@@ -154,9 +154,17 @@ else
     # has CRLF endings — measured, 876 CRs in the workspace root manifest — and the
     # captured name ends in a CR. `cargo -p 'mycrate<CR>'` then fails with `invalid
     # character in package name`, so NO Rust commit could pass the hook.
+    # ⚠ `dirname --`. Without the `--`, a staged path beginning with `-` is parsed
+    # as OPTIONS: `dirname: illegal option -- d`, non-zero exit, and under `set -e`
+    # that kills this subshell MID-STREAM. The failure does not propagate — the
+    # assignment takes the status of the last command in the pipeline (`sed`, which
+    # succeeds) — so every crate after the offending path is lost and the hook
+    # cheerfully prints "don't belong to a workspace crate" and exits 0. Since `-`
+    # sorts early, usually ALL crates are lost. Measured. That is the same false
+    # clean bill of health the mesh guard's own comments refuse to print.
     crates=$(printf '%s\n' "$staged_rs_files" | while IFS= read -r file; do
         [ -n "$file" ] || continue
-        dir=$(dirname "$file")
+        dir=$(dirname -- "$file")
         # `!= "/"` guards an absolute path, whose dirname never reaches "." — git
         # gives repo-relative paths, so this is insurance, not a live case.
         while [ "$dir" != "." ] && [ "$dir" != "/" ]; do
@@ -165,9 +173,22 @@ else
                     "$dir/Cargo.toml" | tr -d '\r'
                 break
             fi
-            dir=$(dirname "$dir")
+            dir=$(dirname -- "$dir")
         done
     done | sort -u | tr '\n' ' ' | sed 's/ *$//')
+
+    # ⚠ A path containing a NEWLINE cannot survive a line-based read, and git
+    # C-quotes control characters regardless of `core.quotePath` — so such a file is
+    # dropped from the lint set. That is tolerable; dropping it SILENTLY is not,
+    # because "no crates" and "we lost some crates" print the same reassuring line.
+    # Compare a NUL-delimited count against the line count and say so when they differ.
+    staged_rs_nul=$(git -c core.quotePath=false diff --cached --name-only -z \
+        --diff-filter=ACMR -- '*.rs' '*Cargo.toml' | tr -dc '\0' | wc -c | tr -d ' ')
+    staged_rs_lines=$(printf '%s\n' "$staged_rs_files" | wc -l | tr -d ' ')
+    if [ "$staged_rs_nul" != "$staged_rs_lines" ]; then
+        echo "⚠ A staged path contains a newline, so the crate list below may be"
+        echo "  incomplete and some staged code will NOT be linted."
+    fi
 
     if [ -z "$crates" ]; then
         # True for a root-level staged file: the workspace manifest is virtual (no

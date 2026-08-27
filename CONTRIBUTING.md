@@ -64,7 +64,8 @@ cargo xtask ci
 >
 > `cargo xtask setup` reaches the same verdicts, and it will not overwrite or delete
 > a hook that is not ours — `cargo xtask uninstall` removes only the hooks it
-> installed. Run from a linked worktree, both act on the **main checkout's** shared
+> installed. An up-to-date hook is left alone apart from its executable bit, so a
+> `.git/hooks/pre-commit` you have symlinked to `xtask/hooks/pre-commit` survives. Run from a linked worktree, both act on the **main checkout's** shared
 > hooks directory, which is where git reads them from.
 
 ### Local CI/CD (Recommended)

@@ -139,9 +139,10 @@ filename through the single `hook_install::HOOKS` table —
 - `cargo xtask setup` — the one-command heal, and `cargo xtask uninstall` its
   inverse. Both make the SAME ownership check `build.rs` makes: a hook that is not
   ours is neither overwritten nor deleted, and they say so. They differ from
-  `build.rs` in one way only — `setup` re-writes a hook that is already current,
-  because laying the file down again is the cheapest guarantee of the executable bit
-  git silently requires.
+  `build.rs` in no way at all: an up-to-date hook has its executable bit repaired
+  IN PLACE (`chmod`), never rewritten. ⚠ Rewriting looked equivalent and was not —
+  the atomic write renames over the path, so it replaced a symlinked hook with a
+  regular file and flipped tracked `.githooks/*` from 644 to 755 on every run.
 
   ⚠ This used to be the opposite: `setup` wrote both hooks unconditionally and
   `uninstall` deleted by filename, so the two installers reached opposite verdicts on
@@ -173,6 +174,18 @@ LAST resort, not the second: a git too old for `--path-format` (Ubuntu 20.04 shi
 one case the fallback cannot see is a `core.hooksPath` on a machine where git cannot
 run at all — nothing can, and it is the only remaining way to be told "Installed"
 about a file git does not read.
+
+⚠ Because `GIT_DIR`/`GIT_WORK_TREE` are cleared, a working tree checked out purely
+through those variables (a bare repo plus `GIT_WORK_TREE`) can no longer be resolved.
+That trade is deliberate — with both set, git still answers the ownership question
+with our own directory while answering the rest for the other repository — and the
+build says so by name rather than falling silent.
+
+Relative answers from an old git are NORMALISED, not merely joined: `..` and symlinks
+are resolved the way `--path-format=absolute` would. Without that, `core.hooksPath =
+../shared-hooks` produced `<repo>/../shared-hooks`, which `starts_with` accepts
+component-wise — containment defeated, on exactly the git version the second ask
+serves.
 
 **Checks**:
 - **Scan/mesh guard** — refuses staged `*.stl` / `*.obj` / `*.ply` / `*.3mf` /

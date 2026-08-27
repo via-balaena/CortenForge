@@ -4,7 +4,6 @@
 //! This ensures that anyone running `cargo xtask` commands
 //! has the pre-commit and commit-msg hooks installed.
 
-use std::fs;
 use std::path::Path;
 
 // The installer's data and its pure decisions, shared VERBATIM with the xtask binary
@@ -42,16 +41,40 @@ fn main() {
             return;
         }
         Some(HooksDir::Shared(dir)) => {
+            // ⚠ Says WHERE, not WHOSE — a repo-LOCAL `core.hooksPath` pointing out
+            // of the tree lands here too, and telling that developer the directory
+            // is "shared with every other repo on this machine" is simply false.
+            // The identical correction was made in `setup.rs` one commit earlier and
+            // not here: a fix that lands in one installer and not the other is the
+            // exact drift this whole arc exists to end.
             println!(
                 "cargo:warning=git is configured to read hooks from {}, which is \
-                 outside this repository and shared with every other repo on this \
-                 machine. CortenForge's hooks were NOT installed there and the \
-                 scan/mesh guard is not armed — merge xtask/hooks/* into it yourself.",
+                 outside this repository — a directory out there may be shared with \
+                 your other repos. CortenForge's hooks were NOT installed and the \
+                 scan/mesh guard is not armed. Merge xtask/hooks/* into it yourself, \
+                 or point core.hooksPath somewhere inside this checkout.",
                 dir.display()
             );
             return;
         }
         None => {
+            // ⚠ `GIT_DIR`/`GIT_WORK_TREE` are cleared before asking git, because
+            // otherwise the environment decides which repository we install into.
+            // The cost lands here: a bare repo checked out via those variables can
+            // no longer be resolved, and its working tree has no `.git` for the
+            // check below to find — so without this it is the one shape that gets
+            // no hooks AND no explanation. Name the reason we cannot see it.
+            if std::env::var_os("GIT_DIR").is_some() || std::env::var_os("GIT_WORK_TREE").is_some()
+            {
+                println!(
+                    "cargo:warning=GIT_DIR/GIT_WORK_TREE are set in this environment. \
+                     They are ignored when locating hooks, because they let the \
+                     environment install into a different repository — so this \
+                     checkout could not be resolved and CortenForge's hooks were NOT \
+                     installed. Build from the working tree without them."
+                );
+                return;
+            }
             // Only worth saying anything if this looks like a checkout. xtask can be
             // built from a vendored copy with no git present, where silence is right.
             if workspace_root.join(".git").exists() {
@@ -160,15 +183,13 @@ fn install_hook_if_needed(path: &Path, content: &str, name: &str) {
 /// it: its text is current, so there is nothing to rewrite. Repair it regardless.
 #[cfg(unix)]
 fn ensure_executable(path: &Path, name: &str, freshly_written: bool) {
-    use std::os::unix::fs::PermissionsExt;
-    let already_executable = fs::metadata(path)
-        .map(|m| m.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false);
-    if already_executable {
+    // Shared with `cargo xtask setup`, so the two installers cannot drift on what
+    // "git will run this" means — the drift that started this arc.
+    if is_executable(path) {
         return;
     }
 
-    if let Err(e) = fs::set_permissions(path, fs::Permissions::from_mode(0o755)) {
+    if let Err(e) = make_executable(path) {
         println!(
             "cargo:warning=The {name} hook is not executable and could not be made \
              one, so git will ignore it and its checks will not run: {e}"

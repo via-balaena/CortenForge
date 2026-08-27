@@ -210,17 +210,7 @@ fn install_git_hooks_into(hooks_dir: &Path) -> Result<()> {
         // said nothing. An explicit command is not a licence to delete a file
         // nobody mentioned.
         if !state.is_ours_to_manage() {
-            match state {
-                crate::hook_install::HookState::Foreign => println!(
-                    "  ⚠ Left your existing {name} hook in place — CortenForge's is \
-                     NOT installed and its checks will not run. Merge \
-                     xtask/hooks/{name} into yours, or move yours aside and re-run."
-                ),
-                _ => println!(
-                    "  ⚠ Could not read the existing {name} hook, so it was left \
-                     alone. CortenForge's {name} hook is NOT installed."
-                ),
-            }
+            println!("  {}", describe_untouchable(state, name, &path));
             continue;
         }
 
@@ -229,17 +219,69 @@ fn install_git_hooks_into(hooks_dir: &Path) -> Result<()> {
             crate::hook_install::write_hook_file(&path, content)
                 .with_context(|| format!("Failed to write {name} hook"))?;
             println!("  ✓ Installed {name} hook");
-        } else {
-            // Ours and current. Still re-write it: this is the one command a
-            // developer runs to REPAIR hooks, and the cheapest way to guarantee the
-            // executable bit git silently requires is to lay the file down again.
-            crate::hook_install::write_hook_file(&path, content)
-                .with_context(|| format!("Failed to refresh {name} hook"))?;
-            println!("  ✓ {name} hook already current (refreshed)");
+            continue;
         }
+
+        // ⚠⚠ OURS AND CURRENT — DO NOT REWRITE IT. An earlier version did, reasoning
+        // that laying the file down again was the cheapest way to guarantee the
+        // executable bit. It is not equivalent: `write_hook_file` RENAMES over the
+        // path, so a `.git/hooks/pre-commit` symlinked to `xtask/hooks/pre-commit`
+        // became a regular file and the developer's link was gone — announced as
+        // "already current". It also flipped tracked `.githooks/*` from 644 to 755
+        // on every run, dirtying the working tree, in the same commit that stopped
+        // `uninstall` touching tracked files. And it put the two installers back into
+        // disagreement on `OursCurrent`, which is the asymmetry this all began with.
+        //
+        // Repair the bit IN PLACE instead, exactly as `build.rs` does.
+        #[cfg(unix)]
+        if !crate::hook_install::is_executable(&path) {
+            crate::hook_install::make_executable(&path)
+                .with_context(|| format!("Failed to make the {name} hook executable"))?;
+            println!(
+                "  ✓ Repaired the {name} hook's executable bit — git had been \
+                 ignoring it, so its checks were not running."
+            );
+            continue;
+        }
+        println!("  ✓ {name} hook already current");
     }
 
     Ok(())
+}
+
+/// Say precisely why a hook was left alone, and what to do about it.
+///
+/// ⚠ THE MESSAGE IS THE WHOLE VALUE HERE. Declining to install means the developer's
+/// guard is not armed, so a sentence that misdescribes the file leaves them with no
+/// route forward. Two cases were being told the wrong story:
+///
+/// - An EMPTY hook classifies `Foreign` — correctly, since it carries no marker —
+///   but "merge ours into yours" is nonsense for a zero-byte file, and before the
+///   ownership check `setup` used to be the way to repair one. Name it, and say the
+///   one thing that works.
+/// - `uninstall` reported "it is not ours" for anything it merely failed to READ: a
+///   chmod-000 hook that IS ours, a directory, a dangling symlink. `install`
+///   distinguished the two; `uninstall` did not.
+fn describe_untouchable(state: crate::hook_install::HookState, name: &str, path: &Path) -> String {
+    let empty = path.metadata().is_ok_and(|m| m.len() == 0);
+    match state {
+        crate::hook_install::HookState::Foreign if empty => format!(
+            "⚠ The existing {name} hook is EMPTY, so it carries no mark of ours and \
+             was left alone — CortenForge's {name} hook is NOT installed and its \
+             checks will not run. Delete {} and run this again.",
+            path.display()
+        ),
+        crate::hook_install::HookState::Foreign => format!(
+            "⚠ Left your existing {name} hook in place — CortenForge's is NOT \
+             installed and its checks will not run. Merge xtask/hooks/{name} into \
+             yours, or move yours aside and re-run."
+        ),
+        _ => format!(
+            "⚠ Could not read the existing {name} hook, so it was left alone — it \
+             may be a directory, a broken symlink, or unreadable. CortenForge's \
+             {name} hook is NOT installed and its checks will not run."
+        ),
+    }
 }
 
 /// Verify required tools are installed
@@ -351,6 +393,7 @@ pub fn uninstall() -> Result<()> {
 /// lived inside the command that resolves its own directory, no test could reach it,
 /// and it deleted files by name with no ownership check at all.
 fn uninstall_hooks_from(hooks_dir: &Path) -> Result<()> {
+    let mut failures = 0usize;
     // The same single source both installers read. Hardcoding the names here is
     // how a third hook would get installed by both of them and left behind by this
     // one — a live hook with no source, which is the drift shape (#709) this branch
@@ -375,13 +418,26 @@ fn uninstall_hooks_from(hooks_dir: &Path) -> Result<()> {
         // checkout. Uninstalling CortenForge's hooks is not a licence to remove
         // anybody else's; the two halves of the installer now agree on ownership.
         if !state.is_ours_to_manage() {
-            println!("  ⚠ Left the existing {name} hook alone — it is not ours.");
+            // Same precise wording as install. "It is not ours" was also what a
+            // chmod-000 hook that IS ours got told.
+            println!("  {}", describe_untouchable(state, name, &path));
             continue;
         }
-        fs::remove_file(&path)?;
+        // ⚠ NOT `?`. Failing on `pre-commit` used to abort the loop, leaving
+        // `commit-msg` installed while the command reported an error — a half-done
+        // uninstall that neither the user nor the next run can reason about. Try
+        // every hook, then report.
+        if let Err(e) = fs::remove_file(&path) {
+            println!("  ⚠ Could not remove the {name} hook: {e}");
+            failures += 1;
+            continue;
+        }
         println!("  ✓ Removed {name} hook");
     }
 
+    if failures > 0 {
+        anyhow::bail!("{failures} hook(s) could not be removed; see above.");
+    }
     Ok(())
 }
 
@@ -473,6 +529,307 @@ mod hook_tests {
         );
         let _ = std::fs::remove_dir_all(&dir);
         (out.status.success(), combined)
+    }
+
+    /// Run the hook with a real nested crate staged, and capture the argv it hands
+    /// `cargo clippy`. Returns (exited_zero, hook output, cargo argv lines).
+    ///
+    /// ⚠⚠ THIS BLOCK WAS REACHED BY NOTHING. A mutation survey found that every
+    /// staged shape the suite used — a mesh, a `.txt`, the fixture's own root-level
+    /// `Cargo.toml` — exits before the crate walk, so four separate mutations of it
+    /// all shipped green: dropping `tr -d '\r'` (no Rust commit passes on Windows),
+    /// reverting to `for file in $staged_rs_files` (a crate under `my crate/`
+    /// silently unlinted), dropping `core.quotePath=false` (same for `café/`), and
+    /// re-adding `2>/dev/null` (a failure with no diagnostic). Untested installer
+    /// wiring is the shape of #709 itself.
+    ///
+    /// `cargo` is stubbed on the PATH of the hook's CHILD PROCESS ONLY — per-child,
+    /// so unlike a `set_var` it cannot race the parallel suite. It logs its argv and
+    /// exits 0, which also keeps this fast: a real clippy per case would not.
+    fn run_hook_with_crate(dir_name: &str, crlf_manifest: bool) -> (bool, String, Vec<String>) {
+        run_hook_with_crate_and_cargo(dir_name, crlf_manifest, None)
+    }
+
+    /// As above, but `clippy_failure` makes the stub fail the clippy step with that
+    /// text on STDERR — which is where cargo puts every diagnostic it prints.
+    fn run_hook_with_crate_and_cargo(
+        dir_name: &str,
+        crlf_manifest: bool,
+        clippy_failure: Option<&str>,
+    ) -> (bool, String, Vec<String>) {
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let uniq = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("cf-crate-{}-{uniq}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let git = |args: &[&str]| {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(&dir)
+                .output()
+                .expect("git");
+            assert!(
+                out.status.success(),
+                "scratch-repo setup failed at `git {}`:\n{}{}",
+                args.join(" "),
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        git(&["init", "-q", "."]);
+        git(&["config", "user.email", "t@t"]);
+        git(&["config", "user.name", "t"]);
+
+        let crate_dir = dir.join(dir_name);
+        std::fs::create_dir_all(crate_dir.join("src")).expect("crate src");
+        let manifest =
+            "[package]\nname = \"demo-crate\"\nversion = \"0.0.0\"\nedition = \"2021\"\n";
+        let manifest = if crlf_manifest {
+            manifest.replace('\n', "\r\n")
+        } else {
+            manifest.to_string()
+        };
+        std::fs::write(crate_dir.join("Cargo.toml"), manifest).expect("manifest");
+        std::fs::write(crate_dir.join("src/lib.rs"), b"pub fn a() {}\n").expect("lib.rs");
+        git(&["add", "-A"]);
+
+        // The stub. `"$@"` is logged verbatim so a mangled crate name is visible.
+        let bin = dir.join("stubbin");
+        std::fs::create_dir_all(&bin).expect("bin");
+        let log = dir.join("cargo.log");
+        let fail_clause = match clippy_failure {
+            Some(msg) => {
+                format!("case \"$1\" in clippy) printf '%s\\n' '{msg}' >&2; exit 1;; esac\n")
+            }
+            None => String::new(),
+        };
+        std::fs::write(
+            bin.join("cargo"),
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n{fail_clause}exit 0\n",
+                log.display()
+            ),
+        )
+        .expect("stub");
+        #[cfg(unix)]
+        crate::hook_install::make_executable(&bin.join("cargo")).expect("chmod stub");
+
+        let hook = dir.join("hook.sh");
+        std::fs::write(&hook, PRE_COMMIT_HOOK).expect("hook");
+        let path = format!(
+            "{}:{}",
+            bin.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let out = Command::new("sh")
+            .arg(&hook)
+            .current_dir(&dir)
+            .env("PATH", path)
+            .env_remove("CF_ALLOW_MESH")
+            .output()
+            .expect("run hook");
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let argv: Vec<String> = std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        let _ = std::fs::remove_dir_all(&dir);
+        (out.status.success(), combined, argv)
+    }
+
+    /// The crate walk must name every staged crate, whatever its path looks like.
+    #[test]
+    fn the_lint_step_finds_crates_through_awkward_paths_and_manifests() {
+        // POSITIVE CONTROL FIRST. If the ordinary case did not reach clippy, every
+        // assertion below would hold for a hook that simply never lints anything.
+        let (ok, out, argv) = run_hook_with_crate("demo", false);
+        assert!(ok, "the ordinary case must pass;\n{out}");
+        assert!(
+            argv.iter()
+                .any(|a| a.contains("clippy") && a.contains("-p demo-crate")),
+            "the crate walk never reached clippy, so nothing below discriminates; \
+             argv = {argv:?}\n{out}"
+        );
+
+        for (label, dir_name, crlf) in [
+            // A space: the default IFS split this into two words, so it matched no
+            // Cargo.toml and the crate was dropped with a reassuring message.
+            ("a space in the path", "my crate", false),
+            // Non-ASCII: git C-quotes it to `"caf\303\251/..."` unless quotePath is
+            // off — a name no file has, so the walk finds nothing.
+            ("a non-ASCII path", "café", false),
+            // A glob character, which must not be expanded on the way through.
+            ("a glob character", "g[1]", false),
+            // CRLF manifest: the captured name ended in a CR, and `cargo -p 'x<CR>'`
+            // is rejected — so NO Rust commit passed the hook on a Windows checkout.
+            ("a CRLF manifest", "demo", true),
+        ] {
+            let (ok, out, argv) = run_hook_with_crate(dir_name, crlf);
+            assert!(ok, "{label}: the hook failed;\n{out}");
+            let clippy = argv
+                .iter()
+                .find(|a| a.contains("clippy"))
+                .unwrap_or_else(|| panic!("{label}: clippy was never invoked — the crate was silently dropped from the lint set;\n{out}"));
+            assert!(
+                clippy.contains("-p demo-crate"),
+                "{label}: clippy ran without the staged crate: {clippy:?}\n{out}"
+            );
+            assert!(
+                !clippy.contains('\r'),
+                "{label}: the crate name carries a carriage return, which cargo \
+                 rejects as an invalid character in a package name: {clippy:?}"
+            );
+            assert!(
+                !out.contains("don't belong to a workspace crate"),
+                "{label}: the hook claimed the staged files belong to no crate;\n{out}"
+            );
+        }
+    }
+
+    /// An up-to-date hook is REPAIRED IN PLACE, never laid down again.
+    ///
+    /// ⚠⚠ These look equivalent and are not. `write_hook_file` renames over the
+    /// path, so rewriting an already-current hook replaces a SYMLINK with a regular
+    /// file — a developer whose `.git/hooks/pre-commit` links to `xtask/hooks/`
+    /// loses the link silently, told only "already current". It also flipped tracked
+    /// `.githooks/*` from 644 to 755 on every single run, dirtying the working tree
+    /// in the same commit that stopped `uninstall` touching tracked files. And it
+    /// put the two installers back into disagreement on `OursCurrent`, which is the
+    /// asymmetry the whole arc exists to end. `build.rs` never did this.
+    #[test]
+    #[cfg(unix)]
+    fn an_up_to_date_hook_is_repaired_in_place_and_a_symlinked_one_survives() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let base = std::env::temp_dir().join(format!("cf-inplace-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let hooks = base.join("hooks");
+        let source = base.join("source");
+        std::fs::create_dir_all(&hooks).expect("temp dir");
+        std::fs::create_dir_all(&source).expect("temp dir");
+
+        // pre-commit: OUR CURRENT TEXT, reached through a symlink — the shape a
+        // developer creates to keep the hook tracking xtask/hooks/.
+        let target = source.join("pre-commit");
+        std::fs::write(&target, PRE_COMMIT_HOOK).expect("seed target");
+        crate::hook_install::make_executable(&target).expect("chmod target");
+        std::os::unix::fs::symlink(&target, hooks.join("pre-commit")).expect("symlink");
+
+        // commit-msg: our current text, but mode 644 — git ignores it silently, so
+        // the bit MUST be repaired. This is the positive control: an installer that
+        // simply did nothing for `OursCurrent` would pass the symlink assertion.
+        let cm = hooks.join("commit-msg");
+        std::fs::write(&cm, COMMIT_MSG_HOOK).expect("seed commit-msg");
+        std::fs::set_permissions(&cm, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+        let cm_ino_before = std::fs::metadata(&cm).expect("meta").ino();
+
+        super::install_git_hooks_into(&hooks).expect("install");
+
+        let still_symlink = hooks.join("pre-commit").is_symlink();
+        let target_intact = std::fs::read_to_string(&target).expect("read target");
+        let cm_meta = std::fs::metadata(&cm).expect("meta");
+        let cm_mode = cm_meta.permissions().mode();
+        let cm_ino_after = cm_meta.ino();
+        let _ = std::fs::remove_dir_all(&base);
+
+        assert!(
+            still_symlink,
+            "installing over an up-to-date hook replaced the developer's symlink \
+             with a regular file — silently, and reported as 'already current'"
+        );
+        assert_eq!(
+            target_intact, PRE_COMMIT_HOOK,
+            "the symlink's target must be left exactly as it was"
+        );
+        assert!(
+            cm_mode & 0o111 != 0,
+            "POSITIVE CONTROL: an up-to-date hook at mode {cm_mode:o} is ignored by \
+             git without a word — the bit has to be repaired, or doing nothing at \
+             all would satisfy the assertion above"
+        );
+        assert_eq!(
+            cm_ino_before, cm_ino_after,
+            "the executable bit was repaired by REWRITING the file, not by chmod — \
+             which is exactly what destroys a symlinked hook"
+        );
+    }
+
+    /// Declining to install must say something the developer can act on.
+    #[test]
+    fn an_empty_hook_is_named_as_empty_rather_than_as_somebody_elses() {
+        use crate::hook_install::HookState;
+
+        let dir = std::env::temp_dir().join(format!("cf-empty-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let empty = dir.join("pre-commit");
+        let theirs = dir.join("commit-msg");
+        std::fs::write(&empty, b"").expect("seed empty");
+        std::fs::write(&theirs, b"#!/bin/sh\n# husky\n").expect("seed foreign");
+
+        // A zero-byte file carries no marker, so it classifies Foreign — correctly.
+        // But "merge xtask/hooks/pre-commit into yours" is nonsense advice for it,
+        // and before the ownership check `setup` was the way to repair one. The
+        // classification is right; the SENTENCE was the thing that had to change.
+        let empty_msg = super::describe_untouchable(HookState::Foreign, "pre-commit", &empty);
+        let foreign_msg = super::describe_untouchable(HookState::Foreign, "commit-msg", &theirs);
+        let unreadable_msg =
+            super::describe_untouchable(HookState::Unreadable, "pre-commit", &empty);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(
+            empty_msg.contains("EMPTY") && empty_msg.contains("Delete"),
+            "an empty hook must be named, with the one action that works: {empty_msg}"
+        );
+        assert!(
+            !empty_msg.contains("Merge"),
+            "there is nothing to merge out of a zero-byte file: {empty_msg}"
+        );
+        assert!(
+            foreign_msg.contains("Merge"),
+            "POSITIVE CONTROL: a real foreign hook still gets the merge advice: \
+             {foreign_msg}"
+        );
+        assert!(
+            unreadable_msg.contains("Could not read"),
+            "unreadable must not be reported as somebody else's hook — a chmod-000 \
+             hook that IS ours landed here: {unreadable_msg}"
+        );
+    }
+
+    /// A failing lint must show the developer WHY, not just that.
+    ///
+    /// ⚠ cargo writes every diagnostic to stderr, so the `2>/dev/null` this call
+    /// used to carry left `✗ Clippy check failed. Fix errors before committing.` and
+    /// nothing else — no file, no lint, no line. It also hid the CRLF crate-name
+    /// failure above for as long as that bug existed: the hook rejected every Rust
+    /// commit on Windows and gave no clue that the reason was `invalid character in
+    /// package name`. A verdict with no evidence is the thing this repo keeps
+    /// refusing elsewhere; it does not get a pass because it is only a lint.
+    #[test]
+    fn a_failing_lint_shows_cargos_own_diagnostic() {
+        let diagnostic = "error: length comparison to zero at src/lib.rs:1:5";
+        let (ok, out, argv) = run_hook_with_crate_and_cargo("demo", false, Some(diagnostic));
+
+        assert!(
+            argv.iter().any(|a| a.contains("clippy")),
+            "PREMISE: clippy was never reached, so this proves nothing;\n{out}"
+        );
+        assert!(!ok, "a failing lint must fail the commit;\n{out}");
+        assert!(
+            out.contains("Clippy check failed"),
+            "the hook must say the lint failed;\n{out}"
+        );
+        assert!(
+            out.contains(diagnostic),
+            "cargo's own diagnostic was swallowed, leaving the developer a verdict \
+             with no evidence;\n{out}"
+        );
     }
 
     /// A staged mesh must actually BLOCK the commit — the behaviour, not the prose.
