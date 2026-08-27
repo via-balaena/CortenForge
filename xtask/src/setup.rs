@@ -117,6 +117,46 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
+/// A workspace ROOT, so it cannot be handed to something that wants a HOOKS
+/// DIRECTORY.
+///
+/// ⚠⚠ `install_git_hooks_in(root)` and `install_git_hooks_into(hooks_dir)` are two
+/// characters apart, mean different things, and one calls the other eleven lines
+/// away. While both took `&Path`, crossing them COMPILED — and wrote both hooks into
+/// the workspace root. That is the silent half of this hazard, so it gets the fix
+/// that cannot be got wrong rather than a better name.
+#[derive(Clone, Copy)]
+pub struct Root<'a>(pub &'a Path);
+
+/// Where `cargo xtask setup` may write. Refuses a `GitCannotRun` directory.
+fn hooks_dir_for_install(root: Root<'_>) -> Result<PathBuf> {
+    git_hooks_dir(
+        root,
+        crate::hook_install::Attempted::Install { retry: "re-run" },
+    )
+}
+
+/// Where `cargo xtask uninstall` may DELETE. Accepts a `GitCannotRun` directory,
+/// because that is where a stranded developer's hooks actually are.
+///
+/// ⚠ Which of these two each command calls is itself a pairing, and it is gated —
+/// by `setup_and_uninstall_each_pass_the_attempt_that_matches_them`, which drives
+/// the real commands against a lab repository. Before that test, crossing them
+/// shipped green in both directions.
+fn hooks_dir_for_removal(root: Root<'_>) -> Result<PathBuf> {
+    git_hooks_dir(root, crate::hook_install::Attempted::Uninstall)
+}
+
+/// The workspace root, read from the process's working directory.
+///
+/// ⚠ Process-global, so no in-process test can hand it a different answer. That is
+/// why it is now the only thing `install_git_hooks` and `uninstall` do before
+/// delegating to a function a test CAN drive.
+fn workspace_root() -> Result<PathBuf> {
+    let sh = xshell::Shell::new()?;
+    Ok(PathBuf::from(crate::grade::find_workspace_root(&sh)?))
+}
+
 /// Where git will actually look for hooks — asked, never assumed.
 ///
 /// Joining `.git/hooks` onto the workspace root is silently wrong under
@@ -131,51 +171,17 @@ pub fn run() -> Result<()> {
 /// repo-local `core.hooksPath` out of the tree lands here too, so the refusal names
 /// the location, never the owner. See [`crate::hook_install::HooksDir`].
 ///
+/// ⚠ `root` is a parameter, but the `GIT_DIR`/`GIT_WORK_TREE` read below is still
+/// process-global — so this function has one input a test cannot supply, and the
+/// `None if git_env_set` arm is reachable only through [`hooks_dir_from`].
+///
 /// # Errors
 /// If git's hooks directory cannot be determined, is not inside this repository, or
 /// — when installing — is one git cannot exec a hook from.
-/// Where `cargo xtask setup` may write. Refuses a `GitCannotRun` directory.
-fn hooks_dir_for_install(root: &Path) -> Result<PathBuf> {
-    git_hooks_dir(
-        root,
-        crate::hook_install::Attempted::Install { retry: "re-run" },
-    )
-}
-
-/// Where `cargo xtask uninstall` may DELETE. Accepts a `GitCannotRun` directory,
-/// because that is where a stranded developer's hooks actually are.
-///
-/// ⚠⚠ THE PAIRING OF THESE TWO WITH THEIR CALLERS IS ITSELF A THING THAT MUST BE
-/// GATED, and for one commit it was not. `hooks_dir_from` is asserted for both
-/// `Attempted` values, but nothing tested the WIRING — and crossing the two call
-/// sites shipped GREEN in both directions, the install direction making `cargo xtask
-/// setup` install into a directory git cannot exec from, the exact outcome
-/// `GitCannotRun` exists to prevent. Same shape as the hook PAIRING that already cost
-/// this arc a commit (`8f843874`): two things that must correspond, nothing asserting
-/// they do.
-///
-/// ★ I first wrote that it could not be gated, because `git_hooks_dir` resolved the
-/// workspace root from the PROCESS working directory. That was giving up too early —
-/// the root is a PARAMETER now, exactly as `repair_bit` and `hooks_dir_from` already
-/// were, so `install_git_hooks_in` and `uninstall_in` can be driven against a lab
-/// repository and the crossing dies. "Untestable" usually means "not yet injected".
-fn hooks_dir_for_removal(root: &Path) -> Result<PathBuf> {
-    git_hooks_dir(root, crate::hook_install::Attempted::Uninstall)
-}
-
-/// The workspace root, read from the process's working directory.
-///
-/// This is the ONE part of resolution that cannot be handed to a test, which is why
-/// it is now the only thing the public entry points do before delegating.
-fn workspace_root() -> Result<PathBuf> {
-    let sh = xshell::Shell::new()?;
-    Ok(PathBuf::from(crate::grade::find_workspace_root(&sh)?))
-}
-
-fn git_hooks_dir(root: &Path, attempted: crate::hook_install::Attempted) -> Result<PathBuf> {
+fn git_hooks_dir(root: Root<'_>, attempted: crate::hook_install::Attempted) -> Result<PathBuf> {
     hooks_dir_from(
-        crate::hook_install::resolve_hooks_dir(root),
-        root,
+        crate::hook_install::resolve_hooks_dir(root.0),
+        root.0,
         std::env::var_os("GIT_DIR").is_some() || std::env::var_os("GIT_WORK_TREE").is_some(),
         attempted,
     )
@@ -183,12 +189,10 @@ fn git_hooks_dir(root: &Path, attempted: crate::hook_install::Attempted) -> Resu
 
 /// Turn a resolution into a directory to write, or into the reason we will not.
 ///
-/// Split from [`git_hooks_dir`] because THE REFUSALS ARE THE POINT and, at the time,
-/// the version that resolved the directory could not be tested — it read the
-/// process's cwd. ⚠ That is no longer why: the root is a parameter now, and
-/// [`workspace_root`] is the only thing left that cannot be handed to a test. The
-/// split still earns its place, because these arms are pure and this is where a
-/// mutation survey can reach them one at a time.
+/// Split from [`git_hooks_dir`] because THE REFUSALS ARE THE POINT and this is where
+/// a mutation survey can reach them one at a time, each arm pure and independently
+/// killable. (It was originally split because the resolving version read the process
+/// cwd; the root is a parameter now, so that is no longer the reason.)
 /// While the two were one function, mutating either refusal into `Ok(dir)` left the
 /// whole suite green while `cargo xtask setup` wrote CortenForge's hooks into a
 /// developer's global hooks directory, or into an unrelated repository.
@@ -271,13 +275,13 @@ fn hooks_dir_from(
 
 /// Install git hooks
 fn install_git_hooks() -> Result<()> {
-    install_git_hooks_in(&workspace_root()?)
+    install_git_hooks_in(Root(&workspace_root()?))
 }
 
 /// The install path, with the one untestable step (finding the workspace root) lifted
 /// out — so a test can drive the real command against a lab repository and observe
 /// which `Attempted` it passes.
-fn install_git_hooks_in(root: &Path) -> Result<()> {
+fn install_git_hooks_in(root: Root<'_>) -> Result<()> {
     println!("{}", "→ Installing git hooks...".bright_blue());
 
     let hooks_dir = hooks_dir_for_install(root)?;
@@ -297,9 +301,8 @@ fn install_git_hooks_in(root: &Path) -> Result<()> {
 
 /// Write both hooks into `hooks_dir`.
 ///
-/// Split out from [`install_git_hooks`] so a test can reach it: the version that
-/// resolves the directory itself can only be exercised by changing the process's
-/// cwd, which is global and races other tests. A mutation survey found the pairing
+/// Split out from [`install_git_hooks_in`] so a test can hand it a directory
+/// directly, without resolving one. A mutation survey found the pairing
 /// — which text goes to which filename — was covered by NOTHING, so crossing the two
 /// shipped green. That is the same class as this arc's original bug: installer wiring
 /// with no gate on it. The pairing now lives once, in `hook_install::HOOKS`.
@@ -523,11 +526,11 @@ fn verify_tools() -> Result<()> {
 
 /// Uninstall git hooks
 pub fn uninstall() -> Result<()> {
-    uninstall_in(&workspace_root()?)
+    uninstall_in(Root(&workspace_root()?))
 }
 
 /// The uninstall path, split for the same reason as [`install_git_hooks_in`].
-fn uninstall_in(root: &Path) -> Result<()> {
+fn uninstall_in(root: Root<'_>) -> Result<()> {
     println!("{}", "→ Removing git hooks...".bright_blue());
 
     let hooks_dir = hooks_dir_for_removal(root)?;
@@ -1551,8 +1554,8 @@ mod hook_tests {
             crate::hook_install::make_executable(&path).expect("chmod");
         }
 
-        let install = super::install_git_hooks_in(&repo);
-        let removal = super::uninstall_in(&repo);
+        let install = super::install_git_hooks_in(super::Root(&repo));
+        let removal = super::uninstall_in(super::Root(&repo));
         let left_behind: Vec<_> = HOOKS
             .iter()
             .filter(|(name, _)| hooks.join(name).exists())

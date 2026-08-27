@@ -229,8 +229,7 @@ fn parse_git_paths(stdout: &str, base: &std::path::Path) -> Option<GitPaths> {
 /// where git said the directory was, then committing. This function agrees with git
 /// on all 20. The first design disagreed on SIX — it refused `./.`, `././` and
 /// `././.`, which git runs, and accepted `+hooks`, `+` and `./+hooks`, which git
-/// cannot exec. (An earlier version of this paragraph said "four", which is its own
-/// small argument for keeping the sweep OUT of the prose and IN the gate.)
+/// cannot exec.
 ///
 /// ⚠⚠ THIS IS NOT THE DELETED `-` FILTER COMING BACK (catalogue: [`four_answers`]).
 /// That filter DROPPED the line,
@@ -391,8 +390,8 @@ fn resolve_into(out: &mut std::path::PathBuf, path: &std::path::Path, budget: &m
 /// same filter left a well-formed THREE and installed into the TRUNCATED
 /// `<repo>/hooks` while git read `<repo>/hooks\n`.
 ///
-/// ⚠ The numbers in this paragraph moved when the fourth question was added, and an
-/// earlier version of it kept the old ones. Quote the RULE, not a count.
+/// ⚠ Quote the RULE, not a count: adding the fourth question moved every number
+/// here, and the counts outlived the change.
 ///
 /// ★★ THE CATALOGUE OF DELETED RULES LIVES HERE, and only here. FIVE defensive rules
 /// have been added and deleted on this arc:
@@ -406,10 +405,13 @@ fn resolve_into(out: &mut std::path::PathBuf, path: &std::path::Path, budget: &m
 /// | `file_name` check in [`git_will_exec_our_hook`] | nothing |
 ///
 /// Every one was added to catch a shape someone REASONED about; every one was
-/// measured afterwards to catch nothing, and three of the five ate a legal answer,
-/// each the same way: a real answer removed, a short count, no answer, and the
-/// `.git/hooks` guess reporting a successful install into a directory git never
-/// reads. ⇒ **A defensive rule that cannot be shown to catch something the primary
+/// measured afterwards to catch nothing, and three of the five ate a legal answer.
+/// ⚠ Not all three the same way: the two OPTION-SHAPED filters removed a real answer,
+/// leaving a short count, no answer, and the `.git/hooks` guess reporting a
+/// successful install into a directory git never reads — while the EMPTY-LINE filter
+/// left a well-formed count and installed into the TRUNCATED directory instead. Same
+/// class, different failure; merging the paragraphs is what blurred them.
+/// ⇒ **A defensive rule that cannot be shown to catch something the primary
 /// rule misses is not free insurance; it is an untested code path with its own
 /// failure mode.**
 ///
@@ -593,7 +595,8 @@ const REV_PARSE_ASK: [&str; 7] = [
     // prefix, and the properties `git_will_exec_our_hook` reads are functions of that
     // prefix alone, so any hook name gives the same verdict BY CONSTRUCTION. (A
     // 40-spelling sweep across three names agreed, but it is not in the tree; the
-    // construction argument is the reason to believe it, not the sweep.) It must still name a hook we actually manage, which cannot be
+    // construction argument is the reason to believe it, not the sweep.) It must
+    // still name a hook we actually manage, which cannot be
     // expressed as a `const` (there is no const string concatenation) and is
     // therefore asserted against [`HOOKS`] in
     // `the_ask_carries_no_option_an_old_git_would_echo`.
@@ -1379,9 +1382,9 @@ mod tests {
         // empty, leaving a well-formed count, and installed into the TRUNCATED
         // `<repo>/hooks` while git read `<repo>/hooks\n`.
         //
-        // ⚠ The previous fixture here was `\"…hooks\\nhooks/pre-commit\\n\\n\"` — an
-        // empty line LAST, which no git emits under this ask. A fixture no producer
-        // can produce tests nothing, which this module says 100 lines above.
+        // ⚠ An empty line LAST would be no git's output under this ask, and a
+        // fixture no producer can produce tests nothing — which this module says 100
+        // lines above, and which the fixture that used to sit here ignored.
         //
         // ⚠ BE HONEST ABOUT WHAT THE COUNT RULE BUYS HERE. It prevents the TRUNCATED
         // install; it does not rescue the developer. Refusing sends resolution to the
