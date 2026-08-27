@@ -16,7 +16,12 @@
 //! get **re-tessellated** under round-trip — same point cloud, same
 //! face count, different triangle set (planar-quad diagonal swap).
 //! The other 13 iter-1 reference STLs (cup pieces, plugs, platform)
-//! preserve the triangle set exactly. `geometric_equivalence` is
+//! preserve the triangle set exactly. ⚠ That 1-plus-13 split describes
+//! the 14-piece generation it was measured on; the current spec emits
+//! **15** (`dowel` and `funnel` both present). Whether the two added
+//! pieces preserve their triangle set is NOT re-measured — this gate
+//! checks vertex and face COUNT, never the triangle set, so it cannot
+//! answer that either way. `geometric_equivalence` is
 //! the right tool for S4-S6 before-vs-after feature-migration tests
 //! (where re-tessellation isn't expected because both sides
 //! manifold3d-round-trip the same composition); for "raw STL →
@@ -34,12 +39,27 @@
 //!
 //! # Why ignored by default
 //!
-//! Iter-1 cf-cast-cli runs take ~6 min wall time
-//! (`project_cf_cast_f4_split_asymmetry`); loading + welding all 14
-//! reference STLs is ~10 s, but the test depends on an absolute
-//! path outside the repo (`~/scans/cast_iter1_design/`). Gating
-//! behind `#[ignore]` + an env-var lookup keeps the standard
-//! `cargo test -p cf-cast` workflow hermetic.
+//! NOT for cost — the test depends on an absolute path outside the
+//! repo (`~/scans/cast_iter1_design/`). Gating behind `#[ignore]` + an
+//! env-var lookup keeps the standard `cargo test -p cf-cast` workflow
+//! hermetic.
+//!
+//! ⚠ **THE COST FIGURES THAT USED TO JUSTIFY THIS WERE BOTH WRONG, AND
+//! WRONG IN THE SAME DIRECTION.** It read: "Iter-1 cf-cast-cli runs take
+//! ~6 min wall time (`project_cf_cast_f4_split_asymmetry`); loading +
+//! welding all 14 reference STLs is ~10 s". Re-measured 2026-08-27 on an
+//! M4 laptop:
+//!
+//! - `cf-cast-cli` on `cast.iter1-design.toml`: **96 s**, not ~6 min.
+//! - this gate over **15** STLs, `--release`: **0.07 s** (3 runs, stable),
+//!   not ~10 s — off by more than two orders of magnitude.
+//!
+//! ⇒ The fixture path is the whole reason for `#[ignore]`, and stating a
+//! cost that was never re-checked made a hermeticity constraint look like
+//! a performance one. The synthetic tests at the bottom of this file are
+//! the reason a stale figure here can no longer hide the gate rotting:
+//! they run on every `cargo test -p cf-cast`, in microseconds, with no
+//! fixture at all.
 //!
 //! # Manual run
 //!
