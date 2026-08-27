@@ -74,8 +74,13 @@ cargo xtask ci
 >
 > ⚠ **If you ever `chmod -x` a hook, run `cargo xtask setup`.** `chmod` does not change
 > a file's mtime, so cargo cannot tell the build script to re-run, and the hook stays
-> unarmed through every later `cargo build` — silently. `cargo xtask setup` always runs
-> and always repairs the bit.
+> unarmed through every later `cargo build` — silently. `cargo xtask setup` always
+> runs, and repairs the bit for any ordinary hook file.
+>
+> ⚠ The one case it will not repair is a hook that is a **symlink**: `chmod` follows
+> the link, so repairing would change the permissions of the target — a file outside
+> the hooks directory, possibly outside the repository. It says which file to chmod
+> instead, and counts that as a failure, so `cargo xtask setup` exits non-zero.
 >
 > `cargo xtask setup` reaches the same verdicts, and it will not overwrite or delete
 > a hook that is not ours — `cargo xtask uninstall` removes only the hooks it

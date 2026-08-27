@@ -266,11 +266,16 @@ fn install_git_hooks_into(hooks_dir: &Path) -> Result<()> {
 /// at mode 0644, which git ignores WITHOUT A WORD. `uninstall_hooks_from` has the
 /// symmetric test; install did not.
 ///
-/// ⚠ A seam rather than a real refusal, deliberately. Making `chmod` fail needs
-/// `chflags uchg` (macOS) or root (Linux), and `xtask`'s tests run only on
-/// `ubuntu-latest` — so a `#[cfg(target_os = "macos")]` test would execute in NO CI
-/// job and its green would mean SKIPPED. That trap has already recurred three times
-/// here (#747, #827, #828).
+/// ⚠ A seam rather than a real refusal, and the ORIGINAL reason for it has since
+/// been falsified: it said making `chmod` fail needs `chflags uchg` (macOS) or root
+/// (Linux), which stopped being true when `make_executable` began refusing a
+/// SYMLINK — portable, no privileges, and `repairing_the_bit_never_chmods_through_a_symlink`
+/// does exactly that in this same suite.
+///
+/// ★ The seam still earns its place, for a better reason: it isolates the COUNTING
+/// contract from the symlink policy. A test that made chmod fail by handing it a
+/// symlink would fail for a second reason the moment that policy changed, and would
+/// stop being a test of "a failure is counted, and the loop continues".
 fn install_git_hooks_into_with(
     hooks_dir: &Path,
     #[cfg(unix)] repair_bit: &dyn Fn(&Path) -> std::io::Result<()>,

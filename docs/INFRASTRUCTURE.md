@@ -156,7 +156,9 @@ filename through the single `hook_install::HOOKS` table —
   typed the command.
 
 Both resolve the directory by ASKING git (`rev-parse --show-toplevel
---git-common-dir --git-path hooks`) rather than joining `.git/hooks` onto the repo
+--git-common-dir --git-path hooks --git-path hooks/pre-commit` — the fourth question
+is explained under "spellings git will not run our hook from" below) rather than
+joining `.git/hooks` onto the repo
 root — that join is silently wrong under `core.hooksPath`, in a linked worktree
 (whose `.git` is a *file*, so the path does not exist), and with
 `--separate-git-dir`. In each case the old code wrote a file git never reads, and
@@ -205,8 +207,10 @@ not re-run, the hook stays unarmed through any number of `cargo build`s, and a s
 lines on a no-op build, so you may see "Repaired the pre-commit hook's executable bit"
 while nothing was repaired.
 
-Three things bound it, none of them ours: **`cargo xtask setup` always runs and always
-repairs** — that is the remedy; DELETING a hook does re-trigger the build script; and
+Three things bound it, none of them ours: **`cargo xtask setup` always runs and
+repairs any ordinary hook file** — that is the remedy (⚠ except a hook that is a
+SYMLINK, where `chmod` would follow the link out of the hooks directory; it names the
+target for you to chmod and exits non-zero); DELETING a hook does re-trigger the build script; and
 git prints `hint: the '…/pre-commit' hook was ignored because it's not set as
 executable`, which can be switched off. ⇒ **If you ever chmod a hook, run
 `cargo xtask setup`.** Nothing else will notice.
@@ -221,6 +225,13 @@ kernel refuses to traverse `empty/`, so the hook does not run and **the commit i
 blocked** — demonstrated end to end. Both require a `core.hooksPath` git itself cannot
 use; detecting them would mean re-implementing the kernel's path traversal, which is
 the class of reimplementation this arc has already paid for twice.
+
+⚠ **The same family, reached through a MISSING directory rather than a broken link:**
+`core.hooksPath = nope/../gh`, where `nope` does not exist. Resolution pops the `..`
+lexically and answers `<repo>/gh`; the kernel does not, so git can never open the
+path. We install into `<repo>/gh` and report success while the hook never runs.
+Accepted for the same reason as the others — the alternative is re-implementing
+traversal — and named here so it is met as a decision.
 
 ⚠ **Some `core.hooksPath` spellings name a directory git will not run OUR file from,
 and those are REFUSED rather than installed into.** git execs `<hooksPath>/<name>`

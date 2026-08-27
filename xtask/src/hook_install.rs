@@ -74,7 +74,8 @@ pub enum HooksDir {
     GitCannotRun(std::path::PathBuf),
 }
 
-/// The three answers one `git rev-parse` call gives about a checkout.
+/// The four answers one `git rev-parse` call gives about a checkout, plus the one
+/// property that is read off them rather than stored.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct GitPaths {
     /// The working tree root git resolves for us.
@@ -88,8 +89,8 @@ struct GitPaths {
     pub hooks_runnable: bool,
 }
 
-/// Parse `git rev-parse --show-toplevel --git-common-dir --git-path hooks`, or
-/// `None` if git did not really answer.
+/// Parse `git rev-parse --show-toplevel --git-common-dir --git-path hooks --git-path
+/// hooks/pre-commit` — see [`REV_PARSE_ASK`] — or `None` if git did not really answer.
 ///
 /// `--show-toplevel` is absolute on every git. The other two are USUALLY relative to
 /// the directory the command ran in, which is `base`, and `absolutize` resolves them
@@ -124,18 +125,12 @@ struct GitPaths {
 /// ⚠⚠ THE COUNT RULE IN [`four_answers`] IS THE WHOLE DEFENCE against a garbled
 /// answer, and that is measured, not assumed. `rev-parse` echoes an option it does
 /// not understand as an EXTRA LINE IN POSITION — it never replaces an answer — so
-/// any echo makes four lines and is refused on count before anything inspects the
+/// any echo makes a FIFTH line and is refused on count before anything inspects the
 /// paths.
 ///
-/// ⚠ There was briefly a `toplevel.is_absolute()` rule here as well, justified by a
-/// shift that the count rule already catches. Nothing real reached it: its two
-/// negative controls fed hand-built THREE-line strings that no git emits. That makes
-/// it the fourth defensive rule on this arc to be deleted for the same reason —
-/// after a `-` prefix filter (ate `core.hooksPath = -hooks`), an exact-match option
-/// filter (ate `--git-path`), and an empty-line filter (defeated this very count
-/// rule). ★ The pattern is worth naming: every one of them was added to catch a
-/// shape someone REASONED about, and every one was measured afterwards to catch
-/// nothing while three of the four ate a legal answer.
+/// ⚠ A `toplevel.is_absolute()` rule lived here briefly and was deleted for catching
+/// nothing. It is the FOURTH of five such rules on this arc; they are catalogued once,
+/// in [`four_answers`], rather than retold at each site they touched.
 ///
 /// ⚠⚠ THE ECHO HAZARD IS NOT GONE, it is just no longer reachable by a flag WE
 /// choose. `rev-parse` still echoes any option it does not understand and still
@@ -145,10 +140,12 @@ struct GitPaths {
 /// and `ask_git` discards the output before it is parsed at all.
 ///
 /// ⚠ THAT 128 IS NOT THE GUARANTEE, and leaning on it would be a mistake: in a
-/// repository with a BRANCH named `hooks`, the same git exits 0 and emits four lines
-/// — two answers, the echoed option, and the branch's SHA. Nothing is discarded, and
-/// what refuses it is the COUNT rule in [`four_answers`]. A repo with a `hooks`
-/// branch is not exotic. Measured.
+/// repository with a BRANCH named `hooks`, the same git exits 0 and emits an extra
+/// line — the branch's SHA where an answer should be. Nothing is discarded, and what
+/// refuses it is the COUNT rule in [`four_answers`]. A repo with a `hooks` branch is
+/// not exotic. Measured against a pre-2.5 shim — and note the count that shim
+/// produces moved when the fourth question was added, which is the whole reason this
+/// paragraph names the RULE rather than a number.
 ///
 /// ⚠ KNOWN GAP, one release wide. `core.hooksPath` arrived in 2.9, so the
 /// `.git/hooks` guess is the right answer for anything older. But `rev-parse
@@ -158,12 +155,6 @@ struct GitPaths {
 /// `.git/hooks` and report success while git runs hooks from `core.hooksPath`.
 /// Documented rather than worked around: the window is one 2016 minor release, and
 /// closing it would mean a version check in a module that deliberately has none.
-///
-/// ⚠ There used to be a rule dropping any line starting with `-`, described as belt
-/// and braces. It was not free: `core.hooksPath = -hooks` is a legal setting whose
-/// answer that filter ate. Deleted. A defensive rule that cannot be shown to catch
-/// something the primary rule misses is not free insurance; it is an untested code
-/// path with its own failure mode.
 ///
 /// ⚠⚠ JOINING IS NOT ENOUGH — it must also NORMALISE. `Path::starts_with` is
 /// component-wise, so a surviving `..` walks straight through containment. Measured:
@@ -228,12 +219,18 @@ fn parse_git_paths(stdout: &str, base: &std::path::Path) -> Option<GitPaths> {
 /// follow a hook that is a SYMLINK to its target and report a mismatch for a setup
 /// that works perfectly.
 ///
-/// ★ VALIDATED AS A PREDICATE, not as three hunches: 20 `core.hooksPath` spellings
+/// ★ VALIDATED AS A PREDICATE, not as three hunches — but read this as MOTIVATION,
+/// not as evidence, on the same standard as the differential above: the sweep is not
+/// in the tree. What is EVIDENCE is the nine shapes the live gate re-measures against
+/// real git on every run. The sweep was 20 `core.hooksPath` spellings
 /// were run against real git — `.` `./` `./.` `././` `././.` `-hooks` `+hooks`
 /// `.githooks` `./nested` `sub/-hooks` `sub/+hooks` `""` `hooks` `..` `" githooks"`
 /// `"githooks "` `-` `+` `./-hooks` `./+hooks` — installing an always-passing hook
 /// where git said the directory was, then committing. This function agrees with git
-/// on all 20. The first design disagreed on four of them, in both directions.
+/// on all 20. The first design disagreed on SIX — it refused `./.`, `././` and
+/// `././.`, which git runs, and accepted `+hooks`, `+` and `./+hooks`, which git
+/// cannot exec. (An earlier count of "four" here was wrong, which is its own small
+/// argument for the rule below.)
 ///
 /// ⚠⚠ THIS IS NOT THE DELETED `-` FILTER COMING BACK. That filter DROPPED the line,
 /// so the answer was lost, two lines were left, and the `.git/hooks` guess reported a
@@ -390,6 +387,16 @@ fn resolve_into(out: &mut std::path::PathBuf, path: &std::path::Path, budget: &m
 /// below never fired and we installed into the TRUNCATED `<repo>/hooks` while git
 /// read `<repo>/hooks\n`. Exactly what that check exists to prevent, reached by the
 /// same mechanism with the newline at the END rather than the middle.
+///
+/// ★★ THE CATALOGUE OF DELETED RULES LIVES HERE, so it is told once. FIVE defensive
+/// rules have been added and deleted on this arc: a `-` prefix filter (ate
+/// `core.hooksPath = -hooks`), an exact-match option filter (ate `--git-path`), an
+/// empty-line filter (defeated this very count rule), a `toplevel.is_absolute()` rule
+/// in [`parse_git_paths`], and a `file_name` check in [`git_will_exec_our_hook`].
+/// Every one was added to catch a shape someone REASONED about; every one was
+/// measured afterwards to catch nothing, and three of the five ate a legal answer.
+/// ⇒ A defensive rule that cannot be shown to catch something the primary rule misses
+/// is not free insurance; it is an untested code path with its own failure mode.
 ///
 /// ⚠⚠ NOTHING IS DROPPED FOR LOOKING LIKE AN OPTION, and that has now been decided
 /// twice, in both directions. A `-`-prefix filter ate the answer for
@@ -548,14 +555,20 @@ fn resolve_from_answers(
 /// pin. Adding it looks free — on a modern git it changes nothing, which is exactly
 /// why a mutation survey found nothing objecting. On a git older than 2.31 (Ubuntu
 /// 20.04 ships 2.25) it is not free: that git does not know the flag and echoes it
-/// as an EXTRA line in position, so the answer is four lines and the COUNT rule in
+/// as an EXTRA line in position, so the answer is FIVE lines and the COUNT rule in
 /// [`four_answers`] refuses it. (It is not a SHIFT — an echo never replaces an
 /// answer. Saying "shift" here pointed at a `toplevel.is_absolute()` rule that no
 /// longer exists, and was wrong about the mechanism even while it existed.) The
 /// result is safe but WRONG — resolution falls back to `.git/hooks` and a
 /// `core.hooksPath` is silently lost.
 ///
-/// Every option here shipped in git 2.5 (2015) or earlier.
+/// Every option here shipped in git 2.5 (2015) or earlier — and `--git-path` is
+/// passed TWICE, which the sentence above does not cover on its own. Measured: git
+/// parses options in a per-argument loop with no single-value slot, so repeats
+/// cannot collapse; four `--git-path` operands come back as four lines in argument
+/// order. ⚠ A hypothetical git that honoured only the FIRST would give three lines,
+/// which [`four_answers`] refuses — safe, and a silent loss of `core.hooksPath` to
+/// the `.git/hooks` guess.
 const REV_PARSE_ASK: [&str; 7] = [
     "rev-parse",
     "--show-toplevel",
@@ -1246,7 +1259,7 @@ mod tests {
 
         // ★ THE REAL ECHO SHAPE, measured on git 2.50: an unrecognised option is
         // echoed as an EXTRA LINE IN POSITION — it never replaces an answer — so it
-        // makes FOUR lines and is refused on count. An earlier version of this test
+        // makes a FIFTH line and is refused on count. An earlier version of this test
         // fed a hand-built THREE-line string with the flag first, which no git
         // emits, and used it to justify a `toplevel.is_absolute()` rule that
         // therefore never fired. A fixture no git can produce tests nothing.
@@ -1349,9 +1362,15 @@ mod tests {
         // ★★ AND AN EMPTY FOURTH LINE COUNTS. `core.hooksPath` may end in a newline;
         // git 2.50 stores it and RUNS hooks from the directory whose name ends in
         // that newline — measured by putting an executable hook in both candidates
-        // and committing. Its answer is four lines, the last empty. An
-        // `!l.is_empty()` filter dropped it, left three, and installed into the
+        // and committing. Its answer carries an extra EMPTY line. An `!l.is_empty()`
+        // filter dropped it, leaving a well-formed count, and installed into the
         // TRUNCATED `<repo>/hooks` while git read `<repo>/hooks\n`.
+        //
+        // ⚠ BE HONEST ABOUT WHAT THE COUNT RULE BUYS HERE. It prevents the TRUNCATED
+        // install; it does not rescue the developer. Refusing sends resolution to the
+        // `.git/hooks` guess, which is a different wrong directory — reported as
+        // "Installed" while git reads the newline-named one. The guard moves the
+        // failure from silent-and-truncated to silent-and-elsewhere.
         assert!(
             four_answers("/r\n.git\nhooks\nhooks/pre-commit\n\n").is_none(),
             "an empty fifth line is still a fifth line; dropping it installs into \
@@ -1435,7 +1454,7 @@ mod tests {
 
         let verdict = |hooks: &str| {
             super::parse_git_paths(&ask(&repo.display().to_string(), ".git", hooks), &repo)
-                .expect("three answers")
+                .expect("four answers")
                 .hooks
         };
         // Three shapes through the same cycle. Each must RETURN; none may hang.
@@ -2124,11 +2143,11 @@ mod tests {
         );
     }
 
-    /// The build script's OWN three refusals, which nothing reached.
+    /// The build script's OWN refusals, which nothing reached.
     ///
     /// ⚠⚠ `cargo xtask setup`'s refusals were extracted into `hooks_dir_from` and
     /// tested precisely so a mutation could not gut them — while `build.rs`, the
-    /// installer a FRESH CLONE actually runs, kept the same three decisions as
+    /// installer a FRESH CLONE actually runs, kept the same decisions as
     /// untestable control flow. Turning its `Shared` arm into an install shipped
     /// green. These arms are what stop a vendored copy writing our mesh guard and our
     /// `cargo fmt` into an unrelated project.
