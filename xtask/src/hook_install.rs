@@ -93,6 +93,22 @@ struct GitPaths {
 /// it as motivation, not as evidence. What is EVIDENCE is the tests below, whose
 /// oracle is git's own `--path-format=absolute` answer recorded from real runs.
 ///
+/// ⚠⚠ THE COUNT RULE IN [`three_answers`] IS THE WHOLE DEFENCE against a garbled
+/// answer, and that is measured, not assumed. `rev-parse` echoes an option it does
+/// not understand as an EXTRA LINE IN POSITION — it never replaces an answer — so
+/// any echo makes four lines and is refused on count before anything inspects the
+/// paths.
+///
+/// ⚠ There was briefly a `toplevel.is_absolute()` rule here as well, justified by a
+/// shift that the count rule already catches. Nothing real reached it: its two
+/// negative controls fed hand-built THREE-line strings that no git emits. That makes
+/// it the fourth defensive rule on this arc to be deleted for the same reason —
+/// after a `-` prefix filter (ate `core.hooksPath = -hooks`), an exact-match option
+/// filter (ate `--git-path`), and an empty-line filter (defeated this very count
+/// rule). ★ The pattern is worth naming: every one of them was added to catch a
+/// shape someone REASONED about, and every one was measured afterwards to catch
+/// nothing while three of the four ate a legal answer.
+///
 /// ⚠⚠ THE ECHO HAZARD IS NOT GONE, it is just no longer reachable by a flag WE
 /// choose. `rev-parse` still echoes any option it does not understand and still
 /// exits 0. `--git-common-dir` and `--git-path` shipped IN git 2.5 (2015), so only
@@ -116,23 +132,6 @@ struct GitPaths {
 #[must_use]
 fn parse_git_paths(stdout: &str, base: &std::path::Path) -> Option<GitPaths> {
     let [toplevel, common_dir, hooks] = three_answers(stdout)?;
-    // ⚠⚠ THE ONE LINE THAT MUST BE A PATH ON EVERY GIT. `--show-toplevel` is
-    // absolute unless `--path-format=relative` is asked for, and we never ask.
-    //
-    // This is the surviving half of a rule that once required ALL THREE answers to
-    // be absolute. That rule's other job — telling a modern answer apart from an old
-    // git's — died with the second ask; this job did not. If git echoes an option it
-    // does not understand, every answer SHIFTS and `toplevel` reads as the flag text,
-    // which is not absolute. Refusing here sends the caller to the `.git/hooks`
-    // fallback — hooks installed, nothing hidden — whereas letting the shift through
-    // yields `OtherRepo`, and `build.rs` handles that by returning SILENTLY.
-    //
-    // ★ It is TOKEN-AGNOSTIC, which is why it replaced a list of option names: it
-    // catches a shift caused by any option, including one a future maintainer adds
-    // to the argument vector and forgets to list somewhere else.
-    if !std::path::Path::new(toplevel).is_absolute() {
-        return None;
-    }
     Some(GitPaths {
         toplevel: absolutize(base, toplevel),
         common_dir: absolutize(base, common_dir),
@@ -202,11 +201,26 @@ fn push_component(out: &mut std::path::PathBuf, component: std::path::Component<
 /// INSIDE and accepted. A containment escape, in the direction that matters.
 ///
 /// `budget` is shared with the caller so a cycle — or a chain spread across several
-/// components — terminates. ⚠ Do NOT justify that with "git refuses a cycle": WITHOUT
-/// `--path-format=absolute`, which is the ask we make, git resolves a cycle lexically
-/// and exits 0 — measured. The guarantee is ours, and it is that whatever we name
-/// cannot be OPENED, so both installers refuse it at their `exists()` gate. Pinned by
-/// `a_symlink_cycle_terminates_and_names_nothing_that_exists`.
+/// components — terminates. That is the ONLY guarantee here, and it is worth being
+/// exact about what it is not.
+///
+/// ⚠ Do NOT justify it with "git refuses a cycle": without `--path-format=absolute`,
+/// which is the ask we make, git resolves a cycle lexically and exits 0 — measured.
+///
+/// ⚠⚠ And do NOT claim the path we name cannot be OPENED. That held only for the one
+/// shape the test used. Measured with `a -> b -> a` and `core.hooksPath = a/../hooks`:
+/// the `..` pops the unresolved link and we answer `<repo>/hooks`, which EXISTS, so
+/// the installers' `exists()` gate passes and both hooks are written — while git
+/// cannot traverse the cycle at all (`fatal: More than 32 nested symlinks`) and runs
+/// nothing. A wasted install reported as a success, not a wrong directory. The same
+/// is true of an EMPTY symlink target, which macOS permits: git and we agree on
+/// `<repo>`, and the kernel then refuses to traverse `empty/`, so the hook does not
+/// run and the commit is NOT blocked — demonstrated end to end.
+///
+/// Both need a `core.hooksPath` pointing through a broken link, which git itself
+/// cannot use either. Named in docs/INFRASTRUCTURE.md rather than worked around: any
+/// detection would have to re-implement the kernel's traversal, which is the class of
+/// reimplementation this arc has already paid for twice.
 fn resolve_into(out: &mut std::path::PathBuf, path: &std::path::Path, budget: &mut usize) {
     for component in path.components() {
         push_component(out, component);
@@ -956,12 +970,16 @@ mod tests {
         assert_eq!(ordinary.toplevel, PathBuf::from("/repo"));
         assert_eq!(ordinary.hooks, PathBuf::from("/repo/.git/hooks"));
 
-        // ★ A shift: the first line is no longer a path. This is the shape that must
-        // never be read as an answer, whatever caused it.
+        // ★ THE REAL ECHO SHAPE, measured on git 2.50: an unrecognised option is
+        // echoed as an EXTRA LINE IN POSITION — it never replaces an answer — so it
+        // makes FOUR lines and is refused on count. An earlier version of this test
+        // fed a hand-built THREE-line string with the flag first, which no git
+        // emits, and used it to justify a `toplevel.is_absolute()` rule that
+        // therefore never fired. A fixture no git can produce tests nothing.
         assert!(
-            parse_git_paths("--some-option\n/repo\n.git\n", base).is_none(),
-            "a first line that is not a path means every answer has shifted; reading \
-             it yields OtherRepo, which build.rs reports by staying SILENT"
+            parse_git_paths("/repo\n--some-option\n.git\n.git/hooks\n", base).is_none(),
+            "an echoed option makes a fourth line; taking three of four silently \
+             shifts which answer is which"
         );
 
         // ★★ AND THE COST SIDE. These are real answers that a filter would eat.
@@ -1084,13 +1102,17 @@ mod tests {
         );
     }
 
-    /// A symlink CYCLE must terminate, and must not be reported as ours to install.    /// A symlink CYCLE must terminate, and must not be reported as ours to install.
+    /// A symlink CYCLE must terminate.
     ///
     /// ⚠ The ask carries no `--path-format=absolute`, and WITHOUT it git resolves a
     /// cycle lexically and exits 0 — it does NOT report the path as unresolvable, as
-    /// an earlier version of `resolve_into`'s doc claimed. So the guarantee that
-    /// matters is ours: the hop budget terminates, and whatever we name cannot be
-    /// opened, which both installers refuse at the `exists()` gate.
+    /// an earlier version of `resolve_into`'s doc claimed.
+    ///
+    /// ⚠⚠ Nor does "whatever we name cannot be opened" hold — that was the SECOND
+    /// false version of this claim, true only for the bare `a` this test started
+    /// with. `a/../hooks` names a directory that exists. The assertion below is now
+    /// the one thing that is actually guaranteed: it TERMINATES. The consequence of
+    /// the rest is recorded in docs/INFRASTRUCTURE.md.
     #[test]
     #[cfg(unix)]
     fn a_symlink_cycle_terminates_and_names_nothing_that_exists() {
@@ -1102,22 +1124,33 @@ mod tests {
         std::os::unix::fs::symlink("b", repo.join("a")).expect("symlink");
         std::os::unix::fs::symlink("a", repo.join("b")).expect("symlink");
 
-        let paths = super::parse_git_paths(&format!("{}\n.git\na\n", repo.display()), &repo)
-            .expect("three answers");
-        let resolved = paths.hooks.clone();
-        let opens = paths.hooks.exists();
+        let verdict = |hooks: &str| {
+            super::parse_git_paths(&format!("{}\n.git\n{hooks}\n", repo.display()), &repo)
+                .expect("three answers")
+                .hooks
+        };
+        // Three shapes through the same cycle. Each must RETURN; none may hang.
+        let bare = verdict("a");
+        let up = verdict("a/..");
+        let up_then_down = verdict("a/../hooks");
         let _ = std::fs::remove_dir_all(&lab);
+        let resolved = bare;
 
         // Terminating at all is the claim: an unbounded walk would hang the build.
         assert!(
             resolved.starts_with(&repo),
             "a cycle should resolve to somewhere in the checkout, not wander: {resolved:?}"
         );
-        assert!(
-            !opens,
-            "a cycle named a directory that can be OPENED ({resolved:?}), so the \
-             installers' exists() gate would not refuse it"
-        );
+        // ⚠ NO assertion that these cannot be opened — `a/../hooks` names a real
+        // directory, and asserting otherwise is what made this test agree with a
+        // false doc for two rounds. What is pinned is that every shape terminates
+        // and stays within the checkout rather than wandering.
+        for (label, path) in [("a/..", &up), ("a/../hooks", &up_then_down)] {
+            assert!(
+                path.starts_with(&repo),
+                "{label} resolved outside the checkout: {path:?}"
+            );
+        }
     }
 
     /// CONTAINMENT has two independent halves, and each needs its own case.
@@ -1661,13 +1694,13 @@ mod tests {
              successful install into a directory git never reads"
         );
 
-        // NEGATIVE CONTROL: a shifted answer — first line not a path — is still
-        // refused, without any rule that inspects what a line LOOKS like. That is
-        // what lets `-hooks` above survive.
+        // NEGATIVE CONTROL: an echoed option is still refused — on COUNT, the shape
+        // git actually emits — without any rule inspecting what a line LOOKS like.
+        // That is exactly what lets `-hooks` above survive.
         assert_eq!(
-            resolve_from_answers(Some("--git-common-dir\n/r\n-hooks\n"), root, true),
+            resolve_from_answers(Some("/r\n--git-common-dir\n.git\n-hooks\n"), root, true),
             Some(HooksDir::Repo(root.join(".git").join("hooks"))),
-            "a shifted answer must fall back, not be read as an answer"
+            "a four-line answer must fall back, not be read as three"
         );
     }
 

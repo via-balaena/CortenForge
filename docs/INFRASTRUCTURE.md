@@ -209,6 +209,17 @@ git prints `hint: the '…/pre-commit' hook was ignored because it's not set as
 executable`, which can be switched off. ⇒ **If you ever chmod a hook, run
 `cargo xtask setup`.** Nothing else will notice.
 
+⚠ **A `core.hooksPath` pointing through a BROKEN symlink installs where git cannot
+follow.** With a symlink cycle and `core.hooksPath = a/../hooks`, the `..` pops the
+unresolved link and resolution answers `<repo>/hooks` — which exists, so the hooks are
+written and reported installed — while git cannot traverse the cycle at all (`fatal:
+More than 32 nested symlinks`) and runs nothing. An EMPTY symlink target (macOS
+permits `ln -s ""`) is worse: git and the installer agree on the directory, but the
+kernel refuses to traverse `empty/`, so the hook does not run and **the commit is not
+blocked** — demonstrated end to end. Both require a `core.hooksPath` git itself cannot
+use; detecting them would mean re-implementing the kernel's path traversal, which is
+the class of reimplementation this arc has already paid for twice.
+
 ⚠ **git cannot execute hooks from a RELATIVE `core.hooksPath` of `.` or `./`** —
 measured on git 2.50: it drops the directory part and `execvp` searches `PATH`, so
 every commit dies with `error: cannot run pre-commit: No such file or directory`. The
