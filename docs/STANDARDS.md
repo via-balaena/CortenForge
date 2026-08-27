@@ -49,6 +49,32 @@ Requires the `llvm-tools` rustup component (`rustup component add
 llvm-tools-preview`); no `cargo-llvm-cov` install is needed. Works on Linux,
 macOS (including Apple Silicon), and Windows.
 
+### This criterion also gates on the tests PASSING — and it is the only one that does
+
+Criterion 1 runs in two passes. Pass 1 measures coverage; **pass 2 runs
+`cargo test --release -p <crate>` uninstrumented, and a failing suite grades the
+crate F regardless of the percentage.** Criteria 2–8 read source, lints and
+manifests — none of them executes a test. So "the tests pass" is a claim only
+this criterion makes.
+
+⚠ **`--skip-coverage` therefore skips the test run too**, because it returns
+before pass 1. That is not a side effect worth hiding: it is why
+`cargo xtask grade-all --skip-coverage` — the form the per-PR CI shards use —
+grades documentation, lints, safety, dependencies, layering, WASM and API, and
+asserts nothing about whether the code works. The grade report says so on that
+path, in criterion 1's detail line and in the sweep banner.
+
+What gates tests in CI is `tests-debug` + `tests-release`, whose hand-maintained
+crate lists are the only crate enumeration in the workflow — and so the only
+place a crate's tests can be silently lost. `cargo xtask test-reachability`
+guards them, but *necessarily, not sufficiently*: it checks that a crate is
+**named** by a test job, not that the job actually runs its tests. A
+`--lib`-scoped invocation still names its crate, which is how six `cf-cast`
+tests stayed red for 473 commits behind green CI (#765).
+
+Locally there is no such gap: `cargo xtask grade <crate>` and
+`cargo xtask complete <crate>` both omit the flag, so the suite gates the letter.
+
 **Instrumentation is scoped to the crate being measured** (and its own test
 targets, so their binaries emit usable profiles). `RUSTFLAGS` applies
 to every unit cargo builds, so instrumenting through `cargo llvm-cov`

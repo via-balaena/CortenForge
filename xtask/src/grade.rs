@@ -635,15 +635,83 @@ fn print_coverage_detail(report: &GradeReport) {
 /// commands recorded on [`grade_coverage`]. A rule this cheap to state should
 /// not need a human to re-run three greps after every edit.
 ///
-/// `NotApplicable` is the whole of the silent set, and it is silent because
-/// those details genuinely restate their cells — "coverage skipped: …" beside
-/// `(skipped)`, "no production code to instrument" beside
-/// `(no production lines)`. Every other outcome says something the 16-character
-/// cell cannot hold: a percentage with its counts, the rustup command behind
-/// `(llvm-tools n/a)`, or the error and failing test names behind
-/// `(measurement failed)`.
+/// `NotApplicable` is ALMOST the whole of the silent set, and it is silent
+/// because those details genuinely restate their cells — "no production code to
+/// instrument" beside `(no production lines)`. Every other outcome says
+/// something the cell cannot hold: a percentage with its counts, the rustup
+/// command behind `(llvm-tools n/a)`, or the error and failing test names
+/// behind `(measurement failed)`.
+///
+/// ★★ THE RULE IS ABOUT THE TEST RUN, NOT ABOUT COVERAGE. Criterion 1 returns
+/// early on four paths, and exactly one of them — [`NO_PRODUCTION_LINES_CELL`] —
+/// sits BELOW pass 2, so it is the only one whose crate had its tests run. Its
+/// detail genuinely restates its cell. The other three
+/// ([`COVERAGE_SKIPPED_CELL`], `(bin-only)`, `(integration-only)`) all return
+/// above pass 2, so each of their details carries a second fact the cell has no
+/// room for: **the crate's tests did not run**, and the letter beside it is not
+/// evidence the code works.
+///
+/// ⚠ Written as "silent iff the tests ran" rather than as a list of three
+/// cells, because a list is a thing to forget to extend. A fifth early return
+/// added above pass 2 inherits the speaking behaviour; only a return placed
+/// below it, where the suite has actually gated, goes quiet — which is the
+/// distinction that matters and the one a new cell name cannot get wrong.
 fn coverage_detail_says_more_than_the_cell(c: &CriterionResult) -> bool {
-    c.grade != Grade::NotApplicable
+    c.grade != Grade::NotApplicable || c.result != NO_PRODUCTION_LINES_CELL
+}
+
+/// Criterion 1's `result` cell when `--skip-coverage` suppressed it.
+///
+/// Named rather than written twice so the cell and the test asserting its
+/// wording cannot drift apart.
+///
+/// ⚠ [`coverage_detail_says_more_than_the_cell`] does NOT match on this
+/// constant — an earlier draft of this change had it do exactly that, and the
+/// narrower rule then left `(bin-only)` and `(integration-only)` silenced, which
+/// is the same defect one door along. The rule keys on
+/// [`NO_PRODUCTION_LINES_CELL`] instead, so every cell but that one speaks.
+///
+/// ⚠ The wording carries the finding, not just the state. `(skipped)` was
+/// accurate about coverage and silent about the thing that matters more.
+const COVERAGE_SKIPPED_CELL: &str = "(skipped — no tests run)";
+
+/// Criterion 1's `result` cell when the crate has no production lines to
+/// measure.
+///
+/// ★ The ONLY early return in criterion 1 that sits BELOW pass 2, and therefore
+/// the only one whose crate had its tests run and gate. That position is
+/// deliberate and load-bearing — "no production code to measure" says nothing
+/// about whether the crate's `tests/` suite passes — and it is what
+/// [`coverage_detail_says_more_than_the_cell`] keys the silent set on. Moving
+/// this return above pass 2 would make the cell a lie in two ways at once.
+const NO_PRODUCTION_LINES_CELL: &str = "(no production lines)";
+
+/// Criterion 1's result when `--skip-coverage` suppressed it.
+///
+/// ★ Extracted from [`grade_coverage`]'s early return so the TEXT is testable
+/// without a `Shell`, a workspace or a multi-minute run. The sentence it
+/// carries is the only warning a reader of a `--skip-coverage` grade gets, and
+/// it sat inline in a function no unit test can call — the same shape as the
+/// criterion-7 push that was deleted with all 326 tests still green.
+///
+/// ⚠ The detail says what did NOT happen and what to run instead. "coverage
+/// skipped" alone was true and useless: it names the criterion the operator
+/// switched off, not the consequence they did not ask for.
+fn skip_coverage_criterion() -> CriterionResult {
+    CriterionResult {
+        name: "1. Coverage",
+        result: COVERAGE_SKIPPED_CELL.to_string(),
+        grade: Grade::NotApplicable,
+        threshold: "≥75%/≥90% A+",
+        measured_detail:
+            "coverage skipped via --skip-coverage, and with it this crate's TEST RUN: \
+             pass 2 of the coverage criterion is the only place any criterion executes \
+             tests, and the flag returns above it. Nothing in this grade reflects \
+             whether the suite passes — a crate whose tests are RED still grades A \
+             here. Re-run without the flag (as `xtask complete` does) to have them \
+             gate the letter."
+                .to_string(),
+    }
 }
 
 /// Print criterion 1's per-file breakdown, worst first.
@@ -873,6 +941,16 @@ pub fn run(crate_name: &str, verbosity: Verbosity) -> Result<()> {
 /// Intended as the CI entry point for single-source-of-truth grading:
 /// CI runs `cargo xtask grade-all --skip-coverage --quiet`, checks the
 /// exit code, and surfaces the failure summary on red.
+///
+/// ⚠ Single source of truth for the criteria it RUNS. Under the
+/// `--skip-coverage` that CI always passes, criterion 1 returns before pass 2,
+/// and pass 2 is the only place any criterion executes a test — so a green
+/// sweep here means documentation, lints, safety, dependencies, layering, WASM
+/// and API are clean, and says nothing about whether the code works. That is
+/// gated by `tests-debug` + `tests-release`, whose hand-maintained crate lists
+/// are the only enumeration in CI that can silently lose a crate;
+/// `cargo xtask test-reachability` guards them, but only necessarily — it
+/// checks a crate is NAMED by a job, not that the job runs its tests.
 pub fn run_all(
     verbosity: Verbosity,
     shard: Option<(usize, usize)>,
@@ -931,7 +1009,14 @@ pub fn run_all(
             );
         }
         if verbosity.skip_coverage {
-            eprintln!("  (coverage skipped via --skip-coverage)");
+            // Names the test run too. The flag reads as "one criterion off",
+            // but criterion 1 is where the sweep executes tests, so this line
+            // is the only place a reader of a CI log is told that the letters
+            // below assert nothing about whether the code works.
+            eprintln!(
+                "  (coverage skipped via --skip-coverage — and with it every crate's \
+                 TEST RUN: no test executes in this sweep)"
+            );
         }
         eprintln!();
     }
@@ -1217,6 +1302,14 @@ fn wasm_skip_result(target: &WasmTarget) -> Option<CriterionResult> {
 /// ⚠ Coverage is conditional and WASM is not, and that asymmetry is real:
 /// `--skip-coverage` makes an unmeasured criterion 1 the instruction rather than
 /// a defect, while no flag asks for a sweep without criterion 7.
+///
+/// ⚠ There is deliberately NO third bucket for "tests did not run", even though
+/// `--skip-coverage` skips those too. A bucket here either gates — turning every
+/// CI sweep red for a condition CI asked for — or does not, and becomes a line
+/// printed on every run that no one reads. The skip is surfaced where it is
+/// actionable instead: the sweep banner in [`run_all`], and criterion 1's own
+/// detail line, which [`coverage_detail_says_more_than_the_cell`] now prints
+/// specifically so this case cannot stay silent.
 fn record_sweep_buckets(
     crate_name: &str,
     report: &GradeReport,
@@ -1490,13 +1583,21 @@ fn coverage_skip_reason(
         CrateProfile::Example | CrateProfile::Xtask => Some((
             "(bin-only)",
             format!(
-                "coverage skipped: this {} crate has no lib target per STANDARDS.md §1",
+                "coverage skipped: this {} crate has no lib target per STANDARDS.md §1 \
+                 — AND SO IS ITS TEST RUN, which this criterion also gates: the return \
+                 is above pass 2, the only place any criterion executes tests. `grade` \
+                 therefore reports a letter for this crate without running its suite. \
+                 Run `cargo test -p <crate>` yourself.",
                 profile.label()
             ),
         )),
         CrateProfile::IntegrationOnly => Some((
             "(integration-only)",
-            "coverage skipped: integration-only crate per [package.metadata.cortenforge]"
+            "coverage skipped: integration-only crate per [package.metadata.cortenforge] \
+             — AND SO IS ITS TEST RUN, which this criterion also gates: the return is \
+             above pass 2, the only place any criterion executes tests. An \
+             integration-only crate keeps ALL its tests in tests/, so this is the whole \
+             suite. Run `cargo test -p <crate>` yourself."
                 .to_string(),
         )),
         CrateProfile::Layer0 | CrateProfile::BevyLayer1 => None,
@@ -1557,12 +1658,18 @@ fn coverage_skip_reason(
 ///
 /// The three manual commands that used to stand in for that test still work
 /// and are still worth running after touching the printing, re-verified
-/// 2026-08-18: `grade sim-types --skip-coverage` (`(skipped)`),
+/// 2026-08-18: `grade sim-types --skip-coverage`,
 /// `grade cf-device-design --skip-coverage` (bin-only), and
 /// `grade sim-core-benches` (`(no production lines)`, which also confirms on
 /// real input the invariant asserted above — a zero total implies an empty
-/// `files`). All three print no detail line. A guard verified only where it
-/// fires is indistinguishable from one that always fires.
+/// `files`). A guard verified only where it fires is indistinguishable from one
+/// that always fires.
+///
+/// ⚠ "All three print no detail line" was true when written and is now WRONG
+/// for two of them, deliberately. Only `sim-core-benches` stays silent; the two
+/// `--skip-coverage`/bin-only forms now print the sentence saying their crate's
+/// tests never ran, which is the whole point of the change. Re-verified live
+/// 2026-08-27 on `grade mesh-types --skip-coverage`.
 fn grade_coverage(
     sh: &Shell,
     crate_name: &str,
@@ -1593,13 +1700,7 @@ fn grade_coverage(
     // of minutes (measured: sim-thermostat ~16 min). Dedicated
     // coverage jobs (nightly / manual) run without the flag.
     if verbosity.skip_coverage {
-        return Ok(CriterionResult {
-            name: "1. Coverage",
-            result: "(skipped)".to_string(),
-            grade: Grade::NotApplicable,
-            threshold: "≥75%/≥90% A+",
-            measured_detail: "coverage skipped via --skip-coverage flag".to_string(),
-        });
+        return Ok(skip_coverage_criterion());
     }
 
     if !crate::coverage_run::tools_available(sh) {
@@ -1755,7 +1856,7 @@ fn grade_coverage(
             {
                 return Ok(CriterionResult {
                     name: "1. Coverage",
-                    result: "(no production lines)".to_string(),
+                    result: NO_PRODUCTION_LINES_CELL.to_string(),
                     grade: Grade::NotApplicable,
                     threshold: "≥75%/≥90% A+",
                     measured_detail:
@@ -1874,7 +1975,7 @@ fn coverage_result(
     let Some(coverage) = measured.percent() else {
         return CriterionResult {
             name: "1. Coverage",
-            result: "(no production lines)".to_string(),
+            result: NO_PRODUCTION_LINES_CELL.to_string(),
             grade: Grade::NotApplicable,
             threshold: "≥75%/≥90% A+",
             measured_detail: format!(
@@ -1940,9 +2041,18 @@ fn coverage_result(
     // last so the real grade above is computed from the real number and only
     // then set aside; the percentage a reader sees is the same either way.
     //
-    // ⚠ A failing test run is NOT waivable. `heavy_passed` gates every crate,
-    // report-only or not: the waiver is on the coverage THRESHOLD, and letting
-    // it swallow a red suite would rebuild the fail-open hole this arc closed.
+    // ⚠ A failing test run is NOT waivable by report-only. `heavy_passed`
+    // gates every crate THAT REACHES HERE, report-only or not: the waiver is on
+    // the coverage THRESHOLD, and letting it swallow a red suite would rebuild
+    // the fail-open hole this arc closed.
+    //
+    // ⚠⚠ "that reaches here" is load-bearing, and this sentence used to omit
+    // it — it read "gates every crate", which is false for every sweep CI
+    // actually runs. `--skip-coverage` returns hundreds of lines above, before
+    // either pass, so under the flag the per-PR shards pass, NO crate reaches
+    // this gate. That is the flag doing what it says; the defect was a comment
+    // asserting a guarantee the tool does not provide. CI's `tests-debug` +
+    // `tests-release` jobs are what execute tests there.
     if heavy_passed && report_only {
         return CriterionResult {
             name: "1. Coverage",
@@ -6962,19 +7072,26 @@ tier_up_features = { sneaky = "App" }
             measured_detail: "detail".to_string(),
         };
 
-        // Silent: the detail restates the cell. These are the three commands
-        // `grade_coverage`'s doc lists, re-verified live 2026-08-18.
-        for (result, grade) in [
-            ("(skipped)", Grade::NotApplicable),
-            ("(bin-only)", Grade::NotApplicable),
-            ("(integration-only)", Grade::NotApplicable),
-            ("(no production lines)", Grade::NotApplicable),
-        ] {
-            assert!(
-                !coverage_detail_says_more_than_the_cell(&crit(result, grade)),
-                "{result} restates its cell and must stay silent"
-            );
-        }
+        // Silent: exactly one cell, and the reason is its POSITION. The
+        // `(no production lines)` return is the only one below pass 2, so its
+        // crate's tests ran and gated; there is genuinely nothing to add.
+        //
+        // ⚠ THIS LIST USED TO HOLD THREE MORE — `(skipped)`, `(bin-only)` and
+        // `(integration-only)` — on the premise that every `NotApplicable`
+        // detail restates its cell. That premise was false in the way that
+        // mattered: all three return ABOVE pass 2, so each crate was graded
+        // without its tests being run, and these assertions were pinning the
+        // suppression of the one sentence that says so.
+        // A set of one, written as one assertion rather than a loop: clippy is
+        // right that iterating a single element is noise, and the singleness is
+        // the finding anyway.
+        assert!(
+            !coverage_detail_says_more_than_the_cell(&crit(
+                NO_PRODUCTION_LINES_CELL,
+                Grade::NotApplicable
+            )),
+            "{NO_PRODUCTION_LINES_CELL} restates its cell and must stay silent"
+        );
 
         // Shown: the detail is the only place the information exists.
         for (result, grade) in [
@@ -6983,12 +7100,89 @@ tier_up_features = { sneaky = "App" }
             ("33.8%", Grade::F),
             ("94.2%", Grade::F),
             ("97.7%", Grade::APlus),
+            // NotApplicable, and shown anyway. All three return above pass 2,
+            // so each carries the one fact its cell cannot: the crate's tests
+            // did not run, and the letter beside it is not evidence the code
+            // works. Asserted here so the silent and shown sets disagree about
+            // them ON PURPOSE, in one place.
+            (COVERAGE_SKIPPED_CELL, Grade::NotApplicable),
+            ("(bin-only)", Grade::NotApplicable),
+            ("(integration-only)", Grade::NotApplicable),
         ] {
             assert!(
                 coverage_detail_says_more_than_the_cell(&crit(result, grade)),
                 "{result} carries information the 16-char cell cannot"
             );
         }
+    }
+
+    /// The `--skip-coverage` cell must reach a reader, and the rule must still
+    /// be able to say no.
+    ///
+    /// ★ Both faces in one test, because either alone proves nothing. A rule
+    /// rewritten to `true` shows every detail and passes any assertion that
+    /// only checks something IS shown; a rule rewritten to `false` passes any
+    /// assertion that only checks something is hidden. The pair is what pins
+    /// it — and the shape being guarded is the original defect, where
+    /// `grade_coverage` produced a detail and `print_coverage_detail` dropped
+    /// it, each of them individually correct.
+    ///
+    /// ⚠ The silent case is `(no production lines)` specifically, not "some
+    /// other cell": it is the only early return below pass 2, so it is the only
+    /// one whose crate had its tests run. That position, not the string, is the
+    /// rule.
+    #[test]
+    fn the_skip_coverage_cell_speaks_and_the_rule_can_still_say_no() {
+        let crit = |result: &str| CriterionResult {
+            name: "1. Coverage",
+            result: result.to_string(),
+            grade: Grade::NotApplicable,
+            threshold: "≥75%/≥90% A+",
+            measured_detail: "detail".to_string(),
+        };
+
+        assert!(
+            coverage_detail_says_more_than_the_cell(&crit(COVERAGE_SKIPPED_CELL)),
+            "the --skip-coverage cell must print its detail: it is the only place \
+             a reader is told the crate's tests did not run"
+        );
+
+        // Positive control for the rule's OTHER face: it must still be able to
+        // return false, or the assertion above proves nothing.
+        assert!(
+            !coverage_detail_says_more_than_the_cell(&crit("(no production lines)")),
+            "a NotApplicable cell that is not the skip cell must stay silent — \
+             otherwise the rule is `true` and the assertion above is vacuous"
+        );
+    }
+
+    /// The skip arm must name the TEST RUN, not only coverage.
+    ///
+    /// ★ This is the whole finding in one assertion. Criterion 1 is the only
+    /// criterion that executes tests; `--skip-coverage` returns before it does;
+    /// and CI passes that flag on every shard. The detail is where a reader
+    /// learns it, and for as long as the text said only "coverage skipped via
+    /// --skip-coverage flag" the tool reported a letter that looked like a
+    /// certification and was not one.
+    ///
+    /// Asserts on the WORDS a reader needs rather than the whole string, so
+    /// rewording stays free and deleting the finding does not.
+    #[test]
+    fn the_skip_coverage_detail_says_the_tests_did_not_run() {
+        let detail = skip_coverage_criterion().measured_detail;
+        for needle in ["TEST RUN", "--skip-coverage", "grades A"] {
+            assert!(
+                detail.contains(needle),
+                "the --skip-coverage detail must still say {needle:?}; a reader who \
+                 is not told the suite never ran will read the letter as one. Got: \
+                 {detail}"
+            );
+        }
+        assert_eq!(
+            skip_coverage_criterion().grade,
+            Grade::NotApplicable,
+            "the skipped criterion must not contribute a letter"
+        );
     }
 
     /// ★ The gap this closes, measured on the first completed weekly sweep
