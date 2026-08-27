@@ -133,13 +133,14 @@ pub fn run() -> Result<()> {
 ///
 /// # Errors
 /// If git's hooks directory cannot be determined, or is not inside this checkout.
-fn git_hooks_dir() -> Result<PathBuf> {
+fn git_hooks_dir(attempted: crate::hook_install::Attempted) -> Result<PathBuf> {
     let sh = xshell::Shell::new()?;
     let root = PathBuf::from(crate::grade::find_workspace_root(&sh)?);
     hooks_dir_from(
         crate::hook_install::resolve_hooks_dir(&root),
         &root,
         std::env::var_os("GIT_DIR").is_some() || std::env::var_os("GIT_WORK_TREE").is_some(),
+        attempted,
     )
 }
 
@@ -154,6 +155,7 @@ fn hooks_dir_from(
     resolved: Option<crate::hook_install::HooksDir>,
     root: &Path,
     git_env_set: bool,
+    attempted: crate::hook_install::Attempted,
 ) -> Result<PathBuf> {
     match resolved {
         Some(crate::hook_install::HooksDir::Repo(dir)) => Ok(dir),
@@ -181,6 +183,19 @@ fn hooks_dir_from(
         // Both installers must say so, or `cargo build` and `cargo xtask setup`
         // disagree about a repository neither of them can help: the drift this whole
         // arc exists to end.
+        // ⚠⚠ REMOVING FROM HERE IS EXACTLY WHAT THIS DEVELOPER NEEDS. Containment
+        // has already passed, so the directory is inside the checkout; and the
+        // population with an unrunnable `core.hooksPath` is precisely the one the
+        // PREVIOUS code installed into — every commit in those checkouts is being
+        // refused right now, by a hook we put there. Refusing to uninstall told them
+        // to fix the setting and "re-run" a command they had asked to undo, which is
+        // the mistake `describe_untouchable` already names: never answer an uninstall
+        // with install advice.
+        Some(crate::hook_install::HooksDir::GitCannotRun(dir))
+            if attempted == crate::hook_install::Attempted::Uninstall =>
+        {
+            Ok(dir)
+        }
         Some(crate::hook_install::HooksDir::GitCannotRun(dir)) => anyhow::bail!(
             "git resolves hooks to {}, but the path git would actually EXEC is not \
              the file we would write. core.hooksPath is a bare `.`/`./` (git \
@@ -214,7 +229,7 @@ fn hooks_dir_from(
 fn install_git_hooks() -> Result<()> {
     println!("{}", "→ Installing git hooks...".bright_blue());
 
-    let hooks_dir = git_hooks_dir()?;
+    let hooks_dir = git_hooks_dir(crate::hook_install::Attempted::Install { retry: "re-run" })?;
 
     if !hooks_dir.exists() {
         // Worktrees and core.hooksPath now resolve correctly, so reaching here means
@@ -454,7 +469,7 @@ fn verify_tools() -> Result<()> {
 pub fn uninstall() -> Result<()> {
     println!("{}", "→ Removing git hooks...".bright_blue());
 
-    let hooks_dir = git_hooks_dir()?;
+    let hooks_dir = git_hooks_dir(crate::hook_install::Attempted::Uninstall)?;
 
     if !hooks_dir.exists() {
         println!("  No hooks directory found at {}.", hooks_dir.display());
@@ -1437,14 +1452,16 @@ mod hook_tests {
     /// than its body.
     #[test]
     fn setup_refuses_every_hooks_directory_it_must_not_write() {
-        use crate::hook_install::HooksDir;
+        use crate::hook_install::{Attempted, HooksDir};
         use std::path::{Path, PathBuf};
 
+        const INSTALL: Attempted = Attempted::Install { retry: "re-run" };
         let root = Path::new("/repo");
         let ours = super::hooks_dir_from(
             Some(HooksDir::Repo(PathBuf::from("/repo/.git/hooks"))),
             root,
             false,
+            INSTALL,
         );
         assert_eq!(
             ours.expect("our own hooks dir must be accepted"),
@@ -1458,6 +1475,7 @@ mod hook_tests {
             Some(HooksDir::Shared(PathBuf::from("/home/dev/.githooks"))),
             root,
             false,
+            INSTALL,
         )
         .expect_err("a hooks dir outside the repo is never ours to write");
         assert!(
@@ -1475,6 +1493,7 @@ mod hook_tests {
             Some(HooksDir::OtherRepo(PathBuf::from("/outer/.git/hooks"))),
             root,
             false,
+            INSTALL,
         )
         .expect_err("an ancestor repository is never ours to write");
         assert!(
@@ -1490,6 +1509,7 @@ mod hook_tests {
             Some(HooksDir::GitCannotRun(PathBuf::from("/repo"))),
             root,
             false,
+            INSTALL,
         )
         .expect_err("core.hooksPath=. must not be installed into");
         assert!(
@@ -1499,11 +1519,41 @@ mod hook_tests {
              {unrunnable}"
         );
 
-        let unknown = super::hooks_dir_from(None, root, false)
+        // ⚠⚠ AND UNINSTALL MUST BE ABLE TO CLEAN IT. Containment already passed, so
+        // this directory is inside the checkout — and the developers who have hooks
+        // sitting in an unrunnable one are exactly those the PREVIOUS code installed
+        // for. Every commit in those checkouts is refused right now by a hook we put
+        // there; answering `cargo xtask uninstall` with "fix the setting, then
+        // re-run" tells them to install the thing they asked to remove, and leaves
+        // them no way out but deleting the files by hand.
+        let removable = super::hooks_dir_from(
+            Some(HooksDir::GitCannotRun(PathBuf::from("/repo/-hooks"))),
+            root,
+            false,
+            Attempted::Uninstall,
+        )
+        .expect("uninstall must be able to remove hooks from a dir git cannot exec");
+        assert_eq!(
+            removable,
+            PathBuf::from("/repo/-hooks"),
+            "uninstall must clean the directory git named, not a guess"
+        );
+        // POSITIVE CONTROL, so "uninstall accepts anything" cannot pass: a directory
+        // OUTSIDE the checkout is still not ours to delete from, whatever we are
+        // attempting.
+        super::hooks_dir_from(
+            Some(HooksDir::Shared(PathBuf::from("/home/dev/.githooks"))),
+            root,
+            false,
+            Attempted::Uninstall,
+        )
+        .expect_err("uninstall must never delete from a hooks dir outside the repo");
+
+        let unknown = super::hooks_dir_from(None, root, false, INSTALL)
             .expect_err("an unknown hooks dir is not a licence");
         // The same checkout, with the environment that explains it — `build.rs` said
         // this and `setup` did not.
-        let with_env = super::hooks_dir_from(None, root, true)
+        let with_env = super::hooks_dir_from(None, root, true, INSTALL)
             .expect_err("an unknown hooks dir is not a licence");
         assert!(
             with_env.to_string().contains("GIT_DIR"),

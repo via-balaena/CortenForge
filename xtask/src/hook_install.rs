@@ -247,22 +247,14 @@ fn git_will_exec_our_hook(exec: &str, hooks_dir: &std::path::Path, base: &std::p
     if exec.starts_with('-') || exec.starts_with('+') {
         return false;
     }
-    let probe = std::path::Path::new(exec);
-    if probe.file_name() != Some(std::ffi::OsStr::new(HOOK_PROBE_NAME)) {
-        return false;
-    }
-    probe
+    // ⚠ `Path::parent`, not `rsplit_once('/')`. The parent of `/pre-commit` is `/`,
+    // and string surgery would call it "" — which resolves back to `base` and would
+    // ACCEPT the empty-`core.hooksPath` case this condition exists to refuse.
+    std::path::Path::new(exec)
         .parent()
         .and_then(|p| p.to_str())
         .is_some_and(|parent| absolutize(base, parent) == hooks_dir)
 }
-
-/// The hook name we ask git to resolve, purely as a probe.
-///
-/// Any hook would do — every name shares the `core.hooksPath` prefix, so the three
-/// properties above are the same for all of them. It is taken from [`HOOKS`] so the
-/// probe cannot drift into naming a hook this installer does not manage.
-const HOOK_PROBE_NAME: &str = HOOKS[0].0;
 
 /// Join `answer` onto `base` and resolve it the way git's own `--path-format=absolute`
 /// would have — `..` applied to what is resolved so far, symlinks followed.
@@ -451,37 +443,34 @@ fn classify_hooks_dir(paths: &GitPaths, repo_root: &std::path::Path) -> HooksDir
     if paths.toplevel != repo_root {
         return HooksDir::OtherRepo(paths.hooks.clone());
     }
-    // ⚠⚠ BEFORE ASKING WHETHER IT IS OURS, ASK WHETHER GIT WILL RUN WHAT WE WRITE.
-    // These are different questions and the answer to the first used to stand in for
-    // both.
-    //
-    // The working-tree arm below accepts the repository ROOT (`core.hooksPath = .`,
-    // where git's hooks answer equals the toplevel), and that acceptance was pinned
-    // by a test whose comment called it a decision: "that is genuinely where git
-    // reads hooks under that setting … the visible cost is two untracked files in
-    // the repository root". Both halves were false. git cannot exec a hook from a
-    // relative `.` at all, so the guard was never armed — and the real cost was that
-    // installing there makes git refuse EVERY commit in the checkout. The fact that
-    // refutes it was measured on this very branch and written into
-    // docs/INFRASTRUCTURE.md while this comment went on asserting the opposite,
-    // eight lines from the code it describes.
-    if !paths.hooks_runnable {
-        return HooksDir::GitCannotRun(paths.hooks.clone());
-    }
     // `starts_with` is COMPONENT-wise, not textual, so a sibling whose name merely
     // begins with the same characters (`/x/.github` against `/x/.git`) is not
     // "inside" it. Both arms rely on that.
-    //
-    // ★ The working-tree arm still accepts the repository root when git spells it in
-    // a form git can exec from — an ABSOLUTE `core.hooksPath` naming the top level.
-    // That case works (measured), and it does mean the two hooks appear as untracked
-    // files in the root. Pinned by test, so a future reader meets a decision rather
-    // than a surprise.
-    if paths.hooks.starts_with(&paths.common_dir) || paths.hooks.starts_with(&paths.toplevel) {
-        HooksDir::Repo(paths.hooks.clone())
-    } else {
-        HooksDir::Shared(paths.hooks.clone())
+    if !paths.hooks.starts_with(&paths.common_dir) && !paths.hooks.starts_with(&paths.toplevel) {
+        return HooksDir::Shared(paths.hooks.clone());
     }
+    // ⚠⚠ CONTAINMENT FIRST, THEN RUNNABILITY, AND THE ORDER IS A CLAIM. Five doc
+    // sites said `GitCannotRun` means "ours, and git still will not run it" — and
+    // with the runnable check first that was false: `core.hooksPath = -lnk`, where
+    // `-lnk` is a symlink out of the tree, resolved OUTSIDE the checkout and still
+    // came back `GitCannotRun`. Measured. Containment first makes the claim true by
+    // construction rather than by comment.
+    //
+    // ★ It also hands that developer the more durable reason. "Outside this
+    // repository" survives re-spelling the path; "git cannot exec this" does not, so
+    // reporting runnability first would send them to fix the spelling and then meet
+    // the containment refusal anyway — two round trips for one mistake.
+    //
+    // ⚠ The working-tree arm accepts the repository ROOT itself, and that used to be
+    // pinned by a test whose comment called it a considered decision: "that is
+    // genuinely where git reads hooks under that setting". It was false — git cannot
+    // exec a hook from a relative `.` — and the runnable check below is what now
+    // catches it. An ABSOLUTE `core.hooksPath` naming the top level does work, and is
+    // still accepted; the two hooks then appear as untracked files in the root.
+    if !paths.hooks_runnable {
+        return HooksDir::GitCannotRun(paths.hooks.clone());
+    }
+    HooksDir::Repo(paths.hooks.clone())
 }
 
 /// Resolve the hooks directory for `repo_root`, or `None` if it cannot be known.
@@ -576,6 +565,14 @@ const REV_PARSE_ASK: [&str; 7] = [
     // ⚠ THE FOURTH ANSWER IS NOT A LUXURY. It is the only thing that can tell
     // `core.hooksPath = .` (git refuses every commit) from `./.` (git runs the hook)
     // — they give the SAME directory answer. See `git_will_exec_our_hook`.
+    //
+    // ⚠ The hook NAME here is only a probe. Every name shares the `core.hooksPath`
+    // prefix, and the properties `git_will_exec_our_hook` reads are functions of that
+    // prefix alone — measured across 40 spellings × three hook names, zero
+    // divergence. It must still name a hook we actually manage, which cannot be
+    // expressed as a `const` (there is no const string concatenation) and is
+    // therefore asserted against [`HOOKS`] in
+    // `the_ask_carries_no_option_an_old_git_would_echo`.
     "--git-path",
     "hooks/pre-commit",
 ];
@@ -1323,22 +1320,16 @@ mod tests {
             .iter()
             .find(|a| a.starts_with("hooks/"))
             .unwrap_or_else(|| panic!("the exec-path probe is gone from the ask: {ask:?}"));
-        assert_eq!(
-            *probe,
-            format!("hooks/{}", super::HOOK_PROBE_NAME),
-            "the probe must name a hook this installer actually manages, or it \
-             measures the runnability of a file git will never be asked for"
-        );
+        let probed_name = probe.trim_start_matches("hooks/");
         assert!(
-            HOOKS
-                .iter()
-                .any(|(name, _)| *name == super::HOOK_PROBE_NAME),
-            "HOOK_PROBE_NAME drifted out of the HOOKS table: {:?}",
-            super::HOOK_PROBE_NAME
+            HOOKS.iter().any(|(name, _)| *name == probed_name),
+            "the probe must name a hook this installer actually manages, or it \
+             measures the runnability of a file git will never be asked for: \
+             {probed_name:?}"
         );
     }
 
-    /// A fifth line means the answers cannot be trusted to line up.
+    /// EXACTLY four, which has a lower side as well as an upper one.
     ///
     /// ⚠ Not hypothetical, and not only about echoed options: `core.hooksPath` may
     /// contain a NEWLINE — git 2.50 accepts it — and the answer then arrives split
@@ -1346,7 +1337,7 @@ mod tests {
     /// directory, which `setup` would happily create. The count check is what the
     /// module's own doc leans on, and nothing exercised it.
     #[test]
-    fn more_answers_than_asked_for_is_not_an_answer() {
+    fn only_exactly_four_answers_is_an_answer() {
         use super::{four_answers, resolve_from_answers, HooksDir};
         use std::path::{Path, PathBuf};
 
@@ -1365,6 +1356,16 @@ mod tests {
             four_answers("/r\n.git\nhooks\nhooks/pre-commit\n\n").is_none(),
             "an empty fifth line is still a fifth line; dropping it installs into \
              a truncated directory that git does not read"
+        );
+        // ★ AND THE LOWER SIDE, which nothing reached: THREE lines. That is exactly
+        // what the previous three-question ask produced, so it is the shape a git
+        // that honoured only the first `--git-path` would emit — and the doc calls
+        // this rule "the whole defence". Accepting three would read the hooks answer
+        // as the exec path and decide runnability from the wrong string.
+        assert!(
+            four_answers("/r\n.git\n.git/hooks\n").is_none(),
+            "three lines is the OLD ask's shape; accepting it reads the hooks answer \
+             as the exec path"
         );
         // POSITIVE CONTROL: exactly four is still an answer.
         assert!(four_answers("/r\n.git\n.git/hooks\n.git/hooks/pre-commit\n").is_some());
@@ -1839,6 +1840,98 @@ mod tests {
             Some(HooksDir::GitCannotRun(repo)),
             "an empty core.hooksPath must be refused: git execs /pre-commit while we \
              would install at the repo root"
+        );
+    }
+
+    /// Containment is decided BEFORE runnability, and a symlinked hook is still ours.
+    ///
+    /// ⚠⚠ TWO CHOICES THAT LOOK LIKE STYLE AND ARE NOT. Both survived a mutation
+    /// round — the code could be reordered, or the comparison widened, with the whole
+    /// suite green — while five doc sites rested on them.
+    ///
+    /// 1. `GitCannotRun` claims "this directory IS ours, and git still will not run
+    ///    what we write there". With the runnable check first that was FALSE:
+    ///    `core.hooksPath = -lnk`, where `-lnk` is a symlink pointing out of the
+    ///    tree, resolves OUTSIDE the checkout and is unrunnable for its leading dash,
+    ///    so it came back `GitCannotRun` naming somebody else's directory. Measured
+    ///    against git 2.50.1.
+    /// 2. [`git_will_exec_our_hook`] compares the exec path's PARENT with the hooks
+    ///    directory rather than comparing whole paths. Widening it to the whole path
+    ///    breaks the commonest bespoke setup there is — a hook that is a SYMLINK —
+    ///    because `absolutize` canonicalises the final component and follows it to
+    ///    the target, so the two sides disagree for a configuration that works
+    ///    perfectly. A loud false refusal, and nothing objected.
+    #[test]
+    #[cfg(unix)]
+    fn containment_is_decided_before_runnability_and_a_symlinked_hook_is_ours() {
+        use super::{classify_hooks_dir, parse_git_paths, HooksDir};
+
+        let lab = std::env::temp_dir().join(format!("cf-order-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&lab);
+        let repo = lab.join("repo");
+        std::fs::create_dir_all(repo.join(".git").join("hooks")).expect("temp dir");
+        std::fs::create_dir_all(lab.join("outside")).expect("temp dir");
+        let repo = std::fs::canonicalize(&repo).expect("canonicalize");
+        let outside = std::fs::canonicalize(lab.join("outside")).expect("canonicalize");
+
+        // A dash-named symlink OUT of the tree: unrunnable AND outside, so the two
+        // rungs disagree and the order is observable.
+        std::os::unix::fs::symlink(&outside, repo.join("-lnk")).expect("symlink");
+        let both_wrong = parse_git_paths(
+            &format!("{}\n.git\n-lnk\n-lnk/pre-commit\n", repo.display()),
+            &repo,
+        )
+        .expect("git emits exactly this shape");
+        let outside_verdict = classify_hooks_dir(&both_wrong, &repo);
+
+        // POSITIVE CONTROL for the same rung: unrunnable but INSIDE must still be
+        // `GitCannotRun`, or "containment first" would be satisfied by deleting the
+        // runnable check altogether.
+        std::fs::create_dir_all(repo.join("-hooks")).expect("temp dir");
+        let inside_unrunnable = parse_git_paths(
+            &format!("{}\n.git\n-hooks\n-hooks/pre-commit\n", repo.display()),
+            &repo,
+        )
+        .expect("git emits exactly this shape");
+        let inside_verdict = classify_hooks_dir(&inside_unrunnable, &repo);
+
+        // ★ THE SYMLINKED HOOK. The FILE git execs is a link to somewhere else
+        // entirely; the DIRECTORY is ours, and that is what decides.
+        std::fs::write(lab.join("outside").join("shared-hook"), "hook\n").expect("seed");
+        std::os::unix::fs::symlink(
+            outside.join("shared-hook"),
+            repo.join(".git").join("hooks").join("pre-commit"),
+        )
+        .expect("symlink");
+        let linked = parse_git_paths(
+            &format!(
+                "{}\n.git\n.git/hooks\n.git/hooks/pre-commit\n",
+                repo.display()
+            ),
+            &repo,
+        )
+        .expect("git emits exactly this shape");
+        let linked_verdict = classify_hooks_dir(&linked, &repo);
+        let _ = std::fs::remove_dir_all(&lab);
+
+        assert_eq!(
+            outside_verdict,
+            HooksDir::Shared(outside),
+            "a hooks path that is BOTH outside the checkout and unrunnable must be \
+             refused for being outside — that reason survives re-spelling the path, \
+             and `GitCannotRun` would be claiming a directory that is not ours"
+        );
+        assert_eq!(
+            inside_verdict,
+            HooksDir::GitCannotRun(repo.join("-hooks")),
+            "POSITIVE CONTROL: unrunnable and INSIDE is still GitCannotRun"
+        );
+        assert_eq!(
+            linked_verdict,
+            HooksDir::Repo(repo.join(".git").join("hooks")),
+            "a hook that is a SYMLINK must not make its own directory unrunnable — \
+             comparing whole paths instead of parents follows the link to its target \
+             and refuses a setup that works"
         );
     }
 
@@ -2667,10 +2760,16 @@ mod tests {
         // to the HOOKS directory to a developer standing in the repo root, where it
         // resolves to nothing. The instruction is "chmod that file yourself"; it has
         // to name a file they can actually reach.
+        //
+        // ⚠⚠ ASSERT THE WHOLE RESOLVED PATH, not "no `../` and the basename appears".
+        // That weaker pair was the first version of this assertion, and a mutant that
+        // resolved the target against the PROCESS WORKING DIRECTORY rather than the
+        // hook's own directory satisfied both — reintroducing the unpasteable path
+        // this leg exists to prevent, from a different base.
         assert!(
-            said_relative.contains("somebody-elses-file") && !said_relative.contains("../"),
-            "the refusal must resolve a relative link target, not echo it: \
-             {said_relative}"
+            said_relative.contains(&base.join("somebody-elses-file").display().to_string()),
+            "the refusal must resolve a relative link target against the HOOK's own \
+             directory, not the process working directory: {said_relative}"
         );
         repaired.expect("a regular hook file is still ours to repair");
         assert!(
