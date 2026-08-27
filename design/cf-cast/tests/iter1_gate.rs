@@ -107,7 +107,25 @@ fn iter1_reference_stls_round_trip_through_manifold3d() {
         dir.is_dir(),
         "CF_CAST_ITER1_DIR={dir_env} is not a directory"
     );
-    let dir = resolve_stl_dir(&dir);
+    check_reference_stls(&dir);
+}
+
+/// The gate's whole body, taking the directory **as the operator gave it** —
+/// resolution included.
+///
+/// ★★ SPLIT OUT SO THE CALL TO [`resolve_stl_dir`] IS ITSELF GATED. Before
+/// this, `resolve_stl_dir` had two tests and its single call site had none:
+/// deleting `let dir = resolve_stl_dir(&dir)` from the gate left the whole
+/// suite green, because the tests kept the function alive and the gate that
+/// used it is `#[ignore]`d. The rule was gated; the WIRING was not — the same
+/// shape this arc keeps finding, and the reason the tests below hand this
+/// function an unresolved cast folder rather than calling `resolve_stl_dir`
+/// directly.
+///
+/// Panics with the same messages the gate always did, so the `#[ignore]`d
+/// caller's workshop-triage output is unchanged.
+fn check_reference_stls(given: &std::path::Path) {
+    let dir = resolve_stl_dir(given);
 
     let mut stls: Vec<PathBuf> = std::fs::read_dir(&dir)
         .expect("read CF_CAST_ITER1_DIR")
@@ -241,11 +259,25 @@ fn a_flat_layout_is_never_redirected() {
         "a directory holding its own STLs must be used as given"
     );
 
-    // Neither layout: hand back the path as given, so the gate's existing
+    // No `stls/` at all: hand back the path as given, so the gate's
     // "no .stl files in {dir} — wrong fixture directory?" names what the
     // operator actually typed rather than a subdirectory they never mentioned.
     let empty = fixture("empty");
     assert_eq!(resolve_stl_dir(&empty), empty);
+
+    // ⚠ THE EXCEPTION, asserted rather than left implied. An EMPTY `stls/`
+    // still redirects — `holds_stl(dir)` is false and `nested.is_dir()` is
+    // true — so in that one case the error names `<dir>/stls`, NOT what was
+    // typed. That is the more useful message (it says where we looked), but
+    // the commit that added this claimed the path is "returned as given"
+    // whenever no layout is present, and that claim was wrong here.
+    let hollow = fixture("hollow");
+    std::fs::create_dir_all(hollow.join("stls")).expect("mkdir stls");
+    assert_eq!(
+        resolve_stl_dir(&hollow),
+        hollow.join("stls"),
+        "an empty stls/ is still a redirect — the error will name it, not the given path"
+    );
 }
 
 /// A throwaway directory for the two resolution tests.
@@ -268,4 +300,75 @@ fn fixture(tag: &str) -> PathBuf {
     }
     std::fs::create_dir_all(&root).expect("mkdir root");
     root
+}
+
+/// A closed unit tetrahedron in ASCII STL, wound outward.
+///
+/// Four triangles, four vertices, every edge shared by exactly two faces —
+/// the smallest thing manifold3d will accept, so a failure here is about the
+/// GATE and not about the mesh being marginal.
+fn tetrahedron_stl() -> String {
+    use std::fmt::Write as _;
+
+    // Outward normals verified by right-hand rule against (0,0,0)-(1,0,0)-
+    // (0,1,0)-(0,0,1): -z, -y, -x, and (1,1,1)/√3 for the slanted face.
+    let faces = [
+        [(0., 0., 0.), (0., 1., 0.), (1., 0., 0.)],
+        [(0., 0., 0.), (1., 0., 0.), (0., 0., 1.)],
+        [(0., 0., 0.), (0., 0., 1.), (0., 1., 0.)],
+        [(1., 0., 0.), (0., 1., 0.), (0., 0., 1.)],
+    ];
+    let mut s = String::from("solid tet\n");
+    for f in faces {
+        s.push_str("facet normal 0 0 0\n  outer loop\n");
+        for (x, y, z) in f {
+            // Infallible into a String; `expect` rather than a discarded
+            // Result, which this crate's lints reject.
+            writeln!(s, "    vertex {x} {y} {z}").expect("write to String");
+        }
+        s.push_str("  endloop\nendfacet\n");
+    }
+    s.push_str("endsolid tet\n");
+    s
+}
+
+/// The gate, driven end-to-end from an UNRESOLVED cast folder, on a sound mesh.
+///
+/// ★★ Two things at once, both of which the suite lacked:
+///
+/// 1. **The wiring.** This hands [`check_reference_stls`] the cast folder, not
+///    `stls/`. Delete the `resolve_stl_dir` call inside it and this test goes
+///    red — which it did NOT before, when only the rule was tested.
+/// 2. **A positive control.** Every other assertion here is about paths or
+///    about failure; nothing proved the round-trip can PASS. A gate verified
+///    only where it fires is indistinguishable from one that always fires.
+#[test]
+fn the_gate_resolves_into_stls_and_a_sound_mesh_passes() {
+    let root = fixture("gate-ok");
+    std::fs::create_dir_all(root.join("stls")).expect("mkdir stls");
+    std::fs::write(root.join("stls/tet.stl"), tetrahedron_stl()).expect("write");
+
+    // Panics on any failure, exactly as it does for the workshop fixture.
+    check_reference_stls(&root);
+}
+
+/// The gate must be able to FAIL — a lone triangle is not manifold-clean.
+///
+/// ⚠ THE NEGATIVE CONTROL, and the reason it is worth its lines: the test
+/// above passes just as happily against a `check_reference_stls` whose
+/// failure branch is unreachable. One open triangle has three boundary edges,
+/// so `from_vertices_and_faces` rejects it and the gate's summary assertion
+/// fires. Pinned on the summary's own wording so a silent downgrade to
+/// "collect failures and return" cannot pass.
+#[test]
+#[should_panic(expected = "failed the manifold3d round-trip gate")]
+fn the_gate_rejects_a_mesh_that_is_not_manifold_clean() {
+    let root = fixture("gate-bad");
+    std::fs::create_dir_all(root.join("stls")).expect("mkdir stls");
+    let open = "solid open\nfacet normal 0 0 0\n  outer loop\n    \
+                vertex 0 0 0\n    vertex 1 0 0\n    vertex 0 1 0\n  \
+                endloop\nendfacet\nendsolid open\n";
+    std::fs::write(root.join("stls/open.stl"), open).expect("write");
+
+    check_reference_stls(&root);
 }
