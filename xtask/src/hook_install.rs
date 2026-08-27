@@ -88,10 +88,23 @@ pub enum HookState {
 }
 
 impl HookState {
-    /// Only the two states that are ours to write.
+    /// Only the two states whose CONTENT is ours to write.
     #[must_use]
     pub fn should_replace(self) -> bool {
         matches!(self, HookState::Missing | HookState::OursStale)
+    }
+
+    /// Is this path ours to touch at all — including to REPAIR?
+    ///
+    /// Deliberately wider than [`Self::should_replace`]. A hook that is ours and
+    /// already current still needs its executable bit checked: git ignores a
+    /// non-executable hook and says nothing, and the previous build script discarded
+    /// its `set_permissions` error — so "right text, mode 0644" is reachable in
+    /// exactly the population this installer exists to heal, and `should_replace`
+    /// alone would return before ever looking.
+    #[must_use]
+    pub fn is_ours_to_manage(self) -> bool {
+        !matches!(self, HookState::Foreign | HookState::Unreadable)
     }
 }
 
@@ -263,6 +276,24 @@ mod tests {
                 "a hook we did not install reads as up to date — the warning is lost"
             );
         }
+    }
+
+    /// Ours-and-current is NOT ours-to-rewrite, but it IS ours to repair. If these
+    /// two ever collapse back into one predicate, a correct-but-unexecutable hook
+    /// stops being fixable and git goes on silently ignoring it.
+    #[test]
+    fn an_up_to_date_hook_is_still_ours_to_repair() {
+        let current = classify(Some(Ok(OURS)), OURS, MARKER);
+        assert!(!current.should_replace(), "current text rewritten");
+        assert!(
+            current.is_ours_to_manage(),
+            "current hook is not repairable"
+        );
+
+        let theirs = "#!/bin/sh\n# husky\nnpm test\n";
+        assert!(!classify(Some(Ok(theirs)), OURS, MARKER).is_ours_to_manage());
+        assert!(!classify(Some(Err(())), OURS, MARKER).is_ours_to_manage());
+        assert!(classify(None, OURS, MARKER).is_ours_to_manage());
     }
 
     /// The failure mode an empty marker would cause, pinned directly: if a marker of

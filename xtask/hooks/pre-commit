@@ -37,9 +37,20 @@ echo "→ Checking for scan/mesh binaries..."
 # ':(icase)' is load-bearing. Git pathspecs are CASE-SENSITIVE, so a bare '*.stl'
 # does NOT match PART.STL — and scanners happily emit uppercase extensions. Without
 # it the guard is bypassed by the filename alone, which is the hole it exists to close.
-staged_meshes=$(git diff --cached --name-only --diff-filter=ACMR \
+# ⚠ FAILS CLOSED. This used to end in `|| true`, so ANY git failure — an older git
+# that rejects the ':(icase)' magic pathspec, a corrupt index, a GIT_INDEX_FILE
+# problem — produced an empty list, printed "No scan/mesh binaries staged" and let
+# the commit through with the scan attached. Note the clippy step below has no
+# `|| true` and so aborts under `set -e`: the QUALITY check was failing safe while
+# this one, whose miss is unrecoverable, was failing unsafe.
+if ! staged_meshes=$(git diff --cached --name-only --diff-filter=ACMR \
     -- ':(icase)*.stl' ':(icase)*.obj' ':(icase)*.ply' \
-       ':(icase)*.3mf' ':(icase)*.mtl' || true)
+       ':(icase)*.3mf' ':(icase)*.mtl'); then
+    echo "✗ Could not read the staged file list, so the scan/mesh guard cannot run."
+    echo "  Refusing the commit: an unreadable index is NOT evidence that nothing"
+    echo "  is staged, and this guard protects a PUBLIC repo from anatomical data."
+    exit 1
+fi
 if [ -n "$staged_meshes" ]; then
     if [ "${CF_ALLOW_MESH:-0}" = "1" ]; then
         # Say so LOUDLY. Printing "no meshes staged" here — which is what this used

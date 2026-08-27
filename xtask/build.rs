@@ -66,7 +66,7 @@ fn install_hook_if_needed(path: &Path, content: &str, name: &str) {
         marker,
     );
 
-    if !state.should_replace() {
+    if !state.is_ours_to_manage() {
         // ⚠ Declining to install is only allowed to be SILENT when the hook is
         // already ours and current. Otherwise the developer's scan/mesh guard is not
         // armed and they have no way to know — that silence is how the original bug
@@ -87,25 +87,54 @@ fn install_hook_if_needed(path: &Path, content: &str, name: &str) {
         return;
     }
 
-    if let Err(e) = fs::write(path, content) {
-        // Don't fail the build, just warn.
-        println!("cargo:warning=Failed to install {name} hook: {e}");
+    let mut wrote = false;
+    if state.should_replace() {
+        if let Err(e) = fs::write(path, content) {
+            // Don't fail the build, just warn.
+            println!("cargo:warning=Failed to install {name} hook: {e}");
+            return;
+        }
+        wrote = true;
+    }
+
+    // ⚠ Runs even when the text was already current. See `ensure_executable`.
+    #[cfg(unix)]
+    ensure_executable(path, name, wrote);
+
+    if wrote {
+        println!("cargo:warning=Installed {name} git hook");
+    }
+}
+
+/// Make sure git will actually RUN the hook at `path`.
+///
+/// git silently ignores a hook without an executable bit — no error, no warning, the
+/// guard simply never runs. The previous build script discarded this error entirely
+/// (`let _ = fs::set_permissions(..)`), so a hook with the right text and mode 0644
+/// is reachable on real machines, and checking only when we WRITE would never reach
+/// it: its text is current, so there is nothing to rewrite. Repair it regardless.
+#[cfg(unix)]
+fn ensure_executable(path: &Path, name: &str, freshly_written: bool) {
+    use std::os::unix::fs::PermissionsExt;
+    let already_executable = fs::metadata(path)
+        .map(|m| m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false);
+    if already_executable {
         return;
     }
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Err(e) = fs::set_permissions(path, fs::Permissions::from_mode(0o755)) {
-            // git ignores a hook that is not executable, and says nothing. Discarding
-            // this error leaves a hook that looks installed and never runs.
-            println!(
-                "cargo:warning=Installed {name} hook but could not make it \
-                 executable, so git will ignore it: {e}"
-            );
-            return;
-        }
+    if let Err(e) = fs::set_permissions(path, fs::Permissions::from_mode(0o755)) {
+        println!(
+            "cargo:warning=The {name} hook is not executable and could not be made \
+             one, so git will ignore it and its checks will not run: {e}"
+        );
+        return;
     }
 
-    println!("cargo:warning=Installed {name} git hook");
+    if !freshly_written {
+        println!(
+            "cargo:warning=Repaired the {name} hook's executable bit — git had been \
+             ignoring it, so its checks were not running."
+        );
+    }
 }

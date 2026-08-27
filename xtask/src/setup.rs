@@ -264,18 +264,16 @@ pub fn uninstall() -> Result<()> {
         return Ok(());
     }
 
-    // Remove pre-commit hook
-    let pre_commit_path = hooks_dir.join("pre-commit");
-    if pre_commit_path.exists() {
-        fs::remove_file(&pre_commit_path)?;
-        println!("  ✓ Removed pre-commit hook");
-    }
-
-    // Remove commit-msg hook
-    let commit_msg_path = hooks_dir.join("commit-msg");
-    if commit_msg_path.exists() {
-        fs::remove_file(&commit_msg_path)?;
-        println!("  ✓ Removed commit-msg hook");
+    // The same single source both installers read. Hardcoding the names here is
+    // how a third hook would get installed by both of them and left behind by this
+    // one — a live hook with no source, which is the drift shape (#709) this branch
+    // exists to repair.
+    for (name, _) in HOOKS {
+        let path = hooks_dir.join(name);
+        if path.exists() {
+            fs::remove_file(&path)?;
+            println!("  ✓ Removed {name} hook");
+        }
     }
 
     println!("{}", "Hooks removed.".bright_green());
@@ -594,7 +592,118 @@ mod hook_tests {
         );
     }
 
-    /// `build.rs::title_of` takes the marker from line 2, so line 2 must actually
+    /// Run the commit-msg hook against `message`. Returns (exited_zero, output).
+    ///
+    /// EXECUTED, not grepped. Asserting on `COMMIT_MSG_HOOK`'s text would prove
+    /// nothing about what the hook does — the same mistake the pre-commit tests were
+    /// built to avoid, and the reason this hook's regex went uncovered so long.
+    fn run_commit_msg(message: &str) -> (bool, String) {
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let uniq = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("cf-msg-{}-{uniq}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+
+        let msg_path = dir.join("COMMIT_EDITMSG");
+        std::fs::write(&msg_path, message).expect("message");
+        let hook = dir.join("hook.sh");
+        std::fs::write(&hook, COMMIT_MSG_HOOK).expect("hook");
+        let out = Command::new("sh")
+            .arg(&hook)
+            .arg(&msg_path)
+            .current_dir(&dir)
+            .output()
+            .expect("run hook");
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        (out.status.success(), combined)
+    }
+
+    /// The Merge/Revert allowances must read the SUBJECT, not the whole message.
+    ///
+    /// They used to grep everything, so any BODY line beginning "Merge " switched
+    /// conventional-commit enforcement off for that commit. TWO-SIDED on purpose: a
+    /// real merge subject must still be allowed, or this is not a fix, just a
+    /// stricter hook that breaks `git merge`.
+    #[test]
+    fn merge_and_revert_are_allowed_only_in_the_subject() {
+        for (label, msg) in [
+            (
+                "Merge in body",
+                "garbage subject\n\nMerge the two config files\n",
+            ),
+            (
+                "Revert in body",
+                "garbage subject\n\nRevert that change later\n",
+            ),
+        ] {
+            let (ok, out) = run_commit_msg(msg);
+            assert!(
+                !ok,
+                "{label}: enforcement was disabled by a BODY line;\n{out}"
+            );
+        }
+
+        // POSITIVE CONTROL: the allowances must still allow what they are for.
+        for (label, msg) in [
+            ("real merge", "Merge branch 'main' into feature\n"),
+            ("real revert", "Revert \"feat(x): y\"\n"),
+            (
+                "valid subject, Merge in body",
+                "feat(xtask): a thing\n\nMerge notes\n",
+            ),
+        ] {
+            let (ok, out) = run_commit_msg(msg);
+            assert!(ok, "{label}: rejected a message that must pass;\n{out}");
+        }
+    }
+
+    /// The scan/mesh guard must fail CLOSED when git cannot answer.
+    ///
+    /// It used to end in `|| true`, so any git failure produced an empty list and the
+    /// hook printed "No scan/mesh binaries staged" — false — and carried on. ⚠ The
+    /// exit code alone CANNOT catch this: the clippy step further down has no
+    /// `|| true`, so `set -e` aborts there regardless and the hook exits non-zero
+    /// either way. The discriminator is that the guard must never CLAIM a clean stage
+    /// it was unable to verify.
+    #[test]
+    fn the_guard_refuses_when_it_cannot_read_the_index() {
+        let dir = std::env::temp_dir().join(format!("cf-nogit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        // Deliberately NOT a git repo, which is the cheapest way to make
+        // `git diff --cached` exit non-zero for real rather than by injection.
+        let hook = dir.join("hook.sh");
+        std::fs::write(&hook, PRE_COMMIT_HOOK).expect("hook");
+        let out = Command::new("sh")
+            .arg(&hook)
+            .current_dir(&dir)
+            .env_remove("CF_ALLOW_MESH")
+            .output()
+            .expect("run hook");
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(
+            !combined.contains("No scan/mesh binaries staged"),
+            "the guard claimed a clean stage it could not verify; output:\n{combined}"
+        );
+        assert!(
+            combined.contains("scan/mesh guard cannot run"),
+            "the guard did not refuse for the stated reason; output:\n{combined}"
+        );
+        assert!(!out.status.success(), "hook passed; output:\n{combined}");
+    }
+
+    /// `hook_install::title_of` takes the marker from line 2, so line 2 must actually
     /// BE a title. It only requires that a second line exists — a hook whose line 2
     /// were `set -e` would build fine and yield the marker "set -e", after which the
     /// updater silently stops recognising its own hooks. That is this arc's original
@@ -604,12 +713,12 @@ mod hook_tests {
     fn line_two_of_each_hook_is_the_title_the_marker_is_derived_from() {
         for (name, hook) in HOOKS {
             let line2 = hook.lines().nth(1).unwrap_or_else(|| {
-                panic!("{name} has no line 2; build.rs::title_of would panic the BUILD")
+                panic!("{name} has no line 2; hook_install::title_of would panic the BUILD")
             });
             assert!(
                 line2.starts_with("# CortenForge"),
                 "{name} line 2 is {line2:?}, not a `# CortenForge ...` title. \
-                 build.rs::title_of would derive that as the ownership marker and \
+                 hook_install::title_of would derive that as the ownership marker and \
                  the updater would stop recognising its own hooks, silently."
             );
         }

@@ -129,7 +129,12 @@ that left the scan/mesh guard uninstalled on most checkouts (#833).
 filename through the single `hook_install::HOOKS` table —
 - `xtask/build.rs` — automatic on first `cargo build` of any xtask command. Replaces
   a hook that is ours and out of date, leaves a foreign hook alone and says so.
-- `cargo xtask setup` — the one-command heal; writes both unconditionally.
+- `cargo xtask setup` — the one-command heal. ⚠ Writes both UNCONDITIONALLY: it
+  does NOT make the ownership check `build.rs` makes, so it overwrites a hook you
+  wrote yourself, with no backup. Move yours aside first. This is deliberate — it is
+  what makes the heal work from any state — but it means the warning `build.rs`
+  prints ("merge ours into yours") must be acted on BEFORE running the heal, not by
+  running it.
 **Checks**:
 - **Scan/mesh guard** — refuses staged `*.stl` / `*.obj` / `*.ply` / `*.3mf` / `*.mtl`
   (see 1.3.1 below). Runs first: it is a safety rule, not a quality one.

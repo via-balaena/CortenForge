@@ -12,15 +12,20 @@
 # Enforces conventional commit format for automated changelog generation.
 # See docs/INFRASTRUCTURE.md for details.
 
-commit_msg=$(cat "$1")
+# ⚠ SUBJECT ONLY, for every check below. These two allowances used to grep the
+# WHOLE message, so any BODY line beginning "Merge " or "Revert " switched
+# enforcement off for that commit. Measured: a `garbage subject line` whose body
+# read "Merge the two config files into one" exited 0. The pattern check below
+# always used `head -1`; these did not, and the disagreement was the bug.
+subject=$(head -1 "$1")
 
 # Allow merge commits
-if echo "$commit_msg" | grep -qE "^Merge "; then
+if echo "$subject" | grep -qE "^Merge "; then
     exit 0
 fi
 
 # Allow revert commits
-if echo "$commit_msg" | grep -qE "^Revert "; then
+if echo "$subject" | grep -qE "^Revert "; then
     exit 0
 fi
 
@@ -31,7 +36,7 @@ fi
 # Types: feat, fix, refactor, test, docs, chore, perf, ci, build, style
 pattern="^(feat|fix|refactor|test|docs|chore|perf|ci|build|style)(\([a-z0-9-]+\))?: .+"
 
-if ! echo "$commit_msg" | head -1 | grep -qE "$pattern"; then
+if ! echo "$subject" | grep -qE "$pattern"; then
     echo "✗ Commit message does not follow conventional commits format."
     echo ""
     echo "Expected format:"
@@ -46,6 +51,6 @@ if ! echo "$commit_msg" | head -1 | grep -qE "$pattern"; then
     echo "  refactor(mesh-repair): extract hole-filling into separate module"
     echo ""
     echo "Your message:"
-    echo "  $(head -1 "$1")"
+    echo "  $subject"
     exit 1
 fi
