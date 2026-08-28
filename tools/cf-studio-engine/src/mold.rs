@@ -661,7 +661,7 @@ mod tests {
     }
 
     /// A private copy of the `base_mold` scan fixture, in this test's own temp
-    /// directory. `None` when the fixture is absent (skip, as `edit.rs` does).
+    /// directory. PANICS when the fixture is absent — see the assert below.
     ///
     /// ★★ WHY THIS EXISTS. These gates used to hand
     /// [`generate_molds_for_design`] the paths in `~/scans` directly, and it
@@ -872,10 +872,12 @@ mod tests {
         // `generate_molds` takes the scan DIRECTORY (the cast spec names
         // `base_mold.cleaned.stl` relative to it), so it gets the temp dir the
         // fixture was copied into.
-        // ⚠ EVERY precondition is checked BEFORE the fixture is created.
-        // Ordered the other way, this skip returned with a 9.3 MB fixture
-        // directory already on disk and no `discard_fixture` — a leak on the
-        // exact path that fires for anyone whose machine lacks this spec.
+        // ⚠ EVERY precondition is checked BEFORE the fixture is created, and
+        // that ordering still matters now that both are asserts: the panic
+        // aborts the test, so anything allocated first is never discarded.
+        // When this was a skip rather than a panic, ordering it the other way
+        // leaked a 9.3 MB fixture directory on the exact path that fires for
+        // anyone whose machine lacks this spec.
         //
         // The cast spec is READ-ONLY input, so it is read in place rather than
         // copied — nothing writes back to it.
