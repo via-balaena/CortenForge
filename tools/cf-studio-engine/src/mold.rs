@@ -707,8 +707,13 @@ mod tests {
             "cf-studio-mold-gate-{}-{label}",
             std::process::id()
         ));
-        // Fresh every run: a leftover `.design.toml` from a previous run is
-        // exactly the state these gates are supposed to produce themselves.
+        // ⚠ Defensive only, and deliberately kept: the PID is in the name, so
+        // a PREVIOUS run's directory is never this one. What it actually guards
+        // is a same-process collision (two labels colliding, or a re-entrant
+        // call), where a leftover `.design.toml` would be exactly the state
+        // these gates are supposed to produce themselves. Said plainly because
+        // "clears stale state from the last run" would be a guard described by
+        // a scenario it cannot see.
         if let Err(err) = std::fs::remove_dir_all(&dir) {
             assert_eq!(
                 err.kind(),
@@ -856,9 +861,11 @@ mod tests {
         // `generate_molds` takes the scan DIRECTORY (the cast spec names
         // `base_mold.cleaned.stl` relative to it), so it gets the temp dir the
         // fixture was copied into.
-        let Some((dir, cleaned, _prep)) = isolated_base_mold_fixture("end-to-end") else {
-            return;
-        };
+        // ⚠ EVERY precondition is checked BEFORE the fixture is created.
+        // Ordered the other way, this skip returned with a 9.3 MB fixture
+        // directory already on disk and no `discard_fixture` — a leak on the
+        // exact path that fires for anyone whose machine lacks this spec.
+        //
         // The cast spec is READ-ONLY input, so it is read in place rather than
         // copied — nothing writes back to it.
         let spec = PathBuf::from(std::env::var("HOME").unwrap())
@@ -868,6 +875,9 @@ mod tests {
             return;
         }
         let cast_toml = std::fs::read_to_string(&spec).unwrap();
+        let Some((dir, cleaned, _prep)) = isolated_base_mold_fixture("end-to-end") else {
+            return;
+        };
         let config = CastConfig::from_toml_str(&cast_toml).unwrap();
         let design_path = dir.join("base_mold.design.toml");
         let draft = DesignDraft {
