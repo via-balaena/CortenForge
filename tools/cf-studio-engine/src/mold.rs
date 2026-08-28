@@ -879,7 +879,13 @@ mod tests {
             return;
         };
         let config = CastConfig::from_toml_str(&cast_toml).unwrap();
-        let design_path = dir.join("base_mold.design.toml");
+        // ⚠ BOTH names derive from the fixture, via the SAME `design_filename`
+        // production uses (`generate_molds_for_design` does
+        // `base_dir.join(design_filename(&cleaned_name))`). An earlier draft
+        // derived the scan name and left this one a literal — one line apart,
+        // agreeing only because the fixture happens to be called `base_mold`.
+        let cleaned_name = cleaned.file_name().unwrap().to_str().unwrap();
+        let design_path = dir.join(design_filename(cleaned_name));
         let draft = DesignDraft {
             cavity_inset_m: 0.005,
             layers: vec![
@@ -912,12 +918,7 @@ mod tests {
         // material assertions drift with it, for reasons nothing here explains.
         // Writing it from the draft makes the invariant hold by construction,
         // which is what the comment already claims.
-        // ⚠ Derived from `cleaned`, not spelled again. The literal
-        // "base_mold.cleaned.stl" here would be a second source of truth for a
-        // name the fixture already owns — the drift shape this whole change is
-        // about.
-        let cleaned_name = Path::new(cleaned.file_name().unwrap());
-        save_design_from_draft(cleaned_name, &draft, &design_path).unwrap();
+        save_design_from_draft(Path::new(cleaned_name), &draft, &design_path).unwrap();
 
         let out = generate_molds(
             config,
