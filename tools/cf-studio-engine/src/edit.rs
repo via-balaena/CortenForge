@@ -1235,7 +1235,14 @@ mod tests {
         let tilt = s.level_to_floor();
         eprintln!("level_to_floor tilt: {tilt:?}");
 
-        let dir = std::env::temp_dir().join("cf-studio-save-check");
+        // ⚠ PID-scoped like every other temp dir in this file (`cf-edit-load-`,
+        // `cf-edit-save-`, `cf-edit-nosave-` all do this). This one did NOT,
+        // and it is the gate whose doc line — "writes to a temp dir (never
+        // ~/scans)" — the mold gates were rewritten to follow. It was the least
+        // isolated test in its own file: a fixed path shared by every
+        // concurrent process, holding 10 MB of the previous run's output
+        // indefinitely (measured 2026-08-27).
+        let dir = std::env::temp_dir().join(format!("cf-studio-save-check-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let report = s.save(&dir, "base_mold", "mm", 8).unwrap();
         let stl_bytes = std::fs::metadata(&report.cleaned_stl).unwrap().len();
@@ -1251,6 +1258,12 @@ mod tests {
         );
         let toml = std::fs::read_to_string(&report.prep_toml).unwrap();
         eprintln!("----- base_mold.prep.toml -----\n{toml}");
+
+        // After the assertions, never on the failure path — a red gate keeps
+        // its output for inspection. Matches `discard_fixture` in `mold.rs`.
+        if let Err(err) = std::fs::remove_dir_all(&dir) {
+            eprintln!("WARN: could not remove {}: {err}", dir.display());
+        }
     }
 
     #[test]
