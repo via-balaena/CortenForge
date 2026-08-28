@@ -603,7 +603,7 @@ mod tests {
         selection: &PartSelection,
         out_name: &str,
     ) {
-        let Some((_dir, cleaned, prep)) = isolated_base_mold_fixture(out_name) else {
+        let Some((dir, cleaned, prep)) = isolated_base_mold_fixture(out_name) else {
             return;
         };
         let draft = DesignDraft {
@@ -643,8 +643,23 @@ mod tests {
         assert_eq!(out.plug_stls.len(), 3, "1 plug × 3 layers");
         assert_eq!(out.pour_plan.steps.len(), 3);
         assert!(out.total_mass_g > 0.0);
-        // No cleanup of `~/scans` — nothing was written there. `_dir` holds the
-        // whole run, and leaving it lets a failure be inspected.
+        discard_fixture(&dir);
+    }
+
+    /// Remove a fixture directory once its test has PASSED.
+    ///
+    /// ⚠ Called after the assertions, never on the failure path, so a red gate
+    /// leaves its output to be inspected — the behaviour the `~/scans` cleanup
+    /// this replaced already had.
+    ///
+    /// ★ Not optional. A single gate produces up to ~240 MB of cast output, the
+    /// directory name carries the PID so every run makes a fresh set, and the
+    /// first draft of this change simply dropped the old cleanup: 1.43 GB
+    /// accumulated across 12 directories before anyone looked (2026-08-27).
+    fn discard_fixture(dir: &Path) {
+        if let Err(err) = std::fs::remove_dir_all(dir) {
+            eprintln!("WARN: could not remove fixture {}: {err}", dir.display());
+        }
     }
 
     /// A private copy of the `base_mold` scan fixture, in this test's own temp
@@ -670,8 +685,14 @@ mod tests {
     /// does not get run rots. That is the actual reason these sat idle for
     /// three months, and it is fixed here rather than documented around.
     ///
-    /// The STL is ~9 MB and is copied per test. That is deliberate: sharing it
-    /// by symlink would put the `.design.toml` write back into a shared parent.
+    /// ⚠ The first version of this comment claimed the ~9 MB STL is copied
+    /// rather than symlinked because "sharing it by symlink would put the
+    /// `.design.toml` write back into a shared parent". **That is false** —
+    /// `generate_molds_for_design` computes `base_dir.join(design_name)` from
+    /// the parent of the path it is GIVEN, so a symlink inside the temp dir
+    /// resolves to the temp dir either way. It is copied because a copy cannot
+    /// be invalidated by the scan being edited mid-run, and 9 MB is cheap
+    /// beside the ~240 MB of cast output a single gate produces.
     fn isolated_base_mold_fixture(label: &str) -> Option<(PathBuf, PathBuf, PathBuf)> {
         let scans = PathBuf::from(std::env::var("HOME").unwrap()).join("scans");
         let (src_stl, src_prep) = (
@@ -766,7 +787,7 @@ mod tests {
     #[test]
     #[ignore = "integration: needs ~/scans/base_mold files"]
     fn generate_only_layer0_plug_via_wizard() {
-        let Some((_dir, cleaned, prep)) = isolated_base_mold_fixture("layer0-plug") else {
+        let Some((dir, cleaned, prep)) = isolated_base_mold_fixture("layer0-plug") else {
             return;
         };
         let draft = DesignDraft {
@@ -811,6 +832,7 @@ mod tests {
         assert!(out.accessory_stls.is_empty(), "no platform/dowel");
         // Pour plan still spans all 3 layers (instructions, not files).
         assert_eq!(out.pour_plan.steps.len(), 3);
+        discard_fixture(&dir);
     }
 
     /// End-to-end integration on the real base_mold. Run manually:
@@ -834,7 +856,7 @@ mod tests {
         // `generate_molds` takes the scan DIRECTORY (the cast spec names
         // `base_mold.cleaned.stl` relative to it), so it gets the temp dir the
         // fixture was copied into.
-        let Some((dir, _cleaned, _prep)) = isolated_base_mold_fixture("end-to-end") else {
+        let Some((dir, cleaned, _prep)) = isolated_base_mold_fixture("end-to-end") else {
             return;
         };
         // The cast spec is READ-ONLY input, so it is read in place rather than
@@ -880,7 +902,12 @@ mod tests {
         // material assertions drift with it, for reasons nothing here explains.
         // Writing it from the draft makes the invariant hold by construction,
         // which is what the comment already claims.
-        save_design_from_draft(Path::new("base_mold.cleaned.stl"), &draft, &design_path).unwrap();
+        // ⚠ Derived from `cleaned`, not spelled again. The literal
+        // "base_mold.cleaned.stl" here would be a second source of truth for a
+        // name the fixture already owns — the drift shape this whole change is
+        // about.
+        let cleaned_name = Path::new(cleaned.file_name().unwrap());
+        save_design_from_draft(cleaned_name, &draft, &design_path).unwrap();
 
         let out = generate_molds(
             config,
@@ -899,5 +926,6 @@ mod tests {
             out.pour_plan.steps[0].material_display_name,
             "Ecoflex 00-30"
         );
+        discard_fixture(&dir);
     }
 }
