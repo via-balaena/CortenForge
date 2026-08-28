@@ -603,9 +603,7 @@ mod tests {
         selection: &PartSelection,
         out_name: &str,
     ) {
-        let Some((dir, cleaned, prep)) = isolated_base_mold_fixture(out_name) else {
-            return;
-        };
+        let (dir, cleaned, prep) = isolated_base_mold_fixture(out_name);
         let draft = DesignDraft {
             cavity_inset_m: 0.005,
             layers: vec![
@@ -693,16 +691,31 @@ mod tests {
     /// resolves to the temp dir either way. It is copied because a copy cannot
     /// be invalidated by the scan being edited mid-run, and 9 MB is cheap
     /// beside the ~240 MB of cast output a single gate produces.
-    fn isolated_base_mold_fixture(label: &str) -> Option<(PathBuf, PathBuf, PathBuf)> {
+    fn isolated_base_mold_fixture(label: &str) -> (PathBuf, PathBuf, PathBuf) {
         let scans = PathBuf::from(std::env::var("HOME").unwrap()).join("scans");
         let (src_stl, src_prep) = (
             scans.join("base_mold.cleaned.stl"),
             scans.join("base_mold.prep.toml"),
         );
-        if !src_stl.exists() || !src_prep.exists() {
-            eprintln!("SKIP: {src_stl:?} / {src_prep:?} not found");
-            return None;
-        }
+        // ⚠⚠ PANICS, does not skip. An earlier draft of this helper returned
+        // `None` here and each caller returned early — so on any machine
+        // without these files all six gates reported GREEN having executed
+        // nothing, and `eprintln!` from a passing test is captured, so it said
+        // so silently. That is the "green by absence" failure this whole change
+        // exists to remove, reintroduced while fixing it.
+        //
+        // These gates are `#[ignore]`d: they never run by accident, only when
+        // someone asks for them by name. A missing fixture is therefore an
+        // ERROR — the run that was requested cannot happen — not a pass.
+        assert!(
+            src_stl.exists() && src_prep.exists(),
+            "MISSING FIXTURE: {} and {} are required by this #[ignore]d gate. \
+             It runs only when explicitly asked for, so this is an error rather \
+             than a skip — a silent pass here would report the mold path as \
+             verified when nothing ran.",
+            src_stl.display(),
+            src_prep.display(),
+        );
         let dir = std::env::temp_dir().join(format!(
             "cf-studio-mold-gate-{}-{label}",
             std::process::id()
@@ -729,7 +742,7 @@ mod tests {
         );
         std::fs::copy(&src_stl, &cleaned).unwrap();
         std::fs::copy(&src_prep, &prep).unwrap();
-        Some((dir, cleaned, prep))
+        (dir, cleaned, prep)
     }
 
     /// Fine 0.5 mm — the GUI **default** (print quality; the physical
@@ -792,9 +805,7 @@ mod tests {
     #[test]
     #[ignore = "integration: needs ~/scans/base_mold files"]
     fn generate_only_layer0_plug_via_wizard() {
-        let Some((dir, cleaned, prep)) = isolated_base_mold_fixture("layer0-plug") else {
-            return;
-        };
+        let (dir, cleaned, prep) = isolated_base_mold_fixture("layer0-plug");
         let draft = DesignDraft {
             cavity_inset_m: 0.005,
             layers: vec![
@@ -870,14 +881,14 @@ mod tests {
         // copied — nothing writes back to it.
         let spec = PathBuf::from(std::env::var("HOME").unwrap())
             .join("scans/cast.base_mold.canal.05.toml");
-        if !spec.exists() {
-            eprintln!("SKIP: {spec:?} not found");
-            return;
-        }
+        assert!(
+            spec.exists(),
+            "MISSING FIXTURE: {} is required by this #[ignore]d gate (see \
+             `isolated_base_mold_fixture` for why this is an error, not a skip).",
+            spec.display(),
+        );
         let cast_toml = std::fs::read_to_string(&spec).unwrap();
-        let Some((dir, cleaned, _prep)) = isolated_base_mold_fixture("end-to-end") else {
-            return;
-        };
+        let (dir, cleaned, _prep) = isolated_base_mold_fixture("end-to-end");
         let config = CastConfig::from_toml_str(&cast_toml).unwrap();
         // ⚠ BOTH names derive from the fixture, via the SAME `design_filename`
         // production uses (`generate_molds_for_design` does

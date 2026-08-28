@@ -1218,10 +1218,17 @@ mod tests {
     fn save_real_base_mold_to_tempdir() {
         let scan =
             std::path::PathBuf::from(std::env::var("HOME").unwrap()).join("scans/base_mold.stl");
-        if !scan.exists() {
-            eprintln!("SKIP: {scan:?} not found");
-            return;
-        }
+        // ⚠ Panics rather than skipping, matching `mold.rs`'s
+        // `isolated_base_mold_fixture`. This line set the precedent the mold
+        // gates copied, and the precedent was wrong: an `#[ignore]`d gate is
+        // only ever run deliberately, so a missing fixture means the requested
+        // run cannot happen — reporting green is worse than failing.
+        assert!(
+            scan.exists(),
+            "MISSING FIXTURE: {} is required by this #[ignore]d gate. It runs \
+             only when explicitly asked for, so this is an error, not a skip.",
+            scan.display(),
+        );
         let mut s = EditSession::load(&scan, 0.001).unwrap();
         eprintln!(
             "loaded: {} faces, {} verts",
