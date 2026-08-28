@@ -603,9 +603,7 @@ mod tests {
         selection: &PartSelection,
         out_name: &str,
     ) {
-        let scans = PathBuf::from(std::env::var("HOME").unwrap()).join("scans");
-        let cleaned = scans.join("base_mold.cleaned.stl");
-        let prep = scans.join("base_mold.prep.toml");
+        let (dir, cleaned, prep) = isolated_base_mold_fixture(out_name);
         let draft = DesignDraft {
             cavity_inset_m: 0.005,
             layers: vec![
@@ -643,8 +641,108 @@ mod tests {
         assert_eq!(out.plug_stls.len(), 3, "1 plug × 3 layers");
         assert_eq!(out.pour_plan.steps.len(), 3);
         assert!(out.total_mass_g > 0.0);
+        discard_fixture(&dir);
+    }
 
-        let _ = std::fs::remove_dir_all(scans.join(out_name));
+    /// Remove a fixture directory once its test has PASSED.
+    ///
+    /// ⚠ Called after the assertions, never on the failure path, so a red gate
+    /// leaves its output to be inspected — the behaviour the `~/scans` cleanup
+    /// this replaced already had.
+    ///
+    /// ★ Not optional. A single gate produces up to ~240 MB of cast output, the
+    /// directory name carries the PID so every run makes a fresh set, and the
+    /// first draft of this change simply dropped the old cleanup: 1.43 GB
+    /// accumulated across 12 directories before anyone looked (2026-08-27).
+    fn discard_fixture(dir: &Path) {
+        if let Err(err) = std::fs::remove_dir_all(dir) {
+            eprintln!("WARN: could not remove fixture {}: {err}", dir.display());
+        }
+    }
+
+    /// A private copy of the `base_mold` scan fixture, in this test's own temp
+    /// directory. PANICS when the fixture is absent — see the assert below.
+    ///
+    /// ★★ WHY THIS EXISTS. These gates used to hand
+    /// [`generate_molds_for_design`] the paths in `~/scans` directly, and it
+    /// writes `<scan-stem>.design.toml` NEXT TO THE SCAN. Two consequences,
+    /// both hit on 2026-08-27 the first time the set was run since ~June:
+    ///
+    /// 1. **They overwrote the operator's real `base_mold.design.toml`** — live
+    ///    workshop data, replaced by this function's `DesignDraft`. `edit.rs`'s
+    ///    sibling gate already documented the rule ("writes to a temp dir
+    ///    (never `~/scans`)"); these did not follow it.
+    /// 2. **They raced each other.** Five tests, one shared path, and cargo runs
+    ///    them in parallel: three failed with `rename …design.toml.tmp →
+    ///    …design.toml: No such file or directory`, one winning the rename and
+    ///    the others losing their temp file. The per-test run commands in the
+    ///    doc comments below are single-test filters, which is how that went
+    ///    unnoticed — the set was never run as a set.
+    ///
+    /// ⚠ A gate that damages its own inputs does not get run, and a gate that
+    /// does not get run rots. That is the actual reason these sat idle for
+    /// three months, and it is fixed here rather than documented around.
+    ///
+    /// ⚠ The first version of this comment claimed the ~9 MB STL is copied
+    /// rather than symlinked because "sharing it by symlink would put the
+    /// `.design.toml` write back into a shared parent". **That is false** —
+    /// `generate_molds_for_design` computes `base_dir.join(design_name)` from
+    /// the parent of the path it is GIVEN, so a symlink inside the temp dir
+    /// resolves to the temp dir either way. It is copied because a copy cannot
+    /// be invalidated by the scan being edited mid-run, and 9 MB is cheap
+    /// beside the ~240 MB of cast output a single gate produces.
+    fn isolated_base_mold_fixture(label: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let scans = PathBuf::from(std::env::var("HOME").unwrap()).join("scans");
+        let (src_stl, src_prep) = (
+            scans.join("base_mold.cleaned.stl"),
+            scans.join("base_mold.prep.toml"),
+        );
+        // ⚠⚠ PANICS, does not skip. An earlier draft of this helper returned
+        // `None` here and each caller returned early — so on any machine
+        // without these files all six gates reported GREEN having executed
+        // nothing, and `eprintln!` from a passing test is captured, so it said
+        // so silently. That is the "green by absence" failure this whole change
+        // exists to remove, reintroduced while fixing it.
+        //
+        // These gates are `#[ignore]`d: they never run by accident, only when
+        // someone asks for them by name. A missing fixture is therefore an
+        // ERROR — the run that was requested cannot happen — not a pass.
+        assert!(
+            src_stl.exists() && src_prep.exists(),
+            "MISSING FIXTURE: {} and {} are required by this #[ignore]d gate. \
+             It runs only when explicitly asked for, so this is an error rather \
+             than a skip — a silent pass here would report the mold path as \
+             verified when nothing ran.",
+            src_stl.display(),
+            src_prep.display(),
+        );
+        let dir = std::env::temp_dir().join(format!(
+            "cf-studio-mold-gate-{}-{label}",
+            std::process::id()
+        ));
+        // ⚠ Defensive only, and deliberately kept: the PID is in the name, so
+        // a PREVIOUS run's directory is never this one. What it actually guards
+        // is a same-process collision (two labels colliding, or a re-entrant
+        // call), where a leftover `.design.toml` would be exactly the state
+        // these gates are supposed to produce themselves. Said plainly because
+        // "clears stale state from the last run" would be a guard described by
+        // a scenario it cannot see.
+        if let Err(err) = std::fs::remove_dir_all(&dir) {
+            assert_eq!(
+                err.kind(),
+                std::io::ErrorKind::NotFound,
+                "could not clear {}: {err}",
+                dir.display()
+            );
+        }
+        std::fs::create_dir_all(&dir).unwrap();
+        let (cleaned, prep) = (
+            dir.join("base_mold.cleaned.stl"),
+            dir.join("base_mold.prep.toml"),
+        );
+        std::fs::copy(&src_stl, &cleaned).unwrap();
+        std::fs::copy(&src_prep, &prep).unwrap();
+        (dir, cleaned, prep)
     }
 
     /// Fine 0.5 mm — the GUI **default** (print quality; the physical
@@ -663,9 +761,12 @@ mod tests {
         );
     }
 
-    /// Fast 1.5 mm preview — much quicker (~minutes) than the 0.5 mm finish.
+    /// Fast 1.5 mm preview — much quicker than the 0.5 mm finish. Measured
+    /// 2026-08-27, solo: **269 s**. (All four wizard gates run CONCURRENTLY in
+    /// 1319 s wall — they are isolated now, so running the set is cheaper than
+    /// running them one at a time.)
     #[test]
-    #[ignore = "integration: ~minutes, needs ~/scans/base_mold files"]
+    #[ignore = "integration: ~4.5 min (measured 2026-08-27), needs ~/scans/base_mold files"]
     fn generate_molds_for_design_casts_base_mold_at_fast() {
         cast_real_base_mold_via_wizard(
             0.0015,
@@ -704,9 +805,7 @@ mod tests {
     #[test]
     #[ignore = "integration: needs ~/scans/base_mold files"]
     fn generate_only_layer0_plug_via_wizard() {
-        let scans = PathBuf::from(std::env::var("HOME").unwrap()).join("scans");
-        let cleaned = scans.join("base_mold.cleaned.stl");
-        let prep = scans.join("base_mold.prep.toml");
+        let (dir, cleaned, prep) = isolated_base_mold_fixture("layer0-plug");
         let draft = DesignDraft {
             cavity_inset_m: 0.005,
             layers: vec![
@@ -749,20 +848,57 @@ mod tests {
         assert!(out.accessory_stls.is_empty(), "no platform/dowel");
         // Pour plan still spans all 3 layers (instructions, not files).
         assert_eq!(out.pour_plan.steps.len(), 3);
-
-        let _ = std::fs::remove_dir_all(scans.join(out_name));
+        discard_fixture(&dir);
     }
 
-    /// End-to-end integration on the real base_mold (slow ~13 min, needs
-    /// the `~/scans/base_mold*` files). Run manually:
+    /// End-to-end integration on the real base_mold. Run manually:
     /// `cargo test -p cf-studio-engine -- --ignored generate_molds`.
+    ///
+    /// ⚠ **~61 MINUTES, not the "~13 min" this said until 2026-08-27.**
+    /// Measured that day, solo, on an M4 laptop: 3650 s wall, of which
+    /// `export_molds_v2` was 3281 s. Treat it as an upper bound — the machine
+    /// had been building all session — but the ORDER is right and the old
+    /// figure was not. That mattered: "~13 min" invites a casual
+    /// `--ignored` sweep; an hour is a deliberate decision.
+    ///
+    /// ★ Third stale cost figure found in one day (the cf-cast iter-1 gate
+    /// claimed ~10 s for what takes 0.07 s, and ~6 min for a 96 s cast run).
+    /// The direction varies; the cause does not — measured once, written into
+    /// a doc comment, never re-checked. If you change what this runs, re-measure
+    /// and say when.
     #[test]
-    #[ignore = "integration: ~13 min, needs ~/scans/base_mold files"]
+    #[ignore = "integration: ~61 min (measured 2026-08-27), needs ~/scans/base_mold files"]
     fn generate_molds_runs_base_mold_end_to_end() {
-        let scans = PathBuf::from(std::env::var("HOME").unwrap()).join("scans");
-        let cast_toml =
-            std::fs::read_to_string(scans.join("cast.base_mold.canal.05.toml")).unwrap();
+        // `generate_molds` takes the scan DIRECTORY (the cast spec names
+        // `base_mold.cleaned.stl` relative to it), so it gets the temp dir the
+        // fixture was copied into.
+        // ⚠ EVERY precondition is checked BEFORE the fixture is created, and
+        // that ordering still matters now that both are asserts: the panic
+        // aborts the test, so anything allocated first is never discarded.
+        // When this was a skip rather than a panic, ordering it the other way
+        // leaked a 9.3 MB fixture directory on the exact path that fires for
+        // anyone whose machine lacks this spec.
+        //
+        // The cast spec is READ-ONLY input, so it is read in place rather than
+        // copied — nothing writes back to it.
+        let spec = PathBuf::from(std::env::var("HOME").unwrap())
+            .join("scans/cast.base_mold.canal.05.toml");
+        assert!(
+            spec.exists(),
+            "MISSING FIXTURE: {} is required by this #[ignore]d gate (see \
+             `isolated_base_mold_fixture` for why this is an error, not a skip).",
+            spec.display(),
+        );
+        let cast_toml = std::fs::read_to_string(&spec).unwrap();
+        let (dir, cleaned, _prep) = isolated_base_mold_fixture("end-to-end");
         let config = CastConfig::from_toml_str(&cast_toml).unwrap();
+        // ⚠ BOTH names derive from the fixture, via the SAME `design_filename`
+        // production uses (`generate_molds_for_design` does
+        // `base_dir.join(design_filename(&cleaned_name))`). An earlier draft
+        // derived the scan name and left this one a literal — one line apart,
+        // agreeing only because the fixture happens to be called `base_mold`.
+        let cleaned_name = cleaned.file_name().unwrap().to_str().unwrap();
+        let design_path = dir.join(design_filename(cleaned_name));
         let draft = DesignDraft {
             cavity_inset_m: 0.005,
             layers: vec![
@@ -784,10 +920,23 @@ mod tests {
             ],
         };
 
+        // ★ Materialize the design from THIS test's own draft.
+        //
+        // `generate_molds` runs the cast from `config` — whose `[design] path`
+        // names `base_mold.design.toml` — and uses `draft` only for the pour
+        // plan. Its doc comment states the coupling: "draft.layers is 1:1 with
+        // the run's layers by construction (same design.toml)". Reading the
+        // operator's `~/scans/base_mold.design.toml` made that 1:1 a matter of
+        // LUCK: edit the layer stack in the GUI and this test's mass and
+        // material assertions drift with it, for reasons nothing here explains.
+        // Writing it from the draft makes the invariant hold by construction,
+        // which is what the comment already claims.
+        save_design_from_draft(Path::new(cleaned_name), &draft, &design_path).unwrap();
+
         let out = generate_molds(
             config,
             &draft,
-            &scans,
+            &dir,
             Some(Path::new("cast_base_mold_studio_verify")),
         )
         .unwrap();
@@ -801,7 +950,6 @@ mod tests {
             out.pour_plan.steps[0].material_display_name,
             "Ecoflex 00-30"
         );
-
-        let _ = std::fs::remove_dir_all(scans.join("cast_base_mold_studio_verify"));
+        discard_fixture(&dir);
     }
 }
