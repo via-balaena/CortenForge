@@ -159,7 +159,7 @@ jobs:
   # not the uninstrumented suite time above, is what to size a future crate
   # with.
   #
-  #     shard 1   88-91 m observed  + ~71 m (sim-soft)          ≈ 160 m
+  #     shard 1   88-91 m observed  + ~23 m (sim-soft)          ≈ 111-114 m
   #     shard 2   observed          + ~1 m (sim-therm-env, 82.0 %)
   #     shard 3   113-149 m observed + sim-conformance-tests, UNMEASURED
   #
@@ -169,12 +169,18 @@ jobs:
   #   - `sim-conformance-tests` is the tarpaulin job's old named timeout source,
   #     and #837 is what started running it here.
   #
-  # ⚠⚠ ~160 m CROSSES THE TRIGGER the paragraph above sets — "if a shard starts
-  # exceeding ~150 m, shard by WEIGHT rather than raising this again". So 240 is
-  # NOT to be raised for this. `select_shard_weighted` is written but unwired,
-  # and wiring it needs a per-crate weight source that does not exist yet. The
-  # trigger is met and that work is open: recorded here rather than deferred in
-  # silence.
+  # ★ sim-soft costs ~23 m, not the ~71 m it cost when first measured, because
+  # its coverage pass no longer runs ten binaries that contributed no line any
+  # other binary already covered — `coverage_skip_binaries` in its Cargo.toml,
+  # derived and set-verified by `cargo xtask coverage-census sim-soft`. Pass 1
+  # 61.8 -> 14.9 m; reported coverage unchanged at 89.6 % (8201/9146), the same
+  # covered count both ways. The skipped tests still RUN, in pass 2 and in
+  # `soft-contact-heavy`; only the instrumented measurement is smaller.
+  #
+  # ⇒ shard 1 lands ~111-114 m, back UNDER the ~150 m trigger the paragraph
+  # above sets for itself, so weighted sharding is not forced. An earlier
+  # revision of this comment said ~160 m and called that trigger crossed; that
+  # was true of the unskipped pass and is superseded, not merely rounded down.
   coverage:
     name: Coverage (grade shard ${{ matrix.shard }}/3)
     runs-on: ubuntu-latest
