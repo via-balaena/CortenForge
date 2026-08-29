@@ -111,6 +111,9 @@ const COVERAGE_TARGET_DIR: &str = "target/cf-coverage";
 /// being `--lib`-only, and a type whose name says otherwise is how the old
 /// scope kept being assumed.
 pub(crate) struct CoverageRun {
+    /// Binaries the manifest's `coverage_skip_binaries` kept out of this pass,
+    /// by target name. Reported so the number is never quoted without them.
+    pub skipped: Vec<String>,
     /// The llvm-cov JSON export, in the same shape `cargo llvm-cov --json`
     /// produced — [`crate::coverage::production_coverage`] reads it unchanged.
     pub json: serde_json::Value,
@@ -267,6 +270,35 @@ impl TestBinary {
         key.rsplit_once('-')
             .map_or_else(|| key.clone(), |(head, _)| head.to_string())
     }
+}
+
+/// Test binaries this crate's manifest asks the coverage pass to skip.
+///
+/// `[package.metadata.cortenforge] coverage_skip_binaries = ["name", …]`, by
+/// target name — `bonded_layer_indentation`, not the hashed file stem.
+///
+/// ★ Unlike the `integration-only` opt-in this workspace had to remove, a wrong
+/// entry here CANNOT hide untested code. Skipping a binary that solely covers a
+/// line makes that line read UNCOVERED, so the percentage falls and the triage
+/// list names the file: the failure is loud. The list is derived from `xtask
+/// coverage-census`, which prices exactly this decision, and re-deriving it is
+/// how you check it.
+pub(crate) fn coverage_skip_list(cargo_toml_text: &str) -> Vec<String> {
+    toml::from_str::<toml::Value>(cargo_toml_text)
+        .ok()
+        .as_ref()
+        .and_then(|v| v.get("package"))
+        .and_then(|p| p.get("metadata"))
+        .and_then(|m| m.get("cortenforge"))
+        .and_then(|c| c.get("coverage_skip_binaries"))
+        .and_then(toml::Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(toml::Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// A census, plus the check that its recommendation actually holds.
@@ -584,7 +616,24 @@ fn measure_inner(
     // credits those lines exactly as a unit test would.
     let mut tests_passed = true;
     let mut timings: Vec<BinaryTiming> = Vec::new();
+    // ⚠ NOT applied during a census: the census exists to price these very
+    // binaries, and one that skips them measures nothing and would recommend
+    // skipping them on no evidence at all.
+    let skip_list = if census.is_some() {
+        Vec::new()
+    } else {
+        let manifest = workspace_root.join(crate_path).join("Cargo.toml");
+        coverage_skip_list(&std::fs::read_to_string(manifest).unwrap_or_default())
+    };
+    let mut skipped: Vec<String> = Vec::new();
     for bin in &exes {
+        // ⚠ The lib binary is NEVER skippable: it alone sets `tests_passed`,
+        // which `grade` ANDs into the criterion, so skipping it would hand back
+        // a vacuous pass. Listing it is ignored rather than obeyed.
+        if !bin.is_lib && skip_list.contains(&bin.display_name()) {
+            skipped.push(bin.display_name());
+            continue;
+        }
         // ★ PREFIXED PER BINARY, not a single shared `cf-%p-%m`. The merge
         // below still globs the whole directory, so the measured number is
         // unchanged — but the profiles stay ATTRIBUTABLE, which is what lets
@@ -760,12 +809,62 @@ fn measure_inner(
         }
     };
 
-    Ok((CoverageRun { json, tests_passed }, contributions))
+    Ok((
+        CoverageRun {
+            json,
+            tests_passed,
+            skipped,
+        },
+        contributions,
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The list drives which binaries a coverage pass omits, so a parse that
+    /// quietly returns nothing spends the hour it was meant to save.
+    #[test]
+    fn the_skip_list_is_read_from_the_crate_metadata() {
+        let toml = "\
+[package]
+name = \"sim-soft\"
+
+[package.metadata.cortenforge]
+tier = \"L0\"
+coverage_skip_binaries = [\"bonded_layer_indentation\", \"stick_impact\"]
+";
+        assert_eq!(
+            coverage_skip_list(toml),
+            vec![
+                "bonded_layer_indentation".to_string(),
+                "stick_impact".to_string()
+            ]
+        );
+    }
+
+    /// ⚠ BOTH FACES. A parser that always returns the list would skip binaries
+    /// for every crate in the workspace; one that always returns empty would
+    /// silently stop skipping and only ever look slow, never wrong.
+    #[test]
+    fn a_crate_that_asks_for_no_skips_gets_none() {
+        assert!(coverage_skip_list("[package]\nname = \"x\"\n").is_empty());
+        assert!(coverage_skip_list("not valid toml {{{").is_empty());
+        assert!(coverage_skip_list("[package.metadata.cortenforge]\ntier = \"L0\"\n").is_empty());
+    }
+
+    /// `display_name` is what the manifest matches against, so cargo's hash
+    /// suffix must not reach the comparison — a list entry never carries one.
+    #[test]
+    fn a_binary_is_named_without_cargos_hash_suffix() {
+        let bin = TestBinary {
+            path: PathBuf::from("/t/deps/bonded_layer_indentation-9f3c1a2b"),
+            is_lib: false,
+        };
+        assert_eq!(bin.display_name(), "bonded_layer_indentation");
+        assert_eq!(bin.profile_key(), "bonded_layer_indentation-9f3c1a2b");
+    }
 
     /// The wrapper sees every `rustc` in the build. Instrumenting the wrong one
     /// costs the instrumentation tax this module exists to remove (164-1226x on

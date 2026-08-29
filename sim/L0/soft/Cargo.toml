@@ -52,6 +52,41 @@ tier = "L0"
 dependency_budget = 200
 tier_up_features = { gpu-probe = "L0-io" }
 
+# Binaries the COVERAGE pass skips. They still run, and still gate: `grade`'s
+# pass 2 is an uninstrumented `cargo test --release -p sim-soft` over the whole
+# suite, and `bonded_layer_indentation` additionally has its own CI job. Only
+# the instrumented measurement pass omits them.
+#
+# ★ DERIVED, NOT ASSERTED — `cargo xtask coverage-census sim-soft`, 2026-08-29,
+# on 469fb964. Each entry cost >30 s instrumented and contributed ZERO lines no
+# other binary already covered, and the set was then verified TOGETHER, because
+# a line covered by exactly two of them would read marginal-0 for both and still
+# be lost when both go:
+#
+#     full run covers 8201 line(s); skipping those 10 together covers 8201
+#
+# ⇒ 43.2 min of a 61.8 min pass, for no change to the reported number.
+# `bonded_layer_indentation` alone is 25.4 min of it — one #[test], 42 % of the
+# pass, and not one line only it reaches.
+#
+# ⚠ Re-derive with the census before trusting this after the suite changes. A
+# stale entry CANNOT hide untested code — skip a binary that becomes the sole
+# cover of a line and that line reads UNCOVERED, so the percentage falls and
+# triage names the file. The failure is loud, unlike the `integration-only`
+# opt-in this crate used to carry, whose failure was silence.
+coverage_skip_binaries = [
+    "bonded_layer_indentation",
+    "stick_impact",
+    "stick_flex",
+    "tet10_lame_decision",
+    "tet10_indentation_demand1",
+    "reduced_newton_trajectory",
+    "reduced_pod_basis",
+    "contact_drop_rest",
+    "non_interpenetration",
+    "slender_bending_matches_analytic",
+]
+
 [features]
 default = []
 # I-6b probe: opt-in wgpu build-graph tractability + buffer round-trip test.

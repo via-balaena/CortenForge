@@ -2251,7 +2251,7 @@ fn grade_coverage(
     // test drives, and a 2026-08-16 mutation sweep proved it — the report-only
     // block, the library-only detail and the binary-target marker could each
     // be deleted whole with every test still green.
-    let result = coverage_result_for(crate_name, &measured, &heavy);
+    let result = coverage_result_for(crate_name, &measured, &heavy, &run.skipped);
 
     // Unconditional, and still honours "a non-empty `files_out` means these
     // files were measured": the one verdict above that measured nothing is
@@ -2277,8 +2277,14 @@ fn coverage_result_for(
     crate_name: &str,
     measured: &crate::coverage::ProductionCoverage,
     heavy: &HeavyRun,
+    skipped: &[String],
 ) -> CriterionResult {
-    coverage_result(measured, heavy, is_coverage_report_only(crate_name))
+    coverage_result(
+        measured,
+        heavy,
+        is_coverage_report_only(crate_name),
+        skipped,
+    )
 }
 
 /// Criterion 1's verdict, from a finished measurement. Pure: no `Shell`, no
@@ -2295,6 +2301,7 @@ fn coverage_result(
     measured: &crate::coverage::ProductionCoverage,
     heavy: &HeavyRun,
     report_only: bool,
+    skipped: &[String],
 ) -> CriterionResult {
     // No production lines is a different fact from bad coverage, and from a
     // broken report. Grading it F would send a reader hunting for uncovered
@@ -2352,6 +2359,17 @@ fn coverage_result(
             coverage_display(lib_only),
             measured.bin_total,
             measured.bin_covered
+        ));
+    }
+    // ⚠ NAMED, never just counted, and never omitted. `coverage-census`
+    // measured these as contributing no unique line, but that was measured on
+    // one tree — a reader comparing this number to another run needs to know
+    // the pass was not the whole suite.
+    if !skipped.is_empty() {
+        detail.push_str(&format!(
+            "; {} binary(ies) skipped per `coverage_skip_binaries` ({})",
+            skipped.len(),
+            skipped.join(", ")
         ));
     }
     if !measured.unparsed.is_empty() {
@@ -5987,7 +6005,12 @@ serde = \"1\"
             (45, Grade::C),
             (20, Grade::F),
         ] {
-            let r = coverage_result(&measurement(covered, 100, 0, 0), &HeavyRun::ok(), false);
+            let r = coverage_result(
+                &measurement(covered, 100, 0, 0),
+                &HeavyRun::ok(),
+                false,
+                &[],
+            );
             assert_eq!(r.grade, expect, "{covered}/100");
         }
     }
@@ -5997,7 +6020,7 @@ serde = \"1\"
     /// is told the enforcement is deferred rather than absent.
     #[test]
     fn a_report_only_crate_still_reports_its_real_number() {
-        let r = coverage_result(&measurement(30, 100, 0, 0), &HeavyRun::ok(), true);
+        let r = coverage_result(&measurement(30, 100, 0, 0), &HeavyRun::ok(), true, &[]);
 
         assert_eq!(r.grade, Grade::NotApplicable, "the threshold is waived");
         assert_eq!(r.result, "30.0% (report-only)");
@@ -6018,6 +6041,7 @@ serde = \"1\"
             &measurement(99, 100, 0, 0),
             &HeavyRun::failed_unnamed(),
             true,
+            &[],
         );
 
         assert_eq!(
@@ -6061,14 +6085,19 @@ serde = \"1\"
     #[test]
     fn the_deferral_is_looked_up_from_the_list_and_not_hardcoded() {
         for name in COVERAGE_REPORT_ONLY {
-            let r = coverage_result_for(name, &measurement(30, 100, 0, 0), &HeavyRun::ok());
+            let r = coverage_result_for(name, &measurement(30, 100, 0, 0), &HeavyRun::ok(), &[]);
             assert_eq!(
                 r.grade,
                 Grade::NotApplicable,
                 "{name} is on the list and must be deferred"
             );
         }
-        let r = coverage_result_for("cf-viewer", &measurement(30, 100, 0, 0), &HeavyRun::ok());
+        let r = coverage_result_for(
+            "cf-viewer",
+            &measurement(30, 100, 0, 0),
+            &HeavyRun::ok(),
+            &[],
+        );
         assert_eq!(
             r.grade,
             Grade::F,
@@ -6080,7 +6109,7 @@ serde = \"1\"
     /// about `heavy_passed` and not about the list being ineffective.
     #[test]
     fn an_undeferred_crate_grades_on_the_threshold() {
-        let r = coverage_result(&measurement(30, 100, 0, 0), &HeavyRun::ok(), false);
+        let r = coverage_result(&measurement(30, 100, 0, 0), &HeavyRun::ok(), false, &[]);
         assert_eq!(r.grade, Grade::F);
         assert_eq!(r.result, "30.0%");
         assert!(!r.measured_detail.contains("REPORT-ONLY"));
@@ -6092,7 +6121,7 @@ serde = \"1\"
     fn the_detail_reports_the_library_only_figure_when_a_binary_contributed() {
         // 40/100 overall; the binary holds 50 lines, none covered, so the
         // library is 40/50 = 80 %.
-        let r = coverage_result(&measurement(40, 100, 0, 50), &HeavyRun::ok(), false);
+        let r = coverage_result(&measurement(40, 100, 0, 50), &HeavyRun::ok(), false, &[]);
 
         assert!(
             r.measured_detail.contains("80.0% over library lines alone"),
@@ -6107,13 +6136,13 @@ serde = \"1\"
     /// same number twice under two names.
     #[test]
     fn the_detail_omits_the_library_figure_when_there_is_no_binary() {
-        let r = coverage_result(&measurement(40, 100, 0, 0), &HeavyRun::ok(), false);
+        let r = coverage_result(&measurement(40, 100, 0, 0), &HeavyRun::ok(), false, &[]);
         assert!(!r.measured_detail.contains("library lines alone"));
     }
 
     #[test]
     fn a_measurement_with_no_production_lines_is_not_a_bad_grade() {
-        let r = coverage_result(&measurement(0, 0, 0, 0), &HeavyRun::ok(), false);
+        let r = coverage_result(&measurement(0, 0, 0, 0), &HeavyRun::ok(), false, &[]);
         assert_eq!(r.grade, Grade::NotApplicable);
         assert_eq!(r.result, "(no production lines)");
     }
