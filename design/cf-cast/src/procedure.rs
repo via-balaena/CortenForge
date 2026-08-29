@@ -2232,6 +2232,7 @@ mod tests {
     };
     use crate::bolt_pattern::{BoltPatternKind, BoltPatternSpec};
     use crate::dowel_hole::{DowelHoleKind, DowelHoleSpec};
+    use crate::flange::{DemandFlangeSpec, FlangeKind};
     use crate::gasket_mold::GasketKind;
     use crate::plug::{PlugPinKind, PlugPinSpec};
     use crate::ribbon::{Ribbon, SplitNormal};
@@ -2434,35 +2435,59 @@ mod tests {
         );
     }
 
-    /// The clamping section's HEADER is what tells the user which
-    /// protocol they are on. All three combinations must be distinct and
-    /// must name the hardware actually present.
+    /// The clamping section's HEADER tells the user which protocol they
+    /// are on, and the BODY tells them how to execute it. They must agree.
+    ///
+    /// ⚠ The first version of this test built bolts WITHOUT a flange and
+    /// asserted only the header. It passed while the body said the
+    /// opposite — and that is a config `cf-cast-cli` rejects outright
+    /// ("M5 through-bolts clamp through the flange — without a flange
+    /// there is no material to bolt"). Bolts are therefore exercised in
+    /// the configuration the pour actually ships: flange + bolts.
     #[test]
-    fn cup_half_clamping_header_names_the_hardware_that_is_present() {
-        let build = |gasket: GasketKind, bolts: BoltPatternKind| {
+    fn cup_half_clamping_header_and_body_agree_on_the_clamp_method() {
+        let build = |flange: FlangeKind, gasket: GasketKind, bolts: BoltPatternKind| {
             let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
             let split = SplitNormal::new(Vector3::new(0.0, 0.0, 1.0)).unwrap();
             let mut r = Ribbon::new(centerline, split).unwrap();
+            r.flange = flange;
             r.gasket = gasket;
             r.bolt_pattern = bolts;
             let mut md = String::new();
             write_v2_cup_half_clamping_note(&mut md, &r);
-            md.lines().next().unwrap_or_default().to_string()
+            md
         };
+        let head = |md: &str| md.lines().next().unwrap_or_default().to_string();
 
-        let bare = build(GasketKind::None, BoltPatternKind::None);
+        let bare = build(FlangeKind::None, GasketKind::None, BoltPatternKind::None);
+        assert!(
+            head(&bare).contains("Gasketless"),
+            "bare header: {:?}",
+            head(&bare)
+        );
+        assert!(
+            bare.contains("hand-clamped"),
+            "no flange, gasket or bolts must read as hand-clamp:\n{bare}"
+        );
+
         let bolted = build(
+            FlangeKind::Demand(DemandFlangeSpec::iter1()),
             GasketKind::None,
             BoltPatternKind::Auto(BoltPatternSpec::iter1()),
         );
-        assert!(bare.contains("Gasketless"), "bare header was {bare:?}");
         assert!(
-            bolted.contains("Bolt-Pattern"),
-            "bolted header was {bolted:?}"
+            head(&bolted).contains("Bolt-Pattern"),
+            "bolted header: {:?}",
+            head(&bolted)
+        );
+        assert!(
+            !bolted.contains("must be hand-clamped"),
+            "header promises an M5 bolt seal while the body orders hand-clamping:\n{bolted}"
         );
         assert_ne!(
-            bare, bolted,
-            "two different builds got the same clamping header"
+            head(&bare),
+            head(&bolted),
+            "two different builds got one header"
         );
     }
 }
