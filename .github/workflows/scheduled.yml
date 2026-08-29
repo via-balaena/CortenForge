@@ -86,17 +86,26 @@ jobs:
   # because doing so switches off a gate that fires today rather than deferring
   # one that just appeared. Emptying the list is the work; hiding it is not.
   #
-  # ★ It needs no `--exclude`, unlike the tarpaulin job it replaces. Coverage's
-  # pass 2 (`cargo test --release -p <crate>`) is what could have made this job
-  # enormous, but `coverage_skip_reason` returns BEFORE pass 2 for
-  # `grading_profile = "integration-only"` — and both candidates declare it:
-  # `sim-conformance-tests` (the old job's named timeout source, 60k lines and
-  # 500k+ sim steps) and `sim-soft`, whose release-only
-  # `bonded_layer_indentation` is the single most expensive test in the
-  # workspace at 24.2 min. Neither runs here, which is why neither shows up in
-  # the 70.4 min sizing run, and why this job does NOT duplicate the
-  # `soft-contact-heavy` job below. Verified 2026-08-17 — do not "fix" it by
-  # adding excludes.
+  # ★ It needs no `--exclude`, unlike the tarpaulin job it replaces — but NOT
+  # for the reason this paragraph used to give. It said `coverage_skip_reason`
+  # returns BEFORE pass 2 for `grading_profile = "integration-only"`, so that
+  # neither `sim-conformance-tests` (the old job's named timeout source, 60k
+  # lines and 500k+ sim steps) nor `sim-soft` ran here at all. Both halves of
+  # that are now false:
+  #
+  #   - #837 made that early return RUN the crate's suite on its way out, so an
+  #     integration-only crate does execute its tests here. The "Raised to 240"
+  #     paragraph below is about exactly that change; THIS paragraph never got
+  #     the correction and went on asserting the opposite for eleven days. A
+  #     superseding finding that lands in one section and stalls in another is
+  #     how both end up quoted.
+  #   - `sim-soft` no longer declares the opt-in. It never qualified — 74 files
+  #     under src/, 341 `#[test]` — and `xtask grade` now REFUSES a claim it can
+  #     disprove instead of granting it from the manifest string.
+  #
+  # ⇒ this job measures `sim-soft` in full, the single largest line item in the
+  # sweep. Do not "fix" that with an exclude: it is the FEM core's only coverage
+  # number, and it is an A — 89.6 %, 8198/9146, measured 2026-08-28.
   #
   # Weekly rather than per-PR: a coverage run is minutes to tens of minutes PER
   # CRATE (measured: sim-thermostat ~16 min), which is why the PR shards skip
@@ -142,6 +151,30 @@ jobs:
   # WEIGHT (`select_shard_weighted`, already written) rather than raising this
   # again — round-robin does not balance coverage cost, which is what put 149 m
   # and 75 m in the same run.
+  #
+  # ★★ RE-SIZED 2026-08-28, when sim-soft's exemption was removed. `xtask grade
+  # sim-soft` end to end on an M4 laptop: 71 m wall, of which criterion 1 alone
+  # is 70.4 m — pass 1 (instrumented `--lib --tests`) 61.8 m against pass 2's
+  # 8.6 m. ⇒ **coverage instrumentation costs ~7x on solver code.** That ratio,
+  # not the uninstrumented suite time above, is what to size a future crate
+  # with.
+  #
+  #     shard 1   88-91 m observed  + ~71 m (sim-soft)          ≈ 160 m
+  #     shard 2   observed          + ~1 m (sim-therm-env, 82.0 %)
+  #     shard 3   113-149 m observed + sim-conformance-tests, UNMEASURED
+  #
+  # ⚠ Two costs above are NOT sized, and are left blank rather than guessed:
+  #   - every 88-91 / 113-149 m figure predates #837, so none of them includes
+  #     the suites it added. The first post-#837 sweep has not run yet.
+  #   - `sim-conformance-tests` is the tarpaulin job's old named timeout source,
+  #     and #837 is what started running it here.
+  #
+  # ⚠⚠ ~160 m CROSSES THE TRIGGER the paragraph above sets — "if a shard starts
+  # exceeding ~150 m, shard by WEIGHT rather than raising this again". So 240 is
+  # NOT to be raised for this. `select_shard_weighted` is written but unwired,
+  # and wiring it needs a per-crate weight source that does not exist yet. The
+  # trigger is met and that work is open: recorded here rather than deferred in
+  # silence.
   coverage:
     name: Coverage (grade shard ${{ matrix.shard }}/3)
     runs-on: ubuntu-latest
