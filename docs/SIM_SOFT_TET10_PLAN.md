@@ -979,9 +979,12 @@ is now CI-gated** by the path-filtered `soft-contact-heavy` job (#692). Decide
 explicitly whether the ν=0.49 **h/2 decision** solve (~28k DOF, CI-feasible)
 also becomes CI-run, while the ν=0.49 **h/4 confirmation** (MEASURED 284k DOF,
 GB-scale, OOM-risk) stays **pre-push one-shot, never CI**. Register whatever
-becomes CI-run in the release `--test` list. Coverage is **skipped** for sim-soft (`grading_profile =
-"integration-only"`), so there is *no unit-coverage net* — correctness rests
-entirely on these integration gates. Any *new* dependency counts against
+becomes CI-run in the release `--test` list. Coverage for sim-soft is **measured**: 89.6 % (8198/9146 lines), grade A, first
+measured 2026-08-28. This paragraph used to read "skipped … so there is *no
+unit-coverage net*", on the strength of a `grading_profile =
+"integration-only"` opt-in the crate never qualified for — 74 files under
+`src/`, 341 `#[test]`. There IS a unit-coverage net, and the integration gates
+below are not carrying correctness by themselves. Any *new* dependency counts against
 sim-soft's **L0** dep cap (~100); the rank-gate eigensolver adds none
 (nalgebra is already in-tree). The `MeshTopology` supertrait is nominally a
 public-API change (grade "API") but has **zero external implementors**, so the

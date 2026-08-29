@@ -111,6 +111,16 @@ const COVERAGE_TARGET_DIR: &str = "target/cf-coverage";
 /// being `--lib`-only, and a type whose name says otherwise is how the old
 /// scope kept being assumed.
 pub(crate) struct CoverageRun {
+    /// Binaries the manifest's `coverage_skip_binaries` kept out of this pass,
+    /// by target name. Reported so the number is never quoted without them.
+    pub skipped: Vec<String>,
+    /// Entries in `coverage_skip_binaries` that matched NO binary cargo built.
+    ///
+    /// ⚠ Reported because the failure is otherwise SILENT and permanent: rename
+    /// a test file and its stale entry stops matching, the binary quietly
+    /// rejoins the pass, and the only symptom is a slow job nobody attributes.
+    /// An entry that does nothing is a defect, not a harmless leftover.
+    pub skip_unmatched: Vec<String>,
     /// The llvm-cov JSON export, in the same shape `cargo llvm-cov --json`
     /// produced — [`crate::coverage::production_coverage`] reads it unchanged.
     pub json: serde_json::Value,
@@ -240,6 +250,112 @@ struct TestBinary {
     /// trip the "no --lib test binary" bail rather than silently handing the
     /// gate to an integration suite.
     is_lib: bool,
+}
+
+impl TestBinary {
+    /// Filename-safe key identifying this binary's profiles on disk.
+    ///
+    /// Cargo already makes the file stem unique per target with its hash
+    /// suffix, so this needs no disambiguation of its own. Used as the
+    /// `LLVM_PROFILE_FILE` prefix so a later merge can select or exclude one
+    /// binary's profiles by name.
+    fn profile_key(&self) -> String {
+        self.path.file_name().map_or_else(
+            || "unknown".to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        )
+    }
+
+    /// The target name a reader recognises — the key with cargo's hash suffix
+    /// dropped, so `bonded_layer_indentation-1a2b3c` reads as
+    /// `bonded_layer_indentation`.
+    ///
+    /// ⚠ Splits on the LAST `-` because that is the only one cargo puts there:
+    /// a target name's own dashes are already `_` in the file stem.
+    fn display_name(&self) -> String {
+        let key = self.profile_key();
+        key.rsplit_once('-')
+            .map_or_else(|| key.clone(), |(head, _)| head.to_string())
+    }
+}
+
+/// Test binaries this crate's manifest asks the coverage pass to skip.
+///
+/// `[package.metadata.cortenforge] coverage_skip_binaries = ["name", …]`, by
+/// target name — `bonded_layer_indentation`, not the hashed file stem.
+///
+/// ★ Unlike the `integration-only` opt-in this workspace had to remove, a wrong
+/// entry here CANNOT hide untested code. Skipping a binary that solely covers a
+/// line makes that line read UNCOVERED, so the percentage falls and the triage
+/// list names the file: the failure is loud. The list is derived from `xtask
+/// coverage-census`, which prices exactly this decision, and re-deriving it is
+/// how you check it.
+pub(crate) fn coverage_skip_list(cargo_toml_text: &str) -> Vec<String> {
+    toml::from_str::<toml::Value>(cargo_toml_text)
+        .ok()
+        .as_ref()
+        .and_then(|v| v.get("package"))
+        .and_then(|p| p.get("metadata"))
+        .and_then(|m| m.get("cortenforge"))
+        .and_then(|c| c.get("coverage_skip_binaries"))
+        .and_then(toml::Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(toml::Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A census, plus the check that its recommendation actually holds.
+///
+/// ★★ TWO-SIDED ON PURPOSE. Per-binary `marginal_lines` can UNDERCOUNT a set:
+/// a line covered by exactly two skip candidates has marginal 0 for each and is
+/// still lost when both go. So the per-binary numbers propose a set and
+/// [`Census::joint_covered`] — one merge of everything except that whole set —
+/// disposes. When they disagree, the joint number is the true one and the
+/// recommendation is wrong.
+#[derive(Default)]
+pub(crate) struct Census {
+    pub rows: Vec<Contribution>,
+    /// Production lines covered by the full run.
+    pub full_covered: u64,
+    /// Production lines covered with every zero-marginal binary skipped AT
+    /// ONCE. Equal to `full_covered` exactly when the skip set is free.
+    pub joint_covered: u64,
+    /// Instrumented seconds the skip set holds.
+    pub skipped_seconds: f64,
+}
+
+/// One binary's price in the coverage pass: what it cost, and what only it covered.
+pub(crate) struct Contribution {
+    /// Target name, hash suffix dropped.
+    pub name: String,
+    /// The profile prefix this binary's `.profraw` were written under.
+    ///
+    /// ⚠ Carried rather than looked back up by name. Resolving the skip set
+    /// through a name match needed a fallible `find`, and a miss there would
+    /// have dropped a binary from the set being verified — the joint check
+    /// would then confirm a SMALLER set than the one it reported, and pass. A
+    /// verifier with a silent hole is worse than no verifier.
+    key: String,
+    /// Instrumented wall seconds.
+    pub seconds: f64,
+    /// Production lines this binary covered that NOTHING else did. Zero means
+    /// excluding it leaves the reported coverage bit-identical.
+    pub marginal_lines: u64,
+}
+
+/// What one binary cost in the instrumented run, keyed to its profiles.
+struct BinaryTiming {
+    /// Matches the `LLVM_PROFILE_FILE` prefix its profiles were written under.
+    key: String,
+    /// The same binary as a reader names it — see [`TestBinary::display_name`].
+    name: String,
+    /// Wall seconds. Instrumented, so 7x-1226x the uninstrumented figure
+    /// depending on how much arithmetic the binary does per line executed.
+    seconds: f64,
 }
 
 /// Every test executable cargo reported building, from `--message-format=json`.
@@ -425,6 +541,50 @@ pub(crate) fn measure_coverage(
     workspace_root: &Path,
     quiet: bool,
 ) -> Result<CoverageRun> {
+    measure_inner(sh, crate_name, crate_path, workspace_root, quiet, None).map(|(run, _)| run)
+}
+
+/// Price every binary that costs more than `threshold_seconds`: what it took,
+/// and what it uniquely covered.
+///
+/// ★ Exists because "exclude the slow tests from coverage" is only safe for a
+/// binary whose MARGINAL contribution is zero — exclude one that solely covers
+/// a line and the report calls that line untested, which is a lie in the
+/// report rather than the silence the `integration-only` opt-in produced, but a
+/// lie either way. This measures which is which instead of asserting it, and is
+/// re-runnable, so the exclusion list stays derived rather than inherited.
+///
+/// ⚠ One full instrumented run — for `sim-soft` that is ~62 min. The subset
+/// arithmetic afterwards is cheap (a merge and an export per candidate), which
+/// is why the threshold matters: a binary too cheap to be worth excluding is
+/// not worth an export either.
+pub(crate) fn census_coverage(
+    sh: &Shell,
+    crate_name: &str,
+    crate_path: &str,
+    workspace_root: &Path,
+    quiet: bool,
+    threshold_seconds: f64,
+) -> Result<Census> {
+    measure_inner(
+        sh,
+        crate_name,
+        crate_path,
+        workspace_root,
+        quiet,
+        Some(threshold_seconds),
+    )
+    .map(|(_, c)| c)
+}
+
+fn measure_inner(
+    sh: &Shell,
+    crate_name: &str,
+    crate_path: &str,
+    workspace_root: &Path,
+    quiet: bool,
+    census: Option<f64>,
+) -> Result<(CoverageRun, Census)> {
     let profdata_tool = llvm_tool(sh, "llvm-profdata")?;
     let cov_tool = llvm_tool(sh, "llvm-cov")?;
     let xtask_exe = std::env::current_exe().context("cannot locate the running xtask binary")?;
@@ -464,15 +624,54 @@ pub(crate) fn measure_coverage(
         bail!("cargo reported no --lib test binary; the pass/fail gate would be vacuous");
     }
 
+    // ★★ SKIPPING A BINARY DOES NOT MOVE THE DENOMINATOR. `exes` is unchanged
+    // below, so llvm-cov still receives every binary as `-object` and the line
+    // universe comes from the OBJECTS, not from which profiles were merged. A
+    // skipped binary therefore removes lines from the numerator only if nothing
+    // else covered them — which is exactly what `coverage-census` measures, and
+    // why 8201/9146 came back identical with ten binaries skipped. Were the
+    // universe profile-derived instead, a skip would drop lines from BOTH sides
+    // and inflate the percentage.
+    //
     // `%p`/`%m` keep one process's profile separate from another's. Each test
     // binary is threaded but single-process, so this is one file per binary.
     // They all land in the same directory and merge together below — an
     // integration test that exercises production code the unit tests miss
     // credits those lines exactly as a unit test would.
     let mut tests_passed = true;
+    let mut timings: Vec<BinaryTiming> = Vec::new();
+    // ⚠ NOT applied during a census: the census exists to price these very
+    // binaries, and one that skips them measures nothing and would recommend
+    // skipping them on no evidence at all.
+    let skip_list = if census.is_some() {
+        Vec::new()
+    } else {
+        let manifest = workspace_root.join(crate_path).join("Cargo.toml");
+        coverage_skip_list(&std::fs::read_to_string(manifest).unwrap_or_default())
+    };
+    let mut skipped: Vec<String> = Vec::new();
     for bin in &exes {
+        // ⚠ The lib binary is NEVER skippable: it alone sets `tests_passed`,
+        // which `grade` ANDs into the criterion, so skipping it would hand back
+        // a vacuous pass. Listing it is ignored rather than obeyed.
+        if !bin.is_lib && skip_list.contains(&bin.display_name()) {
+            skipped.push(bin.display_name());
+            continue;
+        }
+        // ★ PREFIXED PER BINARY, not a single shared `cf-%p-%m`. The merge
+        // below still globs the whole directory, so the measured number is
+        // unchanged — but the profiles stay ATTRIBUTABLE, which is what lets
+        // `coverage-census` merge every subset except one binary and price
+        // that binary's unique contribution. Without the prefix the profiles
+        // are an undifferentiated pile and the only answerable question is
+        // "all or nothing".
+        let key = bin.profile_key();
         let mut test_run = Command::new(&bin.path);
-        test_run.env("LLVM_PROFILE_FILE", profraw_dir.join("cf-%p-%m.profraw"));
+        test_run.env(
+            "LLVM_PROFILE_FILE",
+            profraw_dir.join(format!("{key}__cf-%p-%m.profraw")),
+        );
+        let started = std::time::Instant::now();
         let ok = if quiet {
             test_run
                 .output()
@@ -504,6 +703,11 @@ pub(crate) fn measure_coverage(
         if bin.is_lib {
             tests_passed &= ok;
         }
+        timings.push(BinaryTiming {
+            key: bin.profile_key(),
+            name: bin.display_name(),
+            seconds: started.elapsed().as_secs_f64(),
+        });
     }
 
     let raw: Vec<PathBuf> = std::fs::read_dir(&profraw_dir)
@@ -518,8 +722,9 @@ pub(crate) fn measure_coverage(
         );
     }
 
+    let raw_all = &raw;
     let merged = target_dir.join("merged.profdata");
-    cmd!(sh, "{profdata_tool} merge -sparse {raw...} -o {merged}")
+    cmd!(sh, "{profdata_tool} merge -sparse {raw_all...} -o {merged}")
         .run()
         .context("llvm-profdata merge failed")?;
 
@@ -533,9 +738,10 @@ pub(crate) fn measure_coverage(
         .iter()
         .flat_map(|b| ["-object".to_string(), b.path.display().to_string()])
         .collect();
+    let objects = &object_args;
     let export = cmd!(
         sh,
-        "{cov_tool} export --format=text --instr-profile={merged} {first_exe} {object_args...}"
+        "{cov_tool} export --format=text --instr-profile={merged} {first_exe} {objects...}"
     )
     .read()
     .context("llvm-cov export failed")?;
@@ -550,12 +756,150 @@ pub(crate) fn measure_coverage(
         );
     }
 
-    Ok(CoverageRun { json, tests_passed })
+    let contributions = match census {
+        None => Census::default(),
+        Some(threshold) => {
+            let full = crate::coverage::production_coverage(&json, crate_path).covered;
+            // Covered lines with every profile whose prefix is in `drop`
+            // removed. One merge, one export; `covered` can only fall.
+            let covered_without = |drop: &[String]| -> Result<u64> {
+                let keep: Vec<PathBuf> = raw
+                    .iter()
+                    .filter(|p| {
+                        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                        !drop.iter().any(|k| name.starts_with(&format!("{k}__")))
+                    })
+                    .cloned()
+                    .collect();
+                if keep.is_empty() {
+                    return Ok(0);
+                }
+                let sans = target_dir.join("sans.profdata");
+                let keep_ref = &keep;
+                cmd!(sh, "{profdata_tool} merge -sparse {keep_ref...} -o {sans}")
+                    .run()
+                    .context("llvm-profdata merge failed for the census subset")?;
+                let sans_export = cmd!(
+                    sh,
+                    "{cov_tool} export --format=text --instr-profile={sans} {first_exe} {objects...}"
+                )
+                .read()
+                .context("llvm-cov export failed for the census subset")?;
+                let sans_json: serde_json::Value = serde_json::from_str(&sans_export)
+                    .context("census subset export was not valid JSON")?;
+                Ok(crate::coverage::production_coverage(&sans_json, crate_path).covered)
+            };
+
+            let mut out = Vec::new();
+            for t in timings.iter().filter(|t| t.seconds >= threshold) {
+                // Everything EXCEPT this binary's profiles: the difference is
+                // exactly the lines nothing else reached.
+                let sans_covered = covered_without(std::slice::from_ref(&t.key))?;
+                out.push(Contribution {
+                    name: t.name.clone(),
+                    key: t.key.clone(),
+                    seconds: t.seconds,
+                    marginal_lines: full.saturating_sub(sans_covered),
+                });
+            }
+            // Cheapest exclusions first: zero marginal, most time saved.
+            out.sort_by(|a, b| {
+                a.marginal_lines
+                    .cmp(&b.marginal_lines)
+                    .then(b.seconds.total_cmp(&a.seconds))
+                    // Final tiebreak on name so two rows that cost and
+                    // contribute the same do not swap places between runs.
+                    .then_with(|| a.name.cmp(&b.name))
+            });
+
+            // ★★ The set the rows PROPOSE, verified as a set. Skipping N
+            // binaries is not the sum of skipping each: a line covered by
+            // exactly two of them is marginal-0 for both and lost when both go.
+            let free: Vec<&Contribution> = out.iter().filter(|c| c.marginal_lines == 0).collect();
+            let keys: Vec<String> = free.iter().map(|c| c.key.clone()).collect();
+            let skipped_seconds = free.iter().map(|c| c.seconds).sum();
+            let joint_covered = if keys.is_empty() {
+                full
+            } else {
+                covered_without(&keys)?
+            };
+
+            Census {
+                rows: out,
+                full_covered: full,
+                joint_covered,
+                skipped_seconds,
+            }
+        }
+    };
+
+    // ⚠ Deliberately NOT sorted here. `coverage_result` sorts what it prints,
+    // so the stable-output property lives in the one function that renders it
+    // and is reachable from a unit test. Sorting in both places would be two
+    // claims on one invariant, free to drift.
+    let skip_unmatched: Vec<String> = skip_list
+        .iter()
+        .filter(|w| !skipped.contains(w))
+        .cloned()
+        .collect();
+
+    Ok((
+        CoverageRun {
+            json,
+            tests_passed,
+            skipped,
+            skip_unmatched,
+        },
+        contributions,
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The list drives which binaries a coverage pass omits, so a parse that
+    /// quietly returns nothing spends the hour it was meant to save.
+    #[test]
+    fn the_skip_list_is_read_from_the_crate_metadata() {
+        let toml = "\
+[package]
+name = \"sim-soft\"
+
+[package.metadata.cortenforge]
+tier = \"L0\"
+coverage_skip_binaries = [\"bonded_layer_indentation\", \"stick_impact\"]
+";
+        assert_eq!(
+            coverage_skip_list(toml),
+            vec![
+                "bonded_layer_indentation".to_string(),
+                "stick_impact".to_string()
+            ]
+        );
+    }
+
+    /// ⚠ BOTH FACES. A parser that always returns the list would skip binaries
+    /// for every crate in the workspace; one that always returns empty would
+    /// silently stop skipping and only ever look slow, never wrong.
+    #[test]
+    fn a_crate_that_asks_for_no_skips_gets_none() {
+        assert!(coverage_skip_list("[package]\nname = \"x\"\n").is_empty());
+        assert!(coverage_skip_list("not valid toml {{{").is_empty());
+        assert!(coverage_skip_list("[package.metadata.cortenforge]\ntier = \"L0\"\n").is_empty());
+    }
+
+    /// `display_name` is what the manifest matches against, so cargo's hash
+    /// suffix must not reach the comparison — a list entry never carries one.
+    #[test]
+    fn a_binary_is_named_without_cargos_hash_suffix() {
+        let bin = TestBinary {
+            path: PathBuf::from("/t/deps/bonded_layer_indentation-9f3c1a2b"),
+            is_lib: false,
+        };
+        assert_eq!(bin.display_name(), "bonded_layer_indentation");
+        assert_eq!(bin.profile_key(), "bonded_layer_indentation-9f3c1a2b");
+    }
 
     /// The wrapper sees every `rustc` in the build. Instrumenting the wrong one
     /// costs the instrumentation tax this module exists to remove (164-1226x on

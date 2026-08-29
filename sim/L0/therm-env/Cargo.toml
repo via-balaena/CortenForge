@@ -10,13 +10,8 @@ repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 
-# Coverage criterion N/A: env wrapper is exercised by integration tests
-# (phase2.rs / phase3.rs here; the RL-baseline fixtures experiment_*/
-# ising_chain/kramers_* moved to the sim-rl-baselines crate); src/ has
-# no inline #[cfg(test)] modules so --lib coverage reports 0.0%.
 [package.metadata.cortenforge]
 tier = "L0-integration"
-grading_profile = "integration-only"
 
 [dependencies]
 # Model/Data/DVector/StepError for builder thermostat wiring + Environment impl

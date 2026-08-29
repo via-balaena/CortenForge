@@ -289,6 +289,71 @@ pub(crate) fn classify_crate(crate_path: &str, cargo_toml_text: &str) -> CratePr
     }
 }
 
+/// Verify the `integration-only` opt-in against the crate it exempts.
+///
+/// The profile means "no inline `#[cfg(test)]` modules, or no `src/` at all"
+/// (see [`CrateProfile::IntegrationOnly`]). [`classify_crate`] grants it from
+/// the manifest STRING and never touches the filesystem, so until this ran a
+/// crate exempted itself from the Coverage criterion by asserting a fact
+/// nothing checked. Two did, and neither was caught for months: `sim-soft`
+/// (74 files under src/, 341 `#[test]`) and `sim-therm-env` (9). Measured once
+/// the exemptions were removed, both were already passing — 89.6 % and 82.0 %
+/// — so the waiver had been buying nothing and hiding the FEM core's only
+/// coverage number.
+///
+/// Its sibling [`has_lib_target`] below learned this same lesson earlier: it
+/// replaced a path GUESS with a real filesystem check.
+///
+/// ★★ THE SEAM EXISTS SO THE DECISION IS GATEABLE, exactly as in
+/// [`profile_skip_criterion_with`]. `offenders` is `FnOnce` and LAZY — it walks
+/// and parses every file under `src/`, and no crate outside this one profile
+/// should pay for that. Written inline, both the profile guard and the laziness
+/// would be unreachable from a unit test, and a mutation deleting either would
+/// leave the suite green.
+///
+/// ★ What no unit test reaches is the CALL in [`evaluate`], so that is covered
+/// by an end-to-end check run and RECORDED rather than assumed (2026-08-28).
+/// Re-adding the opt-in to `sim-therm-env` made `xtask grade sim-therm-env`
+/// exit 1 naming `sim/L0/therm-env/src/builder.rs`; `xtask grade
+/// cf-design-tests`, which has no `src/` at all, still graded A as
+/// Integration-only. Both directions, because a check that rejected every
+/// opt-in would pass the first half of that and be worthless.
+fn verify_integration_only_with(
+    profile: CrateProfile,
+    package: &str,
+    offenders: impl FnOnce() -> Vec<PathBuf>,
+) -> Result<()> {
+    if profile != CrateProfile::IntegrationOnly {
+        return Ok(());
+    }
+    let offenders = offenders();
+    if offenders.is_empty() {
+        return Ok(());
+    }
+
+    // Named, not counted. A count tells a reader the claim is false; the paths
+    // tell them which files to move or which line to delete.
+    const SHOWN: usize = 5;
+    let mut named: Vec<String> = offenders
+        .iter()
+        .take(SHOWN)
+        .map(|p| format!("      {}", p.display()))
+        .collect();
+    if let Some(rest) = offenders.len().checked_sub(SHOWN).filter(|n| *n > 0) {
+        named.push(format!("      … and {rest} more"));
+    }
+
+    bail!(
+        "{package} declares `grading_profile = \"integration-only\"`, which waives the \
+         Coverage criterion for a crate whose src/ holds no inline tests — but {} file(s) \
+         under its own src/ define `#[test]` functions:\n{}\n\
+         Remove the opt-in from its Cargo.toml so the crate is measured, or move those \
+         tests to tests/.",
+        offenders.len(),
+        named.join("\n"),
+    );
+}
+
 /// Whether the crate actually has a library target, by Cargo's own rule: an
 /// explicit `[lib]` table, or auto-discovery of `src/lib.rs`.
 ///
@@ -410,6 +475,16 @@ pub fn evaluate(sh: &Shell, crate_name: &str, verbosity: Verbosity) -> Result<Gr
     let crate_dir = Path::new(&workspace_root).join(&crate_path);
     let cargo_toml_text = std::fs::read_to_string(crate_dir.join("Cargo.toml")).unwrap_or_default();
     let profile = classify_crate(&crate_path, &cargo_toml_text);
+
+    // ⚠ BEFORE any criterion runs: an exemption nobody verified must not reach
+    // the report. Cheap enough (one syn pass over src/) to gate every PR, which
+    // is what makes it worth having — PR CI passes `--skip-coverage`, so the
+    // Coverage criterion never runs there and this is the only place a false
+    // opt-in can be caught before the weekly job.
+    verify_integration_only_with(profile, crate_name, || {
+        crate::test_reachability::src_files_with_inline_tests(&crate_dir, crate_name)
+    })?;
+
     let has_lib = has_lib_target(&crate_dir, &cargo_toml_text);
 
     if !verbosity.quiet {
@@ -1734,6 +1809,81 @@ pub(crate) fn find_workspace_root(sh: &Shell) -> Result<String> {
     Ok(root.to_string_lossy().to_string())
 }
 
+/// `cargo xtask coverage-census <crate>` — price each expensive test binary.
+///
+/// ★ The instrument behind any decision to skip a binary in the coverage pass.
+/// A binary with `marginal 0` can be skipped and the reported percentage does
+/// not move by one line; a binary with `marginal > 0` cannot, because dropping
+/// it makes lines it solely covers read as UNTESTED. That distinction is the
+/// whole reason this exists, and it is measured here rather than assumed —
+/// the same failure the `integration-only` opt-in made by asserting instead of
+/// checking.
+///
+/// ⚠ Costs one full instrumented run of the crate (~62 min for `sim-soft`), so
+/// it is a deliberate command, not part of `grade`.
+pub fn run_census(crate_name: &str, threshold_seconds: f64) -> Result<()> {
+    let sh = Shell::new()?;
+    let workspace_root = find_workspace_root(&sh)?;
+    sh.change_dir(&workspace_root);
+    let crate_path = find_crate_path(&sh, crate_name)?;
+
+    eprintln!();
+    eprintln!("  coverage census: {crate_name} (binaries >= {threshold_seconds:.0}s)…");
+    eprintln!();
+
+    let census = crate::coverage_run::census_coverage(
+        &sh,
+        crate_name,
+        &crate_path,
+        Path::new(&workspace_root),
+        true,
+        threshold_seconds,
+    )?;
+
+    if census.rows.is_empty() {
+        println!("no binary reached {threshold_seconds:.0}s — nothing worth skipping");
+        return Ok(());
+    }
+
+    println!();
+    println!("  {:>9}  {:>8}  binary", "seconds", "marginal");
+    for r in &census.rows {
+        let flag = if r.marginal_lines == 0 {
+            "  ← free to skip"
+        } else {
+            ""
+        };
+        println!(
+            "  {:>9.1}  {:>8}  {}{}",
+            r.seconds, r.marginal_lines, r.name, flag
+        );
+    }
+
+    let free_count = census.rows.iter().filter(|r| r.marginal_lines == 0).count();
+    let lost = census.full_covered.saturating_sub(census.joint_covered);
+    println!();
+    println!(
+        "  full run covers {} line(s); skipping those {free_count} together covers {}.",
+        census.full_covered, census.joint_covered
+    );
+    if lost == 0 {
+        println!(
+            "  ✓ VERIFIED AS A SET — {:.1} s ({:.1} min) skippable, reported number unchanged.",
+            census.skipped_seconds,
+            census.skipped_seconds / 60.0
+        );
+    } else {
+        // The per-binary column proposed this set and the joint merge refused
+        // it: these lines are covered only by COMBINATIONS, so each candidate
+        // reads marginal-0 on its own.
+        println!(
+            "  ⚠ NOT FREE AS A SET — {lost} line(s) are covered only by combinations of \
+             these binaries, so each reads marginal-0 alone. Do not skip them together."
+        );
+    }
+    Ok(())
+}
+
 /// Find the path to a crate within the workspace.
 ///
 /// Uses `cargo metadata` to look up the crate's manifest path by package
@@ -2101,7 +2251,13 @@ fn grade_coverage(
     // test drives, and a 2026-08-16 mutation sweep proved it — the report-only
     // block, the library-only detail and the binary-target marker could each
     // be deleted whole with every test still green.
-    let result = coverage_result_for(crate_name, &measured, &heavy);
+    let result = coverage_result_for(
+        crate_name,
+        &measured,
+        &heavy,
+        &run.skipped,
+        &run.skip_unmatched,
+    );
 
     // Unconditional, and still honours "a non-empty `files_out` means these
     // files were measured": the one verdict above that measured nothing is
@@ -2127,8 +2283,16 @@ fn coverage_result_for(
     crate_name: &str,
     measured: &crate::coverage::ProductionCoverage,
     heavy: &HeavyRun,
+    skipped: &[String],
+    skip_unmatched: &[String],
 ) -> CriterionResult {
-    coverage_result(measured, heavy, is_coverage_report_only(crate_name))
+    coverage_result(
+        measured,
+        heavy,
+        is_coverage_report_only(crate_name),
+        skipped,
+        skip_unmatched,
+    )
 }
 
 /// Criterion 1's verdict, from a finished measurement. Pure: no `Shell`, no
@@ -2145,6 +2309,8 @@ fn coverage_result(
     measured: &crate::coverage::ProductionCoverage,
     heavy: &HeavyRun,
     report_only: bool,
+    skipped: &[String],
+    skip_unmatched: &[String],
 ) -> CriterionResult {
     // No production lines is a different fact from bad coverage, and from a
     // broken report. Grading it F would send a reader hunting for uncovered
@@ -2202,6 +2368,33 @@ fn coverage_result(
             coverage_display(lib_only),
             measured.bin_total,
             measured.bin_covered
+        ));
+    }
+    // ⚠ NAMED, never just counted, and never omitted. `coverage-census`
+    // measured these as contributing no unique line, but that was measured on
+    // one tree — a reader comparing this number to another run needs to know
+    // the pass was not the whole suite.
+    // ⚠ SORTED HERE, not by the caller. These arrive in cargo's ARTIFACT order,
+    // which is neither the manifest's nor alphabetical nor stable between runs,
+    // and this line gets diffed across runs — unsorted, an unchanged tree reads
+    // as changed. Same rule `FileCoverage` follows for its per-file rows.
+    if !skipped.is_empty() {
+        let mut names = skipped.to_vec();
+        names.sort();
+        detail.push_str(&format!(
+            "; {} binary(ies) skipped per `coverage_skip_binaries` ({})",
+            names.len(),
+            names.join(", ")
+        ));
+    }
+    if !skip_unmatched.is_empty() {
+        let mut stale = skip_unmatched.to_vec();
+        stale.sort();
+        detail.push_str(&format!(
+            " ⚠ {} skip entry(ies) skipped NOTHING ({}) — stale after a rename, \
+             or naming the lib target, which is never skippable?",
+            stale.len(),
+            stale.join(", ")
         ));
     }
     if !measured.unparsed.is_empty() {
@@ -5459,6 +5652,179 @@ serde = \"1\"
     }
 
     #[test]
+    fn integration_only_opt_in_is_rejected_when_src_holds_inline_tests() {
+        let err = verify_integration_only_with(CrateProfile::IntegrationOnly, "sim-soft", || {
+            vec![
+                PathBuf::from("src/material/silicone_table.rs"),
+                PathBuf::from("src/solver/backward_euler/newton.rs"),
+            ]
+        })
+        .expect_err("a claim contradicted by src/ must not be granted");
+        let msg = err.to_string();
+        assert!(msg.contains("sim-soft"), "must name the crate: {msg}");
+        // Named, not merely counted — the paths are the actionable half.
+        assert!(
+            msg.contains("silicone_table.rs"),
+            "must name the files: {msg}"
+        );
+        assert!(msg.contains("newton.rs"), "must name the files: {msg}");
+    }
+
+    #[test]
+    fn integration_only_opt_in_is_granted_when_src_holds_none() {
+        verify_integration_only_with(CrateProfile::IntegrationOnly, "cf-design-tests", Vec::new)
+            .expect("an honest opt-in must still be granted");
+    }
+
+    /// ⚠ NEGATIVE CONTROL for the profile guard AND for the laziness. The walk
+    /// parses every file under `src/`; a crate that never claimed the profile
+    /// must not pay for it. A mutation deleting the `profile !=` guard makes
+    /// this crate walk, find an offender and error — which the two tests above
+    /// would not notice.
+    #[test]
+    fn a_crate_that_never_opted_in_is_never_walked() {
+        let mut walked = false;
+        verify_integration_only_with(CrateProfile::Layer0, "sim-core", || {
+            walked = true;
+            vec![PathBuf::from("src/lib.rs")]
+        })
+        .expect("Layer0 makes no integration-only claim to verify");
+        assert!(!walked, "walked src/ for a crate that never opted in");
+    }
+
+    /// A skip entry matching no binary is a defect that is otherwise invisible:
+    /// the binary quietly rejoins the pass and the only symptom is a slow job.
+    /// Named in the detail so a reader can act on it.
+    #[test]
+    fn a_skip_entry_that_matched_no_binary_is_named() {
+        let r = coverage_result(
+            &measurement(80, 100, 0, 0),
+            &HeavyRun::ok(),
+            false,
+            &["kept".to_string()],
+            &["renamed_away".to_string()],
+        );
+        assert!(
+            r.measured_detail.contains("renamed_away"),
+            "a stale skip entry must be named: {}",
+            r.measured_detail
+        );
+        assert!(r.measured_detail.contains("skipped NOTHING"));
+        // ⚠ The message is assembled with a `\` line continuation, which eats
+        // the newline AND the next line's indentation. A substring check on one
+        // half would pass while the seam between them read "rename,or naming".
+        assert!(
+            r.measured_detail.contains(
+                "stale after a rename, or naming the lib target, which is never skippable?"
+            ),
+            "the continuation mangled the message: {}",
+            r.measured_detail
+        );
+    }
+
+    /// ⚠ The stale list gets the same treatment as the skipped one, and needs
+    /// its own gate to say so: a mutation dropping `stale.sort()` survived
+    /// every other test here, because the only sort anyone had asserted was the
+    /// one on `skipped`. Both halves of the line are read together, so both are
+    /// alphabetical or neither is worth trusting.
+    #[test]
+    fn stale_skip_entries_are_named_in_a_stable_order() {
+        let r = coverage_result(
+            &measurement(80, 100, 0, 0),
+            &HeavyRun::ok(),
+            false,
+            &[],
+            &[
+                "zeta_gone".to_string(),
+                "alpha_gone".to_string(),
+                "middle_gone".to_string(),
+            ],
+        );
+        let at = |n: &str| r.measured_detail.find(n).expect("named");
+        assert!(
+            at("alpha_gone") < at("middle_gone") && at("middle_gone") < at("zeta_gone"),
+            "stale list must print sorted: {}",
+            r.measured_detail
+        );
+    }
+
+    /// ⚠ Guards the ARGUMENT ORDER at the seam, not the verdict. `skipped` and
+    /// `skip_unmatched` are adjacent `&[String]`, so swapping them compiles and
+    /// every test that drives `coverage_result` directly still passes — the
+    /// same hole a mutation once found in the `report_only` lookup one level up.
+    /// Only a call through `coverage_result_for` with two DISTINCT lists can
+    /// tell them apart.
+    #[test]
+    fn the_seam_does_not_swap_skipped_for_unmatched() {
+        let r = coverage_result_for(
+            "sim-soft",
+            &measurement(80, 100, 0, 0),
+            &HeavyRun::ok(),
+            &["actually_skipped".to_string()],
+            &["never_matched".to_string()],
+        );
+        let d = &r.measured_detail;
+        let skipped_at = d.find("actually_skipped").expect("skipped named");
+        let stale_at = d.find("never_matched").expect("stale named");
+        assert!(
+            d[..skipped_at].contains("skipped per `coverage_skip_binaries`"),
+            "the skipped list must be introduced as the skipped list: {d}"
+        );
+        assert!(
+            d[..stale_at].contains("skipped NOTHING"),
+            "the stale list must be introduced as the stale one: {d}"
+        );
+        assert!(skipped_at < stale_at, "order swapped: {d}");
+    }
+
+    /// ⚠ The detail line is diffed across runs. `skipped` arrives in cargo's
+    /// ARTIFACT order, so without a sort an unchanged tree prints a different
+    /// line each time and reads as a change.
+    #[test]
+    fn skipped_binaries_are_named_in_a_stable_order() {
+        let r = coverage_result(
+            &measurement(80, 100, 0, 0),
+            &HeavyRun::ok(),
+            false,
+            &[
+                "zeta".to_string(),
+                "alpha".to_string(),
+                "middle".to_string(),
+            ],
+            &[],
+        );
+        let at = |n: &str| r.measured_detail.find(n).expect("named");
+        assert!(
+            at("alpha") < at("middle") && at("middle") < at("zeta"),
+            "skipped list must print sorted: {}",
+            r.measured_detail
+        );
+    }
+
+    /// ⚠ BOTH FACES. A detail that always warned would train the reader to
+    /// ignore the warning, which is the same as not having one.
+    #[test]
+    fn a_skip_list_that_all_matched_produces_no_warning() {
+        let r = coverage_result(
+            &measurement(80, 100, 0, 0),
+            &HeavyRun::ok(),
+            false,
+            &["bonded_layer_indentation".to_string()],
+            &[],
+        );
+        assert!(
+            r.measured_detail.contains("bonded_layer_indentation"),
+            "what WAS skipped is always named: {}",
+            r.measured_detail
+        );
+        assert!(
+            !r.measured_detail.contains("skipped NOTHING"),
+            "no stale entries, so no warning: {}",
+            r.measured_detail
+        );
+    }
+
+    #[test]
     fn coverage_skip_reason_integration_only_is_skipped() {
         // F.3: grade_coverage takes the early-return path for
         // IntegrationOnly; result label is "(integration-only)" to
@@ -5796,7 +6162,13 @@ serde = \"1\"
             (45, Grade::C),
             (20, Grade::F),
         ] {
-            let r = coverage_result(&measurement(covered, 100, 0, 0), &HeavyRun::ok(), false);
+            let r = coverage_result(
+                &measurement(covered, 100, 0, 0),
+                &HeavyRun::ok(),
+                false,
+                &[],
+                &[],
+            );
             assert_eq!(r.grade, expect, "{covered}/100");
         }
     }
@@ -5806,7 +6178,7 @@ serde = \"1\"
     /// is told the enforcement is deferred rather than absent.
     #[test]
     fn a_report_only_crate_still_reports_its_real_number() {
-        let r = coverage_result(&measurement(30, 100, 0, 0), &HeavyRun::ok(), true);
+        let r = coverage_result(&measurement(30, 100, 0, 0), &HeavyRun::ok(), true, &[], &[]);
 
         assert_eq!(r.grade, Grade::NotApplicable, "the threshold is waived");
         assert_eq!(r.result, "30.0% (report-only)");
@@ -5827,6 +6199,8 @@ serde = \"1\"
             &measurement(99, 100, 0, 0),
             &HeavyRun::failed_unnamed(),
             true,
+            &[],
+            &[],
         );
 
         assert_eq!(
@@ -5870,14 +6244,21 @@ serde = \"1\"
     #[test]
     fn the_deferral_is_looked_up_from_the_list_and_not_hardcoded() {
         for name in COVERAGE_REPORT_ONLY {
-            let r = coverage_result_for(name, &measurement(30, 100, 0, 0), &HeavyRun::ok());
+            let r =
+                coverage_result_for(name, &measurement(30, 100, 0, 0), &HeavyRun::ok(), &[], &[]);
             assert_eq!(
                 r.grade,
                 Grade::NotApplicable,
                 "{name} is on the list and must be deferred"
             );
         }
-        let r = coverage_result_for("cf-viewer", &measurement(30, 100, 0, 0), &HeavyRun::ok());
+        let r = coverage_result_for(
+            "cf-viewer",
+            &measurement(30, 100, 0, 0),
+            &HeavyRun::ok(),
+            &[],
+            &[],
+        );
         assert_eq!(
             r.grade,
             Grade::F,
@@ -5889,7 +6270,13 @@ serde = \"1\"
     /// about `heavy_passed` and not about the list being ineffective.
     #[test]
     fn an_undeferred_crate_grades_on_the_threshold() {
-        let r = coverage_result(&measurement(30, 100, 0, 0), &HeavyRun::ok(), false);
+        let r = coverage_result(
+            &measurement(30, 100, 0, 0),
+            &HeavyRun::ok(),
+            false,
+            &[],
+            &[],
+        );
         assert_eq!(r.grade, Grade::F);
         assert_eq!(r.result, "30.0%");
         assert!(!r.measured_detail.contains("REPORT-ONLY"));
@@ -5901,7 +6288,13 @@ serde = \"1\"
     fn the_detail_reports_the_library_only_figure_when_a_binary_contributed() {
         // 40/100 overall; the binary holds 50 lines, none covered, so the
         // library is 40/50 = 80 %.
-        let r = coverage_result(&measurement(40, 100, 0, 50), &HeavyRun::ok(), false);
+        let r = coverage_result(
+            &measurement(40, 100, 0, 50),
+            &HeavyRun::ok(),
+            false,
+            &[],
+            &[],
+        );
 
         assert!(
             r.measured_detail.contains("80.0% over library lines alone"),
@@ -5916,13 +6309,19 @@ serde = \"1\"
     /// same number twice under two names.
     #[test]
     fn the_detail_omits_the_library_figure_when_there_is_no_binary() {
-        let r = coverage_result(&measurement(40, 100, 0, 0), &HeavyRun::ok(), false);
+        let r = coverage_result(
+            &measurement(40, 100, 0, 0),
+            &HeavyRun::ok(),
+            false,
+            &[],
+            &[],
+        );
         assert!(!r.measured_detail.contains("library lines alone"));
     }
 
     #[test]
     fn a_measurement_with_no_production_lines_is_not_a_bad_grade() {
-        let r = coverage_result(&measurement(0, 0, 0, 0), &HeavyRun::ok(), false);
+        let r = coverage_result(&measurement(0, 0, 0, 0), &HeavyRun::ok(), false, &[], &[]);
         assert_eq!(r.grade, Grade::NotApplicable);
         assert_eq!(r.result, "(no production lines)");
     }

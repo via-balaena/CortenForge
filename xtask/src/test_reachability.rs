@@ -35,7 +35,7 @@
 //! rather than waved through on the strength of the examples job existing.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Result};
 
@@ -146,6 +146,37 @@ pub(crate) fn crate_has_tests(crate_dir: &Path, package: &str) -> bool {
         }
     }
     false
+}
+
+/// Files under `crate_dir/src` that define `#[test]` functions, sorted by path.
+///
+/// ★ Scoped to `src/`, unlike [`crate_has_tests`], which counts a crate's
+/// `tests/` too. The `integration-only` grading opt-in asserts a fact about
+/// `src/` ALONE — a crate whose tests all live in `tests/` genuinely qualifies
+/// for it — so a walk that also saw `tests/` would reject every honest opt-in
+/// and be useless as a gate.
+///
+/// ⚠ Fails CLOSED, mirroring [`crate_has_tests`]: a file that cannot be read or
+/// parsed is reported as offending. Such a file has an UNKNOWN number of tests,
+/// not zero, and letting it grant a coverage exemption is the exact failure
+/// this check exists to prevent.
+pub(crate) fn src_files_with_inline_tests(crate_dir: &Path, package: &str) -> Vec<PathBuf> {
+    let mut hits: Vec<PathBuf> = source_files(&crate_dir.join("src"))
+        .into_iter()
+        // Scoped by OWNING PACKAGE for the same reason `crate_has_tests` is:
+        // `source_files` recurses, so a nested crate would otherwise lend its
+        // tests to the parent and cost it an exemption it deserves.
+        .filter(|p| matches!(owning_package(p), Some((_, owner)) if owner == package))
+        .filter(|p| match std::fs::read_to_string(p) {
+            Err(_) => true,
+            Ok(text) => match syn::parse_file(&text) {
+                Err(_) => true,
+                Ok(file) => count_tests(&file.items) > 0,
+            },
+        })
+        .collect();
+    hits.sort();
+    hits
 }
 
 /// Count `#[test]` functions, descending into modules so a crate that hides its
@@ -452,6 +483,43 @@ mod tests {
             std::fs::write(&path, body).expect("write");
         }
         root
+    }
+
+    /// The fact the `integration-only` coverage exemption asserts. The
+    /// discrimination that matters is `tests/`: a crate keeping every test
+    /// there genuinely qualifies, so counting them would reject honest opt-ins.
+    #[test]
+    fn inline_src_tests_are_found_and_a_tests_dir_is_not_counted() {
+        let root = crate_fixture(
+            "src-inline",
+            "widget",
+            &[
+                ("src/lib.rs", "pub fn f() {}\n"),
+                (
+                    "src/inner.rs",
+                    "#[cfg(test)]\nmod t {\n  #[test]\n  fn a() {}\n}\n",
+                ),
+                ("tests/it.rs", "#[test]\nfn integration() {}\n"),
+            ],
+        );
+        assert_eq!(
+            src_files_with_inline_tests(&root, "widget"),
+            vec![root.join("src/inner.rs")],
+            "only src/ inline tests are the claim; tests/ and test-free src/ are not"
+        );
+    }
+
+    #[test]
+    fn a_crate_with_no_src_directory_reports_no_inline_tests() {
+        let root = crate_fixture(
+            "no-src",
+            "harness",
+            &[("tests/it.rs", "#[test]\nfn a() {}\n")],
+        );
+        assert!(
+            src_files_with_inline_tests(&root, "harness").is_empty(),
+            "a crate with no src/ qualifies for the exemption"
+        );
     }
 
     /// The decision `grade` spends a release test run on.
