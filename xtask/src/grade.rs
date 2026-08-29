@@ -197,6 +197,13 @@ impl CoverageMargin {
     /// Always emitted, in all three bands, because the alternative is a reader
     /// who has to know that silence means "wide" — and silence is also what a
     /// missing feature looks like.
+    ///
+    /// ⚠ Names the BAR, never a letter. This clause sits in a detail line
+    /// whose criterion may have graded F for a failing suite, where predicting
+    /// "could grade B" would contradict the `F` printed beside it. Nor is the
+    /// prediction true in general: a crate small enough for the noise floor to
+    /// span several bands could fall past `B` in one re-run. "Under the bar" is
+    /// the claim the margin actually supports.
     pub(crate) fn describe(&self) -> String {
         if self.lines < 0 {
             return format!(
@@ -208,7 +215,7 @@ impl CoverageMargin {
             return format!(
                 "; only {} line(s) of headroom above the {}% A bar — inside the ±{}-line \
                  run-to-run spread for a crate this size, so a re-run on this same tree \
-                 could grade B",
+                 could put it under the bar",
                 self.lines, A_PERCENT, self.noise_floor
             );
         }
@@ -1071,6 +1078,14 @@ fn report_json(report: &GradeReport) -> serde_json::Value {
     // ([`CoverageMargin::is_thin`]) and two implementations of one judgement
     // drift; the inputs are published as well so a consumer that disagrees can
     // say so rather than having to guess what was compared.
+    //
+    // ⚠ `thin` is the ARITHMETIC — it can be true on a crate the sweep does
+    // not list, because [`thin_margin_row`] additionally requires criterion 1
+    // to have graded A, which a failing suite denies at any percentage. That
+    // is deliberate: this surface publishes what was measured and the grade
+    // beside it, and lets the consumer draw the conclusion. The human surfaces
+    // publish the conclusion, so they cannot afford to disagree with the
+    // letter printed next to them.
     if let Some(margin) = report.coverage_margin() {
         json["coverage_margin"] = serde_json::json!({
             "lines": margin.lines,
@@ -1396,7 +1411,8 @@ pub fn run_all(
         }
         println!(
             "{}",
-            "      Not a failure. A re-run on the same tree could grade these B.".dimmed()
+            "      Not a failure. A re-run on the same tree could put these under the bar."
+                .dimmed()
         );
     }
 
@@ -1480,7 +1496,23 @@ fn is_failing_criterion(c: &CriterionResult) -> bool {
 /// 200-crate loop is a line no test reads, and this one carries the whole
 /// point of the block — which crate, how close, and what "close" was measured
 /// against.
+///
+/// ⚠⚠ **Gated on criterion 1's VERDICT, not on the arithmetic alone.** The
+/// margin is a fact about a measurement; "passes coverage" is a fact about a
+/// grade, and the two come apart exactly when the suite fails — a red suite
+/// grades F at any percentage, while the counts behind it still say the crate
+/// is sitting on the bar. Without this the sweep listed such a crate under
+/// "N crate(s) pass coverage…" while printing it at F two blocks above: a
+/// figure contradicting the verdict beside it, which is the defect
+/// [`coverage_display`] exists to prevent, arriving by a different door.
+///
+/// The same gate excludes [`COVERAGE_REPORT_ONLY`] crates, and rightly: their
+/// threshold is waived, so there is no bar for them to be passing by a little.
 fn thin_margin_row(crate_name: &str, report: &GradeReport) -> Option<String> {
+    let coverage = report.criteria.iter().find(|c| c.name.starts_with("1."))?;
+    if !matches!(coverage.grade, Grade::A | Grade::APlus) {
+        return None;
+    }
     let margin = report.coverage_margin().filter(CoverageMargin::is_thin)?;
     Some(format!(
         "      {crate_name} — {} covered line(s) above the {}% bar, against a ±{}-line \
@@ -9151,8 +9183,15 @@ test result: FAILED. 786 passed; 1 failed; 2 ignored; 0 measured; 0 filtered out
     /// derived from the same numbers — a fixture that set them separately
     /// could assert they agree while proving only that I typed them to match.
     fn report_measuring(covered: u64, total: u64) -> GradeReport {
+        report_measuring_with(covered, total, &HeavyRun::ok())
+    }
+
+    /// [`report_measuring`] with the suite's outcome under the caller's
+    /// control, because the measurement and the VERDICT come apart exactly
+    /// when the tests fail.
+    fn report_measuring_with(covered: u64, total: u64, heavy: &HeavyRun) -> GradeReport {
         let m = measurement(covered, total, 0, 0);
-        let criterion = coverage_result(&m, &HeavyRun::ok(), false, &[], &[]);
+        let criterion = coverage_result(&m, heavy, false, &[], &[]);
         GradeReport {
             criteria: vec![criterion],
             coverage: Some(m),
@@ -9231,8 +9270,14 @@ test result: FAILED. 786 passed; 1 failed; 2 ignored; 0 measured; 0 filtered out
             noise_floor: 6,
         }
         .describe();
-        assert!(thin.contains("could grade B"), "{thin}");
+        assert!(thin.contains("could put it under the bar"), "{thin}");
         assert!(thin.contains("±6-line"), "{thin}");
+        // ⚠ The clause names the bar, never a letter: the same detail line
+        // carries an `F` when the suite failed, and a small crate can fall
+        // past `B` in one step.
+        for band in [short.as_str(), wide.as_str(), thin.as_str()] {
+            assert!(!band.contains("grade B"), "predicts a letter: {band}");
+        }
         // ⚠ Every clause here is a `\`-continued literal, and a continuation
         // that loses its backslash leaves the source indentation INSIDE the
         // string — a run of spaces mid-sentence that compiles, passes every
@@ -9265,9 +9310,27 @@ test result: FAILED. 786 passed; 1 failed; 2 ignored; 0 measured; 0 filtered out
         );
         assert_eq!(thin.grade, Grade::A);
         assert!(
-            thin.measured_detail.contains("could grade B"),
+            thin.measured_detail.contains("could put it under the bar"),
             "{}",
             thin.measured_detail
+        );
+
+        // ⚠ The same counts with a RED suite grade F, and the margin clause
+        // still appears — the measurement is real and worth reporting. What it
+        // must not do is predict a letter, because the letter is `F`.
+        let red = coverage_result(
+            &measurement(76, 100, 0, 0),
+            &HeavyRun::failed_unnamed(),
+            false,
+            &[],
+            &[],
+        );
+        assert_eq!(red.grade, Grade::F);
+        assert!(
+            red.measured_detail.contains("under the bar")
+                && !red.measured_detail.contains("grade B"),
+            "{}",
+            red.measured_detail
         );
 
         // 50/100 — 25 lines short.
@@ -9333,6 +9396,44 @@ test result: FAILED. 786 passed; 1 failed; 2 ignored; 0 measured; 0 filtered out
             thin_margin_row("unmeasured", &empty_report()),
             None,
             "no measurement, no margin"
+        );
+    }
+
+    /// ⚠⚠ The margin is arithmetic over a measurement; "passes coverage" is a
+    /// VERDICT. They come apart exactly when the suite fails: criterion 1
+    /// grades F on a red suite whatever the percentage, while the covered and
+    /// total counts behind it are unchanged and still say the crate sits on
+    /// the bar.
+    ///
+    /// Left to the arithmetic alone, the sweep prints such a crate under
+    /// "N crate(s) pass coverage…" while the failure list two blocks above
+    /// prints the same crate at F — a figure contradicting the verdict beside
+    /// it, which is the defect [`coverage_display`] was written to prevent,
+    /// arriving by a different door.
+    #[test]
+    fn a_crate_whose_suite_failed_never_reads_as_passing_coverage() {
+        let red = report_measuring_with(7500, 10_000, &HeavyRun::failed_unnamed());
+        assert_eq!(
+            red.criteria[0].grade,
+            Grade::F,
+            "a red suite grades F at any percentage"
+        );
+        assert!(
+            red.coverage_margin().expect("measured").is_thin(),
+            "and the arithmetic still says it is sitting on the bar"
+        );
+        assert_eq!(
+            thin_margin_row("red-suite", &red),
+            None,
+            "so the row must come from the verdict, not from the arithmetic"
+        );
+
+        // Positive control: the same counts with a green suite DO produce a
+        // row, so the assertion above tracks the suite rather than pinning
+        // this fixture to `None`.
+        assert!(
+            thin_margin_row("green-suite", &report_measuring(7500, 10_000)).is_some(),
+            "the identical measurement, passing, is still reported"
         );
     }
 

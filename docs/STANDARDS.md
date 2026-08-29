@@ -408,7 +408,10 @@ would put the drift in the tests rather than in `llvm-cov`.
 A crate passing by **less than that band** is reported as thin — by
 `grade <crate>` in criterion 1's detail line, by `grade-all` in a block naming
 every such crate, and by `--json` as `coverage_margin.thin`. **Reported, not
-gated.** A thin margin is a real `A`; the only claim is that a re-run on the same
+gated.** ⚠ The sweep's block is gated on criterion 1 having actually graded A:
+a crate whose suite failed grades F at any percentage, and listing it under
+"passes coverage" would contradict the F printed above it. `--json` publishes
+the raw arithmetic instead, with the grade beside it. A thin margin is a real `A`; the only claim is that a re-run on the same
 tree could take it away. Gating on it is a policy call that should follow the
 data, and this reporting is where the data comes from.
 
