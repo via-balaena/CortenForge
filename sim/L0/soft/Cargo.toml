@@ -51,7 +51,6 @@ tier = "L0"
 # run, including passes, so the slack cannot be spent invisibly.
 dependency_budget = 200
 tier_up_features = { gpu-probe = "L0-io" }
-grading_profile = "integration-only"
 
 [features]
 default = []
