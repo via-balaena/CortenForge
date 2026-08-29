@@ -1081,11 +1081,15 @@ fn report_json(report: &GradeReport) -> serde_json::Value {
     //
     // ⚠ `thin` is the ARITHMETIC — it can be true on a crate the sweep does
     // not list, because [`thin_margin_row`] additionally requires criterion 1
-    // to have graded A, which a failing suite denies at any percentage. That
-    // is deliberate: this surface publishes what was measured and the grade
-    // beside it, and lets the consumer draw the conclusion. The human surfaces
-    // publish the conclusion, so they cannot afford to disagree with the
-    // letter printed next to them.
+    // to have graded A, which a failing suite denies at any percentage.
+    //
+    // Deliberate, and the line falls between SURFACES THAT CLAIM and surfaces
+    // that only measure — not between machine and human. This one publishes
+    // the counts with the grade beside them and lets the consumer conclude.
+    // Criterion 1's detail line bands on the same arithmetic and is equally
+    // safe, because it only ever says how far from the bar the crate is. The
+    // sweep block is the one surface that asserts a crate PASSED, so it is the
+    // one that has to agree with the letter printed above it.
     if let Some(margin) = report.coverage_margin() {
         json["coverage_margin"] = serde_json::json!({
             "lines": margin.lines,
@@ -9434,6 +9438,43 @@ test result: FAILED. 786 passed; 1 failed; 2 ignored; 0 measured; 0 filtered out
         assert!(
             thin_margin_row("green-suite", &report_measuring(7500, 10_000)).is_some(),
             "the identical measurement, passing, is still reported"
+        );
+    }
+
+    /// The verdict gate's OTHER exclusion, which its doc claims and nothing
+    /// drove until now: a [`COVERAGE_REPORT_ONLY`] crate.
+    ///
+    /// Its coverage is measured and printed but does not gate, so the letter
+    /// is deferred to `NotApplicable`. There is no bar it can be passing by a
+    /// little — the bar was waived — and a sweep block that named it would be
+    /// claiming an `A` that criterion 1 explicitly withheld.
+    ///
+    /// ⚠ Reached only through the gate: the measurement is real, so
+    /// `coverage_margin` is `Some` and `is_thin` is true. Asserted here, so a
+    /// gate rewritten to look at the arithmetic alone fails rather than
+    /// quietly starting to list deferred crates.
+    #[test]
+    fn a_report_only_crate_is_not_listed_as_passing_by_a_little() {
+        let m = measurement(7500, 10_000, 0, 0);
+        let deferred = GradeReport {
+            criteria: vec![coverage_result(&m, &HeavyRun::ok(), true, &[], &[])],
+            coverage: Some(m),
+            ..empty_report()
+        };
+
+        assert_eq!(
+            deferred.criteria[0].grade,
+            Grade::NotApplicable,
+            "report-only withholds the letter"
+        );
+        assert!(
+            deferred.coverage_margin().expect("measured").is_thin(),
+            "and the arithmetic still says it is sitting on the bar"
+        );
+        assert_eq!(
+            thin_margin_row("deferred", &deferred),
+            None,
+            "a waived threshold is not a bar to be passing by a little"
         );
     }
 
