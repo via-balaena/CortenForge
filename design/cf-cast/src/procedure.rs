@@ -913,7 +913,7 @@ fn write_chamfer_recipe_v2(md: &mut String) {
         "Recon-1 §G-6 envisioned the chamfer band on each \
          `PrismaticPin` as bed-adjacent FDM-elephant-foot relief. \
          Post-§M-S4 the cup-pin registration path is retired (see \
-         `## v2 Mold Assembly` above for the symmetric dowel-hole \
+         `## v2 Mold Assembly` below for the symmetric dowel-hole \
          replacement); only the plug-floor-lock chamfer remains. \
          Under the dome-end-DOWN plug orientation the chamfer band \
          lives at the `-axis_unit` end of the lock pyramid — deep \
@@ -1387,12 +1387,12 @@ fn write_v2_assembly_note(md: &mut String, ribbon: &Ribbon) {
                 md,
                 "If a dowel breaks during assembly or the holes drift \
                  out of register on a given print, swap to a fresh \
-                 PLA rod cut to {depth_total:.1} mm; the symmetric \
+                 PLA rod cut to the same {dowel_length_mm:.1} mm as \
+                 the printed dowels; the symmetric \
                  dowel-hole pattern means no asymmetry to worry about \
                  between halves. Document fit issues for the post-\
                  iter-3 dowel-spec decision (revisit \
                  `DowelHoleSpec::iter1` diameter / clearance defaults).",
-                depth_total = depth_mm * 2.0,
             );
         }
     }
@@ -2220,9 +2220,23 @@ fn write_per_layer_sections_v2(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    // The crate denies `panic` in production; the note-assertion helpers
+    // below panic deliberately to print the offending markdown when a
+    // sheet is missing an expected phrase — a bare `unwrap` there would
+    // report "None" and hide which sheet failed.
+    #![allow(clippy::panic, clippy::unwrap_used)]
 
-    use super::{TDS_LOOKUP_PLACEHOLDER, cure_protocol_cells, layer_position_label};
+    use super::{
+        TDS_LOOKUP_PLACEHOLDER, cure_protocol_cells, layer_position_label, write_v2_assembly_note,
+        write_v2_cup_half_clamping_note, write_v2_plug_anchor_note,
+    };
+    use crate::bolt_pattern::{BoltPatternKind, BoltPatternSpec};
+    use crate::dowel_hole::{DowelHoleKind, DowelHoleSpec};
+    use crate::flange::{DemandFlangeSpec, FlangeKind};
+    use crate::gasket_mold::GasketKind;
+    use crate::plug::{PlugPinKind, PlugPinSpec};
+    use crate::ribbon::{Ribbon, SplitNormal};
+    use nalgebra::{Point3, Vector3};
 
     #[test]
     fn cure_protocol_cells_resolves_known_anchor() {
@@ -2272,5 +2286,334 @@ mod tests {
         // 2 layers: no middle position.
         assert_eq!(layer_position_label(0, 2), "innermost");
         assert_eq!(layer_position_label(1, 2), "outermost");
+    }
+
+    // ----- v2 bench-instruction notes ---------------------------------
+    //
+    // These four `write_v2_*_note` fns are the most-EXECUTED code in
+    // cf-cast (629 lines per pour) and were its least-tested: they emit
+    // `procedure.md`, the sheet a human follows at the bench. A wrong
+    // number here passes every mesh gate in the repo, because the
+    // procedure is not a mesh.
+
+    /// Pull the first `f64` that appears immediately before `unit_phrase`.
+    fn number_before(md: &str, unit_phrase: &str) -> f64 {
+        let at = md
+            .find(unit_phrase)
+            .unwrap_or_else(|| panic!("phrase {unit_phrase:?} missing from:\n{md}"));
+        let head: String = md[..at]
+            .chars()
+            .rev()
+            .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == ' ' || *c == '~')
+            .collect();
+        head.chars()
+            .rev()
+            .collect::<String>()
+            .trim()
+            .trim_start_matches('~')
+            .trim()
+            .parse()
+            .unwrap_or_else(|e| panic!("no number before {unit_phrase:?}: {e}"))
+    }
+
+    /// Pull the `A x B` pair that precedes `unit_phrase`. The lock's
+    /// dimensions are quoted as two axes; reading only the number nearest
+    /// the phrase checks the BINORMAL and leaves the LATERAL unguarded —
+    /// a mutation swapping the lateral tip extent for the base survived
+    /// exactly that gap on 2026-08-29.
+    fn pair_before(md: &str, unit_phrase: &str) -> (f64, f64) {
+        let at = md
+            .find(unit_phrase)
+            .unwrap_or_else(|| panic!("phrase {unit_phrase:?} missing from:\n{md}"));
+        let head = md[..at].replace('\n', " ");
+        let (lhs, rhs) = head
+            .rsplit_once('\u{d7}')
+            .unwrap_or_else(|| panic!("no `x` pair before {unit_phrase:?}"));
+        let a = lhs.split_whitespace().last().unwrap_or_default();
+        let b = rhs.split_whitespace().last().unwrap_or_default();
+        (
+            a.parse().unwrap_or_else(|e| panic!("lhs {a:?}: {e}")),
+            b.parse().unwrap_or_else(|e| panic!("rhs {b:?}: {e}")),
+        )
+    }
+
+    fn dowelled_ribbon() -> Ribbon {
+        let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
+        let split = SplitNormal::new(Vector3::new(0.0, 0.0, 1.0)).unwrap();
+        let mut ribbon = Ribbon::new(centerline, split).unwrap();
+        ribbon.dowel_hole = DowelHoleKind::Auto(DowelHoleSpec::iter1());
+        ribbon
+    }
+
+    /// ★ The load-bearing one. The prose states a dowel LENGTH and an
+    /// insertion depth "into each cup-half"; the dowel spans both halves,
+    /// so length must be exactly twice the per-half insertion. This is a
+    /// property of the SHEET, checked without pinning any constant.
+    ///
+    /// It is also a regression: a cold-read on 2026-05-27 caught this
+    /// prose understating tip slack by half by counting the dowel's
+    /// insertion slack and forgetting the hole's axial slack. With only
+    /// one counted the sheet reads 9.0 mm long / 5.0 mm inserted, and
+    /// 2 x 5.0 != 9.0 — this assertion fails.
+    #[test]
+    fn assembly_note_dowel_length_is_twice_its_per_half_insertion() {
+        let mut md = String::new();
+        write_v2_assembly_note(&mut md, &dowelled_ribbon());
+
+        let length = number_before(&md, " mm long");
+        let insert = number_before(&md, " mm into each cup-half");
+        assert!(
+            (length - 2.0 * insert).abs() < 1e-9,
+            "sheet says {length} mm long but {insert} mm into each half — \
+             a dowel spanning two halves cannot be shorter than 2x its \
+             insertion. Slack double-count regression?"
+        );
+    }
+
+    /// The hole must be the dowel plus clearance on BOTH sides, and the
+    /// replacement-rod length must span both halves. Both are read back
+    /// out of the emitted sheet and checked against the spec the ribbon
+    /// was built with, not against the formulas that produced them.
+    #[test]
+    fn assembly_note_hole_and_rod_dimensions_follow_the_dowel_spec() {
+        let spec = DowelHoleSpec::iter1();
+        let mut md = String::new();
+        write_v2_assembly_note(&mut md, &dowelled_ribbon());
+
+        // ⚠ This asserted `hole == 2*clearance + diameter` recomputed from the
+        // spec — the SAME arithmetic as the code, so it could only ever catch
+        // bad wiring, never a wrong formula. The sheet quotes all three
+        // operands, so check it against ITSELF: that is also the reader's
+        // question, since a sheet whose own numbers disagree is unusable
+        // regardless of which one matches the spec.
+        let hole_d = number_before(&md, " mm Ø");
+        let nominal = number_before(&md, " mm nominal dowel");
+        let clearance = number_before(&md, " mm radial clearance");
+        assert!(
+            (hole_d - 2.0_f64.mul_add(clearance, nominal)).abs() < 1e-9,
+            "sheet quotes a {hole_d} mm hole for a {nominal} mm dowel with \
+             {clearance} mm radial clearance — those three cannot all be right"
+        );
+        assert!(
+            (nominal - spec.diameter_m * 1000.0).abs() < 1e-9,
+            "sheet quotes a {nominal} mm dowel; the spec builds {} mm",
+            spec.diameter_m * 1000.0
+        );
+
+        // ⚠ The oracle here was WRONG on first writing (2026-08-29): it
+        // asserted the rod equals 2 x hole depth, which is what the code
+        // did — so it passed while the sheet told the user to cut a 10.0 mm
+        // rod to replace a 9.0 mm printed dowel. The consumer's question is
+        // "does the replacement match what I printed", not "does it match
+        // the hole pair". Found by reading the generated procedure.md.
+        let rod = number_before(&md, " mm as the printed dowels");
+        let dowel = number_before(&md, " mm long");
+        assert!(
+            (rod - dowel).abs() < 1e-9,
+            "sheet says replace a {dowel} mm dowel with a {rod} mm rod — a \
+             replacement that differs from the printed part halves the \
+             designed tip slack"
+        );
+    }
+
+    /// Two-sided: with no dowel holes the sheet must NOT invent
+    /// registration hardware, and must tell the user to hand-align.
+    #[test]
+    fn assembly_note_without_dowels_directs_hand_alignment_and_invents_no_hardware() {
+        let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
+        let split = SplitNormal::new(Vector3::new(0.0, 0.0, 1.0)).unwrap();
+        let ribbon = Ribbon::new(centerline, split).unwrap();
+        assert!(
+            ribbon.dowel_hole.spec().is_none(),
+            "fixture should have no dowels"
+        );
+
+        let mut md = String::new();
+        write_v2_assembly_note(&mut md, &ribbon);
+
+        assert!(
+            md.contains("align the pieces by hand"),
+            "no hand-align instruction:\n{md}"
+        );
+        assert!(
+            !md.contains("Print `dowel.stl` first."),
+            "sheet tells the user to print dowels that this cast has none of"
+        );
+        assert!(
+            !md.contains(" mm Ø"),
+            "sheet quotes a hole diameter with no holes"
+        );
+    }
+
+    /// Every dimension the sheet quotes for the plug lock, checked for
+    /// internal consistency: the socket must be the pin plus its diametral
+    /// clearance (or the printed lock will not seat), the pyramid must
+    /// actually taper on BOTH axes, and the chamfer must fit on the lock it
+    /// sits on. These are the numbers a workshop user measures a printed
+    /// part against with calipers.
+    #[test]
+    fn plug_anchor_lock_and_socket_dimensions_are_self_consistent() {
+        let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
+        let split = SplitNormal::new(Vector3::new(0.0, 0.0, 1.0)).unwrap();
+        let mut ribbon = Ribbon::new(centerline, split).unwrap();
+        let spec = PlugPinSpec::iter1();
+        // read the geometry off the spec BEFORE it moves into the ribbon
+        let diametral_mm = spec.lock_spec.diametral_clearance_m * 1000.0;
+        let lock_length_mm = spec.lock_spec.pin_half_length_m * 2000.0;
+        ribbon.plug_pins = PlugPinKind::Axial(spec);
+
+        let mut md = String::new();
+        write_v2_plug_anchor_note(&mut md, &ribbon);
+
+        // Same correction as the dowel hole: read the socket, the base it
+        // is cut for, and the clearance between them all OUT OF THE SHEET
+        // and check they agree, rather than recomputing the sum the code
+        // just performed.
+        let socket = number_before(&md, " mm base —");
+        let diametral_quoted = number_before(&md, " mm diametral clearance");
+        assert!(
+            (diametral_quoted - diametral_mm).abs() < 1e-9,
+            "sheet quotes {diametral_quoted} mm clearance; spec has {diametral_mm} mm"
+        );
+
+        // The pyramid's OWN dimensions were unasserted until a review-pass
+        // mutation round (2026-08-29): halving the lock length, reporting
+        // the tip extent as the base, and inflating the chamfer 10x all
+        // SURVIVED. These are the numbers a workshop user checks a printed
+        // part against with calipers, so assert the physical invariants
+        // the prose itself claims rather than pinning the spec values.
+        let (base_lat, base_bin) = pair_before(&md, " mm rectangular base");
+        let (tip_lat, tip_bin) = pair_before(&md, " mm flat tip");
+        let length = number_before(&md, " mm long along the cap-");
+        let chamfer = number_before(&md, " mm base-end chamfer");
+
+        assert!(
+            tip_lat < base_lat && tip_bin < base_bin,
+            "sheet says the lock is `tapered to` {tip_lat} x {tip_bin} mm from a \
+             {base_lat} x {base_bin} mm base — an axis without taper loses the \
+             lead-in that self-centers the plug on that axis"
+        );
+        assert!(
+            chamfer < length,
+            "chamfer {chamfer} mm cannot exceed the {length} mm lock it sits on"
+        );
+        assert!(
+            (length - lock_length_mm).abs() < 1e-9,
+            "sheet quotes a {length} mm lock; the spec builds {lock_length_mm} mm"
+        );
+        assert!(
+            (socket - (base_lat + diametral_quoted)).abs() < 1e-9,
+            "sheet quotes a {socket} mm socket for a {base_lat} mm base with \
+             {diametral_quoted} mm clearance — the plug will not seat as described"
+        );
+    }
+
+    /// The clamping section's HEADER tells the user which protocol they
+    /// are on, and the BODY tells them how to execute it. They must agree.
+    ///
+    /// ⚠ The first version of this test built bolts WITHOUT a flange and
+    /// asserted only the header. It passed while the body said the
+    /// opposite — and that is a config `cf-cast-cli` rejects outright
+    /// ("M5 through-bolts clamp through the flange — without a flange
+    /// there is no material to bolt"). Bolts are therefore exercised in
+    /// the configuration the pour actually ships: flange + bolts.
+    #[test]
+    fn cup_half_clamping_header_and_body_agree_on_the_clamp_method() {
+        let build = |flange: FlangeKind, gasket: GasketKind, bolts: BoltPatternKind| {
+            let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
+            let split = SplitNormal::new(Vector3::new(0.0, 0.0, 1.0)).unwrap();
+            let mut r = Ribbon::new(centerline, split).unwrap();
+            r.flange = flange;
+            r.gasket = gasket;
+            r.bolt_pattern = bolts;
+            let mut md = String::new();
+            write_v2_cup_half_clamping_note(&mut md, &r);
+            md
+        };
+        let head = |md: &str| md.lines().next().unwrap_or_default().to_string();
+
+        let bare = build(FlangeKind::None, GasketKind::None, BoltPatternKind::None);
+        assert!(
+            head(&bare).contains("Gasketless"),
+            "bare header: {:?}",
+            head(&bare)
+        );
+        assert!(
+            bare.contains("hand-clamped"),
+            "no flange, gasket or bolts must read as hand-clamp:\n{bare}"
+        );
+
+        let bolted = build(
+            FlangeKind::Demand(DemandFlangeSpec::iter1()),
+            GasketKind::None,
+            BoltPatternKind::Auto(BoltPatternSpec::iter1()),
+        );
+        assert!(
+            head(&bolted).contains("Bolt-Pattern"),
+            "bolted header: {:?}",
+            head(&bolted)
+        );
+        assert!(
+            !bolted.contains("must be hand-clamped"),
+            "header promises an M5 bolt seal while the body orders hand-clamping:\n{bolted}"
+        );
+        assert_ne!(
+            head(&bare),
+            head(&bolted),
+            "two different builds got one header"
+        );
+    }
+
+    /// The two gasketed arms had no test and had never been read. Both are
+    /// sound (checked by emitting them, 2026-08-29); this pins the
+    /// properties a reader depends on so a later edit cannot quietly drop
+    /// them: the section must announce the gasket, and the clamp method it
+    /// prescribes must match whether a flange exists to clamp against.
+    #[test]
+    fn gasketed_clamping_arms_announce_the_gasket_and_match_the_flange() {
+        let build = |flange: FlangeKind| {
+            let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
+            let split = SplitNormal::new(Vector3::new(0.0, 0.0, 1.0)).unwrap();
+            let mut r = Ribbon::new(centerline, split).unwrap();
+            r.flange = flange;
+            r.gasket = GasketKind::Mold(crate::gasket_mold::GasketSpec::iter1());
+            let mut md = String::new();
+            write_v2_cup_half_clamping_note(&mut md, &r);
+            md
+        };
+
+        let no_flange = build(FlangeKind::None);
+        let flanged = build(FlangeKind::Demand(DemandFlangeSpec::iter1()));
+
+        for (label, md) in [("no-flange", &no_flange), ("flanged", &flanged)] {
+            let head = md.lines().next().unwrap_or_default();
+            // ⚠ `contains("Gasket")` is satisfied by "(Gasketless)" — the very
+            // header this must exclude. A mutation collapsing the gasket
+            // header to the gasketless one SURVIVED that assertion.
+            assert!(
+                head.contains("Gasket Installation"),
+                "{label} gasketed cast does not announce the gasket: {head:?}"
+            );
+            assert!(
+                !head.contains("Gasketless"),
+                "{label} gasketed cast is headed as gasketless: {head:?}"
+            );
+            assert!(
+                md.contains("gasket"),
+                "{label} gasketed body never mentions the gasket:\n{md}"
+            );
+        }
+
+        // With no flange there is no flat grip surface, so the sheet must say
+        // hand-clamp; with the demand flange it must not, because the land and
+        // bosses are what gets clamped.
+        assert!(
+            no_flange.contains("hand-clamped"),
+            "a gasket with no flange still needs a hand-clamp instruction:\n{no_flange}"
+        );
+        assert!(
+            !flanged.contains("must be hand-clamped"),
+            "a flanged gasketed cast should clamp the bosses, not be hand-clamped:\n{flanged}"
+        );
     }
 }
