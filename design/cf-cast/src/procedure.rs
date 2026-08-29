@@ -913,7 +913,7 @@ fn write_chamfer_recipe_v2(md: &mut String) {
         "Recon-1 §G-6 envisioned the chamfer band on each \
          `PrismaticPin` as bed-adjacent FDM-elephant-foot relief. \
          Post-§M-S4 the cup-pin registration path is retired (see \
-         `## v2 Mold Assembly` above for the symmetric dowel-hole \
+         `## v2 Mold Assembly` below for the symmetric dowel-hole \
          replacement); only the plug-floor-lock chamfer remains. \
          Under the dome-end-DOWN plug orientation the chamfer band \
          lives at the `-axis_unit` end of the lock pyramid — deep \
@@ -1387,12 +1387,12 @@ fn write_v2_assembly_note(md: &mut String, ribbon: &Ribbon) {
                 md,
                 "If a dowel breaks during assembly or the holes drift \
                  out of register on a given print, swap to a fresh \
-                 PLA rod cut to {depth_total:.1} mm; the symmetric \
+                 PLA rod cut to the same {dowel_length_mm:.1} mm as \
+                 the printed dowels; the symmetric \
                  dowel-hole pattern means no asymmetry to worry about \
                  between halves. Document fit issues for the post-\
                  iter-3 dowel-spec decision (revisit \
                  `DowelHoleSpec::iter1` diameter / clearance defaults).",
-                depth_total = depth_mm * 2.0,
             );
         }
     }
@@ -2365,11 +2365,19 @@ mod tests {
             "hole Ø {hole_d} != dowel Ø + 2x clearance ({expected_hole})"
         );
 
-        let rod = number_before(&md, " mm; the symmetric");
+        // ⚠ The oracle here was WRONG on first writing (2026-08-29): it
+        // asserted the rod equals 2 x hole depth, which is what the code
+        // did — so it passed while the sheet told the user to cut a 10.0 mm
+        // rod to replace a 9.0 mm printed dowel. The consumer's question is
+        // "does the replacement match what I printed", not "does it match
+        // the hole pair". Found by reading the generated procedure.md.
+        let rod = number_before(&md, " mm as the printed dowels");
+        let dowel = number_before(&md, " mm long");
         assert!(
-            (rod - spec.depth_m * 2000.0).abs() < 1e-9,
-            "replacement rod {rod} mm must span both halves ({} mm)",
-            spec.depth_m * 2000.0
+            (rod - dowel).abs() < 1e-9,
+            "sheet says replace a {dowel} mm dowel with a {rod} mm rod — a \
+             replacement that differs from the printed part halves the \
+             designed tip slack"
         );
     }
 
