@@ -1770,7 +1770,15 @@ fn run_crate_tests(sh: &Shell, crate_name: &str, verbosity: Verbosity) -> HeavyR
 /// is the same finding, in the same loop, that this function was extracted
 /// for. The argument was right about the judgements and wrong about where the
 /// risk is: what makes a sweep bucket real is that something drives the
-/// WIRING, and there is exactly one call here that a test can drive.
+/// WIRING, and this is the one call site a test can drive.
+///
+/// ★ It takes no `skip_coverage` guard, and that is not an omission. The
+/// coverage bucket needs one because [`Grade::Manual`] looks identical
+/// whether the tooling was missing or the flag asked for the skip, so only the
+/// caller can tell them apart. A margin cannot be faked that way: under the
+/// flag there is no measurement, so [`GradeReport::coverage_margin`] is `None`
+/// and there is nothing to record. The input carries the answer, which is a
+/// stronger guarantee than a parameter agreeing with it.
 ///
 /// ⚠ There is deliberately NO fourth bucket for "tests did not run", even though
 /// `--skip-coverage` skips those too. A bucket here either gates — turning every
@@ -8741,6 +8749,23 @@ test result: FAILED. 786 passed; 1 failed; 2 ignored; 0 measured; 0 filtered out
             "skip-coverage makes an unmeasured 1 the instruction"
         );
         assert_eq!(wasm, vec!["demo".to_string()], "but 7 is still a defect");
+        assert!(thin.is_empty(), "and there is still no margin to report");
+
+        // ★ The margin bucket takes no `skip_coverage` parameter, so this
+        // pins the reason it does not need one: a measured report is recorded
+        // under the flag exactly as it is without it, because the flag is not
+        // what silences it — the absence of a measurement is, and a report
+        // that HAS one was not produced under the flag.
+        let (mut cov, mut wasm, mut thin) = (Vec::new(), Vec::new(), Vec::new());
+        record_sweep_buckets(
+            "on-the-bar",
+            &report_measuring(7500, 10_000),
+            true,
+            &mut cov,
+            &mut wasm,
+            &mut thin,
+        );
+        assert_eq!(thin.len(), 1, "the margin is a property of the measurement");
 
         // ★ Negative control: a report where both criteria RAN records nothing,
         // so the assertions above track the grades rather than being pinned.
