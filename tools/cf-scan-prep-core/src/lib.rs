@@ -5659,4 +5659,670 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp_root);
         Ok(())
     }
+
+    // ----- reconstruction path: fixtures ------------------------------
+
+    /// Frustum with a **closed tip cap and an OPEN base** — the shape
+    /// [`apply_reconstruction`] expects: exactly one boundary loop, at
+    /// the cut. Ring `r` sits at `z = r/(n_rings-1) * height` with
+    /// radius lerping `radius_base -> radius_tip`, so the reference
+    /// zone above the cut obeys the exact linear law
+    /// `r(s) = radius_base + ((radius_tip - radius_base)/height) * s`.
+    /// That law is the independent oracle for the Extrapolate fit.
+    fn open_base_frustum(
+        n_rings: usize,
+        n_segs: usize,
+        radius_base: f64,
+        radius_tip: f64,
+        height: f64,
+    ) -> IndexedMesh {
+        assert!(n_rings >= 2 && n_segs >= 3);
+        let mut mesh = IndexedMesh::with_capacity(n_rings * n_segs + 1, 2 * n_rings * n_segs);
+        for r in 0..n_rings {
+            #[allow(clippy::cast_precision_loss)]
+            let t = (r as f64) / ((n_rings - 1) as f64);
+            let z = t * height;
+            let ring_radius = radius_base * (1.0 - t) + radius_tip * t;
+            for k in 0..n_segs {
+                #[allow(clippy::cast_precision_loss)]
+                let theta = (k as f64) * std::f64::consts::TAU / (n_segs as f64);
+                mesh.vertices.push(Point3::new(
+                    ring_radius * theta.cos(),
+                    ring_radius * theta.sin(),
+                    z,
+                ));
+            }
+        }
+        #[allow(clippy::cast_possible_truncation)]
+        let tip_idx = (n_rings * n_segs) as u32;
+        mesh.vertices.push(Point3::new(0.0, 0.0, height));
+        for r in 0..(n_rings - 1) {
+            for k in 0..n_segs {
+                #[allow(clippy::cast_possible_truncation)]
+                let i00 = (r * n_segs + k) as u32;
+                #[allow(clippy::cast_possible_truncation)]
+                let i01 = (r * n_segs + (k + 1) % n_segs) as u32;
+                #[allow(clippy::cast_possible_truncation)]
+                let i10 = ((r + 1) * n_segs + k) as u32;
+                #[allow(clippy::cast_possible_truncation)]
+                let i11 = ((r + 1) * n_segs + (k + 1) % n_segs) as u32;
+                mesh.faces.push([i00, i01, i11]);
+                mesh.faces.push([i00, i11, i10]);
+            }
+        }
+        let top_base = (n_rings - 1) * n_segs;
+        for k in 0..n_segs {
+            #[allow(clippy::cast_possible_truncation)]
+            let i0 = (top_base + k) as u32;
+            #[allow(clippy::cast_possible_truncation)]
+            let i1 = (top_base + (k + 1) % n_segs) as u32;
+            mesh.faces.push([tip_idx, i0, i1]);
+        }
+        mesh
+    }
+
+    /// Centerline running tip -> cut, so `centerline.last()` is the cut
+    /// at `z = 0` and the inward tangent is `+Z`.
+    fn axis_centerline(height: f64, n: usize) -> Vec<Point3<f64>> {
+        #[allow(clippy::cast_precision_loss)]
+        (0..n)
+            .map(|i| {
+                let t = (i as f64) / ((n - 1) as f64);
+                Point3::new(0.0, 0.0, height * (1.0 - t))
+            })
+            .collect()
+    }
+
+    /// XY distance from the axis — the radius of a reconstruction ring
+    /// vertex, computed without reusing the production basis.
+    fn axial_radius(p: Point3<f64>) -> f64 {
+        (p.x * p.x + p.y * p.y).sqrt()
+    }
+
+    // ----- perpendicular_basis_for ------------------------------------
+
+    /// `(u, v, n)` must be a right-handed orthonormal frame. Checked
+    /// against the definition (dot/cross identities), not against the
+    /// Gram-Schmidt steps the implementation happens to use.
+    #[test]
+    fn perpendicular_basis_is_orthonormal_and_right_handed() {
+        for n in [
+            Vector3::new(0.0, 0.0, 1.0),
+            Vector3::new(0.0, 1.0, 0.0),
+            Vector3::new(1.0, 2.0, 3.0).normalize(),
+            Vector3::new(-0.3, 0.4, -0.86602540378).normalize(),
+        ] {
+            let (u, v) = perpendicular_basis_for(n);
+            assert!((u.norm() - 1.0).abs() < 1e-12, "u not unit for {n:?}");
+            assert!((v.norm() - 1.0).abs() < 1e-12, "v not unit for {n:?}");
+            assert!(u.dot(&n).abs() < 1e-12, "u not perpendicular to {n:?}");
+            assert!(v.dot(&n).abs() < 1e-12, "v not perpendicular to {n:?}");
+            assert!(u.dot(&v).abs() < 1e-12, "u,v not orthogonal for {n:?}");
+            assert!(
+                (u.cross(&v) - n).norm() < 1e-12,
+                "frame is left-handed for {n:?}"
+            );
+        }
+    }
+
+    /// The `n.x.abs() < 0.9` guard exists so the Gram-Schmidt seed is
+    /// never parallel to `n`. `n = +X` takes the else-branch; without
+    /// the guard the subtraction would leave the zero vector and
+    /// `normalize()` would produce NaN.
+    #[test]
+    fn perpendicular_basis_stays_finite_when_n_is_the_x_axis() {
+        let (u, v) = perpendicular_basis_for(Vector3::new(1.0, 0.0, 0.0));
+        assert!(u.iter().all(|c| c.is_finite()), "u went non-finite: {u:?}");
+        assert!(v.iter().all(|c| c.is_finite()), "v went non-finite: {v:?}");
+        assert!((u.norm() - 1.0).abs() < 1e-12);
+        assert!(u.dot(&Vector3::new(1.0, 0.0, 0.0)).abs() < 1e-12);
+    }
+
+    // ----- find_floor_loop_index --------------------------------------
+
+    fn loop_of(n: usize) -> holes::BoundaryLoop {
+        #[allow(clippy::cast_possible_truncation)]
+        holes::BoundaryLoop {
+            vertices: (0..n as u32).collect(),
+        }
+    }
+
+    /// The rim is the LARGEST loop, and largest must win over both
+    /// earlier and later candidates.
+    #[test]
+    fn floor_loop_is_the_largest_loop_not_the_first() {
+        let loops = [loop_of(12), loop_of(30), loop_of(11)];
+        let mesh = IndexedMesh::with_capacity(0, 0);
+        let got = find_floor_loop_index(&loops, &mesh, Point3::new(0.0, 0.0, 0.0));
+        assert_eq!(got, Some(1));
+    }
+
+    /// CSP.4e.2 regression: on an unsimplified scan the mesh carries
+    /// hundreds of 3-vertex scanner stragglers. Picking one of those
+    /// generated the degenerate "white vertical line" column. Loops
+    /// under `MIN_RIM_LOOP_VERTS` (10) must be refused outright — even
+    /// when they are the only loops present.
+    #[test]
+    fn floor_loop_refuses_noise_stragglers_rather_than_picking_one() {
+        let loops = [loop_of(3), loop_of(9), loop_of(5)];
+        let mesh = IndexedMesh::with_capacity(0, 0);
+        assert_eq!(
+            find_floor_loop_index(&loops, &mesh, Point3::new(0.0, 0.0, 0.0)),
+            None
+        );
+    }
+
+    /// A degenerate loop (< 3 vertices) is not a loop at all; it must
+    /// be skipped even though nothing else qualifies on count alone.
+    #[test]
+    fn floor_loop_skips_invalid_loops_and_takes_the_valid_one() {
+        let loops = [loop_of(2), loop_of(10)];
+        let mesh = IndexedMesh::with_capacity(0, 0);
+        assert_eq!(
+            find_floor_loop_index(&loops, &mesh, Point3::new(0.0, 0.0, 0.0)),
+            Some(1)
+        );
+    }
+
+    // ----- sample_radius_at_angle -------------------------------------
+
+    /// A flat profile is flat everywhere, including between bins and
+    /// outside `[0, TAU)`.
+    #[test]
+    fn radius_at_angle_of_a_flat_profile_is_that_radius_everywhere() {
+        let radii = [2.5_f64; RECONSTRUCT_ANGLE_BINS];
+        for angle in [0.0, 0.37, 2.0, -1.1, std::f64::consts::TAU - 1e-9] {
+            assert!((sample_radius_at_angle(&radii, angle) - 2.5).abs() < 1e-12);
+        }
+    }
+
+    /// Halfway between two bin centres the result is their mean —
+    /// linear interpolation, computed here from the bin values rather
+    /// than from the implementation's `t`.
+    #[test]
+    fn radius_at_angle_interpolates_linearly_between_adjacent_bins() {
+        let mut radii = [0.0_f64; RECONSTRUCT_ANGLE_BINS];
+        radii[0] = 1.0;
+        radii[1] = 3.0;
+        #[allow(clippy::cast_precision_loss)]
+        let bin_span = std::f64::consts::TAU / RECONSTRUCT_ANGLE_BINS as f64;
+        assert!((sample_radius_at_angle(&radii, 0.0) - 1.0).abs() < 1e-12);
+        assert!((sample_radius_at_angle(&radii, 0.5 * bin_span) - 2.0).abs() < 1e-12);
+        assert!((sample_radius_at_angle(&radii, bin_span) - 3.0).abs() < 1e-12);
+    }
+
+    /// The profile is periodic: the last bin interpolates back into the
+    /// first, and a negative angle names the same direction as its
+    /// positive coterminal.
+    #[test]
+    fn radius_at_angle_wraps_across_the_seam_and_normalizes_negatives() {
+        let mut radii = [0.0_f64; RECONSTRUCT_ANGLE_BINS];
+        radii[0] = 4.0;
+        radii[RECONSTRUCT_ANGLE_BINS - 1] = 2.0;
+        #[allow(clippy::cast_precision_loss)]
+        let bin_span = std::f64::consts::TAU / RECONSTRUCT_ANGLE_BINS as f64;
+        #[allow(clippy::cast_precision_loss)]
+        let seam = (RECONSTRUCT_ANGLE_BINS - 1) as f64 * bin_span + 0.5 * bin_span;
+        assert!(
+            (sample_radius_at_angle(&radii, seam) - 3.0).abs() < 1e-12,
+            "seam did not interpolate bin[23] -> bin[0]"
+        );
+        for a in [0.1_f64, 1.3, 3.0] {
+            let neg = sample_radius_at_angle(&radii, a - std::f64::consts::TAU);
+            let pos = sample_radius_at_angle(&radii, a);
+            assert!((neg - pos).abs() < 1e-12, "negative angle differed at {a}");
+        }
+    }
+
+    // ----- sample_radial_profile --------------------------------------
+
+    /// On a right cylinder every angular bin sees the same radius.
+    #[test]
+    fn radial_profile_of_a_cylinder_is_the_cylinder_radius_in_every_bin() {
+        let mesh = open_base_frustum(6, 24, 0.02, 0.02, 0.060);
+        let (u, v) = perpendicular_basis_for(Vector3::new(0.0, 0.0, 1.0));
+        let radii = sample_radial_profile(
+            &mesh,
+            Point3::new(0.0, 0.0, 0.0),
+            Vector3::new(0.0, 0.0, 1.0),
+            u,
+            v,
+            0.030,
+        );
+        for (i, r) in radii.iter().enumerate() {
+            assert!((r - 0.02).abs() < 1e-9, "bin {i} was {r}, expected 0.02");
+        }
+    }
+
+    /// Only the slab `0 < s <= reference_zone` may contribute. Vertices
+    /// below the cut and beyond the zone are decoys with a wildly
+    /// different radius; if either leaked in, the medians would move.
+    #[test]
+    fn radial_profile_ignores_geometry_outside_the_reference_zone() {
+        let mut mesh = open_base_frustum(6, 24, 0.02, 0.02, 0.060);
+        let baseline = sample_radial_profile(
+            &mesh,
+            Point3::new(0.0, 0.0, 0.0),
+            Vector3::new(0.0, 0.0, 1.0),
+            Vector3::new(1.0, 0.0, 0.0),
+            Vector3::new(0.0, 1.0, 0.0),
+            0.030,
+        );
+        // Deleting EITHER half of the zone guard also admits the frustum's
+        // own out-of-zone rings (5 more samples at r = 0.02), so the decoys
+        // must outnumber those too or the median swallows the leak and this
+        // test passes with the guard gone. Six per side does it; three did
+        // not, and the surviving mutant is what said so.
+        for k in 0..24 {
+            #[allow(clippy::cast_precision_loss)]
+            let th = (k as f64) * std::f64::consts::TAU / 24.0;
+            for j in 0..6 {
+                #[allow(clippy::cast_precision_loss)]
+                let d = (j as f64) * 0.002;
+                // below the cut (s < 0)
+                mesh.vertices
+                    .push(Point3::new(0.5 * th.cos(), 0.5 * th.sin(), -0.005 - d));
+                // beyond the reference zone (s > 0.030)
+                mesh.vertices
+                    .push(Point3::new(0.5 * th.cos(), 0.5 * th.sin(), 0.050 + d));
+            }
+        }
+        let after = sample_radial_profile(
+            &mesh,
+            Point3::new(0.0, 0.0, 0.0),
+            Vector3::new(0.0, 0.0, 1.0),
+            Vector3::new(1.0, 0.0, 0.0),
+            Vector3::new(0.0, 1.0, 0.0),
+            0.030,
+        );
+        assert_eq!(
+            baseline, after,
+            "vertices outside the reference zone changed the profile"
+        );
+    }
+
+    /// Per-bin **median**, not mean: one wild vertex inside the zone
+    /// must not move its bin. A mean would land near 0.18 here.
+    #[test]
+    fn radial_profile_median_absorbs_a_single_outlier_vertex() {
+        let mut mesh = open_base_frustum(6, 24, 0.02, 0.02, 0.060);
+        mesh.vertices.push(Point3::new(0.5, 0.0, 0.012));
+        let radii = sample_radial_profile(
+            &mesh,
+            Point3::new(0.0, 0.0, 0.0),
+            Vector3::new(0.0, 0.0, 1.0),
+            Vector3::new(1.0, 0.0, 0.0),
+            Vector3::new(0.0, 1.0, 0.0),
+            0.030,
+        );
+        assert!(
+            (radii[0] - 0.02).abs() < 1e-9,
+            "outlier moved bin 0 to {} — median degraded to a mean?",
+            radii[0]
+        );
+    }
+
+    // ----- sample_radial_profile_linear_fit ---------------------------
+
+    /// The fixture's radius is exactly linear in `s`, so the per-bin
+    /// regression must recover the fixture's own coefficients. Both are
+    /// derived from the frustum's geometry, independently of the
+    /// least-squares code under test.
+    #[test]
+    fn linear_fit_recovers_the_frustums_analytic_taper() {
+        let (r_base, r_tip, height) = (0.020_f64, 0.030_f64, 0.060_f64);
+        // 120 segments over 24 bins: every bin keeps >= 2 samples even when
+        // floating-point rounding drops an angle into its neighbour. At
+        // n_segs == RECONSTRUCT_ANGLE_BINS some bins come up short and take
+        // the flat fallback, which is a different branch (covered separately).
+        let mesh = open_base_frustum(6, 120, r_base, r_tip, height);
+        let expected_slope = (r_tip - r_base) / height;
+        let (intercepts, slopes) = sample_radial_profile_linear_fit(
+            &mesh,
+            Point3::new(0.0, 0.0, 0.0),
+            Vector3::new(0.0, 0.0, 1.0),
+            Vector3::new(1.0, 0.0, 0.0),
+            Vector3::new(0.0, 1.0, 0.0),
+            0.050,
+        );
+        for i in 0..RECONSTRUCT_ANGLE_BINS {
+            assert!(
+                (slopes[i] - expected_slope).abs() < 1e-9,
+                "bin {i} slope {} != analytic {expected_slope}",
+                slopes[i]
+            );
+            assert!(
+                (intercepts[i] - r_base).abs() < 1e-9,
+                "bin {i} intercept {} != analytic {r_base}",
+                intercepts[i]
+            );
+        }
+    }
+
+    /// The linear-fit fixture obeys one law everywhere, so admitting
+    /// out-of-zone geometry would leave the fit unchanged and a deleted
+    /// zone guard would go unnoticed. These decoys sit OFF that line —
+    /// below the cut and past the zone — so any leak drags the
+    /// regression away from the frustum's analytic coefficients.
+    #[test]
+    fn linear_fit_ignores_geometry_outside_the_reference_zone() {
+        let (r_base, r_tip, height) = (0.020_f64, 0.030_f64, 0.060_f64);
+        let mut mesh = open_base_frustum(6, 120, r_base, r_tip, height);
+        for k in 0..120 {
+            #[allow(clippy::cast_precision_loss)]
+            let th = (k as f64) * std::f64::consts::TAU / 120.0;
+            for j in 0..4 {
+                #[allow(clippy::cast_precision_loss)]
+                let d = (j as f64) * 0.002;
+                mesh.vertices
+                    .push(Point3::new(0.4 * th.cos(), 0.4 * th.sin(), -0.004 - d));
+                mesh.vertices
+                    .push(Point3::new(0.4 * th.cos(), 0.4 * th.sin(), 0.052 + d));
+            }
+        }
+        let expected_slope = (r_tip - r_base) / height;
+        let (intercepts, slopes) = sample_radial_profile_linear_fit(
+            &mesh,
+            Point3::new(0.0, 0.0, 0.0),
+            Vector3::new(0.0, 0.0, 1.0),
+            Vector3::new(1.0, 0.0, 0.0),
+            Vector3::new(0.0, 1.0, 0.0),
+            0.050,
+        );
+        for i in 0..RECONSTRUCT_ANGLE_BINS {
+            assert!(
+                (slopes[i] - expected_slope).abs() < 1e-9,
+                "bin {i} slope {} moved off the analytic {expected_slope}",
+                slopes[i]
+            );
+            assert!(
+                (intercepts[i] - r_base).abs() < 1e-9,
+                "bin {i} intercept {} moved off the analytic {r_base}",
+                intercepts[i]
+            );
+        }
+    }
+
+    /// A bin with fewer than two samples cannot support a regression;
+    /// it falls back to the overall median with zero slope rather than
+    /// dividing by a degenerate denominator.
+    #[test]
+    fn linear_fit_falls_back_to_flat_for_bins_with_too_few_samples() {
+        let mut mesh = IndexedMesh::with_capacity(4, 0);
+        // Two samples in bin 0 (angle 0), one lone sample near angle pi.
+        mesh.vertices.push(Point3::new(0.02, 0.0, 0.005));
+        mesh.vertices.push(Point3::new(0.02, 0.0, 0.010));
+        mesh.vertices.push(Point3::new(-0.09, 0.0, 0.008));
+        let (intercepts, slopes) = sample_radial_profile_linear_fit(
+            &mesh,
+            Point3::new(0.0, 0.0, 0.0),
+            Vector3::new(0.0, 0.0, 1.0),
+            Vector3::new(1.0, 0.0, 0.0),
+            Vector3::new(0.0, 1.0, 0.0),
+            0.030,
+        );
+        let overall = 0.02_f64; // median of [0.02, 0.02, 0.09]
+        let lone_bin = RECONSTRUCT_ANGLE_BINS / 2;
+        assert!(
+            (slopes[lone_bin]).abs() < 1e-15,
+            "single-sample bin got a slope: {}",
+            slopes[lone_bin]
+        );
+        assert!(
+            (intercepts[lone_bin] - overall).abs() < 1e-12,
+            "single-sample bin did not fall back to the overall median: {}",
+            intercepts[lone_bin]
+        );
+    }
+
+    // ----- apply_reconstruction ---------------------------------------
+
+    /// A centerline too short to define a tangent cannot drive an
+    /// extrusion. The documented contract is "fall back to flat-cap",
+    /// so the result must match a plain `auto_cap_open_boundaries` —
+    /// compared against that function directly, not against a count.
+    #[test]
+    fn reconstruction_with_a_degenerate_centerline_falls_back_to_flat_cap() {
+        let mesh = open_base_frustum(4, 16, 0.02, 0.02, 0.040);
+        let mut expected = mesh.clone();
+        auto_cap_open_boundaries(&mut expected);
+
+        let short = vec![Point3::new(0.0, 0.0, 0.0)];
+        let got =
+            apply_reconstruction(mesh.clone(), &short, 10.0, 20.0, ReconstructShape::Constant);
+        assert_eq!(got.vertices.len(), expected.vertices.len());
+        assert_eq!(got.faces.len(), expected.faces.len());
+        assert!(
+            detect_boundary_loops(&got).is_empty(),
+            "result is not closed"
+        );
+    }
+
+    /// A non-positive extension is the same "nothing to reconstruct"
+    /// branch, and must not emit a zero-height extrusion.
+    #[test]
+    fn reconstruction_with_a_non_positive_extension_falls_back_to_flat_cap() {
+        let mesh = open_base_frustum(4, 16, 0.02, 0.02, 0.040);
+        let mut expected = mesh.clone();
+        auto_cap_open_boundaries(&mut expected);
+
+        let cl = axis_centerline(0.040, 5);
+        let got = apply_reconstruction(mesh.clone(), &cl, 0.0, 20.0, ReconstructShape::Constant);
+        assert_eq!(got.vertices.len(), expected.vertices.len());
+        assert_eq!(got.faces.len(), expected.faces.len());
+    }
+
+    /// The happy path adds exactly `K` rings of `L` vertices plus one
+    /// fan centroid, and `2·L·K + L` faces — counts derived from the
+    /// documented algorithm, and the result must be watertight.
+    #[test]
+    fn reconstruction_adds_the_documented_ring_geometry_and_closes_the_mesh() {
+        let n_segs = 16;
+        let mesh = open_base_frustum(5, n_segs, 0.02, 0.02, 0.050);
+        let v0 = mesh.vertices.len();
+        let f0 = mesh.faces.len();
+        let cl = axis_centerline(0.050, 6);
+
+        let got = apply_reconstruction(mesh, &cl, 8.0, 25.0, ReconstructShape::Constant);
+
+        assert_eq!(
+            got.vertices.len(),
+            v0 + RECONSTRUCT_RING_COUNT * n_segs + 1,
+            "expected K*L + 1 new vertices"
+        );
+        assert_eq!(
+            got.faces.len(),
+            f0 + 2 * n_segs * RECONSTRUCT_RING_COUNT + n_segs,
+            "expected 2*L*K + L new faces"
+        );
+        assert!(
+            detect_boundary_loops(&got).is_empty(),
+            "reconstructed mesh still has an open boundary"
+        );
+    }
+
+    /// The new floor sits `applied_floor_mm` beyond the cut, along the
+    /// direction opposite the inward tangent. Getting this wrong is the
+    /// 2.73 mm mid-body plane the `[caps]` override exists to prevent.
+    #[test]
+    fn reconstruction_puts_the_new_floor_at_the_requested_depth() {
+        let n_segs = 16;
+        let mesh = open_base_frustum(5, n_segs, 0.02, 0.02, 0.050);
+        let v0 = mesh.vertices.len();
+        let cl = axis_centerline(0.050, 6);
+
+        let got = apply_reconstruction(mesh, &cl, 8.0, 25.0, ReconstructShape::Constant);
+
+        let centroid = got.vertices[v0 + RECONSTRUCT_RING_COUNT * n_segs];
+        assert!(
+            (centroid.z - (-0.008)).abs() < 1e-9,
+            "floor centroid at z={}, expected -0.008",
+            centroid.z
+        );
+        assert!(centroid.x.abs() < 1e-9 && centroid.y.abs() < 1e-9);
+    }
+
+    /// Taper's contract is `(1 - RECONSTRUCT_TAPER_AT_FLOOR)` of the
+    /// canonical radius at the floor. Compared against the Constant
+    /// run's own bottom ring, so the assertion needs no hard-coded
+    /// radius.
+    #[test]
+    fn taper_pinches_the_floor_ring_by_the_documented_fraction() {
+        let n_segs = 16;
+        let cl = axis_centerline(0.050, 6);
+        let bottom_ring = |shape| {
+            let mesh = open_base_frustum(5, n_segs, 0.02, 0.02, 0.050);
+            let v0 = mesh.vertices.len();
+            let got = apply_reconstruction(mesh, &cl, 8.0, 25.0, shape);
+            let start = v0 + (RECONSTRUCT_RING_COUNT - 1) * n_segs;
+            (start..start + n_segs)
+                .map(|i| axial_radius(got.vertices[i]))
+                .collect::<Vec<_>>()
+        };
+        let constant = bottom_ring(ReconstructShape::Constant);
+        let taper = bottom_ring(ReconstructShape::Taper);
+        for (i, (c, t)) in constant.iter().zip(taper.iter()).enumerate() {
+            let expected = c * (1.0 - RECONSTRUCT_TAPER_AT_FLOOR);
+            assert!(
+                (t - expected).abs() < 1e-9,
+                "vertex {i}: taper {t} != {expected} (constant {c})"
+            );
+        }
+    }
+
+    /// Extrapolate must continue the reference zone's trend below the
+    /// cut. The fixture's taper is analytic, so the floor radius is
+    /// predicted in closed form — `r_base + slope·(-extension)` — with
+    /// no reference to the regression code.
+    #[test]
+    fn extrapolate_continues_the_measured_taper_below_the_cut() {
+        let (r_base, r_tip, height) = (0.020_f64, 0.030_f64, 0.060_f64);
+        // Densely sampled for the same reason as the linear-fit test: with
+        // fewer segments than bins, the empty bins fall back to a flat
+        // profile and the interpolated floor radius mixes the two branches.
+        let n_segs = 120;
+        let extension_m = 0.008_f64;
+        let mesh = open_base_frustum(7, n_segs, r_base, r_tip, height);
+        let v0 = mesh.vertices.len();
+        let cl = axis_centerline(height, 7);
+
+        let got = apply_reconstruction(mesh, &cl, 8.0, 50.0, ReconstructShape::Extrapolate);
+
+        let slope = (r_tip - r_base) / height;
+        let expected = slope.mul_add(-extension_m, r_base);
+        let start = v0 + (RECONSTRUCT_RING_COUNT - 1) * n_segs;
+        for i in start..start + n_segs {
+            let r = axial_radius(got.vertices[i]);
+            assert!(
+                (r - expected).abs() < 1e-6,
+                "floor radius {r} != analytic extrapolation {expected}"
+            );
+        }
+        assert!(
+            expected < r_base,
+            "fixture chosen wrong: extrapolation must narrow below the cut"
+        );
+    }
+
+    /// The K rings smoothstep from the noisy rim toward the canonical
+    /// profile — that gradual fade IS the anti-lip behaviour, so it has
+    /// to be asserted on an INTERMEDIATE ring. On a clean cylinder the
+    /// rim already equals the canonical radius and every blend curve
+    /// gives the same answer, so the rim here is widened to 1.5x while
+    /// the reference zone above the cut is left alone. Ring 2 is chosen
+    /// because smoothstep(0.25) = 0.15625 while a linear blend would
+    /// give 0.25 — at ring 4 the two curves cross and prove nothing.
+    #[test]
+    fn extrusion_rings_smoothstep_from_the_rim_toward_the_canonical_profile() {
+        let n_segs = 16;
+        let radius = 0.020_f64;
+        let mut mesh = open_base_frustum(5, n_segs, radius, radius, 0.050);
+        // Widen ONLY the rim (ring 0, the boundary loop at z = 0).
+        for v in mesh.vertices.iter_mut().take(n_segs) {
+            v.x *= 1.5;
+            v.y *= 1.5;
+        }
+        let v0 = mesh.vertices.len();
+        let cl = axis_centerline(0.050, 6);
+
+        let got = apply_reconstruction(mesh, &cl, 8.0, 25.0, ReconstructShape::Constant);
+
+        let t_k = 2.0 / RECONSTRUCT_RING_COUNT as f64;
+        let blend = t_k * t_k * (3.0 - 2.0 * t_k);
+        let expected = (1.5 * radius).mul_add(1.0 - blend, radius * blend);
+        let start = v0 + n_segs; // ring k = 2
+        for i in start..start + n_segs {
+            let r = axial_radius(got.vertices[i]);
+            assert!(
+                (r - expected).abs() < 1e-9,
+                "ring 2 radius {r} != smoothstep blend {expected}"
+            );
+        }
+    }
+
+    /// An aggressive reference-zone trend extrapolated over a long
+    /// extension projects through zero to a NEGATIVE radius. Unclamped,
+    /// the ring vertices would pass through the centerline and come out
+    /// the far side — the mesh self-crosses its own axis. The clamp
+    /// pins the floor to the axis instead. Fixture: slope 1.0 mm/mm
+    /// with a 40 mm extension, so the raw extrapolation is -0.020.
+    #[test]
+    fn extrapolate_clamps_a_runaway_taper_at_the_centerline() {
+        let n_segs = 120;
+        let mesh = open_base_frustum(6, n_segs, 0.020, 0.060, 0.040);
+        let v0 = mesh.vertices.len();
+        let cl = axis_centerline(0.040, 6);
+
+        let got = apply_reconstruction(mesh, &cl, 40.0, 35.0, ReconstructShape::Extrapolate);
+
+        let start = v0 + (RECONSTRUCT_RING_COUNT - 1) * n_segs;
+        for i in start..start + n_segs {
+            let r = axial_radius(got.vertices[i]);
+            assert!(
+                r < 1e-9,
+                "floor ring vertex sits {r} off the axis; the negative \
+                 extrapolation was not clamped and the ring inverted"
+            );
+        }
+    }
+
+    // ----- build_detected_cap_loop ------------------------------------
+
+    /// Spec §6: loops with >= 8 vertices are included by default,
+    /// smaller ones are treated as acceptable holes / scanner artifacts.
+    #[test]
+    fn detected_cap_loop_includes_large_loops_and_defers_small_ones() {
+        let mesh = open_base_frustum(4, 16, 0.02, 0.02, 0.040);
+        let loops = detect_boundary_loops(&mesh);
+        assert_eq!(loops.len(), 1, "fixture should have exactly one open loop");
+        let big = build_detected_cap_loop(&mesh, &loops[0]);
+        assert!(big.include, "a 16-vertex rim should default to included");
+
+        let small = holes::BoundaryLoop {
+            vertices: loops[0].vertices.iter().copied().take(5).collect(),
+        };
+        assert!(
+            !build_detected_cap_loop(&mesh, &small).include,
+            "a 5-vertex loop should not default to included"
+        );
+    }
+
+    /// The cap normal points AWAY from the body. The fixture's rim is
+    /// at `z = 0` with the whole mesh above it, so outward is `-Z`.
+    #[test]
+    fn detected_cap_loop_normal_points_away_from_the_mesh_body() {
+        let mesh = open_base_frustum(4, 16, 0.02, 0.02, 0.040);
+        let loops = detect_boundary_loops(&mesh);
+        let cap = build_detected_cap_loop(&mesh, &loops[0]);
+        assert!(
+            cap.plane_normal.z < -0.99,
+            "outward normal was {:?}, expected ~-Z",
+            cap.plane_normal
+        );
+        assert!(
+            cap.plane_centroid.z.abs() < 1e-9,
+            "rim centroid should sit on z=0, got {}",
+            cap.plane_centroid.z
+        );
+    }
 }
