@@ -2380,11 +2380,24 @@ mod tests {
         let mut md = String::new();
         write_v2_assembly_note(&mut md, &dowelled_ribbon());
 
+        // ⚠ This asserted `hole == 2*clearance + diameter` recomputed from the
+        // spec — the SAME arithmetic as the code, so it could only ever catch
+        // bad wiring, never a wrong formula. The sheet quotes all three
+        // operands, so check it against ITSELF: that is also the reader's
+        // question, since a sheet whose own numbers disagree is unusable
+        // regardless of which one matches the spec.
         let hole_d = number_before(&md, " mm Ø");
-        let expected_hole = 2.0_f64.mul_add(spec.clearance_m * 1000.0, spec.diameter_m * 1000.0);
+        let nominal = number_before(&md, " mm nominal dowel");
+        let clearance = number_before(&md, " mm radial clearance");
         assert!(
-            (hole_d - expected_hole).abs() < 1e-9,
-            "hole Ø {hole_d} != dowel Ø + 2x clearance ({expected_hole})"
+            (hole_d - 2.0_f64.mul_add(clearance, nominal)).abs() < 1e-9,
+            "sheet quotes a {hole_d} mm hole for a {nominal} mm dowel with \
+             {clearance} mm radial clearance — those three cannot all be right"
+        );
+        assert!(
+            (nominal - spec.diameter_m * 1000.0).abs() < 1e-9,
+            "sheet quotes a {nominal} mm dowel; the spec builds {} mm",
+            spec.diameter_m * 1000.0
         );
 
         // ⚠ The oracle here was WRONG on first writing (2026-08-29): it
@@ -2441,7 +2454,6 @@ mod tests {
         let mut ribbon = Ribbon::new(centerline, split).unwrap();
         let spec = PlugPinSpec::iter1();
         // read the geometry off the spec BEFORE it moves into the ribbon
-        let base_lateral_mm = spec.lock_spec.pin_base_half_extents_m.x * 2000.0;
         let diametral_mm = spec.lock_spec.diametral_clearance_m * 1000.0;
         let lock_length_mm = spec.lock_spec.pin_half_length_m * 2000.0;
         ribbon.plug_pins = PlugPinKind::Axial(spec);
@@ -2449,11 +2461,15 @@ mod tests {
         let mut md = String::new();
         write_v2_plug_anchor_note(&mut md, &ribbon);
 
-        let socket = base_lateral_mm + diametral_mm;
+        // Same correction as the dowel hole: read the socket, the base it
+        // is cut for, and the clearance between them all OUT OF THE SHEET
+        // and check they agree, rather than recomputing the sum the code
+        // just performed.
+        let socket = number_before(&md, " mm base —");
+        let diametral_quoted = number_before(&md, " mm diametral clearance");
         assert!(
-            md.contains(&format!("{socket:.2}")),
-            "sheet never quotes the socket size {socket:.2} mm \
-             (pin {base_lateral_mm:.2} + clearance {diametral_mm:.2}):\n{md}"
+            (diametral_quoted - diametral_mm).abs() < 1e-9,
+            "sheet quotes {diametral_quoted} mm clearance; spec has {diametral_mm} mm"
         );
 
         // The pyramid's OWN dimensions were unasserted until a review-pass
@@ -2480,6 +2496,11 @@ mod tests {
         assert!(
             (length - lock_length_mm).abs() < 1e-9,
             "sheet quotes a {length} mm lock; the spec builds {lock_length_mm} mm"
+        );
+        assert!(
+            (socket - (base_lat + diametral_quoted)).abs() < 1e-9,
+            "sheet quotes a {socket} mm socket for a {base_lat} mm base with \
+             {diametral_quoted} mm clearance — the plug will not seat as described"
         );
     }
 
