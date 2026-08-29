@@ -2316,6 +2316,27 @@ mod tests {
             .unwrap_or_else(|e| panic!("no number before {unit_phrase:?}: {e}"))
     }
 
+    /// Pull the `A x B` pair that precedes `unit_phrase`. The lock's
+    /// dimensions are quoted as two axes; reading only the number nearest
+    /// the phrase checks the BINORMAL and leaves the LATERAL unguarded —
+    /// a mutation swapping the lateral tip extent for the base survived
+    /// exactly that gap on 2026-08-29.
+    fn pair_before(md: &str, unit_phrase: &str) -> (f64, f64) {
+        let at = md
+            .find(unit_phrase)
+            .unwrap_or_else(|| panic!("phrase {unit_phrase:?} missing from:\n{md}"));
+        let head = md[..at].replace('\n', " ");
+        let (lhs, rhs) = head
+            .rsplit_once('\u{d7}')
+            .unwrap_or_else(|| panic!("no `x` pair before {unit_phrase:?}"));
+        let a = lhs.split_whitespace().last().unwrap_or_default();
+        let b = rhs.split_whitespace().last().unwrap_or_default();
+        (
+            a.parse().unwrap_or_else(|e| panic!("lhs {a:?}: {e}")),
+            b.parse().unwrap_or_else(|e| panic!("rhs {b:?}: {e}")),
+        )
+    }
+
     fn dowelled_ribbon() -> Ribbon {
         let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
         let split = SplitNormal::new(Vector3::new(0.0, 0.0, 1.0)).unwrap();
@@ -2422,6 +2443,7 @@ mod tests {
         // read the geometry off the spec BEFORE it moves into the ribbon
         let base_lateral_mm = spec.lock_spec.pin_base_half_extents_m.x * 2000.0;
         let diametral_mm = spec.lock_spec.diametral_clearance_m * 1000.0;
+        let lock_length_mm = spec.lock_spec.pin_half_length_m * 2000.0;
         ribbon.plug_pins = PlugPinKind::Axial(spec);
 
         let mut md = String::new();
@@ -2432,6 +2454,32 @@ mod tests {
             md.contains(&format!("{socket:.2}")),
             "sheet never quotes the socket size {socket:.2} mm \
              (pin {base_lateral_mm:.2} + clearance {diametral_mm:.2}):\n{md}"
+        );
+
+        // The pyramid's OWN dimensions were unasserted until a review-pass
+        // mutation round (2026-08-29): halving the lock length, reporting
+        // the tip extent as the base, and inflating the chamfer 10x all
+        // SURVIVED. These are the numbers a workshop user checks a printed
+        // part against with calipers, so assert the physical invariants
+        // the prose itself claims rather than pinning the spec values.
+        let (base_lat, base_bin) = pair_before(&md, " mm rectangular base");
+        let (tip_lat, tip_bin) = pair_before(&md, " mm flat tip");
+        let length = number_before(&md, " mm long along the cap-");
+        let chamfer = number_before(&md, " mm base-end chamfer");
+
+        assert!(
+            tip_lat < base_lat && tip_bin < base_bin,
+            "sheet says the lock is `tapered to` {tip_lat} x {tip_bin} mm from a \
+             {base_lat} x {base_bin} mm base — an axis without taper loses the \
+             lead-in that self-centers the plug on that axis"
+        );
+        assert!(
+            chamfer < length,
+            "chamfer {chamfer} mm cannot exceed the {length} mm lock it sits on"
+        );
+        assert!(
+            (length - lock_length_mm).abs() < 1e-9,
+            "sheet quotes a {length} mm lock; the spec builds {lock_length_mm} mm"
         );
     }
 
