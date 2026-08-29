@@ -2755,10 +2755,6 @@ fn coverage_display(percent: f64) -> String {
 ///   appeared, which is why `cf-viewer` (33.8 %) is absent.
 ///
 const COVERAGE_REPORT_ONLY: &[&str] = &[
-    // 0.0 % of 1560 lines — no test anywhere in the crate. The largest single
-    // untested body of code the census found, and the one that most deserves
-    // to stop being report-only.
-    "cf-scan-prep-core",
     // 14.3 % of 1955 lines, but 93.9 % over its LIBRARY: 1657 of those lines
     // are a Bevy GUI binary. Second independent instance of the shape
     // `cf-viewer` shows, and the stronger one.

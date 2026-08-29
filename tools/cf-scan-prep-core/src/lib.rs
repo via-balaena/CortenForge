@@ -10,3659 +10,2725 @@
 //! Everything here operates on [`mesh_types::IndexedMesh`] + nalgebra types.
 //! Nothing here depends on Bevy, egui, or any renderer.
 
-use std::collections::{HashMap, HashSet};
-use std::path::Path;
-use std::time::Instant;
+mod cap;
+mod centerline;
+mod clip;
+mod prep_toml;
+mod reconstruct;
+mod save;
+mod simplify;
+mod transform;
+mod trim;
 
-use anyhow::{Context, Result};
-use baby_shark::{
-    decimation::{AlwaysDecimate, EdgeDecimator},
-    mesh::{corner_table::CornerTableF, traits::TriangleMesh},
+// The crate's public surface is FLAT — `cf-scan-prep` and Studio both consume
+// it as `use cf_scan_prep_core::*`, so the split must not move a single name.
+// Every item re-exports at the root, exactly where it was.
+pub use cap::{
+    DetectedCapLoop, MeshEdgeKey, PLANE_INTERSECTION_ON_PLANE_EPS_M, auto_cap_open_boundaries,
+    build_detected_cap_loop, detect_boundary_loops, emit_centroid_fan_cap, fit_plane_to_points,
+    floor_loop_index, intersect_plane_with_mesh, orient_cap_normal_outward, point_in_triangle_2d,
+    polygon_area_3d, polygon_centroid_3d, project_loop_to_plane_2d, triangulate_polygon_2d_earclip,
 };
-use mesh_io::save_stl;
-use mesh_repair::{
-    MeshAdjacency, TAUBIN_DEFAULT_LAMBDA, TAUBIN_DEFAULT_MU, holes, remove_degenerate_triangles,
-    remove_small_components, remove_unreferenced_vertices, taubin_smooth_vertices, weld_vertices,
+pub use centerline::{
+    CENTERLINE_MAIN_BODY_AREA_FRACTION, CENTERLINE_REORIENT_PASSES, MIN_SLAB_AREA_M2, SlabSample,
+    build_polyline_with_boundary_trim, compute_centerline_polyline, compute_slab_sample,
+    correct_tangents_for_end_regions, local_polyline_tangents, smooth_polyline,
 };
-use mesh_types::{Aabb, Bounded, IndexedMesh, Point3};
-use nalgebra::{Matrix3, UnitQuaternion, Vector3};
-use serde::Serialize;
+pub use clip::{clip_mesh_against_plane, clip_mesh_against_plane_eq, lerp_point};
+pub use prep_toml::{
+    PrepAabbBlock, PrepCapLoop, PrepCapsBlock, PrepCenterlineBlock, PrepCenterlineTrimBlock,
+    PrepOutputBlock, PrepReconstructSubBlock, PrepRotationBlock, PrepScanPrepBlock,
+    PrepSimplifyBlock, PrepSmoothingBlock, PrepToml, PrepTransformBlock, PrepTranslationBlock,
+    SIMPLIFY_ALGORITHM_NAME, SIMPLIFY_ALGORITHM_VERSION, SMOOTHING_ALGORITHM_NAME,
+    build_prep_toml_string,
+};
+pub use reconstruct::{
+    AppliedReconstruct, RECONSTRUCT_ANGLE_BINS, RECONSTRUCT_RING_COUNT, RECONSTRUCT_TAPER_AT_FLOOR,
+    ReconstructShape, ReconstructedFloorPlane, STABLE_INWARD_TANGENT_LOOKBACK_M,
+    apply_reconstruction, compute_reconstructed_floor_plane_physics, find_floor_loop_index,
+    perpendicular_basis_for, sample_radial_profile, sample_radial_profile_linear_fit,
+    sample_radius_at_angle, stable_inward_tangent,
+};
+pub use save::{
+    atomic_write_save, build_cleaned_mesh, chrono_like_timestamp, iso8601_utc_from_unix_seconds,
+    unix_days_to_ymd,
+};
+pub use simplify::{
+    CLEANUP_DEGENERATE_AREA_M2, CLEANUP_MIN_COMPONENT_FACES, CleanupReport,
+    SIMPLIFY_TARGET_DEFAULT, SIMPLIFY_TARGET_MAX, SIMPLIFY_TARGET_MIN, SIMPLIFY_WELD_EPSILON_M,
+    SimplifyResult, cleanup_cleaned_mesh_for_disk, human_count, mesh_looks_unwelded, simplify_mesh,
+};
+pub use transform::{
+    auto_center_in_place, auto_pca_in_place, bake_vertex_with_pivot, compute_pca_orientation,
+    rotated_aabb_around_centroid_physics_mm, scale_vertices_in_place,
+};
+pub use trim::{
+    point_along_polyline_at_arc_distance, polyline_arc_length_m, trim_centerline_polyline,
+    trim_mesh_along_centerline,
+};
 
-/// Heuristic: does `mesh` look like raw, unwelded STL soup?
-///
-/// `mesh_io::load_stl` emits 3 unshared vertices per triangle, so a
-/// freshly-loaded scan has `vertex_count == 3 × face_count`. A welded
-/// mesh has `vertex_count ≈ 0.5 × face_count` (Euler: V ≈ F/2). The
-/// `≥ 2 ×` threshold cleanly separates the two and stays robust to
-/// partial welds. Used to surface the "Weld first" warning + to make
-/// the Cap → Scan message actionable when it detects per-triangle loops.
-pub fn mesh_looks_unwelded(vertex_count: usize, face_count: usize) -> bool {
-    face_count > 0 && vertex_count >= face_count * 2
-}
+#[cfg(test)]
+mod tests {
+    // `unwrap()` + `expect()` are denied at the crate level for production
+    // safety; allow them inside tests so assertions can pull values out of
+    // `Option` / `Result` returns without multi-line `match` ceremony.
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-/// Default target face count for the Simplify panel slider per spec
-/// §Architectural decisions §Simplify algorithm: 10× over the 50k
-/// surface-continuity floor, well below the 500k "may be sluggish"
-/// threshold, matches cf-cast's 2 mm-cell SDF sampling density
-/// × surface-continuity headroom.
-pub const SIMPLIFY_TARGET_DEFAULT: usize = 200_000;
+    use super::*;
 
-/// Lower slider bound. Below this the simplified mesh loses too much
-/// surface continuity for cast purposes.
-pub const SIMPLIFY_TARGET_MIN: usize = 1_000;
+    // The flat `lib.rs` imported these for its production code; after the
+    // module split the facade holds no code, so the test module carries the
+    // foreign types it uses directly.
+    use anyhow::Result;
+    use mesh_repair::holes;
+    use mesh_types::{Aabb, Bounded, IndexedMesh, Point3};
+    use nalgebra::{UnitQuaternion, Vector3};
 
-/// Upper slider bound. Above this we're not really simplifying typical
-/// scans anymore.
-pub const SIMPLIFY_TARGET_MAX: usize = 1_000_000;
-
-/// Spatial-hash welding tolerance applied pre-`meshopt::simplify` so
-/// the STL's 3N unshared vertices collapse to ~N shared. 1 µm in
-/// meters; tighter than any practical scan precision.
-pub const SIMPLIFY_WELD_EPSILON_M: f64 = 1e-6;
-
-/// Area threshold for `remove_degenerate_triangles` in the
-/// `build_cleaned_mesh` cleanup pass (CSP.3). Square meters; 1e-15 m²
-/// is well below cf-cast's 2 mm-cell SDF resolution (4e-6 m² per cell
-/// face) and below the f32 quantization floor meshopt operates at,
-/// so anything we strip here is FP noise the downstream couldn't have
-/// used anyway. Catches zero-area triangles from cap ear-clip
-/// degeneracies, clip-intersection sliver triangles, and any
-/// preexisting degenerate faces the raw STL carried in. The latter
-/// is what made cf-device-design's `simplify_decoder` retain its
-/// full 3.34M face count on the iter-1 fixture
-/// (`tools/cf-device-design/src/main.rs:419-425`).
-pub const CLEANUP_DEGENERATE_AREA_M2: f64 = 1e-15;
-
-/// Minimum face count for a connected component to survive the
-/// `build_cleaned_mesh` cleanup pass. Components smaller than this
-/// are dropped as scanner noise. 10 is conservative — a meaningful
-/// shell (even a small cyst-like protrusion) has dozens of faces;
-/// noise islands are typically 1-3 stray triangles from scanner
-/// registration glitches or self-intersection artifacts. Spec
-/// §Strategic context assumes the user has pre-trimmed to a single
-/// shell externally; this threshold is the safety net for the
-/// "user forgot" case.
-pub const CLEANUP_MIN_COMPONENT_FACES: usize = 10;
-
-/// One detected boundary loop on the scan, with its least-squares
-/// plane fit + per-loop user-decided cap-include state. Populated by
-/// the `[Scan]` button's run-once handler; consumed by
-/// `render_cap_section` (display) + `draw_cap_overlays` (gizmo
-/// linestrip + plane outline) + commit #12 (bake into cleaned STL on
-/// save).
-///
-/// All vertex indices are into the **scan mesh as it was at scan
-/// time** — the boundary loop's vertex IDs reference positions in
-/// `ScanMesh` snapshotted when the user clicked `[Scan]`. If the user
-/// then simplifies or otherwise mutates `ScanMesh`, the indices go
-/// stale and the loop list dims via the `CapState::stale` flag.
-#[derive(Debug, Clone)]
-pub struct DetectedCapLoop {
-    /// Ordered vertex indices forming the boundary loop (closed: the
-    /// last edge connects back to vertex 0).
-    pub vertex_indices: Vec<u32>,
-    /// Least-squares fit plane: position `centroid` and unit normal.
-    /// Centroid is the average of loop vertex positions in mesh-local
-    /// physics-frame meters; normal is outward-oriented per the
-    /// mesh-side-of-plane heuristic. Stored at scan time for use by
-    /// commit #12's ear-clipping triangulation (the bake step needs
-    /// both centroid + normal to project loop vertices onto the fit
-    /// plane before triangulating into cap faces).
-    pub plane_centroid: Point3<f64>,
-    pub plane_normal: Vector3<f64>,
-    /// Plane-fit R²: 1.0 = perfectly planar loop; 0.0 = totally
-    /// non-planar. Surfaced to the user so they can judge whether
-    /// auto-fit produced a reasonable cap.
-    pub plane_fit_r_squared: f64,
-    /// User decision: include this loop in `[Apply caps]` /
-    /// downstream save? Default `true` if vertex count >= 8 (per
-    /// spec: small loops are often acceptable holes / scanner
-    /// artifacts), `false` otherwise.
-    pub include: bool,
-}
-
-/// Cross-section extrusion shape choice for the reconstruct
-/// algorithm (CSP.4e). User-picked via radio buttons.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReconstructShape {
-    /// Average radial profile from the reference zone, extruded
-    /// straight down the centerline at constant radius. Simplest
-    /// shape; ships first in CSP.4e.2.
-    Constant,
-    /// Constant profile linearly tapered toward a smaller radius
-    /// at the new floor. Ships in CSP.4e.3.
-    Taper,
-    /// Fit a linear trend `r(angle, s) = a + b·s` across the
-    /// reference zone; extrapolate `s` past the cut. Most
-    /// faithful to natural taper. Ships in CSP.4e.4.
-    Extrapolate,
-}
-
-/// What got committed by `[Apply reconstruct]`. Distinct from
-/// the live slider/shape state so the user can drift the
-/// sliders without un-applying the existing reconstruction.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct AppliedReconstruct {
-    pub reference_mm: f64,
-    pub shape: ReconstructShape,
-}
-
-/// Linear interpolation between two `Point3<f64>` positions.
-/// `t = 0` returns `a`; `t = 1` returns `b`.
-pub fn lerp_point(a: &Point3<f64>, b: &Point3<f64>, t: f64) -> Point3<f64> {
-    Point3::new(
-        a.x + t * (b.x - a.x),
-        a.y + t * (b.y - a.y),
-        a.z + t * (b.z - a.z),
-    )
-}
-
-/// True-plane-intersection mesh clip against a plane in the mesh's
-/// own coordinate frame, expressed as the equation
-/// `plane_normal · v >= plane_d` (kept side).
-///
-/// Shared core algorithm — [`clip_mesh_against_plane`] (the
-/// centerline-trim cuts at each end) derives its inputs and then
-/// forwards here. Pre-CSP.4d there was also a
-/// `clip_mesh_against_world_z` for the now-retired Clip-floor
-/// panel; that wrapper is gone, but `clip_mesh_against_plane_eq`
-/// remained as the shared core.
-///
-/// For each triangle:
-/// - **All 3 vertices on/above** the plane → keep as-is.
-/// - **All 3 below** → drop.
-/// - **Mixed** → compute intersection points on the crossing edges +
-///   triangulate the surviving polygon (3 or 4 vertices) via a fan
-///   from the first vertex. The result is a clean planar cut along
-///   the plane, suitable for capping (boundary stays planar so
-///   `mesh-repair`'s plane fit gets `R² ≈ 1.0`).
-///
-/// Vertices exactly on the plane (`dist == 0`) are classified as
-/// "above" so the surrounding triangle is kept; this avoids
-/// degenerate sub-triangles in the cut.
-///
-/// Output mesh's vertex buffer = original vertices + new intersection
-/// vertices appended; `remove_unreferenced_vertices` strips the
-/// dropped (all-below) original vertices afterwards so the result is
-/// tight.
-pub fn clip_mesh_against_plane_eq(
-    mesh: &IndexedMesh,
-    plane_normal: Vector3<f64>,
-    plane_d: f64,
-) -> IndexedMesh {
-    // Output buffers — start with the original vertices (later
-    // stripped of unreferenced); append intersection points as we go.
-    let mut new_vertices: Vec<Point3<f64>> = mesh.vertices.clone();
-    let mut new_faces: Vec<[u32; 3]> = Vec::with_capacity(mesh.faces.len());
-
-    for face in &mesh.faces {
-        let verts = [
-            mesh.vertices[face[0] as usize],
-            mesh.vertices[face[1] as usize],
-            mesh.vertices[face[2] as usize],
-        ];
-        // Signed distance from the plane. dist >= 0 → above (keep).
-        let dists = [
-            plane_normal.dot(&verts[0].coords) - plane_d,
-            plane_normal.dot(&verts[1].coords) - plane_d,
-            plane_normal.dot(&verts[2].coords) - plane_d,
-        ];
-        let above_count = dists.iter().filter(|d| **d >= 0.0).count();
-
-        if above_count == 3 {
-            new_faces.push(*face);
-            continue;
-        }
-        if above_count == 0 {
-            continue;
-        }
-
-        // Mixed case: walk the triangle CCW, collecting above-plane
-        // vertices + intersection points where edges cross. The
-        // resulting polygon has 3 (1-above) or 4 (2-above) vertices —
-        // both convex, so fan-triangulate from vertex[0].
-        let mut poly_indices: Vec<u32> = Vec::with_capacity(4);
-        for i in 0..3 {
-            let next = (i + 1) % 3;
-            let d_curr = dists[i];
-            let d_next = dists[next];
-            if d_curr >= 0.0 {
-                poly_indices.push(face[i]);
+    fn one_triangle_at(scale: f64) -> IndexedMesh {
+        let mut mesh = IndexedMesh::with_capacity(3, 1);
+        mesh.vertices.push(Point3::new(scale, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(0.0, scale, 0.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, scale));
+        mesh.faces.push([0, 1, 2]);
+        mesh
+    }
+    /// Build a regular grid-subdivided square (in the XY plane) with
+    /// `cells × cells` quads, each split into 2 triangles. Vertices are
+    /// shared (proper indexed mesh; no STL-style 3N unsharing). Used
+    /// for the simplify-on-known-shape test — small enough to be fast
+    /// in CI while large enough that meshopt has something to collapse.
+    fn grid_square(cells: usize) -> IndexedMesh {
+        let mut mesh = IndexedMesh::with_capacity((cells + 1) * (cells + 1), cells * cells * 2);
+        for j in 0..=cells {
+            for i in 0..=cells {
+                #[allow(clippy::cast_precision_loss)]
+                let x = i as f64 / cells as f64;
+                #[allow(clippy::cast_precision_loss)]
+                let y = j as f64 / cells as f64;
+                mesh.vertices.push(mesh_types::Point3::new(x, y, 0.0));
             }
-            // Edge crosses the plane iff the signs of d_curr and
-            // d_next differ. The `>= 0.0` convention puts zeros on
-            // the "above" side, so an edge with one zero and one
-            // negative still crosses.
-            if (d_curr >= 0.0) != (d_next >= 0.0) {
-                let t = d_curr / (d_curr - d_next);
-                let intersection = lerp_point(&verts[i], &verts[next], t);
+        }
+        #[allow(clippy::cast_possible_truncation)]
+        let stride = (cells + 1) as u32;
+        for j in 0..cells {
+            for i in 0..cells {
                 #[allow(clippy::cast_possible_truncation)]
-                let new_idx = new_vertices.len() as u32;
-                new_vertices.push(intersection);
-                poly_indices.push(new_idx);
+                let row = j as u32 * stride;
+                #[allow(clippy::cast_possible_truncation)]
+                let next_row = (j as u32 + 1) * stride;
+                #[allow(clippy::cast_possible_truncation)]
+                let col = i as u32;
+                let a = row + col;
+                let b = row + col + 1;
+                let c = next_row + col + 1;
+                let d = next_row + col;
+                mesh.faces.push([a, b, c]);
+                mesh.faces.push([a, c, d]);
             }
         }
-
-        // Fan triangulation from poly_indices[0].
-        for i in 1..(poly_indices.len() - 1) {
-            new_faces.push([poly_indices[0], poly_indices[i], poly_indices[i + 1]]);
+        mesh
+    }
+    /// Build a unit-cube indexed mesh (corners at 0/1 on each axis,
+    /// 8 verts + 12 triangles, CCW-outward winding). Hand-crafted
+    /// fixture used by the [`intersect_plane_with_mesh`] tests; the
+    /// general-purpose body-shape fixture helpers live alongside the
+    /// algorithm tests further down.
+    fn make_unit_cube_mesh() -> IndexedMesh {
+        let mut mesh = IndexedMesh::with_capacity(8, 12);
+        // Corner ordering: bit 0 = x, bit 1 = y, bit 2 = z.
+        for i in 0..8 {
+            mesh.vertices.push(Point3::new(
+                f64::from(i & 1),
+                f64::from((i >> 1) & 1),
+                f64::from((i >> 2) & 1),
+            ));
         }
-    }
-
-    let mut clipped = IndexedMesh::with_capacity(new_vertices.len(), new_faces.len());
-    clipped.vertices = new_vertices;
-    clipped.faces = new_faces;
-    remove_unreferenced_vertices(&mut clipped);
-    clipped
-}
-
-// CSP.4c — `clip_mesh_against_world_z` removed alongside
-// `ClipState`. The shared `clip_mesh_against_plane_eq` primitive
-// below is still load-bearing for `trim_mesh_along_centerline`.
-
-/// Clip `mesh` against an arbitrary plane defined by a point on the
-/// plane and a normal. Kept side: where
-/// `(p - plane_point) · plane_normal >= 0`. CSP.4b — used by
-/// [`trim_mesh_along_centerline`] to clip each end of the centerline
-/// at a user-chosen distance.
-///
-/// `plane_normal` MUST be a unit vector — the algorithm relies on the
-/// dot product producing signed distances. Callers passing a
-/// non-unit normal will get a clip that succeeds but with wrong
-/// intersection-point math; cheaper than asserting here.
-pub fn clip_mesh_against_plane(
-    mesh: &IndexedMesh,
-    plane_point: Point3<f64>,
-    plane_normal: Vector3<f64>,
-) -> IndexedMesh {
-    // `plane_normal · (p - plane_point) >= 0`
-    //   ⇔ `plane_normal · p >= plane_normal · plane_point`
-    let plane_d = plane_normal.dot(&plane_point.coords);
-    clip_mesh_against_plane_eq(mesh, plane_normal, plane_d)
-}
-
-/// Walk along `polyline`'s arc and return the position + local
-/// tangent at arc-length `distance_m` from `polyline[0]`. The
-/// tangent is the unit direction of the segment containing the
-/// target point, pointing from `polyline[0]` toward
-/// `polyline[N-1]`. CSP.4b.3 — the load-bearing primitive for both
-/// the mesh-trim algorithm + the live overlay; both used to
-/// extrapolate linearly from the first/last segment's tangent
-/// (CSP.4b initial), which diverged from the actual centerline
-/// path on curved scans (user-reported via screenshots 2026-05-15).
-///
-/// Returns `None` for a < 2-point polyline (no segments to walk).
-/// For `distance_m` past the polyline's total arc length, returns
-/// a linear extrapolation along the LAST segment's tangent — fine
-/// for the panel-clamped slider range (max = half arc length per
-/// end), but explicit so future call sites that pass arbitrary
-/// distances don't hit a silent failure.
-pub fn point_along_polyline_at_arc_distance(
-    polyline: &[Point3<f64>],
-    distance_m: f64,
-) -> Option<(Point3<f64>, Vector3<f64>)> {
-    if polyline.len() < 2 {
-        return None;
-    }
-    let target_m = distance_m.max(0.0);
-    let mut walked_m = 0.0_f64;
-    for i in 0..polyline.len() - 1 {
-        let seg_vec = polyline[i + 1].coords - polyline[i].coords;
-        let seg_len = seg_vec.norm();
-        if seg_len < f64::EPSILON {
-            continue;
-        }
-        if walked_m + seg_len >= target_m {
-            // Target lies within segment `i..i+1`. Lerp to the
-            // exact point + return that segment's unit tangent.
-            let t = ((target_m - walked_m) / seg_len).clamp(0.0, 1.0);
-            let pos = Point3::from(polyline[i].coords + t * seg_vec);
-            let tangent = seg_vec / seg_len;
-            return Some((pos, tangent));
-        }
-        walked_m += seg_len;
-    }
-    // Past the end of the polyline — linear extrapolation along the
-    // last segment's tangent. Reaches this branch only if the
-    // caller's distance exceeds the polyline arc length (the
-    // user-facing panel clamps to half arc length per end, so this
-    // is a safety fallback, not a hot path).
-    let n = polyline.len();
-    let last_seg = polyline[n - 1].coords - polyline[n - 2].coords;
-    let last_seg_len = last_seg.norm();
-    if last_seg_len < f64::EPSILON {
-        return None;
-    }
-    let overrun_m = target_m - walked_m;
-    let tangent = last_seg / last_seg_len;
-    let pos = Point3::from(polyline[n - 1].coords + tangent * overrun_m);
-    Some((pos, tangent))
-}
-
-/// Total arc length of `polyline` in meters. Returns `0.0` for
-/// `< 2` points.
-pub fn polyline_arc_length_m(polyline: &[Point3<f64>]) -> f64 {
-    polyline
-        .windows(2)
-        .map(|w| (w[1].coords - w[0].coords).norm())
-        .sum()
-}
-
-/// Trim `mesh` along its centerline polyline: clips off
-/// `trim_tip_mm` from the tip end (centerline\[0\]) and
-/// `trim_floor_mm` from the floor end (centerline\[N-1\]) of the
-/// polyline. Returns the trimmed mesh.
-///
-/// CSP.4b user-facing feature. The trim planes are perpendicular to
-/// the centerline tangent **at the cut point** (computed via
-/// [`point_along_polyline_at_arc_distance`]). For a roughly-straight
-/// centerline this is a horizontal cut at the corresponding world-Z
-/// height; for a curved centerline (sock fixture with PCA-induced
-/// curvature) the cut tilts with the local spine direction — the
-/// natural workshop intent of "shave off the noisy end along the
-/// spine."
-///
-/// CSP.4b.3 — initial CSP.4b used the first/last polyline segment's
-/// tangent + linear extrapolation, which diverged badly from the
-/// real centerline on curved scans (visible in trim-overlay
-/// screenshots). The current implementation walks the polyline arc.
-///
-/// Centerline polyline ordering convention: index 0 is the tip
-/// (closed end / dome), index N-1 is the floor (open end / rim).
-/// This is the order [`compute_centerline_polyline`] returns when
-/// driven by the first cap loop's outward normal (which points
-/// outward from the rim, toward -Z under PCA convention).
-///
-/// `trim_tip_mm == 0 && trim_floor_mm == 0` is a fast-path no-op
-/// (returns `mesh.clone()`). A degenerate centerline (< 2 points)
-/// also returns the input unchanged.
-///
-/// The trimmed mesh has new open boundaries at each non-zero cut.
-/// The caller is responsible for capping those — see
-/// [`auto_cap_open_boundaries`] for the auto-cap step.
-pub fn trim_mesh_along_centerline(
-    mesh: &IndexedMesh,
-    centerline: &[Point3<f64>],
-    trim_tip_mm: f64,
-    trim_floor_mm: f64,
-) -> IndexedMesh {
-    if centerline.len() < 2 || (trim_tip_mm <= 0.0 && trim_floor_mm <= 0.0) {
-        return mesh.clone();
-    }
-    let mut out = mesh.clone();
-
-    // Tip-end trim: plane at arc-distance `trim_tip_mm` forward
-    // from the tip; plane normal = local tangent (points toward
-    // floor). Kept side = the "floor" side.
-    if trim_tip_mm > 0.0
-        && let Some((plane_point, tangent)) =
-            point_along_polyline_at_arc_distance(centerline, trim_tip_mm * 0.001)
-    {
-        out = clip_mesh_against_plane(&out, plane_point, tangent);
-    }
-
-    // Floor-end trim: plane at arc-distance
-    // `total_length - trim_floor_mm` from the tip (i.e.,
-    // `trim_floor_mm` backward from the floor). Plane normal =
-    // -tangent (points toward tip). Kept side = the "tip" side.
-    if trim_floor_mm > 0.0 {
-        let total_length_m = polyline_arc_length_m(centerline);
-        let target_m = total_length_m - trim_floor_mm * 0.001;
-        if target_m > 0.0
-            && let Some((plane_point, tangent)) =
-                point_along_polyline_at_arc_distance(centerline, target_m)
-        {
-            out = clip_mesh_against_plane(&out, plane_point, -tangent);
-        }
-    }
-
-    out
-}
-
-/// Trim the centerline polyline by the same distances applied to
-/// the mesh in [`trim_mesh_along_centerline`]: drop `trim_tip_mm`
-/// from the start (index 0 = tip) and `trim_floor_mm` from the end
-/// (index N-1 = floor). Both trims measured in millimeters along
-/// the cumulative arc length.
-///
-/// CSP.4b — keeps the `.prep.toml`'s `[centerline].points_m` line
-/// in sync with the cleaned STL on disk. Without this, the TOML
-/// would describe a longer centerline than the mesh actually has.
-///
-/// Returns an empty vec if the trim consumes the whole polyline
-/// (`trim_tip_mm + trim_floor_mm >= total arc length`) — the
-/// caller's `[centerline]` block then drops out per the
-/// `skip_serializing_if` rule.
-pub fn trim_centerline_polyline(
-    centerline: &[Point3<f64>],
-    trim_tip_mm: f64,
-    trim_floor_mm: f64,
-) -> Vec<Point3<f64>> {
-    if centerline.len() < 2 || (trim_tip_mm <= 0.0 && trim_floor_mm <= 0.0) {
-        return centerline.to_vec();
-    }
-    // Cumulative arc length from start, in millimeters. Seeded
-    // with `0.0` and built by single-pass accumulation; `last`
-    // dereferences are unwrap-free via tracking `accum` separately.
-    let mut cum_lengths_mm: Vec<f64> = Vec::with_capacity(centerline.len());
-    cum_lengths_mm.push(0.0);
-    let mut accum = 0.0_f64;
-    for w in centerline.windows(2) {
-        accum += (w[1].coords - w[0].coords).norm() * 1000.0;
-        cum_lengths_mm.push(accum);
-    }
-    let total_length_mm = accum;
-    let start_mm = trim_tip_mm.max(0.0);
-    let end_mm = (total_length_mm - trim_floor_mm.max(0.0)).max(start_mm);
-    if end_mm <= start_mm + f64::EPSILON {
-        return Vec::new();
-    }
-
-    // Linear interpolation at arc-length `target_mm` along the
-    // polyline. Walks segments; for a 30-point polyline this is
-    // trivial cost.
-    let interp = |target_mm: f64| -> Point3<f64> {
-        for i in 0..centerline.len() - 1 {
-            let s = cum_lengths_mm[i];
-            let e = cum_lengths_mm[i + 1];
-            if target_mm <= e {
-                let t = if e > s {
-                    (target_mm - s) / (e - s)
-                } else {
-                    0.0
-                };
-                let interpolated =
-                    centerline[i].coords + t * (centerline[i + 1].coords - centerline[i].coords);
-                return Point3::from(interpolated);
-            }
-        }
-        centerline[centerline.len() - 1]
-    };
-
-    let mut trimmed: Vec<Point3<f64>> = Vec::with_capacity(centerline.len());
-    trimmed.push(interp(start_mm));
-    for (i, p) in centerline.iter().enumerate() {
-        if cum_lengths_mm[i] > start_mm + f64::EPSILON && cum_lengths_mm[i] < end_mm - f64::EPSILON
-        {
-            trimmed.push(*p);
-        }
-    }
-    let last = trimmed.last().copied();
-    let end_pt = interp(end_mm);
-    if last.is_none_or(|p| (p.coords - end_pt.coords).norm_squared() > 1e-18) {
-        trimmed.push(end_pt);
-    }
-    trimmed
-}
-
-/// Detect all open boundary loops on `mesh`, fit a plane to each via
-/// SVD, orient the normal outward, and append ear-clipped cap faces
-/// (with outward-pointing 3D normals) that close every detected loop.
-/// CSP.4b — runs after [`trim_mesh_along_centerline`] so the trim cuts
-/// get sealed.
-///
-/// Mutates `mesh` in place. Returns the number of loops capped.
-///
-/// Same projection + winding logic as `build_cleaned_mesh`'s cap
-/// step (CSP.3a): boundary vertices are projected onto the fit plane
-/// before ear-clip so the cap is exactly planar. Cap faces use the
-/// existing loop vertex indices (no new vertices appended for the
-/// cap; only re-uses the now-projected boundary positions). Cap-face
-/// 3D winding emits with cross-product normals aligned to the
-/// outward-oriented plane normal — pinned by
-/// `auto_cap_open_boundaries_emits_outward_cap_normals`.
-pub fn auto_cap_open_boundaries(mesh: &mut IndexedMesh) -> usize {
-    let loops = detect_boundary_loops(mesh);
-    let mut capped = 0;
-    for loop_data in &loops {
-        if !loop_data.is_valid() {
-            continue;
-        }
-        let loop_points_3d: Vec<Point3<f64>> = loop_data
-            .vertices
-            .iter()
-            .filter_map(|&idx| mesh.vertices.get(idx as usize).copied())
-            .collect();
-        if loop_points_3d.len() != loop_data.vertices.len() {
-            continue;
-        }
-        let (plane_centroid, plane_normal_raw, _r_squared) = fit_plane_to_points(&loop_points_3d);
-        let plane_normal = orient_cap_normal_outward(mesh, plane_centroid, plane_normal_raw);
-
-        // CSP.3a — project loop vertices onto the fit plane so the
-        // cap is planar.
-        for &idx in &loop_data.vertices {
-            if let Some(p) = mesh.vertices.get(idx as usize).copied() {
-                let signed = (p.coords - plane_centroid.coords).dot(&plane_normal);
-                let projected = p.coords - plane_normal * signed;
-                mesh.vertices[idx as usize] = Point3::from(projected);
-            }
-        }
-
-        let loop_points_projected: Vec<Point3<f64>> = loop_data
-            .vertices
-            .iter()
-            .filter_map(|&idx| mesh.vertices.get(idx as usize).copied())
-            .collect();
-        let verts_2d =
-            project_loop_to_plane_2d(&loop_points_projected, plane_centroid, plane_normal);
-
-        emit_centroid_fan_cap(mesh, &loop_data.vertices, &loop_points_projected, &verts_2d);
-        capped += 1;
-    }
-    capped
-}
-
-/// Cap a single open boundary loop with a **centroid-fan**: append one
-/// new vertex at the loop's 3D centroid (which sits on the fit plane
-/// because `loop_points_projected` has already been snapped to it) and
-/// emit one cap triangle per perimeter edge fanning out from that
-/// centroid.
-///
-/// Replaces the [`triangulate_polygon_2d_earclip`] path that
-/// `auto_cap_open_boundaries` + `build_cleaned_mesh`'s cap step used
-/// pre-2026-05-26. Per S1.1 probe-8/recon: that path's fan-fallback
-/// (kicked in whenever no ear satisfies the convex + empty-interior
-/// check) emitted overlapping triangles from a degenerate fan anchor
-/// on self-intersecting projected boundaries, producing duplicate
-/// faces + non-manifold edges in the cap region that downstream
-/// manifold3d-based consumers (cf-cast's `apply_mating_transforms`)
-/// rejected.
-///
-/// **Why centroid-fan is always-manifold for our cap-fan inputs**:
-/// for any STAR-SHAPED 2D polygon — which fit-plane-projected
-/// boundary loops always are on the workshop scans — fanning from
-/// the centroid to each consecutive perimeter edge produces a
-/// non-overlapping, manifold triangulation by construction. The
-/// centroid is inside the polygon (star-point), so every cap triangle
-/// is contained in the polygon and adjacent triangles share exactly
-/// one edge (the `(centroid, perim[i])` edge). Self-intersecting
-/// polygons would still trip this, but cf-scan-prep's projection step
-/// ([`project_loop_to_plane_2d`]) on workshop scans hasn't surfaced a
-/// non-star-shaped case to date; if one ever does, the workshop user
-/// can re-scan or pre-process upstream.
-///
-/// **Winding**: `verts_2d` lives in the `(u, v, plane_normal)`
-/// right-handed basis returned by `project_loop_to_plane_2d`. A
-/// 2D-CCW perimeter (`signed_area > 0`) emitted as
-/// `[centroid, perim[i], perim[i+1]]` produces a 3D cross product
-/// in the `+plane_normal` direction, which `orient_cap_normal_outward`
-/// has already aligned with OUTWARD. For 2D-CW perimeters
-/// (`signed_area < 0`) we swap the perimeter pair to land the same
-/// outward direction. Pinned by
-/// `auto_cap_open_boundaries_emits_outward_cap_normals`.
-pub fn emit_centroid_fan_cap(
-    mesh: &mut IndexedMesh,
-    loop_vertex_indices: &[u32],
-    loop_points_projected: &[Point3<f64>],
-    verts_2d: &[(f64, f64)],
-) {
-    let n = loop_vertex_indices.len();
-    if n < 3 || loop_points_projected.len() != n || verts_2d.len() != n {
-        return;
-    }
-    // 3D centroid as the mean of the projected perimeter positions.
-    // Because the perimeter was projected onto the fit plane upstream
-    // (CSP.3a), the arithmetic mean is also on the plane → cap stays
-    // planar.
-    let mut sum = Vector3::zeros();
-    for p in loop_points_projected {
-        sum += p.coords;
-    }
-    #[allow(clippy::cast_precision_loss)]
-    let centroid_3d = Point3::from(sum / n as f64);
-    #[allow(clippy::cast_possible_truncation)]
-    let centroid_global_idx = mesh.vertices.len() as u32;
-    mesh.vertices.push(centroid_3d);
-
-    // 2D signed area (shoelace) determines perimeter winding.
-    let signed_area_2d: f64 = (0..n)
-        .map(|i| {
-            let (x0, y0) = verts_2d[i];
-            let (x1, y1) = verts_2d[(i + 1) % n];
-            x0 * y1 - x1 * y0
-        })
-        .sum::<f64>()
-        * 0.5;
-
-    for i in 0..n {
-        let next_i = (i + 1) % n;
-        let a = loop_vertex_indices[i];
-        let b = loop_vertex_indices[next_i];
-        if signed_area_2d >= 0.0 {
-            mesh.faces.push([centroid_global_idx, a, b]);
-        } else {
-            // CW perimeter — flip to match the OUTWARD direction.
-            mesh.faces.push([centroid_global_idx, b, a]);
-        }
-    }
-}
-
-// ----- Centerline reconstruction (CSP.4e.2) -------------------------
-//
-// Replace a chopped floor region with extruded average-cross-section
-// geometry so the cleaned mesh keeps its original length. The user
-// dials the reference-zone slider + picks a shape (Constant in 4e.2;
-// Taper + Extrapolate in 4e.3/4e.4); this code consumes those values
-// to build new mesh geometry.
-//
-// Algorithm (Constant shape):
-// 1. Find the floor-end open boundary loop (closest to the polyline
-//    endpoint nearest the chopped end).
-// 2. Build a local frame at the cut: tangent (along the polyline),
-//    plus two perpendicular basis vectors u, v.
-// 3. Walk every mesh vertex; collect the ones within
-//    `reference_zone_m` of the cut (along the tangent direction
-//    INTO the mesh). For each, compute (angle = atan2(v·d, u·d),
-//    radial = √(u² + v²)). Bin angles into M bins, take the median
-//    radial per bin → canonical r(angle) profile.
-// 4. Project boundary-loop vertices onto the cut plane and snap
-//    them to the canonical profile (each vertex moves radially to
-//    r(angle_at_that_vertex)). The loop topology stays connected
-//    to the mesh body; only the rim vertices move.
-// 5. Extrude K rings DOWN the centerline (each ring has the same L
-//    angular positions as the boundary loop, at canonical radii
-//    for Constant shape). Connect each pair of rings with triangle
-//    strips.
-// 6. Add a flat bottom cap fanned from a centroid vertex at the
-//    new floor.
-
-/// Number of angular bins used when sampling the radial profile.
-/// 24 = one bin every 15°. Coarser than the typical boundary-loop
-/// vertex count (hundreds) so each bin has multiple samples to
-/// median-filter against scan noise.
-pub const RECONSTRUCT_ANGLE_BINS: usize = 24;
-
-/// Number of subdivisions along the extruded sidewall. 8 keeps the
-/// reconstruction lightweight (8 × L new triangles per band, L =
-/// boundary loop vertex count); enough for visual smoothness on
-/// the sock fixture's mostly-straight floor region.
-pub const RECONSTRUCT_RING_COUNT: usize = 8;
-
-/// Decide which of `loops` is the "floor end" loop — the LARGEST
-/// valid boundary loop. Used by [`apply_reconstruction`] to
-/// single out the loop the user wants to reconstruct (the cut
-/// rim) vs. scan-noise stragglers.
-///
-/// CSP.4e.2 fix-forward (2026-05-15): the initial implementation
-/// picked the loop whose centroid was closest to the centerline
-/// endpoint. On an unsimplified scan (iter-1 fixture: 1215
-/// boundary loops, mostly 3-vertex stragglers), that heuristic
-/// picked a tiny noise loop at random whose centroid happened to
-/// be closest. The reconstruction then generated a degenerate
-/// thin column at that location ("white vertical line" the user
-/// reported). The cut rim is overwhelmingly the largest loop on
-/// any practical scan, so picking by vertex count is robust.
-///
-/// Loops with fewer than `MIN_RIM_LOOP_VERTS` (10) vertices are
-/// filtered out — they're scanner-noise stragglers, never the
-/// actual rim. Among the remaining, the largest wins.
-///
-/// `centerline_last_point` is accepted for future use (e.g., a
-/// distance-based tiebreaker when two large loops exist —
-/// multi-shell scans) but unused in the current pick-by-count
-/// implementation.
-///
-/// Returns the loop's index in `loops`, or `None` when no
-/// sufficiently-large valid loop exists.
-pub fn find_floor_loop_index(
-    loops: &[holes::BoundaryLoop],
-    _mesh: &IndexedMesh,
-    _centerline_last_point: Point3<f64>,
-) -> Option<usize> {
-    const MIN_RIM_LOOP_VERTS: usize = 10;
-    let mut best: Option<(usize, usize)> = None;
-    for (i, lp) in loops.iter().enumerate() {
-        if !lp.is_valid() {
-            continue;
-        }
-        let count = lp.vertices.len();
-        if count < MIN_RIM_LOOP_VERTS {
-            continue;
-        }
-        if best.is_none_or(|(_, c)| count > c) {
-            best = Some((i, count));
-        }
-    }
-    best.map(|(i, _)| i)
-}
-
-/// Build an orthonormal basis `(u, v)` perpendicular to the unit
-/// vector `n`. Used to project 3D points around the centerline
-/// into a 2D (radial, angular) representation.
-///
-/// Standard Gram-Schmidt against a world axis that isn't parallel
-/// to `n`. Matches the heuristic in [`project_loop_to_plane_2d`]
-/// for consistency.
-pub fn perpendicular_basis_for(n: Vector3<f64>) -> (Vector3<f64>, Vector3<f64>) {
-    let world_axis = if n.x.abs() < 0.9 {
-        Vector3::new(1.0, 0.0, 0.0)
-    } else {
-        Vector3::new(0.0, 1.0, 0.0)
-    };
-    let u = (world_axis - n * world_axis.dot(&n)).normalize();
-    let v = n.cross(&u).normalize();
-    (u, v)
-}
-
-/// Reconstructed-floor plane recorded in the `.prep.toml` `[caps]`
-/// block when the user applied centerline-driven floor reconstruction.
-///
-/// After [`apply_reconstruction`] extends the chopped floor by
-/// `applied_floor_mm`, the cleaned mesh's actual closed-floor plane
-/// sits at `centerline_last + (-inward_tangent) * extension_m` — NOT
-/// at the original cut boundary's fit plane that
-/// [`PrepCapsBlock`]'s `loops` records (those were detected from the raw scan
-/// BEFORE reconstruction added the extrusion + cap fan).
-///
-/// Without this override, downstream consumers (cf-cap-planes →
-/// cf-device-design candidate-A pinned-floor) clip the cavity against
-/// the stale pre-reconstruction plane, which lands MID-BODY (verified
-/// 2.73 mm offset on iter-1 sock_over_capsule). The cavity's iso=0
-/// then traces a mid-body slice and the marching-cubes reconstruction
-/// shows "dripping-wax" rim artifacts at the cap plane (iter-1 visual
-/// gate failure, 2026-05-17). Recording the post-reconstruction plane
-/// here aligns the .prep.toml's `[caps]` contract with the actual
-/// cleaned-STL floor.
-#[derive(Debug, Clone, Copy)]
-pub struct ReconstructedFloorPlane {
-    /// Floor centroid in PRE-BAKE physics-frame meters — `bottom_center`
-    /// from [`apply_reconstruction`]'s computation: trimmed centerline
-    /// endpoint plus `extension_m` along the outward extrusion direction.
-    pub centroid_m: Point3<f64>,
-    /// Outward unit normal in PRE-BAKE physics-frame coordinates.
-    /// Mirrors [`orient_cap_normal_outward`]'s convention: points AWAY
-    /// from body interior (into the chopped-end half-space). Equals
-    /// `-inward_tangent`.
-    pub normal: Vector3<f64>,
-}
-
-/// Compute the reconstructed-floor plane in PRE-BAKE physics frame
-/// from the in-memory centerline polyline + applied trim values.
-///
-/// Mirrors the `bottom_center` + `extrusion_dir` calculation inside
-/// [`apply_reconstruction`] so the recorded plane matches the actual
-/// reconstructed floor of the cleaned mesh. Operates on the physics-
-/// frame polyline (cf-scan-prep's `CapState::centerline_polyline`)
-/// directly; the bake transform that the cleaned mesh goes through
-/// is applied to neither input nor output, so the result lives in
-/// the same frame as [`DetectedCapLoop::plane_centroid`] / `plane_normal`
-/// — which is what the .prep.toml's `[caps]` block contract expects
-/// (cf-cap-planes' `parse_cap_planes` bakes the recorded plane through
-/// the `[transform]` block at load time).
-///
-/// Returns `None` when reconstruction would not produce a usable floor
-/// plane: zero floor trim, polyline too short after trimming, or a
-/// degenerate inward tangent.
-pub fn compute_reconstructed_floor_plane_physics(
-    centerline_polyline_physics: &[Point3<f64>],
-    applied_tip_mm: f64,
-    applied_floor_mm: f64,
-) -> Option<ReconstructedFloorPlane> {
-    if applied_floor_mm <= 0.0 {
-        return None;
-    }
-    let trimmed = trim_centerline_polyline(
-        centerline_polyline_physics,
-        applied_tip_mm,
-        applied_floor_mm,
-    );
-    if trimmed.len() < 2 {
-        return None;
-    }
-    let n_last = trimmed[trimmed.len() - 1];
-    // Same tangent posture as `apply_reconstruction`: prefer the
-    // ~20 mm look-back average for axis-stability, fall back to the
-    // last-segment vector for short polylines.
-    let inward_tangent = stable_inward_tangent(&trimmed, STABLE_INWARD_TANGENT_LOOKBACK_M)
-        .or_else(|| {
-            let n = trimmed.len();
-            let tangent_raw = trimmed[n - 2].coords - trimmed[n - 1].coords;
-            let norm = tangent_raw.norm();
-            if norm < f64::EPSILON {
-                None
-            } else {
-                Some(tangent_raw / norm)
-            }
-        })?;
-    let extrusion_dir = -inward_tangent;
-    let extension_m = applied_floor_mm * 0.001;
-    let centroid_m = Point3::from(n_last.coords + extrusion_dir * extension_m);
-    Some(ReconstructedFloorPlane {
-        centroid_m,
-        normal: extrusion_dir,
-    })
-}
-
-/// Look-back distance for [`stable_inward_tangent`] in meters.
-/// 20 mm averages enough centerline segments on a typical
-/// workshop scan (segment density ~5 mm; 20 mm = ~4 segments)
-/// to wash out the noisy single-segment tangent at the
-/// post-trim cut endpoint, while staying short enough that the
-/// resulting direction tracks the body's local axis (not the
-/// whole-body PCA average).
-pub const STABLE_INWARD_TANGENT_LOOKBACK_M: f64 = 0.020;
-
-/// Estimate a stable inward tangent at the centerline polyline's
-/// last (cut) endpoint by walking back along the polyline by
-/// `lookback_m` arc-length, then taking the unit vector from
-/// that look-back point to the cut endpoint and **negating** it
-/// so the result points FROM the cut INTO the body (matching
-/// the convention used by [`apply_reconstruction`]'s
-/// `inward_tangent`).
-///
-/// Falls back to the head→cut direction when `lookback_m`
-/// exceeds the polyline's total arc length, and to the
-/// last-segment vector when the polyline has only two points.
-/// Returns `None` for degenerate inputs (single-point polyline,
-/// non-positive lookback, or coincident look-back/cut points).
-///
-/// **Why this helper exists** (2026-05-16): the pre-fix
-/// `apply_reconstruction` used `centerline[n-2] - centerline[n-1]`
-/// directly. On the iter-1 sock-over-capsule scan that single
-/// segment wandered laterally relative to the body's main axis,
-/// causing (a) the K-ring extrusion to extend off-axis and (b)
-/// the blend pass to project scan vertices onto a tilted global
-/// frame, producing visible spike artifacts. Look-back averaging
-/// over ~20 mm tames both.
-pub fn stable_inward_tangent(centerline: &[Point3<f64>], lookback_m: f64) -> Option<Vector3<f64>> {
-    let n = centerline.len();
-    if n < 2 || lookback_m <= 0.0 {
-        return None;
-    }
-    let cut = centerline[n - 1];
-    // Walk segments from the cut endpoint inward, accumulating
-    // arc-length. Stop when `accumulated + this_segment >=
-    // lookback_m` and interpolate within that segment so the
-    // look-back point is exactly `lookback_m` from the cut.
-    let mut accumulated = 0.0;
-    // Default: if every segment is degenerate (zero-length), fall
-    // back to centerline[n-2] (the immediate inward neighbor).
-    let mut lookback_point = centerline[n - 2];
-    let mut found = false;
-    for i in (0..n - 1).rev() {
-        let seg = centerline[i].coords - centerline[i + 1].coords;
-        let seg_len = seg.norm();
-        if seg_len < f64::EPSILON {
-            continue;
-        }
-        if accumulated + seg_len >= lookback_m {
-            let remaining = lookback_m - accumulated;
-            let t = remaining / seg_len;
-            lookback_point = centerline[i + 1] + seg * t;
-            found = true;
-            break;
-        }
-        accumulated += seg_len;
-        lookback_point = centerline[i];
-    }
-    // If we exhausted the polyline without reaching `lookback_m`,
-    // the last assignment of `lookback_point` is the head of the
-    // polyline (centerline[0] or last non-degenerate inward
-    // point) — that's the right fallback for short polylines.
-    let _ = found;
-
-    let dir = lookback_point.coords - cut.coords;
-    let norm = dir.norm();
-    if norm < f64::EPSILON {
-        return None;
-    }
-    Some(dir / norm)
-}
-
-/// Bin the mesh vertices in the reference zone above the cut by
-/// angular position around the centerline, then take the median
-/// radial distance per bin. Returns a length-M array of radii (M =
-/// [`RECONSTRUCT_ANGLE_BINS`]).
-///
-/// Robust to noise: per-bin **median** rather than mean. A single
-/// stray vertex doesn't pull the bin's radius.
-///
-/// Bins with zero samples fall back to the overall median radius
-/// (so the bottom-fan reconstruction stays well-defined even with
-/// patchy reference data).
-pub fn sample_radial_profile(
-    mesh: &IndexedMesh,
-    cut_point: Point3<f64>,
-    inward_tangent: Vector3<f64>,
-    u: Vector3<f64>,
-    v: Vector3<f64>,
-    reference_zone_m: f64,
-) -> [f64; RECONSTRUCT_ANGLE_BINS] {
-    let mut bins: Vec<Vec<f64>> = (0..RECONSTRUCT_ANGLE_BINS).map(|_| Vec::new()).collect();
-    let bin_span = std::f64::consts::TAU / RECONSTRUCT_ANGLE_BINS as f64;
-    for vtx in &mesh.vertices {
-        let d = vtx.coords - cut_point.coords;
-        let along = d.dot(&inward_tangent);
-        // Sample only the slab ABOVE the cut (toward the mesh
-        // interior), within `reference_zone_m`. `along > 0` ⇒ on
-        // the interior side; `along < reference_zone_m` ⇒ within
-        // the zone.
-        if along <= 0.0 || along > reference_zone_m {
-            continue;
-        }
-        let proj_u = d.dot(&u);
-        let proj_v = d.dot(&v);
-        let r = (proj_u * proj_u + proj_v * proj_v).sqrt();
-        let angle = proj_v.atan2(proj_u);
-        let normalized = if angle >= 0.0 {
-            angle
-        } else {
-            angle + std::f64::consts::TAU
-        };
-        let bin = ((normalized / bin_span) as usize).min(RECONSTRUCT_ANGLE_BINS - 1);
-        bins[bin].push(r);
-    }
-
-    // Compute per-bin median + a fallback "overall median" for
-    // empty bins.
-    let mut radii = [0.0_f64; RECONSTRUCT_ANGLE_BINS];
-    let mut all_radii: Vec<f64> = bins.iter().flat_map(|b| b.iter().copied()).collect();
-    let overall = if all_radii.is_empty() {
-        0.0
-    } else {
-        all_radii.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        all_radii[all_radii.len() / 2]
-    };
-    for (i, bin) in bins.iter_mut().enumerate() {
-        if bin.is_empty() {
-            radii[i] = overall;
-        } else {
-            bin.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-            radii[i] = bin[bin.len() / 2];
-        }
-    }
-    radii
-}
-
-/// Same reference-zone walk as [`sample_radial_profile`] but
-/// fits a **per-angle-bin linear regression** `r(s) = a + b·s`
-/// instead of taking the median. Used by the Extrapolate shape
-/// variant (CSP.4e.3.b) — extrapolating below the cut at `s < 0`
-/// gives a profile that continues the reference-zone trend
-/// (e.g., a sock that narrows toward the rim keeps narrowing
-/// below the cut).
-///
-/// Returns `(intercepts, slopes)` — both length-M arrays:
-/// - `intercepts[i]` = `a` for bin i (radius at `s = 0`, the cut)
-/// - `slopes[i]`     = `b` for bin i (mm of radius per mm of s)
-///
-/// Per-bin samples with < 2 points fall back to (overall median,
-/// slope 0) — flat reconstruction for that angle.
-pub fn sample_radial_profile_linear_fit(
-    mesh: &IndexedMesh,
-    cut_point: Point3<f64>,
-    inward_tangent: Vector3<f64>,
-    u: Vector3<f64>,
-    v: Vector3<f64>,
-    reference_zone_m: f64,
-) -> ([f64; RECONSTRUCT_ANGLE_BINS], [f64; RECONSTRUCT_ANGLE_BINS]) {
-    let mut bins: Vec<Vec<(f64, f64)>> = (0..RECONSTRUCT_ANGLE_BINS).map(|_| Vec::new()).collect();
-    let bin_span = std::f64::consts::TAU / RECONSTRUCT_ANGLE_BINS as f64;
-    let mut all_radii: Vec<f64> = Vec::new();
-    for vtx in &mesh.vertices {
-        let d = vtx.coords - cut_point.coords;
-        let s = d.dot(&inward_tangent);
-        if s <= 0.0 || s > reference_zone_m {
-            continue;
-        }
-        let proj_u = d.dot(&u);
-        let proj_v = d.dot(&v);
-        let r = (proj_u * proj_u + proj_v * proj_v).sqrt();
-        let angle = proj_v.atan2(proj_u);
-        let normalized = if angle >= 0.0 {
-            angle
-        } else {
-            angle + std::f64::consts::TAU
-        };
-        let bin = ((normalized / bin_span) as usize).min(RECONSTRUCT_ANGLE_BINS - 1);
-        bins[bin].push((s, r));
-        all_radii.push(r);
-    }
-    // Fallback overall median for sparse bins.
-    let overall = if all_radii.is_empty() {
-        0.0
-    } else {
-        all_radii.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        all_radii[all_radii.len() / 2]
-    };
-    let mut intercepts = [0.0_f64; RECONSTRUCT_ANGLE_BINS];
-    let mut slopes = [0.0_f64; RECONSTRUCT_ANGLE_BINS];
-    for (i, samples) in bins.iter().enumerate() {
-        if samples.len() < 2 {
-            intercepts[i] = overall;
-            slopes[i] = 0.0;
-            continue;
-        }
-        #[allow(clippy::cast_precision_loss)]
-        let n = samples.len() as f64;
-        let sum_s: f64 = samples.iter().map(|(s, _)| s).sum();
-        let sum_r: f64 = samples.iter().map(|(_, r)| r).sum();
-        let sum_s2: f64 = samples.iter().map(|(s, _)| s * s).sum();
-        let sum_sr: f64 = samples.iter().map(|(s, r)| s * r).sum();
-        let denom = n * sum_s2 - sum_s * sum_s;
-        if denom.abs() < f64::EPSILON {
-            intercepts[i] = sum_r / n;
-            slopes[i] = 0.0;
-        } else {
-            slopes[i] = (n * sum_sr - sum_s * sum_r) / denom;
-            intercepts[i] = (sum_r - slopes[i] * sum_s) / n;
-        }
-    }
-    (intercepts, slopes)
-}
-
-/// Taper rate for the Taper shape variant (CSP.4e.3.a). The new
-/// floor's radius is `1 - TAPER_AT_FLOOR` × the canonical
-/// profile; intermediate rings linearly interpolate. 0.3 = 30%
-/// reduction at the floor → visible-but-not-extreme pinch.
-pub const RECONSTRUCT_TAPER_AT_FLOOR: f64 = 0.3;
-
-/// Linearly interpolate the canonical radius at angle `angle`
-/// (radians, any value) from the M-bin profile.
-pub fn sample_radius_at_angle(radii: &[f64; RECONSTRUCT_ANGLE_BINS], angle: f64) -> f64 {
-    let bin_span = std::f64::consts::TAU / RECONSTRUCT_ANGLE_BINS as f64;
-    let normalized = if angle >= 0.0 {
-        angle
-    } else {
-        angle + std::f64::consts::TAU
-    };
-    let pos = (normalized / bin_span) % RECONSTRUCT_ANGLE_BINS as f64;
-    let lo_bin = (pos as usize) % RECONSTRUCT_ANGLE_BINS;
-    let hi_bin = (lo_bin + 1) % RECONSTRUCT_ANGLE_BINS;
-    let t = pos - pos.floor();
-    radii[lo_bin] * (1.0 - t) + radii[hi_bin] * t
-}
-
-/// Apply floor reconstruction to `mesh`. The mesh MUST already be
-/// trim-cut (open boundary at the floor end); other open
-/// boundaries (e.g., tip-end if tip was also trimmed) fall
-/// through to flat auto-cap inside this function's degenerate
-/// paths. CSP.4e.2 (Constant), CSP.4e.3 (Taper, Extrapolate).
-///
-/// `shape` controls how the per-ring radius is computed as we
-/// extrude down the centerline from the cut to the new floor:
-/// - `Constant` — every ring uses the canonical median profile
-///   at the cut (cylindrical extrusion).
-/// - `Taper`    — linear scaling from canonical at the cut to
-///   `(1 - RECONSTRUCT_TAPER_AT_FLOOR) × canonical` at the new
-///   floor.
-/// - `Extrapolate` — per-angle linear regression `r(s) = a + b·s`
-///   across the reference zone; extrapolate to `s < 0` (below
-///   the cut) for each ring. Captures the natural taper of the
-///   reference geometry.
-///
-/// `centerline` is the POST-trim polyline in the same frame as
-/// `mesh` (physics-frame meters, pre-bake under the current live-
-/// preview pipeline).
-///
-/// # Seam handling (2026-05-16)
-///
-/// The transition from the noisy scan above the cut to the smooth
-/// reconstruction below used to produce a visible "lip": the
-/// floor-loop's noisy radii didn't match the smoothed canonical
-/// profile, leaving a ridge at the join. **Always-on fix**: the
-/// floor-loop vertices are NOT snapped to the canonical profile;
-/// they BECOME the top extrusion ring as-is, and each subsequent
-/// ring `k` lerps toward the canonical profile via a smoothstep
-/// weight (0 at the top, 1 at the new floor). The bottom flat
-/// cap still sits on the fully-smooth canonical profile, so the
-/// reconstruction doesn't carry the noise into the floor. Combined
-/// with the [`stable_inward_tangent`]-driven extrusion direction,
-/// this produces a clean seam without any user-tunable knob.
-///
-/// (A scan-side blend-zone slider was prototyped 2026-05-16 and
-/// removed the same session: the local-frame projection it needed
-/// produced visible artifacts on the iter-1 sock-over-capsule
-/// fixture at any non-zero blend, and `blend_zone_mm = 0` already
-/// looked "pretty much perfect" per user verification. The slider
-/// was carrying surface area without earning it.)
-pub fn apply_reconstruction(
-    mut mesh: IndexedMesh,
-    centerline: &[Point3<f64>],
-    applied_floor_mm: f64,
-    reference_zone_mm: f64,
-    shape: ReconstructShape,
-) -> IndexedMesh {
-    if centerline.len() < 2 || applied_floor_mm <= 0.0 || reference_zone_mm <= 0.0 {
-        // Nothing to reconstruct — fall back to flat-cap.
-        auto_cap_open_boundaries(&mut mesh);
-        return mesh;
-    }
-    let loops = detect_boundary_loops(&mesh);
-    let centerline_last = centerline[centerline.len() - 1];
-    let Some(floor_idx) = find_floor_loop_index(&loops, &mesh, centerline_last) else {
-        auto_cap_open_boundaries(&mut mesh);
-        return mesh;
-    };
-
-    // Build the local frame at the cut. `inward_tangent` points
-    // FROM the cut endpoint AWAY from the chopped end (i.e., back
-    // INTO the mesh body) — that's the direction of `polyline[N-2]
-    // - polyline[N-1]` after trim trimmed the polyline.
-    // Stable inward tangent: walk back along the centerline by
-    // ~20 mm and take the dir-into-body. Replaces the prior
-    // single-segment `centerline[n-2] - centerline[n-1]` which
-    // wandered laterally on noisy polylines, tilting the K-ring
-    // extrusion direction off the body's actual axis. Falls
-    // back to the single-segment vector for short polylines.
-    let inward_tangent =
-        if let Some(t) = stable_inward_tangent(centerline, STABLE_INWARD_TANGENT_LOOKBACK_M) {
-            t
-        } else {
-            let n = centerline.len();
-            let tangent_raw = centerline[n - 2].coords - centerline[n - 1].coords;
-            let tangent_norm = tangent_raw.norm();
-            if tangent_norm < f64::EPSILON {
-                auto_cap_open_boundaries(&mut mesh);
-                return mesh;
-            }
-            tangent_raw / tangent_norm
-        };
-    let (u_axis, v_axis) = perpendicular_basis_for(inward_tangent);
-
-    // Sample the canonical radial profile from the reference zone.
-    // For Constant + Taper we only need per-bin medians; for
-    // Extrapolate we ALSO need per-bin linear-regression slopes
-    // so we can evaluate `r(s) = a + b·s` at `s < 0` (below the
-    // cut). The closure below dispatches per-shape.
-    let base_radii = sample_radial_profile(
-        &mesh,
-        centerline_last,
-        inward_tangent,
-        u_axis,
-        v_axis,
-        reference_zone_mm * 0.001,
-    );
-    let extrap_fit = if matches!(shape, ReconstructShape::Extrapolate) {
-        Some(sample_radial_profile_linear_fit(
-            &mesh,
-            centerline_last,
-            inward_tangent,
-            u_axis,
-            v_axis,
-            reference_zone_mm * 0.001,
-        ))
-    } else {
-        None
-    };
-    let extension_m = applied_floor_mm * 0.001;
-    // `t` ∈ [0, 1]: 0 = top ring at the cut, 1 = bottom ring at
-    // the new floor. Returns the per-angle radius for that ring.
-    let radius_at = |angle: f64, t: f64| -> f64 {
-        let base = sample_radius_at_angle(&base_radii, angle);
-        match shape {
-            ReconstructShape::Constant => base,
-            ReconstructShape::Taper => base * (1.0 - RECONSTRUCT_TAPER_AT_FLOOR * t),
-            ReconstructShape::Extrapolate => {
-                // CSP.4e.3.b — for Extrapolate, evaluate the
-                // per-angle linear fit at `s = -extension_m × t`
-                // (negative s = below cut). Fall back to Constant
-                // if the fit isn't available (shouldn't happen).
-                if let Some((a_arr, b_arr)) = extrap_fit.as_ref() {
-                    let a = sample_radius_at_angle(a_arr, angle);
-                    let b = sample_radius_at_angle(b_arr, angle);
-                    let s = -extension_m * t;
-                    let r = a + b * s;
-                    // Clamp non-negative — an aggressive trend
-                    // could project to negative radius for a long
-                    // extrusion. Below ~0 the mesh would
-                    // self-cross the centerline.
-                    r.max(0.0)
-                } else {
-                    base
-                }
-            }
-        }
-    };
-
-    // Capture the floor-loop's per-vertex angle + radius as the
-    // top extrusion ring. **Anti-lip**: we use the noisy raw
-    // radii as-is (no snap to the canonical profile), so the
-    // top ring matches the boundary the scan is welded to —
-    // no geometric step at the seam. The K-ring loop below
-    // smoothsteps each subsequent ring toward the canonical
-    // profile, fading the noise out over K rings.
-    let floor_loop = loops[floor_idx].clone();
-    let l = floor_loop.vertices.len();
-    let mut top_ring_angles = Vec::with_capacity(l);
-    let mut top_ring_radii = Vec::with_capacity(l);
-    for &vidx in &floor_loop.vertices {
-        if let Some(p) = mesh.vertices.get(vidx as usize).copied() {
-            let d = p.coords - centerline_last.coords;
-            let proj_u = d.dot(&u_axis);
-            let proj_v = d.dot(&v_axis);
-            let angle = proj_v.atan2(proj_u);
-            let r = (proj_u * proj_u + proj_v * proj_v).sqrt();
-            top_ring_angles.push(angle);
-            top_ring_radii.push(r);
-        } else {
-            top_ring_angles.push(0.0);
-            top_ring_radii.push(0.0);
-        }
-    }
-
-    // Generate K extrusion rings DOWN past the cut (in the
-    // direction OPPOSITE the inward tangent — outward toward the
-    // original chopped position). Each ring's per-angle radius is
-    // a smoothstep lerp from `top_ring_radii` (k=0, the floor loop)
-    // to the canonical `radius_at(angle, t_k)` (k=K, the new floor).
-    // At blend_zone=0 this gradual smoothing IS the anti-lip — the
-    // noisy top ring doesn't snap to the smooth profile abruptly.
-    // At blend_zone > 0 the top ring is already on the canonical
-    // profile (from the blend pass), so the lerp degenerates to
-    // smooth-all-the-way.
-    let extrusion_dir = -inward_tangent;
-    let mut prev_ring: Vec<u32> = floor_loop.vertices.clone();
-    for k in 1..=RECONSTRUCT_RING_COUNT {
-        #[allow(clippy::cast_precision_loss)]
-        let t_k = k as f64 / RECONSTRUCT_RING_COUNT as f64;
-        let ring_blend = t_k * t_k * (3.0 - 2.0 * t_k);
-        let ring_center = centerline_last.coords + extrusion_dir * extension_m * t_k;
-        let mut this_ring: Vec<u32> = Vec::with_capacity(l);
-        for (i, &angle) in top_ring_angles.iter().enumerate() {
-            let r_smooth = radius_at(angle, t_k);
-            let r_top = top_ring_radii[i];
-            let r = r_top * (1.0 - ring_blend) + r_smooth * ring_blend;
-            let new_pos = ring_center + r * (u_axis * angle.cos() + v_axis * angle.sin());
-            #[allow(clippy::cast_possible_truncation)]
-            let idx = mesh.vertices.len() as u32;
-            mesh.vertices.push(Point3::from(new_pos));
-            this_ring.push(idx);
-        }
-        // Triangle strip between prev_ring (top) and this_ring (bottom).
-        // For each i: quad (prev[i], prev[i+1], this[i+1], this[i]).
-        // Triangulate as (prev[i], prev[i+1], this[i+1]) +
-        // (prev[i], this[i+1], this[i]). Winding chosen so the
-        // outward normal points radially AWAY from the centerline.
-        for i in 0..l {
-            let a = prev_ring[i];
-            let b = prev_ring[(i + 1) % l];
-            let c = this_ring[(i + 1) % l];
-            let d = this_ring[i];
-            mesh.faces.push([a, b, c]);
-            mesh.faces.push([a, c, d]);
-        }
-        prev_ring = this_ring;
-    }
-
-    // Bottom flat cap: fan from a centroid vertex at the extrusion
-    // tip. Winding: outward normal points FURTHER along
-    // `extrusion_dir` (away from the mesh body).
-    let bottom_center = centerline_last.coords + extrusion_dir * extension_m;
-    #[allow(clippy::cast_possible_truncation)]
-    let center_idx = mesh.vertices.len() as u32;
-    mesh.vertices.push(Point3::from(bottom_center));
-    for i in 0..l {
-        let a = prev_ring[i];
-        let b = prev_ring[(i + 1) % l];
-        mesh.faces.push([a, b, center_idx]);
-    }
-
-    // Verify winding empirically: pick the first sidewall triangle,
-    // compute its normal, check if it points radially OUTWARD. If
-    // not, flip all the sidewall + cap face winding. This is a
-    // one-shot heuristic — the boundary loop's CCW-vs-CW direction
-    // depends on which end was trimmed, so we can't pre-compute.
-    let first_sidewall_face_idx = mesh.faces.len() - 2 * l * RECONSTRUCT_RING_COUNT - l;
-    if let Some(&[a, b, c]) = mesh.faces.get(first_sidewall_face_idx) {
-        let va = mesh.vertices[a as usize];
-        let vb = mesh.vertices[b as usize];
-        let vc = mesh.vertices[c as usize];
-        let normal = (vb.coords - va.coords).cross(&(vc.coords - va.coords));
-        // Radial outward at va: va - ring_axis_point_at_same_along.
-        // Use the cut_point as a proxy for the radial-from-centerline
-        // origin at the top ring (it's close enough for the sign check).
-        let radial_at_va = va.coords - centerline_last.coords;
-        // Project out the along-tangent component to get the pure radial.
-        let radial_only = radial_at_va - inward_tangent * radial_at_va.dot(&inward_tangent);
-        if normal.dot(&radial_only) < 0.0 {
-            // Flip every new face we added (last 2*L*K + L faces).
-            let new_face_count = 2 * l * RECONSTRUCT_RING_COUNT + l;
-            let start = mesh.faces.len() - new_face_count;
-            for face in mesh.faces.iter_mut().skip(start) {
-                face.swap(1, 2);
-            }
-        }
-    }
-
-    // CSP.4e fix-forward (PR #246 cold-read review, 2026-05-15) —
-    // seal any OTHER open boundaries we didn't reconstruct. The
-    // floor end is closed by the extrusion sidewalls + bottom fan
-    // above; this call only acts on remaining open loops (typically
-    // the tip end if the user also trimmed there). Without it, a
-    // dual-end-trim + reconstruct workflow emits a non-watertight
-    // cleaned STL that breaks downstream cf-cast-cli offset/simplify.
-    auto_cap_open_boundaries(&mut mesh);
-
-    mesh
-}
-
-/// Detect all open boundary loops in `mesh`. Wraps `mesh-repair`'s
-/// `detect_holes`, which builds adjacency + walks boundary edges into
-/// closed vertex-index loops. Returns a `Vec<BoundaryLoop>` (each
-/// loop's `vertices` is an ordered list of vertex indices closing
-/// back to vertex 0).
-pub fn detect_boundary_loops(mesh: &IndexedMesh) -> Vec<holes::BoundaryLoop> {
-    let adjacency = MeshAdjacency::build(&mesh.faces);
-    holes::detect_holes(mesh, &adjacency)
-}
-
-/// Least-squares fit a plane to a set of 3D points via SVD on the
-/// centered covariance matrix. Returns `(centroid, normal, r_squared)`.
-///
-/// **Algorithm**: compute the points' centroid, build the covariance
-/// matrix `Σ (p - centroid)(p - centroid)^T`, SVD-decompose it. The
-/// singular vector corresponding to the smallest singular value is
-/// the plane normal (direction of least variance through the cloud).
-/// R² is `1.0 - (smallest_singular_value² / sum_of_singular_values²)` —
-/// measures how concentrated the variance is in the two larger
-/// directions vs. the normal direction. A perfectly planar loop has
-/// `smallest = 0` → `R² = 1.0`; a spherical cloud has all three
-/// roughly equal → `R² ≈ 2/3`.
-///
-/// **Caller responsibility**: the returned normal is *unsigned* —
-/// the SVD doesn't tell us which side is "outward". Pair with
-/// [`orient_cap_normal_outward`] to flip the normal so it points
-/// away from the mesh interior.
-///
-/// Handles degenerate input: < 3 points returns an identity-ish
-/// fallback (`+Z` normal, centroid at origin, R² = 0). Real loops
-/// have ≥ 3 vertices via mesh-repair's `BoundaryLoop::is_valid`.
-pub fn fit_plane_to_points(points: &[Point3<f64>]) -> (Point3<f64>, Vector3<f64>, f64) {
-    if points.len() < 3 {
-        return (Point3::origin(), Vector3::new(0.0, 0.0, 1.0), 0.0);
-    }
-    // Compute centroid.
-    let mut sum = Vector3::zeros();
-    for p in points {
-        sum += p.coords;
-    }
-    #[allow(clippy::cast_precision_loss)]
-    let n = points.len() as f64;
-    let centroid_v = sum / n;
-    let centroid = Point3::from(centroid_v);
-
-    // Build covariance matrix Σ (p - centroid)(p - centroid)^T.
-    let mut cov = Matrix3::<f64>::zeros();
-    for p in points {
-        let d = p.coords - centroid_v;
-        cov += d * d.transpose();
-    }
-
-    // SVD: cov = U Σ V^T. For a symmetric matrix, U = V; the columns
-    // of U are eigenvectors and the singular values are eigenvalues
-    // (non-negative).
-    let svd = cov.svd(true, true);
-    let singular_values = svd.singular_values;
-    // Smallest singular value's index — that's our normal direction.
-    let (min_idx, min_sv) =
-        if singular_values[2] <= singular_values[1] && singular_values[2] <= singular_values[0] {
-            (2, singular_values[2])
-        } else if singular_values[1] <= singular_values[0] {
-            (1, singular_values[1])
-        } else {
-            (0, singular_values[0])
-        };
-
-    let normal = if let Some(u) = &svd.u {
-        let col = u.column(min_idx);
-        Vector3::new(col[0], col[1], col[2])
-    } else {
-        Vector3::new(0.0, 0.0, 1.0)
-    };
-
-    // R² = 1 - (min_sv² / sum_sv²). If all singular values are zero
-    // (all points coincident), the plane is undefined; fall back to
-    // R² = 0.
-    let sum_sq = singular_values[0] * singular_values[0]
-        + singular_values[1] * singular_values[1]
-        + singular_values[2] * singular_values[2];
-    let r_squared = if sum_sq > f64::EPSILON {
-        1.0 - (min_sv * min_sv) / sum_sq
-    } else {
-        0.0
-    };
-    (centroid, normal.normalize(), r_squared)
-}
-
-/// Flip `normal` so it points **away from the mesh interior**.
-///
-/// **Heuristic**: sample mesh vertices, count how many fall on each
-/// side of the plane (loop_centroid + normal · t). The side with the
-/// MORE vertices is the "interior" (since the mesh extends inward
-/// from the loop). The normal should point to the side with FEWER
-/// vertices. If the heuristic is ambiguous (~50/50 split — possible
-/// when the loop wraps a thin protrusion), the input normal is
-/// returned unchanged; user can manually override via the cap panel's
-/// manual sub-section (out of MVP scope; deferred).
-///
-/// Per spec §Architectural decisions §"Cap normal orientation": the
-/// triangulated cap winding determines outward direction; we need
-/// the normal to face away from the mesh interior so `mesh_sdf`
-/// computes correct inside/outside at commit #12.
-pub fn orient_cap_normal_outward(
-    mesh: &IndexedMesh,
-    plane_centroid: Point3<f64>,
-    normal: Vector3<f64>,
-) -> Vector3<f64> {
-    let mut above: usize = 0;
-    let mut below: usize = 0;
-    for v in &mesh.vertices {
-        let signed = (v.coords - plane_centroid.coords).dot(&normal);
-        if signed > 0.0 {
-            above += 1;
-        } else if signed < 0.0 {
-            below += 1;
-        }
-    }
-    // The "mesh-majority side" is the side with more vertices. The
-    // outward normal points away from that side.
-    if above > below { -normal } else { normal }
-}
-
-/// Build a cap-loop record from a detected boundary loop: fits its
-/// plane, orients the normal outward, decides the default per-loop
-/// include flag based on vertex count.
-pub fn build_detected_cap_loop(
-    mesh: &IndexedMesh,
-    loop_data: &holes::BoundaryLoop,
-) -> DetectedCapLoop {
-    let loop_points: Vec<Point3<f64>> = loop_data
-        .vertices
-        .iter()
-        .map(|&idx| mesh.vertices[idx as usize])
-        .collect();
-    let (plane_centroid, plane_normal_raw, r_squared) = fit_plane_to_points(&loop_points);
-    let plane_normal = orient_cap_normal_outward(mesh, plane_centroid, plane_normal_raw);
-
-    // Spec §Panel specifications §6: default-check loops with vertex
-    // count ≥ 8 (small loops are usually acceptable holes or scanner
-    // artifacts).
-    let include = loop_data.vertices.len() >= 8;
-
-    DetectedCapLoop {
-        vertex_indices: loop_data.vertices.clone(),
-        plane_centroid,
-        plane_normal,
-        plane_fit_r_squared: r_squared,
-        include,
-    }
-}
-
-/// Identifies a mesh edge by the unordered pair of its vertex
-/// indices (`lo <= hi`). Used as a hash key to deduplicate
-/// plane-edge intersection points across the two faces that share
-/// each interior mesh edge — two adjacent triangles' segments meet
-/// at the SAME intersection point because they share the same edge
-/// key, so segment chaining is robust without coordinate-tolerance
-/// matching.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct MeshEdgeKey {
-    lo: u32,
-    hi: u32,
-}
-
-impl MeshEdgeKey {
-    fn new(a: u32, b: u32) -> Self {
-        Self {
-            lo: a.min(b),
-            hi: a.max(b),
-        }
-    }
-}
-
-/// SOS perturbation magnitude (meters) used by
-/// [`intersect_plane_with_mesh`] to push vertices with signed
-/// distance below this magnitude consistently to the positive side
-/// of the plane. With every vertex strictly off-plane after the
-/// perturbation, each plane-crossing triangle produces a well-
-/// defined 2-edge segment (no vertex-on-plane degenerate cases).
-/// 1e-12 m = 1 picometer — well below any geometric feature on
-/// body-part scans (mm scale) and far below f64 precision around
-/// typical coordinate magnitudes (≤ 1 m).
-pub const PLANE_INTERSECTION_ON_PLANE_EPS_M: f64 = 1e-12;
-
-/// Intersect a plane with a triangle mesh and return the resulting
-/// cross-section as one or more closed polygon loops.
-///
-/// **Inputs**: `plane_point` is any point on the plane (used as the
-/// plane's origin for signed-distance computation); `plane_normal`
-/// MUST be unit-magnitude (caller normalizes once); `mesh` is a
-/// watertight indexed triangle mesh (input meshes from cf-scan-prep
-/// post-Cap are watertight by construction).
-///
-/// **Output**: each inner `Vec<Point3<f64>>` is the ordered vertex
-/// sequence of a closed polygon loop; the implicit last edge
-/// connects `loop[n-1]` back to `loop[0]`. Order around each loop
-/// is consistent (traversal-walk order) but the WINDING (CCW vs.
-/// CW with respect to `plane_normal`) is arbitrary — downstream
-/// consumers like [`polygon_centroid_3d`] handle both orientations
-/// via signed-area cancellation.
-///
-/// **Algorithm**:
-///
-/// 1. **Signed distance per vertex** with SOS perturbation — any
-///    vertex with `|dist| < PLANE_INTERSECTION_ON_PLANE_EPS_M` is
-///    snapped to `+EPS`. After this no vertex is exactly on the
-///    plane, so every plane-crossing triangle has signs that are
-///    strictly `(+, +, -)` or `(+, -, -)` — exactly 2 of its 3
-///    edges have endpoints of opposite sign.
-/// 2. **Per-face intersection segments** — for each plane-crossing
-///    triangle, compute the linear interpolation parameter on its
-///    two sign-flipping edges. Each endpoint is identified by a
-///    [`MeshEdgeKey`] so the SAME intersection point is shared
-///    between the two faces adjacent to that mesh edge (no
-///    coordinate dedup needed — the key is exact).
-/// 3. **Segment graph** — `adjacency: MeshEdgeKey → Vec<MeshEdgeKey>`
-///    records the segments. In a watertight mesh each crossing edge
-///    has exactly 2 neighbors (one from each adjacent face), so the
-///    graph decomposes into disjoint cycles.
-/// 4. **Loop extraction** — walk the graph starting from each
-///    unvisited key, following adjacency (avoid the previous node)
-///    until the start is revisited. Drop fragments shorter than 3
-///    points (degenerate / open boundary remnants).
-///
-/// **Edge cases**:
-/// - Empty mesh / zero-magnitude normal: returns `Vec::new()`.
-/// - Plane outside the mesh: returns `Vec::new()` (no triangles
-///   have mixed signs).
-/// - Non-convex body (e.g., a torus slice): returns multiple loops
-///   — the caller (centerline algorithm) picks the largest-area
-///   loop for centroid computation.
-/// - Open / non-watertight mesh at the slice: incomplete loops
-///   (segments with dead ends) are dropped by the `len >= 3` filter
-///   — caller sees fewer / smaller loops than expected.
-pub fn intersect_plane_with_mesh(
-    plane_point: &Point3<f64>,
-    plane_normal: &Vector3<f64>,
-    mesh: &IndexedMesh,
-) -> Vec<Vec<Point3<f64>>> {
-    if mesh.vertices.is_empty()
-        || mesh.faces.is_empty()
-        || plane_normal.norm_squared() < f64::EPSILON
-    {
-        return Vec::new();
-    }
-    // Caller's contract is to pass a unit normal; defensive
-    // re-normalize is one sqrt and protects against drift.
-    let n = plane_normal.normalize();
-
-    // Step 1: signed distance per vertex, with SOS perturbation.
-    let dists: Vec<f64> = mesh
-        .vertices
-        .iter()
-        .map(|v| {
-            let raw = n.dot(&(v.coords - plane_point.coords));
-            if raw.abs() < PLANE_INTERSECTION_ON_PLANE_EPS_M {
-                PLANE_INTERSECTION_ON_PLANE_EPS_M
-            } else {
-                raw
-            }
-        })
-        .collect();
-
-    // Step 2-3: per-face intersection + segment graph build.
-    let mut point_at: HashMap<MeshEdgeKey, Point3<f64>> = HashMap::new();
-    let mut adjacency: HashMap<MeshEdgeKey, Vec<MeshEdgeKey>> = HashMap::new();
-
-    for face in &mesh.faces {
-        let signs = [
-            dists[face[0] as usize].signum(),
-            dists[face[1] as usize].signum(),
-            dists[face[2] as usize].signum(),
+        // 6 faces × 2 triangles, CCW from outside.
+        let faces: [[u32; 3]; 12] = [
+            // -Z (bottom)
+            [0, 2, 1],
+            [1, 2, 3],
+            // +Z (top)
+            [4, 5, 6],
+            [5, 7, 6],
+            // -Y (front)
+            [0, 1, 4],
+            [1, 5, 4],
+            // +Y (back)
+            [2, 6, 3],
+            [3, 6, 7],
+            // -X (left)
+            [0, 4, 2],
+            [2, 4, 6],
+            // +X (right)
+            [1, 3, 5],
+            [3, 7, 5],
         ];
-        let any_pos = signs.iter().any(|&s| s > 0.0);
-        let any_neg = signs.iter().any(|&s| s < 0.0);
-        if !(any_pos && any_neg) {
-            continue;
+        for f in faces {
+            mesh.faces.push(f);
         }
-
-        // Find the two edges of this triangle whose endpoints have
-        // opposite signs (these are the two edges the plane crosses).
-        // After SOS perturbation, a mixed-sign triangle has exactly
-        // 2 sign-flipping edges, so `crossing.len() == 2` is the
-        // expected case; the defensive `if let` skips any anomaly.
-        let mut crossing: Vec<MeshEdgeKey> = Vec::with_capacity(2);
-        for e in 0..3 {
-            let i = face[e];
-            let j = face[(e + 1) % 3];
-            if signs[e] != signs[(e + 1) % 3] {
-                let key = MeshEdgeKey::new(i, j);
-                crossing.push(key);
-
-                // Compute the intersection point on this edge (once
-                // per edge, shared across the two adjacent faces).
-                point_at.entry(key).or_insert_with(|| {
-                    let p_i = mesh.vertices[i as usize].coords;
-                    let p_j = mesh.vertices[j as usize].coords;
-                    let d_i = dists[i as usize];
-                    let d_j = dists[j as usize];
-                    // Linear-interpolation parameter where the
-                    // signed distance crosses zero. With strict
-                    // sign-flip guaranteed by SOS, `d_i - d_j` is
-                    // bounded away from zero (same sign as d_i).
-                    let t = d_i / (d_i - d_j);
-                    Point3::from(p_i + t * (p_j - p_i))
-                });
-            }
-        }
-        if let &[a, b] = crossing.as_slice() {
-            adjacency.entry(a).or_default().push(b);
-            adjacency.entry(b).or_default().push(a);
-        }
+        mesh
     }
+    /// Build a closed Z-axis frustum (cylinder if `radius_base ==
+    /// radius_tip`; cone if `radius_tip == 0`) with `n_rings` axial
+    /// rings × `n_segs` angular segments per ring, plus triangle-fan
+    /// caps at z = ±height/2. Watertight; CCW-outward winding;
+    /// centered on z-axis.
+    ///
+    /// `apply_noise(ring_idx, seg_idx, theta) -> f64` is added to
+    /// the ring's interpolated radius per vertex. Use a closure
+    /// returning `0.0` for a clean surface.
+    fn make_closed_frustum_mesh(
+        n_rings: usize,
+        n_segs: usize,
+        radius_base: f64,
+        radius_tip: f64,
+        height: f64,
+        apply_noise: impl Fn(usize, usize, f64) -> f64,
+    ) -> IndexedMesh {
+        assert!(
+            n_rings >= 2 && n_segs >= 3,
+            "frustum needs >= 2 rings, >= 3 segs"
+        );
+        let vert_count = n_rings * n_segs + 2;
+        let face_count = 2 * (n_rings - 1) * n_segs + 2 * n_segs;
+        let mut mesh = IndexedMesh::with_capacity(vert_count, face_count);
 
-    // Step 4: walk segment graph to extract closed loops.
-    // Collect keys into a sorted Vec for deterministic loop-output
-    // order across runs (HashMap key iteration is nondeterministic).
-    let mut keys: Vec<MeshEdgeKey> = adjacency.keys().copied().collect();
-    keys.sort_by_key(|k| (k.lo, k.hi));
-
-    let mut visited: HashSet<MeshEdgeKey> = HashSet::new();
-    let mut loops: Vec<Vec<Point3<f64>>> = Vec::new();
-
-    for start in keys {
-        if visited.contains(&start) {
-            continue;
-        }
-        let mut loop_pts: Vec<Point3<f64>> = Vec::new();
-        let mut current = start;
-        let mut prev: Option<MeshEdgeKey> = None;
-        loop {
-            if visited.contains(&current) {
-                // Either closed the loop (current == start, second
-                // visit) or hit an already-traversed area. Either
-                // way the walk ends.
-                break;
-            }
-            visited.insert(current);
-            loop_pts.push(point_at[&current]);
-            // Pick the next neighbor that isn't the previous step.
-            // In a watertight mesh each crossing edge has exactly 2
-            // neighbors; on a clean loop the non-prev choice is
-            // unique.
-            let neighbors = &adjacency[&current];
-            let next = neighbors.iter().find(|&&n| Some(n) != prev).copied();
-            match next {
-                Some(n) => {
-                    prev = Some(current);
-                    current = n;
-                }
-                None => break, // dead end (degenerate boundary)
-            }
-        }
-        if loop_pts.len() >= 3 {
-            loops.push(loop_pts);
-        }
-    }
-
-    loops
-}
-
-/// Compute the area-weighted centroid of a closed 3D polygon
-/// lying in a plane.
-///
-/// Uses fan triangulation from `polygon[0]` and the signed-area
-/// projected onto `plane_normal`: each sub-triangle contributes
-/// its centroid weighted by its signed area, divided by the total
-/// signed area. The signed-area sum cancels out spurious
-/// contributions from non-convex regions, so the result is correct
-/// for any simple polygon (convex or non-convex) and is invariant
-/// to winding direction (CW vs CCW with respect to `plane_normal`).
-///
-/// **Density-independence**: the formula depends only on the
-/// polygon's BOUNDARY GEOMETRY — adding redundant collinear
-/// vertices between existing ones (subdividing edges) does not
-/// change the centroid. This is the load-bearing property that
-/// makes the centerline algorithm density-independent.
-///
-/// **Caller's contract**: `plane_normal` MUST be unit-magnitude.
-/// Polygon vertices MUST be approximately coplanar with that
-/// normal; otherwise the signed-area projection under-counts
-/// contributions tilted away from the plane.
-///
-/// **Returns** `None` when the polygon has fewer than 3 vertices
-/// OR its total area projects to ≈ 0 (degenerate / collinear).
-pub fn polygon_centroid_3d(
-    polygon: &[Point3<f64>],
-    plane_normal: &Vector3<f64>,
-) -> Option<Point3<f64>> {
-    if polygon.len() < 3 {
-        return None;
-    }
-    let v0 = polygon[0].coords;
-    let mut total_signed_area: f64 = 0.0;
-    let mut centroid_accum: Vector3<f64> = Vector3::zeros();
-    for i in 1..(polygon.len() - 1) {
-        let v1 = polygon[i].coords;
-        let v2 = polygon[i + 1].coords;
-        let cross = (v1 - v0).cross(&(v2 - v0));
-        let signed_area = 0.5 * cross.dot(plane_normal);
-        let tri_centroid = (v0 + v1 + v2) / 3.0;
-        centroid_accum += signed_area * tri_centroid;
-        total_signed_area += signed_area;
-    }
-    if total_signed_area.abs() < f64::EPSILON {
-        return None;
-    }
-    Some(Point3::from(centroid_accum / total_signed_area))
-}
-
-/// Unsigned area of a closed 3D polygon projected onto
-/// `plane_normal`. Same fan-triangulation + signed-area summation
-/// as [`polygon_centroid_3d`]; absolute value at the end so the
-/// result is winding-invariant. Used by the centerline algorithm
-/// to (a) gate degenerate slabs below `MIN_SLAB_AREA_M2` and (b)
-/// pick the largest loop when a slab intersection produces
-/// multiple loops (non-convex body / multi-component slice).
-pub fn polygon_area_3d(polygon: &[Point3<f64>], plane_normal: &Vector3<f64>) -> f64 {
-    if polygon.len() < 3 {
-        return 0.0;
-    }
-    let v0 = polygon[0].coords;
-    let mut total_signed_area: f64 = 0.0;
-    for i in 1..(polygon.len() - 1) {
-        let v1 = polygon[i].coords;
-        let v2 = polygon[i + 1].coords;
-        let cross = (v1 - v0).cross(&(v2 - v0));
-        total_signed_area += 0.5 * cross.dot(plane_normal);
-    }
-    total_signed_area.abs()
-}
-
-/// Minimum projected slab area (m²) below which a slab's
-/// intersection polygon is treated as degenerate — its centroid is
-/// discarded and the polyline point at that slab is filled in by
-/// interpolation from neighboring non-degenerate slabs. 1e-8 m² =
-/// 0.01 mm² — well below any real cross-section on body-part scans
-/// (smallest expected: dome-tip slabs of a few mm² = 1e-6 m²) and
-/// well above the polygon-area numerical noise floor for f64
-/// coordinates in meters.
-pub const MIN_SLAB_AREA_M2: f64 = 1e-8;
-
-/// Compute the scan's centerline as **N evenly-spaced points
-/// along the body's true geometric axis**, with each point
-/// derived from the area-weighted centroid of the per-slab
-/// cross-section polygon.
-///
-/// Used by cf-cast's curve-following multi-piece mold generator AND
-/// by cf-device-design's per-vertex radial direction computation.
-/// Both consumers REQUIRE that the centerline track the body's
-/// true visual center — an off-center centerline produces lopsided
-/// layer dome surfaces (the iter-1 failure mode documented in
-/// `docs/CENTERLINE_RECON_BOOKMARK.md`).
-///
-/// **Algorithm** (`docs/CENTERLINE_SPEC.md` §2.4, sixth iteration —
-/// the one that escapes the density / extreme-point biases that
-/// sank the prior five):
-///
-/// 1. Normalize `spine_hint` to a unit axis. This is the user's
-///    chosen body direction — typically the cap loop's outward
-///    normal, which after cf-scan-prep's auto-PCA-at-load is
-///    aligned with the body's principal axis (`-Z` for floor caps).
-/// 2. Project all vertices onto the axis to find the body's depth
-///    range `[min_d, max_d]`.
-/// 3. For each of `n_slices` evenly-spaced depths `d_i`, intersect
-///    the slab plane at depth `d_i` (perpendicular to the axis)
-///    with the mesh via [`intersect_plane_with_mesh`]. Pick the
-///    largest-area loop (handles non-convex bodies / multi-
-///    component slices) and compute its area-weighted polygon
-///    centroid via [`polygon_centroid_3d`]. Slabs with area below
-///    [`MIN_SLAB_AREA_M2`] are marked degenerate and filled in by
-///    linear interpolation between non-degenerate neighbors (or
-///    extrapolation along the axis at the extremes).
-///
-/// **Why per-slab area-weighted polygon centroid, not the prior
-/// algorithms** (full recon at `docs/CENTERLINE_RECON_BOOKMARK.md`):
-///
-/// - All 5 prior iterations (per-slab Kasa, Kasa+centroid-prior,
-///   PCA, vertex-centroid+spine, AABB+spine) were SAMPLE-biased:
-///   their statistics depend on how vertices are distributed
-///   around the surface, OR on the body's extreme points. Real
-///   scans have non-uniform vertex density (denser on
-///   scanner-facing side) and noisy extreme points (scanner spikes,
-///   reconstruct artifacts), so all five drifted off-axis.
-/// - The polygon centroid is **DENSITY-INDEPENDENT BY CONSTRUCTION**:
-///   it depends only on the slab-mesh intersection polygon's
-///   BOUNDARY GEOMETRY, not on the vertex density of the underlying
-///   triangulation. Two scans of the same body with different
-///   sampling produce the SAME polygon centroid (modulo
-///   discretization error from boundary-edge subdivision, which is
-///   sub-pixel for typical mesh resolutions). The geometric
-///   property is verified by `polygon_centroid_3d_density_independent`.
-///
-/// **Performance**: O(n_slices × n_faces) per call ≈ 5M triangle-
-/// plane intersections for `n_slices=30` and a 169k-face cleaned
-/// scan. ~50ms single-threaded; fine for both Cap-step and
-/// per-frame re-evaluation budgets.
-///
-/// **Trade-off**: the algorithm produces a STRAIGHT centerline (no
-/// curvature support). For genuinely curved bodies (bent finger,
-/// flexed arm), an outer iteration loop re-orienting slabs
-/// perpendicular to the local polyline tangent would be needed —
-/// banked as spec §2.7 stretch goal G.s2 until a curved-body
-/// fixture surfaces.
-///
-/// **Empty / degenerate input**: returns `Vec::new()` if the mesh
-/// has no vertices OR no faces (the algorithm needs faces to
-/// intersect, not just vertices), the spine hint is zero-magnitude,
-/// `n_slices == 0`, or all slabs end up degenerate (e.g., a
-/// non-watertight mesh that no slab plane intersects).
-/// Number of iterative re-orientation passes after the initial
-/// spine_hint-perpendicular pass. Each pass re-runs the slab
-/// sampling with slab planes perpendicular to the local polyline
-/// tangent (instead of the global spine_hint axis), allowing the
-/// centerline to track curved bodies (banana, bent limb) where a
-/// single global axis can't perpendicularly cut all parts of the
-/// body simultaneously. The polyline is `smooth_polyline`-damped
-/// between passes so per-slab polygon-centroid noise doesn't
-/// amplify into divergent tangent tilt (saw 5× drift amplification
-/// without this damping on the noisy tapered-cone fixture).
-///
-/// `1` is the empirical sweet spot: a single re-orientation
-/// pass takes spine_hint-aligned slabs → local-tangent-aligned
-/// slabs (handles ≤ ~15° curvature well, approximate up to 30°),
-/// and re-runs the sampling once at the better slab orientation.
-/// Bumping to 2 measurably improves 30°+ curvature handling but
-/// re-introduces noise amplification on small-body fixtures (the
-/// tapered-cone test fails by ~2×). When a real 30°+ curved
-/// body-part fixture surfaces, revisit — likely the right fix is
-/// adaptive iteration count gated on detected curvature, not a
-/// blanket bump.
-pub const CENTERLINE_REORIENT_PASSES: usize = 1;
-
-/// Area threshold (as a fraction of the per-call max polygon area)
-/// above which a slab is classified as **main-body** vs **end-region**
-/// for the iterative re-orientation tangent correction.
-///
-/// **Why this matters** (the sphere-cut bias, discovered on the iter-1
-/// fixture 2026-05-16): for a body shaped like a hemispherical dome
-/// capping a cylinder, oblique slab cuts (slab normal tilted from
-/// the body axis) of the CYLINDER portion produce ELLIPSES whose
-/// centers lie on the body axis (algorithm works correctly there).
-/// Oblique slab cuts of the HEMISPHERE produce CIRCLES whose centers
-/// trace a line **parallel to the slab normal** (not the body axis)
-/// — this is a pure geometry property of plane-sphere intersection
-/// independent of mesh tessellation. The result is a phantom curve
-/// in the dome-region polyline that the local-tangent iteration can't
-/// fix (the biased tangent equals the slab normal, so re-sampling
-/// with that tangent doesn't change anything).
-///
-/// **Fix**: classify each pass-0 slab as main-body iff it's
-/// single-loop AND its area is at least this fraction of the per-call
-/// max. For end-region slabs (dome / floor extremes / small
-/// fragmented), override the local tangent with the tangent of the
-/// nearest main-body slab — this forces dome-region slabs in the
-/// re-orientation pass to be perpendicular to the CYLINDER axis,
-/// not the spine_hint-aligned biased dome direction. Centroids of
-/// the re-sampled dome slabs then sit on the body axis line
-/// extending through the cylinder.
-///
-/// 0.95 catches only the truly cylindrical slabs (where area is near
-/// maximum) — strict enough to exclude transitioning dome slabs whose
-/// tangents are still partially biased. Tested fixtures (uniform
-/// cylinder, tapered cone, offset cylinder, density-biased, rotated)
-/// all have either uniform area (all slabs main-body) or a clear
-/// max-area cluster, so this threshold doesn't regress them.
-pub const CENTERLINE_MAIN_BODY_AREA_FRACTION: f64 = 0.95;
-
-/// One per-slab sample produced by intersecting a slab plane with
-/// the mesh and computing its area-weighted polygon centroid.
-/// Plus diagnostic metrics used by [`build_polyline_with_boundary_trim`]
-/// to classify quality.
-#[derive(Clone, Copy, Debug)]
-pub struct SlabSample {
-    centroid: Point3<f64>,
-    area: f64,
-    n_loops: usize,
-}
-
-/// Sample one slab: intersect the plane with the mesh, pick the
-/// largest-area loop, return its centroid + diagnostic metrics.
-/// `None` if no valid intersection (no loops, or the largest
-/// loop's area is below `MIN_SLAB_AREA_M2` numerical floor, or
-/// the polygon centroid is degenerate).
-pub fn compute_slab_sample(
-    mesh: &IndexedMesh,
-    plane_pt: &Point3<f64>,
-    plane_n: &Vector3<f64>,
-) -> Option<SlabSample> {
-    let loops = intersect_plane_with_mesh(plane_pt, plane_n, mesh);
-    let n_loops = loops.len();
-    let best = loops.into_iter().max_by(|a, b| {
-        polygon_area_3d(a, plane_n)
-            .partial_cmp(&polygon_area_3d(b, plane_n))
-            .unwrap_or(std::cmp::Ordering::Equal)
-    })?;
-    let area = polygon_area_3d(&best, plane_n);
-    if area < MIN_SLAB_AREA_M2 {
-        return None;
-    }
-    let centroid = polygon_centroid_3d(&best, plane_n)?;
-    Some(SlabSample {
-        centroid,
-        area,
-        n_loops,
-    })
-}
-
-/// Compute per-vertex tangent direction along a polyline.
-/// Interior: central difference between neighbors. Endpoints:
-/// forward / backward difference. Each tangent is unit-normalized;
-/// zero-length segments produce a zero tangent (defensive — the
-/// caller's slab plane normal would then be invalid, which the
-/// downstream intersection routine rejects).
-pub fn local_polyline_tangents(polyline: &[Point3<f64>]) -> Vec<Vector3<f64>> {
-    let n = polyline.len();
-    if n < 2 {
-        return vec![Vector3::zeros(); n];
-    }
-    let mut tangents = Vec::with_capacity(n);
-    for i in 0..n {
-        let raw = if i == 0 {
-            polyline[1].coords - polyline[0].coords
-        } else if i == n - 1 {
-            polyline[n - 1].coords - polyline[n - 2].coords
-        } else {
-            polyline[i + 1].coords - polyline[i - 1].coords
-        };
-        let unit = if raw.norm_squared() > f64::EPSILON {
-            raw.normalize()
-        } else {
-            Vector3::zeros()
-        };
-        tangents.push(unit);
-    }
-    tangents
-}
-
-/// Replace end-region slabs' tangents with the tangent of the
-/// nearest main-body slab. Fixes the dome / sphere-cut bias
-/// described at [`CENTERLINE_MAIN_BODY_AREA_FRACTION`]: end-region
-/// slabs' raw local tangents are biased along the slab normal
-/// (sphere-cap geometry), so iterating with those tangents
-/// re-creates the same biased orientation. Substituting the
-/// nearest cylindrical-region tangent re-orients dome slabs to
-/// be perpendicular to the body axis, putting their re-sampled
-/// centroids on the body axis line.
-///
-/// If no slab is main-body (pathological input: every slab is
-/// multi-loop or below the area threshold), returns the raw
-/// tangents unchanged — the algorithm degrades to local-tangent
-/// iteration rather than failing.
-pub fn correct_tangents_for_end_regions(
-    raw_tangents: &[Vector3<f64>],
-    is_main_body: &[bool],
-) -> Vec<Vector3<f64>> {
-    let n = raw_tangents.len().min(is_main_body.len());
-    if n == 0 {
-        return Vec::new();
-    }
-    let any_main_body = is_main_body.iter().take(n).any(|&b| b);
-    if !any_main_body {
-        return raw_tangents[..n].to_vec();
-    }
-    let mut corrected = raw_tangents[..n].to_vec();
-    for i in 0..n {
-        if is_main_body[i] {
-            continue;
-        }
-        // Linear scan for nearest main-body index — n ≤ 30 in
-        // practice; a fancier data structure would be overkill.
-        let nearest = is_main_body
-            .iter()
-            .take(n)
-            .enumerate()
-            .filter(|(_, b)| **b)
-            .min_by_key(|(j, _)| j.abs_diff(i))
-            .map(|(j, _)| j);
-        if let Some(j) = nearest {
-            corrected[i] = raw_tangents[j];
-        }
-    }
-    corrected
-}
-
-/// Build the centerline polyline from per-slab samples with
-/// **boundary-trim + local-tangent extrapolation**.
-///
-/// Algorithm:
-///
-/// 1. **Classify each slab as high-quality** iff the sample is
-///    `Some` AND `n_loops == 1`. Single-loop slabs have unambiguous
-///    polygon centroids; multi-loop slabs (typical at fragmented
-///    dome-tip cross-sections) are unreliable because the
-///    "largest loop" pick can be any of several similar-area
-///    fragments. The single-loop criterion catches the iter-1
-///    failure mode (dome-tip slabs at 10–22 loops; floor-extreme
-///    slab at 2 loops) without rejecting clean tapered interiors
-///    (where every slab is one loop regardless of area).
-/// 2. **High-quality slabs**: use the sample's centroid directly.
-/// 3. **Leading boundary low-quality slabs** (before the first
-///    high-quality index): extrapolate from the local tangent
-///    between the first two high-quality samples, stepping
-///    backward one slab-index at a time. Keeps the boundary
-///    polyline on the body's local axis line established by the
-///    high-quality interior.
-/// 4. **Trailing boundary low-quality slabs** (after the last
-///    high-quality index): symmetric, forward extrapolation from
-///    the local tangent between the last two high-quality samples.
-/// 5. **Interior low-quality slabs** (between two high-quality
-///    neighbors): linear interpolation by slab-index fraction.
-/// 6. **All-degenerate fallback** (no high-quality slab anywhere;
-///    pathological input): straight line along `fallback_axis`
-///    through origin, evenly spaced over `[min_d, max_d]`.
-pub fn build_polyline_with_boundary_trim(
-    samples: &[Option<SlabSample>],
-    fallback_axis: Vector3<f64>,
-    min_d: f64,
-    max_d: f64,
-) -> Vec<Point3<f64>> {
-    let n = samples.len();
-    if n == 0 {
-        return Vec::new();
-    }
-
-    // Collect (slab_index, centroid) pairs for high-quality slabs.
-    // Quality = single-loop polygon (multi-loop slabs are fragmented
-    // and the "largest loop" pick is unreliable; the iter-1 dome-tip
-    // at 10-22 loops + the floor extreme at 2 loops both fail this
-    // criterion while clean tapered interiors with 1 loop always pass
-    // regardless of area).
-    let hq: Vec<(usize, Point3<f64>)> = samples
-        .iter()
-        .enumerate()
-        .filter_map(|(i, s)| {
-            s.as_ref()
-                .filter(|sample| sample.n_loops == 1)
-                .map(|sample| (i, sample.centroid))
-        })
-        .collect();
-
-    let Some(&(hq_first_idx, hq_first_centroid)) = hq.first() else {
-        let mut polyline = Vec::with_capacity(n);
-        for i in 0..n {
+        // Side-wall vertices: index = ring * n_segs + seg.
+        for r in 0..n_rings {
             #[allow(clippy::cast_precision_loss)]
-            let t = (i as f64 + 0.5) / (n as f64);
-            let depth = min_d + t * (max_d - min_d);
-            polyline.push(Point3::from(fallback_axis * depth));
+            let t = (r as f64) / ((n_rings - 1) as f64);
+            let z = -height / 2.0 + t * height;
+            let ring_radius = radius_base * (1.0 - t) + radius_tip * t;
+            for k in 0..n_segs {
+                #[allow(clippy::cast_precision_loss)]
+                let theta = (k as f64) * std::f64::consts::TAU / (n_segs as f64);
+                let radius = ring_radius + apply_noise(r, k, theta);
+                mesh.vertices
+                    .push(Point3::new(radius * theta.cos(), radius * theta.sin(), z));
+            }
         }
-        return polyline;
-    };
-    // last() is guaranteed Some since first() was Some.
-    let Some(&(hq_last_idx, hq_last_centroid)) = hq.last() else {
-        unreachable!()
-    };
+        #[allow(clippy::cast_possible_truncation)]
+        let bottom_center_idx = (n_rings * n_segs) as u32;
+        let top_center_idx = bottom_center_idx + 1;
+        mesh.vertices.push(Point3::new(0.0, 0.0, -height / 2.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, height / 2.0));
 
-    let mut polyline = Vec::with_capacity(n);
-    for i in 0..n {
-        // Direct match against the hq list (small N — linear scan
-        // is cheaper than a HashSet for n ≤ 30).
-        if let Some(&(_, centroid)) = hq.iter().find(|(j, _)| *j == i) {
-            polyline.push(centroid);
-            continue;
+        // Side-wall: 2 CCW-outward triangles per quad.
+        for r in 0..(n_rings - 1) {
+            for k in 0..n_segs {
+                #[allow(clippy::cast_possible_truncation)]
+                let i00 = (r * n_segs + k) as u32;
+                #[allow(clippy::cast_possible_truncation)]
+                let i01 = (r * n_segs + (k + 1) % n_segs) as u32;
+                #[allow(clippy::cast_possible_truncation)]
+                let i10 = ((r + 1) * n_segs + k) as u32;
+                #[allow(clippy::cast_possible_truncation)]
+                let i11 = ((r + 1) * n_segs + (k + 1) % n_segs) as u32;
+                mesh.faces.push([i00, i01, i11]);
+                mesh.faces.push([i00, i11, i10]);
+            }
         }
-        let pt = if i < hq_first_idx {
-            // Leading boundary: extrapolate backward from
-            // hq_first_centroid along the local tangent to the
-            // next high-quality slab.
-            if let Some(&(j_next, p_next)) = hq.get(1) {
-                #[allow(clippy::cast_precision_loss)]
-                let step =
-                    (p_next.coords - hq_first_centroid.coords) / (j_next - hq_first_idx) as f64;
-                #[allow(clippy::cast_precision_loss)]
-                let count = (hq_first_idx - i) as f64;
-                Point3::from(hq_first_centroid.coords - step * count)
-            } else {
-                hq_first_centroid
-            }
-        } else if i > hq_last_idx {
-            // Trailing boundary: extrapolate forward from
-            // hq_last_centroid along the local tangent to the
-            // previous high-quality slab.
-            if hq.len() >= 2 {
-                if let Some(&(j_prev, p_prev)) = hq.get(hq.len() - 2) {
-                    #[allow(clippy::cast_precision_loss)]
-                    let step =
-                        (hq_last_centroid.coords - p_prev.coords) / (hq_last_idx - j_prev) as f64;
-                    #[allow(clippy::cast_precision_loss)]
-                    let count = (i - hq_last_idx) as f64;
-                    Point3::from(hq_last_centroid.coords + step * count)
-                } else {
-                    hq_last_centroid
-                }
-            } else {
-                hq_last_centroid
-            }
-        } else {
-            // Interior gap: linear interpolate between nearest
-            // high-quality neighbors on each side. Both Some since
-            // hq_first_idx < i < hq_last_idx and i is not itself
-            // in `hq` (the early `find` above handled that case).
-            let left = hq.iter().rev().find(|(j, _)| *j < i);
-            let right = hq.iter().find(|(j, _)| *j > i);
-            if let (Some(&(j_l, p_l)), Some(&(j_r, p_r))) = (left, right) {
-                #[allow(clippy::cast_precision_loss)]
-                let frac = (i - j_l) as f64 / (j_r - j_l) as f64;
-                Point3::from(p_l.coords + frac * (p_r.coords - p_l.coords))
-            } else {
-                // Defensive: shouldn't reach this branch given the
-                // index range; fall back to hq_first.
-                hq_first_centroid
-            }
-        };
-        polyline.push(pt);
+        // Bottom cap (normal -Z): CW when viewed from +Z above.
+        for k in 0..n_segs {
+            #[allow(clippy::cast_possible_truncation)]
+            let i0 = k as u32;
+            #[allow(clippy::cast_possible_truncation)]
+            let i1 = ((k + 1) % n_segs) as u32;
+            mesh.faces.push([bottom_center_idx, i1, i0]);
+        }
+        // Top cap (normal +Z): CCW when viewed from +Z above.
+        let top_ring_base = (n_rings - 1) * n_segs;
+        for k in 0..n_segs {
+            #[allow(clippy::cast_possible_truncation)]
+            let i0 = (top_ring_base + k) as u32;
+            #[allow(clippy::cast_possible_truncation)]
+            let i1 = (top_ring_base + (k + 1) % n_segs) as u32;
+            mesh.faces.push([top_center_idx, i0, i1]);
+        }
+        mesh
     }
-    polyline
-}
+    /// Like [`make_closed_frustum_mesh`] but with **non-uniform
+    /// angular sampling** per ring — vertices are placed at the
+    /// user-provided `thetas` (in `[0, 2π)`, monotonic; same set
+    /// repeated for every ring). Pure cylinder shape (`radius_base
+    /// == radius_tip`), no noise.
+    ///
+    /// Used to verify density-independence: with `thetas` densely
+    /// sampled on one side of the circle and sparsely on the other,
+    /// the BOUNDARY shape is still the same circle but the vertex
+    /// density is asymmetric — the polygon centroid is invariant
+    /// (regression test for the iter-1 failure mode), while the
+    /// prior vertex-centroid statistic would have been biased
+    /// toward the dense side.
+    fn make_density_biased_cylinder_mesh(
+        n_rings: usize,
+        thetas: &[f64],
+        radius: f64,
+        height: f64,
+    ) -> IndexedMesh {
+        let n_segs = thetas.len();
+        assert!(
+            n_rings >= 2 && n_segs >= 3,
+            "density-biased cylinder needs >= 2 rings, >= 3 thetas"
+        );
+        let vert_count = n_rings * n_segs + 2;
+        let face_count = 2 * (n_rings - 1) * n_segs + 2 * n_segs;
+        let mut mesh = IndexedMesh::with_capacity(vert_count, face_count);
 
-pub fn compute_centerline_polyline(
-    mesh: &IndexedMesh,
-    spine_hint: Vector3<f64>,
-    n_slices: usize,
-) -> Vec<Point3<f64>> {
-    if mesh.vertices.is_empty()
-        || mesh.faces.is_empty()
-        || spine_hint.norm_squared() < f64::EPSILON
-        || n_slices == 0
-    {
-        return Vec::new();
-    }
-    let axis = spine_hint.normalize();
-
-    // Depth range of the body along the chosen axis.
-    let depths_proj: Vec<f64> = mesh.vertices.iter().map(|p| axis.dot(&p.coords)).collect();
-    let min_d = depths_proj.iter().copied().fold(f64::INFINITY, f64::min);
-    let max_d = depths_proj
-        .iter()
-        .copied()
-        .fold(f64::NEG_INFINITY, f64::max);
-    let range = max_d - min_d;
-    if range < f64::EPSILON {
-        return Vec::new();
-    }
-
-    // Pass 0: slabs perpendicular to spine_hint, evenly spaced
-    // along the body's depth range.
-    let mut plane_pts: Vec<Point3<f64>> = (0..n_slices)
-        .map(|i| {
+        for r in 0..n_rings {
             #[allow(clippy::cast_precision_loss)]
-            let t = (i as f64 + 0.5) / (n_slices as f64);
-            Point3::from(axis * (min_d + t * range))
-        })
-        .collect();
-    let mut plane_normals: Vec<Vector3<f64>> = vec![axis; n_slices];
+            let t = (r as f64) / ((n_rings - 1) as f64);
+            let z = -height / 2.0 + t * height;
+            for &theta in thetas {
+                mesh.vertices
+                    .push(Point3::new(radius * theta.cos(), radius * theta.sin(), z));
+            }
+        }
+        #[allow(clippy::cast_possible_truncation)]
+        let bottom_center_idx = (n_rings * n_segs) as u32;
+        let top_center_idx = bottom_center_idx + 1;
+        mesh.vertices.push(Point3::new(0.0, 0.0, -height / 2.0));
+        mesh.vertices.push(Point3::new(0.0, 0.0, height / 2.0));
 
-    let mut polyline: Vec<Point3<f64>> = Vec::new();
-    // Captured from pass 0 samples and reused for every subsequent
-    // re-orientation pass's tangent correction (the cylinder vs.
-    // dome classification is a property of the BODY, not of the
-    // polyline orientation in any particular pass).
-    let mut is_main_body: Vec<bool> = Vec::new();
-    for pass_idx in 0..=CENTERLINE_REORIENT_PASSES {
-        let samples: Vec<Option<SlabSample>> = plane_pts
+        for r in 0..(n_rings - 1) {
+            for k in 0..n_segs {
+                #[allow(clippy::cast_possible_truncation)]
+                let i00 = (r * n_segs + k) as u32;
+                #[allow(clippy::cast_possible_truncation)]
+                let i01 = (r * n_segs + (k + 1) % n_segs) as u32;
+                #[allow(clippy::cast_possible_truncation)]
+                let i10 = ((r + 1) * n_segs + k) as u32;
+                #[allow(clippy::cast_possible_truncation)]
+                let i11 = ((r + 1) * n_segs + (k + 1) % n_segs) as u32;
+                mesh.faces.push([i00, i01, i11]);
+                mesh.faces.push([i00, i11, i10]);
+            }
+        }
+        for k in 0..n_segs {
+            #[allow(clippy::cast_possible_truncation)]
+            let i0 = k as u32;
+            #[allow(clippy::cast_possible_truncation)]
+            let i1 = ((k + 1) % n_segs) as u32;
+            mesh.faces.push([bottom_center_idx, i1, i0]);
+        }
+        let top_ring_base = (n_rings - 1) * n_segs;
+        for k in 0..n_segs {
+            #[allow(clippy::cast_possible_truncation)]
+            let i0 = (top_ring_base + k) as u32;
+            #[allow(clippy::cast_possible_truncation)]
+            let i1 = (top_ring_base + (k + 1) % n_segs) as u32;
+            mesh.faces.push([top_center_idx, i0, i1]);
+        }
+        mesh
+    }
+    /// Translate every vertex of a mesh by `offset` (utility for
+    /// building off-axis fixtures — apply to a centered fixture to
+    /// shift the whole body laterally).
+    fn translate_mesh(mesh: &mut IndexedMesh, offset: Vector3<f64>) {
+        for v in &mut mesh.vertices {
+            v.coords += offset;
+        }
+    }
+    /// Rotate every vertex of a mesh by `rotation` around origin
+    /// (utility for building rotated-axis fixtures — apply to a
+    /// Z-axis centered fixture to test XYZ-independence with a
+    /// non-Z body axis).
+    fn rotate_mesh(mesh: &mut IndexedMesh, rotation: UnitQuaternion<f64>) {
+        for v in &mut mesh.vertices {
+            v.coords = rotation * v.coords;
+        }
+    }
+    /// A unit square at the origin (CCW in XY). 4 vertices, 2-triangle
+    /// triangulation expected from `triangulate_polygon_2d_earclip`.
+    fn unit_square_2d() -> Vec<(f64, f64)> {
+        vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
+    }
+    /// Build the STL-style (per-triangle unshared) version of an
+    /// IndexedMesh — `mesh_io::load_stl` produces this layout because
+    /// binary STL stores each triangle's 3 vertices independently
+    /// without index sharing. cf-scan-prep's hygiene pass is supposed
+    /// to weld these back to the shared layout downstream
+    /// `simplify_decoder` requires. Test helper, not production code.
+    fn unshare_vertices(mesh: &IndexedMesh) -> IndexedMesh {
+        let n_faces = mesh.faces.len();
+        let mut out = IndexedMesh::with_capacity(n_faces * 3, n_faces);
+        #[allow(clippy::cast_possible_truncation)]
+        for face in &mesh.faces {
+            let base = out.vertices.len() as u32;
+            for &idx in face {
+                out.vertices.push(mesh.vertices[idx as usize]);
+            }
+            out.faces.push([base, base + 1, base + 2]);
+        }
+        out
+    }
+
+    // ----- scale_vertices_in_place -----------------------------------
+    /// `factor = 1.0` is a no-op fast path — load with `--stl-units m`
+    /// must leave vertices bit-identical (avoids subtle FP drift on
+    /// re-saved meter-scale STLs).
+    #[test]
+    fn scale_vertices_identity_is_bit_exact_no_op() {
+        let mut mesh = one_triangle_at(1.234_567_891_234_567);
+        let original = mesh.vertices.clone();
+        scale_vertices_in_place(&mut mesh, 1.0);
+        assert_eq!(mesh.vertices, original);
+    }
+    /// `factor = 0.001` (the `mm → m` case) walks every vertex and
+    /// scales each component. Asserts on the three components of the
+    /// scaled triangle independently to catch axis-confusion bugs.
+    #[test]
+    fn scale_vertices_mm_to_meters_scales_each_component() {
+        let mut mesh = one_triangle_at(80.0); // 80 mm
+        scale_vertices_in_place(&mut mesh, 0.001);
+        assert!((mesh.vertices[0].x - 0.080).abs() < 1e-12);
+        assert!((mesh.vertices[1].y - 0.080).abs() < 1e-12);
+        assert!((mesh.vertices[2].z - 0.080).abs() < 1e-12);
+    }
+
+    // ----- auto_center_in_place (CSP.3.5) ----------------------------
+    /// `auto_center_in_place` moves a scan offset far from the
+    /// physics origin to a centroid-at-origin position, and reports
+    /// the offset it applied. Simulates the "scanner pointed down,
+    /// captured geometry at negative z" workflow the CSP.3.5
+    /// followup addresses.
+    #[test]
+    fn auto_center_in_place_moves_centroid_to_origin() {
+        // A unit-cube-like mesh sitting at physics centroid
+        // (0.05, 0.00, -0.170) — far from origin, like a scanner
+        // dropped it there.
+        let mut mesh = IndexedMesh::with_capacity(8, 0);
+        for &(x, y, z) in &[
+            (0.05 - 0.04, 0.00 - 0.03, -0.170 - 0.06),
+            (0.05 + 0.04, 0.00 - 0.03, -0.170 - 0.06),
+            (0.05 + 0.04, 0.00 + 0.03, -0.170 - 0.06),
+            (0.05 - 0.04, 0.00 + 0.03, -0.170 - 0.06),
+            (0.05 - 0.04, 0.00 - 0.03, -0.170 + 0.06),
+            (0.05 + 0.04, 0.00 - 0.03, -0.170 + 0.06),
+            (0.05 + 0.04, 0.00 + 0.03, -0.170 + 0.06),
+            (0.05 - 0.04, 0.00 + 0.03, -0.170 + 0.06),
+        ] {
+            mesh.vertices.push(Point3::new(x, y, z));
+        }
+        let offset = auto_center_in_place(&mut mesh);
+        // Offset = -centroid → expect (-0.05, 0, +0.170).
+        assert!((offset.x - (-0.05)).abs() < 1e-12);
+        assert!(offset.y.abs() < 1e-12);
+        assert!((offset.z - 0.170).abs() < 1e-12);
+        // Post-centering AABB centroid should be ~origin.
+        let post_centroid = mesh.aabb().center();
+        assert!(post_centroid.coords.norm() < 1e-12);
+    }
+    /// `auto_center_in_place` is a no-op (returns zero offset) for
+    /// a mesh whose centroid is already within 1 µm of the origin.
+    /// Guards against FP-drift on already-centered fixtures. Uses a
+    /// symmetric ±1 mm cube — its AABB centroid lands at bit-exact
+    /// origin, so the threshold guard fires.
+    #[test]
+    fn auto_center_in_place_no_op_when_already_centered() {
+        let mut mesh = IndexedMesh::with_capacity(2, 0);
+        mesh.vertices.push(Point3::new(-0.001, -0.001, -0.001));
+        mesh.vertices.push(Point3::new(0.001, 0.001, 0.001));
+        let mesh_before = mesh.clone();
+        let offset = auto_center_in_place(&mut mesh);
+        assert!(offset.norm() < 1e-12, "near-zero offset, got {offset:?}");
+        // Vertices unchanged.
+        assert_eq!(mesh.vertices, mesh_before.vertices);
+    }
+    /// `auto_center_in_place` is a no-op on empty meshes (defensive
+    /// against the load-failure overlay path — never hit, but cheap
+    /// to guarantee).
+    #[test]
+    fn auto_center_in_place_handles_empty_mesh() {
+        let mut mesh = IndexedMesh::with_capacity(0, 0);
+        let offset = auto_center_in_place(&mut mesh);
+        assert_eq!(offset, Vector3::zeros());
+        assert!(mesh.vertices.is_empty());
+    }
+
+    // ----- auto_pca_in_place (CSP.4a) --------------------------------
+    /// Mesh elongated along physics +X: after auto-PCA-in-place, the
+    /// long axis aligns with +Z (the principal-axis vertices' X
+    /// components rotate into Z). Confirms the bake-in-place
+    /// behavior matches the rotation `compute_pca_orientation`
+    /// returns.
+    #[test]
+    fn auto_pca_in_place_rotates_long_x_axis_to_plus_z() {
+        // 11 points along +X (centroid at origin), no spread on Y/Z.
+        let mut mesh = IndexedMesh::with_capacity(11, 0);
+        for i in -5..=5 {
+            mesh.vertices
+                .push(Point3::new(f64::from(i) * 0.01, 0.0, 0.0));
+        }
+        let pre_x_range_max = mesh
+            .vertices
             .iter()
-            .zip(plane_normals.iter())
-            .map(|(pt, n)| compute_slab_sample(mesh, pt, n))
-            .collect();
-        if pass_idx == 0 {
-            // Main-body classification (pass 0 only): cylinder
-            // region of the body, where polygon-centroid is
-            // unbiased. Used to correct end-region tangents in the
-            // re-orientation pass — see
-            // [`CENTERLINE_MAIN_BODY_AREA_FRACTION`] and
-            // [`correct_tangents_for_end_regions`].
-            let max_area = samples
-                .iter()
-                .filter_map(|s| s.as_ref().map(|s| s.area))
-                .fold(0.0_f64, f64::max);
-            let threshold = CENTERLINE_MAIN_BODY_AREA_FRACTION * max_area;
-            is_main_body = samples
-                .iter()
-                .map(|s| {
-                    s.as_ref()
-                        .is_some_and(|sample| sample.n_loops == 1 && sample.area >= threshold)
-                })
-                .collect();
-        }
-        polyline = build_polyline_with_boundary_trim(&samples, axis, min_d, max_d);
-
-        if pass_idx < CENTERLINE_REORIENT_PASSES {
-            // Re-orient for next pass: each slab plane passes
-            // through the current polyline point with normal equal
-            // to the corrected local polyline tangent (end-region
-            // slabs' tangents are overridden with the tangent of
-            // the nearest main-body slab — see
-            // [`correct_tangents_for_end_regions`] for the sphere-
-            // cut bias this fixes). Curved bodies still get
-            // body-axis-aligned cuts at the bend via the main-body
-            // tangent propagation.
-            //
-            // SMOOTH BEFORE TANGENT EXTRACTION — slab-to-slab
-            // polygon-centroid noise on the order of the per-vertex
-            // mesh noise translates directly into tangent tilt; over
-            // multiple iterations, tilt amplifies into a divergent
-            // off-axis bias (saw 5× drift amplification on the
-            // tapered-cone test before this smoothing pass was
-            // added). 5 iterations of 3-tap moving average reduces
-            // tangent noise by ~ sqrt(5)× without flattening the
-            // body's real curvature (kernel width ~7 samples on
-            // a 30-slab polyline).
-            let smoothed = smooth_polyline(&polyline, 5);
-            let raw_tangents = local_polyline_tangents(&smoothed);
-            plane_normals = correct_tangents_for_end_regions(&raw_tangents, &is_main_body);
-            plane_pts = smoothed;
-        }
-    }
-
-    polyline
-}
-
-/// Smooth a polyline by iterated 3-tap moving average over interior
-/// points, with endpoint pinning. User-driven 2026-05-15: "the
-/// actual line inside needs to be smooth before we trim."
-///
-/// `compute_centerline_polyline` produces cross-section centroids
-/// from raw scan vertex bins. On a noisy surface scan the centroids
-/// wobble several mm per slab — that wobble propagates downstream:
-/// trim cut planes pivot off the wobbly local tangent;
-/// `apply_constant_reconstruction` builds its sampling frame from
-/// a wobbly tangent. Smoothing the polyline before any downstream
-/// consumer sees it kills the noise.
-///
-/// Algorithm — `iterations` passes of the 3-tap update
-/// `next_i = (curr_im1 + curr_i + curr_ip1) / 3` for interior
-/// points; the first and last polyline points are PINNED (so
-/// the trim distance semantics — "trim from tip = forward from
-/// the first polyline point; trim from floor = backward from the
-/// last polyline point" — stay anchored). For `iterations=3` the
-/// effective filter footprint is ~5 samples wide; visibly
-/// smooths without flattening overall curvature.
-///
-/// No-op for polylines with < 3 points (no interior to smooth).
-pub fn smooth_polyline(polyline: &[Point3<f64>], iterations: usize) -> Vec<Point3<f64>> {
-    if polyline.len() < 3 || iterations == 0 {
-        return polyline.to_vec();
-    }
-    let mut current: Vec<Point3<f64>> = polyline.to_vec();
-    let n = current.len();
-    for _ in 0..iterations {
-        let mut next = current.clone();
-        for i in 1..(n - 1) {
-            let avg = (current[i - 1].coords + current[i].coords + current[i + 1].coords) / 3.0;
-            next[i] = Point3::from(avg);
-        }
-        current = next;
-    }
-    current
-}
-
-/// Triangulate a 2D simple polygon via ear-clipping. Input: ordered
-/// polygon vertices (CCW or CW; algorithm reverses on the fly if
-/// signed area is negative). Output: triangles as index triplets
-/// into the input vertex list. Always closes the polygon (last
-/// edge connects vertex `n-1` back to vertex `0`).
-///
-/// Per spec §Panel specifications §6: cap polygons triangulated via
-/// inline ear-clipping with **fan-fallback** when ear-clipping fails
-/// (degenerate / self-intersecting polygons after projection). Fan
-/// triangulation from vertex 0 produces valid faces for any
-/// star-shaped polygon, which boundary loops typically are.
-///
-/// **Complexity**: O(n²) for the ear-clip path. For a 2609-vertex
-/// loop (iter-1 fixture's open boundary): ~6.8M ops; ~5-20 ms. Fast
-/// enough at save time. Larger loops (10k+) would benefit from
-/// Delaunay or constrained-Delaunay; out of scope until iter-1
-/// surfaces pathological cases.
-///
-/// **Fan fallback trigger**: ear-clipping stops finding ears (no
-/// ear is convex + empty) before reducing to 3 vertices. Either the
-/// polygon is non-simple (self-intersecting) or near-degenerate. Fan
-/// from vertex 0 always works for star-shaped polygons; produces
-/// possibly-thin triangles but no NaN / inverted faces.
-///
-/// **No longer used in production** as of S1.1 2026-05-26 — both cap-
-/// fan call sites (`auto_cap_open_boundaries` + `build_cleaned_mesh`)
-/// switched to [`emit_centroid_fan_cap`] after the fan-fallback path
-/// here was identified as the source of cleaned.stl's cap-region
-/// duplicate-face + non-manifold-edge artifacts. Retained as a
-/// generic 2D-polygon ear-clip with its regression tests so the
-/// algorithm + its convention (CCW input → CCW output, fan-fallback
-/// for non-simple polys) stay documented in-tree.
-#[allow(dead_code)]
-pub fn triangulate_polygon_2d_earclip(verts_2d: &[(f64, f64)]) -> Vec<[u32; 3]> {
-    let n = verts_2d.len();
-    if n < 3 {
-        return Vec::new();
-    }
-
-    // Signed area (shoelace) — negative → CW; reverse to get CCW.
-    let signed_area: f64 = (0..n)
-        .map(|i| {
-            let (x0, y0) = verts_2d[i];
-            let (x1, y1) = verts_2d[(i + 1) % n];
-            x0 * y1 - x1 * y0
-        })
-        .sum::<f64>()
-        * 0.5;
-
-    // `working` holds the indices into the input array, in CCW
-    // order. We splice ears out of this list as we go.
-    #[allow(clippy::cast_possible_truncation)]
-    let mut working: Vec<u32> = if signed_area >= 0.0 {
-        (0..n as u32).collect()
-    } else {
-        (0..n as u32).rev().collect()
-    };
-
-    let mut triangles: Vec<[u32; 3]> = Vec::with_capacity(n.saturating_sub(2));
-
-    // Ear-clip loop. Each iteration finds one ear, emits a triangle,
-    // and removes the ear-tip index from `working`.
-    while working.len() > 3 {
-        let mut found_ear = false;
-        let m = working.len();
-        for i in 0..m {
-            let prev_idx = working[(i + m - 1) % m];
-            let curr_idx = working[i];
-            let next_idx = working[(i + 1) % m];
-            let prev = verts_2d[prev_idx as usize];
-            let curr = verts_2d[curr_idx as usize];
-            let next = verts_2d[next_idx as usize];
-
-            // Is the triangle (prev, curr, next) convex in CCW order?
-            // Cross-product z-component: positive → CCW (convex);
-            // negative or zero → reflex / collinear, skip.
-            let cross =
-                (curr.0 - prev.0) * (next.1 - prev.1) - (curr.1 - prev.1) * (next.0 - prev.0);
-            if cross <= 0.0 {
-                continue;
-            }
-
-            // Does any other polygon vertex lie strictly inside the
-            // ear triangle? If yes, not an ear; skip.
-            let any_inside = working
-                .iter()
-                .enumerate()
-                .filter(|(j, _)| *j != (i + m - 1) % m && *j != i && *j != (i + 1) % m)
-                .map(|(_, &k)| verts_2d[k as usize])
-                .any(|p| point_in_triangle_2d(p, prev, curr, next));
-            if any_inside {
-                continue;
-            }
-
-            triangles.push([prev_idx, curr_idx, next_idx]);
-            working.remove(i);
-            found_ear = true;
-            break;
-        }
-
-        if !found_ear {
-            // Degenerate / self-intersecting input — fall back to
-            // fan triangulation over the remaining `working` indices.
-            let anchor = working[0];
-            for k in 1..(working.len() - 1) {
-                triangles.push([anchor, working[k], working[k + 1]]);
-            }
-            return triangles;
-        }
-    }
-
-    // Final triangle from the last 3 remaining vertices.
-    if working.len() == 3 {
-        triangles.push([working[0], working[1], working[2]]);
-    }
-    triangles
-}
-
-/// Standard 2D point-in-triangle test via barycentric sign check.
-/// Returns `true` if `p` is strictly inside the triangle `(a, b, c)`.
-/// Points on edges return `false` to avoid spurious ear rejection
-/// from shared boundary vertices.
-///
-/// Only used by [`triangulate_polygon_2d_earclip`] which itself is no
-/// longer used in production (see its docstring for rationale).
-#[allow(dead_code)]
-pub fn point_in_triangle_2d(p: (f64, f64), a: (f64, f64), b: (f64, f64), c: (f64, f64)) -> bool {
-    let d1 = (p.0 - b.0) * (a.1 - b.1) - (a.0 - b.0) * (p.1 - b.1);
-    let d2 = (p.0 - c.0) * (b.1 - c.1) - (b.0 - c.0) * (p.1 - c.1);
-    let d3 = (p.0 - a.0) * (c.1 - a.1) - (c.0 - a.0) * (p.1 - a.1);
-    let has_neg = d1 < 0.0 || d2 < 0.0 || d3 < 0.0;
-    let has_pos = d1 > 0.0 || d2 > 0.0 || d3 > 0.0;
-    !(has_neg && has_pos)
-}
-
-/// Project a 3D loop onto its fit plane and return 2D coordinates
-/// for ear-clipping. Picks an arbitrary orthonormal basis in the
-/// plane (Gram-Schmidt against a non-parallel world axis); the
-/// orientation of the 2D frame doesn't matter because the
-/// ear-clip handles CW/CCW input automatically.
-pub fn project_loop_to_plane_2d(
-    loop_points_3d: &[Point3<f64>],
-    plane_centroid: Point3<f64>,
-    plane_normal: Vector3<f64>,
-) -> Vec<(f64, f64)> {
-    // Pick a world axis that isn't parallel to `plane_normal`, then
-    // project it orthogonal to the normal → first basis vector `u`.
-    // `v = normal × u` → second basis vector.
-    let world_axis = if plane_normal.x.abs() < 0.9 {
-        Vector3::new(1.0, 0.0, 0.0)
-    } else {
-        Vector3::new(0.0, 1.0, 0.0)
-    };
-    let u = (world_axis - plane_normal * world_axis.dot(&plane_normal)).normalize();
-    let v = plane_normal.cross(&u).normalize();
-
-    loop_points_3d
-        .iter()
-        .map(|p| {
-            let d = p.coords - plane_centroid.coords;
-            (u.dot(&d), v.dot(&d))
-        })
-        .collect()
-}
-
-/// Mesh hygiene cleanup pass applied at save time (CSP.3b).
-///
-/// Before this function existed the cleaned STL inherited the raw
-/// scan's vertex layout — 3N unshared verts from `mesh_io::load_stl`,
-/// no degenerate-triangle strip, no smallest-component drop — plus
-/// whatever new geometry the cap + clip steps appended. Downstream
-/// `simplify_decoder` choked on that (cf-device-design
-/// `main.rs:419-425` documents the iter-1 fixture retaining its full
-/// 3.34M face count under topology-preserving simplification, forcing
-/// a switch to `simplify_sloppy_decoder`).
-///
-/// This pass runs in `handle_save_action` between `build_cleaned_mesh`
-/// and the save-time simplify (slice 9.8). The fix-set lands here,
-/// not inside `build_cleaned_mesh`, so the cap-construction concern
-/// (loop-vertex projection) stays isolated from the disk-hygiene
-/// concern, and so unit-test fixtures with tiny face counts don't
-/// have to fight the `min_component_faces` cutoff.
-///
-/// Pipeline:
-///
-///   1. **weld_vertices** — collapse 3N STL-unshared verts to ~N
-///      shared so collapse-edge algorithms can find topology.
-///   2. **remove_degenerate_triangles** — drop FP-noise zero-area
-///      triangles from cap ear-clip + clip intersection slivers.
-///   3. **remove_small_components** — drop scanner-noise islands
-///      (`< CLEANUP_MIN_COMPONENT_FACES` per shell). Spec assumes
-///      the user pre-trimmed to single shell; this is the safety net.
-///   4. **remove_unreferenced_vertices** — tighten memory layout
-///      after the other passes orphan vertices.
-///
-/// Order matters: weld first (degenerate detection needs shared
-/// indices), then degenerate, then component analysis (so components
-/// don't bridge via zero-area triangles), then unreferenced cleanup
-/// last.
-///
-/// Mutates `mesh` in place. Returns a [`CleanupReport`] summarizing
-/// each step's effect so the Save status message can surface how
-/// aggressive the cleanup was for the user's confidence.
-///
-/// `smoothing_iterations` controls a final Taubin-smoothing pass
-/// (added 2026-05-16, user-driven) that suppresses sub-mm scanner
-/// noise so the cleaned STL represents the silicone cast's actual
-/// outcome (surface tension during cure smooths sub-mm features
-/// physically), not the noisy scan capture.
-/// `0` = skip smoothing entirely (back-compat with pre-fix behavior).
-/// Default per the Save panel slider is `SMOOTHING_DEFAULT_ITERATIONS`.
-pub fn cleanup_cleaned_mesh_for_disk(
-    mesh: &mut IndexedMesh,
-    smoothing_iterations: usize,
-) -> CleanupReport {
-    let welded = weld_vertices(mesh, SIMPLIFY_WELD_EPSILON_M);
-    let degenerate = remove_degenerate_triangles(mesh, CLEANUP_DEGENERATE_AREA_M2);
-    let small_components = remove_small_components(mesh, CLEANUP_MIN_COMPONENT_FACES);
-    let unreferenced = remove_unreferenced_vertices(mesh);
-    let smoothing = taubin_smooth_vertices(
-        mesh,
-        smoothing_iterations,
-        TAUBIN_DEFAULT_LAMBDA,
-        TAUBIN_DEFAULT_MU,
-    );
-    CleanupReport {
-        welded,
-        degenerate,
-        small_components,
-        unreferenced,
-        smoothing,
-    }
-}
-
-/// Per-pass counts from [`cleanup_cleaned_mesh_for_disk`].
-///
-/// Sums are surfaced in the Save panel status message when non-zero,
-/// so the user can tell whether the cleanup pass did meaningful work
-/// (workshop-iter-1 fixture: high counts mean the raw scan needed
-/// hygiene help; future cleaned scans approaching ~zero counts
-/// indicate the pre-prep pipeline is producing cleaner inputs).
-#[derive(Debug, Clone, Copy, Default)]
-pub struct CleanupReport {
-    pub welded: usize,
-    pub degenerate: usize,
-    pub small_components: usize,
-    pub unreferenced: usize,
-    /// Number of Taubin-smoothing iterations actually applied
-    /// (returned by [`taubin_smooth_vertices`]; matches the
-    /// `smoothing_iterations` parameter unless the mesh was
-    /// degenerate). Surfaced in the Save status so the user
-    /// can see how much smoothing landed in the file.
-    pub smoothing: usize,
-}
-
-impl CleanupReport {
-    /// Total operations across all five passes. Zero when the input
-    /// was already disk-ready (no cleanup needed) AND the smoothing
-    /// slider was at 0.
-    pub fn total(self) -> usize {
-        self.welded + self.degenerate + self.small_components + self.unreferenced + self.smoothing
-    }
-}
-
-// ----- .prep.toml serializable structures -----
-//
-// Block names match `docs/SCAN_PREP_DESIGN.md` §Output format (v1.0
-// completion rename CSP.1, 2026-05-15). Earlier as-built used
-// `[reorient]` / `[recenter]` — those names exposed internal egui-panel
-// nouns rather than the conceptual transform operation. Downstream
-// consumers (cf-cast-cli `prep.rs`, cf-device-design `parse_centerline`)
-// read only `[centerline]` and tolerate unknown sibling keys, so this
-// rename is downstream-safe.
-
-#[derive(Serialize)]
-pub struct PrepToml {
-    pub scan_prep: PrepScanPrepBlock,
-    pub simplify: PrepSimplifyBlock,
-    pub smoothing: PrepSmoothingBlock,
-    pub transform: PrepTransformBlock,
-    pub caps: PrepCapsBlock,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub centerline: Option<PrepCenterlineBlock>,
-    pub centerline_trim: PrepCenterlineTrimBlock,
-    pub output: PrepOutputBlock,
-}
-
-#[derive(Serialize)]
-pub struct PrepScanPrepBlock {
-    pub source_stl: String,
-    pub tool_version: &'static str,
-    pub generated_at: String,
-    pub stl_units_at_load: &'static str,
-    /// Physics-frame translation auto-applied at load (CSP.3.5) so
-    /// the scan's AABB centroid lands at origin. Provenance only —
-    /// the cleaned STL is in the auto-centered frame (plus the
-    /// user's transforms). To reconstruct the source-frame position
-    /// of a cleaned-STL vertex, INVERT the user's Reorient +
-    /// Recenter recorded in `[transform]`, then add this offset.
-    pub auto_center_offset_m: [f64; 3],
-    /// Auto-PCA rotation applied at load (CSP.4a) — quaternion in
-    /// `(w, x, y, z)` order that takes the source's principal axis
-    /// to `+Z`. Skipped (serialized as `null`) when PCA was
-    /// degenerate (rare). Pairs with `auto_center_offset_m` for
-    /// full source-frame reconstruction.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub auto_pca_quaternion: Option<[f64; 4]>,
-}
-
-/// `[simplify]` provenance — what decimation, if any, was applied at
-/// save time. Per spec §Output format. Records both the user-targeted
-/// budget (slice 9.8: Simplify panel slider IS the save-time budget)
-/// and the actually-achieved face count, plus the originally-loaded
-/// count so the reduction ratio is visible.
-#[derive(Serialize)]
-pub struct PrepSimplifyBlock {
-    /// `true` when meshopt was invoked at save time (target < pre-
-    /// simplify cleaned-mesh face count). `false` when the cleaned
-    /// mesh's face count was already at or below the target (no
-    /// decimation; achieved == original).
-    pub applied: bool,
-    /// Algorithm identifier — pinned literal so downstream audits know
-    /// what code path produced this file.
-    pub algorithm: &'static str,
-    /// Version string for the algorithm dependency. Tracks the
-    /// workspace `meshopt` Cargo dep; bump this constant in lockstep
-    /// when that dep is updated. Hard-coded literal because the
-    /// meshopt-rs crate doesn't expose its version at runtime and a
-    /// build-script lift for one provenance line would be overkill.
-    pub algorithm_version: &'static str,
-    /// Target face count from the Simplify panel slider at save time.
-    pub target_face_count: usize,
-    /// Actual face count of the cleaned mesh on disk. Equals
-    /// `target_face_count` ± boundary-locked vertex topology slack
-    /// when `applied`; equals `original_face_count` when `!applied`.
-    pub achieved_face_count: usize,
-    /// Face count of the as-loaded scan (in `OriginalScanMesh`,
-    /// before any decimation or transforms). Distinct from
-    /// `achieved_face_count` whenever simplify ran at all.
-    pub original_face_count: usize,
-    /// Always `true` — cf-scan-prep uses
-    /// `meshopt::SimplifyOptions::LockBorder` (NOT
-    /// `simplify_sloppy`) per spec §Architectural decisions §Simplify
-    /// algorithm. Surfaced in the TOML for audit purposes.
-    pub boundary_preserved: bool,
-}
-
-/// `[smoothing]` provenance — what surface smoothing was
-/// applied at save time. Added 2026-05-16 with the Taubin
-/// smoothing pass in [`cleanup_cleaned_mesh_for_disk`].
-///
-/// Downstream consumers can use this to know how aggressively
-/// the cleaned mesh has been smoothed — e.g., cf-cast's SDF
-/// sampling math is unaffected (it just samples whatever
-/// surface is on disk), but a future re-mesh / re-process
-/// pipeline can decide whether to apply additional smoothing
-/// based on what's already there.
-#[derive(Serialize)]
-pub struct PrepSmoothingBlock {
-    /// Algorithm identifier — pinned literal so downstream
-    /// audits know what produced the smoothed vertices.
-    pub algorithm: &'static str,
-    /// Number of Taubin (shrink + expand) pass pairs applied.
-    /// `0` = smoothing disabled at save time.
-    pub iterations: usize,
-    /// Shrink-pass weight `λ` (positive Laplacian step).
-    pub lambda: f64,
-    /// Expand-pass weight `μ` (negative Laplacian step).
-    pub mu: f64,
-}
-
-/// Algorithm identifier pinned literal for
-/// [`PrepSmoothingBlock::algorithm`]. Matches the function
-/// name in `mesh-repair`'s public API so downstream audit
-/// tooling can trace back to the implementation.
-pub const SMOOTHING_ALGORITHM_NAME: &str = "taubin_smooth_vertices";
-
-/// `[transform]` umbrella — `rotation` + `translation` sub-tables
-/// match spec §Output format. Each renders as `[transform.rotation]`
-/// + `[transform.translation]` in TOML.
-#[derive(Serialize)]
-pub struct PrepTransformBlock {
-    pub rotation: PrepRotationBlock,
-    pub translation: PrepTranslationBlock,
-}
-
-#[derive(Serialize)]
-pub struct PrepRotationBlock {
-    /// Physics-frame unit quaternion `(w, x, y, z)`. Source of truth
-    /// for downstream reconstruction; the Euler angles below mirror
-    /// the cf-scan-prep slider source-of-truth for human readability.
-    pub quaternion: [f64; 4],
-    pub roll_deg: f64,
-    pub pitch_deg: f64,
-    pub yaw_deg: f64,
-}
-
-#[derive(Serialize)]
-pub struct PrepTranslationBlock {
-    /// Physics-frame translation in meters. Spec §Output format
-    /// names this `m`; the panel state stores mm but the on-disk
-    /// units convention is meters (matches cf-cast / the rest of
-    /// the workspace).
-    pub m: [f64; 3],
-}
-
-// CSP.4c — `PrepClipBlock` removed alongside `ClipState`. The
-// `.prep.toml` no longer emits a `[clip]` block. Downstream
-// consumers (cf-cast-cli, cf-device-design) read only
-// `[centerline]` and tolerate unknown sibling keys, so the
-// removal is downstream-safe.
-
-#[derive(Serialize)]
-pub struct PrepCapsBlock {
-    /// Whether ear-clipping was applied at save time to close the
-    /// included loops. Always `true` if any loops were detected
-    /// AND included.
-    pub applied: bool,
-    pub loops: Vec<PrepCapLoop>,
-}
-
-#[derive(Serialize)]
-pub struct PrepCapLoop {
-    pub loop_index: usize,
-    pub vertex_count: usize,
-    pub plane_fit_r_squared: f64,
-    /// Physics-frame outward normal at scan time (pre-transform bake).
-    pub plane_normal: [f64; 3],
-    /// Physics-frame centroid at scan time.
-    pub plane_centroid_m: [f64; 3],
-    pub included: bool,
-}
-
-#[derive(Serialize)]
-pub struct PrepCenterlineBlock {
-    /// Polyline in **post-bake, post-trim world-frame meters**
-    /// (matches the cleaned STL's coordinate system; v2 cf-cast
-    /// consumes directly). CSP.4b — when the user dialed centerline
-    /// trim, this is the polyline between the trim cut planes, not
-    /// the full pre-trim polyline.
-    pub points_m: Vec<[f64; 3]>,
-    pub algorithm: &'static str,
-}
-
-/// `[centerline_trim]` provenance — what user-driven centerline
-/// trim was applied at save time (CSP.4b). Always emitted, even
-/// when no trim was requested (the explicit `0.0 / 0.0` record
-/// makes "saved without trim" indistinguishable from an audit
-/// perspective).
-#[derive(Serialize)]
-pub struct PrepCenterlineTrimBlock {
-    pub trim_tip_mm: f64,
-    pub trim_floor_mm: f64,
-    /// Number of boundary loops auto-capped after the trim cuts.
-    /// For a "trim only the floor end" save on a closed-tip sock,
-    /// this is 1; for "trim both ends" it's 2; for "no trim" it's
-    /// 0. When floor reconstruction is applied this drops to 0 +
-    /// 1 (the tip-end auto-cap survives, the floor end is
-    /// extrusion + flat cap instead of an auto-cap).
-    pub capped_loops: usize,
-    /// CSP.4e.5 — present only when floor reconstruction was
-    /// applied at save time. The cleaned STL has the extruded
-    /// sidewall + flat cap baked in; this provenance block
-    /// records WHAT shape + how much reference zone the user
-    /// dialed.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reconstruct: Option<PrepReconstructSubBlock>,
-}
-
-/// `[centerline_trim.reconstruct]` provenance — emitted only
-/// when the user clicked Apply reconstruct before Save. CSP.4e.5.
-#[derive(Serialize)]
-pub struct PrepReconstructSubBlock {
-    /// "constant", "taper", or "extrapolate" — matches the
-    /// `ReconstructShape` variant the user selected.
-    pub shape: &'static str,
-    /// Reference-zone length in mm that drove the radial profile
-    /// sampling.
-    pub reference_mm: f64,
-}
-
-#[derive(Serialize)]
-pub struct PrepOutputBlock {
-    pub cleaned_stl: String,
-    /// AABB of the cleaned mesh on disk (post-transform, post-cap,
-    /// post-save-time-simplify), in meters. Spec §Output format
-    /// promised this so downstream tooling can sanity-check the
-    /// cleaned scan extents without re-loading the STL.
-    pub aabb_m: PrepAabbBlock,
-}
-
-#[derive(Serialize)]
-pub struct PrepAabbBlock {
-    pub min: [f64; 3],
-    pub max: [f64; 3],
-}
-
-/// Algorithm identifier for `[simplify].algorithm`. Pinned literal so
-/// downstream audits can distinguish cf-scan-prep's boundary-preserving
-/// quadric collapse from other decimation strategies (e.g.,
-/// cf-device-design's `simplify_sloppy` proxy).
-pub const SIMPLIFY_ALGORITHM_NAME: &str = "meshopt_quadric_edge_collapse";
-
-/// Tracks the workspace `meshopt` Cargo dep. Update in lockstep with
-/// `Cargo.toml`'s `meshopt = "X.Y.Z"`.
-pub const SIMPLIFY_ALGORITHM_VERSION: &str = "0.6.2";
-
-/// Minimal RFC 3339-ish timestamp without pulling in `chrono`. Uses
-/// the OS clock + `std::time::SystemTime` for a UTC-shaped string
-/// good enough for provenance. If the clock returns an error
-/// (extremely unusual), falls back to a placeholder.
-pub fn chrono_like_timestamp() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    // Plain seconds-since-epoch (the user's timezone is irrelevant
-    // for provenance — they can convert if needed). Format as ISO
-    // 8601 UTC by computing a calendar date from the unix timestamp.
-    iso8601_utc_from_unix_seconds(secs)
-}
-
-/// Convert a unix timestamp (seconds since 1970-01-01 UTC) into an
-/// ISO 8601 UTC string like `2026-05-12T22:34:00Z`. Inline because
-/// the only alternative is pulling in `chrono` for one function.
-pub fn iso8601_utc_from_unix_seconds(unix_secs: u64) -> String {
-    // Days since epoch.
-    let days = unix_secs / 86_400;
-    let secs_in_day = unix_secs % 86_400;
-    let hours = secs_in_day / 3600;
-    let minutes = (secs_in_day % 3600) / 60;
-    let seconds = secs_in_day % 60;
-
-    // Walk forward from 1970-01-01 day-by-day. Slow for far-future
-    // dates but trivial for "now". Use a calendar table.
-    let (year, month, day) = unix_days_to_ymd(days as i64);
-    format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}Z")
-}
-
-/// Convert "days since 1970-01-01" to a (year, month, day) tuple.
-/// Algorithm: Howard Hinnant's civil-from-days; well-known + branch-
-/// less. ~30 LOC inline, avoids the `chrono` dep.
-pub fn unix_days_to_ymd(z: i64) -> (i64, u32, u32) {
-    // Shift so the "year 0" anchor is March 1 of year 0 (so leap
-    // days fall at year boundaries cleanly).
-    let z_shifted = z + 719_468;
-    let era = if z_shifted >= 0 {
-        z_shifted / 146_097
-    } else {
-        (z_shifted - 146_096) / 146_097
-    };
-    let doe = (z_shifted - era * 146_097) as u64; // [0, 146096]
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
-    let mp = (5 * doy + 2) / 153; // [0, 11]
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32; // [1, 12]
-    let year = if m <= 2 { y + 1 } else { y };
-    (year, m, d)
-}
-
-/// Atomic two-file write: writes `cleaned_stl_path` + `prep_toml_path`
-/// to `.tmp` siblings first, then renames both to final names. If
-/// either step fails, BOTH `.tmp` files are cleaned up so the user
-/// doesn't end up with a half-written set. Spec §Architectural
-/// decisions §Save atomicity.
-pub fn atomic_write_save(
-    cleaned_mesh: &IndexedMesh,
-    cleaned_stl_path: &Path,
-    prep_toml_path: &Path,
-    prep_toml_content: &str,
-) -> Result<()> {
-    let stl_tmp = cleaned_stl_path.with_extension("stl.tmp");
-    let toml_tmp = prep_toml_path.with_extension("toml.tmp");
-
-    // STL write (binary; cleaned scans are large — text STL would
-    // 10x the file size with no benefit).
-    save_stl(cleaned_mesh, &stl_tmp, true)
-        .with_context(|| format!("writing {}", stl_tmp.display()))?;
-    // TOML write.
-    if let Err(e) = std::fs::write(&toml_tmp, prep_toml_content) {
-        // Roll back STL tmp; surface the TOML error.
-        let _ = std::fs::remove_file(&stl_tmp);
-        return Err(anyhow::Error::new(e).context(format!("writing {}", toml_tmp.display())));
-    }
-    // Atomic renames.
-    if let Err(e) = std::fs::rename(&stl_tmp, cleaned_stl_path) {
-        let _ = std::fs::remove_file(&stl_tmp);
-        let _ = std::fs::remove_file(&toml_tmp);
-        return Err(anyhow::Error::new(e).context(format!("renaming {}", stl_tmp.display())));
-    }
-    if let Err(e) = std::fs::rename(&toml_tmp, prep_toml_path) {
-        // STL already landed; remove it to keep atomicity contract
-        // ("neither final file lands if either write fails").
-        let _ = std::fs::remove_file(cleaned_stl_path);
-        let _ = std::fs::remove_file(&toml_tmp);
-        return Err(anyhow::Error::new(e).context(format!("renaming {}", toml_tmp.display())));
-    }
-    Ok(())
-}
-
-/// Compute the **post-Reorient** AABB of the raw scan AABB in
-/// physics-frame **millimeters**. Used by the Recenter panel's
-/// `[Center origin]` and `[Floor -> z=0]` click handlers to figure out
-/// where the rotated mesh actually sits in space.
-///
-/// Walks the 8 corners of the raw AABB, rotates each by `rot_physics`
-/// (no translation applied — translation is what we're trying to
-/// compute), and accumulates the rotated min/max. Returns mm bounds
-/// because the Recenter sliders + status messages all work in mm
-/// (workshop convention; matches the Scan Info panel's AABB display
-/// units).
-pub fn rotated_aabb_around_centroid_physics_mm(
-    rot_physics: UnitQuaternion<f64>,
-    raw_aabb_m: &Aabb,
-) -> (Vector3<f64>, Vector3<f64>) {
-    // Pivot rotation around the raw AABB centroid: corner_centered =
-    // corner - centroid, rotated_centered = R * corner_centered,
-    // world = rotated_centered + centroid. This keeps the mesh
-    // ROTATING IN PLACE — the AABB CENTER stays at `centroid * 1000`
-    // mm regardless of `rot_physics`; only the AABB extents rotate.
-    // Without this pivot the [Center origin] / [Floor -> z=0] click
-    // handlers would compute the FULL swing of the off-origin mesh
-    // through space, which the user perceives as "rotation moves the
-    // model" rather than "rotation rotates the model in place".
-    let centroid = raw_aabb_m.center();
-    let lo = raw_aabb_m.min;
-    let hi = raw_aabb_m.max;
-    let mut min_mm = Vector3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
-    let mut max_mm = Vector3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
-    for &x in &[lo.x, hi.x] {
-        for &y in &[lo.y, hi.y] {
-            for &z in &[lo.z, hi.z] {
-                let centered_mm = Vector3::new(
-                    (x - centroid.x) * 1000.0,
-                    (y - centroid.y) * 1000.0,
-                    (z - centroid.z) * 1000.0,
-                );
-                let rotated_centered = rot_physics.transform_vector(&centered_mm);
-                let world_mm = Vector3::new(
-                    rotated_centered.x + centroid.x * 1000.0,
-                    rotated_centered.y + centroid.y * 1000.0,
-                    rotated_centered.z + centroid.z * 1000.0,
-                );
-                min_mm.x = min_mm.x.min(world_mm.x);
-                min_mm.y = min_mm.y.min(world_mm.y);
-                min_mm.z = min_mm.z.min(world_mm.z);
-                max_mm.x = max_mm.x.max(world_mm.x);
-                max_mm.y = max_mm.y.max(world_mm.y);
-                max_mm.z = max_mm.z.max(world_mm.z);
-            }
-        }
-    }
-    (min_mm, max_mm)
-}
-
-/// Bake a physics-frame point through Reorient + Recenter with the
-/// rotation pivoted at `centroid` (the scan's raw AABB centroid).
-/// Returns the world-frame point:
-///
-/// ```text
-/// world = rotation * (point - centroid) + centroid + translation_m
-/// ```
-///
-/// The centroid pivot is what makes rotation feel like "rotate in
-/// place" — without it, rotating an off-origin mesh swings the
-/// centroid through space because the bake formula pivots at the
-/// physics-frame origin by default. The pivot compensation
-/// `(I - R) * centroid` is folded into the bake formula uniformly
-/// so the cleaned STL on disk, the viewport mesh + wireframe, and
-/// the cap / centerline overlays all agree.
-pub fn bake_vertex_with_pivot(
-    point: &Point3<f64>,
-    rotation: UnitQuaternion<f64>,
-    centroid: &Point3<f64>,
-    translation_m: Vector3<f64>,
-) -> Point3<f64> {
-    let centered = point.coords - centroid.coords;
-    let rotated_centered = rotation.transform_vector(&centered);
-    Point3::from(rotated_centered + centroid.coords + translation_m)
-}
-
-/// Compute the principal-axis rotation that aligns a scan's
-/// long axis with `+Z` (the cast-frame demolding axis).
-///
-/// PCA on the mean-centered vertex positions: 3×3 covariance,
-/// symmetric eigendecomposition, principal eigenvector = the
-/// largest-variance direction (the "long axis" of the scan). The
-/// returned [`UnitQuaternion`] is the shortest rotation that maps
-/// that principal axis to `+Z`.
-///
-/// Sign convention: the principal eigenvector is determined only
-/// up to sign. This helper picks the side whose `z` component is
-/// non-negative (i.e., the side already closer to `+Z`) — the
-/// resulting rotation is therefore at most 90° from identity.
-/// Users who want the opposite end pointed up flip post-hoc with
-/// a 180° follow-on rotation (e.g. by setting roll = 180°).
-///
-/// Returns `None` for:
-/// - fewer than 3 vertices (PCA underdetermined)
-/// - degenerate mesh whose covariance has all near-zero
-///   eigenvalues (all vertices coincident; no principal axis)
-///
-/// **Resolves cf-scan-prep deferred item §5 "Auto-PCA initial
-/// orientation guess"** from `docs/SCAN_PREP_DESIGN.md` — the
-/// manual-slider Reorient panel introduces tilt that propagates
-/// downstream to the cleaned STL + centerline + (via cf-cast-cli)
-/// the mold geometry. Auto-PCA gives a deterministic starting
-/// orientation that the user can then nudge with the existing
-/// sliders.
-pub fn compute_pca_orientation(vertices: &[Point3<f64>]) -> Option<UnitQuaternion<f64>> {
-    if vertices.len() < 3 {
-        return None;
-    }
-
-    // Mean-center.
-    let n = vertices.len() as f64;
-    let mut centroid = Vector3::zeros();
-    for v in vertices {
-        centroid += v.coords;
-    }
-    centroid /= n;
-
-    // 3×3 covariance accumulation (Σ d · d^T / n). Symmetric by
-    // construction, so we use SymmetricEigen for the
-    // eigendecomposition below.
-    let mut cov = Matrix3::zeros();
-    for v in vertices {
-        let d = v.coords - centroid;
-        cov += d * d.transpose();
-    }
-    cov /= n;
-
-    let eigen = cov.symmetric_eigen();
-
-    // Largest eigenvalue's column = principal axis.
-    let (mut max_i, mut max_val) = (0_usize, eigen.eigenvalues[0]);
-    for i in 1..3 {
-        if eigen.eigenvalues[i] > max_val {
-            max_i = i;
-            max_val = eigen.eigenvalues[i];
-        }
-    }
-    // Degeneracy guard: all-zero (or all near-zero) eigenvalues =
-    // no meaningful principal direction (e.g. all vertices
-    // coincident). Threshold relative to the largest eigenvalue
-    // scale; absolute 1e-30 m² catches the all-zeros case
-    // independently.
-    if max_val <= 1e-30 {
-        return None;
-    }
-    let mut principal: Vector3<f64> = eigen.eigenvectors.column(max_i).into_owned();
-
-    // Sign pick: orient the principal axis toward `+Z` so the
-    // resulting rotation is the SHORTEST rotation (≤ 90°).
-    if principal.z < 0.0 {
-        principal = -principal;
-    }
-
-    // `rotation_between` returns `None` for anti-parallel inputs;
-    // the sign-pick above ensures `principal.z >= 0`, so the
-    // anti-parallel case (principal == -Z) is precluded. Identity
-    // case (principal == +Z, already aligned) yields the identity
-    // quaternion.
-    UnitQuaternion::rotation_between(&principal, &Vector3::z())
-}
-
-/// Format an integer count with `k` / `M` suffixes for compact display
-/// in the Scan Info panel + Simplify panel + load-time auto-suggest
-/// banner. Mirrors the spec's wording (`"18.4k"`, `"3.35M"`).
-pub fn human_count(n: usize) -> String {
-    // f64 keeps 53 bits of precision; usize → f64 is lossless for the
-    // counts cf-scan-prep operates on (typical scans 10k-10M faces; the
-    // 2^53 boundary is ~9×10^15).
-    #[allow(clippy::cast_precision_loss)]
-    if n >= 1_000_000 {
-        format!("{:.2}M", n as f64 / 1_000_000.0)
-    } else if n >= 1_000 {
-        format!("{:.1}k", n as f64 / 1_000.0)
-    } else {
-        n.to_string()
-    }
-}
-
-/// Apply the PCA-derived rotation to all vertices in `mesh`, taking
-/// the principal axis to `+Z`. Returns the quaternion that was
-/// applied (or `None` if PCA was degenerate — coincident vertices,
-/// < 3 verts, or all-zero covariance).
-///
-/// Operates on the mesh after auto-center, so the rotation pivot is
-/// the origin (= scan centroid). The result has its principal axis
-/// aligned with cast-frame `+Z`.
-///
-/// Skips when the resulting quaternion is near-identity (within 1
-/// µrad sin(θ/2) of identity) — the rotation would be a no-op
-/// modulo FP drift, and skipping the vertex walk keeps already-
-/// upright fixtures bit-exact.
-pub fn auto_pca_in_place(mesh: &mut IndexedMesh) -> Option<UnitQuaternion<f64>> {
-    let q = compute_pca_orientation(&mesh.vertices)?;
-    // Near-identity check: |q.i|² + |q.j|² + |q.k|² < 1e-12 means
-    // the vector part is sub-µrad; rotation is effectively identity.
-    let vec_sq = q.i * q.i + q.j * q.j + q.k * q.k;
-    if vec_sq < 1e-12 {
-        return Some(q);
-    }
-    for v in &mut mesh.vertices {
-        *v = q.transform_point(v);
-    }
-    Some(q)
-}
-
-/// Translate `mesh`'s vertices so the AABB centroid lands at physics
-/// origin. Returns the offset that was applied (`= -aabb.center()`
-/// from the input mesh in meters).
-///
-/// No-op for an empty mesh (no vertices to walk). When `centroid`
-/// is already at origin, returns near-zero offset and skips the
-/// walk to avoid FP-drift on bit-exact-centered fixtures.
-pub fn auto_center_in_place(mesh: &mut IndexedMesh) -> Vector3<f64> {
-    if mesh.vertices.is_empty() {
-        return Vector3::zeros();
-    }
-    let centroid = mesh.aabb().center();
-    // FP-drift guard: if the centroid is already within 1 µm of the
-    // origin, skip the walk — we'd be moving vertices by sub-FP-
-    // precision amounts that meshopt couldn't see anyway.
-    let centroid_v = centroid.coords;
-    if centroid_v.norm() < 1e-6 {
-        return Vector3::zeros();
-    }
-    let offset = -centroid_v;
-    for v in &mut mesh.vertices {
-        v.x += offset.x;
-        v.y += offset.y;
-        v.z += offset.z;
-    }
-    offset
-}
-
-/// Multiply each vertex of `mesh` by `factor` in place. No-op when
-/// `factor` is exactly `1.0` (skips the f64 vertex walk for the
-/// `--stl-units m` identity case).
-pub fn scale_vertices_in_place(mesh: &mut IndexedMesh, factor: f64) {
-    if factor == 1.0 {
-        return;
-    }
-    for v in &mut mesh.vertices {
-        v.x *= factor;
-        v.y *= factor;
-        v.z *= factor;
-    }
-}
-
-/// Result of [`simplify_mesh`]: the decimated mesh + wall-clock elapsed
-/// for the status-bar achievement message.
-pub struct SimplifyResult {
-    pub mesh: IndexedMesh,
-    pub elapsed_secs: f64,
-}
-
-/// Run boundary-preserving quadric edge collapse decimation on `original`
-/// down to (approximately) `target_face_count` faces. Returns the
-/// simplified mesh + wall-clock elapsed time.
-///
-/// Pipeline:
-///
-/// 1. **Weld vertices** ([`mesh_repair::weld_vertices`] with epsilon
-///    `SIMPLIFY_WELD_EPSILON_M`). STL load produces 3N unshared
-///    vertices (one set per triangle); meshopt operates on indexed
-///    buffers and needs shared vertex indices across adjacent triangles
-///    to find collapsible edges. Without this step `meshopt::simplify`
-///    would see every triangle as topologically disconnected and would
-///    refuse to decimate.
-/// 2. **Convert positions to `[f32; 3]`** for meshopt's
-///    `DecodePosition` impl. f64 → f32 loses ~16 ulps of precision at
-///    the scan's mm scale; below the 1 µm weld tolerance.
-/// 3. **`meshopt::simplify_decoder`** with
-///    `SimplifyOptions::LockBorder`. `target_count` is in **indices**
-///    (`target_face_count × 3`); the C-side `meshopt_simplify` takes
-///    `target_index_count`. `LockBorder` pins open-boundary-loop
-///    vertices in place so the Cap panel (commit #9) sees the same
-///    boundary topology after simplification (the spec's load-bearing
-///    boundary-preservation requirement).
-/// 4. **Reassemble `IndexedMesh`** + strip unreferenced vertices left
-///    over from collapse so the simplified mesh has tight memory shape.
-///
-/// The output mesh shares its vertex coordinates with the welded
-/// intermediate (no further conversion); faces reference the surviving
-/// vertex indices.
-///
-/// # Precondition: `target_face_count < original.faces.len()`
-///
-/// meshopt is a reduction-only algorithm; its C++ side asserts
-/// `target_index_count <= index_count` in `meshopt_simplifyEdge`
-/// (simplifier.cpp:2286) and SIGABRTs the process if violated. We
-/// defensively early-return the cloned input unchanged when the target
-/// is at or above the current face count, so callers that forget the
-/// precondition see a no-op + finite `elapsed_secs` instead of a
-/// process abort. `handle_simplify_actions` pre-checks this case and
-/// surfaces a user-facing status message before invoking us; the guard
-/// here is belt-and-suspenders.
-pub fn simplify_mesh(original: &IndexedMesh, target_face_count: usize) -> SimplifyResult {
-    let start = Instant::now();
-
-    if target_face_count >= original.faces.len() {
-        return SimplifyResult {
-            mesh: original.clone(),
-            elapsed_secs: start.elapsed().as_secs_f64(),
-        };
-    }
-
-    // Step 1: weld unshared vertices into shared indices, then
-    // compact the vertex array. STL load produces 3 unique vertex
-    // slots per triangle (vertex soup); the decimator needs shared
-    // vertex indices across adjacent triangles to find collapsible
-    // edges. `remove_unreferenced_vertices` compacts away the
-    // unreferenced entries `weld_vertices` leaves behind, which makes
-    // the decimator's vertex-index space dense.
-    let mut welded = original.clone();
-    weld_vertices(&mut welded, SIMPLIFY_WELD_EPSILON_M);
-    remove_unreferenced_vertices(&mut welded);
-
-    // Env-var-gated diagnostics. Set `CF_SCAN_PREP_SIMPLIFY_DIAG=1` to
-    // see pre/post stats + timing on stderr.
-    let diag = std::env::var("CF_SCAN_PREP_SIMPLIFY_DIAG").is_ok_and(|v| !v.is_empty());
-    if diag {
-        eprintln!(
-            "[simplify_mesh] start: target={} welded_faces={} welded_vertices={}",
-            target_face_count,
-            welded.faces.len(),
-            welded.vertices.len(),
-        );
-    }
-
-    // Step 2: convert `IndexedMesh` -> `CornerTableF` for baby_shark.
-    // CornerTableF stores positions as f32 (matches the prior meshopt
-    // path's f32 conversion; sub-1 µm precision at scan mm scale).
-    #[allow(clippy::cast_possible_truncation)]
-    let positions_f32: Vec<Vector3<f32>> = welded
-        .vertices
-        .iter()
-        .map(|p| Vector3::new(p.x as f32, p.y as f32, p.z as f32))
-        .collect();
-    let flat_indices: Vec<usize> = welded
-        .faces
-        .iter()
-        .flat_map(|tri| [tri[0] as usize, tri[1] as usize, tri[2] as usize])
-        .collect();
-    let mut ct_mesh = CornerTableF::from_vertex_and_face_slices(&positions_f32, &flat_indices);
-
-    // Step 3: decimate with baby_shark's incremental QEM edge collapse.
-    // `keep_boundary(true)` is the equivalent of meshopt's
-    // `SimplifyOptions::LockBorder` — pins open-boundary loop vertices
-    // so the downstream Cap panel sees the same loop topology after
-    // simplification (the spec's load-bearing boundary-preservation
-    // requirement). Unlike meshopt, baby_shark's `EdgeDecimator`
-    // refuses any collapse that would create a non-manifold edge —
-    // see S1.1 probe-8 (2026-05-26) for the empirical confirmation
-    // on the workshop iter-1 scan.
-    let decimate_start = Instant::now();
-    let mut decimator: EdgeDecimator<f32, AlwaysDecimate> = EdgeDecimator::default()
-        .decimation_criteria(AlwaysDecimate)
-        .min_faces_count(Some(target_face_count))
-        .keep_boundary(true);
-    decimator.decimate(&mut ct_mesh);
-    let decimate_elapsed = decimate_start.elapsed().as_secs_f64();
-
-    // Step 4: convert CornerTableF back to IndexedMesh. baby_shark's
-    // `VertexId` is opaque (an internal handle, possibly with gaps
-    // after edge collapse); walk `vertices()` once to assign each VID
-    // a dense `[0..n)` index, then walk `faces()` to emit triangles
-    // using the dense indices.
-    let mut out_mesh = IndexedMesh::new();
-    let mut vid_to_dense: std::collections::HashMap<_, u32> = std::collections::HashMap::new();
-    for vid in <CornerTableF as TriangleMesh>::vertices(&ct_mesh) {
-        let pos = <CornerTableF as TriangleMesh>::position(&ct_mesh, vid);
-        let dense_idx = out_mesh.vertices.len() as u32;
-        out_mesh.vertices.push(Point3::new(
-            f64::from(pos[0]),
-            f64::from(pos[1]),
-            f64::from(pos[2]),
-        ));
-        vid_to_dense.insert(vid, dense_idx);
-    }
-    for face_vids in <CornerTableF as TriangleMesh>::faces(&ct_mesh) {
-        // Invariant: each `face_vids[i]` was emitted by `vertices()`
-        // above, so the map lookup always succeeds. Use `if let` over
-        // `expect` to satisfy the crate's `expect_used = deny` lint
-        // without changing behavior — the no-match arm is unreachable
-        // under the documented baby_shark TriangleMesh contract.
-        if let (Some(&a), Some(&b), Some(&c)) = (
-            vid_to_dense.get(&face_vids[0]),
-            vid_to_dense.get(&face_vids[1]),
-            vid_to_dense.get(&face_vids[2]),
-        ) {
-            out_mesh.faces.push([a, b, c]);
-        }
-    }
-
-    if diag {
-        eprintln!(
-            "[simplify_mesh] decimated: in_faces={} out_faces={} out_verts={} \
-             decimate_elapsed={:.3}s",
-            welded.faces.len(),
-            out_mesh.faces.len(),
-            out_mesh.vertices.len(),
-            decimate_elapsed,
-        );
-    }
-
-    if diag {
-        eprintln!(
-            "[simplify_mesh] end: final_faces={} final_vertices={} elapsed={:.3}s",
-            out_mesh.faces.len(),
-            out_mesh.vertices.len(),
-            start.elapsed().as_secs_f64(),
-        );
-    }
-
-    SimplifyResult {
-        mesh: out_mesh,
-        elapsed_secs: start.elapsed().as_secs_f64(),
-    }
-}
-
-// ===== Move 2: orchestration fns (plain-data) =====
-
-/// Identify the floor loop in the [`DetectedCapLoop`] list for the
-/// reconstruction-plane override: the LARGEST valid loop, matching
-/// [`find_floor_loop_index`]'s pick-by-count heuristic (`MIN_RIM_LOOP_VERTS`
-/// = 10). The cut rim is overwhelmingly the largest loop on practical
-/// scans; small loops are scanner-noise stragglers and should keep
-/// their detected planes. Returns `None` when no sufficiently-large
-/// loop exists (in which case the override is skipped).
-pub fn floor_loop_index(loops: &[DetectedCapLoop]) -> Option<usize> {
-    const MIN_RIM_LOOP_VERTS: usize = 10;
-    loops
-        .iter()
-        .enumerate()
-        .filter(|(_, cl)| cl.vertex_indices.len() >= MIN_RIM_LOOP_VERTS)
-        .max_by_key(|(_, cl)| cl.vertex_indices.len())
-        .map(|(i, _)| i)
-}
-
-/// Build the cleaned IndexedMesh from the working scan + Reorient +
-/// Recenter + included cap loops.
-///
-/// Pipeline:
-/// 1. Clone `scan` into `out`.
-/// 2. Bake rotation + translation into vertex positions (in place).
-///    After this step `out.vertices` are in world frame.
-/// 3. For each included cap loop, ear-clip its 2D projection and
-///    append triangles (using existing loop vertex indices — no new
-///    vertices added). Cap faces inherit the world-frame coordinates
-///    from step 2.
-///
-/// CSP.4c — Clip-floor step removed (the feature itself retired
-/// alongside `ClipState`). Centerline trim handles the workshop
-/// "shave the noisy end" use case the clip used to cover.
-///
-/// **Cap normal orientation**: the spec mandates that the cap's
-/// outward normal point away from the mesh interior. We orient the
-/// triangulation's vertex winding to match the loop's stored
-/// `plane_normal` (which `build_detected_cap_loop` already flipped
-/// to face outward).
-pub fn build_cleaned_mesh(
-    scan: &IndexedMesh,
-    rotation: UnitQuaternion<f64>,
-    translation_m: Vector3<f64>,
-    cap_loops: &[DetectedCapLoop],
-) -> IndexedMesh {
-    let translation = translation_m;
-    // Pivot the bake rotation around the raw scan AABB centroid so
-    // rotation rotates the mesh in place (matches the viewport's
-    // centroid-pivot Transform composition). Empty mesh → centroid
-    // at origin (matches `IndexedMesh::aabb()` returning
-    // `Aabb::empty()`); the loop below is a no-op anyway.
-    let centroid = scan.aabb().center();
-
-    let mut out = scan.clone();
-
-    // Step 2: bake transforms. Compute centroid-pivoted rotation +
-    // recenter translation for each vertex from the ORIGINAL
-    // (pre-bake) coordinates so cap triangulation can still reference
-    // the original positions for plane fit etc. We then mutate
-    // `out.vertices` in place.
-    for v in out.vertices.iter_mut() {
-        *v = bake_vertex_with_pivot(v, rotation, &centroid, translation);
-    }
-
-    // Step 3: triangulate + append included caps. Loop vertex
-    // indices were captured at scan time + reference positions in
-    // `scan.0.vertices` — which after our in-place transform are
-    // now in world frame. So both the original-loop-positions math
-    // (for the 2D projection) AND the resulting face indices stay
-    // valid.
-    for cap_loop in cap_loops {
-        if !cap_loop.include {
-            continue;
-        }
-        // Loop's stored `plane_centroid` and `plane_normal` are in
-        // pre-bake physics-local frame. Bake centroid through the
-        // same pivot transform as the vertices; rotate the plane
-        // normal (a direction, no pivot or translation).
-        let centroid_world =
-            bake_vertex_with_pivot(&cap_loop.plane_centroid, rotation, &centroid, translation);
-        let normal_world = rotation.transform_vector(&cap_loop.plane_normal);
-
-        // CSP.3a — project each loop vertex onto the fit plane
-        // BEFORE the ear-clip. The boundary loop's points have
-        // sub-mm wobble for typical R² ≈ 0.9 fixtures; without this
-        // projection the resulting cap faces lie OFF the plane
-        // (because ear-clip's 2D projection is into the plane, but
-        // the final 3D faces draw from the unprojected vertex
-        // positions). Snapping the rim onto the plane keeps the cap
-        // planar at the cost of moving the scan-body rim ring by
-        // the wobble magnitude — sub-mm, well below the 2 mm SDF
-        // cell + below the meshopt target_error threshold. The
-        // alternative (append separate cap vertices) leaves a
-        // sub-mm seam gap that breaks watertightness for mesh_sdf.
-        // All loop indices are validated below; we project only the
-        // ones that exist in the current `out.vertices`.
-        for &idx in &cap_loop.vertex_indices {
-            if let Some(p) = out.vertices.get(idx as usize).copied() {
-                let signed = (p.coords - centroid_world.coords).dot(&normal_world);
-                let projected = p.coords - normal_world * signed;
-                out.vertices[idx as usize] = Point3::from(projected);
-            }
-        }
-
-        let loop_points_world: Vec<Point3<f64>> = cap_loop
-            .vertex_indices
+            .map(|v| v.x.abs())
+            .fold(0.0_f64, f64::max);
+        assert!((pre_x_range_max - 0.05).abs() < 1e-12);
+
+        let q = auto_pca_in_place(&mut mesh).expect("PCA should succeed");
+
+        // After rotation, the long axis runs along +Z (or -Z; the
+        // sign-pick keeps the rotation short). The X spread
+        // collapses to ~zero; the Z spread inherits the original X
+        // spread.
+        let post_z_range_max = mesh
+            .vertices
             .iter()
-            .filter_map(|&idx| out.vertices.get(idx as usize).copied())
-            .collect();
-        if loop_points_world.len() != cap_loop.vertex_indices.len() {
-            // Some indices invalid (mesh changed after scan); skip
-            // this loop rather than emit malformed faces.
-            continue;
+            .map(|v| v.z.abs())
+            .fold(0.0_f64, f64::max);
+        let post_x_range_max = mesh
+            .vertices
+            .iter()
+            .map(|v| v.x.abs())
+            .fold(0.0_f64, f64::max);
+        assert!(
+            (post_z_range_max - 0.05).abs() < 1e-9,
+            "post Z extent: {post_z_range_max}"
+        );
+        assert!(
+            post_x_range_max < 1e-9,
+            "post X extent should collapse: {post_x_range_max}"
+        );
+
+        // Quaternion identity-check: not identity (we actually rotated).
+        let vec_sq = q.i * q.i + q.j * q.j + q.k * q.k;
+        assert!(vec_sq > 1e-6, "expected non-identity rotation");
+    }
+    /// Already-PCA-aligned mesh (principal axis = +Z, vertices in
+    /// the YZ plane with the long axis on Z): auto-PCA is the
+    /// identity, vertex positions stay bit-exact.
+    #[test]
+    fn auto_pca_in_place_skips_vertex_walk_on_near_identity() {
+        // 11 points along +Z, centroid at origin. PCA principal axis
+        // = +Z already; rotation_between(+Z, +Z) = identity.
+        let mut mesh = IndexedMesh::with_capacity(11, 0);
+        for i in -5..=5 {
+            mesh.vertices
+                .push(Point3::new(0.0, 0.0, f64::from(i) * 0.01));
         }
+        let mesh_before = mesh.clone();
 
-        let verts_2d = project_loop_to_plane_2d(&loop_points_world, centroid_world, normal_world);
+        let q = auto_pca_in_place(&mut mesh).expect("PCA should succeed");
+        // Quaternion should be near-identity.
+        assert!(
+            (q.w - 1.0).abs() < 1e-9,
+            "expected near-identity q.w, got {}",
+            q.w
+        );
+        // Vertices bit-exactly preserved (the near-identity skip
+        // path didn't walk them).
+        assert_eq!(mesh.vertices, mesh_before.vertices);
+    }
+    /// Degenerate input (all vertices coincident → no principal
+    /// axis): auto-PCA returns `None`, vertices unchanged. Pairs
+    /// with `compute_pca_orientation`'s `None` path.
+    #[test]
+    fn auto_pca_in_place_returns_none_on_degenerate() {
+        let mut mesh = IndexedMesh::with_capacity(10, 0);
+        for _ in 0..10 {
+            mesh.vertices.push(Point3::origin());
+        }
+        let mesh_before = mesh.clone();
+        let q = auto_pca_in_place(&mut mesh);
+        assert!(q.is_none(), "expected None on degenerate input");
+        assert_eq!(mesh.vertices, mesh_before.vertices);
+    }
 
-        // Centroid-fan replacement for the ear-clip path (S1.1
-        // 2026-05-26) — produces a non-overlapping fan from a fresh
-        // centroid vertex to each perimeter edge. Manifold by
-        // construction for star-shaped projected polygons; eliminates
-        // the duplicate-face + non-manifold-edge artifacts the ear-
-        // clip's fan-fallback emitted on self-intersecting
-        // projections. Same helper as `auto_cap_open_boundaries`.
-        emit_centroid_fan_cap(
-            &mut out,
-            &cap_loop.vertex_indices,
-            &loop_points_world,
-            &verts_2d,
+    // ----- human_count ------------------------------------------------
+    /// Small counts pass through as bare integers (no suffix). The
+    /// `1`/`999` boundary cases pin the `< 1000` threshold.
+    #[test]
+    fn human_count_small_returns_bare_integer() {
+        assert_eq!(human_count(0), "0");
+        assert_eq!(human_count(1), "1");
+        assert_eq!(human_count(999), "999");
+    }
+    /// Thousands use `k` suffix with one decimal. `18_432` matches the
+    /// spec mockup's `"18.4k"` example exactly.
+    #[test]
+    fn human_count_thousands_use_k_suffix() {
+        assert_eq!(human_count(1_000), "1.0k");
+        assert_eq!(human_count(18_432), "18.4k");
+    }
+    /// Millions use `M` suffix with two decimals. `3_352_068` matches
+    /// the iter-1 fixture's face count (`sock_over_capsule.stl`, 3.35M
+    /// faces) — banked in MEMORY.md's Resume-here block as the spec's
+    /// canonical perf-calibration value.
+    #[test]
+    fn human_count_millions_use_m_suffix() {
+        assert_eq!(human_count(1_000_000), "1.00M");
+        assert_eq!(human_count(3_352_068), "3.35M");
+    }
+
+    // ----- SIMPLIFY_TARGET_MIN / MAX ---------------------------------
+    /// Slider bounds spec-pin (1k–1M) per spec §Panel specifications §2.
+    /// Changing either bound silently shifts the slider's logarithmic
+    /// midpoint (where the 200k default sits in the track), so worth
+    /// a regression test.
+    #[test]
+    fn simplify_slider_bounds_match_spec() {
+        assert_eq!(SIMPLIFY_TARGET_MIN, 1_000);
+        assert_eq!(SIMPLIFY_TARGET_MAX, 1_000_000);
+    }
+
+    // ----- simplify_mesh end-to-end (small fixture) ------------------
+    #[test]
+    fn mesh_looks_unwelded_flags_raw_stl_soup() {
+        // Raw STL load: 3 verts per triangle → 3× faces. Flagged.
+        assert!(mesh_looks_unwelded(600_000, 200_000));
+        // Welded mesh: V ≈ F/2. Not flagged.
+        assert!(!mesh_looks_unwelded(100_000, 200_000));
+        // Exactly at the 2× threshold → flagged.
+        assert!(mesh_looks_unwelded(400_000, 200_000));
+        // Empty mesh → never flagged (avoids div-by-zero / false alarm).
+        assert!(!mesh_looks_unwelded(0, 0));
+    }
+    /// `simplify_mesh` on a 20×20-cell grid (800 faces) targeting 100
+    /// faces returns a mesh with face count ≤ target. meshopt doesn't
+    /// guarantee hitting the target exactly (topology may force fewer
+    /// collapses), so the assertion is upper-bounded.
+    #[test]
+    fn simplify_mesh_reduces_face_count_within_target() {
+        let original = grid_square(20);
+        assert_eq!(original.faces.len(), 800);
+
+        let result = simplify_mesh(&original, 100);
+        assert!(
+            result.mesh.faces.len() <= 100,
+            "simplified face count {} should not exceed target 100",
+            result.mesh.faces.len(),
+        );
+        // Strictly smaller than original (some progress was made).
+        assert!(
+            result.mesh.faces.len() < original.faces.len(),
+            "simplify must reduce face count (got {} from original {})",
+            result.mesh.faces.len(),
+            original.faces.len(),
+        );
+        // Elapsed time is finite + non-negative (sanity on the timer).
+        assert!(result.elapsed_secs >= 0.0);
+        assert!(result.elapsed_secs.is_finite());
+    }
+    /// Regression for the iter-1-eyes-on-pixels crash: meshopt's C++
+    /// side asserts `target_index_count <= index_count` in
+    /// `meshopt_simplifyEdge` and SIGABRTs the process if violated.
+    /// `simplify_mesh` defensively early-returns the input unchanged
+    /// when `target_face_count >= original.faces.len()` so the FFI is
+    /// never invoked with assertion-violating params.
+    ///
+    /// Covers the "drag slider right past current face count + Apply"
+    /// workflow (e.g., after a prior Apply reduces to 100 faces, then
+    /// the user drags the slider to 200 and clicks Apply again). The
+    /// `handle_simplify_actions` system pre-checks this case and
+    /// surfaces a user-facing status message, but the guard inside
+    /// `simplify_mesh` itself is the bulletproof layer.
+    #[test]
+    fn simplify_mesh_above_input_face_count_is_no_op() {
+        let original = grid_square(20);
+        assert_eq!(original.faces.len(), 800);
+
+        // Target >> input — would SIGABRT without the guard.
+        let result = simplify_mesh(&original, 10_000);
+
+        assert_eq!(
+            result.mesh.faces.len(),
+            original.faces.len(),
+            "guard must return input unchanged when target >= current",
+        );
+        assert_eq!(result.mesh.vertices.len(), original.vertices.len());
+
+        // Exactly-equal target also exits the guard (>=, not >).
+        let result_eq = simplify_mesh(&original, 800);
+        assert_eq!(result_eq.mesh.faces.len(), 800);
+    }
+
+    // ----- compute_pca_orientation ----------------------------------
+    /// Empty vertex slice returns `None` — PCA needs at least one
+    /// point to define a centroid, three to define a principal axis.
+    /// Pinned so a misuse at the call site surfaces visibly rather
+    /// than panicking inside `symmetric_eigen` on a zero matrix.
+    #[test]
+    fn pca_orientation_too_few_vertices_returns_none() {
+        let v: Vec<Point3<f64>> = vec![];
+        assert!(compute_pca_orientation(&v).is_none());
+        let v = vec![Point3::origin(), Point3::new(1.0, 0.0, 0.0)];
+        assert!(compute_pca_orientation(&v).is_none());
+    }
+    /// Coincident vertices have zero covariance → no principal axis.
+    /// Returns `None` rather than producing an arbitrary rotation
+    /// from numerical noise.
+    #[test]
+    fn pca_orientation_degenerate_coincident_returns_none() {
+        let v = vec![Point3::origin(); 10];
+        assert!(compute_pca_orientation(&v).is_none());
+    }
+    /// Vertices stretched along physics-frame `+X` produce a rotation
+    /// that maps `+X` to `+Z`. The shortest such rotation is `-90°`
+    /// about `+Y`; via `from_axis_angle` that's quaternion
+    /// `(cos(-45°), 0, sin(-45°), 0)`.
+    #[test]
+    fn pca_orientation_long_x_axis_rotates_x_to_z() {
+        // 11 points along +X with no spread on Y or Z. Length 1.0 m
+        // along X, zero variance on Y / Z → principal axis = +X
+        // (or -X; sign-pick flips to +X for positive z-target).
+        let v: Vec<Point3<f64>> = (0..11)
+            .map(|i| Point3::new(f64::from(i) * 0.1, 0.0, 0.0))
+            .collect();
+        let q = compute_pca_orientation(&v).unwrap();
+
+        // Apply the rotation to +X — should land at +Z.
+        let rotated = q.transform_vector(&Vector3::x());
+        assert!((rotated.x).abs() < 1e-9, "rotated.x = {}", rotated.x);
+        assert!((rotated.y).abs() < 1e-9, "rotated.y = {}", rotated.y);
+        assert!((rotated.z - 1.0).abs() < 1e-9, "rotated.z = {}", rotated.z);
+    }
+    /// Vertices already long along `+Z` produce the identity
+    /// rotation — no work needed. Pins the "no-op fast path" against
+    /// silently producing a small rotation from FP noise.
+    #[test]
+    fn pca_orientation_long_z_axis_yields_identity() {
+        let v: Vec<Point3<f64>> = (0..11)
+            .map(|i| Point3::new(0.0, 0.0, f64::from(i) * 0.1))
+            .collect();
+        let q = compute_pca_orientation(&v).unwrap();
+        assert!((q.w - 1.0).abs() < 1e-9, "q.w = {}", q.w);
+        assert!(q.i.abs() < 1e-9, "q.i = {}", q.i);
+        assert!(q.j.abs() < 1e-9, "q.j = {}", q.j);
+        assert!(q.k.abs() < 1e-9, "q.k = {}", q.k);
+    }
+    /// Sign-pick check: the principal eigenvector for vertices
+    /// stretched along `-Z` could come out as `+Z` or `-Z`; the
+    /// helper flips to `+Z` (the side closer to the `+Z` target) so
+    /// the resulting rotation is identity rather than a 180° flip.
+    /// Sigil for "no rotation needed when the long axis ALREADY
+    /// points up, even if the eigenvector signs out the other way."
+    #[test]
+    fn pca_orientation_sign_pick_prefers_positive_z() {
+        // 11 points along ±Z spanning 1 m, symmetric about origin.
+        // Centroid = origin; principal eigenvector axis = ±Z line.
+        let v: Vec<Point3<f64>> = (0..11)
+            .map(|i| Point3::new(0.0, 0.0, (f64::from(i) - 5.0) * 0.1))
+            .collect();
+        let q = compute_pca_orientation(&v).unwrap();
+        // Identity — sign-pick collapsed both ±Z choices onto +Z.
+        assert!((q.w - 1.0).abs() < 1e-9, "q.w = {}", q.w);
+    }
+    /// Cuboid mass distribution with the long axis along physics
+    /// `+Y` produces a rotation that maps `+Y` to `+Z` — i.e. the
+    /// 90°-about-X rotation behind the existing `[Snap +Y -> +Z]`
+    /// button. Sanity check that PCA picks up dominant variance
+    /// along a non-axis-of-largest-index direction.
+    #[test]
+    fn pca_orientation_long_y_axis_rotates_y_to_z() {
+        // Cuboid: 0.05 m × 1.0 m × 0.05 m (long along +Y). Use 9
+        // points covering corners + center to mimic mass spread.
+        let v = vec![
+            Point3::new(-0.025, -0.5, -0.025),
+            Point3::new(0.025, -0.5, -0.025),
+            Point3::new(-0.025, 0.5, -0.025),
+            Point3::new(0.025, 0.5, -0.025),
+            Point3::new(-0.025, -0.5, 0.025),
+            Point3::new(0.025, -0.5, 0.025),
+            Point3::new(-0.025, 0.5, 0.025),
+            Point3::new(0.025, 0.5, 0.025),
+            Point3::origin(),
+        ];
+        let q = compute_pca_orientation(&v).unwrap();
+        let rotated = q.transform_vector(&Vector3::y());
+        assert!((rotated.x).abs() < 1e-9, "rotated.x = {}", rotated.x);
+        assert!((rotated.y).abs() < 1e-9, "rotated.y = {}", rotated.y);
+        assert!((rotated.z - 1.0).abs() < 1e-9, "rotated.z = {}", rotated.z);
+    }
+
+    // ----- rotated_aabb_around_centroid_physics_mm -------------------
+    /// Identity rotation: `rotated_aabb_around_centroid_physics_mm`
+    /// returns the raw AABB scaled to mm with no axis permutation.
+    #[test]
+    fn rotated_aabb_identity_preserves_bounds_in_mm() {
+        let raw = Aabb::from_corners(
+            mesh_types::Point3::new(-0.05, -0.10, -0.15),
+            mesh_types::Point3::new(0.05, 0.10, 0.15),
+        );
+        let (min_mm, max_mm) =
+            rotated_aabb_around_centroid_physics_mm(UnitQuaternion::identity(), &raw);
+
+        assert!((min_mm.x + 50.0).abs() < 1e-9);
+        assert!((min_mm.y + 100.0).abs() < 1e-9);
+        assert!((min_mm.z + 150.0).abs() < 1e-9);
+        assert!((max_mm.x - 50.0).abs() < 1e-9);
+        assert!((max_mm.y - 100.0).abs() < 1e-9);
+        assert!((max_mm.z - 150.0).abs() < 1e-9);
+    }
+    /// 90° rotation about physics X axis: physics +Y becomes physics
+    /// +Z; physics +Z becomes physics -Y. The rotated bbox's
+    /// Y-extent equals the original Z-extent and vice-versa (signs
+    /// shift accordingly). Test load: `(±0.05, ±0.10, ±0.15)` (mm:
+    /// `±50, ±100, ±150`) rotated `+90°` about X:
+    ///
+    /// - X unchanged → `±50` mm.
+    /// - Original Y `±100` becomes... actually the +90°-about-X
+    ///   rotation maps `(0, 1, 0) -> (0, 0, 1)` and
+    ///   `(0, 0, 1) -> (0, -1, 0)`. So the rotated bbox's Y range
+    ///   is `±150` (= original Z range), and the rotated Z range is
+    ///   `±100` (= original Y range).
+    #[test]
+    fn rotated_aabb_90deg_about_x_swaps_y_z_extents() {
+        let raw = Aabb::from_corners(
+            mesh_types::Point3::new(-0.05, -0.10, -0.15),
+            mesh_types::Point3::new(0.05, 0.10, 0.15),
+        );
+        let rot = UnitQuaternion::from_axis_angle(
+            &nalgebra::Vector3::x_axis(),
+            std::f64::consts::FRAC_PI_2,
+        );
+        let (min_mm, max_mm) = rotated_aabb_around_centroid_physics_mm(rot, &raw);
+
+        // X unchanged.
+        assert!((min_mm.x + 50.0).abs() < 1e-6);
+        assert!((max_mm.x - 50.0).abs() < 1e-6);
+        // Y now spans `±150` (was Z).
+        assert!((min_mm.y + 150.0).abs() < 1e-6);
+        assert!((max_mm.y - 150.0).abs() < 1e-6);
+        // Z now spans `±100` (was Y, sign-flipped by the +90° rotation
+        // but symmetric bbox -> same bounds).
+        assert!((min_mm.z + 100.0).abs() < 1e-6);
+        assert!((max_mm.z - 100.0).abs() < 1e-6);
+    }
+    /// Off-center AABB under centroid-pivot rotation: the AABB CENTER
+    /// stays at the centroid (in mm) regardless of rotation; only the
+    /// extents rotate. Test load: AABB from `(0.10, -0.05, 0.20)` to
+    /// `(0.20, 0.05, 0.40)` — centroid at `(0.15, 0.0, 0.30)`. Under
+    /// `+90°` about Y the half-extents `(50, 50, 100)` mm in
+    /// `(x, y, z)` rotate to `(100, 50, 50)` mm. After translating the
+    /// rotated centered AABB back to centroid (in mm `(150, 0, 300)`),
+    /// the world AABB is centroid ± rotated_half_extents.
+    ///
+    /// **This test is THE pivot-vs-origin discriminator** — under the
+    /// old origin-pivot helper, the rotated AABB would be far from the
+    /// raw bbox; here we pin it to stay locked at the centroid.
+    #[test]
+    fn rotated_aabb_off_center_pivots_around_centroid_not_origin() {
+        let raw = Aabb::from_corners(
+            mesh_types::Point3::new(0.10, -0.05, 0.20),
+            mesh_types::Point3::new(0.20, 0.05, 0.40),
+        );
+        let rot = UnitQuaternion::from_axis_angle(
+            &nalgebra::Vector3::y_axis(),
+            std::f64::consts::FRAC_PI_2,
+        );
+        let (min_mm, max_mm) = rotated_aabb_around_centroid_physics_mm(rot, &raw);
+
+        // Centroid in mm: (150, 0, 300).
+        // Half-extents before rotation (mm): (50, 50, 100) in (x,y,z).
+        // +90° about Y sends original X-half-extent (50) to Z and
+        // original Z-half-extent (100) to -X (-100 → magnitude 100 in
+        // X). So rotated half-extents: (100, 50, 50) in (x,y,z).
+        // World AABB: centroid ± rotated_half_extents.
+        assert!(
+            (min_mm.x - (150.0 - 100.0)).abs() < 1e-6,
+            "min.x = {}",
+            min_mm.x
+        );
+        assert!(
+            (max_mm.x - (150.0 + 100.0)).abs() < 1e-6,
+            "max.x = {}",
+            max_mm.x
+        );
+        assert!(
+            (min_mm.y - (0.0 - 50.0)).abs() < 1e-6,
+            "min.y = {}",
+            min_mm.y
+        );
+        assert!(
+            (max_mm.y - (0.0 + 50.0)).abs() < 1e-6,
+            "max.y = {}",
+            max_mm.y
+        );
+        assert!(
+            (min_mm.z - (300.0 - 50.0)).abs() < 1e-6,
+            "min.z = {}",
+            min_mm.z
+        );
+        assert!(
+            (max_mm.z - (300.0 + 50.0)).abs() < 1e-6,
+            "max.z = {}",
+            max_mm.z
+        );
+        // Center of the rotated world AABB == centroid in mm.
+        let center_x = 0.5 * (min_mm.x + max_mm.x);
+        let center_y = 0.5 * (min_mm.y + max_mm.y);
+        let center_z = 0.5 * (min_mm.z + max_mm.z);
+        assert!((center_x - 150.0).abs() < 1e-6);
+        assert!(center_y.abs() < 1e-6);
+        assert!((center_z - 300.0).abs() < 1e-6);
+    }
+
+    // ----- bake_vertex_with_pivot -----------------------------------
+    /// Identity rotation + zero translation: bake is the identity
+    /// transform (returns the input point unchanged regardless of
+    /// centroid). Confirms the formula `R*(v-c)+c+t` collapses to `v`
+    /// at the trivial case.
+    #[test]
+    fn bake_vertex_with_pivot_identity_is_passthrough() {
+        let v = Point3::new(0.5, -0.3, 1.2);
+        let c = Point3::new(0.1, 0.2, 0.3);
+        let baked = bake_vertex_with_pivot(&v, UnitQuaternion::identity(), &c, Vector3::zeros());
+        assert!((baked.x - v.x).abs() < 1e-12);
+        assert!((baked.y - v.y).abs() < 1e-12);
+        assert!((baked.z - v.z).abs() < 1e-12);
+    }
+    /// Centroid itself is fixed under any pivot rotation (rotation
+    /// around centroid leaves the centroid in place by definition).
+    /// Translation shifts it linearly.
+    #[test]
+    fn bake_vertex_with_pivot_centroid_is_fixed_point() {
+        let c = Point3::new(0.15, 0.0, 0.30);
+        let rot = UnitQuaternion::from_axis_angle(
+            &nalgebra::Vector3::y_axis(),
+            std::f64::consts::FRAC_PI_2,
+        );
+        let t = Vector3::new(0.05, -0.10, 0.20);
+        let baked = bake_vertex_with_pivot(&c, rot, &c, t);
+        // baked = R*(c-c)+c+t = c+t
+        assert!((baked.x - (c.x + t.x)).abs() < 1e-12);
+        assert!((baked.y - (c.y + t.y)).abs() < 1e-12);
+        assert!((baked.z - (c.z + t.z)).abs() < 1e-12);
+    }
+    /// 180° rotation around an off-origin centroid reflects every
+    /// point through the centroid. Sigil: an off-origin vertex
+    /// reflected through a non-origin pivot does NOT land at the
+    /// origin-reflected position — the pivot matters.
+    #[test]
+    fn bake_vertex_with_pivot_180_reflects_through_centroid() {
+        let v = Point3::new(0.20, 0.0, 0.30);
+        let c = Point3::new(0.15, 0.0, 0.30);
+        let rot =
+            UnitQuaternion::from_axis_angle(&nalgebra::Vector3::y_axis(), std::f64::consts::PI);
+        let baked = bake_vertex_with_pivot(&v, rot, &c, Vector3::zeros());
+        // Reflection of v through c on the X axis: c.x - (v.x - c.x) = 0.10.
+        // (Y axis 180° rotation also flips Z, but z component of v - c
+        // is 0, so z stays at c.z = 0.30.)
+        assert!((baked.x - 0.10).abs() < 1e-12, "baked.x = {}", baked.x);
+        assert!(baked.y.abs() < 1e-12, "baked.y = {}", baked.y);
+        assert!((baked.z - 0.30).abs() < 1e-12, "baked.z = {}", baked.z);
+    }
+
+    // ----- Cap algorithms (plane fit / normal / centerline) ---------
+    /// `fit_plane_to_points` on a perfectly planar XY-plane loop:
+    /// normal should be ±Z; R² should be 1.0; centroid at origin.
+    #[test]
+    fn plane_fit_on_xy_loop_returns_z_normal_and_unit_r_squared() {
+        let points = vec![
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+            Point3::new(-1.0, 0.0, 0.0),
+            Point3::new(0.0, -1.0, 0.0),
+        ];
+        let (centroid, normal, r_sq) = fit_plane_to_points(&points);
+
+        assert!(centroid.x.abs() < 1e-9);
+        assert!(centroid.y.abs() < 1e-9);
+        assert!(centroid.z.abs() < 1e-9);
+        // Normal is ±Z (SVD doesn't pick a sign).
+        assert!(normal.x.abs() < 1e-9, "normal x: {}", normal.x);
+        assert!(normal.y.abs() < 1e-9, "normal y: {}", normal.y);
+        assert!(
+            (normal.z.abs() - 1.0).abs() < 1e-9,
+            "normal z: {}",
+            normal.z
+        );
+        // Planar loop → R² ≈ 1.
+        assert!((r_sq - 1.0).abs() < 1e-9, "r² = {r_sq}");
+    }
+    /// `fit_plane_to_points` on a non-planar (twisted) loop has
+    /// R² < 1. Four points lifted slightly off the XY plane in
+    /// alternating directions; the best-fit plane is still ~XY but
+    /// the residual is non-zero.
+    #[test]
+    fn plane_fit_on_twisted_loop_has_r_squared_below_one() {
+        let points = vec![
+            Point3::new(1.0, 0.0, 0.05),
+            Point3::new(0.0, 1.0, -0.05),
+            Point3::new(-1.0, 0.0, 0.05),
+            Point3::new(0.0, -1.0, -0.05),
+        ];
+        let (_, _, r_sq) = fit_plane_to_points(&points);
+        assert!(r_sq < 1.0);
+        assert!(
+            r_sq > 0.5,
+            "non-trivial twist; r² should still be high: {r_sq}"
+        );
+    }
+    /// `fit_plane_to_points` on < 3 input points returns the
+    /// fallback (R² = 0, normal = +Z). Degenerate input shouldn't
+    /// panic.
+    #[test]
+    fn plane_fit_degenerate_input_returns_fallback() {
+        let too_few = vec![Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0)];
+        let (_, _, r_sq) = fit_plane_to_points(&too_few);
+        assert_eq!(r_sq, 0.0);
+    }
+    /// `orient_cap_normal_outward` flips the normal so it points
+    /// away from the side containing more mesh vertices. Build a
+    /// mesh with all vertices above the cap plane (z > 0); the
+    /// outward normal should be -Z (pointing away from mesh-side).
+    #[test]
+    fn orient_cap_normal_flips_to_point_away_from_mesh_majority() {
+        let mut mesh = IndexedMesh::with_capacity(5, 0);
+        for v in &[
+            (0.0, 0.0, 1.0),
+            (1.0, 0.0, 1.0),
+            (0.0, 1.0, 1.0),
+            (-1.0, 0.0, 2.0),
+            (0.0, -1.0, 2.0),
+        ] {
+            mesh.vertices.push(Point3::new(v.0, v.1, v.2));
+        }
+        let plane_centroid = Point3::origin();
+        // Try with normal pointing +Z (toward the mesh majority).
+        let oriented =
+            orient_cap_normal_outward(&mesh, plane_centroid, Vector3::new(0.0, 0.0, 1.0));
+        // Outward = away from majority = -Z.
+        assert!(
+            oriented.z < 0.0,
+            "expected outward normal to point -Z; got {:?}",
+            oriented,
+        );
+    }
+    /// Cap-face 3D winding emission anchor for
+    /// `auto_cap_open_boundaries` (see also the sister anchor on the
+    /// `build_cleaned_mesh` path inside
+    /// `build_cleaned_mesh_projects_loop_verts_onto_fit_plane`). The
+    /// function must emit cap triangles whose 3D cross-product normals
+    /// align with `orient_cap_normal_outward`'s returned OUTWARD
+    /// direction. Without this assertion the emission could (and
+    /// historically did, until the B arc fix at commit `99f2c512`)
+    /// produce inward normals: cf-view's flat-shaded render path
+    /// would compute inward face normals from the winding and shade
+    /// cap faces DARK; mesh-io's `save_stl` would write inverted
+    /// facet normals to disk for 3rd-party STL tools (Meshlab,
+    /// ParaView, slicers).
+    ///
+    /// ⚠ This anchor used to close with "all in-tree SDF consumers
+    /// tolerate either winding … so the bug was visualization-only".
+    /// The three oracles it named do tolerate either winding
+    /// (`FloodFillSign` is topological-reachability-based;
+    /// `TriMeshDistance` is unsigned; cf-cap-planes uses `.dot().abs()`)
+    /// — but they are not all of them, so the conclusion did not
+    /// follow. `mesh_sdf::PseudoNormalSign` takes its sign from face
+    /// winding, and production paths compose it throughout the tree —
+    /// mesh-offset's `offset_mesh`, cf-fsu-geometry's `oracle`,
+    /// cf-device-geometry's `build_cached_scan_sdf`, cf-cast-cli's
+    /// `derive_spec_and_ribbon` and cf-sim-research's
+    /// `run_sdf_bridge_spike` among them. Inward caps reaching any of
+    /// them invert the field's sign rather than its shading, so the
+    /// blast radius was never bounded to rendering. The assertion below
+    /// is what keeps that moot.
+    ///
+    /// Fixture: 5-vertex square pyramid with the base OPEN (4 side
+    /// triangles, no base triangulation). Apex at (0, 0, +1); base
+    /// at z=0 with 4 corner verts. The open base is the boundary loop.
+    /// `orient_cap_normal_outward` checks vertex distribution — 4 verts
+    /// at z=0 (no sign), 1 at z=+1 (above) → returns -plane_normal →
+    /// outward = -Z. After cap, every cap-face cross product must
+    /// point -Z (outward, away from apex).
+    #[test]
+    fn auto_cap_open_boundaries_emits_outward_cap_normals() {
+        // 5 verts + 4 side triangles + 2 cap triangles = 6 faces post-cap.
+        let mut mesh = IndexedMesh::with_capacity(5, 6);
+        // Base square (z=0) + apex (z=+1).
+        mesh.vertices.push(Point3::new(-1.0, -1.0, 0.0)); // 0
+        mesh.vertices.push(Point3::new(1.0, -1.0, 0.0)); // 1
+        mesh.vertices.push(Point3::new(1.0, 1.0, 0.0)); // 2
+        mesh.vertices.push(Point3::new(-1.0, 1.0, 0.0)); // 3
+        mesh.vertices.push(Point3::new(0.0, 0.0, 1.0)); // 4 apex
+        // 4 side triangles (CCW from outside — outward normals point
+        // sideways + upward). Base is open.
+        mesh.faces.push([0, 1, 4]);
+        mesh.faces.push([1, 2, 4]);
+        mesh.faces.push([2, 3, 4]);
+        mesh.faces.push([3, 0, 4]);
+        let initial_faces = mesh.faces.len();
+        let capped = auto_cap_open_boundaries(&mut mesh);
+        assert_eq!(capped, 1, "expected exactly 1 cap loop to be capped");
+        let cap_faces = &mesh.faces[initial_faces..];
+        assert!(
+            !cap_faces.is_empty(),
+            "auto-cap should append ≥1 cap triangle",
+        );
+        // Every cap face's 3D cross-product normal must point -Z
+        // (outward, away from the apex above). Without the B-arc
+        // fix the normals pointed +Z (inward toward apex), shading
+        // dark under Bevy lighting in cf-view.
+        for face in cap_faces {
+            let v0 = mesh.vertices[face[0] as usize];
+            let v1 = mesh.vertices[face[1] as usize];
+            let v2 = mesh.vertices[face[2] as usize];
+            let e1 = v1.coords - v0.coords;
+            let e2 = v2.coords - v0.coords;
+            let normal = e1.cross(&e2);
+            assert!(
+                normal.z < 0.0,
+                "cap-face normal must point -Z (outward, away from apex); \
+                 face {face:?} produced normal {normal:?}",
+            );
+        }
+    }
+    /// Plane bisecting a unit cube perpendicular to +Z at `z=0.5`
+    /// produces exactly one closed loop describing the unit square
+    /// cross-section at z=0.5. **Contract test for
+    /// `intersect_plane_with_mesh`.**
+    ///
+    /// The unit cube's 4 vertical edges each contribute one corner;
+    /// each side face is split into 2 triangles whose internal
+    /// DIAGONAL also crosses the plane, contributing 4 extra
+    /// (collinear-on-the-square's-edges) intersection points. So
+    /// the returned loop has 8 vertices around a square boundary,
+    /// not the "minimal" 4 — this is correct algorithmic behavior
+    /// (the polygon centroid is invariant to such mesh-diagonal
+    /// subdivisions, verified by `polygon_centroid_3d_density_independent`).
+    /// Test asserts the polygon's CENTROID + AREA, not vertex count.
+    #[test]
+    fn intersect_plane_unit_cube_bisecting_z_returns_square() {
+        let mesh = make_unit_cube_mesh();
+        let plane_pt = Point3::new(0.5, 0.5, 0.5);
+        let plane_n = Vector3::new(0.0, 0.0, 1.0);
+        let loops = intersect_plane_with_mesh(&plane_pt, &plane_n, &mesh);
+        assert_eq!(
+            loops.len(),
+            1,
+            "expected exactly 1 loop; got {}",
+            loops.len()
+        );
+        let loop0 = &loops[0];
+        assert!(
+            loop0.len() >= 4,
+            "expected ≥ 4 verts on square cross-section; got {}",
+            loop0.len()
+        );
+        // Every vertex sits at z=0.5 and on the boundary of the
+        // unit square (x or y coordinate equals 0 or 1).
+        for p in loop0 {
+            assert!((p.z - 0.5).abs() < 1e-9, "vert {p:?} not on z=0.5 plane");
+            let on_boundary = (p.x.abs() < 1e-9 || (p.x - 1.0).abs() < 1e-9)
+                || (p.y.abs() < 1e-9 || (p.y - 1.0).abs() < 1e-9);
+            assert!(
+                on_boundary,
+                "vert {p:?} not on unit-square boundary at z=0.5"
+            );
+        }
+        // Polygon-level geometric properties: area = 1.0, centroid
+        // = (0.5, 0.5, 0.5).
+        let area = polygon_area_3d(loop0, &plane_n);
+        assert!((area - 1.0).abs() < 1e-9, "area should be 1.0; got {area}");
+        let c = polygon_centroid_3d(loop0, &plane_n).expect("non-degenerate square");
+        assert!((c.x - 0.5).abs() < 1e-9, "centroid x: {c:?}");
+        assert!((c.y - 0.5).abs() < 1e-9, "centroid y: {c:?}");
+        assert!((c.z - 0.5).abs() < 1e-9, "centroid z: {c:?}");
+    }
+    /// Plane parked outside the mesh's z-range produces no loops.
+    /// Defensive test for the "no triangles crossed" path.
+    #[test]
+    fn intersect_plane_outside_mesh_returns_empty() {
+        let mesh = make_unit_cube_mesh();
+        let plane_pt = Point3::new(0.0, 0.0, 10.0);
+        let plane_n = Vector3::new(0.0, 0.0, 1.0);
+        let loops = intersect_plane_with_mesh(&plane_pt, &plane_n, &mesh);
+        assert!(loops.is_empty(), "expected no loops; got {}", loops.len());
+    }
+    /// Defensive paths: empty mesh OR zero-magnitude normal return
+    /// `Vec::new()` without panicking.
+    #[test]
+    fn intersect_plane_degenerate_input_returns_empty() {
+        let empty = IndexedMesh::with_capacity(0, 0);
+        let plane_pt = Point3::origin();
+        let plane_n = Vector3::new(0.0, 0.0, 1.0);
+        assert!(intersect_plane_with_mesh(&plane_pt, &plane_n, &empty).is_empty());
+
+        let cube = make_unit_cube_mesh();
+        let zero_n = Vector3::zeros();
+        assert!(intersect_plane_with_mesh(&plane_pt, &zero_n, &cube).is_empty());
+    }
+    /// Polygon centroid of an axis-aligned unit square in the
+    /// xy-plane sits at the square's geometric center. Contract
+    /// test for [`polygon_centroid_3d`].
+    #[test]
+    fn polygon_centroid_3d_unit_square_at_center() {
+        let square = [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(1.0, 1.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+        ];
+        let n = Vector3::new(0.0, 0.0, 1.0);
+        let c = polygon_centroid_3d(&square, &n).expect("non-degenerate square");
+        assert!((c.x - 0.5).abs() < 1e-12, "x centroid: {c:?}");
+        assert!((c.y - 0.5).abs() < 1e-12, "y centroid: {c:?}");
+        assert!(c.z.abs() < 1e-12, "z centroid: {c:?}");
+    }
+    /// **Load-bearing test for density-independence.** A unit
+    /// square traversed with 4 vertices vs. the SAME square with
+    /// 4 extra collinear midpoints (8 verts on the boundary, same
+    /// SHAPE) produces the same centroid. This is the geometric
+    /// property that makes the centerline algorithm density-
+    /// independent: adding redundant boundary samples does not
+    /// shift the polygon centroid, unlike the failed vertex-centroid
+    /// statistic (which would average toward the dense side).
+    #[test]
+    fn polygon_centroid_3d_density_independent() {
+        let n = Vector3::new(0.0, 0.0, 1.0);
+        let sparse = [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(1.0, 1.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+        ];
+        // Same boundary, traversed with midpoints between each
+        // pair of corners (8 verts total, all on the boundary).
+        let dense = [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.5, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(1.0, 0.5, 0.0),
+            Point3::new(1.0, 1.0, 0.0),
+            Point3::new(0.5, 1.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+            Point3::new(0.0, 0.5, 0.0),
+        ];
+        let c_sparse = polygon_centroid_3d(&sparse, &n).unwrap();
+        let c_dense = polygon_centroid_3d(&dense, &n).unwrap();
+        let diff = (c_sparse.coords - c_dense.coords).norm();
+        assert!(
+            diff < 1e-12,
+            "density-asymmetric boundary shifted centroid: sparse={c_sparse:?}, dense={c_dense:?}, diff={diff}"
+        );
+    }
+    /// Polygon centroid is invariant to traversal winding (CW vs
+    /// CCW with respect to `plane_normal`): the signed-area sum in
+    /// the numerator AND denominator both flip sign, canceling out.
+    /// Defensive test — the centerline algorithm doesn't control the
+    /// winding of loops produced by [`intersect_plane_with_mesh`].
+    #[test]
+    fn polygon_centroid_3d_winding_invariant() {
+        let n = Vector3::new(0.0, 0.0, 1.0);
+        let ccw = [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(1.0, 1.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+        ];
+        let cw = [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+            Point3::new(1.0, 1.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+        ];
+        let c_ccw = polygon_centroid_3d(&ccw, &n).unwrap();
+        let c_cw = polygon_centroid_3d(&cw, &n).unwrap();
+        let diff = (c_ccw.coords - c_cw.coords).norm();
+        assert!(
+            diff < 1e-12,
+            "winding changed centroid: ccw={c_ccw:?}, cw={c_cw:?}"
+        );
+    }
+    /// `polygon_centroid_3d` returns `None` for degenerate inputs:
+    /// < 3 vertices OR collinear vertices (zero projected area).
+    #[test]
+    fn polygon_centroid_3d_degenerate_returns_none() {
+        let n = Vector3::new(0.0, 0.0, 1.0);
+        let two = [Point3::origin(), Point3::new(1.0, 0.0, 0.0)];
+        assert!(polygon_centroid_3d(&two, &n).is_none());
+        let collinear = [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(2.0, 0.0, 0.0),
+        ];
+        assert!(polygon_centroid_3d(&collinear, &n).is_none());
+    }
+    /// `polygon_area_3d` of a unit square is 1.0; winding-invariant.
+    #[test]
+    fn polygon_area_3d_unit_square() {
+        let n = Vector3::new(0.0, 0.0, 1.0);
+        let ccw = [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(1.0, 1.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+        ];
+        assert!((polygon_area_3d(&ccw, &n) - 1.0).abs() < 1e-12);
+        let cw = [ccw[0], ccw[3], ccw[2], ccw[1]];
+        assert!((polygon_area_3d(&cw, &n) - 1.0).abs() < 1e-12);
+    }
+    /// `compute_centerline_polyline` on a closed Z-axis cylinder
+    /// produces polyline points along the Z axis (every centroid
+    /// at (0, 0, z)) with monotonically increasing z. **Contract
+    /// test for the per-slab area-weighted polygon centroid
+    /// algorithm.** XYZ-independence (non-Z body axes) is
+    /// separately covered by [`centerline_algorithm_xyz_independent`].
+    #[test]
+    fn centerline_along_closed_cylinder_z_axis_follows_z() {
+        let mesh = make_closed_frustum_mesh(10, 16, 0.1, 0.1, 2.0, |_, _, _| 0.0);
+        let polyline = compute_centerline_polyline(&mesh, Vector3::new(0.0, 0.0, 1.0), 10);
+        assert!(
+            polyline.len() >= 5,
+            "expected ≥5 polyline pts; got {}",
+            polyline.len()
+        );
+        for p in &polyline {
+            assert!(p.x.abs() < 1e-9, "polyline x drifted: {p:?}");
+            assert!(p.y.abs() < 1e-9, "polyline y drifted: {p:?}");
+        }
+        let zs: Vec<f64> = polyline.iter().map(|p| p.z).collect();
+        for window in zs.windows(2) {
+            assert!(
+                window[1] > window[0],
+                "polyline z should monotonically increase: {zs:?}",
+            );
+        }
+    }
+    /// `compute_centerline_polyline` on empty mesh / zero-direction
+    /// input returns an empty Vec without panicking.
+    #[test]
+    fn centerline_degenerate_input_returns_empty() {
+        let empty = IndexedMesh::with_capacity(0, 0);
+        let polyline = compute_centerline_polyline(&empty, Vector3::new(1.0, 0.0, 0.0), 10);
+        assert!(polyline.is_empty());
+
+        let mut tiny = IndexedMesh::with_capacity(1, 0);
+        tiny.vertices.push(Point3::new(0.0, 0.0, 0.0));
+        let zero_dir = compute_centerline_polyline(&tiny, Vector3::zeros(), 10);
+        assert!(zero_dir.is_empty());
+    }
+    /// A tapering frustum (radius 1.0 at z=−0.5 → 0.05 at z=+0.5,
+    /// 20 rings × 16 segs, with asymmetric per-vertex noise) has a
+    /// centerline that stays on its true axis at EVERY slab,
+    /// including the narrow-tip end. **Load-bearing test for the
+    /// per-slab area-weighted polygon centroid algorithm vs. the
+    /// failed vertex-centroid statistic** — vertex-centroid would
+    /// be biased toward the noise direction at small-cross-section
+    /// slabs; polygon-centroid is geometry-only, so the noise's
+    /// effect averages out around the slab boundary.
+    #[test]
+    fn centerline_tapered_cylinder_tip_stays_on_axis() {
+        const N_RINGS: usize = 20;
+        const N_SEGS: usize = 16;
+        const RADIUS_BASE: f64 = 1.0;
+        const RADIUS_TIP: f64 = 0.05;
+        const NOISE_MAG: f64 = 0.005; // 0.5 % of the base radius
+
+        let mesh = make_closed_frustum_mesh(
+            N_RINGS,
+            N_SEGS,
+            RADIUS_BASE,
+            RADIUS_TIP,
+            1.0,
+            |ring, seg, _theta| {
+                // Asymmetric noise: amplitude tied to (ring + seg)
+                // so different rings have different noise patterns.
+                NOISE_MAG * (((ring * 7 + seg * 13) % 11) as f64 / 11.0 - 0.5)
+            },
+        );
+
+        let polyline = compute_centerline_polyline(&mesh, Vector3::new(0.0, 0.0, 1.0), N_RINGS);
+        assert!(
+            polyline.len() >= N_RINGS - 2,
+            "expected ~N_RINGS polyline pts; got {}",
+            polyline.len()
+        );
+
+        // Every polyline point should be on the body axis (x ≈ 0,
+        // y ≈ 0) within the per-slab noise envelope. The polygon
+        // centroid is unbiased w.r.t. uniform-around-the-ring noise;
+        // residual drift comes from second-order chord-area
+        // asymmetry (bounded by ~ NOISE_MAG for a 16-segment
+        // polygon).
+        for (i, p) in polyline.iter().enumerate() {
+            assert!(
+                p.x.abs() < NOISE_MAG,
+                "x drift at slab {i}: {p:?} (NOISE_MAG = {NOISE_MAG})"
+            );
+            assert!(
+                p.y.abs() < NOISE_MAG,
+                "y drift at slab {i}: {p:?} (NOISE_MAG = {NOISE_MAG})"
+            );
+        }
+    }
+    /// **Spec test #1 (contract)** — a perfectly symmetric closed
+    /// cylinder along Z produces a centerline pinned to the Z axis
+    /// at every slab. Tightest tolerance of the suite.
+    #[test]
+    fn centerline_algorithm_axisymmetric_cylinder_along_axis() {
+        let mesh = make_closed_frustum_mesh(20, 32, 0.05, 0.05, 0.2, |_, _, _| 0.0);
+        let polyline = compute_centerline_polyline(&mesh, Vector3::new(0.0, 0.0, 1.0), 30);
+        assert_eq!(polyline.len(), 30);
+        for (i, p) in polyline.iter().enumerate() {
+            assert!(p.x.abs() < 1e-9, "x drift at slab {i}: {p:?}");
+            assert!(p.y.abs() < 1e-9, "y drift at slab {i}: {p:?}");
+        }
+    }
+    /// **Spec test #2 (regression for iter-1 failure mode)** — a
+    /// closed cylinder translated by Δx = 5mm off the world Z axis
+    /// produces a centerline pinned to the BODY'S axis (i.e. at
+    /// (5mm, 0, z)), NOT to the world Z axis. This is the iteration-5
+    /// failure mode the algorithm switch fixes.
+    #[test]
+    fn centerline_algorithm_offset_cylinder_tracks_body_axis() {
+        const OFFSET_X: f64 = 0.005;
+        let mut mesh = make_closed_frustum_mesh(20, 32, 0.05, 0.05, 0.2, |_, _, _| 0.0);
+        translate_mesh(&mut mesh, Vector3::new(OFFSET_X, 0.0, 0.0));
+        let polyline = compute_centerline_polyline(&mesh, Vector3::new(0.0, 0.0, 1.0), 30);
+        assert_eq!(polyline.len(), 30);
+        for (i, p) in polyline.iter().enumerate() {
+            assert!(
+                (p.x - OFFSET_X).abs() < 1e-9,
+                "x should track OFFSET_X at slab {i}: {p:?}"
+            );
+            assert!(p.y.abs() < 1e-9, "y should be 0 at slab {i}: {p:?}");
+        }
+    }
+    /// **Spec test #3 (load-bearing: density-independence)** — a
+    /// cylinder sampled with 80% of its angular vertices in the
+    /// right semi-circle and 20% in the left semi-circle has the
+    /// SAME centerline as a uniformly-sampled cylinder of the same
+    /// radius. This is the property that escapes ALL five prior
+    /// failed algorithms (Kasa, Kasa+prior, PCA, vertex-centroid,
+    /// AABB-midpoint were each biased by sampling asymmetry).
+    ///
+    /// Vertex-centroid baseline (FOR THE OLD ALGORITHM, would have
+    /// FAILED): mean x of the boundary samples for the dense fixture
+    /// is ~ +0.022 m (vs. radius 0.05 → 44% bias), which would have
+    /// pulled the prior centerline off-axis by ~22mm on a 50mm-radius
+    /// body. The new algorithm produces sub-mm residual.
+    #[test]
+    fn centerline_algorithm_density_independent() {
+        const RADIUS: f64 = 0.05;
+        // 80% (24/30) of thetas densely packed in the right
+        // semi-circle (theta ∈ (-π/2, π/2)); 20% (6/30) sparsely
+        // in the left semi-circle. Boundary shape is still the
+        // same circle.
+        let mut thetas: Vec<f64> = Vec::new();
+        for k in 0..24 {
+            #[allow(clippy::cast_precision_loss)]
+            let f = (k as f64 + 0.5) / 24.0;
+            thetas.push(-std::f64::consts::FRAC_PI_2 + f * std::f64::consts::PI);
+        }
+        for k in 0..6 {
+            #[allow(clippy::cast_precision_loss)]
+            let f = (k as f64 + 0.5) / 6.0;
+            thetas.push(std::f64::consts::FRAC_PI_2 + f * std::f64::consts::PI);
+        }
+        let mesh = make_density_biased_cylinder_mesh(20, &thetas, RADIUS, 0.2);
+        let polyline = compute_centerline_polyline(&mesh, Vector3::new(0.0, 0.0, 1.0), 30);
+        assert_eq!(polyline.len(), 30);
+        // Residual chord-area asymmetry: ~(1 - cos(π / n_dense))
+        // for the dense side × similar on sparse side. With 24 vs 6
+        // segments, residual x-drift is at most a few percent of
+        // RADIUS (sub-mm at RADIUS=50mm). The vertex-centroid
+        // statistic on the SAME fixture would drift by ~50% of
+        // RADIUS — this tolerance is 100× tighter.
+        let tol_x = 0.05 * RADIUS;
+        for (i, p) in polyline.iter().enumerate() {
+            assert!(
+                p.x.abs() < tol_x,
+                "density-biased x drift at slab {i}: {p:?} (tol = {tol_x})"
+            );
+            assert!(
+                p.y.abs() < tol_x,
+                "density-biased y drift at slab {i}: {p:?} (tol = {tol_x})"
+            );
+        }
+    }
+    /// **Spec test #4 (degenerate-slab interpolation)** — a needle
+    /// cone (radius 1.0 at z=−0.5 → 0.00001 at z=+0.5) has its
+    /// tip-end slabs fall below MIN_SLAB_AREA_M2 (π × 1e-5² ≈
+    /// 3e-10 m² < 1e-8 m²). Those degenerate slabs must be filled
+    /// in by linear interpolation / axial extrapolation; the
+    /// polyline length should match `n_slices` exactly (no gaps)
+    /// and the filled-in points should stay on the body axis.
+    #[test]
+    fn centerline_algorithm_degenerate_slabs_filled_by_interpolation() {
+        let mesh = make_closed_frustum_mesh(20, 32, 1.0, 1e-5, 1.0, |_, _, _| 0.0);
+        let polyline = compute_centerline_polyline(&mesh, Vector3::new(0.0, 0.0, 1.0), 30);
+        assert_eq!(
+            polyline.len(),
+            30,
+            "polyline length should equal n_slices even with degenerate slabs"
+        );
+        // All points (interior + filled-in tip) should be on the
+        // body axis. The interpolation from non-degenerate
+        // neighbors stays on axis since those neighbors are on axis
+        // for a symmetric cone.
+        for (i, p) in polyline.iter().enumerate() {
+            assert!(p.x.abs() < 1e-9, "x drift at slab {i}: {p:?}");
+            assert!(p.y.abs() < 1e-9, "y drift at slab {i}: {p:?}");
+        }
+    }
+    /// **Spec test #5 (XYZ-independence)** — a closed cylinder
+    /// whose body axis has been rotated 30° around Y produces a
+    /// centerline that follows the ROTATED body axis, not the
+    /// world Z axis. The algorithm uses `spine_hint` (not world
+    /// directions) for slicing, so any spine_hint direction works.
+    /// See `project_scans_axis_orientation` memo.
+    #[test]
+    fn centerline_algorithm_xyz_independent() {
+        let mut mesh = make_closed_frustum_mesh(20, 32, 0.05, 0.05, 0.2, |_, _, _| 0.0);
+        let axis_angle_deg = 30.0;
+        let rotation = UnitQuaternion::from_axis_angle(
+            &Vector3::y_axis(),
+            axis_angle_deg * std::f64::consts::PI / 180.0,
+        );
+        rotate_mesh(&mut mesh, rotation);
+        let rotated_axis = rotation * Vector3::new(0.0, 0.0, 1.0);
+        let polyline = compute_centerline_polyline(&mesh, rotated_axis, 30);
+        assert_eq!(polyline.len(), 30);
+        // Each polyline point should lie on the line through origin
+        // in direction `rotated_axis`. Cross-product magnitude with
+        // the axis direction tells us the perpendicular distance —
+        // should be ~ 0 for an on-axis point.
+        for (i, p) in polyline.iter().enumerate() {
+            let perp = p.coords.cross(&rotated_axis).norm();
+            assert!(
+                perp < 1e-9,
+                "perp distance from rotated axis at slab {i}: {perp} (point {p:?})"
+            );
+        }
+    }
+
+    // ----- Centerline trim (CSP.4b) ----------------------------------
+    /// `trim_mesh_along_centerline` with both trims at 0 is a
+    /// pure-clone no-op (returns the input unchanged). Pins the
+    /// fast-path guard so future refactors don't accidentally walk
+    /// vertices unnecessarily for un-trimmed saves.
+    #[test]
+    fn trim_mesh_along_centerline_no_op_when_both_trims_zero() {
+        let mesh = one_triangle_at(0.01);
+        let centerline = vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 0.0, 1.0)];
+        let trimmed = trim_mesh_along_centerline(&mesh, &centerline, 0.0, 0.0);
+        assert_eq!(trimmed.vertices, mesh.vertices);
+        assert_eq!(trimmed.faces, mesh.faces);
+    }
+    /// Degenerate centerline (< 2 points) is a no-op. Defensive
+    /// against the "Cap → Scan not yet clicked" path (CapState
+    /// centerline empty); the save handler skips trim entirely in
+    /// that case, but the function itself guards too.
+    #[test]
+    fn trim_mesh_along_centerline_no_op_when_centerline_too_short() {
+        let mesh = one_triangle_at(0.01);
+        let centerline = vec![Point3::new(0.0, 0.0, 0.0)];
+        let trimmed = trim_mesh_along_centerline(&mesh, &centerline, 10.0, 10.0);
+        assert_eq!(trimmed.vertices, mesh.vertices);
+        assert_eq!(trimmed.faces, mesh.faces);
+    }
+    /// Trim from the floor end of a +Z-axis centerline drops
+    /// vertices beyond the trim plane. Vertical "pole" of 11 points
+    /// from z=0 to z=0.1 (100 mm), centerline tip→floor along +Z,
+    /// trim floor by 30 mm → keep points with z <= 0.07.
+    #[test]
+    fn trim_mesh_along_centerline_floor_end_clips_high_z_vertices() {
+        // Build a simple vertical column of triangles (pole), 11
+        // segments stacked from z=0 to z=0.1. Each "stack-rung" is
+        // a degenerate-ish 3-vertex triangle for testing.
+        let mut mesh = IndexedMesh::with_capacity(11, 9);
+        for i in 0..11 {
+            let z = f64::from(i) * 0.01;
+            mesh.vertices.push(Point3::new(0.0, 0.0, z));
+        }
+        // Connect into a chain of "triangles" with shared verts.
+        // (Geometrically degenerate but valid topology; serves the
+        // trim test.)
+        for i in 0..9 {
+            mesh.faces.push([i as u32, (i + 1) as u32, (i + 2) as u32]);
+        }
+        // Centerline from tip (z=0) to floor (z=0.1). Trim floor
+        // by 30 mm → clip plane at z = 0.07.
+        let centerline = vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 0.0, 0.1)];
+        let trimmed = trim_mesh_along_centerline(&mesh, &centerline, 0.0, 30.0);
+        // All surviving vertices' z <= 0.07 (the trim plane).
+        for v in &trimmed.vertices {
+            assert!(v.z <= 0.07 + 1e-9, "kept vertex z={} above trim plane", v.z);
+        }
+        // Some vertices survived.
+        assert!(!trimmed.vertices.is_empty(), "all dropped by trim");
+    }
+    /// `trim_centerline_polyline` keeps the polyline whole when no
+    /// trim is requested. Pins the no-op identity.
+    #[test]
+    fn trim_centerline_polyline_no_op_when_both_zero() {
+        let polyline = vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.0, 0.0, 0.05),
+            Point3::new(0.0, 0.0, 0.1),
+        ];
+        let trimmed = trim_centerline_polyline(&polyline, 0.0, 0.0);
+        assert_eq!(trimmed, polyline);
+    }
+    /// `trim_centerline_polyline` cuts the start + end of the
+    /// polyline at the requested mm distances. 100 mm polyline,
+    /// trim 30 mm tip + 20 mm floor → result is 50 mm long, from
+    /// the 30 mm mark to the 80 mm mark.
+    #[test]
+    fn trim_centerline_polyline_clips_both_ends_at_arc_length() {
+        let polyline = vec![
+            Point3::new(0.0, 0.0, 0.0),   //  0 mm
+            Point3::new(0.0, 0.0, 0.025), // 25 mm
+            Point3::new(0.0, 0.0, 0.05),  // 50 mm
+            Point3::new(0.0, 0.0, 0.075), // 75 mm
+            Point3::new(0.0, 0.0, 0.1),   // 100 mm
+        ];
+        let trimmed = trim_centerline_polyline(&polyline, 30.0, 20.0);
+        // First trimmed point: z = 0.030 (interpolated between 25
+        // and 50 mm originals).
+        assert!((trimmed.first().unwrap().z - 0.030).abs() < 1e-9);
+        // Last trimmed point: z = 0.080.
+        assert!((trimmed.last().unwrap().z - 0.080).abs() < 1e-9);
+        // Total arc length collapsed from 100 mm to ~50 mm.
+        let new_total_mm: f64 = trimmed
+            .windows(2)
+            .map(|w| (w[1].coords - w[0].coords).norm() * 1000.0)
+            .sum();
+        assert!((new_total_mm - 50.0).abs() < 1e-6);
+    }
+    /// `trim_centerline_polyline` returns empty when the trim
+    /// consumes the entire polyline (`trim_tip + trim_floor >=
+    /// total arc length`). The save handler's
+    /// `centerline.is_empty()` check then omits the `[centerline]`
+    /// block from the TOML.
+    #[test]
+    fn trim_centerline_polyline_returns_empty_when_fully_consumed() {
+        let polyline = vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.0, 0.0, 0.1), // 100 mm total
+        ];
+        // Trim 60 + 60 = 120 mm > 100 mm total.
+        let trimmed = trim_centerline_polyline(&polyline, 60.0, 60.0);
+        assert!(trimmed.is_empty());
+    }
+    /// CSP.4b.3 regression test — the polyline-walker primitive
+    /// that drives both the trim algorithm + the live overlay.
+    /// Pre-CSP.4b.3 trim/overlay code extrapolated linearly from
+    /// the first segment's tangent, which diverged from the actual
+    /// curve as the trim distance grew. This test builds a
+    /// L-shaped polyline (sharp 90° bend at mid-arc) and asserts
+    /// that walking past the bend lands on the SECOND-leg
+    /// position, NOT linearly extrapolated from the first leg's
+    /// tangent.
+    #[test]
+    fn point_along_polyline_walks_through_a_bend() {
+        // L-shaped polyline:
+        //   (0,0,0) → (0,0,0.05) → (0.05,0,0.05)
+        // Total arc length: 0.05 + 0.05 = 0.10 m (100 mm).
+        // First leg (+Z, 50 mm); second leg (+X, 50 mm); 90° bend
+        // at index 1.
+        let polyline = vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.0, 0.0, 0.05),
+            Point3::new(0.05, 0.0, 0.05),
+        ];
+
+        // 25 mm in: on the first leg. Expect (0, 0, 0.025), tangent = +Z.
+        let (p, t) = point_along_polyline_at_arc_distance(&polyline, 0.025).unwrap();
+        assert!((p.x - 0.0).abs() < 1e-12);
+        assert!((p.z - 0.025).abs() < 1e-12);
+        assert!((t.z - 1.0).abs() < 1e-9);
+        assert!(t.x.abs() < 1e-9);
+
+        // 75 mm in: 25 mm into the SECOND leg. Expect (0.025, 0,
+        // 0.05), tangent = +X. The pre-CSP.4b.3 buggy code would
+        // have walked 75 mm along the first leg's +Z tangent and
+        // landed at (0, 0, 0.075) — way off the actual polyline.
+        let (p, t) = point_along_polyline_at_arc_distance(&polyline, 0.075).unwrap();
+        assert!(
+            (p.x - 0.025).abs() < 1e-12,
+            "x post-bend should be 0.025, got {}",
+            p.x
+        );
+        assert!(
+            (p.z - 0.05).abs() < 1e-12,
+            "z post-bend should be 0.05, got {}",
+            p.z
+        );
+        assert!(
+            (t.x - 1.0).abs() < 1e-9,
+            "tangent post-bend should be +X, got {t:?}"
+        );
+        assert!(t.z.abs() < 1e-9);
+    }
+    /// `point_along_polyline_at_arc_distance` returns `None` for a
+    /// polyline with < 2 points (no segment to walk). Pairs with
+    /// the trim algorithm's "skip if centerline too short" path.
+    #[test]
+    fn point_along_polyline_returns_none_when_too_short() {
+        let single = vec![Point3::origin()];
+        assert!(point_along_polyline_at_arc_distance(&single, 0.0).is_none());
+        let empty: Vec<Point3<f64>> = Vec::new();
+        assert!(point_along_polyline_at_arc_distance(&empty, 0.1).is_none());
+    }
+    /// `polyline_arc_length_m` sums Euclidean segment lengths.
+    #[test]
+    fn polyline_arc_length_sums_segments() {
+        let polyline = vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.0, 0.0, 0.05),
+            Point3::new(0.05, 0.0, 0.05),
+            Point3::new(0.05, 0.0, 0.0),
+        ];
+        // 50 + 50 + 50 mm = 0.15 m.
+        let total = polyline_arc_length_m(&polyline);
+        assert!((total - 0.15).abs() < 1e-12);
+    }
+    /// CSP.4e.2.3 — `smooth_polyline` pins the endpoints and
+    /// flattens an interior zigzag. Fixture: 5-point polyline
+    /// where the middle point is offset perpendicular to the
+    /// otherwise-straight line. After 3 iterations of 3-tap
+    /// moving average, the middle point should be pulled
+    /// substantially back toward the straight line; endpoints
+    /// `polyline[0]` and `polyline[N-1]` should be unchanged.
+    #[test]
+    fn smooth_polyline_flattens_interior_pins_endpoints() {
+        let raw = vec![
+            Point3::new(0.0, 0.0, 0.0), // endpoint
+            Point3::new(0.01, 0.0, 0.0),
+            Point3::new(0.02, 0.005, 0.0), // wobble +5 mm
+            Point3::new(0.03, 0.0, 0.0),
+            Point3::new(0.04, 0.0, 0.0), // endpoint
+        ];
+        let smoothed = smooth_polyline(&raw, 3);
+        assert_eq!(smoothed.len(), raw.len());
+        // Endpoints bit-exact preserved.
+        assert_eq!(smoothed[0], raw[0]);
+        assert_eq!(smoothed[4], raw[4]);
+        // Middle point's y substantially reduced (started at
+        // 5 mm; after 3 iterations of 3-tap should be < 2 mm).
+        assert!(
+            smoothed[2].y.abs() < raw[2].y.abs(),
+            "middle should smooth toward 0, got y = {}",
+            smoothed[2].y,
+        );
+        assert!(
+            smoothed[2].y.abs() < 0.002,
+            "after 3 iterations 5 mm wobble should drop below 2 mm, got {}",
+            smoothed[2].y,
+        );
+    }
+    /// `smooth_polyline` is a no-op for < 3-point input (no
+    /// interior to smooth) and for `iterations == 0`.
+    #[test]
+    fn smooth_polyline_no_op_when_too_short_or_zero_iters() {
+        let two_pt = vec![Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0)];
+        assert_eq!(smooth_polyline(&two_pt, 5), two_pt);
+        let three_pt = vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.5, 0.5, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+        ];
+        assert_eq!(smooth_polyline(&three_pt, 0), three_pt);
+    }
+
+    // ----- simplify_mesh post-process --------------------------------
+    /// `simplify_mesh` post-process strips unreferenced vertices, so
+    /// every vertex in the output is touched by at least one face. The
+    /// converse (every face references valid vertex indices) is
+    /// trivially true since `remove_unreferenced_vertices` preserves
+    /// face validity by construction.
+    #[test]
+    fn simplify_mesh_strips_unreferenced_vertices() {
+        let original = grid_square(20);
+        let result = simplify_mesh(&original, 50);
+
+        let vertex_count = result.mesh.vertices.len();
+        let mut touched = vec![false; vertex_count];
+        for face in &result.mesh.faces {
+            for &idx in face {
+                touched[idx as usize] = true;
+            }
+        }
+        let untouched = touched.iter().filter(|t| !**t).count();
+        assert_eq!(
+            untouched, 0,
+            "simplified mesh should have no unreferenced vertices",
         );
     }
 
-    out
-}
-
-/// Build the `.prep.toml` string from the current cf-scan-prep state.
-/// Includes provenance for every transform / cap / centerline /
-/// simplify-at-save so v2 cf-cast (or a future audit) can reconstruct
-/// what cf-scan-prep did to produce the cleaned STL.
-///
-/// `pivot_centroid_m` is the raw scan AABB centroid (in physics-frame
-/// meters). The centerline polyline is baked through the same
-/// centroid-pivot transform `bake_vertex_with_pivot` uses for mesh
-/// vertices, so the polyline coordinates emitted into `.prep.toml`
-/// agree with the cleaned STL on disk.
-///
-/// `simplify_target_face_count`, `original_face_count`, and
-/// `cleaned_aabb_m` feed the spec-promised `[simplify]` and
-/// `[output.aabb_m]` blocks. The caller computes them from the live
-/// `SimplifyState` / `OriginalScanMesh` / final cleaned mesh AABB so
-/// this function stays pure (no Res lookups).
-#[allow(clippy::too_many_arguments)]
-pub fn build_prep_toml_string(
-    source_stl: &Path,
-    stl_units_label: &'static str,
-    auto_center_offset_m: Vector3<f64>,
-    auto_pca_quat: Option<UnitQuaternion<f64>>,
-    rotation_physics: UnitQuaternion<f64>,
-    euler_deg: [f64; 3],
-    translation_m: Vector3<f64>,
-    centerline_polyline: &[Point3<f64>],
-    cap_loops: &[DetectedCapLoop],
-    applied_tip_mm: f64,
-    applied_floor_mm: f64,
-    applied_reconstruct: Option<AppliedReconstruct>,
-    centerline_trim_capped: usize,
-    cleaned_stl_name: &str,
-    rotation_for_centerline: UnitQuaternion<f64>,
-    translation_for_centerline_m: Vector3<f64>,
-    pivot_centroid_m: Point3<f64>,
-    simplify_target_face_count: usize,
-    simplify_ran: bool,
-    original_face_count: usize,
-    achieved_face_count: usize,
-    smoothing_iterations: usize,
-    cleaned_aabb_m: &Aabb,
-    reconstructed_floor: Option<ReconstructedFloorPlane>,
-) -> Result<String> {
-    let q = rotation_physics;
-    let timestamp = chrono_like_timestamp();
-
-    // Project the centerline polyline into world frame so v2 cf-cast
-    // can consume it directly without redoing transform math. Same
-    // centroid-pivot transform as `build_cleaned_mesh` uses for mesh
-    // vertices. CSP.4b — if the user dialed trim, emit the
-    // POST-TRIM polyline so the TOML record matches what's actually
-    // in the cleaned STL on disk.
-    let baked_polyline: Vec<Point3<f64>> = centerline_polyline
-        .iter()
-        .map(|p| {
-            bake_vertex_with_pivot(
-                p,
-                rotation_for_centerline,
-                &pivot_centroid_m,
-                translation_for_centerline_m,
-            )
-        })
-        .collect();
-    // CSP.4b.6 — use APPLIED trim values (what the displayed +
-    // saved mesh was cut with), not the slider values (which may
-    // be ahead of the user's last Apply click).
-    let trimmed_polyline =
-        trim_centerline_polyline(&baked_polyline, applied_tip_mm, applied_floor_mm);
-    let centerline_world: Vec<[f64; 3]> =
-        trimmed_polyline.iter().map(|p| [p.x, p.y, p.z]).collect();
-
-    let toml_struct = PrepToml {
-        scan_prep: PrepScanPrepBlock {
-            source_stl: source_stl.display().to_string(),
-            tool_version: env!("CARGO_PKG_VERSION"),
-            generated_at: timestamp,
-            stl_units_at_load: stl_units_label,
-            auto_center_offset_m: [
-                auto_center_offset_m.x,
-                auto_center_offset_m.y,
-                auto_center_offset_m.z,
-            ],
-            auto_pca_quaternion: auto_pca_quat.map(|q| [q.w, q.i, q.j, q.k]),
-        },
-        simplify: PrepSimplifyBlock {
-            // `applied = true` iff the user clicked [Apply Simplify]
-            // against the currently-loaded mesh — threaded directly
-            // from `SimplifyState::was_applied`. Replaces a prior
-            // face-count-inference (`achieved < original`) which
-            // produced false positives once save-time simplify was
-            // retired (commit `a66a3cda`, 2026-05-15) and the
-            // save-time cleanup pass became the only face-dropper
-            // for the "user never clicked Apply" case.
-            applied: simplify_ran,
-            algorithm: SIMPLIFY_ALGORITHM_NAME,
-            algorithm_version: SIMPLIFY_ALGORITHM_VERSION,
-            target_face_count: simplify_target_face_count,
-            achieved_face_count,
-            original_face_count,
-            boundary_preserved: true,
-        },
-        smoothing: PrepSmoothingBlock {
-            algorithm: SMOOTHING_ALGORITHM_NAME,
-            iterations: smoothing_iterations,
-            lambda: TAUBIN_DEFAULT_LAMBDA,
-            mu: TAUBIN_DEFAULT_MU,
-        },
-        transform: PrepTransformBlock {
-            rotation: PrepRotationBlock {
-                quaternion: [q.w, q.i, q.j, q.k],
-                roll_deg: euler_deg[0],
-                pitch_deg: euler_deg[1],
-                yaw_deg: euler_deg[2],
-            },
-            translation: PrepTranslationBlock {
-                m: [translation_m.x, translation_m.y, translation_m.z],
-            },
-        },
-        caps: PrepCapsBlock {
-            applied: cap_loops.iter().any(|l| l.include),
-            loops: cap_loops
-                .iter()
-                .enumerate()
-                .map(|(i, cl)| {
-                    // Reconstruction override: when the user applied
-                    // centerline-driven floor reconstruction, the
-                    // cleaned mesh's actual floor sits at the
-                    // post-reconstruction plane (NOT at this loop's
-                    // pre-reconstruction fit plane). Identify the
-                    // floor loop with the same pick-by-count
-                    // heuristic `find_floor_loop_index` uses (the
-                    // largest valid loop is overwhelmingly the cut
-                    // rim on practical scans) and override its plane.
-                    // Other loops (top-end caps, scanner-noise
-                    // stragglers below the size threshold) keep their
-                    // detected planes verbatim.
-                    let is_floor_loop =
-                        reconstructed_floor.is_some() && floor_loop_index(cap_loops) == Some(i);
-                    let (centroid, normal, r_squared) = match reconstructed_floor {
-                        Some(rf) if is_floor_loop => (rf.centroid_m, rf.normal, 1.0_f64),
-                        _ => (cl.plane_centroid, cl.plane_normal, cl.plane_fit_r_squared),
-                    };
-                    PrepCapLoop {
-                        loop_index: i,
-                        vertex_count: cl.vertex_indices.len(),
-                        plane_fit_r_squared: r_squared,
-                        plane_normal: [normal.x, normal.y, normal.z],
-                        plane_centroid_m: [centroid.x, centroid.y, centroid.z],
-                        included: cl.include,
-                    }
-                })
-                .collect(),
-        },
-        centerline: if centerline_world.is_empty() {
-            None
-        } else {
-            Some(PrepCenterlineBlock {
-                points_m: centerline_world,
-                algorithm: "cross_section_centroids",
+    // ----- triangulate_polygon_2d_earclip ----------------------------
+    /// Ear-clipping a unit square produces exactly 2 triangles
+    /// covering the full polygon area (4 area units of 0.5 each).
+    /// Validates the basic ear-clip + signed-area path.
+    #[test]
+    fn earclip_unit_square_produces_two_triangles() {
+        let verts = unit_square_2d();
+        let tris = triangulate_polygon_2d_earclip(&verts);
+        assert_eq!(tris.len(), 2);
+        // Total signed area of the triangulation should equal the
+        // square's area (1.0). Sums absolute signed area per tri.
+        let total_area: f64 = tris
+            .iter()
+            .map(|t| {
+                let a = verts[t[0] as usize];
+                let b = verts[t[1] as usize];
+                let c = verts[t[2] as usize];
+                0.5 * ((b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0)).abs()
             })
-        },
-        centerline_trim: PrepCenterlineTrimBlock {
-            // CSP.4b.6 — record APPLIED values (what was actually
-            // cut into the saved STL), not slider values (the
-            // user's draft preview position).
-            trim_tip_mm: applied_tip_mm,
-            trim_floor_mm: applied_floor_mm,
-            capped_loops: centerline_trim_capped,
-            // CSP.4e.5 — reconstruct sub-block. Present only when
-            // floor reconstruction was applied (and the floor was
-            // chopped — the gate match in `handle_save_action`
-            // ensures both).
-            reconstruct: applied_reconstruct.and_then(|ar| {
-                if applied_floor_mm > 0.0 {
-                    Some(PrepReconstructSubBlock {
-                        shape: match ar.shape {
-                            ReconstructShape::Constant => "constant",
-                            ReconstructShape::Taper => "taper",
-                            ReconstructShape::Extrapolate => "extrapolate",
-                        },
-                        reference_mm: ar.reference_mm,
-                    })
-                } else {
-                    None
-                }
-            }),
-        },
-        output: PrepOutputBlock {
-            cleaned_stl: cleaned_stl_name.to_string(),
-            aabb_m: PrepAabbBlock {
-                min: [
-                    cleaned_aabb_m.min.x,
-                    cleaned_aabb_m.min.y,
-                    cleaned_aabb_m.min.z,
-                ],
-                max: [
-                    cleaned_aabb_m.max.x,
-                    cleaned_aabb_m.max.y,
-                    cleaned_aabb_m.max.z,
-                ],
-            },
-        },
-    };
-    toml::to_string_pretty(&toml_struct).context("serialize PrepToml to TOML")
+            .sum();
+        assert!(
+            (total_area - 1.0).abs() < 1e-12,
+            "expected total area 1.0, got {total_area}",
+        );
+    }
+    /// Reversing a CCW polygon to CW must still produce a valid
+    /// 2-triangle triangulation. Pins the `signed_area < 0 -> reverse`
+    /// branch of the ear-clip.
+    #[test]
+    fn earclip_cw_polygon_is_handled() {
+        let mut verts = unit_square_2d();
+        verts.reverse();
+        let tris = triangulate_polygon_2d_earclip(&verts);
+        assert_eq!(tris.len(), 2);
+    }
+
+    // ----- stable_inward_tangent --------------------------------------
+    /// 2-point polyline → look-back walks the only segment fully
+    /// and returns the head→tail (then negated) direction. The
+    /// `lookback_m` exceeding the polyline arc-length falls
+    /// through to the head endpoint, NOT an error.
+    #[test]
+    fn stable_inward_tangent_falls_back_to_last_segment_on_2_point_polyline() {
+        let polyline = [Point3::new(0.0, 0.0, 1.0), Point3::new(0.0, 0.0, 0.0)];
+        // Cut endpoint = (0,0,0); look-back at (0,0,1). Inward
+        // direction (cut → body) = +Z.
+        let dir = stable_inward_tangent(&polyline, 0.020).expect("tangent");
+        assert!((dir - Vector3::new(0.0, 0.0, 1.0)).norm() < 1e-12);
+    }
+    /// On a long polyline the look-back point sits at exactly
+    /// `lookback_m` arc-length from the cut endpoint (interpolated
+    /// within the relevant segment). Pin the resulting direction
+    /// against a known-good handcomputed answer.
+    #[test]
+    fn stable_inward_tangent_walks_back_lookback_arc_length() {
+        // 4-point centerline along +Z, segments of length 0.010 m.
+        // Total arc length = 0.030 m.
+        let polyline = [
+            Point3::new(0.0, 0.0, 0.030), // body end
+            Point3::new(0.0, 0.0, 0.020),
+            Point3::new(0.0, 0.0, 0.010),
+            Point3::new(0.0, 0.0, 0.000), // cut end
+        ];
+        // Look back 0.015 m → between segments [2] and [1] (i.e.
+        // halfway through the segment from (0,0,0.010) to
+        // (0,0,0.020)). Look-back point = (0,0,0.015).
+        let dir = stable_inward_tangent(&polyline, 0.015).expect("tangent");
+        // dir = (lookback - cut) / norm = (0,0,0.015) / 0.015 = +Z.
+        assert!((dir - Vector3::new(0.0, 0.0, 1.0)).norm() < 1e-12);
+    }
+    /// Look-back exceeding the polyline arc-length walks the
+    /// whole polyline and returns the head→tail unit vector.
+    /// Important so very-short trim-cut polylines don't crash.
+    #[test]
+    fn stable_inward_tangent_uses_full_polyline_when_lookback_exceeds_arc_length() {
+        // Total arc length = 0.005 m; ask for 0.020 m look-back.
+        let polyline = [Point3::new(0.0, 0.0, 0.005), Point3::new(0.0, 0.0, 0.000)];
+        let dir = stable_inward_tangent(&polyline, 0.020).expect("tangent");
+        assert!((dir - Vector3::new(0.0, 0.0, 1.0)).norm() < 1e-12);
+    }
+    /// Polygons with `n < 3` vertices produce no triangles (early
+    /// return). Otherwise an `n=3` polygon should produce exactly
+    /// 1 triangle.
+    #[test]
+    fn earclip_handles_degenerate_vertex_counts() {
+        assert!(triangulate_polygon_2d_earclip(&[]).is_empty());
+        assert!(triangulate_polygon_2d_earclip(&[(0.0, 0.0)]).is_empty());
+        assert!(triangulate_polygon_2d_earclip(&[(0.0, 0.0), (1.0, 0.0)]).is_empty());
+        let single = triangulate_polygon_2d_earclip(&[(0.0, 0.0), (1.0, 0.0), (0.5, 1.0)]);
+        assert_eq!(single.len(), 1);
+    }
+    /// A convex pentagon (5 vertices) produces 3 triangles
+    /// (`n - 2 = 3` for any simple polygon).
+    #[test]
+    fn earclip_convex_pentagon_produces_three_triangles() {
+        // Regular-ish pentagon at unit radius.
+        let verts = (0..5)
+            .map(|i| {
+                let theta = i as f64 * std::f64::consts::TAU / 5.0;
+                (theta.cos(), theta.sin())
+            })
+            .collect::<Vec<_>>();
+        let tris = triangulate_polygon_2d_earclip(&verts);
+        assert_eq!(tris.len(), 3);
+    }
+    /// `iso8601_utc_from_unix_seconds` produces a parseable, sensible
+    /// timestamp. Pins the date math against a known unix epoch:
+    /// `1640995200` = `2022-01-01T00:00:00Z`.
+    #[test]
+    fn iso8601_timestamp_matches_known_unix_epoch() {
+        let s = iso8601_utc_from_unix_seconds(1_640_995_200);
+        assert_eq!(s, "2022-01-01T00:00:00Z");
+    }
+    #[test]
+    fn compute_reconstructed_floor_plane_matches_apply_reconstruction_geometry() {
+        // Synthetic 40 mm centerline along +Z; floor end at z = 0.
+        // The reconstruction workflow is: trim removes the last
+        // `applied_floor_mm` of arc length, then `apply_reconstruction`
+        // extends the body by `applied_floor_mm` along the OUTWARD
+        // direction from the trimmed endpoint. The trim-then-extend
+        // pair restores the original body length with cleaner floor
+        // geometry, so `bottom_center` lands at the original
+        // polyline's floor endpoint (z = 0.000 in this fixture).
+        let polyline = vec![
+            Point3::new(0.0, 0.0, 0.040),
+            Point3::new(0.0, 0.0, 0.020),
+            Point3::new(0.0, 0.0, 0.010),
+            Point3::new(0.0, 0.0, 0.000),
+        ];
+        let rf =
+            compute_reconstructed_floor_plane_physics(&polyline, 0.0, 10.0).expect("Some plane");
+        // Trim drops last 10 mm → trimmed_last = z=0.010; outward
+        // extension by 10 mm in -Z → bottom_center z = 0.000.
+        assert!((rf.centroid_m.x).abs() < 1e-9);
+        assert!((rf.centroid_m.y).abs() < 1e-9);
+        assert!(
+            (rf.centroid_m.z).abs() < 1e-9,
+            "bottom_center.z = {} (expected 0.000)",
+            rf.centroid_m.z,
+        );
+        // Outward normal = -inward (+Z) = -Z.
+        assert!((rf.normal.x).abs() < 1e-9);
+        assert!((rf.normal.y).abs() < 1e-9);
+        assert!((rf.normal.z - (-1.0)).abs() < 1e-9);
+    }
+    #[test]
+    fn compute_reconstructed_floor_plane_iter1_reproducer() {
+        // Reproduces the iter-1 numerical hypothesis check: the
+        // synthetic offset along the cap normal should be ~ extension
+        // along the tangent ≈ 40 mm (since recorded cap_centroid is
+        // the pre-reconstruction boundary fit-plane at the trim cut,
+        // and bottom_center is 40 mm beyond it along the centerline
+        // tangent). Pin the math on a tangent-mostly-Z polyline so
+        // future refactors of stable_inward_tangent don't silently
+        // drift the recorded plane back toward the old stale position.
+        let polyline = vec![
+            Point3::new(0.001, -0.002, 0.060),
+            Point3::new(0.001, -0.002, 0.040),
+            Point3::new(0.001, -0.002, 0.020),
+            Point3::new(0.001, -0.002, 0.000),
+        ];
+        let rf =
+            compute_reconstructed_floor_plane_physics(&polyline, 0.0, 20.0).expect("Some plane");
+        // Trim drops last 20 mm → trimmed_last = z=0.020; outward
+        // (= -Z) extension by 20 mm → bottom_center z = 0.000.
+        assert!((rf.centroid_m.z).abs() < 1e-9);
+        // The override's centroid sits 20 mm below the trim cut
+        // (trimmed_last z = 0.020) along the tangent. cf-device-design's
+        // candidate-A clip would otherwise hit the body at trim_cut +
+        // recorded-plane-offset; this assertion is the load-bearing
+        // contract that the override moves it to bottom_center.
+        let trim_cut_z = 0.020;
+        let override_minus_trim = rf.centroid_m.z - trim_cut_z;
+        assert!((override_minus_trim - (-0.020)).abs() < 1e-9);
+    }
+    #[test]
+    fn compute_reconstructed_floor_plane_returns_none_for_zero_floor_trim() {
+        let polyline = vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 0.0, 0.010)];
+        assert!(compute_reconstructed_floor_plane_physics(&polyline, 0.0, 0.0).is_none());
+    }
+    #[test]
+    fn compute_reconstructed_floor_plane_returns_none_for_short_polyline() {
+        let polyline = vec![Point3::new(0.0, 0.0, 0.0)];
+        assert!(compute_reconstructed_floor_plane_physics(&polyline, 0.0, 10.0).is_none());
+        let polyline2 = vec![Point3::new(0.0, 0.0, 0.020), Point3::new(0.0, 0.0, 0.010)];
+        // applied_floor_mm = 15 > polyline length (10 mm) → trim
+        // consumes everything → None.
+        assert!(compute_reconstructed_floor_plane_physics(&polyline2, 0.0, 15.0).is_none());
+    }
+    /// CSP.3b — `cleanup_cleaned_mesh_for_disk` welds STL-style
+    /// unshared vertices into the shared-index layout that
+    /// downstream `simplify_decoder` requires. Builds a 4×4
+    /// grid-square (32 faces — comfortably above the 10-face
+    /// small-component floor), STL-unshares it via the test helper,
+    /// runs cleanup, and confirms the welded result has the shared-
+    /// vertex topology the iter-1 fixture's downstream consumer was
+    /// missing (`tools/cf-device-design/src/main.rs:419-425`).
+    #[test]
+    fn cleanup_welds_stl_style_unshared_vertices() {
+        let shared = grid_square(4); // 32 faces, 25 shared verts
+        let shared_vert_count = shared.vertices.len();
+        let shared_face_count = shared.faces.len();
+        assert!(shared_face_count >= CLEANUP_MIN_COMPONENT_FACES);
+        let mut unshared = unshare_vertices(&shared);
+        // STL-unshared form: 3 verts per face.
+        assert_eq!(unshared.vertices.len(), shared_face_count * 3);
+
+        // Smoothing disabled — this test asserts the weld/degenerate
+        // hygiene path, not the smoothing pass.
+        let report = cleanup_cleaned_mesh_for_disk(&mut unshared, 0);
+        assert!(
+            report.welded > 0,
+            "weld_vertices report welded=0: {report:?}",
+        );
+        // Welded back down to the shared form (25 verts) with all
+        // faces surviving.
+        assert_eq!(unshared.vertices.len(), shared_vert_count);
+        assert_eq!(unshared.faces.len(), shared_face_count);
+    }
+    /// CSP.3b — small-component strip drops scanner-noise islands
+    /// below `CLEANUP_MIN_COMPONENT_FACES`. Builds a 20-face main
+    /// component + a single 1-face island; cleanup keeps the main
+    /// component + drops the island.
+    #[test]
+    fn cleanup_drops_small_component_islands() {
+        // Main component: 5×5 grid (50 faces).
+        let mut mesh = grid_square(5);
+        let main_faces_before = mesh.faces.len();
+        assert!(main_faces_before >= CLEANUP_MIN_COMPONENT_FACES);
+        // Add a stray 1-face island far from the main grid (so
+        // welding doesn't accidentally merge it in).
+        let v0 = mesh.vertices.len() as u32;
+        mesh.vertices.push(Point3::new(100.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(101.0, 0.0, 0.0));
+        mesh.vertices.push(Point3::new(100.5, 1.0, 0.0));
+        mesh.faces.push([v0, v0 + 1, v0 + 2]);
+
+        let report = cleanup_cleaned_mesh_for_disk(&mut mesh, 0);
+        assert!(
+            report.small_components >= 1,
+            "small_components report: {report:?}",
+        );
+        // The 1-face island is gone; main component faces survive.
+        assert_eq!(mesh.faces.len(), main_faces_before);
+    }
+    /// CSP.3b — `CleanupReport::total()` is zero for an
+    /// already-clean input mesh. Pins the "no work needed → status
+    /// message stays clean" path so future cleanup pipeline
+    /// additions don't silently start surfacing spurious counts on
+    /// pristine inputs.
+    #[test]
+    fn cleanup_report_total_zero_on_clean_input() {
+        // 5×5 grid is already in shared-index form, no degenerates,
+        // single component, no unreferenced verts.
+        let mut mesh = grid_square(5);
+        let report = cleanup_cleaned_mesh_for_disk(&mut mesh, 0);
+        assert_eq!(report.total(), 0, "clean mesh produced cleanup: {report:?}");
+    }
+    /// Smoothing with non-zero iterations counts toward
+    /// [`CleanupReport::total()`] AND actually moves vertices.
+    /// Pins the slider's `iterations > 0` path so a future
+    /// refactor doesn't silently disconnect the slider from
+    /// the smoothing call.
+    #[test]
+    fn cleanup_applies_taubin_smoothing_when_iterations_positive() {
+        let mut mesh = grid_square(5);
+        let original_verts = mesh.vertices.clone();
+        let report = cleanup_cleaned_mesh_for_disk(&mut mesh, 5);
+        assert_eq!(
+            report.smoothing, 5,
+            "smoothing iters not threaded: {report:?}"
+        );
+        // grid_square produces vertices ON a plane; Taubin should
+        // not significantly displace them (Laplacian of a planar
+        // mesh is ~zero), but some boundary verts will drift
+        // toward the interior. At least one vertex should differ.
+        let any_moved = mesh
+            .vertices
+            .iter()
+            .enumerate()
+            .any(|(i, v)| (v.coords - original_verts[i].coords).norm() > 1e-12);
+        assert!(
+            any_moved,
+            "Taubin smoothing with 5 iters did not move any vertex on grid_square(5)",
+        );
+    }
+    /// Atomic-write produces both expected files when both writes
+    /// succeed. Uses a tempfile-style temp dir constructed from
+    /// `std::env::temp_dir()` + a unique stem so tests don't collide.
+    #[test]
+    fn atomic_write_save_lands_both_files() -> Result<()> {
+        let tmp_root = std::env::temp_dir().join(format!(
+            "cf-scan-prep-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0),
+        ));
+        std::fs::create_dir_all(&tmp_root)?;
+        let stl_path = tmp_root.join("scan.cleaned.stl");
+        let toml_path = tmp_root.join("scan.prep.toml");
+        let mesh = one_triangle_at(0.001);
+        atomic_write_save(&mesh, &stl_path, &toml_path, "key = \"value\"\n")?;
+        assert!(stl_path.exists(), "cleaned STL should land at final path");
+        assert!(toml_path.exists(), ".prep.toml should land at final path");
+        // No `.tmp` files left over.
+        assert!(!stl_path.with_extension("stl.tmp").exists());
+        assert!(!toml_path.with_extension("toml.tmp").exists());
+        // Cleanup.
+        let _ = std::fs::remove_dir_all(&tmp_root);
+        Ok(())
+    }
+
+    // ----- reconstruction path: fixtures ------------------------------
+
+    /// Frustum with a **closed tip cap and an OPEN base** — the shape
+    /// [`apply_reconstruction`] expects: exactly one boundary loop, at
+    /// the cut. Ring `r` sits at `z = r/(n_rings-1) * height` with
+    /// radius lerping `radius_base -> radius_tip`, so the reference
+    /// zone above the cut obeys the exact linear law
+    /// `r(s) = radius_base + ((radius_tip - radius_base)/height) * s`.
+    /// That law is the independent oracle for the Extrapolate fit.
+    fn open_base_frustum(
+        n_rings: usize,
+        n_segs: usize,
+        radius_base: f64,
+        radius_tip: f64,
+        height: f64,
+    ) -> IndexedMesh {
+        assert!(n_rings >= 2 && n_segs >= 3);
+        let mut mesh = IndexedMesh::with_capacity(n_rings * n_segs + 1, 2 * n_rings * n_segs);
+        for r in 0..n_rings {
+            #[allow(clippy::cast_precision_loss)]
+            let t = (r as f64) / ((n_rings - 1) as f64);
+            let z = t * height;
+            let ring_radius = radius_base * (1.0 - t) + radius_tip * t;
+            for k in 0..n_segs {
+                #[allow(clippy::cast_precision_loss)]
+                let theta = (k as f64) * std::f64::consts::TAU / (n_segs as f64);
+                mesh.vertices.push(Point3::new(
+                    ring_radius * theta.cos(),
+                    ring_radius * theta.sin(),
+                    z,
+                ));
+            }
+        }
+        #[allow(clippy::cast_possible_truncation)]
+        let tip_idx = (n_rings * n_segs) as u32;
+        mesh.vertices.push(Point3::new(0.0, 0.0, height));
+        for r in 0..(n_rings - 1) {
+            for k in 0..n_segs {
+                #[allow(clippy::cast_possible_truncation)]
+                let i00 = (r * n_segs + k) as u32;
+                #[allow(clippy::cast_possible_truncation)]
+                let i01 = (r * n_segs + (k + 1) % n_segs) as u32;
+                #[allow(clippy::cast_possible_truncation)]
+                let i10 = ((r + 1) * n_segs + k) as u32;
+                #[allow(clippy::cast_possible_truncation)]
+                let i11 = ((r + 1) * n_segs + (k + 1) % n_segs) as u32;
+                mesh.faces.push([i00, i01, i11]);
+                mesh.faces.push([i00, i11, i10]);
+            }
+        }
+        let top_base = (n_rings - 1) * n_segs;
+        for k in 0..n_segs {
+            #[allow(clippy::cast_possible_truncation)]
+            let i0 = (top_base + k) as u32;
+            #[allow(clippy::cast_possible_truncation)]
+            let i1 = (top_base + (k + 1) % n_segs) as u32;
+            mesh.faces.push([tip_idx, i0, i1]);
+        }
+        mesh
+    }
+
+    /// Centerline running tip -> cut, so `centerline.last()` is the cut
+    /// at `z = 0` and the inward tangent is `+Z`.
+    fn axis_centerline(height: f64, n: usize) -> Vec<Point3<f64>> {
+        #[allow(clippy::cast_precision_loss)]
+        (0..n)
+            .map(|i| {
+                let t = (i as f64) / ((n - 1) as f64);
+                Point3::new(0.0, 0.0, height * (1.0 - t))
+            })
+            .collect()
+    }
+
+    /// XY distance from the axis — the radius of a reconstruction ring
+    /// vertex, computed without reusing the production basis.
+    fn axial_radius(p: Point3<f64>) -> f64 {
+        (p.x * p.x + p.y * p.y).sqrt()
+    }
+
+    // ----- perpendicular_basis_for ------------------------------------
+
+    /// `(u, v, n)` must be a right-handed orthonormal frame. Checked
+    /// against the definition (dot/cross identities), not against the
+    /// Gram-Schmidt steps the implementation happens to use.
+    #[test]
+    fn perpendicular_basis_is_orthonormal_and_right_handed() {
+        for n in [
+            Vector3::new(0.0, 0.0, 1.0),
+            Vector3::new(0.0, 1.0, 0.0),
+            Vector3::new(1.0, 2.0, 3.0).normalize(),
+            Vector3::new(-0.3, 0.4, -0.86602540378).normalize(),
+        ] {
+            let (u, v) = perpendicular_basis_for(n);
+            assert!((u.norm() - 1.0).abs() < 1e-12, "u not unit for {n:?}");
+            assert!((v.norm() - 1.0).abs() < 1e-12, "v not unit for {n:?}");
+            assert!(u.dot(&n).abs() < 1e-12, "u not perpendicular to {n:?}");
+            assert!(v.dot(&n).abs() < 1e-12, "v not perpendicular to {n:?}");
+            assert!(u.dot(&v).abs() < 1e-12, "u,v not orthogonal for {n:?}");
+            assert!(
+                (u.cross(&v) - n).norm() < 1e-12,
+                "frame is left-handed for {n:?}"
+            );
+        }
+    }
+
+    /// The `n.x.abs() < 0.9` guard exists so the Gram-Schmidt seed is
+    /// never parallel to `n`. `n = +X` takes the else-branch; without
+    /// the guard the subtraction would leave the zero vector and
+    /// `normalize()` would produce NaN.
+    #[test]
+    fn perpendicular_basis_stays_finite_when_n_is_the_x_axis() {
+        let (u, v) = perpendicular_basis_for(Vector3::new(1.0, 0.0, 0.0));
+        assert!(u.iter().all(|c| c.is_finite()), "u went non-finite: {u:?}");
+        assert!(v.iter().all(|c| c.is_finite()), "v went non-finite: {v:?}");
+        assert!((u.norm() - 1.0).abs() < 1e-12);
+        assert!(u.dot(&Vector3::new(1.0, 0.0, 0.0)).abs() < 1e-12);
+    }
+
+    // ----- find_floor_loop_index --------------------------------------
+
+    fn loop_of(n: usize) -> holes::BoundaryLoop {
+        #[allow(clippy::cast_possible_truncation)]
+        holes::BoundaryLoop {
+            vertices: (0..n as u32).collect(),
+        }
+    }
+
+    /// The rim is the LARGEST loop, and largest must win over both
+    /// earlier and later candidates.
+    #[test]
+    fn floor_loop_is_the_largest_loop_not_the_first() {
+        let loops = [loop_of(12), loop_of(30), loop_of(11)];
+        let mesh = IndexedMesh::with_capacity(0, 0);
+        let got = find_floor_loop_index(&loops, &mesh, Point3::new(0.0, 0.0, 0.0));
+        assert_eq!(got, Some(1));
+    }
+
+    /// CSP.4e.2 regression: on an unsimplified scan the mesh carries
+    /// hundreds of 3-vertex scanner stragglers. Picking one of those
+    /// generated the degenerate "white vertical line" column. Loops
+    /// under `MIN_RIM_LOOP_VERTS` (10) must be refused outright — even
+    /// when they are the only loops present.
+    #[test]
+    fn floor_loop_refuses_noise_stragglers_rather_than_picking_one() {
+        let loops = [loop_of(3), loop_of(9), loop_of(5)];
+        let mesh = IndexedMesh::with_capacity(0, 0);
+        assert_eq!(
+            find_floor_loop_index(&loops, &mesh, Point3::new(0.0, 0.0, 0.0)),
+            None
+        );
+    }
+
+    /// A degenerate loop (< 3 vertices) is not a loop at all; it must
+    /// be skipped even though nothing else qualifies on count alone.
+    #[test]
+    fn floor_loop_skips_invalid_loops_and_takes_the_valid_one() {
+        let loops = [loop_of(2), loop_of(10)];
+        let mesh = IndexedMesh::with_capacity(0, 0);
+        assert_eq!(
+            find_floor_loop_index(&loops, &mesh, Point3::new(0.0, 0.0, 0.0)),
+            Some(1)
+        );
+    }
+
+    // ----- sample_radius_at_angle -------------------------------------
+
+    /// A flat profile is flat everywhere, including between bins and
+    /// outside `[0, TAU)`.
+    #[test]
+    fn radius_at_angle_of_a_flat_profile_is_that_radius_everywhere() {
+        let radii = [2.5_f64; RECONSTRUCT_ANGLE_BINS];
+        for angle in [0.0, 0.37, 2.0, -1.1, std::f64::consts::TAU - 1e-9] {
+            assert!((sample_radius_at_angle(&radii, angle) - 2.5).abs() < 1e-12);
+        }
+    }
+
+    /// Halfway between two bin centres the result is their mean —
+    /// linear interpolation, computed here from the bin values rather
+    /// than from the implementation's `t`.
+    #[test]
+    fn radius_at_angle_interpolates_linearly_between_adjacent_bins() {
+        let mut radii = [0.0_f64; RECONSTRUCT_ANGLE_BINS];
+        radii[0] = 1.0;
+        radii[1] = 3.0;
+        #[allow(clippy::cast_precision_loss)]
+        let bin_span = std::f64::consts::TAU / RECONSTRUCT_ANGLE_BINS as f64;
+        assert!((sample_radius_at_angle(&radii, 0.0) - 1.0).abs() < 1e-12);
+        assert!((sample_radius_at_angle(&radii, 0.5 * bin_span) - 2.0).abs() < 1e-12);
+        assert!((sample_radius_at_angle(&radii, bin_span) - 3.0).abs() < 1e-12);
+    }
+
+    /// The profile is periodic: the last bin interpolates back into the
+    /// first, and a negative angle names the same direction as its
+    /// positive coterminal.
+    #[test]
+    fn radius_at_angle_wraps_across_the_seam_and_normalizes_negatives() {
+        let mut radii = [0.0_f64; RECONSTRUCT_ANGLE_BINS];
+        radii[0] = 4.0;
+        radii[RECONSTRUCT_ANGLE_BINS - 1] = 2.0;
+        #[allow(clippy::cast_precision_loss)]
+        let bin_span = std::f64::consts::TAU / RECONSTRUCT_ANGLE_BINS as f64;
+        #[allow(clippy::cast_precision_loss)]
+        let seam = (RECONSTRUCT_ANGLE_BINS - 1) as f64 * bin_span + 0.5 * bin_span;
+        assert!(
+            (sample_radius_at_angle(&radii, seam) - 3.0).abs() < 1e-12,
+            "seam did not interpolate bin[23] -> bin[0]"
+        );
+        for a in [0.1_f64, 1.3, 3.0] {
+            let neg = sample_radius_at_angle(&radii, a - std::f64::consts::TAU);
+            let pos = sample_radius_at_angle(&radii, a);
+            assert!((neg - pos).abs() < 1e-12, "negative angle differed at {a}");
+        }
+    }
+
+    // ----- sample_radial_profile --------------------------------------
+
+    /// On a right cylinder every angular bin sees the same radius.
+    #[test]
+    fn radial_profile_of_a_cylinder_is_the_cylinder_radius_in_every_bin() {
+        let mesh = open_base_frustum(6, 24, 0.02, 0.02, 0.060);
+        let (u, v) = perpendicular_basis_for(Vector3::new(0.0, 0.0, 1.0));
+        let radii = sample_radial_profile(
+            &mesh,
+            Point3::new(0.0, 0.0, 0.0),
+            Vector3::new(0.0, 0.0, 1.0),
+            u,
+            v,
+            0.030,
+        );
+        for (i, r) in radii.iter().enumerate() {
+            assert!((r - 0.02).abs() < 1e-9, "bin {i} was {r}, expected 0.02");
+        }
+    }
+
+    /// Only the slab `0 < s <= reference_zone` may contribute. Vertices
+    /// below the cut and beyond the zone are decoys with a wildly
+    /// different radius; if either leaked in, the medians would move.
+    #[test]
+    fn radial_profile_ignores_geometry_outside_the_reference_zone() {
+        let mut mesh = open_base_frustum(6, 24, 0.02, 0.02, 0.060);
+        let baseline = sample_radial_profile(
+            &mesh,
+            Point3::new(0.0, 0.0, 0.0),
+            Vector3::new(0.0, 0.0, 1.0),
+            Vector3::new(1.0, 0.0, 0.0),
+            Vector3::new(0.0, 1.0, 0.0),
+            0.030,
+        );
+        // Deleting EITHER half of the zone guard also admits the frustum's
+        // own out-of-zone rings (5 more samples at r = 0.02), so the decoys
+        // must outnumber those too or the median swallows the leak and this
+        // test passes with the guard gone. Six per side does it; three did
+        // not, and the surviving mutant is what said so.
+        for k in 0..24 {
+            #[allow(clippy::cast_precision_loss)]
+            let th = (k as f64) * std::f64::consts::TAU / 24.0;
+            for j in 0..6 {
+                #[allow(clippy::cast_precision_loss)]
+                let d = (j as f64) * 0.002;
+                // below the cut (s < 0)
+                mesh.vertices
+                    .push(Point3::new(0.5 * th.cos(), 0.5 * th.sin(), -0.005 - d));
+                // beyond the reference zone (s > 0.030)
+                mesh.vertices
+                    .push(Point3::new(0.5 * th.cos(), 0.5 * th.sin(), 0.050 + d));
+            }
+        }
+        let after = sample_radial_profile(
+            &mesh,
+            Point3::new(0.0, 0.0, 0.0),
+            Vector3::new(0.0, 0.0, 1.0),
+            Vector3::new(1.0, 0.0, 0.0),
+            Vector3::new(0.0, 1.0, 0.0),
+            0.030,
+        );
+        assert_eq!(
+            baseline, after,
+            "vertices outside the reference zone changed the profile"
+        );
+    }
+
+    /// Per-bin **median**, not mean: one wild vertex inside the zone
+    /// must not move its bin. A mean would land near 0.18 here.
+    #[test]
+    fn radial_profile_median_absorbs_a_single_outlier_vertex() {
+        let mut mesh = open_base_frustum(6, 24, 0.02, 0.02, 0.060);
+        mesh.vertices.push(Point3::new(0.5, 0.0, 0.012));
+        let radii = sample_radial_profile(
+            &mesh,
+            Point3::new(0.0, 0.0, 0.0),
+            Vector3::new(0.0, 0.0, 1.0),
+            Vector3::new(1.0, 0.0, 0.0),
+            Vector3::new(0.0, 1.0, 0.0),
+            0.030,
+        );
+        assert!(
+            (radii[0] - 0.02).abs() < 1e-9,
+            "outlier moved bin 0 to {} — median degraded to a mean?",
+            radii[0]
+        );
+    }
+
+    // ----- sample_radial_profile_linear_fit ---------------------------
+
+    /// The fixture's radius is exactly linear in `s`, so the per-bin
+    /// regression must recover the fixture's own coefficients. Both are
+    /// derived from the frustum's geometry, independently of the
+    /// least-squares code under test.
+    #[test]
+    fn linear_fit_recovers_the_frustums_analytic_taper() {
+        let (r_base, r_tip, height) = (0.020_f64, 0.030_f64, 0.060_f64);
+        // 120 segments over 24 bins: every bin keeps >= 2 samples even when
+        // floating-point rounding drops an angle into its neighbour. At
+        // n_segs == RECONSTRUCT_ANGLE_BINS some bins come up short and take
+        // the flat fallback, which is a different branch (covered separately).
+        let mesh = open_base_frustum(6, 120, r_base, r_tip, height);
+        let expected_slope = (r_tip - r_base) / height;
+        let (intercepts, slopes) = sample_radial_profile_linear_fit(
+            &mesh,
+            Point3::new(0.0, 0.0, 0.0),
+            Vector3::new(0.0, 0.0, 1.0),
+            Vector3::new(1.0, 0.0, 0.0),
+            Vector3::new(0.0, 1.0, 0.0),
+            0.050,
+        );
+        for i in 0..RECONSTRUCT_ANGLE_BINS {
+            assert!(
+                (slopes[i] - expected_slope).abs() < 1e-9,
+                "bin {i} slope {} != analytic {expected_slope}",
+                slopes[i]
+            );
+            assert!(
+                (intercepts[i] - r_base).abs() < 1e-9,
+                "bin {i} intercept {} != analytic {r_base}",
+                intercepts[i]
+            );
+        }
+    }
+
+    /// The linear-fit fixture obeys one law everywhere, so admitting
+    /// out-of-zone geometry would leave the fit unchanged and a deleted
+    /// zone guard would go unnoticed. These decoys sit OFF that line —
+    /// below the cut and past the zone — so any leak drags the
+    /// regression away from the frustum's analytic coefficients.
+    #[test]
+    fn linear_fit_ignores_geometry_outside_the_reference_zone() {
+        let (r_base, r_tip, height) = (0.020_f64, 0.030_f64, 0.060_f64);
+        let mut mesh = open_base_frustum(6, 120, r_base, r_tip, height);
+        for k in 0..120 {
+            #[allow(clippy::cast_precision_loss)]
+            let th = (k as f64) * std::f64::consts::TAU / 120.0;
+            for j in 0..4 {
+                #[allow(clippy::cast_precision_loss)]
+                let d = (j as f64) * 0.002;
+                mesh.vertices
+                    .push(Point3::new(0.4 * th.cos(), 0.4 * th.sin(), -0.004 - d));
+                mesh.vertices
+                    .push(Point3::new(0.4 * th.cos(), 0.4 * th.sin(), 0.052 + d));
+            }
+        }
+        let expected_slope = (r_tip - r_base) / height;
+        let (intercepts, slopes) = sample_radial_profile_linear_fit(
+            &mesh,
+            Point3::new(0.0, 0.0, 0.0),
+            Vector3::new(0.0, 0.0, 1.0),
+            Vector3::new(1.0, 0.0, 0.0),
+            Vector3::new(0.0, 1.0, 0.0),
+            0.050,
+        );
+        for i in 0..RECONSTRUCT_ANGLE_BINS {
+            assert!(
+                (slopes[i] - expected_slope).abs() < 1e-9,
+                "bin {i} slope {} moved off the analytic {expected_slope}",
+                slopes[i]
+            );
+            assert!(
+                (intercepts[i] - r_base).abs() < 1e-9,
+                "bin {i} intercept {} moved off the analytic {r_base}",
+                intercepts[i]
+            );
+        }
+    }
+
+    /// A bin with fewer than two samples cannot support a regression;
+    /// it falls back to the overall median with zero slope rather than
+    /// dividing by a degenerate denominator.
+    #[test]
+    fn linear_fit_falls_back_to_flat_for_bins_with_too_few_samples() {
+        let mut mesh = IndexedMesh::with_capacity(4, 0);
+        // Two samples in bin 0 (angle 0), one lone sample near angle pi.
+        mesh.vertices.push(Point3::new(0.02, 0.0, 0.005));
+        mesh.vertices.push(Point3::new(0.02, 0.0, 0.010));
+        mesh.vertices.push(Point3::new(-0.09, 0.0, 0.008));
+        let (intercepts, slopes) = sample_radial_profile_linear_fit(
+            &mesh,
+            Point3::new(0.0, 0.0, 0.0),
+            Vector3::new(0.0, 0.0, 1.0),
+            Vector3::new(1.0, 0.0, 0.0),
+            Vector3::new(0.0, 1.0, 0.0),
+            0.030,
+        );
+        let overall = 0.02_f64; // median of [0.02, 0.02, 0.09]
+        let lone_bin = RECONSTRUCT_ANGLE_BINS / 2;
+        assert!(
+            (slopes[lone_bin]).abs() < 1e-15,
+            "single-sample bin got a slope: {}",
+            slopes[lone_bin]
+        );
+        assert!(
+            (intercepts[lone_bin] - overall).abs() < 1e-12,
+            "single-sample bin did not fall back to the overall median: {}",
+            intercepts[lone_bin]
+        );
+    }
+
+    // ----- apply_reconstruction ---------------------------------------
+
+    /// A centerline too short to define a tangent cannot drive an
+    /// extrusion. The documented contract is "fall back to flat-cap",
+    /// so the result must match a plain `auto_cap_open_boundaries` —
+    /// compared against that function directly, not against a count.
+    #[test]
+    fn reconstruction_with_a_degenerate_centerline_falls_back_to_flat_cap() {
+        let mesh = open_base_frustum(4, 16, 0.02, 0.02, 0.040);
+        let mut expected = mesh.clone();
+        auto_cap_open_boundaries(&mut expected);
+
+        let short = vec![Point3::new(0.0, 0.0, 0.0)];
+        let got =
+            apply_reconstruction(mesh.clone(), &short, 10.0, 20.0, ReconstructShape::Constant);
+        assert_eq!(got.vertices.len(), expected.vertices.len());
+        assert_eq!(got.faces.len(), expected.faces.len());
+        assert!(
+            detect_boundary_loops(&got).is_empty(),
+            "result is not closed"
+        );
+    }
+
+    /// A non-positive extension is the same "nothing to reconstruct"
+    /// branch, and must not emit a zero-height extrusion.
+    #[test]
+    fn reconstruction_with_a_non_positive_extension_falls_back_to_flat_cap() {
+        let mesh = open_base_frustum(4, 16, 0.02, 0.02, 0.040);
+        let mut expected = mesh.clone();
+        auto_cap_open_boundaries(&mut expected);
+
+        let cl = axis_centerline(0.040, 5);
+        let got = apply_reconstruction(mesh.clone(), &cl, 0.0, 20.0, ReconstructShape::Constant);
+        assert_eq!(got.vertices.len(), expected.vertices.len());
+        assert_eq!(got.faces.len(), expected.faces.len());
+    }
+
+    /// The happy path adds exactly `K` rings of `L` vertices plus one
+    /// fan centroid, and `2·L·K + L` faces — counts derived from the
+    /// documented algorithm, and the result must be watertight.
+    #[test]
+    fn reconstruction_adds_the_documented_ring_geometry_and_closes_the_mesh() {
+        let n_segs = 16;
+        let mesh = open_base_frustum(5, n_segs, 0.02, 0.02, 0.050);
+        let v0 = mesh.vertices.len();
+        let f0 = mesh.faces.len();
+        let cl = axis_centerline(0.050, 6);
+
+        let got = apply_reconstruction(mesh, &cl, 8.0, 25.0, ReconstructShape::Constant);
+
+        assert_eq!(
+            got.vertices.len(),
+            v0 + RECONSTRUCT_RING_COUNT * n_segs + 1,
+            "expected K*L + 1 new vertices"
+        );
+        assert_eq!(
+            got.faces.len(),
+            f0 + 2 * n_segs * RECONSTRUCT_RING_COUNT + n_segs,
+            "expected 2*L*K + L new faces"
+        );
+        assert!(
+            detect_boundary_loops(&got).is_empty(),
+            "reconstructed mesh still has an open boundary"
+        );
+    }
+
+    /// The new floor sits `applied_floor_mm` beyond the cut, along the
+    /// direction opposite the inward tangent. Getting this wrong is the
+    /// 2.73 mm mid-body plane the `[caps]` override exists to prevent.
+    #[test]
+    fn reconstruction_puts_the_new_floor_at_the_requested_depth() {
+        let n_segs = 16;
+        let mesh = open_base_frustum(5, n_segs, 0.02, 0.02, 0.050);
+        let v0 = mesh.vertices.len();
+        let cl = axis_centerline(0.050, 6);
+
+        let got = apply_reconstruction(mesh, &cl, 8.0, 25.0, ReconstructShape::Constant);
+
+        let centroid = got.vertices[v0 + RECONSTRUCT_RING_COUNT * n_segs];
+        assert!(
+            (centroid.z - (-0.008)).abs() < 1e-9,
+            "floor centroid at z={}, expected -0.008",
+            centroid.z
+        );
+        assert!(centroid.x.abs() < 1e-9 && centroid.y.abs() < 1e-9);
+    }
+
+    /// Taper's contract is `(1 - RECONSTRUCT_TAPER_AT_FLOOR)` of the
+    /// canonical radius at the floor. Compared against the Constant
+    /// run's own bottom ring, so the assertion needs no hard-coded
+    /// radius.
+    #[test]
+    fn taper_pinches_the_floor_ring_by_the_documented_fraction() {
+        let n_segs = 16;
+        let cl = axis_centerline(0.050, 6);
+        let bottom_ring = |shape| {
+            let mesh = open_base_frustum(5, n_segs, 0.02, 0.02, 0.050);
+            let v0 = mesh.vertices.len();
+            let got = apply_reconstruction(mesh, &cl, 8.0, 25.0, shape);
+            let start = v0 + (RECONSTRUCT_RING_COUNT - 1) * n_segs;
+            (start..start + n_segs)
+                .map(|i| axial_radius(got.vertices[i]))
+                .collect::<Vec<_>>()
+        };
+        let constant = bottom_ring(ReconstructShape::Constant);
+        let taper = bottom_ring(ReconstructShape::Taper);
+        for (i, (c, t)) in constant.iter().zip(taper.iter()).enumerate() {
+            let expected = c * (1.0 - RECONSTRUCT_TAPER_AT_FLOOR);
+            assert!(
+                (t - expected).abs() < 1e-9,
+                "vertex {i}: taper {t} != {expected} (constant {c})"
+            );
+        }
+    }
+
+    /// Extrapolate must continue the reference zone's trend below the
+    /// cut. The fixture's taper is analytic, so the floor radius is
+    /// predicted in closed form — `r_base + slope·(-extension)` — with
+    /// no reference to the regression code.
+    #[test]
+    fn extrapolate_continues_the_measured_taper_below_the_cut() {
+        let (r_base, r_tip, height) = (0.020_f64, 0.030_f64, 0.060_f64);
+        // Densely sampled for the same reason as the linear-fit test: with
+        // fewer segments than bins, the empty bins fall back to a flat
+        // profile and the interpolated floor radius mixes the two branches.
+        let n_segs = 120;
+        let extension_m = 0.008_f64;
+        let mesh = open_base_frustum(7, n_segs, r_base, r_tip, height);
+        let v0 = mesh.vertices.len();
+        let cl = axis_centerline(height, 7);
+
+        let got = apply_reconstruction(mesh, &cl, 8.0, 50.0, ReconstructShape::Extrapolate);
+
+        let slope = (r_tip - r_base) / height;
+        let expected = slope.mul_add(-extension_m, r_base);
+        let start = v0 + (RECONSTRUCT_RING_COUNT - 1) * n_segs;
+        for i in start..start + n_segs {
+            let r = axial_radius(got.vertices[i]);
+            assert!(
+                (r - expected).abs() < 1e-6,
+                "floor radius {r} != analytic extrapolation {expected}"
+            );
+        }
+        assert!(
+            expected < r_base,
+            "fixture chosen wrong: extrapolation must narrow below the cut"
+        );
+    }
+
+    /// The K rings smoothstep from the noisy rim toward the canonical
+    /// profile — that gradual fade IS the anti-lip behaviour, so it has
+    /// to be asserted on an INTERMEDIATE ring. On a clean cylinder the
+    /// rim already equals the canonical radius and every blend curve
+    /// gives the same answer, so the rim here is widened to 1.5x while
+    /// the reference zone above the cut is left alone. Ring 2 is chosen
+    /// because smoothstep(0.25) = 0.15625 while a linear blend would
+    /// give 0.25 — at ring 4 the two curves cross and prove nothing.
+    #[test]
+    fn extrusion_rings_smoothstep_from_the_rim_toward_the_canonical_profile() {
+        let n_segs = 16;
+        let radius = 0.020_f64;
+        let mut mesh = open_base_frustum(5, n_segs, radius, radius, 0.050);
+        // Widen ONLY the rim (ring 0, the boundary loop at z = 0).
+        for v in mesh.vertices.iter_mut().take(n_segs) {
+            v.x *= 1.5;
+            v.y *= 1.5;
+        }
+        let v0 = mesh.vertices.len();
+        let cl = axis_centerline(0.050, 6);
+
+        let got = apply_reconstruction(mesh, &cl, 8.0, 25.0, ReconstructShape::Constant);
+
+        let t_k = 2.0 / RECONSTRUCT_RING_COUNT as f64;
+        let blend = t_k * t_k * (3.0 - 2.0 * t_k);
+        let expected = (1.5 * radius).mul_add(1.0 - blend, radius * blend);
+        let start = v0 + n_segs; // ring k = 2
+        for i in start..start + n_segs {
+            let r = axial_radius(got.vertices[i]);
+            assert!(
+                (r - expected).abs() < 1e-9,
+                "ring 2 radius {r} != smoothstep blend {expected}"
+            );
+        }
+    }
+
+    /// An aggressive reference-zone trend extrapolated over a long
+    /// extension projects through zero to a NEGATIVE radius. Unclamped,
+    /// the ring vertices would pass through the centerline and come out
+    /// the far side — the mesh self-crosses its own axis. The clamp
+    /// pins the floor to the axis instead. Fixture: slope 1.0 mm/mm
+    /// with a 40 mm extension, so the raw extrapolation is -0.020.
+    #[test]
+    fn extrapolate_clamps_a_runaway_taper_at_the_centerline() {
+        let n_segs = 120;
+        let mesh = open_base_frustum(6, n_segs, 0.020, 0.060, 0.040);
+        let v0 = mesh.vertices.len();
+        let cl = axis_centerline(0.040, 6);
+
+        let got = apply_reconstruction(mesh, &cl, 40.0, 35.0, ReconstructShape::Extrapolate);
+
+        let start = v0 + (RECONSTRUCT_RING_COUNT - 1) * n_segs;
+        for i in start..start + n_segs {
+            let r = axial_radius(got.vertices[i]);
+            assert!(
+                r < 1e-9,
+                "floor ring vertex sits {r} off the axis; the negative \
+                 extrapolation was not clamped and the ring inverted"
+            );
+        }
+    }
+
+    // ----- build_detected_cap_loop ------------------------------------
+
+    /// Spec §6: loops with >= 8 vertices are included by default,
+    /// smaller ones are treated as acceptable holes / scanner artifacts.
+    #[test]
+    fn detected_cap_loop_includes_large_loops_and_defers_small_ones() {
+        let mesh = open_base_frustum(4, 16, 0.02, 0.02, 0.040);
+        let loops = detect_boundary_loops(&mesh);
+        assert_eq!(loops.len(), 1, "fixture should have exactly one open loop");
+        let big = build_detected_cap_loop(&mesh, &loops[0]);
+        assert!(big.include, "a 16-vertex rim should default to included");
+
+        let small = holes::BoundaryLoop {
+            vertices: loops[0].vertices.iter().copied().take(5).collect(),
+        };
+        assert!(
+            !build_detected_cap_loop(&mesh, &small).include,
+            "a 5-vertex loop should not default to included"
+        );
+    }
+
+    /// The cap normal points AWAY from the body. The fixture's rim is
+    /// at `z = 0` with the whole mesh above it, so outward is `-Z`.
+    #[test]
+    fn detected_cap_loop_normal_points_away_from_the_mesh_body() {
+        let mesh = open_base_frustum(4, 16, 0.02, 0.02, 0.040);
+        let loops = detect_boundary_loops(&mesh);
+        let cap = build_detected_cap_loop(&mesh, &loops[0]);
+        assert!(
+            cap.plane_normal.z < -0.99,
+            "outward normal was {:?}, expected ~-Z",
+            cap.plane_normal
+        );
+        assert!(
+            cap.plane_centroid.z.abs() < 1e-9,
+            "rim centroid should sit on z=0, got {}",
+            cap.plane_centroid.z
+        );
+    }
 }
