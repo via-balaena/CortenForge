@@ -158,6 +158,92 @@ impl ProductionCoverage {
         let covered = self.covered.saturating_sub(self.bin_covered);
         (total > 0).then(|| 100.0 * covered as f64 / total as f64)
     }
+
+    /// The smallest `covered` that would meet `percent` — the bar, in LINES.
+    ///
+    /// ⚠⚠ Integer, and that is the point. [`Self::margin_lines`] is a line
+    /// count and [`Self::meets`] is the comparison the LETTER comes from, so
+    /// the two have to name the same boundary line-for-line. Deriving the
+    /// letter from an `f64` percentage and the margin from integers lets them
+    /// disagree at exactly the boundary — which is the only place either
+    /// number is interesting, and where the crates this reporting exists for
+    /// live. [`Self::percent`] survives as display only.
+    ///
+    /// `div_ceil`, not `/`: the bar is the smallest integer `covered`
+    /// satisfying `covered * 100 >= percent * total`, and truncating division
+    /// would put the bar one line low whenever the quotient is fractional —
+    /// reporting a crate as exactly at the bar while [`Self::meets`] says it
+    /// is under. That disagreement is the whole defect this is shaped to
+    /// avoid.
+    pub fn bar(&self, percent: u64) -> u64 {
+        (percent * self.total).div_ceil(100)
+    }
+
+    /// Does the measurement meet `percent`? Decided in integers.
+    ///
+    /// `covered * 100 >= percent * total` is `covered >= bar(percent)` — the
+    /// same question, and provably the same answer, which is what lets the
+    /// letter and the margin be read together.
+    ///
+    /// A crate with no production lines answers `true` (`0 >= 0`). No caller
+    /// reaches that: `coverage_result` returns on `percent()` being `None`
+    /// first, and it is `None` on exactly the same condition. Documented
+    /// rather than guarded, because the guard belongs at the one place that
+    /// has somewhere better to go — a crate with nothing to measure is not a
+    /// crate that met the bar, and it should not be graded as though it were.
+    pub fn meets(&self, percent: u64) -> bool {
+        self.covered * 100 >= percent * self.total
+    }
+
+    /// Covered lines above the bar for `percent`; NEGATIVE means short by that
+    /// many. `None` when the crate has no production lines, matching
+    /// [`Self::percent`].
+    ///
+    /// ★ Lines, not percentage points, because lines are the unit the reader
+    /// acts in ("write four more tests"), the unit the run-to-run spread is
+    /// measured in ([`Self::noise_floor_lines`]), and an integer — so there is
+    /// no rounding ambiguity at the bar, which is where every use of this
+    /// number is.
+    pub fn margin_lines(&self, percent: u64) -> Option<i64> {
+        (self.total > 0).then(|| self.covered as i64 - self.bar(percent) as i64)
+    }
+
+    /// How many covered lines two runs over the SAME TREE can differ by.
+    ///
+    /// A margin inside this spread is not evidence the crate is above the bar:
+    /// re-running could lose it without a line of source changing.
+    ///
+    /// **Measured, at both ends:**
+    ///
+    /// - `cf-codesign`, 2026-08-16: 1416 → 1410 covered of 1622 — 6 lines,
+    ///   0.37 %.
+    /// - `sim-soft`, 2026-08-29: five runs on identical trees spanned
+    ///   8198–8216 covered of 9146 — 18 lines, 0.20 %.
+    ///
+    /// So the spread scales with the crate rather than sitting at a constant.
+    /// A flat 6 lines is a third of sim-soft's observed drift; a flat 0.4 % is
+    /// three lines on an 800-line crate, under the smallest drift anyone has
+    /// actually seen. Hence **0.4 %, or 6 lines, whichever is larger** — the
+    /// proportional term sizes the big crates, the floor sizes the small ones,
+    /// and neither measurement is contradicted.
+    ///
+    /// Suspected mechanism, UNVERIFIED: solver tests iterate to convergence,
+    /// so thread scheduling changes which lines execute — drift in the TESTS,
+    /// not in `llvm-cov`. Named as a suspicion, not a finding; the band is
+    /// sized from the observed spread either way, so nothing here depends on
+    /// the cause being right.
+    ///
+    /// ⚠ Both observations are from ONE machine. A CI runner with a different
+    /// core count may well spread wider, which would make this floor too
+    /// tight. It errs toward flagging fewer crates than it should — the
+    /// direction that stays quiet, not the direction that lies.
+    pub fn noise_floor_lines(&self) -> u64 {
+        /// Smallest drift ever directly observed (`cf-codesign`, 6 of 1622).
+        const OBSERVED_FLOOR: u64 = 6;
+        /// 0.4 %, as parts per thousand so the arithmetic stays integer.
+        const PER_MILLE: u64 = 4;
+        OBSERVED_FLOOR.max((self.total * PER_MILLE).div_ceil(1000))
+    }
 }
 
 /// Strip the crate root from an absolute export path: `src/solver/pgs.rs`.
@@ -1957,5 +2043,143 @@ mod tests {
             .find(|f| f.file == "src/lib.rs")
             .expect("lib.rs row");
         assert!(!lib.is_bin);
+    }
+
+    // === the bar, the margin, and the letter — one integer comparison ===
+
+    fn measured(covered: u64, total: u64) -> ProductionCoverage {
+        ProductionCoverage {
+            covered,
+            total,
+            ..Default::default()
+        }
+    }
+
+    /// The three ways of asking "is this crate above the bar" have to agree,
+    /// or a report can print a letter and a margin that contradict it.
+    ///
+    /// Exhaustive over every crate size a workspace crate plausibly has and
+    /// every covered count within it, at all four grade bands — this is
+    /// cheaper than reasoning about which sizes are the interesting ones, and
+    /// it does not go stale when a band moves.
+    #[test]
+    fn meets_the_bar_and_being_at_or_above_it_are_the_same_question() {
+        for total in 1..=300u64 {
+            for covered in 0..=total {
+                let m = measured(covered, total);
+                for percent in [40u64, 60, 75, 90] {
+                    let meets = m.meets(percent);
+                    assert_eq!(
+                        meets,
+                        covered >= m.bar(percent),
+                        "meets vs bar at {covered}/{total} @ {percent}%"
+                    );
+                    assert_eq!(
+                        meets,
+                        m.margin_lines(percent).expect("has lines") >= 0,
+                        "meets vs margin sign at {covered}/{total} @ {percent}%"
+                    );
+                }
+            }
+        }
+    }
+
+    /// ⚠ The regression control for the change that introduced all of this:
+    /// the letter used to come from `100.0 * covered / total >= 75.0` on an
+    /// `f64`, and now comes from `covered * 100 >= 75 * total`. Every crate's
+    /// grade had to stay exactly where it was.
+    ///
+    /// Checked against the `f64` form directly rather than argued from
+    /// mantissa widths — the argument is sound for these magnitudes and is
+    /// still not evidence. Real crate sizes are swept alongside the small ones
+    /// because the two forms diverge, if they ever do, only where the quotient
+    /// is least representable.
+    #[test]
+    fn the_integer_bar_grades_identically_to_the_float_it_replaced() {
+        let sizes = (1..=300u64).chain([807, 879, 1082, 1622, 9146]);
+        for total in sizes {
+            // Every covered count for a small crate; a window around each bar
+            // for a large one, where a disagreement would have to live.
+            let candidates: Vec<u64> = if total <= 300 {
+                (0..=total).collect()
+            } else {
+                [40u64, 60, 75, 90]
+                    .iter()
+                    .flat_map(|p| {
+                        let bar = (p * total) / 100;
+                        (bar.saturating_sub(3)..=(bar + 3).min(total)).collect::<Vec<_>>()
+                    })
+                    .collect()
+            };
+            for covered in candidates {
+                let m = measured(covered, total);
+                let float = m.percent().expect("has lines");
+                for percent in [40u64, 60, 75, 90] {
+                    assert_eq!(
+                        m.meets(percent),
+                        float >= percent as f64,
+                        "integer/float disagree at {covered}/{total} @ {percent}%"
+                    );
+                }
+            }
+        }
+    }
+
+    /// ★ The mutant this is shaped to kill: `bar` using `/` instead of
+    /// `div_ceil`.
+    ///
+    /// `sim-soft` on 2026-08-29 measured 9146 production lines, and
+    /// `75 × 9146 / 100` is 6859.5 — so truncating division puts the bar at
+    /// 6859, one line low. A crate at exactly 6859 covered lines is at
+    /// 74.99 % and grades `B`; a truncating `bar` would report it as sitting
+    /// exactly ON the A bar with zero margin. Both faces asserted, because a
+    /// bar that is merely *high* is the opposite defect and just as wrong.
+    #[test]
+    fn the_bar_is_the_first_line_that_meets_it_not_the_last_that_misses() {
+        let total = 9146;
+        assert_eq!(measured(0, total).bar(75), 6860, "75 % of 9146 rounds UP");
+
+        let under = measured(6859, total);
+        assert!(!under.meets(75), "6859/9146 is 74.99 %, not 75 %");
+        assert_eq!(under.margin_lines(75), Some(-1));
+
+        let at = measured(6860, total);
+        assert!(at.meets(75));
+        assert_eq!(at.margin_lines(75), Some(0));
+    }
+
+    /// A crate with nothing to measure has no margin to report — the same
+    /// answer [`ProductionCoverage::percent`] gives, so the two cannot
+    /// disagree about whether a measurement happened.
+    #[test]
+    fn a_crate_with_no_production_lines_has_no_margin() {
+        let empty = measured(0, 0);
+        assert_eq!(empty.percent(), None);
+        assert_eq!(empty.margin_lines(75), None);
+    }
+
+    /// The floor has to cover BOTH observations it was sized from, and the
+    /// proportional term has to be what covers the large one — a flat 6 would
+    /// pass the first assertion and fail the second.
+    #[test]
+    fn the_noise_floor_covers_both_measured_spreads() {
+        // cf-codesign, 2026-08-16: 6 lines of drift on 1622 total.
+        assert!(
+            measured(1410, 1622).noise_floor_lines() >= 6,
+            "cf-codesign's observed 6-line drift must fall inside the band"
+        );
+        // sim-soft, 2026-08-29: 8198–8216 on 9146 total.
+        assert!(
+            measured(8201, 9146).noise_floor_lines() >= 18,
+            "sim-soft's observed 18-line drift must fall inside the band"
+        );
+        // The floor, for a crate too small for 0.4 % to reach it.
+        assert_eq!(measured(300, 400).noise_floor_lines(), 6);
+        // ⚠ Negative control for the floor itself: without the proportional
+        // term this would also be 6, and the assertion above would still pass.
+        assert!(
+            measured(8201, 9146).noise_floor_lines() > 6,
+            "a large crate must get a wider band than the flat floor"
+        );
     }
 }

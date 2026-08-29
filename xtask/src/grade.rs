@@ -94,15 +94,23 @@ pub struct GradeReport {
     pub automated_grade: Grade,
     #[allow(dead_code)]
     pub needs_review: bool,
-    /// Criterion 1's measurement split by file, worst first — empty whenever
-    /// coverage did not run (`--skip-coverage`, a skipped profile, a failed
-    /// measurement) or produced no production lines.
+    /// Criterion 1's measurement, whole — `None` whenever coverage did not run
+    /// (`--skip-coverage`, a skipped profile, a failed measurement).
     ///
     /// Structured rather than folded into `CriterionResult.measured_detail`
-    /// because two consumers want it in two shapes: `--json` for machine
-    /// triage, the table for a reader. `pub(crate)` to match
-    /// [`crate::coverage::FileCoverage`]'s own visibility.
-    pub(crate) coverage_files: Vec<crate::coverage::FileCoverage>,
+    /// because the consumers want it in three shapes: `--json` for machine
+    /// triage, the table for a reader, and [`Self::coverage_margin`] for the
+    /// sweep. `pub(crate)` to match [`crate::coverage::ProductionCoverage`]'s
+    /// own visibility.
+    ///
+    /// ★ An `Option`, not the bare file list it replaced. Empty-vec-means-
+    /// nothing-ran is the ambiguity [`print_coverage_detail`] was fixed for
+    /// once already: `(measurement failed)` and a fully-covered crate both
+    /// produced an empty `Vec`, and they are opposite facts. `None` says "no
+    /// measurement" and `Some` with no uncovered file says "measured, clean",
+    /// so the distinction is in the type rather than in a convention each
+    /// reader has to remember.
+    pub(crate) coverage: Option<crate::coverage::ProductionCoverage>,
 }
 
 impl GradeReport {
@@ -124,6 +132,90 @@ impl GradeReport {
             };
         }
         worst
+    }
+
+    /// Criterion 1's measurement split by file, worst first — empty when
+    /// coverage did not run.
+    ///
+    /// The two printers and `--json` all want the rows and nothing else, and
+    /// none of them has anything different to say about "not measured" than
+    /// about "measured, no rows". Flattening it here keeps that judgement in
+    /// one place instead of three `map_or(&[], …)` calls that could drift.
+    pub(crate) fn coverage_files(&self) -> &[crate::coverage::FileCoverage] {
+        self.coverage.as_ref().map_or(&[], |c| &c.files)
+    }
+
+    /// How far criterion 1 sits from the bar that GATES, in covered lines.
+    ///
+    /// `None` when coverage did not run, or ran and found no production lines
+    /// — there is no bar to be near when there is nothing to measure.
+    pub(crate) fn coverage_margin(&self) -> Option<CoverageMargin> {
+        let measured = self.coverage.as_ref()?;
+        Some(CoverageMargin {
+            lines: measured.margin_lines(A_PERCENT)?,
+            noise_floor: measured.noise_floor_lines(),
+        })
+    }
+}
+
+/// Criterion 1's distance from the bar, in covered LINES.
+///
+/// ★ **The letter has no gradient.** 75.06 % and 97.9 % both print `A`, so a
+/// crate can walk to the edge of the bar — or across it — with the report
+/// saying the same word throughout. Worse, the measurement is not reproducible
+/// to the line ([`crate::coverage::ProductionCoverage::noise_floor_lines`]),
+/// so a crate can cross from nothing but a re-run. The 2026-08-27 census put
+/// `mesh-types` at 113 covered lines of 146 — three above a bar of 110, so a
+/// fourth lost line grades it `B` — and it is in `cf-cast-cli`'s dependency
+/// tree.
+///
+/// ⚠ Measured against the **A bar alone**, never A+. A+ is a distinction; A is
+/// the pass/fail line every gate in this repo is written against, so headroom
+/// below A+ is a number no one acts on and one more clause for a reader to
+/// skip past. Below the bar the same integer says how far short.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CoverageMargin {
+    /// Covered lines above the A bar; NEGATIVE means short by that many.
+    pub lines: i64,
+    /// The run-to-run spread for a crate this size — see
+    /// [`crate::coverage::ProductionCoverage::noise_floor_lines`].
+    pub noise_floor: u64,
+}
+
+impl CoverageMargin {
+    /// Above the bar, but by no more than the measurement noise.
+    ///
+    /// The letter is real and is not withdrawn — this only says a re-run on
+    /// this same tree could lose it, which is a thing to go and fix before it
+    /// happens rather than after.
+    pub(crate) fn is_thin(&self) -> bool {
+        self.lines >= 0 && self.lines <= self.noise_floor as i64
+    }
+
+    /// The clause criterion 1's detail line ends with.
+    ///
+    /// Always emitted, in all three bands, because the alternative is a reader
+    /// who has to know that silence means "wide" — and silence is also what a
+    /// missing feature looks like.
+    pub(crate) fn describe(&self) -> String {
+        if self.lines < 0 {
+            return format!(
+                "; {} more covered line(s) would reach the {}% A bar",
+                -self.lines, A_PERCENT
+            );
+        }
+        if self.is_thin() {
+            return format!(
+                "; only {} line(s) of headroom above the {}% A bar — inside the ±{}-line \
+                 run-to-run spread for a crate this size, so a re-run on this same tree \
+                 could grade B",
+                self.lines, A_PERCENT, self.noise_floor
+            );
+        }
+        format!(
+            "; {} line(s) of headroom above the {}% A bar",
+            self.lines, A_PERCENT
+        )
     }
 }
 
@@ -499,14 +591,15 @@ pub fn evaluate(sh: &Shell, crate_name: &str, verbosity: Verbosity) -> Result<Gr
         criteria: Vec::new(),
         automated_grade: Grade::A,
         needs_review: true,
-        coverage_files: Vec::new(),
+        coverage: None,
     };
 
     // Filled by `grade_coverage` through a `&mut` capture. The criterion's
-    // grade is a `CriterionResult` like every other, but its per-file split has
+    // grade is a `CriterionResult` like every other, but the measurement behind
+    // it — the per-file split, and the counts the margin is derived from — has
     // no place in that shape, and re-deriving it would mean a second
-    // instrumented run — minutes, for data the first run already produced.
-    let mut coverage_files = Vec::new();
+    // instrumented run: minutes, for data the first run already produced.
+    let mut coverage = None;
     report
         .criteria
         .push(run_criterion(1, "Coverage", verbosity.quiet, || {
@@ -517,10 +610,10 @@ pub fn evaluate(sh: &Shell, crate_name: &str, verbosity: Verbosity) -> Result<Gr
                 profile,
                 has_lib,
                 verbosity,
-                &mut coverage_files,
+                &mut coverage,
             )
         })?);
-    report.coverage_files = coverage_files;
+    report.coverage = coverage;
     report
         .criteria
         .push(run_criterion(2, "Documentation", verbosity.quiet, || {
@@ -806,7 +899,7 @@ fn skip_coverage_criterion() -> CriterionResult {
 /// would push real targets off the bottom of the cap.
 fn print_coverage_triage(report: &GradeReport) {
     let worst: Vec<&crate::coverage::FileCoverage> = report
-        .coverage_files
+        .coverage_files()
         .iter()
         .filter(|f| f.uncovered() > 0)
         .collect();
@@ -821,7 +914,7 @@ fn print_coverage_triage(report: &GradeReport) {
         format!(
             "  Coverage triage — {} of {} measured file(s) hold {} uncovered production line(s):",
             worst.len(),
-            report.coverage_files.len(),
+            report.coverage_files().len(),
             uncovered_total
         )
         .bright_white()
@@ -904,6 +997,20 @@ fn triage_tail(worst: &[&crate::coverage::FileCoverage], cap: usize) -> Option<(
 
 /// Emit the grade report as JSON to stdout.
 fn json_output(report: &GradeReport) {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&report_json(report)).unwrap_or_default()
+    );
+}
+
+/// The `--json` document, built but not printed.
+///
+/// ★ Split from [`json_output`] for the reason [`coverage_result`] was split
+/// from [`grade_coverage`]: a decision reachable only by capturing stdout is a
+/// decision no test drives. Which keys are present is a decision — `--json` is
+/// the machine surface, and a consumer keying on a field's ABSENCE to mean
+/// "not measured" is relying on it.
+fn report_json(report: &GradeReport) -> serde_json::Value {
     let criteria: Vec<serde_json::Value> = report
         .criteria
         .iter()
@@ -924,7 +1031,7 @@ fn json_output(report: &GradeReport) {
     // so. Absent rather than empty when coverage did not run, so a consumer can
     // tell "measured, all covered" from "never measured".
     let coverage_files: Vec<serde_json::Value> = report
-        .coverage_files
+        .coverage_files()
         .iter()
         .map(|f| {
             serde_json::json!({
@@ -954,11 +1061,24 @@ fn json_output(report: &GradeReport) {
     if !coverage_files.is_empty() {
         json["coverage_files"] = serde_json::Value::Array(coverage_files);
     }
-
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&json).unwrap_or_default()
-    );
+    // Absent rather than null when coverage did not run, matching
+    // `coverage_files` beside it: a consumer distinguishes "not measured" by
+    // the key not being there, and never by a sentinel margin of 0 — which is
+    // a real and interesting value.
+    //
+    // `thin` is emitted rather than left for the consumer to recompute from
+    // the two numbers beside it. The band rule is a judgement
+    // ([`CoverageMargin::is_thin`]) and two implementations of one judgement
+    // drift; the inputs are published as well so a consumer that disagrees can
+    // say so rather than having to guess what was compared.
+    if let Some(margin) = report.coverage_margin() {
+        json["coverage_margin"] = serde_json::json!({
+            "lines": margin.lines,
+            "noise_floor": margin.noise_floor,
+            "thin": margin.is_thin(),
+        });
+    }
+    json
 }
 
 /// Run grading for a specific crate
@@ -1125,6 +1245,12 @@ pub fn run_all(
     // Same bucket shape for criterion 7, and open for the same reason: a skipped
     // WASM check leaves every letter in this sweep untouched.
     let mut wasm_unavailable: Vec<String> = Vec::new();
+    // Crates that PASSED, by less than the measurement's own run-to-run
+    // spread. Deliberately absent from `SweepTally`, and so from `is_green`:
+    // gating on it would fail crates for being where they already are, which
+    // is a policy call that should follow the data rather than arrive with it.
+    // This sweep is where the data comes from.
+    let mut thin_margins: Vec<String> = Vec::new();
 
     for (idx, crate_name) in crate_names.iter().enumerate() {
         // Force --quiet per-crate regardless of outer verbosity — grade-all
@@ -1166,6 +1292,7 @@ pub fn run_all(
             verbosity.skip_coverage,
             &mut coverage_unavailable,
             &mut wasm_unavailable,
+            &mut thin_margins,
         );
 
         let passed = matches!(report.automated_grade, Grade::A | Grade::APlus);
@@ -1248,6 +1375,31 @@ pub fn run_all(
         }
     }
 
+    // Above the errors, not below: this block is advisory and the tail of the
+    // log is where the gating findings belong. It is still printed
+    // unconditionally when non-empty — a crate one re-run from `B` is the
+    // whole reason the sweep measures anything, and the letter beside it in
+    // the progress list says `A`.
+    if !thin_margins.is_empty() {
+        println!();
+        println!(
+            "{}",
+            format!(
+                "  {} crate(s) pass coverage by less than the measurement's own noise:",
+                thin_margins.len()
+            )
+            .yellow()
+            .bold()
+        );
+        for row in &thin_margins {
+            println!("{row}");
+        }
+        println!(
+            "{}",
+            "      Not a failure. A re-run on the same tree could grade these B.".dimmed()
+        );
+    }
+
     // Errors last: they are the ones an operator usually has to act on first,
     // and the tail of the output is what a CI log viewer opens on.
     for (name, err) in &errors {
@@ -1318,6 +1470,23 @@ fn is_failing_criterion(c: &CriterionResult) -> bool {
         c.grade,
         Grade::Manual | Grade::NotApplicable | Grade::A | Grade::APlus
     )
+}
+
+/// One line of the sweep's thin-margin block, or `None` when this crate is not
+/// sitting on the bar.
+///
+/// Split out from the loop for the reason [`triage_tail`] and
+/// [`triage_row_markers`] were: a line assembled inside a `println!` inside a
+/// 200-crate loop is a line no test reads, and this one carries the whole
+/// point of the block — which crate, how close, and what "close" was measured
+/// against.
+fn thin_margin_row(crate_name: &str, report: &GradeReport) -> Option<String> {
+    let margin = report.coverage_margin().filter(CoverageMargin::is_thin)?;
+    Some(format!(
+        "      {crate_name} — {} covered line(s) above the {}% bar, against a ±{}-line \
+         run-to-run spread",
+        margin.lines, A_PERCENT, margin.noise_floor
+    ))
 }
 
 /// Whether this report's Coverage criterion came back unmeasurable.
@@ -1593,7 +1762,17 @@ fn run_crate_tests(sh: &Shell, crate_name: &str, verbosity: Verbosity) -> HeavyR
 /// `--skip-coverage` makes an unmeasured criterion 1 the instruction rather than
 /// a defect, while no flag asks for a sweep without criterion 7.
 ///
-/// ⚠ There is deliberately NO third bucket for "tests did not run", even though
+/// ⚠ The third bucket is not about a criterion that failed to RUN. Criterion 1
+/// ran, passed, and passed by less than its own measurement noise
+/// ([`thin_margin_row`]). It was written beside this call rather than inside
+/// it, on the argument that two unlike judgements do not belong in one
+/// function — and a mutation deleting that line left every test green, which
+/// is the same finding, in the same loop, that this function was extracted
+/// for. The argument was right about the judgements and wrong about where the
+/// risk is: what makes a sweep bucket real is that something drives the
+/// WIRING, and there is exactly one call here that a test can drive.
+///
+/// ⚠ There is deliberately NO fourth bucket for "tests did not run", even though
 /// `--skip-coverage` skips those too. A bucket here either gates — turning every
 /// CI sweep red for a condition CI asked for — or does not, and becomes a line
 /// printed on every run that no one reads. The skip is surfaced where it is
@@ -1606,6 +1785,7 @@ fn record_sweep_buckets(
     skip_coverage: bool,
     coverage_unavailable: &mut Vec<String>,
     wasm_unavailable: &mut Vec<String>,
+    thin_margins: &mut Vec<String>,
 ) {
     if !skip_coverage && coverage_was_unavailable(report) {
         coverage_unavailable.push(crate_name.to_string());
@@ -1613,6 +1793,7 @@ fn record_sweep_buckets(
     if wasm_was_unavailable(report) {
         wasm_unavailable.push(crate_name.to_string());
     }
+    thin_margins.extend(thin_margin_row(crate_name, report));
 }
 
 /// Whether criterion 7 was skipped rather than run.
@@ -1980,20 +2161,23 @@ fn coverage_skip_reason(
 /// carries the measurement — and because the report never counted those files,
 /// scoping the build cannot move the number.
 ///
-/// `files_out` receives the per-file split of whatever this measured, worst
-/// first. **A non-empty `files_out` means "these files were measured", never
-/// "this is all we managed to see"** — that is the guarantee callers rely on,
-/// and it holds two ways. Every path that returns before a measurement exists
-/// — a skipped profile, `--skip-coverage`, missing tooling, a failed run —
-/// returns without touching it. The one measured path that still reports no
-/// percentage, `(no production lines)`, is reached exactly when `total == 0`,
-/// and `total` only grows in the branch that pushes a row, so its `files` is
-/// already empty and assigning it moves nothing.
+/// `measured_out` receives the finished measurement. **`Some` means "this was
+/// measured", `None` means "no measurement exists"** — that is the guarantee
+/// callers rely on, and it is now carried by the type rather than by a
+/// convention about emptiness. Every path that returns before a measurement
+/// exists — a skipped profile, `--skip-coverage`, missing tooling, a failed
+/// run — returns without touching it.
 ///
 /// ⚠ Stated as the guarantee rather than as "left untouched unless…": the
 /// assignment moved when the verdict was split into [`coverage_result`], and a
 /// contract phrased in terms of which line runs goes stale the next time that
 /// happens. This one is a property of the data.
+///
+/// ★ It used to be a bare `Vec` of the per-file split, and an empty one said
+/// two opposite things at once: "nothing ran" and "measured, every file
+/// clean". [`print_coverage_detail`] had to be fixed for reading it the first
+/// way when it meant the second; the `Option` removes the reading rather than
+/// the bug.
 ///
 /// ★ **Where the automated boundary sits, and why here.** Everything from a
 /// finished measurement onward is unit-tested through [`coverage_result_for`]
@@ -2040,7 +2224,7 @@ fn grade_coverage(
     profile: CrateProfile,
     has_lib_target: bool,
     verbosity: Verbosity,
-    files_out: &mut Vec<crate::coverage::FileCoverage>,
+    measured_out: &mut Option<crate::coverage::ProductionCoverage>,
 ) -> Result<CriterionResult> {
     // A crate with no library target has nothing for the instrumented
     // `--lib --tests` build to measure; an F.3 IntegrationOnly crate (per its
@@ -2259,14 +2443,13 @@ fn grade_coverage(
         &run.skip_unmatched,
     );
 
-    // Unconditional, and still honours "a non-empty `files_out` means these
-    // files were measured": the one verdict above that measured nothing is
-    // `(no production lines)`, which is returned exactly when `total == 0` —
-    // and `total` only ever grows in the same branch that pushes a row, so a
-    // zero total already implies an empty `files`. Assigning it moves an empty
-    // vec. Guarding on the grade instead would be a second, weaker statement
-    // of the same invariant, free to drift from it.
-    *files_out = measured.files;
+    // Unconditional, and correct for every verdict `coverage_result` can have
+    // returned above: each of them was reached FROM this measurement, so the
+    // measurement exists and `Some` is the true statement. That includes
+    // `(no production lines)` — a real measurement whose answer is zero, which
+    // is a different fact from never having run, and one the sweep needs in
+    // order to say so.
+    *measured_out = Some(measured);
     Ok(result)
 }
 
@@ -2294,6 +2477,21 @@ fn coverage_result_for(
         skip_unmatched,
     )
 }
+
+/// Criterion 1's grade bands, as WHOLE PERCENTAGES.
+///
+/// ⚠⚠ Integers, and named, because two separate numbers are derived from them
+/// and they have to agree: the letter
+/// ([`crate::coverage::ProductionCoverage::meets`]) and the margin
+/// ([`CoverageMargin`]). While the letter came from `coverage >= 75.0` on an
+/// `f64` and the margin from integer line counts, the two could contradict
+/// each other at the boundary — and the boundary is the only place either is
+/// worth printing. One set of constants, one comparison, no boundary to
+/// reason about.
+const A_PLUS_PERCENT: u64 = 90;
+const A_PERCENT: u64 = 75;
+const B_PERCENT: u64 = 60;
+const C_PERCENT: u64 = 40;
 
 /// Criterion 1's verdict, from a finished measurement. Pure: no `Shell`, no
 /// filesystem, no cargo.
@@ -2333,13 +2531,13 @@ fn coverage_result(
     let heavy_passed = heavy.passed;
     let grade = if !heavy_passed {
         Grade::F
-    } else if coverage >= 90.0 {
+    } else if measured.meets(A_PLUS_PERCENT) {
         Grade::APlus
-    } else if coverage >= 75.0 {
+    } else if measured.meets(A_PERCENT) {
         Grade::A
-    } else if coverage >= 60.0 {
+    } else if measured.meets(B_PERCENT) {
         Grade::B
-    } else if coverage >= 40.0 {
+    } else if measured.meets(C_PERCENT) {
         Grade::C
     } else {
         Grade::F
@@ -2402,6 +2600,24 @@ fn coverage_result(
             " ⚠ {} file(s) unreadable, so their test code IS counted",
             measured.unparsed.len()
         ));
+    }
+    // How far the crate is from the bar, in the unit a reader acts in. See
+    // [`CoverageMargin`] for why a letter alone is not enough. Placed after
+    // everything that qualifies the measurement — a margin computed over a
+    // partial pass is worth less, and the reader should have been told so
+    // before reading it.
+    //
+    // ⚠ Unconditional on the grade. A crate BELOW the bar gets the clause too,
+    // saying how many lines would reach it; that is the same question a
+    // failing crate's owner is already asking, answered without arithmetic.
+    if let Some(lines) = measured.margin_lines(A_PERCENT) {
+        detail.push_str(
+            &CoverageMargin {
+                lines,
+                noise_floor: measured.noise_floor_lines(),
+            }
+            .describe(),
+        );
     }
     if !heavy_passed {
         detail.push_str(&heavy.describe_failure());
@@ -7773,7 +7989,7 @@ tier_up_features = { sneaky = "App" }
             criteria: Vec::new(),
             automated_grade: Grade::A,
             needs_review: true,
-            coverage_files: Vec::new(),
+            coverage: None,
         }
     }
 
@@ -8321,7 +8537,7 @@ test result: FAILED. 786 passed; 1 failed; 2 ignored; 0 measured; 0 filtered out
     #[test]
     fn skip_coverage_does_not_trip_the_unavailable_guard() {
         let sh = Shell::new().expect("shell");
-        let mut files = Vec::new();
+        let mut measured = None;
         let skipped = grade_coverage(
             &sh,
             "fixture",
@@ -8334,11 +8550,19 @@ test result: FAILED. 786 passed; 1 failed; 2 ignored; 0 measured; 0 filtered out
                 json: false,
                 skip_coverage: true,
             },
-            &mut files,
+            &mut measured,
         )
         .expect("the skip arm cannot fail");
 
         assert_eq!(skipped.grade, Grade::NotApplicable, "{skipped:?}");
+        // The out-param's whole contract, on the path most likely to break
+        // it: `--skip-coverage` measured nothing, so it must report nothing.
+        // A `Some` here would give the sweep a margin to publish for a crate
+        // it never instrumented.
+        assert!(
+            measured.is_none(),
+            "the skip arm must not invent a measurement"
+        );
         assert!(!coverage_was_unavailable(&GradeReport {
             criteria: vec![skipped],
             ..empty_report()
@@ -8499,15 +8723,19 @@ test result: FAILED. 786 passed; 1 failed; 2 ignored; 0 measured; 0 filtered out
             ..empty_report()
         };
 
-        let (mut cov, mut wasm) = (Vec::new(), Vec::new());
-        record_sweep_buckets("demo", &both_skipped, false, &mut cov, &mut wasm);
+        let (mut cov, mut wasm, mut thin) = (Vec::new(), Vec::new(), Vec::new());
+        record_sweep_buckets("demo", &both_skipped, false, &mut cov, &mut wasm, &mut thin);
         assert_eq!(cov, vec!["demo".to_string()], "coverage bucket");
         assert_eq!(wasm, vec!["demo".to_string()], "wasm bucket");
+        assert!(
+            thin.is_empty(),
+            "a crate whose coverage never ran has no margin to be thin"
+        );
 
         // ★ `--skip-coverage` silences criterion 1 and MUST NOT silence 7:
         // there is no flag that asks for a sweep without the WASM check.
-        let (mut cov, mut wasm) = (Vec::new(), Vec::new());
-        record_sweep_buckets("demo", &both_skipped, true, &mut cov, &mut wasm);
+        let (mut cov, mut wasm, mut thin) = (Vec::new(), Vec::new(), Vec::new());
+        record_sweep_buckets("demo", &both_skipped, true, &mut cov, &mut wasm, &mut thin);
         assert!(
             cov.is_empty(),
             "skip-coverage makes an unmeasured 1 the instruction"
@@ -8516,15 +8744,51 @@ test result: FAILED. 786 passed; 1 failed; 2 ignored; 0 measured; 0 filtered out
 
         // ★ Negative control: a report where both criteria RAN records nothing,
         // so the assertions above track the grades rather than being pinned.
-        let (mut cov, mut wasm) = (Vec::new(), Vec::new());
+        let (mut cov, mut wasm, mut thin) = (Vec::new(), Vec::new(), Vec::new());
         record_sweep_buckets(
             "demo",
             &report_with_wasm(Grade::A),
             false,
             &mut cov,
             &mut wasm,
+            &mut thin,
         );
         assert!(cov.is_empty() && wasm.is_empty(), "nothing was skipped");
+        assert!(thin.is_empty(), "and nothing was near the bar");
+
+        // ★★ The third bucket, wired. `thin_margin_row` has its own tests; what
+        // this asserts is that the sweep CALLS it — the property a mutation
+        // deleting the call proved was missing, and the one this whole function
+        // exists to keep. Asserted alongside the two empty buckets beside it, so
+        // a fixture that reached nothing at all cannot read as a pass.
+        let (mut cov, mut wasm, mut thin) = (Vec::new(), Vec::new(), Vec::new());
+        record_sweep_buckets(
+            "on-the-bar",
+            &report_measuring(7500, 10_000),
+            false,
+            &mut cov,
+            &mut wasm,
+            &mut thin,
+        );
+        assert_eq!(thin.len(), 1, "a crate exactly on the bar is recorded");
+        assert!(thin[0].contains("on-the-bar"), "{}", thin[0]);
+        assert!(
+            cov.is_empty() && wasm.is_empty(),
+            "and it is not filed as unmeasured"
+        );
+
+        // Negative control for that arm: a comfortable crate records nothing,
+        // so the assertion above tracks the margin rather than the call.
+        let (mut cov, mut wasm, mut thin) = (Vec::new(), Vec::new(), Vec::new());
+        record_sweep_buckets(
+            "comfortable",
+            &report_measuring(9800, 10_000),
+            false,
+            &mut cov,
+            &mut wasm,
+            &mut thin,
+        );
+        assert!(thin.is_empty(), "98 % is nowhere near the bar");
     }
 
     /// ★★ An unrunnable rustup is not evidence of anything, and must not be
@@ -8850,6 +9114,222 @@ test result: FAILED. 786 passed; 1 failed; 2 ignored; 0 measured; 0 filtered out
             triage_tail(&worst, 0),
             Some((4, 23)),
             "with nothing printed the tail is the whole list, 10+7+4+2"
+        );
+    }
+
+    // === margin — how far the crate is from the bar that gates ===
+
+    /// A report whose Coverage criterion measured `covered` of `total`.
+    ///
+    /// Carries the real `CriterionResult` from [`coverage_result`] rather than
+    /// a hand-written one, so the criterion and the margin below it are
+    /// derived from the same numbers — a fixture that set them separately
+    /// could assert they agree while proving only that I typed them to match.
+    fn report_measuring(covered: u64, total: u64) -> GradeReport {
+        let m = measurement(covered, total, 0, 0);
+        let criterion = coverage_result(&m, &HeavyRun::ok(), false, &[], &[]);
+        GradeReport {
+            criteria: vec![criterion],
+            coverage: Some(m),
+            ..empty_report()
+        }
+    }
+
+    /// The band boundary, from both sides. `noise_floor` lines of headroom is
+    /// still thin — the spread was *observed* at that width, so a margin equal
+    /// to it can be spent by a re-run.
+    #[test]
+    fn the_thin_band_includes_its_own_edge_and_stops_one_line_later() {
+        let at_edge = CoverageMargin {
+            lines: 6,
+            noise_floor: 6,
+        };
+        assert!(at_edge.is_thin(), "a margin the size of the spread is thin");
+
+        let past_edge = CoverageMargin {
+            lines: 7,
+            noise_floor: 6,
+        };
+        assert!(!past_edge.is_thin());
+
+        let exactly_on_the_bar = CoverageMargin {
+            lines: 0,
+            noise_floor: 6,
+        };
+        assert!(exactly_on_the_bar.is_thin());
+    }
+
+    /// ⚠ A crate BELOW the bar is not "thin", it is failing, and the two want
+    /// different words. Without this the `<= noise_floor` half of the rule
+    /// would catch every crate from `-6` upward and the sweep would list
+    /// failures under a heading that calls them passes.
+    #[test]
+    fn a_crate_under_the_bar_is_never_thin() {
+        for lines in [-1i64, -6, -2862] {
+            assert!(
+                !CoverageMargin {
+                    lines,
+                    noise_floor: 6
+                }
+                .is_thin(),
+                "{lines} is short of the bar, not near it"
+            );
+        }
+    }
+
+    /// The three bands have to be distinguishable by a reader, which means the
+    /// words have to differ — not just the numbers.
+    ///
+    /// ★ The assertion that matters is the last one: a thin margin must NOT
+    /// read like a wide one. Both are "above the bar", both print a positive
+    /// line count, and a `describe` that dropped the warning clause would
+    /// still produce a sentence that is true and useless.
+    #[test]
+    fn each_margin_band_says_something_different() {
+        let short = CoverageMargin {
+            lines: -25,
+            noise_floor: 6,
+        }
+        .describe();
+        assert!(short.contains("25 more covered line(s)"), "{short}");
+        assert!(!short.contains("headroom"), "{short}");
+
+        let wide = CoverageMargin {
+            lines: 400,
+            noise_floor: 6,
+        }
+        .describe();
+        assert!(wide.contains("400 line(s) of headroom"), "{wide}");
+
+        let thin = CoverageMargin {
+            lines: 3,
+            noise_floor: 6,
+        }
+        .describe();
+        assert!(thin.contains("could grade B"), "{thin}");
+        assert!(thin.contains("±6-line"), "{thin}");
+        // ⚠ Every clause here is a `\`-continued literal, and a continuation
+        // that loses its backslash leaves the source indentation INSIDE the
+        // string — a run of spaces mid-sentence that compiles, passes every
+        // assertion about what the text contains, and prints wrong. It
+        // happened to `thin_margin_row` while this was being written.
+        for band in [short.as_str(), wide.as_str(), thin.as_str()] {
+            assert!(!band.contains("  "), "collapsed continuation: {band:?}");
+        }
+        assert!(
+            thin != wide.replace("400", "3"),
+            "a thin margin must not read like a wide one: {thin}"
+        );
+    }
+
+    /// The margin reaches the detail line — the surface a person reading
+    /// `xtask grade` actually sees.
+    ///
+    /// Driven through [`coverage_result`] rather than by calling `describe`
+    /// twice, because the property is that the clause is APPENDED. A test that
+    /// re-derives the string it expects would pass with the `push_str` deleted.
+    #[test]
+    fn the_coverage_detail_line_says_how_far_from_the_bar_the_crate_is() {
+        // 76/100 — one line above the 75-line bar, inside the 6-line floor.
+        let thin = coverage_result(
+            &measurement(76, 100, 0, 0),
+            &HeavyRun::ok(),
+            false,
+            &[],
+            &[],
+        );
+        assert_eq!(thin.grade, Grade::A);
+        assert!(
+            thin.measured_detail.contains("could grade B"),
+            "{}",
+            thin.measured_detail
+        );
+
+        // 50/100 — 25 lines short.
+        let failing = coverage_result(
+            &measurement(50, 100, 0, 0),
+            &HeavyRun::ok(),
+            false,
+            &[],
+            &[],
+        );
+        assert_eq!(failing.grade, Grade::C);
+        assert!(
+            failing
+                .measured_detail
+                .contains("25 more covered line(s) would reach the 75% A bar"),
+            "{}",
+            failing.measured_detail
+        );
+
+        // A crate with nothing to measure has no bar to be near, and must not
+        // print a margin of zero as though it were sitting on one.
+        let empty = coverage_result(&measurement(0, 0, 0, 0), &HeavyRun::ok(), false, &[], &[]);
+        assert!(
+            !empty.measured_detail.contains("bar"),
+            "{}",
+            empty.measured_detail
+        );
+    }
+
+    /// The sweep lists a crate that passed by less than the spread, and only
+    /// such a crate.
+    ///
+    /// Both faces: a comfortable crate and a failing one must produce no row,
+    /// or the block that is meant to hold three names holds three hundred and
+    /// nobody reads it.
+    #[test]
+    fn the_sweep_names_a_thin_crate_and_no_other() {
+        // 7500/10000 — exactly on the bar, and the band for a crate this size
+        // is 40 lines, so this is as thin as it gets.
+        let thin = thin_margin_row("mesh-types", &report_measuring(7500, 10_000));
+        let thin = thin.expect("a crate exactly on the bar is thin");
+        assert!(thin.contains("mesh-types"), "{thin}");
+        assert!(thin.contains("0 covered line(s) above"), "{thin}");
+        // Same guard as `each_margin_band_says_something_different`, and this
+        // is the row it was written for. Past the six-space indent the sweep
+        // block prints with, nothing should hold a double space.
+        assert!(
+            !thin.trim_start().contains("  "),
+            "collapsed continuation: {thin:?}"
+        );
+
+        assert_eq!(
+            thin_margin_row("comfortable", &report_measuring(9800, 10_000)),
+            None,
+            "98 % is nowhere near the bar"
+        );
+        assert_eq!(
+            thin_margin_row("failing", &report_measuring(5000, 10_000)),
+            None,
+            "a crate under the bar belongs in the failure list, not here"
+        );
+        assert_eq!(
+            thin_margin_row("unmeasured", &empty_report()),
+            None,
+            "no measurement, no margin"
+        );
+    }
+
+    /// `--json` publishes the margin, and OMITS the key when nothing was
+    /// measured.
+    ///
+    /// ⚠ Absence is the contract, not `null` and not `0`: zero is a real
+    /// margin — a crate sitting exactly on the bar — so a consumer that read a
+    /// sentinel `0` as "not measured" would silently ignore the single most
+    /// at-risk crate in the sweep.
+    #[test]
+    fn the_json_carries_the_margin_and_omits_it_when_nothing_was_measured() {
+        let json = report_json(&report_measuring(7500, 10_000));
+        let margin = &json["coverage_margin"];
+        assert_eq!(margin["lines"], 0);
+        assert_eq!(margin["noise_floor"], 40);
+        assert_eq!(margin["thin"], true);
+
+        let unmeasured = report_json(&empty_report());
+        assert!(
+            unmeasured.get("coverage_margin").is_none(),
+            "an unmeasured crate must not carry the key at all: {unmeasured}"
         );
     }
 }

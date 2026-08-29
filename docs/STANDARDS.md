@@ -379,6 +379,39 @@ disagree, the grade is the one that answers "how much of what I ship is tested".
 
 **Exceptions:** None for Layer 0 crates.
 
+### The letter has no gradient — read the MARGIN
+
+`A` covers everything from 75.0 % to 89.9 %, so a crate can drift to the edge of
+the bar, or across it, with the report printing the same letter throughout.
+Criterion 1 therefore also reports **margin in covered lines** — how many
+covered lines the crate holds above the 75 % bar, or how many more it would need
+to reach it:
+
+```
+89.6% production line coverage (8201/9146 lines; …); 1341 line(s) of headroom above the 75% A bar
+```
+
+Lines rather than percentage points, because lines are the unit the work is done
+in and the unit the measurement's own error is expressed in. The bar itself is
+`covered × 100 ≥ 75 × total`, decided in integers, so the letter and the margin
+cannot disagree about which side of it a crate is on.
+
+⚠ **Coverage is not reproducible to the line.** Two runs over an unchanged tree
+return different numbers: `cf-codesign` moved 1416 → 1410 of 1622 (6 lines), and
+`sim-soft` spanned 8198–8216 of 9146 across five runs (18 lines) on 2026-08-29.
+The band is sized as **0.4 % of production lines, or 6 lines, whichever is
+larger** — the proportional term for large crates, the floor for small ones,
+neither observation contradicted. Suspected cause, UNVERIFIED: solver tests
+iterate to convergence, so thread scheduling changes which lines execute, which
+would put the drift in the tests rather than in `llvm-cov`.
+
+A crate passing by **less than that band** is reported as thin — by
+`grade <crate>` in criterion 1's detail line, by `grade-all` in a block naming
+every such crate, and by `--json` as `coverage_margin.thin`. **Reported, not
+gated.** A thin margin is a real `A`; the only claim is that a re-run on the same
+tree could take it away. Gating on it is a policy call that should follow the
+data, and this reporting is where the data comes from.
+
 ### Example Test Structure
 
 ```rust
