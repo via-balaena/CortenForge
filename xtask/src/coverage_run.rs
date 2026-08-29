@@ -269,6 +269,26 @@ impl TestBinary {
     }
 }
 
+/// A census, plus the check that its recommendation actually holds.
+///
+/// ★★ TWO-SIDED ON PURPOSE. Per-binary `marginal_lines` can UNDERCOUNT a set:
+/// a line covered by exactly two skip candidates has marginal 0 for each and is
+/// still lost when both go. So the per-binary numbers propose a set and
+/// [`Census::joint_covered`] — one merge of everything except that whole set —
+/// disposes. When they disagree, the joint number is the true one and the
+/// recommendation is wrong.
+#[derive(Default)]
+pub(crate) struct Census {
+    pub rows: Vec<Contribution>,
+    /// Production lines covered by the full run.
+    pub full_covered: u64,
+    /// Production lines covered with every zero-marginal binary skipped AT
+    /// ONCE. Equal to `full_covered` exactly when the skip set is free.
+    pub joint_covered: u64,
+    /// Instrumented seconds the skip set holds.
+    pub skipped_seconds: f64,
+}
+
 /// One binary's price in the coverage pass: what it cost, and what only it covered.
 pub(crate) struct Contribution {
     /// Target name, hash suffix dropped.
@@ -498,7 +518,7 @@ pub(crate) fn census_coverage(
     workspace_root: &Path,
     quiet: bool,
     threshold_seconds: f64,
-) -> Result<Vec<Contribution>> {
+) -> Result<Census> {
     measure_inner(
         sh,
         crate_name,
@@ -517,7 +537,7 @@ fn measure_inner(
     workspace_root: &Path,
     quiet: bool,
     census: Option<f64>,
-) -> Result<(CoverageRun, Vec<Contribution>)> {
+) -> Result<(CoverageRun, Census)> {
     let profdata_tool = llvm_tool(sh, "llvm-profdata")?;
     let cov_tool = llvm_tool(sh, "llvm-cov")?;
     let xtask_exe = std::env::current_exe().context("cannot locate the running xtask binary")?;
@@ -664,41 +684,44 @@ fn measure_inner(
     }
 
     let contributions = match census {
-        None => Vec::new(),
+        None => Census::default(),
         Some(threshold) => {
             let full = crate::coverage::production_coverage(&json, crate_path).covered;
-            let mut out = Vec::new();
-            for t in timings.iter().filter(|t| t.seconds >= threshold) {
-                // Everything EXCEPT this binary's profiles. `covered` can only
-                // fall, so the difference is exactly the lines nothing else
-                // reached.
+            // Covered lines with every profile whose prefix is in `drop`
+            // removed. One merge, one export; `covered` can only fall.
+            let covered_without = |drop: &[String]| -> Result<u64> {
                 let keep: Vec<PathBuf> = raw
                     .iter()
                     .filter(|p| {
-                        !p.file_name()
-                            .and_then(|n| n.to_str())
-                            .is_some_and(|n| n.starts_with(&format!("{}__", t.key)))
+                        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                        !drop.iter().any(|k| name.starts_with(&format!("{k}__")))
                     })
                     .cloned()
                     .collect();
-                let sans_covered = if keep.is_empty() {
-                    0
-                } else {
-                    let sans = target_dir.join("sans.profdata");
-                    let keep_ref = &keep;
-                    cmd!(sh, "{profdata_tool} merge -sparse {keep_ref...} -o {sans}")
-                        .run()
-                        .context("llvm-profdata merge failed for the census subset")?;
-                    let sans_export = cmd!(
-                        sh,
-                        "{cov_tool} export --format=text --instr-profile={sans} {first_exe} {objects...}"
-                    )
-                    .read()
-                    .context("llvm-cov export failed for the census subset")?;
-                    let sans_json: serde_json::Value = serde_json::from_str(&sans_export)
-                        .context("census subset export was not valid JSON")?;
-                    crate::coverage::production_coverage(&sans_json, crate_path).covered
-                };
+                if keep.is_empty() {
+                    return Ok(0);
+                }
+                let sans = target_dir.join("sans.profdata");
+                let keep_ref = &keep;
+                cmd!(sh, "{profdata_tool} merge -sparse {keep_ref...} -o {sans}")
+                    .run()
+                    .context("llvm-profdata merge failed for the census subset")?;
+                let sans_export = cmd!(
+                    sh,
+                    "{cov_tool} export --format=text --instr-profile={sans} {first_exe} {objects...}"
+                )
+                .read()
+                .context("llvm-cov export failed for the census subset")?;
+                let sans_json: serde_json::Value = serde_json::from_str(&sans_export)
+                    .context("census subset export was not valid JSON")?;
+                Ok(crate::coverage::production_coverage(&sans_json, crate_path).covered)
+            };
+
+            let mut out = Vec::new();
+            for t in timings.iter().filter(|t| t.seconds >= threshold) {
+                // Everything EXCEPT this binary's profiles: the difference is
+                // exactly the lines nothing else reached.
+                let sans_covered = covered_without(std::slice::from_ref(&t.key))?;
                 out.push(Contribution {
                     name: t.name.clone(),
                     seconds: t.seconds,
@@ -711,7 +734,29 @@ fn measure_inner(
                     .cmp(&b.marginal_lines)
                     .then(b.seconds.total_cmp(&a.seconds))
             });
-            out
+
+            // ★★ The set the rows PROPOSE, verified as a set. Skipping N
+            // binaries is not the sum of skipping each: a line covered by
+            // exactly two of them is marginal-0 for both and lost when both go.
+            let free: Vec<&Contribution> = out.iter().filter(|c| c.marginal_lines == 0).collect();
+            let keys: Vec<String> = free
+                .iter()
+                .filter_map(|c| timings.iter().find(|t| t.name == c.name))
+                .map(|t| t.key.clone())
+                .collect();
+            let skipped_seconds = free.iter().map(|c| c.seconds).sum();
+            let joint_covered = if keys.is_empty() {
+                full
+            } else {
+                covered_without(&keys)?
+            };
+
+            Census {
+                rows: out,
+                full_covered: full,
+                joint_covered,
+                skipped_seconds,
+            }
         }
     };
 

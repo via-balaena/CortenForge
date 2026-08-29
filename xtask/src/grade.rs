@@ -1831,7 +1831,7 @@ pub fn run_census(crate_name: &str, threshold_seconds: f64) -> Result<()> {
     eprintln!("  coverage census: {crate_name} (binaries >= {threshold_seconds:.0}s)…");
     eprintln!();
 
-    let rows = crate::coverage_run::census_coverage(
+    let census = crate::coverage_run::census_coverage(
         &sh,
         crate_name,
         &crate_path,
@@ -1840,34 +1840,47 @@ pub fn run_census(crate_name: &str, threshold_seconds: f64) -> Result<()> {
         threshold_seconds,
     )?;
 
-    if rows.is_empty() {
-        println!("no binary reached {threshold_seconds:.0}s — nothing worth excluding");
+    if census.rows.is_empty() {
+        println!("no binary reached {threshold_seconds:.0}s — nothing worth skipping");
         return Ok(());
     }
 
     println!();
     println!("  {:>9}  {:>8}  binary", "seconds", "marginal");
-    let mut free = 0.0;
-    for r in &rows {
+    for r in &census.rows {
         let flag = if r.marginal_lines == 0 {
             "  ← free to skip"
         } else {
             ""
         };
-        if r.marginal_lines == 0 {
-            free += r.seconds;
-        }
         println!(
             "  {:>9.1}  {:>8}  {}{}",
             r.seconds, r.marginal_lines, r.name, flag
         );
     }
+
+    let free_count = census.rows.iter().filter(|r| r.marginal_lines == 0).count();
+    let lost = census.full_covered.saturating_sub(census.joint_covered);
     println!();
     println!(
-        "  {:.1} s ({:.1} min) is skippable with NO change to the reported number.",
-        free,
-        free / 60.0
+        "  full run covers {} line(s); skipping those {free_count} together covers {}.",
+        census.full_covered, census.joint_covered
     );
+    if lost == 0 {
+        println!(
+            "  ✓ VERIFIED AS A SET — {:.1} s ({:.1} min) skippable, reported number unchanged.",
+            census.skipped_seconds,
+            census.skipped_seconds / 60.0
+        );
+    } else {
+        // The per-binary column proposed this set and the joint merge refused
+        // it: these lines are covered only by COMBINATIONS, so each candidate
+        // reads marginal-0 on its own.
+        println!(
+            "  ⚠ NOT FREE AS A SET — {lost} line(s) are covered only by combinations of \
+             these binaries, so each reads marginal-0 alone. Do not skip them together."
+        );
+    }
     Ok(())
 }
 
