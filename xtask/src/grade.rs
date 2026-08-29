@@ -5710,6 +5710,42 @@ serde = \"1\"
             r.measured_detail
         );
         assert!(r.measured_detail.contains("skipped NOTHING"));
+        // ⚠ The message is assembled with a `\` line continuation, which eats
+        // the newline AND the next line's indentation. A substring check on one
+        // half would pass while the seam between them read "rename,or naming".
+        assert!(
+            r.measured_detail.contains(
+                "stale after a rename, or naming the lib target, which is never skippable?"
+            ),
+            "the continuation mangled the message: {}",
+            r.measured_detail
+        );
+    }
+
+    /// ⚠ The stale list gets the same treatment as the skipped one, and needs
+    /// its own gate to say so: a mutation dropping `stale.sort()` survived
+    /// every other test here, because the only sort anyone had asserted was the
+    /// one on `skipped`. Both halves of the line are read together, so both are
+    /// alphabetical or neither is worth trusting.
+    #[test]
+    fn stale_skip_entries_are_named_in_a_stable_order() {
+        let r = coverage_result(
+            &measurement(80, 100, 0, 0),
+            &HeavyRun::ok(),
+            false,
+            &[],
+            &[
+                "zeta_gone".to_string(),
+                "alpha_gone".to_string(),
+                "middle_gone".to_string(),
+            ],
+        );
+        let at = |n: &str| r.measured_detail.find(n).expect("named");
+        assert!(
+            at("alpha_gone") < at("middle_gone") && at("middle_gone") < at("zeta_gone"),
+            "stale list must print sorted: {}",
+            r.measured_detail
+        );
     }
 
     /// ⚠ Guards the ARGUMENT ORDER at the seam, not the verdict. `skipped` and
