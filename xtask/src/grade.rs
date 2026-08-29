@@ -289,6 +289,71 @@ pub(crate) fn classify_crate(crate_path: &str, cargo_toml_text: &str) -> CratePr
     }
 }
 
+/// Verify the `integration-only` opt-in against the crate it exempts.
+///
+/// The profile means "no inline `#[cfg(test)]` modules, or no `src/` at all"
+/// (see [`CrateProfile::IntegrationOnly`]). [`classify_crate`] grants it from
+/// the manifest STRING and never touches the filesystem, so until this ran a
+/// crate exempted itself from the Coverage criterion by asserting a fact
+/// nothing checked. Two did, and neither was caught for months: `sim-soft`
+/// (74 files under src/, 341 `#[test]`) and `sim-therm-env` (9). Measured once
+/// the exemptions were removed, both were already passing — 89.6 % and 82.0 %
+/// — so the waiver had been buying nothing and hiding the FEM core's only
+/// coverage number.
+///
+/// Its sibling [`has_lib_target`] below learned this same lesson earlier: it
+/// replaced a path GUESS with a real filesystem check.
+///
+/// ★★ THE SEAM EXISTS SO THE DECISION IS GATEABLE, exactly as in
+/// [`profile_skip_criterion_with`]. `offenders` is `FnOnce` and LAZY — it walks
+/// and parses every file under `src/`, and no crate outside this one profile
+/// should pay for that. Written inline, both the profile guard and the laziness
+/// would be unreachable from a unit test, and a mutation deleting either would
+/// leave the suite green.
+///
+/// ★ What no unit test reaches is the CALL in [`evaluate`], so that is covered
+/// by an end-to-end check run and RECORDED rather than assumed (2026-08-28).
+/// Re-adding the opt-in to `sim-therm-env` made `xtask grade sim-therm-env`
+/// exit 1 naming `sim/L0/therm-env/src/builder.rs`; `xtask grade
+/// cf-design-tests`, which has no `src/` at all, still graded A as
+/// Integration-only. Both directions, because a check that rejected every
+/// opt-in would pass the first half of that and be worthless.
+fn verify_integration_only_with(
+    profile: CrateProfile,
+    package: &str,
+    offenders: impl FnOnce() -> Vec<PathBuf>,
+) -> Result<()> {
+    if profile != CrateProfile::IntegrationOnly {
+        return Ok(());
+    }
+    let offenders = offenders();
+    if offenders.is_empty() {
+        return Ok(());
+    }
+
+    // Named, not counted. A count tells a reader the claim is false; the paths
+    // tell them which files to move or which line to delete.
+    const SHOWN: usize = 5;
+    let mut named: Vec<String> = offenders
+        .iter()
+        .take(SHOWN)
+        .map(|p| format!("      {}", p.display()))
+        .collect();
+    if let Some(rest) = offenders.len().checked_sub(SHOWN).filter(|n| *n > 0) {
+        named.push(format!("      … and {rest} more"));
+    }
+
+    bail!(
+        "{package} declares `grading_profile = \"integration-only\"`, which waives the \
+         Coverage criterion for a crate whose src/ holds no inline tests — but {} file(s) \
+         under its own src/ define `#[test]` functions:\n{}\n\
+         Remove the opt-in from its Cargo.toml so the crate is measured, or move those \
+         tests to tests/.",
+        offenders.len(),
+        named.join("\n"),
+    );
+}
+
 /// Whether the crate actually has a library target, by Cargo's own rule: an
 /// explicit `[lib]` table, or auto-discovery of `src/lib.rs`.
 ///
@@ -410,6 +475,16 @@ pub fn evaluate(sh: &Shell, crate_name: &str, verbosity: Verbosity) -> Result<Gr
     let crate_dir = Path::new(&workspace_root).join(&crate_path);
     let cargo_toml_text = std::fs::read_to_string(crate_dir.join("Cargo.toml")).unwrap_or_default();
     let profile = classify_crate(&crate_path, &cargo_toml_text);
+
+    // ⚠ BEFORE any criterion runs: an exemption nobody verified must not reach
+    // the report. Cheap enough (one syn pass over src/) to gate every PR, which
+    // is what makes it worth having — PR CI passes `--skip-coverage`, so the
+    // Coverage criterion never runs there and this is the only place a false
+    // opt-in can be caught before the weekly job.
+    verify_integration_only_with(profile, crate_name, || {
+        crate::test_reachability::src_files_with_inline_tests(&crate_dir, crate_name)
+    })?;
+
     let has_lib = has_lib_target(&crate_dir, &cargo_toml_text);
 
     if !verbosity.quiet {
@@ -5456,6 +5531,47 @@ serde = \"1\"
             classify_crate("sim/L0/therm-env", cargo_toml),
             CrateProfile::IntegrationOnly,
         );
+    }
+
+    #[test]
+    fn integration_only_opt_in_is_rejected_when_src_holds_inline_tests() {
+        let err = verify_integration_only_with(CrateProfile::IntegrationOnly, "sim-soft", || {
+            vec![
+                PathBuf::from("src/material/silicone_table.rs"),
+                PathBuf::from("src/solver/backward_euler/newton.rs"),
+            ]
+        })
+        .expect_err("a claim contradicted by src/ must not be granted");
+        let msg = err.to_string();
+        assert!(msg.contains("sim-soft"), "must name the crate: {msg}");
+        // Named, not merely counted — the paths are the actionable half.
+        assert!(
+            msg.contains("silicone_table.rs"),
+            "must name the files: {msg}"
+        );
+        assert!(msg.contains("newton.rs"), "must name the files: {msg}");
+    }
+
+    #[test]
+    fn integration_only_opt_in_is_granted_when_src_holds_none() {
+        verify_integration_only_with(CrateProfile::IntegrationOnly, "cf-design-tests", Vec::new)
+            .expect("an honest opt-in must still be granted");
+    }
+
+    /// ⚠ NEGATIVE CONTROL for the profile guard AND for the laziness. The walk
+    /// parses every file under `src/`; a crate that never claimed the profile
+    /// must not pay for it. A mutation deleting the `profile !=` guard makes
+    /// this crate walk, find an offender and error — which the two tests above
+    /// would not notice.
+    #[test]
+    fn a_crate_that_never_opted_in_is_never_walked() {
+        let mut walked = false;
+        verify_integration_only_with(CrateProfile::Layer0, "sim-core", || {
+            walked = true;
+            vec![PathBuf::from("src/lib.rs")]
+        })
+        .expect("Layer0 makes no integration-only claim to verify");
+        assert!(!walked, "walked src/ for a crate that never opted in");
     }
 
     #[test]
