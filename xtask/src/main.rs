@@ -113,6 +113,22 @@ enum Commands {
         skip_coverage: bool,
     },
 
+    /// Price each expensive test binary in the coverage pass: instrumented
+    /// wall time, and the production lines only that binary covers.
+    ///
+    /// Costs one full instrumented run. Use it to decide which binaries a
+    /// coverage pass can skip without moving the reported number.
+    CoverageCensus {
+        /// The crate to census (e.g., "sim-soft")
+        #[arg(name = "CRATE")]
+        crate_name: String,
+
+        /// Only price binaries at or above this many instrumented seconds.
+        /// Cheaper binaries are not worth an export, nor worth skipping.
+        #[arg(long, default_value_t = 30.0)]
+        threshold: f64,
+    },
+
     /// Grade every workspace crate and aggregate into a single summary
     GradeAll {
         /// Suppress per-crate progress; show only the final summary
@@ -313,6 +329,11 @@ fn main() -> Result<()> {
                 skip_coverage,
             },
         ),
+        Commands::CoverageCensus {
+            crate_name,
+            threshold,
+        } => grade::run_census(&crate_name, threshold),
+
         Commands::GradeAll {
             quiet,
             verbose,

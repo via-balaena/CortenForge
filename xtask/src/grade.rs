@@ -1809,6 +1809,68 @@ pub(crate) fn find_workspace_root(sh: &Shell) -> Result<String> {
     Ok(root.to_string_lossy().to_string())
 }
 
+/// `cargo xtask coverage-census <crate>` — price each expensive test binary.
+///
+/// ★ The instrument behind any decision to skip a binary in the coverage pass.
+/// A binary with `marginal 0` can be skipped and the reported percentage does
+/// not move by one line; a binary with `marginal > 0` cannot, because dropping
+/// it makes lines it solely covers read as UNTESTED. That distinction is the
+/// whole reason this exists, and it is measured here rather than assumed —
+/// the same failure the `integration-only` opt-in made by asserting instead of
+/// checking.
+///
+/// ⚠ Costs one full instrumented run of the crate (~62 min for `sim-soft`), so
+/// it is a deliberate command, not part of `grade`.
+pub fn run_census(crate_name: &str, threshold_seconds: f64) -> Result<()> {
+    let sh = Shell::new()?;
+    let workspace_root = find_workspace_root(&sh)?;
+    sh.change_dir(&workspace_root);
+    let crate_path = find_crate_path(&sh, crate_name)?;
+
+    eprintln!();
+    eprintln!("  coverage census: {crate_name} (binaries >= {threshold_seconds:.0}s)…");
+    eprintln!();
+
+    let rows = crate::coverage_run::census_coverage(
+        &sh,
+        crate_name,
+        &crate_path,
+        Path::new(&workspace_root),
+        true,
+        threshold_seconds,
+    )?;
+
+    if rows.is_empty() {
+        println!("no binary reached {threshold_seconds:.0}s — nothing worth excluding");
+        return Ok(());
+    }
+
+    println!();
+    println!("  {:>9}  {:>8}  binary", "seconds", "marginal");
+    let mut free = 0.0;
+    for r in &rows {
+        let flag = if r.marginal_lines == 0 {
+            "  ← free to skip"
+        } else {
+            ""
+        };
+        if r.marginal_lines == 0 {
+            free += r.seconds;
+        }
+        println!(
+            "  {:>9.1}  {:>8}  {}{}",
+            r.seconds, r.marginal_lines, r.name, flag
+        );
+    }
+    println!();
+    println!(
+        "  {:.1} s ({:.1} min) is skippable with NO change to the reported number.",
+        free,
+        free / 60.0
+    );
+    Ok(())
+}
+
 /// Find the path to a crate within the workspace.
 ///
 /// Uses `cargo metadata` to look up the crate's manifest path by package

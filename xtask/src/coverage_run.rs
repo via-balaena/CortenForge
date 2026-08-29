@@ -242,6 +242,55 @@ struct TestBinary {
     is_lib: bool,
 }
 
+impl TestBinary {
+    /// Filename-safe key identifying this binary's profiles on disk.
+    ///
+    /// Cargo already makes the file stem unique per target with its hash
+    /// suffix, so this needs no disambiguation of its own. Used as the
+    /// `LLVM_PROFILE_FILE` prefix so a later merge can select or exclude one
+    /// binary's profiles by name.
+    fn profile_key(&self) -> String {
+        self.path.file_name().map_or_else(
+            || "unknown".to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        )
+    }
+
+    /// The target name a reader recognises — the key with cargo's hash suffix
+    /// dropped, so `bonded_layer_indentation-1a2b3c` reads as
+    /// `bonded_layer_indentation`.
+    ///
+    /// ⚠ Splits on the LAST `-` because that is the only one cargo puts there:
+    /// a target name's own dashes are already `_` in the file stem.
+    fn display_name(&self) -> String {
+        let key = self.profile_key();
+        key.rsplit_once('-')
+            .map_or_else(|| key.clone(), |(head, _)| head.to_string())
+    }
+}
+
+/// One binary's price in the coverage pass: what it cost, and what only it covered.
+pub(crate) struct Contribution {
+    /// Target name, hash suffix dropped.
+    pub name: String,
+    /// Instrumented wall seconds.
+    pub seconds: f64,
+    /// Production lines this binary covered that NOTHING else did. Zero means
+    /// excluding it leaves the reported coverage bit-identical.
+    pub marginal_lines: u64,
+}
+
+/// What one binary cost in the instrumented run, keyed to its profiles.
+struct BinaryTiming {
+    /// Matches the `LLVM_PROFILE_FILE` prefix its profiles were written under.
+    key: String,
+    /// The same binary as a reader names it — see [`TestBinary::display_name`].
+    name: String,
+    /// Wall seconds. Instrumented, so 7x-1226x the uninstrumented figure
+    /// depending on how much arithmetic the binary does per line executed.
+    seconds: f64,
+}
+
 /// Every test executable cargo reported building, from `--message-format=json`.
 ///
 /// Cargo emits one `compiler-artifact` line per unit; only test binaries carry
@@ -425,6 +474,50 @@ pub(crate) fn measure_coverage(
     workspace_root: &Path,
     quiet: bool,
 ) -> Result<CoverageRun> {
+    measure_inner(sh, crate_name, crate_path, workspace_root, quiet, None).map(|(run, _)| run)
+}
+
+/// Price every binary that costs more than `threshold_seconds`: what it took,
+/// and what it uniquely covered.
+///
+/// ★ Exists because "exclude the slow tests from coverage" is only safe for a
+/// binary whose MARGINAL contribution is zero — exclude one that solely covers
+/// a line and the report calls that line untested, which is a lie in the
+/// report rather than the silence the `integration-only` opt-in produced, but a
+/// lie either way. This measures which is which instead of asserting it, and is
+/// re-runnable, so the exclusion list stays derived rather than inherited.
+///
+/// ⚠ One full instrumented run — for `sim-soft` that is ~62 min. The subset
+/// arithmetic afterwards is cheap (a merge and an export per candidate), which
+/// is why the threshold matters: a binary too cheap to be worth excluding is
+/// not worth an export either.
+pub(crate) fn census_coverage(
+    sh: &Shell,
+    crate_name: &str,
+    crate_path: &str,
+    workspace_root: &Path,
+    quiet: bool,
+    threshold_seconds: f64,
+) -> Result<Vec<Contribution>> {
+    measure_inner(
+        sh,
+        crate_name,
+        crate_path,
+        workspace_root,
+        quiet,
+        Some(threshold_seconds),
+    )
+    .map(|(_, c)| c)
+}
+
+fn measure_inner(
+    sh: &Shell,
+    crate_name: &str,
+    crate_path: &str,
+    workspace_root: &Path,
+    quiet: bool,
+    census: Option<f64>,
+) -> Result<(CoverageRun, Vec<Contribution>)> {
     let profdata_tool = llvm_tool(sh, "llvm-profdata")?;
     let cov_tool = llvm_tool(sh, "llvm-cov")?;
     let xtask_exe = std::env::current_exe().context("cannot locate the running xtask binary")?;
@@ -470,9 +563,22 @@ pub(crate) fn measure_coverage(
     // integration test that exercises production code the unit tests miss
     // credits those lines exactly as a unit test would.
     let mut tests_passed = true;
+    let mut timings: Vec<BinaryTiming> = Vec::new();
     for bin in &exes {
+        // ★ PREFIXED PER BINARY, not a single shared `cf-%p-%m`. The merge
+        // below still globs the whole directory, so the measured number is
+        // unchanged — but the profiles stay ATTRIBUTABLE, which is what lets
+        // `coverage-census` merge every subset except one binary and price
+        // that binary's unique contribution. Without the prefix the profiles
+        // are an undifferentiated pile and the only answerable question is
+        // "all or nothing".
+        let key = bin.profile_key();
         let mut test_run = Command::new(&bin.path);
-        test_run.env("LLVM_PROFILE_FILE", profraw_dir.join("cf-%p-%m.profraw"));
+        test_run.env(
+            "LLVM_PROFILE_FILE",
+            profraw_dir.join(format!("{key}__cf-%p-%m.profraw")),
+        );
+        let started = std::time::Instant::now();
         let ok = if quiet {
             test_run
                 .output()
@@ -504,6 +610,11 @@ pub(crate) fn measure_coverage(
         if bin.is_lib {
             tests_passed &= ok;
         }
+        timings.push(BinaryTiming {
+            key: bin.profile_key(),
+            name: bin.display_name(),
+            seconds: started.elapsed().as_secs_f64(),
+        });
     }
 
     let raw: Vec<PathBuf> = std::fs::read_dir(&profraw_dir)
@@ -518,8 +629,9 @@ pub(crate) fn measure_coverage(
         );
     }
 
+    let raw_all = &raw;
     let merged = target_dir.join("merged.profdata");
-    cmd!(sh, "{profdata_tool} merge -sparse {raw...} -o {merged}")
+    cmd!(sh, "{profdata_tool} merge -sparse {raw_all...} -o {merged}")
         .run()
         .context("llvm-profdata merge failed")?;
 
@@ -533,9 +645,10 @@ pub(crate) fn measure_coverage(
         .iter()
         .flat_map(|b| ["-object".to_string(), b.path.display().to_string()])
         .collect();
+    let objects = &object_args;
     let export = cmd!(
         sh,
-        "{cov_tool} export --format=text --instr-profile={merged} {first_exe} {object_args...}"
+        "{cov_tool} export --format=text --instr-profile={merged} {first_exe} {objects...}"
     )
     .read()
     .context("llvm-cov export failed")?;
@@ -550,7 +663,59 @@ pub(crate) fn measure_coverage(
         );
     }
 
-    Ok(CoverageRun { json, tests_passed })
+    let contributions = match census {
+        None => Vec::new(),
+        Some(threshold) => {
+            let full = crate::coverage::production_coverage(&json, crate_path).covered;
+            let mut out = Vec::new();
+            for t in timings.iter().filter(|t| t.seconds >= threshold) {
+                // Everything EXCEPT this binary's profiles. `covered` can only
+                // fall, so the difference is exactly the lines nothing else
+                // reached.
+                let keep: Vec<PathBuf> = raw
+                    .iter()
+                    .filter(|p| {
+                        !p.file_name()
+                            .and_then(|n| n.to_str())
+                            .is_some_and(|n| n.starts_with(&format!("{}__", t.key)))
+                    })
+                    .cloned()
+                    .collect();
+                let sans_covered = if keep.is_empty() {
+                    0
+                } else {
+                    let sans = target_dir.join("sans.profdata");
+                    let keep_ref = &keep;
+                    cmd!(sh, "{profdata_tool} merge -sparse {keep_ref...} -o {sans}")
+                        .run()
+                        .context("llvm-profdata merge failed for the census subset")?;
+                    let sans_export = cmd!(
+                        sh,
+                        "{cov_tool} export --format=text --instr-profile={sans} {first_exe} {objects...}"
+                    )
+                    .read()
+                    .context("llvm-cov export failed for the census subset")?;
+                    let sans_json: serde_json::Value = serde_json::from_str(&sans_export)
+                        .context("census subset export was not valid JSON")?;
+                    crate::coverage::production_coverage(&sans_json, crate_path).covered
+                };
+                out.push(Contribution {
+                    name: t.name.clone(),
+                    seconds: t.seconds,
+                    marginal_lines: full.saturating_sub(sans_covered),
+                });
+            }
+            // Cheapest exclusions first: zero marginal, most time saved.
+            out.sort_by(|a, b| {
+                a.marginal_lines
+                    .cmp(&b.marginal_lines)
+                    .then(b.seconds.total_cmp(&a.seconds))
+            });
+            out
+        }
+    };
+
+    Ok((CoverageRun { json, tests_passed }, contributions))
 }
 
 #[cfg(test)]
