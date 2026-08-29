@@ -2220,9 +2220,22 @@ fn write_per_layer_sections_v2(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    // The crate denies `panic` in production; the note-assertion helpers
+    // below panic deliberately to print the offending markdown when a
+    // sheet is missing an expected phrase — a bare `unwrap` there would
+    // report "None" and hide which sheet failed.
+    #![allow(clippy::panic, clippy::unwrap_used)]
 
-    use super::{TDS_LOOKUP_PLACEHOLDER, cure_protocol_cells, layer_position_label};
+    use super::{
+        TDS_LOOKUP_PLACEHOLDER, cure_protocol_cells, layer_position_label, write_v2_assembly_note,
+        write_v2_cup_half_clamping_note, write_v2_plug_anchor_note,
+    };
+    use crate::bolt_pattern::{BoltPatternKind, BoltPatternSpec};
+    use crate::dowel_hole::{DowelHoleKind, DowelHoleSpec};
+    use crate::gasket_mold::GasketKind;
+    use crate::plug::{PlugPinKind, PlugPinSpec};
+    use crate::ribbon::{Ribbon, SplitNormal};
+    use nalgebra::{Point3, Vector3};
 
     #[test]
     fn cure_protocol_cells_resolves_known_anchor() {
@@ -2272,5 +2285,176 @@ mod tests {
         // 2 layers: no middle position.
         assert_eq!(layer_position_label(0, 2), "innermost");
         assert_eq!(layer_position_label(1, 2), "outermost");
+    }
+
+    // ----- v2 bench-instruction notes ---------------------------------
+    //
+    // These four `write_v2_*_note` fns are the most-EXECUTED code in
+    // cf-cast (629 lines per pour) and were its least-tested: they emit
+    // `procedure.md`, the sheet a human follows at the bench. A wrong
+    // number here passes every mesh gate in the repo, because the
+    // procedure is not a mesh.
+
+    /// Pull the first `f64` that appears immediately before `unit_phrase`.
+    fn number_before(md: &str, unit_phrase: &str) -> f64 {
+        let at = md
+            .find(unit_phrase)
+            .unwrap_or_else(|| panic!("phrase {unit_phrase:?} missing from:\n{md}"));
+        let head: String = md[..at]
+            .chars()
+            .rev()
+            .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == ' ' || *c == '~')
+            .collect();
+        head.chars()
+            .rev()
+            .collect::<String>()
+            .trim()
+            .trim_start_matches('~')
+            .trim()
+            .parse()
+            .unwrap_or_else(|e| panic!("no number before {unit_phrase:?}: {e}"))
+    }
+
+    fn dowelled_ribbon() -> Ribbon {
+        let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
+        let split = SplitNormal::new(Vector3::new(0.0, 0.0, 1.0)).unwrap();
+        let mut ribbon = Ribbon::new(centerline, split).unwrap();
+        ribbon.dowel_hole = DowelHoleKind::Auto(DowelHoleSpec::iter1());
+        ribbon
+    }
+
+    /// ★ The load-bearing one. The prose states a dowel LENGTH and an
+    /// insertion depth "into each cup-half"; the dowel spans both halves,
+    /// so length must be exactly twice the per-half insertion. This is a
+    /// property of the SHEET, checked without pinning any constant.
+    ///
+    /// It is also a regression: a cold-read on 2026-05-27 caught this
+    /// prose understating tip slack by half by counting the dowel's
+    /// insertion slack and forgetting the hole's axial slack. With only
+    /// one counted the sheet reads 9.0 mm long / 5.0 mm inserted, and
+    /// 2 x 5.0 != 9.0 — this assertion fails.
+    #[test]
+    fn assembly_note_dowel_length_is_twice_its_per_half_insertion() {
+        let mut md = String::new();
+        write_v2_assembly_note(&mut md, &dowelled_ribbon());
+
+        let length = number_before(&md, " mm long");
+        let insert = number_before(&md, " mm into each cup-half");
+        assert!(
+            (length - 2.0 * insert).abs() < 1e-9,
+            "sheet says {length} mm long but {insert} mm into each half — \
+             a dowel spanning two halves cannot be shorter than 2x its \
+             insertion. Slack double-count regression?"
+        );
+    }
+
+    /// The hole must be the dowel plus clearance on BOTH sides, and the
+    /// replacement-rod length must span both halves. Both are read back
+    /// out of the emitted sheet and checked against the spec the ribbon
+    /// was built with, not against the formulas that produced them.
+    #[test]
+    fn assembly_note_hole_and_rod_dimensions_follow_the_dowel_spec() {
+        let spec = DowelHoleSpec::iter1();
+        let mut md = String::new();
+        write_v2_assembly_note(&mut md, &dowelled_ribbon());
+
+        let hole_d = number_before(&md, " mm Ø");
+        let expected_hole = 2.0_f64.mul_add(spec.clearance_m * 1000.0, spec.diameter_m * 1000.0);
+        assert!(
+            (hole_d - expected_hole).abs() < 1e-9,
+            "hole Ø {hole_d} != dowel Ø + 2x clearance ({expected_hole})"
+        );
+
+        let rod = number_before(&md, " mm; the symmetric");
+        assert!(
+            (rod - spec.depth_m * 2000.0).abs() < 1e-9,
+            "replacement rod {rod} mm must span both halves ({} mm)",
+            spec.depth_m * 2000.0
+        );
+    }
+
+    /// Two-sided: with no dowel holes the sheet must NOT invent
+    /// registration hardware, and must tell the user to hand-align.
+    #[test]
+    fn assembly_note_without_dowels_directs_hand_alignment_and_invents_no_hardware() {
+        let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
+        let split = SplitNormal::new(Vector3::new(0.0, 0.0, 1.0)).unwrap();
+        let ribbon = Ribbon::new(centerline, split).unwrap();
+        assert!(
+            ribbon.dowel_hole.spec().is_none(),
+            "fixture should have no dowels"
+        );
+
+        let mut md = String::new();
+        write_v2_assembly_note(&mut md, &ribbon);
+
+        assert!(
+            md.contains("align the pieces by hand"),
+            "no hand-align instruction:\n{md}"
+        );
+        assert!(
+            !md.contains("Print `dowel.stl` first."),
+            "sheet tells the user to print dowels that this cast has none of"
+        );
+        assert!(
+            !md.contains(" mm Ø"),
+            "sheet quotes a hole diameter with no holes"
+        );
+    }
+
+    /// The socket must be the pin plus its diametral clearance —
+    /// otherwise the printed plug lock will not seat.
+    #[test]
+    fn plug_anchor_socket_is_the_pin_plus_its_diametral_clearance() {
+        let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
+        let split = SplitNormal::new(Vector3::new(0.0, 0.0, 1.0)).unwrap();
+        let mut ribbon = Ribbon::new(centerline, split).unwrap();
+        let spec = PlugPinSpec::iter1();
+        // read the geometry off the spec BEFORE it moves into the ribbon
+        let base_lateral_mm = spec.lock_spec.pin_base_half_extents_m.x * 2000.0;
+        let diametral_mm = spec.lock_spec.diametral_clearance_m * 1000.0;
+        ribbon.plug_pins = PlugPinKind::Axial(spec);
+
+        let mut md = String::new();
+        write_v2_plug_anchor_note(&mut md, &ribbon);
+
+        let socket = base_lateral_mm + diametral_mm;
+        assert!(
+            md.contains(&format!("{socket:.2}")),
+            "sheet never quotes the socket size {socket:.2} mm \
+             (pin {base_lateral_mm:.2} + clearance {diametral_mm:.2}):\n{md}"
+        );
+    }
+
+    /// The clamping section's HEADER is what tells the user which
+    /// protocol they are on. All three combinations must be distinct and
+    /// must name the hardware actually present.
+    #[test]
+    fn cup_half_clamping_header_names_the_hardware_that_is_present() {
+        let build = |gasket: GasketKind, bolts: BoltPatternKind| {
+            let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
+            let split = SplitNormal::new(Vector3::new(0.0, 0.0, 1.0)).unwrap();
+            let mut r = Ribbon::new(centerline, split).unwrap();
+            r.gasket = gasket;
+            r.bolt_pattern = bolts;
+            let mut md = String::new();
+            write_v2_cup_half_clamping_note(&mut md, &r);
+            md.lines().next().unwrap_or_default().to_string()
+        };
+
+        let bare = build(GasketKind::None, BoltPatternKind::None);
+        let bolted = build(
+            GasketKind::None,
+            BoltPatternKind::Auto(BoltPatternSpec::iter1()),
+        );
+        assert!(bare.contains("Gasketless"), "bare header was {bare:?}");
+        assert!(
+            bolted.contains("Bolt-Pattern"),
+            "bolted header was {bolted:?}"
+        );
+        assert_ne!(
+            bare, bolted,
+            "two different builds got the same clamping header"
+        );
     }
 }
