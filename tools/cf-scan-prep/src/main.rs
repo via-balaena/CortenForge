@@ -3688,7 +3688,6 @@ mod tests {
     use mesh_types::Point3;
 
     // ----- StlUnits conversion factors -------------------------------
-
     #[test]
     fn stl_units_mm_returns_one_thousandth() {
         assert!((StlUnits::Mm.to_meters_factor() - 0.001).abs() < f64::EPSILON);
@@ -3707,8 +3706,6 @@ mod tests {
         assert_eq!(StlUnits::Inch.to_meters_factor(), 0.0254);
     }
 
-    // ----- scale_vertices_in_place -----------------------------------
-
     fn one_triangle_at(scale: f64) -> IndexedMesh {
         let mut mesh = IndexedMesh::with_capacity(3, 1);
         mesh.vertices.push(Point3::new(scale, 0.0, 0.0));
@@ -3718,6 +3715,7 @@ mod tests {
         mesh
     }
 
+    // ----- scale_vertices_in_place -----------------------------------
     /// `factor = 0.0254` (the `inch → m` case) on a unit-inch triangle
     /// lands on the NIST-exact meter coordinate; no FP drift beyond f64
     /// representation of the constant itself.
@@ -3731,7 +3729,6 @@ mod tests {
     }
 
     // ----- CLI parsing ------------------------------------------------
-
     /// Default unit is `Mm` per the workspace convention surfaced in
     /// the Scan Info panel. Pinned because changing the default
     /// silently 1000×-shifts every cleaned STL.
@@ -3760,7 +3757,6 @@ mod tests {
     }
 
     // ----- StlUnits::panel_label spec-string pins --------------------
-
     /// Spec-exact string for `mm` units. Changing this drift-checks the
     /// Scan Info panel against the spec mockup (`docs/SCAN_PREP_DESIGN.md`
     /// §Panel specifications §1). ASCII `->` (not Unicode `→`) because
@@ -3784,7 +3780,6 @@ mod tests {
     }
 
     // ----- ScanInfo::from_loaded -------------------------------------
-
     /// `from_loaded` populates every field: basename + full path,
     /// vertex/face counts, units label, and mm-scaled AABB extents. The
     /// mesh is built in meters (post unit conversion) and the expected
@@ -3805,7 +3800,6 @@ mod tests {
     }
 
     // ----- SimplifyState defaults ------------------------------------
-
     /// Default target face count is `SIMPLIFY_TARGET_DEFAULT` (200k)
     /// per spec §Architectural decisions §Simplify algorithm. Pinned so
     /// silent default-shift cascades don't break the iter-1 fixture's
@@ -3830,7 +3824,6 @@ mod tests {
     }
 
     // ----- format_count_with_separators ------------------------------
-
     /// Achievement-message format helper. Used in the "Reduced X -> Y
     /// faces in Zs" status text where Y needs the precise meshopt-
     /// achieved face count (not the human_count `k`/`M` summary).
@@ -3845,8 +3838,7 @@ mod tests {
         assert_eq!(format_count_with_separators(1_234_567), "1,234,567");
     }
 
-    // ----- simplify_mesh end-to-end (small fixture) ------------------
-
+    // ----- leveling_euler_deg + auto_level_to_floor ------------------
     #[test]
     fn leveling_euler_aligns_tilted_cap_normal_to_vertical() {
         // The iter-1 clone's cap normal (~5° lean toward -Z).
@@ -3909,7 +3901,6 @@ mod tests {
     }
 
     // ----- ReorientState + physics_quat_to_bevy ----------------------
-
     /// Default state is all-zeros (identity rotation). Pinned because
     /// changing the default silently rotates every loaded scan from
     /// the moment of load.
@@ -3954,7 +3945,6 @@ mod tests {
     }
 
     // ----- physics_quat_to_bevy (continued) -------------------------
-
     /// Identity physics quaternion maps to identity Bevy quaternion
     /// under the `UpAxis::PlusZ` swap. Sanity check that the
     /// scalar-form conversion preserves identity.
@@ -4019,7 +4009,6 @@ mod tests {
     }
 
     // ----- RecenterState + rotated_aabb_around_centroid_physics_mm --
-
     /// Default state is all-zeros (no translation). Pinned because
     /// changing the default would silently translate every loaded
     /// scan from the moment of load.
@@ -4052,19 +4041,14 @@ mod tests {
         assert!((world.y - 3.0).abs() < 1e-5);
     }
 
-    // ----- bake_vertex_with_pivot -----------------------------------
-
     // CSP.4c — ClipState + clip_mesh_against_world_z tests removed
     // alongside the feature.
-
-    // ----- Cap algorithms (plane fit / normal / centerline) ---------
 
     // ---- plane-mesh intersection + polygon centroid subroutines ----
 
     // ---- New algorithm regression tests (docs/CENTERLINE_SPEC.md §6.1) ----
 
     // ----- Centerline trim (CSP.4b) ----------------------------------
-
     /// CenterlineTrimState defaults are zero — the trim is opt-in.
     /// Pins the "no trim by default" semantic so future refactors
     /// don't accidentally enable a trim baseline.
@@ -4076,7 +4060,6 @@ mod tests {
     }
 
     // ----- build_overlay_lengths -------------------------------------
-
     /// `build_overlay_lengths` derives the axis arrow length from the
     /// scaled diagonal (`0.6 × scaled_diagonal`) + applies the
     /// `UpAxis::PlusZ` swap to the bbox center/dims (physics Y/Z swap
@@ -4129,7 +4112,6 @@ mod tests {
         );
     }
 
-    // ----- stable_inward_tangent --------------------------------------
     //
     // Helper introduced 2026-05-16 to fix `apply_reconstruction`'s
     // K-ring extrusion direction (previously derived from the
@@ -4138,6 +4120,7 @@ mod tests {
     // scan). Pinned here so future refactors don't silently
     // revert to the single-segment tangent.
 
+    // ----- save path: prep.toml + cleaned mesh + output dir ----------
     /// `build_prep_toml_string` produces a string that re-parses as
     /// TOML and contains every spec-promised top-level block under
     /// the v1.0 completion schema (CSP.1 rename, 2026-05-15). Pins

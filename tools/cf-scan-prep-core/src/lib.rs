@@ -4157,7 +4157,7 @@ mod tests {
         assert_eq!(human_count(3_352_068), "3.35M");
     }
 
-    // ----- SimplifyState defaults ------------------------------------
+    // ----- SIMPLIFY_TARGET_MIN / MAX ---------------------------------
     /// Slider bounds spec-pin (1k–1M) per spec §Panel specifications §2.
     /// Changing either bound silently shifts the slider's logarithmic
     /// midpoint (where the 200k default sits in the track), so worth
@@ -4337,7 +4337,7 @@ mod tests {
         assert!((rotated.z - 1.0).abs() < 1e-9, "rotated.z = {}", rotated.z);
     }
 
-    // ----- RecenterState + rotated_aabb_around_centroid_physics_mm --
+    // ----- rotated_aabb_around_centroid_physics_mm -------------------
     /// Identity rotation: `rotated_aabb_around_centroid_physics_mm`
     /// returns the raw AABB scaled to mm with no axis permutation.
     #[test]
@@ -5321,7 +5321,7 @@ mod tests {
         assert_eq!(smooth_polyline(&three_pt, 0), three_pt);
     }
 
-    // ----- build_overlay_lengths -------------------------------------
+    // ----- simplify_mesh post-process --------------------------------
     /// `simplify_mesh` post-process strips unreferenced vertices, so
     /// every vertex in the output is touched by at least one face. The
     /// converse (every face references valid vertex indices) is
@@ -5346,7 +5346,7 @@ mod tests {
         );
     }
 
-    // ----- Save panel helpers ----------------------------------------
+    // ----- triangulate_polygon_2d_earclip ----------------------------
     /// Ear-clipping a unit square produces exactly 2 triangles
     /// covering the full polygon area (4 area units of 0.5 each).
     /// Validates the basic ear-clip + signed-area path.
