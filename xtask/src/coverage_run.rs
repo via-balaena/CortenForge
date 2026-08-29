@@ -807,6 +807,9 @@ fn measure_inner(
                 a.marginal_lines
                     .cmp(&b.marginal_lines)
                     .then(b.seconds.total_cmp(&a.seconds))
+                    // Final tiebreak on name so two rows that cost and
+                    // contribute the same do not swap places between runs.
+                    .then_with(|| a.name.cmp(&b.name))
             });
 
             // ★★ The set the rows PROPOSE, verified as a set. Skipping N
@@ -830,6 +833,10 @@ fn measure_inner(
         }
     };
 
+    // ⚠ Deliberately NOT sorted here. `coverage_result` sorts what it prints,
+    // so the stable-output property lives in the one function that renders it
+    // and is reachable from a unit test. Sorting in both places would be two
+    // claims on one invariant, free to drift.
     let skip_unmatched: Vec<String> = skip_list
         .iter()
         .filter(|w| !skipped.contains(w))

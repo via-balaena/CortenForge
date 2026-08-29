@@ -2374,18 +2374,27 @@ fn coverage_result(
     // measured these as contributing no unique line, but that was measured on
     // one tree — a reader comparing this number to another run needs to know
     // the pass was not the whole suite.
+    // ⚠ SORTED HERE, not by the caller. These arrive in cargo's ARTIFACT order,
+    // which is neither the manifest's nor alphabetical nor stable between runs,
+    // and this line gets diffed across runs — unsorted, an unchanged tree reads
+    // as changed. Same rule `FileCoverage` follows for its per-file rows.
     if !skipped.is_empty() {
+        let mut names = skipped.to_vec();
+        names.sort();
         detail.push_str(&format!(
             "; {} binary(ies) skipped per `coverage_skip_binaries` ({})",
-            skipped.len(),
-            skipped.join(", ")
+            names.len(),
+            names.join(", ")
         ));
     }
     if !skip_unmatched.is_empty() {
+        let mut stale = skip_unmatched.to_vec();
+        stale.sort();
         detail.push_str(&format!(
-            " ⚠ {} skip entry(ies) matched NO binary ({}) — stale after a rename?",
-            skip_unmatched.len(),
-            skip_unmatched.join(", ")
+            " ⚠ {} skip entry(ies) skipped NOTHING ({}) — stale after a rename, \
+             or naming the lib target, which is never skippable?",
+            stale.len(),
+            stale.join(", ")
         ));
     }
     if !measured.unparsed.is_empty() {
@@ -5700,7 +5709,60 @@ serde = \"1\"
             "a stale skip entry must be named: {}",
             r.measured_detail
         );
-        assert!(r.measured_detail.contains("matched NO binary"));
+        assert!(r.measured_detail.contains("skipped NOTHING"));
+    }
+
+    /// ⚠ Guards the ARGUMENT ORDER at the seam, not the verdict. `skipped` and
+    /// `skip_unmatched` are adjacent `&[String]`, so swapping them compiles and
+    /// every test that drives `coverage_result` directly still passes — the
+    /// same hole a mutation once found in the `report_only` lookup one level up.
+    /// Only a call through `coverage_result_for` with two DISTINCT lists can
+    /// tell them apart.
+    #[test]
+    fn the_seam_does_not_swap_skipped_for_unmatched() {
+        let r = coverage_result_for(
+            "sim-soft",
+            &measurement(80, 100, 0, 0),
+            &HeavyRun::ok(),
+            &["actually_skipped".to_string()],
+            &["never_matched".to_string()],
+        );
+        let d = &r.measured_detail;
+        let skipped_at = d.find("actually_skipped").expect("skipped named");
+        let stale_at = d.find("never_matched").expect("stale named");
+        assert!(
+            d[..skipped_at].contains("skipped per `coverage_skip_binaries`"),
+            "the skipped list must be introduced as the skipped list: {d}"
+        );
+        assert!(
+            d[..stale_at].contains("skipped NOTHING"),
+            "the stale list must be introduced as the stale one: {d}"
+        );
+        assert!(skipped_at < stale_at, "order swapped: {d}");
+    }
+
+    /// ⚠ The detail line is diffed across runs. `skipped` arrives in cargo's
+    /// ARTIFACT order, so without a sort an unchanged tree prints a different
+    /// line each time and reads as a change.
+    #[test]
+    fn skipped_binaries_are_named_in_a_stable_order() {
+        let r = coverage_result(
+            &measurement(80, 100, 0, 0),
+            &HeavyRun::ok(),
+            false,
+            &[
+                "zeta".to_string(),
+                "alpha".to_string(),
+                "middle".to_string(),
+            ],
+            &[],
+        );
+        let at = |n: &str| r.measured_detail.find(n).expect("named");
+        assert!(
+            at("alpha") < at("middle") && at("middle") < at("zeta"),
+            "skipped list must print sorted: {}",
+            r.measured_detail
+        );
     }
 
     /// ⚠ BOTH FACES. A detail that always warned would train the reader to
@@ -5720,7 +5782,7 @@ serde = \"1\"
             r.measured_detail
         );
         assert!(
-            !r.measured_detail.contains("matched NO binary"),
+            !r.measured_detail.contains("skipped NOTHING"),
             "no stale entries, so no warning: {}",
             r.measured_detail
         );
