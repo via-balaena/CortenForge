@@ -222,8 +222,8 @@ impl ProductionCoverage {
     ///
     /// So the spread scales with the crate rather than sitting at a constant.
     /// A flat 6 lines is a third of sim-soft's observed drift; a flat 0.4 % is
-    /// three lines on an 800-line crate, under the smallest drift anyone has
-    /// actually seen. Hence **0.4 %, or 6 lines, whichever is larger** — the
+    /// four lines on an 800-line crate (3.2, rounded up), under the smallest
+    /// drift anyone has actually seen. Hence **0.4 %, or 6 lines, whichever is larger** — the
     /// proportional term sizes the big crates, the floor sizes the small ones,
     /// and neither measurement is contradicted.
     ///
