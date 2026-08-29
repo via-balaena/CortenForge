@@ -2289,6 +2289,59 @@ mod tests {
     }
 
     // ----- v2 bench-instruction notes ---------------------------------
+    /// The two gasketed arms had no test and had never been read. Both are
+    /// sound (checked by emitting them, 2026-08-29); this pins the
+    /// properties a reader depends on so a later edit cannot quietly drop
+    /// them: the section must announce the gasket, and the clamp method it
+    /// prescribes must match whether a flange exists to clamp against.
+    #[test]
+    fn gasketed_clamping_arms_announce_the_gasket_and_match_the_flange() {
+        let build = |flange: FlangeKind| {
+            let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
+            let split = SplitNormal::new(Vector3::new(0.0, 0.0, 1.0)).unwrap();
+            let mut r = Ribbon::new(centerline, split).unwrap();
+            r.flange = flange;
+            r.gasket = GasketKind::Mold(crate::gasket_mold::GasketSpec::iter1());
+            let mut md = String::new();
+            write_v2_cup_half_clamping_note(&mut md, &r);
+            md
+        };
+
+        let no_flange = build(FlangeKind::None);
+        let flanged = build(FlangeKind::Demand(DemandFlangeSpec::iter1()));
+
+        for (label, md) in [("no-flange", &no_flange), ("flanged", &flanged)] {
+            let head = md.lines().next().unwrap_or_default();
+            // ⚠ `contains("Gasket")` is satisfied by "(Gasketless)" — the very
+            // header this must exclude. A mutation collapsing the gasket
+            // header to the gasketless one SURVIVED that assertion.
+            assert!(
+                head.contains("Gasket Installation"),
+                "{label} gasketed cast does not announce the gasket: {head:?}"
+            );
+            assert!(
+                !head.contains("Gasketless"),
+                "{label} gasketed cast is headed as gasketless: {head:?}"
+            );
+            assert!(
+                md.contains("gasket"),
+                "{label} gasketed body never mentions the gasket:\n{md}"
+            );
+        }
+
+        // With no flange there is no flat grip surface, so the sheet must say
+        // hand-clamp; with the demand flange it must not, because the land and
+        // bosses are what gets clamped.
+        assert!(
+            no_flange.contains("hand-clamped"),
+            "a gasket with no flange still needs a hand-clamp instruction:\n{no_flange}"
+        );
+        assert!(
+            !flanged.contains("must be hand-clamped"),
+            "a flanged gasketed cast should clamp the bosses, not be hand-clamped:\n{flanged}"
+        );
+    }
+
     //
     // These four `write_v2_*_note` fns are the most-EXECUTED code in
     // cf-cast (629 lines per pour) and were its least-tested: they emit
