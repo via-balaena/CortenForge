@@ -132,7 +132,9 @@ It is listed apart from these four precisely because it is not one of them.
 
 A crate with **no lib target** has nothing to instrument ("(bin-only)");
 a crate opting into `grading_profile = "integration-only"`
-declares it has no testable lib API; a crate whose files map no lines reports
+declares it has no testable lib API — a declaration `xtask grade` now VERIFIES
+against the crate's own `src/` and REFUSES when it is false, rather than
+granting it from the manifest string; a crate whose files map no lines reports
 "(no production lines)"; and a crate whose `src/` declares **no items at all
 outside `#[cfg(test)]`** reports the same. The last is the `*-benches` shape — a
 lib that is only a doc comment, with every benchmark in `benches/*.rs` under
