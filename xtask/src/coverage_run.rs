@@ -114,6 +114,13 @@ pub(crate) struct CoverageRun {
     /// Binaries the manifest's `coverage_skip_binaries` kept out of this pass,
     /// by target name. Reported so the number is never quoted without them.
     pub skipped: Vec<String>,
+    /// Entries in `coverage_skip_binaries` that matched NO binary cargo built.
+    ///
+    /// ⚠ Reported because the failure is otherwise SILENT and permanent: rename
+    /// a test file and its stale entry stops matching, the binary quietly
+    /// rejoins the pass, and the only symptom is a slow job nobody attributes.
+    /// An entry that does nothing is a defect, not a harmless leftover.
+    pub skip_unmatched: Vec<String>,
     /// The llvm-cov JSON export, in the same shape `cargo llvm-cov --json`
     /// produced — [`crate::coverage::production_coverage`] reads it unchanged.
     pub json: serde_json::Value,
@@ -325,6 +332,14 @@ pub(crate) struct Census {
 pub(crate) struct Contribution {
     /// Target name, hash suffix dropped.
     pub name: String,
+    /// The profile prefix this binary's `.profraw` were written under.
+    ///
+    /// ⚠ Carried rather than looked back up by name. Resolving the skip set
+    /// through a name match needed a fallible `find`, and a miss there would
+    /// have dropped a binary from the set being verified — the joint check
+    /// would then confirm a SMALLER set than the one it reported, and pass. A
+    /// verifier with a silent hole is worse than no verifier.
+    key: String,
     /// Instrumented wall seconds.
     pub seconds: f64,
     /// Production lines this binary covered that NOTHING else did. Zero means
@@ -609,6 +624,15 @@ fn measure_inner(
         bail!("cargo reported no --lib test binary; the pass/fail gate would be vacuous");
     }
 
+    // ★★ SKIPPING A BINARY DOES NOT MOVE THE DENOMINATOR. `exes` is unchanged
+    // below, so llvm-cov still receives every binary as `-object` and the line
+    // universe comes from the OBJECTS, not from which profiles were merged. A
+    // skipped binary therefore removes lines from the numerator only if nothing
+    // else covered them — which is exactly what `coverage-census` measures, and
+    // why 8201/9146 came back identical with ten binaries skipped. Were the
+    // universe profile-derived instead, a skip would drop lines from BOTH sides
+    // and inflate the percentage.
+    //
     // `%p`/`%m` keep one process's profile separate from another's. Each test
     // binary is threaded but single-process, so this is one file per binary.
     // They all land in the same directory and merge together below — an
@@ -773,6 +797,7 @@ fn measure_inner(
                 let sans_covered = covered_without(std::slice::from_ref(&t.key))?;
                 out.push(Contribution {
                     name: t.name.clone(),
+                    key: t.key.clone(),
                     seconds: t.seconds,
                     marginal_lines: full.saturating_sub(sans_covered),
                 });
@@ -788,11 +813,7 @@ fn measure_inner(
             // binaries is not the sum of skipping each: a line covered by
             // exactly two of them is marginal-0 for both and lost when both go.
             let free: Vec<&Contribution> = out.iter().filter(|c| c.marginal_lines == 0).collect();
-            let keys: Vec<String> = free
-                .iter()
-                .filter_map(|c| timings.iter().find(|t| t.name == c.name))
-                .map(|t| t.key.clone())
-                .collect();
+            let keys: Vec<String> = free.iter().map(|c| c.key.clone()).collect();
             let skipped_seconds = free.iter().map(|c| c.seconds).sum();
             let joint_covered = if keys.is_empty() {
                 full
@@ -809,11 +830,18 @@ fn measure_inner(
         }
     };
 
+    let skip_unmatched: Vec<String> = skip_list
+        .iter()
+        .filter(|w| !skipped.contains(w))
+        .cloned()
+        .collect();
+
     Ok((
         CoverageRun {
             json,
             tests_passed,
             skipped,
+            skip_unmatched,
         },
         contributions,
     ))

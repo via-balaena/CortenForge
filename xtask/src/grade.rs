@@ -2251,7 +2251,13 @@ fn grade_coverage(
     // test drives, and a 2026-08-16 mutation sweep proved it — the report-only
     // block, the library-only detail and the binary-target marker could each
     // be deleted whole with every test still green.
-    let result = coverage_result_for(crate_name, &measured, &heavy, &run.skipped);
+    let result = coverage_result_for(
+        crate_name,
+        &measured,
+        &heavy,
+        &run.skipped,
+        &run.skip_unmatched,
+    );
 
     // Unconditional, and still honours "a non-empty `files_out` means these
     // files were measured": the one verdict above that measured nothing is
@@ -2278,12 +2284,14 @@ fn coverage_result_for(
     measured: &crate::coverage::ProductionCoverage,
     heavy: &HeavyRun,
     skipped: &[String],
+    skip_unmatched: &[String],
 ) -> CriterionResult {
     coverage_result(
         measured,
         heavy,
         is_coverage_report_only(crate_name),
         skipped,
+        skip_unmatched,
     )
 }
 
@@ -2302,6 +2310,7 @@ fn coverage_result(
     heavy: &HeavyRun,
     report_only: bool,
     skipped: &[String],
+    skip_unmatched: &[String],
 ) -> CriterionResult {
     // No production lines is a different fact from bad coverage, and from a
     // broken report. Grading it F would send a reader hunting for uncovered
@@ -2370,6 +2379,13 @@ fn coverage_result(
             "; {} binary(ies) skipped per `coverage_skip_binaries` ({})",
             skipped.len(),
             skipped.join(", ")
+        ));
+    }
+    if !skip_unmatched.is_empty() {
+        detail.push_str(&format!(
+            " ⚠ {} skip entry(ies) matched NO binary ({}) — stale after a rename?",
+            skip_unmatched.len(),
+            skip_unmatched.join(", ")
         ));
     }
     if !measured.unparsed.is_empty() {
@@ -5667,6 +5683,49 @@ serde = \"1\"
         assert!(!walked, "walked src/ for a crate that never opted in");
     }
 
+    /// A skip entry matching no binary is a defect that is otherwise invisible:
+    /// the binary quietly rejoins the pass and the only symptom is a slow job.
+    /// Named in the detail so a reader can act on it.
+    #[test]
+    fn a_skip_entry_that_matched_no_binary_is_named() {
+        let r = coverage_result(
+            &measurement(80, 100, 0, 0),
+            &HeavyRun::ok(),
+            false,
+            &["kept".to_string()],
+            &["renamed_away".to_string()],
+        );
+        assert!(
+            r.measured_detail.contains("renamed_away"),
+            "a stale skip entry must be named: {}",
+            r.measured_detail
+        );
+        assert!(r.measured_detail.contains("matched NO binary"));
+    }
+
+    /// ⚠ BOTH FACES. A detail that always warned would train the reader to
+    /// ignore the warning, which is the same as not having one.
+    #[test]
+    fn a_skip_list_that_all_matched_produces_no_warning() {
+        let r = coverage_result(
+            &measurement(80, 100, 0, 0),
+            &HeavyRun::ok(),
+            false,
+            &["bonded_layer_indentation".to_string()],
+            &[],
+        );
+        assert!(
+            r.measured_detail.contains("bonded_layer_indentation"),
+            "what WAS skipped is always named: {}",
+            r.measured_detail
+        );
+        assert!(
+            !r.measured_detail.contains("matched NO binary"),
+            "no stale entries, so no warning: {}",
+            r.measured_detail
+        );
+    }
+
     #[test]
     fn coverage_skip_reason_integration_only_is_skipped() {
         // F.3: grade_coverage takes the early-return path for
@@ -6010,6 +6069,7 @@ serde = \"1\"
                 &HeavyRun::ok(),
                 false,
                 &[],
+                &[],
             );
             assert_eq!(r.grade, expect, "{covered}/100");
         }
@@ -6020,7 +6080,7 @@ serde = \"1\"
     /// is told the enforcement is deferred rather than absent.
     #[test]
     fn a_report_only_crate_still_reports_its_real_number() {
-        let r = coverage_result(&measurement(30, 100, 0, 0), &HeavyRun::ok(), true, &[]);
+        let r = coverage_result(&measurement(30, 100, 0, 0), &HeavyRun::ok(), true, &[], &[]);
 
         assert_eq!(r.grade, Grade::NotApplicable, "the threshold is waived");
         assert_eq!(r.result, "30.0% (report-only)");
@@ -6041,6 +6101,7 @@ serde = \"1\"
             &measurement(99, 100, 0, 0),
             &HeavyRun::failed_unnamed(),
             true,
+            &[],
             &[],
         );
 
@@ -6085,7 +6146,8 @@ serde = \"1\"
     #[test]
     fn the_deferral_is_looked_up_from_the_list_and_not_hardcoded() {
         for name in COVERAGE_REPORT_ONLY {
-            let r = coverage_result_for(name, &measurement(30, 100, 0, 0), &HeavyRun::ok(), &[]);
+            let r =
+                coverage_result_for(name, &measurement(30, 100, 0, 0), &HeavyRun::ok(), &[], &[]);
             assert_eq!(
                 r.grade,
                 Grade::NotApplicable,
@@ -6096,6 +6158,7 @@ serde = \"1\"
             "cf-viewer",
             &measurement(30, 100, 0, 0),
             &HeavyRun::ok(),
+            &[],
             &[],
         );
         assert_eq!(
@@ -6109,7 +6172,13 @@ serde = \"1\"
     /// about `heavy_passed` and not about the list being ineffective.
     #[test]
     fn an_undeferred_crate_grades_on_the_threshold() {
-        let r = coverage_result(&measurement(30, 100, 0, 0), &HeavyRun::ok(), false, &[]);
+        let r = coverage_result(
+            &measurement(30, 100, 0, 0),
+            &HeavyRun::ok(),
+            false,
+            &[],
+            &[],
+        );
         assert_eq!(r.grade, Grade::F);
         assert_eq!(r.result, "30.0%");
         assert!(!r.measured_detail.contains("REPORT-ONLY"));
@@ -6121,7 +6190,13 @@ serde = \"1\"
     fn the_detail_reports_the_library_only_figure_when_a_binary_contributed() {
         // 40/100 overall; the binary holds 50 lines, none covered, so the
         // library is 40/50 = 80 %.
-        let r = coverage_result(&measurement(40, 100, 0, 50), &HeavyRun::ok(), false, &[]);
+        let r = coverage_result(
+            &measurement(40, 100, 0, 50),
+            &HeavyRun::ok(),
+            false,
+            &[],
+            &[],
+        );
 
         assert!(
             r.measured_detail.contains("80.0% over library lines alone"),
@@ -6136,13 +6211,19 @@ serde = \"1\"
     /// same number twice under two names.
     #[test]
     fn the_detail_omits_the_library_figure_when_there_is_no_binary() {
-        let r = coverage_result(&measurement(40, 100, 0, 0), &HeavyRun::ok(), false, &[]);
+        let r = coverage_result(
+            &measurement(40, 100, 0, 0),
+            &HeavyRun::ok(),
+            false,
+            &[],
+            &[],
+        );
         assert!(!r.measured_detail.contains("library lines alone"));
     }
 
     #[test]
     fn a_measurement_with_no_production_lines_is_not_a_bad_grade() {
-        let r = coverage_result(&measurement(0, 0, 0, 0), &HeavyRun::ok(), false, &[]);
+        let r = coverage_result(&measurement(0, 0, 0, 0), &HeavyRun::ok(), false, &[], &[]);
         assert_eq!(r.grade, Grade::NotApplicable);
         assert_eq!(r.result, "(no production lines)");
     }
