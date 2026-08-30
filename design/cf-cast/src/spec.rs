@@ -4026,6 +4026,7 @@ mod tests {
                                             &mut cover,
                                         );
                                         assert_cross_refs_resolve(&md, &case);
+                                        assert_prose_is_well_formed(&md, &case);
                                     }
                                 }
                             }
@@ -4839,6 +4840,127 @@ mod tests {
             "expected each of the 4 gated configs x 2 layer counts x 2 modes \
              to require exactly one claim"
         );
+    }
+
+    /// ★★★ Mechanical prose damage, on every sheet the matrix renders.
+    ///
+    /// ⚠ This exists because THREE separate rounds of review found defects
+    /// that no test could see and only reading the rendered sheet caught: a
+    /// line continuation splitting a word ("the half- cone"), an article
+    /// wrong for a computed value ("a 18 mm"), a doubled preposition ("on the
+    /// Negative cup half on the seam face"), and a templated clause turning a
+    /// list into a comma splice. Each was introduced by a fix, shipped, and
+    /// found a round later.
+    ///
+    /// ★ Reading still finds what this cannot — contradictions between two
+    /// sentences that share no keyword. But the MECHANICAL half of "read the
+    /// artifact" is exactly what a machine should own, and every defect it
+    /// owns is one I cannot reintroduce.
+    fn assert_prose_is_well_formed(md: &str, case: &str) {
+        let chars: Vec<char> = md.chars().collect();
+        let flag = |what: &str, at: usize| -> String {
+            let lo = at.saturating_sub(60);
+            let hi = (at + 60).min(chars.len());
+            let ctx: String = chars[lo..hi].iter().collect();
+            format!("[{case}]\n{what}\n  …{}…", ctx.replace('\n', " "))
+        };
+
+        for (i, w) in chars.windows(3).enumerate() {
+            // A line continuation split a word: "half- cone".
+            assert!(
+                !(w[0].is_ascii_lowercase()
+                    && w[1] == '-'
+                    && w[2] == ' '
+                    && chars.get(i + 3).is_some_and(char::is_ascii_lowercase)),
+                "{}",
+                flag("a hyphenated word was split by a line continuation", i)
+            );
+            // Two spaces mid-sentence.
+            assert!(
+                !(w[0].is_ascii_alphabetic() && w[1] == ' ' && w[2] == ' '),
+                "{}",
+                flag("double space between words", i)
+            );
+            // Space before punctuation.
+            assert!(
+                !(w[0] == ' ' && matches!(w[1], ',' | ';' | ')')),
+                "{}",
+                flag("space before punctuation", i)
+            );
+        }
+
+        // "a" before a vowel-initial word, or before a number READ with one.
+        // ⚠ Not "u"/"eu" — "a unique", "a European" are correct.
+        for (idx, _) in md.match_indices(" a ") {
+            let tail = &md[idx + 3..];
+            let bad_vowel = tail.starts_with(['a', 'i', 'o'])
+                || (tail.starts_with('e') && !tail.starts_with("eu"));
+            let bad_number = ["8", "11", "18"].iter().any(|n| {
+                tail.starts_with(n) && !tail[n.len()..].starts_with(|c: char| c.is_ascii_digit())
+            });
+            assert!(
+                !(bad_vowel || bad_number),
+                "{}",
+                flag(
+                    "\"a\" before a vowel sound — should be \"an\"",
+                    md[..idx].chars().count()
+                )
+            );
+        }
+
+        // An unsubstituted Rust binding. `{N}` is a deliberate literal the
+        // bencher substitutes; `{gate_flash}` is a bug.
+        for (idx, _) in md.match_indices('{') {
+            let tail = &md[idx + 1..];
+            let name: String = tail
+                .chars()
+                .take_while(|c| c.is_ascii_lowercase() || *c == '_')
+                .collect();
+            assert!(
+                !(name.len() >= 3 && tail[name.len()..].starts_with('}')),
+                "{}",
+                flag(
+                    "an unsubstituted format binding reached the sheet",
+                    md[..idx].chars().count()
+                )
+            );
+        }
+
+        // The same preposition twice for one object: "lay it on the Negative
+        // cup half on the seam face". Templating a clause that already carries
+        // its own preposition into a sentence that supplies one produces this,
+        // and it reads as two places rather than one.
+        for (idx, _) in md.match_indices(" on the ") {
+            let span_end = (idx + 70).min(md.len());
+            let Some(span) = md.get(idx + 8..span_end) else {
+                continue;
+            };
+            // ⚠ Only when the two are DIRECTLY juxtaposed. "Pour leg on the
+            // Positive piece, vent leg on the Negative piece" is a correct
+            // two-object list; any comma or conjunction means a second object,
+            // not a second preposition for the same one.
+            let clause = span.split(['.', ';', ',', '\n']).next().unwrap_or("");
+            assert!(
+                !clause.contains(" on the ") || clause.contains(" and "),
+                "{}",
+                flag(
+                    "\"on the … on the\" — one object, two prepositions",
+                    md[..idx].chars().count()
+                )
+            );
+        }
+
+        // The same word twice in a row.
+        let words: Vec<&str> = md.split_whitespace().collect();
+        for pair in words.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            assert!(
+                !(a.len() > 2
+                    && a.eq_ignore_ascii_case(b)
+                    && a.chars().all(|c| c.is_ascii_alphabetic())),
+                "[{case}]\nthe word {a:?} is repeated"
+            );
+        }
     }
 
     /// Assert every backticked `#…` reference in `md` names a heading that is
