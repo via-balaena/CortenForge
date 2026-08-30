@@ -410,7 +410,7 @@ pub fn generate_procedure_markdown_v2_for_mode(
     );
     // ★ Computed ONCE, by running the PLANNER. Every prose site that mentions
     // bolts reads this one value, so the sheet and the carve cannot disagree.
-    // See `spec::bolts_carved_per_layer` for why a predicate over the config
+    // See `spec::carved_features` for why a predicate over the config
     // provably cannot answer this question.
     // ★ ONE planner run answers both features. Section-level prose (the §B
     // block, the clamping header, the cf-view checklist) describes the cast as
@@ -429,7 +429,13 @@ pub fn generate_procedure_markdown_v2_for_mode(
         CastMode::Bonded => write_header_v2_bonded(&mut md, spec, apex_pour),
     }
     write_cast_geometry_v2(&mut md, ribbon);
-    write_print_orientation_v2(&mut md, apex_pour, spec.layers.len(), has_dowels);
+    write_print_orientation_v2(
+        &mut md,
+        apex_pour,
+        spec.layers.len(),
+        has_dowels,
+        bolts_carved,
+    );
     write_chamfer_recipe_v2(&mut md);
     write_target_fdm_floor_v2(&mut md);
     write_cfview_sanity_check_v2(&mut md, apex_pour, has_dowels, bolts_carved);
@@ -929,6 +935,7 @@ fn write_print_orientation_v2(
     apex_pour: bool,
     layer_count: usize,
     has_dowels: bool,
+    bolts_carved: bool,
 ) {
     let _ = writeln!(md, "## Per-Piece Print Orientation");
     md.push('\n');
@@ -941,13 +948,13 @@ fn write_print_orientation_v2(
          section)."
     );
     md.push('\n');
-    write_print_orientation_cup_pieces(md, has_dowels);
+    write_print_orientation_cup_pieces(md, has_dowels, bolts_carved);
     write_print_orientation_plug_pieces(md);
     write_print_orientation_funnel_platform(md, apex_pour, layer_count);
     write_print_orientation_g4_revision(md);
 }
 
-fn write_print_orientation_cup_pieces(md: &mut String, has_dowels: bool) {
+fn write_print_orientation_cup_pieces(md: &mut String, has_dowels: bool, bolts_carved: bool) {
     let _ = writeln!(md, "### Cup pieces (`mold_layer_*_piece_{{0|1}}.stl`)");
     md.push('\n');
     let _ = writeln!(
@@ -971,13 +978,26 @@ fn write_print_orientation_cup_pieces(md: &mut String, has_dowels: bool) {
              seam-face-UP orientation carries over for dowel holes \
              without modification."
         );
+    } else if bolts_carved {
+        // ⚠ NOT "plain": the §B M5 clearance holes go through this same face,
+        // and the cf-view checklist below says so under a heading whose
+        // failure instruction is "do NOT proceed to print".
+        let _ = writeln!(
+            md,
+            "This cast carves no dowel holes, but the §B M5 bolt clearance \
+             holes DO pass through the seam face. Seam-face-UP is the \
+             orientation lock for exactly that reason — each hole opens \
+             upward as a recess, printable without internal support or \
+             bridging."
+        );
     } else {
         let _ = writeln!(
             md,
-            "This cast carves no dowel holes, so the \
-             seam face is plain; seam-face-UP is still the orientation lock \
-             (it is what keeps any seam-face feature printable as an \
-             upward-opening recess, without internal support or bridging)."
+            "This cast carves nothing into the seam face (no dowel holes, no \
+             bolt pattern), so it prints plain; seam-face-UP is still the \
+             orientation lock (it is what keeps any seam-face feature \
+             printable as an upward-opening recess, without support or \
+             bridging)."
         );
     }
     md.push('\n');
@@ -1541,6 +1561,19 @@ fn write_v2_assembly_note(
             // ⚠ Naming rubber bands / tape while §B says the M5 bolts ARE the
             // clamp is a third rival protocol for one joint — the same defect
             // the gasketed arm carries, in the arm nobody checked.
+            // ⚠ Say WHY there are no registration features. Stating
+            // `DowelHoleKind::None` as fact contradicts a `cast.toml` that
+            // enabled dowels but got none (no flange ⇒ no placement) — bolts
+            // got an explicit "requested but not carved" notice for exactly
+            // this; dowels had none.
+            let registration_status = if ribbon.dowel_hole.spec().is_some() {
+                "⚠ A `[dowel_hole]` pattern was requested but NO dowel holes \
+                 were carved (placement needs a flange), so this cast has no \
+                 integral registration features;"
+            } else {
+                "This cast has no integral registration features \
+                 (`DowelHoleKind::None`);"
+            };
             let hand_clamp = if bolts_carved {
                 " — the §B M5 through-bolts are the clamp (see below); \
                  no rubber bands or tape are needed"
@@ -1551,8 +1584,7 @@ fn write_v2_assembly_note(
                 md,
                 "Each layer's mold is two ribbon-cut pieces \
                  (`_piece_0` + `_piece_1`) that meet along the \
-                 curve-following seam. This cast has no integral \
-                 registration features (`DowelHoleKind::None`); \
+                 curve-following seam. {registration_status} \
                  align the pieces by hand{hand_clamp}. Each piece's seam \
                  face is bit-precise flat to the ribbon plane via \
                  the cup-piece SDF halfspace intersect with \
@@ -1967,6 +1999,16 @@ fn write_v2_cup_half_clamping_note(
             );
         }
         (FlangeKind::None, GasketKind::Mold(_)) => {
+            // ⚠ Keyed on the CARVE. This arm has NO flange, and dowel
+            // placement requires one — so a `DowelHoleKind::Auto` cast here
+            // gets zero holes, and naming the pattern sends the reader to
+            // registration geometry that does not exist.
+            let gasket_align = if has_dowels {
+                "the symmetric dowel-hole pattern"
+            } else {
+                "hand alignment at the seam (no dowel holes are carved — \
+                 placement needs a flange, and this cast has none)"
+            };
             let _ = writeln!(
                 md,
                 "This cast carries per-layer gaskets \
@@ -1976,8 +2018,7 @@ fn write_v2_cup_half_clamping_note(
                  and lay each gasket on the Negative cup half's seam \
                  face inside the body cavity perimeter. Close the \
                  Positive half over Negative + gasket, aligning via \
-                 the symmetric dowel-hole pattern (or hand-alignment \
-                 when `DowelHoleKind::None`). Without a flange to provide \
+                 {gasket_align}. Without a flange to provide \
                  a flat C-clamp grip surface, the cup must be hand-\
                  clamped over its contoured outer surface (wide tape \
                  or ratchet straps at 4+ quadrants). Aim for the \

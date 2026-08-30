@@ -3899,6 +3899,7 @@ mod tests {
     fn every_cross_referenced_section_exists_in_the_same_sheet() {
         use crate::bolt_pattern::{BoltPatternKind, BoltPatternSpec};
         use crate::cast_mode::CastMode;
+        use crate::dowel_hole::{DowelHoleKind, DowelHoleSpec};
         use crate::flange::{DemandFlangeSpec, FlangeKind, FlangeSpec};
         use crate::gasket_mold::{GasketKind, GasketSpec};
         use crate::pour::PourGateLayout;
@@ -3913,6 +3914,7 @@ mod tests {
         // would pass this gate vacuously on the very path it was widened for.
         let mut bolted_sheets = 0usize;
         let mut apex_sheets = 0usize;
+        let mut dowelled_sheets = 0usize;
         let thin = |pair: (CastSpec, Ribbon)| {
             let (mut spec, base) = pair;
             spec.wall_thickness_m = 0.004;
@@ -3931,57 +3933,78 @@ mod tests {
                 FlangeKind::Demand(DemandFlangeSpec::iter1()),
             ] {
                 for gasket in [GasketKind::None, GasketKind::Mold(GasketSpec::iter1())] {
-                    for bolts in [
-                        BoltPatternKind::None,
-                        BoltPatternKind::Auto(BoltPatternSpec::iter1()),
+                    // ⚠ `dowel_hole` MUST be a matrix dimension. Both fixtures
+                    // leave it at `None`, so before this every one of the 288
+                    // sheets rendered `has_dowels == false` and the entire
+                    // dowel side — the §M section, its cf-view bullet,
+                    // `dowel_first`, `dowel_seat`, `align_method`,
+                    // `mate_method` — was invisible to the gate built to catch
+                    // cross-writer contradictions.
+                    for dowels in [
+                        DowelHoleKind::None,
+                        DowelHoleKind::Auto(DowelHoleSpec::iter1()),
                     ] {
-                        // ⚠ ApexAxial is NOT optional coverage — it is the
-                        // production `base_mold` layout, and it routes through a
-                        // different writer (`write_apex_axial_pour_note`) plus
-                        // the apex branches of the header and funnel notes. With
-                        // only VAtDome in the matrix, an apex sheet asserting a
-                        // bolt that no flange could hold went unseen.
-                        let apex = {
-                            let mut g = PourGateSpec::iter1();
-                            g.layout = PourGateLayout::ApexAxial;
-                            g
-                        };
-                        for gate in [
-                            PourGateKind::None,
-                            PourGateKind::Default(PourGateSpec::iter1()),
-                            PourGateKind::Default(apex),
+                        for bolts in [
+                            BoltPatternKind::None,
+                            BoltPatternKind::Auto(BoltPatternSpec::iter1()),
                         ] {
-                            for mode in [CastMode::Detachable, CastMode::Bonded] {
-                                let mut r = base.clone();
-                                r.flange = flange;
-                                r.gasket = gasket;
-                                r.bolt_pattern = bolts;
-                                r.pour_gate = gate.clone();
-                                let md = generate_procedure_markdown_v2_for_mode(
-                                    &spec, &pours, &r, mode,
-                                );
-                                let case = format!(
-                                    "{layers} / {flange:?} / {gasket:?} / {bolts:?} / \
+                            // ⚠ ApexAxial is NOT optional coverage — it is the
+                            // production `base_mold` layout, and it routes through a
+                            // different writer (`write_apex_axial_pour_note`) plus
+                            // the apex branches of the header and funnel notes. With
+                            // only VAtDome in the matrix, an apex sheet asserting a
+                            // bolt that no flange could hold went unseen.
+                            let apex = {
+                                let mut g = PourGateSpec::iter1();
+                                g.layout = PourGateLayout::ApexAxial;
+                                g
+                            };
+                            for gate in [
+                                PourGateKind::None,
+                                PourGateKind::Default(PourGateSpec::iter1()),
+                                PourGateKind::Default(apex),
+                            ] {
+                                for mode in [CastMode::Detachable, CastMode::Bonded] {
+                                    let mut r = base.clone();
+                                    r.flange = flange;
+                                    r.gasket = gasket;
+                                    r.bolt_pattern = bolts;
+                                    r.dowel_hole = dowels;
+                                    r.pour_gate = gate.clone();
+                                    let md = generate_procedure_markdown_v2_for_mode(
+                                        &spec, &pours, &r, mode,
+                                    );
+                                    let case = format!(
+                                        "{layers} / {flange:?} / {gasket:?} / {bolts:?} / \
                                      {gate:?} / {mode:?}"
-                                );
-                                // ⚠ PLATE specifically. A demand flange is always
-                                // feasible, so counting any bolted sheet would be
-                                // satisfied by the arm that was never in doubt.
-                                if md.contains("integral to each cup") {
-                                    apex_sheets += 1;
+                                    );
+                                    // ⚠ PLATE specifically. A demand flange is always
+                                    // feasible, so counting any bolted sheet would be
+                                    // satisfied by the arm that was never in doubt.
+                                    if md.contains("integral to each cup") {
+                                        apex_sheets += 1;
+                                    }
+                                    if md.contains("**Symmetric dowel holes**") {
+                                        dowelled_sheets += 1;
+                                    }
+                                    if matches!(flange, FlangeKind::Plate(_))
+                                        && md.contains("### M5 through-bolt clamp pattern (§B)")
+                                    {
+                                        bolted_sheets += 1;
+                                    }
+                                    assert_cross_refs_resolve(&md, &case);
                                 }
-                                if matches!(flange, FlangeKind::Plate(_))
-                                    && md.contains("### M5 through-bolt clamp pattern (§B)")
-                                {
-                                    bolted_sheets += 1;
-                                }
-                                assert_cross_refs_resolve(&md, &case);
                             }
                         }
                     }
                 }
             }
         }
+        assert!(
+            dowelled_sheets > 0,
+            "matrix rendered no sheet with carved dowels — the entire §M dowel \
+             side is unexercised and this gate passes vacuously over it"
+        );
         assert!(
             apex_sheets > 0,
             "matrix rendered no apex-axial sheet — the production pour layout \
@@ -4152,7 +4175,7 @@ mod tests {
         );
     }
 
-    /// ★ `bolts_carved_per_layer` is UNIFORM across layers, and that is an
+    /// ★ `carved_features` is UNIFORM across layers, and that is an
     /// invariant of the planner rather than of this function.
     ///
     /// `cross_layer_snap` keeps a master placement only when it is feasible on
@@ -4240,7 +4263,11 @@ mod tests {
             "aligning the two halves by hand until the seam closes flush",
             "This cast has no integral registration features",
             "This cast carves no dowel holes",
+            "This cast carves nothing into the seam face",
             "No dowel holes are carved",
+            "NO dowel holes were carved",
+            "no dowel holes are carved — \
+                 placement needs a flange",
             "no dowel holes and no bolt holes are carved",
             "bolt clearance holes ONLY",
             // Reference / historical prose — describes the feature, does not
@@ -5510,7 +5537,7 @@ mod tests {
             ));
         // ⚠ Thin the wall for this arm. The shared fixture runs 20 mm, and a
         // 20 mm-wide plate flange takes NO bolts above an 8 mm wall — the
-        // washer window closes (see `bolts_carved_per_layer`). This test
+        // washer window closes (see `carved_features`). This test
         // asserts the BOLTED step-6 prose, so it needs a cast that actually
         // carries bolts; at 20 mm the correct sheet has no bolt section at
         // all, which is what this assertion used to mistake for a regression.
