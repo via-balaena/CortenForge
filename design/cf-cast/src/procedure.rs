@@ -734,10 +734,15 @@ fn write_per_layer_sections_v2_bonded(
     // ⚠ Reads BEFORE the assembly clause it modifies. Appended after it, the
     // bonded bencher assembled the mold and only then learned the gasket had
     // to go in first — its detachable twin has always had the order right.
+    // ⚠ A COMPLETE SENTENCE, so it slots between two others or vanishes
+    // without trace. As a trailing ", then " fragment it produced "...above,
+    // then Place ..., then assemble" on every bonded multi-layer gasketed
+    // sheet, and left the NO-gasket layer-0 sentence starting lowercase.
+    // Both arms now read ". {cue}Assemble ...".
     let gasket_cue = if matches!(ribbon.gasket, GasketKind::Mold(_)) {
         "Place the cured gasket strip on the Negative half's seam face per \
          `## Cup-Half Clamping with Gasket Installation` above BEFORE closing \
-         the second half, then "
+         the second half. "
     } else {
         ""
     };
@@ -794,7 +799,7 @@ fn write_per_layer_sections_v2_bonded(
                 md,
                 "1. Print `mold_layer_0_piece_0.stl` + `mold_layer_0_piece_1.stl` + \
                  `plug_layer_0.stl` (the only plug). Apply mold release to the plug + \
-                 both cup halves. {gasket_cue}assemble the two halves around the \
+                 both cup halves. {gasket_cue}Assemble the two halves around the \
                  plug per the \"v2 Mold Assembly\" section above."
             );
         } else {
@@ -803,8 +808,8 @@ fn write_per_layer_sections_v2_bonded(
                 "1. Print `mold_layer_{i}_piece_0.stl` + `mold_layer_{i}_piece_1.stl` \
                  (no plug — the cured layer {} still on the plug is this layer's inner \
                  form). Mold-release the two cup halves only (NOT the cured silicone), \
-                 prep the cured surface per the inter-layer bond note above, then \
-                 {gasket_cue}assemble the two halves around the plug-plus-cured-stack.",
+                 prep the cured surface per the inter-layer bond note above. \
+                 {gasket_cue}Assemble the two halves around the plug-plus-cured-stack.",
                 i - 1
             );
         }

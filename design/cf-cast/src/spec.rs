@@ -4933,6 +4933,13 @@ mod tests {
         assert_eq!(bad, 0, "{bad} probe(s) behaved wrong");
     }
 
+    /// The text starting at char index `at`, for short look-aheads.
+    fn md_after(chars: &[char], at: usize) -> String {
+        chars[at.min(chars.len())..(at + 8).min(chars.len())]
+            .iter()
+            .collect()
+    }
+
     /// ★★★ Mechanical prose damage, on every sheet the matrix renders.
     ///
     /// ⚠ Rounds of review kept finding defects no test could see and only
@@ -4957,13 +4964,6 @@ mod tests {
     /// sentences that share no keyword, and every defect listed above under
     /// ⛔. The MECHANICAL half is what a machine should own; do not let its
     /// green mislead you into skipping the read.
-    /// The text starting at char index `at`, for short look-aheads.
-    fn md_after(chars: &[char], at: usize) -> String {
-        chars[at.min(chars.len())..(at + 8).min(chars.len())]
-            .iter()
-            .collect()
-    }
-
     fn assert_prose_is_well_formed(md: &str, case: &str) {
         // ⚠⚠ A BARE `'}'` CHAR LITERAL DESYNCS `xtask grade`'s Safety scanner
         // (brace-depth state machine; the unmatched close drops it below zero
