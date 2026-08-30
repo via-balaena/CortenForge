@@ -3820,8 +3820,25 @@ mod tests {
         use crate::gasket_mold::{GasketKind, GasketSpec};
         use crate::procedure::generate_procedure_markdown_v2_for_mode;
 
-        for (layers, (spec, base)) in [("1-layer", v2_fixture()), ("2-layer", two_layer_fixture())]
-        {
+        // ⚠ Thin-wall variants are ESSENTIAL, not extra coverage. Both shared
+        // fixtures run a 20 mm wall, at which a 20 mm-wide plate flange takes
+        // no bolts at all — so without these the entire `Plate + bolts` path
+        // (the iter-1 production one, including its §B cross-reference) is
+        // never rendered by this gate and only the `Demand` arm is exercised.
+        // ★ Self-verifying coverage: a matrix that renders no bolted sheet
+        // would pass this gate vacuously on the very path it was widened for.
+        let mut bolted_sheets = 0usize;
+        let thin = |pair: (CastSpec, Ribbon)| {
+            let (mut spec, base) = pair;
+            spec.wall_thickness_m = 0.004;
+            (spec, base)
+        };
+        for (layers, (spec, base)) in [
+            ("1-layer", v2_fixture()),
+            ("2-layer", two_layer_fixture()),
+            ("1-layer thin-wall", thin(v2_fixture())),
+            ("2-layer thin-wall", thin(two_layer_fixture())),
+        ] {
             let pours = spec.compute_pour_volumes().unwrap();
             for flange in [
                 FlangeKind::None,
@@ -3850,6 +3867,14 @@ mod tests {
                                     "{layers} / {flange:?} / {gasket:?} / {bolts:?} / \
                                      {gate:?} / {mode:?}"
                                 );
+                                // ⚠ PLATE specifically. A demand flange is always
+                                // feasible, so counting any bolted sheet would be
+                                // satisfied by the arm that was never in doubt.
+                                if matches!(flange, FlangeKind::Plate(_))
+                                    && md.contains("### M5 through-bolt clamp pattern (§B)")
+                                {
+                                    bolted_sheets += 1;
+                                }
                                 assert_cross_refs_resolve(&md, &case);
                             }
                         }
@@ -3857,6 +3882,12 @@ mod tests {
                 }
             }
         }
+        assert!(
+            bolted_sheets > 0,
+            "matrix rendered no §B bolt section for a PLATE flange — the \
+             iter-1 production path is unexercised and this gate is passing \
+             vacuously over it"
+        );
     }
 
     /// Assert every backticked `#…` reference in `md` names a heading that is

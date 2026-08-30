@@ -325,7 +325,12 @@ fn cure_protocol_cells(anchor_key: Option<&'static str>) -> (String, String, Str
 /// Innermost-first ordering means index 0 is "innermost"; the last
 /// index is "outermost"; everything between is "middle".
 const fn layer_position_label(layer_index: usize, layer_count: usize) -> &'static str {
-    if layer_index == 0 {
+    if layer_count == 1 {
+        // ⚠ NOT "innermost". Naming a position implies something occupies the
+        // other one; on a single-layer sheet every such implication is the
+        // defect this whole family of prose fixes exists to remove.
+        "single layer"
+    } else if layer_index == 0 {
         "innermost"
     } else if layer_index + 1 == layer_count {
         "outermost"
@@ -1599,14 +1604,17 @@ fn write_v2_bolt_pattern_note(md: &mut String, ribbon: &Ribbon, wall_thickness_m
     // — the two happen to share a default, which is why it read as correct.
     // A demand flange set to anything else printed a bolt length that cannot
     // seat. Post-carve-gate only Plate and Demand reach here.
+    // ★ `FlangeKind::thickness_m()` is the SAME accessor the carve uses
+    // (`build_bolt_pattern_transforms`). Re-deriving the mapping here is what
+    // produced the plate-default-for-a-demand-flange bug; a new flange kind
+    // must not be able to reach the geometry without reaching the sheet.
+    // `None` is unreachable past the carve gate above, and a doc generator
+    // should not panic, so it keeps the iter-1 default.
     let flange_thickness_mm = 1000.0
-        * match &ribbon.flange {
-            FlangeKind::Plate(f) => f.flange_thickness_m,
-            FlangeKind::Demand(d) => d.flange_thickness_m,
-            // Unreachable past the carve gate; a doc generator should not
-            // panic, so keep the iter-1 default.
-            FlangeKind::None => crate::flange::FlangeSpec::iter1().flange_thickness_m,
-        };
+        * ribbon
+            .flange
+            .thickness_m()
+            .unwrap_or_else(|| crate::flange::FlangeSpec::iter1().flange_thickness_m);
     let bolt_traverse_mm = flange_thickness_mm * 2.0;
     // Minimum exact length = traverse + 2 × washer (~1 mm each) + nut
     // (~4 mm M5) + head (~3 mm M5). Round UP to the nearest 5 mm
@@ -1774,12 +1782,11 @@ fn write_v2_cup_half_clamping_note(
     // the plug as the next layer's inner form, so a blanket "demold the tube"
     // here contradicts the per-layer steps. Only the final layer comes off.
     let demold_sentence = match (mode, layer_count) {
-        (CastMode::Bonded, n) if n > 1 => {
+        (CastMode::Bonded, n) if n > 1 => format!(
             "Leave each cured layer on the plug between pours (per the \
              per-layer steps); only the outermost layer is demolded, per \
-             `## Finishing` below."
-                .to_string()
-        }
+             `{post_demold}` below."
+        ),
         _ => format!("Demold the cured silicone tube per `{post_demold}` below."),
     };
     // S3 of the seam-flange arc per recon §F-7. Prose adapts to the
@@ -1893,6 +1900,24 @@ fn write_v2_cup_half_clamping_note(
                      flag any leak for the post-iter-3 gasket \
                      enablement decision."
                 );
+                // ⚠ "no §B bolt pattern" above is true of the GEOMETRY but
+                // not of the config when a pattern was requested and dropped.
+                // Saying nothing leaves the solver's stderr warning as the
+                // only signal that the sheet and `cast.toml` disagree.
+                if ribbon.bolt_pattern.spec().is_some() {
+                    md.push('\n');
+                    let _ = writeln!(
+                        md,
+                        "> ⚠ **A `[bolt_pattern]` was requested but NO bolt holes \
+                         were carved.** The washer footprint does not fit this \
+                         flange at this wall thickness — the placeable radial \
+                         band is empty, so the solver placed nothing and the §B \
+                         section is intentionally absent. Widen \
+                         `flange_width_m`, or thin `wall_thickness_m`, and \
+                         regenerate if you want bolts; otherwise clamp as \
+                         described above."
+                    );
+                }
             }
         }
         (FlangeKind::Plate(flange_spec), GasketKind::Mold(gasket_spec)) => {
@@ -2495,14 +2520,19 @@ mod tests {
     }
 
     #[test]
-    fn layer_position_label_single_layer_is_outermost_and_innermost() {
-        // Edge case: a single-layer device's only layer is both
-        // innermost (`index == 0`) AND outermost (`index + 1 ==
-        // count`). The check ordering picks innermost — fine,
-        // because both are accurate; "innermost" is more
-        // load-bearing for the procedure (it's the one that uses
-        // the printed plug).
-        assert_eq!(layer_position_label(0, 1), "innermost");
+    fn layer_position_label_single_layer_names_no_position() {
+        // A single-layer device's only layer is both innermost
+        // (`index == 0`) AND outermost (`index + 1 == count`). This used
+        // to return "innermost" on the reasoning that both are accurate
+        // and innermost is the load-bearing one (it uses the printed
+        // plug). ⚠ Accurate is not the bar for a bench sheet: "Layer 0 —
+        // Ecoflex 00-30 (innermost)" tells a reader something sits
+        // outside it, which is the same implication the rest of the
+        // single-layer prose fixes remove.
+        assert_eq!(layer_position_label(0, 1), "single layer");
+        // Multi-layer labelling is untouched.
+        assert_eq!(layer_position_label(0, 2), "innermost");
+        assert_eq!(layer_position_label(1, 2), "outermost");
     }
 
     #[test]
