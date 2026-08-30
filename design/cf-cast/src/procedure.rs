@@ -437,7 +437,7 @@ pub fn generate_procedure_markdown_v2_for_mode(
     let mut md = String::new();
     match mode {
         CastMode::Detachable => write_header_v2(&mut md, spec, apex_pour, has_pour_gate),
-        CastMode::Bonded => write_header_v2_bonded(&mut md, spec, apex_pour),
+        CastMode::Bonded => write_header_v2_bonded(&mut md, spec, apex_pour, has_pour_gate),
     }
     write_cast_geometry_v2(&mut md, ribbon);
     write_print_orientation_v2(&mut md, apex_pour, spec.layers.len(), ribbon, features);
@@ -448,7 +448,14 @@ pub fn generate_procedure_markdown_v2_for_mode(
     write_seam_face_edge_v2(&mut md, has_plug_lock);
     write_materials_table(&mut md, spec, pour_volumes);
     write_generic_guidance(&mut md, spec.layers.len());
-    write_v2_assembly_note(&mut md, ribbon, spec.layers.len(), bolts_carved, has_dowels);
+    write_v2_assembly_note(
+        &mut md,
+        ribbon,
+        spec.layers.len(),
+        bolts_carved,
+        has_dowels,
+        has_pour_gate,
+    );
     write_v2_cup_half_clamping_note(
         &mut md,
         ribbon,
@@ -559,7 +566,7 @@ fn write_v2_post_cure_assembly(md: &mut String, spec: &CastSpec, mode: CastMode)
 
 /// Bonded-mode header: one plug, cast-in-place. Self-contained (does not
 /// share the detachable header so that path stays byte-identical).
-fn write_header_v2_bonded(md: &mut String, spec: &CastSpec, apex_pour: bool) {
+fn write_header_v2_bonded(md: &mut String, spec: &CastSpec, apex_pour: bool, has_pour_gate: bool) {
     let _ = writeln!(
         md,
         "# Cast Procedure (v2.1 curve-following, bonded cast-in-place)"
@@ -614,12 +621,23 @@ fn write_header_v2_bonded(md: &mut String, spec: &CastSpec, apex_pour: bool) {
              sits at the dome apex on the seam; air vents are hand-drilled (tiny \
              ~0.3-1.0 mm holes) at the apex + any high spots — see `## Pour Gate + Vent`."
         );
-    } else {
+    } else if has_pour_gate {
         let _ = writeln!(
             md,
             "**Orientation convention**: orient the assembled mold with **+Z up** \
              during each pour + cure. Pour leg on the Positive piece (`_piece_1`), \
              vent leg on the Negative piece (`_piece_0`)."
+        );
+    } else {
+        // ⚠ The detachable header got this third branch last commit; its
+        // bonded twin did not, so a gateless bonded cast was still told where
+        // its pour and vent legs are.
+        let _ = writeln!(
+            md,
+            "**Orientation convention**: orient the assembled mold with **+Z up** \
+             during each pour + cure. This cast has no pour gate or vent \
+             (`PourGateKind::None`) — pour through the open seam and drill \
+             air-relief holes as needed; see `## Pour Gate + Vent`."
         );
     }
     md.push('\n');
@@ -1237,24 +1255,32 @@ fn write_chamfer_recipe_v2(md: &mut String, has_plug_lock: bool) {
              chamfer band on each cup-piece carves into the cup body \
              cavity (no-op subtract)."
         );
+        md.push('\n');
     }
-    md.push('\n');
-    let slicer_tuned_by = if has_plug_lock {
-        "plug-lock pyramid/socket diametral + axial clearances are tuned by \
-         `PrismaticPinSpec` (S7 caliper pass per §G-8); the dowel-hole radial \
-         clearance is tuned by `DowelHoleSpec` (§M-S2 / §M-S3)"
+    // ⚠ "both fits" only reads correctly when two are named.
+    let (slicer_tuned_by, slicer_tighten) = if has_plug_lock {
+        (
+            "plug-lock pyramid/socket diametral + axial clearances are tuned \
+             by `PrismaticPinSpec` (S7 caliper pass per §G-8); the dowel-hole \
+             radial clearance is tuned by `DowelHoleSpec` (§M-S2 / §M-S3)",
+            ". Adding slicer-level compensation on top would tighten both fits \
+             past their spec budgets and the per-layer cup-wall surface past \
+             spec wall-thickness.",
+        )
     } else {
-        "dowel-hole radial clearance is tuned by `DowelHoleSpec` \
-         (§M-S2 / §M-S3)"
+        (
+            "dowel-hole radial clearance is tuned by `DowelHoleSpec` \
+             (§M-S2 / §M-S3)",
+            ". Adding slicer-level compensation on top would tighten that fit \
+             past its spec budget and the per-layer cup-wall surface past spec \
+             wall-thickness.",
+        )
     };
     let _ = writeln!(
         md,
         "**Slicer-level elephant-foot compensation** (Bambu Studio \
          / PrusaSlicer / OrcaSlicer): set to **0.0 mm**. The \
-         {slicer_tuned_by}. Adding slicer-level \
-         compensation on top would tighten both fits past their \
-         spec budgets and the per-layer cup-wall surface past spec \
-         wall-thickness."
+         {slicer_tuned_by}{slicer_tighten}"
     );
     md.push('\n');
 }
@@ -1722,8 +1748,8 @@ fn write_seam_face_edge_v2(md: &mut String, has_plug_lock: bool) {
              cf-view screenshot — that would warrant a separate recon arc \
              on the boolean-junction geometry."
         );
+        md.push('\n');
     }
-    md.push('\n');
 }
 
 // Mostly prose writeln!s describing dowel placement + bolt-pattern
@@ -1738,6 +1764,7 @@ fn write_v2_assembly_note(
     layer_count: usize,
     bolts_carved: bool,
     has_dowels: bool,
+    has_pour_gate: bool,
 ) {
     let _ = writeln!(md, "## v2 Mold Assembly");
     md.push('\n');
@@ -1899,7 +1926,7 @@ fn write_v2_assembly_note(
             );
         }
     }
-    write_v2_bolt_pattern_note(md, ribbon, bolts_carved, has_dowels);
+    write_v2_bolt_pattern_note(md, ribbon, bolts_carved, has_dowels, has_pour_gate);
     md.push('\n');
     write_v2_plug_anchor_note(md, ribbon);
 }
@@ -1909,7 +1936,14 @@ fn write_v2_bolt_pattern_note(
     ribbon: &Ribbon,
     bolts_carved: bool,
     has_dowels: bool,
+    has_pour_gate: bool,
 ) {
+    // ⚠ §B describes bracketing the pour gate; a gateless cast has none.
+    let bracket_clause = if has_pour_gate {
+        "brackets the pour gate with a bolt on each side, and "
+    } else {
+        ""
+    };
     let Some(spec) = ribbon.bolt_pattern.spec() else {
         return;
     };
@@ -1995,7 +2029,7 @@ fn write_v2_bolt_pattern_note(
          **M5 bolt clearance holes** ({clearance_mm:.1} mm Ø) carve \
          through BOTH cup-halves' flange material. The seam-placement \
          solver spaces them evenly around the seam loop (≤30 mm pitch), \
-         brackets the pour gate with a bolt on each side, and sizes each \
+         {bracket_clause}sizes each \
          bolt's radial offset so the M5 washer footprint stays inside the \
          flange band and clear of the cup-wall step{dowel_exclusion} and \
          the pour. Identical pattern on both halves of a given layer; the \
@@ -2349,14 +2383,44 @@ fn write_v2_cup_half_clamping_note(
             };
             // ⚠ `PourGateKind::None` has no funnel and no vent — the
             // per-layer `pour_sentence` is already three-way, this arm was not.
-            let gasket_pour_route = if has_pour_gate {
-                "funnel (see `## Pour Gate + Vent` below). The vent leg \
-                 confirms full cavity fill; pour until silicone wets the vent \
-                 opening."
+            // ⚠ The vent is a THIRD state: `PourGateSpec::include_vent` can be
+            // false, and `write_v2_pour_gate_note` prints an explicit
+            // "vent leg disabled" note in that case.
+            let vent_cue = match &ribbon.pour_gate {
+                PourGateKind::Default(g) if g.include_vent => {
+                    " The vent leg confirms full cavity fill; pour until \
+                     silicone wets the vent opening."
+                }
+                _ => {
+                    " There is no vent leg on this cast (`include_vent = \
+                     false`) — drill air-relief holes as needed and watch the \
+                     cavity fill."
+                }
+            };
+            let (gasket_pour_lead, gasket_pour_route): (&str, String) = if has_pour_gate {
+                (
+                    "Pour main layer silicone through the pour gate.",
+                    format!(
+                        "pour the layer silicone through the pour-gate funnel \
+                         (see `## Pour Gate + Vent` below).{vent_cue}"
+                    ),
+                )
             } else {
-                "seam (this cast has no pour gate or vent — see \
-                 `## Pour Gate + Vent` below); drill air-relief holes through \
-                 the cured cup wall as needed and watch the cavity fill."
+                (
+                    "Pour main layer silicone through the seam.",
+                    "pour the layer silicone through the open seam — this cast \
+                     has no pour gate or vent (see `## Pour Gate + Vent` \
+                     below); drill air-relief holes through the cured cup wall \
+                     as needed and watch the cavity fill."
+                        .to_string(),
+                )
+            };
+            // ⚠ Steps 5 and 8 were split on `bolts_carved`; step 7 was the
+            // one sentence left telling a bolted cast about its clamps.
+            let (held_by, release_verb) = if bolts_carved {
+                ("bolted", "back the bolts off")
+            } else {
+                ("clamped", "release the clamps")
             };
             let step8_lead = if bolts_carved {
                 "Back off the bolts + open cup halves."
@@ -2483,18 +2547,16 @@ fn write_v2_cup_half_clamping_note(
             }
             let _ = writeln!(
                 md,
-                "6. **Pour main layer silicone through the pour \
-                 gate.** With the cup clamped and gasket compressed, \
-                 pour the layer silicone through the pour-gate \
-                 {gasket_pour_route}"
+                "6. **{gasket_pour_lead}** With the cup clamped and gasket \
+                 compressed, {gasket_pour_route}"
             );
             let _ = writeln!(
                 md,
                 "7. **Cure per layer material TDS.** Leave the \
-                 assembly clamped for the full cure window (per \
-                 layer material's TDS at 23 °C). Do NOT release \
-                 clamps until cure is complete — gasket compression \
-                 must hold throughout cure to maintain the seal."
+                 assembly {held_by} for the full cure window (per \
+                 layer material's TDS at 23 °C). Do NOT {release_verb} \
+                 until cure is complete — gasket compression must hold \
+                 throughout cure to maintain the seal."
             );
             let _ = writeln!(
                 md,
@@ -3169,7 +3231,7 @@ mod tests {
     #[test]
     fn assembly_note_dowel_length_is_twice_its_per_half_insertion() {
         let mut md = String::new();
-        write_v2_assembly_note(&mut md, &dowelled_ribbon(), 2, true, true);
+        write_v2_assembly_note(&mut md, &dowelled_ribbon(), 2, true, true, true);
 
         let length = number_before(&md, " mm long");
         let insert = number_before(&md, " mm into each cup-half");
@@ -3189,7 +3251,7 @@ mod tests {
     fn assembly_note_hole_and_rod_dimensions_follow_the_dowel_spec() {
         let spec = DowelHoleSpec::iter1();
         let mut md = String::new();
-        write_v2_assembly_note(&mut md, &dowelled_ribbon(), 2, true, true);
+        write_v2_assembly_note(&mut md, &dowelled_ribbon(), 2, true, true, true);
 
         // ⚠ This asserted `hole == 2*clearance + diameter` recomputed from the
         // spec — the SAME arithmetic as the code, so it could only ever catch
@@ -3240,7 +3302,7 @@ mod tests {
         );
 
         let mut md = String::new();
-        write_v2_assembly_note(&mut md, &ribbon, 2, true, true);
+        write_v2_assembly_note(&mut md, &ribbon, 2, true, true, true);
 
         assert!(
             md.contains("align the pieces by hand"),
@@ -3426,7 +3488,7 @@ mod tests {
             r.flange = flange;
             r.bolt_pattern = BoltPatternKind::Auto(BoltPatternSpec::iter1());
             let mut md = String::new();
-            write_v2_assembly_note(&mut md, &r, 2, bolts_carved, false);
+            write_v2_assembly_note(&mut md, &r, 2, bolts_carved, false, true);
             md
         };
 
@@ -3474,7 +3536,7 @@ mod tests {
             r.flange = FlangeKind::Demand(demand);
             r.bolt_pattern = BoltPatternKind::Auto(BoltPatternSpec::iter1());
             let mut md = String::new();
-            write_v2_assembly_note(&mut md, &r, 2, true, false);
+            write_v2_assembly_note(&mut md, &r, 2, true, false, true);
             md
         };
 
