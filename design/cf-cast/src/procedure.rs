@@ -1595,6 +1595,18 @@ fn write_v2_bolt_pattern_note(md: &mut String, ribbon: &Ribbon, bolts_carved: bo
     // clamp the two halves at the flange (across a gasket when one is
     // present; iter-1 ships gasketless with mold release + PLA-on-
     // PLA contact under bolt-induced clamp pressure as the seal).
+    // ⚠ Dowels are a separate opt-in. With `DowelHoleKind::None` the mold
+    // has no registration features at all — the assembly section says so and
+    // tells the bencher to align by hand — so "register with the §M dowels
+    // FIRST" sends them looking for holes that were never carved.
+    let dowel_first = if ribbon.dowel_hole.spec().is_some() {
+        "register the two halves with the §M dowels FIRST (the dowel-hole \
+         pattern provides lateral alignment so the bolt-clearance holes match \
+         up across the seam). "
+    } else {
+        "align the two halves by hand (this cast carves no dowel holes) so the \
+         bolt-clearance holes line up across the seam. "
+    };
     let clearance_mm = spec.clearance_diameter_m * 1000.0;
     // Minimum bolt length the workshop should source: 2 × flange
     // thickness (the bolt traverse) + 2 × washer (~1 mm each) + nut
@@ -1650,9 +1662,7 @@ fn write_v2_bolt_pattern_note(md: &mut String, ribbon: &Ribbon, bolts_carved: bo
          holes in the generated `mold_layer_*` pieces (or in cf-view) for \
          the per-layer quantity.\n\
          \n\
-         **Assembly order**: register the two halves with the §M dowels \
-         FIRST (the dowel-hole pattern provides lateral alignment so the \
-         bolt-clearance holes match up across the seam). Then insert each \
+         **Assembly order**: {dowel_first}Then insert each \
          M5 bolt through the matching bolt-clearance holes on the two \
          halves, slip a washer under each head + nut, and hand-tighten \
          crosswise (like a car lug pattern) for even flange clamp \
@@ -2511,29 +2521,35 @@ fn write_per_layer_sections_v2(
             .get(pour.layer_index)
             .copied()
             .unwrap_or(false);
-        let closing_protocol = match (&ribbon.gasket, bolted) {
-            (GasketKind::Mold(_), _) => {
-                "Place the cured gasket strip on the Negative half's \
+        // ⚠ Dowels are their own opt-in — telling the bencher to seat the
+        // halves on §M dowels a cast never carved contradicts the assembly
+        // section, which says to align by hand.
+        let dowel_seat = if ribbon.dowel_hole.spec().is_some() {
+            "registering the §M dowels to seat the two halves flush."
+        } else {
+            "aligning the two halves by hand until the seam closes flush \
+             (this cast carves no dowel holes)."
+        };
+        let closing_protocol: String = match (&ribbon.gasket, bolted) {
+            (GasketKind::Mold(_), _) => "Place the cured gasket strip on the Negative half's \
                  seam face per `## Cup-Half Clamping with Gasket \
                  Installation` above BEFORE closing the second cup \
                  half, then close the second half and apply the \
                  clamping protocol from that section."
-            }
-            (GasketKind::None, true) => {
-                "Close the second cup half over the plug, registering \
-                 the §M dowels to seat the two halves flush. Then \
-                 install the §B M5 through-bolts per `### M5 \
+                .to_string(),
+            (GasketKind::None, true) => format!(
+                "Close the second cup half over the plug, {dowel_seat} \
+                 Then install the §B M5 through-bolts per `### M5 \
                  through-bolt clamp pattern (§B)` above — insert each \
                  bolt + washers + nut and hand-tighten crosswise for \
                  even flange clamp pressure. PLA-on-PLA seam contact \
                  + mold release stands in for a gasket; the bolt \
                  clamp force is the seal."
-            }
-            (GasketKind::None, false) => {
-                "Close the second cup half over the plug directly \
+            ),
+            (GasketKind::None, false) => "Close the second cup half over the plug directly \
                  (seam closes flush = press-stop tactile feedback). \
                  Apply the clamping protocol from the section above."
-            }
+                .to_string(),
         };
         let _ = writeln!(
             md,

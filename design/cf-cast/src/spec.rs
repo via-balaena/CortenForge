@@ -4178,6 +4178,66 @@ mod tests {
         }
     }
 
+    /// ★ A cast with no dowel holes must not tell the bencher to register on
+    /// them — the same defect family as the bolt prose, one feature over.
+    ///
+    /// `DowelHoleKind` is an independent opt-in from `[bolt_pattern]`, and the
+    /// assembly section already says "no integral registration features …
+    /// align the pieces by hand". Two other sentences said the opposite: §B's
+    /// "Assembly order: register the two halves with the §M dowels FIRST" and
+    /// per-layer step 6's "registering the §M dowels to seat the two halves
+    /// flush", both keyed on bolts rather than on dowels.
+    ///
+    /// ⚠ Found by rendering the sheet and grepping the OUTPUT for the concept,
+    /// not by grepping the source for a phrase — the two sentences share no
+    /// wording with each other.
+    #[test]
+    fn a_cast_without_dowels_never_says_to_register_on_them() {
+        use crate::bolt_pattern::{BoltPatternKind, BoltPatternSpec};
+        use crate::dowel_hole::{DowelHoleKind, DowelHoleSpec};
+        use crate::flange::{DemandFlangeSpec, FlangeKind};
+        use crate::procedure::generate_procedure_markdown_v2;
+
+        let sheet = |dowels: DowelHoleKind| {
+            let (mut spec, base) = v2_fixture();
+            spec.wall_thickness_m = 0.004;
+            let ribbon = base
+                .with_flange(FlangeKind::Demand(DemandFlangeSpec::iter1()))
+                .with_bolt_pattern(BoltPatternKind::Auto(BoltPatternSpec::iter1()))
+                .with_dowel_hole(dowels);
+            let pours = spec.compute_pour_volumes().unwrap();
+            generate_procedure_markdown_v2(&spec, &pours, &ribbon)
+        };
+
+        let no_dowels = sheet(DowelHoleKind::None);
+        assert!(
+            no_dowels.contains("### M5 through-bolt clamp pattern (§B)"),
+            "fixture must carve bolts, or the §B prose never renders:\n{no_dowels}"
+        );
+        for sentence in no_dowels.split(['.', '\n']) {
+            let lower = sentence.to_lowercase();
+            if !lower.contains("dowel") {
+                continue;
+            }
+            let instructs = lower.contains("register") || lower.contains("seat the two halves");
+            let negated = lower
+                .split(|c: char| !c.is_alphanumeric())
+                .any(|w| w == "no" || w == "not" || w == "none" || w == "without" || w == "if");
+            assert!(
+                !instructs || negated,
+                "a cast with DowelHoleKind::None is told to register on dowels: \
+                 {sentence}"
+            );
+        }
+
+        // Two-sided: with dowels enabled the registration instruction returns.
+        let dowelled = sheet(DowelHoleKind::Auto(DowelHoleSpec::iter1()));
+        assert!(
+            dowelled.contains("register the two halves with the §M dowels FIRST"),
+            "a dowelled cast must still say to register on them:\n{dowelled}"
+        );
+    }
+
     /// Assert every backticked `#…` reference in `md` names a heading that is
     /// actually present in `md`.
     fn assert_cross_refs_resolve(md: &str, case: &str) {
