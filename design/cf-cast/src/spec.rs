@@ -3906,6 +3906,7 @@ mod tests {
         use crate::dowel_hole::{DowelHoleKind, DowelHoleSpec};
         use crate::flange::{DemandFlangeSpec, FlangeKind, FlangeSpec};
         use crate::gasket_mold::{GasketKind, GasketSpec};
+        use crate::plug::{PlugPinKind, PlugPinSpec};
         use crate::pour::PourGateLayout;
         use crate::procedure::generate_procedure_markdown_v2_for_mode;
 
@@ -3916,9 +3917,7 @@ mod tests {
         // never rendered by this gate and only the `Demand` arm is exercised.
         // ★ Self-verifying coverage: a matrix that renders no bolted sheet
         // would pass this gate vacuously on the very path it was widened for.
-        let mut bolted_sheets = 0usize;
-        let mut apex_sheets = 0usize;
-        let mut dowelled_sheets = 0usize;
+        let mut cover = MatrixCoverage::default();
         let thin = |pair: (CastSpec, Ribbon)| {
             let (mut spec, base) = pair;
             spec.wall_thickness_m = 0.004;
@@ -3963,41 +3962,45 @@ mod tests {
                                 g.layout = PourGateLayout::ApexAxial;
                                 g
                             };
+                            // ⚠ `plug_pins` and `include_vent` were never
+                            // dimensions, so EVERY `has_plug_lock == true`
+                            // branch and every vent-disabled sheet rendered in
+                            // ZERO of the 576 — which is why three vent claims
+                            // and the whole plug-lock side reached review
+                            // ungated.
+                            let mut ventless = PourGateSpec::iter1();
+                            ventless.include_vent = false;
                             for gate in [
                                 PourGateKind::None,
                                 PourGateKind::Default(PourGateSpec::iter1()),
                                 PourGateKind::Default(apex),
+                                PourGateKind::Default(ventless),
                             ] {
-                                for mode in [CastMode::Detachable, CastMode::Bonded] {
-                                    let mut r = base.clone();
-                                    r.flange = flange;
-                                    r.gasket = gasket;
-                                    r.bolt_pattern = bolts;
-                                    r.dowel_hole = dowels;
-                                    r.pour_gate = gate.clone();
-                                    let md = generate_procedure_markdown_v2_for_mode(
-                                        &spec, &pours, &r, mode,
-                                    );
-                                    let case = format!(
-                                        "{layers} / {flange:?} / {gasket:?} / {bolts:?} / \
+                                for pins in
+                                    [PlugPinKind::None, PlugPinKind::Axial(PlugPinSpec::iter1())]
+                                {
+                                    for mode in [CastMode::Detachable, CastMode::Bonded] {
+                                        let mut r = base.clone();
+                                        r.flange = flange;
+                                        r.gasket = gasket;
+                                        r.bolt_pattern = bolts;
+                                        r.dowel_hole = dowels;
+                                        r.pour_gate = gate.clone();
+                                        r.plug_pins = pins.clone();
+                                        let md = generate_procedure_markdown_v2_for_mode(
+                                            &spec, &pours, &r, mode,
+                                        );
+                                        let case = format!(
+                                            "{layers} / {flange:?} / {gasket:?} / {bolts:?} / \
                                      {gate:?} / {mode:?}"
-                                    );
-                                    if md.contains("integral to each cup") {
-                                        apex_sheets += 1;
+                                        );
+                                        tally_coverage(
+                                            &md,
+                                            matches!(flange, FlangeKind::Plate(_)),
+                                            &mut cover,
+                                        );
+                                        assert_cross_refs_resolve(&md, &case);
                                     }
-                                    if md.contains("**Symmetric dowel holes**") {
-                                        dowelled_sheets += 1;
-                                    }
-                                    // ⚠ PLATE specifically. A demand flange is
-                                    // always feasible, so counting ANY bolted
-                                    // sheet would be satisfied by the arm that
-                                    // was never in doubt.
-                                    if matches!(flange, FlangeKind::Plate(_))
-                                        && md.contains("### M5 through-bolt clamp pattern (§B)")
-                                    {
-                                        bolted_sheets += 1;
-                                    }
-                                    assert_cross_refs_resolve(&md, &case);
                                 }
                             }
                         }
@@ -4005,22 +4008,7 @@ mod tests {
                 }
             }
         }
-        assert!(
-            dowelled_sheets > 0,
-            "matrix rendered no sheet with carved dowels — the entire §M dowel \
-             side is unexercised and this gate passes vacuously over it"
-        );
-        assert!(
-            apex_sheets > 0,
-            "matrix rendered no apex-axial sheet — the production pour layout \
-             and its dedicated writer are unexercised"
-        );
-        assert!(
-            bolted_sheets > 0,
-            "matrix rendered no §B bolt section for a PLATE flange — the \
-             iter-1 production path is unexercised and this gate is passing \
-             vacuously over it"
-        );
+        assert_matrix_not_vacuous(&cover);
     }
 
     /// ★★★ The SHEET must agree with the CARVE about whether bolts exist.
@@ -4364,6 +4352,71 @@ mod tests {
         "radial clearance is tuned by `DowelHoleSpec`",
         "retired the prismatic-pin registration path entirely",
     ];
+
+    /// The matrix must actually render every optional branch it claims to
+    /// cover — otherwise it passes vacuously over the ones it does not.
+    fn assert_matrix_not_vacuous(cover: &MatrixCoverage) {
+        assert!(
+            cover.plug_lock > 0,
+            "matrix rendered no sheet with a plug-floor lock — every \
+             `has_plug_lock` branch is unexercised"
+        );
+        assert!(
+            cover.ventless > 0,
+            "matrix rendered no vent-disabled sheet — `include_vent = false` \
+             is unexercised and vent claims go unchecked"
+        );
+        assert!(
+            cover.dowelled > 0,
+            "matrix rendered no sheet with carved dowels — the entire §M dowel \
+             side is unexercised and this gate passes vacuously over it"
+        );
+        assert!(
+            cover.apex > 0,
+            "matrix rendered no apex-axial sheet — the production pour layout \
+             and its dedicated writer are unexercised"
+        );
+        assert!(
+            cover.bolted > 0,
+            "matrix rendered no §B bolt section for a PLATE flange — the \
+             iter-1 production path is unexercised and this gate is passing \
+             vacuously over it"
+        );
+    }
+
+    /// Which optional branches the matrix actually rendered.
+    ///
+    /// ★ A matrix that silently stops covering a branch is worse than no
+    /// matrix — every counter here is asserted non-zero.
+    #[derive(Default)]
+    struct MatrixCoverage {
+        bolted: usize,
+        apex: usize,
+        dowelled: usize,
+        plug_lock: usize,
+        ventless: usize,
+    }
+
+    fn tally_coverage(md: &str, plate_flange: bool, cover: &mut MatrixCoverage) {
+        if md.contains("integral to each cup") {
+            cover.apex += 1;
+        }
+        if md.contains("**Symmetric dowel holes**") {
+            cover.dowelled += 1;
+        }
+        if md.contains("truncated-pyramid lock pointing UP") {
+            cover.plug_lock += 1;
+        }
+        if md.contains("no vent leg is carved") {
+            cover.ventless += 1;
+        }
+        // ⚠ PLATE specifically. A demand flange is always feasible, so
+        // counting ANY bolted sheet would be satisfied by the arm that was
+        // never in doubt.
+        if plate_flange && md.contains("### M5 through-bolt clamp pattern (§B)") {
+            cover.bolted += 1;
+        }
+    }
 
     /// Every sentence mentioning a dowel on a sheet that carves none must be
     /// an explicitly triaged entry in [`ALLOWED_DOWEL_MENTIONS`].

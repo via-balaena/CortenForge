@@ -427,11 +427,16 @@ pub fn generate_procedure_markdown_v2_for_mode(
     // the checklist demanded both under "do NOT proceed to print".
     let has_plug_lock = !matches!(ribbon.plug_pins, crate::plug::PlugPinKind::None);
     let has_pour_gate = !matches!(ribbon.pour_gate, PourGateKind::None);
+    let has_vent = matches!(
+        &ribbon.pour_gate,
+        PourGateKind::Default(g) if g.layout == PourGateLayout::VAtDome && g.include_vent
+    );
     let features = SheetFeatures {
         has_dowels,
         bolts_carved,
         has_plug_lock,
         has_pour_gate,
+        has_vent,
     };
 
     let mut md = String::new();
@@ -441,7 +446,7 @@ pub fn generate_procedure_markdown_v2_for_mode(
     }
     write_cast_geometry_v2(&mut md, ribbon);
     write_print_orientation_v2(&mut md, apex_pour, spec.layers.len(), ribbon, features);
-    write_chamfer_recipe_v2(&mut md, has_plug_lock);
+    write_chamfer_recipe_v2(&mut md, has_plug_lock, has_dowels);
     write_target_fdm_floor_v2(&mut md);
     write_cfview_sanity_check_v2(&mut md, apex_pour, ribbon, features);
     write_cap_plane_chamfer_v2(&mut md, has_plug_lock);
@@ -456,15 +461,7 @@ pub fn generate_procedure_markdown_v2_for_mode(
         has_dowels,
         has_pour_gate,
     );
-    write_v2_cup_half_clamping_note(
-        &mut md,
-        ribbon,
-        mode,
-        spec.layers.len(),
-        bolts_carved,
-        has_dowels,
-        has_pour_gate,
-    );
+    write_v2_cup_half_clamping_note(&mut md, ribbon, mode, spec.layers.len(), features);
     write_v2_pour_gate_note(&mut md, ribbon, spec.layers.len(), bolts_carved);
     match mode {
         CastMode::Detachable => {
@@ -478,7 +475,9 @@ pub fn generate_procedure_markdown_v2_for_mode(
                 has_plug_lock,
             );
         }
-        CastMode::Bonded => write_per_layer_sections_v2_bonded(&mut md, spec, pour_volumes, ribbon),
+        CastMode::Bonded => {
+            write_per_layer_sections_v2_bonded(&mut md, spec, pour_volumes, ribbon, has_vent);
+        }
     }
     match mode {
         CastMode::Detachable => write_v2_post_cure_assembly(&mut md, spec, mode),
@@ -663,6 +662,7 @@ fn write_per_layer_sections_v2_bonded(
     spec: &CastSpec,
     pour_volumes: &[PourVolume],
     ribbon: &Ribbon,
+    has_vent: bool,
 ) {
     let n = spec.layers.len();
     let _ = writeln!(md, "## Per-Layer Procedure (bonded, cast-in-place)");
@@ -755,10 +755,12 @@ fn write_per_layer_sections_v2_bonded(
         // ⚠ `pour_orientation_blurb` is already three-way; this tail was not,
         // so a `PourGateKind::None` cast was told to vent through a vent it
         // does not have, one sentence after being told to drill relief holes.
-        let bonded_air_escape = if matches!(ribbon.pour_gate, PourGateKind::None) {
-            "hand-drilled relief holes"
-        } else {
+        // ⚠ Not implied by a pour gate: `ApexAxial` ignores `include_vent`
+        // and vents by hand-drilled holes, and `VAtDome` can disable it.
+        let bonded_air_escape = if has_vent {
             "vent(s)"
+        } else {
+            "hand-drilled relief holes"
         };
         let _ = writeln!(
             md,
@@ -987,6 +989,7 @@ fn write_print_orientation_v2(
         bolts_carved,
         has_plug_lock,
         has_pour_gate,
+        has_vent: _,
     } = carved;
     let _ = writeln!(md, "## Per-Piece Print Orientation");
     md.push('\n');
@@ -1211,7 +1214,7 @@ fn write_print_orientation_g4_revision(md: &mut String) {
     md.push('\n');
 }
 
-fn write_chamfer_recipe_v2(md: &mut String, has_plug_lock: bool) {
+fn write_chamfer_recipe_v2(md: &mut String, has_plug_lock: bool, has_dowels: bool) {
     let plug_chamfer_mm = PrismaticPinSpec::plug_lock_default().base_chamfer_m * 1000.0;
     // ⚠ With `PlugPinKind::None` there is no lock pyramid, so the only
     // remaining chamfer does not exist either and the whole section would be
@@ -1232,10 +1235,8 @@ fn write_chamfer_recipe_v2(md: &mut String, has_plug_lock: bool) {
     } else {
         "Recon-1 §G-6 envisioned a chamfer band on each `PrismaticPin` as \
          bed-adjacent FDM-elephant-foot relief. This cast carries neither \
-         path: §M-S4 retired the cup-pin registration (see \
-         `## v2 Mold Assembly` below for the symmetric dowel-hole \
-         replacement), and `PlugPinKind::None` generates no plug-floor lock. \
-         There is no chamfer band on this cast."
+         path: §M-S4 retired the cup-pin registration, and `PlugPinKind::None` \
+         generates no plug-floor lock. There is no chamfer band on this cast."
     };
     let _ = writeln!(md, "## First-Layer Chamfer Recipe");
     md.push('\n');
@@ -1274,6 +1275,17 @@ fn write_chamfer_recipe_v2(md: &mut String, has_plug_lock: bool) {
             ". Adding slicer-level compensation on top would tighten that fit \
              past its spec budget and the per-layer cup-wall surface past spec \
              wall-thickness.",
+        )
+    };
+    // ⚠ With no dowels carved either, there is no mating fit left to protect
+    // — only the cup-wall surface.
+    let (slicer_tuned_by, slicer_tighten) = if has_plug_lock || has_dowels {
+        (slicer_tuned_by, slicer_tighten)
+    } else {
+        (
+            "cast carves no mating features at all",
+            ". Adding slicer-level compensation would still push the per-layer \
+             cup-wall surface past spec wall-thickness.",
         )
     };
     let _ = writeln!(
@@ -1348,6 +1360,11 @@ struct SheetFeatures {
     /// `PourGateKind::None` exports no `funnel.stl` and carves no vent, so
     /// every sentence naming one has to be gated the same way.
     has_pour_gate: bool,
+    /// ⚠ A vent leg is NOT implied by a pour gate. It exists only for
+    /// `VAtDome` with `include_vent` — `ApexAxial` ignores `include_vent`
+    /// entirely and vents by hand-drilled holes. Three sentences promised the
+    /// bencher a vent to watch that the carve never made.
+    has_vent: bool,
 }
 
 /// The cf-view seam-face bullet: what the bencher should SEE in a seam face.
@@ -1392,10 +1409,16 @@ fn seam_face_features(ribbon: &Ribbon, has_dowels: bool, bolts_carved: bool) -> 
                  into an open half-trough and half-cone (the bore lies IN the \
                  seam plane, so each half carries one side of it)",
             ),
+            PourGateLayout::VAtDome if spec.include_vent => present.push(
+                "ONE half-trough at the dome end per piece — the V's legs \
+                 splay along the binormal, so the Positive piece carries the \
+                 pour leg's and the Negative piece the vent leg's, not both \
+                 in each face",
+            ),
             PourGateLayout::VAtDome => present.push(
-                "ONE half-trough at the dome end — the V's legs splay along \
-                 the binormal, so the Positive piece carries the pour leg's \
-                 and the Negative piece the vent leg's, not both in each face",
+                "ONE half-trough at the dome end, on the Positive piece only \
+                 (`include_vent = false` — no vent leg is carved, so the \
+                 Negative seam face has none)",
             ),
         },
     }
@@ -1461,6 +1484,7 @@ fn write_cfview_sanity_check_v2(
         bolts_carved,
         has_plug_lock,
         has_pour_gate,
+        has_vent: _,
     } = carved;
     // ⚠ Do not send the bencher to verify features the cast never carves.
     let dowel_check = seam_face_check(ribbon, has_dowels, bolts_carved);
@@ -1975,10 +1999,20 @@ fn write_v2_bolt_pattern_note(
          without a separate gasket"
     };
     // The solver only excludes dowel footprints when dowels exist.
-    let dowel_exclusion = if has_dowels {
-        ", the dowel holes,"
+    // ⚠ Name only the exclusions this cast actually has. Previously this
+    // listed the dowel holes and "the pour" unconditionally, and the no-dowel
+    // rendering left a stray comma before "and the pour".
+    let mut exclusion_list: Vec<&str> = Vec::new();
+    if has_dowels {
+        exclusion_list.push("the dowel holes");
+    }
+    if has_pour_gate {
+        exclusion_list.push("the pour channel");
+    }
+    let exclusions = if exclusion_list.is_empty() {
+        String::new()
     } else {
-        ","
+        format!(", {}", exclusion_list.join(" and "))
     };
     let dowel_first = if has_dowels {
         "register the two halves with the §M dowels FIRST (the dowel-hole \
@@ -2031,8 +2065,8 @@ fn write_v2_bolt_pattern_note(
          solver spaces them evenly around the seam loop (≤30 mm pitch), \
          {bracket_clause}sizes each \
          bolt's radial offset so the M5 washer footprint stays inside the \
-         flange band and clear of the cup-wall step{dowel_exclusion} and \
-         the pour. Identical pattern on both halves of a given layer; the \
+         flange band and clear of the cup-wall step{exclusions}. Identical \
+         pattern on both halves of a given layer; the \
          per-layer hole count is emergent.\n\
          \n\
          **Workshop supplies (per cast assembly)**: per bolt hole — one \
@@ -2169,10 +2203,15 @@ fn write_v2_cup_half_clamping_note(
     ribbon: &Ribbon,
     mode: CastMode,
     layer_count: usize,
-    bolts_carved: bool,
-    has_dowels: bool,
-    has_pour_gate: bool,
+    carved: SheetFeatures,
 ) {
+    let SheetFeatures {
+        has_dowels,
+        bolts_carved,
+        has_pour_gate,
+        has_vent,
+        ..
+    } = carved;
     let post_demold = post_demold_section(mode, layer_count);
     // ⚠ Bonded intermediate layers are NOT demolded — the cured layer stays on
     // the plug as the next layer's inner form, so a blanket "demold the tube"
@@ -2202,6 +2241,14 @@ fn write_v2_cup_half_clamping_note(
     };
     let _ = writeln!(md, "{header}");
     md.push('\n');
+    // ⚠ `has_pour_gate` was used in the Plate+Mold arm but not in these two,
+    // so a `PourGateKind::None` cast was routed to a gate the header, the
+    // funnel note and the cf-view checklist all say it does not have.
+    let pour_route_none = if has_pour_gate {
+        "through the pour gate"
+    } else {
+        "through the open seam (this cast has no pour gate)"
+    };
     // ⚠ Every arm below describes the clamp method for the geometry that was
     // ACTUALLY carved. When a `[bolt_pattern]` was requested and the solver
     // placed nothing, all of them go on to say (or imply) there are no bolts —
@@ -2233,7 +2280,7 @@ fn write_v2_cup_half_clamping_note(
                  ratchet straps, or workshop user's preferred \
                  contoured-clamp method; see the assembly note above \
                  for the alignment method). Pour \
-                 silicone directly through the pour gate; the seam \
+                 silicone {pour_route_none}; the seam \
                  relies on the cup-piece SDF halfspace intersect's \
                  bit-precise flat seam face (recon-4 (P) §F-2). \
                  Workshop user monitors for leaks at the seam during \
@@ -2333,7 +2380,7 @@ fn write_v2_cup_half_clamping_note(
                      a gasket there is no compressible silicone strip \
                      to absorb over-tightening, and PLA-on-PLA flange \
                      contact at high clamp force can stress-crack \
-                     the flange. Pour silicone through the pour gate; \
+                     the flange. Pour silicone {pour_route_none}; \
                      the seam relies on the cup-piece SDF halfspace \
                      intersect's bit-precise flat seam face (recon-4 \
                      (P) §F-2). Workshop user monitors for leaks; \
@@ -2386,16 +2433,12 @@ fn write_v2_cup_half_clamping_note(
             // ⚠ The vent is a THIRD state: `PourGateSpec::include_vent` can be
             // false, and `write_v2_pour_gate_note` prints an explicit
             // "vent leg disabled" note in that case.
-            let vent_cue = match &ribbon.pour_gate {
-                PourGateKind::Default(g) if g.include_vent => {
-                    " The vent leg confirms full cavity fill; pour until \
-                     silicone wets the vent opening."
-                }
-                _ => {
-                    " There is no vent leg on this cast (`include_vent = \
-                     false`) — drill air-relief holes as needed and watch the \
-                     cavity fill."
-                }
+            let vent_cue = if has_vent {
+                " The vent leg confirms full cavity fill; pour until silicone \
+                 wets the vent opening."
+            } else {
+                " There is no vent leg on this cast — drill air-relief holes \
+                 as needed and watch the cavity fill."
             };
             let (gasket_pour_lead, gasket_pour_route): (&str, String) = if has_pour_gate {
                 (
@@ -3093,6 +3136,7 @@ mod tests {
     // report "None" and hide which sheet failed.
     #![allow(clippy::panic, clippy::unwrap_used)]
 
+    use super::SheetFeatures;
     use super::{
         TDS_LOOKUP_PLACEHOLDER, cure_protocol_cells, layer_position_label, write_v2_assembly_note,
         write_v2_cup_half_clamping_note, write_v2_plug_anchor_note,
@@ -3406,9 +3450,13 @@ mod tests {
                     &r,
                     CastMode::Detachable,
                     2,
-                    bolts_carved,
-                    false,
-                    true,
+                    SheetFeatures {
+                        has_dowels: false,
+                        bolts_carved,
+                        has_plug_lock: false,
+                        has_pour_gate: true,
+                        has_vent: true,
+                    },
                 );
                 md
             };
@@ -3578,9 +3626,13 @@ mod tests {
                 &r,
                 CastMode::Detachable,
                 2,
-                false,
-                false,
-                true,
+                SheetFeatures {
+                    has_dowels: false,
+                    bolts_carved: false,
+                    has_plug_lock: false,
+                    has_pour_gate: true,
+                    has_vent: true,
+                },
             );
             md
         };
