@@ -4249,37 +4249,6 @@ mod tests {
     /// wording with each other.
     #[test]
     fn a_cast_without_dowels_never_says_to_register_on_them() {
-        // ⚠⚠ NO FILTER AT ALL — not a verb list either. A verb list is a
-        // phrase-match in disguise and failed exactly the same way: keyed on
-        // "register"/"seat the two halves" it passed over "mating the cup
-        // halves via the symmetric dowel-hole pattern", "aligning on the
-        // dowels", and a cf-view step naming holes the cast never carves.
-        //
-        // Instead EVERY sentence mentioning a dowel must match a known-good
-        // key below. A new or reworded dowel sentence fails until a human
-        // triages it, which is the only oracle synonyms cannot walk through.
-        const ALLOWED_DOWEL_MENTIONS: &[&str] = &[
-            // Correctly negated instructions.
-            "align the two halves by hand (this cast carves no dowel holes)",
-            "aligning the two halves by hand until the seam closes flush",
-            "This cast has no integral registration features",
-            "This cast carves no dowel holes",
-            "This cast carves nothing into the seam face",
-            "No dowel holes are carved",
-            "NO dowel holes were carved",
-            "Either there is no flange to place them in",
-            "no dowel holes are carved — \
-                 placement needs a flange",
-            "no dowel holes and no bolt holes are carved",
-            "bolt clearance holes ONLY",
-            // Reference / historical prose — describes the feature, does not
-            // instruct the bencher to use one.
-            "enable dowel holes, dovetails, or magnets",
-            "the cup-pin registration path is retired",
-            "dowel-hole subtracts only remesh the INTERIOR",
-            "radial clearance is tuned by `DowelHoleSpec`",
-            "retired the prismatic-pin registration path entirely",
-        ];
         use crate::bolt_pattern::{BoltPatternKind, BoltPatternSpec};
         use crate::dowel_hole::{DowelHoleKind, DowelHoleSpec};
         use crate::flange::{DemandFlangeSpec, FlangeKind};
@@ -4301,18 +4270,7 @@ mod tests {
             no_dowels.contains("### M5 through-bolt clamp pattern (§B)"),
             "fixture must carve bolts, or the §B prose never renders:\n{no_dowels}"
         );
-        for sentence in no_dowels.split(['.', '\n']) {
-            if !sentence.to_lowercase().contains("dowel") {
-                continue;
-            }
-            assert!(
-                ALLOWED_DOWEL_MENTIONS.iter().any(|k| sentence.contains(k)),
-                "un-triaged dowel sentence on a `DowelHoleKind::None` sheet — \
-                 either it is a contradiction, or add it to \
-                 ALLOWED_DOWEL_MENTIONS with a reason:\n  {}",
-                sentence.trim()
-            );
-        }
+        assert_no_untriaged_dowel_mention(&no_dowels, "dowels off");
 
         // ★★ THE CONFIG THAT MOTIVATED THE CARVE-BACKED ANSWER: dowels
         // ENABLED but no flange. `compute_smart_placements` needs a flange, so
@@ -4331,17 +4289,33 @@ mod tests {
             let pours = flangeless_spec.compute_pour_volumes().unwrap();
             generate_procedure_markdown_v2(&flangeless_spec, &pours, &ribbon)
         };
-        for sentence in flangeless.split(['.', '\n']) {
-            if !sentence.to_lowercase().contains("dowel") {
-                continue;
-            }
-            assert!(
-                ALLOWED_DOWEL_MENTIONS.iter().any(|k| sentence.contains(k)),
-                "dowels enabled but NO FLANGE carves none — sheet still says: \
-                 \n  {}",
-                sentence.trim()
-            );
-        }
+        assert_no_untriaged_dowel_mention(
+            &flangeless,
+            "dowels ENABLED but no flange, so none are placed",
+        );
+
+        // ★ The gasketed PLATE arm — the iter-3 default, and the one arm that
+        // never consulted the carve. The earlier fixture is gasketless, so
+        // this arm simply never rendered and its step 4 ("aligning via the
+        // symmetric dowel holes") and step 8 ("any dowels … slide out") went
+        // unchecked.
+        let gasketed = {
+            let (mut sp, base) = v2_fixture();
+            sp.wall_thickness_m = 0.020;
+            let ribbon = base
+                .with_flange(FlangeKind::Plate(crate::flange::FlangeSpec::iter1()))
+                .with_gasket(crate::gasket_mold::GasketKind::Mold(
+                    crate::gasket_mold::GasketSpec::iter1(),
+                ))
+                .with_dowel_hole(DowelHoleKind::None);
+            let pours = sp.compute_pour_volumes().unwrap();
+            generate_procedure_markdown_v2(&sp, &pours, &ribbon)
+        };
+        assert!(
+            gasketed.contains("## Cup-Half Clamping with Gasket Installation"),
+            "fixture must render the gasketed arm:\n{gasketed}"
+        );
+        assert_no_untriaged_dowel_mention(&gasketed, "gasketed PLATE arm, no dowels carved");
 
         // Two-sided: with dowels enabled the registration instruction returns.
         let dowelled = sheet(DowelHoleKind::Auto(DowelHoleSpec::iter1()));
@@ -4349,6 +4323,58 @@ mod tests {
             dowelled.contains("register the two halves with the §M dowels FIRST"),
             "a dowelled cast must still say to register on them:\n{dowelled}"
         );
+    }
+
+    // ⚠⚠ NO FILTER AT ALL — not a verb list either. A verb list is a
+    // phrase-match in disguise and failed exactly the same way: keyed on
+    // "register"/"seat the two halves" it passed over "mating the cup
+    // halves via the symmetric dowel-hole pattern", "aligning on the
+    // dowels", and a cf-view step naming holes the cast never carves.
+    //
+    // Instead EVERY sentence mentioning a dowel must match a known-good
+    // key below. A new or reworded dowel sentence fails until a human
+    // triages it, which is the only oracle synonyms cannot walk through.
+    const ALLOWED_DOWEL_MENTIONS: &[&str] = &[
+        // Correctly negated instructions.
+        "align the two halves by hand (this cast carves no dowel holes)",
+        "aligning the two halves by hand until the seam closes flush",
+        "This cast has no integral registration features",
+        "This cast carves no dowel holes",
+        "This cast carves nothing into the seam face",
+        "No dowel holes are carved",
+        "NO dowel holes were carved",
+        "Either there is no flange to place them in",
+        "no dowel holes are carved — \
+             placement needs a flange",
+        "no dowel holes and no bolt holes are carved",
+        "bolt clearance holes ONLY",
+        // Reference / historical prose — describes the feature, does not
+        // instruct the bencher to use one.
+        "enable dowel holes, dovetails, or magnets",
+        "so the requested dowels can place",
+        "this cast \
+                 carves no dowel holes, so see",
+        "the cup-pin registration path is retired",
+        "dowel-hole subtracts only remesh the INTERIOR",
+        "radial clearance is tuned by `DowelHoleSpec`",
+        "retired the prismatic-pin registration path entirely",
+    ];
+
+    /// Every sentence mentioning a dowel on a sheet that carves none must be
+    /// an explicitly triaged entry in [`ALLOWED_DOWEL_MENTIONS`].
+    fn assert_no_untriaged_dowel_mention(md: &str, case: &str) {
+        for sentence in md.split(['.', '\n']) {
+            if !sentence.to_lowercase().contains("dowel") {
+                continue;
+            }
+            assert!(
+                ALLOWED_DOWEL_MENTIONS.iter().any(|k| sentence.contains(k)),
+                "[{case}] un-triaged dowel sentence — either it is a \
+                 contradiction, or add it to ALLOWED_DOWEL_MENTIONS with a \
+                 reason:\n  {}",
+                sentence.trim()
+            );
+        }
     }
 
     /// Assert every backticked `#…` reference in `md` names a heading that is

@@ -433,12 +433,13 @@ pub fn generate_procedure_markdown_v2_for_mode(
         &mut md,
         apex_pour,
         spec.layers.len(),
+        ribbon,
         has_dowels,
         bolts_carved,
     );
     write_chamfer_recipe_v2(&mut md);
     write_target_fdm_floor_v2(&mut md);
-    write_cfview_sanity_check_v2(&mut md, apex_pour, has_dowels, bolts_carved);
+    write_cfview_sanity_check_v2(&mut md, apex_pour, ribbon, has_dowels, bolts_carved);
     write_cap_plane_chamfer_v2(&mut md);
     write_seam_face_edge_v2(&mut md);
     write_materials_table(&mut md, spec, pour_volumes);
@@ -940,6 +941,7 @@ fn write_print_orientation_v2(
     md: &mut String,
     apex_pour: bool,
     layer_count: usize,
+    ribbon: &Ribbon,
     has_dowels: bool,
     bolts_carved: bool,
 ) {
@@ -954,7 +956,7 @@ fn write_print_orientation_v2(
          section)."
     );
     md.push('\n');
-    write_print_orientation_cup_pieces(md, has_dowels, bolts_carved, apex_pour);
+    write_print_orientation_cup_pieces(md, ribbon, has_dowels, bolts_carved);
     write_print_orientation_plug_pieces(md);
     write_print_orientation_funnel_platform(md, apex_pour, layer_count);
     write_print_orientation_g4_revision(md);
@@ -962,9 +964,9 @@ fn write_print_orientation_v2(
 
 fn write_print_orientation_cup_pieces(
     md: &mut String,
+    ribbon: &Ribbon,
     has_dowels: bool,
     bolts_carved: bool,
-    apex_bore: bool,
 ) {
     let _ = writeln!(md, "### Cup pieces (`mold_layer_*_piece_{{0|1}}.stl`)");
     md.push('\n');
@@ -989,19 +991,17 @@ fn write_print_orientation_cup_pieces(
              seam-face-UP orientation carries over for dowel holes \
              without modification."
         );
-    } else if bolts_carved || apex_bore {
+    } else if !seam_face_features(ribbon, has_dowels, bolts_carved).is_empty() {
         // ⚠ NOT "plain": the §B M5 clearance holes go through this same face,
         // and the cf-view checklist below says so under a heading whose
         // failure instruction is "do NOT proceed to print".
         let _ = writeln!(
             md,
             "This cast carves no dowel holes, but other features DO break \
-             the seam face — the §B M5 bolt clearance holes and/or the apex \
-             pour bore + integral funnel, depending on configuration (the \
-             cf-view checklist below lists exactly what to expect). \
-             Seam-face-UP is the orientation lock for exactly that reason: \
-             each one opens upward as a recess, printable without internal \
-             support or bridging."
+             the seam face — see `## cf-view Sanity-Check Workflow` below for \
+             the exact list this configuration produces. Seam-face-UP is the \
+             orientation lock for exactly that reason: each one opens upward \
+             as a recess, printable without internal support or bridging."
         );
     } else {
         let _ = writeln!(
@@ -1234,16 +1234,25 @@ fn write_target_fdm_floor_v2(md: &mut String) {
 /// The cf-view seam-face bullet: what the bencher should SEE in a seam face.
 ///
 /// ⚠⚠ This bullet ends a checklist whose failure instruction is "do NOT
-/// proceed to print", so an exclusivity claim here BLOCKS A CORRECT PRINT if it
-/// under-counts. It has done so twice: keyed on dowels alone it called §B bolt
-/// holes a regression; keyed on dowels+bolts it called the `ApexAxial` pour bore
-/// a regression — on the iter-1 production config, which has neither fastener.
+/// proceed to print", so an exclusivity claim here BLOCKS A CORRECT PRINT when
+/// it under-counts. It has done so FOUR times — keyed on dowels it condemned
+/// the §B bolt holes; on dowels+bolts, the apex bore; enumerating those three,
+/// the V-at-dome pour/vent legs and the plug-lock socket. Each fix
+/// under-counted by exactly the feature its author was not thinking about.
 ///
-/// ★ So it ENUMERATES rather than branches. Adding a fifth seam-face feature is
-/// one `push`, and the "nothing else" sentence stays true automatically —
-/// a 2^N match cannot make that guarantee.
-fn seam_face_check(has_dowels: bool, bolts_carved: bool, apex_bore: bool) -> String {
-    let mut present: Vec<&str> = Vec::new();
+/// ★ It therefore reads the RIBBON rather than taking a caller's guesses: the
+/// authoritative list is "every carve the seam plane bisects", and those all
+/// live on the ribbon. From `piece.rs` / `pour.rs` / `plug.rs`, that is:
+/// §M-S2 dowel holes · §B bolt clearance holes · the apex bore + integral
+/// funnel · the V-at-dome pour and vent legs (`pour.rs:312` — "effectively
+/// bisected at the seam") · the plug-floor-lock socket (`plug.rs:62` — "the
+/// per-side halfspace intersect bisects it by construction").
+///
+/// ⚠ Only `has_dowels` / `bolts_carved` are passed in, because those two are
+/// answers from the PLANNER — the kind alone does not say whether they were
+/// placed. Everything else is a pure function of the ribbon.
+fn seam_face_features(ribbon: &Ribbon, has_dowels: bool, bolts_carved: bool) -> Vec<&'static str> {
+    let mut present: Vec<&'static str> = Vec::new();
     if has_dowels {
         present.push(
             "the §M-S2 symmetric dowel holes (cylindrical recesses at the \
@@ -1256,13 +1265,35 @@ fn seam_face_check(has_dowels: bool, bolts_carved: bool, apex_bore: bool) -> Str
              band, mirrored across the seam plane)",
         );
     }
-    if apex_bore {
+    match &ribbon.pour_gate {
+        PourGateKind::None => {}
+        PourGateKind::Default(spec) => match spec.layout {
+            PourGateLayout::ApexAxial => present.push(
+                "the apex pour bore + integral funnel, bisected lengthwise \
+                 into an open half-trough and half-cone (the bore lies IN the \
+                 seam plane, so each half carries one side of it)",
+            ),
+            PourGateLayout::VAtDome => present.push(
+                "the pour and vent legs at the dome end, each bisected \
+                 lengthwise into an open half-trough (their apex sits on the \
+                 centerline, i.e. on the seam plane)",
+            ),
+        },
+    }
+    if !matches!(ribbon.plug_pins, crate::plug::PlugPinKind::None) {
         present.push(
-            "the apex pour bore + integral funnel, bisected lengthwise into an \
-             open half-trough and half-cone (the bore lies IN the seam plane, \
-             so each half carries one side of it)",
+            "the plug-floor-lock socket on the cap-plane wall, bisected by \
+             the seam (each half carries one side of the truncated-pyramid \
+             recess)",
         );
     }
+    present
+}
+
+/// The cf-view bullet built from [`seam_face_features`], so the exclusivity
+/// sentence can never outrun the list.
+fn seam_face_check(ribbon: &Ribbon, has_dowels: bool, bolts_carved: bool) -> String {
+    let present = seam_face_features(ribbon, has_dowels, bolts_carved);
     if present.is_empty() {
         return "- Seam faces: FLAT and featureless — this cast carves nothing \
                 into them. Any recessed cavity in a seam face is a regression."
@@ -1277,11 +1308,12 @@ fn seam_face_check(has_dowels: bool, bolts_carved: bool, apex_bore: bool) -> Str
 fn write_cfview_sanity_check_v2(
     md: &mut String,
     apex_pour: bool,
+    ribbon: &Ribbon,
     has_dowels: bool,
     bolts_carved: bool,
 ) {
     // ⚠ Do not send the bencher to verify features the cast never carves.
-    let dowel_check = seam_face_check(has_dowels, bolts_carved, apex_pour);
+    let dowel_check = seam_face_check(ribbon, has_dowels, bolts_carved);
     let _ = writeln!(md, "## cf-view Sanity-Check Workflow");
     md.push('\n');
     let _ = writeln!(
@@ -1618,6 +1650,15 @@ fn write_v2_assembly_note(
                  needs to bring the cup outlines into registration."
             );
             md.push('\n');
+            // ⚠ Do not offer "enable dowel holes" to a reader who already
+            // enabled them and got none — `registration_status` above has just
+            // told them why. Offer the remedies that are still available.
+            let registration_remedy = if ribbon.dowel_hole.spec().is_some() {
+                "widen the flange or thin the wall so the requested dowels can \
+                 place, or switch to dovetails or magnets"
+            } else {
+                "enable dowel holes, dovetails, or magnets"
+            };
             let reseal_when = if layer_count == 1 {
                 "before re-pouring"
             } else {
@@ -1629,7 +1670,7 @@ fn write_v2_assembly_note(
                  small fillet of mold release or putty along the outside \
                  of the seam {reseal_when}. Document the leak \
                  position for the post-iter-1 registration-feature \
-                 decision (enable dowel holes, dovetails, or magnets)."
+                 decision ({registration_remedy})."
             );
         }
         Some(spec) => {
@@ -2132,6 +2173,24 @@ fn write_v2_cup_half_clamping_note(
             // not in step 8's release, not in the calibration note. Gating a
             // single step (as a first attempt did) leaves four sentences
             // commanding clamps that the same section forbids.
+            // ⚠ This arm is the one that never consulted the carve: step 4
+            // aligned "via the symmetric dowel holes" and step 8 had dowels
+            // sliding out of them, on a cast that may carve none.
+            let (gasket_step4_align, dowel_release, seated_on) = if has_dowels {
+                (
+                    "aligning via the symmetric dowel holes",
+                    " any dowels in the symmetric holes slide out",
+                    "cup halves resting on the registration features",
+                )
+            } else {
+                (
+                    "bringing the seam faces together by hand — this cast \
+                     carves no dowel holes, so see `## v2 Mold Assembly` above \
+                     for the hand-alignment method",
+                    "",
+                    "cup halves resting on the gasket alone",
+                )
+            };
             let grip_surface = if bolts_carved {
                 "the flat bearing surface the §B M5 bolts clamp against"
             } else {
@@ -2217,12 +2276,9 @@ fn write_v2_cup_half_clamping_note(
                 "4. **Close the Positive cup half over Negative + \
                  gasket.** Bring the Positive piece \
                  (`mold_layer_{{N}}_piece_1.stl`) down onto the \
-                 Negative + gasket assembly, aligning via the \
-                 symmetric dowel holes (if enabled — see \
-                 `## v2 Mold Assembly` above for the alignment \
-                 method when dowel holes are disabled). At this stage \
-                 the gasket is only lightly seated (cup halves resting \
-                 on the registration features); the cup halves should \
+                 Negative + gasket assembly, {gasket_step4_align}. At \
+                 this stage the gasket is only lightly seated ({seated_on}); \
+                 the cup halves should \
                  seat flush at the seam (flange-to-flange contact \
                  OUTSIDE the gasket strip; gasket-sandwiched lightly \
                  INSIDE). Full gasket compression is achieved in \
@@ -2283,8 +2339,7 @@ fn write_v2_cup_half_clamping_note(
             let _ = writeln!(
                 md,
                 "8. **Release clamps + open cup halves.** After cure, \
-                 {release_step}. Separate the cup halves; \
-                 any dowels in the symmetric holes slide out \
+                 {release_step}. Separate the cup halves;{dowel_release} \
                  (gravity-held friction-fit — no latch action). Peel \
                  the gasket strip out of the seam; trim at the body \
                  cavity perimeter with a scalpel if the gasket has \
