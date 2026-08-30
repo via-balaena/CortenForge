@@ -412,7 +412,10 @@ pub fn generate_procedure_markdown_v2_for_mode(
     // bolts reads this one value, so the sheet and the carve cannot disagree.
     // See `spec::bolts_will_be_carved` for why a predicate over the config
     // provably cannot answer this question.
-    let bolts_carved = crate::spec::bolts_will_be_carved(spec, ribbon);
+    let bolts_per_layer = crate::spec::bolts_carved_per_layer(spec, ribbon);
+    // Section-level prose (the §B block, the clamping header) describes the
+    // cast as a whole; the per-layer steps index the vector.
+    let bolts_carved = bolts_per_layer.iter().any(|b| *b);
 
     let mut md = String::new();
     match mode {
@@ -433,7 +436,7 @@ pub fn generate_procedure_markdown_v2_for_mode(
     write_v2_pour_gate_note(&mut md, ribbon, spec.layers.len());
     match mode {
         CastMode::Detachable => {
-            write_per_layer_sections_v2(&mut md, spec, pour_volumes, ribbon, bolts_carved);
+            write_per_layer_sections_v2(&mut md, spec, pour_volumes, ribbon, &bolts_per_layer);
         }
         CastMode::Bonded => write_per_layer_sections_v2_bonded(&mut md, spec, pour_volumes, ribbon),
     }
@@ -1898,13 +1901,23 @@ fn write_v2_cup_half_clamping_note(
                      cast.toml)."
                 );
             } else {
+                // ⚠ Same split as the demand arm below: "no §B bolt pattern"
+                // is about the CARVE. Saying it flat contradicts a `cast.toml`
+                // that enabled one — and this is the exact configuration
+                // (20 mm plate flange, 20 mm wall) the carve gate was written
+                // about, so it is the likeliest arm to hit it.
+                let bolt_status = if ribbon.bolt_pattern.spec().is_some() {
+                    "a `[bolt_pattern]` that placed no fasteners"
+                } else {
+                    "no §B bolt pattern"
+                };
                 let _ = writeln!(
                     md,
                     "This cast carries a seam-plane flange \
                      (`FlangeKind::Plate`: {width_mm:.1} mm lateral × \
                      {thickness_mm:.1} mm per-half thickness) but no \
-                     per-layer gasket (`GasketKind::None`) and no §B \
-                     bolt pattern. Use the flange as a flat C-clamp \
+                     per-layer gasket (`GasketKind::None`) and {bolt_status}. \
+                     Use the flange as a flat C-clamp \
                      grip surface: after mating the cup halves via \
                      the symmetric dowel-hole pattern, apply C-clamps \
                      to the flange at 4 positions (one per 90° \
@@ -1925,6 +1938,28 @@ fn write_v2_cup_half_clamping_note(
         (FlangeKind::Plate(flange_spec), GasketKind::Mold(gasket_spec)) => {
             // Workshop iter-3 default path — full clamp-and-pour
             // protocol per recon §F-7.
+            //
+            // ⚠ ONE clamp actor for the whole arm. When bolts are carved they
+            // ARE the clamp and C-clamps must not appear anywhere in this
+            // protocol — not in the intro, not in step 4's forward reference,
+            // not in step 8's release, not in the calibration note. Gating a
+            // single step (as a first attempt did) leaves four sentences
+            // commanding clamps that the same section forbids.
+            let grip_surface = if bolts_carved {
+                "the flat bearing surface the §B M5 bolts clamp against"
+            } else {
+                "the flat C-clamp grip surface"
+            };
+            let compression_actor = if bolts_carved {
+                "the §B bolts are tightened"
+            } else {
+                "the C-clamps apply the design pressure"
+            };
+            let release_step = if bolts_carved {
+                "back off the M5 nuts in the reverse crosswise order"
+            } else {
+                "release the 4 C-clamps"
+            };
             let width_mm = flange_spec.flange_width_m * 1000.0;
             let thickness_mm = flange_spec.flange_thickness_m * 1000.0;
             let inner_offset_mm = flange_spec.flange_inner_offset_m * 1000.0;
@@ -1942,8 +1977,8 @@ fn write_v2_cup_half_clamping_note(
                  cavity perimeter) and per-layer gaskets \
                  (`GasketKind::Mold`: {gasket_width_mm:.1} × \
                  {gasket_thickness_mm:.1} mm {gasket_material_label} \
-                 cross-section). The flange provides the flat C-clamp \
-                 grip surface; the gasket provides the silicone seal \
+                 cross-section). The flange provides {grip_surface}; \
+                 the gasket provides the silicone seal \
                  against FDM-tolerance leak per the seam-gasket-mold \
                  arc (recon §G-1). The flange's `inner_offset_m` \
                  ({inner_offset_mm:.1} mm) keeps the flange material \
@@ -2004,7 +2039,7 @@ fn write_v2_cup_half_clamping_note(
                  seat flush at the seam (flange-to-flange contact \
                  OUTSIDE the gasket strip; gasket-sandwiched lightly \
                  INSIDE). Full gasket compression is achieved in \
-                 Step 5 once the C-clamps apply the design pressure."
+                 Step 5 once {compression_actor}."
             );
             // ⚠ With carved bolts the §B section already says the M5 bolts ARE
             // the clamp; a C-clamp step here would be a second, conflicting
@@ -2056,7 +2091,7 @@ fn write_v2_cup_half_clamping_note(
             let _ = writeln!(
                 md,
                 "8. **Release clamps + open cup halves.** After cure, \
-                 release the 4 C-clamps. Separate the cup halves; \
+                 {release_step}. Separate the cup halves; \
                  any dowels in the symmetric holes slide out \
                  (gravity-held friction-fit — no latch action). Peel \
                  the gasket strip out of the seam; trim at the body \
@@ -2070,16 +2105,28 @@ fn write_v2_cup_half_clamping_note(
                  halves (silicone-non-stick). {demold_sentence}"
             );
             md.push('\n');
-            let _ = writeln!(
-                md,
-                "**Clamp count + tightness** (recon §F-10): the \
-                 4-clamp / hand-tight + 1/8 turn recipe is the iter-3 \
-                 starting point. Workshop S6 calibration may dial up \
-                 to 6-8 clamps for longer perimeters, or dial down \
-                 clamp torque if gasket extrusion is observed. \
-                 Document deltas for the S7 post-iter-3 calibration \
-                 sweep."
-            );
+            if bolts_carved {
+                let _ = writeln!(
+                    md,
+                    "**Bolt tightness** (recon §F-10, bolted variant): the \
+                     crosswise hand-tight recipe in §B is the iter-3 starting \
+                     point. There is no clamp COUNT to calibrate here — the \
+                     bolt count is emergent from the seam solver. Dial down \
+                     bolt torque if gasket extrusion is observed, and document \
+                     deltas for the S7 post-iter-3 calibration sweep."
+                );
+            } else {
+                let _ = writeln!(
+                    md,
+                    "**Clamp count + tightness** (recon §F-10): the \
+                     4-clamp / hand-tight + 1/8 turn recipe is the iter-3 \
+                     starting point. Workshop S6 calibration may dial up \
+                     to 6-8 clamps for longer perimeters, or dial down \
+                     clamp torque if gasket extrusion is observed. \
+                     Document deltas for the S7 post-iter-3 calibration \
+                     sweep."
+                );
+            }
         }
         (FlangeKind::Demand(demand_spec), GasketKind::None) => {
             // The demand-flange print target (recon §4): a scalloped flange —
@@ -2150,6 +2197,15 @@ fn write_v2_cup_half_clamping_note(
             // seal). Supported for completeness — the gasket sits on the
             // continuous land and the bosses host the clamp.
             let land_width_mm = demand_spec.land_width_m * 1000.0;
+            // ⚠ Key on the CARVE. The §B section is gated on bolts actually
+            // being placed, so "clamp via the §B bolts (or C-clamp if no bolt
+            // pattern)" can point a reader at a section that is not in this
+            // document — a bare-prose "§B" the cross-reference gate cannot see.
+            let boss_clamp = if bolts_carved {
+                "clamp via the §B bolts at the bosses"
+            } else {
+                "C-clamp the bosses directly (no bolt pattern was carved)"
+            };
             let _ = writeln!(
                 md,
                 "This cast carries the demand-driven (scalloped) flange \
@@ -2158,8 +2214,7 @@ fn write_v2_cup_half_clamping_note(
                  The demand flange is normally run gasket-None (the continuous land \
                  IS the PLA-on-PLA seal); with a gasket also present, lay the gasket \
                  strip on the continuous seal land along the body-cavity perimeter, \
-                 close the halves aligning on the dowels, and clamp via the §B bolts \
-                 at the bosses (or C-clamp the bosses if no bolt pattern). Aim for \
+                 close the halves aligning on the dowels, and {boss_clamp}. Aim for \
                  the gasket's design compression; do not over-tighten. Reconsider \
                  whether the gasket is needed once the bare-land seal is proven at \
                  the physical gate."
@@ -2347,7 +2402,7 @@ fn write_per_layer_sections_v2(
     spec: &CastSpec,
     pour_volumes: &[PourVolume],
     ribbon: &Ribbon,
-    bolts_carved: bool,
+    bolts_per_layer: &[bool],
 ) {
     let _ = writeln!(md, "## Per-Layer Procedure");
     md.push('\n');
@@ -2433,7 +2488,12 @@ fn write_per_layer_sections_v2(
         // the clamping header are the other two. Gating on the bolt KIND here
         // sends step 6 to `### M5 through-bolt clamp pattern (§B)`, a section
         // that is not emitted when no holes are carved.
-        let bolted = bolts_carved;
+        // ⚠ THIS layer's answer — a stack can be bolted on one layer and not
+        // another, and step 6 offers no fallback clamp if it lies.
+        let bolted = bolts_per_layer
+            .get(pour.layer_index)
+            .copied()
+            .unwrap_or(false);
         let closing_protocol = match (&ribbon.gasket, bolted) {
             (GasketKind::Mold(_), _) => {
                 "Place the cured gasket strip on the Negative half's \

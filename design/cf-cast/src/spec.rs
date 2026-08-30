@@ -1429,7 +1429,15 @@ fn compute_smart_placements(
     })
 }
 
-/// Whether the carve will actually place bolt holes for `spec` + `ribbon`.
+/// Per-LAYER: whether the carve will actually place bolt holes, for each
+/// layer of `spec` in order.
+///
+/// ⚠ Per layer, not per cast. The carve indexes `placements.bolts[i]`, and
+/// feasibility is a function of each layer's own seam silhouette against one
+/// global `wall_thickness_m` — so a small inner layer can close the washer
+/// window while the outer layer places four bolts. Collapsing this to a single
+/// bool made step 6 tell a bolt-less layer to install §B bolts, with no other
+/// clamp method offered.
 ///
 /// ★★★ This RUNS THE PLANNER ([`compute_smart_placements`], the same call the
 /// carve makes) rather than testing a predicate over the config, because no
@@ -1454,15 +1462,21 @@ fn compute_smart_placements(
 /// iter-1 production spec, which carries no flange — pays nothing. If bolted
 /// casts get expensive on the pivot's real scan bodies, thread the already
 /// computed [`SmartPlacements`] from the export path instead of re-solving.
-pub fn bolts_will_be_carved(spec: &CastSpec, ribbon: &Ribbon) -> bool {
+pub fn bolts_carved_per_layer(spec: &CastSpec, ribbon: &Ribbon) -> Vec<bool> {
+    let n = spec.layers.len();
     if ribbon.bolt_pattern.spec().is_none() {
-        return false;
+        return vec![false; n];
     }
     match compute_smart_placements(spec, ribbon) {
-        Ok(p) => p
-            .bolts
-            .is_some_and(|per_layer| per_layer.iter().any(|l| !l.is_empty())),
-        Err(_) => true,
+        Ok(p) => p.bolts.map_or_else(
+            || vec![false; n],
+            |per_layer| {
+                let mut out: Vec<bool> = per_layer.iter().map(|l| !l.is_empty()).collect();
+                out.resize(n, false);
+                out
+            },
+        ),
+        Err(_) => vec![true; n],
     }
 }
 
@@ -4045,11 +4059,21 @@ mod tests {
             bolted.contains("### M5 through-bolt clamp pattern (§B)"),
             "fixture must actually carve bolts, or this proves nothing:\n{bolted}"
         );
-        assert!(
-            !bolted.contains("Apply C-clamps to the flange at 4 quadrant"),
-            "bolted + gasketed sheet gives BOTH a bolt protocol and a C-clamp \
-             protocol for the same joint:\n{bolted}"
-        );
+        // ⚠ Assert the PROPERTY, not one phrase. The first version of this
+        // test checked a single literal ("Apply C-clamps to the flange at 4
+        // quadrant") and passed while FOUR other sentences in the same section
+        // still commanded C-clamps: the intro's grip surface, step 4's forward
+        // reference, step 8's release, and the clamp-count calibration note.
+        // Every surviving mention must be a NEGATION.
+        for (at, _) in bolted.match_indices("C-clamp") {
+            let lookback = &bolted[at.saturating_sub(30)..at];
+            assert!(
+                lookback.to_lowercase().contains("not"),
+                "bolted sheet still COMMANDS a C-clamp (only negated mentions \
+                 are allowed): …{}",
+                &bolted[at.saturating_sub(120)..(at + 80).min(bolted.len())]
+            );
+        }
         assert!(
             bolted.contains("Clamp with the §B M5 bolts, not C-clamps"),
             "the bolted gasket path must say which clamp wins:\n{bolted}"
@@ -4061,6 +4085,64 @@ mod tests {
             unbolted.contains("Apply C-clamps to the flange at 4 quadrant"),
             "an unbolted gasketed cast still needs its C-clamp step:\n{unbolted}"
         );
+    }
+
+    /// ★ `bolts_carved_per_layer` is UNIFORM across layers, and that is an
+    /// invariant of the planner rather than of this function.
+    ///
+    /// `cross_layer_snap` keeps a master placement only when it is feasible on
+    /// EVERY layer, then pushes it to every layer's result — so all layers end
+    /// with the same count and "any layer bolted" implies "all layers bolted".
+    ///
+    /// ⚠ Recorded because a review argued the opposite: that a small inner
+    /// layer could close the washer window while the outer layer bolts, making
+    /// step 6 order §B bolts into a mold without them. I could not construct
+    /// that — 16 inner/outer size × wall combinations all came back uniform,
+    /// and the snap loop above explains why. The per-layer plumbing is kept
+    /// anyway (it mirrors the carve's own `placements.bolts[i]` indexing and
+    /// costs nothing), and THIS test is what would catch the invariant
+    /// breaking, at which point the prose is already correct.
+    #[test]
+    fn bolts_carved_is_uniform_across_layers() {
+        use super::bolts_carved_per_layer;
+        use crate::bolt_pattern::{BoltPatternKind, BoltPatternSpec};
+        use crate::flange::{FlangeKind, FlangeSpec};
+
+        for (inner, outer) in [(0.008_f64, 0.030), (0.006, 0.040), (0.012, 0.030)] {
+            for wall in [0.003_f64, 0.005] {
+                let layer = |h: f64| CastLayer {
+                    body: Solid::cuboid(Vector3::new(h, h, h * 0.8)),
+                    material: reference_material(),
+                };
+                let spec = CastSpec {
+                    layers: vec![layer(inner), layer(outer)],
+                    plug: Solid::capsule(0.004, 0.010).translate(Vector3::new(0.0, 0.0, 0.040)),
+                    bounding_region: Solid::cuboid(Vector3::new(0.070, 0.070, 0.060)),
+                    wall_thickness_m: wall,
+                    mesh_cell_size_m: 0.010,
+                    printer_config: PrinterConfig::fdm_default(),
+                    mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+                    scan_mesh_for_plug_layer_0: None,
+                    plug_layer_0_mesh_cell_size_m: None,
+                    plug_layer_0_field_skin_m: None,
+                };
+                let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
+                let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
+                let ribbon = Ribbon::new(centerline, split)
+                    .unwrap()
+                    .with_flange(FlangeKind::Plate(FlangeSpec::iter1()))
+                    .with_bolt_pattern(BoltPatternKind::Auto(BoltPatternSpec::iter1()));
+
+                let per = bolts_carved_per_layer(&spec, &ribbon);
+                assert_eq!(per.len(), 2, "one answer per layer");
+                assert!(
+                    per.iter().all(|b| *b == per[0]),
+                    "layers disagree ({per:?}) for inner {inner} / outer {outer} at \
+                     wall {wall} — `cross_layer_snap` no longer equalises counts, so \
+                     the per-layer step-6 gate is now load-bearing, not defensive"
+                );
+            }
+        }
     }
 
     /// Assert every backticked `#…` reference in `md` names a heading that is
