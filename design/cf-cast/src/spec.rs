@@ -4461,16 +4461,217 @@ mod tests {
         }
     }
 
+    /// ★★★ EVERY cylindrical recess the cast carves must be in the expected
+    /// list — dowels and bolts included.
+    ///
+    /// ⚠ Its sibling gate renders only `FlangeKind::None`, where the planner
+    /// places NEITHER dowels NOR bolts, so marking either of them
+    /// `cylindrical: None` survived it — and that mutant reproduces the exact
+    /// defect the bullet pair exists to prevent (bullet 1 calling the dowel
+    /// holes "cylindrical recesses", the cylinder bullet omitting them and so
+    /// condemning them one line later). A gate that cannot fail on the
+    /// motivating defect is decoration. This one carves them.
+    #[test]
+    fn dowel_and_bolt_cylinders_are_listed_as_expected() {
+        use crate::bolt_pattern::{BoltPatternKind, BoltPatternSpec};
+        use crate::cast_mode::CastMode;
+        use crate::dowel_hole::{DowelHoleKind, DowelHoleSpec};
+        use crate::flange::{DemandFlangeSpec, FlangeKind};
+        use crate::procedure::generate_procedure_markdown_v2_for_mode;
+
+        let (mut spec, base) = v2_fixture();
+        spec.wall_thickness_m = 0.004;
+        let ribbon = base
+            .with_flange(FlangeKind::Demand(DemandFlangeSpec::iter1()))
+            .with_bolt_pattern(BoltPatternKind::Auto(BoltPatternSpec::iter1()))
+            .with_dowel_hole(DowelHoleKind::Auto(DowelHoleSpec::iter1()))
+            // ⚠ The lock MUST be on, or the "not a cylinder" assertion below is
+            // vacuous: with `PlugPinKind::None` the socket never enters the list
+            // at all, and marking it cylindrical survives the gate.
+            .with_plug_pins(crate::plug::PlugPinKind::Axial(
+                crate::plug::PlugPinSpec::iter1(),
+            ));
+        let pours = spec.compute_pour_volumes().unwrap();
+
+        // Ground truth from the PLANNER, not from the config.
+        let carved = crate::spec::carved_features(&spec, &ribbon);
+        let bolts = carved.bolts.iter().any(|b| *b);
+        let dowels = carved.dowels.iter().any(|d| *d);
+        assert!(
+            bolts && dowels,
+            "fixture must actually carve both, or this gate is vacuous \
+             (bolts={bolts}, dowels={dowels})"
+        );
+
+        for mode in [CastMode::Detachable, CastMode::Bonded] {
+            let md = generate_procedure_markdown_v2_for_mode(&spec, &pours, &ribbon, mode);
+            let bullet = md
+                .lines()
+                .find(|l| l.contains("cylindrical pin"))
+                .unwrap_or_else(|| panic!("no cylinder bullet on the {mode:?} sheet"));
+            for (carved_now, name) in [
+                (dowels, "the §M-S2 dowel holes"),
+                (bolts, "the §B bolt clearance holes"),
+            ] {
+                assert_eq!(
+                    bullet.contains(name),
+                    carved_now,
+                    "{mode:?}: the cast carves {name} = {carved_now}, but the \
+                     expected list disagrees — the bullet above calls them \
+                     cylindrical recesses:\n  {bullet}"
+                );
+            }
+            // The plug-floor-lock socket is a truncated PYRAMID
+            // (`SubtractTruncatedPyramid`), never a cylinder — but it IS on this
+            // fixture, so bullet 1 must list it while the cylinder bullet must not.
+            let seam_bullet = md
+                .lines()
+                .find(|l| l.contains("Seam faces carry"))
+                .unwrap_or_else(|| panic!("no seam-face bullet on the {mode:?} sheet"));
+            assert!(
+                seam_bullet.contains("plug-floor-lock socket"),
+                "{mode:?}: fixture must carve the lock, or the pyramid assertion \
+                 below is vacuous:\n  {seam_bullet}"
+            );
+            assert!(
+                !bullet.contains("plug-floor-lock"),
+                "{mode:?}: the lock socket is a pyramid, not a cylinder:\n  {bullet}"
+            );
+        }
+    }
+
+    /// ★★★ Whichever mode a gasketed cast runs, the step that CLOSES the
+    /// halves must tell the bencher to install the gasket first.
+    ///
+    /// ⚠ The bonded per-layer writer never branched on `ribbon.gasket` at all,
+    /// so its step 1 said "assemble the two halves around the plug" with no
+    /// mention of the strip — while the gasket section, two headings away, is
+    /// itself bonded-aware. Two rival numbered protocols, one of which did not
+    /// know about the gasket. The bencher pours and the seam leaks. This is
+    /// the third missing-cue-in-one-twin defect on this branch, so it gets a
+    /// gate rather than a comment.
+    #[test]
+    fn a_gasketed_cast_installs_the_gasket_in_both_modes() {
+        use crate::cast_mode::CastMode;
+        use crate::flange::{FlangeKind, FlangeSpec};
+        use crate::gasket_mold::{GasketKind, GasketSpec};
+        use crate::procedure::generate_procedure_markdown_v2_for_mode;
+
+        for layers in [1usize, 2] {
+            let (spec, base) = if layers == 1 {
+                v2_fixture()
+            } else {
+                two_layer_fixture()
+            };
+            let ribbon = base
+                .with_flange(FlangeKind::Plate(FlangeSpec::iter1()))
+                .with_gasket(GasketKind::Mold(GasketSpec::iter1()));
+            let pours = spec.compute_pour_volumes().unwrap();
+            for mode in [CastMode::Detachable, CastMode::Bonded] {
+                let md = generate_procedure_markdown_v2_for_mode(&spec, &pours, &ribbon, mode);
+                // The per-layer procedure is the protocol a bencher actually
+                // follows; the gasket SECTION existing elsewhere is not enough.
+                //
+                // ⚠ BOUND IT AT THE NEXT HEADING. Taking everything after the
+                // heading swallows the gasket section further down the sheet,
+                // which made this assertion pass with the cue deleted — the
+                // gate was decoration until a mutant caught it.
+                // ⚠ Match the HEADING, not a mention: the gasket section
+                // cross-references `## Per-Layer Procedure` in backticks
+                // EARLIER on the sheet, so a plain `split_once` sliced from
+                // that mention and never reached the steps.
+                let after = md
+                    .split_once("\n## Per-Layer Procedure")
+                    .unwrap_or_else(|| panic!("{mode:?}: no per-layer procedure"))
+                    .1;
+                let per_layer = after.find("\n## ").map_or(after, |end| &after[..end]);
+                assert!(
+                    per_layer.contains("Mix "),
+                    "{mode:?}: per-layer slice lost the actual steps"
+                );
+                assert!(
+                    per_layer.contains("gasket"),
+                    "{mode:?} {layers}-layer: the per-layer steps close the mold \
+                     without ever mentioning the gasket — the bencher pours a \
+                     gasketed cast with no gasket installed"
+                );
+            }
+        }
+    }
+
+    /// ★★ All three gasket arms must seat the strip in the SAME place.
+    ///
+    /// ⚠ `match (&ribbon.flange, &ribbon.gasket)` had three arms each naming a
+    /// DIFFERENT seat for the same cured loop — "inside the body cavity
+    /// perimeter" (it falls into the cavity and is cast into the part), "on the
+    /// continuous seal land" (~3.5 mm outboard; the loop cannot reach it
+    /// without the stretch step 2 forbids), and straddling the edge. Only one
+    /// can be right, and a bencher reads only their own sheet.
+    #[test]
+    fn every_gasket_arm_seats_the_strip_in_the_same_place() {
+        use crate::cast_mode::CastMode;
+        use crate::flange::{FlangeKind, FlangeSpec};
+        use crate::gasket_mold::{GasketKind, GasketSpec};
+        use crate::procedure::generate_procedure_markdown_v2_for_mode;
+
+        // The one true placement, and the two wrong seats that shipped.
+        const PLACEMENT: &str = "straddling the body cavity edge";
+        const WRONG: &[&str] = &[
+            "inside the body cavity perimeter",
+            "on the continuous seal land",
+        ];
+
+        let mut seen = 0usize;
+        for flange in [
+            FlangeKind::None,
+            FlangeKind::Plate(FlangeSpec::iter1()),
+            FlangeKind::Demand(crate::flange::DemandFlangeSpec::iter1()),
+        ] {
+            let (spec, base) = v2_fixture();
+            let ribbon = base
+                .with_flange(flange)
+                .with_gasket(GasketKind::Mold(GasketSpec::iter1()));
+            let pours = spec.compute_pour_volumes().unwrap();
+            for mode in [CastMode::Detachable, CastMode::Bonded] {
+                let md = generate_procedure_markdown_v2_for_mode(&spec, &pours, &ribbon, mode);
+                assert!(
+                    md.contains(PLACEMENT),
+                    "{flange:?} / {mode:?} gasket sheet never seats the strip on \
+                     the cavity edge"
+                );
+                for wrong in WRONG {
+                    assert!(
+                        !md.contains(wrong),
+                        "{flange:?} / {mode:?} seats the gasket at {wrong:?} — \
+                         the three arms have diverged again"
+                    );
+                }
+                seen += 1;
+            }
+        }
+        assert_eq!(seen, 6, "gasket arm matrix went vacuous");
+    }
+
     /// ★★★ Every `SubtractCylinder` the pour gate actually carves must be
     /// named in the cf-view cylinder bullet's EXPECTED list.
     ///
-    /// ⚠ The oracle is `build_pour_gate_transforms` — the real carve — not a
-    /// mirror of the prose's own predicate. Marking the V legs
-    /// `cylindrical: None` restores the exact defect this gate exists for
-    /// (the bullet condemning, as a suspected regression, a trough the bullet
-    /// above calls expected) and MUST fail here; sharing one list between the
-    /// two bullets makes them agree, but agreement about a wrong answer is
-    /// still wrong.
+    /// ⚠ The oracle is the CARVE, not a mirror of the prose's own predicate.
+    /// Marking the V legs `cylindrical: None` restores the exact defect this
+    /// gate exists for (the bullet condemning, as a suspected regression, a
+    /// trough the bullet above calls expected) and MUST fail here; sharing one
+    /// list between the two bullets makes them agree, but agreement about a
+    /// wrong answer is still wrong.
+    ///
+    /// ⚠⚠ The carve is layout-dependent and `build_pour_gate_transforms` is
+    /// NOT it for `ApexAxial`: that arm returns the seam-solver's exclusion
+    /// FOOTPRINT (radius = the funnel base, not the bore), and
+    /// `compose_piece_shared` drops it — the cup gets the integral split
+    /// funnel + bore fused into its SDF by `build_integral_pour_channel`
+    /// instead. Reading that function as "the carve" happens to give the right
+    /// answer today; if the footprint arm ever returned empty, this gate would
+    /// flip and demand the prose DROP a bore the cup really carves, which is
+    /// the false-STOP-WORK shape the branch exists to remove. So each layout
+    /// states its own truth.
     #[test]
     fn every_cylinder_the_pour_gate_carves_is_listed_as_expected() {
         use crate::cast_mode::CastMode;
@@ -4501,10 +4702,30 @@ mod tests {
                 CastMode::Detachable,
             );
 
-            let cylinders = build_pour_gate_transforms(&ribbon)
-                .iter()
-                .filter(|t| matches!(t, MatingTransform::SubtractCylinder { .. }))
-                .count();
+            // What the CUP actually ends up with, per layout.
+            let (cylinders, expected_name) = match &ribbon.pour_gate {
+                PourGateKind::None => (0usize, None),
+                // The bore + split funnel are fused into the cup SDF; the
+                // post-MC transform list is deliberately empty here.
+                PourGateKind::Default(g) if g.layout == PourGateLayout::ApexAxial => {
+                    (1, Some("the apex pour bore"))
+                }
+                // V-at-dome: one post-MC `SubtractCylinder` per leg. The vented
+                // and ventless arms name their recess differently — the
+                // ventless sheet must NOT say "V", since it says three times
+                // over that there is none.
+                PourGateKind::Default(g) => (
+                    build_pour_gate_transforms(&ribbon)
+                        .iter()
+                        .filter(|t| matches!(t, MatingTransform::SubtractCylinder { .. }))
+                        .count(),
+                    Some(if g.include_vent {
+                        "the V's pour + vent legs at the dome end"
+                    } else {
+                        "the pour leg at the dome end"
+                    }),
+                ),
+            };
 
             let bullet = md
                 .lines()
@@ -4518,12 +4739,15 @@ mod tests {
                     "{gate:?} carves {cylinders} cylinder(s) but the cf-view \
                      bullet is the flat no-recesses form, which condemns them:\n  {bullet}"
                 );
-                // The gate's own cylinders — not merely SOME cylinder — must
-                // be what the bullet names.
+                // ⚠ THIS layout's own recess, not merely SOME cylinder — a
+                // disjunction over both names let a V config pass by naming
+                // the apex bore.
+                let name =
+                    expected_name.unwrap_or_else(|| panic!("{gate:?} carves but names nothing"));
                 assert!(
-                    bullet.contains("dome end") || bullet.contains("apex pour bore"),
+                    bullet.contains(name),
                     "{gate:?} carves {cylinders} cylinder(s) at the pour gate, \
-                     but the expected list names none of them:\n  {bullet}"
+                     but the expected list does not name {name:?}:\n  {bullet}"
                 );
             } else {
                 saw_gateless += 1;

@@ -491,7 +491,14 @@ pub fn generate_procedure_markdown_v2_for_mode(
     }
     match mode {
         CastMode::Detachable => {
-            write_v2_post_cure_assembly(&mut md, spec, mode, has_pour_gate, has_vent);
+            write_v2_post_cure_assembly(
+                &mut md,
+                spec,
+                mode,
+                has_pour_gate,
+                has_vent,
+                has_plug_lock,
+            );
         }
         CastMode::Bonded => {
             write_v2_bonded_finishing(&mut md, spec, mode, has_pour_gate, has_vent);
@@ -523,7 +530,19 @@ fn write_v2_post_cure_assembly(
     mode: CastMode,
     has_pour_gate: bool,
     has_vent: bool,
+    has_plug_lock: bool,
 ) {
+    // ⚠ The nesting surfaces are line-to-line EXCEPT at the plug lock:
+    // `add_plug_pins` unions a truncated pyramid onto each plug, so layer N's
+    // cavity and layer N-1's tube each carry a socket at the same place and
+    // nesting leaves a pyramid-shaped air void. Stating the invariant
+    // absolutely would have the bencher hunt a defect that is by design.
+    let lock_void = if has_plug_lock {
+        " (except at the plug-floor-lock socket, where both tubes carry one \
+         and nesting leaves a small pyramid-shaped void — expected)"
+    } else {
+        ""
+    };
     // ⚠ Must match its bonded twin `write_v2_bonded_finishing` exactly — after
     // that one learned `has_vent`, this one saying only "pour-gate flash" made
     // the two modes disagree about the same geometry.
@@ -564,9 +583,11 @@ fn write_v2_post_cure_assembly(
          tube's outer geometry as its inner cavity (innermost = \
          layer 0; outermost = layer {}). Trim any seam flash{gate_flash} \
          flush with a sharp blade on every tube BEFORE nesting — each \
-         tube's cavity is cast against the next-inner tube's own outer \
-         surface, so the two mate line-to-line by construction and any \
-         flash left on a mating face is pure interference.",
+         tube was cast on a PLUG built from the next-inner layer's own \
+         outer solid (`plug_layer_N.stl`; the layers never touch during \
+         casting in this mode), so the two mate line-to-line by \
+         construction{lock_void} and any flash left on a mating face is \
+         pure interference.",
         spec.layers.len(),
         spec.layers.len(),
         spec.layers.len().saturating_sub(1),
@@ -576,11 +597,11 @@ fn write_v2_post_cure_assembly(
         md,
         "**Assembly**: nest the tubes innermost-first. Slide layer 0 \
          into the inner cavity of layer 1. The two surfaces are \
-         nominally line-to-line (layer 1 was cast on layer 0's own \
-         outer geometry), so the fit you actually get is whatever your \
-         print + cure tolerances add — expect it to be snug rather \
-         than loose, and rely on the cured silicone's flexibility. \
-         Apply Smooth-On Silicone Slip (or any \
+         nominally line-to-line (layer 1's plug WAS layer 0's outer \
+         solid), so no clearance is designed in either direction: the \
+         fit you get is whatever print tolerance, cure shrinkage and \
+         marching-cubes quantization add, and this sheet cannot predict \
+         its sign. Work with the cured silicone's flexibility. Apply Smooth-On Silicone Slip (or any \
          silicone-safe lubricant) sparingly to ease insertion if \
          needed. Repeat with each successive outer layer until all \
          tubes are stacked into a single multi-layer device."
@@ -714,6 +735,20 @@ fn write_per_layer_sections_v2_bonded(
     has_vent: bool,
 ) {
     let n = spec.layers.len();
+    // ⚠ The detachable twin has carried a 3-way gasket cue in its closing
+    // protocol since #258; this writer never branched on `ribbon.gasket` at
+    // all, so a bonded gasketed cast was told to "assemble the two halves"
+    // with no mention of the strip — and the gasket section, which IS
+    // bonded-aware, is a rival numbered protocol two headings away. The
+    // bencher pours the layer with no gasket installed and the seam leaks.
+    // This is the third time this branch has fixed a missing cue in one twin.
+    let gasket_cue = if matches!(ribbon.gasket, GasketKind::Mold(_)) {
+        " Before closing the second half, place the cured gasket strip per \
+         `## Cup-Half Clamping with Gasket Installation` above, and clamp per \
+         that section."
+    } else {
+        ""
+    };
     let _ = writeln!(md, "## Per-Layer Procedure (bonded, cast-in-place)");
     md.push('\n');
     if n == 1 {
@@ -768,7 +803,7 @@ fn write_per_layer_sections_v2_bonded(
                 "1. Print `mold_layer_0_piece_0.stl` + `mold_layer_0_piece_1.stl` + \
                  `plug_layer_0.stl` (the only plug). Apply mold release to the plug + \
                  both cup halves, then assemble the two halves around the plug per the \
-                 \"v2 Mold Assembly\" section above."
+                 \"v2 Mold Assembly\" section above.{gasket_cue}"
             );
         } else {
             let _ = writeln!(
@@ -777,7 +812,7 @@ fn write_per_layer_sections_v2_bonded(
                  (no plug — the cured layer {} still on the plug is this layer's inner \
                  form). Mold-release the two cup halves only (NOT the cured silicone), \
                  prep the cured surface per the inter-layer bond note above, then \
-                 assemble the two halves around the plug-plus-cured-stack.",
+                 assemble the two halves around the plug-plus-cured-stack.{gasket_cue}",
                 i - 1
             );
         }
@@ -1581,6 +1616,56 @@ struct SheetFeatures {
     has_vent: bool,
 }
 
+/// The ONE description of where the gasket strip goes.
+///
+/// ⚠⚠ Three arms of `match (&ribbon.flange, &ribbon.gasket)` each told the
+/// bencher to lay the same cured loop in a DIFFERENT place: "inside the body
+/// cavity perimeter" (it falls into the cavity and gets cast into the part),
+/// "on the continuous seal land" (~3.5 mm outboard — the loop cannot reach it
+/// without the stretch step 2 forbids), and straddling the edge. Only the
+/// last is right: `gasket_mold`'s channel SDF is `|body_dist| - half_width`,
+/// symmetric about `body_dist = 0`, so the CURED LOOP is a circuit traced on
+/// the cavity edge itself.
+///
+/// ⚠ And there is no groove in the cup to drop it into. `compose_gasket_mold_solid`
+/// returns ZERO `MatingTransform`s and `piece.rs` never reads `ribbon.gasket`
+/// — the channel is in the gasket MOLD TRAY, which is what steps 1-2 cast the
+/// strip in. The cup seam face is flat. A previous version of this sentence
+/// cited the tray's SDF as if it described the cup, sending the bencher
+/// looking for a groove that is not there, two headings above "do NOT proceed
+/// to print".
+const GASKET_PLACEMENT: &str = "**straddling the body cavity edge \
+     (`body_dist = 0`) — CENTERED on that perimeter, not beside it**, so half its \
+     width lies over the cavity (`body_dist < 0`) and half over the cup wall";
+
+/// Why the strip does not click into anything — a SEPARATE sentence.
+///
+/// ⚠ Folding this into [`GASKET_PLACEMENT`] broke the one arm that continues
+/// its sentence as a list ("lay the strip …, close the halves …, and clamp
+/// …"): the trailing clause turned it into a comma splice reading "…close on
+/// it, close the halves by hand…". A templated fragment has to survive every
+/// grammar it lands in, so the clause that ends a sentence is its own const.
+const GASKET_NO_CHANNEL: &str = "The cup seam face is FLAT — there is no channel cut \
+     into it (the channel is in the gasket mold tray you cast the strip in), so the \
+     strip is only lightly seated until the halves close on it.";
+
+/// One recess a seam face carries.
+///
+/// ⚠ The two cf-view bullets that describe seam faces MUST agree about what
+/// is there: bullet 1 lists the recesses as EXPECTED, and the cylinder bullet
+/// declares which of them are cylinders. When they were built from separate
+/// enumerations they disagreed immediately — the cylinder bullet omitted the
+/// V-at-dome legs, which `SubtractCylinder` carves (`pour::leg_transform`),
+/// so it condemned a trough the bullet above had just called expected. One
+/// list, filtered two ways, cannot drift like that.
+struct SeamFeature {
+    /// How bullet 1 describes the recess.
+    prose: &'static str,
+    /// `Some(short name)` iff the recess is CYLINDRICAL, and so must also
+    /// appear in the cylinder-remnant bullet's expected list.
+    cylindrical: Option<&'static str>,
+}
+
 /// The cf-view seam-face bullet: what the bencher should SEE in a seam face.
 ///
 /// ⚠⚠ This bullet ends a checklist whose failure instruction is "do NOT
@@ -1601,23 +1686,6 @@ struct SheetFeatures {
 /// ⚠ Only `has_dowels` / `bolts_carved` are passed in, because those two are
 /// answers from the PLANNER — the kind alone does not say whether they were
 /// placed. Everything else is a pure function of the ribbon.
-/// One recess a seam face carries.
-///
-/// ⚠ The two cf-view bullets that describe seam faces MUST agree about what
-/// is there: bullet 1 lists the recesses as EXPECTED, and the cylinder bullet
-/// declares which of them are cylinders. When they were built from separate
-/// enumerations they disagreed immediately — the cylinder bullet omitted the
-/// V-at-dome legs, which `SubtractCylinder` carves (`pour::leg_transform`),
-/// so it condemned a trough the bullet above had just called expected. One
-/// list, filtered two ways, cannot drift like that.
-struct SeamFeature {
-    /// How bullet 1 describes the recess.
-    prose: &'static str,
-    /// `Some(short name)` iff the recess is CYLINDRICAL, and so must also
-    /// appear in the cylinder-remnant bullet's expected list.
-    cylindrical: Option<&'static str>,
-}
-
 fn seam_face_features(
     ribbon: &Ribbon,
     has_dowels: bool,
@@ -1681,7 +1749,11 @@ fn seam_face_features(
                 prose: "ONE half-trough at the dome end, on the Positive piece only \
                         (`include_vent = false` — no vent leg is carved, so the \
                         Negative seam face has none)",
-                cylindrical: Some("the V's pour leg at the dome end"),
+                // ⚠ NOT "the V's pour leg" — this sheet says three times over
+                // that `include_vent = false` means "there is no V". Naming one
+                // here reintroduces the branch's own bug class inside the "do
+                // NOT proceed to print" checklist.
+                cylindrical: Some("the pour leg at the dome end"),
             }),
         },
     }
@@ -2674,8 +2746,8 @@ fn write_v2_cup_half_clamping_note(
                  (`GasketKind::Mold`) but no flange \
                  (`FlangeKind::None`). Pour and cure the gasket \
                  strips per the gasket-mold protocol, peel them out, \
-                 and lay each gasket on the Negative cup half's seam \
-                 face inside the body cavity perimeter. Close the \
+                 and lay each gasket on the Negative cup half's seam face, \
+                 {GASKET_PLACEMENT}. {GASKET_NO_CHANNEL} Close the \
                  Positive half over Negative + gasket, aligning via \
                  {gasket_align}. Without a flange to provide \
                  a flat C-clamp grip surface, the cup must be hand-\
@@ -2854,6 +2926,15 @@ fn write_v2_cup_half_clamping_note(
             let gasket_thickness_mm = gasket_spec.cross_section_thickness_m * 1000.0;
             let clamp_pressure_kpa = gasket_spec.workshop_clamp_pressure_pa / 1000.0;
             let predicted_compression_um = gasket_spec.predicted_compression_m() * 1_000_000.0;
+            // ⚠ There is NO channel in the cup seam face (see `GASKET_PLACEMENT`),
+            // so the strip's full thickness stands proud and only
+            // `predicted_compression_m` of it is taken up under clamp. The
+            // halves therefore cannot reach flange-to-flange contact, which
+            // this step used to promise.
+            let gasket_thick_mm = gasket_spec.cross_section_thickness_m * 1000.0;
+            let residual_gap_mm = (gasket_spec.cross_section_thickness_m
+                - gasket_spec.predicted_compression_m())
+                * 1000.0;
             let gasket_material_label = gasket_spec.material.shore_label();
             let _ = writeln!(
                 md,
@@ -2901,15 +2982,10 @@ fn write_v2_cup_half_clamping_note(
                 "3. **Position the gasket on the Negative cup half.** \
                  Open the cup halves, lay the Negative cup half \
                  (`mold_layer_{{N}}_piece_0.stl`) seam-face-UP on the \
-                 workshop bench. Place the gasket strip on the seam \
-                 face **straddling the body cavity edge \
-                 (`body_dist = 0`) — CENTERED on that perimeter, not \
-                 beside it**, so half its width lies over the cavity \
-                 (`body_dist < 0`) and half over the cup wall. That \
-                 is where the channel is cut: its SDF is \
-                 `|body_dist| - half_width`, symmetric about the \
-                 cavity edge, so the strip drops into it. The \
-                 flange's {inner_offset_mm:.1} mm `inner_offset_m` \
+                 workshop bench. Place the gasket strip on the seam face, \
+                 {GASKET_PLACEMENT}. \
+                 {GASKET_NO_CHANNEL} \
+                 The flange's {inner_offset_mm:.1} mm `inner_offset_m` \
                  sets how far OUTBOARD the flange material starts, \
                  keeping it laterally clear of the gasket per recon \
                  §F-4 gasket-disjoint invariant — it is clearance for \
@@ -2925,10 +3001,14 @@ fn write_v2_cup_half_clamping_note(
                  (`mold_layer_{{N}}_piece_1.stl`) down onto the \
                  Negative + gasket assembly, {gasket_step4_align}. At \
                  this stage the gasket is only lightly seated ({seated_on}); \
-                 the cup halves should \
-                 seat flush at the seam (flange-to-flange contact \
-                 OUTSIDE the gasket strip; gasket-sandwiched lightly \
-                 INSIDE). Full gasket compression is achieved in \
+                 the halves will NOT sit flush yet. The seam face is flat, so \
+                 the whole {gasket_thick_mm:.1} mm strip stands proud of it and \
+                 holds the halves apart — expect a visible gap. **That gap is \
+                 correct at this step, not a fit fault:** the design \
+                 compression is only {predicted_compression_um:.0} µm, so even \
+                 fully clamped the halves close to roughly \
+                 {residual_gap_mm:.2} mm, and the gasket — not \
+                 flange-to-flange contact — is what seals. Full gasket compression is achieved in \
                  Step 5 once {compression_actor}."
             );
             // ⚠ With carved bolts the §B section already says the M5 bolts ARE
@@ -3077,11 +3157,16 @@ fn write_v2_cup_half_clamping_note(
                 );
             }
         }
-        (FlangeKind::Demand(demand_spec), GasketKind::Mold(_)) => {
-            // Unusual: the demand flange is designed gasket-None (the land is the
-            // seal). Supported for completeness — the gasket sits on the
-            // continuous land and the bosses host the clamp.
+        (FlangeKind::Demand(demand_spec), GasketKind::Mold(gasket_spec)) => {
+            // Unusual: the demand flange is designed gasket-None (the land IS the
+            // seal). Supported for completeness — but at the default land geometry
+            // the two OVERLAP, so this arm has to say so rather than describe a
+            // clean install: the gasket is centered on the cavity edge and the
+            // land starts 0.5 mm outboard of it, inside the gasket's 0.75 mm
+            // half-width. `flange.rs` flags the same condition on the constant.
             let land_width_mm = demand_spec.land_width_m * 1000.0;
+            let land_inner_mm = demand_spec.land_inner_offset_m * 1000.0;
+            let gasket_half_mm = gasket_spec.cross_section_width_m * 1000.0 / 2.0;
             // ⚠ Key on the CARVE. The §B section is gated on bolts actually
             // being placed, so "clamp via the §B bolts (or C-clamp if no bolt
             // pattern)" can point a reader at a section that is not in this
@@ -3103,11 +3188,23 @@ fn write_v2_cup_half_clamping_note(
                  + per-fastener bosses) AND per-layer gaskets (`GasketKind::Mold`). \
                  The demand flange is normally run gasket-None (the continuous land \
                  IS the PLA-on-PLA seal); with a gasket also present, lay the gasket \
-                 strip on the continuous seal land along the body-cavity perimeter, \
-                 close the halves {align_method}, and {boss_clamp}. Aim for \
-                 the gasket's design compression; do not over-tighten. Reconsider \
-                 whether the gasket is needed once the bare-land seal is proven at \
-                 the physical gate."
+                 strip on the seam face, {GASKET_PLACEMENT}. \
+                 {GASKET_NO_CHANNEL} Then close the halves {align_method} \
+                 and {boss_clamp}. Aim for \
+                 the gasket's design compression; do not over-tighten.\n\n\
+                 ⚠ **This combination is out of spec at the default land \
+                 geometry.** The land starts {land_inner_mm:.1} mm outboard of \
+                 the cavity edge, but the gasket is centered ON that edge and \
+                 is {gasket_half_mm:.2} mm wide to each side, so the land \
+                 overlaps the gasket's outer half — the §F-4 gasket-disjoint \
+                 invariant the Plate flange asserts does NOT hold here. \
+                 `flange.rs` records the same condition on \
+                 `DEFAULT_DEMAND_LAND_INNER_OFFSET_M` (\"if a gasket is \
+                 re-enabled this must grow to clear its channel\"). Either run \
+                 this flange gasket-None as intended, or raise the land's \
+                 inner offset past {gasket_half_mm:.2} mm before printing. \
+                 Reconsider whether the gasket is needed once the bare-land \
+                 seal is proven at the physical gate."
             );
         }
     }
