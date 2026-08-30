@@ -678,10 +678,11 @@ fn write_header_v2_bonded(
         // its pour and vent legs are.
         let _ = writeln!(
             md,
-            "**Orientation convention**: orient the assembled mold with **+Z up** \
-             during each pour + cure. This cast has no pour gate or vent \
-             (`PourGateKind::None`) — pour through the open seam and drill \
-             air-relief holes as needed; see `## Pour Gate + Vent`."
+            "**Orientation convention**: this cast has no pour gate or vent \
+             (`PourGateKind::None`), so orient the assembled mold with the \
+             **seam roughly vertical** during each pour + cure — the seam is \
+             the pour route. Drill air-relief holes as needed; see \
+             `## Pour Gate + Vent`."
         );
     }
     md.push('\n');
@@ -1015,10 +1016,11 @@ fn write_header_v2(
         // saying it has neither.
         let _ = writeln!(
             md,
-            "**Orientation convention**: orient the assembled mold with \
-             **+Z up** during pour + cure. This cast has no pour gate or \
-             vent (`PourGateKind::None`) — pour through the open seam and \
-             drill air-relief holes as needed; see `## Pour Gate + Vent`."
+            "**Orientation convention**: this cast has no pour gate or vent \
+             (`PourGateKind::None`), so orient the assembled mold with the \
+             **seam roughly vertical** during pour + cure — the seam is the \
+             pour route. Drill air-relief holes as needed; see \
+             `## Pour Gate + Vent`."
         );
     }
     md.push('\n');
@@ -1817,6 +1819,16 @@ fn write_cfview_sanity_check_v2(
 }
 
 fn write_cap_plane_chamfer_v2(md: &mut String, has_plug_lock: bool) {
+    // ⚠ That section says "There is no chamfer band on this cast" when no plug
+    // lock is carved, so describing it as being ABOUT one contradicts it.
+    let chamfer_distinct = if has_plug_lock {
+        "that section concerns the first-layer chamfer BAND on pin/lock \
+         features (a deliberate `PrismaticPin` geometry primitive for FDM \
+         topology continuity at the deepest-in-material corner)."
+    } else {
+        "that section covers the first-layer chamfer band on pin/lock \
+         features, which this cast does not carve."
+    };
     let socket_perimeter = if has_plug_lock {
         " It does NOT appear at the plug-lock socket recess perimeter (the \
          truncated-pyramid socket has FLAT lateral walls, no derivative \
@@ -1887,10 +1899,7 @@ fn write_cap_plane_chamfer_v2(md: &mut String, has_plug_lock: bool) {
     let _ = writeln!(
         md,
         "**Distinct from `## First-Layer Chamfer Recipe`** above: \
-         that section concerns the first-layer chamfer \
-         BAND on pin/lock features (a deliberate `PrismaticPin` \
-         geometry primitive for FDM topology continuity at the \
-         deepest-in-material corner). The cap-plane edge chamfer \
+         {chamfer_distinct} The cap-plane edge chamfer \
          documented here is an MC-quantization byproduct of the \
          body × cap-plane derivative discontinuity, NOT a \
          deliberately-emitted feature."
@@ -2704,14 +2713,13 @@ fn write_v2_cup_half_clamping_note(
                 )
             } else {
                 (
-                    "Pour main layer silicone.",
+                    "Pour — but this configuration has no clean route.",
                     "⚠ this cast pairs a gasket with NO pour gate (see \
-                     `## Pour Gate + Vent` below), which has no clean pour \
-                     route: the gasket seals the seam you would otherwise pour \
-                     through. Enable `[pour_gate]` for a gasketed cast. As \
-                     generated, pour into the assembled cavity through the \
-                     seam before the gasket is fully compressed, and drill \
-                     air-relief holes through the cured cup wall as needed."
+                     `## Pour Gate + Vent` below): the gasket seals the very \
+                     seam you would otherwise pour through. **Enable \
+                     `[pour_gate]` for a gasketed cast.** As generated, follow \
+                     the pour step in `## Per-Layer Procedure` below — this \
+                     section does not prescribe a second one."
                         .to_string(),
                 )
             };
