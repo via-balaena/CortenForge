@@ -1511,19 +1511,23 @@ pub fn carved_features(spec: &CastSpec, ribbon: &Ribbon) -> CarvedFeatures {
     // produce them: BOTH patterns need a flange, so without one the answer is a
     // definite no, and claiming otherwise would order bolts sized from a
     // fallback flange that does not exist.
-    // ⚠ This arm silently falls back to the CONFIG PREDICATE this function
-    // exists to replace, so say so on stderr: the procedure is written before
-    // `export_molds_v2` runs, and on an unbounded body the user's only artifact
-    // is a sheet whose bolt/dowel claims were never checked against a carve.
-    eprintln!(
-        "[cf-cast] WARNING: seam placement could not be solved, so procedure.md \
-         falls back to the CONFIGURED bolt/dowel kinds — its hardware claims are \
-         UNVERIFIED against the carve. Export will report the underlying error."
-    );
-    let plausible = ribbon.flange.lateral_reach_m().is_some();
+    // ⚠ DEFENSIVE ONLY — unreachable from any path that writes `procedure.md`.
+    // `compute_smart_placements`'s single `?` is `layer_mc_bounds`, which fails
+    // exactly when `layer_body.bounds()` is `None`; but
+    // `write_procedure_v2_for_mode` calls `compute_pour_volumes()?` on the same
+    // bodies BEFORE rendering, and every caller (`cf-cast-cli` `run_with_config`
+    // / `run_selected`, and the v2 example) runs `export_molds_v2` with `?`
+    // first. So an unbounded body aborts before a sheet exists.
+    //
+    // A previous version of this comment asserted the opposite call order and
+    // added a stderr warning for a scenario that cannot occur. Left as a
+    // total-function fallback, not as a guard against a real case.
+    //
+    // `want_*` already implies a flange (`want_placement` above), so no further
+    // flange check is needed here.
     CarvedFeatures {
-        bolts: vec![plausible && want_bolts; n],
-        dowels: vec![plausible && want_dowels; n],
+        bolts: vec![want_bolts; n],
+        dowels: vec![want_dowels; n],
     }
 }
 
@@ -4451,6 +4455,70 @@ mod tests {
                  reason:\n  {}",
                 sentence.trim()
             );
+        }
+    }
+
+    /// ★★ The detachable and bonded finishing sections must make the SAME
+    /// flash claim for the same geometry.
+    ///
+    /// ⚠ These twins have diverged TWICE: first both wrong together
+    /// (claiming pour-gate flash on a gateless cast), then — after only the
+    /// bonded one learned `has_vent` — wrong DIFFERENTLY, one saying
+    /// "pour-gate / vent flash" and the other "pour-gate flash" for identical
+    /// casts. A comment saying "must match its bonded twin" enforces nothing;
+    /// this does.
+    #[test]
+    fn detachable_and_bonded_finishing_agree_about_flash() {
+        // The flash phrases the two writers may emit. Whichever one a config
+        // produces, BOTH modes must produce it.
+        const FLASH_CLAIMS: &[&str] = &[" and pour-gate / vent flash", " and pour-gate flash"];
+
+        use crate::cast_mode::CastMode;
+        use crate::pour::PourGateLayout;
+        use crate::procedure::generate_procedure_markdown_v2_for_mode;
+
+        let mut ventless = PourGateSpec::iter1();
+        ventless.include_vent = false;
+        let mut apex = PourGateSpec::iter1();
+        apex.layout = PourGateLayout::ApexAxial;
+
+        for gate in [
+            PourGateKind::None,
+            PourGateKind::Default(PourGateSpec::iter1()),
+            PourGateKind::Default(ventless),
+            PourGateKind::Default(apex),
+        ] {
+            for layers in [1usize, 2] {
+                let (spec, base) = if layers == 1 {
+                    v2_fixture()
+                } else {
+                    two_layer_fixture()
+                };
+                let ribbon = base.with_pour_gate(gate.clone());
+                let pours = spec.compute_pour_volumes().unwrap();
+                let sheet =
+                    |mode| generate_procedure_markdown_v2_for_mode(&spec, &pours, &ribbon, mode);
+                let det = sheet(CastMode::Detachable);
+                let bon = sheet(CastMode::Bonded);
+
+                for claim in FLASH_CLAIMS {
+                    assert_eq!(
+                        det.contains(claim),
+                        bon.contains(claim),
+                        "detachable and bonded disagree about {claim:?} for \
+                         {layers}-layer {gate:?} — the finishing twins have \
+                         drifted again"
+                    );
+                }
+                // And both must actually say to trim something.
+                for (mode, md) in [("detachable", &det), ("bonded", &bon)] {
+                    assert!(
+                        md.to_lowercase().contains("trim any seam flash"),
+                        "{mode} sheet never tells the bencher to trim flash \
+                         ({layers}-layer, {gate:?})"
+                    );
+                }
+            }
         }
     }
 

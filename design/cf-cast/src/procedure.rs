@@ -562,7 +562,10 @@ fn write_v2_post_cure_assembly(
         "After all {} layers cure + demold, you have {} standalone \
          silicone tubes — one per layer — each with the next-inner \
          tube's outer geometry as its inner cavity (innermost = \
-         layer 0; outermost = layer {}).",
+         layer 0; outermost = layer {}). Trim any seam flash{gate_flash} \
+         flush with a sharp blade on every tube BEFORE nesting — the \
+         inter-layer fit is a 0.5-1 mm interference, and flash on a \
+         mating face eats that budget.",
         spec.layers.len(),
         spec.layers.len(),
         spec.layers.len().saturating_sub(1),
@@ -1727,12 +1730,61 @@ const fn pin_remnant_bullet(has_plug_lock: bool) -> &'static str {
 /// carry cylindrical recesses — listed as expected two bullets up — so a flat
 /// "no cylindrical remnants" line condemns them inside a checklist whose
 /// failure instruction is "do NOT proceed to print".
-const fn cylinder_remnant_bullet(has_dowels: bool) -> &'static str {
+fn cylinder_remnant_bullet(has_dowels: bool, bolts_carved: bool, apex_bore: bool) -> String {
+    // ⚠ ENUMERATE, do not list all three generically — naming "dowel holes" on
+    // a cast that carves none is the same contradiction one bullet over.
+    let mut recesses: Vec<&str> = Vec::new();
     if has_dowels {
+        recesses.push("the §M-S2 dowel holes");
+    }
+    if bolts_carved {
+        recesses.push("the §B bolt clearance holes");
+    }
+    if apex_bore {
+        recesses.push("the apex pour bore");
+    }
+    if recesses.is_empty() {
+        return "- No cylindrical pin remnants (pre-S3 cylinder primitive \
+                retired)."
+            .to_string();
+    }
+    format!(
         "- No cylindrical pin PROTRUSIONS (pre-S3 cylinder primitive retired) \
-         — the §M-S2 dowel-hole recesses listed above are expected."
+         — the cylindrical recesses listed above ({}) are expected.",
+        recesses.join(", ")
+    )
+}
+
+/// Bullet 3 of the cf-view checklist: what `funnel.stl` should look like —
+/// or that there is deliberately no such file.
+///
+/// ⚠ Three genuinely different artifacts, not three phrasings of one: no gate
+/// exports NO funnel at all, an apex gate builds the funnel INTO the cup
+/// pieces, and only the V-at-dome gate writes a separate `funnel.stl`.
+/// Demanding a `funnel.stl` for the first two — inside a checklist that ends
+/// "do NOT proceed to print" — blocks a correct mold.
+const fn funnel_bullet(has_pour_gate: bool, apex_pour: bool) -> &'static str {
+    if !has_pour_gate {
+        "3. **Funnel**: *none* — this cast has no pour gate \
+         (`PourGateKind::None`), so no `funnel.stl` is generated and \
+         there is nothing to check here."
+    } else if apex_pour {
+        "3. **Funnel**: *no separate STL* — the apex pour funnel is \
+         **integral to the cup pieces** (a split cone at the apex, half \
+         on each piece, forming a full funnel when clamped). Its lumen \
+         is continuous into the bore (no inserted nipple → no throat \
+         constriction). It prints with the cups; pour straight into the \
+         assembled funnel and trim the funnel+bore sprue flush after \
+         demold."
     } else {
-        "- No cylindrical pin remnants (pre-S3 cylinder primitive retired)."
+        "3. **Funnel** (`funnel.stl`): bent-spout funnel — vertical \
+         bowl + 30°-tilted nipple as one connected body, joined at \
+         the bowl-bottom shoulder. Nipple Ø matches the cup pour-gate \
+         Ø minus the funnel's asymmetric diametral clearance \
+         (`cf-cast` `funnel::NIPPLE_DIAMETRAL_CLEARANCE_M`). Interior \
+         bore tapers smoothly from the bowl mouth down to the nipple \
+         bore (single conical lumen). No flat flange disk; no \
+         floating components."
     }
 }
 
@@ -1768,7 +1820,16 @@ fn write_cfview_sanity_check_v2(
     // it, inside the "do NOT proceed to print" checklist. Distinguish the
     // retired PROTRUSIONS from the expected recess.
     let pin_remnant_check = pin_remnant_bullet(has_plug_lock);
-    let cyl_remnant_check = cylinder_remnant_bullet(has_dowels);
+    let cyl_remnant_check = cylinder_remnant_bullet(
+        has_dowels,
+        bolts_carved,
+        // ⚠ Dowels are not the only cylindrical recess bullet 1 lists as
+        // expected: §B bolt clearance holes and the apex pour bore are too.
+        matches!(
+            &ribbon.pour_gate,
+            PourGateKind::Default(g) if g.layout == PourGateLayout::ApexAxial
+        ),
+    );
     let socket_check = if has_plug_lock {
         "- Cap-plane wall carries a clean rectangular plug-floor-lock socket \
          recess (S4) — recessed cavity, NOT a through-hole."
@@ -1799,40 +1860,7 @@ fn write_cfview_sanity_check_v2(
          {dome_check}"
     );
     md.push('\n');
-    if !has_pour_gate {
-        // ⚠ No pour gate ⇒ no `funnel.stl` exported. Demanding the bencher
-        // verify one, inside a checklist that ends "do NOT proceed to print",
-        // blocks a correct mold.
-        let _ = writeln!(
-            md,
-            "3. **Funnel**: *none* — this cast has no pour gate \
-             (`PourGateKind::None`), so no `funnel.stl` is generated and \
-             there is nothing to check here."
-        );
-    } else if apex_pour {
-        let _ = writeln!(
-            md,
-            "3. **Funnel**: *no separate STL* — the apex pour funnel is \
-             **integral to the cup pieces** (a split cone at the apex, half \
-             on each piece, forming a full funnel when clamped). Its lumen \
-             is continuous into the bore (no inserted nipple → no throat \
-             constriction). It prints with the cups; pour straight into the \
-             assembled funnel and trim the funnel+bore sprue flush after \
-             demold."
-        );
-    } else {
-        let _ = writeln!(
-            md,
-            "3. **Funnel** (`funnel.stl`): bent-spout funnel — vertical \
-             bowl + 30°-tilted nipple as one connected body, joined at \
-             the bowl-bottom shoulder. Nipple Ø matches the cup pour-gate \
-             Ø minus the funnel's asymmetric diametral clearance \
-             (`cf-cast` `funnel::NIPPLE_DIAMETRAL_CLEARANCE_M`). Interior \
-             bore tapers smoothly from the bowl mouth down to the nipple \
-             bore (single conical lumen). No flat flange disk; no \
-             floating components."
-        );
-    }
+    let _ = writeln!(md, "{}", funnel_bullet(has_pour_gate, apex_pour));
     md.push('\n');
     // ⚠ `build_platform_solid` returns `None` for `PlugPinKind::None`, so the
     // default cast exports no `platform.stl` — demanding it under "do NOT
