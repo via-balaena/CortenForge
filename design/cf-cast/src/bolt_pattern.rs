@@ -256,6 +256,23 @@ fn bolt_feasibility(flange: &FlangeKind, wall_thickness_m: f64) -> Option<Feasib
     }
 }
 
+/// Whether a bolt pattern carves any geometry against `flange`.
+///
+/// ⚠ `procedure.md` prose MUST gate on this, not on the bolt KIND
+/// (`BoltPatternKind::spec().is_some()`). A bolt pattern enabled against
+/// [`FlangeKind::None`] is dropped by [`bolt_feasibility`] — there is no
+/// flange band to place holes in — so the geometry carves ZERO holes while a
+/// sheet gated on the bolt kind still orders M5 bolts, washers and nuts per
+/// hole and titles itself "M5 Bolt-Pattern Seal" over a body that says the
+/// halves must be hand-clamped.
+///
+/// Mirrors [`bolt_feasibility`]'s only `None` arm;
+/// `bolts_are_carved_agrees_with_bolt_feasibility` pins the two together so
+/// a new `None` arm cannot silently desynchronize the prose from the carve.
+pub(crate) const fn bolts_are_carved(flange: &FlangeKind) -> bool {
+    !matches!(flange, FlangeKind::None)
+}
+
 /// The arc length where a pour channel pierces the loop — the loop point nearest
 /// the (in-plane) bore axis segment. Sampled along the segment by minimum
 /// `|signed_distance|` (the crossing sits on the loop, sd ≈ 0), then snapped to
@@ -419,6 +436,33 @@ mod tests {
     use super::*;
     use crate::dowel_hole::{DowelHoleKind, DowelHoleSpec};
     use crate::flange::{DemandFlangeSpec, FlangeKind, FlangeSpec};
+
+    /// ★ Anti-drift pin. [`bolts_are_carved`] exists so `procedure.md` can
+    /// gate its M5 hardware prose on the SAME predicate the carve uses. It
+    /// restates `bolt_feasibility`'s `None` arm rather than calling it (the
+    /// prose has no wall thickness to pass), so this test holds the two in
+    /// agreement: add a second `None` arm to `bolt_feasibility` and the sheet
+    /// would start ordering bolts for holes nobody cut — exactly the bug the
+    /// predicate was introduced to close. Wall thickness is swept because
+    /// `bolt_feasibility` takes it and could come to depend on it.
+    #[test]
+    fn bolts_are_carved_agrees_with_bolt_feasibility() {
+        let flanges = [
+            FlangeKind::None,
+            FlangeKind::Plate(FlangeSpec::iter1()),
+            FlangeKind::Demand(DemandFlangeSpec::iter1()),
+        ];
+        for flange in &flanges {
+            for wall_thickness_m in [0.002, 0.005, 0.020] {
+                assert_eq!(
+                    bolts_are_carved(flange),
+                    bolt_feasibility(flange, wall_thickness_m).is_some(),
+                    "predicate disagrees with the carve for {flange:?}                      at wall {wall_thickness_m} m"
+                );
+            }
+        }
+    }
+
     use crate::pour::{PourGateKind, PourGateLayout, PourGateSpec, build_pour_gate_transforms};
     use crate::ribbon::SplitNormal;
     use crate::seam_placement::{build_layer_loops, seam_silhouette};

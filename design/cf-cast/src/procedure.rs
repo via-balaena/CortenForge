@@ -1517,6 +1517,12 @@ fn write_v2_bolt_pattern_note(md: &mut String, ribbon: &Ribbon) {
     let Some(spec) = ribbon.bolt_pattern.spec() else {
         return;
     };
+    // Gate on the CARVE, not on the bolt kind. With `FlangeKind::None` the
+    // planner places zero holes, so emitting this section would send the
+    // bench after M5 bolts, washers and nuts for holes nobody cut.
+    if !crate::bolt_pattern::bolts_are_carved(&ribbon.flange) {
+        return;
+    }
     // §B of the unified-mating-plane bolt-pattern arc: SubtractCylinder
     // holes per bolt, placed by the seam-placement solver (even spacing
     // at ≤30 mm pitch, bracketing the pour gate, variable radial offset
@@ -1533,11 +1539,10 @@ fn write_v2_bolt_pattern_note(md: &mut String, ribbon: &Ribbon) {
     // (standard stock length, gives ~3 mm thread excess past the nut
     // which is workshop-friendly).
     // Cold-read I3 fix 2026-05-27: prefer FlangeSpec::iter1() over a
-    // hard-coded magic number when the ribbon has no flange. In
-    // practice the cf-cast-cli validator forbids bolt_pattern without
-    // flange + `write_v2_bolt_pattern_note` is gated on
-    // `ribbon.bolt_pattern.spec().is_some()`, so this fallback only
-    // matters for hand-built test ribbons bypassing the validator.
+    // hard-coded magic number when `flange.spec()` is None. Since the
+    // carve gate above returns for `FlangeKind::None`, the only kind that
+    // still reaches this fallback is `FlangeKind::Demand` — it carries a
+    // `DemandFlangeSpec`, so `FlangeKind::spec()` is None for it too.
     let flange_thickness_mm = ribbon.flange.spec().map_or_else(
         || crate::flange::FlangeSpec::iter1().flange_thickness_m * 1000.0,
         |f| f.flange_thickness_m * 1000.0,
@@ -1703,10 +1708,16 @@ fn write_v2_cup_half_clamping_note(md: &mut String, ribbon: &Ribbon) {
     // protocol fires only when both are enabled (the workshop
     // iter-3 default); other combinations get a brief fallback note
     // pointing at the hand-clamp / no-gasket degraded paths.
-    let header = match (&ribbon.gasket, ribbon.bolt_pattern.spec()) {
+    // ⚠ Keyed on whether bolts are actually CARVED, not on the bolt kind.
+    // Bolts against `FlangeKind::None` carve nothing, and the body arm below
+    // keys on the flange — so gating the header on the kind titled a
+    // hand-clamped cast "M5 Bolt-Pattern Seal", contradicting its own body.
+    let bolted = ribbon.bolt_pattern.spec().is_some()
+        && crate::bolt_pattern::bolts_are_carved(&ribbon.flange);
+    let header = match (&ribbon.gasket, bolted) {
         (GasketKind::Mold(_), _) => "## Cup-Half Clamping with Gasket Installation",
-        (GasketKind::None, Some(_)) => "## Cup-Half Clamping (M5 Bolt-Pattern Seal)",
-        (GasketKind::None, None) => "## Cup-Half Clamping (Gasketless)",
+        (GasketKind::None, true) => "## Cup-Half Clamping (M5 Bolt-Pattern Seal)",
+        (GasketKind::None, false) => "## Cup-Half Clamping (Gasketless)",
     };
     let _ = writeln!(md, "{header}");
     md.push('\n');
@@ -2690,6 +2701,70 @@ mod tests {
             head(&bolted),
             "two different builds got one header"
         );
+
+        // ★ The combination that argued with itself: bolts enabled against
+        // NO flange. `bolt_feasibility` drops the pattern (no band to place
+        // holes in) so the geometry carves ZERO holes, but the header keyed
+        // on the bolt KIND while the body keyed on the FLANGE — titling a
+        // hand-clamped cast "M5 Bolt-Pattern Seal". Unreachable through
+        // `cf-cast-cli`, which rejects the config, but a library consumer
+        // bypassing the CLI (the Cendrillon stack does) renders it.
+        let bolts_no_flange = build(
+            FlangeKind::None,
+            GasketKind::None,
+            BoltPatternKind::Auto(BoltPatternSpec::iter1()),
+        );
+        assert_eq!(
+            head(&bolts_no_flange),
+            head(&bare),
+            "bolts that carve nothing must read exactly like no bolts at all"
+        );
+        assert!(
+            bolts_no_flange.contains("hand-clamped"),
+            "no flange means hand-clamping, whatever the bolt kind says:\n{bolts_no_flange}"
+        );
+    }
+
+    /// ★ Bolts enabled against NO flange must not put an M5 hardware order
+    /// on the bench sheet: `bolt_feasibility` drops the pattern, so the
+    /// geometry carves zero holes. Two-sided — the same build WITH a flange
+    /// must still emit the section, or this would pass by deleting it.
+    #[test]
+    fn bolt_hardware_is_ordered_only_when_the_holes_are_actually_carved() {
+        let build = |flange: FlangeKind| {
+            let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
+            let split = SplitNormal::new(Vector3::new(0.0, 0.0, 1.0)).unwrap();
+            let mut r = Ribbon::new(centerline, split).unwrap();
+            r.flange = flange;
+            r.bolt_pattern = BoltPatternKind::Auto(BoltPatternSpec::iter1());
+            let mut md = String::new();
+            write_v2_assembly_note(&mut md, &r, 2);
+            md
+        };
+
+        let no_flange = build(FlangeKind::None);
+        for phrase in [
+            "M5 through-bolt clamp pattern",
+            "M5 hex nut",
+            "M5 flat washers",
+        ] {
+            assert!(
+                !no_flange.contains(phrase),
+                "bolts carve nothing without a flange, yet the sheet orders                  {phrase:?}:\n{no_flange}"
+            );
+        }
+
+        let flanged = build(FlangeKind::Demand(DemandFlangeSpec::iter1()));
+        for phrase in [
+            "M5 through-bolt clamp pattern",
+            "M5 hex nut",
+            "M5 flat washers",
+        ] {
+            assert!(
+                flanged.contains(phrase),
+                "a flanged bolt pattern must still order {phrase:?}:\n{flanged}"
+            );
+        }
     }
 
     /// The two gasketed arms had no test and had never been read. Both are
