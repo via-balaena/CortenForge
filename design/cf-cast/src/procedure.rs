@@ -470,14 +470,7 @@ pub fn generate_procedure_markdown_v2_for_mode(
     write_seam_face_edge_v2(&mut md, has_plug_lock);
     write_materials_table(&mut md, spec, pour_volumes);
     write_generic_guidance(&mut md, spec.layers.len());
-    write_v2_assembly_note(
-        &mut md,
-        ribbon,
-        spec.layers.len(),
-        bolts_carved,
-        has_dowels,
-        has_pour_gate,
-    );
+    write_v2_assembly_note(&mut md, ribbon, spec.layers.len(), features, has_gasket);
     write_v2_cup_half_clamping_note(&mut md, ribbon, mode, spec.layers.len(), features);
     write_v2_pour_gate_note(&mut md, ribbon, spec.layers.len(), bolts_carved);
     match mode {
@@ -501,7 +494,7 @@ pub fn generate_procedure_markdown_v2_for_mode(
             write_v2_post_cure_assembly(&mut md, spec, mode, has_pour_gate);
         }
         CastMode::Bonded => {
-            write_v2_bonded_finishing(&mut md, spec, mode, has_pour_gate);
+            write_v2_bonded_finishing(&mut md, spec, mode, has_pour_gate, has_vent);
         }
     }
     write_mass_budget_summary(&mut md, spec, pour_volumes);
@@ -881,11 +874,19 @@ fn write_v2_bonded_finishing(
     spec: &CastSpec,
     mode: CastMode,
     has_pour_gate: bool,
+    has_vent: bool,
 ) {
-    let gate_flash = if has_pour_gate {
-        " and pour-gate / vent flash"
-    } else {
-        ""
+    // ⚠ Three bugs lived in this one binding: the single-layer branch below
+    // ignored it entirely (hard-coding "pour-gate / vent flash" on a gateless
+    // cast — the detachable twin gates the same sentence correctly); the
+    // multi-layer branch interpolated it after "seam" instead of "seam flash",
+    // so with no gate it read "Trim any seam flush with a sharp blade"; and it
+    // asserted a VENT on `ApexAxial` / `include_vent = false` casts, the fifth
+    // site of the vent claim this branch has now fixed.
+    let gate_flash = match (has_pour_gate, has_vent) {
+        (true, true) => " and pour-gate / vent flash",
+        (true, false) => " and pour-gate flash",
+        (false, _) => "",
     };
     let _ = writeln!(md, "{}", post_demold_section(mode, spec.layers.len()));
     md.push('\n');
@@ -894,8 +895,8 @@ fn write_v2_bonded_finishing(
             md,
             "After the layer cures and you pull the part off the plug, the device is a \
              single silicone body of one durometer — with one layer there are no \
-             bonded interfaces and nothing to delaminate. Trim any pour-gate / vent \
-             flash flush with a sharp blade, and inspect the body for voids (a missed \
+             bonded interfaces and nothing to delaminate. Trim any seam flash{gate_flash} \
+             flush with a sharp blade, and inspect the body for voids (a missed \
              degas shows as a trapped bubble — re-pour if so)."
         );
     } else {
@@ -905,7 +906,7 @@ fn write_v2_bonded_finishing(
              device is a SINGLE integrated {}-layer silicone body — the durometers \
              transition through the bonded interfaces (soft inner, firmer outer). Unlike \
              the detachable model, the layers are not separable; you cannot swap one out \
-             without re-casting. Trim any seam{gate_flash} flush with a sharp blade, \
+             without re-casting. Trim any seam flash{gate_flash} flush with a sharp blade, \
              and inspect the inter-layer interfaces for voids (a missed degas or a stale \
              bond surface shows as a delamination bubble — re-pour that layer if so).",
             spec.layers.len().saturating_sub(1),
@@ -1700,6 +1701,23 @@ const fn plug_piece_checks(has_plug_lock: bool) -> (&'static str, &'static str) 
     }
 }
 
+/// The cf-view "no retired pin remnants" bullet.
+///
+/// ⚠ With a plug lock, the bullet above it REQUIRES a truncated-pyramid socket
+/// in the seam face — so a flat "no truncated-pyramid geometry" bullet
+/// condemns it, inside the "do NOT proceed to print" checklist. Distinguish
+/// the retired PROTRUSIONS from the expected recess.
+const fn pin_remnant_bullet(has_plug_lock: bool) -> &'static str {
+    if has_plug_lock {
+        "- No trapezoidal / truncated-pyramid pin PROTRUSIONS on the seam face \
+         (the §M-S4-retired prismatic-pin path) — the plug-lock socket recess \
+         listed above is expected, a raised pin is not."
+    } else {
+        "- No trapezoidal / truncated-pyramid pin remnants on the seam face \
+         (the §M-S4-retired prismatic-pin registration path)."
+    }
+}
+
 fn write_cfview_sanity_check_v2(
     md: &mut String,
     apex_pour: bool,
@@ -1727,6 +1745,11 @@ fn write_cfview_sanity_check_v2(
     // ⚠ Do not demand a feature this cast does not carve. `PlugPinKind` is
     // OFF by default, so the DEFAULT sheet was requiring a socket and a
     // pyramid that no cast produces — under "do NOT proceed to print".
+    // ⚠ With a plug lock, bullet 1 REQUIRES a truncated-pyramid socket in the
+    // seam face; a flat "no truncated-pyramid geometry" bullet then condemns
+    // it, inside the "do NOT proceed to print" checklist. Distinguish the
+    // retired PROTRUSIONS from the expected recess.
+    let pin_remnant_check = pin_remnant_bullet(has_plug_lock);
     let socket_check = if has_plug_lock {
         "- Cap-plane wall carries a clean rectangular plug-floor-lock socket \
          recess (S4) — recessed cavity, NOT a through-hole."
@@ -1738,9 +1761,7 @@ fn write_cfview_sanity_check_v2(
         md,
         "1. **Cup pieces** (`mold_layer_*_piece_0.stl` + `_piece_1.stl`):\n   \
          {dowel_check}\n   \
-         - No trapezoidal / truncated-pyramid pin remnants on the \
-         seam face (the §M-S4-retired prismatic-pin registration \
-         path).\n   \
+         {pin_remnant_check}\n   \
          - No cylindrical pin remnants (pre-S3 cylinder primitive \
          retired).\n   \
          - No T-bar / stem / T-slot remnants on the cap-plane wall \
@@ -2026,10 +2047,14 @@ fn write_v2_assembly_note(
     md: &mut String,
     ribbon: &Ribbon,
     layer_count: usize,
-    bolts_carved: bool,
-    has_dowels: bool,
-    has_pour_gate: bool,
+    carved: SheetFeatures,
+    has_gasket: bool,
 ) {
+    let SheetFeatures {
+        has_dowels,
+        bolts_carved,
+        ..
+    } = carved;
     let _ = writeln!(md, "## v2 Mold Assembly");
     md.push('\n');
     // §M-S4 (2026-05-27) retired the legacy prismatic-pin
@@ -2198,7 +2223,7 @@ fn write_v2_assembly_note(
             );
         }
     }
-    write_v2_bolt_pattern_note(md, ribbon, bolts_carved, has_dowels, has_pour_gate);
+    write_v2_bolt_pattern_note(md, ribbon, carved, has_gasket);
     md.push('\n');
     write_v2_plug_anchor_note(md, ribbon);
 }
@@ -2206,10 +2231,15 @@ fn write_v2_assembly_note(
 fn write_v2_bolt_pattern_note(
     md: &mut String,
     ribbon: &Ribbon,
-    bolts_carved: bool,
-    has_dowels: bool,
-    has_pour_gate: bool,
+    carved: SheetFeatures,
+    has_gasket: bool,
 ) {
+    let SheetFeatures {
+        has_dowels,
+        bolts_carved,
+        has_pour_gate,
+        ..
+    } = carved;
     // ⚠ §B describes bracketing the pour gate; a gateless cast has none.
     let bracket_clause = if has_pour_gate {
         "brackets the pour gate with a bolt on each side, and "
@@ -2269,6 +2299,16 @@ fn write_v2_bolt_pattern_note(
         [a, b] => format!("{a} and {b}"),
         [rest @ .., last] => format!("{}, and {last}", rest.join(", ")),
         [] => String::new(),
+    };
+    // ⚠ §B renders BEFORE the gasket section but reads as a complete closing
+    // protocol. On a gasketed cast it must not send the bencher bolting up a
+    // joint with no gasket in it, at a torque stop that section overrides.
+    let gasket_first = if has_gasket {
+        "**this cast has a gasket — lay it first per \
+         `## Cup-Half Clamping with Gasket Installation` below, and use THAT \
+         section's torque stop, which supersedes the one here.** Then, "
+    } else {
+        ""
     };
     let dowel_first = if has_dowels {
         "register the two halves with the §M dowels FIRST (the dowel-hole \
@@ -2333,7 +2373,7 @@ fn write_v2_bolt_pattern_note(
          holes in the generated `mold_layer_*` pieces (or in cf-view) for \
          the per-layer quantity.\n\
          \n\
-         **Assembly order**: {dowel_first}Then insert each \
+         **Assembly order**: {gasket_first}{dowel_first}Then insert each \
          M5 bolt through the matching bolt-clearance holes on the two \
          halves, slip a washer under each head + nut, and hand-tighten \
          crosswise (like a car lug pattern) for even flange clamp \
@@ -3609,7 +3649,19 @@ mod tests {
     #[test]
     fn assembly_note_dowel_length_is_twice_its_per_half_insertion() {
         let mut md = String::new();
-        write_v2_assembly_note(&mut md, &dowelled_ribbon(), 2, true, true, true);
+        write_v2_assembly_note(
+            &mut md,
+            &dowelled_ribbon(),
+            2,
+            SheetFeatures {
+                has_dowels: true,
+                bolts_carved: true,
+                has_plug_lock: false,
+                has_pour_gate: true,
+                has_vent: true,
+            },
+            false,
+        );
 
         let length = number_before(&md, " mm long");
         let insert = number_before(&md, " mm into each cup-half");
@@ -3629,7 +3681,19 @@ mod tests {
     fn assembly_note_hole_and_rod_dimensions_follow_the_dowel_spec() {
         let spec = DowelHoleSpec::iter1();
         let mut md = String::new();
-        write_v2_assembly_note(&mut md, &dowelled_ribbon(), 2, true, true, true);
+        write_v2_assembly_note(
+            &mut md,
+            &dowelled_ribbon(),
+            2,
+            SheetFeatures {
+                has_dowels: true,
+                bolts_carved: true,
+                has_plug_lock: false,
+                has_pour_gate: true,
+                has_vent: true,
+            },
+            false,
+        );
 
         // ⚠ This asserted `hole == 2*clearance + diameter` recomputed from the
         // spec — the SAME arithmetic as the code, so it could only ever catch
@@ -3680,7 +3744,19 @@ mod tests {
         );
 
         let mut md = String::new();
-        write_v2_assembly_note(&mut md, &ribbon, 2, true, true, true);
+        write_v2_assembly_note(
+            &mut md,
+            &ribbon,
+            2,
+            SheetFeatures {
+                has_dowels: true,
+                bolts_carved: true,
+                has_plug_lock: false,
+                has_pour_gate: true,
+                has_vent: true,
+            },
+            false,
+        );
 
         assert!(
             md.contains("align the pieces by hand"),
@@ -3870,7 +3946,19 @@ mod tests {
             r.flange = flange;
             r.bolt_pattern = BoltPatternKind::Auto(BoltPatternSpec::iter1());
             let mut md = String::new();
-            write_v2_assembly_note(&mut md, &r, 2, bolts_carved, false, true);
+            write_v2_assembly_note(
+                &mut md,
+                &r,
+                2,
+                SheetFeatures {
+                    has_dowels: false,
+                    bolts_carved,
+                    has_plug_lock: false,
+                    has_pour_gate: true,
+                    has_vent: true,
+                },
+                false,
+            );
             md
         };
 
@@ -3918,7 +4006,19 @@ mod tests {
             r.flange = FlangeKind::Demand(demand);
             r.bolt_pattern = BoltPatternKind::Auto(BoltPatternSpec::iter1());
             let mut md = String::new();
-            write_v2_assembly_note(&mut md, &r, 2, true, false, true);
+            write_v2_assembly_note(
+                &mut md,
+                &r,
+                2,
+                SheetFeatures {
+                    has_dowels: false,
+                    bolts_carved: true,
+                    has_plug_lock: false,
+                    has_pour_gate: true,
+                    has_vent: true,
+                },
+                false,
+            );
             md
         };
 
