@@ -3641,6 +3641,165 @@ mod tests {
         );
     }
 
+    // ----- single-layer procedure prose --------------------------------
+    //
+    // ★ A single-layer cast is a FIRST-CLASS case, not a degenerate edge:
+    // the pipeline supports it and it is expected to be common. Its prose
+    // was not: every section below was written for a stack and asserted a
+    // layer that does not exist — the post-cure section told the bencher to
+    // "slide layer 0 into the inner cavity of layer 1".
+    //
+    // ⚠ These tests assert on the CLAIM, never on a keyword. Correct
+    // single-layer prose legitimately says "there are no other layers to
+    // nest with" and "no inter-layer bond step", so `!contains("nest")` or
+    // `!contains("inter-layer")` would fail on the FIXED text. Every string
+    // below is verbatim from the multi-layer sheet and cannot occur in a
+    // truthful single-layer one.
+    //
+    // ⚠ Each pair is TWO-SIDED on purpose. The negative test alone would
+    // also pass if the multi-layer prose were deleted outright; its partner
+    // pins that the same strings are still emitted at 2 layers.
+
+    /// Detachable-mode prose that presupposes a second layer.
+    const DETACHABLE_SECOND_LAYER_CLAIMS: &[&str] = &[
+        "## Post-Cure Assembly + Disassembly",
+        "ready to nest with the other layers post-cure",
+        "Slide layer 0 into the inner cavity of layer 1",
+        "Repeat with each successive outer layer",
+        "peel each tube off the next-inner one",
+        "sized to the previous layer's outer surface",
+        "of the seam before the next layer",
+        "reuse across every layer's pour",
+        "reused across every layer's pour",
+    ];
+
+    /// Bonded-mode prose that presupposes a second layer.
+    const BONDED_SECOND_LAYER_CLAIMS: &[&str] = &[
+        "Inter-layer bond (important)",
+        "onto the previous cured layer",
+        "leave the cured layer on the plug",
+        "the higher-numbered plugs are",
+        "inspect the inter-layer interfaces for voids",
+        "integrated multi-durometer part",
+        "Only the final (outermost) layer is fully demolded",
+    ];
+
+    /// Render both modes for a spec, with a pour gate so the funnel /
+    /// pour-gate prose (which is skipped under `PourGateKind::None`)
+    /// actually renders.
+    fn procedure_pair(spec: &CastSpec, ribbon: &Ribbon) -> (String, String) {
+        use crate::procedure::generate_procedure_markdown_v2_for_mode;
+        let ribbon = ribbon
+            .clone()
+            .with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()));
+        let pours = spec.compute_pour_volumes().unwrap();
+        (
+            generate_procedure_markdown_v2_for_mode(
+                spec,
+                &pours,
+                &ribbon,
+                crate::cast_mode::CastMode::Detachable,
+            ),
+            generate_procedure_markdown_v2_for_mode(
+                spec,
+                &pours,
+                &ribbon,
+                crate::cast_mode::CastMode::Bonded,
+            ),
+        )
+    }
+
+    /// A 1-layer detachable sheet must not instruct an assembly that
+    /// cannot happen. Paired with
+    /// `multi_layer_detachable_procedure_keeps_second_layer_prose`.
+    #[test]
+    fn single_layer_detachable_procedure_drops_second_layer_prose() {
+        let (spec, ribbon) = v2_fixture();
+        assert_eq!(spec.layers.len(), 1, "fixture must be single-layer");
+        let (md, _) = procedure_pair(&spec, &ribbon);
+
+        for claim in DETACHABLE_SECOND_LAYER_CLAIMS {
+            assert!(
+                !md.contains(claim),
+                "single-layer sheet still asserts a second layer: {claim:?}"
+            );
+        }
+        assert!(
+            !md.contains("(1 layers)"),
+            "mass budget must not read \"1 layers\""
+        );
+        assert!(md.contains("(1 layer)"), "mass budget singular");
+        assert!(
+            md.contains("## Post-Cure\n"),
+            "single-layer gets the short Post-Cure section"
+        );
+        assert!(
+            md.contains("that tube IS the finished device"),
+            "header states the one tube is the device"
+        );
+    }
+
+    /// The other side of the pair: at 2 layers every phrase above is still
+    /// emitted. Without this, deleting the multi-layer prose outright would
+    /// leave the negative test green.
+    #[test]
+    fn multi_layer_detachable_procedure_keeps_second_layer_prose() {
+        let (spec, ribbon) = two_layer_fixture();
+        assert_eq!(spec.layers.len(), 2, "fixture must be two-layer");
+        let (md, _) = procedure_pair(&spec, &ribbon);
+
+        for claim in DETACHABLE_SECOND_LAYER_CLAIMS {
+            assert!(
+                md.contains(claim),
+                "multi-layer sheet lost its nesting prose: {claim:?}"
+            );
+        }
+        assert!(md.contains("(2 layers)"), "mass budget plural at 2 layers");
+    }
+
+    /// A 1-layer bonded sheet has no previous cured surface to bond to, so
+    /// the leave-on-the-plug sequencing and the inter-layer bond callout
+    /// must not render. ★ The callout ends "Avoid mold release on the
+    /// *inter-layer* faces" — at one layer there are none, so the only
+    /// instruction a fast reader could act on is to withhold release where
+    /// it IS needed.
+    #[test]
+    fn single_layer_bonded_procedure_drops_second_layer_prose() {
+        let (spec, ribbon) = v2_fixture();
+        assert_eq!(spec.layers.len(), 1, "fixture must be single-layer");
+        let (_, md) = procedure_pair(&spec, &ribbon);
+
+        for claim in BONDED_SECOND_LAYER_CLAIMS {
+            assert!(
+                !md.contains(claim),
+                "single-layer bonded sheet still asserts a second layer: {claim:?}"
+            );
+        }
+        assert!(
+            md.contains("nothing to bond to"),
+            "bonded header explains why there is no bond step"
+        );
+        assert!(
+            md.contains("mold release goes on every printed surface"),
+            "the withheld-release instruction is replaced, not just deleted"
+        );
+    }
+
+    /// Two-sided partner for the bonded pair.
+    #[test]
+    fn multi_layer_bonded_procedure_keeps_second_layer_prose() {
+        let (spec, ribbon) = two_layer_fixture();
+        assert_eq!(spec.layers.len(), 2, "fixture must be two-layer");
+        let (_, md) = procedure_pair(&spec, &ribbon);
+
+        for claim in BONDED_SECOND_LAYER_CLAIMS {
+            assert!(
+                md.contains(claim),
+                "multi-layer bonded sheet lost its bond prose: {claim:?}"
+            );
+        }
+    }
+
     /// The selected-export path must write **byte-identical** STLs to the
     /// full export for the same parts (it reuses the same leaf meshing +
     /// filenames), and must write *only* the selected parts. This is the
