@@ -1511,6 +1511,15 @@ pub fn carved_features(spec: &CastSpec, ribbon: &Ribbon) -> CarvedFeatures {
     // produce them: BOTH patterns need a flange, so without one the answer is a
     // definite no, and claiming otherwise would order bolts sized from a
     // fallback flange that does not exist.
+    // ⚠ This arm silently falls back to the CONFIG PREDICATE this function
+    // exists to replace, so say so on stderr: the procedure is written before
+    // `export_molds_v2` runs, and on an unbounded body the user's only artifact
+    // is a sheet whose bolt/dowel claims were never checked against a carve.
+    eprintln!(
+        "[cf-cast] WARNING: seam placement could not be solved, so procedure.md \
+         falls back to the CONFIGURED bolt/dowel kinds — its hardware claims are \
+         UNVERIFIED against the carve. Export will report the underlying error."
+    );
     let plausible = ribbon.flange.lateral_reach_m().is_some();
     CarvedFeatures {
         bolts: vec![plausible && want_bolts; n],

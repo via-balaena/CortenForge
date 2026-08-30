@@ -491,7 +491,7 @@ pub fn generate_procedure_markdown_v2_for_mode(
     }
     match mode {
         CastMode::Detachable => {
-            write_v2_post_cure_assembly(&mut md, spec, mode, has_pour_gate);
+            write_v2_post_cure_assembly(&mut md, spec, mode, has_pour_gate, has_vent);
         }
         CastMode::Bonded => {
             write_v2_bonded_finishing(&mut md, spec, mode, has_pour_gate, has_vent);
@@ -522,12 +522,15 @@ fn write_v2_post_cure_assembly(
     spec: &CastSpec,
     mode: CastMode,
     has_pour_gate: bool,
+    has_vent: bool,
 ) {
-    // ⚠ Do not send the bencher trimming flash off a gate this cast lacks.
-    let gate_flash = if has_pour_gate {
-        " and pour-gate flash"
-    } else {
-        ""
+    // ⚠ Must match its bonded twin `write_v2_bonded_finishing` exactly — after
+    // that one learned `has_vent`, this one saying only "pour-gate flash" made
+    // the two modes disagree about the same geometry.
+    let gate_flash = match (has_pour_gate, has_vent) {
+        (true, true) => " and pour-gate / vent flash",
+        (true, false) => " and pour-gate flash",
+        (false, _) => "",
     };
     // A single-layer cast has nothing to nest, stack or take apart: the one
     // cured tube is the finished device. Emitting the multi-layer assembly
@@ -1718,6 +1721,21 @@ const fn pin_remnant_bullet(has_plug_lock: bool) -> &'static str {
     }
 }
 
+/// The cf-view "no retired cylindrical pin remnants" bullet.
+///
+/// ⚠ Sibling of [`pin_remnant_bullet`]: with dowels carved, the seam face DOES
+/// carry cylindrical recesses — listed as expected two bullets up — so a flat
+/// "no cylindrical remnants" line condemns them inside a checklist whose
+/// failure instruction is "do NOT proceed to print".
+const fn cylinder_remnant_bullet(has_dowels: bool) -> &'static str {
+    if has_dowels {
+        "- No cylindrical pin PROTRUSIONS (pre-S3 cylinder primitive retired) \
+         — the §M-S2 dowel-hole recesses listed above are expected."
+    } else {
+        "- No cylindrical pin remnants (pre-S3 cylinder primitive retired)."
+    }
+}
+
 fn write_cfview_sanity_check_v2(
     md: &mut String,
     apex_pour: bool,
@@ -1750,20 +1768,21 @@ fn write_cfview_sanity_check_v2(
     // it, inside the "do NOT proceed to print" checklist. Distinguish the
     // retired PROTRUSIONS from the expected recess.
     let pin_remnant_check = pin_remnant_bullet(has_plug_lock);
+    let cyl_remnant_check = cylinder_remnant_bullet(has_dowels);
     let socket_check = if has_plug_lock {
         "- Cap-plane wall carries a clean rectangular plug-floor-lock socket \
          recess (S4) — recessed cavity, NOT a through-hole."
     } else {
-        "- Cap-plane wall is plain (`PlugPinKind::None` — no plug-floor-lock \
-         socket is carved). A socket recess here would be a regression."
+        "- Cap-plane wall carries the body-cavity opening perimeter and \
+         nothing else (`PlugPinKind::None` — no plug-floor-lock socket is \
+         carved). A socket recess here would be a regression."
     };
     let _ = writeln!(
         md,
         "1. **Cup pieces** (`mold_layer_*_piece_0.stl` + `_piece_1.stl`):\n   \
          {dowel_check}\n   \
          {pin_remnant_check}\n   \
-         - No cylindrical pin remnants (pre-S3 cylinder primitive \
-         retired).\n   \
+         {cyl_remnant_check}\n   \
          - No T-bar / stem / T-slot remnants on the cap-plane wall \
          (pre-S4 plug-shaft mechanism retired).\n   \
          {socket_check}"
