@@ -412,10 +412,16 @@ pub fn generate_procedure_markdown_v2_for_mode(
     // bolts reads this one value, so the sheet and the carve cannot disagree.
     // See `spec::bolts_carved_per_layer` for why a predicate over the config
     // provably cannot answer this question.
-    let bolts_per_layer = crate::spec::bolts_carved_per_layer(spec, ribbon);
-    // Section-level prose (the §B block, the clamping header) describes the
-    // cast as a whole; the per-layer steps index the vector.
+    // ★ ONE planner run answers both features. Section-level prose (the §B
+    // block, the clamping header, the cf-view checklist) describes the cast as
+    // a whole; the per-layer steps index the vector.
+    //
+    // ⚠ `has_dowels` is what the carve PLACES, not `DowelHoleKind` — dowels
+    // need a flange, so the kind alone says "yes" on casts that get none.
+    let carved = crate::spec::carved_features(spec, ribbon);
+    let bolts_per_layer = carved.bolts;
     let bolts_carved = bolts_per_layer.iter().any(|b| *b);
+    let has_dowels = carved.dowels.iter().any(|d| *d);
 
     let mut md = String::new();
     match mode {
@@ -423,30 +429,34 @@ pub fn generate_procedure_markdown_v2_for_mode(
         CastMode::Bonded => write_header_v2_bonded(&mut md, spec, apex_pour),
     }
     write_cast_geometry_v2(&mut md, ribbon);
-    write_print_orientation_v2(
-        &mut md,
-        apex_pour,
-        spec.layers.len(),
-        ribbon.dowel_hole.spec().is_some(),
-    );
+    write_print_orientation_v2(&mut md, apex_pour, spec.layers.len(), has_dowels);
     write_chamfer_recipe_v2(&mut md);
     write_target_fdm_floor_v2(&mut md);
-    write_cfview_sanity_check_v2(
-        &mut md,
-        apex_pour,
-        ribbon.dowel_hole.spec().is_some(),
-        bolts_carved,
-    );
+    write_cfview_sanity_check_v2(&mut md, apex_pour, has_dowels, bolts_carved);
     write_cap_plane_chamfer_v2(&mut md);
     write_seam_face_edge_v2(&mut md);
     write_materials_table(&mut md, spec, pour_volumes);
     write_generic_guidance(&mut md, spec.layers.len());
-    write_v2_assembly_note(&mut md, ribbon, spec.layers.len(), bolts_carved);
-    write_v2_cup_half_clamping_note(&mut md, ribbon, mode, spec.layers.len(), bolts_carved);
+    write_v2_assembly_note(&mut md, ribbon, spec.layers.len(), bolts_carved, has_dowels);
+    write_v2_cup_half_clamping_note(
+        &mut md,
+        ribbon,
+        mode,
+        spec.layers.len(),
+        bolts_carved,
+        has_dowels,
+    );
     write_v2_pour_gate_note(&mut md, ribbon, spec.layers.len(), bolts_carved);
     match mode {
         CastMode::Detachable => {
-            write_per_layer_sections_v2(&mut md, spec, pour_volumes, ribbon, &bolts_per_layer);
+            write_per_layer_sections_v2(
+                &mut md,
+                spec,
+                pour_volumes,
+                ribbon,
+                &bolts_per_layer,
+                has_dowels,
+            );
         }
         CastMode::Bonded => write_per_layer_sections_v2_bonded(&mut md, spec, pour_volumes, ribbon),
     }
@@ -964,7 +974,7 @@ fn write_print_orientation_cup_pieces(md: &mut String, has_dowels: bool) {
     } else {
         let _ = writeln!(
             md,
-            "This cast carves no dowel holes (`DowelHoleKind::None`), so the \
+            "This cast carves no dowel holes, so the \
              seam face is plain; seam-face-UP is still the orientation lock \
              (it is what keeps any seam-face feature printable as an \
              upward-opening recess, without internal support or bridging)."
@@ -1212,14 +1222,14 @@ const fn seam_face_check(has_dowels: bool, bolts_carved: bool) -> &'static str {
              mirror each other exactly along the seam plane."
         }
         (false, true) => {
-            "- Seam faces carry the §B M5 bolt clearance holes ONLY \
-             (`DowelHoleKind::None`) — cylindrical cavities through the \
-             flange band, mirrored across the seam plane. No dowel holes are \
-             carved; any other recessed feature is a regression."
+            "- Seam faces carry the §B M5 bolt clearance holes ONLY — \
+             cylindrical cavities through the flange band, mirrored across \
+             the seam plane. No dowel holes are carved; any other recessed \
+             feature is a regression."
         }
         (false, false) => {
-            "- Seam faces: FLAT and featureless (`DowelHoleKind::None`, no \
-             bolt pattern carved). Any recessed cavity in a seam face is a \
+            "- Seam faces: FLAT and featureless — no dowel holes and no bolt \
+             holes are carved. Any recessed cavity in a seam face is a \
              regression."
         }
     }
@@ -1512,6 +1522,7 @@ fn write_v2_assembly_note(
     ribbon: &Ribbon,
     layer_count: usize,
     bolts_carved: bool,
+    has_dowels: bool,
 ) {
     let _ = writeln!(md, "## v2 Mold Assembly");
     md.push('\n');
@@ -1521,7 +1532,11 @@ fn write_v2_assembly_note(
     // workshop user inserts loose printed dowels through matching
     // holes at assembly time. Per
     // [[project-cf-cast-unified-mating-plane-recon]] §M-S4.
-    match ribbon.dowel_hole.spec() {
+    // ⚠ Gate on the CARVE, not the kind. Dowel placement needs a flange, so
+    // `[dowel_hole] enabled = true` with no flange yields ZERO holes — and this
+    // arm would then dimension them, tell the bencher to print `dowel.stl`, and
+    // have them insert dowels through holes that were never cut.
+    match ribbon.dowel_hole.spec().filter(|_| has_dowels) {
         None => {
             // ⚠ Naming rubber bands / tape while §B says the M5 bolts ARE the
             // clamp is a third rival protocol for one joint — the same defect
@@ -1644,12 +1659,17 @@ fn write_v2_assembly_note(
             );
         }
     }
-    write_v2_bolt_pattern_note(md, ribbon, bolts_carved);
+    write_v2_bolt_pattern_note(md, ribbon, bolts_carved, has_dowels);
     md.push('\n');
     write_v2_plug_anchor_note(md, ribbon);
 }
 
-fn write_v2_bolt_pattern_note(md: &mut String, ribbon: &Ribbon, bolts_carved: bool) {
+fn write_v2_bolt_pattern_note(
+    md: &mut String,
+    ribbon: &Ribbon,
+    bolts_carved: bool,
+    has_dowels: bool,
+) {
     let Some(spec) = ribbon.bolt_pattern.spec() else {
         return;
     };
@@ -1671,13 +1691,22 @@ fn write_v2_bolt_pattern_note(md: &mut String, ribbon: &Ribbon, bolts_carved: bo
     // has no registration features at all — the assembly section says so and
     // tells the bencher to align by hand — so "register with the §M dowels
     // FIRST" sends them looking for holes that were never carved.
+    // ⚠ Do not claim the joint seals gasketlessly on a sheet that has the
+    // bencher cast, cure, peel and lay a gasket — and whose step 5 now points
+    // back at THIS section for the clamp protocol.
+    let seal_claim = if matches!(ribbon.gasket, GasketKind::Mold(_)) {
+        ", clamping the gasket to its design compression"
+    } else {
+        " so PLA-on-PLA seam contact + mold release should seal \
+         without a separate gasket"
+    };
     // The solver only excludes dowel footprints when dowels exist.
-    let dowel_exclusion = if ribbon.dowel_hole.spec().is_some() {
+    let dowel_exclusion = if has_dowels {
         ", the dowel holes,"
     } else {
         ","
     };
-    let dowel_first = if ribbon.dowel_hole.spec().is_some() {
+    let dowel_first = if has_dowels {
         "register the two halves with the §M dowels FIRST (the dowel-hole \
          pattern provides lateral alignment so the bolt-clearance holes match \
          up across the seam). "
@@ -1746,8 +1775,7 @@ fn write_v2_bolt_pattern_note(md: &mut String, ribbon: &Ribbon, bolts_carved: bo
          crosswise (like a car lug pattern) for even flange clamp \
          pressure (~1 MPa across the flange contact area at \
          hand-torqued M5 — exceeds the silicone hydrostatic leak \
-         pressure by ~1000× so PLA-on-PLA seam contact + mold release \
-         should seal without a separate gasket). Engine-valve-cover \
+         pressure by ~1000×{seal_claim}). Engine-valve-cover \
          torque level — snug, not stripped; PLA threads in the \
          workshop user's hand-tools strip well before the bolt design \
          load is exceeded.\n\
@@ -1868,6 +1896,7 @@ fn write_v2_cup_half_clamping_note(
     mode: CastMode,
     layer_count: usize,
     bolts_carved: bool,
+    has_dowels: bool,
 ) {
     let post_demold = post_demold_section(mode, layer_count);
     // ⚠ Bonded intermediate layers are NOT demolded — the cured layer stays on
@@ -2001,7 +2030,7 @@ fn write_v2_cup_half_clamping_note(
                 };
                 // ⚠ Dowels are their own opt-in; with none carved the assembly
                 // section says to align by hand.
-                let mate_method = if ribbon.dowel_hole.spec().is_some() {
+                let mate_method = if has_dowels {
                     "mating the cup halves via the symmetric dowel-hole pattern"
                 } else {
                     "hand-aligning the cup halves at the seam"
@@ -2143,12 +2172,17 @@ fn write_v2_cup_half_clamping_note(
                     md,
                     "5. **Clamp with the §B M5 bolts, not C-clamps.** This cast \
                      carves a bolt pattern, so the bolts supply the clamp force \
-                     across the gasket — insert each bolt with its washers, then \
+                     across the gasket — insert each bolt with its washers and \
                      hand-tighten crosswise per `### M5 through-bolt clamp \
-                     pattern (§B)` above until the flange faces meet. That is \
-                     the gasket's design {clamp_pressure_kpa:.0} kPa target \
-                     (predicts ~{predicted_compression_um:.0} µm compression). \
-                     Do NOT add C-clamps on top of the bolts."
+                     pattern (§B)` above. ⚠ Step 4 already brought the flange \
+                     faces into contact, so THAT IS NOT THE STOP CRITERION: go \
+                     to **snug + 1/8 turn** past first resistance on each bolt, \
+                     which is what reaches the gasket's design \
+                     {clamp_pressure_kpa:.0} kPa (predicts \
+                     ~{predicted_compression_um:.0} µm compression). Workshop \
+                     user MUST avoid over-tightening — gasket extrusion loses \
+                     the seal, and PLA threads strip well before the bolt \
+                     design load. Do NOT add C-clamps on top of the bolts."
                 );
             } else {
                 let _ = writeln!(
@@ -2295,7 +2329,7 @@ fn write_v2_cup_half_clamping_note(
             // being placed, so "clamp via the §B bolts (or C-clamp if no bolt
             // pattern)" can point a reader at a section that is not in this
             // document — a bare-prose "§B" the cross-reference gate cannot see.
-            let align_method = if ribbon.dowel_hole.spec().is_some() {
+            let align_method = if has_dowels {
                 "aligning on the dowels"
             } else {
                 "by hand (no dowel holes are carved)"
@@ -2519,6 +2553,7 @@ fn write_per_layer_sections_v2(
     pour_volumes: &[PourVolume],
     ribbon: &Ribbon,
     bolts_per_layer: &[bool],
+    has_dowels: bool,
 ) {
     let _ = writeln!(md, "## Per-Layer Procedure");
     md.push('\n');
@@ -2613,7 +2648,7 @@ fn write_per_layer_sections_v2(
         // ⚠ Dowels are their own opt-in — telling the bencher to seat the
         // halves on §M dowels a cast never carved contradicts the assembly
         // section, which says to align by hand.
-        let dowel_seat = if ribbon.dowel_hole.spec().is_some() {
+        let dowel_seat = if has_dowels {
             "registering the §M dowels to seat the two halves flush."
         } else {
             "aligning the two halves by hand until the seam closes flush \
@@ -2829,7 +2864,7 @@ mod tests {
     #[test]
     fn assembly_note_dowel_length_is_twice_its_per_half_insertion() {
         let mut md = String::new();
-        write_v2_assembly_note(&mut md, &dowelled_ribbon(), 2, true);
+        write_v2_assembly_note(&mut md, &dowelled_ribbon(), 2, true, true);
 
         let length = number_before(&md, " mm long");
         let insert = number_before(&md, " mm into each cup-half");
@@ -2849,7 +2884,7 @@ mod tests {
     fn assembly_note_hole_and_rod_dimensions_follow_the_dowel_spec() {
         let spec = DowelHoleSpec::iter1();
         let mut md = String::new();
-        write_v2_assembly_note(&mut md, &dowelled_ribbon(), 2, true);
+        write_v2_assembly_note(&mut md, &dowelled_ribbon(), 2, true, true);
 
         // ⚠ This asserted `hole == 2*clearance + diameter` recomputed from the
         // spec — the SAME arithmetic as the code, so it could only ever catch
@@ -2900,7 +2935,7 @@ mod tests {
         );
 
         let mut md = String::new();
-        write_v2_assembly_note(&mut md, &ribbon, 2, true);
+        write_v2_assembly_note(&mut md, &ribbon, 2, true, true);
 
         assert!(
             md.contains("align the pieces by hand"),
@@ -2999,7 +3034,14 @@ mod tests {
                 r.gasket = gasket;
                 r.bolt_pattern = bolts;
                 let mut md = String::new();
-                write_v2_cup_half_clamping_note(&mut md, &r, CastMode::Detachable, 2, bolts_carved);
+                write_v2_cup_half_clamping_note(
+                    &mut md,
+                    &r,
+                    CastMode::Detachable,
+                    2,
+                    bolts_carved,
+                    false,
+                );
                 md
             };
         let head = |md: &str| md.lines().next().unwrap_or_default().to_string();
@@ -3078,7 +3120,7 @@ mod tests {
             r.flange = flange;
             r.bolt_pattern = BoltPatternKind::Auto(BoltPatternSpec::iter1());
             let mut md = String::new();
-            write_v2_assembly_note(&mut md, &r, 2, bolts_carved);
+            write_v2_assembly_note(&mut md, &r, 2, bolts_carved, false);
             md
         };
 
@@ -3126,7 +3168,7 @@ mod tests {
             r.flange = FlangeKind::Demand(demand);
             r.bolt_pattern = BoltPatternKind::Auto(BoltPatternSpec::iter1());
             let mut md = String::new();
-            write_v2_assembly_note(&mut md, &r, 2, true);
+            write_v2_assembly_note(&mut md, &r, 2, true, false);
             md
         };
 
@@ -3163,7 +3205,7 @@ mod tests {
             r.flange = flange;
             r.gasket = GasketKind::Mold(crate::gasket_mold::GasketSpec::iter1());
             let mut md = String::new();
-            write_v2_cup_half_clamping_note(&mut md, &r, CastMode::Detachable, 2, false);
+            write_v2_cup_half_clamping_note(&mut md, &r, CastMode::Detachable, 2, false, false);
             md
         };
 

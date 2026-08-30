@@ -1429,62 +1429,84 @@ fn compute_smart_placements(
     })
 }
 
-/// Per-LAYER: whether the carve will actually place bolt holes, for each
-/// layer of `spec` in order.
+/// What the carve will actually place, per layer, for `spec` + `ribbon`.
 ///
-/// ⚠ Per layer, not per cast. The carve indexes `placements.bolts[i]`, and
-/// feasibility is a function of each layer's own seam silhouette against one
-/// global `wall_thickness_m` — so a small inner layer can close the washer
-/// window while the outer layer places four bolts. Collapsing this to a single
-/// bool made step 6 tell a bolt-less layer to install §B bolts, with no other
-/// clamp method offered.
+/// ★★★ Both answers come from RUNNING THE PLANNER ([`compute_smart_placements`],
+/// the same call the carve makes), not from a predicate over `cast.toml`.
 ///
-/// ★★★ This RUNS THE PLANNER ([`compute_smart_placements`], the same call the
-/// carve makes) rather than testing a predicate over the config, because no
-/// such predicate can answer the question. A band-arithmetic test reasons
-/// about the radial offset `d`, while the solver tests
-/// `signed_distance(p + n·d)`; the two agree only where the seam silhouette
-/// is CONVEX. Measured on a U-channel body at a 12 mm wall (the figure
-/// `bolt_prose_matches_what_the_carve_actually_places` exercises): the
-/// arithmetic says infeasible and the solver places 2 bolts — which would
-/// drop the §B section and the whole hardware list from a sheet whose molds
-/// carry M5 holes.
+/// For bolts a config predicate provably cannot answer it: band arithmetic
+/// reasons about the radial offset `d` while the solver tests
+/// `signed_distance(p + n·d)`, and those agree only on a CONVEX seam
+/// silhouette. Measured on a U-channel body at a 12 mm wall, arithmetic says
+/// infeasible and the solver places 2.
 ///
-/// `false` when no `[bolt_pattern]` is configured, or when one is configured
-/// and the solver places nothing. A planning error yields `true`: that cast
-/// cannot export at all, and keeping the hardware section is the safe side.
+/// ⚠ DOWELS HAVE THE SAME PROBLEM, and keying their prose on
+/// `DowelHoleKind` was the identical bug one feature over: placement needs a
+/// FLANGE (`want_placement` above), so `[flange] enabled = false` with
+/// `[dowel_hole]` left at its default carves ZERO dowels while the kind says
+/// otherwise. The CLI permits that pairing — its cross-field gate only forbids
+/// bolts without a flange. The sheet then dimensions dowel holes, says to print
+/// `dowel.stl`, and its cf-view checklist demands cavities that do not exist
+/// under a heading whose failure instruction is "do NOT proceed to print".
 ///
-/// ⚠ COST. This makes procedure rendering no longer a pure formatting pass —
-/// on a cast that enables `[bolt_pattern]`, the seam solve (whose silhouette
+/// Both vectors are UNIFORM across layers by `cross_layer_snap`'s construction
+/// — see `bolts_carved_is_uniform_across_layers`. The per-layer shape mirrors
+/// the carve's own `placements.bolts[i]` indexing.
+///
+/// ⚠ COST. This makes procedure rendering no longer a pure formatting pass:
+/// on a cast enabling either feature, the seam solve (whose silhouette
 /// flood-fill [`compute_smart_placements`] calls "the dominant solve cost")
 /// runs a second time, because `write_procedure_v2_for_mode` and
-/// `export_molds_v2` are separate entry points and the CLI calls both. The
-/// early return means a cast WITHOUT a bolt pattern — including the current
-/// iter-1 production spec, which carries no flange — pays nothing.
-///
-/// ⚠ It is also no longer SIDE-EFFECT-FREE: the planner's `eprintln!`
-/// diagnostics (coincident-position collapses, empty-silhouette warnings) are
-/// emitted again, so a bolted cast prints each one twice per CLI run. If bolted
-/// casts get expensive on the pivot's real scan bodies, thread the already
-/// computed [`SmartPlacements`] from the export path instead of re-solving.
-// ⚠ `pub`, not `pub(crate)`, deliberately: `mod spec` is private (lib.rs), so
-// this is crate-visible either way — and clippy's `redundant_pub_crate` rejects
-// `pub(crate)` here. Do not "tighten" it back; the lint will fail the build.
-pub fn bolts_carved_per_layer(spec: &CastSpec, ribbon: &Ribbon) -> Vec<bool> {
+/// `export_molds_v2` are separate entry points and the CLI calls both. It is
+/// also no longer SIDE-EFFECT-FREE — the planner's `eprintln!` diagnostics are
+/// emitted again, so such a cast prints each one twice per run. A cast with
+/// neither feature (including the iter-1 production spec, which carries no
+/// flange) returns before planning anything. If this lands hot on the pivot's
+/// real scan bodies, thread the already-computed [`SmartPlacements`] in from
+/// the export path rather than re-solving.
+pub struct CarvedFeatures {
+    /// Per layer: does the carve place bolt clearance holes.
+    pub bolts: Vec<bool>,
+    /// Per layer: does the carve place dowel holes.
+    pub dowels: Vec<bool>,
+}
+
+/// See [`CarvedFeatures`].
+pub fn carved_features(spec: &CastSpec, ribbon: &Ribbon) -> CarvedFeatures {
     let n = spec.layers.len();
-    if ribbon.bolt_pattern.spec().is_none() {
-        return vec![false; n];
+    let want_bolts = ribbon.bolt_pattern.spec().is_some();
+    let want_dowels = ribbon.dowel_hole.spec().is_some();
+    if !want_bolts && !want_dowels {
+        return CarvedFeatures {
+            bolts: vec![false; n],
+            dowels: vec![false; n],
+        };
     }
-    match compute_smart_placements(spec, ribbon) {
-        Ok(p) => p.bolts.map_or_else(
+    let per_layer = |placed: Option<Vec<Vec<Point2>>>| -> Vec<bool> {
+        placed.map_or_else(
             || vec![false; n],
-            |per_layer| {
-                let mut out: Vec<bool> = per_layer.iter().map(|l| !l.is_empty()).collect();
+            |layers| {
+                let mut out: Vec<bool> = layers.iter().map(|l| !l.is_empty()).collect();
                 out.resize(n, false);
                 out
             },
-        ),
-        Err(_) => vec![true; n],
+        )
+    };
+    if let Ok(p) = compute_smart_placements(spec, ribbon) {
+        return CarvedFeatures {
+            bolts: per_layer(p.bolts),
+            dowels: per_layer(p.dowels),
+        };
+    }
+    // A planning error means this cast cannot export at all. Keeping the
+    // hardware sections is the safe side — but only where the config could
+    // produce them: BOTH patterns need a flange, so without one the answer is a
+    // definite no, and claiming otherwise would order bolts sized from a
+    // fallback flange that does not exist.
+    let plausible = ribbon.flange.lateral_reach_m().is_some();
+    CarvedFeatures {
+        bolts: vec![plausible && want_bolts; n],
+        dowels: vec![plausible && want_dowels; n],
     }
 }
 
@@ -4147,7 +4169,7 @@ mod tests {
     /// breaking, at which point the prose is already correct.
     #[test]
     fn bolts_carved_is_uniform_across_layers() {
-        use super::bolts_carved_per_layer;
+        use super::carved_features;
         use crate::bolt_pattern::{BoltPatternKind, BoltPatternSpec};
         use crate::flange::{FlangeKind, FlangeSpec};
 
@@ -4176,7 +4198,7 @@ mod tests {
                     .with_flange(FlangeKind::Plate(FlangeSpec::iter1()))
                     .with_bolt_pattern(BoltPatternKind::Auto(BoltPatternSpec::iter1()));
 
-                let per = bolts_carved_per_layer(&spec, &ribbon);
+                let per = carved_features(&spec, &ribbon).bolts;
                 assert_eq!(per.len(), 2, "one answer per layer");
                 assert!(
                     per.iter().all(|b| *b == per[0]),
@@ -4219,6 +4241,7 @@ mod tests {
             "This cast has no integral registration features",
             "This cast carves no dowel holes",
             "No dowel holes are carved",
+            "no dowel holes and no bolt holes are carved",
             "bolt clearance holes ONLY",
             // Reference / historical prose — describes the feature, does not
             // instruct the bencher to use one.
@@ -4258,6 +4281,35 @@ mod tests {
                 "un-triaged dowel sentence on a `DowelHoleKind::None` sheet — \
                  either it is a contradiction, or add it to \
                  ALLOWED_DOWEL_MENTIONS with a reason:\n  {}",
+                sentence.trim()
+            );
+        }
+
+        // ★★ THE CONFIG THAT MOTIVATED THE CARVE-BACKED ANSWER: dowels
+        // ENABLED but no flange. `compute_smart_placements` needs a flange, so
+        // zero dowels are carved — while `DowelHoleKind::Auto` says otherwise.
+        // The CLI permits this pairing (its cross-field gate only forbids
+        // BOLTS without a flange), and keying the prose on the kind made the
+        // sheet dimension dowel holes, say to print `dowel.stl`, and demand
+        // cavities in a cf-view checklist whose failure instruction is
+        // "do NOT proceed to print".
+        let (mut flangeless_spec, flangeless_base) = v2_fixture();
+        flangeless_spec.wall_thickness_m = 0.004;
+        let flangeless = {
+            let ribbon = flangeless_base
+                .with_flange(FlangeKind::None)
+                .with_dowel_hole(DowelHoleKind::Auto(DowelHoleSpec::iter1()));
+            let pours = flangeless_spec.compute_pour_volumes().unwrap();
+            generate_procedure_markdown_v2(&flangeless_spec, &pours, &ribbon)
+        };
+        for sentence in flangeless.split(['.', '\n']) {
+            if !sentence.to_lowercase().contains("dowel") {
+                continue;
+            }
+            assert!(
+                ALLOWED_DOWEL_MENTIONS.iter().any(|k| sentence.contains(k)),
+                "dowels enabled but NO FLANGE carves none — sheet still says: \
+                 \n  {}",
                 sentence.trim()
             );
         }
