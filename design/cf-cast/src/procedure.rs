@@ -433,6 +433,7 @@ pub fn generate_procedure_markdown_v2_for_mode(
     let has_plug_lock = !matches!(ribbon.plug_pins, crate::plug::PlugPinKind::None);
     let has_pour_gate = !matches!(ribbon.pour_gate, PourGateKind::None);
     let has_flange = !matches!(ribbon.flange, FlangeKind::None);
+    let has_gasket = matches!(ribbon.gasket, GasketKind::Mold(_));
     let has_vent = matches!(
         &ribbon.pour_gate,
         PourGateKind::Default(g) if g.layout == PourGateLayout::VAtDome && g.include_vent
@@ -461,9 +462,10 @@ pub fn generate_procedure_markdown_v2_for_mode(
         &mut md,
         has_pour_gate && !apex_pour,
         features,
-        matches!(ribbon.gasket, GasketKind::Mold(_)),
+        has_gasket,
+        apex_pour,
     );
-    write_cfview_sanity_check_v2(&mut md, apex_pour, ribbon, features);
+    write_cfview_sanity_check_v2(&mut md, apex_pour, ribbon, features, has_gasket);
     write_cap_plane_chamfer_v2(&mut md, has_plug_lock);
     write_seam_face_edge_v2(&mut md, has_plug_lock);
     write_materials_table(&mut md, spec, pour_volumes);
@@ -495,8 +497,12 @@ pub fn generate_procedure_markdown_v2_for_mode(
         }
     }
     match mode {
-        CastMode::Detachable => write_v2_post_cure_assembly(&mut md, spec, mode),
-        CastMode::Bonded => write_v2_bonded_finishing(&mut md, spec, mode),
+        CastMode::Detachable => {
+            write_v2_post_cure_assembly(&mut md, spec, mode, has_pour_gate);
+        }
+        CastMode::Bonded => {
+            write_v2_bonded_finishing(&mut md, spec, mode, has_pour_gate);
+        }
     }
     write_mass_budget_summary(&mut md, spec, pour_volumes);
     md
@@ -518,7 +524,18 @@ const fn post_demold_section(mode: CastMode, layer_count: usize) -> &'static str
     }
 }
 
-fn write_v2_post_cure_assembly(md: &mut String, spec: &CastSpec, mode: CastMode) {
+fn write_v2_post_cure_assembly(
+    md: &mut String,
+    spec: &CastSpec,
+    mode: CastMode,
+    has_pour_gate: bool,
+) {
+    // ⚠ Do not send the bencher trimming flash off a gate this cast lacks.
+    let gate_flash = if has_pour_gate {
+        " and pour-gate flash"
+    } else {
+        ""
+    };
     // A single-layer cast has nothing to nest, stack or take apart: the one
     // cured tube is the finished device. Emitting the multi-layer assembly
     // prose here instructs an impossible assembly ("slide layer 0 into the
@@ -531,7 +548,7 @@ fn write_v2_post_cure_assembly(md: &mut String, spec: &CastSpec, mode: CastMode)
             "This is a single-layer cast: once layer 0 cures and demolds, you are \
              done. The cured tube IS the device — there is no second layer to nest \
              it into and no assembly step. Inspect the tube for voids and trim any \
-             seam or pour-gate flash flush with a sharp blade."
+             seam flash{gate_flash} flush with a sharp blade."
         );
         md.push('\n');
         let _ = writeln!(
@@ -858,7 +875,17 @@ fn pour_orientation_blurb(ribbon: &Ribbon) -> &'static str {
 
 /// Bonded-mode finishing note (replaces the detachable nest/disassemble
 /// section): the device is one bonded part, not separable shells.
-fn write_v2_bonded_finishing(md: &mut String, spec: &CastSpec, mode: CastMode) {
+fn write_v2_bonded_finishing(
+    md: &mut String,
+    spec: &CastSpec,
+    mode: CastMode,
+    has_pour_gate: bool,
+) {
+    let gate_flash = if has_pour_gate {
+        " and pour-gate / vent flash"
+    } else {
+        ""
+    };
     let _ = writeln!(md, "{}", post_demold_section(mode, spec.layers.len()));
     md.push('\n');
     if spec.layers.len() == 1 {
@@ -877,7 +904,7 @@ fn write_v2_bonded_finishing(md: &mut String, spec: &CastSpec, mode: CastMode) {
              device is a SINGLE integrated {}-layer silicone body — the durometers \
              transition through the bonded interfaces (soft inner, firmer outer). Unlike \
              the detachable model, the layers are not separable; you cannot swap one out \
-             without re-casting. Trim any pour-gate / vent flash flush with a sharp blade, \
+             without re-casting. Trim any seam{gate_flash} flush with a sharp blade, \
              and inspect the inter-layer interfaces for voids (a missed degas or a stale \
              bond surface shows as a delamination bubble — re-pour that layer if so).",
             spec.layers.len().saturating_sub(1),
@@ -1113,11 +1140,12 @@ fn write_print_orientation_cup_pieces(md: &mut String, has_dowels: bool, has_plu
         // failure instruction is "do NOT proceed to print".
         let _ = writeln!(
             md,
-            "This cast carves no dowel holes, but other features DO break \
-             the seam face — see `## cf-view Sanity-Check Workflow` below for \
-             the exact list this configuration produces. Seam-face-UP is the \
-             orientation lock for exactly that reason: each one opens upward \
-             as a recess, printable without internal support or bridging."
+            "This cast carves no dowel holes. The seam face still opens onto \
+             the body cavity, and may carry other recesses depending on \
+             configuration — `## cf-view Sanity-Check Workflow` below lists \
+             exactly what to expect. Seam-face-UP is the orientation lock so \
+             that whatever is there opens upward as a recess, printable \
+             without internal support or bridging."
         );
     }
     md.push('\n');
@@ -1226,6 +1254,7 @@ fn write_print_orientation_funnel_platform(
              through the open seam as described in `## Pour Gate + Vent` below."
         );
     } else if apex_pour {
+        let funnel_height_mm = crate::pour::INTEGRAL_FUNNEL_HEIGHT_M * 1000.0;
         let _ = writeln!(
             md,
             "**No separate funnel to print** — the apex pour funnel is \
@@ -1234,7 +1263,7 @@ fn write_print_orientation_funnel_platform(
              when the two halves are clamped. Its lumen runs continuously \
              into the bore (no inserted nipple), so there is no throat \
              constriction. It prints as part of the cup pieces (the half- \
-             cone is an 18 mm CANTILEVERED PROTRUSION above the cup's outer \
+             cone is a {funnel_height_mm:.0} mm CANTILEVERED PROTRUSION above the cup's outer \
              surface, not a recess — check what your slicer gives it \
              before printing; the half-channel of its lumen is the only \
              part that opens upward under the seam-face-UP lock). \
@@ -1416,7 +1445,19 @@ fn write_target_fdm_floor_v2(
     has_funnel_stl: bool,
     carved: SheetFeatures,
     has_gasket: bool,
+    apex_pour: bool,
 ) {
+    // ⚠ The apex integral funnel is a cantilevered protrusion ON the cup
+    // piece, so "no supports for cup pieces" is not a safe blanket claim there
+    // — and the same sheet now tells the reader to check what the slicer gives
+    // that cone.
+    let cup_supports = if apex_pour {
+        "none for the cup body (continuous bottom contour), but the integral \
+         apex funnel is a cantilevered protrusion on that same piece — see \
+         `## Per-Piece Print Orientation`;"
+    } else {
+        "none for cup pieces (continuous bottom contour);"
+    };
     let SheetFeatures {
         has_dowels,
         has_plug_lock,
@@ -1487,9 +1528,9 @@ fn write_target_fdm_floor_v2(
          - **Wall loops**: 3 (default).\n\
          - **Infill**: 15% gyroid (default; mold pieces don't need \
          structural infill — silicone pour pressure is low).\n\
-         - **Supports**: none for cup pieces (continuous bottom \
-         contour); brim 5-8 mm 1-layer for cup outer-surface \
-         adhesion; brim + brief dome-curvature supports for plug.\n\
+         - **Supports**: {cup_supports} brim 5-8 mm 1-layer for cup \
+         outer-surface adhesion; brim + brief dome-curvature supports for \
+         plug.\n\
          - **Elephant-foot compensation**: 0.0 mm{chamfer_reason}.\n\
          - **Filament**: Jayo PLA generic profile (~220 °C nozzle, \
          60 °C bed); equivalent generic-PLA profile if Jayo \
@@ -1547,18 +1588,28 @@ struct SheetFeatures {
 /// ⚠ Only `has_dowels` / `bolts_carved` are passed in, because those two are
 /// answers from the PLANNER — the kind alone does not say whether they were
 /// placed. Everything else is a pure function of the ribbon.
-fn seam_face_features(ribbon: &Ribbon, has_dowels: bool, bolts_carved: bool) -> Vec<&'static str> {
+fn seam_face_features(
+    ribbon: &Ribbon,
+    has_dowels: bool,
+    bolts_carved: bool,
+    has_gasket: bool,
+) -> Vec<&'static str> {
     // ⚠⚠ ALWAYS FIRST, and the one this list omitted for five rounds: the cup
     // piece is `bounding_region ∖ layer_body` intersected with the seam
     // halfspace, so the BODY CAVITY is bisected by construction and every seam
     // face carries its open half-trough. It was invisible to an enumeration of
     // OPTIONAL features precisely because it is never optional — which is also
     // why the "flat and featureless" case below can never actually be reached.
-    let mut present: Vec<&'static str> = vec![
+    // ⚠ "the face the gasket lies on" asserted a gasket on every cast — inside
+    // a checklist whose failure instruction is "do NOT proceed to print".
+    let mut present: Vec<&'static str> = vec![if has_gasket {
         "the body-cavity opening, bisected by the seam into an open half-trough \
          on each piece (this is the cavity the silicone fills, and the face the \
-         gasket lies on)",
-    ];
+         gasket lies on)"
+    } else {
+        "the body-cavity opening, bisected by the seam into an open half-trough \
+         on each piece (this is the cavity the silicone fills)"
+    }];
     if has_dowels {
         present.push(
             "the §M-S2 symmetric dowel holes (cylindrical recesses at the \
@@ -1604,12 +1655,17 @@ fn seam_face_features(ribbon: &Ribbon, has_dowels: bool, bolts_carved: bool) -> 
 
 /// The cf-view bullet built from [`seam_face_features`], so the exclusivity
 /// sentence can never outrun the list.
-fn seam_face_check(ribbon: &Ribbon, has_dowels: bool, bolts_carved: bool) -> String {
+fn seam_face_check(
+    ribbon: &Ribbon,
+    has_dowels: bool,
+    bolts_carved: bool,
+    has_gasket: bool,
+) -> String {
     // ⚠ No empty case: the body-cavity opening is unconditional, so a seam
     // face is never featureless. An "anything here is a regression" fallback
     // would be unreachable AND wrong, which is how this bullet blocked correct
     // prints four times.
-    let present = seam_face_features(ribbon, has_dowels, bolts_carved);
+    let present = seam_face_features(ribbon, has_dowels, bolts_carved, has_gasket);
     format!(
         "- Seam faces carry {}. Nothing else should be recessed into them.",
         present.join("; and ")
@@ -1647,6 +1703,7 @@ fn write_cfview_sanity_check_v2(
     apex_pour: bool,
     ribbon: &Ribbon,
     carved: SheetFeatures,
+    has_gasket: bool,
 ) {
     let SheetFeatures {
         has_dowels,
@@ -1656,7 +1713,7 @@ fn write_cfview_sanity_check_v2(
         has_vent: _,
     } = carved;
     // ⚠ Do not send the bencher to verify features the cast never carves.
-    let dowel_check = seam_face_check(ribbon, has_dowels, bolts_carved);
+    let dowel_check = seam_face_check(ribbon, has_dowels, bolts_carved, has_gasket);
     let _ = writeln!(md, "## cf-view Sanity-Check Workflow");
     md.push('\n');
     let _ = writeln!(
@@ -2434,14 +2491,16 @@ fn write_v2_cup_half_clamping_note(
     // ⚠ `has_pour_gate` was used in the Plate+Mold arm but not in these two,
     // so a `PourGateKind::None` cast was routed to a gate the header, the
     // funnel note and the cf-view checklist all say it does not have.
-    // ⚠ NOT "the open seam": in the gasketed and bolted arms this sentence
-    // lands AFTER the step that closes and clamps that seam. Pour into the
-    // cavity through the still-open half before closing.
+    // ⚠ Match the wording the per-layer `pour_sentence` and
+    // `## Pour Gate + Vent` already share — "into the assembled mold cavity".
+    // A previous attempt here invented a THIRD answer ("before closing the
+    // second half"), which contradicted both of them; the sheet is worse with
+    // three stories than it was with two.
     let pour_route_none = if has_pour_gate {
         "through the pour gate"
     } else {
-        "into the open cup cavity before closing the second half (this cast \
-         has no pour gate)"
+        "into the assembled mold cavity, working through the ribbon seam \
+         (this cast has no pour gate)"
     };
     // ⚠ Every arm below describes the clamp method for the geometry that was
     // ACTUALLY carved. When a `[bolt_pattern]` was requested and the solver
@@ -2638,19 +2697,21 @@ fn write_v2_cup_half_clamping_note(
                 (
                     "Pour main layer silicone through the pour gate.",
                     format!(
-                        "pour the layer silicone through the pour-gate funnel \
-                         (see `## Pour Gate + Vent` below).{vent_cue}"
+                        "With the cup clamped and gasket compressed, pour the \
+                         layer silicone through the pour-gate funnel (see \
+                         `## Pour Gate + Vent` below).{vent_cue}"
                     ),
                 )
             } else {
                 (
-                    "Pour BEFORE closing the second half.",
-                    "⚠ this cast has no pour gate or vent (see \
-                     `## Pour Gate + Vent` below), so the silicone goes in \
-                     before the seam is closed and clamped: fill the open \
-                     Negative half around the seated gasket, then close and \
-                     clamp per the steps above. Drill air-relief holes through \
-                     the cured cup wall as needed."
+                    "Pour main layer silicone.",
+                    "⚠ this cast pairs a gasket with NO pour gate (see \
+                     `## Pour Gate + Vent` below), which has no clean pour \
+                     route: the gasket seals the seam you would otherwise pour \
+                     through. Enable `[pour_gate]` for a gasketed cast. As \
+                     generated, pour into the assembled cavity through the \
+                     seam before the gasket is fully compressed, and drill \
+                     air-relief holes through the cured cup wall as needed."
                         .to_string(),
                 )
             };
@@ -2784,11 +2845,7 @@ fn write_v2_cup_half_clamping_note(
                  (gasket extrusion → loss of seal)."
                 );
             }
-            let _ = writeln!(
-                md,
-                "6. **{gasket_pour_lead}** With the cup clamped and gasket \
-                 compressed, {gasket_pour_route}"
-            );
+            let _ = writeln!(md, "6. **{gasket_pour_lead}** {gasket_pour_route}");
             let _ = writeln!(
                 md,
                 "7. **Cure per layer material TDS.** Leave the \
@@ -3017,7 +3074,7 @@ fn write_apex_axial_pour_note(
          (no inserted nipple), so the pour throat is the {gate_dia_mm:.1} mm \
          bore itself with no wall constriction. Mouth Ø ≈ {mouth_dia_mm:.1} mm, \
          ~{funnel_height_mm:.0} mm tall. It prints as part of the cups (the \
-         half-cone is an 18 mm CANTILEVERED PROTRUSION above the cup's outer \
+         half-cone is a {funnel_height_mm:.0} mm CANTILEVERED PROTRUSION above the cup's outer \
              surface, not a recess — check what your slicer gives it \
              before printing; the half-channel of its lumen is the only \
              part that opens upward under the seam-face-UP lock). \
