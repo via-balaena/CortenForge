@@ -422,6 +422,15 @@ pub fn generate_procedure_markdown_v2_for_mode(
     let bolts_per_layer = carved.bolts;
     let bolts_carved = bolts_per_layer.iter().any(|b| *b);
     let has_dowels = carved.dowels.iter().any(|d| *d);
+    // ⚠ Third feature that must be gated: the plug-floor lock. `Ribbon::new`
+    // defaults it OFF, so the DEFAULT cast has no socket and no pyramid — yet
+    // the checklist demanded both under "do NOT proceed to print".
+    let has_plug_lock = !matches!(ribbon.plug_pins, crate::plug::PlugPinKind::None);
+    let features = SheetFeatures {
+        has_dowels,
+        bolts_carved,
+        has_plug_lock,
+    };
 
     let mut md = String::new();
     match mode {
@@ -429,19 +438,12 @@ pub fn generate_procedure_markdown_v2_for_mode(
         CastMode::Bonded => write_header_v2_bonded(&mut md, spec, apex_pour),
     }
     write_cast_geometry_v2(&mut md, ribbon);
-    write_print_orientation_v2(
-        &mut md,
-        apex_pour,
-        spec.layers.len(),
-        ribbon,
-        has_dowels,
-        bolts_carved,
-    );
-    write_chamfer_recipe_v2(&mut md);
+    write_print_orientation_v2(&mut md, apex_pour, spec.layers.len(), ribbon, features);
+    write_chamfer_recipe_v2(&mut md, has_plug_lock);
     write_target_fdm_floor_v2(&mut md);
-    write_cfview_sanity_check_v2(&mut md, apex_pour, ribbon, has_dowels, bolts_carved);
-    write_cap_plane_chamfer_v2(&mut md);
-    write_seam_face_edge_v2(&mut md);
+    write_cfview_sanity_check_v2(&mut md, apex_pour, ribbon, features);
+    write_cap_plane_chamfer_v2(&mut md, has_plug_lock);
+    write_seam_face_edge_v2(&mut md, has_plug_lock);
     write_materials_table(&mut md, spec, pour_volumes);
     write_generic_guidance(&mut md, spec.layers.len());
     write_v2_assembly_note(&mut md, ribbon, spec.layers.len(), bolts_carved, has_dowels);
@@ -453,13 +455,7 @@ pub fn generate_procedure_markdown_v2_for_mode(
         bolts_carved,
         has_dowels,
     );
-    write_v2_pour_gate_note(
-        &mut md,
-        ribbon,
-        spec.layers.len(),
-        bolts_carved,
-        bolts_carved || has_dowels,
-    );
+    write_v2_pour_gate_note(&mut md, ribbon, spec.layers.len(), bolts_carved);
     match mode {
         CastMode::Detachable => {
             write_per_layer_sections_v2(
@@ -469,6 +465,7 @@ pub fn generate_procedure_markdown_v2_for_mode(
                 ribbon,
                 &bolts_per_layer,
                 has_dowels,
+                has_plug_lock,
             );
         }
         CastMode::Bonded => write_per_layer_sections_v2_bonded(&mut md, spec, pour_volumes, ribbon),
@@ -942,9 +939,13 @@ fn write_print_orientation_v2(
     apex_pour: bool,
     layer_count: usize,
     ribbon: &Ribbon,
-    has_dowels: bool,
-    bolts_carved: bool,
+    carved: SheetFeatures,
 ) {
+    let SheetFeatures {
+        has_dowels,
+        bolts_carved,
+        has_plug_lock,
+    } = carved;
     let _ = writeln!(md, "## Per-Piece Print Orientation");
     md.push('\n');
     let _ = writeln!(
@@ -956,8 +957,8 @@ fn write_print_orientation_v2(
          section)."
     );
     md.push('\n');
-    write_print_orientation_cup_pieces(md, ribbon, has_dowels, bolts_carved);
-    write_print_orientation_plug_pieces(md);
+    write_print_orientation_cup_pieces(md, ribbon, has_dowels, bolts_carved, has_plug_lock);
+    write_print_orientation_plug_pieces(md, has_plug_lock);
     write_print_orientation_funnel_platform(md, apex_pour, layer_count);
     write_print_orientation_g4_revision(md);
 }
@@ -967,6 +968,7 @@ fn write_print_orientation_cup_pieces(
     ribbon: &Ribbon,
     has_dowels: bool,
     bolts_carved: bool,
+    has_plug_lock: bool,
 ) {
     let _ = writeln!(md, "### Cup pieces (`mold_layer_*_piece_{{0|1}}.stl`)");
     md.push('\n');
@@ -1013,34 +1015,48 @@ fn write_print_orientation_cup_pieces(
         );
     }
     md.push('\n');
-    let _ = writeln!(
-        md,
-        "The cap-plane wall carrying the S4 plug-floor-lock socket \
-         is a vertical wall in this orientation; the socket prints \
-         as a horizontal SIDE recess into the vertical wall — no \
-         first-layer adhesion concern at the socket interior."
-    );
-    md.push('\n');
+    if has_plug_lock {
+        let _ = writeln!(
+            md,
+            "The cap-plane wall carrying the S4 plug-floor-lock socket \
+             is a vertical wall in this orientation; the socket prints \
+             as a horizontal SIDE recess into the vertical wall — no \
+             first-layer adhesion concern at the socket interior."
+        );
+        md.push('\n');
+    }
 }
 
-fn write_print_orientation_plug_pieces(md: &mut String) {
+fn write_print_orientation_plug_pieces(md: &mut String, has_plug_lock: bool) {
+    let (lock_up, cap_down_verdict) = if has_plug_lock {
+        (
+            ", the truncated-pyramid lock pointing UP",
+            "**Cap-plane-face-DOWN is INVALID** — the S4 truncated pyramid \
+             protrudes from the cap-plane face along `cap_normal` (away from \
+             plug body), so cap-plane-face-down would put the pyramid INTO \
+             the bed (geometrically impossible).",
+        )
+    } else {
+        (
+            "",
+            "Cap-plane-face-DOWN is geometrically valid on this cast \
+             (`PlugPinKind::None` — nothing protrudes from the cap-plane \
+             face), but dome-end-DOWN remains the recommendation: it keeps \
+             the flat cap-plane as the top surface.",
+        )
+    };
     let _ = writeln!(md, "### Plug pieces (`plug_layer_*.stl`)");
     md.push('\n');
     let _ = writeln!(
         md,
-        "**Orient dome end DOWN on bed, cap-plane face UP, the \
-         truncated-pyramid lock pointing UP.** Add a brim (5-8 mm, \
-         1 layer) for the dome contact patch; brief minor supports \
-         may be needed for the first dome-curvature layers."
+        "**Orient dome end DOWN on bed, cap-plane face UP{lock_up}.** \
+         Add a brim (5-8 mm, 1 layer) for the dome contact patch; brief \
+         minor supports may be needed for the first dome-curvature layers."
     );
     md.push('\n');
     let _ = writeln!(
         md,
-        "**Cap-plane-face-DOWN is INVALID** — the S4 truncated \
-         pyramid protrudes from the cap-plane face along \
-         `cap_normal` (away from plug body), so cap-plane-face-\
-         down would put the pyramid INTO the bed (geometrically \
-         impossible). Side-orient (centerline horizontal) is \
+        "{cap_down_verdict} Side-orient (centerline horizontal) is \
          geometrically valid but requires extensive supports for \
          body curvature overhangs; not recommended."
     );
@@ -1137,7 +1153,7 @@ fn write_print_orientation_g4_revision(md: &mut String) {
     md.push('\n');
 }
 
-fn write_chamfer_recipe_v2(md: &mut String) {
+fn write_chamfer_recipe_v2(md: &mut String, has_plug_lock: bool) {
     let plug_chamfer_mm = PrismaticPinSpec::plug_lock_default().base_chamfer_m * 1000.0;
     let _ = writeln!(md, "## First-Layer Chamfer Recipe");
     md.push('\n');
@@ -1157,19 +1173,21 @@ fn write_chamfer_recipe_v2(md: &mut String) {
          typed-range default pending S7 caliper data."
     );
     md.push('\n');
-    let _ = writeln!(
-        md,
-        "**Plug-lock chamfer** ({plug_chamfer_mm:.2} mm default per \
-         `PrismaticPinSpec::plug_lock_default`, typed-range §G-6 / \
-         pinned post-S7 §G-8): retained at default. Under the dome-\
-         end-DOWN plug orientation `+axis_unit = +cap_normal` \
-         points UP, so the chamfer band at `-axis_unit` lives \
-         **inside the plug body** (below the cap-plane face). The \
-         workshop-visible pyramid above the cap-plane is the \
-         unchamfered main-taper portion only. The matching socket's \
-         chamfer band on each cup-piece carves into the cup body \
-         cavity (no-op subtract)."
-    );
+    if has_plug_lock {
+        let _ = writeln!(
+            md,
+            "**Plug-lock chamfer** ({plug_chamfer_mm:.2} mm default per \
+             `PrismaticPinSpec::plug_lock_default`, typed-range §G-6 / \
+             pinned post-S7 §G-8): retained at default. Under the dome-\
+             end-DOWN plug orientation `+axis_unit = +cap_normal` \
+             points UP, so the chamfer band at `-axis_unit` lives \
+             **inside the plug body** (below the cap-plane face). The \
+             workshop-visible pyramid above the cap-plane is the \
+             unchamfered main-taper portion only. The matching socket's \
+             chamfer band on each cup-piece carves into the cup body \
+             cavity (no-op subtract)."
+        );
+    }
     md.push('\n');
     let _ = writeln!(
         md,
@@ -1231,6 +1249,19 @@ fn write_target_fdm_floor_v2(md: &mut String) {
     md.push('\n');
 }
 
+/// The optional geometry a sheet may describe, resolved ONCE per render.
+///
+/// ⚠ `has_dowels` and `bolts_carved` are answers from the PLANNER, not from
+/// `cast.toml` — the kind alone does not say whether anything was placed.
+/// `has_plug_lock` is a pure ribbon property (`PlugPinKind`), which defaults
+/// OFF, so the DEFAULT cast has no socket and no pyramid.
+#[derive(Clone, Copy)]
+struct SheetFeatures {
+    has_dowels: bool,
+    bolts_carved: bool,
+    has_plug_lock: bool,
+}
+
 /// The cf-view seam-face bullet: what the bencher should SEE in a seam face.
 ///
 /// ⚠⚠ This bullet ends a checklist whose failure instruction is "do NOT
@@ -1274,9 +1305,9 @@ fn seam_face_features(ribbon: &Ribbon, has_dowels: bool, bolts_carved: bool) -> 
                  seam plane, so each half carries one side of it)",
             ),
             PourGateLayout::VAtDome => present.push(
-                "the pour and vent legs at the dome end, each bisected \
-                 lengthwise into an open half-trough (their apex sits on the \
-                 centerline, i.e. on the seam plane)",
+                "ONE half-trough at the dome end — the V's legs splay along \
+                 the binormal, so the Positive piece carries the pour leg's \
+                 and the Negative piece the vent leg's, not both in each face",
             ),
         },
     }
@@ -1305,13 +1336,43 @@ fn seam_face_check(ribbon: &Ribbon, has_dowels: bool, bolts_carved: bool) -> Str
     )
 }
 
+/// The two cf-view plug-piece bullets, which describe the plug-floor lock.
+///
+/// ⚠ `PlugPinKind` is OFF by default, so the unconditional form demanded a
+/// pyramid the default cast never generates — inside a checklist whose failure
+/// instruction is "do NOT proceed to print".
+const fn plug_piece_checks(has_plug_lock: bool) -> (&'static str, &'static str) {
+    if has_plug_lock {
+        (
+            "- Cap-plane face carries a single truncated-pyramid lock \
+             protruding from the cap-plane face along `cap_normal` (S4); \
+             flat tapered lateral faces, sharp edges.",
+            "- Dome end is smooth and closed; the workshop-visible pyramid \
+             above the cap-plane is the unchamfered main-taper only (the \
+             chamfer band lives inside the plug body and is not visible from \
+             outside).",
+        )
+    } else {
+        (
+            "- Cap-plane face is FLAT (`PlugPinKind::None` — no plug-floor \
+             lock is generated). Any pyramid protruding from it is a \
+             regression.",
+            "- Dome end is smooth and closed.",
+        )
+    }
+}
+
 fn write_cfview_sanity_check_v2(
     md: &mut String,
     apex_pour: bool,
     ribbon: &Ribbon,
-    has_dowels: bool,
-    bolts_carved: bool,
+    carved: SheetFeatures,
 ) {
+    let SheetFeatures {
+        has_dowels,
+        bolts_carved,
+        has_plug_lock,
+    } = carved;
     // ⚠ Do not send the bencher to verify features the cast never carves.
     let dowel_check = seam_face_check(ribbon, has_dowels, bolts_carved);
     let _ = writeln!(md, "## cf-view Sanity-Check Workflow");
@@ -1322,6 +1383,16 @@ fn write_cfview_sanity_check_v2(
          viewer) and verify the recon-1 §G-11 #3 visual gate:"
     );
     md.push('\n');
+    // ⚠ Do not demand a feature this cast does not carve. `PlugPinKind` is
+    // OFF by default, so the DEFAULT sheet was requiring a socket and a
+    // pyramid that no cast produces — under "do NOT proceed to print".
+    let socket_check = if has_plug_lock {
+        "- Cap-plane wall carries a clean rectangular plug-floor-lock socket \
+         recess (S4) — recessed cavity, NOT a through-hole."
+    } else {
+        "- Cap-plane wall is plain (`PlugPinKind::None` — no plug-floor-lock \
+         socket is carved). A socket recess here would be a regression."
+    };
     let _ = writeln!(
         md,
         "1. **Cup pieces** (`mold_layer_*_piece_0.stl` + `_piece_1.stl`):\n   \
@@ -1333,24 +1404,18 @@ fn write_cfview_sanity_check_v2(
          retired).\n   \
          - No T-bar / stem / T-slot remnants on the cap-plane wall \
          (pre-S4 plug-shaft mechanism retired).\n   \
-         - Cap-plane wall carries a clean rectangular plug-floor-\
-         lock socket recess (S4) — recessed cavity, NOT a through-\
-         hole."
+         {socket_check}"
     );
     md.push('\n');
+    let (lock_check, dome_check) = plug_piece_checks(has_plug_lock);
     let _ = writeln!(
         md,
         "2. **Plug pieces** (`plug_layer_*.stl`):\n   \
-         - Cap-plane face carries a single truncated-pyramid lock \
-         protruding from the cap-plane face along `cap_normal` \
-         (S4); flat tapered lateral faces, sharp edges.\n   \
+         {lock_check}\n   \
          - No T-bar / stem / cylindrical-shaft remnants (pre-S4 \
          geometry retired); no separate dome-pin (pre-S4 dome-pin \
          gone too).\n   \
-         - Dome end is smooth and closed; the workshop-visible \
-         pyramid above the cap-plane is the unchamfered main-taper \
-         only (the chamfer band lives inside the plug body and is \
-         not visible from outside)."
+         {dome_check}"
     );
     md.push('\n');
     if apex_pour {
@@ -1397,7 +1462,14 @@ fn write_cfview_sanity_check_v2(
     md.push('\n');
 }
 
-fn write_cap_plane_chamfer_v2(md: &mut String) {
+fn write_cap_plane_chamfer_v2(md: &mut String, has_plug_lock: bool) {
+    let socket_perimeter = if has_plug_lock {
+        " It does NOT appear at the plug-lock socket recess perimeter (the \
+         truncated-pyramid socket has FLAT lateral walls, no derivative \
+         discontinuity with the cap-plane)."
+    } else {
+        ""
+    };
     let _ = writeln!(md, "## Cap-Plane Edge Chamfer (Expected MC Quantization)");
     md.push('\n');
     let _ = writeln!(
@@ -1408,11 +1480,8 @@ fn write_cap_plane_chamfer_v2(md: &mut String) {
          wall. On plug pieces this is the cap-plane face perimeter \
          (cap-plane × curving plug body wall). On cup pieces this \
          is the body-cavity opening perimeter on the cap-plane wall \
-         (cap-plane × curving cup body cavity wall). It does NOT \
-         appear at the plug-lock socket recess perimeter (the \
-         truncated-pyramid socket has FLAT lateral walls, no \
-         derivative discontinuity with the cap-plane). This is \
-         **expected geometry, not a defect.**"
+         (cap-plane × curving cup body cavity wall).{socket_perimeter} \
+         This is **expected geometry, not a defect.**"
     );
     md.push('\n');
     let _ = writeln!(
@@ -1478,7 +1547,7 @@ fn write_cap_plane_chamfer_v2(md: &mut String) {
 // Linear writeln!s + a single bullet-list block; factoring out subsections would
 // just shuffle the prose into helper names without reducing complexity.
 #[allow(clippy::too_many_lines)]
-fn write_seam_face_edge_v2(md: &mut String) {
+fn write_seam_face_edge_v2(md: &mut String, has_plug_lock: bool) {
     let _ = writeln!(
         md,
         "## Seam-Face Edge Non-Flatness (Expected Centerline Curvature + MC)"
@@ -1561,24 +1630,26 @@ fn write_seam_face_edge_v2(md: &mut String) {
          (4')-pattern accepted."
     );
     md.push('\n');
-    let _ = writeln!(
-        md,
-        "**Plug-lock socket mouth (cup-piece cap-plane wall):** the \
-         `SubtractTruncatedPyramid` mesh-CSG carve of the plug-lock \
-         socket recess inherits ~100 µm cap-plane edge chamfer at the \
-         socket mouth perimeter (manifold3d boolean subtract on an \
-         already-MC-quantized cap-plane face). Workshop user 2026-05-24 \
-         night cf-view flagged this as \"matter obstructing the \
-         opening\" (Finding C in `docs/CF_CAST_POST_SALVAGE_TRIAGE.md`). \
-         Expected magnitude is ~100 µm — well below the triage doc's \
-         <0.5 mm workshop-acceptability threshold. If cf-view shows \
-         the obstruction is < 0.5 mm thick, accept it (workshop user \
-         can file off any visible artifact in 30 seconds before \
-         pressing the plug into the socket). If the obstruction is \
-         visibly > 0.5 mm thick, file a regression issue with a \
-         cf-view screenshot — that would warrant a separate recon arc \
-         on the boolean-junction geometry."
-    );
+    if has_plug_lock {
+        let _ = writeln!(
+            md,
+            "**Plug-lock socket mouth (cup-piece cap-plane wall):** the \
+             `SubtractTruncatedPyramid` mesh-CSG carve of the plug-lock \
+             socket recess inherits ~100 µm cap-plane edge chamfer at the \
+             socket mouth perimeter (manifold3d boolean subtract on an \
+             already-MC-quantized cap-plane face). Workshop user 2026-05-24 \
+             night cf-view flagged this as \"matter obstructing the \
+             opening\" (Finding C in `docs/CF_CAST_POST_SALVAGE_TRIAGE.md`). \
+             Expected magnitude is ~100 µm — well below the triage doc's \
+             <0.5 mm workshop-acceptability threshold. If cf-view shows \
+             the obstruction is < 0.5 mm thick, accept it (workshop user \
+             can file off any visible artifact in 30 seconds before \
+             pressing the plug into the socket). If the obstruction is \
+             visibly > 0.5 mm thick, file a regression issue with a \
+             cf-view screenshot — that would warrant a separate recon arc \
+             on the boolean-junction geometry."
+        );
+    }
     md.push('\n');
 }
 
@@ -2053,7 +2124,7 @@ fn write_v2_cup_half_clamping_note(
                  over their contoured outer surface (wide tape, \
                  ratchet straps, or workshop user's preferred \
                  contoured-clamp method; see the assembly note above \
-                 for the registration-pin-mediated alignment). Pour \
+                 for the alignment method). Pour \
                  silicone directly through the pour gate; the seam \
                  relies on the cup-piece SDF halfspace intersect's \
                  bit-precise flat seam face (recon-4 (P) §F-2). \
@@ -2484,7 +2555,6 @@ fn write_apex_axial_pour_note(
     md: &mut String,
     spec: &crate::pour::PourGateSpec,
     bolts_carved: bool,
-    fasteners_placed: bool,
 ) {
     // ⚠ The bracketing clause describes what BOLTS do around the bore. With no
     // bolt pattern carved there is nothing to bracket and no flange to clamp,
@@ -2496,11 +2566,15 @@ fn write_apex_axial_pour_note(
     } else {
         ""
     };
-    // ⚠ No fastener placed means the seam solver never ran on this cast
-    // (`compute_smart_placements` returns early), so nothing "brackets the
-    // bore by construction" — the whole sentence would be a claim about work
-    // that did not happen.
-    let solver_bracket = if fasteners_placed {
+    // ⚠ BOLTS are what bracket the bore — the solver excludes the pour as a
+    // swept channel so a fastener lands either side of it. A dowels-only cast
+    // has nothing bracketing anything, and a cast with no placement at all has
+    // no solver result to describe.
+    //
+    // (An earlier comment here claimed the solver "never ran" without
+    // fasteners. That was wrong: it runs whenever a flange plus a pattern
+    // exists, and can legitimately place zero.)
+    let solver_bracket = if bolts_carved {
         format!(
             " The seam-placement solver brackets this bore by construction — \
              it excludes the pour as a swept channel{bolt_bracket}."
@@ -2570,7 +2644,6 @@ fn write_v2_pour_gate_note(
     ribbon: &Ribbon,
     layer_count: usize,
     bolts_carved: bool,
-    fasteners_placed: bool,
 ) {
     let funnel_once = funnel_print_once_sentence(layer_count);
     let _ = writeln!(md, "## Pour Gate + Vent");
@@ -2587,7 +2660,7 @@ fn write_v2_pour_gate_note(
             );
         }
         PourGateKind::Default(spec) if spec.layout == PourGateLayout::ApexAxial => {
-            write_apex_axial_pour_note(md, spec, bolts_carved, fasteners_placed);
+            write_apex_axial_pour_note(md, spec, bolts_carved);
         }
         PourGateKind::Default(spec) => {
             let gate_dia_mm = spec.gate_radius_m * 2.0 * 1000.0;
@@ -2685,10 +2758,28 @@ fn write_per_layer_sections_v2(
     ribbon: &Ribbon,
     bolts_per_layer: &[bool],
     has_dowels: bool,
+    has_plug_lock: bool,
 ) {
     let _ = writeln!(md, "## Per-Layer Procedure");
     md.push('\n');
     let single = spec.layers.len() == 1;
+    // ⚠ `PlugPinKind` is OFF by default, so steps 6 and 8 described a lock and
+    // a socket the default cast never carves.
+    let (seat_plug, lock_release) = if has_plug_lock {
+        (
+            "seat the plug into one open cup half so its truncated-pyramid \
+             floor lock drops into the cup-piece floor socket",
+            " The truncated-pyramid floor lock slides out of its cap-plane \
+             socket-cavity in the silicone (the pyramid's taper releases \
+             without interference under axial pull).",
+        )
+    } else {
+        (
+            "seat the plug into one open cup half, positioning it by hand \
+             (`PlugPinKind::None` — there is no floor lock to seat)",
+            "",
+        )
+    };
     for (layer, pour) in spec.layers.iter().zip(pour_volumes) {
         let position = layer_position_label(pour.layer_index, spec.layers.len());
         let _ = writeln!(
@@ -2809,9 +2900,7 @@ fn write_per_layer_sections_v2(
         let _ = writeln!(
             md,
             "6. Apply mold release to `plug_layer_{0}.stl` (Smooth-On \
-             Ease Release 200 standard) and seat the plug into one \
-             open cup half so its truncated-pyramid floor lock drops \
-             into the cup-piece floor socket. {closing_protocol} \
+             Ease Release 200 standard) and {seat_plug}. {closing_protocol} \
              {pour_sentence}",
             pour.layer_index,
         );
@@ -2839,11 +2928,8 @@ fn write_per_layer_sections_v2(
             "8. Demold: open the two mold halves along the ribbon \
              seam (remove `piece_0` first, then `piece_1` for clean \
              centerline-axis slide release on curved centerlines). \
-             Pull the plug axially out of the cured silicone shell; \
-             the truncated-pyramid floor lock slides out of its \
-             cap-plane socket-cavity in the silicone (the pyramid's \
-             taper releases without interference under axial pull). \
-             {demold_tail}"
+             Pull the plug axially out of the cured silicone \
+             shell.{lock_release} {demold_tail}"
         );
         md.push('\n');
     }

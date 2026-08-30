@@ -5105,7 +5105,14 @@ mod tests {
         // anchors gate any future rewrite that silently flips the
         // orientation guidance back to recon-1 §G-4's original
         // (geometrically-falsified) seam-face-on-bed lock.
+        // ⚠ Plug pins ENABLED. `PlugPinKind` defaults OFF, and the
+        // plug-lock prose this test pins is now gated on the cast actually
+        // carrying a lock — an unconditional "cap-plane-face-DOWN is INVALID"
+        // was describing a pyramid the default cast never generates.
         let (spec, ribbon) = v2_procedure_fixture();
+        let ribbon = ribbon.with_plug_pins(crate::plug::PlugPinKind::Axial(
+            crate::plug::PlugPinSpec::iter1(),
+        ));
         let pours = spec.compute_pour_volumes().unwrap();
         let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
         assert!(
@@ -5217,6 +5224,12 @@ mod tests {
         // vs without-pins. Anchors gate any future drift back toward
         // "fix it" framing.
         let (spec, ribbon) = v2_procedure_fixture();
+        // ⚠ Plug pins ENABLED — the socket-mouth callout this test pins is
+        // now gated on the cast carrying a plug-floor lock, which
+        // `PlugPinKind` does not do by default.
+        let ribbon = ribbon.with_plug_pins(crate::plug::PlugPinKind::Axial(
+            crate::plug::PlugPinSpec::iter1(),
+        ));
         let pours = spec.compute_pour_volumes().unwrap();
         let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
         assert!(
