@@ -408,6 +408,11 @@ pub fn generate_procedure_markdown_v2_for_mode(
         &ribbon.pour_gate,
         PourGateKind::Default(s) if s.layout == PourGateLayout::ApexAxial
     );
+    // ★ Computed ONCE, by running the PLANNER. Every prose site that mentions
+    // bolts reads this one value, so the sheet and the carve cannot disagree.
+    // See `spec::bolts_will_be_carved` for why a predicate over the config
+    // provably cannot answer this question.
+    let bolts_carved = crate::spec::bolts_will_be_carved(spec, ribbon);
 
     let mut md = String::new();
     match mode {
@@ -423,17 +428,13 @@ pub fn generate_procedure_markdown_v2_for_mode(
     write_seam_face_edge_v2(&mut md);
     write_materials_table(&mut md, spec, pour_volumes);
     write_generic_guidance(&mut md, spec.layers.len());
-    write_v2_assembly_note(&mut md, ribbon, spec.layers.len(), spec.wall_thickness_m);
-    write_v2_cup_half_clamping_note(
-        &mut md,
-        ribbon,
-        mode,
-        spec.layers.len(),
-        spec.wall_thickness_m,
-    );
+    write_v2_assembly_note(&mut md, ribbon, spec.layers.len(), bolts_carved);
+    write_v2_cup_half_clamping_note(&mut md, ribbon, mode, spec.layers.len(), bolts_carved);
     write_v2_pour_gate_note(&mut md, ribbon, spec.layers.len());
     match mode {
-        CastMode::Detachable => write_per_layer_sections_v2(&mut md, spec, pour_volumes, ribbon),
+        CastMode::Detachable => {
+            write_per_layer_sections_v2(&mut md, spec, pour_volumes, ribbon, bolts_carved);
+        }
         CastMode::Bonded => write_per_layer_sections_v2_bonded(&mut md, spec, pour_volumes, ribbon),
     }
     match mode {
@@ -1443,7 +1444,7 @@ fn write_v2_assembly_note(
     md: &mut String,
     ribbon: &Ribbon,
     layer_count: usize,
-    wall_thickness_m: f64,
+    bolts_carved: bool,
 ) {
     let _ = writeln!(md, "## v2 Mold Assembly");
     md.push('\n');
@@ -1568,19 +1569,19 @@ fn write_v2_assembly_note(
             );
         }
     }
-    write_v2_bolt_pattern_note(md, ribbon, wall_thickness_m);
+    write_v2_bolt_pattern_note(md, ribbon, bolts_carved);
     md.push('\n');
     write_v2_plug_anchor_note(md, ribbon);
 }
 
-fn write_v2_bolt_pattern_note(md: &mut String, ribbon: &Ribbon, wall_thickness_m: f64) {
+fn write_v2_bolt_pattern_note(md: &mut String, ribbon: &Ribbon, bolts_carved: bool) {
     let Some(spec) = ribbon.bolt_pattern.spec() else {
         return;
     };
     // Gate on the CARVE, not on the bolt kind. With `FlangeKind::None` the
     // planner places zero holes, so emitting this section would send the
     // bench after M5 bolts, washers and nuts for holes nobody cut.
-    if !crate::bolt_pattern::bolts_are_carved(&ribbon.flange, wall_thickness_m) {
+    if !bolts_carved {
         return;
     }
     // §B of the unified-mating-plane bolt-pattern arc: SubtractCylinder
@@ -1775,7 +1776,7 @@ fn write_v2_cup_half_clamping_note(
     ribbon: &Ribbon,
     mode: CastMode,
     layer_count: usize,
-    wall_thickness_m: f64,
+    bolts_carved: bool,
 ) {
     let post_demold = post_demold_section(mode, layer_count);
     // ⚠ Bonded intermediate layers are NOT demolded — the cured layer stays on
@@ -1798,8 +1799,7 @@ fn write_v2_cup_half_clamping_note(
     // Bolts against `FlangeKind::None` carve nothing, and the body arm below
     // keys on the flange — so gating the header on the kind titled a
     // hand-clamped cast "M5 Bolt-Pattern Seal", contradicting its own body.
-    let bolted = ribbon.bolt_pattern.spec().is_some()
-        && crate::bolt_pattern::bolts_are_carved(&ribbon.flange, wall_thickness_m);
+    let bolted = bolts_carved;
     let header = match (&ribbon.gasket, bolted) {
         (GasketKind::Mold(_), _) => "## Cup-Half Clamping with Gasket Installation",
         (GasketKind::None, true) => "## Cup-Half Clamping (M5 Bolt-Pattern Seal)",
@@ -1807,6 +1807,25 @@ fn write_v2_cup_half_clamping_note(
     };
     let _ = writeln!(md, "{header}");
     md.push('\n');
+    // ⚠ Every arm below describes the clamp method for the geometry that was
+    // ACTUALLY carved. When a `[bolt_pattern]` was requested and the solver
+    // placed nothing, all of them go on to say (or imply) there are no bolts —
+    // true of the molds, but silently at odds with the `cast.toml` the user
+    // wrote. Emitted here, before the branch, so no arm can omit it.
+    if ribbon.bolt_pattern.spec().is_some() && !bolts_carved {
+        let _ = writeln!(
+            md,
+            "> ⚠ **A `[bolt_pattern]` was requested but NO bolt holes were \
+             carved**, so this cast is clamped as described below and there is \
+             no §B section. The seam solver placed no fasteners — with no \
+             flange there is nowhere to put them; with one, the M5 washer \
+             footprint does not fit the flange band at this wall thickness, or \
+             the pour gate and dowels leave no clear arc. Widen \
+             `flange_width_m`, thin `wall_thickness_m`, or drop \
+             `[bolt_pattern]` and regenerate."
+        );
+        md.push('\n');
+    }
     match (&ribbon.flange, &ribbon.gasket) {
         (FlangeKind::None, GasketKind::None) => {
             let _ = writeln!(
@@ -1900,24 +1919,6 @@ fn write_v2_cup_half_clamping_note(
                      flag any leak for the post-iter-3 gasket \
                      enablement decision."
                 );
-                // ⚠ "no §B bolt pattern" above is true of the GEOMETRY but
-                // not of the config when a pattern was requested and dropped.
-                // Saying nothing leaves the solver's stderr warning as the
-                // only signal that the sheet and `cast.toml` disagree.
-                if ribbon.bolt_pattern.spec().is_some() {
-                    md.push('\n');
-                    let _ = writeln!(
-                        md,
-                        "> ⚠ **A `[bolt_pattern]` was requested but NO bolt holes \
-                         were carved.** The washer footprint does not fit this \
-                         flange at this wall thickness — the placeable radial \
-                         band is empty, so the solver placed nothing and the §B \
-                         section is intentionally absent. Widen \
-                         `flange_width_m`, or thin `wall_thickness_m`, and \
-                         regenerate if you want bolts; otherwise clamp as \
-                         described above."
-                    );
-                }
             }
         }
         (FlangeKind::Plate(flange_spec), GasketKind::Mold(gasket_spec)) => {
@@ -2312,6 +2313,7 @@ fn write_per_layer_sections_v2(
     spec: &CastSpec,
     pour_volumes: &[PourVolume],
     ribbon: &Ribbon,
+    bolts_carved: bool,
 ) {
     let _ = writeln!(md, "## Per-Layer Procedure");
     md.push('\n');
@@ -2397,8 +2399,7 @@ fn write_per_layer_sections_v2(
         // the clamping header are the other two. Gating on the bolt KIND here
         // sends step 6 to `### M5 through-bolt clamp pattern (§B)`, a section
         // that is not emitted when no holes are carved.
-        let bolted = ribbon.bolt_pattern.spec().is_some()
-            && crate::bolt_pattern::bolts_are_carved(&ribbon.flange, spec.wall_thickness_m);
+        let bolted = bolts_carved;
         let closing_protocol = match (&ribbon.gasket, bolted) {
             (GasketKind::Mold(_), _) => {
                 "Place the cured gasket strip on the Negative half's \
@@ -2612,7 +2613,7 @@ mod tests {
     #[test]
     fn assembly_note_dowel_length_is_twice_its_per_half_insertion() {
         let mut md = String::new();
-        write_v2_assembly_note(&mut md, &dowelled_ribbon(), 2, 0.004);
+        write_v2_assembly_note(&mut md, &dowelled_ribbon(), 2, true);
 
         let length = number_before(&md, " mm long");
         let insert = number_before(&md, " mm into each cup-half");
@@ -2632,7 +2633,7 @@ mod tests {
     fn assembly_note_hole_and_rod_dimensions_follow_the_dowel_spec() {
         let spec = DowelHoleSpec::iter1();
         let mut md = String::new();
-        write_v2_assembly_note(&mut md, &dowelled_ribbon(), 2, 0.004);
+        write_v2_assembly_note(&mut md, &dowelled_ribbon(), 2, true);
 
         // ⚠ This asserted `hole == 2*clearance + diameter` recomputed from the
         // spec — the SAME arithmetic as the code, so it could only ever catch
@@ -2683,7 +2684,7 @@ mod tests {
         );
 
         let mut md = String::new();
-        write_v2_assembly_note(&mut md, &ribbon, 2, 0.004);
+        write_v2_assembly_note(&mut md, &ribbon, 2, true);
 
         assert!(
             md.contains("align the pieces by hand"),
@@ -2773,20 +2774,26 @@ mod tests {
     /// the configuration the pour actually ships: flange + bolts.
     #[test]
     fn cup_half_clamping_header_and_body_agree_on_the_clamp_method() {
-        let build = |flange: FlangeKind, gasket: GasketKind, bolts: BoltPatternKind| {
-            let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
-            let split = SplitNormal::new(Vector3::new(0.0, 0.0, 1.0)).unwrap();
-            let mut r = Ribbon::new(centerline, split).unwrap();
-            r.flange = flange;
-            r.gasket = gasket;
-            r.bolt_pattern = bolts;
-            let mut md = String::new();
-            write_v2_cup_half_clamping_note(&mut md, &r, CastMode::Detachable, 2, 0.004);
-            md
-        };
+        let build =
+            |flange: FlangeKind, gasket: GasketKind, bolts: BoltPatternKind, bolts_carved: bool| {
+                let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
+                let split = SplitNormal::new(Vector3::new(0.0, 0.0, 1.0)).unwrap();
+                let mut r = Ribbon::new(centerline, split).unwrap();
+                r.flange = flange;
+                r.gasket = gasket;
+                r.bolt_pattern = bolts;
+                let mut md = String::new();
+                write_v2_cup_half_clamping_note(&mut md, &r, CastMode::Detachable, 2, bolts_carved);
+                md
+            };
         let head = |md: &str| md.lines().next().unwrap_or_default().to_string();
 
-        let bare = build(FlangeKind::None, GasketKind::None, BoltPatternKind::None);
+        let bare = build(
+            FlangeKind::None,
+            GasketKind::None,
+            BoltPatternKind::None,
+            false,
+        );
         assert!(
             head(&bare).contains("Gasketless"),
             "bare header: {:?}",
@@ -2801,6 +2808,7 @@ mod tests {
             FlangeKind::Demand(DemandFlangeSpec::iter1()),
             GasketKind::None,
             BoltPatternKind::Auto(BoltPatternSpec::iter1()),
+            true,
         );
         assert!(
             head(&bolted).contains("Bolt-Pattern"),
@@ -2828,6 +2836,7 @@ mod tests {
             FlangeKind::None,
             GasketKind::None,
             BoltPatternKind::Auto(BoltPatternSpec::iter1()),
+            false,
         );
         assert_eq!(
             head(&bolts_no_flange),
@@ -2846,18 +2855,18 @@ mod tests {
     /// must still emit the section, or this would pass by deleting it.
     #[test]
     fn bolt_hardware_is_ordered_only_when_the_holes_are_actually_carved() {
-        let build = |flange: FlangeKind| {
+        let build = |flange: FlangeKind, bolts_carved: bool| {
             let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
             let split = SplitNormal::new(Vector3::new(0.0, 0.0, 1.0)).unwrap();
             let mut r = Ribbon::new(centerline, split).unwrap();
             r.flange = flange;
             r.bolt_pattern = BoltPatternKind::Auto(BoltPatternSpec::iter1());
             let mut md = String::new();
-            write_v2_assembly_note(&mut md, &r, 2, 0.004);
+            write_v2_assembly_note(&mut md, &r, 2, bolts_carved);
             md
         };
 
-        let no_flange = build(FlangeKind::None);
+        let no_flange = build(FlangeKind::None, false);
         for phrase in [
             "M5 through-bolt clamp pattern",
             "M5 hex nut",
@@ -2869,7 +2878,7 @@ mod tests {
             );
         }
 
-        let flanged = build(FlangeKind::Demand(DemandFlangeSpec::iter1()));
+        let flanged = build(FlangeKind::Demand(DemandFlangeSpec::iter1()), true);
         for phrase in [
             "M5 through-bolt clamp pattern",
             "M5 hex nut",
@@ -2901,7 +2910,7 @@ mod tests {
             r.flange = FlangeKind::Demand(demand);
             r.bolt_pattern = BoltPatternKind::Auto(BoltPatternSpec::iter1());
             let mut md = String::new();
-            write_v2_assembly_note(&mut md, &r, 2, 0.004);
+            write_v2_assembly_note(&mut md, &r, 2, true);
             md
         };
 
@@ -2938,7 +2947,7 @@ mod tests {
             r.flange = flange;
             r.gasket = GasketKind::Mold(crate::gasket_mold::GasketSpec::iter1());
             let mut md = String::new();
-            write_v2_cup_half_clamping_note(&mut md, &r, CastMode::Detachable, 2, 0.004);
+            write_v2_cup_half_clamping_note(&mut md, &r, CastMode::Detachable, 2, false);
             md
         };
 

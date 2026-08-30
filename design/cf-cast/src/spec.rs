@@ -1342,6 +1342,33 @@ struct SmartPlacements {
 ///
 /// Propagates [`CastError::InfiniteBounds`] from `layer_mc_bounds` if a layer body
 /// is unbounded.
+/// Whether the carve will actually place bolt holes for `spec` + `ribbon`.
+///
+/// ★★★ This RUNS THE PLANNER ([`compute_smart_placements`], the same call the
+/// carve makes) rather than testing a predicate over the config, because no
+/// such predicate can answer the question. A band-arithmetic test reasons
+/// about the radial offset `d`, while the solver tests
+/// `signed_distance(p + n·d)`; the two agree only where the seam silhouette
+/// is CONVEX. Measured on a U-channel body: plate flange at a 9 mm wall, the
+/// arithmetic says infeasible and the solver places 2 bolts — which would
+/// drop the §B section and the whole hardware list from a sheet whose molds
+/// carry M5 holes.
+///
+/// `false` when no `[bolt_pattern]` is configured, or when one is configured
+/// and the solver places nothing. A planning error yields `true`: that cast
+/// cannot export at all, and keeping the hardware section is the safe side.
+pub fn bolts_will_be_carved(spec: &CastSpec, ribbon: &Ribbon) -> bool {
+    if ribbon.bolt_pattern.spec().is_none() {
+        return false;
+    }
+    match compute_smart_placements(spec, ribbon) {
+        Ok(p) => p
+            .bolts
+            .is_some_and(|per_layer| per_layer.iter().any(|l| !l.is_empty())),
+        Err(_) => true,
+    }
+}
+
 fn compute_smart_placements(
     spec: &CastSpec,
     ribbon: &Ribbon,
@@ -3890,6 +3917,90 @@ mod tests {
         );
     }
 
+    /// ★★★ The SHEET must agree with the CARVE about whether bolts exist.
+    ///
+    /// This is the assertion four review rounds converged on. Earlier versions
+    /// gated the bolt prose on a predicate over `cast.toml` — first "is there a
+    /// flange" (wrong: a 20 mm plate flange takes no bolts above an 8 mm wall),
+    /// then band arithmetic on the radial offset (wrong the OTHER way: the
+    /// solver tests `signed_distance(p + n·d)`, which only equals `d` on a
+    /// CONVEX seam silhouette).
+    ///
+    /// ⚠ The body here is a U-channel — genuinely non-convex in the seam plane.
+    /// A curved CENTERLINE does not produce that: `seam_silhouette` slices the
+    /// BODY and the ribbon only chooses the plane, so a bent centerline through
+    /// a straight cylinder is still convex, and a fixture built that way tested
+    /// nothing. At a 12 mm wall the band arithmetic calls this infeasible while
+    /// the planner places 2 bolts — molds with M5 holes and a sheet that says
+    /// hand-clamp.
+    #[test]
+    fn bolt_prose_matches_what_the_carve_actually_places() {
+        use super::compute_smart_placements;
+        use crate::bolt_pattern::{BoltPatternKind, BoltPatternSpec};
+        use crate::flange::{FlangeKind, FlangeSpec};
+        use crate::procedure::generate_procedure_markdown_v2;
+
+        // Non-convex in the seam plane: a slot cut into one side.
+        let body = Solid::cuboid(Vector3::new(0.030, 0.030, 0.030)).subtract(
+            Solid::cuboid(Vector3::new(0.012, 0.040, 0.020))
+                .translate(Vector3::new(0.0, 0.0, 0.022)),
+        );
+        let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
+        let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
+        let base = Ribbon::new(centerline, split).unwrap();
+
+        for wall in [0.004_f64, 0.012] {
+            for (flange_label, flange) in [
+                ("plate", FlangeKind::Plate(FlangeSpec::iter1())),
+                ("none", FlangeKind::None),
+            ] {
+                let spec = CastSpec {
+                    layers: vec![CastLayer {
+                        body: body.clone(),
+                        material: reference_material(),
+                    }],
+                    plug: Solid::capsule(0.008, 0.020).translate(Vector3::new(0.0, 0.0, 0.040)),
+                    bounding_region: Solid::cuboid(Vector3::new(0.060, 0.040, 0.060)),
+                    wall_thickness_m: wall,
+                    mesh_cell_size_m: 0.012,
+                    printer_config: PrinterConfig::fdm_default(),
+                    mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+                    scan_mesh_for_plug_layer_0: None,
+                    plug_layer_0_mesh_cell_size_m: None,
+                    plug_layer_0_field_skin_m: None,
+                };
+                let ribbon = base
+                    .clone()
+                    .with_flange(flange)
+                    .with_bolt_pattern(BoltPatternKind::Auto(BoltPatternSpec::iter1()));
+
+                // Ground truth straight from the planner the CARVE uses.
+                let placed: usize = compute_smart_placements(&spec, &ribbon)
+                    .unwrap()
+                    .bolts
+                    .map_or(0, |per_layer| per_layer.iter().map(Vec::len).sum());
+
+                let pours = spec.compute_pour_volumes().unwrap();
+                let md = generate_procedure_markdown_v2(&spec, &pours, &ribbon);
+                let has_section = md.contains("### M5 through-bolt clamp pattern (§B)");
+                let orders_hardware = md.contains("M5 hex nut");
+
+                assert_eq!(
+                    has_section,
+                    placed > 0,
+                    "[{flange_label} wall {wall}] carve placed {placed} bolts but the \
+                     sheet's §B section presence is {has_section}"
+                );
+                assert_eq!(
+                    orders_hardware,
+                    placed > 0,
+                    "[{flange_label} wall {wall}] carve placed {placed} bolts but the \
+                     sheet's hardware order presence is {orders_hardware}"
+                );
+            }
+        }
+    }
+
     /// Assert every backticked `#…` reference in `md` names a heading that is
     /// actually present in `md`.
     fn assert_cross_refs_resolve(md: &str, case: &str) {
@@ -5090,7 +5201,7 @@ mod tests {
             ));
         // ⚠ Thin the wall for this arm. The shared fixture runs 20 mm, and a
         // 20 mm-wide plate flange takes NO bolts above an 8 mm wall — the
-        // washer window closes (`bolt_pattern::bolts_are_carved`). This test
+        // washer window closes (see `bolts_will_be_carved`). This test
         // asserts the BOLTED step-6 prose, so it needs a cast that actually
         // carries bolts; at 20 mm the correct sheet has no bolt section at
         // all, which is what this assertion used to mistake for a regression.

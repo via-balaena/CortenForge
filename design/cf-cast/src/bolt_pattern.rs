@@ -256,53 +256,6 @@ fn bolt_feasibility(flange: &FlangeKind, wall_thickness_m: f64) -> Option<Feasib
     }
 }
 
-/// Whether `flange` permits bolt holes at all — the FLANGE precondition for
-/// carving, not a promise that holes were carved.
-///
-/// ⚠ `procedure.md` prose MUST gate on this, not on the bolt KIND
-/// (`BoltPatternKind::spec().is_some()`). A bolt pattern enabled against
-/// [`FlangeKind::None`] is dropped by [`bolt_feasibility`] — there is no
-/// flange band to place holes in — so the geometry carves ZERO holes while a
-/// sheet gated on the bolt kind still orders M5 bolts, washers and nuts per
-/// hole and titles itself "M5 Bolt-Pattern Seal" over a body that says the
-/// halves must be hand-clamped.
-///
-/// Calls [`bolt_feasibility`] rather than restating it, and
-/// `bolts_are_carved_agrees_with_actual_placements` sweeps wall thickness
-/// against the REAL planner output so the band arithmetic cannot drift.
-///
-/// Covers the two reasons visible from the FLANGE alone: no flange at all,
-/// and a washer window that closes arithmetically against the wall thickness.
-///
-/// ⚠ STILL NOT SUFFICIENT, and the residue is not purely geometric —
-/// [`plan_smart_bolt_placements`] also folds in the pour-channel exclusion,
-/// every dowel footprint, and a cross-layer feasibility drop, all of which
-/// `cast.toml` drives and none of which this predicate is given (it sees
-/// neither the ribbon nor the layer count). On a short seam loop those can
-/// still zero the placements while this returns `true`. Closing it properly
-/// means handing the renderer the PLANNED PLACEMENTS instead of a predicate.
-pub(crate) fn bolts_are_carved(flange: &FlangeKind, wall_thickness_m: f64) -> bool {
-    let Some(feas) = bolt_feasibility(flange, wall_thickness_m) else {
-        return false;
-    };
-    // The washer disk must fit in the band AND sit at or beyond the inboard
-    // floor. `SeamProfile::band_feasible` requires
-    // `inner + ρ ≤ sd ≤ width − ρ`, and the solver only searches
-    // `d ∈ [d_floor, d_max]`, so the placeable window is the intersection.
-    // When it is empty NOTHING is placed however good the silhouette is —
-    // measured: a plate flange at the 20 mm default width takes no bolts at
-    // all once `wall_thickness_m` exceeds 8 mm, and cf-cast's own fixtures
-    // run at 20 mm.
-    let lower = (feas.inner + BOLT_WASHER_RADIUS_M).max(feas.d_floor);
-    let upper = (feas.width - BOLT_WASHER_RADIUS_M).min(feas.d_max);
-    // Tolerance because the window closes EXACTLY at a representable
-    // boundary: a 20 mm plate flange at 8 mm wall gives lower == upper ==
-    // 15 mm, and `0.008 + 0.005 + 0.002` lands one ulp above `0.020 - 0.005`.
-    // The planner places 9 bolts there, so a bare `<=` would call a feasible
-    // cast infeasible. 1 nm is far below the 0.5 mm radial search step.
-    lower <= upper + 1e-9
-}
-
 /// The arc length where a pour channel pierces the loop — the loop point nearest
 /// the (in-plane) bore axis segment. Sampled along the segment by minimum
 /// `|signed_distance|` (the crossing sits on the loop, sd ≈ 0), then snapped to
@@ -473,85 +426,23 @@ mod tests {
     use cf_design::Solid;
     use nalgebra::{Point3, Vector3};
 
-    /// ★★ Anti-drift pin, against the REAL planner rather than against
-    /// `bolt_feasibility`'s Some/None.
-    ///
-    /// The first version of this test compared `bolts_are_carved` to
-    /// `bolt_feasibility(..).is_some()` — which agreed, and was WRONG: at the
-    /// default 20 mm plate flange, feasibility returns `Some` while the
-    /// placeable window is empty for any wall thickness over 8 mm, so a cast
-    /// carved zero holes and the sheet still ordered a bolt, two washers and
-    /// a nut for each of them. cf-cast's own fixtures run at 20 mm.
-    ///
-    /// Direction that matters: `bolts_are_carved == false` must imply zero
-    /// placements. The converse cannot hold — silhouette-level infeasibility
-    /// is invisible to a predicate that sees only the config — so a `true`
-    /// with zero placements is reported, not asserted, and the fixture is
-    /// chosen so it does not occur.
-    #[test]
-    fn bolts_are_carved_agrees_with_actual_placements() {
-        // ⚠ Two silhouettes. The straight cylinder is CONVEX, where the
-        // solver's `signed_distance(p + n·d)` equals the radial offset `d`
-        // the predicate reasons about. A curved centerline makes the inner
-        // seam edge CONCAVE, where they diverge — and a curve-following
-        // ribbon is the whole point of v2.1, so a convex-only fixture would
-        // leave the predicate's core assumption unexercised.
-        for (label, (body, bounds, ribbon)) in [
-            ("straight", cylinder_fixture()),
-            ("curved", curved_centerline_fixture()),
-        ] {
-            assert_agrees(label, &body, bounds, &ribbon);
-        }
-    }
-
-    /// A 90°-bent centerline: the inner side of the seam silhouette is
-    /// concave, so `signed_distance(p + n·d) < d` there.
-    fn curved_centerline_fixture() -> (Solid, cf_design::Aabb, Ribbon) {
-        let n: i32 = 32;
-        let bend_r = 0.025;
-        let centerline: Vec<Point3<f64>> = (0..=n)
-            .map(|i| {
-                let t = f64::from(i) / f64::from(n) * std::f64::consts::FRAC_PI_2;
-                Point3::new(bend_r * t.cos() - bend_r, 0.0, bend_r * t.sin())
-            })
-            .collect();
-        let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
-        let ribbon = Ribbon::new(centerline, split).unwrap();
-        let bounding_region = Solid::cuboid(Vector3::new(0.090, 0.030, 0.090));
+    fn cylinder_fixture() -> (Solid, cf_design::Aabb, Ribbon) {
+        // Cylinder along X, R=10 mm, length 60 mm.
+        let body = Solid::cylinder(0.010, 0.030).rotate(nalgebra::UnitQuaternion::from_axis_angle(
+            &Vector3::y_axis(),
+            std::f64::consts::FRAC_PI_2,
+        ));
+        let bounding_region = Solid::cuboid(Vector3::new(0.100, 0.030, 0.030));
         let bounds = bounding_region.bounds().unwrap();
-        (Solid::cylinder(0.010, 0.045), bounds, ribbon)
+        let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
+        let split = SplitNormal::new(Vector3::new(0.0, 0.0, 1.0)).unwrap();
+        let ribbon = Ribbon::new(centerline, split).unwrap();
+        (body, bounds, ribbon)
     }
 
-    fn assert_agrees(label: &str, body: &Solid, bounds: cf_design::Aabb, ribbon: &Ribbon) {
-        for flange in [
-            FlangeKind::None,
-            FlangeKind::Plate(FlangeSpec::iter1()),
-            FlangeKind::Demand(DemandFlangeSpec::iter1()),
-        ] {
-            for wall in [0.002_f64, 0.004, 0.006, 0.008, 0.010, 0.015, 0.020] {
-                let predicted = bolts_are_carved(&flange, wall);
-                let placed: usize = plan_bolts(
-                    &[body],
-                    &[bounds],
-                    ribbon,
-                    &BoltPatternSpec::iter1(),
-                    &flange,
-                    wall,
-                    None,
-                )
-                .iter()
-                .map(Vec::len)
-                .sum();
-                assert_eq!(
-                    predicted,
-                    placed > 0,
-                    "[{label}] predicate {predicted} but {placed} bolts placed \
-                     for {flange:?} at wall {wall} m"
-                );
-            }
-        }
-    }
-
+    /// Test adapter: build the shared per-layer loops (S5d-(A)) the way the v2
+    /// pipeline does, then run the bolt planner — keeps the test call sites on the
+    /// pre-S5d-(A) arg shape after loop construction moved out of the planner.
     fn plan_bolts(
         bodies: &[&Solid],
         bounds: &[cf_design::Aabb],
@@ -567,21 +458,6 @@ mod tests {
             .spec()
             .map(crate::dowel_hole::smart_dowel_footprint);
         plan_smart_bolt_placements(&loops, bolt_spec, flange, wall, dowel_r, smart_dowels)
-    }
-
-    /// TEMP probe: curved centerline -> concave inner seam silhouette.
-    fn cylinder_fixture() -> (Solid, cf_design::Aabb, Ribbon) {
-        // Cylinder along X, R=10 mm, length 60 mm.
-        let body = Solid::cylinder(0.010, 0.030).rotate(nalgebra::UnitQuaternion::from_axis_angle(
-            &Vector3::y_axis(),
-            std::f64::consts::FRAC_PI_2,
-        ));
-        let bounding_region = Solid::cuboid(Vector3::new(0.100, 0.030, 0.030));
-        let bounds = bounding_region.bounds().unwrap();
-        let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
-        let split = SplitNormal::new(Vector3::new(0.0, 0.0, 1.0)).unwrap();
-        let ribbon = Ribbon::new(centerline, split).unwrap();
-        (body, bounds, ribbon)
     }
 
     // Test-only geometry helpers. These were module fns under the legacy
