@@ -443,14 +443,16 @@ pub fn generate_procedure_markdown_v2_for_mode(
     let mut md = String::new();
     match mode {
         CastMode::Detachable => {
-            write_header_v2(&mut md, spec, apex_pour, has_pour_gate, has_flange);
+            write_header_v2(&mut md, spec, apex_pour, has_flange, features);
         }
-        CastMode::Bonded => write_header_v2_bonded(&mut md, spec, apex_pour, has_pour_gate),
+        CastMode::Bonded => {
+            write_header_v2_bonded(&mut md, spec, apex_pour, has_pour_gate, has_vent);
+        }
     }
     write_cast_geometry_v2(&mut md, ribbon);
-    write_print_orientation_v2(&mut md, apex_pour, spec.layers.len(), ribbon, features);
+    write_print_orientation_v2(&mut md, apex_pour, spec.layers.len(), features);
     write_chamfer_recipe_v2(&mut md, has_plug_lock, has_dowels);
-    write_target_fdm_floor_v2(&mut md, has_pour_gate, has_plug_lock);
+    write_target_fdm_floor_v2(&mut md, has_pour_gate && !apex_pour, has_plug_lock);
     write_cfview_sanity_check_v2(&mut md, apex_pour, ribbon, features);
     write_cap_plane_chamfer_v2(&mut md, has_plug_lock);
     write_seam_face_edge_v2(&mut md, has_plug_lock);
@@ -568,7 +570,20 @@ fn write_v2_post_cure_assembly(md: &mut String, spec: &CastSpec, mode: CastMode)
 
 /// Bonded-mode header: one plug, cast-in-place. Self-contained (does not
 /// share the detachable header so that path stays byte-identical).
-fn write_header_v2_bonded(md: &mut String, spec: &CastSpec, apex_pour: bool, has_pour_gate: bool) {
+fn write_header_v2_bonded(
+    md: &mut String,
+    spec: &CastSpec,
+    apex_pour: bool,
+    has_pour_gate: bool,
+    has_vent: bool,
+) {
+    // ⚠ Same clause as the detachable header — its twin, again.
+    let header_vent_clause = if has_vent {
+        ", vent leg on the Negative piece (`_piece_0`)"
+    } else {
+        " — no vent leg is carved (`include_vent = false`); drill air-relief \
+         holes as needed"
+    };
     let _ = writeln!(
         md,
         "# Cast Procedure (v2.1 curve-following, bonded cast-in-place)"
@@ -627,8 +642,8 @@ fn write_header_v2_bonded(md: &mut String, spec: &CastSpec, apex_pour: bool, has
         let _ = writeln!(
             md,
             "**Orientation convention**: orient the assembled mold with **+Z up** \
-             during each pour + cure. Pour leg on the Positive piece (`_piece_1`), \
-             vent leg on the Negative piece (`_piece_0`)."
+             during each pour + cure. Pour leg on the Positive piece \
+             (`_piece_1`){header_vent_clause}."
         );
     } else {
         // ⚠ The detachable header got this third branch last commit; its
@@ -865,9 +880,23 @@ fn write_header_v2(
     md: &mut String,
     spec: &CastSpec,
     apex_pour: bool,
-    has_pour_gate: bool,
     has_flange: bool,
+    carved: SheetFeatures,
 ) {
+    let SheetFeatures {
+        has_pour_gate,
+        has_vent,
+        ..
+    } = carved;
+    // ⚠ `has_vent` reached five writers and not the two HEADERS, so a
+    // `include_vent = false` cast read "vent leg on the Negative piece" in
+    // its first orientation paragraph and "no vent leg is carved" later.
+    let header_vent_clause = if has_vent {
+        ", vent leg on the Negative piece (`_piece_0`, -binormal side)"
+    } else {
+        " — no vent leg is carved (`include_vent = false`); drill air-relief \
+         holes as needed"
+    };
     // ⚠ The bore bisects whatever it passes through; with `FlangeKind::None`
     // there is no flange for it to split.
     let apex_flange_clause = if has_flange {
@@ -929,8 +958,7 @@ fn write_header_v2(
              at the dome end of the centerline (opposite the cap plane); \
              both holes are visible at the TOP of the assembly. Pour leg \
              on the Positive piece (`_piece_1`, +binormal side of the \
-             seam), vent leg on the Negative piece (`_piece_0`, -binormal \
-             side)."
+             seam){header_vent_clause}."
         );
     } else {
         // ⚠ `write_v2_pour_gate_note` and `pour_sentence` are already
@@ -1003,15 +1031,13 @@ fn write_print_orientation_v2(
     md: &mut String,
     apex_pour: bool,
     layer_count: usize,
-    ribbon: &Ribbon,
     carved: SheetFeatures,
 ) {
     let SheetFeatures {
         has_dowels,
-        bolts_carved,
         has_plug_lock,
         has_pour_gate,
-        has_vent: _,
+        ..
     } = carved;
     let _ = writeln!(md, "## Per-Piece Print Orientation");
     md.push('\n');
@@ -1024,7 +1050,7 @@ fn write_print_orientation_v2(
          section)."
     );
     md.push('\n');
-    write_print_orientation_cup_pieces(md, ribbon, has_dowels, bolts_carved, has_plug_lock);
+    write_print_orientation_cup_pieces(md, has_dowels, has_plug_lock);
     write_print_orientation_plug_pieces(md, has_plug_lock);
     write_print_orientation_funnel_platform(
         md,
@@ -1036,13 +1062,7 @@ fn write_print_orientation_v2(
     write_print_orientation_g4_revision(md);
 }
 
-fn write_print_orientation_cup_pieces(
-    md: &mut String,
-    ribbon: &Ribbon,
-    has_dowels: bool,
-    bolts_carved: bool,
-    has_plug_lock: bool,
-) {
+fn write_print_orientation_cup_pieces(md: &mut String, has_dowels: bool, has_plug_lock: bool) {
     let _ = writeln!(md, "### Cup pieces (`mold_layer_*_piece_{{0|1}}.stl`)");
     md.push('\n');
     let _ = writeln!(
@@ -1066,7 +1086,7 @@ fn write_print_orientation_cup_pieces(
              seam-face-UP orientation carries over for dowel holes \
              without modification."
         );
-    } else if !seam_face_features(ribbon, has_dowels, bolts_carved).is_empty() {
+    } else {
         // ⚠ NOT "plain": the §B M5 clearance holes go through this same face,
         // and the cf-view checklist below says so under a heading whose
         // failure instruction is "do NOT proceed to print".
@@ -1077,14 +1097,6 @@ fn write_print_orientation_cup_pieces(
              the exact list this configuration produces. Seam-face-UP is the \
              orientation lock for exactly that reason: each one opens upward \
              as a recess, printable without internal support or bridging."
-        );
-    } else {
-        let _ = writeln!(
-            md,
-            "This cast carves nothing into the seam face, so it prints \
-             plain; seam-face-UP is still the orientation lock (it is what \
-             keeps any seam-face feature printable as an upward-opening \
-             recess, without support or bridging)."
         );
     }
     md.push('\n');
@@ -1250,12 +1262,20 @@ fn write_chamfer_recipe_v2(md: &mut String, has_plug_lock: bool, has_dowels: boo
     // ⚠ With `PlugPinKind::None` there is no lock pyramid, so the only
     // remaining chamfer does not exist either and the whole section would be
     // describing geometry the same sheet says is absent.
-    let chamfer_intro = if has_plug_lock {
-        "Recon-1 §G-6 envisioned the chamfer band on each \
+    //
+    // ⚠ Only point at the dowel-hole replacement when this cast carves one.
+    let dowel_replacement = if has_dowels {
+        " (see `## v2 Mold Assembly` below for the symmetric dowel-hole \
+         replacement)"
+    } else {
+        ""
+    };
+    let chamfer_intro: String = if has_plug_lock {
+        format!(
+            "Recon-1 §G-6 envisioned the chamfer band on each \
          `PrismaticPin` as bed-adjacent FDM-elephant-foot relief. \
-         Post-§M-S4 the cup-pin registration path is retired (see \
-         `## v2 Mold Assembly` below for the symmetric dowel-hole \
-         replacement); only the plug-floor-lock chamfer remains. \
+         Post-§M-S4 the cup-pin registration path is retired{dowel_replacement}; \
+         only the plug-floor-lock chamfer remains. \
          Under the dome-end-DOWN plug orientation the chamfer band \
          lives at the `-axis_unit` end of the lock pyramid — deep \
          inside the plug body, never at the bed-touching first \
@@ -1263,11 +1283,13 @@ fn write_chamfer_recipe_v2(md: &mut String, has_plug_lock: bool, has_dowels: boo
          part. The chamfer is **SDF/MC topology continuity at the \
          deepest-in-material corner**, retained at the §G-6 \
          typed-range default pending S7 caliper data."
+        )
     } else {
         "Recon-1 §G-6 envisioned a chamfer band on each `PrismaticPin` as \
          bed-adjacent FDM-elephant-foot relief. This cast carries neither \
          path: §M-S4 retired the cup-pin registration, and `PlugPinKind::None` \
          generates no plug-floor lock. There is no chamfer band on this cast."
+            .to_string()
     };
     let _ = writeln!(md, "## First-Layer Chamfer Recipe");
     md.push('\n');
@@ -1336,10 +1358,13 @@ fn write_chamfer_recipe_v2(md: &mut String, has_plug_lock: bool, has_dowels: boo
     md.push('\n');
 }
 
-fn write_target_fdm_floor_v2(md: &mut String, has_pour_gate: bool, has_plug_lock: bool) {
+fn write_target_fdm_floor_v2(md: &mut String, has_funnel_stl: bool, has_plug_lock: bool) {
     // ⚠ `funnel.stl` and `platform.stl` are not always exported — the
     // regression-target list must name only the files this cast produces.
-    let print_list = match (has_pour_gate, has_plug_lock) {
+    // `build_funnel_solid` returns `None` for BOTH `PourGateKind::None` and
+    // `ApexAxial` (the apex funnel is integral to the cups), so a pour gate
+    // alone does not imply a funnel STL.
+    let print_list = match (has_funnel_stl, has_plug_lock) {
         (true, true) => "mold + plug + funnel + platform",
         (true, false) => "mold + plug + funnel",
         (false, true) => "mold + plug + platform",
@@ -1394,8 +1419,10 @@ fn write_target_fdm_floor_v2(md: &mut String, has_pour_gate: bool, has_plug_lock
 /// ⚠ `has_dowels` and `bolts_carved` are answers from the PLANNER, not from
 /// `cast.toml` — the kind alone does not say whether anything was placed.
 /// `has_plug_lock` is a pure ribbon property (`PlugPinKind`), which defaults
-/// OFF, so the DEFAULT cast has no socket and no pyramid.
-// Four independent optional features, deliberately kept as separate flags:
+/// OFF, so the DEFAULT cast has no socket and no pyramid. It also governs
+/// `platform.stl`: `build_platform_solid` returns `None` for
+/// `PlugPinKind::None`, so that file is not exported either.
+// Five independent optional features, deliberately kept as separate flags:
 // collapsing them into a bitfield or nested struct would hide exactly the
 // enumeration this file needs to stay honest about.
 #[allow(clippy::struct_excessive_bools)]
@@ -1407,9 +1434,6 @@ struct SheetFeatures {
     /// `PourGateKind::None` exports no `funnel.stl` and carves no vent, so
     /// every sentence naming one has to be gated the same way.
     has_pour_gate: bool,
-    /// `build_platform_solid` also returns `None` for `PlugPinKind::None`, so
-    /// `platform.stl` is not exported either — the same gate covers both.
-    ///
     /// ⚠ A vent leg is NOT implied by a pour gate. It exists only for
     /// `VAtDome` with `include_vent` — `ApexAxial` ignores `include_vent`
     /// entirely and vents by hand-drilled holes. Three sentences promised the
@@ -1495,12 +1519,11 @@ fn seam_face_features(ribbon: &Ribbon, has_dowels: bool, bolts_carved: bool) -> 
 /// The cf-view bullet built from [`seam_face_features`], so the exclusivity
 /// sentence can never outrun the list.
 fn seam_face_check(ribbon: &Ribbon, has_dowels: bool, bolts_carved: bool) -> String {
+    // ⚠ No empty case: the body-cavity opening is unconditional, so a seam
+    // face is never featureless. An "anything here is a regression" fallback
+    // would be unreachable AND wrong, which is how this bullet blocked correct
+    // prints four times.
     let present = seam_face_features(ribbon, has_dowels, bolts_carved);
-    if present.is_empty() {
-        return "- Seam faces: FLAT and featureless — this cast carves nothing \
-                into them. Any recessed cavity in a seam face is a regression."
-            .to_string();
-    }
     format!(
         "- Seam faces carry {}. Nothing else should be recessed into them.",
         present.join("; and ")
@@ -2904,6 +2927,42 @@ fn write_apex_axial_pour_note(
     md.push('\n');
 }
 
+/// The `## Pour Gate + Vent` bullet and air-escape sentence for a V-at-dome
+/// gate.
+///
+/// ⚠ This is the section every other writer cross-references for vent
+/// behaviour, and it dimensioned the vent unconditionally — so a ventless
+/// sheet read "here is your vent's diameter", then "you have no vent", then
+/// "air escapes through the vent", in that order.
+fn vent_prose(spec: &crate::pour::PourGateSpec) -> (String, String) {
+    let vent_dia_mm = spec.vent_radius_m * 2.0 * 1000.0;
+    let vent_length_mm = spec.vent_half_length_m * 2.0 * 1000.0;
+    if spec.include_vent {
+        (
+            format!(
+                "- **{vent_dia_mm:.1} mm Ø vent** on the -binormal side of the \
+                 seam (Negative piece, file `_piece_0`), {vent_length_mm:.1} mm \
+                 total channel length.\n"
+            ),
+            format!(
+                " Trapped air escapes through the smaller {vent_dia_mm:.1} mm Ø \
+                 vent leg (-binormal hole, Negative piece) as the cavity fills \
+                 bottom-up. Workshop user identifies pour vs vent by binormal \
+                 side AND by hole diameter."
+            ),
+        )
+    } else {
+        (
+            "- **No vent leg** (`include_vent = false`) — only the pour leg is \
+             carved.\n"
+                .to_string(),
+            " Air escapes back through the pour leg as silicone fills \
+             bottom-up; drill relief holes if trapping is suspected."
+                .to_string(),
+        )
+    }
+}
+
 fn write_v2_pour_gate_note(
     md: &mut String,
     ribbon: &Ribbon,
@@ -2929,9 +2988,8 @@ fn write_v2_pour_gate_note(
         }
         PourGateKind::Default(spec) => {
             let gate_dia_mm = spec.gate_radius_m * 2.0 * 1000.0;
-            let vent_dia_mm = spec.vent_radius_m * 2.0 * 1000.0;
             let gate_length_mm = spec.gate_half_length_m * 2.0 * 1000.0;
-            let vent_length_mm = spec.vent_half_length_m * 2.0 * 1000.0;
+            let (vent_bullet, air_escape) = vent_prose(spec);
             let _ = writeln!(
                 md,
                 "Integrated pour-gate + air-vent channels form a **V at \
@@ -2944,9 +3002,7 @@ fn write_v2_pour_gate_note(
                  - **{gate_dia_mm:.1} mm Ø pour gate** on the +binormal \
                  side of the seam (Positive piece, file `_piece_1`), \
                  {gate_length_mm:.1} mm total channel length.\n\
-                 - **{vent_dia_mm:.1} mm Ø vent** on the -binormal \
-                 side of the seam (Negative piece, file `_piece_0`), \
-                 {vent_length_mm:.1} mm total channel length.\n\n\
+                 {vent_bullet}\n\
                  Each leg lives entirely on one piece (no seam \
                  straddling), so each piece carves the leg on its own \
                  side and leaves the other untouched."
@@ -2965,12 +3021,8 @@ fn write_v2_pour_gate_note(
             }
             let _ = writeln!(
                 md,
-                "Pour silicone slowly into the larger {gate_dia_mm:.1} mm Ø \
-                 pour leg (+binormal hole, Positive piece). Trapped air \
-                 escapes through the smaller {vent_dia_mm:.1} mm Ø vent \
-                 leg (-binormal hole, Negative piece) as the cavity fills \
-                 bottom-up. Workshop user identifies pour vs vent by \
-                 binormal side AND by hole diameter."
+                "Pour silicone slowly into the {gate_dia_mm:.1} mm Ø \
+                 pour leg (+binormal hole, Positive piece).{air_escape}"
             );
             md.push('\n');
             // NIPPLE_DIAMETRAL_CLEARANCE_M is funnel-private; recompute
