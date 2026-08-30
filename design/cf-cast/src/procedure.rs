@@ -845,8 +845,9 @@ fn pour_orientation_blurb(ribbon: &Ribbon) -> &'static str {
         }
         PourGateKind::Default(_) => {
             // ⚠ `include_vent = false` carves no vent leg (`pour.rs:390`).
-            "Orient the assembled mold **+Z up** so the V's pour leg is on top, \
-             and pour into it at the dome end (no vent leg is carved)."
+            "Orient the assembled mold **+Z up** so the pour leg is on top, \
+             and pour into it at the dome end (no vent leg is carved, so there \
+             is no V)."
         }
         PourGateKind::None => {
             "Orient the assembled mold seam roughly vertical and drill air-relief \
@@ -901,11 +902,23 @@ fn write_header_v2(
     // ⚠ `has_vent` reached five writers and not the two HEADERS, so a
     // `include_vent = false` cast read "vent leg on the Negative piece" in
     // its first orientation paragraph and "no vent leg is carved" later.
-    let header_vent_clause = if has_vent {
-        ", vent leg on the Negative piece (`_piece_0`, -binormal side)"
+    // ⚠ Twin of `v_layout_prose`: gating only the trailing clause left the
+    // sentence asserting a V and "both holes" one comma before saying there is
+    // no vent leg.
+    let (header_gate_shape, header_vent_clause) = if has_vent {
+        (
+            "The pour gate + vent form a V at the dome end of the centerline \
+             (opposite the cap plane); both holes are visible at the TOP of \
+             the assembly.",
+            ", vent leg on the Negative piece (`_piece_0`, -binormal side)",
+        )
     } else {
-        " — no vent leg is carved (`include_vent = false`); drill air-relief \
-         holes as needed"
+        (
+            "A single pour gate sits at the dome end of the centerline \
+             (opposite the cap plane) — no vent leg is carved, so there is no \
+             V; its hole is visible at the TOP of the assembly.",
+            " — drill air-relief holes as needed",
+        )
     };
     // ⚠ The bore bisects whatever it passes through; with `FlangeKind::None`
     // there is no flange for it to split.
@@ -964,9 +977,7 @@ fn write_header_v2(
         let _ = writeln!(
             md,
             "**Orientation convention**: orient the assembled mold with \
-             **+Z up** during pour + cure. The pour gate + vent form a V \
-             at the dome end of the centerline (opposite the cap plane); \
-             both holes are visible at the TOP of the assembly. Pour leg \
+             **+Z up** during pour + cure. {header_gate_shape} Pour leg \
              on the Positive piece (`_piece_1`, +binormal side of the \
              seam){header_vent_clause}."
         );
@@ -1223,8 +1234,10 @@ fn write_print_orientation_funnel_platform(
              when the two halves are clamped. Its lumen runs continuously \
              into the bore (no inserted nipple), so there is no throat \
              constriction. It prints as part of the cup pieces (the half- \
-             cone opens upward under the seam-face-UP orientation lock, so it \
-             prints as a recess without supports). \
+             cone is an 18 mm CANTILEVERED PROTRUSION above the cup's outer \
+             surface, not a recess — check what your slicer gives it \
+             before printing; the half-channel of its lumen is the only \
+             part that opens upward under the seam-face-UP lock). \
              Pour silicone straight into the assembled funnel at the apex; \
              the funnel + bore silicone cures as one sprue that lifts out \
              of the open half-troughs when the halves separate — trim it \
@@ -1976,11 +1989,12 @@ fn write_v2_assembly_note(
             let registration_status = if ribbon.dowel_hole.spec().is_some() {
                 "⚠ A `[dowel_hole]` pattern was requested but NO dowel holes \
                  were carved, so this cast has no integral registration \
-                 features. Either there is no flange to place them in, or the \
+                 features — either there is no flange to place them in, or the \
                  dowel footprint does not fit the flange band at this wall \
-                 thickness — widen the flange (`[flange] width_m`, or \
-                 `land_width_m` for a demand flange) or thin \
-                 `[cast] wall_thickness_m` and regenerate;"
+                 thickness. (To get them: widen the flange \
+                 (`[flange] width_m`, or `land_width_m` for a demand flange) \
+                 or thin `[cast] wall_thickness_m`, then regenerate.) \
+                 For the cast as generated,"
             } else {
                 "This cast has no integral registration features \
                  (`DowelHoleKind::None`);"
@@ -2420,10 +2434,14 @@ fn write_v2_cup_half_clamping_note(
     // ⚠ `has_pour_gate` was used in the Plate+Mold arm but not in these two,
     // so a `PourGateKind::None` cast was routed to a gate the header, the
     // funnel note and the cf-view checklist all say it does not have.
+    // ⚠ NOT "the open seam": in the gasketed and bolted arms this sentence
+    // lands AFTER the step that closes and clamps that seam. Pour into the
+    // cavity through the still-open half before closing.
     let pour_route_none = if has_pour_gate {
         "through the pour gate"
     } else {
-        "through the open seam (this cast has no pour gate)"
+        "into the open cup cavity before closing the second half (this cast \
+         has no pour gate)"
     };
     // ⚠ Every arm below describes the clamp method for the geometry that was
     // ACTUALLY carved. When a `[bolt_pattern]` was requested and the solver
@@ -2626,11 +2644,13 @@ fn write_v2_cup_half_clamping_note(
                 )
             } else {
                 (
-                    "Pour main layer silicone through the seam.",
-                    "pour the layer silicone through the open seam — this cast \
-                     has no pour gate or vent (see `## Pour Gate + Vent` \
-                     below); drill air-relief holes through the cured cup wall \
-                     as needed and watch the cavity fill."
+                    "Pour BEFORE closing the second half.",
+                    "⚠ this cast has no pour gate or vent (see \
+                     `## Pour Gate + Vent` below), so the silicone goes in \
+                     before the seam is closed and clamped: fill the open \
+                     Negative half around the seated gasket, then close and \
+                     clamp per the steps above. Drill air-relief holes through \
+                     the cured cup wall as needed."
                         .to_string(),
                 )
             };
@@ -2997,8 +3017,10 @@ fn write_apex_axial_pour_note(
          (no inserted nipple), so the pour throat is the {gate_dia_mm:.1} mm \
          bore itself with no wall constriction. Mouth Ø ≈ {mouth_dia_mm:.1} mm, \
          ~{funnel_height_mm:.0} mm tall. It prints as part of the cups (the \
-         half-cone opens upward under the seam-face-UP orientation lock, so it \
-             prints as a recess without supports). \
+         half-cone is an 18 mm CANTILEVERED PROTRUSION above the cup's outer \
+             surface, not a recess — check what your slicer gives it \
+             before printing; the half-channel of its lumen is the only \
+             part that opens upward under the seam-face-UP lock). \
          Ladle silicone straight into the assembled funnel at the apex; the \
          funnel + bore silicone cures as one sprue that lifts out of the open \
          half-troughs when the halves separate (apply mold release first), \
@@ -3285,11 +3307,11 @@ fn write_per_layer_sections_v2(
             }
             PourGateKind::Default(_) => {
                 // ⚠ `include_vent = false` carves the pour leg only.
-                "Orient the assembled mold with **+Z up** so the V's pour leg is \
+                "Orient the assembled mold with **+Z up** so the pour leg is \
                  on top. Pour silicone into it at the dome end (Positive piece, \
                  +binormal side) at a slow steady rate. No vent leg is carved \
-                 (`include_vent = false`) — drill air-relief holes through the \
-                 cured cup wall as needed."
+                 (`include_vent = false`), so there is no V — drill air-relief \
+                 holes through the cured cup wall as needed."
             }
             PourGateKind::None => {
                 "Orient the assembled mold seam roughly vertical. Pour \
