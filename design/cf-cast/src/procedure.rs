@@ -423,10 +423,20 @@ pub fn generate_procedure_markdown_v2_for_mode(
         CastMode::Bonded => write_header_v2_bonded(&mut md, spec, apex_pour),
     }
     write_cast_geometry_v2(&mut md, ribbon);
-    write_print_orientation_v2(&mut md, apex_pour, spec.layers.len());
+    write_print_orientation_v2(
+        &mut md,
+        apex_pour,
+        spec.layers.len(),
+        ribbon.dowel_hole.spec().is_some(),
+    );
     write_chamfer_recipe_v2(&mut md);
     write_target_fdm_floor_v2(&mut md);
-    write_cfview_sanity_check_v2(&mut md, apex_pour, ribbon.dowel_hole.spec().is_some());
+    write_cfview_sanity_check_v2(
+        &mut md,
+        apex_pour,
+        ribbon.dowel_hole.spec().is_some(),
+        bolts_carved,
+    );
     write_cap_plane_chamfer_v2(&mut md);
     write_seam_face_edge_v2(&mut md);
     write_materials_table(&mut md, spec, pour_volumes);
@@ -904,7 +914,12 @@ fn write_cast_geometry_v2(md: &mut String, ribbon: &Ribbon) {
 /// dowel-hole pattern (holes carve straight through the seam face,
 /// printable as recessed cavities without internal support when the
 /// seam face is up).
-fn write_print_orientation_v2(md: &mut String, apex_pour: bool, layer_count: usize) {
+fn write_print_orientation_v2(
+    md: &mut String,
+    apex_pour: bool,
+    layer_count: usize,
+    has_dowels: bool,
+) {
     let _ = writeln!(md, "## Per-Piece Print Orientation");
     md.push('\n');
     let _ = writeln!(
@@ -916,13 +931,13 @@ fn write_print_orientation_v2(md: &mut String, apex_pour: bool, layer_count: usi
          section)."
     );
     md.push('\n');
-    write_print_orientation_cup_pieces(md);
+    write_print_orientation_cup_pieces(md, has_dowels);
     write_print_orientation_plug_pieces(md);
     write_print_orientation_funnel_platform(md, apex_pour, layer_count);
     write_print_orientation_g4_revision(md);
 }
 
-fn write_print_orientation_cup_pieces(md: &mut String) {
+fn write_print_orientation_cup_pieces(md: &mut String, has_dowels: bool) {
     let _ = writeln!(md, "### Cup pieces (`mold_layer_*_piece_{{0|1}}.stl`)");
     md.push('\n');
     let _ = writeln!(
@@ -933,18 +948,28 @@ fn write_print_orientation_cup_pieces(md: &mut String) {
          by-layer upward from a continuous bottom contour)."
     );
     md.push('\n');
-    let _ = writeln!(
-        md,
-        "Seam-face-UP also fits the §M-S2 symmetric dowel-hole \
-         pattern: dowel holes carve straight through the seam face \
-         along the ribbon binormal (perpendicular to the seam \
-         plane). With the seam face UP, each hole opens upward as a \
-         shallow recessed cavity (printable without internal support \
-         or bridging). Pre-§M-S4 this section described the now-\
-         retired prismatic-pin registration ridge; the same \
-         seam-face-UP orientation carries over for dowel holes \
-         without modification."
-    );
+    if has_dowels {
+        let _ = writeln!(
+            md,
+            "Seam-face-UP also fits the §M-S2 symmetric dowel-hole \
+             pattern: dowel holes carve straight through the seam face \
+             along the ribbon binormal (perpendicular to the seam \
+             plane). With the seam face UP, each hole opens upward as a \
+             shallow recessed cavity (printable without internal support \
+             or bridging). Pre-§M-S4 this section described the now-\
+             retired prismatic-pin registration ridge; the same \
+             seam-face-UP orientation carries over for dowel holes \
+             without modification."
+        );
+    } else {
+        let _ = writeln!(
+            md,
+            "This cast carves no dowel holes (`DowelHoleKind::None`), so the \
+             seam face is plain; seam-face-UP is still the orientation lock \
+             (it is what keeps any seam-face feature printable as an \
+             upward-opening recess, without internal support or bridging)."
+        );
+    }
     md.push('\n');
     let _ = writeln!(
         md,
@@ -1164,19 +1189,50 @@ fn write_target_fdm_floor_v2(md: &mut String) {
     md.push('\n');
 }
 
-fn write_cfview_sanity_check_v2(md: &mut String, apex_pour: bool, has_dowels: bool) {
+/// The cf-view seam-face bullet.
+///
+/// ⚠⚠ This bullet ends a checklist whose failure instruction is "do NOT
+/// proceed to print", so it must enumerate EVERY seam-face feature the cast
+/// actually carves — dowels AND bolt clearance holes. A previous version keyed
+/// on dowels alone and told a correctly-generated bolted mold that its M5
+/// holes were a regression, blocking the print.
+const fn seam_face_check(has_dowels: bool, bolts_carved: bool) -> &'static str {
+    match (has_dowels, bolts_carved) {
+        (true, true) => {
+            "- Seam faces carry BOTH the §M-S2 symmetric dowel holes and the \
+             §B M5 bolt clearance holes — cylindrical recessed cavities in \
+             both halves, mirrored across the seam plane. No other recessed \
+             feature should be present."
+        }
+        (true, false) => {
+            "- Dowel holes: cylindrical recessed cavities in BOTH \
+             halves' seam faces, placed by the seam-placement solver at \
+             the body's long-axis extremes in the flange band (§M-S2). \
+             The hole pattern is symmetric — the two halves should \
+             mirror each other exactly along the seam plane."
+        }
+        (false, true) => {
+            "- Seam faces carry the §B M5 bolt clearance holes ONLY \
+             (`DowelHoleKind::None`) — cylindrical cavities through the \
+             flange band, mirrored across the seam plane. No dowel holes are \
+             carved; any other recessed feature is a regression."
+        }
+        (false, false) => {
+            "- Seam faces: FLAT and featureless (`DowelHoleKind::None`, no \
+             bolt pattern carved). Any recessed cavity in a seam face is a \
+             regression."
+        }
+    }
+}
+
+fn write_cfview_sanity_check_v2(
+    md: &mut String,
+    apex_pour: bool,
+    has_dowels: bool,
+    bolts_carved: bool,
+) {
     // ⚠ Do not send the bencher to verify features the cast never carves.
-    let dowel_check = if has_dowels {
-        "- Dowel holes: cylindrical recessed cavities in BOTH \
-         halves' seam faces, placed by the seam-placement solver at \
-         the body's long-axis extremes in the flange band (§M-S2). \
-         The hole pattern is symmetric — the two halves should \
-         mirror each other exactly along the seam plane."
-    } else {
-        "- Seam faces: FLAT and featureless (`DowelHoleKind::None` — \
-         no dowel holes are carved). Any recessed cavity in a seam \
-         face is a regression."
-    };
+    let dowel_check = seam_face_check(has_dowels, bolts_carved);
     let _ = writeln!(md, "## cf-view Sanity-Check Workflow");
     md.push('\n');
     let _ = writeln!(
@@ -1615,6 +1671,12 @@ fn write_v2_bolt_pattern_note(md: &mut String, ribbon: &Ribbon, bolts_carved: bo
     // has no registration features at all — the assembly section says so and
     // tells the bencher to align by hand — so "register with the §M dowels
     // FIRST" sends them looking for holes that were never carved.
+    // The solver only excludes dowel footprints when dowels exist.
+    let dowel_exclusion = if ribbon.dowel_hole.spec().is_some() {
+        ", the dowel holes,"
+    } else {
+        ","
+    };
     let dowel_first = if ribbon.dowel_hole.spec().is_some() {
         "register the two halves with the §M dowels FIRST (the dowel-hole \
          pattern provides lateral alignment so the bolt-clearance holes match \
@@ -1666,7 +1728,7 @@ fn write_v2_bolt_pattern_note(md: &mut String, ribbon: &Ribbon, bolts_carved: bo
          solver spaces them evenly around the seam loop (≤30 mm pitch), \
          brackets the pour gate with a bolt on each side, and sizes each \
          bolt's radial offset so the M5 washer footprint stays inside the \
-         flange band and clear of the cup-wall step, the dowel holes, and \
+         flange band and clear of the cup-wall step{dowel_exclusion} and \
          the pour. Identical pattern on both halves of a given layer; the \
          per-layer hole count is emergent.\n\
          \n\

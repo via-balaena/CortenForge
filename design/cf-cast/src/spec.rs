@@ -4203,6 +4203,31 @@ mod tests {
     /// wording with each other.
     #[test]
     fn a_cast_without_dowels_never_says_to_register_on_them() {
+        // ⚠⚠ NO FILTER AT ALL — not a verb list either. A verb list is a
+        // phrase-match in disguise and failed exactly the same way: keyed on
+        // "register"/"seat the two halves" it passed over "mating the cup
+        // halves via the symmetric dowel-hole pattern", "aligning on the
+        // dowels", and a cf-view step naming holes the cast never carves.
+        //
+        // Instead EVERY sentence mentioning a dowel must match a known-good
+        // key below. A new or reworded dowel sentence fails until a human
+        // triages it, which is the only oracle synonyms cannot walk through.
+        const ALLOWED_DOWEL_MENTIONS: &[&str] = &[
+            // Correctly negated instructions.
+            "align the two halves by hand (this cast carves no dowel holes)",
+            "aligning the two halves by hand until the seam closes flush",
+            "This cast has no integral registration features",
+            "This cast carves no dowel holes",
+            "No dowel holes are carved",
+            "bolt clearance holes ONLY",
+            // Reference / historical prose — describes the feature, does not
+            // instruct the bencher to use one.
+            "enable dowel holes, dovetails, or magnets",
+            "the cup-pin registration path is retired",
+            "dowel-hole subtracts only remesh the INTERIOR",
+            "radial clearance is tuned by `DowelHoleSpec`",
+            "retired the prismatic-pin registration path entirely",
+        ];
         use crate::bolt_pattern::{BoltPatternKind, BoltPatternSpec};
         use crate::dowel_hole::{DowelHoleKind, DowelHoleSpec};
         use crate::flange::{DemandFlangeSpec, FlangeKind};
@@ -4224,34 +4249,16 @@ mod tests {
             no_dowels.contains("### M5 through-bolt clamp pattern (§B)"),
             "fixture must carve bolts, or the §B prose never renders:\n{no_dowels}"
         );
-        // ⚠ NO verb filter. The first version of this oracle keyed on
-        // "register" / "seat the two halves" and missed three more sites that
-        // say the same thing in different words — "mating the cup halves via
-        // the symmetric dowel-hole pattern", "aligning on the dowels", and a
-        // cf-view step telling the bencher to inspect holes never carved.
-        // Any un-negated ASSEMBLY mention of a dowel is a contradiction.
         for sentence in no_dowels.split(['.', '\n']) {
-            let lower = sentence.to_lowercase();
-            if !lower.contains("dowel") {
+            if !sentence.to_lowercase().contains("dowel") {
                 continue;
             }
-            // Reference prose (what a dowel IS, how to enable one) is fine;
-            // an instruction that ACTS on dowels is not.
-            let acts_on_them = [
-                "register",
-                "seat the two halves",
-                "mating",
-                "aligning on",
-                "align on",
-            ]
-            .iter()
-            .any(|v| lower.contains(v));
-            let negated = lower
-                .split(|c: char| !c.is_alphanumeric())
-                .any(|w| matches!(w, "no" | "not" | "none" | "without" | "if" | "disabled"));
             assert!(
-                !acts_on_them || negated,
-                "a cast with DowelHoleKind::None is told to act on dowels: {sentence}"
+                ALLOWED_DOWEL_MENTIONS.iter().any(|k| sentence.contains(k)),
+                "un-triaged dowel sentence on a `DowelHoleKind::None` sheet — \
+                 either it is a contradiction, or add it to \
+                 ALLOWED_DOWEL_MENTIONS with a reason:\n  {}",
+                sentence.trim()
             );
         }
 
