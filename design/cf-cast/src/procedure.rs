@@ -426,15 +426,17 @@ pub fn generate_procedure_markdown_v2_for_mode(
     // defaults it OFF, so the DEFAULT cast has no socket and no pyramid — yet
     // the checklist demanded both under "do NOT proceed to print".
     let has_plug_lock = !matches!(ribbon.plug_pins, crate::plug::PlugPinKind::None);
+    let has_pour_gate = !matches!(ribbon.pour_gate, PourGateKind::None);
     let features = SheetFeatures {
         has_dowels,
         bolts_carved,
         has_plug_lock,
+        has_pour_gate,
     };
 
     let mut md = String::new();
     match mode {
-        CastMode::Detachable => write_header_v2(&mut md, spec, apex_pour),
+        CastMode::Detachable => write_header_v2(&mut md, spec, apex_pour, has_pour_gate),
         CastMode::Bonded => write_header_v2_bonded(&mut md, spec, apex_pour),
     }
     write_cast_geometry_v2(&mut md, ribbon);
@@ -454,6 +456,7 @@ pub fn generate_procedure_markdown_v2_for_mode(
         spec.layers.len(),
         bolts_carved,
         has_dowels,
+        has_pour_gate,
     );
     write_v2_pour_gate_note(&mut md, ribbon, spec.layers.len(), bolts_carved);
     match mode {
@@ -731,10 +734,18 @@ fn write_per_layer_sections_v2_bonded(
         } else {
             format!("the cured layer {} (it bonds as it cures)", i - 1)
         };
+        // ⚠ `pour_orientation_blurb` is already three-way; this tail was not,
+        // so a `PourGateKind::None` cast was told to vent through a vent it
+        // does not have, one sentence after being told to drill relief holes.
+        let bonded_air_escape = if matches!(ribbon.pour_gate, PourGateKind::None) {
+            "hand-drilled relief holes"
+        } else {
+            "vent(s)"
+        };
         let _ = writeln!(
             md,
             "3. {} Pour the silicone slowly into {onto}; let trapped air escape the \
-             vent(s).",
+             {bonded_air_escape}.",
             pour_orientation_blurb(ribbon),
         );
         if let Some(protocol) = protocol {
@@ -822,7 +833,7 @@ fn write_v2_bonded_finishing(md: &mut String, spec: &CastSpec, mode: CastMode) {
     md.push('\n');
 }
 
-fn write_header_v2(md: &mut String, spec: &CastSpec, apex_pour: bool) {
+fn write_header_v2(md: &mut String, spec: &CastSpec, apex_pour: bool, has_pour_gate: bool) {
     let _ = writeln!(
         md,
         "# Cast Procedure (v2.1 curve-following, detachable-shell)"
@@ -868,7 +879,7 @@ fn write_header_v2(md: &mut String, spec: &CastSpec, apex_pour: bool) {
              are hand-drilled (tiny ~0.3-1.0 mm holes) at the apex + any \
              high spots — see `## Pour Gate + Vent`."
         );
-    } else {
+    } else if has_pour_gate {
         let _ = writeln!(
             md,
             "**Orientation convention**: orient the assembled mold with \
@@ -878,6 +889,18 @@ fn write_header_v2(md: &mut String, spec: &CastSpec, apex_pour: bool) {
              on the Positive piece (`_piece_1`, +binormal side of the \
              seam), vent leg on the Negative piece (`_piece_0`, -binormal \
              side)."
+        );
+    } else {
+        // ⚠ `write_v2_pour_gate_note` and `pour_sentence` are already
+        // three-way; this writer was not, so a `PourGateKind::None` cast was
+        // told where its pour and vent legs are three sections above the one
+        // saying it has neither.
+        let _ = writeln!(
+            md,
+            "**Orientation convention**: orient the assembled mold with \
+             **+Z up** during pour + cure. This cast has no pour gate or \
+             vent (`PourGateKind::None`) — pour through the open seam and \
+             drill air-relief holes as needed; see `## Pour Gate + Vent`."
         );
     }
     md.push('\n');
@@ -945,6 +968,7 @@ fn write_print_orientation_v2(
         has_dowels,
         bolts_carved,
         has_plug_lock,
+        has_pour_gate,
     } = carved;
     let _ = writeln!(md, "## Per-Piece Print Orientation");
     md.push('\n');
@@ -959,7 +983,7 @@ fn write_print_orientation_v2(
     md.push('\n');
     write_print_orientation_cup_pieces(md, ribbon, has_dowels, bolts_carved, has_plug_lock);
     write_print_orientation_plug_pieces(md, has_plug_lock);
-    write_print_orientation_funnel_platform(md, apex_pour, layer_count);
+    write_print_orientation_funnel_platform(md, apex_pour, layer_count, has_pour_gate);
     write_print_orientation_g4_revision(md);
 }
 
@@ -1085,11 +1109,27 @@ const fn funnel_print_once_sentence(layer_count: usize) -> &'static str {
     }
 }
 
-fn write_print_orientation_funnel_platform(md: &mut String, apex_pour: bool, layer_count: usize) {
+fn write_print_orientation_funnel_platform(
+    md: &mut String,
+    apex_pour: bool,
+    layer_count: usize,
+    has_pour_gate: bool,
+) {
     let funnel_reuse = funnel_reuse_tail(layer_count);
     let _ = writeln!(md, "### Funnel + platform (one-time prints)");
     md.push('\n');
-    if apex_pour {
+    if !has_pour_gate {
+        // ⚠ `build_funnel_solid` returns `None` for `PourGateKind::None`, so
+        // no `funnel.stl` is exported — telling the bencher to print one, with
+        // slicer support settings, sends them after a file that is not there.
+        let _ = writeln!(
+            md,
+            "**No funnel to print** — this cast has no pour gate \
+             (`PourGateKind::None`), so no `funnel.stl` is generated. Pour \
+             through the open seam as described in `## Pour Gate + Vent` below."
+        );
+        md.push('\n');
+    } else if apex_pour {
         let _ = writeln!(
             md,
             "**No separate funnel to print** — the apex pour funnel is \
@@ -1155,10 +1195,10 @@ fn write_print_orientation_g4_revision(md: &mut String) {
 
 fn write_chamfer_recipe_v2(md: &mut String, has_plug_lock: bool) {
     let plug_chamfer_mm = PrismaticPinSpec::plug_lock_default().base_chamfer_m * 1000.0;
-    let _ = writeln!(md, "## First-Layer Chamfer Recipe");
-    md.push('\n');
-    let _ = writeln!(
-        md,
+    // ⚠ With `PlugPinKind::None` there is no lock pyramid, so the only
+    // remaining chamfer does not exist either and the whole section would be
+    // describing geometry the same sheet says is absent.
+    let chamfer_intro = if has_plug_lock {
         "Recon-1 §G-6 envisioned the chamfer band on each \
          `PrismaticPin` as bed-adjacent FDM-elephant-foot relief. \
          Post-§M-S4 the cup-pin registration path is retired (see \
@@ -1171,7 +1211,17 @@ fn write_chamfer_recipe_v2(md: &mut String, has_plug_lock: bool) {
          part. The chamfer is **SDF/MC topology continuity at the \
          deepest-in-material corner**, retained at the §G-6 \
          typed-range default pending S7 caliper data."
-    );
+    } else {
+        "Recon-1 §G-6 envisioned a chamfer band on each `PrismaticPin` as \
+         bed-adjacent FDM-elephant-foot relief. This cast carries neither \
+         path: §M-S4 retired the cup-pin registration (see \
+         `## v2 Mold Assembly` below for the symmetric dowel-hole \
+         replacement), and `PlugPinKind::None` generates no plug-floor lock. \
+         There is no chamfer band on this cast."
+    };
+    let _ = writeln!(md, "## First-Layer Chamfer Recipe");
+    md.push('\n');
+    let _ = writeln!(md, "{chamfer_intro}");
     md.push('\n');
     if has_plug_lock {
         let _ = writeln!(
@@ -1189,14 +1239,19 @@ fn write_chamfer_recipe_v2(md: &mut String, has_plug_lock: bool) {
         );
     }
     md.push('\n');
+    let slicer_tuned_by = if has_plug_lock {
+        "plug-lock pyramid/socket diametral + axial clearances are tuned by \
+         `PrismaticPinSpec` (S7 caliper pass per §G-8); the dowel-hole radial \
+         clearance is tuned by `DowelHoleSpec` (§M-S2 / §M-S3)"
+    } else {
+        "dowel-hole radial clearance is tuned by `DowelHoleSpec` \
+         (§M-S2 / §M-S3)"
+    };
     let _ = writeln!(
         md,
         "**Slicer-level elephant-foot compensation** (Bambu Studio \
          / PrusaSlicer / OrcaSlicer): set to **0.0 mm**. The \
-         plug-lock pyramid/socket diametral + axial clearances are \
-         tuned by `PrismaticPinSpec` (S7 caliper pass per §G-8); \
-         the dowel-hole radial clearance is tuned by \
-         `DowelHoleSpec` (§M-S2 / §M-S3). Adding slicer-level \
+         {slicer_tuned_by}. Adding slicer-level \
          compensation on top would tighten both fits past their \
          spec budgets and the per-layer cup-wall surface past spec \
          wall-thickness."
@@ -1255,11 +1310,18 @@ fn write_target_fdm_floor_v2(md: &mut String) {
 /// `cast.toml` — the kind alone does not say whether anything was placed.
 /// `has_plug_lock` is a pure ribbon property (`PlugPinKind`), which defaults
 /// OFF, so the DEFAULT cast has no socket and no pyramid.
+// Four independent optional features, deliberately kept as separate flags:
+// collapsing them into a bitfield or nested struct would hide exactly the
+// enumeration this file needs to stay honest about.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Copy)]
 struct SheetFeatures {
     has_dowels: bool,
     bolts_carved: bool,
     has_plug_lock: bool,
+    /// `PourGateKind::None` exports no `funnel.stl` and carves no vent, so
+    /// every sentence naming one has to be gated the same way.
+    has_pour_gate: bool,
 }
 
 /// The cf-view seam-face bullet: what the bencher should SEE in a seam face.
@@ -1372,6 +1434,7 @@ fn write_cfview_sanity_check_v2(
         has_dowels,
         bolts_carved,
         has_plug_lock,
+        has_pour_gate,
     } = carved;
     // ⚠ Do not send the bencher to verify features the cast never carves.
     let dowel_check = seam_face_check(ribbon, has_dowels, bolts_carved);
@@ -1418,7 +1481,17 @@ fn write_cfview_sanity_check_v2(
          {dome_check}"
     );
     md.push('\n');
-    if apex_pour {
+    if !has_pour_gate {
+        // ⚠ No pour gate ⇒ no `funnel.stl` exported. Demanding the bencher
+        // verify one, inside a checklist that ends "do NOT proceed to print",
+        // blocks a correct mold.
+        let _ = writeln!(
+            md,
+            "3. **Funnel**: *none* — this cast has no pour gate \
+             (`PourGateKind::None`), so no `funnel.stl` is generated and \
+             there is nothing to check here."
+        );
+    } else if apex_pour {
         let _ = writeln!(
             md,
             "3. **Funnel**: *no separate STL* — the apex pour funnel is \
@@ -2064,6 +2137,7 @@ fn write_v2_cup_half_clamping_note(
     layer_count: usize,
     bolts_carved: bool,
     has_dowels: bool,
+    has_pour_gate: bool,
 ) {
     let post_demold = post_demold_section(mode, layer_count);
     // ⚠ Bonded intermediate layers are NOT demolded — the cured layer stays on
@@ -2250,7 +2324,8 @@ fn write_v2_cup_half_clamping_note(
             let (gasket_step4_align, dowel_release, seated_on) = if has_dowels {
                 (
                     "aligning via the symmetric dowel holes",
-                    " any dowels in the symmetric holes slide out",
+                    " Any dowels in the symmetric holes slide out \
+                     (gravity-held friction-fit — no latch action).",
                     "cup halves resting on the registration features",
                 )
             } else {
@@ -2271,6 +2346,22 @@ fn write_v2_cup_half_clamping_note(
                 "the §B bolts are tightened"
             } else {
                 "the C-clamps apply the design pressure"
+            };
+            // ⚠ `PourGateKind::None` has no funnel and no vent — the
+            // per-layer `pour_sentence` is already three-way, this arm was not.
+            let gasket_pour_route = if has_pour_gate {
+                "funnel (see `## Pour Gate + Vent` below). The vent leg \
+                 confirms full cavity fill; pour until silicone wets the vent \
+                 opening."
+            } else {
+                "seam (this cast has no pour gate or vent — see \
+                 `## Pour Gate + Vent` below); drill air-relief holes through \
+                 the cured cup wall as needed and watch the cavity fill."
+            };
+            let step8_lead = if bolts_carved {
+                "Back off the bolts + open cup halves."
+            } else {
+                "Release clamps + open cup halves."
             };
             let release_step = if bolts_carved {
                 "back off the M5 nuts in the reverse crosswise order"
@@ -2395,9 +2486,7 @@ fn write_v2_cup_half_clamping_note(
                 "6. **Pour main layer silicone through the pour \
                  gate.** With the cup clamped and gasket compressed, \
                  pour the layer silicone through the pour-gate \
-                 funnel (see `## Pour Gate + Vent` below). The vent \
-                 leg confirms full cavity fill; pour until silicone \
-                 wets the vent opening."
+                 {gasket_pour_route}"
             );
             let _ = writeln!(
                 md,
@@ -2409,9 +2498,8 @@ fn write_v2_cup_half_clamping_note(
             );
             let _ = writeln!(
                 md,
-                "8. **Release clamps + open cup halves.** After cure, \
-                 {release_step}. Separate the cup halves;{dowel_release} \
-                 (gravity-held friction-fit — no latch action). Peel \
+                "8. **{step8_lead}** After cure, \
+                 {release_step}. Separate the cup halves.{dowel_release} Peel \
                  the gasket strip out of the seam; trim at the body \
                  cavity perimeter with a scalpel if the gasket has \
                  chemically bonded to the cured silicone shell at \
@@ -3258,6 +3346,7 @@ mod tests {
                     2,
                     bolts_carved,
                     false,
+                    true,
                 );
                 md
             };
@@ -3422,7 +3511,15 @@ mod tests {
             r.flange = flange;
             r.gasket = GasketKind::Mold(crate::gasket_mold::GasketSpec::iter1());
             let mut md = String::new();
-            write_v2_cup_half_clamping_note(&mut md, &r, CastMode::Detachable, 2, false, false);
+            write_v2_cup_half_clamping_note(
+                &mut md,
+                &r,
+                CastMode::Detachable,
+                2,
+                false,
+                false,
+                true,
+            );
             md
         };
 

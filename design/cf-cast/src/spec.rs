@@ -1464,6 +1464,10 @@ fn compute_smart_placements(
 /// flange) returns before planning anything. If this lands hot on the pivot's
 /// real scan bodies, thread the already-computed [`SmartPlacements`] in from
 /// the export path rather than re-solving.
+///
+/// ⚠ For a `FlangeKind::Demand` cast the re-solve also rebuilds every layer's
+/// demand-flange solid and discards it — the larger half of the waste, and not
+/// covered by calling this "the seam solve".
 pub struct CarvedFeatures {
     /// Per layer: does the carve place bolt clearance holes.
     pub bolts: Vec<bool>,
@@ -4355,6 +4359,7 @@ mod tests {
         "this cast \
                  carves no dowel holes, so see",
         "the cup-pin registration path is retired",
+        "§M-S4 retired the cup-pin registration",
         "dowel-hole subtracts only remesh the INTERIOR",
         "radial clearance is tuned by `DowelHoleSpec`",
         "retired the prismatic-pin registration path entirely",
