@@ -457,7 +457,12 @@ pub fn generate_procedure_markdown_v2_for_mode(
     write_cast_geometry_v2(&mut md, ribbon);
     write_print_orientation_v2(&mut md, apex_pour, spec.layers.len(), features);
     write_chamfer_recipe_v2(&mut md, has_plug_lock, has_dowels, bolts_carved);
-    write_target_fdm_floor_v2(&mut md, has_pour_gate && !apex_pour, has_plug_lock);
+    write_target_fdm_floor_v2(
+        &mut md,
+        has_pour_gate && !apex_pour,
+        features,
+        matches!(ribbon.gasket, GasketKind::Mold(_)),
+    );
     write_cfview_sanity_check_v2(&mut md, apex_pour, ribbon, features);
     write_cap_plane_chamfer_v2(&mut md, has_plug_lock);
     write_seam_face_edge_v2(&mut md, has_plug_lock);
@@ -1195,7 +1200,7 @@ fn write_print_orientation_funnel_platform(
         (true, true) => "### Funnel + platform (one-time prints)",
         (true, false) => "### Funnel (one-time print)",
         (false, true) => "### Platform (one-time print)",
-        (false, false) => "### One-time prints",
+        (false, false) => "### One-time prints: none",
     };
     let _ = writeln!(md, "{one_time_heading}");
     md.push('\n');
@@ -1393,7 +1398,17 @@ fn write_chamfer_recipe_v2(
     md.push('\n');
 }
 
-fn write_target_fdm_floor_v2(md: &mut String, has_funnel_stl: bool, has_plug_lock: bool) {
+fn write_target_fdm_floor_v2(
+    md: &mut String,
+    has_funnel_stl: bool,
+    carved: SheetFeatures,
+    has_gasket: bool,
+) {
+    let SheetFeatures {
+        has_dowels,
+        has_plug_lock,
+        ..
+    } = carved;
     // ⚠ Both of these describe plug-lock geometry. With `PlugPinKind::None`
     // the chamfer section two headings up ends "There is no chamfer band on
     // this cast", and §M-S4 retired the cup pins — so the unconditional forms
@@ -1418,12 +1433,24 @@ fn write_target_fdm_floor_v2(md: &mut String, has_funnel_stl: bool, has_plug_loc
     // `build_funnel_solid` returns `None` for BOTH `PourGateKind::None` and
     // `ApexAxial` (the apex funnel is integral to the cups), so a pour gate
     // alone does not imply a funnel STL.
-    let print_list = match (has_funnel_stl, has_plug_lock) {
-        (true, true) => "mold + plug + funnel + platform",
-        (true, false) => "mold + plug + funnel",
-        (false, true) => "mold + plug + platform",
-        (false, false) => "mold + plug",
-    };
+    // ⚠ `export_molds_v2` also writes `dowel.stl` and `gasket_mold_layer_*`,
+    // so naming only mold/plug/funnel/platform under-counts the files the cast
+    // produces — the same "name what this cast makes" goal, in the other
+    // direction.
+    let mut files: Vec<&str> = vec!["mold", "plug"];
+    if has_funnel_stl {
+        files.push("funnel");
+    }
+    if has_plug_lock {
+        files.push("platform");
+    }
+    if has_dowels {
+        files.push("dowel");
+    }
+    if has_gasket {
+        files.push("gasket-mold");
+    }
+    let print_list = files.join(" + ");
     let _ = writeln!(md, "## Target FDM Floor (Bambu A1 + Default + Jayo)");
     md.push('\n');
     let _ = writeln!(
@@ -2154,8 +2181,12 @@ fn write_v2_bolt_pattern_note(
     if has_pour_gate {
         exclusion_list.push("the pour channel");
     }
+    // ⚠ Two items take NO comma. The previous rewrite fixed a comma splice and
+    // introduced "the cup-wall step, and the pour channel" — which is the
+    // PRODUCTION apex shape (bolts + gate, no dowels).
     let exclusions = match exclusion_list.as_slice() {
         [only] => (*only).to_string(),
+        [a, b] => format!("{a} and {b}"),
         [rest @ .., last] => format!("{}, and {last}", rest.join(", ")),
         [] => String::new(),
     };
@@ -3032,9 +3063,10 @@ const fn v_layout_prose(
                      splaying outward at ±30° from the body axis in the \
                      (outward + binormal) plane.",
             "both holes appear at the top",
-            "Each leg lives entirely on one piece (no seam straddling), \
-                     so each piece carves the leg on its own side and leaves \
-                     the other untouched.",
+            "Each leg is carved into ONE piece — the halfspace clip keeps \
+                     its own side's half-cylinder (pour leg → Positive, vent \
+                     leg → Negative), so each piece's seam face shows that \
+                     leg's half-trough and the other piece's does not.",
         )
     } else {
         (
@@ -3044,8 +3076,9 @@ const fn v_layout_prose(
                      binormal) plane. No vent leg is carved \
                      (`include_vent = false`), so there is no V.",
             "the pour hole appears at the top",
-            "The pour leg lives entirely on the Positive piece (no seam \
-                     straddling); the Negative piece is left untouched.",
+            "The pour leg is carved into the Positive piece only, so its \
+             half-trough shows on that piece's seam face and the Negative \
+             piece's is untouched.",
         )
     }
 }
@@ -3089,14 +3122,15 @@ fn write_v2_pour_gate_note(
                  {leg_placement}"
             );
             md.push('\n');
+            // ⚠ `vent_prose` already states the disabled vent (bullet) and
+            // the escape path (tail). This note keeps only what neither says:
+            // WHEN disabling it is safe, and what to do if it is not.
             if !spec.include_vent {
                 let _ = writeln!(
                     md,
-                    "**Note**: this cast has the vent leg disabled \
-                     (`include_vent = false`). For short straight molds \
-                     air escapes back through the pour leg as silicone \
-                     fills bottom-up. For any cast where air trapping \
-                     is suspected, enable the vent."
+                    "**Note**: disabling the vent is only safe for short \
+                     straight molds. For any cast where air trapping is \
+                     suspected, enable it (`include_vent = true`)."
                 );
                 md.push('\n');
             }

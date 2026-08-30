@@ -1468,6 +1468,10 @@ fn compute_smart_placements(
 /// ⚠ For a `FlangeKind::Demand` cast the re-solve also rebuilds every layer's
 /// demand-flange solid and discards it — the larger half of the waste, and not
 /// covered by calling this "the seam solve".
+// ⚠ `pub`, not `pub(crate)`: `mod spec` is private (lib.rs) and neither of
+// these is re-exported, so both are crate-visible either way — and clippy's
+// `redundant_pub_crate` REJECTS `pub(crate)` here. Reviewers read the `pub` as
+// public API and ask for it to be tightened; the lint then fails the build.
 pub struct CarvedFeatures {
     /// Per layer: does the carve place bolt clearance holes.
     pub bolts: Vec<bool>,
