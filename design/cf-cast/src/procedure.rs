@@ -270,7 +270,12 @@ fn write_mass_budget_summary(md: &mut String, spec: &CastSpec, pour_volumes: &[P
     let budget_g = spec.mass_budget_kg * KG_TO_G;
     let _ = writeln!(
         md,
-        "- Total silicone mass across all layers: **{:.2} g** ({} layer{}).",
+        "- Total silicone mass {}: **{:.2} g** ({} layer{}).",
+        if spec.layers.len() == 1 {
+            "for this cast"
+        } else {
+            "across all layers"
+        },
         total_g,
         spec.layers.len(),
         if spec.layers.len() == 1 { "" } else { "s" }
@@ -1178,7 +1183,16 @@ fn write_print_orientation_funnel_platform(
     has_plug_lock: bool,
 ) {
     let funnel_reuse = funnel_reuse_tail(layer_count);
-    let _ = writeln!(md, "### Funnel + platform (one-time prints)");
+    // ⚠ Name only what this cast actually prints. With neither a pour gate
+    // nor a plug lock the section announced two one-time prints and listed
+    // none.
+    let one_time_heading = match (has_pour_gate, has_plug_lock) {
+        (true, true) => "### Funnel + platform (one-time prints)",
+        (true, false) => "### Funnel (one-time print)",
+        (false, true) => "### Platform (one-time print)",
+        (false, false) => "### One-time prints",
+    };
+    let _ = writeln!(md, "{one_time_heading}");
     md.push('\n');
     if !has_pour_gate {
         // ⚠ `build_funnel_solid` returns `None` for `PourGateKind::None`, so
@@ -1190,7 +1204,6 @@ fn write_print_orientation_funnel_platform(
              (`PourGateKind::None`), so no `funnel.stl` is generated. Pour \
              through the open seam as described in `## Pour Gate + Vent` below."
         );
-        md.push('\n');
     } else if apex_pour {
         let _ = writeln!(
             md,
@@ -1200,7 +1213,8 @@ fn write_print_orientation_funnel_platform(
              when the two halves are clamped. Its lumen runs continuously \
              into the bore (no inserted nipple), so there is no throat \
              constriction. It prints as part of the cup pieces (the half- \
-             cone lies flat on the seam-face-down bed — no extra supports). \
+             cone opens upward under the seam-face-UP orientation lock, so it \
+             prints as a recess without supports). \
              Pour silicone straight into the assembled funnel at the apex; \
              the funnel + bore silicone cures as one sprue that lifts out \
              of the open half-troughs when the halves separate — trim it \
@@ -1359,6 +1373,25 @@ fn write_chamfer_recipe_v2(md: &mut String, has_plug_lock: bool, has_dowels: boo
 }
 
 fn write_target_fdm_floor_v2(md: &mut String, has_funnel_stl: bool, has_plug_lock: bool) {
+    // ⚠ Both of these describe plug-lock geometry. With `PlugPinKind::None`
+    // the chamfer section two headings up ends "There is no chamfer band on
+    // this cast", and §M-S4 retired the cup pins — so the unconditional forms
+    // cite two features the same sheet has just declared absent.
+    let chamfer_reason = if has_plug_lock {
+        " (geometry includes chamfer bands per the previous section)"
+    } else {
+        " (this cast carves no chamfer bands — see the previous section)"
+    };
+    let clearance_note = if has_plug_lock {
+        "`PrismaticPinSpec::plug_lock_default` diametral + axial clearances \
+         default to the §G-6 typed-range mid-points; exact values are pinned \
+         to caliper data from the S7 workshop-physical Bambu A1 calibration \
+         pass."
+    } else {
+        "This cast generates no plug-floor lock (`PlugPinKind::None`) and the \
+         §M-S4-retired cup pins are gone, so no `PrismaticPinSpec` clearances \
+         apply to it."
+    };
     // ⚠ `funnel.stl` and `platform.stl` are not always exported — the
     // regression-target list must name only the files this cast produces.
     // `build_funnel_solid` returns `None` for BOTH `PourGateKind::None` and
@@ -1396,21 +1429,13 @@ fn write_target_fdm_floor_v2(md: &mut String, has_funnel_stl: bool, has_plug_loc
          - **Supports**: none for cup pieces (continuous bottom \
          contour); brim 5-8 mm 1-layer for cup outer-surface \
          adhesion; brim + brief dome-curvature supports for plug.\n\
-         - **Elephant-foot compensation**: 0.0 mm (geometry \
-         includes chamfer bands per the previous section).\n\
+         - **Elephant-foot compensation**: 0.0 mm{chamfer_reason}.\n\
          - **Filament**: Jayo PLA generic profile (~220 °C nozzle, \
          60 °C bed); equivalent generic-PLA profile if Jayo \
          unavailable."
     );
     md.push('\n');
-    let _ = writeln!(
-        md,
-        "`PrismaticPinSpec::cup_pin_default` + \
-         `PrismaticPinSpec::plug_lock_default` diametral + axial \
-         clearances default to the §G-6 typed-range mid-points; \
-         exact values are pinned to caliper data from the S7 \
-         workshop-physical Bambu A1 calibration pass."
-    );
+    let _ = writeln!(md, "{clearance_note}");
     md.push('\n');
 }
 
@@ -2061,7 +2086,7 @@ fn write_v2_bolt_pattern_note(
     let bracket_clause = if has_pour_gate {
         "brackets the pour gate with a bolt on each side, and "
     } else {
-        ""
+        "and "
     };
     let Some(spec) = ribbon.bolt_pattern.spec() else {
         return;
@@ -2097,17 +2122,21 @@ fn write_v2_bolt_pattern_note(
     // ⚠ Name only the exclusions this cast actually has. Previously this
     // listed the dowel holes and "the pour" unconditionally, and the no-dowel
     // rendering left a stray comma before "and the pour".
-    let mut exclusion_list: Vec<&str> = Vec::new();
+    // ⚠ Build the WHOLE list, including the always-present cup-wall step, and
+    // join with a final "and". Templating only the optional tail produced a
+    // comma splice with one exclusion ("…the cup-wall step, the pour channel.")
+    // and, with none, swallowed the conjunction the removed clause carried.
+    let mut exclusion_list: Vec<&str> = vec!["the cup-wall step"];
     if has_dowels {
         exclusion_list.push("the dowel holes");
     }
     if has_pour_gate {
         exclusion_list.push("the pour channel");
     }
-    let exclusions = if exclusion_list.is_empty() {
-        String::new()
-    } else {
-        format!(", {}", exclusion_list.join(" and "))
+    let exclusions = match exclusion_list.as_slice() {
+        [only] => (*only).to_string(),
+        [rest @ .., last] => format!("{}, and {last}", rest.join(", ")),
+        [] => String::new(),
     };
     let dowel_first = if has_dowels {
         "register the two halves with the §M dowels FIRST (the dowel-hole \
@@ -2160,7 +2189,7 @@ fn write_v2_bolt_pattern_note(
          solver spaces them evenly around the seam loop (≤30 mm pitch), \
          {bracket_clause}sizes each \
          bolt's radial offset so the M5 washer footprint stays inside the \
-         flange band and clear of the cup-wall step{exclusions}. Identical \
+         flange band and clear of {exclusions}. Identical \
          pattern on both halves of a given layer; the \
          per-layer hole count is emergent.\n\
          \n\
@@ -2916,7 +2945,8 @@ fn write_apex_axial_pour_note(
          (no inserted nipple), so the pour throat is the {gate_dia_mm:.1} mm \
          bore itself with no wall constriction. Mouth Ø ≈ {mouth_dia_mm:.1} mm, \
          ~{funnel_height_mm:.0} mm tall. It prints as part of the cups (the \
-         half-cone lies flat on the seam-face-down bed — no extra supports). \
+         half-cone opens upward under the seam-face-UP orientation lock, so it \
+             prints as a recess without supports). \
          Ladle silicone straight into the assembled funnel at the apex; the \
          funnel + bore silicone cures as one sprue that lifts out of the open \
          half-troughs when the halves separate (apply mold release first), \
@@ -2963,6 +2993,42 @@ fn vent_prose(spec: &crate::pour::PourGateSpec) -> (String, String) {
     }
 }
 
+/// The V-at-dome intro, the "holes at the top" cue, and the leg-placement
+/// sentence.
+///
+/// ⚠ `vent_prose` gated the vent BULLET and the air-escape sentence but not
+/// the paragraph that introduces them, so a ventless sheet still opened with
+/// "both legs splaying" and "both holes appear at the top" one line above the
+/// bullet saying no vent leg is carved.
+const fn v_layout_prose(
+    spec: &crate::pour::PourGateSpec,
+) -> (&'static str, &'static str, &'static str) {
+    if spec.include_vent {
+        (
+            "Integrated pour-gate + air-vent channels form a **V at the \
+                     dome end** of the centerline (opposite the cap plane). The \
+                     V apex sits on the body's closed end with both legs \
+                     splaying outward at ±30° from the body axis in the \
+                     (outward + binormal) plane.",
+            "both holes appear at the top",
+            "Each leg lives entirely on one piece (no seam straddling), \
+                     so each piece carves the leg on its own side and leaves \
+                     the other untouched.",
+        )
+    } else {
+        (
+            "An integrated pour-gate channel sits at the **dome end** \
+                     of the centerline (opposite the cap plane), splaying \
+                     outward at 30° from the body axis in the (outward + \
+                     binormal) plane. No vent leg is carved \
+                     (`include_vent = false`), so there is no V.",
+            "the pour hole appears at the top",
+            "The pour leg lives entirely on the Positive piece (no seam \
+                     straddling); the Negative piece is left untouched.",
+        )
+    }
+}
+
 fn write_v2_pour_gate_note(
     md: &mut String,
     ribbon: &Ribbon,
@@ -2990,22 +3056,16 @@ fn write_v2_pour_gate_note(
             let gate_dia_mm = spec.gate_radius_m * 2.0 * 1000.0;
             let gate_length_mm = spec.gate_half_length_m * 2.0 * 1000.0;
             let (vent_bullet, air_escape) = vent_prose(spec);
+            let (v_intro, holes_at_top, leg_placement) = v_layout_prose(spec);
             let _ = writeln!(
                 md,
-                "Integrated pour-gate + air-vent channels form a **V at \
-                 the dome end** of the centerline (opposite the cap \
-                 plane). The V apex sits on the body's closed end with \
-                 both legs splaying outward at ±30° from the body axis \
-                 in the (outward + binormal) plane. Workshop orients \
-                 the assembled mold **+Z up** during pour + cure; both \
-                 holes appear at the top:\n\n\
+                "{v_intro} Workshop orients the assembled mold **+Z up** \
+                 during pour + cure; {holes_at_top}:\n\n\
                  - **{gate_dia_mm:.1} mm Ø pour gate** on the +binormal \
                  side of the seam (Positive piece, file `_piece_1`), \
                  {gate_length_mm:.1} mm total channel length.\n\
                  {vent_bullet}\n\
-                 Each leg lives entirely on one piece (no seam \
-                 straddling), so each piece carves the leg on its own \
-                 side and leaves the other untouched."
+                 {leg_placement}"
             );
             md.push('\n');
             if !spec.include_vent {
