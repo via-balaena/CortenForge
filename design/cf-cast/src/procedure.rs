@@ -456,7 +456,7 @@ pub fn generate_procedure_markdown_v2_for_mode(
     }
     write_cast_geometry_v2(&mut md, ribbon);
     write_print_orientation_v2(&mut md, apex_pour, spec.layers.len(), features);
-    write_chamfer_recipe_v2(&mut md, has_plug_lock, has_dowels);
+    write_chamfer_recipe_v2(&mut md, has_plug_lock, has_dowels, bolts_carved);
     write_target_fdm_floor_v2(&mut md, has_pour_gate && !apex_pour, has_plug_lock);
     write_cfview_sanity_check_v2(&mut md, apex_pour, ribbon, features);
     write_cap_plane_chamfer_v2(&mut md, has_plug_lock);
@@ -1186,7 +1186,12 @@ fn write_print_orientation_funnel_platform(
     // ⚠ Name only what this cast actually prints. With neither a pour gate
     // nor a plug lock the section announced two one-time prints and listed
     // none.
-    let one_time_heading = match (has_pour_gate, has_plug_lock) {
+    // ⚠ `has_pour_gate` is NOT the funnel-STL predicate — `build_funnel_solid`
+    // returns `None` for ApexAxial too. Keyed on the gate alone, the
+    // PRODUCTION apex cast announced "### Funnel (one-time print)" and then
+    // listed no files at all.
+    let has_funnel_stl = has_pour_gate && !apex_pour;
+    let one_time_heading = match (has_funnel_stl, has_plug_lock) {
         (true, true) => "### Funnel + platform (one-time prints)",
         (true, false) => "### Funnel (one-time print)",
         (false, true) => "### Platform (one-time print)",
@@ -1271,7 +1276,12 @@ fn write_print_orientation_g4_revision(md: &mut String) {
     md.push('\n');
 }
 
-fn write_chamfer_recipe_v2(md: &mut String, has_plug_lock: bool, has_dowels: bool) {
+fn write_chamfer_recipe_v2(
+    md: &mut String,
+    has_plug_lock: bool,
+    has_dowels: bool,
+    bolts_carved: bool,
+) {
     let plug_chamfer_mm = PrismaticPinSpec::plug_lock_default().base_chamfer_m * 1000.0;
     // ⚠ With `PlugPinKind::None` there is no lock pyramid, so the only
     // remaining chamfer does not exist either and the whole section would be
@@ -1354,8 +1364,19 @@ fn write_chamfer_recipe_v2(md: &mut String, has_plug_lock: bool, has_dowels: boo
     };
     // ⚠ With no dowels carved either, there is no mating fit left to protect
     // — only the cup-wall surface.
+    // ⚠ BOLTS are a mating fit too — §B dimensions M5 clearance holes "with
+    // no slide-fit slack" and has the bencher ream them, which is exactly the
+    // budget slicer compensation would eat.
     let (slicer_tuned_by, slicer_tighten) = if has_plug_lock || has_dowels {
         (slicer_tuned_by, slicer_tighten)
+    } else if bolts_carved {
+        (
+            "§B M5 bolt clearance is tuned by `BoltPatternSpec` \
+             (`clearance_diameter_m`)",
+            ". Adding slicer-level compensation on top would tighten that fit \
+             past its spec budget and the per-layer cup-wall surface past spec \
+             wall-thickness.",
+        )
     } else {
         (
             "cast carves no mating features at all",
