@@ -267,18 +267,38 @@ fn bolt_feasibility(flange: &FlangeKind, wall_thickness_m: f64) -> Option<Feasib
 /// hole and titles itself "M5 Bolt-Pattern Seal" over a body that says the
 /// halves must be hand-clamped.
 ///
-/// Mirrors [`bolt_feasibility`]'s only `None` arm;
-/// `bolts_are_carved_agrees_with_bolt_feasibility` pins the two together so
-/// a new `None` arm cannot silently desynchronize the prose from the carve.
+/// Calls [`bolt_feasibility`] rather than restating it, and
+/// `bolts_are_carved_agrees_with_actual_placements` sweeps wall thickness
+/// against the REAL planner output so the band arithmetic cannot drift.
 ///
-/// ⚠ NECESSARY, NOT SUFFICIENT. [`plan_smart_bolt_placements`] also returns
-/// no placements when the outermost layer silhouette is empty, and can drop
-/// positions infeasible on some layer — so a FLANGED cast can still end up
-/// with zero holes while the sheet orders hardware. Closing that needs the
-/// planned placements at prose time, which the renderer does not receive;
-/// this predicate closes the flange half only.
-pub(crate) const fn bolts_are_carved(flange: &FlangeKind) -> bool {
-    !matches!(flange, FlangeKind::None)
+/// Covers both configuration-level reasons nothing is placed: no flange at
+/// all, and a washer window that closes arithmetically.
+///
+/// ⚠ STILL NOT SUFFICIENT — but the residue is geometric, not configurable:
+/// [`plan_smart_bolt_placements`] also places nothing when the outermost
+/// layer silhouette is empty, and can drop positions infeasible on some
+/// layer. Closing that needs the planned placements at prose time, which the
+/// renderer does not receive.
+pub(crate) fn bolts_are_carved(flange: &FlangeKind, wall_thickness_m: f64) -> bool {
+    let Some(feas) = bolt_feasibility(flange, wall_thickness_m) else {
+        return false;
+    };
+    // The washer disk must fit in the band AND sit at or beyond the inboard
+    // floor. `SeamProfile::band_feasible` requires
+    // `inner + ρ ≤ sd ≤ width − ρ`, and the solver only searches
+    // `d ∈ [d_floor, d_max]`, so the placeable window is the intersection.
+    // When it is empty NOTHING is placed however good the silhouette is —
+    // measured: a plate flange at the 20 mm default width takes no bolts at
+    // all once `wall_thickness_m` exceeds 8 mm, and cf-cast's own fixtures
+    // run at 20 mm.
+    let lower = (feas.inner + BOLT_WASHER_RADIUS_M).max(feas.d_floor);
+    let upper = (feas.width - BOLT_WASHER_RADIUS_M).min(feas.d_max);
+    // Tolerance because the window closes EXACTLY at a representable
+    // boundary: a 20 mm plate flange at 8 mm wall gives lower == upper ==
+    // 15 mm, and `0.008 + 0.005 + 0.002` lands one ulp above `0.020 - 0.005`.
+    // The planner places 9 bolts there, so a bare `<=` would call a feasible
+    // cast infeasible. 1 nm is far below the 0.5 mm radial search step.
+    lower <= upper + 1e-9
 }
 
 /// The arc length where a pour channel pierces the loop — the loop point nearest
@@ -444,43 +464,60 @@ mod tests {
     use super::*;
     use crate::dowel_hole::{DowelHoleKind, DowelHoleSpec};
     use crate::flange::{DemandFlangeSpec, FlangeKind, FlangeSpec};
-
     use crate::pour::{PourGateKind, PourGateLayout, PourGateSpec, build_pour_gate_transforms};
     use crate::ribbon::SplitNormal;
-
-    /// ★ Anti-drift pin. [`bolts_are_carved`] exists so `procedure.md` can
-    /// gate its M5 hardware prose on the SAME predicate the carve uses. It
-    /// restates `bolt_feasibility`'s `None` arm rather than calling it (the
-    /// prose has no wall thickness to pass), so this test holds the two in
-    /// agreement: add a second `None` arm to `bolt_feasibility` and the sheet
-    /// would start ordering bolts for holes nobody cut — exactly the bug the
-    /// predicate was introduced to close. Wall thickness is swept because
-    /// `bolt_feasibility` takes it and could come to depend on it.
-    #[test]
-    fn bolts_are_carved_agrees_with_bolt_feasibility() {
-        let flanges = [
-            FlangeKind::None,
-            FlangeKind::Plate(FlangeSpec::iter1()),
-            FlangeKind::Demand(DemandFlangeSpec::iter1()),
-        ];
-        for flange in &flanges {
-            for wall_thickness_m in [0.002, 0.005, 0.020] {
-                assert_eq!(
-                    bolts_are_carved(flange),
-                    bolt_feasibility(flange, wall_thickness_m).is_some(),
-                    "predicate disagrees with the carve for {flange:?} at wall {wall_thickness_m} m"
-                );
-            }
-        }
-    }
     use crate::seam_placement::{build_layer_loops, seam_silhouette};
     use crate::silhouette_2d::SILHOUETTE_GRID_STEP_M;
     use cf_design::Solid;
     use nalgebra::{Point3, Vector3};
 
-    /// Test adapter: build the shared per-layer loops (S5d-(A)) the way the v2
-    /// pipeline does, then run the bolt planner — keeps the test call sites on the
-    /// pre-S5d-(A) arg shape after loop construction moved out of the planner.
+    /// ★★ Anti-drift pin, against the REAL planner rather than against
+    /// `bolt_feasibility`'s Some/None.
+    ///
+    /// The first version of this test compared `bolts_are_carved` to
+    /// `bolt_feasibility(..).is_some()` — which agreed, and was WRONG: at the
+    /// default 20 mm plate flange, feasibility returns `Some` while the
+    /// placeable window is empty for any wall thickness over 8 mm, so a cast
+    /// carved zero holes and the sheet still ordered a bolt, two washers and
+    /// a nut for each of them. cf-cast's own fixtures run at 20 mm.
+    ///
+    /// Direction that matters: `bolts_are_carved == false` must imply zero
+    /// placements. The converse cannot hold — silhouette-level infeasibility
+    /// is invisible to a predicate that sees only the config — so a `true`
+    /// with zero placements is reported, not asserted, and the fixture is
+    /// chosen so it does not occur.
+    #[test]
+    fn bolts_are_carved_agrees_with_actual_placements() {
+        let (body, bounds, ribbon) = cylinder_fixture();
+        for flange in [
+            FlangeKind::None,
+            FlangeKind::Plate(FlangeSpec::iter1()),
+            FlangeKind::Demand(DemandFlangeSpec::iter1()),
+        ] {
+            for wall in [0.002_f64, 0.004, 0.006, 0.008, 0.010, 0.015, 0.020] {
+                let predicted = bolts_are_carved(&flange, wall);
+                let placed: usize = plan_bolts(
+                    &[&body],
+                    &[bounds],
+                    &ribbon,
+                    &BoltPatternSpec::iter1(),
+                    &flange,
+                    wall,
+                    None,
+                )
+                .iter()
+                .map(Vec::len)
+                .sum();
+                assert_eq!(
+                    predicted,
+                    placed > 0,
+                    "predicate {predicted} but {placed} bolts placed for \
+                     {flange:?} at wall {wall} m"
+                );
+            }
+        }
+    }
+
     fn plan_bolts(
         bodies: &[&Solid],
         bounds: &[cf_design::Aabb],

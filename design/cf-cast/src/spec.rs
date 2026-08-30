@@ -3862,22 +3862,73 @@ mod tests {
     /// Assert every backticked `#…` reference in `md` names a heading that is
     /// actually present in `md`.
     fn assert_cross_refs_resolve(md: &str, case: &str) {
+        // ⚠ Spelled `\u{22}` rather than as a bare `'\u{22}'` char literal.
+        // `xtask grade`'s Safety scanner strips from the first double quote on
+        // a line to end-of-line, so `find(<quote char>) {` loses its OPENING
+        // BRACE; the matching close then ends the scanner's `#[cfg(test)]`
+        // region early and every test below is graded as production code
+        // (87 phantom unwrap violations, Safety A -> F, on unchanged files).
+        const QUOTE: char = '\u{22}';
         let headings: Vec<&str> = md
             .lines()
             .filter(|l| l.starts_with("## ") || l.starts_with("### "))
             .collect();
+        // Sections are also cross-referenced in plain double quotes — e.g.
+        // `per the "v2 Mold Assembly" section above` — which a backtick scan
+        // never sees. Renaming that heading would orphan them silently, the
+        // exact failure this gate exists to prevent.
+        //
+        // ⚠ Matched with `char` scanning rather than a `\"` escape inside a
+        // literal: `xtask grade`'s Safety scanner strips string literals with
+        // a brace-depth state machine that an escaped quote desynchronizes,
+        // which silently reclassifies the whole rest of `mod tests` as
+        // production code (87 phantom unwrap violations, Safety A -> F).
+        // ⚠ `QUOTE` is spelled `\u{22}` rather than as a bare `'"'` char
+        // literal. `xtask grade`'s Safety scanner strips from the first `"`
+        // on a line to end-of-line, so `find('"') {` loses its OPENING BRACE;
+        // the matching `}` then closes the scanner's `#[cfg(test)]` region
+        // early and every test below is graded as production code (87 phantom
+        // unwrap violations, Safety A -> F, on a file that had not changed).
+        let mut idx = 0usize;
+        while let Some(open_rel) = md[idx..].find(QUOTE) {
+            let open = idx + open_rel;
+            let after = &md[open + 1..];
+            let Some(close_rel) = after.find(QUOTE) else {
+                break;
+            };
+            idx = open + 1 + close_rel + 1;
+            if !after[close_rel + 1..].starts_with(" section") {
+                continue;
+            }
+            let name = &after[..close_rel];
+            let wanted = format!("## {name}");
+            assert!(
+                headings.iter().any(|h| *h == wanted),
+                "[{case}]\nsheet refers to the {name:?} section but no such \
+                 heading is in it.\nheadings present:\n{headings:#?}"
+            );
+        }
         let mut rest = md;
         while let Some(at) = rest.find("`#") {
             rest = &rest[at + 1..];
             let Some(end) = rest.find('`') else { break };
             let reference = &rest[..end];
             rest = &rest[end + 1..];
-            // Prefix, not equality: prose abbreviates a long heading (e.g.
-            // `## Cap-Plane Edge Chamfer` for "… (Expected MC Quantization)")
-            // and that still resolves for a reader. What must not happen is a
-            // reference matching NO heading at all.
+            // Exact, or a heading that continues with a PARENTHETICAL — prose
+            // abbreviates `## Cap-Plane Edge Chamfer (Expected MC Quantization)`
+            // to its name, and that resolves for a reader.
+            //
+            // ⚠ A bare `starts_with` is BLIND IN THE GUARDED DIRECTION: every
+            // short reference resolves against every longer heading, so
+            // shortening `## Post-Cure Assembly + Disassembly` to `## Post-Cure`
+            // in one place and not the other SURVIVED this assertion. Verified
+            // by mutation — do not relax this back.
             assert!(
-                headings.iter().any(|h| h.starts_with(reference)),
+                headings.iter().any(|h| {
+                    *h == reference
+                        || h.strip_prefix(reference)
+                            .is_some_and(|tail| tail.starts_with(" ("))
+                }),
                 "[{case}]\nsheet points at {reference:?} but that heading is not in it.\n\
                  headings present:\n{headings:#?}"
             );
@@ -5006,7 +5057,17 @@ mod tests {
             .with_bolt_pattern(crate::bolt_pattern::BoltPatternKind::Auto(
                 crate::bolt_pattern::BoltPatternSpec::iter1(),
             ));
-        let md_bolt = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &bolt_ribbon);
+        // ⚠ Thin the wall for this arm. The shared fixture runs 20 mm, and a
+        // 20 mm-wide plate flange takes NO bolts above an 8 mm wall — the
+        // washer window closes (`bolt_pattern::bolts_are_carved`). This test
+        // asserts the BOLTED step-6 prose, so it needs a cast that actually
+        // carries bolts; at 20 mm the correct sheet has no bolt section at
+        // all, which is what this assertion used to mistake for a regression.
+        let mut bolt_spec = spec;
+        bolt_spec.wall_thickness_m = 0.004;
+        let bolt_pours = bolt_spec.compute_pour_volumes().unwrap();
+        let md_bolt =
+            crate::procedure::generate_procedure_markdown_v2(&bolt_spec, &bolt_pours, &bolt_ribbon);
         assert!(
             md_bolt.contains("install the §B M5 through-bolts"),
             "(Plate,None,Bolts) step 6 must install the bolts: {md_bolt}"

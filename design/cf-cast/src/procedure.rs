@@ -74,7 +74,7 @@ pub fn generate_procedure_markdown(spec: &CastSpec, pour_volumes: &[PourVolume])
     let mut md = String::new();
     write_header(&mut md, spec);
     write_materials_table(&mut md, spec, pour_volumes);
-    write_generic_guidance(&mut md);
+    write_generic_guidance(&mut md, spec.layers.len());
     write_per_layer_sections(&mut md, spec, pour_volumes);
     write_mass_budget_summary(&mut md, spec, pour_volumes);
     md
@@ -122,7 +122,7 @@ fn write_materials_table(md: &mut String, spec: &CastSpec, pour_volumes: &[PourV
     md.push('\n');
 }
 
-fn write_generic_guidance(md: &mut String) {
+fn write_generic_guidance(md: &mut String, layer_count: usize) {
     let _ = writeln!(md, "## Generic Smooth-On Guidance");
     md.push('\n');
     let _ = writeln!(
@@ -132,19 +132,36 @@ fn write_generic_guidance(md: &mut String) {
          on hand (weight typically beats volume for low-viscosity \
          silicones)."
     );
-    let _ = writeln!(
-        md,
-        "- Vacuum-degas the mixed silicone at ≥27 inHg for 2-3 minutes \
-         before pouring. Bubbles trapped at cavity surfaces or layer \
-         interfaces are the #1 first-cast failure mode."
-    );
-    let _ = writeln!(
-        md,
-        "- Apply mold release to printed surfaces before each pour. \
-         Layer-to-layer adhesion between cured silicones is generally \
-         strong without release, but printed-mold-to-silicone separation \
-         needs it."
-    );
+    if layer_count == 1 {
+        let _ = writeln!(
+            md,
+            "- Vacuum-degas the mixed silicone at ≥27 inHg for 2-3 minutes \
+             before pouring. Bubbles trapped at cavity surfaces are the #1 \
+             first-cast failure mode."
+        );
+    } else {
+        let _ = writeln!(
+            md,
+            "- Vacuum-degas the mixed silicone at ≥27 inHg for 2-3 minutes \
+             before pouring. Bubbles trapped at cavity surfaces or layer \
+             interfaces are the #1 first-cast failure mode."
+        );
+    }
+    if layer_count == 1 {
+        let _ = writeln!(
+            md,
+            "- Apply mold release to printed surfaces before the pour — \
+             printed-mold-to-silicone separation needs it."
+        );
+    } else {
+        let _ = writeln!(
+            md,
+            "- Apply mold release to printed surfaces before each pour. \
+             Layer-to-layer adhesion between cured silicones is generally \
+             strong without release, but printed-mold-to-silicone separation \
+             needs it."
+        );
+    }
     let _ = writeln!(
         md,
         "- Pour into the deepest point of the cavity and let the silicone \
@@ -258,18 +275,29 @@ fn write_mass_budget_summary(md: &mut String, spec: &CastSpec, pour_volumes: &[P
         spec.layers.len(),
         if spec.layers.len() == 1 { "" } else { "s" }
     );
-    let _ = writeln!(
-        md,
-        "- Per-pour budget: **{:.2} g** ({:.4} kg). Every layer's pour mass \
-         falls within budget per the F2 export gate.",
-        budget_g, spec.mass_budget_kg,
-    );
-    let _ = writeln!(
-        md,
-        "- Same-material layers' aggregate may exceed user holdings even \
-         when each per-pour mass fits — verify total holdings against \
-         per-material sums in the summary table above."
-    );
+    if spec.layers.len() == 1 {
+        let _ = writeln!(
+            md,
+            "- Per-pour budget: **{:.2} g** ({:.4} kg). The pour mass falls \
+             within budget per the F2 export gate.",
+            budget_g, spec.mass_budget_kg,
+        );
+        // The same-material aggregate warning needs at least two pours to
+        // aggregate; at one layer the table above already IS the total.
+    } else {
+        let _ = writeln!(
+            md,
+            "- Per-pour budget: **{:.2} g** ({:.4} kg). Every layer's pour mass \
+             falls within budget per the F2 export gate.",
+            budget_g, spec.mass_budget_kg,
+        );
+        let _ = writeln!(
+            md,
+            "- Same-material layers' aggregate may exceed user holdings even \
+             when each per-pour mass fits — verify total holdings against \
+             per-material sums in the summary table above."
+        );
+    }
     md.push('\n');
 }
 
@@ -389,13 +417,14 @@ pub fn generate_procedure_markdown_v2_for_mode(
     write_cap_plane_chamfer_v2(&mut md);
     write_seam_face_edge_v2(&mut md);
     write_materials_table(&mut md, spec, pour_volumes);
-    write_generic_guidance(&mut md);
-    write_v2_assembly_note(&mut md, ribbon, spec.layers.len());
+    write_generic_guidance(&mut md, spec.layers.len());
+    write_v2_assembly_note(&mut md, ribbon, spec.layers.len(), spec.wall_thickness_m);
     write_v2_cup_half_clamping_note(
         &mut md,
         ribbon,
-        post_demold_section(mode, spec.layers.len()),
+        mode,
         spec.layers.len(),
+        spec.wall_thickness_m,
     );
     write_v2_pour_gate_note(&mut md, ribbon, spec.layers.len());
     match mode {
@@ -403,8 +432,8 @@ pub fn generate_procedure_markdown_v2_for_mode(
         CastMode::Bonded => write_per_layer_sections_v2_bonded(&mut md, spec, pour_volumes, ribbon),
     }
     match mode {
-        CastMode::Detachable => write_v2_post_cure_assembly(&mut md, spec),
-        CastMode::Bonded => write_v2_bonded_finishing(&mut md, spec),
+        CastMode::Detachable => write_v2_post_cure_assembly(&mut md, spec, mode),
+        CastMode::Bonded => write_v2_bonded_finishing(&mut md, spec, mode),
     }
     write_mass_budget_summary(&mut md, spec, pour_volumes);
     md
@@ -426,17 +455,13 @@ const fn post_demold_section(mode: CastMode, layer_count: usize) -> &'static str
     }
 }
 
-fn write_v2_post_cure_assembly(md: &mut String, spec: &CastSpec) {
+fn write_v2_post_cure_assembly(md: &mut String, spec: &CastSpec, mode: CastMode) {
     // A single-layer cast has nothing to nest, stack or take apart: the one
     // cured tube is the finished device. Emitting the multi-layer assembly
     // prose here instructs an impossible assembly ("slide layer 0 into the
     // inner cavity of layer 1"), so single-layer gets its own short section.
     if spec.layers.len() == 1 {
-        let _ = writeln!(
-            md,
-            "{}",
-            post_demold_section(CastMode::Detachable, spec.layers.len())
-        );
+        let _ = writeln!(md, "{}", post_demold_section(mode, spec.layers.len()));
         md.push('\n');
         let _ = writeln!(
             md,
@@ -454,11 +479,7 @@ fn write_v2_post_cure_assembly(md: &mut String, spec: &CastSpec) {
         md.push('\n');
         return;
     }
-    let _ = writeln!(
-        md,
-        "{}",
-        post_demold_section(CastMode::Detachable, spec.layers.len())
-    );
+    let _ = writeln!(md, "{}", post_demold_section(mode, spec.layers.len()));
     md.push('\n');
     let _ = writeln!(
         md,
@@ -733,12 +754,8 @@ fn pour_orientation_blurb(ribbon: &Ribbon) -> &'static str {
 
 /// Bonded-mode finishing note (replaces the detachable nest/disassemble
 /// section): the device is one bonded part, not separable shells.
-fn write_v2_bonded_finishing(md: &mut String, spec: &CastSpec) {
-    let _ = writeln!(
-        md,
-        "{}",
-        post_demold_section(CastMode::Bonded, spec.layers.len())
-    );
+fn write_v2_bonded_finishing(md: &mut String, spec: &CastSpec, mode: CastMode) {
+    let _ = writeln!(md, "{}", post_demold_section(mode, spec.layers.len()));
     md.push('\n');
     if spec.layers.len() == 1 {
         let _ = writeln!(
@@ -1417,7 +1434,12 @@ fn write_seam_face_edge_v2(md: &mut String) {
 // Factoring per-subsection into helpers would just shuffle the prose
 // into named functions without reducing complexity.
 #[allow(clippy::too_many_lines)]
-fn write_v2_assembly_note(md: &mut String, ribbon: &Ribbon, layer_count: usize) {
+fn write_v2_assembly_note(
+    md: &mut String,
+    ribbon: &Ribbon,
+    layer_count: usize,
+    wall_thickness_m: f64,
+) {
     let _ = writeln!(md, "## v2 Mold Assembly");
     md.push('\n');
     // §M-S4 (2026-05-27) retired the legacy prismatic-pin
@@ -1541,19 +1563,19 @@ fn write_v2_assembly_note(md: &mut String, ribbon: &Ribbon, layer_count: usize) 
             );
         }
     }
-    write_v2_bolt_pattern_note(md, ribbon);
+    write_v2_bolt_pattern_note(md, ribbon, wall_thickness_m);
     md.push('\n');
     write_v2_plug_anchor_note(md, ribbon);
 }
 
-fn write_v2_bolt_pattern_note(md: &mut String, ribbon: &Ribbon) {
+fn write_v2_bolt_pattern_note(md: &mut String, ribbon: &Ribbon, wall_thickness_m: f64) {
     let Some(spec) = ribbon.bolt_pattern.spec() else {
         return;
     };
     // Gate on the CARVE, not on the bolt kind. With `FlangeKind::None` the
     // planner places zero holes, so emitting this section would send the
     // bench after M5 bolts, washers and nuts for holes nobody cut.
-    if !crate::bolt_pattern::bolts_are_carved(&ribbon.flange) {
+    if !crate::bolt_pattern::bolts_are_carved(&ribbon.flange, wall_thickness_m) {
         return;
     }
     // §B of the unified-mating-plane bolt-pattern arc: SubtractCylinder
@@ -1743,9 +1765,23 @@ fn write_v2_plug_anchor_note(md: &mut String, ribbon: &Ribbon) {
 fn write_v2_cup_half_clamping_note(
     md: &mut String,
     ribbon: &Ribbon,
-    post_demold: &str,
+    mode: CastMode,
     layer_count: usize,
+    wall_thickness_m: f64,
 ) {
+    let post_demold = post_demold_section(mode, layer_count);
+    // ⚠ Bonded intermediate layers are NOT demolded — the cured layer stays on
+    // the plug as the next layer's inner form, so a blanket "demold the tube"
+    // here contradicts the per-layer steps. Only the final layer comes off.
+    let demold_sentence = match (mode, layer_count) {
+        (CastMode::Bonded, n) if n > 1 => {
+            "Leave each cured layer on the plug between pours (per the \
+             per-layer steps); only the outermost layer is demolded, per \
+             `## Finishing` below."
+                .to_string()
+        }
+        _ => format!("Demold the cured silicone tube per `{post_demold}` below."),
+    };
     // S3 of the seam-flange arc per recon §F-7. Prose adapts to the
     // combination of FlangeKind + GasketKind: the full clamp-and-pour
     // protocol fires only when both are enabled (the workshop
@@ -1756,7 +1792,7 @@ fn write_v2_cup_half_clamping_note(
     // keys on the flange — so gating the header on the kind titled a
     // hand-clamped cast "M5 Bolt-Pattern Seal", contradicting its own body.
     let bolted = ribbon.bolt_pattern.spec().is_some()
-        && crate::bolt_pattern::bolts_are_carved(&ribbon.flange);
+        && crate::bolt_pattern::bolts_are_carved(&ribbon.flange, wall_thickness_m);
     let header = match (&ribbon.gasket, bolted) {
         (GasketKind::Mold(_), _) => "## Cup-Half Clamping with Gasket Installation",
         (GasketKind::None, true) => "## Cup-Half Clamping (M5 Bolt-Pattern Seal)",
@@ -1809,7 +1845,7 @@ fn write_v2_cup_half_clamping_note(
         (FlangeKind::Plate(flange_spec), GasketKind::None) => {
             let width_mm = flange_spec.flange_width_m * 1000.0;
             let thickness_mm = flange_spec.flange_thickness_m * 1000.0;
-            if ribbon.bolt_pattern.spec().is_some() {
+            if bolted {
                 // iter-1 path: flange + bolts, no gasket. The bolts
                 // ARE the clamp; defer the protocol to the §B section
                 // already rendered above. Emitting C-clamp prose here
@@ -1987,8 +2023,7 @@ fn write_v2_cup_half_clamping_note(
                  contacted the fresh main pour at body_dist < 0; the \
                  thin gasket strip tears cleanly under light scalpel \
                  guidance). The gasket does NOT bond to the PLA cup \
-                 halves (silicone-non-stick). Demold the cured \
-                 silicone tube per `{post_demold}` below."
+                 halves (silicone-non-stick). {demold_sentence}"
             );
             md.push('\n');
             let _ = writeln!(
@@ -2011,7 +2046,7 @@ fn write_v2_cup_half_clamping_note(
             let land_width_mm = demand_spec.land_width_m * 1000.0;
             let land_inner_mm = demand_spec.land_inner_offset_m * 1000.0;
             let thickness_mm = demand_spec.flange_thickness_m * 1000.0;
-            if ribbon.bolt_pattern.spec().is_some() {
+            if bolted {
                 let _ = writeln!(
                     md,
                     "This cast carries the demand-driven (scalloped) flange \
@@ -2338,7 +2373,7 @@ fn write_per_layer_sections_v2(
         // sends step 6 to `### M5 through-bolt clamp pattern (§B)`, a section
         // that is not emitted when no holes are carved.
         let bolted = ribbon.bolt_pattern.spec().is_some()
-            && crate::bolt_pattern::bolts_are_carved(&ribbon.flange);
+            && crate::bolt_pattern::bolts_are_carved(&ribbon.flange, spec.wall_thickness_m);
         let closing_protocol = match (&ribbon.gasket, bolted) {
             (GasketKind::Mold(_), _) => {
                 "Place the cured gasket strip on the Negative half's \
@@ -2419,6 +2454,7 @@ mod tests {
         write_v2_cup_half_clamping_note, write_v2_plug_anchor_note,
     };
     use crate::bolt_pattern::{BoltPatternKind, BoltPatternSpec};
+    use crate::cast_mode::CastMode;
     use crate::dowel_hole::{DowelHoleKind, DowelHoleSpec};
     use crate::flange::{DemandFlangeSpec, FlangeKind};
     use crate::gasket_mold::GasketKind;
@@ -2546,7 +2582,7 @@ mod tests {
     #[test]
     fn assembly_note_dowel_length_is_twice_its_per_half_insertion() {
         let mut md = String::new();
-        write_v2_assembly_note(&mut md, &dowelled_ribbon(), 2);
+        write_v2_assembly_note(&mut md, &dowelled_ribbon(), 2, 0.004);
 
         let length = number_before(&md, " mm long");
         let insert = number_before(&md, " mm into each cup-half");
@@ -2566,7 +2602,7 @@ mod tests {
     fn assembly_note_hole_and_rod_dimensions_follow_the_dowel_spec() {
         let spec = DowelHoleSpec::iter1();
         let mut md = String::new();
-        write_v2_assembly_note(&mut md, &dowelled_ribbon(), 2);
+        write_v2_assembly_note(&mut md, &dowelled_ribbon(), 2, 0.004);
 
         // ⚠ This asserted `hole == 2*clearance + diameter` recomputed from the
         // spec — the SAME arithmetic as the code, so it could only ever catch
@@ -2617,7 +2653,7 @@ mod tests {
         );
 
         let mut md = String::new();
-        write_v2_assembly_note(&mut md, &ribbon, 2);
+        write_v2_assembly_note(&mut md, &ribbon, 2, 0.004);
 
         assert!(
             md.contains("align the pieces by hand"),
@@ -2715,7 +2751,7 @@ mod tests {
             r.gasket = gasket;
             r.bolt_pattern = bolts;
             let mut md = String::new();
-            write_v2_cup_half_clamping_note(&mut md, &r, "## Post-Cure Assembly + Disassembly", 2);
+            write_v2_cup_half_clamping_note(&mut md, &r, CastMode::Detachable, 2, 0.004);
             md
         };
         let head = |md: &str| md.lines().next().unwrap_or_default().to_string();
@@ -2787,7 +2823,7 @@ mod tests {
             r.flange = flange;
             r.bolt_pattern = BoltPatternKind::Auto(BoltPatternSpec::iter1());
             let mut md = String::new();
-            write_v2_assembly_note(&mut md, &r, 2);
+            write_v2_assembly_note(&mut md, &r, 2, 0.004);
             md
         };
 
@@ -2835,7 +2871,7 @@ mod tests {
             r.flange = FlangeKind::Demand(demand);
             r.bolt_pattern = BoltPatternKind::Auto(BoltPatternSpec::iter1());
             let mut md = String::new();
-            write_v2_assembly_note(&mut md, &r, 2);
+            write_v2_assembly_note(&mut md, &r, 2, 0.004);
             md
         };
 
@@ -2872,7 +2908,7 @@ mod tests {
             r.flange = flange;
             r.gasket = GasketKind::Mold(crate::gasket_mold::GasketSpec::iter1());
             let mut md = String::new();
-            write_v2_cup_half_clamping_note(&mut md, &r, "## Post-Cure Assembly + Disassembly", 2);
+            write_v2_cup_half_clamping_note(&mut md, &r, CastMode::Detachable, 2, 0.004);
             md
         };
 
