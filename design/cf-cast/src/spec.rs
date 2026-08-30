@@ -3893,8 +3893,8 @@ mod tests {
     ///
     /// `compute_pour_volumes` depends only on the spec, so it is computed once
     /// per layer count and reused across every ribbon × mode variation
-    /// (3 flanges × 2 gaskets × 2 bolt kinds × 3 pour gates × 2 modes = 72 per
-    /// layer config, 288 in total).
+    /// (3 flanges × 2 gaskets × 2 dowel kinds × 2 bolt kinds × 3 pour gates ×
+    /// 2 modes = 144 per layer config, 576 in total).
     #[test]
     fn every_cross_referenced_section_exists_in_the_same_sheet() {
         use crate::bolt_pattern::{BoltPatternKind, BoltPatternSpec};
@@ -3978,15 +3978,16 @@ mod tests {
                                         "{layers} / {flange:?} / {gasket:?} / {bolts:?} / \
                                      {gate:?} / {mode:?}"
                                     );
-                                    // ⚠ PLATE specifically. A demand flange is always
-                                    // feasible, so counting any bolted sheet would be
-                                    // satisfied by the arm that was never in doubt.
                                     if md.contains("integral to each cup") {
                                         apex_sheets += 1;
                                     }
                                     if md.contains("**Symmetric dowel holes**") {
                                         dowelled_sheets += 1;
                                     }
+                                    // ⚠ PLATE specifically. A demand flange is
+                                    // always feasible, so counting ANY bolted
+                                    // sheet would be satisfied by the arm that
+                                    // was never in doubt.
                                     if matches!(flange, FlangeKind::Plate(_))
                                         && md.contains("### M5 through-bolt clamp pattern (§B)")
                                     {
@@ -4266,6 +4267,7 @@ mod tests {
             "This cast carves nothing into the seam face",
             "No dowel holes are carved",
             "NO dowel holes were carved",
+            "Either there is no flange to place them in",
             "no dowel holes are carved — \
                  placement needs a flange",
             "no dowel holes and no bolt holes are carved",

@@ -452,7 +452,13 @@ pub fn generate_procedure_markdown_v2_for_mode(
         bolts_carved,
         has_dowels,
     );
-    write_v2_pour_gate_note(&mut md, ribbon, spec.layers.len(), bolts_carved);
+    write_v2_pour_gate_note(
+        &mut md,
+        ribbon,
+        spec.layers.len(),
+        bolts_carved,
+        bolts_carved || has_dowels,
+    );
     match mode {
         CastMode::Detachable => {
             write_per_layer_sections_v2(
@@ -948,13 +954,18 @@ fn write_print_orientation_v2(
          section)."
     );
     md.push('\n');
-    write_print_orientation_cup_pieces(md, has_dowels, bolts_carved);
+    write_print_orientation_cup_pieces(md, has_dowels, bolts_carved, apex_pour);
     write_print_orientation_plug_pieces(md);
     write_print_orientation_funnel_platform(md, apex_pour, layer_count);
     write_print_orientation_g4_revision(md);
 }
 
-fn write_print_orientation_cup_pieces(md: &mut String, has_dowels: bool, bolts_carved: bool) {
+fn write_print_orientation_cup_pieces(
+    md: &mut String,
+    has_dowels: bool,
+    bolts_carved: bool,
+    apex_bore: bool,
+) {
     let _ = writeln!(md, "### Cup pieces (`mold_layer_*_piece_{{0|1}}.stl`)");
     md.push('\n');
     let _ = writeln!(
@@ -978,26 +989,27 @@ fn write_print_orientation_cup_pieces(md: &mut String, has_dowels: bool, bolts_c
              seam-face-UP orientation carries over for dowel holes \
              without modification."
         );
-    } else if bolts_carved {
+    } else if bolts_carved || apex_bore {
         // ⚠ NOT "plain": the §B M5 clearance holes go through this same face,
         // and the cf-view checklist below says so under a heading whose
         // failure instruction is "do NOT proceed to print".
         let _ = writeln!(
             md,
-            "This cast carves no dowel holes, but the §B M5 bolt clearance \
-             holes DO pass through the seam face. Seam-face-UP is the \
-             orientation lock for exactly that reason — each hole opens \
-             upward as a recess, printable without internal support or \
-             bridging."
+            "This cast carves no dowel holes, but other features DO break \
+             the seam face — the §B M5 bolt clearance holes and/or the apex \
+             pour bore + integral funnel, depending on configuration (the \
+             cf-view checklist below lists exactly what to expect). \
+             Seam-face-UP is the orientation lock for exactly that reason: \
+             each one opens upward as a recess, printable without internal \
+             support or bridging."
         );
     } else {
         let _ = writeln!(
             md,
-            "This cast carves nothing into the seam face (no dowel holes, no \
-             bolt pattern), so it prints plain; seam-face-UP is still the \
-             orientation lock (it is what keeps any seam-face feature \
-             printable as an upward-opening recess, without support or \
-             bridging)."
+            "This cast carves nothing into the seam face, so it prints \
+             plain; seam-face-UP is still the orientation lock (it is what \
+             keeps any seam-face feature printable as an upward-opening \
+             recess, without support or bridging)."
         );
     }
     md.push('\n');
@@ -1219,40 +1231,47 @@ fn write_target_fdm_floor_v2(md: &mut String) {
     md.push('\n');
 }
 
-/// The cf-view seam-face bullet.
+/// The cf-view seam-face bullet: what the bencher should SEE in a seam face.
 ///
 /// ⚠⚠ This bullet ends a checklist whose failure instruction is "do NOT
-/// proceed to print", so it must enumerate EVERY seam-face feature the cast
-/// actually carves — dowels AND bolt clearance holes. A previous version keyed
-/// on dowels alone and told a correctly-generated bolted mold that its M5
-/// holes were a regression, blocking the print.
-const fn seam_face_check(has_dowels: bool, bolts_carved: bool) -> &'static str {
-    match (has_dowels, bolts_carved) {
-        (true, true) => {
-            "- Seam faces carry BOTH the §M-S2 symmetric dowel holes and the \
-             §B M5 bolt clearance holes — cylindrical recessed cavities in \
-             both halves, mirrored across the seam plane. No other recessed \
-             feature should be present."
-        }
-        (true, false) => {
-            "- Dowel holes: cylindrical recessed cavities in BOTH \
-             halves' seam faces, placed by the seam-placement solver at \
-             the body's long-axis extremes in the flange band (§M-S2). \
-             The hole pattern is symmetric — the two halves should \
-             mirror each other exactly along the seam plane."
-        }
-        (false, true) => {
-            "- Seam faces carry the §B M5 bolt clearance holes ONLY — \
-             cylindrical cavities through the flange band, mirrored across \
-             the seam plane. No dowel holes are carved; any other recessed \
-             feature is a regression."
-        }
-        (false, false) => {
-            "- Seam faces: FLAT and featureless — no dowel holes and no bolt \
-             holes are carved. Any recessed cavity in a seam face is a \
-             regression."
-        }
+/// proceed to print", so an exclusivity claim here BLOCKS A CORRECT PRINT if it
+/// under-counts. It has done so twice: keyed on dowels alone it called §B bolt
+/// holes a regression; keyed on dowels+bolts it called the `ApexAxial` pour bore
+/// a regression — on the iter-1 production config, which has neither fastener.
+///
+/// ★ So it ENUMERATES rather than branches. Adding a fifth seam-face feature is
+/// one `push`, and the "nothing else" sentence stays true automatically —
+/// a 2^N match cannot make that guarantee.
+fn seam_face_check(has_dowels: bool, bolts_carved: bool, apex_bore: bool) -> String {
+    let mut present: Vec<&str> = Vec::new();
+    if has_dowels {
+        present.push(
+            "the §M-S2 symmetric dowel holes (cylindrical recesses at the \
+             body's long-axis extremes, mirrored across the seam plane)",
+        );
     }
+    if bolts_carved {
+        present.push(
+            "the §B M5 bolt clearance holes (cylindrical, through the flange \
+             band, mirrored across the seam plane)",
+        );
+    }
+    if apex_bore {
+        present.push(
+            "the apex pour bore + integral funnel, bisected lengthwise into an \
+             open half-trough and half-cone (the bore lies IN the seam plane, \
+             so each half carries one side of it)",
+        );
+    }
+    if present.is_empty() {
+        return "- Seam faces: FLAT and featureless — this cast carves nothing \
+                into them. Any recessed cavity in a seam face is a regression."
+            .to_string();
+    }
+    format!(
+        "- Seam faces carry {}. Nothing else should be recessed into them.",
+        present.join("; and ")
+    )
 }
 
 fn write_cfview_sanity_check_v2(
@@ -1262,7 +1281,7 @@ fn write_cfview_sanity_check_v2(
     bolts_carved: bool,
 ) {
     // ⚠ Do not send the bencher to verify features the cast never carves.
-    let dowel_check = seam_face_check(has_dowels, bolts_carved);
+    let dowel_check = seam_face_check(has_dowels, bolts_carved, apex_pour);
     let _ = writeln!(md, "## cf-view Sanity-Check Workflow");
     md.push('\n');
     let _ = writeln!(
@@ -1568,8 +1587,12 @@ fn write_v2_assembly_note(
             // this; dowels had none.
             let registration_status = if ribbon.dowel_hole.spec().is_some() {
                 "⚠ A `[dowel_hole]` pattern was requested but NO dowel holes \
-                 were carved (placement needs a flange), so this cast has no \
-                 integral registration features;"
+                 were carved, so this cast has no integral registration \
+                 features. Either there is no flange to place them in, or the \
+                 dowel footprint does not fit the flange band at this wall \
+                 thickness — widen the flange (`[flange] width_m`, or \
+                 `land_width_m` for a demand flange) or thin \
+                 `[cast] wall_thickness_m` and regenerate;"
             } else {
                 "This cast has no integral registration features \
                  (`DowelHoleKind::None`);"
@@ -2406,6 +2429,7 @@ fn write_apex_axial_pour_note(
     md: &mut String,
     spec: &crate::pour::PourGateSpec,
     bolts_carved: bool,
+    fasteners_placed: bool,
 ) {
     // ⚠ The bracketing clause describes what BOLTS do around the bore. With no
     // bolt pattern carved there is nothing to bracket and no flange to clamp,
@@ -2416,6 +2440,18 @@ fn write_apex_axial_pour_note(
          split flange stays clamped at the apex"
     } else {
         ""
+    };
+    // ⚠ No fastener placed means the seam solver never ran on this cast
+    // (`compute_smart_placements` returns early), so nothing "brackets the
+    // bore by construction" — the whole sentence would be a claim about work
+    // that did not happen.
+    let solver_bracket = if fasteners_placed {
+        format!(
+            " The seam-placement solver brackets this bore by construction — \
+             it excludes the pour as a swept channel{bolt_bracket}."
+        )
+    } else {
+        String::new()
     };
     let gate_dia_mm = spec.gate_radius_m * 2.0 * 1000.0;
     let gate_length_mm = spec.gate_half_length_m * 2.0 * 1000.0;
@@ -2449,9 +2485,7 @@ fn write_apex_axial_pour_note(
         "Because the pour bore is on the seam, separating the two cup \
          halves at demold bisects it lengthwise into open half-troughs \
          — the cured sprue lifts straight out (no pulling through a \
-         blind hole); trim it flush off the cast. The seam-placement \
-         solver brackets this bore by construction — it excludes the \
-         pour as a swept channel{bolt_bracket}."
+         blind hole); trim it flush off the cast.{solver_bracket}"
     );
     md.push('\n');
     let mouth_dia_mm = gate_dia_mm * crate::pour::INTEGRAL_FUNNEL_MOUTH_FACTOR;
@@ -2481,6 +2515,7 @@ fn write_v2_pour_gate_note(
     ribbon: &Ribbon,
     layer_count: usize,
     bolts_carved: bool,
+    fasteners_placed: bool,
 ) {
     let funnel_once = funnel_print_once_sentence(layer_count);
     let _ = writeln!(md, "## Pour Gate + Vent");
@@ -2497,7 +2532,7 @@ fn write_v2_pour_gate_note(
             );
         }
         PourGateKind::Default(spec) if spec.layout == PourGateLayout::ApexAxial => {
-            write_apex_axial_pour_note(md, spec, bolts_carved);
+            write_apex_axial_pour_note(md, spec, bolts_carved, fasteners_placed);
         }
         PourGateKind::Default(spec) => {
             let gate_dia_mm = spec.gate_radius_m * 2.0 * 1000.0;
