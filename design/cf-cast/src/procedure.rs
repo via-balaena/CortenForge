@@ -1820,9 +1820,10 @@ fn write_v2_cup_half_clamping_note(
              no §B section. The seam solver placed no fasteners — with no \
              flange there is nowhere to put them; with one, the M5 washer \
              footprint does not fit the flange band at this wall thickness, or \
-             the pour gate and dowels leave no clear arc. Widen \
-             `flange_width_m`, thin `wall_thickness_m`, or drop \
-             `[bolt_pattern]` and regenerate."
+             the pour gate and dowels leave no clear arc. To get bolts, widen \
+             the flange (`[flange] width_m`, or `land_width_m` for a demand \
+             flange), thin `[cast] wall_thickness_m`, or drop `[bolt_pattern]` \
+             and regenerate."
         );
         md.push('\n');
     }
@@ -2005,9 +2006,25 @@ fn write_v2_cup_half_clamping_note(
                  INSIDE). Full gasket compression is achieved in \
                  Step 5 once the C-clamps apply the design pressure."
             );
-            let _ = writeln!(
-                md,
-                "5. **Apply C-clamps to the flange at 4 quadrant \
+            // ⚠ With carved bolts the §B section already says the M5 bolts ARE
+            // the clamp; a C-clamp step here would be a second, conflicting
+            // protocol for the same joint. §B carries the crosswise tighten.
+            if bolts_carved {
+                let _ = writeln!(
+                    md,
+                    "5. **Clamp with the §B M5 bolts, not C-clamps.** This cast \
+                     carves a bolt pattern, so the bolts supply the clamp force \
+                     across the gasket — insert each bolt with its washers, then \
+                     hand-tighten crosswise per `### M5 through-bolt clamp \
+                     pattern (§B)` above until the flange faces meet. That is \
+                     the gasket's design {clamp_pressure_kpa:.0} kPa target \
+                     (predicts ~{predicted_compression_um:.0} µm compression). \
+                     Do NOT add C-clamps on top of the bolts."
+                );
+            } else {
+                let _ = writeln!(
+                    md,
+                    "5. **Apply C-clamps to the flange at 4 quadrant \
                  positions.** Place one C-clamp at each 90° quadrant \
                  around the seam-plane perimeter. Tighten each clamp \
                  to **hand-tight + 1/8 turn** — enough to reach the \
@@ -2017,7 +2034,8 @@ fn write_v2_cup_half_clamping_note(
                  `GasketSpec::predicted_compression_m` Hookean \
                  estimate). Workshop user MUST avoid over-tightening \
                  (gasket extrusion → loss of seal)."
-            );
+                );
+            }
             let _ = writeln!(
                 md,
                 "6. **Pour main layer silicone through the pour \
@@ -2097,17 +2115,33 @@ fn write_v2_cup_half_clamping_note(
                      `cast.toml` knob.)"
                 );
             } else {
+                // ⚠ "no §B bolt pattern" is about the CARVE. When one was
+                // requested and placed nothing, the warning above already says
+                // so — telling the reader to "enable `[bolt_pattern]`" here
+                // would contradict it and their own config.
+                let (bolt_status, bolt_advice) = if ribbon.bolt_pattern.spec().is_some() {
+                    (
+                        "a `[bolt_pattern]` that placed no fasteners",
+                        "widen the flange or thin the wall so the pattern can \
+                         place (see the note above this section).",
+                    )
+                } else {
+                    (
+                        "no §B bolt pattern",
+                        "enable `[bolt_pattern]` for this flange kind.",
+                    )
+                };
                 let _ = writeln!(
                     md,
                     "This cast carries the demand-driven (scalloped) flange \
                      (`FlangeKind::Demand`: continuous {land_width_mm:.1} mm seal \
-                     land + per-fastener bosses) but no §B bolt pattern and no \
+                     land + per-fastener bosses) but {bolt_status} and no \
                      gasket. The demand flange is designed to be clamped BY the \
-                     bolts at its bosses; without a bolt pattern there is no \
+                     bolts at its bosses; without carved bolt holes there is no \
                      continuous flat C-clamp surface (the flange is scalloped \
-                     between bosses), so enable `[bolt_pattern]` for this flange \
-                     kind. As a stopgap, C-clamp directly on the bosses (one per \
-                     boss, hand-tight) and monitor the seal-ring land for leaks."
+                     between bosses), so {bolt_advice} As a stopgap, C-clamp \
+                     directly on the bosses (one per boss, hand-tight) and \
+                     monitor the seal-ring land for leaks."
                 );
             }
         }

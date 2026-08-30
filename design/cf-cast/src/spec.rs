@@ -1342,33 +1342,6 @@ struct SmartPlacements {
 ///
 /// Propagates [`CastError::InfiniteBounds`] from `layer_mc_bounds` if a layer body
 /// is unbounded.
-/// Whether the carve will actually place bolt holes for `spec` + `ribbon`.
-///
-/// ★★★ This RUNS THE PLANNER ([`compute_smart_placements`], the same call the
-/// carve makes) rather than testing a predicate over the config, because no
-/// such predicate can answer the question. A band-arithmetic test reasons
-/// about the radial offset `d`, while the solver tests
-/// `signed_distance(p + n·d)`; the two agree only where the seam silhouette
-/// is CONVEX. Measured on a U-channel body: plate flange at a 9 mm wall, the
-/// arithmetic says infeasible and the solver places 2 bolts — which would
-/// drop the §B section and the whole hardware list from a sheet whose molds
-/// carry M5 holes.
-///
-/// `false` when no `[bolt_pattern]` is configured, or when one is configured
-/// and the solver places nothing. A planning error yields `true`: that cast
-/// cannot export at all, and keeping the hardware section is the safe side.
-pub fn bolts_will_be_carved(spec: &CastSpec, ribbon: &Ribbon) -> bool {
-    if ribbon.bolt_pattern.spec().is_none() {
-        return false;
-    }
-    match compute_smart_placements(spec, ribbon) {
-        Ok(p) => p
-            .bolts
-            .is_some_and(|per_layer| per_layer.iter().any(|l| !l.is_empty())),
-        Err(_) => true,
-    }
-}
-
 fn compute_smart_placements(
     spec: &CastSpec,
     ribbon: &Ribbon,
@@ -1454,6 +1427,43 @@ fn compute_smart_placements(
         bolts: bolt_plan,
         demand_flanges,
     })
+}
+
+/// Whether the carve will actually place bolt holes for `spec` + `ribbon`.
+///
+/// ★★★ This RUNS THE PLANNER ([`compute_smart_placements`], the same call the
+/// carve makes) rather than testing a predicate over the config, because no
+/// such predicate can answer the question. A band-arithmetic test reasons
+/// about the radial offset `d`, while the solver tests
+/// `signed_distance(p + n·d)`; the two agree only where the seam silhouette
+/// is CONVEX. Measured on a U-channel body: plate flange at a 9 mm wall, the
+/// arithmetic says infeasible and the solver places 2 bolts — which would
+/// drop the §B section and the whole hardware list from a sheet whose molds
+/// carry M5 holes.
+///
+/// `false` when no `[bolt_pattern]` is configured, or when one is configured
+/// and the solver places nothing. A planning error yields `true`: that cast
+/// cannot export at all, and keeping the hardware section is the safe side.
+///
+/// ⚠ COST. This makes procedure rendering no longer a pure formatting pass —
+/// on a cast that enables `[bolt_pattern]`, the seam solve (whose silhouette
+/// flood-fill [`compute_smart_placements`] calls "the dominant solve cost")
+/// runs a second time, because `write_procedure_v2_for_mode` and
+/// `export_molds_v2` are separate entry points and the CLI calls both. The
+/// early return means a cast WITHOUT a bolt pattern — including the current
+/// iter-1 production spec, which carries no flange — pays nothing. If bolted
+/// casts get expensive on the pivot's real scan bodies, thread the already
+/// computed [`SmartPlacements`] from the export path instead of re-solving.
+pub fn bolts_will_be_carved(spec: &CastSpec, ribbon: &Ribbon) -> bool {
+    if ribbon.bolt_pattern.spec().is_none() {
+        return false;
+    }
+    match compute_smart_placements(spec, ribbon) {
+        Ok(p) => p
+            .bolts
+            .is_some_and(|per_layer| per_layer.iter().any(|l| !l.is_empty())),
+        Err(_) => true,
+    }
 }
 
 /// Compose, mesh, and F4-gate every (layer × piece) pair.
@@ -4001,6 +4011,58 @@ mod tests {
         }
     }
 
+    /// ★ One joint, one clamp protocol.
+    ///
+    /// With a plate flange, a gasket AND a bolt pattern that actually carves,
+    /// the sheet used to render §B ("the M5 through-bolts ARE the clamp …
+    /// hand-tighten crosswise") and the gasket arm's step 5 ("apply C-clamps
+    /// at 4 quadrant positions") — two different, conflicting instructions for
+    /// closing the same joint, neither mentioning the other.
+    ///
+    /// ⚠ `every_cross_referenced_section_exists_in_the_same_sheet` renders this
+    /// exact combination and passes: it resolves headings, not contradictions.
+    #[test]
+    fn a_gasketed_bolted_cast_gives_one_clamp_protocol_not_two() {
+        use crate::bolt_pattern::{BoltPatternKind, BoltPatternSpec};
+        use crate::flange::{FlangeKind, FlangeSpec};
+        use crate::gasket_mold::{GasketKind, GasketSpec};
+        use crate::procedure::generate_procedure_markdown_v2;
+
+        let sheet = |bolts: BoltPatternKind| {
+            let (mut spec, base) = v2_fixture();
+            // Thin wall so a plate-flange bolt pattern actually places.
+            spec.wall_thickness_m = 0.004;
+            let ribbon = base
+                .with_flange(FlangeKind::Plate(FlangeSpec::iter1()))
+                .with_gasket(GasketKind::Mold(GasketSpec::iter1()))
+                .with_bolt_pattern(bolts);
+            let pours = spec.compute_pour_volumes().unwrap();
+            generate_procedure_markdown_v2(&spec, &pours, &ribbon)
+        };
+
+        let bolted = sheet(BoltPatternKind::Auto(BoltPatternSpec::iter1()));
+        assert!(
+            bolted.contains("### M5 through-bolt clamp pattern (§B)"),
+            "fixture must actually carve bolts, or this proves nothing:\n{bolted}"
+        );
+        assert!(
+            !bolted.contains("Apply C-clamps to the flange at 4 quadrant"),
+            "bolted + gasketed sheet gives BOTH a bolt protocol and a C-clamp \
+             protocol for the same joint:\n{bolted}"
+        );
+        assert!(
+            bolted.contains("Clamp with the §B M5 bolts, not C-clamps"),
+            "the bolted gasket path must say which clamp wins:\n{bolted}"
+        );
+
+        // Two-sided: with no bolt pattern the C-clamp step is still the answer.
+        let unbolted = sheet(BoltPatternKind::None);
+        assert!(
+            unbolted.contains("Apply C-clamps to the flange at 4 quadrant"),
+            "an unbolted gasketed cast still needs its C-clamp step:\n{unbolted}"
+        );
+    }
+
     /// Assert every backticked `#…` reference in `md` names a heading that is
     /// actually present in `md`.
     fn assert_cross_refs_resolve(md: &str, case: &str) {
@@ -4019,18 +4081,6 @@ mod tests {
         // `per the "v2 Mold Assembly" section above` — which a backtick scan
         // never sees. Renaming that heading would orphan them silently, the
         // exact failure this gate exists to prevent.
-        //
-        // ⚠ Matched with `char` scanning rather than a `\"` escape inside a
-        // literal: `xtask grade`'s Safety scanner strips string literals with
-        // a brace-depth state machine that an escaped quote desynchronizes,
-        // which silently reclassifies the whole rest of `mod tests` as
-        // production code (87 phantom unwrap violations, Safety A -> F).
-        // ⚠ `QUOTE` is spelled `\u{22}` rather than as a bare `'"'` char
-        // literal. `xtask grade`'s Safety scanner strips from the first `"`
-        // on a line to end-of-line, so `find('"') {` loses its OPENING BRACE;
-        // the matching `}` then closes the scanner's `#[cfg(test)]` region
-        // early and every test below is graded as production code (87 phantom
-        // unwrap violations, Safety A -> F, on a file that had not changed).
         let mut idx = 0usize;
         while let Some(open_rel) = md[idx..].find(QUOTE) {
             let open = idx + open_rel;
