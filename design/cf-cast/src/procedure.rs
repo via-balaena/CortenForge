@@ -410,7 +410,7 @@ pub fn generate_procedure_markdown_v2_for_mode(
     );
     // ★ Computed ONCE, by running the PLANNER. Every prose site that mentions
     // bolts reads this one value, so the sheet and the carve cannot disagree.
-    // See `spec::bolts_will_be_carved` for why a predicate over the config
+    // See `spec::bolts_carved_per_layer` for why a predicate over the config
     // provably cannot answer this question.
     let bolts_per_layer = crate::spec::bolts_carved_per_layer(spec, ribbon);
     // Section-level prose (the §B block, the clamping header) describes the
@@ -433,7 +433,7 @@ pub fn generate_procedure_markdown_v2_for_mode(
     write_generic_guidance(&mut md, spec.layers.len());
     write_v2_assembly_note(&mut md, ribbon, spec.layers.len(), bolts_carved);
     write_v2_cup_half_clamping_note(&mut md, ribbon, mode, spec.layers.len(), bolts_carved);
-    write_v2_pour_gate_note(&mut md, ribbon, spec.layers.len());
+    write_v2_pour_gate_note(&mut md, ribbon, spec.layers.len(), bolts_carved);
     match mode {
         CastMode::Detachable => {
             write_per_layer_sections_v2(&mut md, spec, pour_volumes, ribbon, &bolts_per_layer);
@@ -2170,7 +2170,7 @@ fn write_v2_cup_half_clamping_note(
                     (
                         "a `[bolt_pattern]` that placed no fasteners",
                         "widen the flange or thin the wall so the pattern can \
-                         place (see the note above this section).",
+                         place (see the note at the top of this section).",
                     )
                 } else {
                     (
@@ -2228,7 +2228,21 @@ fn write_v2_cup_half_clamping_note(
 /// at the dome apex on the seam, the integral split funnel (recon §7.8 —
 /// part of the cup, no separate STL), and hand-drilled carbide vents.
 /// Replaces the V-shape pour/vent prose for [`PourGateLayout::ApexAxial`].
-fn write_apex_axial_pour_note(md: &mut String, spec: &crate::pour::PourGateSpec) {
+fn write_apex_axial_pour_note(
+    md: &mut String,
+    spec: &crate::pour::PourGateSpec,
+    bolts_carved: bool,
+) {
+    // ⚠ The bracketing clause describes what BOLTS do around the bore. With no
+    // bolt pattern carved there is nothing to bracket and no flange to clamp,
+    // and the Cup-Half Clamping section three headings up says the halves are
+    // hand-clamped — so stating it unconditionally contradicts the same sheet.
+    let bolt_bracket = if bolts_carved {
+        ", so a bolt lands just outside the clearance on each side and the \
+         split flange stays clamped at the apex"
+    } else {
+        ""
+    };
     let gate_dia_mm = spec.gate_radius_m * 2.0 * 1000.0;
     let gate_length_mm = spec.gate_half_length_m * 2.0 * 1000.0;
     let _ = writeln!(
@@ -2263,9 +2277,7 @@ fn write_apex_axial_pour_note(md: &mut String, spec: &crate::pour::PourGateSpec)
          — the cured sprue lifts straight out (no pulling through a \
          blind hole); trim it flush off the cast. The seam-placement \
          solver brackets this bore by construction — it excludes the \
-         pour as a swept channel, so a bolt lands just outside the \
-         clearance on each side and the split flange stays clamped at \
-         the apex."
+         pour as a swept channel{bolt_bracket}."
     );
     md.push('\n');
     let mouth_dia_mm = gate_dia_mm * crate::pour::INTEGRAL_FUNNEL_MOUTH_FACTOR;
@@ -2290,7 +2302,12 @@ fn write_apex_axial_pour_note(md: &mut String, spec: &crate::pour::PourGateSpec)
     md.push('\n');
 }
 
-fn write_v2_pour_gate_note(md: &mut String, ribbon: &Ribbon, layer_count: usize) {
+fn write_v2_pour_gate_note(
+    md: &mut String,
+    ribbon: &Ribbon,
+    layer_count: usize,
+    bolts_carved: bool,
+) {
     let funnel_once = funnel_print_once_sentence(layer_count);
     let _ = writeln!(md, "## Pour Gate + Vent");
     md.push('\n');
@@ -2306,7 +2323,7 @@ fn write_v2_pour_gate_note(md: &mut String, ribbon: &Ribbon, layer_count: usize)
             );
         }
         PourGateKind::Default(spec) if spec.layout == PourGateLayout::ApexAxial => {
-            write_apex_axial_pour_note(md, spec);
+            write_apex_axial_pour_note(md, spec, bolts_carved);
         }
         PourGateKind::Default(spec) => {
             let gate_dia_mm = spec.gate_radius_m * 2.0 * 1000.0;

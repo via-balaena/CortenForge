@@ -3869,6 +3869,7 @@ mod tests {
         use crate::cast_mode::CastMode;
         use crate::flange::{DemandFlangeSpec, FlangeKind, FlangeSpec};
         use crate::gasket_mold::{GasketKind, GasketSpec};
+        use crate::pour::PourGateLayout;
         use crate::procedure::generate_procedure_markdown_v2_for_mode;
 
         // ⚠ Thin-wall variants are ESSENTIAL, not extra coverage. Both shared
@@ -3879,6 +3880,7 @@ mod tests {
         // ★ Self-verifying coverage: a matrix that renders no bolted sheet
         // would pass this gate vacuously on the very path it was widened for.
         let mut bolted_sheets = 0usize;
+        let mut apex_sheets = 0usize;
         let thin = |pair: (CastSpec, Ribbon)| {
             let (mut spec, base) = pair;
             spec.wall_thickness_m = 0.004;
@@ -3901,9 +3903,21 @@ mod tests {
                         BoltPatternKind::None,
                         BoltPatternKind::Auto(BoltPatternSpec::iter1()),
                     ] {
+                        // ⚠ ApexAxial is NOT optional coverage — it is the
+                        // production `base_mold` layout, and it routes through a
+                        // different writer (`write_apex_axial_pour_note`) plus
+                        // the apex branches of the header and funnel notes. With
+                        // only VAtDome in the matrix, an apex sheet asserting a
+                        // bolt that no flange could hold went unseen.
+                        let apex = {
+                            let mut g = PourGateSpec::iter1();
+                            g.layout = PourGateLayout::ApexAxial;
+                            g
+                        };
                         for gate in [
                             PourGateKind::None,
                             PourGateKind::Default(PourGateSpec::iter1()),
+                            PourGateKind::Default(apex),
                         ] {
                             for mode in [CastMode::Detachable, CastMode::Bonded] {
                                 let mut r = base.clone();
@@ -3921,6 +3935,9 @@ mod tests {
                                 // ⚠ PLATE specifically. A demand flange is always
                                 // feasible, so counting any bolted sheet would be
                                 // satisfied by the arm that was never in doubt.
+                                if md.contains("integral to each cup") {
+                                    apex_sheets += 1;
+                                }
                                 if matches!(flange, FlangeKind::Plate(_))
                                     && md.contains("### M5 through-bolt clamp pattern (§B)")
                                 {
@@ -3933,6 +3950,11 @@ mod tests {
                 }
             }
         }
+        assert!(
+            apex_sheets > 0,
+            "matrix rendered no apex-axial sheet — the production pour layout \
+             and its dedicated writer are unexercised"
+        );
         assert!(
             bolted_sheets > 0,
             "matrix rendered no §B bolt section for a PLATE flange — the \
@@ -4065,13 +4087,24 @@ mod tests {
         // still commanded C-clamps: the intro's grip surface, step 4's forward
         // reference, step 8's release, and the clamp-count calibration note.
         // Every surviving mention must be a NEGATION.
-        for (at, _) in bolted.match_indices("C-clamp") {
-            let lookback = &bolted[at.saturating_sub(30)..at];
+        // ⚠ Sentence-scoped and word-boundary matched, NOT a byte-offset
+        // lookback. Byte slicing round a multi-byte char (`µ` sits 30 bytes
+        // behind the only current match) panics instead of asserting — and
+        // panics in the FAILURE-MESSAGE slice too, so a real regression would
+        // never print. And a bare `contains("not")` is satisfied by "note",
+        // "nothing" and "cannot" — the `"Gasketless".contains("Gasket")` trap.
+        for sentence in bolted.split(['.', '\n']) {
+            if !sentence.contains("C-clamp") {
+                continue;
+            }
+            let negated = sentence
+                .to_lowercase()
+                .split(|c: char| !c.is_alphanumeric())
+                .any(|w| w == "not" || w == "no" || w == "never");
             assert!(
-                lookback.to_lowercase().contains("not"),
+                negated,
                 "bolted sheet still COMMANDS a C-clamp (only negated mentions \
-                 are allowed): …{}",
-                &bolted[at.saturating_sub(120)..(at + 80).min(bolted.len())]
+                 are allowed): {sentence}"
             );
         }
         assert!(
@@ -5333,7 +5366,7 @@ mod tests {
             ));
         // ⚠ Thin the wall for this arm. The shared fixture runs 20 mm, and a
         // 20 mm-wide plate flange takes NO bolts above an 8 mm wall — the
-        // washer window closes (see `bolts_will_be_carved`). This test
+        // washer window closes (see `bolts_carved_per_layer`). This test
         // asserts the BOLTED step-6 prose, so it needs a cast that actually
         // carries bolts; at 20 mm the correct sheet has no bolt section at
         // all, which is what this assertion used to mistake for a regression.
