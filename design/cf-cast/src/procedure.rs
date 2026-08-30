@@ -427,6 +427,7 @@ pub fn generate_procedure_markdown_v2_for_mode(
     // the checklist demanded both under "do NOT proceed to print".
     let has_plug_lock = !matches!(ribbon.plug_pins, crate::plug::PlugPinKind::None);
     let has_pour_gate = !matches!(ribbon.pour_gate, PourGateKind::None);
+    let has_flange = !matches!(ribbon.flange, FlangeKind::None);
     let has_vent = matches!(
         &ribbon.pour_gate,
         PourGateKind::Default(g) if g.layout == PourGateLayout::VAtDome && g.include_vent
@@ -441,13 +442,15 @@ pub fn generate_procedure_markdown_v2_for_mode(
 
     let mut md = String::new();
     match mode {
-        CastMode::Detachable => write_header_v2(&mut md, spec, apex_pour, has_pour_gate),
+        CastMode::Detachable => {
+            write_header_v2(&mut md, spec, apex_pour, has_pour_gate, has_flange);
+        }
         CastMode::Bonded => write_header_v2_bonded(&mut md, spec, apex_pour, has_pour_gate),
     }
     write_cast_geometry_v2(&mut md, ribbon);
     write_print_orientation_v2(&mut md, apex_pour, spec.layers.len(), ribbon, features);
     write_chamfer_recipe_v2(&mut md, has_plug_lock, has_dowels);
-    write_target_fdm_floor_v2(&mut md);
+    write_target_fdm_floor_v2(&mut md, has_pour_gate, has_plug_lock);
     write_cfview_sanity_check_v2(&mut md, apex_pour, ribbon, features);
     write_cap_plane_chamfer_v2(&mut md, has_plug_lock);
     write_seam_face_edge_v2(&mut md, has_plug_lock);
@@ -811,9 +814,14 @@ fn pour_orientation_blurb(ribbon: &Ribbon) -> &'static str {
             "Orient the assembled mold **+Z up** (apex on top) and feed the integral \
              apex funnel so the shell fills bottom-up."
         }
-        PourGateKind::Default(_) => {
+        PourGateKind::Default(s) if s.include_vent => {
             "Orient the assembled mold **+Z up** so the V's pour + vent legs are on \
              top, and pour into the pour leg at the dome end."
+        }
+        PourGateKind::Default(_) => {
+            // ⚠ `include_vent = false` carves no vent leg (`pour.rs:390`).
+            "Orient the assembled mold **+Z up** so the V's pour leg is on top, \
+             and pour into it at the dome end (no vent leg is carved)."
         }
         PourGateKind::None => {
             "Orient the assembled mold seam roughly vertical and drill air-relief \
@@ -853,7 +861,22 @@ fn write_v2_bonded_finishing(md: &mut String, spec: &CastSpec, mode: CastMode) {
     md.push('\n');
 }
 
-fn write_header_v2(md: &mut String, spec: &CastSpec, apex_pour: bool, has_pour_gate: bool) {
+fn write_header_v2(
+    md: &mut String,
+    spec: &CastSpec,
+    apex_pour: bool,
+    has_pour_gate: bool,
+    has_flange: bool,
+) {
+    // ⚠ The bore bisects whatever it passes through; with `FlangeKind::None`
+    // there is no flange for it to split.
+    let apex_flange_clause = if has_flange {
+        "it splits the flange, so it appears as a half-trough on each cup \
+         half that re-registers into one round hole"
+    } else {
+        "it appears as a half-trough on each cup half that re-registers into \
+         one round hole"
+    };
     let _ = writeln!(
         md,
         "# Cast Procedure (v2.1 curve-following, detachable-shell)"
@@ -893,9 +916,8 @@ fn write_header_v2(md: &mut String, spec: &CastSpec, apex_pour: bool, has_pour_g
             md,
             "**Orientation convention**: orient the assembled mold with \
              **+Z up** during pour + cure (dome apex on top). A single \
-             straight pour bore sits at the dome apex on the seam (it \
-             splits the flange, so it appears as a half-trough on each \
-             cup half that re-registers into one round hole). Air vents \
+             straight pour bore sits at the dome apex on the seam \
+             ({apex_flange_clause}). Air vents \
              are hand-drilled (tiny ~0.3-1.0 mm holes) at the apex + any \
              high spots — see `## Pour Gate + Vent`."
         );
@@ -1004,7 +1026,13 @@ fn write_print_orientation_v2(
     md.push('\n');
     write_print_orientation_cup_pieces(md, ribbon, has_dowels, bolts_carved, has_plug_lock);
     write_print_orientation_plug_pieces(md, has_plug_lock);
-    write_print_orientation_funnel_platform(md, apex_pour, layer_count, has_pour_gate);
+    write_print_orientation_funnel_platform(
+        md,
+        apex_pour,
+        layer_count,
+        has_pour_gate,
+        has_plug_lock,
+    );
     write_print_orientation_g4_revision(md);
 }
 
@@ -1135,6 +1163,7 @@ fn write_print_orientation_funnel_platform(
     apex_pour: bool,
     layer_count: usize,
     has_pour_gate: bool,
+    has_plug_lock: bool,
 ) {
     let funnel_reuse = funnel_reuse_tail(layer_count);
     let _ = writeln!(md, "### Funnel + platform (one-time prints)");
@@ -1185,13 +1214,15 @@ fn write_print_orientation_funnel_platform(
         );
     }
     md.push('\n');
-    let _ = writeln!(
-        md,
-        "`platform.stl`: post-S4 bare flat slab (pre-S4 T-bar pocket \
+    if has_plug_lock {
+        let _ = writeln!(
+            md,
+            "`platform.stl`: post-S4 bare flat slab (pre-S4 T-bar pocket \
          retired with the plug-shaft removal). Trivial orientation \
          — any face down works; no supports."
-    );
-    md.push('\n');
+        );
+        md.push('\n');
+    }
 }
 
 fn write_print_orientation_g4_revision(md: &mut String) {
@@ -1259,7 +1290,7 @@ fn write_chamfer_recipe_v2(md: &mut String, has_plug_lock: bool, has_dowels: boo
         md.push('\n');
     }
     // ⚠ "both fits" only reads correctly when two are named.
-    let (slicer_tuned_by, slicer_tighten) = if has_plug_lock {
+    let (slicer_tuned_by, slicer_tighten) = if has_plug_lock && has_dowels {
         (
             "plug-lock pyramid/socket diametral + axial clearances are tuned \
              by `PrismaticPinSpec` (S7 caliper pass per §G-8); the dowel-hole \
@@ -1267,6 +1298,14 @@ fn write_chamfer_recipe_v2(md: &mut String, has_plug_lock: bool, has_dowels: boo
             ". Adding slicer-level compensation on top would tighten both fits \
              past their spec budgets and the per-layer cup-wall surface past \
              spec wall-thickness.",
+        )
+    } else if has_plug_lock {
+        (
+            "plug-lock pyramid/socket diametral + axial clearances are tuned \
+             by `PrismaticPinSpec` (S7 caliper pass per §G-8)",
+            ". Adding slicer-level compensation on top would tighten that fit \
+             past its spec budget and the per-layer cup-wall surface past spec \
+             wall-thickness.",
         )
     } else {
         (
@@ -1297,15 +1336,23 @@ fn write_chamfer_recipe_v2(md: &mut String, has_plug_lock: bool, has_dowels: boo
     md.push('\n');
 }
 
-fn write_target_fdm_floor_v2(md: &mut String) {
+fn write_target_fdm_floor_v2(md: &mut String, has_pour_gate: bool, has_plug_lock: bool) {
+    // ⚠ `funnel.stl` and `platform.stl` are not always exported — the
+    // regression-target list must name only the files this cast produces.
+    let print_list = match (has_pour_gate, has_plug_lock) {
+        (true, true) => "mold + plug + funnel + platform",
+        (true, false) => "mold + plug + funnel",
+        (false, true) => "mold + plug + platform",
+        (false, false) => "mold + plug",
+    };
     let _ = writeln!(md, "## Target FDM Floor (Bambu A1 + Default + Jayo)");
     md.push('\n');
     let _ = writeln!(
         md,
         "Recon-1 §G-3 picks **Bambu A1 + Bambu Studio default settings \
          + Jayo generic PLA** as the consumer-FDM tolerance floor for \
-         the mating-feature geometry. Print mold + plug + funnel + \
-         platform STLs against this baseline as the regression \
+         the mating-feature geometry. Print {print_list} \
+         STLs against this baseline as the regression \
          target. Calibrated Bambu Lab (X1C / P1S with PEI sheet + \
          tuned profile + Bambu PLA) is acceptable as a side-\
          comparison reference but is NOT the regression target — \
@@ -1360,6 +1407,9 @@ struct SheetFeatures {
     /// `PourGateKind::None` exports no `funnel.stl` and carves no vent, so
     /// every sentence naming one has to be gated the same way.
     has_pour_gate: bool,
+    /// `build_platform_solid` also returns `None` for `PlugPinKind::None`, so
+    /// `platform.stl` is not exported either — the same gate covers both.
+    ///
     /// ⚠ A vent leg is NOT implied by a pour gate. It exists only for
     /// `VAtDome` with `include_vent` — `ApexAxial` ignores `include_vent`
     /// entirely and vents by hand-drilled holes. Three sentences promised the
@@ -1388,7 +1438,17 @@ struct SheetFeatures {
 /// answers from the PLANNER — the kind alone does not say whether they were
 /// placed. Everything else is a pure function of the ribbon.
 fn seam_face_features(ribbon: &Ribbon, has_dowels: bool, bolts_carved: bool) -> Vec<&'static str> {
-    let mut present: Vec<&'static str> = Vec::new();
+    // ⚠⚠ ALWAYS FIRST, and the one this list omitted for five rounds: the cup
+    // piece is `bounding_region ∖ layer_body` intersected with the seam
+    // halfspace, so the BODY CAVITY is bisected by construction and every seam
+    // face carries its open half-trough. It was invisible to an enumeration of
+    // OPTIONAL features precisely because it is never optional — which is also
+    // why the "flat and featureless" case below can never actually be reached.
+    let mut present: Vec<&'static str> = vec![
+        "the body-cavity opening, bisected by the seam into an open half-trough \
+         on each piece (this is the cavity the silicone fills, and the face the \
+         gasket lies on)",
+    ];
     if has_dowels {
         present.push(
             "the §M-S2 symmetric dowel holes (cylindrical recesses at the \
@@ -1566,13 +1626,18 @@ fn write_cfview_sanity_check_v2(
         );
     }
     md.push('\n');
-    let _ = writeln!(
-        md,
-        "4. **Platform** (`platform.stl`): bare flat slab (post-S4 \
-         pocket retirement). If the slab shows ANY pocket / cavity \
-         / protrusion, flag a regression — S4 retired all features."
-    );
-    md.push('\n');
+    // ⚠ `build_platform_solid` returns `None` for `PlugPinKind::None`, so the
+    // default cast exports no `platform.stl` — demanding it under "do NOT
+    // proceed to print" blocks a correct mold, same as the funnel bullet did.
+    if has_plug_lock {
+        let _ = writeln!(
+            md,
+            "4. **Platform** (`platform.stl`): bare flat slab (post-S4 \
+             pocket retirement). If the slab shows ANY pocket / cavity \
+             / protrusion, flag a regression — S4 retired all features."
+        );
+        md.push('\n');
+    }
     let _ = writeln!(
         md,
         "If any of the above checks fail, do NOT proceed to print — \
@@ -1824,11 +1889,18 @@ fn write_v2_assembly_note(
                 "This cast has no integral registration features \
                  (`DowelHoleKind::None`);"
             };
+            // ⚠ Rubber bands are the fallback for a cast with NO clamp
+            // surface. With a flange, the Cup-Half Clamping section prescribes
+            // C-clamps (plate) or boss clamps (demand); naming tape here is a
+            // second, conflicting protocol for the same joint.
             let hand_clamp = if bolts_carved {
                 " — the §B M5 through-bolts are the clamp (see below); \
                  no rubber bands or tape are needed"
-            } else {
+            } else if matches!(ribbon.flange, FlangeKind::None) {
                 " and clamp with rubber bands or wide tape during pour + cure"
+            } else {
+                " — the flange is the clamp surface; follow the cup-half \
+                 clamping section below rather than banding the cup"
             };
             let _ = writeln!(
                 md,
@@ -3036,13 +3108,21 @@ fn write_per_layer_sections_v2(
                  any high spots. The cast is full the instant silicone reaches \
                  the bore (no point sits above it)."
             }
-            PourGateKind::Default(_) => {
+            PourGateKind::Default(s) if s.include_vent => {
                 "Orient the assembled mold with **+Z up** so the V's pour + vent \
                  legs are on top. Pour silicone into the pour leg of the V at \
                  the dome end (Positive piece, +binormal side) at a slow steady \
                  rate to avoid splashing through the vent; trapped air rises \
                  into the vent leg (Negative piece, -binormal side) as the \
                  cavity fills."
+            }
+            PourGateKind::Default(_) => {
+                // ⚠ `include_vent = false` carves the pour leg only.
+                "Orient the assembled mold with **+Z up** so the V's pour leg is \
+                 on top. Pour silicone into it at the dome end (Positive piece, \
+                 +binormal side) at a slow steady rate. No vent leg is carved \
+                 (`include_vent = false`) — drill air-relief holes through the \
+                 cured cup wall as needed."
             }
             PourGateKind::None => {
                 "Orient the assembled mold seam roughly vertical. Pour \

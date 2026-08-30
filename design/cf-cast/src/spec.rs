@@ -3897,8 +3897,8 @@ mod tests {
     ///
     /// `compute_pour_volumes` depends only on the spec, so it is computed once
     /// per layer count and reused across every ribbon × mode variation
-    /// (3 flanges × 2 gaskets × 2 dowel kinds × 2 bolt kinds × 3 pour gates ×
-    /// 2 modes = 144 per layer config, 576 in total).
+    /// (3 flanges × 2 gaskets × 2 dowel kinds × 2 bolt kinds × 4 pour gates ×
+    /// 2 plug-pin kinds × 2 modes = 384 per layer config, 1536 in total).
     #[test]
     fn every_cross_referenced_section_exists_in_the_same_sheet() {
         use crate::bolt_pattern::{BoltPatternKind, BoltPatternSpec};
@@ -3990,9 +3990,15 @@ mod tests {
                                         let md = generate_procedure_markdown_v2_for_mode(
                                             &spec, &pours, &r, mode,
                                         );
+                                        // ⚠ Name EVERY dimension — a failure
+                                        // otherwise identifies one of four
+                                        // sheets, and this label is all a CI
+                                        // log shows.
                                         let case = format!(
-                                            "{layers} / {flange:?} / {gasket:?} / {bolts:?} / \
-                                     {gate:?} / {mode:?}"
+                                            "{layers} / {flange:?} / {gasket:?} \
+                                             / dowels={dowels:?} / {bolts:?} \
+                                             / {gate:?} / pins={pins:?} \
+                                             / {mode:?}"
                                         );
                                         tally_coverage(
                                             &md,
