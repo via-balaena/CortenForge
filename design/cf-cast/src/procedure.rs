@@ -491,14 +491,7 @@ pub fn generate_procedure_markdown_v2_for_mode(
     }
     match mode {
         CastMode::Detachable => {
-            write_v2_post_cure_assembly(
-                &mut md,
-                spec,
-                mode,
-                has_pour_gate,
-                has_vent,
-                has_plug_lock,
-            );
+            write_v2_post_cure_assembly(&mut md, spec, mode, has_pour_gate, has_vent);
         }
         CastMode::Bonded => {
             write_v2_bonded_finishing(&mut md, spec, mode, has_pour_gate, has_vent);
@@ -530,19 +523,15 @@ fn write_v2_post_cure_assembly(
     mode: CastMode,
     has_pour_gate: bool,
     has_vent: bool,
-    has_plug_lock: bool,
 ) {
-    // ⚠ The nesting surfaces are line-to-line EXCEPT at the plug lock:
-    // `add_plug_pins` unions a truncated pyramid onto each plug, so layer N's
-    // cavity and layer N-1's tube each carry a socket at the same place and
-    // nesting leaves a pyramid-shaped air void. Stating the invariant
-    // absolutely would have the bencher hunt a defect that is by design.
-    let lock_void = if has_plug_lock {
-        " (except at the plug-floor-lock socket, where both tubes carry one \
-         and nesting leaves a small pyramid-shaped void — expected)"
-    } else {
-        ""
-    };
+    // ⚠ A previous round added a "(except at the plug-floor-lock socket …
+    // nesting leaves a small pyramid-shaped void — expected)" clause here. It
+    // was INVENTED: `add_plug_pins` returns its `base_plug` UNCHANGED plus
+    // post-MC transforms (the SDF-side union "was reverted the same night"),
+    // and the cup socket is INFLATED by the diametral clearance, so nested
+    // tubes plausibly interfere rather than void. Nothing in the repo states
+    // it and no test gates it. If the nest binds at the lock, MEASURE it
+    // before writing a sentence about it.
     // ⚠ Must match its bonded twin `write_v2_bonded_finishing` exactly — after
     // that one learned `has_vent`, this one saying only "pour-gate flash" made
     // the two modes disagree about the same geometry.
@@ -586,7 +575,7 @@ fn write_v2_post_cure_assembly(
          tube was cast on a PLUG built from the next-inner layer's own \
          outer solid (`plug_layer_N.stl`; the layers never touch during \
          casting in this mode), so the two mate line-to-line by \
-         construction{lock_void} and any flash left on a mating face is \
+         construction and any flash left on a mating face is \
          pure interference.",
         spec.layers.len(),
         spec.layers.len(),
@@ -742,10 +731,13 @@ fn write_per_layer_sections_v2_bonded(
     // bonded-aware, is a rival numbered protocol two headings away. The
     // bencher pours the layer with no gasket installed and the seam leaks.
     // This is the third time this branch has fixed a missing cue in one twin.
+    // ⚠ Reads BEFORE the assembly clause it modifies. Appended after it, the
+    // bonded bencher assembled the mold and only then learned the gasket had
+    // to go in first — its detachable twin has always had the order right.
     let gasket_cue = if matches!(ribbon.gasket, GasketKind::Mold(_)) {
-        " Before closing the second half, place the cured gasket strip per \
-         `## Cup-Half Clamping with Gasket Installation` above, and clamp per \
-         that section."
+        "Place the cured gasket strip on the Negative half's seam face per \
+         `## Cup-Half Clamping with Gasket Installation` above BEFORE closing \
+         the second half, then "
     } else {
         ""
     };
@@ -802,8 +794,8 @@ fn write_per_layer_sections_v2_bonded(
                 md,
                 "1. Print `mold_layer_0_piece_0.stl` + `mold_layer_0_piece_1.stl` + \
                  `plug_layer_0.stl` (the only plug). Apply mold release to the plug + \
-                 both cup halves, then assemble the two halves around the plug per the \
-                 \"v2 Mold Assembly\" section above.{gasket_cue}"
+                 both cup halves. {gasket_cue}assemble the two halves around the \
+                 plug per the \"v2 Mold Assembly\" section above."
             );
         } else {
             let _ = writeln!(
@@ -812,7 +804,7 @@ fn write_per_layer_sections_v2_bonded(
                  (no plug — the cured layer {} still on the plug is this layer's inner \
                  form). Mold-release the two cup halves only (NOT the cured silicone), \
                  prep the cured surface per the inter-layer bond note above, then \
-                 assemble the two halves around the plug-plus-cured-stack.{gasket_cue}",
+                 {gasket_cue}assemble the two halves around the plug-plus-cured-stack.",
                 i - 1
             );
         }
@@ -2409,8 +2401,17 @@ fn write_v2_bolt_pattern_note(
     // ⚠ Do not claim the joint seals gasketlessly on a sheet that has the
     // bencher cast, cure, peel and lay a gasket — and whose step 5 now points
     // back at THIS section for the clamp protocol.
+    // ⚠ Do NOT claim the bolts land on the gasket's design compression. That
+    // target is `workshop_clamp_pressure_pa` = 20 kPa (a hand C-clamp or
+    // rubber band, per its own doc); the ~1 MPa quoted here is ~50× it, on a
+    // sheet that warns over-tightening extrudes the gasket. Point at the
+    // gasket section's target instead of asserting this one reaches it.
+    // ⚠ This lands INSIDE a parenthetical, so it must be a CLAUSE. A version
+    // of it opened a new sentence and left the paren dangling.
     let seal_claim = if matches!(ribbon.gasket, GasketKind::Mold(_)) {
-        ", clamping the gasket to its design compression"
+        ", and far above the gasket's own design pressure — with a gasket, \
+         tighten to snug only and work to the target in `## Cup-Half \
+         Clamping with Gasket Installation`"
     } else {
         " so PLA-on-PLA seam contact + mold release should seal \
          without a separate gasket"
@@ -2926,15 +2927,19 @@ fn write_v2_cup_half_clamping_note(
             let gasket_thickness_mm = gasket_spec.cross_section_thickness_m * 1000.0;
             let clamp_pressure_kpa = gasket_spec.workshop_clamp_pressure_pa / 1000.0;
             let predicted_compression_um = gasket_spec.predicted_compression_m() * 1_000_000.0;
-            // ⚠ There is NO channel in the cup seam face (see `GASKET_PLACEMENT`),
-            // so the strip's full thickness stands proud and only
-            // `predicted_compression_m` of it is taken up under clamp. The
-            // halves therefore cannot reach flange-to-flange contact, which
-            // this step used to promise.
-            let gasket_thick_mm = gasket_spec.cross_section_thickness_m * 1000.0;
-            let residual_gap_mm = (gasket_spec.cross_section_thickness_m
-                - gasket_spec.predicted_compression_m())
-                * 1000.0;
+            // ⚠⚠ DO NOT re-derive a "residual gap" from
+            // `predicted_compression_m` here. A previous round did, concluded
+            // the halves stay ~0.57 mm apart, and contradicted step 5, the
+            // Plug Anchor press-stop, §B's clamp pressure and this section's
+            // own §F-4 sentence — while telling the bencher to file down the
+            // plug's lock pyramid chasing a press-stop that "never comes".
+            // The reasoning was circular: `workshop_clamp_pressure_pa` is
+            // DEFINED as the pressure at the SEAM-FACE CONTACT AREA, so it
+            // presupposes the faces touch. And if they did not, the whole
+            // clamp load would cross the 1.5 mm strip instead of the 20 mm
+            // flange band — an order of magnitude more stress, at which
+            // Ecoflex 00-30 (E = 69 kPa) is far past bottoming out. The
+            // gasket cannot hold the halves apart; they seat flush.
             let gasket_material_label = gasket_spec.material.shore_label();
             let _ = writeln!(
                 md,
@@ -2950,7 +2955,7 @@ fn write_v2_cup_half_clamping_note(
                  against FDM-tolerance leak per the seam-gasket-mold \
                  arc (recon §G-1). The flange's `inner_offset_m` \
                  ({inner_offset_mm:.1} mm) keeps the flange material \
-                 laterally disjoint from the gasket channel per recon \
+                 laterally disjoint from the gasket strip per recon \
                  §F-4 — gasket compresses, flange clamps, no lateral \
                  overlap between the two."
             );
@@ -3001,14 +3006,10 @@ fn write_v2_cup_half_clamping_note(
                  (`mold_layer_{{N}}_piece_1.stl`) down onto the \
                  Negative + gasket assembly, {gasket_step4_align}. At \
                  this stage the gasket is only lightly seated ({seated_on}); \
-                 the halves will NOT sit flush yet. The seam face is flat, so \
-                 the whole {gasket_thick_mm:.1} mm strip stands proud of it and \
-                 holds the halves apart — expect a visible gap. **That gap is \
-                 correct at this step, not a fit fault:** the design \
-                 compression is only {predicted_compression_um:.0} µm, so even \
-                 fully clamped the halves close to roughly \
-                 {residual_gap_mm:.2} mm, and the gasket — not \
-                 flange-to-flange contact — is what seals. Full gasket compression is achieved in \
+                 the cup halves should \
+                 seat flush at the seam (flange-to-flange contact \
+                 OUTSIDE the gasket strip; gasket-sandwiched lightly \
+                 INSIDE). Full gasket compression is achieved in \
                  Step 5 once {compression_actor}."
             );
             // ⚠ With carved bolts the §B section already says the M5 bolts ARE

@@ -4842,21 +4842,136 @@ mod tests {
         );
     }
 
+    /// ★★★ The prose lint's OWN gate — both directions.
+    ///
+    /// ⚠ A round found that the lint shipped claiming five negative controls
+    /// when two tested defect shapes that never occurred, that its
+    /// doubled-preposition exemption waved the real defect through if " and "
+    /// appeared ANYWHERE later, that it missed every `{x:.1}` binding (the
+    /// shape the sheets are built from), and that four rules were latent
+    /// panics on CORRECT prose. A gate with no gate of its own is a claim,
+    /// not a check — so each rule is pinned here in both directions: the
+    /// defect must fail, and the correct prose it resembles must pass.
+    #[test]
+    fn the_prose_lint_catches_defects_and_spares_correct_prose() {
+        // ⚠⚠ Braces are BUILT, never written literally. `xtask grade`'s Safety
+        // scanner strips string literals with a brace-depth state machine, so a
+        // literal `{` in a test string desynchronizes it and reclassifies the
+        // rest of `mod tests` as production code — Safety A -> F with phantom
+        // violations (same class as the escaped quote that did this once
+        // before). Clippy also reads a literal brace-arg as a stray format
+        // argument.
+        const OB: char = '\u{7B}';
+        const CB: char = '\u{7D}';
+        let binding_fmt = format!("the land starts {OB}land_inner_mm:.1{CB} mm outboard");
+        let binding_bare = format!("sheet {OB}md{CB} follows");
+        let placeholder = format!("print mold_layer_{OB}N{CB}_piece_0.stl now");
+        let cases: &[(&str, &str, bool)] = &[
+            (
+                "doubled-prep exemption must not look past the 2nd match",
+                "lay each gasket on the Negative cup half on the seam face and clamp it",
+                true,
+            ),
+            ("binding with a format spec", &binding_fmt, true),
+            ("bare binding", &binding_bare, true),
+            (
+                "CORRECT: 'a one-piece'",
+                "the result is a one-piece silicone body",
+                false,
+            ),
+            (
+                "CORRECT: suspended hyphen",
+                "trim the pour- and vent-leg flash flush",
+                false,
+            ),
+            (
+                "CORRECT: markdown hard break",
+                "line one  \nline two",
+                false,
+            ),
+            (
+                "CORRECT: heading echoed by its line",
+                "## Gasket\nGasket strips cure overnight",
+                false,
+            ),
+            (
+                "split word across a continuation",
+                "the half- cone is proud",
+                true,
+            ),
+            (
+                "article wrong for a computed value",
+                "the cone is a 18 mm cantilever",
+                true,
+            ),
+            (
+                "one object, two prepositions",
+                "lay each gasket on the Negative cup half on the seam face",
+                true,
+            ),
+            (
+                "CORRECT: two objects, one preposition each",
+                "Pour leg on the Positive piece, vent leg on the Negative piece",
+                false,
+            ),
+            ("CORRECT: deliberate placeholder", &placeholder, false),
+        ];
+        let mut bad = 0;
+        for (name, txt, want_fail) in cases {
+            let caught =
+                std::panic::catch_unwind(|| assert_prose_is_well_formed(txt, "probe")).is_err();
+            let ok = caught == *want_fail;
+            if !ok {
+                bad += 1;
+            }
+            println!(
+                "{} {:7} {name}",
+                if ok { "ok  " } else { "WRONG" },
+                if caught { "CAUGHT" } else { "passes" }
+            );
+        }
+        assert_eq!(bad, 0, "{bad} probe(s) behaved wrong");
+    }
+
     /// ★★★ Mechanical prose damage, on every sheet the matrix renders.
     ///
-    /// ⚠ This exists because THREE separate rounds of review found defects
-    /// that no test could see and only reading the rendered sheet caught: a
-    /// line continuation splitting a word ("the half- cone"), an article
-    /// wrong for a computed value ("a 18 mm"), a doubled preposition ("on the
-    /// Negative cup half on the seam face"), and a templated clause turning a
-    /// list into a comma splice. Each was introduced by a fix, shipped, and
-    /// found a round later.
+    /// ⚠ Rounds of review kept finding defects no test could see and only
+    /// reading the rendered sheet caught. These are the ones this gate
+    /// ACTUALLY covers, each verified by reintroducing it:
+    ///   - a line continuation splitting a word ("the half- cone")
+    ///   - an article wrong for a computed value ("a 18 mm")
+    ///   - one object carrying two prepositions ("on the Negative cup half
+    ///     on the seam face")
+    ///   - an unsubstituted `{binding}`, with or without a format spec
+    ///   - a repeated word, a double space, a space before punctuation
+    ///
+    /// ⛔ WHAT IT DOES NOT COVER, though these also shipped: a templated
+    /// clause turning a list into a COMMA SPLICE, and a fragment that drops a
+    /// NOUN ("Trim any seam flush with a sharp blade"). An earlier version of
+    /// this comment listed the comma splice as though it were covered, and
+    /// the commit message claimed all five controls were defects that had
+    /// really shipped — two were shapes that never did. Both claims were
+    /// false in exactly the direction that flatters the gate.
     ///
     /// ★ Reading still finds what this cannot — contradictions between two
-    /// sentences that share no keyword. But the MECHANICAL half of "read the
-    /// artifact" is exactly what a machine should own, and every defect it
-    /// owns is one I cannot reintroduce.
+    /// sentences that share no keyword, and every defect listed above under
+    /// ⛔. The MECHANICAL half is what a machine should own; do not let its
+    /// green mislead you into skipping the read.
+    /// The text starting at char index `at`, for short look-aheads.
+    fn md_after(chars: &[char], at: usize) -> String {
+        chars[at.min(chars.len())..(at + 8).min(chars.len())]
+            .iter()
+            .collect()
+    }
+
     fn assert_prose_is_well_formed(md: &str, case: &str) {
+        // ⚠⚠ A BARE `'}'` CHAR LITERAL DESYNCS `xtask grade`'s Safety scanner
+        // (brace-depth state machine; the unmatched close drops it below zero
+        // and the rest of `mod tests` reads as production code — Safety A->F,
+        // phantom violations). Same class as the `'\u{22}'` quote workaround
+        // in `assert_cross_refs_resolve`. Found by BISECTING file, then
+        // literal — not by guessing, which was wrong twice before.
+        const CLOSE_BRACE: char = '\u{7D}';
         let chars: Vec<char> = md.chars().collect();
         let flag = |what: &str, at: usize| -> String {
             let lo = at.saturating_sub(60);
@@ -4867,17 +4982,26 @@ mod tests {
 
         for (i, w) in chars.windows(3).enumerate() {
             // A line continuation split a word: "half- cone".
+            // ⚠ EXCEPT a suspended hyphen — "trim the pour- and vent-leg
+            // flash" is correct, and this sheet writes exactly that shape.
+            let suspended = md_after(&chars, i + 3).starts_with("and ")
+                || md_after(&chars, i + 3).starts_with("or ");
             assert!(
                 !(w[0].is_ascii_lowercase()
                     && w[1] == '-'
                     && w[2] == ' '
-                    && chars.get(i + 3).is_some_and(char::is_ascii_lowercase)),
+                    && chars.get(i + 3).is_some_and(char::is_ascii_lowercase)
+                    && !suspended),
                 "{}",
                 flag("a hyphenated word was split by a line continuation", i)
             );
             // Two spaces mid-sentence.
+            // ⚠ NOT a Markdown hard line break (two spaces then newline).
             assert!(
-                !(w[0].is_ascii_alphabetic() && w[1] == ' ' && w[2] == ' '),
+                !(w[0].is_ascii_alphabetic()
+                    && w[1] == ' '
+                    && w[2] == ' '
+                    && chars.get(i + 3).is_some_and(|c| *c != '\n')),
                 "{}",
                 flag("double space between words", i)
             );
@@ -4893,7 +5017,12 @@ mod tests {
         // ⚠ Not "u"/"eu" — "a unique", "a European" are correct.
         for (idx, _) in md.match_indices(" a ") {
             let tail = &md[idx + 3..];
-            let bad_vowel = tail.starts_with(['a', 'i', 'o'])
+            // ⚠ Consonant-sounding vowels take "a": "a European", "a unit",
+            // "a one-piece". Excluding only "eu" made "a one-piece" — natural
+            // vocabulary on a sheet that already says "a SINGLE integrated
+            // 2-layer silicone body" — a latent panic on correct prose.
+            let bad_vowel = tail.starts_with(['a', 'i'])
+                || (tail.starts_with('o') && !tail.starts_with("one") && !tail.starts_with("once"))
                 || (tail.starts_with('e') && !tail.starts_with("eu"));
             let bad_number = ["8", "11", "18"].iter().any(|n| {
                 tail.starts_with(n) && !tail[n.len()..].starts_with(|c: char| c.is_ascii_digit())
@@ -4916,8 +5045,18 @@ mod tests {
                 .chars()
                 .take_while(|c| c.is_ascii_lowercase() || *c == '_')
                 .collect();
+            // ⚠ `{x:.1}` / `{x:.0}` are the SHAPE THE SHEETS ARE BUILT FROM;
+            // requiring `}` immediately after the name missed every one of
+            // them. A deliberate `{N}` still passes — uppercase yields an
+            // empty name.
+            let rest = &tail[name.len()..];
+            let leaked = !name.is_empty()
+                && (rest.starts_with(CLOSE_BRACE)
+                    || rest
+                        .split_once(CLOSE_BRACE)
+                        .is_some_and(|(spec, _)| spec.starts_with(':') && !spec.contains(' ')));
             assert!(
-                !(name.len() >= 3 && tail[name.len()..].starts_with('}')),
+                !leaked,
                 "{}",
                 flag(
                     "an unsubstituted format binding reached the sheet",
@@ -4940,8 +5079,13 @@ mod tests {
             // two-object list; any comma or conjunction means a second object,
             // not a second preposition for the same one.
             let clause = span.split(['.', ';', ',', '\n']).next().unwrap_or("");
+            // ⚠ The exemption must look only BETWEEN the two matches. Scanning
+            // the whole clause let " and " ANYWHERE — even after the second
+            // "on the" — wave the defect through, so the sentence that shipped
+            // passed with four words appended.
+            let between = clause.split(" on the ").next().unwrap_or("");
             assert!(
-                !clause.contains(" on the ") || clause.contains(" and "),
+                !clause.contains(" on the ") || between.contains(" and "),
                 "{}",
                 flag(
                     "\"on the … on the\" — one object, two prepositions",
@@ -4951,15 +5095,19 @@ mod tests {
         }
 
         // The same word twice in a row.
-        let words: Vec<&str> = md.split_whitespace().collect();
-        for pair in words.windows(2) {
-            let (a, b) = (pair[0], pair[1]);
-            assert!(
-                !(a.len() > 2
-                    && a.eq_ignore_ascii_case(b)
-                    && a.chars().all(|c| c.is_ascii_alphabetic())),
-                "[{case}]\nthe word {a:?} is repeated"
-            );
+        // ⚠ Per LINE — `split_whitespace` over the whole sheet joins across
+        // newlines, so a heading echoed by its first word ("## Gasket\nGasket
+        // strips…") read as a repeat.
+        for words in md.lines().map(|l| l.split_whitespace().collect::<Vec<_>>()) {
+            for pair in words.windows(2) {
+                let (a, b) = (pair[0], pair[1]);
+                assert!(
+                    !(a.len() > 2
+                        && a.eq_ignore_ascii_case(b)
+                        && a.chars().all(|c| c.is_ascii_alphabetic())),
+                    "[{case}]\nthe word {a:?} is repeated"
+                );
+            }
         }
     }
 
