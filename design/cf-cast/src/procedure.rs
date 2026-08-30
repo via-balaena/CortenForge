@@ -563,9 +563,10 @@ fn write_v2_post_cure_assembly(
          silicone tubes — one per layer — each with the next-inner \
          tube's outer geometry as its inner cavity (innermost = \
          layer 0; outermost = layer {}). Trim any seam flash{gate_flash} \
-         flush with a sharp blade on every tube BEFORE nesting — the \
-         inter-layer fit is a 0.5-1 mm interference, and flash on a \
-         mating face eats that budget.",
+         flush with a sharp blade on every tube BEFORE nesting — each \
+         tube's cavity is cast against the next-inner tube's own outer \
+         surface, so the two mate line-to-line by construction and any \
+         flash left on a mating face is pure interference.",
         spec.layers.len(),
         spec.layers.len(),
         spec.layers.len().saturating_sub(1),
@@ -574,9 +575,12 @@ fn write_v2_post_cure_assembly(
     let _ = writeln!(
         md,
         "**Assembly**: nest the tubes innermost-first. Slide layer 0 \
-         into the inner cavity of layer 1; the cured silicone is \
-         flexible enough to flex over the 0.5-1 mm inter-layer \
-         interference fit. Apply Smooth-On Silicone Slip (or any \
+         into the inner cavity of layer 1. The two surfaces are \
+         nominally line-to-line (layer 1 was cast on layer 0's own \
+         outer geometry), so the fit you actually get is whatever your \
+         print + cure tolerances add — expect it to be snug rather \
+         than loose, and rely on the cured silicone's flexibility. \
+         Apply Smooth-On Silicone Slip (or any \
          silicone-safe lubricant) sparingly to ease insertion if \
          needed. Repeat with each successive outer layer until all \
          tubes are stacked into a single multi-layer device."
@@ -1271,9 +1275,9 @@ fn write_print_orientation_funnel_platform(
              bore, half on each cup piece, that forms a full pour funnel \
              when the two halves are clamped. Its lumen runs continuously \
              into the bore (no inserted nipple), so there is no throat \
-             constriction. It prints as part of the cup pieces (the half- \
-             cone is a {funnel_height_mm:.0} mm CANTILEVERED PROTRUSION above the cup's outer \
-             surface, not a recess — check what your slicer gives it \
+             constriction. It prints as part of the cup pieces (the \
+             half-cone rises {funnel_height_mm:.0} mm above the cup's outer surface as a \
+             CANTILEVERED PROTRUSION, not a recess — check what your slicer gives it \
              before printing; the half-channel of its lumen is the only \
              part that opens upward under the seam-face-UP lock). \
              Pour silicone straight into the assembled funnel at the apex; \
@@ -1597,12 +1601,29 @@ struct SheetFeatures {
 /// ⚠ Only `has_dowels` / `bolts_carved` are passed in, because those two are
 /// answers from the PLANNER — the kind alone does not say whether they were
 /// placed. Everything else is a pure function of the ribbon.
+/// One recess a seam face carries.
+///
+/// ⚠ The two cf-view bullets that describe seam faces MUST agree about what
+/// is there: bullet 1 lists the recesses as EXPECTED, and the cylinder bullet
+/// declares which of them are cylinders. When they were built from separate
+/// enumerations they disagreed immediately — the cylinder bullet omitted the
+/// V-at-dome legs, which `SubtractCylinder` carves (`pour::leg_transform`),
+/// so it condemned a trough the bullet above had just called expected. One
+/// list, filtered two ways, cannot drift like that.
+struct SeamFeature {
+    /// How bullet 1 describes the recess.
+    prose: &'static str,
+    /// `Some(short name)` iff the recess is CYLINDRICAL, and so must also
+    /// appear in the cylinder-remnant bullet's expected list.
+    cylindrical: Option<&'static str>,
+}
+
 fn seam_face_features(
     ribbon: &Ribbon,
     has_dowels: bool,
     bolts_carved: bool,
     has_gasket: bool,
-) -> Vec<&'static str> {
+) -> Vec<SeamFeature> {
     // ⚠⚠ ALWAYS FIRST, and the one this list omitted for five rounds: the cup
     // piece is `bounding_region ∖ layer_body` intersected with the seam
     // halfspace, so the BODY CAVITY is bisected by construction and every seam
@@ -1611,73 +1632,80 @@ fn seam_face_features(
     // why the "flat and featureless" case below can never actually be reached.
     // ⚠ "the face the gasket lies on" asserted a gasket on every cast — inside
     // a checklist whose failure instruction is "do NOT proceed to print".
-    let mut present: Vec<&'static str> = vec![if has_gasket {
-        "the body-cavity opening, bisected by the seam into an open half-trough \
-         on each piece (this is the cavity the silicone fills, and the face the \
-         gasket lies on)"
-    } else {
-        "the body-cavity opening, bisected by the seam into an open half-trough \
-         on each piece (this is the cavity the silicone fills)"
+    // Not cylindrical: it is the body's own cross-section.
+    let mut present: Vec<SeamFeature> = vec![SeamFeature {
+        prose: if has_gasket {
+            "the body-cavity opening, bisected by the seam into an open half-trough \
+             on each piece (this is the cavity the silicone fills, and the face the \
+             gasket lies on)"
+        } else {
+            "the body-cavity opening, bisected by the seam into an open half-trough \
+             on each piece (this is the cavity the silicone fills)"
+        },
+        cylindrical: None,
     }];
     if has_dowels {
-        present.push(
-            "the §M-S2 symmetric dowel holes (cylindrical recesses at the \
-             body's long-axis extremes, mirrored across the seam plane)",
-        );
+        present.push(SeamFeature {
+            prose: "the §M-S2 symmetric dowel holes (cylindrical recesses at the \
+                    body's long-axis extremes, mirrored across the seam plane)",
+            cylindrical: Some("the §M-S2 dowel holes"),
+        });
     }
     if bolts_carved {
-        present.push(
-            "the §B M5 bolt clearance holes (cylindrical, through the flange \
-             band, mirrored across the seam plane)",
-        );
+        present.push(SeamFeature {
+            prose: "the §B M5 bolt clearance holes (cylindrical, through the flange \
+                    band, mirrored across the seam plane)",
+            cylindrical: Some("the §B bolt clearance holes"),
+        });
     }
     match &ribbon.pour_gate {
         PourGateKind::None => {}
         PourGateKind::Default(spec) => match spec.layout {
-            PourGateLayout::ApexAxial => present.push(
-                "the apex pour bore + integral funnel, bisected lengthwise \
-                 into an open half-trough and half-cone (the bore lies IN the \
-                 seam plane, so each half carries one side of it)",
-            ),
-            PourGateLayout::VAtDome if spec.include_vent => present.push(
-                "ONE half-trough at the dome end per piece — the V's legs \
-                 splay along the binormal, so the Positive piece carries the \
-                 pour leg's and the Negative piece the vent leg's, not both \
-                 in each face",
-            ),
-            PourGateLayout::VAtDome => present.push(
-                "ONE half-trough at the dome end, on the Positive piece only \
-                 (`include_vent = false` — no vent leg is carved, so the \
-                 Negative seam face has none)",
-            ),
+            PourGateLayout::ApexAxial => present.push(SeamFeature {
+                prose: "the apex pour bore + integral funnel, bisected lengthwise \
+                        into an open half-trough and half-cone (the bore lies IN the \
+                        seam plane, so each half carries one side of it)",
+                cylindrical: Some("the apex pour bore"),
+            }),
+            // ⚠ These legs ARE cylinders — `pour::leg_transform` emits one
+            // `MatingTransform::SubtractCylinder` per leg. Omitting them from
+            // the cylindrical set condemns them one bullet later.
+            PourGateLayout::VAtDome if spec.include_vent => present.push(SeamFeature {
+                prose: "ONE half-trough at the dome end per piece — the V's legs \
+                        splay along the binormal, so the Positive piece carries the \
+                        pour leg's and the Negative piece the vent leg's, not both \
+                        in each face",
+                cylindrical: Some("the V's pour + vent legs at the dome end"),
+            }),
+            PourGateLayout::VAtDome => present.push(SeamFeature {
+                prose: "ONE half-trough at the dome end, on the Positive piece only \
+                        (`include_vent = false` — no vent leg is carved, so the \
+                        Negative seam face has none)",
+                cylindrical: Some("the V's pour leg at the dome end"),
+            }),
         },
     }
     if !matches!(ribbon.plug_pins, crate::plug::PlugPinKind::None) {
-        present.push(
-            "the plug-floor-lock socket on the cap-plane wall, bisected by \
-             the seam (each half carries one side of the truncated-pyramid \
-             recess)",
-        );
+        // Not cylindrical: a truncated PYRAMID recess.
+        present.push(SeamFeature {
+            prose: "the plug-floor-lock socket on the cap-plane wall, bisected by \
+                    the seam (each half carries one side of the truncated-pyramid \
+                    recess)",
+            cylindrical: None,
+        });
     }
     present
 }
 
-/// The cf-view bullet built from [`seam_face_features`], so the exclusivity
-/// sentence can never outrun the list.
-fn seam_face_check(
-    ribbon: &Ribbon,
-    has_dowels: bool,
-    bolts_carved: bool,
-    has_gasket: bool,
-) -> String {
+fn seam_face_check(present: &[SeamFeature]) -> String {
     // ⚠ No empty case: the body-cavity opening is unconditional, so a seam
     // face is never featureless. An "anything here is a regression" fallback
     // would be unreachable AND wrong, which is how this bullet blocked correct
     // prints four times.
-    let present = seam_face_features(ribbon, has_dowels, bolts_carved, has_gasket);
+    let prose: Vec<&str> = present.iter().map(|f| f.prose).collect();
     format!(
         "- Seam faces carry {}. Nothing else should be recessed into them.",
-        present.join("; and ")
+        prose.join("; and ")
     )
 }
 
@@ -1730,19 +1758,17 @@ const fn pin_remnant_bullet(has_plug_lock: bool) -> &'static str {
 /// carry cylindrical recesses — listed as expected two bullets up — so a flat
 /// "no cylindrical remnants" line condemns them inside a checklist whose
 /// failure instruction is "do NOT proceed to print".
-fn cylinder_remnant_bullet(has_dowels: bool, bolts_carved: bool, apex_bore: bool) -> String {
-    // ⚠ ENUMERATE, do not list all three generically — naming "dowel holes" on
-    // a cast that carves none is the same contradiction one bullet over.
-    let mut recesses: Vec<&str> = Vec::new();
-    if has_dowels {
-        recesses.push("the §M-S2 dowel holes");
-    }
-    if bolts_carved {
-        recesses.push("the §B bolt clearance holes");
-    }
-    if apex_bore {
-        recesses.push("the apex pour bore");
-    }
+/// The cylinder bullet, derived from the SAME list bullet 1 renders.
+///
+/// ⚠ Do not reintroduce caller booleans here. This function previously took
+/// `(has_dowels, bolts_carved, apex_bore)` and enumerated them itself; it
+/// silently omitted the V-at-dome legs and so condemned, as a suspected
+/// regression, a trough the bullet immediately above calls expected — on the
+/// iter-1 layout, inside the "do NOT proceed to print" checklist. That is the
+/// fifth time this class of bullet under-counted by exactly the feature its
+/// author was not thinking about.
+fn cylinder_remnant_bullet(present: &[SeamFeature]) -> String {
+    let recesses: Vec<&str> = present.iter().filter_map(|f| f.cylindrical).collect();
     if recesses.is_empty() {
         return "- No cylindrical pin remnants (pre-S3 cylinder primitive \
                 retired)."
@@ -1803,7 +1829,10 @@ fn write_cfview_sanity_check_v2(
         has_vent: _,
     } = carved;
     // ⚠ Do not send the bencher to verify features the cast never carves.
-    let dowel_check = seam_face_check(ribbon, has_dowels, bolts_carved, has_gasket);
+    // ⚠ ONE list, filtered two ways — bullet 1 and the cylinder bullet cannot
+    // disagree about what a seam face carries.
+    let seam = seam_face_features(ribbon, has_dowels, bolts_carved, has_gasket);
+    let dowel_check = seam_face_check(&seam);
     let _ = writeln!(md, "## cf-view Sanity-Check Workflow");
     md.push('\n');
     let _ = writeln!(
@@ -1820,16 +1849,7 @@ fn write_cfview_sanity_check_v2(
     // it, inside the "do NOT proceed to print" checklist. Distinguish the
     // retired PROTRUSIONS from the expected recess.
     let pin_remnant_check = pin_remnant_bullet(has_plug_lock);
-    let cyl_remnant_check = cylinder_remnant_bullet(
-        has_dowels,
-        bolts_carved,
-        // ⚠ Dowels are not the only cylindrical recess bullet 1 lists as
-        // expected: §B bolt clearance holes and the apex pour bore are too.
-        matches!(
-            &ribbon.pour_gate,
-            PourGateKind::Default(g) if g.layout == PourGateLayout::ApexAxial
-        ),
-    );
+    let cyl_remnant_check = cylinder_remnant_bullet(&seam);
     let socket_check = if has_plug_lock {
         "- Cap-plane wall carries a clean rectangular plug-floor-lock socket \
          recess (S4) — recessed cavity, NOT a through-hole."
@@ -2882,15 +2902,21 @@ fn write_v2_cup_half_clamping_note(
                  Open the cup halves, lay the Negative cup half \
                  (`mold_layer_{{N}}_piece_0.stl`) seam-face-UP on the \
                  workshop bench. Place the gasket strip on the seam \
-                 face **along the body cavity perimeter, in the \
-                 annular clearance gap between the body cavity edge \
-                 (`body_dist = 0`) and the flange's inner edge** — \
-                 the flange's {inner_offset_mm:.1} mm \
-                 `inner_offset_m` is the width of that gap and keeps \
-                 the flange material laterally clear of the gasket \
-                 per recon §F-4 gasket-disjoint invariant. The \
-                 gasket strip itself is centered on the body \
-                 perimeter (half inside body_dist < 0, half outside)."
+                 face **straddling the body cavity edge \
+                 (`body_dist = 0`) — CENTERED on that perimeter, not \
+                 beside it**, so half its width lies over the cavity \
+                 (`body_dist < 0`) and half over the cup wall. That \
+                 is where the channel is cut: its SDF is \
+                 `|body_dist| - half_width`, symmetric about the \
+                 cavity edge, so the strip drops into it. The \
+                 flange's {inner_offset_mm:.1} mm `inner_offset_m` \
+                 sets how far OUTBOARD the flange material starts, \
+                 keeping it laterally clear of the gasket per recon \
+                 §F-4 gasket-disjoint invariant — it is clearance for \
+                 the flange, not the seat for the gasket. Expect the \
+                 cast to carry a thin silicone bead at the seam where \
+                 it bonded to the gasket's inner half; step 8 trims \
+                 it."
             );
             let _ = writeln!(
                 md,
@@ -3169,8 +3195,8 @@ fn write_apex_axial_pour_note(
          (no inserted nipple), so the pour throat is the {gate_dia_mm:.1} mm \
          bore itself with no wall constriction. Mouth Ø ≈ {mouth_dia_mm:.1} mm, \
          ~{funnel_height_mm:.0} mm tall. It prints as part of the cups (the \
-         half-cone is a {funnel_height_mm:.0} mm CANTILEVERED PROTRUSION above the cup's outer \
-             surface, not a recess — check what your slicer gives it \
+         half-cone rises {funnel_height_mm:.0} mm above the cup's outer surface as a \
+             CANTILEVERED PROTRUSION, not a recess — check what your slicer gives it \
              before printing; the half-channel of its lumen is the only \
              part that opens upward under the seam-face-UP lock). \
          Ladle silicone straight into the assembled funnel at the apex; the \

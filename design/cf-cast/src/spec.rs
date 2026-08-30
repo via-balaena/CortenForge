@@ -1523,8 +1523,11 @@ pub fn carved_features(spec: &CastSpec, ribbon: &Ribbon) -> CarvedFeatures {
     // added a stderr warning for a scenario that cannot occur. Left as a
     // total-function fallback, not as a guard against a real case.
     //
-    // `want_*` already implies a flange (`want_placement` above), so no further
-    // flange check is needed here.
+    // ⚠ The dropped `plausible` guard is safe because REACHING this line means
+    // `compute_smart_placements` ran and got past its own `want_placement`
+    // check — NOT because `want_bolts` / `want_dowels` imply anything. They are
+    // pure `cast.toml` predicates (`Kind::spec().is_some()`) and imply no
+    // flange whatsoever; that is the whole reason this function exists.
     CarvedFeatures {
         bolts: vec![want_bolts; n],
         dowels: vec![want_dowels; n],
@@ -4458,23 +4461,21 @@ mod tests {
         }
     }
 
-    /// ★★ The detachable and bonded finishing sections must make the SAME
-    /// flash claim for the same geometry.
+    /// ★★★ Every `SubtractCylinder` the pour gate actually carves must be
+    /// named in the cf-view cylinder bullet's EXPECTED list.
     ///
-    /// ⚠ These twins have diverged TWICE: first both wrong together
-    /// (claiming pour-gate flash on a gateless cast), then — after only the
-    /// bonded one learned `has_vent` — wrong DIFFERENTLY, one saying
-    /// "pour-gate / vent flash" and the other "pour-gate flash" for identical
-    /// casts. A comment saying "must match its bonded twin" enforces nothing;
-    /// this does.
+    /// ⚠ The oracle is `build_pour_gate_transforms` — the real carve — not a
+    /// mirror of the prose's own predicate. Marking the V legs
+    /// `cylindrical: None` restores the exact defect this gate exists for
+    /// (the bullet condemning, as a suspected regression, a trough the bullet
+    /// above calls expected) and MUST fail here; sharing one list between the
+    /// two bullets makes them agree, but agreement about a wrong answer is
+    /// still wrong.
     #[test]
-    fn detachable_and_bonded_finishing_agree_about_flash() {
-        // The flash phrases the two writers may emit. Whichever one a config
-        // produces, BOTH modes must produce it.
-        const FLASH_CLAIMS: &[&str] = &[" and pour-gate / vent flash", " and pour-gate flash"];
-
+    fn every_cylinder_the_pour_gate_carves_is_listed_as_expected() {
         use crate::cast_mode::CastMode;
-        use crate::pour::PourGateLayout;
+        use crate::mesh_csg::MatingTransform;
+        use crate::pour::{PourGateLayout, build_pour_gate_transforms};
         use crate::procedure::generate_procedure_markdown_v2_for_mode;
 
         let mut ventless = PourGateSpec::iter1();
@@ -4482,12 +4483,98 @@ mod tests {
         let mut apex = PourGateSpec::iter1();
         apex.layout = PourGateLayout::ApexAxial;
 
+        let mut saw_carved = 0usize;
+        let mut saw_gateless = 0usize;
         for gate in [
             PourGateKind::None,
             PourGateKind::Default(PourGateSpec::iter1()),
             PourGateKind::Default(ventless),
             PourGateKind::Default(apex),
         ] {
+            let (spec, base) = v2_fixture();
+            let ribbon = base.with_pour_gate(gate.clone());
+            let pours = spec.compute_pour_volumes().unwrap();
+            let md = generate_procedure_markdown_v2_for_mode(
+                &spec,
+                &pours,
+                &ribbon,
+                CastMode::Detachable,
+            );
+
+            let cylinders = build_pour_gate_transforms(&ribbon)
+                .iter()
+                .filter(|t| matches!(t, MatingTransform::SubtractCylinder { .. }))
+                .count();
+
+            let bullet = md
+                .lines()
+                .find(|l| l.contains("cylindrical pin"))
+                .unwrap_or_else(|| panic!("no cylinder bullet on the {gate:?} sheet"));
+
+            if cylinders > 0 {
+                saw_carved += 1;
+                assert!(
+                    bullet.contains("PROTRUSIONS"),
+                    "{gate:?} carves {cylinders} cylinder(s) but the cf-view \
+                     bullet is the flat no-recesses form, which condemns them:\n  {bullet}"
+                );
+                // The gate's own cylinders — not merely SOME cylinder — must
+                // be what the bullet names.
+                assert!(
+                    bullet.contains("dome end") || bullet.contains("apex pour bore"),
+                    "{gate:?} carves {cylinders} cylinder(s) at the pour gate, \
+                     but the expected list names none of them:\n  {bullet}"
+                );
+            } else {
+                saw_gateless += 1;
+                assert!(
+                    !bullet.contains("dome end") && !bullet.contains("apex pour bore"),
+                    "{gate:?} carves no pour-gate cylinder, but the bullet \
+                     lists one as expected:\n  {bullet}"
+                );
+            }
+        }
+        assert_eq!((saw_carved, saw_gateless), (3, 1), "matrix went vacuous");
+    }
+
+    /// ★★ The flash claim must match WHAT THE CAST CARVES, in both modes.
+    ///
+    /// ⚠ An earlier version of this test asserted only that the two modes
+    /// AGREE (`det.contains(c) == bon.contains(c)`), which `(false, false)`
+    /// satisfies. Setting `gate_flash = ""` in both writers passed it — and
+    /// that is the branch's original defect, not a hypothetical. So did
+    /// claiming "pour-gate / vent flash" unconditionally, which is the vent
+    /// claim this branch fixed at five separate sites. Agreement is necessary,
+    /// not sufficient: assert the EXPECTED claim per config.
+    #[test]
+    fn finishing_flash_claim_matches_the_carve_in_both_modes() {
+        use crate::cast_mode::CastMode;
+        use crate::pour::PourGateLayout;
+        use crate::procedure::generate_procedure_markdown_v2_for_mode;
+
+        const VENTED: &str = " and pour-gate / vent flash";
+        const GATE_ONLY: &str = " and pour-gate flash";
+
+        let mut ventless = PourGateSpec::iter1();
+        ventless.include_vent = false;
+        let mut apex = PourGateSpec::iter1();
+        apex.layout = PourGateLayout::ApexAxial;
+        // ⚠ `include_vent` is meaningless for ApexAxial — vents are hand-drilled
+        // there. A cast that sets BOTH must still not claim a vent leg.
+        let mut apex_vent = apex.clone();
+        apex_vent.include_vent = true;
+
+        // (gate, does the cast carry a vent leg?)
+        let cases = [
+            (PourGateKind::None, None),
+            (PourGateKind::Default(PourGateSpec::iter1()), Some(VENTED)),
+            (PourGateKind::Default(ventless), Some(GATE_ONLY)),
+            (PourGateKind::Default(apex), Some(GATE_ONLY)),
+            (PourGateKind::Default(apex_vent), Some(GATE_ONLY)),
+        ];
+
+        let mut fired = 0usize;
+        for (gate, expected) in cases {
             for layers in [1usize, 2] {
                 let (spec, base) = if layers == 1 {
                     v2_fixture()
@@ -4496,30 +4583,38 @@ mod tests {
                 };
                 let ribbon = base.with_pour_gate(gate.clone());
                 let pours = spec.compute_pour_volumes().unwrap();
-                let sheet =
-                    |mode| generate_procedure_markdown_v2_for_mode(&spec, &pours, &ribbon, mode);
-                let det = sheet(CastMode::Detachable);
-                let bon = sheet(CastMode::Bonded);
-
-                for claim in FLASH_CLAIMS {
-                    assert_eq!(
-                        det.contains(claim),
-                        bon.contains(claim),
-                        "detachable and bonded disagree about {claim:?} for \
-                         {layers}-layer {gate:?} — the finishing twins have \
-                         drifted again"
-                    );
-                }
-                // And both must actually say to trim something.
-                for (mode, md) in [("detachable", &det), ("bonded", &bon)] {
+                for mode in [CastMode::Detachable, CastMode::Bonded] {
+                    let md = generate_procedure_markdown_v2_for_mode(&spec, &pours, &ribbon, mode);
+                    for claim in [VENTED, GATE_ONLY] {
+                        let want = expected == Some(claim);
+                        assert_eq!(
+                            md.contains(claim),
+                            want,
+                            "{mode:?} {layers}-layer {gate:?}: expected \
+                             contains({claim:?}) == {want}. The finishing \
+                             prose claims flash the cast does not carve, or \
+                             omits flash it does."
+                        );
+                        if want {
+                            fired += 1;
+                        }
+                    }
+                    // Both modes must always tell the bencher to trim SOMETHING.
                     assert!(
                         md.to_lowercase().contains("trim any seam flash"),
-                        "{mode} sheet never tells the bencher to trim flash \
-                         ({layers}-layer, {gate:?})"
+                        "{mode:?} {layers}-layer sheet never says to trim flash"
                     );
                 }
             }
         }
+        // Non-vacuity: both claims must have been REQUIRED somewhere, or the
+        // loop is asserting absence everywhere and would survive deleting the
+        // `gate_flash` match entirely.
+        assert_eq!(
+            fired, 16,
+            "expected each of the 4 gated configs x 2 layer counts x 2 modes \
+             to require exactly one claim"
+        );
     }
 
     /// Assert every backticked `#…` reference in `md` names a heading that is
@@ -5506,18 +5601,32 @@ mod tests {
             md.contains("Do NOT release"),
             "do-not-release-during-cure warning missing in: {md}"
         );
-        // Cold-read pass-1 (Finding A): Step 3 geometry must say
-        // "annular clearance gap between body cavity edge and flange
-        // inner edge", NOT "INSIDE the flange perimeter" (ambiguous
-        // — workshop user could put the gasket in the wrong ring).
+        // Step 3 must place the gasket CENTERED on the body-cavity edge.
+        //
+        // ⚠ This assertion previously demanded the words "annular clearance
+        // gap between the body cavity edge and the flange's inner edge" — a
+        // cold-read fix for an earlier ambiguity ("INSIDE the flange
+        // perimeter"). It replaced one wrong placement with another and then
+        // PINNED it: the channel SDF is `|body_dist| - half_width`
+        // (`gasket_mold.rs`), symmetric about `body_dist = 0`, so the gasket
+        // straddles the cavity edge and does NOT sit in the gap outboard of
+        // it. The same bullet then contradicted itself one sentence later by
+        // saying "centered on the body perimeter". Assert the geometry, not
+        // the vocabulary of whichever fix landed last.
         assert!(
-            md.contains("annular clearance gap"),
-            "annular-gap geometry vocabulary missing in: {md}"
+            md.contains("CENTERED on that perimeter, not beside it"),
+            "step 3 must center the gasket on the body-cavity edge: {md}"
         );
-        assert!(
-            !md.contains("INSIDE the flange perimeter"),
-            "ambiguous \"INSIDE the flange perimeter\" wording leaking back in: {md}"
-        );
+        for wrong in [
+            "INSIDE the flange perimeter",
+            "in the annular clearance gap",
+        ] {
+            assert!(
+                !md.contains(wrong),
+                "step 3 seats the gasket beside the cavity edge ({wrong:?}), \
+                 not straddling it: {md}"
+            );
+        }
         // Cold-read pass-1 (Finding B): the predicted compression
         // number must live in Step 5 (where clamps are applied),
         // NOT Step 4 (cup-close only). Step 4 must explicitly
