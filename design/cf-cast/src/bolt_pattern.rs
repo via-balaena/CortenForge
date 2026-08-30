@@ -426,6 +426,20 @@ mod tests {
     use cf_design::Solid;
     use nalgebra::{Point3, Vector3};
 
+    fn cylinder_fixture() -> (Solid, cf_design::Aabb, Ribbon) {
+        // Cylinder along X, R=10 mm, length 60 mm.
+        let body = Solid::cylinder(0.010, 0.030).rotate(nalgebra::UnitQuaternion::from_axis_angle(
+            &Vector3::y_axis(),
+            std::f64::consts::FRAC_PI_2,
+        ));
+        let bounding_region = Solid::cuboid(Vector3::new(0.100, 0.030, 0.030));
+        let bounds = bounding_region.bounds().unwrap();
+        let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
+        let split = SplitNormal::new(Vector3::new(0.0, 0.0, 1.0)).unwrap();
+        let ribbon = Ribbon::new(centerline, split).unwrap();
+        (body, bounds, ribbon)
+    }
+
     /// Test adapter: build the shared per-layer loops (S5d-(A)) the way the v2
     /// pipeline does, then run the bolt planner — keeps the test call sites on the
     /// pre-S5d-(A) arg shape after loop construction moved out of the planner.
@@ -444,20 +458,6 @@ mod tests {
             .spec()
             .map(crate::dowel_hole::smart_dowel_footprint);
         plan_smart_bolt_placements(&loops, bolt_spec, flange, wall, dowel_r, smart_dowels)
-    }
-
-    fn cylinder_fixture() -> (Solid, cf_design::Aabb, Ribbon) {
-        // Cylinder along X, R=10 mm, length 60 mm.
-        let body = Solid::cylinder(0.010, 0.030).rotate(nalgebra::UnitQuaternion::from_axis_angle(
-            &Vector3::y_axis(),
-            std::f64::consts::FRAC_PI_2,
-        ));
-        let bounding_region = Solid::cuboid(Vector3::new(0.100, 0.030, 0.030));
-        let bounds = bounding_region.bounds().unwrap();
-        let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
-        let split = SplitNormal::new(Vector3::new(0.0, 0.0, 1.0)).unwrap();
-        let ribbon = Ribbon::new(centerline, split).unwrap();
-        (body, bounds, ribbon)
     }
 
     // Test-only geometry helpers. These were module fns under the legacy

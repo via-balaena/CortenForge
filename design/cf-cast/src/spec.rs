@@ -1429,6 +1429,111 @@ fn compute_smart_placements(
     })
 }
 
+/// What the carve will actually place, per layer, for `spec` + `ribbon`.
+///
+/// ★★★ Both answers come from RUNNING THE PLANNER ([`compute_smart_placements`],
+/// the same call the carve makes), not from a predicate over `cast.toml`.
+///
+/// For bolts a config predicate provably cannot answer it: band arithmetic
+/// reasons about the radial offset `d` while the solver tests
+/// `signed_distance(p + n·d)`, and those agree only on a CONVEX seam
+/// silhouette. Measured on a U-channel body at a 12 mm wall, arithmetic says
+/// infeasible and the solver places 2.
+///
+/// ⚠ DOWELS HAVE THE SAME PROBLEM, and keying their prose on
+/// `DowelHoleKind` was the identical bug one feature over: placement needs a
+/// FLANGE (`want_placement` above), so `[flange] enabled = false` with
+/// `[dowel_hole]` left at its default carves ZERO dowels while the kind says
+/// otherwise. The CLI permits that pairing — its cross-field gate only forbids
+/// bolts without a flange. The sheet then dimensions dowel holes, says to print
+/// `dowel.stl`, and its cf-view checklist demands cavities that do not exist
+/// under a heading whose failure instruction is "do NOT proceed to print".
+///
+/// Both vectors are UNIFORM across layers by `cross_layer_snap`'s construction
+/// — see `bolts_carved_is_uniform_across_layers`. The per-layer shape mirrors
+/// the carve's own `placements.bolts[i]` indexing.
+///
+/// ⚠ COST. This makes procedure rendering no longer a pure formatting pass:
+/// on a cast enabling either feature, the seam solve (whose silhouette
+/// flood-fill [`compute_smart_placements`] calls "the dominant solve cost")
+/// runs a second time, because `write_procedure_v2_for_mode` and
+/// `export_molds_v2` are separate entry points and the CLI calls both. It is
+/// also no longer SIDE-EFFECT-FREE — the planner's `eprintln!` diagnostics are
+/// emitted again, so such a cast prints each one twice per run. A cast with
+/// neither feature (including the iter-1 production spec, which carries no
+/// flange) returns before planning anything. If this lands hot on the pivot's
+/// real scan bodies, thread the already-computed [`SmartPlacements`] in from
+/// the export path rather than re-solving.
+///
+/// ⚠ For a `FlangeKind::Demand` cast the re-solve also rebuilds every layer's
+/// demand-flange solid and discards it — the larger half of the waste, and not
+/// covered by calling this "the seam solve".
+// ⚠ `pub`, not `pub(crate)`: `mod spec` is private (lib.rs) and neither of
+// these is re-exported, so both are crate-visible either way — and clippy's
+// `redundant_pub_crate` REJECTS `pub(crate)` here. Reviewers read the `pub` as
+// public API and ask for it to be tightened; the lint then fails the build.
+pub struct CarvedFeatures {
+    /// Per layer: does the carve place bolt clearance holes.
+    pub bolts: Vec<bool>,
+    /// Per layer: does the carve place dowel holes.
+    pub dowels: Vec<bool>,
+}
+
+/// See [`CarvedFeatures`].
+pub fn carved_features(spec: &CastSpec, ribbon: &Ribbon) -> CarvedFeatures {
+    let n = spec.layers.len();
+    let want_bolts = ribbon.bolt_pattern.spec().is_some();
+    let want_dowels = ribbon.dowel_hole.spec().is_some();
+    if !want_bolts && !want_dowels {
+        return CarvedFeatures {
+            bolts: vec![false; n],
+            dowels: vec![false; n],
+        };
+    }
+    let per_layer = |placed: Option<Vec<Vec<Point2>>>| -> Vec<bool> {
+        placed.map_or_else(
+            || vec![false; n],
+            |layers| {
+                let mut out: Vec<bool> = layers.iter().map(|l| !l.is_empty()).collect();
+                out.resize(n, false);
+                out
+            },
+        )
+    };
+    if let Ok(p) = compute_smart_placements(spec, ribbon) {
+        return CarvedFeatures {
+            bolts: per_layer(p.bolts),
+            dowels: per_layer(p.dowels),
+        };
+    }
+    // A planning error means this cast cannot export at all. Keeping the
+    // hardware sections is the safe side — but only where the config could
+    // produce them: BOTH patterns need a flange, so without one the answer is a
+    // definite no, and claiming otherwise would order bolts sized from a
+    // fallback flange that does not exist.
+    // ⚠ DEFENSIVE ONLY — unreachable from any path that writes `procedure.md`.
+    // `compute_smart_placements`'s single `?` is `layer_mc_bounds`, which fails
+    // exactly when `layer_body.bounds()` is `None`; but
+    // `write_procedure_v2_for_mode` calls `compute_pour_volumes()?` on the same
+    // bodies BEFORE rendering, and every caller (`cf-cast-cli` `run_with_config`
+    // / `run_selected`, and the v2 example) runs `export_molds_v2` with `?`
+    // first. So an unbounded body aborts before a sheet exists.
+    //
+    // A previous version of this comment asserted the opposite call order and
+    // added a stderr warning for a scenario that cannot occur. Left as a
+    // total-function fallback, not as a guard against a real case.
+    //
+    // ⚠ The dropped `plausible` guard is safe because REACHING this line means
+    // `compute_smart_placements` ran and got past its own `want_placement`
+    // check — NOT because `want_bolts` / `want_dowels` imply anything. They are
+    // pure `cast.toml` predicates (`Kind::spec().is_some()`) and imply no
+    // flange whatsoever; that is the whole reason this function exists.
+    CarvedFeatures {
+        bolts: vec![want_bolts; n],
+        dowels: vec![want_dowels; n],
+    }
+}
+
 /// Compose, mesh, and F4-gate every (layer × piece) pair.
 /// Returns the v2 pending buffer organized as `[Negative, Positive]`
 /// per-layer pairs, so the writer phase consumes them without
@@ -3641,6 +3746,1435 @@ mod tests {
         );
     }
 
+    // ----- single-layer procedure prose --------------------------------
+    //
+    // ★ A single-layer cast is a FIRST-CLASS case, not a degenerate edge:
+    // the pipeline supports it and it is expected to be common. Its prose
+    // was not: every section below was written for a stack and asserted a
+    // layer that does not exist — the post-cure section told the bencher to
+    // "slide layer 0 into the inner cavity of layer 1".
+    //
+    // ⚠ These tests assert on the CLAIM, never on a keyword. Correct
+    // single-layer prose legitimately says "there are no other layers to
+    // nest with" and "no inter-layer bond step", so `!contains("nest")` or
+    // `!contains("inter-layer")` would fail on the FIXED text. Every string
+    // below is verbatim from the multi-layer sheet and cannot occur in a
+    // truthful single-layer one.
+    //
+    // ⚠ Each pair is TWO-SIDED on purpose. The negative test alone would
+    // also pass if the multi-layer prose were deleted outright; its partner
+    // pins that the same strings are still emitted at 2 layers.
+
+    /// Detachable-mode prose that presupposes a second layer.
+    const DETACHABLE_SECOND_LAYER_CLAIMS: &[&str] = &[
+        "## Post-Cure Assembly + Disassembly",
+        "ready to nest with the other layers post-cure",
+        "Slide layer 0 into the inner cavity of layer 1",
+        "Repeat with each successive outer layer",
+        "peel each tube off the next-inner one",
+        "sized to the previous layer's outer surface",
+        "of the seam before the next layer",
+        "reuse across every layer's pour",
+        "reused across every layer's pour",
+    ];
+
+    /// Bonded-mode prose that presupposes a second layer.
+    const BONDED_SECOND_LAYER_CLAIMS: &[&str] = &[
+        "Inter-layer bond (important)",
+        "onto the previous cured layer",
+        "leave the cured layer on the plug",
+        "the higher-numbered plugs are",
+        "inspect the inter-layer interfaces for voids",
+        "integrated multi-durometer part",
+        "Only the final (outermost) layer is fully demolded",
+    ];
+
+    /// Render both modes for a spec, with a pour gate so the funnel /
+    /// pour-gate prose (which is skipped under `PourGateKind::None`)
+    /// actually renders.
+    fn procedure_pair(spec: &CastSpec, ribbon: &Ribbon) -> (String, String) {
+        use crate::procedure::generate_procedure_markdown_v2_for_mode;
+        let ribbon = ribbon
+            .clone()
+            .with_pour_gate(PourGateKind::Default(PourGateSpec::iter1()));
+        let pours = spec.compute_pour_volumes().unwrap();
+        (
+            generate_procedure_markdown_v2_for_mode(
+                spec,
+                &pours,
+                &ribbon,
+                crate::cast_mode::CastMode::Detachable,
+            ),
+            generate_procedure_markdown_v2_for_mode(
+                spec,
+                &pours,
+                &ribbon,
+                crate::cast_mode::CastMode::Bonded,
+            ),
+        )
+    }
+
+    /// A 1-layer detachable sheet must not instruct an assembly that
+    /// cannot happen. Paired with
+    /// `multi_layer_detachable_procedure_keeps_second_layer_prose`.
+    #[test]
+    fn single_layer_detachable_procedure_drops_second_layer_prose() {
+        let (spec, ribbon) = v2_fixture();
+        assert_eq!(spec.layers.len(), 1, "fixture must be single-layer");
+        let (md, _) = procedure_pair(&spec, &ribbon);
+
+        for claim in DETACHABLE_SECOND_LAYER_CLAIMS {
+            assert!(
+                !md.contains(claim),
+                "single-layer sheet still asserts a second layer: {claim:?}"
+            );
+        }
+        assert!(
+            !md.contains("(1 layers)"),
+            "mass budget must not read \"1 layers\""
+        );
+        assert!(md.contains("(1 layer)"), "mass budget singular");
+        assert!(
+            md.contains("## Post-Cure\n"),
+            "single-layer gets the short Post-Cure section"
+        );
+        assert!(
+            md.contains("that tube IS the finished device"),
+            "header states the one tube is the device"
+        );
+    }
+
+    /// The other side of the pair: at 2 layers every phrase above is still
+    /// emitted. Without this, deleting the multi-layer prose outright would
+    /// leave the negative test green.
+    #[test]
+    fn multi_layer_detachable_procedure_keeps_second_layer_prose() {
+        let (spec, ribbon) = two_layer_fixture();
+        assert_eq!(spec.layers.len(), 2, "fixture must be two-layer");
+        let (md, _) = procedure_pair(&spec, &ribbon);
+
+        for claim in DETACHABLE_SECOND_LAYER_CLAIMS {
+            assert!(
+                md.contains(claim),
+                "multi-layer sheet lost its nesting prose: {claim:?}"
+            );
+        }
+        assert!(md.contains("(2 layers)"), "mass budget plural at 2 layers");
+    }
+
+    /// A 1-layer bonded sheet has no previous cured surface to bond to, so
+    /// the leave-on-the-plug sequencing and the inter-layer bond callout
+    /// must not render. ★ The callout ends "Avoid mold release on the
+    /// *inter-layer* faces" — at one layer there are none, so the only
+    /// instruction a fast reader could act on is to withhold release where
+    /// it IS needed.
+    #[test]
+    fn single_layer_bonded_procedure_drops_second_layer_prose() {
+        let (spec, ribbon) = v2_fixture();
+        assert_eq!(spec.layers.len(), 1, "fixture must be single-layer");
+        let (_, md) = procedure_pair(&spec, &ribbon);
+
+        for claim in BONDED_SECOND_LAYER_CLAIMS {
+            assert!(
+                !md.contains(claim),
+                "single-layer bonded sheet still asserts a second layer: {claim:?}"
+            );
+        }
+        assert!(
+            md.contains("nothing to bond to"),
+            "bonded header explains why there is no bond step"
+        );
+        assert!(
+            md.contains("mold release goes on every printed surface"),
+            "the withheld-release instruction is replaced, not just deleted"
+        );
+    }
+
+    /// Two-sided partner for the bonded pair.
+    #[test]
+    fn multi_layer_bonded_procedure_keeps_second_layer_prose() {
+        let (spec, ribbon) = two_layer_fixture();
+        assert_eq!(spec.layers.len(), 2, "fixture must be two-layer");
+        let (_, md) = procedure_pair(&spec, &ribbon);
+
+        for claim in BONDED_SECOND_LAYER_CLAIMS {
+            assert!(
+                md.contains(claim),
+                "multi-layer bonded sheet lost its bond prose: {claim:?}"
+            );
+        }
+    }
+
+    /// ★★ Every `## Section` the sheet points at must EXIST in that same
+    /// sheet, across the whole config matrix.
+    ///
+    /// This PR's first round tested individual writers in isolation, and that
+    /// is exactly how two dangling references got introduced: gating one
+    /// section off (bolts against no flange) and renaming another
+    /// (single-layer post-cure) each orphaned a cross-reference emitted by a
+    /// DIFFERENT writer. No phrase-list assertion can see that — only
+    /// rendering the whole document and resolving its own references can.
+    ///
+    /// `compute_pour_volumes` depends only on the spec, so it is computed once
+    /// per layer count and reused across every ribbon × mode variation
+    /// (3 flanges × 2 gaskets × 2 dowel kinds × 2 bolt kinds × 4 pour gates ×
+    /// 2 plug-pin kinds × 2 modes = 384 per layer config, 1536 in total).
+    #[test]
+    fn every_cross_referenced_section_exists_in_the_same_sheet() {
+        use crate::bolt_pattern::{BoltPatternKind, BoltPatternSpec};
+        use crate::cast_mode::CastMode;
+        use crate::dowel_hole::{DowelHoleKind, DowelHoleSpec};
+        use crate::flange::{DemandFlangeSpec, FlangeKind, FlangeSpec};
+        use crate::gasket_mold::{GasketKind, GasketSpec};
+        use crate::plug::{PlugPinKind, PlugPinSpec};
+        use crate::pour::PourGateLayout;
+        use crate::procedure::generate_procedure_markdown_v2_for_mode;
+
+        // ⚠ Thin-wall variants are ESSENTIAL, not extra coverage. Both shared
+        // fixtures run a 20 mm wall, at which a 20 mm-wide plate flange takes
+        // no bolts at all — so without these the entire `Plate + bolts` path
+        // (the iter-1 production one, including its §B cross-reference) is
+        // never rendered by this gate and only the `Demand` arm is exercised.
+        // ★ Self-verifying coverage: a matrix that renders no bolted sheet
+        // would pass this gate vacuously on the very path it was widened for.
+        let mut cover = MatrixCoverage::default();
+        let thin = |pair: (CastSpec, Ribbon)| {
+            let (mut spec, base) = pair;
+            spec.wall_thickness_m = 0.004;
+            (spec, base)
+        };
+        for (layers, (spec, base)) in [
+            ("1-layer", v2_fixture()),
+            ("2-layer", two_layer_fixture()),
+            ("1-layer thin-wall", thin(v2_fixture())),
+            ("2-layer thin-wall", thin(two_layer_fixture())),
+        ] {
+            let pours = spec.compute_pour_volumes().unwrap();
+            for flange in [
+                FlangeKind::None,
+                FlangeKind::Plate(FlangeSpec::iter1()),
+                FlangeKind::Demand(DemandFlangeSpec::iter1()),
+            ] {
+                for gasket in [GasketKind::None, GasketKind::Mold(GasketSpec::iter1())] {
+                    // ⚠ `dowel_hole` MUST be a matrix dimension. Both fixtures
+                    // leave it at `None`, so before this every one of the 288
+                    // sheets rendered `has_dowels == false` and the entire
+                    // dowel side — the §M section, its cf-view bullet,
+                    // `dowel_first`, `dowel_seat`, `align_method`,
+                    // `mate_method` — was invisible to the gate built to catch
+                    // cross-writer contradictions.
+                    for dowels in [
+                        DowelHoleKind::None,
+                        DowelHoleKind::Auto(DowelHoleSpec::iter1()),
+                    ] {
+                        for bolts in [
+                            BoltPatternKind::None,
+                            BoltPatternKind::Auto(BoltPatternSpec::iter1()),
+                        ] {
+                            // ⚠ ApexAxial is NOT optional coverage — it is the
+                            // production `base_mold` layout, and it routes through a
+                            // different writer (`write_apex_axial_pour_note`) plus
+                            // the apex branches of the header and funnel notes. With
+                            // only VAtDome in the matrix, an apex sheet asserting a
+                            // bolt that no flange could hold went unseen.
+                            let apex = {
+                                let mut g = PourGateSpec::iter1();
+                                g.layout = PourGateLayout::ApexAxial;
+                                g
+                            };
+                            // ⚠ `plug_pins` and `include_vent` were never
+                            // dimensions, so EVERY `has_plug_lock == true`
+                            // branch and every vent-disabled sheet rendered in
+                            // ZERO of the 576 — which is why three vent claims
+                            // and the whole plug-lock side reached review
+                            // ungated.
+                            let mut ventless = PourGateSpec::iter1();
+                            ventless.include_vent = false;
+                            for gate in [
+                                PourGateKind::None,
+                                PourGateKind::Default(PourGateSpec::iter1()),
+                                PourGateKind::Default(apex),
+                                PourGateKind::Default(ventless),
+                            ] {
+                                for pins in
+                                    [PlugPinKind::None, PlugPinKind::Axial(PlugPinSpec::iter1())]
+                                {
+                                    for mode in [CastMode::Detachable, CastMode::Bonded] {
+                                        let mut r = base.clone();
+                                        r.flange = flange;
+                                        r.gasket = gasket;
+                                        r.bolt_pattern = bolts;
+                                        r.dowel_hole = dowels;
+                                        r.pour_gate = gate.clone();
+                                        r.plug_pins = pins.clone();
+                                        let md = generate_procedure_markdown_v2_for_mode(
+                                            &spec, &pours, &r, mode,
+                                        );
+                                        // ⚠ Name EVERY dimension — a failure
+                                        // otherwise identifies one of four
+                                        // sheets, and this label is all a CI
+                                        // log shows.
+                                        let case = format!(
+                                            "{layers} / {flange:?} / {gasket:?} \
+                                             / dowels={dowels:?} / {bolts:?} \
+                                             / {gate:?} / pins={pins:?} \
+                                             / {mode:?}"
+                                        );
+                                        tally_coverage(
+                                            &md,
+                                            matches!(flange, FlangeKind::Plate(_)),
+                                            &mut cover,
+                                        );
+                                        assert_cross_refs_resolve(&md, &case);
+                                        assert_prose_is_well_formed(&md, &case);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert_matrix_not_vacuous(&cover);
+    }
+
+    /// ★★★ The SHEET must agree with the CARVE about whether bolts exist.
+    ///
+    /// This is the assertion four review rounds converged on. Earlier versions
+    /// gated the bolt prose on a predicate over `cast.toml` — first "is there a
+    /// flange" (wrong: a 20 mm plate flange takes no bolts above an 8 mm wall),
+    /// then band arithmetic on the radial offset (wrong the OTHER way: the
+    /// solver tests `signed_distance(p + n·d)`, which only equals `d` on a
+    /// CONVEX seam silhouette).
+    ///
+    /// ⚠ The body here is a U-channel — genuinely non-convex in the seam plane.
+    /// A curved CENTERLINE does not produce that: `seam_silhouette` slices the
+    /// BODY and the ribbon only chooses the plane, so a bent centerline through
+    /// a straight cylinder is still convex, and a fixture built that way tested
+    /// nothing. At a 12 mm wall the band arithmetic calls this infeasible while
+    /// the planner places 2 bolts — molds with M5 holes and a sheet that says
+    /// hand-clamp.
+    #[test]
+    fn bolt_prose_matches_what_the_carve_actually_places() {
+        use super::compute_smart_placements;
+        use crate::bolt_pattern::{BoltPatternKind, BoltPatternSpec};
+        use crate::flange::{FlangeKind, FlangeSpec};
+        use crate::procedure::generate_procedure_markdown_v2;
+
+        // Non-convex in the seam plane: a slot cut into one side.
+        let body = Solid::cuboid(Vector3::new(0.030, 0.030, 0.030)).subtract(
+            Solid::cuboid(Vector3::new(0.012, 0.040, 0.020))
+                .translate(Vector3::new(0.0, 0.0, 0.022)),
+        );
+        let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
+        let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
+        let base = Ribbon::new(centerline, split).unwrap();
+
+        for wall in [0.004_f64, 0.012] {
+            for (flange_label, flange) in [
+                ("plate", FlangeKind::Plate(FlangeSpec::iter1())),
+                ("none", FlangeKind::None),
+            ] {
+                let spec = CastSpec {
+                    layers: vec![CastLayer {
+                        body: body.clone(),
+                        material: reference_material(),
+                    }],
+                    plug: Solid::capsule(0.008, 0.020).translate(Vector3::new(0.0, 0.0, 0.040)),
+                    bounding_region: Solid::cuboid(Vector3::new(0.060, 0.040, 0.060)),
+                    wall_thickness_m: wall,
+                    mesh_cell_size_m: 0.012,
+                    printer_config: PrinterConfig::fdm_default(),
+                    mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+                    scan_mesh_for_plug_layer_0: None,
+                    plug_layer_0_mesh_cell_size_m: None,
+                    plug_layer_0_field_skin_m: None,
+                };
+                let ribbon = base
+                    .clone()
+                    .with_flange(flange)
+                    .with_bolt_pattern(BoltPatternKind::Auto(BoltPatternSpec::iter1()));
+
+                // Ground truth straight from the planner the CARVE uses.
+                let placed: usize = compute_smart_placements(&spec, &ribbon)
+                    .unwrap()
+                    .bolts
+                    .map_or(0, |per_layer| per_layer.iter().map(Vec::len).sum());
+
+                let pours = spec.compute_pour_volumes().unwrap();
+                let md = generate_procedure_markdown_v2(&spec, &pours, &ribbon);
+                let has_section = md.contains("### M5 through-bolt clamp pattern (§B)");
+                let orders_hardware = md.contains("M5 hex nut");
+
+                assert_eq!(
+                    has_section,
+                    placed > 0,
+                    "[{flange_label} wall {wall}] carve placed {placed} bolts but the \
+                     sheet's §B section presence is {has_section}"
+                );
+                assert_eq!(
+                    orders_hardware,
+                    placed > 0,
+                    "[{flange_label} wall {wall}] carve placed {placed} bolts but the \
+                     sheet's hardware order presence is {orders_hardware}"
+                );
+            }
+        }
+    }
+
+    /// ★ One joint, one clamp protocol.
+    ///
+    /// With a plate flange, a gasket AND a bolt pattern that actually carves,
+    /// the sheet used to render §B ("the M5 through-bolts ARE the clamp …
+    /// hand-tighten crosswise") and the gasket arm's step 5 ("apply C-clamps
+    /// at 4 quadrant positions") — two different, conflicting instructions for
+    /// closing the same joint, neither mentioning the other.
+    ///
+    /// ⚠ `every_cross_referenced_section_exists_in_the_same_sheet` renders this
+    /// exact combination and passes: it resolves headings, not contradictions.
+    #[test]
+    fn a_gasketed_bolted_cast_gives_one_clamp_protocol_not_two() {
+        use crate::bolt_pattern::{BoltPatternKind, BoltPatternSpec};
+        use crate::flange::{FlangeKind, FlangeSpec};
+        use crate::gasket_mold::{GasketKind, GasketSpec};
+        use crate::procedure::generate_procedure_markdown_v2;
+
+        let sheet = |bolts: BoltPatternKind| {
+            let (mut spec, base) = v2_fixture();
+            // Thin wall so a plate-flange bolt pattern actually places.
+            spec.wall_thickness_m = 0.004;
+            let ribbon = base
+                .with_flange(FlangeKind::Plate(FlangeSpec::iter1()))
+                .with_gasket(GasketKind::Mold(GasketSpec::iter1()))
+                .with_bolt_pattern(bolts);
+            let pours = spec.compute_pour_volumes().unwrap();
+            generate_procedure_markdown_v2(&spec, &pours, &ribbon)
+        };
+
+        let bolted = sheet(BoltPatternKind::Auto(BoltPatternSpec::iter1()));
+        assert!(
+            bolted.contains("### M5 through-bolt clamp pattern (§B)"),
+            "fixture must actually carve bolts, or this proves nothing:\n{bolted}"
+        );
+        // ⚠ Assert the PROPERTY, not one phrase. The first version of this
+        // test checked a single literal ("Apply C-clamps to the flange at 4
+        // quadrant") and passed while FOUR other sentences in the same section
+        // still commanded C-clamps: the intro's grip surface, step 4's forward
+        // reference, step 8's release, and the clamp-count calibration note.
+        // Every surviving mention must be a NEGATION.
+        // ⚠ Sentence-scoped and word-boundary matched, NOT a byte-offset
+        // lookback. Byte slicing round a multi-byte char (`µ` sits 30 bytes
+        // behind the only current match) panics instead of asserting — and
+        // panics in the FAILURE-MESSAGE slice too, so a real regression would
+        // never print. And a bare `contains("not")` is satisfied by "note",
+        // "nothing" and "cannot" — the `"Gasketless".contains("Gasket")` trap.
+        for sentence in bolted.split(['.', '\n']) {
+            if !sentence.contains("C-clamp") {
+                continue;
+            }
+            let negated = sentence
+                .to_lowercase()
+                .split(|c: char| !c.is_alphanumeric())
+                .any(|w| w == "not" || w == "no" || w == "never");
+            assert!(
+                negated,
+                "bolted sheet still COMMANDS a C-clamp (only negated mentions \
+                 are allowed): {sentence}"
+            );
+        }
+        assert!(
+            bolted.contains("Clamp with the §B M5 bolts, not C-clamps"),
+            "the bolted gasket path must say which clamp wins:\n{bolted}"
+        );
+
+        // Two-sided: with no bolt pattern the C-clamp step is still the answer.
+        let unbolted = sheet(BoltPatternKind::None);
+        assert!(
+            unbolted.contains("Apply C-clamps to the flange at 4 quadrant"),
+            "an unbolted gasketed cast still needs its C-clamp step:\n{unbolted}"
+        );
+    }
+
+    /// ★ `carved_features` is UNIFORM across layers, and that is an
+    /// invariant of the planner rather than of this function.
+    ///
+    /// `cross_layer_snap` keeps a master placement only when it is feasible on
+    /// EVERY layer, then pushes it to every layer's result — so all layers end
+    /// with the same count and "any layer bolted" implies "all layers bolted".
+    ///
+    /// ⚠ Recorded because a review argued the opposite: that a small inner
+    /// layer could close the washer window while the outer layer bolts, making
+    /// step 6 order §B bolts into a mold without them. I could not construct
+    /// that — 16 inner/outer size × wall combinations all came back uniform,
+    /// and the snap loop above explains why. The per-layer plumbing is kept
+    /// anyway (it mirrors the carve's own `placements.bolts[i]` indexing and
+    /// costs nothing), and THIS test is what would catch the invariant
+    /// breaking, at which point the prose is already correct.
+    #[test]
+    fn bolts_carved_is_uniform_across_layers() {
+        use super::carved_features;
+        use crate::bolt_pattern::{BoltPatternKind, BoltPatternSpec};
+        use crate::flange::{FlangeKind, FlangeSpec};
+
+        for (inner, outer) in [(0.008_f64, 0.030), (0.006, 0.040), (0.012, 0.030)] {
+            for wall in [0.003_f64, 0.005] {
+                let layer = |h: f64| CastLayer {
+                    body: Solid::cuboid(Vector3::new(h, h, h * 0.8)),
+                    material: reference_material(),
+                };
+                let spec = CastSpec {
+                    layers: vec![layer(inner), layer(outer)],
+                    plug: Solid::capsule(0.004, 0.010).translate(Vector3::new(0.0, 0.0, 0.040)),
+                    bounding_region: Solid::cuboid(Vector3::new(0.070, 0.070, 0.060)),
+                    wall_thickness_m: wall,
+                    mesh_cell_size_m: 0.010,
+                    printer_config: PrinterConfig::fdm_default(),
+                    mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+                    scan_mesh_for_plug_layer_0: None,
+                    plug_layer_0_mesh_cell_size_m: None,
+                    plug_layer_0_field_skin_m: None,
+                };
+                let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
+                let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
+                let ribbon = Ribbon::new(centerline, split)
+                    .unwrap()
+                    .with_flange(FlangeKind::Plate(FlangeSpec::iter1()))
+                    .with_bolt_pattern(BoltPatternKind::Auto(BoltPatternSpec::iter1()));
+
+                let per = carved_features(&spec, &ribbon).bolts;
+                assert_eq!(per.len(), 2, "one answer per layer");
+                assert!(
+                    per.iter().all(|b| *b == per[0]),
+                    "layers disagree ({per:?}) for inner {inner} / outer {outer} at \
+                     wall {wall} — `cross_layer_snap` no longer equalises counts, so \
+                     the per-layer step-6 gate is now load-bearing, not defensive"
+                );
+            }
+        }
+    }
+
+    /// ★ A cast with no dowel holes must not tell the bencher to register on
+    /// them — the same defect family as the bolt prose, one feature over.
+    ///
+    /// `DowelHoleKind` is an independent opt-in from `[bolt_pattern]`, and the
+    /// assembly section already says "no integral registration features …
+    /// align the pieces by hand". Two other sentences said the opposite: §B's
+    /// "Assembly order: register the two halves with the §M dowels FIRST" and
+    /// per-layer step 6's "registering the §M dowels to seat the two halves
+    /// flush", both keyed on bolts rather than on dowels.
+    ///
+    /// ⚠ Found by rendering the sheet and grepping the OUTPUT for the concept,
+    /// not by grepping the source for a phrase — the two sentences share no
+    /// wording with each other.
+    #[test]
+    fn a_cast_without_dowels_never_says_to_register_on_them() {
+        use crate::bolt_pattern::{BoltPatternKind, BoltPatternSpec};
+        use crate::dowel_hole::{DowelHoleKind, DowelHoleSpec};
+        use crate::flange::{DemandFlangeSpec, FlangeKind};
+        use crate::procedure::generate_procedure_markdown_v2;
+
+        let sheet = |dowels: DowelHoleKind| {
+            let (mut spec, base) = v2_fixture();
+            spec.wall_thickness_m = 0.004;
+            let ribbon = base
+                .with_flange(FlangeKind::Demand(DemandFlangeSpec::iter1()))
+                .with_bolt_pattern(BoltPatternKind::Auto(BoltPatternSpec::iter1()))
+                .with_dowel_hole(dowels);
+            let pours = spec.compute_pour_volumes().unwrap();
+            generate_procedure_markdown_v2(&spec, &pours, &ribbon)
+        };
+
+        let no_dowels = sheet(DowelHoleKind::None);
+        assert!(
+            no_dowels.contains("### M5 through-bolt clamp pattern (§B)"),
+            "fixture must carve bolts, or the §B prose never renders:\n{no_dowels}"
+        );
+        assert_no_untriaged_dowel_mention(&no_dowels, "dowels off");
+
+        // ★★ THE CONFIG THAT MOTIVATED THE CARVE-BACKED ANSWER: dowels
+        // ENABLED but no flange. `compute_smart_placements` needs a flange, so
+        // zero dowels are carved — while `DowelHoleKind::Auto` says otherwise.
+        // The CLI permits this pairing (its cross-field gate only forbids
+        // BOLTS without a flange), and keying the prose on the kind made the
+        // sheet dimension dowel holes, say to print `dowel.stl`, and demand
+        // cavities in a cf-view checklist whose failure instruction is
+        // "do NOT proceed to print".
+        let (mut flangeless_spec, flangeless_base) = v2_fixture();
+        flangeless_spec.wall_thickness_m = 0.004;
+        let flangeless = {
+            let ribbon = flangeless_base
+                .with_flange(FlangeKind::None)
+                .with_dowel_hole(DowelHoleKind::Auto(DowelHoleSpec::iter1()));
+            let pours = flangeless_spec.compute_pour_volumes().unwrap();
+            generate_procedure_markdown_v2(&flangeless_spec, &pours, &ribbon)
+        };
+        assert_no_untriaged_dowel_mention(
+            &flangeless,
+            "dowels ENABLED but no flange, so none are placed",
+        );
+
+        // ★ The gasketed PLATE arm — the iter-3 default, and the one arm that
+        // never consulted the carve. The earlier fixture is gasketless, so
+        // this arm simply never rendered and its step 4 ("aligning via the
+        // symmetric dowel holes") and step 8 ("any dowels … slide out") went
+        // unchecked.
+        let gasketed = {
+            let (mut sp, base) = v2_fixture();
+            sp.wall_thickness_m = 0.020;
+            let ribbon = base
+                .with_flange(FlangeKind::Plate(crate::flange::FlangeSpec::iter1()))
+                .with_gasket(crate::gasket_mold::GasketKind::Mold(
+                    crate::gasket_mold::GasketSpec::iter1(),
+                ))
+                .with_dowel_hole(DowelHoleKind::None);
+            let pours = sp.compute_pour_volumes().unwrap();
+            generate_procedure_markdown_v2(&sp, &pours, &ribbon)
+        };
+        assert!(
+            gasketed.contains("## Cup-Half Clamping with Gasket Installation"),
+            "fixture must render the gasketed arm:\n{gasketed}"
+        );
+        assert_no_untriaged_dowel_mention(&gasketed, "gasketed PLATE arm, no dowels carved");
+
+        // Two-sided: with dowels enabled the registration instruction returns.
+        let dowelled = sheet(DowelHoleKind::Auto(DowelHoleSpec::iter1()));
+        assert!(
+            dowelled.contains("register the two halves with the §M dowels FIRST"),
+            "a dowelled cast must still say to register on them:\n{dowelled}"
+        );
+    }
+
+    // ⚠⚠ NO FILTER AT ALL — not a verb list either. A verb list is a
+    // phrase-match in disguise and failed exactly the same way: keyed on
+    // "register"/"seat the two halves" it passed over "mating the cup
+    // halves via the symmetric dowel-hole pattern", "aligning on the
+    // dowels", and a cf-view step naming holes the cast never carves.
+    //
+    // Instead EVERY sentence mentioning a dowel must match a known-good
+    // key below. A new or reworded dowel sentence fails until a human
+    // triages it, which is the only oracle synonyms cannot walk through.
+    const ALLOWED_DOWEL_MENTIONS: &[&str] = &[
+        // Correctly negated instructions.
+        "align the two halves by hand (this cast carves no dowel holes)",
+        "aligning the two halves by hand until the seam closes flush",
+        "This cast has no integral registration features",
+        "This cast carves no dowel holes",
+        "This cast carves nothing into the seam face",
+        "No dowel holes are carved",
+        "NO dowel holes were carved",
+        "Either there is no flange to place them in",
+        "no dowel holes are carved — \
+             placement needs a flange",
+        "no dowel holes and no bolt holes are carved",
+        "bolt clearance holes ONLY",
+        // Reference / historical prose — describes the feature, does not
+        // instruct the bencher to use one.
+        "enable dowel holes, dovetails, or magnets",
+        "so the requested dowels can place",
+        "this cast \
+                 carves no dowel holes, so see",
+        "the cup-pin registration path is retired",
+        "§M-S4 retired the cup-pin registration",
+        "dowel-hole subtracts only remesh the INTERIOR",
+        "radial clearance is tuned by `DowelHoleSpec`",
+        "retired the prismatic-pin registration path entirely",
+    ];
+
+    /// The matrix must actually render every optional branch it claims to
+    /// cover — otherwise it passes vacuously over the ones it does not.
+    fn assert_matrix_not_vacuous(cover: &MatrixCoverage) {
+        assert!(
+            cover.plug_lock > 0,
+            "matrix rendered no sheet with a plug-floor lock — every \
+             `has_plug_lock` branch is unexercised"
+        );
+        assert!(
+            cover.ventless > 0,
+            "matrix rendered no vent-disabled sheet — `include_vent = false` \
+             is unexercised and vent claims go unchecked"
+        );
+        assert!(
+            cover.dowelled > 0,
+            "matrix rendered no sheet with carved dowels — the entire §M dowel \
+             side is unexercised and this gate passes vacuously over it"
+        );
+        assert!(
+            cover.apex > 0,
+            "matrix rendered no apex-axial sheet — the production pour layout \
+             and its dedicated writer are unexercised"
+        );
+        assert!(
+            cover.bolted > 0,
+            "matrix rendered no §B bolt section for a PLATE flange — the \
+             iter-1 production path is unexercised and this gate is passing \
+             vacuously over it"
+        );
+    }
+
+    /// Which optional branches the matrix actually rendered.
+    ///
+    /// ★ A matrix that silently stops covering a branch is worse than no
+    /// matrix — every counter here is asserted non-zero.
+    #[derive(Default)]
+    struct MatrixCoverage {
+        bolted: usize,
+        apex: usize,
+        dowelled: usize,
+        plug_lock: usize,
+        ventless: usize,
+    }
+
+    fn tally_coverage(md: &str, plate_flange: bool, cover: &mut MatrixCoverage) {
+        if md.contains("integral to each cup") {
+            cover.apex += 1;
+        }
+        if md.contains("**Symmetric dowel holes**") {
+            cover.dowelled += 1;
+        }
+        if md.contains("truncated-pyramid lock pointing UP") {
+            cover.plug_lock += 1;
+        }
+        if md.contains("no vent leg is carved") {
+            cover.ventless += 1;
+        }
+        // ⚠ PLATE specifically. A demand flange is always feasible, so
+        // counting ANY bolted sheet would be satisfied by the arm that was
+        // never in doubt.
+        if plate_flange && md.contains("### M5 through-bolt clamp pattern (§B)") {
+            cover.bolted += 1;
+        }
+    }
+
+    /// Every sentence mentioning a dowel on a sheet that carves none must be
+    /// an explicitly triaged entry in [`ALLOWED_DOWEL_MENTIONS`].
+    fn assert_no_untriaged_dowel_mention(md: &str, case: &str) {
+        for sentence in md.split(['.', '\n']) {
+            if !sentence.to_lowercase().contains("dowel") {
+                continue;
+            }
+            assert!(
+                ALLOWED_DOWEL_MENTIONS.iter().any(|k| sentence.contains(k)),
+                "[{case}] un-triaged dowel sentence — either it is a \
+                 contradiction, or add it to ALLOWED_DOWEL_MENTIONS with a \
+                 reason:\n  {}",
+                sentence.trim()
+            );
+        }
+    }
+
+    /// ★★★ EVERY cylindrical recess the cast carves must be in the expected
+    /// list — dowels and bolts included.
+    ///
+    /// ⚠ Its sibling gate renders only `FlangeKind::None`, where the planner
+    /// places NEITHER dowels NOR bolts, so marking either of them
+    /// `cylindrical: None` survived it — and that mutant reproduces the exact
+    /// defect the bullet pair exists to prevent (bullet 1 calling the dowel
+    /// holes "cylindrical recesses", the cylinder bullet omitting them and so
+    /// condemning them one line later). A gate that cannot fail on the
+    /// motivating defect is decoration. This one carves them.
+    #[test]
+    fn dowel_and_bolt_cylinders_are_listed_as_expected() {
+        use crate::bolt_pattern::{BoltPatternKind, BoltPatternSpec};
+        use crate::cast_mode::CastMode;
+        use crate::dowel_hole::{DowelHoleKind, DowelHoleSpec};
+        use crate::flange::{DemandFlangeSpec, FlangeKind};
+        use crate::procedure::generate_procedure_markdown_v2_for_mode;
+
+        let (mut spec, base) = v2_fixture();
+        spec.wall_thickness_m = 0.004;
+        let ribbon = base
+            .with_flange(FlangeKind::Demand(DemandFlangeSpec::iter1()))
+            .with_bolt_pattern(BoltPatternKind::Auto(BoltPatternSpec::iter1()))
+            .with_dowel_hole(DowelHoleKind::Auto(DowelHoleSpec::iter1()))
+            // ⚠ The lock MUST be on, or the "not a cylinder" assertion below is
+            // vacuous: with `PlugPinKind::None` the socket never enters the list
+            // at all, and marking it cylindrical survives the gate.
+            .with_plug_pins(crate::plug::PlugPinKind::Axial(
+                crate::plug::PlugPinSpec::iter1(),
+            ));
+        let pours = spec.compute_pour_volumes().unwrap();
+
+        // Ground truth from the PLANNER, not from the config.
+        let carved = crate::spec::carved_features(&spec, &ribbon);
+        let bolts = carved.bolts.iter().any(|b| *b);
+        let dowels = carved.dowels.iter().any(|d| *d);
+        assert!(
+            bolts && dowels,
+            "fixture must actually carve both, or this gate is vacuous \
+             (bolts={bolts}, dowels={dowels})"
+        );
+
+        for mode in [CastMode::Detachable, CastMode::Bonded] {
+            let md = generate_procedure_markdown_v2_for_mode(&spec, &pours, &ribbon, mode);
+            let bullet = md
+                .lines()
+                .find(|l| l.contains("cylindrical pin"))
+                .unwrap_or_else(|| panic!("no cylinder bullet on the {mode:?} sheet"));
+            for (carved_now, name) in [
+                (dowels, "the §M-S2 dowel holes"),
+                (bolts, "the §B bolt clearance holes"),
+            ] {
+                assert_eq!(
+                    bullet.contains(name),
+                    carved_now,
+                    "{mode:?}: the cast carves {name} = {carved_now}, but the \
+                     expected list disagrees — the bullet above calls them \
+                     cylindrical recesses:\n  {bullet}"
+                );
+            }
+            // The plug-floor-lock socket is a truncated PYRAMID
+            // (`SubtractTruncatedPyramid`), never a cylinder — but it IS on this
+            // fixture, so bullet 1 must list it while the cylinder bullet must not.
+            let seam_bullet = md
+                .lines()
+                .find(|l| l.contains("Seam faces carry"))
+                .unwrap_or_else(|| panic!("no seam-face bullet on the {mode:?} sheet"));
+            assert!(
+                seam_bullet.contains("plug-floor-lock socket"),
+                "{mode:?}: fixture must carve the lock, or the pyramid assertion \
+                 below is vacuous:\n  {seam_bullet}"
+            );
+            assert!(
+                !bullet.contains("plug-floor-lock"),
+                "{mode:?}: the lock socket is a pyramid, not a cylinder:\n  {bullet}"
+            );
+        }
+    }
+
+    /// ★★★ Whichever mode a gasketed cast runs, the step that CLOSES the
+    /// halves must tell the bencher to install the gasket first.
+    ///
+    /// ⚠ The bonded per-layer writer never branched on `ribbon.gasket` at all,
+    /// so its step 1 said "assemble the two halves around the plug" with no
+    /// mention of the strip — while the gasket section, two headings away, is
+    /// itself bonded-aware. Two rival numbered protocols, one of which did not
+    /// know about the gasket. The bencher pours and the seam leaks. This is
+    /// the third missing-cue-in-one-twin defect on this branch, so it gets a
+    /// gate rather than a comment.
+    #[test]
+    fn a_gasketed_cast_installs_the_gasket_in_both_modes() {
+        use crate::cast_mode::CastMode;
+        use crate::flange::{FlangeKind, FlangeSpec};
+        use crate::gasket_mold::{GasketKind, GasketSpec};
+        use crate::procedure::generate_procedure_markdown_v2_for_mode;
+
+        for layers in [1usize, 2] {
+            let (spec, base) = if layers == 1 {
+                v2_fixture()
+            } else {
+                two_layer_fixture()
+            };
+            let ribbon = base
+                .with_flange(FlangeKind::Plate(FlangeSpec::iter1()))
+                .with_gasket(GasketKind::Mold(GasketSpec::iter1()));
+            let pours = spec.compute_pour_volumes().unwrap();
+            for mode in [CastMode::Detachable, CastMode::Bonded] {
+                let md = generate_procedure_markdown_v2_for_mode(&spec, &pours, &ribbon, mode);
+                // The per-layer procedure is the protocol a bencher actually
+                // follows; the gasket SECTION existing elsewhere is not enough.
+                //
+                // ⚠ BOUND IT AT THE NEXT HEADING. Taking everything after the
+                // heading swallows the gasket section further down the sheet,
+                // which made this assertion pass with the cue deleted — the
+                // gate was decoration until a mutant caught it.
+                // ⚠ Match the HEADING, not a mention: the gasket section
+                // cross-references `## Per-Layer Procedure` in backticks
+                // EARLIER on the sheet, so a plain `split_once` sliced from
+                // that mention and never reached the steps.
+                let after = md
+                    .split_once("\n## Per-Layer Procedure")
+                    .unwrap_or_else(|| panic!("{mode:?}: no per-layer procedure"))
+                    .1;
+                let per_layer = after.find("\n## ").map_or(after, |end| &after[..end]);
+                assert!(
+                    per_layer.contains("Mix "),
+                    "{mode:?}: per-layer slice lost the actual steps"
+                );
+                assert!(
+                    per_layer.contains("gasket"),
+                    "{mode:?} {layers}-layer: the per-layer steps close the mold \
+                     without ever mentioning the gasket — the bencher pours a \
+                     gasketed cast with no gasket installed"
+                );
+            }
+        }
+    }
+
+    /// ★★ All three gasket arms must seat the strip in the SAME place.
+    ///
+    /// ⚠ `match (&ribbon.flange, &ribbon.gasket)` had three arms each naming a
+    /// DIFFERENT seat for the same cured loop — "inside the body cavity
+    /// perimeter" (it falls into the cavity and is cast into the part), "on the
+    /// continuous seal land" (~3.5 mm outboard; the loop cannot reach it
+    /// without the stretch step 2 forbids), and straddling the edge. Only one
+    /// can be right, and a bencher reads only their own sheet.
+    #[test]
+    fn every_gasket_arm_seats_the_strip_in_the_same_place() {
+        use crate::cast_mode::CastMode;
+        use crate::flange::{FlangeKind, FlangeSpec};
+        use crate::gasket_mold::{GasketKind, GasketSpec};
+        use crate::procedure::generate_procedure_markdown_v2_for_mode;
+
+        // The one true placement, and the two wrong seats that shipped.
+        const PLACEMENT: &str = "straddling the body cavity edge";
+        const WRONG: &[&str] = &[
+            "inside the body cavity perimeter",
+            "on the continuous seal land",
+        ];
+
+        let mut seen = 0usize;
+        for flange in [
+            FlangeKind::None,
+            FlangeKind::Plate(FlangeSpec::iter1()),
+            FlangeKind::Demand(crate::flange::DemandFlangeSpec::iter1()),
+        ] {
+            let (spec, base) = v2_fixture();
+            let ribbon = base
+                .with_flange(flange)
+                .with_gasket(GasketKind::Mold(GasketSpec::iter1()));
+            let pours = spec.compute_pour_volumes().unwrap();
+            for mode in [CastMode::Detachable, CastMode::Bonded] {
+                let md = generate_procedure_markdown_v2_for_mode(&spec, &pours, &ribbon, mode);
+                assert!(
+                    md.contains(PLACEMENT),
+                    "{flange:?} / {mode:?} gasket sheet never seats the strip on \
+                     the cavity edge"
+                );
+                for wrong in WRONG {
+                    assert!(
+                        !md.contains(wrong),
+                        "{flange:?} / {mode:?} seats the gasket at {wrong:?} — \
+                         the three arms have diverged again"
+                    );
+                }
+                seen += 1;
+            }
+        }
+        assert_eq!(seen, 6, "gasket arm matrix went vacuous");
+    }
+
+    /// ★★★ Every `SubtractCylinder` the pour gate actually carves must be
+    /// named in the cf-view cylinder bullet's EXPECTED list.
+    ///
+    /// ⚠ The oracle is the CARVE, not a mirror of the prose's own predicate.
+    /// Marking the V legs `cylindrical: None` restores the exact defect this
+    /// gate exists for (the bullet condemning, as a suspected regression, a
+    /// trough the bullet above calls expected) and MUST fail here; sharing one
+    /// list between the two bullets makes them agree, but agreement about a
+    /// wrong answer is still wrong.
+    ///
+    /// ⚠⚠ The carve is layout-dependent and `build_pour_gate_transforms` is
+    /// NOT it for `ApexAxial`: that arm returns the seam-solver's exclusion
+    /// FOOTPRINT (radius = the funnel base, not the bore), and
+    /// `compose_piece_shared` drops it — the cup gets the integral split
+    /// funnel + bore fused into its SDF by `build_integral_pour_channel`
+    /// instead. Reading that function as "the carve" happens to give the right
+    /// answer today; if the footprint arm ever returned empty, this gate would
+    /// flip and demand the prose DROP a bore the cup really carves, which is
+    /// the false-STOP-WORK shape the branch exists to remove. So each layout
+    /// states its own truth.
+    #[test]
+    fn every_cylinder_the_pour_gate_carves_is_listed_as_expected() {
+        use crate::cast_mode::CastMode;
+        use crate::mesh_csg::MatingTransform;
+        use crate::pour::{PourGateLayout, build_pour_gate_transforms};
+        use crate::procedure::generate_procedure_markdown_v2_for_mode;
+
+        let mut ventless = PourGateSpec::iter1();
+        ventless.include_vent = false;
+        let mut apex = PourGateSpec::iter1();
+        apex.layout = PourGateLayout::ApexAxial;
+
+        let mut saw_carved = 0usize;
+        let mut saw_gateless = 0usize;
+        for gate in [
+            PourGateKind::None,
+            PourGateKind::Default(PourGateSpec::iter1()),
+            PourGateKind::Default(ventless),
+            PourGateKind::Default(apex),
+        ] {
+            let (spec, base) = v2_fixture();
+            let ribbon = base.with_pour_gate(gate.clone());
+            let pours = spec.compute_pour_volumes().unwrap();
+            let md = generate_procedure_markdown_v2_for_mode(
+                &spec,
+                &pours,
+                &ribbon,
+                CastMode::Detachable,
+            );
+
+            // What the CUP actually ends up with, per layout.
+            let (cylinders, expected_name) = match &ribbon.pour_gate {
+                PourGateKind::None => (0usize, None),
+                // The bore + split funnel are fused into the cup SDF; the
+                // post-MC transform list is deliberately empty here.
+                PourGateKind::Default(g) if g.layout == PourGateLayout::ApexAxial => {
+                    (1, Some("the apex pour bore"))
+                }
+                // V-at-dome: one post-MC `SubtractCylinder` per leg. The vented
+                // and ventless arms name their recess differently — the
+                // ventless sheet must NOT say "V", since it says three times
+                // over that there is none.
+                PourGateKind::Default(g) => (
+                    build_pour_gate_transforms(&ribbon)
+                        .iter()
+                        .filter(|t| matches!(t, MatingTransform::SubtractCylinder { .. }))
+                        .count(),
+                    Some(if g.include_vent {
+                        "the V's pour + vent legs at the dome end"
+                    } else {
+                        "the pour leg at the dome end"
+                    }),
+                ),
+            };
+
+            let bullet = md
+                .lines()
+                .find(|l| l.contains("cylindrical pin"))
+                .unwrap_or_else(|| panic!("no cylinder bullet on the {gate:?} sheet"));
+
+            if cylinders > 0 {
+                saw_carved += 1;
+                assert!(
+                    bullet.contains("PROTRUSIONS"),
+                    "{gate:?} carves {cylinders} cylinder(s) but the cf-view \
+                     bullet is the flat no-recesses form, which condemns them:\n  {bullet}"
+                );
+                // ⚠ THIS layout's own recess, not merely SOME cylinder — a
+                // disjunction over both names let a V config pass by naming
+                // the apex bore.
+                let name =
+                    expected_name.unwrap_or_else(|| panic!("{gate:?} carves but names nothing"));
+                assert!(
+                    bullet.contains(name),
+                    "{gate:?} carves {cylinders} cylinder(s) at the pour gate, \
+                     but the expected list does not name {name:?}:\n  {bullet}"
+                );
+            } else {
+                saw_gateless += 1;
+                assert!(
+                    !bullet.contains("dome end") && !bullet.contains("apex pour bore"),
+                    "{gate:?} carves no pour-gate cylinder, but the bullet \
+                     lists one as expected:\n  {bullet}"
+                );
+            }
+        }
+        assert_eq!((saw_carved, saw_gateless), (3, 1), "matrix went vacuous");
+    }
+
+    /// ★★ The flash claim must match WHAT THE CAST CARVES, in both modes.
+    ///
+    /// ⚠ An earlier version of this test asserted only that the two modes
+    /// AGREE (`det.contains(c) == bon.contains(c)`), which `(false, false)`
+    /// satisfies. Setting `gate_flash = ""` in both writers passed it — and
+    /// that is the branch's original defect, not a hypothetical. So did
+    /// claiming "pour-gate / vent flash" unconditionally, which is the vent
+    /// claim this branch fixed at five separate sites. Agreement is necessary,
+    /// not sufficient: assert the EXPECTED claim per config.
+    #[test]
+    fn finishing_flash_claim_matches_the_carve_in_both_modes() {
+        use crate::cast_mode::CastMode;
+        use crate::pour::PourGateLayout;
+        use crate::procedure::generate_procedure_markdown_v2_for_mode;
+
+        const VENTED: &str = " and pour-gate / vent flash";
+        const GATE_ONLY: &str = " and pour-gate flash";
+
+        let mut ventless = PourGateSpec::iter1();
+        ventless.include_vent = false;
+        let mut apex = PourGateSpec::iter1();
+        apex.layout = PourGateLayout::ApexAxial;
+        // ⚠ `include_vent` is meaningless for ApexAxial — vents are hand-drilled
+        // there. A cast that sets BOTH must still not claim a vent leg.
+        let mut apex_vent = apex.clone();
+        apex_vent.include_vent = true;
+
+        // (gate, does the cast carry a vent leg?)
+        let cases = [
+            (PourGateKind::None, None),
+            (PourGateKind::Default(PourGateSpec::iter1()), Some(VENTED)),
+            (PourGateKind::Default(ventless), Some(GATE_ONLY)),
+            (PourGateKind::Default(apex), Some(GATE_ONLY)),
+            (PourGateKind::Default(apex_vent), Some(GATE_ONLY)),
+        ];
+
+        let mut fired = 0usize;
+        for (gate, expected) in cases {
+            for layers in [1usize, 2] {
+                let (spec, base) = if layers == 1 {
+                    v2_fixture()
+                } else {
+                    two_layer_fixture()
+                };
+                let ribbon = base.with_pour_gate(gate.clone());
+                let pours = spec.compute_pour_volumes().unwrap();
+                for mode in [CastMode::Detachable, CastMode::Bonded] {
+                    let md = generate_procedure_markdown_v2_for_mode(&spec, &pours, &ribbon, mode);
+                    for claim in [VENTED, GATE_ONLY] {
+                        let want = expected == Some(claim);
+                        assert_eq!(
+                            md.contains(claim),
+                            want,
+                            "{mode:?} {layers}-layer {gate:?}: expected \
+                             contains({claim:?}) == {want}. The finishing \
+                             prose claims flash the cast does not carve, or \
+                             omits flash it does."
+                        );
+                        if want {
+                            fired += 1;
+                        }
+                    }
+                    // Both modes must always tell the bencher to trim SOMETHING.
+                    assert!(
+                        md.to_lowercase().contains("trim any seam flash"),
+                        "{mode:?} {layers}-layer sheet never says to trim flash"
+                    );
+                }
+            }
+        }
+        // Non-vacuity: both claims must have been REQUIRED somewhere, or the
+        // loop is asserting absence everywhere and would survive deleting the
+        // `gate_flash` match entirely.
+        assert_eq!(
+            fired, 16,
+            "expected each of the 4 gated configs x 2 layer counts x 2 modes \
+             to require exactly one claim"
+        );
+    }
+
+    /// ★★★ The prose lint's OWN gate — both directions.
+    ///
+    /// ⚠ A round found that the lint shipped claiming five negative controls
+    /// when two tested defect shapes that never occurred, that its
+    /// doubled-preposition exemption waved the real defect through if " and "
+    /// appeared ANYWHERE later, that it missed every `{x:.1}` binding (the
+    /// shape the sheets are built from), and that four rules were latent
+    /// panics on CORRECT prose. A gate with no gate of its own is a claim,
+    /// not a check — so each rule is pinned here in both directions: the
+    /// defect must fail, and the correct prose it resembles must pass.
+    #[test]
+    fn the_prose_lint_catches_defects_and_spares_correct_prose() {
+        // ⚠⚠ Braces are BUILT, never written literally. `xtask grade`'s Safety
+        // scanner strips string literals with a brace-depth state machine, so a
+        // literal `{` in a test string desynchronizes it and reclassifies the
+        // rest of `mod tests` as production code — Safety A -> F with phantom
+        // violations (same class as the escaped quote that did this once
+        // before). Clippy also reads a literal brace-arg as a stray format
+        // argument.
+        const OB: char = '\u{7B}';
+        const CB: char = '\u{7D}';
+        let binding_fmt = format!("the land starts {OB}land_inner_mm:.1{CB} mm outboard");
+        let binding_bare = format!("sheet {OB}md{CB} follows");
+        let placeholder = format!("print mold_layer_{OB}N{CB}_piece_0.stl now");
+        let cases: &[(&str, &str, bool)] = &[
+            (
+                "doubled-prep exemption must not look past the 2nd match",
+                "lay each gasket on the Negative cup half on the seam face and clamp it",
+                true,
+            ),
+            ("binding with a format spec", &binding_fmt, true),
+            ("bare binding", &binding_bare, true),
+            (
+                "CORRECT: 'a one-piece'",
+                "the result is a one-piece silicone body",
+                false,
+            ),
+            (
+                "CORRECT: suspended hyphen",
+                "trim the pour- and vent-leg flash flush",
+                false,
+            ),
+            (
+                "CORRECT: markdown hard break",
+                "line one  \nline two",
+                false,
+            ),
+            (
+                "CORRECT: heading echoed by its line",
+                "## Gasket\nGasket strips cure overnight",
+                false,
+            ),
+            (
+                "split word across a continuation",
+                "the half- cone is proud",
+                true,
+            ),
+            (
+                "article wrong for a computed value",
+                "the cone is a 18 mm cantilever",
+                true,
+            ),
+            (
+                "one object, two prepositions",
+                "lay each gasket on the Negative cup half on the seam face",
+                true,
+            ),
+            (
+                "CORRECT: two objects, one preposition each",
+                "Pour leg on the Positive piece, vent leg on the Negative piece",
+                false,
+            ),
+            ("CORRECT: deliberate placeholder", &placeholder, false),
+        ];
+        let mut bad = 0;
+        for (name, txt, want_fail) in cases {
+            let caught =
+                std::panic::catch_unwind(|| assert_prose_is_well_formed(txt, "probe")).is_err();
+            let ok = caught == *want_fail;
+            if !ok {
+                bad += 1;
+            }
+            println!(
+                "{} {:7} {name}",
+                if ok { "ok  " } else { "WRONG" },
+                if caught { "CAUGHT" } else { "passes" }
+            );
+        }
+        assert_eq!(bad, 0, "{bad} probe(s) behaved wrong");
+    }
+
+    /// The text starting at char index `at`, for short look-aheads.
+    fn md_after(chars: &[char], at: usize) -> String {
+        chars[at.min(chars.len())..(at + 8).min(chars.len())]
+            .iter()
+            .collect()
+    }
+
+    /// ★★★ Mechanical prose damage, on every sheet the matrix renders.
+    ///
+    /// ⚠ Rounds of review kept finding defects no test could see and only
+    /// reading the rendered sheet caught. These are the ones this gate
+    /// ACTUALLY covers, each verified by reintroducing it:
+    ///   - a line continuation splitting a word ("the half- cone")
+    ///   - an article wrong for a computed value ("a 18 mm")
+    ///   - one object carrying two prepositions ("on the Negative cup half
+    ///     on the seam face")
+    ///   - an unsubstituted `{binding}`, with or without a format spec
+    ///   - a repeated word, a double space, a space before punctuation
+    ///
+    /// ⛔ WHAT IT DOES NOT COVER, though these also shipped: a templated
+    /// clause turning a list into a COMMA SPLICE, and a fragment that drops a
+    /// NOUN ("Trim any seam flush with a sharp blade"). An earlier version of
+    /// this comment listed the comma splice as though it were covered, and
+    /// the commit message claimed all five controls were defects that had
+    /// really shipped — two were shapes that never did. Both claims were
+    /// false in exactly the direction that flatters the gate.
+    ///
+    /// ★ Reading still finds what this cannot — contradictions between two
+    /// sentences that share no keyword, and every defect listed above under
+    /// ⛔. The MECHANICAL half is what a machine should own; do not let its
+    /// green mislead you into skipping the read.
+    fn assert_prose_is_well_formed(md: &str, case: &str) {
+        // ⚠⚠ A BARE `'}'` CHAR LITERAL DESYNCS `xtask grade`'s Safety scanner
+        // (brace-depth state machine; the unmatched close drops it below zero
+        // and the rest of `mod tests` reads as production code — Safety A->F,
+        // phantom violations). Same class as the `'\u{22}'` quote workaround
+        // in `assert_cross_refs_resolve`. Found by BISECTING file, then
+        // literal — not by guessing, which was wrong twice before.
+        const CLOSE_BRACE: char = '\u{7D}';
+        let chars: Vec<char> = md.chars().collect();
+        let flag = |what: &str, at: usize| -> String {
+            let lo = at.saturating_sub(60);
+            let hi = (at + 60).min(chars.len());
+            let ctx: String = chars[lo..hi].iter().collect();
+            format!("[{case}]\n{what}\n  …{}…", ctx.replace('\n', " "))
+        };
+
+        for (i, w) in chars.windows(3).enumerate() {
+            // A line continuation split a word: "half- cone".
+            // ⚠ EXCEPT a suspended hyphen — "trim the pour- and vent-leg
+            // flash" is correct, and this sheet writes exactly that shape.
+            let suspended = md_after(&chars, i + 3).starts_with("and ")
+                || md_after(&chars, i + 3).starts_with("or ");
+            assert!(
+                !(w[0].is_ascii_lowercase()
+                    && w[1] == '-'
+                    && w[2] == ' '
+                    && chars.get(i + 3).is_some_and(char::is_ascii_lowercase)
+                    && !suspended),
+                "{}",
+                flag("a hyphenated word was split by a line continuation", i)
+            );
+            // Two spaces mid-sentence.
+            // ⚠ NOT a Markdown hard line break (two spaces then newline).
+            assert!(
+                !(w[0].is_ascii_alphabetic()
+                    && w[1] == ' '
+                    && w[2] == ' '
+                    && chars.get(i + 3).is_some_and(|c| *c != '\n')),
+                "{}",
+                flag("double space between words", i)
+            );
+            // Space before punctuation.
+            assert!(
+                !(w[0] == ' ' && matches!(w[1], ',' | ';' | ')')),
+                "{}",
+                flag("space before punctuation", i)
+            );
+        }
+
+        // "a" before a vowel-initial word, or before a number READ with one.
+        // ⚠ Not "u"/"eu" — "a unique", "a European" are correct.
+        for (idx, _) in md.match_indices(" a ") {
+            let tail = &md[idx + 3..];
+            // ⚠ Consonant-sounding vowels take "a": "a European", "a unit",
+            // "a one-piece". Excluding only "eu" made "a one-piece" — natural
+            // vocabulary on a sheet that already says "a SINGLE integrated
+            // 2-layer silicone body" — a latent panic on correct prose.
+            let bad_vowel = tail.starts_with(['a', 'i'])
+                || (tail.starts_with('o') && !tail.starts_with("one") && !tail.starts_with("once"))
+                || (tail.starts_with('e') && !tail.starts_with("eu"));
+            let bad_number = ["8", "11", "18"].iter().any(|n| {
+                tail.starts_with(n) && !tail[n.len()..].starts_with(|c: char| c.is_ascii_digit())
+            });
+            assert!(
+                !(bad_vowel || bad_number),
+                "{}",
+                flag(
+                    "\"a\" before a vowel sound — should be \"an\"",
+                    md[..idx].chars().count()
+                )
+            );
+        }
+
+        // An unsubstituted Rust binding. `{N}` is a deliberate literal the
+        // bencher substitutes; `{gate_flash}` is a bug.
+        for (idx, _) in md.match_indices('{') {
+            let tail = &md[idx + 1..];
+            let name: String = tail
+                .chars()
+                .take_while(|c| c.is_ascii_lowercase() || *c == '_')
+                .collect();
+            // ⚠ `{x:.1}` / `{x:.0}` are the SHAPE THE SHEETS ARE BUILT FROM;
+            // requiring `}` immediately after the name missed every one of
+            // them. A deliberate `{N}` still passes — uppercase yields an
+            // empty name.
+            let rest = &tail[name.len()..];
+            let leaked = !name.is_empty()
+                && (rest.starts_with(CLOSE_BRACE)
+                    || rest
+                        .split_once(CLOSE_BRACE)
+                        .is_some_and(|(spec, _)| spec.starts_with(':') && !spec.contains(' ')));
+            assert!(
+                !leaked,
+                "{}",
+                flag(
+                    "an unsubstituted format binding reached the sheet",
+                    md[..idx].chars().count()
+                )
+            );
+        }
+
+        // The same preposition twice for one object: "lay it on the Negative
+        // cup half on the seam face". Templating a clause that already carries
+        // its own preposition into a sentence that supplies one produces this,
+        // and it reads as two places rather than one.
+        for (idx, _) in md.match_indices(" on the ") {
+            let span_end = (idx + 70).min(md.len());
+            let Some(span) = md.get(idx + 8..span_end) else {
+                continue;
+            };
+            // ⚠ Only when the two are DIRECTLY juxtaposed. "Pour leg on the
+            // Positive piece, vent leg on the Negative piece" is a correct
+            // two-object list; any comma or conjunction means a second object,
+            // not a second preposition for the same one.
+            let clause = span.split(['.', ';', ',', '\n']).next().unwrap_or("");
+            // ⚠ The exemption must look only BETWEEN the two matches. Scanning
+            // the whole clause let " and " ANYWHERE — even after the second
+            // "on the" — wave the defect through, so the sentence that shipped
+            // passed with four words appended.
+            let between = clause.split(" on the ").next().unwrap_or("");
+            assert!(
+                !clause.contains(" on the ") || between.contains(" and "),
+                "{}",
+                flag(
+                    "\"on the … on the\" — one object, two prepositions",
+                    md[..idx].chars().count()
+                )
+            );
+        }
+
+        // The same word twice in a row.
+        // ⚠ Per LINE — `split_whitespace` over the whole sheet joins across
+        // newlines, so a heading echoed by its first word ("## Gasket\nGasket
+        // strips…") read as a repeat.
+        for words in md.lines().map(|l| l.split_whitespace().collect::<Vec<_>>()) {
+            for pair in words.windows(2) {
+                let (a, b) = (pair[0], pair[1]);
+                assert!(
+                    !(a.len() > 2
+                        && a.eq_ignore_ascii_case(b)
+                        && a.chars().all(|c| c.is_ascii_alphabetic())),
+                    "[{case}]\nthe word {a:?} is repeated"
+                );
+            }
+        }
+    }
+
+    /// Assert every backticked `#…` reference in `md` names a heading that is
+    /// actually present in `md`.
+    fn assert_cross_refs_resolve(md: &str, case: &str) {
+        // ⚠ Spelled `\u{22}` rather than as a bare `'\u{22}'` char literal.
+        // `xtask grade`'s Safety scanner strips from the first double quote on
+        // a line to end-of-line, so `find(<quote char>) {` loses its OPENING
+        // BRACE; the matching close then ends the scanner's `#[cfg(test)]`
+        // region early and every test below is graded as production code
+        // (87 phantom unwrap violations, Safety A -> F, on unchanged files).
+        const QUOTE: char = '\u{22}';
+        let headings: Vec<&str> = md
+            .lines()
+            .filter(|l| l.starts_with("## ") || l.starts_with("### "))
+            .collect();
+        // Sections are also cross-referenced in plain double quotes — e.g.
+        // `per the "v2 Mold Assembly" section above` — which a backtick scan
+        // never sees. Renaming that heading would orphan them silently, the
+        // exact failure this gate exists to prevent.
+        let mut idx = 0usize;
+        while let Some(open_rel) = md[idx..].find(QUOTE) {
+            let open = idx + open_rel;
+            let after = &md[open + 1..];
+            let Some(close_rel) = after.find(QUOTE) else {
+                break;
+            };
+            idx = open + 1 + close_rel + 1;
+            if !after[close_rel + 1..].starts_with(" section") {
+                continue;
+            }
+            let name = &after[..close_rel];
+            let wanted = format!("## {name}");
+            assert!(
+                headings.iter().any(|h| *h == wanted),
+                "[{case}]\nsheet refers to the {name:?} section but no such \
+                 heading is in it.\nheadings present:\n{headings:#?}"
+            );
+        }
+        let mut rest = md;
+        while let Some(at) = rest.find("`#") {
+            rest = &rest[at + 1..];
+            let Some(end) = rest.find('`') else { break };
+            let reference = &rest[..end];
+            rest = &rest[end + 1..];
+            // Exact, or a heading that continues with a PARENTHETICAL — prose
+            // abbreviates `## Cap-Plane Edge Chamfer (Expected MC Quantization)`
+            // to its name, and that resolves for a reader.
+            //
+            // ⚠ A bare `starts_with` is BLIND IN THE GUARDED DIRECTION: every
+            // short reference resolves against every longer heading, so
+            // shortening `## Post-Cure Assembly + Disassembly` to `## Post-Cure`
+            // in one place and not the other SURVIVED this assertion. Verified
+            // by mutation — do not relax this back.
+            assert!(
+                headings.iter().any(|h| {
+                    *h == reference
+                        || h.strip_prefix(reference)
+                            .is_some_and(|tail| tail.starts_with(" ("))
+                }),
+                "[{case}]\nsheet points at {reference:?} but that heading is not in it.\n\
+                 headings present:\n{headings:#?}"
+            );
+        }
+    }
+
     /// The selected-export path must write **byte-identical** STLs to the
     /// full export for the same parts (it reuses the same leaf meshing +
     /// filenames), and must write *only* the selected parts. This is the
@@ -4305,7 +5839,14 @@ mod tests {
         // anchors gate any future rewrite that silently flips the
         // orientation guidance back to recon-1 §G-4's original
         // (geometrically-falsified) seam-face-on-bed lock.
+        // ⚠ Plug pins ENABLED. `PlugPinKind` defaults OFF, and the
+        // plug-lock prose this test pins is now gated on the cast actually
+        // carrying a lock — an unconditional "cap-plane-face-DOWN is INVALID"
+        // was describing a pyramid the default cast never generates.
         let (spec, ribbon) = v2_procedure_fixture();
+        let ribbon = ribbon.with_plug_pins(crate::plug::PlugPinKind::Axial(
+            crate::plug::PlugPinSpec::iter1(),
+        ));
         let pours = spec.compute_pour_volumes().unwrap();
         let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
         assert!(
@@ -4417,6 +5958,12 @@ mod tests {
         // vs without-pins. Anchors gate any future drift back toward
         // "fix it" framing.
         let (spec, ribbon) = v2_procedure_fixture();
+        // ⚠ Plug pins ENABLED — the socket-mouth callout this test pins is
+        // now gated on the cast carrying a plug-floor lock, which
+        // `PlugPinKind` does not do by default.
+        let ribbon = ribbon.with_plug_pins(crate::plug::PlugPinKind::Axial(
+            crate::plug::PlugPinSpec::iter1(),
+        ));
         let pours = spec.compute_pour_volumes().unwrap();
         let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
         assert!(
@@ -4548,18 +6095,32 @@ mod tests {
             md.contains("Do NOT release"),
             "do-not-release-during-cure warning missing in: {md}"
         );
-        // Cold-read pass-1 (Finding A): Step 3 geometry must say
-        // "annular clearance gap between body cavity edge and flange
-        // inner edge", NOT "INSIDE the flange perimeter" (ambiguous
-        // — workshop user could put the gasket in the wrong ring).
+        // Step 3 must place the gasket CENTERED on the body-cavity edge.
+        //
+        // ⚠ This assertion previously demanded the words "annular clearance
+        // gap between the body cavity edge and the flange's inner edge" — a
+        // cold-read fix for an earlier ambiguity ("INSIDE the flange
+        // perimeter"). It replaced one wrong placement with another and then
+        // PINNED it: the channel SDF is `|body_dist| - half_width`
+        // (`gasket_mold.rs`), symmetric about `body_dist = 0`, so the gasket
+        // straddles the cavity edge and does NOT sit in the gap outboard of
+        // it. The same bullet then contradicted itself one sentence later by
+        // saying "centered on the body perimeter". Assert the geometry, not
+        // the vocabulary of whichever fix landed last.
         assert!(
-            md.contains("annular clearance gap"),
-            "annular-gap geometry vocabulary missing in: {md}"
+            md.contains("CENTERED on that perimeter, not beside it"),
+            "step 3 must center the gasket on the body-cavity edge: {md}"
         );
-        assert!(
-            !md.contains("INSIDE the flange perimeter"),
-            "ambiguous \"INSIDE the flange perimeter\" wording leaking back in: {md}"
-        );
+        for wrong in [
+            "INSIDE the flange perimeter",
+            "in the annular clearance gap",
+        ] {
+            assert!(
+                !md.contains(wrong),
+                "step 3 seats the gasket beside the cavity edge ({wrong:?}), \
+                 not straddling it: {md}"
+            );
+        }
         // Cold-read pass-1 (Finding B): the predicted compression
         // number must live in Step 5 (where clamps are applied),
         // NOT Step 4 (cup-close only). Step 4 must explicitly
@@ -4763,7 +6324,17 @@ mod tests {
             .with_bolt_pattern(crate::bolt_pattern::BoltPatternKind::Auto(
                 crate::bolt_pattern::BoltPatternSpec::iter1(),
             ));
-        let md_bolt = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &bolt_ribbon);
+        // ⚠ Thin the wall for this arm. The shared fixture runs 20 mm, and a
+        // 20 mm-wide plate flange takes NO bolts above an 8 mm wall — the
+        // washer window closes (see `carved_features`). This test
+        // asserts the BOLTED step-6 prose, so it needs a cast that actually
+        // carries bolts; at 20 mm the correct sheet has no bolt section at
+        // all, which is what this assertion used to mistake for a regression.
+        let mut bolt_spec = spec;
+        bolt_spec.wall_thickness_m = 0.004;
+        let bolt_pours = bolt_spec.compute_pour_volumes().unwrap();
+        let md_bolt =
+            crate::procedure::generate_procedure_markdown_v2(&bolt_spec, &bolt_pours, &bolt_ribbon);
         assert!(
             md_bolt.contains("install the §B M5 through-bolts"),
             "(Plate,None,Bolts) step 6 must install the bolts: {md_bolt}"
