@@ -391,7 +391,12 @@ pub fn generate_procedure_markdown_v2_for_mode(
     write_materials_table(&mut md, spec, pour_volumes);
     write_generic_guidance(&mut md);
     write_v2_assembly_note(&mut md, ribbon, spec.layers.len());
-    write_v2_cup_half_clamping_note(&mut md, ribbon);
+    write_v2_cup_half_clamping_note(
+        &mut md,
+        ribbon,
+        post_demold_section(mode, spec.layers.len()),
+        spec.layers.len(),
+    );
     write_v2_pour_gate_note(&mut md, ribbon, spec.layers.len());
     match mode {
         CastMode::Detachable => write_per_layer_sections_v2(&mut md, spec, pour_volumes, ribbon),
@@ -405,13 +410,33 @@ pub fn generate_procedure_markdown_v2_for_mode(
     md
 }
 
+/// Heading of the section describing demold and what follows it. Several
+/// EARLIER sections cross-reference it by name, and its name varies with mode
+/// and layer count — so the emitter and every reference read it from here
+/// rather than spelling it out. Renaming a section in one place and orphaning
+/// a reference in another is exactly how this went wrong once already;
+/// `every_cross_referenced_section_exists_in_the_same_sheet` is the gate.
+const fn post_demold_section(mode: CastMode, layer_count: usize) -> &'static str {
+    match mode {
+        // Bonded never nests, at any layer count.
+        CastMode::Bonded => "## Finishing",
+        // One layer has nothing to assemble or take apart.
+        CastMode::Detachable if layer_count == 1 => "## Post-Cure",
+        CastMode::Detachable => "## Post-Cure Assembly + Disassembly",
+    }
+}
+
 fn write_v2_post_cure_assembly(md: &mut String, spec: &CastSpec) {
     // A single-layer cast has nothing to nest, stack or take apart: the one
     // cured tube is the finished device. Emitting the multi-layer assembly
     // prose here instructs an impossible assembly ("slide layer 0 into the
     // inner cavity of layer 1"), so single-layer gets its own short section.
     if spec.layers.len() == 1 {
-        let _ = writeln!(md, "## Post-Cure");
+        let _ = writeln!(
+            md,
+            "{}",
+            post_demold_section(CastMode::Detachable, spec.layers.len())
+        );
         md.push('\n');
         let _ = writeln!(
             md,
@@ -429,7 +454,11 @@ fn write_v2_post_cure_assembly(md: &mut String, spec: &CastSpec) {
         md.push('\n');
         return;
     }
-    let _ = writeln!(md, "## Post-Cure Assembly + Disassembly");
+    let _ = writeln!(
+        md,
+        "{}",
+        post_demold_section(CastMode::Detachable, spec.layers.len())
+    );
     md.push('\n');
     let _ = writeln!(
         md,
@@ -705,7 +734,11 @@ fn pour_orientation_blurb(ribbon: &Ribbon) -> &'static str {
 /// Bonded-mode finishing note (replaces the detachable nest/disassemble
 /// section): the device is one bonded part, not separable shells.
 fn write_v2_bonded_finishing(md: &mut String, spec: &CastSpec) {
-    let _ = writeln!(md, "## Finishing");
+    let _ = writeln!(
+        md,
+        "{}",
+        post_demold_section(CastMode::Bonded, spec.layers.len())
+    );
     md.push('\n');
     if spec.layers.len() == 1 {
         let _ = writeln!(
@@ -1538,15 +1571,20 @@ fn write_v2_bolt_pattern_note(md: &mut String, ribbon: &Ribbon) {
     // default that's 8 + 2 + 4 + 3 = 17 mm — round up to M5×20 mm
     // (standard stock length, gives ~3 mm thread excess past the nut
     // which is workshop-friendly).
-    // Cold-read I3 fix 2026-05-27: prefer FlangeSpec::iter1() over a
-    // hard-coded magic number when `flange.spec()` is None. Since the
-    // carve gate above returns for `FlangeKind::None`, the only kind that
-    // still reaches this fallback is `FlangeKind::Demand` — it carries a
-    // `DemandFlangeSpec`, so `FlangeKind::spec()` is None for it too.
-    let flange_thickness_mm = ribbon.flange.spec().map_or_else(
-        || crate::flange::FlangeSpec::iter1().flange_thickness_m * 1000.0,
-        |f| f.flange_thickness_m * 1000.0,
-    );
+    // ⚠ Read each kind's OWN thickness. `FlangeKind::spec()` is None for
+    // BOTH `None` and `Demand`, so the previous `map_or_else` fallback
+    // silently substituted the PLATE default (4 mm) for every demand flange
+    // — the two happen to share a default, which is why it read as correct.
+    // A demand flange set to anything else printed a bolt length that cannot
+    // seat. Post-carve-gate only Plate and Demand reach here.
+    let flange_thickness_mm = 1000.0
+        * match &ribbon.flange {
+            FlangeKind::Plate(f) => f.flange_thickness_m,
+            FlangeKind::Demand(d) => d.flange_thickness_m,
+            // Unreachable past the carve gate; a doc generator should not
+            // panic, so keep the iter-1 default.
+            FlangeKind::None => crate::flange::FlangeSpec::iter1().flange_thickness_m,
+        };
     let bolt_traverse_mm = flange_thickness_mm * 2.0;
     // Minimum exact length = traverse + 2 × washer (~1 mm each) + nut
     // (~4 mm M5) + head (~3 mm M5). Round UP to the nearest 5 mm
@@ -1702,7 +1740,12 @@ fn write_v2_plug_anchor_note(md: &mut String, ribbon: &Ribbon) {
 // nested control flow), so factoring each branch into its own
 // helper would just shuffle the same prose between identifiers.
 #[allow(clippy::too_many_lines)]
-fn write_v2_cup_half_clamping_note(md: &mut String, ribbon: &Ribbon) {
+fn write_v2_cup_half_clamping_note(
+    md: &mut String,
+    ribbon: &Ribbon,
+    post_demold: &str,
+    layer_count: usize,
+) {
     // S3 of the seam-flange arc per recon §F-7. Prose adapts to the
     // combination of FlangeKind + GasketKind: the full clamp-and-pour
     // protocol fires only when both are enabled (the workshop
@@ -1846,11 +1889,12 @@ fn write_v2_cup_half_clamping_note(md: &mut String, ribbon: &Ribbon) {
                  overlap between the two."
             );
             md.push('\n');
-            let _ = writeln!(
-                md,
-                "**Per-layer workshop protocol** (repeat for each \
-                 layer's pour):"
-            );
+            let protocol_header = if layer_count == 1 {
+                "**Workshop protocol**:"
+            } else {
+                "**Per-layer workshop protocol** (repeat for each layer's pour):"
+            };
+            let _ = writeln!(md, "{protocol_header}");
             md.push('\n');
             let _ = writeln!(
                 md,
@@ -1944,8 +1988,7 @@ fn write_v2_cup_half_clamping_note(md: &mut String, ribbon: &Ribbon) {
                  thin gasket strip tears cleanly under light scalpel \
                  guidance). The gasket does NOT bond to the PLA cup \
                  halves (silicone-non-stick). Demold the cured \
-                 silicone tube per `## Post-Cure Assembly + \
-                 Disassembly` below."
+                 silicone tube per `{post_demold}` below."
             );
             md.push('\n');
             let _ = writeln!(
@@ -2290,7 +2333,13 @@ fn write_per_layer_sections_v2(
                  air-relief holes through the cured cup wall as needed."
             }
         };
-        let closing_protocol = match (&ribbon.gasket, ribbon.bolt_pattern.spec()) {
+        // ⚠ Third site keyed on this predicate — the bolt section header and
+        // the clamping header are the other two. Gating on the bolt KIND here
+        // sends step 6 to `### M5 through-bolt clamp pattern (§B)`, a section
+        // that is not emitted when no holes are carved.
+        let bolted = ribbon.bolt_pattern.spec().is_some()
+            && crate::bolt_pattern::bolts_are_carved(&ribbon.flange);
+        let closing_protocol = match (&ribbon.gasket, bolted) {
             (GasketKind::Mold(_), _) => {
                 "Place the cured gasket strip on the Negative half's \
                  seam face per `## Cup-Half Clamping with Gasket \
@@ -2298,7 +2347,7 @@ fn write_per_layer_sections_v2(
                  half, then close the second half and apply the \
                  clamping protocol from that section."
             }
-            (GasketKind::None, Some(_)) => {
+            (GasketKind::None, true) => {
                 "Close the second cup half over the plug, registering \
                  the §M dowels to seat the two halves flush. Then \
                  install the §B M5 through-bolts per `### M5 \
@@ -2308,7 +2357,7 @@ fn write_per_layer_sections_v2(
                  + mold release stands in for a gasket; the bolt \
                  clamp force is the seal."
             }
-            (GasketKind::None, None) => {
+            (GasketKind::None, false) => {
                 "Close the second cup half over the plug directly \
                  (seam closes flush = press-stop tactile feedback). \
                  Apply the clamping protocol from the section above."
@@ -2666,7 +2715,7 @@ mod tests {
             r.gasket = gasket;
             r.bolt_pattern = bolts;
             let mut md = String::new();
-            write_v2_cup_half_clamping_note(&mut md, &r);
+            write_v2_cup_half_clamping_note(&mut md, &r, "## Post-Cure Assembly + Disassembly", 2);
             md
         };
         let head = |md: &str| md.lines().next().unwrap_or_default().to_string();
@@ -2750,7 +2799,7 @@ mod tests {
         ] {
             assert!(
                 !no_flange.contains(phrase),
-                "bolts carve nothing without a flange, yet the sheet orders                  {phrase:?}:\n{no_flange}"
+                "bolts carve nothing without a flange, yet the sheet orders {phrase:?}:\n{no_flange}"
             );
         }
 
@@ -2767,6 +2816,48 @@ mod tests {
         }
     }
 
+    /// ★ The bolt length must follow the flange ACTUALLY configured. Both
+    /// `FlangeSpec` and `DemandFlangeSpec` default to 4 mm, so a demand
+    /// flange reading the PLATE default looked correct at defaults and only
+    /// diverged off-default — the reason this survived.
+    ///
+    /// ⚠ Reads the numbers back OUT of the artifact rather than recomputing
+    /// the formula: a mirror oracle would have applied the same wrong operand
+    /// and agreed with the bug.
+    #[test]
+    fn bolt_length_follows_the_configured_demand_flange_thickness() {
+        let sheet = |thickness_m: f64| {
+            let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
+            let split = SplitNormal::new(Vector3::new(0.0, 0.0, 1.0)).unwrap();
+            let mut r = Ribbon::new(centerline, split).unwrap();
+            let mut demand = DemandFlangeSpec::iter1();
+            demand.flange_thickness_m = thickness_m;
+            r.flange = FlangeKind::Demand(demand);
+            r.bolt_pattern = BoltPatternKind::Auto(BoltPatternSpec::iter1());
+            let mut md = String::new();
+            write_v2_assembly_note(&mut md, &r, 2);
+            md
+        };
+
+        // 9 mm per half -> 18 mm traverse -> 18+2+4+3 = 27 -> M5x30.
+        let thick = sheet(0.009);
+        assert!(
+            thick.contains("18 mm PLA traverse"),
+            "traverse must be 2 x the CONFIGURED 9 mm flange:\n{thick}"
+        );
+        assert!(
+            thick.contains("M5×30 mm"),
+            "bolt length must cover the 18 mm traverse:\n{thick}"
+        );
+
+        // Two-sided: at the 4 mm default the long-standing numbers are intact.
+        let default = sheet(0.004);
+        assert!(
+            default.contains("8 mm PLA traverse") && default.contains("M5×20 mm"),
+            "default demand flange must still read 8 mm / M5x20:\n{default}"
+        );
+    }
+
     /// The two gasketed arms had no test and had never been read. Both are
     /// sound (checked by emitting them, 2026-08-29); this pins the
     /// properties a reader depends on so a later edit cannot quietly drop
@@ -2781,7 +2872,7 @@ mod tests {
             r.flange = flange;
             r.gasket = GasketKind::Mold(crate::gasket_mold::GasketSpec::iter1());
             let mut md = String::new();
-            write_v2_cup_half_clamping_note(&mut md, &r);
+            write_v2_cup_half_clamping_note(&mut md, &r, "## Post-Cure Assembly + Disassembly", 2);
             md
         };
 

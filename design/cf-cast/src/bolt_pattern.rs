@@ -256,7 +256,8 @@ fn bolt_feasibility(flange: &FlangeKind, wall_thickness_m: f64) -> Option<Feasib
     }
 }
 
-/// Whether a bolt pattern carves any geometry against `flange`.
+/// Whether `flange` permits bolt holes at all — the FLANGE precondition for
+/// carving, not a promise that holes were carved.
 ///
 /// ⚠ `procedure.md` prose MUST gate on this, not on the bolt KIND
 /// (`BoltPatternKind::spec().is_some()`). A bolt pattern enabled against
@@ -269,6 +270,13 @@ fn bolt_feasibility(flange: &FlangeKind, wall_thickness_m: f64) -> Option<Feasib
 /// Mirrors [`bolt_feasibility`]'s only `None` arm;
 /// `bolts_are_carved_agrees_with_bolt_feasibility` pins the two together so
 /// a new `None` arm cannot silently desynchronize the prose from the carve.
+///
+/// ⚠ NECESSARY, NOT SUFFICIENT. [`plan_smart_bolt_placements`] also returns
+/// no placements when the outermost layer silhouette is empty, and can drop
+/// positions infeasible on some layer — so a FLANGED cast can still end up
+/// with zero holes while the sheet orders hardware. Closing that needs the
+/// planned placements at prose time, which the renderer does not receive;
+/// this predicate closes the flange half only.
 pub(crate) const fn bolts_are_carved(flange: &FlangeKind) -> bool {
     !matches!(flange, FlangeKind::None)
 }
@@ -437,6 +445,9 @@ mod tests {
     use crate::dowel_hole::{DowelHoleKind, DowelHoleSpec};
     use crate::flange::{DemandFlangeSpec, FlangeKind, FlangeSpec};
 
+    use crate::pour::{PourGateKind, PourGateLayout, PourGateSpec, build_pour_gate_transforms};
+    use crate::ribbon::SplitNormal;
+
     /// ★ Anti-drift pin. [`bolts_are_carved`] exists so `procedure.md` can
     /// gate its M5 hardware prose on the SAME predicate the carve uses. It
     /// restates `bolt_feasibility`'s `None` arm rather than calling it (the
@@ -457,14 +468,11 @@ mod tests {
                 assert_eq!(
                     bolts_are_carved(flange),
                     bolt_feasibility(flange, wall_thickness_m).is_some(),
-                    "predicate disagrees with the carve for {flange:?}                      at wall {wall_thickness_m} m"
+                    "predicate disagrees with the carve for {flange:?} at wall {wall_thickness_m} m"
                 );
             }
         }
     }
-
-    use crate::pour::{PourGateKind, PourGateLayout, PourGateSpec, build_pour_gate_transforms};
-    use crate::ribbon::SplitNormal;
     use crate::seam_placement::{build_layer_loops, seam_silhouette};
     use crate::silhouette_2d::SILHOUETTE_GRID_STEP_M;
     use cf_design::Solid;

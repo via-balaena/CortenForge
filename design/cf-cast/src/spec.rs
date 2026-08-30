@@ -3800,6 +3800,90 @@ mod tests {
         }
     }
 
+    /// ★★ Every `## Section` the sheet points at must EXIST in that same
+    /// sheet, across the whole config matrix.
+    ///
+    /// This PR's first round tested individual writers in isolation, and that
+    /// is exactly how two dangling references got introduced: gating one
+    /// section off (bolts against no flange) and renaming another
+    /// (single-layer post-cure) each orphaned a cross-reference emitted by a
+    /// DIFFERENT writer. No phrase-list assertion can see that — only
+    /// rendering the whole document and resolving its own references can.
+    ///
+    /// `compute_pour_volumes` depends only on the spec, so it is computed once
+    /// per layer count and reused across all 48 ribbon × mode variations.
+    #[test]
+    fn every_cross_referenced_section_exists_in_the_same_sheet() {
+        use crate::bolt_pattern::{BoltPatternKind, BoltPatternSpec};
+        use crate::cast_mode::CastMode;
+        use crate::flange::{DemandFlangeSpec, FlangeKind, FlangeSpec};
+        use crate::gasket_mold::{GasketKind, GasketSpec};
+        use crate::procedure::generate_procedure_markdown_v2_for_mode;
+
+        for (layers, (spec, base)) in [("1-layer", v2_fixture()), ("2-layer", two_layer_fixture())]
+        {
+            let pours = spec.compute_pour_volumes().unwrap();
+            for flange in [
+                FlangeKind::None,
+                FlangeKind::Plate(FlangeSpec::iter1()),
+                FlangeKind::Demand(DemandFlangeSpec::iter1()),
+            ] {
+                for gasket in [GasketKind::None, GasketKind::Mold(GasketSpec::iter1())] {
+                    for bolts in [
+                        BoltPatternKind::None,
+                        BoltPatternKind::Auto(BoltPatternSpec::iter1()),
+                    ] {
+                        for gate in [
+                            PourGateKind::None,
+                            PourGateKind::Default(PourGateSpec::iter1()),
+                        ] {
+                            for mode in [CastMode::Detachable, CastMode::Bonded] {
+                                let mut r = base.clone();
+                                r.flange = flange;
+                                r.gasket = gasket;
+                                r.bolt_pattern = bolts;
+                                r.pour_gate = gate.clone();
+                                let md = generate_procedure_markdown_v2_for_mode(
+                                    &spec, &pours, &r, mode,
+                                );
+                                let case = format!(
+                                    "{layers} / {flange:?} / {gasket:?} / {bolts:?} / \
+                                     {gate:?} / {mode:?}"
+                                );
+                                assert_cross_refs_resolve(&md, &case);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Assert every backticked `#…` reference in `md` names a heading that is
+    /// actually present in `md`.
+    fn assert_cross_refs_resolve(md: &str, case: &str) {
+        let headings: Vec<&str> = md
+            .lines()
+            .filter(|l| l.starts_with("## ") || l.starts_with("### "))
+            .collect();
+        let mut rest = md;
+        while let Some(at) = rest.find("`#") {
+            rest = &rest[at + 1..];
+            let Some(end) = rest.find('`') else { break };
+            let reference = &rest[..end];
+            rest = &rest[end + 1..];
+            // Prefix, not equality: prose abbreviates a long heading (e.g.
+            // `## Cap-Plane Edge Chamfer` for "… (Expected MC Quantization)")
+            // and that still resolves for a reader. What must not happen is a
+            // reference matching NO heading at all.
+            assert!(
+                headings.iter().any(|h| h.starts_with(reference)),
+                "[{case}]\nsheet points at {reference:?} but that heading is not in it.\n\
+                 headings present:\n{headings:#?}"
+            );
+        }
+    }
+
     /// The selected-export path must write **byte-identical** STLs to the
     /// full export for the same parts (it reuses the same leaf meshing +
     /// filenames), and must write *only* the selected parts. This is the
