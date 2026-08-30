@@ -426,7 +426,7 @@ pub fn generate_procedure_markdown_v2_for_mode(
     write_print_orientation_v2(&mut md, apex_pour, spec.layers.len());
     write_chamfer_recipe_v2(&mut md);
     write_target_fdm_floor_v2(&mut md);
-    write_cfview_sanity_check_v2(&mut md, apex_pour);
+    write_cfview_sanity_check_v2(&mut md, apex_pour, ribbon.dowel_hole.spec().is_some());
     write_cap_plane_chamfer_v2(&mut md);
     write_seam_face_edge_v2(&mut md);
     write_materials_table(&mut md, spec, pour_volumes);
@@ -1164,7 +1164,19 @@ fn write_target_fdm_floor_v2(md: &mut String) {
     md.push('\n');
 }
 
-fn write_cfview_sanity_check_v2(md: &mut String, apex_pour: bool) {
+fn write_cfview_sanity_check_v2(md: &mut String, apex_pour: bool, has_dowels: bool) {
+    // ⚠ Do not send the bencher to verify features the cast never carves.
+    let dowel_check = if has_dowels {
+        "- Dowel holes: cylindrical recessed cavities in BOTH \
+         halves' seam faces, placed by the seam-placement solver at \
+         the body's long-axis extremes in the flange band (§M-S2). \
+         The hole pattern is symmetric — the two halves should \
+         mirror each other exactly along the seam plane."
+    } else {
+        "- Seam faces: FLAT and featureless (`DowelHoleKind::None` — \
+         no dowel holes are carved). Any recessed cavity in a seam \
+         face is a regression."
+    };
     let _ = writeln!(md, "## cf-view Sanity-Check Workflow");
     md.push('\n');
     let _ = writeln!(
@@ -1176,11 +1188,7 @@ fn write_cfview_sanity_check_v2(md: &mut String, apex_pour: bool) {
     let _ = writeln!(
         md,
         "1. **Cup pieces** (`mold_layer_*_piece_0.stl` + `_piece_1.stl`):\n   \
-         - Dowel holes: cylindrical recessed cavities in BOTH \
-         halves' seam faces, placed by the seam-placement solver at \
-         the body's long-axis extremes in the flange band (§M-S2). \
-         The hole pattern is symmetric — the two halves should \
-         mirror each other exactly along the seam plane.\n   \
+         {dowel_check}\n   \
          - No trapezoidal / truncated-pyramid pin remnants on the \
          seam face (the §M-S4-retired prismatic-pin registration \
          path).\n   \
@@ -1459,14 +1467,22 @@ fn write_v2_assembly_note(
     // [[project-cf-cast-unified-mating-plane-recon]] §M-S4.
     match ribbon.dowel_hole.spec() {
         None => {
+            // ⚠ Naming rubber bands / tape while §B says the M5 bolts ARE the
+            // clamp is a third rival protocol for one joint — the same defect
+            // the gasketed arm carries, in the arm nobody checked.
+            let hand_clamp = if bolts_carved {
+                " — the §B M5 through-bolts are the clamp (see below); \
+                 no rubber bands or tape are needed"
+            } else {
+                " and clamp with rubber bands or wide tape during pour + cure"
+            };
             let _ = writeln!(
                 md,
                 "Each layer's mold is two ribbon-cut pieces \
                  (`_piece_0` + `_piece_1`) that meet along the \
                  curve-following seam. This cast has no integral \
                  registration features (`DowelHoleKind::None`); \
-                 align the pieces by hand and clamp with rubber bands \
-                 or wide tape during pour + cure. Each piece's seam \
+                 align the pieces by hand{hand_clamp}. Each piece's seam \
                  face is bit-precise flat to the ribbon plane via \
                  the cup-piece SDF halfspace intersect with \
                  `overlap_m = 0` (post-§M-S1 flush mating; MC's \
@@ -1921,6 +1937,13 @@ fn write_v2_cup_half_clamping_note(
                 } else {
                     "no §B bolt pattern"
                 };
+                // ⚠ Dowels are their own opt-in; with none carved the assembly
+                // section says to align by hand.
+                let mate_method = if ribbon.dowel_hole.spec().is_some() {
+                    "mating the cup halves via the symmetric dowel-hole pattern"
+                } else {
+                    "hand-aligning the cup halves at the seam"
+                };
                 let _ = writeln!(
                     md,
                     "This cast carries a seam-plane flange \
@@ -1928,8 +1951,7 @@ fn write_v2_cup_half_clamping_note(
                      {thickness_mm:.1} mm per-half thickness) but no \
                      per-layer gasket (`GasketKind::None`) and {bolt_status}. \
                      Use the flange as a flat C-clamp \
-                     grip surface: after mating the cup halves via \
-                     the symmetric dowel-hole pattern, apply C-clamps \
+                     grip surface: after {mate_method}, apply C-clamps \
                      to the flange at 4 positions (one per 90° \
                      quadrant around the seam plane perimeter). \
                      Tighten each clamp to hand-tight only — without \
@@ -2211,6 +2233,11 @@ fn write_v2_cup_half_clamping_note(
             // being placed, so "clamp via the §B bolts (or C-clamp if no bolt
             // pattern)" can point a reader at a section that is not in this
             // document — a bare-prose "§B" the cross-reference gate cannot see.
+            let align_method = if ribbon.dowel_hole.spec().is_some() {
+                "aligning on the dowels"
+            } else {
+                "by hand (no dowel holes are carved)"
+            };
             let boss_clamp = if bolts_carved {
                 "clamp via the §B bolts at the bosses"
             } else {
@@ -2224,7 +2251,7 @@ fn write_v2_cup_half_clamping_note(
                  The demand flange is normally run gasket-None (the continuous land \
                  IS the PLA-on-PLA seal); with a gasket also present, lay the gasket \
                  strip on the continuous seal land along the body-cavity perimeter, \
-                 close the halves aligning on the dowels, and {boss_clamp}. Aim for \
+                 close the halves {align_method}, and {boss_clamp}. Aim for \
                  the gasket's design compression; do not over-tighten. Reconsider \
                  whether the gasket is needed once the bare-land seal is proven at \
                  the physical gate."

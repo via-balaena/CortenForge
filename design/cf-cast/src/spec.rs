@@ -1444,7 +1444,8 @@ fn compute_smart_placements(
 /// such predicate can answer the question. A band-arithmetic test reasons
 /// about the radial offset `d`, while the solver tests
 /// `signed_distance(p + n·d)`; the two agree only where the seam silhouette
-/// is CONVEX. Measured on a U-channel body: plate flange at a 9 mm wall, the
+/// is CONVEX. Measured on a U-channel body at a 12 mm wall (the figure
+/// `bolt_prose_matches_what_the_carve_actually_places` exercises): the
 /// arithmetic says infeasible and the solver places 2 bolts — which would
 /// drop the §B section and the whole hardware list from a sheet whose molds
 /// carry M5 holes.
@@ -1459,9 +1460,16 @@ fn compute_smart_placements(
 /// runs a second time, because `write_procedure_v2_for_mode` and
 /// `export_molds_v2` are separate entry points and the CLI calls both. The
 /// early return means a cast WITHOUT a bolt pattern — including the current
-/// iter-1 production spec, which carries no flange — pays nothing. If bolted
+/// iter-1 production spec, which carries no flange — pays nothing.
+///
+/// ⚠ It is also no longer SIDE-EFFECT-FREE: the planner's `eprintln!`
+/// diagnostics (coincident-position collapses, empty-silhouette warnings) are
+/// emitted again, so a bolted cast prints each one twice per CLI run. If bolted
 /// casts get expensive on the pivot's real scan bodies, thread the already
 /// computed [`SmartPlacements`] from the export path instead of re-solving.
+// ⚠ `pub`, not `pub(crate)`, deliberately: `mod spec` is private (lib.rs), so
+// this is crate-visible either way — and clippy's `redundant_pub_crate` rejects
+// `pub(crate)` here. Do not "tighten" it back; the lint will fail the build.
 pub fn bolts_carved_per_layer(spec: &CastSpec, ribbon: &Ribbon) -> Vec<bool> {
     let n = spec.layers.len();
     if ribbon.bolt_pattern.spec().is_none() {
@@ -3862,7 +3870,9 @@ mod tests {
     /// rendering the whole document and resolving its own references can.
     ///
     /// `compute_pour_volumes` depends only on the spec, so it is computed once
-    /// per layer count and reused across all 48 ribbon × mode variations.
+    /// per layer count and reused across every ribbon × mode variation
+    /// (3 flanges × 2 gaskets × 2 bolt kinds × 3 pour gates × 2 modes = 72 per
+    /// layer config, 288 in total).
     #[test]
     fn every_cross_referenced_section_exists_in_the_same_sheet() {
         use crate::bolt_pattern::{BoltPatternKind, BoltPatternSpec};
@@ -4214,19 +4224,34 @@ mod tests {
             no_dowels.contains("### M5 through-bolt clamp pattern (§B)"),
             "fixture must carve bolts, or the §B prose never renders:\n{no_dowels}"
         );
+        // ⚠ NO verb filter. The first version of this oracle keyed on
+        // "register" / "seat the two halves" and missed three more sites that
+        // say the same thing in different words — "mating the cup halves via
+        // the symmetric dowel-hole pattern", "aligning on the dowels", and a
+        // cf-view step telling the bencher to inspect holes never carved.
+        // Any un-negated ASSEMBLY mention of a dowel is a contradiction.
         for sentence in no_dowels.split(['.', '\n']) {
             let lower = sentence.to_lowercase();
             if !lower.contains("dowel") {
                 continue;
             }
-            let instructs = lower.contains("register") || lower.contains("seat the two halves");
+            // Reference prose (what a dowel IS, how to enable one) is fine;
+            // an instruction that ACTS on dowels is not.
+            let acts_on_them = [
+                "register",
+                "seat the two halves",
+                "mating",
+                "aligning on",
+                "align on",
+            ]
+            .iter()
+            .any(|v| lower.contains(v));
             let negated = lower
                 .split(|c: char| !c.is_alphanumeric())
-                .any(|w| w == "no" || w == "not" || w == "none" || w == "without" || w == "if");
+                .any(|w| matches!(w, "no" | "not" | "none" | "without" | "if" | "disabled"));
             assert!(
-                !instructs || negated,
-                "a cast with DowelHoleKind::None is told to register on dowels: \
-                 {sentence}"
+                !acts_on_them || negated,
+                "a cast with DowelHoleKind::None is told to act on dowels: {sentence}"
             );
         }
 
