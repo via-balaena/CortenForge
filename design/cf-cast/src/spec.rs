@@ -5833,12 +5833,17 @@ mod tests {
 
     #[test]
     fn generate_procedure_markdown_v2_includes_print_orientation_revision() {
-        // S6 anchors the §G-4 revision to seam-face-UP for cup pieces
-        // and dome-end-DOWN for plug pieces (cap-plane-face-DOWN
-        // explicitly called out as INVALID). These vocabulary
-        // anchors gate any future rewrite that silently flips the
-        // orientation guidance back to recon-1 §G-4's original
-        // (geometrically-falsified) seam-face-on-bed lock.
+        // ⚠⚠ THIS TEST USED TO PIN THE DEFECT. It asserted
+        // `"Orient seam face UP"` and described recon-1 §G-4's original
+        // seam-face-on-bed lock as "geometrically-falsified" — but the thing
+        // that falsified it was S3's registration pins crossing the seam, and
+        // §M-S4 (2026-05-27) retired those entirely. The conclusion was never
+        // re-derived, so the sheet kept instructing the OPPOSITE of the hard
+        // flat-mating-face constraint (workshop 2026-05-30: the cup halves
+        // print mating-face-DOWN so the bed backstops the seal faces'
+        // flatness) — and this assertion is what held it in place.
+        // Corrected 2026-08-31: seam-face-on-bed is the lock again, now
+        // gated on the seam actually BEING planar.
         // ⚠ Plug pins ENABLED. `PlugPinKind` defaults OFF, and the
         // plug-lock prose this test pins is now gated on the cast actually
         // carrying a lock — an unconditional "cap-plane-face-DOWN is INVALID"
@@ -5849,9 +5854,20 @@ mod tests {
         ));
         let pours = spec.compute_pour_volumes().unwrap();
         let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
+        // The shared fixture's ribbon is curve-following (`with_planar_seam`
+        // is never called on it), so it CANNOT satisfy the constraint and must
+        // get a stop-work block rather than any orientation at all.
         assert!(
-            md.contains("Orient seam face UP"),
-            "cup-piece seam-face-UP guidance missing in: {md}"
+            md.contains("STOP — this cast's seam is NOT planar"),
+            "non-planar seam must stop work, not pick an orientation: {md}"
+        );
+        assert!(
+            !md.contains("Orient seam face UP"),
+            "the retired seam-face-UP lock must not reappear: {md}"
+        );
+        assert!(
+            !md.contains("Orient the mating (seam) face DOWN"),
+            "a curve-following seam has no flat mating face to lay down: {md}"
         );
         assert!(
             md.contains("Orient dome end DOWN"),
@@ -5864,6 +5880,40 @@ mod tests {
         assert!(
             md.contains("§G-4 revision"),
             "§G-4 revision header missing in: {md}"
+        );
+    }
+
+    /// The constraint-correct branch — which NO fixture exercised before
+    /// 2026-08-31, which is precisely why the sheet could ship the opposite
+    /// instruction for months without a red test.
+    #[test]
+    fn a_planar_seam_locks_the_cup_pieces_mating_face_down_on_the_bed() {
+        let (spec, ribbon) = v2_procedure_fixture();
+        let ribbon = ribbon.with_planar_seam();
+        assert!(
+            ribbon.planar_seam.is_some(),
+            "fixture surgery did not land — the seam is still curve-following"
+        );
+        let pours = spec.compute_pour_volumes().unwrap();
+        let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
+        assert!(
+            md.contains("Orient the mating (seam) face DOWN, flat on the bed"),
+            "planar seam must lock mating-face-DOWN: {md}"
+        );
+        // The exact string the defect emitted. Its absence IS the fix.
+        assert!(
+            !md.contains("Orient seam face UP"),
+            "the retired seam-face-UP lock must not reappear: {md}"
+        );
+        assert!(
+            !md.contains("STOP — this cast's seam is NOT planar"),
+            "a planar seam must not trip the stop-work block: {md}"
+        );
+        // The reason, not just the instruction — an orientation with no stated
+        // rationale is what let the previous one survive its premise.
+        assert!(
+            md.contains("clamp seal") && md.contains("backstops"),
+            "the bed-as-flatness-reference rationale must be stated: {md}"
         );
     }
 
