@@ -3999,34 +3999,47 @@ mod tests {
                                 for pins in
                                     [PlugPinKind::None, PlugPinKind::Axial(PlugPinSpec::iter1())]
                                 {
-                                    for mode in [CastMode::Detachable, CastMode::Bonded] {
-                                        let mut r = base.clone();
-                                        r.flange = flange;
-                                        r.gasket = gasket;
-                                        r.bolt_pattern = bolts;
-                                        r.dowel_hole = dowels;
-                                        r.pour_gate = gate.clone();
-                                        r.plug_pins = pins.clone();
-                                        let md = generate_procedure_markdown_v2_for_mode(
-                                            &spec, &pours, &r, mode,
-                                        );
-                                        // ⚠ Name EVERY dimension — a failure
-                                        // otherwise identifies one of four
-                                        // sheets, and this label is all a CI
-                                        // log shows.
-                                        let case = format!(
-                                            "{layers} / {flange:?} / {gasket:?} \
+                                    // ⚠ Seam planarity MUST be a dimension.
+                                    // Every fixture here is curve-following, so
+                                    // when the print-orientation and seam-face
+                                    // sections were split on `planar_seam`
+                                    // (2026-08-31) the ENTIRE planar branch —
+                                    // its mating-face-DOWN lock, its stop-work
+                                    // block, `## Seam Face (Flat by
+                                    // Construction)` and every cross-reference
+                                    // they carry — rendered in ZERO of the
+                                    // sheets this gate checks.
+                                    for planar in [false, true] {
+                                        for mode in [CastMode::Detachable, CastMode::Bonded] {
+                                            let mut r = base.clone();
+                                            r.flange = flange;
+                                            r.gasket = gasket;
+                                            r.bolt_pattern = bolts;
+                                            r.dowel_hole = dowels;
+                                            r.pour_gate = gate.clone();
+                                            r.plug_pins = pins.clone();
+                                            let r = if planar { r.with_planar_seam() } else { r };
+                                            let md = generate_procedure_markdown_v2_for_mode(
+                                                &spec, &pours, &r, mode,
+                                            );
+                                            // ⚠ Name EVERY dimension — a failure
+                                            // otherwise identifies one of four
+                                            // sheets, and this label is all a CI
+                                            // log shows.
+                                            let case = format!(
+                                                "{layers} / {flange:?} / {gasket:?} \
                                              / dowels={dowels:?} / {bolts:?} \
                                              / {gate:?} / pins={pins:?} \
-                                             / {mode:?}"
-                                        );
-                                        tally_coverage(
-                                            &md,
-                                            matches!(flange, FlangeKind::Plate(_)),
-                                            &mut cover,
-                                        );
-                                        assert_cross_refs_resolve(&md, &case);
-                                        assert_prose_is_well_formed(&md, &case);
+                                             / {mode:?} / planar={planar}"
+                                            );
+                                            tally_coverage(
+                                                &md,
+                                                matches!(flange, FlangeKind::Plate(_)),
+                                                &mut cover,
+                                            );
+                                            assert_cross_refs_resolve(&md, &case);
+                                            assert_prose_is_well_formed(&md, &case);
+                                        }
                                     }
                                 }
                             }
@@ -4399,6 +4412,12 @@ mod tests {
              side is unexercised and this gate passes vacuously over it"
         );
         assert!(
+            cover.planar_seam > 0,
+            "matrix rendered no planar-seam sheet — the mating-face-DOWN lock, \
+             `## Seam Face (Flat by Construction)` and their cross-references \
+             are unexercised, which is exactly how they shipped uncovered"
+        );
+        assert!(
             cover.apex > 0,
             "matrix rendered no apex-axial sheet — the production pour layout \
              and its dedicated writer are unexercised"
@@ -4422,6 +4441,7 @@ mod tests {
         dowelled: usize,
         plug_lock: usize,
         ventless: usize,
+        planar_seam: usize,
     }
 
     fn tally_coverage(md: &str, plate_flange: bool, cover: &mut MatrixCoverage) {
@@ -4436,6 +4456,9 @@ mod tests {
         }
         if md.contains("no vent leg is carved") {
             cover.ventless += 1;
+        }
+        if md.contains("Orient the mating (seam) face DOWN") {
+            cover.planar_seam += 1;
         }
         // ⚠ PLATE specifically. A demand flange is always feasible, so
         // counting ANY bolted sheet would be satisfied by the arm that was

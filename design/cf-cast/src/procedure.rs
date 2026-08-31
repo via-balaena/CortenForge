@@ -2229,11 +2229,12 @@ fn write_seam_face_edge_v2(md: &mut String, has_plug_lock: bool, seam_is_planar:
         let _ = writeln!(
             md,
             "In cf-view you may still see faceting where the seam plane meets \
-             the dome cap (high Z) and the cap-plane wall (low Z). That is MC \
-             quantization at a derivative discontinuity — the same byproduct \
-             `## Cap-Plane Edge Chamfer` documents — **not** seam-face \
-             non-flatness. The mating face itself is flat, which is what lets \
-             it be printed against the bed and clamped into a seal."
+             the dome cap (high Z) and the cap-plane wall (low Z). What it is NOT \
+             is seam-face non-flatness — that is what the 1 µm gate above \
+             rules out. It is edge quantization where the seam plane meets a \
+             curved surface, the same class `## Cap-Plane Edge Chamfer` \
+             documents. The mating face itself is flat, which is what lets it \
+             be printed against the bed and clamped into a seal."
         );
         md.push('\n');
         return;
