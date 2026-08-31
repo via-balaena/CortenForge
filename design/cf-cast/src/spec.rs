@@ -5917,6 +5917,56 @@ mod tests {
         );
     }
 
+    /// ★★★ Two sections describing the same surface in different words is the
+    /// one thing a `contains` test cannot catch and a grep will miss. Before
+    /// 2026-08-31 the planar sheet said "Orient the mating (seam) face DOWN,
+    /// flat on the bed" and then, ~80 lines later, "The seam face ... is NOT a
+    /// single flat plane" and "Do NOT try to flatten the seam face globally".
+    /// Both shipped in the same document. This asserts they cannot coexist.
+    #[test]
+    fn a_planar_seam_sheet_does_not_argue_with_itself_about_flatness() {
+        let (spec, ribbon) = v2_procedure_fixture();
+        let ribbon = ribbon.with_planar_seam();
+        let pours = spec.compute_pour_volumes().unwrap();
+        let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
+
+        // It must commit to the seam being flat...
+        assert!(
+            md.contains("Orient the mating (seam) face DOWN, flat on the bed"),
+            "planar sheet must lock mating-face-DOWN: {md}"
+        );
+        // ...and must not then deny it anywhere else in the same document.
+        for contradiction in [
+            "NOT a single flat plane",
+            "Do NOT try to flatten the seam face",
+            "The seam face is intentionally curved",
+            "seam face follows the curved centerline",
+        ] {
+            assert!(
+                !md.contains(contradiction),
+                "planar sheet contradicts its own flat-seam lock with \
+                 {contradiction:?}: {md}"
+            );
+        }
+    }
+
+    /// The curve-following sheet must KEEP that guidance — it is correct there.
+    /// Without this, gating the section could be "fixed" by deleting it.
+    #[test]
+    fn a_curve_following_sheet_keeps_the_centerline_curvature_guidance() {
+        let (spec, ribbon) = v2_procedure_fixture();
+        assert!(
+            ribbon.planar_seam.is_none(),
+            "fixture must be curve-following"
+        );
+        let pours = spec.compute_pour_volumes().unwrap();
+        let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
+        assert!(
+            md.contains("Do NOT try to flatten the seam face"),
+            "curve-following sheet must keep the do-not-flatten guidance: {md}"
+        );
+    }
+
     #[test]
     fn generate_procedure_markdown_v2_lists_target_fdm_floor() {
         // S6 anchors the recon-1 §G-3 consumer-FDM tolerance floor —

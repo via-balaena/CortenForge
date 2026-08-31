@@ -479,7 +479,7 @@ pub fn generate_procedure_markdown_v2_for_mode(
     );
     write_cfview_sanity_check_v2(&mut md, apex_pour, ribbon, features, has_gasket);
     write_cap_plane_chamfer_v2(&mut md, has_plug_lock);
-    write_seam_face_edge_v2(&mut md, has_plug_lock);
+    write_seam_face_edge_v2(&mut md, has_plug_lock, seam_is_planar);
     write_materials_table(&mut md, spec, pour_volumes);
     write_generic_guidance(&mut md, spec.layers.len());
     write_v2_assembly_note(&mut md, ribbon, spec.layers.len(), features, has_gasket);
@@ -2204,7 +2204,41 @@ fn write_cap_plane_chamfer_v2(md: &mut String, has_plug_lock: bool) {
 // Linear writeln!s + a single bullet-list block; factoring out subsections would
 // just shuffle the prose into helper names without reducing complexity.
 #[allow(clippy::too_many_lines)]
-fn write_seam_face_edge_v2(md: &mut String, has_plug_lock: bool) {
+fn write_seam_face_edge_v2(md: &mut String, has_plug_lock: bool, seam_is_planar: bool) {
+    // ⚠⚠ This whole section describes the CURVE-FOLLOWING seam: "it is NOT a
+    // single flat plane", "do NOT try to flatten the seam face globally". On a
+    // `planar_seam` cast every word of that is false, and it directly
+    // contradicts `### Cup pieces` above, which tells the bencher to lay the
+    // flat mating face on the bed. Ungated, the same sheet argued both sides.
+    // Found by READING the rendered sheet in review — no test compares two
+    // sections against each other.
+    if seam_is_planar {
+        let _ = writeln!(md, "## Seam Face (Flat by Construction)");
+        md.push('\n');
+        let _ = writeln!(
+            md,
+            "This cast uses a **planar seam** (`[cast] planar_seam = true`), so \
+             each cup half's mating face is a single flat plane — the §F-4 \
+             bit-precise SDF halfspace cut, with marching cubes interpolating \
+             the linear seam SDF onto that plane. Flatness is gated at **1 µm** \
+             by `piece::tests::mating_face_is_mathematically_flat_and_coplanar`, \
+             roughly 400× finer than the 0.4 mm extrusion width, so nothing at \
+             this scale survives to the print."
+        );
+        md.push('\n');
+        let _ = writeln!(
+            md,
+            "In cf-view you may still see faceting where the seam plane meets \
+             the dome cap (high Z) and the cap-plane wall (low Z). That is MC \
+             quantization at a derivative discontinuity — the same byproduct \
+             `## Cap-Plane Edge Chamfer` documents — **not** seam-face \
+             non-flatness. The mating face itself is flat, which is what lets \
+             it be printed against the bed and clamped into a seal."
+        );
+        md.push('\n');
+        return;
+    }
+
     let _ = writeln!(
         md,
         "## Seam-Face Edge Non-Flatness (Expected Centerline Curvature + MC)"
