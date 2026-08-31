@@ -156,6 +156,67 @@ fn every_gating_job_is_in_quality_gate_needs() {
     }
 }
 
+/// A GATED job must not be conditional on the event type.
+///
+/// ⚠⚠ This nearly broke the merge queue for the whole repository. The
+/// `doc-theft` job first carried `if: github.event_name == 'pull_request'`.
+/// This workflow also runs on `merge_group` and `push`; a job whose `if` is
+/// false reports **`skipped`**, and `quality-gate` fails anything that is not
+/// exactly `success`. Every merge-queue run would have failed the required
+/// check, so nothing could ever have landed on main.
+///
+/// `semver` carries the same condition and is harmless ONLY because it is
+/// advisory — it is on [`UNGATED_JOBS`] and nothing waits on it. That made the
+/// pattern look safe by example, which is exactly why this needs a test rather
+/// than a habit.
+///
+/// The fix for such a job is not to drop the condition but to move it: let the
+/// job always run, and have the STEP decide what it can do for that event.
+#[test]
+fn no_gated_job_is_conditional_on_the_event_type() {
+    let needs = parse_needs(WORKFLOW, "quality-gate");
+    assert!(!needs.is_empty(), "could not parse `quality-gate` needs");
+
+    let mut current: Option<String> = None;
+    let mut in_steps = false;
+    let mut offenders: Vec<String> = Vec::new();
+
+    for raw in WORKFLOW.lines() {
+        // A top-level job key: exactly two spaces of indent, then `name:`.
+        if let Some(rest) = raw.strip_prefix("  ") {
+            if !rest.starts_with(' ') && !rest.starts_with('#') {
+                if let Some(name) = rest.strip_suffix(':') {
+                    if !name.contains(' ') {
+                        current = Some(name.to_string());
+                        in_steps = false;
+                        continue;
+                    }
+                }
+            }
+        }
+        if raw.trim_start().starts_with("steps:") {
+            in_steps = true;
+        }
+        // Only the job-level `if:` matters; a step-level one is the correct fix.
+        if !in_steps && raw.trim_start().starts_with("if:") && raw.contains("github.event_name") {
+            if let Some(job) = current.as_deref() {
+                if needs.iter().any(|n| n == job) {
+                    offenders.push(job.to_string());
+                }
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "gated job(s) {offenders:?} are conditional on `github.event_name`. A \
+         skipped job reports `skipped`, and `quality-gate` fails anything that \
+         is not `success` — so every merge_group and push run of the required \
+         check would fail and nothing could merge. Move the condition into the \
+         STEP and let the job always run."
+    );
+}
+
 #[test]
 fn parse_jobs_extracts_top_level_keys_only() {
     let yaml = "\

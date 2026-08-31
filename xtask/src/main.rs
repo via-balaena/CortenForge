@@ -30,6 +30,7 @@ mod check;
 mod complete;
 mod coverage;
 mod coverage_run;
+mod doc_theft;
 mod grade;
 // Dual-purpose, and `xtask/build.rs` pulls the whole thing in via `include!`. It
 // lives under src/ so it is COMPILED INTO A CRATE WITH A TEST TARGET: a build script
@@ -197,6 +198,19 @@ enum Commands {
         json: bool,
     },
 
+    /// Report doc comments stolen from the item below them.
+    ///
+    /// Inserting an item above an existing one but BELOW its doc comment
+    /// silently reassigns that doc; the original is left undocumented while
+    /// everything still compiles and passes. It has happened ten times here,
+    /// and reading the diff has missed it. Reports any item that HAD a doc
+    /// before the change and has none after.
+    DocTheft {
+        /// Git ref to diff against (the PR base); compared as `base...HEAD`.
+        #[arg(long, default_value = "origin/main")]
+        base: String,
+    },
+
     /// Run full CI suite (same as GitHub Actions)
     Ci,
 
@@ -352,6 +366,7 @@ fn main() -> Result<()> {
         ),
         Commands::Complete { crate_name, force } => complete::run(&crate_name, force),
         Commands::Affected { base, json } => affected::run(&base, json),
+        Commands::DocTheft { base } => doc_theft::run(&base),
         Commands::Ci => check::run_ci(),
         Commands::Status => grade::status(),
         Commands::RunValidators {
