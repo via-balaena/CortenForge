@@ -2460,6 +2460,18 @@ fn write_v2_assembly_note(
             let clearance_mm = spec.clearance_m * 1000.0;
             let depth_mm = spec.depth_m * 1000.0;
             let hole_diameter_mm = 2.0_f64.mul_add(clearance_mm, diameter_mm);
+            // ⚠⚠ Quote what the pipeline CARVES, not what the config REQUESTED
+            // — the #850 lesson, and this sheet had the same bug in a third
+            // place. `dowel_hole.rs:215` carves `depth_m + HOLE_AXIAL_SLACK_M`
+            // per half, so a bencher's depth gauge reads 5.5 mm where the
+            // config says 5.0. The sheet also said each dowel "inserts ~4.5 mm
+            // ... with 1.0 mm slack at each tip", which sums to 5.5 — so the
+            // document disagreed with its own arithmetic.
+            let hole_axial_slack_mm = crate::dowel_hole::HOLE_AXIAL_SLACK_M * 1000.0;
+            // ★ ASK the carve, do not recompute it. Re-deriving here is how the
+            // #850 class survived its own fix: the sheet stopped quoting
+            // `depth_m` but started quoting a second copy of the carve formula.
+            let carved_half_depth_mm = crate::dowel_hole::carved_half_length_m(spec) * 1000.0;
             let _ = writeln!(
                 md,
                 "Each layer's mold is two ribbon-cut pieces \
@@ -2468,7 +2480,10 @@ fn write_v2_assembly_note(
                  ({hole_diameter_mm:.2} mm Ø — \
                  {diameter_mm:.1} mm nominal dowel × \
                  2 × {clearance_mm:.2} mm radial clearance, \
-                 {depth_mm:.1} mm deep per half) are carved through \
+                 {carved_half_depth_mm:.1} mm deep per half as carved — \
+                 {depth_mm:.1} mm nominal plus {hole_axial_slack_mm:.1} mm \
+                 axial slack that keeps the cylinder's flat caps inside the \
+                 material) are carved through \
                  BOTH cup-halves' mating faces. The seam-placement \
                  solver positions the dowels at the body's long-axis \
                  extremes (maximum moment arm, so a registration pair \
@@ -2482,13 +2497,22 @@ fn write_v2_assembly_note(
             // §M-S2 followup: total tip slack is the SUM of the
             // dowel's own insertion slack + the hole's axial slack
             // (cold-read 2026-05-27 caught the prose understating
-            // this by half by counting only one).
-            let dowel_insertion_slack_mm = crate::dowel::DOWEL_INSERTION_SLACK_M * 1000.0;
-            let hole_axial_slack_mm = crate::dowel_hole::HOLE_AXIAL_SLACK_M * 1000.0;
-            let dowel_length_mm = depth_mm.mul_add(2.0, -2.0 * dowel_insertion_slack_mm);
-            let total_cavity_mm = depth_mm.mul_add(2.0, 2.0 * hole_axial_slack_mm);
+            // this by half by counting only one). ★ Both quantities are now
+            // read from their owning module rather than re-derived here.
+            // ★ The EFFECTIVE chamfer, not the requested constant — the
+            // builder clamps it to the dowel's own radius and half-length, and
+            // re-deriving here would let the sheet describe a tip the mesh
+            // does not have (negative, on a sub-millimetre dowel).
+            let dowel_chamfer_mm = crate::dowel::effective_tip_chamfer_m(spec) * 1000.0;
+            // ⚠ The chamfer HALVES first-layer adhesion on a part with a 3:1
+            // aspect ratio. Quote the number the bencher needs rather than
+            // leaving them to discover it when a dowel pops off mid-print.
+            let dowel_tip_dia_mm = 2.0f64.mul_add(-dowel_chamfer_mm, diameter_mm);
+            let dowel_bed_area_mm2 = std::f64::consts::PI * (dowel_tip_dia_mm / 2.0).powi(2);
+            let dowel_length_mm = crate::dowel::length_m(spec) * 1000.0;
+            let total_cavity_mm = 2.0 * carved_half_depth_mm;
             let tip_slack_mm = (total_cavity_mm - dowel_length_mm) / 2.0;
-            let insert_depth_mm = depth_mm + hole_axial_slack_mm - tip_slack_mm;
+            let insert_depth_mm = carved_half_depth_mm - tip_slack_mm;
             let _ = writeln!(
                 md,
                 "**Print `dowel.stl` first.** The export emits a \
@@ -2497,10 +2521,21 @@ fn write_v2_assembly_note(
                  {dowel_length_mm:.1} mm long — sized so each dowel \
                  inserts ~{insert_depth_mm:.1} mm into each cup-half \
                  with {tip_slack_mm:.1} mm assembly slack at each \
-                 tip). Print the dowels VERTICAL (cylindrical axis \
+                 tip; each tip carries a {dowel_chamfer_mm:.1} mm 45° \
+                 lead-in chamfer, so the dowel self-centres into a hole \
+                 mouth that first-layer squish has narrowed — start it by \
+                 hand, and if it still needs forcing say so, because that \
+                 is a fit problem, not a technique problem). Print the \
+                 dowels VERTICAL (cylindrical axis \
                  perpendicular to the build plate; cf-view loads them \
-                 oriented this way) so the cylindrical walls print \
-                 clean without overhangs. Insert one dowel through \
+                 oriented this way) so the shank walls print clean. \
+                 **Add a brim.** The tip chamfer narrows the bed \
+                 contact to a {dowel_tip_dia_mm:.1} mm Ø disc — about \
+                 {dowel_bed_area_mm2:.1} mm² under a \
+                 {dowel_length_mm:.1} mm-tall part, which will not hold \
+                 on its own. The chamfer itself is a 45° flare, at the \
+                 self-supporting limit, so it needs no support. Insert \
+                 one dowel through \
                  each pair of matching holes to register the two \
                  halves laterally before clamping."
             );
@@ -2743,7 +2778,10 @@ fn write_v2_plug_anchor_note(md: &mut String, ribbon: &Ribbon) {
             let lock_length_mm = lock_spec.pin_half_length_m * 2.0 * 1000.0;
             let chamfer_mm = lock_spec.base_chamfer_m * 1000.0;
             let diametral_mm = lock_spec.diametral_clearance_m * 1000.0;
-            let socket_base_lateral_mm = base_lateral_mm + diametral_mm;
+            // ★ ASK the spec how big the socket is. Re-adding the clearance
+            // here splits the `/ 2.0` across two sites — the same split that
+            // made the funnel nipple's asymmetric clearance quotable wrong.
+            let socket_base_lateral_mm = lock_spec.socket_base_half_extents_m().x * 2.0 * 1000.0;
             let _ = writeln!(
                 md,
                 "Each per-layer plug carries a **truncated-pyramid \
@@ -3461,7 +3499,9 @@ fn write_apex_axial_pour_note(
          blind hole); trim it flush off the cast.{solver_bracket}"
     );
     md.push('\n');
-    let mouth_dia_mm = gate_dia_mm * crate::pour::INTEGRAL_FUNNEL_MOUTH_FACTOR;
+    // ★ ASK the builder, do not re-apply the factor. `pour.rs` owns how the
+    // mouth is sized; re-deriving here is the #850 class in its funnel form.
+    let mouth_dia_mm = crate::pour::integral_funnel_mouth_radius_m(spec.gate_radius_m) * 2000.0;
     let funnel_height_mm = crate::pour::INTEGRAL_FUNNEL_HEIGHT_M * 1000.0;
     let _ = writeln!(
         md,
@@ -3615,11 +3655,13 @@ fn write_v2_pour_gate_note(
                  pour leg (+binormal hole, Positive piece).{air_escape}"
             );
             md.push('\n');
-            // NIPPLE_DIAMETRAL_CLEARANCE_M is funnel-private; recompute
-            // the asymmetric-`/2` cup-vs-nipple Ø delta from the spec so
-            // workshop user sees the actual diametral gap.
+            // ★ The clearance is ASYMMETRIC — all of it comes off the nipple,
+            // the cup hole stays nominal — so the `/ 2.0` must live in exactly
+            // one place. `funnel.rs` owns it; this asks rather than re-typing.
+            // (The old comment here claimed the constant was "funnel-private";
+            // it is `pub`, and the recompute it justified was the #850 class.)
             let nipple_clearance_mm = crate::funnel::NIPPLE_DIAMETRAL_CLEARANCE_M * 1000.0;
-            let nipple_outer_dia_mm = gate_dia_mm - nipple_clearance_mm;
+            let nipple_outer_dia_mm = crate::funnel::nipple_outer_radius_m(spec) * 2000.0;
             let _ = writeln!(
                 md,
                 "**Pour funnel** (one-time print: `funnel.stl`). Honey-\

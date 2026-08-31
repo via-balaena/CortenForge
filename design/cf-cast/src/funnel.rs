@@ -143,6 +143,16 @@ pub const FUNNEL_NIPPLE_WALL_M: f64 = 0.0015;
 /// §9 M5.
 pub const NIPPLE_DIAMETRAL_CLEARANCE_M: f64 = 0.0005;
 
+/// The detachable funnel nipple's OUTER radius for a given pour-gate spec.
+///
+/// ★★★ **THE ONE DERIVATION.** The clearance is ASYMMETRIC — all of it comes
+/// off the nipple, the cup hole stays nominal — so the `/ 2.0` must live in
+/// exactly one place. The mesh builder and the workshop prose both call this.
+#[must_use]
+pub fn nipple_outer_radius_m(spec: &crate::pour::PourGateSpec) -> f64 {
+    spec.gate_radius_m - NIPPLE_DIAMETRAL_CLEARANCE_M / 2.0
+}
+
 /// Bowl-bottom outer radius (m).
 ///
 /// 10 mm — the visible "shoulder" where the tilted spout meets the
@@ -236,7 +246,7 @@ pub fn build_funnel_solid(ribbon: &Ribbon) -> Option<(Solid, Vec<MatingTransform
     if spec.layout == PourGateLayout::ApexAxial {
         return None;
     }
-    let nipple_outer_r = spec.gate_radius_m - NIPPLE_DIAMETRAL_CLEARANCE_M / 2.0;
+    let nipple_outer_r = nipple_outer_radius_m(spec);
     let nipple_inner_r = nipple_outer_r - FUNNEL_NIPPLE_WALL_M;
     let bowl_top_inner_r = FUNNEL_TOP_OUTER_RADIUS_M - FUNNEL_CONE_WALL_M;
 
@@ -416,6 +426,26 @@ mod tests {
     /// inserted-nipple standalone funnel for this layout. (Recon §7.8 —
     /// the inserted nipple's wall was a ~5.6× `r⁴` throat constriction;
     /// the integral funnel's lumen is continuous into the bore.)
+    /// ★★★ LITERAL expected values, deliberately NOT re-derived.
+    ///
+    /// `funnel_nipple_wall_is_solid` is an inside/outside SDF probe with about
+    /// half a wall-thickness of slack, so it cannot see a 0.25 mm radius error:
+    /// mutating the `/ 2.0` away passed the whole suite. The ASYMMETRY is the
+    /// load-bearing part, so it gets a number rather than a formula.
+    #[test]
+    fn nipple_outer_radius_is_dimensionally_pinned_and_asymmetric() {
+        let mut spec = PourGateSpec::iter1();
+        spec.gate_radius_m = 0.004;
+        // 4.000 mm gate, 0.5 mm diametral clearance, ALL of it off the nipple
+        // → 3.750 mm nipple outer radius, NOT 3.500.
+        assert!((nipple_outer_radius_m(&spec) - 0.003_75).abs() < 1e-12);
+        assert!(
+            (nipple_outer_radius_m(&spec) - 0.003_5).abs() > 1e-9,
+            "taking the FULL clearance off the nipple would loosen the fit by \
+             0.25 mm on radius — the clearance is asymmetric"
+        );
+    }
+
     #[test]
     fn build_funnel_solid_apex_axial_is_none_now_integral() {
         let ribbon = apex_axial_ribbon();

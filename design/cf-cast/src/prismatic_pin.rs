@@ -245,11 +245,24 @@ impl PrismaticPinSpec {
         let inflate = Vector2::new(half_diametral, half_diametral);
         PrismaticPinParams {
             pose,
-            base_half_extents_m: self.pin_base_half_extents_m + inflate,
+            base_half_extents_m: self.socket_base_half_extents_m(),
             tip_half_extents_m: self.pin_tip_half_extents_m + inflate,
             half_length_m: self.pin_half_length_m + half_axial,
             base_chamfer_m: self.base_chamfer_m,
         }
+    }
+
+    /// The socket's inflated BASE half-extents, without needing a pose.
+    ///
+    /// ★★★ **THE ONE DERIVATION** of "how much bigger the socket is than the
+    /// pin". [`Self::socket_params`] uses it, and so does the workshop prose in
+    /// `crate::procedure`, which previously re-added `diametral_clearance_m`
+    /// itself. Splitting the `/ 2.0` across two call sites is exactly how the
+    /// funnel nipple's asymmetric clearance went wrong.
+    #[must_use]
+    pub fn socket_base_half_extents_m(&self) -> Vector2<f64> {
+        let half_diametral = self.diametral_clearance_m / 2.0;
+        self.pin_base_half_extents_m + Vector2::new(half_diametral, half_diametral)
     }
 }
 

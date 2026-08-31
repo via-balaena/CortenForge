@@ -422,6 +422,106 @@ pub fn build_cylinder_along_axis(
     z_aligned.transform(&affine_12_from_isometry(&iso))
 }
 
+/// The tip chamfer [`build_chamfered_cylinder_along_axis`] will ACTUALLY cut,
+/// after clamping the request to the geometry that exists.
+///
+/// ★★★ **THE ONE ARITHMETIC SOURCE.** Anything that describes the chamfer —
+/// the builder, and the workshop prose in `crate::procedure` — must call this
+/// rather than re-deriving from `DOWEL_TIP_CHAMFER_M`. The prose briefly did
+/// re-derive, and on a small dowel it would have printed a NEGATIVE tip
+/// diameter while the mesh carried a clamped positive one: the #850 class
+/// (describing what was requested, not what is built) reappearing inside the
+/// fix for it. Same remedy as the #853 Slacker step — one function, both
+/// consumers.
+///
+/// 40 % keeps a majority of both the radius and the shank as bearing surface
+/// at any scale. At the iter-1 dowel (1.5 mm radius, 4.5 mm half-length)
+/// neither bound binds and the full 0.4 mm request is used.
+#[must_use]
+pub fn effective_tip_chamfer_m(requested_m: f64, radius_m: f64, half_length_m: f64) -> f64 {
+    requested_m.min(radius_m * 0.4).min(half_length_m * 0.4)
+}
+
+/// Build a [`Manifold`] cylinder with a **conical lead-in chamfer at
+/// both ends**, via `Manifold::hull_pts`.
+///
+/// A chamfered cylinder is convex, so the hull of four coaxial rings
+/// reproduces it exactly — the same construction
+/// [`build_truncated_pyramid_via_hull_pts`] uses for the plug-lock
+/// chamfer band, and for the same reason: hull resolution is native
+/// and independent of any marching-cubes cell size.
+///
+/// Rings, in `parent`-local Z (the cylinder axis), radius `r`,
+/// chamfer `c`:
+///
+/// - `z = -half_length`, radius `r - c` — the entering tip
+/// - `z = -half_length + c`, radius `r` — chamfer shoulder
+/// - `z = +half_length - c`, radius `r`
+/// - `z = +half_length`, radius `r - c`
+///
+/// ⚠ **Why the dowel needs this at all:** the workshop reported
+/// (2026-08-31) needing a CLAMP to seat a dowel — a fail of recon §G-6's
+/// acceptance criterion (a) "seat without forcing". The dowel was the one
+/// mating feature in the crate with square-cut ends and no lead-in, while
+/// the plug-floor lock has carried a chamfer described as a
+/// "lead-in self-centering aid" since §G-6. Under the mating-face-DOWN
+/// print lock the hole mouth is bed-adjacent, so first-layer squish
+/// narrows exactly the entry a square-cut pin has to find. A chamfer
+/// bridges that without touching the fit along the shank, so lateral
+/// registration precision is unchanged.
+///
+/// Falls back to a plain cylinder when `tip_chamfer_m <= 0.0`.
+///
+/// ⚠⚠ **The chamfer is CLAMPED, never asserted.** `[dowel_hole].diameter_m`
+/// and `.depth_m` are user-settable from `cast.toml`, so a small dowel (say
+/// 0.6 mm Ø) would make a fixed 0.4 mm chamfer larger than the radius. An
+/// earlier revision of this function `assert!`ed that away — a panic reachable
+/// from a config file, on a path that accepted any positive radius before the
+/// chamfer existed. It now takes the smallest of the requested chamfer, 40 % of
+/// the radius, and 40 % of the half-length, so the primitive is TOTAL and a
+/// tiny dowel simply gets a proportionally tiny lead-in, which is the right
+/// geometry for it anyway.
+#[must_use]
+pub fn build_chamfered_cylinder_along_axis(
+    parent: &CylinderParent,
+    radius_m: f64,
+    tip_chamfer_m: f64,
+    segments: u32,
+) -> Manifold {
+    let chamfer_m = effective_tip_chamfer_m(tip_chamfer_m, radius_m, parent.half_length_m);
+    if chamfer_m <= 0.0 {
+        return build_cylinder_along_axis(parent, radius_m, segments);
+    }
+
+    let half_len_mm = parent.half_length_m * METERS_TO_MM;
+    let r_mm = radius_m * METERS_TO_MM;
+    let c_mm = chamfer_m * METERS_TO_MM;
+    let tip_r_mm = r_mm - c_mm;
+
+    let rings = [
+        (-half_len_mm, tip_r_mm),
+        (-half_len_mm + c_mm, r_mm),
+        (half_len_mm - c_mm, r_mm),
+        (half_len_mm, tip_r_mm),
+    ];
+    let mut pts_mm: Vec<[f64; 3]> = Vec::with_capacity(4 * segments as usize);
+    for (z_mm, ring_r_mm) in rings {
+        for seg in 0..segments {
+            let theta = 2.0 * std::f64::consts::PI * f64::from(seg) / f64::from(segments);
+            pts_mm.push([ring_r_mm * theta.cos(), ring_r_mm * theta.sin(), z_mm]);
+        }
+    }
+    let z_aligned = Manifold::hull_pts(&pts_mm);
+
+    let center_mm = Point3::new(
+        parent.center_m.x * METERS_TO_MM,
+        parent.center_m.y * METERS_TO_MM,
+        parent.center_m.z * METERS_TO_MM,
+    );
+    let iso = pose_from_z_axis(parent.axis, center_mm);
+    z_aligned.transform(&affine_12_from_isometry(&iso))
+}
+
 /// Build a [`Manifold`] truncated-pyramid (with optional chamfer
 /// band) via `Manifold::hull_pts`, placed at the world-frame pose
 /// encoded in `params.pose`.
@@ -923,6 +1023,36 @@ mod tests {
             [0, 7, 3], // -X left
         ];
         IndexedMesh::from_parts(vertices, faces)
+    }
+
+    /// ★★★ The 0.4 clamp fraction, pinned by NUMBER and by INTENT.
+    ///
+    /// ⚠⚠ Mutating 0.4 → 0.9 passed all 391 tests. The prose-vs-mesh gate in
+    /// `crate::dowel` compares two CALLERS of this function, so both follow any
+    /// change to it and keep agreeing: **a "compare two sources" test is blind
+    /// to a change in the shared source.** That is the cost of single-sourcing
+    /// a value, and it is paid with a gate like this one.
+    #[test]
+    fn tip_chamfer_clamp_is_pinned_by_value_and_by_intent() {
+        // Neither bound binds: the request survives intact.
+        assert!((effective_tip_chamfer_m(0.000_4, 0.001_5, 0.004_5) - 0.000_4).abs() < 1e-12);
+        // Radius binds: 0.3 mm radius × 0.4 = 0.12 mm.
+        assert!((effective_tip_chamfer_m(0.000_4, 0.000_3, 0.004_5) - 0.000_12).abs() < 1e-12);
+        // Half-length binds: 0.1 mm half × 0.4 = 0.04 mm.
+        assert!((effective_tip_chamfer_m(0.000_4, 0.001_5, 0.000_1) - 0.000_04).abs() < 1e-12);
+
+        // ★ The INTENT, independent of the number: whichever bound binds, a
+        // MAJORITY of both the radius and the shank must survive as bearing
+        // surface. A chamfer that ate most of either would be a cone, not a
+        // lead-in — which is what a fraction ≥ 0.5 would silently produce.
+        for (r, hl) in [(0.000_3, 0.004_5), (0.001_5, 0.000_1), (0.000_2, 0.000_2)] {
+            let c = effective_tip_chamfer_m(1.0, r, hl);
+            assert!(
+                c < r / 2.0 && c < hl / 2.0,
+                "clamped chamfer {c} must leave a majority of radius {r} and \
+                 half-length {hl} as bearing surface"
+            );
+        }
     }
 
     #[test]

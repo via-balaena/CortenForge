@@ -413,6 +413,16 @@ pub(crate) const INTEGRAL_FUNNEL_WALL_M: f64 = 0.0025;
 /// mouth Ø in the workshop prose.
 pub(crate) const INTEGRAL_FUNNEL_MOUTH_FACTOR: f64 = 2.2;
 
+/// The integral funnel's inner mouth radius for a given apex bore radius.
+///
+/// ★★★ **THE ONE DERIVATION.** The SDF builder and the workshop prose in
+/// `crate::procedure` both call this; the prose used to re-apply
+/// [`INTEGRAL_FUNNEL_MOUTH_FACTOR`] itself.
+#[must_use]
+pub(crate) fn integral_funnel_mouth_radius_m(bore_radius_m: f64) -> f64 {
+    bore_radius_m * INTEGRAL_FUNNEL_MOUTH_FACTOR
+}
+
 /// Integral-funnel protrusion height above the cup outer surface (m).
 ///
 /// 18 mm (recon §7.8) — short + cone-stiff so the bore-bracketing bolt
@@ -529,7 +539,7 @@ pub(crate) fn build_integral_pour_channel(
 
     let wall = INTEGRAL_FUNNEL_WALL_M;
     let height = INTEGRAL_FUNNEL_HEIGHT_M;
-    let mouth_inner = bore_radius_m * INTEGRAL_FUNNEL_MOUTH_FACTOR;
+    let mouth_inner = integral_funnel_mouth_radius_m(bore_radius_m);
     let base_outer = bore_radius_m + wall;
     let mouth_outer = mouth_inner + wall;
     // Tip overshoot so MC cuts the mouth rim cleanly (mirrors the funnel
@@ -706,6 +716,25 @@ mod tests {
         let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
         let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
         Ribbon::new(centerline, split).unwrap()
+    }
+
+    /// ★★★ LITERAL expected values, deliberately NOT re-derived.
+    ///
+    /// `integral_funnel_mouth_radius_m` is now the ONE source for both the SDF
+    /// builder and the workshop prose. That is the right structure, but it
+    /// removes the accidental cross-check duplication provided: the two can no
+    /// longer disagree, so a WRONG formula gets quoted and built consistently.
+    /// Mutating the factor to ×1.5 passed the entire suite before this existed.
+    #[test]
+    fn integral_funnel_mouth_radius_is_dimensionally_pinned() {
+        // 4.0 mm bore → 8.8 mm mouth radius at the 2.2 factor.
+        assert!((integral_funnel_mouth_radius_m(0.004) - 0.008_8).abs() < 1e-12);
+        // 2.5 mm bore → 5.5 mm.
+        assert!((integral_funnel_mouth_radius_m(0.002_5) - 0.005_5).abs() < 1e-12);
+        assert!(
+            integral_funnel_mouth_radius_m(0.004) > 0.004,
+            "a funnel mouth must be wider than its bore"
+        );
     }
 
     #[test]
