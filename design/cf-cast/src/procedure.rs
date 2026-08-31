@@ -2468,7 +2468,10 @@ fn write_v2_assembly_note(
             // ... with 1.0 mm slack at each tip", which sums to 5.5 — so the
             // document disagreed with its own arithmetic.
             let hole_axial_slack_mm = crate::dowel_hole::HOLE_AXIAL_SLACK_M * 1000.0;
-            let carved_half_depth_mm = depth_mm + hole_axial_slack_mm;
+            // ★ ASK the carve, do not recompute it. Re-deriving here is how the
+            // #850 class survived its own fix: the sheet stopped quoting
+            // `depth_m` but started quoting a second copy of the carve formula.
+            let carved_half_depth_mm = crate::dowel_hole::carved_half_length_m(spec) * 1000.0;
             let _ = writeln!(
                 md,
                 "Each layer's mold is two ribbon-cut pieces \
@@ -2494,8 +2497,8 @@ fn write_v2_assembly_note(
             // §M-S2 followup: total tip slack is the SUM of the
             // dowel's own insertion slack + the hole's axial slack
             // (cold-read 2026-05-27 caught the prose understating
-            // this by half by counting only one).
-            let dowel_insertion_slack_mm = crate::dowel::DOWEL_INSERTION_SLACK_M * 1000.0;
+            // this by half by counting only one). ★ Both quantities are now
+            // read from their owning module rather than re-derived here.
             // ★ The EFFECTIVE chamfer, not the requested constant — the
             // builder clamps it to the dowel's own radius and half-length, and
             // re-deriving here would let the sheet describe a tip the mesh
@@ -2506,10 +2509,10 @@ fn write_v2_assembly_note(
             // leaving them to discover it when a dowel pops off mid-print.
             let dowel_tip_dia_mm = 2.0f64.mul_add(-dowel_chamfer_mm, diameter_mm);
             let dowel_bed_area_mm2 = std::f64::consts::PI * (dowel_tip_dia_mm / 2.0).powi(2);
-            let dowel_length_mm = depth_mm.mul_add(2.0, -2.0 * dowel_insertion_slack_mm);
-            let total_cavity_mm = depth_mm.mul_add(2.0, 2.0 * hole_axial_slack_mm);
+            let dowel_length_mm = crate::dowel::length_m(spec) * 1000.0;
+            let total_cavity_mm = 2.0 * carved_half_depth_mm;
             let tip_slack_mm = (total_cavity_mm - dowel_length_mm) / 2.0;
-            let insert_depth_mm = depth_mm + hole_axial_slack_mm - tip_slack_mm;
+            let insert_depth_mm = carved_half_depth_mm - tip_slack_mm;
             let _ = writeln!(
                 md,
                 "**Print `dowel.stl` first.** The export emits a \

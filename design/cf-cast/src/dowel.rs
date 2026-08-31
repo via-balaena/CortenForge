@@ -104,10 +104,18 @@ const DEFAULT_SEGMENTS: u32 = 32;
 /// drift; nothing enforced it. Extracted so the claim is structural rather
 /// than aspirational.
 fn dowel_geometry_m(spec: &DowelHoleSpec) -> (f64, f64) {
-    let radius_m = spec.diameter_m / 2.0;
-    // dowel length = 2 × depth - 2 × insertion_slack
-    let length_m = 2.0_f64.mul_add(-DOWEL_INSERTION_SLACK_M, 2.0 * spec.depth_m);
-    (radius_m, length_m / 2.0)
+    (spec.diameter_m / 2.0, length_m(spec) / 2.0)
+}
+
+/// The printed dowel's overall length — `2 × depth - 2 × insertion slack`.
+///
+/// ★★★ **THE ONE DERIVATION.** The mesh builder and the workshop prose both
+/// call this; the prose used to re-derive it from `depth_m` and
+/// [`DOWEL_INSERTION_SLACK_M`], so a change to how a dowel is sized would have
+/// left the sheet quoting a length no dowel has.
+#[must_use]
+pub fn length_m(spec: &DowelHoleSpec) -> f64 {
+    2.0_f64.mul_add(-DOWEL_INSERTION_SLACK_M, 2.0 * spec.depth_m)
 }
 
 /// The lead-in chamfer a dowel built from `spec` will ACTUALLY carry.

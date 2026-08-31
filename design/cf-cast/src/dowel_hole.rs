@@ -98,6 +98,20 @@ const DEFAULT_SEGMENTS: u32 = 32;
 /// depth + dowel tip-slack accurately.
 pub const HOLE_AXIAL_SLACK_M: f64 = 0.0005;
 
+/// The hole half-length actually CARVED into each cup half — `depth_m` plus
+/// [`HOLE_AXIAL_SLACK_M`].
+///
+/// ★★★ **THE ONE DERIVATION.** `depth_m` is the REQUESTED depth; this is what
+/// a bencher's depth gauge reads. The geometry builder and the workshop prose
+/// in `crate::procedure` both call this. The prose previously re-derived it —
+/// which was itself the fix for the sheet quoting `depth_m`, so the same class
+/// (#850: describing what was requested, not what is built) survived its own
+/// remedy by one level.
+#[must_use]
+pub fn carved_half_length_m(spec: &DowelHoleSpec) -> f64 {
+    spec.depth_m + HOLE_AXIAL_SLACK_M
+}
+
 /// PLA wall a dowel hole keeps to its surroundings in the seam-placement solver
 /// (§3.6). The dowel *footprint* radius is the hole radius plus this, so (a) the
 /// hole sits inside the flange band with PLA around it and (b) a bolt washer
@@ -212,7 +226,7 @@ pub fn build_dowel_hole_transforms(
     let (seam_midpoint, seam_normal) = ribbon.seam_plane_reference();
     let binormal = seam_normal.into_inner();
     let axis = Unit::new_normalize(binormal);
-    let half_length_m = spec.depth_m + HOLE_AXIAL_SLACK_M;
+    let half_length_m = carved_half_length_m(spec);
     let radius_m = spec.diameter_m / 2.0 + spec.clearance_m;
     centers
         .iter()
