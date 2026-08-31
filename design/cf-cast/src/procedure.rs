@@ -2496,7 +2496,11 @@ fn write_v2_assembly_note(
             // (cold-read 2026-05-27 caught the prose understating
             // this by half by counting only one).
             let dowel_insertion_slack_mm = crate::dowel::DOWEL_INSERTION_SLACK_M * 1000.0;
-            let dowel_chamfer_mm = crate::dowel::DOWEL_TIP_CHAMFER_M * 1000.0;
+            // ★ The EFFECTIVE chamfer, not the requested constant — the
+            // builder clamps it to the dowel's own radius and half-length, and
+            // re-deriving here would let the sheet describe a tip the mesh
+            // does not have (negative, on a sub-millimetre dowel).
+            let dowel_chamfer_mm = crate::dowel::effective_tip_chamfer_m(spec) * 1000.0;
             // ⚠ The chamfer HALVES first-layer adhesion on a part with a 3:1
             // aspect ratio. Quote the number the bencher needs rather than
             // leaving them to discover it when a dowel pops off mid-print.

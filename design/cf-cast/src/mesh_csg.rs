@@ -422,6 +422,26 @@ pub fn build_cylinder_along_axis(
     z_aligned.transform(&affine_12_from_isometry(&iso))
 }
 
+/// The tip chamfer [`build_chamfered_cylinder_along_axis`] will ACTUALLY cut,
+/// after clamping the request to the geometry that exists.
+///
+/// ★★★ **THE ONE ARITHMETIC SOURCE.** Anything that describes the chamfer —
+/// the builder, and the workshop prose in `crate::procedure` — must call this
+/// rather than re-deriving from `DOWEL_TIP_CHAMFER_M`. The prose briefly did
+/// re-derive, and on a small dowel it would have printed a NEGATIVE tip
+/// diameter while the mesh carried a clamped positive one: the #850 class
+/// (describing what was requested, not what is built) reappearing inside the
+/// fix for it. Same remedy as the #853 Slacker step — one function, both
+/// consumers.
+///
+/// 40 % keeps a majority of both the radius and the shank as bearing surface
+/// at any scale. At the iter-1 dowel (1.5 mm radius, 4.5 mm half-length)
+/// neither bound binds and the full 0.4 mm request is used.
+#[must_use]
+pub fn effective_tip_chamfer_m(requested_m: f64, radius_m: f64, half_length_m: f64) -> f64 {
+    requested_m.min(radius_m * 0.4).min(half_length_m * 0.4)
+}
+
 /// Build a [`Manifold`] cylinder with a **conical lead-in chamfer at
 /// both ends**, via `Manifold::hull_pts`.
 ///
@@ -468,12 +488,7 @@ pub fn build_chamfered_cylinder_along_axis(
     tip_chamfer_m: f64,
     segments: u32,
 ) -> Manifold {
-    // 40 % keeps a majority of both the radius and the shank as bearing
-    // surface at any scale; at the iter-1 dowel (1.5 mm radius, 4.5 mm half)
-    // neither bound binds and the full 0.4 mm is used.
-    let chamfer_m = tip_chamfer_m
-        .min(radius_m * 0.4)
-        .min(parent.half_length_m * 0.4);
+    let chamfer_m = effective_tip_chamfer_m(tip_chamfer_m, radius_m, parent.half_length_m);
     if chamfer_m <= 0.0 {
         return build_cylinder_along_axis(parent, radius_m, segments);
     }

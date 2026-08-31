@@ -96,6 +96,22 @@ const DOWEL_PRINT_SPACING_M: f64 = 0.004;
 /// so slide-fit clearance is geometrically uniform.
 const DEFAULT_SEGMENTS: u32 = 32;
 
+/// The lead-in chamfer a dowel built from `spec` will ACTUALLY carry.
+///
+/// ★★★ `crate::procedure` MUST use this, not [`DOWEL_TIP_CHAMFER_M`] directly.
+/// The constant is a REQUEST; the builder clamps it to the geometry that
+/// exists (see [`crate::mesh_csg::effective_tip_chamfer_m`]). At iter-1
+/// defaults the two agree, which is exactly why a prose site that re-derived
+/// from the constant looked correct — on a sub-millimetre dowel it would have
+/// stated a NEGATIVE tip diameter for a mesh whose tip is positive.
+#[must_use]
+pub fn effective_tip_chamfer_m(spec: &DowelHoleSpec) -> f64 {
+    // Mirror `build_dowel_array_mesh`'s own derivation so the two cannot drift.
+    let radius_m = spec.diameter_m / 2.0;
+    let half_length_m = 2.0_f64.mul_add(-DOWEL_INSERTION_SLACK_M, 2.0 * spec.depth_m) / 2.0;
+    crate::mesh_csg::effective_tip_chamfer_m(DOWEL_TIP_CHAMFER_M, radius_m, half_length_m)
+}
+
 /// Build the printable dowel-array mesh.
 ///
 /// Contains `count` analytic 32-segment cylinders laid out along +X
@@ -244,6 +260,51 @@ mod tests {
              baseline was ~3400); got {}",
             mesh.faces.len()
         );
+    }
+
+    /// ★★★ The sheet and the mesh must state the SAME tip. This is the #850
+    /// class a fourth time — and the first three were all "prose describes what
+    /// was requested, not what is built", so the gate has to compare the two
+    /// SOURCES, not re-run one of them.
+    #[test]
+    fn the_prose_chamfer_matches_the_chamfer_the_mesh_actually_carries() {
+        for (label, spec) in [
+            ("iter1", DowelHoleSpec::iter1()),
+            (
+                "sub-chamfer dowel",
+                DowelHoleSpec {
+                    diameter_m: 0.0006,
+                    depth_m: 0.0006,
+                    ..DowelHoleSpec::iter1()
+                },
+            ),
+        ] {
+            let quoted_mm = effective_tip_chamfer_m(&spec) * 1000.0;
+            let mesh = build_dowel_array_mesh(&spec, 1, 0.0).unwrap();
+
+            let r_mm = spec.diameter_m / 2.0 * 1000.0;
+            let tip_mm = mesh
+                .vertices
+                .iter()
+                .filter(|v| v[2].abs() < 1e-6)
+                .map(|v| v[0].hypot(v[1]))
+                .fold(0.0_f64, f64::max);
+            let built_mm = r_mm - tip_mm;
+
+            assert!(
+                (quoted_mm - built_mm).abs() < 1e-6,
+                "[{label}] the sheet would quote a {quoted_mm} mm chamfer but \
+                 the mesh carries {built_mm} mm — a tip Ø of \
+                 {} vs {}",
+                2.0f64.mul_add(-quoted_mm, r_mm * 2.0),
+                tip_mm * 2.0
+            );
+            assert!(
+                quoted_mm > 0.0,
+                "[{label}] a quoted chamfer of {quoted_mm} mm would render a \
+                 negative tip diameter in the sheet"
+            );
+        }
     }
 
     /// ⚠⚠ `[dowel_hole].diameter_m` and `.depth_m` are user-settable from
