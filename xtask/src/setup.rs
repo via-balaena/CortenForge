@@ -618,6 +618,37 @@ mod hook_tests {
     use crate::hook_install::{COMMIT_MSG_HOOK, HOOKS, PRE_COMMIT_HOOK};
     use std::process::Command;
 
+    /// Every extension the guard's pathspec actually declares, parsed OUT OF THE
+    /// HOOK ITSELF.
+    ///
+    /// ★★★ Derived, not duplicated. Both blocking tests used to carry a
+    /// hand-written list of seven, and each carried a comment explaining that a
+    /// SHORTER list had already let a real mutant survive. Widening the guard to
+    /// 23 extensions on 2026-08-31 made both lists — and both comments claiming
+    /// "EVERY" and "ALL" — silently false, leaving 16 entries with zero coverage.
+    /// Parsing the source means the tests can never lag the guard again.
+    ///
+    /// ⚠ This is not a mirror oracle: it does not recompute what the guard does,
+    /// it asserts that every extension the guard CLAIMS to cover actually blocks
+    /// a commit end-to-end. A typo'd or malformed entry still fails.
+    fn guarded_extensions() -> Vec<String> {
+        let exts: Vec<String> = PRE_COMMIT_HOOK
+            .split(":(icase)*.")
+            .skip(1)
+            .filter_map(|tail| tail.split('\'').next())
+            .map(str::to_string)
+            .collect();
+        // ⚠ An empty or short parse is not evidence of anything — it would make
+        // every loop below pass vacuously. Pin the floor.
+        assert!(
+            exts.len() >= 23,
+            "parsed only {} extension(s) from the hook pathspec — the parse broke, \
+             and every test looping over it would pass over nothing",
+            exts.len()
+        );
+        exts
+    }
+
     /// Run the pre-commit hook in a throwaway git repo with `staged` created and
     /// `git add -f`'d. Returns (exited_zero, combined_output).
     ///
@@ -1261,15 +1292,9 @@ mod hook_tests {
         // dropping one from the pathspec was a change no test opposed.
         // ★ `.step`/`.stp` were in neither the guard nor .gitignore, while mesh-io
         // has read and written STEP as a first-class format all along.
-        for name in [
-            "part.stl",
-            "part.obj",
-            "part.ply",
-            "part.3mf",
-            "part.mtl",
-            "part.step",
-            "part.stp",
-        ] {
+        for ext in guarded_extensions() {
+            let name = format!("part.{ext}");
+            let name = name.as_str();
             let (ok, out) = run_hook(name, false);
             // `!ok` is load-bearing now that the scratch repo is a valid, formatted
             // cargo project — `a_clean_stage_passes` proves the hook CAN exit 0.
@@ -1299,15 +1324,9 @@ mod hook_tests {
         // ⚠ A second, identical `run_hook("SCAN.STL", ..)` used to sit below this
         // loop re-asserting the loop's own two predicates on the loop's own first
         // input. Only its third assertion was new, so it is folded in here.
-        for name in [
-            "SCAN.STL",
-            "SCAN.OBJ",
-            "SCAN.PLY",
-            "SCAN.3MF",
-            "SCAN.MTL",
-            "SCAN.STEP",
-            "SCAN.STP",
-        ] {
+        for ext in guarded_extensions() {
+            let name = format!("SCAN.{}", ext.to_uppercase());
+            let name = name.as_str();
             let (ok, out) = run_hook(name, false);
             assert!(!ok, "{name} did not block the commit; output:\n{out}");
             assert!(
