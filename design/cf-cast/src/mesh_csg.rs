@@ -452,13 +452,15 @@ pub fn build_cylinder_along_axis(
 ///
 /// Falls back to a plain cylinder when `tip_chamfer_m <= 0.0`.
 ///
-/// # Panics
-///
-/// If `tip_chamfer_m` is not smaller than both `radius_m` and
-/// `parent.half_length_m` — a chamfer that consumes the whole radius
-/// leaves a cone with no bearing surface, and one that consumes the
-/// half-length leaves no parallel shank at all. Both are spec errors,
-/// not geometry this should silently approximate.
+/// ⚠⚠ **The chamfer is CLAMPED, never asserted.** `[dowel_hole].diameter_m`
+/// and `.depth_m` are user-settable from `cast.toml`, so a small dowel (say
+/// 0.6 mm Ø) would make a fixed 0.4 mm chamfer larger than the radius. An
+/// earlier revision of this function `assert!`ed that away — a panic reachable
+/// from a config file, on a path that accepted any positive radius before the
+/// chamfer existed. It now takes the smallest of the requested chamfer, 40 % of
+/// the radius, and 40 % of the half-length, so the primitive is TOTAL and a
+/// tiny dowel simply gets a proportionally tiny lead-in, which is the right
+/// geometry for it anyway.
 #[must_use]
 pub fn build_chamfered_cylinder_along_axis(
     parent: &CylinderParent,
@@ -466,19 +468,19 @@ pub fn build_chamfered_cylinder_along_axis(
     tip_chamfer_m: f64,
     segments: u32,
 ) -> Manifold {
-    if tip_chamfer_m <= 0.0 {
+    // 40 % keeps a majority of both the radius and the shank as bearing
+    // surface at any scale; at the iter-1 dowel (1.5 mm radius, 4.5 mm half)
+    // neither bound binds and the full 0.4 mm is used.
+    let chamfer_m = tip_chamfer_m
+        .min(radius_m * 0.4)
+        .min(parent.half_length_m * 0.4);
+    if chamfer_m <= 0.0 {
         return build_cylinder_along_axis(parent, radius_m, segments);
     }
-    assert!(
-        tip_chamfer_m < radius_m && tip_chamfer_m < parent.half_length_m,
-        "dowel tip chamfer {tip_chamfer_m} m must be smaller than both the \
-         radius {radius_m} m and the half-length {} m",
-        parent.half_length_m
-    );
 
     let half_len_mm = parent.half_length_m * METERS_TO_MM;
     let r_mm = radius_m * METERS_TO_MM;
-    let c_mm = tip_chamfer_m * METERS_TO_MM;
+    let c_mm = chamfer_m * METERS_TO_MM;
     let tip_r_mm = r_mm - c_mm;
 
     let rings = [

@@ -2497,6 +2497,11 @@ fn write_v2_assembly_note(
             // this by half by counting only one).
             let dowel_insertion_slack_mm = crate::dowel::DOWEL_INSERTION_SLACK_M * 1000.0;
             let dowel_chamfer_mm = crate::dowel::DOWEL_TIP_CHAMFER_M * 1000.0;
+            // ⚠ The chamfer HALVES first-layer adhesion on a part with a 3:1
+            // aspect ratio. Quote the number the bencher needs rather than
+            // leaving them to discover it when a dowel pops off mid-print.
+            let dowel_tip_dia_mm = 2.0f64.mul_add(-dowel_chamfer_mm, diameter_mm);
+            let dowel_bed_area_mm2 = std::f64::consts::PI * (dowel_tip_dia_mm / 2.0).powi(2);
             let dowel_length_mm = depth_mm.mul_add(2.0, -2.0 * dowel_insertion_slack_mm);
             let total_cavity_mm = depth_mm.mul_add(2.0, 2.0 * hole_axial_slack_mm);
             let tip_slack_mm = (total_cavity_mm - dowel_length_mm) / 2.0;
@@ -2516,8 +2521,14 @@ fn write_v2_assembly_note(
                  is a fit problem, not a technique problem). Print the \
                  dowels VERTICAL (cylindrical axis \
                  perpendicular to the build plate; cf-view loads them \
-                 oriented this way) so the cylindrical walls print \
-                 clean without overhangs. Insert one dowel through \
+                 oriented this way) so the shank walls print clean. \
+                 **Add a brim.** The tip chamfer narrows the bed \
+                 contact to a {dowel_tip_dia_mm:.1} mm Ø disc — about \
+                 {dowel_bed_area_mm2:.1} mm² under a \
+                 {dowel_length_mm:.1} mm-tall part, which will not hold \
+                 on its own. The chamfer itself is a 45° flare, at the \
+                 self-supporting limit, so it needs no support. Insert \
+                 one dowel through \
                  each pair of matching holes to register the two \
                  halves laterally before clamping."
             );

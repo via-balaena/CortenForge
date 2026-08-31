@@ -246,6 +246,41 @@ mod tests {
         );
     }
 
+    /// ⚠⚠ `[dowel_hole].diameter_m` and `.depth_m` are user-settable from
+    /// `cast.toml`, so a small dowel can be smaller than the fixed 0.4 mm
+    /// chamfer. An earlier revision `assert!`ed against that — a panic
+    /// reachable from a config file, on a path that took any positive radius
+    /// before the chamfer existed. The chamfer is clamped instead.
+    #[test]
+    fn a_dowel_smaller_than_the_chamfer_still_builds() {
+        // 0.6 mm Ø → 0.3 mm radius, well under the 0.4 mm chamfer.
+        let tiny = DowelHoleSpec {
+            diameter_m: 0.0006,
+            depth_m: 0.0006,
+            ..DowelHoleSpec::iter1()
+        };
+        // ⚠ ONE dowel: the array lays additional dowels out along +X at
+        // `diameter + 4 mm` pitch, so a radius measured from the origin would
+        // pick up the neighbour rather than this dowel's own shank.
+        // A panic anywhere in this call IS the regression this test exists for.
+        let mesh = build_dowel_array_mesh(&tiny, 1, 0.0).unwrap();
+        assert!(
+            !mesh.faces.is_empty(),
+            "clamped-chamfer dowel produced an empty mesh"
+        );
+        // And the clamp must leave real bearing surface, not a bare cone.
+        let r_mm = tiny.diameter_m / 2.0 * 1000.0;
+        let widest = mesh
+            .vertices
+            .iter()
+            .map(|v| v[0].hypot(v[1]))
+            .fold(0.0_f64, f64::max);
+        assert!(
+            (widest - r_mm).abs() < 1e-6,
+            "the shank should still reach the full {r_mm} mm radius; got {widest} mm"
+        );
+    }
+
     /// ★ The face-count budget above would stay green if the chamfer silently
     /// vanished only on ONE ring, so assert the lead-in geometrically: the
     /// extreme-Z ring must be NARROWER than the shank by exactly the chamfer.
