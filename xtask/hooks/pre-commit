@@ -22,7 +22,9 @@ echo "╚═══════════════════════�
 
 # ── Scan/mesh guard — FIRST, because it is a safety rule, not a quality one ──
 # This repository is PUBLIC, and the casting pipeline's inputs are anatomical scans
-# of a real person. They live outside the repo by design: reached via
+# of a real person -- or will be; today's fixtures are physical STAND-INS (a clay
+# form) and the rule holds regardless, because the real scans are the point.
+# They live outside the repo by design: reached via
 # CF_CAST_ITER1_DIR (design/cf-cast/tests/iter1_gate.rs, #[ignore]d) or regenerated
 # by cf-cast. Zero meshes have ever been tracked here — but that was habit, not a
 # rule. Verified 2026-07-29: `git add` accepted a 29 MB anatomical scan without
@@ -44,13 +46,38 @@ echo "→ Checking for scan/mesh binaries..."
 # `|| true` and so aborts under `set -e`: the QUALITY check was failing safe while
 # this one, whose miss is unrecoverable, was failing unsafe.
 guard_unreadable=0
+# ⚠⚠ WIDENED 2026-08-31, the day the pipeline was first pointed at a
+# full-resolution body-shaped scan and its sensitivity was raised. That fixture
+# turned out to be a stand-in, which is exactly the right time to widen: the
+# guard must be correct BEFORE real data arrives, not after.
+# The list above was mesh-only; a scanner emits POINT CLOUDS (.e57
+# .pcd .pts .ptx .xyz-family) and a medical source emits .dcm/.nii, none of
+# which this guard could see. `.xyz` is deliberately EXCLUDED — it collides
+# with ordinary numeric data files, and .gitignore would silently swallow them.
+#
+# ⚠ `.ptx` is ALSO NVIDIA CUDA PTX assembly. There is no CUDA in this workspace
+# (the GPU story is wgpu), so it is guarded as the point-cloud format it is here
+# — but if kernels ever land, this is the line that will silently ignore them.
+#
+# ⚠⚠ THE INSTALLED HOOK CAN BE OLDER THAN THE BRANCH YOU ARE ON. `.git/hooks/`
+# holds ONE hook, written by `xtask/build.rs` at BUILD time — switching branches
+# does not reinstall it. So a checkout of this branch still runs whatever guard
+# was last built, and during this change's own review the installed hook had 7
+# extensions while the source had 23, which made every probe report ALLOWED and
+# looked exactly like a broken guard. **`cargo build -p xtask` after switching
+# branches, and `cmp .git/hooks/pre-commit xtask/hooks/pre-commit` before
+# trusting a negative result.**
 # ⚠ KEEP IN STEP WITH .gitignore — the two layers are only worth having if they
 # cover the same extensions. `.step`/`.stp` were in NEITHER, while mesh-io has read
 # and written them as a first-class format all along (MeshFormat::Step), so the one
 # geometry format a CAD tool exports by default was the one the guard could not see.
 if ! staged_meshes=$(git -c core.quotePath=false diff --cached --name-only --diff-filter=ACMR \
     -- ':(icase)*.stl' ':(icase)*.obj' ':(icase)*.ply' \
-       ':(icase)*.3mf' ':(icase)*.mtl' ':(icase)*.step' ':(icase)*.stp'); then
+       ':(icase)*.3mf' ':(icase)*.mtl' ':(icase)*.step' ':(icase)*.stp' \
+       ':(icase)*.dcm' ':(icase)*.nii' ':(icase)*.e57' ':(icase)*.pcd' \
+       ':(icase)*.pts' ':(icase)*.ptx' ':(icase)*.las' ':(icase)*.laz' \
+       ':(icase)*.glb' ':(icase)*.gltf' ':(icase)*.fbx' ':(icase)*.dae' \
+       ':(icase)*.off' ':(icase)*.amf' ':(icase)*.3ds' ':(icase)*.wrl'); then
     if [ "${CF_ALLOW_MESH:-0}" = "1" ]; then
         # The DOCUMENTED override has to work here too. Without it the only way past
         # a malfunctioning guard is `git commit --no-verify`, which ALSO disables the
