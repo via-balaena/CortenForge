@@ -34,6 +34,15 @@ const MATERIALS_ANCHOR: &str = "## Materials Summary";
 /// an enrichment of the materials table.
 const GUIDANCE_ANCHOR: &str = "## Generic Smooth-On Guidance";
 
+/// The h2 anchor for cf-cast's per-layer bench steps. v1 and v2 emit
+/// `## Per-Layer Procedure`; the bonded path emits
+/// `## Per-Layer Procedure (bonded, cast-in-place)`, so a prefix match
+/// covers all three. Anchoring here rather than searching the whole
+/// document is load-bearing: the `## Slacker Recipe` section this
+/// module injects carries `### Layer {i} — ...` headings of its own,
+/// and a document-wide search would hit those first.
+const PER_LAYER_ANCHOR: &str = "## Per-Layer Procedure";
+
 /// Slice 9.5 — per-layer Slacker recipe input. Carries everything
 /// the procedure surface needs in one row: the layer's display name,
 /// the cavity-fill volume + mass (lifted from cf-cast's `PourVolume`),
@@ -203,6 +212,9 @@ pub(crate) fn inject_slacker_recipe_into_markdown(
     const M3_TO_CC: f64 = 1.0e6;
     const OVERAGE: f64 = 1.20; // +20% over-pour
     let mut out = String::new();
+    // The per-layer bench steps are corrected in place on this copy as
+    // the table is built; `out` is spliced in at the anchor at the end.
+    let mut body = original.to_string();
     out.push_str("## Slacker Recipe\n\n");
     out.push_str(
         "**Smooth-On Slacker** softens the base silicone. It is mixed BY WEIGHT \
@@ -239,6 +251,19 @@ pub(crate) fn inject_slacker_recipe_into_markdown(
         let base_fill_g = mix_fill_g / (1.0 + sf);
         let part_fill_g = base_fill_g / 2.0;
         let slacker_fill_g = sf * base_fill_g;
+        // Same locals, same layer: correct the bench step cf-cast wrote
+        // without knowing this layer takes Slacker. Done here rather
+        // than in a second pass so the step and the table row below can
+        // never state different masses.
+        body = correct_mix_step_for_layer(
+            &body,
+            idx,
+            part_fill_g,
+            base_fill_g,
+            slacker_fill_g,
+            sf * 100.0,
+        )
+        .with_context(|| format!("correct the Slacker mix step for layer {idx}"))?;
         // +20% over-pour on the corrected total (ratios preserved).
         let part_g = part_fill_g * OVERAGE;
         let slacker_g = slacker_fill_g * OVERAGE;
@@ -264,8 +289,118 @@ pub(crate) fn inject_slacker_recipe_into_markdown(
         );
     }
 
-    let patched = original.replacen(GUIDANCE_ANCHOR, &format!("{out}{GUIDANCE_ANCHOR}"), 1);
+    let patched = body.replacen(GUIDANCE_ANCHOR, &format!("{out}{GUIDANCE_ANCHOR}"), 1);
     Ok(patched)
+}
+
+/// Rewrite one layer's mix step so it states the split the
+/// `## Slacker Recipe` table specifies.
+///
+/// cf-cast renders that step from `pour_mass_kg` alone — it has no
+/// Slacker concept at all (see this module's header), so for a Slacker
+/// layer it halves the base+Slacker TOTAL into two parts of pure base:
+/// `61.87 g Part A + 61.87 g Part B` for a 123.74 g mix that should be
+/// `49.49 + 49.49 + 24.75`. Followed literally that pours a layer with
+/// no Slacker in it; cross-referenced against the recipe table and
+/// topped up instead, it overfills the cavity by the Slacker fraction —
+/// the very error the recipe prose warns against. Both are silent, and
+/// no keyword search finds either, because the mix step never says
+/// "Slacker": the sheet's two halves describe one pour in different
+/// words.
+///
+/// The masses come from the caller's loop — the SAME locals that build
+/// the table row — so step and table cannot drift apart.
+///
+/// # Errors
+///
+/// Bails when the anchor, the layer heading, or a recognized mix-step
+/// shape is missing. A silent no-op would restore precisely the defect
+/// this exists to remove, so every miss is loud.
+fn correct_mix_step_for_layer(
+    body: &str,
+    layer_idx: usize,
+    part_fill_g: f64,
+    base_fill_g: f64,
+    slacker_fill_g: f64,
+    pct: f64,
+) -> Result<String> {
+    let anchor = body.find(PER_LAYER_ANCHOR).with_context(|| {
+        format!("procedure.md missing the `{PER_LAYER_ANCHOR}` anchor (cf-cast shape changed?)")
+    })?;
+    let heading = format!("### Layer {layer_idx} — ");
+    let heading_at = body[anchor..]
+        .find(&heading)
+        .map(|rel| anchor + rel)
+        .with_context(|| format!("no `{heading}` heading under `{PER_LAYER_ANCHOR}`"))?;
+    // Bound the search to THIS layer's section, so a layer whose own
+    // step is missing cannot silently pick up the next layer's.
+    let after_heading = heading_at + heading.len();
+    let section_end = body[after_heading..]
+        .find("\n### ")
+        .map_or(body.len(), |rel| after_heading + rel);
+    let section = &body[heading_at..section_end];
+
+    // Two shapes carry a mix step. The numeric split states a FALSE
+    // base mass for a Slacker layer; the TDS fallback cf-cast emits for
+    // a material with no known protocol states no split at all, so it
+    // is incomplete rather than wrong and only needs the Slacker mass.
+    const SPLIT_MARKER: &str = " g Part A + ";
+    const TDS_MARKER: &str = "Mix Part A + Part B ";
+    let (hit, is_split) = match (section.find(SPLIT_MARKER), section.find(TDS_MARKER)) {
+        (Some(i), _) => (i, true),
+        (None, Some(i)) => (i, false),
+        (None, None) => bail!(
+            "layer {layer_idx} takes Slacker but its `{PER_LAYER_ANCHOR}` section has no \
+             recognized mix step (looked for `{SPLIT_MARKER}` and `{TDS_MARKER}`)"
+        ),
+    };
+    let line_start = section[..hit].rfind('\n').map_or(0, |p| p + 1);
+    let line_end = section[hit..]
+        .find('\n')
+        .map_or(section.len(), |rel| hit + rel);
+    let line = &section[line_start..line_end];
+
+    let corrected =
+        if is_split {
+            // Rebuild the two part masses, but reuse the material name, the
+            // mix ratio and the trailing total VERBATIM — cf-cast owns
+            // those and the Slacker split changes none of them.
+            const MIX_LEAD: &str = ". Mix ";
+            const PART_B: &str = " g Part B ";
+            const RATIO_END: &str = " mix ratio)";
+            let lead_end = line.find(MIX_LEAD).with_context(|| {
+                format!("layer {layer_idx} mix step has no `{MIX_LEAD}`: {line}")
+            })? + MIX_LEAD.len();
+            let part_b_end = line
+                .find(PART_B)
+                .with_context(|| format!("layer {layer_idx} mix step has no `{PART_B}`: {line}"))?
+                + PART_B.len();
+            let ratio_end = line[part_b_end..].find(RATIO_END).with_context(|| {
+                format!("layer {layer_idx} mix step has no `{RATIO_END}`: {line}")
+            })? + part_b_end
+                + RATIO_END.len();
+            format!(
+                "{}{part_fill_g:.2} g Part A + {part_fill_g:.2} g Part B {} plus \
+             {slacker_fill_g:.2} g Slacker ({pct:.0}% of the {base_fill_g:.2} g base, by \
+             weight; mix order per `## Slacker Recipe`){}",
+                &line[..lead_end],
+                &line[part_b_end..ratio_end],
+                &line[ratio_end..],
+            )
+        } else {
+            format!(
+                "{line} Of that total, {slacker_fill_g:.2} g is Slacker ({pct:.0}% of the \
+             {base_fill_g:.2} g base, by weight) — mix order per `## Slacker Recipe`."
+            )
+        };
+
+    let abs_start = heading_at + line_start;
+    let abs_end = heading_at + line_end;
+    Ok(format!(
+        "{}{corrected}{}",
+        &body[..abs_start],
+        &body[abs_end..]
+    ))
 }
 
 #[cfg(test)]
@@ -291,7 +426,21 @@ Some geometry prose.\n\
 \n\
 ## Generic Smooth-On Guidance\n\
 \n\
-Some guidance.\n";
+Some guidance.\n\
+\n\
+## Per-Layer Procedure\n\
+\n\
+### Layer 0 — Ecoflex 00-30 (innermost)\n\
+\n\
+1. Print STLs.\n\
+4. Mix 71.00 g Part A + 71.00 g Part B Ecoflex 00-30 (1A:1B mix ratio). Total 142.00 g.\n\
+5. Vacuum-degas the mix.\n\
+\n\
+### Layer 1 — Dragon Skin 10A (outermost)\n\
+\n\
+1. Print STLs.\n\
+4. Mix 40.00 g Part A + 40.00 g Part B Dragon Skin 10A (1A:1B mix ratio). Total 80.00 g.\n\
+5. Vacuum-degas the mix.\n";
 
     #[test]
     fn inject_press_fit_inserts_section_above_materials() {
@@ -455,5 +604,106 @@ Some guidance.\n";
     #[test]
     fn guidance_anchor_appears_once_in_fixture() {
         assert_eq!(FIXTURE_V2.matches(GUIDANCE_ANCHOR).count(), 1);
+    }
+
+    /// The defect this module exists to close: cf-cast writes the mix
+    /// step from the pour mass alone, so a Slacker layer's step used to
+    /// halve the base+Slacker TOTAL into two parts of pure base. The
+    /// second assertion is the negative control — it re-states the
+    /// uncorrected split verbatim and requires it to be gone.
+    #[test]
+    fn slacker_layer_mix_step_states_the_slacker_split() {
+        let layers = vec![
+            slacker_layer("Ecoflex 00-30", 0.142, Some(0.10)),
+            slacker_layer("Dragon Skin 10A", 0.080, None),
+        ];
+        let patched = inject_slacker_recipe_into_markdown(FIXTURE_V2, &layers).unwrap();
+        let steps = &patched[patched.find(PER_LAYER_ANCHOR).unwrap()..];
+
+        // base = 142.00 / 1.10 = 129.09 -> A = B = 64.55, Slacker = 12.91.
+        assert!(
+            steps.contains(
+                "4. Mix 64.55 g Part A + 64.55 g Part B Ecoflex 00-30 (1A:1B mix ratio) \
+                 plus 12.91 g Slacker (10% of the 129.09 g base, by weight; mix order \
+                 per `## Slacker Recipe`). Total 142.00 g."
+            ),
+            "layer-0 mix step not corrected; got:\n{steps}",
+        );
+        assert!(
+            !steps.contains("71.00 g Part A"),
+            "the uncorrected 1A:1B split of the TOTAL mix is still present; got:\n{steps}",
+        );
+    }
+
+    #[test]
+    fn non_slacker_layer_mix_step_is_untouched() {
+        let layers = vec![
+            slacker_layer("Ecoflex 00-30", 0.142, Some(0.10)),
+            slacker_layer("Dragon Skin 10A", 0.080, None),
+        ];
+        let patched = inject_slacker_recipe_into_markdown(FIXTURE_V2, &layers).unwrap();
+        assert!(
+            patched.contains(
+                "4. Mix 40.00 g Part A + 40.00 g Part B Dragon Skin 10A (1A:1B mix ratio). \
+                 Total 80.00 g."
+            ),
+            "layer 1 takes no Slacker; its step must survive verbatim. Got:\n{patched}",
+        );
+        assert!(
+            !patched.contains("Dragon Skin 10A (1A:1B mix ratio) plus"),
+            "layer 1 must not gain a Slacker clause; got:\n{patched}",
+        );
+    }
+
+    #[test]
+    fn slacker_layer_without_a_mix_step_errors() {
+        // A silent no-op here would re-open the defect, so a per-layer
+        // section carrying no recognized mix step must be loud. This
+        // also pins the section bound: layer 0's search must NOT fall
+        // through to layer 1's still-present step.
+        let no_step = FIXTURE_V2.replace(
+            "4. Mix 71.00 g Part A + 71.00 g Part B Ecoflex 00-30 (1A:1B mix ratio). \
+             Total 142.00 g.\n",
+            "",
+        );
+        assert!(
+            !no_step.contains("71.00 g Part A"),
+            "fixture surgery failed — the step is still there, so the test proves nothing",
+        );
+        let layers = vec![slacker_layer("Ecoflex 00-30", 0.142, Some(0.10))];
+        let err = inject_slacker_recipe_into_markdown(&no_step, &layers).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("no recognized mix step"),
+            "unexpected error message: {msg}",
+        );
+    }
+
+    #[test]
+    fn tds_fallback_mix_step_gains_the_slacker_mass() {
+        // cf-cast emits this shape when the material has no known
+        // Smooth-On protocol. It states no A/B split, so it is
+        // incomplete rather than wrong — it needs the Slacker mass
+        // appended, not the numbers rebuilt.
+        let tds = FIXTURE_V2.replace(
+            "4. Mix 71.00 g Part A + 71.00 g Part B Ecoflex 00-30 (1A:1B mix ratio). \
+             Total 142.00 g.",
+            "4. Mix Part A + Part B Ecoflex 00-30 per the Smooth-On TDS (total pour \
+             mass: 142.00 g, split per the data-sheet mix ratio).",
+        );
+        let layers = vec![slacker_layer("Ecoflex 00-30", 0.142, Some(0.10))];
+        let patched = inject_slacker_recipe_into_markdown(&tds, &layers).unwrap();
+        assert!(
+            patched.contains(
+                "Of that total, 12.91 g is Slacker (10% of the 129.09 g base, by weight) \
+                 — mix order per `## Slacker Recipe`."
+            ),
+            "TDS-fallback step did not gain the Slacker mass; got:\n{patched}",
+        );
+    }
+
+    #[test]
+    fn per_layer_anchor_appears_once_in_fixture() {
+        assert_eq!(FIXTURE_V2.matches(PER_LAYER_ANCHOR).count(), 1);
     }
 }
