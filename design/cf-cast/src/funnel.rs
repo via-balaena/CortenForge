@@ -420,12 +420,6 @@ mod tests {
             .with_pour_gate(PourGateKind::Default(spec))
     }
 
-    /// `ApexAxial` layout → NO separate funnel STL: the funnel is now
-    /// integrated INTO the cup pieces (the integral split funnel —
-    /// `crate::pour::build_integral_pour_channel`), so there is no
-    /// inserted-nipple standalone funnel for this layout. (Recon §7.8 —
-    /// the inserted nipple's wall was a ~5.6× `r⁴` throat constriction;
-    /// the integral funnel's lumen is continuous into the bore.)
     /// ★★★ LITERAL expected values, deliberately NOT re-derived.
     ///
     /// `funnel_nipple_wall_is_solid` is an inside/outside SDF probe with about
@@ -446,6 +440,12 @@ mod tests {
         );
     }
 
+    /// `ApexAxial` layout → NO separate funnel STL: the funnel is now
+    /// integrated INTO the cup pieces (the integral split funnel —
+    /// `crate::pour::build_integral_pour_channel`), so there is no
+    /// inserted-nipple standalone funnel for this layout. (Recon §7.8 —
+    /// the inserted nipple's wall was a ~5.6× `r⁴` throat constriction;
+    /// the integral funnel's lumen is continuous into the bore.)
     #[test]
     fn build_funnel_solid_apex_axial_is_none_now_integral() {
         let ribbon = apex_axial_ribbon();
