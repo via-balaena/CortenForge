@@ -343,6 +343,16 @@ fn correct_mix_step_for_layer(
     // material before writing rather than trusting the index alone — a
     // desync would otherwise put one layer's Slacker mass under
     // another layer's heading, silently.
+    // An empty name makes `starts_with` trivially true, so the guard
+    // below would pass while proving nothing — and `display_name` is
+    // user-settable from cast.toml with no emptiness validation. Reject
+    // it rather than run a check that cannot fail.
+    if display_name.is_empty() {
+        bail!(
+            "layer {layer_idx} takes Slacker but its material has an empty `display_name`; \
+             its bench step cannot be matched to a sheet heading without one"
+        );
+    }
     if !body[after_heading..].starts_with(display_name) {
         let found: String = body[after_heading..]
             .lines()
@@ -741,6 +751,12 @@ Some guidance.\n\
                 "2. Mix 71.00 g Part A + 71.00 g Part B Ecoflex 00-30 (1A:1B mix ratio); \
                  total 142.00 g. Vacuum-degas 2-3 min at ≥27 inHg.",
             );
+        assert!(
+            bonded.contains("## Per-Layer Procedure (bonded, cast-in-place)")
+                && bonded.contains("; total 142.00 g. Vacuum-degas"),
+            "fixture surgery failed — without BOTH bonded markers this test passes \
+             against the plain shape and proves nothing",
+        );
         let layers = vec![slacker_layer("Ecoflex 00-30", 0.142, Some(0.10))];
         let patched = inject_slacker_recipe_into_markdown(&bonded, &layers).unwrap();
         assert!(
@@ -826,6 +842,25 @@ Some guidance.\n\
         let msg = format!("{err:#}");
         assert!(
             msg.contains("out of step"),
+            "unexpected error message: {msg}",
+        );
+    }
+
+    #[test]
+    fn empty_display_name_errors_rather_than_guarding_vacuously() {
+        // cast.toml's per-layer `display_name` is user-settable and is
+        // never checked for emptiness, and `"".starts_with("")` is true
+        // — so without an explicit reject the alignment guard would
+        // pass on a nameless material while verifying nothing.
+        let nameless = FIXTURE_V2.replace(
+            "### Layer 0 — Ecoflex 00-30 (innermost)",
+            "### Layer 0 —  (innermost)",
+        );
+        let layers = vec![slacker_layer("", 0.142, Some(0.10))];
+        let err = inject_slacker_recipe_into_markdown(&nameless, &layers).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("empty `display_name`"),
             "unexpected error message: {msg}",
         );
     }
