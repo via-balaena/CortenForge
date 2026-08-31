@@ -2460,6 +2460,15 @@ fn write_v2_assembly_note(
             let clearance_mm = spec.clearance_m * 1000.0;
             let depth_mm = spec.depth_m * 1000.0;
             let hole_diameter_mm = 2.0_f64.mul_add(clearance_mm, diameter_mm);
+            // ⚠⚠ Quote what the pipeline CARVES, not what the config REQUESTED
+            // — the #850 lesson, and this sheet had the same bug in a third
+            // place. `dowel_hole.rs:215` carves `depth_m + HOLE_AXIAL_SLACK_M`
+            // per half, so a bencher's depth gauge reads 5.5 mm where the
+            // config says 5.0. The sheet also said each dowel "inserts ~4.5 mm
+            // ... with 1.0 mm slack at each tip", which sums to 5.5 — so the
+            // document disagreed with its own arithmetic.
+            let hole_axial_slack_mm = crate::dowel_hole::HOLE_AXIAL_SLACK_M * 1000.0;
+            let carved_half_depth_mm = depth_mm + hole_axial_slack_mm;
             let _ = writeln!(
                 md,
                 "Each layer's mold is two ribbon-cut pieces \
@@ -2468,7 +2477,10 @@ fn write_v2_assembly_note(
                  ({hole_diameter_mm:.2} mm Ø — \
                  {diameter_mm:.1} mm nominal dowel × \
                  2 × {clearance_mm:.2} mm radial clearance, \
-                 {depth_mm:.1} mm deep per half) are carved through \
+                 {carved_half_depth_mm:.1} mm deep per half as carved — \
+                 {depth_mm:.1} mm nominal plus {hole_axial_slack_mm:.1} mm \
+                 axial slack that keeps the cylinder's flat caps inside the \
+                 material) are carved through \
                  BOTH cup-halves' mating faces. The seam-placement \
                  solver positions the dowels at the body's long-axis \
                  extremes (maximum moment arm, so a registration pair \
@@ -2484,7 +2496,6 @@ fn write_v2_assembly_note(
             // (cold-read 2026-05-27 caught the prose understating
             // this by half by counting only one).
             let dowel_insertion_slack_mm = crate::dowel::DOWEL_INSERTION_SLACK_M * 1000.0;
-            let hole_axial_slack_mm = crate::dowel_hole::HOLE_AXIAL_SLACK_M * 1000.0;
             let dowel_length_mm = depth_mm.mul_add(2.0, -2.0 * dowel_insertion_slack_mm);
             let total_cavity_mm = depth_mm.mul_add(2.0, 2.0 * hole_axial_slack_mm);
             let tip_slack_mm = (total_cavity_mm - dowel_length_mm) / 2.0;

@@ -5990,6 +5990,71 @@ mod tests {
         );
     }
 
+    /// ★★★ Do the BENCHER's arithmetic, on the BENCHER's numbers.
+    ///
+    /// The sheet stated the dowel hole was "5.0 mm deep per half" (the config
+    /// parameter) while telling the same reader each dowel "inserts ~4.5 mm
+    /// into each cup-half with 1.0 mm assembly slack at each tip" — which sums
+    /// to 5.5, the depth `dowel_hole.rs:215` actually carves. A depth gauge
+    /// reads 5.5. Third instance of the #850 class: the sheet quoting what was
+    /// REQUESTED instead of what is CARVED.
+    ///
+    /// ⚠ Operands are PARSED OUT OF THE RENDERED SHEET, never recomputed from
+    /// the constants. Recomputing would mirror whatever the writer did and stay
+    /// green with both numbers wrong — the failure mode
+    /// `feedback_answer_the_consumers_question_not_the_fixtures` describes.
+    #[test]
+    fn the_stated_dowel_hole_depth_equals_insertion_plus_tip_slack() {
+        use crate::dowel_hole::{DowelHoleKind, DowelHoleSpec};
+        use crate::flange::{DemandFlangeSpec, FlangeKind};
+
+        // ⚠ `DowelHoleKind::Auto` alone carves NOTHING — dowels need a flange
+        // band to sit in, and the shared fixture's 20 mm wall is too thick for
+        // the solver to place them. Both are required or this gate would assert
+        // over a sheet with no dowel section at all.
+        let (mut spec, mut ribbon) = v2_procedure_fixture();
+        spec.wall_thickness_m = 0.004;
+        ribbon.flange = FlangeKind::Demand(DemandFlangeSpec::iter1());
+        ribbon.dowel_hole = DowelHoleKind::Auto(DowelHoleSpec::iter1());
+        let pours = spec.compute_pour_volumes().unwrap();
+        let probe = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
+        assert!(
+            probe.contains("**Symmetric dowel holes**"),
+            "fixture surgery did not land — no dowels carved, so this gate \
+             would pass over a sheet that never states a depth: {probe}"
+        );
+        let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
+
+        let grab = |after: &str, before: &str| -> f64 {
+            let tail = md
+                .split_once(after)
+                .unwrap_or_else(|| panic!("sheet never says {after:?}: {md}"))
+                .1;
+            let head = tail
+                .split_once(before)
+                .unwrap_or_else(|| panic!("no {before:?} after {after:?}: {md}"))
+                .0;
+            head.trim()
+                .rsplit(|c: char| c.is_whitespace())
+                .next()
+                .and_then(|t| t.parse().ok())
+                .unwrap_or_else(|| panic!("no number before {before:?} in {head:?}"))
+        };
+
+        let stated_depth = grab("radial clearance, ", " mm deep per half");
+        let insert = grab("inserts ~", " mm into each cup-half");
+        let tip_slack = grab("into each cup-half with ", " mm assembly slack");
+
+        assert!(
+            (stated_depth - (insert + tip_slack)).abs() < 1e-9,
+            "the sheet's own numbers do not reconcile: it states a \
+             {stated_depth} mm hole per half, then says the dowel goes \
+             {insert} mm in with {tip_slack} mm of slack behind it \
+             (= {} mm). A depth gauge cannot read both.",
+            insert + tip_slack
+        );
+    }
+
     #[test]
     fn generate_procedure_markdown_v2_lists_target_fdm_floor() {
         // S6 anchors the recon-1 §G-3 consumer-FDM tolerance floor —
