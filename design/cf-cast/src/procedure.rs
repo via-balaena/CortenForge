@@ -2496,6 +2496,7 @@ fn write_v2_assembly_note(
             // (cold-read 2026-05-27 caught the prose understating
             // this by half by counting only one).
             let dowel_insertion_slack_mm = crate::dowel::DOWEL_INSERTION_SLACK_M * 1000.0;
+            let dowel_chamfer_mm = crate::dowel::DOWEL_TIP_CHAMFER_M * 1000.0;
             let dowel_length_mm = depth_mm.mul_add(2.0, -2.0 * dowel_insertion_slack_mm);
             let total_cavity_mm = depth_mm.mul_add(2.0, 2.0 * hole_axial_slack_mm);
             let tip_slack_mm = (total_cavity_mm - dowel_length_mm) / 2.0;
@@ -2508,7 +2509,12 @@ fn write_v2_assembly_note(
                  {dowel_length_mm:.1} mm long — sized so each dowel \
                  inserts ~{insert_depth_mm:.1} mm into each cup-half \
                  with {tip_slack_mm:.1} mm assembly slack at each \
-                 tip). Print the dowels VERTICAL (cylindrical axis \
+                 tip; each tip carries a {dowel_chamfer_mm:.1} mm 45° \
+                 lead-in chamfer, so the dowel self-centres into a hole \
+                 mouth that first-layer squish has narrowed — start it by \
+                 hand, and if it still needs forcing say so, because that \
+                 is a fit problem, not a technique problem). Print the \
+                 dowels VERTICAL (cylindrical axis \
                  perpendicular to the build plate; cf-view loads them \
                  oriented this way) so the cylindrical walls print \
                  clean without overhangs. Insert one dowel through \

@@ -422,6 +422,89 @@ pub fn build_cylinder_along_axis(
     z_aligned.transform(&affine_12_from_isometry(&iso))
 }
 
+/// Build a [`Manifold`] cylinder with a **conical lead-in chamfer at
+/// both ends**, via `Manifold::hull_pts`.
+///
+/// A chamfered cylinder is convex, so the hull of four coaxial rings
+/// reproduces it exactly — the same construction
+/// [`build_truncated_pyramid_via_hull_pts`] uses for the plug-lock
+/// chamfer band, and for the same reason: hull resolution is native
+/// and independent of any marching-cubes cell size.
+///
+/// Rings, in `parent`-local Z (the cylinder axis), radius `r`,
+/// chamfer `c`:
+///
+/// - `z = -half_length`, radius `r - c` — the entering tip
+/// - `z = -half_length + c`, radius `r` — chamfer shoulder
+/// - `z = +half_length - c`, radius `r`
+/// - `z = +half_length`, radius `r - c`
+///
+/// ⚠ **Why the dowel needs this at all:** the workshop reported
+/// (2026-08-31) needing a CLAMP to seat a dowel — a fail of recon §G-6's
+/// acceptance criterion (a) "seat without forcing". The dowel was the one
+/// mating feature in the crate with square-cut ends and no lead-in, while
+/// the plug-floor lock has carried a chamfer described as a
+/// "lead-in self-centering aid" since §G-6. Under the mating-face-DOWN
+/// print lock the hole mouth is bed-adjacent, so first-layer squish
+/// narrows exactly the entry a square-cut pin has to find. A chamfer
+/// bridges that without touching the fit along the shank, so lateral
+/// registration precision is unchanged.
+///
+/// Falls back to a plain cylinder when `tip_chamfer_m <= 0.0`.
+///
+/// # Panics
+///
+/// If `tip_chamfer_m` is not smaller than both `radius_m` and
+/// `parent.half_length_m` — a chamfer that consumes the whole radius
+/// leaves a cone with no bearing surface, and one that consumes the
+/// half-length leaves no parallel shank at all. Both are spec errors,
+/// not geometry this should silently approximate.
+#[must_use]
+pub fn build_chamfered_cylinder_along_axis(
+    parent: &CylinderParent,
+    radius_m: f64,
+    tip_chamfer_m: f64,
+    segments: u32,
+) -> Manifold {
+    if tip_chamfer_m <= 0.0 {
+        return build_cylinder_along_axis(parent, radius_m, segments);
+    }
+    assert!(
+        tip_chamfer_m < radius_m && tip_chamfer_m < parent.half_length_m,
+        "dowel tip chamfer {tip_chamfer_m} m must be smaller than both the \
+         radius {radius_m} m and the half-length {} m",
+        parent.half_length_m
+    );
+
+    let half_len_mm = parent.half_length_m * METERS_TO_MM;
+    let r_mm = radius_m * METERS_TO_MM;
+    let c_mm = tip_chamfer_m * METERS_TO_MM;
+    let tip_r_mm = r_mm - c_mm;
+
+    let rings = [
+        (-half_len_mm, tip_r_mm),
+        (-half_len_mm + c_mm, r_mm),
+        (half_len_mm - c_mm, r_mm),
+        (half_len_mm, tip_r_mm),
+    ];
+    let mut pts_mm: Vec<[f64; 3]> = Vec::with_capacity(4 * segments as usize);
+    for (z_mm, ring_r_mm) in rings {
+        for seg in 0..segments {
+            let theta = 2.0 * std::f64::consts::PI * f64::from(seg) / f64::from(segments);
+            pts_mm.push([ring_r_mm * theta.cos(), ring_r_mm * theta.sin(), z_mm]);
+        }
+    }
+    let z_aligned = Manifold::hull_pts(&pts_mm);
+
+    let center_mm = Point3::new(
+        parent.center_m.x * METERS_TO_MM,
+        parent.center_m.y * METERS_TO_MM,
+        parent.center_m.z * METERS_TO_MM,
+    );
+    let iso = pose_from_z_axis(parent.axis, center_mm);
+    z_aligned.transform(&affine_12_from_isometry(&iso))
+}
+
 /// Build a [`Manifold`] truncated-pyramid (with optional chamfer
 /// band) via `Manifold::hull_pts`, placed at the world-frame pose
 /// encoded in `params.pose`.

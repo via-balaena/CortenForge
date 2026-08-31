@@ -55,7 +55,9 @@ use mesh_types::IndexedMesh;
 use nalgebra::{Point3, Unit, Vector3};
 
 use crate::dowel_hole::DowelHoleSpec;
-use crate::mesh_csg::{CylinderParent, build_cylinder_along_axis, manifold_to_indexed_mesh};
+use crate::mesh_csg::{
+    CylinderParent, build_chamfered_cylinder_along_axis, manifold_to_indexed_mesh,
+};
 
 /// Axial slack at each dowel tip after assembly insertion (0.5 mm).
 ///
@@ -65,6 +67,25 @@ use crate::mesh_csg::{CylinderParent, build_cylinder_along_axis, manifold_to_ind
 /// [`crate::dowel_hole::HOLE_AXIAL_SLACK_M`] — the hole has its own
 /// internal axial slack).
 pub const DOWEL_INSERTION_SLACK_M: f64 = 0.0005;
+
+/// Lead-in chamfer at each dowel tip (0.4 mm, 45°).
+///
+/// ⚠ Added 2026-08-31 after the workshop reported needing a CLAMP to seat a
+/// dowel — a fail of recon §G-6's acceptance criterion (a), "seat without
+/// forcing". The dowel was the only mating feature in this crate with
+/// square-cut ends; the plug-floor lock has carried a chamfer described as a
+/// "lead-in self-centering aid" since §G-6.
+///
+/// Under the mating-face-DOWN print lock (the hard flat-mating-face
+/// constraint) the hole mouth sits on the bed, so first-layer squish narrows
+/// precisely the entry a square-cut pin must find. A chamfer bridges that.
+///
+/// **0.4 mm is the FLOOR of the §G-6 typed chamfer range (0.4-0.8 mm)** —
+/// chosen to buy the lead-in at the smallest cost in bearing length, which
+/// drops from 4.5 mm to 4.1 mm per half. If the workshop still has to force a
+/// dowel, the next move is up this range, NOT out to a looser radial
+/// clearance: clearance trades away lateral registration, chamfer does not.
+pub const DOWEL_TIP_CHAMFER_M: f64 = 0.0004;
 
 /// Center-to-center extra spacing between adjacent dowels (4 mm).
 const DOWEL_PRINT_SPACING_M: f64 = 0.004;
@@ -114,7 +135,12 @@ pub fn build_dowel_array_mesh(
             axis,
             half_length_m,
         };
-        let cyl = build_cylinder_along_axis(&parent, radius_m, DEFAULT_SEGMENTS);
+        let cyl = build_chamfered_cylinder_along_axis(
+            &parent,
+            radius_m,
+            DOWEL_TIP_CHAMFER_M,
+            DEFAULT_SEGMENTS,
+        );
         combined = Some(match combined {
             None => cyl,
             Some(prev) => prev.union(&cyl),
@@ -201,19 +227,63 @@ mod tests {
 
     #[test]
     fn build_dowel_array_is_32_segment_smooth() {
-        // 4 cylinders × (32 sides × 2 tris + 30 cap tris × 2 caps)
-        // ≈ 4 × (64 + 60) = 4 × 124 = 496 triangles before union dedup.
-        // Union shouldn't change face count meaningfully when cylinders
-        // are disjoint (no overlap). MC-baseline was ~3400 faces with
-        // ugly 12-faceted cylinders — 32-segment is way smoother + 7×
-        // smaller mesh.
+        // Each dowel is the convex hull of FOUR 32-point rings (tip,
+        // chamfer shoulder, chamfer shoulder, tip) = 128 points, which
+        // triangulates to ~252 faces; 4 dowels ≈ 1008.
+        //
+        // ⚠ This budget was `< 1000` while the dowel was a plain cylinder
+        // (two rings, ~124 faces each). Adding the 2026-08-31 tip chamfer
+        // doubled the rings and tripped it at 1008. Raised deliberately with
+        // the new arithmetic shown — still ~3× under the ~3400-face MC
+        // baseline this test was written to protect.
         let spec = DowelHoleSpec::iter1();
         let mesh = build_dowel_array_mesh(&spec, 4, 0.0).unwrap();
         assert!(
-            mesh.faces.len() < 1000,
-            "32-segment cylinder array should have < 1000 faces (MC \
+            mesh.faces.len() < 1200,
+            "4 chamfered 32-segment dowels should stay under 1200 faces (MC \
              baseline was ~3400); got {}",
             mesh.faces.len()
+        );
+    }
+
+    /// ★ The face-count budget above would stay green if the chamfer silently
+    /// vanished only on ONE ring, so assert the lead-in geometrically: the
+    /// extreme-Z ring must be NARROWER than the shank by exactly the chamfer.
+    #[test]
+    fn each_dowel_tip_is_chamfered_not_square_cut() {
+        let spec = DowelHoleSpec::iter1();
+        let mesh = build_dowel_array_mesh(&spec, 1, 0.0).unwrap();
+
+        let r_mm = spec.diameter_m / 2.0 * 1000.0;
+        let c_mm = DOWEL_TIP_CHAMFER_M * 1000.0;
+
+        // Vertices are mm; the dowel spans z = 0 .. length.
+        let radius_at = |z_target: f64| -> f64 {
+            mesh.vertices
+                .iter()
+                .filter(|v| (v[2] - z_target).abs() < 1e-6)
+                .map(|v| v[0].hypot(v[1]))
+                .fold(0.0_f64, f64::max)
+        };
+
+        let tip = radius_at(0.0);
+        let shoulder = radius_at(c_mm);
+        assert!(
+            (tip - (r_mm - c_mm)).abs() < 1e-6,
+            "tip ring should be inset by the {c_mm} mm chamfer to \
+             {} mm, got {tip} mm — a square-cut dowel is what made the \
+             workshop reach for a clamp",
+            r_mm - c_mm
+        );
+        assert!(
+            (shoulder - r_mm).abs() < 1e-6,
+            "chamfer shoulder should be at the full {r_mm} mm radius, got \
+             {shoulder} mm"
+        );
+        assert!(
+            tip < shoulder,
+            "tip {tip} mm must be narrower than shoulder {shoulder} mm or \
+             there is no lead-in at all"
         );
     }
 }
