@@ -96,6 +96,20 @@ const DOWEL_PRINT_SPACING_M: f64 = 0.004;
 /// so slide-fit clearance is geometrically uniform.
 const DEFAULT_SEGMENTS: u32 = 32;
 
+/// The dowel's shank radius and half-length, derived from `spec`.
+///
+/// ★★★ **THE ONE DERIVATION.** [`build_dowel_array_mesh`] and
+/// [`effective_tip_chamfer_m`] both call this. They previously each computed
+/// it, with a comment claiming they "cannot drift" — a mirror, and mirrors
+/// drift; nothing enforced it. Extracted so the claim is structural rather
+/// than aspirational.
+fn dowel_geometry_m(spec: &DowelHoleSpec) -> (f64, f64) {
+    let radius_m = spec.diameter_m / 2.0;
+    // dowel length = 2 × depth - 2 × insertion_slack
+    let length_m = 2.0_f64.mul_add(-DOWEL_INSERTION_SLACK_M, 2.0 * spec.depth_m);
+    (radius_m, length_m / 2.0)
+}
+
 /// The lead-in chamfer a dowel built from `spec` will ACTUALLY carry.
 ///
 /// ★★★ `crate::procedure` MUST use this, not [`DOWEL_TIP_CHAMFER_M`] directly.
@@ -106,9 +120,7 @@ const DEFAULT_SEGMENTS: u32 = 32;
 /// stated a NEGATIVE tip diameter for a mesh whose tip is positive.
 #[must_use]
 pub fn effective_tip_chamfer_m(spec: &DowelHoleSpec) -> f64 {
-    // Mirror `build_dowel_array_mesh`'s own derivation so the two cannot drift.
-    let radius_m = spec.diameter_m / 2.0;
-    let half_length_m = 2.0_f64.mul_add(-DOWEL_INSERTION_SLACK_M, 2.0 * spec.depth_m) / 2.0;
+    let (radius_m, half_length_m) = dowel_geometry_m(spec);
     crate::mesh_csg::effective_tip_chamfer_m(DOWEL_TIP_CHAMFER_M, radius_m, half_length_m)
 }
 
@@ -135,10 +147,7 @@ pub fn build_dowel_array_mesh(
     if count == 0 {
         return None;
     }
-    let radius_m = spec.diameter_m / 2.0;
-    // dowel length = 2 × depth - 2 × insertion_slack
-    let length_m = 2.0_f64.mul_add(-DOWEL_INSERTION_SLACK_M, 2.0 * spec.depth_m);
-    let half_length_m = length_m / 2.0;
+    let (radius_m, half_length_m) = dowel_geometry_m(spec);
     let pitch = spec.diameter_m + DOWEL_PRINT_SPACING_M;
     let axis = Unit::new_normalize(Vector3::new(0.0, 0.0, 1.0));
 
@@ -270,11 +279,26 @@ mod tests {
     fn the_prose_chamfer_matches_the_chamfer_the_mesh_actually_carries() {
         for (label, spec) in [
             ("iter1", DowelHoleSpec::iter1()),
+            // ⚠ The clamp has TWO bounds and they must be covered
+            // SEPARATELY. This case binds on HALF-LENGTH (0.040 mm beats the
+            // 0.120 mm radius bound)...
             (
-                "sub-chamfer dowel",
+                "short dowel — half-length binds",
                 DowelHoleSpec {
                     diameter_m: 0.0006,
                     depth_m: 0.0006,
+                    ..DowelHoleSpec::iter1()
+                },
+            ),
+            // ...and this one binds on RADIUS (0.120 mm beats the 1.800 mm
+            // half-length bound). Deleting the `radius_m * 0.4` term left the
+            // whole suite green until this case existed — the guard was
+            // vacuous on the bound it was written for.
+            (
+                "thin dowel — radius binds",
+                DowelHoleSpec {
+                    diameter_m: 0.0006,
+                    depth_m: 0.005,
                     ..DowelHoleSpec::iter1()
                 },
             ),
