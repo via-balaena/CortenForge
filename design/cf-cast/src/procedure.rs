@@ -3496,7 +3496,9 @@ fn write_apex_axial_pour_note(
          blind hole); trim it flush off the cast.{solver_bracket}"
     );
     md.push('\n');
-    let mouth_dia_mm = gate_dia_mm * crate::pour::INTEGRAL_FUNNEL_MOUTH_FACTOR;
+    // ★ ASK the builder, do not re-apply the factor. `pour.rs` owns how the
+    // mouth is sized; re-deriving here is the #850 class in its funnel form.
+    let mouth_dia_mm = crate::pour::integral_funnel_mouth_radius_m(spec.gate_radius_m) * 2000.0;
     let funnel_height_mm = crate::pour::INTEGRAL_FUNNEL_HEIGHT_M * 1000.0;
     let _ = writeln!(
         md,
@@ -3650,11 +3652,13 @@ fn write_v2_pour_gate_note(
                  pour leg (+binormal hole, Positive piece).{air_escape}"
             );
             md.push('\n');
-            // NIPPLE_DIAMETRAL_CLEARANCE_M is funnel-private; recompute
-            // the asymmetric-`/2` cup-vs-nipple Ø delta from the spec so
-            // workshop user sees the actual diametral gap.
+            // ★ The clearance is ASYMMETRIC — all of it comes off the nipple,
+            // the cup hole stays nominal — so the `/ 2.0` must live in exactly
+            // one place. `funnel.rs` owns it; this asks rather than re-typing.
+            // (The old comment here claimed the constant was "funnel-private";
+            // it is `pub`, and the recompute it justified was the #850 class.)
             let nipple_clearance_mm = crate::funnel::NIPPLE_DIAMETRAL_CLEARANCE_M * 1000.0;
-            let nipple_outer_dia_mm = gate_dia_mm - nipple_clearance_mm;
+            let nipple_outer_dia_mm = crate::funnel::nipple_outer_radius_m(spec) * 2000.0;
             let _ = writeln!(
                 md,
                 "**Pour funnel** (one-time print: `funnel.stl`). Honey-\
