@@ -2778,7 +2778,10 @@ fn write_v2_plug_anchor_note(md: &mut String, ribbon: &Ribbon) {
             let lock_length_mm = lock_spec.pin_half_length_m * 2.0 * 1000.0;
             let chamfer_mm = lock_spec.base_chamfer_m * 1000.0;
             let diametral_mm = lock_spec.diametral_clearance_m * 1000.0;
-            let socket_base_lateral_mm = base_lateral_mm + diametral_mm;
+            // ★ ASK the spec how big the socket is. Re-adding the clearance
+            // here splits the `/ 2.0` across two sites — the same split that
+            // made the funnel nipple's asymmetric clearance quotable wrong.
+            let socket_base_lateral_mm = lock_spec.socket_base_half_extents_m().x * 2.0 * 1000.0;
             let _ = writeln!(
                 md,
                 "Each per-layer plug carries a **truncated-pyramid \
