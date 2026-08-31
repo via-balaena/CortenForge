@@ -514,6 +514,26 @@ mod tests {
         (body, bounds, ribbon)
     }
 
+    /// ★★★ The carved depth, as a LITERAL — the last mirror in this chain.
+    ///
+    /// `smart_dowel_emission_matches_legacy_cylinder_geometry` pins this by
+    /// re-deriving `depth_m + HOLE_AXIAL_SLACK_M`, which catches a change to
+    /// [`carved_half_length_m`] but would agree with it if the design itself
+    /// were wrong. The number below is what a workshop depth gauge reads, and
+    /// the sheet quotes it — so it is written out rather than computed.
+    #[test]
+    fn iter1_carved_half_length_is_five_and_a_half_millimetres() {
+        let spec = DowelHoleSpec::iter1();
+        assert!(
+            (carved_half_length_m(&spec) - 0.005_5).abs() < 1e-12,
+            "iter-1 carves 5.5 mm per half (5.0 nominal + 0.5 slack); got {} m",
+            carved_half_length_m(&spec)
+        );
+        // ⚠ And it must EXCEED the nominal — the whole reason the sheet used to
+        // quote the wrong number is that `depth_m` looks like the answer.
+        assert!(carved_half_length_m(&spec) > spec.depth_m);
+    }
+
     #[test]
     fn dowel_hole_spec_iter1_defaults() {
         let s = DowelHoleSpec::iter1();

@@ -1025,6 +1025,36 @@ mod tests {
         IndexedMesh::from_parts(vertices, faces)
     }
 
+    /// ★★★ The 0.4 clamp fraction, pinned by NUMBER and by INTENT.
+    ///
+    /// ⚠⚠ Mutating 0.4 → 0.9 passed all 391 tests. The prose-vs-mesh gate in
+    /// `crate::dowel` compares two CALLERS of this function, so both follow any
+    /// change to it and keep agreeing: **a "compare two sources" test is blind
+    /// to a change in the shared source.** That is the cost of single-sourcing
+    /// a value, and it is paid with a gate like this one.
+    #[test]
+    fn tip_chamfer_clamp_is_pinned_by_value_and_by_intent() {
+        // Neither bound binds: the request survives intact.
+        assert!((effective_tip_chamfer_m(0.000_4, 0.001_5, 0.004_5) - 0.000_4).abs() < 1e-12);
+        // Radius binds: 0.3 mm radius × 0.4 = 0.12 mm.
+        assert!((effective_tip_chamfer_m(0.000_4, 0.000_3, 0.004_5) - 0.000_12).abs() < 1e-12);
+        // Half-length binds: 0.1 mm half × 0.4 = 0.04 mm.
+        assert!((effective_tip_chamfer_m(0.000_4, 0.001_5, 0.000_1) - 0.000_04).abs() < 1e-12);
+
+        // ★ The INTENT, independent of the number: whichever bound binds, a
+        // MAJORITY of both the radius and the shank must survive as bearing
+        // surface. A chamfer that ate most of either would be a cone, not a
+        // lead-in — which is what a fraction ≥ 0.5 would silently produce.
+        for (r, hl) in [(0.000_3, 0.004_5), (0.001_5, 0.000_1), (0.000_2, 0.000_2)] {
+            let c = effective_tip_chamfer_m(1.0, r, hl);
+            assert!(
+                c < r / 2.0 && c < hl / 2.0,
+                "clamped chamfer {c} must leave a majority of radius {r} and \
+                 half-length {hl} as bearing surface"
+            );
+        }
+    }
+
     #[test]
     fn manifold3d_roundtrip_preserves_outward_winding() {
         // §Q-5 root-cause diagnostic (per
