@@ -258,6 +258,7 @@ pub(crate) fn inject_slacker_recipe_into_markdown(
         body = correct_mix_step_for_layer(
             &body,
             idx,
+            &recipe.display_name,
             part_fill_g,
             base_fill_g,
             slacker_fill_g,
@@ -319,6 +320,7 @@ pub(crate) fn inject_slacker_recipe_into_markdown(
 fn correct_mix_step_for_layer(
     body: &str,
     layer_idx: usize,
+    display_name: &str,
     part_fill_g: f64,
     base_fill_g: f64,
     slacker_fill_g: f64,
@@ -335,6 +337,25 @@ fn correct_mix_step_for_layer(
     // Bound the search to THIS layer's section, so a layer whose own
     // step is missing cannot silently pick up the next layer's.
     let after_heading = heading_at + heading.len();
+    // The caller's `layers` are positional; the sheet's headings carry
+    // cf-cast's own `pour.layer_index`. Correcting a step commits real
+    // masses to a bench sheet, so require the two to agree on the
+    // material before writing rather than trusting the index alone — a
+    // desync would otherwise put one layer's Slacker mass under
+    // another layer's heading, silently.
+    if !body[after_heading..].starts_with(display_name) {
+        let found: String = body[after_heading..]
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .chars()
+            .take(60)
+            .collect();
+        bail!(
+            "layer {layer_idx} recipe says `{display_name}` but the sheet's heading reads \
+             `{found}` — positional layers and sheet headings are out of step"
+        );
+    }
     let section_end = body[after_heading..]
         .find("\n### ")
         .map_or(body.len(), |rel| after_heading + rel);
@@ -699,6 +720,113 @@ Some guidance.\n\
                  — mix order per `## Slacker Recipe`."
             ),
             "TDS-fallback step did not gain the Slacker mass; got:\n{patched}",
+        );
+    }
+
+    /// The bonded path (`write_procedure_v2_for_mode`, reached via
+    /// `export_selected`) emits `## Per-Layer Procedure (bonded,
+    /// cast-in-place)` and terminates the mix step with `; total …`
+    /// instead of `. Total …`. The corrector reuses that tail verbatim,
+    /// so it must survive both differences.
+    #[test]
+    fn bonded_mode_mix_step_is_corrected() {
+        let bonded = FIXTURE_V2
+            .replace(
+                "## Per-Layer Procedure\n",
+                "## Per-Layer Procedure (bonded, cast-in-place)\n",
+            )
+            .replace(
+                "4. Mix 71.00 g Part A + 71.00 g Part B Ecoflex 00-30 (1A:1B mix ratio). \
+                 Total 142.00 g.",
+                "2. Mix 71.00 g Part A + 71.00 g Part B Ecoflex 00-30 (1A:1B mix ratio); \
+                 total 142.00 g. Vacuum-degas 2-3 min at ≥27 inHg.",
+            );
+        let layers = vec![slacker_layer("Ecoflex 00-30", 0.142, Some(0.10))];
+        let patched = inject_slacker_recipe_into_markdown(&bonded, &layers).unwrap();
+        assert!(
+            patched.contains(
+                "2. Mix 64.55 g Part A + 64.55 g Part B Ecoflex 00-30 (1A:1B mix ratio) \
+                 plus 12.91 g Slacker (10% of the 129.09 g base, by weight; mix order \
+                 per `## Slacker Recipe`); total 142.00 g. Vacuum-degas 2-3 min at ≥27 inHg."
+            ),
+            "bonded mix step not corrected, or its `; total …` tail was mangled; got:\n{patched}",
+        );
+    }
+
+    /// `procedure.rs` emits the anchor string inside PROSE — "follow the
+    /// pour step in `## Per-Layer Procedure` below" — for a gasketed
+    /// cast with no pour gate. That mention precedes the real heading,
+    /// so a naive `find` lands on it.
+    #[test]
+    fn anchor_mentioned_in_prose_does_not_derail_the_search() {
+        let with_prose = FIXTURE_V2.replace(
+            "Some guidance.\n",
+            "Some guidance. As generated, follow the pour step in \
+             `## Per-Layer Procedure` below — this section does not \
+             prescribe a second one.\n",
+        );
+        assert_eq!(
+            with_prose.matches(PER_LAYER_ANCHOR).count(),
+            2,
+            "fixture must contain BOTH the prose mention and the heading",
+        );
+        let layers = vec![slacker_layer("Ecoflex 00-30", 0.142, Some(0.10))];
+        let patched = inject_slacker_recipe_into_markdown(&with_prose, &layers).unwrap();
+        assert!(
+            patched.contains("64.55 g Part A + 64.55 g Part B Ecoflex 00-30"),
+            "prose mention derailed the layer search; got:\n{patched}",
+        );
+        assert!(
+            !patched.contains("71.00 g Part A"),
+            "layer-0 step left uncorrected; got:\n{patched}",
+        );
+    }
+
+    /// Every offset in the corrector is a byte index. The layer heading
+    /// already carries a multi-byte em-dash; a material name with
+    /// non-ASCII in it must not split a char boundary and panic.
+    #[test]
+    fn multibyte_material_name_does_not_panic() {
+        let exotic = FIXTURE_V2
+            .replace(
+                "### Layer 0 — Ecoflex 00-30 (innermost)",
+                "### Layer 0 — Ecoflex™ 00-30 — «smøl» (innermost)",
+            )
+            .replace(
+                "4. Mix 71.00 g Part A + 71.00 g Part B Ecoflex 00-30 (1A:1B mix ratio). \
+                 Total 142.00 g.",
+                "4. Mix 71.00 g Part A + 71.00 g Part B Ecoflex™ 00-30 — «smøl» (1A:1B mix \
+                 ratio). Total 142.00 g.",
+            );
+        let layers = vec![slacker_layer("Ecoflex™ 00-30 — «smøl»", 0.142, Some(0.10))];
+        let patched = inject_slacker_recipe_into_markdown(&exotic, &layers).unwrap();
+        assert!(
+            patched.contains(
+                "64.55 g Part A + 64.55 g Part B Ecoflex™ 00-30 — «smøl» (1A:1B mix ratio) plus"
+            ),
+            "multi-byte material name not preserved; got:\n{patched}",
+        );
+    }
+
+    /// A positional/heading desync must be loud, not a silently
+    /// misattributed mass. Layer 0's heading is renamed so it no longer
+    /// matches the recipe row that would be written under it.
+    #[test]
+    fn heading_material_mismatch_errors() {
+        let renamed = FIXTURE_V2.replace(
+            "### Layer 0 — Ecoflex 00-30 (innermost)",
+            "### Layer 0 — Dragon Skin 20A (innermost)",
+        );
+        assert!(
+            renamed.contains("### Layer 0 — Dragon Skin 20A"),
+            "fixture surgery failed — the test would prove nothing",
+        );
+        let layers = vec![slacker_layer("Ecoflex 00-30", 0.142, Some(0.10))];
+        let err = inject_slacker_recipe_into_markdown(&renamed, &layers).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("out of step"),
+            "unexpected error message: {msg}",
         );
     }
 
