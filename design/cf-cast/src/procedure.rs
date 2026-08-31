@@ -456,7 +456,18 @@ pub fn generate_procedure_markdown_v2_for_mode(
         }
     }
     write_cast_geometry_v2(&mut md, ribbon);
-    write_print_orientation_v2(&mut md, apex_pour, spec.layers.len(), features);
+    // ⚠ The mating-face-DOWN lock is only available when the seam is a flat
+    // plane. `Ribbon::planar_seam` is the ONE source of truth — the geometry
+    // layer already branches on it, and before 2026-08-31 the prose layer
+    // could not see it at all and hard-coded the opposite orientation.
+    let seam_is_planar = ribbon.planar_seam.is_some();
+    write_print_orientation_v2(
+        &mut md,
+        apex_pour,
+        spec.layers.len(),
+        features,
+        seam_is_planar,
+    );
     write_chamfer_recipe_v2(&mut md, has_plug_lock, has_dowels, bolts_carved);
     write_target_fdm_floor_v2(
         &mut md,
@@ -464,10 +475,11 @@ pub fn generate_procedure_markdown_v2_for_mode(
         features,
         has_gasket,
         apex_pour,
+        seam_is_planar,
     );
     write_cfview_sanity_check_v2(&mut md, apex_pour, ribbon, features, has_gasket);
     write_cap_plane_chamfer_v2(&mut md, has_plug_lock);
-    write_seam_face_edge_v2(&mut md, has_plug_lock);
+    write_seam_face_edge_v2(&mut md, has_plug_lock, seam_is_planar);
     write_materials_table(&mut md, spec, pour_volumes);
     write_generic_guidance(&mut md, spec.layers.len());
     write_v2_assembly_note(&mut md, ribbon, spec.layers.len(), features, has_gasket);
@@ -1102,29 +1114,38 @@ fn write_cast_geometry_v2(md: &mut String, ribbon: &Ribbon) {
 }
 
 // ===== S6 — print-prep documentation ==============================
-// Per-piece print orientation (recon-1 §G-4, S6-revised), first-layer
+// Per-piece print orientation (recon-1 §G-4, S6-revised then corrected
+// 2026-08-31 back to seam-face-on-bed), first-layer
 // chamfer recipe (§G-6 reframed under S6 orientation), Bambu A1 +
 // default + Jayo target FDM floor (§G-3), and the cf-view sanity-
 // check workflow gating §G-11 #3 before the workshop user starts
 // slicing.
 
-/// Recon-1 §G-4 originally locked cup pieces to "seam face on bed"
-/// assuming registration pins lived entirely inside cup-wall
-/// material. S3 shipped pins extending symmetrically along the
-/// ribbon binormal across the seam plane, placing the workshop-
-/// visible ridge ON THE EMPTY side of the seam — which under
-/// seam-face-down would point INTO the bed (geometrically
-/// impossible). S6 revised the cup orientation to seam-face-UP.
-/// §M-S4 (2026-05-27) retired the prismatic-pin registration path
-/// entirely; the seam-face-UP orientation remains preferred for the
-/// dowel-hole pattern (holes carve straight through the seam face,
-/// printable as recessed cavities without internal support when the
-/// seam face is up).
+/// ⚠⚠ **The cup orientation is MATING-FACE-DOWN, and it is a HARD
+/// workshop constraint (2026-05-30), not a preference:** the seam
+/// faces are the PLA-on-PLA clamp seal, and printing them against
+/// the bed is what backstops their flatness. A seam built as a TOP
+/// surface (perimeters + infill) carries no such guarantee.
+///
+/// History, because this section shipped the opposite instruction
+/// for months: recon-1 §G-4 originally locked cup pieces to "seam
+/// face on bed" — correct. S3 then shipped registration pins
+/// crossing the seam plane, whose ridge would point INTO the bed,
+/// so S6 flipped the lock to seam-face-UP. **§M-S4 (2026-05-27)
+/// retired the prismatic-pin path entirely, deleting S6's only
+/// premise — but the flipped lock was never re-derived**, so the
+/// sheet kept instructing seam-face-UP against the constraint.
+/// Corrected 2026-08-31.
+///
+/// ⇒ Gated on `seam_is_planar` (`Ribbon::planar_seam`). A
+/// curve-following seam has NO flat mating face, cannot satisfy the
+/// constraint, and gets a stop-work block instead of an orientation.
 fn write_print_orientation_v2(
     md: &mut String,
     apex_pour: bool,
     layer_count: usize,
     carved: SheetFeatures,
+    seam_is_planar: bool,
 ) {
     let SheetFeatures {
         has_dowels,
@@ -1139,11 +1160,11 @@ fn write_print_orientation_v2(
         "Each STL has one geometrically-correct print orientation \
          picked from the FDM-friendly geometry contract (recon-1 \
          §G-4 in `docs/CF_CAST_FDM_FRIENDLY_GEOMETRY_RECON.md`, \
-         S6-revised — see §G-4 revision note at the end of this \
+         §M-S4-corrected — see §G-4 revision note at the end of this \
          section)."
     );
     md.push('\n');
-    write_print_orientation_cup_pieces(md, has_dowels, has_plug_lock);
+    write_print_orientation_cup_pieces(md, has_dowels, has_plug_lock, seam_is_planar);
     write_print_orientation_plug_pieces(md, has_plug_lock);
     write_print_orientation_funnel_platform(
         md,
@@ -1151,33 +1172,68 @@ fn write_print_orientation_v2(
         layer_count,
         has_pour_gate,
         has_plug_lock,
+        integral_funnel_lock_clause(seam_is_planar),
     );
-    write_print_orientation_g4_revision(md);
+    write_print_orientation_g4_revision(md, seam_is_planar, has_dowels);
 }
 
-fn write_print_orientation_cup_pieces(md: &mut String, has_dowels: bool, has_plug_lock: bool) {
+fn write_print_orientation_cup_pieces(
+    md: &mut String,
+    has_dowels: bool,
+    has_plug_lock: bool,
+    seam_is_planar: bool,
+) {
     let _ = writeln!(md, "### Cup pieces (`mold_layer_*_piece_{{0|1}}.stl`)");
     md.push('\n');
+
+    if !seam_is_planar {
+        // ⛔ No flat mating face exists, so there is no orientation that
+        // satisfies the hard constraint. Say so instead of picking one — a
+        // curve-following seam cannot be clamped into a reliable PLA-on-PLA
+        // seal, and that is a stop-work fact, not a printing preference.
+        let _ = writeln!(
+            md,
+            "> ⛔ **STOP — this cast's seam is NOT planar, so it has no flat \
+             mating face.** The cup halves meet along a curve-following \
+             (ribbon-cut) seam, which cannot satisfy the hard \
+             flat-mating-face constraint: the seam faces ARE the PLA-on-PLA \
+             clamp seal, and a non-flat seam is not guaranteed to close. \
+             **Do not print this for a pour.** Set `[cast] planar_seam = \
+             true` and regenerate. If you are deliberately printing a \
+             curve-following cast for geometry inspection only, lay the \
+             outer curved cup surface DOWN with a 5-8 mm brim and treat the \
+             seam as unsealed."
+        );
+        md.push('\n');
+        return;
+    }
+
     let _ = writeln!(
         md,
-        "**Orient seam face UP, outer curved cup surface DOWN on \
-         bed.** Add a brim (5-8 mm, 1 layer) for curved-surface \
-         adhesion; supports not required (cup walls build layer-\
-         by-layer upward from a continuous bottom contour)."
+        "**Orient the mating (seam) face DOWN, flat on the bed.** The bed \
+         backstops its flatness, which is the whole point: the two seam \
+         faces ARE the PLA-on-PLA clamp seal, and the hard \
+         flat-mating-face constraint exists because a dished or bulged \
+         mating face defeats it. A seam printed as a TOP surface \
+         (perimeters + infill) carries no equivalent flatness guarantee. \
+         Bed contact is the full mating face, so adhesion is not the \
+         constraint here and a brim is optional."
     );
     md.push('\n');
+    // ⚠ Do NOT promise "no bridging" here. Every seam-face recess opens
+    // DOWNWARD under this lock, so each one carries a ceiling. They are short
+    // spans the slicer bridges unsupported — but they are real, and the
+    // retired seam-face-UP prose claimed their absence as a selling point.
     if has_dowels {
         let _ = writeln!(
             md,
-            "Seam-face-UP also fits the §M-S2 symmetric dowel-hole \
-             pattern: dowel holes carve straight through the seam face \
-             along the ribbon binormal (perpendicular to the seam \
-             plane). With the seam face UP, each hole opens upward as a \
-             shallow recessed cavity (printable without internal support \
-             or bridging). Pre-§M-S4 this section described the now-\
-             retired prismatic-pin registration ridge; the same \
-             seam-face-UP orientation carries over for dowel holes \
-             without modification."
+            "The §M-S2 symmetric dowel holes carve straight through the seam \
+             face along the ribbon binormal (perpendicular to the seam \
+             plane), so under this lock each one opens DOWNWARD against the \
+             bed and closes with a short bridged ceiling at its far end. \
+             Those spans are the hole diameter — bridged without support. \
+             Expect a small amount of bridge extrusion in the slice; that is \
+             this lock working as intended, not a fault."
         );
     } else {
         // ⚠ NOT "plain": the §B M5 clearance holes go through this same face,
@@ -1188,19 +1244,35 @@ fn write_print_orientation_cup_pieces(md: &mut String, has_dowels: bool, has_plu
             "This cast carves no dowel holes. The seam face still opens onto \
              the body cavity, and may carry other recesses depending on \
              configuration — `## cf-view Sanity-Check Workflow` below lists \
-             exactly what to expect. Seam-face-UP is the orientation lock so \
-             that whatever is there opens upward as a recess, printable \
-             without internal support or bridging."
+             exactly what to expect. Under this lock each such recess opens \
+             DOWNWARD against the bed; blind ones close with a short bridged \
+             ceiling, and §B M5 clearance holes pass clean through."
         );
     }
     md.push('\n');
+    let _ = writeln!(
+        md,
+        "⚠ **Check your elephant-foot compensation before committing a full \
+         set.** With the seam face on the bed, the tuned mating clearances \
+         (§M-S2 dowel-hole radial, §G-8 plug-lock) and the flange seal land \
+         are ALL first-layer geometry. `## First-Layer Chamfer Recipe` below \
+         specifies 0.0 mm slicer compensation on the grounds that those \
+         clearances are already tuned in the geometry — that reasoning was \
+         written for the retired seam-face-UP lock, where none of those \
+         features touched the bed. Verify it against a first layer rather \
+         than assuming it carries over."
+    );
+    md.push('\n');
     if has_plug_lock {
+        // ⚠ The retired prose asserted the cap-plane wall "is a vertical wall
+        // in this orientation" — true under seam-face-UP, unverified under this
+        // lock. State only what the SEAM BISECTION guarantees.
         let _ = writeln!(
             md,
-            "The cap-plane wall carrying the S4 plug-floor-lock socket \
-             is a vertical wall in this orientation; the socket prints \
-             as a horizontal SIDE recess into the vertical wall — no \
-             first-layer adhesion concern at the socket interior."
+            "The S4 plug-floor-lock socket is bisected by the seam, so each \
+             cup half carries one side of the truncated-pyramid recess on \
+             its mating face. Under this lock that half-recess opens \
+             DOWNWARD against the bed like the other seam-face features."
         );
         md.push('\n');
     }
@@ -1270,6 +1342,7 @@ fn write_print_orientation_funnel_platform(
     layer_count: usize,
     has_pour_gate: bool,
     has_plug_lock: bool,
+    funnel_lock: &str,
 ) {
     let funnel_reuse = funnel_reuse_tail(layer_count);
     // ⚠ Name only what this cast actually prints. With neither a pour gate
@@ -1308,10 +1381,8 @@ fn write_print_orientation_funnel_platform(
              when the two halves are clamped. Its lumen runs continuously \
              into the bore (no inserted nipple), so there is no throat \
              constriction. It prints as part of the cup pieces (the \
-             half-cone rises {funnel_height_mm:.0} mm above the cup's outer surface as a \
-             CANTILEVERED PROTRUSION, not a recess — check what your slicer gives it \
-             before printing; the half-channel of its lumen is the only \
-             part that opens upward under the seam-face-UP lock). \
+             half-cone rises {funnel_height_mm:.0} mm above the cup's outer surface \
+             {funnel_lock}). \
              Pour silicone straight into the assembled funnel at the apex; \
              the funnel + bore silicone cures as one sprue that lifts out \
              of the open half-troughs when the halves separate — trim it \
@@ -1348,24 +1419,67 @@ fn write_print_orientation_funnel_platform(
     }
 }
 
-fn write_print_orientation_g4_revision(md: &mut String) {
+/// How the integral apex half-cone sits on the bed — the ONE sentence, shared
+/// by the print-orientation section and the pour-gate note.
+///
+/// ⚠⚠ `apex_pour` does NOT imply a planar seam here. Only `cf-cast-cli`'s
+/// `validate()` enforces `apex_axial ⟹ planar_seam`; a `Ribbon` built directly
+/// against this crate can carry an apex pour on a curve-following seam, and
+/// several test fixtures do exactly that. A `debug_assert!` of that
+/// "invariant" panicked six existing tests. Branch, never assume.
+const fn integral_funnel_lock_clause(seam_is_planar: bool) -> &'static str {
+    if seam_is_planar {
+        "with its SPLIT FACE COPLANAR WITH THE MATING FACE, so under the \
+         mating-face-DOWN lock it lies FLAT ON THE BED alongside the seam — \
+         fully bed-supported, NOT a cantilever; its lumen half-channel opens \
+         downward against the bed like every other seam-face recess"
+    } else {
+        "as a CANTILEVERED PROTRUSION, not a recess. This cast's seam is NOT \
+         planar, so there is no mating-face-DOWN orientation to lay the \
+         half-cone flat on the bed — check what your slicer gives it before \
+         printing"
+    }
+}
+
+fn write_print_orientation_g4_revision(md: &mut String, seam_is_planar: bool, has_dowels: bool) {
     let _ = writeln!(md, "### §G-4 revision note");
     md.push('\n');
     let _ = writeln!(
         md,
-        "Recon-1 §G-4 originally locked cup pieces to **seam face \
-         on bed** on the assumption that registration pins lived \
-         entirely inside cup-wall material. S3 shipped pins \
-         extending symmetrically across the seam plane — ridge \
-         points into bed under seam-face-down. S6 revised to \
-         seam-face-UP as documented above. §M-S4 (2026-05-27) \
-         retired the prismatic-pin registration path entirely in \
-         favor of the §M-S2 symmetric dowel-hole pattern; the \
-         seam-face-UP orientation carries over (dowel holes are \
-         printable as upward-opening recesses without modification \
-         to the orientation lock)."
+        "Recon-1 §G-4 originally locked cup pieces to **seam face on bed** \
+         — correct, and the current lock. S3 then shipped registration pins \
+         extending symmetrically across the seam plane, whose workshop-\
+         visible ridge would point INTO the bed under that lock, so S6 \
+         flipped it to seam-face-UP. **§M-S4 (2026-05-27) retired the \
+         prismatic-pin path entirely, deleting S6's only premise — but the \
+         flipped lock was never re-derived**, so this sheet kept instructing \
+         seam-face-UP for months, contradicting the hard flat-mating-face \
+         constraint. Corrected 2026-08-31: the lock is mating-face-DOWN \
+         whenever the seam is planar."
     );
     md.push('\n');
+    // ⚠ S6's stated reason was the dowel-hole pattern, so rebutting it is
+    // only coherent on a cast that HAS dowels. Naming them otherwise trips
+    // `a_cast_without_dowels_never_says_to_register_on_them` — correctly.
+    if has_dowels {
+        let _ = writeln!(
+            md,
+            "The §M-S2 dowel holes S6 cited are printable either way — \
+             downward-opening they close with a short bridged ceiling — so \
+             they were never a reason to give up the bed as the flatness \
+             reference for the two faces that form the seal."
+        );
+        md.push('\n');
+    }
+    if !seam_is_planar {
+        let _ = writeln!(
+            md,
+            "⚠ This cast's seam is not planar, so no orientation satisfies \
+             the constraint — see the stop-work block under `### Cup pieces` \
+             above."
+        );
+        md.push('\n');
+    }
 }
 
 fn write_chamfer_recipe_v2(
@@ -1485,23 +1599,47 @@ fn write_chamfer_recipe_v2(
     md.push('\n');
 }
 
+// Same reasoning as `SheetFeatures` above: these are four INDEPENDENT facts the
+// bullet list has to gate on, and every one of them has already been the source
+// of a sheet that described geometry the cast does not have. Bundling them
+// would hide the enumeration this file exists to keep honest.
+#[allow(clippy::fn_params_excessive_bools)]
 fn write_target_fdm_floor_v2(
     md: &mut String,
     has_funnel_stl: bool,
     carved: SheetFeatures,
     has_gasket: bool,
     apex_pour: bool,
+    seam_is_planar: bool,
 ) {
-    // ⚠ The apex integral funnel is a cantilevered protrusion ON the cup
-    // piece, so "no supports for cup pieces" is not a safe blanket claim there
-    // — and the same sheet now tells the reader to check what the slicer gives
-    // that cone.
-    let cup_supports = if apex_pour {
-        "none for the cup body (continuous bottom contour), but the integral \
-         apex funnel is a cantilevered protrusion on that same piece — see \
-         `## Per-Piece Print Orientation`;"
+    // ⚠⚠ This bullet used to assert the apex funnel is "a cantilevered
+    // protrusion on that same piece" UNCONDITIONALLY under `apex_pour`, which
+    // — once the orientation section was corrected — contradicted a paragraph
+    // two headings above it in the SAME SHEET. Whether that half-cone is a
+    // cantilever is a fact about the LOCK, not about the pour layout: under
+    // mating-face-DOWN its split face is coplanar with the mating face and it
+    // lies flat on the bed. Found by READING the rendered sheet; no test saw it.
+    let cup_supports = match (apex_pour, seam_is_planar) {
+        (true, true) => {
+            "none for cup pieces — the cup body builds from a continuous \
+             bottom contour and the integral apex funnel's split face is \
+             coplanar with the mating face, so it lies flat on the bed too;"
+        }
+        (true, false) => {
+            "none for the cup body (continuous bottom contour), but the \
+             integral apex funnel is a cantilevered protrusion on that same \
+             piece under this non-planar seam — see \
+             `## Per-Piece Print Orientation`;"
+        }
+        (false, _) => "none for cup pieces (continuous bottom contour);",
+    };
+    // ⚠ Brim rationale is also lock-dependent: mating-face-DOWN lands the full
+    // flat seam on the bed, so a brim is optional, not an adhesion necessity.
+    let cup_brim = if seam_is_planar {
+        "brim optional for cup pieces (the flat mating face is the bed \
+         contact)"
     } else {
-        "none for cup pieces (continuous bottom contour);"
+        "brim 5-8 mm 1-layer for cup outer-surface adhesion"
     };
     let SheetFeatures {
         has_dowels,
@@ -1573,9 +1711,8 @@ fn write_target_fdm_floor_v2(
          - **Wall loops**: 3 (default).\n\
          - **Infill**: 15% gyroid (default; mold pieces don't need \
          structural infill — silicone pour pressure is low).\n\
-         - **Supports**: {cup_supports} brim 5-8 mm 1-layer for cup \
-         outer-surface adhesion; brim + brief dome-curvature supports for \
-         plug.\n\
+         - **Supports**: {cup_supports} {cup_brim}; brim + brief \
+         dome-curvature supports for plug.\n\
          - **Elephant-foot compensation**: 0.0 mm{chamfer_reason}.\n\
          - **Filament**: Jayo PLA generic profile (~220 °C nozzle, \
          60 °C bed); equivalent generic-PLA profile if Jayo \
@@ -2067,7 +2204,42 @@ fn write_cap_plane_chamfer_v2(md: &mut String, has_plug_lock: bool) {
 // Linear writeln!s + a single bullet-list block; factoring out subsections would
 // just shuffle the prose into helper names without reducing complexity.
 #[allow(clippy::too_many_lines)]
-fn write_seam_face_edge_v2(md: &mut String, has_plug_lock: bool) {
+fn write_seam_face_edge_v2(md: &mut String, has_plug_lock: bool, seam_is_planar: bool) {
+    // ⚠⚠ This whole section describes the CURVE-FOLLOWING seam: "it is NOT a
+    // single flat plane", "do NOT try to flatten the seam face globally". On a
+    // `planar_seam` cast every word of that is false, and it directly
+    // contradicts `### Cup pieces` above, which tells the bencher to lay the
+    // flat mating face on the bed. Ungated, the same sheet argued both sides.
+    // Found by READING the rendered sheet in review — no test compares two
+    // sections against each other.
+    if seam_is_planar {
+        let _ = writeln!(md, "## Seam Face (Flat by Construction)");
+        md.push('\n');
+        let _ = writeln!(
+            md,
+            "This cast uses a **planar seam** (`[cast] planar_seam = true`), so \
+             each cup half's mating face is a single flat plane — the §F-4 \
+             bit-precise SDF halfspace cut, with marching cubes interpolating \
+             the linear seam SDF onto that plane. Flatness is gated at **1 µm** \
+             by `piece::tests::mating_face_is_mathematically_flat_and_coplanar`, \
+             roughly 400× finer than the 0.4 mm extrusion width, so nothing at \
+             this scale survives to the print."
+        );
+        md.push('\n');
+        let _ = writeln!(
+            md,
+            "In cf-view you may still see faceting where the seam plane meets \
+             the dome cap (high Z) and the cap-plane wall (low Z). What it is NOT \
+             is seam-face non-flatness — that is what the 1 µm gate above \
+             rules out. It is edge quantization where the seam plane meets a \
+             curved surface, the same class `## Cap-Plane Edge Chamfer` \
+             documents. The mating face itself is flat, which is what lets it \
+             be printed against the bed and clamped into a seal."
+        );
+        md.push('\n');
+        return;
+    }
+
     let _ = writeln!(
         md,
         "## Seam-Face Edge Non-Flatness (Expected Centerline Curvature + MC)"
@@ -3225,7 +3397,9 @@ fn write_apex_axial_pour_note(
     md: &mut String,
     spec: &crate::pour::PourGateSpec,
     bolts_carved: bool,
+    seam_is_planar: bool,
 ) {
+    let funnel_lock = integral_funnel_lock_clause(seam_is_planar);
     // ⚠ The bracketing clause describes what BOLTS do around the bore. With no
     // bolt pattern carved there is nothing to bracket and no flange to clamp,
     // and the Cup-Half Clamping section three headings up says the halves are
@@ -3298,10 +3472,8 @@ fn write_apex_axial_pour_note(
          (no inserted nipple), so the pour throat is the {gate_dia_mm:.1} mm \
          bore itself with no wall constriction. Mouth Ø ≈ {mouth_dia_mm:.1} mm, \
          ~{funnel_height_mm:.0} mm tall. It prints as part of the cups (the \
-         half-cone rises {funnel_height_mm:.0} mm above the cup's outer surface as a \
-             CANTILEVERED PROTRUSION, not a recess — check what your slicer gives it \
-             before printing; the half-channel of its lumen is the only \
-             part that opens upward under the seam-face-UP lock). \
+         half-cone rises {funnel_height_mm:.0} mm above the cup's outer surface \
+             {funnel_lock}). \
          Ladle silicone straight into the assembled funnel at the apex; the \
          funnel + bore silicone cures as one sprue that lifts out of the open \
          half-troughs when the halves separate (apply mold release first), \
@@ -3407,7 +3579,7 @@ fn write_v2_pour_gate_note(
             );
         }
         PourGateKind::Default(spec) if spec.layout == PourGateLayout::ApexAxial => {
-            write_apex_axial_pour_note(md, spec, bolts_carved);
+            write_apex_axial_pour_note(md, spec, bolts_carved, ribbon.planar_seam.is_some());
         }
         PourGateKind::Default(spec) => {
             let gate_dia_mm = spec.gate_radius_m * 2.0 * 1000.0;

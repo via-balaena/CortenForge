@@ -3999,34 +3999,47 @@ mod tests {
                                 for pins in
                                     [PlugPinKind::None, PlugPinKind::Axial(PlugPinSpec::iter1())]
                                 {
-                                    for mode in [CastMode::Detachable, CastMode::Bonded] {
-                                        let mut r = base.clone();
-                                        r.flange = flange;
-                                        r.gasket = gasket;
-                                        r.bolt_pattern = bolts;
-                                        r.dowel_hole = dowels;
-                                        r.pour_gate = gate.clone();
-                                        r.plug_pins = pins.clone();
-                                        let md = generate_procedure_markdown_v2_for_mode(
-                                            &spec, &pours, &r, mode,
-                                        );
-                                        // ⚠ Name EVERY dimension — a failure
-                                        // otherwise identifies one of four
-                                        // sheets, and this label is all a CI
-                                        // log shows.
-                                        let case = format!(
-                                            "{layers} / {flange:?} / {gasket:?} \
+                                    // ⚠ Seam planarity MUST be a dimension.
+                                    // Every fixture here is curve-following, so
+                                    // when the print-orientation and seam-face
+                                    // sections were split on `planar_seam`
+                                    // (2026-08-31) the ENTIRE planar branch —
+                                    // its mating-face-DOWN lock, its stop-work
+                                    // block, `## Seam Face (Flat by
+                                    // Construction)` and every cross-reference
+                                    // they carry — rendered in ZERO of the
+                                    // sheets this gate checks.
+                                    for planar in [false, true] {
+                                        for mode in [CastMode::Detachable, CastMode::Bonded] {
+                                            let mut r = base.clone();
+                                            r.flange = flange;
+                                            r.gasket = gasket;
+                                            r.bolt_pattern = bolts;
+                                            r.dowel_hole = dowels;
+                                            r.pour_gate = gate.clone();
+                                            r.plug_pins = pins.clone();
+                                            let r = if planar { r.with_planar_seam() } else { r };
+                                            let md = generate_procedure_markdown_v2_for_mode(
+                                                &spec, &pours, &r, mode,
+                                            );
+                                            // ⚠ Name EVERY dimension — a failure
+                                            // otherwise identifies one of four
+                                            // sheets, and this label is all a CI
+                                            // log shows.
+                                            let case = format!(
+                                                "{layers} / {flange:?} / {gasket:?} \
                                              / dowels={dowels:?} / {bolts:?} \
                                              / {gate:?} / pins={pins:?} \
-                                             / {mode:?}"
-                                        );
-                                        tally_coverage(
-                                            &md,
-                                            matches!(flange, FlangeKind::Plate(_)),
-                                            &mut cover,
-                                        );
-                                        assert_cross_refs_resolve(&md, &case);
-                                        assert_prose_is_well_formed(&md, &case);
+                                             / {mode:?} / planar={planar}"
+                                            );
+                                            tally_coverage(
+                                                &md,
+                                                matches!(flange, FlangeKind::Plate(_)),
+                                                &mut cover,
+                                            );
+                                            assert_cross_refs_resolve(&md, &case);
+                                            assert_prose_is_well_formed(&md, &case);
+                                        }
                                     }
                                 }
                             }
@@ -4399,6 +4412,12 @@ mod tests {
              side is unexercised and this gate passes vacuously over it"
         );
         assert!(
+            cover.planar_seam > 0,
+            "matrix rendered no planar-seam sheet — the mating-face-DOWN lock, \
+             `## Seam Face (Flat by Construction)` and their cross-references \
+             are unexercised, which is exactly how they shipped uncovered"
+        );
+        assert!(
             cover.apex > 0,
             "matrix rendered no apex-axial sheet — the production pour layout \
              and its dedicated writer are unexercised"
@@ -4422,6 +4441,7 @@ mod tests {
         dowelled: usize,
         plug_lock: usize,
         ventless: usize,
+        planar_seam: usize,
     }
 
     fn tally_coverage(md: &str, plate_flange: bool, cover: &mut MatrixCoverage) {
@@ -4436,6 +4456,9 @@ mod tests {
         }
         if md.contains("no vent leg is carved") {
             cover.ventless += 1;
+        }
+        if md.contains("Orient the mating (seam) face DOWN") {
+            cover.planar_seam += 1;
         }
         // ⚠ PLATE specifically. A demand flange is always feasible, so
         // counting ANY bolted sheet would be satisfied by the arm that was
@@ -5833,12 +5856,17 @@ mod tests {
 
     #[test]
     fn generate_procedure_markdown_v2_includes_print_orientation_revision() {
-        // S6 anchors the §G-4 revision to seam-face-UP for cup pieces
-        // and dome-end-DOWN for plug pieces (cap-plane-face-DOWN
-        // explicitly called out as INVALID). These vocabulary
-        // anchors gate any future rewrite that silently flips the
-        // orientation guidance back to recon-1 §G-4's original
-        // (geometrically-falsified) seam-face-on-bed lock.
+        // ⚠⚠ THIS TEST USED TO PIN THE DEFECT. It asserted
+        // `"Orient seam face UP"` and described recon-1 §G-4's original
+        // seam-face-on-bed lock as "geometrically-falsified" — but the thing
+        // that falsified it was S3's registration pins crossing the seam, and
+        // §M-S4 (2026-05-27) retired those entirely. The conclusion was never
+        // re-derived, so the sheet kept instructing the OPPOSITE of the hard
+        // flat-mating-face constraint (workshop 2026-05-30: the cup halves
+        // print mating-face-DOWN so the bed backstops the seal faces'
+        // flatness) — and this assertion is what held it in place.
+        // Corrected 2026-08-31: seam-face-on-bed is the lock again, now
+        // gated on the seam actually BEING planar.
         // ⚠ Plug pins ENABLED. `PlugPinKind` defaults OFF, and the
         // plug-lock prose this test pins is now gated on the cast actually
         // carrying a lock — an unconditional "cap-plane-face-DOWN is INVALID"
@@ -5849,9 +5877,20 @@ mod tests {
         ));
         let pours = spec.compute_pour_volumes().unwrap();
         let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
+        // The shared fixture's ribbon is curve-following (`with_planar_seam`
+        // is never called on it), so it CANNOT satisfy the constraint and must
+        // get a stop-work block rather than any orientation at all.
         assert!(
-            md.contains("Orient seam face UP"),
-            "cup-piece seam-face-UP guidance missing in: {md}"
+            md.contains("STOP — this cast's seam is NOT planar"),
+            "non-planar seam must stop work, not pick an orientation: {md}"
+        );
+        assert!(
+            !md.contains("Orient seam face UP"),
+            "the retired seam-face-UP lock must not reappear: {md}"
+        );
+        assert!(
+            !md.contains("Orient the mating (seam) face DOWN"),
+            "a curve-following seam has no flat mating face to lay down: {md}"
         );
         assert!(
             md.contains("Orient dome end DOWN"),
@@ -5864,6 +5903,90 @@ mod tests {
         assert!(
             md.contains("§G-4 revision"),
             "§G-4 revision header missing in: {md}"
+        );
+    }
+
+    /// The constraint-correct branch — which NO fixture exercised before
+    /// 2026-08-31, which is precisely why the sheet could ship the opposite
+    /// instruction for months without a red test.
+    #[test]
+    fn a_planar_seam_locks_the_cup_pieces_mating_face_down_on_the_bed() {
+        let (spec, ribbon) = v2_procedure_fixture();
+        let ribbon = ribbon.with_planar_seam();
+        assert!(
+            ribbon.planar_seam.is_some(),
+            "fixture surgery did not land — the seam is still curve-following"
+        );
+        let pours = spec.compute_pour_volumes().unwrap();
+        let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
+        assert!(
+            md.contains("Orient the mating (seam) face DOWN, flat on the bed"),
+            "planar seam must lock mating-face-DOWN: {md}"
+        );
+        // The exact string the defect emitted. Its absence IS the fix.
+        assert!(
+            !md.contains("Orient seam face UP"),
+            "the retired seam-face-UP lock must not reappear: {md}"
+        );
+        assert!(
+            !md.contains("STOP — this cast's seam is NOT planar"),
+            "a planar seam must not trip the stop-work block: {md}"
+        );
+        // The reason, not just the instruction — an orientation with no stated
+        // rationale is what let the previous one survive its premise.
+        assert!(
+            md.contains("clamp seal") && md.contains("backstops"),
+            "the bed-as-flatness-reference rationale must be stated: {md}"
+        );
+    }
+
+    /// ★★★ Two sections describing the same surface in different words is the
+    /// one thing a `contains` test cannot catch and a grep will miss. Before
+    /// 2026-08-31 the planar sheet said "Orient the mating (seam) face DOWN,
+    /// flat on the bed" and then, ~80 lines later, "The seam face ... is NOT a
+    /// single flat plane" and "Do NOT try to flatten the seam face globally".
+    /// Both shipped in the same document. This asserts they cannot coexist.
+    #[test]
+    fn a_planar_seam_sheet_does_not_argue_with_itself_about_flatness() {
+        let (spec, ribbon) = v2_procedure_fixture();
+        let ribbon = ribbon.with_planar_seam();
+        let pours = spec.compute_pour_volumes().unwrap();
+        let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
+
+        // It must commit to the seam being flat...
+        assert!(
+            md.contains("Orient the mating (seam) face DOWN, flat on the bed"),
+            "planar sheet must lock mating-face-DOWN: {md}"
+        );
+        // ...and must not then deny it anywhere else in the same document.
+        for contradiction in [
+            "NOT a single flat plane",
+            "Do NOT try to flatten the seam face",
+            "The seam face is intentionally curved",
+            "seam face follows the curved centerline",
+        ] {
+            assert!(
+                !md.contains(contradiction),
+                "planar sheet contradicts its own flat-seam lock with \
+                 {contradiction:?}: {md}"
+            );
+        }
+    }
+
+    /// The curve-following sheet must KEEP that guidance — it is correct there.
+    /// Without this, gating the section could be "fixed" by deleting it.
+    #[test]
+    fn a_curve_following_sheet_keeps_the_centerline_curvature_guidance() {
+        let (spec, ribbon) = v2_procedure_fixture();
+        assert!(
+            ribbon.planar_seam.is_none(),
+            "fixture must be curve-following"
+        );
+        let pours = spec.compute_pour_volumes().unwrap();
+        let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
+        assert!(
+            md.contains("Do NOT try to flatten the seam face"),
+            "curve-following sheet must keep the do-not-flatten guidance: {md}"
         );
     }
 

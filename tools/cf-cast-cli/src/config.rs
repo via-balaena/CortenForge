@@ -240,12 +240,19 @@ pub struct CastDefaults {
     pub scan_mesh_direct_plug_layer_0: bool,
     /// Collapse the cup seam to a single FLAT VERTICAL plane instead of
     /// the curve-following ribbon (S1 of `CF_CAST_ORGANIC_PARTS_RECON.md`).
-    /// For organic/curved parts where the cup halves print
-    /// mating-face-down and need a guaranteed-flat seam to seal. Off by
-    /// default — the curve-following seam is bit-preserved for every
-    /// cast.toml that doesn't opt in. Re-level the scan in cf-scan-prep
-    /// first so the vertical cut bisects cleanly.
-    #[serde(default)]
+    /// The cup halves print mating-face-down, so the seam faces — which ARE
+    /// the PLA-on-PLA clamp seal — must be flat.
+    ///
+    /// **Default `true` since 2026-08-31.** It was `false`, which made a HARD
+    /// workshop constraint (flat mating faces, 2026-05-30) opt-in: any
+    /// `cast.toml` omitting the key silently built a curve-following seam with
+    /// no flat face to clamp or to lay on the bed. Only
+    /// `apex_axial` and `flat_cavity_floor` caught it, and only when they were
+    /// themselves on. Set `false` ONLY to inspect curve-following geometry —
+    /// the generated `procedure.md` then emits a stop-work block instead of a
+    /// print orientation. Re-level the scan in cf-scan-prep first so the
+    /// vertical cut bisects cleanly.
+    #[serde(default = "default_true")]
     pub planar_seam: bool,
     /// When `planar_seam` is on, FIT the flat seam to the body (apex-anchored,
     /// balance-swept — item A §4.1) so it follows a leaning part and bisects the
@@ -278,7 +285,7 @@ impl Default for CastDefaults {
             piece_min_wall_mm: default_piece_min_wall_mm(),
             output_dir: default_output_dir(),
             scan_mesh_direct_plug_layer_0: false,
-            planar_seam: false,
+            planar_seam: true,
             planar_seam_fit: true,
             flat_cavity_floor: false,
         }
@@ -1106,6 +1113,73 @@ prep_toml = "scan.cleaned.prep.toml"
 thickness_m = 0.006
 material = "ECOFLEX_00_30"
 "#
+    }
+
+    /// ⚠⚠ The flat mating face is a HARD workshop constraint (2026-05-30):
+    /// the cup halves print mating-face-DOWN so the bed backstops the flatness
+    /// of the two faces that form the clamp seal. Until 2026-08-31
+    /// `planar_seam` defaulted to `false`, which made that constraint OPT-IN —
+    /// any `cast.toml` omitting the key silently built a curve-following seam
+    /// with no flat face to clamp. Only `apex_axial` and `flat_cavity_floor`
+    /// caught it, and only when they were themselves enabled.
+    ///
+    /// ★ TWO defaults have to agree, and which one fires depends on whether
+    /// the TOML has a `[cast]` table at all:
+    /// - **no `[cast]` table** → the whole struct comes from
+    ///   `CastDefaults::default()`, and the field attribute never runs;
+    /// - **`[cast]` present, key omitted** → the field-level
+    ///   `#[serde(default = "default_true")]` runs. Plain `#[serde(default)]`
+    ///   here would resolve to `bool::default()` (= `false`) and silently
+    ///   restore the defect for exactly the configs that matter —
+    ///   `cast.iter1-design.toml` is this shape.
+    ///
+    /// ⚠ Both cases are asserted below. Covering only the first let a mutation
+    /// that reverted the field attribute survive.
+    #[test]
+    fn an_omitted_planar_seam_key_defaults_to_the_flat_mating_face() {
+        let cfg = CastConfig::from_toml_str(minimal_config_text()).unwrap();
+        assert!(
+            !minimal_config_text().contains("planar_seam"),
+            "fixture must OMIT the key for this to test the default at all"
+        );
+        assert!(
+            cfg.cast.planar_seam,
+            "a cast.toml that omits `planar_seam` must still get the flat \
+             mating face — it is a hard constraint, not an opt-in"
+        );
+        // Belt and braces: the struct default must agree with the serde one.
+        assert!(CastDefaults::default().planar_seam);
+
+        // ★★ THE CASE THAT ACTUALLY MATTERS, and the one the fixture above
+        // does NOT reach: a `[cast]` table that is PRESENT but omits the key.
+        // With no `[cast]` section at all the whole struct comes from
+        // `CastDefaults::default()` and the field-level `#[serde(default …)]`
+        // never fires — so reverting that attribute survived this test until
+        // this second case was added. `cast.iter1-design.toml` is exactly this
+        // shape: a populated `[cast]` table with no `planar_seam` line.
+        let with_cast_table = r#"
+[scan]
+cleaned_stl = "scan.cleaned.stl"
+prep_toml = "scan.cleaned.prep.toml"
+
+[cast]
+mesh_cell_size_m = 0.003
+wall_thickness_m = 0.005
+
+[[layers]]
+thickness_m = 0.006
+material = "ECOFLEX_00_30"
+"#;
+        assert!(
+            !with_cast_table.contains("planar_seam"),
+            "fixture must omit the key inside a PRESENT [cast] table"
+        );
+        let cfg = CastConfig::from_toml_str(with_cast_table).unwrap();
+        assert!(
+            cfg.cast.planar_seam,
+            "a populated [cast] table that omits `planar_seam` must still get \
+             the flat mating face"
+        );
     }
 
     #[test]
