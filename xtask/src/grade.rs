@@ -2755,9 +2755,18 @@ fn coverage_display(percent: f64) -> String {
 ///   appeared, which is why `cf-viewer` (33.8 %) is absent.
 ///
 const COVERAGE_REPORT_ONLY: &[&str] = &[
-    // 14.3 % of 1955 lines, but 93.9 % over its LIBRARY: 1657 of those lines
-    // are a Bevy GUI binary. Second independent instance of the shape
-    // `cf-viewer` shows, and the stronger one.
+    // 21.0 % of 2119 lines, but 95.9 % over its LIBRARY: 1655 of those lines
+    // are a GUI binary. Second independent instance of the shape `cf-viewer`
+    // shows, and the stronger one.
+    //
+    // ⚠ Re-measured 2026-09-01 after the wizard logic was lifted out of the
+    // Slint closures into the library (was 14.3 % of 1955, 93.9 % library).
+    // BOTH figures moved: the overall one because ~800 library lines were
+    // added, and the library one because those lines arrived tested. The
+    // library figure is what this deferral actually rests on, and it went UP.
+    // ⚠ The earlier note called this "a Bevy GUI binary" — it is Slint today.
+    // The Slint -> Bevy port will make that true by accident; it was wrong when
+    // written, copied from the `cf-viewer` entry above.
     "cf-studio-gui",
     // 0.0 % of 131 lines — shared helper library for the ML examples.
     "example-ml-shared",

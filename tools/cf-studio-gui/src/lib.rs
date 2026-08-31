@@ -459,6 +459,449 @@ pub fn nav_state(project: &Project, viewed: Step) -> NavState {
     }
 }
 
+/// The wizard's view cursor — which screen the user is *looking at*.
+///
+/// ⚠ This is **not** `Project::current_step()`. The two are independent and both
+/// live: Back moves the cursor without touching the project, so you can page back
+/// over completed work and return. The project's own step only moves when a step
+/// is *completed*. Conflating them is the bug this type exists to make impossible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WizardCursor {
+    viewed: Step,
+}
+
+impl Default for WizardCursor {
+    fn default() -> Self {
+        Self {
+            viewed: Step::FIRST,
+        }
+    }
+}
+
+impl WizardCursor {
+    /// A cursor parked on `viewed`.
+    #[must_use]
+    pub const fn new(viewed: Step) -> Self {
+        Self { viewed }
+    }
+
+    /// The screen currently shown.
+    #[must_use]
+    pub const fn viewed(self) -> Step {
+        self.viewed
+    }
+
+    /// Page back one screen. A no-op on the first — the Slint original used
+    /// `saturating_sub`, and `Step::prev()` returning `None` is the same
+    /// contract without the index arithmetic.
+    pub const fn back(&mut self) {
+        if let Some(prev) = self.viewed.prev() {
+            self.viewed = prev;
+        }
+    }
+
+    /// Page forward, **gated on [`nav_state`]**.
+    ///
+    /// ⚠ The gate is re-checked here rather than trusted to the disabled button.
+    /// The Slint original carried the same belt-and-braces check with the comment
+    /// "Respect the gate even if the disabled button somehow fires" — an immediate-
+    /// mode UI makes that failure *more* likely, not less, because a stale frame
+    /// can deliver a click against last frame's enablement.
+    ///
+    /// Returns `true` if the cursor actually moved.
+    pub fn next(&mut self, project: &Project) -> bool {
+        if !nav_state(project, self.viewed).can_next {
+            return false;
+        }
+        match self.viewed.next() {
+            Some(n) => {
+                self.viewed = n;
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+/// What [`PourSession::advance`] wants the caller to do next.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PourAdvance {
+    /// No pour plan (or an empty one) — the button should do nothing at all.
+    NoPlan,
+    /// Moved on to another layer; `poured` layers are now done.
+    Layer { poured: usize },
+    /// The last layer was poured — the caller must record completion on the
+    /// `Project` via `set_pour(PourRecord { layers_poured })`.
+    Complete { layers_poured: usize },
+}
+
+/// Which layer the pour assistant is working on, within one session.
+///
+/// ⚠ **Session-only, deliberately.** `Project` records only the *final*
+/// completion, so this cursor does not survive a restart. See the autosave work:
+/// resuming mid-pour returns you to layer 1. Extending `Project` to carry it is a
+/// schema change, not a UI change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PourSession {
+    current: usize,
+}
+
+impl PourSession {
+    /// The 0-based layer being poured.
+    #[must_use]
+    pub const fn current(self) -> usize {
+        self.current
+    }
+
+    /// Mark the current layer poured and step on.
+    ///
+    /// `total` is the pour plan's step count; **zero is a no-op**, matching the
+    /// Slint original's early return — a project with no molds has no plan, and
+    /// the button must not advance a cursor into a plan that does not exist.
+    pub const fn advance(&mut self, total: usize) -> PourAdvance {
+        if total == 0 {
+            return PourAdvance::NoPlan;
+        }
+        self.current += 1;
+        if self.current >= total {
+            PourAdvance::Complete {
+                layers_poured: total,
+            }
+        } else {
+            PourAdvance::Layer {
+                poured: self.current,
+            }
+        }
+    }
+}
+
+/// Elapsed time for a long job's status line, as `M:SS`.
+///
+/// Lifted from an inline `format!` so the long-job status text is testable; the
+/// jobs it labels run 4.5–15 minutes, so the minutes field is the part that
+/// matters and the one an off-by-one would hide.
+#[must_use]
+pub fn format_elapsed(secs: u64) -> String {
+    format!("{}:{:02}", secs / 60, secs % 60)
+}
+
+/// A numeric field's edit state — the toolkit-agnostic half of the stepper.
+///
+/// ## Why this is not just an `i32`
+///
+/// The Slint `StepBox` component encoded four rules that a naive spinner gets
+/// wrong, and all four are load-bearing because **committing re-meshes the
+/// preview** (hundreds of milliseconds). Getting them wrong is not a cosmetic
+/// bug; it is a stutter on every keystroke.
+///
+/// 1. **Typing does not clamp.** Clamping mid-type snaps the field to the bound
+///    the moment you overshoot, which is jarring while you are still typing the
+///    second digit of `25`. Clamping happens at commit.
+/// 2. **Typing does not commit.** Only Enter, the ± buttons, or losing focus do.
+/// 3. **Blur commits only if dirty.** Clicking into a field and out again must
+///    not trigger a re-mesh. This is why `dirty` exists rather than comparing
+///    values — a user who types `30` over `30` has changed nothing, and the
+///    value comparison in [`Self::commit`] catches that too.
+/// 4. **Empty text keeps the old value.** Clearing the box mid-edit must not be
+///    read as zero.
+///
+/// ⚠ **Store one of these per row, inside the row struct** — never in a `Vec`
+/// keyed by row index. Removing ring #1 must take ring #1's uncommitted text with
+/// it; index-keyed state would leave it bound to what is now ring #1 (formerly
+/// #2). Slint's per-row widgets made this impossible; an immediate-mode UI does
+/// not, so the invariant has to live in the data layout.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepBoxState {
+    text: String,
+    /// The live parsed value. May be out of range while typing (rule 1).
+    value: i32,
+    /// The last value actually committed. ⚠ Tracked separately because
+    /// `on_typed` updates `value` eagerly, so a commit that compared `value`
+    /// before and after clamping could never detect a change — it would compare
+    /// the typed value against itself and report "nothing happened" for every
+    /// in-range edit. The first version of this type had exactly that bug.
+    committed: i32,
+    dirty: bool,
+}
+
+impl StepBoxState {
+    /// A field showing `value`, clean.
+    #[must_use]
+    pub fn new(value: i32) -> Self {
+        Self {
+            text: value.to_string(),
+            value,
+            committed: value,
+            dirty: false,
+        }
+    }
+
+    /// The last committed value.
+    #[must_use]
+    pub const fn value(&self) -> i32 {
+        self.value
+    }
+
+    /// Whether there is an uncommitted edit pending.
+    #[must_use]
+    pub const fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
+    /// The text buffer the text widget binds to.
+    pub const fn text_mut(&mut self) -> &mut String {
+        &mut self.text
+    }
+
+    /// The text buffer, for rendering.
+    #[must_use]
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    /// Call after the text widget reports a change. Parses without clamping
+    /// (rule 1) and marks the edit pending (rule 2).
+    ///
+    /// Unparseable or empty text leaves `value` alone (rule 4) but still marks
+    /// dirty, so that blurring an empty box re-renders the old value rather than
+    /// leaving the box blank.
+    pub fn on_typed(&mut self) {
+        if let Ok(v) = self.text.trim().parse::<i32>() {
+            self.value = v;
+        }
+        self.dirty = true;
+    }
+
+    /// Commit an edit: clamp, clear the pending flag, re-render the text.
+    ///
+    /// Returns `Some(value)` **only when a commit actually changed something** —
+    /// a clean blur returns `None` (rule 3), and so does re-typing the same
+    /// number. The caller uses that to decide whether to re-mesh.
+    /// ⚠ There is deliberately **no** `if !dirty { return None }` early exit.
+    /// It would be dead logic: `value != committed` implies `dirty` on every
+    /// path (`new`, `step`, `commit` and `sync_external` all set the two equal),
+    /// so the comparison below already covers the clean case. A mutation test
+    /// removing that guard passed the whole suite, which is what surfaced it.
+    /// Rule 4 also needs this method to actually RUN on a dirty-but-unchanged
+    /// field, so it can refill a box the user emptied.
+    pub fn commit(&mut self, min: i32, max: i32) -> Option<i32> {
+        self.value = self.value.clamp(min, max);
+        self.text = self.value.to_string();
+        self.dirty = false;
+        let changed = self.value != self.committed;
+        self.committed = self.value;
+        changed.then_some(self.value)
+    }
+
+    /// The ± buttons. Steps by `delta`, clamps, and commits in one action.
+    pub fn step(&mut self, delta: i32, min: i32, max: i32) -> Option<i32> {
+        self.value = self.value.saturating_add(delta).clamp(min, max);
+        self.text = self.value.to_string();
+        self.dirty = false;
+        let changed = self.value != self.committed;
+        self.committed = self.value;
+        changed.then_some(self.value)
+    }
+
+    /// The model changed underneath — e.g. a trim bound shrank because the mesh
+    /// did. Discards any pending edit; the model wins.
+    ///
+    /// ⚠ **Clamps**, and takes the bounds for that reason. The scenario this
+    /// method exists for is the one where the bounds themselves moved, so the
+    /// incoming value can be outside them. Without the clamp the field would show
+    /// an out-of-range number that [`Self::commit`] could never correct, because
+    /// a clean field returns early — the value would only be fixed if the user
+    /// happened to edit that field again.
+    pub fn sync_external(&mut self, value: i32, min: i32, max: i32) {
+        self.value = value.clamp(min, max);
+        self.committed = self.value;
+        self.text = self.value.to_string();
+        self.dirty = false;
+    }
+}
+
+/// One grip ring in the "Shape your piece" editor, in the integer units the UI
+/// edits (percent, tenths of a millimetre) rather than the SDK's meters.
+///
+/// The three `StepBoxState`s live **inside the row** on purpose — see the
+/// warning on [`StepBoxState`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RingRow {
+    /// Axial position: 0 = opening … 100 = deep end.
+    pub position: StepBoxState,
+    /// Inward pinch depth, in tenths of a millimetre.
+    pub depth: StepBoxState,
+    /// Half-width of the ring's axial support, percent.
+    pub width: StepBoxState,
+}
+
+impl RingRow {
+    /// Build a row from an owned SDK ring (meters/fractions → integer UI units).
+    #[must_use]
+    pub fn from_ridge(ring: &RidgeRing) -> Self {
+        Self {
+            position: StepBoxState::new(scale_to_i32(ring.position_frac, 100.0)),
+            depth: StepBoxState::new(scale_to_i32(ring.depth_m, 10_000.0)),
+            width: StepBoxState::new(scale_to_i32(ring.half_width_frac, 100.0)),
+        }
+    }
+
+    /// The inverse: integer UI units → an owned SDK ring.
+    ///
+    /// ⚠ This round-trip was untested before the toolkit split: only the
+    /// `RidgeRing → RingRow` direction had a function, and the reverse was
+    /// inlined in a Slint closure reading `&AppWindow`.
+    #[must_use]
+    pub fn to_ridge(&self) -> RidgeRing {
+        RidgeRing {
+            position_frac: f64::from(self.position.value()) / 100.0,
+            depth_m: tenths_mm_to_m(self.depth.value()),
+            half_width_frac: f64::from(self.width.value()) / 100.0,
+        }
+    }
+}
+
+/// Tenths of a millimetre → meters. The UI's depth unit throughout.
+#[must_use]
+pub fn tenths_mm_to_m(tenths: i32) -> f64 {
+    f64::from(tenths) / 10_000.0
+}
+
+/// A fraction/length → the UI's integer unit, rounded.
+fn scale_to_i32(value: f64, scale: f64) -> i32 {
+    // Float -> int `as` has saturated (and mapped NaN to 0) since Rust 1.45; the
+    // workspace MSRV is 1.92, so this is guaranteed rather than incidental. That
+    // is the behaviour we want: a garbage spec renders a clamped control instead
+    // of panicking the app.
+    (value * scale).round() as i32
+}
+
+/// The five per-feature toggles plus their scalar controls, read off whatever UI
+/// is driving them.
+///
+/// Exists so [`ridge_options_from_rows`] can be a pure function. Its predecessor
+/// took `&AppWindow` and was therefore untestable by construction — the reason
+/// none of this arithmetic had a test before.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RidgeToggles {
+    /// Master switch for the whole interior-ridge feature set.
+    pub enabled: bool,
+    /// Grip rings on/off.
+    pub rings_enabled: bool,
+    /// Surface texture on/off, with its depth + spacing in tenths of a mm.
+    pub texture_enabled: bool,
+    /// Texture depth, tenths of a millimetre.
+    pub texture_depth_tenths_mm: i32,
+    /// Texture spacing, tenths of a millimetre.
+    pub texture_spacing_tenths_mm: i32,
+    /// Lateral pinch on/off, with depth in tenths of a mm.
+    pub side_pinch_enabled: bool,
+    /// Side-pinch depth, tenths of a millimetre.
+    pub side_pinch_tenths_mm: i32,
+    /// Tip relief on/off, with depth in tenths of a mm.
+    pub tip_relief_enabled: bool,
+    /// Tip-relief depth, tenths of a millimetre.
+    pub tip_relief_tenths_mm: i32,
+    /// Orientation override on/off, with the angle in whole degrees.
+    pub orientation_enabled: bool,
+    /// Orientation, degrees.
+    pub orientation_deg: i32,
+}
+
+/// Ring rows + toggles → an owned [`RidgeOptions`], with each disabled feature
+/// zeroed by the already-tested [`gate_ridge_options`].
+#[must_use]
+pub fn ridge_options_from_rows(rows: &[RingRow], toggles: RidgeToggles) -> RidgeOptions {
+    gate_ridge_options(RidgeControls {
+        enabled: toggles.enabled,
+        rings_enabled: toggles.rings_enabled,
+        rings: rows.iter().map(RingRow::to_ridge).collect(),
+        texture_enabled: toggles.texture_enabled,
+        texture_depth_m: tenths_mm_to_m(toggles.texture_depth_tenths_mm),
+        texture_spacing_m: tenths_mm_to_m(toggles.texture_spacing_tenths_mm),
+        side_pinch_enabled: toggles.side_pinch_enabled,
+        side_pinch_depth_m: tenths_mm_to_m(toggles.side_pinch_tenths_mm),
+        tip_relief_enabled: toggles.tip_relief_enabled,
+        tip_relief_depth_m: tenths_mm_to_m(toggles.tip_relief_tenths_mm),
+        orientation_enabled: toggles.orientation_enabled,
+        orientation_deg: f64::from(toggles.orientation_deg),
+    })
+}
+
+/// The step-5 part picker: which cast pieces to generate.
+///
+/// Owns the label/checked rows **and** the parallel `PartId`s, which the Slint
+/// version kept in two structures (a `VecModel<PartRow>` beside a
+/// `RefCell<Vec<PartId>>`) that had to be rebuilt in lockstep. One type removes
+/// the chance of them disagreeing.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PartPicker {
+    rows: Vec<(PartId, String, bool)>,
+}
+
+impl PartPicker {
+    /// Rebuild for a layer count, everything checked (the default: make it all).
+    #[must_use]
+    pub fn rebuild(layer_count: usize, mode: CastMode) -> Self {
+        Self {
+            rows: enumerate_parts(layer_count, mode)
+                .into_iter()
+                .map(|(id, label)| (id, label, true))
+                .collect(),
+        }
+    }
+
+    /// `(label, checked)` for rendering.
+    pub fn rows(&self) -> impl Iterator<Item = (&str, bool)> {
+        self.rows.iter().map(|(_, l, c)| (l.as_str(), *c))
+    }
+
+    /// Number of rows.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// Whether the picker has no rows at all (no design yet).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
+    /// Toggle one row. Out-of-range indices are ignored.
+    pub fn set_checked(&mut self, index: usize, checked: bool) {
+        if let Some(row) = self.rows.get_mut(index) {
+            row.2 = checked;
+        }
+    }
+
+    /// The All / None buttons.
+    pub fn set_all(&mut self, checked: bool) {
+        for row in &mut self.rows {
+            row.2 = checked;
+        }
+    }
+
+    /// `true` when at least one part is checked — make-molds needs ≥1 piece.
+    #[must_use]
+    pub fn any_checked(&self) -> bool {
+        self.rows.iter().any(|(_, _, c)| *c)
+    }
+
+    /// The checked rows as a [`PartSelection`]; all-checked collapses to
+    /// [`PartSelection::all`] via the already-tested `part_selection_from_checks`.
+    #[must_use]
+    pub fn selection(&self, mode: CastMode) -> PartSelection {
+        let parts: Vec<(PartId, String)> = self
+            .rows
+            .iter()
+            .map(|(id, l, _)| (*id, l.clone()))
+            .collect();
+        let checked: Vec<bool> = self.rows.iter().map(|(_, _, c)| *c).collect();
+        part_selection_from_checks(&parts, &checked, mode)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -937,6 +1380,37 @@ visible = true
     }
 
     #[test]
+    fn picker_selection_keeps_rows_aligned_with_their_checkboxes() {
+        // `selection` builds the parts vec and the checked vec in two separate
+        // passes over `rows`, and `part_selection_from_checks` pairs them BY
+        // INDEX. Nothing in the type system holds those two in step, so a
+        // misalignment would quietly export the wrong pieces. Mirrors
+        // `subset_selects_only_checked_parts` but drives it through the picker.
+        let mut picker = PartPicker::rebuild(2, CastMode::Detachable);
+        picker.set_all(false);
+        picker.set_checked(2, true); // "Layer 1 — plug" → Plug { layer_index: 0 }
+
+        let sel = picker.selection(CastMode::Detachable);
+        assert!(!sel.is_all(), "one checked row is not the full cast");
+        assert!(
+            sel.includes(PartId::Plug { layer_index: 0 }),
+            "the checked row's OWN part must be selected"
+        );
+        assert!(
+            !sel.includes(PartId::Plug { layer_index: 1 }),
+            "an off-by-one in the zip would select this instead"
+        );
+    }
+
+    #[test]
+    fn picker_all_checked_matches_the_direct_call() {
+        // The all-checked collapse to `PartSelection::all` must survive the
+        // adapter, not just the function it delegates to.
+        let picker = PartPicker::rebuild(2, CastMode::Detachable);
+        assert!(picker.selection(CastMode::Detachable).is_all());
+    }
+
+    #[test]
     fn subset_selects_only_checked_parts() {
         let parts = enumerate_parts(2, CastMode::Detachable);
         // Check only "Layer 1 — plug" (index 2).
@@ -1032,5 +1506,430 @@ visible = true
         );
 
         let _ = std::fs::remove_dir_all(&d);
+    }
+    // ── StepBoxState ────────────────────────────────────────────────────────
+    // The four rules from the Slint `StepBox`, each with the jarring behaviour
+    // it exists to prevent named in the assertion message.
+
+    #[test]
+    fn typing_does_not_clamp_so_overshoot_is_not_snapped_mid_edit() {
+        let mut s = StepBoxState::new(10);
+        *s.text_mut() = "250".to_string();
+        s.on_typed();
+        assert_eq!(
+            s.value(),
+            250,
+            "clamping mid-type snaps the field to the bound the moment you \
+             overshoot, which is jarring while still typing"
+        );
+        assert_eq!(
+            s.commit(0, 30),
+            Some(30),
+            "commit is where clamping happens"
+        );
+        assert_eq!(s.text(), "30", "commit re-renders the clamped value");
+    }
+
+    #[test]
+    fn blurring_a_clean_field_commits_nothing() {
+        let mut s = StepBoxState::new(10);
+        assert_eq!(
+            s.commit(0, 30),
+            None,
+            "a bare click-in/out must not trigger a re-mesh"
+        );
+    }
+
+    #[test]
+    fn blurring_a_dirty_field_commits_once() {
+        let mut s = StepBoxState::new(10);
+        *s.text_mut() = "12".to_string();
+        s.on_typed();
+        assert_eq!(s.commit(0, 30), Some(12));
+        assert_eq!(s.commit(0, 30), None, "the second blur is already clean");
+    }
+
+    #[test]
+    fn retyping_the_same_number_commits_nothing() {
+        let mut s = StepBoxState::new(10);
+        *s.text_mut() = "10".to_string();
+        s.on_typed();
+        assert!(s.is_dirty(), "the text changed, so the edit is pending");
+        assert_eq!(
+            s.commit(0, 30),
+            None,
+            "but the VALUE did not change — no re-mesh"
+        );
+    }
+
+    #[test]
+    fn empty_text_keeps_the_old_value() {
+        let mut s = StepBoxState::new(17);
+        *s.text_mut() = String::new();
+        s.on_typed();
+        assert_eq!(s.value(), 17, "clearing the box must not read as zero");
+        assert_eq!(
+            s.commit(0, 30),
+            None,
+            "and re-rendering the old value is not a change"
+        );
+        assert_eq!(s.text(), "17", "the box refills rather than staying blank");
+    }
+
+    #[test]
+    fn unparseable_text_keeps_the_old_value() {
+        let mut s = StepBoxState::new(5);
+        *s.text_mut() = "3o".to_string();
+        s.on_typed();
+        assert_eq!(s.value(), 5);
+        assert_eq!(s.commit(0, 30), None);
+    }
+
+    #[test]
+    fn stepping_clamps_at_both_bounds_and_reports_only_real_moves() {
+        let mut s = StepBoxState::new(0);
+        assert_eq!(s.step(-1, 0, 30), None, "already at min");
+        assert_eq!(s.step(1, 0, 30), Some(1));
+        let mut s = StepBoxState::new(30);
+        assert_eq!(s.step(1, 0, 30), None, "already at max");
+        assert_eq!(s.step(-1, 0, 30), Some(29));
+    }
+
+    #[test]
+    fn stepping_clears_a_pending_edit() {
+        let mut s = StepBoxState::new(10);
+        *s.text_mut() = "999".to_string();
+        s.on_typed();
+        assert_eq!(s.step(1, 0, 30), Some(30), "the ± button commits + clamps");
+        assert!(!s.is_dirty());
+    }
+
+    #[test]
+    fn sync_external_discards_a_pending_edit_because_the_model_wins() {
+        let mut s = StepBoxState::new(20);
+        *s.text_mut() = "25".to_string();
+        s.on_typed();
+        s.sync_external(8, 0, 30);
+        assert_eq!(s.value(), 8, "a shrunk trim bound overrides what was typed");
+        assert_eq!(s.text(), "8");
+        assert!(!s.is_dirty());
+    }
+
+    #[test]
+    fn sync_external_clamps_because_the_bounds_may_have_moved_too() {
+        let mut s = StepBoxState::new(25);
+        // The mesh shrank, so the trim ceiling dropped from 30 to 10 and the
+        // model is handing back a value that no longer fits.
+        s.sync_external(25, 0, 10);
+        assert_eq!(
+            s.value(),
+            10,
+            "an unclamped sync leaves a value commit() can never correct — a \
+             clean field returns early"
+        );
+        assert_eq!(s.text(), "10");
+        assert_eq!(s.commit(0, 10), None, "and it is already settled");
+    }
+
+    // ── WizardCursor ────────────────────────────────────────────────────────
+
+    #[test]
+    fn no_next_on_the_final_screen_even_once_it_is_complete() {
+        // ⚠ `nav_state`'s gate is `is_complete(viewed) && viewed != Step::LAST`.
+        // `next_gate_opens_only_after_the_step_completes` asserts
+        // `!nav_state(&p, Step::Pour).can_next` under the message "no Next on
+        // the final screen" — but its project is INCOMPLETE at Pour, so the
+        // FIRST conjunct already returns false and the LAST one never runs.
+        // Deleting `&& viewed != Step::LAST` left that test green.
+        //
+        // Driving the wizard to genuinely finished is the only way to isolate
+        // the second conjunct, because `Project` enforces step order.
+        use cf_studio_core::{MoldOutputs, PourPlan, PourRecord, PrintExport};
+
+        let d = dir("lastscreen");
+        let stl = d.join("s.stl");
+        let cleaned = d.join("c.stl");
+        let prep = d.join("p.prep.toml");
+        let design = d.join("x.design.toml");
+        std::fs::write(&stl, ONE_TRIANGLE_STL).unwrap();
+        std::fs::write(&cleaned, ONE_TRIANGLE_STL).unwrap();
+        std::fs::write(&prep, PREP_WITH_CENTERLINE).unwrap();
+        std::fs::write(&design, DESIGN_TOML).unwrap();
+
+        let mut p = Project::new("t");
+        apply_scan(&mut p, &stl).unwrap();
+        apply_prep(&mut p, &cleaned, &prep).unwrap();
+        apply_plug(&mut p, cf_studio_core::PlugDraft::default()).unwrap();
+        apply_design(&mut p, &design).unwrap();
+        p.set_molds(MoldOutputs {
+            out_dir: PathBuf::from("/tmp/out"),
+            mold_stls: vec![PathBuf::from("a.stl")],
+            plug_stls: vec![PathBuf::from("p.stl")],
+            accessory_stls: vec![],
+            procedure_path: PathBuf::from("proc.md"),
+            total_mass_g: 100.0,
+            pour_plan: PourPlan { steps: vec![] },
+        })
+        .unwrap();
+        p.set_print(PrintExport {
+            export_dir: PathBuf::from("/tmp/print-out"),
+        })
+        .unwrap();
+        p.set_pour(PourRecord { layers_poured: 1 }).unwrap();
+
+        assert!(p.is_complete(Step::Pour), "the final step is now complete");
+        assert!(
+            !nav_state(&p, Step::Pour).can_next,
+            "the wizard must not advance past its last screen"
+        );
+
+        // And at the cursor, which is what the button actually drives.
+        let mut c = WizardCursor::new(Step::Pour);
+        assert!(!c.next(&p), "Next on the last screen must not move");
+        assert_eq!(c.viewed(), Step::Pour, "the cursor must stay put");
+
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn back_from_the_first_screen_is_a_no_op() {
+        let mut c = WizardCursor::default();
+        assert_eq!(c.viewed(), Step::FIRST);
+        c.back();
+        assert_eq!(c.viewed(), Step::FIRST);
+    }
+
+    #[test]
+    fn next_is_refused_while_the_viewed_step_is_incomplete() {
+        let project = Project::new("t");
+        let mut c = WizardCursor::default();
+        assert!(
+            !c.next(&project),
+            "the gate must hold even if a disabled button fires"
+        );
+        assert_eq!(c.viewed(), Step::FIRST);
+    }
+
+    #[test]
+    fn next_advances_once_the_viewed_step_completes() {
+        use cf_studio_core::ScanInput;
+        let mut project = Project::new("t");
+        project.set_scan(ScanInput {
+            source_path: PathBuf::from("/tmp/s.stl"),
+        });
+        let mut c = WizardCursor::default();
+        assert!(c.next(&project));
+        assert_eq!(c.viewed(), Step::CleanScan);
+    }
+
+    #[test]
+    fn back_preserves_completed_work_and_next_returns() {
+        use cf_studio_core::ScanInput;
+        let mut project = Project::new("t");
+        project.set_scan(ScanInput {
+            source_path: PathBuf::from("/tmp/s.stl"),
+        });
+        let mut c = WizardCursor::new(Step::CleanScan);
+        c.back();
+        assert_eq!(c.viewed(), Step::AddScan);
+        assert!(
+            c.next(&project),
+            "paging back over completed work must not invalidate it"
+        );
+        assert_eq!(c.viewed(), Step::CleanScan);
+    }
+
+    // ── PourSession ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn advancing_an_empty_plan_does_nothing() {
+        let mut s = PourSession::default();
+        assert_eq!(s.advance(0), PourAdvance::NoPlan);
+        assert_eq!(
+            s.current(),
+            0,
+            "a project with no molds has no plan; the cursor must not move"
+        );
+    }
+
+    #[test]
+    fn advancing_mid_plan_reports_the_layer() {
+        let mut s = PourSession::default();
+        assert_eq!(s.advance(3), PourAdvance::Layer { poured: 1 });
+        assert_eq!(s.advance(3), PourAdvance::Layer { poured: 2 });
+        assert_eq!(s.current(), 2);
+    }
+
+    #[test]
+    fn the_last_layer_completes_the_project() {
+        let mut s = PourSession::default();
+        s.advance(2);
+        assert_eq!(s.advance(2), PourAdvance::Complete { layers_poured: 2 });
+    }
+
+    #[test]
+    fn a_single_layer_plan_completes_on_the_first_advance() {
+        let mut s = PourSession::default();
+        assert_eq!(s.advance(1), PourAdvance::Complete { layers_poured: 1 });
+    }
+
+    // ── format_elapsed ──────────────────────────────────────────────────────
+
+    #[test]
+    fn elapsed_pads_seconds_and_rolls_minutes() {
+        assert_eq!(format_elapsed(0), "0:00");
+        assert_eq!(format_elapsed(9), "0:09");
+        assert_eq!(format_elapsed(60), "1:00");
+        assert_eq!(format_elapsed(61), "1:01");
+        // The jobs this labels run 4.5-15 minutes; the minutes field is the part
+        // an off-by-one would hide.
+        assert_eq!(format_elapsed(15 * 60 + 7), "15:07");
+    }
+
+    // ── RingRow round-trip ──────────────────────────────────────────────────
+
+    #[test]
+    fn ring_row_round_trips_through_the_sdk_units() {
+        let ring = RidgeRing {
+            position_frac: 0.35,
+            depth_m: 0.0012,
+            half_width_frac: 0.08,
+        };
+        let row = RingRow::from_ridge(&ring);
+        assert_eq!(row.position.value(), 35);
+        assert_eq!(row.depth.value(), 12, "1.2 mm is 12 tenths");
+        assert_eq!(row.width.value(), 8);
+
+        let back = row.to_ridge();
+        assert!((back.position_frac - 0.35).abs() < 1e-12);
+        assert!((back.depth_m - 0.0012).abs() < 1e-12);
+        assert!((back.half_width_frac - 0.08).abs() < 1e-12);
+    }
+
+    #[test]
+    fn tenths_of_a_millimetre_convert_to_meters() {
+        assert!(
+            (tenths_mm_to_m(10) - 0.001).abs() < 1e-12,
+            "10 tenths = 1 mm"
+        );
+        assert!((tenths_mm_to_m(0) - 0.0).abs() < 1e-12);
+    }
+
+    // ── ridge_options_from_rows ─────────────────────────────────────────────
+
+    #[test]
+    fn rows_and_toggles_produce_the_same_options_the_ui_did() {
+        let rows = vec![RingRow::from_ridge(&RidgeRing {
+            position_frac: 0.5,
+            depth_m: 0.002,
+            half_width_frac: 0.1,
+        })];
+        let toggles = RidgeToggles {
+            enabled: true,
+            rings_enabled: true,
+            texture_enabled: true,
+            texture_depth_tenths_mm: 3,
+            texture_spacing_tenths_mm: 25,
+            side_pinch_enabled: true,
+            side_pinch_tenths_mm: 4,
+            tip_relief_enabled: true,
+            tip_relief_tenths_mm: 6,
+            orientation_enabled: true,
+            orientation_deg: 90,
+        };
+        let opts = ridge_options_from_rows(&rows, toggles);
+        assert!(opts.enabled);
+        assert_eq!(opts.rings.len(), 1);
+        assert!((opts.texture_depth_m - 0.0003).abs() < 1e-12);
+        assert!((opts.orientation_deg - 90.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn the_master_toggle_off_zeroes_everything_downstream() {
+        let rows = vec![RingRow::from_ridge(&RidgeRing {
+            position_frac: 0.5,
+            depth_m: 0.002,
+            half_width_frac: 0.1,
+        })];
+        let opts = ridge_options_from_rows(
+            &rows,
+            RidgeToggles {
+                enabled: false,
+                rings_enabled: true,
+                ..RidgeToggles::default()
+            },
+        );
+        assert!(
+            !opts.enabled,
+            "the master switch gates the whole feature set"
+        );
+    }
+
+    #[test]
+    fn disabling_rings_drops_the_rows_even_when_present() {
+        let rows = vec![RingRow::from_ridge(&RidgeRing {
+            position_frac: 0.5,
+            depth_m: 0.002,
+            half_width_frac: 0.1,
+        })];
+        let opts = ridge_options_from_rows(
+            &rows,
+            RidgeToggles {
+                enabled: true,
+                rings_enabled: false,
+                ..RidgeToggles::default()
+            },
+        );
+        assert!(
+            opts.rings.is_empty(),
+            "an edited-but-disabled ring must not reach the carve"
+        );
+    }
+
+    // ── PartPicker ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn a_rebuilt_picker_starts_all_checked() {
+        let p = PartPicker::rebuild(2, CastMode::Bonded);
+        assert!(!p.is_empty());
+        assert!(p.any_checked());
+        assert!(p.rows().all(|(_, checked)| checked));
+    }
+
+    #[test]
+    fn none_then_any_checked_is_false() {
+        let mut p = PartPicker::rebuild(2, CastMode::Bonded);
+        p.set_all(false);
+        assert!(
+            !p.any_checked(),
+            "make-molds needs at least one piece; the button gates on this"
+        );
+    }
+
+    #[test]
+    fn checking_one_row_is_enough_to_proceed() {
+        let mut p = PartPicker::rebuild(2, CastMode::Bonded);
+        p.set_all(false);
+        p.set_checked(0, true);
+        assert!(p.any_checked());
+    }
+
+    #[test]
+    fn an_out_of_range_index_is_ignored_rather_than_panicking() {
+        let mut p = PartPicker::rebuild(1, CastMode::Bonded);
+        p.set_checked(999, false);
+        assert!(p.any_checked(), "a stale row index must not corrupt state");
+    }
+
+    #[test]
+    fn a_rebuild_for_a_new_layer_count_resets_to_all_checked() {
+        let mut p = PartPicker::rebuild(1, CastMode::Bonded);
+        p.set_all(false);
+        let p2 = PartPicker::rebuild(3, CastMode::Bonded);
+        assert!(
+            p2.any_checked(),
+            "changing the design starts the picker fresh"
+        );
+        assert!(p2.len() >= p.len());
     }
 }
