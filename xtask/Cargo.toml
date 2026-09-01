@@ -40,8 +40,10 @@ serde_json = "1"
 # Rust source parsing: the Coverage criterion measures PRODUCTION lines, so it
 # has to know which line ranges exist only under `#[cfg(test)]`. Those appear on
 # modules, free functions, methods and struct fields alike, so a text scan is
-# not enough -- see coverage.rs.
-syn = { version = "2", features = ["full", "parsing", "printing"] }
+# not enough -- see coverage.rs. `visit` is for doc_theft.rs, which has to reach
+# every named declaration wherever it nests -- including items declared inside
+# function bodies -- and a hand-written walk misses those by omission.
+syn = { version = "2", features = ["full", "parsing", "printing", "visit"] }
 proc-macro2 = { version = "1", features = ["span-locations"] }
 
 # SHA-256 for the licensed-asset integrity check. The BodyParts3D meshes are
