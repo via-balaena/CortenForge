@@ -605,6 +605,13 @@ pub fn format_elapsed(secs: u64) -> String {
 /// 4. **Empty text keeps the old value.** Clearing the box mid-edit must not be
 ///    read as zero.
 ///
+/// ⚠ A fifth difference from the Slint original, recorded rather than resolved:
+/// Slint parses typed text with `to-float()` into an `int` property, this parses
+/// with `parse::<i32>()` and keeps the old value when that fails. Text the first
+/// accepts and the second rejects — `"3.7"` — therefore diverges. Whether such
+/// text can be entered at all depends on Slint's `input-type: number`, which has
+/// **not** been checked, so this is a known difference and not a known bug.
+///
 /// ⚠ **Store one of these per row, inside the row struct** — never in a `Vec`
 /// keyed by row index. Removing ring #1 must take ring #1's uncommitted text with
 /// it; index-keyed state would leave it bound to what is now ring #1 (formerly
@@ -1218,6 +1225,21 @@ visible = true
         );
         // Past the end → empty (all poured).
         assert_eq!(format_pour_active(&plan, 2), "");
+
+        // ⚠ `is_last` decides whether " · cure ~N h" is appended, and the
+        // asserts above are all `starts_with`, so they never reach the suffix.
+        // Two mutants survived on that: inverting `==` to `!=`, and `current + 1`
+        // to `current * 1`. Either one tells the user to wait a cure period
+        // after the FINAL layer, or drops the wait BETWEEN layers — a pour
+        // instruction, not a cosmetic string.
+        assert!(
+            a0.contains("cure ~4 h"),
+            "a non-last layer must state its cure wait: {a0}"
+        );
+        assert!(
+            !a1.contains("cure ~"),
+            "the last layer has nothing to cure before: {a1}"
+        );
     }
 
     #[test]
@@ -1399,6 +1421,16 @@ visible = true
         assert!(
             !sel.includes(PartId::Plug { layer_index: 1 }),
             "an off-by-one in the zip would select this instead"
+        );
+
+        // ★ The other half of the same claim: what the picker RENDERS must
+        // agree with what it EXPORTS. Asserting only `selection` leaves a
+        // `rows()` that disagrees with it invisible.
+        let checked: Vec<bool> = picker.rows().map(|(_, c)| c).collect();
+        assert_eq!(
+            checked,
+            [false, false, true, false, false, false, false, false],
+            "exactly the row set_checked(2) touched may render as checked"
         );
     }
 
@@ -1890,10 +1922,55 @@ visible = true
 
     #[test]
     fn a_rebuilt_picker_starts_all_checked() {
+        // ⚠⚠ `rows()` is what the picker RENDERS, and it used to be asserted
+        // only as `p.rows().all(|(_, c)| c)` — vacuously true on an EMPTY
+        // iterator. Mutation proved it blind: `rows()` returning
+        // `iter::empty()`, or one fabricated `("xyzzy", true)`, passed the whole
+        // suite, and so did `len()` returning 0 or 1. That left the render half
+        // of this type unverified — and a wrong `rows()` shows one set of
+        // checkboxes while `selection()` exports another, which is the exact
+        // disagreement `PartPicker` exists to make impossible.
         let p = PartPicker::rebuild(2, CastMode::Bonded);
+
+        let labels: Vec<&str> = p.rows().map(|(label, _)| label).collect();
+        assert_eq!(
+            labels,
+            [
+                "Layer 1 — cup (left)",
+                "Layer 1 — cup (right)",
+                "Layer 1 — plug",
+                "Layer 2 — cup (left)",
+                "Layer 2 — cup (right)",
+                "Platform",
+                "Dowels",
+            ],
+            "rows() must render exactly what `enumerate_parts` enumerated, in order"
+        );
+        assert_eq!(
+            p.len(),
+            7,
+            "bonded: 2 cups x 2 layers + 1 plug + platform + dowels"
+        );
+        assert_eq!(
+            p.rows().count(),
+            p.len(),
+            "len() must agree with what rows() yields"
+        );
         assert!(!p.is_empty());
         assert!(p.any_checked());
         assert!(p.rows().all(|(_, checked)| checked));
+    }
+
+    #[test]
+    fn an_empty_picker_reports_itself_empty() {
+        // The pre-design state: no layers, nothing to pick. `is_empty()` gates
+        // the Make-molds button, and a mutant returning `false` unconditionally
+        // survived the entire suite because nothing ever asked an EMPTY picker.
+        let p = PartPicker::default();
+        assert!(p.is_empty());
+        assert_eq!(p.len(), 0);
+        assert_eq!(p.rows().count(), 0);
+        assert!(!p.any_checked());
     }
 
     #[test]
