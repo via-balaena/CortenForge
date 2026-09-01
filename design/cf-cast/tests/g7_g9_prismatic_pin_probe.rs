@@ -351,8 +351,6 @@ fn pin_center_for_default_layout_mm() -> (f64, f64, f64) {
 
 // ── F4 critical-issue diff helper ────────────────────────────────────
 
-/// Collect the set of F4 critical-issue TYPES present in a mesh,
-/// sorted + deduplicated.
 /// Criticals that indicate the BOOLEAN ITSELF went wrong, as opposed to honest
 /// feedback about the shape that legitimately came out of it.
 ///
@@ -366,6 +364,8 @@ const CSG_ROBUSTNESS_CRITICALS: [PrintIssueType; 3] = [
     PrintIssueType::NotWatertight,
 ];
 
+/// Collect the set of F4 critical-issue TYPES present in a mesh,
+/// sorted + deduplicated.
 fn critical_issue_types(mesh: &IndexedMesh, config: &PrinterConfig) -> Vec<PrintIssueType> {
     let validation =
         validate_for_printing(mesh, config).expect("non-empty mesh validates without error");
