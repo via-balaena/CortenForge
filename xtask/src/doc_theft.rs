@@ -577,7 +577,13 @@ fn sweep(repo: &std::path::Path, base: &str) -> anyhow::Result<Sweep> {
     // self-consistent number. That is the failure this line exists to prevent,
     // so it must be measured rather than inferred. The identity is asserted
     // instead, where a break in it is loud.
-    debug_assert_eq!(
+    //
+    // ⚠ `assert_eq!`, NOT `debug_assert_eq!`. CI invokes this as
+    // `cargo run --release`, where a debug assertion is compiled out — the one
+    // configuration that matters would have had no check at all, while the
+    // comment above claimed it did. It costs three integer adds once per run,
+    // not per file.
+    assert_eq!(
         out.compared + out.skipped_added + out.skipped_deleted,
         out.files,
         "every changed file must be compared or explicitly skipped"
