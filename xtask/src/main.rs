@@ -366,7 +366,7 @@ fn main() -> Result<()> {
         ),
         Commands::Complete { crate_name, force } => complete::run(&crate_name, force),
         Commands::Affected { base, json } => affected::run(&base, json),
-        Commands::DocTheft { base } => doc_theft::run(&base),
+        Commands::DocTheft { base } => doc_theft::run(&std::env::current_dir()?, &base),
         Commands::Ci => check::run_ci(),
         Commands::Status => grade::status(),
         Commands::RunValidators {

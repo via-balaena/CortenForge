@@ -60,9 +60,9 @@
 //! file read as undocumented, hiding real thefts as well as inventing false
 //! ones). Measured over the 703 774 tracked `.rs` lines here, a text matcher
 //! over-matches badly: **29 665** lines trim to `[pub ]name: value,` against
-//! 4 383 documented fields (~7x), and **11 458** trim to a bare `Ident,`
-//! against 1 127 real variants (~10x). Every false hit would become a
-//! trackable name.
+//! 7 770 field declarations (**3.8x**), and **11 458** trim to a bare `Ident,`
+//! against 1 132 variant declarations (**10.1x**). Every false hit would become
+//! a trackable name.
 //!
 //! `syn` already answers this structurally and is already a direct dependency of
 //! this crate, doing the same job for the Coverage criterion. A field
@@ -74,14 +74,22 @@
 //!
 //! Every doc-bearing named declaration `syn` can see is tracked: items, `impl` /
 //! `trait` / `extern` block members, **struct fields**, **enum variants** and
-//! documented **`use` re-exports**. Measured over this workspace: **13 433
-//! documented items, 4 383 documented fields, 1 030 documented variants, 33
-//! documented re-exports**.
+//! documented **`use` re-exports**.
+//!
+//! Measured by running [`docs_by_item`] itself over all 1307 tracked files, 0
+//! unparsed: **13 487 documented items, 4 404 documented fields, 1 033
+//! documented variants, 33 documented re-exports** — 18 957 in all. ⚠ Produced
+//! by the shipped census, not by a throwaway walker written to answer the
+//! question; an earlier revision of these figures came from the latter and
+//! disagreed with what the code actually counts.
 //!
 //! ## What the change is worth, measured
 //!
-//! Swept over 400 commits — 1091 modified-file pairs, 0 parse failures on either
-//! side — against the line scanner it replaces:
+//! Swept over the 400 non-merge commits ending at **`793a64cd`** — 1091
+//! modified-file pairs, 2182 file versions, 0 parse failures on either side —
+//! against the line scanner it replaces. ⚠ The anchor is part of the claim:
+//! "the last 400 commits" is a moving window that gave 1091, 1086 and 1087 on
+//! three different days, none of them reproducible by a reader.
 //!
 //! | | findings | verified real |
 //! |---|---|---|
@@ -117,9 +125,9 @@
 //! - **Tuple-struct fields are positional**, so a doc on one has no name to
 //!   track either. Measured at **zero occurrences** here.
 //! - **A move across files still reads as a loss** when the name AND kind
-//!   survive in the old file. Measured at **zero occurrences** in 1091 pairs
-//!   once the kind is keyed on, but it is a real shape: this check reads one
-//!   file at a time and cannot see where a declaration went.
+//!   survive in the old file. Measured at **zero occurrences** across the 1091
+//!   pairs above once the kind is keyed on, but it is a real shape: this check
+//!   reads one file at a time and cannot see where a declaration went.
 //! - **A file that does not parse is an error, not a pass.** This gate reads the
 //!   working tree, so a mid-edit file will say so rather than go quiet.
 
@@ -415,60 +423,89 @@ pub fn items_that_lost_docs(before: &str, after: &str) -> anyhow::Result<Vec<Str
         .collect())
 }
 
-/// Run the check over every `.rs` file changed between `base` and `HEAD`.
+/// Run `git -C repo <args>`, failing on a non-zero exit.
+///
+/// ⚠⚠ FAILS CLOSED. `.output()?` propagates only a SPAWN failure; a non-zero
+/// git exit still returns `Ok` with empty stdout, and empty means "no changed
+/// files" or "no before-text" — both of which report clean. Same shape as the
+/// `.unwrap_or_default()` this replaced at the call sites, and as the `|| true`
+/// removed from `xtask/hooks/pre-commit`. A guard that goes quiet when its
+/// inputs break is worse than no guard, because it also stops anyone looking.
+fn git_in(repo: &std::path::Path, args: &[&str]) -> anyhow::Result<String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .output()
+        .with_context(|| format!("running git {}", args.join(" ")))?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "git {} failed ({}): {}",
+            args.join(" "),
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// What one sweep looked at, and what it found.
+///
+/// ★ The counts are returned rather than only printed. A run that skipped every
+/// file and reported nothing looks identical to a clean run otherwise — the "an
+/// empty result is not evidence" failure this whole check exists to answer — so
+/// the accounting has to be assertable, not just visible.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Sweep {
+    /// `(file, "<kind> <name>")` for each declaration that lost its doc.
+    findings: Vec<(String, String)>,
+    /// Changed `.rs` files the diff listed.
+    files: usize,
+    /// Files actually compared before-against-after.
+    compared: usize,
+    /// Files with no base version — added by this change.
+    skipped_added: usize,
+    /// Files with no working-tree version — deleted by this change.
+    skipped_deleted: usize,
+}
+
+/// Compare every `.rs` file changed between `base` and `HEAD` in `repo`.
 ///
 /// ⚠ Needs real history: `base...HEAD` requires the merge-base, so a shallow
-/// checkout cannot run this. In CI it lives in the `affected` job, the one
-/// already fetching `fetch-depth: 0` for exactly that reason.
+/// checkout cannot run this. In CI it lives in a job fetching `fetch-depth: 0`
+/// for exactly that reason.
 ///
 /// # Errors
-/// Returns an error if git cannot be run, if a changed file does not parse, or
-/// if any declaration lost a doc comment.
-pub fn run(base: &str) -> anyhow::Result<()> {
-    use anyhow::bail;
+/// Returns an error if git cannot be run, if there is no merge-base, or if a
+/// changed file does not parse.
+fn sweep(repo: &std::path::Path, base: &str) -> anyhow::Result<Sweep> {
     use std::process::Command;
 
-    let git = |args: &[&str]| -> anyhow::Result<String> {
-        let out = Command::new("git")
-            .args(args)
-            .output()
-            .with_context(|| format!("running git {}", args.join(" ")))?;
-        // ⚠⚠ FAILS CLOSED. `.output()?` propagates only a SPAWN failure; a
-        // non-zero git exit still returns Ok with empty stdout, and empty means
-        // "no changed files" or "no before-text" — both of which report clean.
-        // Same shape as the `.unwrap_or_default()` removed at the call sites.
-        if !out.status.success() {
-            bail!(
-                "git {} failed ({}): {}",
-                args.join(" "),
-                out.status,
-                String::from_utf8_lossy(&out.stderr).trim()
-            );
-        }
-        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-    };
-
     // ⚠ `git diff --name-only` yields REPO-RELATIVE paths, but the working-tree
-    // reads below resolve against the CWD. Run from a subdirectory and every
-    // path misses, each file counts as "deleted", and the check reports clean —
-    // a theft would be invisible. Anchor on the repo root instead.
-    let root = git(&["rev-parse", "--show-toplevel"])?.trim().to_string();
+    // reads below resolve against `repo`. Anchor on the repo root instead: run
+    // from a subdirectory and every path would miss, each file would count as
+    // "deleted", and the check would report clean with a theft in front of it.
+    let root = git_in(repo, &["rev-parse", "--show-toplevel"])?
+        .trim()
+        .to_string();
 
     // ⚠ NOT through the strict helper: `git merge-base` exits NON-ZERO when the
-    // two commits share no ancestor, and git prints nothing to stderr for it.
-    // Routing it through `git()` bailed with a bare "failed (exit status: 1):"
+    // two commits share no ancestor, and prints nothing to stderr for it.
+    // Routing it through `git_in` bailed with a bare "failed (exit status: 1):"
     // and buried the one message that tells a CI operator what to change. Empty
     // output is still fatal below, so this tolerates the status without
     // becoming fail-open.
     let merge_base = {
         let out = Command::new("git")
+            .arg("-C")
+            .arg(repo)
             .args(["merge-base", base, "HEAD"])
             .output()
             .context("running git merge-base")?;
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     };
     if merge_base.is_empty() {
-        bail!(
+        anyhow::bail!(
             "no merge-base between {base} and HEAD — this needs full history \
              (fetch-depth: 0), not a shallow checkout"
         );
@@ -479,85 +516,91 @@ pub fn run(base: &str) -> anyhow::Result<()> {
     // Listing committed changes while reading the working tree would disagree
     // locally — a theft you had not yet committed would be invisible to the very
     // check meant to catch it before you commit.
-    let changed = git(&["diff", "--name-only", &merge_base])?;
+    let changed = git_in(repo, &["diff", "--name-only", &merge_base])?;
     let files: Vec<&str> = changed.lines().filter(|f| f.ends_with(".rs")).collect();
 
-    println!(
-        "→ Checking {} changed Rust file(s) for stolen doc comments…",
-        files.len()
-    );
-
-    // ⚠⚠ FAILS CLOSED. Both reads below used to be `.unwrap_or_default()`, which
-    // turned any git or IO failure into "empty", and empty silently means "no
-    // findings" — a broken input would report a clean check. That is the exact
-    // shape the scan guard in `xtask/hooks/pre-commit` was fixed for (it used to
-    // end in `|| true`). A guard that goes quiet when its inputs break is worse
-    // than no guard, because it also stops anyone looking.
-    //
     // The two legitimate "nothing to compare" cases are distinguished
     // explicitly, by asking git and the filesystem rather than by inferring
-    // emptiness: a file ADDED by this change has no base version, and a file
+    // emptiness: a file ADDED by this change has no base version, and one
     // DELETED by it has no working-tree version. Anything else is an error.
-    let mut findings: Vec<(String, String)> = Vec::new();
-    let mut skipped_added = 0usize;
-    let mut skipped_deleted = 0usize;
+    let mut out = Sweep {
+        files: files.len(),
+        ..Sweep::default()
+    };
 
     for file in &files {
         let blob = format!("{merge_base}:{file}");
 
-        // Added by this change? Then there is no "before" and nothing can be lost.
         // ⚠ stderr silenced: a MISS here is the expected "file is new to this
         // change" path, and git prints `fatal: path ... exists on disk, but not
         // in <sha>` for it. A `fatal:` in a CI log reads as breakage, and a
         // check that cries wolf on its own happy path is one people learn to
         // scroll past. Only the exit status is consulted.
         let in_base = Command::new("git")
+            .arg("-C")
+            .arg(repo)
             .args(["cat-file", "-e", &blob])
             .stderr(std::process::Stdio::null())
             .status()
             .with_context(|| format!("git cat-file -e {blob}"))?
             .success();
         if !in_base {
-            skipped_added += 1;
+            out.skipped_added += 1;
             continue;
         }
 
-        // Deleted by this change? Then there is no "after" to compare against.
         let path = std::path::Path::new(&root).join(file);
         if !path.exists() {
-            skipped_deleted += 1;
+            out.skipped_deleted += 1;
             continue;
         }
 
-        let before = git(&["show", &blob])?;
+        let before = git_in(repo, &["show", &blob])?;
         let after = std::fs::read_to_string(&path)
             .with_context(|| format!("reading {file} from the working tree"))?;
 
-        // ⚠ The file name belongs in the error. A bare `expected one of ...` from
-        // `syn` with no path is unactionable in a CI log listing 40 files.
+        // ⚠ The file name belongs in the error. A bare `expected one of ...`
+        // from `syn` with no path is unactionable in a CI log listing 40 files.
         let lost = items_that_lost_docs(&before, &after)
             .with_context(|| format!("checking {file} for stolen doc comments"))?;
         for item in lost {
-            findings.push(((*file).to_string(), item));
+            out.findings.push(((*file).to_string(), item));
         }
     }
 
-    // ★ Say what was NOT compared. A run that skipped everything and reported
-    // nothing looks identical to a clean run otherwise — the "an empty result is
-    // not evidence" failure this whole check exists to answer.
-    let compared = files.len() - skipped_added - skipped_deleted;
+    out.compared = out.files - out.skipped_added - out.skipped_deleted;
+    Ok(out)
+}
+
+/// Run the check over `repo` and report it.
+///
+/// Takes the directory rather than reading the current one, so the whole check
+/// is reachable from a test. ⚠ It used to resolve the CWD itself, which left
+/// every line below unreachable except by running the binary: a mutation sweep
+/// replaced this entire function with `Ok(())` and the suite stayed green.
+///
+/// # Errors
+/// Returns an error if the sweep fails, or if any declaration lost a doc.
+pub fn run(repo: &std::path::Path, base: &str) -> anyhow::Result<()> {
+    let s = sweep(repo, base)?;
+
     println!(
-        "  compared {compared} file(s); skipped {skipped_added} added, \
-         {skipped_deleted} deleted"
+        "→ Checked {} changed Rust file(s) for stolen doc comments…",
+        s.files
+    );
+    // ★ Say what was NOT compared.
+    println!(
+        "  compared {} file(s); skipped {} added, {} deleted",
+        s.compared, s.skipped_added, s.skipped_deleted
     );
 
-    if findings.is_empty() {
+    if s.findings.is_empty() {
         println!("✓ No doc comments changed owner");
         return Ok(());
     }
 
     eprintln!("\n✗ Doc comment(s) stolen from the declaration below them:\n");
-    for (file, item) in &findings {
+    for (file, item) in &s.findings {
         eprintln!("    {file}: `{item}` LOST the doc comment it had before this change");
     }
     eprintln!(
@@ -565,7 +608,7 @@ pub fn run(base: &str) -> anyhow::Result<()> {
          that comment with it. The only insertion point in a Rust item list that\n  \
          cannot steal a doc is between a `use` block and the next doc comment.\n"
     );
-    bail!("{} doc comment(s) changed owner", findings.len())
+    anyhow::bail!("{} doc comment(s) changed owner", s.findings.len())
 }
 
 #[cfg(test)]
@@ -758,6 +801,17 @@ struct StepReport {
             ),
             ("/// D.\npub use m::a;", "pub use m::a;", "use a"),
             ("/// D.\npub use m::z as a;", "pub use m::z as a;", "use a"),
+            // ⚠ These two were absent, and a mutation sweep proved it: replacing
+            // `visit_item_trait_alias` or `visit_foreign_item_type` with `()`
+            // survived the whole suite. The table tested `trait a {}` (an
+            // `ItemTrait`) and `extern "C" { fn }` / `{ static }`, never the
+            // alias or the foreign type — an exhaustiveness probe that was not.
+            ("/// D.\ntrait a = b;", "trait a = b;", "trait a"),
+            (
+                "extern \"C\" { /// D.\n type a; }",
+                "extern \"C\" { type a; }",
+                "type a",
+            ),
             // ★ The two kinds this change exists for.
             (
                 "struct S { /// D.\n a: u8 }",
@@ -883,9 +937,9 @@ pub enum Step {
     fn a_struct_literal_field_is_not_a_declaration() {
         // ⚠⚠ The trap that made a text scan unusable here. `zoom: 1.0` is
         // textually a field declaration and is not one. Measured: 29 665 lines
-        // in this workspace trim to `[pub ]name: value,` against 4 383
-        // documented fields — a ~7x over-match, every hit of which would become
-        // a trackable name.
+        // in this workspace trim to `[pub ]name: value,` against 7 770 field
+        // declarations — a 3.8x over-match, every hit of which would become a
+        // trackable name.
         let src = "\
 struct Config {
     zoom: f32,
@@ -916,8 +970,9 @@ fn make() -> Config {
     #[test]
     fn a_match_arm_is_not_a_variant() {
         // ⚠ 11 458 lines in this workspace trim to a bare `Ident,` against
-        // 1 127 real variants — a ~10x over-match: call arguments, array
-        // elements, `use` lists and shorthand struct literals share the shape.
+        // 1 132 variant declarations — a 10.1x over-match: call arguments,
+        // array elements, `use` lists and shorthand struct literals share the
+        // shape.
         let src = "\
 enum Mode {
     Rotate,
@@ -1138,5 +1193,150 @@ pub struct B;
             "a file that does not parse must not report clean"
         );
         assert!(items_that_lost_docs("fn a( {\n", "fn a() {}\n").is_err());
+    }
+
+    // ── The sweep itself, driven end to end over a real git repo ──────────
+    //
+    // ⚠⚠ Everything below exists because a mutation sweep replaced the WHOLE of
+    // `run` with `Ok(())` and the suite stayed green: 12 of 14 survivors sat in
+    // this one function. The pure core was well covered and the part that
+    // actually runs in CI had no test at all — a gate whose decision lives only
+    // behind a CI job, which is the shape that rots silently.
+
+    /// Run a git command in `dir`, asserting it succeeded.
+    fn g(dir: &std::path::Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .expect("git is on PATH");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// A throwaway repo under the system temp dir — never the real one.
+    fn temp_repo(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("cf-doc-theft-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        g(&dir, &["init", "-q", "-b", "main"]);
+        g(&dir, &["config", "user.email", "gate@example.invalid"]);
+        g(&dir, &["config", "user.name", "gate"]);
+        dir
+    }
+
+    fn write(dir: &std::path::Path, name: &str, body: &str) {
+        std::fs::write(dir.join(name), body).expect("write");
+    }
+
+    fn commit(dir: &std::path::Path, msg: &str) {
+        g(dir, &["add", "-A"]);
+        g(dir, &["commit", "-q", "--no-verify", "-m", msg]);
+    }
+
+    #[test]
+    fn sweep_catches_a_theft_in_a_real_repo() {
+        let d = temp_repo("theft");
+        write(&d, "a.rs", "/// Victim doc.\nfn victim() {}\n");
+        commit(&d, "base");
+        // Uncommitted — the shape the pre-commit hook has to catch.
+        write(
+            &d,
+            "a.rs",
+            "/// Victim doc.\nfn thief() {}\n\nfn victim() {}\n",
+        );
+
+        let s = sweep(&d, "HEAD").expect("sweep runs");
+        assert_eq!(s.files, 1);
+        assert_eq!(s.compared, 1);
+        assert_eq!(s.skipped_added, 0);
+        assert_eq!(s.skipped_deleted, 0);
+        assert_eq!(
+            s.findings,
+            vec![("a.rs".to_string(), "fn victim".to_string())]
+        );
+        assert!(run(&d, "HEAD").is_err(), "run must FAIL on a theft");
+    }
+
+    #[test]
+    fn sweep_is_clean_when_nothing_changed_owner() {
+        let d = temp_repo("clean");
+        write(&d, "a.rs", "/// Victim doc.\nfn victim() {}\n");
+        commit(&d, "base");
+        write(
+            &d,
+            "a.rs",
+            "/// New doc.\nfn newcomer() {}\n\n/// Victim doc.\nfn victim() {}\n",
+        );
+
+        let s = sweep(&d, "HEAD").expect("sweep runs");
+        assert!(s.findings.is_empty(), "the correct form steals nothing");
+        assert_eq!(s.compared, 1, "and it must actually have been compared");
+        assert!(run(&d, "HEAD").is_ok());
+    }
+
+    #[test]
+    fn the_accounting_separates_compared_from_added_and_deleted() {
+        // ★ The counters and the `compared` arithmetic. Mutating `+=` to `*=`
+        // or `-=`, and `-` to `+` or `/`, all survived — including on the line
+        // whose only job is to say what was NOT looked at.
+        let d = temp_repo("accounting");
+        write(&d, "a.rs", "/// Victim doc.\nfn victim() {}\n");
+        write(&d, "gone.rs", "fn gone() {}\n");
+        commit(&d, "base");
+        g(&d, &["branch", "base"]);
+
+        write(&d, "new.rs", "fn fresh() {}\n");
+        commit(&d, "add a file");
+
+        write(
+            &d,
+            "a.rs",
+            "/// Victim doc.\nfn thief() {}\n\nfn victim() {}\n",
+        );
+        std::fs::remove_file(d.join("gone.rs")).expect("remove");
+
+        let s = sweep(&d, "base").expect("sweep runs");
+        assert_eq!(s.files, 3, "a.rs modified, gone.rs deleted, new.rs added");
+        assert_eq!(s.skipped_added, 1, "new.rs has no base version");
+        assert_eq!(s.skipped_deleted, 1, "gone.rs has no working-tree version");
+        assert_eq!(s.compared, 1, "only a.rs could be compared");
+        assert_eq!(s.findings.len(), 1);
+    }
+
+    #[test]
+    fn a_git_failure_is_an_error_not_a_clean_sweep() {
+        // ⚠⚠ The fail-closed guarantee the module header advertises in bold,
+        // and which nothing tested. Deleting the `!` in `git_in` makes every
+        // git failure return `Ok("")`, and empty reads as "nothing to compare".
+        let dir = std::env::temp_dir().join(format!("cf-doc-theft-norepo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+
+        let err = sweep(&dir, "HEAD").expect_err("outside a repo this must fail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("rev-parse"),
+            "the git failure must surface as ITSELF, not as a later symptom: {msg}"
+        );
+    }
+
+    #[test]
+    fn a_missing_merge_base_names_the_shallow_checkout() {
+        // The one git call deliberately NOT routed through the strict helper,
+        // so this message stays reachable instead of becoming a bare
+        // "failed (exit status: 1):".
+        let d = temp_repo("nomergebase");
+        write(&d, "a.rs", "fn a() {}\n");
+        commit(&d, "base");
+
+        let err = sweep(&d, "no-such-ref").expect_err("an unknown base must fail");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("merge-base"), "got: {msg}");
+        assert!(msg.contains("fetch-depth"), "must name the fix: {msg}");
     }
 }
