@@ -36,9 +36,9 @@ const CENDRILLON_CAST_MODE: CastMode = CastMode::Bonded;
 use cf_studio_gui::viewer::{MeshData, OrbitCamera, Uniforms, Vertex, mesh_data_from_indexed};
 use cf_studio_gui::{
     RidgeControls, StepOutcome, apply_design, apply_design_draft, apply_plug, apply_prep,
-    apply_scan, cell_size_m_for_quality, enumerate_parts, format_molds_summary, format_pour_active,
-    format_pour_plan, gate_ridge_options, nav_state, part_selection_from_checks, pour_countdown,
-    print_step_summary, step_rows,
+    apply_scan, cell_size_m_for_quality, enumerate_parts, format_elapsed, format_molds_summary,
+    format_pour_active, format_pour_plan, gate_ridge_options, nav_state,
+    part_selection_from_checks, pour_countdown, print_step_summary, step_rows,
 };
 use cortenforge::mesh::types::IndexedMesh;
 use slint::wgpu_28::wgpu;
@@ -623,13 +623,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(t0) = start.get()
                     && let Some(ui) = weak.upgrade()
                 {
-                    let secs = t0.elapsed().as_secs();
+                    let elapsed = format_elapsed(t0.elapsed().as_secs());
                     ui.set_step_message(
                         format!(
-                            "Making molds… {}:{:02} elapsed  \
+                            "Making molds… {elapsed} elapsed  \
                                  (this can take a while — the window stays responsive)",
-                            secs / 60,
-                            secs % 60,
                         )
                         .into(),
                     );
