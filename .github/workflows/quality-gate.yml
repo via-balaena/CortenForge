@@ -148,6 +148,82 @@ jobs:
         run: cargo fmt --all -- --check
 
   # ============================================================================
+  # DOC THEFT - a doc comment silently reassigned to the item inserted above it
+  # ============================================================================
+  # Inserting an item above another but BELOW its doc comment takes that comment
+  # with it; the original is left undocumented while everything still compiles
+  # and every test passes. Ten occurrences to date, three on 2026-08-31 — and two
+  # of those three happened WHILE FIXING the first, because the obvious fix moves
+  # the theft onto the next item instead of removing it.
+  #
+  # Nothing else catches it: `missing_docs` does not fire on private items (most
+  # victims are private helpers or `#[test]` fns), and a plain read of the diff
+  # missed the same instance twice.
+  #
+  # ⚠ Needs `fetch-depth: 0` — it diffs `merge-base(base, HEAD)`, which a shallow
+  # checkout cannot resolve. It is its OWN job rather than a step inside
+  # `affected` (the other full-history job) because `affected` is on
+  # `UNGATED_JOBS` in xtask/src/workflow_gate.rs: a real check living there would
+  # run where its red never blocks a merge.
+  # ⚠⚠ The job is UNCONDITIONAL on purpose. It first carried
+  # `if: github.event_name == 'pull_request'`, which would have broken the merge
+  # queue for the whole repository: this workflow also runs on `merge_group` and
+  # `push`, a skipped job reports `skipped`, and `quality-gate` fails anything
+  # that is not exactly `success`. Nothing would ever have landed on main. The
+  # only other PR-only job, `semver`, escapes this solely by being on
+  # UNGATED_JOBS — this is the first GATED job to carry such a condition.
+  #
+  # So the job always runs and the STEP decides what it can compare.
+  doc-theft:
+    name: Doc-comment theft
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check for stolen doc comments
+        run: |
+          set -euo pipefail
+          case "${{ github.event_name }}" in
+            pull_request)
+              BASE_BRANCH="${{ github.base_ref }}"
+              ;;
+            merge_group)
+              # `refs/heads/main` -> `main`
+              BASE_BRANCH="${GITHUB_BASE_REF_MG##refs/heads/}"
+              ;;
+            *)
+              # A push to main has nothing to diff against: the change is
+              # already in. Report and succeed — do NOT skip the job, or the
+              # aggregator sees `skipped` and fails the gate.
+              echo "event=${{ github.event_name }} has no PR base; nothing to compare."
+              exit 0
+              ;;
+          esac
+          # ⚠ `git fetch origin ""` SUCCEEDS (it fetches HEAD into FETCH_HEAD),
+          # so an empty base does not fail here — it falls through to the gate,
+          # which does exit non-zero but blames "no merge-base between origin/
+          # and HEAD". Name the real cause instead.
+          if [ -z "$BASE_BRANCH" ]; then
+            echo "::error::doc-theft: no base branch for ${{ github.event_name }}"
+            exit 1
+          fi
+          git fetch --no-tags --prune origin "$BASE_BRANCH"
+          cargo run -q -p xtask --release -- \
+            doc-theft --base "origin/$BASE_BRANCH"
+        env:
+          GITHUB_BASE_REF_MG: ${{ github.event.merge_group.base_ref }}
+        shell: bash
+
+  # ============================================================================
   # AFFECTED - Compute the PR-scoped crate set (changed + reverse-dep closure)
   # ============================================================================
   # On a pull request, runs `cargo xtask affected` to compute which crates the
@@ -1334,7 +1410,7 @@ jobs:
 
   quality-gate:
     name: Quality Gate
-    needs: [format, ci-scripts, grade, tests-debug, tests-release, cross-os, feature-combos, dependencies, validate-examples, soft-contact-heavy, licensed-gates]
+    needs: [format, ci-scripts, doc-theft, grade, tests-debug, tests-release, cross-os, feature-combos, dependencies, validate-examples, soft-contact-heavy, licensed-gates]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
