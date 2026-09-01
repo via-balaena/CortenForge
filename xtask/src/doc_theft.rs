@@ -454,7 +454,8 @@ fn git_in(repo: &std::path::Path, args: &[&str]) -> anyhow::Result<String> {
 /// ★ The counts are returned rather than only printed. A run that skipped every
 /// file and reported nothing looks identical to a clean run otherwise — the "an
 /// empty result is not evidence" failure this whole check exists to answer — so
-/// the accounting has to be assertable, not just visible.
+/// the accounting has to be assertable, not just visible. Each is counted where
+/// it happens; none is derived from the others.
 #[derive(Debug, Default, PartialEq, Eq)]
 struct Sweep {
     /// `(file, "<kind> <name>")` for each declaration that lost its doc.
@@ -563,12 +564,24 @@ fn sweep(repo: &std::path::Path, base: &str) -> anyhow::Result<Sweep> {
         // from `syn` with no path is unactionable in a CI log listing 40 files.
         let lost = items_that_lost_docs(&before, &after)
             .with_context(|| format!("checking {file} for stolen doc comments"))?;
+        out.compared += 1;
         for item in lost {
             out.findings.push(((*file).to_string(), item));
         }
     }
 
-    out.compared = out.files - out.skipped_added - out.skipped_deleted;
+    // ⚠ COUNTED where the comparison happens, not derived as
+    // `files - skipped_added - skipped_deleted`. Subtraction makes the total
+    // add up by construction, so a file that was neither compared nor skipped —
+    // a `continue` added to the loop later — would still report a tidy,
+    // self-consistent number. That is the failure this line exists to prevent,
+    // so it must be measured rather than inferred. The identity is asserted
+    // instead, where a break in it is loud.
+    debug_assert_eq!(
+        out.compared + out.skipped_added + out.skipped_deleted,
+        out.files,
+        "every changed file must be compared or explicitly skipped"
+    );
     Ok(out)
 }
 
@@ -1177,7 +1190,9 @@ pub struct B;
     #[test]
     fn a_documented_module_is_tracked() {
         // ⚠ The R8 gap. `mod` was absent from the line scanner's kind list, so
-        // 75 documented modules in this workspace could lose a doc undetected.
+        // every documented module could lose a doc undetected. The census
+        // counts 84 of them; #859's note said 75, which was the line scanner's
+        // own count and missed the inline and nested ones it could not see.
         let before = "/// Module doc.\npub mod prelude {}\n";
         let after = "/// Module doc.\npub mod thief {}\n\npub mod prelude {}\n";
         assert_eq!(lost(before, after), one("mod prelude"));
