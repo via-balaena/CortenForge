@@ -650,11 +650,19 @@ fn cavity_wall_mean(outcome: &SolveOutcome) -> f64 {
 /// cavity-wall radial displacement plus the Newton diagnostics the
 /// convergence test's `eprintln!` + budget asserts consume.
 struct StepReport {
+    /// [`cavity_wall_mean`] for this run: the mean of [`observed_u_r`] over
+    /// the cavity-surface (loaded) vertices, denominator `n_loaded` below.
     cavity_u_r_mean: f64,
+    /// Newton iteration count at convergence.
     iter_count: usize,
+    /// Free-DOF residual norm at convergence.
     residual_norm: f64,
+    /// Number of cavity-surface vertices — the Saint-Venant denominator that
+    /// divides `cavity_u_r_mean`.
     n_loaded: usize,
+    /// Number of pinned outer-surface vertices.
     n_pinned: usize,
+    /// Total tet count at this refinement.
     n_tets: usize,
 }
 
