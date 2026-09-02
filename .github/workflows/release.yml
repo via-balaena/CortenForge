@@ -44,14 +44,12 @@ jobs:
     name: Build Cendrillon (release, ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     # The notes tell users to build from source on every OS, so a leg that does
-    # not compile means the tag ships broken instructions. All three block —
-    # unlike the retired matrix, where a red leg only meant one missing
-    # download. `fail-fast: false` so one flaky runner does not cancel the rest.
+    # not compile ships broken instructions — all three block, unlike the
+    # retired matrix where a red leg meant one missing download.
     # ⚠ No `continue-on-error`: at job level it reports SUCCESS to `needs`, so
-    # an exempted leg leaves the whole run green and buys no signal at all.
+    # an exempted leg leaves the run green and buys no signal.
     # 60 vs measured cold legs on v0.3.2: macOS 8m26s, Linux 9m24s, Win 15m58s.
-    # ⚠ A cap bounds a hung build, NOT a queue wait — the v0.1.3 hang (a leg
-    # queued 24h for a runner that never came) is not addressed here.
+    # ⚠ A cap bounds a hung build, NOT a queue wait.
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -64,11 +62,10 @@ jobs:
         if: runner.os == 'Linux'
         uses: ./.github/actions/install-linux-deps
         with:
-          # The same list every other Linux job installs — a divergent list on
-          # a BLOCKING leg would fail only at tag time, invisible on every PR.
-          # ⚠ Deliberately NOT the notes' list: this job only COMPILES, so it
-          # needs no GPU driver, and the runner preinstalls cmake, g++ and
-          # pkg-config that a user's machine does not.
+          # The list every other Linux job installs — a divergent list on a
+          # BLOCKING leg would fail only at tag time, invisible on every PR.
+          # ⚠ NOT the notes' list: this job only COMPILES (no GPU driver), and
+          # the runner preinstalls cmake/g++/pkg-config that users lack.
           packages: libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev libfontconfig1-dev
       - run: cargo build --release --locked -p cf-studio-gui
 
