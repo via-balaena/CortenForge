@@ -43,11 +43,16 @@ jobs:
     # red without blocking — the release notes tell users to build from source
     # on all three, so all three are worth compiling, but a runner hiccup on a
     # non-primary OS should not cost the tag its changelog and SBOM.
-    # ⚠ `timeout-minutes` is not optional here: the deleted matrix carried a
-    # note that macos-13's retirement left a leg queued 24h for a runner that
-    # never came and hung the v0.1.3 release. This job blocks `release`.
+    # ⚠ The cap bounds a HUNG OR LOOPING BUILD, not a queue wait — GitHub does
+    # not count time spent waiting for a runner, so this does NOT address the
+    # v0.1.3 hang (macos-13 retired, leg queued 24h for a runner that never
+    # came). That hazard is unaddressed and would need a different mechanism.
+    # ⚠ 60 is UNMEASURED. This workflow runs on tag refs only, so the cache
+    # below never restores and every leg is a cold `--release` build including
+    # the vendored manifold C++ kernel. quality-gate's cross-os gets 45 for a
+    # DEBUG build with a warm cache. Tune down once a real tag has been timed.
     continue-on-error: ${{ matrix.beta }}
-    timeout-minutes: 30
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -61,12 +66,21 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+      # `save-if: false` — every tag is its own cache scope, so anything saved
+      # here is unrestorable by any later run and would evict main's live
+      # entries under the repo's LRU budget. Restore only.
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
       - name: Install Linux build deps
         if: runner.os == 'Linux'
         uses: ./.github/actions/install-linux-deps
         with:
-          packages: libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev libfontconfig1-dev
+          # The list the retired build job used, and enough to compile this
+          # crate on the runner. NOT the from-source prerequisite list in the
+          # release notes below — the runner preinstalls cmake, g++ and
+          # pkg-config, so a CI list is a delta, never a user's starting point.
+          packages: libfontconfig1-dev
       - run: cargo build --release --locked -p cf-studio-gui
 
   # ============================================================================
