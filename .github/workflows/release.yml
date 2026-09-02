@@ -44,10 +44,13 @@ jobs:
   sbom:
     name: Generate SBOM
     runs-on: ubuntu-latest
-    # `release` now gates on this job, and `cargo install cargo-cyclonedx` is
-    # an unpinned from-source build — a crates.io stall would otherwise sit at
-    # GitHub's 360-minute default and produce NO release at all, changelog
-    # included. 20 matches the sibling SBOM job in quality-gate.yml.
+    # ⚠ What the cap does and does NOT do: `release` gates on this job, so a
+    # stalled SBOM means no release either way — the cap does not save the
+    # release, it bounds TIME TO FAILURE (360 min default -> 20) and the runner
+    # spend, so a tag fails fast enough to fix and re-run. `cargo install
+    # cargo-cyclonedx` is an unpinned from-source build, which is the realistic
+    # stall. 20 matches quality-gate.yml's sibling SBOM job and is generous:
+    # that job really runs in about 100 s.
     timeout-minutes: 20
     # ⚠ RE-DERIVED 2026-09-02, and the verdict FLIPPED. This job was
     # `continue-on-error: true` because it was "supplementary — must never
@@ -119,6 +122,10 @@ jobs:
   changelog:
     name: Generate Changelog
     runs-on: ubuntu-latest
+    # Capped for the same reason as `sbom` above — `release` needs this too, so
+    # a hang here (it checks out full history with fetch-depth: 0) costs the
+    # tag its release for six hours rather than twenty minutes.
+    timeout-minutes: 20
     outputs:
       changelog: ${{ steps.changelog.outputs.changelog }}
     steps:
@@ -189,6 +196,9 @@ jobs:
     name: Create Release
     needs: [sbom, changelog]
     runs-on: ubuntu-latest
+    # The last uncapped job on the path; all three are now bounded, matching
+    # quality-gate.yml where all 16 cap.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
 
