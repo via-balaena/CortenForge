@@ -13,9 +13,11 @@ description: >
 inputs:
   packages:
     description: >
-      Space-separated apt package list. Deliberately an input rather than a fixed
-      list: the three call-site lists in this repo genuinely differ, and unifying
-      them would change what some jobs install.
+      Space-separated apt package list. ⚠ As of 2026-09-02 every call site
+      passes the SAME five packages — retiring the Cendrillon download removed
+      the last caller with a shorter list. Kept as an input so a future non-GUI
+      caller can narrow it, not because the lists currently differ; do not
+      "restore" variation on the strength of an older note.
       ⚠ `required: true` is not enforced by GitHub — `apt.sh` checks it itself.
     required: true
 

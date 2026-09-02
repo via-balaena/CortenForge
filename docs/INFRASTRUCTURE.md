@@ -521,7 +521,7 @@ These constraints enable team growth and cross-platform reliability.
 | x86_64-pc-windows-msvc | Windows | x64 | ✓ |
 | aarch64-apple-darwin | macOS | ARM64 | ✓ cross-os job |
 | aarch64-unknown-linux-gnu | Linux | ARM64 | - |
-| wasm32-unknown-unknown | WASM | - | ✓ grade, criterion 7 |
+| wasm32-unknown-unknown | WASM | - | ✓ grade, criterion 7 (L0 only) |
 
 ⚠ `x86_64-apple-darwin` has had no builder since 2026-09-02, and never had CI
 coverage: its only builder was the Cendrillon release matrix's cross-compile

@@ -20,9 +20,9 @@ on:
       - 'v[0-9]+.[0-9]+.[0-9]+'
       - 'v[0-9]+.[0-9]+.[0-9]+-*'  # Pre-releases like v0.8.0-rc.1
   # Rehearsal path. Nothing in CI parses this file, so without it every change
-  # here first executes on a real version tag, where a malformed job costs that
-  # tag its release. On a dispatch the build/SBOM/changelog jobs run and
-  # `release` is skipped by its `if:`, so publishing stays tag-only.
+  # here first executes on a real version tag. ⚠ A dispatch runs
+  # build-check/sbom/changelog only — `release` stays untested until a real tag,
+  # by design, since publishing must never fire off a dispatch.
   workflow_dispatch:
 
 permissions:
@@ -43,21 +43,13 @@ jobs:
   build-check:
     name: Build Cendrillon (release, ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    # ⚠ DELIBERATELY NOT the retired matrix's shape. There, only arm64 macOS
-    # blocked, because a red leg meant one DOWNLOAD was missing and the others
-    # still shipped. The notes now tell every user on every OS to build from
-    # source, so a leg that does not compile means the tag publishes
-    # instructions that do not work — and nothing else compiles this crate in
-    # release profile anywhere. macOS and Linux therefore block. Windows stays
-    # non-blocking: its runners are the flakiest, and it is the platform the
-    # maintainer verifies by hand.
-    # Caps are MEASURED, not guessed: on the v0.3.2 tag all legs ran cold and
-    # cacheless on this same graph — macOS 8m26s, Linux 9m24s, Windows 15m58s,
-    # 22 min whole workflow — and those legs also packaged, signed and uploaded,
-    # which this compile-only job does not.
-    # ⚠ A cap bounds a HUNG BUILD, not a queue wait: GitHub does not count time
-    # spent waiting for a runner, so the v0.1.3 hang (macos-13 retired, a leg
-    # queued 24h for a runner that never came) is NOT addressed here.
+    # The notes tell users to build from source on every OS, so a leg that does
+    # not compile means the tag ships broken instructions — hence blocking,
+    # unlike the retired matrix where a red leg only meant one missing download.
+    # Windows stays non-blocking: flakiest runners, verified by hand.
+    # 60 vs measured cold legs on v0.3.2: macOS 8m26s, Linux 9m24s, Win 15m58s.
+    # ⚠ A cap bounds a hung build, NOT a queue wait — the v0.1.3 hang (a leg
+    # queued 24h for a runner that never came) is not addressed here.
     continue-on-error: ${{ matrix.beta }}
     timeout-minutes: 60
     strategy:
@@ -73,22 +65,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      # `save-if: false` — every tag is its own cache scope, so anything saved
-      # here is unrestorable by any later run and would evict main's live
-      # entries under the repo's LRU budget. Restore only.
-      - uses: Swatinem/rust-cache@v2
-        with:
-          save-if: false
       - name: Install Linux build deps
         if: runner.os == 'Linux'
         uses: ./.github/actions/install-linux-deps
         with:
-          # The list the retired build job used. Verified sufficient rather
-          # than assumed: v0.3.2 shipped Cendrillon-linux-x86_64.tar.gz, so this
-          # list did compile the crate in release on this runner. NOT the
-          # from-source prerequisite list in the notes below — the runner
-          # preinstalls cmake, g++ and pkg-config, so a CI list is a delta.
-          packages: libfontconfig1-dev
+          # The same list every other Linux job installs — a divergent list on
+          # a BLOCKING leg would fail only at tag time, invisible on every PR.
+          # ⚠ A CI delta, not the from-source list in the notes: the runner
+          # preinstalls cmake, g++ and pkg-config.
+          packages: libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev libfontconfig1-dev
       - run: cargo build --release --locked -p cf-studio-gui
 
   # ============================================================================
@@ -204,9 +189,11 @@ jobs:
   release:
     name: Create Release
     needs: [build-check, sbom, changelog]
-    # Tag-only: a workflow_dispatch rehearsal must never publish a release named
-    # after a branch ref (`version` below is `${GITHUB_REF#refs/tags/}`).
-    if: startsWith(github.ref, 'refs/tags/')
+    # ⚠ Gate on the EVENT, not the ref. `startsWith(github.ref, 'refs/tags/')`
+    # looks equivalent and is not: workflow_dispatch's ref picker offers TAGS,
+    # so dispatching on v0.3.2 would pass it and action-gh-release would rewrite
+    # that live release's name, body and assets.
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
