@@ -6,9 +6,6 @@
 //! pipeline that turns a [`MeshData`] + [`OrbitCamera`] into a rendered
 //! `slint::Image` lives in `main.rs` — it needs Slint's device/queue and
 //! can't run in a headless test.
-//!
-//! This is the viewer first proven in the `spike-wgpu` bin, folded in once
-//! the render + live drag-orbit were verified on a real scan.
 
 use std::path::Path;
 

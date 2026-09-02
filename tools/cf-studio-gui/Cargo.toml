@@ -8,9 +8,6 @@ repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 publish = false
-# Two bins (the app + the throwaway 3D spike); make plain `cargo run` launch
-# the app.
-default-run = "cf-studio-gui"
 
 # Cendrillon app stack — App tier (the dependency sink): may depend on the SDK,
 # but no SDK crate may depend on it (enforced by grade Layer Integrity).
@@ -23,12 +20,6 @@ tier = "App"
 [[bin]]
 name = "cf-studio-gui"
 path = "src/main.rs"
-
-# 3D-preview spike (stage 1): prove wgpu renders into a Slint Image.
-# Throwaway-grade exploration; the working approach folds into the lib.
-[[bin]]
-name = "spike-wgpu"
-path = "src/bin/spike_wgpu.rs"
 
 [lib]
 path = "src/lib.rs"

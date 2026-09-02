@@ -341,9 +341,13 @@ pub(crate) fn path_is_under(name: &str, dir: &str) -> bool {
 /// ⚠ **Deliberately under-inclusive, in the safe direction.** Two shapes it
 /// does not catch:
 ///
-/// - A `[[bin]] path = …` pointing outside the convention. Both explicit
-///   `[[bin]]` declarations in this workspace (`cf-viewer` → `src/main.rs`,
-///   `cf-studio-gui` → `src/bin/spike_wgpu.rs`) sit on the convention anyway.
+/// - A `[[bin]] path = …` pointing outside the convention. Re-measured
+///   2026-09-02 across all 301 members: **9** explicit `[[bin]]` declarations
+///   in 9 crates, and every one of them sets `path = "src/main.rs"` — so no
+///   declaration in this workspace exercises the miss. (The `mesh-io/fuzz`
+///   crate does declare four off-convention `fuzz_targets/*.rs` bins, but
+///   cargo-fuzz gives it its own `[workspace]` table, so it is not a member
+///   here and never reaches grading.)
 /// - A module reached by `mod foo;` **from** a binary root. `src/foo.rs` is
 ///   indistinguishable from a library module by path, and resolving it would
 ///   mean parsing every binary's module tree.
@@ -1929,7 +1933,7 @@ mod tests {
     #[test]
     fn cargos_three_binary_conventions_are_recognised() {
         assert!(is_bin_target_file("src/main.rs"));
-        assert!(is_bin_target_file("src/bin/spike_wgpu.rs"));
+        assert!(is_bin_target_file("src/bin/tool.rs"));
         assert!(is_bin_target_file("src/bin/tool/main.rs"));
     }
 
