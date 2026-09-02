@@ -10,10 +10,6 @@
 # site/cendrillon/index.html's buttons, site/style.css's `.downloads`/
 # `.button*`/`details.firstrun` rules, and tools/cf-studio-gui/macos/Info.plist.
 #
-# ⚠ Nothing here compiles the tagged tree — the deleted build job's
-# `beta: false` leg did. Tags are cut from green `main` by convention, with
-# nothing enforcing it.
-#
 # See docs/INFRASTRUCTURE.md for the full constraint specification.
 
 name: Release
@@ -34,6 +30,24 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # ============================================================================
+  # BUILD CHECK — the tagged tree must compile in the profile users are told to
+  # run. Replaces the deleted 4-target matrix's `beta: false` leg, which was the
+  # only thing stopping a non-building tag from publishing.
+  # ============================================================================
+  build-check:
+    name: Build Cendrillon (release profile)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Linux build deps
+        uses: ./.github/actions/install-linux-deps
+        with:
+          packages: libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev libfontconfig1-dev
+      - run: cargo build --release --locked -p cf-studio-gui
+
   # ============================================================================
   # GENERATE SBOM
   # ============================================================================
@@ -146,7 +160,7 @@ jobs:
   # ============================================================================
   release:
     name: Create Release
-    needs: [sbom, changelog]
+    needs: [build-check, sbom, changelog]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -184,7 +198,7 @@ jobs:
 
             ```
             sudo apt-get update
-            sudo apt-get install cmake build-essential \
+            sudo apt-get install cmake build-essential pkg-config \
               libwayland-dev libxkbcommon-dev libasound2-dev \
               libudev-dev libfontconfig1-dev
             ```
@@ -198,7 +212,7 @@ jobs:
             git clone https://github.com/via-balaena/CortenForge.git
             cd CortenForge
             git checkout ${{ steps.version.outputs.version }}
-            cargo run -p cf-studio-gui      # Cendrillon
+            cargo run --release -p cf-studio-gui   # Cendrillon
             ```
 
             Without the `git checkout` you build `main`, not this tag.
@@ -213,7 +227,7 @@ jobs:
             ---
             By using this software you accept the terms in `DISCLAIMER.md` — it is general-purpose research software, provided **as is**, **not a medical device**, used **entirely at your own risk**. The repository carries `LICENSE-APACHE`, `LICENSE-MIT`, `NOTICE`, and `DISCLAIMER.md`.
 
-            A CycloneDX SBOM for `cf-studio-gui` is attached — Cendrillon's own resolved dependency graph, not the whole workspace, whose ~280 per-crate SBOMs would trip GitHub's upload limit. Read the file for its contents. The workspace meets the A-grade quality standard ([STANDARDS.md](https://github.com/via-balaena/CortenForge/blob/main/docs/STANDARDS.md)).
+            A CycloneDX SBOM for `cf-studio-gui` is attached when one was produced — Cendrillon's own resolved dependency graph, not the whole workspace, whose ~280 per-crate SBOMs would trip GitHub's upload limit. The workspace meets the A-grade quality standard ([STANDARDS.md](https://github.com/via-balaena/CortenForge/blob/main/docs/STANDARDS.md)).
           files: |
             artifacts/*.cdx.json
           fail_on_unmatched_files: false
