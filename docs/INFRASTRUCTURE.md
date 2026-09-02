@@ -660,8 +660,7 @@ if a && b {  // Need tests where:
 │   └── Required reviewers approved        │
 │                                          │
 │ Release tag                              │
-│   ├── SBOM attached                      │
-│   ├── Signed release                     │
+│   ├── SBOM attached (the only asset)     │
 │   └── Changelog generated                │
 └─────────────────────────────────────────┘
 ```

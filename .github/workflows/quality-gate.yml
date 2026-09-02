@@ -945,8 +945,14 @@ jobs:
       # download at release". There is no Windows download any more — the
       # release pipeline was retired the same day. The guard still earns its
       # keep on a DIFFERENT premise: Cendrillon is now run from source, so a
-      # broken Windows build is the user-facing failure itself rather than a
-      # missing artifact, and no other CI job compiles this crate on Windows.
+      # broken Windows build reaches the user directly rather than as a missing
+      # artifact, and no other CI job compiles this crate on Windows.
+      # ⚠ SCOPED HONESTLY: this is a `--locked` DEBUG build. It proves the
+      # lockfile resolves and links on each OS; it does NOT cover the release
+      # profile, which no job compiles this crate under any more — the deleted
+      # release job did, on four targets per tag. `[profile.dev] opt-level = 2`
+      # narrows the gap, but a `debug_assertions`/`overflow-checks`-gated item
+      # would still reach someone running `cargo run --release -p cf-studio-gui`.
       # A Cargo.lock change trips needs_full (→ GUI_PKGS non-empty), so the
       # guard always runs exactly when a lockfile drift could occur.
       - name: Build Cendrillon (guards the Windows windows-crate pin)
