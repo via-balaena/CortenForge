@@ -5,23 +5,14 @@
 # - SBOM (Software Bill of Materials)
 # - Auto-generated changelog from conventional commits
 #
-# ⚠ No binaries are attached. Cendrillon was shipped here as a 4-target
-# download until 2026-09-02; it is now run from source, so the build/package/
-# sign job and the app archives are gone. Restoring a download means restoring
-# THREE things deleted with it: site/cendrillon/index.html's buttons (they 404
-# without this job), site/style.css's `.downloads`/`.button*`/`details.firstrun`
-# rules (or the buttons render unstyled), and tools/cf-studio-gui/macos/
-# Info.plist (the .app packaging sed-substituted __VERSION__ from it). All
-# three went in one commit, so `git show` on it is the restore list.
+# ⚠ No binaries attached; the Cendrillon download was retired 2026-09-02.
+# Restoring it needs three things deleted with it, all in one commit:
+# site/cendrillon/index.html's buttons, site/style.css's `.downloads`/
+# `.button*`/`details.firstrun` rules, and tools/cf-studio-gui/macos/Info.plist.
 #
-# ⚠ NOTHING IN THIS WORKFLOW COMPILES THE TAGGED TREE. The deleted build job's
-# Apple-Silicon leg was `beta: false`, so a tag that did not build failed the job
-# and no release was published. The premise that made that redundant is still
-# the real one — correctness is gated on `main` by quality-gate.yml, and a tag is
-# only ever cut from already-green `main` — but it is now a CONVENTION with
-# nothing enforcing it. A tag pushed off a side branch, or cut from a commit
-# whose Quality Gate later went red, will publish a release whose only
-# instruction is "build it from source" for a tree that does not build.
+# ⚠ Nothing here compiles the tagged tree — the deleted build job's
+# `beta: false` leg did. Tags are cut from green `main` by convention, with
+# nothing enforcing it.
 #
 # See docs/INFRASTRUCTURE.md for the full constraint specification.
 
@@ -35,11 +26,9 @@ on:
 
 permissions:
   contents: write
-  # ⚠ `id-token: write` was dropped 2026-09-02. It was granted "for SLSA
-  # provenance", but no step ever minted or consumed an OIDC token, and the
-  # only artifact signing that existed (ad-hoc `codesign` on the macOS .app)
-  # went with the retired download. Re-add it in the change that actually
-  # generates provenance — it is an elevated identity grant.
+  # `id-token: write` removed 2026-09-02: nothing here mints or consumes an
+  # OIDC token, and the only signing went with the download. Re-add it with the
+  # change that generates provenance — it is an elevated grant.
 
 env:
   CARGO_TERM_COLOR: always
@@ -51,13 +40,8 @@ jobs:
   sbom:
     name: Generate SBOM
     runs-on: ubuntu-latest
-    # ⚠ Was "supplementary — must never block the actual downloads". There are
-    # no downloads since 2026-09-02, so the SBOM is now this release's ONLY
-    # asset and a failure here publishes a release with zero files while the
-    # body says one is attached. Real gap, deliberately NOT fixed here:
-    # hardening it touches four separate tolerance points, an unpinned tool and
-    # a filename nothing pre-merge exercises. Filed as #866, which carries the
-    # four tolerance points and the measured cargo-cyclonedx naming probe.
+    # ⚠ The SBOM is this release's only asset now, and this job still tolerates
+    # failure — so a failure publishes an empty release. Tracked in #866.
     continue-on-error: true
     steps:
       - uses: actions/checkout@v7
@@ -75,8 +59,7 @@ jobs:
 
       # cargo-cyclonedx writes one <crate>.cdx.json per workspace member
       # (~280 of them). Keep only Cendrillon's — attaching all of them as
-      # release assets is noise AND trips GitHub's upload rate limit. ⚠ Not
-      # "the shipped app" any more: nothing is shipped.
+      # release assets is noise AND trips GitHub's upload rate limit.
       - name: Collect Studio SBOM
         run: |
           mkdir -p sbom-out
@@ -218,10 +201,7 @@ jobs:
             cargo run -p cf-studio-gui      # Cendrillon
             ```
 
-            The `git checkout` matters: these notes are attached to this tag,
-            and the retired download delivered exactly this tag's code. Without
-            it you build whatever `main` is when you read this. Omit it if you
-            want the newest work instead.
+            Without the `git checkout` you build `main`, not this tag.
 
             Building from source also removes the unsigned-binary warnings the
             old downloads carried on macOS and Windows.

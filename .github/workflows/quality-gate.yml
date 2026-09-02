@@ -44,10 +44,8 @@
 #   file-path handling concerns. Per plan §6.3 (b): sim-core (FP/physics),
 #   sim-mjcf (XML/file paths), mesh-io (multi-format file paths), and
 #   mesh-printability — this line said "3 crates" and omitted the fourth
-#   until 2026-08-22. It also builds `cf-studio-gui` `--locked` on each OS as
-#   a lockfile-drift guard, not a test — it was the Windows release artifact
-#   until the download was retired on 2026-09-02; see the step's own comment
-#   for the premise it now rests on. Other crates' cross-OS coverage was
+#   until 2026-08-22. It also builds `cf-studio-gui` `--locked` on each OS as a
+#   lockfile-drift guard, not a test. Other crates' cross-OS coverage was
 #   admission-of-status-quo;
 #   ubuntu coverage is sufficient.
 # - `feature-combos` (ubuntu): explicit non-default-feature paths, plus
@@ -938,24 +936,11 @@ jobs:
 
       # Build Cendrillon on each OS, --locked, so a lockfile drift that breaks
       # the Windows build — e.g. a cargo update dropping gpu-allocator's
-      # windows 0.62.2 pin — fails the PR here.
-      #
-      # ⚠ RE-DERIVED 2026-09-02. The old justification was "the only thing
-      # released for Windows … instead of silently dropping the Windows
-      # download at release". There is no Windows download any more — the
-      # release pipeline was retired the same day. The guard still earns its
-      # keep on a DIFFERENT premise: Cendrillon is now run from source, so a
-      # broken Windows build reaches the user directly rather than as a missing
-      # artifact, and no other CI job compiles this crate on Windows.
-      # ⚠ SCOPED HONESTLY: this is a `--locked` DEBUG build. It proves the
-      # lockfile resolves and links on each OS; it does NOT cover the release
-      # profile, which no job compiles this crate under any more — the deleted
-      # release job did, on four targets per tag. What that leaves unguarded is
-      # specifically the code this build does NOT see: `cfg(not(debug_assertions))`
-      # branches are never compiled anywhere in CI, and overflow-checks are ON
-      # here but OFF in release, so an add that panics loudly in this job wraps
-      # silently for someone running `cargo run --release -p cf-studio-gui`.
-      # (`[profile.dev] opt-level = 2` narrows codegen differences, not these.)
+      # windows 0.62.2 pin — fails the PR here. Cendrillon is run from source,
+      # so a broken Windows build reaches users directly, and no other job
+      # compiles this crate on Windows.
+      # ⚠ DEBUG build only: `cfg(not(debug_assertions))` code is compiled
+      # nowhere in CI, and overflow-checks are ON here but OFF in release.
       # A Cargo.lock change trips needs_full (→ GUI_PKGS non-empty), so the
       # guard always runs exactly when a lockfile drift could occur.
       - name: Build Cendrillon (guards the Windows windows-crate pin)
