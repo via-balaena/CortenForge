@@ -25,8 +25,10 @@ on:
   # by design, since publishing must never fire off a dispatch.
   workflow_dispatch:
 
+# Only `release` writes. build-check and sbom run build scripts for ~280
+# transitive crates plus a vendored C++ kernel, so they get read-only.
 permissions:
-  contents: write
+  contents: read
   # `id-token: write` removed 2026-09-02: nothing here mints or consumes an
   # OIDC token, and the only signing went with the download. Re-add it with the
   # change that generates provenance — it is an elevated grant.
@@ -75,6 +77,7 @@ jobs:
   sbom:
     name: Generate SBOM
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     # ⚠ The SBOM is this release's only asset now, and this job still tolerates
     # failure — so a failure publishes an empty release. Tracked in #866.
     continue-on-error: true
@@ -113,6 +116,7 @@ jobs:
   changelog:
     name: Generate Changelog
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     outputs:
       changelog: ${{ steps.changelog.outputs.changelog }}
     steps:
@@ -182,11 +186,14 @@ jobs:
   release:
     name: Create Release
     needs: [build-check, sbom, changelog]
+    timeout-minutes: 20
+    permissions:
+      contents: write
     # ⚠ Gate on the EVENT, not the ref. `startsWith(github.ref, 'refs/tags/')`
     # looks equivalent and is not: workflow_dispatch's ref picker offers TAGS,
     # so dispatching on v0.3.2 would pass it and action-gh-release would rewrite
     # that live release's name, body and assets.
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
