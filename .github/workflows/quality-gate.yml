@@ -934,10 +934,17 @@ jobs:
         run: cargo test $PKGS
         shell: bash
 
-      # Build Cendrillon (the only thing released for Windows) on each OS,
-      # --locked, so a lockfile drift that breaks the Windows build — e.g. a
-      # cargo update dropping gpu-allocator's windows 0.62.2 pin — fails the
-      # PR here instead of silently dropping the Windows download at release.
+      # Build Cendrillon on each OS, --locked, so a lockfile drift that breaks
+      # the Windows build — e.g. a cargo update dropping gpu-allocator's
+      # windows 0.62.2 pin — fails the PR here.
+      #
+      # ⚠ RE-DERIVED 2026-09-02. The old justification was "the only thing
+      # released for Windows … instead of silently dropping the Windows
+      # download at release". There is no Windows download any more — the
+      # release pipeline was retired the same day. The guard still earns its
+      # keep on a DIFFERENT premise: Cendrillon is now run from source, so a
+      # broken Windows build is the user-facing failure itself rather than a
+      # missing artifact, and no other CI job compiles this crate on Windows.
       # A Cargo.lock change trips needs_full (→ GUI_PKGS non-empty), so the
       # guard always runs exactly when a lockfile drift could occur.
       - name: Build Cendrillon (guards the Windows windows-crate pin)

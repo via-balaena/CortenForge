@@ -2,9 +2,14 @@
 #
 # Triggered on version tags (v*.*.*)
 # Creates GitHub releases with:
-# - Signed release artifacts
 # - SBOM (Software Bill of Materials)
 # - Auto-generated changelog from conventional commits
+#
+# ⚠ No binaries are attached. Cendrillon was shipped here as a 4-target
+# download until 2026-09-02; it is now run from source (`cargo run -p
+# cf-studio-gui`), so the build/package/sign job and the app archives are gone.
+# Do not re-add a download without also restoring site/cendrillon/index.html's
+# buttons — they were deleted in the same change because they 404 without it.
 #
 # See docs/INFRASTRUCTURE.md for the full constraint specification.
 
@@ -24,142 +29,6 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # ============================================================================
-  # BUILD AND TEST
-  # ============================================================================
-  build:
-    name: Build Studio (${{ matrix.target }})
-    runs-on: ${{ matrix.os }}
-    # Beta legs are non-fatal: if Windows/Linux/Intel-mac fail to build, the
-    # release still goes out with whatever did build. The verified
-    # Apple-Silicon leg (beta: false) stays blocking — if it fails, no release.
-    # (fail-fast: false alone wouldn't do this — it only stops cancellation;
-    # a failed leg would still fail the job and skip the release, which
-    # `needs` it.)
-    continue-on-error: ${{ matrix.beta }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-            asset: Cendrillon-linux-x86_64.tar.gz
-            beta: true
-          # Intel macOS: cross-compiled on the arm64 `macos-latest` runner.
-          # GitHub's last Intel image (`macos-13`) is retired — its job queued 24h
-          # for a runner that never came and hung the v0.1.3 release. Manifold's
-          # cmake build defaults to the host (arm64) arch, which previously gave
-          # arm64 objects the linker rejected ("found architecture 'arm64',
-          # required 'x86_64'"); we now force the C++ deps to x86_64 via
-          # CMAKE_OSX_ARCHITECTURES in the Build step (cmake reads it from env).
-          # Stays beta + continue-on-error: if the cross-build still fails it is
-          # non-fatal and the release ships without the Intel binary.
-          - target: x86_64-apple-darwin
-            os: macos-latest
-            asset: Cendrillon-macos-x86_64.zip
-            beta: true
-          - target: aarch64-apple-darwin
-            os: macos-latest
-            asset: Cendrillon-macos-arm64.zip
-            beta: false
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            asset: Cendrillon-windows-x86_64.zip
-            beta: true
-
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-
-      # Slint/winit on Linux build against system fontconfig (the
-      # yeslogic-fontconfig-sys C build dep).
-      - name: Install Linux build deps
-        if: runner.os == 'Linux'
-        uses: ./.github/actions/install-linux-deps
-        with:
-          packages: libfontconfig1-dev
-
-      # Correctness is gated on main by quality-gate.yml (full debug +
-      # release test suites, grade-all, cross-OS checks) — a tag is only ever
-      # cut from already-green main. So the release does NOT re-run the whole
-      # workspace test suite (slow stochastic-physics + cf-cast grade tests)
-      # or build crates it doesn't ship; it builds exactly the one artifact
-      # it publishes. Most targets build natively on their own runner; the
-      # x86_64-apple-darwin leg cross-compiles on the arm64 macos-latest runner
-      # (see CMAKE_OSX_ARCHITECTURES below).
-      # --locked: build the committed Cargo.lock exactly. The Windows build
-      # depends on gpu-allocator being pinned to windows 0.62.2 (to match
-      # wgpu-hal); without --locked a re-resolve could drag it back onto an
-      # older windows and reintroduce the D3D12 type mismatch.
-      - name: Build Cendrillon
-        # Force Manifold's cmake C++/TBB build to the target arch when
-        # cross-compiling x86_64 on the arm64 runner (cmake initialises
-        # CMAKE_OSX_ARCHITECTURES from this env var) — otherwise it builds
-        # host-arch objects the linker rejects. Empty on native legs (harmless).
-        env:
-          CMAKE_OSX_ARCHITECTURES: ${{ matrix.target == 'x86_64-apple-darwin' && 'x86_64' || '' }}
-        run: cargo build --release --locked -p cf-studio-gui --target ${{ matrix.target }}
-
-      - name: Package Studio (macOS .app)
-        if: runner.os == 'macOS'
-        run: |
-          version="${GITHUB_REF#refs/tags/v}"
-          app="Cendrillon.app"
-          mkdir -p "$app/Contents/MacOS"
-          cp "target/${{ matrix.target }}/release/cf-studio-gui" "$app/Contents/MacOS/"
-          chmod +x "$app/Contents/MacOS/cf-studio-gui"
-          sed "s/__VERSION__/${version}/g" tools/cf-studio-gui/macos/Info.plist \
-            > "$app/Contents/Info.plist"
-          # Ad-hoc sign the bundle (best-effort, free). Doesn't satisfy
-          # Gatekeeper — users still approve once via "Open Anyway" — but it
-          # avoids the scarier "app is damaged and can't be opened" error a
-          # bundle with no signature can trigger on Apple Silicon.
-          codesign --force --deep --sign - "$app" || true
-          mkdir -p dist
-          # Stage the app next to the license/disclaimer so the terms travel
-          # inside the archive (both licenses require it) — a redistributed copy carries
-          # them. ditto (no --keepParent) archives the staging dir's contents,
-          # preserving the .app bundle layout + executable bit.
-          stage="$(mktemp -d)"
-          mv "$app" "$stage/"
-          cp LICENSE-APACHE LICENSE-MIT NOTICE DISCLAIMER.md "$stage/"
-          ditto -c -k "$stage" "dist/${{ matrix.asset }}"
-
-      - name: Package Studio (Linux tar.gz)
-        if: runner.os == 'Linux'
-        run: |
-          mkdir -p dist
-          # Include the license/disclaimer at the archive root so the terms
-          # travel with a redistributed copy (both licenses require it). GNU tar applies
-          # each -C to the files that follow it.
-          tar czf "dist/${{ matrix.asset }}" \
-            -C "target/${{ matrix.target }}/release" cf-studio-gui \
-            -C "$GITHUB_WORKSPACE" LICENSE-APACHE LICENSE-MIT NOTICE DISCLAIMER.md
-
-      - name: Package Studio (Windows zip)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path dist | Out-Null
-          # Include the license/disclaimer at the archive root so the terms
-          # travel with a redistributed copy (both licenses require it).
-          Compress-Archive -Force `
-            -Path "target/${{ matrix.target }}/release/cf-studio-gui.exe", "LICENSE-APACHE", "LICENSE-MIT", "NOTICE", "DISCLAIMER.md" `
-            -DestinationPath "dist/${{ matrix.asset }}"
-
-      - name: Upload Studio artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: studio-${{ matrix.target }}
-          path: dist/${{ matrix.asset }}
-
   # ============================================================================
   # GENERATE SBOM
   # ============================================================================
@@ -271,7 +140,7 @@ jobs:
   # ============================================================================
   release:
     name: Create Release
-    needs: [build, sbom, changelog]
+    needs: [sbom, changelog]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -281,13 +150,6 @@ jobs:
         continue-on-error: true
         with:
           name: sbom
-          path: ./artifacts
-
-      - name: Download Studio downloads
-        uses: actions/download-artifact@v8
-        with:
-          pattern: studio-*
-          merge-multiple: true
           path: ./artifacts
 
       - name: Extract version
@@ -301,43 +163,35 @@ jobs:
           body: |
             # CortenForge ${{ steps.version.outputs.version }}
 
-            **Cendrillon** — the guided desktop app that takes a 3D scan all the
-            way to printable, silicone-cast molds, step by step — built on the
-            CortenForge SDK.
+            The CortenForge SDK — a Rust workspace for mechatronics design and
+            simulation, and **Cendrillon**, the guided app that takes a 3D scan
+            all the way to printable, silicone-cast molds.
 
-            **⬇ Easiest install: [cortenforge.com](https://cortenforge.com)** — one-click downloads + setup steps.
+            ## Running it
 
-            ## Download
-            - **macOS, Apple Silicon** (tested) — `Cendrillon-macos-arm64.zip`
-            - **macOS, Intel** (beta) — `Cendrillon-macos-x86_64.zip`
-            - **Windows** (beta) — `Cendrillon-windows-x86_64.zip`
-            - **Linux** (beta) — `Cendrillon-linux-x86_64.tar.gz`
+            There is no download. Everything here is built from source:
 
-            Beta builds may be missing if that platform didn't build for this tag.
+            ```
+            git clone https://github.com/via-balaena/CortenForge
+            cd CortenForge
+            cargo run -p cf-studio-gui      # Cendrillon
+            ```
 
-            ## First time you open it (unsigned for now)
-            - **macOS** — unzip, drag `Cendrillon.app` to Applications, and
-              double-click. macOS will say it can't verify the developer — open
-              **System Settings → Privacy & Security**, scroll down, and click
-              **Open Anyway**, then open it again. You only do this once.
-            - **Windows** — unzip and run `cf-studio-gui.exe`. If SmartScreen
-              warns, click **More info → Run anyway**.
-            - **Linux** — `tar xzf` and run the `cf-studio-gui` binary (needs a
-              working Vulkan/GL driver).
-
-            Code-signing + notarization (a one-click launch) is a planned upgrade.
+            You need a Rust toolchain (see `rust-toolchain.toml`) and a working
+            Vulkan or GL driver for the 3D views. Building from source also
+            removes the unsigned-binary warnings the old downloads carried on
+            macOS and Windows.
 
             ## What's new
 
             ${{ needs.changelog.outputs.changelog }}
 
             ---
-            By downloading and using this software you accept the terms in the bundled `DISCLAIMER` — it is general-purpose research software, provided **as is**, **not a medical device**, used **entirely at your own risk**. Each archive includes `LICENSE-APACHE`, `LICENSE-MIT`, `NOTICE`, and `DISCLAIMER`.
+            By using this software you accept the terms in `DISCLAIMER.md` — it is general-purpose research software, provided **as is**, **not a medical device**, used **entirely at your own risk**. The repository carries `LICENSE-APACHE`, `LICENSE-MIT`, `NOTICE`, and `DISCLAIMER.md`.
 
-            SBOM (CycloneDX) attached. All builds meet the A-grade quality standard ([STANDARDS.md](https://github.com/via-balaena/CortenForge/blob/main/docs/STANDARDS.md)).
+            SBOM (CycloneDX) attached. The workspace meets the A-grade quality standard ([STANDARDS.md](https://github.com/via-balaena/CortenForge/blob/main/docs/STANDARDS.md)).
           files: |
             artifacts/*.cdx.json
-            artifacts/Cendrillon-*
           fail_on_unmatched_files: false
           draft: false
           prerelease: ${{ contains(steps.version.outputs.version, '-') }}
