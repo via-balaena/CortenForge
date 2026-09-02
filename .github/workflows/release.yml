@@ -14,6 +14,15 @@
 # Info.plist (the .app packaging sed-substituted __VERSION__ from it). All
 # three went in one commit, so `git show` on it is the restore list.
 #
+# ⚠ NOTHING IN THIS WORKFLOW COMPILES THE TAGGED TREE. The deleted build job's
+# Apple-Silicon leg was `beta: false`, so a tag that did not build failed the job
+# and no release was published. The premise that made that redundant is still
+# the real one — correctness is gated on `main` by quality-gate.yml, and a tag is
+# only ever cut from already-green `main` — but it is now a CONVENTION with
+# nothing enforcing it. A tag pushed off a side branch, or cut from a commit
+# whose Quality Gate later went red, will publish a release whose only
+# instruction is "build it from source" for a tree that does not build.
+#
 # See docs/INFRASTRUCTURE.md for the full constraint specification.
 
 name: Release
@@ -36,14 +45,6 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # ⚠ NOTHING HERE COMPILES THE TAGGED TREE. The deleted build job's
-  # Apple-Silicon leg was `beta: false`, so a tag that did not build failed the
-  # job and no release was published. The premise that made that redundant is
-  # still the real one — correctness is gated on `main` by quality-gate.yml, and
-  # a tag is only ever cut from already-green `main` — but it is now a CONVENTION
-  # with nothing enforcing it. A tag pushed off a side branch, or cut from a
-  # commit whose Quality Gate later went red, will publish a release whose only
-  # instruction is "build it from source" for a tree that does not build.
   # ============================================================================
   # GENERATE SBOM
   # ============================================================================
@@ -218,8 +219,8 @@ jobs:
             ```
 
             The `git checkout` matters: these notes are attached to this tag,
-            and a download used to deliver exactly this tag's code. Without it
-            you build whatever `main` is when you read this. Omit it if you
+            and the retired download delivered exactly this tag's code. Without
+            it you build whatever `main` is when you read this. Omit it if you
             want the newest work instead.
 
             Building from source also removes the unsigned-binary warnings the

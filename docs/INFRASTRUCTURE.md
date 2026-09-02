@@ -522,11 +522,15 @@ These constraints enable team growth and cross-platform reliability.
 | aarch64-unknown-linux-gnu | Linux | ARM64 | - |
 | wasm32-unknown-unknown | WASM | - | ✓ wasm job (Layer 0) |
 
-⚠ **`x86_64-apple-darwin` lost its only builder on 2026-09-02.** It was covered
-solely by the Cendrillon release matrix's cross-compile leg (`macos-latest` is
-arm64, so that leg set `CMAKE_OSX_ARCHITECTURES` to force x86_64 C++ objects).
-Retiring the download deleted it, and `grep apple-darwin .github/workflows/`
-now returns nothing for that target. Intel macOS is untested in CI.
+⚠ **`x86_64-apple-darwin` has had no builder since 2026-09-02 — and it was
+never CI coverage.** Its only builder was the Cendrillon release matrix's
+cross-compile leg (`macos-latest` is arm64, so it forced x86_64 C++ objects via
+`CMAKE_OSX_ARCHITECTURES`). That leg was `beta: true` under
+`continue-on-error`, so a failed Intel build shipped the release anyway, and the
+workflow runs on tag pushes only — no PR ever compiled this target. Retiring the
+download deleted it; `grep apple-darwin .github/workflows/` now returns nothing.
+⚠ The other ✓ rows were not audited by that change and at least two are stale
+(`test-arm64` and `wasm` name jobs that do not exist) — tracked in #867.
 
 **Why**:
 - Apple Silicon is now majority Mac market
