@@ -209,7 +209,7 @@ cf-msk-lib 95.7 %, cf-msk-fit 94.7 %, cf-osim 94.6 %, cf-studio-core 90.3 %,
 cf-codesign 86.9–87.2 %, cf-cast-cli 79.9 %, cf-studio 75.2 % — so what the skip hid
 was mostly a measurement gap rather than a quality one. The six deferred are
 cf-scan-prep-core (0.0 % of 1560 lines), cf-studio-gui (14.3 %, but 93.9 %
-over its library — 1657 of its lines are a Bevy GUI binary), example-ml-shared
+over its library — 1657 of its lines are a Slint GUI binary), example-ml-shared
 (0.0 % of 131), pbit-analyze (69.6 %), cf-anthro (71.1 %) and cf-studio-engine
 (74.969 %). What each would cost to clear is grouped below.
 
@@ -221,8 +221,8 @@ without its sizes gets read as one job:
   ⚠ Aim past each bar, not at it — see the drift note below.
 - **Two need no new tests at all if binary lines stop counting** (the reported-
   but-not-graded split above): pbit-analyze is 91.4 % over its library and
-  cf-studio-gui 93.9 %, so both clear the bar the moment their binaries leave
-  the denominator. That sizes the open lib/bin decision — it is worth two
+  cf-studio-gui 93.9 % (95.9 % when re-measured 2026-09-02), so both clear
+  the bar the moment their binaries leave the denominator. That sizes the open lib/bin decision — it is worth two
   crates immediately.
 - **Two are real work either way**: cf-scan-prep-core (1170 lines, no test in
   the crate) and example-ml-shared (99). No other lever reaches them.
@@ -286,12 +286,22 @@ line also reports the figure over library lines alone, and the triage table
 marks the binary root `(binary target)`. Measured on `cf-viewer`: 33.8 % overall
 against 57.7 % over its library, with 460 of 1082 production lines in
 `src/main.rs` at 1.5 %. The census found a second, stronger instance:
-`cf-studio-gui` reads 14.3 % overall and **93.9 % over its library**, because
-1657 of its 1955 lines are a Bevy GUI binary. Reported only; **excluding binary
-lines from the grade is deliberately not done here**, because it would make
-`main.rs` a place where logic stops being measured — the dead zone this section
-just finished closing. The number exists so that decision can be taken on
-evidence.
+`cf-studio-gui` reads 24.8 % overall and **95.9 % over its library**, because
+1330 of its 1794 lines are a Slint GUI binary (re-measured 2026-09-02; the
+2026-08-16 census above read 14.3 % / 93.9 % / 1657-of-1955, and it has never
+been *Bevy* — that word was copied from the `cf-viewer` entry beside it).
+Reported only; **excluding binary lines from the grade is deliberately not done
+here**, because it would make `main.rs` a place where logic stops being
+measured — the dead zone this section just finished closing. The number exists
+so that decision can be taken on evidence.
+
+⚠ **Every figure in this subsection is a dated snapshot, not a live value.**
+`cf-studio-gui`'s pair has moved three times (2026-08-16, 2026-09-01,
+2026-09-02), and `xtask`'s `COVERAGE_REPORT_ONLY` entry — which points back at
+*this* section for the rationale — is the second copy that has to move with it.
+Read the current pair off `cargo xtask grade cf-studio-gui`, which prints both,
+rather than trusting either inline number. Same rule the shard lists already
+carry: read the count off the source, do not restate it.
 
 **Where the uncovered lines are.** A percentage says a crate needs tests; it
 does not say where to write them. `grade` therefore prints a per-file breakdown
