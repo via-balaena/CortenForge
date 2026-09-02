@@ -56,10 +56,22 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest, windows-latest]
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v7
+      # ⚠ Explicit `--target`, not the host default: INFRASTRUCTURE.md §2.1
+      # cites this job as the ✓ for these exact triples, and GitHub has already
+      # re-pointed macos-latest from x86_64 to arm64 once. Without the pin, a
+      # runner-image flip silently stops covering the triple the table claims.
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
       - name: Install Linux build deps
         if: runner.os == 'Linux'
         uses: ./.github/actions/install-linux-deps
@@ -69,7 +81,7 @@ jobs:
           # ⚠ NOT the notes' list: this job only COMPILES (no GPU driver), and
           # the runner preinstalls cmake/g++/pkg-config that users lack.
           packages: libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev libfontconfig1-dev
-      - run: cargo build --release --locked -p cf-studio-gui
+      - run: cargo build --release --locked -p cf-studio-gui --target ${{ matrix.target }}
 
   # ============================================================================
   # GENERATE SBOM
@@ -231,7 +243,7 @@ jobs:
 
             ```
             sudo apt-get update
-            sudo apt-get install cmake build-essential pkg-config \
+            sudo apt-get install git cmake build-essential pkg-config \
               libwayland-dev libxkbcommon-dev libasound2-dev \
               libudev-dev libfontconfig1-dev mesa-vulkan-drivers
             ```

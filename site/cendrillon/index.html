@@ -53,10 +53,10 @@
 
       <p class="lead-in">Cendrillon runs from source. You need a <a href="https://rustup.rs">Rust toolchain</a> &mdash; the pinned version is in <code>rust-toolchain.toml</code> &mdash; plus <strong>CMake and a C++ compiler</strong>, because the mold-CSG stage builds a vendored C++ kernel, and a working Vulkan or GL driver for the 3D views.</p>
 
-      <p class="note">On Debian or Ubuntu, install the toolchain and libraries before you build. <code>cmake</code>, <code>build-essential</code> and <code>pkg-config</code> build the C++ kernel and locate system libraries; the rest are the workspace&rsquo;s shared list, and without <code>libfontconfig1-dev</code> the build fails inside <code>yeslogic-fontconfig-sys</code>:</p>
+      <p class="note">On Debian or Ubuntu, install the build tools and libraries first (the Rust toolchain comes from rustup, above). <code>cmake</code>, <code>build-essential</code> and <code>pkg-config</code> build the C++ kernel and locate system libraries; the rest are the workspace&rsquo;s shared list, and without <code>libfontconfig1-dev</code> the build fails inside <code>yeslogic-fontconfig-sys</code>:</p>
 
       <pre tabindex="0" role="region" aria-label="Linux system dependencies"><code>sudo apt-get update
-sudo apt-get install cmake build-essential pkg-config \
+sudo apt-get install git cmake build-essential pkg-config \
   libwayland-dev libxkbcommon-dev libasound2-dev \
   libudev-dev libfontconfig1-dev mesa-vulkan-drivers</code></pre>
 
