@@ -939,9 +939,9 @@ jobs:
       # windows 0.62.2 pin — fails the PR here. Cendrillon is run from source,
       # so a broken Windows build reaches users directly, and no other job
       # compiles this crate on Windows.
-      # ⚠ DEBUG build. This crate's release profile is compiled only by
-      # release.yml's build-check, on Linux and macOS — never on Windows, the
-      # OS this job exists for. overflow-checks are ON here, OFF there.
+      # ⚠ DEBUG build; overflow-checks are ON here and OFF in release. The
+      # release profile is compiled per-tag by release.yml's build-check, which
+      # covers this OS but only goes red — it cannot block a release.
       # A Cargo.lock change trips needs_full (→ GUI_PKGS non-empty), so the
       # guard always runs exactly when a lockfile drift could occur.
       - name: Build Cendrillon (guards the Windows windows-crate pin)

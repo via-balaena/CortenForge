@@ -665,7 +665,7 @@ if a && b {  // Need tests where:
 │   └── Required reviewers approved        │
 │                                          │
 │ Release tag                              │
-│   ├── SBOM attached (the only asset)     │
+│   ├── SBOM, if produced (only asset)     │
 │   └── Changelog generated                │
 └─────────────────────────────────────────┘
 ```
