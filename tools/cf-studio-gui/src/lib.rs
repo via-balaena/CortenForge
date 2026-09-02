@@ -1,4 +1,4 @@
-//! `cf-studio-gui` — the polished Slint GUI for CortenForge Studio.
+//! `cf-studio-gui` — the polished Bevy + egui GUI for CortenForge Studio.
 //!
 //! A thin client over [`cf_studio_engine`] + the [`cf_studio_core::Project`]
 //! state machine — the same boundary the `cf-studio` CLI drives, so the
@@ -6,18 +6,19 @@
 //!
 //! This lib holds the **headless, testable** part:
 //! - [`step_rows`] maps a [`Project`] + the previewed step to the
-//!   checklist rows the Slint markup renders;
+//!   checklist rows the wizard panel renders;
 //! - [`apply_scan`] / [`apply_prep`] / [`apply_design`] run a step's
 //!   action against the engine and return a user-facing message (the
 //!   GUI's analog of the CLI's `cmd_*`, but file-dialog picking lives in
-//!   `main.rs`);
+//!   the binary);
 //! - [`nav_state`] computes the gated Back/Next availability.
 //!
-//! The Slint event-loop + `rfd` file-dialog glue lives in `main.rs` (it
-//! needs a display to *run*, but compiles headlessly).
+//! The Bevy app, the egui panels and the file-dialog glue live in the
+//! binary's modules (they need a display to *run*, but compile headlessly).
 
 use std::fmt::Write as _;
 use std::path::Path;
+use std::time::Duration;
 
 use cf_studio_core::{
     DesignDraft, MoldOutputs, PourPlan, PourStep, Project, RidgeOptions, RidgeRing, Step,
@@ -25,8 +26,6 @@ use cf_studio_core::{
 use cf_studio_engine::{
     CastMode, PartId, PartSelection, PieceSide, accept_prep, draft_from_design_toml, load_scan,
 };
-
-pub mod viewer;
 
 /// A workflow step as the checklist shows it. `done` / `current` come
 /// from the real project; `viewing` is whether this is the step shown in
@@ -209,8 +208,9 @@ pub fn gate_ridge_options(c: RidgeControls) -> RidgeOptions {
 /// Index 0 = Fine 0.5 mm (the print-quality default — the physical fit-test
 /// print was 0.5 mm); index 1 = Fast 1.5 mm preview. Any other index falls
 /// back to the print-quality default. 3 mm is never offered (it drops the
-/// flange web). **Must stay in lockstep with the picker's `model` order in
-/// `app.slint`** — the test pins it.
+/// flange web). **Must stay in lockstep with the quality picker's option order
+/// in the step-4 panel.** Nothing checks that pairing; only the index→size
+/// mapping is pinned, by `quality_index_maps_to_cell_size`.
 #[must_use]
 pub fn cell_size_m_for_quality(quality_idx: i32) -> f64 {
     match quality_idx {
@@ -419,6 +419,18 @@ pub struct PourCountdown {
     pub urgency: i32,
 }
 
+/// A pot life as a [`Duration`] — the working time the step-7 countdown runs.
+///
+/// ⚠ Extracted from the timer's call site so the minutes→seconds conversion is
+/// reachable from a test. Mutation testing showed the `* 60` was killed by
+/// nothing: a wrong factor here does not *look* wrong, it silently gives a
+/// 25-SECOND working time for a 25-minute silicone, and the user finds out when
+/// the pour sets in the cup.
+#[must_use]
+pub fn pot_life_duration(minutes: u32) -> Duration {
+    Duration::from_secs(u64::from(minutes) * 60)
+}
+
 /// Format a pot-life countdown from the seconds remaining (negative or zero
 /// = expired). Warns under five minutes.
 #[must_use]
@@ -605,12 +617,11 @@ pub fn format_elapsed(secs: u64) -> String {
 /// 4. **Empty text keeps the old value.** Clearing the box mid-edit must not be
 ///    read as zero.
 ///
-/// ⚠ A fifth difference from the Slint original, recorded rather than resolved:
-/// Slint parses typed text with `to-float()` into an `int` property, this parses
-/// with `parse::<i32>()` and keeps the old value when that fails. Text the first
-/// accepts and the second rejects — `"3.7"` — therefore diverges. Whether such
-/// text can be entered at all depends on Slint's `input-type: number`, which has
-/// **not** been checked, so this is a known difference and not a known bug.
+/// ⚠ Decimal text is rejected rather than truncated: parsing is `parse::<i32>()`
+/// and anything it rejects — `"3.7"` — leaves the old value standing. The Slint
+/// original accepted that via `to-float()` into an `int`, so the two differ for
+/// such input. With Slint gone this is simply the behaviour, not an open
+/// question.
 ///
 /// ⚠ **Store one of these per row, inside the row struct** — never in a `Vec`
 /// keyed by row index. Removing ring #1 must take ring #1's uncommitted text with
@@ -1161,6 +1172,23 @@ visible = true
         assert!(s.starts_with("✓ Saved to /tmp/print-out"), "got: {s}");
 
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn pot_life_converts_minutes_to_seconds() {
+        // The factor, pinned. `+ 60` would give 85 s and `/ 60` would give 0 —
+        // both plausible-looking numbers on a countdown, both ruinous.
+        assert_eq!(
+            pot_life_duration(25),
+            Duration::from_secs(1500),
+            "25 minutes of working time is 1500 seconds"
+        );
+        assert_eq!(pot_life_duration(1), Duration::from_secs(60));
+        assert_eq!(
+            pot_life_duration(0),
+            Duration::ZERO,
+            "a zero pot life is already expired, not unlimited"
+        );
     }
 
     fn sample_plan() -> PourPlan {

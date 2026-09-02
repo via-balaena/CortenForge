@@ -1,6 +1,6 @@
 [package]
 name = "cf-studio"
-description = "CortenForge Studio — the headless CLI frontend for the guided scan→cast workflow. A thin client over cf-studio-engine + the cf-studio-core Project state machine; each command runs one step and autosaves, so the workflow resumes across invocations. Also the Slint GUI's behavioral reference. See MISSION.md."
+description = "CortenForge Studio — the headless CLI frontend for the guided scan→cast workflow. A thin client over cf-studio-engine + the cf-studio-core Project state machine; each command runs one step and autosaves, so the workflow resumes across invocations. Also the Cendrillon GUI's behavioral reference. See MISSION.md."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
