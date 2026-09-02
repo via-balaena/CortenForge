@@ -516,11 +516,17 @@ These constraints enable team growth and cross-platform reliability.
 | Target | OS | Arch | Status |
 |--------|-----|------|--------|
 | x86_64-unknown-linux-gnu | Linux | x64 | ✓ |
-| x86_64-apple-darwin | macOS | x64 | ✓ |
+| x86_64-apple-darwin | macOS | x64 | **-** (see note) |
 | x86_64-pc-windows-msvc | Windows | x64 | ✓ |
 | aarch64-apple-darwin | macOS | ARM64 | ✓ test-arm64 job |
 | aarch64-unknown-linux-gnu | Linux | ARM64 | - |
 | wasm32-unknown-unknown | WASM | - | ✓ wasm job (Layer 0) |
+
+⚠ **`x86_64-apple-darwin` lost its only builder on 2026-09-02.** It was covered
+solely by the Cendrillon release matrix's cross-compile leg (`macos-latest` is
+arm64, so that leg set `CMAKE_OSX_ARCHITECTURES` to force x86_64 C++ objects).
+Retiring the download deleted it, and `grep apple-darwin .github/workflows/`
+now returns nothing for that target. Intel macOS is untested in CI.
 
 **Why**:
 - Apple Silicon is now majority Mac market

@@ -36,6 +36,14 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # ⚠ NOTHING HERE COMPILES THE TAGGED TREE. The deleted build job's
+  # Apple-Silicon leg was `beta: false`, so a tag that did not build failed the
+  # job and no release was published. The premise that made that redundant is
+  # still the real one — correctness is gated on `main` by quality-gate.yml, and
+  # a tag is only ever cut from already-green `main` — but it is now a CONVENTION
+  # with nothing enforcing it. A tag pushed off a side branch, or cut from a
+  # commit whose Quality Gate later went red, will publish a release whose only
+  # instruction is "build it from source" for a tree that does not build.
   # ============================================================================
   # GENERATE SBOM
   # ============================================================================
@@ -205,8 +213,14 @@ jobs:
             ```
             git clone https://github.com/via-balaena/CortenForge.git
             cd CortenForge
+            git checkout ${{ steps.version.outputs.version }}
             cargo run -p cf-studio-gui      # Cendrillon
             ```
+
+            The `git checkout` matters: these notes are attached to this tag,
+            and a download used to deliver exactly this tag's code. Without it
+            you build whatever `main` is when you read this. Omit it if you
+            want the newest work instead.
 
             Building from source also removes the unsigned-binary warnings the
             old downloads carried on macOS and Windows.
