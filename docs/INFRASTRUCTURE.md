@@ -105,11 +105,12 @@ CVE-2024 data shows 70% of breaches involve known, patchable vulnerabilities.
 
 **Tool**: `cargo-cyclonedx`
 **Format**: CycloneDX 1.5 (OWASP standard)
-**Output**: `sbom.json` as release artifact
+**Output**: one `<crate>.cdx.json` per workspace member; the release attaches
+`cf-studio-gui.cdx.json` (see `release.yml` — there is no `--output-file` flag).
 
 ```bash
 cargo install cargo-cyclonedx
-cargo cyclonedx --format json --output-file sbom.json
+cargo cyclonedx --format json
 ```
 
 **Why**:
