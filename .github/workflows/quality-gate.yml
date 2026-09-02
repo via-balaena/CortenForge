@@ -940,8 +940,8 @@ jobs:
       # so a broken Windows build reaches users directly, and no other PR-time
       # job compiles this crate on Windows.
       # ⚠ DEBUG build; overflow-checks are ON here and OFF in release. The
-      # release profile is compiled per-tag by release.yml's build-check, which
-      # covers this OS but only goes red — it cannot block a release.
+      # release profile is compiled per-tag by release.yml's build-check, whose
+      # Windows leg only goes red while its macOS leg blocks the release.
       # A Cargo.lock change trips needs_full (→ GUI_PKGS non-empty), so the
       # guard always runs exactly when a lockfile drift could occur.
       - name: Build Cendrillon (guards the Windows windows-crate pin)

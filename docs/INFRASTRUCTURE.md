@@ -526,8 +526,9 @@ These constraints enable team growth and cross-platform reliability.
 ⚠ `x86_64-apple-darwin` has had no builder since 2026-09-02, and never had CI
 coverage: its only builder was the Cendrillon release matrix's cross-compile
 leg, which was `beta: true` (a failed Intel build shipped anyway) and ran on tag
-pushes only. The arm64-macOS and wasm rows named a job that never existed
-(`test-arm64`) and one that was deleted (`wasm`); both now name what runs.
+pushes only. The arm64-macOS and wasm rows named jobs that were since deleted
+(`test-arm64` by #138 as redundant, `wasm` when grade's criterion 7 became the
+single source of truth); both now name what actually runs.
 
 **Why**:
 - Apple Silicon is now majority Mac market
