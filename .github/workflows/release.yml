@@ -8,8 +8,13 @@
 # ⚠ No binaries are attached. Cendrillon was shipped here as a 4-target
 # download until 2026-09-02; it is now run from source (`cargo run -p
 # cf-studio-gui`), so the build/package/sign job and the app archives are gone.
-# Do not re-add a download without also restoring site/cendrillon/index.html's
-# buttons — they were deleted in the same change because they 404 without it.
+# Restoring a download means restoring THREE things deleted with it, not one:
+#   1. site/cendrillon/index.html's download buttons (they 404 without this job)
+#   2. site/style.css's `.downloads` / `.button*` / `details.firstrun` rules —
+#      without them those buttons render as bare unstyled links
+#   3. tools/cf-studio-gui/macos/Info.plist — the "Package Studio (macOS .app)"
+#      step sed-substituted __VERSION__ from it; packaging fails without it
+# All three went in the same commit, so `git show` on it is the restore list.
 #
 # See docs/INFRASTRUCTURE.md for the full constraint specification.
 
@@ -23,7 +28,11 @@ on:
 
 permissions:
   contents: write
-  id-token: write  # For SLSA provenance
+  # ⚠ `id-token: write` was dropped 2026-09-02. It was granted "for SLSA
+  # provenance", but no step ever minted or consumed an OIDC token, and the
+  # only artifact signing that existed (ad-hoc `codesign` on the macOS .app)
+  # went with the retired download. Re-add it in the same change that actually
+  # generates provenance, not before — it is an elevated identity grant.
 
 env:
   CARGO_TERM_COLOR: always
@@ -35,6 +44,11 @@ jobs:
   sbom:
     name: Generate SBOM
     runs-on: ubuntu-latest
+    # `release` now gates on this job, and `cargo install cargo-cyclonedx` is
+    # an unpinned from-source build — a crates.io stall would otherwise sit at
+    # GitHub's 360-minute default and produce NO release at all, changelog
+    # included. 20 matches the sibling SBOM job in quality-gate.yml.
+    timeout-minutes: 20
     # ⚠ RE-DERIVED 2026-09-02, and the verdict FLIPPED. This job was
     # `continue-on-error: true` because it was "supplementary — must never
     # block the actual downloads": it deferred to a more important payload.
