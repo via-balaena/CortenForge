@@ -25,8 +25,9 @@ on:
   # by design, since publishing must never fire off a dispatch.
   workflow_dispatch:
 
-# Only `release` writes. build-check and sbom run build scripts for ~280
-# transitive crates plus a vendored C++ kernel, so they get read-only.
+# Only `release` writes. build-check runs build scripts for ~280 transitive
+# crates plus a vendored C++ kernel, and sbom runs an unpinned `cargo install`;
+# both get read-only.
 permissions:
   contents: read
   # `id-token: write` removed 2026-09-02: nothing here mints or consumes an

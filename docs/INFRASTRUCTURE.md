@@ -526,7 +526,10 @@ These constraints enable team growth and cross-platform reliability.
 ⚠ `x86_64-apple-darwin` has had no builder since 2026-09-02, and never had CI
 coverage: its only builder was the Cendrillon release matrix's cross-compile
 leg, which was `beta: true` (a failed Intel build shipped anyway) and ran on tag
-pushes only. ⚠ The wasm ✓* FAILS OPEN: `rust-toolchain.toml` records that when
+pushes only. ⚠ The release notes now tell every platform to build from source,
+Intel macOS included, so that target is the one where the instructions are
+wholly unverified — previously its `beta: true` leg at least went red.
+⚠ The wasm ✓* FAILS OPEN: `rust-toolchain.toml` records that when
 the target is not installed, criterion 7 degrades to `Manual` and
 `overall_automated` SKIPS `Manual`, so the tick can appear with nothing checked.
 The arm64-macOS and wasm rows named jobs that were since deleted
@@ -661,9 +664,8 @@ if a && b {  // Need tests where:
 │   ├── dependencies (cargo-deny)          │
 │   ├── bevy-free (Layer 0 check)          │
 │   ├── semver (cargo-semver-checks)       │
-│   ├── sbom (cargo-cyclonedx)             │
-│   ├── arm64 (Apple Silicon)              │
-│   └── wasm (Layer 0 compatibility)       │
+│   ├── cross-os (macOS + Windows)         │
+│   └── wasm — grade criterion 7, not a job│
 │                                          │
 │ Merge to main                            │
 │   ├── All above pass                     │
@@ -671,7 +673,8 @@ if a && b {  // Need tests where:
 │   └── Required reviewers approved        │
 │                                          │
 │ Release tag                              │
-│   ├── SBOM, if produced (only asset)     │
+│   ├── build-check (3 triples, blocking)  │
+│   ├── sbom — only asset, if produced     │
 │   └── Changelog generated                │
 └─────────────────────────────────────────┘
 ```
