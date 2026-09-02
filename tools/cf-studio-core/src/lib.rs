@@ -4,7 +4,7 @@
 //! through making a custom multi-layer silicone-cast piece, one step
 //! at a time. This crate is its **headless core**: a UI-agnostic Rust
 //! library that owns the workflow as a state machine plus the project
-//! it operates on. Frontends — the `cf-studio` CLI and the Slint GUI —
+//! it operates on. Frontends — the `cf-studio` CLI and the Cendrillon GUI —
 //! are thin clients over this; they hold no business logic, so the two
 //! cannot drift apart.
 //!

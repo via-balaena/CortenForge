@@ -595,10 +595,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # `libfontconfig1-dev` is not decoration: without it `yeslogic-fontconfig-sys`
-      # (slint -> the studio crates) panics in its build script, and this job died
+      # `libfontconfig1-dev` was not decoration: without it `yeslogic-fontconfig-sys`
+      # (slint -> the studio crates) panicked in its build script, and this job died
       # there — before running a single lint — on every weekly run through
       # 2026-08-18. Its red was read as toolchain drift; it was a missing package.
+      # ⚠ That reason is GONE: the Slint→Bevy port removed the last Slint consumer
+      # and `yeslogic-fontconfig-sys` is no longer in the lockfile at all. The
+      # package is kept here (and at the nine other call sites) only until a CI
+      # run without Slint proves what the Linux legs still need — see the shard-
+      # rebalance PR, which removes it with that evidence in hand.
       - name: Install system dependencies
         uses: ./.github/actions/install-linux-deps
         with:

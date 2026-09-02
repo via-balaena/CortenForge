@@ -1,6 +1,6 @@
 [package]
 name = "cf-studio-core"
-description = "Headless workflow core for CortenForge Studio — the six-step scan→cast guided wizard as a UI-agnostic state machine. Orchestrates the SDK crates; the CLI and the Slint GUI are thin clients over this. See MISSION.md."
+description = "Headless workflow core for CortenForge Studio — the six-step scan→cast guided wizard as a UI-agnostic state machine. Orchestrates the SDK crates; the CLI and the Cendrillon GUI are thin clients over this. See MISSION.md."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

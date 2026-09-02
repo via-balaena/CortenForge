@@ -47,15 +47,13 @@ allow = [
     # since font-asset licenses don't infect software using the font.
     "OFL-1.1",          # SIL Open Font License 1.1 (Google Fonts default)
     "Ubuntu-font-1.0",  # Ubuntu Font Licence v1.0
-    # BSL-1.0 (Boost, permissive) — clipboard-win + error-code, pulled in
-    # via Slint's winit backend (copypasta).
-    "BSL-1.0",
-    # Slint (the Cendrillon GUI toolkit) is tri-licensed
-    # "GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR
-    # LicenseRef-Slint-Software-3.0". We use it under its royalty-free
-    # desktop license, so allowing this ref satisfies the OR without
-    # accepting GPL/copyleft workspace-wide (Cendrillon stays non-GPL).
-    "LicenseRef-Slint-Royalty-free-2.0",
+    # ⚠ BSL-1.0 was allowed here for `clipboard-win` + `error-code`, pulled in
+    # by Slint's winit backend via copypasta. Slint is gone and so are they.
+    # It comes BACK the moment any crate enables `bevy_egui`'s clipboard
+    # feature — cf-studio-gui pins `default-features = false` partly for this.
+    # ⚠ `LicenseRef-Slint-Royalty-free-2.0` was allowed so Cendrillon could take
+    # Slint's royalty-free desktop license without accepting GPL workspace-wide.
+    # With Slint removed the workspace has no tri-licensed dependency at all.
 ]
 confidence-threshold = 0.8
 

@@ -2755,22 +2755,30 @@ fn coverage_display(percent: f64) -> String {
 ///   appeared, which is why `cf-viewer` (33.8 %) is absent.
 ///
 const COVERAGE_REPORT_ONLY: &[&str] = &[
-    // 24.8 % of 1794 lines, but 95.9 % over its LIBRARY: 1330 of those lines
-    // are a GUI binary. Second independent instance of the shape `cf-viewer`
-    // shows, and the stronger one.
+    // 46.6 % of 857 lines, 48.8 % over what this classifier calls the LIBRARY.
     //
-    // ⚠ Re-measured 2026-09-02 after the dead wgpu spike bin was deleted (was
-    // 21.0 % of 2119, 1655 binary, 95.9 % library). BOTH bin-side figures fell
-    // by exactly 325 and the library figure did not move at all — which is the
-    // check that matters, because the spike was a BINARY target, so removing
-    // it can only shrink the bucket this deferral already discounts. The
-    // overall percentage ROSE without a single line being tested.
-    // ⚠ Re-measured 2026-09-01 after the wizard logic was lifted out of the
-    // Slint closures into the library (was 14.3 % of 1955, 93.9 % library):
-    // the library figure is what this deferral rests on, and it went UP.
-    // ⚠ The earlier note called this "a Bevy GUI binary" — it is Slint today.
-    // The Slint -> Bevy port will make that true by accident; it was wrong when
-    // written, copied from the `cf-viewer` entry above.
+    // ⚠⚠ DO NOT read that 48.8 % as this crate's library coverage, and do not
+    // compare it with the 95.9 % this entry used to quote. The Slint -> Bevy
+    // port (2026-09-02) changed what the number MEANS, not just its value.
+    //
+    // The port replaced a single 1915-line `main.rs` with a thin `main.rs` plus
+    // nine modules it declares (`mod panel;`, `mod state;`, …). This classifier
+    // treats only `src/main.rs` and `src/bin/*` as binary roots and does not
+    // follow `mod` out of them, so those nine modules — 418 uncovered lines of
+    // egui drawing, Bevy wiring and scene setup — are counted as LIBRARY, and
+    // just 38 lines are still counted as binary (was 1330).
+    //
+    // ⇒ The real library is `src/lib.rs`, measured at 99.7 % with ONE uncovered
+    // line. That is the figure this deferral rests on, and it went UP.
+    // ⇒ The right repair is to teach the classifier to follow `mod`
+    // declarations from a binary root — NOT to chase the percentage by testing
+    // egui draw calls, and NOT to move UI modules into the lib to flatter it.
+    // Tracked in #869; this affects any crate with a `[lib]` and a modular
+    // binary, so cf-studio-gui is the first case, not the only one.
+    //
+    // History: 14.3 % of 1955 (2026-09-01, before the wizard logic was lifted
+    // into the lib) -> 21.0 % of 2119 -> 24.8 % of 1794 (2026-09-02, after the
+    // dead wgpu spike bin was deleted) -> here.
     "cf-studio-gui",
     // 0.0 % of 131 lines — shared helper library for the ML examples.
     "example-ml-shared",
@@ -4394,7 +4402,7 @@ fn tier_config(tier: Tier) -> TierConfig {
             test_max: usize::MAX,
             banned: L1_BANNED,
         },
-        // App: unbounded and unbanned. Apps legitimately pull Slint/wgpu/winit;
+        // App: unbounded and unbanned. Apps legitimately pull Bevy/wgpu/winit;
         // the constraint on an App crate is not on what it consumes but on who
         // consumes IT (the sink rule). In practice this arm is never reached at
         // runtime — an App crate short-circuits Layer Integrity before

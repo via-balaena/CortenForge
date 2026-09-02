@@ -27,7 +27,7 @@
 #   Sharded 3 ways (balanced by dependency tree) like `tests-release` and
 #   `grade`: on a foundational `sim-core` PR the affected set is nearly the full
 #   crate list, making this the COMPILE-bound long pole, so the heavy GUI dep
-#   trees (Bevy / Slint) are isolated one-per-shard to compile once each.
+#   tree (Bevy) is isolated on one shard so it compiles once.
 # - `tests-release` (ubuntu, default features, --release): authoritative
 #   test gate for the crates whose heavy stochastic-physics integration
 #   tests (90M–600M-step Boltzmann/CEM/REINFORCE/SA validators) run 5–10×
@@ -423,12 +423,17 @@ jobs:
   # round-robined crates by count left one shard compiling BOTH giant optional
   # trees (Bevy via sim-bevy-soft + Slint/wgpu via cf-studio-gui) and it stayed
   # at ~25 min. Each giant tree must compile *somewhere*, so the win comes from
-  # co-locating each tree's consumers on ONE shard (it compiles once, not 2-3×):
+  # co-locating each tree's consumers on ONE shard (it compiles once, not 2-3×).
+  #
+  # ⚠ THERE IS NOW ONLY ONE GIANT TREE. Cendrillon's Slint→Bevy port removed
+  # the workspace's only Slint consumer, so Bevy is the sole optional tree the
+  # split has to isolate, and `cf-studio-gui` moved to shard 1 with it
+  # (measured: 334 `bevy` lines, 0 for every other crate that was on shard 2).
   #
   # ⚠ THE RULE WAS RIGHT; THE LISTS HAD DRIFTED FROM IT. Measured 2026-08-22,
-  # shard 2 was carrying THREE trees, two of them duplicates of another shard:
-  # Slint via `cf-studio-gui` (legitimately its home, the only slint consumer in
-  # the workspace); BEVY via six `example-ml-*` crates, 345 `bevy` lines each in
+  # back when Slint still existed, shard 2 was carrying THREE trees, two of them
+  # duplicates of another shard: Slint via `cf-studio-gui` (its home then, and
+  # the only slint consumer); BEVY via six `example-ml-*` crates, 345 `bevy` lines each in
   # `cargo tree` — a second full bevy compile beside shard 1's; and SIM+MESH via
   # `cortenforge` (the facade re-exports sim-core/sim-soft/sim-mjcf/cf-design and
   # every mesh-*) plus `mesh` (the umbrella) — a second copy of shard 3's stack.
@@ -436,14 +441,14 @@ jobs:
   # and clearing the re-run by 32 s, while shard 3 idled for 22 minutes.
   #
   # ⚠ A crate's shard is decided by WHICH TREE IT PULLS, not by its name or
-  # directory. Check `cargo tree -p <crate> --edges normal | grep -c bevy` (or
-  # `slint`) before adding one — the drift above happened because example-ml-*
-  # and cortenforge were filed by name.
+  # directory. Check `cargo tree -p <crate> --edges normal | grep -c bevy`
+  # before adding one — the drift above happened because example-ml-* and
+  # cortenforge were filed by name.
   #   - shard 1 = the Bevy tree   (cf-bevy-common, sim-bevy-soft, cf-viewer, sim-ml-chassis-bevy,
   #                                cf-spine-studio, cf-sim-research, cf-scan-prep, cf-device-design,
   #                                cf-device-geometry)
-  #   - shard 2 = the Slint tree  (cf-studio-{core,engine,gui,studio}; cf-studio-gui pulls ~12 slint crates)
-  #   - shard 3 = FEM + core + mesh (sim-soft, sim-core, sim-mjcf, …) — no Bevy, no Slint
+  #   - shard 2 = no giant tree   (cf-studio-{core,engine,studio} + the cf-* leaves + xtask)
+  #   - shard 3 = FEM + core + mesh (sim-soft, sim-core, sim-mjcf, …) — no Bevy
   # `sim-core` is a universal dep so it compiles in every shard regardless (the
   # wall-time floor); only the two GUI trees are isolable. Rebalance the lists if
   # a shard's measured time drifts. Crates intentionally in NO shard (run
@@ -522,27 +527,31 @@ jobs:
           # shard 1 = the BEVY tree and nothing else. Every crate here pulls
           # bevy (measured: 16-389 `bevy` lines in `cargo tree --edges normal`),
           # including the six `example-ml-*` crates that used to sit on shard 2
-          # and dragged a SECOND full bevy compile there.
+          # and dragged a SECOND full bevy compile there — and now
+          # `cf-studio-gui` (334), which pulled Slint until the Bevy port.
           - id: 1
             crates: cf-bevy-common sim-bevy-soft cf-viewer sim-ml-chassis-bevy cf-spine-studio
-              sim-bevy cf-mesh-paint
+              sim-bevy cf-mesh-paint cf-studio-gui
               cf-sim-research cf-scan-prep cf-device-design cf-device-geometry
               example-ml-6dof-cem-linear example-ml-vec-env-ppo example-ml-vec-env-auto-reset
               example-ml-vec-env-reinforce example-ml-vec-env-sac example-ml-vec-env-td3
-          # shard 2 = the SLINT tree. `cf-studio-gui` is the only slint consumer
-          # in the workspace and it IS this shard: 459 unique packages, against
-          # 223 for all eleven other crates unioned — of which only 16 fall
-          # outside gui's own tree. So the rest are ~3% of the build and ride
-          # along genuinely free.
+          # shard 2 = NO giant tree. This shard existed to isolate Slint; with
+          # `cf-studio-gui` gone to shard 1 what remains is 233 unique packages
+          # across eleven crates, of which only 14 fall outside what gui used to
+          # drag here anyway.
           #
           # They pull NO giant optional tree, which is the property that decides
           # placement. Several do pull a few mesh-/sim- crates (cf-msk-fit 11,
           # cf-scan-prep-core 5, cf-anthro 5) — LEAVES of shard 3's stack, not
           # the whole stack the way `cortenforge` pulled it (32 workspace crates,
           # itself excluded) — which is why cortenforge moved and these did not.
-          # Moving them anyway would save 16 packages of 475; not worth the churn.
+          #
+          # ⚠ Whether this shard should still exist is now an open REBALANCE
+          # question: two of three shards carry no giant tree. Deciding it needs
+          # measured times from a run WITHOUT Slint, which this change is the
+          # first to produce — so it is left alone here on purpose.
           - id: 2
-            crates: cf-studio-core cf-studio-engine cf-studio-gui cf-studio
+            crates: cf-studio-core cf-studio-engine cf-studio
               cf-geometry cf-spatial cf-scan-prep-core
               cf-msk-fit cf-anthro cf-cap-planes cf-device-types xtask
           # shard 3 = sim + mesh + design: one shared dependency stack, no giant

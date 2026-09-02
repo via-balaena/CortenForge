@@ -8,7 +8,7 @@
 //! happen.
 //!
 //! It is still a *library* — frontends (the `cf-studio` CLI and the
-//! Slint GUI) call into it; it holds no UI.
+//! Cendrillon GUI) call into it; it holds no UI.
 //!
 //! Today it implements the design-build boundary ([`design`]) — turning
 //! a [`cf_studio_core::DesignDraft`] into a validated `.design.toml`
