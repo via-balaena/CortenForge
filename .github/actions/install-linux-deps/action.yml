@@ -13,15 +13,9 @@ description: >
 inputs:
   packages:
     description: >
-      Space-separated apt package list, an input rather than a fixed list.
-      ⚠ RE-DERIVED 2026-09-02: the rationale used to be "the three call-site
-      lists genuinely differ". They no longer do — retiring the Cendrillon
-      release build removed the only caller with a different list
-      (`libfontconfig1-dev` alone), so all 10 remaining call sites now pass the
-      byte-identical five-package list. The input is kept because a fixed list
-      would bake a GUI-shaped dependency set into an action that non-GUI jobs
-      also call, not because the lists currently vary — do not "restore"
-      variation on the strength of the old wording.
+      Space-separated apt package list. Deliberately an input rather than a fixed
+      list: the three call-site lists in this repo genuinely differ, and unifying
+      them would change what some jobs install.
       ⚠ `required: true` is not enforced by GitHub — `apt.sh` checks it itself.
     required: true
 
