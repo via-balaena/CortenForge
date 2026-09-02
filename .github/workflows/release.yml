@@ -65,8 +65,17 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      # Pinned + --locked, because this job is now a hard gate on every tag and
+      # the strict collect step below depends on the tool's default output
+      # NAME. An unpinned from-source install would fail the release for an
+      # upstream change nobody here made (raised MSRV, a resolution break, or a
+      # different default filename).
+      # ⚠ 0.5.7 is the version whose naming was MEASURED, not assumed: built a
+      # synthetic crate with both a [lib] and a [[bin]] (the shape of
+      # cf-studio-gui, and the shape that could plausibly emit `_bin`) and it
+      # wrote `<crate>.cdx.json`. Re-run that probe when bumping this pin.
       - name: Install cargo-cyclonedx
-        run: cargo install cargo-cyclonedx
+        run: cargo install --locked --version 0.5.7 cargo-cyclonedx
 
       # Current cargo-cyclonedx has no --output-file; it writes a
       # <crate>.cdx.json per package. Generate, then gather them.
@@ -231,20 +240,27 @@ jobs:
 
             ## Running it
 
-            There is no download. Everything here is built from source:
+            There is no download. Everything here is built from source.
+
+            You need a Rust toolchain (see `rust-toolchain.toml`), **CMake and a
+            C++ compiler** — `manifold-csg-sys` builds a vendored C++ kernel
+            through CMake — and a working Vulkan or GL driver for the 3D views.
+            On Debian/Ubuntu that is:
 
             ```
-            git clone https://github.com/via-balaena/CortenForge
+            sudo apt-get update
+            sudo apt-get install cmake build-essential \
+              libwayland-dev libxkbcommon-dev libasound2-dev \
+              libudev-dev libfontconfig1-dev
+            ```
+
+            Then:
+
+            ```
+            git clone https://github.com/via-balaena/CortenForge.git
             cd CortenForge
             cargo run -p cf-studio-gui      # Cendrillon
             ```
-
-            You need a Rust toolchain (see `rust-toolchain.toml`), **CMake and
-            a C++ compiler** for the vendored mold-CSG kernel, and a working
-            Vulkan or GL driver for the 3D views. On Debian/Ubuntu also install
-            `libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev
-            libfontconfig1-dev` — the same packages CI installs; without the
-            last one the build fails inside `yeslogic-fontconfig-sys`.
 
             Building from source also removes the unsigned-binary warnings the
             old downloads carried on macOS and Windows.
