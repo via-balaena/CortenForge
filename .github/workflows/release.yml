@@ -1,6 +1,6 @@
 # CortenForge Release Workflow
 #
-# Triggered on version tags (v*.*.*)
+# Triggered on version tags (v*.*.*), plus workflow_dispatch as a rehearsal
 # Creates GitHub releases with:
 # - SBOM (Software Bill of Materials)
 # - Auto-generated changelog from conventional commits

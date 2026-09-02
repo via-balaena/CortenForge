@@ -516,7 +516,7 @@ These constraints enable team growth and cross-platform reliability.
 **Targets**:
 | Target | OS | Arch | Status |
 |--------|-----|------|--------|
-| x86_64-unknown-linux-gnu | Linux | x64 | ✓ most jobs + build-check (tag) |
+| x86_64-unknown-linux-gnu | Linux | x64 | ✓ most jobs + build-check (tag, release) |
 | x86_64-apple-darwin | macOS | x64 | **-** (see note) |
 | x86_64-pc-windows-msvc | Windows | x64 | ✓ cross-os (PR, debug) + build-check (tag, release) |
 | aarch64-apple-darwin | macOS | ARM64 | ✓ cross-os (PR, debug) + build-check (tag, release) |
@@ -664,6 +664,7 @@ if a && b {  // Need tests where:
 │   ├── dependencies (cargo-deny)          │
 │   ├── bevy-free (Layer 0 check)          │
 │   ├── semver (cargo-semver-checks)       │
+│   ├── sbom (cargo-cyclonedx)             │
 │   ├── cross-os (macOS + Windows)         │
 │   └── wasm — grade criterion 7, not a job│
 │                                          │
