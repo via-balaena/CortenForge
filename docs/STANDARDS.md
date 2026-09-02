@@ -170,12 +170,13 @@ text named a property nobody had checked. The fail-closed guarantee under
 **The Grade Command** below states the general rule for the scanning criteria.
 
 **Report-only crates.** Turning that skip off lit 14 crates at once, so the
-threshold is deferred for the six that fail while it is enforced for everyone
-else. A deferred crate prints its real percentage with `(report-only)` beside
-it and a detail line naming the grade it *would* have taken; only the
-**threshold** is waived. Failing tests, Clippy, Safety, Documentation and
-Dependencies gate these crates exactly as they gate every other, and a red test
-run is never waivable. So green here means "measured, enforcement deferred" —
+threshold was deferred for the six that failed then — **five today**, after
+#842 cleared cf-scan-prep-core — while it is enforced for everyone else. A
+deferred crate prints its real percentage with `(report-only)` beside it and a
+detail line naming the grade it *would* have taken; only the **threshold** is
+waived. Failing tests, Clippy, Safety, Documentation and Dependencies gate
+these crates exactly as they gate every other, and a red test run is never
+waivable. So green here means "measured, enforcement deferred" —
 never "not measured", which is the distinction the fail-closed guarantee under
 **The Grade Command** exists to protect.
 
@@ -222,10 +223,18 @@ without its sizes gets read as one job:
 - **Two need no new tests at all if binary lines stop counting** (the reported-
   but-not-graded split above): pbit-analyze is 91.4 % over its library and
   cf-studio-gui 93.9 % (95.9 % when re-measured 2026-09-02), so both clear
-  the bar the moment their binaries leave the denominator. That sizes the open lib/bin decision — it is worth two
-  crates immediately.
+  the bar the moment their binaries leave the denominator. That sizes the open
+  lib/bin decision — it is worth two crates immediately.
 - **Two are real work either way**: cf-scan-prep-core (1170 lines, no test in
   the crate) and example-ml-shared (99). No other lever reaches them.
+
+⚠ **The list has shrunk since this census; nothing above restates it.**
+`cf-scan-prep-core` — the largest item on it — was cleared by #842 on
+2026-08-29 (0.0 % → 78.3 %, F → A, its tests having been invisible rather than
+absent) and is off `COVERAGE_REPORT_ONLY` entirely. Read both the enumeration
+and the bullets above as **five deferred and one real-work item**, not six and
+two. The census figures stay as
+the dated record they are; `xtask/src/grade.rs`'s list is the live one.
 
 ⚠ **The measurement is not reproducible to the line** (measured 2026-08-16).
 Re-measuring all fifteen census crates on an unchanged tree, **two did not
@@ -285,23 +294,26 @@ are not unit-testable — so when a binary target contributes lines, the detail
 line also reports the figure over library lines alone, and the triage table
 marks the binary root `(binary target)`. Measured on `cf-viewer`: 33.8 % overall
 against 57.7 % over its library, with 460 of 1082 production lines in
-`src/main.rs` at 1.5 %. The census found a second, stronger instance:
-`cf-studio-gui` reads 24.8 % overall and **95.9 % over its library**, because
-1330 of its 1794 lines are a Slint GUI binary (re-measured 2026-09-02; the
-2026-08-16 census above read 14.3 % / 93.9 % / 1657-of-1955, and it has never
-been *Bevy* — that word was copied from the `cf-viewer` entry beside it).
+`src/main.rs` at 1.5 %. The census found a second, stronger instance in
+`cf-studio-gui`, which read 14.3 % overall against 93.9 % over its library at
+the time. It now reads **24.8 % overall and 95.9 % over its library**
+(2026-09-02), because 1330 of its 1794 lines are a Slint GUI binary — never a
+*Bevy* one; that word was copied from the `cf-viewer` entry beside it.
 Reported only; **excluding binary lines from the grade is deliberately not done
 here**, because it would make `main.rs` a place where logic stops being
 measured — the dead zone this section just finished closing. The number exists
 so that decision can be taken on evidence.
 
-⚠ **Every figure in this subsection is a dated snapshot, not a live value.**
-`cf-studio-gui`'s pair has moved three times (2026-08-16, 2026-09-01,
-2026-09-02), and `xtask`'s `COVERAGE_REPORT_ONLY` entry — which points back at
-*this* section for the rationale — is the second copy that has to move with it.
-Read the current pair off `cargo xtask grade cf-studio-gui`, which prints both,
-rather than trusting either inline number. Same rule the shard lists already
-carry: read the count off the source, do not restate it.
+⚠ **These are point-in-time measurements, and they rot.** Across three
+measurements `cf-studio-gui`'s overall figure moved twice (14.3 → 21.0 → 24.8)
+while its library figure moved once (93.9 → 95.9) and has held since — which is
+the asymmetry the deferral rests on. The `cf-viewer` figures above carry no
+date at all and have not been re-checked here. Meanwhile `xtask`'s
+`COVERAGE_REPORT_ONLY` entry — which points back at *this* section for the
+rationale — is a second copy that has to move with them. Read the current pair
+for any crate off `cargo xtask grade <crate>`, which prints both, rather than
+trusting an inline number. Same rule the shard lists already carry: read the
+count off the source, do not restate it.
 
 **Where the uncovered lines are.** A percentage says a crate needs tests; it
 does not say where to write them. `grade` therefore prints a per-file breakdown
