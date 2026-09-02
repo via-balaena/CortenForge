@@ -6,9 +6,9 @@
 # - Auto-generated changelog from conventional commits
 #
 # ⚠ No binaries attached; the Cendrillon download was retired 2026-09-02.
-# Restoring it needs three things deleted with it, all in one commit:
-# site/cendrillon/index.html's buttons, site/style.css's `.downloads`/
-# `.button*`/`details.firstrun` rules, and tools/cf-studio-gui/macos/Info.plist.
+# It went in one commit, which also took the site's download buttons and their
+# CSS, macos/Info.plist, the Intel-macOS cross-compile fix and the per-OS
+# license bundling — revert that commit rather than reassembling from a list.
 #
 # See docs/INFRASTRUCTURE.md for the full constraint specification.
 
@@ -36,13 +36,21 @@ jobs:
   # only thing stopping a non-building tag from publishing.
   # ============================================================================
   build-check:
-    name: Build Cendrillon (release profile)
-    runs-on: ubuntu-latest
+    name: Build Cendrillon (release, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    # macos-latest is arm64 — the platform the deleted matrix actually blocked
+    # on (`beta: false`). Windows was `beta: true` there, so it stays
+    # non-blocking, covered debug-only by quality-gate.yml's cross-os job.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install Linux build deps
+        if: runner.os == 'Linux'
         uses: ./.github/actions/install-linux-deps
         with:
           packages: libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev libfontconfig1-dev
@@ -202,9 +210,6 @@ jobs:
               libwayland-dev libxkbcommon-dev libasound2-dev \
               libudev-dev libfontconfig1-dev
             ```
-
-            ⚠ That list is duplicated on cortenforge.com/cendrillon/ and nothing
-            enforces that the two stay in step — change both together.
 
             Then:
 
