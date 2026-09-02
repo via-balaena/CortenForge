@@ -65,10 +65,15 @@ jobs:
             target: x86_64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v7
-      # ⚠ Explicit `--target`, not the host default: INFRASTRUCTURE.md §2.1
-      # cites this job as the ✓ for these exact triples, and GitHub has already
-      # re-pointed macos-latest from x86_64 to arm64 once. Without the pin, a
-      # runner-image flip silently stops covering the triple the table claims.
+      # ⚠ Explicit `--target`, not the host default. GitHub has already
+      # re-pointed macos-latest from x86_64 to arm64 once; without the pin a
+      # runner-image flip silently changes which triple is covered.
+      # What the pin buys is a LOUD failure, not continued coverage: `targets:`
+      # here installs into the action's STABLE channel while rust-toolchain.toml
+      # pins 1.96.0 for every cargo call (the bug that file documents for
+      # llvm-tools and wasm). So after a flip the build stops with E0463
+      # "can't find crate for `std`" instead of quietly building something else
+      # — and the fix at that point is to add the triple to rust-toolchain.toml.
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}

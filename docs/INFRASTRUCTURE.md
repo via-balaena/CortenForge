@@ -516,10 +516,10 @@ These constraints enable team growth and cross-platform reliability.
 **Targets**:
 | Target | OS | Arch | Status |
 |--------|-----|------|--------|
-| x86_64-unknown-linux-gnu | Linux | x64 | ✓ |
+| x86_64-unknown-linux-gnu | Linux | x64 | ✓ most jobs + build-check (tag) |
 | x86_64-apple-darwin | macOS | x64 | **-** (see note) |
-| x86_64-pc-windows-msvc | Windows | x64 | ✓ |
-| aarch64-apple-darwin | macOS | ARM64 | ✓ cross-os job |
+| x86_64-pc-windows-msvc | Windows | x64 | ✓ cross-os (PR, debug) + build-check (tag, release) |
+| aarch64-apple-darwin | macOS | ARM64 | ✓ cross-os (PR, debug) + build-check (tag, release) |
 | aarch64-unknown-linux-gnu | Linux | ARM64 | - |
 | wasm32-unknown-unknown | WASM | - | ✓* grade, criterion 7 (L0 only) |
 
