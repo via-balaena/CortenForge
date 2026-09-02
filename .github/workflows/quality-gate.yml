@@ -44,9 +44,9 @@
 #   file-path handling concerns. Per plan §6.3 (b): sim-core (FP/physics),
 #   sim-mjcf (XML/file paths), mesh-io (multi-format file paths), and
 #   mesh-printability — this line said "3 crates" and omitted the fourth
-#   until 2026-08-22. It also builds `cf-studio-gui` `--locked` on each OS,
-#   which is the Windows release artifact and a lockfile-drift guard, not a
-#   test. Other crates' cross-OS coverage was admission-of-status-quo;
+#   until 2026-08-22. It also builds `cf-studio-gui` `--locked` on each OS as a
+#   lockfile-drift guard, not a test. Other crates' cross-OS coverage was
+#   admission-of-status-quo;
 #   ubuntu coverage is sufficient.
 # - `feature-combos` (ubuntu): explicit non-default-feature paths, plus
 #   the workspace-union `--all-features` gate. Currently sim-soft
@@ -934,10 +934,14 @@ jobs:
         run: cargo test $PKGS
         shell: bash
 
-      # Build Cendrillon (the only thing released for Windows) on each OS,
-      # --locked, so a lockfile drift that breaks the Windows build — e.g. a
-      # cargo update dropping gpu-allocator's windows 0.62.2 pin — fails the
-      # PR here instead of silently dropping the Windows download at release.
+      # Build Cendrillon on each OS, --locked, so a lockfile drift that breaks
+      # the Windows build — e.g. a cargo update dropping gpu-allocator's
+      # windows 0.62.2 pin — fails the PR here. Cendrillon is run from source,
+      # so a broken Windows build reaches users directly, and no other PR-time
+      # job compiles this crate on Windows.
+      # ⚠ DEBUG build; overflow-checks are ON here and OFF in release. The
+      # release profile is compiled per-tag by release.yml's build-check, whose
+      # Windows leg blocks — so a release-profile-only MSVC break stops the tag.
       # A Cargo.lock change trips needs_full (→ GUI_PKGS non-empty), so the
       # guard always runs exactly when a lockfile drift could occur.
       - name: Build Cendrillon (guards the Windows windows-crate pin)

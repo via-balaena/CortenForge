@@ -105,11 +105,12 @@ CVE-2024 data shows 70% of breaches involve known, patchable vulnerabilities.
 
 **Tool**: `cargo-cyclonedx`
 **Format**: CycloneDX 1.5 (OWASP standard)
-**Output**: `sbom.json` as release artifact
+**Output**: one `<crate>.cdx.json` per workspace member; the release attaches
+`cf-studio-gui.cdx.json` (see `release.yml` — there is no `--output-file` flag).
 
 ```bash
 cargo install cargo-cyclonedx
-cargo cyclonedx --format json --output-file sbom.json
+cargo cyclonedx --format json
 ```
 
 **Why**:
@@ -515,12 +516,25 @@ These constraints enable team growth and cross-platform reliability.
 **Targets**:
 | Target | OS | Arch | Status |
 |--------|-----|------|--------|
-| x86_64-unknown-linux-gnu | Linux | x64 | ✓ |
-| x86_64-apple-darwin | macOS | x64 | ✓ |
-| x86_64-pc-windows-msvc | Windows | x64 | ✓ |
-| aarch64-apple-darwin | macOS | ARM64 | ✓ test-arm64 job |
+| x86_64-unknown-linux-gnu | Linux | x64 | ✓ most jobs + build-check (tag, release) |
+| x86_64-apple-darwin | macOS | x64 | **-** (see note) |
+| x86_64-pc-windows-msvc | Windows | x64 | ✓ cross-os (PR, debug) + build-check (tag, release) |
+| aarch64-apple-darwin | macOS | ARM64 | ✓ cross-os (PR, debug) + build-check (tag, release) |
 | aarch64-unknown-linux-gnu | Linux | ARM64 | - |
-| wasm32-unknown-unknown | WASM | - | ✓ wasm job (Layer 0) |
+| wasm32-unknown-unknown | WASM | - | ✓* grade, criterion 7 (L0 only) |
+
+⚠ `x86_64-apple-darwin` has had no builder since 2026-09-02, and never had CI
+coverage: its only builder was the Cendrillon release matrix's cross-compile
+leg, which was `beta: true` (a failed Intel build shipped anyway) and ran on tag
+pushes only. ⚠ The release notes now tell every platform to build from source,
+Intel macOS included, so that target is the one where the instructions are
+wholly unverified — previously its `beta: true` leg at least went red.
+⚠ The wasm ✓* FAILS OPEN: `rust-toolchain.toml` records that when
+the target is not installed, criterion 7 degrades to `Manual` and
+`overall_automated` SKIPS `Manual`, so the tick can appear with nothing checked.
+The arm64-macOS and wasm rows named jobs that were since deleted
+(`test-arm64` by #138 as redundant, `wasm` when grade's criterion 7 became the
+single source of truth); both now name what actually runs.
 
 **Why**:
 - Apple Silicon is now majority Mac market
@@ -651,8 +665,8 @@ if a && b {  // Need tests where:
 │   ├── bevy-free (Layer 0 check)          │
 │   ├── semver (cargo-semver-checks)       │
 │   ├── sbom (cargo-cyclonedx)             │
-│   ├── arm64 (Apple Silicon)              │
-│   └── wasm (Layer 0 compatibility)       │
+│   ├── cross-os (macOS + Windows)         │
+│   └── wasm — grade criterion 7, not a job│
 │                                          │
 │ Merge to main                            │
 │   ├── All above pass                     │
@@ -660,8 +674,8 @@ if a && b {  // Need tests where:
 │   └── Required reviewers approved        │
 │                                          │
 │ Release tag                              │
-│   ├── SBOM attached                      │
-│   ├── Signed release                     │
+│   ├── build-check (3 triples, blocking)  │
+│   ├── sbom — only asset, if produced     │
 │   └── Changelog generated                │
 └─────────────────────────────────────────┘
 ```

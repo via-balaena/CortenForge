@@ -49,36 +49,26 @@
     </section>
 
     <section>
-      <h2>Download</h2>
+      <h2>Running it</h2>
 
-      <!-- GitHub's stable latest-release URLs (…/releases/latest/download/<asset>)
-           so these keep working across releases without pointing users at the
-           release page. -->
-      <div class="downloads">
-        <a class="button" href="https://github.com/via-balaena/CortenForge/releases/latest/download/Cendrillon-macos-arm64.zip">
-          Download for Mac<span class="button-sub">Apple silicon &middot; stable</span>
-        </a>
-        <a class="button button-secondary" href="https://github.com/via-balaena/CortenForge/releases/latest/download/Cendrillon-windows-x86_64.zip">
-          Download for Windows<span class="button-sub">beta</span>
-        </a>
-        <a class="button button-secondary" href="https://github.com/via-balaena/CortenForge/releases/latest/download/Cendrillon-linux-x86_64.tar.gz">
-          Download for Linux<span class="button-sub">beta</span>
-        </a>
-      </div>
+      <p class="lead-in">Cendrillon runs from source. You need a <a class="inline" href="https://rustup.rs">Rust toolchain</a> &mdash; the pinned version is in <code>rust-toolchain.toml</code> &mdash; plus <strong>CMake and a C++ compiler</strong>, because the mold-CSG stage builds a vendored C++ kernel, and a working Vulkan or GL driver for the 3D views.</p>
 
-      <p class="note">On an older Intel Mac? The Intel build is in beta &mdash; find it, and every other download, on the <a href="https://github.com/via-balaena/CortenForge/releases/latest">releases page</a>.</p>
+      <p class="note">On Debian or Ubuntu, install the build tools and libraries first (the Rust toolchain comes from rustup, above). <code>cmake</code>, <code>build-essential</code> and <code>pkg-config</code> build the C++ kernel and locate system libraries; the rest are the workspace&rsquo;s shared list, and without <code>libfontconfig1-dev</code> the build fails inside <code>yeslogic-fontconfig-sys</code>:</p>
 
-      <details class="firstrun" open>
-        <summary>First time you open it &mdash; the builds are unsigned</summary>
-        <p class="note">On Windows and Linux the binary is named <code>cf-studio-gui</code> &mdash; that is Cendrillon, under its internal name.</p>
-        <ul>
-          <li><strong>Mac</strong> &mdash; unzip, drag <code>Cendrillon.app</code> into Applications, and double-click. macOS will say it can&rsquo;t verify the developer. Open <strong>System Settings &rarr; Privacy &amp; Security</strong>, scroll down, and click <strong>Open Anyway</strong>, then open it again. You only do this once.</li>
-          <li><strong>Windows</strong> &mdash; unzip and run <code>cf-studio-gui.exe</code>. If SmartScreen warns, click <strong>More info &rarr; Run anyway</strong>.</li>
-          <li><strong>Linux</strong> &mdash; <code>tar xzf</code> and run the <code>cf-studio-gui</code> binary. Needs a working Vulkan or GL driver.</li>
-        </ul>
-      </details>
+      <pre tabindex="0" role="region" aria-label="Linux system dependencies"><code>sudo apt-get update
+sudo apt-get install git cmake build-essential pkg-config \
+  libwayland-dev libxkbcommon-dev libasound2-dev \
+  libudev-dev libfontconfig1-dev mesa-vulkan-drivers</code></pre>
 
-      <p class="note">Code-signing and notarization are planned, which will turn the steps above into a one-click launch.</p>
+      <p>Then:</p>
+
+      <pre tabindex="0" role="region" aria-label="Run Cendrillon from source"><code>git clone https://github.com/via-balaena/CortenForge.git
+cd CortenForge
+cargo run --release -p cf-studio-gui</code></pre>
+
+      <p class="note"><code>cf-studio-gui</code> is Cendrillon under its internal name. The first build compiles its dependency graph &mdash; a large fraction of the workspace, including the C++ kernel &mdash; so expect it to take a while; after that it is incremental.</p>
+
+      <p class="note">There are no prebuilt downloads. Building from source also means none of the unsigned-binary warnings macOS and Windows show for an unnotarized app.</p>
     </section>
 
     <section>
@@ -88,7 +78,7 @@
 
       <p>It runs on CortenForge end to end &mdash; scan ingestion and repair, SDF conversion, multi-material layer stacks, mold splitting with registration features, printability gating, and generated pour-and-demold instructions. Everything it does is available as library calls if you would rather drive the same path from code.</p>
 
-      <p class="closer">Cendrillon&rsquo;s workflow is built entirely from CortenForge components, and its whole source sits in the same repository &mdash; you can read every line before you download.</p>
+      <p class="closer">Cendrillon&rsquo;s workflow is built entirely from CortenForge components, and its whole source sits in the same repository &mdash; you can read every line before you run it.</p>
     </section>
 
     <section>

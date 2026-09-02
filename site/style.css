@@ -211,10 +211,10 @@ h1 {
   margin: 28px 0 0;
 }
 
-/* One button component. `.cta` sits inline under the hero, `.button` stacks
-   in the download row; everything else about them is shared. */
-.cta,
-.button {
+/* The one button component, used inline under the hero. It was shared with a
+   `.button` variant that stacked in Cendrillon's download row until the
+   downloads were retired on 2026-09-02. */
+.cta {
   border-radius: 4px;
   background: var(--accent);
   color: #0a1211;
@@ -224,23 +224,19 @@ h1 {
   font-weight: 650;
   line-height: 1.35;
   transition: background .14s ease, border-color .14s ease;
+  display: inline-block;
+  padding: 11px 22px;
 }
 
-.cta { display: inline-block; padding: 11px 22px; }
-.button { display: block; padding: 13px 20px; }
+.cta:hover { background: var(--accent-hi); border-color: var(--accent-hi); }
 
-.cta:hover,
-.button:hover { background: var(--accent-hi); border-color: var(--accent-hi); }
-
-.cta-secondary,
-.button-secondary {
+.cta-secondary {
   background: transparent;
   color: var(--text);
   border-color: var(--border-hi);
 }
 
-.cta-secondary:hover,
-.button-secondary:hover { background: var(--surface); border-color: var(--accent); }
+.cta-secondary:hover { background: var(--surface); border-color: var(--accent); }
 
 /* ---------- sections ---------- */
 
@@ -344,60 +340,6 @@ pre code {
   color: var(--text-2);
 }
 
-/* ---------- downloads ---------- */
-
-.downloads {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  margin: 0 0 20px;
-}
-
-/* Solid colour rather than opacity — 11.5px text over the accent needs the
-   full 4.5:1, and compositing at 0.8 fell short of it. */
-.button-sub {
-  display: block;
-  font-family: var(--mono);
-  font-size: 11.5px;
-  font-weight: 500;
-  color: #20100a;
-  margin-top: 3px;
-}
-
-.button-secondary .button-sub { color: var(--text-3); }
-
-/* ---------- disclosure ---------- */
-
-details.firstrun {
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 14px 18px;
-  margin: 0 0 16px;
-  background: var(--bg-lift);
-}
-
-details.firstrun > summary {
-  cursor: pointer;
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--text);
-}
-
-details.firstrun > summary::marker { color: var(--accent); }
-details.firstrun > summary::-webkit-details-marker { color: var(--accent); }
-
-.firstrun ul {
-  margin: 14px 0 0;
-  padding-left: 20px;
-  font-size: 15.5px;
-  color: var(--text-2);
-  max-width: 68ch;
-}
-
-.firstrun li { margin-bottom: 9px; }
-.firstrun li:last-child { margin-bottom: 0; }
-.firstrun li::marker { color: var(--text-3); }
-
 /* ---------- callouts ---------- */
 
 .closer {
@@ -490,7 +432,6 @@ footer.site a:hover { color: var(--sodium); border-bottom-color: var(--accent); 
   section { padding-top: 38px; }
   .bar { flex-wrap: wrap; gap: 10px; padding: 11px 0; }
   nav.site { gap: 16px; font-size: 13.5px; }
-  .downloads { flex-direction: column; }
   footer.site { margin-top: 48px; padding-bottom: 44px; }
 }
 
@@ -513,16 +454,16 @@ footer.site a:hover { color: var(--sodium); border-bottom-color: var(--accent); 
     border-color: #999999;
   }
 
-  h1, h2, h3, .stack-row h3, .card-title, strong, footer.site strong,
-  details.firstrun > summary { color: #000000; }
+  h1, h2, h3, .stack-row h3, .card-title, strong,
+  footer.site strong { color: #000000; }
 
   .lead-in, .standfirst, .stack-row p, .stack-row p:last-child, .stack-note,
-  .card-sub, .note, .closer, .kicker, .firstrun ul, .firstrun li,
-  .button-secondary .button-sub, footer.site, .sep { color: #222222; }
+  .card-sub, .note, .closer, .kicker, footer.site,
+  .sep { color: #222222; }
 
   .stack-row p.crates, code, pre code, .card-label, .eyebrow { color: #000000; }
 
-  pre, .stack, .stack-row, .card, .closer, details.firstrun, .kicker,
+  pre, .stack, .stack-row, .card, .closer, .kicker,
   .hero, footer.site, code {
     background: #ffffff;
     border-color: #999999;
@@ -530,7 +471,7 @@ footer.site a:hover { color: var(--sodium); border-bottom-color: var(--accent); 
 
   .stack-row:nth-child(odd) { background: #ffffff; }
 
-  .cta, .button {
+  .cta {
     background: #ffffff;
     color: #000000;
     border-color: #000000;
@@ -548,10 +489,6 @@ footer.site a:hover { color: var(--sodium); border-bottom-color: var(--accent); 
   section { padding-top: 28px; }
 
   h1, h2, h3 { page-break-after: avoid; break-after: avoid; }
-
-  .firstrun li::marker,
-  details.firstrun > summary::marker { color: #000000; }
-  details.firstrun > summary::-webkit-details-marker { color: #000000; }
 
   /* overflow:hidden establishes a BFC that some engines refuse to fragment
      across pages; the radius clipping it buys is moot once backgrounds go. */
