@@ -519,14 +519,15 @@ These constraints enable team growth and cross-platform reliability.
 | x86_64-unknown-linux-gnu | Linux | x64 | ✓ |
 | x86_64-apple-darwin | macOS | x64 | **-** (see note) |
 | x86_64-pc-windows-msvc | Windows | x64 | ✓ |
-| aarch64-apple-darwin | macOS | ARM64 | ✓ test-arm64 job |
+| aarch64-apple-darwin | macOS | ARM64 | ✓ cross-os job |
 | aarch64-unknown-linux-gnu | Linux | ARM64 | - |
-| wasm32-unknown-unknown | WASM | - | ✓ wasm job (Layer 0) |
+| wasm32-unknown-unknown | WASM | - | ✓ grade, criterion 7 |
 
 ⚠ `x86_64-apple-darwin` has had no builder since 2026-09-02, and never had CI
 coverage: its only builder was the Cendrillon release matrix's cross-compile
 leg, which was `beta: true` (a failed Intel build shipped anyway) and ran on tag
-pushes only. At least two other ✓ rows are stale — tracked in #867.
+pushes only. The arm64-macOS and wasm rows named a job that never existed
+(`test-arm64`) and one that was deleted (`wasm`); both now name what runs.
 
 **Why**:
 - Apple Silicon is now majority Mac market
