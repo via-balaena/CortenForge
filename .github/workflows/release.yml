@@ -47,7 +47,8 @@ jobs:
     # asset and a failure here publishes a release with zero files while the
     # body says one is attached. Real gap, deliberately NOT fixed here:
     # hardening it touches four separate tolerance points, an unpinned tool and
-    # a filename nothing pre-merge exercises. Filed as its own issue.
+    # a filename nothing pre-merge exercises. Filed as #866, which carries the
+    # four tolerance points and the measured cargo-cyclonedx naming probe.
     continue-on-error: true
     steps:
       - uses: actions/checkout@v7
