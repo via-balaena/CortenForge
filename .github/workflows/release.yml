@@ -75,11 +75,17 @@ jobs:
         run: |
           mkdir -p sbom-out
           find . -name 'cf-studio-gui.cdx.json' -not -path './sbom-out/*' -exec cp {} sbom-out/ \;
-          if [ ! -s sbom-out/cf-studio-gui.cdx.json ]; then
-            echo "::error::cargo-cyclonedx produced no cf-studio-gui.cdx.json." \
-                 "It is the release's only asset, so this blocks the release." \
-                 "Check whether the tool changed its output filename or layout:"
+          if [ ! -f sbom-out/cf-studio-gui.cdx.json ]; then
+            echo "::error::No cf-studio-gui.cdx.json was produced. It is the" \
+                 "release's only asset, so this blocks the release. Check" \
+                 "whether cargo-cyclonedx changed its output name or layout" \
+                 "— these are the .cdx.json files it did write:"
             find . -name '*.cdx.json' -not -path './sbom-out/*' | head -20
+            exit 1
+          elif [ ! -s sbom-out/cf-studio-gui.cdx.json ]; then
+            echo "::error::cf-studio-gui.cdx.json is EMPTY (0 bytes). The file" \
+                 "is where it should be, so this is a truncated or failed" \
+                 "write, not a rename — check runner disk space."
             exit 1
           fi
 
@@ -226,7 +232,7 @@ jobs:
             ---
             By using this software you accept the terms in `DISCLAIMER.md` — it is general-purpose research software, provided **as is**, **not a medical device**, used **entirely at your own risk**. The repository carries `LICENSE-APACHE`, `LICENSE-MIT`, `NOTICE`, and `DISCLAIMER.md`.
 
-            A CycloneDX SBOM for `cf-studio-gui` is attached — Cendrillon's own dependency graph, not the whole workspace, whose ~280 per-crate SBOMs would trip GitHub's upload limit. It is not a small subgraph: `cf-studio-gui` declares the facade at `features = ["mesh"]`, but `cf-studio-engine` declares `["mesh", "fabrication"]` and cargo unifies them, so the whole fabrication stack (`cf-design`, `cf-cast`, `cf-cast-cli`, `cf-scan-prep-core`, `cf-geometry`, `cf-spatial`) and the vendored Manifold C++ kernel are all in it. What it does NOT cover is the sim/RL/thermo half. The workspace meets the A-grade quality standard ([STANDARDS.md](https://github.com/via-balaena/CortenForge/blob/main/docs/STANDARDS.md)).
+            A CycloneDX SBOM for `cf-studio-gui` is attached — Cendrillon's own resolved dependency graph, not the whole workspace, whose ~280 per-crate SBOMs would trip GitHub's upload limit. Read the file itself for what it contains; it is machine-readable and authoritative, and any prose summary here would be a second copy to drift. The workspace meets the A-grade quality standard ([STANDARDS.md](https://github.com/via-balaena/CortenForge/blob/main/docs/STANDARDS.md)).
           files: |
             artifacts/*.cdx.json
           fail_on_unmatched_files: true

@@ -950,9 +950,12 @@ jobs:
       # ⚠ SCOPED HONESTLY: this is a `--locked` DEBUG build. It proves the
       # lockfile resolves and links on each OS; it does NOT cover the release
       # profile, which no job compiles this crate under any more — the deleted
-      # release job did, on four targets per tag. `[profile.dev] opt-level = 2`
-      # narrows the gap, but a `debug_assertions`/`overflow-checks`-gated item
-      # would still reach someone running `cargo run --release -p cf-studio-gui`.
+      # release job did, on four targets per tag. What that leaves unguarded is
+      # specifically the code this build does NOT see: `cfg(not(debug_assertions))`
+      # branches are never compiled anywhere in CI, and overflow-checks are ON
+      # here but OFF in release, so an add that panics loudly in this job wraps
+      # silently for someone running `cargo run --release -p cf-studio-gui`.
+      # (`[profile.dev] opt-level = 2` narrows codegen differences, not these.)
       # A Cargo.lock change trips needs_full (→ GUI_PKGS non-empty), so the
       # guard always runs exactly when a lockfile drift could occur.
       - name: Build Cendrillon (guards the Windows windows-crate pin)
