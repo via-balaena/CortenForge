@@ -44,9 +44,11 @@
 #   file-path handling concerns. Per plan §6.3 (b): sim-core (FP/physics),
 #   sim-mjcf (XML/file paths), mesh-io (multi-format file paths), and
 #   mesh-printability — this line said "3 crates" and omitted the fourth
-#   until 2026-08-22. It also builds `cf-studio-gui` `--locked` on each OS,
-#   which is the Windows release artifact and a lockfile-drift guard, not a
-#   test. Other crates' cross-OS coverage was admission-of-status-quo;
+#   until 2026-08-22. It also builds `cf-studio-gui` `--locked` on each OS as
+#   a lockfile-drift guard, not a test — it was the Windows release artifact
+#   until the download was retired on 2026-09-02; see the step's own comment
+#   for the premise it now rests on. Other crates' cross-OS coverage was
+#   admission-of-status-quo;
 #   ubuntu coverage is sufficient.
 # - `feature-combos` (ubuntu): explicit non-default-feature paths, plus
 #   the workspace-union `--all-features` gate. Currently sim-soft

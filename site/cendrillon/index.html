@@ -51,13 +51,20 @@
     <section>
       <h2>Running it</h2>
 
-      <p class="lead-in">Cendrillon runs from source. You need a <a href="https://rustup.rs">Rust toolchain</a> &mdash; the pinned version is in <code>rust-toolchain.toml</code> &mdash; and a working Vulkan or GL driver for the 3D views.</p>
+      <p class="lead-in">Cendrillon runs from source. You need a <a href="https://rustup.rs">Rust toolchain</a> &mdash; the pinned version is in <code>rust-toolchain.toml</code> &mdash; plus <strong>CMake and a C++ compiler</strong>, because the mold-CSG stage builds a vendored C++ kernel, and a working Vulkan or GL driver for the 3D views.</p>
+
+      <p class="note">On Debian or Ubuntu, install the windowing, audio and font libraries the GUI links against before you build &mdash; these are the same packages CI installs, and without <code>libfontconfig1-dev</code> the build fails inside <code>yeslogic-fontconfig-sys</code>:</p>
+
+      <pre tabindex="0" role="region" aria-label="Linux system dependencies"><code>sudo apt-get install libwayland-dev libxkbcommon-dev \
+  libasound2-dev libudev-dev libfontconfig1-dev</code></pre>
+
+      <p>Then:</p>
 
       <pre tabindex="0" role="region" aria-label="Run Cendrillon from source"><code>git clone https://github.com/via-balaena/CortenForge.git
 cd CortenForge
 cargo run -p cf-studio-gui</code></pre>
 
-      <p class="note"><code>cf-studio-gui</code> is Cendrillon under its internal name. The first build compiles the whole workspace and takes a while; after that it is incremental.</p>
+      <p class="note"><code>cf-studio-gui</code> is Cendrillon under its internal name. The first build compiles its dependency graph &mdash; a large fraction of the workspace, including the C++ kernel &mdash; so expect it to take a while; after that it is incremental.</p>
 
       <p class="note">There are no prebuilt downloads. Building from source also means none of the unsigned-binary warnings macOS and Windows show for an unnotarized app.</p>
     </section>

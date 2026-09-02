@@ -224,9 +224,9 @@ h1 {
   font-weight: 650;
   line-height: 1.35;
   transition: background .14s ease, border-color .14s ease;
+  display: inline-block;
+  padding: 11px 22px;
 }
-
-.cta { display: inline-block; padding: 11px 22px; }
 
 .cta:hover { background: var(--accent-hi); border-color: var(--accent-hi); }
 

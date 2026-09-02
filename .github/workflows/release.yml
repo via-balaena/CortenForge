@@ -35,8 +35,13 @@ jobs:
   sbom:
     name: Generate SBOM
     runs-on: ubuntu-latest
-    # Supplementary — must never block the actual downloads.
-    continue-on-error: true
+    # ⚠ RE-DERIVED 2026-09-02, and the verdict FLIPPED. This job was
+    # `continue-on-error: true` because it was "supplementary — must never
+    # block the actual downloads": it deferred to a more important payload.
+    # That payload is gone, and the SBOM is now the release's ONLY attached
+    # asset. Left non-blocking, a broken `cargo install cargo-cyclonedx`
+    # would publish a release with zero files while the body claims an SBOM,
+    # and nothing would go red. A payload job blocks.
     steps:
       - uses: actions/checkout@v7
 
@@ -52,8 +57,11 @@ jobs:
         run: cargo cyclonedx --format json
 
       # cargo-cyclonedx writes one <crate>.cdx.json per workspace member
-      # (~280 of them). Keep only the shipped app's SBOM — attaching all of
-      # them as release assets is noise AND trips GitHub's upload rate limit.
+      # (~280 of them). Keep only Cendrillon's — attaching all of them as
+      # release assets is noise AND trips GitHub's upload rate limit. ⚠ It is
+      # no longer "the shipped app": nothing is shipped. It is kept as the
+      # representative subgraph, and the release body says so rather than
+      # implying workspace coverage.
       - name: Collect Studio SBOM
         run: |
           mkdir -p sbom-out
@@ -64,7 +72,10 @@ jobs:
         with:
           name: sbom
           path: sbom-out/
-          if-no-files-found: warn
+          # `error`, not `warn`: if the find above matched nothing the job has
+          # produced no asset at all, and the release it feeds would publish
+          # empty. This was `warn` while binaries were the payload.
+          if-no-files-found: error
 
   # ============================================================================
   # GENERATE CHANGELOG
@@ -145,9 +156,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # No `continue-on-error` here, and none on the `sbom` job either: with
+      # the app archives retired the SBOM is the only asset, so a missing one
+      # is an empty release, not a degraded one. FOUR points used to tolerate
+      # that and all four are now strict — this step, the `sbom` job, its
+      # `if-no-files-found`, and `fail_on_unmatched_files` below. Relaxing any
+      # one of them restores the silent-empty-release path.
       - name: Download SBOM
         uses: actions/download-artifact@v8
-        continue-on-error: true
         with:
           name: sbom
           path: ./artifacts
@@ -177,10 +193,15 @@ jobs:
             cargo run -p cf-studio-gui      # Cendrillon
             ```
 
-            You need a Rust toolchain (see `rust-toolchain.toml`) and a working
-            Vulkan or GL driver for the 3D views. Building from source also
-            removes the unsigned-binary warnings the old downloads carried on
-            macOS and Windows.
+            You need a Rust toolchain (see `rust-toolchain.toml`), **CMake and
+            a C++ compiler** for the vendored mold-CSG kernel, and a working
+            Vulkan or GL driver for the 3D views. On Debian/Ubuntu also install
+            `libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev
+            libfontconfig1-dev` — the same packages CI installs; without the
+            last one the build fails inside `yeslogic-fontconfig-sys`.
+
+            Building from source also removes the unsigned-binary warnings the
+            old downloads carried on macOS and Windows.
 
             ## What's new
 
@@ -189,10 +210,10 @@ jobs:
             ---
             By using this software you accept the terms in `DISCLAIMER.md` — it is general-purpose research software, provided **as is**, **not a medical device**, used **entirely at your own risk**. The repository carries `LICENSE-APACHE`, `LICENSE-MIT`, `NOTICE`, and `DISCLAIMER.md`.
 
-            SBOM (CycloneDX) attached. The workspace meets the A-grade quality standard ([STANDARDS.md](https://github.com/via-balaena/CortenForge/blob/main/docs/STANDARDS.md)).
+            A CycloneDX SBOM for `cf-studio-gui` is attached — that is Cendrillon's dependency subgraph (the facade at `default-features = false, features = ["mesh"]`), not the whole workspace, whose ~280 per-crate SBOMs would trip GitHub's upload limit. The workspace meets the A-grade quality standard ([STANDARDS.md](https://github.com/via-balaena/CortenForge/blob/main/docs/STANDARDS.md)).
           files: |
             artifacts/*.cdx.json
-          fail_on_unmatched_files: false
+          fail_on_unmatched_files: true
           draft: false
           prerelease: ${{ contains(steps.version.outputs.version, '-') }}
         env:
