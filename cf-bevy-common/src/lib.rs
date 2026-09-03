@@ -21,9 +21,11 @@
 //!   `UpAxis`-aware coordinate swap + winding flip. Truthful WYSIWYP
 //!   rendering — the mesh's actual triangulation matches what comes
 //!   out of a 3D printer.
-//! - [`scale`] — the sub-meter render lift: [`scale::compute_render_scale`],
-//!   [`scale::scale_aabb`] and the [`scale::RenderScale`] resource, which
-//!   keep small scenes inside Bevy's human-scale rendering defaults.
+//! - [`scale`] — the sub-meter render lift that keeps small scenes inside
+//!   Bevy's human-scale rendering defaults: [`scale::compute_render_scale`]
+//!   derives the factor, [`scale::scale_aabb`] frames the camera,
+//!   [`scale::render_transform`] applies it to an entity, and
+//!   [`scale::RenderScale`] carries it to other rendered-frame systems.
 //! - [`prelude`] — convenience re-exports for consumer wiring.
 
 pub mod axis;
