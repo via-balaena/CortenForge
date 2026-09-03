@@ -6,11 +6,14 @@
 //! module only holds the state and routes button presses into it, so the egui
 //! systems have nothing left to get wrong.
 
+use std::path::Path;
 use std::time::Instant;
 
 use bevy::prelude::*;
 use cf_studio_core::{PourRecord, Project};
-use cf_studio_gui::{PourAdvance, PourSession, StepOutcome, WizardCursor, pot_life_duration};
+use cf_studio_gui::{
+    PourAdvance, PourSession, StepOutcome, WizardCursor, apply_scan, pot_life_duration,
+};
 
 /// The two top-level screens. The waiver is a *screen*, not an overlay: it is a
 /// full-window gate, and modelling it as state keeps the wizard's systems from
@@ -77,6 +80,24 @@ impl Studio {
     pub(crate) fn next(&mut self) {
         self.cursor.next(&self.project);
         self.message = None;
+    }
+
+    /// Record a newly chosen scan.
+    ///
+    /// [`Project::set_scan`] clears every downstream artifact, so the session's
+    /// own cursors into that work — the pour layer and any running pot-life
+    /// timer — go with it, or they point into a plan that no longer exists.
+    ///
+    /// # Errors
+    /// The engine's message if the scan is missing, unreadable, or empty. On a
+    /// failure nothing is recorded and nothing is reset.
+    pub(crate) fn record_scan(&mut self, scan_file: &Path) -> StepOutcome {
+        let outcome = apply_scan(&mut self.project, scan_file);
+        if outcome.is_ok() {
+            self.pour = PourSession::default();
+            self.pour_deadline = None;
+        }
+        outcome
     }
 
     /// Start (or restart) the current layer's pot-life countdown.
@@ -182,6 +203,44 @@ mod tests {
             s.pour_remaining_secs().is_none(),
             "so no countdown is shown"
         );
+    }
+
+    /// A minimal valid ASCII STL — one triangle, enough for `load_scan`.
+    const ONE_TRIANGLE_STL: &str = "\
+solid t
+facet normal 0 0 1
+  outer loop
+    vertex 0 0 0
+    vertex 1 0 0
+    vertex 0 1 0
+  endloop
+endfacet
+endsolid t
+";
+
+    /// `set_scan` clears the molds, so a pour cursor into their plan is stale.
+    /// Without this reset a second scan resumes mid-pour on the first's plan.
+    #[test]
+    fn recording_a_scan_drops_the_previous_scans_pour_session() {
+        let scan = std::env::temp_dir().join(format!(
+            "cf-studio-gui-record-scan-{}.stl",
+            std::process::id()
+        ));
+        assert!(
+            std::fs::write(&scan, ONE_TRIANGLE_STL).is_ok(),
+            "the fixture must be writable"
+        );
+
+        let mut s = fresh();
+        s.pour.advance(3);
+        s.pour_deadline = Some(Instant::now() + std::time::Duration::from_secs(600));
+
+        let outcome = s.record_scan(&scan);
+        let _ = std::fs::remove_file(&scan);
+
+        assert!(outcome.is_ok(), "the fixture must load: {outcome:?}");
+        assert_eq!(s.pour.current(), 0, "the pour cursor was the old scan's");
+        assert!(s.pour_deadline.is_none(), "and so was its countdown");
     }
 
     #[test]

@@ -9,7 +9,6 @@ use std::path::{Path, PathBuf};
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, futures_lite::future};
 use cf_studio_engine::{PrintExportReport, export_print_package};
-use cf_studio_gui::apply_scan;
 
 use crate::dialogs::{DialogKind, PendingDialog};
 use crate::scan::{ActiveScan, ScanEdit};
@@ -34,12 +33,12 @@ pub(crate) fn poll_dialogs(
             let Some(path) = picked else { return };
             // Both reads run before either commit, so the project and the
             // viewport cannot end up disagreeing about which scan is loaded:
-            // `ActiveScan::load` only reads, and `apply_scan` records nothing
+            // `ActiveScan::load` only reads, and `record_scan` records nothing
             // unless its own read of the same file succeeded.
             let outcome = match ActiveScan::load(&path) {
                 Err(message) => Err(message),
                 Ok(active) => {
-                    let recorded = apply_scan(&mut studio.project, &path);
+                    let recorded = studio.record_scan(&path);
                     if recorded.is_ok() {
                         scan.set(active);
                     }
