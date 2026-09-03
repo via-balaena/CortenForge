@@ -1,27 +1,22 @@
 //! Render-side scale lift for sub-meter scenes.
 //!
-//! Bevy 0.18's rendering defaults — the `0.1 m` camera near plane,
-//! [`OrbitCamera::framing_for_aabb`]'s internal `.max(1.0)` clamp on the
-//! AABB diagonal, `AmbientLight` brightness — are tuned for human-scale
-//! scenes. Geometry much smaller than a metre falls outside that regime:
-//! the framing clamp treats a 5 cm scene as if it were 1 m and parks the
-//! camera 1.5 m away, so it renders as a dot.
+//! [`OrbitCamera::framing_for_aabb`] clamps the AABB diagonal to `max(1.0)`, so
+//! every scene 1 m or smaller is framed from one distance — `1.5·√3 ≈ 2.6 m`.
+//! A 5 cm object at 2.6 m renders as a dot.
 //!
-//! The fix is uniform and cheap: scale the *rendered* geometry so its
-//! diagonal reaches ~1 m, frame the camera on the scaled AABB, and leave
-//! the physics-scale mesh untouched. [`compute_render_scale`] derives the
-//! factor, [`scale_aabb`] produces the framing AABB, and [`RenderScale`]
-//! carries the factor to every system that must apply the same lift —
-//! gizmo overlays, clip planes, and pushed uniforms all live in the
-//! rendered frame, not the physics frame.
+//! ⚠ The lift does **not** move the camera; `framing_for_aabb` returns the same
+//! distance either way (`the_lift_does_not_move_the_camera` asserts it). It
+//! scales the *rendered* geometry to a 1 m diagonal so it fills the frame the
+//! camera is already aimed at, leaving the physics-scale mesh alone.
+//! [`RenderScale`] carries the factor to everything else drawing into that
+//! frame — gizmos, clip planes, pushed uniforms — which must apply the same
+//! lift or land in the wrong place.
 //!
-//! ⚠ **The lift is a rendering concern only.** Nothing written back to a
-//! file, measured, or reported to the user may pass through it. A value
-//! that has been scaled is in a different frame from the mesh it came
-//! from, and mixing the two silently reports the wrong size.
+//! ⚠ Rendering only. A lifted value sits in a different frame from the mesh it
+//! came from: never write one to a file or report it to the user.
 //!
-//! Banked as sim-soft `EXAMPLE_INVENTORY` iter-11 pattern (b); the same
-//! root cause as sim-bevy-soft's row-12/row-13 `RENDER_SCALE` policy.
+//! Pattern from sim-soft `EXAMPLE_INVENTORY` — iter-11 (row 12) pivoted to it,
+//! iter-12 applied it in cf-view.
 //!
 //! [`OrbitCamera::framing_for_aabb`]: crate::camera::OrbitCamera::framing_for_aabb
 
@@ -31,8 +26,7 @@ use mesh_types::{Aabb, Point3};
 /// The factor applied uniformly to all spawned geometry, so systems that
 /// draw into the rendered frame can apply the same lift the mesh got.
 ///
-/// `1.0` for scenes already at metre scale or larger — the common case for
-/// mesh-v1.0 examples, and a true no-op.
+/// `1.0` for scenes already at metre scale or larger — a true no-op.
 #[derive(Resource, Clone, Copy, Debug)]
 pub struct RenderScale(pub f32);
 
@@ -65,6 +59,8 @@ pub fn scale_aabb(raw: &Aabb, scale: f32) -> Aabb {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::axis::UpAxis;
+    use crate::camera::OrbitCamera;
 
     /// Sub-meter scenes lift to the 1 m target: `0.05 m → 20×`.
     #[test]
@@ -118,26 +114,31 @@ mod tests {
         assert!((scaled.diagonal() - raw.diagonal() * 10.0).abs() < 1e-9);
     }
 
-    /// The pairing that matters: a lifted scene's framing AABB reaches the
-    /// 1 m target, so `framing_for_aabb`'s clamp is no longer what decides
-    /// the camera distance. Without the lift a 0.05 m scene and a 1 m scene
-    /// frame identically — which is the defect this module exists for.
+    /// The claim the module doc rests on, and the reason the lift is not a
+    /// camera change: `framing_for_aabb`'s `max(1.0)` clamp pins a 5 cm scene
+    /// and that same scene lifted to one distance. Only the geometry's size in
+    /// that fixed frame changes.
     #[test]
     // f64 diagonal → the f32 the real call sites pass.
     #[allow(clippy::cast_possible_truncation)]
-    fn lifting_a_sub_meter_scene_clears_the_framing_clamp() {
+    fn the_lift_does_not_move_the_camera() {
         let raw = Aabb::from_corners(
             Point3::new(-0.025, -0.025, -0.025),
             Point3::new(0.025, 0.025, 0.025),
         );
-        let scale = compute_render_scale(raw.diagonal() as f32);
-        let lifted = scale_aabb(&raw, scale);
-        // f32 tolerance, not f64: the scale factor is an `f32` because
-        // that is what `RenderScale` and Bevy's `Transform` carry, so the
-        // round trip through it is only good to ~1e-7.
+        let lifted = scale_aabb(&raw, compute_render_scale(raw.diagonal() as f32));
         assert!(
             (lifted.diagonal() - 1.0).abs() < 1e-6,
-            "the lift targets a 1 m diagonal, where the clamp is inert",
+            "the lift targets a 1 m diagonal",
+        );
+
+        let before = OrbitCamera::framing_for_aabb(&raw, UpAxis::PlusZ).distance;
+        let after = OrbitCamera::framing_for_aabb(&lifted, UpAxis::PlusZ).distance;
+        assert!(
+            (before - after).abs() < 1e-4,
+            "the clamp pins both to one distance ({before} vs {after}); if this \
+             ever fails the clamp has changed, and whether this module is still \
+             needed should be re-asked",
         );
     }
 }

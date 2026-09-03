@@ -30,13 +30,10 @@
 //! sim-bevy can share the same controller. [`UpAxis`] is re-exported here
 //! for back-compat with cf-viewer's existing call sites.
 //!
-//! The sub-meter render lift followed, to [`cf_bevy_common::scale`], next
-//! to the framing clamp that creates the need for it. ⚠ It is deliberately
-//! **not** re-exported here: the `UpAxis` re-export above split the
-//! workspace's imports across two paths for one type (14 call sites reach
-//! it through this crate, 35 through `cf_bevy_common`), and a second
-//! back-compat alias would buy the same drift again. Import
-//! `cf_bevy_common::scale::{RenderScale, compute_render_scale, scale_aabb}`.
+//! The sub-meter render lift followed, to [`cf_bevy_common::scale`]. ⚠ Not
+//! re-exported: the `UpAxis` alias above already split this workspace's `use`
+//! sites across two paths for one type — 14 through this crate, 18 through
+//! `cf_bevy_common` — and a second alias would buy the same drift.
 
 pub mod cli;
 pub mod colormap;
