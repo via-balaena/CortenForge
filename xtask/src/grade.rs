@@ -2813,22 +2813,58 @@ pub(crate) fn is_coverage_report_only(crate_name: &str) -> bool {
     COVERAGE_REPORT_ONLY.contains(&crate_name)
 }
 
+/// One `cargo doc` pass over the given target selection.
+///
+/// Returns the exit code and stderr. Colour is forced off because CI sets
+/// `CARGO_TERM_COLOR=always`, which injects ANSI escapes into stderr (e.g.
+/// `error\x1b[0m:`) and breaks the caller's substring counts.
+fn run_cargo_doc(sh: &Shell, crate_name: &str, targets: &[&str]) -> Result<(i32, String)> {
+    let output = cmd!(sh, "cargo doc --no-deps -p {crate_name}")
+        .args(targets)
+        .env("RUSTDOCFLAGS", "-D warnings")
+        .env("CARGO_TERM_COLOR", "never")
+        .ignore_status()
+        .output()?;
+    Ok((
+        output.status.code().unwrap_or(1),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    ))
+}
+
 /// Grade documentation by checking for warnings.
 ///
 /// Captures stderr + exit code (B2 fix: `cargo doc` writes diagnostics
 /// to stderr, not stdout — the old gate read stdout and always saw 0).
 fn grade_documentation(sh: &Shell, crate_name: &str, crate_path: &str) -> Result<CriterionResult> {
-    // Force color off — CI sets CARGO_TERM_COLOR=always, which injects ANSI
-    // escape sequences into stderr (e.g. `error\x1b[0m:`) and breaks the
-    // `contains("error:")` / `matches("warning:")` substring counts below.
-    let output = cmd!(sh, "cargo doc --no-deps -p {crate_name}")
-        .env("RUSTDOCFLAGS", "-D warnings")
-        .env("CARGO_TERM_COLOR", "never")
-        .ignore_status()
-        .output()?;
-
-    let exit_code = output.status.code().unwrap_or(1);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    // ⚠ TWO passes, because no single target selection is right for all three
+    // package shapes in this workspace. Measured, one dead intra-doc link
+    // injected into each:
+    //
+    // | shape        | default  | `--bins`      | `--lib --bins`     |
+    // |--------------|----------|---------------|--------------------|
+    // | lib only     | caught   | NOT caught    | caught             |
+    // | bin only     | caught   | caught        | errors, no lib     |
+    // | lib **+** bin| NOT seen | caught        | caught             |
+    //
+    // `cargo doc` documents the lib when a package has one and falls back to
+    // the bins when it does not, so a package with both never had its binary
+    // checked — that is how a dead link shipped green in #870. `--bins` alone
+    // silently documents nothing on a lib-only package, and `--lib --bins`
+    // fails outright on a bin-only one, so neither is a safe replacement.
+    // Running both covers every shape without inspecting the manifest.
+    // The second pass exists only to reach targets the first did not, so it is
+    // skipped once the first has already decided the grade. On success the
+    // first pass's output is what gets reported, leaving every already-passing
+    // crate's output identical to before.
+    let (default_code, default_stderr) = run_cargo_doc(sh, crate_name, &[])?;
+    let (exit_code, stderr) = if default_code != 0 {
+        (default_code, default_stderr)
+    } else {
+        match run_cargo_doc(sh, crate_name, &["--bins"])? {
+            (0, _) => (0, default_stderr),
+            failed => failed,
+        }
+    };
 
     // Count diagnostics. With -D warnings, warnings are promoted to errors,
     // so also count "error:" lines (excluding "aborting due to" summaries).
