@@ -43,7 +43,7 @@ use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, futures_lite::future};
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
 use cf_bevy_common::prelude::*;
-use cf_bevy_common::scale::{RenderScale, compute_render_scale, scale_aabb};
+use cf_bevy_common::scale::{RenderScale, compute_render_scale, render_transform, scale_aabb};
 use cf_viewer::{setup_camera_and_lighting, spawn_face_mesh};
 use clap::{Parser, ValueEnum};
 use mesh_io::load_stl;
@@ -1494,7 +1494,7 @@ fn respawn_scan_entity(
         mesh,
         None,
         up,
-        Transform::from_scale(Vec3::splat(render_scale)),
+        render_transform(render_scale),
     );
     commands.entity(entity).insert(ScanMeshEntity);
 }

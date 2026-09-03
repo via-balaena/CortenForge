@@ -1,41 +1,25 @@
 //! Render-side scale lift for sub-meter scenes.
 //!
 //! [`OrbitCamera::framing_for_aabb`] clamps the AABB diagonal to `max(1.0)`, so
-//! every scene 1 m or smaller is framed from one distance — `1.5·√3 ≈ 2.6 m`.
-//! A 5 cm object there spans about 2° of the view.
+//! every scene 1 m or smaller is framed from one distance — `1.5·√3 ≈ 2.6 m`,
+//! where a 5 cm object spans about 2° of the view. Scaling the *rendered*
+//! geometry to a 1 m diagonal fills that fixed frame; the camera never moves.
 //!
-//! ⚠ The lift does **not** move the camera; `framing_for_aabb` returns the same
-//! distance either way (`the_lift_does_not_move_the_camera` asserts it). What
-//! changes is the geometry's size within that fixed frame.
-//!
-//! ⚠ **These functions only derive numbers.** The caller applies the factor to
-//! the geometry — `Transform::from_scale(Vec3::splat(f))` — and to anything else
-//! drawn in the same frame (gizmos, clip planes, pushed uniforms), which is what
-//! [`RenderScale`] is for. Deriving without applying leaves a correctly-framed
-//! camera over an unscaled mesh: the original defect.
-//!
-//! ⚠ Rendering only. A lifted value sits in a different frame from the mesh it
+//! ⚠ Rendering only. A lifted value is in a different frame from the mesh it
 //! came from: never write one to a file or report it to the user.
-//!
-//! Pattern from sim-soft `EXAMPLE_INVENTORY` — iter-11 (row 12) pivoted to it,
-//! iter-12 applied it in cf-view.
 //!
 //! [`OrbitCamera::framing_for_aabb`]: crate::camera::OrbitCamera::framing_for_aabb
 
-use bevy::prelude::Resource;
+use bevy::prelude::{Resource, Transform, Vec3};
 use mesh_types::{Aabb, Point3};
 
-/// The factor applied uniformly to all spawned geometry, so systems that
-/// draw into the rendered frame can apply the same lift the mesh got.
-///
-/// `1.0` for scenes already at metre scale or larger — a true no-op.
+/// The factor every spawned entity and rendered-frame system must apply.
+/// `1.0` for metre-scale scenes — a true no-op.
 #[derive(Resource, Clone, Copy, Debug)]
 pub struct RenderScale(pub f32);
 
-/// Compute the render scale from the raw bbox diagonal: lift sub-meter
-/// scenes to a 1 m target diagonal; meter+ scenes render at native scale.
-/// Degenerate (zero / non-finite) diagonals fall back to `1.0` so the
-/// downstream framing helper's own clamp handles them.
+/// The factor that lifts `raw_diagonal` to the 1 m target; `1.0` at metre scale
+/// or on a degenerate diagonal, leaving the framing helper's own clamp to cope.
 #[must_use]
 pub fn compute_render_scale(raw_diagonal: f32) -> f32 {
     const TARGET_DIAGONAL: f32 = 1.0;
@@ -46,9 +30,8 @@ pub fn compute_render_scale(raw_diagonal: f32) -> f32 {
     }
 }
 
-/// Apply a uniform scale factor to an [`Aabb`]'s corners. Used to compute
-/// the camera-framing AABB at render scale (the rendered geometry's
-/// bbox), distinct from the loaded mesh's physics-scale AABB.
+/// The camera-framing AABB at render scale — distinct from the mesh's
+/// physics-scale AABB.
 #[must_use]
 pub fn scale_aabb(raw: &Aabb, scale: f32) -> Aabb {
     let s = f64::from(scale);
@@ -58,21 +41,28 @@ pub fn scale_aabb(raw: &Aabb, scale: f32) -> Aabb {
     )
 }
 
+/// The transform that applies the lift to a spawned entity.
+///
+/// Deriving a scale without applying it leaves a correctly-framed camera over
+/// an unscaled mesh — the defect this module exists for.
+#[must_use]
+pub fn render_transform(scale: f32) -> Transform {
+    Transform::from_scale(Vec3::splat(scale))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::axis::UpAxis;
     use crate::camera::OrbitCamera;
 
-    /// Sub-meter scenes lift to the 1 m target: `0.05 m → 20×`.
     #[test]
     fn compute_render_scale_lifts_sub_meter_to_one() {
         assert!((compute_render_scale(0.05) - 20.0).abs() < 1e-6);
         assert!((compute_render_scale(0.5) - 2.0).abs() < 1e-6);
     }
 
-    /// Meter+ scenes pass through unchanged. The `1 m` boundary itself is
-    /// included in the no-lift regime (the impl gates on `>= TARGET`).
+    /// The `1 m` boundary is in the no-lift regime — the impl gates on `>=`.
     #[test]
     fn compute_render_scale_passthrough_at_meter_plus() {
         assert_eq!(compute_render_scale(1.0), 1.0);
@@ -80,9 +70,6 @@ mod tests {
         assert_eq!(compute_render_scale(100.0), 1.0);
     }
 
-    /// Degenerate inputs (zero, negative, NaN, Inf) fall back to `1.0` so
-    /// the downstream framing helper's own `max(1.0)` clamp can handle the
-    /// scene without dividing by zero here.
     #[test]
     fn compute_render_scale_falls_back_to_one_on_degenerate() {
         assert_eq!(compute_render_scale(0.0), 1.0);
@@ -91,8 +78,7 @@ mod tests {
         assert_eq!(compute_render_scale(f32::INFINITY), 1.0);
     }
 
-    /// `scale = 1.0` is the identity (load-bearing for meter+ scenes
-    /// where `compute_render_scale` returns `1.0`).
+    /// Load-bearing for metre-scale scenes, where the factor is `1.0`.
     #[test]
     fn scale_aabb_identity_at_unit_scale() {
         let raw = Aabb::from_corners(Point3::new(-0.1, -0.2, -0.3), Point3::new(0.4, 0.5, 0.6));
@@ -101,8 +87,6 @@ mod tests {
         assert_eq!(scaled.max, raw.max);
     }
 
-    /// Uniform scaling is corner-wise linear: `min × s` and `max × s`
-    /// reach the rendered-frame bbox.
     #[test]
     fn scale_aabb_scales_corners_linearly() {
         let raw = Aabb::from_corners(
@@ -112,14 +96,19 @@ mod tests {
         let scaled = scale_aabb(&raw, 10.0);
         assert!((scaled.min.x - -0.5).abs() < 1e-9);
         assert!((scaled.max.z - 0.5).abs() < 1e-9);
-        // Diagonal scales by the same factor.
         assert!((scaled.diagonal() - raw.diagonal() * 10.0).abs() < 1e-9);
     }
 
-    /// The claim the module doc rests on, and the reason the lift is not a
-    /// camera change: `framing_for_aabb`'s `max(1.0)` clamp pins a 5 cm scene
-    /// and that same scene lifted to one distance. Only the geometry's size in
-    /// that fixed frame changes.
+    /// The factor reaches the geometry as a uniform scale on all three axes.
+    #[test]
+    fn render_transform_scales_uniformly() {
+        assert_eq!(render_transform(11.5).scale, Vec3::splat(11.5));
+        assert_eq!(render_transform(1.0).scale, Vec3::ONE);
+    }
+
+    /// `framing_for_aabb`'s `max(1.0)` clamp pins a 5 cm scene and that same
+    /// scene lifted to one distance. Only the geometry's size in that fixed
+    /// frame changes.
     #[test]
     // f64 diagonal → the f32 the real call sites pass.
     #[allow(clippy::cast_possible_truncation)]

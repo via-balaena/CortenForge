@@ -38,7 +38,7 @@ use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
 use cf_bevy_common::mesh::triangle_mesh_flat_shaded;
 use cf_bevy_common::prelude::*;
-use cf_bevy_common::scale::{RenderScale, compute_render_scale, scale_aabb};
+use cf_bevy_common::scale::{RenderScale, compute_render_scale, render_transform, scale_aabb};
 use cf_device_types::{
     CavityState, Centerline, LAYER_COUNT_MAX, LAYER_MATERIALS, LAYER_SURFACE_PALETTE, LayerSpec,
     LayersState, ScanFilePath, ScanInfo, ScanMesh, ScanMeshVisible, design_toml, material_density,
@@ -772,7 +772,7 @@ fn setup_render_scene(
     let raw_aabb = scan.0.aabb();
     let scaled_aabb = scale_aabb(&raw_aabb, scale);
     setup_camera_and_lighting(&mut commands, &scaled_aabb, *up);
-    let entity_transform = Transform::from_scale(Vec3::splat(scale));
+    let entity_transform = render_transform(scale);
     // Local inline of `cf_viewer::spawn_face_mesh` that mounts the
     // `ClipPlaneMaterial` extended material instead of the stock
     // `StandardMaterial` — keeps cf-viewer generic (per spec sub-leaf 3

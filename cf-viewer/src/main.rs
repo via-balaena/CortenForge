@@ -4,7 +4,7 @@ use anyhow::Result;
 use bevy::prelude::*;
 use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
 use cf_bevy_common::prelude::*;
-use cf_bevy_common::scale::{RenderScale, compute_render_scale, scale_aabb};
+use cf_bevy_common::scale::{RenderScale, compute_render_scale, render_transform, scale_aabb};
 use cf_viewer::{
     AssemblyInputs, InputMode, UpAxis, ViewerInput,
     cli::{Cli, seed_selection},
@@ -429,7 +429,7 @@ fn spawn_assembly_pieces(
             },
             Mesh3d(meshes.add(bevy_mesh)),
             MeshMaterial3d(materials.add(material)),
-            Transform::from_scale(Vec3::splat(scale)),
+            render_transform(scale),
         ));
     }
 }
@@ -677,7 +677,7 @@ fn spawn_geometry(
             GeometryEntity,
             Mesh3d(meshes.add(bevy_mesh)),
             MeshMaterial3d(material_handle),
-            Transform::from_scale(Vec3::splat(scale)),
+            render_transform(scale),
         ));
     } else {
         // Point-cloud case — one Mesh3d per vertex sharing a Sphere mesh
