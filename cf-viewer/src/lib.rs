@@ -32,8 +32,8 @@
 //!
 //! The sub-meter render lift followed, to [`cf_bevy_common::scale`]. ⚠ Not
 //! re-exported: the `UpAxis` alias above already split this workspace's `use`
-//! sites across two paths for one type — 14 through this crate, 18 through
-//! `cf_bevy_common` — and a second alias would buy the same drift.
+//! sites across two paths for one type, and a second alias would buy the same
+//! drift.
 
 pub mod cli;
 pub mod colormap;

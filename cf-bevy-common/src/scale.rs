@@ -1,9 +1,9 @@
 //! Render-side scale lift for sub-meter scenes.
 //!
 //! [`OrbitCamera::framing_for_aabb`] clamps the AABB diagonal to `max(1.0)`, so
-//! every scene 1 m or smaller is framed from one distance — `1.5·√3 ≈ 2.6 m`,
-//! where a 5 cm object spans about 2° of the view. Scaling the *rendered*
-//! geometry to a 1 m diagonal fills that fixed frame; the camera never moves.
+//! every scene 1 m or smaller is framed from one distance. Scaling the
+//! *rendered* geometry to a 1 m diagonal fills that fixed frame; the camera
+//! never moves.
 //!
 //! ⚠ Rendering only. A lifted value is in a different frame from the mesh it
 //! came from: never write one to a file or report it to the user.
