@@ -2852,15 +2852,18 @@ fn grade_documentation(sh: &Shell, crate_name: &str, crate_path: &str) -> Result
     // silently documents nothing on a lib-only package, and `--lib --bins`
     // fails outright on a bin-only one, so neither is a safe replacement.
     // Running both covers every shape without inspecting the manifest.
+    // The second pass exists only to reach targets the first did not, so it is
+    // skipped once the first has already decided the grade. On success the
+    // first pass's output is what gets reported, leaving every already-passing
+    // crate's output identical to before.
     let (default_code, default_stderr) = run_cargo_doc(sh, crate_name, &[])?;
-    let (bins_code, bins_stderr) = run_cargo_doc(sh, crate_name, &["--bins"])?;
-
-    // Report the pass that failed, so the count and the debug dump describe
-    // the actual failure rather than the other pass's clean run.
     let (exit_code, stderr) = if default_code != 0 {
         (default_code, default_stderr)
     } else {
-        (bins_code, bins_stderr)
+        match run_cargo_doc(sh, crate_name, &["--bins"])? {
+            (0, _) => (0, default_stderr),
+            failed => failed,
+        }
     };
 
     // Count diagnostics. With -D warnings, warnings are promoted to errors,
