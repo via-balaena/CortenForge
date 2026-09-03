@@ -205,6 +205,101 @@ mod tests {
         );
     }
 
+    /// A project walked to [`Step::MakeMolds`] with a two-layer pour plan.
+    ///
+    /// Every artifact on the way is plain data, so this needs no files and no
+    /// cast run — the setters only gate on the previous step being complete.
+    fn with_pour_plan() -> Studio {
+        use cf_studio_core::{
+            DesignDraft, LayerDraft, MoldOutputs, PlugDraft, PourPlan, PourStep, PrepInput,
+            ScanInput,
+        };
+
+        let step = |layer_index: usize, pot_life_minutes: u32| PourStep {
+            layer_index,
+            material_display_name: "Ecoflex 00-30".to_string(),
+            mass_g: 40.0,
+            mix_ratio_a_to_b: "1:1".to_string(),
+            pot_life_minutes,
+            cure_time_hours: 4.0,
+            slacker_fraction: None,
+        };
+
+        let mut s = fresh();
+        s.project.set_scan(ScanInput {
+            source_path: "scan.stl".into(),
+        });
+        let steps: [Result<(), cf_studio_core::StudioError>; 4] = [
+            s.project.set_prep(PrepInput {
+                cleaned_stl: "scan.cleaned.stl".into(),
+                prep_toml: "scan.prep.toml".into(),
+            }),
+            s.project.set_plug(PlugDraft::default()),
+            s.project.set_design(DesignDraft {
+                cavity_inset_m: 0.0,
+                layers: vec![LayerDraft {
+                    thickness_m: 0.003,
+                    material_key: "ECOFLEX_00_30".to_string(),
+                    slacker_fraction: 0.0,
+                }],
+            }),
+            s.project.set_molds(MoldOutputs {
+                out_dir: "out".into(),
+                mold_stls: Vec::new(),
+                plug_stls: Vec::new(),
+                accessory_stls: Vec::new(),
+                procedure_path: "procedure.md".into(),
+                total_mass_g: 80.0,
+                pour_plan: PourPlan {
+                    steps: vec![step(0, POT_LIFE_MINUTES), step(1, 45)],
+                },
+            }),
+        ];
+        assert!(
+            steps.iter().all(Result::is_ok),
+            "the fixture must reach MakeMolds: {steps:?}"
+        );
+        s
+    }
+
+    /// The first layer's working time, in minutes — the value the countdown
+    /// under test is expected to start from.
+    const POT_LIFE_MINUTES: u32 = 30;
+
+    /// Both halves matter: the timer must start at all, and it must count
+    /// *down from* the pot life rather than to a moment already past.
+    #[test]
+    fn the_pour_timer_starts_at_the_layers_pot_life() {
+        let mut s = with_pour_plan();
+        s.start_pour_timer();
+
+        assert!(s.pour_deadline.is_some(), "a plan means the timer starts");
+        let remaining = s.pour_remaining_secs().unwrap_or(-1);
+        let expected = i64::from(POT_LIFE_MINUTES) * 60;
+        assert!(
+            remaining > expected - 60 && remaining <= expected,
+            "the deadline must be {expected}s ahead, not behind: {remaining}"
+        );
+    }
+
+    /// Both halves matter: the cursor moves on, and the clock stops. The clock
+    /// is what catches an inverted `PourAdvance::NoPlan` check, since `advance`
+    /// has already moved the cursor by the time that check runs.
+    #[test]
+    fn marking_a_layer_poured_advances_and_stops_the_clock() {
+        let mut s = with_pour_plan();
+        s.start_pour_timer();
+        assert!(
+            s.pour_deadline.is_some(),
+            "precondition: a timer is running"
+        );
+
+        s.mark_poured();
+
+        assert_eq!(s.pour.current(), 1, "on to the second layer");
+        assert!(s.pour_deadline.is_none(), "and the countdown stopped");
+    }
+
     /// A minimal valid ASCII STL — one triangle, enough for `load_scan`.
     const ONE_TRIANGLE_STL: &str = "\
 solid t
