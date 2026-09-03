@@ -9,8 +9,10 @@ use std::path::{Path, PathBuf};
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, futures_lite::future};
 use cf_studio_engine::{PrintExportReport, export_print_package};
+use cf_studio_gui::apply_scan;
 
 use crate::dialogs::{DialogKind, PendingDialog};
+use crate::scan::{ActiveScan, ScanEdit};
 use crate::state::Studio;
 
 /// The running print export, if any.
@@ -22,11 +24,24 @@ pub(crate) fn poll_dialogs(
     mut dialog: ResMut<PendingDialog>,
     mut studio: ResMut<Studio>,
     mut job: ResMut<PrintJob>,
+    mut scan: ResMut<ScanEdit>,
 ) {
     let Some((kind, picked)) = dialog.poll() else {
         return;
     };
     match kind {
+        DialogKind::ScanFile => {
+            let Some(path) = picked else { return };
+            // The session loads first: it is the stricter read, and recording a
+            // scan the viewport cannot show would leave the two disagreeing.
+            studio.message = Some(match ActiveScan::load(&path) {
+                Ok(active) => {
+                    scan.set(active);
+                    apply_scan(&mut studio.project, &path)
+                }
+                Err(message) => Err(message),
+            });
+        }
         DialogKind::PrintDest => {
             // `None` is a cancel, which is a complete outcome: leave the app
             // exactly as it was, with no message.

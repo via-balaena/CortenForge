@@ -24,9 +24,15 @@ use std::path::PathBuf;
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, futures_lite::future};
 
+/// The scan formats the picker offers. `cortenforge` enables `mesh-io/threemf`,
+/// so all four reach a loader.
+const SCAN_EXTENSIONS: &[&str] = &["stl", "obj", "ply", "3mf"];
+
 /// What a dialog was opened for, so the poller can route the chosen path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DialogKind {
+    /// Step 1 (Add scan): the scan file to work from.
+    ScanFile,
     /// Step 6 (Print): the folder the printable files are copied into.
     PrintDest,
 }
@@ -57,6 +63,22 @@ impl PendingDialog {
                 .map(|handle| handle.path().to_path_buf())
         });
         self.0 = Some((kind, task));
+    }
+
+    /// Open a scan-file picker. A no-op while one is already open.
+    pub(crate) fn pick_scan_file(&mut self) {
+        if self.0.is_some() {
+            return;
+        }
+        let task = AsyncComputeTaskPool::get().spawn(async move {
+            rfd::AsyncFileDialog::new()
+                .set_title("Choose your 3D scan")
+                .add_filter("3D scan", SCAN_EXTENSIONS)
+                .pick_file()
+                .await
+                .map(|handle| handle.path().to_path_buf())
+        });
+        self.0 = Some((DialogKind::ScanFile, task));
     }
 
     /// Take the result if the dialog has resolved. `Some((kind, None))` means

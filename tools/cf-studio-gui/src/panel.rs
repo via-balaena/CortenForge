@@ -25,6 +25,8 @@ use crate::widgets::{
 pub(crate) enum Intent {
     Back,
     Next,
+    /// Step 1: choose the scan file to work from.
+    PickScan,
     /// Step 6: choose a folder and copy the printable files into it.
     ExportPrint,
     /// Step 6: reveal the folder the files were copied to.
@@ -128,11 +130,8 @@ fn draw_body(ui: &mut egui::Ui, studio: &Studio, dialog: &PendingDialog) -> Opti
     // "not ported yet" steps) would silently render one step's screen for a
     // step added later; this way the compiler names the new arm.
     let intent = match viewed {
-        Step::AddScan
-        | Step::CleanScan
-        | Step::ShapePiece
-        | Step::DesignLayers
-        | Step::MakeMolds => {
+        Step::AddScan => draw_add_scan(ui, studio, dialog),
+        Step::CleanScan | Step::ShapePiece | Step::DesignLayers | Step::MakeMolds => {
             draw_porting_notice(ui);
             None
         }
@@ -150,7 +149,37 @@ fn draw_body(ui: &mut egui::Ui, studio: &Studio, dialog: &PendingDialog) -> Opti
     intent
 }
 
-/// Steps 1–5 during the Slint→Bevy port. Says what is missing and that the work
+/// Step 1 — choose the scan. The 3D view behind the panel shows it.
+fn draw_add_scan(ui: &mut egui::Ui, studio: &Studio, dialog: &PendingDialog) -> Option<Intent> {
+    let mut intent = None;
+    let has_scan = studio.project.is_complete(Step::AddScan);
+    ui.add_space(8.0);
+    if !has_scan {
+        wrapped_label(ui, "Choose a scan to see it here — then drag to spin it.");
+        ui.add_space(12.0);
+    }
+    let label = if has_scan {
+        "Choose a different scan…"
+    } else {
+        "Choose scan file…"
+    };
+    let blocked = studio.busy || dialog.is_open();
+    if ui.add_enabled(!blocked, egui::Button::new(label)).clicked() {
+        intent = Some(Intent::PickScan);
+    }
+    ui.add_space(8.0);
+    wrapped_label(ui, "Works with STL, OBJ, PLY, and 3MF scans.");
+    ui.add_space(12.0);
+    wrapped_label(
+        ui,
+        "💡 Leave the bottom open — scan it like it's on a lazy Susan and \
+         don't bother closing or capping the floor in your scanning software. \
+         CortenForge trims and rebuilds the floor for you in the next step.",
+    );
+    intent
+}
+
+/// Steps 2–5 during the Slint→Bevy port. Says what is missing and that the work
 /// is not lost, rather than showing an empty screen that reads as a bug.
 fn draw_porting_notice(ui: &mut egui::Ui) {
     ui.add_space(8.0);
@@ -280,6 +309,7 @@ fn apply_intent(intent: Intent, studio: &mut Studio, dialog: &mut PendingDialog)
     match intent {
         Intent::Back => studio.back(),
         Intent::Next => studio.next(),
+        Intent::PickScan => dialog.pick_scan_file(),
         Intent::StartPourTimer => studio.start_pour_timer(),
         Intent::MarkPoured => studio.mark_poured(),
         Intent::OpenExportFolder => match studio.project.print().map(|p| p.export_dir.clone()) {
