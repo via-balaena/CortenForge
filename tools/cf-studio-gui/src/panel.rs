@@ -97,19 +97,25 @@ fn draw_checklist(ui: &mut egui::Ui, studio: &Studio) {
     }
 }
 
-/// Back / Help / Next, gated by [`nav_state`].
+/// Whether the wizard is accepting actions.
 ///
-/// Paging is blocked while a dialog is open for the same reason the action
-/// buttons are: the picker's result lands on whichever step the cursor has
-/// reached by then, and a scan landing resets the project to step 1.
+/// A long job owns the app until it finishes and an open OS dialog owns it
+/// until it resolves — and **paging counts**: the picker's result lands on
+/// whichever step the cursor has reached by then, and a scan landing resets the
+/// project to step 1. One definition so a new control cannot honour half of it.
+fn accepting_actions(studio: &Studio, dialog: &PendingDialog) -> bool {
+    !studio.busy && !dialog.is_open()
+}
+
+/// Back / Help / Next, gated by [`nav_state`].
 fn draw_nav(ui: &mut egui::Ui, studio: &Studio, dialog: &PendingDialog) -> Option<Intent> {
     let nav = nav_state(&studio.project, studio.cursor.viewed());
-    let blocked = studio.busy || dialog.is_open();
+    let ready = accepting_actions(studio, dialog);
     let mut intent = None;
     ui.add_space(6.0);
     ui.horizontal(|ui| {
         if ui
-            .add_enabled(nav.can_back && !blocked, egui::Button::new("← Back"))
+            .add_enabled(nav.can_back && ready, egui::Button::new("← Back"))
             .clicked()
         {
             intent = Some(Intent::Back);
@@ -117,7 +123,7 @@ fn draw_nav(ui: &mut egui::Ui, studio: &Studio, dialog: &PendingDialog) -> Optio
         ui.add_enabled(false, egui::Button::new("Help"))
             .on_disabled_hover_text("Per-step guidance arrives with the ported steps.");
         if ui
-            .add_enabled(nav.can_next && !blocked, egui::Button::new("Next →"))
+            .add_enabled(nav.can_next && ready, egui::Button::new("Next →"))
             .clicked()
         {
             intent = Some(Intent::Next);
@@ -176,8 +182,10 @@ fn draw_add_scan(ui: &mut egui::Ui, studio: &Studio, dialog: &PendingDialog) -> 
     } else {
         "Choose scan file…"
     };
-    let blocked = studio.busy || dialog.is_open();
-    if ui.add_enabled(!blocked, egui::Button::new(label)).clicked() {
+    if ui
+        .add_enabled(accepting_actions(studio, dialog), egui::Button::new(label))
+        .clicked()
+    {
         intent = Some(Intent::PickScan);
     }
     ui.add_space(8.0);
@@ -217,7 +225,8 @@ fn draw_print(ui: &mut egui::Ui, studio: &Studio, dialog: &PendingDialog) -> Opt
     ui.add_space(12.0);
 
     let exported = studio.project.print().is_some();
-    let blocked = studio.busy || dialog.is_open();
+    let ready = accepting_actions(studio, dialog);
+    // `busy` alone, not `ready`: an open dialog is not yet a running save.
     let label = if studio.busy {
         "Saving…"
     } else if exported {
@@ -226,12 +235,12 @@ fn draw_print(ui: &mut egui::Ui, studio: &Studio, dialog: &PendingDialog) -> Opt
         "Save files for printing…"
     };
     ui.horizontal(|ui| {
-        if ui.add_enabled(!blocked, egui::Button::new(label)).clicked() {
+        if ui.add_enabled(ready, egui::Button::new(label)).clicked() {
             intent = Some(Intent::ExportPrint);
         }
         if exported
             && ui
-                .add_enabled(!blocked, egui::Button::new("Open folder"))
+                .add_enabled(ready, egui::Button::new("Open folder"))
                 .clicked()
         {
             intent = Some(Intent::OpenExportFolder);
