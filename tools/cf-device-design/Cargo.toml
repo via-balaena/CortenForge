@@ -18,10 +18,10 @@ name = "cf-device-design"
 path = "src/main.rs"
 
 [dependencies]
-# cf-viewer library — scene helpers (`RenderScale`, `compute_render_scale`,
-# `scale_aabb`, `setup_camera_and_lighting`, `spawn_face_mesh`) lifted at
-# Stage 2.5 commit #2 for cross-tool reuse. cf-device-design is the third
-# consumer alongside cf-view (binary) + cf-scan-prep.
+# cf-viewer library — `setup_camera_and_lighting`, lifted at Stage 2.5
+# commit #2 for cross-tool reuse. cf-device-design is the third consumer
+# alongside cf-view (binary) + cf-scan-prep. The render-scale helpers
+# moved to `cf-bevy-common::scale`.
 cf-viewer = { workspace = true }
 
 # Shared Bevy helpers — `UpAxis::PlusZ` (cast-frame demolding axis

@@ -390,8 +390,9 @@ pub fn detect_input_mode(path: &Path) -> Result<InputMode> {
 
 /// Spawn the orbit camera + directional key light + global ambient light,
 /// framed on the supplied AABB (which the caller has already scaled via
-/// [`cf_bevy_common::scale::scale_aabb`] to match the rendered geometry's
-/// bbox).
+/// [`RenderScale::framing_aabb`] to match the rendered geometry's bbox).
+///
+/// [`RenderScale::framing_aabb`]: cf_bevy_common::scale::RenderScale::framing_aabb
 ///
 /// `up` controls the input-frame → Bevy-Y-up swap that
 /// [`OrbitCamera::framing_for_aabb`] applies to the camera target so the
