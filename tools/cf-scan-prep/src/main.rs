@@ -43,7 +43,7 @@ use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, futures_lite::future};
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
 use cf_bevy_common::prelude::*;
-use cf_bevy_common::scale::{RenderScale, compute_render_scale, render_transform, scale_aabb};
+use cf_bevy_common::scale::RenderScale;
 use cf_viewer::{setup_camera_and_lighting, spawn_face_mesh};
 use clap::{Parser, ValueEnum};
 use mesh_io::load_stl;
@@ -1106,7 +1106,7 @@ fn run_render_app(
 ) {
     #[allow(clippy::cast_possible_truncation)] // f64 → f32 is intentional for Bevy.
     let raw_diagonal = scan_mesh.aabb().diagonal() as f32;
-    let render_scale = compute_render_scale(raw_diagonal);
+    let render_scale = RenderScale::for_diagonal(raw_diagonal);
     println!(
         "loaded {} vertices, {} faces; bbox diagonal = {raw_diagonal:.4} m; \
          render_scale = {render_scale:.2}×",
@@ -1128,7 +1128,7 @@ fn run_render_app(
         .add_plugins(OrbitCameraPlugin)
         .insert_resource(ClearColor(Color::srgb(0.10, 0.10, 0.12)))
         .insert_resource(SCAN_UP_AXIS)
-        .insert_resource(RenderScale(render_scale))
+        .insert_resource(render_scale)
         .insert_resource(ScanMesh(scan_mesh))
         .insert_resource(original)
         .insert_resource(scan_info)
@@ -1205,9 +1205,13 @@ fn run_render_app(
 /// after the raw scan AABB + render_scale are known; the resulting
 /// values are immutable for the app's lifetime (user-mutable transforms
 /// stack on top per-frame via `draw_reference_overlays`).
-fn build_overlay_lengths(scan: &IndexedMesh, render_scale: f32, up: UpAxis) -> OverlayLengths {
+fn build_overlay_lengths(
+    scan: &IndexedMesh,
+    render_scale: RenderScale,
+    up: UpAxis,
+) -> OverlayLengths {
     let raw_aabb = scan.aabb();
-    let scaled_aabb = scale_aabb(&raw_aabb, render_scale);
+    let scaled_aabb = render_scale.framing_aabb(&raw_aabb);
 
     // Center + half-extents in physics frame.
     let center_physics = scaled_aabb.center();
@@ -1284,7 +1288,7 @@ fn setup_render_scene(
     // through one place + the displayed mesh is always the
     // post-trim view).
     let raw_aabb = scan.0.aabb();
-    let scaled_aabb = scale_aabb(&raw_aabb, render_scale.0);
+    let scaled_aabb = render_scale.framing_aabb(&raw_aabb);
     setup_camera_and_lighting(&mut commands, &scaled_aabb, *up);
 }
 
@@ -1482,7 +1486,7 @@ fn respawn_scan_entity(
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
     up: UpAxis,
-    render_scale: f32,
+    render_scale: RenderScale,
 ) {
     for entity in existing {
         commands.entity(entity).despawn();
@@ -1494,7 +1498,7 @@ fn respawn_scan_entity(
         mesh,
         None,
         up,
-        render_transform(render_scale),
+        render_scale.transform(),
     );
     commands.entity(entity).insert(ScanMeshEntity);
 }
@@ -1750,7 +1754,7 @@ fn update_displayed_mesh(
         meshes.as_mut(),
         materials.as_mut(),
         *up,
-        render_scale.0,
+        *render_scale,
     );
 
     *last_snapshot = Some(snapshot);
@@ -4077,7 +4081,7 @@ mod tests {
         mesh.vertices.push(Point3::new(0.0, 0.0, 0.3));
         mesh.faces.push([0, 1, 2]);
 
-        let overlays = build_overlay_lengths(&mesh, 10.0, UpAxis::PlusZ);
+        let overlays = build_overlay_lengths(&mesh, RenderScale(10.0), UpAxis::PlusZ);
 
         // Bevy bbox center: physics (0.05, 0.10, 0.15) × 10 swapped to
         // (0.5, 1.5, 1.0).

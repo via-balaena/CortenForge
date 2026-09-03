@@ -205,7 +205,7 @@ mod visual {
     use bevy::time::Real;
     use cf_bevy_common::axis::UpAxis;
     use cf_bevy_common::camera::{OrbitCamera, OrbitCameraPlugin};
-    use cf_bevy_common::scale::render_transform;
+    use cf_bevy_common::scale::RenderScale;
     use sim_bevy_soft::prelude::{apply_soft_positions, build_soft_mesh};
 
     const LINK_R: f64 = 0.012;
@@ -279,7 +279,7 @@ mod visual {
         commands.spawn((
             Mesh3d(soft_mesh),
             MeshMaterial3d(soft_material),
-            render_transform(RENDER_SCALE),
+            RenderScale(RENDER_SCALE).transform(),
             SoftBody,
         ));
 
