@@ -35,7 +35,7 @@ impl ActiveScan {
     #[allow(clippy::cast_possible_truncation)] // f64 diagonal → the f32 the lift takes.
     pub(crate) fn load(path: &Path) -> Result<Self, String> {
         let session = EditSession::load(path, SCAN_SCALE_TO_M).map_err(|e| e.to_string())?;
-        let diagonal = session.display_mesh().aabb().diagonal() as f32;
+        let diagonal = session.working().aabb().diagonal() as f32;
         Ok(Self {
             session,
             scale: RenderScale::for_diagonal(diagonal),

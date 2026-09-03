@@ -32,15 +32,21 @@ pub(crate) fn poll_dialogs(
     match kind {
         DialogKind::ScanFile => {
             let Some(path) = picked else { return };
-            // The session loads first: it is the stricter read, and recording a
-            // scan the viewport cannot show would leave the two disagreeing.
-            studio.message = Some(match ActiveScan::load(&path) {
-                Ok(active) => {
-                    scan.set(active);
-                    apply_scan(&mut studio.project, &path)
-                }
+            // Both reads run before either commit, so the project and the
+            // viewport cannot end up disagreeing about which scan is loaded:
+            // `ActiveScan::load` only reads, and `apply_scan` records nothing
+            // unless its own read of the same file succeeded.
+            let outcome = match ActiveScan::load(&path) {
                 Err(message) => Err(message),
-            });
+                Ok(active) => {
+                    let recorded = apply_scan(&mut studio.project, &path);
+                    if recorded.is_ok() {
+                        scan.set(active);
+                    }
+                    recorded
+                }
+            };
+            studio.message = Some(outcome);
         }
         DialogKind::PrintDest => {
             // `None` is a cancel, which is a complete outcome: leave the app

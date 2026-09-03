@@ -27,12 +27,15 @@ const VIEWPORT_WIDTH: f32 = 600.0;
 /// The narrowest 3D view still worth showing — the resize floor.
 const MIN_VIEWPORT_WIDTH: f32 = 220.0;
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Widths are small and positive.
 fn main() {
+    // `WindowResolution` is whole pixels; the panel widths are egui's points.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let default_width = (PANEL_WIDTH + VIEWPORT_WIDTH) as u32;
+
     let plugins = DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
             title: "Cendrillon".into(),
-            resolution: (((PANEL_WIDTH + VIEWPORT_WIDTH) as u32), 900u32).into(),
+            resolution: (default_width, 900u32).into(),
             // Width is measured from the panels outwards: they cover the same
             // strip whatever the window's width, and everything left over is
             // the 3D view. The pre-port floor of 640 predates the viewport and
