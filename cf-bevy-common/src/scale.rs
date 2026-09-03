@@ -2,15 +2,17 @@
 //!
 //! [`OrbitCamera::framing_for_aabb`] clamps the AABB diagonal to `max(1.0)`, so
 //! every scene 1 m or smaller is framed from one distance — `1.5·√3 ≈ 2.6 m`.
-//! A 5 cm object at 2.6 m renders as a dot.
+//! A 5 cm object there spans about 2° of the view.
 //!
 //! ⚠ The lift does **not** move the camera; `framing_for_aabb` returns the same
-//! distance either way (`the_lift_does_not_move_the_camera` asserts it). It
-//! scales the *rendered* geometry to a 1 m diagonal so it fills the frame the
-//! camera is already aimed at, leaving the physics-scale mesh alone.
-//! [`RenderScale`] carries the factor to everything else drawing into that
-//! frame — gizmos, clip planes, pushed uniforms — which must apply the same
-//! lift or land in the wrong place.
+//! distance either way (`the_lift_does_not_move_the_camera` asserts it). What
+//! changes is the geometry's size within that fixed frame.
+//!
+//! ⚠ **These functions only derive numbers.** The caller applies the factor to
+//! the geometry — `Transform::from_scale(Vec3::splat(f))` — and to anything else
+//! drawn in the same frame (gizmos, clip planes, pushed uniforms), which is what
+//! [`RenderScale`] is for. Deriving without applying leaves a correctly-framed
+//! camera over an unscaled mesh: the original defect.
 //!
 //! ⚠ Rendering only. A lifted value sits in a different frame from the mesh it
 //! came from: never write one to a file or report it to the user.
