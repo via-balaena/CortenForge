@@ -60,7 +60,7 @@ pub(crate) fn wizard_screen(
         .show(ctx, |ui| draw_checklist(ui, &studio));
 
     egui::TopBottomPanel::bottom("nav").show(ctx, |ui| {
-        intent = draw_nav(ui, &studio).or(intent);
+        intent = draw_nav(ui, &studio, &dialog).or(intent);
     });
 
     egui::SidePanel::right("body")
@@ -98,13 +98,18 @@ fn draw_checklist(ui: &mut egui::Ui, studio: &Studio) {
 }
 
 /// Back / Help / Next, gated by [`nav_state`].
-fn draw_nav(ui: &mut egui::Ui, studio: &Studio) -> Option<Intent> {
+///
+/// Paging is blocked while a dialog is open for the same reason the action
+/// buttons are: the picker's result lands on whichever step the cursor has
+/// reached by then, and a scan landing resets the project to step 1.
+fn draw_nav(ui: &mut egui::Ui, studio: &Studio, dialog: &PendingDialog) -> Option<Intent> {
     let nav = nav_state(&studio.project, studio.cursor.viewed());
+    let blocked = studio.busy || dialog.is_open();
     let mut intent = None;
     ui.add_space(6.0);
     ui.horizontal(|ui| {
         if ui
-            .add_enabled(nav.can_back && !studio.busy, egui::Button::new("← Back"))
+            .add_enabled(nav.can_back && !blocked, egui::Button::new("← Back"))
             .clicked()
         {
             intent = Some(Intent::Back);
@@ -112,7 +117,7 @@ fn draw_nav(ui: &mut egui::Ui, studio: &Studio) -> Option<Intent> {
         ui.add_enabled(false, egui::Button::new("Help"))
             .on_disabled_hover_text("Per-step guidance arrives with the ported steps.");
         if ui
-            .add_enabled(nav.can_next && !studio.busy, egui::Button::new("Next →"))
+            .add_enabled(nav.can_next && !blocked, egui::Button::new("Next →"))
             .clicked()
         {
             intent = Some(Intent::Next);

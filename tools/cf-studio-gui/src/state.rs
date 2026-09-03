@@ -234,6 +234,7 @@ endsolid t
         let mut s = fresh();
         s.pour.advance(3);
         s.pour_deadline = Some(Instant::now() + std::time::Duration::from_secs(600));
+        assert_eq!(s.pour.current(), 1, "the fixture must start mid-pour");
 
         let outcome = s.record_scan(&scan);
         let _ = std::fs::remove_file(&scan);
