@@ -35,12 +35,13 @@ use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
 use cf_bevy_common::mesh::triangle_mesh_flat_shaded;
 use cf_bevy_common::prelude::*;
+use cf_bevy_common::scale::{RenderScale, compute_render_scale, scale_aabb};
 use cf_device_types::{
     CavityState, Centerline, LAYER_COUNT_MAX, LAYER_MATERIALS, LAYER_SURFACE_PALETTE, LayerSpec,
     LayersState, ScanInfo, ScanMesh, ScanMeshVisible, design_toml, material_density,
     resolve_slacker_fraction, slacker,
 };
-use cf_viewer::{RenderScale, compute_render_scale, scale_aabb, setup_camera_and_lighting};
+use cf_viewer::setup_camera_and_lighting;
 
 use cf_device_geometry::bevy_mesh::{
     build_bevy_mesh_from_indexed, build_bevy_mesh_from_indexed_with_colors,

@@ -43,9 +43,8 @@ use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, futures_lite::future};
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
 use cf_bevy_common::prelude::*;
-use cf_viewer::{
-    RenderScale, compute_render_scale, scale_aabb, setup_camera_and_lighting, spawn_face_mesh,
-};
+use cf_bevy_common::scale::{RenderScale, compute_render_scale, scale_aabb};
+use cf_viewer::{setup_camera_and_lighting, spawn_face_mesh};
 use clap::{Parser, ValueEnum};
 use mesh_io::load_stl;
 use mesh_repair::{remove_unreferenced_vertices, weld_vertices};

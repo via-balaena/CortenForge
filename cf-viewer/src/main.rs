@@ -4,13 +4,13 @@ use anyhow::Result;
 use bevy::prelude::*;
 use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
 use cf_bevy_common::prelude::*;
+use cf_bevy_common::scale::{RenderScale, compute_render_scale, scale_aabb};
 use cf_viewer::{
-    AssemblyInputs, InputMode, RenderScale, UpAxis, ViewerInput,
+    AssemblyInputs, InputMode, UpAxis, ViewerInput,
     cli::{Cli, seed_selection},
     colormap::{Colormap, ColormapKind},
-    compute_render_scale, detect_input_mode, load_assembly_inputs, load_input,
+    detect_input_mode, load_assembly_inputs, load_input,
     mesh::{POINT_RADIUS_FRACTION, build_face_mesh},
-    scale_aabb,
     sequence::{
         Playback, advance_playback_on_clock, handle_frame_navigation, handle_playback_input,
         reload_frame_on_change, sequence_info_panel,
