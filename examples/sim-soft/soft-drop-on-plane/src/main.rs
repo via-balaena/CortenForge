@@ -202,6 +202,7 @@ use bevy::prelude::Vec3 as BevyVec3;
 use bevy::prelude::*;
 use cf_bevy_common::axis::UpAxis;
 use cf_bevy_common::camera::{OrbitCamera, OrbitCameraPlugin};
+use cf_bevy_common::scale::RenderScale;
 use mesh_io::save_ply_attributed;
 use mesh_types::{AttributedMesh, IndexedMesh, Point3};
 use sim_bevy_soft::mesh::build_soft_mesh;
@@ -956,7 +957,7 @@ fn setup_visual_scene(
     commands.spawn((
         Mesh3d(soft_mesh_handle),
         MeshMaterial3d(soft_material),
-        Transform::from_scale(BevyVec3::splat(RENDER_SCALE)),
+        RenderScale(RENDER_SCALE).transform(),
         trajectory,
     ));
 

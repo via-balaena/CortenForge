@@ -16,8 +16,6 @@
 //!
 //! Top-level scene helpers shared across viewer binaries:
 //!
-//! - [`RenderScale`] / [`compute_render_scale`] / [`scale_aabb`] — lift
-//!   sub-meter scenes to Bevy's pipeline-default human-scale regime.
 //! - [`setup_camera_and_lighting`] — spawn orbit camera + directional
 //!   light + global ambient framed on a scaled AABB.
 //! - [`spawn_face_mesh`] — flat-shaded `IndexedMesh` → Bevy entity spawn
@@ -31,6 +29,11 @@
 //! moved to [`cf_bevy_common`] at sim-soft PR2 C2b so sim-bevy-soft and
 //! sim-bevy can share the same controller. [`UpAxis`] is re-exported here
 //! for back-compat with cf-viewer's existing call sites.
+//!
+//! The sub-meter render lift followed, to [`cf_bevy_common::scale`]. ⚠ Not
+//! re-exported: the `UpAxis` alias above already split this workspace's `use`
+//! sites across two paths for one type, and a second alias would buy the same
+//! drift.
 
 pub mod cli;
 pub mod colormap;
@@ -46,7 +49,7 @@ pub use cf_bevy_common::axis::UpAxis;
 use cf_bevy_common::camera::OrbitCamera;
 use cf_bevy_common::mesh::triangle_mesh_flat_shaded;
 use mesh_io::{load_ply_attributed, load_stl};
-use mesh_types::{Aabb, AttributedMesh, IndexedMesh, Point3};
+use mesh_types::{Aabb, AttributedMesh, IndexedMesh};
 
 pub use sequence::Sequence;
 
@@ -385,56 +388,11 @@ pub fn detect_input_mode(path: &Path) -> Result<InputMode> {
 // design spec (`docs/SCAN_PREP_DESIGN.md` §Architectural decisions §Tool home).
 // ---------------------------------------------------------------------------
 
-/// Render-side scale factor applied uniformly to all spawned geometry so
-/// sub-meter scenes lift to Bevy's pipeline-default human-scale (~1 m)
-/// regime. Bevy 0.18's defaults — near plane `0.1 m`,
-/// [`OrbitCamera::framing_for_aabb`]'s internal `.max(1.0)` clamp on
-/// diagonal, AmbientLight brightness — were tuned for human-scale scenes;
-/// at sim-soft's cm-scale (e.g. row 13's 52.6 mm bbox diagonal — the
-/// BCC mesher allocates a cube of side `2 (R + margin)` around the
-/// 1 cm sphere, with margin scaling per cell-size), the framing helper
-/// clamps diagonal up to `1.0` and places the camera 1.5 m away —
-/// geometry then renders as a single dot. Lifting the rendered scene to
-/// ~1 m diagonal puts everything safely within the defaults' working
-/// range. mesh-v1.0 examples already at meter scale get
-/// `render_scale = 1.0` (no change).
-///
-/// Banked at sim-soft EXAMPLE_INVENTORY iter-12 as the cf-view application
-/// of inventory iter-11 pattern (b) (RENDER_SCALE-as-rendering-pipeline-
-/// default-workaround); same root cause as sim-bevy-soft's row-12 +
-/// row-13 RENDER_SCALE policy.
-#[derive(Resource, Clone, Copy, Debug)]
-pub struct RenderScale(pub f32);
-
-/// Compute the render scale from the raw bbox diagonal: lift sub-meter
-/// scenes to a 1 m target diagonal; meter+ scenes render at native scale.
-/// Degenerate (zero / non-finite) diagonals fall back to `1.0` so the
-/// downstream framing helper's own clamp handles them.
-#[must_use]
-pub fn compute_render_scale(raw_diagonal: f32) -> f32 {
-    const TARGET_DIAGONAL: f32 = 1.0;
-    if !raw_diagonal.is_finite() || raw_diagonal <= 0.0 || raw_diagonal >= TARGET_DIAGONAL {
-        1.0
-    } else {
-        TARGET_DIAGONAL / raw_diagonal
-    }
-}
-
-/// Apply a uniform scale factor to an [`Aabb`]'s corners. Used to compute
-/// the camera-framing AABB at render scale (the rendered geometry's
-/// bbox), distinct from the loaded mesh's physics-scale AABB.
-#[must_use]
-pub fn scale_aabb(raw: &Aabb, scale: f32) -> Aabb {
-    let s = scale as f64;
-    Aabb::from_corners(
-        Point3::new(raw.min.x * s, raw.min.y * s, raw.min.z * s),
-        Point3::new(raw.max.x * s, raw.max.y * s, raw.max.z * s),
-    )
-}
-
 /// Spawn the orbit camera + directional key light + global ambient light,
 /// framed on the supplied AABB (which the caller has already scaled via
-/// [`scale_aabb`] to match the rendered geometry's bbox).
+/// [`RenderScale::framing_aabb`] to match the rendered geometry's bbox).
+///
+/// [`RenderScale::framing_aabb`]: cf_bevy_common::scale::RenderScale::framing_aabb
 ///
 /// `up` controls the input-frame → Bevy-Y-up swap that
 /// [`OrbitCamera::framing_for_aabb`] applies to the camera target so the
@@ -940,62 +898,6 @@ mod tests {
             "STL has no per-vertex scalars",
         );
         Ok(())
-    }
-
-    // ----- compute_render_scale ---------------------------------------
-
-    /// Sub-meter scenes lift to the 1 m target: `0.05 m → 20×`.
-    #[test]
-    fn compute_render_scale_lifts_sub_meter_to_one() {
-        assert!((compute_render_scale(0.05) - 20.0).abs() < 1e-6);
-        assert!((compute_render_scale(0.5) - 2.0).abs() < 1e-6);
-    }
-
-    /// Meter+ scenes pass through unchanged. The `1 m` boundary itself is
-    /// included in the no-lift regime (the impl gates on `>= TARGET`).
-    #[test]
-    fn compute_render_scale_passthrough_at_meter_plus() {
-        assert_eq!(compute_render_scale(1.0), 1.0);
-        assert_eq!(compute_render_scale(2.5), 1.0);
-        assert_eq!(compute_render_scale(100.0), 1.0);
-    }
-
-    /// Degenerate inputs (zero, negative, NaN, Inf) fall back to `1.0` so
-    /// the downstream framing helper's own `max(1.0)` clamp can handle the
-    /// scene without dividing by zero here.
-    #[test]
-    fn compute_render_scale_falls_back_to_one_on_degenerate() {
-        assert_eq!(compute_render_scale(0.0), 1.0);
-        assert_eq!(compute_render_scale(-1.0), 1.0);
-        assert_eq!(compute_render_scale(f32::NAN), 1.0);
-        assert_eq!(compute_render_scale(f32::INFINITY), 1.0);
-    }
-
-    // ----- scale_aabb -------------------------------------------------
-
-    /// `scale = 1.0` is the identity (load-bearing for meter+ scenes
-    /// where `compute_render_scale` returns `1.0`).
-    #[test]
-    fn scale_aabb_identity_at_unit_scale() {
-        let raw = Aabb::from_corners(Point3::new(-0.1, -0.2, -0.3), Point3::new(0.4, 0.5, 0.6));
-        let scaled = scale_aabb(&raw, 1.0);
-        assert_eq!(scaled.min, raw.min);
-        assert_eq!(scaled.max, raw.max);
-    }
-
-    /// Uniform scaling is corner-wise linear: `min × s` and `max × s`
-    /// reach the rendered-frame bbox.
-    #[test]
-    fn scale_aabb_scales_corners_linearly() {
-        let raw = Aabb::from_corners(
-            Point3::new(-0.05, -0.05, -0.05),
-            Point3::new(0.05, 0.05, 0.05),
-        );
-        let scaled = scale_aabb(&raw, 10.0);
-        assert!((scaled.min.x - -0.5).abs() < 1e-9);
-        assert!((scaled.max.z - 0.5).abs() < 1e-9);
-        // Diagonal scales by the same factor.
-        assert!((scaled.diagonal() - raw.diagonal() * 10.0).abs() < 1e-9);
     }
 
     // ----- existing round-trip ---------------------------------------

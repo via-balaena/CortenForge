@@ -12,8 +12,8 @@
 use bevy::pbr::ExtendedMaterial;
 use bevy::prelude::*;
 use cf_bevy_common::axis::UpAxis;
+use cf_bevy_common::scale::RenderScale;
 use cf_device_types::CavityState;
-use cf_viewer::RenderScale;
 
 use crate::bevy_mesh::build_bevy_mesh_from_indexed;
 use crate::clip_plane::{ClipPlaneExt, ClipPlaneMaterial};

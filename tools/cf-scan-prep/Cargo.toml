@@ -26,10 +26,10 @@ path = "src/main.rs"
 # ECS/egui/rendering here, the math in cf-scan-prep-core.
 cf-scan-prep-core = { workspace = true }
 
-# cf-viewer library — scene helpers (`RenderScale`, `compute_render_scale`,
-# `scale_aabb`, `setup_camera_and_lighting`, `spawn_face_mesh`) lifted at
-# Stage 2.5 commit #2 for cross-tool reuse. cf-scan-prep is the second
-# consumer (cf-view binary is the first).
+# cf-viewer library — `setup_camera_and_lighting` + `spawn_face_mesh`,
+# lifted at Stage 2.5 commit #2 for cross-tool reuse. cf-scan-prep is the
+# second consumer (cf-view binary is the first). The render-scale helpers
+# moved to `cf-bevy-common::scale`.
 cf-viewer = { workspace = true }
 
 # Shared Bevy helpers — `UpAxis` (cast-frame `+Z` convention), the

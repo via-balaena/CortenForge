@@ -21,11 +21,14 @@
 //!   `UpAxis`-aware coordinate swap + winding flip. Truthful WYSIWYP
 //!   rendering — the mesh's actual triangulation matches what comes
 //!   out of a 3D printer.
+//! - [`scale`] — the sub-meter render lift that keeps small scenes inside
+//!   Bevy's human-scale rendering defaults.
 //! - [`prelude`] — convenience re-exports for consumer wiring.
 
 pub mod axis;
 pub mod camera;
 pub mod mesh;
+pub mod scale;
 
 /// Convenience re-exports. `use cf_bevy_common::prelude::*;` brings in
 /// the load-bearing types (`UpAxis`, `OrbitCamera`, `OrbitCameraPlugin`)

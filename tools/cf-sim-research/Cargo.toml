@@ -35,8 +35,8 @@ path = "src/main.rs"
 # same way cf-device-design does.
 cf-device-types = { workspace = true, features = ["bevy"] }
 
-# cf-viewer library — `RenderScale` / `compute_render_scale` /
-# `scale_aabb` / `setup_camera_and_lighting`. cf-sim-research does
+# cf-viewer library — `setup_camera_and_lighting` (the render-scale
+# helpers moved to `cf-bevy-common::scale`). cf-sim-research does
 # NOT consume `spawn_face_mesh` (cf-viewer's stock face-mesh
 # spawner) because Phase 3's `setup_render_scene` inlines a
 # `ClipPlaneMaterial` variant so the scan participates in clipping

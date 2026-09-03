@@ -35,12 +35,13 @@ use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
 use cf_bevy_common::mesh::triangle_mesh_flat_shaded;
 use cf_bevy_common::prelude::*;
+use cf_bevy_common::scale::RenderScale;
 use cf_device_types::{
     CavityState, Centerline, LAYER_COUNT_MAX, LAYER_MATERIALS, LAYER_SURFACE_PALETTE, LayerSpec,
     LayersState, ScanInfo, ScanMesh, ScanMeshVisible, design_toml, material_density,
     resolve_slacker_fraction, slacker,
 };
-use cf_viewer::{RenderScale, compute_render_scale, scale_aabb, setup_camera_and_lighting};
+use cf_viewer::setup_camera_and_lighting;
 
 use cf_device_geometry::bevy_mesh::{
     build_bevy_mesh_from_indexed, build_bevy_mesh_from_indexed_with_colors,
@@ -1174,11 +1175,11 @@ fn setup_render_scene(
     mut meshes: ResMut<Assets<Mesh>>,
     mut clip_materials: ResMut<Assets<ClipPlaneMaterial>>,
 ) {
-    let scale = render_scale.0;
+    let scale = *render_scale;
     let raw_aabb = scan.0.aabb();
-    let scaled_aabb = scale_aabb(&raw_aabb, scale);
+    let scaled_aabb = scale.framing_aabb(&raw_aabb);
     setup_camera_and_lighting(&mut commands, &scaled_aabb, *up);
-    let entity_transform = Transform::from_scale(Vec3::splat(scale));
+    let entity_transform = scale.transform();
     // Local inline of `cf_viewer::spawn_face_mesh` that mounts the
     // `ClipPlaneMaterial` extended material instead of the stock
     // `StandardMaterial` — keeps cf-viewer generic (per spec sub-leaf 3
@@ -1798,7 +1799,7 @@ fn run_render_app(
 ) {
     #[allow(clippy::cast_possible_truncation)] // f64 → f32 is intentional for Bevy.
     let raw_diagonal = scan_mesh.aabb().diagonal() as f32;
-    let render_scale = compute_render_scale(raw_diagonal);
+    let render_scale = RenderScale::for_diagonal(raw_diagonal);
     // Phase 3 — start from defaults, then apply the loaded design if
     // any. `apply_design_toml` errors only on catalog lookup, already
     // gated by `validate_design_toml` at `load_design_toml`. A failure
@@ -1831,7 +1832,7 @@ fn run_render_app(
         .add_plugins(insertion_sim_ui::InsertionSimPlugin)
         .insert_resource(ClearColor(Color::srgb(0.10, 0.10, 0.12)))
         .insert_resource(DEVICE_UP_AXIS)
-        .insert_resource(RenderScale(render_scale))
+        .insert_resource(render_scale)
         .insert_resource(ScanMesh(scan_mesh))
         .insert_resource(scan_info)
         .insert_resource(Centerline {

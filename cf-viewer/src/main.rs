@@ -4,13 +4,13 @@ use anyhow::Result;
 use bevy::prelude::*;
 use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
 use cf_bevy_common::prelude::*;
+use cf_bevy_common::scale::RenderScale;
 use cf_viewer::{
-    AssemblyInputs, InputMode, RenderScale, UpAxis, ViewerInput,
+    AssemblyInputs, InputMode, UpAxis, ViewerInput,
     cli::{Cli, seed_selection},
     colormap::{Colormap, ColormapKind},
-    compute_render_scale, detect_input_mode, load_assembly_inputs, load_input,
+    detect_input_mode, load_assembly_inputs, load_input,
     mesh::{POINT_RADIUS_FRACTION, build_face_mesh},
-    scale_aabb,
     sequence::{
         Playback, advance_playback_on_clock, handle_frame_navigation, handle_playback_input,
         reload_frame_on_change, sequence_info_panel,
@@ -67,7 +67,7 @@ fn main() -> Result<()> {
 
     let input = load_input(&frame_path)?;
     let raw_diagonal = input.mesh.aabb().diagonal() as f32;
-    let render_scale = compute_render_scale(raw_diagonal);
+    let render_scale = RenderScale::for_diagonal(raw_diagonal);
     println!(
         "loaded {} vertices, {} scalars: {:?}",
         input.mesh.vertex_count(),
@@ -110,7 +110,7 @@ fn main() -> Result<()> {
     .insert_resource(input)
     .insert_resource(selection)
     .insert_resource(up_axis)
-    .insert_resource(RenderScale(render_scale))
+    .insert_resource(render_scale)
     .insert_resource(EguiPointerCaptured::default());
 
     // Sequence-mode-only resources. The sequence systems below are
@@ -276,7 +276,7 @@ fn run_assembly_mode(cli: &Cli, stls: &[std::path::PathBuf]) -> Result<()> {
     // frames the whole assembly, not just the first piece.
     let combined_aabb = combined_assembly_aabb(&assembly);
     let raw_diagonal = combined_aabb.diagonal() as f32;
-    let render_scale = compute_render_scale(raw_diagonal);
+    let render_scale = RenderScale::for_diagonal(raw_diagonal);
     println!("assembly bbox diagonal = {raw_diagonal:.4} m; render_scale = {render_scale:.2}×",);
 
     let up_axis: UpAxis = cli.up.into();
@@ -309,7 +309,7 @@ fn run_assembly_mode(cli: &Cli, stls: &[std::path::PathBuf]) -> Result<()> {
     .insert_resource(AssemblyVisibility::default())
     .insert_resource(AssemblyOpacity::default())
     .insert_resource(up_axis)
-    .insert_resource(RenderScale(render_scale))
+    .insert_resource(render_scale)
     .insert_resource(EguiPointerCaptured::default());
 
     app.add_systems(
@@ -364,7 +364,7 @@ fn setup_assembly_scene(
     render_scale: Res<RenderScale>,
 ) {
     let raw_aabb = combined_assembly_aabb(&assembly);
-    let aabb = scale_aabb(&raw_aabb, render_scale.0);
+    let aabb = render_scale.framing_aabb(&raw_aabb);
     setup_camera_and_lighting(&mut commands, &aabb, *up);
 }
 
@@ -401,7 +401,7 @@ fn spawn_assembly_pieces(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let scale = render_scale.0;
+    let scale = *render_scale;
     for (color_index, piece) in assembly.pieces.iter().enumerate() {
         let bevy_mesh = build_face_mesh(&piece.mesh, None, *up);
         let piece_color = TAB10[color_index % TAB10.len()];
@@ -429,7 +429,7 @@ fn spawn_assembly_pieces(
             },
             Mesh3d(meshes.add(bevy_mesh)),
             MeshMaterial3d(materials.add(material)),
-            Transform::from_scale(Vec3::splat(scale)),
+            scale.transform(),
         ));
     }
 }
@@ -577,7 +577,7 @@ fn setup_scene(
     render_scale: Res<RenderScale>,
 ) {
     let raw_aabb = input.mesh.aabb();
-    let aabb = scale_aabb(&raw_aabb, render_scale.0);
+    let aabb = render_scale.framing_aabb(&raw_aabb);
     setup_camera_and_lighting(&mut commands, &aabb, *up);
 }
 
@@ -665,7 +665,7 @@ fn spawn_geometry(
         ..default()
     };
 
-    let scale = render_scale.0;
+    let scale = *render_scale;
     if input.mesh.face_count() > 0 {
         // Faces case — single Mesh3d carrying the full triangle set, with
         // a uniform Transform::from_scale lifting cm-scale physics
@@ -677,7 +677,7 @@ fn spawn_geometry(
             GeometryEntity,
             Mesh3d(meshes.add(bevy_mesh)),
             MeshMaterial3d(material_handle),
-            Transform::from_scale(Vec3::splat(scale)),
+            scale.transform(),
         ));
     } else {
         // Point-cloud case — one Mesh3d per vertex sharing a Sphere mesh
@@ -698,7 +698,7 @@ fn spawn_geometry(
         //      centroid clouds (sim-soft scalar-field row 8, module `layered`,
         //      + successors) where the diagonal-only rule gave overlap.
         let raw_aabb = input.mesh.aabb();
-        let scaled_aabb = scale_aabb(&raw_aabb, scale);
+        let scaled_aabb = scale.framing_aabb(&raw_aabb);
         let diagonal = (scaled_aabb.diagonal() as f32).max(1.0);
         let n_points = input.mesh.geometry.vertices.len();
         let diagonal_radius = diagonal * POINT_RADIUS_FRACTION;
@@ -730,7 +730,9 @@ fn spawn_geometry(
                         GeometryEntity,
                         Mesh3d(sphere_handle.clone()),
                         MeshMaterial3d(material),
-                        Transform::from_translation(Vec3::from_array(up.to_bevy_point(v)) * scale),
+                        Transform::from_translation(
+                            Vec3::from_array(up.to_bevy_point(v)) * scale.0,
+                        ),
                     ));
                 }
             }
@@ -741,7 +743,9 @@ fn spawn_geometry(
                         GeometryEntity,
                         Mesh3d(sphere_handle.clone()),
                         MeshMaterial3d(material_handle.clone()),
-                        Transform::from_translation(Vec3::from_array(up.to_bevy_point(v)) * scale),
+                        Transform::from_translation(
+                            Vec3::from_array(up.to_bevy_point(v)) * scale.0,
+                        ),
                     ));
                 }
             }

@@ -2114,7 +2114,6 @@ dependencies = [
  "cf-cap-planes",
  "cf-design",
  "cf-device-types",
- "cf-viewer",
  "mesh-offset",
  "mesh-repair",
  "mesh-sdf",

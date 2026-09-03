@@ -166,6 +166,7 @@ mod visual {
     use bevy::time::Real;
     use cf_bevy_common::axis::UpAxis;
     use cf_bevy_common::camera::{OrbitCamera, OrbitCameraPlugin};
+    use cf_bevy_common::scale::RenderScale;
     use sim_bevy_soft::prelude::{apply_soft_positions, build_soft_mesh};
 
     /// The captured scene, handed to the startup system (taken once).
@@ -229,7 +230,7 @@ mod visual {
         commands.spawn((
             Mesh3d(soft_mesh),
             MeshMaterial3d(soft_material),
-            Transform::from_scale(Vec3::splat(RENDER_SCALE)),
+            RenderScale(RENDER_SCALE).transform(),
             SoftBody,
         ));
 

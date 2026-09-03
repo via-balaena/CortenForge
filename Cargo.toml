@@ -813,9 +813,9 @@ cf-bevy-common = { path = "cf-bevy-common" }
 # sim-bevy-soft's paint-faces example (and CortenForge Studio).
 cf-mesh-paint = { path = "cf-mesh-paint" }
 
-# cf-viewer library — scene helpers (`RenderScale`, `compute_render_scale`,
-# `setup_camera_and_lighting`, `spawn_face_mesh`) shared with
-# `tools/cf-scan-prep` per the Stage 2.5 design spec
+# cf-viewer library — `setup_camera_and_lighting` + `spawn_face_mesh`,
+# shared with `tools/cf-scan-prep` per the Stage 2.5 design spec. The
+# render-scale helpers moved to `cf-bevy-common::scale`.
 # (`docs/SCAN_PREP_DESIGN.md` §Architectural decisions §Tool home).
 # Library-only consumption; the `cf-view` binary stays out of dependents'
 # build graphs.
