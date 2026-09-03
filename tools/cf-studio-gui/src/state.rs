@@ -215,6 +215,11 @@ mod tests {
             ScanInput,
         };
 
+        let layer = || LayerDraft {
+            thickness_m: 0.003,
+            material_key: "ECOFLEX_00_30".to_string(),
+            slacker_fraction: 0.0,
+        };
         let step = |layer_index: usize, pot_life_minutes: u32| PourStep {
             layer_index,
             material_display_name: "Ecoflex 00-30".to_string(),
@@ -235,13 +240,10 @@ mod tests {
                 prep_toml: "scan.prep.toml".into(),
             }),
             s.project.set_plug(PlugDraft::default()),
+            // One layer per pour step, as a real cast run produces.
             s.project.set_design(DesignDraft {
                 cavity_inset_m: 0.0,
-                layers: vec![LayerDraft {
-                    thickness_m: 0.003,
-                    material_key: "ECOFLEX_00_30".to_string(),
-                    slacker_fraction: 0.0,
-                }],
+                layers: vec![layer(), layer()],
             }),
             s.project.set_molds(MoldOutputs {
                 out_dir: "out".into(),
