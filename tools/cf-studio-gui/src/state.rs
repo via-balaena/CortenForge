@@ -2,9 +2,9 @@
 //! cursor over it.
 //!
 //! Every decision here is a plain function over plain data in the lib
-//! ([`nav_state`], [`WizardCursor`], [`PourSession`]); this module only holds
-//! the state and routes button presses into it, so the egui systems have
-//! nothing left to get wrong.
+//! ([`cf_studio_gui::nav_state`], [`WizardCursor`], [`PourSession`]); this
+//! module only holds the state and routes button presses into it, so the egui
+//! systems have nothing left to get wrong.
 
 use std::time::Instant;
 

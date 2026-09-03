@@ -19,6 +19,14 @@ use crate::widgets::{
     ACTIVE_TEXT, ERROR_TEXT, GOOD_FILL, GOOD_TEXT, WARN_TEXT, card, wrapped_colored, wrapped_label,
 };
 
+/// The checklist column's width.
+const CHECKLIST_WIDTH: f32 = 260.0;
+/// The step body column's width.
+const BODY_WIDTH: f32 = 420.0;
+/// What the wizard's panels cover at any window width. The rest of the window
+/// is the 3D view, which is why `main.rs` sizes the window against this.
+pub(crate) const PANEL_WIDTH: f32 = CHECKLIST_WIDTH + BODY_WIDTH;
+
 /// What the user asked for this frame. At most one — a frame cannot hold two
 /// clicks, and modelling it as one value stops a "both fired" case existing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,7 +56,7 @@ pub(crate) fn wizard_screen(
 
     egui::SidePanel::left("checklist")
         .resizable(false)
-        .exact_width(260.0)
+        .exact_width(CHECKLIST_WIDTH)
         .show(ctx, |ui| draw_checklist(ui, &studio));
 
     egui::TopBottomPanel::bottom("nav").show(ctx, |ui| {
@@ -57,7 +65,7 @@ pub(crate) fn wizard_screen(
 
     egui::SidePanel::right("body")
         .resizable(false)
-        .exact_width(420.0)
+        .exact_width(BODY_WIDTH)
         .show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 intent = draw_body(ui, &studio, &dialog).or(intent);

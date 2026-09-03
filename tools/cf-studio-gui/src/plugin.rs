@@ -14,7 +14,7 @@ use crate::input::arbitrate_pointer_over_egui;
 use crate::jobs::{PrintJob, poll_dialogs, poll_print_job};
 use crate::panel::wizard_screen;
 use crate::scan::ScanEdit;
-use crate::scene::{setup_scene, show_scan};
+use crate::scene::{fit_viewport_to_free_space, setup_scene, show_scan};
 use crate::state::{Screen, Studio};
 use crate::waiver::waiver_screen;
 
@@ -39,6 +39,8 @@ impl Plugin for StudioPlugin {
                     force_light_theme,
                     waiver_screen.run_if(in_state(Screen::Waiver)),
                     wizard_screen.run_if(in_state(Screen::Wizard)),
+                    // Last: it measures what the panels above left uncovered.
+                    fit_viewport_to_free_space,
                 )
                     .chain(),
             )

@@ -20,16 +20,27 @@ use bevy::render::pipelined_rendering::PipelinedRenderingPlugin;
 use bevy::window::WindowResizeConstraints;
 use bevy_egui::EguiPlugin;
 
+use crate::panel::PANEL_WIDTH;
+
+/// The 3D view the window opens with, beside the panels.
+const VIEWPORT_WIDTH: f32 = 600.0;
+/// The narrowest 3D view still worth showing — the resize floor.
+const MIN_VIEWPORT_WIDTH: f32 = 220.0;
+
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Widths are small and positive.
 fn main() {
     let plugins = DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
             title: "Cendrillon".into(),
-            resolution: (900u32, 900u32).into(),
-            // Floors carried over from the pre-port window: wide enough for the
-            // checklist beside the body, tall enough that the footer nav stays
-            // on screen if the OS restores a shorter window.
+            resolution: (((PANEL_WIDTH + VIEWPORT_WIDTH) as u32), 900u32).into(),
+            // Width is measured from the panels outwards: they cover the same
+            // strip whatever the window's width, and everything left over is
+            // the 3D view. The pre-port floor of 640 predates the viewport and
+            // was narrower than the two panels it sat beside. Height is
+            // unchanged — enough that the footer nav stays on screen if the OS
+            // restores a shorter window.
             resize_constraints: WindowResizeConstraints {
-                min_width: 640.0,
+                min_width: PANEL_WIDTH + MIN_VIEWPORT_WIDTH,
                 min_height: 850.0,
                 ..default()
             },
