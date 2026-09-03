@@ -99,7 +99,6 @@ mod tests {
         assert!((scaled.diagonal() - raw.diagonal() * 10.0).abs() < 1e-9);
     }
 
-    /// The factor reaches the geometry as a uniform scale on all three axes.
     #[test]
     fn render_transform_scales_uniformly() {
         assert_eq!(render_transform(11.5).scale, Vec3::splat(11.5));
