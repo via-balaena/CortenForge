@@ -11,6 +11,7 @@ use bevy::tasks::{AsyncComputeTaskPool, Task, futures_lite::future};
 use cf_studio_engine::{PrintExportReport, export_print_package};
 
 use crate::dialogs::{DialogKind, PendingDialog};
+use crate::scan::{ActiveScan, ScanEdit};
 use crate::state::Studio;
 
 /// The running print export, if any.
@@ -22,11 +23,30 @@ pub(crate) fn poll_dialogs(
     mut dialog: ResMut<PendingDialog>,
     mut studio: ResMut<Studio>,
     mut job: ResMut<PrintJob>,
+    mut scan: ResMut<ScanEdit>,
 ) {
     let Some((kind, picked)) = dialog.poll() else {
         return;
     };
     match kind {
+        DialogKind::ScanFile => {
+            let Some(path) = picked else { return };
+            // Both reads run before either commit, so the project and the
+            // viewport cannot end up disagreeing about which scan is loaded:
+            // `ActiveScan::load` only reads, and `record_scan` records nothing
+            // unless its own read of the same file succeeded.
+            let outcome = match ActiveScan::load(&path) {
+                Err(message) => Err(message),
+                Ok(active) => {
+                    let recorded = studio.record_scan(&path);
+                    if recorded.is_ok() {
+                        scan.set(active);
+                    }
+                    recorded
+                }
+            };
+            studio.message = Some(outcome);
+        }
         DialogKind::PrintDest => {
             // `None` is a cancel, which is a complete outcome: leave the app
             // exactly as it was, with no message.

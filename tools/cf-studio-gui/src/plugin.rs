@@ -13,7 +13,8 @@ use crate::dialogs::PendingDialog;
 use crate::input::arbitrate_pointer_over_egui;
 use crate::jobs::{PrintJob, poll_dialogs, poll_print_job};
 use crate::panel::wizard_screen;
-use crate::scene::setup_scene;
+use crate::scan::ScanEdit;
+use crate::scene::{fit_viewport_to_free_space, setup_scene, show_scan};
 use crate::state::{Screen, Studio};
 use crate::waiver::waiver_screen;
 
@@ -28,6 +29,7 @@ impl Plugin for StudioPlugin {
             .init_resource::<Studio>()
             .init_resource::<PendingDialog>()
             .init_resource::<PrintJob>()
+            .init_resource::<ScanEdit>()
             .insert_resource(ClearColor(BACKGROUND))
             .add_plugins(OrbitCameraPlugin)
             .add_systems(Startup, setup_scene)
@@ -37,12 +39,21 @@ impl Plugin for StudioPlugin {
                     force_light_theme,
                     waiver_screen.run_if(in_state(Screen::Waiver)),
                     wizard_screen.run_if(in_state(Screen::Wizard)),
+                    // Last: it measures what the panels above left uncovered.
+                    fit_viewport_to_free_space,
                 )
                     .chain(),
             )
             .add_systems(
                 Update,
-                (arbitrate_pointer_over_egui, poll_dialogs, poll_print_job),
+                (
+                    arbitrate_pointer_over_egui,
+                    poll_dialogs,
+                    poll_print_job,
+                    show_scan
+                        .after(poll_dialogs)
+                        .run_if(resource_changed::<ScanEdit>),
+                ),
             );
     }
 }

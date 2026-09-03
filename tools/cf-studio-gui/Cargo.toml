@@ -73,6 +73,11 @@ bevy_egui = { version = "0.39.1", default-features = false, features = [
     "bevy_ui",
 ] }
 
+# The mesh types the scan travels in — `IndexedMesh` (into
+# `triangle_mesh_flat_shaded`) and `Bounded::aabb` for the camera framing. Same
+# crate the engine's `EditSession` hands back, via `cortenforge::mesh::types`.
+mesh-types = { workspace = true }
+
 # Shared Bevy helpers — `OrbitCameraPlugin` (orbit/pan/zoom) for the 3D view.
 # UI-free by design, so it composes with this crate's own egui panels.
 cf-bevy-common = { workspace = true }

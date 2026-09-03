@@ -19,12 +19,22 @@ use crate::widgets::{
     ACTIVE_TEXT, ERROR_TEXT, GOOD_FILL, GOOD_TEXT, WARN_TEXT, card, wrapped_colored, wrapped_label,
 };
 
+/// The checklist column's width.
+const CHECKLIST_WIDTH: f32 = 260.0;
+/// The step body column's width.
+const BODY_WIDTH: f32 = 420.0;
+/// What the wizard's panels cover at any window width. The rest of the window
+/// is the 3D view, which is why `main.rs` sizes the window against this.
+pub(crate) const PANEL_WIDTH: f32 = CHECKLIST_WIDTH + BODY_WIDTH;
+
 /// What the user asked for this frame. At most one — a frame cannot hold two
 /// clicks, and modelling it as one value stops a "both fired" case existing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Intent {
     Back,
     Next,
+    /// Step 1: choose the scan file to work from.
+    PickScan,
     /// Step 6: choose a folder and copy the printable files into it.
     ExportPrint,
     /// Step 6: reveal the folder the files were copied to.
@@ -46,16 +56,16 @@ pub(crate) fn wizard_screen(
 
     egui::SidePanel::left("checklist")
         .resizable(false)
-        .exact_width(260.0)
+        .exact_width(CHECKLIST_WIDTH)
         .show(ctx, |ui| draw_checklist(ui, &studio));
 
     egui::TopBottomPanel::bottom("nav").show(ctx, |ui| {
-        intent = draw_nav(ui, &studio).or(intent);
+        intent = draw_nav(ui, &studio, &dialog).or(intent);
     });
 
     egui::SidePanel::right("body")
         .resizable(false)
-        .exact_width(420.0)
+        .exact_width(BODY_WIDTH)
         .show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 intent = draw_body(ui, &studio, &dialog).or(intent);
@@ -87,14 +97,25 @@ fn draw_checklist(ui: &mut egui::Ui, studio: &Studio) {
     }
 }
 
+/// Whether the wizard is accepting actions.
+///
+/// A long job owns the app until it finishes and an open OS dialog owns it
+/// until it resolves — and **paging counts**: the picker's result lands on
+/// whichever step the cursor has reached by then, and a scan landing resets the
+/// project to step 1. One definition so a new control cannot honour half of it.
+fn accepting_actions(studio: &Studio, dialog: &PendingDialog) -> bool {
+    !studio.busy && !dialog.is_open()
+}
+
 /// Back / Help / Next, gated by [`nav_state`].
-fn draw_nav(ui: &mut egui::Ui, studio: &Studio) -> Option<Intent> {
+fn draw_nav(ui: &mut egui::Ui, studio: &Studio, dialog: &PendingDialog) -> Option<Intent> {
     let nav = nav_state(&studio.project, studio.cursor.viewed());
+    let ready = accepting_actions(studio, dialog);
     let mut intent = None;
     ui.add_space(6.0);
     ui.horizontal(|ui| {
         if ui
-            .add_enabled(nav.can_back && !studio.busy, egui::Button::new("← Back"))
+            .add_enabled(nav.can_back && ready, egui::Button::new("← Back"))
             .clicked()
         {
             intent = Some(Intent::Back);
@@ -102,7 +123,7 @@ fn draw_nav(ui: &mut egui::Ui, studio: &Studio) -> Option<Intent> {
         ui.add_enabled(false, egui::Button::new("Help"))
             .on_disabled_hover_text("Per-step guidance arrives with the ported steps.");
         if ui
-            .add_enabled(nav.can_next && !studio.busy, egui::Button::new("Next →"))
+            .add_enabled(nav.can_next && ready, egui::Button::new("Next →"))
             .clicked()
         {
             intent = Some(Intent::Next);
@@ -128,11 +149,8 @@ fn draw_body(ui: &mut egui::Ui, studio: &Studio, dialog: &PendingDialog) -> Opti
     // "not ported yet" steps) would silently render one step's screen for a
     // step added later; this way the compiler names the new arm.
     let intent = match viewed {
-        Step::AddScan
-        | Step::CleanScan
-        | Step::ShapePiece
-        | Step::DesignLayers
-        | Step::MakeMolds => {
+        Step::AddScan => draw_add_scan(ui, studio, dialog),
+        Step::CleanScan | Step::ShapePiece | Step::DesignLayers | Step::MakeMolds => {
             draw_porting_notice(ui);
             None
         }
@@ -150,7 +168,39 @@ fn draw_body(ui: &mut egui::Ui, studio: &Studio, dialog: &PendingDialog) -> Opti
     intent
 }
 
-/// Steps 1–5 during the Slint→Bevy port. Says what is missing and that the work
+/// Step 1 — choose the scan. The 3D view behind the panel shows it.
+fn draw_add_scan(ui: &mut egui::Ui, studio: &Studio, dialog: &PendingDialog) -> Option<Intent> {
+    let mut intent = None;
+    let has_scan = studio.project.is_complete(Step::AddScan);
+    ui.add_space(8.0);
+    if !has_scan {
+        wrapped_label(ui, "Choose a scan to see it here — then drag to spin it.");
+        ui.add_space(12.0);
+    }
+    let label = if has_scan {
+        "Choose a different scan…"
+    } else {
+        "Choose scan file…"
+    };
+    if ui
+        .add_enabled(accepting_actions(studio, dialog), egui::Button::new(label))
+        .clicked()
+    {
+        intent = Some(Intent::PickScan);
+    }
+    ui.add_space(8.0);
+    wrapped_label(ui, "Works with STL, OBJ, PLY, and 3MF scans.");
+    ui.add_space(12.0);
+    wrapped_label(
+        ui,
+        "💡 Leave the bottom open — scan it like it's on a lazy Susan and \
+         don't bother closing or capping the floor in your scanning software. \
+         CortenForge trims and rebuilds the floor for you in the next step.",
+    );
+    intent
+}
+
+/// Steps 2–5 during the Slint→Bevy port. Says what is missing and that the work
 /// is not lost, rather than showing an empty screen that reads as a bug.
 fn draw_porting_notice(ui: &mut egui::Ui) {
     ui.add_space(8.0);
@@ -175,7 +225,8 @@ fn draw_print(ui: &mut egui::Ui, studio: &Studio, dialog: &PendingDialog) -> Opt
     ui.add_space(12.0);
 
     let exported = studio.project.print().is_some();
-    let blocked = studio.busy || dialog.is_open();
+    let ready = accepting_actions(studio, dialog);
+    // `busy` alone, not `ready`: an open dialog is not yet a running save.
     let label = if studio.busy {
         "Saving…"
     } else if exported {
@@ -184,12 +235,12 @@ fn draw_print(ui: &mut egui::Ui, studio: &Studio, dialog: &PendingDialog) -> Opt
         "Save files for printing…"
     };
     ui.horizontal(|ui| {
-        if ui.add_enabled(!blocked, egui::Button::new(label)).clicked() {
+        if ui.add_enabled(ready, egui::Button::new(label)).clicked() {
             intent = Some(Intent::ExportPrint);
         }
         if exported
             && ui
-                .add_enabled(!blocked, egui::Button::new("Open folder"))
+                .add_enabled(ready, egui::Button::new("Open folder"))
                 .clicked()
         {
             intent = Some(Intent::OpenExportFolder);
@@ -280,6 +331,7 @@ fn apply_intent(intent: Intent, studio: &mut Studio, dialog: &mut PendingDialog)
     match intent {
         Intent::Back => studio.back(),
         Intent::Next => studio.next(),
+        Intent::PickScan => dialog.pick_scan_file(),
         Intent::StartPourTimer => studio.start_pour_timer(),
         Intent::MarkPoured => studio.mark_poured(),
         Intent::OpenExportFolder => match studio.project.print().map(|p| p.export_dir.clone()) {
