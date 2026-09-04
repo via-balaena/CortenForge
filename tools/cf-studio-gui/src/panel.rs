@@ -703,6 +703,35 @@ mod tests {
         assert_eq!(outer.simplify, Some(200_000), "and each field on its own");
     }
 
+    /// ★ The one definition every control on every screen is gated on, and the
+    /// reason it is one definition rather than a condition per button.
+    ///
+    /// ⚠ All four states, not just the happy one. A version that answered a
+    /// constant, or that read `||` for `&&`, leaves the app either frozen with
+    /// nothing running or fully clickable in the middle of a background job —
+    /// and neither of those reports itself as an error.
+    #[test]
+    fn actions_are_accepted_only_with_no_job_running_and_no_dialog_open() {
+        let idle = Studio::default();
+        let busy = Studio {
+            busy: true,
+            ..Studio::default()
+        };
+        let closed = PendingDialog::default();
+        let open = PendingDialog::opened(DialogKind::ScanFile);
+
+        assert!(accepting_actions(&idle, &closed), "idle, with nothing open");
+        assert!(
+            !accepting_actions(&busy, &closed),
+            "a running job holds the app"
+        );
+        assert!(
+            !accepting_actions(&idle, &open),
+            "and so does an open dialog"
+        );
+        assert!(!accepting_actions(&busy, &open), "and the two together");
+    }
+
     /// Where both fired, the inner one wins — it is the more specific of the
     /// two, and the pre-merge code resolved it the same way.
     #[test]

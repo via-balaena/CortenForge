@@ -50,6 +50,15 @@ impl PendingDialog {
         self.0.is_some()
     }
 
+    /// A [`PendingDialog`] that reports itself open, so a test can prove a
+    /// control is gated on one without putting an OS picker on screen. The task
+    /// resolves straight to a cancel.
+    #[cfg(test)]
+    pub(crate) fn opened(kind: DialogKind) -> Self {
+        let pool = AsyncComputeTaskPool::get_or_init(bevy::tasks::TaskPool::default);
+        Self(Some((kind, pool.spawn(async { None }))))
+    }
+
     /// Open a folder picker for `kind`. A no-op while one is already open.
     pub(crate) fn pick_folder(&mut self, kind: DialogKind, title: &'static str) {
         if self.0.is_some() {
