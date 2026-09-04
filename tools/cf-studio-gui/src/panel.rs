@@ -955,9 +955,13 @@ mod tests {
     ///
     /// ⚠ Asks the font stack instead of encoding the answer. A codepoint gate
     /// only rejects the one character somebody already knew about.
+    ///
+    /// ⚠ Control characters are skipped: `has_glyph` says `false` for `\n`,
+    /// which layout breaks the line on rather than drawing, so checking it
+    /// would fail every multi-line message on screen.
     fn assert_renders(ctx: &egui::Context, text: &str) {
         let font = egui::FontId::default();
-        for c in text.chars() {
+        for c in text.chars().filter(|c| !c.is_control()) {
             assert!(
                 ctx.fonts_mut(|f| f.has_glyph(&font, c)),
                 "U+{:04X} {c:?} has no glyph — it draws as a box in {text:?}",
@@ -966,29 +970,68 @@ mod tests {
         }
     }
 
-    /// ★ The step messages, which no census reaches: the accessibility tree
-    /// names controls, and every one of these is prose under them.
+    /// ★ The messages, which no census reaches: the accessibility tree names
+    /// controls, and every one of these is prose under them.
     ///
     /// ⚠ This is the gate `format_save_done` needed. It shipped U+2713 `✓`,
     /// which no bundled font carries, because the check that existed named one
     /// function and compared one codepoint. The lib cannot run this itself —
     /// it is deliberately toolkit-free, and the fonts belong to the panel.
+    ///
+    /// ⚠ Every producer in the lib, not step 2's alone: the pour and mold
+    /// lines carry the rarest glyphs in the app (`⏱`, `🎉`, `·`, `±`, `°`).
     #[test]
-    fn every_step_message_is_drawable_in_the_fonts_that_ship() {
+    fn every_message_is_drawable_in_the_fonts_that_ship() {
         let mut harness = Harness::new_ui(|_| {});
         harness.ctx.set_fonts(crate::plugin::font_definitions());
         harness.run();
 
-        for message in [
+        let project = ready_to_pour();
+        let molds = project
+            .molds()
+            .expect("the fixture is driven to the pour")
+            .clone();
+        let dir = crate::save::tests::temp_dir("glyphs");
+        let (_scan, saved) = crate::save::tests::ready_to_save(&dir);
+
+        let mut messages = vec![
             cf_studio_gui::format_save_done("base_mold", 180_236),
             cf_studio_gui::format_simplify_done(200_000, 12.3),
             cf_studio_gui::format_simplify_started(50_000),
             cf_studio_gui::format_floor_found(1, 29, 7.7),
             cf_studio_gui::format_floor_no_centerline(3),
             format_scan_stats(200_000, 600_000),
-        ] {
+            cf_studio_gui::format_elapsed(3671),
+            cf_studio_gui::print_step_summary(&project),
+            cf_studio_gui::format_molds_summary(&molds),
+            format_pour_plan(&molds.pour_plan),
+            format_pour_active(&molds.pour_plan, 0),
+            crate::save::overwrite_question(&saved, &dir),
+        ];
+        // Each urgency band words itself differently.
+        messages.extend([600_i64, 120, -30].map(|secs| pour_countdown(secs).text));
+
+        for message in messages {
             assert_renders(&harness.ctx, &message);
         }
+
+        // Step 2's op reports, which the lib does not produce. `↺ Reset` is one
+        // of the three arrows `plugin::font_definitions` exists for, and the
+        // only one no control label already covers — `← Back` and `Next →` are
+        // in the nav census.
+        let mut screen = cleanup_screen();
+        for intent in [EditIntent::Weld, EditIntent::FindFloor, EditIntent::Reset] {
+            apply_edit_intent(
+                intent,
+                &mut screen.scan,
+                &mut screen.studio,
+                &mut screen.controls,
+            );
+            let reported = screen.studio.message.as_ref().expect("every op reports");
+            let (Ok(text) | Err(text)) = reported;
+            assert_renders(&harness.ctx, text);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Step 2 with every section revealed: a scan loaded, a centerline traced,
