@@ -10,7 +10,7 @@
 use bevy::camera::Viewport;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
-use bevy_egui::{EguiContexts, PrimaryEguiContext};
+use bevy_egui::{EguiContexts, PrimaryEguiContext, egui};
 use cf_bevy_common::camera::OrbitCamera;
 use cf_bevy_common::mesh::triangle_mesh_flat_shaded;
 use mesh_types::Bounded;
@@ -162,7 +162,6 @@ fn body_material() -> StandardMaterial {
 /// this the camera renders the whole window, so the body — framed on the
 /// *window's* centre — sits partly behind the right panel. Bevy's viewport is
 /// physical pixels; egui's rect is logical points, hence the scale factor.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Rect → whole pixels.
 pub(crate) fn fit_viewport_to_free_space(
     mut contexts: EguiContexts,
     windows: Query<&Window, With<PrimaryWindow>>,
@@ -172,23 +171,39 @@ pub(crate) fn fit_viewport_to_free_space(
     let Ok(window) = windows.single() else {
         return Ok(());
     };
-    let scale = window.scale_factor();
-    let whole_px = |points: f32| (points * scale).max(0.0) as u32;
-
     let bounds = UVec2::new(window.physical_width(), window.physical_height());
+    let viewport = viewport_for(free, bounds, window.scale_factor());
+    for mut camera in &mut cameras {
+        camera.viewport = viewport.clone();
+    }
+    Ok(())
+}
+
+/// The viewport covering `free` — egui's uncovered region, in logical points —
+/// inside a window `bounds` physical pixels across, at `scale` pixels per point.
+///
+/// `None` when the region has no area: a zero-sized viewport is not renderable,
+/// so the caller leaves the camera on the whole window instead.
+///
+/// ⚠ Clamped at both ends, and both clamps are load-bearing. egui measures `free`
+/// against its own screen rect, which lags the window by a frame during a resize,
+/// so the position can land past the window's edge and the size can exceed what
+/// is left after it.
+///
+/// Split out from the system because every decision in this file's viewport
+/// handling lives here, and reaching it through the system needs a laid-out egui
+/// context. It is the arithmetic that #874 got wrong.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Rect → whole pixels.
+fn viewport_for(free: egui::Rect, bounds: UVec2, scale: f32) -> Option<Viewport> {
+    let whole_px = |points: f32| (points * scale).max(0.0) as u32;
     let position = UVec2::new(whole_px(free.min.x), whole_px(free.min.y)).min(bounds);
     let size = UVec2::new(whole_px(free.width()), whole_px(free.height()))
         .min(bounds.saturating_sub(position));
-
-    for mut camera in &mut cameras {
-        // A zero-area viewport is not renderable; fall back to the full window.
-        camera.viewport = (size.x > 0 && size.y > 0).then(|| Viewport {
-            physical_position: position,
-            physical_size: size,
-            ..default()
-        });
-    }
-    Ok(())
+    (size.x > 0 && size.y > 0).then(|| Viewport {
+        physical_position: position,
+        physical_size: size,
+        ..default()
+    })
 }
 
 #[cfg(test)]
@@ -242,6 +257,67 @@ endsolid t
             .iter(app.world())
             .next()
             .map(|c| (c.target, c.distance))
+    }
+
+    /// The real geometry, taken off the running app rather than invented: a
+    /// 2560x1800 window at scale 2, panels leaving egui 600x863 points free from
+    /// x=260. The probe that diagnosed the strobe printed exactly this pairing.
+    #[test]
+    fn the_viewport_matches_the_measured_window() {
+        let free = egui::Rect::from_min_size(egui::pos2(260.0, 0.0), egui::vec2(600.0, 863.0));
+
+        let vp = viewport_for(free, UVec2::new(2560, 1800), 2.0);
+
+        assert_eq!(
+            vp.map(|v| (v.physical_position, v.physical_size)),
+            Some((UVec2::new(520, 0), UVec2::new(1200, 1726))),
+            "logical points scale by the window factor, not by anything else"
+        );
+    }
+
+    /// ⚠ Either dimension collapsing is enough. A zero-area viewport is not
+    /// renderable, and the caller reads `None` as "leave the whole window" — the
+    /// fallback whose oscillation was the strobe.
+    #[test]
+    fn a_collapsed_region_yields_no_viewport() {
+        let bounds = UVec2::new(2560, 1800);
+        let flat = egui::Rect::from_min_size(egui::pos2(520.0, 0.0), egui::vec2(0.0, 826.0));
+        let thin = egui::Rect::from_min_size(egui::pos2(0.0, 900.0), egui::vec2(600.0, 0.0));
+
+        assert!(viewport_for(flat, bounds, 2.0).is_none(), "no width");
+        assert!(viewport_for(thin, bounds, 2.0).is_none(), "no height");
+    }
+
+    /// egui measures against its own screen rect, which lags the window by a
+    /// frame while resizing, so it can hand over a region that runs off the edge.
+    #[test]
+    fn a_region_past_the_window_edge_is_clamped_inside_it() {
+        let bounds = UVec2::new(800, 600);
+        let overhang =
+            egui::Rect::from_min_size(egui::pos2(100.0, 100.0), egui::vec2(9000.0, 9000.0));
+
+        let vp = viewport_for(overhang, bounds, 1.0);
+
+        assert_eq!(
+            vp.map(|v| (v.physical_position, v.physical_size)),
+            Some((UVec2::new(100, 100), UVec2::new(700, 500))),
+            "the size is what remains after the position, never more"
+        );
+    }
+
+    /// The other end of the same lag: a negative origin must not wrap when it
+    /// becomes an unsigned pixel count.
+    #[test]
+    fn a_negative_origin_clamps_to_zero_rather_than_wrapping() {
+        let off = egui::Rect::from_min_size(egui::pos2(-50.0, -20.0), egui::vec2(300.0, 200.0));
+
+        let vp = viewport_for(off, UVec2::new(800, 600), 1.0);
+
+        assert_eq!(
+            vp.map(|v| v.physical_position),
+            Some(UVec2::ZERO),
+            "a negative point must floor at the window origin, not wrap to u32::MAX"
+        );
     }
 
     /// ★★★ The invariant #874 violated, and the reason the app strobed: egui's
