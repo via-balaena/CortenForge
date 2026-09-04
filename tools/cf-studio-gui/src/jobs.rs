@@ -105,7 +105,7 @@ pub(crate) fn poll_print_job(mut job: ResMut<PrintJob>, mut studio: ResMut<Studi
                 Ok(()) => {
                     reveal_in_file_manager(&dest);
                     Ok(format!(
-                        "✓ Saved {stl_count} file(s){guide} to {} — opening it now. \
+                        "✔ Saved {stl_count} file(s){guide} to {} — opening it now. \
                          Print each piece, then click Next →.",
                         dest.display(),
                     ))

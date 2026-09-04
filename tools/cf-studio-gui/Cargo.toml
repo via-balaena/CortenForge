@@ -47,6 +47,10 @@ cf-studio-engine = { workspace = true }
 bevy = { workspace = true, default-features = false, features = [
     "bevy_asset",
     "bevy_core_pipeline",
+    # The step-2 centerline overlay. `bevy_gizmos_render` is the half that
+    # actually draws — the pairing every other Bevy tool here uses.
+    "bevy_gizmos",
+    "bevy_gizmos_render",
     "bevy_pbr",
     "bevy_render",
     "bevy_state",
