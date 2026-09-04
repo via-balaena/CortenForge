@@ -665,8 +665,6 @@ fn apply_intent(intent: Intent, studio: &mut Studio, dialog: &mut PendingDialog)
 
 #[cfg(test)]
 mod tests {
-    // The fixtures drive the project state machine step by step; a `Result` at
-    // each one would say nothing a panic in a test does not.
     #![allow(clippy::expect_used)]
 
     use std::path::PathBuf;
@@ -743,13 +741,6 @@ mod tests {
         assert_eq!(outer.nav, Some(Intent::Next));
     }
 
-    // ── Layout gates ────────────────────────────────────────────────────────
-    //
-    // ★ The class #878 shipped: a control laid out past the body column's right
-    // edge. egui culls what overflows instead of wrapping or scrolling it, so
-    // "Apply trim" was simply absent — no scrollbar, no error, nothing to see.
-    // A person found it.
-
     /// The body column's usable width, in points. #878's overflow was measured
     /// against this: a 492 px trim row in a 404 px column.
     const COLUMN_WIDTH: f32 = 404.0;
@@ -762,12 +753,9 @@ mod tests {
     /// Lay `body` out in the body column and name the controls on it, in layout
     /// order — failing if any of them sits outside the column.
     ///
-    /// ⚠ Accessibility rects, not painted shapes. The culling **is** the
-    /// defect's mechanism, so a shape-bounds metric cannot see it; this rect is
-    /// the widget's real position whether or not it was drawn. A `Ui`-rect
-    /// metric is blind for the opposite reason — it reports the space a layout
-    /// was given, not what it put there. Both were run against the real defect
-    /// and both passed it.
+    /// ⚠ Accessibility rects, not painted shapes: egui culls what overflows,
+    /// so the shapes cannot show it. This rect is the widget's real position
+    /// whether or not it was drawn.
     ///
     /// ⚠ The returned census is the other half, and each is vacuous alone: an
     /// overflowing control fails here, a vanished one fails the caller's
@@ -910,8 +898,7 @@ mod tests {
         project
     }
 
-    /// ★ The gate #878 did not have, on the screen it broke — nineteen controls,
-    /// the densest in the app.
+    /// ★ The gate #878 did not have, on the screen it broke.
     #[test]
     fn every_control_on_the_cleanup_screen_is_inside_the_body_column() {
         let mut screen = cleanup_screen();
@@ -952,8 +939,8 @@ mod tests {
         );
     }
 
-    /// The same class on the pour screen, whose two action buttons share the
-    /// shape that broke: an ungrouped row of wide labels.
+    /// The pour screen's action row is the shape that broke: ungrouped, wide
+    /// labels.
     #[test]
     fn every_control_on_the_pour_screen_is_inside_the_body_column() {
         let studio = Studio {
@@ -968,8 +955,6 @@ mod tests {
         assert_eq!(controls, ["Start pour timer", "Mark this layer poured →"]);
     }
 
-    /// The remaining screens. Each is a button or three today, which is exactly
-    /// why they are worth pinning: the census fails when one grows.
     #[test]
     fn every_control_on_the_simpler_screens_is_inside_the_body_column() {
         let studio = Studio::default();

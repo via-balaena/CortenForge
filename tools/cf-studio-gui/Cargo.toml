@@ -96,14 +96,10 @@ cf-bevy-common = { workspace = true }
 rfd = "0.15"
 
 [dev-dependencies]
-# Headless egui driver for the layout gates in `panel.rs` — it lays a screen out
-# and reports the accessibility tree, with no window and no GPU.
+# Headless egui driver for the layout gates in `panel.rs`.
 #
 # ⚠ The minor tracks egui's, not its own latest: 0.33 against bevy_egui 0.39.1's
 # egui 0.33.3. A newer kittest resolves a second egui and drives that one.
-#
-# Default features are empty, and stay that way: `snapshot` and `wgpu` add an
-# image-diff renderer and a GPU, neither of which reading the tree needs.
 egui_kittest = "0.33"
 
 [features]
