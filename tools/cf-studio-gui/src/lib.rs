@@ -1026,6 +1026,19 @@ pub fn format_simplify_done(target_faces: usize, secs: f64) -> String {
     format!("✔ Simplified to {target_faces} faces ({secs:.1}s).")
 }
 
+/// A Save has landed: what was written, and that the step is now complete.
+///
+/// ⚠ Names both files. They are written as a pair and [`apply_prep`] accepts
+/// them as a pair, so reporting only the STL would leave the user hunting for
+/// the file the cast actually reads.
+#[must_use]
+pub fn format_save_done(stem: &str, face_count: usize) -> String {
+    format!(
+        "✓ Saved {stem}.cleaned.stl ({face_count} faces) + {stem}.prep.toml — \
+         step complete, click Next →."
+    )
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]

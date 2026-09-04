@@ -6,7 +6,7 @@
 //! module only holds the state and routes button presses into it, so the egui
 //! systems have nothing left to get wrong.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use bevy::prelude::*;
@@ -28,6 +28,45 @@ pub(crate) enum Screen {
     Wizard,
 }
 
+/// A Save that has not yet finished asking the user where to write.
+///
+/// Held on [`Studio`] because it gates every other control through
+/// `accepting_actions` — the one definition a running job and an open picker
+/// already go through. A Save with no question outstanding never reaches here:
+/// it writes and lands in the same frame.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PendingSave {
+    /// `{stem}`'s outputs already sit in `dir` and the modal is asking.
+    Confirming {
+        /// The folder the collision was found in.
+        ///
+        /// ⚠ Carried, not re-derived from the scan's own folder: a second
+        /// collision can be found in a folder the user picked, and re-deriving
+        /// would then offer to overwrite the wrong one.
+        dir: PathBuf,
+        /// Smoothing as it read when Save was clicked.
+        ///
+        /// Carried for the reason every [`crate::edit::EditIntent`] carries its
+        /// fields — the answer applies to the question that was asked — and so
+        /// the picker's poller need not borrow step 2's fields to find it.
+        smoothing: usize,
+    },
+    /// The user asked for a different folder; the picker for it is open.
+    ChoosingFolder {
+        /// See [`Self::Confirming::smoothing`].
+        smoothing: usize,
+    },
+}
+
+impl PendingSave {
+    /// The smoothing the Save was requested with.
+    pub(crate) const fn smoothing(&self) -> usize {
+        match *self {
+            Self::Confirming { smoothing, .. } | Self::ChoosingFolder { smoothing } => smoothing,
+        }
+    }
+}
+
 /// Everything the wizard reads and writes.
 ///
 /// ⚠ `cursor` is **not** `project.current_step()`. Back pages the cursor over
@@ -47,6 +86,8 @@ pub(crate) struct Studio {
     pub(crate) message: Option<StepOutcome>,
     /// A long job is running — gates the buttons that could clobber it.
     pub(crate) busy: bool,
+    /// A Save waiting on the user; `None` unless one asked a question.
+    pub(crate) pending_save: Option<PendingSave>,
 }
 
 impl Default for Studio {
@@ -58,6 +99,7 @@ impl Default for Studio {
             pour_deadline: None,
             message: None,
             busy: false,
+            pending_save: None,
         }
     }
 }

@@ -17,8 +17,9 @@ use mesh_types::IndexedMesh;
 
 use crate::dialogs::{DialogKind, PendingDialog};
 use crate::edit::{EditControls, land_edit};
+use crate::save::{save_into, settle};
 use crate::scan::{ActiveScan, ScanEdit};
-use crate::state::Studio;
+use crate::state::{PendingSave, Studio};
 
 /// The running print export, if any.
 #[derive(Resource, Default)]
@@ -64,6 +65,27 @@ pub(crate) fn poll_dialogs(
             studio.busy = true;
             studio.message = Some(Ok("Saving the printable files…".to_string()));
             job.0 = Some(spawn_export(molds, dest));
+        }
+        DialogKind::PrepDest => {
+            // The smoothing the Save was clicked with rides on the pending
+            // state: this poller never sees step 2's fields. No pending state
+            // means no Save asked for this folder, so there is nothing to do.
+            let Some(smoothing) = studio.pending_save.as_ref().map(PendingSave::smoothing) else {
+                return;
+            };
+            // ⚠ Unlike `PrintDest`, a cancel here says something and must clear
+            // the pending Save: `pending_save` gates every control in the
+            // wizard, so backing out silently would leave the app inert with
+            // the question that gated it no longer on screen.
+            let Some(dest) = picked else {
+                settle(&mut studio, Ok("Save cancelled.".to_string()));
+                return;
+            };
+            // ⚠ `&scan` — an immutable borrow of the `ResMut`, which resolves
+            // through `Deref`, not `DerefMut`. Saving only reads the session;
+            // marking the resource changed would re-mesh 200 000 faces and
+            // re-frame the camera for a file write.
+            save_into(&scan, &mut studio, dest, smoothing);
         }
     }
 }

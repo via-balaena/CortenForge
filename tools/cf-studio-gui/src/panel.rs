@@ -20,12 +20,13 @@ use cf_studio_gui::{
 
 use crate::dialogs::{DialogKind, PendingDialog};
 use crate::edit::{
-    EditControls, EditIntent, FloorShape, SIMPLIFY_STEP_FACES, STEP_MM, apply_edit_intent,
-    simplify_range,
+    EditControls, EditIntent, FloorShape, SIMPLIFY_STEP_FACES, SMOOTHING_STEP, STEP_MM,
+    apply_edit_intent, simplify_range, smoothing_range,
 };
 use crate::jobs::{SimplifyJob, start_simplify};
+use crate::save;
 use crate::scan::ScanEdit;
-use crate::state::Studio;
+use crate::state::{PendingSave, Studio};
 use crate::widgets::{
     ACTIVE_TEXT, CONTROL_TEXT, DONE_TEXT, ERROR_TEXT, GOOD_FILL, GOOD_TEXT, HEADING_TEXT,
     HINT_TEXT, STATS_TEXT, WARN_TEXT, card, centered_wrapped, cleanup_section, field_grid,
@@ -55,6 +56,9 @@ const SUBHINT_SIZE: f32 = 12.0;
 const ROW_GAP: f32 = 6.0;
 /// The rebuilt-floor picker. Fixed, or the combo stretches to fill the column.
 const SHAPE_PICKER_WIDTH: f32 = 110.0;
+/// The overwrite modal's width. Wider than the body column — it is centred on
+/// the whole window and has to hold a folder path.
+const MODAL_WIDTH: f32 = 460.0;
 
 /// What the frame reported.
 ///
@@ -72,6 +76,11 @@ struct Acted {
     /// ⚠ Not an [`EditIntent`] variant: starting a Simplify only reads the
     /// scan. See [`start_simplify`].
     simplify: Option<usize>,
+    /// The smoothing a Save was clicked with.
+    ///
+    /// ⚠ Not an [`EditIntent`] variant either, and for the same reason: a Save
+    /// reads the scan and writes the *project*. See [`crate::save`].
+    save: Option<usize>,
 }
 
 impl Acted {
@@ -81,6 +90,7 @@ impl Acted {
         self.nav = inner.nav.or(self.nav);
         self.edit = inner.edit.or(self.edit);
         self.simplify = inner.simplify.or(self.simplify);
+        self.save = inner.save.or(self.save);
     }
 }
 
@@ -130,6 +140,26 @@ pub(crate) fn wizard_screen(
         acted.merge(draw_body(ui, &studio, &dialog, &scan, &mut controls));
     });
 
+    // ⚠ Drawn from `pending_save` alone, outside the step match: the state that
+    // gates every control and the modal that explains why it is gated are the
+    // same `Option`, so neither can outlive the other.
+    if let Some(PendingSave::Confirming { dir, smoothing }) = studio.pending_save.clone()
+        && let Some(choice) = draw_save_modal(ctx, &save::overwrite_question(&studio, &dir))
+    {
+        match choice {
+            // ⚠ `&scan`, immutably — a Save only reads the session.
+            SaveChoice::Overwrite => save::write_into(&scan, &mut studio, &dir, smoothing),
+            SaveChoice::ChooseFolder => {
+                studio.pending_save = Some(PendingSave::ChoosingFolder { smoothing });
+                dialog.pick_folder(
+                    DialogKind::PrepDest,
+                    "Choose a folder to save the cleaned scan",
+                );
+            }
+            SaveChoice::Cancel => save::settle(&mut studio, Ok("Save cancelled.".to_string())),
+        }
+    }
+
     if let Some(intent) = acted.nav {
         apply_intent(intent, &mut studio, &mut dialog);
     }
@@ -139,6 +169,10 @@ pub(crate) fn wizard_screen(
     // ⚠ `&scan`, immutably — see [`start_simplify`].
     if let Some(target_faces) = acted.simplify {
         start_simplify(target_faces, &scan, &mut studio, &mut job);
+    }
+    // ⚠ `&scan`, immutably, for the same reason.
+    if let Some(smoothing) = acted.save {
+        save::save_to_default(&scan, &mut studio, smoothing);
     }
     Ok(())
 }
@@ -177,12 +211,13 @@ fn draw_checklist(ui: &mut egui::Ui, studio: &Studio) {
 
 /// Whether the wizard is accepting actions.
 ///
-/// A long job owns the app until it finishes and an open OS dialog owns it
-/// until it resolves — and **paging counts**: the picker's result lands on
-/// whichever step the cursor has reached by then, and a scan landing resets the
-/// project to step 1. One definition so a new control cannot honour half of it.
+/// A long job owns the app until it finishes, an open OS dialog owns it until
+/// it resolves, and an unanswered Save owns it until it is answered — and
+/// **paging counts**: the picker's result lands on whichever step the cursor
+/// has reached by then, and a scan landing resets the project to step 1. One
+/// definition so a new control cannot honour half of it.
 fn accepting_actions(studio: &Studio, dialog: &PendingDialog) -> bool {
-    !studio.busy && !dialog.is_open()
+    !studio.busy && !dialog.is_open() && studio.pending_save.is_none()
 }
 
 /// Back / Help / Next, gated by [`nav_state`].
@@ -345,6 +380,21 @@ fn draw_clean_scan(
         );
     }
 
+    // Last, as it was pre-port, and shown even with no centerline: the hint is
+    // where the user is told which step above unblocks it.
+    ui.add_space(SECTION_GAP);
+    cleanup_section(
+        ui,
+        "Finally — save your cleaned scan",
+        if has_centerline {
+            ""
+        } else {
+            "Do \u{201c}stand it upright\u{201d} above first."
+        },
+        false,
+        |ui| acted.save = draw_save_row(ui, controls, ready && has_centerline),
+    );
+
     // Secondary, and centred like the rest of the section controls.
     ui.add_space(SECTION_GAP);
     ui.vertical_centered(|ui| {
@@ -355,15 +405,36 @@ fn draw_clean_scan(
             acted.edit = Some(EditIntent::Reset);
         }
     });
-
-    ui.add_space(SECTION_GAP);
-    centered_wrapped(
-        ui,
-        SUBHINT_SIZE,
-        HINT_TEXT,
-        "Save arrives in the next build of this screen.",
-    );
     acted
+}
+
+/// The save row: how much to smooth, then the button that writes both files.
+///
+/// ⚠ Stacked for [`draw_trim_row`]'s reason. As one row the label, stepper and
+/// a 17-character button do not fit the 404 px column, and egui culls the
+/// overflow rather than wrapping it.
+fn draw_save_row(ui: &mut egui::Ui, controls: &mut EditControls, ready: bool) -> Option<usize> {
+    let mut clicked = None;
+    ui.vertical_centered(|ui| {
+        ui.horizontal(|ui| {
+            ui.colored_label(CONTROL_TEXT, "Smoothing");
+            step_box(
+                ui,
+                &mut controls.smoothing,
+                smoothing_range(),
+                SMOOTHING_STEP,
+                ready,
+            );
+        });
+        ui.add_space(ROW_GAP);
+        if ui
+            .add_enabled(ready, egui::Button::new("Save cleaned scan"))
+            .clicked()
+        {
+            clicked = Some(controls.smoothing_iters());
+        }
+    });
+    clicked
 }
 
 /// The tidy row: Weld, then a face target and Simplify.
@@ -433,6 +504,54 @@ fn draw_trim_row(
         }
     });
     intent
+}
+
+/// How the overwrite question was answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SaveChoice {
+    /// Write over what is already in the folder.
+    Overwrite,
+    /// Open a picker for a different folder.
+    ChooseFolder,
+    /// Do not save.
+    Cancel,
+}
+
+/// The overwrite question, over the whole window.
+///
+/// ⚠ An [`egui::Modal`], not the `rfd::MessageDialog` the pre-port used: a
+/// native dialog blocks, and blocking from a Bevy system deadlocks the app on
+/// macOS every time — see [`crate::dialogs`].
+///
+/// Returns the answer instead of acting on it, so all three outcomes are
+/// reachable from a test without putting an OS picker on screen.
+fn draw_save_modal(ctx: &egui::Context, question: &str) -> Option<SaveChoice> {
+    let mut choice = None;
+    let modal = egui::Modal::new(egui::Id::new("overwrite-outputs")).show(ctx, |ui| {
+        ui.set_max_width(MODAL_WIDTH);
+        centered_wrapped(ui, SUBHEADING_SIZE, HEADING_TEXT, "Output already exists");
+        ui.add_space(ROW_GAP);
+        wrapped_label(ui, question);
+        ui.add_space(SECTION_GAP);
+        ui.horizontal(|ui| {
+            if ui.button("Overwrite").clicked() {
+                choice = Some(SaveChoice::Overwrite);
+            }
+            if ui.button("Choose a different folder\u{2026}").clicked() {
+                choice = Some(SaveChoice::ChooseFolder);
+            }
+            if ui.button("Cancel").clicked() {
+                choice = Some(SaveChoice::Cancel);
+            }
+        });
+    });
+    // Escape, and a click on the backdrop, are the same "get me out of this"
+    // the Cancel button is. Checked only if nothing was clicked, so a real
+    // answer can never be overwritten by one.
+    if choice.is_none() && modal.should_close() {
+        choice = Some(SaveChoice::Cancel);
+    }
+    choice
 }
 
 /// Re-cap the chopped floor. Titled so it is clear this rebuilds the floor the
@@ -954,6 +1073,10 @@ mod tests {
                 "TextInput",
                 "+",
                 "Reconstruct floor",
+                "−",
+                "TextInput",
+                "+",
+                "Save cleaned scan",
                 "Start over",
             ]
         );

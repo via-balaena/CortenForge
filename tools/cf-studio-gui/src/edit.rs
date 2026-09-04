@@ -41,6 +41,20 @@ pub(crate) const STEP_MM: i32 = 1;
 /// from the default down to the floor — the buttons were decorative.
 pub(crate) const SIMPLIFY_STEP_FACES: i32 = 10_000;
 
+/// The smoothing stepper's floor, ceiling and starting value — the pre-port
+/// stepper's `minimum` / `maximum` / `value`, unchanged.
+const SMOOTHING_MIN: i32 = 0;
+const SMOOTHING_MAX: i32 = 30;
+const DEFAULT_SMOOTHING: i32 = 8;
+
+/// One ± click on the smoothing field.
+///
+/// ⚠ Deliberately 1, unlike [`SIMPLIFY_STEP_FACES`]: 30 clicks crosses the
+/// whole range, so the inherited step is the right one here. Named anyway, so
+/// the choice is a decision on the record rather than the default nobody
+/// checked — which is exactly what [`SIMPLIFY_STEP_FACES`] was.
+pub(crate) const SMOOTHING_STEP: i32 = 1;
+
 /// Reported when a trim leaves nothing behind. The mesh is still trimmed — only
 /// the view is held — so the wording asks for a smaller number rather than
 /// claiming the op was refused.
@@ -98,6 +112,9 @@ pub(crate) struct EditControls {
     /// ⚠ Bounded by face count, not by the centerline, so [`Self::rebound`]
     /// must leave it alone — see [`simplify_range`].
     pub(crate) target_faces: StepBoxState,
+    /// Smoothing passes the saved mesh gets. Fixed bounds, so [`Self::rebound`]
+    /// leaves it alone for the same reason [`Self::target_faces`] is left alone.
+    pub(crate) smoothing: StepBoxState,
     /// The upper bound all three fields clamp against — the centerline's arc
     /// length, since that is what a trim is measured along.
     bound_mm: i32,
@@ -111,6 +128,7 @@ impl Default for EditControls {
             reference_mm: StepBoxState::new(DEFAULT_REFERENCE_MM),
             shape: FloorShape::default(),
             target_faces: StepBoxState::new(DEFAULT_TARGET_FACES),
+            smoothing: StepBoxState::new(DEFAULT_SMOOTHING),
             // No centerline yet, so the floor of the bound is all there is.
             bound_mm: trim_bound_mm(0.0),
         }
@@ -142,6 +160,15 @@ impl EditControls {
             .clamp(SIMPLIFY_MIN_FACES, SIMPLIFY_MAX_FACES) as usize
     }
 
+    /// The smoothing pass count a Save runs with.
+    ///
+    /// ⚠ Clamped for [`Self::simplify_target`]'s reason — an uncommitted typed
+    /// number reaches here unclamped — and because the engine takes a `usize`.
+    #[allow(clippy::cast_sign_loss)] // The clamp removes the sign the lint is about.
+    pub(crate) fn smoothing_iters(&self) -> usize {
+        self.smoothing.value().clamp(SMOOTHING_MIN, SMOOTHING_MAX) as usize
+    }
+
     /// Re-bound the fields when the centerline's arc length has moved.
     ///
     /// ⚠ Only when it actually moved. [`StepBoxState::sync_external`] discards a
@@ -166,6 +193,11 @@ impl EditControls {
 /// [`EditControls::trim_range`] — see [`EditControls::target_faces`].
 pub(crate) const fn simplify_range() -> (i32, i32) {
     (SIMPLIFY_MIN_FACES, SIMPLIFY_MAX_FACES)
+}
+
+/// The smoothing stepper's `(min, max)`. Fixed, like [`simplify_range`].
+pub(crate) const fn smoothing_range() -> (i32, i32) {
+    (SMOOTHING_MIN, SMOOTHING_MAX)
 }
 
 /// A step-2 cleanup op. Each carries the field values it was clicked with, so

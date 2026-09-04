@@ -35,6 +35,9 @@ pub(crate) enum DialogKind {
     ScanFile,
     /// Step 6 (Print): the folder the printable files are copied into.
     PrintDest,
+    /// Step 2 (Save): a folder other than the scan's own to write the cleaned
+    /// scan + `.prep.toml` into, chosen because the default already held them.
+    PrepDest,
 }
 
 /// The at-most-one dialog currently open.

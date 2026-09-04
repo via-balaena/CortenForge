@@ -10,6 +10,7 @@ mod input;
 mod jobs;
 mod panel;
 mod plugin;
+mod save;
 mod scan;
 mod scene;
 mod state;
