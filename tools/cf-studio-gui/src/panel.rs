@@ -145,18 +145,8 @@ pub(crate) fn wizard_screen(
     if let Some(PendingSave::Confirming { dir, smoothing }) = studio.pending_save.clone()
         && let Some(choice) = draw_save_modal(ctx, &save::overwrite_question(&studio, &dir))
     {
-        match choice {
-            // ⚠ `&scan`, immutably — a Save only reads the session.
-            SaveChoice::Overwrite => save::write_into(&scan, &mut studio, &dir, smoothing),
-            SaveChoice::ChooseFolder => {
-                studio.pending_save = Some(PendingSave::ChoosingFolder { smoothing });
-                dialog.pick_folder(
-                    DialogKind::PrepDest,
-                    "Choose a folder to save the cleaned scan",
-                );
-            }
-            SaveChoice::Cancel => save::settle(&mut studio, Ok("Save cancelled.".to_string())),
-        }
+        // ⚠ `&scan`, immutably — a Save only reads the session.
+        apply_save_choice(choice, &dir, smoothing, &scan, &mut studio, &mut dialog);
     }
 
     if let Some(intent) = acted.nav {
@@ -764,6 +754,34 @@ fn draw_pour(ui: &mut egui::Ui, studio: &Studio) -> Option<Intent> {
         }
     });
     intent
+}
+
+/// Execute the answer the overwrite modal came back with.
+///
+/// ⚠ Extracted for [`apply_intent`]'s reason, and it is the one this branch
+/// learned the hard way: inline in [`wizard_screen`] this was the only intent
+/// kind without an executor a test could call, and all three miswirings passed
+/// the whole suite — Cancel overwriting the files, Overwrite quietly saving
+/// nothing, and a folder answer that opens no picker and leaves the app inert.
+fn apply_save_choice(
+    choice: SaveChoice,
+    dir: &std::path::Path,
+    smoothing: usize,
+    scan: &ScanEdit,
+    studio: &mut Studio,
+    dialog: &mut PendingDialog,
+) {
+    match choice {
+        SaveChoice::Overwrite => save::write_into(scan, studio, dir, smoothing),
+        SaveChoice::ChooseFolder => {
+            studio.pending_save = Some(PendingSave::ChoosingFolder { smoothing });
+            dialog.pick_folder(
+                DialogKind::PrepDest,
+                "Choose a folder to save the cleaned scan",
+            );
+        }
+        SaveChoice::Cancel => save::settle(studio, Ok("Save cancelled.".to_string())),
+    }
 }
 
 /// Execute an intent. Every state transition in the wizard passes through here.
@@ -1409,6 +1427,65 @@ mod tests {
             harness.run();
         }
         (buttons, answer.get())
+    }
+
+    /// ★ The glue between two halves each well tested on its own: the modal
+    /// returns the right answer, and `save` does the right thing — but nothing
+    /// said the answer reaches the action it names. Miswiring any of the three
+    /// passed the entire suite.
+    ///
+    /// ⚠ `ChooseFolder` is checked by the state it leaves, not by the picker
+    /// opening: `pick_folder` would put a real OS dialog on screen, so the
+    /// dialog here is already open and its call is a no-op. That the call
+    /// exists at all is the one part of this arm a hand test still owns.
+    #[test]
+    fn each_modal_answer_reaches_the_action_it_names() {
+        let dir = crate::save::tests::temp_dir("answers");
+        let question = std::fs::read_to_string(dir.join("base.cleaned.stl"));
+        assert!(question.is_err(), "the folder starts empty");
+
+        let (scan, mut studio) = crate::save::tests::ready_to_save(&dir);
+        let mut dialog = PendingDialog::default();
+        apply_save_choice(
+            SaveChoice::Overwrite,
+            &dir,
+            0,
+            &scan,
+            &mut studio,
+            &mut dialog,
+        );
+        assert!(
+            dir.join("base.cleaned.stl").is_file() && studio.project.prep().is_some(),
+            "Overwrite writes and completes the step: {:?}",
+            studio.message
+        );
+
+        let (scan, mut studio) = crate::save::tests::ready_to_save(&dir);
+        std::fs::write(dir.join("base.cleaned.stl"), b"keep me").expect("a decoy");
+        apply_save_choice(SaveChoice::Cancel, &dir, 0, &scan, &mut studio, &mut dialog);
+        assert_eq!(
+            std::fs::read(dir.join("base.cleaned.stl")).expect("still there"),
+            b"keep me",
+            "Cancel must not write — miswired, it overwrites what the user kept"
+        );
+        assert!(studio.pending_save.is_none(), "and it hands the app back");
+
+        let (scan, mut studio) = crate::save::tests::ready_to_save(&dir);
+        let mut open = PendingDialog::opened(DialogKind::PrepDest);
+        apply_save_choice(
+            SaveChoice::ChooseFolder,
+            &dir,
+            7,
+            &scan,
+            &mut studio,
+            &mut open,
+        );
+        assert_eq!(
+            studio.pending_save,
+            Some(PendingSave::ChoosingFolder { smoothing: 7 }),
+            "a folder answer waits for the folder, carrying the smoothing"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// ★ The modal, as it is built. Its three answers are the only way out of a
