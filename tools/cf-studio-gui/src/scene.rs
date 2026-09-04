@@ -287,10 +287,24 @@ endsolid t
         // window. `order` back to 0 leaves the two cameras' sequence undefined;
         // `clear_color` back to the default makes the UI camera clear the whole
         // target AFTER the scene drew into it, erasing the 3D view outright.
-        let ui = app.world().get::<Camera>(egui[0]);
-        assert!(ui.is_some(), "the context camera carries a Camera");
-        if let Some(ui) = ui {
-            assert_eq!(ui.order, 1, "egui renders after the scene, not before it");
+        let (ui, body) = (
+            app.world().get::<Camera>(egui[0]),
+            app.world().get::<Camera>(scene[0]),
+        );
+        assert!(
+            ui.is_some() && body.is_some(),
+            "both context holders carry a Camera"
+        );
+        if let (Some(ui), Some(body)) = (ui, body) {
+            // ⚠ The relationship, not the literal 1. "egui draws after the
+            // scene" is the invariant; pinning the magic number would still pass
+            // if someone pushed the 3D camera past it.
+            assert!(
+                ui.order > body.order,
+                "egui must render after the scene, not before it: ui={} body={}",
+                ui.order,
+                body.order
+            );
             assert!(
                 matches!(ui.clear_color, ClearColorConfig::None),
                 "the 3D camera owns the clear; a second one would wipe the scene"
