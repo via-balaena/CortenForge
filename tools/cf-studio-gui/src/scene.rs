@@ -25,6 +25,11 @@ pub(crate) struct SceneBody;
 /// the panel for attention.
 const BODY_COLOR: Color = Color::srgb(0.72, 0.70, 0.66);
 
+/// How far the key light is swung to one side of the view direction, radians.
+const KEY_LIGHT_YAW: f32 = 0.5;
+/// And how far above it. Negative tilts the light down, so it falls from above.
+const KEY_LIGHT_PITCH: f32 = -0.4;
+
 /// The centerline overlay's cyan, carried over from the pre-port line shader.
 const CENTERLINE_COLOR: Color = Color::srgb(0.05, 0.85, 0.95);
 
@@ -34,28 +39,50 @@ pub(crate) fn setup_scene(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    // ⚠ These three starting values, and the light's below, are knowingly
-    // untested. `cargo-mutants` flags each as a live mutant, but deleting any of
-    // them falls back to a perfectly reasonable default — 5.0, 0.5, and
-    // AMBIENT_DAYLIGHT — that still frames the placeholder and still lights it.
-    // No relationship assertion separates ours from those, and the only test
-    // that would kill the mutants is one restating the literal beside it.
-    // They are taste, and wrong taste is visible the instant the app opens.
-    commands.spawn((
-        Camera3d::default(),
-        OrbitCamera {
-            distance: 4.0,
-            elevation: 0.35,
-            ..OrbitCamera::default()
-        },
-    ));
-    commands.spawn((
-        DirectionalLight {
-            illuminance: 8_000.0,
-            ..default()
-        },
-        Transform::from_xyz(4.0, 8.0, 6.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
+    // ⚠ These starting values are knowingly untested. `cargo-mutants` flags each
+    // as a live mutant, but deleting any of them falls back to a perfectly
+    // reasonable default — 5.0, 0.5, and AMBIENT_DAYLIGHT — that still frames the
+    // placeholder and still lights it. No relationship assertion separates ours
+    // from those, and the only test that would kill the mutants is one restating
+    // the literal beside it. They are taste, and wrong taste is visible the
+    // instant the app opens.
+    commands
+        .spawn((
+            Camera3d::default(),
+            OrbitCamera {
+                distance: 4.0,
+                elevation: 0.35,
+                ..OrbitCamera::default()
+            },
+        ))
+        // ⚠⚠ The key light is a CHILD of the camera, and that is the whole point.
+        //
+        // Fixed in world space it sat at (4, 8, 6) while `framing_for_aabb` put
+        // the camera wherever the scan's AABB dictated, so after levelling you
+        // could be looking straight at the unlit side — the scan rendered
+        // near-black and the fix was to rotate until you got lucky. On a screen
+        // whose whole job is judging scan geometry, that is not a lighting
+        // preference; it is an obstacle to the task.
+        //
+        // ⚠ Offset from the view axis, not along it. A light pointing exactly
+        // where the camera looks lights every visible face equally and flattens
+        // the surface, which loses the shape you are trying to read. Up and to
+        // one side keeps the shading sculptural while guaranteeing the side you
+        // are looking at is never the dark one.
+        .with_children(|camera| {
+            camera.spawn((
+                DirectionalLight {
+                    illuminance: 8_000.0,
+                    ..default()
+                },
+                Transform::from_rotation(Quat::from_euler(
+                    EulerRot::YXZ,
+                    KEY_LIGHT_YAW,
+                    KEY_LIGHT_PITCH,
+                    0.0,
+                )),
+            ));
+        });
     commands.spawn((
         SceneBody,
         Mesh3d(meshes.add(Sphere::new(1.0))),
@@ -264,6 +291,41 @@ endsolid t
             .iter(app.world())
             .next()
             .map(|c| (c.target, c.distance))
+    }
+
+    /// ★ The headlamp invariant: the key light must ride the camera.
+    ///
+    /// Spawned at top level it is fixed in world space, and since the camera is
+    /// framed off the scan's AABB the two can end up on opposite sides — the scan
+    /// renders near-black and the only recourse is to orbit until the light finds
+    /// it. That is what this parenting fixes, and re-spawning the light beside
+    /// the camera instead of under it would quietly bring it back.
+    #[test]
+    fn the_key_light_rides_the_camera() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Mesh>()
+            .init_asset::<StandardMaterial>()
+            .add_systems(Startup, setup_scene);
+        app.update();
+
+        let world = app.world_mut();
+        let lights: Vec<Entity> = world
+            .query_filtered::<Entity, With<DirectionalLight>>()
+            .iter(world)
+            .collect();
+        let cameras: Vec<Entity> = world
+            .query_filtered::<Entity, With<Camera3d>>()
+            .iter(world)
+            .collect();
+
+        assert_eq!(lights.len(), 1, "one key light");
+        assert_eq!(cameras.len(), 1, "one camera to hang it on");
+        assert_eq!(
+            app.world().get::<ChildOf>(lights[0]).map(ChildOf::parent),
+            Some(cameras[0]),
+            "the light must be a child of the camera, not fixed in world space"
+        );
     }
 
     /// ⚠ Two fields here are correctness, not taste: a raw scan's winding is not
