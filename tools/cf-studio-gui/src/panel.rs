@@ -358,8 +358,9 @@ fn draw_clean_scan(
 
 /// The tidy row: Weld, then a face target and Simplify.
 ///
-/// ⚠ Wrapping and grouped, like [`draw_trim_row`]. Label, field and button are
-/// one unit, so the only place the row may break is between Weld and them.
+/// ⚠ Grouped: label, field and button are one unit, so the only place the row
+/// may break is between Weld and them. It fits the column as one row; the trim
+/// controls did not, and are stacked instead.
 fn draw_tidy_row(ui: &mut egui::Ui, controls: &mut EditControls, ready: bool) -> Acted {
     let mut acted = Acted::default();
     ui.horizontal_wrapped(|ui| {

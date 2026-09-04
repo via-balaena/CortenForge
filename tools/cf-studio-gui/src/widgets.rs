@@ -133,12 +133,8 @@ pub(crate) fn step_box(
     (min, max): (i32, i32),
     enabled: bool,
 ) {
-    // ⚠ One `horizontal` group, not three loose widgets. These sit inside a
-    // `horizontal_wrapped` row wider than the body column, so egui is free to
-    // wrap BETWEEN them — splitting a stepper across two lines with its `+`
-    // orphaned under the field. Grouping makes the trio one item the parent can
-    // only place or push to the next row whole, which is what the pre-port
-    // `StepBox` (a `HorizontalLayout` component) guaranteed for free.
+    // ⚠ One `horizontal` group, not three loose widgets, or a wrapping parent is
+    // free to break BETWEEN them and orphan the `+` under the field.
     ui.horizontal(|ui| {
         // The committed value is read when an action button is clicked, not here:
         // nothing in step 2 re-meshes on a field edit, so the commit results go
