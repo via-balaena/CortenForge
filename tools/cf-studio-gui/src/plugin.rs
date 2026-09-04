@@ -128,6 +128,31 @@ mod tests {
     /// `bevy_egui` is told to stop attaching one of its own. Left on, it would
     /// mark the 3D camera too — two primary contexts, and the feedback loop back
     /// through whichever one egui picked.
+    /// The centerline runs *inside* the scan, so it is visible only because the
+    /// gizmo group ignores depth. At the default bias of 0 the surface it
+    /// describes hides it, and the overlay silently stops existing — no error,
+    /// no failing test, just an empty viewport where the whole point of this
+    /// screen used to be.
+    ///
+    /// ⚠ Asserts the sign, not `-1.0`. "In front" is the invariant; the exact
+    /// magnitude is free to change.
+    #[test]
+    fn the_centerline_gizmo_is_configured_to_draw_in_front() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, StatesPlugin, StudioPlugin));
+
+        let (config, _) = app
+            .world()
+            .resource::<GizmoConfigStore>()
+            .config::<DefaultGizmoConfigGroup>();
+
+        assert!(
+            config.depth_bias < 0.0,
+            "the overlay must draw in front of the scan, not inside it: depth_bias={}",
+            config.depth_bias
+        );
+    }
+
     #[test]
     fn bevy_egui_is_told_not_to_claim_the_first_camera() {
         let mut app = App::new();
