@@ -1007,6 +1007,25 @@ pub fn format_floor_no_centerline(loop_count: usize) -> String {
     format!("Found {loop_count} loop(s) but couldn't trace a centerline to level by.")
 }
 
+/// A Simplify has started: what it is aiming at, and how long to expect.
+///
+/// The estimate is part of the message on purpose — this is the only op in the
+/// wizard that takes long enough for a still window to read as a hang.
+#[must_use]
+pub fn format_simplify_started(target_faces: usize) -> String {
+    format!("Simplifying to {target_faces} faces… (this can take ~10–40 s)")
+}
+
+/// A Simplify has landed: the target it was asked for, and what it cost.
+///
+/// ⚠ Reports the target that was asked for, not the count that resulted — as
+/// the pre-port message did. The stats line above the step-2 controls carries
+/// the count the mesh actually ended up with.
+#[must_use]
+pub fn format_simplify_done(target_faces: usize, secs: f64) -> String {
+    format!("✔ Simplified to {target_faces} faces ({secs:.1}s).")
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -2199,5 +2218,43 @@ visible = true
             format_scan_stats(193_740, 581_220),
             "193740 faces · 581220 vertices"
         );
+    }
+
+    /// ⚠ Distinct operands, deliberately. The target and the elapsed seconds
+    /// are both numbers in one sentence, so a swapped pair would go on reading
+    /// as a perfectly plausible message.
+    #[test]
+    fn the_simplify_report_keeps_its_target_and_its_cost_apart() {
+        let line = format_simplify_done(200_000, 12.34);
+        assert!(
+            line.contains("200000 faces"),
+            "the target is what the user asked for: {line}"
+        );
+        assert!(
+            line.contains("(12.3s)"),
+            "the cost is shown to a tenth of a second: {line}"
+        );
+    }
+
+    /// The tick must be U+2714 `✔`, not U+2713 `✓`. No bundled font carries
+    /// U+2713 — it renders as a tofu box — and a test that only checks the
+    /// words cannot see that.
+    #[test]
+    fn the_simplify_report_uses_a_tick_the_bundled_fonts_have() {
+        let line = format_simplify_done(1_000, 0.0);
+        assert_eq!(
+            line.chars().next().map(u32::from),
+            Some(0x2714),
+            "wrong tick: {line}"
+        );
+    }
+
+    /// The estimate is why this message exists at all: without it, forty
+    /// seconds of a still window reads as a hung app.
+    #[test]
+    fn the_simplify_start_line_carries_the_target_and_the_estimate() {
+        let line = format_simplify_started(50_000);
+        assert!(line.contains("50000 faces"), "the target: {line}");
+        assert!(line.contains("~10–40 s"), "the estimate: {line}");
     }
 }

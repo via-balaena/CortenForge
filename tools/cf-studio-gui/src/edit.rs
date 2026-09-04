@@ -13,7 +13,7 @@ use cf_studio_gui::{
     trim_bound_mm,
 };
 
-use crate::scan::{ScanEdit, ViewUpdate};
+use crate::scan::{ActiveScan, ScanEdit, ViewUpdate};
 use crate::state::Studio;
 
 /// Trims start at nothing taken off.
@@ -25,6 +25,12 @@ const REFERENCE_MIN_MM: i32 = 5;
 const DEFAULT_TIP_MM: i32 = 0;
 const DEFAULT_FLOOR_MM: i32 = 10;
 const DEFAULT_REFERENCE_MM: i32 = 25;
+
+/// The Simplify target's floor and ceiling, and the value the field starts at
+/// — the pre-port stepper's `minimum` / `maximum` / `value`, unchanged.
+const SIMPLIFY_MIN_FACES: i32 = 1_000;
+const SIMPLIFY_MAX_FACES: i32 = 1_000_000;
+const DEFAULT_TARGET_FACES: i32 = 200_000;
 
 /// Reported when a trim leaves nothing behind. The mesh is still trimmed — only
 /// the view is held — so the wording asks for a smaller number rather than
@@ -78,6 +84,11 @@ pub(crate) struct EditControls {
     pub(crate) reference_mm: StepBoxState,
     /// The rebuilt floor's shape.
     pub(crate) shape: FloorShape,
+    /// The face count a Simplify aims at.
+    ///
+    /// ⚠ Bounded by face count, not by the centerline, so [`Self::rebound`]
+    /// must leave it alone — see [`simplify_range`].
+    pub(crate) target_faces: StepBoxState,
     /// The upper bound all three fields clamp against — the centerline's arc
     /// length, since that is what a trim is measured along.
     bound_mm: i32,
@@ -90,6 +101,7 @@ impl Default for EditControls {
             floor_mm: StepBoxState::new(DEFAULT_FLOOR_MM),
             reference_mm: StepBoxState::new(DEFAULT_REFERENCE_MM),
             shape: FloorShape::default(),
+            target_faces: StepBoxState::new(DEFAULT_TARGET_FACES),
             // No centerline yet, so the floor of the bound is all there is.
             bound_mm: trim_bound_mm(0.0),
         }
@@ -105,6 +117,20 @@ impl EditControls {
     /// The reference-zone field's `(min, max)`.
     pub(crate) const fn reference_range(&self) -> (i32, i32) {
         (REFERENCE_MIN_MM, self.bound_mm)
+    }
+
+    /// The target a Simplify runs at, in [`cf_studio_engine::run_simplify`]'s
+    /// units.
+    ///
+    /// ⚠ The clamp is not redundant with the stepper's. Typing does not commit,
+    /// and [`StepBoxState::value`] tracks an in-progress edit unclamped by
+    /// design, so a number typed and then clicked straight through arrives here
+    /// out of range.
+    #[allow(clippy::cast_sign_loss)] // The clamp removes the sign the lint is about.
+    pub(crate) fn simplify_target(&self) -> usize {
+        self.target_faces
+            .value()
+            .clamp(SIMPLIFY_MIN_FACES, SIMPLIFY_MAX_FACES) as usize
     }
 
     /// Re-bound the fields when the centerline's arc length has moved.
@@ -125,6 +151,12 @@ impl EditControls {
         self.reference_mm
             .sync_external(self.reference_mm.value(), REFERENCE_MIN_MM, bound_mm);
     }
+}
+
+/// The Simplify stepper's `(min, max)`. Fixed, unlike
+/// [`EditControls::trim_range`] — see [`EditControls::target_faces`].
+pub(crate) const fn simplify_range() -> (i32, i32) {
+    (SIMPLIFY_MIN_FACES, SIMPLIFY_MAX_FACES)
 }
 
 /// A step-2 cleanup op. Each carries the field values it was clicked with, so
@@ -168,7 +200,20 @@ pub(crate) fn apply_edit_intent(
     };
     // `None` means no scan is loaded, which the step-2 screen cannot be showing.
     let Some(outcome) = outcome else { return };
+    land_edit(outcome, scan, studio, controls);
+}
 
+/// Report a finished step-2 op and re-bound the trim fields behind it.
+///
+/// The pre-port `apply_edit`: the one place deciding what happens after ANY
+/// step-2 op, shared with [`crate::jobs::poll_simplify_job`] so the two paths
+/// cannot drift.
+pub(crate) fn land_edit(
+    outcome: StepOutcome,
+    scan: &ScanEdit,
+    studio: &mut Studio,
+    controls: &mut EditControls,
+) {
     // The over-trim guard. The op ran and the session holds its result; what is
     // held back is the *view*, because an empty mesh has nothing to draw and
     // dropping the last good one would leave the user staring at an empty
@@ -178,14 +223,24 @@ pub(crate) fn apply_edit_intent(
     // applied, so the centerline is now a stub — re-bounding to it would clamp
     // the number the user just typed down to that stub's length, taking away
     // the very field they are being told to reduce.
+    //
+    // ⚠ Only a trim reaches it: `simplify_mesh` cannot empty a mesh that had
+    // faces, and the pre-port `apply_edit` shared this message too.
     if scan.view() == ViewUpdate::Hold {
         studio.message = Some(Err(OVER_TRIM_MESSAGE.to_string()));
         return;
     }
     studio.message = Some(outcome);
 
-    if let Some(active) = scan.active() {
-        controls.rebound(trim_bound_mm(active.session().centerline_arc_length_mm()));
+    // ⚠ Only while a centerline exists to measure against. Every op that clears
+    // one — weld, Simplify, reset — reports an arc length of 0, which
+    // `trim_bound_mm` floors to a placeholder 10 mm; re-bounding to that would
+    // silently rewrite a 40 mm floor trim to 10 the moment the user welded. The
+    // trim section is hidden meanwhile, so holding the old bound shows nothing.
+    if let Some(session) = scan.active().map(ActiveScan::session)
+        && session.has_centerline()
+    {
+        controls.rebound(trim_bound_mm(session.centerline_arc_length_mm()));
     }
 }
 
@@ -404,6 +459,167 @@ endsolid t
             matches!(&studio.message, Some(Err(text)) if text.contains("Apply a floor trim first")),
             "with no trim there is nothing to rebuild: {:?}",
             studio.message
+        );
+    }
+
+    /// ⚠ Adding the face target to [`EditControls::rebound`]'s three fields
+    /// would clamp a six-figure count to a few hundred millimetres the first
+    /// time Find floor ran.
+    #[test]
+    fn re_bounding_the_trim_fields_leaves_the_face_target_alone() {
+        let mut c = EditControls::default();
+        c.target_faces.text_mut().clear();
+        c.target_faces.text_mut().push_str("5000");
+        c.target_faces.on_typed();
+        assert!(c.target_faces.is_dirty(), "the fixture must start dirty");
+
+        c.rebound(120);
+
+        assert!(
+            c.target_faces.is_dirty(),
+            "a trim bound moving is not this field's business"
+        );
+        assert_eq!(
+            c.simplify_target(),
+            5_000,
+            "and the typed target survives it"
+        );
+    }
+
+    /// A typed-but-uncommitted number is in range only because
+    /// [`EditControls::simplify_target`] puts it there.
+    #[test]
+    fn a_typed_target_reaches_the_engine_inside_the_steppers_range() {
+        let mut c = EditControls::default();
+
+        c.target_faces.text_mut().clear();
+        c.target_faces.text_mut().push_str("99999999");
+        c.target_faces.on_typed();
+        assert_eq!(
+            c.simplify_target(),
+            1_000_000,
+            "clamped to SIMPLIFY_MAX_FACES"
+        );
+
+        c.target_faces.text_mut().clear();
+        c.target_faces.text_mut().push_str("-5");
+        c.target_faces.on_typed();
+        assert_eq!(c.simplify_target(), 1_000, "and up to SIMPLIFY_MIN_FACES");
+    }
+
+    /// The pre-port stepper's bounds and starting value.
+    #[test]
+    fn the_simplify_stepper_keeps_its_pre_port_bounds_and_default() {
+        assert_eq!(simplify_range(), (1_000, 1_000_000));
+        assert_eq!(EditControls::default().simplify_target(), 200_000);
+    }
+
+    /// [`open_tube`]'s height in session units (metres) — 100 mm of spine.
+    const TUBE_HEIGHT_M: f64 = 0.1;
+
+    /// A welded square tube along +Z, open at both ends and [`TUBE_HEIGHT_M`]
+    /// tall.
+    ///
+    /// Two open boundary loops with a spine between them is what `detect_caps`
+    /// and `level_to_floor` trace a centerline from; the cube fixture is closed
+    /// and can never have one.
+    fn open_tube() -> mesh_types::IndexedMesh {
+        use mesh_types::Point3;
+
+        const RINGS: usize = 4;
+        const SIDE_M: f64 = 0.02;
+
+        let mut vertices = Vec::new();
+        for r in 0..RINGS {
+            #[allow(clippy::cast_precision_loss)] // Four rings.
+            let z = TUBE_HEIGHT_M * r as f64 / (RINGS - 1) as f64;
+            vertices.push(Point3::new(0.0, 0.0, z));
+            vertices.push(Point3::new(SIDE_M, 0.0, z));
+            vertices.push(Point3::new(SIDE_M, SIDE_M, z));
+            vertices.push(Point3::new(0.0, SIDE_M, z));
+        }
+        let mut faces = Vec::new();
+        for r in 0..RINGS - 1 {
+            let (b, t) = ((r * 4) as u32, ((r + 1) * 4) as u32);
+            for k in 0..4u32 {
+                let k2 = (k + 1) % 4;
+                faces.push([b + k, b + k2, t + k2]);
+                faces.push([b + k, t + k2, t + k]);
+            }
+        }
+        mesh_types::IndexedMesh { vertices, faces }
+    }
+
+    /// ⚠ A window, not an equality. The trace is a polyline through slice
+    /// centroids, so it stops half a slice short at each end — 97 on a 100 mm
+    /// tube. Pinning 97 would pin the sampler's resolution; what must not
+    /// happen is the 10 mm placeholder.
+    #[test]
+    fn landing_an_op_that_traced_a_centerline_bounds_the_fields_to_it() {
+        let mut scan = ScanEdit::default();
+        scan.set(ActiveScan::synthetic(open_tube()));
+        let mut studio = Studio::default();
+        let mut controls = EditControls::default();
+        let traced = scan.edit(find_floor);
+        assert!(
+            matches!(traced, Some(Ok(_))),
+            "the fixture must stand up: {traced:?}"
+        );
+
+        land_edit(
+            Ok("stood up".to_string()),
+            &scan,
+            &mut studio,
+            &mut controls,
+        );
+
+        let bound = controls.trim_range().1;
+        assert!(
+            (90..=100).contains(&bound),
+            "the bound must come from the tube's 100 mm spine, not the placeholder: {bound}"
+        );
+    }
+
+    /// ★ The bug [`land_edit`]'s guard exists for, driven through the landing.
+    ///
+    /// [`StepBoxState::sync_external`] moves the value, not just the range, so
+    /// Find floor again does not give it back. The sequence is the one the
+    /// screen invites: Find floor, tidy, "Find floor again".
+    #[test]
+    fn landing_an_op_that_cleared_the_centerline_holds_the_bound_it_no_longer_has() {
+        let mut scan = ScanEdit::default();
+        // A closed cube has no boundary loops, so the session has no centerline
+        // — exactly the state a weld or a Simplify leaves behind.
+        scan.set(ActiveScan::synthetic(mesh_types::unit_cube()));
+        let mut studio = Studio::default();
+        let mut controls = EditControls::default();
+        // Stand in for the bound a Find floor had already established.
+        controls.rebound(trim_bound_mm(147.6));
+        controls
+            .floor_mm
+            .step(30, TRIM_MIN_MM, controls.trim_range().1);
+        assert_eq!(
+            controls.floor_mm.value(),
+            40,
+            "the fixture must start at 40"
+        );
+
+        land_edit(Ok("tidied".to_string()), &scan, &mut studio, &mut controls);
+
+        assert_eq!(
+            controls.trim_range().1,
+            148,
+            "the bound the last real trace left must stand"
+        );
+        assert_eq!(
+            controls.floor_mm.value(),
+            40,
+            "and the trim the user typed against it"
+        );
+        assert_eq!(
+            controls.reference_mm.value(),
+            DEFAULT_REFERENCE_MM,
+            "and so must the reference zone"
         );
     }
 

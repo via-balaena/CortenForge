@@ -12,7 +12,7 @@ use cf_bevy_common::camera::OrbitCameraPlugin;
 use crate::dialogs::PendingDialog;
 use crate::edit::EditControls;
 use crate::input::arbitrate_pointer_over_egui;
-use crate::jobs::{PrintJob, poll_dialogs, poll_print_job};
+use crate::jobs::{PrintJob, SimplifyJob, poll_dialogs, poll_print_job, poll_simplify_job};
 use crate::panel::wizard_screen;
 use crate::scan::ScanEdit;
 use crate::scene::{draw_centerline, fit_viewport_to_free_space, setup_scene, show_scan};
@@ -39,6 +39,7 @@ impl Plugin for StudioPlugin {
             .init_resource::<Studio>()
             .init_resource::<PendingDialog>()
             .init_resource::<PrintJob>()
+            .init_resource::<SimplifyJob>()
             .init_resource::<ScanEdit>()
             .init_resource::<EditControls>()
             .insert_resource(ClearColor(BACKGROUND))
@@ -72,8 +73,13 @@ impl Plugin for StudioPlugin {
                     arbitrate_pointer_over_egui,
                     poll_dialogs,
                     poll_print_job,
+                    poll_simplify_job,
+                    // After both writers, so a landing scan or a landed
+                    // Simplify reaches the viewport on its own frame rather
+                    // than the next one.
                     show_scan
                         .after(poll_dialogs)
+                        .after(poll_simplify_job)
                         .run_if(resource_changed::<ScanEdit>),
                     // Immediate mode: gizmos are re-emitted every frame, so
                     // this one is NOT gated on the resource changing.

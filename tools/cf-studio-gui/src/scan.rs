@@ -74,6 +74,23 @@ impl ActiveScan {
         })
     }
 
+    /// An [`ActiveScan`] over `mesh`, built exactly as [`Self::load`] builds
+    /// one but without going through a file.
+    ///
+    /// The lift is pinned to 1.0: the tests that reach for this are about what
+    /// the *session* did, and a scale would only add arithmetic to their
+    /// assertions.
+    #[cfg(test)]
+    pub(crate) fn synthetic(mesh: IndexedMesh) -> Self {
+        let session = EditSession::from_mesh(std::path::PathBuf::from("synthetic.stl"), mesh);
+        Self {
+            display: session.display_mesh(),
+            centerline: lifted_centerline(&session.display_centerline(), RenderScale(1.0)),
+            session,
+            scale: RenderScale(1.0),
+        }
+    }
+
     /// The mesh the viewport draws.
     pub(crate) const fn display(&self) -> &IndexedMesh {
         &self.display
@@ -203,21 +220,6 @@ mod tests {
 
     use super::*;
 
-    /// An [`ActiveScan`] over `mesh`, built the way [`ActiveScan::load`] builds
-    /// one but without going through a file.
-    ///
-    /// The lift is pinned to 1.0: these tests are about *what the viewport is
-    /// asked to do*, and a scale would only add arithmetic to the assertions.
-    fn scan_over(mesh: IndexedMesh) -> ActiveScan {
-        let session = EditSession::from_mesh(PathBuf::from("synthetic.stl"), mesh);
-        ActiveScan {
-            display: session.display_mesh(),
-            centerline: lifted_centerline(&session.display_centerline(), RenderScale(1.0)),
-            session,
-            scale: RenderScale(1.0),
-        }
-    }
-
     /// ★★★ The invariant the overlay exists under: a gizmo point must land
     /// exactly where the scan entity puts the same point. Gizmos draw in world
     /// space and are not children of that entity, so the lift is applied by
@@ -266,7 +268,7 @@ mod tests {
     #[test]
     fn a_newly_set_scan_asks_for_the_camera() {
         let mut edit = ScanEdit::default();
-        edit.set(scan_over(unit_cube()));
+        edit.set(ActiveScan::synthetic(unit_cube()));
         assert_eq!(edit.view(), ViewUpdate::Reframe);
     }
 
@@ -276,7 +278,7 @@ mod tests {
     #[test]
     fn an_ordinary_edit_remeshes_without_reaching_for_the_camera() {
         let mut edit = ScanEdit::default();
-        edit.set(scan_over(unit_cube()));
+        edit.set(ActiveScan::synthetic(unit_cube()));
 
         let welded = edit.edit(EditSession::weld);
 
@@ -298,7 +300,7 @@ mod tests {
     #[test]
     fn an_edit_that_empties_the_mesh_holds_the_last_good_view() {
         let mut edit = ScanEdit::default();
-        edit.set(scan_over(unit_cube()));
+        edit.set(ActiveScan::synthetic(unit_cube()));
         let good_faces = edit.active().map(|a| a.display().faces.len());
         assert_eq!(good_faces, Some(12), "the fixture must start renderable");
 
