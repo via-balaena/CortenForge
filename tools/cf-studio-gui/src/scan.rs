@@ -7,7 +7,7 @@ use bevy::prelude::{Resource, Vec3};
 use cf_bevy_common::axis::UpAxis;
 use cf_bevy_common::scale::RenderScale;
 use cf_studio_engine::EditSession;
-use mesh_types::{Bounded, IndexedMesh};
+use mesh_types::{Bounded, IndexedMesh, Point3};
 
 /// Scans carry no unit metadata; the workshop scanner exports millimeters and
 /// the cast pipeline works in meters. (A units selector can override this
@@ -68,7 +68,7 @@ impl ActiveScan {
         let scale = RenderScale::for_diagonal(diagonal);
         Ok(Self {
             display: session.display_mesh(),
-            centerline: lifted_centerline(&session, scale),
+            centerline: lifted_centerline(&session.display_centerline(), scale),
             session,
             scale,
         })
@@ -103,22 +103,25 @@ impl ActiveScan {
         if display.faces.is_empty() {
             return false;
         }
-        self.centerline = lifted_centerline(&self.session, self.scale);
+        self.centerline = lifted_centerline(&self.session.display_centerline(), self.scale);
         self.display = display;
         true
     }
 }
 
-/// The engine's display centerline, in the same frame and at the same lift as
-/// the rendered body.
+/// Centerline points in the same frame and at the same lift as the rendered
+/// body.
+///
+/// Takes the points rather than the session because it does no session work —
+/// which also makes the one piece of arithmetic here testable against the
+/// entity transform it has to agree with.
 ///
 /// ⚠ The lift is applied here by hand. Gizmos draw in world space — they are
 /// not children of the scan entity, so [`RenderScale::transform`] never reaches
 /// them, and an unlifted line would hide inside a body drawn several times
 /// larger than it.
-fn lifted_centerline(session: &EditSession, scale: RenderScale) -> Vec<Vec3> {
-    session
-        .display_centerline()
+fn lifted_centerline(points: &[Point3<f64>], scale: RenderScale) -> Vec<Vec3> {
+    points
         .iter()
         .map(|p| Vec3::from_array(SCAN_UP_AXIS.to_bevy_point(p)) * scale.0)
         .collect()
@@ -189,5 +192,143 @@ impl ScanEdit {
             ViewUpdate::Hold
         };
         Some(value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use mesh_types::unit_cube;
+
+    use super::*;
+
+    /// An [`ActiveScan`] over `mesh`, built the way [`ActiveScan::load`] builds
+    /// one but without going through a file.
+    ///
+    /// The lift is pinned to 1.0: these tests are about *what the viewport is
+    /// asked to do*, and a scale would only add arithmetic to the assertions.
+    fn scan_over(mesh: IndexedMesh) -> ActiveScan {
+        let session = EditSession::from_mesh(PathBuf::from("synthetic.stl"), mesh);
+        ActiveScan {
+            display: session.display_mesh(),
+            centerline: lifted_centerline(&session.display_centerline(), RenderScale(1.0)),
+            session,
+            scale: RenderScale(1.0),
+        }
+    }
+
+    /// ★★★ The invariant the overlay exists under: a gizmo point must land
+    /// exactly where the scan entity puts the same point. Gizmos draw in world
+    /// space and are not children of that entity, so the lift is applied by
+    /// hand here — and a hand-applied lift is one typo away from an overlay
+    /// that floats inside, or far outside, the body it describes.
+    ///
+    /// ⚠ The expectation is built from the *entity's* own pieces — the mesh
+    /// conversion's axis swap and [`RenderScale::transform`] — not by
+    /// restating this function's arithmetic, which would agree with itself no
+    /// matter how wrong both were.
+    #[test]
+    fn a_lifted_point_lands_where_the_scan_entity_puts_the_same_point() {
+        // 6.68x is `base_mold`'s measured lift; the offsets are asymmetric so a
+        // swapped axis cannot pass by coincidence.
+        let scale = RenderScale(6.68);
+        let points = [
+            Point3::new(0.011, 0.022, 0.033),
+            Point3::new(0.0, 0.0, 0.05),
+        ];
+
+        let lifted = lifted_centerline(&points, scale);
+
+        assert_eq!(lifted.len(), points.len(), "every point survives the lift");
+        for (got, p) in lifted.iter().zip(&points) {
+            let on_entity = scale
+                .transform()
+                .transform_point(Vec3::from_array(SCAN_UP_AXIS.to_bevy_point(p)));
+            assert!(
+                (*got - on_entity).length() < 1e-6,
+                "overlay {got:?} does not sit on the body at {on_entity:?}"
+            );
+        }
+    }
+
+    /// A unit lift must be a true no-op, or a metre-scale scan's overlay drifts.
+    #[test]
+    fn a_unit_lift_only_swaps_axes() {
+        let lifted = lifted_centerline(&[Point3::new(1.0, 2.0, 3.0)], RenderScale(1.0));
+        assert_eq!(
+            lifted,
+            vec![Vec3::new(1.0, 3.0, 2.0)],
+            "+Z up swaps y and z"
+        );
+    }
+
+    #[test]
+    fn a_newly_set_scan_asks_for_the_camera() {
+        let mut edit = ScanEdit::default();
+        edit.set(scan_over(unit_cube()));
+        assert_eq!(edit.view(), ViewUpdate::Reframe);
+    }
+
+    /// An edit re-meshes but must NOT re-frame: the pre-port viewer preserved
+    /// the orbit angle, and re-framing here snaps the view back to the front on
+    /// every weld and trim.
+    #[test]
+    fn an_ordinary_edit_remeshes_without_reaching_for_the_camera() {
+        let mut edit = ScanEdit::default();
+        edit.set(scan_over(unit_cube()));
+
+        let welded = edit.edit(EditSession::weld);
+
+        assert!(welded.is_some(), "the op runs against the loaded scan");
+        assert_eq!(
+            edit.view(),
+            ViewUpdate::Remesh,
+            "an edit must never re-frame the camera"
+        );
+    }
+
+    /// The over-trim guard, and the reason it exists: an edit that leaves
+    /// nothing renderable must keep the last good mesh on screen, or the user
+    /// is left staring at an empty viewport with no way to see what they did.
+    ///
+    /// ⚠ Both halves are asserted. A guard that returned [`ViewUpdate::Hold`]
+    /// but still overwrote the cache would blank the view anyway, and the
+    /// `view()` check alone cannot see that.
+    #[test]
+    fn an_edit_that_empties_the_mesh_holds_the_last_good_view() {
+        let mut edit = ScanEdit::default();
+        edit.set(scan_over(unit_cube()));
+        let good_faces = edit.active().map(|a| a.display().faces.len());
+        assert_eq!(good_faces, Some(12), "the fixture must start renderable");
+
+        // Stand in for an over-trim: the session now yields an empty display.
+        let ran = edit.edit(|session| {
+            *session =
+                EditSession::from_mesh(PathBuf::from("synthetic.stl"), IndexedMesh::default());
+        });
+
+        assert!(ran.is_some(), "the op still ran");
+        assert_eq!(
+            edit.view(),
+            ViewUpdate::Hold,
+            "nothing renderable came of it"
+        );
+        assert_eq!(
+            edit.active().map(|a| a.display().faces.len()),
+            good_faces,
+            "the last good mesh must survive the guard"
+        );
+    }
+
+    #[test]
+    fn editing_before_a_scan_is_loaded_reports_nothing() {
+        let mut edit = ScanEdit::default();
+        assert!(edit.edit(EditSession::weld).is_none());
+        assert_eq!(
+            edit.view(),
+            ViewUpdate::Hold,
+            "and asks the viewport for nothing"
+        );
     }
 }
