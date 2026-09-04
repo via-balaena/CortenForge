@@ -19,7 +19,10 @@ use cf_studio_gui::{
 };
 
 use crate::dialogs::{DialogKind, PendingDialog};
-use crate::edit::{EditControls, EditIntent, FloorShape, apply_edit_intent, simplify_range};
+use crate::edit::{
+    EditControls, EditIntent, FloorShape, SIMPLIFY_STEP_FACES, STEP_MM, apply_edit_intent,
+    simplify_range,
+};
 use crate::jobs::{SimplifyJob, start_simplify};
 use crate::scan::ScanEdit;
 use crate::state::Studio;
@@ -378,7 +381,13 @@ fn draw_tidy_row(ui: &mut egui::Ui, controls: &mut EditControls, ready: bool) ->
         }
         ui.horizontal(|ui| {
             ui.colored_label(CONTROL_TEXT, "Simplify to");
-            step_box(ui, &mut controls.target_faces, simplify_range(), ready);
+            step_box(
+                ui,
+                &mut controls.target_faces,
+                simplify_range(),
+                SIMPLIFY_STEP_FACES,
+                ready,
+            );
             if ui
                 .add_enabled(ready, egui::Button::new("Simplify"))
                 .clicked()
@@ -404,11 +413,11 @@ fn draw_trim_row(
     ui.vertical_centered(|ui| {
         field_grid(ui, "trim-fields", |ui| {
             ui.colored_label(CONTROL_TEXT, "from tip");
-            step_box(ui, &mut controls.tip_mm, range, ready);
+            step_box(ui, &mut controls.tip_mm, range, STEP_MM, ready);
             ui.colored_label(CONTROL_TEXT, "mm");
             ui.end_row();
             ui.colored_label(CONTROL_TEXT, "from floor");
-            step_box(ui, &mut controls.floor_mm, range, ready);
+            step_box(ui, &mut controls.floor_mm, range, STEP_MM, ready);
             ui.colored_label(CONTROL_TEXT, "mm");
             ui.end_row();
         });
@@ -465,7 +474,7 @@ fn draw_reconstruct_row(
                 });
             ui.end_row();
             ui.colored_label(CONTROL_TEXT, "from");
-            step_box(ui, &mut controls.reference_mm, range, ready);
+            step_box(ui, &mut controls.reference_mm, range, STEP_MM, ready);
             ui.colored_label(CONTROL_TEXT, "mm above cut");
             ui.end_row();
         });
@@ -680,6 +689,8 @@ mod tests {
         DesignDraft, LayerDraft, MoldOutputs, PlugDraft, PourPlan, PourStep, PrepInput, Project,
         RidgeOptions, ScanInput,
     };
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
 
     use super::*;
     use crate::edit::tests::open_tube;
@@ -770,7 +781,6 @@ mod tests {
     /// `assert_eq!`. Fit alone passes an empty screen.
     fn controls_in_column(mut body: impl FnMut(&mut egui::Ui)) -> Vec<String> {
         use egui::accesskit::Role;
-        use egui_kittest::Harness;
         use egui_kittest::kittest::NodeT;
 
         let column = std::cell::Cell::new(egui::Rect::NOTHING);
@@ -990,5 +1000,67 @@ mod tests {
         );
         assert!(controls_in_column(draw_porting_notice).is_empty());
         assert!(controls_in_column(|ui| draw_checklist(ui, &studio)).is_empty());
+    }
+
+    /// Lay `row` out, click its first `label` button, and hand back the
+    /// controls it acted on.
+    fn after_clicking(
+        label: &str,
+        mut controls: EditControls,
+        mut row: impl FnMut(&mut egui::Ui, &mut EditControls),
+    ) -> EditControls {
+        {
+            let controls = std::cell::RefCell::new(&mut controls);
+            let mut harness = Harness::builder()
+                .with_size(egui::Vec2::new(BODY_WIDTH, COLUMN_HEIGHT))
+                .build(|ctx| {
+                    body_column(ctx, |ui| row(ui, &mut controls.borrow_mut()));
+                });
+            harness.run();
+            // A row may hold two steppers; the first is the one asserted on.
+            harness
+                .get_all_by_label(label)
+                .next()
+                .expect("the row has a stepper")
+                .click();
+            harness.run();
+        }
+        controls
+    }
+
+    /// ★ The ± buttons were decorative on the face target: at the millimetre
+    /// step the three mm fields use, reaching the floor from the default took
+    /// 199 000 clicks.
+    ///
+    /// ⚠ Driven through the widget, not asserted on the constants. Only this
+    /// says `step_box` hands each field *its own* step — a swap would leave
+    /// both constants correct and both fields wrong.
+    ///
+    /// ⚠ Round trips, not single clicks. `+` and `−` take the step separately,
+    /// so clicking only `+` passes a stepper that adds 10 000 and subtracts 1.
+    #[test]
+    fn each_stepper_moves_its_field_by_that_fields_step() {
+        let tidy = |ui: &mut egui::Ui, c: &mut EditControls| {
+            let _ = draw_tidy_row(ui, c, true);
+        };
+        let trim = |ui: &mut egui::Ui, c: &mut EditControls| {
+            let _ = draw_trim_row(ui, c, true);
+        };
+        let faces = EditControls::default().target_faces.value();
+        let tip = EditControls::default().tip_mm.value();
+
+        let c = after_clicking("+", EditControls::default(), tidy);
+        assert_eq!(c.target_faces.value(), faces + SIMPLIFY_STEP_FACES, "up");
+        let c = after_clicking("−", c, tidy);
+        assert_eq!(c.target_faces.value(), faces, "and back down");
+
+        let c = after_clicking("+", EditControls::default(), trim);
+        assert_eq!(
+            c.tip_mm.value(),
+            tip + STEP_MM,
+            "up, a millimetre at a time"
+        );
+        let c = after_clicking("−", c, trim);
+        assert_eq!(c.tip_mm.value(), tip, "and back down");
     }
 }
