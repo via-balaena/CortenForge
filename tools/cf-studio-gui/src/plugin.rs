@@ -116,3 +116,28 @@ fn pin_theme_and_fonts(
     *done = true;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use bevy::state::app::StatesPlugin;
+
+    use super::*;
+
+    /// The other half of the viewport fix, and the half `scene.rs` cannot see:
+    /// `setup_scene` spawning a dedicated context camera only helps while
+    /// `bevy_egui` is told to stop attaching one of its own. Left on, it would
+    /// mark the 3D camera too — two primary contexts, and the feedback loop back
+    /// through whichever one egui picked.
+    #[test]
+    fn bevy_egui_is_told_not_to_claim_the_first_camera() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, StatesPlugin, StudioPlugin));
+
+        assert!(
+            !app.world()
+                .resource::<EguiGlobalSettings>()
+                .auto_create_primary_context,
+            "the context belongs to scene.rs's UI camera, not to whichever camera spawns first"
+        );
+    }
+}
