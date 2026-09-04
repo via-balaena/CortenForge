@@ -244,6 +244,45 @@ endsolid t
             .map(|c| (c.target, c.distance))
     }
 
+    /// ★★★ The invariant #874 violated, and the reason the app strobed: egui's
+    /// context must NOT live on the camera whose viewport we resize.
+    ///
+    /// `bevy_egui` reads its context camera's viewport as egui's screen rect, so
+    /// with the context on `Camera3d` — the default, since it attaches to the
+    /// first camera created — `fit_viewport_to_free_space` fed egui a rect
+    /// derived from egui's own output. Measured before the fix: screen width
+    /// 1280 -> 600 -> 0, oscillating every frame.
+    ///
+    /// This asserts the shape rather than the symptom, because the symptom needs
+    /// a real window: exactly one 3D camera, exactly one context holder, and they
+    /// are different entities.
+    #[test]
+    fn egui_does_not_share_a_camera_with_the_scene() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Mesh>()
+            .init_asset::<StandardMaterial>()
+            .add_systems(Startup, setup_scene);
+        app.update();
+
+        let world = app.world_mut();
+        let scene: Vec<Entity> = world
+            .query_filtered::<Entity, With<Camera3d>>()
+            .iter(world)
+            .collect();
+        let egui: Vec<Entity> = world
+            .query_filtered::<Entity, With<PrimaryEguiContext>>()
+            .iter(world)
+            .collect();
+
+        assert_eq!(scene.len(), 1, "one camera renders the scan");
+        assert_eq!(egui.len(), 1, "and one holds egui's context");
+        assert_ne!(
+            scene[0], egui[0],
+            "egui must not sit on the camera whose viewport is resized"
+        );
+    }
+
     /// ★★★ The invariant the whole intent split exists to protect: a NEW scan
     /// frames the camera, an EDIT must not touch it. Inverting these two arms
     /// would snap the view back to the front on every weld and trim — and the

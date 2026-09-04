@@ -58,7 +58,7 @@ impl Plugin for StudioPlugin {
             .add_systems(
                 EguiPrimaryContextPass,
                 (
-                    force_light_theme,
+                    pin_theme_and_fonts,
                     waiver_screen.run_if(in_state(Screen::Waiver)),
                     wizard_screen.run_if(in_state(Screen::Wizard)),
                     // Last: it measures what the panels above left uncovered.
@@ -97,7 +97,7 @@ impl Plugin for StudioPlugin {
 /// `before → after`, `↺ Reset`) is proportional text, so without this they all
 /// render as tofu boxes. Measured against the bundled `.ttf`s: those codepoints
 /// exist in `Hack` and nowhere else in the default set.
-fn force_light_theme(
+fn pin_theme_and_fonts(
     mut contexts: EguiContexts,
     mut done: Local<bool>,
 ) -> bevy::ecs::error::Result {
