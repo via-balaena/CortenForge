@@ -2,15 +2,16 @@
 //!
 //! The panel decides nothing. It renders from the lib's plain functions
 //! ([`step_rows`], [`nav_state`], the `format_*` family) and turns clicks into
-//! an [`Intent`] or an [`EditIntent`], executed by [`apply_intent`] and
-//! [`apply_edit_intent`] respectively. Keeping the egui closure free of state
-//! transitions is what makes the transitions reviewable — and testable, since
-//! they are all methods on `Studio` or plain functions over an `EditSession`.
+//! an [`Intent`], an [`EditIntent`] or a Simplify target — executed by
+//! [`apply_intent`], [`apply_edit_intent`] and [`start_simplify`] respectively.
+//! Keeping the egui closure free of state transitions is what makes the
+//! transitions reviewable — and testable, since they are all methods on
+//! `Studio` or plain functions over an `EditSession`.
 //!
-//! ⚠ The two intent types are **not** an accident of growth. Executing an
+//! ⚠ The three kinds of click are **not** an accident of growth. Executing an
 //! [`EditIntent`] borrows [`ScanEdit`] mutably, which marks it changed and
-//! rebuilds a 200 000-face mesh; Back and Next must not take that path. See
-//! [`Acted`].
+//! rebuilds a 200 000-face mesh; Back, Next and *starting* a Simplify must not
+//! take that path. See [`Acted`].
 
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
@@ -21,7 +22,8 @@ use cf_studio_gui::{
 };
 
 use crate::dialogs::{DialogKind, PendingDialog};
-use crate::edit::{EditControls, EditIntent, FloorShape, apply_edit_intent};
+use crate::edit::{EditControls, EditIntent, FloorShape, apply_edit_intent, simplify_range};
+use crate::jobs::{SimplifyJob, start_simplify};
 use crate::scan::ScanEdit;
 use crate::state::Studio;
 use crate::widgets::{
@@ -50,18 +52,38 @@ const SUBHEADING_SIZE: f32 = 13.0;
 /// Its hint, a step smaller than a section's.
 const SUBHINT_SIZE: f32 = 12.0;
 
-/// What the body reported this frame.
+/// What the frame reported.
 ///
-/// The two are separate types because executing an [`EditIntent`] borrows
+/// The three are separate because executing an [`EditIntent`] borrows
 /// [`ScanEdit`] mutably, and that marks it changed — which costs a full rebuild
-/// of a 200 000-face mesh. Routing Back and Next through the same call would
-/// charge every navigation click for it. See the warning on [`ScanEdit`].
+/// of a 200 000-face mesh. Routing the other two through the same call would
+/// charge them for it. See the warning on [`ScanEdit`].
 #[derive(Default)]
 struct Acted {
     /// A navigation or dialog action.
     nav: Option<Intent>,
     /// A step-2 cleanup op.
     edit: Option<EditIntent>,
+    /// The face target a Simplify was clicked with.
+    ///
+    /// ⚠ Not an [`EditIntent`] variant, and the reason is the same borrow rule
+    /// one step further out: *starting* a Simplify only reads the scan. Sent
+    /// through [`apply_edit_intent`] it would take `&mut ScanEdit` anyway,
+    /// marking the resource changed while its [`crate::scan::ViewUpdate`] still
+    /// holds whatever the last op left — so the mesh would rebuild for nothing,
+    /// and the camera would jump if that last op was the load.
+    simplify: Option<usize>,
+}
+
+impl Acted {
+    /// Fold in what a nested piece of the screen reported; it wins where both
+    /// did. Each field merges on its own — they come from different controls,
+    /// and no frame can hold two clicks.
+    fn merge(&mut self, inner: Self) {
+        self.nav = inner.nav.or(self.nav);
+        self.edit = inner.edit.or(self.edit);
+        self.simplify = inner.simplify.or(self.simplify);
+    }
 }
 
 /// What the user asked for this frame. At most one — a frame cannot hold two
@@ -89,6 +111,7 @@ pub(crate) fn wizard_screen(
     mut dialog: ResMut<PendingDialog>,
     mut scan: ResMut<ScanEdit>,
     mut controls: ResMut<EditControls>,
+    mut job: ResMut<SimplifyJob>,
 ) -> bevy::ecs::error::Result {
     let ctx = contexts.ctx_mut()?;
     let mut acted = Acted::default();
@@ -111,9 +134,7 @@ pub(crate) fn wizard_screen(
                 // save passing it twice, would mark the resource changed on
                 // every frame the wizard drew and re-mesh the scan 60 times a
                 // second.
-                let drawn = draw_body(ui, &studio, &dialog, &scan, &mut controls);
-                acted.nav = drawn.nav.or(acted.nav);
-                acted.edit = drawn.edit.or(acted.edit);
+                acted.merge(draw_body(ui, &studio, &dialog, &scan, &mut controls));
             });
         });
 
@@ -122,6 +143,12 @@ pub(crate) fn wizard_screen(
     }
     if let Some(intent) = acted.edit {
         apply_edit_intent(intent, &mut scan, &mut studio, &mut controls);
+    }
+    // ⚠ `&scan`, immutably — see the note on [`Acted::simplify`]. What travels
+    // to the worker is a clone of the session's working mesh;
+    // `poll_simplify_job` installs what comes back.
+    if let Some(target_faces) = acted.simplify {
+        start_simplify(target_faces, &scan, &mut studio, &mut job);
     }
     Ok(())
 }
@@ -222,7 +249,7 @@ fn draw_body(
     let mut acted = Acted::default();
     match viewed {
         Step::AddScan => acted.nav = draw_add_scan(ui, studio, dialog),
-        Step::CleanScan => acted.edit = draw_clean_scan(ui, studio, dialog, scan, controls),
+        Step::CleanScan => acted.merge(draw_clean_scan(ui, studio, dialog, scan, controls)),
         Step::ShapePiece | Step::DesignLayers | Step::MakeMolds => draw_porting_notice(ui),
         Step::Print => acted.nav = draw_print(ui, studio, dialog),
         Step::Pour => acted.nav = draw_pour(ui, studio),
@@ -240,11 +267,11 @@ fn draw_clean_scan(
     dialog: &PendingDialog,
     scan: &ScanEdit,
     controls: &mut EditControls,
-) -> Option<EditIntent> {
+) -> Acted {
     ui.add_space(8.0);
     let Some(active) = scan.active() else {
         wrapped_label(ui, "Add a scan in step 1 first.");
-        return None;
+        return Acted::default();
     };
     let session = active.session();
     let has_centerline = session.has_centerline();
@@ -252,7 +279,7 @@ fn draw_clean_scan(
     // centerline it was cut along still exists.
     let has_floor_trim = session.reconstruct_available() && has_centerline;
     let ready = accepting_actions(studio, dialog);
-    let mut intent = None;
+    let mut acted = Acted::default();
 
     centered_wrapped(
         ui,
@@ -268,16 +295,7 @@ fn draw_clean_scan(
         "Merge duplicate points so the rest works. A very heavy scan can be \
          lightened, too.",
         false,
-        |ui| {
-            ui.vertical_centered(|ui| {
-                if ui
-                    .add_enabled(ready, egui::Button::new("Weld points"))
-                    .clicked()
-                {
-                    intent = Some(EditIntent::Weld);
-                }
-            });
-        },
+        |ui| acted.merge(draw_tidy_row(ui, controls, ready)),
     );
     ui.add_space(SECTION_GAP);
 
@@ -295,7 +313,7 @@ fn draw_clean_scan(
             };
             ui.vertical_centered(|ui| {
                 if ui.add_enabled(ready, egui::Button::new(label)).clicked() {
-                    intent = Some(EditIntent::FindFloor);
+                    acted.edit = Some(EditIntent::FindFloor);
                 }
             });
         },
@@ -312,13 +330,13 @@ fn draw_clean_scan(
              good start.",
             false,
             |ui| {
-                intent = draw_trim_row(ui, controls, ready).or(intent);
+                acted.edit = draw_trim_row(ui, controls, ready).or(acted.edit);
                 // Nested inside the trim section, as it was pre-port: it undoes
                 // part of the cut made directly above it, and reading as a
                 // sibling section would make it look like a third way to trim.
                 if has_floor_trim {
                     ui.add_space(SECTION_GAP);
-                    intent = draw_reconstruct_row(ui, controls, ready).or(intent);
+                    acted.edit = draw_reconstruct_row(ui, controls, ready).or(acted.edit);
                 }
             },
         );
@@ -331,7 +349,7 @@ fn draw_clean_scan(
             .add_enabled(ready, egui::Button::new("Start over"))
             .clicked()
         {
-            intent = Some(EditIntent::Reset);
+            acted.edit = Some(EditIntent::Reset);
         }
     });
 
@@ -340,9 +358,38 @@ fn draw_clean_scan(
         ui,
         SUBHINT_SIZE,
         HINT_TEXT,
-        "Simplify and Save arrive in the next two builds of this screen.",
+        "Save arrives in the next build of this screen.",
     );
-    intent
+    acted
+}
+
+/// The tidy row: Weld, then a face target and Simplify.
+///
+/// ⚠ Wrapping and grouped, like [`draw_trim_row`]. Wrapping so that a body
+/// column too narrow for the row pushes the trailing button onto a line of its
+/// own instead of off the panel; grouped so that the break egui picks cannot
+/// land between "Simplify to" and the field it labels.
+fn draw_tidy_row(ui: &mut egui::Ui, controls: &mut EditControls, ready: bool) -> Acted {
+    let mut acted = Acted::default();
+    ui.horizontal_wrapped(|ui| {
+        if ui
+            .add_enabled(ready, egui::Button::new("Weld points"))
+            .clicked()
+        {
+            acted.edit = Some(EditIntent::Weld);
+        }
+        ui.horizontal(|ui| {
+            ui.colored_label(CONTROL_TEXT, "Simplify to");
+            step_box(ui, &mut controls.target_faces, simplify_range(), ready);
+        });
+        if ui
+            .add_enabled(ready, egui::Button::new("Simplify"))
+            .clicked()
+        {
+            acted.simplify = Some(controls.simplify_target());
+        }
+    });
+    acted
 }
 
 /// The trim row: a stepper for each end, then Apply trim.

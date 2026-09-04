@@ -26,6 +26,12 @@ const DEFAULT_TIP_MM: i32 = 0;
 const DEFAULT_FLOOR_MM: i32 = 10;
 const DEFAULT_REFERENCE_MM: i32 = 25;
 
+/// The Simplify target's floor and ceiling, and the value the field starts at
+/// — the pre-port stepper's `minimum` / `maximum` / `value`, unchanged.
+const SIMPLIFY_MIN_FACES: i32 = 1_000;
+const SIMPLIFY_MAX_FACES: i32 = 1_000_000;
+const DEFAULT_TARGET_FACES: i32 = 200_000;
+
 /// Reported when a trim leaves nothing behind. The mesh is still trimmed — only
 /// the view is held — so the wording asks for a smaller number rather than
 /// claiming the op was refused.
@@ -78,6 +84,11 @@ pub(crate) struct EditControls {
     pub(crate) reference_mm: StepBoxState,
     /// The rebuilt floor's shape.
     pub(crate) shape: FloorShape,
+    /// The face count a Simplify aims at.
+    ///
+    /// ⚠ Bounded by face count, not by the centerline, so [`Self::rebound`]
+    /// must leave it alone — see [`simplify_range`].
+    pub(crate) target_faces: StepBoxState,
     /// The upper bound all three fields clamp against — the centerline's arc
     /// length, since that is what a trim is measured along.
     bound_mm: i32,
@@ -90,6 +101,7 @@ impl Default for EditControls {
             floor_mm: StepBoxState::new(DEFAULT_FLOOR_MM),
             reference_mm: StepBoxState::new(DEFAULT_REFERENCE_MM),
             shape: FloorShape::default(),
+            target_faces: StepBoxState::new(DEFAULT_TARGET_FACES),
             // No centerline yet, so the floor of the bound is all there is.
             bound_mm: trim_bound_mm(0.0),
         }
@@ -105,6 +117,21 @@ impl EditControls {
     /// The reference-zone field's `(min, max)`.
     pub(crate) const fn reference_range(&self) -> (i32, i32) {
         (REFERENCE_MIN_MM, self.bound_mm)
+    }
+
+    /// The target a Simplify runs at, in the units
+    /// [`cf_studio_engine::run_simplify`] takes.
+    ///
+    /// ⚠ The clamp is not redundant with the stepper's own. Typing does not
+    /// commit — [`StepBoxState::value`] tracks an in-progress edit unclamped, by
+    /// design — so a number typed and then clicked straight through arrives
+    /// here out of range. Clamping here is also what makes the conversion
+    /// total, so that moving [`SIMPLIFY_MIN_FACES`] later cannot become a panic.
+    #[allow(clippy::cast_sign_loss)] // The clamp removes the sign the lint is about.
+    pub(crate) fn simplify_target(&self) -> usize {
+        self.target_faces
+            .value()
+            .clamp(SIMPLIFY_MIN_FACES, SIMPLIFY_MAX_FACES) as usize
     }
 
     /// Re-bound the fields when the centerline's arc length has moved.
@@ -125,6 +152,15 @@ impl EditControls {
         self.reference_mm
             .sync_external(self.reference_mm.value(), REFERENCE_MIN_MM, bound_mm);
     }
+}
+
+/// The Simplify stepper's `(min, max)`.
+///
+/// A free function rather than a method, and the asymmetry with
+/// [`EditControls::trim_range`] is the point: a face target is not the mesh's
+/// to re-bound, so there is no state for it to read.
+pub(crate) const fn simplify_range() -> (i32, i32) {
+    (SIMPLIFY_MIN_FACES, SIMPLIFY_MAX_FACES)
 }
 
 /// A step-2 cleanup op. Each carries the field values it was clicked with, so
@@ -168,7 +204,22 @@ pub(crate) fn apply_edit_intent(
     };
     // `None` means no scan is loaded, which the step-2 screen cannot be showing.
     let Some(outcome) = outcome else { return };
+    land_edit(outcome, scan, studio, controls);
+}
 
+/// Report a finished step-2 op and re-bound the trim fields behind it.
+///
+/// Shared with the async Simplify's poller ([`crate::jobs::poll_simplify_job`])
+/// rather than duplicated, because it is the pre-port `apply_edit` — the one
+/// place that decided what happens *after* any step-2 op — and the two callers
+/// drifting apart is how the trim fields would end up bounded by a centerline
+/// that a Simplify had already cleared.
+pub(crate) fn land_edit(
+    outcome: StepOutcome,
+    scan: &ScanEdit,
+    studio: &mut Studio,
+    controls: &mut EditControls,
+) {
     // The over-trim guard. The op ran and the session holds its result; what is
     // held back is the *view*, because an empty mesh has nothing to draw and
     // dropping the last good one would leave the user staring at an empty
@@ -178,6 +229,12 @@ pub(crate) fn apply_edit_intent(
     // applied, so the centerline is now a stub — re-bounding to it would clamp
     // the number the user just typed down to that stub's length, taking away
     // the very field they are being told to reduce.
+    //
+    // ⚠ The wording names a trim because a trim is what reaches it.
+    // `cf_scan_prep_core::simplify_mesh` returns the input unchanged when the
+    // target is at or above the current face count, and decimates toward a
+    // positive one otherwise, so a Simplify cannot arrive here having emptied
+    // the mesh. The pre-port `apply_edit` carried this message on both paths.
     if scan.view() == ViewUpdate::Hold {
         studio.message = Some(Err(OVER_TRIM_MESSAGE.to_string()));
         return;
@@ -405,6 +462,61 @@ endsolid t
             "with no trim there is nothing to rebuild: {:?}",
             studio.message
         );
+    }
+
+    /// ⚠ The face target is not a trim field. [`EditControls::rebound`] re-bounds
+    /// three fields against the centerline's arc length; adding this one to that
+    /// list would clamp a six-figure face count down to a few hundred
+    /// millimetres the first time Find floor ran.
+    #[test]
+    fn re_bounding_the_trim_fields_leaves_the_face_target_alone() {
+        let mut c = EditControls::default();
+        c.target_faces.text_mut().clear();
+        c.target_faces.text_mut().push_str("5000");
+        c.target_faces.on_typed();
+        assert!(c.target_faces.is_dirty(), "the fixture must start dirty");
+
+        c.rebound(120);
+
+        assert!(
+            c.target_faces.is_dirty(),
+            "a trim bound moving is not this field's business"
+        );
+        assert_eq!(
+            c.simplify_target(),
+            5_000,
+            "and the typed target survives it"
+        );
+    }
+
+    /// Typing does not commit, and [`StepBoxState`] tracks an in-progress edit
+    /// unclamped by design — so a number typed and then clicked straight
+    /// through is in range only because this conversion puts it there.
+    #[test]
+    fn a_typed_target_reaches_the_engine_inside_the_steppers_range() {
+        let mut c = EditControls::default();
+
+        c.target_faces.text_mut().clear();
+        c.target_faces.text_mut().push_str("99999999");
+        c.target_faces.on_typed();
+        assert_eq!(
+            c.simplify_target(),
+            1_000_000,
+            "clamped to SIMPLIFY_MAX_FACES"
+        );
+
+        c.target_faces.text_mut().clear();
+        c.target_faces.text_mut().push_str("-5");
+        c.target_faces.on_typed();
+        assert_eq!(c.simplify_target(), 1_000, "and up to SIMPLIFY_MIN_FACES");
+    }
+
+    /// The pre-port stepper's bounds and starting value, which are what a
+    /// user's habits with this field are built on.
+    #[test]
+    fn the_simplify_stepper_keeps_its_pre_port_bounds_and_default() {
+        assert_eq!(simplify_range(), (1_000, 1_000_000));
+        assert_eq!(EditControls::default().simplify_target(), 200_000);
     }
 
     /// The reference zone is not a trim: a trim may take off nothing, but a
