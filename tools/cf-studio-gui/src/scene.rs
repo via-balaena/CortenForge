@@ -326,6 +326,21 @@ endsolid t
             Some(cameras[0]),
             "the light must be a child of the camera, not fixed in world space"
         );
+
+        // ⚠ The euler signs were derived by hand, and a hand-derived sign is
+        // exactly the thing to check rather than reason about. Dropping the minus
+        // on the pitch tilts the light UP instead of down, and the scan is then
+        // lit from below — which looks wrong in a way that is hard to name and
+        // easy to ship. A light shines along its own forward, so forward must
+        // point downward relative to the camera it hangs from.
+        let shining = app
+            .world()
+            .get::<Transform>(lights[0])
+            .map(|t| t.rotation * Vec3::NEG_Z);
+        assert!(
+            shining.is_some_and(|d| d.y < 0.0),
+            "the key light must fall from above the view axis, not up from below: {shining:?}"
+        );
     }
 
     /// ⚠ Two fields here are correctness, not taste: a raw scan's winding is not
