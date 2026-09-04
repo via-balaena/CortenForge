@@ -677,3 +677,46 @@ fn apply_intent(intent: Intent, studio: &mut Studio, dialog: &mut PendingDialog)
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ⚠ Every click on every screen reaches [`wizard_screen`] through this.
+    /// A merge that dropped a field would not error or panic — the control it
+    /// belonged to would simply stop working.
+    #[test]
+    fn merging_lands_the_inner_report_without_dropping_the_outer_one() {
+        let mut outer = Acted {
+            nav: Some(Intent::Back),
+            ..Acted::default()
+        };
+
+        outer.merge(Acted {
+            edit: Some(EditIntent::Weld),
+            simplify: Some(200_000),
+            ..Acted::default()
+        });
+
+        assert_eq!(outer.nav, Some(Intent::Back), "the outer report survives");
+        assert_eq!(outer.edit, Some(EditIntent::Weld), "the inner one lands");
+        assert_eq!(outer.simplify, Some(200_000), "and each field on its own");
+    }
+
+    /// Where both fired, the inner one wins — it is the more specific of the
+    /// two, and the pre-merge code resolved it the same way.
+    #[test]
+    fn an_inner_report_wins_over_the_outer_one() {
+        let mut outer = Acted {
+            nav: Some(Intent::Back),
+            ..Acted::default()
+        };
+
+        outer.merge(Acted {
+            nav: Some(Intent::Next),
+            ..Acted::default()
+        });
+
+        assert_eq!(outer.nav, Some(Intent::Next));
+    }
+}

@@ -13,7 +13,7 @@ use cf_studio_gui::{
     trim_bound_mm,
 };
 
-use crate::scan::{ScanEdit, ViewUpdate};
+use crate::scan::{ActiveScan, ScanEdit, ViewUpdate};
 use crate::state::Studio;
 
 /// Trims start at nothing taken off.
@@ -241,8 +241,18 @@ pub(crate) fn land_edit(
     }
     studio.message = Some(outcome);
 
-    if let Some(active) = scan.active() {
-        controls.rebound(trim_bound_mm(active.session().centerline_arc_length_mm()));
+    // ⚠ Only while a centerline exists to measure against. Every op that clears
+    // one — weld, Simplify, reset — then reports an arc length of 0, and
+    // `trim_bound_mm` floors that to a placeholder 10 mm. Re-bounding to the
+    // placeholder would clamp the user's numbers against it: a 40 mm floor trim
+    // would silently become 10 the moment they welded, and Find floor again
+    // would not give it back. There is nothing to show meanwhile — the trim
+    // section is hidden without a centerline — so holding the old bound costs
+    // nothing and the next real trace replaces it.
+    if let Some(session) = scan.active().map(ActiveScan::session)
+        && session.has_centerline()
+    {
+        controls.rebound(trim_bound_mm(session.centerline_arc_length_mm()));
     }
 }
 
@@ -517,6 +527,53 @@ endsolid t
     fn the_simplify_stepper_keeps_its_pre_port_bounds_and_default() {
         assert_eq!(simplify_range(), (1_000, 1_000_000));
         assert_eq!(EditControls::default().simplify_target(), 200_000);
+    }
+
+    /// ★ The bug this guard exists for, driven through the landing itself.
+    ///
+    /// Every op that clears the centerline — weld, Simplify, reset — then
+    /// reports an arc length of 0, which [`trim_bound_mm`] floors to a
+    /// placeholder 10 mm. Re-bounding to that placeholder clamps numbers the
+    /// user typed against a bound that describes nothing, and Find floor again
+    /// does not give them back: [`StepBoxState::sync_external`] moves the
+    /// value, not just the range. The sequence is the one the screen invites —
+    /// Find floor, tidy, then "Find floor again".
+    #[test]
+    fn landing_an_op_that_cleared_the_centerline_holds_the_bound_it_no_longer_has() {
+        let mut scan = ScanEdit::default();
+        // A closed cube has no boundary loops, so the session has no centerline
+        // — exactly the state a weld or a Simplify leaves behind.
+        scan.set(ActiveScan::synthetic(mesh_types::unit_cube()));
+        let mut studio = Studio::default();
+        let mut controls = EditControls::default();
+        // Stand in for the bound a Find floor had already established.
+        controls.rebound(trim_bound_mm(147.6));
+        controls
+            .floor_mm
+            .step(30, TRIM_MIN_MM, controls.trim_range().1);
+        assert_eq!(
+            controls.floor_mm.value(),
+            40,
+            "the fixture must start at 40"
+        );
+
+        land_edit(Ok("tidied".to_string()), &scan, &mut studio, &mut controls);
+
+        assert_eq!(
+            controls.trim_range().1,
+            148,
+            "the bound the last real trace left must stand"
+        );
+        assert_eq!(
+            controls.floor_mm.value(),
+            40,
+            "and the trim the user typed against it"
+        );
+        assert_eq!(
+            controls.reference_mm.value(),
+            DEFAULT_REFERENCE_MM,
+            "and so must the reference zone"
+        );
     }
 
     /// The reference zone is not a trim: a trim may take off nothing, but a
