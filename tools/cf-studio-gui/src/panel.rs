@@ -991,8 +991,10 @@ mod tests {
             .molds()
             .expect("the fixture is driven to the pour")
             .clone();
-        let dir = crate::save::tests::temp_dir("glyphs");
-        let (_scan, saved) = crate::save::tests::ready_to_save(&dir);
+        // A path, not a folder: the question only interpolates one, so creating
+        // it would be filesystem work with a cleanup that a failure would skip.
+        let dir = std::env::temp_dir().join("cf-glyph-gate");
+        let (_scan, studio) = crate::save::tests::ready_to_save(&dir);
 
         let mut messages = vec![
             cf_studio_gui::format_save_done("base_mold", 180_236),
@@ -1006,7 +1008,7 @@ mod tests {
             cf_studio_gui::format_molds_summary(&molds),
             format_pour_plan(&molds.pour_plan),
             format_pour_active(&molds.pour_plan, 0),
-            crate::save::overwrite_question(&saved, &dir),
+            crate::save::overwrite_question(&studio, &dir),
         ];
         // Each urgency band words itself differently.
         messages.extend([600_i64, 120, -30].map(|secs| pour_countdown(secs).text));
@@ -1020,6 +1022,7 @@ mod tests {
         // only one no control label already covers — `← Back` and `Next →` are
         // in the nav census.
         let mut screen = cleanup_screen();
+        let mut reports = Vec::new();
         for intent in [EditIntent::Weld, EditIntent::FindFloor, EditIntent::Reset] {
             apply_edit_intent(
                 intent,
@@ -1030,8 +1033,15 @@ mod tests {
             let reported = screen.studio.message.as_ref().expect("every op reports");
             let (Ok(text) | Err(text)) = reported;
             assert_renders(&harness.ctx, text);
+            reports.push(text.clone());
         }
-        let _ = std::fs::remove_dir_all(&dir);
+        // ⚠ Otherwise this loop checks whatever the ops happen to say. Reword
+        // one — or let a guard report in its place — and the arrow this is here
+        // for stops being checked, with the gate still green.
+        assert!(
+            reports.iter().any(|text| text.contains('\u{21ba}')),
+            "no op reported the arrow this covers: {reports:?}"
+        );
     }
 
     /// Step 2 with every section revealed: a scan loaded, a centerline traced,
@@ -1222,14 +1232,9 @@ mod tests {
     /// ⚠ The accessibility tree's own flag. Presence is not the question — the
     /// section is on screen either way, which is how the user is told what to
     /// do first.
-    fn save_button_disabled(stood_up: bool) -> Option<bool> {
+    fn save_button_disabled(screen: &mut CleanupScreen) -> Option<bool> {
         use egui_kittest::kittest::NodeT;
 
-        let mut screen = cleanup_screen();
-        if !stood_up {
-            // Back to a freshly loaded scan: no centerline, so no cast frame.
-            screen.scan.set(ActiveScan::synthetic(open_tube()));
-        }
         let mut harness = Harness::builder()
             .with_size(egui::Vec2::new(BODY_WIDTH, COLUMN_HEIGHT))
             .build(|ctx| {
@@ -1251,13 +1256,46 @@ mod tests {
             .map(|node| node.accesskit_node().is_disabled())
     }
 
-    /// ★ Save is gated on the centerline, not merely on the app being idle:
-    /// `EditSession::save` refuses without one, so an enabled button here buys
-    /// the user a click and a "Save failed" for it.
+    /// ★ Save is gated on the centerline *and* on the app being free — both
+    /// terms, because a test that only stands the scan up passes just as well
+    /// with the `ready` half deleted.
+    ///
+    /// ⚠ `EditSession::save` refuses without a centerline, so an enabled button
+    /// there buys the user a click and a "Save failed" for it; and a Save that
+    /// ran during a job or an open picker would write while the question that
+    /// gated it is still on screen.
     #[test]
-    fn save_is_offered_only_once_the_scan_has_been_stood_up() {
-        assert_eq!(save_button_disabled(true), Some(false), "stood up");
-        assert_eq!(save_button_disabled(false), Some(true), "not yet stood up");
+    fn save_is_offered_only_once_the_scan_is_stood_up_and_the_app_is_free() {
+        assert_eq!(
+            save_button_disabled(&mut cleanup_screen()),
+            Some(false),
+            "stood up, nothing else running"
+        );
+
+        let mut flat = cleanup_screen();
+        // Back to a freshly loaded scan: no centerline, so no cast frame.
+        flat.scan.set(ActiveScan::synthetic(open_tube()));
+        assert_eq!(
+            save_button_disabled(&mut flat),
+            Some(true),
+            "not yet stood up"
+        );
+
+        let mut busy = cleanup_screen();
+        busy.studio.busy = true;
+        assert_eq!(
+            save_button_disabled(&mut busy),
+            Some(true),
+            "a job is running"
+        );
+
+        let mut asking = cleanup_screen();
+        asking.dialog = PendingDialog::opened(DialogKind::PrepDest);
+        assert_eq!(
+            save_button_disabled(&mut asking),
+            Some(true),
+            "a picker is open"
+        );
     }
 
     /// Lay the save row out with `controls`, click `label`, and report what the
