@@ -131,35 +131,43 @@ pub(crate) fn step_box(
     (min, max): (i32, i32),
     enabled: bool,
 ) {
-    // The committed value is read when an action button is clicked, not here:
-    // nothing in step 2 re-meshes on a field edit, so the commit results go
-    // unused on purpose.
-    if ui
-        .add_enabled(enabled && state.value() > min, egui::Button::new("−"))
-        .clicked()
-    {
-        let _ = state.step(-1, min, max);
-    }
-    let field = ui.add_enabled(
-        enabled,
-        egui::TextEdit::singleline(state.text_mut())
-            .desired_width(FIELD_WIDTH)
-            .horizontal_align(egui::Align::Center),
-    );
-    if field.changed() {
-        state.on_typed();
-    }
-    // Enter also drops focus on a single-line field, so this is both commit
-    // paths at once.
-    if field.lost_focus() {
-        let _ = state.commit(min, max);
-    }
-    if ui
-        .add_enabled(enabled && state.value() < max, egui::Button::new("+"))
-        .clicked()
-    {
-        let _ = state.step(1, min, max);
-    }
+    // ⚠ One `horizontal` group, not three loose widgets. These sit inside a
+    // `horizontal_wrapped` row wider than the body column, so egui is free to
+    // wrap BETWEEN them — splitting a stepper across two lines with its `+`
+    // orphaned under the field. Grouping makes the trio one item the parent can
+    // only place or push to the next row whole, which is what the pre-port
+    // `StepBox` (a `HorizontalLayout` component) guaranteed for free.
+    ui.horizontal(|ui| {
+        // The committed value is read when an action button is clicked, not here:
+        // nothing in step 2 re-meshes on a field edit, so the commit results go
+        // unused on purpose.
+        if ui
+            .add_enabled(enabled && state.value() > min, egui::Button::new("−"))
+            .clicked()
+        {
+            let _ = state.step(-1, min, max);
+        }
+        let field = ui.add_enabled(
+            enabled,
+            egui::TextEdit::singleline(state.text_mut())
+                .desired_width(FIELD_WIDTH)
+                .horizontal_align(egui::Align::Center),
+        );
+        if field.changed() {
+            state.on_typed();
+        }
+        // Enter also drops focus on a single-line field, so this is both commit
+        // paths at once.
+        if field.lost_focus() {
+            let _ = state.commit(min, max);
+        }
+        if ui
+            .add_enabled(enabled && state.value() < max, egui::Button::new("+"))
+            .clicked()
+        {
+            let _ = state.step(1, min, max);
+        }
+    });
 }
 
 /// A rounded, filled card — the panel-within-a-panel the summaries sit in.
