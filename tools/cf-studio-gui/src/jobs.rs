@@ -67,24 +67,17 @@ pub(crate) fn poll_dialogs(
             job.0 = Some(spawn_export(molds, dest));
         }
         DialogKind::PrepDest => {
-            // The smoothing the Save was clicked with rides on the pending
-            // state: this poller never sees step 2's fields. No pending state
-            // means no Save asked for this folder, so there is nothing to do.
             let Some(smoothing) = studio.pending_save.as_ref().map(PendingSave::smoothing) else {
                 return;
             };
-            // ⚠ Unlike `PrintDest`, a cancel here says something and must clear
-            // the pending Save: `pending_save` gates every control in the
-            // wizard, so backing out silently would leave the app inert with
-            // the question that gated it no longer on screen.
+            // ⚠ Unlike `PrintDest`, a cancel here must clear the pending Save:
+            // it gates every control, so backing out silently leaves the app
+            // inert with the question that gated it gone from the screen.
             let Some(dest) = picked else {
                 settle(&mut studio, Ok("Save cancelled.".to_string()));
                 return;
             };
-            // ⚠ `&scan` — an immutable borrow of the `ResMut`, which resolves
-            // through `Deref`, not `DerefMut`. Saving only reads the session;
-            // marking the resource changed would re-mesh 200 000 faces and
-            // re-frame the camera for a file write.
+            // ⚠ `&scan`, immutably — see the warning on `ScanEdit`.
             save_into(&scan, &mut studio, dest, smoothing);
         }
     }
@@ -283,7 +276,6 @@ mod tests {
         let (scan, studio) = crate::save::tests::ready_to_save(dir);
         let mut app = App::new();
         app.add_plugins(TaskPoolPlugin::default())
-            .init_resource::<EditControls>()
             .init_resource::<PrintJob>()
             .add_systems(Update, poll_dialogs);
         app.insert_resource(studio);

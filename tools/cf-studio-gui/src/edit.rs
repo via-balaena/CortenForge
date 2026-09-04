@@ -49,10 +49,8 @@ const DEFAULT_SMOOTHING: i32 = 8;
 
 /// One ± click on the smoothing field.
 ///
-/// ⚠ Deliberately 1, unlike [`SIMPLIFY_STEP_FACES`]: 30 clicks crosses the
-/// whole range, so the inherited step is the right one here. Named anyway, so
-/// the choice is a decision on the record rather than the default nobody
-/// checked — which is exactly what [`SIMPLIFY_STEP_FACES`] was.
+/// ⚠ 1, unlike [`SIMPLIFY_STEP_FACES`], because 30 clicks crosses the whole
+/// range. Named rather than inherited, which is what went wrong there.
 pub(crate) const SMOOTHING_STEP: i32 = 1;
 
 /// Reported when a trim leaves nothing behind. The mesh is still trimmed — only

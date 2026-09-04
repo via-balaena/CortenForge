@@ -298,15 +298,29 @@ pub(crate) mod tests {
         save_to_default(&scan, &mut studio, 0);
         assert!(studio.pending_save.is_none(), "a save that succeeded");
 
-        // A session with no centerline: the engine refuses to write, since the
-        // cast has nothing to follow.
-        let bare = ScanEdit::default();
+        // No scan at all — `write_into`'s own guard, before the engine.
         studio.pending_save = Some(PendingSave::ChoosingFolder { smoothing: 0 });
-        write_into(&bare, &mut studio, &dir, 0);
-        assert!(studio.pending_save.is_none(), "a save that could not run");
+        write_into(&ScanEdit::default(), &mut studio, &dir, 0);
         assert!(
-            studio.message.as_ref().is_some_and(Result::is_err),
-            "and it says so: {:?}",
+            studio.pending_save.is_none(),
+            "a save with nothing to write"
+        );
+        assert!(
+            matches!(&studio.message, Some(Err(text)) if text.contains("step 1")),
+            "and it says which step is missing: {:?}",
+            studio.message
+        );
+
+        // A scan that was never stood up — this one does reach the engine, and
+        // it refuses, because the cast has no centerline to follow.
+        let mut unlevelled = ScanEdit::default();
+        unlevelled.set(ActiveScan::synthetic(open_tube()));
+        studio.pending_save = Some(PendingSave::ChoosingFolder { smoothing: 0 });
+        write_into(&unlevelled, &mut studio, &dir, 0);
+        assert!(studio.pending_save.is_none(), "a save the engine refused");
+        assert!(
+            matches!(&studio.message, Some(Err(text)) if text.starts_with("Save failed")),
+            "and it passes the engine's reason on: {:?}",
             studio.message
         );
 

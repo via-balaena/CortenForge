@@ -2,13 +2,12 @@
 //!
 //! The panel decides nothing. It renders from the lib's plain functions
 //! ([`step_rows`], [`nav_state`], the `format_*` family) and turns clicks into
-//! an [`Intent`], an [`EditIntent`] or a Simplify target — executed by
-//! [`apply_intent`], [`apply_edit_intent`] and [`start_simplify`] respectively.
-//! Keeping the egui closure free of state transitions is what makes the
-//! transitions reviewable — and testable, since they are all methods on
-//! `Studio` or plain functions over an `EditSession`.
+//! the fields of [`Acted`], each executed by a function of its own. Keeping the
+//! egui closure free of state transitions is what makes the transitions
+//! reviewable — and testable, since they are all methods on `Studio` or plain
+//! functions over an `EditSession`.
 //!
-//! ⚠ The three kinds are **not** an accident of growth — see [`Acted`].
+//! ⚠ The split is **not** an accident of growth — see [`Acted`].
 
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
@@ -62,9 +61,9 @@ const MODAL_WIDTH: f32 = 460.0;
 
 /// What the frame reported.
 ///
-/// The three are separate because executing an [`EditIntent`] borrows
-/// [`ScanEdit`] mutably, which rebuilds a 200 000-face mesh; the other two must
-/// not pay that. See the warning on [`ScanEdit`].
+/// The fields are separate because executing an [`EditIntent`] borrows
+/// [`ScanEdit`] mutably, which rebuilds a 200 000-face mesh; nothing else here
+/// may pay that. See the warning on [`ScanEdit`].
 #[derive(Default)]
 struct Acted {
     /// A navigation or dialog action.
@@ -545,9 +544,7 @@ fn draw_save_modal(ctx: &egui::Context, question: &str) -> Option<SaveChoice> {
             }
         });
     });
-    // Escape, and a click on the backdrop, are the same "get me out of this"
-    // the Cancel button is. Checked only if nothing was clicked, so a real
-    // answer can never be overwritten by one.
+    // Escape and a click on the backdrop are the Cancel button by other means.
     if choice.is_none() && modal.should_close() {
         choice = Some(SaveChoice::Cancel);
     }
