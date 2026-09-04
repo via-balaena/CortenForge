@@ -71,7 +71,7 @@ bevy = { workspace = true, default-features = false, features = [
 # bevy_egui's clipboard feature pulls `clipboard-win` + `error-code`, which are
 # BSL-1.0. deny.toml's allow-list no longer carries BSL-1.0 (it was there for
 # Slint's copypasta) — enabling clipboard here puts it back.
-bevy_egui = { version = "0.39.1", default-features = false, features = [
+bevy_egui = { version = "0.42.0", default-features = false, features = [
     "default_fonts",
     "render",
     "bevy_ui",
@@ -93,14 +93,14 @@ cf-bevy-common = { workspace = true }
 # rfd's `run_on_main` dispatch_syncs to the main thread, and the main thread is
 # already parked inside the executor scope waiting for that same system. Both
 # halves were sampled; `dialogs.rs` carries the async form that fixes it.
-rfd = "0.15"
+rfd = "0.17"
 
 [dev-dependencies]
 # Headless egui driver for the layout gates in `panel.rs`.
 #
 # ⚠ The minor tracks egui's, not its own latest: 0.33 against bevy_egui 0.39.1's
 # egui 0.33.3. A newer kittest resolves a second egui and drives that one.
-egui_kittest = "0.33"
+egui_kittest = "0.36"
 
 [features]
 default = ["x11"]
