@@ -6,7 +6,7 @@
 //! exactly that reason; this is the one structural choice that avoids it.
 
 use bevy::prelude::*;
-use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
+use bevy_egui::{EguiContexts, EguiGlobalSettings, EguiPrimaryContextPass, egui};
 use cf_bevy_common::camera::OrbitCameraPlugin;
 
 use crate::dialogs::PendingDialog;
@@ -26,6 +26,15 @@ pub(crate) struct StudioPlugin;
 
 impl Plugin for StudioPlugin {
     fn build(&self, app: &mut App) {
+        // ⚠ Off, because the default is "attach the primary context to the
+        // first camera created" — which would be the 3D camera, the one whose
+        // viewport `fit_viewport_to_free_space` shrinks. `scene.rs` spawns a
+        // dedicated UI camera carrying `PrimaryEguiContext` instead; the comment
+        // there has the measurement.
+        app.world_mut()
+            .get_resource_or_init::<EguiGlobalSettings>()
+            .auto_create_primary_context = false;
+
         app.init_state::<Screen>()
             .init_resource::<Studio>()
             .init_resource::<PendingDialog>()

@@ -10,7 +10,7 @@
 use bevy::camera::Viewport;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
-use bevy_egui::EguiContexts;
+use bevy_egui::{EguiContexts, PrimaryEguiContext};
 use cf_bevy_common::camera::OrbitCamera;
 use cf_bevy_common::mesh::triangle_mesh_flat_shaded;
 use mesh_types::Bounded;
@@ -53,6 +53,31 @@ pub(crate) fn setup_scene(
         SceneBody,
         Mesh3d(meshes.add(Sphere::new(1.0))),
         MeshMaterial3d(materials.add(body_material())),
+    ));
+
+    // ⚠⚠ egui's context lives on THIS camera, never on the 3D one, and the
+    // separation is load-bearing rather than tidy.
+    //
+    // `bevy_egui` reads its context camera's viewport as egui's screen rect. Put
+    // the context on the 3D camera and `fit_viewport_to_free_space` — which sets
+    // that viewport from egui's *available* rect — closes a loop: egui lays out
+    // inside the strip it was just confined to, the available rect collapses to
+    // zero width, the zero guard resets the viewport to the whole window, and it
+    // oscillates every frame. Measured on `main`: screen 1280 → 600 → 0, panels
+    // bunched mid-window over a full-window 3D view, visibly strobing.
+    //
+    // `order: 1` puts egui on top of the scene, so tooltips and combo popups may
+    // cross into the 3D strip; `ClearColorConfig::None` leaves the clear to the
+    // 3D camera, whose `LoadOp` covers the whole target before its viewport
+    // scissors the drawing.
+    commands.spawn((
+        Camera2d,
+        Camera {
+            order: 1,
+            clear_color: ClearColorConfig::None,
+            ..default()
+        },
+        PrimaryEguiContext,
     ));
 }
 
