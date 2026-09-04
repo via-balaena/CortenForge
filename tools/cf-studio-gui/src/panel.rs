@@ -126,14 +126,14 @@ pub(crate) fn wizard_screen(
     Ok(())
 }
 
-/// The seven-step progress list. `✓`/`○` is real completion; the arrow marks
+/// The seven-step progress list. `✔`/`○` is real completion; the arrow marks
 /// the screen being viewed — two different things that must not be conflated.
 fn draw_checklist(ui: &mut egui::Ui, studio: &Studio) {
     ui.add_space(8.0);
     ui.heading(&studio.project.name);
     ui.separator();
     for row in step_rows(&studio.project, studio.cursor.viewed()) {
-        let mark = if row.done { "✓" } else { "○" };
+        let mark = if row.done { "✔" } else { "○" };
         let text = format!("{mark}  {}. {}", row.number, row.title);
         let rich = if row.viewing {
             egui::RichText::new(format!("{text}   ← you are here")).strong()

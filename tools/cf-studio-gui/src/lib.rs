@@ -61,7 +61,7 @@ pub fn step_rows(project: &Project, viewed: Step) -> Vec<StepRow> {
 }
 
 /// Outcome of a step action: a user-facing message. `Ok` is a success
-/// line (starts with "✓"); `Err` is the failure message to surface. The
+/// line (starts with "✔"); `Err` is the failure message to surface. The
 /// frontend decides how to color/show it.
 pub type StepOutcome = Result<String, String>;
 
@@ -72,7 +72,7 @@ pub type StepOutcome = Result<String, String>;
 pub fn apply_scan(project: &mut Project, scan_file: &Path) -> StepOutcome {
     let loaded = load_scan(scan_file).map_err(|e| e.to_string())?;
     let message = format!(
-        "✓ Added scan: {} ({} vertices, {} faces)",
+        "✔ Added scan: {} ({} vertices, {} faces)",
         scan_file.display(),
         loaded.vertex_count,
         loaded.face_count
@@ -88,7 +88,7 @@ pub fn apply_scan(project: &mut Project, scan_file: &Path) -> StepOutcome {
 pub fn apply_prep(project: &mut Project, cleaned_stl: &Path, prep_toml: &Path) -> StepOutcome {
     let prep = accept_prep(cleaned_stl, prep_toml).map_err(|e| e.to_string())?;
     project.set_prep(prep).map_err(|e| e.to_string())?;
-    Ok("✓ Accepted cleaned scan + prep.".to_string())
+    Ok("✔ Accepted cleaned scan + prep.".to_string())
 }
 
 /// Step 3 action — load a layer design from a `.design.toml`.
@@ -98,7 +98,7 @@ pub fn apply_prep(project: &mut Project, cleaned_stl: &Path, prep_toml: &Path) -
 pub fn apply_design(project: &mut Project, design_toml: &Path) -> StepOutcome {
     let draft = draft_from_design_toml(design_toml).map_err(|e| e.to_string())?;
     let message = format!(
-        "✓ Design set: {} layer(s), {:.1} mm cavity inset.",
+        "✔ Design set: {} layer(s), {:.1} mm cavity inset.",
         draft.layers.len(),
         draft.cavity_inset_m * 1000.0
     );
@@ -113,7 +113,7 @@ pub fn apply_design(project: &mut Project, design_toml: &Path) -> StepOutcome {
 /// The failure message if the design is invalid or the scan isn't cleaned.
 pub fn apply_design_draft(project: &mut Project, draft: DesignDraft) -> StepOutcome {
     let message = format!(
-        "✓ Design set: {} layer(s), {:.1} mm cavity inset.",
+        "✔ Design set: {} layer(s), {:.1} mm cavity inset.",
         draft.layers.len(),
         draft.cavity_inset_m * 1000.0
     );
@@ -132,7 +132,7 @@ pub fn apply_design_draft(project: &mut Project, draft: DesignDraft) -> StepOutc
 /// been cleaned.
 pub fn apply_plug(project: &mut Project, plug: cf_studio_core::PlugDraft) -> StepOutcome {
     let message = format!(
-        "✓ Shaped piece: {:.1} mm inset{}.",
+        "✔ Shaped piece: {:.1} mm inset{}.",
         plug.cavity_inset_m * 1000.0,
         if plug.ridges.enabled {
             ", ridges on"
@@ -291,7 +291,7 @@ pub fn part_selection_from_checks(
 #[must_use]
 pub fn format_molds_summary(out: &MoldOutputs) -> String {
     let mut s = format!(
-        "✓ {} mold piece(s) + {} plug(s)",
+        "✔ {} mold piece(s) + {} plug(s)",
         out.mold_stls.len(),
         out.plug_stls.len(),
     );
@@ -325,7 +325,7 @@ pub fn format_molds_summary(out: &MoldOutputs) -> String {
 pub fn print_step_summary(project: &Project) -> String {
     if let Some(export) = project.print() {
         return format!(
-            "✓ Saved to {} — open that folder in your slicer to print each piece.",
+            "✔ Saved to {} — open that folder in your slicer to print each piece.",
             export.export_dir.display()
         );
     }
@@ -994,7 +994,7 @@ impl FloorReadiness {
 #[must_use]
 pub fn format_floor_found(loop_count: usize, centerline_segments: usize, tilt_deg: f64) -> String {
     format!(
-        "✓ Found floor — {loop_count} open loop(s), \
+        "✔ Found floor — {loop_count} open loop(s), \
          {centerline_segments}-segment centerline. \
          Stood upright (corrected {tilt_deg:.0}° tilt)."
     )
@@ -1256,7 +1256,7 @@ visible = true
         })
         .unwrap();
         let s = print_step_summary(&p);
-        assert!(s.starts_with("✓ Saved to /tmp/print-out"), "got: {s}");
+        assert!(s.starts_with("✔ Saved to /tmp/print-out"), "got: {s}");
 
         let _ = std::fs::remove_dir_all(&d);
     }

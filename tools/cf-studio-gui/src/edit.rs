@@ -192,7 +192,7 @@ pub(crate) fn apply_edit_intent(
 /// Merge coincident vertices.
 fn weld(session: &mut EditSession) -> StepOutcome {
     let (before, after) = session.weld();
-    Ok(format!("✓ Welded vertices: {before} → {after}"))
+    Ok(format!("✔ Welded vertices: {before} → {after}"))
 }
 
 /// Find the open end and stand the scan up on it.
@@ -224,7 +224,7 @@ fn apply_trim(session: &mut EditSession, tip_mm: i32, floor_mm: i32) -> StepOutc
     // now that there is a trim.
     session.level_to_floor();
     Ok(format!(
-        "✓ Trimmed — tip {tip_mm} mm, floor {floor_mm} mm — and re-leveled."
+        "✔ Trimmed — tip {tip_mm} mm, floor {floor_mm} mm — and re-leveled."
     ))
 }
 
@@ -239,7 +239,7 @@ fn reconstruct_floor(
     }
     session.level_to_floor();
     Ok(format!(
-        "✓ Reconstructed the floor ({reference_mm} mm reference zone)."
+        "✔ Reconstructed the floor ({reference_mm} mm reference zone)."
     ))
 }
 

@@ -101,7 +101,7 @@ pub(crate) fn cleanup_section(
     add: impl FnOnce(&mut egui::Ui),
 ) {
     let (text, color) = if done {
-        (format!("{heading}   ✓"), DONE_TEXT)
+        (format!("{heading}   ✔"), DONE_TEXT)
     } else {
         (heading.to_string(), HEADING_TEXT)
     };

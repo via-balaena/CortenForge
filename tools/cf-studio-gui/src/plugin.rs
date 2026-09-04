@@ -83,12 +83,20 @@ impl Plugin for StudioPlugin {
     }
 }
 
-/// Pin the light theme once, on the first frame that has a context.
+/// Pin the light theme and the font fallback once, on the first frame that has a
+/// context.
 ///
-/// ⚠ Load-bearing, not cosmetic. This app is designed light — light body panel,
-/// dark text — and egui defaults to **dark**. The pre-port UI forced light for
-/// the same reason: under macOS dark mode its off-panel text went dark-on-dark
-/// and vanished.
+/// ⚠ The theme is load-bearing, not cosmetic. This app is designed light — light
+/// body panel, dark text — and egui defaults to **dark**. The pre-port UI forced
+/// light for the same reason: under macOS dark mode its off-panel text went
+/// dark-on-dark and vanished.
+///
+/// ⚠⚠ So is the font fallback. egui puts `Hack` in the **monospace** family only,
+/// and `Ubuntu-Light` — the proportional face — has no `←`, `→` or `↺`. Every
+/// arrow in this UI (`← Back`, `Next →`, `← you are here`, the weld report's
+/// `before → after`, `↺ Reset`) is proportional text, so without this they all
+/// render as tofu boxes. Measured against the bundled `.ttf`s: those codepoints
+/// exist in `Hack` and nowhere else in the default set.
 fn force_light_theme(
     mut contexts: EguiContexts,
     mut done: Local<bool>,
@@ -96,7 +104,15 @@ fn force_light_theme(
     if *done {
         return Ok(());
     }
-    contexts.ctx_mut()?.set_visuals(egui::Visuals::light());
+    let ctx = contexts.ctx_mut()?;
+    ctx.set_visuals(egui::Visuals::light());
+
+    let mut fonts = egui::FontDefinitions::default();
+    if let Some(proportional) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
+        proportional.push("Hack".to_owned());
+    }
+    ctx.set_fonts(fonts);
+
     *done = true;
     Ok(())
 }
