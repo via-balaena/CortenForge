@@ -106,15 +106,23 @@ fn pin_theme_and_fonts(
     }
     let ctx = contexts.ctx_mut()?;
     ctx.set_visuals(egui::Visuals::light());
+    ctx.set_fonts(font_definitions());
 
+    *done = true;
+    Ok(())
+}
+
+/// egui's defaults, with `Hack` reachable from proportional text.
+///
+/// Split out from the system so the one decision in it can be tested: reaching
+/// it through [`pin_theme_and_fonts`] would need a live egui context, and the
+/// arrows breaking again is not something to find out by looking.
+fn font_definitions() -> egui::FontDefinitions {
     let mut fonts = egui::FontDefinitions::default();
     if let Some(proportional) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
         proportional.push("Hack".to_owned());
     }
-    ctx.set_fonts(fonts);
-
-    *done = true;
-    Ok(())
+    fonts
 }
 
 #[cfg(test)]
@@ -128,6 +136,58 @@ mod tests {
     /// `bevy_egui` is told to stop attaching one of its own. Left on, it would
     /// mark the 3D camera too — two primary contexts, and the feedback loop back
     /// through whichever one egui picked.
+    /// The system itself, run for real — no window, no `EguiPlugin`, no render
+    /// stack. `EguiContexts` needs only a component query plus
+    /// `EguiUserTextures`, and `PrimaryEguiContext` pulls in `EguiContext`, so a
+    /// bare `App` is enough to prove the theme actually reaches the context.
+    #[test]
+    fn the_theme_reaches_the_context() {
+        use bevy_egui::{EguiContext, EguiUserTextures, PrimaryEguiContext};
+
+        let mut app = App::new();
+        app.init_resource::<EguiUserTextures>()
+            .add_systems(Update, pin_theme_and_fonts);
+        app.world_mut().spawn(PrimaryEguiContext);
+        app.update();
+
+        let mut q = app.world_mut().query::<&mut EguiContext>();
+        let dark = q
+            .iter_mut(app.world_mut())
+            .next()
+            .map(|mut c| c.get_mut().style().visuals.dark_mode);
+
+        assert_eq!(
+            dark,
+            Some(false),
+            "this app is designed light; egui defaults dark"
+        );
+    }
+
+    /// ⚠ Two separate failures, one assertion each.
+    ///
+    /// Losing the `Hack` push tofus every arrow in the UI. Losing the bundled
+    /// faces is worse and quieter to cause: `set_fonts` REPLACES the font set,
+    /// so if `default_fonts` were ever dropped from the `bevy_egui` features,
+    /// `FontDefinitions::default()` would hand over an empty set and the app
+    /// would render no text at all.
+    #[test]
+    fn proportional_text_can_reach_the_arrow_glyphs() {
+        let fonts = font_definitions();
+        let proportional = fonts.families.get(&egui::FontFamily::Proportional);
+
+        assert!(proportional.is_some(), "the proportional family must exist");
+        if let Some(family) = proportional {
+            assert!(
+                family.iter().any(|f| f == "Hack"),
+                "← → ↺ live only in Hack; without it they render as tofu: {family:?}"
+            );
+            assert!(
+                family.len() > 1,
+                "Hack is a fallback, not a replacement for the bundled faces: {family:?}"
+            );
+        }
+    }
+
     /// The centerline runs *inside* the scan, so it is visible only because the
     /// gizmo group ignores depth. At the default bias of 0 the surface it
     /// describes hides it, and the overlay silently stops existing — no error,
