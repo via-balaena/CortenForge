@@ -287,6 +287,23 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(&picked);
     }
 
+    /// A Save that could not run said so, and handed the app back.
+    ///
+    /// ⚠ Takes the entry point's name. Run as a loop over both, one failure
+    /// reads exactly like the other, and the codebase's own rule for this is
+    /// two separate failures with one assertion each.
+    fn assert_released(studio: &Studio, entry: &str) {
+        assert!(
+            studio.pending_save.is_none(),
+            "{entry} left the app held with no question on screen"
+        );
+        assert!(
+            matches!(&studio.message, Some(Err(text)) if text.contains("step 1")),
+            "{entry} did not say which step is missing: {:?}",
+            studio.message
+        );
+    }
+
     /// ⚠ `pending_save` gates every control in the wizard, so a Save that ends
     /// without clearing it leaves the app inert with no question on screen to
     /// explain why. Every way one can end, including the failures.
@@ -336,22 +353,14 @@ pub(crate) mod tests {
         // second guard that returned without settling would wedge the app just
         // as hard as no guard at all.
         studio.project = Project::new("no scan recorded");
-        for start in [
-            &save_to_default as &dyn Fn(&ScanEdit, &mut Studio, usize),
-            &|scan, studio, smoothing| save_into(scan, studio, dir.clone(), smoothing),
-        ] {
-            studio.pending_save = Some(PendingSave::ChoosingFolder { smoothing: 0 });
-            start(&scan, &mut studio, 0);
-            assert!(
-                studio.pending_save.is_none(),
-                "a save with no scan to write"
-            );
-            assert!(
-                matches!(&studio.message, Some(Err(text)) if text.contains("step 1")),
-                "and it says which step is missing: {:?}",
-                studio.message
-            );
-        }
+
+        studio.pending_save = Some(PendingSave::ChoosingFolder { smoothing: 0 });
+        save_to_default(&scan, &mut studio, 0);
+        assert_released(&studio, "the button's entry point");
+
+        studio.pending_save = Some(PendingSave::ChoosingFolder { smoothing: 0 });
+        save_into(&scan, &mut studio, dir.clone(), 0);
+        assert_released(&studio, "the picker's entry point");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
