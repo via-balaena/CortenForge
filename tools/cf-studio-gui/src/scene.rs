@@ -165,3 +165,88 @@ pub(crate) fn fit_viewport_to_free_space(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use bevy::asset::AssetPlugin;
+
+    use super::*;
+    use crate::scan::ActiveScan;
+
+    const ONE_TRIANGLE_STL: &str = "\
+solid t
+facet normal 0 0 1
+  outer loop
+    vertex 0 0 0
+    vertex 1 0 0
+    vertex 0 1 0
+  endloop
+endfacet
+endsolid t
+";
+
+    /// A headless app with `show_scan` wired and a camera to aim.
+    fn headless() -> App {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Mesh>()
+            .init_asset::<StandardMaterial>()
+            .init_resource::<ScanEdit>()
+            .add_systems(Update, show_scan);
+        app.world_mut()
+            .spawn((Camera3d::default(), OrbitCamera::default()));
+        app
+    }
+
+    fn a_scan(tag: &str) -> Option<ActiveScan> {
+        let path = std::env::temp_dir().join(format!(
+            "cf-studio-gui-scene-{tag}-{}.stl",
+            std::process::id()
+        ));
+        std::fs::write(&path, ONE_TRIANGLE_STL).ok()?;
+        let loaded = ActiveScan::load(&path).ok();
+        let _ = std::fs::remove_file(&path);
+        loaded
+    }
+
+    /// Where the camera is aimed and how far back it sits — the two fields
+    /// `framing_for_aabb` sets, and so the two that say whether it moved.
+    fn aim_of(app: &mut App) -> Option<(Vec3, f32)> {
+        app.world_mut()
+            .query::<&OrbitCamera>()
+            .iter(app.world())
+            .next()
+            .map(|c| (c.target, c.distance))
+    }
+
+    /// ★★★ The invariant the whole intent split exists to protect: a NEW scan
+    /// frames the camera, an EDIT must not touch it. Inverting these two arms
+    /// would snap the view back to the front on every weld and trim — and the
+    /// producing side's tests cannot see it, because they only assert which
+    /// `ViewUpdate` was recorded, never what the viewport did with it.
+    #[test]
+    fn a_load_frames_the_camera_and_an_edit_leaves_it_alone() {
+        let loaded = a_scan("frame");
+        assert!(loaded.is_some(), "the fixture must load");
+        let Some(scan) = loaded else { return };
+        let mut app = headless();
+        let start = aim_of(&mut app);
+        assert!(start.is_some(), "the fixture must have a camera");
+
+        app.world_mut().resource_mut::<ScanEdit>().set(scan);
+        app.update();
+        let framed = aim_of(&mut app);
+        assert_ne!(framed, start, "a new scan must frame the camera on it");
+
+        app.world_mut()
+            .resource_mut::<ScanEdit>()
+            .edit(cf_studio_engine::EditSession::weld);
+        app.update();
+
+        assert_eq!(
+            aim_of(&mut app),
+            framed,
+            "an edit re-meshes; it must never move the camera"
+        );
+    }
+}
