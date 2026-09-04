@@ -529,6 +529,81 @@ endsolid t
         assert_eq!(EditControls::default().simplify_target(), 200_000);
     }
 
+    /// [`open_tube`]'s height, in session units (metres) — 100 mm along the
+    /// spine, so the bound it produces is readable at a glance.
+    const TUBE_HEIGHT_M: f64 = 0.1;
+
+    /// A welded square tube along +Z, open at both ends and [`TUBE_HEIGHT_M`]
+    /// tall.
+    ///
+    /// Two boundary loops with a spine between them is the least a scan needs
+    /// for `detect_caps` + `level_to_floor` to trace a centerline — the state
+    /// the cube fixture deliberately cannot reach.
+    fn open_tube() -> mesh_types::IndexedMesh {
+        use mesh_types::Point3;
+
+        const RINGS: usize = 4;
+        const SIDE_M: f64 = 0.02;
+
+        let mut vertices = Vec::new();
+        for r in 0..RINGS {
+            #[allow(clippy::cast_precision_loss)] // Four rings.
+            let z = TUBE_HEIGHT_M * r as f64 / (RINGS - 1) as f64;
+            vertices.push(Point3::new(0.0, 0.0, z));
+            vertices.push(Point3::new(SIDE_M, 0.0, z));
+            vertices.push(Point3::new(SIDE_M, SIDE_M, z));
+            vertices.push(Point3::new(0.0, SIDE_M, z));
+        }
+        let mut faces = Vec::new();
+        for r in 0..RINGS - 1 {
+            let (b, t) = ((r * 4) as u32, ((r + 1) * 4) as u32);
+            for k in 0..4u32 {
+                let k2 = (k + 1) % 4;
+                faces.push([b + k, b + k2, t + k2]);
+                faces.push([b + k, t + k2, t + k]);
+            }
+        }
+        mesh_types::IndexedMesh { vertices, faces }
+    }
+
+    /// The other half of the guard below: when there IS a centerline, the trim
+    /// fields must be bounded to it.
+    ///
+    /// ⚠ Without this, deleting the re-bound from [`land_edit`] outright passes
+    /// the whole suite — the guard's negative case would be the only half
+    /// anyone had ever proved.
+    ///
+    /// ⚠ A window, not an equality. The trace is a polyline through slice
+    /// centroids, so it stops half a slice short at each end and reads a little
+    /// under the tube's full 100 mm — measured at 97. Pinning that exact number
+    /// would pin the sampler's resolution, which is not this test's business.
+    /// What must not happen is the 10 mm placeholder, and that is nowhere near.
+    #[test]
+    fn landing_an_op_that_traced_a_centerline_bounds_the_fields_to_it() {
+        let mut scan = ScanEdit::default();
+        scan.set(ActiveScan::synthetic(open_tube()));
+        let mut studio = Studio::default();
+        let mut controls = EditControls::default();
+        let traced = scan.edit(find_floor);
+        assert!(
+            matches!(traced, Some(Ok(_))),
+            "the fixture must stand up: {traced:?}"
+        );
+
+        land_edit(
+            Ok("stood up".to_string()),
+            &scan,
+            &mut studio,
+            &mut controls,
+        );
+
+        let bound = controls.trim_range().1;
+        assert!(
+            (90..=100).contains(&bound),
+            "the bound must come from the tube's 100 mm spine, not the placeholder: {bound}"
+        );
+    }
+
     /// ★ The bug this guard exists for, driven through the landing itself.
     ///
     /// Every op that clears the centerline — weld, Simplify, reset — then

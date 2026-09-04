@@ -366,9 +366,10 @@ fn draw_clean_scan(
 /// The tidy row: Weld, then a face target and Simplify.
 ///
 /// ⚠ Wrapping and grouped, like [`draw_trim_row`]. Wrapping so that a body
-/// column too narrow for the row pushes the trailing button onto a line of its
-/// own instead of off the panel; grouped so that the break egui picks cannot
-/// land between "Simplify to" and the field it labels.
+/// column too narrow for the row pushes a control onto a line of its own rather
+/// than off the panel; grouped so that the break egui picks cannot land inside
+/// the Simplify control — its label, its field and its button are one thing,
+/// and the only place the row may break is between Weld and them.
 fn draw_tidy_row(ui: &mut egui::Ui, controls: &mut EditControls, ready: bool) -> Acted {
     let mut acted = Acted::default();
     ui.horizontal_wrapped(|ui| {
@@ -381,13 +382,13 @@ fn draw_tidy_row(ui: &mut egui::Ui, controls: &mut EditControls, ready: bool) ->
         ui.horizontal(|ui| {
             ui.colored_label(CONTROL_TEXT, "Simplify to");
             step_box(ui, &mut controls.target_faces, simplify_range(), ready);
+            if ui
+                .add_enabled(ready, egui::Button::new("Simplify"))
+                .clicked()
+            {
+                acted.simplify = Some(controls.simplify_target());
+            }
         });
-        if ui
-            .add_enabled(ready, egui::Button::new("Simplify"))
-            .clicked()
-        {
-            acted.simplify = Some(controls.simplify_target());
-        }
     });
     acted
 }

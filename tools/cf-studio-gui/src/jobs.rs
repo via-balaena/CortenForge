@@ -247,14 +247,20 @@ mod tests {
         app
     }
 
-    /// Run frames until the app is handed back, or give up. The bound is a
-    /// deadlock guard, not a timing assumption — the decimation these tests ask
-    /// for is a no-op on a twelve-face cube.
+    /// Run frames until the app is handed back.
+    ///
+    /// ⚠ Bounded by wall clock, not by a frame count. These frames are nearly
+    /// free, so a fixed count can spin through and give up on a worker thread
+    /// that simply has not been scheduled yet — which would fail on a loaded
+    /// machine and pass everywhere else. The deadline is long enough that only
+    /// a poller that never clears `busy` can reach it.
     fn run_until_idle(app: &mut App) {
-        for _ in 0..1_000 {
-            if !app.world().resource::<Studio>().busy {
-                return;
-            }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while app.world().resource::<Studio>().busy {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the job never landed — `busy` was never cleared"
+            );
             app.update();
         }
     }
