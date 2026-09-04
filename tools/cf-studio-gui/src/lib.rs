@@ -1034,7 +1034,7 @@ pub fn format_simplify_done(target_faces: usize, secs: f64) -> String {
 #[must_use]
 pub fn format_save_done(stem: &str, face_count: usize) -> String {
     format!(
-        "✓ Saved {stem}.cleaned.stl ({face_count} faces) + {stem}.prep.toml — \
+        "✔ Saved {stem}.cleaned.stl ({face_count} faces) + {stem}.prep.toml — \
          step complete, click Next →."
     )
 }
@@ -1046,19 +1046,6 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-
-    /// ⚠ Both names and the count, not just that it is non-empty. This line is
-    /// the only place the user is told which two files to hand on, and that
-    /// the step is finished.
-    #[test]
-    fn a_finished_save_names_both_files_and_points_at_the_next_step() {
-        let done = format_save_done("base_mold", 180_236);
-
-        assert!(done.contains("base_mold.cleaned.stl"), "{done}");
-        assert!(done.contains("base_mold.prep.toml"), "{done}");
-        assert!(done.contains("180236"), "{done}");
-        assert!(done.contains("Next"), "{done}");
-    }
 
     const ONE_TRIANGLE_STL: &str = "\
 solid t
@@ -2262,17 +2249,17 @@ visible = true
         );
     }
 
-    /// The tick must be U+2714 `✔`, not U+2713 `✓`. No bundled font carries
-    /// U+2713 — it renders as a tofu box — and a test that only checks the
-    /// words cannot see that.
+    /// ⚠ Both names and the count, not just that it is non-empty. This line is
+    /// the only place the user is told which two files to hand on, and that the
+    /// step is finished.
     #[test]
-    fn the_simplify_report_uses_a_tick_the_bundled_fonts_have() {
-        let line = format_simplify_done(1_000, 0.0);
-        assert_eq!(
-            line.chars().next().map(u32::from),
-            Some(0x2714),
-            "wrong tick: {line}"
-        );
+    fn a_finished_save_names_both_files_and_points_at_the_next_step() {
+        let done = format_save_done("base_mold", 180_236);
+
+        assert!(done.contains("base_mold.cleaned.stl"), "{done}");
+        assert!(done.contains("base_mold.prep.toml"), "{done}");
+        assert!(done.contains("180236"), "{done}");
+        assert!(done.contains("Next"), "{done}");
     }
 
     /// The estimate is why this message exists at all: without it, forty

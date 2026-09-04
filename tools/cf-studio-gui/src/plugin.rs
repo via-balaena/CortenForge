@@ -123,7 +123,7 @@ fn pin_theme_and_fonts(
 /// Split out from the system so the one decision in it can be tested: reaching
 /// it through [`pin_theme_and_fonts`] would need a live egui context, and the
 /// arrows breaking again is not something to find out by looking.
-fn font_definitions() -> egui::FontDefinitions {
+pub(crate) fn font_definitions() -> egui::FontDefinitions {
     let mut fonts = egui::FontDefinitions::default();
     if let Some(proportional) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
         proportional.push("Hack".to_owned());

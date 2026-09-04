@@ -914,8 +914,12 @@ mod tests {
                     body(ui);
                 });
             });
+        // The fonts that ship, so both what is measured here and what is
+        // checked for glyphs are what the app actually draws.
+        harness.ctx.set_fonts(crate::plugin::font_definitions());
         harness.run();
 
+        let harness_fonts = harness.ctx.clone();
         let column = column.get();
         assert_eq!(
             column.width(),
@@ -941,9 +945,50 @@ mod tests {
                     column.contains_rect(rect),
                     "{name} is laid out at {rect:?}, outside the {column:?} column"
                 );
+                assert_renders(&harness_fonts, &name);
                 Some(name)
             })
             .collect()
+    }
+
+    /// Fail if any character of `text` has no glyph in the fonts that ship.
+    ///
+    /// ⚠ Asks the font stack instead of encoding the answer. A codepoint gate
+    /// only rejects the one character somebody already knew about.
+    fn assert_renders(ctx: &egui::Context, text: &str) {
+        let font = egui::FontId::default();
+        for c in text.chars() {
+            assert!(
+                ctx.fonts_mut(|f| f.has_glyph(&font, c)),
+                "U+{:04X} {c:?} has no glyph — it draws as a box in {text:?}",
+                u32::from(c),
+            );
+        }
+    }
+
+    /// ★ The step messages, which no census reaches: the accessibility tree
+    /// names controls, and every one of these is prose under them.
+    ///
+    /// ⚠ This is the gate `format_save_done` needed. It shipped U+2713 `✓`,
+    /// which no bundled font carries, because the check that existed named one
+    /// function and compared one codepoint. The lib cannot run this itself —
+    /// it is deliberately toolkit-free, and the fonts belong to the panel.
+    #[test]
+    fn every_step_message_is_drawable_in_the_fonts_that_ship() {
+        let mut harness = Harness::new_ui(|_| {});
+        harness.ctx.set_fonts(crate::plugin::font_definitions());
+        harness.run();
+
+        for message in [
+            cf_studio_gui::format_save_done("base_mold", 180_236),
+            cf_studio_gui::format_simplify_done(200_000, 12.3),
+            cf_studio_gui::format_simplify_started(50_000),
+            cf_studio_gui::format_floor_found(1, 29, 7.7),
+            cf_studio_gui::format_floor_no_centerline(3),
+            format_scan_stats(200_000, 600_000),
+        ] {
+            assert_renders(&harness.ctx, &message);
+        }
     }
 
     /// Step 2 with every section revealed: a scan loaded, a centerline traced,
