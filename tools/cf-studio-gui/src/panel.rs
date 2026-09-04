@@ -25,8 +25,8 @@ use crate::scan::ScanEdit;
 use crate::state::Studio;
 use crate::widgets::{
     ACTIVE_TEXT, CONTROL_TEXT, DONE_TEXT, ERROR_TEXT, GOOD_FILL, GOOD_TEXT, HEADING_TEXT,
-    HINT_TEXT, STATS_TEXT, WARN_TEXT, card, centered_wrapped, cleanup_section, step_box,
-    wrapped_colored, wrapped_label,
+    HINT_TEXT, STATS_TEXT, WARN_TEXT, card, centered_wrapped, cleanup_section, field_grid,
+    step_box, wrapped_colored, wrapped_label,
 };
 
 /// The checklist column's width.
@@ -48,6 +48,10 @@ const STATS_SIZE: f32 = 15.0;
 const SUBHEADING_SIZE: f32 = 13.0;
 /// Its hint, a step smaller than a section's.
 const SUBHINT_SIZE: f32 = 12.0;
+/// Between a stacked control row and the button that acts on it.
+const ROW_GAP: f32 = 6.0;
+/// The rebuilt-floor picker. Fixed, or the combo stretches to fill the column.
+const SHAPE_PICKER_WIDTH: f32 = 110.0;
 
 /// What the frame reported.
 ///
@@ -354,8 +358,8 @@ fn draw_clean_scan(
 
 /// The tidy row: Weld, then a face target and Simplify.
 ///
-/// ⚠ Wrapping and grouped, like [`draw_trim_row`]. Label, field and button are
-/// one unit, so the only place the row may break is between Weld and them.
+/// ⚠ Grouped: label, field and button are one unit, so the only place the row
+/// may break is between Weld and them.
 fn draw_tidy_row(ui: &mut egui::Ui, controls: &mut EditControls, ready: bool) -> Acted {
     let mut acted = Acted::default();
     ui.horizontal_wrapped(|ui| {
@@ -379,11 +383,11 @@ fn draw_tidy_row(ui: &mut egui::Ui, controls: &mut EditControls, ready: bool) ->
     acted
 }
 
-/// The trim row: a stepper for each end, then Apply trim.
+/// The trim controls: a stepper for each end, then Apply trim.
 ///
-/// ⚠ Wrapping, not a plain row. The two steppers, their four labels and the
-/// button come to more than the body column is wide, so a fixed horizontal
-/// layout would push the button off the panel at every window size.
+/// ⚠⚠ Stacked, and it must stay stacked: as one row these measure 492 px in a
+/// 404 px column, and egui culls the button rather than wrapping it. No test
+/// sees that — check by eye.
 fn draw_trim_row(
     ui: &mut egui::Ui,
     controls: &mut EditControls,
@@ -391,32 +395,27 @@ fn draw_trim_row(
 ) -> Option<EditIntent> {
     let mut intent = None;
     let range = controls.trim_range();
-    // ⚠ Grouped, not six loose widgets. The row is wider than the body column
-    // so it always wraps, and egui breaks between items — ungrouped, the break
-    // lands wherever it likes and strands a bare "mm" on a line of its own,
-    // away from the number it belongs to. Each group is a unit the wrap can only
-    // place or push down whole.
-    ui.horizontal_wrapped(|ui| {
-        ui.horizontal(|ui| {
+    ui.vertical_centered(|ui| {
+        field_grid(ui, "trim-fields", |ui| {
             ui.colored_label(CONTROL_TEXT, "from tip");
             step_box(ui, &mut controls.tip_mm, range, ready);
-        });
-        ui.horizontal(|ui| {
-            ui.colored_label(CONTROL_TEXT, "mm    from floor");
-            step_box(ui, &mut controls.floor_mm, range, ready);
-        });
-        ui.horizontal(|ui| {
             ui.colored_label(CONTROL_TEXT, "mm");
-            if ui
-                .add_enabled(ready, egui::Button::new("Apply trim"))
-                .clicked()
-            {
-                intent = Some(EditIntent::ApplyTrim {
-                    tip_mm: controls.tip_mm.value(),
-                    floor_mm: controls.floor_mm.value(),
-                });
-            }
+            ui.end_row();
+            ui.colored_label(CONTROL_TEXT, "from floor");
+            step_box(ui, &mut controls.floor_mm, range, ready);
+            ui.colored_label(CONTROL_TEXT, "mm");
+            ui.end_row();
         });
+        ui.add_space(ROW_GAP);
+        if ui
+            .add_enabled(ready, egui::Button::new("Apply trim"))
+            .clicked()
+        {
+            intent = Some(EditIntent::ApplyTrim {
+                tip_mm: controls.tip_mm.value(),
+                floor_mm: controls.floor_mm.value(),
+            });
+        }
     });
     intent
 }
@@ -446,34 +445,34 @@ fn draw_reconstruct_row(
     ui.add_space(4.0);
 
     let range = controls.reference_range();
-    // Grouped for the same reason as the trim row above it.
-    ui.horizontal_wrapped(|ui| {
-        ui.horizontal(|ui| {
+    // Stacked for the same reason as the trim controls above.
+    ui.vertical_centered(|ui| {
+        field_grid(ui, "reconstruct-fields", |ui| {
             ui.colored_label(CONTROL_TEXT, "Shape");
             egui::ComboBox::from_id_salt("rebuilt-floor-shape")
+                .width(SHAPE_PICKER_WIDTH)
                 .selected_text(controls.shape.label())
                 .show_ui(ui, |ui| {
                     for shape in FloorShape::ALL {
                         ui.selectable_value(&mut controls.shape, shape, shape.label());
                     }
                 });
-        });
-        ui.horizontal(|ui| {
+            ui.end_row();
             ui.colored_label(CONTROL_TEXT, "from");
             step_box(ui, &mut controls.reference_mm, range, ready);
-        });
-        ui.horizontal(|ui| {
             ui.colored_label(CONTROL_TEXT, "mm above cut");
-            if ui
-                .add_enabled(ready, egui::Button::new("Reconstruct floor"))
-                .clicked()
-            {
-                intent = Some(EditIntent::ReconstructFloor {
-                    shape: controls.shape,
-                    reference_mm: controls.reference_mm.value(),
-                });
-            }
+            ui.end_row();
         });
+        ui.add_space(ROW_GAP);
+        if ui
+            .add_enabled(ready, egui::Button::new("Reconstruct floor"))
+            .clicked()
+        {
+            intent = Some(EditIntent::ReconstructFloor {
+                shape: controls.shape,
+                reference_mm: controls.reference_mm.value(),
+            });
+        }
     });
     intent
 }

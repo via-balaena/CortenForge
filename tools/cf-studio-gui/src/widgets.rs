@@ -55,6 +55,8 @@ const HINT_SIZE: f32 = 13.0;
 const FIELD_WIDTH: f32 = 56.0;
 /// Between a heading, its hint, and its controls.
 const SECTION_SPACING: f32 = 4.0;
+/// Between a field grid's columns and rows.
+const GRID_SPACING: f32 = 6.0;
 
 /// Centred text, wrapping to the available width.
 ///
@@ -131,12 +133,8 @@ pub(crate) fn step_box(
     (min, max): (i32, i32),
     enabled: bool,
 ) {
-    // ⚠ One `horizontal` group, not three loose widgets. These sit inside a
-    // `horizontal_wrapped` row wider than the body column, so egui is free to
-    // wrap BETWEEN them — splitting a stepper across two lines with its `+`
-    // orphaned under the field. Grouping makes the trio one item the parent can
-    // only place or push to the next row whole, which is what the pre-port
-    // `StepBox` (a `HorizontalLayout` component) guaranteed for free.
+    // ⚠ One `horizontal` group, not three loose widgets, or a wrapping parent is
+    // free to break BETWEEN them and orphan the `+` under the field.
     ui.horizontal(|ui| {
         // The committed value is read when an action button is clicked, not here:
         // nothing in step 2 re-meshes on a field edit, so the commit results go
@@ -168,6 +166,17 @@ pub(crate) fn step_box(
             let _ = state.step(1, min, max);
         }
     });
+}
+
+/// A label / field / unit grid for a stacked control block.
+///
+/// ⚠ A `Grid`, not a stack of `ui.horizontal` rows: stacked fields have to line
+/// up with each other, and the labels beside them differ in width.
+pub(crate) fn field_grid(ui: &mut egui::Ui, id: &str, add: impl FnOnce(&mut egui::Ui)) {
+    egui::Grid::new(id)
+        .num_columns(3)
+        .spacing([GRID_SPACING, GRID_SPACING])
+        .show(ui, add);
 }
 
 /// A rounded, filled card — the panel-within-a-panel the summaries sit in.
