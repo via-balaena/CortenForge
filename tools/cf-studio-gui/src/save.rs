@@ -191,6 +191,20 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// ⚠ The modal's whole job is saying *which* files and *where*. An empty
+    /// or fixed question is a modal asking the user to confirm nothing.
+    #[test]
+    fn the_overwrite_question_names_the_files_and_the_folder() {
+        let dir = temp_dir("question");
+        let (_scan, studio) = ready_to_save(&dir);
+
+        let question = overwrite_question(&studio, &dir);
+
+        assert!(question.contains("base.cleaned.stl"), "{question}");
+        assert!(question.contains(&dir.display().to_string()), "{question}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// ⚠ Outputs already in the folder are a question, not a silent overwrite.
     /// Only the STL is planted, so this covers the first half of the check.
     #[test]

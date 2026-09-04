@@ -1131,6 +1131,103 @@ mod tests {
         assert!(controls_in_column(|ui| draw_checklist(ui, &studio)).is_empty());
     }
 
+    /// Lay `draw_clean_scan` out for a screen that has, or has not, been stood
+    /// up, and report whether its Save button is disabled.
+    ///
+    /// ⚠ The accessibility tree's own flag. Presence is not the question — the
+    /// section is on screen either way, which is how the user is told what to
+    /// do first.
+    fn save_button_disabled(stood_up: bool) -> Option<bool> {
+        use egui_kittest::kittest::NodeT;
+
+        let mut screen = cleanup_screen();
+        if !stood_up {
+            // Back to a freshly loaded scan: no centerline, so no cast frame.
+            screen.scan.set(ActiveScan::synthetic(open_tube()));
+        }
+        let mut harness = Harness::builder()
+            .with_size(egui::Vec2::new(BODY_WIDTH, COLUMN_HEIGHT))
+            .build(|ctx| {
+                body_column(ctx, |ui| {
+                    let _ = draw_clean_scan(
+                        ui,
+                        &screen.studio,
+                        &screen.dialog,
+                        &screen.scan,
+                        &mut screen.controls,
+                    );
+                });
+            });
+        harness.run();
+        harness
+            .root()
+            .children_recursive()
+            .find(|node| node.accesskit_node().label().as_deref() == Some("Save cleaned scan"))
+            .map(|node| node.accesskit_node().is_disabled())
+    }
+
+    /// ★ Save is gated on the centerline, not merely on the app being idle:
+    /// `EditSession::save` refuses without one, so an enabled button here buys
+    /// the user a click and a "Save failed" for it.
+    #[test]
+    fn save_is_offered_only_once_the_scan_has_been_stood_up() {
+        assert_eq!(save_button_disabled(true), Some(false), "stood up");
+        assert_eq!(save_button_disabled(false), Some(true), "not yet stood up");
+    }
+
+    /// Lay the save row out with `controls`, click `label`, and report what the
+    /// row itself said — the payload the click carries, not the field behind it.
+    fn save_row_after(label: &str, controls: &mut EditControls) -> Option<usize> {
+        let reported = std::cell::Cell::new(None);
+        {
+            let borrowed = std::cell::RefCell::new(&mut *controls);
+            let mut harness = Harness::builder()
+                .with_size(egui::Vec2::new(BODY_WIDTH, COLUMN_HEIGHT))
+                .build(|ctx| {
+                    body_column(ctx, |ui| {
+                        if let Some(smoothing) = draw_save_row(ui, &mut borrowed.borrow_mut(), true)
+                        {
+                            reported.set(Some(smoothing));
+                        }
+                    });
+                });
+            harness.run();
+            harness.get_by_label(label).click();
+            harness.run();
+        }
+        reported.get()
+    }
+
+    /// ★ The click has to carry the number on screen. Every other save gate
+    /// passes with the button sending a constant, the field pinned by its own
+    /// bounds, or `smoothing_iters` answering 0.
+    ///
+    /// ⚠ One `+` is one more pass — the decision `SMOOTHING_STEP` records, and
+    /// the reason it is not the face target's step.
+    #[test]
+    fn the_save_button_carries_the_smoothing_the_stepper_shows() {
+        let shown = EditControls::default().smoothing_iters();
+
+        let mut controls = EditControls::default();
+        assert_eq!(
+            save_row_after("Save cleaned scan", &mut controls),
+            Some(shown),
+            "the click carries what the field shows"
+        );
+
+        let mut controls = EditControls::default();
+        assert_eq!(
+            save_row_after("+", &mut controls),
+            None,
+            "stepping the field is not a save"
+        );
+        assert_eq!(
+            save_row_after("Save cleaned scan", &mut controls),
+            Some(shown + 1),
+            "and the click after one + carries one more pass"
+        );
+    }
+
     /// The question the modal is asked to render. Its wording belongs to
     /// [`save::overwrite_question`], not to this gate.
     const A_QUESTION: &str = "base.cleaned.stl / .prep.toml already exist in /tmp.";

@@ -1043,6 +1043,19 @@ pub fn format_save_done(stem: &str, face_count: usize) -> String {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+    /// ⚠ Both names and the count, not just that it is non-empty. This line is
+    /// the only place the user is told which two files to hand on, and that
+    /// the step is finished.
+    #[test]
+    fn a_finished_save_names_both_files_and_points_at_the_next_step() {
+        let done = super::format_save_done("base_mold", 180_236);
+
+        assert!(done.contains("base_mold.cleaned.stl"), "{done}");
+        assert!(done.contains("base_mold.prep.toml"), "{done}");
+        assert!(done.contains("180236"), "{done}");
+        assert!(done.contains("Next"), "{done}");
+    }
+
     use std::path::PathBuf;
 
     use super::*;

@@ -304,8 +304,10 @@ mod tests {
             &dir,
             PendingDialog::resolved(DialogKind::PrepDest, Some(picked.clone())),
         );
+        // ⚠ Not 0. The smoothing has to survive the picker, and `0` is what a
+        // dropped one would look like.
         app.world_mut().resource_mut::<Studio>().pending_save =
-            Some(PendingSave::ChoosingFolder { smoothing: 0 });
+            Some(PendingSave::ChoosingFolder { smoothing: 3 });
 
         app.update();
 
@@ -313,9 +315,10 @@ mod tests {
             app.world().resource::<Studio>().pending_save,
             Some(PendingSave::Confirming {
                 dir: picked.clone(),
-                smoothing: 0
+                smoothing: 3
             }),
-            "the picked folder is asked about, not written into"
+            "the picked folder is asked about, not written into, and the \
+             smoothing rides across the picker"
         );
         assert_eq!(
             std::fs::read(picked.join("base.prep.toml")).expect("still there"),
