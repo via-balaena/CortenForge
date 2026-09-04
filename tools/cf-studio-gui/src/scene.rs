@@ -34,6 +34,13 @@ pub(crate) fn setup_scene(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
+    // ⚠ These three starting values, and the light's below, are knowingly
+    // untested. `cargo-mutants` flags each as a live mutant, but deleting any of
+    // them falls back to a perfectly reasonable default — 5.0, 0.5, and
+    // AMBIENT_DAYLIGHT — that still frames the placeholder and still lights it.
+    // No relationship assertion separates ours from those, and the only test
+    // that would kill the mutants is one restating the literal beside it.
+    // They are taste, and wrong taste is visible the instant the app opens.
     commands.spawn((
         Camera3d::default(),
         OrbitCamera {
