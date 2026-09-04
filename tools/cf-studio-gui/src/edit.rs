@@ -251,7 +251,47 @@ fn reset(session: &mut EditSession) -> StepOutcome {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
+    use crate::scan::ActiveScan;
+
+    /// A minimal valid ASCII STL — one triangle, enough for `EditSession::load`.
+    const ONE_TRIANGLE_STL: &str = "\
+solid t
+facet normal 0 0 1
+  outer loop
+    vertex 0 0 0
+    vertex 1 0 0
+    vertex 0 1 0
+  endloop
+endfacet
+endsolid t
+";
+
+    /// A [`ScanEdit`] with that fixture loaded, plus the path to clean up.
+    ///
+    /// ★ Cheap on purpose. The executor was reachable only through a loaded
+    /// scan, and a scan is just a file — so the "needs synthetic artifacts"
+    /// excuse for leaving `apply_edit_intent` untested was worth about ten
+    /// lines.
+    fn loaded_scan(tag: &str) -> (ScanEdit, PathBuf) {
+        let path = std::env::temp_dir().join(format!(
+            "cf-studio-gui-edit-{tag}-{}.stl",
+            std::process::id()
+        ));
+        assert!(
+            std::fs::write(&path, ONE_TRIANGLE_STL).is_ok(),
+            "the fixture must be writable"
+        );
+        let loaded = ActiveScan::load(&path);
+        assert!(loaded.is_ok(), "the fixture must load: {:?}", loaded.err());
+        let mut scan = ScanEdit::default();
+        if let Ok(active) = loaded {
+            scan.set(active);
+        }
+        (scan, path)
+    }
 
     /// A field with an uncommitted edit in it: "10" typed up to "107".
     fn with_a_pending_floor_edit() -> EditControls {
@@ -312,5 +352,79 @@ mod tests {
     fn the_picker_lists_the_shapes_in_the_pre_port_order() {
         let labels: Vec<&str> = FloorShape::ALL.iter().map(|s| s.label()).collect();
         assert_eq!(labels, ["Flat", "Taper", "Extrapolate"]);
+    }
+    /// The executor end to end: the op runs, its message lands, and the
+    /// viewport is asked to redraw *without* re-framing the camera.
+    ///
+    /// ⚠ Also the guard against an inverted over-trim check. Inverting `==` to
+    /// `!=` reports "that trim removes the whole mesh" for every successful
+    /// edit, which only an assertion on the success message catches.
+    #[test]
+    fn an_op_runs_reports_itself_and_asks_for_a_redraw() {
+        let (mut scan, path) = loaded_scan("weld");
+        let mut studio = Studio::default();
+        let mut controls = EditControls::default();
+
+        apply_edit_intent(EditIntent::Weld, &mut scan, &mut studio, &mut controls);
+        let _ = std::fs::remove_file(&path);
+
+        assert!(
+            matches!(&studio.message, Some(Ok(text)) if text.contains("Welded")),
+            "the op must run and report success: {:?}",
+            studio.message
+        );
+        assert_eq!(
+            scan.view(),
+            ViewUpdate::Remesh,
+            "an edit re-meshes; only a new scan moves the camera"
+        );
+    }
+
+    /// Reconstruct needs a floor trim to rebuild. The screen hides the control
+    /// until there is one, but the executor must refuse on its own — the
+    /// button is not the guard.
+    #[test]
+    fn reconstructing_without_a_trim_is_refused() {
+        let (mut scan, path) = loaded_scan("reconstruct");
+        let mut studio = Studio::default();
+        let mut controls = EditControls::default();
+
+        apply_edit_intent(
+            EditIntent::ReconstructFloor {
+                shape: FloorShape::Flat,
+                reference_mm: DEFAULT_REFERENCE_MM,
+            },
+            &mut scan,
+            &mut studio,
+            &mut controls,
+        );
+        let _ = std::fs::remove_file(&path);
+
+        assert!(
+            matches!(&studio.message, Some(Err(text)) if text.contains("Apply a floor trim first")),
+            "with no trim there is nothing to rebuild: {:?}",
+            studio.message
+        );
+    }
+
+    /// The reference zone is not a trim: a trim may take off nothing, but a
+    /// zone with no depth has no profile to average, so its floor is its own.
+    #[test]
+    fn the_reference_zone_keeps_its_own_floor_and_shares_the_bound() {
+        let mut c = EditControls::default();
+
+        assert_eq!(c.reference_range().0, REFERENCE_MIN_MM);
+        assert_ne!(
+            c.reference_range().0,
+            c.trim_range().0,
+            "a trim may be zero; a reference zone may not"
+        );
+
+        c.rebound(300);
+        assert_eq!(
+            c.reference_range(),
+            (REFERENCE_MIN_MM, 300),
+            "both fields are bounded by the same centerline"
+        );
     }
 }
