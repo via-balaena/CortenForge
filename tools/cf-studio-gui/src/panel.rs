@@ -359,8 +359,7 @@ fn draw_clean_scan(
 /// The tidy row: Weld, then a face target and Simplify.
 ///
 /// ⚠ Grouped: label, field and button are one unit, so the only place the row
-/// may break is between Weld and them. It fits the column as one row; the trim
-/// controls did not, and are stacked instead.
+/// may break is between Weld and them.
 fn draw_tidy_row(ui: &mut egui::Ui, controls: &mut EditControls, ready: bool) -> Acted {
     let mut acted = Acted::default();
     ui.horizontal_wrapped(|ui| {
@@ -386,13 +385,9 @@ fn draw_tidy_row(ui: &mut egui::Ui, controls: &mut EditControls, ready: bool) ->
 
 /// The trim controls: a stepper for each end, then Apply trim.
 ///
-/// ⚠⚠ Stacked, and it must stay stacked. As one row these measured 492 px in a
-/// 404 px column, and `horizontal_wrapped` does not save them: each
-/// label-plus-field is one non-wrapping group, so the row overflows and egui
-/// CULLS the trailing widget — "Apply trim" was simply absent.
-///
-/// ⚠ Nothing automated guards this. A `Ui` reports the space it was given, and
-/// an overflowing shape is culled, so neither can see it. Check by eye.
+/// ⚠⚠ Stacked, and it must stay stacked: as one row these measure 492 px in a
+/// 404 px column, and egui culls the button rather than wrapping it. No test
+/// sees that — check by eye.
 fn draw_trim_row(
     ui: &mut egui::Ui,
     controls: &mut EditControls,
