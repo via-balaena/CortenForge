@@ -118,3 +118,210 @@ pub(crate) fn settle(studio: &mut Studio, outcome: cf_studio_gui::StepOutcome) {
     studio.pending_save = None;
     studio.message = Some(outcome);
 }
+
+#[cfg(test)]
+pub(crate) mod tests {
+    #![allow(clippy::expect_used)]
+
+    use cf_studio_core::{Project, ScanInput};
+
+    use super::*;
+    use crate::edit::tests::open_tube;
+    use crate::edit::{EditControls, EditIntent, apply_edit_intent};
+    use crate::scan::ActiveScan;
+
+    /// A folder of this test's own. Name- and PID-scoped like the engine's save
+    /// gates, so concurrent runs cannot read each other's outputs.
+    pub(crate) fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("cf-save-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        dir
+    }
+
+    /// Step 2 with a Save available: a scan recorded at `dir/base.stl`, and a
+    /// session holding the centerline `EditSession::save` refuses to write
+    /// without.
+    ///
+    /// ⚠ The scan file itself is never written. Nothing on the Save path reads
+    /// it — the mesh is already in the session — and `source_path` is only ever
+    /// asked for its folder and its stem.
+    pub(crate) fn ready_to_save(dir: &Path) -> (ScanEdit, Studio) {
+        let mut scan = ScanEdit::default();
+        scan.set(ActiveScan::synthetic(open_tube()));
+        let mut studio = Studio::default();
+        let mut controls = EditControls::default();
+        apply_edit_intent(EditIntent::FindFloor, &mut scan, &mut studio, &mut controls);
+        assert!(
+            scan.active()
+                .map(ActiveScan::session)
+                .is_some_and(|s| s.has_centerline()),
+            "the fixture must stand up, or every save below fails for that reason \
+             instead of the one it is testing; last message: {:?}",
+            studio.message
+        );
+        studio.project = Project::new("save gate");
+        studio.project.set_scan(ScanInput {
+            source_path: dir.join("base.stl"),
+        });
+        (scan, studio)
+    }
+
+    /// ★ What step 2 is for: both files land beside the scan and the project
+    /// accepts them, which is what unblocks Next.
+    #[test]
+    fn a_save_writes_both_files_and_completes_the_step() {
+        let dir = temp_dir("roundtrip");
+        let (scan, mut studio) = ready_to_save(&dir);
+
+        save_to_default(&scan, &mut studio, 0);
+
+        assert!(dir.join("base.cleaned.stl").is_file(), "the cleaned STL");
+        assert!(dir.join("base.prep.toml").is_file(), "and its prep");
+        assert!(
+            studio.project.prep().is_some(),
+            "accepted as step 2's artifact — the files alone are not the step: {:?}",
+            studio.message
+        );
+        assert!(
+            studio.message.as_ref().is_some_and(Result::is_ok),
+            "and reported as a success: {:?}",
+            studio.message
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ⚠ Outputs already in the folder are a question, not a silent overwrite.
+    /// Only the STL is planted, so this covers the first half of the check.
+    #[test]
+    fn outputs_already_there_are_asked_about_rather_than_overwritten() {
+        let dir = temp_dir("collision");
+        let (scan, mut studio) = ready_to_save(&dir);
+        std::fs::write(dir.join("base.cleaned.stl"), b"not mine").expect("a decoy");
+
+        save_to_default(&scan, &mut studio, 0);
+
+        assert_eq!(
+            studio.pending_save,
+            Some(PendingSave::Confirming {
+                dir: dir.clone(),
+                smoothing: 0
+            }),
+            "the save is held on the question"
+        );
+        assert_eq!(
+            std::fs::read(dir.join("base.cleaned.stl")).expect("still there"),
+            b"not mine",
+            "and nothing is written until it is answered"
+        );
+        assert!(
+            studio.project.prep().is_none(),
+            "so the step is not complete"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Answering the question with Overwrite is what actually replaces them.
+    #[test]
+    fn overwriting_replaces_what_was_in_the_way() {
+        let dir = temp_dir("overwrite");
+        let (scan, mut studio) = ready_to_save(&dir);
+        std::fs::write(dir.join("base.cleaned.stl"), b"not mine").expect("a decoy");
+        save_to_default(&scan, &mut studio, 0);
+
+        write_into(&scan, &mut studio, &dir, 0);
+
+        assert_ne!(
+            std::fs::read(dir.join("base.cleaned.stl")).expect("written"),
+            b"not mine",
+            "the decoy is gone"
+        );
+        assert!(studio.project.prep().is_some(), "and the step completes");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★ The pre-port code checked the default folder and then wrote into a
+    /// chosen one unconditionally. A folder picked *because* the first one
+    /// collided is exactly where a second collision is likely.
+    ///
+    /// ⚠ Only the prep is planted here, so this covers the half of the check
+    /// the collision gate above does not.
+    #[test]
+    fn a_folder_the_user_picked_is_checked_for_a_collision_too() {
+        let dir = temp_dir("picked-scan-folder");
+        let picked = temp_dir("picked-second-folder");
+        let (scan, mut studio) = ready_to_save(&dir);
+        std::fs::write(picked.join("base.prep.toml"), b"in the way").expect("a decoy");
+
+        save_into(&scan, &mut studio, picked.clone(), 0);
+
+        assert_eq!(
+            studio.pending_save,
+            Some(PendingSave::Confirming {
+                dir: picked.clone(),
+                smoothing: 0
+            }),
+            "asked about the picked folder, not the scan's own"
+        );
+        assert_eq!(
+            std::fs::read(picked.join("base.prep.toml")).expect("still there"),
+            b"in the way",
+            "and it is still untouched"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&picked);
+    }
+
+    /// ⚠ `pending_save` gates every control in the wizard, so a Save that ends
+    /// without clearing it leaves the app inert with no question on screen to
+    /// explain why. Every way one can end, including the failures.
+    #[test]
+    fn every_way_a_save_ends_lets_go_of_the_app() {
+        let dir = temp_dir("release");
+        let (scan, mut studio) = ready_to_save(&dir);
+
+        save_to_default(&scan, &mut studio, 0);
+        assert!(studio.pending_save.is_none(), "a save that succeeded");
+
+        // A session with no centerline: the engine refuses to write, since the
+        // cast has nothing to follow.
+        let bare = ScanEdit::default();
+        studio.pending_save = Some(PendingSave::ChoosingFolder { smoothing: 0 });
+        write_into(&bare, &mut studio, &dir, 0);
+        assert!(studio.pending_save.is_none(), "a save that could not run");
+        assert!(
+            studio.message.as_ref().is_some_and(Result::is_err),
+            "and it says so: {:?}",
+            studio.message
+        );
+
+        studio.pending_save = Some(PendingSave::Confirming {
+            dir: dir.clone(),
+            smoothing: 0,
+        });
+        settle(&mut studio, Ok("Save cancelled.".to_owned()));
+        assert!(studio.pending_save.is_none(), "a save that was cancelled");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ⚠ Nothing else here would notice `smoothing` being dropped on the way to
+    /// the engine: every other gate passes with it hard-coded.
+    #[test]
+    fn the_smoothing_field_reaches_the_mesh_that_is_written() {
+        let smooth = temp_dir("smoothed");
+        let sharp = temp_dir("unsmoothed");
+        let (scan, mut studio) = ready_to_save(&sharp);
+        save_to_default(&scan, &mut studio, 0);
+        let (scan, mut studio) = ready_to_save(&smooth);
+
+        save_to_default(&scan, &mut studio, 30);
+
+        assert_ne!(
+            std::fs::read(sharp.join("base.cleaned.stl")).expect("written"),
+            std::fs::read(smooth.join("base.cleaned.stl")).expect("written"),
+            "30 smoothing passes move the mesh; 0 and 30 cannot write the same file"
+        );
+        let _ = std::fs::remove_dir_all(&smooth);
+        let _ = std::fs::remove_dir_all(&sharp);
+    }
+}

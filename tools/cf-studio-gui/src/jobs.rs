@@ -234,6 +234,8 @@ pub(crate) fn reveal_in_file_manager(dir: &Path) {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used)]
+
     use bevy::ecs::system::RunSystemOnce;
     use mesh_types::unit_cube;
 
@@ -273,6 +275,78 @@ mod tests {
             );
             app.update();
         }
+    }
+
+    /// Enough app to own a task pool and [`poll_dialogs`], with `dialog`
+    /// already answered and a step 2 ready to save into `dir`.
+    fn app_with_a_resolved_dialog(dir: &std::path::Path, dialog: PendingDialog) -> App {
+        let (scan, studio) = crate::save::tests::ready_to_save(dir);
+        let mut app = App::new();
+        app.add_plugins(TaskPoolPlugin::default())
+            .init_resource::<EditControls>()
+            .init_resource::<PrintJob>()
+            .add_systems(Update, poll_dialogs);
+        app.insert_resource(studio);
+        app.insert_resource(scan);
+        app.insert_resource(dialog);
+        app
+    }
+
+    /// ★ The routing that makes the picked folder safe. Sending it straight to
+    /// `write_into` — what the pre-port code did — restores a silent overwrite,
+    /// and every other gate in this crate stays green while it does.
+    #[test]
+    fn a_folder_the_picker_returns_is_checked_before_it_is_written_into() {
+        let dir = crate::save::tests::temp_dir("routed-scan-folder");
+        let picked = crate::save::tests::temp_dir("routed-picked-folder");
+        std::fs::write(picked.join("base.prep.toml"), b"in the way").expect("a decoy");
+        let mut app = app_with_a_resolved_dialog(
+            &dir,
+            PendingDialog::resolved(DialogKind::PrepDest, Some(picked.clone())),
+        );
+        app.world_mut().resource_mut::<Studio>().pending_save =
+            Some(PendingSave::ChoosingFolder { smoothing: 0 });
+
+        app.update();
+
+        assert_eq!(
+            app.world().resource::<Studio>().pending_save,
+            Some(PendingSave::Confirming {
+                dir: picked.clone(),
+                smoothing: 0
+            }),
+            "the picked folder is asked about, not written into"
+        );
+        assert_eq!(
+            std::fs::read(picked.join("base.prep.toml")).expect("still there"),
+            b"in the way",
+            "and the file that was in the way is untouched"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&picked);
+    }
+
+    /// ⚠ Unlike a cancelled print picker, this one must report and let go:
+    /// `pending_save` gates every control, so backing out silently would leave
+    /// the app inert with the question that gated it gone from the screen.
+    #[test]
+    fn cancelling_the_folder_picker_hands_the_app_back() {
+        let dir = crate::save::tests::temp_dir("routed-cancel");
+        let mut app =
+            app_with_a_resolved_dialog(&dir, PendingDialog::resolved(DialogKind::PrepDest, None));
+        app.world_mut().resource_mut::<Studio>().pending_save =
+            Some(PendingSave::ChoosingFolder { smoothing: 0 });
+
+        app.update();
+
+        let studio = app.world().resource::<Studio>();
+        assert!(studio.pending_save.is_none(), "the held save is let go");
+        assert!(
+            matches!(&studio.message, Some(Ok(text)) if text.contains("cancelled")),
+            "and it says so: {:?}",
+            studio.message
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// ⚠ The `Remesh` assertion is the point of doing this off the intent

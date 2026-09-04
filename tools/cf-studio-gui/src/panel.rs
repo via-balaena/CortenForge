@@ -837,29 +837,35 @@ mod tests {
 
     /// ★ The one definition every control on every screen is gated on.
     ///
-    /// ⚠ All four states, not just the happy one. A constant answer, or `||`
-    /// for `&&`, leaves the app either frozen with nothing running or clickable
-    /// in the middle of a background job — neither of which reports itself.
+    /// ⚠ Enumerated, not branched: it is a three-way `&&`, so a constant
+    /// answer, a dropped term or an `||` each leave the app either frozen with
+    /// nothing running or clickable in the middle of a job — and none of those
+    /// report themselves. Eight states is all of them.
     #[test]
-    fn actions_are_accepted_only_with_no_job_running_and_no_dialog_open() {
-        let idle = Studio::default();
-        let busy = Studio {
-            busy: true,
-            ..Studio::default()
-        };
-        let closed = PendingDialog::default();
-        let open = PendingDialog::opened(DialogKind::ScanFile);
+    fn actions_are_accepted_only_when_nothing_else_holds_the_app() {
+        for busy in [false, true] {
+            for dialog_open in [false, true] {
+                for saving in [false, true] {
+                    let studio = Studio {
+                        busy,
+                        pending_save: saving
+                            .then_some(PendingSave::ChoosingFolder { smoothing: 0 }),
+                        ..Studio::default()
+                    };
+                    let dialog = if dialog_open {
+                        PendingDialog::opened(DialogKind::ScanFile)
+                    } else {
+                        PendingDialog::default()
+                    };
 
-        assert!(accepting_actions(&idle, &closed), "idle, with nothing open");
-        assert!(
-            !accepting_actions(&busy, &closed),
-            "a running job holds the app"
-        );
-        assert!(
-            !accepting_actions(&idle, &open),
-            "and so does an open dialog"
-        );
-        assert!(!accepting_actions(&busy, &open), "and the two together");
+                    assert_eq!(
+                        accepting_actions(&studio, &dialog),
+                        !busy && !dialog_open && !saving,
+                        "busy={busy} dialog_open={dialog_open} saving={saving}"
+                    );
+                }
+            }
+        }
     }
 
     /// Where both fired the inner one wins, as the pre-merge code did.
@@ -1123,6 +1129,72 @@ mod tests {
         );
         assert!(controls_in_column(draw_porting_notice).is_empty());
         assert!(controls_in_column(|ui| draw_checklist(ui, &studio)).is_empty());
+    }
+
+    /// The question the modal is asked to render. Its wording belongs to
+    /// [`save::overwrite_question`], not to this gate.
+    const A_QUESTION: &str = "base.cleaned.stl / .prep.toml already exist in /tmp.";
+
+    /// Lay the overwrite modal out, optionally `pick` one of its buttons, and
+    /// report the buttons it offered and the answer it gave.
+    ///
+    /// ⚠ The answer is accumulated, not read off the last frame: `run` may draw
+    /// several, and a later one reporting `None` would erase the click.
+    fn modal_answer(pick: Option<&str>) -> (Vec<String>, Option<SaveChoice>) {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::NodeT;
+
+        let answer = std::cell::Cell::new(None);
+        let mut harness = Harness::builder()
+            .with_size(egui::Vec2::new(MODAL_WIDTH * 2.0, COLUMN_HEIGHT))
+            .build(|ctx| {
+                if let Some(choice) = draw_save_modal(ctx, A_QUESTION) {
+                    answer.set(Some(choice));
+                }
+            });
+        harness.run();
+        let buttons = harness
+            .root()
+            .children_recursive()
+            .filter_map(|node| {
+                let widget = node.accesskit_node();
+                (widget.role() == Role::Button).then(|| widget.label().unwrap_or_default())
+            })
+            .collect();
+        if let Some(label) = pick {
+            harness.get_by_label(label).click();
+            harness.run();
+        }
+        (buttons, answer.get())
+    }
+
+    /// ★ The modal, as it is built. Its three answers are the only way out of a
+    /// held Save — `pending_save` gates every other control — so a button that
+    /// is missing, or wired to the wrong answer, strands the app.
+    ///
+    /// ⚠ Driven through the modal rather than asserted on [`SaveChoice`], which
+    /// is three unit variants and agrees with itself. And it must answer only
+    /// when clicked: `should_close` also fires on Escape and on the backdrop,
+    /// and a modal that reported Cancel unprompted would cancel every save the
+    /// moment it was raised.
+    #[test]
+    fn the_overwrite_modal_offers_three_answers_and_each_one_lands() {
+        let (buttons, unclicked) = modal_answer(None);
+
+        assert_eq!(
+            buttons,
+            ["Overwrite", "Choose a different folder…", "Cancel"]
+        );
+        assert_eq!(unclicked, None, "and it answers nothing until asked");
+        assert_eq!(
+            modal_answer(Some("Overwrite")).1,
+            Some(SaveChoice::Overwrite)
+        );
+        assert_eq!(
+            modal_answer(Some("Choose a different folder…")).1,
+            Some(SaveChoice::ChooseFolder)
+        );
+        assert_eq!(modal_answer(Some("Cancel")).1, Some(SaveChoice::Cancel));
     }
 
     /// Lay `row` out, click its first `label` button, and hand back the

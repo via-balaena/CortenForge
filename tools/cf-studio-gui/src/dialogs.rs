@@ -58,8 +58,16 @@ impl PendingDialog {
     /// resolves straight to a cancel.
     #[cfg(test)]
     pub(crate) fn opened(kind: DialogKind) -> Self {
+        Self::resolved(kind, None)
+    }
+
+    /// A [`PendingDialog`] whose task is already answered, so a test can drive
+    /// [`Self::poll`]'s consumers down either branch — a chosen path, or the
+    /// `None` that means the user cancelled.
+    #[cfg(test)]
+    pub(crate) fn resolved(kind: DialogKind, picked: Option<PathBuf>) -> Self {
         let pool = AsyncComputeTaskPool::get_or_init(bevy::tasks::TaskPool::default);
-        Self(Some((kind, pool.spawn(async { None }))))
+        Self(Some((kind, pool.spawn(async move { picked }))))
     }
 
     /// Open a folder picker for `kind`. A no-op while one is already open.
