@@ -251,11 +251,22 @@ mod tests {
     ///
     /// ⚠ Bounded by wall clock, not by a frame count. These frames are nearly
     /// free, so a fixed count can spin through and give up on a worker thread
-    /// that simply has not been scheduled yet — which would fail on a loaded
-    /// machine and pass everywhere else. The deadline is long enough that only
-    /// a poller that never clears `busy` can reach it.
+    /// that simply has not been scheduled yet — green here, flaky on a loaded
+    /// machine.
+    ///
+    /// ⚠ This is a deadlock detector, not a work budget: the decimation behind
+    /// it is microseconds on a twelve-face cube, so the whole deadline is
+    /// margin for thread-scheduling latency.
+    ///
+    /// ⚠⚠ Keep it small, and keep the constraint in mind when adding a test
+    /// that calls this. `cargo-mutants` gives the suite a 20 s floor, and a
+    /// mutant that stops the poller clearing `busy` makes EVERY caller here
+    /// burn the full deadline — so `callers × DEADLINE` has to stay well under
+    /// that, or a caught mutant is reported as a timeout instead. Measured: at
+    /// 30 s it was a timeout; at 2 s the two callers fail the run in ~4 s.
     fn run_until_idle(app: &mut App) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        const DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
+        let deadline = std::time::Instant::now() + DEADLINE;
         while app.world().resource::<Studio>().busy {
             assert!(
                 std::time::Instant::now() < deadline,
