@@ -384,12 +384,12 @@ fn draw_reconstruct_row(
     ready: bool,
 ) -> Option<EditIntent> {
     let mut intent = None;
-    ui.add(egui::Label::new(
-        egui::RichText::new("Rebuild the trimmed floor")
-            .size(SUBHEADING_SIZE)
-            .strong()
-            .color(HEADING_TEXT),
-    ));
+    centered_wrapped(
+        ui,
+        SUBHEADING_SIZE,
+        HEADING_TEXT,
+        "Rebuild the trimmed floor",
+    );
     ui.add_space(4.0);
     centered_wrapped(
         ui,

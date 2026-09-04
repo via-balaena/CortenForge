@@ -56,12 +56,21 @@ const FIELD_WIDTH: f32 = 56.0;
 /// Between a heading, its hint, and its controls.
 const SECTION_SPACING: f32 = 4.0;
 
-/// Centred, wrapping text.
+/// Centred text, wrapping to the available width.
 ///
-/// ⚠ Neither `ui.vertical_centered` nor a plain [`wrapped_label`] centres a
-/// *wrapped* paragraph. The first centres the widget, which already spans the
-/// panel; the second left-aligns every line inside it. Only the layout job's own
-/// `halign` centres the lines, which is why this builds one by hand.
+/// ⚠ **Both halves are needed, and each is silently wrong alone.**
+///
+/// - The layout job's `halign` centres the *lines within the galley*, but
+///   `Label` allocates a rect of `galley.size()` — the text's natural width, not
+///   the wrap width — and anchors the galley at that rect's centre. In a
+///   left-aligned top-down `Ui` the rect sits at the left edge, so short text
+///   centres inside its own narrow box and still renders hard left. Only a
+///   paragraph long enough to wrap to full width looks centred by accident.
+/// - `vertical_centered` centres that rect, but leaves every line inside it
+///   left-aligned, so a wrapped paragraph comes out ragged-right in the middle
+///   of the panel.
+///
+/// Together the rect is centred and so are the lines in it.
 pub(crate) fn centered_wrapped(
     ui: &mut egui::Ui,
     size: f32,
@@ -75,7 +84,7 @@ pub(crate) fn centered_wrapped(
         ui.available_width(),
     );
     job.halign = egui::Align::Center;
-    ui.add(egui::Label::new(job));
+    ui.vertical_centered(|ui| ui.add(egui::Label::new(job)));
 }
 
 /// One numbered sub-step of step 2's cleanup flow: a sequence heading
@@ -96,12 +105,12 @@ pub(crate) fn cleanup_section(
     } else {
         (heading.to_string(), HEADING_TEXT)
     };
-    ui.add(egui::Label::new(
-        egui::RichText::new(text)
-            .size(HEADING_SIZE)
-            .strong()
-            .color(color),
-    ));
+    // ⚠ Not `RichText::strong()`. egui resolves `strong` to a *colour*, and only
+    // when no explicit colour is set — so beside `.color()` it is dead, and it
+    // was never going to give the pre-port `font-weight: 700` either, because
+    // the bundled proportional family has no bold face. Size and colour are the
+    // weight this heading gets.
+    centered_wrapped(ui, HEADING_SIZE, color, text);
     ui.add_space(SECTION_SPACING);
     if !hint.is_empty() {
         centered_wrapped(ui, HINT_SIZE, HINT_TEXT, hint);
