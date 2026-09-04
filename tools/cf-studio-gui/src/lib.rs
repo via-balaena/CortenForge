@@ -2181,6 +2181,18 @@ visible = true
         );
     }
 
+    /// The other half of Find floor's report. Its whole job is to say how many
+    /// loops *were* found — a message that dropped the count would leave the
+    /// user with nothing to act on and no idea the scan was even read.
+    #[test]
+    fn the_untraceable_centerline_line_still_reports_what_was_found() {
+        let line = format_floor_no_centerline(3);
+        assert!(
+            line.contains("3 loop(s)"),
+            "the count is the actionable part: {line}"
+        );
+    }
+
     #[test]
     fn the_stats_line_reads_faces_then_vertices() {
         assert_eq!(
