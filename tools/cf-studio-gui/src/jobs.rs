@@ -1,8 +1,7 @@
 //! Background work, and the pollers that land its results on the app.
 //!
-//! Two ops are too slow to run on the main thread, and both take the same
-//! shape here — spawn on the task pool, poll for a result, land it — with
-//! `Studio::busy` gating every control that could clobber one while it runs:
+//! Two ops are too slow for the main thread, and `Studio::busy` gates every
+//! control that could clobber one while it runs:
 //!
 //! - **Simplify** (step 2) decimates the working scan, ~10–40 s.
 //! - **the print export** (step 6) copies the mold package, hundreds of
@@ -124,24 +123,19 @@ pub(crate) fn poll_print_job(mut job: ResMut<PrintJob>, mut studio: ResMut<Studi
     });
 }
 
-/// What a panicked decimation is reported as. A higher target is the one thing
-/// the user can usefully try next.
+/// What a panicked decimation is reported as.
 const SIMPLIFY_PANICKED: &str = "Simplify failed unexpectedly — try a higher target face count.";
 
-/// The running Simplify: the face target it was started with, and its task.
-///
-/// The target travels with the task because the message that lands names it,
-/// and by then the field it came from is no longer the right thing to read.
+/// The running Simplify, and the target it was started with.
 #[derive(Resource, Default)]
 pub(crate) struct SimplifyJob(Option<(usize, Task<Result<(IndexedMesh, f64), String>>)>);
 
 /// Start a Simplify on the task pool.
 ///
-/// ⚠ Takes `&ScanEdit`, not `&mut`, and that is the whole reason a Simplify is
-/// not an [`crate::edit::EditIntent`]: marking the resource changed here would
-/// re-run `show_scan` against the [`crate::scan::ViewUpdate`] left over from the
-/// previous op — a full rebuild of a 200 000-face mesh, and the camera snapped
-/// back to the front if that op happened to be the load.
+/// ⚠ `&ScanEdit`, not `&mut` — and that is why a Simplify is not an
+/// [`crate::edit::EditIntent`]. Marking the resource changed here would re-run
+/// `show_scan` against the previous op's [`crate::scan::ViewUpdate`]: a full
+/// rebuild of a 200 000-face mesh, and a camera jump if that op was the load.
 pub(crate) fn start_simplify(
     target_faces: usize,
     scan: &ScanEdit,
@@ -149,8 +143,6 @@ pub(crate) fn start_simplify(
     job: &mut SimplifyJob,
 ) {
     let Some(active) = scan.active() else { return };
-    // A clone, because the decimation crosses a thread boundary and the session
-    // does not. `apply_simplified` installs the result when it lands.
     let working = active.session().working_clone();
     studio.busy = true;
     studio.message = Some(Ok(format_simplify_started(target_faces)));
@@ -159,9 +151,8 @@ pub(crate) fn start_simplify(
 
 /// Decimate off-thread.
 ///
-/// The `catch_unwind` is carried over from the pre-port code deliberately: a
-/// panic in the decimation would otherwise take the task down silently and
-/// leave `busy` stuck on — every control in the app disabled, with no way back.
+/// The `catch_unwind` is deliberate, as it was pre-port: a panic here would
+/// otherwise leave `busy` stuck on, every control disabled, with no way back.
 fn spawn_simplify(
     working: IndexedMesh,
     target_faces: usize,
@@ -192,10 +183,9 @@ pub(crate) fn poll_simplify_job(
     studio.busy = false;
     match result {
         Ok((mesh, secs)) => {
-            // ⚠ Through `edit`, not around it. `apply_simplified` clears the
-            // caps, so the cached display mesh AND the centerline overlay are
-            // both stale until that refresh runs — and the overlay would go on
-            // being drawn, tracing an axis through a mesh that no longer has one.
+            // ⚠ Through `edit`, not around it: `apply_simplified` clears the
+            // caps, so both the cached display mesh and the centerline overlay
+            // are stale until that refresh runs.
             scan.edit(|session| session.apply_simplified(mesh, target_faces));
             land_edit(
                 Ok(format_simplify_done(target_faces, secs)),
@@ -228,11 +218,9 @@ mod tests {
     use super::*;
     use crate::scan::{ActiveScan, ViewUpdate};
 
-    /// The smallest target the stepper offers, and what these tests aim at.
     const TARGET: usize = 1_000;
 
-    /// Enough app to own a task pool, the four resources the poller touches,
-    /// and the poller itself — no window, no render stack.
+    /// Enough app to own a task pool and the poller — no window, no renderer.
     fn app_with_a_loaded_scan() -> App {
         let mut app = App::new();
         app.add_plugins(TaskPoolPlugin::default())
@@ -249,17 +237,10 @@ mod tests {
 
     /// Run frames until the app is handed back.
     ///
-    /// ⚠ A deadlock detector, not a work budget. The decimation behind it is
-    /// microseconds on a twelve-face cube, so the whole deadline is margin for
-    /// thread-scheduling latency — which a frame count cannot give, since these
-    /// frames are nearly free and a thousand of them pass in milliseconds.
-    ///
-    /// ⚠⚠ Keep it short. A mutant that stops the poller clearing `busy` makes
-    /// every caller here sit out the full deadline, and `cargo-mutants` allowed
-    /// this suite 20 s — at 30 s that mutant was reported as a timeout instead
-    /// of as caught. Measured with the poller gutted: 2.01 s in parallel and
-    /// 4.00 s under `--test-threads=1`, so budget against the single-threaded
-    /// figure.
+    /// ⚠ Wall clock, because these frames are nearly free and a fixed count
+    /// gives no margin for a worker not yet scheduled — but keep it short: a
+    /// mutant stopping the poller makes every caller sit out the whole
+    /// deadline, and a long one turns that caught mutant into a timeout.
     fn run_until_idle(app: &mut App) {
         const DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
         let deadline = std::time::Instant::now() + DEADLINE;
@@ -272,13 +253,10 @@ mod tests {
         }
     }
 
-    /// The whole round trip: the click hands the mesh off and holds the app,
-    /// and the poller lands the result on the session and hands it back.
-    ///
-    /// ⚠ The `Remesh` assertion is the point of doing this off the intent path.
-    /// The scan here was just loaded, so its [`ViewUpdate`] still says
-    /// `Reframe`; a Simplify that landed without going through `ScanEdit::edit`
-    /// would leave it saying so, and the camera would snap to the front.
+    /// ⚠ The `Remesh` assertion is the point of doing this off the intent
+    /// path. The scan was just loaded, so its [`ViewUpdate`] still says
+    /// `Reframe` — a Simplify landing outside `ScanEdit::edit` would leave it
+    /// saying so, and the camera would snap to the front.
     #[test]
     fn a_simplify_runs_off_thread_and_lands_on_the_session() {
         let mut app = app_with_a_loaded_scan();
@@ -352,9 +330,8 @@ mod tests {
         );
     }
 
-    /// What the `catch_unwind` in [`spawn_simplify`] is for, reached through a
-    /// task that fails outright: a failed run has to hand the app back, or the
-    /// whole wizard stays disabled with nothing left to clear it.
+    /// What the `catch_unwind` in [`spawn_simplify`] is for: a failed run must
+    /// still hand the app back, or the wizard stays disabled for good.
     #[test]
     fn a_failed_simplify_hands_the_app_back_and_says_why() {
         let mut app = app_with_a_loaded_scan();

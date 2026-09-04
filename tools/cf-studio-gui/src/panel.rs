@@ -8,10 +8,7 @@
 //! transitions reviewable — and testable, since they are all methods on
 //! `Studio` or plain functions over an `EditSession`.
 //!
-//! ⚠ The three kinds of click are **not** an accident of growth. Executing an
-//! [`EditIntent`] borrows [`ScanEdit`] mutably, which marks it changed and
-//! rebuilds a 200 000-face mesh; Back, Next and *starting* a Simplify must not
-//! take that path. See [`Acted`].
+//! ⚠ The three kinds are **not** an accident of growth — see [`Acted`].
 
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
@@ -55,9 +52,8 @@ const SUBHINT_SIZE: f32 = 12.0;
 /// What the frame reported.
 ///
 /// The three are separate because executing an [`EditIntent`] borrows
-/// [`ScanEdit`] mutably, and that marks it changed — which costs a full rebuild
-/// of a 200 000-face mesh. Routing the other two through the same call would
-/// charge them for it. See the warning on [`ScanEdit`].
+/// [`ScanEdit`] mutably, which rebuilds a 200 000-face mesh; the other two must
+/// not pay that. See the warning on [`ScanEdit`].
 #[derive(Default)]
 struct Acted {
     /// A navigation or dialog action.
@@ -66,19 +62,14 @@ struct Acted {
     edit: Option<EditIntent>,
     /// The face target a Simplify was clicked with.
     ///
-    /// ⚠ Not an [`EditIntent`] variant, and the reason is the same borrow rule
-    /// one step further out: *starting* a Simplify only reads the scan. Sent
-    /// through [`apply_edit_intent`] it would take `&mut ScanEdit` anyway,
-    /// marking the resource changed while its [`crate::scan::ViewUpdate`] still
-    /// holds whatever the last op left — so the mesh would rebuild for nothing,
-    /// and the camera would jump if that last op was the load.
+    /// ⚠ Not an [`EditIntent`] variant: starting a Simplify only reads the
+    /// scan. See [`start_simplify`].
     simplify: Option<usize>,
 }
 
 impl Acted {
     /// Fold in what a nested piece of the screen reported; it wins where both
-    /// did. Each field merges on its own — they come from different controls,
-    /// and no frame can hold two clicks.
+    /// did, and each field merges on its own.
     fn merge(&mut self, inner: Self) {
         self.nav = inner.nav.or(self.nav);
         self.edit = inner.edit.or(self.edit);
@@ -144,9 +135,7 @@ pub(crate) fn wizard_screen(
     if let Some(intent) = acted.edit {
         apply_edit_intent(intent, &mut scan, &mut studio, &mut controls);
     }
-    // ⚠ `&scan`, immutably — see the note on [`Acted::simplify`]. What travels
-    // to the worker is a clone of the session's working mesh;
-    // `poll_simplify_job` installs what comes back.
+    // ⚠ `&scan`, immutably — see [`start_simplify`].
     if let Some(target_faces) = acted.simplify {
         start_simplify(target_faces, &scan, &mut studio, &mut job);
     }
@@ -365,11 +354,8 @@ fn draw_clean_scan(
 
 /// The tidy row: Weld, then a face target and Simplify.
 ///
-/// ⚠ Wrapping and grouped, like [`draw_trim_row`]. Wrapping so that a body
-/// column too narrow for the row pushes a control onto a line of its own rather
-/// than off the panel; grouped so that the break egui picks cannot land inside
-/// the Simplify control — its label, its field and its button are one thing,
-/// and the only place the row may break is between Weld and them.
+/// ⚠ Wrapping and grouped, like [`draw_trim_row`]. Label, field and button are
+/// one unit, so the only place the row may break is between Weld and them.
 fn draw_tidy_row(ui: &mut egui::Ui, controls: &mut EditControls, ready: bool) -> Acted {
     let mut acted = Acted::default();
     ui.horizontal_wrapped(|ui| {
@@ -684,8 +670,7 @@ mod tests {
     use super::*;
 
     /// ⚠ Every click on every screen reaches [`wizard_screen`] through this.
-    /// A merge that dropped a field would not error or panic — the control it
-    /// belonged to would simply stop working.
+    /// A dropped field does not error — the control just stops working.
     #[test]
     fn merging_lands_the_inner_report_without_dropping_the_outer_one() {
         let mut outer = Acted {
@@ -704,13 +689,11 @@ mod tests {
         assert_eq!(outer.simplify, Some(200_000), "and each field on its own");
     }
 
-    /// ★ The one definition every control on every screen is gated on, and the
-    /// reason it is one definition rather than a condition per button.
+    /// ★ The one definition every control on every screen is gated on.
     ///
-    /// ⚠ All four states, not just the happy one. A version that answered a
-    /// constant, or that read `||` for `&&`, leaves the app either frozen with
-    /// nothing running or fully clickable in the middle of a background job —
-    /// and neither of those reports itself as an error.
+    /// ⚠ All four states, not just the happy one. A constant answer, or `||`
+    /// for `&&`, leaves the app either frozen with nothing running or clickable
+    /// in the middle of a background job — neither of which reports itself.
     #[test]
     fn actions_are_accepted_only_with_no_job_running_and_no_dialog_open() {
         let idle = Studio::default();
@@ -733,8 +716,7 @@ mod tests {
         assert!(!accepting_actions(&busy, &open), "and the two together");
     }
 
-    /// Where both fired, the inner one wins — it is the more specific of the
-    /// two, and the pre-merge code resolved it the same way.
+    /// Where both fired the inner one wins, as the pre-merge code did.
     #[test]
     fn an_inner_report_wins_over_the_outer_one() {
         let mut outer = Acted {

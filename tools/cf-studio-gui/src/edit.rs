@@ -119,14 +119,13 @@ impl EditControls {
         (REFERENCE_MIN_MM, self.bound_mm)
     }
 
-    /// The target a Simplify runs at, in the units
-    /// [`cf_studio_engine::run_simplify`] takes.
+    /// The target a Simplify runs at, in [`cf_studio_engine::run_simplify`]'s
+    /// units.
     ///
-    /// ⚠ The clamp is not redundant with the stepper's own. Typing does not
-    /// commit — [`StepBoxState::value`] tracks an in-progress edit unclamped, by
-    /// design — so a number typed and then clicked straight through arrives
-    /// here out of range. Clamping here is also what makes the conversion
-    /// total, so that moving [`SIMPLIFY_MIN_FACES`] later cannot become a panic.
+    /// ⚠ The clamp is not redundant with the stepper's. Typing does not commit,
+    /// and [`StepBoxState::value`] tracks an in-progress edit unclamped by
+    /// design, so a number typed and then clicked straight through arrives here
+    /// out of range.
     #[allow(clippy::cast_sign_loss)] // The clamp removes the sign the lint is about.
     pub(crate) fn simplify_target(&self) -> usize {
         self.target_faces
@@ -154,11 +153,8 @@ impl EditControls {
     }
 }
 
-/// The Simplify stepper's `(min, max)`.
-///
-/// A free function rather than a method, and the asymmetry with
-/// [`EditControls::trim_range`] is the point: a face target is not the mesh's
-/// to re-bound, so there is no state for it to read.
+/// The Simplify stepper's `(min, max)`. Fixed, unlike
+/// [`EditControls::trim_range`] — see [`EditControls::target_faces`].
 pub(crate) const fn simplify_range() -> (i32, i32) {
     (SIMPLIFY_MIN_FACES, SIMPLIFY_MAX_FACES)
 }
@@ -209,11 +205,9 @@ pub(crate) fn apply_edit_intent(
 
 /// Report a finished step-2 op and re-bound the trim fields behind it.
 ///
-/// Shared with the async Simplify's poller ([`crate::jobs::poll_simplify_job`])
-/// rather than duplicated, because it is the pre-port `apply_edit` — the one
-/// place that decided what happens *after* any step-2 op — and the two callers
-/// drifting apart is how the trim fields would end up bounded by a centerline
-/// that a Simplify had already cleared.
+/// The pre-port `apply_edit`: the one place deciding what happens after ANY
+/// step-2 op, shared with [`crate::jobs::poll_simplify_job`] so the two paths
+/// cannot drift.
 pub(crate) fn land_edit(
     outcome: StepOutcome,
     scan: &ScanEdit,
@@ -230,11 +224,8 @@ pub(crate) fn land_edit(
     // the number the user just typed down to that stub's length, taking away
     // the very field they are being told to reduce.
     //
-    // ⚠ The wording names a trim because a trim is what reaches it.
-    // `cf_scan_prep_core::simplify_mesh` returns the input unchanged when the
-    // target is at or above the current face count, and decimates toward a
-    // positive one otherwise, so a Simplify cannot arrive here having emptied
-    // the mesh. The pre-port `apply_edit` carried this message on both paths.
+    // ⚠ Only a trim reaches it: `simplify_mesh` cannot empty a mesh that had
+    // faces, and the pre-port `apply_edit` shared this message too.
     if scan.view() == ViewUpdate::Hold {
         studio.message = Some(Err(OVER_TRIM_MESSAGE.to_string()));
         return;
@@ -242,13 +233,10 @@ pub(crate) fn land_edit(
     studio.message = Some(outcome);
 
     // ⚠ Only while a centerline exists to measure against. Every op that clears
-    // one — weld, Simplify, reset — then reports an arc length of 0, and
-    // `trim_bound_mm` floors that to a placeholder 10 mm. Re-bounding to the
-    // placeholder would clamp the user's numbers against it: a 40 mm floor trim
-    // would silently become 10 the moment they welded, and Find floor again
-    // would not give it back. There is nothing to show meanwhile — the trim
-    // section is hidden without a centerline — so holding the old bound costs
-    // nothing and the next real trace replaces it.
+    // one — weld, Simplify, reset — reports an arc length of 0, which
+    // `trim_bound_mm` floors to a placeholder 10 mm; re-bounding to that would
+    // silently rewrite a 40 mm floor trim to 10 the moment the user welded. The
+    // trim section is hidden meanwhile, so holding the old bound shows nothing.
     if let Some(session) = scan.active().map(ActiveScan::session)
         && session.has_centerline()
     {
@@ -474,10 +462,9 @@ endsolid t
         );
     }
 
-    /// ⚠ The face target is not a trim field. [`EditControls::rebound`] re-bounds
-    /// three fields against the centerline's arc length; adding this one to that
-    /// list would clamp a six-figure face count down to a few hundred
-    /// millimetres the first time Find floor ran.
+    /// ⚠ Adding the face target to [`EditControls::rebound`]'s three fields
+    /// would clamp a six-figure count to a few hundred millimetres the first
+    /// time Find floor ran.
     #[test]
     fn re_bounding_the_trim_fields_leaves_the_face_target_alone() {
         let mut c = EditControls::default();
@@ -499,9 +486,8 @@ endsolid t
         );
     }
 
-    /// Typing does not commit, and [`StepBoxState`] tracks an in-progress edit
-    /// unclamped by design — so a number typed and then clicked straight
-    /// through is in range only because this conversion puts it there.
+    /// A typed-but-uncommitted number is in range only because
+    /// [`EditControls::simplify_target`] puts it there.
     #[test]
     fn a_typed_target_reaches_the_engine_inside_the_steppers_range() {
         let mut c = EditControls::default();
@@ -521,25 +507,22 @@ endsolid t
         assert_eq!(c.simplify_target(), 1_000, "and up to SIMPLIFY_MIN_FACES");
     }
 
-    /// The pre-port stepper's bounds and starting value, which are what a
-    /// user's habits with this field are built on.
+    /// The pre-port stepper's bounds and starting value.
     #[test]
     fn the_simplify_stepper_keeps_its_pre_port_bounds_and_default() {
         assert_eq!(simplify_range(), (1_000, 1_000_000));
         assert_eq!(EditControls::default().simplify_target(), 200_000);
     }
 
-    /// [`open_tube`]'s height, in session units (metres) — 100 mm along the
-    /// spine, so the bound it produces is readable at a glance.
+    /// [`open_tube`]'s height in session units (metres) — 100 mm of spine.
     const TUBE_HEIGHT_M: f64 = 0.1;
 
     /// A welded square tube along +Z, open at both ends and [`TUBE_HEIGHT_M`]
     /// tall.
     ///
     /// Two open boundary loops with a spine between them is what `detect_caps`
-    /// and `level_to_floor` trace a centerline from. The cube fixture is
-    /// closed, so it can never have one — which is exactly what makes it the
-    /// negative case below.
+    /// and `level_to_floor` trace a centerline from; the cube fixture is closed
+    /// and can never have one.
     fn open_tube() -> mesh_types::IndexedMesh {
         use mesh_types::Point3;
 
@@ -567,18 +550,10 @@ endsolid t
         mesh_types::IndexedMesh { vertices, faces }
     }
 
-    /// The other half of the guard below: when there IS a centerline, the trim
-    /// fields must be bounded to it.
-    ///
-    /// ⚠ Without this, deleting the re-bound from [`land_edit`] outright passes
-    /// the whole suite — the guard's negative case would be the only half
-    /// anyone had ever proved.
-    ///
     /// ⚠ A window, not an equality. The trace is a polyline through slice
-    /// centroids, so it stops half a slice short at each end and reads a little
-    /// under the tube's full 100 mm — measured at 97. Pinning that exact number
-    /// would pin the sampler's resolution, which is not this test's business.
-    /// What must not happen is the 10 mm placeholder, and that is nowhere near.
+    /// centroids, so it stops half a slice short at each end — 97 on a 100 mm
+    /// tube. Pinning 97 would pin the sampler's resolution; what must not
+    /// happen is the 10 mm placeholder.
     #[test]
     fn landing_an_op_that_traced_a_centerline_bounds_the_fields_to_it() {
         let mut scan = ScanEdit::default();
@@ -605,15 +580,11 @@ endsolid t
         );
     }
 
-    /// ★ The bug this guard exists for, driven through the landing itself.
+    /// ★ The bug [`land_edit`]'s guard exists for, driven through the landing.
     ///
-    /// Every op that clears the centerline — weld, Simplify, reset — then
-    /// reports an arc length of 0, which [`trim_bound_mm`] floors to a
-    /// placeholder 10 mm. Re-bounding to that placeholder clamps numbers the
-    /// user typed against a bound that describes nothing, and Find floor again
-    /// does not give them back: [`StepBoxState::sync_external`] moves the
-    /// value, not just the range. The sequence is the one the screen invites —
-    /// Find floor, tidy, then "Find floor again".
+    /// [`StepBoxState::sync_external`] moves the value, not just the range, so
+    /// Find floor again does not give it back. The sequence is the one the
+    /// screen invites: Find floor, tidy, "Find floor again".
     #[test]
     fn landing_an_op_that_cleared_the_centerline_holds_the_bound_it_no_longer_has() {
         let mut scan = ScanEdit::default();
