@@ -305,7 +305,7 @@ fn reset(session: &mut EditSession) -> StepOutcome {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::path::PathBuf;
 
     use super::*;
@@ -523,7 +523,7 @@ endsolid t
     /// Two open boundary loops with a spine between them is what `detect_caps`
     /// and `level_to_floor` trace a centerline from; the cube fixture is closed
     /// and can never have one.
-    fn open_tube() -> mesh_types::IndexedMesh {
+    pub(crate) fn open_tube() -> mesh_types::IndexedMesh {
         use mesh_types::Point3;
 
         const RINGS: usize = 4;

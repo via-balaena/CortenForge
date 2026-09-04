@@ -95,6 +95,13 @@ cf-bevy-common = { workspace = true }
 # halves were sampled; `dialogs.rs` carries the async form that fixes it.
 rfd = "0.15"
 
+[dev-dependencies]
+# Headless egui driver for the layout gates in `panel.rs`.
+#
+# ⚠ The minor tracks egui's, not its own latest: 0.33 against bevy_egui 0.39.1's
+# egui 0.33.3. A newer kittest resolves a second egui and drives that one.
+egui_kittest = "0.33"
+
 [features]
 default = ["x11"]
 # Linux window backends — mirror cf-spine-studio's feature shape.

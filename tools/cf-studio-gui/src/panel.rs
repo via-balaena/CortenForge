@@ -120,18 +120,12 @@ pub(crate) fn wizard_screen(
         acted.nav = draw_nav(ui, &studio, &dialog).or(acted.nav);
     });
 
-    egui::SidePanel::right("body")
-        .resizable(false)
-        .exact_width(BODY_WIDTH)
-        .show(ctx, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                // ⚠ `&scan` — an immutable borrow. Reaching for `&mut` here, to
-                // save passing it twice, would mark the resource changed on
-                // every frame the wizard drew and re-mesh the scan 60 times a
-                // second.
-                acted.merge(draw_body(ui, &studio, &dialog, &scan, &mut controls));
-            });
-        });
+    body_column(ctx, |ui| {
+        // ⚠ `&scan` — an immutable borrow. Reaching for `&mut` here, to save
+        // passing it twice, would mark the resource changed on every frame the
+        // wizard drew and re-mesh the scan 60 times a second.
+        acted.merge(draw_body(ui, &studio, &dialog, &scan, &mut controls));
+    });
 
     if let Some(intent) = acted.nav {
         apply_intent(intent, &mut studio, &mut dialog);
@@ -144,6 +138,19 @@ pub(crate) fn wizard_screen(
         start_simplify(target_faces, &scan, &mut studio, &mut job);
     }
     Ok(())
+}
+
+/// The column every step body is laid out in.
+///
+/// ⚠ Extracted so the layout gates lay out in *this*, not in a copy of it. A
+/// test that rebuilt the panel would agree with itself while the app drifted.
+fn body_column(ctx: &egui::Context, add: impl FnOnce(&mut egui::Ui)) {
+    egui::SidePanel::right("body")
+        .resizable(false)
+        .exact_width(BODY_WIDTH)
+        .show(ctx, |ui| {
+            egui::ScrollArea::vertical().show(ui, add);
+        });
 }
 
 /// The seven-step progress list. `✔`/`○` is real completion; the arrow marks
@@ -386,8 +393,7 @@ fn draw_tidy_row(ui: &mut egui::Ui, controls: &mut EditControls, ready: bool) ->
 /// The trim controls: a stepper for each end, then Apply trim.
 ///
 /// ⚠⚠ Stacked, and it must stay stacked: as one row these measure 492 px in a
-/// 404 px column, and egui culls the button rather than wrapping it. No test
-/// sees that — check by eye.
+/// 404 px column, and egui culls the button rather than wrapping it.
 fn draw_trim_row(
     ui: &mut egui::Ui,
     controls: &mut EditControls,
@@ -666,7 +672,18 @@ fn apply_intent(intent: Intent, studio: &mut Studio, dialog: &mut PendingDialog)
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used)]
+
+    use std::path::PathBuf;
+
+    use cf_studio_core::{
+        DesignDraft, LayerDraft, MoldOutputs, PlugDraft, PourPlan, PourStep, PrepInput, Project,
+        RidgeOptions, ScanInput,
+    };
+
     use super::*;
+    use crate::edit::tests::open_tube;
+    use crate::scan::ActiveScan;
 
     /// ⚠ Every click on every screen reaches [`wizard_screen`] through this.
     /// A dropped field does not error — the control just stops working.
@@ -729,5 +746,249 @@ mod tests {
         });
 
         assert_eq!(outer.nav, Some(Intent::Next));
+    }
+
+    /// The body column's usable width, in points. #878's overflow was measured
+    /// against this: a 492 px trim row in a 404 px column.
+    const COLUMN_WIDTH: f32 = 404.0;
+    /// Tall enough that nothing is cut off the bottom; too short and the fit
+    /// check below fails rather than measuring half a screen.
+    const COLUMN_HEIGHT: f32 = 1400.0;
+    /// A trim the open tube is long enough to take from either end.
+    const FIXTURE_TRIM_MM: i32 = 5;
+
+    /// Lay `body` out in [`body_column`] — the column the wizard builds — and
+    /// name the controls on it, in layout order, failing if any of them sits
+    /// outside it.
+    ///
+    /// ⚠ Accessibility rects, not painted shapes: egui culls what overflows,
+    /// so the shapes cannot show it. This rect is the widget's real position
+    /// whether or not it was drawn.
+    ///
+    /// ⚠ The returned census is the other half, and each is vacuous alone: an
+    /// overflowing control fails here, a vanished one fails the caller's
+    /// `assert_eq!`. Fit alone passes an empty screen.
+    fn controls_in_column(mut body: impl FnMut(&mut egui::Ui)) -> Vec<String> {
+        use egui::accesskit::Role;
+        use egui_kittest::Harness;
+        use egui_kittest::kittest::NodeT;
+
+        let column = std::cell::Cell::new(egui::Rect::NOTHING);
+        let mut harness = Harness::builder()
+            .with_size(egui::Vec2::new(BODY_WIDTH, COLUMN_HEIGHT))
+            .build(|ctx| {
+                body_column(ctx, |ui| {
+                    column.set(ui.max_rect());
+                    body(ui);
+                });
+            });
+        harness.run();
+
+        let column = column.get();
+        assert_eq!(
+            column.width(),
+            COLUMN_WIDTH,
+            "the column #878 was measured in"
+        );
+        harness
+            .root()
+            .children_recursive()
+            .filter_map(|node| {
+                let widget = node.accesskit_node();
+                let name = match widget.role() {
+                    role @ (Role::Button | Role::TextInput | Role::ComboBox) => widget
+                        .label()
+                        // ⚠ Not `?`. A stepper's field, the shape picker and a
+                        // text-free button report no label; skipping those lets
+                        // the very control this gate is for slip past both halves.
+                        .unwrap_or_else(|| format!("{role:?}")),
+                    _ => return None,
+                };
+                let rect = node.rect();
+                assert!(
+                    column.contains_rect(rect),
+                    "{name} is laid out at {rect:?}, outside the {column:?} column"
+                );
+                Some(name)
+            })
+            .collect()
+    }
+
+    /// Step 2 with every section revealed: a scan loaded, a centerline traced,
+    /// and a floor trim applied — the only state that shows the reconstruct
+    /// block, and the state #878 was found in.
+    struct CleanupScreen {
+        studio: Studio,
+        dialog: PendingDialog,
+        scan: ScanEdit,
+        controls: EditControls,
+    }
+
+    fn cleanup_screen() -> CleanupScreen {
+        let mut scan = ScanEdit::default();
+        scan.set(ActiveScan::synthetic(open_tube()));
+        let mut studio = Studio::default();
+        let mut controls = EditControls::default();
+        apply_edit_intent(EditIntent::FindFloor, &mut scan, &mut studio, &mut controls);
+        apply_edit_intent(
+            EditIntent::ApplyTrim {
+                tip_mm: FIXTURE_TRIM_MM,
+                floor_mm: FIXTURE_TRIM_MM,
+            },
+            &mut scan,
+            &mut studio,
+            &mut controls,
+        );
+        // ⚠ A failed op would hide the later sections and leave the census
+        // trivially short — passing while measuring half the screen.
+        let session = scan.active().map(ActiveScan::session);
+        assert!(
+            session.is_some_and(|s| s.has_centerline() && s.reconstruct_available()),
+            "the fixture must reveal every section; last message: {:?}",
+            studio.message
+        );
+        CleanupScreen {
+            studio,
+            dialog: PendingDialog::default(),
+            scan,
+            controls,
+        }
+    }
+
+    /// A project driven to the pour step — the only state `draw_pour` shows its
+    /// buttons in, since every earlier artifact gates the next.
+    fn ready_to_pour() -> Project {
+        let mut project = Project::new("layout gate");
+        project.set_scan(ScanInput {
+            source_path: PathBuf::from("scan.stl"),
+        });
+        project
+            .set_prep(PrepInput {
+                cleaned_stl: PathBuf::from("scan.cleaned.stl"),
+                prep_toml: PathBuf::from("scan.prep.toml"),
+            })
+            .expect("each artifact is set in workflow order");
+        project
+            .set_plug(PlugDraft {
+                cavity_inset_m: 0.005,
+                ridges: RidgeOptions::default(),
+            })
+            .expect("each artifact is set in workflow order");
+        project
+            .set_design(DesignDraft {
+                cavity_inset_m: 0.005,
+                layers: vec![LayerDraft {
+                    thickness_m: 0.0175,
+                    material_key: "ECOFLEX_00_30".to_string(),
+                    slacker_fraction: 0.25,
+                }],
+            })
+            .expect("each artifact is set in workflow order");
+        project
+            .set_molds(MoldOutputs {
+                out_dir: PathBuf::from("out"),
+                mold_stls: vec![PathBuf::from("out/mold.stl")],
+                plug_stls: vec![PathBuf::from("out/plug.stl")],
+                accessory_stls: vec![],
+                procedure_path: PathBuf::from("out/procedure.md"),
+                total_mass_g: 842.0,
+                pour_plan: PourPlan {
+                    steps: vec![PourStep {
+                        layer_index: 0,
+                        material_display_name: "Ecoflex 00-30".to_string(),
+                        mass_g: 500.0,
+                        mix_ratio_a_to_b: "1:1".to_string(),
+                        pot_life_minutes: 25,
+                        cure_time_hours: 4.0,
+                        slacker_fraction: Some(0.25),
+                    }],
+                },
+            })
+            .expect("each artifact is set in workflow order");
+        project
+    }
+
+    /// ★ The gate #878 did not have, on the screen it broke.
+    #[test]
+    fn every_control_on_the_cleanup_screen_is_inside_the_body_column() {
+        let mut screen = cleanup_screen();
+
+        let controls = controls_in_column(|ui| {
+            let _ = draw_clean_scan(
+                ui,
+                &screen.studio,
+                &screen.dialog,
+                &screen.scan,
+                &mut screen.controls,
+            );
+        });
+
+        assert_eq!(
+            controls,
+            [
+                "Weld points",
+                "−",
+                "TextInput",
+                "+",
+                "Simplify",
+                "Find floor again",
+                "−",
+                "TextInput",
+                "+",
+                "−",
+                "TextInput",
+                "+",
+                "Apply trim",
+                "ComboBox",
+                "−",
+                "TextInput",
+                "+",
+                "Reconstruct floor",
+                "Start over",
+            ]
+        );
+    }
+
+    /// The pour screen's action row is the shape that broke: ungrouped, wide
+    /// labels.
+    #[test]
+    fn every_control_on_the_pour_screen_is_inside_the_body_column() {
+        let studio = Studio {
+            project: ready_to_pour(),
+            ..Studio::default()
+        };
+
+        let controls = controls_in_column(|ui| {
+            let _ = draw_pour(ui, &studio);
+        });
+
+        assert_eq!(controls, ["Start pour timer", "Mark this layer poured →"]);
+    }
+
+    #[test]
+    fn every_control_on_the_simpler_screens_is_inside_the_body_column() {
+        let studio = Studio::default();
+        let dialog = PendingDialog::default();
+
+        assert_eq!(
+            controls_in_column(|ui| {
+                let _ = draw_add_scan(ui, &studio, &dialog);
+            }),
+            ["Choose scan file…"]
+        );
+        assert_eq!(
+            controls_in_column(|ui| {
+                let _ = draw_print(ui, &studio, &dialog);
+            }),
+            ["Save files for printing…"]
+        );
+        assert_eq!(
+            controls_in_column(|ui| {
+                let _ = draw_nav(ui, &studio, &dialog);
+            }),
+            ["← Back", "Help", "Next →"]
+        );
+        assert!(controls_in_column(draw_porting_notice).is_empty());
+        assert!(controls_in_column(|ui| draw_checklist(ui, &studio)).is_empty());
     }
 }
