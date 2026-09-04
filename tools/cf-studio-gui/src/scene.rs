@@ -236,6 +236,10 @@ endsolid t
         app.world_mut().resource_mut::<ScanEdit>().set(scan);
         app.update();
         let framed = aim_of(&mut app);
+        // ⚠ `is_some` first. `assert_ne!` alone would be satisfied by the camera
+        // having been despawned, and the equality below would then hold
+        // vacuously — the whole test would pass while nothing was aimed at all.
+        assert!(framed.is_some(), "the camera must survive the re-mesh");
         assert_ne!(framed, start, "a new scan must frame the camera on it");
 
         app.world_mut()
