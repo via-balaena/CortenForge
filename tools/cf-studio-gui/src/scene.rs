@@ -293,7 +293,7 @@ endsolid t
         );
         assert!(
             ui.is_some() && body.is_some(),
-            "both context holders carry a Camera"
+            "both the scene camera and the context camera carry a Camera"
         );
         if let (Some(ui), Some(body)) = (ui, body) {
             // ⚠ The relationship, not the literal 1. "egui draws after the
