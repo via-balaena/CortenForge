@@ -357,21 +357,32 @@ fn draw_trim_row(
 ) -> Option<EditIntent> {
     let mut intent = None;
     let range = controls.trim_range();
+    // ⚠ Grouped, not six loose widgets. The row is wider than the body column
+    // so it always wraps, and egui breaks between items — ungrouped, the break
+    // lands wherever it likes and strands a bare "mm" on a line of its own,
+    // away from the number it belongs to. Each group is a unit the wrap can only
+    // place or push down whole.
     ui.horizontal_wrapped(|ui| {
-        ui.colored_label(CONTROL_TEXT, "from tip");
-        step_box(ui, &mut controls.tip_mm, range, ready);
-        ui.colored_label(CONTROL_TEXT, "mm    from floor");
-        step_box(ui, &mut controls.floor_mm, range, ready);
-        ui.colored_label(CONTROL_TEXT, "mm");
-        if ui
-            .add_enabled(ready, egui::Button::new("Apply trim"))
-            .clicked()
-        {
-            intent = Some(EditIntent::ApplyTrim {
-                tip_mm: controls.tip_mm.value(),
-                floor_mm: controls.floor_mm.value(),
-            });
-        }
+        ui.horizontal(|ui| {
+            ui.colored_label(CONTROL_TEXT, "from tip");
+            step_box(ui, &mut controls.tip_mm, range, ready);
+        });
+        ui.horizontal(|ui| {
+            ui.colored_label(CONTROL_TEXT, "mm    from floor");
+            step_box(ui, &mut controls.floor_mm, range, ready);
+        });
+        ui.horizontal(|ui| {
+            ui.colored_label(CONTROL_TEXT, "mm");
+            if ui
+                .add_enabled(ready, egui::Button::new("Apply trim"))
+                .clicked()
+            {
+                intent = Some(EditIntent::ApplyTrim {
+                    tip_mm: controls.tip_mm.value(),
+                    floor_mm: controls.floor_mm.value(),
+                });
+            }
+        });
     });
     intent
 }
@@ -401,27 +412,34 @@ fn draw_reconstruct_row(
     ui.add_space(4.0);
 
     let range = controls.reference_range();
+    // Grouped for the same reason as the trim row above it.
     ui.horizontal_wrapped(|ui| {
-        ui.colored_label(CONTROL_TEXT, "Shape");
-        egui::ComboBox::from_id_salt("rebuilt-floor-shape")
-            .selected_text(controls.shape.label())
-            .show_ui(ui, |ui| {
-                for shape in FloorShape::ALL {
-                    ui.selectable_value(&mut controls.shape, shape, shape.label());
-                }
-            });
-        ui.colored_label(CONTROL_TEXT, "from");
-        step_box(ui, &mut controls.reference_mm, range, ready);
-        ui.colored_label(CONTROL_TEXT, "mm above cut");
-        if ui
-            .add_enabled(ready, egui::Button::new("Reconstruct floor"))
-            .clicked()
-        {
-            intent = Some(EditIntent::ReconstructFloor {
-                shape: controls.shape,
-                reference_mm: controls.reference_mm.value(),
-            });
-        }
+        ui.horizontal(|ui| {
+            ui.colored_label(CONTROL_TEXT, "Shape");
+            egui::ComboBox::from_id_salt("rebuilt-floor-shape")
+                .selected_text(controls.shape.label())
+                .show_ui(ui, |ui| {
+                    for shape in FloorShape::ALL {
+                        ui.selectable_value(&mut controls.shape, shape, shape.label());
+                    }
+                });
+        });
+        ui.horizontal(|ui| {
+            ui.colored_label(CONTROL_TEXT, "from");
+            step_box(ui, &mut controls.reference_mm, range, ready);
+        });
+        ui.horizontal(|ui| {
+            ui.colored_label(CONTROL_TEXT, "mm above cut");
+            if ui
+                .add_enabled(ready, egui::Button::new("Reconstruct floor"))
+                .clicked()
+            {
+                intent = Some(EditIntent::ReconstructFloor {
+                    shape: controls.shape,
+                    reference_mm: controls.reference_mm.value(),
+                });
+            }
+        });
     });
     intent
 }

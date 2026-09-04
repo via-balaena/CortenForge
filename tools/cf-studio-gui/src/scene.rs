@@ -259,6 +259,28 @@ endsolid t
             .map(|c| (c.target, c.distance))
     }
 
+    /// ⚠ Two fields here are correctness, not taste: a raw scan's winding is not
+    /// to be trusted, so the surface must draw from both sides. Lose either and a
+    /// back-facing triangle reads as a hole straight through the body — which on
+    /// this screen looks like a defect in the user's scan rather than in the app.
+    ///
+    /// The colour and roughness are deliberately NOT asserted. Pinning them would
+    /// only restate the constants above them, and a wrong shade is visible the
+    /// instant anyone opens the app.
+    #[test]
+    fn the_body_surface_is_drawn_from_both_sides() {
+        let material = body_material();
+
+        assert!(
+            material.double_sided,
+            "an unwelded scan's back faces must still shade"
+        );
+        assert!(
+            material.cull_mode.is_none(),
+            "and must not be culled away, or they read as holes"
+        );
+    }
+
     /// The real geometry, taken off the running app rather than invented: a
     /// 2560x1800 window at scale 2, panels leaving egui 600x863 points free from
     /// x=260. The probe that diagnosed the strobe printed exactly this pairing.
