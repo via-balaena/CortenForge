@@ -131,6 +131,7 @@ pub(crate) fn step_box(
     ui: &mut egui::Ui,
     state: &mut StepBoxState,
     (min, max): (i32, i32),
+    step: i32,
     enabled: bool,
 ) {
     // ⚠ One `horizontal` group, not three loose widgets, or a wrapping parent is
@@ -143,7 +144,7 @@ pub(crate) fn step_box(
             .add_enabled(enabled && state.value() > min, egui::Button::new("−"))
             .clicked()
         {
-            let _ = state.step(-1, min, max);
+            let _ = state.step(-step, min, max);
         }
         let field = ui.add_enabled(
             enabled,
@@ -163,7 +164,7 @@ pub(crate) fn step_box(
             .add_enabled(enabled && state.value() < max, egui::Button::new("+"))
             .clicked()
         {
-            let _ = state.step(1, min, max);
+            let _ = state.step(step, min, max);
         }
     });
 }

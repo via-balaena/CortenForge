@@ -32,6 +32,15 @@ const SIMPLIFY_MIN_FACES: i32 = 1_000;
 const SIMPLIFY_MAX_FACES: i32 = 1_000_000;
 const DEFAULT_TARGET_FACES: i32 = 200_000;
 
+/// One ± click on a millimetre field.
+pub(crate) const STEP_MM: i32 = 1;
+/// One ± click on the Simplify target.
+///
+/// ⚠ Not [`STEP_MM`]. The pre-port `StepBox` hard-coded a step of 1 for every
+/// field and the port inherited it, which on this range was **199 000 clicks**
+/// from the default down to the floor — the buttons were decorative.
+pub(crate) const SIMPLIFY_STEP_FACES: i32 = 10_000;
+
 /// Reported when a trim leaves nothing behind. The mesh is still trimmed — only
 /// the view is held — so the wording asks for a smaller number rather than
 /// claiming the op was refused.
@@ -512,6 +521,27 @@ endsolid t
     fn the_simplify_stepper_keeps_its_pre_port_bounds_and_default() {
         assert_eq!(simplify_range(), (1_000, 1_000_000));
         assert_eq!(EditControls::default().simplify_target(), 200_000);
+    }
+
+    /// ⚠ The verdict, not the constant. What matters is not that the step is
+    /// 10 000 but that a person can cross the range with the buttons: at the
+    /// millimetre step the mm fields use it was 199 000 clicks down and 800 000
+    /// up, which is what made them decorative.
+    #[test]
+    fn the_face_targets_buttons_cross_its_range_in_a_usable_number_of_clicks() {
+        let (min, max) = simplify_range();
+
+        let down = (DEFAULT_TARGET_FACES - min) / SIMPLIFY_STEP_FACES;
+        let up = (max - DEFAULT_TARGET_FACES) / SIMPLIFY_STEP_FACES;
+
+        assert!(
+            (1..=40).contains(&down),
+            "{down} clicks from the default down to the floor"
+        );
+        assert!(
+            (1..=100).contains(&up),
+            "{up} clicks from the default up to the ceiling"
+        );
     }
 
     /// [`open_tube`]'s height in session units (metres) — 100 mm of spine.
