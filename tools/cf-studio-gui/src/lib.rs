@@ -920,6 +920,93 @@ impl PartPicker {
     }
 }
 
+/// The step-2 working-mesh stats line, shown above the cleanup controls.
+#[must_use]
+pub fn format_scan_stats(faces: usize, vertices: usize) -> String {
+    format!("{faces} faces · {vertices} vertices")
+}
+
+/// The smallest trim bound the fields will offer, in millimetres.
+///
+/// A degenerate centerline would otherwise collapse both fields to a single
+/// value, leaving nothing to type into and no way to recover.
+const TRIM_BOUND_MIN_MM: i32 = 10;
+
+/// The largest, in millimetres — a sanity rail against a nonsense arc
+/// length, not a physical limit.
+const TRIM_BOUND_MAX_MM: i32 = 100_000;
+
+/// The trim fields' upper bound, in whole millimetres.
+///
+/// Trimming is measured along the centerline, so its arc length is the most
+/// that can be taken off. This is also what [`StepBoxState::commit`] clamps
+/// against, which is why the bound is floored rather than passed through.
+///
+/// A non-finite arc length saturates rather than wrapping, then clamps — so
+/// a centerline that failed to trace still yields a usable field.
+#[must_use]
+#[allow(clippy::cast_possible_truncation)] // Saturating; the clamp bounds it either way.
+pub fn trim_bound_mm(centerline_arc_length_mm: f64) -> i32 {
+    (centerline_arc_length_mm.round() as i32).clamp(TRIM_BOUND_MIN_MM, TRIM_BOUND_MAX_MM)
+}
+
+/// Whether a cap scan can be stood upright, and what to say when it cannot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FloorReadiness {
+    /// Raw, unwelded vertex soup: the boundary loops reported are seams between
+    /// duplicated vertices, not the real open end.
+    Unwelded,
+    /// Welded, but closed — there is no open boundary to stand the scan on.
+    NoOpenEdges,
+    /// Worth trying to level.
+    Ready,
+}
+
+impl FloorReadiness {
+    /// Read a `detect_caps` summary.
+    ///
+    /// ⚠ Order matters. Unwelded soup reports *many* loops, so it sails past
+    /// a `loop_count` test — the weld prompt has to win, or the user is told
+    /// the scan is ready on the strength of a count that means nothing.
+    #[must_use]
+    pub const fn read(loop_count: usize, looks_unwelded: bool) -> Self {
+        if looks_unwelded {
+            Self::Unwelded
+        } else if loop_count == 0 {
+            Self::NoOpenEdges
+        } else {
+            Self::Ready
+        }
+    }
+
+    /// Why the scan cannot be stood up, or `None` when it can.
+    #[must_use]
+    pub const fn blocked_message(self) -> Option<&'static str> {
+        match self {
+            Self::Unwelded => Some("Looks like a raw scan — click Weld first, then Find floor."),
+            Self::NoOpenEdges => Some("No open edges found to stand it on."),
+            Self::Ready => None,
+        }
+    }
+}
+
+/// "Find floor" succeeded: what it found, and how far it tipped the scan.
+#[must_use]
+pub fn format_floor_found(loop_count: usize, centerline_segments: usize, tilt_deg: f64) -> String {
+    format!(
+        "✓ Found floor — {loop_count} open loop(s), \
+         {centerline_segments}-segment centerline. \
+         Stood upright (corrected {tilt_deg:.0}° tilt)."
+    )
+}
+
+/// Open loops were found, but no centerline could be traced through them —
+/// so there is no axis to level against.
+#[must_use]
+pub fn format_floor_no_centerline(loop_count: usize) -> String {
+    format!("Found {loop_count} loop(s) but couldn't trace a centerline to level by.")
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -2036,5 +2123,69 @@ visible = true
             "changing the design starts the picker fresh"
         );
         assert!(p2.len() >= p.len());
+    }
+    /// Both halves matter: the weld prompt must win over the loop count, and a
+    /// welded-but-closed mesh must NOT be told to weld. Reading only
+    /// `looks_unwelded` after a `loop_count == 0` test inverts the first.
+    #[test]
+    fn unwelded_soup_is_told_to_weld_before_its_loop_count_is_believed() {
+        // Soup reports plenty of loops; the count is meaningless.
+        assert_eq!(
+            FloorReadiness::read(48, true),
+            FloorReadiness::Unwelded,
+            "many loops on unwelded soup must still ask for a weld"
+        );
+        assert_eq!(
+            FloorReadiness::read(0, false),
+            FloorReadiness::NoOpenEdges,
+            "a welded, closed mesh has nothing to stand on — and needs no weld"
+        );
+        assert_eq!(FloorReadiness::read(1, false), FloorReadiness::Ready);
+    }
+
+    #[test]
+    fn only_a_ready_scan_has_no_blocking_message() {
+        assert!(FloorReadiness::Ready.blocked_message().is_none());
+        assert!(FloorReadiness::Unwelded.blocked_message().is_some());
+        assert!(FloorReadiness::NoOpenEdges.blocked_message().is_some());
+    }
+
+    #[test]
+    fn the_trim_bound_is_floored_so_the_fields_stay_usable() {
+        assert_eq!(trim_bound_mm(0.0), 10, "a traced-nothing centerline");
+        assert_eq!(trim_bound_mm(3.4), 10, "and anything under the floor");
+        assert_eq!(trim_bound_mm(147.6), 148, "otherwise it rounds");
+    }
+
+    /// The cast is `as`, which saturates rather than wrapping. Without the
+    /// clamp behind it a NaN arc length would offer a 0 mm bound.
+    #[test]
+    fn a_non_finite_arc_length_still_yields_a_usable_bound() {
+        assert_eq!(trim_bound_mm(f64::NAN), 10);
+        assert_eq!(trim_bound_mm(f64::INFINITY), 100_000);
+        assert_eq!(trim_bound_mm(f64::NEG_INFINITY), 10);
+    }
+
+    /// Tilt is shown to the nearest whole degree, and the two counts must not
+    /// swap: they read as "N open loop(s), M-segment centerline".
+    #[test]
+    fn the_found_floor_line_rounds_the_tilt_and_keeps_its_counts_in_order() {
+        let line = format_floor_found(2, 41, 3.7);
+        assert!(
+            line.contains("2 open loop(s), 41-segment centerline"),
+            "counts in the wrong order or the wrong units: {line}"
+        );
+        assert!(
+            line.contains("corrected 4° tilt"),
+            "tilt must round to whole degrees: {line}"
+        );
+    }
+
+    #[test]
+    fn the_stats_line_reads_faces_then_vertices() {
+        assert_eq!(
+            format_scan_stats(193_740, 581_220),
+            "193740 faces · 581220 vertices"
+        );
     }
 }

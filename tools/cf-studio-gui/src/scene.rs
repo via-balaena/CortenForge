@@ -15,7 +15,7 @@ use cf_bevy_common::camera::OrbitCamera;
 use cf_bevy_common::mesh::triangle_mesh_flat_shaded;
 use mesh_types::Bounded;
 
-use crate::scan::{SCAN_UP_AXIS, ScanEdit};
+use crate::scan::{SCAN_UP_AXIS, ScanEdit, ViewUpdate};
 
 /// The body on show — the startup placeholder, then the scan that replaces it.
 #[derive(Component)]
@@ -24,6 +24,9 @@ pub(crate) struct SceneBody;
 /// Muted clay, readable against the light background without competing with
 /// the panel for attention.
 const BODY_COLOR: Color = Color::srgb(0.72, 0.70, 0.66);
+
+/// The centerline overlay's cyan, carried over from the pre-port line shader.
+const CENTERLINE_COLOR: Color = Color::srgb(0.05, 0.85, 0.95);
 
 /// Spawn the camera, a key light, and the placeholder body.
 pub(crate) fn setup_scene(
@@ -53,7 +56,14 @@ pub(crate) fn setup_scene(
     ));
 }
 
-/// Show the loaded scan: replace the body on screen and frame the camera on it.
+/// Show the scan as it now stands: replace the body, and frame the camera on it
+/// only when the scan itself is new.
+///
+/// ⚠ The camera is the whole reason this branches. A step-2 edit changes the
+/// mesh a dozen times over, and re-framing on each would snap the view back to
+/// the front every time the user welded or trimmed — so the pre-port code
+/// rebuilt the buffers "PRESERVING the orbit angle". Only a freshly loaded scan
+/// earns a camera move.
 pub(crate) fn show_scan(
     mut commands: Commands,
     scan: Res<ScanEdit>,
@@ -62,23 +72,49 @@ pub(crate) fn show_scan(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
+    let reframe = match scan.view() {
+        // The edit left nothing renderable; the last good view stands.
+        ViewUpdate::Hold => return,
+        ViewUpdate::Reframe => true,
+        ViewUpdate::Remesh => false,
+    };
     let Some(active) = scan.active() else { return };
-    let mesh = active.session.display_mesh();
+    let mesh = active.display();
 
     for body in &bodies {
         commands.entity(body).despawn();
     }
     commands.spawn((
         SceneBody,
-        Mesh3d(meshes.add(triangle_mesh_flat_shaded(&mesh, None, SCAN_UP_AXIS))),
+        Mesh3d(meshes.add(triangle_mesh_flat_shaded(mesh, None, SCAN_UP_AXIS))),
         MeshMaterial3d(materials.add(body_material())),
-        active.scale.transform(),
+        active.scale().transform(),
     ));
 
-    let framing = active.scale.framing_aabb(&mesh.aabb());
-    for mut camera in &mut cameras {
-        *camera = OrbitCamera::framing_for_aabb(&framing, SCAN_UP_AXIS);
+    if reframe {
+        let framing = active.scale().framing_aabb(&mesh.aabb());
+        for mut camera in &mut cameras {
+            *camera = OrbitCamera::framing_for_aabb(&framing, SCAN_UP_AXIS);
+        }
     }
+}
+
+/// Draw the centerline Find floor traced, over the body.
+///
+/// The line runs *inside* the scan, so it is only visible because the gizmo
+/// group is configured to ignore depth (`plugin.rs`) — the pre-port viewer had
+/// its own line pipeline at `depth_compare: Always` for the same reason. Cyan,
+/// as it was there.
+///
+/// Immediate mode, so this runs every frame. That is why the points come from
+/// the scan's cache rather than the engine — see [`crate::scan::ActiveScan`].
+pub(crate) fn draw_centerline(scan: Res<ScanEdit>, mut gizmos: Gizmos) {
+    let Some(active) = scan.active() else { return };
+    let points = active.centerline();
+    if points.len() < 2 {
+        return;
+    }
+    gizmos.linestrip(points.iter().copied(), CENTERLINE_COLOR);
 }
 
 /// The clay surface, for both the placeholder and the scan.

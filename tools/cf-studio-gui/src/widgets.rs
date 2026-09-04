@@ -10,6 +10,7 @@
 //!   explicit `ScrollArea`.
 
 use bevy_egui::egui;
+use cf_studio_gui::StepBoxState;
 
 /// Cool green used for the "this succeeded, here's what happened" cards.
 pub(crate) const GOOD_FILL: egui::Color32 = egui::Color32::from_rgb(0xee, 0xf3, 0xee);
@@ -30,6 +31,126 @@ pub(crate) fn wrapped_label(ui: &mut egui::Ui, text: impl Into<String>) {
 /// A wrapping, coloured label.
 pub(crate) fn wrapped_colored(ui: &mut egui::Ui, color: egui::Color32, text: impl Into<String>) {
     ui.add(egui::Label::new(egui::RichText::new(text.into()).color(color)).wrap());
+}
+
+/// The green a finished cleanup section's heading turns.
+///
+/// ⚠ Not [`GOOD_TEXT`]. The pre-port screen used a brighter green here than in
+/// its result cards, because this one carries no fill behind it.
+pub(crate) const DONE_TEXT: egui::Color32 = egui::Color32::from_rgb(0x2e, 0x7d, 0x32);
+/// A cleanup section heading before it is done.
+pub(crate) const HEADING_TEXT: egui::Color32 = egui::Color32::from_rgb(0x1a, 0x1a, 0x1a);
+/// The plain-language hint under a section heading.
+pub(crate) const HINT_TEXT: egui::Color32 = egui::Color32::from_rgb(0x5f, 0x5f, 0x5f);
+/// The working-mesh stats line above the cleanup controls.
+pub(crate) const STATS_TEXT: egui::Color32 = egui::Color32::from_rgb(0x55, 0x55, 0x55);
+/// The small labels between controls — "from tip", "mm above cut".
+pub(crate) const CONTROL_TEXT: egui::Color32 = egui::Color32::from_rgb(0x33, 0x33, 0x33);
+
+/// A section heading's point size.
+const HEADING_SIZE: f32 = 15.0;
+/// A hint's point size.
+const HINT_SIZE: f32 = 13.0;
+/// The stepper's text field.
+const FIELD_WIDTH: f32 = 56.0;
+/// Between a heading, its hint, and its controls.
+const SECTION_SPACING: f32 = 4.0;
+
+/// Centred, wrapping text.
+///
+/// ⚠ Neither `ui.vertical_centered` nor a plain [`wrapped_label`] centres a
+/// *wrapped* paragraph. The first centres the widget, which already spans the
+/// panel; the second left-aligns every line inside it. Only the layout job's own
+/// `halign` centres the lines, which is why this builds one by hand.
+pub(crate) fn centered_wrapped(
+    ui: &mut egui::Ui,
+    size: f32,
+    color: egui::Color32,
+    text: impl Into<String>,
+) {
+    let mut job = egui::text::LayoutJob::simple(
+        text.into(),
+        egui::FontId::proportional(size),
+        color,
+        ui.available_width(),
+    );
+    job.halign = egui::Align::Center;
+    ui.add(egui::Label::new(job));
+}
+
+/// One numbered sub-step of step 2's cleanup flow: a sequence heading
+/// ("First — …", "Then — …"), a one-line hint, then its controls.
+///
+/// Laid out top to bottom so the page reads as an obvious order rather than a
+/// flat toolbar — the reason the pre-port screen had this as a component at all.
+/// `done` appends a tick and turns the heading green.
+pub(crate) fn cleanup_section(
+    ui: &mut egui::Ui,
+    heading: &str,
+    hint: &str,
+    done: bool,
+    add: impl FnOnce(&mut egui::Ui),
+) {
+    let (text, color) = if done {
+        (format!("{heading}   ✓"), DONE_TEXT)
+    } else {
+        (heading.to_string(), HEADING_TEXT)
+    };
+    ui.add(egui::Label::new(
+        egui::RichText::new(text)
+            .size(HEADING_SIZE)
+            .strong()
+            .color(color),
+    ));
+    ui.add_space(SECTION_SPACING);
+    if !hint.is_empty() {
+        centered_wrapped(ui, HINT_SIZE, HINT_TEXT, hint);
+        ui.add_space(SECTION_SPACING);
+    }
+    add(ui);
+}
+
+/// A numeric stepper: `−`, a text field, `+`.
+///
+/// ⚠ Deliberately not a `DragValue` or a spinner. Both step on the mouse wheel,
+/// which fights the scrolling panel this sits in — the pre-port widget was hand-
+/// built to avoid exactly that. Typing does not commit; Enter, the buttons and
+/// focus-out do. [`StepBoxState`] holds all four of those rules.
+pub(crate) fn step_box(
+    ui: &mut egui::Ui,
+    state: &mut StepBoxState,
+    (min, max): (i32, i32),
+    enabled: bool,
+) {
+    // The committed value is read when an action button is clicked, not here:
+    // nothing in step 2 re-meshes on a field edit, so the commit results go
+    // unused on purpose.
+    if ui
+        .add_enabled(enabled && state.value() > min, egui::Button::new("−"))
+        .clicked()
+    {
+        let _ = state.step(-1, min, max);
+    }
+    let field = ui.add_enabled(
+        enabled,
+        egui::TextEdit::singleline(state.text_mut())
+            .desired_width(FIELD_WIDTH)
+            .horizontal_align(egui::Align::Center),
+    );
+    if field.changed() {
+        state.on_typed();
+    }
+    // Enter also drops focus on a single-line field, so this is both commit
+    // paths at once.
+    if field.lost_focus() {
+        let _ = state.commit(min, max);
+    }
+    if ui
+        .add_enabled(enabled && state.value() < max, egui::Button::new("+"))
+        .clicked()
+    {
+        let _ = state.step(1, min, max);
+    }
 }
 
 /// A rounded, filled card — the panel-within-a-panel the summaries sit in.

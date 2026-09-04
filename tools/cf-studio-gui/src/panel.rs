@@ -2,21 +2,32 @@
 //!
 //! The panel decides nothing. It renders from the lib's plain functions
 //! ([`step_rows`], [`nav_state`], the `format_*` family) and turns clicks into
-//! an [`Intent`], which [`apply_intent`] executes in one place. Keeping the
-//! egui closure free of state transitions is what makes the transitions
-//! reviewable — and testable, since they are all methods on `Studio`.
+//! an [`Intent`] or an [`EditIntent`], executed by [`apply_intent`] and
+//! [`apply_edit_intent`] respectively. Keeping the egui closure free of state
+//! transitions is what makes the transitions reviewable — and testable, since
+//! they are all methods on `Studio` or plain functions over an `EditSession`.
+//!
+//! ⚠ The two intent types are **not** an accident of growth. Executing an
+//! [`EditIntent`] borrows [`ScanEdit`] mutably, which marks it changed and
+//! rebuilds a 200 000-face mesh; Back and Next must not take that path. See
+//! [`Acted`].
 
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
 use cf_studio_core::Step;
 use cf_studio_gui::{
-    format_pour_active, format_pour_plan, nav_state, pour_countdown, print_step_summary, step_rows,
+    format_pour_active, format_pour_plan, format_scan_stats, nav_state, pour_countdown,
+    print_step_summary, step_rows,
 };
 
 use crate::dialogs::{DialogKind, PendingDialog};
+use crate::edit::{EditControls, EditIntent, FloorShape, apply_edit_intent};
+use crate::scan::ScanEdit;
 use crate::state::Studio;
 use crate::widgets::{
-    ACTIVE_TEXT, ERROR_TEXT, GOOD_FILL, GOOD_TEXT, WARN_TEXT, card, wrapped_colored, wrapped_label,
+    ACTIVE_TEXT, CONTROL_TEXT, DONE_TEXT, ERROR_TEXT, GOOD_FILL, GOOD_TEXT, HEADING_TEXT,
+    HINT_TEXT, STATS_TEXT, WARN_TEXT, card, centered_wrapped, cleanup_section, step_box,
+    wrapped_colored, wrapped_label,
 };
 
 /// The checklist column's width.
@@ -26,6 +37,32 @@ const BODY_WIDTH: f32 = 420.0;
 /// What the wizard's panels cover at any window width. The rest of the window
 /// is the 3D view, which is why `main.rs` sizes the window against this.
 pub(crate) const PANEL_WIDTH: f32 = CHECKLIST_WIDTH + BODY_WIDTH;
+
+/// The step status line, a touch larger than body text so it reads as a result
+/// rather than as more instructions.
+const MESSAGE_SIZE: f32 = 17.0;
+/// Between step 2's cleanup sections.
+const SECTION_GAP: f32 = 14.0;
+/// The working-mesh stats line's point size.
+const STATS_SIZE: f32 = 15.0;
+/// The "Rebuild the trimmed floor" sub-heading.
+const SUBHEADING_SIZE: f32 = 13.0;
+/// Its hint, a step smaller than a section's.
+const SUBHINT_SIZE: f32 = 12.0;
+
+/// What the body reported this frame.
+///
+/// The two are separate types because executing an [`EditIntent`] borrows
+/// [`ScanEdit`] mutably, and that marks it changed — which costs a full rebuild
+/// of a 200 000-face mesh. Routing Back and Next through the same call would
+/// charge every navigation click for it. See the warning on [`ScanEdit`].
+#[derive(Default)]
+struct Acted {
+    /// A navigation or dialog action.
+    nav: Option<Intent>,
+    /// A step-2 cleanup op.
+    edit: Option<EditIntent>,
+}
 
 /// What the user asked for this frame. At most one — a frame cannot hold two
 /// clicks, and modelling it as one value stops a "both fired" case existing.
@@ -50,9 +87,11 @@ pub(crate) fn wizard_screen(
     mut contexts: EguiContexts,
     mut studio: ResMut<Studio>,
     mut dialog: ResMut<PendingDialog>,
+    mut scan: ResMut<ScanEdit>,
+    mut controls: ResMut<EditControls>,
 ) -> bevy::ecs::error::Result {
     let ctx = contexts.ctx_mut()?;
-    let mut intent = None;
+    let mut acted = Acted::default();
 
     egui::SidePanel::left("checklist")
         .resizable(false)
@@ -60,7 +99,7 @@ pub(crate) fn wizard_screen(
         .show(ctx, |ui| draw_checklist(ui, &studio));
 
     egui::TopBottomPanel::bottom("nav").show(ctx, |ui| {
-        intent = draw_nav(ui, &studio, &dialog).or(intent);
+        acted.nav = draw_nav(ui, &studio, &dialog).or(acted.nav);
     });
 
     egui::SidePanel::right("body")
@@ -68,12 +107,21 @@ pub(crate) fn wizard_screen(
         .exact_width(BODY_WIDTH)
         .show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-                intent = draw_body(ui, &studio, &dialog).or(intent);
+                // ⚠ `&scan` — an immutable borrow. Reaching for `&mut` here, to
+                // save passing it twice, would mark the resource changed on
+                // every frame the wizard drew and re-mesh the scan 60 times a
+                // second.
+                let drawn = draw_body(ui, &studio, &dialog, &scan, &mut controls);
+                acted.nav = drawn.nav.or(acted.nav);
+                acted.edit = drawn.edit.or(acted.edit);
             });
         });
 
-    if let Some(intent) = intent {
+    if let Some(intent) = acted.nav {
         apply_intent(intent, &mut studio, &mut dialog);
+    }
+    if let Some(intent) = acted.edit {
+        apply_edit_intent(intent, &mut scan, &mut studio, &mut controls);
     }
     Ok(())
 }
@@ -133,8 +181,19 @@ fn draw_nav(ui: &mut egui::Ui, studio: &Studio, dialog: &PendingDialog) -> Optio
     intent
 }
 
-/// The body for the viewed step, plus the step message beneath it.
-fn draw_body(ui: &mut egui::Ui, studio: &Studio, dialog: &PendingDialog) -> Option<Intent> {
+/// The step message, then the body for the viewed step.
+///
+/// ⚠ The message sits **above** the body, where the pre-port screen put it —
+/// *"so it's always visible, not buried at the bottom of a long, scrolling
+/// step."* Step 2 is that long step, and it is the one whose ops the message
+/// reports on, so the note's own reason applies here first.
+fn draw_body(
+    ui: &mut egui::Ui,
+    studio: &Studio,
+    dialog: &PendingDialog,
+    scan: &ScanEdit,
+    controls: &mut EditControls,
+) -> Acted {
     let viewed = studio.cursor.viewed();
     ui.add_space(8.0);
     ui.heading(format!(
@@ -145,26 +204,225 @@ fn draw_body(ui: &mut egui::Ui, studio: &Studio, dialog: &PendingDialog) -> Opti
     ));
     ui.separator();
 
+    if let Some(message) = &studio.message {
+        ui.add_space(8.0);
+        // Centred, larger than body text, and green when it went well — the
+        // pre-port status line's own styling. #870 rendered it as a plain label,
+        // which lost the success/failure colour split entirely.
+        let (text, color) = match message {
+            Ok(text) => (text, DONE_TEXT),
+            Err(text) => (text, ERROR_TEXT),
+        };
+        centered_wrapped(ui, MESSAGE_SIZE, color, text.clone());
+    }
+
     // ⚠ Exhaustive on purpose, with no catch-all arm. A `_ =>` (or a list of
     // "not ported yet" steps) would silently render one step's screen for a
     // step added later; this way the compiler names the new arm.
-    let intent = match viewed {
-        Step::AddScan => draw_add_scan(ui, studio, dialog),
-        Step::CleanScan | Step::ShapePiece | Step::DesignLayers | Step::MakeMolds => {
-            draw_porting_notice(ui);
-            None
-        }
-        Step::Print => draw_print(ui, studio, dialog),
-        Step::Pour => draw_pour(ui, studio),
-    };
-
-    if let Some(message) = &studio.message {
-        ui.add_space(12.0);
-        match message {
-            Ok(text) => wrapped_label(ui, text.clone()),
-            Err(text) => wrapped_colored(ui, ERROR_TEXT, text.clone()),
-        }
+    let mut acted = Acted::default();
+    match viewed {
+        Step::AddScan => acted.nav = draw_add_scan(ui, studio, dialog),
+        Step::CleanScan => acted.edit = draw_clean_scan(ui, studio, dialog, scan, controls),
+        Step::ShapePiece | Step::DesignLayers | Step::MakeMolds => draw_porting_notice(ui),
+        Step::Print => acted.nav = draw_print(ui, studio, dialog),
+        Step::Pour => acted.nav = draw_pour(ui, studio),
     }
+    acted
+}
+
+/// Step 2 — clean the scan, live, in the same viewport.
+///
+/// Laid out as an ordered sequence (First → Then → Next) so the cleanup order
+/// is obvious, with later sections revealed only as earlier ones complete.
+fn draw_clean_scan(
+    ui: &mut egui::Ui,
+    studio: &Studio,
+    dialog: &PendingDialog,
+    scan: &ScanEdit,
+    controls: &mut EditControls,
+) -> Option<EditIntent> {
+    ui.add_space(8.0);
+    let Some(active) = scan.active() else {
+        wrapped_label(ui, "Add a scan in step 1 first.");
+        return None;
+    };
+    let session = active.session();
+    let has_centerline = session.has_centerline();
+    // Reconstruct is offered once a floor trim has been applied *and* the
+    // centerline it was cut along still exists.
+    let has_floor_trim = session.reconstruct_available() && has_centerline;
+    let ready = accepting_actions(studio, dialog);
+    let mut intent = None;
+
+    centered_wrapped(
+        ui,
+        STATS_SIZE,
+        STATS_TEXT,
+        format_scan_stats(session.face_count(), session.vertex_count()),
+    );
+    ui.add_space(SECTION_GAP);
+
+    cleanup_section(
+        ui,
+        "First — tidy the scan",
+        "Merge duplicate points so the rest works. A very heavy scan can be \
+         lightened, too.",
+        false,
+        |ui| {
+            ui.vertical_centered(|ui| {
+                if ui
+                    .add_enabled(ready, egui::Button::new("Weld points"))
+                    .clicked()
+                {
+                    intent = Some(EditIntent::Weld);
+                }
+            });
+        },
+    );
+    ui.add_space(SECTION_GAP);
+
+    cleanup_section(
+        ui,
+        "Then — stand it upright",
+        "Finds the open end and stands the scan vertical. Needed before you can \
+         save.",
+        has_centerline,
+        |ui| {
+            let label = if has_centerline {
+                "Find floor again"
+            } else {
+                "Find floor"
+            };
+            ui.vertical_centered(|ui| {
+                if ui.add_enabled(ready, egui::Button::new(label)).clicked() {
+                    intent = Some(EditIntent::FindFloor);
+                }
+            });
+        },
+    );
+
+    // Trimming is measured along the centerline, so there is nothing to offer
+    // until one exists.
+    if has_centerline {
+        ui.add_space(SECTION_GAP);
+        cleanup_section(
+            ui,
+            "Next — trim the open end",
+            "Trim the ragged open edge. Removing about 10 mm from the floor is a \
+             good start.",
+            false,
+            |ui| {
+                intent = draw_trim_row(ui, controls, ready).or(intent);
+                // Nested inside the trim section, as it was pre-port: it undoes
+                // part of the cut made directly above it, and reading as a
+                // sibling section would make it look like a third way to trim.
+                if has_floor_trim {
+                    ui.add_space(SECTION_GAP);
+                    intent = draw_reconstruct_row(ui, controls, ready).or(intent);
+                }
+            },
+        );
+    }
+
+    // Secondary, and centred like the rest of the section controls.
+    ui.add_space(SECTION_GAP);
+    ui.vertical_centered(|ui| {
+        if ui
+            .add_enabled(ready, egui::Button::new("Start over"))
+            .clicked()
+        {
+            intent = Some(EditIntent::Reset);
+        }
+    });
+
+    ui.add_space(SECTION_GAP);
+    centered_wrapped(
+        ui,
+        SUBHINT_SIZE,
+        HINT_TEXT,
+        "Simplify and Save arrive in the next two builds of this screen.",
+    );
+    intent
+}
+
+/// The trim row: a stepper for each end, then Apply trim.
+///
+/// ⚠ Wrapping, not a plain row. The two steppers, their four labels and the
+/// button come to more than the body column is wide, so a fixed horizontal
+/// layout would push the button off the panel at every window size.
+fn draw_trim_row(
+    ui: &mut egui::Ui,
+    controls: &mut EditControls,
+    ready: bool,
+) -> Option<EditIntent> {
+    let mut intent = None;
+    let range = controls.trim_range();
+    ui.horizontal_wrapped(|ui| {
+        ui.colored_label(CONTROL_TEXT, "from tip");
+        step_box(ui, &mut controls.tip_mm, range, ready);
+        ui.colored_label(CONTROL_TEXT, "mm    from floor");
+        step_box(ui, &mut controls.floor_mm, range, ready);
+        ui.colored_label(CONTROL_TEXT, "mm");
+        if ui
+            .add_enabled(ready, egui::Button::new("Apply trim"))
+            .clicked()
+        {
+            intent = Some(EditIntent::ApplyTrim {
+                tip_mm: controls.tip_mm.value(),
+                floor_mm: controls.floor_mm.value(),
+            });
+        }
+    });
+    intent
+}
+
+/// Re-cap the chopped floor. Titled so it is clear this rebuilds the floor the
+/// trim above just took off, rather than being another way to trim.
+fn draw_reconstruct_row(
+    ui: &mut egui::Ui,
+    controls: &mut EditControls,
+    ready: bool,
+) -> Option<EditIntent> {
+    let mut intent = None;
+    ui.add(egui::Label::new(
+        egui::RichText::new("Rebuild the trimmed floor")
+            .size(SUBHEADING_SIZE)
+            .strong()
+            .color(HEADING_TEXT),
+    ));
+    ui.add_space(4.0);
+    centered_wrapped(
+        ui,
+        SUBHINT_SIZE,
+        HINT_TEXT,
+        "Close the open end back up with a clean floor, rebuilt from the scan's \
+         shape just above the cut.",
+    );
+    ui.add_space(4.0);
+
+    let range = controls.reference_range();
+    ui.horizontal_wrapped(|ui| {
+        ui.colored_label(CONTROL_TEXT, "Shape");
+        egui::ComboBox::from_id_salt("rebuilt-floor-shape")
+            .selected_text(controls.shape.label())
+            .show_ui(ui, |ui| {
+                for shape in FloorShape::ALL {
+                    ui.selectable_value(&mut controls.shape, shape, shape.label());
+                }
+            });
+        ui.colored_label(CONTROL_TEXT, "from");
+        step_box(ui, &mut controls.reference_mm, range, ready);
+        ui.colored_label(CONTROL_TEXT, "mm above cut");
+        if ui
+            .add_enabled(ready, egui::Button::new("Reconstruct floor"))
+            .clicked()
+        {
+            intent = Some(EditIntent::ReconstructFloor {
+                shape: controls.shape,
+                reference_mm: controls.reference_mm.value(),
+            });
+        }
+    });
     intent
 }
 
@@ -200,7 +458,7 @@ fn draw_add_scan(ui: &mut egui::Ui, studio: &Studio, dialog: &PendingDialog) -> 
     intent
 }
 
-/// Steps 2–5 during the Slint→Bevy port. Says what is missing and that the work
+/// Steps 3–5 during the Slint→Bevy port. Says what is missing and that the work
 /// is not lost, rather than showing an empty screen that reads as a bug.
 fn draw_porting_notice(ui: &mut egui::Ui) {
     ui.add_space(8.0);
@@ -208,7 +466,7 @@ fn draw_porting_notice(ui: &mut egui::Ui) {
         ui,
         "This step is being rebuilt on the new interface and isn't available in \
          this build yet. Its logic is unchanged — only the screen is being \
-         redrawn. Steps 6 and 7 work today.",
+         redrawn. Steps 1, 2, 6 and 7 work today.",
     );
 }
 

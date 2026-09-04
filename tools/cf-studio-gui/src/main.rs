@@ -5,6 +5,7 @@
 //! are.
 
 mod dialogs;
+mod edit;
 mod input;
 mod jobs;
 mod panel;

@@ -10,11 +10,12 @@ use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 use cf_bevy_common::camera::OrbitCameraPlugin;
 
 use crate::dialogs::PendingDialog;
+use crate::edit::EditControls;
 use crate::input::arbitrate_pointer_over_egui;
 use crate::jobs::{PrintJob, poll_dialogs, poll_print_job};
 use crate::panel::wizard_screen;
 use crate::scan::ScanEdit;
-use crate::scene::{fit_viewport_to_free_space, setup_scene, show_scan};
+use crate::scene::{draw_centerline, fit_viewport_to_free_space, setup_scene, show_scan};
 use crate::state::{Screen, Studio};
 use crate::waiver::waiver_screen;
 
@@ -30,7 +31,19 @@ impl Plugin for StudioPlugin {
             .init_resource::<PendingDialog>()
             .init_resource::<PrintJob>()
             .init_resource::<ScanEdit>()
+            .init_resource::<EditControls>()
             .insert_resource(ClearColor(BACKGROUND))
+            // The centerline runs *inside* the scan, so at the default
+            // `depth_bias` of 0 it is hidden by the surface it describes and the
+            // overlay is invisible exactly when it matters. −1 draws it in
+            // front, matching the pre-port viewer's `depth_compare: Always`.
+            .insert_gizmo_config(
+                DefaultGizmoConfigGroup,
+                GizmoConfig {
+                    depth_bias: -1.0,
+                    ..default()
+                },
+            )
             .add_plugins(OrbitCameraPlugin)
             .add_systems(Startup, setup_scene)
             .add_systems(
@@ -53,6 +66,9 @@ impl Plugin for StudioPlugin {
                     show_scan
                         .after(poll_dialogs)
                         .run_if(resource_changed::<ScanEdit>),
+                    // Immediate mode: gizmos are re-emitted every frame, so
+                    // this one is NOT gated on the resource changing.
+                    draw_centerline,
                 ),
             );
     }
