@@ -680,7 +680,6 @@ mod tests {
         DesignDraft, LayerDraft, MoldOutputs, PlugDraft, PourPlan, PourStep, PrepInput, Project,
         RidgeOptions, ScanInput,
     };
-    use egui_kittest::Harness;
 
     use super::*;
     use crate::edit::tests::open_tube;
@@ -771,6 +770,7 @@ mod tests {
     /// `assert_eq!`. Fit alone passes an empty screen.
     fn controls_in_column(mut body: impl FnMut(&mut egui::Ui)) -> Vec<String> {
         use egui::accesskit::Role;
+        use egui_kittest::Harness;
         use egui_kittest::kittest::NodeT;
 
         let column = std::cell::Cell::new(egui::Rect::NOTHING);
