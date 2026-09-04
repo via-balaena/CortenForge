@@ -281,6 +281,21 @@ endsolid t
             scene[0], egui[0],
             "egui must not sit on the camera whose viewport is resized"
         );
+
+        // ⚠ Both of these were live mutants: dropping either field still
+        // compiles, still passes the assertions above, and still ruins the
+        // window. `order` back to 0 leaves the two cameras' sequence undefined;
+        // `clear_color` back to the default makes the UI camera clear the whole
+        // target AFTER the scene drew into it, erasing the 3D view outright.
+        let ui = app.world().get::<Camera>(egui[0]);
+        assert!(ui.is_some(), "the context camera carries a Camera");
+        if let Some(ui) = ui {
+            assert_eq!(ui.order, 1, "egui renders after the scene, not before it");
+            assert!(
+                matches!(ui.clear_color, ClearColorConfig::None),
+                "the 3D camera owns the clear; a second one would wipe the scene"
+            );
+        }
     }
 
     /// ★★★ The invariant the whole intent split exists to protect: a NEW scan
