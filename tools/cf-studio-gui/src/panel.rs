@@ -798,9 +798,12 @@ mod tests {
             .filter_map(|node| {
                 let widget = node.accesskit_node();
                 let name = match widget.role() {
-                    Role::Button => widget.label()?,
-                    // A stepper's field and the shape picker carry no label.
-                    role @ (Role::TextInput | Role::ComboBox) => format!("{role:?}"),
+                    role @ (Role::Button | Role::TextInput | Role::ComboBox) => widget
+                        .label()
+                        // ⚠ Not `?`. A stepper's field, the shape picker and a
+                        // text-free button report no label; skipping those lets
+                        // the very control this gate is for slip past both halves.
+                        .unwrap_or_else(|| format!("{role:?}")),
                     _ => return None,
                 };
                 let rect = node.rect();
