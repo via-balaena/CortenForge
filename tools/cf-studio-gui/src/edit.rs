@@ -536,9 +536,10 @@ endsolid t
     /// A welded square tube along +Z, open at both ends and [`TUBE_HEIGHT_M`]
     /// tall.
     ///
-    /// Two boundary loops with a spine between them is the least a scan needs
-    /// for `detect_caps` + `level_to_floor` to trace a centerline — the state
-    /// the cube fixture deliberately cannot reach.
+    /// Two open boundary loops with a spine between them is what `detect_caps`
+    /// and `level_to_floor` trace a centerline from. The cube fixture is
+    /// closed, so it can never have one — which is exactly what makes it the
+    /// negative case below.
     fn open_tube() -> mesh_types::IndexedMesh {
         use mesh_types::Point3;
 
