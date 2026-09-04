@@ -120,18 +120,12 @@ pub(crate) fn wizard_screen(
         acted.nav = draw_nav(ui, &studio, &dialog).or(acted.nav);
     });
 
-    egui::SidePanel::right("body")
-        .resizable(false)
-        .exact_width(BODY_WIDTH)
-        .show(ctx, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                // ⚠ `&scan` — an immutable borrow. Reaching for `&mut` here, to
-                // save passing it twice, would mark the resource changed on
-                // every frame the wizard drew and re-mesh the scan 60 times a
-                // second.
-                acted.merge(draw_body(ui, &studio, &dialog, &scan, &mut controls));
-            });
-        });
+    body_column(ctx, |ui| {
+        // ⚠ `&scan` — an immutable borrow. Reaching for `&mut` here, to save
+        // passing it twice, would mark the resource changed on every frame the
+        // wizard drew and re-mesh the scan 60 times a second.
+        acted.merge(draw_body(ui, &studio, &dialog, &scan, &mut controls));
+    });
 
     if let Some(intent) = acted.nav {
         apply_intent(intent, &mut studio, &mut dialog);
@@ -144,6 +138,19 @@ pub(crate) fn wizard_screen(
         start_simplify(target_faces, &scan, &mut studio, &mut job);
     }
     Ok(())
+}
+
+/// The column every step body is laid out in.
+///
+/// ⚠ Extracted so the layout gates lay out in *this*, not in a copy of it. A
+/// test that rebuilt the panel would agree with itself while the app drifted.
+fn body_column(ctx: &egui::Context, add: impl FnOnce(&mut egui::Ui)) {
+    egui::SidePanel::right("body")
+        .resizable(false)
+        .exact_width(BODY_WIDTH)
+        .show(ctx, |ui| {
+            egui::ScrollArea::vertical().show(ui, add);
+        });
 }
 
 /// The seven-step progress list. `✔`/`○` is real completion; the arrow marks
@@ -673,6 +680,7 @@ mod tests {
         DesignDraft, LayerDraft, MoldOutputs, PlugDraft, PourPlan, PourStep, PrepInput, Project,
         RidgeOptions, ScanInput,
     };
+    use egui_kittest::Harness;
 
     use super::*;
     use crate::edit::tests::open_tube;
@@ -750,8 +758,9 @@ mod tests {
     /// A trim the open tube is long enough to take from either end.
     const FIXTURE_TRIM_MM: i32 = 5;
 
-    /// Lay `body` out in the body column and name the controls on it, in layout
-    /// order — failing if any of them sits outside the column.
+    /// Lay `body` out in [`body_column`] — the column the wizard builds — and
+    /// name the controls on it, in layout order, failing if any of them sits
+    /// outside it.
     ///
     /// ⚠ Accessibility rects, not painted shapes: egui culls what overflows,
     /// so the shapes cannot show it. This rect is the widget's real position
@@ -762,15 +771,16 @@ mod tests {
     /// `assert_eq!`. Fit alone passes an empty screen.
     fn controls_in_column(mut body: impl FnMut(&mut egui::Ui)) -> Vec<String> {
         use egui::accesskit::Role;
-        use egui_kittest::Harness;
         use egui_kittest::kittest::NodeT;
 
         let column = std::cell::Cell::new(egui::Rect::NOTHING);
         let mut harness = Harness::builder()
             .with_size(egui::Vec2::new(BODY_WIDTH, COLUMN_HEIGHT))
-            .build_ui(|ui| {
-                column.set(ui.max_rect());
-                body(ui);
+            .build(|ctx| {
+                body_column(ctx, |ui| {
+                    column.set(ui.max_rect());
+                    body(ui);
+                });
             });
         harness.run();
 
@@ -778,7 +788,7 @@ mod tests {
         assert_eq!(
             column.width(),
             COLUMN_WIDTH,
-            "the harness must lay out in the width the real column has"
+            "the column #878 was measured in"
         );
         harness
             .root()
