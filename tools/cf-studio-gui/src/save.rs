@@ -330,6 +330,28 @@ pub(crate) mod tests {
         });
         settle(&mut studio, Ok("Save cancelled.".to_owned()));
         assert!(studio.pending_save.is_none(), "a save that was cancelled");
+
+        // No scan on the project at all, through both entry points. The control
+        // is not offered in this state, so these are the second guard — but a
+        // second guard that returned without settling would wedge the app just
+        // as hard as no guard at all.
+        studio.project = Project::new("no scan recorded");
+        for start in [
+            &save_to_default as &dyn Fn(&ScanEdit, &mut Studio, usize),
+            &|scan, studio, smoothing| save_into(scan, studio, dir.clone(), smoothing),
+        ] {
+            studio.pending_save = Some(PendingSave::ChoosingFolder { smoothing: 0 });
+            start(&scan, &mut studio, 0);
+            assert!(
+                studio.pending_save.is_none(),
+                "a save with no scan to write"
+            );
+            assert!(
+                matches!(&studio.message, Some(Err(text)) if text.contains("step 1")),
+                "and it says which step is missing: {:?}",
+                studio.message
+            );
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
