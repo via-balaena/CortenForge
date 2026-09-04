@@ -410,9 +410,10 @@ fn draw_clean_scan(
 
 /// The save row: how much to smooth, then the button that writes both files.
 ///
-/// ⚠ Stacked for [`draw_trim_row`]'s reason. As one row the label, stepper and
-/// a 17-character button do not fit the 404 px column, and egui culls the
-/// overflow rather than wrapping it.
+/// ⚠ One row, as it was pre-port — *not* stacked like [`draw_trim_row`].
+/// Measured, because that row's overflow makes stacking look like the safe
+/// default: this one reaches 309 px of the 404 px column, where the trim row
+/// reached 492. Stacking it would be layout guessed rather than measured.
 fn draw_save_row(ui: &mut egui::Ui, controls: &mut EditControls, ready: bool) -> Option<usize> {
     let mut clicked = None;
     ui.vertical_centered(|ui| {
@@ -425,14 +426,13 @@ fn draw_save_row(ui: &mut egui::Ui, controls: &mut EditControls, ready: bool) ->
                 SMOOTHING_STEP,
                 ready,
             );
+            if ui
+                .add_enabled(ready, egui::Button::new("Save cleaned scan"))
+                .clicked()
+            {
+                clicked = Some(controls.smoothing_iters());
+            }
         });
-        ui.add_space(ROW_GAP);
-        if ui
-            .add_enabled(ready, egui::Button::new("Save cleaned scan"))
-            .clicked()
-        {
-            clicked = Some(controls.smoothing_iters());
-        }
     });
     clicked
 }

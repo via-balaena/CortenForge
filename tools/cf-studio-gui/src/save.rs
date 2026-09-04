@@ -3,10 +3,11 @@
 //!
 //! ⚠ Synchronous, unlike Simplify — measured, not inherited. On the
 //! 200 000-face `base_mold` scan a save costs 87 ms at smoothing 0, 109 ms at
-//! the default 8, and 141 ms after a floor trim: the same order as `weld`
-//! (68 ms) and `detect_caps` (56 ms), which step 2 already runs on the main
-//! thread. So there is no task to spawn, no poller, and no second `busy` path.
-//! The pre-port comment calling this "the save freeze" was wrong.
+//! the default 8, and 147–184 ms through this path once the scan is trimmed
+//! and its floor rebuilt: the same order as `weld` (68 ms) and `detect_caps`
+//! (56 ms), which step 2 already runs on the main thread. So there is no task
+//! to spawn, no poller, and no second `busy` path. The pre-port comment
+//! calling this "the save freeze" was wrong.
 
 use std::path::{Path, PathBuf};
 
