@@ -25,8 +25,8 @@ use crate::scan::ScanEdit;
 use crate::state::Studio;
 use crate::widgets::{
     ACTIVE_TEXT, CONTROL_TEXT, DONE_TEXT, ERROR_TEXT, GOOD_FILL, GOOD_TEXT, HEADING_TEXT,
-    HINT_TEXT, STATS_TEXT, WARN_TEXT, card, centered_wrapped, cleanup_section, step_box,
-    wrapped_colored, wrapped_label,
+    HINT_TEXT, STATS_TEXT, WARN_TEXT, card, centered_wrapped, cleanup_section, field_grid,
+    step_box, wrapped_colored, wrapped_label,
 };
 
 /// The checklist column's width.
@@ -385,18 +385,13 @@ fn draw_tidy_row(ui: &mut egui::Ui, controls: &mut EditControls, ready: bool) ->
 
 /// The trim controls: a stepper for each end, then Apply trim.
 ///
-/// ⚠⚠ Stacked, and it must stay stacked. As one wrapped row these measured
-/// 492 px in a 404 px column, and `horizontal_wrapped` does not save them:
-/// each label-plus-field is one non-wrapping group, so the row overflows and
-/// egui CULLS the trailing widget instead of moving it down — "Apply trim" was
-/// simply absent, with no scrollbar and no error.
+/// ⚠⚠ Stacked, and it must stay stacked. As one row these measured 492 px in a
+/// 404 px column, and `horizontal_wrapped` does not save them: each
+/// label-plus-field is one non-wrapping group, so the row overflows and egui
+/// CULLS the trailing widget — "Apply trim" was simply absent.
 ///
-/// ⚠⚠⚠ **No automated test guards this.** A `Ui` reports the space it was
-/// given, so a filling layout answers the column width however far its contents
-/// overrun (measured: 784 in an 800 px column); and the shapes are culled, so
-/// their bounds do not exceed the panel either. Both metrics were written and
-/// both passed against the real defect. The oracle here is a person or
-/// `egui_kittest`, which can ask whether the button exists.
+/// ⚠ Nothing automated guards this. A `Ui` reports the space it was given, and
+/// an overflowing shape is culled, so neither can see it. Check by eye.
 fn draw_trim_row(
     ui: &mut egui::Ui,
     controls: &mut EditControls,
@@ -405,15 +400,15 @@ fn draw_trim_row(
     let mut intent = None;
     let range = controls.trim_range();
     ui.vertical_centered(|ui| {
-        ui.horizontal(|ui| {
+        field_grid(ui, "trim-fields", |ui| {
             ui.colored_label(CONTROL_TEXT, "from tip");
             step_box(ui, &mut controls.tip_mm, range, ready);
             ui.colored_label(CONTROL_TEXT, "mm");
-        });
-        ui.horizontal(|ui| {
+            ui.end_row();
             ui.colored_label(CONTROL_TEXT, "from floor");
             step_box(ui, &mut controls.floor_mm, range, ready);
             ui.colored_label(CONTROL_TEXT, "mm");
+            ui.end_row();
         });
         ui.add_space(ROW_GAP);
         if ui
@@ -456,7 +451,7 @@ fn draw_reconstruct_row(
     let range = controls.reference_range();
     // Stacked for the same reason as the trim controls above.
     ui.vertical_centered(|ui| {
-        ui.horizontal(|ui| {
+        field_grid(ui, "reconstruct-fields", |ui| {
             ui.colored_label(CONTROL_TEXT, "Shape");
             egui::ComboBox::from_id_salt("rebuilt-floor-shape")
                 .width(SHAPE_PICKER_WIDTH)
@@ -466,11 +461,11 @@ fn draw_reconstruct_row(
                         ui.selectable_value(&mut controls.shape, shape, shape.label());
                     }
                 });
-        });
-        ui.horizontal(|ui| {
+            ui.end_row();
             ui.colored_label(CONTROL_TEXT, "from");
             step_box(ui, &mut controls.reference_mm, range, ready);
             ui.colored_label(CONTROL_TEXT, "mm above cut");
+            ui.end_row();
         });
         ui.add_space(ROW_GAP);
         if ui
@@ -677,7 +672,7 @@ fn apply_intent(intent: Intent, studio: &mut Studio, dialog: &mut PendingDialog)
 mod tests {
     use super::*;
 
-    /// ⚠ Every click on every screen reaches [`wizard_screen`] through this.    /// ⚠ Every click on every screen reaches [`wizard_screen`] through this.
+    /// ⚠ Every click on every screen reaches [`wizard_screen`] through this.
     /// A dropped field does not error — the control just stops working.
     #[test]
     fn merging_lands_the_inner_report_without_dropping_the_outer_one() {
