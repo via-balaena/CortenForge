@@ -508,8 +508,7 @@ endsolid t
             "and the project recorded it: {:?}",
             studio.message
         );
-        // ⚠ Landing it silently is its own failure: step 1's only feedback that
-        // the pick worked is this line.
+        // ⚠ Landing it silently is its own failure.
         assert!(
             matches!(&studio.message, Some(Ok(text)) if !text.is_empty()),
             "and it said so: {:?}",

@@ -33,10 +33,10 @@ const MIN_VIEWPORT_WIDTH: f32 = 220.0;
 
 /// The window the app opens with, and the smallest one it can be dragged to.
 ///
-/// ⚠ Every screen's layout gates sweep exactly these two sizes, so they are
-/// defined here beside the constraints they configure rather than copied into
-/// each test — a floor that drifts from the gates asserting "at every size the
-/// window allows" leaves them measuring a window nobody can make.
+/// ⚠ The waiver's layout gates sweep exactly these, so they are defined here
+/// beside the constraints they configure rather than copied into the test — a
+/// floor that drifted from a gate asserting "at every size the window allows"
+/// would leave it measuring a window nobody can make.
 pub(crate) const OPENING_WINDOW: (f32, f32) = (PANEL_WIDTH + VIEWPORT_WIDTH, 900.0);
 pub(crate) const SMALLEST_WINDOW: (f32, f32) = (PANEL_WIDTH + MIN_VIEWPORT_WIDTH, 850.0);
 

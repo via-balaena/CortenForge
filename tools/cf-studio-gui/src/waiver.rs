@@ -29,7 +29,7 @@ const AGE_GATE: &str = "This software and the objects it helps you create are in
 /// The confirmation checkbox's label — the thing being agreed to.
 const CONFIRM: &str = "I have read and accept these terms, and I assume all risk.";
 
-/// The gate's own width, and the column every gate test lays out in.
+/// The gate's own width.
 const GATE_WIDTH: f32 = 640.0;
 
 /// How the gate was answered.
@@ -141,10 +141,10 @@ mod tests {
     /// ★★ The whole stack, as the app runs it: the Bevy system draws the gate,
     /// a click on the box arms it, and a click on the answer opens the wizard.
     ///
-    /// ⚠ The one thing every other test here cannot reach. `draw_waiver` is
-    /// tested directly and `waiver_screen` is thin routing around it —
-    /// but replacing the whole system with a no-op passed everything, because
-    /// drawing has no effect on the ECS to observe. This observes the drawing.
+    /// ⚠ `draw_waiver` is tested directly and `waiver_screen` is thin routing
+    /// around it — but replacing the whole system with a no-op passed
+    /// everything, because drawing has no effect on the ECS to observe. This
+    /// observes the drawing.
     #[test]
     fn the_gate_runs_as_a_system_and_opens_only_after_both_clicks() {
         let mut app = app_running_the_real_system();
