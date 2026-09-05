@@ -1,8 +1,7 @@
 //! Step 3's field state: how snugly the finished piece fits.
 //!
-//! The unit arithmetic and the ridge gating are `cf_studio_gui`'s, tested
-//! there. This module holds the numbers between frames and hands out the
-//! [`PlugDraft`] a Continue commits.
+//! Holds the numbers between frames and hands out the [`PlugDraft`] a Continue
+//! commits.
 
 use bevy::prelude::*;
 use cf_studio_core::{PlugDraft, RidgeOptions};
@@ -10,9 +9,9 @@ use cf_studio_gui::{StepBoxState, apply_plug};
 
 use crate::state::Studio;
 
-/// The inset field's bounds, in millimetres. Zero is the scan's own surface;
-/// 30 mm is deeper than any piece this casts. Fixed — nothing about the scan
-/// moves them, unlike [`crate::edit::EditControls::trim_range`].
+/// The inset field's bounds, in millimetres, as the pre-port screen had them.
+/// Fixed — nothing about the scan moves them, unlike
+/// [`crate::edit::EditControls::trim_range`].
 const CAVITY_MIN_MM: i32 = 0;
 const CAVITY_MAX_MM: i32 = 30;
 /// The inset the screen opens on, as the pre-port screen did.
@@ -51,8 +50,7 @@ impl ShapeControls {
         let mm = self.cavity_mm.value().clamp(CAVITY_MIN_MM, CAVITY_MAX_MM);
         PlugDraft {
             cavity_inset_m: f64::from(mm) / 1000.0,
-            // The ridge editor is a later PR. Off is the smooth piece, and the
-            // numbers behind the toggle are already the validated canal.
+            // The ridge editor is a later PR; off is the smooth piece.
             ridges: RidgeOptions::default(),
         }
     }
@@ -113,18 +111,18 @@ pub(crate) mod tests {
         let mut controls = ShapeControls::default();
         assert_eq!(
             controls.plug_draft().cavity_inset_m,
-            f64::from(DEFAULT_CAVITY_MM) / 1000.0,
-            "5 mm is 0.005 m, not 5.0"
+            0.005,
+            "the field's 5 mm is 0.005 m"
         );
 
         // ⚠ Typing does not commit, so this reaches `plug_draft` unclamped —
         // the path the clamp exists for.
-        *controls.cavity_mm.text_mut() = (CAVITY_MAX_MM + 900).to_string();
+        *controls.cavity_mm.text_mut() = (CAVITY_MAX_MM + 1).to_string();
         controls.cavity_mm.on_typed();
         assert_eq!(
             controls.plug_draft().cavity_inset_m,
-            f64::from(CAVITY_MAX_MM) / 1000.0,
-            "a number typed past the bound is clamped, not cast"
+            0.030,
+            "one past the bound is clamped to it"
         );
     }
 
@@ -139,7 +137,7 @@ pub(crate) mod tests {
         assert_eq!(studio.cursor.viewed(), Step::DesignLayers, "it moves on");
         assert_eq!(
             studio.project.plug().map(|plug| plug.cavity_inset_m),
-            Some(f64::from(DEFAULT_CAVITY_MM) / 1000.0),
+            Some(0.005),
             "carrying the inset it was handed"
         );
         assert!(

@@ -77,33 +77,32 @@ pub(crate) fn app() -> App {
     app
 }
 
-/// The most frames a screen is given to stop moving. Three is what the
-/// widest screen here needs; the rest is headroom before the assert.
+/// The most frames a screen is given to stop moving before [`settle`] gives up.
 const SETTLE_FRAMES: usize = 8;
 
 /// Run frames until the screen stops moving.
 ///
 /// ⚠ Not a fixed count, because there isn't one. egui sizes a `ScrollArea`
-/// from the pass before, and an `egui::Grid` its columns — a screen holding
-/// both settles on the *third* frame. Two frames put a click 9 px off the
-/// button it named, which reads as "the control does nothing" rather than as a
-/// harness fault.
+/// from the pass before, and an `egui::Grid` its columns, so a screen holding
+/// both is still moving on its second frame. A click taken from that pass
+/// lands beside the button it named, which reads as "the control does nothing"
+/// rather than as a harness fault.
 pub(crate) fn settle(app: &mut App) {
-    let mut last = Vec::new();
+    // ⚠ `None`, not an empty `Vec`. A screen that paints nothing on its first
+    // frame would otherwise read as settled, and the caller would assert
+    // against a blank pass.
+    let mut last = None;
     for frame in 1..=SETTLE_FRAMES {
         app.update();
         let painted = app.world().resource::<Painted>().0.clone();
-        if painted == last {
+        if last.as_ref() == Some(&painted) {
             return;
         }
-        // ⚠ The loop must *converge*, not merely finish: a screen that never
-        // stops moving would hand out a stale position and the click would
-        // silently miss, which is the failure this function exists to remove.
         assert!(
             frame < SETTLE_FRAMES,
             "the screen is still moving after {frame} frames"
         );
-        last = painted;
+        last = Some(painted);
     }
 }
 

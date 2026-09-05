@@ -680,7 +680,7 @@ fn draw_shape_piece(
     );
     ui.add_space(SECTION_GAP);
     ui.vertical_centered(|ui| {
-        field_grid(ui, "shape-fields", |ui| {
+        ui.horizontal(|ui| {
             ui.colored_label(CONTROL_TEXT, "Cavity inset");
             step_box(
                 ui,
@@ -690,7 +690,6 @@ fn draw_shape_piece(
                 ready,
             );
             ui.colored_label(CONTROL_TEXT, "mm");
-            ui.end_row();
         });
         ui.add_space(ROW_GAP);
         if ui
