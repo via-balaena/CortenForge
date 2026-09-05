@@ -27,7 +27,7 @@ use crate::jobs::{SimplifyJob, start_simplify};
 use crate::preview::PlugView;
 use crate::save;
 use crate::scan::ScanEdit;
-use crate::shape::{RidgeFields, SHAPE_STEP, ShapeControls, commit_plug};
+use crate::shape::{RidgeFields, ShapeControls, commit_plug};
 use crate::state::{PendingSave, Studio};
 use crate::widgets::{
     ACTIVE_TEXT, CONTROL_TEXT, DONE_TEXT, ERROR_TEXT, GOOD_FILL, GOOD_TEXT, HEADING_TEXT,
@@ -946,14 +946,18 @@ fn ridge_row(
     ui.end_row();
 }
 
-/// A stepper for one of step 3's fields.
+/// One unit per click of every stepper the wizard draws — the pre-port
+/// `StepBox` had no step property at all.
+const FIELD_STEP: i32 = 1;
+
+/// A stepper for one of the shape or layer fields.
 ///
 /// ⚠ The bounds come off the field, so the screen cannot enforce a limit the
 /// commit does not. Given the wrong ones the field walks past its own maximum
 /// and [`ShapeControls::plug_draft`] quietly clamps it back — the screen
 /// showing one number and the plug carrying another.
 fn bounded_step_box(ui: &mut egui::Ui, field: &mut BoundedField, enabled: bool) {
-    step_box(ui, &mut field.state, field.range, SHAPE_STEP, enabled);
+    step_box(ui, &mut field.state, field.range, FIELD_STEP, enabled);
 }
 
 /// Step 4 — the silicone stack, built outward off the shaped piece.
@@ -980,9 +984,9 @@ fn draw_design_layers(
     // pre-port screen left it live and dropped the click on the floor.
     let removable = design.layers.can_drop();
     for (index, layer) in design.layers.rows_mut().iter_mut().enumerate() {
-        // ⚠ Before every card, not between them, as the ring editor has it. A
-        // `index > 0` here spends a branch on 6 px above the first card, and
-        // three mutations of it survive the suite.
+        // ⚠ Before every card, not between them, as the ring editor has it. An
+        // `index > 0` guard here buys 6 px above the first card and costs a
+        // branch whose every mutation survives the suite.
         ui.add_space(ROW_GAP);
         if draw_layer(ui, index, layer, ready, removable) {
             dropped = Some(index);
