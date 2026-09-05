@@ -1001,10 +1001,7 @@ fn draw_design_layers(
         }
         ui.add_space(ROW_GAP);
         if ui
-            .add_enabled(
-                ready && !design.layers.is_empty(),
-                egui::Button::new("Use this design"),
-            )
+            .add_enabled(ready, egui::Button::new("Use this design"))
             .clicked()
         {
             acted.design = Some(design.layers.drafts());

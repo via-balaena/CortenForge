@@ -906,11 +906,13 @@ const LAYER_THICKNESS_RANGE: (i32, i32) = (1, 100);
 /// Slacker™ softening, as a percentage of the layer's mix.
 const LAYER_SLACKER_RANGE: (i32, i32) = (0, 100);
 
-/// The stack the step-4 screen opens on: the recipe the physically validated
-/// `base_mold` was poured at — a soft, slacker-softened inner layer under two
-/// progressively firmer ones. `(catalog key, thickness mm, slacker %)`.
+/// The stack the step-4 screen opens on, carried over from the pre-port
+/// screen: a soft, slacker-softened inner layer under two progressively firmer
+/// ones. `(catalog key, thickness mm, slacker %)`.
 ///
-/// A starting point, not a prescription; every field is editable, and a
+/// ⚠ The pre-port code called this "≈ the `base_mold` recipe" and that is as
+/// far as it can be checked from here — no `base_mold` design lives in the
+/// repo. A starting point, not a prescription: every field is editable, and a
 /// `.design.toml` replaces the lot.
 const OPENING_STACK: [(&str, i32, i32); 3] = [
     ("ECOFLEX_00_30", 18, 25),
@@ -918,7 +920,8 @@ const OPENING_STACK: [(&str, i32, i32); 3] = [
     ("DRAGON_SKIN_20A", 5, 0),
 ];
 
-/// The silicone a fresh layer starts on, and the thickness it starts at.
+/// What "+ Add layer" adds, in [`OPENING_STACK`]'s units: a middling silicone,
+/// thin, unsoftened.
 const ADDED_LAYER: (&str, i32, i32) = ("DRAGON_SKIN_10A", 5, 0);
 
 /// One entry of the silicone catalog: the key a [`LayerDraft`] carries, and
@@ -927,7 +930,7 @@ const ADDED_LAYER: (&str, i32, i32) = ("DRAGON_SKIN_10A", 5, 0);
 pub struct Silicone {
     /// The SDK's catalog key, e.g. `"ECOFLEX_00_30"`.
     pub key: &'static str,
-    /// The display name, e.g. `"Ecoflex 00-30"`.
+    /// The display name, e.g. `"Ecoflex 00-30 (medium-soft)"`.
     pub name: &'static str,
 }
 
@@ -951,8 +954,8 @@ impl Silicone {
 /// One silicone layer in the step-4 editor, in the integer units the UI edits
 /// (whole millimetres, percent) rather than the SDK's meters and fractions.
 ///
-/// The two fields live **inside the row** on purpose — see the warning on
-/// [`StepBoxState`].
+/// The two stepper fields live **inside the row** on purpose — see the
+/// warning on [`StepBoxState`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LayerRow {
     /// Which silicone this layer is poured in.
@@ -1004,7 +1007,7 @@ pub struct LayerStack {
 }
 
 /// [`OPENING_STACK`], skipping any silicone the catalog no longer carries —
-/// pinned whole by `the_opening_stack_is_the_base_mold_recipe`, which fails
+/// pinned whole by `the_screen_opens_on_the_pre_ports_stack`, which fails
 /// loudly if one goes missing.
 impl Default for LayerStack {
     fn default() -> Self {
@@ -2240,13 +2243,13 @@ visible = true
             .collect()
     }
 
-    /// ★ The whole opening stack, not a length and not a spot check: this is
-    /// the recipe `base_mold` was physically poured at, and `LayerStack`'s
-    /// `filter_map` silently *shortens* the stack for a silicone the catalog
-    /// no longer carries. Asserting the collection is what turns that into a
-    /// failure instead of a two-layer default nobody notices.
+    /// ★ The whole opening stack, not a length and not a spot check:
+    /// `LayerStack`'s `filter_map` silently *shortens* the stack for a
+    /// silicone the catalog no longer carries. Asserting the collection is
+    /// what turns that into a failure instead of a two-layer default nobody
+    /// notices.
     #[test]
-    fn the_opening_stack_is_the_base_mold_recipe() {
+    fn the_screen_opens_on_the_pre_ports_stack() {
         let stack = LayerStack::default();
 
         assert_eq!(
@@ -2353,8 +2356,8 @@ visible = true
         );
     }
 
-    /// ⚠ The picker's list is the SDK's, in the SDK's order — the index a user
-    /// clicks and the key a layer carries have to name the same silicone.
+    /// ⚠ The picker's list is the SDK's own, whole and in its order: this is
+    /// where [`Silicone`] and the catalog it wraps are held together.
     #[test]
     fn the_picker_offers_the_sdks_catalog() {
         let offered: Vec<(&str, &str)> = Silicone::catalog()

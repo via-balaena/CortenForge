@@ -94,6 +94,13 @@ impl PendingDialog {
 
     /// Open a file picker for `kind`, offering `extensions` under `filter`.
     /// A no-op while one is already open.
+    ///
+    /// ⚠ Which [`DialogKind`] a caller passes is **ungated**, and cannot be
+    /// reached without putting an OS picker on screen: a test that called one
+    /// of the two wrappers would open a real dialog, and one that pre-opens a
+    /// dialog to stop that gets the early return instead. `poll_dialogs`
+    /// routes on the kind, so a swap sends a chosen `.design.toml` down the
+    /// scan path, which fails to load and resets the project. Hand-tested only.
     fn pick_file(
         &mut self,
         kind: DialogKind,
@@ -116,13 +123,6 @@ impl PendingDialog {
     }
 
     /// Open a scan-file picker.
-    ///
-    /// ⚠ Which [`DialogKind`] each of these two passes is **ungated**, and it
-    /// cannot be reached without putting an OS picker on screen: a test that
-    /// called one would open a real dialog, and one that pre-opens a dialog to
-    /// stop that gets the early return instead. `poll_dialogs` routes by the
-    /// kind, so a swap here sends a chosen `.design.toml` down the scan path,
-    /// which fails to load and resets the project. Hand-tested only.
     pub(crate) fn pick_scan_file(&mut self) {
         self.pick_file(
             DialogKind::ScanFile,
