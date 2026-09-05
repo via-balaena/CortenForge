@@ -401,8 +401,8 @@ fn draw_clean_scan(
 ///
 /// ⚠ One row, as it was pre-port — *not* stacked like [`draw_trim_row`].
 /// Measured, because that row's overflow makes stacking look like the safe
-/// default: this one reaches 309 px of the 404 px column, where the trim row
-/// reached 492. Stacking it would be layout guessed rather than measured.
+/// default: this one reaches 309 px of the 404 px column. Stacking it would be
+/// layout guessed rather than measured.
 fn draw_save_row(ui: &mut egui::Ui, controls: &mut EditControls, ready: bool) -> Option<usize> {
     let mut clicked = None;
     ui.vertical_centered(|ui| {
