@@ -3007,8 +3007,14 @@ pub(crate) mod tests {
     /// ⚠ Every control, by name — a screen that gates its buttons and leaves
     /// the pickers or the steppers live is `accepting_actions` honoured by
     /// half, which is the thing that rule exists to prevent.
+    ///
+    /// ⚠ The count is asserted beside the flags. "Nothing on this screen is
+    /// live" is also true of a screen that drew nothing at all, and an empty
+    /// result is not evidence.
     #[test]
     fn every_control_on_the_layer_screen_is_gated_while_the_app_works() {
+        use egui_kittest::kittest::NodeT;
+
         let mut design = DesignControls::default();
         let busy = Studio {
             busy: true,
@@ -3018,19 +3024,26 @@ pub(crate) mod tests {
             let _ = draw_design_layers(ui, &busy, &PendingDialog::default(), &mut design);
         };
 
-        use egui_kittest::kittest::NodeT;
-
-        let live: Vec<(String, bool)> = column_harness(&mut body)
+        let disabled: Vec<bool> = column_harness(&mut body)
             .root()
             .children_recursive()
             .filter_map(|node| {
                 let widget = node.accesskit_node();
-                let name = control_name(widget.role(), widget.label())?;
-                (!widget.is_disabled()).then_some((name, true))
+                control_name(widget.role(), widget.label())?;
+                Some(widget.is_disabled())
             })
             .collect();
 
-        assert_eq!(live, Vec::new(), "nothing on the screen is clickable");
+        assert_eq!(
+            disabled.len(),
+            3 * LAYER_CARD.len() + 3,
+            "the whole screen is still drawn: three cards and three buttons"
+        );
+        assert_eq!(
+            disabled,
+            vec![true; disabled.len()],
+            "and not one of them is live"
+        );
     }
 
     /// Every button on the screen, by name, with the first layer's material
