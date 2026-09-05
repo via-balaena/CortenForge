@@ -34,10 +34,8 @@ impl Default for ShapeControls {
 impl ShapeControls {
     /// The plug the fields describe, in the SDK's meters.
     ///
-    /// ⚠ Clamped for [`crate::edit::EditControls::simplify_target`]'s reason:
-    /// typing does not commit, and [`StepBoxState::value`] tracks an
-    /// in-progress edit unclamped by design, so a number typed and then clicked
-    /// straight through arrives here out of range.
+    /// ⚠ Clamped for [`crate::edit::EditControls::simplify_target`]'s reason —
+    /// an uncommitted typed number reaches here unclamped.
     pub(crate) fn plug_draft(&self) -> PlugDraft {
         let (min, max) = cavity_range();
         let mm = self.cavity_mm.value().clamp(min, max);
