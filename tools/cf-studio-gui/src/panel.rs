@@ -3036,6 +3036,68 @@ pub(crate) mod tests {
         assert_eq!(live, Vec::new(), "nothing on the screen is clickable");
     }
 
+    /// Every button on the screen, by name, with the first layer's material
+    /// picker opened or left shut.
+    ///
+    /// ⚠ Three passes after the click, not one: the click lands on the frame
+    /// after it is queued, egui opens the popup on the next, and lays its items
+    /// out on the one after that — the "a widget is placed from the previous
+    /// pass" rule `settle` exists for on the Bevy side.
+    fn design_buttons(design: &mut DesignControls, open_the_picker: bool) -> Vec<String> {
+        use egui_kittest::kittest::NodeT;
+
+        let mut body = design_body(design);
+        let mut harness = column_harness(&mut body);
+        if open_the_picker {
+            harness
+                .root()
+                .children_recursive()
+                .find(|node| node.accesskit_node().role() == egui::accesskit::Role::ComboBox)
+                .expect("every layer card draws one")
+                .click();
+            for _ in 0..3 {
+                harness.run();
+            }
+        }
+        harness
+            .root()
+            .children_recursive()
+            .filter_map(|node| {
+                let widget = node.accesskit_node();
+                (widget.role() == egui::accesskit::Role::Button)
+                    .then(|| widget.label())
+                    .flatten()
+            })
+            .collect()
+    }
+
+    /// ★ What the picker *offers*, which no other gate reaches: every census
+    /// here reads the selected name off the shut control, and a picker wired
+    /// to one silicone shows the same name and passes all of them.
+    ///
+    /// ⚠ The buttons the popup adds, not the buttons on screen — the cards
+    /// draw ✖ and two steppers each, and the difference is the menu.
+    #[test]
+    fn the_material_picker_offers_every_silicone_in_the_catalog() {
+        let mut design = DesignControls::default();
+        let shut = design_buttons(&mut design, false);
+
+        let opened = design_buttons(&mut design, true);
+
+        let menu: Vec<String> = opened
+            .into_iter()
+            .filter(|button| !shut.contains(button))
+            .collect();
+        assert_eq!(
+            menu,
+            Silicone::catalog()
+                .into_iter()
+                .map(|silicone| silicone.name.to_string())
+                .collect::<Vec<_>>(),
+            "the whole catalog, in the order it offers it"
+        );
+    }
+
     /// Every material picker's laid-out width, in the order they are drawn.
     fn picker_widths(design: &mut DesignControls) -> Vec<f32> {
         use egui_kittest::kittest::NodeT;
