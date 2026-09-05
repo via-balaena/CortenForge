@@ -1797,11 +1797,11 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(crate::preview::tests::fixture_dir("panel-note"));
     }
 
-    /// ★★★ The thrash guard, and the reason step 2's `&scan` discipline now has
-    /// a second consumer. Any path in this screen that reaches `ScanEdit`
-    /// mutably marks it changed on every frame the wizard draws — and the
-    /// preview drops its cache and re-meshes each time, which on a real scan is
-    /// 191 ms of flood-filled SDF per frame, for ever.
+    /// ★★★ The thrash guard. The driver runs behind a screen that redraws sixty
+    /// times a second, and everything it decides from — the draft the fields
+    /// describe, the cleaned scan on disk — has to read the same each time. Any
+    /// one of them flickering costs a flood-filled SDF per frame, for ever, and
+    /// on a real scan that is 191 ms of it.
     #[test]
     fn redrawing_the_wizard_does_not_rebuild_the_preview() {
         let mut app = wizard_previewing(crate::preview::tests::a_missing_scan());

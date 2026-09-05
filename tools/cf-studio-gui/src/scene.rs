@@ -185,13 +185,16 @@ pub(crate) fn show_plug(
     if *drawn == view.generation() {
         return;
     }
+    // ⚠ Ahead of the mesh, so a dropped preview takes its body with it. A piece
+    // left up is one cut from a scan that has since been replaced, and
+    // [`show_the_step_subject`] would go on showing it.
+    for body in &bodies {
+        commands.entity(body).despawn();
+    }
     let (Some(mesh), Some(active)) = (view.mesh(), scan.active()) else {
         return;
     };
     *drawn = view.generation();
-    for body in &bodies {
-        commands.entity(body).despawn();
-    }
     commands.spawn((
         PlugBody,
         Mesh3d(meshes.add(triangle_mesh_flat_shaded(mesh, None, SCAN_UP_AXIS))),
@@ -219,11 +222,9 @@ pub(crate) fn show_the_step_subject(
     pieces: Query<(), With<PlugBody>>,
     mut bodies: Query<(&mut Visibility, Has<PlugBody>), Or<(With<SceneBody>, With<PlugBody>)>>,
 ) {
-    // ⚠ Whether a piece is on screen, not whether one has been meshed. Until the
-    // first preview lands the scan stays up rather than step 3 opening on an
-    // empty viewport — and [`show_plug`] needs the scan for the lift besides, so
-    // a meshed piece can have no body to show and this would hide the scan in
-    // favour of nothing at all.
+    // ⚠ Whether a piece is on screen, not whether one has been meshed:
+    // [`show_plug`] needs the scan for the lift, so a meshed piece can have no
+    // body — and the scan would then be hidden in favour of nothing at all.
     let previewing = studio.cursor.viewed() == Step::ShapePiece && !pieces.is_empty();
     for (mut visibility, is_plug) in &mut bodies {
         let wanted = if is_plug == previewing {
@@ -231,9 +232,7 @@ pub(crate) fn show_the_step_subject(
         } else {
             Visibility::Hidden
         };
-        if *visibility != wanted {
-            *visibility = wanted;
-        }
+        *visibility = wanted;
     }
 }
 
@@ -764,6 +763,57 @@ endsolid t
             is_visible::<SceneBody>(&mut app),
             Some(true),
             "so the scan is what step 3 opens on"
+        );
+    }
+
+    /// ⚠ A piece meshed before the scan reached the viewport must still be drawn
+    /// when it gets there. The generation is marked drawn only once a body is
+    /// actually spawned; marking it beside the early return spends the one
+    /// chance this mesh had.
+    #[test]
+    fn a_piece_meshed_before_the_scan_is_drawn_once_the_scan_arrives() {
+        let mut app = headless_on(Step::ShapePiece);
+        app.world_mut().resource_mut::<PlugView>().show(unit_cube());
+        app.update();
+        assert!(
+            bodies_of::<PlugBody>(&mut app).is_empty(),
+            "there is no scan yet to take a lift from"
+        );
+
+        let loaded = a_scan("plug-late");
+        assert!(loaded.is_some(), "the fixture must load");
+        let Some(scan) = loaded else { return };
+        app.world_mut().resource_mut::<ScanEdit>().set(scan);
+        app.update();
+
+        assert_eq!(
+            bodies_of::<PlugBody>(&mut app).len(),
+            1,
+            "and the piece is drawn once there is one"
+        );
+    }
+
+    /// ★★ The piece on screen must go when the preview does. Left up, the swap
+    /// sees a body and goes on showing it — a piece cut from a scan that has
+    /// since been replaced, which is the whole reason the preview was dropped.
+    #[test]
+    fn dropping_the_preview_takes_the_piece_off_the_screen() {
+        let showing = showing_both(Step::ShapePiece, "plug-drop");
+        assert!(showing.is_some(), "the fixture must load");
+        let Some(mut app) = showing else { return };
+        assert_eq!(bodies_of::<PlugBody>(&mut app).len(), 1, "a piece is up");
+
+        app.world_mut().resource_mut::<PlugView>().drop_shown();
+        app.update();
+
+        assert!(
+            bodies_of::<PlugBody>(&mut app).is_empty(),
+            "the piece leaves with the preview it was drawn from"
+        );
+        assert_eq!(
+            is_visible::<SceneBody>(&mut app),
+            Some(true),
+            "and the scan holds the viewport until the next one lands"
         );
     }
 

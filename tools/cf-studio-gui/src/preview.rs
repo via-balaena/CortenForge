@@ -13,6 +13,7 @@
 
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, futures_lite::future};
@@ -20,16 +21,14 @@ use cf_studio_core::{PlugDraft, PrepInput, Step};
 use cf_studio_engine::{PlugPreview, proxy_preview_mesh};
 use mesh_types::IndexedMesh;
 
-use crate::scan::ScanEdit;
 use crate::shape::ShapeControls;
 use crate::state::Studio;
 
 /// The cleaned scan behind the preview.
 ///
-/// Neither end state moves except through [`PlugView::invalidate`], which
-/// clears the mesh with it. That is what lets [`PlugView::showing_proxy`] read
-/// the note's answer off this rather than recording it per mesh: while a piece
-/// is on show, the cache that cut it is still the one held here.
+/// ⚠ [`PlugView::showing_proxy`] reads the note's answer off this rather than
+/// recording it per mesh, which holds because nothing moves a built cache
+/// except [`PlugView::invalidate`] — and that clears the mesh with it.
 #[derive(Default)]
 enum Cache {
     /// Nothing built, and nothing building it.
@@ -68,8 +67,11 @@ pub(crate) struct PlugView {
     /// mutably to *draw* the fields, so it reads as changed on every frame the
     /// screen is up.
     shown: Option<PlugDraft>,
+    /// Which cleaned scan [`Self::cache`] was built from. See [`scan_stamp`].
+    stamp: Option<(u64, SystemTime)>,
     mesh: Option<IndexedMesh>,
-    /// Bumped whenever [`Self::mesh`] is replaced. See [`Self::generation`].
+    /// Bumped whenever [`Self::mesh`] changes, nothing included. See
+    /// [`Self::generation`].
     generation: u64,
 }
 
@@ -96,14 +98,22 @@ impl PlugView {
     }
 
     /// Drop everything built from the scan as it was.
-    ///
-    /// The mesh goes with the cache: it was cut out of that body, and leaving it
-    /// up would preview a piece for a scan the user has since changed.
     fn invalidate(&mut self) {
         self.cache = Cache::Cold;
         self.meshing = None;
         self.shown = None;
+        self.stamp = None;
         self.mesh = None;
+        // ⚠ Bumped on the way out too, or the viewport keeps drawing the piece
+        // this just dropped — cut from a scan that has since been replaced.
+        self.generation += 1;
+    }
+
+    /// Drop the cache if the cleaned scan on disk is no longer the one it holds.
+    fn drop_a_stale_cache(&mut self, prep: Option<&PrepInput>) {
+        if prep.and_then(scan_stamp) != self.stamp {
+            self.invalidate();
+        }
     }
 
     /// Take delivery of a finished cache.
@@ -144,6 +154,7 @@ impl PlugView {
             self.cache = Cache::Unavailable;
             return;
         };
+        self.stamp = scan_stamp(prep);
         let (stl, toml) = (prep.cleaned_stl.clone(), prep.prep_toml.clone());
         self.cache = Cache::Building(AsyncComputeTaskPool::get().spawn(async move {
             // A scan that panics the SDF builder falls back to the proxy with
@@ -182,15 +193,28 @@ impl PlugView {
 
 #[cfg(test)]
 impl PlugView {
-    /// Put `mesh` on show, as a landing job would.
-    ///
-    /// ⚠ For the viewport's own gates, which need a view in that state and have
-    /// no task pool to reach it through. The driver's gates drive
-    /// [`Self::land_mesh`] itself.
+    /// Put `mesh` on show, as a landing job would — the viewport's gates need a
+    /// view in that state and have no task pool to reach it through.
     pub(crate) fn show(&mut self, mesh: IndexedMesh) {
         self.mesh = Some(mesh);
         self.generation += 1;
     }
+
+    /// Drop what is on show, as a scan rewritten on disk would.
+    pub(crate) fn drop_shown(&mut self) {
+        self.invalidate();
+    }
+}
+
+/// How one cleaned scan is told from a later one written over it.
+///
+/// ⚠ Length and time, not the path. A second Save writes the cleaned scan back
+/// to the same place at a different smoothing: the path does not move and the
+/// body does, and none of it reaches `ScanEdit` — which a Save borrows
+/// immutably on purpose, so its change flag cannot answer this either.
+fn scan_stamp(prep: &PrepInput) -> Option<(u64, SystemTime)> {
+    let file = std::fs::metadata(&prep.cleaned_stl).ok()?;
+    Some((file.len(), file.modified().ok()?))
 }
 
 /// Keep the preview in step with the fields while step 3 is on screen.
@@ -198,20 +222,15 @@ pub(crate) fn drive_plug_preview(
     mut view: ResMut<PlugView>,
     studio: Res<Studio>,
     shape: Res<ShapeControls>,
-    scan: Res<ScanEdit>,
 ) {
-    // ⚠ Ahead of the step gate, because a step-2 edit lands while step 3 is off
-    // screen: a cache built before it would preview a body the user has already
-    // changed, and nothing on step 3 would ever notice.
-    if scan.is_changed() {
-        view.invalidate();
-    }
     if studio.cursor.viewed() != Step::ShapePiece {
         return;
     }
+    let prep = studio.project.prep();
+    view.drop_a_stale_cache(prep);
     view.land_cache();
     view.land_mesh();
-    view.start_cache(studio.project.prep());
+    view.start_cache(prep);
     view.start_mesh(&shape.plug_draft());
 }
 
@@ -249,16 +268,16 @@ pub(crate) mod tests {
         [1, 7, 5],
     ];
 
-    /// A closed 40 mm box, in meters.
+    /// A closed box `half` meters to a side, in meters.
     ///
     /// ⚠ Small on purpose. The flood fill covers the scan's AABB at the
     /// preview's 2 mm cells, so a metre-wide fixture would ask for 125 million
     /// of them and this suite would never finish.
-    fn box_stl() -> String {
+    fn box_stl(half: f64) -> String {
         let corner = |i: usize| {
             [
-                if i & 1 == 0 { -0.02 } else { 0.02 },
-                if i & 2 == 0 { -0.02 } else { 0.02 },
+                if i & 1 == 0 { -half } else { half },
+                if i & 2 == 0 { -half } else { half },
                 if i & 4 == 0 { 0.0 } else { 0.04 },
             ]
         };
@@ -284,7 +303,7 @@ pub(crate) mod tests {
             cleaned_stl: dir.join("box.cleaned.stl"),
             prep_toml: dir.join("box.prep.toml"),
         };
-        std::fs::write(&prep.cleaned_stl, box_stl()).expect("the fixture scan writes");
+        std::fs::write(&prep.cleaned_stl, box_stl(0.02)).expect("the fixture scan writes");
         std::fs::write(
             &prep.prep_toml,
             "[centerline]\npoints_m = [[0.0, 0.0, 0.004], [0.0, 0.0, 0.036]]\n",
@@ -326,7 +345,6 @@ pub(crate) mod tests {
     fn app_on(step: Step, project: Project) -> App {
         let mut app = App::new();
         app.add_plugins(TaskPoolPlugin::default())
-            .init_resource::<ScanEdit>()
             .init_resource::<ShapeControls>()
             .init_resource::<PlugView>()
             .insert_resource(Studio {
@@ -362,10 +380,6 @@ pub(crate) mod tests {
 
     fn view(app: &App) -> &PlugView {
         app.world().resource::<PlugView>()
-    }
-
-    fn set_step(app: &mut App, step: Step) {
-        app.world_mut().resource_mut::<Studio>().cursor = WizardCursor::new(step);
     }
 
     fn set_cavity(app: &mut App, mm: i32) {
@@ -489,34 +503,32 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(fixture_dir("building"));
     }
 
-    /// ★★ The stale-body trap. A step-2 edit lands while step 3 is off screen,
-    /// and the cache is built from the scan as it *was* — so without this the
-    /// user pages forward onto a piece cut from a body they already changed,
-    /// and nothing on the screen is wrong enough to notice.
+    /// ★★ The stale-body trap, driven the way it really happens: a second Save
+    /// writes the cleaned scan back to the same path at a different smoothing.
+    /// The path does not move, so a cache keyed on it survives — and the user
+    /// pages forward onto a piece cut from a body they have already replaced,
+    /// with nothing on screen wrong enough to notice.
     #[test]
-    fn an_edit_to_the_scan_drops_the_preview_built_from_it() {
-        let mut app = app_on(Step::ShapePiece, cleaned(a_missing_scan()));
+    fn a_cleaned_scan_rewritten_on_disk_drops_the_preview_built_from_it() {
+        let prep = a_cleaned_scan("rewritten");
+        let mut app = app_on(Step::ShapePiece, cleaned(prep.clone()));
         settle(&mut app);
-        assert!(view(&app).mesh().is_some(), "something to lose");
+        let before = size(&app);
 
-        // ⚠ Paged away first, because that is where the edit really happens.
-        // Invalidating from behind the step gate looks right and catches
-        // nothing: on step 2 the gate has already returned.
-        set_step(&mut app, Step::CleanScan);
-        app.world_mut().resource_mut::<ScanEdit>().set_changed();
+        std::fs::write(&prep.cleaned_stl, box_stl(0.012)).expect("the second Save writes");
         app.update();
-
         assert!(
             view(&app).mesh().is_none(),
             "the piece goes with the body it was cut from"
         );
 
-        set_step(&mut app, Step::ShapePiece);
         settle(&mut app);
         assert!(
-            view(&app).mesh().is_some(),
-            "and is rebuilt from the scan as it now stands"
+            size(&app) < before,
+            "and is rebuilt from the body now on disk: {} vs {before}",
+            size(&app)
         );
+        let _ = std::fs::remove_dir_all(fixture_dir("rewritten"));
     }
 
     /// ⚠ A project carrying no cleaned scan at all still gets a preview, and
