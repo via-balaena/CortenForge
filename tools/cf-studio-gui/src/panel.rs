@@ -2041,9 +2041,8 @@ pub(crate) mod tests {
     /// stepper walks past its own limit, `plug_draft` clamps it back, and the
     /// screen shows one number while the plug carries another.
     ///
-    /// ⚠ Driven from outside the bound rather than clicked up to it: texture
-    /// spacing's range is 290 steps wide, and a gate that walked it would say
-    /// the same thing 290 times more slowly.
+    /// ⚠ Driven from outside the bound rather than clicked up to it — texture
+    /// spacing's range is 290 steps wide.
     #[test]
     fn every_stepper_stops_at_the_bound_its_field_commits_at() {
         for (nth, pick) in FIELDS.into_iter().enumerate() {
@@ -2068,22 +2067,15 @@ pub(crate) mod tests {
     }
 
     /// Every stepper's value on step 3, in the order they are laid out.
-    fn stepper_values(shape: &ShapeControls) -> Vec<i32> {
-        vec![
-            shape.cavity_mm.value(),
-            shape.ridges.texture_depth.value(),
-            shape.ridges.texture_spacing.value(),
-            shape.ridges.side_pinch.value(),
-            shape.ridges.tip_relief.value(),
-            shape.ridges.orientation.value(),
-        ]
+    fn stepper_values(shape: &mut ShapeControls) -> Vec<i32> {
+        FIELDS.into_iter().map(|pick| pick(shape).value()).collect()
     }
 
     /// ★★ Six steppers from one helper. A row bound to its neighbour's field
     /// moves the wrong number, and every value on screen stays plausible.
     #[test]
     fn each_stepper_on_step_three_moves_its_own_field_and_no_other() {
-        let opening = stepper_values(&ridges_on());
+        let opening = stepper_values(&mut ridges_on());
 
         for nth in 0..opening.len() {
             let mut stepped = ridges_on();
@@ -2095,7 +2087,7 @@ pub(crate) mod tests {
                 .map(|(i, value)| value + i32::from(i == nth))
                 .collect();
             assert_eq!(
-                stepper_values(&stepped),
+                stepper_values(&mut stepped),
                 expected,
                 "stepper {nth} moved something other than its own field"
             );
