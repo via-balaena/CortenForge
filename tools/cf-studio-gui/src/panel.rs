@@ -1792,7 +1792,7 @@ pub(crate) mod tests {
         );
         assert!(
             !unsaid.contains("stand-in"),
-            "and a scan that could must not be disowned: {unsaid:?}"
+            "and a scan that could be read must not be disowned: {unsaid:?}"
         );
         let _ = std::fs::remove_dir_all(crate::preview::tests::fixture_dir("panel-note"));
     }

@@ -70,7 +70,7 @@ pub(crate) struct PlugView {
     /// Which cleaned scan [`Self::cache`] was built from. See [`scan_stamp`].
     stamp: Option<(u64, SystemTime)>,
     mesh: Option<IndexedMesh>,
-    /// Bumped whenever [`Self::mesh`] changes, nothing included. See
+    /// Bumped whenever [`Self::mesh`] changes, including to nothing. See
     /// [`Self::generation`].
     generation: u64,
 }
@@ -103,10 +103,11 @@ impl PlugView {
         self.meshing = None;
         self.shown = None;
         self.stamp = None;
-        self.mesh = None;
-        // ⚠ Bumped on the way out too, or the viewport keeps drawing the piece
-        // this just dropped — cut from a scan that has since been replaced.
-        self.generation += 1;
+        if self.mesh.take().is_some() {
+            // ⚠ Counted like a landing, or the viewport goes on drawing the
+            // piece this just dropped — cut from a scan since replaced.
+            self.generation += 1;
+        }
     }
 
     /// Drop the cache if the cleaned scan on disk is no longer the one it holds.
@@ -209,9 +210,9 @@ impl PlugView {
 /// How one cleaned scan is told from a later one written over it.
 ///
 /// ⚠ Length and time, not the path. A second Save writes the cleaned scan back
-/// to the same place at a different smoothing: the path does not move and the
-/// body does, and none of it reaches `ScanEdit` — which a Save borrows
-/// immutably on purpose, so its change flag cannot answer this either.
+/// to the same place at a different smoothing: the path does not move, the body
+/// does, and none of it reaches `ScanEdit` — which a Save borrows immutably on
+/// purpose.
 fn scan_stamp(prep: &PrepInput) -> Option<(u64, SystemTime)> {
     let file = std::fs::metadata(&prep.cleaned_stl).ok()?;
     Some((file.len(), file.modified().ok()?))

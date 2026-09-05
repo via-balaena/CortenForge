@@ -227,12 +227,11 @@ pub(crate) fn show_the_step_subject(
     // body — and the scan would then be hidden in favour of nothing at all.
     let previewing = studio.cursor.viewed() == Step::ShapePiece && !pieces.is_empty();
     for (mut visibility, is_plug) in &mut bodies {
-        let wanted = if is_plug == previewing {
+        *visibility = if is_plug == previewing {
             Visibility::Inherited
         } else {
             Visibility::Hidden
         };
-        *visibility = wanted;
     }
 }
 
