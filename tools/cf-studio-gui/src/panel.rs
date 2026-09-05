@@ -1106,18 +1106,11 @@ pub(crate) mod tests {
         use egui_kittest::kittest::NodeT;
 
         let column = std::cell::Cell::new(egui::Rect::NOTHING);
-        let mut harness = Harness::builder()
-            .with_size(egui::Vec2::new(BODY_WIDTH, COLUMN_HEIGHT))
-            .build(|ctx| {
-                body_column(ctx, |ui| {
-                    column.set(ui.max_rect());
-                    body(ui);
-                });
-            });
-        // The fonts that ship, so both what is measured here and what is
-        // checked for glyphs are what the app actually draws.
-        harness.ctx.set_fonts(crate::plugin::font_definitions());
-        harness.run();
+        let mut measured = |ui: &mut egui::Ui| {
+            column.set(ui.max_rect());
+            body(ui);
+        };
+        let harness = column_harness(&mut measured);
 
         let harness_fonts = harness.ctx.clone();
         // ⚠ Every piece of text on the screen, not just the control names.
@@ -1530,8 +1523,8 @@ pub(crate) mod tests {
 
     /// Whether step 2's Save is disabled, for a screen that has — or has not —
     /// been stood up.
-    fn save_button_disabled(screen: &mut CleanupScreen) -> Option<bool> {
-        control_disabled(
+    fn save_button_disabled(screen: &mut CleanupScreen) -> Vec<bool> {
+        controls_disabled(
             |ui| {
                 let _ = draw_clean_scan(
                     ui,
@@ -1545,28 +1538,19 @@ pub(crate) mod tests {
         )
     }
 
-    /// Whether the control named `label` is disabled, on a screen `body` lays
-    /// out in [`body_column`].
-    ///
-    /// ⚠ The accessibility tree's own flag. Presence is not the question — a
-    /// gated control is on screen either way, which is how the user is told
-    /// what to do first.
-    fn control_disabled(body: impl FnMut(&mut egui::Ui), label: &str) -> Option<bool> {
-        controls_disabled(body, label).first().copied()
-    }
-
     /// Whether each control called `name` is disabled, in layout order.
     ///
     /// ⚠ The order is the gate. Six identical `+` buttons say nothing about
     /// which feature owns which — only their positions do.
+    ///
+    /// ⚠ The accessibility tree's own flag, and the count is half the answer.
+    /// A gated control is on screen either way — that is how the user is told
+    /// what to do first — so a control that vanished must not read as one that
+    /// was refused.
     fn controls_disabled(mut body: impl FnMut(&mut egui::Ui), name: &str) -> Vec<bool> {
         use egui_kittest::kittest::NodeT;
 
-        let mut harness = Harness::builder()
-            .with_size(egui::Vec2::new(BODY_WIDTH, COLUMN_HEIGHT))
-            .build(|ctx| body_column(ctx, &mut body));
-        harness.run();
-        harness
+        column_harness(&mut body)
             .root()
             .children_recursive()
             .filter_map(|node| {
@@ -1574,6 +1558,19 @@ pub(crate) mod tests {
                 (control_name(widget.role(), widget.label())? == name).then(|| widget.is_disabled())
             })
             .collect()
+    }
+
+    /// `body`, laid out and run in the column the wizard builds.
+    ///
+    /// ⚠ The fonts that ship, so what these gates measure — and check for
+    /// glyphs — is what the app actually draws.
+    fn column_harness<'a>(body: &'a mut dyn FnMut(&mut egui::Ui)) -> Harness<'a> {
+        let mut harness = Harness::builder()
+            .with_size(egui::Vec2::new(BODY_WIDTH, COLUMN_HEIGHT))
+            .build(|ctx| body_column(ctx, &mut *body));
+        harness.ctx.set_fonts(crate::plugin::font_definitions());
+        harness.run();
+        harness
     }
 
     /// ★ Save is gated on the centerline *and* on the app being free — both
@@ -1588,32 +1585,24 @@ pub(crate) mod tests {
     fn save_is_offered_only_once_the_scan_is_stood_up_and_the_app_is_free() {
         assert_eq!(
             save_button_disabled(&mut cleanup_screen()),
-            Some(false),
+            [false],
             "stood up, nothing else running"
         );
 
         let mut flat = cleanup_screen();
         // Back to a freshly loaded scan: no centerline, so no cast frame.
         flat.scan.set(ActiveScan::synthetic(open_tube()));
-        assert_eq!(
-            save_button_disabled(&mut flat),
-            Some(true),
-            "not yet stood up"
-        );
+        assert_eq!(save_button_disabled(&mut flat), [true], "not yet stood up");
 
         let mut busy = cleanup_screen();
         busy.studio.busy = true;
-        assert_eq!(
-            save_button_disabled(&mut busy),
-            Some(true),
-            "a job is running"
-        );
+        assert_eq!(save_button_disabled(&mut busy), [true], "a job is running");
 
         let mut asking = cleanup_screen();
         asking.dialog = PendingDialog::opened(DialogKind::PrepDest);
         assert_eq!(
             save_button_disabled(&mut asking),
-            Some(true),
+            [true],
             "a picker is open"
         );
     }
@@ -1624,17 +1613,12 @@ pub(crate) mod tests {
         let reported = std::cell::Cell::new(None);
         {
             let borrowed = std::cell::RefCell::new(&mut *controls);
-            let mut harness = Harness::builder()
-                .with_size(egui::Vec2::new(BODY_WIDTH, COLUMN_HEIGHT))
-                .build(|ctx| {
-                    body_column(ctx, |ui| {
-                        if let Some(smoothing) = draw_save_row(ui, &mut borrowed.borrow_mut(), true)
-                        {
-                            reported.set(Some(smoothing));
-                        }
-                    });
-                });
-            harness.run();
+            let mut body = |ui: &mut egui::Ui| {
+                if let Some(smoothing) = draw_save_row(ui, &mut borrowed.borrow_mut(), true) {
+                    reported.set(Some(smoothing));
+                }
+            };
+            let mut harness = column_harness(&mut body);
             harness.get_by_label(label).click();
             harness.run();
         }
@@ -1951,11 +1935,7 @@ pub(crate) mod tests {
         use egui::accesskit::Role;
         use egui_kittest::kittest::NodeT;
 
-        let mut harness = Harness::builder()
-            .with_size(egui::Vec2::new(BODY_WIDTH, COLUMN_HEIGHT))
-            .build(|ctx| body_column(ctx, &mut body));
-        harness.run();
-        harness
+        column_harness(&mut body)
             .root()
             .children_recursive()
             .filter(|node| node.accesskit_node().role() == Role::TextInput)
@@ -2054,10 +2034,7 @@ pub(crate) mod tests {
             let mut stepped = ridges_on();
             {
                 let mut body = shape_body(&mut stepped);
-                let mut harness = Harness::builder()
-                    .with_size(egui::Vec2::new(BODY_WIDTH, COLUMN_HEIGHT))
-                    .build(|ctx| body_column(ctx, &mut body));
-                harness.run();
+                let mut harness = column_harness(&mut body);
                 harness
                     .get_all_by_label("+")
                     .nth(nth)
@@ -2306,12 +2283,8 @@ pub(crate) mod tests {
     ) -> EditControls {
         {
             let controls = std::cell::RefCell::new(&mut controls);
-            let mut harness = Harness::builder()
-                .with_size(egui::Vec2::new(BODY_WIDTH, COLUMN_HEIGHT))
-                .build(|ctx| {
-                    body_column(ctx, |ui| row(ui, &mut controls.borrow_mut()));
-                });
-            harness.run();
+            let mut body = |ui: &mut egui::Ui| row(ui, &mut controls.borrow_mut());
+            let mut harness = column_harness(&mut body);
             // A row may hold two steppers; the first is the one asserted on.
             harness
                 .get_all_by_label(label)
