@@ -132,3 +132,69 @@ pub(crate) fn click_on(app: &mut App, text: &str) {
     app.update();
     app.world_mut().resource_mut::<Click>().0 = None;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The fixture's pass count and how far down the window it has crept.
+    #[derive(Resource, Default)]
+    struct Drawn {
+        passes: usize,
+        y: f32,
+    }
+
+    /// A screen that paints nothing on its first pass, then creeps down the
+    /// window, then holds still from pass `stops` on.
+    fn creeping_until(stops: usize) -> impl FnMut(ResMut<Drawn>, Query<&mut EguiContext>) {
+        move |mut drawn: ResMut<Drawn>, mut contexts: Query<&mut EguiContext>| {
+            let Some(mut context) = contexts.iter_mut().next() else {
+                return;
+            };
+            drawn.passes += 1;
+            if drawn.passes == 1 {
+                return;
+            }
+            if drawn.passes <= stops {
+                drawn.y += 10.0;
+            }
+            egui::CentralPanel::default().show(context.get_mut(), |ui| {
+                ui.add_space(drawn.y);
+                ui.label("creeping");
+            });
+        }
+    }
+
+    fn app_drawing(stops: usize) -> App {
+        let mut app = app();
+        app.init_resource::<Drawn>()
+            .add_systems(Update, (begin, creeping_until(stops), end).chain());
+        app
+    }
+
+    /// ⚠ Both halves, and each is silently wrong alone. Returning on the first
+    /// pass — which seeding the comparison with an empty `Vec` does — hands the
+    /// caller a screen that has drawn nothing; returning while it still moves
+    /// hands over a position the button has already left.
+    #[test]
+    fn settling_waits_for_a_pass_that_drew_and_then_for_one_that_repeated() {
+        let mut app = app_drawing(4);
+
+        settle(&mut app);
+
+        assert_eq!(
+            app.world().resource::<Drawn>().passes,
+            5,
+            "the blank pass, three that moved, then the repeat that matched"
+        );
+        assert_eq!(painted_texts(&app), ["creeping"]);
+    }
+
+    /// ⚠ Without this the loop could run out and return, and every click taken
+    /// from the screen after it would land where the button no longer is.
+    #[test]
+    #[should_panic = "still moving"]
+    fn a_screen_that_never_stops_is_reported_rather_than_handed_back() {
+        settle(&mut app_drawing(usize::MAX));
+    }
+}

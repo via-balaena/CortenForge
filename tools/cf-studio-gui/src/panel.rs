@@ -1683,11 +1683,10 @@ pub(crate) mod tests {
         click_on(&mut app, "Continue");
 
         let studio = app.world().resource::<Studio>();
-        let stepped = ShapeControls::default().cavity_mm.value() + CAVITY_STEP_MM;
         assert_eq!(
             studio.project.plug().map(|plug| plug.cavity_inset_m),
-            Some(f64::from(stepped) / 1000.0),
-            "the click carried the stepped field: {:?}",
+            Some(0.006),
+            "the 5 mm field, stepped once, committed 6 mm: {:?}",
             studio.message
         );
         assert_eq!(
@@ -1705,7 +1704,6 @@ pub(crate) mod tests {
         for step in [Step::DesignLayers, Step::MakeMolds] {
             let mut app = app_running_the_wizard();
             app.insert_resource(Studio {
-                project: ready_to_pour(),
                 cursor: WizardCursor::new(step),
                 ..Studio::default()
             });
