@@ -122,91 +122,20 @@ mod tests {
     use egui_kittest::kittest::{NodeT, Queryable};
 
     use super::*;
+    use crate::egui_harness::{self, Painted, begin, click_on, end};
     use crate::panel::tests::assert_renders;
-
-    /// What one frame of the real system painted, and where.
-    #[derive(Resource, Default)]
-    struct Painted(Vec<(String, egui::Rect)>);
-
-    /// The click to deliver on the next frame, if any.
-    #[derive(Resource, Default)]
-    struct Click(Option<egui::Pos2>);
 
     /// Stand `waiver_screen` up as the Bevy system it is, with the egui pass
     /// `bevy_egui`'s plugin would normally open around it.
-    ///
-    /// ⚠ The plugin itself needs a window and a render device, so it cannot run
-    /// here — `begin_pass` / `end_pass` are what it does around the system, and
-    /// doing them by hand is what makes the system reachable at all.
     fn app_running_the_real_system() -> App {
         use bevy::state::app::StatesPlugin;
-        use bevy_egui::{EguiContext, EguiUserTextures, PrimaryEguiContext};
 
-        fn begin(mut q: Query<&mut EguiContext>, click: Res<Click>) {
-            let Some(mut ctx) = q.iter_mut().next() else {
-                return;
-            };
-            let mut events = Vec::new();
-            if let Some(pos) = click.0 {
-                events.push(egui::Event::PointerMoved(pos));
-                for pressed in [true, false] {
-                    events.push(egui::Event::PointerButton {
-                        pos,
-                        button: egui::PointerButton::Primary,
-                        pressed,
-                        modifiers: egui::Modifiers::NONE,
-                    });
-                }
-            }
-            ctx.get_mut().begin_pass(egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::pos2(0.0, 0.0),
-                    egui::vec2(1280.0, 900.0),
-                )),
-                events,
-                ..Default::default()
-            });
-        }
-
-        fn end(mut q: Query<&mut EguiContext>, mut painted: ResMut<Painted>) {
-            let Some(mut ctx) = q.iter_mut().next() else {
-                return;
-            };
-            painted.0.clear();
-            for shape in &ctx.get_mut().end_pass().shapes {
-                if let egui::epaint::Shape::Text(text) = &shape.shape {
-                    painted.0.push((
-                        text.galley.text().to_owned(),
-                        egui::Rect::from_min_size(text.pos, text.galley.size()),
-                    ));
-                }
-            }
-        }
-
-        let mut app = App::new();
+        let mut app = egui_harness::app();
         app.add_plugins(StatesPlugin)
-            .init_resource::<EguiUserTextures>()
-            .init_resource::<Painted>()
-            .init_resource::<Click>()
             .init_state::<Screen>()
             .add_message::<AppExit>()
             .add_systems(Update, (begin, waiver_screen, end).chain());
-        app.world_mut().spawn(PrimaryEguiContext);
         app
-    }
-
-    /// Click the middle of whatever the gate painted `text` at, next frame.
-    fn click_on(app: &mut App, text: &str) {
-        let painted = &app.world().resource::<Painted>().0;
-        let at = painted
-            .iter()
-            .find(|(shown, _)| shown.starts_with(text))
-            .map(|(_, rect)| rect.center());
-        assert!(at.is_some(), "the gate never painted {text:?}: {painted:?}");
-        let at = at.expect("checked just above");
-        app.world_mut().resource_mut::<Click>().0 = Some(at);
-        app.update();
-        app.world_mut().resource_mut::<Click>().0 = None;
     }
 
     /// ★★ The whole stack, as the app runs it: the Bevy system draws the gate,

@@ -6,6 +6,8 @@
 
 mod dialogs;
 mod edit;
+#[cfg(test)]
+mod egui_harness;
 mod input;
 mod jobs;
 mod panel;

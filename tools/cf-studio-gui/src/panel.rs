@@ -828,6 +828,7 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::edit::tests::open_tube;
+    use crate::egui_harness::{self, begin, click_on, end, painted_texts};
     use crate::scan::ActiveScan;
 
     /// ⚠ Every click on every screen reaches [`wizard_screen`] through this.
@@ -1434,103 +1435,20 @@ pub(crate) mod tests {
         );
     }
 
-    /// What one frame of the real wizard painted, and where.
-    #[derive(Resource, Default)]
-    struct Painted(Vec<(String, egui::Rect)>);
-
-    /// The click to deliver on the next frame, if any.
-    #[derive(Resource, Default)]
-    struct Click(Option<egui::Pos2>);
-
     /// Stand `wizard_screen` up as the Bevy system it is, with the egui pass
     /// `bevy_egui`'s plugin would normally open around it.
-    ///
-    /// ⚠ The plugin itself needs a window and a render device, so it cannot run
-    /// here — `begin_pass` / `end_pass` are all it does around the system, and
-    /// doing them by hand is what makes the system reachable at all.
     fn app_running_the_wizard() -> App {
-        use bevy_egui::{EguiContext, EguiUserTextures, PrimaryEguiContext};
+        use bevy::state::app::StatesPlugin;
 
-        fn begin(mut q: Query<&mut EguiContext>, click: Res<Click>) {
-            let Some(mut ctx) = q.iter_mut().next() else {
-                return;
-            };
-            let mut events = Vec::new();
-            if let Some(pos) = click.0 {
-                events.push(egui::Event::PointerMoved(pos));
-                for pressed in [true, false] {
-                    events.push(egui::Event::PointerButton {
-                        pos,
-                        button: egui::PointerButton::Primary,
-                        pressed,
-                        modifiers: egui::Modifiers::NONE,
-                    });
-                }
-            }
-            // `main.rs`'s opening resolution, so this lays out at the size the
-            // app really runs at.
-            ctx.get_mut().begin_pass(egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::pos2(0.0, 0.0),
-                    egui::vec2(1280.0, 900.0),
-                )),
-                events,
-                ..Default::default()
-            });
-        }
-
-        fn end(mut q: Query<&mut EguiContext>, mut painted: ResMut<Painted>) {
-            let Some(mut ctx) = q.iter_mut().next() else {
-                return;
-            };
-            painted.0.clear();
-            for shape in &ctx.get_mut().end_pass().shapes {
-                if let egui::epaint::Shape::Text(text) = &shape.shape {
-                    painted.0.push((
-                        text.galley.text().to_owned(),
-                        egui::Rect::from_min_size(text.pos, text.galley.size()),
-                    ));
-                }
-            }
-        }
-
-        let mut app = App::new();
-        app.init_resource::<EguiUserTextures>()
-            .init_resource::<Painted>()
-            .init_resource::<Click>()
+        let mut app = egui_harness::app();
+        app.add_plugins((StatesPlugin, bevy::asset::AssetPlugin::default()))
             .init_resource::<Studio>()
             .init_resource::<PendingDialog>()
             .init_resource::<ScanEdit>()
             .init_resource::<EditControls>()
             .init_resource::<SimplifyJob>()
             .add_systems(Update, (begin, wizard_screen, end).chain());
-        app.world_mut().spawn(PrimaryEguiContext);
         app
-    }
-
-    fn painted_texts(app: &App) -> Vec<String> {
-        app.world()
-            .resource::<Painted>()
-            .0
-            .iter()
-            .map(|(text, _)| text.clone())
-            .collect()
-    }
-
-    /// Click the middle of whatever the wizard painted `text` at, next frame.
-    fn click_wizard_on(app: &mut App, text: &str) {
-        let painted = &app.world().resource::<Painted>().0;
-        let at = painted
-            .iter()
-            .find(|(shown, _)| shown.starts_with(text))
-            .map(|(_, rect)| rect.center());
-        assert!(
-            at.is_some(),
-            "the wizard never painted {text:?}: {painted:?}"
-        );
-        app.world_mut().resource_mut::<Click>().0 = at;
-        app.update();
-        app.world_mut().resource_mut::<Click>().0 = None;
     }
 
     /// ★ `wizard_screen` is the system every click reaches the app through, and
@@ -1571,7 +1489,7 @@ pub(crate) mod tests {
         // Save is not on it, and a click can only land on what was painted.
         app.update();
         app.update();
-        click_wizard_on(&mut app, "Save cleaned scan");
+        click_on(&mut app, "Save cleaned scan");
 
         let studio = app.world().resource::<Studio>();
         assert!(
