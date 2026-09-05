@@ -1731,6 +1731,18 @@ pub(crate) mod tests {
         app
     }
 
+    /// The wizard parked on step 3, with a scan cleaned behind it so
+    /// [`Project::set_plug`] will take.
+    fn wizard_on_step_three() -> App {
+        let mut app = app_running_the_wizard();
+        app.insert_resource(Studio {
+            project: crate::shape::tests::ready_to_shape(),
+            cursor: WizardCursor::new(Step::ShapePiece),
+            ..Studio::default()
+        });
+        app
+    }
+
     /// ★ `wizard_screen` is the system every click reaches the app through, and
     /// replacing it with a no-op passed everything: drawing leaves nothing in
     /// the ECS to observe.
@@ -1872,12 +1884,7 @@ pub(crate) mod tests {
     /// default, passes every other gate step 3 has.
     #[test]
     fn clicking_continue_in_the_running_wizard_shapes_the_piece() {
-        let mut app = app_running_the_wizard();
-        app.insert_resource(Studio {
-            project: crate::shape::tests::ready_to_shape(),
-            cursor: WizardCursor::new(Step::ShapePiece),
-            ..Studio::default()
-        });
+        let mut app = wizard_on_step_three();
 
         click_on(&mut app, "+");
         click_on(&mut app, "Continue");
@@ -2274,12 +2281,7 @@ pub(crate) mod tests {
     /// harness cannot reach it.
     #[test]
     fn rings_edited_in_the_running_wizard_reach_the_committed_plug() {
-        let mut app = app_running_the_wizard();
-        app.insert_resource(Studio {
-            project: crate::shape::tests::ready_to_shape(),
-            cursor: WizardCursor::new(Step::ShapePiece),
-            ..Studio::default()
-        });
+        let mut app = wizard_on_step_three();
 
         click_on(&mut app, "Add surface ridges");
         click_on(&mut app, "+ Add ring");
@@ -2321,12 +2323,7 @@ pub(crate) mod tests {
     /// gate on this screen passes, because none of them clicks this box.
     #[test]
     fn switching_the_rings_off_in_the_running_wizard_commits_the_canal_without_them() {
-        let mut app = app_running_the_wizard();
-        app.insert_resource(Studio {
-            project: crate::shape::tests::ready_to_shape(),
-            cursor: WizardCursor::new(Step::ShapePiece),
-            ..Studio::default()
-        });
+        let mut app = wizard_on_step_three();
 
         click_on(&mut app, "Add surface ridges");
         click_on(&mut app, "Grip rings");
@@ -2359,12 +2356,7 @@ pub(crate) mod tests {
     /// when one is dropped.
     #[test]
     fn the_ring_cards_are_numbered_from_one_in_the_order_they_are_drawn() {
-        let mut app = app_running_the_wizard();
-        app.insert_resource(Studio {
-            project: crate::shape::tests::ready_to_shape(),
-            cursor: WizardCursor::new(Step::ShapePiece),
-            ..Studio::default()
-        });
+        let mut app = wizard_on_step_three();
 
         click_on(&mut app, "Add surface ridges");
         settle(&mut app);
@@ -2388,12 +2380,7 @@ pub(crate) mod tests {
     /// editor and committed a smooth piece anyway looks exactly right.
     #[test]
     fn switching_ridges_on_in_the_running_wizard_commits_them() {
-        let mut app = app_running_the_wizard();
-        app.insert_resource(Studio {
-            project: crate::shape::tests::ready_to_shape(),
-            cursor: WizardCursor::new(Step::ShapePiece),
-            ..Studio::default()
-        });
+        let mut app = wizard_on_step_three();
 
         click_on(&mut app, "Add surface ridges");
         click_on(&mut app, "Continue");
