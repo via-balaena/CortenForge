@@ -247,8 +247,9 @@ mod tests {
         }
     }
 
-    /// The bottom of the lowest word of the terms, and the top of the checkbox.
-    fn terms_and_box(size: (f32, f32)) -> (f32, f32) {
+    /// Lay the gate out at `size`, in the fonts the app ships, and hand the
+    /// result to `inspect`.
+    fn laid_out<T>(size: (f32, f32), inspect: impl FnOnce(&Harness<'_>) -> T) -> T {
         let mut harness = Harness::builder()
             .with_size(egui::Vec2::new(size.0, size.1))
             .build(|ctx| {
@@ -259,23 +260,30 @@ mod tests {
             });
         harness.ctx.set_fonts(crate::plugin::font_definitions());
         harness.run();
-        let rects = |role: Role| {
-            harness
-                .root()
-                .children_recursive()
-                .filter(|node| node.accesskit_node().role() == role)
-                .map(|node| node.rect())
-                .collect::<Vec<_>>()
-        };
-        let terms_bottom = rects(Role::Label)
-            .iter()
-            .map(|rect| rect.max.y)
-            .fold(f32::MIN, f32::max);
-        let box_top = rects(Role::CheckBox)
-            .iter()
-            .map(|rect| rect.min.y)
-            .fold(f32::MAX, f32::min);
-        (terms_bottom, box_top)
+        inspect(&harness)
+    }
+
+    /// The bottom of the lowest word of the terms, and the top of the checkbox.
+    fn terms_and_box(size: (f32, f32)) -> (f32, f32) {
+        laid_out(size, |harness| {
+            let rects = |role: Role| {
+                harness
+                    .root()
+                    .children_recursive()
+                    .filter(|node| node.accesskit_node().role() == role)
+                    .map(|node| node.rect())
+                    .collect::<Vec<_>>()
+            };
+            let terms_bottom = rects(Role::Label)
+                .iter()
+                .map(|rect| rect.max.y)
+                .fold(f32::MIN, f32::max);
+            let box_top = rects(Role::CheckBox)
+                .iter()
+                .map(|rect| rect.min.y)
+                .fold(f32::MAX, f32::min);
+            (terms_bottom, box_top)
+        })
     }
 
     fn disabled(controls: &[(String, bool, egui::Rect)], label: &str) -> bool {
@@ -291,12 +299,18 @@ mod tests {
     /// gates. It is shown on every launch and is never persisted.
     #[test]
     fn the_gate_does_not_open_until_the_box_is_ticked() {
+        assert_eq!(
+            gate(OPENING, false, Some("Agree & Continue")).1,
+            None,
+            "unticked, clicking the way through accepts nothing"
+        );
+
         let (unticked, answer) = gate(OPENING, false, None);
         assert!(
             disabled(&unticked, "Agree & Continue"),
-            "unticked, there is no way through: {unticked:?}"
+            "and it is offered as disabled, not merely inert: {unticked:?}"
         );
-        assert_eq!(answer, None, "and nothing was answered by drawing it");
+        assert_eq!(answer, None, "nothing is answered by drawing it either");
 
         let (ticked, _) = gate(OPENING, true, None);
         assert!(
@@ -307,7 +321,7 @@ mod tests {
         assert_eq!(
             gate(OPENING, true, Some("Agree & Continue")).1,
             Some(WaiverChoice::Continue),
-            "and taking it accepts"
+            "and taking it ticked accepts"
         );
     }
 
@@ -374,21 +388,13 @@ mod tests {
     /// its fonts do not have.
     #[test]
     fn every_word_the_gate_shows_is_drawable() {
-        let mut harness = Harness::new_ui(|_| {});
-        harness.ctx.set_fonts(crate::plugin::font_definitions());
-        harness.run();
-
-        for text in TERMS {
-            assert_renders(&harness.ctx, text);
-        }
-        for text in [
-            AGE_GATE,
-            CONFIRM,
-            "Before you begin",
-            "Quit",
-            "Agree & Continue",
-        ] {
-            assert_renders(&harness.ctx, text);
-        }
+        laid_out(OPENING, |harness| {
+            for node in harness.root().children_recursive() {
+                let widget = node.accesskit_node();
+                if let Some(text) = widget.label().or_else(|| widget.value()) {
+                    assert_renders(&harness.ctx, &text);
+                }
+            }
+        });
     }
 }
