@@ -1434,66 +1434,6 @@ mod tests {
         );
     }
 
-    /// The question the modal is asked to render. Its wording belongs to
-    /// [`save::overwrite_question`], not to this gate.
-    const A_QUESTION: &str = "base.cleaned.stl / .prep.toml already exist in /tmp.";
-
-    /// Lay the overwrite modal out, optionally `pick` one of its buttons, and
-    /// report the buttons it offered and the answer it gave.
-    ///
-    /// ⚠ The answer is accumulated, not read off the last frame: `run` may draw
-    /// several, and a later one reporting `None` would erase the click.
-    fn modal_answer(pick: Option<&str>) -> (Vec<String>, Option<SaveChoice>) {
-        use egui::accesskit::Role;
-        use egui_kittest::kittest::NodeT;
-
-        let answer = std::cell::Cell::new(None);
-        let mut harness = Harness::builder()
-            .with_size(egui::Vec2::new(MODAL_WIDTH * 2.0, COLUMN_HEIGHT))
-            .build(|ctx| {
-                if let Some(choice) = draw_save_modal(ctx, A_QUESTION) {
-                    answer.set(Some(choice));
-                }
-            });
-        harness.ctx.set_fonts(crate::plugin::font_definitions());
-        harness.run();
-
-        // ⚠ The modal is the eighth surface, and `controls_in_column` cannot
-        // reach it: it is centred on the window, not laid out in the body
-        // column. So the two things that helper does for every other screen —
-        // does it fit, and can it be drawn — are done here instead.
-        let placed: Vec<(String, egui::Rect)> = harness
-            .root()
-            .children_recursive()
-            .filter(|node| node.accesskit_node().role() == Role::Button)
-            .map(|node| {
-                (
-                    node.accesskit_node().label().unwrap_or_default(),
-                    node.rect(),
-                )
-            })
-            .collect();
-        for (label, _) in &placed {
-            assert_renders(&harness.ctx, label);
-        }
-        assert_renders(&harness.ctx, A_QUESTION);
-        let left = placed.iter().map(|(_, r)| r.min.x).fold(f32::MAX, f32::min);
-        let right = placed.iter().map(|(_, r)| r.max.x).fold(f32::MIN, f32::max);
-        assert!(
-            right - left <= MODAL_WIDTH,
-            "the answers span {:.1} px of a {MODAL_WIDTH} px modal, and egui \
-             clips the overflow rather than wrapping it: {placed:?}",
-            right - left,
-        );
-
-        let buttons = placed.into_iter().map(|(label, _)| label).collect();
-        if let Some(label) = pick {
-            harness.get_by_label(label).click();
-            harness.run();
-        }
-        (buttons, answer.get())
-    }
-
     /// What one frame of the real wizard painted, and where.
     #[derive(Resource, Default)]
     struct Painted(Vec<(String, egui::Rect)>);
@@ -1731,6 +1671,66 @@ mod tests {
             "a folder answer waits for the folder, carrying the smoothing"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The question the modal is asked to render. Its wording belongs to
+    /// [`save::overwrite_question`], not to this gate.
+    const A_QUESTION: &str = "base.cleaned.stl / .prep.toml already exist in /tmp.";
+
+    /// Lay the overwrite modal out, optionally `pick` one of its buttons, and
+    /// report the buttons it offered and the answer it gave.
+    ///
+    /// ⚠ The answer is accumulated, not read off the last frame: `run` may draw
+    /// several, and a later one reporting `None` would erase the click.
+    fn modal_answer(pick: Option<&str>) -> (Vec<String>, Option<SaveChoice>) {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::NodeT;
+
+        let answer = std::cell::Cell::new(None);
+        let mut harness = Harness::builder()
+            .with_size(egui::Vec2::new(MODAL_WIDTH * 2.0, COLUMN_HEIGHT))
+            .build(|ctx| {
+                if let Some(choice) = draw_save_modal(ctx, A_QUESTION) {
+                    answer.set(Some(choice));
+                }
+            });
+        harness.ctx.set_fonts(crate::plugin::font_definitions());
+        harness.run();
+
+        // ⚠ The modal is the eighth surface, and `controls_in_column` cannot
+        // reach it: it is centred on the window, not laid out in the body
+        // column. So the two things that helper does for every other screen —
+        // does it fit, and can it be drawn — are done here instead.
+        let placed: Vec<(String, egui::Rect)> = harness
+            .root()
+            .children_recursive()
+            .filter(|node| node.accesskit_node().role() == Role::Button)
+            .map(|node| {
+                (
+                    node.accesskit_node().label().unwrap_or_default(),
+                    node.rect(),
+                )
+            })
+            .collect();
+        for (label, _) in &placed {
+            assert_renders(&harness.ctx, label);
+        }
+        assert_renders(&harness.ctx, A_QUESTION);
+        let left = placed.iter().map(|(_, r)| r.min.x).fold(f32::MAX, f32::min);
+        let right = placed.iter().map(|(_, r)| r.max.x).fold(f32::MIN, f32::max);
+        assert!(
+            right - left <= MODAL_WIDTH,
+            "the answers span {:.1} px of a {MODAL_WIDTH} px modal, and egui \
+             clips the overflow rather than wrapping it: {placed:?}",
+            right - left,
+        );
+
+        let buttons = placed.into_iter().map(|(label, _)| label).collect();
+        if let Some(label) = pick {
+            harness.get_by_label(label).click();
+            harness.run();
+        }
+        (buttons, answer.get())
     }
 
     /// ★ The modal, as it is built. Its three answers are the only way out of a
