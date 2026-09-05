@@ -920,7 +920,7 @@ const OPENING_STACK: [(&str, i32, i32); 3] = [
     ("DRAGON_SKIN_20A", 5, 0),
 ];
 
-/// What "+ Add layer" adds, in [`OPENING_STACK`]'s units: a middling silicone,
+/// What "+ Add layer" adds, in `OPENING_STACK`'s units: a middling silicone,
 /// thin, unsoftened.
 const ADDED_LAYER: (&str, i32, i32) = ("DRAGON_SKIN_10A", 5, 0);
 
@@ -1006,7 +1006,7 @@ pub struct LayerStack {
     rows: Vec<LayerRow>,
 }
 
-/// [`OPENING_STACK`], skipping any silicone the catalog no longer carries —
+/// `OPENING_STACK`, skipping any silicone the catalog no longer carries —
 /// pinned whole by `the_screen_opens_on_the_pre_ports_stack`, which fails
 /// loudly if one goes missing.
 impl Default for LayerStack {
