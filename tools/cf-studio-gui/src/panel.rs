@@ -2197,29 +2197,69 @@ pub(crate) mod tests {
         }
     }
 
-    /// ★★ Removing a row has to take that row's own state with it, uncommitted
-    /// text included. Per-row state held in a `Vec` keyed by index leaves the
-    /// edit bound to whatever is now that index — which is why
-    /// [`cf_studio_gui::StepBoxState`] lives inside [`RingRow`].
+    /// ★★ Each ✖ drops the ring it sits in, and takes that ring's own state
+    /// with it — uncommitted text included. Per-row state held in a `Vec`
+    /// keyed by index leaves the edit bound to whatever is now that index,
+    /// which is why [`cf_studio_gui::StepBoxState`] lives inside [`RingRow`].
+    ///
+    /// ⚠ Every ✖, not just the first: three identical buttons say nothing
+    /// about which row each drops, and a remove that always took row 1 passes
+    /// the whole suite on the first one.
     #[test]
-    fn dropping_a_ring_takes_its_own_uncommitted_text_with_it() {
-        let mut shape = ridges_on();
-        // Ring 2's own edit, typed into its position field and left there.
-        *shape.ridges.rings[1].position.state.text_mut() = "77".to_owned();
-        shape.ridges.rings[1].position.state.on_typed();
+    fn each_cross_drops_the_ring_it_sits_in_and_the_edit_typed_into_it() {
+        let typed = ["71", "72", "73"];
 
-        click_nth(&mut shape, "✖", 0);
+        for dropped in 0..typed.len() {
+            let mut shape = ridges_on();
+            for (ring, mark) in shape.ridges.rings.iter_mut().zip(typed) {
+                *ring.position.state.text_mut() = mark.to_owned();
+                ring.position.state.on_typed();
+            }
 
-        assert_eq!(
-            shape
+            click_nth(&mut shape, "✖", dropped);
+
+            let left: Vec<&str> = shape
                 .ridges
                 .rings
                 .iter()
                 .map(|ring| ring.position.state.text())
-                .collect::<Vec<_>>(),
-            ["77", "55"],
-            "ring 2's edit moved up with ring 2; index-keyed state leaves it on ring 3"
-        );
+                .collect();
+            let expected: Vec<&str> = typed
+                .iter()
+                .enumerate()
+                .filter_map(|(row, mark)| (row != dropped).then_some(*mark))
+                .collect();
+            assert_eq!(
+                left,
+                expected,
+                "the ✖ in ring {} dropped another row, or left that row's text behind",
+                dropped + 1
+            );
+        }
+    }
+
+    /// ★ The rings own two controls that are not steppers, and the sweep above
+    /// reaches neither. Handed `ready` in place of the switch, the ✖ and the
+    /// button stay live with the rings off — editing a set the plug will not
+    /// carry.
+    #[test]
+    fn the_ring_switch_gates_the_controls_that_are_not_steppers() {
+        for (name, count) in [("✖", 3), ("+ Add ring", 1)] {
+            let mut on = ridges_on();
+            assert_eq!(
+                controls_disabled(shape_body(&mut on), name),
+                vec![false; count],
+                "{name} is offered with the rings on"
+            );
+
+            let mut off = ridges_on();
+            off.ridges.rings_enabled = false;
+            assert_eq!(
+                controls_disabled(shape_body(&mut off), name),
+                vec![true; count],
+                "{name} must be withheld with the rings off"
+            );
+        }
     }
 
     /// ★★ The ring editor's own wiring, end to end: the buttons change the
