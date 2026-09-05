@@ -10,18 +10,16 @@
 //! leaves nothing in the ECS to observe, so replacing a whole screen system
 //! with a no-op passes every other kind of test in this crate.
 
-#![allow(clippy::expect_used)]
-
 use bevy::prelude::*;
 use bevy_egui::{EguiContext, EguiUserTextures, PrimaryEguiContext, egui};
 
 /// What one frame painted, and where.
 #[derive(Resource, Default)]
-pub(crate) struct Painted(pub(crate) Vec<(String, egui::Rect)>);
+pub(crate) struct Painted(Vec<(String, egui::Rect)>);
 
 /// The click to deliver on the next frame, if any.
 #[derive(Resource, Default)]
-pub(crate) struct Click(pub(crate) Option<egui::Pos2>);
+pub(crate) struct Click(Option<egui::Pos2>);
 
 /// The app's opening resolution, so screens lay out at the size it really runs
 /// at.

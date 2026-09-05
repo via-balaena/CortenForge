@@ -30,11 +30,11 @@ const AGE_GATE: &str = "This software and the objects it helps you create are in
 const CONFIRM: &str = "I have read and accept these terms, and I assume all risk.";
 
 /// The gate's own width, and the column every gate test lays out in.
-pub(crate) const GATE_WIDTH: f32 = 640.0;
+const GATE_WIDTH: f32 = 640.0;
 
 /// How the gate was answered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum WaiverChoice {
+enum WaiverChoice {
     /// Leave without accepting.
     Quit,
     /// Accepted; the wizard may start.
@@ -47,7 +47,7 @@ pub(crate) enum WaiverChoice {
 /// executors are: a Bevy system is the one shape no test can drive, and this is
 /// a legal and age gate — that it refuses to open until the box is ticked is
 /// the single most consequential behaviour in the app.
-pub(crate) fn draw_waiver(ui: &mut egui::Ui, agreed: &mut bool) -> Option<WaiverChoice> {
+fn draw_waiver(ui: &mut egui::Ui, agreed: &mut bool) -> Option<WaiverChoice> {
     let mut choice = None;
     ui.vertical_centered(|ui| {
         ui.set_max_width(GATE_WIDTH);
@@ -122,7 +122,7 @@ mod tests {
     use egui_kittest::kittest::{NodeT, Queryable};
 
     use super::*;
-    use crate::egui_harness::{self, Painted, begin, click_on, end};
+    use crate::egui_harness::{self, begin, click_on, end, painted_texts};
     use crate::panel::tests::assert_renders;
     use crate::{OPENING_WINDOW as OPENING, SMALLEST_WINDOW as NARROWEST};
 
@@ -142,7 +142,7 @@ mod tests {
     /// a click on the box arms it, and a click on the answer opens the wizard.
     ///
     /// ⚠ The one thing every other test here cannot reach. `draw_waiver` is
-    /// tested directly and `waiver_screen` is six lines of routing around it —
+    /// tested directly and `waiver_screen` is thin routing around it —
     /// but replacing the whole system with a no-op passed everything, because
     /// drawing has no effect on the ECS to observe. This observes the drawing.
     #[test]
@@ -150,9 +150,9 @@ mod tests {
         let mut app = app_running_the_real_system();
         app.update();
 
-        let painted = &app.world().resource::<Painted>().0;
+        let painted = painted_texts(&app);
         assert!(
-            painted.iter().any(|(text, _)| text == "Before you begin"),
+            painted.iter().any(|text| text == "Before you begin"),
             "the system painted the gate: {painted:?}"
         );
 
