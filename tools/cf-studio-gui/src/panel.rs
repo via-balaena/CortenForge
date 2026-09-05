@@ -1254,12 +1254,30 @@ mod tests {
         assert!(controls_in_column(|ui| draw_checklist(ui, &studio)).is_empty());
     }
 
-    /// ⚠ The other state of step 2. Before the scan is stood up the trim and
-    /// reconstruct sections are hidden and the save section shows a hint
-    /// instead — text that exists in no other state, so censusing only the
-    /// revealed screen leaves it, and the controls beside it, ungated.
+    /// ⚠ Step 2's earlier states. Each shows text that exists in no other one —
+    /// the hint naming the step that unblocks Save, and the line telling you to
+    /// add a scan at all — so censusing only the revealed screen leaves both of
+    /// them, and the controls beside them, ungated.
     #[test]
-    fn every_control_on_the_cleanup_screen_before_it_is_stood_up_fits_too() {
+    fn every_earlier_state_of_the_cleanup_screen_is_laid_out_too() {
+        let mut empty = CleanupScreen {
+            scan: ScanEdit::default(),
+            ..cleanup_screen()
+        };
+        assert!(
+            controls_in_column(|ui| {
+                let _ = draw_clean_scan(
+                    ui,
+                    &empty.studio,
+                    &empty.dialog,
+                    &empty.scan,
+                    &mut empty.controls,
+                );
+            })
+            .is_empty(),
+            "with no scan there is nothing to offer but the line saying so"
+        );
+
         let mut screen = cleanup_screen();
         screen.scan.set(ActiveScan::synthetic(open_tube()));
 
@@ -1474,6 +1492,188 @@ mod tests {
             harness.run();
         }
         (buttons, answer.get())
+    }
+
+    /// What one frame of the real wizard painted, and where.
+    #[derive(Resource, Default)]
+    struct Painted(Vec<(String, egui::Rect)>);
+
+    /// The click to deliver on the next frame, if any.
+    #[derive(Resource, Default)]
+    struct Click(Option<egui::Pos2>);
+
+    /// Stand `wizard_screen` up as the Bevy system it is, with the egui pass
+    /// `bevy_egui`'s plugin would normally open around it.
+    ///
+    /// ⚠ The plugin itself needs a window and a render device, so it cannot run
+    /// here — `begin_pass` / `end_pass` are all it does around the system, and
+    /// doing them by hand is what makes the system reachable at all.
+    fn app_running_the_wizard() -> App {
+        use bevy::state::app::StatesPlugin;
+        use bevy_egui::{EguiContext, EguiUserTextures, PrimaryEguiContext};
+
+        fn begin(mut q: Query<&mut EguiContext>, click: Res<Click>) {
+            let Some(mut ctx) = q.iter_mut().next() else {
+                return;
+            };
+            let mut events = Vec::new();
+            if let Some(pos) = click.0 {
+                events.push(egui::Event::PointerMoved(pos));
+                for pressed in [true, false] {
+                    events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    });
+                }
+            }
+            // `main.rs`'s opening resolution, so this lays out at the size the
+            // app really runs at.
+            ctx.get_mut().begin_pass(egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::pos2(0.0, 0.0),
+                    egui::vec2(1280.0, 900.0),
+                )),
+                events,
+                ..Default::default()
+            });
+        }
+
+        fn end(mut q: Query<&mut EguiContext>, mut painted: ResMut<Painted>) {
+            let Some(mut ctx) = q.iter_mut().next() else {
+                return;
+            };
+            painted.0.clear();
+            for shape in &ctx.get_mut().end_pass().shapes {
+                if let egui::epaint::Shape::Text(text) = &shape.shape {
+                    painted.0.push((
+                        text.galley.text().to_owned(),
+                        egui::Rect::from_min_size(text.pos, text.galley.size()),
+                    ));
+                }
+            }
+        }
+
+        let mut app = App::new();
+        app.add_plugins((StatesPlugin, bevy::asset::AssetPlugin::default()))
+            .init_resource::<EguiUserTextures>()
+            .init_resource::<Painted>()
+            .init_resource::<Click>()
+            .init_resource::<Studio>()
+            .init_resource::<PendingDialog>()
+            .init_resource::<ScanEdit>()
+            .init_resource::<EditControls>()
+            .init_resource::<SimplifyJob>()
+            .add_systems(Update, (begin, wizard_screen, end).chain());
+        app.world_mut().spawn(PrimaryEguiContext);
+        app
+    }
+
+    fn painted_texts(app: &App) -> Vec<String> {
+        app.world()
+            .resource::<Painted>()
+            .0
+            .iter()
+            .map(|(text, _)| text.clone())
+            .collect()
+    }
+
+    /// Click the middle of whatever the wizard painted `text` at, next frame.
+    fn click_wizard_on(app: &mut App, text: &str) {
+        let painted = &app.world().resource::<Painted>().0;
+        let at = painted
+            .iter()
+            .find(|(shown, _)| shown.starts_with(text))
+            .map(|(_, rect)| rect.center());
+        assert!(
+            at.is_some(),
+            "the wizard never painted {text:?}: {painted:?}"
+        );
+        app.world_mut().resource_mut::<Click>().0 = at;
+        app.update();
+        app.world_mut().resource_mut::<Click>().0 = None;
+    }
+
+    /// ★ `wizard_screen` is the system every click reaches the app through, and
+    /// replacing it with a no-op passed everything: drawing leaves nothing in
+    /// the ECS to observe.
+    #[test]
+    fn the_wizard_runs_as_a_system_and_paints_its_three_panels() {
+        let mut app = app_running_the_wizard();
+
+        app.update();
+
+        let painted = painted_texts(&app);
+        let shows = |needle: &str| painted.iter().any(|text| text.contains(needle));
+        assert!(shows("Step 1 of 7"), "the body column: {painted:?}");
+        assert!(shows("Next"), "the footer nav: {painted:?}");
+        assert!(shows("1. Add your scan"), "and the checklist: {painted:?}");
+    }
+
+    /// ★★ Save's own wiring, which nothing else reaches. `draw_save_modal`,
+    /// `apply_save_choice` and `save_to_default` are each driven directly — but
+    /// deleting either call site from `wizard_screen` left the whole suite
+    /// green, because a call site is not a function anyone can call.
+    ///
+    /// ⚠ Clicked through the real system: the button is painted on one frame
+    /// and the pointer lands on it the next, exactly as a person produces it.
+    #[test]
+    fn clicking_save_in_the_running_wizard_writes_the_files() {
+        let dir = crate::save::tests::temp_dir("through-the-wizard");
+        let (scan, studio) = crate::save::tests::ready_to_save(&dir);
+        let mut app = app_running_the_wizard();
+        app.insert_resource(scan);
+        app.insert_resource(studio);
+        // Step 1 is complete the moment a scan is recorded, so this lands on 2.
+        app.world_mut().resource_mut::<Studio>().next();
+
+        // ⚠ Two frames. egui sizes a scroll area from the previous pass, so the
+        // first one paints only as far as the column it has not measured yet —
+        // Save is not on it, and a click can only land on what was painted.
+        app.update();
+        app.update();
+        click_wizard_on(&mut app, "Save cleaned scan");
+
+        let studio = app.world().resource::<Studio>();
+        assert!(
+            dir.join("base.cleaned.stl").is_file() && studio.project.prep().is_some(),
+            "the click wrote the files and completed the step: {:?}",
+            studio.message
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ⚠ The modal is drawn from `pending_save` in `wizard_screen` alone. Delete
+    /// that block and every control stays gated on a question with nothing on
+    /// screen to answer — the app inert, and no test the wiser.
+    #[test]
+    fn a_held_save_puts_its_question_on_screen() {
+        let dir = crate::save::tests::temp_dir("held-save");
+        let (scan, mut studio) = crate::save::tests::ready_to_save(&dir);
+        studio.pending_save = Some(PendingSave::Confirming {
+            dir: dir.clone(),
+            smoothing: 0,
+        });
+        let mut app = app_running_the_wizard();
+        app.insert_resource(scan);
+        app.insert_resource(studio);
+
+        // ⚠ Two frames, as above: the modal is an `Area`, and egui places one
+        // from the size it measured on the pass before.
+        app.update();
+        app.update();
+
+        let painted = painted_texts(&app);
+        assert!(
+            painted.iter().any(|text| text.contains("already exist")),
+            "the question is on screen: {painted:?}"
+        );
+        assert!(
+            painted.iter().any(|text| text == "Overwrite"),
+            "and so are its answers: {painted:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// ★ The glue between two halves each well tested on its own: the modal
