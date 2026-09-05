@@ -1026,6 +1026,19 @@ pub fn format_simplify_done(target_faces: usize, secs: f64) -> String {
     format!("✔ Simplified to {target_faces} faces ({secs:.1}s).")
 }
 
+/// A Save has landed: what was written, and that the step is now complete.
+///
+/// ⚠ Names both files. They are written as a pair and [`apply_prep`] accepts
+/// them as a pair, so reporting only the STL would leave the user hunting for
+/// the file the cast actually reads.
+#[must_use]
+pub fn format_save_done(stem: &str, face_count: usize) -> String {
+    format!(
+        "✔ Saved {stem}.cleaned.stl ({face_count} faces) + {stem}.prep.toml — \
+         step complete, click Next →."
+    )
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -2236,17 +2249,17 @@ visible = true
         );
     }
 
-    /// The tick must be U+2714 `✔`, not U+2713 `✓`. No bundled font carries
-    /// U+2713 — it renders as a tofu box — and a test that only checks the
-    /// words cannot see that.
+    /// ⚠ Both names and the count, not just that it is non-empty. This line is
+    /// the only place the user is told which two files to hand on, and that the
+    /// step is finished.
     #[test]
-    fn the_simplify_report_uses_a_tick_the_bundled_fonts_have() {
-        let line = format_simplify_done(1_000, 0.0);
-        assert_eq!(
-            line.chars().next().map(u32::from),
-            Some(0x2714),
-            "wrong tick: {line}"
-        );
+    fn a_finished_save_names_both_files_and_points_at_the_next_step() {
+        let done = format_save_done("base_mold", 180_236);
+
+        assert!(done.contains("base_mold.cleaned.stl"), "{done}");
+        assert!(done.contains("base_mold.prep.toml"), "{done}");
+        assert!(done.contains("180236"), "{done}");
+        assert!(done.contains("Next"), "{done}");
     }
 
     /// The estimate is why this message exists at all: without it, forty

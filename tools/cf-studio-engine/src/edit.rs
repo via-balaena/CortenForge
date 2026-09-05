@@ -1333,6 +1333,13 @@ mod tests {
             "the cleaned STL reloads as a mesh"
         );
 
+        // ⚠ The seam the GUI's Save sits on: step 2 hands this pair straight to
+        // `accept_prep`, and a pair that fails there is one the user cannot
+        // finish the step with. Writing both files and reloading the mesh does
+        // not prove it — `accept_prep` also requires >= 2 centerline points.
+        crate::accept_prep(&report.cleaned_stl, &report.prep_toml)
+            .expect("save's own output passes the engine's acceptance check");
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 

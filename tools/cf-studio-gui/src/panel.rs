@@ -2,13 +2,12 @@
 //!
 //! The panel decides nothing. It renders from the lib's plain functions
 //! ([`step_rows`], [`nav_state`], the `format_*` family) and turns clicks into
-//! an [`Intent`], an [`EditIntent`] or a Simplify target — executed by
-//! [`apply_intent`], [`apply_edit_intent`] and [`start_simplify`] respectively.
-//! Keeping the egui closure free of state transitions is what makes the
-//! transitions reviewable — and testable, since they are all methods on
-//! `Studio` or plain functions over an `EditSession`.
+//! the fields of [`Acted`], each executed by a function of its own. Keeping the
+//! egui closure free of state transitions is what makes the transitions
+//! reviewable — and testable, since they are all methods on `Studio` or plain
+//! functions over an `EditSession`.
 //!
-//! ⚠ The three kinds are **not** an accident of growth — see [`Acted`].
+//! ⚠ The split is **not** an accident of growth — see [`Acted`].
 
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
@@ -20,12 +19,13 @@ use cf_studio_gui::{
 
 use crate::dialogs::{DialogKind, PendingDialog};
 use crate::edit::{
-    EditControls, EditIntent, FloorShape, SIMPLIFY_STEP_FACES, STEP_MM, apply_edit_intent,
-    simplify_range,
+    EditControls, EditIntent, FloorShape, SIMPLIFY_STEP_FACES, SMOOTHING_STEP, STEP_MM,
+    apply_edit_intent, simplify_range, smoothing_range,
 };
 use crate::jobs::{SimplifyJob, start_simplify};
+use crate::save;
 use crate::scan::ScanEdit;
-use crate::state::Studio;
+use crate::state::{PendingSave, Studio};
 use crate::widgets::{
     ACTIVE_TEXT, CONTROL_TEXT, DONE_TEXT, ERROR_TEXT, GOOD_FILL, GOOD_TEXT, HEADING_TEXT,
     HINT_TEXT, STATS_TEXT, WARN_TEXT, card, centered_wrapped, cleanup_section, field_grid,
@@ -55,12 +55,15 @@ const SUBHINT_SIZE: f32 = 12.0;
 const ROW_GAP: f32 = 6.0;
 /// The rebuilt-floor picker. Fixed, or the combo stretches to fill the column.
 const SHAPE_PICKER_WIDTH: f32 = 110.0;
+/// The overwrite modal's width. Wider than the body column — it is centred on
+/// the whole window and has to hold a folder path.
+const MODAL_WIDTH: f32 = 460.0;
 
 /// What the frame reported.
 ///
-/// The three are separate because executing an [`EditIntent`] borrows
-/// [`ScanEdit`] mutably, which rebuilds a 200 000-face mesh; the other two must
-/// not pay that. See the warning on [`ScanEdit`].
+/// The fields are separate because executing an [`EditIntent`] borrows
+/// [`ScanEdit`] mutably, which rebuilds a 200 000-face mesh; nothing else here
+/// may pay that. See the warning on [`ScanEdit`].
 #[derive(Default)]
 struct Acted {
     /// A navigation or dialog action.
@@ -72,6 +75,11 @@ struct Acted {
     /// ⚠ Not an [`EditIntent`] variant: starting a Simplify only reads the
     /// scan. See [`start_simplify`].
     simplify: Option<usize>,
+    /// The smoothing a Save was clicked with.
+    ///
+    /// ⚠ Not an [`EditIntent`] variant either, and for the same reason: a Save
+    /// reads the scan and writes the *project*. See [`crate::save`].
+    save: Option<usize>,
 }
 
 impl Acted {
@@ -81,6 +89,7 @@ impl Acted {
         self.nav = inner.nav.or(self.nav);
         self.edit = inner.edit.or(self.edit);
         self.simplify = inner.simplify.or(self.simplify);
+        self.save = inner.save.or(self.save);
     }
 }
 
@@ -130,6 +139,16 @@ pub(crate) fn wizard_screen(
         acted.merge(draw_body(ui, &studio, &dialog, &scan, &mut controls));
     });
 
+    // ⚠ Drawn from `pending_save` alone, outside the step match: the state that
+    // gates every control and the modal that explains why it is gated are the
+    // same `Option`, so neither can outlive the other.
+    if let Some(PendingSave::Confirming { dir, smoothing }) = studio.pending_save.clone()
+        && let Some(choice) = draw_save_modal(ctx, &save::overwrite_question(&studio, &dir))
+    {
+        // ⚠ `&scan`, immutably — a Save only reads the session.
+        apply_save_choice(choice, &dir, smoothing, &scan, &mut studio, &mut dialog);
+    }
+
     if let Some(intent) = acted.nav {
         apply_intent(intent, &mut studio, &mut dialog);
     }
@@ -139,6 +158,10 @@ pub(crate) fn wizard_screen(
     // ⚠ `&scan`, immutably — see [`start_simplify`].
     if let Some(target_faces) = acted.simplify {
         start_simplify(target_faces, &scan, &mut studio, &mut job);
+    }
+    // ⚠ `&scan`, immutably, for the same reason.
+    if let Some(smoothing) = acted.save {
+        save::save_to_default(&scan, &mut studio, smoothing);
     }
     Ok(())
 }
@@ -177,12 +200,13 @@ fn draw_checklist(ui: &mut egui::Ui, studio: &Studio) {
 
 /// Whether the wizard is accepting actions.
 ///
-/// A long job owns the app until it finishes and an open OS dialog owns it
-/// until it resolves — and **paging counts**: the picker's result lands on
-/// whichever step the cursor has reached by then, and a scan landing resets the
-/// project to step 1. One definition so a new control cannot honour half of it.
+/// A long job owns the app until it finishes, an open OS dialog owns it until
+/// it resolves, and an unanswered Save owns it until it is answered — and
+/// **paging counts**: the picker's result lands on whichever step the cursor
+/// has reached by then, and a scan landing resets the project to step 1. One
+/// definition so a new control cannot honour half of it.
 fn accepting_actions(studio: &Studio, dialog: &PendingDialog) -> bool {
-    !studio.busy && !dialog.is_open()
+    !studio.busy && !dialog.is_open() && studio.pending_save.is_none()
 }
 
 /// Back / Help / Next, gated by [`nav_state`].
@@ -345,6 +369,21 @@ fn draw_clean_scan(
         );
     }
 
+    // Last, as it was pre-port, and shown even with no centerline: the hint is
+    // where the user is told which step above unblocks it.
+    ui.add_space(SECTION_GAP);
+    cleanup_section(
+        ui,
+        "Finally — save your cleaned scan",
+        if has_centerline {
+            ""
+        } else {
+            "Do \u{201c}stand it upright\u{201d} above first."
+        },
+        false,
+        |ui| acted.save = draw_save_row(ui, controls, ready && has_centerline),
+    );
+
     // Secondary, and centred like the rest of the section controls.
     ui.add_space(SECTION_GAP);
     ui.vertical_centered(|ui| {
@@ -355,15 +394,36 @@ fn draw_clean_scan(
             acted.edit = Some(EditIntent::Reset);
         }
     });
-
-    ui.add_space(SECTION_GAP);
-    centered_wrapped(
-        ui,
-        SUBHINT_SIZE,
-        HINT_TEXT,
-        "Save arrives in the next build of this screen.",
-    );
     acted
+}
+
+/// The save row: how much to smooth, then the button that writes both files.
+///
+/// ⚠ One row, as it was pre-port — *not* stacked like [`draw_trim_row`].
+/// Measured, because that row's overflow makes stacking look like the safe
+/// default: this one reaches 309 px of the 404 px column. Stacking it would be
+/// layout guessed rather than measured.
+fn draw_save_row(ui: &mut egui::Ui, controls: &mut EditControls, ready: bool) -> Option<usize> {
+    let mut clicked = None;
+    ui.vertical_centered(|ui| {
+        ui.horizontal(|ui| {
+            ui.colored_label(CONTROL_TEXT, "Smoothing");
+            step_box(
+                ui,
+                &mut controls.smoothing,
+                smoothing_range(),
+                SMOOTHING_STEP,
+                ready,
+            );
+            if ui
+                .add_enabled(ready, egui::Button::new("Save cleaned scan"))
+                .clicked()
+            {
+                clicked = Some(controls.smoothing_iters());
+            }
+        });
+    });
+    clicked
 }
 
 /// The tidy row: Weld, then a face target and Simplify.
@@ -433,6 +493,52 @@ fn draw_trim_row(
         }
     });
     intent
+}
+
+/// How the overwrite question was answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SaveChoice {
+    /// Write over what is already in the folder.
+    Overwrite,
+    /// Open a picker for a different folder.
+    ChooseFolder,
+    /// Do not save.
+    Cancel,
+}
+
+/// The overwrite question, over the whole window.
+///
+/// ⚠ An [`egui::Modal`], not the `rfd::MessageDialog` the pre-port used: a
+/// native dialog blocks, and blocking from a Bevy system deadlocks the app on
+/// macOS every time — see [`crate::dialogs`].
+///
+/// Returns the answer instead of acting on it, so all three outcomes are
+/// reachable from a test without putting an OS picker on screen.
+fn draw_save_modal(ctx: &egui::Context, question: &str) -> Option<SaveChoice> {
+    let mut choice = None;
+    let modal = egui::Modal::new(egui::Id::new("overwrite-outputs")).show(ctx, |ui| {
+        ui.set_max_width(MODAL_WIDTH);
+        centered_wrapped(ui, SUBHEADING_SIZE, HEADING_TEXT, "Output already exists");
+        ui.add_space(ROW_GAP);
+        wrapped_label(ui, question);
+        ui.add_space(SECTION_GAP);
+        ui.horizontal(|ui| {
+            if ui.button("Overwrite").clicked() {
+                choice = Some(SaveChoice::Overwrite);
+            }
+            if ui.button("Choose a different folder\u{2026}").clicked() {
+                choice = Some(SaveChoice::ChooseFolder);
+            }
+            if ui.button("Cancel").clicked() {
+                choice = Some(SaveChoice::Cancel);
+            }
+        });
+    });
+    // Escape and a click on the backdrop are the Cancel button by other means.
+    if choice.is_none() && modal.should_close() {
+        choice = Some(SaveChoice::Cancel);
+    }
+    choice
 }
 
 /// Re-cap the chopped floor. Titled so it is clear this rebuilds the floor the
@@ -650,6 +756,34 @@ fn draw_pour(ui: &mut egui::Ui, studio: &Studio) -> Option<Intent> {
     intent
 }
 
+/// Execute the answer the overwrite modal came back with.
+///
+/// ⚠ Extracted for [`apply_intent`]'s reason, and it is the one this branch
+/// learned the hard way: inline in [`wizard_screen`] this was the only intent
+/// kind without an executor a test could call, and all three miswirings passed
+/// the whole suite — Cancel overwriting the files, Overwrite quietly saving
+/// nothing, and a folder answer that opens no picker and leaves the app inert.
+fn apply_save_choice(
+    choice: SaveChoice,
+    dir: &std::path::Path,
+    smoothing: usize,
+    scan: &ScanEdit,
+    studio: &mut Studio,
+    dialog: &mut PendingDialog,
+) {
+    match choice {
+        SaveChoice::Overwrite => save::write_into(scan, studio, dir, smoothing),
+        SaveChoice::ChooseFolder => {
+            studio.pending_save = Some(PendingSave::ChoosingFolder { smoothing });
+            dialog.pick_folder(
+                DialogKind::PrepDest,
+                "Choose a folder to save the cleaned scan",
+            );
+        }
+        SaveChoice::Cancel => save::settle(studio, Ok("Save cancelled.".to_string())),
+    }
+}
+
 /// Execute an intent. Every state transition in the wizard passes through here.
 fn apply_intent(intent: Intent, studio: &mut Studio, dialog: &mut PendingDialog) {
     match intent {
@@ -718,29 +852,35 @@ mod tests {
 
     /// ★ The one definition every control on every screen is gated on.
     ///
-    /// ⚠ All four states, not just the happy one. A constant answer, or `||`
-    /// for `&&`, leaves the app either frozen with nothing running or clickable
-    /// in the middle of a background job — neither of which reports itself.
+    /// ⚠ Enumerated, not branched: it is a three-way `&&`, so a constant
+    /// answer, a dropped term or an `||` each leave the app either frozen with
+    /// nothing running or clickable in the middle of a job — and none of those
+    /// report themselves. Eight states is all of them.
     #[test]
-    fn actions_are_accepted_only_with_no_job_running_and_no_dialog_open() {
-        let idle = Studio::default();
-        let busy = Studio {
-            busy: true,
-            ..Studio::default()
-        };
-        let closed = PendingDialog::default();
-        let open = PendingDialog::opened(DialogKind::ScanFile);
+    fn actions_are_accepted_only_when_nothing_else_holds_the_app() {
+        for busy in [false, true] {
+            for dialog_open in [false, true] {
+                for saving in [false, true] {
+                    let studio = Studio {
+                        busy,
+                        pending_save: saving
+                            .then_some(PendingSave::ChoosingFolder { smoothing: 0 }),
+                        ..Studio::default()
+                    };
+                    let dialog = if dialog_open {
+                        PendingDialog::opened(DialogKind::ScanFile)
+                    } else {
+                        PendingDialog::default()
+                    };
 
-        assert!(accepting_actions(&idle, &closed), "idle, with nothing open");
-        assert!(
-            !accepting_actions(&busy, &closed),
-            "a running job holds the app"
-        );
-        assert!(
-            !accepting_actions(&idle, &open),
-            "and so does an open dialog"
-        );
-        assert!(!accepting_actions(&busy, &open), "and the two together");
+                    assert_eq!(
+                        accepting_actions(&studio, &dialog),
+                        !busy && !dialog_open && !saving,
+                        "busy={busy} dialog_open={dialog_open} saving={saving}"
+                    );
+                }
+            }
+        }
     }
 
     /// Where both fired the inner one wins, as the pre-merge code did.
@@ -792,8 +932,23 @@ mod tests {
                     body(ui);
                 });
             });
+        // The fonts that ship, so both what is measured here and what is
+        // checked for glyphs are what the app actually draws.
+        harness.ctx.set_fonts(crate::plugin::font_definitions());
         harness.run();
 
+        let harness_fonts = harness.ctx.clone();
+        // ⚠ Every piece of text on the screen, not just the control names.
+        // Prose sits on `Role::Label` nodes and carries its text in `value()`,
+        // not `label()`; reading only `label()` returns the buttons and makes
+        // prose look unreachable, which leaves this screen's own labels — the
+        // stepper's caption, the hint under a heading — in no gate at all.
+        for node in harness.root().children_recursive() {
+            let widget = node.accesskit_node();
+            if let Some(text) = widget.label().or_else(|| widget.value()) {
+                assert_renders(&harness_fonts, &text);
+            }
+        }
         let column = column.get();
         assert_eq!(
             column.width(),
@@ -822,6 +977,99 @@ mod tests {
                 Some(name)
             })
             .collect()
+    }
+
+    /// Fail if any character of `text` has no glyph in the fonts that ship.
+    ///
+    /// ⚠ Asks the font stack instead of encoding the answer. A codepoint gate
+    /// only rejects the one character somebody already knew about.
+    ///
+    /// ⚠ Control characters are skipped: `has_glyph` says `false` for `\n`,
+    /// which layout breaks the line on rather than drawing, so checking it
+    /// would fail every multi-line message on screen.
+    fn assert_renders(ctx: &egui::Context, text: &str) {
+        let font = egui::FontId::default();
+        for c in text.chars().filter(|c| !c.is_control()) {
+            assert!(
+                ctx.fonts_mut(|f| f.has_glyph(&font, c)),
+                "U+{:04X} {c:?} has no glyph — it draws as a box in {text:?}",
+                u32::from(c),
+            );
+        }
+    }
+
+    /// ★ The messages, which no census reaches: the accessibility tree names
+    /// controls, and every one of these is prose under them.
+    ///
+    /// ⚠ This is the gate `format_save_done` needed. It shipped U+2713 `✓`,
+    /// which no bundled font carries, because the check that existed named one
+    /// function and compared one codepoint. The lib cannot run this itself —
+    /// it is deliberately toolkit-free, and the fonts belong to the panel.
+    ///
+    /// ⚠ Every producer in the lib, not step 2's alone: the pour and mold
+    /// lines carry the rarest glyphs in the app (`⏱`, `🎉`, `·`, `±`, `°`).
+    #[test]
+    fn every_message_is_drawable_in_the_fonts_that_ship() {
+        let mut harness = Harness::new_ui(|_| {});
+        harness.ctx.set_fonts(crate::plugin::font_definitions());
+        harness.run();
+
+        let project = ready_to_pour();
+        let molds = project
+            .molds()
+            .expect("the fixture is driven to the pour")
+            .clone();
+        // A path, not a folder: the question only interpolates one, so creating
+        // it would be filesystem work with a cleanup that a failure would skip.
+        let dir = std::env::temp_dir().join("cf-glyph-gate");
+        let (_scan, studio) = crate::save::tests::ready_to_save(&dir);
+
+        let mut messages = vec![
+            cf_studio_gui::format_save_done("base_mold", 180_236),
+            cf_studio_gui::format_simplify_done(200_000, 12.3),
+            cf_studio_gui::format_simplify_started(50_000),
+            cf_studio_gui::format_floor_found(1, 29, 7.7),
+            cf_studio_gui::format_floor_no_centerline(3),
+            format_scan_stats(200_000, 600_000),
+            cf_studio_gui::format_elapsed(3671),
+            cf_studio_gui::print_step_summary(&project),
+            cf_studio_gui::format_molds_summary(&molds),
+            format_pour_plan(&molds.pour_plan),
+            format_pour_active(&molds.pour_plan, 0),
+            crate::save::overwrite_question(&studio, &dir),
+        ];
+        // Each urgency band words itself differently.
+        messages.extend([600_i64, 120, -30].map(|secs| pour_countdown(secs).text));
+
+        for message in messages {
+            assert_renders(&harness.ctx, &message);
+        }
+
+        // Step 2's op reports, which the lib does not produce. `↺ Reset` is one
+        // of the three arrows `plugin::font_definitions` exists for, and the
+        // only one no control label already covers — `← Back` and `Next →` are
+        // in the nav census.
+        let mut screen = cleanup_screen();
+        let mut reports = Vec::new();
+        for intent in [EditIntent::Weld, EditIntent::FindFloor, EditIntent::Reset] {
+            apply_edit_intent(
+                intent,
+                &mut screen.scan,
+                &mut screen.studio,
+                &mut screen.controls,
+            );
+            let reported = screen.studio.message.as_ref().expect("every op reports");
+            let (Ok(text) | Err(text)) = reported;
+            assert_renders(&harness.ctx, text);
+            reports.push(text.clone());
+        }
+        // ⚠ Otherwise this loop checks whatever the ops happen to say. Reword
+        // one — or let a guard report in its place — and the arrow this is here
+        // for stops being checked, with the gate still green.
+        assert!(
+            reports.iter().any(|text| text.contains('\u{21ba}')),
+            "no op reported the arrow this covers: {reports:?}"
+        );
     }
 
     /// Step 2 with every section revealed: a scan loaded, a centerline traced,
@@ -954,6 +1202,10 @@ mod tests {
                 "TextInput",
                 "+",
                 "Reconstruct floor",
+                "−",
+                "TextInput",
+                "+",
+                "Save cleaned scan",
                 "Start over",
             ]
         );
@@ -1000,6 +1252,514 @@ mod tests {
         );
         assert!(controls_in_column(draw_porting_notice).is_empty());
         assert!(controls_in_column(|ui| draw_checklist(ui, &studio)).is_empty());
+    }
+
+    /// ⚠ Step 2's earlier states. Each shows text that exists in no other one —
+    /// the hint naming the step that unblocks Save, and the line telling you to
+    /// add a scan at all — so censusing only the revealed screen leaves both of
+    /// them, and the controls beside them, ungated.
+    #[test]
+    fn every_earlier_state_of_the_cleanup_screen_is_laid_out_too() {
+        let mut empty = CleanupScreen {
+            scan: ScanEdit::default(),
+            ..cleanup_screen()
+        };
+        assert!(
+            controls_in_column(|ui| {
+                let _ = draw_clean_scan(
+                    ui,
+                    &empty.studio,
+                    &empty.dialog,
+                    &empty.scan,
+                    &mut empty.controls,
+                );
+            })
+            .is_empty(),
+            "with no scan there is nothing to offer but the line saying so"
+        );
+
+        let mut screen = cleanup_screen();
+        screen.scan.set(ActiveScan::synthetic(open_tube()));
+
+        let controls = controls_in_column(|ui| {
+            let _ = draw_clean_scan(
+                ui,
+                &screen.studio,
+                &screen.dialog,
+                &screen.scan,
+                &mut screen.controls,
+            );
+        });
+
+        assert_eq!(
+            controls,
+            [
+                "Weld points",
+                "−",
+                "TextInput",
+                "+",
+                "Simplify",
+                "Find floor",
+                "−",
+                "TextInput",
+                "+",
+                "Save cleaned scan",
+                "Start over",
+            ]
+        );
+    }
+
+    /// Lay `draw_clean_scan` out for a screen that has, or has not, been stood
+    /// up, and report whether its Save button is disabled.
+    ///
+    /// ⚠ The accessibility tree's own flag. Presence is not the question — the
+    /// section is on screen either way, which is how the user is told what to
+    /// do first.
+    fn save_button_disabled(screen: &mut CleanupScreen) -> Option<bool> {
+        use egui_kittest::kittest::NodeT;
+
+        let mut harness = Harness::builder()
+            .with_size(egui::Vec2::new(BODY_WIDTH, COLUMN_HEIGHT))
+            .build(|ctx| {
+                body_column(ctx, |ui| {
+                    let _ = draw_clean_scan(
+                        ui,
+                        &screen.studio,
+                        &screen.dialog,
+                        &screen.scan,
+                        &mut screen.controls,
+                    );
+                });
+            });
+        harness.run();
+        harness
+            .root()
+            .children_recursive()
+            .find(|node| node.accesskit_node().label().as_deref() == Some("Save cleaned scan"))
+            .map(|node| node.accesskit_node().is_disabled())
+    }
+
+    /// ★ Save is gated on the centerline *and* on the app being free — both
+    /// terms, because a test that only stands the scan up passes just as well
+    /// with the `ready` half deleted.
+    ///
+    /// ⚠ `EditSession::save` refuses without a centerline, so an enabled button
+    /// there buys the user a click and a "Save failed" for it; and a Save that
+    /// ran during a job or an open picker would write while the question that
+    /// gated it is still on screen.
+    #[test]
+    fn save_is_offered_only_once_the_scan_is_stood_up_and_the_app_is_free() {
+        assert_eq!(
+            save_button_disabled(&mut cleanup_screen()),
+            Some(false),
+            "stood up, nothing else running"
+        );
+
+        let mut flat = cleanup_screen();
+        // Back to a freshly loaded scan: no centerline, so no cast frame.
+        flat.scan.set(ActiveScan::synthetic(open_tube()));
+        assert_eq!(
+            save_button_disabled(&mut flat),
+            Some(true),
+            "not yet stood up"
+        );
+
+        let mut busy = cleanup_screen();
+        busy.studio.busy = true;
+        assert_eq!(
+            save_button_disabled(&mut busy),
+            Some(true),
+            "a job is running"
+        );
+
+        let mut asking = cleanup_screen();
+        asking.dialog = PendingDialog::opened(DialogKind::PrepDest);
+        assert_eq!(
+            save_button_disabled(&mut asking),
+            Some(true),
+            "a picker is open"
+        );
+    }
+
+    /// Lay the save row out with `controls`, click `label`, and report what the
+    /// row itself said — the payload the click carries, not the field behind it.
+    fn save_row_after(label: &str, controls: &mut EditControls) -> Option<usize> {
+        let reported = std::cell::Cell::new(None);
+        {
+            let borrowed = std::cell::RefCell::new(&mut *controls);
+            let mut harness = Harness::builder()
+                .with_size(egui::Vec2::new(BODY_WIDTH, COLUMN_HEIGHT))
+                .build(|ctx| {
+                    body_column(ctx, |ui| {
+                        if let Some(smoothing) = draw_save_row(ui, &mut borrowed.borrow_mut(), true)
+                        {
+                            reported.set(Some(smoothing));
+                        }
+                    });
+                });
+            harness.run();
+            harness.get_by_label(label).click();
+            harness.run();
+        }
+        reported.get()
+    }
+
+    /// ★ The click has to carry the number on screen. Every other save gate
+    /// passes with the button sending a constant, the field pinned by its own
+    /// bounds, or `smoothing_iters` answering 0.
+    ///
+    /// ⚠ One `+` is one more pass — the decision `SMOOTHING_STEP` records, and
+    /// the reason it is not the face target's step.
+    #[test]
+    fn the_save_button_carries_the_smoothing_the_stepper_shows() {
+        let shown = EditControls::default().smoothing_iters();
+
+        let mut controls = EditControls::default();
+        assert_eq!(
+            save_row_after("Save cleaned scan", &mut controls),
+            Some(shown),
+            "the click carries what the field shows"
+        );
+
+        let mut controls = EditControls::default();
+        assert_eq!(
+            save_row_after("+", &mut controls),
+            None,
+            "stepping the field is not a save"
+        );
+        assert_eq!(
+            save_row_after("Save cleaned scan", &mut controls),
+            Some(shown + 1),
+            "and the click after one + carries one more pass"
+        );
+    }
+
+    /// What one frame of the real wizard painted, and where.
+    #[derive(Resource, Default)]
+    struct Painted(Vec<(String, egui::Rect)>);
+
+    /// The click to deliver on the next frame, if any.
+    #[derive(Resource, Default)]
+    struct Click(Option<egui::Pos2>);
+
+    /// Stand `wizard_screen` up as the Bevy system it is, with the egui pass
+    /// `bevy_egui`'s plugin would normally open around it.
+    ///
+    /// ⚠ The plugin itself needs a window and a render device, so it cannot run
+    /// here — `begin_pass` / `end_pass` are all it does around the system, and
+    /// doing them by hand is what makes the system reachable at all.
+    fn app_running_the_wizard() -> App {
+        use bevy_egui::{EguiContext, EguiUserTextures, PrimaryEguiContext};
+
+        fn begin(mut q: Query<&mut EguiContext>, click: Res<Click>) {
+            let Some(mut ctx) = q.iter_mut().next() else {
+                return;
+            };
+            let mut events = Vec::new();
+            if let Some(pos) = click.0 {
+                events.push(egui::Event::PointerMoved(pos));
+                for pressed in [true, false] {
+                    events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    });
+                }
+            }
+            // `main.rs`'s opening resolution, so this lays out at the size the
+            // app really runs at.
+            ctx.get_mut().begin_pass(egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::pos2(0.0, 0.0),
+                    egui::vec2(1280.0, 900.0),
+                )),
+                events,
+                ..Default::default()
+            });
+        }
+
+        fn end(mut q: Query<&mut EguiContext>, mut painted: ResMut<Painted>) {
+            let Some(mut ctx) = q.iter_mut().next() else {
+                return;
+            };
+            painted.0.clear();
+            for shape in &ctx.get_mut().end_pass().shapes {
+                if let egui::epaint::Shape::Text(text) = &shape.shape {
+                    painted.0.push((
+                        text.galley.text().to_owned(),
+                        egui::Rect::from_min_size(text.pos, text.galley.size()),
+                    ));
+                }
+            }
+        }
+
+        let mut app = App::new();
+        app.init_resource::<EguiUserTextures>()
+            .init_resource::<Painted>()
+            .init_resource::<Click>()
+            .init_resource::<Studio>()
+            .init_resource::<PendingDialog>()
+            .init_resource::<ScanEdit>()
+            .init_resource::<EditControls>()
+            .init_resource::<SimplifyJob>()
+            .add_systems(Update, (begin, wizard_screen, end).chain());
+        app.world_mut().spawn(PrimaryEguiContext);
+        app
+    }
+
+    fn painted_texts(app: &App) -> Vec<String> {
+        app.world()
+            .resource::<Painted>()
+            .0
+            .iter()
+            .map(|(text, _)| text.clone())
+            .collect()
+    }
+
+    /// Click the middle of whatever the wizard painted `text` at, next frame.
+    fn click_wizard_on(app: &mut App, text: &str) {
+        let painted = &app.world().resource::<Painted>().0;
+        let at = painted
+            .iter()
+            .find(|(shown, _)| shown.starts_with(text))
+            .map(|(_, rect)| rect.center());
+        assert!(
+            at.is_some(),
+            "the wizard never painted {text:?}: {painted:?}"
+        );
+        app.world_mut().resource_mut::<Click>().0 = at;
+        app.update();
+        app.world_mut().resource_mut::<Click>().0 = None;
+    }
+
+    /// ★ `wizard_screen` is the system every click reaches the app through, and
+    /// replacing it with a no-op passed everything: drawing leaves nothing in
+    /// the ECS to observe.
+    #[test]
+    fn the_wizard_runs_as_a_system_and_paints_its_three_panels() {
+        let mut app = app_running_the_wizard();
+
+        app.update();
+
+        let painted = painted_texts(&app);
+        let shows = |needle: &str| painted.iter().any(|text| text.contains(needle));
+        assert!(shows("Step 1 of 7"), "the body column: {painted:?}");
+        assert!(shows("Next"), "the footer nav: {painted:?}");
+        assert!(shows("1. Add your scan"), "and the checklist: {painted:?}");
+    }
+
+    /// ★★ Save's own wiring, which nothing else reaches. `draw_save_modal`,
+    /// `apply_save_choice` and `save_to_default` are each driven directly — but
+    /// deleting either call site from `wizard_screen` left the whole suite
+    /// green, because a call site is not a function anyone can call.
+    ///
+    /// ⚠ Clicked through the real system: the button is painted on one frame
+    /// and the pointer lands on it the next, exactly as a person produces it.
+    #[test]
+    fn clicking_save_in_the_running_wizard_writes_the_files() {
+        let dir = crate::save::tests::temp_dir("through-the-wizard");
+        let (scan, studio) = crate::save::tests::ready_to_save(&dir);
+        let mut app = app_running_the_wizard();
+        app.insert_resource(scan);
+        app.insert_resource(studio);
+        // Step 1 is complete the moment a scan is recorded, so this lands on 2.
+        app.world_mut().resource_mut::<Studio>().next();
+
+        // ⚠ Two frames. egui sizes a scroll area from the previous pass, so the
+        // first one paints only as far as the column it has not measured yet —
+        // Save is not on it, and a click can only land on what was painted.
+        app.update();
+        app.update();
+        click_wizard_on(&mut app, "Save cleaned scan");
+
+        let studio = app.world().resource::<Studio>();
+        assert!(
+            dir.join("base.cleaned.stl").is_file() && studio.project.prep().is_some(),
+            "the click wrote the files and completed the step: {:?}",
+            studio.message
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ⚠ The modal is drawn from `pending_save` in `wizard_screen` alone. Delete
+    /// that block and every control stays gated on a question with nothing on
+    /// screen to answer — the app inert, and no test the wiser.
+    #[test]
+    fn a_held_save_puts_its_question_on_screen() {
+        let dir = crate::save::tests::temp_dir("held-save");
+        let (scan, mut studio) = crate::save::tests::ready_to_save(&dir);
+        studio.pending_save = Some(PendingSave::Confirming {
+            dir: dir.clone(),
+            smoothing: 0,
+        });
+        let mut app = app_running_the_wizard();
+        app.insert_resource(scan);
+        app.insert_resource(studio);
+
+        // ⚠ Two frames, as above: the modal is an `Area`, and egui places one
+        // from the size it measured on the pass before.
+        app.update();
+        app.update();
+
+        let painted = painted_texts(&app);
+        assert!(
+            painted.iter().any(|text| text.contains("already exist")),
+            "the question is on screen: {painted:?}"
+        );
+        assert!(
+            painted.iter().any(|text| text == "Overwrite"),
+            "and so are its answers: {painted:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★ The glue between two halves each well tested on its own: the modal
+    /// returns the right answer, and `save` does the right thing — but nothing
+    /// said the answer reaches the action it names. Miswiring any of the three
+    /// passed the entire suite.
+    ///
+    /// ⚠ `ChooseFolder` is checked by the state it leaves, not by the picker
+    /// opening: `pick_folder` would put a real OS dialog on screen, so the
+    /// dialog here is already open and its call is a no-op. That the call
+    /// exists at all is the one part of this arm a hand test still owns.
+    #[test]
+    fn each_modal_answer_reaches_the_action_it_names() {
+        let dir = crate::save::tests::temp_dir("answers");
+        let question = std::fs::read_to_string(dir.join("base.cleaned.stl"));
+        assert!(question.is_err(), "the folder starts empty");
+
+        let (scan, mut studio) = crate::save::tests::ready_to_save(&dir);
+        let mut dialog = PendingDialog::default();
+        apply_save_choice(
+            SaveChoice::Overwrite,
+            &dir,
+            0,
+            &scan,
+            &mut studio,
+            &mut dialog,
+        );
+        assert!(
+            dir.join("base.cleaned.stl").is_file() && studio.project.prep().is_some(),
+            "Overwrite writes and completes the step: {:?}",
+            studio.message
+        );
+
+        let (scan, mut studio) = crate::save::tests::ready_to_save(&dir);
+        std::fs::write(dir.join("base.cleaned.stl"), b"keep me").expect("a decoy");
+        apply_save_choice(SaveChoice::Cancel, &dir, 0, &scan, &mut studio, &mut dialog);
+        assert_eq!(
+            std::fs::read(dir.join("base.cleaned.stl")).expect("still there"),
+            b"keep me",
+            "Cancel must not write — miswired, it overwrites what the user kept"
+        );
+        assert!(studio.pending_save.is_none(), "and it hands the app back");
+
+        let (scan, mut studio) = crate::save::tests::ready_to_save(&dir);
+        let mut open = PendingDialog::opened(DialogKind::PrepDest);
+        apply_save_choice(
+            SaveChoice::ChooseFolder,
+            &dir,
+            7,
+            &scan,
+            &mut studio,
+            &mut open,
+        );
+        assert_eq!(
+            studio.pending_save,
+            Some(PendingSave::ChoosingFolder { smoothing: 7 }),
+            "a folder answer waits for the folder, carrying the smoothing"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The question the modal is asked to render. Its wording belongs to
+    /// [`save::overwrite_question`], not to this gate.
+    const A_QUESTION: &str = "base.cleaned.stl / .prep.toml already exist in /tmp.";
+
+    /// Lay the overwrite modal out, optionally `pick` one of its buttons, and
+    /// report the buttons it offered and the answer it gave.
+    ///
+    /// ⚠ The answer is accumulated, not read off the last frame: `run` may draw
+    /// several, and a later one reporting `None` would erase the click.
+    fn modal_answer(pick: Option<&str>) -> (Vec<String>, Option<SaveChoice>) {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::NodeT;
+
+        let answer = std::cell::Cell::new(None);
+        let mut harness = Harness::builder()
+            .with_size(egui::Vec2::new(MODAL_WIDTH * 2.0, COLUMN_HEIGHT))
+            .build(|ctx| {
+                if let Some(choice) = draw_save_modal(ctx, A_QUESTION) {
+                    answer.set(Some(choice));
+                }
+            });
+        harness.ctx.set_fonts(crate::plugin::font_definitions());
+        harness.run();
+
+        // ⚠ The modal is the eighth surface, and `controls_in_column` cannot
+        // reach it: it is centred on the window, not laid out in the body
+        // column. So the two things that helper does for every other screen —
+        // does it fit, and can it be drawn — are done here instead.
+        let placed: Vec<(String, egui::Rect)> = harness
+            .root()
+            .children_recursive()
+            .filter(|node| node.accesskit_node().role() == Role::Button)
+            .map(|node| {
+                (
+                    node.accesskit_node().label().unwrap_or_default(),
+                    node.rect(),
+                )
+            })
+            .collect();
+        for (label, _) in &placed {
+            assert_renders(&harness.ctx, label);
+        }
+        assert_renders(&harness.ctx, A_QUESTION);
+        let left = placed.iter().map(|(_, r)| r.min.x).fold(f32::MAX, f32::min);
+        let right = placed.iter().map(|(_, r)| r.max.x).fold(f32::MIN, f32::max);
+        assert!(
+            right - left <= MODAL_WIDTH,
+            "the answers span {:.1} px of a {MODAL_WIDTH} px modal, and egui \
+             clips the overflow rather than wrapping it: {placed:?}",
+            right - left,
+        );
+
+        let buttons = placed.into_iter().map(|(label, _)| label).collect();
+        if let Some(label) = pick {
+            harness.get_by_label(label).click();
+            harness.run();
+        }
+        (buttons, answer.get())
+    }
+
+    /// ★ The modal, as it is built. Its three answers are the only way out of a
+    /// held Save — `pending_save` gates every other control — so a button that
+    /// is missing, or wired to the wrong answer, strands the app.
+    ///
+    /// ⚠ Driven through the modal rather than asserted on [`SaveChoice`], which
+    /// is three unit variants and agrees with itself. And it must answer only
+    /// when clicked: `should_close` also fires on Escape and on the backdrop,
+    /// and a modal that reported Cancel unprompted would cancel every save the
+    /// moment it was raised.
+    #[test]
+    fn the_overwrite_modal_offers_three_answers_and_each_one_lands() {
+        let (buttons, unclicked) = modal_answer(None);
+
+        assert_eq!(
+            buttons,
+            ["Overwrite", "Choose a different folder…", "Cancel"]
+        );
+        assert_eq!(unclicked, None, "and it answers nothing until asked");
+        assert_eq!(
+            modal_answer(Some("Overwrite")).1,
+            Some(SaveChoice::Overwrite)
+        );
+        assert_eq!(
+            modal_answer(Some("Choose a different folder…")).1,
+            Some(SaveChoice::ChooseFolder)
+        );
+        assert_eq!(modal_answer(Some("Cancel")).1, Some(SaveChoice::Cancel));
     }
 
     /// Lay `row` out, click its first `label` button, and hand back the
