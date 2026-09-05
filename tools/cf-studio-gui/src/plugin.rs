@@ -222,25 +222,19 @@ mod tests {
     }
 
     /// ★★ The plugin's own registrations, which nothing else reaches. Every
-    /// resource the screens take is inserted by hand in their tests, so
-    /// dropping any one `init_resource` here left all 85 of them green and the
-    /// app dead on the frame it first drew — Bevy skips a system whose params
-    /// it cannot build, so the wizard simply stops appearing.
+    /// resource the wizard takes is inserted by hand in its tests, so dropping
+    /// any one `init_resource` here left the whole suite green — Bevy skips a
+    /// system whose params it cannot build, so the wizard simply stops
+    /// appearing.
     ///
     /// ⚠ Driven through the real schedule, not by naming the resources. A list
-    /// gates only what somebody remembered to add to it; running the pass gates
-    /// whatever the screens ask for today.
+    /// gates only what somebody remembered to add to it.
     #[test]
-    fn the_plugin_gives_the_screens_every_resource_they_ask_for() {
-        use bevy_egui::{EguiUserTextures, PrimaryEguiContext};
+    fn the_plugin_gives_the_wizard_every_resource_it_asks_for() {
+        use crate::egui_harness::{begin, end, painted_texts};
 
-        use crate::egui_harness::{Click, Painted, begin, end, painted_texts};
-
-        let mut app = App::new();
+        let mut app = crate::egui_harness::app();
         app.add_plugins((MinimalPlugins, StatesPlugin, StudioPlugin))
-            .init_resource::<EguiUserTextures>()
-            .init_resource::<Painted>()
-            .init_resource::<Click>()
             .add_systems(
                 EguiPrimaryContextPass,
                 (
@@ -248,7 +242,6 @@ mod tests {
                     end.after(fit_viewport_to_free_space),
                 ),
             );
-        app.world_mut().spawn(PrimaryEguiContext);
         app.world_mut()
             .resource_mut::<NextState<Screen>>()
             .set(Screen::Wizard);

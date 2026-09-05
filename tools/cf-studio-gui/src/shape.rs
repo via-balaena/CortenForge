@@ -31,11 +31,6 @@ impl Default for ShapeControls {
     }
 }
 
-/// The inset field's `(min, max)`.
-pub(crate) const fn cavity_range() -> (i32, i32) {
-    (CAVITY_MIN_MM, CAVITY_MAX_MM)
-}
-
 impl ShapeControls {
     /// The plug the fields describe, in the SDK's meters.
     ///
@@ -52,6 +47,11 @@ impl ShapeControls {
             ridges: RidgeOptions::default(),
         }
     }
+}
+
+/// The inset field's `(min, max)`.
+pub(crate) const fn cavity_range() -> (i32, i32) {
+    (CAVITY_MIN_MM, CAVITY_MAX_MM)
 }
 
 /// Commit the shaped plug, and move on to the layer stack if it took.
