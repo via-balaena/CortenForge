@@ -1693,12 +1693,10 @@ pub(crate) mod tests {
             "and Continue moved on"
         );
 
+        settle(&mut app);
         // ★ The end of the trap `commit_plug` guards. `Studio::next` clears the
         // message, so reporting before advancing lands the user on step 4 with
         // nothing on it — which only the screen itself can show.
-        // ⚠ A frame the click did not draw: `click_on` leaves behind the pass
-        // that delivered it, which egui drew before `commit_plug` ran.
-        settle(&mut app);
         let painted = painted_texts(&app);
         assert!(
             painted.iter().any(|text| text.contains("Step 4 of 7")),
@@ -1730,6 +1728,80 @@ pub(crate) mod tests {
                 "step {} says so instead of showing nothing: {painted:?}",
                 step.number()
             );
+        }
+    }
+
+    /// Whether step 3's `label` control is disabled, laid out for `studio`.
+    fn shape_control_disabled(
+        studio: &Studio,
+        dialog: &PendingDialog,
+        label: &str,
+    ) -> Option<bool> {
+        use egui_kittest::kittest::NodeT;
+
+        let mut shape = ShapeControls::default();
+        let mut harness = Harness::builder()
+            .with_size(egui::Vec2::new(BODY_WIDTH, COLUMN_HEIGHT))
+            .build(|ctx| {
+                body_column(ctx, |ui| {
+                    let _ = draw_shape_piece(ui, studio, dialog, &mut shape);
+                });
+            });
+        harness.run();
+        harness
+            .root()
+            .children_recursive()
+            .find(|node| node.accesskit_node().label().as_deref() == Some(label))
+            .map(|node| node.accesskit_node().is_disabled())
+    }
+
+    /// ⚠ `accepting_actions` is gated on its own, but nothing said step 3 hands
+    /// it to anything. With `ready` replaced by `true`, Continue commits and
+    /// advances behind an open picker — and the folder that picker returns then
+    /// lands on a step the user has already left.
+    ///
+    /// ⚠ Both controls, and each way the app is held: the stepper takes the
+    /// same flag, and a screen that gates only its button still lets the value
+    /// under it move while a job reads it.
+    #[test]
+    fn step_threes_controls_are_offered_only_while_the_app_is_free() {
+        for label in ["Continue", "+"] {
+            assert_eq!(
+                shape_control_disabled(&Studio::default(), &PendingDialog::default(), label),
+                Some(false),
+                "{label} is offered when nothing holds the app"
+            );
+
+            let held = [
+                (
+                    "a job",
+                    Studio {
+                        busy: true,
+                        ..Studio::default()
+                    },
+                    PendingDialog::default(),
+                ),
+                (
+                    "a picker",
+                    Studio::default(),
+                    PendingDialog::opened(DialogKind::ScanFile),
+                ),
+                (
+                    "a save",
+                    Studio {
+                        pending_save: Some(PendingSave::ChoosingFolder { smoothing: 0 }),
+                        ..Studio::default()
+                    },
+                    PendingDialog::default(),
+                ),
+            ];
+            for (what, studio, dialog) in held {
+                assert_eq!(
+                    shape_control_disabled(&studio, &dialog, label),
+                    Some(true),
+                    "{label} is withheld while {what} holds the app"
+                );
+            }
         }
     }
 
