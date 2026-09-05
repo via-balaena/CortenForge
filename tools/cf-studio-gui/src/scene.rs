@@ -13,17 +13,28 @@ use bevy::window::PrimaryWindow;
 use bevy_egui::{EguiContexts, PrimaryEguiContext, egui};
 use cf_bevy_common::camera::OrbitCamera;
 use cf_bevy_common::mesh::triangle_mesh_flat_shaded;
+use cf_studio_core::Step;
 use mesh_types::Bounded;
 
+use crate::preview::PlugView;
 use crate::scan::{SCAN_UP_AXIS, ScanEdit, ViewUpdate};
+use crate::state::Studio;
 
 /// The body on show — the startup placeholder, then the scan that replaces it.
 #[derive(Component)]
 pub(crate) struct SceneBody;
 
+/// Step 3's plug preview, shown in the scan's place while that step is up.
+#[derive(Component)]
+pub(crate) struct PlugBody;
+
 /// Muted clay, readable against the light background without competing with
 /// the panel for attention.
 const BODY_COLOR: Color = Color::srgb(0.72, 0.70, 0.66);
+
+/// The piece's own clay — warmer than [`BODY_COLOR`], so paging onto step 3
+/// reads as a different object rather than a body that quietly changed shape.
+const PLUG_COLOR: Color = Color::srgb(0.80, 0.64, 0.48);
 
 /// How far the key light is swung to one side of the view direction, radians.
 const KEY_LIGHT_YAW: f32 = 0.5;
@@ -87,6 +98,7 @@ pub(crate) fn setup_scene(
         SceneBody,
         Mesh3d(meshes.add(Sphere::new(1.0))),
         MeshMaterial3d(materials.add(body_material())),
+        Visibility::default(),
     ));
 
     // ⚠⚠ egui's context lives on THIS camera, never on the 3D one, and the
@@ -148,12 +160,76 @@ pub(crate) fn show_scan(
         Mesh3d(meshes.add(triangle_mesh_flat_shaded(mesh, None, SCAN_UP_AXIS))),
         MeshMaterial3d(materials.add(body_material())),
         active.scale().transform(),
+        Visibility::default(),
     ));
 
     if reframe {
         let framing = active.scale().framing_aabb(&mesh.aabb());
         for mut camera in &mut cameras {
             *camera = OrbitCamera::framing_for_aabb(&framing, SCAN_UP_AXIS);
+        }
+    }
+}
+
+/// Rebuild the plug body when a new preview mesh lands — [`PlugView::generation`]
+/// carries why that, and not change detection, is the gate.
+pub(crate) fn show_plug(
+    mut commands: Commands,
+    view: Res<PlugView>,
+    scan: Res<ScanEdit>,
+    bodies: Query<Entity, With<PlugBody>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut drawn: Local<u64>,
+) {
+    if *drawn == view.generation() {
+        return;
+    }
+    let (Some(mesh), Some(active)) = (view.mesh(), scan.active()) else {
+        return;
+    };
+    *drawn = view.generation();
+    for body in &bodies {
+        commands.entity(body).despawn();
+    }
+    commands.spawn((
+        PlugBody,
+        Mesh3d(meshes.add(triangle_mesh_flat_shaded(mesh, None, SCAN_UP_AXIS))),
+        MeshMaterial3d(materials.add(plug_material())),
+        // ⚠ The scan's lift, not one derived from the plug. The plug is that
+        // scan offset inward, so re-deriving would draw every cavity inset at
+        // the same size on screen and hide the edit being made.
+        active.scale().transform(),
+        Visibility::default(),
+    ));
+}
+
+/// Show the piece on step 3 and the scan on every other step.
+///
+/// ⚠ Visibility, not a rebuild. The plug is the scan offset inward, so the two
+/// occupy the same space and drawing both hides the piece inside the body it was
+/// cut from — and paging back and forth must not re-mesh either one.
+///
+/// ⚠ Both bodies are spawned carrying an explicit `Visibility`. `Mesh3d` brings
+/// one along in the running app, but only once the render plugins are up, so
+/// relying on that would leave this decision unreachable from a headless gate —
+/// which is the only place it can be checked at all.
+pub(crate) fn show_the_step_subject(
+    studio: Res<Studio>,
+    view: Res<PlugView>,
+    mut bodies: Query<(&mut Visibility, Has<PlugBody>), Or<(With<SceneBody>, With<PlugBody>)>>,
+) {
+    // ⚠ Until the first preview lands there is nothing to swap to, so the scan
+    // stays up rather than step 3 opening on an empty viewport.
+    let previewing = studio.cursor.viewed() == Step::ShapePiece && view.mesh().is_some();
+    for (mut visibility, is_plug) in &mut bodies {
+        let wanted = if is_plug == previewing {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+        if *visibility != wanted {
+            *visibility = wanted;
         }
     }
 }
@@ -187,6 +263,14 @@ fn body_material() -> StandardMaterial {
         double_sided: true,
         cull_mode: None,
         ..default()
+    }
+}
+
+/// The plug's surface: the clay of [`body_material`] in the piece's own colour.
+fn plug_material() -> StandardMaterial {
+    StandardMaterial {
+        base_color: PLUG_COLOR,
+        ..body_material()
     }
 }
 
@@ -243,6 +327,9 @@ fn viewport_for(free: egui::Rect, bounds: UVec2, scale: f32) -> Option<Viewport>
 #[cfg(test)]
 mod tests {
     use bevy::asset::AssetPlugin;
+
+    use cf_studio_gui::WizardCursor;
+    use mesh_types::unit_cube;
 
     use super::*;
     use crate::scan::ActiveScan;
@@ -527,5 +614,161 @@ endsolid t
             framed,
             "an edit re-meshes; it must never move the camera"
         );
+    }
+
+    /// A headless app with both bodies' systems wired, parked on `step`.
+    fn headless_on(step: Step) -> App {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Mesh>()
+            .init_asset::<StandardMaterial>()
+            .init_resource::<ScanEdit>()
+            .init_resource::<PlugView>()
+            .insert_resource(Studio {
+                cursor: WizardCursor::new(step),
+                ..Studio::default()
+            })
+            .add_systems(
+                Update,
+                (show_scan, show_plug, show_the_step_subject).chain(),
+            );
+        app.world_mut()
+            .spawn((Camera3d::default(), OrbitCamera::default()));
+        app
+    }
+
+    /// Every body of kind `C` on screen.
+    fn bodies_of<C: Component>(app: &mut App) -> Vec<Entity> {
+        let world = app.world_mut();
+        let mut bodies = world.query_filtered::<Entity, With<C>>();
+        bodies.iter(world).collect()
+    }
+
+    fn lift_of<C: Component>(app: &mut App) -> Option<Transform> {
+        let world = app.world_mut();
+        let mut bodies = world.query_filtered::<&Transform, With<C>>();
+        bodies.iter(world).next().copied()
+    }
+
+    fn is_visible<C: Component>(app: &mut App) -> Option<bool> {
+        let world = app.world_mut();
+        let mut bodies = world.query_filtered::<&Visibility, With<C>>();
+        bodies
+            .iter(world)
+            .next()
+            .map(|seen| *seen != Visibility::Hidden)
+    }
+
+    /// A scan on screen and a piece cut from it.
+    fn showing_both(step: Step, tag: &str) -> Option<App> {
+        let scan = a_scan(tag)?;
+        let mut app = headless_on(step);
+        app.world_mut().resource_mut::<ScanEdit>().set(scan);
+        app.world_mut().resource_mut::<PlugView>().show(unit_cube());
+        app.update();
+        Some(app)
+    }
+
+    /// ⚠ The piece must ride the SCAN's lift. Deriving one from the plug instead
+    /// would draw every cavity inset at the same size on screen — the shape would
+    /// change and the size would not, and the size is half of what the user is
+    /// there to judge.
+    #[test]
+    fn the_piece_is_drawn_at_the_lift_the_scan_is_drawn_at() {
+        let showing = showing_both(Step::ShapePiece, "plug-lift");
+        assert!(showing.is_some(), "the fixture must load");
+        let Some(mut app) = showing else { return };
+
+        let scan = lift_of::<SceneBody>(&mut app);
+        let plug = lift_of::<PlugBody>(&mut app);
+
+        assert!(scan.is_some(), "the scan is on screen to compare against");
+        assert_eq!(
+            plug, scan,
+            "the piece rides the scan's lift, never one of its own"
+        );
+    }
+
+    /// ★★ The plug is the scan offset inward, so it sits *inside* the body it
+    /// was cut from: drawing both is drawing neither. Step 3 shows the piece,
+    /// every other step shows the scan.
+    #[test]
+    fn step_three_shows_the_piece_and_every_other_step_shows_the_scan() {
+        let showing = showing_both(Step::ShapePiece, "plug-swap");
+        assert!(showing.is_some(), "the fixture must load");
+        let Some(mut app) = showing else { return };
+
+        assert_eq!(
+            (
+                is_visible::<PlugBody>(&mut app),
+                is_visible::<SceneBody>(&mut app)
+            ),
+            (Some(true), Some(false)),
+            "step 3 is looking at the piece"
+        );
+
+        app.world_mut().resource_mut::<Studio>().cursor = WizardCursor::new(Step::CleanScan);
+        app.update();
+
+        assert_eq!(
+            (
+                is_visible::<PlugBody>(&mut app),
+                is_visible::<SceneBody>(&mut app)
+            ),
+            (Some(false), Some(true)),
+            "and paging back to step 2 is looking at the scan again"
+        );
+    }
+
+    /// ⚠ Until the first preview lands there is nothing to swap to, so the scan
+    /// stays up. Swapping on the step alone opens step 3 on an empty viewport for
+    /// as long as the flood fill takes.
+    #[test]
+    fn step_three_holds_the_scan_until_the_first_piece_is_ready() {
+        let loaded = a_scan("plug-wait");
+        assert!(loaded.is_some(), "the fixture must load");
+        let Some(scan) = loaded else { return };
+        let mut app = headless_on(Step::ShapePiece);
+        app.world_mut().resource_mut::<ScanEdit>().set(scan);
+        app.update();
+
+        assert!(
+            bodies_of::<PlugBody>(&mut app).is_empty(),
+            "nothing has been meshed yet"
+        );
+        assert_eq!(
+            is_visible::<SceneBody>(&mut app),
+            Some(true),
+            "so the scan is what step 3 opens on"
+        );
+    }
+
+    /// ⚠ The rebuild is gated on the preview's own generation, not on Bevy's
+    /// change detection. `drive_plug_preview` takes that resource mutably on
+    /// every frame step 3 is up, so "changed" is true on frames where nothing was
+    /// replaced — and the piece would be torn down and rebuilt at 60 Hz.
+    #[test]
+    fn the_piece_is_rebuilt_only_when_a_new_mesh_lands() {
+        let showing = showing_both(Step::ShapePiece, "plug-gen");
+        assert!(showing.is_some(), "the fixture must load");
+        let Some(mut app) = showing else { return };
+        let first = bodies_of::<PlugBody>(&mut app);
+        assert_eq!(first.len(), 1, "one piece on screen");
+
+        for _ in 0..3 {
+            app.update();
+        }
+        assert_eq!(
+            bodies_of::<PlugBody>(&mut app),
+            first,
+            "redrawing the same mesh must not respawn the body"
+        );
+
+        app.world_mut().resource_mut::<PlugView>().show(unit_cube());
+        app.update();
+        let second = bodies_of::<PlugBody>(&mut app);
+
+        assert_eq!(second.len(), 1, "and the old body is not left behind");
+        assert_ne!(second, first, "a landing mesh replaces what was on screen");
     }
 }

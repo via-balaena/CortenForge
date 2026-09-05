@@ -23,6 +23,7 @@ use crate::edit::{
     apply_edit_intent, simplify_range, smoothing_range,
 };
 use crate::jobs::{SimplifyJob, start_simplify};
+use crate::preview::PlugView;
 use crate::save;
 use crate::scan::ScanEdit;
 use crate::shape::{RidgeFields, SHAPE_STEP, ShapeControls, commit_plug};
@@ -58,6 +59,9 @@ const ROW_GAP: f32 = 6.0;
 const RIDGE_NOTE_SIZE: f32 = 14.0;
 /// The grip-ring switch's label, sized as the section heading it is.
 const RING_HEADING_SIZE: f32 = 15.0;
+/// What the screen says when the preview is not the user's own body.
+const STAND_IN_NOTE: &str = "The preview is a stand-in shape — your cleaned scan \
+     couldn't be read. The ridges are real; the body is not yours.";
 /// The rebuilt-floor picker. Fixed, or the combo stretches to fill the column.
 const SHAPE_PICKER_WIDTH: f32 = 110.0;
 /// The overwrite modal's width. Wider than the body column — it is centred on
@@ -124,6 +128,10 @@ pub(crate) enum Intent {
 }
 
 /// Draw the whole wizard and execute whatever was clicked.
+// Its parameters ARE its dependency list, and the plugin gate checks that
+// list against what the app registers. A `SystemParam` bundle would satisfy
+// the lint by hiding the very thing that gate reads.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn wizard_screen(
     mut contexts: EguiContexts,
     mut studio: ResMut<Studio>,
@@ -132,6 +140,7 @@ pub(crate) fn wizard_screen(
     mut controls: ResMut<EditControls>,
     mut shape: ResMut<ShapeControls>,
     mut job: ResMut<SimplifyJob>,
+    preview: Res<PlugView>,
 ) -> bevy::ecs::error::Result {
     let ctx = contexts.ctx_mut()?;
     let mut acted = Acted::default();
@@ -156,6 +165,7 @@ pub(crate) fn wizard_screen(
             &scan,
             &mut controls,
             &mut shape,
+            preview.showing_proxy(),
         ));
     });
 
@@ -271,6 +281,7 @@ fn draw_body(
     scan: &ScanEdit,
     controls: &mut EditControls,
     shape: &mut ShapeControls,
+    showing_a_stand_in: bool,
 ) -> Acted {
     let viewed = studio.cursor.viewed();
     ui.add_space(8.0);
@@ -301,7 +312,9 @@ fn draw_body(
     match viewed {
         Step::AddScan => acted.nav = draw_add_scan(ui, studio, dialog),
         Step::CleanScan => acted.merge(draw_clean_scan(ui, studio, dialog, scan, controls)),
-        Step::ShapePiece => acted.plug = draw_shape_piece(ui, studio, dialog, shape),
+        Step::ShapePiece => {
+            acted.plug = draw_shape_piece(ui, studio, dialog, shape, showing_a_stand_in);
+        }
         Step::DesignLayers | Step::MakeMolds => draw_porting_notice(ui),
         Step::Print => acted.nav = draw_print(ui, studio, dialog),
         Step::Pour => acted.nav = draw_pour(ui, studio),
@@ -673,6 +686,7 @@ fn draw_shape_piece(
     studio: &Studio,
     dialog: &PendingDialog,
     shape: &mut ShapeControls,
+    showing_a_stand_in: bool,
 ) -> Option<PlugDraft> {
     let ready = accepting_actions(studio, dialog);
     let mut draft = None;
@@ -682,6 +696,13 @@ fn draw_shape_piece(
         "Set how snugly the piece fits: the cavity sits this far in from your \
          scan's surface, all the way round.",
     );
+    // ⚠ Said, not left to be inferred. Without a readable cleaned scan the
+    // preview falls back to a generic plug, and a stand-in body shown silently
+    // beside these controls reads as the user's own.
+    if showing_a_stand_in {
+        ui.add_space(ROW_GAP);
+        centered_wrapped(ui, RIDGE_NOTE_SIZE, WARN_TEXT, STAND_IN_NOTE);
+    }
     ui.add_space(SECTION_GAP);
     ui.vertical_centered(|ui| {
         ui.horizontal(|ui| {
@@ -1289,6 +1310,7 @@ pub(crate) mod tests {
             format_pour_plan(&molds.pour_plan),
             format_pour_active(&molds.pour_plan, 0),
             crate::save::overwrite_question(&studio, &dir),
+            STAND_IN_NOTE.to_string(),
         ];
         // Each urgency band words itself differently.
         messages.extend([600_i64, 120, -30].map(|secs| pour_countdown(secs).text));
@@ -1727,8 +1749,74 @@ pub(crate) mod tests {
             .init_resource::<EditControls>()
             .init_resource::<ShapeControls>()
             .init_resource::<SimplifyJob>()
+            .init_resource::<PlugView>()
             .add_systems(Update, (begin, wizard_screen, end).chain());
         app
+    }
+
+    /// The wizard on step 3 with the preview driver running behind it, against
+    /// the cleaned scan `prep` names.
+    fn wizard_previewing(prep: cf_studio_core::PrepInput) -> App {
+        let mut app = app_running_the_wizard();
+        app.add_plugins(bevy::prelude::TaskPoolPlugin::default())
+            .add_systems(Update, crate::preview::drive_plug_preview.before(begin));
+        app.insert_resource(Studio {
+            project: crate::preview::tests::cleaned(prep),
+            cursor: WizardCursor::new(Step::ShapePiece),
+            ..Studio::default()
+        });
+        crate::preview::tests::settle(&mut app);
+        // One more frame, so the panel draws against the settled preview rather
+        // than against the state of the one before it.
+        app.update();
+        app
+    }
+
+    /// ★★ The honesty gate, driven from the resource rather than the argument.
+    /// Calling `draw_shape_piece(.., true)` proves only that the note *can* be
+    /// drawn; nothing there says the screen ever hears about a stand-in.
+    ///
+    /// ⚠ Two-sided. A note that is always on is as wrong as one that never is —
+    /// it would tell a user previewing their own scan that it is not theirs.
+    #[test]
+    fn a_stand_in_preview_says_so_and_a_real_one_does_not() {
+        let absent = wizard_previewing(crate::preview::tests::a_missing_scan());
+        let real = wizard_previewing(crate::preview::tests::a_cleaned_scan("panel-note"));
+
+        let said = painted_texts(&absent).join(" ");
+        let unsaid = painted_texts(&real).join(" ");
+
+        assert!(
+            said.contains("stand-in"),
+            "a scan that could not be read must own up to it: {said:?}"
+        );
+        assert!(
+            !unsaid.contains("stand-in"),
+            "and a scan that could must not be disowned: {unsaid:?}"
+        );
+        let _ = std::fs::remove_dir_all(crate::preview::tests::fixture_dir("panel-note"));
+    }
+
+    /// ★★★ The thrash guard, and the reason step 2's `&scan` discipline now has
+    /// a second consumer. Any path in this screen that reaches `ScanEdit`
+    /// mutably marks it changed on every frame the wizard draws — and the
+    /// preview drops its cache and re-meshes each time, which on a real scan is
+    /// 191 ms of flood-filled SDF per frame, for ever.
+    #[test]
+    fn redrawing_the_wizard_does_not_rebuild_the_preview() {
+        let mut app = wizard_previewing(crate::preview::tests::a_missing_scan());
+        let settled = app.world().resource::<PlugView>().generation();
+        assert!(settled > 0, "a piece has been meshed to hold still");
+
+        for _ in 0..10 {
+            app.update();
+        }
+
+        assert_eq!(
+            app.world().resource::<PlugView>().generation(),
+            settled,
+            "drawing the screen must not re-mesh the piece"
+        );
     }
 
     /// The wizard parked on step 3, with a scan cleaned behind it so
@@ -1954,7 +2042,13 @@ pub(crate) mod tests {
     /// The step-3 body for `shape`, on an app holding nothing.
     fn shape_body(shape: &mut ShapeControls) -> impl FnMut(&mut egui::Ui) + '_ {
         move |ui| {
-            let _ = draw_shape_piece(ui, &Studio::default(), &PendingDialog::default(), shape);
+            let _ = draw_shape_piece(
+                ui,
+                &Studio::default(),
+                &PendingDialog::default(),
+                shape,
+                false,
+            );
         }
     }
 
@@ -2408,7 +2502,7 @@ pub(crate) mod tests {
         let mut shape = shape();
         controls_disabled(
             |ui| {
-                let _ = draw_shape_piece(ui, studio, dialog, &mut shape);
+                let _ = draw_shape_piece(ui, studio, dialog, &mut shape, false);
             },
             name,
         )

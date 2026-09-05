@@ -12,6 +12,7 @@ mod input;
 mod jobs;
 mod panel;
 mod plugin;
+mod preview;
 mod save;
 mod scan;
 mod scene;
