@@ -19,8 +19,15 @@ use crate::state::{PendingSave, Studio};
 /// The unit the cleaned STL records itself in, as the pre-port save did.
 const STL_UNITS: &str = "mm";
 
-/// Used only if the scan's filename has no stem, which no picked file has.
+/// Used if the scan's filename has no stem, or is not valid UTF-8 — rare, but
+/// a picked file can be either, and the outputs still need a name.
 const FALLBACK_STEM: &str = "scan";
+
+/// Reported when a Save is asked for with no scan to write.
+///
+/// ⚠ One constant, because all three entry points report it and a user-facing
+/// string written out three times drifts on the first edit that misses one.
+const NO_SCAN: &str = "Add a scan in step 1 first.";
 
 /// The folder a Save defaults to, and the stem its two outputs are named
 /// after — the scan's own folder and filename, so the cast's inputs land
@@ -53,7 +60,7 @@ fn outputs_exist(dir: &Path, stem: &str) -> bool {
 /// Save into the scan's own folder — what the Save button asks for.
 pub(crate) fn save_to_default(scan: &ScanEdit, studio: &mut Studio, smoothing: usize) {
     let Some((dir, _)) = scan_target(studio) else {
-        settle(studio, Err("Add a scan in step 1 first.".to_owned()));
+        settle(studio, Err(NO_SCAN.to_owned()));
         return;
     };
     save_into(scan, studio, dir, smoothing);
@@ -77,7 +84,7 @@ pub(crate) fn overwrite_question(studio: &Studio, dir: &Path) -> String {
 /// the chosen one unconditionally, silently overwriting whatever was there.
 pub(crate) fn save_into(scan: &ScanEdit, studio: &mut Studio, dir: PathBuf, smoothing: usize) {
     let Some((_, stem)) = scan_target(studio) else {
-        settle(studio, Err("Add a scan in step 1 first.".to_owned()));
+        settle(studio, Err(NO_SCAN.to_owned()));
         return;
     };
     if outputs_exist(&dir, &stem) {
@@ -94,7 +101,7 @@ pub(crate) fn write_into(scan: &ScanEdit, studio: &mut Studio, dir: &Path, smoot
     let (Some((_, stem)), Some(session)) =
         (scan_target(studio), scan.active().map(ActiveScan::session))
     else {
-        settle(studio, Err("Add a scan in step 1 first.".to_owned()));
+        settle(studio, Err(NO_SCAN.to_owned()));
         return;
     };
     let outcome = match session.save(dir, &stem, STL_UNITS, smoothing) {

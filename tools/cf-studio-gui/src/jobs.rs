@@ -270,6 +270,24 @@ mod tests {
         }
     }
 
+    /// Run frames until the dialog has been polled, or fail.
+    ///
+    /// ⚠ Not one `update`. `PendingDialog::resolved` spawns its answer on the
+    /// task pool, and a worker that has not been scheduled yet leaves `poll`
+    /// returning `None` — so a single frame passes alone and fails in a full
+    /// run. Same reason [`run_until_idle`] exists.
+    fn run_until_answered(app: &mut App) {
+        const DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
+        let deadline = std::time::Instant::now() + DEADLINE;
+        while app.world().resource::<PendingDialog>().is_open() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the dialog never resolved"
+            );
+            app.update();
+        }
+    }
+
     /// Enough app to own a task pool and [`poll_dialogs`], with `dialog`
     /// already answered and a step 2 ready to save into `dir`.
     fn app_with_a_resolved_dialog(dir: &std::path::Path, dialog: PendingDialog) -> App {
@@ -301,7 +319,7 @@ mod tests {
         app.world_mut().resource_mut::<Studio>().pending_save =
             Some(PendingSave::ChoosingFolder { smoothing: 3 });
 
-        app.update();
+        run_until_answered(&mut app);
 
         assert_eq!(
             app.world().resource::<Studio>().pending_save,
@@ -332,7 +350,7 @@ mod tests {
         app.world_mut().resource_mut::<Studio>().pending_save =
             Some(PendingSave::ChoosingFolder { smoothing: 0 });
 
-        app.update();
+        run_until_answered(&mut app);
 
         let studio = app.world().resource::<Studio>();
         assert!(studio.pending_save.is_none(), "the held save is let go");
