@@ -17,10 +17,8 @@ pub(crate) struct DesignControls {
 /// Commit the layer stack as the project's design.
 ///
 /// ⚠ Does not advance, where [`crate::shape::commit_plug`] does — the pre-port
-/// screen left you on step 4 with Next → newly enabled. "Use this design" sits
-/// between two buttons ("+ Add layer", "…or load a file") that are reasonable
-/// things to reach for after seeing the design took, and paging away from them
-/// would be the surprise.
+/// screen left you on step 4 with Next → newly enabled, beside two buttons you
+/// might reasonably reach for next.
 pub(crate) fn commit_design(layers: Vec<LayerDraft>, studio: &mut Studio) {
     // The cavity inset belongs to "Shape your piece" — the layer stack builds
     // outward off the plug that step shaped, and carries a copy so the design

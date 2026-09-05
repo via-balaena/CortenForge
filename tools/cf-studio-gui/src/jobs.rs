@@ -81,8 +81,6 @@ pub(crate) fn poll_dialogs(
             save_into(&scan, &mut studio, dest, smoothing);
         }
         DialogKind::DesignFile => {
-            // A cancel leaves the editor's own stack standing, which is the
-            // whole state this step has — so, like `PrintDest`, nothing to say.
             let Some(path) = picked else { return };
             studio.message = Some(apply_design(&mut studio.project, &path));
         }

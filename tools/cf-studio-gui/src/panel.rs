@@ -3078,29 +3078,44 @@ pub(crate) mod tests {
     /// The buttons under the cards, in the order the pre-port screen had them.
     const ACTIONS: [&str; 3] = ["+ Add layer", "Use this design", "…or load a file"];
 
-    /// The three action buttons' rects, in the order they are drawn.
-    fn action_button_rects(design: &mut DesignControls) -> Vec<egui::Rect> {
+    /// The column the body lays out in, and the three action buttons' rects
+    /// inside it, in the order they are drawn.
+    fn action_button_rects(design: &mut DesignControls) -> (egui::Rect, Vec<egui::Rect>) {
         use egui_kittest::kittest::NodeT;
 
-        let mut body = design_body(design);
-        column_harness(&mut body)
+        let column = std::cell::Cell::new(egui::Rect::NOTHING);
+        let mut inner = design_body(design);
+        let mut body = |ui: &mut egui::Ui| {
+            column.set(ui.max_rect());
+            inner(ui);
+        };
+        let rects = column_harness(&mut body)
             .root()
             .children_recursive()
             .filter_map(|node| {
                 let label = node.accesskit_node().label()?;
                 ACTIONS.contains(&label.as_str()).then(|| node.rect())
             })
-            .collect()
+            .collect();
+        (column.get(), rects)
     }
 
-    /// ★ One row, as the pre-port screen had them. Stacked, they still fit the
+    /// ★ One row, as the pre-port screen had them. Stacked they still fit the
     /// column and still pass the census — three unrelated steps where the
     /// screen means one choice.
+    ///
+    /// ⚠ The row is LEFT-ALIGNED, where the pre-port centred it, and this
+    /// pins that: `vertical_centered` centres a lone widget but not a
+    /// `horizontal` inside it — the row claims the full width and lays out
+    /// from its left edge, and `Layout::with_main_align(Center)` does not
+    /// change that (both measured: 0 px left, 128.6 right). Step 3's cavity
+    /// row has sat this way since #884; centring rows is one app-wide change,
+    /// not this screen's.
     #[test]
-    fn the_three_actions_sit_on_one_row() {
+    fn the_three_actions_sit_on_one_row_against_the_left_margin() {
         let mut design = DesignControls::default();
 
-        let rects = action_button_rects(&mut design);
+        let (column, rects) = action_button_rects(&mut design);
 
         assert_eq!(rects.len(), ACTIONS.len(), "all three are drawn: {rects:?}");
         assert!(
@@ -3108,6 +3123,10 @@ pub(crate) mod tests {
                 .windows(2)
                 .all(|pair| (pair[0].top() - pair[1].top()).abs() < 0.01),
             "one row: {rects:?}"
+        );
+        assert!(
+            (rects[0].left() - column.left()).abs() < 1.0,
+            "flush left, as every other row in this column is: {rects:?}"
         );
     }
 
