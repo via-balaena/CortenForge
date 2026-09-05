@@ -237,7 +237,16 @@ mod tests {
     #[test]
     fn every_word_of_the_terms_is_above_the_box_that_accepts_them() {
         for size in [NARROWEST, OPENING] {
-            let (terms_bottom, box_top) = terms_and_box(size);
+            let (terms_bottom, box_top, prose) = terms_and_box(size);
+            // ⚠ Position alone is not enough: the heading is a label too, so a
+            // gate that dropped every term still has one sitting above the box.
+            for term in TERMS.iter().chain(std::iter::once(&AGE_GATE)) {
+                let opening: String = term.chars().take(30).collect();
+                assert!(
+                    prose.iter().any(|shown| shown.starts_with(&opening)),
+                    "at {size:?} the gate never showed {opening:?}"
+                );
+            }
             assert!(
                 box_top >= terms_bottom,
                 "at {size:?} the terms run to {terms_bottom:.1} px but the box \
@@ -263,8 +272,9 @@ mod tests {
         inspect(&harness)
     }
 
-    /// The bottom of the lowest word of the terms, and the top of the checkbox.
-    fn terms_and_box(size: (f32, f32)) -> (f32, f32) {
+    /// The bottom of the lowest word of the terms, the top of the checkbox, and
+    /// every piece of prose the gate laid out.
+    fn terms_and_box(size: (f32, f32)) -> (f32, f32, Vec<String>) {
         laid_out(size, |harness| {
             let rects = |role: Role| {
                 harness
@@ -274,15 +284,25 @@ mod tests {
                     .map(|node| node.rect())
                     .collect::<Vec<_>>()
             };
+            let prose = harness
+                .root()
+                .children_recursive()
+                .filter(|node| node.accesskit_node().role() == Role::Label)
+                .filter_map(|node| node.accesskit_node().value())
+                .collect();
+            // `reduce`, not a seeded `fold`: an empty tree should fail here,
+            // not compare an identity against an identity.
             let terms_bottom = rects(Role::Label)
                 .iter()
                 .map(|rect| rect.max.y)
-                .fold(f32::MIN, f32::max);
+                .reduce(f32::max)
+                .expect("the gate shows its terms");
             let box_top = rects(Role::CheckBox)
                 .iter()
                 .map(|rect| rect.min.y)
-                .fold(f32::MAX, f32::min);
-            (terms_bottom, box_top)
+                .reduce(f32::min)
+                .expect("the gate offers the box that accepts them");
+            (terms_bottom, box_top, prose)
         })
     }
 
