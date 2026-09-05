@@ -1390,6 +1390,8 @@ pub(crate) mod tests {
         );
     }
 
+    /// Whether step 2's Save is disabled, for a screen that has — or has not —
+    /// been stood up.
     fn save_button_disabled(screen: &mut CleanupScreen) -> Option<bool> {
         control_disabled(
             |ui| {
