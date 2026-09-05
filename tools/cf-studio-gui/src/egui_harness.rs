@@ -23,9 +23,9 @@ pub(crate) struct Painted(pub(crate) Vec<(String, egui::Rect)>);
 #[derive(Resource, Default)]
 pub(crate) struct Click(pub(crate) Option<egui::Pos2>);
 
-/// `main.rs`'s opening resolution, so screens lay out at the size the app
-/// really runs at.
-const SCREEN: egui::Vec2 = egui::Vec2::new(1280.0, 900.0);
+/// The app's opening resolution, so screens lay out at the size it really runs
+/// at.
+const SCREEN: egui::Vec2 = egui::Vec2::new(crate::OPENING_WINDOW.0, crate::OPENING_WINDOW.1);
 
 /// Open the pass the plugin would have, delivering any click [`click_on`] left.
 pub(crate) fn begin(mut contexts: Query<&mut EguiContext>, click: Res<Click>) {

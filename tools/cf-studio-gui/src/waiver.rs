@@ -175,8 +175,7 @@ mod tests {
 
     /// `main.rs`'s resize floor and its opening resolution — the narrowest and
     /// the widest this gate is normally shown at.
-    const NARROWEST: (f32, f32) = (900.0, 850.0);
-    const OPENING: (f32, f32) = (1280.0, 900.0);
+    use crate::{OPENING_WINDOW as OPENING, SMALLEST_WINDOW as NARROWEST};
 
     /// Lay the gate out at `size` with the box ticked or not, optionally click
     /// `pick`, and report its controls and the answer it gave.
@@ -217,6 +216,66 @@ mod tests {
             harness.run();
         }
         (controls, answer.get())
+    }
+
+    /// ⚠ The scroll reserve's actual job, and the one thing a legal gate must
+    /// not get wrong: you cannot be asked to accept terms you cannot see. The
+    /// checkbox has to sit below the last word of the terms, so all of them are
+    /// on screen at once at every height `main.rs` allows.
+    ///
+    /// ⚠ Measured, not assumed: with the reserve, the terms end at 370 px and
+    /// the box starts at 383 px. Starving the scroll area — `available_height /
+    /// button_room`, which clamps to 120 px — leaves the terms ending at the
+    /// same 370 px with the box at 198 px, above them, and every other gate
+    /// here stays green. The term *count* is blind to it: all five stay in the
+    /// accessibility tree, clipped. Only the rects show it.
+    ///
+    /// ⚠ If the terms are ever lengthened past the room an 850 px window has,
+    /// this fails. That is the intended failure — it forces a deliberate choice
+    /// about a screen nobody may be made to scroll blindly through.
+    #[test]
+    fn every_word_of_the_terms_is_above_the_box_that_accepts_them() {
+        for size in [NARROWEST, OPENING] {
+            let (terms_bottom, box_top) = terms_and_box(size);
+            assert!(
+                box_top >= terms_bottom,
+                "at {size:?} the terms run to {terms_bottom:.1} px but the box \
+                 that accepts them is at {box_top:.1} px, above the words it \
+                 agrees to"
+            );
+        }
+    }
+
+    /// The bottom of the lowest word of the terms, and the top of the checkbox.
+    fn terms_and_box(size: (f32, f32)) -> (f32, f32) {
+        let mut harness = Harness::builder()
+            .with_size(egui::Vec2::new(size.0, size.1))
+            .build(|ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let mut agreed = false;
+                    let _ = draw_waiver(ui, &mut agreed);
+                });
+            });
+        harness.ctx.set_fonts(crate::plugin::font_definitions());
+        harness.run();
+        let by_role = |role: Role, lowest: bool| {
+            harness
+                .root()
+                .children_recursive()
+                .filter(|node| node.accesskit_node().role() == role)
+                .map(|node| {
+                    if lowest {
+                        node.rect().max.y
+                    } else {
+                        node.rect().min.y
+                    }
+                })
+                .fold(
+                    if lowest { f32::MIN } else { f32::MAX },
+                    if lowest { f32::max } else { f32::min },
+                )
+        };
+        (by_role(Role::Label, true), by_role(Role::CheckBox, false))
     }
 
     fn disabled(controls: &[(String, bool, egui::Rect)], label: &str) -> bool {

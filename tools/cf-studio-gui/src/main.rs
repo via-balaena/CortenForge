@@ -31,15 +31,24 @@ const VIEWPORT_WIDTH: f32 = 600.0;
 /// The narrowest 3D view still worth showing — the resize floor.
 const MIN_VIEWPORT_WIDTH: f32 = 220.0;
 
+/// The window the app opens with, and the smallest one it can be dragged to.
+///
+/// ⚠ Every screen's layout gates sweep exactly these two sizes, so they are
+/// defined here beside the constraints they configure rather than copied into
+/// each test — a floor that drifts from the gates asserting "at every size the
+/// window allows" leaves them measuring a window nobody can make.
+pub(crate) const OPENING_WINDOW: (f32, f32) = (PANEL_WIDTH + VIEWPORT_WIDTH, 900.0);
+pub(crate) const SMALLEST_WINDOW: (f32, f32) = (PANEL_WIDTH + MIN_VIEWPORT_WIDTH, 850.0);
+
 fn main() {
     // `WindowResolution` is whole pixels; the panel widths are egui's points.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let default_width = (PANEL_WIDTH + VIEWPORT_WIDTH) as u32;
+    let default_width = OPENING_WINDOW.0 as u32;
 
     let plugins = DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
             title: "Cendrillon".into(),
-            resolution: (default_width, 900u32).into(),
+            resolution: (default_width, OPENING_WINDOW.1 as u32).into(),
             // Width is measured from the panels outwards: they cover the same
             // strip whatever the window's width, and everything left over is
             // the 3D view. The pre-port floor of 640 predates the viewport and
@@ -47,8 +56,8 @@ fn main() {
             // unchanged — enough that the footer nav stays on screen if the OS
             // restores a shorter window.
             resize_constraints: WindowResizeConstraints {
-                min_width: PANEL_WIDTH + MIN_VIEWPORT_WIDTH,
-                min_height: 850.0,
+                min_width: SMALLEST_WINDOW.0,
+                min_height: SMALLEST_WINDOW.1,
                 ..default()
             },
             ..default()
