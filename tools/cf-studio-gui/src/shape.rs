@@ -1,55 +1,157 @@
-//! Step 3's field state: how snugly the finished piece fits.
+//! Step 3's field state: how snugly the finished piece fits, and the ridges cut
+//! into it.
 
 use bevy::prelude::*;
 use cf_studio_core::{PlugDraft, RidgeOptions};
-use cf_studio_gui::{StepBoxState, apply_plug};
+use cf_studio_gui::{RidgeToggles, RingRow, StepBoxState, apply_plug, ridge_options_from_rows};
 
 use crate::state::Studio;
 
-/// The inset field's bounds, in millimetres, as the pre-port screen had them.
-/// Fixed — nothing about the scan moves them, unlike
-/// [`crate::edit::EditControls::trim_range`].
-const CAVITY_MIN_MM: i32 = 0;
-const CAVITY_MAX_MM: i32 = 30;
-/// The inset the screen opens on.
-const DEFAULT_CAVITY_MM: i32 = 5;
-/// One millimetre per click of the stepper.
-pub(crate) const CAVITY_STEP_MM: i32 = 1;
+/// One unit per click of every stepper on this screen — the pre-port `StepBox`
+/// had no step property at all.
+pub(crate) const SHAPE_STEP: i32 = 1;
+
+/// A stepper field and the bounds it is committed inside.
+///
+/// ⚠ The two travel together because the range is needed twice — once to draw
+/// the field, once to read it — and a field drawn against one range and read
+/// against another is wrong in neither half alone.
+pub(crate) struct BoundedField {
+    /// The text and value the stepper edits.
+    pub(crate) state: StepBoxState,
+    /// `(min, max)`, in the field's own unit.
+    pub(crate) range: (i32, i32),
+}
+
+impl BoundedField {
+    /// A field showing `value`, editable within `range`.
+    fn new(value: i32, range: (i32, i32)) -> Self {
+        Self {
+            state: StepBoxState::new(value),
+            range,
+        }
+    }
+
+    /// The value, inside its bounds.
+    ///
+    /// ⚠ Clamped here because typing does not commit: a number typed and left
+    /// uncommitted reaches this unclamped. See [`StepBoxState`].
+    pub(crate) fn value(&self) -> i32 {
+        let (min, max) = self.range;
+        self.state.value().clamp(min, max)
+    }
+}
 
 /// The step-3 screen's field state, which outlives any one frame.
 #[derive(Resource)]
 pub(crate) struct ShapeControls {
     /// How far in from the scan surface the cavity sits, in millimetres.
-    pub(crate) cavity_mm: StepBoxState,
+    ///
+    /// ⚠ Its bounds are fixed — nothing about the scan moves them, unlike
+    /// [`crate::edit::EditControls::trim_range`].
+    pub(crate) cavity_mm: BoundedField,
+    /// The ridges cut into the piece's gripping face.
+    pub(crate) ridges: RidgeFields,
 }
 
 impl Default for ShapeControls {
     fn default() -> Self {
         Self {
-            cavity_mm: StepBoxState::new(DEFAULT_CAVITY_MM),
+            cavity_mm: BoundedField::new(5, (0, 30)),
+            ridges: RidgeFields::default(),
         }
     }
 }
 
 impl ShapeControls {
-    /// The plug the fields describe, in the SDK's meters.
-    ///
-    /// ⚠ Clamped for [`crate::edit::EditControls::simplify_target`]'s reason —
-    /// an uncommitted typed number reaches here unclamped.
+    /// The plug the fields describe, in the SDK's units.
     pub(crate) fn plug_draft(&self) -> PlugDraft {
-        let (min, max) = cavity_range();
-        let mm = self.cavity_mm.value().clamp(min, max);
         PlugDraft {
-            cavity_inset_m: f64::from(mm) / 1000.0,
-            // The ridge editor is a later PR; off is the smooth piece.
-            ridges: RidgeOptions::default(),
+            cavity_inset_m: f64::from(self.cavity_mm.value()) / 1000.0,
+            ridges: ridge_options_from_rows(&validated_rings(), self.ridges.toggles()),
         }
     }
 }
 
-/// The inset field's `(min, max)`.
-pub(crate) const fn cavity_range() -> (i32, i32) {
-    (CAVITY_MIN_MM, CAVITY_MAX_MM)
+/// The ridge editor's fields: a master switch, then a toggle and a scalar for
+/// each feature.
+///
+/// ⚠ The grip rings are the other half of this editor and have no controls
+/// yet. Until they do [`validated_rings`] stands in for them, so a piece can be
+/// committed carrying rings the screen never showed.
+pub(crate) struct RidgeFields {
+    /// The whole feature. Off is the smooth piece.
+    pub(crate) enabled: bool,
+    /// The fine surface ribs — both their depth and their spacing.
+    pub(crate) texture_enabled: bool,
+    /// Rib depth, tenths of a millimetre.
+    pub(crate) texture_depth: BoundedField,
+    /// Rib pitch, tenths of a millimetre. ⚠ Governed by `texture_enabled` —
+    /// it has no switch of its own.
+    pub(crate) texture_spacing: BoundedField,
+    /// The one-sided flattening.
+    pub(crate) side_pinch_enabled: bool,
+    /// Pinch depth, tenths of a millimetre.
+    pub(crate) side_pinch: BoundedField,
+    /// The outward pocket at the deep end.
+    pub(crate) tip_relief_enabled: bool,
+    /// Pocket depth, tenths of a millimetre.
+    pub(crate) tip_relief: BoundedField,
+    /// Whether the one-sided features are rotated off their default direction.
+    pub(crate) orientation_enabled: bool,
+    /// Where they sit around the channel axis, in degrees.
+    pub(crate) orientation: BoundedField,
+}
+
+/// The pre-port screen's opening state: ridges off, every feature inside them
+/// on, at the values [`RidgeOptions::default`] carries.
+impl Default for RidgeFields {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            texture_enabled: true,
+            texture_depth: BoundedField::new(15, (0, 50)),
+            texture_spacing: BoundedField::new(80, (10, 300)),
+            side_pinch_enabled: true,
+            side_pinch: BoundedField::new(15, (0, 50)),
+            tip_relief_enabled: true,
+            tip_relief: BoundedField::new(30, (0, 50)),
+            orientation_enabled: true,
+            orientation: BoundedField::new(0, (0, 360)),
+        }
+    }
+}
+
+impl RidgeFields {
+    /// What the toggles and fields say, in the units
+    /// [`ridge_options_from_rows`] reads.
+    fn toggles(&self) -> RidgeToggles {
+        RidgeToggles {
+            enabled: self.enabled,
+            // ⚠ On, and not switchable: the rings the screen cannot show yet
+            // are the ones the pre-port screen applied. See the type's note.
+            rings_enabled: true,
+            texture_enabled: self.texture_enabled,
+            texture_depth_tenths_mm: self.texture_depth.value(),
+            texture_spacing_tenths_mm: self.texture_spacing.value(),
+            side_pinch_enabled: self.side_pinch_enabled,
+            side_pinch_tenths_mm: self.side_pinch.value(),
+            tip_relief_enabled: self.tip_relief_enabled,
+            tip_relief_tenths_mm: self.tip_relief.value(),
+            orientation_enabled: self.orientation_enabled,
+            orientation_deg: self.orientation.value(),
+        }
+    }
+}
+
+/// The three grip rings the pre-port screen opened with, standing in until the
+/// ring editor exists.
+fn validated_rings() -> Vec<RingRow> {
+    RidgeOptions::default()
+        .rings
+        .iter()
+        .map(RingRow::from_ridge)
+        .collect()
 }
 
 /// Commit the shaped plug, and move on to the layer stack if it took.
@@ -103,28 +205,181 @@ pub(crate) mod tests {
     /// that commits 5 *metres* casts a piece the size of a room, and no gate
     /// comparing a draft against another draft can see it.
     #[test]
-    fn the_draft_carries_the_field_in_meters_and_inside_its_bounds() {
-        let mut controls = ShapeControls::default();
+    fn the_draft_carries_the_cavity_field_in_meters() {
         assert_eq!(
-            controls.plug_draft().cavity_inset_m,
+            ShapeControls::default().plug_draft().cavity_inset_m,
             0.005,
             "the field's 5 mm is 0.005 m"
         );
+    }
 
-        // ⚠ Typing does not commit, so these reach `plug_draft` unclamped —
-        // the path the clamp exists for.
-        //
-        // ⚠ Both edges. `clamp` swapped for a bare `min` holds the top and lets
-        // a negative through, and a negative inset offsets the plug *outward*
-        // — a cavity the scan no longer fits.
-        for (typed, expected) in [(CAVITY_MAX_MM + 1, 0.030), (CAVITY_MIN_MM - 1, 0.0)] {
-            *controls.cavity_mm.text_mut() = typed.to_string();
-            controls.cavity_mm.on_typed();
+    /// ★★ Every ported default, unit conversion and ring in one comparison,
+    /// against the SDK's own validated canal rather than against a copy of
+    /// itself.
+    ///
+    /// ⚠ The second half is what says the master switch is a switch. Gate the
+    /// whole struct on it — zeroing the scalars when it is off — and the first
+    /// assertion still passes.
+    #[test]
+    fn the_screen_opens_on_the_canal_the_sdk_calls_default() {
+        let mut controls = ShapeControls::default();
+
+        assert_eq!(
+            controls.plug_draft().ridges,
+            RidgeOptions::default(),
+            "off, but carrying the canal — the pre-port opening state"
+        );
+
+        controls.ridges.enabled = true;
+        assert_eq!(
+            controls.plug_draft().ridges,
+            RidgeOptions {
+                enabled: true,
+                ..RidgeOptions::default()
+            },
+            "and the master switch is the only thing it changes"
+        );
+    }
+
+    /// A screen with every scalar on a different number, none of them a
+    /// default, so a field wired to its neighbour's place shows up as the wrong
+    /// one moving.
+    ///
+    /// ⚠ Orientation especially. Its default is 0°, so a case that left it
+    /// there would prove nothing when its switch is turned off.
+    fn distinct_scalars() -> ShapeControls {
+        let mut controls = ShapeControls::default();
+        let ridges = &mut controls.ridges;
+        ridges.texture_depth.state = StepBoxState::new(11);
+        ridges.texture_spacing.state = StepBoxState::new(99);
+        ridges.side_pinch.state = StepBoxState::new(22);
+        ridges.tip_relief.state = StepBoxState::new(33);
+        ridges.orientation.state = StepBoxState::new(44);
+        controls
+    }
+
+    /// ★ Eleven values copied into one struct literal across three units. A
+    /// field wired to its neighbour's place is invisible while every number is
+    /// its default — [`distinct_scalars`] is what makes it visible.
+    #[test]
+    fn each_ridge_scalar_lands_in_its_own_place_in_the_options() {
+        let ridges = distinct_scalars().plug_draft().ridges;
+
+        assert_eq!(ridges.texture_depth_m, 0.0011, "texture depth");
+        assert_eq!(ridges.texture_spacing_m, 0.0099, "texture spacing");
+        assert_eq!(ridges.side_pinch_depth_m, 0.0022, "side pinch");
+        assert_eq!(ridges.tip_relief_depth_m, 0.0033, "tip relief");
+        assert_eq!(ridges.orientation_deg, 44.0, "orientation");
+    }
+
+    /// One feature's switch: what to call it, the flag it drives, and the
+    /// number that has to go to zero when it is off.
+    type ToggleCase = (
+        &'static str,
+        fn(&mut ShapeControls) -> &mut bool,
+        fn(&RidgeOptions) -> f64,
+    );
+
+    /// ★ Four toggles beside five scalars: one wired to its neighbour zeroes
+    /// the wrong feature, and every number left on screen still looks
+    /// plausible.
+    #[test]
+    fn each_ridge_toggle_zeroes_its_own_feature_and_leaves_the_rest_standing() {
+        let cases: [ToggleCase; 4] = [
+            (
+                "texture",
+                |c| &mut c.ridges.texture_enabled,
+                |o| o.texture_depth_m,
+            ),
+            (
+                "side pinch",
+                |c| &mut c.ridges.side_pinch_enabled,
+                |o| o.side_pinch_depth_m,
+            ),
+            (
+                "tip relief",
+                |c| &mut c.ridges.tip_relief_enabled,
+                |o| o.tip_relief_depth_m,
+            ),
+            (
+                "orientation",
+                |c| &mut c.ridges.orientation_enabled,
+                |o| o.orientation_deg,
+            ),
+        ];
+        let all_on = distinct_scalars().plug_draft().ridges;
+
+        for (name, toggle, read) in cases {
+            let mut controls = distinct_scalars();
+            *toggle(&mut controls) = false;
+            let off = controls.plug_draft().ridges;
+
+            assert_eq!(read(&off), 0.0, "{name} off must zero its own feature");
+            for (other, _, read_other) in cases {
+                assert!(
+                    other == name || read_other(&off) == read_other(&all_on),
+                    "{name} off moved {other} as well"
+                );
+            }
             assert_eq!(
-                controls.plug_draft().cavity_inset_m,
-                expected,
-                "{typed} mm is clamped to the bound it passed"
+                off.texture_spacing_m, all_on.texture_spacing_m,
+                "{name} off must leave the spacing, which no toggle gates"
             );
+        }
+    }
+
+    /// ⚠ Typing does not commit, so a number typed and left uncommitted reaches
+    /// [`ShapeControls::plug_draft`] unclamped — the path the bounds exist for.
+    ///
+    /// ⚠ Both edges of every field. A `min` where a `clamp` belongs holds the
+    /// top and lets a negative through, and a negative inset offsets the plug
+    /// *outward* — a cavity the scan no longer fits.
+    ///
+    /// ⚠ Asserted through the committed plug, not through
+    /// [`BoundedField::value`]: a caller reading `state` directly would bypass
+    /// the clamp with the field's own gate still green.
+    #[test]
+    fn every_field_commits_inside_the_bounds_the_pre_port_screen_had() {
+        // The pre-port `StepBox` minimum/maximum, in each field's own unit.
+        let cases: [(
+            &str,
+            fn(&mut ShapeControls) -> &mut BoundedField,
+            (i32, i32),
+        ); 6] = [
+            ("cavity", |c| &mut c.cavity_mm, (0, 30)),
+            ("texture depth", |c| &mut c.ridges.texture_depth, (0, 50)),
+            (
+                "texture spacing",
+                |c| &mut c.ridges.texture_spacing,
+                (10, 300),
+            ),
+            ("side pinch", |c| &mut c.ridges.side_pinch, (0, 50)),
+            ("tip relief", |c| &mut c.ridges.tip_relief, (0, 50)),
+            ("orientation", |c| &mut c.ridges.orientation, (0, 360)),
+        ];
+
+        for (name, pick, (min, max)) in cases {
+            assert_eq!(
+                pick(&mut ShapeControls::default()).range,
+                (min, max),
+                "{name} is edited inside the bounds the pre-port screen gave it"
+            );
+
+            for (typed, bound) in [(max + 1, max), (min - 1, min)] {
+                let mut typed_over = ShapeControls::default();
+                let field = pick(&mut typed_over);
+                *field.state.text_mut() = typed.to_string();
+                field.state.on_typed();
+
+                let mut at_bound = ShapeControls::default();
+                pick(&mut at_bound).state = StepBoxState::new(bound);
+
+                assert_eq!(
+                    typed_over.plug_draft(),
+                    at_bound.plug_draft(),
+                    "{name}: {typed} must commit as {bound}"
+                );
+            }
         }
     }
 
