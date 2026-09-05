@@ -1509,7 +1509,6 @@ mod tests {
     /// here — `begin_pass` / `end_pass` are all it does around the system, and
     /// doing them by hand is what makes the system reachable at all.
     fn app_running_the_wizard() -> App {
-        use bevy::state::app::StatesPlugin;
         use bevy_egui::{EguiContext, EguiUserTextures, PrimaryEguiContext};
 
         fn begin(mut q: Query<&mut EguiContext>, click: Res<Click>) {
@@ -1556,8 +1555,7 @@ mod tests {
         }
 
         let mut app = App::new();
-        app.add_plugins((StatesPlugin, bevy::asset::AssetPlugin::default()))
-            .init_resource::<EguiUserTextures>()
+        app.init_resource::<EguiUserTextures>()
             .init_resource::<Painted>()
             .init_resource::<Click>()
             .init_resource::<Studio>()

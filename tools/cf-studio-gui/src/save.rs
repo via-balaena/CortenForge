@@ -19,8 +19,8 @@ use crate::state::{PendingSave, Studio};
 /// The unit the cleaned STL records itself in, as the pre-port save did.
 const STL_UNITS: &str = "mm";
 
-/// Used if the scan's filename has no stem, or is not valid UTF-8 — rare, but
-/// a picked file can be either, and the outputs still need a name.
+/// Used when the scan's filename yields no usable stem — in practice, one that
+/// is not valid UTF-8.
 const FALLBACK_STEM: &str = "scan";
 
 /// Reported when a Save is asked for with no scan to write.
