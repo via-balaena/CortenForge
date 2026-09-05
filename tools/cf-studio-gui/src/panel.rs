@@ -978,7 +978,7 @@ fn draw_design_layers(
     let mut dropped = None;
     // The last layer's ✖ is disabled rather than silently ignored — the
     // pre-port screen left it live and dropped the click on the floor.
-    let removable = design.layers.len() > 1;
+    let removable = design.layers.can_drop();
     for (index, layer) in design.layers.rows_mut().iter_mut().enumerate() {
         if index > 0 {
             ui.add_space(ROW_GAP);

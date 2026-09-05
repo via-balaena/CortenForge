@@ -1039,16 +1039,15 @@ impl LayerStack {
         &mut self.rows
     }
 
-    /// How many layers the stack holds.
+    /// Whether a layer can be dropped.
+    ///
+    /// ⚠ One predicate, read by both the ✖ that offers the drop and the
+    /// [`Self::remove`] that performs it. Split in two, the button and the rule
+    /// can disagree — which is how the pre-port screen had it, with the
+    /// condition written out at the callback and nothing on the model.
     #[must_use]
-    pub fn len(&self) -> usize {
-        self.rows.len()
-    }
-
-    /// Whether the stack has no layers at all — nothing the cast could pour.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.rows.is_empty()
+    pub fn can_drop(&self) -> bool {
+        self.rows.len() > 1
     }
 
     /// Add a layer on the outside, where the "+ Add layer" button puts it.
@@ -1066,7 +1065,7 @@ impl LayerStack {
     /// disables that row's ✖ — this guard is what makes the rule true rather
     /// than merely unclickable.
     pub fn remove(&mut self, index: usize) {
-        if self.rows.len() > 1 && index < self.rows.len() {
+        if self.can_drop() && index < self.rows.len() {
             self.rows.remove(index);
         }
     }
@@ -2327,13 +2326,19 @@ visible = true
         );
     }
 
+    /// ⚠ One past the end as well as far past it: `remove` indexes a `Vec`,
+    /// and `index <= len` would reach `Vec::remove(len)`, which panics.
     #[test]
     fn dropping_a_layer_that_is_not_there_changes_nothing() {
-        let mut stack = LayerStack::default();
+        let untouched = stack_census(&LayerStack::default());
 
-        stack.remove(9);
+        for index in [3, 9] {
+            let mut stack = LayerStack::default();
 
-        assert_eq!(stack_census(&stack), stack_census(&LayerStack::default()));
+            stack.remove(index);
+
+            assert_eq!(stack_census(&stack), untouched, "removing index {index}");
+        }
     }
 
     /// ⚠ On the outside, where the button says it goes: the stack is built
