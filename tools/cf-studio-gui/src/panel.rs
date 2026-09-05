@@ -11,12 +11,13 @@
 
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
-use cf_studio_core::{PlugDraft, Step};
+use cf_studio_core::{LayerDraft, PlugDraft, Step};
 use cf_studio_gui::{
-    BoundedField, RingRow, format_pour_active, format_pour_plan, format_scan_stats, nav_state,
-    pour_countdown, print_step_summary, step_rows,
+    BoundedField, LayerRow, RingRow, Silicone, format_pour_active, format_pour_plan,
+    format_scan_stats, nav_state, pour_countdown, print_step_summary, step_rows,
 };
 
+use crate::design::{DesignControls, commit_design};
 use crate::dialogs::{DialogKind, PendingDialog};
 use crate::edit::{
     EditControls, EditIntent, FloorShape, SIMPLIFY_STEP_FACES, SMOOTHING_STEP, STEP_MM,
@@ -26,11 +27,11 @@ use crate::jobs::{SimplifyJob, start_simplify};
 use crate::preview::PlugView;
 use crate::save;
 use crate::scan::ScanEdit;
-use crate::shape::{RidgeFields, SHAPE_STEP, ShapeControls, commit_plug};
+use crate::shape::{RidgeFields, ShapeControls, commit_plug};
 use crate::state::{PendingSave, Studio};
 use crate::widgets::{
     ACTIVE_TEXT, CONTROL_TEXT, DONE_TEXT, ERROR_TEXT, GOOD_FILL, GOOD_TEXT, HEADING_TEXT,
-    HINT_TEXT, RIDGE_FILL, RIDGE_NOTE_TEXT, RING_FILL, STATS_TEXT, WARN_TEXT, card,
+    HINT_TEXT, LAYER_FILL, RIDGE_FILL, RIDGE_NOTE_TEXT, RING_FILL, STATS_TEXT, WARN_TEXT, card,
     centered_wrapped, cleanup_section, field_grid, step_box, wrapped_colored, wrapped_label,
 };
 
@@ -64,6 +65,19 @@ const STAND_IN_NOTE: &str = "The preview is a stand-in shape — your cleaned sc
      couldn't be read. The ridges are real; the body is not yours.";
 /// The rebuilt-floor picker. Fixed, or the combo stretches to fill the column.
 const SHAPE_PICKER_WIDTH: f32 = 110.0;
+/// One unit per click of every stepper the wizard draws — the pre-port
+/// `StepBox` had no step property at all.
+const FIELD_STEP: i32 = 1;
+/// The layer material picker's width, arrow and padding included.
+///
+/// ⚠ A **floor**, not a cap: egui grows a `ComboBox` to its selected text and
+/// never truncates it, so this cannot cut a silicone name off. What it buys is
+/// three stacked pickers that stay one width instead of jittering as materials
+/// change — which needs it to clear the *widest* name the catalog carries: 163
+/// px of text plus 26 px of chrome, measured with the shipped fonts. A longer
+/// silicone than any of today's breaks that, and
+/// `the_material_pickers_stay_one_width_whatever_they_show` says so.
+const SILICONE_PICKER_WIDTH: f32 = 190.0;
 /// The overwrite modal's width. Wider than the body column — it is centred on
 /// the whole window and has to hold a folder path.
 const MODAL_WIDTH: f32 = 460.0;
@@ -95,6 +109,9 @@ struct Acted {
     /// and `save` carry theirs: the executor must not see a field the user has
     /// changed since the click.
     plug: Option<PlugDraft>,
+    /// The layer stack a step-4 "Use this design" was clicked with, carried
+    /// for the same reason as `plug`.
+    design: Option<Vec<LayerDraft>>,
 }
 
 impl Acted {
@@ -106,6 +123,7 @@ impl Acted {
         self.simplify = inner.simplify.or(self.simplify);
         self.save = inner.save.or(self.save);
         self.plug = inner.plug.or(self.plug.take());
+        self.design = inner.design.or(self.design.take());
     }
 }
 
@@ -117,6 +135,8 @@ pub(crate) enum Intent {
     Next,
     /// Step 1: choose the scan file to work from.
     PickScan,
+    /// Step 4: choose a `.design.toml` instead of the editor's own stack.
+    PickDesign,
     /// Step 6: choose a folder and copy the printable files into it.
     ExportPrint,
     /// Step 6: reveal the folder the files were copied to.
@@ -139,6 +159,7 @@ pub(crate) fn wizard_screen(
     mut scan: ResMut<ScanEdit>,
     mut controls: ResMut<EditControls>,
     mut shape: ResMut<ShapeControls>,
+    mut design: ResMut<DesignControls>,
     mut job: ResMut<SimplifyJob>,
     preview: Res<PlugView>,
 ) -> bevy::ecs::error::Result {
@@ -163,8 +184,11 @@ pub(crate) fn wizard_screen(
             &studio,
             &dialog,
             &scan,
-            &mut controls,
-            &mut shape,
+            &mut Editors {
+                controls: &mut controls,
+                shape: &mut shape,
+                design: &mut design,
+            },
             preview.showing_proxy(),
         ));
     });
@@ -195,6 +219,9 @@ pub(crate) fn wizard_screen(
     }
     if let Some(draft) = acted.plug {
         commit_plug(draft, &mut studio);
+    }
+    if let Some(layers) = acted.design {
+        commit_design(layers, &mut studio);
     }
     Ok(())
 }
@@ -268,6 +295,21 @@ fn draw_nav(ui: &mut egui::Ui, studio: &Studio, dialog: &PendingDialog) -> Optio
     intent
 }
 
+/// The field state of every step editor, threaded to whichever screen is on.
+///
+/// ⚠ A plain struct, not a `SystemParam` bundle. `wizard_screen`'s own
+/// parameter list is what the plugin gate reads against the app's registered
+/// resources; this sits one level below that, where the only thing growing is
+/// the number of ported screens.
+struct Editors<'a> {
+    /// Step 2's cleanup fields.
+    controls: &'a mut EditControls,
+    /// Step 3's cavity inset and ridges.
+    shape: &'a mut ShapeControls,
+    /// Step 4's silicone stack.
+    design: &'a mut DesignControls,
+}
+
 /// The step message, then the body for the viewed step.
 ///
 /// ⚠ The message sits **above** the body, where the pre-port screen put it —
@@ -279,8 +321,7 @@ fn draw_body(
     studio: &Studio,
     dialog: &PendingDialog,
     scan: &ScanEdit,
-    controls: &mut EditControls,
-    shape: &mut ShapeControls,
+    editors: &mut Editors<'_>,
     showing_a_stand_in: bool,
 ) -> Acted {
     let viewed = studio.cursor.viewed();
@@ -311,11 +352,16 @@ fn draw_body(
     let mut acted = Acted::default();
     match viewed {
         Step::AddScan => acted.nav = draw_add_scan(ui, studio, dialog),
-        Step::CleanScan => acted.merge(draw_clean_scan(ui, studio, dialog, scan, controls)),
-        Step::ShapePiece => {
-            acted.plug = draw_shape_piece(ui, studio, dialog, shape, showing_a_stand_in);
+        Step::CleanScan => {
+            acted.merge(draw_clean_scan(ui, studio, dialog, scan, editors.controls));
         }
-        Step::DesignLayers | Step::MakeMolds => draw_porting_notice(ui),
+        Step::ShapePiece => {
+            acted.plug = draw_shape_piece(ui, studio, dialog, editors.shape, showing_a_stand_in);
+        }
+        Step::DesignLayers => {
+            acted.merge(draw_design_layers(ui, studio, dialog, editors.design));
+        }
+        Step::MakeMolds => draw_porting_notice(ui),
         Step::Print => acted.nav = draw_print(ui, studio, dialog),
         Step::Pour => acted.nav = draw_pour(ui, studio),
     }
@@ -608,14 +654,19 @@ fn draw_reconstruct_row(
     ui.vertical_centered(|ui| {
         field_grid(ui, "reconstruct-fields", |ui| {
             ui.colored_label(CONTROL_TEXT, "Shape");
-            egui::ComboBox::from_id_salt("rebuilt-floor-shape")
-                .width(SHAPE_PICKER_WIDTH)
-                .selected_text(controls.shape.label())
-                .show_ui(ui, |ui| {
-                    for shape in FloorShape::ALL {
-                        ui.selectable_value(&mut controls.shape, shape, shape.label());
-                    }
-                });
+            // ⚠ `add_enabled_ui` — see [`silicone_picker`]. This picker was
+            // live during a Simplify until step 4 gave the app a second combo
+            // and the omission showed up beside it.
+            ui.add_enabled_ui(ready, |ui| {
+                egui::ComboBox::from_id_salt("rebuilt-floor-shape")
+                    .width(SHAPE_PICKER_WIDTH)
+                    .selected_text(controls.shape.label())
+                    .show_ui(ui, |ui| {
+                        for shape in FloorShape::ALL {
+                            ui.selectable_value(&mut controls.shape, shape, shape.label());
+                        }
+                    });
+            });
             ui.end_row();
             ui.colored_label(CONTROL_TEXT, "from");
             step_box(ui, &mut controls.reference_mm, range, STEP_MM, ready);
@@ -668,8 +719,8 @@ fn draw_add_scan(ui: &mut egui::Ui, studio: &Studio, dialog: &PendingDialog) -> 
     intent
 }
 
-/// Steps 4 and 5 during the Slint→Bevy port. Says what is missing and that the
-/// work is not lost, rather than showing an empty screen that reads as a bug.
+/// Step 5 during the Slint→Bevy port. Says what is missing and that the work
+/// is not lost, rather than showing an empty screen that reads as a bug.
 fn draw_porting_notice(ui: &mut egui::Ui) {
     ui.add_space(8.0);
     wrapped_label(
@@ -898,14 +949,132 @@ fn ridge_row(
     ui.end_row();
 }
 
-/// A stepper for one of step 3's fields.
+/// A stepper for one of the shape or layer fields.
 ///
 /// ⚠ The bounds come off the field, so the screen cannot enforce a limit the
 /// commit does not. Given the wrong ones the field walks past its own maximum
-/// and [`ShapeControls::plug_draft`] quietly clamps it back — the screen
-/// showing one number and the plug carrying another.
+/// and [`BoundedField::value`] quietly clamps it back — the screen showing one
+/// number and the commit carrying another.
 fn bounded_step_box(ui: &mut egui::Ui, field: &mut BoundedField, enabled: bool) {
-    step_box(ui, &mut field.state, field.range, SHAPE_STEP, enabled);
+    step_box(ui, &mut field.state, field.range, FIELD_STEP, enabled);
+}
+
+/// Step 4 — the silicone stack, built outward off the shaped piece.
+fn draw_design_layers(
+    ui: &mut egui::Ui,
+    studio: &Studio,
+    dialog: &PendingDialog,
+    design: &mut DesignControls,
+) -> Acted {
+    let ready = accepting_actions(studio, dialog);
+    let mut acted = Acted::default();
+    ui.add_space(8.0);
+    wrapped_label(
+        ui,
+        "Choose the silicone layers, innermost first — soft inside, firmer \
+         outside. These build outward off the piece you just shaped.",
+    );
+    ui.add_space(SECTION_GAP);
+
+    // ⚠ Noted here and applied after the loop: the row drawing the ✖ is
+    // borrowed out of the stack that removing it shortens.
+    let mut dropped = None;
+    // ⚠ Disabled, where the pre-port screen left it live and dropped the click.
+    let removable = design.layers.can_drop();
+    for (index, layer) in design.layers.rows_mut().iter_mut().enumerate() {
+        ui.add_space(ROW_GAP);
+        if draw_layer(ui, index, layer, ready, removable) {
+            dropped = Some(index);
+        }
+    }
+    if let Some(index) = dropped {
+        design.layers.remove(index);
+    }
+
+    ui.add_space(SECTION_GAP);
+    ui.vertical_centered(|ui| {
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(ready, egui::Button::new("+ Add layer"))
+                .clicked()
+            {
+                design.layers.add();
+            }
+            if ui
+                .add_enabled(ready, egui::Button::new("Use this design"))
+                .clicked()
+            {
+                acted.design = Some(design.layers.drafts());
+            }
+            if ui
+                .add_enabled(ready, egui::Button::new("…or load a file"))
+                .clicked()
+            {
+                acted.nav = Some(Intent::PickDesign);
+            }
+        });
+    });
+    acted
+}
+
+/// One layer: which one it is, the ✖ that drops it, its silicone and its two
+/// fields. Reports whether the ✖ was clicked.
+///
+/// ⚠ A card of stacked rows, not the pre-port screen's single line. That line
+/// put a material picker, two steppers, two unit labels and a button side by
+/// side — wider than the ring row that already forced this shape, and egui
+/// culls what overflows the column rather than wrapping it.
+fn draw_layer(
+    ui: &mut egui::Ui,
+    index: usize,
+    layer: &mut LayerRow,
+    ready: bool,
+    removable: bool,
+) -> bool {
+    let mut dropped = false;
+    card(ui, LAYER_FILL, |ui| {
+        ui.horizontal(|ui| {
+            ui.colored_label(CONTROL_TEXT, format!("Layer {}", index + 1));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                dropped = ui
+                    .add_enabled(ready && removable, egui::Button::new("✖"))
+                    .on_disabled_hover_text("The cast needs at least one layer.")
+                    .clicked();
+            });
+        });
+        field_grid(ui, &format!("layer-{index}"), |ui| {
+            ui.colored_label(CONTROL_TEXT, "Silicone");
+            silicone_picker(ui, index, &mut layer.material, ready);
+            ui.end_row();
+            ui.colored_label(CONTROL_TEXT, "Thickness");
+            bounded_step_box(ui, &mut layer.thickness_mm, ready);
+            ui.colored_label(CONTROL_TEXT, "mm");
+            ui.end_row();
+            ui.colored_label(CONTROL_TEXT, "Slacker");
+            bounded_step_box(ui, &mut layer.slacker_pct, ready);
+            ui.colored_label(CONTROL_TEXT, "%");
+            ui.end_row();
+        });
+    });
+    dropped
+}
+
+/// The material picker for one layer.
+///
+/// ⚠ `add_enabled_ui`, because `ComboBox` takes no `enabled` of its own — and
+/// a picker left live during a long job is `accepting_actions` honoured by
+/// half, which is the thing that rule exists to prevent.
+fn silicone_picker(ui: &mut egui::Ui, index: usize, material: &mut Silicone, ready: bool) {
+    ui.add_enabled_ui(ready, |ui| {
+        egui::ComboBox::from_id_salt(format!("layer-{index}-silicone"))
+            .width(SILICONE_PICKER_WIDTH)
+            .selected_text(material.name)
+            .show_ui(ui, |ui| {
+                for silicone in Silicone::catalog() {
+                    ui.selectable_value(material, silicone, silicone.name);
+                }
+            });
+    });
 }
 
 /// Step 6 — save the printable files, then hand off to the slicer.
@@ -1056,6 +1225,7 @@ fn apply_intent(intent: Intent, studio: &mut Studio, dialog: &mut PendingDialog)
         Intent::Back => studio.back(),
         Intent::Next => studio.next(),
         Intent::PickScan => dialog.pick_scan_file(),
+        Intent::PickDesign => dialog.pick_design_file(),
         Intent::StartPourTimer => studio.start_pour_timer(),
         Intent::MarkPoured => studio.mark_poured(),
         Intent::OpenExportFolder => match studio.project.print().map(|p| p.export_dir.clone()) {
@@ -1748,6 +1918,7 @@ pub(crate) mod tests {
             .init_resource::<ScanEdit>()
             .init_resource::<EditControls>()
             .init_resource::<ShapeControls>()
+            .init_resource::<DesignControls>()
             .init_resource::<SimplifyJob>()
             .init_resource::<PlugView>()
             .add_systems(Update, (begin, wizard_screen, end).chain());
@@ -2005,27 +2176,45 @@ pub(crate) mod tests {
         );
     }
 
-    /// ⚠ The steps still on the notice. Replacing `draw_porting_notice` with a
-    /// no-op leaves them blank and passes the control census, which counts what
+    /// ⚠ The step still on the notice. Replacing `draw_porting_notice` with a
+    /// no-op leaves it blank and passes the control census, which counts what
     /// a screen with no controls has none of.
     #[test]
-    fn the_steps_still_being_ported_say_so_rather_than_showing_nothing() {
-        for step in [Step::DesignLayers, Step::MakeMolds] {
-            let mut app = app_running_the_wizard();
-            app.insert_resource(Studio {
-                cursor: WizardCursor::new(step),
-                ..Studio::default()
-            });
+    fn the_step_still_being_ported_says_so_rather_than_showing_nothing() {
+        let mut app = app_running_the_wizard();
+        app.insert_resource(Studio {
+            cursor: WizardCursor::new(Step::MakeMolds),
+            ..Studio::default()
+        });
 
-            settle(&mut app);
+        settle(&mut app);
 
-            let painted = painted_texts(&app);
-            assert!(
-                painted.iter().any(|text| text.contains("being rebuilt")),
-                "step {} says so instead of showing nothing: {painted:?}",
-                step.number()
-            );
-        }
+        let painted = painted_texts(&app);
+        assert!(
+            painted.iter().any(|text| text.contains("being rebuilt")),
+            "step 5 says so instead of showing nothing: {painted:?}"
+        );
+    }
+
+    /// ⚠ The other half of the same claim: step 4 must have *stopped* saying
+    /// it. A screen that draws its new controls under the notice still reads
+    /// as unported, and every gate below counts controls, not what they sit
+    /// beneath.
+    #[test]
+    fn the_layer_screen_no_longer_says_it_is_being_rebuilt() {
+        let mut app = app_running_the_wizard();
+        app.insert_resource(Studio {
+            cursor: WizardCursor::new(Step::DesignLayers),
+            ..Studio::default()
+        });
+
+        settle(&mut app);
+
+        let painted = painted_texts(&app);
+        assert!(
+            !painted.iter().any(|text| text.contains("being rebuilt")),
+            "step 4 is ported: {painted:?}"
+        );
     }
 
     /// The ridge editor's master switch, by the name the census gives it.
@@ -2744,13 +2933,536 @@ pub(crate) mod tests {
         assert_eq!(c.tip_mm.value(), tip, "and back down");
     }
 
+    // ── step 4: the silicone layer stack ────────────────────────────────────
+
+    /// Step 4's body, laid out with `design` behind it.
+    fn design_body(design: &mut DesignControls) -> impl FnMut(&mut egui::Ui) + '_ {
+        move |ui| {
+            let _ = draw_design_layers(ui, &Studio::default(), &PendingDialog::default(), design);
+        }
+    }
+
+    /// One layer's card: the ✖ that drops it, its material picker, then its
+    /// two steppers.
+    const LAYER_CARD: [&str; 8] = [
+        "✖",
+        "ComboBox",
+        "−",
+        "TextInput",
+        "+",
+        "−",
+        "TextInput",
+        "+",
+    ];
+
+    /// ⚠ Assembled from named blocks rather than derived from the screen, for
+    /// the reason on the ridge editor's census: this is the list a person
+    /// checks against the pre-port editor, and a block that moved, vanished or
+    /// arrived twice changes it.
+    ///
+    /// ⚠ `controls_in_column` also asserts every control lands *inside* the
+    /// column, which is the whole reason a layer is a stacked card and not the
+    /// pre-port's one-line row.
+    #[test]
+    fn the_layer_screen_is_laid_out_inside_the_body_column() {
+        let mut design = DesignControls::default();
+
+        let controls = controls_in_column(design_body(&mut design));
+
+        assert_eq!(
+            controls,
+            [&LAYER_CARD[..], &LAYER_CARD, &LAYER_CARD, &ACTIONS,].concat(),
+            "the three layers the screen opens on, then the three buttons"
+        );
+    }
+
+    /// ★ The cast needs a stack, and `LayerStack::remove` refuses to empty one
+    /// — but a live ✖ that does nothing is a button the user has to guess
+    /// about. Both halves, because either alone leaves the other free to go.
+    #[test]
+    fn only_the_last_layers_cross_is_disabled() {
+        let mut design = DesignControls::default();
+        assert_eq!(
+            controls_disabled(design_body(&mut design), "✖"),
+            [false, false, false],
+            "three layers: every ✖ is live"
+        );
+
+        design.layers.remove(2);
+        design.layers.remove(1);
+
+        assert_eq!(
+            controls_disabled(design_body(&mut design), "✖"),
+            [true],
+            "the one that is left cannot be dropped"
+        );
+    }
+
+    /// ⚠ Every control, by name — a screen that gates its buttons and leaves
+    /// the pickers or the steppers live is `accepting_actions` honoured by
+    /// half, which is the thing that rule exists to prevent.
+    ///
+    /// ⚠ The count is asserted beside the flags. "Nothing on this screen is
+    /// live" is also true of a screen that drew nothing at all, and an empty
+    /// result is not evidence.
+    #[test]
+    fn every_control_on_the_layer_screen_is_gated_while_the_app_works() {
+        use egui_kittest::kittest::NodeT;
+
+        let mut design = DesignControls::default();
+        let busy = Studio {
+            busy: true,
+            ..Studio::default()
+        };
+        let mut body = |ui: &mut egui::Ui| {
+            let _ = draw_design_layers(ui, &busy, &PendingDialog::default(), &mut design);
+        };
+
+        let disabled: Vec<bool> = column_harness(&mut body)
+            .root()
+            .children_recursive()
+            .filter_map(|node| {
+                let widget = node.accesskit_node();
+                control_name(widget.role(), widget.label())?;
+                Some(widget.is_disabled())
+            })
+            .collect();
+
+        assert_eq!(
+            disabled.len(),
+            3 * LAYER_CARD.len() + 3,
+            "the whole screen is still drawn: three cards and three buttons"
+        );
+        assert_eq!(
+            disabled,
+            vec![true; disabled.len()],
+            "and not one of them is live"
+        );
+    }
+
+    /// Every button on the screen, by name, with the first layer's material
+    /// picker opened or left shut.
+    ///
+    /// ⚠ Three passes after the click, not one: the click lands on the frame
+    /// after it is queued, egui opens the popup on the next, and lays its items
+    /// out on the one after that — the "a widget is placed from the previous
+    /// pass" rule `settle` exists for on the Bevy side.
+    fn design_buttons(design: &mut DesignControls, open_the_picker: bool) -> Vec<String> {
+        use egui_kittest::kittest::NodeT;
+
+        let mut body = design_body(design);
+        let mut harness = column_harness(&mut body);
+        if open_the_picker {
+            harness
+                .root()
+                .children_recursive()
+                .find(|node| node.accesskit_node().role() == egui::accesskit::Role::ComboBox)
+                .expect("every layer card draws one")
+                .click();
+            for _ in 0..3 {
+                harness.run();
+            }
+        }
+        harness
+            .root()
+            .children_recursive()
+            .filter_map(|node| {
+                let widget = node.accesskit_node();
+                (widget.role() == egui::accesskit::Role::Button)
+                    .then(|| widget.label())
+                    .flatten()
+            })
+            .collect()
+    }
+
+    /// The buttons under the cards, in the order the pre-port screen had them.
+    const ACTIONS: [&str; 3] = ["+ Add layer", "Use this design", "…or load a file"];
+
+    /// The column the body lays out in, and the three action buttons' rects
+    /// inside it, in the order they are drawn.
+    fn action_button_rects(design: &mut DesignControls) -> (egui::Rect, Vec<egui::Rect>) {
+        use egui_kittest::kittest::NodeT;
+
+        let column = std::cell::Cell::new(egui::Rect::NOTHING);
+        let mut inner = design_body(design);
+        let mut body = |ui: &mut egui::Ui| {
+            column.set(ui.max_rect());
+            inner(ui);
+        };
+        let rects = column_harness(&mut body)
+            .root()
+            .children_recursive()
+            .filter_map(|node| {
+                let label = node.accesskit_node().label()?;
+                ACTIONS.contains(&label.as_str()).then(|| node.rect())
+            })
+            .collect();
+        (column.get(), rects)
+    }
+
+    /// ★ One row, as the pre-port screen had them. Stacked they still fit the
+    /// column and still pass the census — three unrelated steps where the
+    /// screen means one choice.
+    ///
+    /// ⚠ The row is LEFT-ALIGNED, where the pre-port centred it, and this
+    /// pins that: `vertical_centered` centres a lone widget but not a
+    /// `horizontal` inside it — the row claims the full width and lays out
+    /// from its left edge, and `Layout::with_main_align(Center)` does not
+    /// change that (both measured: 0 px left, 128.6 right). Step 3's cavity
+    /// row has sat this way since #884; centring rows is one app-wide change,
+    /// not this screen's.
+    #[test]
+    fn the_three_actions_sit_on_one_row_against_the_left_margin() {
+        let mut design = DesignControls::default();
+
+        let (column, rects) = action_button_rects(&mut design);
+
+        assert_eq!(rects.len(), ACTIONS.len(), "all three are drawn: {rects:?}");
+        assert!(
+            rects
+                .windows(2)
+                .all(|pair| (pair[0].top() - pair[1].top()).abs() < 0.01),
+            "one row: {rects:?}"
+        );
+        assert!(
+            (rects[0].left() - column.left()).abs() < 1.0,
+            "flush left, as every other row in this column is: {rects:?}"
+        );
+    }
+
+    /// Lay step 4 out with `design` and click the `nth` button called `name`.
+    fn click_nth_layer_button(design: &mut DesignControls, name: &str, nth: usize) {
+        let mut body = design_body(design);
+        let mut harness = column_harness(&mut body);
+        harness
+            .get_all_by_label(name)
+            .nth(nth)
+            .expect("the screen draws that many")
+            .click();
+        harness.run();
+    }
+
+    /// Every layer's `(thickness, slacker)`, in the order they are drawn.
+    fn layer_fields(design: &DesignControls) -> Vec<(i32, i32)> {
+        design
+            .layers
+            .rows()
+            .iter()
+            .map(|row| (row.thickness_mm.value(), row.slacker_pct.value()))
+            .collect()
+    }
+
+    /// ★ Each card edits its own row. The screen draws all three from one loop
+    /// over `rows_mut`, and a card reaching a fixed index — or three sibling
+    /// `Ui`s sharing an id — moves the wrong layer while looking right.
+    ///
+    /// ⚠ The whole stack is asserted, not the layer that was meant to move: a
+    /// stepper that moved two rows passes any check that only reads one.
+    #[test]
+    fn a_cards_stepper_moves_its_own_layer_and_no_other() {
+        let mut design = DesignControls::default();
+
+        // Thickness then slacker, card by card — so the third `+` is layer 2's
+        // thickness and the sixth is layer 3's slacker.
+        click_nth_layer_button(&mut design, "+", 2);
+        click_nth_layer_button(&mut design, "+", 5);
+
+        assert_eq!(
+            layer_fields(&design),
+            [(18, 25), (9, 0), (5, 1)],
+            "layer 2 thickened and layer 3 softened, each on its own row"
+        );
+    }
+
+    /// The silicone each layer's picker shows, in the order they are drawn.
+    ///
+    /// ⚠ `value()`, not `label()`. A `ComboBox` reports its selected text as
+    /// its value and carries no label at all, which is why the control census
+    /// records it by role — and why the census cannot see this.
+    fn silicones_shown(design: &mut DesignControls) -> Vec<String> {
+        use egui_kittest::kittest::NodeT;
+
+        let mut body = design_body(design);
+        column_harness(&mut body)
+            .root()
+            .children_recursive()
+            .filter_map(|node| {
+                let widget = node.accesskit_node();
+                (widget.role() == egui::accesskit::Role::ComboBox)
+                    .then(|| widget.value())
+                    .flatten()
+            })
+            .collect()
+    }
+
+    /// ★ Which silicone a layer is poured in is the one thing on the card that
+    /// cannot be inferred from anything else on it, and every other gate reads
+    /// the picker by its *role*: emptied of its selected text it counts, lays
+    /// out and opens exactly the same. Found by mutation.
+    #[test]
+    fn each_picker_shows_its_own_layers_silicone() {
+        let mut design = DesignControls::default();
+
+        assert_eq!(
+            silicones_shown(&mut design),
+            [
+                "Ecoflex 00-30 (medium-soft)",
+                "Dragon Skin 10A (soft)",
+                "Dragon Skin 20A (firm)",
+            ],
+            "innermost first, each card naming its own row's silicone"
+        );
+    }
+
+    /// ★ What the picker *offers*, which no other gate reaches: every census
+    /// here reads the selected name off the shut control, and a picker wired
+    /// to one silicone shows the same name and passes all of them.
+    ///
+    /// ⚠ The buttons the popup adds, not the buttons on screen — the cards
+    /// draw ✖ and two steppers each, and the difference is the menu.
+    #[test]
+    fn the_material_picker_offers_every_silicone_in_the_catalog() {
+        let mut design = DesignControls::default();
+        let shut = design_buttons(&mut design, false);
+
+        let opened = design_buttons(&mut design, true);
+
+        let menu: Vec<String> = opened
+            .into_iter()
+            .filter(|button| !shut.contains(button))
+            .collect();
+        assert_eq!(
+            menu,
+            Silicone::catalog()
+                .into_iter()
+                .map(|silicone| silicone.name.to_string())
+                .collect::<Vec<_>>(),
+            "the whole catalog, in the order it offers it"
+        );
+    }
+
+    /// Every material picker's laid-out width, in the order they are drawn.
+    fn picker_widths(design: &mut DesignControls) -> Vec<f32> {
+        use egui_kittest::kittest::NodeT;
+
+        let mut body = design_body(design);
+        column_harness(&mut body)
+            .root()
+            .children_recursive()
+            .filter(|node| node.accesskit_node().role() == egui::accesskit::Role::ComboBox)
+            .map(|node| node.rect().width())
+            .collect()
+    }
+
+    /// ★ What [`SILICONE_PICKER_WIDTH`] is actually for. egui grows a
+    /// `ComboBox` to its selected text and **never truncates** it — measured,
+    /// by laying the widest picker out at 20 px and watching it come back the
+    /// same 189 px as at 180 — so the gate this replaced, that the longest
+    /// name "fits", could not have failed. What the constant buys is three
+    /// cards that stay one width; below the widest name they jitter apart as
+    /// the user changes materials, which is what this catches.
+    ///
+    /// ⚠ The three silicones the screen opens on have three different name
+    /// widths, which is what makes this gate able to fail.
+    #[test]
+    fn the_material_pickers_stay_one_width_whatever_they_show() {
+        let mut design = DesignControls::default();
+
+        let widths = picker_widths(&mut design);
+
+        assert_eq!(widths.len(), 3, "one picker per layer: {widths:?}");
+        assert!(
+            widths
+                .windows(2)
+                .all(|pair| (pair[0] - pair[1]).abs() < 0.01),
+            "three silicones, three name widths, one picker width: {widths:?}"
+        );
+    }
+
+    /// Lay step 4 out with `design`, click `label`, and report the navigation
+    /// intent the screen itself raised.
+    fn design_nav_after(label: &str, design: &mut DesignControls) -> Option<Intent> {
+        let reported = std::cell::Cell::new(None);
+        {
+            let borrowed = std::cell::RefCell::new(&mut *design);
+            let mut body = |ui: &mut egui::Ui| {
+                let acted = draw_design_layers(
+                    ui,
+                    &Studio::default(),
+                    &PendingDialog::default(),
+                    &mut borrowed.borrow_mut(),
+                );
+                if let Some(intent) = acted.nav {
+                    reported.set(Some(intent));
+                }
+            };
+            let mut harness = column_harness(&mut body);
+            harness.get_by_label(label).click();
+            harness.run();
+        }
+        reported.get()
+    }
+
+    /// ★ The button that reaches the file picker. Every gate above counts it
+    /// and reads its label; a "…or load a file" wired to nothing counts and
+    /// reads exactly the same.
+    #[test]
+    fn loading_a_file_asks_for_the_design_picker() {
+        let mut design = DesignControls::default();
+
+        assert_eq!(
+            design_nav_after("…or load a file", &mut design),
+            Some(Intent::PickDesign)
+        );
+        assert_eq!(
+            design_nav_after("+ Add layer", &mut design),
+            None,
+            "and the buttons beside it raise no intent at all"
+        );
+    }
+
+    /// Every layer card's header, in the order they are drawn.
+    fn layer_headers(app: &App) -> Vec<String> {
+        painted_texts(app)
+            .into_iter()
+            .filter(|text| text.starts_with("Layer "))
+            .collect()
+    }
+
+    /// A project with the piece shaped — the state step 4 is reached in, since
+    /// [`cf_studio_core::Project::set_design`] refuses before it.
+    ///
+    /// ⚠ Not the default inset. The design carries a copy of it, and a zero
+    /// here is exactly what a dropped one would look like.
+    fn ready_to_design() -> cf_studio_core::Project {
+        let mut project = crate::shape::tests::ready_to_shape();
+        project
+            .set_plug(PlugDraft {
+                cavity_inset_m: 0.004,
+                ridges: RidgeOptions::default(),
+            })
+            .expect("each artifact is set in workflow order");
+        project
+    }
+
+    /// The running wizard parked on step 4, with the piece already shaped.
+    fn wizard_on_step_four() -> App {
+        let mut app = app_running_the_wizard();
+        app.insert_resource(Studio {
+            project: ready_to_design(),
+            cursor: WizardCursor::new(Step::DesignLayers),
+            ..Studio::default()
+        });
+        app
+    }
+
+    /// ⚠ The header is the only thing tying a card to the layer it edits, and
+    /// no census reaches it: it is prose, not a control. Numbered from the loop
+    /// index it reads "Layer 0"; stored on the row it stops renumbering when
+    /// one is dropped.
+    #[test]
+    fn the_layer_cards_are_numbered_from_one_in_the_order_they_are_drawn() {
+        let mut app = wizard_on_step_four();
+
+        settle(&mut app);
+        assert_eq!(layer_headers(&app), ["Layer 1", "Layer 2", "Layer 3"]);
+
+        click_on(&mut app, "✖");
+        settle(&mut app);
+
+        assert_eq!(
+            layer_headers(&app),
+            ["Layer 1", "Layer 2"],
+            "the outer layer renumbered into the gap the first one left"
+        );
+    }
+
+    /// ★★ The whole path, click to project: `draw_design_layers` hands back a
+    /// stack and `commit_design` applies one, but a call site is not a function
+    /// anyone can call — deleting either leaves every gate above green.
+    ///
+    /// ⚠ Clicked through one `+` first, so the button has to carry the number
+    /// on screen. Sending the opening stack, or reading a field pinned by its
+    /// own default, passes every other gate this step has.
+    #[test]
+    fn clicking_use_this_design_in_the_running_wizard_commits_the_stack() {
+        let mut app = wizard_on_step_four();
+
+        click_on(&mut app, "+ Add layer");
+        click_on(&mut app, "Use this design");
+
+        let studio = app.world().resource::<Studio>();
+        assert_eq!(
+            studio.project.design().map(|design| design
+                .layers
+                .iter()
+                .map(|layer| layer.material_key.as_str())
+                .collect::<Vec<_>>()),
+            Some(vec![
+                "ECOFLEX_00_30",
+                "DRAGON_SKIN_10A",
+                "DRAGON_SKIN_20A",
+                "DRAGON_SKIN_10A"
+            ]),
+            "the opening stack plus the layer added on the outside: {:?}",
+            studio.message
+        );
+    }
+
+    /// ★ The design carries its own copy of the inset for the cast engine, and
+    /// step 3 is the step that owns the number. Built from the screen's own
+    /// fields it would be zero, which the engine accepts.
+    #[test]
+    fn the_committed_design_carries_the_shaped_pieces_cavity_inset() {
+        let mut app = wizard_on_step_four();
+
+        click_on(&mut app, "Use this design");
+
+        let studio = app.world().resource::<Studio>();
+        let inset = studio.project.design().map(|design| design.cavity_inset_m);
+        assert_eq!(inset, Some(0.004), "the plug's inset, not a fresh zero");
+    }
+
+    /// ⚠ Where step 3's Continue moves on, this one stays — "+ Add layer" and
+    /// "…or load a file" are reasonable things to reach for after seeing the
+    /// design took, and paging away from them would be the surprise. Next →
+    /// carries the user on, and only becomes available here.
+    #[test]
+    fn committing_the_design_stays_on_the_screen_and_opens_next() {
+        let mut app = wizard_on_step_four();
+        assert!(
+            !nav_state(
+                &app.world().resource::<Studio>().project,
+                Step::DesignLayers
+            )
+            .can_next,
+            "Next is closed until the design is set"
+        );
+
+        click_on(&mut app, "Use this design");
+        settle(&mut app);
+
+        let studio = app.world().resource::<Studio>();
+        assert_eq!(
+            studio.cursor.viewed(),
+            Step::DesignLayers,
+            "the screen stayed put"
+        );
+        assert!(
+            nav_state(&studio.project, Step::DesignLayers).can_next,
+            "and Next opened"
+        );
+    }
+
     /// ★ `state.rs` tests each `Studio` transition on its own, but nothing
     /// said an [`Intent`] reaches the one it names. Back paging forward, or
     /// MarkPoured doing nothing, passes every test in that module.
     ///
-    /// ⚠ The dialog starts open, so `pick_scan_file` and `pick_folder`
-    /// no-op instead of putting an OS picker on screen. That leaves
-    /// [`Intent::PickScan`], whose only effect is opening one, to a hand test.
+    /// ⚠ The dialog starts open, so `pick_scan_file`, `pick_design_file` and
+    /// `pick_folder` no-op instead of putting an OS picker on screen. That
+    /// leaves [`Intent::PickScan`] and [`Intent::PickDesign`], whose only
+    /// effect is opening one, to a hand test — the *button* that raises
+    /// `PickDesign` is gated by `loading_a_file_asks_for_the_design_picker`.
     #[test]
     fn each_intent_reaches_the_transition_it_names() {
         let mut dialog = PendingDialog::opened(DialogKind::ScanFile);

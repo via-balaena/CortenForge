@@ -7,10 +7,6 @@ use cf_studio_gui::{BoundedField, RidgeToggles, RingRow, apply_plug, ridge_optio
 
 use crate::state::Studio;
 
-/// One unit per click of every stepper on this screen — the pre-port `StepBox`
-/// had no step property at all.
-pub(crate) const SHAPE_STEP: i32 = 1;
-
 /// The step-3 screen's field state, which outlives any one frame.
 #[derive(Resource)]
 pub(crate) struct ShapeControls {

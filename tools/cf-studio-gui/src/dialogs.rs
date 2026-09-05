@@ -28,6 +28,10 @@ use bevy::tasks::{AsyncComputeTaskPool, Task, futures_lite::future};
 /// so all four reach a loader.
 const SCAN_EXTENSIONS: &[&str] = &["stl", "obj", "ply", "3mf"];
 
+/// What a layer design is saved as — `<scan>.design.toml`, so the filter is
+/// plain TOML.
+const DESIGN_EXTENSIONS: &[&str] = &["toml"];
+
 /// What a dialog was opened for, so the poller can route the chosen path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DialogKind {
@@ -38,6 +42,9 @@ pub(crate) enum DialogKind {
     /// Step 2 (Save): a folder other than the scan's own to write the cleaned
     /// scan + `.prep.toml` into, chosen because the default already held them.
     PrepDest,
+    /// Step 4 (Design layers): a `.design.toml` to use instead of the stack
+    /// built in the editor.
+    DesignFile,
 }
 
 /// The at-most-one dialog currently open.
@@ -85,20 +92,53 @@ impl PendingDialog {
         self.0 = Some((kind, task));
     }
 
-    /// Open a scan-file picker. A no-op while one is already open.
-    pub(crate) fn pick_scan_file(&mut self) {
+    /// Open a file picker for `kind`, offering `extensions` under `filter`.
+    /// A no-op while one is already open.
+    ///
+    /// ⚠ Untestable: calling it opens a real OS picker, and pre-opening one to
+    /// stop that hits the early return below. `cargo-mutants` empties this and
+    /// both its wrappers to `()` and the suite stays green. `poll_dialogs`
+    /// routes on `kind`, so a swapped one sends a chosen `.design.toml` down
+    /// the scan path, where it fails to load and resets the project.
+    fn pick_file(
+        &mut self,
+        kind: DialogKind,
+        title: &'static str,
+        filter: &'static str,
+        extensions: &'static [&'static str],
+    ) {
         if self.0.is_some() {
             return;
         }
         let task = AsyncComputeTaskPool::get().spawn(async move {
             rfd::AsyncFileDialog::new()
-                .set_title("Choose your 3D scan")
-                .add_filter("3D scan", SCAN_EXTENSIONS)
+                .set_title(title)
+                .add_filter(filter, extensions)
                 .pick_file()
                 .await
                 .map(|handle| handle.path().to_path_buf())
         });
-        self.0 = Some((DialogKind::ScanFile, task));
+        self.0 = Some((kind, task));
+    }
+
+    /// Open a scan-file picker.
+    pub(crate) fn pick_scan_file(&mut self) {
+        self.pick_file(
+            DialogKind::ScanFile,
+            "Choose your 3D scan",
+            "3D scan",
+            SCAN_EXTENSIONS,
+        );
+    }
+
+    /// Open a design-file picker.
+    pub(crate) fn pick_design_file(&mut self) {
+        self.pick_file(
+            DialogKind::DesignFile,
+            "Choose the design file",
+            "design",
+            DESIGN_EXTENSIONS,
+        );
     }
 
     /// Take the result if the dialog has resolved. `Some((kind, None))` means
