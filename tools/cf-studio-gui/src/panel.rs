@@ -980,9 +980,10 @@ fn draw_design_layers(
     // pre-port screen left it live and dropped the click on the floor.
     let removable = design.layers.can_drop();
     for (index, layer) in design.layers.rows_mut().iter_mut().enumerate() {
-        if index > 0 {
-            ui.add_space(ROW_GAP);
-        }
+        // ⚠ Before every card, not between them, as the ring editor has it. A
+        // `index > 0` here spends a branch on 6 px above the first card, and
+        // three mutations of it survive the suite.
+        ui.add_space(ROW_GAP);
         if draw_layer(ui, index, layer, ready, removable) {
             dropped = Some(index);
         }
