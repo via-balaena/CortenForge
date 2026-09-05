@@ -3071,6 +3071,46 @@ pub(crate) mod tests {
             .collect()
     }
 
+    /// The silicone each layer's picker shows, in the order they are drawn.
+    ///
+    /// ⚠ `value()`, not `label()`. A `ComboBox` reports its selected text as
+    /// its value and carries no label at all, which is why the control census
+    /// records it by role — and why the census cannot see this.
+    fn silicones_shown(design: &mut DesignControls) -> Vec<String> {
+        use egui_kittest::kittest::NodeT;
+
+        let mut body = design_body(design);
+        column_harness(&mut body)
+            .root()
+            .children_recursive()
+            .filter_map(|node| {
+                let widget = node.accesskit_node();
+                (widget.role() == egui::accesskit::Role::ComboBox)
+                    .then(|| widget.value())
+                    .flatten()
+            })
+            .collect()
+    }
+
+    /// ★ Which silicone a layer is poured in is the one thing on the card that
+    /// cannot be inferred from anything else on it, and every other gate reads
+    /// the picker by its *role*: emptied of its selected text it counts, lays
+    /// out and opens exactly the same. Found by mutation.
+    #[test]
+    fn each_picker_shows_its_own_layers_silicone() {
+        let mut design = DesignControls::default();
+
+        assert_eq!(
+            silicones_shown(&mut design),
+            [
+                "Ecoflex 00-30 (medium-soft)",
+                "Dragon Skin 10A (soft)",
+                "Dragon Skin 20A (firm)",
+            ],
+            "innermost first, each card naming its own row's silicone"
+        );
+    }
+
     /// ★ What the picker *offers*, which no other gate reaches: every census
     /// here reads the selected name off the shut control, and a picker wired
     /// to one silicone shows the same name and passes all of them.
