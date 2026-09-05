@@ -9,6 +9,7 @@ use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiGlobalSettings, EguiPrimaryContextPass, egui};
 use cf_bevy_common::camera::OrbitCameraPlugin;
 
+use crate::design::DesignControls;
 use crate::dialogs::PendingDialog;
 use crate::edit::EditControls;
 use crate::input::arbitrate_pointer_over_egui;
@@ -48,6 +49,7 @@ impl Plugin for StudioPlugin {
             .init_resource::<ScanEdit>()
             .init_resource::<EditControls>()
             .init_resource::<ShapeControls>()
+            .init_resource::<DesignControls>()
             .init_resource::<PlugView>()
             .insert_resource(ClearColor(BACKGROUND))
             // The centerline runs *inside* the scan, so at the default

@@ -21,10 +21,12 @@ use std::path::Path;
 use std::time::Duration;
 
 use cf_studio_core::{
-    DesignDraft, MoldOutputs, PourPlan, PourStep, Project, RidgeOptions, RidgeRing, Step,
+    DesignDraft, LayerDraft, MoldOutputs, PourPlan, PourStep, Project, RidgeOptions, RidgeRing,
+    Step,
 };
 use cf_studio_engine::{
     CastMode, PartId, PartSelection, PieceSide, accept_prep, draft_from_design_toml, load_scan,
+    silicone_catalog,
 };
 
 /// A workflow step as the checklist shows it. `done` / `current` come
@@ -896,6 +898,181 @@ pub fn ridge_options_from_rows(rows: &[RingRow], toggles: RidgeToggles) -> Ridge
         orientation_enabled: toggles.orientation_enabled,
         orientation_deg: f64::from(toggles.orientation_deg),
     })
+}
+
+/// Layer thickness, whole millimetres. ⚠ One, not zero — the cast meshes a
+/// shell per layer, and a layer of no thickness is not a layer.
+const LAYER_THICKNESS_RANGE: (i32, i32) = (1, 100);
+/// Slacker™ softening, as a percentage of the layer's mix.
+const LAYER_SLACKER_RANGE: (i32, i32) = (0, 100);
+
+/// The stack the step-4 screen opens on: the recipe the physically validated
+/// `base_mold` was poured at — a soft, slacker-softened inner layer under two
+/// progressively firmer ones. `(catalog key, thickness mm, slacker %)`.
+///
+/// A starting point, not a prescription; every field is editable, and a
+/// `.design.toml` replaces the lot.
+const OPENING_STACK: [(&str, i32, i32); 3] = [
+    ("ECOFLEX_00_30", 18, 25),
+    ("DRAGON_SKIN_10A", 8, 0),
+    ("DRAGON_SKIN_20A", 5, 0),
+];
+
+/// The silicone a fresh layer starts on, and the thickness it starts at.
+const ADDED_LAYER: (&str, i32, i32) = ("DRAGON_SKIN_10A", 5, 0);
+
+/// One entry of the silicone catalog: the key a [`LayerDraft`] carries, and
+/// the name the material picker shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Silicone {
+    /// The SDK's catalog key, e.g. `"ECOFLEX_00_30"`.
+    pub key: &'static str,
+    /// The display name, e.g. `"Ecoflex 00-30"`.
+    pub name: &'static str,
+}
+
+impl Silicone {
+    /// The catalog, in the order the picker offers it.
+    #[must_use]
+    pub fn catalog() -> Vec<Self> {
+        silicone_catalog()
+            .into_iter()
+            .map(|(key, name)| Self { key, name })
+            .collect()
+    }
+
+    /// The entry for `key`, or `None` if that silicone is not in the catalog.
+    #[must_use]
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::catalog().into_iter().find(|s| s.key == key)
+    }
+}
+
+/// One silicone layer in the step-4 editor, in the integer units the UI edits
+/// (whole millimetres, percent) rather than the SDK's meters and fractions.
+///
+/// The two fields live **inside the row** on purpose — see the warning on
+/// [`StepBoxState`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LayerRow {
+    /// Which silicone this layer is poured in.
+    ///
+    /// ⚠ The catalog entry itself, not an index into the catalog and not a
+    /// bare key: the row needs no lookup to draw its picker or to build its
+    /// [`LayerDraft`], so there is no "silicone not found" branch to get
+    /// wrong. The pre-port screen held an index and carried a fallback
+    /// material for exactly that branch.
+    pub material: Silicone,
+    /// How thick this layer is poured, whole millimetres. A `.design.toml`
+    /// carries sub-millimetre thicknesses; this editor does not offer them.
+    pub thickness_mm: BoundedField,
+    /// How much Slacker™ softens the mix, percent.
+    pub slacker_pct: BoundedField,
+}
+
+impl LayerRow {
+    /// A row at the UI's own units, inside the bounds its steppers offer.
+    #[must_use]
+    pub fn new(material: Silicone, thickness_mm: i32, slacker_pct: i32) -> Self {
+        Self {
+            material,
+            thickness_mm: BoundedField::new(thickness_mm, LAYER_THICKNESS_RANGE),
+            slacker_pct: BoundedField::new(slacker_pct, LAYER_SLACKER_RANGE),
+        }
+    }
+
+    /// The layer this row describes, in the SDK's units.
+    #[must_use]
+    pub fn draft(&self) -> LayerDraft {
+        LayerDraft {
+            thickness_m: f64::from(self.thickness_mm.value()) / 1000.0,
+            material_key: self.material.key.to_string(),
+            slacker_fraction: f64::from(self.slacker_pct.value()) / 100.0,
+        }
+    }
+}
+
+/// The step-4 silicone stack: the layers built outward off the shaped plug,
+/// innermost first.
+///
+/// Owns the rows so the "never drop the last layer" rule is one tested method
+/// rather than a condition spelled out at the button — which is where the
+/// pre-port screen kept it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LayerStack {
+    rows: Vec<LayerRow>,
+}
+
+/// [`OPENING_STACK`], skipping any silicone the catalog no longer carries —
+/// pinned whole by `the_opening_stack_is_the_base_mold_recipe`, which fails
+/// loudly if one goes missing.
+impl Default for LayerStack {
+    fn default() -> Self {
+        Self {
+            rows: OPENING_STACK
+                .iter()
+                .filter_map(|&(key, thickness_mm, slacker_pct)| {
+                    Some(LayerRow::new(
+                        Silicone::from_key(key)?,
+                        thickness_mm,
+                        slacker_pct,
+                    ))
+                })
+                .collect(),
+        }
+    }
+}
+
+impl LayerStack {
+    /// The rows, innermost first, for rendering.
+    #[must_use]
+    pub fn rows(&self) -> &[LayerRow] {
+        &self.rows
+    }
+
+    /// The rows, for the screen that edits them in place.
+    #[must_use]
+    pub fn rows_mut(&mut self) -> &mut [LayerRow] {
+        &mut self.rows
+    }
+
+    /// How many layers the stack holds.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// Whether the stack has no layers at all — nothing the cast could pour.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
+    /// Add a layer on the outside, where the "+ Add layer" button puts it.
+    pub fn add(&mut self) {
+        let (key, thickness_mm, slacker_pct) = ADDED_LAYER;
+        if let Some(material) = Silicone::from_key(key) {
+            self.rows
+                .push(LayerRow::new(material, thickness_mm, slacker_pct));
+        }
+    }
+
+    /// Drop one layer.
+    ///
+    /// ⚠ A no-op on the last one: the cast needs a stack. The screen also
+    /// disables that row's ✖ — this guard is what makes the rule true rather
+    /// than merely unclickable.
+    pub fn remove(&mut self, index: usize) {
+        if self.rows.len() > 1 && index < self.rows.len() {
+            self.rows.remove(index);
+        }
+    }
+
+    /// The stack in the SDK's units, innermost first.
+    #[must_use]
+    pub fn drafts(&self) -> Vec<LayerDraft> {
+        self.rows.iter().map(LayerRow::draft).collect()
+    }
 }
 
 /// The step-5 part picker: which cast pieces to generate.
@@ -2044,6 +2221,178 @@ visible = true
             "10 tenths = 1 mm"
         );
         assert!((tenths_mm_to_m(0) - 0.0).abs() < 1e-12);
+    }
+
+    // ── the step-4 layer stack ──────────────────────────────────────────────
+
+    /// The keys and integer fields of a stack, in the order it holds them.
+    fn stack_census(stack: &LayerStack) -> Vec<(&'static str, i32, i32)> {
+        stack
+            .rows()
+            .iter()
+            .map(|row| {
+                (
+                    row.material.key,
+                    row.thickness_mm.value(),
+                    row.slacker_pct.value(),
+                )
+            })
+            .collect()
+    }
+
+    /// ★ The whole opening stack, not a length and not a spot check: this is
+    /// the recipe `base_mold` was physically poured at, and `LayerStack`'s
+    /// `filter_map` silently *shortens* the stack for a silicone the catalog
+    /// no longer carries. Asserting the collection is what turns that into a
+    /// failure instead of a two-layer default nobody notices.
+    #[test]
+    fn the_opening_stack_is_the_base_mold_recipe() {
+        let stack = LayerStack::default();
+
+        assert_eq!(
+            stack_census(&stack),
+            vec![
+                ("ECOFLEX_00_30", 18, 25),
+                ("DRAGON_SKIN_10A", 8, 0),
+                ("DRAGON_SKIN_20A", 5, 0),
+            ],
+            "soft and slacker-softened inside, firmer outward"
+        );
+    }
+
+    #[test]
+    fn a_layer_row_converts_to_the_sdks_units() {
+        let row = LayerRow::new(
+            Silicone::from_key("ECOFLEX_00_30").expect("the catalog carries it"),
+            18,
+            25,
+        );
+
+        let draft = row.draft();
+
+        assert!((draft.thickness_m - 0.018).abs() < 1e-12, "18 mm in meters");
+        assert!(
+            (draft.slacker_fraction - 0.25).abs() < 1e-12,
+            "25 % as a fraction"
+        );
+        assert_eq!(draft.material_key, "ECOFLEX_00_30");
+    }
+
+    /// ⚠ The order is the pour order — innermost first — so a stack that
+    /// converted as a set would build the device inside out.
+    #[test]
+    fn the_drafts_keep_the_stacks_order() {
+        let keys: Vec<String> = LayerStack::default()
+            .drafts()
+            .into_iter()
+            .map(|draft| draft.material_key)
+            .collect();
+
+        assert_eq!(
+            keys,
+            ["ECOFLEX_00_30", "DRAGON_SKIN_10A", "DRAGON_SKIN_20A"]
+        );
+    }
+
+    #[test]
+    fn dropping_a_layer_takes_the_one_the_index_names() {
+        let mut stack = LayerStack::default();
+
+        stack.remove(1);
+
+        assert_eq!(
+            stack_census(&stack),
+            vec![("ECOFLEX_00_30", 18, 25), ("DRAGON_SKIN_20A", 5, 0)],
+            "the middle layer went, and the outer one did not slide into it"
+        );
+    }
+
+    /// ★ The cast needs a stack. The screen also disables the last ✖, but a
+    /// rule that lives only in the button is a rule the next screen can break.
+    #[test]
+    fn the_last_layer_cannot_be_dropped() {
+        let mut stack = LayerStack::default();
+        stack.remove(2);
+        stack.remove(1);
+
+        stack.remove(0);
+
+        assert_eq!(
+            stack_census(&stack),
+            vec![("ECOFLEX_00_30", 18, 25)],
+            "the one layer left stayed, unchanged"
+        );
+    }
+
+    #[test]
+    fn dropping_a_layer_that_is_not_there_changes_nothing() {
+        let mut stack = LayerStack::default();
+
+        stack.remove(9);
+
+        assert_eq!(stack_census(&stack), stack_census(&LayerStack::default()));
+    }
+
+    /// ⚠ On the outside, where the button says it goes: the stack is built
+    /// outward off the plug, so an added layer that landed innermost would
+    /// change what every layer above it sits on.
+    #[test]
+    fn an_added_layer_lands_on_the_outside() {
+        let mut stack = LayerStack::default();
+
+        stack.add();
+
+        assert_eq!(
+            stack_census(&stack),
+            vec![
+                ("ECOFLEX_00_30", 18, 25),
+                ("DRAGON_SKIN_10A", 8, 0),
+                ("DRAGON_SKIN_20A", 5, 0),
+                ("DRAGON_SKIN_10A", 5, 0),
+            ]
+        );
+    }
+
+    /// ⚠ The picker's list is the SDK's, in the SDK's order — the index a user
+    /// clicks and the key a layer carries have to name the same silicone.
+    #[test]
+    fn the_picker_offers_the_sdks_catalog() {
+        let offered: Vec<(&str, &str)> = Silicone::catalog()
+            .into_iter()
+            .map(|silicone| (silicone.key, silicone.name))
+            .collect();
+
+        assert_eq!(offered, silicone_catalog());
+        assert!(!offered.is_empty(), "a picker with no silicones is not one");
+    }
+
+    #[test]
+    fn a_silicone_is_found_by_its_key_and_only_a_real_one_is() {
+        assert_eq!(
+            Silicone::from_key("ECOFLEX_00_30").map(|s| s.name),
+            Some("Ecoflex 00-30 (medium-soft)")
+        );
+        assert_eq!(Silicone::from_key("NOT_A_SILICONE"), None);
+    }
+
+    /// ⚠ Typing does not commit, so an in-flight number reaches `draft()`
+    /// unclamped unless the field clamps on read. 500 mm of silicone is not a
+    /// layer the cast should be asked for.
+    #[test]
+    fn a_thickness_typed_past_its_bound_is_read_back_inside_it() {
+        let mut row = LayerRow::new(
+            Silicone::from_key("ECOFLEX_00_30").expect("the catalog carries it"),
+            18,
+            25,
+        );
+
+        *row.thickness_mm.state.text_mut() = "500".to_string();
+        row.thickness_mm.state.on_typed();
+
+        assert!(
+            (row.draft().thickness_m - 0.1).abs() < 1e-12,
+            "clamped to the 100 mm the stepper offers"
+        );
     }
 
     // ── ridge_options_from_rows ─────────────────────────────────────────────

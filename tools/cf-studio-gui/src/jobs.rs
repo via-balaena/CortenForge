@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, futures_lite::future};
 use cf_studio_engine::{PrintExportReport, export_print_package, run_simplify};
-use cf_studio_gui::{format_simplify_done, format_simplify_started};
+use cf_studio_gui::{apply_design, format_simplify_done, format_simplify_started};
 use mesh_types::IndexedMesh;
 
 use crate::dialogs::{DialogKind, PendingDialog};
@@ -79,6 +79,12 @@ pub(crate) fn poll_dialogs(
             };
             // ⚠ `&scan`, immutably — see the warning on `ScanEdit`.
             save_into(&scan, &mut studio, dest, smoothing);
+        }
+        DialogKind::DesignFile => {
+            // A cancel leaves the editor's own stack standing, which is the
+            // whole state this step has — so, like `PrintDest`, nothing to say.
+            let Some(path) = picked else { return };
+            studio.message = Some(apply_design(&mut studio.project, &path));
         }
     }
 }
@@ -543,6 +549,92 @@ endsolid t
             app.world().resource::<PrintJob>().0.is_some(),
             "and a job is actually running to hold it for"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A real `.design.toml` on disk, written by the writer the app itself
+    /// uses — a hand-rolled literal would pass a loader that had stopped
+    /// agreeing with the engine.
+    fn a_design_file(dir: &std::path::Path) -> PathBuf {
+        let path = dir.join("base.design.toml");
+        cf_studio_engine::save_design_from_draft(
+            Path::new("base.cleaned.stl"),
+            &cf_studio_core::DesignDraft {
+                cavity_inset_m: 0.005,
+                layers: vec![cf_studio_core::LayerDraft {
+                    thickness_m: 0.006,
+                    material_key: "DRAGON_SKIN_20A".to_string(),
+                    slacker_fraction: 0.1,
+                }],
+            },
+            &path,
+        )
+        .expect("the engine writes its own format");
+        path
+    }
+
+    /// The dialog app, walked on to the state a design can be set from.
+    fn app_ready_for_a_design(dir: &std::path::Path, dialog: PendingDialog) -> App {
+        let mut app = app_with_a_resolved_dialog(dir, dialog);
+        let mut studio = app.world_mut().resource_mut::<Studio>();
+        studio
+            .project
+            .set_prep(cf_studio_core::PrepInput {
+                cleaned_stl: dir.join("base.cleaned.stl"),
+                prep_toml: dir.join("base.prep.toml"),
+            })
+            .and_then(|()| {
+                studio
+                    .project
+                    .set_plug(cf_studio_core::PlugDraft::default())
+            })
+            .expect("each artifact is set in workflow order");
+        app
+    }
+
+    /// ★ "…or load a file" is the only way a design arrives from outside the
+    /// editor, and the picked path has to reach `apply_design`. Routed
+    /// nowhere, the picker opens, closes, and the screen says nothing —
+    /// which every gate on the panel side passes.
+    #[test]
+    fn a_design_file_the_picker_returns_reaches_the_project() {
+        let dir = crate::save::tests::temp_dir("routed-design-file");
+        let picked = a_design_file(&dir);
+        let mut app = app_ready_for_a_design(
+            &dir,
+            PendingDialog::resolved(DialogKind::DesignFile, Some(picked)),
+        );
+
+        run_until_answered(&mut app);
+
+        let studio = app.world().resource::<Studio>();
+        assert_eq!(
+            studio.project.design().map(|design| design
+                .layers
+                .iter()
+                .map(|layer| layer.material_key.as_str())
+                .collect::<Vec<_>>()),
+            Some(vec!["DRAGON_SKIN_20A"]),
+            "the file's own stack, not the editor's: {:?}",
+            studio.message
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ⚠ A cancel leaves the editor's stack standing — the only state this
+    /// step has — so it must not clear the design or say anything.
+    #[test]
+    fn cancelling_the_design_picker_leaves_the_project_alone() {
+        let dir = crate::save::tests::temp_dir("cancelled-design-file");
+        let mut app =
+            app_ready_for_a_design(&dir, PendingDialog::resolved(DialogKind::DesignFile, None));
+        let before = app.world().resource::<Studio>().message.clone();
+
+        run_until_answered(&mut app);
+
+        let studio = app.world().resource::<Studio>();
+        assert!(studio.project.design().is_none(), "no design was set");
+        assert_eq!(studio.message, before, "and nothing new was reported");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

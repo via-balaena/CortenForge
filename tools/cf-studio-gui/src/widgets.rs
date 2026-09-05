@@ -30,6 +30,10 @@ pub(crate) const RIDGE_NOTE_TEXT: egui::Color32 = egui::Color32::from_rgb(0x6b, 
 /// One ring's card, lifted off [`RIDGE_FILL`] so three stacked rings read as
 /// three things rather than nine rows.
 pub(crate) const RING_FILL: egui::Color32 = egui::Color32::from_rgb(0xfd, 0xfb, 0xf7);
+/// One silicone layer's card. The pre-port screen's own cool grey — cool where
+/// the ridge cards are warm, because these sit on the panel itself rather than
+/// inside an enclosing card.
+pub(crate) const LAYER_FILL: egui::Color32 = egui::Color32::from_rgb(0xee, 0xf1, 0xf4);
 
 /// A label that wraps. Use this for anything longer than a few words.
 pub(crate) fn wrapped_label(ui: &mut egui::Ui, text: impl Into<String>) {
