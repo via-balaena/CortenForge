@@ -157,7 +157,12 @@ mod tests {
         );
 
         // Ticking the box is not accepting: the wizard must still be shut.
+        //
+        // ⚠ The frame after the click is load-bearing. A state change lands on
+        // the next transition, so without it this reads `Waiver` either way —
+        // and a gate that opens on the tick alone passes.
         click_on(&mut app, CONFIRM);
+        app.update();
         assert_eq!(
             app.world().resource::<State<Screen>>().get(),
             &Screen::Waiver,
