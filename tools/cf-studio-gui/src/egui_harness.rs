@@ -119,7 +119,13 @@ pub(crate) fn painted_texts(app: &App) -> Vec<String> {
 /// Click the middle of whatever was painted starting with `text`.
 ///
 /// ⚠ [`settle`] first, and that is the point: egui places a widget from the
-/// previous pass, so a click can only land where a *settled* frame drew.
+/// previous pass, so a click can only land where a settled frame drew.
+///
+/// ⚠ It does NOT settle afterwards, so the pass left behind is the one that
+/// *delivered* the click — drawn before the click was acted on. [`settle`]
+/// again to read the screen it produced. Settling here instead would run the
+/// frames that flush Bevy's message buffers, and a click whose whole effect is
+/// a message (the waiver's Quit) would land with nothing to observe.
 pub(crate) fn click_on(app: &mut App, text: &str) {
     settle(app);
     let painted = &app.world().resource::<Painted>().0;

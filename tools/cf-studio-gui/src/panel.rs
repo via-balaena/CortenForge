@@ -1692,6 +1692,22 @@ pub(crate) mod tests {
             Step::DesignLayers,
             "and Continue moved on"
         );
+
+        // ★ The end of the trap `commit_plug` guards. `Studio::next` clears the
+        // message, so reporting before advancing lands the user on step 4 with
+        // nothing on it — which only the screen itself can show.
+        // ⚠ A frame the click did not draw: `click_on` leaves behind the pass
+        // that delivered it, which egui drew before `commit_plug` ran.
+        settle(&mut app);
+        let painted = painted_texts(&app);
+        assert!(
+            painted.iter().any(|text| text.contains("Step 4 of 7")),
+            "the screen moved on with the cursor: {painted:?}"
+        );
+        assert!(
+            painted.iter().any(|text| text.contains("Shaped piece")),
+            "and carried the report onto it: {painted:?}"
+        );
     }
 
     /// ⚠ The steps still on the notice. Replacing `draw_porting_notice` with a
