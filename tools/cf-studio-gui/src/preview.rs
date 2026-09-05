@@ -244,7 +244,7 @@ pub(crate) mod tests {
 
     use cf_studio_core::{PrepInput, Project, ScanInput};
     use cf_studio_gui::{StepBoxState, WizardCursor};
-    use mesh_types::Bounded;
+    use mesh_types::{Bounded, unit_cube};
 
     use super::*;
 
@@ -545,6 +545,51 @@ pub(crate) mod tests {
         assert!(
             view(&app).showing_proxy(),
             "with nothing to cut a piece from, the stand-in is what there is"
+        );
+    }
+
+    /// ⚠⚠ A mesh that fails is still recorded as the answer for its draft.
+    /// Recorded only on success, the driver asks for the same failing draft
+    /// again on every frame step 3 is up — a task pool pinned at full tilt for
+    /// as long as the screen is open, and the piece on show never changes to say
+    /// so. Only a panic inside the mesher produces this, so nothing else reaches
+    /// the line that decides it.
+    #[test]
+    fn a_mesh_that_fails_is_not_asked_for_again() {
+        let mut app = App::new();
+        app.add_plugins(TaskPoolPlugin::default());
+        let mut view = PlugView {
+            cache: Cache::Unavailable,
+            ..PlugView::default()
+        };
+        let wanted = PlugDraft::default();
+        view.show(unit_cube());
+        let standing = view.generation();
+
+        // Stand in for the panic path: the job hands back nothing.
+        view.meshing = Some(Meshing {
+            draft: wanted.clone(),
+            task: AsyncComputeTaskPool::get().spawn(async { None }),
+        });
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while view.meshing.is_some() {
+            assert!(Instant::now() < deadline, "the stand-in job never landed");
+            view.land_mesh();
+        }
+
+        assert!(
+            view.mesh().is_some(),
+            "the last good piece keeps the screen; a failure is not a picture"
+        );
+        assert_eq!(
+            view.generation(),
+            standing,
+            "so the viewport is never told to redraw nothing"
+        );
+        view.start_mesh(&wanted);
+        assert!(
+            view.meshing.is_none(),
+            "and the draft it failed for is not asked for again"
         );
     }
 

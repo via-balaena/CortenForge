@@ -814,6 +814,18 @@ endsolid t
             Some(true),
             "and the scan holds the viewport until the next one lands"
         );
+
+        // ⚠ And that the next one does land. A generation moving *backwards*
+        // clears the screen just as convincingly, then collides with a value the
+        // viewport has already drawn — and the piece never comes back.
+        app.world_mut().resource_mut::<PlugView>().show(unit_cube());
+        app.update();
+
+        assert_eq!(
+            bodies_of::<PlugBody>(&mut app).len(),
+            1,
+            "the piece that replaces it is drawn"
+        );
     }
 
     /// ⚠ The rebuild is gated on the preview's own generation, not on Bevy's
