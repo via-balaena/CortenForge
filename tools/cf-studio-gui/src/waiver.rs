@@ -124,6 +124,7 @@ mod tests {
     use super::*;
     use crate::egui_harness::{self, Painted, begin, click_on, end};
     use crate::panel::tests::assert_renders;
+    use crate::{OPENING_WINDOW as OPENING, SMALLEST_WINDOW as NARROWEST};
 
     /// Stand `waiver_screen` up as the Bevy system it is, with the egui pass
     /// `bevy_egui`'s plugin would normally open around it.
@@ -171,10 +172,6 @@ mod tests {
             "and the answer does"
         );
     }
-
-    /// `main.rs`'s resize floor and its opening resolution — the narrowest and
-    /// the widest this gate is normally shown at.
-    use crate::{OPENING_WINDOW as OPENING, SMALLEST_WINDOW as NARROWEST};
 
     /// Lay the gate out at `size` with the box ticked or not, optionally click
     /// `pick`, and report its controls and the answer it gave.
@@ -257,24 +254,23 @@ mod tests {
             });
         harness.ctx.set_fonts(crate::plugin::font_definitions());
         harness.run();
-        let by_role = |role: Role, lowest: bool| {
+        let rects = |role: Role| {
             harness
                 .root()
                 .children_recursive()
                 .filter(|node| node.accesskit_node().role() == role)
-                .map(|node| {
-                    if lowest {
-                        node.rect().max.y
-                    } else {
-                        node.rect().min.y
-                    }
-                })
-                .fold(
-                    if lowest { f32::MIN } else { f32::MAX },
-                    if lowest { f32::max } else { f32::min },
-                )
+                .map(|node| node.rect())
+                .collect::<Vec<_>>()
         };
-        (by_role(Role::Label, true), by_role(Role::CheckBox, false))
+        let terms_bottom = rects(Role::Label)
+            .iter()
+            .map(|rect| rect.max.y)
+            .fold(f32::MIN, f32::max);
+        let box_top = rects(Role::CheckBox)
+            .iter()
+            .map(|rect| rect.min.y)
+            .fold(f32::MAX, f32::min);
+        (terms_bottom, box_top)
     }
 
     fn disabled(controls: &[(String, bool, egui::Rect)], label: &str) -> bool {
