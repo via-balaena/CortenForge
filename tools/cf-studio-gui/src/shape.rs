@@ -213,9 +213,9 @@ pub(crate) mod tests {
         );
     }
 
-    /// ★★ Eleven numbers ported by hand, checked against the SDK's own
-    /// validated canal rather than against a copy of themselves: every default,
-    /// every unit conversion and every ring in one comparison.
+    /// ★★ Every ported default, unit conversion and ring in one comparison,
+    /// against the SDK's own validated canal rather than against a copy of
+    /// itself.
     ///
     /// ⚠ The second half is what says the master switch is a switch. Gate the
     /// whole struct on it — zeroing the scalars when it is off — and the first
@@ -241,26 +241,22 @@ pub(crate) mod tests {
         );
     }
 
-    /// A screen with every scalar on a different number, so a field wired to
-    /// its neighbour's place shows up as the wrong one moving.
+    /// A screen with every scalar on a different number, none of them a
+    /// default, so a field wired to its neighbour's place shows up as the wrong
+    /// one moving.
+    ///
+    /// ⚠ Orientation especially. Its default is 0°, so a case that left it
+    /// there would prove nothing when its switch is turned off.
     fn distinct_scalars() -> ShapeControls {
         let mut controls = ShapeControls::default();
-        for (pick, value) in SCALARS {
-            pick(&mut controls).state = StepBoxState::new(value);
-        }
+        let ridges = &mut controls.ridges;
+        ridges.texture_depth.state = StepBoxState::new(11);
+        ridges.texture_spacing.state = StepBoxState::new(99);
+        ridges.side_pinch.state = StepBoxState::new(22);
+        ridges.tip_relief.state = StepBoxState::new(33);
+        ridges.orientation.state = StepBoxState::new(44);
         controls
     }
-
-    /// The five ridge scalars, each with a value no other field carries and
-    /// none of them a default. ⚠ Orientation's default is 0°, so switching it
-    /// off would change nothing and its case below would prove nothing.
-    const SCALARS: [(fn(&mut ShapeControls) -> &mut BoundedField, i32); 5] = [
-        (|c| &mut c.ridges.texture_depth, 11),
-        (|c| &mut c.ridges.texture_spacing, 99),
-        (|c| &mut c.ridges.side_pinch, 22),
-        (|c| &mut c.ridges.tip_relief, 33),
-        (|c| &mut c.ridges.orientation, 44),
-    ];
 
     /// ★ Eleven values copied into one struct literal across three units. A
     /// field wired to its neighbour's place is invisible while every number is

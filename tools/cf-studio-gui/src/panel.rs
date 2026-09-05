@@ -1555,7 +1555,7 @@ pub(crate) mod tests {
         controls_disabled(body, label).first().copied()
     }
 
-    /// Whether each control named `label` is disabled, in layout order.
+    /// Whether each control called `name` is disabled, in layout order.
     ///
     /// ⚠ The order is the gate. Six identical `+` buttons say nothing about
     /// which feature owns which — only their positions do.
@@ -2195,10 +2195,12 @@ pub(crate) mod tests {
                 );
 
                 for (what, studio, dialog) in &held {
-                    assert!(
-                        shape_controls_disabled(shape, studio, dialog, name)
-                            .iter()
-                            .all(|disabled| *disabled),
+                    // ⚠ The length too. `all` over an empty result is true, so
+                    // a control that vanished while the app was held — rather
+                    // than being offered and refused — would pass.
+                    assert_eq!(
+                        shape_controls_disabled(shape, studio, dialog, name),
+                        vec![true; offered.len()],
                         "{name} is withheld on the {screen} editor while {what} holds the app"
                     );
                 }
