@@ -3081,6 +3081,50 @@ pub(crate) mod tests {
             .collect()
     }
 
+    /// Lay step 4 out with `design` and click the `nth` button called `name`.
+    fn click_nth_layer_button(design: &mut DesignControls, name: &str, nth: usize) {
+        let mut body = design_body(design);
+        let mut harness = column_harness(&mut body);
+        harness
+            .get_all_by_label(name)
+            .nth(nth)
+            .expect("the screen draws that many")
+            .click();
+        harness.run();
+    }
+
+    /// Every layer's `(thickness, slacker)`, in the order they are drawn.
+    fn layer_fields(design: &DesignControls) -> Vec<(i32, i32)> {
+        design
+            .layers
+            .rows()
+            .iter()
+            .map(|row| (row.thickness_mm.value(), row.slacker_pct.value()))
+            .collect()
+    }
+
+    /// ★ Each card edits its own row. The screen draws all three from one loop
+    /// over `rows_mut`, and a card reaching a fixed index — or three sibling
+    /// `Ui`s sharing an id — moves the wrong layer while looking right.
+    ///
+    /// ⚠ The whole stack is asserted, not the layer that was meant to move: a
+    /// stepper that moved two rows passes any check that only reads one.
+    #[test]
+    fn a_cards_stepper_moves_its_own_layer_and_no_other() {
+        let mut design = DesignControls::default();
+
+        // Thickness then slacker, card by card — so the third `+` is layer 2's
+        // thickness and the sixth is layer 3's slacker.
+        click_nth_layer_button(&mut design, "+", 2);
+        click_nth_layer_button(&mut design, "+", 5);
+
+        assert_eq!(
+            layer_fields(&design),
+            [(18, 25), (9, 0), (5, 1)],
+            "layer 2 thickened and layer 3 softened, each on its own row"
+        );
+    }
+
     /// The silicone each layer's picker shows, in the order they are drawn.
     ///
     /// ⚠ `value()`, not `label()`. A `ComboBox` reports its selected text as
