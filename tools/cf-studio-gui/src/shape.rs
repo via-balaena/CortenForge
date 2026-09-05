@@ -3,44 +3,13 @@
 
 use bevy::prelude::*;
 use cf_studio_core::{PlugDraft, RidgeOptions};
-use cf_studio_gui::{RidgeToggles, RingRow, StepBoxState, apply_plug, ridge_options_from_rows};
+use cf_studio_gui::{BoundedField, RidgeToggles, RingRow, apply_plug, ridge_options_from_rows};
 
 use crate::state::Studio;
 
 /// One unit per click of every stepper on this screen — the pre-port `StepBox`
 /// had no step property at all.
 pub(crate) const SHAPE_STEP: i32 = 1;
-
-/// A stepper field and the bounds it is committed inside.
-///
-/// ⚠ The two travel together because the range is needed twice — once to draw
-/// the field, once to read it — and a field drawn against one range and read
-/// against another is wrong in neither half alone.
-pub(crate) struct BoundedField {
-    /// The text and value the stepper edits.
-    pub(crate) state: StepBoxState,
-    /// `(min, max)`, in the field's own unit.
-    pub(crate) range: (i32, i32),
-}
-
-impl BoundedField {
-    /// A field showing `value`, editable within `range`.
-    fn new(value: i32, range: (i32, i32)) -> Self {
-        Self {
-            state: StepBoxState::new(value),
-            range,
-        }
-    }
-
-    /// The value, inside its bounds.
-    ///
-    /// ⚠ Clamped here because typing does not commit: a number typed and left
-    /// uncommitted reaches this unclamped. See [`StepBoxState`].
-    pub(crate) fn value(&self) -> i32 {
-        let (min, max) = self.range;
-        self.state.value().clamp(min, max)
-    }
-}
 
 /// The step-3 screen's field state, which outlives any one frame.
 #[derive(Resource)]
@@ -68,20 +37,20 @@ impl ShapeControls {
     pub(crate) fn plug_draft(&self) -> PlugDraft {
         PlugDraft {
             cavity_inset_m: f64::from(self.cavity_mm.value()) / 1000.0,
-            ridges: ridge_options_from_rows(&validated_rings(), self.ridges.toggles()),
+            ridges: ridge_options_from_rows(&self.ridges.rings, self.ridges.toggles()),
         }
     }
 }
 
-/// The ridge editor's fields: a master switch, then a toggle and a scalar for
-/// each feature.
-///
-/// ⚠ The grip rings are the other half of this editor and have no controls
-/// yet. Until they do [`validated_rings`] stands in for them, so a piece can be
-/// committed carrying rings the screen never showed.
+/// The ridge editor's fields: a master switch, the grip rings, then a toggle
+/// and a scalar for each of the remaining features.
 pub(crate) struct RidgeFields {
     /// The whole feature. Off is the smooth piece.
     pub(crate) enabled: bool,
+    /// The grip rings on/off.
+    pub(crate) rings_enabled: bool,
+    /// The rings themselves, in the order they are drawn.
+    pub(crate) rings: Vec<RingRow>,
     /// The fine surface ribs — both their depth and their spacing.
     pub(crate) texture_enabled: bool,
     /// Rib depth, tenths of a millimetre.
@@ -109,6 +78,12 @@ impl Default for RidgeFields {
     fn default() -> Self {
         Self {
             enabled: false,
+            rings_enabled: true,
+            rings: RidgeOptions::default()
+                .rings
+                .iter()
+                .map(RingRow::from_ridge)
+                .collect(),
             texture_enabled: true,
             texture_depth: BoundedField::new(15, (0, 50)),
             texture_spacing: BoundedField::new(80, (10, 300)),
@@ -128,9 +103,7 @@ impl RidgeFields {
     fn toggles(&self) -> RidgeToggles {
         RidgeToggles {
             enabled: self.enabled,
-            // ⚠ On, and not switchable: the rings the screen cannot show yet
-            // are the ones the pre-port screen applied. See the type's note.
-            rings_enabled: true,
+            rings_enabled: self.rings_enabled,
             texture_enabled: self.texture_enabled,
             texture_depth_tenths_mm: self.texture_depth.value(),
             texture_spacing_tenths_mm: self.texture_spacing.value(),
@@ -142,16 +115,12 @@ impl RidgeFields {
             orientation_deg: self.orientation.value(),
         }
     }
-}
 
-/// The three grip rings the pre-port screen opened with, standing in until the
-/// ring editor exists.
-fn validated_rings() -> Vec<RingRow> {
-    RidgeOptions::default()
-        .rings
-        .iter()
-        .map(RingRow::from_ridge)
-        .collect()
+    /// Add a ring mid-channel, a conservative 2 mm deep, as wide as the ones
+    /// that ship.
+    pub(crate) fn add_ring(&mut self) {
+        self.rings.push(RingRow::new(50, 20, 4));
+    }
 }
 
 /// Commit the shaped plug, and move on to the layer stack if it took.
@@ -171,8 +140,8 @@ pub(crate) mod tests {
 
     use std::path::PathBuf;
 
-    use cf_studio_core::{PrepInput, Project, ScanInput, Step};
-    use cf_studio_gui::WizardCursor;
+    use cf_studio_core::{PrepInput, Project, RidgeRing, ScanInput, Step};
+    use cf_studio_gui::{StepBoxState, WizardCursor};
 
     use super::*;
 
@@ -272,6 +241,96 @@ pub(crate) mod tests {
         assert_eq!(ridges.orientation_deg, 44.0, "orientation");
     }
 
+    /// ★ Three rows of three fields, all flattened into one unit-converted
+    /// vector: a row or a field wired to its neighbour's place cuts a
+    /// plausible ring in the wrong groove.
+    ///
+    /// ⚠ Distinct in every one of the nine, and none of them a default. Ring 2
+    /// and ring 3 open on the same depth and every ring on the same width, so
+    /// a screen that read row 1 three times would pass on the shipped values.
+    #[test]
+    fn each_ring_row_lands_in_its_own_place_in_the_carve() {
+        let mut controls = ShapeControls::default();
+        controls.ridges.rings = vec![
+            RingRow::new(11, 21, 31),
+            RingRow::new(12, 22, 32),
+            RingRow::new(13, 23, 33),
+        ];
+
+        assert_eq!(
+            controls.plug_draft().ridges.rings,
+            [
+                RidgeRing {
+                    position_frac: 0.11,
+                    depth_m: 0.0021,
+                    half_width_frac: 0.31,
+                },
+                RidgeRing {
+                    position_frac: 0.12,
+                    depth_m: 0.0022,
+                    half_width_frac: 0.32,
+                },
+                RidgeRing {
+                    position_frac: 0.13,
+                    depth_m: 0.0023,
+                    half_width_frac: 0.33,
+                },
+            ],
+            "percent and tenths of a millimetre, row by row"
+        );
+    }
+
+    /// ⚠ The rings are the one feature whose switch drops rows rather than
+    /// zeroing a number, so no [`ToggleCase`] below reaches it.
+    ///
+    /// ⚠ Two-sided: without the second assertion a screen carrying no rings at
+    /// all passes the first.
+    #[test]
+    fn the_ring_switch_drops_the_rows_and_leaves_the_rest_standing() {
+        let on = distinct_scalars().plug_draft().ridges;
+        let mut controls = distinct_scalars();
+        controls.ridges.rings_enabled = false;
+
+        let off = controls.plug_draft().ridges;
+
+        assert!(off.rings.is_empty(), "the switch drops the rows");
+        assert!(!on.rings.is_empty(), "which were being cut with it on");
+        assert_eq!(
+            RidgeOptions {
+                rings: on.rings.clone(),
+                ..off
+            },
+            on,
+            "and nothing but the rings moved"
+        );
+    }
+
+    /// ⚠ The values, not just the count: an add that appended a copy of a ring
+    /// that ships gets the length right.
+    #[test]
+    fn an_added_ring_lands_mid_channel_at_the_shipped_width() {
+        let mut controls = ShapeControls::default();
+        let before = controls.ridges.rings.len();
+
+        controls.ridges.add_ring();
+
+        assert_eq!(controls.ridges.rings.len(), before + 1, "one more row");
+        let added = controls
+            .ridges
+            .rings
+            .last()
+            .expect("a ring was just pushed");
+        assert_eq!(
+            (
+                added.position.value(),
+                added.depth.value(),
+                added.width.value()
+            ),
+            (50, 20, 4),
+            "mid-channel, a conservative 2 mm deep"
+        );
+    }
+
     /// One feature's switch: what to call it, the flag it drives, and the
     /// number that has to go to zero when it is off.
     type ToggleCase = (
@@ -345,8 +404,18 @@ pub(crate) mod tests {
             &str,
             fn(&mut ShapeControls) -> &mut BoundedField,
             (i32, i32),
-        ); 6] = [
+        ); 9] = [
             ("cavity", |c| &mut c.cavity_mm, (0, 30)),
+            // Ring 1 stands for all three: every row is built by the one
+            // constructor, and which row a field belongs to is
+            // `each_ring_row_lands_in_its_own_place_in_the_carve`'s claim.
+            (
+                "ring position",
+                |c| &mut c.ridges.rings[0].position,
+                (0, 100),
+            ),
+            ("ring depth", |c| &mut c.ridges.rings[0].depth, (0, 100)),
+            ("ring width", |c| &mut c.ridges.rings[0].width, (1, 50)),
             ("texture depth", |c| &mut c.ridges.texture_depth, (0, 50)),
             (
                 "texture spacing",

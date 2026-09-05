@@ -738,30 +738,82 @@ impl StepBoxState {
     }
 }
 
+/// A stepper field and the bounds it is committed inside.
+///
+/// ⚠ The two travel together because the range is needed twice — once to draw
+/// the field, once to read it — and a field drawn against one range and read
+/// against another is wrong in neither half alone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoundedField {
+    /// The text and value the stepper edits.
+    pub state: StepBoxState,
+    /// `(min, max)`, in the field's own unit.
+    pub range: (i32, i32),
+}
+
+impl BoundedField {
+    /// A field showing `value`, editable within `range`.
+    #[must_use]
+    pub fn new(value: i32, range: (i32, i32)) -> Self {
+        Self {
+            state: StepBoxState::new(value),
+            range,
+        }
+    }
+
+    /// The value, inside its bounds.
+    ///
+    /// ⚠ Clamped here because typing does not commit: a number typed and left
+    /// uncommitted reaches this unclamped. See [`StepBoxState`].
+    #[must_use]
+    pub fn value(&self) -> i32 {
+        let (min, max) = self.range;
+        self.state.value().clamp(min, max)
+    }
+}
+
+/// Axial position: 0 = opening … 100 = deep end.
+const RING_POSITION_RANGE: (i32, i32) = (0, 100);
+/// Inward pinch depth, tenths of a millimetre.
+const RING_DEPTH_RANGE: (i32, i32) = (0, 100);
+/// Half-width of the ring's axial support, percent. ⚠ One, not zero: a ring of
+/// no width is not a ring.
+const RING_WIDTH_RANGE: (i32, i32) = (1, 50);
+
 /// One grip ring in the "Shape your piece" editor, in the integer units the UI
 /// edits (percent, tenths of a millimetre) rather than the SDK's meters.
 ///
-/// The three `StepBoxState`s live **inside the row** on purpose — see the
-/// warning on [`StepBoxState`].
+/// The three fields live **inside the row** on purpose — see the warning on
+/// [`StepBoxState`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RingRow {
-    /// Axial position: 0 = opening … 100 = deep end.
-    pub position: StepBoxState,
-    /// Inward pinch depth, in tenths of a millimetre.
-    pub depth: StepBoxState,
-    /// Half-width of the ring's axial support, percent.
-    pub width: StepBoxState,
+    /// Where the ring sits along the channel.
+    pub position: BoundedField,
+    /// How far it pinches inward.
+    pub depth: BoundedField,
+    /// How much of the channel it spans.
+    pub width: BoundedField,
 }
 
 impl RingRow {
+    /// A row at the UI's own units, inside the bounds its steppers offer.
+    #[must_use]
+    pub fn new(position_pct: i32, depth_tenths_mm: i32, width_pct: i32) -> Self {
+        Self {
+            position: BoundedField::new(position_pct, RING_POSITION_RANGE),
+            depth: BoundedField::new(depth_tenths_mm, RING_DEPTH_RANGE),
+            width: BoundedField::new(width_pct, RING_WIDTH_RANGE),
+        }
+    }
+
     /// Build a row from an owned SDK ring (meters/fractions → integer UI units).
     #[must_use]
     pub fn from_ridge(ring: &RidgeRing) -> Self {
-        Self {
-            position: StepBoxState::new(scale_to_i32(ring.position_frac, 100.0)),
-            depth: StepBoxState::new(scale_to_i32(ring.depth_m, 10_000.0)),
-            width: StepBoxState::new(scale_to_i32(ring.half_width_frac, 100.0)),
-        }
+        Self::new(
+            scale_to_i32(ring.position_frac, 100.0),
+            scale_to_i32(ring.depth_m, 10_000.0),
+            scale_to_i32(ring.half_width_frac, 100.0),
+        )
     }
 
     /// The inverse: integer UI units → an owned SDK ring.
