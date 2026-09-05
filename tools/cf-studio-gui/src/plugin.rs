@@ -14,8 +14,12 @@ use crate::edit::EditControls;
 use crate::input::arbitrate_pointer_over_egui;
 use crate::jobs::{PrintJob, SimplifyJob, poll_dialogs, poll_print_job, poll_simplify_job};
 use crate::panel::wizard_screen;
+use crate::preview::{PlugView, drive_plug_preview};
 use crate::scan::ScanEdit;
-use crate::scene::{draw_centerline, fit_viewport_to_free_space, setup_scene, show_scan};
+use crate::scene::{
+    draw_centerline, fit_viewport_to_free_space, setup_scene, show_plug, show_scan,
+    show_the_step_subject,
+};
 use crate::shape::ShapeControls;
 use crate::state::{Screen, Studio};
 use crate::waiver::waiver_screen;
@@ -44,6 +48,7 @@ impl Plugin for StudioPlugin {
             .init_resource::<ScanEdit>()
             .init_resource::<EditControls>()
             .init_resource::<ShapeControls>()
+            .init_resource::<PlugView>()
             .insert_resource(ClearColor(BACKGROUND))
             // The centerline runs *inside* the scan, so at the default
             // `depth_bias` of 0 it is hidden by the surface it describes and the
@@ -83,6 +88,11 @@ impl Plugin for StudioPlugin {
                         .after(poll_dialogs)
                         .after(poll_simplify_job)
                         .run_if(resource_changed::<ScanEdit>),
+                    // Step 3's preview: drive the jobs, land the mesh, then
+                    // choose which body the step is looking at. Chained because
+                    // each reads what the one before it wrote, and a frame's lag
+                    // between them is a frame of the wrong body on screen.
+                    (drive_plug_preview, show_plug, show_the_step_subject).chain(),
                     // Immediate mode: gizmos are re-emitted every frame, so
                     // this one is NOT gated on the resource changing.
                     draw_centerline,
