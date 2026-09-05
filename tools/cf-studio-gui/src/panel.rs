@@ -938,6 +938,17 @@ mod tests {
         harness.run();
 
         let harness_fonts = harness.ctx.clone();
+        // ⚠ Every piece of text on the screen, not just the control names.
+        // Prose sits on `Role::Label` nodes and carries its text in `value()`,
+        // not `label()`; reading only `label()` returns the buttons and makes
+        // prose look unreachable, which leaves this screen's own labels — the
+        // stepper's caption, the hint under a heading — in no gate at all.
+        for node in harness.root().children_recursive() {
+            let widget = node.accesskit_node();
+            if let Some(text) = widget.label().or_else(|| widget.value()) {
+                assert_renders(&harness_fonts, &text);
+            }
+        }
         let column = column.get();
         assert_eq!(
             column.width(),
@@ -963,7 +974,6 @@ mod tests {
                     column.contains_rect(rect),
                     "{name} is laid out at {rect:?}, outside the {column:?} column"
                 );
-                assert_renders(&harness_fonts, &name);
                 Some(name)
             })
             .collect()
@@ -1242,6 +1252,43 @@ mod tests {
         );
         assert!(controls_in_column(draw_porting_notice).is_empty());
         assert!(controls_in_column(|ui| draw_checklist(ui, &studio)).is_empty());
+    }
+
+    /// ⚠ The other state of step 2. Before the scan is stood up the trim and
+    /// reconstruct sections are hidden and the save section shows a hint
+    /// instead — text that exists in no other state, so censusing only the
+    /// revealed screen leaves it, and the controls beside it, ungated.
+    #[test]
+    fn every_control_on_the_cleanup_screen_before_it_is_stood_up_fits_too() {
+        let mut screen = cleanup_screen();
+        screen.scan.set(ActiveScan::synthetic(open_tube()));
+
+        let controls = controls_in_column(|ui| {
+            let _ = draw_clean_scan(
+                ui,
+                &screen.studio,
+                &screen.dialog,
+                &screen.scan,
+                &mut screen.controls,
+            );
+        });
+
+        assert_eq!(
+            controls,
+            [
+                "Weld points",
+                "−",
+                "TextInput",
+                "+",
+                "Simplify",
+                "Find floor",
+                "−",
+                "TextInput",
+                "+",
+                "Save cleaned scan",
+                "Start over",
+            ]
+        );
     }
 
     /// Lay `draw_clean_scan` out for a screen that has, or has not, been stood
