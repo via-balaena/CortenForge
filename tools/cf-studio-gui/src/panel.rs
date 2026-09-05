@@ -1103,7 +1103,6 @@ pub(crate) mod tests {
     /// overflowing control fails here, a vanished one fails the caller's
     /// `assert_eq!`. Fit alone passes an empty screen.
     fn controls_in_column(mut body: impl FnMut(&mut egui::Ui)) -> Vec<String> {
-        use egui::accesskit::Role;
         use egui_kittest::kittest::NodeT;
 
         let column = std::cell::Cell::new(egui::Rect::NOTHING);
@@ -1143,20 +1142,7 @@ pub(crate) mod tests {
             .children_recursive()
             .filter_map(|node| {
                 let widget = node.accesskit_node();
-                let name = match widget.role() {
-                    role @ (Role::Button | Role::TextInput | Role::ComboBox | Role::CheckBox) => {
-                        widget
-                            .label()
-                            // ⚠ Not `?`, and an empty name is no name. A
-                            // stepper's field reports none at all and a bare
-                            // checkbox reports `""`; skipping either lets the
-                            // very control this gate is for slip past both
-                            // halves, and `""` names nothing in a census.
-                            .filter(|label| !label.is_empty())
-                            .unwrap_or_else(|| format!("{role:?}"))
-                    }
-                    _ => return None,
-                };
+                let name = control_name(widget.role(), widget.label())?;
                 let rect = node.rect();
                 assert!(
                     column.contains_rect(rect),
@@ -1165,6 +1151,26 @@ pub(crate) mod tests {
                 Some(name)
             })
             .collect()
+    }
+
+    /// A control, and what these gates call it: its accessible name, or its
+    /// role when it has none.
+    ///
+    /// ⚠ An empty name is no name. A stepper's field reports none at all and a
+    /// bare checkbox reports `""`; skipping either lets the very control the
+    /// census is for slip past it, and `""` names nothing.
+    fn control_name(role: egui::accesskit::Role, label: Option<String>) -> Option<String> {
+        use egui::accesskit::Role;
+
+        matches!(
+            role,
+            Role::Button | Role::TextInput | Role::ComboBox | Role::CheckBox
+        )
+        .then(|| {
+            label
+                .filter(|label| !label.is_empty())
+                .unwrap_or_else(|| format!("{role:?}"))
+        })
     }
 
     /// Fail if any character of `text` has no glyph in the fonts that ship.
@@ -1553,7 +1559,7 @@ pub(crate) mod tests {
     ///
     /// ⚠ The order is the gate. Six identical `+` buttons say nothing about
     /// which feature owns which — only their positions do.
-    fn controls_disabled(mut body: impl FnMut(&mut egui::Ui), label: &str) -> Vec<bool> {
+    fn controls_disabled(mut body: impl FnMut(&mut egui::Ui), name: &str) -> Vec<bool> {
         use egui_kittest::kittest::NodeT;
 
         let mut harness = Harness::builder()
@@ -1563,8 +1569,10 @@ pub(crate) mod tests {
         harness
             .root()
             .children_recursive()
-            .filter(|node| node.accesskit_node().label().as_deref() == Some(label))
-            .map(|node| node.accesskit_node().is_disabled())
+            .filter_map(|node| {
+                let widget = node.accesskit_node();
+                (control_name(widget.role(), widget.label())? == name).then(|| widget.is_disabled())
+            })
             .collect()
     }
 
@@ -1879,6 +1887,9 @@ pub(crate) mod tests {
         }
     }
 
+    /// The ridge editor's master switch, by the name the census gives it.
+    const MASTER_SWITCH: &str = "Add surface ridges (advanced)";
+
     /// Step 3 with the ridge editor asked for — the state everything below
     /// this measures.
     fn ridges_on() -> ShapeControls {
@@ -1888,31 +1899,20 @@ pub(crate) mod tests {
     }
 
     /// The step-3 body for `shape`, on an app holding nothing.
-    ///
-    /// ⚠ A `RefCell`, because the closure runs on every pass and each one
-    /// re-borrows the fields the steppers edit.
-    fn shape_body<'a>(
-        shape: &'a std::cell::RefCell<&'a mut ShapeControls>,
-    ) -> impl FnMut(&mut egui::Ui) + 'a {
+    fn shape_body(shape: &mut ShapeControls) -> impl FnMut(&mut egui::Ui) + '_ {
         move |ui| {
-            let free = Studio::default();
-            let _ = draw_shape_piece(
-                ui,
-                &free,
-                &PendingDialog::default(),
-                &mut shape.borrow_mut(),
-            );
+            let _ = draw_shape_piece(ui, &Studio::default(), &PendingDialog::default(), shape);
         }
     }
 
-    /// ⚠ Ten more controls, and #878's overflow is what a four-column grid in
-    /// a 404 px column risks. The editor is hidden until it is asked for, so
-    /// the census of the opening screen never reaches any of them.
+    /// ⚠ #878's overflow is what a four-column grid in a 404 px column risks,
+    /// and the editor is hidden until it is asked for — so the census of the
+    /// opening screen reaches none of these.
     #[test]
     fn the_revealed_ridge_editor_is_laid_out_inside_the_body_column_too() {
         let mut revealed = ridges_on();
-        let shape = std::cell::RefCell::new(&mut revealed);
-        let controls = controls_in_column(shape_body(&shape));
+
+        let controls = controls_in_column(shape_body(&mut revealed));
 
         assert_eq!(
             controls,
@@ -1970,22 +1970,20 @@ pub(crate) mod tests {
     #[test]
     fn every_ridge_row_lines_its_field_up_with_the_others() {
         let mut revealed = ridges_on();
-        let shape = std::cell::RefCell::new(&mut revealed);
 
-        let rects = stepper_rects(shape_body(&shape));
+        let rects = stepper_rects(shape_body(&mut revealed));
 
         // The first is the cavity's, which sits above the grid entirely.
-        let (cavity, ridges) = rects.split_first().expect("step 3 has six fields");
+        let (_, ridges) = rects.split_first().expect("step 3 has six fields");
         assert_eq!(ridges.len(), 5, "one field per ridge scalar: {rects:?}");
         assert!(
             ridges.iter().all(|rect| rect.left() == ridges[0].left()),
-            "the grid's fields share a column; the cavity's is its own: \
-             {ridges:?} beside {cavity:?}"
+            "the grid's fields must share a column: {ridges:?}"
         );
     }
 
-    /// ★ Five toggles over six steppers, every row drawn by one helper: a row
-    /// handed its neighbour's toggle gates the wrong field, and the screen
+    /// ★ Four switches over six steppers, every row drawn by one helper: a row
+    /// handed its neighbour's switch gates the wrong field, and the screen
     /// reads the same either way.
     ///
     /// ⚠ Texture spacing is the row with no switch of its own, so it is the
@@ -1993,9 +1991,8 @@ pub(crate) mod tests {
     #[test]
     fn each_ridge_toggle_gates_its_own_stepper() {
         let mut everything = ridges_on();
-        let all_on = std::cell::RefCell::new(&mut everything);
         assert_eq!(
-            controls_disabled(shape_body(&all_on), "+"),
+            controls_disabled(shape_body(&mut everything), "+"),
             [false; 6],
             "with every feature on, every stepper is live"
         );
@@ -2026,10 +2023,9 @@ pub(crate) mod tests {
         for (name, toggle, expected) in cases {
             let mut off = ridges_on();
             *toggle(&mut off.ridges) = false;
-            let off = std::cell::RefCell::new(&mut off);
 
             assert_eq!(
-                controls_disabled(shape_body(&off), "+"),
+                controls_disabled(shape_body(&mut off), "+"),
                 expected,
                 "{name} switched off gates its own stepper and no other"
             );
@@ -2057,8 +2053,7 @@ pub(crate) mod tests {
         for nth in 0..opening.len() {
             let mut stepped = ridges_on();
             {
-                let shape = std::cell::RefCell::new(&mut stepped);
-                let mut body = shape_body(&shape);
+                let mut body = shape_body(&mut stepped);
                 let mut harness = Harness::builder()
                     .with_size(egui::Vec2::new(BODY_WIDTH, COLUMN_HEIGHT))
                     .build(|ctx| body_column(ctx, &mut body));
@@ -2115,17 +2110,20 @@ pub(crate) mod tests {
         );
     }
 
-    fn shape_control_disabled(
+    /// Whether each control called `name` on step 3 is disabled, drawn from a
+    /// fresh `shape` against an app held — or not — by `studio` and `dialog`.
+    fn shape_controls_disabled(
+        shape: fn() -> ShapeControls,
         studio: &Studio,
         dialog: &PendingDialog,
-        label: &str,
-    ) -> Option<bool> {
-        let mut shape = ShapeControls::default();
-        control_disabled(
+        name: &str,
+    ) -> Vec<bool> {
+        let mut shape = shape();
+        controls_disabled(
             |ui| {
                 let _ = draw_shape_piece(ui, studio, dialog, &mut shape);
             },
-            label,
+            name,
         )
     }
 
@@ -2134,47 +2132,76 @@ pub(crate) mod tests {
     /// advances behind an open picker — and the folder that picker returns then
     /// lands on a step the user has already left.
     ///
-    /// ⚠ Both controls, and each way the app is held: the stepper takes the
-    /// same flag, and a screen that gates only its button still lets the value
-    /// under it move while a job reads it.
+    /// ⚠ Every control, and each way the app is held. A screen that gates only
+    /// its button still lets the values under it move while a job reads them —
+    /// and the ridge editor is drawn by a function of its own, which took
+    /// `ready` with nothing asking whether it used it.
     #[test]
     fn step_threes_controls_are_offered_only_while_the_app_is_free() {
-        for label in ["Continue", "+"] {
-            assert_eq!(
-                shape_control_disabled(&Studio::default(), &PendingDialog::default(), label),
-                Some(false),
-                "{label} is offered when nothing holds the app"
-            );
+        let held = [
+            (
+                "a job",
+                Studio {
+                    busy: true,
+                    ..Studio::default()
+                },
+                PendingDialog::default(),
+            ),
+            (
+                "a picker",
+                Studio::default(),
+                PendingDialog::opened(DialogKind::ScanFile),
+            ),
+            (
+                "a save",
+                Studio {
+                    pending_save: Some(PendingSave::ChoosingFolder { smoothing: 0 }),
+                    ..Studio::default()
+                },
+                PendingDialog::default(),
+            ),
+        ];
+        // ⚠ "CheckBox" is the four ridge switches, which carry no name of their
+        // own. Without them the row helper could drop `ready` from its checkbox
+        // alone and every other control would still report correctly.
+        let screens: [(&str, fn() -> ShapeControls, &[&str]); 2] = [
+            (
+                "closed",
+                ShapeControls::default,
+                &["Continue", "+", MASTER_SWITCH],
+            ),
+            (
+                "open",
+                ridges_on,
+                &["Continue", "+", MASTER_SWITCH, "CheckBox"],
+            ),
+        ];
 
-            let held = [
-                (
-                    "a job",
-                    Studio {
-                        busy: true,
-                        ..Studio::default()
-                    },
-                    PendingDialog::default(),
-                ),
-                (
-                    "a picker",
-                    Studio::default(),
-                    PendingDialog::opened(DialogKind::ScanFile),
-                ),
-                (
-                    "a save",
-                    Studio {
-                        pending_save: Some(PendingSave::ChoosingFolder { smoothing: 0 }),
-                        ..Studio::default()
-                    },
-                    PendingDialog::default(),
-                ),
-            ];
-            for (what, studio, dialog) in held {
-                assert_eq!(
-                    shape_control_disabled(&studio, &dialog, label),
-                    Some(true),
-                    "{label} is withheld while {what} holds the app"
+        for (screen, shape, names) in screens {
+            for name in names {
+                let offered = shape_controls_disabled(
+                    shape,
+                    &Studio::default(),
+                    &PendingDialog::default(),
+                    name,
                 );
+                assert!(
+                    !offered.is_empty(),
+                    "{name} is on the {screen} editor at all"
+                );
+                assert!(
+                    offered.iter().all(|disabled| !disabled),
+                    "{name} is offered on the {screen} editor when nothing holds the app"
+                );
+
+                for (what, studio, dialog) in &held {
+                    assert!(
+                        shape_controls_disabled(shape, studio, dialog, name)
+                            .iter()
+                            .all(|disabled| *disabled),
+                        "{name} is withheld on the {screen} editor while {what} holds the app"
+                    );
+                }
             }
         }
     }

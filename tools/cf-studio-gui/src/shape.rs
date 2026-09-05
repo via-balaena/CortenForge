@@ -78,7 +78,7 @@ impl ShapeControls {
 ///
 /// ⚠ The grip rings are the other half of this editor and have no controls
 /// yet. Until they do [`validated_rings`] stands in for them, so a piece can be
-/// committed carrying rings the screen never showed. The screen says so.
+/// committed carrying rings the screen never showed.
 pub(crate) struct RidgeFields {
     /// The whole feature. Off is the smooth piece.
     pub(crate) enabled: bool,
@@ -86,10 +86,8 @@ pub(crate) struct RidgeFields {
     pub(crate) texture_enabled: bool,
     /// Rib depth, tenths of a millimetre.
     pub(crate) texture_depth: BoundedField,
-    /// Rib pitch, tenths of a millimetre.
-    ///
-    /// ⚠ Governed by `texture_enabled`. It has no toggle of its own, as the
-    /// pre-port screen had it.
+    /// Rib pitch, tenths of a millimetre. ⚠ Governed by `texture_enabled` —
+    /// it has no switch of its own.
     pub(crate) texture_spacing: BoundedField,
     /// The one-sided flattening.
     pub(crate) side_pinch_enabled: bool,
@@ -99,7 +97,7 @@ pub(crate) struct RidgeFields {
     pub(crate) tip_relief_enabled: bool,
     /// Pocket depth, tenths of a millimetre.
     pub(crate) tip_relief: BoundedField,
-    /// Whether the one-sided features are turned off their default direction.
+    /// Whether the one-sided features are rotated off their default direction.
     pub(crate) orientation_enabled: bool,
     /// Where they sit around the channel axis, in degrees.
     pub(crate) orientation: BoundedField,
