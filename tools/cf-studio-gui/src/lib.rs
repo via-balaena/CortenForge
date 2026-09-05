@@ -910,10 +910,10 @@ const LAYER_SLACKER_RANGE: (i32, i32) = (0, 100);
 /// screen: a soft, slacker-softened inner layer under two progressively firmer
 /// ones. `(catalog key, thickness mm, slacker %)`.
 ///
-/// ⚠ The pre-port code called this "≈ the `base_mold` recipe" and that is as
-/// far as it can be checked from here — no `base_mold` design lives in the
-/// repo. A starting point, not a prescription: every field is editable, and a
-/// `.design.toml` replaces the lot.
+/// ⚠ The pre-port called it "≈ the `base_mold` recipe"; no `base_mold` design
+/// is in the repo, so that is as far as it can be checked. A starting point,
+/// not a prescription — every field is editable, and a `.design.toml` replaces
+/// the lot.
 const OPENING_STACK: [(&str, i32, i32); 3] = [
     ("ECOFLEX_00_30", 18, 25),
     ("DRAGON_SKIN_10A", 8, 0),
@@ -1039,12 +1039,9 @@ impl LayerStack {
         &mut self.rows
     }
 
-    /// Whether a layer can be dropped.
-    ///
-    /// ⚠ One predicate, read by both the ✖ that offers the drop and the
-    /// [`Self::remove`] that performs it. Split in two, the button and the rule
-    /// can disagree — which is how the pre-port screen had it, with the
-    /// condition written out at the callback and nothing on the model.
+    /// Whether a layer can be dropped: the cast needs a stack, so the last one
+    /// stays. Read by both the ✖ that offers the drop and [`Self::remove`] that
+    /// performs it, which is how they cannot disagree.
     #[must_use]
     pub fn can_drop(&self) -> bool {
         self.rows.len() > 1
@@ -1059,11 +1056,7 @@ impl LayerStack {
         }
     }
 
-    /// Drop one layer.
-    ///
-    /// ⚠ A no-op on the last one: the cast needs a stack. The screen also
-    /// disables that row's ✖ — this guard is what makes the rule true rather
-    /// than merely unclickable.
+    /// Drop one layer. A no-op on the last — see [`Self::can_drop`].
     pub fn remove(&mut self, index: usize) {
         if self.can_drop() && index < self.rows.len() {
             self.rows.remove(index);

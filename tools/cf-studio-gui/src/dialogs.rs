@@ -95,17 +95,11 @@ impl PendingDialog {
     /// Open a file picker for `kind`, offering `extensions` under `filter`.
     /// A no-op while one is already open.
     ///
-    /// ⚠ This whole method is **ungated**, and cannot be reached without
-    /// putting an OS picker on screen: a test that called either wrapper would
-    /// open a real dialog, and one that pre-opens a dialog to stop that gets
-    /// the early return instead. `cargo-mutants` emptying any of the three to
-    /// `()` survives the suite. Two consequences ride on that — a picker that
-    /// never opens, and, since `poll_dialogs` routes on the kind, a swapped
-    /// [`DialogKind`] sending a chosen `.design.toml` down the scan path,
-    /// where it fails to load and resets the project. Hand-tested only.
-    ///
-    /// What *is* gated is everything past the picker: [`Self::poll`]'s
-    /// resolved/cancelled split, and each kind's route in `poll_dialogs`.
+    /// ⚠ Untestable: calling it opens a real OS picker, and pre-opening one to
+    /// stop that hits the early return below. `cargo-mutants` empties this and
+    /// both its wrappers to `()` and the suite stays green. `poll_dialogs`
+    /// routes on `kind`, so a swapped one sends a chosen `.design.toml` down
+    /// the scan path, where it fails to load and resets the project.
     fn pick_file(
         &mut self,
         kind: DialogKind,

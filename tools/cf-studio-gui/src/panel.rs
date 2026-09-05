@@ -65,6 +65,9 @@ const STAND_IN_NOTE: &str = "The preview is a stand-in shape — your cleaned sc
      couldn't be read. The ridges are real; the body is not yours.";
 /// The rebuilt-floor picker. Fixed, or the combo stretches to fill the column.
 const SHAPE_PICKER_WIDTH: f32 = 110.0;
+/// One unit per click of every stepper the wizard draws — the pre-port
+/// `StepBox` had no step property at all.
+const FIELD_STEP: i32 = 1;
 /// The layer material picker's width, arrow and padding included.
 ///
 /// ⚠ A **floor**, not a cap: egui grows a `ComboBox` to its selected text and
@@ -946,16 +949,12 @@ fn ridge_row(
     ui.end_row();
 }
 
-/// One unit per click of every stepper the wizard draws — the pre-port
-/// `StepBox` had no step property at all.
-const FIELD_STEP: i32 = 1;
-
 /// A stepper for one of the shape or layer fields.
 ///
 /// ⚠ The bounds come off the field, so the screen cannot enforce a limit the
 /// commit does not. Given the wrong ones the field walks past its own maximum
-/// and [`ShapeControls::plug_draft`] quietly clamps it back — the screen
-/// showing one number and the plug carrying another.
+/// and [`BoundedField::value`] quietly clamps it back — the screen showing one
+/// number and the commit carrying another.
 fn bounded_step_box(ui: &mut egui::Ui, field: &mut BoundedField, enabled: bool) {
     step_box(ui, &mut field.state, field.range, FIELD_STEP, enabled);
 }
@@ -980,13 +979,9 @@ fn draw_design_layers(
     // ⚠ Noted here and applied after the loop: the row drawing the ✖ is
     // borrowed out of the stack that removing it shortens.
     let mut dropped = None;
-    // The last layer's ✖ is disabled rather than silently ignored — the
-    // pre-port screen left it live and dropped the click on the floor.
+    // ⚠ Disabled, where the pre-port screen left it live and dropped the click.
     let removable = design.layers.can_drop();
     for (index, layer) in design.layers.rows_mut().iter_mut().enumerate() {
-        // ⚠ Before every card, not between them, as the ring editor has it. An
-        // `index > 0` guard here buys 6 px above the first card and costs a
-        // branch whose every mutation survives the suite.
         ui.add_space(ROW_GAP);
         if draw_layer(ui, index, layer, ready, removable) {
             dropped = Some(index);
@@ -998,26 +993,26 @@ fn draw_design_layers(
 
     ui.add_space(SECTION_GAP);
     ui.vertical_centered(|ui| {
-        if ui
-            .add_enabled(ready, egui::Button::new("+ Add layer"))
-            .clicked()
-        {
-            design.layers.add();
-        }
-        ui.add_space(ROW_GAP);
-        if ui
-            .add_enabled(ready, egui::Button::new("Use this design"))
-            .clicked()
-        {
-            acted.design = Some(design.layers.drafts());
-        }
-        ui.add_space(ROW_GAP);
-        if ui
-            .add_enabled(ready, egui::Button::new("…or load a file"))
-            .clicked()
-        {
-            acted.nav = Some(Intent::PickDesign);
-        }
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(ready, egui::Button::new("+ Add layer"))
+                .clicked()
+            {
+                design.layers.add();
+            }
+            if ui
+                .add_enabled(ready, egui::Button::new("Use this design"))
+                .clicked()
+            {
+                acted.design = Some(design.layers.drafts());
+            }
+            if ui
+                .add_enabled(ready, egui::Button::new("…or load a file"))
+                .clicked()
+            {
+                acted.nav = Some(Intent::PickDesign);
+            }
+        });
     });
     acted
 }
@@ -2976,13 +2971,7 @@ pub(crate) mod tests {
 
         assert_eq!(
             controls,
-            [
-                &LAYER_CARD[..],
-                &LAYER_CARD,
-                &LAYER_CARD,
-                &["+ Add layer", "Use this design", "…or load a file"],
-            ]
-            .concat(),
+            [&LAYER_CARD[..], &LAYER_CARD, &LAYER_CARD, &ACTIONS,].concat(),
             "the three layers the screen opens on, then the three buttons"
         );
     }
@@ -3084,6 +3073,42 @@ pub(crate) mod tests {
                     .flatten()
             })
             .collect()
+    }
+
+    /// The buttons under the cards, in the order the pre-port screen had them.
+    const ACTIONS: [&str; 3] = ["+ Add layer", "Use this design", "…or load a file"];
+
+    /// The three action buttons' rects, in the order they are drawn.
+    fn action_button_rects(design: &mut DesignControls) -> Vec<egui::Rect> {
+        use egui_kittest::kittest::NodeT;
+
+        let mut body = design_body(design);
+        column_harness(&mut body)
+            .root()
+            .children_recursive()
+            .filter_map(|node| {
+                let label = node.accesskit_node().label()?;
+                ACTIONS.contains(&label.as_str()).then(|| node.rect())
+            })
+            .collect()
+    }
+
+    /// ★ One row, as the pre-port screen had them. Stacked, they still fit the
+    /// column and still pass the census — three unrelated steps where the
+    /// screen means one choice.
+    #[test]
+    fn the_three_actions_sit_on_one_row() {
+        let mut design = DesignControls::default();
+
+        let rects = action_button_rects(&mut design);
+
+        assert_eq!(rects.len(), ACTIONS.len(), "all three are drawn: {rects:?}");
+        assert!(
+            rects
+                .windows(2)
+                .all(|pair| (pair[0].top() - pair[1].top()).abs() < 0.01),
+            "one row: {rects:?}"
+        );
     }
 
     /// Lay step 4 out with `design` and click the `nth` button called `name`.
