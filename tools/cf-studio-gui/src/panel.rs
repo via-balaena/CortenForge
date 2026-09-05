@@ -11,7 +11,7 @@
 
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
-use cf_studio_core::Step;
+use cf_studio_core::{PlugDraft, Step};
 use cf_studio_gui::{
     format_pour_active, format_pour_plan, format_scan_stats, nav_state, pour_countdown,
     print_step_summary, step_rows,
@@ -25,6 +25,7 @@ use crate::edit::{
 use crate::jobs::{SimplifyJob, start_simplify};
 use crate::save;
 use crate::scan::ScanEdit;
+use crate::shape::{CAVITY_STEP_MM, ShapeControls, cavity_range, commit_plug};
 use crate::state::{PendingSave, Studio};
 use crate::widgets::{
     ACTIVE_TEXT, CONTROL_TEXT, DONE_TEXT, ERROR_TEXT, GOOD_FILL, GOOD_TEXT, HEADING_TEXT,
@@ -80,6 +81,12 @@ struct Acted {
     /// ⚠ Not an [`EditIntent`] variant either, and for the same reason: a Save
     /// reads the scan and writes the *project*. See [`crate::save`].
     save: Option<usize>,
+    /// The plug a step-3 Continue was clicked with.
+    ///
+    /// ⚠ Not an [`Intent`] variant: that enum is `Copy`, and a draft carries an
+    /// owned ring set. Built at click time for the reason every other field
+    /// here is — the executor cannot read a field the user has since changed.
+    plug: Option<PlugDraft>,
 }
 
 impl Acted {
@@ -90,6 +97,7 @@ impl Acted {
         self.edit = inner.edit.or(self.edit);
         self.simplify = inner.simplify.or(self.simplify);
         self.save = inner.save.or(self.save);
+        self.plug = inner.plug.or(self.plug.take());
     }
 }
 
@@ -118,6 +126,7 @@ pub(crate) fn wizard_screen(
     mut dialog: ResMut<PendingDialog>,
     mut scan: ResMut<ScanEdit>,
     mut controls: ResMut<EditControls>,
+    mut shape: ResMut<ShapeControls>,
     mut job: ResMut<SimplifyJob>,
 ) -> bevy::ecs::error::Result {
     let ctx = contexts.ctx_mut()?;
@@ -136,7 +145,14 @@ pub(crate) fn wizard_screen(
         // ⚠ `&scan` — an immutable borrow. Reaching for `&mut` here, to save
         // passing it twice, would mark the resource changed on every frame the
         // wizard drew and re-mesh the scan 60 times a second.
-        acted.merge(draw_body(ui, &studio, &dialog, &scan, &mut controls));
+        acted.merge(draw_body(
+            ui,
+            &studio,
+            &dialog,
+            &scan,
+            &mut controls,
+            &mut shape,
+        ));
     });
 
     // ⚠ Drawn from `pending_save` alone, outside the step match: the state that
@@ -162,6 +178,9 @@ pub(crate) fn wizard_screen(
     // ⚠ `&scan`, immutably, for the same reason.
     if let Some(smoothing) = acted.save {
         save::save_to_default(&scan, &mut studio, smoothing);
+    }
+    if let Some(draft) = acted.plug {
+        commit_plug(draft, &mut studio);
     }
     Ok(())
 }
@@ -247,6 +266,7 @@ fn draw_body(
     dialog: &PendingDialog,
     scan: &ScanEdit,
     controls: &mut EditControls,
+    shape: &mut ShapeControls,
 ) -> Acted {
     let viewed = studio.cursor.viewed();
     ui.add_space(8.0);
@@ -277,7 +297,8 @@ fn draw_body(
     match viewed {
         Step::AddScan => acted.nav = draw_add_scan(ui, studio, dialog),
         Step::CleanScan => acted.merge(draw_clean_scan(ui, studio, dialog, scan, controls)),
-        Step::ShapePiece | Step::DesignLayers | Step::MakeMolds => draw_porting_notice(ui),
+        Step::ShapePiece => acted.plug = draw_shape_piece(ui, studio, dialog, shape),
+        Step::DesignLayers | Step::MakeMolds => draw_porting_notice(ui),
         Step::Print => acted.nav = draw_print(ui, studio, dialog),
         Step::Pour => acted.nav = draw_pour(ui, studio),
     }
@@ -630,16 +651,56 @@ fn draw_add_scan(ui: &mut egui::Ui, studio: &Studio, dialog: &PendingDialog) -> 
     intent
 }
 
-/// Steps 3–5 during the Slint→Bevy port. Says what is missing and that the work
-/// is not lost, rather than showing an empty screen that reads as a bug.
+/// Steps 4 and 5 during the Slint→Bevy port. Says what is missing and that the
+/// work is not lost, rather than showing an empty screen that reads as a bug.
 fn draw_porting_notice(ui: &mut egui::Ui) {
     ui.add_space(8.0);
     wrapped_label(
         ui,
         "This step is being rebuilt on the new interface and isn't available in \
          this build yet. Its logic is unchanged — only the screen is being \
-         redrawn. Steps 1, 2, 6 and 7 work today.",
+         redrawn.",
     );
+}
+
+/// Step 3 — how snugly the piece fits, then commit the plug.
+fn draw_shape_piece(
+    ui: &mut egui::Ui,
+    studio: &Studio,
+    dialog: &PendingDialog,
+    shape: &mut ShapeControls,
+) -> Option<PlugDraft> {
+    let ready = accepting_actions(studio, dialog);
+    let mut draft = None;
+    ui.add_space(8.0);
+    wrapped_label(
+        ui,
+        "Set how snugly the piece fits: the cavity sits this far in from your \
+         scan's surface, all the way round.",
+    );
+    ui.add_space(SECTION_GAP);
+    ui.vertical_centered(|ui| {
+        field_grid(ui, "shape-fields", |ui| {
+            ui.colored_label(CONTROL_TEXT, "Cavity inset");
+            step_box(
+                ui,
+                &mut shape.cavity_mm,
+                cavity_range(),
+                CAVITY_STEP_MM,
+                ready,
+            );
+            ui.colored_label(CONTROL_TEXT, "mm");
+            ui.end_row();
+        });
+        ui.add_space(ROW_GAP);
+        if ui
+            .add_enabled(ready, egui::Button::new("Continue"))
+            .clicked()
+        {
+            draft = Some(shape.plug_draft());
+        }
+    });
+    draft
 }
 
 /// Step 6 — save the printable files, then hand off to the slicer.
@@ -820,15 +881,16 @@ pub(crate) mod tests {
     use std::path::PathBuf;
 
     use cf_studio_core::{
-        DesignDraft, LayerDraft, MoldOutputs, PlugDraft, PourPlan, PourStep, PrepInput, Project,
-        RidgeOptions, ScanInput,
+        DesignDraft, LayerDraft, MoldOutputs, PourPlan, PourStep, PrepInput, Project, RidgeOptions,
+        ScanInput,
     };
+    use cf_studio_gui::WizardCursor;
     use egui_kittest::Harness;
     use egui_kittest::kittest::Queryable;
 
     use super::*;
     use crate::edit::tests::open_tube;
-    use crate::egui_harness::{self, begin, click_on, end, painted_texts};
+    use crate::egui_harness::{self, begin, click_on, end, painted_texts, settle};
     use crate::scan::ActiveScan;
 
     /// ⚠ Every click on every screen reaches [`wizard_screen`] through this.
@@ -1029,6 +1091,7 @@ pub(crate) mod tests {
             cf_studio_gui::format_save_done("base_mold", 180_236),
             cf_studio_gui::format_simplify_done(200_000, 12.3),
             cf_studio_gui::format_simplify_started(50_000),
+            shaped_piece_report(),
             cf_studio_gui::format_floor_found(1, 29, 7.7),
             cf_studio_gui::format_floor_no_centerline(3),
             format_scan_stats(200_000, 600_000),
@@ -1071,6 +1134,19 @@ pub(crate) mod tests {
             reports.iter().any(|text| text.contains('\u{21ba}')),
             "no op reported the arrow this covers: {reports:?}"
         );
+    }
+
+    /// What a committed plug reports — the only `apply_plug` message the screen
+    /// ever shows, and one no other producer here covers.
+    fn shaped_piece_report() -> String {
+        let mut studio = Studio {
+            project: crate::shape::tests::ready_to_shape(),
+            ..Studio::default()
+        };
+        crate::shape::commit_plug(ShapeControls::default().plug_draft(), &mut studio);
+        let reported = studio.message.expect("a commit always reports");
+        let (Ok(text) | Err(text)) = reported;
+        text
     }
 
     /// Step 2 with every section revealed: a scan loaded, a centerline traced,
@@ -1238,6 +1314,13 @@ pub(crate) mod tests {
                 let _ = draw_add_scan(ui, &studio, &dialog);
             }),
             ["Choose scan file…"]
+        );
+        let mut shape = ShapeControls::default();
+        assert_eq!(
+            controls_in_column(|ui| {
+                let _ = draw_shape_piece(ui, &studio, &dialog, &mut shape);
+            }),
+            ["−", "TextInput", "+", "Continue"]
         );
         assert_eq!(
             controls_in_column(|ui| {
@@ -1443,6 +1526,7 @@ pub(crate) mod tests {
             .init_resource::<PendingDialog>()
             .init_resource::<ScanEdit>()
             .init_resource::<EditControls>()
+            .init_resource::<ShapeControls>()
             .init_resource::<SimplifyJob>()
             .add_systems(Update, (begin, wizard_screen, end).chain());
         app
@@ -1455,7 +1539,7 @@ pub(crate) mod tests {
     fn the_wizard_runs_as_a_system_and_paints_its_three_panels() {
         let mut app = app_running_the_wizard();
 
-        app.update();
+        settle(&mut app);
 
         let painted = painted_texts(&app);
         let shows = |needle: &str| painted.iter().any(|text| text.contains(needle));
@@ -1481,11 +1565,6 @@ pub(crate) mod tests {
         // Step 1 is complete the moment a scan is recorded, so this lands on 2.
         app.world_mut().resource_mut::<Studio>().next();
 
-        // ⚠ Two frames. egui sizes a scroll area from the previous pass, so the
-        // first one paints only as far as the column it has not measured yet —
-        // Save is not on it, and a click can only land on what was painted.
-        app.update();
-        app.update();
         click_on(&mut app, "Save cleaned scan");
 
         let studio = app.world().resource::<Studio>();
@@ -1512,10 +1591,7 @@ pub(crate) mod tests {
         app.insert_resource(scan);
         app.insert_resource(studio);
 
-        // ⚠ Two frames, as above: the modal is an `Area`, and egui places one
-        // from the size it measured on the pass before.
-        app.update();
-        app.update();
+        settle(&mut app);
 
         let painted = painted_texts(&app);
         assert!(
@@ -1586,6 +1662,40 @@ pub(crate) mod tests {
             "a folder answer waits for the folder, carrying the smoothing"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★★ Step 3's own wiring, which nothing else reaches. `draw_shape_piece`
+    /// hands back a draft and `commit_plug` applies one, but a call site is not
+    /// a function anyone can call — deleting either left the suite green.
+    ///
+    /// ⚠ Clicked through one `+` first, so the button has to carry the number
+    /// on screen. Sending a constant, or reading a field pinned by its own
+    /// default, passes every other gate step 3 has.
+    #[test]
+    fn clicking_continue_in_the_running_wizard_shapes_the_piece() {
+        let mut app = app_running_the_wizard();
+        app.insert_resource(Studio {
+            project: crate::shape::tests::ready_to_shape(),
+            cursor: WizardCursor::new(Step::ShapePiece),
+            ..Studio::default()
+        });
+
+        click_on(&mut app, "+");
+        click_on(&mut app, "Continue");
+
+        let studio = app.world().resource::<Studio>();
+        let stepped = ShapeControls::default().cavity_mm.value() + CAVITY_STEP_MM;
+        assert_eq!(
+            studio.project.plug().map(|plug| plug.cavity_inset_m),
+            Some(f64::from(stepped) / 1000.0),
+            "the click carried the stepped field: {:?}",
+            studio.message
+        );
+        assert_eq!(
+            studio.cursor.viewed(),
+            Step::DesignLayers,
+            "and Continue moved on"
+        );
     }
 
     /// The question the modal is asked to render. Its wording belongs to

@@ -16,6 +16,7 @@ use crate::jobs::{PrintJob, SimplifyJob, poll_dialogs, poll_print_job, poll_simp
 use crate::panel::wizard_screen;
 use crate::scan::ScanEdit;
 use crate::scene::{draw_centerline, fit_viewport_to_free_space, setup_scene, show_scan};
+use crate::shape::ShapeControls;
 use crate::state::{Screen, Studio};
 use crate::waiver::waiver_screen;
 
@@ -42,6 +43,7 @@ impl Plugin for StudioPlugin {
             .init_resource::<SimplifyJob>()
             .init_resource::<ScanEdit>()
             .init_resource::<EditControls>()
+            .init_resource::<ShapeControls>()
             .insert_resource(ClearColor(BACKGROUND))
             // The centerline runs *inside* the scan, so at the default
             // `depth_bias` of 0 it is hidden by the surface it describes and the
