@@ -3,7 +3,7 @@
 //! ⚠⚠ The re-mesh is a background job rather than the pre-port's inline call,
 //! and a measurement is why. [`PlugPreview::mesh`] samples a mesh-BVH-backed
 //! SDF, so its cost tracks the *scan's* triangle count rather than the preview
-//! grid: 97 ms on a 51 k-triangle scan, 191 ms on a 241 k one, against a 16 ms
+//! grid: 97 ms on a 51 k-triangle body, 191 ms on a 241 k one, against a 16 ms
 //! frame. Slint called it inline from `shape-changed()` and froze for the
 //! duration; here that is six to twelve dropped frames on every `+` click.
 //!
@@ -26,9 +26,10 @@ use crate::state::Studio;
 
 /// The cleaned scan behind the preview.
 ///
-/// Both end states are final, which is what lets [`PlugView::showing_proxy`]
-/// read the note's answer off this instead of tracking it per mesh: a `Ready`
-/// cache never fails later, and an `Unavailable` one is never retried.
+/// Neither end state moves except through [`PlugView::invalidate`], which
+/// clears the mesh with it. That is what lets [`PlugView::showing_proxy`] read
+/// the note's answer off this rather than recording it per mesh: while a piece
+/// is on show, the cache that cut it is still the one held here.
 #[derive(Default)]
 enum Cache {
     /// Nothing built, and nothing building it.

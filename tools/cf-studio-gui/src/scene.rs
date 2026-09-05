@@ -216,12 +216,15 @@ pub(crate) fn show_plug(
 /// which is the only place it can be checked at all.
 pub(crate) fn show_the_step_subject(
     studio: Res<Studio>,
-    view: Res<PlugView>,
+    pieces: Query<(), With<PlugBody>>,
     mut bodies: Query<(&mut Visibility, Has<PlugBody>), Or<(With<SceneBody>, With<PlugBody>)>>,
 ) {
-    // ⚠ Until the first preview lands there is nothing to swap to, so the scan
-    // stays up rather than step 3 opening on an empty viewport.
-    let previewing = studio.cursor.viewed() == Step::ShapePiece && view.mesh().is_some();
+    // ⚠ Whether a piece is on screen, not whether one has been meshed. Until the
+    // first preview lands the scan stays up rather than step 3 opening on an
+    // empty viewport — and [`show_plug`] needs the scan for the lift besides, so
+    // a meshed piece can have no body to show and this would hide the scan in
+    // favour of nothing at all.
+    let previewing = studio.cursor.viewed() == Step::ShapePiece && !pieces.is_empty();
     for (mut visibility, is_plug) in &mut bodies {
         let wanted = if is_plug == previewing {
             Visibility::Inherited
@@ -449,6 +452,27 @@ endsolid t
         assert!(
             material.cull_mode.is_none(),
             "and must not be culled away, or they read as holes"
+        );
+    }
+
+    /// ⚠ The plug's material is [`body_material`] with a colour swapped in, and
+    /// the spread is load-bearing rather than tidy: it is what carries the two
+    /// fields above onto the piece. Written out fresh — or defaulted — the piece
+    /// is culled and single-sided, and a marching-cubes patch that comes out
+    /// inverted then reads as a hole in the user's own piece.
+    ///
+    /// The colour is not asserted, for the reason the scan's is not.
+    #[test]
+    fn the_piece_inherits_the_surface_the_scan_is_drawn_with() {
+        let material = plug_material();
+
+        assert!(
+            material.double_sided,
+            "the piece's back faces must shade, as the scan's do"
+        );
+        assert!(
+            material.cull_mode.is_none(),
+            "and must not be culled away, or they read as holes in the piece"
         );
     }
 
