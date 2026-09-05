@@ -814,7 +814,7 @@ fn apply_intent(intent: Intent, studio: &mut Studio, dialog: &mut PendingDialog)
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     #![allow(clippy::expect_used)]
 
     use std::path::PathBuf;
@@ -987,7 +987,7 @@ mod tests {
     /// ⚠ Control characters are skipped: `has_glyph` says `false` for `\n`,
     /// which layout breaks the line on rather than drawing, so checking it
     /// would fail every multi-line message on screen.
-    fn assert_renders(ctx: &egui::Context, text: &str) {
+    pub(crate) fn assert_renders(ctx: &egui::Context, text: &str) {
         let font = egui::FontId::default();
         for c in text.chars().filter(|c| !c.is_control()) {
             assert!(
@@ -1115,7 +1115,7 @@ mod tests {
 
     /// A project driven to the pour step — the only state `draw_pour` shows its
     /// buttons in, since every earlier artifact gates the next.
-    fn ready_to_pour() -> Project {
+    pub(crate) fn ready_to_pour() -> Project {
         let mut project = Project::new("layout gate");
         project.set_scan(ScanInput {
             source_path: PathBuf::from("scan.stl"),
