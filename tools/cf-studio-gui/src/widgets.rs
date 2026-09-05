@@ -22,6 +22,11 @@ pub(crate) const ACTIVE_TEXT: egui::Color32 = egui::Color32::from_rgb(0x15, 0x65
 pub(crate) const ERROR_TEXT: egui::Color32 = egui::Color32::from_rgb(0xc6, 0x28, 0x28);
 /// Warning amber: under five minutes of working time left.
 pub(crate) const WARN_TEXT: egui::Color32 = egui::Color32::from_rgb(0xe6, 0x51, 0x00);
+/// The ridge editor's card — warmer than the result cards, as the pre-port
+/// screen had it.
+pub(crate) const RIDGE_FILL: egui::Color32 = egui::Color32::from_rgb(0xf4, 0xf1, 0xea);
+/// The notes on [`RIDGE_FILL`]: what ridges cost, and what is not on screen yet.
+pub(crate) const RIDGE_NOTE_TEXT: egui::Color32 = egui::Color32::from_rgb(0x6b, 0x5f, 0x44);
 
 /// A label that wraps. Use this for anything longer than a few words.
 pub(crate) fn wrapped_label(ui: &mut egui::Ui, text: impl Into<String>) {
@@ -173,9 +178,17 @@ pub(crate) fn step_box(
 ///
 /// ⚠ A `Grid`, not a stack of `ui.horizontal` rows: stacked fields have to line
 /// up with each other, and the labels beside them differ in width.
-pub(crate) fn field_grid(ui: &mut egui::Ui, id: &str, add: impl FnOnce(&mut egui::Ui)) {
+///
+/// `columns` is how many cells a full row has. egui sizes the last column from
+/// it, so a width-filling widget there gets the rest of the row.
+pub(crate) fn field_grid(
+    ui: &mut egui::Ui,
+    id: &str,
+    columns: usize,
+    add: impl FnOnce(&mut egui::Ui),
+) {
     egui::Grid::new(id)
-        .num_columns(3)
+        .num_columns(columns)
         .spacing([GRID_SPACING, GRID_SPACING])
         .show(ui, add);
 }

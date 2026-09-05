@@ -25,12 +25,12 @@ use crate::edit::{
 use crate::jobs::{SimplifyJob, start_simplify};
 use crate::save;
 use crate::scan::ScanEdit;
-use crate::shape::{CAVITY_STEP_MM, ShapeControls, cavity_range, commit_plug};
+use crate::shape::{BoundedField, RidgeFields, SHAPE_STEP, ShapeControls, commit_plug};
 use crate::state::{PendingSave, Studio};
 use crate::widgets::{
     ACTIVE_TEXT, CONTROL_TEXT, DONE_TEXT, ERROR_TEXT, GOOD_FILL, GOOD_TEXT, HEADING_TEXT,
-    HINT_TEXT, STATS_TEXT, WARN_TEXT, card, centered_wrapped, cleanup_section, field_grid,
-    step_box, wrapped_colored, wrapped_label,
+    HINT_TEXT, RIDGE_FILL, RIDGE_NOTE_TEXT, STATS_TEXT, WARN_TEXT, card, centered_wrapped,
+    cleanup_section, field_grid, step_box, wrapped_colored, wrapped_label,
 };
 
 /// The checklist column's width.
@@ -54,6 +54,10 @@ const SUBHEADING_SIZE: f32 = 13.0;
 const SUBHINT_SIZE: f32 = 12.0;
 /// Between a stacked control row and the button that acts on it.
 const ROW_GAP: f32 = 6.0;
+/// The ridge card's notes: what ridges cost, and what is not on screen yet.
+const RIDGE_NOTE_SIZE: f32 = 14.0;
+/// The ridge grid's cells: a toggle, a label, a stepper and a unit.
+const RIDGE_COLUMNS: usize = 4;
 /// The rebuilt-floor picker. Fixed, or the combo stretches to fill the column.
 const SHAPE_PICKER_WIDTH: f32 = 110.0;
 /// The overwrite modal's width. Wider than the body column — it is centred on
@@ -492,7 +496,7 @@ fn draw_trim_row(
     let mut intent = None;
     let range = controls.trim_range();
     ui.vertical_centered(|ui| {
-        field_grid(ui, "trim-fields", |ui| {
+        field_grid(ui, "trim-fields", 3, |ui| {
             ui.colored_label(CONTROL_TEXT, "from tip");
             step_box(ui, &mut controls.tip_mm, range, STEP_MM, ready);
             ui.colored_label(CONTROL_TEXT, "mm");
@@ -589,7 +593,7 @@ fn draw_reconstruct_row(
     let range = controls.reference_range();
     // Stacked for the same reason as the trim controls above.
     ui.vertical_centered(|ui| {
-        field_grid(ui, "reconstruct-fields", |ui| {
+        field_grid(ui, "reconstruct-fields", 3, |ui| {
             ui.colored_label(CONTROL_TEXT, "Shape");
             egui::ComboBox::from_id_salt("rebuilt-floor-shape")
                 .width(SHAPE_PICKER_WIDTH)
@@ -663,7 +667,7 @@ fn draw_porting_notice(ui: &mut egui::Ui) {
     );
 }
 
-/// Step 3 — how snugly the piece fits, then commit the plug.
+/// Step 3 — how snugly the piece fits, what is cut into it, then commit.
 fn draw_shape_piece(
     ui: &mut egui::Ui,
     studio: &Studio,
@@ -684,14 +688,18 @@ fn draw_shape_piece(
             ui.colored_label(CONTROL_TEXT, "Cavity inset");
             step_box(
                 ui,
-                &mut shape.cavity_mm,
-                cavity_range(),
-                CAVITY_STEP_MM,
+                &mut shape.cavity_mm.state,
+                shape.cavity_mm.range,
+                SHAPE_STEP,
                 ready,
             );
             ui.colored_label(CONTROL_TEXT, "mm");
         });
-        ui.add_space(ROW_GAP);
+    });
+    ui.add_space(SECTION_GAP);
+    draw_ridges(ui, &mut shape.ridges, ready);
+    ui.add_space(SECTION_GAP);
+    ui.vertical_centered(|ui| {
         if ui
             .add_enabled(ready, egui::Button::new("Continue"))
             .clicked()
@@ -700,6 +708,119 @@ fn draw_shape_piece(
         }
     });
     draft
+}
+
+/// The ridge editor: a master switch, and — once it is on — the card of
+/// per-feature toggles.
+fn draw_ridges(ui: &mut egui::Ui, ridges: &mut RidgeFields, ready: bool) {
+    ui.vertical_centered(|ui| {
+        ui.add_enabled(
+            ready,
+            egui::Checkbox::new(&mut ridges.enabled, "Add surface ridges (advanced)"),
+        );
+    });
+    if !ridges.enabled {
+        return;
+    }
+    ui.add_space(ROW_GAP);
+    card(ui, RIDGE_FILL, |ui| {
+        centered_wrapped(
+            ui,
+            RIDGE_NOTE_SIZE,
+            RIDGE_NOTE_TEXT,
+            "Ridges mesh the piece at fine 0.5 mm detail, so a run with them takes \
+             print-quality time.",
+        );
+        ui.add_space(ROW_GAP);
+        // ⚠ The rings are applied whether or not this screen can show them, so
+        // it says so rather than committing geometry nobody has seen.
+        centered_wrapped(
+            ui,
+            RIDGE_NOTE_SIZE,
+            RIDGE_NOTE_TEXT,
+            "Grip rings are still being rebuilt on the new interface. Until they are, \
+             the three tested rings are cut as they always were.",
+        );
+        ui.add_space(SECTION_GAP);
+        field_grid(ui, "ridge-fields", RIDGE_COLUMNS, |ui| {
+            ridge_row(
+                ui,
+                RowToggle::Own(&mut ridges.texture_enabled),
+                "Surface texture depth",
+                &mut ridges.texture_depth,
+                "×0.1 mm",
+                ready,
+            );
+            ridge_row(
+                ui,
+                RowToggle::GovernedAbove(ridges.texture_enabled),
+                "Surface texture spacing",
+                &mut ridges.texture_spacing,
+                "×0.1 mm",
+                ready,
+            );
+            ridge_row(
+                ui,
+                RowToggle::Own(&mut ridges.side_pinch_enabled),
+                "Side pinch depth",
+                &mut ridges.side_pinch,
+                "×0.1 mm",
+                ready,
+            );
+            ridge_row(
+                ui,
+                RowToggle::Own(&mut ridges.tip_relief_enabled),
+                "Tip relief depth",
+                &mut ridges.tip_relief,
+                "×0.1 mm",
+                ready,
+            );
+            ridge_row(
+                ui,
+                RowToggle::Own(&mut ridges.orientation_enabled),
+                "Feature orientation",
+                &mut ridges.orientation,
+                "°",
+                ready,
+            );
+        });
+    });
+}
+
+/// What switches a ridge row's field on.
+enum RowToggle<'a> {
+    /// The feature's own checkbox, drawn in the row.
+    Own(&'a mut bool),
+    /// The row above's, with a blank cell where the checkbox would go: texture
+    /// spacing has no switch of its own, as the pre-port screen had it.
+    GovernedAbove(bool),
+}
+
+/// One row of the ridge grid: its toggle, its label, its stepper and the unit.
+fn ridge_row(
+    ui: &mut egui::Ui,
+    toggle: RowToggle<'_>,
+    label: &str,
+    field: &mut BoundedField,
+    unit: &str,
+    ready: bool,
+) {
+    let on = match toggle {
+        RowToggle::Own(flag) => {
+            ui.add_enabled(ready, egui::Checkbox::without_text(flag));
+            *flag
+        }
+        RowToggle::GovernedAbove(on) => {
+            // The blank cell. Without it the columns after it shift left and
+            // this row stops lining up with the rest.
+            ui.label("");
+            on
+        }
+    };
+    ui.colored_label(CONTROL_TEXT, label);
+    step_box(ui, &mut field.state, field.range, SHAPE_STEP, ready && on);
+    ui.colored_label(CONTROL_TEXT, unit);
+    ui.end_row();
 }
 
 /// Step 6 — save the printable files, then hand off to the slicer.
@@ -1023,12 +1144,17 @@ pub(crate) mod tests {
             .filter_map(|node| {
                 let widget = node.accesskit_node();
                 let name = match widget.role() {
-                    role @ (Role::Button | Role::TextInput | Role::ComboBox) => widget
-                        .label()
-                        // ⚠ Not `?`. A stepper's field, the shape picker and a
-                        // text-free button report no label; skipping those lets
-                        // the very control this gate is for slip past both halves.
-                        .unwrap_or_else(|| format!("{role:?}")),
+                    role @ (Role::Button | Role::TextInput | Role::ComboBox | Role::CheckBox) => {
+                        widget
+                            .label()
+                            // ⚠ Not `?`, and an empty name is no name. A
+                            // stepper's field reports none at all and a bare
+                            // checkbox reports `""`; skipping either lets the
+                            // very control this gate is for slip past both
+                            // halves, and `""` names nothing in a census.
+                            .filter(|label| !label.is_empty())
+                            .unwrap_or_else(|| format!("{role:?}"))
+                    }
                     _ => return None,
                 };
                 let rect = node.rect();
@@ -1317,7 +1443,13 @@ pub(crate) mod tests {
             controls_in_column(|ui| {
                 let _ = draw_shape_piece(ui, &studio, &dialog, &mut shape);
             }),
-            ["−", "TextInput", "+", "Continue"]
+            [
+                "−",
+                "TextInput",
+                "+",
+                "Add surface ridges (advanced)",
+                "Continue"
+            ]
         );
         assert_eq!(
             controls_in_column(|ui| {
@@ -1413,7 +1545,15 @@ pub(crate) mod tests {
     /// ⚠ The accessibility tree's own flag. Presence is not the question — a
     /// gated control is on screen either way, which is how the user is told
     /// what to do first.
-    fn control_disabled(mut body: impl FnMut(&mut egui::Ui), label: &str) -> Option<bool> {
+    fn control_disabled(body: impl FnMut(&mut egui::Ui), label: &str) -> Option<bool> {
+        controls_disabled(body, label).first().copied()
+    }
+
+    /// Whether each control named `label` is disabled, in layout order.
+    ///
+    /// ⚠ The order is the gate. Six identical `+` buttons say nothing about
+    /// which feature owns which — only their positions do.
+    fn controls_disabled(mut body: impl FnMut(&mut egui::Ui), label: &str) -> Vec<bool> {
         use egui_kittest::kittest::NodeT;
 
         let mut harness = Harness::builder()
@@ -1423,8 +1563,9 @@ pub(crate) mod tests {
         harness
             .root()
             .children_recursive()
-            .find(|node| node.accesskit_node().label().as_deref() == Some(label))
+            .filter(|node| node.accesskit_node().label().as_deref() == Some(label))
             .map(|node| node.accesskit_node().is_disabled())
+            .collect()
     }
 
     /// ★ Save is gated on the centerline *and* on the app being free — both
@@ -1736,6 +1877,242 @@ pub(crate) mod tests {
                 step.number()
             );
         }
+    }
+
+    /// Step 3 with the ridge editor asked for — the state everything below
+    /// this measures.
+    fn ridges_on() -> ShapeControls {
+        let mut shape = ShapeControls::default();
+        shape.ridges.enabled = true;
+        shape
+    }
+
+    /// The step-3 body for `shape`, on an app holding nothing.
+    ///
+    /// ⚠ A `RefCell`, because the closure runs on every pass and each one
+    /// re-borrows the fields the steppers edit.
+    fn shape_body<'a>(
+        shape: &'a std::cell::RefCell<&'a mut ShapeControls>,
+    ) -> impl FnMut(&mut egui::Ui) + 'a {
+        move |ui| {
+            let free = Studio::default();
+            let _ = draw_shape_piece(
+                ui,
+                &free,
+                &PendingDialog::default(),
+                &mut shape.borrow_mut(),
+            );
+        }
+    }
+
+    /// ⚠ Ten more controls, and #878's overflow is what a four-column grid in
+    /// a 404 px column risks. The editor is hidden until it is asked for, so
+    /// the census of the opening screen never reaches any of them.
+    #[test]
+    fn the_revealed_ridge_editor_is_laid_out_inside_the_body_column_too() {
+        let mut revealed = ridges_on();
+        let shape = std::cell::RefCell::new(&mut revealed);
+        let controls = controls_in_column(shape_body(&shape));
+
+        assert_eq!(
+            controls,
+            [
+                "−",
+                "TextInput",
+                "+",
+                "Add surface ridges (advanced)",
+                "CheckBox",
+                "−",
+                "TextInput",
+                "+",
+                "−",
+                "TextInput",
+                "+",
+                "CheckBox",
+                "−",
+                "TextInput",
+                "+",
+                "CheckBox",
+                "−",
+                "TextInput",
+                "+",
+                "CheckBox",
+                "−",
+                "TextInput",
+                "+",
+                "Continue"
+            ],
+            "four switched rows and one governed by the switch above it"
+        );
+    }
+
+    /// Where each stepper's field is laid out, in the order they are drawn.
+    fn stepper_rects(mut body: impl FnMut(&mut egui::Ui)) -> Vec<egui::Rect> {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::NodeT;
+
+        let mut harness = Harness::builder()
+            .with_size(egui::Vec2::new(BODY_WIDTH, COLUMN_HEIGHT))
+            .build(|ctx| body_column(ctx, &mut body));
+        harness.run();
+        harness
+            .root()
+            .children_recursive()
+            .filter(|node| node.accesskit_node().role() == Role::TextInput)
+            .map(|node| node.rect())
+            .collect()
+    }
+
+    /// ⚠ The one row with no switch of its own carries a blank cell where the
+    /// others carry a checkbox. Drop it and every cell after it shifts left on
+    /// that row alone — a field that still fits, still works, and lines up
+    /// with nothing.
+    #[test]
+    fn every_ridge_row_lines_its_field_up_with_the_others() {
+        let mut revealed = ridges_on();
+        let shape = std::cell::RefCell::new(&mut revealed);
+
+        let rects = stepper_rects(shape_body(&shape));
+
+        // The first is the cavity's, which sits above the grid entirely.
+        let (cavity, ridges) = rects.split_first().expect("step 3 has six fields");
+        assert_eq!(ridges.len(), 5, "one field per ridge scalar: {rects:?}");
+        assert!(
+            ridges.iter().all(|rect| rect.left() == ridges[0].left()),
+            "the grid's fields share a column; the cavity's is its own: \
+             {ridges:?} beside {cavity:?}"
+        );
+    }
+
+    /// ★ Five toggles over six steppers, every row drawn by one helper: a row
+    /// handed its neighbour's toggle gates the wrong field, and the screen
+    /// reads the same either way.
+    ///
+    /// ⚠ Texture spacing is the row with no switch of its own, so it is the
+    /// one a "every row owns its checkbox" port silently leaves live.
+    #[test]
+    fn each_ridge_toggle_gates_its_own_stepper() {
+        let mut everything = ridges_on();
+        let all_on = std::cell::RefCell::new(&mut everything);
+        assert_eq!(
+            controls_disabled(shape_body(&all_on), "+"),
+            [false; 6],
+            "with every feature on, every stepper is live"
+        );
+
+        let cases: [(&str, fn(&mut RidgeFields) -> &mut bool, [bool; 6]); 4] = [
+            (
+                "texture",
+                |r| &mut r.texture_enabled,
+                [false, true, true, false, false, false],
+            ),
+            (
+                "side pinch",
+                |r| &mut r.side_pinch_enabled,
+                [false, false, false, true, false, false],
+            ),
+            (
+                "tip relief",
+                |r| &mut r.tip_relief_enabled,
+                [false, false, false, false, true, false],
+            ),
+            (
+                "orientation",
+                |r| &mut r.orientation_enabled,
+                [false, false, false, false, false, true],
+            ),
+        ];
+
+        for (name, toggle, expected) in cases {
+            let mut off = ridges_on();
+            *toggle(&mut off.ridges) = false;
+            let off = std::cell::RefCell::new(&mut off);
+
+            assert_eq!(
+                controls_disabled(shape_body(&off), "+"),
+                expected,
+                "{name} switched off gates its own stepper and no other"
+            );
+        }
+    }
+
+    /// Every stepper's value on step 3, in the order they are laid out.
+    fn stepper_values(shape: &ShapeControls) -> Vec<i32> {
+        vec![
+            shape.cavity_mm.value(),
+            shape.ridges.texture_depth.value(),
+            shape.ridges.texture_spacing.value(),
+            shape.ridges.side_pinch.value(),
+            shape.ridges.tip_relief.value(),
+            shape.ridges.orientation.value(),
+        ]
+    }
+
+    /// ★★ Six steppers from one helper. A row bound to its neighbour's field
+    /// moves the wrong number, and every value on screen stays plausible.
+    #[test]
+    fn each_stepper_on_step_three_moves_its_own_field_and_no_other() {
+        let opening = stepper_values(&ridges_on());
+
+        for nth in 0..opening.len() {
+            let mut stepped = ridges_on();
+            {
+                let shape = std::cell::RefCell::new(&mut stepped);
+                let mut body = shape_body(&shape);
+                let mut harness = Harness::builder()
+                    .with_size(egui::Vec2::new(BODY_WIDTH, COLUMN_HEIGHT))
+                    .build(|ctx| body_column(ctx, &mut body));
+                harness.run();
+                harness
+                    .get_all_by_label("+")
+                    .nth(nth)
+                    .expect("every stepper offers a +")
+                    .click();
+                harness.run();
+            }
+
+            let expected: Vec<i32> = opening
+                .iter()
+                .enumerate()
+                .map(|(i, value)| value + i32::from(i == nth))
+                .collect();
+            assert_eq!(
+                stepper_values(&stepped),
+                expected,
+                "stepper {nth} moved something other than its own field"
+            );
+        }
+    }
+
+    /// ★★ The master switch's own wiring, end to end: the checkbox binds to
+    /// the field, the field reaches `plug_draft`, and the draft is what
+    /// Continue commits.
+    ///
+    /// ⚠ Nothing on screen would show this broken. The ridges appear in the
+    /// preview, and the preview is a later step — a screen that drew the whole
+    /// editor and committed a smooth piece anyway looks exactly right.
+    #[test]
+    fn switching_ridges_on_in_the_running_wizard_commits_them() {
+        let mut app = app_running_the_wizard();
+        app.insert_resource(Studio {
+            project: crate::shape::tests::ready_to_shape(),
+            cursor: WizardCursor::new(Step::ShapePiece),
+            ..Studio::default()
+        });
+
+        click_on(&mut app, "Add surface ridges");
+        click_on(&mut app, "Continue");
+
+        let studio = app.world().resource::<Studio>();
+        assert_eq!(
+            studio.project.plug().map(|plug| plug.ridges.clone()),
+            Some(RidgeOptions {
+                enabled: true,
+                ..RidgeOptions::default()
+            }),
+            "the switch reached the committed plug: {:?}",
+            studio.message
+        );
     }
 
     fn shape_control_disabled(
