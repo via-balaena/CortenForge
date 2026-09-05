@@ -29,6 +29,68 @@ const AGE_GATE: &str = "This software and the objects it helps you create are in
 /// The confirmation checkbox's label — the thing being agreed to.
 const CONFIRM: &str = "I have read and accept these terms, and I assume all risk.";
 
+/// The gate's own width.
+const GATE_WIDTH: f32 = 640.0;
+
+/// How the gate was answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WaiverChoice {
+    /// Leave without accepting.
+    Quit,
+    /// Accepted; the wizard may start.
+    Continue,
+}
+
+/// Lay the gate out and report what was clicked.
+///
+/// ⚠ Extracted from [`waiver_screen`] for the reason the wizard's own
+/// executors are: a Bevy system is the one shape no test can drive, and this is
+/// a legal and age gate — that it refuses to open until the box is ticked is
+/// the single most consequential behaviour in the app.
+fn draw_waiver(ui: &mut egui::Ui, agreed: &mut bool) -> Option<WaiverChoice> {
+    let mut choice = None;
+    ui.vertical_centered(|ui| {
+        ui.set_max_width(GATE_WIDTH);
+        ui.add_space(12.0);
+        ui.heading(egui::RichText::new("Before you begin").size(30.0).strong());
+        ui.add_space(8.0);
+
+        // The terms scroll; the checkbox and buttons below must stay
+        // reachable on a short window, so they sit outside the scroll area.
+        let button_room = 96.0;
+        egui::ScrollArea::vertical()
+            .max_height((ui.available_height() - button_room).max(120.0))
+            .show(ui, |ui| {
+                ui.vertical(|ui| {
+                    for term in TERMS {
+                        wrapped_label(ui, term);
+                        ui.add_space(10.0);
+                    }
+                    ui.add(egui::Label::new(egui::RichText::new(AGE_GATE).strong()).wrap());
+                });
+            });
+
+        ui.add_space(10.0);
+        ui.checkbox(agreed, CONFIRM);
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            if ui.button("Quit").clicked() {
+                choice = Some(WaiverChoice::Quit);
+            }
+            // Clamped: a narrow window can leave less room than the
+            // button needs, and a negative space is not a layout.
+            ui.add_space((ui.available_width() - 150.0).max(0.0));
+            if ui
+                .add_enabled(*agreed, egui::Button::new("Agree & Continue"))
+                .clicked()
+            {
+                choice = Some(WaiverChoice::Continue);
+            }
+        });
+    });
+    choice
+}
+
 /// Draw the gate. `agreed` is this screen's own state and resets with the app.
 pub(crate) fn waiver_screen(
     mut contexts: EguiContexts,
@@ -37,46 +99,352 @@ pub(crate) fn waiver_screen(
     mut exit: MessageWriter<AppExit>,
 ) -> bevy::ecs::error::Result {
     let ctx = contexts.ctx_mut()?;
+    let mut choice = None;
     egui::CentralPanel::default().show(ctx, |ui| {
-        ui.vertical_centered(|ui| {
-            ui.set_max_width(640.0);
-            ui.add_space(12.0);
-            ui.heading(egui::RichText::new("Before you begin").size(30.0).strong());
-            ui.add_space(8.0);
-
-            // The terms scroll; the checkbox and buttons below must stay
-            // reachable on a short window, so they sit outside the scroll area.
-            let button_room = 96.0;
-            egui::ScrollArea::vertical()
-                .max_height((ui.available_height() - button_room).max(120.0))
-                .show(ui, |ui| {
-                    ui.vertical(|ui| {
-                        for term in TERMS {
-                            wrapped_label(ui, term);
-                            ui.add_space(10.0);
-                        }
-                        ui.add(egui::Label::new(egui::RichText::new(AGE_GATE).strong()).wrap());
-                    });
-                });
-
-            ui.add_space(10.0);
-            ui.checkbox(&mut agreed, CONFIRM);
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                if ui.button("Quit").clicked() {
-                    exit.write(AppExit::Success);
-                }
-                // Clamped: a narrow window can leave less room than the
-                // button needs, and a negative space is not a layout.
-                ui.add_space((ui.available_width() - 150.0).max(0.0));
-                if ui
-                    .add_enabled(*agreed, egui::Button::new("Agree & Continue"))
-                    .clicked()
-                {
-                    next.set(Screen::Wizard);
-                }
-            });
-        });
+        choice = draw_waiver(ui, &mut agreed);
     });
+    match choice {
+        Some(WaiverChoice::Quit) => {
+            exit.write(AppExit::Success);
+        }
+        Some(WaiverChoice::Continue) => next.set(Screen::Wizard),
+        None => {}
+    }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used)]
+
+    use egui::accesskit::Role;
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::{NodeT, Queryable};
+
+    use super::*;
+    use crate::egui_harness::{self, begin, click_on, end, painted_texts};
+    use crate::panel::tests::assert_renders;
+    use crate::{OPENING_WINDOW as OPENING, SMALLEST_WINDOW as NARROWEST};
+
+    /// Stand `waiver_screen` up as the Bevy system it is, with the egui pass
+    /// `bevy_egui`'s plugin would normally open around it.
+    fn app_running_the_real_system() -> App {
+        use bevy::state::app::StatesPlugin;
+
+        let mut app = egui_harness::app();
+        app.add_plugins(StatesPlugin)
+            .init_state::<Screen>()
+            .add_systems(Update, (begin, waiver_screen, end).chain());
+        app
+    }
+
+    /// ★★ The whole stack, as the app runs it: the Bevy system draws the gate,
+    /// a click on the box arms it, and a click on the answer opens the wizard.
+    ///
+    /// ⚠ `draw_waiver` is tested directly and `waiver_screen` is thin routing
+    /// around it — but replacing the whole system with a no-op passed
+    /// everything, because drawing has no effect on the ECS to observe. This
+    /// observes the drawing.
+    #[test]
+    fn the_gate_runs_as_a_system_and_opens_only_after_both_clicks() {
+        let mut app = app_running_the_real_system();
+        app.update();
+
+        let painted = painted_texts(&app);
+        assert!(
+            painted.iter().any(|text| text == "Before you begin"),
+            "the system painted the gate: {painted:?}"
+        );
+
+        // Ticking the box is not accepting: the wizard must still be shut.
+        //
+        // ⚠ The frame after the click is load-bearing. A state change lands on
+        // the next transition, so without it this reads `Waiver` either way —
+        // and a gate that opens on the tick alone passes.
+        click_on(&mut app, CONFIRM);
+        app.update();
+        assert_eq!(
+            app.world().resource::<State<Screen>>().get(),
+            &Screen::Waiver,
+            "ticking the box alone does not open the wizard"
+        );
+
+        click_on(&mut app, "Agree & Continue");
+        app.update();
+        assert_eq!(
+            app.world().resource::<State<Screen>>().get(),
+            &Screen::Wizard,
+            "and the answer does"
+        );
+    }
+
+    /// ⚠ Quit is the only way out of this screen without agreeing, and the
+    /// half nothing checked. `draw_waiver` reporting `Quit` is not the app
+    /// exiting: dropping the `AppExit` write leaves the whole suite green and
+    /// the user shut inside a legal gate they declined.
+    #[test]
+    fn quitting_the_gate_asks_the_app_to_exit() {
+        let mut app = app_running_the_real_system();
+        app.update();
+
+        click_on(&mut app, "Quit");
+        app.update();
+
+        assert!(
+            !app.world().resource::<Messages<AppExit>>().is_empty(),
+            "Quit asked the app to exit"
+        );
+        assert_eq!(
+            app.world().resource::<State<Screen>>().get(),
+            &Screen::Waiver,
+            "and did not open the wizard on its way out"
+        );
+    }
+
+    /// Lay the gate out at `size` with the box ticked or not, optionally click
+    /// `pick`, and report its controls and the answer it gave.
+    fn gate(
+        size: (f32, f32),
+        ticked: bool,
+        pick: Option<&str>,
+    ) -> (Vec<(String, bool, egui::Rect)>, Option<WaiverChoice>) {
+        let agreed = std::cell::Cell::new(ticked);
+        let answer = std::cell::Cell::new(None);
+        let mut harness = Harness::builder()
+            .with_size(egui::Vec2::new(size.0, size.1))
+            .build(|ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let mut state = agreed.get();
+                    if let Some(choice) = draw_waiver(ui, &mut state) {
+                        answer.set(Some(choice));
+                    }
+                    agreed.set(state);
+                });
+            });
+        harness.ctx.set_fonts(crate::plugin::font_definitions());
+        harness.run();
+        let controls = harness
+            .root()
+            .children_recursive()
+            .filter(|node| matches!(node.accesskit_node().role(), Role::Button | Role::CheckBox))
+            .map(|node| {
+                (
+                    node.accesskit_node().label().unwrap_or_default(),
+                    node.accesskit_node().is_disabled(),
+                    node.rect(),
+                )
+            })
+            .collect();
+        if let Some(label) = pick {
+            harness.get_by_label(label).click();
+            harness.run();
+        }
+        (controls, answer.get())
+    }
+
+    /// ⚠ The scroll reserve's actual job, and the one thing a legal gate must
+    /// not get wrong: you cannot be asked to accept terms you cannot see. The
+    /// checkbox has to sit below the last word of the terms, so all of them are
+    /// on screen at once at every height `main.rs` allows.
+    ///
+    /// ⚠ Measured, not assumed: with the reserve, the terms end at 370 px and
+    /// the box starts at 383 px. Starving the scroll area — `available_height /
+    /// button_room`, which clamps to 120 px — leaves the terms ending at the
+    /// same 370 px with the box at 198 px, above them, and every other gate
+    /// here stays green. The term *count* is blind to it: all five stay in the
+    /// accessibility tree, clipped. Only the rects show it.
+    ///
+    /// ⚠ If the terms are ever lengthened past the room an 850 px window has,
+    /// this fails. That is the intended failure — it forces a deliberate choice
+    /// about a screen nobody may be made to scroll blindly through.
+    #[test]
+    fn every_word_of_the_terms_is_above_the_box_that_accepts_them() {
+        for size in [NARROWEST, OPENING] {
+            let (terms_bottom, box_top) = terms_and_box(size);
+            let prose = prose_shown(size);
+            // ⚠ Position alone is not enough: the heading is a label too, so a
+            // gate that dropped every term still has one sitting above the box.
+            for term in TERMS.iter().chain(std::iter::once(&AGE_GATE)) {
+                let opening: String = term.chars().take(30).collect();
+                assert!(
+                    prose.iter().any(|shown| shown.starts_with(&opening)),
+                    "at {size:?} the gate never showed {opening:?}"
+                );
+            }
+            assert!(
+                box_top >= terms_bottom,
+                "at {size:?} the terms run to {terms_bottom:.1} px but the box \
+                 that accepts them is at {box_top:.1} px, above the words it \
+                 agrees to"
+            );
+        }
+    }
+
+    /// Lay the gate out at `size`, in the fonts the app ships, and hand the
+    /// result to `inspect`.
+    fn laid_out<T>(size: (f32, f32), inspect: impl FnOnce(&Harness<'_>) -> T) -> T {
+        let mut harness = Harness::builder()
+            .with_size(egui::Vec2::new(size.0, size.1))
+            .build(|ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let mut agreed = false;
+                    let _ = draw_waiver(ui, &mut agreed);
+                });
+            });
+        harness.ctx.set_fonts(crate::plugin::font_definitions());
+        harness.run();
+        inspect(&harness)
+    }
+
+    /// Every piece of prose the gate laid out at `size`.
+    fn prose_shown(size: (f32, f32)) -> Vec<String> {
+        laid_out(size, |harness| {
+            harness
+                .root()
+                .children_recursive()
+                .filter(|node| node.accesskit_node().role() == Role::Label)
+                .filter_map(|node| node.accesskit_node().value())
+                .collect()
+        })
+    }
+
+    /// The bottom of the lowest word of the terms, and the top of the checkbox.
+    fn terms_and_box(size: (f32, f32)) -> (f32, f32) {
+        laid_out(size, |harness| {
+            let rects = |role: Role| {
+                harness
+                    .root()
+                    .children_recursive()
+                    .filter(|node| node.accesskit_node().role() == role)
+                    .map(|node| node.rect())
+                    .collect::<Vec<_>>()
+            };
+            // `reduce`, not a seeded `fold`: a role the gate stopped drawing
+            // should fail here, not yield an identity that compares true
+            // against anything.
+            let terms_bottom = rects(Role::Label)
+                .iter()
+                .map(|rect| rect.max.y)
+                .reduce(f32::max)
+                .expect("the gate shows its terms");
+            let box_top = rects(Role::CheckBox)
+                .iter()
+                .map(|rect| rect.min.y)
+                .reduce(f32::min)
+                .expect("the gate offers the box that accepts them");
+            (terms_bottom, box_top)
+        })
+    }
+
+    fn disabled(controls: &[(String, bool, egui::Rect)], label: &str) -> bool {
+        controls
+            .iter()
+            .find(|(name, _, _)| name == label)
+            .map(|(_, off, _)| *off)
+            .expect("the gate must offer this control")
+    }
+
+    /// ★★ The single most consequential behaviour in the app: this is a
+    /// liability waiver and an 18+ age gate, and until now nothing proved it
+    /// gates. It is shown on every launch and is never persisted.
+    #[test]
+    fn the_gate_does_not_open_until_the_box_is_ticked() {
+        assert_eq!(
+            gate(OPENING, false, Some("Agree & Continue")).1,
+            None,
+            "unticked, clicking the way through accepts nothing"
+        );
+
+        let (unticked, answer) = gate(OPENING, false, None);
+        assert!(
+            disabled(&unticked, "Agree & Continue"),
+            "and it is offered as disabled, not merely inert: {unticked:?}"
+        );
+        assert_eq!(answer, None, "nothing is answered by drawing it either");
+
+        let (ticked, _) = gate(OPENING, true, None);
+        assert!(
+            !disabled(&ticked, "Agree & Continue"),
+            "ticked, the way through opens"
+        );
+
+        assert_eq!(
+            gate(OPENING, true, Some("Agree & Continue")).1,
+            Some(WaiverChoice::Continue),
+            "and taking it ticked accepts"
+        );
+    }
+
+    /// ⚠ Quit must work without accepting anything. A gate you can only leave
+    /// by agreeing is not a gate.
+    #[test]
+    fn quit_needs_no_agreement() {
+        assert!(!disabled(&gate(OPENING, false, None).0, "Quit"));
+        assert_eq!(
+            gate(OPENING, false, Some("Quit")).1,
+            Some(WaiverChoice::Quit)
+        );
+    }
+
+    /// ⚠ At both ends of the range `main.rs` allows. The row places its second
+    /// button with a hand-computed spacer, and egui clips what overflows
+    /// rather than wrapping it — the #878 failure, on the one screen every
+    /// launch has to pass through.
+    #[test]
+    fn the_gates_controls_fit_at_every_width_the_window_allows() {
+        for size in [NARROWEST, OPENING] {
+            let (controls, _) = gate(size, true, None);
+            let left = controls
+                .iter()
+                .map(|(_, _, r)| r.min.x)
+                .fold(f32::MAX, f32::min);
+            let right = controls
+                .iter()
+                .map(|(_, _, r)| r.max.x)
+                .fold(f32::MIN, f32::max);
+            assert!(
+                right - left <= GATE_WIDTH,
+                "at {size:?} the controls span {:.1} px of a {GATE_WIDTH} px gate: {controls:?}",
+                right - left,
+            );
+            for (label, _, rect) in &controls {
+                assert!(
+                    rect.min.x >= 0.0 && rect.max.x <= size.0,
+                    "{label} is laid out at {rect:?}, off a {size:?} window"
+                );
+            }
+
+            // ⚠ The spacer's actual job. Total width fits either way, so a
+            // collapsed spacer passes the check above while putting the answer
+            // that leaves and the answer that accepts 12 px apart — a mis-click
+            // on a liability gate. Measured 457 px at both widths.
+            let edge = |name: &str, right: bool| {
+                controls
+                    .iter()
+                    .find(|(label, _, _)| label == name)
+                    .map(|(_, _, r)| if right { r.max.x } else { r.min.x })
+                    .expect("the gate must offer this control")
+            };
+            let apart = edge("Agree & Continue", false) - edge("Quit", true);
+            assert!(
+                apart >= 100.0,
+                "at {size:?} the two answers are only {apart:.1} px apart"
+            );
+        }
+    }
+
+    /// ⚠ Legal text the user is asked to accept. A tofu box in it is a term
+    /// they cannot read — and `format_save_done` proved this app ships glyphs
+    /// its fonts do not have.
+    #[test]
+    fn every_word_the_gate_shows_is_drawable() {
+        laid_out(OPENING, |harness| {
+            for node in harness.root().children_recursive() {
+                let widget = node.accesskit_node();
+                if let Some(text) = widget.label().or_else(|| widget.value()) {
+                    assert_renders(&harness.ctx, &text);
+                }
+            }
+        });
+    }
 }

@@ -814,7 +814,7 @@ fn apply_intent(intent: Intent, studio: &mut Studio, dialog: &mut PendingDialog)
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     #![allow(clippy::expect_used)]
 
     use std::path::PathBuf;
@@ -828,6 +828,7 @@ mod tests {
 
     use super::*;
     use crate::edit::tests::open_tube;
+    use crate::egui_harness::{self, begin, click_on, end, painted_texts};
     use crate::scan::ActiveScan;
 
     /// ⚠ Every click on every screen reaches [`wizard_screen`] through this.
@@ -987,7 +988,7 @@ mod tests {
     /// ⚠ Control characters are skipped: `has_glyph` says `false` for `\n`,
     /// which layout breaks the line on rather than drawing, so checking it
     /// would fail every multi-line message on screen.
-    fn assert_renders(ctx: &egui::Context, text: &str) {
+    pub(crate) fn assert_renders(ctx: &egui::Context, text: &str) {
         let font = egui::FontId::default();
         for c in text.chars().filter(|c| !c.is_control()) {
             assert!(
@@ -1115,7 +1116,7 @@ mod tests {
 
     /// A project driven to the pour step — the only state `draw_pour` shows its
     /// buttons in, since every earlier artifact gates the next.
-    fn ready_to_pour() -> Project {
+    pub(crate) fn ready_to_pour() -> Project {
         let mut project = Project::new("layout gate");
         project.set_scan(ScanInput {
             source_path: PathBuf::from("scan.stl"),
@@ -1434,103 +1435,17 @@ mod tests {
         );
     }
 
-    /// What one frame of the real wizard painted, and where.
-    #[derive(Resource, Default)]
-    struct Painted(Vec<(String, egui::Rect)>);
-
-    /// The click to deliver on the next frame, if any.
-    #[derive(Resource, Default)]
-    struct Click(Option<egui::Pos2>);
-
     /// Stand `wizard_screen` up as the Bevy system it is, with the egui pass
     /// `bevy_egui`'s plugin would normally open around it.
-    ///
-    /// ⚠ The plugin itself needs a window and a render device, so it cannot run
-    /// here — `begin_pass` / `end_pass` are all it does around the system, and
-    /// doing them by hand is what makes the system reachable at all.
     fn app_running_the_wizard() -> App {
-        use bevy_egui::{EguiContext, EguiUserTextures, PrimaryEguiContext};
-
-        fn begin(mut q: Query<&mut EguiContext>, click: Res<Click>) {
-            let Some(mut ctx) = q.iter_mut().next() else {
-                return;
-            };
-            let mut events = Vec::new();
-            if let Some(pos) = click.0 {
-                events.push(egui::Event::PointerMoved(pos));
-                for pressed in [true, false] {
-                    events.push(egui::Event::PointerButton {
-                        pos,
-                        button: egui::PointerButton::Primary,
-                        pressed,
-                        modifiers: egui::Modifiers::NONE,
-                    });
-                }
-            }
-            // `main.rs`'s opening resolution, so this lays out at the size the
-            // app really runs at.
-            ctx.get_mut().begin_pass(egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::pos2(0.0, 0.0),
-                    egui::vec2(1280.0, 900.0),
-                )),
-                events,
-                ..Default::default()
-            });
-        }
-
-        fn end(mut q: Query<&mut EguiContext>, mut painted: ResMut<Painted>) {
-            let Some(mut ctx) = q.iter_mut().next() else {
-                return;
-            };
-            painted.0.clear();
-            for shape in &ctx.get_mut().end_pass().shapes {
-                if let egui::epaint::Shape::Text(text) = &shape.shape {
-                    painted.0.push((
-                        text.galley.text().to_owned(),
-                        egui::Rect::from_min_size(text.pos, text.galley.size()),
-                    ));
-                }
-            }
-        }
-
-        let mut app = App::new();
-        app.init_resource::<EguiUserTextures>()
-            .init_resource::<Painted>()
-            .init_resource::<Click>()
-            .init_resource::<Studio>()
+        let mut app = egui_harness::app();
+        app.init_resource::<Studio>()
             .init_resource::<PendingDialog>()
             .init_resource::<ScanEdit>()
             .init_resource::<EditControls>()
             .init_resource::<SimplifyJob>()
             .add_systems(Update, (begin, wizard_screen, end).chain());
-        app.world_mut().spawn(PrimaryEguiContext);
         app
-    }
-
-    fn painted_texts(app: &App) -> Vec<String> {
-        app.world()
-            .resource::<Painted>()
-            .0
-            .iter()
-            .map(|(text, _)| text.clone())
-            .collect()
-    }
-
-    /// Click the middle of whatever the wizard painted `text` at, next frame.
-    fn click_wizard_on(app: &mut App, text: &str) {
-        let painted = &app.world().resource::<Painted>().0;
-        let at = painted
-            .iter()
-            .find(|(shown, _)| shown.starts_with(text))
-            .map(|(_, rect)| rect.center());
-        assert!(
-            at.is_some(),
-            "the wizard never painted {text:?}: {painted:?}"
-        );
-        app.world_mut().resource_mut::<Click>().0 = at;
-        app.update();
-        app.world_mut().resource_mut::<Click>().0 = None;
     }
 
     /// ★ `wizard_screen` is the system every click reaches the app through, and
@@ -1571,7 +1486,7 @@ mod tests {
         // Save is not on it, and a click can only land on what was painted.
         app.update();
         app.update();
-        click_wizard_on(&mut app, "Save cleaned scan");
+        click_on(&mut app, "Save cleaned scan");
 
         let studio = app.world().resource::<Studio>();
         assert!(
@@ -1822,5 +1737,54 @@ mod tests {
         );
         let c = after_clicking("−", c, trim);
         assert_eq!(c.tip_mm.value(), tip, "and back down");
+    }
+
+    /// ★ `state.rs` tests each `Studio` transition on its own, but nothing
+    /// said an [`Intent`] reaches the one it names. Back paging forward, or
+    /// MarkPoured doing nothing, passes every test in that module.
+    ///
+    /// ⚠ The dialog starts open, so `pick_scan_file` and `pick_folder`
+    /// no-op instead of putting an OS picker on screen. That leaves
+    /// [`Intent::PickScan`], whose only effect is opening one, to a hand test.
+    #[test]
+    fn each_intent_reaches_the_transition_it_names() {
+        let mut dialog = PendingDialog::opened(DialogKind::ScanFile);
+        let mut studio = Studio {
+            project: ready_to_pour(),
+            ..Studio::default()
+        };
+        let start = studio.cursor.viewed();
+
+        apply_intent(Intent::Next, &mut studio, &mut dialog);
+        assert_ne!(studio.cursor.viewed(), start, "Next moves on");
+        apply_intent(Intent::Back, &mut studio, &mut dialog);
+        assert_eq!(studio.cursor.viewed(), start, "and Back comes back");
+
+        apply_intent(Intent::StartPourTimer, &mut studio, &mut dialog);
+        assert!(
+            studio.pour_deadline.is_some(),
+            "StartPourTimer starts the pot-life clock"
+        );
+        apply_intent(Intent::MarkPoured, &mut studio, &mut dialog);
+        assert!(
+            studio.pour_deadline.is_none(),
+            "and MarkPoured stops it — a different transition from the same screen"
+        );
+
+        // The two step-6 intents, each on the branch that reports rather than
+        // reaching for the filesystem.
+        let mut bare = Studio::default();
+        apply_intent(Intent::ExportPrint, &mut bare, &mut dialog);
+        assert!(
+            matches!(&bare.message, Some(Err(text)) if text.contains("molds")),
+            "ExportPrint without molds says so: {:?}",
+            bare.message
+        );
+        apply_intent(Intent::OpenExportFolder, &mut bare, &mut dialog);
+        assert!(
+            matches!(&bare.message, Some(Err(text)) if text.contains("Nothing exported")),
+            "OpenExportFolder with nothing exported says so: {:?}",
+            bare.message
+        );
     }
 }
