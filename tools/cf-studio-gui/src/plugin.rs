@@ -221,6 +221,52 @@ mod tests {
         );
     }
 
+    /// ★★ The plugin's own registrations, which nothing else reaches. Every
+    /// resource the screens take is inserted by hand in their tests, so
+    /// dropping any one `init_resource` here left all 85 of them green and the
+    /// app dead on the frame it first drew — Bevy skips a system whose params
+    /// it cannot build, so the wizard simply stops appearing.
+    ///
+    /// ⚠ Driven through the real schedule, not by naming the resources. A list
+    /// gates only what somebody remembered to add to it; running the pass gates
+    /// whatever the screens ask for today.
+    #[test]
+    fn the_plugin_gives_the_screens_every_resource_they_ask_for() {
+        use bevy_egui::{EguiUserTextures, PrimaryEguiContext};
+
+        use crate::egui_harness::{Click, Painted, begin, end, painted_texts};
+
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, StatesPlugin, StudioPlugin))
+            .init_resource::<EguiUserTextures>()
+            .init_resource::<Painted>()
+            .init_resource::<Click>()
+            .add_systems(
+                EguiPrimaryContextPass,
+                (
+                    begin.before(pin_theme_and_fonts),
+                    end.after(fit_viewport_to_free_space),
+                ),
+            );
+        app.world_mut().spawn(PrimaryEguiContext);
+        app.world_mut()
+            .resource_mut::<NextState<Screen>>()
+            .set(Screen::Wizard);
+
+        // ⚠ The two schedules by hand, not `app.update()`. `EguiPlugin` is what
+        // normally drives the pass and it needs a render device, and `Startup`
+        // would run `setup_scene`, which wants the asset stack this gate has no
+        // business standing up.
+        app.world_mut().run_schedule(StateTransition);
+        app.world_mut().run_schedule(EguiPrimaryContextPass);
+
+        let painted = painted_texts(&app);
+        assert!(
+            painted.iter().any(|text| text.contains("Step 1 of 7")),
+            "the wizard drew from what the plugin alone registered: {painted:?}"
+        );
+    }
+
     #[test]
     fn bevy_egui_is_told_not_to_claim_the_first_camera() {
         let mut app = App::new();

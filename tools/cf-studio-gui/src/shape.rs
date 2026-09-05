@@ -1,7 +1,4 @@
 //! Step 3's field state: how snugly the finished piece fits.
-//!
-//! Holds the numbers between frames and hands out the [`PlugDraft`] a Continue
-//! commits.
 
 use bevy::prelude::*;
 use cf_studio_core::{PlugDraft, RidgeOptions};
@@ -14,7 +11,7 @@ use crate::state::Studio;
 /// [`crate::edit::EditControls::trim_range`].
 const CAVITY_MIN_MM: i32 = 0;
 const CAVITY_MAX_MM: i32 = 30;
-/// The inset the screen opens on, as the pre-port screen did.
+/// The inset the screen opens on.
 const DEFAULT_CAVITY_MM: i32 = 5;
 /// One millimetre per click of the stepper.
 pub(crate) const CAVITY_STEP_MM: i32 = 1;
