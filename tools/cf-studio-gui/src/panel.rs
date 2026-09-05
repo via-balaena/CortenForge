@@ -1390,33 +1390,38 @@ pub(crate) mod tests {
         );
     }
 
-    /// Lay `draw_clean_scan` out for a screen that has, or has not, been stood
-    /// up, and report whether its Save button is disabled.
-    ///
-    /// ⚠ The accessibility tree's own flag. Presence is not the question — the
-    /// section is on screen either way, which is how the user is told what to
-    /// do first.
     fn save_button_disabled(screen: &mut CleanupScreen) -> Option<bool> {
+        control_disabled(
+            |ui| {
+                let _ = draw_clean_scan(
+                    ui,
+                    &screen.studio,
+                    &screen.dialog,
+                    &screen.scan,
+                    &mut screen.controls,
+                );
+            },
+            "Save cleaned scan",
+        )
+    }
+
+    /// Whether the control named `label` is disabled, on a screen `body` lays
+    /// out in [`body_column`].
+    ///
+    /// ⚠ The accessibility tree's own flag. Presence is not the question — a
+    /// gated control is on screen either way, which is how the user is told
+    /// what to do first.
+    fn control_disabled(mut body: impl FnMut(&mut egui::Ui), label: &str) -> Option<bool> {
         use egui_kittest::kittest::NodeT;
 
         let mut harness = Harness::builder()
             .with_size(egui::Vec2::new(BODY_WIDTH, COLUMN_HEIGHT))
-            .build(|ctx| {
-                body_column(ctx, |ui| {
-                    let _ = draw_clean_scan(
-                        ui,
-                        &screen.studio,
-                        &screen.dialog,
-                        &screen.scan,
-                        &mut screen.controls,
-                    );
-                });
-            });
+            .build(|ctx| body_column(ctx, &mut body));
         harness.run();
         harness
             .root()
             .children_recursive()
-            .find(|node| node.accesskit_node().label().as_deref() == Some("Save cleaned scan"))
+            .find(|node| node.accesskit_node().label().as_deref() == Some(label))
             .map(|node| node.accesskit_node().is_disabled())
     }
 
@@ -1731,28 +1736,18 @@ pub(crate) mod tests {
         }
     }
 
-    /// Whether step 3's `label` control is disabled, laid out for `studio`.
     fn shape_control_disabled(
         studio: &Studio,
         dialog: &PendingDialog,
         label: &str,
     ) -> Option<bool> {
-        use egui_kittest::kittest::NodeT;
-
         let mut shape = ShapeControls::default();
-        let mut harness = Harness::builder()
-            .with_size(egui::Vec2::new(BODY_WIDTH, COLUMN_HEIGHT))
-            .build(|ctx| {
-                body_column(ctx, |ui| {
-                    let _ = draw_shape_piece(ui, studio, dialog, &mut shape);
-                });
-            });
-        harness.run();
-        harness
-            .root()
-            .children_recursive()
-            .find(|node| node.accesskit_node().label().as_deref() == Some(label))
-            .map(|node| node.accesskit_node().is_disabled())
+        control_disabled(
+            |ui| {
+                let _ = draw_shape_piece(ui, studio, dialog, &mut shape);
+            },
+            label,
+        )
     }
 
     /// ⚠ `accepting_actions` is gated on its own, but nothing said step 3 hands
