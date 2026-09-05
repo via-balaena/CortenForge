@@ -1823,4 +1823,53 @@ pub(crate) mod tests {
         let c = after_clicking("−", c, trim);
         assert_eq!(c.tip_mm.value(), tip, "and back down");
     }
+
+    /// ★ `state.rs` tests each `Studio` transition on its own, but nothing
+    /// said an [`Intent`] reaches the one it names. Back paging forward, or
+    /// MarkPoured doing nothing, passes every test in that module.
+    ///
+    /// ⚠ The dialog starts open, so `pick_scan_file` and `pick_folder`
+    /// no-op instead of putting an OS picker on screen. That leaves
+    /// [`Intent::PickScan`], whose only effect is opening one, to a hand test.
+    #[test]
+    fn each_intent_reaches_the_transition_it_names() {
+        let mut dialog = PendingDialog::opened(DialogKind::ScanFile);
+        let mut studio = Studio {
+            project: ready_to_pour(),
+            ..Studio::default()
+        };
+        let start = studio.cursor.viewed();
+
+        apply_intent(Intent::Next, &mut studio, &mut dialog);
+        assert_ne!(studio.cursor.viewed(), start, "Next moves on");
+        apply_intent(Intent::Back, &mut studio, &mut dialog);
+        assert_eq!(studio.cursor.viewed(), start, "and Back comes back");
+
+        apply_intent(Intent::StartPourTimer, &mut studio, &mut dialog);
+        assert!(
+            studio.pour_deadline.is_some(),
+            "StartPourTimer starts the pot-life clock"
+        );
+        apply_intent(Intent::MarkPoured, &mut studio, &mut dialog);
+        assert!(
+            studio.pour_deadline.is_none(),
+            "and MarkPoured stops it — a different transition from the same screen"
+        );
+
+        // The two step-6 intents, each on the branch that reports rather than
+        // reaching for the filesystem.
+        let mut bare = Studio::default();
+        apply_intent(Intent::ExportPrint, &mut bare, &mut dialog);
+        assert!(
+            matches!(&bare.message, Some(Err(text)) if text.contains("molds")),
+            "ExportPrint without molds says so: {:?}",
+            bare.message
+        );
+        apply_intent(Intent::OpenExportFolder, &mut bare, &mut dialog);
+        assert!(
+            matches!(&bare.message, Some(Err(text)) if text.contains("Nothing exported")),
+            "OpenExportFolder with nothing exported says so: {:?}",
+            bare.message
+        );
+    }
 }
