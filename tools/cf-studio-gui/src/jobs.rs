@@ -464,4 +464,86 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// A minimal loadable scan, so the `ScanFile` arm has something real to put
+    /// on the project and in the viewport.
+    const ONE_TRIANGLE_STL: &str = "\
+solid t
+facet normal 0 0 1
+  outer loop
+    vertex 0 0 0
+    vertex 1 0 0
+    vertex 0 1 0
+  endloop
+endfacet
+endsolid t
+";
+
+    /// ★ A sibling arm of the poller `PrepDest` was added to, and unreachable
+    /// from any test until `PendingDialog::resolved` existed. Dropping its real
+    /// work — a chosen scan that never reaches the viewport — passed the whole
+    /// suite.
+    #[test]
+    fn a_chosen_scan_lands_on_the_project_and_in_the_viewport() {
+        let dir = crate::save::tests::temp_dir("chosen-scan");
+        let file = dir.join("pick.stl");
+        std::fs::write(&file, ONE_TRIANGLE_STL).expect("a scan to pick");
+        let mut app = App::new();
+        app.add_plugins(TaskPoolPlugin::default())
+            .init_resource::<Studio>()
+            .init_resource::<ScanEdit>()
+            .init_resource::<PrintJob>()
+            .add_systems(Update, poll_dialogs);
+        app.insert_resource(PendingDialog::resolved(DialogKind::ScanFile, Some(file)));
+
+        run_until_answered(&mut app);
+
+        assert!(
+            app.world().resource::<ScanEdit>().active().is_some(),
+            "the viewport has the scan"
+        );
+        let studio = app.world().resource::<Studio>();
+        assert!(
+            studio.project.scan().is_some(),
+            "and the project recorded it: {:?}",
+            studio.message
+        );
+        // ⚠ Landing it silently is its own failure: step 1's only feedback that
+        // the pick worked is this line.
+        assert!(
+            matches!(&studio.message, Some(Ok(text)) if !text.is_empty()),
+            "and it said so: {:?}",
+            studio.message
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ⚠ `busy` and the spawned job are one decision: the app tells the user it
+    /// is saving, so something must actually be saving.
+    #[test]
+    fn a_chosen_export_folder_starts_the_job_that_holds_the_app() {
+        let dir = crate::save::tests::temp_dir("chosen-export");
+        let mut app = App::new();
+        app.add_plugins(TaskPoolPlugin::default())
+            .init_resource::<ScanEdit>()
+            .init_resource::<PrintJob>()
+            .add_systems(Update, poll_dialogs);
+        app.insert_resource(Studio {
+            project: crate::panel::tests::ready_to_pour(),
+            ..Studio::default()
+        });
+        app.insert_resource(PendingDialog::resolved(
+            DialogKind::PrintDest,
+            Some(dir.clone()),
+        ));
+
+        run_until_answered(&mut app);
+
+        assert!(app.world().resource::<Studio>().busy, "the app is held");
+        assert!(
+            app.world().resource::<PrintJob>().0.is_some(),
+            "and a job is actually running to hold it for"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
