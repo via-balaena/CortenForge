@@ -27,6 +27,9 @@ pub(crate) const WARN_TEXT: egui::Color32 = egui::Color32::from_rgb(0xe6, 0x51, 
 pub(crate) const RIDGE_FILL: egui::Color32 = egui::Color32::from_rgb(0xf4, 0xf1, 0xea);
 /// Text on [`RIDGE_FILL`].
 pub(crate) const RIDGE_NOTE_TEXT: egui::Color32 = egui::Color32::from_rgb(0x6b, 0x5f, 0x44);
+/// One ring's card, lifted off [`RIDGE_FILL`] so three stacked rings read as
+/// three things rather than nine rows.
+pub(crate) const RING_FILL: egui::Color32 = egui::Color32::from_rgb(0xfd, 0xfb, 0xf7);
 
 /// A label that wraps. Use this for anything longer than a few words.
 pub(crate) fn wrapped_label(ui: &mut egui::Ui, text: impl Into<String>) {
@@ -178,17 +181,8 @@ pub(crate) fn step_box(
 ///
 /// ⚠ A `Grid`, not a stack of `ui.horizontal` rows: stacked fields have to line
 /// up with each other, and the labels beside them differ in width.
-///
-/// `columns` is how many cells a full row has. egui sizes the last column from
-/// it, so a width-filling widget there gets the rest of the row.
-pub(crate) fn field_grid(
-    ui: &mut egui::Ui,
-    id: &str,
-    columns: usize,
-    add: impl FnOnce(&mut egui::Ui),
-) {
+pub(crate) fn field_grid(ui: &mut egui::Ui, id: &str, add: impl FnOnce(&mut egui::Ui)) {
     egui::Grid::new(id)
-        .num_columns(columns)
         .spacing([GRID_SPACING, GRID_SPACING])
         .show(ui, add);
 }

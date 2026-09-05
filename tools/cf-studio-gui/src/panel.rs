@@ -13,8 +13,8 @@ use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
 use cf_studio_core::{PlugDraft, Step};
 use cf_studio_gui::{
-    format_pour_active, format_pour_plan, format_scan_stats, nav_state, pour_countdown,
-    print_step_summary, step_rows,
+    BoundedField, RingRow, format_pour_active, format_pour_plan, format_scan_stats, nav_state,
+    pour_countdown, print_step_summary, step_rows,
 };
 
 use crate::dialogs::{DialogKind, PendingDialog};
@@ -25,12 +25,12 @@ use crate::edit::{
 use crate::jobs::{SimplifyJob, start_simplify};
 use crate::save;
 use crate::scan::ScanEdit;
-use crate::shape::{BoundedField, RidgeFields, SHAPE_STEP, ShapeControls, commit_plug};
+use crate::shape::{RidgeFields, SHAPE_STEP, ShapeControls, commit_plug};
 use crate::state::{PendingSave, Studio};
 use crate::widgets::{
     ACTIVE_TEXT, CONTROL_TEXT, DONE_TEXT, ERROR_TEXT, GOOD_FILL, GOOD_TEXT, HEADING_TEXT,
-    HINT_TEXT, RIDGE_FILL, RIDGE_NOTE_TEXT, STATS_TEXT, WARN_TEXT, card, centered_wrapped,
-    cleanup_section, field_grid, step_box, wrapped_colored, wrapped_label,
+    HINT_TEXT, RIDGE_FILL, RIDGE_NOTE_TEXT, RING_FILL, STATS_TEXT, WARN_TEXT, card,
+    centered_wrapped, cleanup_section, field_grid, step_box, wrapped_colored, wrapped_label,
 };
 
 /// The checklist column's width.
@@ -54,10 +54,10 @@ const SUBHEADING_SIZE: f32 = 13.0;
 const SUBHINT_SIZE: f32 = 12.0;
 /// Between a stacked control row and the button that acts on it.
 const ROW_GAP: f32 = 6.0;
-/// The ridge card's notes: what ridges cost, and what is not on screen yet.
+/// The ridge card's note: what a run with ridges costs.
 const RIDGE_NOTE_SIZE: f32 = 14.0;
-/// The ridge grid's cells: a toggle, a label, a stepper and a unit.
-const RIDGE_COLUMNS: usize = 4;
+/// The grip-ring switch's label, sized as the section heading it is.
+const RING_HEADING_SIZE: f32 = 15.0;
 /// The rebuilt-floor picker. Fixed, or the combo stretches to fill the column.
 const SHAPE_PICKER_WIDTH: f32 = 110.0;
 /// The overwrite modal's width. Wider than the body column — it is centred on
@@ -496,7 +496,7 @@ fn draw_trim_row(
     let mut intent = None;
     let range = controls.trim_range();
     ui.vertical_centered(|ui| {
-        field_grid(ui, "trim-fields", 3, |ui| {
+        field_grid(ui, "trim-fields", |ui| {
             ui.colored_label(CONTROL_TEXT, "from tip");
             step_box(ui, &mut controls.tip_mm, range, STEP_MM, ready);
             ui.colored_label(CONTROL_TEXT, "mm");
@@ -593,7 +593,7 @@ fn draw_reconstruct_row(
     let range = controls.reference_range();
     // Stacked for the same reason as the trim controls above.
     ui.vertical_centered(|ui| {
-        field_grid(ui, "reconstruct-fields", 3, |ui| {
+        field_grid(ui, "reconstruct-fields", |ui| {
             ui.colored_label(CONTROL_TEXT, "Shape");
             egui::ComboBox::from_id_salt("rebuilt-floor-shape")
                 .width(SHAPE_PICKER_WIDTH)
@@ -725,18 +725,10 @@ fn draw_ridges(ui: &mut egui::Ui, ridges: &mut RidgeFields, ready: bool) {
             "Ridges mesh the piece at fine 0.5 mm detail, so a run with them takes \
              print-quality time.",
         );
-        ui.add_space(ROW_GAP);
-        // ⚠ The rings are applied whether or not this screen can show them, so
-        // it says so rather than committing geometry nobody has seen.
-        centered_wrapped(
-            ui,
-            RIDGE_NOTE_SIZE,
-            RIDGE_NOTE_TEXT,
-            "Grip rings are still being rebuilt on the new interface. Until they are, \
-             the three tested rings are cut as they always were.",
-        );
         ui.add_space(SECTION_GAP);
-        field_grid(ui, "ridge-fields", RIDGE_COLUMNS, |ui| {
+        draw_rings(ui, ridges, ready);
+        ui.add_space(SECTION_GAP);
+        field_grid(ui, "ridge-fields", |ui| {
             ridge_row(
                 ui,
                 RowToggle::Own(&mut ridges.texture_enabled),
@@ -779,6 +771,74 @@ fn draw_ridges(ui: &mut egui::Ui, ridges: &mut RidgeFields, ready: bool) {
             );
         });
     });
+}
+
+/// The grip rings: their switch, a card per ring, and the button that adds one.
+fn draw_rings(ui: &mut egui::Ui, ridges: &mut RidgeFields, ready: bool) {
+    ui.vertical_centered(|ui| {
+        ui.add_enabled(
+            ready,
+            egui::Checkbox::new(
+                &mut ridges.rings_enabled,
+                egui::RichText::new("Grip rings")
+                    .size(RING_HEADING_SIZE)
+                    .color(CONTROL_TEXT),
+            ),
+        );
+    });
+    let live = ready && ridges.rings_enabled;
+    // ⚠ Noted here and applied after the loop: the row drawing the ✖ is
+    // borrowed out of the vector that removing it shortens.
+    let mut dropped = None;
+    for (index, ring) in ridges.rings.iter_mut().enumerate() {
+        ui.add_space(ROW_GAP);
+        if draw_ring(ui, index, ring, live) {
+            dropped = Some(index);
+        }
+    }
+    if let Some(index) = dropped {
+        ridges.rings.remove(index);
+    }
+    ui.add_space(ROW_GAP);
+    ui.vertical_centered(|ui| {
+        if ui
+            .add_enabled(live, egui::Button::new("+ Add ring"))
+            .clicked()
+        {
+            ridges.add_ring();
+        }
+    });
+}
+
+/// One ring: which one it is, the ✖ that drops it, and its three fields.
+/// Reports whether the ✖ was clicked.
+///
+/// ⚠ A card of stacked rows, not the pre-port screen's single line. That line
+/// came to about 620 px of controls in a 404 px column, and egui culls what
+/// overflows rather than wrapping it.
+fn draw_ring(ui: &mut egui::Ui, index: usize, ring: &mut RingRow, live: bool) -> bool {
+    let mut dropped = false;
+    card(ui, RING_FILL, |ui| {
+        ui.horizontal(|ui| {
+            ui.colored_label(CONTROL_TEXT, format!("Ring {}", index + 1));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                dropped = ui.add_enabled(live, egui::Button::new("✖")).clicked();
+            });
+        });
+        field_grid(ui, &format!("ring-{index}"), |ui| {
+            ring_field(ui, &mut ring.position, "% along", live);
+            ring_field(ui, &mut ring.depth, "×0.1 mm deep", live);
+            ring_field(ui, &mut ring.width, "% wide", live);
+        });
+    });
+    dropped
+}
+
+/// One of a ring's fields: the stepper, and what its number means.
+fn ring_field(ui: &mut egui::Ui, field: &mut BoundedField, unit: &str, live: bool) {
+    bounded_step_box(ui, field, live);
+    ui.colored_label(CONTROL_TEXT, unit);
+    ui.end_row();
 }
 
 /// What switches a ridge row's field on.
@@ -1006,7 +1066,7 @@ pub(crate) mod tests {
 
     use cf_studio_core::{
         DesignDraft, LayerDraft, MoldOutputs, PourPlan, PourStep, PrepInput, Project, RidgeOptions,
-        ScanInput,
+        RidgeRing, ScanInput,
     };
     use cf_studio_gui::WizardCursor;
     use egui_kittest::Harness;
@@ -1891,9 +1951,30 @@ pub(crate) mod tests {
         }
     }
 
-    /// ⚠ #878's overflow is what a four-column grid in a 404 px column risks,
-    /// and the editor is hidden until it is asked for — so the census of the
-    /// opening screen reaches none of these.
+    /// The three controls one stepper puts on screen.
+    const STEPPER: [&str; 3] = ["−", "TextInput", "+"];
+
+    /// One ring's card: the ✖ that drops it, then its three steppers.
+    const RING_CARD: [&str; 10] = [
+        "✖",
+        "−",
+        "TextInput",
+        "+",
+        "−",
+        "TextInput",
+        "+",
+        "−",
+        "TextInput",
+        "+",
+    ];
+
+    /// ⚠ #878's overflow is what stacking three ring cards and a grid into a
+    /// 404 px column risks, and the editor is hidden until it is asked for —
+    /// so the census of the opening screen reaches none of these.
+    ///
+    /// ⚠ Assembled from named blocks rather than derived from the screen: this
+    /// is the list a person checks against the pre-port editor, and a block
+    /// that moved, vanished or arrived twice changes it.
     #[test]
     fn the_revealed_ridge_editor_is_laid_out_inside_the_body_column_too() {
         let mut revealed = ridges_on();
@@ -1903,32 +1984,28 @@ pub(crate) mod tests {
         assert_eq!(
             controls,
             [
-                "−",
-                "TextInput",
-                "+",
-                "Add surface ridges (advanced)",
-                "CheckBox",
-                "−",
-                "TextInput",
-                "+",
-                "−",
-                "TextInput",
-                "+",
-                "CheckBox",
-                "−",
-                "TextInput",
-                "+",
-                "CheckBox",
-                "−",
-                "TextInput",
-                "+",
-                "CheckBox",
-                "−",
-                "TextInput",
-                "+",
-                "Continue"
-            ],
-            "four switched rows and one governed by the switch above it"
+                &STEPPER[..],
+                &[MASTER_SWITCH],
+                &["Grip rings"],
+                &RING_CARD,
+                &RING_CARD,
+                &RING_CARD,
+                &["+ Add ring"],
+                &["CheckBox"],
+                &STEPPER,
+                // Texture spacing, governed by the switch above it.
+                &STEPPER,
+                &["CheckBox"],
+                &STEPPER,
+                &["CheckBox"],
+                &STEPPER,
+                &["CheckBox"],
+                &STEPPER,
+                &["Continue"],
+            ]
+            .concat(),
+            "the cavity field, the rings the SDK ships, then four switched rows \
+             and one governed by the switch above it"
         );
     }
 
@@ -1945,71 +2022,103 @@ pub(crate) mod tests {
             .collect()
     }
 
-    /// ⚠ The one row with no switch of its own carries a blank cell where the
-    /// others carry a checkbox. Drop it and every cell after it shifts left on
-    /// that row alone — a field that still fits, still works, and lines up
-    /// with nothing.
+    /// The steppers in the ring cards: three rings of three fields.
+    const RING_STEPPERS: usize = 9;
+
+    /// ⚠ The scalar row with no switch of its own carries a blank cell where
+    /// the others carry a checkbox. Drop it and every cell after it shifts
+    /// left on that row alone — a field that still fits, still works, and
+    /// lines up with nothing.
+    ///
+    /// ⚠ The ring cards are checked as one group, not each card alone: three
+    /// cards that each line up internally but sit at three different insets is
+    /// the same defect one step out.
     #[test]
-    fn every_ridge_row_lines_its_field_up_with_the_others() {
+    fn every_field_lines_up_with_the_others_in_its_grid() {
         let mut revealed = ridges_on();
 
         let rects = stepper_rects(shape_body(&mut revealed));
 
-        // The first is the cavity's, which sits above the grid entirely.
-        let (_, ridges) = rects.split_first().expect("step 3 has six fields");
-        assert_eq!(ridges.len(), 5, "one field per ridge scalar: {rects:?}");
-        assert!(
-            ridges.iter().all(|rect| rect.left() == ridges[0].left()),
-            "the grid's fields must share a column: {ridges:?}"
-        );
+        // The first is the cavity's, which sits above the editor entirely.
+        let (_, editor) = rects.split_first().expect("step 3 has fifteen fields");
+        let (rings, scalars) = editor.split_at(RING_STEPPERS);
+        assert_eq!(scalars.len(), 5, "one field per ridge scalar: {rects:?}");
+
+        for (grid, fields) in [("the ring cards", rings), ("the ridge grid", scalars)] {
+            assert!(
+                fields.iter().all(|rect| rect.left() == fields[0].left()),
+                "{grid}: the fields must share a column: {fields:?}"
+            );
+        }
     }
 
-    /// ★ Four switches over six steppers, every row drawn by one helper: a row
-    /// handed its neighbour's switch gates the wrong field, and the screen
-    /// reads the same either way.
+    // The switch each of step 3's steppers is gated by, beyond the app being
+    // free. The cavity field has none.
+    const UNGATED: &str = "";
+    const RINGS: &str = "grip rings";
+    const TEXTURE: &str = "surface texture";
+    const SIDE_PINCH: &str = "side pinch";
+    const TIP_RELIEF: &str = "tip relief";
+    const ORIENTATION: &str = "orientation";
+
+    /// Step 3's fields, in the order their steppers are laid out, each with
+    /// the switch that has to be on for it.
+    const FIELDS: [(fn(&mut ShapeControls) -> &mut BoundedField, &str); 15] = [
+        (|c| &mut c.cavity_mm, UNGATED),
+        (|c| &mut c.ridges.rings[0].position, RINGS),
+        (|c| &mut c.ridges.rings[0].depth, RINGS),
+        (|c| &mut c.ridges.rings[0].width, RINGS),
+        (|c| &mut c.ridges.rings[1].position, RINGS),
+        (|c| &mut c.ridges.rings[1].depth, RINGS),
+        (|c| &mut c.ridges.rings[1].width, RINGS),
+        (|c| &mut c.ridges.rings[2].position, RINGS),
+        (|c| &mut c.ridges.rings[2].depth, RINGS),
+        (|c| &mut c.ridges.rings[2].width, RINGS),
+        (|c| &mut c.ridges.texture_depth, TEXTURE),
+        (|c| &mut c.ridges.texture_spacing, TEXTURE),
+        (|c| &mut c.ridges.side_pinch, SIDE_PINCH),
+        (|c| &mut c.ridges.tip_relief, TIP_RELIEF),
+        (|c| &mut c.ridges.orientation, ORIENTATION),
+    ];
+
+    /// Every switch inside the ridge editor, and the flag it drives.
+    const SWITCHES: [(&str, fn(&mut RidgeFields) -> &mut bool); 5] = [
+        (RINGS, |r| &mut r.rings_enabled),
+        (TEXTURE, |r| &mut r.texture_enabled),
+        (SIDE_PINCH, |r| &mut r.side_pinch_enabled),
+        (TIP_RELIEF, |r| &mut r.tip_relief_enabled),
+        (ORIENTATION, |r| &mut r.orientation_enabled),
+    ];
+
+    /// ★ Five switches over fifteen steppers, all of them drawn by two
+    /// helpers: a row handed its neighbour's switch gates the wrong field, and
+    /// the screen reads the same either way.
     ///
     /// ⚠ Texture spacing is the row with no switch of its own, so it is the
     /// one a "every row owns its checkbox" port silently leaves live.
+    ///
+    /// ⚠ The switch has to gate something. A name in [`FIELDS`] that matches
+    /// nothing in [`SWITCHES`] expects every stepper live — which is what a
+    /// screen ignoring the switch entirely shows.
     #[test]
-    fn each_ridge_toggle_gates_its_own_stepper() {
+    fn each_ridge_toggle_gates_its_own_steppers() {
         let mut everything = ridges_on();
         assert_eq!(
             controls_disabled(shape_body(&mut everything), "+"),
-            [false; 6],
+            vec![false; FIELDS.len()],
             "with every feature on, every stepper is live"
         );
 
-        let cases: [(&str, fn(&mut RidgeFields) -> &mut bool, [bool; 6]); 4] = [
-            (
-                "texture",
-                |r| &mut r.texture_enabled,
-                [false, true, true, false, false, false],
-            ),
-            (
-                "side pinch",
-                |r| &mut r.side_pinch_enabled,
-                [false, false, false, true, false, false],
-            ),
-            (
-                "tip relief",
-                |r| &mut r.tip_relief_enabled,
-                [false, false, false, false, true, false],
-            ),
-            (
-                "orientation",
-                |r| &mut r.orientation_enabled,
-                [false, false, false, false, false, true],
-            ),
-        ];
-
-        for (name, toggle, expected) in cases {
+        for (name, switch) in SWITCHES {
             let mut off = ridges_on();
-            *toggle(&mut off.ridges) = false;
+            *switch(&mut off.ridges) = false;
+            let expected: Vec<bool> = FIELDS.iter().map(|(_, gate)| *gate == name).collect();
 
+            assert!(expected.contains(&true), "{name} gates no stepper at all");
             assert_eq!(
                 controls_disabled(shape_body(&mut off), "+"),
                 expected,
-                "{name} switched off gates its own stepper and no other"
+                "{name} switched off gates its own steppers and no others"
             );
         }
     }
@@ -2026,16 +2135,6 @@ pub(crate) mod tests {
         harness.run();
     }
 
-    /// Step 3's fields, in the order their steppers are laid out.
-    const FIELDS: [fn(&mut ShapeControls) -> &mut BoundedField; 6] = [
-        |c| &mut c.cavity_mm,
-        |c| &mut c.ridges.texture_depth,
-        |c| &mut c.ridges.texture_spacing,
-        |c| &mut c.ridges.side_pinch,
-        |c| &mut c.ridges.tip_relief,
-        |c| &mut c.ridges.orientation,
-    ];
-
     /// ★★ The screen is drawn with a range and the plug is read with one, and
     /// only this says they are the same range. Handed another field's bounds a
     /// stepper walks past its own limit, `plug_draft` clamps it back, and the
@@ -2045,7 +2144,7 @@ pub(crate) mod tests {
     /// spacing's range is 290 steps wide.
     #[test]
     fn every_stepper_stops_at_the_bound_its_field_commits_at() {
-        for (nth, pick) in FIELDS.into_iter().enumerate() {
+        for (nth, (pick, _)) in FIELDS.into_iter().enumerate() {
             let mut probe = ridges_on();
             let (min, max) = pick(&mut probe).range;
 
@@ -2068,11 +2167,15 @@ pub(crate) mod tests {
 
     /// Every stepper's value on step 3, in the order they are laid out.
     fn stepper_values(shape: &mut ShapeControls) -> Vec<i32> {
-        FIELDS.into_iter().map(|pick| pick(shape).value()).collect()
+        FIELDS
+            .into_iter()
+            .map(|(pick, _)| pick(shape).value())
+            .collect()
     }
 
-    /// ★★ Six steppers from one helper. A row bound to its neighbour's field
-    /// moves the wrong number, and every value on screen stays plausible.
+    /// ★★ Fifteen steppers from two helpers. A row bound to its neighbour's
+    /// field moves the wrong number, and every value on screen stays
+    /// plausible.
     #[test]
     fn each_stepper_on_step_three_moves_its_own_field_and_no_other() {
         let opening = stepper_values(&mut ridges_on());
@@ -2092,6 +2195,81 @@ pub(crate) mod tests {
                 "stepper {nth} moved something other than its own field"
             );
         }
+    }
+
+    /// ★★ Removing a row has to take that row's own state with it, uncommitted
+    /// text included. Per-row state held in a `Vec` keyed by index leaves the
+    /// edit bound to whatever is now that index — which is why
+    /// [`cf_studio_gui::StepBoxState`] lives inside [`RingRow`].
+    #[test]
+    fn dropping_a_ring_takes_its_own_uncommitted_text_with_it() {
+        let mut shape = ridges_on();
+        // Ring 2's own edit, typed into its position field and left there.
+        *shape.ridges.rings[1].position.state.text_mut() = "77".to_owned();
+        shape.ridges.rings[1].position.state.on_typed();
+
+        click_nth(&mut shape, "✖", 0);
+
+        assert_eq!(
+            shape
+                .ridges
+                .rings
+                .iter()
+                .map(|ring| ring.position.state.text())
+                .collect::<Vec<_>>(),
+            ["77", "55"],
+            "ring 2's edit moved up with ring 2; index-keyed state leaves it on ring 3"
+        );
+    }
+
+    /// ★★ The ring editor's own wiring, end to end: the buttons change the
+    /// rows, the rows reach `plug_draft`, and the draft is what Continue
+    /// commits.
+    ///
+    /// ⚠ Through 4c-2a the screen committed `RidgeOptions::default().rings`
+    /// whatever the editor showed, and every gate on this screen passed.
+    ///
+    /// ⚠ One added and one dropped, so the editor ends on three rows — a
+    /// fourth pushes Continue past the bottom of the window, where the
+    /// harness cannot reach it.
+    #[test]
+    fn rings_edited_in_the_running_wizard_reach_the_committed_plug() {
+        let mut app = app_running_the_wizard();
+        app.insert_resource(Studio {
+            project: crate::shape::tests::ready_to_shape(),
+            cursor: WizardCursor::new(Step::ShapePiece),
+            ..Studio::default()
+        });
+
+        click_on(&mut app, "Add surface ridges");
+        click_on(&mut app, "+ Add ring");
+        // The first ✖ on screen, which is ring 1's.
+        click_on(&mut app, "✖");
+        click_on(&mut app, "Continue");
+
+        let studio = app.world().resource::<Studio>();
+        assert_eq!(
+            studio.project.plug().map(|plug| plug.ridges.rings.clone()),
+            Some(vec![
+                RidgeRing {
+                    position_frac: 0.40,
+                    depth_m: 0.002,
+                    half_width_frac: 0.04,
+                },
+                RidgeRing {
+                    position_frac: 0.55,
+                    depth_m: 0.002,
+                    half_width_frac: 0.04,
+                },
+                RidgeRing {
+                    position_frac: 0.50,
+                    depth_m: 0.002,
+                    half_width_frac: 0.04,
+                },
+            ]),
+            "the two the ✖ left, then the one the button added: {:?}",
+            studio.message
+        );
     }
 
     /// ★★ The master switch's own wiring, end to end: the checkbox binds to
@@ -2188,7 +2366,15 @@ pub(crate) mod tests {
             (
                 "open",
                 ridges_on,
-                &["Continue", "+", MASTER_SWITCH, "CheckBox"],
+                &[
+                    "Continue",
+                    "+",
+                    MASTER_SWITCH,
+                    "CheckBox",
+                    "Grip rings",
+                    "✖",
+                    "+ Add ring",
+                ],
             ),
         ];
 
