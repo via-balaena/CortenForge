@@ -178,6 +178,29 @@ mod tests {
         );
     }
 
+    /// ⚠ Quit is the only way out of this screen without agreeing, and the
+    /// half nothing checked. `draw_waiver` reporting `Quit` is not the app
+    /// exiting: dropping the `AppExit` write leaves the whole suite green and
+    /// the user shut inside a legal gate they declined.
+    #[test]
+    fn quitting_the_gate_asks_the_app_to_exit() {
+        let mut app = app_running_the_real_system();
+        app.update();
+
+        click_on(&mut app, "Quit");
+        app.update();
+
+        assert!(
+            !app.world().resource::<Messages<AppExit>>().is_empty(),
+            "Quit asked the app to exit"
+        );
+        assert_eq!(
+            app.world().resource::<State<Screen>>().get(),
+            &Screen::Waiver,
+            "and did not open the wizard on its way out"
+        );
+    }
+
     /// Lay the gate out at `size` with the box ticked or not, optionally click
     /// `pick`, and report its controls and the answer it gave.
     fn gate(
