@@ -1438,11 +1438,8 @@ pub(crate) mod tests {
     /// Stand `wizard_screen` up as the Bevy system it is, with the egui pass
     /// `bevy_egui`'s plugin would normally open around it.
     fn app_running_the_wizard() -> App {
-        use bevy::state::app::StatesPlugin;
-
         let mut app = egui_harness::app();
-        app.add_plugins((StatesPlugin, bevy::asset::AssetPlugin::default()))
-            .init_resource::<Studio>()
+        app.init_resource::<Studio>()
             .init_resource::<PendingDialog>()
             .init_resource::<ScanEdit>()
             .init_resource::<EditControls>()

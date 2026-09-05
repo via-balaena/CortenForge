@@ -133,7 +133,6 @@ mod tests {
         let mut app = egui_harness::app();
         app.add_plugins(StatesPlugin)
             .init_state::<Screen>()
-            .add_message::<AppExit>()
             .add_systems(Update, (begin, waiver_screen, end).chain());
         app
     }
