@@ -1698,6 +1698,30 @@ pub(crate) mod tests {
         );
     }
 
+    /// ⚠ The steps still on the notice. Replacing `draw_porting_notice` with a
+    /// no-op leaves them blank and passes the control census, which counts what
+    /// a screen with no controls has none of.
+    #[test]
+    fn the_steps_still_being_ported_say_so_rather_than_showing_nothing() {
+        for step in [Step::DesignLayers, Step::MakeMolds] {
+            let mut app = app_running_the_wizard();
+            app.insert_resource(Studio {
+                project: ready_to_pour(),
+                cursor: WizardCursor::new(step),
+                ..Studio::default()
+            });
+
+            settle(&mut app);
+
+            let painted = painted_texts(&app);
+            assert!(
+                painted.iter().any(|text| text.contains("being rebuilt")),
+                "step {} says so instead of showing nothing: {painted:?}",
+                step.number()
+            );
+        }
+    }
+
     /// The question the modal is asked to render. Its wording belongs to
     /// [`save::overwrite_question`], not to this gate.
     const A_QUESTION: &str = "base.cleaned.stl / .prep.toml already exist in /tmp.";
