@@ -686,13 +686,7 @@ fn draw_shape_piece(
     ui.vertical_centered(|ui| {
         ui.horizontal(|ui| {
             ui.colored_label(CONTROL_TEXT, "Cavity inset");
-            step_box(
-                ui,
-                &mut shape.cavity_mm.state,
-                shape.cavity_mm.range,
-                SHAPE_STEP,
-                ready,
-            );
+            bounded_step_box(ui, &mut shape.cavity_mm, ready);
             ui.colored_label(CONTROL_TEXT, "mm");
         });
     });
@@ -818,9 +812,19 @@ fn ridge_row(
         }
     };
     ui.colored_label(CONTROL_TEXT, label);
-    step_box(ui, &mut field.state, field.range, SHAPE_STEP, ready && on);
+    bounded_step_box(ui, field, ready && on);
     ui.colored_label(CONTROL_TEXT, unit);
     ui.end_row();
+}
+
+/// A stepper for one of step 3's fields.
+///
+/// ⚠ The bounds come off the field, so the screen cannot enforce a limit the
+/// commit does not. Given the wrong ones the field walks past its own maximum
+/// and [`ShapeControls::plug_draft`] quietly clamps it back — the screen
+/// showing one number and the plug carrying another.
+fn bounded_step_box(ui: &mut egui::Ui, field: &mut BoundedField, enabled: bool) {
+    step_box(ui, &mut field.state, field.range, SHAPE_STEP, enabled);
 }
 
 /// Step 6 — save the printable files, then hand off to the slicer.
@@ -1439,9 +1443,7 @@ pub(crate) mod tests {
         );
         let mut shape = ShapeControls::default();
         assert_eq!(
-            controls_in_column(|ui| {
-                let _ = draw_shape_piece(ui, &studio, &dialog, &mut shape);
-            }),
+            controls_in_column(shape_body(&mut shape)),
             [
                 "−",
                 "TextInput",
@@ -2012,6 +2014,59 @@ pub(crate) mod tests {
         }
     }
 
+    /// Lay step 3 out with `shape` and click the `nth` button called `name`.
+    fn click_nth(shape: &mut ShapeControls, name: &str, nth: usize) {
+        let mut body = shape_body(shape);
+        let mut harness = column_harness(&mut body);
+        harness
+            .get_all_by_label(name)
+            .nth(nth)
+            .expect("every stepper offers both buttons")
+            .click();
+        harness.run();
+    }
+
+    /// Step 3's fields, in the order their steppers are laid out.
+    const FIELDS: [fn(&mut ShapeControls) -> &mut BoundedField; 6] = [
+        |c| &mut c.cavity_mm,
+        |c| &mut c.ridges.texture_depth,
+        |c| &mut c.ridges.texture_spacing,
+        |c| &mut c.ridges.side_pinch,
+        |c| &mut c.ridges.tip_relief,
+        |c| &mut c.ridges.orientation,
+    ];
+
+    /// ★★ The screen is drawn with a range and the plug is read with one, and
+    /// only this says they are the same range. Handed another field's bounds a
+    /// stepper walks past its own limit, `plug_draft` clamps it back, and the
+    /// screen shows one number while the plug carries another.
+    ///
+    /// ⚠ Driven from outside the bound rather than clicked up to it: texture
+    /// spacing's range is 290 steps wide, and a gate that walked it would say
+    /// the same thing 290 times more slowly.
+    #[test]
+    fn every_stepper_stops_at_the_bound_its_field_commits_at() {
+        for (nth, pick) in FIELDS.into_iter().enumerate() {
+            let mut probe = ridges_on();
+            let (min, max) = pick(&mut probe).range;
+
+            for (typed, button, bound) in [(max + 50, "−", max), (min - 50, "+", min)] {
+                let mut shape = ridges_on();
+                let field = pick(&mut shape);
+                *field.state.text_mut() = typed.to_string();
+                field.state.on_typed();
+
+                click_nth(&mut shape, button, nth);
+
+                assert_eq!(
+                    pick(&mut shape).state.value(),
+                    bound,
+                    "stepper {nth} was drawn with bounds other than its own"
+                );
+            }
+        }
+    }
+
     /// Every stepper's value on step 3, in the order they are laid out.
     fn stepper_values(shape: &ShapeControls) -> Vec<i32> {
         vec![
@@ -2032,16 +2087,7 @@ pub(crate) mod tests {
 
         for nth in 0..opening.len() {
             let mut stepped = ridges_on();
-            {
-                let mut body = shape_body(&mut stepped);
-                let mut harness = column_harness(&mut body);
-                harness
-                    .get_all_by_label("+")
-                    .nth(nth)
-                    .expect("every stepper offers a +")
-                    .click();
-                harness.run();
-            }
+            click_nth(&mut stepped, "+", nth);
 
             let expected: Vec<i32> = opening
                 .iter()

@@ -25,7 +25,7 @@ pub(crate) const WARN_TEXT: egui::Color32 = egui::Color32::from_rgb(0xe6, 0x51, 
 /// The ridge editor's card — warmer than the result cards, as the pre-port
 /// screen had it.
 pub(crate) const RIDGE_FILL: egui::Color32 = egui::Color32::from_rgb(0xf4, 0xf1, 0xea);
-/// The notes on [`RIDGE_FILL`]: what ridges cost, and what is not on screen yet.
+/// Text on [`RIDGE_FILL`].
 pub(crate) const RIDGE_NOTE_TEXT: egui::Color32 = egui::Color32::from_rgb(0x6b, 0x5f, 0x44);
 
 /// A label that wraps. Use this for anything longer than a few words.
