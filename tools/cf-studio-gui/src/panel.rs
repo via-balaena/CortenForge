@@ -83,9 +83,9 @@ struct Acted {
     save: Option<usize>,
     /// The plug a step-3 Continue was clicked with.
     ///
-    /// ⚠ Not an [`Intent`] variant: that enum is `Copy`, and a draft carries an
-    /// owned ring set. Built at click time for the reason every other field
-    /// here is — the executor cannot read a field the user has since changed.
+    /// ⚠ Carried, not re-read at execution time — the same reason `simplify`
+    /// and `save` carry theirs: the executor must not see a field the user has
+    /// changed since the click.
     plug: Option<PlugDraft>,
 }
 
@@ -1138,14 +1138,12 @@ pub(crate) mod tests {
     /// What a committed plug reports — the only `apply_plug` message the screen
     /// ever shows, and one no other producer here covers.
     fn shaped_piece_report() -> String {
-        let mut studio = Studio {
-            project: crate::shape::tests::ready_to_shape(),
-            ..Studio::default()
-        };
-        crate::shape::commit_plug(ShapeControls::default().plug_draft(), &mut studio);
-        let reported = studio.message.expect("a commit always reports");
-        let (Ok(text) | Err(text)) = reported;
-        text
+        let mut project = crate::shape::tests::ready_to_shape();
+        // ⚠ `expect`, not either arm: a refusal is a different string, and the
+        // gate would go on checking it with nothing to say the message it
+        // exists for had stopped being produced.
+        cf_studio_gui::apply_plug(&mut project, ShapeControls::default().plug_draft())
+            .expect("the fixture is ready to shape")
     }
 
     /// Step 2 with every section revealed: a scan loaded, a centerline traced,

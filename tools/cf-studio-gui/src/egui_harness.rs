@@ -165,6 +165,9 @@ mod tests {
         }
     }
 
+    /// A `stops` no run reaches, so the screen never holds still.
+    const NEVER: usize = usize::MAX;
+
     fn app_drawing(stops: usize) -> App {
         let mut app = app();
         app.init_resource::<Drawn>()
@@ -195,6 +198,6 @@ mod tests {
     #[test]
     #[should_panic = "still moving"]
     fn a_screen_that_never_stops_is_reported_rather_than_handed_back() {
-        settle(&mut app_drawing(usize::MAX));
+        settle(&mut app_drawing(NEVER));
     }
 }

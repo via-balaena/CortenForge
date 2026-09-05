@@ -47,7 +47,8 @@ impl ShapeControls {
     /// in-progress edit unclamped by design, so a number typed and then clicked
     /// straight through arrives here out of range.
     pub(crate) fn plug_draft(&self) -> PlugDraft {
-        let mm = self.cavity_mm.value().clamp(CAVITY_MIN_MM, CAVITY_MAX_MM);
+        let (min, max) = cavity_range();
+        let mm = self.cavity_mm.value().clamp(min, max);
         PlugDraft {
             cavity_inset_m: f64::from(mm) / 1000.0,
             // The ridge editor is a later PR; off is the smooth piece.
@@ -56,7 +57,7 @@ impl ShapeControls {
     }
 }
 
-/// Commit the shaped plug and move on to the layer stack.
+/// Commit the shaped plug, and move on to the layer stack if it took.
 pub(crate) fn commit_plug(draft: PlugDraft, studio: &mut Studio) {
     let outcome = apply_plug(&mut studio.project, draft);
     if outcome.is_ok() {
