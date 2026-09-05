@@ -116,15 +116,21 @@ pub(crate) mod tests {
             "the field's 5 mm is 0.005 m"
         );
 
-        // ⚠ Typing does not commit, so this reaches `plug_draft` unclamped —
+        // ⚠ Typing does not commit, so these reach `plug_draft` unclamped —
         // the path the clamp exists for.
-        *controls.cavity_mm.text_mut() = (CAVITY_MAX_MM + 1).to_string();
-        controls.cavity_mm.on_typed();
-        assert_eq!(
-            controls.plug_draft().cavity_inset_m,
-            0.030,
-            "one past the bound is clamped to it"
-        );
+        //
+        // ⚠ Both edges. `clamp` swapped for a bare `min` holds the top and lets
+        // a negative through, and a negative inset offsets the plug *outward*
+        // — a cavity the scan no longer fits.
+        for (typed, expected) in [(CAVITY_MAX_MM + 1, 0.030), (CAVITY_MIN_MM - 1, 0.0)] {
+            *controls.cavity_mm.text_mut() = typed.to_string();
+            controls.cavity_mm.on_typed();
+            assert_eq!(
+                controls.plug_draft().cavity_inset_m,
+                expected,
+                "{typed} mm is clamped to the bound it passed"
+            );
+        }
     }
 
     /// ★ The order is the trap: [`Studio::next`] clears the message, so a
