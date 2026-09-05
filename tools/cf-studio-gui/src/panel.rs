@@ -2312,6 +2312,73 @@ pub(crate) mod tests {
         );
     }
 
+    /// ★★ The ring switch's own wiring, end to end: the checkbox binds to
+    /// `rings_enabled` rather than to the master switch above it, and the
+    /// field reaches the committed plug.
+    ///
+    /// ⚠ Both halves of one assertion. Bound to `ridges.enabled` instead, the
+    /// click collapses the editor and commits a smooth piece — and every other
+    /// gate on this screen passes, because none of them clicks this box.
+    #[test]
+    fn switching_the_rings_off_in_the_running_wizard_commits_the_canal_without_them() {
+        let mut app = app_running_the_wizard();
+        app.insert_resource(Studio {
+            project: crate::shape::tests::ready_to_shape(),
+            cursor: WizardCursor::new(Step::ShapePiece),
+            ..Studio::default()
+        });
+
+        click_on(&mut app, "Add surface ridges");
+        click_on(&mut app, "Grip rings");
+        click_on(&mut app, "Continue");
+
+        let studio = app.world().resource::<Studio>();
+        assert_eq!(
+            studio.project.plug().map(|plug| plug.ridges.clone()),
+            Some(RidgeOptions {
+                enabled: true,
+                rings: Vec::new(),
+                ..RidgeOptions::default()
+            }),
+            "the rings alone are gone: {:?}",
+            studio.message
+        );
+    }
+
+    /// Every ring card's header, in the order they are drawn.
+    fn ring_headers(app: &App) -> Vec<String> {
+        painted_texts(app)
+            .into_iter()
+            .filter(|text| text.starts_with("Ring "))
+            .collect()
+    }
+
+    /// ⚠ The header is the only thing tying a card to the ring it edits, and
+    /// no census reaches it: it is prose, not a control. Numbered from the
+    /// loop index it reads "Ring 0"; stored on the row it stops renumbering
+    /// when one is dropped.
+    #[test]
+    fn the_ring_cards_are_numbered_from_one_in_the_order_they_are_drawn() {
+        let mut app = app_running_the_wizard();
+        app.insert_resource(Studio {
+            project: crate::shape::tests::ready_to_shape(),
+            cursor: WizardCursor::new(Step::ShapePiece),
+            ..Studio::default()
+        });
+
+        click_on(&mut app, "Add surface ridges");
+        settle(&mut app);
+        assert_eq!(ring_headers(&app), ["Ring 1", "Ring 2", "Ring 3"]);
+
+        click_on(&mut app, "✖");
+        settle(&mut app);
+        assert_eq!(
+            ring_headers(&app),
+            ["Ring 1", "Ring 2"],
+            "the cards renumber when one is dropped"
+        );
+    }
+
     /// ★★ The master switch's own wiring, end to end: the checkbox binds to
     /// the field, the field reaches `plug_draft`, and the draft is what
     /// Continue commits.
