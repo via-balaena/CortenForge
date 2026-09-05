@@ -122,7 +122,7 @@ mod tests {
     use egui_kittest::kittest::{NodeT, Queryable};
 
     use super::*;
-    use crate::egui_harness::{self, begin, click_on, end, painted_texts};
+    use crate::egui_harness::{self, begin, click_on, end, painted_texts, settle};
     use crate::panel::tests::assert_renders;
     use crate::{OPENING_WINDOW as OPENING, SMALLEST_WINDOW as NARROWEST};
 
@@ -148,7 +148,7 @@ mod tests {
     #[test]
     fn the_gate_runs_as_a_system_and_opens_only_after_both_clicks() {
         let mut app = app_running_the_real_system();
-        app.update();
+        settle(&mut app);
 
         let painted = painted_texts(&app);
         assert!(
@@ -185,7 +185,6 @@ mod tests {
     #[test]
     fn quitting_the_gate_asks_the_app_to_exit() {
         let mut app = app_running_the_real_system();
-        app.update();
 
         click_on(&mut app, "Quit");
         app.update();

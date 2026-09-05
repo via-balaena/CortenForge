@@ -77,6 +77,35 @@ pub(crate) fn app() -> App {
     app
 }
 
+/// The most frames a screen is given to stop moving before [`settle`] gives up.
+const SETTLE_FRAMES: usize = 8;
+
+/// Run frames until the screen stops moving.
+///
+/// ⚠ Not a fixed count, because there isn't one. egui sizes a `ScrollArea`
+/// from the pass before, and an `egui::Grid` its columns, so a screen holding
+/// both is still moving on its second frame. A click taken from that pass
+/// lands beside the button it named, which reads as "the control does nothing"
+/// rather than as a harness fault.
+pub(crate) fn settle(app: &mut App) {
+    // ⚠ `None`, not an empty `Vec`. A screen that paints nothing on its first
+    // frame would otherwise read as settled, and the caller would assert
+    // against a blank pass.
+    let mut last = None;
+    for frame in 1..=SETTLE_FRAMES {
+        app.update();
+        let painted = app.world().resource::<Painted>().0.clone();
+        if last.as_ref() == Some(&painted) {
+            return;
+        }
+        assert!(
+            frame < SETTLE_FRAMES,
+            "the screen is still moving after {frame} frames"
+        );
+        last = Some(painted);
+    }
+}
+
 /// Everything the last frame painted, text only.
 pub(crate) fn painted_texts(app: &App) -> Vec<String> {
     app.world()
@@ -87,11 +116,18 @@ pub(crate) fn painted_texts(app: &App) -> Vec<String> {
         .collect()
 }
 
-/// Click the middle of whatever was painted starting with `text`, next frame.
+/// Click the middle of whatever was painted starting with `text`.
 ///
-/// ⚠ Two frames, and that is the point: egui places a widget from the previous
-/// pass, so a click can only land where the frame before it drew.
+/// ⚠ [`settle`] first, and that is the point: egui places a widget from the
+/// previous pass, so a click can only land where a settled frame drew.
+///
+/// ⚠ It does NOT settle afterwards, so the pass left behind is the one that
+/// *delivered* the click — drawn before the click was acted on. [`settle`]
+/// again to read the screen it produced. Settling here instead would run the
+/// frames that flush Bevy's message buffers, and a click whose whole effect is
+/// a message (the waiver's Quit) would land with nothing to observe.
 pub(crate) fn click_on(app: &mut App, text: &str) {
+    settle(app);
     let painted = &app.world().resource::<Painted>().0;
     let at = painted
         .iter()
@@ -101,4 +137,73 @@ pub(crate) fn click_on(app: &mut App, text: &str) {
     app.world_mut().resource_mut::<Click>().0 = at;
     app.update();
     app.world_mut().resource_mut::<Click>().0 = None;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The fixture's pass count and how far down the window it has crept.
+    #[derive(Resource, Default)]
+    struct Drawn {
+        passes: usize,
+        y: f32,
+    }
+
+    /// A screen that paints nothing on its first pass, then creeps down the
+    /// window, then holds still from pass `stops` on.
+    fn creeping_until(stops: usize) -> impl FnMut(ResMut<Drawn>, Query<&mut EguiContext>) {
+        move |mut drawn: ResMut<Drawn>, mut contexts: Query<&mut EguiContext>| {
+            let Some(mut context) = contexts.iter_mut().next() else {
+                return;
+            };
+            drawn.passes += 1;
+            if drawn.passes == 1 {
+                return;
+            }
+            if drawn.passes <= stops {
+                drawn.y += 10.0;
+            }
+            egui::CentralPanel::default().show(context.get_mut(), |ui| {
+                ui.add_space(drawn.y);
+                ui.label("creeping");
+            });
+        }
+    }
+
+    /// A `stops` no run reaches, so the screen never holds still.
+    const NEVER: usize = usize::MAX;
+
+    fn app_drawing(stops: usize) -> App {
+        let mut app = app();
+        app.init_resource::<Drawn>()
+            .add_systems(Update, (begin, creeping_until(stops), end).chain());
+        app
+    }
+
+    /// ⚠ Both halves, and each is silently wrong alone. Returning on the first
+    /// pass — which seeding the comparison with an empty `Vec` does — hands the
+    /// caller a screen that has drawn nothing; returning while it still moves
+    /// hands over a position the button has already left.
+    #[test]
+    fn settling_waits_for_a_pass_that_drew_and_then_for_one_that_repeated() {
+        let mut app = app_drawing(4);
+
+        settle(&mut app);
+
+        assert_eq!(
+            app.world().resource::<Drawn>().passes,
+            5,
+            "the blank pass, three that moved, then the repeat that matched"
+        );
+        assert_eq!(painted_texts(&app), ["creeping"]);
+    }
+
+    /// ⚠ Without this the loop could run out and return, and every click taken
+    /// from the screen after it would land where the button no longer is.
+    #[test]
+    #[should_panic = "still moving"]
+    fn a_screen_that_never_stops_is_reported_rather_than_handed_back() {
+        settle(&mut app_drawing(NEVER));
+    }
 }

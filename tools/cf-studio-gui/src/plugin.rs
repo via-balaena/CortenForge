@@ -16,6 +16,7 @@ use crate::jobs::{PrintJob, SimplifyJob, poll_dialogs, poll_print_job, poll_simp
 use crate::panel::wizard_screen;
 use crate::scan::ScanEdit;
 use crate::scene::{draw_centerline, fit_viewport_to_free_space, setup_scene, show_scan};
+use crate::shape::ShapeControls;
 use crate::state::{Screen, Studio};
 use crate::waiver::waiver_screen;
 
@@ -42,6 +43,7 @@ impl Plugin for StudioPlugin {
             .init_resource::<SimplifyJob>()
             .init_resource::<ScanEdit>()
             .init_resource::<EditControls>()
+            .init_resource::<ShapeControls>()
             .insert_resource(ClearColor(BACKGROUND))
             // The centerline runs *inside* the scan, so at the default
             // `depth_bias` of 0 it is hidden by the surface it describes and the
@@ -216,6 +218,45 @@ mod tests {
             config.depth_bias < 0.0,
             "the overlay must draw in front of the scan, not inside it: depth_bias={}",
             config.depth_bias
+        );
+    }
+
+    /// ★★ The plugin's own registrations, which nothing else reaches. Every
+    /// resource the wizard takes is inserted by hand in its tests, so dropping
+    /// any one `init_resource` here left the whole suite green — Bevy skips a
+    /// system whose params it cannot build, so the wizard simply stops
+    /// appearing.
+    ///
+    /// ⚠ Driven through the real schedule, not by naming the resources. A list
+    /// gates only what somebody remembered to add to it.
+    #[test]
+    fn the_plugin_gives_the_wizard_every_resource_it_asks_for() {
+        use crate::egui_harness::{begin, end, painted_texts};
+
+        let mut app = crate::egui_harness::app();
+        app.add_plugins((MinimalPlugins, StatesPlugin, StudioPlugin))
+            .add_systems(
+                EguiPrimaryContextPass,
+                (
+                    begin.before(pin_theme_and_fonts),
+                    end.after(fit_viewport_to_free_space),
+                ),
+            );
+        app.world_mut()
+            .resource_mut::<NextState<Screen>>()
+            .set(Screen::Wizard);
+
+        // ⚠ The two schedules by hand, not `app.update()`. `EguiPlugin` is what
+        // normally drives the pass and it needs a render device, and `Startup`
+        // would run `setup_scene`, which wants the asset stack this gate has no
+        // business standing up.
+        app.world_mut().run_schedule(StateTransition);
+        app.world_mut().run_schedule(EguiPrimaryContextPass);
+
+        let painted = painted_texts(&app);
+        assert!(
+            painted.iter().any(|text| text.contains("Step 1 of 7")),
+            "the wizard drew from what the plugin alone registered: {painted:?}"
         );
     }
 

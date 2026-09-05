@@ -15,6 +15,7 @@ mod plugin;
 mod save;
 mod scan;
 mod scene;
+mod shape;
 mod state;
 mod waiver;
 mod widgets;
