@@ -618,6 +618,23 @@ pub fn format_elapsed(secs: u64) -> String {
     format!("{}:{:02}", secs / 60, secs % 60)
 }
 
+/// The status line while the cast runs, refreshed once a second.
+///
+/// The reassurance is not filler: this is the only job in the wizard measured
+/// in *minutes* (269 s at 1.5 mm, ~15 at 0.5), and a window that looks frozen
+/// for that long is one a user force-quits.
+///
+/// ⚠ One deliberate difference from the pre-port text, which built this with a
+/// trailing `\` line continuation and so emitted **two** spaces before the
+/// parenthesis. Single-spaced here.
+#[must_use]
+pub fn format_molds_progress(secs: u64) -> String {
+    format!(
+        "Making molds… {} elapsed (this can take a while — the window stays responsive)",
+        format_elapsed(secs),
+    )
+}
+
 /// A numeric field's edit state — the toolkit-agnostic half of the stepper.
 ///
 /// ## Why this is not just an `i32`
@@ -2253,6 +2270,23 @@ visible = true
         // The jobs this labels run 4.5-15 minutes; the minutes field is the part
         // an off-by-one would hide.
         assert_eq!(format_elapsed(15 * 60 + 7), "15:07");
+    }
+
+    #[test]
+    fn the_cast_progress_line_carries_the_clock_and_the_reassurance() {
+        let line = format_molds_progress(15 * 60 + 7);
+        assert!(
+            line.contains("15:07"),
+            "the clock is the whole point of refreshing it: {line}"
+        );
+        assert!(
+            line.contains("stays responsive"),
+            "and the reassurance survives, on a job measured in minutes: {line}"
+        );
+        // ⚠ The pre-port built this with a trailing `\` continuation and emitted
+        // two spaces here. Single-spaced deliberately; pinned so it is not
+        // "restored" by someone diffing against the old text.
+        assert!(!line.contains("  "), "no double space: {line:?}");
     }
 
     // ── RingRow round-trip ──────────────────────────────────────────────────

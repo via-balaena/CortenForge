@@ -6,13 +6,20 @@
 //! - **Simplify** (step 2) decimates the working scan, ~10–40 s.
 //! - **the print export** (step 6) copies the mold package, hundreds of
 //!   megabytes at 0.5 mm.
+//! - **the cast** (step 5) generates the printable molds. This one is measured
+//!   in *minutes* — 269 s at 1.5 mm, ~15 min at 0.5 — which is why it is the
+//!   only job that reports its own elapsed time while it runs.
 
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, futures_lite::future};
+use cf_studio_core::MoldOutputs;
 use cf_studio_engine::{PrintExportReport, export_print_package, run_simplify};
-use cf_studio_gui::{apply_design, format_simplify_done, format_simplify_started};
+use cf_studio_gui::{
+    PourSession, apply_design, format_molds_progress, format_simplify_done, format_simplify_started,
+};
 use mesh_types::IndexedMesh;
 
 use crate::dialogs::{DialogKind, PendingDialog};
@@ -139,6 +146,60 @@ pub(crate) fn poll_print_job(mut job: ResMut<PrintJob>, mut studio: ResMut<Studi
             }
         }
         Err(msg) => Err(format!("Couldn't save the files: {msg}")),
+    });
+}
+
+/// A cast in flight: when it started, the last whole second put on screen, and
+/// the task itself.
+///
+/// ⚠ `shown_secs` lives here, not in a system `Local`, so it dies with the run.
+/// A `Local` would carry the previous cast's second into the next one and eat
+/// that run's first status line.
+struct MoldsRun {
+    started: Instant,
+    shown_secs: Option<u64>,
+    task: Task<Result<MoldOutputs, String>>,
+}
+
+/// The running cast, if any.
+///
+/// ▶ Nothing starts one yet — the starter lands with the button that calls it.
+/// This is the half that *finishes* a cast: the clock while it runs, and the
+/// recording when it lands.
+#[derive(Resource, Default)]
+pub(crate) struct MoldsJob(Option<MoldsRun>);
+
+/// Land a finished cast, or tick the clock on a running one.
+pub(crate) fn poll_molds_job(mut job: ResMut<MoldsJob>, mut studio: ResMut<Studio>) {
+    let Some(run) = job.0.as_mut() else { return };
+    let Some(result) = future::block_on(future::poll_once(&mut run.task)) else {
+        // Still running. Refresh the clock, but only when the whole second has
+        // changed: this system runs every frame, and rebuilding the line at
+        // 60 Hz would allocate a fresh `String` sixty times a second to show
+        // the same text fifty-nine of them.
+        let secs = run.started.elapsed().as_secs();
+        if run.shown_secs != Some(secs) {
+            run.shown_secs = Some(secs);
+            studio.message = Some(Ok(format_molds_progress(secs)));
+        }
+        return;
+    };
+    job.0 = None;
+    studio.busy = false;
+    studio.message = Some(match result {
+        Ok(outputs) => match studio.project.set_molds(outputs) {
+            Ok(()) => {
+                // ⚠ New molds mean a new pour. `set_molds` clears the project's
+                // *record* of one, but the live session and its countdown are
+                // held here, so step 7 would open on the previous cast's
+                // progress. `Studio::record_scan` resets the same pair.
+                studio.pour = PourSession::default();
+                studio.pour_deadline = None;
+                Ok("✔ Molds ready — click Next →.".to_string())
+            }
+            Err(e) => Err(format!("Molds made, but couldn't record them: {e}")),
+        },
+        Err(msg) => Err(format!("Mold generation failed: {msg}")),
     });
 }
 
@@ -634,5 +695,259 @@ endsolid t
         assert!(studio.project.design().is_none(), "no design was set");
         assert_eq!(studio.message, before, "and nothing new was reported");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── the cast job ────────────────────────────────────────────────────────
+    //
+    // ⚠ The real cast runs for minutes and never runs here. Every test below
+    // hands the poller a `Task` built by hand — the same trick the injected
+    // `SimplifyJob` uses, except that here it is the only option.
+
+    /// A pour step, as a real cast run produces one.
+    fn pour_step(layer_index: usize, pot_life_minutes: u32) -> cf_studio_core::PourStep {
+        cf_studio_core::PourStep {
+            layer_index,
+            material_display_name: "Ecoflex 00-30".to_string(),
+            mass_g: 40.0,
+            mix_ratio_a_to_b: "1:1".to_string(),
+            pot_life_minutes,
+            cure_time_hours: 4.0,
+            slacker_fraction: None,
+        }
+    }
+
+    /// What a finished cast hands back. `tag` lands in `out_dir` so a test can
+    /// tell one run's outputs from another's.
+    fn some_molds(tag: &str) -> MoldOutputs {
+        MoldOutputs {
+            out_dir: tag.into(),
+            mold_stls: vec!["cup.stl".into()],
+            plug_stls: vec!["plug.stl".into()],
+            accessory_stls: Vec::new(),
+            procedure_path: "procedure.md".into(),
+            total_mass_g: 80.0,
+            pour_plan: cf_studio_core::PourPlan {
+                steps: vec![pour_step(0, 30), pour_step(1, 45)],
+            },
+        }
+    }
+
+    /// A project carried as far as step 4, which is what `set_molds` requires.
+    fn studio_ready_for_molds() -> Studio {
+        use cf_studio_core::{DesignDraft, LayerDraft, PlugDraft, PrepInput, ScanInput};
+
+        let layer = || LayerDraft {
+            thickness_m: 0.003,
+            material_key: "ECOFLEX_00_30".to_string(),
+            slacker_fraction: 0.0,
+        };
+        let mut studio = Studio::default();
+        studio.project.set_scan(ScanInput {
+            source_path: "scan.stl".into(),
+        });
+        let built = [
+            studio.project.set_prep(PrepInput {
+                cleaned_stl: "scan.cleaned.stl".into(),
+                prep_toml: "scan.prep.toml".into(),
+            }),
+            studio.project.set_plug(PlugDraft::default()),
+            studio.project.set_design(DesignDraft {
+                cavity_inset_m: 0.0,
+                layers: vec![layer(), layer()],
+            }),
+        ];
+        assert!(
+            built.iter().all(Result::is_ok),
+            "the fixture must reach DesignLayers: {built:?}"
+        );
+        studio
+    }
+
+    /// Enough app to own a task pool and the mold poller — no window.
+    fn app_ready_for_molds() -> App {
+        let mut app = App::new();
+        app.add_plugins(TaskPoolPlugin::default())
+            .init_resource::<MoldsJob>()
+            .add_systems(Update, poll_molds_job);
+        app.insert_resource(studio_ready_for_molds());
+        app
+    }
+
+    /// Put a run into the job by hand: the task, when it started, and the
+    /// second last shown.
+    fn inject(
+        app: &mut App,
+        task: Task<Result<MoldOutputs, String>>,
+        started: Instant,
+        shown_secs: Option<u64>,
+    ) {
+        app.world_mut().resource_mut::<Studio>().busy = true;
+        app.world_mut().resource_mut::<MoldsJob>().0 = Some(MoldsRun {
+            started,
+            shown_secs,
+            task,
+        });
+    }
+
+    fn finished(result: Result<MoldOutputs, String>) -> Task<Result<MoldOutputs, String>> {
+        AsyncComputeTaskPool::get().spawn(async move { result })
+    }
+
+    fn never_finishes() -> Task<Result<MoldOutputs, String>> {
+        AsyncComputeTaskPool::get().spawn(async { future::pending().await })
+    }
+
+    /// Run frames until the app is handed back. Mirrors `run_until_idle`.
+    fn run_until_landed(app: &mut App) {
+        const DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
+        let deadline = Instant::now() + DEADLINE;
+        while app.world().resource::<Studio>().busy {
+            assert!(Instant::now() < deadline, "the cast never landed");
+            app.update();
+        }
+    }
+
+    #[test]
+    fn a_landed_cast_records_the_molds_and_hands_the_app_back() {
+        let mut app = app_ready_for_molds();
+        let task = finished(Ok(some_molds("out-a")));
+        inject(&mut app, task, Instant::now(), Some(0));
+
+        run_until_landed(&mut app);
+
+        let studio = app.world().resource::<Studio>();
+        assert!(!studio.busy, "the app comes back");
+        assert_eq!(
+            studio.project.molds().map(|m| m.out_dir.clone()),
+            Some("out-a".into()),
+            "the outputs must reach the PROJECT, not just the message"
+        );
+        assert!(
+            matches!(&studio.message, Some(Ok(text)) if text.contains("Molds ready")),
+            "and it says so: {:?}",
+            studio.message
+        );
+        assert!(
+            app.world().resource::<MoldsJob>().0.is_none(),
+            "the run is cleared, so a second cast can start"
+        );
+    }
+
+    /// ⚠⚠ `Project::set_molds` clears the pour *record*, but the live session
+    /// and its countdown are held on `Studio` — so without this reset a second
+    /// cast opens step 7 on the FIRST cast's progress, part-way through a pour
+    /// plan that no longer exists.
+    #[test]
+    fn new_molds_reset_the_pour_session_and_its_countdown() {
+        let mut app = app_ready_for_molds();
+        {
+            let mut studio = app.world_mut().resource_mut::<Studio>();
+            studio
+                .project
+                .set_molds(some_molds("out-first"))
+                .expect("the fixture records a first cast");
+            studio.mark_poured();
+            studio.start_pour_timer();
+            assert_eq!(studio.pour.current(), 1, "the fixture is mid-pour");
+            assert!(studio.pour_deadline.is_some(), "with a clock running");
+        }
+
+        let task = finished(Ok(some_molds("out-second")));
+        inject(&mut app, task, Instant::now(), Some(0));
+        run_until_landed(&mut app);
+
+        let studio = app.world().resource::<Studio>();
+        assert_eq!(
+            studio.pour.current(),
+            0,
+            "a new cast starts its pour at layer 1"
+        );
+        assert!(
+            studio.pour_deadline.is_none(),
+            "and the previous layer's countdown is stopped, not left running"
+        );
+    }
+
+    #[test]
+    fn a_failed_cast_says_why_and_hands_the_app_back() {
+        let mut app = app_ready_for_molds();
+        let task = finished(Err("the mesher gave up".to_string()));
+        inject(&mut app, task, Instant::now(), Some(0));
+
+        run_until_landed(&mut app);
+
+        let studio = app.world().resource::<Studio>();
+        assert!(!studio.busy, "a failure must hand the app back too");
+        assert!(
+            matches!(&studio.message, Some(Err(text)) if text.contains("the mesher gave up")),
+            "and carry the reason, not just 'it failed': {:?}",
+            studio.message
+        );
+        assert!(
+            studio.project.molds().is_none(),
+            "nothing is recorded from a failed run"
+        );
+    }
+
+    /// ★ The clock is rebuilt at most once a second. This system runs every
+    /// frame, so the naive version allocates a fresh `String` at 60 Hz to show
+    /// the same text 59 times out of 60.
+    #[test]
+    fn the_clock_is_rewritten_only_when_the_whole_second_changes() {
+        const SENTINEL: &str = "left alone";
+        let mut app = app_ready_for_molds();
+        let started = Instant::now();
+        inject(&mut app, never_finishes(), started, None);
+
+        // First frame: no second has been shown yet, so the line is written.
+        app.update();
+        assert!(
+            matches!(&app.world().resource::<Studio>().message,
+                     Some(Ok(text)) if text.contains("Making molds")),
+            "a running cast reports itself: {:?}",
+            app.world().resource::<Studio>().message
+        );
+
+        // Same whole second, so the next frames must not touch the message.
+        app.world_mut().resource_mut::<Studio>().message = Some(Ok(SENTINEL.to_string()));
+        app.update();
+        app.update();
+        assert!(
+            matches!(&app.world().resource::<Studio>().message,
+                     Some(Ok(text)) if text == SENTINEL),
+            "within one second the line is left alone: {:?}",
+            app.world().resource::<Studio>().message
+        );
+
+        // Wind the start back so the elapsed second has changed, and it redraws.
+        app.world_mut()
+            .resource_mut::<MoldsJob>()
+            .0
+            .as_mut()
+            .expect("the run is still in flight")
+            .started = started - std::time::Duration::from_secs(75);
+        app.update();
+        let studio = app.world().resource::<Studio>();
+        assert!(
+            matches!(&studio.message, Some(Ok(text)) if text.contains("1:15")),
+            "a new second redraws the clock: {:?}",
+            studio.message
+        );
+        assert!(studio.busy, "and the app is still held for the run");
+    }
+
+    #[test]
+    fn the_poller_leaves_an_idle_app_alone() {
+        let mut app = app_ready_for_molds();
+        app.world_mut().resource_mut::<Studio>().message = Some(Ok("untouched".to_string()));
+        app.update();
+
+        let studio = app.world().resource::<Studio>();
+        assert!(!studio.busy, "no run, so nothing holds the app");
+        assert!(
+            matches!(&studio.message, Some(Ok(text)) if text == "untouched"),
+            "and nothing rewrites the message: {:?}",
+            studio.message
+        );
     }
 }
