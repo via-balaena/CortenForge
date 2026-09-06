@@ -16,12 +16,12 @@ use crate::error::{EngineError, Result};
 use crate::pour::{LayerPour, build_pour_plan};
 
 /// Generate the molds for the **guided-wizard** path, from the project's
-/// own artifacts: the cleaned scan + its `.prep.toml` (step 2) and the
-/// in-app [`DesignDraft`] (step 3). This is the single call a frontend
+/// own artifacts: the cleaned scan + its `.prep.toml` and the in-app
+/// [`DesignDraft`]. This is the single call a frontend
 /// makes for "Make molds" — it is the composition that:
 ///
-/// 1. writes the `design.toml` next to the cleaned scan (step 3 keeps the
-///    draft only in memory, so it's materialized here, derived from the
+/// 1. writes the `design.toml` next to the cleaned scan (the frontend keeps
+///    the draft only in memory, so it's materialized here, derived from the
 ///    scan's stem: `foo.cleaned.stl` → `foo.design.toml`);
 /// 2. builds a typed [`CastConfig`] via [`CastConfig::for_design`] at the
 ///    chosen `mesh_cell_size_m` (the quality knob), with relative paths so
@@ -202,8 +202,8 @@ fn design_filename(cleaned_name: &str) -> String {
 /// Generate the molds for a project: run the cast pipeline typed, then
 /// gather the outputs.
 ///
-/// `config`'s `[design]` source should point at the `design.toml` saved
-/// in step 3, so the cavity inset + layer stack are lifted from it.
+/// `config`'s `[design]` source should point at the `design.toml` the
+/// wizard path writes, so the cavity inset + layer stack are lifted from it.
 /// `draft` supplies the layer anchors + Slacker for the pour plan (it
 /// matches that `design.toml` by construction, written from the same
 /// draft). `base_dir` is what the config's relative paths resolve against
