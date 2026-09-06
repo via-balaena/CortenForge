@@ -17,7 +17,7 @@ use std::time::SystemTime;
 
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, futures_lite::future};
-use cf_studio_core::{PlugDraft, PrepInput, Step};
+use cf_studio_core::{PlugDraft, PrepInput};
 use cf_studio_engine::{PlugPreview, proxy_preview_mesh};
 use mesh_types::IndexedMesh;
 
@@ -220,21 +220,32 @@ fn scan_stamp(prep: &PrepInput) -> Option<(u64, SystemTime)> {
 
 /// Keep the preview in step with the fields while the piece is on screen.
 ///
-/// ⚠ Two different conditions, and the split is the point.
+/// ⚠⚠ **Runs in full on every step that shows the piece — there is no
+/// step-3-only half, and an earlier draft of this function got that wrong.**
 ///
-/// **Landing** runs on every step that shows the piece, because a mesh still in
-/// flight when Continue is clicked would otherwise never land — steps 4 and 5
-/// would go on displaying the inset *before* last, so the piece committed would
-/// not be the piece on screen. Gated by
-/// `a_mesh_in_flight_lands_after_continue_has_moved_on`.
+/// That draft landed in-flight work everywhere but restricted *starting* to
+/// step 3, reasoning that only step 3 can change the shape. Both self-guard
+/// already (`start_cache` acts only on `Cache::Cold`, `start_mesh` only when
+/// nothing is meshing and the draft is not the one shown), so the restriction
+/// looked free — a mutation removing it was uncaught by the whole suite. It was
+/// equivalent along every path that had a test, and wrong along two that did
+/// not:
 ///
-/// **Starting** stays on step 3, the only screen that can change the shape.
-/// ⚠ Knowingly ungated, and honestly: removing this guard changes nothing
-/// observable, because `start_mesh` already returns early when the draft is
-/// what is shown and `start_cache` unless the cache is `Cold`. The guard is
-/// there to say which screen owns the shape, and so that a scan rewritten on
-/// disk does not begin a half-second flood fill on a step that cannot use it —
-/// not to avoid a per-frame re-mesh, which does not happen either way.
+/// 1. **Continue clicked during the flood fill.** On first arrival the cache is
+///    `Cold`, so `start_cache` spawns it and `start_mesh` returns early — there
+///    is no mesh yet. Commit inside that window and the cursor is on step 4
+///    before one was ever started, so `start_mesh` would never be reached
+///    again: steps 4 and 5 show the unshaped scan for the rest of the session.
+///    That is precisely the defect this arc set out to fix.
+/// 2. **A cache dropped where nothing can rebuild it.** `drop_a_stale_cache`
+///    invalidates whenever the scan's metadata is unreadable — moved file,
+///    removable volume, permissions — clearing the mesh and despawning the
+///    body. On step 3 that self-heals on the next frame. Restricted, it could
+///    not, and the piece vanished with neither a message nor the proxy.
+///
+/// ⇒ **The guards belong on the operations, not on the caller.** They already
+/// encode "do nothing unless there is something to do"; asking the step as well
+/// only removed the recovery.
 pub(crate) fn drive_plug_preview(
     mut view: ResMut<PlugView>,
     studio: Res<Studio>,
@@ -247,9 +258,6 @@ pub(crate) fn drive_plug_preview(
     view.drop_a_stale_cache(prep);
     view.land_cache();
     view.land_mesh();
-    if studio.cursor.viewed() != Step::ShapePiece {
-        return;
-    }
     view.start_cache(prep);
     view.start_mesh(&shape.plug_draft());
 }
@@ -261,7 +269,7 @@ pub(crate) mod tests {
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
 
-    use cf_studio_core::{PrepInput, Project, ScanInput};
+    use cf_studio_core::{PrepInput, Project, ScanInput, Step};
     use cf_studio_gui::{StepBoxState, WizardCursor};
     use mesh_types::{Bounded, unit_cube};
 
@@ -549,6 +557,78 @@ pub(crate) mod tests {
             size(&app)
         );
         let _ = std::fs::remove_dir_all(fixture_dir("rewritten"));
+    }
+
+    /// ★★★ **Continue clicked while the flood fill is still running.**
+    ///
+    /// The window is real: on first arrival the cache is `Cold`, `start_cache`
+    /// spawns a build documented as "hundreds of milliseconds", and `start_mesh`
+    /// returns early for `Cache::Building` — so for that whole window there is
+    /// no mesh and no body. Commit inside it and the cursor is on step 4.
+    ///
+    /// ⚠ `a_mesh_in_flight_lands_after_continue_has_moved_on` cannot see this:
+    /// it spins until a mesh has *started* before moving the cursor, so it only
+    /// covers the window after this one. Restricting `start_mesh` to step 3
+    /// passes that gate and fails this one — steps 4 and 5 would show the
+    /// unshaped scan for the rest of the session.
+    #[test]
+    fn continuing_before_the_first_mesh_starts_still_builds_the_piece() {
+        let mut app = app_on(Step::ShapePiece, cleaned(a_cleaned_scan("continue-early")));
+        set_cavity(&mut app, 3);
+
+        // One frame: the cache is spawned, and nothing is meshing yet.
+        app.update();
+        assert!(
+            view(&app).meshing.is_none() && view(&app).shown.is_none(),
+            "the fixture must sit in the pre-mesh window, or this gates nothing"
+        );
+
+        // Continue, from inside that window.
+        app.world_mut().resource_mut::<Studio>().cursor = WizardCursor::new(Step::DesignLayers);
+
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while view(&app).shown.is_none() {
+            assert!(
+                Instant::now() < deadline,
+                "no piece was ever built, so step 4 shows the scan it told the \
+                 user it was building outward from"
+            );
+            app.update();
+        }
+    }
+
+    /// ⚠ A cache dropped on a step that cannot rebuild it takes the piece with
+    /// it permanently.
+    ///
+    /// `drop_a_stale_cache` invalidates whenever the scan's metadata cannot be
+    /// read — a moved file, a removable volume, a permission change — clearing
+    /// the mesh and despawning the body. On step 3 that self-heals next frame.
+    /// Restricted to step 3, steps 4 and 5 could drop but never restart, and the
+    /// piece vanished with neither a message nor the proxy fallback.
+    #[test]
+    fn a_cache_dropped_on_step_four_is_rebuilt_there() {
+        let prep = a_cleaned_scan("drop-on-four");
+        let mut app = app_on(Step::ShapePiece, cleaned(prep.clone()));
+        settle(&mut app);
+        assert!(view(&app).shown.is_some(), "a piece is on screen to lose");
+
+        app.world_mut().resource_mut::<Studio>().cursor = WizardCursor::new(Step::DesignLayers);
+        std::fs::write(&prep.cleaned_stl, box_stl(0.012)).expect("the scan changes underneath");
+        app.update();
+        assert!(
+            view(&app).mesh().is_none(),
+            "the stale piece is dropped on step 4 too"
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while view(&app).shown.is_none() {
+            assert!(
+                Instant::now() < deadline,
+                "step 4 dropped the piece and could not rebuild it"
+            );
+            app.update();
+        }
+        let _ = std::fs::remove_dir_all(fixture_dir("drop-on-four"));
     }
 
     /// ⚠ A project carrying no cleaned scan at all still gets a preview, and

@@ -746,7 +746,6 @@ fn draw_add_scan(ui: &mut egui::Ui, studio: &Studio, dialog: &PendingDialog) -> 
     intent
 }
 
-/// Step 5 during the Slint→Bevy port. Says what is missing and that the work
 /// Step 5 — make the printable mold pieces. This is the one that runs the cast.
 ///
 /// ⚠ The parts card is derived from the committed design by
@@ -797,12 +796,20 @@ fn draw_make_molds(
         // ⚠ One gate, one place: nothing checked disables the button, and
         // `start_molds` does not check again. Two copies of the rule would make
         // it untestable from either side.
-        let castable = ready && molds.picker.any_checked();
-        if ui
-            .add_enabled(castable, egui::Button::new(make_molds_label(studio.busy)))
-            .on_disabled_hover_text("Pick at least one part to generate.")
-            .clicked()
-        {
+        // ⚠ The hover text explains only the reason the USER can act on. When
+        // `ready` is false the button is disabled because a cast is running, a
+        // dialog is open or a Save is pending — telling someone to pick a part
+        // while every part is checked and the label reads "Making molds…" is a
+        // lie. The relabel already says what is happening, so say nothing.
+        let enough_parts = molds.picker.any_checked();
+        let castable = ready && enough_parts;
+        let button = ui.add_enabled(castable, egui::Button::new(make_molds_label(studio.busy)));
+        let button = if ready && !enough_parts {
+            button.on_disabled_hover_text("Pick at least one part to generate.")
+        } else {
+            button
+        };
+        if button.clicked() {
             acted.molds = Some(MoldsStart {
                 cell_size_m: cell_size_m_for_quality(molds.quality_idx),
                 selection: molds.picker.selection(CENDRILLON_CAST_MODE),
@@ -829,12 +836,22 @@ fn draw_make_molds(
 /// selective path.
 fn draw_parts_picker(ui: &mut egui::Ui, molds: &mut MoldControls, ready: bool) {
     card(ui, LAYER_FILL, |ui| {
+        // ⚠ Gated on there being rows too: `set_all` over an empty picker is a
+        // no-op, so live All / None beside the "choose a design first" hint are
+        // two controls that cannot do anything.
+        let has_rows = !molds.picker.is_empty();
         ui.horizontal(|ui| {
             ui.colored_label(CONTROL_TEXT, "Parts to generate");
-            if ui.add_enabled(ready, egui::Button::new("All")).clicked() {
+            if ui
+                .add_enabled(ready && has_rows, egui::Button::new("All"))
+                .clicked()
+            {
                 molds.picker.set_all(true);
             }
-            if ui.add_enabled(ready, egui::Button::new("None")).clicked() {
+            if ui
+                .add_enabled(ready && has_rows, egui::Button::new("None"))
+                .clicked()
+            {
                 molds.picker.set_all(false);
             }
         });
@@ -1960,7 +1977,7 @@ pub(crate) mod tests {
 
         assert!(
             !app.world().resource::<Studio>().busy,
-            "an empty selection must not start a fifteen-minute run that meshes nothing"
+            "an empty selection must not start a half-hour run that meshes nothing"
         );
     }
 
@@ -2018,8 +2035,8 @@ pub(crate) mod tests {
 
     /// ⚠⚠ The pairing `cell_size_m_for_quality`'s own doc said nothing checked.
     /// The labels and the cell sizes are two lists indexed by the same number,
-    /// and swapping the labels would quietly cast a 15-minute run when the user
-    /// asked for the 4-minute preview.
+    /// and swapping the labels would quietly cast a 36-minute run when the user
+    /// asked for the 7-minute preview.
     #[test]
     fn the_quality_labels_match_the_cell_sizes_they_pick() {
         for (index, label) in QUALITY_LABELS.iter().enumerate() {

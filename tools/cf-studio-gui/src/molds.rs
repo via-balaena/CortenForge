@@ -81,7 +81,15 @@ pub(crate) mod tests {
     /// suite was run from. The run still fails a moment later on the missing
     /// geometry, which is all the gate needs; the write happens first.
     pub(crate) fn viewing_step_5_with(layers: usize) -> Studio {
-        let dir = crate::save::tests::temp_dir("molds-fixture");
+        // ⚠⚠ UNIQUE PER CALL. `temp_dir` names the directory by label + PID and
+        // `remove_dir_all`s it on entry, so a constant label means ~20 tests
+        // across this file and `panel.rs` share one path and delete each other's
+        // fixture mid-run — and `clicking_make_molds_in_the_running_wizard_
+        // starts_the_cast` writes a real `design.toml` into it while another
+        // test may be tearing it down.
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = crate::save::tests::temp_dir(&format!("molds-fixture-{n}"));
         let mut studio = Studio {
             cursor: WizardCursor::new(Step::MakeMolds),
             ..Studio::default()

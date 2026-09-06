@@ -1,19 +1,20 @@
 //! Background work, and the pollers that land its results on the app.
 //!
-//! Two ops are too slow for the main thread, and `Studio::busy` gates every
-//! control that could clobber one while it runs:
+//! Three ops are too slow for the main thread, and `Studio::busy` gates every
+//! control that could clobber one while it runs, in step order:
 //!
 //! - **Simplify** (step 2) decimates the working scan, ~10–40 s.
+//! - **the cast** (step 5) generates the printable molds.
 //! - **the print export** (step 6) copies the mold package, hundreds of
 //!   megabytes at 0.5 mm.
-//! - **the cast** (step 5) generates the printable molds. This one is measured
-//!   in *minutes* — 408 s at 1.5 mm and 2187 s at 0.5, measured 2026-09-06 in
-//!   the BONDED mode this app casts in — which is why it is the only job that
-//!   reports its own elapsed time while it runs.
 //!
-//!   ⚠ The detachable figures those replaced (269 s / ~15 min) were not merely
-//!   older, they were the wrong mode: bonded is 1.5× slower at 1.5 mm and
-//!   2.4× at 0.5, so the ratio does not even hold across cell sizes.
+//! The cast is the one measured in *minutes* — **408 s at 1.5 mm, 2187 s at
+//! 0.5**, measured 2026-09-06 in the BONDED mode this app casts in — which is
+//! why it is the only job that reports its own elapsed time while it runs.
+//!
+//! ⚠ The figures those replaced (269 s / ~15 min) were not merely older, they
+//! were the wrong MODE: bonded is 1.5× detachable at 1.5 mm and 2.4× at 0.5,
+//! so the ratio does not even hold across cell sizes.
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -1010,15 +1011,21 @@ endsolid t
     fn the_clock_is_rewritten_only_when_the_whole_second_changes() {
         const SENTINEL: &str = "left alone";
         let mut app = app_ready_for_molds();
-        let started = Instant::now();
+        // ⚠⚠ Anchored HALF a second inside the tick, not at `Instant::now()`.
+        // Anchoring at now put the frames an unknown distance from the next
+        // whole-second boundary, so on a loaded box, a debug build, or a
+        // contended test thread the clock could legitimately advance mid-test
+        // and fail a gate that had found no defect. Starting at 75.5 s leaves
+        // ~500 ms of slack for three frames that take microseconds.
+        let started = Instant::now() - std::time::Duration::from_millis(75_500);
         inject(&mut app, never_finishes(), started, None);
 
         // First frame: no second has been shown yet, so the line is written.
         app.update();
         assert!(
             matches!(&app.world().resource::<Studio>().message,
-                     Some(Ok(text)) if text.contains("Making molds")),
-            "a running cast reports itself: {:?}",
+                     Some(Ok(text)) if text.contains("1:15")),
+            "a running cast reports itself, at the second it is actually on: {:?}",
             app.world().resource::<Studio>().message
         );
 
@@ -1033,17 +1040,18 @@ endsolid t
             app.world().resource::<Studio>().message
         );
 
-        // Wind the start back so the elapsed second has changed, and it redraws.
+        // Wind the start back exactly one second, so the elapsed whole second
+        // changes and nothing else does.
         app.world_mut()
             .resource_mut::<MoldsJob>()
             .0
             .as_mut()
             .expect("the run is still in flight")
-            .started = started - std::time::Duration::from_secs(75);
+            .started = started - std::time::Duration::from_secs(1);
         app.update();
         let studio = app.world().resource::<Studio>();
         assert!(
-            matches!(&studio.message, Some(Ok(text)) if text.contains("1:15")),
+            matches!(&studio.message, Some(Ok(text)) if text.contains("1:16")),
             "a new second redraws the clock: {:?}",
             studio.message
         );

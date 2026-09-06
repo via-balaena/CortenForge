@@ -611,7 +611,7 @@ impl PourSession {
 /// Elapsed time for a long job's status line, as `M:SS`.
 ///
 /// Lifted from an inline `format!` so the long-job status text is testable; the
-/// jobs it labels run 4.5–15 minutes, so the minutes field is the part that
+/// jobs it labels run 7–36 minutes, so the minutes field is the part that
 /// matters and the one an off-by-one would hide.
 #[must_use]
 pub fn format_elapsed(secs: u64) -> String {
@@ -1829,18 +1829,18 @@ visible = true
     fn cast_base_mold_as_the_app_would(cell_size_m: f64, out_name: &str) {
         use cf_studio_core::{DesignDraft, LayerDraft};
 
-        let home = PathBuf::from(std::env::var("HOME").expect("HOME"));
-        let cleaned = home.join("scans/base_mold.cleaned.stl");
-        let prep = home.join("scans/base_mold.prep.toml");
-        // ⚠ A missing fixture is an ERROR, not a skip: these gates only run when
-        // asked for by name, so a silent pass would report the bonded path as
-        // cast when nothing ran. Same rule `isolated_base_mold_fixture` states.
-        assert!(
-            cleaned.exists() && prep.exists(),
-            "MISSING FIXTURE: {} and {} are required by this #[ignore]d gate",
-            cleaned.display(),
-            prep.display(),
-        );
+        // ⚠⚠ A PRIVATE COPY, never `~/scans` in place. Handing
+        // `generate_molds_for_design` the paths in `~/scans` directly makes
+        // `base_dir` the user's scan folder: step 1 of that function is
+        // `save_design_from_draft`, so the run OVERWRITES
+        // `base_mold.design.toml`, and the output directory lands beside it and
+        // is never removed. Both happened — 217 MB left behind and the user's
+        // design file rewritten, next to a `.pre-gate-bak` someone had already
+        // made the last time. `cf-studio-engine`'s `isolated_base_mold_fixture`
+        // exists for exactly this and its sibling `discard_fixture` is marked
+        // "★ Not optional … 1.43 GB accumulated across 12 directories before
+        // anyone looked." This is that pattern, not a new one.
+        let (dir, cleaned, prep) = isolated_base_mold_copy(out_name);
 
         // The stack the GUI opens on, as the engine's siblings use.
         let draft = DesignDraft {
@@ -1877,7 +1877,7 @@ visible = true
             &RidgeOptions::default(),
             &selection,
             CENDRILLON_CAST_MODE,
-            Some(Path::new(out_name)),
+            None,
         )
         .expect("the bonded path must cast");
 
@@ -1893,6 +1893,43 @@ visible = true
             "the plan still covers 3 layers"
         );
         assert!(out.total_mass_g > 0.0);
+
+        // ⚠ After the assertions, never on the failure path — a red gate keeps
+        // its output for inspection.
+        if let Err(err) = std::fs::remove_dir_all(&dir) {
+            eprintln!("WARN: could not remove fixture {}: {err}", dir.display());
+        }
+    }
+
+    /// A private copy of the `base_mold` fixture, in this gate's own temp
+    /// directory, so the cast's `base_dir` is never the user's `~/scans`.
+    ///
+    /// ⚠⚠ PANICS when the fixture is absent rather than skipping. These gates
+    /// run only when asked for by name, so a silent pass would report the
+    /// bonded path as cast when nothing ran.
+    fn isolated_base_mold_copy(label: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let scans = PathBuf::from(std::env::var("HOME").expect("HOME")).join("scans");
+        let (src_stl, src_prep) = (
+            scans.join("base_mold.cleaned.stl"),
+            scans.join("base_mold.prep.toml"),
+        );
+        assert!(
+            src_stl.exists() && src_prep.exists(),
+            "MISSING FIXTURE: {} and {} are required by this #[ignore]d gate",
+            src_stl.display(),
+            src_prep.display(),
+        );
+        let dir =
+            std::env::temp_dir().join(format!("cf-studio-gui-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a fixture dir");
+        let (stl, prep) = (
+            dir.join("base_mold.cleaned.stl"),
+            dir.join("base_mold.prep.toml"),
+        );
+        std::fs::copy(&src_stl, &stl).expect("copy the cleaned scan");
+        std::fs::copy(&src_prep, &prep).expect("copy the prep");
+        (dir, stl, prep)
     }
 
     /// The **fast preview** — the quality picker's index 1.
@@ -2389,7 +2426,7 @@ visible = true
         assert_eq!(format_elapsed(9), "0:09");
         assert_eq!(format_elapsed(60), "1:00");
         assert_eq!(format_elapsed(61), "1:01");
-        // The jobs this labels run 4.5-15 minutes; the minutes field is the part
+        // The jobs this labels run 7-36 minutes; the minutes field is the part
         // an off-by-one would hide.
         assert_eq!(format_elapsed(15 * 60 + 7), "15:07");
     }
