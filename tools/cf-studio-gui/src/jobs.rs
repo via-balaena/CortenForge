@@ -280,6 +280,12 @@ pub(crate) fn poll_simplify_job(
 
 /// Open `dir` in the OS file manager. Best-effort — a failure to spawn is
 /// ignored, because it is a convenience and not part of the workflow.
+///
+/// ⚠ Knowingly ungated, and the one surviving mutant in this file (measured
+/// 2026-09-06: 21 mutants, 6 caught, 14 unviable, this one missed). Gating it
+/// means either opening a Finder window on every test run or injecting the
+/// spawn — both worse than an untested convenience whose failure is already
+/// defined as "nothing happens".
 pub(crate) fn reveal_in_file_manager(dir: &Path) {
     #[cfg(target_os = "macos")]
     let program = "open";

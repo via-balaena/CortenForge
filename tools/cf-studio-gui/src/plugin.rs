@@ -240,14 +240,9 @@ mod tests {
 
     /// ★★ The plugin's own registrations, which nothing else reaches. Every
     /// resource the wizard takes is inserted by hand in its tests, so dropping
-    /// any one `init_resource` here left the whole suite green — a system whose
-    /// params cannot be built does not run, so the wizard simply stops
+    /// any one `init_resource` here left the whole suite green — Bevy skips a
+    /// system whose params it cannot build, so the wizard simply stops
     /// appearing.
-    ///
-    /// ⚠ It does not *silently* skip, as this note used to say: measured on
-    /// Bevy 0.18, a param that fails validation raises an error the default
-    /// handler PANICS on. `jobs.rs`'s wiring gates set `ignore` for exactly
-    /// that reason.
     ///
     /// ⚠ Driven through the real schedule, not by naming the resources. A list
     /// gates only what somebody remembered to add to it.
