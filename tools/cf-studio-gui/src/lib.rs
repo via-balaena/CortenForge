@@ -206,12 +206,12 @@ pub fn gate_ridge_options(c: RidgeControls) -> RidgeOptions {
     }
 }
 
-/// Marching-cubes cell size (meters) for the step-4 quality-picker index.
+/// Marching-cubes cell size (meters) for the step-5 quality-picker index.
 /// Index 0 = Fine 0.5 mm (the print-quality default — the physical fit-test
 /// print was 0.5 mm); index 1 = Fast 1.5 mm preview. Any other index falls
 /// back to the print-quality default. 3 mm is never offered (it drops the
 /// flange web). **Must stay in lockstep with the quality picker's option order
-/// in the step-4 panel.** Nothing checks that pairing; only the index→size
+/// in the step-5 panel.** Nothing checks that pairing; only the index→size
 /// mapping is pinned, by `quality_index_maps_to_cell_size`.
 #[must_use]
 pub fn cell_size_m_for_quality(quality_idx: i32) -> f64 {
@@ -228,7 +228,7 @@ pub fn cell_size_m_for_quality(quality_idx: i32) -> f64 {
 ///
 /// In [`CastMode::Bonded`] only the **layer-0** plug is offered — the
 /// per-layer plugs above 0 are redundant (the cured layer N is the plug for
-/// layer N+1), so they are not listed (or generated). The step-4 part picker
+/// layer N+1), so they are not listed (or generated). The step-5 part picker
 /// renders the labels; the ids build the [`PartSelection`].
 #[must_use]
 pub fn enumerate_parts(layer_count: usize, mode: CastMode) -> Vec<(PartId, String)> {
@@ -287,7 +287,7 @@ pub fn part_selection_from_checks(
     }
 }
 
-/// A human-readable summary of a completed mold run for the step-4 results
+/// A human-readable summary of a completed mold run for the step-5 results
 /// panel: piece counts, total silicone, the per-layer pour list, and where
 /// the files landed.
 #[must_use]
@@ -320,7 +320,7 @@ pub fn format_molds_summary(out: &MoldOutputs) -> String {
     s
 }
 
-/// The step-5 (Print) status line, derived from project state: once the
+/// The step-6 (Print) status line, derived from project state: once the
 /// files are exported, where they went; before that, how many printables
 /// are waiting to be saved; nothing if the molds aren't made yet.
 #[must_use]
@@ -338,7 +338,7 @@ pub fn print_step_summary(project: &Project) -> String {
     String::new()
 }
 
-// ── step 6: the pour assistant ──────────────────────────────────────
+// ── step 7: the pour assistant ──────────────────────────────────────
 
 /// One pour layer's full recipe line. Without Slacker, e.g.
 /// `"Dragon Skin 20A — 250 g, mix 1:1 · pot life ~25 min · cure ~5 h"`. With
@@ -379,7 +379,7 @@ fn pour_recipe_line(step: &PourStep, is_last: bool) -> String {
 }
 
 /// The full pour plan as a numbered overview (innermost layer first), for
-/// the step-6 reference panel. Empty plan → a short placeholder.
+/// the step-7 reference panel. Empty plan → a short placeholder.
 #[must_use]
 pub fn format_pour_plan(plan: &PourPlan) -> String {
     if plan.steps.is_empty() {
@@ -396,7 +396,7 @@ pub fn format_pour_plan(plan: &PourPlan) -> String {
     s
 }
 
-/// The active-layer instruction for the step-6 pour panel: which layer of
+/// The active-layer instruction for the step-7 pour panel: which layer of
 /// how many, its recipe, and what to do. `current` is 0-based.
 #[must_use]
 pub fn format_pour_active(plan: &PourPlan, current: usize) -> String {
@@ -412,7 +412,7 @@ pub fn format_pour_active(plan: &PourPlan, current: usize) -> String {
     )
 }
 
-/// A pot-life countdown's display text + urgency for the step-6 timer.
+/// A pot-life countdown's display text + urgency for the step-7 timer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PourCountdown {
     /// `"M:SS left"`, or a "time's up" line once expired.
