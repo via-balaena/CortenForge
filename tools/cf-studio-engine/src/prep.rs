@@ -49,7 +49,7 @@ pub fn accept_prep(cleaned_stl: &Path, prep_toml: &Path) -> Result<PrepInput> {
 
     // 3. It must yield a centerline of >= 2 points. cortenforge::cf_cast::Ribbon::new
     //    rejects < 2 (RibbonError::InsufficientPoints), so we catch a
-    //    degenerate centerline here at step 2 rather than letting it blow
+    //    degenerate centerline here, at prep time, rather than letting it blow
     //    up deep in the 15-minute mold-gen. (cf-cast-cli's own guard only
     //    checks is_empty, so >= 2 is the stronger, correct precondition —
     //    and a real cf-scan-prep centerline polyline has many points.)
