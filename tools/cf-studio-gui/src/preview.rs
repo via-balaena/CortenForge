@@ -1,5 +1,8 @@
 //! The live plug preview: the shaped piece, meshed off the main thread and
 //! shown on every step whose subject is the piece (3, 4 and 5).
+//!
+//! ⚠ Off-thread because it must be: **97 ms** to mesh a 51 k-triangle body,
+//! **191 ms** at 241 k, against a 16 ms frame.
 
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
@@ -229,6 +232,9 @@ pub(crate) fn drive_plug_preview(
     view.land_cache();
     view.land_mesh();
     view.start_cache(prep);
+    // ▶ `plug_draft` allocates a ridge `Vec` every frame the piece is up. A
+    // caller-side guard was tried and did not help; the fix belongs in
+    // `start_mesh`, against a cheap stamp.
     view.start_mesh(&shape.plug_draft());
 }
 

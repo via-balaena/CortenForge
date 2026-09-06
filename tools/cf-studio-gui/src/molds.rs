@@ -117,8 +117,14 @@ pub(crate) mod tests {
     /// This process's fixture root.
     ///
     /// ⚠ PID-keyed: without it, two live runs share a path and the
-    /// `remove_dir_all` below deletes a running suite's fixtures. Costs one
-    /// directory per run, as every other `temp_dir` caller here already does.
+    /// `remove_dir_all` below deletes a running suite's fixtures.
+    ///
+    /// ▶ Leaks one root per run, and nothing collects it — a reaper aging roots
+    /// by mtime was tried and removed, because a root's mtime stops advancing
+    /// once its subdirectories exist, so a long run could have its fixtures
+    /// deleted underneath it. `save::tests::temp_dir` and
+    /// `preview::tests::fixture_dir` leak the same way; collecting all three
+    /// wants one scheme, not a third.
     fn fixture_root() -> std::path::PathBuf {
         use std::sync::OnceLock;
         static ROOT: OnceLock<std::path::PathBuf> = OnceLock::new();

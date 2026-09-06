@@ -801,6 +801,9 @@ fn draw_make_molds(
         });
     });
 
+    // ⚠ A snapshot: the card's empty-state branch reads this while its checkbox
+    // loop reads `picker.rows()` live. Nothing between them changes the picker's
+    // LENGTH today; a row-adding handler in the button row would.
     let has_rows = !molds.picker.is_empty();
     ui.add_space(ROW_GAP);
     ui.horizontal(|ui| {
@@ -2665,18 +2668,7 @@ pub(crate) mod tests {
         let mut absent = wizard_previewing(crate::preview::tests::a_missing_scan());
         let mut real = wizard_previewing(crate::preview::tests::a_cleaned_scan("panel-note"));
 
-        // ⚠ A literal table, not `shows_the_piece(step)` — asserting against the
-        // function under test flips both sides together and passes. `scene.rs`
-        // makes the same point for the same predicate.
-        let expected = [
-            (Step::AddScan, false),
-            (Step::CleanScan, false),
-            (Step::ShapePiece, true),
-            (Step::DesignLayers, true),
-            (Step::MakeMolds, true),
-            (Step::Print, false),
-            (Step::Pour, false),
-        ];
+        let expected = crate::scene::tests::PIECE_STEPS;
         // ⚠ Counting to `Step::TOTAL` is not coverage: a duplicated row and a
         // missing one also make seven.
         assert_eq!(

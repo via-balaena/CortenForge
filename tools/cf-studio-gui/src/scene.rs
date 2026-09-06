@@ -223,6 +223,10 @@ pub(crate) const fn shows_the_piece(step: Step) -> bool {
 ///
 /// ⚠ Visibility, not a rebuild: the plug is the scan offset inward, so drawing
 /// both hides the piece inside the body it was cut from.
+///
+/// ⚠ Both bodies are spawned carrying an explicit `Visibility`. `Mesh3d` brings
+/// one along only once the render plugins are up, so relying on that puts this
+/// decision out of reach of a headless gate — the only place it is checked.
 pub(crate) fn show_the_step_subject(
     studio: Res<Studio>,
     pieces: Query<(), With<PlugBody>>,
@@ -332,7 +336,7 @@ fn viewport_for(free: egui::Rect, bounds: UVec2, scale: f32) -> Option<Viewport>
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use bevy::asset::AssetPlugin;
 
     use cf_studio_gui::WizardCursor;
@@ -717,6 +721,20 @@ endsolid t
         );
     }
 
+    /// Which steps show the piece, stated once, as a literal.
+    ///
+    /// ⚠ A literal, never `shows_the_piece(step)` — asserting against the
+    /// function under test flips both sides together and passes.
+    pub(crate) const PIECE_STEPS: [(Step, bool); Step::TOTAL] = [
+        (Step::AddScan, false),
+        (Step::CleanScan, false),
+        (Step::ShapePiece, true),
+        (Step::DesignLayers, true),
+        (Step::MakeMolds, true),
+        (Step::Print, false),
+        (Step::Pour, false),
+    ];
+
     /// ⚠ Swept over all seven steps. This was called "step three shows the piece
     /// and every other step shows the scan" and checked exactly ONE other step, so
     /// steps 4 and 5 shipped showing the wrong body with nothing red.
@@ -731,15 +749,7 @@ endsolid t
         // expectation reverts with it, and the gate passes. Written that way
         // first, and the negative control caught it — the ShapePiece-only rule
         // this gate exists to forbid sailed straight through.
-        let expected = [
-            (Step::AddScan, false),
-            (Step::CleanScan, false),
-            (Step::ShapePiece, true),
-            (Step::DesignLayers, true),
-            (Step::MakeMolds, true),
-            (Step::Print, false),
-            (Step::Pour, false),
-        ];
+        let expected = PIECE_STEPS;
         // ⚠ Counting to `Step::TOTAL` is not coverage: a duplicated row and a
         // missing one also make seven.
         assert_eq!(
