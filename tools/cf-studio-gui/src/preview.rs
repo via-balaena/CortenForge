@@ -218,19 +218,38 @@ fn scan_stamp(prep: &PrepInput) -> Option<(u64, SystemTime)> {
     Some((file.len(), file.modified().ok()?))
 }
 
-/// Keep the preview in step with the fields while step 3 is on screen.
+/// Keep the preview in step with the fields while the piece is on screen.
+///
+/// ⚠ Two different conditions, and the split is the point.
+///
+/// **Landing** runs on every step that shows the piece, because a mesh still in
+/// flight when Continue is clicked would otherwise never land — steps 4 and 5
+/// would go on displaying the inset *before* last, so the piece committed would
+/// not be the piece on screen. Gated by
+/// `a_mesh_in_flight_lands_after_continue_has_moved_on`.
+///
+/// **Starting** stays on step 3, the only screen that can change the shape.
+/// ⚠ Knowingly ungated, and honestly: removing this guard changes nothing
+/// observable, because `start_mesh` already returns early when the draft is
+/// what is shown and `start_cache` unless the cache is `Cold`. The guard is
+/// there to say which screen owns the shape, and so that a scan rewritten on
+/// disk does not begin a half-second flood fill on a step that cannot use it —
+/// not to avoid a per-frame re-mesh, which does not happen either way.
 pub(crate) fn drive_plug_preview(
     mut view: ResMut<PlugView>,
     studio: Res<Studio>,
     shape: Res<ShapeControls>,
 ) {
-    if studio.cursor.viewed() != Step::ShapePiece {
+    if !crate::scene::shows_the_piece(studio.cursor.viewed()) {
         return;
     }
     let prep = studio.project.prep();
     view.drop_a_stale_cache(prep);
     view.land_cache();
     view.land_mesh();
+    if studio.cursor.viewed() != Step::ShapePiece {
+        return;
+    }
     view.start_cache(prep);
     view.start_mesh(&shape.plug_draft());
 }
@@ -591,6 +610,62 @@ pub(crate) mod tests {
             view.meshing.is_none(),
             "and the draft it failed for is not asked for again"
         );
+    }
+
+    /// ★★ A mesh still in flight when **Continue** is clicked must still land.
+    ///
+    /// ⚠ Landing used to stop with step 3, so a piece meshed on the way out
+    /// never arrived: steps 4 and 5 went on drawing the inset *before* last,
+    /// and the piece the user committed was not the piece on screen. The fix
+    /// splits the two conditions — land on any step that shows the piece, start
+    /// only on the one that can change it.
+    #[test]
+    fn a_mesh_in_flight_lands_after_continue_has_moved_on() {
+        let mut app = app_on(
+            Step::ShapePiece,
+            cleaned(a_cleaned_scan("land-after-continue")),
+        );
+        set_cavity(&mut app, 3);
+
+        // Run step 3 until a mesh is actually in flight — the cache has to build
+        // first, so this is not the first frame.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while view(&app).meshing.is_none() {
+            assert!(Instant::now() < deadline, "no mesh was ever started");
+            app.update();
+        }
+        assert!(
+            view(&app).shown.is_none(),
+            "nothing has landed yet, so landing is what this measures"
+        );
+
+        // Continue: the cursor moves on while that build is still running.
+        app.world_mut().resource_mut::<Studio>().cursor = WizardCursor::new(Step::DesignLayers);
+
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while view(&app).meshing.is_some() {
+            assert!(
+                Instant::now() < deadline,
+                "the in-flight mesh never landed once the step moved on"
+            );
+            app.update();
+        }
+        assert!(
+            view(&app).shown.is_some(),
+            "the piece reached step 4, rather than being abandoned in flight"
+        );
+
+        // ...and step 4 must not start a NEW one: it has no shape controls.
+        let generation = view(&app).generation();
+        for _ in 0..8 {
+            app.update();
+        }
+        assert_eq!(
+            view(&app).generation(),
+            generation,
+            "step 4 lands what step 3 started and asks for nothing more"
+        );
+        let _ = std::fs::remove_dir_all(fixture_dir("land-after-continue"));
     }
 
     /// ⚠ The flood fill is hundreds of milliseconds. Starting it on a step that

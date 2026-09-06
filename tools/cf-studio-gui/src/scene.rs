@@ -207,7 +207,29 @@ pub(crate) fn show_plug(
     ));
 }
 
-/// Show the piece on step 3 and the scan on every other step.
+/// Whether this step's subject is the shaped piece rather than the scan it was
+/// cut from.
+///
+/// ★ Once the piece is shaped it stays the subject for every screen that is
+/// *about* it: shaping it, choosing the silicone that goes round it, and casting
+/// it. Print and Pour are about files and buckets, so they show the scan again.
+///
+/// ⚠ Found by hand-testing, not by a gate: this said `ShapePiece` alone, which
+/// was right when step 3 was the only screen that existed. Steps 4 and 5 landed
+/// after it and inherited the answer without anyone re-asking — so step 4 told
+/// you to build layers "outward off the piece you just shaped" while showing you
+/// the unshaped scan, and step 5 cast a piece it never displayed.
+///
+/// ⚠ An exhaustive `match`, not a `matches!`: a step added later must not
+/// silently default to showing the scan. The compiler names the new arm.
+pub(crate) const fn shows_the_piece(step: Step) -> bool {
+    match step {
+        Step::ShapePiece | Step::DesignLayers | Step::MakeMolds => true,
+        Step::AddScan | Step::CleanScan | Step::Print | Step::Pour => false,
+    }
+}
+
+/// Show the piece on the steps that are about it, and the scan on the rest.
 ///
 /// ⚠ Visibility, not a rebuild. The plug is the scan offset inward, so the two
 /// occupy the same space and drawing both hides the piece inside the body it was
@@ -225,7 +247,7 @@ pub(crate) fn show_the_step_subject(
     // ⚠ Whether a piece is on screen, not whether one has been meshed:
     // [`show_plug`] needs the scan for the lift, so a meshed piece can have no
     // body — and the scan would then be hidden in favour of nothing at all.
-    let previewing = studio.cursor.viewed() == Step::ShapePiece && !pieces.is_empty();
+    let previewing = shows_the_piece(studio.cursor.viewed()) && !pieces.is_empty();
     for (mut visibility, is_plug) in &mut bodies {
         *visibility = if is_plug == previewing {
             Visibility::Inherited
@@ -712,34 +734,58 @@ endsolid t
     }
 
     /// ★★ The plug is the scan offset inward, so it sits *inside* the body it
-    /// was cut from: drawing both is drawing neither. Step 3 shows the piece,
-    /// every other step shows the scan.
+    /// was cut from: drawing both is drawing neither. Each step shows exactly
+    /// one of them, and [`shows_the_piece`] says which.
+    ///
+    /// ⚠⚠ Swept over **all seven** steps, and that is the whole repair. This
+    /// gate used to be called "step three shows the piece and every other step
+    /// shows the scan" and checked exactly ONE other step — `CleanScan`. Steps
+    /// 4 and 5 shipped after it and were never looked at, so the app told you
+    /// to build silicone layers "outward off the piece you just shaped" while
+    /// showing you the unshaped scan, and nothing went red. A gate whose name
+    /// says "every" must actually enumerate every one.
     #[test]
-    fn step_three_shows_the_piece_and_every_other_step_shows_the_scan() {
+    fn every_step_shows_the_body_it_is_about() {
         let showing = showing_both(Step::ShapePiece, "plug-swap");
         assert!(showing.is_some(), "the fixture must load");
         let Some(mut app) = showing else { return };
 
+        // ⚠⚠ A LITERAL table, not `shows_the_piece(step)`. Asserting against
+        // the function under test is a mirror: revert the rule and the
+        // expectation reverts with it, and the gate passes. Written that way
+        // first, and the negative control caught it — the ShapePiece-only rule
+        // this gate exists to forbid sailed straight through.
+        let expected = [
+            (Step::AddScan, false),
+            (Step::CleanScan, false),
+            (Step::ShapePiece, true),
+            (Step::DesignLayers, true),
+            (Step::MakeMolds, true),
+            (Step::Print, false),
+            (Step::Pour, false),
+        ];
         assert_eq!(
-            (
-                is_visible::<PlugBody>(&mut app),
-                is_visible::<SceneBody>(&mut app)
-            ),
-            (Some(true), Some(false)),
-            "step 3 is looking at the piece"
+            expected.len(),
+            Step::TOTAL,
+            "the table must answer for every step, or the sweep is not a sweep"
         );
 
-        app.world_mut().resource_mut::<Studio>().cursor = WizardCursor::new(Step::CleanScan);
-        app.update();
+        for (step, piece) in expected {
+            app.world_mut().resource_mut::<Studio>().cursor = WizardCursor::new(step);
+            app.update();
 
-        assert_eq!(
-            (
-                is_visible::<PlugBody>(&mut app),
-                is_visible::<SceneBody>(&mut app)
-            ),
-            (Some(false), Some(true)),
-            "and paging back to step 2 is looking at the scan again"
-        );
+            assert_eq!(
+                (
+                    is_visible::<PlugBody>(&mut app),
+                    is_visible::<SceneBody>(&mut app)
+                ),
+                (Some(piece), Some(!piece)),
+                "step {} ({}) must show the {}",
+                step.number(),
+                step.title(),
+                if piece { "piece" } else { "scan" },
+            );
+        }
     }
 
     /// ⚠ Until the first preview lands there is nothing to swap to, so the scan
