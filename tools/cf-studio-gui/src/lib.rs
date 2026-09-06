@@ -1827,8 +1827,17 @@ visible = true
     /// Expect `2L` cup halves and exactly **one** plug, against detachable's
     /// `2L` + `L`. Run:
     /// `cargo test -p cf-studio-gui -- --ignored casts_base_mold_bonded`
+    ///
+    /// ★★ **PASSED 2026-09-06: 407.67 s.** Detachable at the same cell size,
+    /// same fixture, same machine, the same day: **277.95 s**. Bonded is the
+    /// slower mode by ~1.5× *while producing fewer pieces* — it never collapses
+    /// to `PartSelection::all`, so it meshes piece-by-piece instead of taking
+    /// the bulk full-export route. One pair, not a repeated measurement.
+    ///
+    /// ⚠ Which means the ~15 min quoted for 0.5 mm is a **detachable** figure,
+    /// and the app does not cast detachable. The fine bonded run is unmeasured.
     #[test]
-    #[ignore = "integration: ~5 min at 1.5 mm, needs ~/scans/base_mold files"]
+    #[ignore = "integration: 408 s at 1.5 mm (measured 2026-09-06), needs ~/scans/base_mold files"]
     fn the_app_casts_base_mold_bonded() {
         use cf_studio_core::{DesignDraft, LayerDraft};
 
