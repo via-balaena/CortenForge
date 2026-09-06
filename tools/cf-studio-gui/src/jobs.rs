@@ -15,10 +15,13 @@ use std::time::Instant;
 
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, futures_lite::future};
-use cf_studio_core::MoldOutputs;
-use cf_studio_engine::{PrintExportReport, export_print_package, run_simplify};
+use cf_studio_core::{DesignDraft, MoldOutputs, RidgeOptions};
+use cf_studio_engine::{
+    PartSelection, PrintExportReport, export_print_package, generate_molds_for_design, run_simplify,
+};
 use cf_studio_gui::{
-    PourSession, apply_design, format_molds_progress, format_simplify_done, format_simplify_started,
+    CENDRILLON_CAST_MODE, PourSession, apply_design, format_molds_progress, format_simplify_done,
+    format_simplify_started,
 };
 use mesh_types::IndexedMesh;
 
@@ -163,11 +166,111 @@ struct MoldsRun {
 
 /// The running cast, if any.
 ///
-/// ▶ Nothing starts one yet — the starter lands with the button that calls it.
-/// This is the half that *finishes* a cast: the clock while it runs, and the
-/// recording when it lands.
+/// Started by [`start_molds`], polled by [`poll_molds_job`].
 #[derive(Resource, Default)]
 pub(crate) struct MoldsJob(Option<MoldsRun>);
+
+/// What the step-5 controls carried into a click.
+///
+/// Snapshotted at click time rather than re-read when the job starts, for the
+/// same reason `Acted`'s other carried fields are: the executor must not see a
+/// control the user has changed since. It also keeps [`start_molds`]
+/// independent of the picker, which is why the poller could be gated before
+/// any of this existed.
+#[derive(Debug, Clone)]
+pub(crate) struct MoldsStart {
+    /// Marching-cubes cell size, from the quality picker's index.
+    pub(crate) cell_size_m: f64,
+    /// Which pieces to generate.
+    pub(crate) selection: PartSelection,
+}
+
+/// What a panicked cast is reported as.
+const MOLDS_PANICKED: &str = "internal error (panic) during mold generation";
+
+/// What is missing when step 5 is somehow reached without its inputs.
+const MOLDS_NO_INPUTS: &str = "Finish steps 2 and 4 first (clean the scan, choose a design).";
+
+/// Start a cast on the task pool.
+///
+/// ⚠ `busy` is taken only once the inputs are confirmed — the rule
+/// [`start_simplify`] documents. Setting it first would wedge the app on a step
+/// with no design: every control disabled, and no task running to clear it.
+///
+/// ⚠ There is no "at least one part" check here. The button is disabled when
+/// nothing is checked, and that is the only copy of the rule — two would make
+/// it untestable from either side, which is how #888's duplicate `can_next`
+/// survived a mutant.
+pub(crate) fn start_molds(start: &MoldsStart, studio: &mut Studio, job: &mut MoldsJob) {
+    // A run already in flight. `busy` disables the button, but a click queued
+    // in the same frame still arrives, and a second cast into the same output
+    // directory would race the first for fifteen minutes.
+    if job.0.is_some() {
+        return;
+    }
+    let inputs = studio
+        .project
+        .prep()
+        .zip(studio.project.design())
+        .map(|(prep, design)| {
+            (
+                prep.cleaned_stl.clone(),
+                prep.prep_toml.clone(),
+                design.clone(),
+            )
+        });
+    let Some((cleaned_stl, prep_toml, draft)) = inputs else {
+        studio.message = Some(Err(MOLDS_NO_INPUTS.to_string()));
+        return;
+    };
+    // The ridges were committed with the plug on "Shape your piece". The one
+    // field rides every offset, so the plug and every shell carry it alike.
+    let ridges = studio
+        .project
+        .plug()
+        .map(|plug| plug.ridges.clone())
+        .unwrap_or_default();
+    studio.busy = true;
+    studio.message = Some(Ok(format_molds_progress(0)));
+    job.0 = Some(MoldsRun {
+        started: Instant::now(),
+        shown_secs: Some(0),
+        task: spawn_molds(cleaned_stl, prep_toml, draft, start.clone(), ridges),
+    });
+}
+
+/// Run the cast off-thread.
+///
+/// The `catch_unwind` is the guard the other two jobs carry, and it earns more
+/// here than anywhere: a panic fifteen minutes in would otherwise leave `busy`
+/// stuck on with no way back.
+fn spawn_molds(
+    cleaned_stl: PathBuf,
+    prep_toml: PathBuf,
+    draft: DesignDraft,
+    start: MoldsStart,
+    ridges: RidgeOptions,
+) -> Task<Result<MoldOutputs, String>> {
+    AsyncComputeTaskPool::get().spawn(async move {
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            generate_molds_for_design(
+                &cleaned_stl,
+                &prep_toml,
+                &draft,
+                start.cell_size_m,
+                &ridges,
+                &start.selection,
+                CENDRILLON_CAST_MODE,
+                None,
+            )
+        }));
+        match outcome {
+            Ok(Ok(outputs)) => Ok(outputs),
+            Ok(Err(e)) => Err(e.to_string()),
+            Err(_) => Err(MOLDS_PANICKED.to_string()),
+        }
+    })
+}
 
 /// Land a finished cast, or tick the clock on a running one.
 pub(crate) fn poll_molds_job(mut job: ResMut<MoldsJob>, mut studio: ResMut<Studio>) {
@@ -297,7 +400,7 @@ pub(crate) fn reveal_in_file_manager(dir: &Path) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     #![allow(clippy::expect_used)]
 
     use bevy::ecs::system::RunSystemOnce;
@@ -724,7 +827,7 @@ endsolid t
 
     /// What a finished cast hands back. `tag` lands in `out_dir` so a test can
     /// tell one run's outputs from another's.
-    fn some_molds(tag: &str) -> MoldOutputs {
+    pub(crate) fn some_molds(tag: &str) -> MoldOutputs {
         MoldOutputs {
             out_dir: tag.into(),
             mold_stls: vec!["cup.stl".into()],

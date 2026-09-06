@@ -17,6 +17,7 @@ use crate::jobs::{
     MoldsJob, PrintJob, SimplifyJob, poll_dialogs, poll_molds_job, poll_print_job,
     poll_simplify_job,
 };
+use crate::molds::{MoldControls, drive_part_picker};
 use crate::panel::wizard_screen;
 use crate::preview::{PlugView, drive_plug_preview};
 use crate::scan::ScanEdit;
@@ -54,6 +55,7 @@ impl Plugin for StudioPlugin {
             .init_resource::<EditControls>()
             .init_resource::<ShapeControls>()
             .init_resource::<DesignControls>()
+            .init_resource::<MoldControls>()
             .init_resource::<PlugView>()
             .insert_resource(ClearColor(BACKGROUND))
             // The centerline runs *inside* the scan, so at the default
@@ -100,6 +102,10 @@ impl Plugin for StudioPlugin {
                     // each reads what the one before it wrote, and a frame's lag
                     // between them is a frame of the wrong body on screen.
                     (drive_plug_preview, show_plug, show_the_step_subject).chain(),
+                    // Step 5's part picker, kept in step with the committed
+                    // design. Not chained with the preview above: it writes
+                    // only its own resource, and nothing this frame reads it.
+                    drive_part_picker,
                     // Immediate mode: gizmos are re-emitted every frame, so
                     // this one is NOT gated on the resource changing.
                     draw_centerline,

@@ -11,6 +11,7 @@ mod edit;
 mod egui_harness;
 mod input;
 mod jobs;
+mod molds;
 mod panel;
 mod plugin;
 mod preview;
