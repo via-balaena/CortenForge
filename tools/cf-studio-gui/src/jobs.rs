@@ -936,6 +936,178 @@ endsolid t
         assert!(studio.busy, "and the app is still held for the run");
     }
 
+    /// ★★ The plugin's own wiring, which nothing else reaches.
+    ///
+    /// ⚠ Every test above inserts `MoldsJob` by hand and adds `poll_molds_job`
+    /// itself, so dropping either the `init_resource` or the schedule entry
+    /// left the whole suite green — a system whose params cannot be built does
+    /// not run, and a cast would run for fifteen minutes and never land.
+    /// Verified by doing exactly that: both deletions pass every other test in
+    /// the crate, and fail this one.
+    ///
+    /// This is the `Update`-side twin of
+    /// `plugin::tests::the_plugin_gives_the_wizard_every_resource_it_asks_for`,
+    /// which can only reach the systems in the egui pass.
+    #[test]
+    fn the_plugin_registers_the_cast_job_and_runs_its_poller() {
+        use bevy::state::app::StatesPlugin;
+
+        // ⚠ `ignore`, and it is load-bearing. `Update` also holds the scene
+        // and pointer systems, whose `Assets<Mesh>` / `EguiContexts` params
+        // need a renderer this gate has no business standing up — and in Bevy
+        // 0.18 a param that fails validation is an ERROR the default handler
+        // PANICS on, not the silent skip the comment in `plugin.rs` assumes.
+        // Ignoring lets the unrelated systems fall out while the poller, whose
+        // params do exist, still runs. Standing up the render stack instead
+        // would gate two lines of wiring behind most of a renderer.
+        let mut app = App::new();
+        app.set_error_handler(bevy::ecs::error::ignore);
+        app.add_plugins((MinimalPlugins, StatesPlugin, crate::plugin::StudioPlugin));
+        app.insert_resource(studio_ready_for_molds());
+
+        // ⚠ `resource_mut` and not `init_resource`: this line is the assertion
+        // that the PLUGIN registered it. Adding it here would gate nothing.
+        app.world_mut().resource_mut::<MoldsJob>().0 = Some(MoldsRun {
+            started: Instant::now(),
+            shown_secs: Some(0),
+            task: finished(Ok(some_molds("out-plugin"))),
+        });
+        app.world_mut().resource_mut::<Studio>().busy = true;
+
+        // ⚠ The schedule by hand, not `app.update()`: `Startup` runs
+        // `setup_scene`, which wants an asset stack this gate has no business
+        // standing up. Same reason the plugin's own wiring gate does it.
+        let deadline = Instant::now() + std::time::Duration::from_secs(2);
+        while app.world().resource::<Studio>().busy {
+            assert!(
+                Instant::now() < deadline,
+                "the plugin never ran the cast poller"
+            );
+            app.world_mut().run_schedule(Update);
+        }
+
+        assert_eq!(
+            app.world()
+                .resource::<Studio>()
+                .project
+                .molds()
+                .map(|m| m.out_dir.clone()),
+            Some("out-plugin".into()),
+            "the cast landed through the plugin's own wiring"
+        );
+    }
+
+    /// The same hole, for the print export — the only sibling that had it.
+    ///
+    /// ⚠ Audited rather than assumed: dropping each `init_resource` in turn
+    /// leaves `SimplifyJob`, `PendingDialog`, `PlugView` and `DesignControls`
+    /// red, because the wizard panel asks for them and the plugin's own wiring
+    /// gate drives that pass. `PrintJob` and `MoldsJob` are read only from
+    /// `Update`, which that gate cannot reach, and both were green.
+    ///
+    /// ⚠ Driven through the FAILURE path on purpose: a landed export calls
+    /// `reveal_in_file_manager`, which spawns the OS file browser. A gate that
+    /// opens a Finder window on every test run is one people learn to skip.
+    #[test]
+    fn the_plugin_registers_the_print_job_and_runs_its_poller() {
+        use bevy::state::app::StatesPlugin;
+
+        let mut app = App::new();
+        app.set_error_handler(bevy::ecs::error::ignore);
+        app.add_plugins((MinimalPlugins, StatesPlugin, crate::plugin::StudioPlugin));
+
+        app.world_mut().resource_mut::<PrintJob>().0 =
+            Some(AsyncComputeTaskPool::get().spawn(async { Err("the copy failed".to_string()) }));
+        app.world_mut().resource_mut::<Studio>().busy = true;
+
+        let deadline = Instant::now() + std::time::Duration::from_secs(2);
+        while app.world().resource::<Studio>().busy {
+            assert!(
+                Instant::now() < deadline,
+                "the plugin never ran the print poller"
+            );
+            app.world_mut().run_schedule(Update);
+        }
+
+        assert!(
+            matches!(&app.world().resource::<Studio>().message,
+                     Some(Err(text)) if text.contains("the copy failed")),
+            "the export landed through the plugin's own wiring: {:?}",
+            app.world().resource::<Studio>().message
+        );
+    }
+
+    /// An app wired by the plugin alone, with unrelated systems allowed to
+    /// fall out. See the note on the cast gate for why `ignore` is required.
+    fn app_from_the_plugin() -> App {
+        use bevy::state::app::StatesPlugin;
+
+        let mut app = App::new();
+        app.set_error_handler(bevy::ecs::error::ignore);
+        app.add_plugins((MinimalPlugins, StatesPlugin, crate::plugin::StudioPlugin));
+        app
+    }
+
+    /// Run the plugin's `Update` until `done`, or fail saying which poller
+    /// never ran.
+    fn run_plugin_update_until(app: &mut App, what: &str, done: impl Fn(&App) -> bool) {
+        let deadline = Instant::now() + std::time::Duration::from_secs(2);
+        while !done(app) {
+            assert!(Instant::now() < deadline, "the plugin never ran {what}");
+            app.world_mut().run_schedule(Update);
+        }
+    }
+
+    /// The third of the four. Its resources are reached by the wizard gate, but
+    /// its *place in the schedule* is not: dropping `poll_simplify_job` from
+    /// `Update` leaves every other test green while a finished Simplify never
+    /// lands and `busy` sticks on forever.
+    #[test]
+    fn the_plugin_runs_the_simplify_poller() {
+        let mut app = app_from_the_plugin();
+        app.world_mut().resource_mut::<SimplifyJob>().0 = Some((
+            TARGET,
+            AsyncComputeTaskPool::get().spawn(async { Err("the decimator gave up".to_string()) }),
+        ));
+        app.world_mut().resource_mut::<Studio>().busy = true;
+
+        run_plugin_update_until(&mut app, "the simplify poller", |app| {
+            !app.world().resource::<Studio>().busy
+        });
+
+        assert!(
+            matches!(&app.world().resource::<Studio>().message,
+                     Some(Err(text)) if text.contains("the decimator gave up")),
+            "the Simplify landed through the plugin's own wiring: {:?}",
+            app.world().resource::<Studio>().message
+        );
+    }
+
+    /// The fourth. Dropping `poll_dialogs` from `Update` means every OS picker
+    /// resolves into nothing — the file is chosen and silently discarded.
+    ///
+    /// ⚠ Driven with a print destination and NO molds recorded, because that
+    /// branch reports and returns: it writes no files and spawns no export.
+    #[test]
+    fn the_plugin_runs_the_dialog_poller() {
+        let mut app = app_from_the_plugin();
+        app.insert_resource(PendingDialog::resolved(
+            DialogKind::PrintDest,
+            Some(PathBuf::from("somewhere")),
+        ));
+
+        run_plugin_update_until(&mut app, "the dialog poller", |app| {
+            app.world().resource::<Studio>().message.is_some()
+        });
+
+        assert!(
+            matches!(&app.world().resource::<Studio>().message,
+                     Some(Err(text)) if text.contains("Make the molds first")),
+            "the picked folder was routed through the plugin's own wiring: {:?}",
+            app.world().resource::<Studio>().message
+        );
+    }
+
     #[test]
     fn the_poller_leaves_an_idle_app_alone() {
         let mut app = app_ready_for_molds();
