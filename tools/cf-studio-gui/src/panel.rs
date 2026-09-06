@@ -2176,6 +2176,54 @@ pub(crate) mod tests {
         );
     }
 
+    /// ★★★ The claim step 5 exists to make true: **the wizard can be driven
+    /// from the first screen to the last**. Until `Step::MakeMolds` stopped
+    /// drawing the porting notice, this walk could not be written — Next is
+    /// gated on `project.is_complete(viewed)`, and nothing completed step 5.
+    ///
+    /// ⚠ Drives the real `Next →` button, not the cursor. Moving the cursor by
+    /// hand would page over exactly the gate this is here to exercise.
+    #[test]
+    fn the_wizard_pages_from_the_first_screen_to_the_last() {
+        use cf_studio_core::PrintExport;
+
+        let mut studio = crate::molds::tests::viewing_step_5_with(1);
+        studio
+            .project
+            .set_molds(crate::jobs::tests::some_molds("out-walk"))
+            .expect("the cast is recorded");
+        studio
+            .project
+            .set_print(PrintExport {
+                export_dir: "out-walk".into(),
+            })
+            .expect("the print is recorded");
+        studio.cursor = WizardCursor::new(Step::FIRST);
+
+        let mut app = app_running_the_wizard();
+        app.insert_resource(studio);
+        app.insert_resource(crate::molds::tests::controls_for(1));
+
+        for step in Step::ALL {
+            settle(&mut app);
+            let heading = format!("Step {} of 7 — {}", step.number(), step.title());
+            let painted = painted_texts(&app);
+            assert!(
+                painted.iter().any(|text| text == &heading),
+                "the walk must reach {heading:?}: {painted:?}"
+            );
+            if step != Step::LAST {
+                click_on(&mut app, "Next →");
+            }
+        }
+
+        assert_eq!(
+            app.world().resource::<Studio>().cursor.viewed(),
+            Step::LAST,
+            "six clicks of Next must land on the pour screen"
+        );
+    }
+
     /// ⚠ Step 2's earlier states. Each shows text that exists in no other one —
     /// the hint naming the step that unblocks Save, and the line telling you to
     /// add a scan at all — so censusing only the revealed screen leaves both of
