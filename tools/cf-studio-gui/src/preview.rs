@@ -1,8 +1,9 @@
 //! The live plug preview: the shaped piece, meshed off the main thread and
 //! shown on every step whose subject is the piece (3, 4 and 5).
 //!
-//! ⚠ Off-thread because it must be: **97 ms** to mesh a 51 k-triangle body,
-//! **191 ms** at 241 k, against a 16 ms frame.
+//! ⚠ Off-thread because it must be: the mesher samples a mesh-BVH-backed SDF,
+//! so its cost tracks the SCAN's triangle count — **97 ms** at 51 k, **191 ms**
+//! at 241 k, against a 16 ms frame.
 
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
@@ -232,9 +233,10 @@ pub(crate) fn drive_plug_preview(
     view.land_cache();
     view.land_mesh();
     view.start_cache(prep);
-    // ▶ `plug_draft` allocates a ridge `Vec` every frame the piece is up. A
-    // caller-side guard was tried and did not help; the fix belongs in
-    // `start_mesh`, against a cheap stamp.
+    // ▶ `plug_draft` allocates a ridge `Vec` every frame the piece is up —
+    // ~144 k allocations over a print-quality cast. A caller-side guard was
+    // tried and deleted: it returns true in the steady state, so it never
+    // skipped the allocation. The fix belongs in `start_mesh`, against a stamp.
     view.start_mesh(&shape.plug_draft());
 }
 

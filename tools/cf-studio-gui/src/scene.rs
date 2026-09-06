@@ -336,7 +336,7 @@ fn viewport_for(free: egui::Rect, bounds: UVec2, scale: f32) -> Option<Viewport>
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use bevy::asset::AssetPlugin;
 
     use cf_studio_gui::WizardCursor;
@@ -721,20 +721,6 @@ endsolid t
         );
     }
 
-    /// Which steps show the piece, stated once, as a literal.
-    ///
-    /// ⚠ A literal, never `shows_the_piece(step)` — asserting against the
-    /// function under test flips both sides together and passes.
-    pub(crate) const PIECE_STEPS: [(Step, bool); Step::TOTAL] = [
-        (Step::AddScan, false),
-        (Step::CleanScan, false),
-        (Step::ShapePiece, true),
-        (Step::DesignLayers, true),
-        (Step::MakeMolds, true),
-        (Step::Print, false),
-        (Step::Pour, false),
-    ];
-
     /// ⚠ Swept over all seven steps. This was called "step three shows the piece
     /// and every other step shows the scan" and checked exactly ONE other step, so
     /// steps 4 and 5 shipped showing the wrong body with nothing red.
@@ -749,7 +735,15 @@ endsolid t
         // expectation reverts with it, and the gate passes. Written that way
         // first, and the negative control caught it — the ShapePiece-only rule
         // this gate exists to forbid sailed straight through.
-        let expected = PIECE_STEPS;
+        let expected: [(Step, bool); Step::TOTAL] = [
+            (Step::AddScan, false),
+            (Step::CleanScan, false),
+            (Step::ShapePiece, true),
+            (Step::DesignLayers, true),
+            (Step::MakeMolds, true),
+            (Step::Print, false),
+            (Step::Pour, false),
+        ];
         // ⚠ Counting to `Step::TOTAL` is not coverage: a duplicated row and a
         // missing one also make seven.
         assert_eq!(

@@ -6,7 +6,7 @@
 //! 2187 s at 0.5**, bonded — which is why it reports its own elapsed time.
 
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, futures_lite::future};
@@ -262,26 +262,26 @@ fn spawn_molds(
     })
 }
 
-/// The second to draw and the line to draw it on, or `None` to leave the line
-/// alone.
+/// The second to draw, or `None` to leave the line alone.
 ///
-/// ⚠ Returns the LINE, not just the second. When it returned only the second
-/// the message write beside it had no test at all — deleting
-/// `studio.message = …` passed all 171. Both halves are gated by literals here.
-fn progress_line(elapsed: Duration, shown: Option<u64>) -> Option<(u64, String)> {
-    let secs = elapsed.as_secs();
-    (shown != Some(secs)).then(|| (secs, format_molds_progress(secs)))
+/// ⚠ Every expectation derived from the run itself was a mirror: `let secs = 0;`
+/// passed all 170 tests.
+const fn clock_to_draw(elapsed_secs: u64, shown: Option<u64>) -> Option<u64> {
+    match shown {
+        Some(already) if already == elapsed_secs => None,
+        _ => Some(elapsed_secs),
+    }
 }
 
 /// Land a finished cast, or tick the clock on a running one.
 pub(crate) fn poll_molds_job(mut job: ResMut<MoldsJob>, mut studio: ResMut<Studio>) {
     let Some(run) = job.0.as_mut() else { return };
     let Some(result) = future::block_on(future::poll_once(&mut run.task)) else {
-        // Still running. The decision is [`clock_to_draw`]; this only carries
+        // Still running. The decision is `clock_to_draw`; this only carries
         // it out.
-        if let Some((secs, line)) = progress_line(run.started.elapsed(), run.shown_secs) {
+        if let Some(secs) = clock_to_draw(run.started.elapsed().as_secs(), run.shown_secs) {
             run.shown_secs = Some(secs);
-            studio.message = Some(Ok(line));
+            studio.message = Some(Ok(format_molds_progress(secs)));
         }
         return;
     };
@@ -403,6 +403,7 @@ pub(crate) mod tests {
 
     use bevy::ecs::system::RunSystemOnce;
     use mesh_types::unit_cube;
+    use std::time::Duration;
 
     use super::*;
     use crate::scan::{ActiveScan, ViewUpdate};
@@ -1006,36 +1007,15 @@ endsolid t
         );
     }
 
-    /// The decision and the line, against literals.
-    ///
-    /// ⚠ Every version that read `shown_secs` back out of the run was a mirror:
-    /// `let secs = 0;` passed all 170 tests.
     #[test]
     fn the_clock_redraws_only_when_the_whole_second_changes() {
-        let at = |s| Duration::from_secs(s);
-        assert_eq!(
-            progress_line(at(75), None),
-            Some((75, format_molds_progress(75)))
-        );
-        assert_eq!(progress_line(at(75), Some(75)), None);
-        assert_eq!(
-            progress_line(at(76), Some(75)),
-            Some((76, format_molds_progress(76)))
-        );
-        assert_eq!(
-            progress_line(at(0), Some(75)),
-            Some((0, format_molds_progress(0)))
-        );
-
-        // The line itself, spelled out — nothing else asserts what the poller
-        // writes.
-        assert_eq!(
-            progress_line(at(75), None).map(|(_, line)| line),
-            Some(
-                "Making molds… 1:15 elapsed (this can take a while — the window stays responsive)"
-                    .to_string()
-            )
-        );
+        assert_eq!(clock_to_draw(75, None), Some(75));
+        assert_eq!(clock_to_draw(75, Some(75)), None);
+        assert_eq!(clock_to_draw(76, Some(75)), Some(76));
+        // ⚠ The defect this exists for: an elapsed that never advances keeps
+        // asking for 0, so the line reads "0:00" however long the run is. Not a
+        // clock going backwards — a frozen source.
+        assert_eq!(clock_to_draw(0, Some(75)), Some(0));
     }
 
     /// The clock source. Only a known duration catches a wrong scale: "it
@@ -1044,27 +1024,24 @@ endsolid t
     #[test]
     fn the_clock_follows_real_elapsed_time() {
         const WAITED: u64 = 2;
+        // ⚠ Backdated, not slept. A sleep plus a tolerance is what let a
+        // constant source through: with ±1 s of slack a poller reading a fixed
+        // `Duration::from_secs(3)` passed all 171. An exact expectation needs an
+        // exact elapsed, and this one costs nothing.
+        let started = Instant::now()
+            .checked_sub(Duration::from_millis(WAITED * 1000 + 100))
+            .expect("2.1 s of uptime");
         let mut app = app_ready_for_molds();
-        inject(&mut app, never_finishes(), Instant::now(), None);
+        inject(&mut app, never_finishes(), started, None);
+
         app.update();
 
-        std::thread::sleep(Duration::from_millis(WAITED * 1000 + 100));
-        app.update();
-
-        // ⚠ Against WAITED, bounded — not against a second `elapsed()` read.
-        // The poller samples inside `update()`; re-reading the same clock after
-        // it returns fails on a descheduled thread with nothing wrong.
         let shown = shown_second(&app);
-        assert!(
-            (WAITED..=WAITED + 1).contains(&shown),
-            "slept {WAITED}s, clock says {shown}"
-        );
-        // ⚠ And that the poller WROTE it. `shown` is pinned to WAITED above, so
-        // this is not a mirror — without it, deleting the message write passes.
+        assert_eq!(shown, WAITED, "backdated {WAITED}s, clock says {shown}");
         assert_eq!(
             app.world().resource::<Studio>().message,
-            Some(Ok(format_molds_progress(shown))),
-            "the line the run is on must reach the screen"
+            Some(Ok(format_molds_progress(WAITED))),
+            "and the line the run is on must reach the screen"
         );
     }
 

@@ -2668,7 +2668,20 @@ pub(crate) mod tests {
         let mut absent = wizard_previewing(crate::preview::tests::a_missing_scan());
         let mut real = wizard_previewing(crate::preview::tests::a_cleaned_scan("panel-note"));
 
-        let expected = crate::scene::tests::PIECE_STEPS;
+        // ⚠⚠ This crate's OWN table, written independently of `scene.rs`'s.
+        // Sharing one made the two gates a single oracle: flipping
+        // `shows_the_piece` and the shared row together — a one-file edit —
+        // shipped step 5 casting a piece it never displays, with 171 green.
+        // Two tables that must be edited in step is the cross-check.
+        let expected: [(Step, bool); Step::TOTAL] = [
+            (Step::AddScan, false),
+            (Step::CleanScan, false),
+            (Step::ShapePiece, true),
+            (Step::DesignLayers, true),
+            (Step::MakeMolds, true),
+            (Step::Print, false),
+            (Step::Pour, false),
+        ];
         // ⚠ Counting to `Step::TOTAL` is not coverage: a duplicated row and a
         // missing one also make seven.
         assert_eq!(
