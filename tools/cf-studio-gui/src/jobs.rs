@@ -1007,32 +1007,50 @@ endsolid t
     /// ★ The clock is rebuilt at most once a second. This system runs every
     /// frame, so the naive version allocates a fresh `String` at 60 Hz to show
     /// the same text 59 times out of 60.
+    ///
+    /// ⚠⚠ **No `Instant` arithmetic, and no wall-clock budget.** Anchoring
+    /// `started` at `Instant::now()` left the frames an unknown distance from
+    /// the next second boundary, so a loaded box could roll the clock mid-test
+    /// and fail a gate that had found no defect; subtracting 75.5 s to buy
+    /// slack traded that for a panic, because `Instant - Duration` is a
+    /// `checked_sub().expect(…)` and `Instant` counts from BOOT — a container
+    /// starting the suite inside its first 76 s would abort here, in a test
+    /// about formatting. The guard's real input is `shown_secs`, so drive it.
     #[test]
     fn the_clock_is_rewritten_only_when_the_whole_second_changes() {
         const SENTINEL: &str = "left alone";
         let mut app = app_ready_for_molds();
-        // ⚠⚠ Anchored HALF a second inside the tick, not at `Instant::now()`.
-        // Anchoring at now put the frames an unknown distance from the next
-        // whole-second boundary, so on a loaded box, a debug build, or a
-        // contended test thread the clock could legitimately advance mid-test
-        // and fail a gate that had found no defect. Starting at 75.5 s leaves
-        // ~500 ms of slack for three frames that take microseconds.
-        let started = Instant::now() - std::time::Duration::from_millis(75_500);
-        inject(&mut app, never_finishes(), started, None);
+        inject(&mut app, never_finishes(), Instant::now(), None);
 
         // First frame: no second has been shown yet, so the line is written.
         app.update();
+        let shown = app
+            .world()
+            .resource::<MoldsJob>()
+            .0
+            .as_ref()
+            .and_then(|run| run.shown_secs)
+            .expect("a running cast records the second it drew");
         assert!(
             matches!(&app.world().resource::<Studio>().message,
-                     Some(Ok(text)) if text.contains("1:15")),
-            "a running cast reports itself, at the second it is actually on: {:?}",
+                     Some(Ok(text)) if text.contains("Making molds")),
+            "a running cast reports itself: {:?}",
             app.world().resource::<Studio>().message
         );
 
-        // Same whole second, so the next frames must not touch the message.
+        // Same shown second: the next frames must not touch the message.
         app.world_mut().resource_mut::<Studio>().message = Some(Ok(SENTINEL.to_string()));
         app.update();
         app.update();
+        assert_eq!(
+            app.world()
+                .resource::<MoldsJob>()
+                .0
+                .as_ref()
+                .and_then(|run| run.shown_secs),
+            Some(shown),
+            "the second under test must not have rolled, or this proves nothing"
+        );
         assert!(
             matches!(&app.world().resource::<Studio>().message,
                      Some(Ok(text)) if text == SENTINEL),
@@ -1040,18 +1058,19 @@ endsolid t
             app.world().resource::<Studio>().message
         );
 
-        // Wind the start back exactly one second, so the elapsed whole second
-        // changes and nothing else does.
+        // Make the last-shown second stale — the guard's own input — and it
+        // redraws, at whatever second the run is actually on.
         app.world_mut()
             .resource_mut::<MoldsJob>()
             .0
             .as_mut()
             .expect("the run is still in flight")
-            .started = started - std::time::Duration::from_secs(1);
+            .shown_secs = Some(shown.wrapping_sub(1));
         app.update();
         let studio = app.world().resource::<Studio>();
         assert!(
-            matches!(&studio.message, Some(Ok(text)) if text.contains("1:16")),
+            matches!(&studio.message,
+                     Some(Ok(text)) if text != SENTINEL && text.contains("Making molds")),
             "a new second redraws the clock: {:?}",
             studio.message
         );

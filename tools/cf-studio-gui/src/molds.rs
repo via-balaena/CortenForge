@@ -80,16 +80,9 @@ pub(crate) mod tests {
     /// click gate wrote that file into the REPO — twice, once per crate the
     /// suite was run from. The run still fails a moment later on the missing
     /// geometry, which is all the gate needs; the write happens first.
-    pub(crate) fn viewing_step_5_with(layers: usize) -> Studio {
-        // ⚠⚠ UNIQUE PER CALL. `temp_dir` names the directory by label + PID and
-        // `remove_dir_all`s it on entry, so a constant label means ~20 tests
-        // across this file and `panel.rs` share one path and delete each other's
-        // fixture mid-run — and `clicking_make_molds_in_the_running_wizard_
-        // starts_the_cast` writes a real `design.toml` into it while another
-        // test may be tearing it down.
-        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let dir = crate::save::tests::temp_dir(&format!("molds-fixture-{n}"));
+    pub(crate) fn viewing_step_5_with(label: &str, layers: usize) -> Studio {
+        let dir = fixture_root().join(label);
+        std::fs::create_dir_all(&dir).expect("a fixture dir");
         let mut studio = Studio {
             cursor: WizardCursor::new(Step::MakeMolds),
             ..Studio::default()
@@ -123,16 +116,44 @@ pub(crate) mod tests {
             .expect("controls survive")
     }
 
+    /// The one directory every step-5 fixture lives under, cleared once per
+    /// process — and **not** keyed by PID, so the next run reclaims this one's.
+    ///
+    /// ⚠⚠ Two failures shaped this, both measured. A constant label handed to
+    /// `save::tests::temp_dir` gave ~28 callers ONE directory that `temp_dir`
+    /// `remove_dir_all`s on entry, so tests deleted each other's fixture
+    /// mid-run — one of them while `clicking_make_molds_in_the_running_wizard_
+    /// starts_the_cast` wrote a real `design.toml` into it. Making the names
+    /// unique fixed the race and broke the cleanup: `temp_dir` keys on
+    /// label + PID, so a fresh process never matches a previous run's name and
+    /// nothing is ever reclaimed — **measured at 21 directories per run, 42
+    /// after two.**
+    ///
+    /// A per-test subdirectory under a process-stable root gives both: no two
+    /// tests share a path, and the root is cleared on the first call of the
+    /// next run. ⇒ **one directory total, whatever happens.**
+    fn fixture_root() -> std::path::PathBuf {
+        use std::sync::OnceLock;
+        static ROOT: OnceLock<std::path::PathBuf> = OnceLock::new();
+        ROOT.get_or_init(|| {
+            let root = std::env::temp_dir().join("cf-studio-gui-molds-fixtures");
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(&root).expect("a fixture root");
+            root
+        })
+        .clone()
+    }
+
     /// Controls whose picker was derived, by the real reconcile, for a design
     /// of `layers` layers. Shared with `panel.rs` so the screen's gates draw
     /// the picker the app would actually hand them, not a hand-built one.
-    pub(crate) fn controls_for(layers: usize) -> MoldControls {
-        reconcile(viewing_step_5_with(layers), MoldControls::default())
+    pub(crate) fn controls_for(label: &str, layers: usize) -> MoldControls {
+        reconcile(viewing_step_5_with(label, layers), MoldControls::default())
     }
 
     #[test]
     fn the_picker_is_built_from_the_committed_design() {
-        let controls = reconcile(viewing_step_5_with(2), MoldControls::default());
+        let controls = reconcile(viewing_step_5_with("m2", 2), MoldControls::default());
         // Bonded: 2 layers × 2 cups + the layer-0 plug + platform + dowels.
         assert_eq!(controls.picker.len(), 2 * 2 + 1 + 2);
         assert!(
@@ -144,8 +165,8 @@ pub(crate) mod tests {
     /// ★★ The reason the stamp is the layer COUNT and not the row count.
     #[test]
     fn a_changed_design_rebuilds_the_picker() {
-        let two = reconcile(viewing_step_5_with(2), MoldControls::default());
-        let three = reconcile(viewing_step_5_with(3), two);
+        let two = reconcile(viewing_step_5_with("m2", 2), MoldControls::default());
+        let three = reconcile(viewing_step_5_with("m3", 3), two);
         assert_eq!(
             three.picker.len(),
             3 * 2 + 1 + 2,
@@ -159,11 +180,11 @@ pub(crate) mod tests {
     /// the mouse.
     #[test]
     fn a_redraw_does_not_clobber_the_boxes_the_user_unchecked() {
-        let mut controls = reconcile(viewing_step_5_with(2), MoldControls::default());
+        let mut controls = reconcile(viewing_step_5_with("m2", 2), MoldControls::default());
         controls.picker.set_all(false);
         controls.picker.set_checked(0, true);
 
-        let after = reconcile(viewing_step_5_with(2), controls);
+        let after = reconcile(viewing_step_5_with("m2", 2), controls);
 
         let checked: Vec<bool> = after.picker.rows().map(|(_, c)| c).collect();
         assert_eq!(
@@ -179,7 +200,7 @@ pub(crate) mod tests {
     /// editing the design it derives from.
     #[test]
     fn the_picker_is_left_alone_off_step_5() {
-        let mut studio = viewing_step_5_with(2);
+        let mut studio = viewing_step_5_with("m2", 2);
         studio.cursor = WizardCursor::new(Step::DesignLayers);
 
         let after = reconcile(studio, MoldControls::default());
@@ -205,7 +226,7 @@ pub(crate) mod tests {
         let mut app = App::new();
         app.set_error_handler(bevy::ecs::error::ignore);
         app.add_plugins((MinimalPlugins, StatesPlugin, crate::plugin::StudioPlugin));
-        app.insert_resource(viewing_step_5_with(2));
+        app.insert_resource(viewing_step_5_with("m2", 2));
 
         // `resource::<MoldControls>()` would panic if the plugin had not
         // registered it — that is this line's second job.

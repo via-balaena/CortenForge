@@ -1,4 +1,5 @@
-//! Step 3's live plug preview: the shaped piece, meshed off the main thread.
+//! The live plug preview: the shaped piece, meshed off the main thread and
+//! shown on every step whose subject is the piece (3, 4 and 5).
 //!
 //! ⚠⚠ The re-mesh is a background job rather than the pre-port's inline call,
 //! and a measurement is why. [`PlugPreview::mesh`] samples a mesh-BVH-backed
@@ -85,7 +86,7 @@ impl PlugView {
     ///
     /// ⚠ The viewport gates its rebuild on this rather than on Bevy's change
     /// detection, because [`drive_plug_preview`] takes this resource mutably on
-    /// every frame step 3 is up — so "changed" is true on frames where nothing
+    /// every frame a piece step is up — so "changed" is true on frames where nothing
     /// was replaced, and the plug would be rebuilt from scratch at 60 Hz.
     pub(crate) const fn generation(&self) -> u64 {
         self.generation
@@ -164,6 +165,13 @@ impl PlugView {
                 .ok()
                 .flatten()
         }));
+    }
+
+    /// Whether a mesh could be started at all — the cheap half of
+    /// [`Self::start_mesh`]'s guard, asked before building the draft it would
+    /// otherwise be compared against.
+    fn wants_a_mesh(&self) -> bool {
+        self.meshing.is_none() && !matches!(self.cache, Cache::Cold | Cache::Building(_))
     }
 
     /// Start meshing `wanted`, if it is not what is already on screen.
@@ -259,7 +267,15 @@ pub(crate) fn drive_plug_preview(
     view.land_cache();
     view.land_mesh();
     view.start_cache(prep);
-    view.start_mesh(&shape.plug_draft());
+    // ⚠ The draft is built only when a mesh could actually be asked for.
+    // `plug_draft` allocates a fresh ridge `Vec` per call, and steps 4 and 5
+    // draw no shape controls — so the value is byte-identical every frame and
+    // `start_mesh` would discard it on the `shown == wanted` line. That is ~60
+    // allocations a second on two screens, one of which is up for the whole
+    // 36 minutes a print-quality cast runs on the same task pool.
+    if view.wants_a_mesh() {
+        view.start_mesh(&shape.plug_draft());
+    }
 }
 
 #[cfg(test)]
@@ -586,8 +602,14 @@ pub(crate) mod tests {
         // Continue, from inside that window.
         app.world_mut().resource_mut::<Studio>().cursor = WizardCursor::new(Step::DesignLayers);
 
+        // ⚠⚠ NOT `shown.is_none()`. `land_mesh` records `shown` before checking
+        // whether the mesh built, deliberately, so a failed draft is not
+        // re-spawned every frame — which means `shown` goes `Some` for a failed
+        // mesh AND for a proxy. Both are the failure this gate names, and both
+        // would have ended the loop green. The real piece is `mesh().is_some()`
+        // and not the stand-in.
         let deadline = Instant::now() + Duration::from_secs(20);
-        while view(&app).shown.is_none() {
+        while view(&app).mesh().is_none() {
             assert!(
                 Instant::now() < deadline,
                 "no piece was ever built, so step 4 shows the scan it told the \
@@ -595,6 +617,11 @@ pub(crate) mod tests {
             );
             app.update();
         }
+        assert!(
+            !view(&app).showing_proxy(),
+            "and it is the user's own body, not the stand-in"
+        );
+        let _ = std::fs::remove_dir_all(fixture_dir("continue-early"));
     }
 
     /// ⚠ A cache dropped on a step that cannot rebuild it takes the piece with
@@ -620,14 +647,19 @@ pub(crate) mod tests {
             "the stale piece is dropped on step 4 too"
         );
 
+        // ⚠ Same oracle, same reason: `shown` alone would go green on a proxy.
         let deadline = Instant::now() + Duration::from_secs(20);
-        while view(&app).shown.is_none() {
+        while view(&app).mesh().is_none() {
             assert!(
                 Instant::now() < deadline,
                 "step 4 dropped the piece and could not rebuild it"
             );
             app.update();
         }
+        assert!(
+            !view(&app).showing_proxy(),
+            "and rebuilt the real body, not the stand-in"
+        );
         let _ = std::fs::remove_dir_all(fixture_dir("drop-on-four"));
     }
 
@@ -696,9 +728,9 @@ pub(crate) mod tests {
     ///
     /// ⚠ Landing used to stop with step 3, so a piece meshed on the way out
     /// never arrived: steps 4 and 5 went on drawing the inset *before* last,
-    /// and the piece the user committed was not the piece on screen. The fix
-    /// splits the two conditions — land on any step that shows the piece, start
-    /// only on the one that can change it.
+    /// and the piece the user committed was not the piece on screen. The driver
+    /// now runs in full on every step that shows the piece — see its own note
+    /// for why restricting the *starts* was wrong too.
     #[test]
     fn a_mesh_in_flight_lands_after_continue_has_moved_on() {
         let mut app = app_on(
@@ -740,6 +772,10 @@ pub(crate) mod tests {
         for _ in 0..8 {
             app.update();
         }
+        // ⚠ Not because step 4 is forbidden to start one — it is not, since the
+        // step-3-only guard was removed — but because `start_mesh` returns
+        // early when the draft is already the one shown, and step 4 draws no
+        // shape controls that could change it.
         assert_eq!(
             view(&app).generation(),
             generation,

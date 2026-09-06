@@ -305,8 +305,11 @@ fn draw_nav(ui: &mut egui::Ui, studio: &Studio, dialog: &PendingDialog) -> Optio
         {
             intent = Some(Intent::Back);
         }
+        // ⚠ Reworded: this promised guidance "with the ported steps", and every
+        // step is now ported. A disabled control whose tooltip names a
+        // milestone outlives the milestone.
         ui.add_enabled(false, egui::Button::new("Help"))
-            .on_disabled_hover_text("Per-step guidance arrives with the ported steps.");
+            .on_disabled_hover_text("Per-step guidance isn't written yet.");
         if ui
             .add_enabled(nav.can_next && ready, egui::Button::new("Next →"))
             .clicked()
@@ -371,6 +374,20 @@ fn draw_body(
         centered_wrapped(ui, MESSAGE_SIZE, color, text.clone());
     }
 
+    // ⚠⚠ Said on EVERY step that shows the piece, not just the one that shapes
+    // it. Without a readable cleaned scan the preview falls back to a generic
+    // plug, and a stand-in body shown silently reads as the user's own — the
+    // reason this note exists at all. It used to sit inside `draw_shape_piece`,
+    // which was correct while step 3 was the only screen showing the piece;
+    // once steps 4 and 5 started showing it too, a failed scan meant choosing
+    // silicone thicknesses and committing to a 36-minute cast against a
+    // stand-in presented as your own body. One site, keyed off the same
+    // predicate the viewport uses, so the two cannot drift apart again.
+    if showing_a_stand_in && crate::scene::shows_the_piece(viewed) {
+        ui.add_space(ROW_GAP);
+        centered_wrapped(ui, RIDGE_NOTE_SIZE, WARN_TEXT, STAND_IN_NOTE);
+    }
+
     // ⚠ Exhaustive on purpose, with no catch-all arm. A `_ =>` (or a list of
     // "not ported yet" steps) would silently render one step's screen for a
     // step added later; this way the compiler names the new arm.
@@ -381,7 +398,7 @@ fn draw_body(
             acted.merge(draw_clean_scan(ui, studio, dialog, scan, editors.controls));
         }
         Step::ShapePiece => {
-            acted.plug = draw_shape_piece(ui, studio, dialog, editors.shape, showing_a_stand_in);
+            acted.plug = draw_shape_piece(ui, studio, dialog, editors.shape);
         }
         Step::DesignLayers => {
             acted.merge(draw_design_layers(ui, studio, dialog, editors.design));
@@ -801,10 +818,15 @@ fn draw_make_molds(
         // dialog is open or a Save is pending — telling someone to pick a part
         // while every part is checked and the label reads "Making molds…" is a
         // lie. The relabel already says what is happening, so say nothing.
+        let has_rows = !molds.picker.is_empty();
         let enough_parts = molds.picker.any_checked();
         let castable = ready && enough_parts;
         let button = ui.add_enabled(castable, egui::Button::new(make_molds_label(studio.busy)));
-        let button = if ready && !enough_parts {
+        // ⚠ And only when there ARE parts: with no design committed the card
+        // beside this says "Choose a design in step 4 first", so telling the
+        // user to pick one of zero checkboxes is the same untruth in a
+        // different costume.
+        let button = if ready && has_rows && !enough_parts {
             button.on_disabled_hover_text("Pick at least one part to generate.")
         } else {
             button
@@ -855,7 +877,7 @@ fn draw_parts_picker(ui: &mut egui::Ui, molds: &mut MoldControls, ready: bool) {
                 molds.picker.set_all(false);
             }
         });
-        if molds.picker.is_empty() {
+        if !has_rows {
             ui.add_space(ROW_GAP);
             wrapped_colored(ui, HINT_TEXT, "Choose a design in step 4 first.");
             return;
@@ -907,7 +929,6 @@ fn draw_shape_piece(
     studio: &Studio,
     dialog: &PendingDialog,
     shape: &mut ShapeControls,
-    showing_a_stand_in: bool,
 ) -> Option<PlugDraft> {
     let ready = accepting_actions(studio, dialog);
     let mut draft = None;
@@ -917,13 +938,6 @@ fn draw_shape_piece(
         "Set how snugly the piece fits: the cavity sits this far in from your \
          scan's surface, all the way round.",
     );
-    // ⚠ Said, not left to be inferred. Without a readable cleaned scan the
-    // preview falls back to a generic plug, and a stand-in body shown silently
-    // beside these controls reads as the user's own.
-    if showing_a_stand_in {
-        ui.add_space(ROW_GAP);
-        centered_wrapped(ui, RIDGE_NOTE_SIZE, WARN_TEXT, STAND_IN_NOTE);
-    }
     ui.add_space(SECTION_GAP);
     ui.vertical_centered(|ui| {
         ui.horizontal(|ui| {
@@ -1206,10 +1220,18 @@ fn draw_layer(
         ui.horizontal(|ui| {
             ui.colored_label(CONTROL_TEXT, format!("Layer {}", index + 1));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                dropped = ui
-                    .add_enabled(ready && removable, egui::Button::new("✖"))
-                    .on_disabled_hover_text("The cast needs at least one layer.")
-                    .clicked();
+                // ⚠ Same rule as the Make-molds button: the hover explains
+                // only the reason the user can act on. When `ready` is false
+                // the ✖ is greyed because a job is running or a dialog is
+                // open, and "the cast needs at least one layer" beside five
+                // layers is simply untrue.
+                let drop_button = ui.add_enabled(ready && removable, egui::Button::new("✖"));
+                let drop_button = if ready && !removable {
+                    drop_button.on_disabled_hover_text("The cast needs at least one layer.")
+                } else {
+                    drop_button
+                };
+                dropped = drop_button.clicked();
             });
         });
         field_grid(ui, &format!("layer-{index}"), |ui| {
@@ -1916,8 +1938,8 @@ pub(crate) mod tests {
             "with no design the picker offers nothing to check"
         );
 
-        let studio = crate::molds::tests::viewing_step_5_with(1);
-        let mut molds = crate::molds::tests::controls_for(1);
+        let studio = crate::molds::tests::viewing_step_5_with("p1", 1);
+        let mut molds = crate::molds::tests::controls_for("p2", 1);
         assert_eq!(
             controls_in_column(|ui| {
                 let _ = draw_make_molds(ui, &studio, &dialog, &mut molds);
@@ -1937,14 +1959,60 @@ pub(crate) mod tests {
         );
     }
 
+    /// ⚠⚠ The empty parts card's controls are DISABLED, not merely drawn.
+    ///
+    /// `every_control_on_the_make_molds_screen_is_inside_the_body_column`
+    /// censuses names, and egui emits a disabled widget under the same label —
+    /// so it is byte-identical with and without the gate, and deleting
+    /// `has_rows` left the whole suite green. Two live buttons whose `set_all`
+    /// iterates zero rows, beside a hint saying to go and choose a design.
+    #[test]
+    fn the_empty_parts_card_offers_nothing_to_click() {
+        let studio = Studio {
+            cursor: WizardCursor::new(Step::MakeMolds),
+            ..Studio::default()
+        };
+        let dialog = PendingDialog::default();
+
+        for name in ["All", "None", "Make molds"] {
+            let mut empty = MoldControls::default();
+            assert_eq!(
+                controls_disabled(
+                    |ui| {
+                        let _ = draw_make_molds(ui, &studio, &dialog, &mut empty);
+                    },
+                    name
+                ),
+                [true],
+                "{name} must be disabled with no design committed"
+            );
+        }
+
+        // ...and live again once there is something to act on.
+        let ready = crate::molds::tests::viewing_step_5_with("census-live", 1);
+        for name in ["All", "None", "Make molds"] {
+            let mut molds = crate::molds::tests::controls_for("census-live-c", 1);
+            assert_eq!(
+                controls_disabled(
+                    |ui| {
+                        let _ = draw_make_molds(ui, &ready, &dialog, &mut molds);
+                    },
+                    name
+                ),
+                [false],
+                "{name} must be live once a design offers parts"
+            );
+        }
+    }
+
     /// ★★★ "Does anything CLICK it." Four defects in #885/#886 were all this
     /// question going unasked — the control drew, and nothing reached it.
     #[test]
     fn clicking_make_molds_in_the_running_wizard_starts_the_cast() {
         let mut app = app_running_the_wizard();
         app.add_plugins(bevy::prelude::TaskPoolPlugin::default());
-        app.insert_resource(crate::molds::tests::viewing_step_5_with(1));
-        app.insert_resource(crate::molds::tests::controls_for(1));
+        app.insert_resource(crate::molds::tests::viewing_step_5_with("p3", 1));
+        app.insert_resource(crate::molds::tests::controls_for("p4", 1));
 
         click_on(&mut app, "Make molds");
 
@@ -1968,8 +2036,8 @@ pub(crate) mod tests {
     fn make_molds_is_refused_when_no_part_is_checked() {
         let mut app = app_running_the_wizard();
         app.add_plugins(bevy::prelude::TaskPoolPlugin::default());
-        app.insert_resource(crate::molds::tests::viewing_step_5_with(1));
-        let mut molds = crate::molds::tests::controls_for(1);
+        app.insert_resource(crate::molds::tests::viewing_step_5_with("p5", 1));
+        let mut molds = crate::molds::tests::controls_for("p6", 1);
         molds.picker.set_all(false);
         app.insert_resource(molds);
 
@@ -1985,8 +2053,8 @@ pub(crate) mod tests {
     #[test]
     fn none_then_all_reaches_the_picker() {
         let mut app = app_running_the_wizard();
-        app.insert_resource(crate::molds::tests::viewing_step_5_with(1));
-        app.insert_resource(crate::molds::tests::controls_for(1));
+        app.insert_resource(crate::molds::tests::viewing_step_5_with("p7", 1));
+        app.insert_resource(crate::molds::tests::controls_for("p8", 1));
 
         click_on(&mut app, "None");
         assert!(
@@ -2010,8 +2078,8 @@ pub(crate) mod tests {
     #[test]
     fn a_part_checkbox_toggles_the_row_it_names() {
         let mut app = app_running_the_wizard();
-        app.insert_resource(crate::molds::tests::viewing_step_5_with(1));
-        app.insert_resource(crate::molds::tests::controls_for(1));
+        app.insert_resource(crate::molds::tests::viewing_step_5_with("p9", 1));
+        app.insert_resource(crate::molds::tests::controls_for("p10", 1));
 
         click_on(&mut app, "Layer 1 — plug");
 
@@ -2063,7 +2131,7 @@ pub(crate) mod tests {
     #[test]
     fn a_finished_cast_shows_its_summary_on_the_screen() {
         let mut app = app_running_the_wizard();
-        let mut studio = crate::molds::tests::viewing_step_5_with(1);
+        let mut studio = crate::molds::tests::viewing_step_5_with("p11", 1);
         studio
             .project
             .set_molds(crate::jobs::tests::some_molds("out-panel"))
@@ -2111,9 +2179,9 @@ pub(crate) mod tests {
     fn a_running_cast_relabels_the_button() {
         let studio = Studio {
             busy: true,
-            ..crate::molds::tests::viewing_step_5_with(1)
+            ..crate::molds::tests::viewing_step_5_with("p12", 1)
         };
-        let app = wizard_on_step_5(studio, crate::molds::tests::controls_for(1));
+        let app = wizard_on_step_5(studio, crate::molds::tests::controls_for("p13", 1));
 
         let painted = painted_texts(&app);
         assert!(
@@ -2131,9 +2199,9 @@ pub(crate) mod tests {
     /// cast at 1.5 mm while the screen still said 0.5.
     #[test]
     fn the_quality_picker_shows_the_choice_it_is_on() {
-        let mut molds = crate::molds::tests::controls_for(1);
+        let mut molds = crate::molds::tests::controls_for("p14", 1);
         molds.quality_idx = 1;
-        let app = wizard_on_step_5(crate::molds::tests::viewing_step_5_with(1), molds);
+        let app = wizard_on_step_5(crate::molds::tests::viewing_step_5_with("p15", 1), molds);
 
         let painted = painted_texts(&app);
         assert!(
@@ -2187,8 +2255,8 @@ pub(crate) mod tests {
     #[test]
     fn no_summary_card_before_the_first_cast() {
         let app = wizard_on_step_5(
-            crate::molds::tests::viewing_step_5_with(1),
-            crate::molds::tests::controls_for(1),
+            crate::molds::tests::viewing_step_5_with("p16", 1),
+            crate::molds::tests::controls_for("p17", 1),
         );
 
         let painted = painted_texts(&app);
@@ -2209,7 +2277,7 @@ pub(crate) mod tests {
     fn the_wizard_pages_from_the_first_screen_to_the_last() {
         use cf_studio_core::PrintExport;
 
-        let mut studio = crate::molds::tests::viewing_step_5_with(1);
+        let mut studio = crate::molds::tests::viewing_step_5_with("p18", 1);
         studio
             .project
             .set_molds(crate::jobs::tests::some_molds("out-walk"))
@@ -2224,7 +2292,7 @@ pub(crate) mod tests {
 
         let mut app = app_running_the_wizard();
         app.insert_resource(studio);
-        app.insert_resource(crate::molds::tests::controls_for(1));
+        app.insert_resource(crate::molds::tests::controls_for("p19", 1));
 
         for step in Step::ALL {
             settle(&mut app);
@@ -2482,17 +2550,32 @@ pub(crate) mod tests {
         let absent = wizard_previewing(crate::preview::tests::a_missing_scan());
         let real = wizard_previewing(crate::preview::tests::a_cleaned_scan("panel-note"));
 
-        let said = painted_texts(&absent).join(" ");
-        let unsaid = painted_texts(&real).join(" ");
+        // ⚠⚠ On EVERY step that shows the piece, not just the one that shapes
+        // it. Steps 4 and 5 began showing the piece in this same PR, and the
+        // note was still wired to step 3 alone — so a scan that could not be
+        // read meant choosing silicone thicknesses and committing to a
+        // 36-minute cast against a generic body presented as your own.
+        let (mut absent, mut real) = (absent, real);
+        for step in [Step::ShapePiece, Step::DesignLayers, Step::MakeMolds] {
+            for app in [&mut absent, &mut real] {
+                app.world_mut().resource_mut::<Studio>().cursor = WizardCursor::new(step);
+                settle(app);
+            }
 
-        assert!(
-            said.contains("stand-in"),
-            "a scan that could not be read must own up to it: {said:?}"
-        );
-        assert!(
-            !unsaid.contains("stand-in"),
-            "and a scan that could be read must not be disowned: {unsaid:?}"
-        );
+            let said = painted_texts(&absent).join(" ");
+            let unsaid = painted_texts(&real).join(" ");
+
+            assert!(
+                said.contains("stand-in"),
+                "step {} must own up to a scan it could not read: {said:?}",
+                step.number()
+            );
+            assert!(
+                !unsaid.contains("stand-in"),
+                "and step {} must not disown a scan it could: {unsaid:?}",
+                step.number()
+            );
+        }
         let _ = std::fs::remove_dir_all(crate::preview::tests::fixture_dir("panel-note"));
     }
 
@@ -2739,13 +2822,7 @@ pub(crate) mod tests {
     /// The step-3 body for `shape`, on an app holding nothing.
     fn shape_body(shape: &mut ShapeControls) -> impl FnMut(&mut egui::Ui) + '_ {
         move |ui| {
-            let _ = draw_shape_piece(
-                ui,
-                &Studio::default(),
-                &PendingDialog::default(),
-                shape,
-                false,
-            );
+            let _ = draw_shape_piece(ui, &Studio::default(), &PendingDialog::default(), shape);
         }
     }
 
@@ -3199,7 +3276,7 @@ pub(crate) mod tests {
         let mut shape = shape();
         controls_disabled(
             |ui| {
-                let _ = draw_shape_piece(ui, studio, dialog, &mut shape, false);
+                let _ = draw_shape_piece(ui, studio, dialog, &mut shape);
             },
             name,
         )

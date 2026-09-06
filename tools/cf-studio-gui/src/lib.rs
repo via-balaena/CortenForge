@@ -1826,7 +1826,7 @@ visible = true
     /// deliberately omits the gasket and the integral funnel.
     /// `CastMode::Bonded.part_selection()` in `cf-cast` is `all_except(plugs)`,
     /// an EXCLUSION set — same intent, and not necessarily the same parts.
-    fn cast_base_mold_as_the_app_would(cell_size_m: f64, out_name: &str) {
+    fn cast_base_mold_as_the_app_would(cell_size_m: f64, label: &str) {
         use cf_studio_core::{DesignDraft, LayerDraft};
 
         // ⚠⚠ A PRIVATE COPY, never `~/scans` in place. Handing
@@ -1840,7 +1840,7 @@ visible = true
         // exists for exactly this and its sibling `discard_fixture` is marked
         // "★ Not optional … 1.43 GB accumulated across 12 directories before
         // anyone looked." This is that pattern, not a new one.
-        let (dir, cleaned, prep) = isolated_base_mold_copy(out_name);
+        let (dir, cleaned, prep) = isolated_base_mold_copy(label);
 
         // The stack the GUI opens on, as the engine's siblings use.
         let draft = DesignDraft {
@@ -1907,6 +1907,13 @@ visible = true
     /// ⚠⚠ PANICS when the fixture is absent rather than skipping. These gates
     /// run only when asked for by name, so a silent pass would report the
     /// bonded path as cast when nothing ran.
+    ///
+    /// ▶ A near-copy of `cf-studio-engine`'s `isolated_base_mold_fixture` +
+    /// `discard_fixture`, and knowingly so: both live in that crate's
+    /// `#[cfg(test)] mod tests`, which this crate cannot reach. ⚠ Two copies of
+    /// a fixture-isolation rule is how the `~/scans` overwrite happened in the
+    /// first place, so the standing fix is a shared `cf-studio-*` test-support
+    /// module both call — not a third copy.
     fn isolated_base_mold_copy(label: &str) -> (PathBuf, PathBuf, PathBuf) {
         let scans = PathBuf::from(std::env::var("HOME").expect("HOME")).join("scans");
         let (src_stl, src_prep) = (
@@ -1944,7 +1951,7 @@ visible = true
     #[test]
     #[ignore = "integration: 408 s at 1.5 mm (measured 2026-09-06), needs ~/scans/base_mold files"]
     fn the_app_casts_base_mold_bonded() {
-        cast_base_mold_as_the_app_would(0.0015, "cf-studio-gui-bonded-gate");
+        cast_base_mold_as_the_app_would(0.0015, "bonded");
     }
 
     /// The **print-quality** default — the quality picker's index 0, and what
@@ -1964,7 +1971,7 @@ visible = true
     #[test]
     #[ignore = "integration: 2187 s / 36 min at 0.5 mm (measured 2026-09-06), needs ~/scans/base_mold files"]
     fn the_app_casts_base_mold_bonded_fine() {
-        cast_base_mold_as_the_app_would(0.0005, "cf-studio-gui-bonded-fine-gate");
+        cast_base_mold_as_the_app_would(0.0005, "bonded-fine");
     }
 
     // ── the cast mode the app pins ──────────────────────────────────────────
