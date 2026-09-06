@@ -22,23 +22,14 @@ pub(crate) struct MoldControls {
     pub(crate) quality_idx: i32,
     /// The committed layer count the picker was last built for.
     ///
-    /// ⚠ The stamp is the layer *count*, not the row count. Rebuilding when
-    /// the rows disagree with the design would look equivalent and is not: two
-    /// different designs can enumerate the same number of parts, and the
-    /// picker would then keep a checkbox pattern belonging to the old one.
-    /// `None` means no design has been committed yet.
+    /// ⚠ The count, not the row count: two designs can enumerate the same
+    /// number of parts, and the picker would keep the old one's checkboxes.
     stamp: Option<usize>,
 }
 
 /// Keep the part picker in step with the committed design while step 5 is up.
 ///
-/// ⚠ A reconcile, not an entry hook — there is no such thing here. `shape.rs`'s
-/// preview does the same: run every frame the step is viewed, and do nothing
-/// unless the thing it derives from has actually changed.
-///
-/// Rebuilding checks every part, which is the right default (a full cast) and
-/// is also what a changed design demands: the parts it offered before may not
-/// exist any more.
+/// ⚠ A per-frame reconcile, not an entry hook — there is none here.
 pub(crate) fn drive_part_picker(mut controls: ResMut<MoldControls>, studio: Res<Studio>) {
     if studio.cursor.viewed() != Step::MakeMolds {
         return;
@@ -73,13 +64,9 @@ pub(crate) mod tests {
 
     /// A project with `layers` committed, parked on step 5.
     ///
-    /// ⚠⚠ The scan paths are ABSOLUTE, under a temp dir, and that is not
-    /// cosmetic. `start_molds` spawns the real cast, and the first thing
-    /// `generate_molds_for_design` does is write `<stem>.design.toml` beside
-    /// the cleaned scan. With a relative path its parent is `"."`, so the panel
-    /// click gate wrote that file into the REPO — twice, once per crate the
-    /// suite was run from. The run still fails a moment later on the missing
-    /// geometry, which is all the gate needs; the write happens first.
+    /// ⚠ Absolute paths under a temp dir: `start_molds` spawns the real cast,
+    /// and `generate_molds_for_design` writes `<stem>.design.toml` beside the
+    /// cleaned scan before it fails. Relative paths put that in the repo.
     pub(crate) fn viewing_step_5_with(layers: usize) -> Studio {
         let dir = fixture_root().join(test_label());
         std::fs::create_dir_all(&dir).expect("a fixture dir");
@@ -212,14 +199,8 @@ pub(crate) mod tests {
         );
     }
 
-    /// ★★ The plugin's wiring, which the tests above cannot reach: they call
-    /// `drive_part_picker` directly, so they gate the FUNCTION and say nothing
-    /// about whether anything runs it. Verified by deleting the schedule entry
-    /// — every other test in the crate stayed green, and step 5 would have
-    /// opened on an empty parts card forever.
-    ///
-    /// ⚠ `ignore`, and `Update` by hand, for the reasons `jobs.rs`'s wiring
-    /// gates give.
+    /// The plugin's wiring: the tests above call `drive_part_picker` directly,
+    /// so they gate the function and say nothing about what runs it.
     #[test]
     fn the_plugin_registers_the_controls_and_runs_the_reconcile() {
         use bevy::state::app::StatesPlugin;

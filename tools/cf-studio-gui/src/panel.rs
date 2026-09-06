@@ -86,10 +86,8 @@ const QUALITY_PICKER_WIDTH: f32 = 230.0;
 
 /// The quality choices, in the order `cell_size_m_for_quality` indexes them.
 ///
-/// ⚠ The pairing is the whole contract, and it used to be unchecked — that
-/// function's doc said so. `the_quality_labels_match_the_cell_sizes_they_pick`
-/// now reads the millimetres out of these labels and compares them against what
-/// the same index actually casts at.
+/// ⚠ That pairing used to be unchecked; `the_quality_labels_match_the_cell_sizes_they_pick`
+/// reads the millimetres back out of these labels.
 const QUALITY_LABELS: [&str; 2] = ["Fine — 0.5 mm (print quality)", "Fast — 1.5 mm (preview)"];
 /// The overwrite modal's width. Wider than the body column — it is centred on
 /// the whole window and has to hold a folder path.
@@ -374,15 +372,10 @@ fn draw_body(
         centered_wrapped(ui, MESSAGE_SIZE, color, text.clone());
     }
 
-    // ⚠⚠ Said on EVERY step that shows the piece, not just the one that shapes
-    // it. Without a readable cleaned scan the preview falls back to a generic
-    // plug, and a stand-in body shown silently reads as the user's own — the
-    // reason this note exists at all. It used to sit inside `draw_shape_piece`,
-    // which was correct while step 3 was the only screen showing the piece;
-    // once steps 4 and 5 started showing it too, a failed scan meant choosing
-    // silicone thicknesses and committing to a 36-minute cast against a
-    // stand-in presented as your own body. One site, keyed off the same
-    // predicate the viewport uses, so the two cannot drift apart again.
+    // ⚠ On every step that shows the piece. It lived in `draw_shape_piece`,
+    // correct while step 3 was the only such screen — once 4 and 5 showed it
+    // too, a failed scan meant committing to a 36-minute cast against a
+    // stand-in presented as the user's own body.
     if showing_a_stand_in && crate::scene::shows_the_piece(viewed) {
         ui.add_space(ROW_GAP);
         centered_wrapped(ui, RIDGE_NOTE_SIZE, WARN_TEXT, STAND_IN_NOTE);
@@ -811,14 +804,8 @@ fn draw_make_molds(
     let has_rows = !molds.picker.is_empty();
     ui.add_space(ROW_GAP);
     ui.horizontal(|ui| {
-        // ⚠ One gate, one place: nothing checked disables the button, and
-        // `start_molds` does not check again. Two copies of the rule would make
-        // it untestable from either side.
-        // ⚠ The hover text explains only the reason the USER can act on. When
-        // `ready` is false the button is disabled because a cast is running, a
-        // dialog is open or a Save is pending — telling someone to pick a part
-        // while every part is checked and the label reads "Making molds…" is a
-        // lie. The relabel already says what is happening, so say nothing.
+        // ⚠ One gate, one place: `start_molds` does not check again. Two copies
+        // of a rule make it untestable from either side.
         let enough_parts = molds.picker.any_checked();
         let castable = ready && enough_parts;
         let button = ui.add_enabled(castable, egui::Button::new(make_molds_label(studio.busy)));
@@ -904,17 +891,10 @@ fn draw_parts_picker(ui: &mut egui::Ui, molds: &mut MoldControls, ready: bool, h
 
 /// What to say on a disabled **Make molds**, or nothing.
 ///
-/// ★★ Hoisted out of the widget because the hover text is a *decision* and
-/// nothing in this crate can read a tooltip — `controls_disabled` reports
-/// accesskit's disabled flag and stops there, so every wording rule here was
-/// invisible to the suite. As a plain function it is gateable.
-///
-/// ⚠ The rule: explain only what the user can act on. When the app is held —
-/// a cast running, a dialog open, a Save pending — the button is grey for a
-/// reason they cannot address, and "pick at least one part" beside a full
-/// checklist and a "Making molds…" label is simply untrue. With no design
-/// committed the actionable fact is the missing design, which the card beside
-/// it already states.
+/// ⚠ Hoisted out of the widget: nothing here can read a tooltip, so every
+/// wording rule was invisible to the suite. Explain only what the user can act
+/// on — while the app is held, "pick at least one part" beside a full checklist
+/// is untrue.
 const fn cast_hint(state: CastButton) -> Option<&'static str> {
     if state.ready && state.has_rows && !state.enough_parts {
         Some("Pick at least one part to generate.")
@@ -925,9 +905,9 @@ const fn cast_hint(state: CastButton) -> Option<&'static str> {
 
 /// What the Make-molds button knows about itself.
 ///
-/// ⚠ Named fields, not three `bool` arguments: positional ones type-check in
-/// any order, and swapping two left all 170 tests green while the app showed
-/// the wrong tooltip. Nothing here can read a tooltip.
+/// ⚠ Named fields, not three `bool`s: positional ones type-check in any order,
+/// and swapping two left all 170 tests green while the app showed the wrong
+/// tooltip.
 #[derive(Debug, Clone, Copy)]
 struct CastButton {
     /// The app is accepting actions at all.
@@ -1960,9 +1940,8 @@ pub(crate) mod tests {
 
     /// Step 5's controls, in the order they are laid out.
     ///
-    /// ⚠ Two states: a committed design gives a checkbox per piece, no design gives
-    /// the hint. ▶ The quality picker censuses as a bare `"ComboBox"` — egui gives
-    /// it no accessible name, app-wide, as with the stepper's `TextInput`.
+    /// ▶ The quality picker censuses as a bare `"ComboBox"` — egui gives it no
+    /// accessible name, app-wide, as with the stepper's `TextInput`.
     #[test]
     fn every_control_on_the_make_molds_screen_is_inside_the_body_column() {
         let dialog = PendingDialog::default();
@@ -2105,13 +2084,10 @@ pub(crate) mod tests {
         );
     }
 
-    /// ⚠⚠ The empty parts card's controls are DISABLED, not merely drawn.
+    /// The empty parts card's controls are DISABLED, not merely drawn.
     ///
-    /// `every_control_on_the_make_molds_screen_is_inside_the_body_column`
-    /// censuses names, and egui emits a disabled widget under the same label —
-    /// so it is byte-identical with and without the gate, and deleting
-    /// `has_rows` left the whole suite green. Two live buttons whose `set_all`
-    /// iterates zero rows, beside a hint saying to go and choose a design.
+    /// ⚠ The name census cannot tell: egui emits a disabled widget under the same
+    /// label, so deleting `has_rows` left the suite green.
     #[test]
     fn the_empty_parts_card_offers_nothing_to_click() {
         let studio = Studio {
@@ -2412,13 +2388,11 @@ pub(crate) mod tests {
         );
     }
 
-    /// ★★★ The claim step 5 exists to make true: **the wizard can be driven
-    /// from the first screen to the last**. Until `Step::MakeMolds` stopped
-    /// drawing the porting notice, this walk could not be written — Next is
-    /// gated on `project.is_complete(viewed)`, and nothing completed step 5.
+    /// The wizard driven from the first screen to the last.
     ///
-    /// ⚠ Drives the real `Next →` button, not the cursor. Moving the cursor by
-    /// hand would page over exactly the gate this is here to exercise.
+    /// ⚠ The real `Next →`, not the cursor: `can_next` is
+    /// `project.is_complete(viewed)`, so moving the cursor pages over the gate.
+    /// Unwritable until step 5 could complete.
     #[test]
     fn the_wizard_pages_from_the_first_screen_to_the_last() {
         use cf_studio_core::PrintExport;
@@ -2685,13 +2659,7 @@ pub(crate) mod tests {
         app
     }
 
-    /// ★★ The honesty gate, driven from the resource rather than an argument.
-    /// The note is drawn by `draw_body` off `PlugView::showing_proxy`, so this
-    /// runs the real wizard: passing a flag in by hand would prove only that
-    /// the note *can* be drawn, never that the screen hears about a stand-in.
-    ///
-    /// ⚠ Two-sided. A note that is always on is as wrong as one that never is —
-    /// it would tell a user previewing their own scan that it is not theirs.
+    /// The honesty gate, driven from the resource rather than an argument.
     #[test]
     fn a_stand_in_preview_says_so_and_a_real_one_does_not() {
         let mut absent = wizard_previewing(crate::preview::tests::a_missing_scan());

@@ -207,21 +207,11 @@ pub(crate) fn show_plug(
     ));
 }
 
-/// Whether this step's subject is the shaped piece rather than the scan it was
-/// cut from.
+/// Whether this step's subject is the shaped piece rather than the scan.
 ///
-/// ★ Once the piece is shaped it stays the subject for every screen that is
-/// *about* it: shaping it, choosing the silicone that goes round it, and casting
-/// it. Print and Pour are about files and buckets, so they show the scan again.
-///
-/// ⚠ Found by hand-testing, not by a gate: this said `ShapePiece` alone, which
-/// was right when step 3 was the only screen that existed. Steps 4 and 5 landed
-/// after it and inherited the answer without anyone re-asking — so step 4 told
-/// you to build layers "outward off the piece you just shaped" while showing you
-/// the unshaped scan, and step 5 cast a piece it never displayed.
-///
-/// ⚠ An exhaustive `match`, not a `matches!`: a step added later must not
-/// silently default to showing the scan. The compiler names the new arm.
+/// ⚠ Exhaustive `match`, so a step added later cannot default to the scan.
+/// Found by hand-testing: this said `ShapePiece` alone, so step 4 told the user
+/// to build layers off the piece while showing the unshaped scan.
 pub(crate) const fn shows_the_piece(step: Step) -> bool {
     match step {
         Step::ShapePiece | Step::DesignLayers | Step::MakeMolds => true,
@@ -231,14 +221,8 @@ pub(crate) const fn shows_the_piece(step: Step) -> bool {
 
 /// Show the piece on the steps that are about it, and the scan on the rest.
 ///
-/// ⚠ Visibility, not a rebuild. The plug is the scan offset inward, so the two
-/// occupy the same space and drawing both hides the piece inside the body it was
-/// cut from — and paging back and forth must not re-mesh either one.
-///
-/// ⚠ Both bodies are spawned carrying an explicit `Visibility`. `Mesh3d` brings
-/// one along in the running app, but only once the render plugins are up, so
-/// relying on that would leave this decision unreachable from a headless gate —
-/// which is the only place it can be checked at all.
+/// ⚠ Visibility, not a rebuild: the plug is the scan offset inward, so drawing
+/// both hides the piece inside the body it was cut from.
 pub(crate) fn show_the_step_subject(
     studio: Res<Studio>,
     pieces: Query<(), With<PlugBody>>,
@@ -733,17 +717,9 @@ endsolid t
         );
     }
 
-    /// ★★ The plug is the scan offset inward, so it sits *inside* the body it
-    /// was cut from: drawing both is drawing neither. Each step shows exactly
-    /// one of them, and [`shows_the_piece`] says which.
-    ///
-    /// ⚠⚠ Swept over **all seven** steps, and that is the whole repair. This
-    /// gate used to be called "step three shows the piece and every other step
-    /// shows the scan" and checked exactly ONE other step — `CleanScan`. Steps
-    /// 4 and 5 shipped after it and were never looked at, so the app told you
-    /// to build silicone layers "outward off the piece you just shaped" while
-    /// showing you the unshaped scan, and nothing went red. A gate whose name
-    /// says "every" must actually enumerate every one.
+    /// ⚠ Swept over all seven steps. This was called "step three shows the piece
+    /// and every other step shows the scan" and checked exactly ONE other step, so
+    /// steps 4 and 5 shipped showing the wrong body with nothing red.
     #[test]
     fn every_step_shows_the_body_it_is_about() {
         let showing = showing_both(Step::ShapePiece, "plug-swap");

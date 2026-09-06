@@ -188,14 +188,9 @@ const MOLDS_NO_INPUTS: &str = "Finish steps 2 and 4 first (clean the scan, choos
 
 /// Start a cast on the task pool.
 ///
-/// ⚠ `busy` is taken only once the inputs are confirmed — the rule
-/// [`start_simplify`] documents. Setting it first would wedge the app on a step
-/// with no design: every control disabled, and no task running to clear it.
-///
-/// ⚠ There is no "at least one part" check here. The button is disabled when
-/// nothing is checked, and that is the only copy of the rule — two would make
-/// it untestable from either side, which is how #888's duplicate `can_next`
-/// survived a mutant.
+/// ⚠ `busy` is taken only once the inputs are confirmed, or the app wedges on a
+/// step with no design. There is no "at least one part" check here — the button
+/// is disabled instead, and one rule has one home.
 pub(crate) fn start_molds(start: &MoldsStart, studio: &mut Studio, job: &mut MoldsJob) {
     // A run already in flight. `busy` disables the button, but a click queued
     // in the same frame still arrives, and a second cast into the same output
@@ -267,19 +262,11 @@ fn spawn_molds(
     })
 }
 
-/// The second to draw on the status line, or `None` to leave it alone.
+/// The second to draw, or `None` to leave the line alone.
 ///
-/// ★★ Extracted because a system test could not gate it. The poller runs every
-/// frame and the only observable is the message it writes, so a gate has to
-/// name the expected second — and every attempt to derive that expectation from
-/// the run itself became a mirror: read `shown_secs` back out and a poller that
-/// computes the wrong second writes the wrong value to both, and they agree.
-/// **Measured: `let secs = 0;` passed all 170 tests** — a 36-minute cast reading
-/// `0:00` forever, green. As a pure function over `(elapsed, shown)` the whole
-/// space is enumerable against literals.
-///
-/// ⚠ Rebuilt at most once a whole second: at 60 fps the naive version writes a
-/// fresh `String` sixty times to show the same text fifty-nine of them.
+/// ⚠ Extracted because a system test could not gate it: every expectation
+/// derived from the run itself was a mirror. Measured — `let secs = 0;` passed
+/// all 170 tests, a 36-minute cast reading `0:00`.
 const fn clock_to_draw(elapsed_secs: u64, shown: Option<u64>) -> Option<u64> {
     match shown {
         Some(already) if already == elapsed_secs => None,
@@ -1068,30 +1055,18 @@ endsolid t
         );
     }
 
-    /// ★★ The plugin's own wiring, which nothing else reaches.
+    /// The plugin's own wiring, which nothing else reaches.
     ///
-    /// ⚠ Every test above inserts `MoldsJob` by hand and adds `poll_molds_job`
-    /// itself, so dropping either the `init_resource` or the schedule entry
-    /// left the whole suite green — a system whose params cannot be built does
-    /// not run, and a cast would run for half an hour and never land.
-    /// Verified by doing exactly that: both deletions pass every other test in
-    /// the crate, and fail this one.
-    ///
-    /// This is the `Update`-side twin of
-    /// `plugin::tests::the_plugin_gives_the_wizard_every_resource_it_asks_for`,
-    /// which can only reach the systems in the egui pass.
+    /// ⚠ Every test above inserts `MoldsJob` by hand, so dropping the
+    /// `init_resource` or the schedule entry left the whole suite green while a
+    /// cast ran for fifteen minutes and never landed.
     #[test]
     fn the_plugin_registers_the_cast_job_and_runs_its_poller() {
         use bevy::state::app::StatesPlugin;
 
-        // ⚠ `ignore`, and it is load-bearing. `Update` also holds the scene
-        // and pointer systems, whose `Assets<Mesh>` / `EguiContexts` params
-        // need a renderer this gate has no business standing up — and in Bevy
-        // 0.18 a param that fails validation is an ERROR the default handler
-        // PANICS on, not the silent skip the comment in `plugin.rs` assumes.
-        // Ignoring lets the unrelated systems fall out while the poller, whose
-        // params do exist, still runs. Standing up the render stack instead
-        // would gate two lines of wiring behind most of a renderer.
+        // ⚠ `ignore` is load-bearing: `Update` also holds the scene and pointer
+        // systems, whose params want a renderer. In Bevy 0.18 a param that fails
+        // validation is an error the default handler PANICS on.
         let mut app = App::new();
         app.set_error_handler(bevy::ecs::error::ignore);
         app.add_plugins((MinimalPlugins, StatesPlugin, crate::plugin::StudioPlugin));
@@ -1131,15 +1106,9 @@ endsolid t
 
     /// The same hole, for the print export — the only sibling that had it.
     ///
-    /// ⚠ Audited rather than assumed: dropping each `init_resource` in turn
-    /// leaves `SimplifyJob`, `PendingDialog`, `PlugView` and `DesignControls`
-    /// red, because the wizard panel asks for them and the plugin's own wiring
-    /// gate drives that pass. `PrintJob` and `MoldsJob` are read only from
-    /// `Update`, which that gate cannot reach, and both were green.
-    ///
-    /// ⚠ Driven through the FAILURE path on purpose: a landed export calls
-    /// `reveal_in_file_manager`, which spawns the OS file browser. A gate that
-    /// opens a Finder window on every test run is one people learn to skip.
+    /// ⚠ Driven through the FAILURE path: a landed export calls
+    /// `reveal_in_file_manager`, and a gate that opens a Finder window is one
+    /// people learn to skip.
     #[test]
     fn the_plugin_registers_the_print_job_and_runs_its_poller() {
         use bevy::state::app::StatesPlugin;

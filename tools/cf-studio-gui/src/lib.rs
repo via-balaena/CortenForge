@@ -223,21 +223,10 @@ pub fn cell_size_m_for_quality(quality_idx: i32) -> f64 {
 
 /// The cast mode Cendrillon casts in.
 ///
-/// **Bonded**, and that is not cosmetic — it changes both what the app offers
-/// and which path the engine takes:
-/// - [`enumerate_parts`] lists only the **layer-0** plug, because above that
-///   the cured layer N *is* the plug for layer N+1;
-/// - [`part_selection_from_checks`] never collapses to [`PartSelection::all`],
-///   so every run goes down the selective, bonded-procedure path.
-///
-/// The engine already documents this as the Cendrillon default on
-/// [`CastMode::Bonded`] itself; this is the app actually choosing it.
-///
-/// ⚠ The pre-port binary pinned this and the port dropped it: every function
-/// was parameterised by mode and nothing restored the app's answer, so the
-/// crate exercised BOTH modes and committed to NEITHER. The gates below read
-/// this constant rather than a `CastMode` literal, which is the whole point —
-/// a gate naming `Bonded` directly would still pass if the app changed.
+/// Bonded drops every plug above layer 0 and stops `part_selection_from_checks`
+/// collapsing to `PartSelection::all`. ⚠ The pre-port binary pinned this and the
+/// port dropped it; the gates below read this constant, not a `CastMode`
+/// literal.
 pub const CENDRILLON_CAST_MODE: CastMode = CastMode::Bonded;
 
 /// Enumerate the generatable parts for a design with `layer_count` layers,
@@ -620,14 +609,8 @@ pub fn format_elapsed(secs: u64) -> String {
 
 /// The status line while the cast runs, refreshed once a second.
 ///
-/// The reassurance is not filler: this is the only job in the wizard measured
-/// in *minutes* (408 s at 1.5 mm, 2187 s at 0.5, measured bonded — the mode
-/// this app casts in), and a window that looks frozen
-/// for that long is one a user force-quits.
-///
-/// ⚠ One deliberate difference from the pre-port text, which built this with a
-/// trailing `\` line continuation and so emitted **two** spaces before the
-/// parenthesis. Single-spaced here.
+/// ⚠ Single-spaced before the parenthesis; the pre-port built this with a
+/// trailing `\` continuation and emitted two spaces.
 #[must_use]
 pub fn format_molds_progress(secs: u64) -> String {
     format!(
@@ -1809,37 +1792,20 @@ visible = true
         );
     }
 
-    /// Cast the real `base_mold` at `cell_size_m`, in the mode and with the
-    /// selection **the app sends**, into a throwaway output dir.
+    /// Cast the real `base_mold` at `cell_size_m`, with the selection the app
+    /// sends.
     ///
-    /// ⚠⚠⚠ **BONDED HAD NEVER BEEN CAST** before 2026-09-06. All five
-    /// `#[ignore]`d cast gates in `cf-studio-engine` go through
-    /// `cast_real_base_mold_via_wizard`, which hard-codes
-    /// [`CastMode::Detachable`]. Every other Bonded exercise in the repo is a
-    /// unit test over the *plan* — selection sets, procedure markdown, which
-    /// plugs get dropped. Nothing had meshed through the bonded path, and
-    /// bonded is the mode Cendrillon actually casts in.
-    ///
-    /// ★ These gates live here, not beside their siblings in the engine,
-    /// because only here can the selection be built the way the APP builds it:
-    /// `enumerate_parts` + `part_selection_from_checks`, an INCLUSION set that
-    /// deliberately omits the gasket and the integral funnel.
-    /// `CastMode::Bonded.part_selection()` in `cf-cast` is `all_except(plugs)`,
-    /// an EXCLUSION set — same intent, and not necessarily the same parts.
+    /// ⚠ Bonded had never been cast before 2026-09-06: all five `#[ignore]`d gates
+    /// in `cf-studio-engine` hard-code `Detachable`. Lives here because only here
+    /// is the selection built as the app builds it — an inclusion set omitting the
+    /// gasket and funnel, unlike `cf-cast`'s `all_except`.
     fn cast_base_mold_as_the_app_would(cell_size_m: f64, label: &str) {
         use cf_studio_core::{DesignDraft, LayerDraft};
 
-        // ⚠⚠ A PRIVATE COPY, never `~/scans` in place. Handing
-        // `generate_molds_for_design` the paths in `~/scans` directly makes
-        // `base_dir` the user's scan folder: step 1 of that function is
-        // `save_design_from_draft`, so the run OVERWRITES
-        // `base_mold.design.toml`, and the output directory lands beside it and
-        // is never removed. Both happened — 217 MB left behind and the user's
-        // design file rewritten, next to a `.pre-gate-bak` someone had already
-        // made the last time. `cf-studio-engine`'s `isolated_base_mold_fixture`
-        // exists for exactly this and its sibling `discard_fixture` is marked
-        // "★ Not optional … 1.43 GB accumulated across 12 directories before
-        // anyone looked." This is that pattern, not a new one.
+        // ⚠ Never `~/scans` in place: `base_dir` would be the user's scan
+        // folder, so the run overwrites `base_mold.design.toml` and leaves its
+        // output beside it. Both happened — 217 MB, and the design file
+        // rewritten next to a `.pre-gate-bak` from the last time.
         let (dir, cleaned, prep) = isolated_base_mold_copy(label);
 
         // The stack the GUI opens on, as the engine's siblings use.
@@ -1901,19 +1867,13 @@ visible = true
         }
     }
 
-    /// A private copy of the `base_mold` fixture, in this gate's own temp
-    /// directory, so the cast's `base_dir` is never the user's `~/scans`.
+    /// A private copy of the `base_mold` fixture, so the cast's `base_dir` is never
+    /// the user's `~/scans`.
     ///
-    /// ⚠⚠ PANICS when the fixture is absent rather than skipping. These gates
-    /// run only when asked for by name, so a silent pass would report the
-    /// bonded path as cast when nothing ran.
-    ///
-    /// ▶ A near-copy of `cf-studio-engine`'s `isolated_base_mold_fixture` +
-    /// `discard_fixture`, and knowingly so: both live in that crate's
-    /// `#[cfg(test)] mod tests`, which this crate cannot reach. ⚠ Two copies of
-    /// a fixture-isolation rule is how the `~/scans` overwrite happened in the
-    /// first place, so the standing fix is a shared `cf-studio-*` test-support
-    /// module both call — not a third copy.
+    /// ⚠ PANICS on a missing fixture rather than skipping — these run only when
+    /// asked for by name, so a silent pass would report the path as cast.
+    /// ▶ A near-copy of the engine's `isolated_base_mold_fixture`; both live in
+    /// `#[cfg(test)]`, so the standing fix is a shared test-support module.
     fn isolated_base_mold_copy(label: &str) -> (PathBuf, PathBuf, PathBuf) {
         let scans = PathBuf::from(std::env::var("HOME").expect("HOME")).join("scans");
         let (src_stl, src_prep) = (
@@ -1939,35 +1899,23 @@ visible = true
         (dir, stl, prep)
     }
 
-    /// The **fast preview** — the quality picker's index 1.
+    /// The fast preview — the picker's index 1.
     ///
-    /// ★★ **PASSED 2026-09-06: 407.67 s.** Detachable at the same cell size,
-    /// same fixture, same machine, the same day: **277.95 s**. Bonded is the
-    /// slower mode by ~1.5× *while producing fewer pieces* — it never collapses
-    /// to `PartSelection::all`, so it meshes piece-by-piece instead of taking
-    /// the bulk full-export route. One pair, not a repeated measurement.
-    ///
-    /// Run: `cargo test -p cf-studio-gui -- --ignored casts_base_mold_bonded`
+    /// ★★ **PASSED 2026-09-06: 407.67 s.** Detachable, same cell size and machine:
+    /// 277.95 s. Bonded is slower while producing fewer pieces — it never collapses
+    /// to `PartSelection::all`, so it meshes piece-by-piece.
     #[test]
     #[ignore = "integration: 408 s at 1.5 mm (measured 2026-09-06), needs ~/scans/base_mold files"]
     fn the_app_casts_base_mold_bonded() {
         cast_base_mold_as_the_app_would(0.0015, "bonded");
     }
 
-    /// The **print-quality** default — the quality picker's index 0, and what
-    /// the user actually prints from.
+    /// Print quality — the picker's index 0, and what the user prints from.
     ///
-    /// ★★★ **PASSED 2026-09-06: 2187.37 s — 36.5 minutes.** Step 5's copy had
-    /// said "around fifteen minutes", a figure measured on the **detachable**
-    /// path the app does not use. The copy now says forty.
-    ///
-    /// ★★ **AND THE RATIO DOES NOT HOLD ACROSS CELL SIZES.** Bonded is 1.47×
-    /// detachable at 1.5 mm (408 vs 278 s) but **2.43×** at 0.5 mm (2187 vs
-    /// ~900). Scaling the 1.5 mm pair would have written down ~22 minutes and
-    /// called it measured. That is why the `#[ignore]` reason said UNMEASURED
-    /// rather than carrying an estimate.
-    ///
-    /// Run: `cargo test -p cf-studio-gui -- --ignored casts_base_mold_bonded_fine`
+    /// ★★ **PASSED 2026-09-06: 2187.37 s (36.5 min).** Step 5's copy had said
+    /// "around fifteen minutes", measured on the detachable path the app does not
+    /// use. ⚠ Bonded is 1.47× detachable at 1.5 mm but **2.43×** at 0.5 — the ratio
+    /// does not hold across cell sizes, so scaling would have written ~22 minutes.
     #[test]
     #[ignore = "integration: 2187 s / 36 min at 0.5 mm (measured 2026-09-06), needs ~/scans/base_mold files"]
     fn the_app_casts_base_mold_bonded_fine() {

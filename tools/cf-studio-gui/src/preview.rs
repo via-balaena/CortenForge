@@ -549,12 +549,9 @@ pub(crate) mod tests {
         // Continue, from inside that window.
         app.world_mut().resource_mut::<Studio>().cursor = WizardCursor::new(Step::DesignLayers);
 
-        // ⚠⚠ NOT `shown.is_none()`. `land_mesh` records `shown` before checking
-        // whether the mesh built, deliberately, so a failed draft is not
-        // re-spawned every frame — which means `shown` goes `Some` for a failed
-        // mesh AND for a proxy. Both are the failure this gate names, and both
-        // would have ended the loop green. The real piece is `mesh().is_some()`
-        // and not the stand-in.
+        // ⚠ Not `shown.is_none()`: `land_mesh` records `shown` before checking
+        // whether the mesh built, so it goes `Some` for a failure and for the
+        // proxy — both of which are what this gate names.
         let deadline = Instant::now() + Duration::from_secs(20);
         while view(&app).mesh().is_none() {
             assert!(
@@ -571,14 +568,9 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(fixture_dir("continue-early"));
     }
 
-    /// ⚠ A cache dropped on a step that cannot rebuild it takes the piece with
-    /// it permanently.
-    ///
-    /// `drop_a_stale_cache` invalidates whenever the scan's metadata cannot be
-    /// read — a moved file, a removable volume, a permission change — clearing
-    /// the mesh and despawning the body. On step 3 that self-heals next frame.
-    /// Restricted to step 3, steps 4 and 5 could drop but never restart, and the
-    /// piece vanished with neither a message nor the proxy fallback.
+    /// A cache dropped on a step that cannot rebuild it takes the piece with it
+    /// permanently — `drop_a_stale_cache` fires whenever the scan's metadata
+    /// cannot be read.
     #[test]
     fn a_cache_dropped_on_step_four_is_rebuilt_there() {
         let prep = a_cleaned_scan("drop-on-four");
@@ -671,13 +663,8 @@ pub(crate) mod tests {
         );
     }
 
-    /// ★★ A mesh still in flight when **Continue** is clicked must still land.
-    ///
-    /// ⚠ Landing used to stop with step 3, so a piece meshed on the way out
-    /// never arrived: steps 4 and 5 went on drawing the inset *before* last,
-    /// and the piece the user committed was not the piece on screen. The driver
-    /// now runs in full on every step that shows the piece — see its own note
-    /// for why restricting the *starts* was wrong too.
+    /// A mesh still in flight when Continue is clicked must still land, or
+    /// steps 4 and 5 draw the inset before last.
     #[test]
     fn a_mesh_in_flight_lands_after_continue_has_moved_on() {
         let mut app = app_on(
