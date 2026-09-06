@@ -155,7 +155,7 @@ pub(crate) fn poll_print_job(mut job: ResMut<PrintJob>, mut studio: ResMut<Studi
 /// that run's first status line.
 struct MoldsRun {
     started: Instant,
-    shown_secs: Option<u64>,
+    shown_secs: u64,
     task: Task<Result<MoldOutputs, String>>,
 }
 
@@ -224,7 +224,7 @@ pub(crate) fn start_molds(start: &MoldsStart, studio: &mut Studio, job: &mut Mol
     studio.message = Some(Ok(format_molds_progress(0)));
     job.0 = Some(MoldsRun {
         started: Instant::now(),
-        shown_secs: Some(0),
+        shown_secs: 0,
         task: spawn_molds(cleaned_stl, prep_toml, draft, start.clone(), ridges),
     });
 }
@@ -263,8 +263,8 @@ fn spawn_molds(
 }
 
 /// The second to draw, or `None` to leave the line alone.
-fn clock_to_draw(elapsed_secs: u64, shown: Option<u64>) -> Option<u64> {
-    (shown != Some(elapsed_secs)).then_some(elapsed_secs)
+fn clock_to_draw(elapsed_secs: u64, shown: u64) -> Option<u64> {
+    (shown != elapsed_secs).then_some(elapsed_secs)
 }
 
 /// Land a finished cast, or tick the clock on a running one.
@@ -274,7 +274,7 @@ pub(crate) fn poll_molds_job(mut job: ResMut<MoldsJob>, mut studio: ResMut<Studi
         // Still running. The decision is `clock_to_draw`; this only carries
         // it out.
         if let Some(secs) = clock_to_draw(run.started.elapsed().as_secs(), run.shown_secs) {
-            run.shown_secs = Some(secs);
+            run.shown_secs = secs;
             studio.message = Some(Ok(format_molds_progress(secs)));
         }
         return;
@@ -427,7 +427,7 @@ pub(crate) mod tests {
     /// mutant stopping the poller makes every caller sit out the whole
     /// deadline, and a long one turns that caught mutant into a timeout.
     fn run_until_idle(app: &mut App) {
-        const DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
+        const DEADLINE: Duration = Duration::from_secs(2);
         let deadline = std::time::Instant::now() + DEADLINE;
         while app.world().resource::<Studio>().busy {
             assert!(
@@ -548,7 +548,7 @@ pub(crate) mod tests {
     /// returning `None` — so a single frame passes alone and fails in a full
     /// run. Same reason [`run_until_idle`] exists.
     fn run_until_answered(app: &mut App) {
-        const DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
+        const DEADLINE: Duration = Duration::from_secs(2);
         let deadline = std::time::Instant::now() + DEADLINE;
         while app.world().resource::<PendingDialog>().is_open() {
             assert!(
@@ -882,7 +882,7 @@ endsolid t
         app: &mut App,
         task: Task<Result<MoldOutputs, String>>,
         started: Instant,
-        shown_secs: Option<u64>,
+        shown_secs: u64,
     ) {
         app.world_mut().resource_mut::<Studio>().busy = true;
         app.world_mut().resource_mut::<MoldsJob>().0 = Some(MoldsRun {
@@ -906,13 +906,13 @@ endsolid t
             .resource::<MoldsJob>()
             .0
             .as_ref()
-            .and_then(|run| run.shown_secs)
+            .map(|run| run.shown_secs)
             .expect("a cast is in flight")
     }
 
     /// Run frames until the app is handed back. Mirrors `run_until_idle`.
     fn run_until_landed(app: &mut App) {
-        const DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
+        const DEADLINE: Duration = Duration::from_secs(2);
         let deadline = Instant::now() + DEADLINE;
         while app.world().resource::<Studio>().busy {
             assert!(Instant::now() < deadline, "the cast never landed");
@@ -924,7 +924,7 @@ endsolid t
     fn a_landed_cast_records_the_molds_and_hands_the_app_back() {
         let mut app = app_ready_for_molds();
         let task = finished(Ok(some_molds("out-a")));
-        inject(&mut app, task, Instant::now(), Some(0));
+        inject(&mut app, task, Instant::now(), 0);
 
         run_until_landed(&mut app);
 
@@ -966,7 +966,7 @@ endsolid t
         }
 
         let task = finished(Ok(some_molds("out-second")));
-        inject(&mut app, task, Instant::now(), Some(0));
+        inject(&mut app, task, Instant::now(), 0);
         run_until_landed(&mut app);
 
         let studio = app.world().resource::<Studio>();
@@ -985,7 +985,7 @@ endsolid t
     fn a_failed_cast_says_why_and_hands_the_app_back() {
         let mut app = app_ready_for_molds();
         let task = finished(Err("the mesher gave up".to_string()));
-        inject(&mut app, task, Instant::now(), Some(0));
+        inject(&mut app, task, Instant::now(), 0);
 
         run_until_landed(&mut app);
 
@@ -1004,9 +1004,11 @@ endsolid t
 
     #[test]
     fn the_clock_redraws_only_when_the_whole_second_changes() {
-        assert_eq!(clock_to_draw(75, None), Some(75));
-        assert_eq!(clock_to_draw(75, Some(75)), None);
-        assert_eq!(clock_to_draw(76, Some(75)), Some(76));
+        // `start_molds` already drew 0:00, so the seed is a second already shown.
+        assert_eq!(clock_to_draw(0, 0), None);
+        assert_eq!(clock_to_draw(75, 0), Some(75));
+        assert_eq!(clock_to_draw(75, 75), None);
+        assert_eq!(clock_to_draw(76, 75), Some(76));
     }
 
     /// The clock source. Only a known duration catches a wrong scale: "it
@@ -1015,26 +1017,61 @@ endsolid t
     #[test]
     fn the_clock_follows_real_elapsed_time() {
         const WAITED: u64 = 2;
+        const BACKDATE_MS: u64 = WAITED * 1000 + 100;
+        const LINE: &str =
+            "Making molds… 0:02 elapsed (this can take a while — the window stays responsive)";
+
+        let mut app = app_ready_for_molds();
         // ⚠ Backdated, not slept. A sleep plus a tolerance is what let a
         // constant source through: with ±1 s of slack a poller reading a fixed
-        // `Duration::from_secs(3)` passed all 171. An exact expectation needs an
-        // exact elapsed, and this one costs nothing.
-        let mut app = app_ready_for_molds();
-        // ⚠ `Some(0)` is what `start_molds` seeds. Under `None` a poller that
-        // draws the opening second and never redraws passed all 171.
+        // `Duration::from_secs(3)` passed all 171. Captured after the app is
+        // built, so construction does not eat the 900 ms margin.
         let started = Instant::now()
-            .checked_sub(Duration::from_millis(WAITED * 1000 + 100))
+            .checked_sub(Duration::from_millis(BACKDATE_MS))
             .expect("2.1 s of uptime");
-        inject(&mut app, never_finishes(), started, Some(0));
+        // ⚠ `0` is what `start_molds` seeds. Seeding a second production never
+        // seeds let a poller that draws once and never redraws pass all 171.
+        inject(&mut app, never_finishes(), started, 0);
 
         app.update();
 
         let shown = shown_second(&app);
-        assert_eq!(shown, WAITED, "backdated {WAITED}s, clock says {shown}");
+        assert_eq!(
+            shown, WAITED,
+            "backdated {BACKDATE_MS} ms, clock says {shown}"
+        );
+        // ⚠ The literal, not `format_molds_progress(WAITED)`. An expectation
+        // built by calling the subject is a mirror; the one excuse for it was
+        // "lib.rs owns the wording", which round seven proved false.
         assert_eq!(
             app.world().resource::<Studio>().message,
-            Some(Ok(format_molds_progress(WAITED))),
+            Some(Ok(LINE.to_string())),
             "and the line the run is on must reach the screen"
+        );
+    }
+
+    /// The suppression at the caller. `clock_to_draw` returning `None` is half
+    /// of it; the poller has to honour it.
+    ///
+    /// ⚠ Without this, replacing the whole `if let` with an unconditional write
+    /// passed all 171 — a 36-minute cast rebuilding the line and waking every
+    /// `Res<Studio>` consumer at 60 Hz.
+    #[test]
+    fn the_line_is_left_alone_within_the_same_second() {
+        let started = Instant::now()
+            .checked_sub(Duration::from_millis(2_100))
+            .expect("2.1 s of uptime");
+        let mut app = app_ready_for_molds();
+        inject(&mut app, never_finishes(), started, 2);
+        let sentinel = Some(Ok("SENTINEL".to_string()));
+        app.world_mut().resource_mut::<Studio>().message = sentinel.clone();
+
+        app.update();
+
+        assert_eq!(
+            app.world().resource::<Studio>().message,
+            sentinel,
+            "the whole second has not changed, so the line must not be rebuilt"
         );
     }
 
@@ -1059,7 +1096,7 @@ endsolid t
         // that the PLUGIN registered it. Adding it here would gate nothing.
         app.world_mut().resource_mut::<MoldsJob>().0 = Some(MoldsRun {
             started: Instant::now(),
-            shown_secs: Some(0),
+            shown_secs: 0,
             task: finished(Ok(some_molds("out-plugin"))),
         });
         app.world_mut().resource_mut::<Studio>().busy = true;
@@ -1067,7 +1104,7 @@ endsolid t
         // ⚠ The schedule by hand, not `app.update()`: `Startup` runs
         // `setup_scene`, which wants an asset stack this gate has no business
         // standing up. Same reason the plugin's own wiring gate does it.
-        let deadline = Instant::now() + std::time::Duration::from_secs(2);
+        let deadline = Instant::now() + Duration::from_secs(2);
         while app.world().resource::<Studio>().busy {
             assert!(
                 Instant::now() < deadline,
@@ -1104,7 +1141,7 @@ endsolid t
             Some(AsyncComputeTaskPool::get().spawn(async { Err("the copy failed".to_string()) }));
         app.world_mut().resource_mut::<Studio>().busy = true;
 
-        let deadline = Instant::now() + std::time::Duration::from_secs(2);
+        let deadline = Instant::now() + Duration::from_secs(2);
         while app.world().resource::<Studio>().busy {
             assert!(
                 Instant::now() < deadline,
@@ -1135,7 +1172,7 @@ endsolid t
     /// Run the plugin's `Update` until `done`, or fail saying which poller
     /// never ran.
     fn run_plugin_update_until(app: &mut App, what: &str, done: impl Fn(&App) -> bool) {
-        let deadline = Instant::now() + std::time::Duration::from_secs(2);
+        let deadline = Instant::now() + Duration::from_secs(2);
         while !done(app) {
             assert!(Instant::now() < deadline, "the plugin never ran {what}");
             app.world_mut().run_schedule(Update);
