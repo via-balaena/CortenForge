@@ -808,14 +808,6 @@ fn draw_make_molds(
         });
     });
 
-    // ⚠ One home for the screen's "is there a design" rule, so the button's
-    // hover and the parts card's controls cannot disagree about it.
-    //
-    // ⚠ The cost, stated: the card's empty-state branch now reads a snapshot
-    // taken here while its checkbox loop still reads `picker.rows()` live. They
-    // cannot diverge today — nothing between the two mutates the picker — but a
-    // click handler added to the button row would open that window, and the
-    // card would then draw live All/None over zero checkboxes with no hint.
     let has_rows = !molds.picker.is_empty();
     ui.add_space(ROW_GAP);
     ui.horizontal(|ui| {
@@ -933,17 +925,9 @@ const fn cast_hint(state: CastButton) -> Option<&'static str> {
 
 /// What the Make-molds button knows about itself.
 ///
-/// ⚠⚠ A struct, not three `bool` arguments. Three positional `bool`s
-/// type-check in any order: swapping two at the call site compiled and left
-/// **all 170 tests green** while the running app showed the wrong tooltip, and
-/// no test in this crate can read a tooltip, so gating the wiring was not
-/// available.
-///
-/// ⚠ Precisely what this buys, and no more: the *positional* mistake becomes a
-/// compile error (the fields must be named), and a mislabelled field is legible
-/// at the call site — `has_rows: enough_parts` reads wrong where a swapped
-/// third argument did not. A deliberate mislabel still compiles. The same
-/// applies to [`DropButton`].
+/// ⚠ Named fields, not three `bool` arguments: positional ones type-check in
+/// any order, and swapping two left all 170 tests green while the app showed
+/// the wrong tooltip. Nothing here can read a tooltip.
 #[derive(Debug, Clone, Copy)]
 struct CastButton {
     /// The app is accepting actions at all.
@@ -1976,17 +1960,9 @@ pub(crate) mod tests {
 
     /// Step 5's controls, in the order they are laid out.
     ///
-    /// ⚠ Two states, because the parts card has two: a committed design gives
-    /// a checkbox per piece, and no design gives the hint instead. Censusing
-    /// only the first leaves the empty state — the one a user hits by paging
-    /// back — with no gate at all.
-    ///
-    /// ▶ The quality picker censuses as a bare `"ComboBox"`: egui gives it no
-    /// accessible name, so nothing can click it BY NAME. Same app-wide gap the
-    /// stepper's `TextInput` has, and the same fix — one change to every picker
-    /// in the app, not this screen's to make. The pairing between its labels
-    /// and the cell sizes they choose is gated separately, by
-    /// `the_quality_labels_match_the_cell_sizes_they_pick`.
+    /// ⚠ Two states: a committed design gives a checkbox per piece, no design gives
+    /// the hint. ▶ The quality picker censuses as a bare `"ComboBox"` — egui gives
+    /// it no accessible name, app-wide, as with the stepper's `TextInput`.
     #[test]
     fn every_control_on_the_make_molds_screen_is_inside_the_body_column() {
         let dialog = PendingDialog::default();
@@ -2027,68 +2003,106 @@ pub(crate) mod tests {
     /// wording rules could be deleted with the whole suite green.
     #[test]
     fn a_disabled_control_explains_only_what_the_user_can_act_on() {
-        // ⚠ ENUMERATED, not sampled: three bools is eight states and the rule
-        // is an exclusivity claim — exactly one of them may speak.
-        for ready in [false, true] {
-            for has_rows in [false, true] {
-                for enough_parts in [false, true] {
-                    let state = CastButton {
-                        ready,
-                        has_rows,
-                        enough_parts,
-                    };
-                    let expected = (ready && has_rows && !enough_parts)
-                        .then_some("Pick at least one part to generate.");
-                    assert_eq!(
-                        cast_hint(state),
-                        expected,
-                        "the only actionable reason is an unchecked list: {state:?}"
-                    );
-                }
-            }
-        }
-        // Spelled out for the three that matter, so the rule is readable and
-        // not only computed:
+        // ⚠ Every state, written out. A loop computing `expected` from the same
+        // boolean expression the function uses is a mirror: edit both in one
+        // sitting and the gate stays green.
+        use CastButton as C;
+        const PICK: Option<&str> = Some("Pick at least one part to generate.");
         assert_eq!(
-            cast_hint(CastButton {
+            cast_hint(C {
                 ready: true,
                 has_rows: true,
                 enough_parts: false
             }),
-            Some("Pick at least one part to generate.")
+            PICK
         );
         assert_eq!(
-            cast_hint(CastButton {
-                ready: false,
+            cast_hint(C {
+                ready: true,
                 has_rows: true,
-                enough_parts: false
+                enough_parts: true
             }),
-            None,
-            "held by a cast or a dialog — telling them to pick a part is untrue"
+            None
         );
         assert_eq!(
-            cast_hint(CastButton {
+            cast_hint(C {
                 ready: true,
                 has_rows: false,
                 enough_parts: false
             }),
-            None,
-            "no design at all — the card beside it already says so"
+            None
+        );
+        assert_eq!(
+            cast_hint(C {
+                ready: true,
+                has_rows: false,
+                enough_parts: true
+            }),
+            None
+        );
+        assert_eq!(
+            cast_hint(C {
+                ready: false,
+                has_rows: true,
+                enough_parts: false
+            }),
+            None
+        );
+        assert_eq!(
+            cast_hint(C {
+                ready: false,
+                has_rows: true,
+                enough_parts: true
+            }),
+            None
+        );
+        assert_eq!(
+            cast_hint(C {
+                ready: false,
+                has_rows: false,
+                enough_parts: false
+            }),
+            None
+        );
+        assert_eq!(
+            cast_hint(C {
+                ready: false,
+                has_rows: false,
+                enough_parts: true
+            }),
+            None
         );
 
-        // The layer ✖: all four states.
-        for ready in [false, true] {
-            for removable in [false, true] {
-                let state = DropButton { ready, removable };
-                let expected =
-                    (ready && !removable).then_some("The cast needs at least one layer.");
-                assert_eq!(
-                    drop_hint(state),
-                    expected,
-                    "the floor is worth explaining, being held is not: {state:?}"
-                );
-            }
-        }
+        use DropButton as D;
+        const FLOOR: Option<&str> = Some("The cast needs at least one layer.");
+        assert_eq!(
+            drop_hint(D {
+                ready: true,
+                removable: false
+            }),
+            FLOOR
+        );
+        assert_eq!(
+            drop_hint(D {
+                ready: true,
+                removable: true
+            }),
+            None
+        );
+        assert_eq!(
+            drop_hint(D {
+                ready: false,
+                removable: false
+            }),
+            None
+        );
+        assert_eq!(
+            drop_hint(D {
+                ready: false,
+                removable: true
+            }),
+            None
+        );
     }
 
     /// ⚠⚠ The empty parts card's controls are DISABLED, not merely drawn.
@@ -2683,23 +2697,9 @@ pub(crate) mod tests {
         let mut absent = wizard_previewing(crate::preview::tests::a_missing_scan());
         let mut real = wizard_previewing(crate::preview::tests::a_cleaned_scan("panel-note"));
 
-        // ⚠⚠ On EVERY step that shows the piece, not just the one that shapes
-        // it. Steps 4 and 5 began showing the piece in this same PR, and the
-        // note was still wired to step 3 alone — so a scan that could not be
-        // read meant choosing silicone thicknesses and committing to a
-        // 36-minute cast against a generic body presented as your own.
-        // ⚠⚠ A LITERAL table over ALL SEVEN steps, and both halves matter.
-        //
-        // The first draft asked `shows_the_piece(step)` for the expectation —
-        // the function under test — so reverting that predicate flipped the
-        // production site and the expectation together and this gate stayed
-        // green. `scene.rs` documents that exact anti-pattern for this exact
-        // predicate and uses a literal table; writing it again here two rounds
-        // later is why the table is spelled out rather than derived.
-        //
-        // And five steps is not seven: steps 1 and 2 reach the note through the
-        // same line, so a failed scan could paint "the body is not yours" on the
-        // Add-scan and Clean-scan screens.
+        // ⚠ A literal table, not `shows_the_piece(step)` — asserting against the
+        // function under test flips both sides together and passes. `scene.rs`
+        // makes the same point for the same predicate.
         let expected = [
             (Step::AddScan, false),
             (Step::CleanScan, false),
@@ -2709,10 +2709,12 @@ pub(crate) mod tests {
             (Step::Print, false),
             (Step::Pour, false),
         ];
+        // ⚠ Counting to `Step::TOTAL` is not coverage: a duplicated row and a
+        // missing one also make seven.
         assert_eq!(
-            expected.len(),
-            Step::TOTAL,
-            "the table must answer for every step, or the sweep is not a sweep"
+            expected.map(|(step, _)| step),
+            Step::ALL,
+            "the table must answer for every step, in order"
         );
         for (step, piece_step) in expected {
             for app in [&mut absent, &mut real] {

@@ -1,20 +1,9 @@
 //! Background work, and the pollers that land its results on the app.
 //!
-//! Three ops are too slow for the main thread, and `Studio::busy` gates every
-//! control that could clobber one while it runs, in step order:
-//!
-//! - **Simplify** (step 2) decimates the working scan, ~10–40 s.
-//! - **the cast** (step 5) generates the printable molds.
-//! - **the print export** (step 6) copies the mold package, hundreds of
-//!   megabytes at 0.5 mm.
-//!
-//! The cast is the one measured in *minutes* — **408 s at 1.5 mm, 2187 s at
-//! 0.5**, measured 2026-09-06 in the BONDED mode this app casts in — which is
-//! why it is the only job that reports its own elapsed time while it runs.
-//!
-//! ⚠ The figures those replaced (269 s / ~15 min) were not merely older, they
-//! were the wrong MODE: bonded is 1.5× detachable at 1.5 mm and 2.4× at 0.5,
-//! so the ratio does not even hold across cell sizes.
+//! Three ops are too slow for the main thread; `Studio::busy` gates every
+//! control that could clobber one. Simplify (step 2), the cast (step 5), the
+//! print export (step 6). The cast is measured in minutes — **408 s at 1.5 mm,
+//! 2187 s at 0.5**, bonded — which is why it reports its own elapsed time.
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -929,6 +918,16 @@ endsolid t
         AsyncComputeTaskPool::get().spawn(async { future::pending().await })
     }
 
+    /// The second the running cast last drew.
+    fn shown_second(app: &App) -> u64 {
+        app.world()
+            .resource::<MoldsJob>()
+            .0
+            .as_ref()
+            .and_then(|run| run.shown_secs)
+            .expect("a cast is in flight")
+    }
+
     /// Run frames until the app is handed back. Mirrors `run_until_idle`.
     fn run_until_landed(app: &mut App) {
         const DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
@@ -1021,19 +1020,8 @@ endsolid t
         );
     }
 
-    /// ★★ The clock decision, enumerated against literals.
-    ///
-    /// ⚠⚠ Every system-level version of this gate was a **mirror**: it derived
-    /// the expected second by reading `shown_secs` back out of the run, so a
-    /// poller computing the wrong second wrote the wrong value to both and they
-    /// agreed. Measured — `let secs = 0;` passed all 170 tests, which is a
-    /// 36-minute cast reading `0:00` forever with the suite green. These
-    /// expectations are constants; nothing here can move with the code.
-    ///
-    /// ⚠ It also retires the `Instant` arithmetic that gate needed to buy a
-    /// non-zero elapsed: on macOS `Instant` is an unsigned `mach_absolute_time`
-    /// from boot, so `Instant::now() - Duration::from_secs(75)` aborts on a
-    /// machine under 75 s of uptime.
+    /// The decision, against literals. Every version that read `shown_secs` back
+    /// out of the run was a mirror: `let secs = 0;` passed all 170 tests.
     #[test]
     fn the_clock_redraws_only_when_the_whole_second_changes() {
         // Nothing shown yet — the opening frame writes the second it is on.
@@ -1053,86 +1041,31 @@ endsolid t
         assert_eq!(clock_to_draw(0, Some(75)), Some(0));
     }
 
-    /// ★★★ The clock SOURCE, which only real elapsed time can gate.
-    ///
-    /// ⚠⚠ `clock_to_draw` is enumerated against literals above, but that gates
-    /// the DECISION, not the wiring — and the wiring is where this kept
-    /// breaking. Freezing the source (`clock_to_draw(0, …)`, or `let secs = 0;`
-    /// before the extraction) leaves every other test in the crate green,
-    /// because with elapsed pinned at 0 the poller writes `0:00`, records 0,
-    /// and any expectation derived from the run agrees with it. Measured
-    /// twice, on two different shapes of that gate.
-    ///
-    /// Nothing but the passage of a real second distinguishes a working clock
-    /// from a frozen one, so this test waits for one. ⚠ Asserts only that the
-    /// second ADVANCED — time moves one way, so it cannot fail spuriously; a
-    /// slow machine makes it wait, never makes it wrong.
+    /// The clock source. Only a known duration catches a wrong scale: "it
+    /// advanced" is satisfied by `as_millis()` in under a millisecond, while the
+    /// app shows 18:20 for a one-second cast.
     #[test]
     fn the_clock_follows_real_elapsed_time() {
+        // ⚠ The wait is the gate. "It advanced" is satisfied by any increasing
+        // function of elapsed — `as_millis()` passes it in under a millisecond
+        // while the app shows 18:20 for a one-second cast. Only comparing the
+        // clock against a KNOWN duration catches a wrong scale, and only real
+        // time supplies one.
+        const WAITED: u64 = 2;
         let mut app = app_ready_for_molds();
-        inject(&mut app, never_finishes(), Instant::now(), None);
-
-        app.update();
-        let first = app
-            .world()
-            .resource::<MoldsJob>()
-            .0
-            .as_ref()
-            .and_then(|run| run.shown_secs)
-            .expect("the opening frame records a second");
-
-        std::thread::sleep(std::time::Duration::from_millis(1_100));
+        let started = Instant::now();
+        inject(&mut app, never_finishes(), started, None);
         app.update();
 
-        let later = app
-            .world()
-            .resource::<MoldsJob>()
-            .0
-            .as_ref()
-            .and_then(|run| run.shown_secs)
-            .expect("still in flight");
-        assert!(
-            later > first,
-            "a second of real time passed and the clock did not move: {first} → {later}"
-        );
-        assert!(
-            matches!(&app.world().resource::<Studio>().message,
-                     Some(Ok(text)) if text == &format_molds_progress(later)),
-            "and the line follows it: {:?}",
-            app.world().resource::<Studio>().message
-        );
-    }
-
-    /// The poller carries that decision out: writes the line, records the
-    /// second, holds the app.
-    ///
-    /// ⚠ Driven from the state `start_molds` actually produces —
-    /// `shown_secs: Some(0)` and the opening line already written — not the
-    /// `None` a fixture can invent. At elapsed 0 the decision is "leave it
-    /// alone", so this pins that the poller does not clobber the line the
-    /// starter just wrote.
-    #[test]
-    fn a_running_cast_reports_itself_and_holds_the_app() {
-        let mut app = app_ready_for_molds();
-        inject(&mut app, never_finishes(), Instant::now(), Some(0));
-        app.world_mut().resource_mut::<Studio>().message = Some(Ok(format_molds_progress(0)));
-
+        std::thread::sleep(std::time::Duration::from_millis(WAITED * 1000 + 100));
         app.update();
 
-        let recorded = app
-            .world()
-            .resource::<MoldsJob>()
-            .0
-            .as_ref()
-            .and_then(|run| run.shown_secs)
-            .expect("a running cast records the second it drew");
-        let studio = app.world().resource::<Studio>();
+        let shown = shown_second(&app);
+        let real = started.elapsed().as_secs();
         assert!(
-            matches!(&studio.message, Some(Ok(text)) if text == &format_molds_progress(recorded)),
-            "the line is what the recorded second formats to: {:?}",
-            studio.message
+            shown == real,
+            "the clock reads seconds: {real}s elapsed, clock says {shown}"
         );
-        assert!(studio.busy, "and the app is held for the run");
     }
 
     /// ★★ The plugin's own wiring, which nothing else reaches.

@@ -764,10 +764,12 @@ endsolid t
             (Step::Print, false),
             (Step::Pour, false),
         ];
+        // ⚠ Counting to `Step::TOTAL` is not coverage: a duplicated row and a
+        // missing one also make seven.
         assert_eq!(
-            expected.len(),
-            Step::TOTAL,
-            "the table must answer for every step, or the sweep is not a sweep"
+            expected.map(|(step, _)| step),
+            Step::ALL,
+            "the table must answer for every step, in order"
         );
 
         for (step, piece) in expected {

@@ -1,16 +1,5 @@
 //! The live plug preview: the shaped piece, meshed off the main thread and
 //! shown on every step whose subject is the piece (3, 4 and 5).
-//!
-//! ⚠⚠ The re-mesh is a background job rather than the pre-port's inline call,
-//! and a measurement is why. [`PlugPreview::mesh`] samples a mesh-BVH-backed
-//! SDF, so its cost tracks the *scan's* triangle count rather than the preview
-//! grid: 97 ms on a 51 k-triangle body, 191 ms on a 241 k one, against a 16 ms
-//! frame. Slint called it inline from `shape-changed()` and froze for the
-//! duration; here that is six to twelve dropped frames on every `+` click.
-//!
-//! ⚠ Which control moved is not worth knowing. Ridges on cost 97.6 ms against
-//! 97.0 off — the cost is the sampling, not the field — so the driver compares
-//! the whole [`PlugDraft`] and re-meshes all of it.
 
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
@@ -221,32 +210,12 @@ fn scan_stamp(prep: &PrepInput) -> Option<(u64, SystemTime)> {
 
 /// Keep the preview in step with the fields while the piece is on screen.
 ///
-/// ⚠⚠ **Runs in full on every step that shows the piece — there is no
-/// step-3-only half, and an earlier draft of this function got that wrong.**
-///
-/// That draft landed in-flight work everywhere but restricted *starting* to
-/// step 3, reasoning that only step 3 can change the shape. Both self-guard
-/// already (`start_cache` acts only on `Cache::Cold`, `start_mesh` only when
-/// nothing is meshing and the draft is not the one shown), so the restriction
-/// looked free — a mutation removing it was uncaught by the whole suite. It was
-/// equivalent along every path that had a test, and wrong along two that did
-/// not:
-///
-/// 1. **Continue clicked during the flood fill.** On first arrival the cache is
-///    `Cold`, so `start_cache` spawns it and `start_mesh` returns early — there
-///    is no mesh yet. Commit inside that window and the cursor is on step 4
-///    before one was ever started, so `start_mesh` would never be reached
-///    again: steps 4 and 5 show the unshaped scan for the rest of the session.
-///    That is precisely the defect this arc set out to fix.
-/// 2. **A cache dropped where nothing can rebuild it.** `drop_a_stale_cache`
-///    invalidates whenever the scan's metadata is unreadable — moved file,
-///    removable volume, permissions — clearing the mesh and despawning the
-///    body. On step 3 that self-heals on the next frame. Restricted, it could
-///    not, and the piece vanished with neither a message nor the proxy.
-///
-/// ⇒ **The guards belong on the operations, not on the caller.** They already
-/// encode "do nothing unless there is something to do"; asking the step as well
-/// only removed the recovery.
+/// ⚠ Runs in full on every piece step. Restricting the *starts* to step 3 looked
+/// free — both starters self-guard — and lost the piece two ways: a Continue
+/// clicked during the flood fill never started a mesh at all, and a cache
+/// dropped on step 4 could not be rebuilt. Gated by
+/// `continuing_before_the_first_mesh_starts_still_builds_the_piece` and
+/// `a_cache_dropped_on_step_four_is_rebuilt_there`.
 pub(crate) fn drive_plug_preview(
     mut view: ResMut<PlugView>,
     studio: Res<Studio>,
@@ -260,13 +229,6 @@ pub(crate) fn drive_plug_preview(
     view.land_cache();
     view.land_mesh();
     view.start_cache(prep);
-    // ▶ `plug_draft` allocates a fresh ridge `Vec` on every frame the piece is
-    // on screen — including the whole ~40 minutes a print-quality cast holds
-    // step 5. A caller-side guard was tried and deleted: it returned true in
-    // the steady state, so it never skipped the allocation it was written for.
-    // The cost is unchanged from before this arc and is recorded, not fixed;
-    // if it is worth removing, the check belongs inside `start_mesh`, against
-    // a cheap stamp of the shape fields rather than a materialised draft.
     view.start_mesh(&shape.plug_draft());
 }
 
@@ -567,18 +529,11 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(fixture_dir("rewritten"));
     }
 
-    /// ★★★ **Continue clicked while the flood fill is still running.**
+    /// Continue clicked while the flood fill is still running — the window where
+    /// the cache is `Cold`, so no mesh has started yet.
     ///
-    /// The window is real: on first arrival the cache is `Cold`, `start_cache`
-    /// spawns a build documented as "hundreds of milliseconds", and `start_mesh`
-    /// returns early for `Cache::Building` — so for that whole window there is
-    /// no mesh and no body. Commit inside it and the cursor is on step 4.
-    ///
-    /// ⚠ `a_mesh_in_flight_lands_after_continue_has_moved_on` cannot see this:
-    /// it spins until a mesh has *started* before moving the cursor, so it only
-    /// covers the window after this one. Restricting `start_mesh` to step 3
-    /// passes that gate and fails this one — steps 4 and 5 would show the
-    /// unshaped scan for the rest of the session.
+    /// ⚠ `a_mesh_in_flight_lands_after_continue_has_moved_on` cannot see this: it
+    /// waits for a mesh to start before moving the cursor.
     #[test]
     fn continuing_before_the_first_mesh_starts_still_builds_the_piece() {
         let mut app = app_on(Step::ShapePiece, cleaned(a_cleaned_scan("continue-early")));

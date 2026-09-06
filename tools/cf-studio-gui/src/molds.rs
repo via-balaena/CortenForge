@@ -116,16 +116,10 @@ pub(crate) mod tests {
             .expect("controls survive")
     }
 
-    /// This test's own fixture name, taken from the thread libtest named after
-    /// it.
+    /// This test's own fixture name, from the thread libtest named after it.
     ///
-    /// ⚠⚠ Derived, not written down. Two rounds running, "no two tests share a
-    /// path" was asserted as a property maintained by hand across 28 magic
-    /// strings — and it was false the first time: `"m2"` named six call sites
-    /// while the doc beside it claimed otherwise. A property that has to be
-    /// re-checked by grep is not a property. libtest runs each `#[test]` on a
-    /// thread named after it, so the harness has already computed the
-    /// uniqueness these fixtures need.
+    /// ⚠ Derived, not written down: "no two tests share a path" was asserted by
+    /// hand across 28 labels twice, and was false the first time.
     fn test_label() -> String {
         std::thread::current()
             .name()
@@ -133,62 +127,17 @@ pub(crate) mod tests {
             .replace("::", "-")
     }
 
-    /// The one directory this process's step-5 fixtures live under.
+    /// This process's fixture root.
     ///
-    /// ⚠⚠ **PID-keyed, and the leak that costs is deliberate.** Three shapes
-    /// were tried:
-    ///
-    /// 1. One constant label through `save::tests::temp_dir` — ~28 callers
-    ///    sharing a directory that `temp_dir` `remove_dir_all`s on entry, so
-    ///    tests deleted each other's fixture mid-run, one of them while
-    ///    `clicking_make_molds_in_the_running_wizard_starts_the_cast` wrote a
-    ///    real `design.toml` into it.
-    /// 2. Unique names per call — fixed the race, broke the cleanup: `temp_dir`
-    ///    reclaims by name reuse, so a fresh PID never matches and nothing is
-    ///    collected. Measured at 21 directories per run, 42 after two.
-    /// 3. Dropping the PID so the next run reclaims this one's — which hands
-    ///    every process on the machine the same path and `remove_dir_all`s it
-    ///    on first use. On a shared `/tmp` that is a concurrent `cargo test` or
-    ///    `cargo-mutants -j2` deleting a live run's fixtures, or an `EACCES`
-    ///    panic on a root owned by another user.
-    ///
-    /// ⇒ **PID-keyed with per-test subdirectories.** No two tests share a path,
-    /// no two processes share a root. One directory per run is left behind —
-    /// the same bargain every other `temp_dir` caller in this crate already
-    /// makes, and the cheapest of the three failures.
+    /// ⚠ PID-keyed: without it, two live runs share a path and the
+    /// `remove_dir_all` below deletes a running suite's fixtures. Costs one
+    /// directory per run, as every other `temp_dir` caller here already does.
     fn fixture_root() -> std::path::PathBuf {
         use std::sync::OnceLock;
         static ROOT: OnceLock<std::path::PathBuf> = OnceLock::new();
         ROOT.get_or_init(|| {
-            let temp = std::env::temp_dir();
-            // ⚠ Reclaim the roots of runs that are long over. Keying on the PID
-            // stops two live runs sharing a path, but then nothing collects
-            // them — under `cargo-mutants`, which spawns hundreds of processes,
-            // that is hundreds of orphaned roots.
-            //
-            // ⚠ By age, not by asking whether the PID is alive: that needs
-            // `libc::kill` and an `unsafe` block in a crate that forbids it.
-            // Two hours is far past any run of this suite, and a fixture is
-            // written and read within seconds of its root being made, so an
-            // aged root cannot belong to a run still using it.
-            const STALE: std::time::Duration = std::time::Duration::from_secs(2 * 60 * 60);
-            if let Ok(entries) = std::fs::read_dir(&temp) {
-                for stale in entries.flatten().filter(|entry| {
-                    entry
-                        .file_name()
-                        .to_str()
-                        .is_some_and(|name| name.starts_with("cf-studio-gui-molds-"))
-                        && entry
-                            .metadata()
-                            .and_then(|m| m.modified())
-                            .ok()
-                            .and_then(|t| t.elapsed().ok())
-                            .is_some_and(|age| age > STALE)
-                }) {
-                    let _ = std::fs::remove_dir_all(stale.path());
-                }
-            }
-            let root = temp.join(format!("cf-studio-gui-molds-{}", std::process::id()));
+            let root =
+                std::env::temp_dir().join(format!("cf-studio-gui-molds-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&root);
             std::fs::create_dir_all(&root).expect("a fixture root");
             root
