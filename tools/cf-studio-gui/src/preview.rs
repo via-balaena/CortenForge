@@ -167,13 +167,6 @@ impl PlugView {
         }));
     }
 
-    /// Whether a mesh could be started at all — the cheap half of
-    /// [`Self::start_mesh`]'s guard, asked before building the draft it would
-    /// otherwise be compared against.
-    fn wants_a_mesh(&self) -> bool {
-        self.meshing.is_none() && !matches!(self.cache, Cache::Cold | Cache::Building(_))
-    }
-
     /// Start meshing `wanted`, if it is not what is already on screen.
     fn start_mesh(&mut self, wanted: &PlugDraft) {
         if self.meshing.is_some() || self.shown.as_ref() == Some(wanted) {
@@ -267,15 +260,7 @@ pub(crate) fn drive_plug_preview(
     view.land_cache();
     view.land_mesh();
     view.start_cache(prep);
-    // ⚠ The draft is built only when a mesh could actually be asked for.
-    // `plug_draft` allocates a fresh ridge `Vec` per call, and steps 4 and 5
-    // draw no shape controls — so the value is byte-identical every frame and
-    // `start_mesh` would discard it on the `shown == wanted` line. That is ~60
-    // allocations a second on two screens, one of which is up for the whole
-    // 36 minutes a print-quality cast runs on the same task pool.
-    if view.wants_a_mesh() {
-        view.start_mesh(&shape.plug_draft());
-    }
+    view.start_mesh(&shape.plug_draft());
 }
 
 #[cfg(test)]

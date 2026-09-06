@@ -1012,15 +1012,32 @@ endsolid t
     /// `started` at `Instant::now()` left the frames an unknown distance from
     /// the next second boundary, so a loaded box could roll the clock mid-test
     /// and fail a gate that had found no defect; subtracting 75.5 s to buy
-    /// slack traded that for a panic, because `Instant - Duration` is a
-    /// `checked_sub().expect(…)` and `Instant` counts from BOOT — a container
-    /// starting the suite inside its first 76 s would abort here, in a test
-    /// about formatting. The guard's real input is `shown_secs`, so drive it.
+    /// slack traded that for a panic **on macOS**, where `Instant` is an
+    /// unsigned `mach_absolute_time` counting from boot and
+    /// `Instant - Duration` is a `checked_sub().expect(…)`: a machine under 76 s
+    /// of uptime aborts in a test about formatting. ⚠ Not universal — Linux
+    /// backs `Instant` with a signed `Timespec` and simply goes negative — so
+    /// the platform is named rather than implied. The guard's real input is
+    /// `shown_secs`, so drive that instead of the clock.
     #[test]
     fn the_clock_is_rewritten_only_when_the_whole_second_changes() {
         const SENTINEL: &str = "left alone";
         let mut app = app_ready_for_molds();
-        inject(&mut app, never_finishes(), Instant::now(), None);
+        // ⚠⚠ A NON-ZERO elapsed, deliberately. With `started` at now the real
+        // elapsed is 0, so a poller frozen at `format_molds_progress(0)` prints
+        // exactly what a correct one prints and the gate cannot tell them
+        // apart — measured: that mutation survived the whole suite.
+        //
+        // ⚠ `checked_sub`, and the `expect` says what it needs. On macOS
+        // `Instant` is an unsigned `mach_absolute_time` from boot, so plain
+        // subtraction aborts with "overflow when subtracting duration from
+        // instant" on a machine under 75 s of uptime — a real edge case with an
+        // opaque message. Linux backs it with a signed `Timespec` and goes
+        // negative instead.
+        let started = Instant::now()
+            .checked_sub(std::time::Duration::from_secs(75))
+            .expect("this gate needs 75 s of uptime to give the clock a non-zero second");
+        inject(&mut app, never_finishes(), started, None);
 
         // First frame: no second has been shown yet, so the line is written.
         app.update();
@@ -1031,10 +1048,15 @@ endsolid t
             .as_ref()
             .and_then(|run| run.shown_secs)
             .expect("a running cast records the second it drew");
+        // ⚠ Against the second the run RECORDED, not a literal. Asserting only
+        // "Making molds" would pass a poller that printed a constant — pinning
+        // `format_molds_progress(0)` in place of `format_molds_progress(secs)`
+        // leaves the whole suite green while a 36-minute cast reads 0:00
+        // forever. Reading `shown` back makes it roll-tolerant too.
         assert!(
             matches!(&app.world().resource::<Studio>().message,
-                     Some(Ok(text)) if text.contains("Making molds")),
-            "a running cast reports itself: {:?}",
+                     Some(Ok(text)) if text == &format_molds_progress(shown)),
+            "the line must carry the second the run is on ({shown}): {:?}",
             app.world().resource::<Studio>().message
         );
 
@@ -1042,21 +1064,29 @@ endsolid t
         app.world_mut().resource_mut::<Studio>().message = Some(Ok(SENTINEL.to_string()));
         app.update();
         app.update();
-        assert_eq!(
-            app.world()
-                .resource::<MoldsJob>()
-                .0
-                .as_ref()
-                .and_then(|run| run.shown_secs),
-            Some(shown),
-            "the second under test must not have rolled, or this proves nothing"
-        );
-        assert!(
-            matches!(&app.world().resource::<Studio>().message,
-                     Some(Ok(text)) if text == SENTINEL),
-            "within one second the line is left alone: {:?}",
-            app.world().resource::<Studio>().message
-        );
+        // ⚠ Roll-tolerant: if the whole second happened to turn between these
+        // frames the poller is CORRECT to rewrite, and asserting it did not
+        // would fail a gate that found no defect. Either the line is untouched,
+        // or it is the line for the new second — never anything else.
+        let now_showing = app
+            .world()
+            .resource::<MoldsJob>()
+            .0
+            .as_ref()
+            .and_then(|run| run.shown_secs)
+            .expect("the run is still in flight");
+        let message = app.world().resource::<Studio>().message.clone();
+        if now_showing == shown {
+            assert!(
+                matches!(&message, Some(Ok(text)) if text == SENTINEL),
+                "within one second the line is left alone: {message:?}"
+            );
+        } else {
+            assert!(
+                matches!(&message, Some(Ok(text)) if text == &format_molds_progress(now_showing)),
+                "and when it does roll it writes that second, nothing else: {message:?}"
+            );
+        }
 
         // Make the last-shown second stale — the guard's own input — and it
         // redraws, at whatever second the run is actually on.
@@ -1068,10 +1098,16 @@ endsolid t
             .shown_secs = Some(shown.wrapping_sub(1));
         app.update();
         let studio = app.world().resource::<Studio>();
+        let redrawn = app
+            .world()
+            .resource::<MoldsJob>()
+            .0
+            .as_ref()
+            .and_then(|run| run.shown_secs)
+            .expect("still in flight");
         assert!(
-            matches!(&studio.message,
-                     Some(Ok(text)) if text != SENTINEL && text.contains("Making molds")),
-            "a new second redraws the clock: {:?}",
+            matches!(&studio.message, Some(Ok(text)) if text == &format_molds_progress(redrawn)),
+            "a stale shown second redraws the clock, at the second it is on: {:?}",
             studio.message
         );
         assert!(studio.busy, "and the app is still held for the run");
