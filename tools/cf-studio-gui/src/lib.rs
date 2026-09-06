@@ -1808,43 +1808,30 @@ visible = true
         );
     }
 
-    /// ⚠⚠⚠ **BONDED HAS NEVER BEEN CAST.** Audited 2026-09-06: all five
+    /// Cast the real `base_mold` at `cell_size_m`, in the mode and with the
+    /// selection **the app sends**, into a throwaway output dir.
+    ///
+    /// ⚠⚠⚠ **BONDED HAD NEVER BEEN CAST** before 2026-09-06. All five
     /// `#[ignore]`d cast gates in `cf-studio-engine` go through
     /// `cast_real_base_mold_via_wizard`, which hard-codes
-    /// [`CastMode::Detachable`]. Every Bonded exercise in the repo is a unit
-    /// test over the *plan* — selection sets, procedure markdown, which plugs
-    /// get dropped. Nothing has meshed through the bonded path, and Bonded is
-    /// the mode Cendrillon actually casts in.
+    /// [`CastMode::Detachable`]. Every other Bonded exercise in the repo is a
+    /// unit test over the *plan* — selection sets, procedure markdown, which
+    /// plugs get dropped. Nothing had meshed through the bonded path, and
+    /// bonded is the mode Cendrillon actually casts in.
     ///
-    /// ★ It lives here, not beside its four siblings in the engine, because
-    /// only here can the selection be built the way the APP builds it:
+    /// ★ These gates live here, not beside their siblings in the engine,
+    /// because only here can the selection be built the way the APP builds it:
     /// `enumerate_parts` + `part_selection_from_checks`, an INCLUSION set that
     /// deliberately omits the gasket and the integral funnel.
     /// `CastMode::Bonded.part_selection()` in `cf-cast` is `all_except(plugs)`,
-    /// an EXCLUSION set — the same intent, and not necessarily the same parts.
-    /// Gating the engine's version would leave the app's untested.
-    ///
-    /// Expect `2L` cup halves and exactly **one** plug, against detachable's
-    /// `2L` + `L`. Run:
-    /// `cargo test -p cf-studio-gui -- --ignored casts_base_mold_bonded`
-    ///
-    /// ★★ **PASSED 2026-09-06: 407.67 s.** Detachable at the same cell size,
-    /// same fixture, same machine, the same day: **277.95 s**. Bonded is the
-    /// slower mode by ~1.5× *while producing fewer pieces* — it never collapses
-    /// to `PartSelection::all`, so it meshes piece-by-piece instead of taking
-    /// the bulk full-export route. One pair, not a repeated measurement.
-    ///
-    /// ⚠ Which means the ~15 min quoted for 0.5 mm is a **detachable** figure,
-    /// and the app does not cast detachable. The fine bonded run is unmeasured.
-    #[test]
-    #[ignore = "integration: 408 s at 1.5 mm (measured 2026-09-06), needs ~/scans/base_mold files"]
-    fn the_app_casts_base_mold_bonded() {
+    /// an EXCLUSION set — same intent, and not necessarily the same parts.
+    fn cast_base_mold_as_the_app_would(cell_size_m: f64, out_name: &str) {
         use cf_studio_core::{DesignDraft, LayerDraft};
 
         let home = PathBuf::from(std::env::var("HOME").expect("HOME"));
         let cleaned = home.join("scans/base_mold.cleaned.stl");
         let prep = home.join("scans/base_mold.prep.toml");
-        // ⚠ A missing fixture is an ERROR, not a skip: this gate only runs when
+        // ⚠ A missing fixture is an ERROR, not a skip: these gates only run when
         // asked for by name, so a silent pass would report the bonded path as
         // cast when nothing ran. Same rule `isolated_base_mold_fixture` states.
         assert!(
@@ -1885,11 +1872,11 @@ visible = true
             &cleaned,
             &prep,
             &draft,
-            0.0015,
+            cell_size_m,
             &RidgeOptions::default(),
             &selection,
             CENDRILLON_CAST_MODE,
-            Some(Path::new("cf-studio-gui-bonded-gate")),
+            Some(Path::new(out_name)),
         )
         .expect("the bonded path must cast");
 
@@ -1905,6 +1892,40 @@ visible = true
             "the plan still covers 3 layers"
         );
         assert!(out.total_mass_g > 0.0);
+    }
+
+    /// The **fast preview** — the quality picker's index 1.
+    ///
+    /// ★★ **PASSED 2026-09-06: 407.67 s.** Detachable at the same cell size,
+    /// same fixture, same machine, the same day: **277.95 s**. Bonded is the
+    /// slower mode by ~1.5× *while producing fewer pieces* — it never collapses
+    /// to `PartSelection::all`, so it meshes piece-by-piece instead of taking
+    /// the bulk full-export route. One pair, not a repeated measurement.
+    ///
+    /// Run: `cargo test -p cf-studio-gui -- --ignored casts_base_mold_bonded`
+    #[test]
+    #[ignore = "integration: 408 s at 1.5 mm (measured 2026-09-06), needs ~/scans/base_mold files"]
+    fn the_app_casts_base_mold_bonded() {
+        cast_base_mold_as_the_app_would(0.0015, "cf-studio-gui-bonded-gate");
+    }
+
+    /// The **print-quality** default — the quality picker's index 0, and what
+    /// the user actually prints from.
+    ///
+    /// ⚠ This exists because step 5's copy says "print quality takes around
+    /// fifteen minutes", and that figure was measured on the **detachable**
+    /// path, which the app does not use. Until this runs, the sentence the
+    /// user reads before committing to the wait is unbacked.
+    ///
+    /// ⛔ Do not fill in an estimate by scaling the 1.5 mm pair — cell size and
+    /// mode are not known to compose. Run it, then write the number here and
+    /// fix the copy to match.
+    ///
+    /// Run: `cargo test -p cf-studio-gui -- --ignored casts_base_mold_bonded_fine`
+    #[test]
+    #[ignore = "integration: UNMEASURED at 0.5 mm, needs ~/scans/base_mold files"]
+    fn the_app_casts_base_mold_bonded_fine() {
+        cast_base_mold_as_the_app_would(0.0005, "cf-studio-gui-bonded-fine-gate");
     }
 
     // ── the cast mode the app pins ──────────────────────────────────────────
