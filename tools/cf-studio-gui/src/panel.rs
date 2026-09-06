@@ -808,8 +808,14 @@ fn draw_make_molds(
         });
     });
 
-    // ⚠ One home for the screen's "is there a design" rule: the button's
-    // hover and the parts card's controls must not be able to disagree.
+    // ⚠ One home for the screen's "is there a design" rule, so the button's
+    // hover and the parts card's controls cannot disagree about it.
+    //
+    // ⚠ The cost, stated: the card's empty-state branch now reads a snapshot
+    // taken here while its checkbox loop still reads `picker.rows()` live. They
+    // cannot diverge today — nothing between the two mutates the picker — but a
+    // click handler added to the button row would open that window, and the
+    // card would then draw live All/None over zero checkboxes with no hint.
     let has_rows = !molds.picker.is_empty();
     ui.add_space(ROW_GAP);
     ui.horizontal(|ui| {
@@ -824,7 +830,11 @@ fn draw_make_molds(
         let enough_parts = molds.picker.any_checked();
         let castable = ready && enough_parts;
         let button = ui.add_enabled(castable, egui::Button::new(make_molds_label(studio.busy)));
-        let button = match cast_hint(ready, has_rows, enough_parts) {
+        let button = match cast_hint(CastButton {
+            ready,
+            has_rows,
+            enough_parts,
+        }) {
             Some(hint) => button.on_disabled_hover_text(hint),
             None => button,
         };
@@ -913,22 +923,54 @@ fn draw_parts_picker(ui: &mut egui::Ui, molds: &mut MoldControls, ready: bool, h
 /// checklist and a "Making molds…" label is simply untrue. With no design
 /// committed the actionable fact is the missing design, which the card beside
 /// it already states.
-const fn cast_hint(ready: bool, has_rows: bool, enough_parts: bool) -> Option<&'static str> {
-    if ready && has_rows && !enough_parts {
+const fn cast_hint(state: CastButton) -> Option<&'static str> {
+    if state.ready && state.has_rows && !state.enough_parts {
         Some("Pick at least one part to generate.")
     } else {
         None
     }
 }
 
+/// What the Make-molds button knows about itself.
+///
+/// ⚠⚠ A struct, not three `bool` arguments. Three positional `bool`s
+/// type-check in any order: swapping two at the call site compiled and left
+/// **all 170 tests green** while the running app showed the wrong tooltip, and
+/// no test in this crate can read a tooltip, so gating the wiring was not
+/// available.
+///
+/// ⚠ Precisely what this buys, and no more: the *positional* mistake becomes a
+/// compile error (the fields must be named), and a mislabelled field is legible
+/// at the call site — `has_rows: enough_parts` reads wrong where a swapped
+/// third argument did not. A deliberate mislabel still compiles. The same
+/// applies to [`DropButton`].
+#[derive(Debug, Clone, Copy)]
+struct CastButton {
+    /// The app is accepting actions at all.
+    ready: bool,
+    /// A design is committed, so there are parts to choose between.
+    has_rows: bool,
+    /// At least one of them is checked.
+    enough_parts: bool,
+}
+
 /// What to say on a disabled layer **✖**, or nothing. Same rule as
 /// [`cast_hint`]: the floor is worth explaining, being held is not.
-const fn drop_hint(ready: bool, removable: bool) -> Option<&'static str> {
-    if ready && !removable {
+const fn drop_hint(state: DropButton) -> Option<&'static str> {
+    if state.ready && !state.removable {
         Some("The cast needs at least one layer.")
     } else {
         None
     }
+}
+
+/// What a layer's ✖ knows about itself. Named for the reason [`CastButton`] is.
+#[derive(Debug, Clone, Copy)]
+struct DropButton {
+    /// The app is accepting actions at all.
+    ready: bool,
+    /// Dropping this layer would leave at least one behind.
+    removable: bool,
 }
 
 /// The quality picker's label for `index`, falling back the way
@@ -1248,7 +1290,7 @@ fn draw_layer(
             ui.colored_label(CONTROL_TEXT, format!("Layer {}", index + 1));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let drop_button = ui.add_enabled(ready && removable, egui::Button::new("✖"));
-                let drop_button = match drop_hint(ready, removable) {
+                let drop_button = match drop_hint(DropButton { ready, removable }) {
                     Some(hint) => drop_button.on_disabled_hover_text(hint),
                     None => drop_button,
                 };
@@ -1959,8 +2001,8 @@ pub(crate) mod tests {
             "with no design the picker offers nothing to check"
         );
 
-        let studio = crate::molds::tests::viewing_step_5_with("p8", 1);
-        let mut molds = crate::molds::tests::controls_for("p9", 1);
+        let studio = crate::molds::tests::viewing_step_5_with(1);
+        let mut molds = crate::molds::tests::controls_for(1);
         assert_eq!(
             controls_in_column(|ui| {
                 let _ = draw_make_molds(ui, &studio, &dialog, &mut molds);
@@ -1985,35 +2027,68 @@ pub(crate) mod tests {
     /// wording rules could be deleted with the whole suite green.
     #[test]
     fn a_disabled_control_explains_only_what_the_user_can_act_on() {
-        // Make molds: the only actionable reason is an unchecked list.
+        // ⚠ ENUMERATED, not sampled: three bools is eight states and the rule
+        // is an exclusivity claim — exactly one of them may speak.
+        for ready in [false, true] {
+            for has_rows in [false, true] {
+                for enough_parts in [false, true] {
+                    let state = CastButton {
+                        ready,
+                        has_rows,
+                        enough_parts,
+                    };
+                    let expected = (ready && has_rows && !enough_parts)
+                        .then_some("Pick at least one part to generate.");
+                    assert_eq!(
+                        cast_hint(state),
+                        expected,
+                        "the only actionable reason is an unchecked list: {state:?}"
+                    );
+                }
+            }
+        }
+        // Spelled out for the three that matter, so the rule is readable and
+        // not only computed:
         assert_eq!(
-            cast_hint(true, true, false),
+            cast_hint(CastButton {
+                ready: true,
+                has_rows: true,
+                enough_parts: false
+            }),
             Some("Pick at least one part to generate.")
         );
         assert_eq!(
-            cast_hint(false, true, false),
+            cast_hint(CastButton {
+                ready: false,
+                has_rows: true,
+                enough_parts: false
+            }),
             None,
             "held by a cast or a dialog — telling them to pick a part is untrue"
         );
         assert_eq!(
-            cast_hint(true, false, false),
+            cast_hint(CastButton {
+                ready: true,
+                has_rows: false,
+                enough_parts: false
+            }),
             None,
             "no design at all — the card beside it already says so"
         );
-        assert_eq!(cast_hint(true, true, true), None, "not disabled");
 
-        // The layer ✖: the floor is worth explaining, being held is not.
-        assert_eq!(
-            drop_hint(true, false),
-            Some("The cast needs at least one layer.")
-        );
-        assert_eq!(
-            drop_hint(false, false),
-            None,
-            "five layers on screen and a job running — the floor is not why"
-        );
-        assert_eq!(drop_hint(false, true), None);
-        assert_eq!(drop_hint(true, true), None, "not disabled");
+        // The layer ✖: all four states.
+        for ready in [false, true] {
+            for removable in [false, true] {
+                let state = DropButton { ready, removable };
+                let expected =
+                    (ready && !removable).then_some("The cast needs at least one layer.");
+                assert_eq!(
+                    drop_hint(state),
+                    expected,
+                    "the floor is worth explaining, being held is not: {state:?}"
+                );
+            }
+        }
     }
 
     /// ⚠⚠ The empty parts card's controls are DISABLED, not merely drawn.
@@ -2046,9 +2121,9 @@ pub(crate) mod tests {
         }
 
         // ...and live again once there is something to act on.
-        let ready = crate::molds::tests::viewing_step_5_with("p10", 1);
+        let ready = crate::molds::tests::viewing_step_5_with(1);
         for name in ["All", "None", "Make molds"] {
-            let mut molds = crate::molds::tests::controls_for("p11", 1);
+            let mut molds = crate::molds::tests::controls_for(1);
             assert_eq!(
                 controls_disabled(
                     |ui| {
@@ -2068,8 +2143,8 @@ pub(crate) mod tests {
     fn clicking_make_molds_in_the_running_wizard_starts_the_cast() {
         let mut app = app_running_the_wizard();
         app.add_plugins(bevy::prelude::TaskPoolPlugin::default());
-        app.insert_resource(crate::molds::tests::viewing_step_5_with("p12", 1));
-        app.insert_resource(crate::molds::tests::controls_for("p13", 1));
+        app.insert_resource(crate::molds::tests::viewing_step_5_with(1));
+        app.insert_resource(crate::molds::tests::controls_for(1));
 
         click_on(&mut app, "Make molds");
 
@@ -2093,8 +2168,8 @@ pub(crate) mod tests {
     fn make_molds_is_refused_when_no_part_is_checked() {
         let mut app = app_running_the_wizard();
         app.add_plugins(bevy::prelude::TaskPoolPlugin::default());
-        app.insert_resource(crate::molds::tests::viewing_step_5_with("p14", 1));
-        let mut molds = crate::molds::tests::controls_for("p15", 1);
+        app.insert_resource(crate::molds::tests::viewing_step_5_with(1));
+        let mut molds = crate::molds::tests::controls_for(1);
         molds.picker.set_all(false);
         app.insert_resource(molds);
 
@@ -2110,8 +2185,8 @@ pub(crate) mod tests {
     #[test]
     fn none_then_all_reaches_the_picker() {
         let mut app = app_running_the_wizard();
-        app.insert_resource(crate::molds::tests::viewing_step_5_with("p16", 1));
-        app.insert_resource(crate::molds::tests::controls_for("p17", 1));
+        app.insert_resource(crate::molds::tests::viewing_step_5_with(1));
+        app.insert_resource(crate::molds::tests::controls_for(1));
 
         click_on(&mut app, "None");
         assert!(
@@ -2135,8 +2210,8 @@ pub(crate) mod tests {
     #[test]
     fn a_part_checkbox_toggles_the_row_it_names() {
         let mut app = app_running_the_wizard();
-        app.insert_resource(crate::molds::tests::viewing_step_5_with("p18", 1));
-        app.insert_resource(crate::molds::tests::controls_for("p19", 1));
+        app.insert_resource(crate::molds::tests::viewing_step_5_with(1));
+        app.insert_resource(crate::molds::tests::controls_for(1));
 
         click_on(&mut app, "Layer 1 — plug");
 
@@ -2188,7 +2263,7 @@ pub(crate) mod tests {
     #[test]
     fn a_finished_cast_shows_its_summary_on_the_screen() {
         let mut app = app_running_the_wizard();
-        let mut studio = crate::molds::tests::viewing_step_5_with("p20", 1);
+        let mut studio = crate::molds::tests::viewing_step_5_with(1);
         studio
             .project
             .set_molds(crate::jobs::tests::some_molds("out-panel"))
@@ -2236,9 +2311,9 @@ pub(crate) mod tests {
     fn a_running_cast_relabels_the_button() {
         let studio = Studio {
             busy: true,
-            ..crate::molds::tests::viewing_step_5_with("p21", 1)
+            ..crate::molds::tests::viewing_step_5_with(1)
         };
-        let app = wizard_on_step_5(studio, crate::molds::tests::controls_for("p22", 1));
+        let app = wizard_on_step_5(studio, crate::molds::tests::controls_for(1));
 
         let painted = painted_texts(&app);
         assert!(
@@ -2256,9 +2331,9 @@ pub(crate) mod tests {
     /// cast at 1.5 mm while the screen still said 0.5.
     #[test]
     fn the_quality_picker_shows_the_choice_it_is_on() {
-        let mut molds = crate::molds::tests::controls_for("p23", 1);
+        let mut molds = crate::molds::tests::controls_for(1);
         molds.quality_idx = 1;
-        let app = wizard_on_step_5(crate::molds::tests::viewing_step_5_with("p24", 1), molds);
+        let app = wizard_on_step_5(crate::molds::tests::viewing_step_5_with(1), molds);
 
         let painted = painted_texts(&app);
         assert!(
@@ -2312,8 +2387,8 @@ pub(crate) mod tests {
     #[test]
     fn no_summary_card_before_the_first_cast() {
         let app = wizard_on_step_5(
-            crate::molds::tests::viewing_step_5_with("p25", 1),
-            crate::molds::tests::controls_for("p26", 1),
+            crate::molds::tests::viewing_step_5_with(1),
+            crate::molds::tests::controls_for(1),
         );
 
         let painted = painted_texts(&app);
@@ -2334,7 +2409,7 @@ pub(crate) mod tests {
     fn the_wizard_pages_from_the_first_screen_to_the_last() {
         use cf_studio_core::PrintExport;
 
-        let mut studio = crate::molds::tests::viewing_step_5_with("p27", 1);
+        let mut studio = crate::molds::tests::viewing_step_5_with(1);
         studio
             .project
             .set_molds(crate::jobs::tests::some_molds("out-walk"))
@@ -2349,7 +2424,7 @@ pub(crate) mod tests {
 
         let mut app = app_running_the_wizard();
         app.insert_resource(studio);
-        app.insert_resource(crate::molds::tests::controls_for("p28", 1));
+        app.insert_resource(crate::molds::tests::controls_for(1));
 
         for step in Step::ALL {
             settle(&mut app);
@@ -2613,17 +2688,33 @@ pub(crate) mod tests {
         // note was still wired to step 3 alone — so a scan that could not be
         // read meant choosing silicone thicknesses and committing to a
         // 36-minute cast against a generic body presented as your own.
-        // ⚠ The last two have NO piece on screen, so the note must not appear
-        // there at all — without that half, deleting the `shows_the_piece`
-        // term paints "the body is not yours" on the print and pour screens.
-        for step in [
-            Step::ShapePiece,
-            Step::DesignLayers,
-            Step::MakeMolds,
-            Step::Print,
-            Step::Pour,
-        ] {
-            let piece_step = crate::scene::shows_the_piece(step);
+        // ⚠⚠ A LITERAL table over ALL SEVEN steps, and both halves matter.
+        //
+        // The first draft asked `shows_the_piece(step)` for the expectation —
+        // the function under test — so reverting that predicate flipped the
+        // production site and the expectation together and this gate stayed
+        // green. `scene.rs` documents that exact anti-pattern for this exact
+        // predicate and uses a literal table; writing it again here two rounds
+        // later is why the table is spelled out rather than derived.
+        //
+        // And five steps is not seven: steps 1 and 2 reach the note through the
+        // same line, so a failed scan could paint "the body is not yours" on the
+        // Add-scan and Clean-scan screens.
+        let expected = [
+            (Step::AddScan, false),
+            (Step::CleanScan, false),
+            (Step::ShapePiece, true),
+            (Step::DesignLayers, true),
+            (Step::MakeMolds, true),
+            (Step::Print, false),
+            (Step::Pour, false),
+        ];
+        assert_eq!(
+            expected.len(),
+            Step::TOTAL,
+            "the table must answer for every step, or the sweep is not a sweep"
+        );
+        for (step, piece_step) in expected {
             for app in [&mut absent, &mut real] {
                 app.world_mut().resource_mut::<Studio>().cursor = WizardCursor::new(step);
                 settle(app);

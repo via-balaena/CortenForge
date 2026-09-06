@@ -80,8 +80,8 @@ pub(crate) mod tests {
     /// click gate wrote that file into the REPO — twice, once per crate the
     /// suite was run from. The run still fails a moment later on the missing
     /// geometry, which is all the gate needs; the write happens first.
-    pub(crate) fn viewing_step_5_with(label: &str, layers: usize) -> Studio {
-        let dir = fixture_root().join(label);
+    pub(crate) fn viewing_step_5_with(layers: usize) -> Studio {
+        let dir = fixture_root().join(test_label());
         std::fs::create_dir_all(&dir).expect("a fixture dir");
         let mut studio = Studio {
             cursor: WizardCursor::new(Step::MakeMolds),
@@ -116,6 +116,23 @@ pub(crate) mod tests {
             .expect("controls survive")
     }
 
+    /// This test's own fixture name, taken from the thread libtest named after
+    /// it.
+    ///
+    /// ⚠⚠ Derived, not written down. Two rounds running, "no two tests share a
+    /// path" was asserted as a property maintained by hand across 28 magic
+    /// strings — and it was false the first time: `"m2"` named six call sites
+    /// while the doc beside it claimed otherwise. A property that has to be
+    /// re-checked by grep is not a property. libtest runs each `#[test]` on a
+    /// thread named after it, so the harness has already computed the
+    /// uniqueness these fixtures need.
+    fn test_label() -> String {
+        std::thread::current()
+            .name()
+            .unwrap_or("unnamed")
+            .replace("::", "-")
+    }
+
     /// The one directory this process's step-5 fixtures live under.
     ///
     /// ⚠⚠ **PID-keyed, and the leak that costs is deliberate.** Three shapes
@@ -143,8 +160,35 @@ pub(crate) mod tests {
         use std::sync::OnceLock;
         static ROOT: OnceLock<std::path::PathBuf> = OnceLock::new();
         ROOT.get_or_init(|| {
-            let root =
-                std::env::temp_dir().join(format!("cf-studio-gui-molds-{}", std::process::id()));
+            let temp = std::env::temp_dir();
+            // ⚠ Reclaim the roots of runs that are long over. Keying on the PID
+            // stops two live runs sharing a path, but then nothing collects
+            // them — under `cargo-mutants`, which spawns hundreds of processes,
+            // that is hundreds of orphaned roots.
+            //
+            // ⚠ By age, not by asking whether the PID is alive: that needs
+            // `libc::kill` and an `unsafe` block in a crate that forbids it.
+            // Two hours is far past any run of this suite, and a fixture is
+            // written and read within seconds of its root being made, so an
+            // aged root cannot belong to a run still using it.
+            const STALE: std::time::Duration = std::time::Duration::from_secs(2 * 60 * 60);
+            if let Ok(entries) = std::fs::read_dir(&temp) {
+                for stale in entries.flatten().filter(|entry| {
+                    entry
+                        .file_name()
+                        .to_str()
+                        .is_some_and(|name| name.starts_with("cf-studio-gui-molds-"))
+                        && entry
+                            .metadata()
+                            .and_then(|m| m.modified())
+                            .ok()
+                            .and_then(|t| t.elapsed().ok())
+                            .is_some_and(|age| age > STALE)
+                }) {
+                    let _ = std::fs::remove_dir_all(stale.path());
+                }
+            }
+            let root = temp.join(format!("cf-studio-gui-molds-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&root);
             std::fs::create_dir_all(&root).expect("a fixture root");
             root
@@ -155,13 +199,13 @@ pub(crate) mod tests {
     /// Controls whose picker was derived, by the real reconcile, for a design
     /// of `layers` layers. Shared with `panel.rs` so the screen's gates draw
     /// the picker the app would actually hand them, not a hand-built one.
-    pub(crate) fn controls_for(label: &str, layers: usize) -> MoldControls {
-        reconcile(viewing_step_5_with(label, layers), MoldControls::default())
+    pub(crate) fn controls_for(layers: usize) -> MoldControls {
+        reconcile(viewing_step_5_with(layers), MoldControls::default())
     }
 
     #[test]
     fn the_picker_is_built_from_the_committed_design() {
-        let controls = reconcile(viewing_step_5_with("m1", 2), MoldControls::default());
+        let controls = reconcile(viewing_step_5_with(2), MoldControls::default());
         // Bonded: 2 layers × 2 cups + the layer-0 plug + platform + dowels.
         assert_eq!(controls.picker.len(), 2 * 2 + 1 + 2);
         assert!(
@@ -173,8 +217,8 @@ pub(crate) mod tests {
     /// ★★ The reason the stamp is the layer COUNT and not the row count.
     #[test]
     fn a_changed_design_rebuilds_the_picker() {
-        let two = reconcile(viewing_step_5_with("m2", 2), MoldControls::default());
-        let three = reconcile(viewing_step_5_with("m3", 3), two);
+        let two = reconcile(viewing_step_5_with(2), MoldControls::default());
+        let three = reconcile(viewing_step_5_with(3), two);
         assert_eq!(
             three.picker.len(),
             3 * 2 + 1 + 2,
@@ -188,11 +232,11 @@ pub(crate) mod tests {
     /// the mouse.
     #[test]
     fn a_redraw_does_not_clobber_the_boxes_the_user_unchecked() {
-        let mut controls = reconcile(viewing_step_5_with("m4", 2), MoldControls::default());
+        let mut controls = reconcile(viewing_step_5_with(2), MoldControls::default());
         controls.picker.set_all(false);
         controls.picker.set_checked(0, true);
 
-        let after = reconcile(viewing_step_5_with("m5", 2), controls);
+        let after = reconcile(viewing_step_5_with(2), controls);
 
         let checked: Vec<bool> = after.picker.rows().map(|(_, c)| c).collect();
         assert_eq!(
@@ -208,7 +252,7 @@ pub(crate) mod tests {
     /// editing the design it derives from.
     #[test]
     fn the_picker_is_left_alone_off_step_5() {
-        let mut studio = viewing_step_5_with("m6", 2);
+        let mut studio = viewing_step_5_with(2);
         studio.cursor = WizardCursor::new(Step::DesignLayers);
 
         let after = reconcile(studio, MoldControls::default());
@@ -234,7 +278,7 @@ pub(crate) mod tests {
         let mut app = App::new();
         app.set_error_handler(bevy::ecs::error::ignore);
         app.add_plugins((MinimalPlugins, StatesPlugin, crate::plugin::StudioPlugin));
-        app.insert_resource(viewing_step_5_with("m7", 2));
+        app.insert_resource(viewing_step_5_with(2));
 
         // `resource::<MoldControls>()` would panic if the plugin had not
         // registered it — that is this line's second job.

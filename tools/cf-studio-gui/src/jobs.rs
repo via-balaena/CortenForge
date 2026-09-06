@@ -278,16 +278,33 @@ fn spawn_molds(
     })
 }
 
+/// The second to draw on the status line, or `None` to leave it alone.
+///
+/// ★★ Extracted because a system test could not gate it. The poller runs every
+/// frame and the only observable is the message it writes, so a gate has to
+/// name the expected second — and every attempt to derive that expectation from
+/// the run itself became a mirror: read `shown_secs` back out and a poller that
+/// computes the wrong second writes the wrong value to both, and they agree.
+/// **Measured: `let secs = 0;` passed all 170 tests** — a 36-minute cast reading
+/// `0:00` forever, green. As a pure function over `(elapsed, shown)` the whole
+/// space is enumerable against literals.
+///
+/// ⚠ Rebuilt at most once a whole second: at 60 fps the naive version writes a
+/// fresh `String` sixty times to show the same text fifty-nine of them.
+const fn clock_to_draw(elapsed_secs: u64, shown: Option<u64>) -> Option<u64> {
+    match shown {
+        Some(already) if already == elapsed_secs => None,
+        _ => Some(elapsed_secs),
+    }
+}
+
 /// Land a finished cast, or tick the clock on a running one.
 pub(crate) fn poll_molds_job(mut job: ResMut<MoldsJob>, mut studio: ResMut<Studio>) {
     let Some(run) = job.0.as_mut() else { return };
     let Some(result) = future::block_on(future::poll_once(&mut run.task)) else {
-        // Still running. Refresh the clock, but only when the whole second has
-        // changed: this system runs every frame, and rebuilding the line at
-        // 60 Hz would allocate a fresh `String` sixty times a second to show
-        // the same text fifty-nine of them.
-        let secs = run.started.elapsed().as_secs();
-        if run.shown_secs != Some(secs) {
+        // Still running. The decision is [`clock_to_draw`]; this only carries
+        // it out.
+        if let Some(secs) = clock_to_draw(run.started.elapsed().as_secs(), run.shown_secs) {
             run.shown_secs = Some(secs);
             studio.message = Some(Ok(format_molds_progress(secs)));
         }
@@ -1004,101 +1021,70 @@ endsolid t
         );
     }
 
-    /// ★ The clock is rebuilt at most once a second. This system runs every
-    /// frame, so the naive version allocates a fresh `String` at 60 Hz to show
-    /// the same text 59 times out of 60.
+    /// ★★ The clock decision, enumerated against literals.
     ///
-    /// ⚠⚠ **No `Instant` arithmetic, and no wall-clock budget.** Anchoring
-    /// `started` at `Instant::now()` left the frames an unknown distance from
-    /// the next second boundary, so a loaded box could roll the clock mid-test
-    /// and fail a gate that had found no defect; subtracting 75.5 s to buy
-    /// slack traded that for a panic **on macOS**, where `Instant` is an
-    /// unsigned `mach_absolute_time` counting from boot and
-    /// `Instant - Duration` is a `checked_sub().expect(…)`: a machine under 76 s
-    /// of uptime aborts in a test about formatting. ⚠ Not universal — Linux
-    /// backs `Instant` with a signed `Timespec` and simply goes negative — so
-    /// the platform is named rather than implied. The guard's real input is
-    /// `shown_secs`, so drive that instead of the clock.
+    /// ⚠⚠ Every system-level version of this gate was a **mirror**: it derived
+    /// the expected second by reading `shown_secs` back out of the run, so a
+    /// poller computing the wrong second wrote the wrong value to both and they
+    /// agreed. Measured — `let secs = 0;` passed all 170 tests, which is a
+    /// 36-minute cast reading `0:00` forever with the suite green. These
+    /// expectations are constants; nothing here can move with the code.
+    ///
+    /// ⚠ It also retires the `Instant` arithmetic that gate needed to buy a
+    /// non-zero elapsed: on macOS `Instant` is an unsigned `mach_absolute_time`
+    /// from boot, so `Instant::now() - Duration::from_secs(75)` aborts on a
+    /// machine under 75 s of uptime.
     #[test]
-    fn the_clock_is_rewritten_only_when_the_whole_second_changes() {
-        const SENTINEL: &str = "left alone";
+    fn the_clock_redraws_only_when_the_whole_second_changes() {
+        // Nothing shown yet — the opening frame writes the second it is on.
+        assert_eq!(clock_to_draw(0, None), Some(0));
+        assert_eq!(clock_to_draw(75, None), Some(75));
+
+        // Same second: left alone. The 59-frames-in-60 case.
+        assert_eq!(clock_to_draw(0, Some(0)), None);
+        assert_eq!(clock_to_draw(75, Some(75)), None);
+
+        // Rolled: redrawn at the ELAPSED second, not the shown one.
+        assert_eq!(clock_to_draw(76, Some(75)), Some(76));
+        assert_eq!(clock_to_draw(1, Some(0)), Some(1));
+
+        // ⚠ The defect this exists for: an elapsed that never advances must
+        // keep asking for 0, which renders "0:00" however long the run is.
+        assert_eq!(clock_to_draw(0, Some(75)), Some(0));
+    }
+
+    /// ★★★ The clock SOURCE, which only real elapsed time can gate.
+    ///
+    /// ⚠⚠ `clock_to_draw` is enumerated against literals above, but that gates
+    /// the DECISION, not the wiring — and the wiring is where this kept
+    /// breaking. Freezing the source (`clock_to_draw(0, …)`, or `let secs = 0;`
+    /// before the extraction) leaves every other test in the crate green,
+    /// because with elapsed pinned at 0 the poller writes `0:00`, records 0,
+    /// and any expectation derived from the run agrees with it. Measured
+    /// twice, on two different shapes of that gate.
+    ///
+    /// Nothing but the passage of a real second distinguishes a working clock
+    /// from a frozen one, so this test waits for one. ⚠ Asserts only that the
+    /// second ADVANCED — time moves one way, so it cannot fail spuriously; a
+    /// slow machine makes it wait, never makes it wrong.
+    #[test]
+    fn the_clock_follows_real_elapsed_time() {
         let mut app = app_ready_for_molds();
-        // ⚠⚠ A NON-ZERO elapsed, deliberately. With `started` at now the real
-        // elapsed is 0, so a poller frozen at `format_molds_progress(0)` prints
-        // exactly what a correct one prints and the gate cannot tell them
-        // apart — measured: that mutation survived the whole suite.
-        //
-        // ⚠ `checked_sub`, and the `expect` says what it needs. On macOS
-        // `Instant` is an unsigned `mach_absolute_time` from boot, so plain
-        // subtraction aborts with "overflow when subtracting duration from
-        // instant" on a machine under 75 s of uptime — a real edge case with an
-        // opaque message. Linux backs it with a signed `Timespec` and goes
-        // negative instead.
-        let started = Instant::now()
-            .checked_sub(std::time::Duration::from_secs(75))
-            .expect("this gate needs 75 s of uptime to give the clock a non-zero second");
-        inject(&mut app, never_finishes(), started, None);
+        inject(&mut app, never_finishes(), Instant::now(), None);
 
-        // First frame: no second has been shown yet, so the line is written.
         app.update();
-        let shown = app
+        let first = app
             .world()
             .resource::<MoldsJob>()
             .0
             .as_ref()
             .and_then(|run| run.shown_secs)
-            .expect("a running cast records the second it drew");
-        // ⚠ Against the second the run RECORDED, not a literal. Asserting only
-        // "Making molds" would pass a poller that printed a constant — pinning
-        // `format_molds_progress(0)` in place of `format_molds_progress(secs)`
-        // leaves the whole suite green while a 36-minute cast reads 0:00
-        // forever. Reading `shown` back makes it roll-tolerant too.
-        assert!(
-            matches!(&app.world().resource::<Studio>().message,
-                     Some(Ok(text)) if text == &format_molds_progress(shown)),
-            "the line must carry the second the run is on ({shown}): {:?}",
-            app.world().resource::<Studio>().message
-        );
+            .expect("the opening frame records a second");
 
-        // Same shown second: the next frames must not touch the message.
-        app.world_mut().resource_mut::<Studio>().message = Some(Ok(SENTINEL.to_string()));
+        std::thread::sleep(std::time::Duration::from_millis(1_100));
         app.update();
-        app.update();
-        // ⚠ Roll-tolerant: if the whole second happened to turn between these
-        // frames the poller is CORRECT to rewrite, and asserting it did not
-        // would fail a gate that found no defect. Either the line is untouched,
-        // or it is the line for the new second — never anything else.
-        let now_showing = app
-            .world()
-            .resource::<MoldsJob>()
-            .0
-            .as_ref()
-            .and_then(|run| run.shown_secs)
-            .expect("the run is still in flight");
-        let message = app.world().resource::<Studio>().message.clone();
-        if now_showing == shown {
-            assert!(
-                matches!(&message, Some(Ok(text)) if text == SENTINEL),
-                "within one second the line is left alone: {message:?}"
-            );
-        } else {
-            assert!(
-                matches!(&message, Some(Ok(text)) if text == &format_molds_progress(now_showing)),
-                "and when it does roll it writes that second, nothing else: {message:?}"
-            );
-        }
 
-        // Make the last-shown second stale — the guard's own input — and it
-        // redraws, at whatever second the run is actually on.
-        app.world_mut()
-            .resource_mut::<MoldsJob>()
-            .0
-            .as_mut()
-            .expect("the run is still in flight")
-            .shown_secs = Some(shown.wrapping_sub(1));
-        app.update();
-        let studio = app.world().resource::<Studio>();
-        let redrawn = app
+        let later = app
             .world()
             .resource::<MoldsJob>()
             .0
@@ -1106,11 +1092,47 @@ endsolid t
             .and_then(|run| run.shown_secs)
             .expect("still in flight");
         assert!(
-            matches!(&studio.message, Some(Ok(text)) if text == &format_molds_progress(redrawn)),
-            "a stale shown second redraws the clock, at the second it is on: {:?}",
+            later > first,
+            "a second of real time passed and the clock did not move: {first} → {later}"
+        );
+        assert!(
+            matches!(&app.world().resource::<Studio>().message,
+                     Some(Ok(text)) if text == &format_molds_progress(later)),
+            "and the line follows it: {:?}",
+            app.world().resource::<Studio>().message
+        );
+    }
+
+    /// The poller carries that decision out: writes the line, records the
+    /// second, holds the app.
+    ///
+    /// ⚠ Driven from the state `start_molds` actually produces —
+    /// `shown_secs: Some(0)` and the opening line already written — not the
+    /// `None` a fixture can invent. At elapsed 0 the decision is "leave it
+    /// alone", so this pins that the poller does not clobber the line the
+    /// starter just wrote.
+    #[test]
+    fn a_running_cast_reports_itself_and_holds_the_app() {
+        let mut app = app_ready_for_molds();
+        inject(&mut app, never_finishes(), Instant::now(), Some(0));
+        app.world_mut().resource_mut::<Studio>().message = Some(Ok(format_molds_progress(0)));
+
+        app.update();
+
+        let recorded = app
+            .world()
+            .resource::<MoldsJob>()
+            .0
+            .as_ref()
+            .and_then(|run| run.shown_secs)
+            .expect("a running cast records the second it drew");
+        let studio = app.world().resource::<Studio>();
+        assert!(
+            matches!(&studio.message, Some(Ok(text)) if text == &format_molds_progress(recorded)),
+            "the line is what the recorded second formats to: {:?}",
             studio.message
         );
-        assert!(studio.busy, "and the app is still held for the run");
+        assert!(studio.busy, "and the app is held for the run");
     }
 
     /// ★★ The plugin's own wiring, which nothing else reaches.

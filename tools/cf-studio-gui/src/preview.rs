@@ -260,6 +260,13 @@ pub(crate) fn drive_plug_preview(
     view.land_cache();
     view.land_mesh();
     view.start_cache(prep);
+    // ▶ `plug_draft` allocates a fresh ridge `Vec` on every frame the piece is
+    // on screen — including the whole ~40 minutes a print-quality cast holds
+    // step 5. A caller-side guard was tried and deleted: it returned true in
+    // the steady state, so it never skipped the allocation it was written for.
+    // The cost is unchanged from before this arc and is recorded, not fixed;
+    // if it is worth removing, the check belongs inside `start_mesh`, against
+    // a cheap stamp of the shape fields rather than a materialised draft.
     view.start_mesh(&shape.plug_draft());
 }
 
