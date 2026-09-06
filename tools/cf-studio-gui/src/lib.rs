@@ -1808,6 +1808,96 @@ visible = true
         );
     }
 
+    /// ⚠⚠⚠ **BONDED HAS NEVER BEEN CAST.** Audited 2026-09-06: all five
+    /// `#[ignore]`d cast gates in `cf-studio-engine` go through
+    /// `cast_real_base_mold_via_wizard`, which hard-codes
+    /// [`CastMode::Detachable`]. Every Bonded exercise in the repo is a unit
+    /// test over the *plan* — selection sets, procedure markdown, which plugs
+    /// get dropped. Nothing has meshed through the bonded path, and Bonded is
+    /// the mode Cendrillon actually casts in.
+    ///
+    /// ★ It lives here, not beside its four siblings in the engine, because
+    /// only here can the selection be built the way the APP builds it:
+    /// `enumerate_parts` + `part_selection_from_checks`, an INCLUSION set that
+    /// deliberately omits the gasket and the integral funnel.
+    /// `CastMode::Bonded.part_selection()` in `cf-cast` is `all_except(plugs)`,
+    /// an EXCLUSION set — the same intent, and not necessarily the same parts.
+    /// Gating the engine's version would leave the app's untested.
+    ///
+    /// Expect `2L` cup halves and exactly **one** plug, against detachable's
+    /// `2L` + `L`. Run:
+    /// `cargo test -p cf-studio-gui -- --ignored casts_base_mold_bonded`
+    #[test]
+    #[ignore = "integration: ~5 min at 1.5 mm, needs ~/scans/base_mold files"]
+    fn the_app_casts_base_mold_bonded() {
+        use cf_studio_core::{DesignDraft, LayerDraft};
+
+        let home = PathBuf::from(std::env::var("HOME").expect("HOME"));
+        let cleaned = home.join("scans/base_mold.cleaned.stl");
+        let prep = home.join("scans/base_mold.prep.toml");
+        // ⚠ A missing fixture is an ERROR, not a skip: this gate only runs when
+        // asked for by name, so a silent pass would report the bonded path as
+        // cast when nothing ran. Same rule `isolated_base_mold_fixture` states.
+        assert!(
+            cleaned.exists() && prep.exists(),
+            "MISSING FIXTURE: {} and {} are required by this #[ignore]d gate",
+            cleaned.display(),
+            prep.display(),
+        );
+
+        // The stack the GUI opens on, as the engine's siblings use.
+        let draft = DesignDraft {
+            cavity_inset_m: 0.005,
+            layers: vec![
+                LayerDraft {
+                    thickness_m: 0.018,
+                    material_key: "ECOFLEX_00_30".to_string(),
+                    slacker_fraction: 0.25,
+                },
+                LayerDraft {
+                    thickness_m: 0.007,
+                    material_key: "DRAGON_SKIN_10A".to_string(),
+                    slacker_fraction: 0.0,
+                },
+                LayerDraft {
+                    thickness_m: 0.005,
+                    material_key: "DRAGON_SKIN_20A".to_string(),
+                    slacker_fraction: 0.0,
+                },
+            ],
+        };
+
+        // Exactly what the screen sends: every offered part checked.
+        let picker = PartPicker::rebuild(draft.layers.len(), CENDRILLON_CAST_MODE);
+        assert!(picker.any_checked(), "a fresh picker is a full cast");
+        let selection = picker.selection(CENDRILLON_CAST_MODE);
+
+        let out = cf_studio_engine::generate_molds_for_design(
+            &cleaned,
+            &prep,
+            &draft,
+            0.0015,
+            &RidgeOptions::default(),
+            &selection,
+            CENDRILLON_CAST_MODE,
+            Some(Path::new("cf-studio-gui-bonded-gate")),
+        )
+        .expect("the bonded path must cast");
+
+        assert_eq!(out.mold_stls.len(), 6, "2 halves × 3 layers");
+        assert_eq!(
+            out.plug_stls.len(),
+            1,
+            "bonded casts ONE plug — the cured layer N is the plug for N+1"
+        );
+        assert_eq!(
+            out.pour_plan.steps.len(),
+            3,
+            "the plan still covers 3 layers"
+        );
+        assert!(out.total_mass_g > 0.0);
+    }
+
     // ── the cast mode the app pins ──────────────────────────────────────────
     //
     // ⚠ These read `CENDRILLON_CAST_MODE`, never a `CastMode` literal. The two
