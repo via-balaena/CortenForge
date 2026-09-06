@@ -2073,6 +2073,109 @@ pub(crate) mod tests {
         }
     }
 
+    /// Step 5 rendered for real, with `molds` as the step-5 controls.
+    fn wizard_on_step_5(studio: Studio, molds: MoldControls) -> App {
+        let mut app = app_running_the_wizard();
+        app.insert_resource(studio);
+        app.insert_resource(molds);
+        settle(&mut app);
+        app
+    }
+
+    /// ⚠ The button relabels itself for the length of the run — the pre-port
+    /// screen's only progress indicator. Removing the branch left every other
+    /// gate on this screen green.
+    #[test]
+    fn a_running_cast_relabels_the_button() {
+        let studio = Studio {
+            busy: true,
+            ..crate::molds::tests::viewing_step_5_with(1)
+        };
+        let app = wizard_on_step_5(studio, crate::molds::tests::controls_for(1));
+
+        let painted = painted_texts(&app);
+        assert!(
+            painted.iter().any(|text| text == "Making molds…"),
+            "a cast in flight says so on the button: {painted:?}"
+        );
+        assert!(
+            !painted.iter().any(|text| text == "Make molds"),
+            "and the idle label is gone while it runs: {painted:?}"
+        );
+    }
+
+    /// ⚠ The picker must show the choice it is ON, not always the first one.
+    /// The cell size is read from the index separately, so a frozen label would
+    /// cast at 1.5 mm while the screen still said 0.5.
+    #[test]
+    fn the_quality_picker_shows_the_choice_it_is_on() {
+        let mut molds = crate::molds::tests::controls_for(1);
+        molds.quality_idx = 1;
+        let app = wizard_on_step_5(crate::molds::tests::viewing_step_5_with(1), molds);
+
+        let painted = painted_texts(&app);
+        assert!(
+            painted.iter().any(|text| text == QUALITY_LABELS[1]),
+            "the fast preview is what is selected: {painted:?}"
+        );
+        assert!(
+            !painted.iter().any(|text| text == QUALITY_LABELS[0]),
+            "and the fine label is not also showing: {painted:?}"
+        );
+    }
+
+    /// An index no label exists for falls back to print quality, the same way
+    /// `cell_size_m_for_quality` does — so the two cannot disagree about what
+    /// an out-of-range index means.
+    #[test]
+    fn an_impossible_quality_index_reads_as_print_quality() {
+        assert_eq!(quality_label(99), QUALITY_LABELS[0]);
+        assert_eq!(quality_label(-1), QUALITY_LABELS[0]);
+        assert!(
+            (cell_size_m_for_quality(99) - 0.0005).abs() < f64::EPSILON,
+            "and the cast agrees with the label"
+        );
+    }
+
+    /// ⚠ The state a user reaches by paging back to step 4 and dropping the
+    /// design. Without the hint the card is an empty grey box with two buttons
+    /// that do nothing.
+    #[test]
+    fn an_empty_parts_card_says_where_the_design_comes_from() {
+        // ⚠ Step 5 with nothing committed — NOT `Studio::default()`, which is
+        // parked on step 1 and would render a different screen entirely.
+        let studio = Studio {
+            cursor: WizardCursor::new(Step::MakeMolds),
+            ..Studio::default()
+        };
+        let app = wizard_on_step_5(studio, MoldControls::default());
+
+        let painted = painted_texts(&app);
+        assert!(
+            painted
+                .iter()
+                .any(|text| text.contains("Choose a design in step 4 first")),
+            "the empty card explains itself: {painted:?}"
+        );
+    }
+
+    /// ⚠ The other half of the summary claim. A card that always draws would
+    /// pass `a_finished_cast_shows_its_summary_on_the_screen` just as happily,
+    /// and would show a stale or empty result before any cast had run.
+    #[test]
+    fn no_summary_card_before_the_first_cast() {
+        let app = wizard_on_step_5(
+            crate::molds::tests::viewing_step_5_with(1),
+            crate::molds::tests::controls_for(1),
+        );
+
+        let painted = painted_texts(&app);
+        assert!(
+            !painted.iter().any(|text| text.contains("mold piece(s)")),
+            "nothing has been cast, so there is no summary to show: {painted:?}"
+        );
+    }
+
     /// ⚠ Step 2's earlier states. Each shows text that exists in no other one —
     /// the hint naming the step that unblocks Save, and the line telling you to
     /// add a scan at all — so censusing only the revealed screen leaves both of
