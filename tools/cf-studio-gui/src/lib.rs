@@ -221,6 +221,25 @@ pub fn cell_size_m_for_quality(quality_idx: i32) -> f64 {
     }
 }
 
+/// The cast mode Cendrillon casts in.
+///
+/// **Bonded**, and that is not cosmetic — it changes both what the app offers
+/// and which path the engine takes:
+/// - [`enumerate_parts`] lists only the **layer-0** plug, because above that
+///   the cured layer N *is* the plug for layer N+1;
+/// - [`part_selection_from_checks`] never collapses to [`PartSelection::all`],
+///   so every run goes down the selective, bonded-procedure path.
+///
+/// The engine already documents this as the Cendrillon default on
+/// [`CastMode::Bonded`] itself; this is the app actually choosing it.
+///
+/// ⚠ The pre-port binary pinned this and the port dropped it: every function
+/// was parameterised by mode and nothing restored the app's answer, so the
+/// crate exercised BOTH modes and committed to NEITHER. The gates below read
+/// this constant rather than a `CastMode` literal, which is the whole point —
+/// a gate naming `Bonded` directly would still pass if the app changed.
+pub const CENDRILLON_CAST_MODE: CastMode = CastMode::Bonded;
+
 /// Enumerate the generatable parts for a design with `layer_count` layers,
 /// in display order, as `(id, label)`. Per layer: two cup halves + a plug,
 /// then the shared workshop platform + dowels (the apex pour funnel is
@@ -1770,6 +1789,53 @@ visible = true
             !sel.includes(PartId::Plug { layer_index: 1 }),
             "no layer-1 plug"
         );
+    }
+
+    // ── the cast mode the app pins ──────────────────────────────────────────
+    //
+    // ⚠ These read `CENDRILLON_CAST_MODE`, never a `CastMode` literal. The two
+    // gates above pin what Bonded *does*; only these pin that the app is in
+    // it — and they are the gates that were missing for the whole port, while
+    // both of those stayed green over an app committed to no mode at all.
+
+    #[test]
+    fn cendrillon_offers_one_plug_however_many_layers_the_design_has() {
+        // Swept, not sampled: a one-layer design offers one plug in EITHER
+        // mode, so a single-layer check would pass just as happily on
+        // detachable.
+        for layer_count in 1..=4 {
+            let parts = enumerate_parts(layer_count, CENDRILLON_CAST_MODE);
+            let plugs: Vec<_> = parts
+                .iter()
+                .filter(|(id, _)| matches!(id, PartId::Plug { .. }))
+                .collect();
+            assert_eq!(
+                plugs.len(),
+                1,
+                "a {layer_count}-layer design must still offer exactly one plug"
+            );
+            assert_eq!(plugs[0].0, PartId::Plug { layer_index: 0 });
+        }
+    }
+
+    #[test]
+    fn cendrillon_never_takes_the_full_cast_shortcut() {
+        let parts = enumerate_parts(3, CENDRILLON_CAST_MODE);
+        let checked = vec![true; parts.len()];
+        let sel = part_selection_from_checks(&parts, &checked, CENDRILLON_CAST_MODE);
+        assert!(
+            !sel.is_all(),
+            "everything-checked must still route the selective bonded path"
+        );
+        // ★ The other half of the claim. `!is_all()` alone is also true of an
+        // EMPTY selection, which would cast nothing at all — so assert the
+        // collection, not just the negation.
+        for (id, _) in &parts {
+            assert!(
+                sel.includes(*id),
+                "{id:?} was checked, so it must be selected"
+            );
+        }
     }
 
     #[test]
