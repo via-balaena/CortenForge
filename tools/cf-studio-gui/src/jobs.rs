@@ -7,8 +7,13 @@
 //! - **the print export** (step 6) copies the mold package, hundreds of
 //!   megabytes at 0.5 mm.
 //! - **the cast** (step 5) generates the printable molds. This one is measured
-//!   in *minutes* — 269 s at 1.5 mm, ~15 min at 0.5 — which is why it is the
-//!   only job that reports its own elapsed time while it runs.
+//!   in *minutes* — 408 s at 1.5 mm and 2187 s at 0.5, measured 2026-09-06 in
+//!   the BONDED mode this app casts in — which is why it is the only job that
+//!   reports its own elapsed time while it runs.
+//!
+//!   ⚠ The detachable figures those replaced (269 s / ~15 min) were not merely
+//!   older, they were the wrong mode: bonded is 1.5× slower at 1.5 mm and
+//!   2.4× at 0.5, so the ratio does not even hold across cell sizes.
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -204,7 +209,7 @@ const MOLDS_NO_INPUTS: &str = "Finish steps 2 and 4 first (clean the scan, choos
 pub(crate) fn start_molds(start: &MoldsStart, studio: &mut Studio, job: &mut MoldsJob) {
     // A run already in flight. `busy` disables the button, but a click queued
     // in the same frame still arrives, and a second cast into the same output
-    // directory would race the first for fifteen minutes.
+    // directory would race the first for the better part of an hour.
     if job.0.is_some() {
         return;
     }
@@ -242,7 +247,7 @@ pub(crate) fn start_molds(start: &MoldsStart, studio: &mut Studio, job: &mut Mol
 /// Run the cast off-thread.
 ///
 /// The `catch_unwind` is the guard the other two jobs carry, and it earns more
-/// here than anywhere: a panic fifteen minutes in would otherwise leave `busy`
+/// here than anywhere: a panic half an hour in would otherwise leave `busy`
 /// stuck on with no way back.
 fn spawn_molds(
     cleaned_stl: PathBuf,
@@ -1050,7 +1055,7 @@ endsolid t
     /// ⚠ Every test above inserts `MoldsJob` by hand and adds `poll_molds_job`
     /// itself, so dropping either the `init_resource` or the schedule entry
     /// left the whole suite green — a system whose params cannot be built does
-    /// not run, and a cast would run for fifteen minutes and never land.
+    /// not run, and a cast would run for half an hour and never land.
     /// Verified by doing exactly that: both deletions pass every other test in
     /// the crate, and fail this one.
     ///

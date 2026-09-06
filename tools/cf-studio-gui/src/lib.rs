@@ -621,7 +621,8 @@ pub fn format_elapsed(secs: u64) -> String {
 /// The status line while the cast runs, refreshed once a second.
 ///
 /// The reassurance is not filler: this is the only job in the wizard measured
-/// in *minutes* (269 s at 1.5 mm, ~15 at 0.5), and a window that looks frozen
+/// in *minutes* (408 s at 1.5 mm, 2187 s at 0.5, measured bonded — the mode
+/// this app casts in), and a window that looks frozen
 /// for that long is one a user force-quits.
 ///
 /// ⚠ One deliberate difference from the pre-port text, which built this with a
@@ -1912,18 +1913,19 @@ visible = true
     /// The **print-quality** default — the quality picker's index 0, and what
     /// the user actually prints from.
     ///
-    /// ⚠ This exists because step 5's copy says "print quality takes around
-    /// fifteen minutes", and that figure was measured on the **detachable**
-    /// path, which the app does not use. Until this runs, the sentence the
-    /// user reads before committing to the wait is unbacked.
+    /// ★★★ **PASSED 2026-09-06: 2187.37 s — 36.5 minutes.** Step 5's copy had
+    /// said "around fifteen minutes", a figure measured on the **detachable**
+    /// path the app does not use. The copy now says forty.
     ///
-    /// ⛔ Do not fill in an estimate by scaling the 1.5 mm pair — cell size and
-    /// mode are not known to compose. Run it, then write the number here and
-    /// fix the copy to match.
+    /// ★★ **AND THE RATIO DOES NOT HOLD ACROSS CELL SIZES.** Bonded is 1.47×
+    /// detachable at 1.5 mm (408 vs 278 s) but **2.43×** at 0.5 mm (2187 vs
+    /// ~900). Scaling the 1.5 mm pair would have written down ~22 minutes and
+    /// called it measured. That is why the `#[ignore]` reason said UNMEASURED
+    /// rather than carrying an estimate.
     ///
     /// Run: `cargo test -p cf-studio-gui -- --ignored casts_base_mold_bonded_fine`
     #[test]
-    #[ignore = "integration: UNMEASURED at 0.5 mm, needs ~/scans/base_mold files"]
+    #[ignore = "integration: 2187 s / 36 min at 0.5 mm (measured 2026-09-06), needs ~/scans/base_mold files"]
     fn the_app_casts_base_mold_bonded_fine() {
         cast_base_mold_as_the_app_would(0.0005, "cf-studio-gui-bonded-fine-gate");
     }

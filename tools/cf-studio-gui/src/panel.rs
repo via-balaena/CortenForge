@@ -763,10 +763,15 @@ fn draw_make_molds(
     ui.add_space(8.0);
     wrapped_label(
         ui,
+        // ⚠ Both numbers are MEASURED, on the reference scan, in the mode this
+        // app casts in — `the_app_casts_base_mold_bonded{,_fine}`. They were
+        // "fifteen minutes" and "a few" until 2026-09-06, both carried over
+        // from DETACHABLE runs the app never performs. If you change the cast,
+        // re-run those two gates and change these with them.
         "CortenForge builds the printable mold from your cleaned scan and \
          silicone design. This runs the full cast — print quality takes around \
-         fifteen minutes (the faster preview is a few), and the window stays \
-         responsive while it works.",
+         forty minutes and the faster preview around seven, and the window \
+         stays responsive while it works.",
     );
     ui.add_space(SECTION_GAP);
 
