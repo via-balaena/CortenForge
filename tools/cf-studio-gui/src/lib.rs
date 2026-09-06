@@ -2388,19 +2388,13 @@ visible = true
 
     #[test]
     fn the_cast_progress_line_carries_the_clock_and_the_reassurance() {
-        let line = format_molds_progress(15 * 60 + 7);
-        assert!(
-            line.contains("15:07"),
-            "the clock is the whole point of refreshing it: {line}"
+        // ⚠ Exact, not `contains`: the pre-port built this with a trailing `\`
+        // continuation and emitted two spaces before the parenthesis, and
+        // substring checks left every other word of the line free.
+        assert_eq!(
+            format_molds_progress(15 * 60 + 7),
+            "Making molds… 15:07 elapsed (this can take a while — the window stays responsive)"
         );
-        assert!(
-            line.contains("stays responsive"),
-            "and the reassurance survives, on a job measured in minutes: {line}"
-        );
-        // ⚠ The pre-port built this with a trailing `\` continuation and emitted
-        // two spaces here. Single-spaced deliberately; pinned so it is not
-        // "restored" by someone diffing against the old text.
-        assert!(!line.contains("  "), "no double space: {line:?}");
     }
 
     // ── RingRow round-trip ──────────────────────────────────────────────────

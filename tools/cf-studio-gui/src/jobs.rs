@@ -263,14 +263,8 @@ fn spawn_molds(
 }
 
 /// The second to draw, or `None` to leave the line alone.
-///
-/// ⚠ Every expectation derived from the run itself was a mirror: `let secs = 0;`
-/// passed all 170 tests.
-const fn clock_to_draw(elapsed_secs: u64, shown: Option<u64>) -> Option<u64> {
-    match shown {
-        Some(already) if already == elapsed_secs => None,
-        _ => Some(elapsed_secs),
-    }
+fn clock_to_draw(elapsed_secs: u64, shown: Option<u64>) -> Option<u64> {
+    (shown != Some(elapsed_secs)).then_some(elapsed_secs)
 }
 
 /// Land a finished cast, or tick the clock on a running one.
@@ -401,9 +395,10 @@ pub(crate) fn reveal_in_file_manager(dir: &Path) {
 pub(crate) mod tests {
     #![allow(clippy::expect_used)]
 
+    use std::time::Duration;
+
     use bevy::ecs::system::RunSystemOnce;
     use mesh_types::unit_cube;
-    use std::time::Duration;
 
     use super::*;
     use crate::scan::{ActiveScan, ViewUpdate};
@@ -1012,10 +1007,6 @@ endsolid t
         assert_eq!(clock_to_draw(75, None), Some(75));
         assert_eq!(clock_to_draw(75, Some(75)), None);
         assert_eq!(clock_to_draw(76, Some(75)), Some(76));
-        // ⚠ The defect this exists for: an elapsed that never advances keeps
-        // asking for 0, so the line reads "0:00" however long the run is. Not a
-        // clock going backwards — a frozen source.
-        assert_eq!(clock_to_draw(0, Some(75)), Some(0));
     }
 
     /// The clock source. Only a known duration catches a wrong scale: "it
@@ -1028,11 +1019,13 @@ endsolid t
         // constant source through: with ±1 s of slack a poller reading a fixed
         // `Duration::from_secs(3)` passed all 171. An exact expectation needs an
         // exact elapsed, and this one costs nothing.
+        let mut app = app_ready_for_molds();
+        // ⚠ `Some(0)` is what `start_molds` seeds. Under `None` a poller that
+        // draws the opening second and never redraws passed all 171.
         let started = Instant::now()
             .checked_sub(Duration::from_millis(WAITED * 1000 + 100))
             .expect("2.1 s of uptime");
-        let mut app = app_ready_for_molds();
-        inject(&mut app, never_finishes(), started, None);
+        inject(&mut app, never_finishes(), started, Some(0));
 
         app.update();
 
