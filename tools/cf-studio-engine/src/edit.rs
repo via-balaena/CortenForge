@@ -216,8 +216,8 @@ impl EditSession {
         self.working.aabb()
     }
 
-    /// The auto-center offset applied (at load + any later `auto_center`
-    /// calls), in meters — the `[scan_prep].auto_center_offset_m` provenance.
+    /// The auto-center offset applied at load, in meters — the
+    /// `[scan_prep].auto_center_offset_m` provenance.
     #[must_use]
     pub fn auto_center_offset_m(&self) -> Vector3<f64> {
         self.auto_center_offset_m
@@ -464,13 +464,6 @@ impl EditSession {
         self.trim_floor_mm = floor_mm;
     }
 
-    /// Clear the trim (and any reconstruction).
-    pub fn clear_trim(&mut self) {
-        self.trim_tip_mm = 0.0;
-        self.trim_floor_mm = 0.0;
-        self.reconstruct = None;
-    }
-
     /// Apply floor reconstruction (`reference_mm` = the zone above the cut
     /// to sample the cross-section from; `shape` = constant/taper/
     /// extrapolate). No-op returning `false` if there's no floor trim to
@@ -484,11 +477,6 @@ impl EditSession {
             shape,
         });
         true
-    }
-
-    /// Drop the floor reconstruction (revert to a flat cap).
-    pub fn clear_reconstruct(&mut self) {
-        self.reconstruct = None;
     }
 
     /// The working mesh with the derived ops applied — centerline trim +
@@ -762,30 +750,6 @@ impl EditSession {
         self.simplify_target = target_faces;
         self.clear_caps();
     }
-
-    /// Recenter the working mesh's AABB centroid onto the origin; returns
-    /// (and accumulates) the applied offset in meters.
-    pub fn auto_center(&mut self) -> Vector3<f64> {
-        let offset = cf_scan_prep_core::auto_center_in_place(&mut self.working);
-        self.auto_center_offset_m += offset;
-        self.clear_caps();
-        offset
-    }
-
-    /// PCA-orient the working mesh toward the cast frame (+Z up); returns
-    /// (and records) the applied rotation, or `None` if PCA was
-    /// degenerate (e.g. a near-spherical mesh with no dominant axis).
-    pub fn auto_orient_pca(&mut self) -> Option<UnitQuaternion<f64>> {
-        let q = cf_scan_prep_core::auto_pca_in_place(&mut self.working);
-        if let Some(rot) = q {
-            self.auto_pca_quat = Some(match self.auto_pca_quat {
-                Some(prev) => rot * prev,
-                None => rot,
-            });
-        }
-        self.clear_caps();
-        q
-    }
 }
 
 /// Run the heavy boundary-preserving decimation toward `target_faces`,
@@ -947,28 +911,33 @@ mod tests {
     }
 
     #[test]
-    fn auto_center_moves_centroid_to_origin() {
-        let mut s = session(offset_tri());
-        let offset = s.auto_center();
-        // The offset is non-trivial (mesh was near (10, 10, 10)).
-        assert!(offset.norm() > 1.0);
-        let c = s.aabb().center();
-        assert!(
-            c.coords.norm() < 1e-9,
-            "centroid recentered to origin: {c:?}"
-        );
-    }
-
-    #[test]
     fn reset_restores_the_original_mesh() {
         let mut s = session(offset_tri());
-        s.auto_center();
-        assert!(s.aabb().center().coords.norm() < 1e-9);
+        // Land an origin-centred mesh the way a finished background simplify
+        // does — `reset` has to undo both the mesh and the flag.
+        s.apply_simplified(
+            IndexedMesh {
+                vertices: vec![
+                    Point3::new(-1.0, 0.0, 0.0),
+                    Point3::new(1.0, 0.0, 0.0),
+                    Point3::new(0.0, 1.0, 0.0),
+                ],
+                faces: vec![[0, 1, 2]],
+            },
+            1,
+        );
+        assert!(s.aabb().center().coords.norm() < 1.0);
+        assert!(
+            s.simplify_applied(),
+            "the edit is in place before the reset"
+        );
+
         s.reset();
-        // Back near (10.33, 10.33, 10) — the original centroid.
+
+        // Back near (10.5, 10.5, 10) — the original AABB centre.
         assert!(
             s.aabb().center().coords.norm() > 1.0,
-            "reset undid auto-center"
+            "reset restored the original mesh"
         );
         assert!(!s.simplify_applied());
     }
