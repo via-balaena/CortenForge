@@ -1451,6 +1451,36 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// ⚠ `centerline.len()` is only ever 0 or `CENTERLINE_SLICES` (30).
+    /// `compute_centerline_polyline` returns exactly `n_slices` points when it
+    /// succeeds and none when it fails, and `detect_caps` always passes 30 — no
+    /// mesh yields 1 or 2 (checked across tetra, quads, and every tube and
+    /// curved-tube shape here). So the `< 2` boundary is UNREACHABLE, and
+    /// `<` -> `<=` is an equivalent mutant in this guard, in `save`'s, and in
+    /// `display_centerline`'s. No fixture can gate it.
+    ///
+    /// What IS reachable is len == 0 with a trim ALREADY SET — the user moves
+    /// the sliders, then a mesh edit clears the caps. The guard has to still
+    /// short-circuit: `<` -> `==` otherwise falls through and auto-caps a scan,
+    /// silently closing the open ends of a mesh the user has not trimmed.
+    #[test]
+    fn processed_mesh_short_circuits_without_a_centerline_even_when_trimmed() {
+        let mut s = session(open_tube(6, 20f64.to_radians()));
+        assert!(
+            s.centerline().is_empty(),
+            "fixture: no detect_caps, so there is no centerline"
+        );
+
+        s.apply_trim(10.0, 5.0);
+
+        assert_eq!(
+            s.processed_mesh().faces,
+            s.working().faces,
+            "with no centerline to trim along, the working mesh comes back \
+             untouched — not welded and auto-capped"
+        );
+    }
+
     /// A tube bent through `bend_rad` in the x-z plane, scaled so its arc is
     /// ~1 unit long.
     ///
