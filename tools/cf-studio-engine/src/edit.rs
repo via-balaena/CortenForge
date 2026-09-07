@@ -1286,6 +1286,109 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The axial (z) and radial (x) extents of a saved cleaned STL.
+    ///
+    /// ⚠ Read back off DISK, not off the session: `save`'s whole job is the
+    /// pair it writes, and the trim happens after the mesh leaves `working`.
+    fn saved_extents(report: &SaveReport) -> (f64, f64) {
+        let m = cortenforge::mesh::io::load_stl(&report.cleaned_stl).unwrap();
+        let a = m.aabb();
+        (a.max.z - a.min.z, a.max.x - a.min.x)
+    }
+
+    /// A capped tube session plus a scratch dir, for the save gates below.
+    fn tube_ready_to_save(tag: &str) -> (EditSession, std::path::PathBuf) {
+        let mut s = session(open_tube(6, 20f64.to_radians()));
+        s.detect_caps();
+        let dir = std::env::temp_dir().join(format!("cf-edit-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        (s, dir)
+    }
+
+    /// ⚠ Each half of `trim_tip_mm > 0.0 || trim_floor_mm > 0.0` must open the
+    /// gate ALONE. Both-set would leave `||` -> `&&` alive, since both
+    /// disjuncts are true either way — the suite trimmed nothing at all before
+    /// this, so the whole block was unexecuted.
+    #[test]
+    fn save_applies_a_tip_only_trim() {
+        let (mut s, dir) = tube_ready_to_save("tiptrim");
+        let (plain_z, plain_x) = saved_extents(&s.save(&dir, "plain", "mm", 0).unwrap());
+
+        s.apply_trim(s.centerline_arc_length_mm() * 0.2, 0.0);
+        let (trim_z, trim_x) = saved_extents(&s.save(&dir, "tip", "mm", 0).unwrap());
+
+        assert!(
+            trim_z < plain_z * 0.95,
+            "a tip-only trim shortens the saved mesh along the centerline: \
+             {plain_z} -> {trim_z}"
+        );
+        assert!(
+            (trim_x - plain_x).abs() < 1e-6,
+            "and does not touch the radius: {plain_x} -> {trim_x}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The other half of the same disjunction — see the tip gate above.
+    #[test]
+    fn save_applies_a_floor_only_trim() {
+        let (mut s, dir) = tube_ready_to_save("floortrim");
+        let (plain_z, plain_x) = saved_extents(&s.save(&dir, "plain", "mm", 0).unwrap());
+
+        s.apply_trim(0.0, s.centerline_arc_length_mm() * 0.2);
+        let (trim_z, trim_x) = saved_extents(&s.save(&dir, "floor", "mm", 0).unwrap());
+
+        assert!(
+            trim_z < plain_z * 0.95,
+            "a floor-only trim shortens the saved mesh along the centerline: \
+             {plain_z} -> {trim_z}"
+        );
+        assert!(
+            (trim_x - plain_x).abs() < 1e-6,
+            "and does not touch the radius: {plain_x} -> {trim_x}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The `Some(ar) if trim_floor_mm > 0.0` arm vs the `_` auto-cap arm.
+    ///
+    /// ⚠ The oracle is `capped_loops`, which ONLY the auto-cap arm sets
+    /// (`trim_capped`); the reconstruct arm leaves it 0. Both arms close the
+    /// same opening with the same face count, and the `[centerline_trim.
+    /// reconstruct]` block is written from `self.reconstruct` — the SETTING —
+    /// so it appears whichever arm ran. Gating on that block passed happily
+    /// with the guard forced to `false`.
+    #[test]
+    fn save_reconstructs_the_floor_instead_of_auto_capping_it() {
+        let (mut s, dir) = tube_ready_to_save("reconstruct");
+        let arc = s.centerline_arc_length_mm();
+        s.apply_trim(arc * 0.2, arc * 0.2);
+
+        let capped =
+            std::fs::read_to_string(&s.save(&dir, "capped", "mm", 0).unwrap().prep_toml).unwrap();
+        assert!(
+            capped.contains("capped_loops = 2"),
+            "with no reconstruction the auto-cap arm closes both trimmed ends: {capped}"
+        );
+
+        assert!(
+            s.apply_reconstruct(arc * 0.1, ReconstructShape::Constant),
+            "a floor trim makes reconstruction available"
+        );
+        let rebuilt =
+            std::fs::read_to_string(&s.save(&dir, "rebuilt", "mm", 0).unwrap().prep_toml).unwrap();
+        assert!(
+            rebuilt.contains("capped_loops = 0"),
+            "the reconstruct arm runs INSTEAD of the auto-cap, so nothing is auto-capped: {rebuilt}"
+        );
+        assert!(
+            rebuilt.contains("[centerline_trim.reconstruct]"),
+            "and the reconstruction it was given is recorded for the consumer"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn save_writes_cleaned_stl_and_prep_toml() {
         let mut s = session(open_tube(6, 20f64.to_radians()));
