@@ -1317,6 +1317,80 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The guard that short-circuits `processed_mesh` to a plain clone.
+    ///
+    /// ⚠ Each half of `tip <= 0.0 && floor <= 0.0` has to close the gate ALONE,
+    /// or `<=` -> `>` survives on the other side. The untrimmed arm matters as
+    /// much as the trimmed ones: it is what fails `||` -> `&&`, which otherwise
+    /// sends an untrimmed mesh through trim + weld + auto-cap and silently
+    /// closes the scan's open ends.
+    #[test]
+    fn processed_mesh_is_the_working_mesh_until_a_trim_is_set() {
+        let mut s = session(open_tube(6, 20f64.to_radians()));
+        s.detect_caps();
+        let working_faces = s.working().faces.len();
+
+        let untouched = s.processed_mesh();
+        assert_eq!(
+            untouched.faces,
+            s.working().faces,
+            "with no trim the working mesh is returned as-is, not capped"
+        );
+
+        let arc = s.centerline_arc_length_mm();
+        s.apply_trim(arc * 0.15, 0.0);
+        assert_ne!(
+            s.processed_mesh().faces.len(),
+            working_faces,
+            "a tip-only trim alone opens the gate"
+        );
+
+        s.apply_trim(0.0, arc * 0.15);
+        assert_ne!(
+            s.processed_mesh().faces.len(),
+            working_faces,
+            "a floor-only trim alone opens the gate"
+        );
+    }
+
+    /// The `Some(ar) if trim_floor_mm > 0.0` arm against the `_` auto-cap arm.
+    ///
+    /// ⚠ Needs the CURVED tube. On a straight one both arms return the same
+    /// face and vertex counts and the same extent — `save`'s equivalent gate
+    /// has to read `capped_loops` out of the written TOML because of it. Curved,
+    /// the reconstruction rebuilds the floor instead of flat-capping the cut,
+    /// which is plainly visible in the mesh.
+    #[test]
+    fn processed_mesh_reconstructs_the_floor_instead_of_capping_it() {
+        let mut s = session(curved_tube(12, 1.2));
+        s.detect_caps();
+        let arc = s.centerline_arc_length_mm();
+        s.apply_trim(arc * 0.15, arc * 0.15);
+
+        let capped = s.processed_mesh();
+
+        assert!(
+            s.apply_reconstruct(arc * 0.10, ReconstructShape::Constant),
+            "a floor trim makes reconstruction available"
+        );
+        let rebuilt = s.processed_mesh();
+
+        // ⚠ Face count, NOT extent. `processed_mesh` is not deterministic:
+        // over 40 runs the capped extent spans 0.787-0.921 and the rebuilt one
+        // 0.868-0.952, so `rebuilt - capped` ranges -0.054..+0.164 — it goes
+        // NEGATIVE, and no threshold on it can hold. An extent assertion here
+        // failed 3 runs in 12. Face counts are tight by comparison: capped
+        // 110-112, rebuilt 334-368 over 40 runs, a minimum ratio of 3.04
+        // against the 2.0 asserted.
+        assert!(
+            rebuilt.faces.len() > capped.faces.len() * 2,
+            "the reconstruction rebuilds the floor rather than flat-capping it: \
+             {} faces vs {}",
+            rebuilt.faces.len(),
+            capped.faces.len()
+        );
+    }
+
     /// A tube bent through `bend_rad` in the x-z plane, scaled so its arc is
     /// ~1 unit long.
     ///
