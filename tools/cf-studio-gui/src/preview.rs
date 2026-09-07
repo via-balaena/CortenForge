@@ -2,8 +2,9 @@
 //! shown on every step whose subject is the piece (3, 4 and 5).
 //!
 //! ⚠ Off-thread because it must be: the mesher marches cubes over the scan's
-//! padded AABB, sampling a mesh-BVH-backed SDF at every cell — **97 ms** and
-//! **191 ms** on 51 k- and 241 k-triangle scans, against a 16 ms frame.
+//! padded AABB, sampling a mesh-BVH-backed SDF at every cell — **97 ms**
+//! on a 51 k-triangle scan and **191 ms** on a 241 k one, against a 16 ms
+//! frame.
 
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
@@ -233,6 +234,10 @@ pub(crate) fn drive_plug_preview(
     view.land_cache();
     view.land_mesh();
     view.start_cache(prep);
+    // ▶ `plug_draft` allocates a ridge `Vec` every frame the piece is up. A
+    // guard here was tried and deleted: it returns true in the steady state, so
+    // it never skipped the allocation. `start_mesh` cannot hold it either — the
+    // draft is built before it is entered.
     view.start_mesh(&shape.plug_draft());
 }
 

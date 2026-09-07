@@ -221,10 +221,13 @@ pub(crate) fn start_molds(start: &MoldsStart, studio: &mut Studio, job: &mut Mol
         .map(|plug| plug.ridges.clone())
         .unwrap_or_default();
     studio.busy = true;
-    studio.message = Some(Ok(format_molds_progress(0)));
+    // `shown_secs` means "already on screen", so the seed and the opening line
+    // have to be the same second or the poller suppresses the line it never drew.
+    const OPENING: u64 = 0;
+    studio.message = Some(Ok(format_molds_progress(OPENING)));
     job.0 = Some(MoldsRun {
         started: Instant::now(),
-        shown_secs: 0,
+        shown_secs: OPENING,
         task: spawn_molds(cleaned_stl, prep_toml, draft, start.clone(), ridges),
     });
 }
@@ -428,10 +431,10 @@ pub(crate) mod tests {
     /// deadline, and a long one turns that caught mutant into a timeout.
     fn run_until_idle(app: &mut App) {
         const DEADLINE: Duration = Duration::from_secs(2);
-        let deadline = std::time::Instant::now() + DEADLINE;
+        let deadline = Instant::now() + DEADLINE;
         while app.world().resource::<Studio>().busy {
             assert!(
-                std::time::Instant::now() < deadline,
+                Instant::now() < deadline,
                 "the job never landed — `busy` was never cleared"
             );
             app.update();
@@ -549,12 +552,9 @@ pub(crate) mod tests {
     /// run. Same reason [`run_until_idle`] exists.
     fn run_until_answered(app: &mut App) {
         const DEADLINE: Duration = Duration::from_secs(2);
-        let deadline = std::time::Instant::now() + DEADLINE;
+        let deadline = Instant::now() + DEADLINE;
         while app.world().resource::<PendingDialog>().is_open() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the dialog never resolved"
-            );
+            assert!(Instant::now() < deadline, "the dialog never resolved");
             app.update();
         }
     }
@@ -1029,8 +1029,9 @@ endsolid t
         let started = Instant::now()
             .checked_sub(Duration::from_millis(BACKDATE_MS))
             .expect("2.1 s of uptime");
-        // ⚠ `0` is what `start_molds` seeds. Seeding a second production never
-        // seeds let a poller that draws once and never redraws pass all 171.
+        // ⚠ `0` is what `start_molds` seeds. Seed a second that production
+        // never seeds and a poller which draws once, then never redraws, passes
+        // all 171.
         inject(&mut app, never_finishes(), started, 0);
 
         app.update();
@@ -1054,15 +1055,19 @@ endsolid t
     /// of it; the poller has to honour it.
     ///
     /// ⚠ Without this, replacing the whole `if let` with an unconditional write
-    /// passed all 171 — a 36-minute cast rebuilding the line and waking every
-    /// `Res<Studio>` consumer at 60 Hz.
+    /// passed all 171 — a fresh `format!` every frame for the 36 minutes of a
+    /// print-quality cast.
     #[test]
     fn the_line_is_left_alone_within_the_same_second() {
-        let started = Instant::now()
-            .checked_sub(Duration::from_millis(2_100))
-            .expect("2.1 s of uptime");
+        const SECOND_ONE: &str =
+            "Making molds… 0:01 elapsed (this can take a while — the window stays responsive)";
+
         let mut app = app_ready_for_molds();
-        inject(&mut app, never_finishes(), started, 2);
+        // ⚠ No backdate. The case needs `elapsed().as_secs() == shown_secs`,
+        // which a fresh `Instant` against a seed of 0 gives with a full second
+        // of margin — a backdated pair would leave 900 ms and tie two literals
+        // together that nothing states must agree.
+        inject(&mut app, never_finishes(), Instant::now(), 0);
         let sentinel = Some(Ok("SENTINEL".to_string()));
         app.world_mut().resource_mut::<Studio>().message = sentinel.clone();
 
@@ -1072,6 +1077,26 @@ endsolid t
             app.world().resource::<Studio>().message,
             sentinel,
             "the whole second has not changed, so the line must not be rebuilt"
+        );
+
+        // ⚠ Two-sided. Asserting only that nothing happened passes just as well
+        // when `poll_molds_job` is not in the schedule at all, so push the run a
+        // second into the past and require the same frame to draw.
+        {
+            let mut job = app.world_mut().resource_mut::<MoldsJob>();
+            let run = job.0.as_mut().expect("a cast is in flight");
+            run.started = run
+                .started
+                .checked_sub(Duration::from_secs(1))
+                .expect("1 s of uptime");
+        }
+
+        app.update();
+
+        assert_eq!(
+            app.world().resource::<Studio>().message,
+            Some(Ok(SECOND_ONE.to_string())),
+            "a second later, the same poller must draw"
         );
     }
 
