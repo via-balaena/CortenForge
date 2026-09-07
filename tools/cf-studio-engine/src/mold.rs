@@ -79,9 +79,30 @@ pub fn generate_molds_for_design(
             cleaned_stl.display()
         )));
     }
-    let base_dir = cleaned_stl.parent().unwrap_or_else(|| Path::new("."));
     let cleaned_name = file_name(cleaned_stl)?;
     let prep_name = file_name(prep_toml)?;
+    // `/` is the only absolute path with no parent, and `file_name` has just
+    // refused it. An error, not a `.` default — that default IS the working
+    // directory the check above exists to keep out.
+    let base_dir = cleaned_stl.parent().ok_or_else(|| {
+        EngineError::MoldGen(format!(
+            "cleaned_stl has no parent: {}",
+            cleaned_stl.display()
+        ))
+    })?;
+    // ⚠ Only `prep_toml`'s FILE NAME survives — the config re-resolves it under
+    // `base_dir` — so a prep from another directory is silently swapped for
+    // whatever shares its name beside the scan: a different centerline and cap
+    // planes, or a not-found half an hour into the run. `cf-studio prep` takes
+    // the two paths independently, so this is reachable from the CLI.
+    if prep_toml.parent() != Some(base_dir) {
+        return Err(EngineError::MoldGen(format!(
+            "prep_toml must sit beside cleaned_stl in {} — only its file name is \
+             kept, so {} would be read from the wrong directory",
+            base_dir.display(),
+            prep_toml.display()
+        )));
+    }
     let design_name = design_filename(&cleaned_name);
     let design_path = base_dir.join(&design_name);
 
@@ -532,6 +553,42 @@ mod tests {
         assert!(
             matches!(&err, EngineError::MoldGen(m) if m.contains("must be absolute")),
             "a relative cleaned_stl must be refused by name: {err:?}"
+        );
+    }
+
+    /// The other half of the same precondition.
+    ///
+    /// ⚠ Only `prep_toml`'s file name reaches the cast, so a prep from another
+    /// directory is silently replaced by whatever shares its name beside the
+    /// scan. Guarding `cleaned_stl` alone left this open.
+    #[test]
+    fn a_prep_toml_from_another_directory_is_refused() {
+        let dir = temp_dir("prep-elsewhere");
+        let elsewhere = temp_dir("prep-elsewhere-other");
+        let draft = DesignDraft {
+            cavity_inset_m: 0.005,
+            layers: vec![LayerDraft {
+                thickness_m: 0.0175,
+                material_key: "ECOFLEX_00_30".to_string(),
+                slacker_fraction: 0.25,
+            }],
+        };
+
+        let err = generate_molds_for_design(
+            &dir.join("base_mold.cleaned.stl"),
+            &elsewhere.join("base_mold.prep.toml"),
+            &draft,
+            0.003,
+            &RidgeOptions::default(),
+            &PartSelection::all(),
+            CastMode::Detachable,
+            None,
+        )
+        .unwrap_err();
+
+        assert!(
+            matches!(&err, EngineError::MoldGen(m) if m.contains("must sit beside")),
+            "a prep from another directory must be refused by name: {err:?}"
         );
     }
 
