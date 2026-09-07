@@ -1083,13 +1083,27 @@ mod tests {
 
     #[test]
     fn leveling_rotation_brings_a_tilted_normal_vertical() {
+        // ⚠ Both poles, and the SIGN — not `leveled.z.abs()`. Levelling to the
+        // FAR pole is also "vertical", and it stands the scan on its head; the
+        // previous gate could not tell the two apart, so a flipped target and a
+        // dropped negation both passed it. `rotation_between` takes the short
+        // way round, so each normal must land on the pole it started nearest.
         let tilt = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), 30f64.to_radians());
-        let n = tilt * Vector3::z();
-        let q = floor_leveling_rotation(n).unwrap();
-        let leveled = q * n;
+
+        let up = tilt * Vector3::z();
+        assert!(up.z > 0.0, "fixture: this normal points up");
+        let leveled = floor_leveling_rotation(up).unwrap() * up;
         assert!(
-            (leveled.z.abs() - 1.0).abs() < 1e-9,
-            "normal is vertical after leveling: {leveled:?}"
+            (leveled.z - 1.0).abs() < 1e-9,
+            "an up-facing floor levels to +Z, not upside down: {leveled:?}"
+        );
+
+        let down = -up;
+        assert!(down.z < 0.0, "fixture: this normal points down");
+        let leveled = floor_leveling_rotation(down).unwrap() * down;
+        assert!(
+            (leveled.z + 1.0).abs() < 1e-9,
+            "a down-facing floor levels to -Z, the pole it was nearer: {leveled:?}"
         );
     }
 
