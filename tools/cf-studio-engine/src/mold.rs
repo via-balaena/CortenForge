@@ -635,6 +635,12 @@ mod tests {
             matches!(&err, EngineError::MoldGen(m) if m.contains("must sit beside")),
             "a prep from another directory must be refused by name: {err:?}"
         );
+
+        // Both dirs, not just the one the assertion names. `temp_dir` CREATES
+        // them and this test made two; leaving them behind had accumulated
+        // 2186 empty directories in `$TMPDIR` before anyone looked.
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&elsewhere);
     }
 
     #[test]
