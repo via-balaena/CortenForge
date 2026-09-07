@@ -2,17 +2,19 @@
 //! synthetic scan — the routing decision at the engine's front door.
 //!
 //! ★★ WHY SYNTHETIC. The mold path's only end-to-end gates copy `~/scans/
-//! base_mold` and are `#[ignore]`d at 278 s (detachable) / 408 s (bonded,
-//! measured 2026-09-06). A gate behind an out-of-repo fixture that also costs
-//! seven minutes is one nobody runs — the set here sat unrun from ~June to
-//! 2026-08-27. A 100 mm tube at 3 mm cells runs the SAME entry point in ~10 s
-//! for both modes, in CI, with no asset.
+//! base_mold` and are `#[ignore]`d at 278 s (detachable) / 408 s (bonded) —
+//! both measured 2026-09-06, same machine and cell size. A gate behind an
+//! out-of-repo fixture that also costs seven minutes is one nobody runs: THAT
+//! set sat unrun from ~June to 2026-08-27. A 100 mm tube at 3 mm cells runs the
+//! SAME entry point for both modes in **7 s wall** (3.7 + 6.7 s serial — the
+//! sum is not the elapsed time), in CI, with no asset.
 //!
 //! ★★★ WHAT THIS CATCHES THAT THE BIG GATES DO NOT. `cast_mode` reaches
 //! exactly two places: the full-vs-selective routing predicate, and
 //! `write_procedure_v2_for_mode`. Everything the existing bonded gate asserts
-//! — plug count, cup count, pour steps — is decided by `selection`, which the
-//! caller computes SEPARATELY. So dropping `cast_mode` on the floor (or calling
+//! is blind to it: plug and cup counts come from `selection`, which the caller
+//! computes SEPARATELY, and the pour steps from `draft.layers`. So dropping
+//! `cast_mode` on the floor (or calling
 //! `write_procedure_v2`, whose signature hard-codes `Detachable`) leaves every
 //! one of those assertions green while every bonded operator is handed
 //! detachable instructions: demold-and-nest steps for a process in which layer
@@ -27,9 +29,11 @@ use cf_studio_core::{DesignDraft, LayerDraft, MoldOutputs, RidgeOptions};
 use cf_studio_engine::{CastMode, EditSession, generate_molds_for_design};
 use cortenforge::mesh::types::{IndexedMesh, Point3};
 
-/// Cendrillon's own layer count. Bonded and detachable are indistinguishable
-/// below two layers (one layer ⇒ one plug either way), so a single-layer
-/// fixture would gate nothing.
+/// Cendrillon's own layer count, and load-bearing. At one layer the two modes
+/// select the SAME parts (one plug either way), so the plug-count assertions
+/// below would coincide — and detachable's heading collapses to `## Post-Cure`,
+/// not the `## Post-Cure Assembly + Disassembly` this asserts. The heading
+/// oracle alone would still discriminate; the rest of the gate would not.
 const LAYERS: usize = 3;
 
 /// An open round tube — `r` radius, `h` tall, open at both ends so cap
