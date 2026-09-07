@@ -1491,6 +1491,19 @@ mod tests {
     /// (the reconstructed plane) fires for any floor trim EXCEPT when the
     /// trimmed polyline drops below 2 points. That is the whole live window,
     /// and nothing exercised it.
+    ///
+    /// ⚠⚠ The oracle is the VALUE, not "differs from the cap". This gate first
+    /// asserted only `(over - cap).norm() > 0.5`, which passes for any wrong
+    /// answer that also happens to sit far from the cap — and all four of this
+    /// function's arithmetic mutants are exactly that. It appeared to catch two
+    /// of them only while `cap_loops[0]` was still flipping at random, i.e. by
+    /// luck; pinning that order in mesh-repair exposed the gate as weak.
+    /// A negative assertion cannot gate a computation.
+    ///
+    /// The literal is measured and stable over 30 runs, and each mutant lands
+    /// far from it: the `-` swaps push the cut past the polyline's end and fall
+    /// through to the cap normal, while the `*` swaps collapse it to zero — the
+    /// tangent at the START, about (-0.361, -0.788, -0.500).
     #[test]
     fn an_over_trimmed_floor_normal_follows_the_centerline_not_the_cap() {
         let mut s = session(curved_tube(12, 1.2));
@@ -1508,10 +1521,16 @@ mod tests {
         let over = s
             .floor_normal()
             .expect("over-trimming still yields a normal");
+
+        let expected = Vector3::new(-0.744_117, 0.002_703, -0.668_044);
+        assert!(
+            (over - expected).norm() < 1e-4,
+            "the tangent at the predicted cut — not the cap, not the start: \
+             {over:?} vs {expected:?}"
+        );
         assert!(
             (over - cap).norm() > 0.5,
-            "over-trimmed, the tangent at the cut is used instead of the cap: \
-             {over:?} vs {cap:?}"
+            "and nowhere near the cap normal: {over:?} vs {cap:?}"
         );
     }
 
