@@ -581,15 +581,6 @@ pub fn add_plug_pins(plug: Solid, ribbon: &Ribbon) -> (Solid, Vec<MatingTransfor
 /// user hand-positions the plug), so this cannot refuse a cast that never
 /// asked for one.
 ///
-/// ⚠ That guard also decides WHAT is being counted, which is the part worth
-/// keeping if the scope rule ever changes. [`crate::apply_mating_transforms`]
-/// returns its input untouched when there are no transforms and runs the
-/// manifold3d round-trip otherwise — and a placed lock is itself a transform.
-/// So reaching the count at all means the mesh came back through manifold3d
-/// with shared indices, which is why this counts components directly where
-/// `tools/cf-studio-engine/tests/plug_lock_connectivity.rs` has to weld at 1 um
-/// first: that one reads the STL back off disk, and an STL is a triangle soup.
-///
 /// # Errors
 ///
 /// [`CastError::PlugMatingFeatureDetached`] when a lock was placed and the
