@@ -107,7 +107,7 @@ pub(crate) mod tests {
     ///
     /// ⚠ Derived, not written down: "no two tests share a path" was asserted by
     /// hand across 28 labels twice, and was false the first time.
-    fn test_label() -> String {
+    pub(crate) fn test_label() -> String {
         std::thread::current()
             .name()
             .unwrap_or("unnamed")
@@ -125,7 +125,7 @@ pub(crate) mod tests {
     /// deleted underneath it. `save::tests::temp_dir` and
     /// `preview::tests::fixture_dir` leak the same way; collecting all three
     /// wants one scheme, not a third.
-    fn fixture_root() -> std::path::PathBuf {
+    pub(crate) fn fixture_root() -> std::path::PathBuf {
         use std::sync::OnceLock;
         static ROOT: OnceLock<std::path::PathBuf> = OnceLock::new();
         ROOT.get_or_init(|| {
