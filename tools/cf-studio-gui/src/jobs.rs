@@ -1100,6 +1100,38 @@ endsolid t
         );
     }
 
+    /// The redraw, from a second that is NOT the seed.
+    ///
+    /// ⚠ The last cell of the decision's 2x2. Every other injection in the
+    /// suite uses `shown_secs == 0`, so a poller that draws only while
+    /// `shown_secs == 0` — one line off the seed, then never again — passed all
+    /// 173 while a 36-minute cast sat at 0:01 the whole way.
+    #[test]
+    fn the_line_is_redrawn_from_a_second_that_is_not_the_seed() {
+        const SHOWN: u64 = 1;
+        const ELAPSED: u64 = 2;
+        const LINE: &str =
+            "Making molds… 0:02 elapsed (this can take a while — the window stays responsive)";
+
+        let mut app = app_ready_for_molds();
+        inject(&mut app, never_finishes(), backdated(ELAPSED), SHOWN);
+        app.world_mut().resource_mut::<Studio>().message = Some(Ok("SENTINEL".to_string()));
+
+        app.update();
+
+        assert_eq!(
+            shown_second(&app),
+            ELAPSED,
+            "the second on screen must advance off a nonzero seed"
+        );
+        assert_eq!(
+            app.world().resource::<Studio>().message,
+            Some(Ok(LINE.to_string())),
+            "and the line must be redrawn \
+             (a stall over {CLOCK_MARGIN_MS} ms here reads as the next second)"
+        );
+    }
+
     /// Both halves of the `OPENING` coupling.
     ///
     /// ⚠ `panel.rs` gates the line, but `MoldsJob.0` is private to this module,
