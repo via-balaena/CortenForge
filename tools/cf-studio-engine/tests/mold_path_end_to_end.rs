@@ -36,8 +36,10 @@ use cortenforge::mesh::types::{IndexedMesh, Point3};
 const LAYERS: usize = 3;
 
 /// Tall enough that the three layers' cups are unambiguous pieces. Only the
-/// ridges gate overrides it, and not merely for speed: its cost is dominated by
-/// the canal plug, which meshes at 0.5 mm regardless of the cup cell size.
+/// ridges gate overrides it, and shortening the tube buys less than it looks:
+/// the canal plug meshes at 0.5 mm whatever the cup cell size, so the PLUG
+/// dominates that gate, not the tube. Measured at h = 30 mm: 0.55 s with ridges
+/// off, 9.5 s with them on.
 const TUBE_H_M: f64 = 0.100;
 
 /// An open round tube — `r` radius, `h` tall, open at both ends so cap
@@ -193,16 +195,19 @@ fn stl_triangles(path: &Path) -> u64 {
 
 // ── which instructions a cast is handed ─────────────────────────────────────
 //
-// `cast_mode` reaches exactly two places, both in `mold.rs`: the
-// full-vs-selective routing predicate `uses_full_export`, and the
-// `write_procedure_v2_for_mode` call it routes to. Everything the `~/scans` bonded gate asserts is
-// blind to it — plug and cup counts come from `selection`, which the caller
-// computes SEPARATELY, and the pour steps from `draft.layers`. So dropping
-// `cast_mode` on the floor (or calling `write_procedure_v2`, whose signature
-// hard-codes `Detachable`) leaves every one of those assertions green while a
-// bonded operator is handed detachable instructions: demold-and-nest steps for a
-// process in which layer N is never demolded. Nothing anywhere read a generated
-// `procedure.md`'s mode before these.
+// `cast_mode` has exactly two consumers, and only one of them is in this
+// workspace crate: `mold.rs` tests it in `uses_full_export` to pick the export
+// path, then forwards it to `run_selected_with_config` in cf-cast-cli, which is
+// what finally hands it to `write_procedure_v2_for_mode`.
+//
+// Everything the `~/scans` bonded gate asserts is blind to it — plug and cup
+// counts come from `selection`, which the caller computes SEPARATELY, and the
+// pour steps from `draft.layers`. So dropping `cast_mode` on the floor (or
+// calling `write_procedure_v2`, whose signature hard-codes `Detachable`) leaves
+// every one of those assertions green while a bonded operator is handed
+// detachable instructions: demold-and-nest steps for a process in which layer N
+// is never demolded. Nothing anywhere read a generated `procedure.md`'s mode
+// before these.
 
 /// The row Cendrillon ships (`CENDRILLON_CAST_MODE`).
 ///
