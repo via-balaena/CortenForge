@@ -1317,6 +1317,70 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A tube bent through `bend_rad` in the x-z plane, scaled so its arc is
+    /// ~1 unit long.
+    ///
+    /// ⚠ Exists because a STRAIGHT tube cannot separate `floor_normal`'s tiers:
+    /// its centerline tangent and its cap-plane normal are the same direction
+    /// (they agree to 1e-15), and its tangent is constant along the arc. Every
+    /// mutant in that function is equivalent under `open_tube`. Curving it makes
+    /// the cap normal and the tangent ~45 deg apart.
+    fn curved_tube(rings: usize, bend_rad: f64) -> IndexedMesh {
+        let r_curve = 1.0 / bend_rad;
+        let mut vertices = Vec::new();
+        for i in 0..rings {
+            let t = i as f64 / (rings - 1) as f64;
+            let ang = t * bend_rad;
+            let c = Point3::new(r_curve * (1.0 - ang.cos()), 0.0, r_curve * ang.sin());
+            let rot = UnitQuaternion::from_axis_angle(&Vector3::y_axis(), ang);
+            for (dx, dy) in [(-0.2, -0.2), (0.2, -0.2), (0.2, 0.2), (-0.2, 0.2)] {
+                vertices.push(c + rot * Vector3::new(dx, dy, 0.0));
+            }
+        }
+        let mut faces = Vec::new();
+        for r in 0..rings - 1 {
+            let b = (r * 4) as u32;
+            let t = ((r + 1) * 4) as u32;
+            for k in 0..4u32 {
+                let k2 = (k + 1) % 4;
+                faces.push([b + k, b + k2, t + k2]);
+                faces.push([b + k, t + k2, t + k]);
+            }
+        }
+        IndexedMesh { vertices, faces }
+    }
+
+    /// `floor_normal`'s tier 2 — the centerline tangent at the predicted cut —
+    /// against tier 3, the raw cap normal.
+    ///
+    /// ⚠ Tier 2 is reachable ONLY when the trim consumes the centerline: tier 1
+    /// (the reconstructed plane) fires for any floor trim EXCEPT when the
+    /// trimmed polyline drops below 2 points. That is the whole live window,
+    /// and nothing exercised it.
+    #[test]
+    fn an_over_trimmed_floor_normal_follows_the_centerline_not_the_cap() {
+        let mut s = session(curved_tube(12, 1.2));
+        s.detect_caps();
+        let cap = s.cap_loops()[0].plane_normal.normalize();
+
+        let untrimmed = s.floor_normal().expect("a capped tube has a floor normal");
+        assert!(
+            (untrimmed - cap).norm() < 1e-9,
+            "with no trim the raw cap normal is used: {untrimmed:?} vs {cap:?}"
+        );
+
+        let arc = s.centerline_arc_length_mm();
+        s.apply_trim(arc * 0.6, arc * 0.6);
+        let over = s
+            .floor_normal()
+            .expect("over-trimming still yields a normal");
+        assert!(
+            (over - cap).norm() > 0.5,
+            "over-trimmed, the tangent at the cut is used instead of the cap: \
+             {over:?} vs {cap:?}"
+        );
+    }
+
     /// ⚠ Each half of `trim_tip_mm > 0.0 || trim_floor_mm > 0.0` must open the
     /// branch ALONE, or `||` -> `&&` survives — the same shape as the `save`
     /// gates. The verdict is WHICH END moved: a tip trim cuts from
