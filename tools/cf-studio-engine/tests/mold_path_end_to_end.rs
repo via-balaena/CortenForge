@@ -35,9 +35,9 @@ use cortenforge::mesh::types::{IndexedMesh, Point3};
 /// The heading oracle alone would still discriminate; the rest would not.
 const LAYERS: usize = 3;
 
-/// Tall enough that the three layers' cups are unambiguous pieces; every gate
-/// that does not need the length overrides it, because the cast's cost scales
-/// with the meshed volume.
+/// Tall enough that the three layers' cups are unambiguous pieces. Only the
+/// ridges gate overrides it, and not merely for speed: its cost is dominated by
+/// the canal plug, which meshes at 0.5 mm regardless of the cup cell size.
 const TUBE_H_M: f64 = 0.100;
 
 /// An open round tube — `r` radius, `h` tall, open at both ends so cap
@@ -193,8 +193,9 @@ fn stl_triangles(path: &Path) -> u64 {
 
 // ── which instructions a cast is handed ─────────────────────────────────────
 //
-// `cast_mode` reaches exactly two places: the routing predicate below, and
-// `write_procedure_v2_for_mode`. Everything the `~/scans` bonded gate asserts is
+// `cast_mode` reaches exactly two places, both in `mold.rs`: the
+// full-vs-selective routing predicate `uses_full_export`, and the
+// `write_procedure_v2_for_mode` call it routes to. Everything the `~/scans` bonded gate asserts is
 // blind to it — plug and cup counts come from `selection`, which the caller
 // computes SEPARATELY, and the pour steps from `draft.layers`. So dropping
 // `cast_mode` on the floor (or calling `write_procedure_v2`, whose signature
