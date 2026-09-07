@@ -1303,6 +1303,87 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// ⚠ Each half of `trim_tip_mm > 0.0 || trim_floor_mm > 0.0` must open the
+    /// branch ALONE, or `||` -> `&&` survives — the same shape as the `save`
+    /// gates. The verdict is WHICH END moved: a tip trim cuts from
+    /// `centerline[0]` and must leave the far end alone, and vice versa. Point
+    /// count alone would not catch the two being swapped.
+    #[test]
+    fn a_tip_trim_shortens_the_drawn_centerline_from_the_tip_end() {
+        let mut s = session(open_tube(6, 20f64.to_radians()));
+        s.detect_caps();
+        let full = s.display_centerline();
+
+        s.apply_trim(s.centerline_arc_length_mm() * 0.2, 0.0);
+        let cut = s.display_centerline();
+
+        assert!(
+            cut.len() < full.len(),
+            "the drawn line loses points: {} -> {}",
+            full.len(),
+            cut.len()
+        );
+        assert!((cut[0] - full[0]).norm() > 1e-9, "the TIP end moved inward");
+        assert!(
+            (cut[cut.len() - 1] - full[full.len() - 1]).norm() < 1e-9,
+            "and the floor end did not"
+        );
+    }
+
+    /// The other half of the same disjunction — see the tip gate above.
+    #[test]
+    fn a_floor_trim_shortens_the_drawn_centerline_from_the_floor_end() {
+        let mut s = session(open_tube(6, 20f64.to_radians()));
+        s.detect_caps();
+        let full = s.display_centerline();
+
+        s.apply_trim(0.0, s.centerline_arc_length_mm() * 0.2);
+        let cut = s.display_centerline();
+
+        assert!(
+            cut.len() < full.len(),
+            "the drawn line loses points: {} -> {}",
+            full.len(),
+            cut.len()
+        );
+        assert!(
+            (cut[cut.len() - 1] - full[full.len() - 1]).norm() > 1e-9,
+            "the FLOOR end moved inward"
+        );
+        assert!((cut[0] - full[0]).norm() < 1e-9, "and the tip end did not");
+    }
+
+    /// The `reorient_rotation == identity` shortcut.
+    ///
+    /// ⚠ The identity case cannot catch `==` -> `!=`: the mutant then falls
+    /// through and bakes with the identity rotation, which is the same answer.
+    /// Only a REAL rotation separates them — the mutant returns the unbaked
+    /// line, so the overlay would drift off the rendered mesh.
+    #[test]
+    fn the_drawn_centerline_is_baked_through_the_reorient() {
+        let mut s = session(open_tube(6, 20f64.to_radians()));
+        s.detect_caps();
+        let raw = s.centerline().to_vec();
+        assert_eq!(
+            s.display_centerline(),
+            raw,
+            "with no reorient the drawn line is the centerline itself"
+        );
+
+        s.level_to_floor().expect("a tilted tube can be leveled");
+        let drawn = s.display_centerline();
+        let moved = drawn
+            .iter()
+            .zip(&raw)
+            .map(|(a, b)| (a - b).norm())
+            .fold(0.0_f64, f64::max);
+        assert!(
+            moved > 1e-3,
+            "after leveling the drawn line is baked through the reorient, \
+             so it tracks the rendered mesh; max point shift {moved}"
+        );
+    }
+
     /// ⚠ The verdict is the UNIT (millimetres), not the polyline maths —
     /// `polyline_arc_length_m` belongs to cf-scan-prep-core and is gated there.
     /// Re-summing the centerline here would mirror the function under test.
