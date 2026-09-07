@@ -879,6 +879,20 @@ mod tests {
         IndexedMesh { vertices, faces }
     }
 
+    /// `mesh` scaled about the origin — the same shape at a second size, so a
+    /// reported length can be checked for LINEARITY rather than against a
+    /// re-implementation of the length maths (which would be a mirror).
+    fn scaled(mesh: IndexedMesh, k: f64) -> IndexedMesh {
+        IndexedMesh {
+            vertices: mesh
+                .vertices
+                .iter()
+                .map(|p| Point3::new(p.x * k, p.y * k, p.z * k))
+                .collect(),
+            faces: mesh.faces,
+        }
+    }
+
     /// A mesh translated far from the origin (for the auto-center test).
     fn offset_tri() -> IndexedMesh {
         IndexedMesh {
@@ -1287,6 +1301,43 @@ mod tests {
             "nothing written when refused"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ⚠ The verdict is the UNIT (millimetres), not the polyline maths —
+    /// `polyline_arc_length_m` belongs to cf-scan-prep-core and is gated there.
+    /// Re-summing the centerline here would mirror the function under test.
+    ///
+    /// The bound is physical, not fitted: `open_tube` spans z 0..=1 exactly and
+    /// the tilt is a rotation, which preserves length, so the tube's own axis is
+    /// 1.0 unit = 1000 mm and its centerline cannot be longer. That alone fails
+    /// the three constant mutants and `* 1000.0` -> `/ 1000.0`.
+    ///
+    /// ⚠ The half-scale arm exists for `* 1000.0` -> `+ 1000.0`, which the bound
+    /// would catch only by 1000.97 vs 1000 — a 0.1% margin. Halving the mesh has
+    /// to halve the report; an added constant breaks that by ~1000 mm.
+    #[test]
+    fn the_centerline_arc_length_is_reported_in_millimetres() {
+        let mut s = session(open_tube(6, 20f64.to_radians()));
+        assert_eq!(
+            s.centerline_arc_length_mm(),
+            0.0,
+            "no centerline yet, so there is no trim bound to offer"
+        );
+
+        s.detect_caps();
+        let full = s.centerline_arc_length_mm();
+        assert!(
+            full > 900.0 && full < 1000.0,
+            "the centerline of a 1.0-unit tube is just under 1000 mm, got {full}"
+        );
+
+        let mut half = session(scaled(open_tube(6, 20f64.to_radians()), 0.5));
+        half.detect_caps();
+        let half_mm = half.centerline_arc_length_mm();
+        assert!(
+            (half_mm * 2.0 - full).abs() < 1.0,
+            "halving the mesh halves the reported length: {half_mm} * 2 vs {full}"
+        );
     }
 
     /// The axial (z) and radial (x) extents of a saved cleaned STL.
