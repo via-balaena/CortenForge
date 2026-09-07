@@ -216,8 +216,8 @@ impl EditSession {
         self.working.aabb()
     }
 
-    /// The auto-center offset applied (at load + any later `auto_center`
-    /// calls), in meters — the `[scan_prep].auto_center_offset_m` provenance.
+    /// The auto-center offset applied at load, in meters — the
+    /// `[scan_prep].auto_center_offset_m` provenance.
     #[must_use]
     pub fn auto_center_offset_m(&self) -> Vector3<f64> {
         self.auto_center_offset_m
@@ -464,13 +464,6 @@ impl EditSession {
         self.trim_floor_mm = floor_mm;
     }
 
-    /// Clear the trim (and any reconstruction).
-    pub fn clear_trim(&mut self) {
-        self.trim_tip_mm = 0.0;
-        self.trim_floor_mm = 0.0;
-        self.reconstruct = None;
-    }
-
     /// Apply floor reconstruction (`reference_mm` = the zone above the cut
     /// to sample the cross-section from; `shape` = constant/taper/
     /// extrapolate). No-op returning `false` if there's no floor trim to
@@ -484,11 +477,6 @@ impl EditSession {
             shape,
         });
         true
-    }
-
-    /// Drop the floor reconstruction (revert to a flat cap).
-    pub fn clear_reconstruct(&mut self) {
-        self.reconstruct = None;
     }
 
     /// The working mesh with the derived ops applied — centerline trim +
@@ -611,8 +599,11 @@ impl EditSession {
 
         // 2. Trim (+ reconstruct / flat-cap) in the baked world frame —
         //    bake the centerline through the same transform first.
+        // ⚠ No `centerline.len() >= 2` here: the refusal at the top of `save`
+        // already returned for that, and `&self` cannot have changed since. The
+        // conjunct was always true — it read as a guard and gated nothing.
         let mut trim_capped = 0_usize;
-        if (self.trim_tip_mm > 0.0 || self.trim_floor_mm > 0.0) && self.centerline.len() >= 2 {
+        if self.trim_tip_mm > 0.0 || self.trim_floor_mm > 0.0 {
             let centerline_world: Vec<Point3<f64>> = self
                 .centerline
                 .iter()
@@ -762,30 +753,6 @@ impl EditSession {
         self.simplify_target = target_faces;
         self.clear_caps();
     }
-
-    /// Recenter the working mesh's AABB centroid onto the origin; returns
-    /// (and accumulates) the applied offset in meters.
-    pub fn auto_center(&mut self) -> Vector3<f64> {
-        let offset = cf_scan_prep_core::auto_center_in_place(&mut self.working);
-        self.auto_center_offset_m += offset;
-        self.clear_caps();
-        offset
-    }
-
-    /// PCA-orient the working mesh toward the cast frame (+Z up); returns
-    /// (and records) the applied rotation, or `None` if PCA was
-    /// degenerate (e.g. a near-spherical mesh with no dominant axis).
-    pub fn auto_orient_pca(&mut self) -> Option<UnitQuaternion<f64>> {
-        let q = cf_scan_prep_core::auto_pca_in_place(&mut self.working);
-        if let Some(rot) = q {
-            self.auto_pca_quat = Some(match self.auto_pca_quat {
-                Some(prev) => rot * prev,
-                None => rot,
-            });
-        }
-        self.clear_caps();
-        q
-    }
 }
 
 /// Run the heavy boundary-preserving decimation toward `target_faces`,
@@ -912,6 +879,20 @@ mod tests {
         IndexedMesh { vertices, faces }
     }
 
+    /// `mesh` scaled about the origin — the same shape at a second size, so a
+    /// reported length can be checked for LINEARITY rather than against a
+    /// re-implementation of the length maths (which would be a mirror).
+    fn scaled(mesh: IndexedMesh, k: f64) -> IndexedMesh {
+        IndexedMesh {
+            vertices: mesh
+                .vertices
+                .iter()
+                .map(|p| Point3::new(p.x * k, p.y * k, p.z * k))
+                .collect(),
+            faces: mesh.faces,
+        }
+    }
+
     /// A mesh translated far from the origin (for the auto-center test).
     fn offset_tri() -> IndexedMesh {
         IndexedMesh {
@@ -947,28 +928,33 @@ mod tests {
     }
 
     #[test]
-    fn auto_center_moves_centroid_to_origin() {
-        let mut s = session(offset_tri());
-        let offset = s.auto_center();
-        // The offset is non-trivial (mesh was near (10, 10, 10)).
-        assert!(offset.norm() > 1.0);
-        let c = s.aabb().center();
-        assert!(
-            c.coords.norm() < 1e-9,
-            "centroid recentered to origin: {c:?}"
-        );
-    }
-
-    #[test]
     fn reset_restores_the_original_mesh() {
         let mut s = session(offset_tri());
-        s.auto_center();
-        assert!(s.aabb().center().coords.norm() < 1e-9);
+        // Land an origin-centred mesh the way a finished background simplify
+        // does — `reset` has to undo both the mesh and the flag.
+        s.apply_simplified(
+            IndexedMesh {
+                vertices: vec![
+                    Point3::new(-1.0, 0.0, 0.0),
+                    Point3::new(1.0, 0.0, 0.0),
+                    Point3::new(0.0, 1.0, 0.0),
+                ],
+                faces: vec![[0, 1, 2]],
+            },
+            1,
+        );
+        assert!(s.aabb().center().coords.norm() < 1.0);
+        assert!(
+            s.simplify_applied(),
+            "the edit is in place before the reset"
+        );
+
         s.reset();
-        // Back near (10.33, 10.33, 10) — the original centroid.
+
+        // Back near (10.5, 10.5, 10) — the original AABB centre.
         assert!(
             s.aabb().center().coords.norm() > 1.0,
-            "reset undid auto-center"
+            "reset restored the original mesh"
         );
         assert!(!s.simplify_applied());
     }
@@ -984,7 +970,7 @@ mod tests {
     /// `load` prepares the scan like the Bevy tool: an off-origin scan
     /// comes back auto-centered, with the offset recorded for provenance.
     #[test]
-    fn load_auto_centers_and_records_offset() {
+    fn load_auto_centers_and_records_both_provenance_values() {
         // An off-center triangle (~(10, 10, 10)) as a tiny ASCII STL.
         let stl = "solid s\n\
             facet normal 0 0 1\n\
@@ -1013,6 +999,18 @@ mod tests {
             s.auto_center_offset_m().norm() > 1.0,
             "the non-trivial centering offset (~17) is recorded for provenance",
         );
+        // ⚠ The other half of the same provenance pair. `load` records both
+        // side by side and `save` writes both into `[scan_prep]`, but only the
+        // offset was gated — so a `load` that dropped the rotation was silent.
+        // The verdict is "a real rotation was recorded", not its exact value:
+        // pinning the quaternion would gate cf-scan-prep-core's PCA, not this.
+        let pca = s
+            .auto_pca_quat()
+            .expect("a flat triangle has a dominant axis, so PCA is not degenerate");
+        assert!(
+            pca.angle() > 0.1,
+            "the non-trivial PCA rotation (~90 deg) is recorded beside the offset, got {pca:?}",
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1040,6 +1038,37 @@ mod tests {
         assert!(s.centerline().is_empty());
         assert!(!s.has_centerline());
         assert_eq!(scan.centerline_segments, 0);
+    }
+
+    /// The `valid.len() > UNWELDED_LOOP_WARN` boundary, at exactly the
+    /// constant.
+    ///
+    /// ⚠ `detect_caps_short_circuits_on_unwelded_soup` uses 101 loops — above
+    /// the bound, where `>` and `>=` agree, so `>` -> `>=` survived it. 100 is
+    /// the only count that separates them: the soup still looks unwelded
+    /// (300 vertices >= 2 x 100 faces), but the loop count has not passed the
+    /// warn threshold, so the scan must proceed rather than short-circuit.
+    #[test]
+    fn a_soup_at_exactly_the_warn_threshold_is_still_scanned() {
+        let mesh = soup_many(UNWELDED_LOOP_WARN);
+        // ⚠ Without this the gate goes VACUOUS if the heuristic stops firing:
+        // `&&` would short-circuit on its first operand and the loop-count
+        // comparison this test exists for would never be evaluated.
+        assert!(
+            cf_scan_prep_core::mesh_looks_unwelded(mesh.vertices.len(), mesh.faces.len()),
+            "the soup does look unwelded, so only the loop count decides"
+        );
+
+        let mut s = session(mesh);
+        let scan = s.detect_caps();
+        assert!(
+            !scan.looks_unwelded,
+            "at exactly {UNWELDED_LOOP_WARN} loops the threshold is not passed"
+        );
+        assert_eq!(
+            scan.loop_count, UNWELDED_LOOP_WARN,
+            "so every loop is built rather than discarded"
+        );
     }
 
     #[test]
@@ -1085,13 +1114,27 @@ mod tests {
 
     #[test]
     fn leveling_rotation_brings_a_tilted_normal_vertical() {
+        // ⚠ Both poles, and the SIGN — not `leveled.z.abs()`. Levelling to the
+        // FAR pole is also "vertical", and it stands the scan on its head; the
+        // previous gate could not tell the two apart, so a flipped target and a
+        // dropped negation both passed it. `rotation_between` takes the short
+        // way round, so each normal must land on the pole it started nearest.
         let tilt = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), 30f64.to_radians());
-        let n = tilt * Vector3::z();
-        let q = floor_leveling_rotation(n).unwrap();
-        let leveled = q * n;
+
+        let up = tilt * Vector3::z();
+        assert!(up.z > 0.0, "fixture: this normal points up");
+        let leveled = floor_leveling_rotation(up).unwrap() * up;
         assert!(
-            (leveled.z.abs() - 1.0).abs() < 1e-9,
-            "normal is vertical after leveling: {leveled:?}"
+            (leveled.z - 1.0).abs() < 1e-9,
+            "an up-facing floor levels to +Z, not upside down: {leveled:?}"
+        );
+
+        let down = -up;
+        assert!(down.z < 0.0, "fixture: this normal points down");
+        let leveled = floor_leveling_rotation(down).unwrap() * down;
+        assert!(
+            (leveled.z + 1.0).abs() < 1e-9,
+            "a down-facing floor levels to -Z, the pole it was nearer: {leveled:?}"
         );
     }
 
@@ -1202,6 +1245,13 @@ mod tests {
         s.detect_caps();
         s.apply_trim(10.0, 200.0);
         s.apply_reconstruct(25.0, ReconstructShape::Constant);
+
+        // ⚠ Assert the trims are SET before asserting `reset` clears them.
+        // Checking only the zeros afterwards is satisfied by a getter that
+        // always returns 0.0, which is exactly the mutant that survived.
+        assert_eq!(s.trim_tip_mm(), 10.0, "the tip trim is in place");
+        assert_eq!(s.trim_floor_mm(), 200.0, "and so is the floor trim");
+
         s.reset();
         assert_eq!(s.trim_tip_mm(), 0.0);
         assert_eq!(s.trim_floor_mm(), 0.0);
@@ -1302,6 +1352,515 @@ mod tests {
             !dir.join("q.cleaned.stl").exists(),
             "nothing written when refused"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The guard that short-circuits `processed_mesh` to a plain clone.
+    ///
+    /// ⚠ Each half of `tip <= 0.0 && floor <= 0.0` has to close the gate ALONE,
+    /// or `<=` -> `>` survives on the other side. The untrimmed arm matters as
+    /// much as the trimmed ones: it is what fails `||` -> `&&`, which otherwise
+    /// sends an untrimmed mesh through trim + weld + auto-cap and silently
+    /// closes the scan's open ends.
+    #[test]
+    fn processed_mesh_is_the_working_mesh_until_a_trim_is_set() {
+        let mut s = session(open_tube(6, 20f64.to_radians()));
+        s.detect_caps();
+        let working_faces = s.working().faces.len();
+
+        let untouched = s.processed_mesh();
+        assert_eq!(
+            untouched.faces,
+            s.working().faces,
+            "with no trim the working mesh is returned as-is, not capped"
+        );
+
+        let arc = s.centerline_arc_length_mm();
+        s.apply_trim(arc * 0.15, 0.0);
+        assert_ne!(
+            s.processed_mesh().faces.len(),
+            working_faces,
+            "a tip-only trim alone opens the gate"
+        );
+
+        s.apply_trim(0.0, arc * 0.15);
+        assert_ne!(
+            s.processed_mesh().faces.len(),
+            working_faces,
+            "a floor-only trim alone opens the gate"
+        );
+    }
+
+    /// The `Some(ar) if trim_floor_mm > 0.0` arm against the `_` auto-cap arm.
+    ///
+    /// ⚠ Needs the CURVED tube. On a straight one both arms return the same
+    /// face and vertex counts and the same extent — `save`'s equivalent gate
+    /// has to read `capped_loops` out of the written TOML because of it. Curved,
+    /// the reconstruction rebuilds the floor instead of flat-capping the cut,
+    /// which is plainly visible in the mesh.
+    #[test]
+    fn processed_mesh_reconstructs_the_floor_instead_of_capping_it() {
+        let mut s = session(curved_tube(12, 1.2));
+        s.detect_caps();
+        let arc = s.centerline_arc_length_mm();
+        s.apply_trim(arc * 0.15, arc * 0.15);
+
+        let capped = s.processed_mesh();
+
+        assert!(
+            s.apply_reconstruct(arc * 0.10, ReconstructShape::Constant),
+            "a floor trim makes reconstruction available"
+        );
+        let rebuilt = s.processed_mesh();
+
+        // ⚠ Face count, NOT extent. `processed_mesh` is not deterministic:
+        // over 40 runs the capped extent spans 0.787-0.921 and the rebuilt one
+        // 0.868-0.952, so `rebuilt - capped` ranges -0.054..+0.164 — it goes
+        // NEGATIVE, and no threshold on it can hold. An extent assertion here
+        // failed 3 runs in 12. Face counts are tight by comparison: capped
+        // 110-112, rebuilt 334-368 over 40 runs, a minimum ratio of 3.04
+        // against the 2.0 asserted.
+        assert!(
+            rebuilt.faces.len() > capped.faces.len() * 2,
+            "the reconstruction rebuilds the floor rather than flat-capping it: \
+             {} faces vs {}",
+            rebuilt.faces.len(),
+            capped.faces.len()
+        );
+    }
+
+    /// A scratch dir for the `load` gates, which need real files on disk.
+    fn load_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("cf-edit-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    const UNIT_TRI_STL: &str = "solid s\nfacet normal 0 0 1\nouter loop\n\
+         vertex 0 0 0\nvertex 10 0 0\nvertex 0 10 0\n\
+         endloop\nendfacet\nendsolid s\n";
+
+    /// ⚠ Vertices WITHOUT faces, not an empty file. `vertices.is_empty() ||
+    /// faces.is_empty()` needs a mesh where exactly one side is empty, or
+    /// `||` -> `&&` survives: with both empty the mutant refuses too. An OBJ
+    /// carrying only `v` lines is the one input that separates them.
+    #[test]
+    fn load_rejects_a_point_cloud_with_no_surface() {
+        let dir = load_dir("vonly");
+        let obj = dir.join("cloud.obj");
+        std::fs::write(&obj, "v 0 0 0\nv 1 0 0\nv 0 1 0\n").unwrap();
+
+        let loaded = cortenforge::mesh::io::load_mesh(&obj).expect("the OBJ itself parses");
+        assert!(
+            !loaded.vertices.is_empty() && loaded.faces.is_empty(),
+            "fixture: vertices without faces, so exactly one side is empty"
+        );
+
+        let err = EditSession::load(&obj, 1.0).unwrap_err();
+        assert!(
+            matches!(err, EngineError::EmptyScan { .. }),
+            "a point cloud is refused as a scan, not carried as an empty session: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ⚠ The suite only ever loaded at `scale_to_m == 1.0`, which SKIPS the
+    /// scaling branch entirely — that is why every mutant in it survived.
+    /// The verdict is the AABB extent, which is invariant under the centring
+    /// and PCA rotation `load` also applies, so it isolates the scale.
+    #[test]
+    fn load_applies_the_unit_scale() {
+        let dir = load_dir("scale");
+        let stl = dir.join("tri.stl");
+        std::fs::write(&stl, UNIT_TRI_STL).unwrap();
+
+        let extent = |s: &EditSession| {
+            let a = s.aabb();
+            a.max.z - a.min.z
+        };
+        let as_is = extent(&EditSession::load(&stl, 1.0).unwrap());
+        let millimetres = extent(&EditSession::load(&stl, 0.001).unwrap());
+
+        assert!(as_is > 1.0, "fixture: the unscaled scan is order 10 units");
+        assert!(
+            (as_is - millimetres * 1000.0).abs() < 1e-9 * as_is,
+            "loading at 0.001 shrinks the scan by exactly 1000x: {as_is} vs {millimetres}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The other side of `changing_the_floor_trim_drops_reconstruct`.
+    ///
+    /// ⚠ That gate only shows a CHANGED floor drops the fit. Nothing showed an
+    /// UNCHANGED one keeps it, so both `-` swaps in the comparison survived:
+    /// `+` makes `(200 + 200)` read as a change, `/` makes `(200 / 200)` read
+    /// as one. Under either, the user loses a floor reconstruction they spent
+    /// time fitting the moment any slider is touched again.
+    ///
+    /// The second arm gates which FIELD the comparison reads: moving the tip
+    /// must not disturb a floor fit.
+    #[test]
+    fn re_applying_the_same_floor_trim_keeps_the_reconstruction() {
+        let mut s = session(open_tube(6, 20f64.to_radians()));
+        s.detect_caps();
+        s.apply_trim(0.0, 200.0);
+        s.apply_reconstruct(25.0, ReconstructShape::Taper);
+        assert!(
+            s.reconstruct().is_some(),
+            "fixture: a reconstruction is fitted"
+        );
+
+        s.apply_trim(0.0, 200.0);
+        assert!(
+            s.reconstruct().is_some(),
+            "re-applying the SAME floor trim is not a change, so the fit stands"
+        );
+
+        s.apply_trim(60.0, 200.0);
+        assert!(
+            s.reconstruct().is_some(),
+            "the guard reads the FLOOR: moving only the tip leaves the fit alone"
+        );
+    }
+
+    /// ⚠ `centerline.len()` is only ever 0 or `CENTERLINE_SLICES` (30).
+    /// `compute_centerline_polyline` returns exactly `n_slices` points when it
+    /// succeeds and none when it fails, and `detect_caps` always passes 30 — no
+    /// mesh yields 1 or 2 (checked across tetra, quads, and every tube and
+    /// curved-tube shape here). So the `< 2` boundary is UNREACHABLE, and
+    /// `<` -> `<=` is an equivalent mutant in this guard, in `save`'s, and in
+    /// `display_centerline`'s. No fixture can gate it.
+    ///
+    /// What IS reachable is len == 0 with a trim ALREADY SET — the user moves
+    /// the sliders, then a mesh edit clears the caps. The guard has to still
+    /// short-circuit: `<` -> `==` otherwise falls through and auto-caps a scan,
+    /// silently closing the open ends of a mesh the user has not trimmed.
+    #[test]
+    fn processed_mesh_short_circuits_without_a_centerline_even_when_trimmed() {
+        let mut s = session(open_tube(6, 20f64.to_radians()));
+        assert!(
+            s.centerline().is_empty(),
+            "fixture: no detect_caps, so there is no centerline"
+        );
+
+        s.apply_trim(10.0, 5.0);
+        // ⚠ Without this the gate goes VACUOUS if `apply_trim` ever stops
+        // setting the trim: the guard's second disjunct would fire instead and
+        // the assertion below would still hold, testing nothing.
+        assert!(
+            s.trim_tip_mm() > 0.0 && s.trim_floor_mm() > 0.0,
+            "the trim is really set, so only the centerline half can short-circuit"
+        );
+
+        assert_eq!(
+            s.processed_mesh().faces,
+            s.working().faces,
+            "with no centerline to trim along, the working mesh comes back \
+             untouched — not welded and auto-capped"
+        );
+    }
+
+    /// A tube bent through `bend_rad` in the x-z plane, scaled so its arc is
+    /// ~1 unit long.
+    ///
+    /// ⚠ Exists because a STRAIGHT tube cannot separate `floor_normal`'s tiers:
+    /// its centerline tangent and its cap-plane normal are the same direction
+    /// (they agree to 1e-15), and its tangent is constant along the arc. Every
+    /// mutant in that function is equivalent under `open_tube`. Curving it makes
+    /// the cap normal and the tangent ~45 deg apart.
+    fn curved_tube(rings: usize, bend_rad: f64) -> IndexedMesh {
+        let r_curve = 1.0 / bend_rad;
+        let mut vertices = Vec::new();
+        for i in 0..rings {
+            let t = i as f64 / (rings - 1) as f64;
+            let ang = t * bend_rad;
+            let c = Point3::new(r_curve * (1.0 - ang.cos()), 0.0, r_curve * ang.sin());
+            let rot = UnitQuaternion::from_axis_angle(&Vector3::y_axis(), ang);
+            for (dx, dy) in [(-0.2, -0.2), (0.2, -0.2), (0.2, 0.2), (-0.2, 0.2)] {
+                vertices.push(c + rot * Vector3::new(dx, dy, 0.0));
+            }
+        }
+        let mut faces = Vec::new();
+        for r in 0..rings - 1 {
+            let b = (r * 4) as u32;
+            let t = ((r + 1) * 4) as u32;
+            for k in 0..4u32 {
+                let k2 = (k + 1) % 4;
+                faces.push([b + k, b + k2, t + k2]);
+                faces.push([b + k, t + k2, t + k]);
+            }
+        }
+        IndexedMesh { vertices, faces }
+    }
+
+    /// `floor_normal`'s tier 2 — the centerline tangent at the predicted cut —
+    /// against tier 3, the raw cap normal.
+    ///
+    /// ⚠ Tier 2 is reachable ONLY when the trim consumes the centerline: tier 1
+    /// (the reconstructed plane) fires for any floor trim EXCEPT when the
+    /// trimmed polyline drops below 2 points. That is the whole live window,
+    /// and nothing exercised it.
+    ///
+    /// ⚠⚠ The oracle is the VALUE, not "differs from the cap". This gate first
+    /// asserted only `(over - cap).norm() > 0.5`, which passes for any wrong
+    /// answer that also happens to sit far from the cap — and all four of this
+    /// function's arithmetic mutants are exactly that. It appeared to catch two
+    /// of them only while `cap_loops[0]` was still flipping at random, i.e. by
+    /// luck; pinning that order in mesh-repair exposed the gate as weak.
+    /// A negative assertion cannot gate a computation.
+    ///
+    /// The literal is measured and stable over 30 runs, and each mutant lands
+    /// far from it: the `-` swaps push the cut past the polyline's end and fall
+    /// through to the cap normal, while the `*` swaps collapse it to zero — the
+    /// tangent at the START, about (-0.361, -0.788, -0.500).
+    #[test]
+    fn an_over_trimmed_floor_normal_follows_the_centerline_not_the_cap() {
+        let mut s = session(curved_tube(12, 1.2));
+        s.detect_caps();
+        let cap = s.cap_loops()[0].plane_normal.normalize();
+
+        let untrimmed = s.floor_normal().expect("a capped tube has a floor normal");
+        assert!(
+            (untrimmed - cap).norm() < 1e-9,
+            "with no trim the raw cap normal is used: {untrimmed:?} vs {cap:?}"
+        );
+
+        let arc = s.centerline_arc_length_mm();
+        s.apply_trim(arc * 0.6, arc * 0.6);
+        let over = s
+            .floor_normal()
+            .expect("over-trimming still yields a normal");
+
+        let expected = Vector3::new(-0.744_117, 0.002_703, -0.668_044);
+        assert!(
+            (over - expected).norm() < 1e-4,
+            "the tangent at the predicted cut — not the cap, not the start: \
+             {over:?} vs {expected:?}"
+        );
+        assert!(
+            (over - cap).norm() > 0.5,
+            "and nowhere near the cap normal: {over:?} vs {cap:?}"
+        );
+    }
+
+    /// ⚠ Each half of `trim_tip_mm > 0.0 || trim_floor_mm > 0.0` must open the
+    /// branch ALONE, or `||` -> `&&` survives — the same shape as the `save`
+    /// gates. The verdict is WHICH END moved: a tip trim cuts from
+    /// `centerline[0]` and must leave the far end alone, and vice versa. Point
+    /// count alone would not catch the two being swapped.
+    #[test]
+    fn a_tip_trim_shortens_the_drawn_centerline_from_the_tip_end() {
+        let mut s = session(open_tube(6, 20f64.to_radians()));
+        s.detect_caps();
+        let full = s.display_centerline();
+
+        s.apply_trim(s.centerline_arc_length_mm() * 0.2, 0.0);
+        let cut = s.display_centerline();
+
+        assert!(
+            cut.len() < full.len(),
+            "the drawn line loses points: {} -> {}",
+            full.len(),
+            cut.len()
+        );
+        assert!((cut[0] - full[0]).norm() > 1e-9, "the TIP end moved inward");
+        assert!(
+            (cut[cut.len() - 1] - full[full.len() - 1]).norm() < 1e-9,
+            "and the floor end did not"
+        );
+    }
+
+    /// The other half of the same disjunction — see the tip gate above.
+    #[test]
+    fn a_floor_trim_shortens_the_drawn_centerline_from_the_floor_end() {
+        let mut s = session(open_tube(6, 20f64.to_radians()));
+        s.detect_caps();
+        let full = s.display_centerline();
+
+        s.apply_trim(0.0, s.centerline_arc_length_mm() * 0.2);
+        let cut = s.display_centerline();
+
+        assert!(
+            cut.len() < full.len(),
+            "the drawn line loses points: {} -> {}",
+            full.len(),
+            cut.len()
+        );
+        assert!(
+            (cut[cut.len() - 1] - full[full.len() - 1]).norm() > 1e-9,
+            "the FLOOR end moved inward"
+        );
+        assert!((cut[0] - full[0]).norm() < 1e-9, "and the tip end did not");
+    }
+
+    /// The `reorient_rotation == identity` shortcut.
+    ///
+    /// ⚠ The identity case cannot catch `==` -> `!=`: the mutant then falls
+    /// through and bakes with the identity rotation, which is the same answer.
+    /// Only a REAL rotation separates them — the mutant returns the unbaked
+    /// line, so the overlay would drift off the rendered mesh.
+    #[test]
+    fn the_drawn_centerline_is_baked_through_the_reorient() {
+        let mut s = session(open_tube(6, 20f64.to_radians()));
+        s.detect_caps();
+        let raw = s.centerline().to_vec();
+        assert_eq!(
+            s.display_centerline(),
+            raw,
+            "with no reorient the drawn line is the centerline itself"
+        );
+
+        s.level_to_floor().expect("a tilted tube can be leveled");
+        let drawn = s.display_centerline();
+        let moved = drawn
+            .iter()
+            .zip(&raw)
+            .map(|(a, b)| (a - b).norm())
+            .fold(0.0_f64, f64::max);
+        assert!(
+            moved > 1e-3,
+            "after leveling the drawn line is baked through the reorient, \
+             so it tracks the rendered mesh; max point shift {moved}"
+        );
+    }
+
+    /// ⚠ The verdict is the UNIT (millimetres), not the polyline maths —
+    /// `polyline_arc_length_m` belongs to cf-scan-prep-core and is gated there.
+    /// Re-summing the centerline here would mirror the function under test.
+    ///
+    /// The bound is physical, not fitted: `open_tube` spans z 0..=1 exactly and
+    /// the tilt is a rotation, which preserves length, so the tube's own axis is
+    /// 1.0 unit = 1000 mm and its centerline cannot be longer. That alone fails
+    /// the three constant mutants and `* 1000.0` -> `/ 1000.0`.
+    ///
+    /// ⚠ The half-scale arm exists for `* 1000.0` -> `+ 1000.0`, which the bound
+    /// would catch only by 1000.97 vs 1000 — a 0.1% margin. Halving the mesh has
+    /// to halve the report; an added constant breaks that by ~1000 mm.
+    #[test]
+    fn the_centerline_arc_length_is_reported_in_millimetres() {
+        let mut s = session(open_tube(6, 20f64.to_radians()));
+        assert_eq!(
+            s.centerline_arc_length_mm(),
+            0.0,
+            "no centerline yet, so there is no trim bound to offer"
+        );
+
+        s.detect_caps();
+        let full = s.centerline_arc_length_mm();
+        assert!(
+            full > 900.0 && full < 1000.0,
+            "the centerline of a 1.0-unit tube is just under 1000 mm, got {full}"
+        );
+
+        let mut half = session(scaled(open_tube(6, 20f64.to_radians()), 0.5));
+        half.detect_caps();
+        let half_mm = half.centerline_arc_length_mm();
+        assert!(
+            (half_mm * 2.0 - full).abs() < 1.0,
+            "halving the mesh halves the reported length: {half_mm} * 2 vs {full}"
+        );
+    }
+
+    /// The axial (z) and radial (x) extents of a saved cleaned STL.
+    ///
+    /// ⚠ Read back off DISK, not off the session: `save`'s whole job is the
+    /// pair it writes, and the trim happens after the mesh leaves `working`.
+    fn saved_extents(report: &SaveReport) -> (f64, f64) {
+        let m = cortenforge::mesh::io::load_stl(&report.cleaned_stl).unwrap();
+        let a = m.aabb();
+        (a.max.z - a.min.z, a.max.x - a.min.x)
+    }
+
+    /// A capped tube session plus a scratch dir, for the save gates below.
+    fn tube_ready_to_save(tag: &str) -> (EditSession, std::path::PathBuf) {
+        let mut s = session(open_tube(6, 20f64.to_radians()));
+        s.detect_caps();
+        let dir = std::env::temp_dir().join(format!("cf-edit-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        (s, dir)
+    }
+
+    /// ⚠ Each half of `trim_tip_mm > 0.0 || trim_floor_mm > 0.0` must open the
+    /// gate ALONE. Both-set would leave `||` -> `&&` alive, since both
+    /// disjuncts are true either way — the suite trimmed nothing at all before
+    /// this, so the whole block was unexecuted.
+    #[test]
+    fn save_applies_a_tip_only_trim() {
+        let (mut s, dir) = tube_ready_to_save("tiptrim");
+        let (plain_z, plain_x) = saved_extents(&s.save(&dir, "plain", "mm", 0).unwrap());
+
+        s.apply_trim(s.centerline_arc_length_mm() * 0.2, 0.0);
+        let (trim_z, trim_x) = saved_extents(&s.save(&dir, "tip", "mm", 0).unwrap());
+
+        assert!(
+            trim_z < plain_z * 0.95,
+            "a tip-only trim shortens the saved mesh along the centerline: \
+             {plain_z} -> {trim_z}"
+        );
+        assert!(
+            (trim_x - plain_x).abs() < 1e-6,
+            "and does not touch the radius: {plain_x} -> {trim_x}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The other half of the same disjunction — see the tip gate above.
+    #[test]
+    fn save_applies_a_floor_only_trim() {
+        let (mut s, dir) = tube_ready_to_save("floortrim");
+        let (plain_z, plain_x) = saved_extents(&s.save(&dir, "plain", "mm", 0).unwrap());
+
+        s.apply_trim(0.0, s.centerline_arc_length_mm() * 0.2);
+        let (trim_z, trim_x) = saved_extents(&s.save(&dir, "floor", "mm", 0).unwrap());
+
+        assert!(
+            trim_z < plain_z * 0.95,
+            "a floor-only trim shortens the saved mesh along the centerline: \
+             {plain_z} -> {trim_z}"
+        );
+        assert!(
+            (trim_x - plain_x).abs() < 1e-6,
+            "and does not touch the radius: {plain_x} -> {trim_x}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The `Some(ar) if trim_floor_mm > 0.0` arm vs the `_` auto-cap arm.
+    ///
+    /// ⚠ The oracle is `capped_loops`, which ONLY the auto-cap arm sets
+    /// (`trim_capped`); the reconstruct arm leaves it 0. Both arms close the
+    /// same opening with the same face count, and the `[centerline_trim.
+    /// reconstruct]` block is written from `self.reconstruct` — the SETTING —
+    /// so it appears whichever arm ran. Gating on that block passed happily
+    /// with the guard forced to `false`.
+    #[test]
+    fn save_reconstructs_the_floor_instead_of_auto_capping_it() {
+        let (mut s, dir) = tube_ready_to_save("reconstruct");
+        let arc = s.centerline_arc_length_mm();
+        s.apply_trim(arc * 0.2, arc * 0.2);
+
+        let capped =
+            std::fs::read_to_string(&s.save(&dir, "capped", "mm", 0).unwrap().prep_toml).unwrap();
+        assert!(
+            capped.contains("capped_loops = 2"),
+            "with no reconstruction the auto-cap arm closes both trimmed ends: {capped}"
+        );
+
+        assert!(
+            s.apply_reconstruct(arc * 0.1, ReconstructShape::Constant),
+            "a floor trim makes reconstruction available"
+        );
+        let rebuilt =
+            std::fs::read_to_string(&s.save(&dir, "rebuilt", "mm", 0).unwrap().prep_toml).unwrap();
+        assert!(
+            rebuilt.contains("capped_loops = 0"),
+            "the reconstruct arm runs INSTEAD of the auto-cap, so nothing is auto-capped: {rebuilt}"
+        );
+        assert!(
+            rebuilt.contains("[centerline_trim.reconstruct]"),
+            "and the reconstruction it was given is recorded for the consumer"
+        );
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 

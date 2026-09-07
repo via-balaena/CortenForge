@@ -93,7 +93,15 @@ impl BoundaryLoop {
 #[must_use]
 pub fn detect_holes(_mesh: &IndexedMesh, adjacency: &MeshAdjacency) -> Vec<BoundaryLoop> {
     // Get all boundary edges
-    let boundary_edges: Vec<(u32, u32)> = adjacency.boundary_edges().collect();
+    let mut boundary_edges: Vec<(u32, u32)> = adjacency.boundary_edges().collect();
+    // ⚠ Load-bearing sort. `boundary_edges()` iterates a `HashMap`, so the
+    // traversal below would start from a different edge on every call and hand
+    // back the loops in a random ORDER. Callers that treat `loops[0]` as a
+    // reference flip with it — cf-studio-engine's `detect_caps` derives the scan
+    // centerline's DIRECTION from it, so an identical tip-trim cut the far end
+    // of the scan in half of all runs. Gated by
+    // `detect_holes_returns_loops_in_a_stable_order`.
+    boundary_edges.sort_unstable();
 
     if boundary_edges.is_empty() {
         return Vec::new();
@@ -493,6 +501,48 @@ mod tests {
         // Top face is missing (hole at z=1)
 
         mesh
+    }
+
+    /// The open box with its bottom removed too — two boundary loops, so their
+    /// ORDER is observable.
+    fn open_tube_mesh() -> IndexedMesh {
+        let mut mesh = open_box_mesh();
+        mesh.faces.drain(0..2); // drop the bottom face, opening a second hole
+        mesh
+    }
+
+    /// ⚠ `MeshAdjacency::boundary_edges()` iterates a `HashMap`, so without the
+    /// sort in `detect_holes` the traversal starts from a different edge on each
+    /// call and the loops come back in a random order. Callers that treat
+    /// `loops[0]` as a reference then flip between runs: cf-studio-engine's
+    /// `detect_caps` derives the scan CENTERLINE'S DIRECTION from it, which made
+    /// an identical tip-trim cut the far end of the scan in 15 runs out of 30.
+    ///
+    /// Each iteration rebuilds the adjacency, because the randomness is seeded
+    /// per `HashMap` instance — reusing one would hide the defect.
+    #[test]
+    fn detect_holes_returns_loops_in_a_stable_order() {
+        let mesh = open_tube_mesh();
+        let expected: Vec<Vec<u32>> = detect_holes(&mesh, &MeshAdjacency::build(&mesh.faces))
+            .iter()
+            .map(|l| l.vertices.clone())
+            .collect();
+        assert_eq!(
+            expected.len(),
+            2,
+            "fixture: a tube open at both ends has two boundary loops"
+        );
+
+        for run in 0..50 {
+            let again: Vec<Vec<u32>> = detect_holes(&mesh, &MeshAdjacency::build(&mesh.faces))
+                .iter()
+                .map(|l| l.vertices.clone())
+                .collect();
+            assert_eq!(
+                again, expected,
+                "run {run}: the same mesh must yield the same loops in the same order"
+            );
+        }
     }
 
     #[test]

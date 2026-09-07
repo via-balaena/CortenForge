@@ -122,7 +122,7 @@ pub fn generate_molds_for_design(
     // identical detachable cast). Otherwise — a subset, OR any bonded cast —
     // route through the selective export, which skips unselected pieces'
     // marching cubes and emits the procedure for `cast_mode`.
-    if cast_mode == CastMode::Detachable && selection.is_all() {
+    if uses_full_export(cast_mode, selection) {
         generate_molds(config, draft, base_dir, output_dir_override)
     } else {
         generate_selected_molds(
@@ -134,6 +134,20 @@ pub fn generate_molds_for_design(
             cast_mode,
         )
     }
+}
+
+/// Whether a cast takes the validated full export rather than the selective one.
+///
+/// Detachable with everything selected is the byte-identical full export; a
+/// subset, or any bonded cast, routes through the selective export instead.
+///
+/// ⚠ Hoisted out of [`generate_molds_for_design`] so this decision has a gate
+/// that actually RUNS. Both of its mutants survived the first mutation sweep:
+/// the only tests reaching the call site are `#[ignore]`d behind
+/// `~/scans/base_mold`, and the two that do run return `Err` at the
+/// preconditions above before ever getting here.
+fn uses_full_export(cast_mode: CastMode, selection: &PartSelection) -> bool {
+    cast_mode == CastMode::Detachable && selection.is_all()
 }
 
 /// Run the cast for a subset of parts ([`run_selected_with_config`]) and
@@ -378,6 +392,37 @@ mod tests {
     use cf_studio_core::LayerDraft;
 
     use super::*;
+
+    /// ⚠ Enumerated, not branched: the routing is a 2x2 over
+    /// (cast mode) x (whole cast or subset), and three of its four cells send
+    /// the cast down the selective path. Cendrillon ships `Bonded`
+    /// (`CENDRILLON_CAST_MODE`), which is the row no engine test exercised —
+    /// every call site here passes `Detachable`.
+    #[test]
+    fn only_a_full_detachable_cast_takes_the_validated_full_export() {
+        use cortenforge::cf_cast_cli::PartId;
+
+        let all = PartSelection::all();
+        let subset = PartSelection::from_ids([PartId::Plug { layer_index: 0 }]);
+        assert!(!subset.is_all(), "the fixture is a genuine subset");
+
+        assert!(
+            uses_full_export(CastMode::Detachable, &all),
+            "detachable + everything is the validated full export"
+        );
+        assert!(
+            !uses_full_export(CastMode::Detachable, &subset),
+            "a subset skips the unselected pieces' marching cubes"
+        );
+        assert!(
+            !uses_full_export(CastMode::Bonded, &all),
+            "a bonded cast needs the selective export's procedure, whole or not"
+        );
+        assert!(
+            !uses_full_export(CastMode::Bonded, &subset),
+            "and likewise for a bonded subset"
+        );
+    }
 
     fn temp_dir(label: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
