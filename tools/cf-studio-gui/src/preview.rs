@@ -1,15 +1,10 @@
-//! Step 3's live plug preview: the shaped piece, meshed off the main thread.
+//! The live plug preview: the shaped piece, meshed off the main thread and
+//! shown on every step whose subject is the piece (3, 4 and 5).
 //!
-//! ⚠⚠ The re-mesh is a background job rather than the pre-port's inline call,
-//! and a measurement is why. [`PlugPreview::mesh`] samples a mesh-BVH-backed
-//! SDF, so its cost tracks the *scan's* triangle count rather than the preview
-//! grid: 97 ms on a 51 k-triangle body, 191 ms on a 241 k one, against a 16 ms
-//! frame. Slint called it inline from `shape-changed()` and froze for the
-//! duration; here that is six to twelve dropped frames on every `+` click.
-//!
-//! ⚠ Which control moved is not worth knowing. Ridges on cost 97.6 ms against
-//! 97.0 off — the cost is the sampling, not the field — so the driver compares
-//! the whole [`PlugDraft`] and re-meshes all of it.
+//! ⚠ Off-thread because it must be: the mesher marches cubes over the scan's
+//! padded AABB, sampling a mesh-BVH-backed SDF at every cell — **97 ms**
+//! on a 51 k-triangle scan and **191 ms** on a 241 k one, against a 16 ms
+//! frame.
 
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
@@ -17,7 +12,7 @@ use std::time::SystemTime;
 
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, futures_lite::future};
-use cf_studio_core::{PlugDraft, PrepInput, Step};
+use cf_studio_core::{PlugDraft, PrepInput};
 use cf_studio_engine::{PlugPreview, proxy_preview_mesh};
 use mesh_types::IndexedMesh;
 
@@ -85,7 +80,7 @@ impl PlugView {
     ///
     /// ⚠ The viewport gates its rebuild on this rather than on Bevy's change
     /// detection, because [`drive_plug_preview`] takes this resource mutably on
-    /// every frame step 3 is up — so "changed" is true on frames where nothing
+    /// every frame a piece step is up — so "changed" is true on frames where nothing
     /// was replaced, and the plug would be rebuilt from scratch at 60 Hz.
     pub(crate) const fn generation(&self) -> u64 {
         self.generation
@@ -218,13 +213,20 @@ fn scan_stamp(prep: &PrepInput) -> Option<(u64, SystemTime)> {
     Some((file.len(), file.modified().ok()?))
 }
 
-/// Keep the preview in step with the fields while step 3 is on screen.
+/// Keep the preview in step with the fields while the piece is on screen.
+///
+/// ⚠ Runs in full on every piece step. Restricting the *starts* to step 3 looked
+/// free — both starters self-guard — and lost the piece two ways: a Continue
+/// clicked during the flood fill never started a mesh at all, and a cache
+/// dropped on step 4 could not be rebuilt. Gated by
+/// `continuing_before_the_first_mesh_starts_still_builds_the_piece` and
+/// `a_cache_dropped_on_step_four_is_rebuilt_there`.
 pub(crate) fn drive_plug_preview(
     mut view: ResMut<PlugView>,
     studio: Res<Studio>,
     shape: Res<ShapeControls>,
 ) {
-    if studio.cursor.viewed() != Step::ShapePiece {
+    if !crate::scene::shows_the_piece(studio.cursor.viewed()) {
         return;
     }
     let prep = studio.project.prep();
@@ -242,7 +244,7 @@ pub(crate) mod tests {
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
 
-    use cf_studio_core::{PrepInput, Project, ScanInput};
+    use cf_studio_core::{PrepInput, Project, ScanInput, Step};
     use cf_studio_gui::{StepBoxState, WizardCursor};
     use mesh_types::{Bounded, unit_cube};
 
@@ -532,6 +534,79 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(fixture_dir("rewritten"));
     }
 
+    /// Continue clicked while the flood fill is still running — the window where
+    /// the cache is `Cold`, so no mesh has started yet.
+    ///
+    /// ⚠ `a_mesh_in_flight_lands_after_continue_has_moved_on` cannot see this: it
+    /// waits for a mesh to start before moving the cursor.
+    #[test]
+    fn continuing_before_the_first_mesh_starts_still_builds_the_piece() {
+        let mut app = app_on(Step::ShapePiece, cleaned(a_cleaned_scan("continue-early")));
+        set_cavity(&mut app, 3);
+
+        // One frame: the cache is spawned, and nothing is meshing yet.
+        app.update();
+        assert!(
+            view(&app).meshing.is_none() && view(&app).shown.is_none(),
+            "the fixture must sit in the pre-mesh window, or this gates nothing"
+        );
+
+        // Continue, from inside that window.
+        app.world_mut().resource_mut::<Studio>().cursor = WizardCursor::new(Step::DesignLayers);
+
+        // ⚠ Not `shown.is_none()`: `land_mesh` records `shown` before checking
+        // whether the mesh built, so it goes `Some` for a failure and for the
+        // proxy — both of which are what this gate names.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while view(&app).mesh().is_none() {
+            assert!(
+                Instant::now() < deadline,
+                "no piece was ever built, so step 4 shows the scan it told the \
+                 user it was building outward from"
+            );
+            app.update();
+        }
+        assert!(
+            !view(&app).showing_proxy(),
+            "and it is the user's own body, not the stand-in"
+        );
+        let _ = std::fs::remove_dir_all(fixture_dir("continue-early"));
+    }
+
+    /// A cache dropped on a step that cannot rebuild it takes the piece with it
+    /// permanently — `drop_a_stale_cache` fires whenever the scan's metadata
+    /// cannot be read.
+    #[test]
+    fn a_cache_dropped_on_step_four_is_rebuilt_there() {
+        let prep = a_cleaned_scan("drop-on-four");
+        let mut app = app_on(Step::ShapePiece, cleaned(prep.clone()));
+        settle(&mut app);
+        assert!(view(&app).shown.is_some(), "a piece is on screen to lose");
+
+        app.world_mut().resource_mut::<Studio>().cursor = WizardCursor::new(Step::DesignLayers);
+        std::fs::write(&prep.cleaned_stl, box_stl(0.012)).expect("the scan changes underneath");
+        app.update();
+        assert!(
+            view(&app).mesh().is_none(),
+            "the stale piece is dropped on step 4 too"
+        );
+
+        // ⚠ Same oracle, same reason: `shown` alone would go green on a proxy.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while view(&app).mesh().is_none() {
+            assert!(
+                Instant::now() < deadline,
+                "step 4 dropped the piece and could not rebuild it"
+            );
+            app.update();
+        }
+        assert!(
+            !view(&app).showing_proxy(),
+            "and rebuilt the real body, not the stand-in"
+        );
+        let _ = std::fs::remove_dir_all(fixture_dir("drop-on-four"));
+    }
+
     /// ⚠ A project carrying no cleaned scan at all still gets a preview, and
     /// still owns up to it. Leaving the cache `Cold` for want of a prep would
     /// show nothing and explain nothing — the step would simply have no picture
@@ -591,6 +666,61 @@ pub(crate) mod tests {
             view.meshing.is_none(),
             "and the draft it failed for is not asked for again"
         );
+    }
+
+    /// A mesh still in flight when Continue is clicked must still land, or
+    /// steps 4 and 5 draw the inset before last.
+    #[test]
+    fn a_mesh_in_flight_lands_after_continue_has_moved_on() {
+        let mut app = app_on(
+            Step::ShapePiece,
+            cleaned(a_cleaned_scan("land-after-continue")),
+        );
+        set_cavity(&mut app, 3);
+
+        // Run step 3 until a mesh is actually in flight — the cache has to build
+        // first, so this is not the first frame.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while view(&app).meshing.is_none() {
+            assert!(Instant::now() < deadline, "no mesh was ever started");
+            app.update();
+        }
+        assert!(
+            view(&app).shown.is_none(),
+            "nothing has landed yet, so landing is what this measures"
+        );
+
+        // Continue: the cursor moves on while that build is still running.
+        app.world_mut().resource_mut::<Studio>().cursor = WizardCursor::new(Step::DesignLayers);
+
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while view(&app).meshing.is_some() {
+            assert!(
+                Instant::now() < deadline,
+                "the in-flight mesh never landed once the step moved on"
+            );
+            app.update();
+        }
+        assert!(
+            view(&app).shown.is_some(),
+            "the piece reached step 4, rather than being abandoned in flight"
+        );
+
+        // ...and step 4 must not start a NEW one: it has no shape controls.
+        let generation = view(&app).generation();
+        for _ in 0..8 {
+            app.update();
+        }
+        // ⚠ Not because step 4 is forbidden to start one — it is not, since the
+        // step-3-only guard was removed — but because `start_mesh` returns
+        // early when the draft is already the one shown, and step 4 draws no
+        // shape controls that could change it.
+        assert_eq!(
+            view(&app).generation(),
+            generation,
+            "step 4 lands what step 3 started and asks for nothing more"
+        );
+        let _ = std::fs::remove_dir_all(fixture_dir("land-after-continue"));
     }
 
     /// ⚠ The flood fill is hundreds of milliseconds. Starting it on a step that

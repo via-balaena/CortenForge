@@ -206,12 +206,12 @@ pub fn gate_ridge_options(c: RidgeControls) -> RidgeOptions {
     }
 }
 
-/// Marching-cubes cell size (meters) for the step-4 quality-picker index.
+/// Marching-cubes cell size (meters) for the step-5 quality-picker index.
 /// Index 0 = Fine 0.5 mm (the print-quality default — the physical fit-test
 /// print was 0.5 mm); index 1 = Fast 1.5 mm preview. Any other index falls
 /// back to the print-quality default. 3 mm is never offered (it drops the
 /// flange web). **Must stay in lockstep with the quality picker's option order
-/// in the step-4 panel.** Nothing checks that pairing; only the index→size
+/// in the step-5 panel.** Nothing checks that pairing; only the index→size
 /// mapping is pinned, by `quality_index_maps_to_cell_size`.
 #[must_use]
 pub fn cell_size_m_for_quality(quality_idx: i32) -> f64 {
@@ -221,6 +221,14 @@ pub fn cell_size_m_for_quality(quality_idx: i32) -> f64 {
     }
 }
 
+/// The cast mode Cendrillon casts in.
+///
+/// Bonded drops every plug above layer 0 and stops `part_selection_from_checks`
+/// collapsing to `PartSelection::all`. ⚠ The pre-port binary pinned this and the
+/// port dropped it; the gates below read this constant, not a `CastMode`
+/// literal.
+pub const CENDRILLON_CAST_MODE: CastMode = CastMode::Bonded;
+
 /// Enumerate the generatable parts for a design with `layer_count` layers,
 /// in display order, as `(id, label)`. Per layer: two cup halves + a plug,
 /// then the shared workshop platform + dowels (the apex pour funnel is
@@ -228,7 +236,7 @@ pub fn cell_size_m_for_quality(quality_idx: i32) -> f64 {
 ///
 /// In [`CastMode::Bonded`] only the **layer-0** plug is offered — the
 /// per-layer plugs above 0 are redundant (the cured layer N is the plug for
-/// layer N+1), so they are not listed (or generated). The step-4 part picker
+/// layer N+1), so they are not listed (or generated). The step-5 part picker
 /// renders the labels; the ids build the [`PartSelection`].
 #[must_use]
 pub fn enumerate_parts(layer_count: usize, mode: CastMode) -> Vec<(PartId, String)> {
@@ -287,7 +295,7 @@ pub fn part_selection_from_checks(
     }
 }
 
-/// A human-readable summary of a completed mold run for the step-4 results
+/// A human-readable summary of a completed mold run for the step-5 results
 /// panel: piece counts, total silicone, the per-layer pour list, and where
 /// the files landed.
 #[must_use]
@@ -320,7 +328,7 @@ pub fn format_molds_summary(out: &MoldOutputs) -> String {
     s
 }
 
-/// The step-5 (Print) status line, derived from project state: once the
+/// The step-6 (Print) status line, derived from project state: once the
 /// files are exported, where they went; before that, how many printables
 /// are waiting to be saved; nothing if the molds aren't made yet.
 #[must_use]
@@ -338,7 +346,7 @@ pub fn print_step_summary(project: &Project) -> String {
     String::new()
 }
 
-// ── step 6: the pour assistant ──────────────────────────────────────
+// ── step 7: the pour assistant ──────────────────────────────────────
 
 /// One pour layer's full recipe line. Without Slacker, e.g.
 /// `"Dragon Skin 20A — 250 g, mix 1:1 · pot life ~25 min · cure ~5 h"`. With
@@ -379,7 +387,7 @@ fn pour_recipe_line(step: &PourStep, is_last: bool) -> String {
 }
 
 /// The full pour plan as a numbered overview (innermost layer first), for
-/// the step-6 reference panel. Empty plan → a short placeholder.
+/// the step-7 reference panel. Empty plan → a short placeholder.
 #[must_use]
 pub fn format_pour_plan(plan: &PourPlan) -> String {
     if plan.steps.is_empty() {
@@ -396,7 +404,7 @@ pub fn format_pour_plan(plan: &PourPlan) -> String {
     s
 }
 
-/// The active-layer instruction for the step-6 pour panel: which layer of
+/// The active-layer instruction for the step-7 pour panel: which layer of
 /// how many, its recipe, and what to do. `current` is 0-based.
 #[must_use]
 pub fn format_pour_active(plan: &PourPlan, current: usize) -> String {
@@ -412,7 +420,7 @@ pub fn format_pour_active(plan: &PourPlan, current: usize) -> String {
     )
 }
 
-/// A pot-life countdown's display text + urgency for the step-6 timer.
+/// A pot-life countdown's display text + urgency for the step-7 timer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PourCountdown {
     /// `"M:SS left"`, or a "time's up" line once expired.
@@ -592,11 +600,23 @@ impl PourSession {
 /// Elapsed time for a long job's status line, as `M:SS`.
 ///
 /// Lifted from an inline `format!` so the long-job status text is testable; the
-/// jobs it labels run 4.5–15 minutes, so the minutes field is the part that
+/// jobs it labels run 7–36 minutes, so the minutes field is the part that
 /// matters and the one an off-by-one would hide.
 #[must_use]
 pub fn format_elapsed(secs: u64) -> String {
     format!("{}:{:02}", secs / 60, secs % 60)
+}
+
+/// The status line while the cast runs, refreshed once a second.
+///
+/// ⚠ Single-spaced before the parenthesis; the pre-port built this with a
+/// trailing `\` continuation and emitted two spaces.
+#[must_use]
+pub fn format_molds_progress(secs: u64) -> String {
+    format!(
+        "Making molds… {} elapsed (this can take a while — the window stays responsive)",
+        format_elapsed(secs),
+    )
 }
 
 /// A numeric field's edit state — the toolkit-agnostic half of the stepper.
@@ -1772,6 +1792,183 @@ visible = true
         );
     }
 
+    /// Cast the real `base_mold` at `cell_size_m`, with the selection the app
+    /// sends.
+    ///
+    /// ⚠ Bonded had never been cast before 2026-09-06: all five `#[ignore]`d gates
+    /// in `cf-studio-engine` hard-code `Detachable`. Lives here because only here
+    /// is the selection built as the app builds it — an inclusion set omitting the
+    /// gasket and funnel, unlike `cf-cast`'s `all_except`.
+    fn cast_base_mold_as_the_app_would(cell_size_m: f64, label: &str) {
+        use cf_studio_core::{DesignDraft, LayerDraft};
+
+        // ⚠ Never `~/scans` in place: `base_dir` would be the user's scan
+        // folder, so the run overwrites `base_mold.design.toml` and leaves its
+        // output beside it. Both happened — 217 MB, and the design file
+        // rewritten next to a `.pre-gate-bak` from the last time.
+        let (dir, cleaned, prep) = isolated_base_mold_copy(label);
+
+        // The stack the GUI opens on, as the engine's siblings use.
+        let draft = DesignDraft {
+            cavity_inset_m: 0.005,
+            layers: vec![
+                LayerDraft {
+                    thickness_m: 0.018,
+                    material_key: "ECOFLEX_00_30".to_string(),
+                    slacker_fraction: 0.25,
+                },
+                LayerDraft {
+                    thickness_m: 0.007,
+                    material_key: "DRAGON_SKIN_10A".to_string(),
+                    slacker_fraction: 0.0,
+                },
+                LayerDraft {
+                    thickness_m: 0.005,
+                    material_key: "DRAGON_SKIN_20A".to_string(),
+                    slacker_fraction: 0.0,
+                },
+            ],
+        };
+
+        // Exactly what the screen sends: every offered part checked.
+        let picker = PartPicker::rebuild(draft.layers.len(), CENDRILLON_CAST_MODE);
+        assert!(picker.any_checked(), "a fresh picker is a full cast");
+        let selection = picker.selection(CENDRILLON_CAST_MODE);
+
+        let out = cf_studio_engine::generate_molds_for_design(
+            &cleaned,
+            &prep,
+            &draft,
+            cell_size_m,
+            &RidgeOptions::default(),
+            &selection,
+            CENDRILLON_CAST_MODE,
+            None,
+        )
+        .expect("the bonded path must cast");
+
+        assert_eq!(out.mold_stls.len(), 6, "2 halves × 3 layers");
+        assert_eq!(
+            out.plug_stls.len(),
+            1,
+            "bonded casts ONE plug — the cured layer N is the plug for N+1"
+        );
+        assert_eq!(
+            out.pour_plan.steps.len(),
+            3,
+            "the plan still covers 3 layers"
+        );
+        assert!(out.total_mass_g > 0.0);
+
+        // ⚠ After the assertions, never on the failure path — a red gate keeps
+        // its output for inspection.
+        if let Err(err) = std::fs::remove_dir_all(&dir) {
+            eprintln!("WARN: could not remove fixture {}: {err}", dir.display());
+        }
+    }
+
+    /// A private copy of the `base_mold` fixture, so the cast's `base_dir` is never
+    /// the user's `~/scans`.
+    ///
+    /// ⚠ PANICS on a missing fixture rather than skipping — these run only when
+    /// asked for by name, so a silent pass would report the path as cast.
+    /// ▶ A near-copy of the engine's `isolated_base_mold_fixture`; both live in
+    /// `#[cfg(test)]`, so the standing fix is a shared test-support module.
+    fn isolated_base_mold_copy(label: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let scans = PathBuf::from(std::env::var("HOME").expect("HOME")).join("scans");
+        let (src_stl, src_prep) = (
+            scans.join("base_mold.cleaned.stl"),
+            scans.join("base_mold.prep.toml"),
+        );
+        assert!(
+            src_stl.exists() && src_prep.exists(),
+            "MISSING FIXTURE: {} and {} are required by this #[ignore]d gate",
+            src_stl.display(),
+            src_prep.display(),
+        );
+        let dir =
+            std::env::temp_dir().join(format!("cf-studio-gui-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a fixture dir");
+        let (stl, prep) = (
+            dir.join("base_mold.cleaned.stl"),
+            dir.join("base_mold.prep.toml"),
+        );
+        std::fs::copy(&src_stl, &stl).expect("copy the cleaned scan");
+        std::fs::copy(&src_prep, &prep).expect("copy the prep");
+        (dir, stl, prep)
+    }
+
+    /// The fast preview — the picker's index 1.
+    ///
+    /// ★★ **PASSED 2026-09-06: 407.67 s.** Detachable, same cell size and machine:
+    /// 277.95 s. Bonded is slower while producing fewer pieces — it never collapses
+    /// to `PartSelection::all`, so it meshes piece-by-piece.
+    #[test]
+    #[ignore = "integration: 408 s at 1.5 mm (measured 2026-09-06), needs ~/scans/base_mold files"]
+    fn the_app_casts_base_mold_bonded() {
+        cast_base_mold_as_the_app_would(0.0015, "bonded");
+    }
+
+    /// Print quality — the picker's index 0, and what the user prints from.
+    ///
+    /// ★★ **PASSED 2026-09-06: 2187.37 s (36.5 min).** Step 5's copy had said
+    /// "around fifteen minutes", measured on the detachable path the app does not
+    /// use. ⚠ Bonded is 1.47× detachable at 1.5 mm but **2.43×** at 0.5 — the ratio
+    /// does not hold across cell sizes, so scaling would have written ~22 minutes.
+    #[test]
+    #[ignore = "integration: 2187 s / 36 min at 0.5 mm (measured 2026-09-06), needs ~/scans/base_mold files"]
+    fn the_app_casts_base_mold_bonded_fine() {
+        cast_base_mold_as_the_app_would(0.0005, "bonded-fine");
+    }
+
+    // ── the cast mode the app pins ──────────────────────────────────────────
+    //
+    // ⚠ These read `CENDRILLON_CAST_MODE`, never a `CastMode` literal. The two
+    // gates above pin what Bonded *does*; only these pin that the app is in
+    // it — and they are the gates that were missing for the whole port, while
+    // both of those stayed green over an app committed to no mode at all.
+
+    #[test]
+    fn cendrillon_offers_one_plug_however_many_layers_the_design_has() {
+        // Swept, not sampled: a one-layer design offers one plug in EITHER
+        // mode, so a single-layer check would pass just as happily on
+        // detachable.
+        for layer_count in 1..=4 {
+            let parts = enumerate_parts(layer_count, CENDRILLON_CAST_MODE);
+            let plugs: Vec<_> = parts
+                .iter()
+                .filter(|(id, _)| matches!(id, PartId::Plug { .. }))
+                .collect();
+            assert_eq!(
+                plugs.len(),
+                1,
+                "a {layer_count}-layer design must still offer exactly one plug"
+            );
+            assert_eq!(plugs[0].0, PartId::Plug { layer_index: 0 });
+        }
+    }
+
+    #[test]
+    fn cendrillon_never_takes_the_full_cast_shortcut() {
+        let parts = enumerate_parts(3, CENDRILLON_CAST_MODE);
+        let checked = vec![true; parts.len()];
+        let sel = part_selection_from_checks(&parts, &checked, CENDRILLON_CAST_MODE);
+        assert!(
+            !sel.is_all(),
+            "everything-checked must still route the selective bonded path"
+        );
+        // ★ The other half of the claim. `!is_all()` alone is also true of an
+        // EMPTY selection, which would cast nothing at all — so assert the
+        // collection, not just the negation.
+        for (id, _) in &parts {
+            assert!(
+                sel.includes(*id),
+                "{id:?} was checked, so it must be selected"
+            );
+        }
+    }
+
     #[test]
     fn picker_selection_keeps_rows_aligned_with_their_checkboxes() {
         // `selection` builds the parts vec and the checked vec in two separate
@@ -2184,9 +2381,20 @@ visible = true
         assert_eq!(format_elapsed(9), "0:09");
         assert_eq!(format_elapsed(60), "1:00");
         assert_eq!(format_elapsed(61), "1:01");
-        // The jobs this labels run 4.5-15 minutes; the minutes field is the part
+        // The jobs this labels run 7-36 minutes; the minutes field is the part
         // an off-by-one would hide.
         assert_eq!(format_elapsed(15 * 60 + 7), "15:07");
+    }
+
+    #[test]
+    fn the_cast_progress_line_carries_the_clock_and_the_reassurance() {
+        // ⚠ Exact, not `contains`: the pre-port built this with a trailing `\`
+        // continuation and emitted two spaces before the parenthesis, and
+        // substring checks left every other word of the line free.
+        assert_eq!(
+            format_molds_progress(15 * 60 + 7),
+            "Making molds… 15:07 elapsed (this can take a while — the window stays responsive)"
+        );
     }
 
     // ── RingRow round-trip ──────────────────────────────────────────────────

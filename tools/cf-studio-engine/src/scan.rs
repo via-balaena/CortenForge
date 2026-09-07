@@ -1,7 +1,7 @@
 //! The scan-load boundary (workflow step "Add scan"): load the chosen
 //! file as a mesh, confirm it actually has geometry, and report quick
 //! stats. Failing here — on a missing file, an unreadable format, or an
-//! empty mesh — surfaces the problem at step 1 instead of deep in the
+//! empty mesh — surfaces the problem at load time instead of deep in the
 //! cast pipeline.
 
 use std::path::{Path, PathBuf};
@@ -12,7 +12,7 @@ use cortenforge::mesh::io::load_mesh;
 use crate::error::{EngineError, Result};
 
 /// A loaded, validated scan plus quick stats for display. Intentionally
-/// does not retain the mesh: step 1 only needs to *validate* the file
+/// does not retain the mesh: loading only needs to *validate* the file
 /// and record its path; downstream steps reload from the cleaned scan.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoadedScan {

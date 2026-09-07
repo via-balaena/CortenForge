@@ -1,4 +1,4 @@
-//! Assembling the structured pour plan — the data the Step-6 pour
+//! Assembling the structured pour plan — the data the GUI's pour
 //! assistant renders (per layer: material, mass, mix ratio, pot-life
 //! timer, cure wait). This is structured data, not the rendered
 //! `procedure.md` markdown: the GUI needs the *numbers* to drive a
@@ -30,7 +30,7 @@ pub struct LayerPour {
     pub slacker_fraction: Option<f64>,
 }
 
-/// Assemble the ordered [`PourPlan`] (innermost layer first) the Step-6
+/// Assemble the ordered [`PourPlan`] (innermost layer first) the pour
 /// assistant renders. Each layer's mix ratio / pot life / cure time come
 /// from `cf-cast`'s cure-protocol table; the display name from the catalog.
 ///

@@ -1,18 +1,23 @@
 //! Background work, and the pollers that land its results on the app.
 //!
-//! Two ops are too slow for the main thread, and `Studio::busy` gates every
-//! control that could clobber one while it runs:
-//!
-//! - **Simplify** (step 2) decimates the working scan, ~10–40 s.
-//! - **the print export** (step 6) copies the mold package, hundreds of
-//!   megabytes at 0.5 mm.
+//! Three ops are too slow for the main thread; `Studio::busy` gates every
+//! control that could clobber one. Simplify (step 2), the cast (step 5), the
+//! print export (step 6). The cast is measured in minutes — **408 s at 1.5 mm,
+//! 2187 s at 0.5**, bonded — which is why it reports its own elapsed time.
 
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, futures_lite::future};
-use cf_studio_engine::{PrintExportReport, export_print_package, run_simplify};
-use cf_studio_gui::{apply_design, format_simplify_done, format_simplify_started};
+use cf_studio_core::{DesignDraft, MoldOutputs, RidgeOptions};
+use cf_studio_engine::{
+    PartSelection, PrintExportReport, export_print_package, generate_molds_for_design, run_simplify,
+};
+use cf_studio_gui::{
+    CENDRILLON_CAST_MODE, PourSession, apply_design, format_molds_progress, format_simplify_done,
+    format_simplify_started,
+};
 use mesh_types::IndexedMesh;
 
 use crate::dialogs::{DialogKind, PendingDialog};
@@ -142,6 +147,160 @@ pub(crate) fn poll_print_job(mut job: ResMut<PrintJob>, mut studio: ResMut<Studi
     });
 }
 
+/// A cast in flight: when it started, the last whole second put on screen, and
+/// the task itself.
+///
+/// ⚠ `shown_secs` lives here, not in a system `Local`, so it dies with the run.
+/// A `Local` would carry the previous cast's second into the next one and eat
+/// that run's first status line.
+struct MoldsRun {
+    started: Instant,
+    shown_secs: u64,
+    task: Task<Result<MoldOutputs, String>>,
+}
+
+/// The running cast, if any.
+///
+/// Started by [`start_molds`], polled by [`poll_molds_job`].
+#[derive(Resource, Default)]
+pub(crate) struct MoldsJob(Option<MoldsRun>);
+
+/// What the step-5 controls carried into a click.
+///
+/// Snapshotted at click time rather than re-read when the job starts, for the
+/// same reason `Acted`'s other carried fields are: the executor must not see a
+/// control the user has changed since. It also keeps [`start_molds`]
+/// independent of the picker, which is why the poller could be gated before
+/// any of this existed.
+#[derive(Debug, Clone)]
+pub(crate) struct MoldsStart {
+    /// Marching-cubes cell size, from the quality picker's index.
+    pub(crate) cell_size_m: f64,
+    /// Which pieces to generate.
+    pub(crate) selection: PartSelection,
+}
+
+/// What a panicked cast is reported as.
+const MOLDS_PANICKED: &str = "internal error (panic) during mold generation";
+
+/// What is missing when step 5 is somehow reached without its inputs.
+const MOLDS_NO_INPUTS: &str = "Finish steps 2 and 4 first (clean the scan, choose a design).";
+
+/// Start a cast on the task pool.
+///
+/// ⚠ `busy` is taken only once the inputs are confirmed, or the app wedges on a
+/// step with no design. There is no "at least one part" check here — the button
+/// is disabled instead, and one rule has one home.
+pub(crate) fn start_molds(start: &MoldsStart, studio: &mut Studio, job: &mut MoldsJob) {
+    // A run already in flight. `busy` disables the button, but a click queued
+    // in the same frame still arrives, and a second cast into the same output
+    // directory would race the first for the better part of an hour.
+    if job.0.is_some() {
+        return;
+    }
+    let inputs = studio
+        .project
+        .prep()
+        .zip(studio.project.design())
+        .map(|(prep, design)| {
+            (
+                prep.cleaned_stl.clone(),
+                prep.prep_toml.clone(),
+                design.clone(),
+            )
+        });
+    let Some((cleaned_stl, prep_toml, draft)) = inputs else {
+        studio.message = Some(Err(MOLDS_NO_INPUTS.to_string()));
+        return;
+    };
+    // The ridges were committed with the plug on "Shape your piece". The one
+    // field rides every offset, so the plug and every shell carry it alike.
+    let ridges = studio
+        .project
+        .plug()
+        .map(|plug| plug.ridges.clone())
+        .unwrap_or_default();
+    studio.busy = true;
+    // `shown_secs` means "already on screen", so the seed and the opening line
+    // have to be the same second or the poller suppresses the line it never drew.
+    const OPENING: u64 = 0;
+    studio.message = Some(Ok(format_molds_progress(OPENING)));
+    job.0 = Some(MoldsRun {
+        started: Instant::now(),
+        shown_secs: OPENING,
+        task: spawn_molds(cleaned_stl, prep_toml, draft, start.clone(), ridges),
+    });
+}
+
+/// Run the cast off-thread.
+///
+/// The `catch_unwind` is the guard the other two jobs carry, and it earns more
+/// here than anywhere: a panic half an hour in would otherwise leave `busy`
+/// stuck on with no way back.
+fn spawn_molds(
+    cleaned_stl: PathBuf,
+    prep_toml: PathBuf,
+    draft: DesignDraft,
+    start: MoldsStart,
+    ridges: RidgeOptions,
+) -> Task<Result<MoldOutputs, String>> {
+    AsyncComputeTaskPool::get().spawn(async move {
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            generate_molds_for_design(
+                &cleaned_stl,
+                &prep_toml,
+                &draft,
+                start.cell_size_m,
+                &ridges,
+                &start.selection,
+                CENDRILLON_CAST_MODE,
+                None,
+            )
+        }));
+        match outcome {
+            Ok(Ok(outputs)) => Ok(outputs),
+            Ok(Err(e)) => Err(e.to_string()),
+            Err(_) => Err(MOLDS_PANICKED.to_string()),
+        }
+    })
+}
+
+/// The second to draw, or `None` to leave the line alone.
+fn clock_to_draw(elapsed_secs: u64, shown: u64) -> Option<u64> {
+    (shown != elapsed_secs).then_some(elapsed_secs)
+}
+
+/// Land a finished cast, or tick the clock on a running one.
+pub(crate) fn poll_molds_job(mut job: ResMut<MoldsJob>, mut studio: ResMut<Studio>) {
+    let Some(run) = job.0.as_mut() else { return };
+    let Some(result) = future::block_on(future::poll_once(&mut run.task)) else {
+        // Still running. The decision is `clock_to_draw`; this only carries
+        // it out.
+        if let Some(secs) = clock_to_draw(run.started.elapsed().as_secs(), run.shown_secs) {
+            run.shown_secs = secs;
+            studio.message = Some(Ok(format_molds_progress(secs)));
+        }
+        return;
+    };
+    job.0 = None;
+    studio.busy = false;
+    studio.message = Some(match result {
+        Ok(outputs) => match studio.project.set_molds(outputs) {
+            Ok(()) => {
+                // ⚠ New molds mean a new pour. `set_molds` clears the project's
+                // *record* of one, but the live session and its countdown are
+                // held here, so step 7 would open on the previous cast's
+                // progress. `Studio::record_scan` resets the same pair.
+                studio.pour = PourSession::default();
+                studio.pour_deadline = None;
+                Ok("✔ Molds ready — click Next →.".to_string())
+            }
+            Err(e) => Err(format!("Molds made, but couldn't record them: {e}")),
+        },
+        Err(msg) => Err(format!("Mold generation failed: {msg}")),
+    });
+}
+
 /// What a panicked decimation is reported as.
 const SIMPLIFY_PANICKED: &str = "Simplify failed unexpectedly — try a higher target face count.";
 
@@ -219,6 +378,12 @@ pub(crate) fn poll_simplify_job(
 
 /// Open `dir` in the OS file manager. Best-effort — a failure to spawn is
 /// ignored, because it is a convenience and not part of the workflow.
+///
+/// ⚠ Knowingly ungated, and the one surviving mutant in this file (measured
+/// 2026-09-06: 21 mutants, 6 caught, 14 unviable, this one missed). Gating it
+/// means either opening a Finder window on every test run or injecting the
+/// spawn — both worse than an untested convenience whose failure is already
+/// defined as "nothing happens".
 pub(crate) fn reveal_in_file_manager(dir: &Path) {
     #[cfg(target_os = "macos")]
     let program = "open";
@@ -230,8 +395,10 @@ pub(crate) fn reveal_in_file_manager(dir: &Path) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     #![allow(clippy::expect_used)]
+
+    use std::time::Duration;
 
     use bevy::ecs::system::RunSystemOnce;
     use mesh_types::unit_cube;
@@ -262,13 +429,20 @@ mod tests {
     /// gives no margin for a worker not yet scheduled — but keep it short: a
     /// mutant stopping the poller makes every caller sit out the whole
     /// deadline, and a long one turns that caught mutant into a timeout.
-    fn run_until_idle(app: &mut App) {
-        const DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
-        let deadline = std::time::Instant::now() + DEADLINE;
+    fn run_until_idle(app: &mut App, what: &str) {
+        const DEADLINE: Duration = Duration::from_secs(2);
+        // ⚠ Zero frames is a pass otherwise, exactly as in
+        // `run_plugin_update_until`: the caller's assertions then read the state
+        // it seeded rather than the poller's output.
+        assert!(
+            app.world().resource::<Studio>().busy,
+            "{what} was already idle before a frame ran"
+        );
+        let deadline = Instant::now() + DEADLINE;
         while app.world().resource::<Studio>().busy {
             assert!(
-                std::time::Instant::now() < deadline,
-                "the job never landed — `busy` was never cleared"
+                Instant::now() < deadline,
+                "{what} never landed — `busy` was never cleared"
             );
             app.update();
         }
@@ -299,7 +473,7 @@ mod tests {
             app.world().resource::<Studio>().message
         );
 
-        run_until_idle(&mut app);
+        run_until_idle(&mut app, "the job");
 
         let world = app.world();
         assert!(!world.resource::<Studio>().busy, "and is handed back after");
@@ -363,7 +537,7 @@ mod tests {
         app.world_mut()
             .insert_resource(SimplifyJob(Some((TARGET, task))));
 
-        run_until_idle(&mut app);
+        run_until_idle(&mut app, "the job");
 
         assert!(
             !app.world().resource::<Studio>().busy,
@@ -384,13 +558,10 @@ mod tests {
     /// returning `None` — so a single frame passes alone and fails in a full
     /// run. Same reason [`run_until_idle`] exists.
     fn run_until_answered(app: &mut App) {
-        const DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
-        let deadline = std::time::Instant::now() + DEADLINE;
+        const DEADLINE: Duration = Duration::from_secs(2);
+        let deadline = Instant::now() + DEADLINE;
         while app.world().resource::<PendingDialog>().is_open() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the dialog never resolved"
-            );
+            assert!(Instant::now() < deadline, "the dialog never resolved");
             app.update();
         }
     }
@@ -634,5 +805,521 @@ endsolid t
         assert!(studio.project.design().is_none(), "no design was set");
         assert_eq!(studio.message, before, "and nothing new was reported");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── the cast job ────────────────────────────────────────────────────────
+    //
+    // ⚠ The real cast runs for minutes and never runs here. Every test below
+    // hands the poller a `Task` built by hand — the same trick the injected
+    // `SimplifyJob` uses, except that here it is the only option.
+
+    /// A pour step, as a real cast run produces one.
+    fn pour_step(layer_index: usize, pot_life_minutes: u32) -> cf_studio_core::PourStep {
+        cf_studio_core::PourStep {
+            layer_index,
+            material_display_name: "Ecoflex 00-30".to_string(),
+            mass_g: 40.0,
+            mix_ratio_a_to_b: "1:1".to_string(),
+            pot_life_minutes,
+            cure_time_hours: 4.0,
+            slacker_fraction: None,
+        }
+    }
+
+    /// What a finished cast hands back. `tag` lands in `out_dir` so a test can
+    /// tell one run's outputs from another's.
+    pub(crate) fn some_molds(tag: &str) -> MoldOutputs {
+        MoldOutputs {
+            out_dir: tag.into(),
+            mold_stls: vec!["cup.stl".into()],
+            plug_stls: vec!["plug.stl".into()],
+            accessory_stls: Vec::new(),
+            procedure_path: "procedure.md".into(),
+            total_mass_g: 80.0,
+            pour_plan: cf_studio_core::PourPlan {
+                steps: vec![pour_step(0, 30), pour_step(1, 45)],
+            },
+        }
+    }
+
+    /// A project carried as far as step 4, which is what `set_molds` requires.
+    fn studio_ready_for_molds() -> Studio {
+        use cf_studio_core::{DesignDraft, LayerDraft, PlugDraft, PrepInput, ScanInput};
+
+        let layer = || LayerDraft {
+            thickness_m: 0.003,
+            material_key: "ECOFLEX_00_30".to_string(),
+            slacker_fraction: 0.0,
+        };
+        // ⚠ Absolute. `start_molds` spawns the real cast, and a relative path
+        // makes the crate directory the cast's `base_dir`. The engine rejects
+        // that now; this keeps the fixture on the right side of it without
+        // depending on the error.
+        let dir = crate::molds::tests::fixture_root().join(crate::molds::tests::test_label());
+        let mut studio = Studio::default();
+        studio.project.set_scan(ScanInput {
+            source_path: dir.join("scan.stl"),
+        });
+        let built = [
+            studio.project.set_prep(PrepInput {
+                cleaned_stl: dir.join("scan.cleaned.stl"),
+                prep_toml: dir.join("scan.prep.toml"),
+            }),
+            studio.project.set_plug(PlugDraft::default()),
+            studio.project.set_design(DesignDraft {
+                cavity_inset_m: 0.0,
+                layers: vec![layer(), layer()],
+            }),
+        ];
+        assert!(
+            built.iter().all(Result::is_ok),
+            "the fixture must reach DesignLayers: {built:?}"
+        );
+        studio
+    }
+
+    /// Enough app to own a task pool and the mold poller — no window.
+    fn app_ready_for_molds() -> App {
+        let mut app = App::new();
+        app.add_plugins(TaskPoolPlugin::default())
+            .init_resource::<MoldsJob>()
+            .add_systems(Update, poll_molds_job);
+        app.insert_resource(studio_ready_for_molds());
+        app
+    }
+
+    /// How long a `backdated` reading stays valid.
+    const CLOCK_MARGIN_MS: u64 = 1000;
+
+    /// An `Instant` exactly `secs` in the past, so `elapsed().as_secs() == secs`.
+    ///
+    /// ⚠ No safety offset: `elapsed()` is read strictly after the `Instant::now()`
+    /// this is built from, so the reading is already `secs` and holds for the
+    /// whole next second. An offset would only spend that margin.
+    ///
+    /// ⛔ Not replaced by an injected clock, deliberately.
+    /// `the_clock_follows_real_elapsed_time` exists to gate that the source IS
+    /// the real clock — a seam would make it vacuous.
+    fn backdated(secs: u64) -> Instant {
+        Instant::now()
+            .checked_sub(Duration::from_millis(secs * 1000))
+            .expect("a few seconds of uptime")
+    }
+
+    /// Put a run into the job by hand: the task, when it started, and the
+    /// second last shown.
+    fn inject(
+        app: &mut App,
+        task: Task<Result<MoldOutputs, String>>,
+        started: Instant,
+        shown_secs: u64,
+    ) {
+        app.world_mut().resource_mut::<Studio>().busy = true;
+        app.world_mut().resource_mut::<MoldsJob>().0 = Some(MoldsRun {
+            started,
+            shown_secs,
+            task,
+        });
+    }
+
+    fn finished(result: Result<MoldOutputs, String>) -> Task<Result<MoldOutputs, String>> {
+        AsyncComputeTaskPool::get().spawn(async move { result })
+    }
+
+    fn never_finishes() -> Task<Result<MoldOutputs, String>> {
+        AsyncComputeTaskPool::get().spawn(async { future::pending().await })
+    }
+
+    /// The second the running cast last drew.
+    fn shown_second(app: &App) -> u64 {
+        app.world()
+            .resource::<MoldsJob>()
+            .0
+            .as_ref()
+            .map(|run| run.shown_secs)
+            .expect("a cast is in flight")
+    }
+
+    #[test]
+    fn a_landed_cast_records_the_molds_and_hands_the_app_back() {
+        let mut app = app_ready_for_molds();
+        let task = finished(Ok(some_molds("out-a")));
+        inject(&mut app, task, Instant::now(), 0);
+
+        run_until_idle(&mut app, "the cast");
+
+        let studio = app.world().resource::<Studio>();
+        assert!(!studio.busy, "the app comes back");
+        assert_eq!(
+            studio.project.molds().map(|m| m.out_dir.clone()),
+            Some("out-a".into()),
+            "the outputs must reach the PROJECT, not just the message"
+        );
+        assert!(
+            matches!(&studio.message, Some(Ok(text)) if text.contains("Molds ready")),
+            "and it says so: {:?}",
+            studio.message
+        );
+        assert!(
+            app.world().resource::<MoldsJob>().0.is_none(),
+            "the run is cleared, so a second cast can start"
+        );
+    }
+
+    /// ⚠⚠ `Project::set_molds` clears the pour *record*, but the live session
+    /// and its countdown are held on `Studio` — so without this reset a second
+    /// cast opens step 7 on the FIRST cast's progress, part-way through a pour
+    /// plan that no longer exists.
+    #[test]
+    fn new_molds_reset_the_pour_session_and_its_countdown() {
+        let mut app = app_ready_for_molds();
+        {
+            let mut studio = app.world_mut().resource_mut::<Studio>();
+            studio
+                .project
+                .set_molds(some_molds("out-first"))
+                .expect("the fixture records a first cast");
+            studio.mark_poured();
+            studio.start_pour_timer();
+            assert_eq!(studio.pour.current(), 1, "the fixture is mid-pour");
+            assert!(studio.pour_deadline.is_some(), "with a clock running");
+        }
+
+        let task = finished(Ok(some_molds("out-second")));
+        inject(&mut app, task, Instant::now(), 0);
+        run_until_idle(&mut app, "the cast");
+
+        let studio = app.world().resource::<Studio>();
+        assert_eq!(
+            studio.pour.current(),
+            0,
+            "a new cast starts its pour at layer 1"
+        );
+        assert!(
+            studio.pour_deadline.is_none(),
+            "and the previous layer's countdown is stopped, not left running"
+        );
+    }
+
+    #[test]
+    fn a_failed_cast_says_why_and_hands_the_app_back() {
+        let mut app = app_ready_for_molds();
+        let task = finished(Err("the mesher gave up".to_string()));
+        inject(&mut app, task, Instant::now(), 0);
+
+        run_until_idle(&mut app, "the cast");
+
+        let studio = app.world().resource::<Studio>();
+        assert!(!studio.busy, "a failure must hand the app back too");
+        assert!(
+            matches!(&studio.message, Some(Err(text)) if text.contains("the mesher gave up")),
+            "and carry the reason, not just 'it failed': {:?}",
+            studio.message
+        );
+        assert!(
+            studio.project.molds().is_none(),
+            "nothing is recorded from a failed run"
+        );
+    }
+
+    #[test]
+    fn the_clock_redraws_only_when_the_whole_second_changes() {
+        // `start_molds` already drew 0:00, so the seed is a second already shown.
+        assert_eq!(clock_to_draw(0, 0), None);
+        assert_eq!(clock_to_draw(75, 0), Some(75));
+        assert_eq!(clock_to_draw(75, 75), None);
+        assert_eq!(clock_to_draw(76, 75), Some(76));
+    }
+
+    /// The clock source. Only a known duration catches a wrong scale: "it
+    /// advanced" is satisfied by `as_millis()` in under a millisecond, while the
+    /// app shows 18:20 for a one-second cast.
+    #[test]
+    fn the_clock_follows_real_elapsed_time() {
+        const WAITED: u64 = 2;
+        const LINE: &str =
+            "Making molds… 0:02 elapsed (this can take a while — the window stays responsive)";
+
+        let mut app = app_ready_for_molds();
+        // ⚠ Backdated, not slept. A sleep plus a tolerance is what let a
+        // constant source through: with ±1 s of slack a poller reading a fixed
+        // `Duration::from_secs(3)` passed all 171. Taken after the app is
+        // built, so construction does not eat the margin.
+        let started = backdated(WAITED);
+        // ⚠ `0` is what `start_molds` seeds. Seed a second that production
+        // never seeds and a poller which draws once, then never redraws, passes
+        // all 171.
+        inject(&mut app, never_finishes(), started, 0);
+
+        app.update();
+
+        let shown = shown_second(&app);
+        assert_eq!(
+            shown, WAITED,
+            "backdated {WAITED}s, clock says {shown} \
+             (a stall over {CLOCK_MARGIN_MS} ms here reads as the next second)"
+        );
+        // ⚠ The literal, not `format_molds_progress(WAITED)`. An expectation
+        // built by calling the subject is a mirror; the one excuse for it was
+        // "lib.rs owns the wording", which round seven proved false.
+        assert_eq!(
+            app.world().resource::<Studio>().message,
+            Some(Ok(LINE.to_string())),
+            "and the line the run is on must reach the screen"
+        );
+    }
+
+    /// The suppression at the caller. `clock_to_draw` returning `None` is half
+    /// of it; the poller has to honour it.
+    ///
+    /// ⚠ Without this, replacing the whole `if let` with an unconditional write
+    /// passed all 171 — a fresh `format!` every frame for the 36 minutes of a
+    /// print-quality cast.
+    #[test]
+    fn the_line_is_left_alone_within_the_same_second() {
+        const WAITED: u64 = 2;
+
+        let mut app = app_ready_for_molds();
+        // ⚠ The backdate has to land inside the seeded second: the case is
+        // "already shown", so `elapsed().as_secs()` must equal `shown_secs`.
+        let started = backdated(WAITED);
+        // ⚠ The suite's only NONZERO `shown_secs`. With 0 injected everywhere,
+        // hardcoding the poller's second argument to 0 — dropping the field read
+        // outright — passed all 172.
+        inject(&mut app, never_finishes(), started, WAITED);
+        let sentinel = Some(Ok("SENTINEL".to_string()));
+        app.world_mut().resource_mut::<Studio>().message = sentinel.clone();
+
+        app.update();
+
+        assert_eq!(
+            app.world().resource::<Studio>().message,
+            sentinel,
+            "the whole second has not changed, so the line must not be rebuilt \
+             (a stall over {CLOCK_MARGIN_MS} ms here reads as the next second)"
+        );
+    }
+
+    /// The redraw, from a second that is NOT the seed.
+    ///
+    /// ⚠ The last cell of the decision's 2x2. Every other injection in the
+    /// suite uses `shown_secs == 0`, so a poller that draws only while
+    /// `shown_secs == 0` — one line off the seed, then never again — passed all
+    /// 173 while a 36-minute cast sat at 0:01 the whole way.
+    #[test]
+    fn the_line_is_redrawn_from_a_second_that_is_not_the_seed() {
+        const SHOWN: u64 = 1;
+        const ELAPSED: u64 = 2;
+        const LINE: &str =
+            "Making molds… 0:02 elapsed (this can take a while — the window stays responsive)";
+
+        let mut app = app_ready_for_molds();
+        inject(&mut app, never_finishes(), backdated(ELAPSED), SHOWN);
+        app.world_mut().resource_mut::<Studio>().message = Some(Ok("SENTINEL".to_string()));
+
+        app.update();
+
+        assert_eq!(
+            shown_second(&app),
+            ELAPSED,
+            "the second on screen must advance off a nonzero seed"
+        );
+        assert_eq!(
+            app.world().resource::<Studio>().message,
+            Some(Ok(LINE.to_string())),
+            "and the line must be redrawn \
+             (a stall over {CLOCK_MARGIN_MS} ms here reads as the next second)"
+        );
+    }
+
+    /// Both halves of the `OPENING` coupling.
+    ///
+    /// ⚠ `panel.rs` gates the line, but `MoldsJob.0` is private to this module,
+    /// so a drift on the field alone — `shown_secs: OPENING + 1` — passed all
+    /// 172. The poller would then measure suppression against a second that was
+    /// never drawn and rebuild the identical line every frame.
+    #[test]
+    fn the_opening_line_and_the_seed_are_the_same_second() {
+        // The pool `start_molds` spawns onto — the form `dialogs.rs` uses.
+        AsyncComputeTaskPool::get_or_init(bevy::tasks::TaskPool::default);
+        let mut studio = studio_ready_for_molds();
+        let mut job = MoldsJob::default();
+
+        start_molds(
+            &MoldsStart {
+                cell_size_m: 0.0015,
+                selection: PartSelection::all(),
+            },
+            &mut studio,
+            &mut job,
+        );
+
+        assert_eq!(
+            job.0.as_ref().expect("a cast is in flight").shown_secs,
+            0,
+            "the seed is the second already on screen"
+        );
+        assert_eq!(
+            studio.message,
+            Some(Ok(
+                "Making molds… 0:00 elapsed (this can take a while — the window stays responsive)"
+                    .to_string()
+            )),
+            "and the opening line shows that same second"
+        );
+    }
+
+    /// The plugin's own wiring, which nothing else reaches.
+    ///
+    /// ⚠ Every test above inserts `MoldsJob` by hand, so dropping the
+    /// `init_resource` or the schedule entry left the whole suite green while a
+    /// cast ran for fifteen minutes and never landed.
+    #[test]
+    fn the_plugin_registers_the_cast_job_and_runs_its_poller() {
+        let mut app = app_from_the_plugin();
+        app.insert_resource(studio_ready_for_molds());
+
+        // ⚠ `resource_mut` and not `init_resource`: this line is the assertion
+        // that the PLUGIN registered it. Adding it here would gate nothing.
+        app.world_mut().resource_mut::<MoldsJob>().0 = Some(MoldsRun {
+            started: Instant::now(),
+            shown_secs: 0,
+            task: finished(Ok(some_molds("out-plugin"))),
+        });
+        app.world_mut().resource_mut::<Studio>().busy = true;
+
+        run_plugin_until_idle(&mut app, "the cast poller");
+
+        assert_eq!(
+            app.world()
+                .resource::<Studio>()
+                .project
+                .molds()
+                .map(|m| m.out_dir.clone()),
+            Some("out-plugin".into()),
+            "the cast landed through the plugin's own wiring"
+        );
+    }
+
+    /// The same hole, for the print export — the only sibling that had it.
+    ///
+    /// ⚠ Driven through the FAILURE path: a landed export calls
+    /// `reveal_in_file_manager`, and a gate that opens a Finder window is one
+    /// people learn to skip.
+    #[test]
+    fn the_plugin_registers_the_print_job_and_runs_its_poller() {
+        let mut app = app_from_the_plugin();
+
+        app.world_mut().resource_mut::<PrintJob>().0 =
+            Some(AsyncComputeTaskPool::get().spawn(async { Err("the copy failed".to_string()) }));
+        app.world_mut().resource_mut::<Studio>().busy = true;
+
+        run_plugin_until_idle(&mut app, "the print poller");
+
+        assert!(
+            matches!(&app.world().resource::<Studio>().message,
+                     Some(Err(text)) if text.contains("the copy failed")),
+            "the export landed through the plugin's own wiring: {:?}",
+            app.world().resource::<Studio>().message
+        );
+    }
+
+    /// An app wired by the plugin alone, with unrelated systems allowed to
+    /// fall out.
+    ///
+    /// ⚠ `ignore` is load-bearing: `Update` also holds the scene and pointer
+    /// systems, whose params want a renderer. In Bevy 0.18 a param that fails
+    /// validation is an error the default handler PANICS on.
+    fn app_from_the_plugin() -> App {
+        use bevy::state::app::StatesPlugin;
+
+        let mut app = App::new();
+        app.set_error_handler(bevy::ecs::error::ignore);
+        app.add_plugins((MinimalPlugins, StatesPlugin, crate::plugin::StudioPlugin));
+        app
+    }
+
+    /// Run the plugin's `Update` until it hands the app back.
+    fn run_plugin_until_idle(app: &mut App, what: &str) {
+        run_plugin_update_until(app, what, |app| !app.world().resource::<Studio>().busy);
+    }
+
+    /// Run the plugin's `Update` until `done`, or fail saying which poller
+    /// never ran.
+    ///
+    /// ⚠ The schedule by hand, not `app.update()`: `Startup` runs `setup_scene`,
+    /// which wants an asset stack these gates have no business standing up.
+    fn run_plugin_update_until(app: &mut App, what: &str, done: impl Fn(&App) -> bool) {
+        // ⚠ Zero frames is a pass otherwise: the caller's assertion then reads
+        // the state it seeded, not the plugin's output.
+        assert!(!done(app), "{what} was already done before a frame ran");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !done(app) {
+            assert!(Instant::now() < deadline, "the plugin never ran {what}");
+            app.world_mut().run_schedule(Update);
+        }
+    }
+
+    /// The third of the four. Its resources are reached by the wizard gate, but
+    /// its *place in the schedule* is not: dropping `poll_simplify_job` from
+    /// `Update` leaves every other test green while a finished Simplify never
+    /// lands and `busy` sticks on forever.
+    #[test]
+    fn the_plugin_runs_the_simplify_poller() {
+        let mut app = app_from_the_plugin();
+        app.world_mut().resource_mut::<SimplifyJob>().0 = Some((
+            TARGET,
+            AsyncComputeTaskPool::get().spawn(async { Err("the decimator gave up".to_string()) }),
+        ));
+        app.world_mut().resource_mut::<Studio>().busy = true;
+
+        run_plugin_until_idle(&mut app, "the simplify poller");
+
+        assert!(
+            matches!(&app.world().resource::<Studio>().message,
+                     Some(Err(text)) if text.contains("the decimator gave up")),
+            "the Simplify landed through the plugin's own wiring: {:?}",
+            app.world().resource::<Studio>().message
+        );
+    }
+
+    /// The fourth. Dropping `poll_dialogs` from `Update` means every OS picker
+    /// resolves into nothing — the file is chosen and silently discarded.
+    ///
+    /// ⚠ Driven with a print destination and NO molds recorded, because that
+    /// branch reports and returns: it writes no files and spawns no export.
+    #[test]
+    fn the_plugin_runs_the_dialog_poller() {
+        let mut app = app_from_the_plugin();
+        app.insert_resource(PendingDialog::resolved(
+            DialogKind::PrintDest,
+            Some(PathBuf::from("somewhere")),
+        ));
+
+        run_plugin_update_until(&mut app, "the dialog poller", |app| {
+            app.world().resource::<Studio>().message.is_some()
+        });
+
+        assert!(
+            matches!(&app.world().resource::<Studio>().message,
+                     Some(Err(text)) if text.contains("Make the molds first")),
+            "the picked folder was routed through the plugin's own wiring: {:?}",
+            app.world().resource::<Studio>().message
+        );
+    }
+
+    #[test]
+    fn the_poller_leaves_an_idle_app_alone() {
+        let mut app = app_ready_for_molds();
+        app.world_mut().resource_mut::<Studio>().message = Some(Ok("untouched".to_string()));
+        app.update();
+
+        let studio = app.world().resource::<Studio>();
+        assert!(!studio.busy, "no run, so nothing holds the app");
+        assert!(
+            matches!(&studio.message, Some(Ok(text)) if text == "untouched"),
+            "and nothing rewrites the message: {:?}",
+            studio.message
+        );
     }
 }

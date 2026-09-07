@@ -1,14 +1,14 @@
-//! Step-2 scan-editing session — the headless engine boundary for
+//! The scan-editing session — the headless engine boundary for
 //! interactive scan cleanup.
 //!
 //! Holds the working mesh + the original (for reset) + accumulated
 //! edit/provenance state, and applies [`cortenforge::cf_scan_prep_core`] ops. The Bevy
-//! `cf-scan-prep` tool and CortenForge Studio's step-2 editor are two
+//! `cf-scan-prep` tool and CortenForge Studio's cleanup editor are two
 //! frontends over this same logic — the goal is identical function. The
 //! session ultimately produces the cleaned STL + `.prep.toml` the cast
 //! pipeline consumes.
 //!
-//! The full step-2 op set, mirroring the cf-scan-prep tool: load
+//! The full op set, mirroring the cf-scan-prep tool: load
 //! (auto-center + auto-orient) / weld / simplify / reset; cap detection +
 //! interior centerline (`detect_caps`); floor leveling (`level_to_floor`);
 //! centerline trim + floor reconstruction (derived, display-only until
@@ -560,7 +560,7 @@ impl EditSession {
     }
 
     /// Write the cleaned scan + `.prep.toml` to `output_dir` (named
-    /// `{stem}.cleaned.stl` / `{stem}.prep.toml`) — the step-2 output the
+    /// `{stem}.cleaned.stl` / `{stem}.prep.toml`) — the cleanup output the
     /// rest of the wizard (and the cast pipeline) consumes. Mirrors the
     /// cf-scan-prep tool's `handle_save_action`: bake the reorient + cap the
     /// detected loops (`build_cleaned_mesh`), trim + reconstruct/flat-cap
@@ -1333,7 +1333,7 @@ mod tests {
             "the cleaned STL reloads as a mesh"
         );
 
-        // ⚠ The seam the GUI's Save sits on: step 2 hands this pair straight to
+        // ⚠ The seam the GUI's Save sits on: cleanup hands this pair straight to
         // `accept_prep`, and a pair that fails there is one the user cannot
         // finish the step with. Writing both files and reloading the mesh does
         // not prove it — `accept_prep` also requires >= 2 centerline points.

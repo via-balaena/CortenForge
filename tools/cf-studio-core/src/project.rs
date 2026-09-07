@@ -227,7 +227,7 @@ pub struct MoldOutputs {
     pub procedure_path: PathBuf,
     /// Total silicone mass across all layers, in grams.
     pub total_mass_g: f64,
-    /// Structured pour plan for the Step-6 assistant.
+    /// Structured pour plan for the [`Step::Pour`] assistant.
     pub pour_plan: PourPlan,
 }
 

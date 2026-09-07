@@ -16,12 +16,12 @@ use crate::error::{EngineError, Result};
 use crate::pour::{LayerPour, build_pour_plan};
 
 /// Generate the molds for the **guided-wizard** path, from the project's
-/// own artifacts: the cleaned scan + its `.prep.toml` (step 2) and the
-/// in-app [`DesignDraft`] (step 3). This is the single call a frontend
+/// own artifacts: the cleaned scan + its `.prep.toml` and the in-app
+/// [`DesignDraft`]. This is the single call a frontend
 /// makes for "Make molds" — it is the composition that:
 ///
-/// 1. writes the `design.toml` next to the cleaned scan (step 3 keeps the
-///    draft only in memory, so it's materialized here, derived from the
+/// 1. writes the `design.toml` next to the cleaned scan (the frontend keeps
+///    the draft only in memory, so it's materialized here, derived from the
 ///    scan's stem: `foo.cleaned.stl` → `foo.design.toml`);
 /// 2. builds a typed [`CastConfig`] via [`CastConfig::for_design`] at the
 ///    chosen `mesh_cell_size_m` (the quality knob), with relative paths so
@@ -48,8 +48,9 @@ use crate::pour::{LayerPour, build_pour_plan};
 /// cast run's `base_dir`.
 ///
 /// # Errors
-/// - [`EngineError::MoldGen`] if a path lacks a filename, the design write
-///   fails, or the cast run / output read-back fails.
+/// - [`EngineError::MoldGen`] if `cleaned_stl` is relative, a path lacks a
+///   filename, the design write fails, or the cast run / output read-back
+///   fails.
 /// - [`EngineError::WriteDesign`] / [`EngineError::InvalidDesign`] /
 ///   [`EngineError::UnknownMaterial`] if the draft can't be materialized.
 /// - [`EngineError::PourDataUnavailable`] if a layer has no cure data.
@@ -67,9 +68,41 @@ pub fn generate_molds_for_design(
     cast_mode: CastMode,
     output_dir_override: Option<&Path>,
 ) -> Result<MoldOutputs> {
-    let base_dir = cleaned_stl.parent().unwrap_or_else(|| Path::new("."));
+    // ⚠ Enforced, not just documented. `base_dir` is this path's parent, so a
+    // relative `cleaned_stl` silently makes the process's working directory the
+    // cast's output root and writes `<stem>.design.toml` there. Two callers had
+    // already got this wrong; a precondition every caller must remember is one
+    // some caller will forget.
+    if cleaned_stl.is_relative() {
+        return Err(EngineError::MoldGen(format!(
+            "cleaned_stl must be absolute — its parent is the cast's base_dir: {}",
+            cleaned_stl.display()
+        )));
+    }
     let cleaned_name = file_name(cleaned_stl)?;
     let prep_name = file_name(prep_toml)?;
+    // `/` is the only absolute path with no parent, and `file_name` has just
+    // refused it. An error, not a `.` default — that default IS the working
+    // directory the check above exists to keep out.
+    let base_dir = cleaned_stl.parent().ok_or_else(|| {
+        EngineError::MoldGen(format!(
+            "cleaned_stl has no parent: {}",
+            cleaned_stl.display()
+        ))
+    })?;
+    // ⚠ Only `prep_toml`'s FILE NAME survives — the config re-resolves it under
+    // `base_dir` — so a prep from another directory is silently swapped for
+    // whatever shares its name beside the scan: a different centerline and cap
+    // planes, or a not-found half an hour into the run. `cf-studio prep` takes
+    // the two paths independently, so this is reachable from the CLI.
+    if prep_toml.parent() != Some(base_dir) {
+        return Err(EngineError::MoldGen(format!(
+            "prep_toml must sit beside cleaned_stl in {} — only its file name is \
+             kept, so {} would be read from the wrong directory",
+            base_dir.display(),
+            prep_toml.display()
+        )));
+    }
     let design_name = design_filename(&cleaned_name);
     let design_path = base_dir.join(&design_name);
 
@@ -202,8 +235,8 @@ fn design_filename(cleaned_name: &str) -> String {
 /// Generate the molds for a project: run the cast pipeline typed, then
 /// gather the outputs.
 ///
-/// `config`'s `[design]` source should point at the `design.toml` saved
-/// in step 3, so the cavity inset + layer stack are lifted from it.
+/// `config`'s `[design]` source should point at the `design.toml` the
+/// wizard path writes, so the cavity inset + layer stack are lifted from it.
 /// `draft` supplies the layer anchors + Slacker for the pour plan (it
 /// matches that `design.toml` by construction, written from the same
 /// draft). `base_dir` is what the config's relative paths resolve against
@@ -487,6 +520,76 @@ mod tests {
             file_name(Path::new("/")).unwrap_err(),
             EngineError::MoldGen(_)
         ));
+    }
+
+    /// The precondition the doc has always stated, now refused.
+    ///
+    /// ⚠ Unenforced, `base_dir` silently becomes the process's working
+    /// directory: the design.toml lands wherever the caller happened to be. Two
+    /// `cf-studio-gui` fixtures had already done exactly that.
+    #[test]
+    fn a_relative_cleaned_stl_is_refused() {
+        let draft = DesignDraft {
+            cavity_inset_m: 0.005,
+            layers: vec![LayerDraft {
+                thickness_m: 0.0175,
+                material_key: "ECOFLEX_00_30".to_string(),
+                slacker_fraction: 0.25,
+            }],
+        };
+
+        let err = generate_molds_for_design(
+            Path::new("base_mold.cleaned.stl"),
+            Path::new("base_mold.prep.toml"),
+            &draft,
+            0.003,
+            &RidgeOptions::default(),
+            &PartSelection::all(),
+            CastMode::Detachable,
+            None,
+        )
+        .unwrap_err();
+
+        assert!(
+            matches!(&err, EngineError::MoldGen(m) if m.contains("must be absolute")),
+            "a relative cleaned_stl must be refused by name: {err:?}"
+        );
+    }
+
+    /// The other half of the same precondition.
+    ///
+    /// ⚠ Only `prep_toml`'s file name reaches the cast, so a prep from another
+    /// directory is silently replaced by whatever shares its name beside the
+    /// scan. Guarding `cleaned_stl` alone left this open.
+    #[test]
+    fn a_prep_toml_from_another_directory_is_refused() {
+        let dir = temp_dir("prep-elsewhere");
+        let elsewhere = temp_dir("prep-elsewhere-other");
+        let draft = DesignDraft {
+            cavity_inset_m: 0.005,
+            layers: vec![LayerDraft {
+                thickness_m: 0.0175,
+                material_key: "ECOFLEX_00_30".to_string(),
+                slacker_fraction: 0.25,
+            }],
+        };
+
+        let err = generate_molds_for_design(
+            &dir.join("base_mold.cleaned.stl"),
+            &elsewhere.join("base_mold.prep.toml"),
+            &draft,
+            0.003,
+            &RidgeOptions::default(),
+            &PartSelection::all(),
+            CastMode::Detachable,
+            None,
+        )
+        .unwrap_err();
+
+        assert!(
+            matches!(&err, EngineError::MoldGen(m) if m.contains("must sit beside")),
+            "a prep from another directory must be refused by name: {err:?}"
+        );
     }
 
     #[test]
