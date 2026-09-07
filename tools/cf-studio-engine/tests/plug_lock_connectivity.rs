@@ -273,7 +273,9 @@ fn a_cast_never_emits_a_detached_plug_lock() {
             Outcome::Cast(pieces) => {
                 if pieces.len() != 1 {
                     problems.push(format!(
-                        "{inset_mm} mm: the plug ships in {} pieces:{}",
+                        "{inset_mm} mm: the plug ships in {} pieces — the floor \
+                         lock is anchored to the ribbon, which does not move with \
+                         the cavity inset, so the plug climbs away from it:{}",
                         pieces.len(),
                         report(&pieces)
                     ));
@@ -281,10 +283,13 @@ fn a_cast_never_emits_a_detached_plug_lock() {
             }
         }
     }
+    // ⚠ The header stays neutral because the sweep has TWO failure modes and
+    // only one of them is the anchor. Naming the ribbon here would misdiagnose
+    // a refusal that simply failed to say what it declined — each problem line
+    // carries its own cause instead.
     assert!(
         problems.is_empty(),
-        "the floor lock is anchored to the ribbon, which does not move with the \
-         cavity inset — so the plug climbs away from it:\n{}",
+        "a cast must hand back one connected plug or say what it declined:\n{}",
         problems.join("\n")
     );
 }
