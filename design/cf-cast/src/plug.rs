@@ -159,6 +159,10 @@
 use cf_design::Solid;
 use nalgebra::{Point3, UnitVector3, Vector3};
 
+use mesh_repair::components::find_connected_components;
+use mesh_types::IndexedMesh;
+
+use crate::error::{CastError, CastTarget};
 use crate::mesh_csg::MatingTransform;
 use crate::prismatic_pin::{PrismaticPinPose, PrismaticPinSpec};
 use crate::ribbon::Ribbon;
@@ -556,6 +560,60 @@ pub fn add_plug_pins(plug: Solid, ribbon: &Ribbon) -> (Solid, Vec<MatingTransfor
     transforms.extend(build_plug_cap_trim_transform(ribbon));
     transforms.extend(build_plug_lock_transform(ribbon));
     (plug, transforms)
+}
+
+/// Refuse a meshed plug whose floor lock did not fuse to the plug body.
+///
+/// Run this AFTER [`crate::apply_mating_transforms`], on the mesh that is
+/// about to be written: the lock is unioned in post-marching-cubes, so
+/// before that the plug is legitimately one body and this would pass on
+/// every input.
+///
+/// ⚠ Deliberately NOT a size heuristic, unlike
+/// [`crate::canal::filter_plug_debris`], which drops any component under
+/// [`crate::canal::CANAL_DEBRIS_MAX_DROP_FRACTION`] of the body as
+/// marching-cubes noise. The lock is a feature this pipeline placed on
+/// purpose, so any detachment is a defect however small — and it is small:
+/// 20 faces against a body of hundreds, which at a fine cell size slips
+/// under that ceiling and gets silently deleted.
+///
+/// No-op when no lock was placed ([`PlugPinKind::None`], where the workshop
+/// user hand-positions the plug), so this cannot refuse a cast that never
+/// asked for one.
+///
+/// # Errors
+///
+/// [`CastError::PlugMatingFeatureDetached`] when a lock was placed and the
+/// emitted plug is not a single connected component.
+pub fn ensure_plug_mating_features_attached(
+    mesh: &IndexedMesh,
+    transforms: &[MatingTransform],
+    target: CastTarget,
+) -> Result<(), CastError> {
+    let placed_lock = transforms
+        .iter()
+        .any(|t| matches!(t, MatingTransform::UnionTruncatedPyramid { .. }));
+    if !placed_lock {
+        return Ok(());
+    }
+    let analysis = find_connected_components(mesh);
+    if analysis.component_count <= 1 {
+        return Ok(());
+    }
+    // `components` is sorted largest-first, so [0] is the plug body and the
+    // rest are whatever failed to fuse to it.
+    Err(CastError::PlugMatingFeatureDetached {
+        target,
+        piece_count: analysis.component_count,
+        main_faces: analysis.largest_component_size,
+        detached_faces: analysis
+            .components
+            .iter()
+            .skip(1)
+            .map(Vec::len)
+            .max()
+            .unwrap_or(0),
+    })
 }
 
 #[cfg(test)]
@@ -1376,5 +1434,179 @@ mod tests {
             "0.1 mm past +axis_unit tip must be exterior; SDF = {}",
             lock.evaluate(&exterior_pos_axis),
         );
+    }
+
+    /// A fan of `n` triangles sharing a center vertex at `x` — ONE connected
+    /// component of exactly `n` faces.
+    #[allow(clippy::cast_precision_loss)]
+    fn fan(n: usize, x: f64) -> (Vec<Point3<f64>>, Vec<[u32; 3]>) {
+        let mut vertices = vec![Point3::new(x, 0.0, 0.0)];
+        for i in 0..=n {
+            let a = std::f64::consts::FRAC_PI_2 * i as f64 / n as f64;
+            vertices.push(Point3::new(x + 0.001 * a.cos(), 0.001 * a.sin(), 0.0));
+        }
+        let faces = (1..=u32::try_from(n).unwrap())
+            .map(|i| [0, i, i + 1])
+            .collect();
+        (vertices, faces)
+    }
+
+    /// One mesh whose connected components have exactly the given face counts.
+    ///
+    /// ⚠ The counts must DIFFER for any test that reads more than one of them
+    /// back. An all-ones fixture cannot tell `main_faces` from
+    /// `detached_faces`, so the two could be swapped in the production code
+    /// and every assertion would still hold — and `cargo-mutants` does not
+    /// swap struct fields, so nothing else would catch it either.
+    #[allow(clippy::cast_precision_loss)]
+    fn mesh_of(component_faces: &[usize]) -> IndexedMesh {
+        let mut mesh = IndexedMesh {
+            vertices: Vec::new(),
+            faces: Vec::new(),
+        };
+        for (i, &n) in component_faces.iter().enumerate() {
+            let (v, f) = fan(n, i as f64 * 0.1);
+            let base = u32::try_from(mesh.vertices.len()).unwrap();
+            mesh.vertices.extend(v);
+            mesh.faces.extend(
+                f.into_iter()
+                    .map(|t| [t[0] + base, t[1] + base, t[2] + base]),
+            );
+        }
+        mesh
+    }
+
+    /// The plug-lock transforms an Axial ribbon actually produces — the same
+    /// pair `add_plug_pins` hands the mesh stage.
+    fn axial_transforms() -> Vec<MatingTransform> {
+        add_plug_pins(Solid::capsule(0.005, 0.020), &iter1_like_ribbon()).1
+    }
+
+    /// ⚠ THE SCOPE BOUND, and the reason this is not just "plugs are one
+    /// piece". With no lock placed there is nothing this check is entitled to
+    /// an opinion about, so a fragmented mesh passes — a `PlugPinKind::None`
+    /// cast, where the workshop user hand-positions the plug, must not start
+    /// failing because a scan shed a marching-cubes speck.
+    #[test]
+    fn a_plug_with_no_lock_is_not_this_checks_business() {
+        let centerline = vec![Point3::new(0.0, 0.0, 0.073), Point3::new(0.0, 0.0, -0.054)];
+        let split = SplitNormal::new(Vector3::new(1.0, 0.0, 0.0)).unwrap();
+        let no_pins = Ribbon::new(centerline, split).unwrap();
+        let transforms = add_plug_pins(Solid::capsule(0.005, 0.020), &no_pins).1;
+        assert!(
+            transforms.is_empty(),
+            "a ribbon without plug pins places no lock; got {transforms:#?}"
+        );
+        assert!(
+            ensure_plug_mating_features_attached(
+                &mesh_of(&[3, 2, 1]),
+                &transforms,
+                CastTarget::Plug { layer_index: None },
+            )
+            .is_ok(),
+            "three components and no lock is not a detached lock"
+        );
+    }
+
+    /// The other way "no lock" happens, and the only one that is a defect
+    /// rather than a setting.
+    ///
+    /// [`build_plug_lock_pose`] Gram-Schmidts the seam reference against the
+    /// pose axis and gives up when the projection collapses, so the caller
+    /// drops the lock rather than emit a pose skewed by numerical noise.
+    /// `Ribbon::new` refuses a split normal parallel to the centerline
+    /// TANGENT, but the pose axis is the cap normal, which the pour-end hint
+    /// sets independently — so a cap plane facing along the split normal
+    /// reaches the collapse the tangent check cannot.
+    ///
+    /// ⚠ Gated here because it decides whether a lock exists at all, which is
+    /// exactly what [`ensure_plug_mating_features_attached`] keys off: an
+    /// ungated collapse would silently turn every plug into one this check has
+    /// no opinion about.
+    #[test]
+    fn a_cap_plane_facing_along_the_split_normal_drops_the_lock() {
+        let centerline = vec![Point3::new(0.0, 0.0, 0.073), Point3::new(0.0, 0.0, -0.013)];
+        let split = SplitNormal::new(Vector3::new(1.0, 0.0, 0.0)).unwrap();
+        let collapsed = Ribbon::new(centerline, split)
+            .unwrap()
+            // Cap normal parallel to the split normal, so the Gram-Schmidt
+            // projection of one against the other is the zero vector.
+            .with_pour_end_hint(Point3::new(0.0, 0.0, -0.054), Vector3::new(1.0, 0.0, 0.0))
+            .with_plug_pins(PlugPinKind::Axial(PlugPinSpec::iter1()));
+
+        assert!(
+            build_plug_lock_pose(&collapsed).is_none(),
+            "a collapsed lateral reference must drop the lock, not skew it"
+        );
+        let transforms = add_plug_pins(Solid::capsule(0.005, 0.020), &collapsed).1;
+        assert!(
+            !transforms
+                .iter()
+                .any(|t| matches!(t, MatingTransform::UnionTruncatedPyramid { .. })),
+            "and so no pyramid is emitted; got {transforms:#?}"
+        );
+        assert!(
+            ensure_plug_mating_features_attached(
+                &mesh_of(&[3, 1]),
+                &transforms,
+                CastTarget::Plug {
+                    layer_index: Some(0)
+                },
+            )
+            .is_ok(),
+            "with no lock emitted there is nothing for the attachment check to hold"
+        );
+    }
+
+    /// The pass case: a lock was placed and the plug came out whole.
+    #[test]
+    fn a_lock_fused_to_its_plug_passes() {
+        assert!(
+            ensure_plug_mating_features_attached(
+                &mesh_of(&[7]),
+                &axial_transforms(),
+                CastTarget::Plug {
+                    layer_index: Some(0)
+                },
+            )
+            .is_ok(),
+            "one component with a lock placed is exactly the good case"
+        );
+    }
+
+    /// The refusal, and the counts it reports.
+    ///
+    /// ★ Two components, not twenty — the detached lock is ~20 faces against a
+    /// body of hundreds, well under the 2% that
+    /// [`crate::canal::CANAL_DEBRIS_MAX_DROP_FRACTION`] would drop as noise.
+    /// A check that shared that ceiling would delete the lock instead of
+    /// reporting it, which is why this one has no size threshold at all.
+    #[test]
+    fn a_lock_detached_from_its_plug_is_refused_whatever_its_size() {
+        let err = ensure_plug_mating_features_attached(
+            &mesh_of(&[7, 3, 1]),
+            &axial_transforms(),
+            CastTarget::Plug {
+                layer_index: Some(0),
+            },
+        )
+        .expect_err("a detached lock must be refused");
+        match err {
+            CastError::PlugMatingFeatureDetached {
+                piece_count,
+                main_faces,
+                detached_faces,
+                ..
+            } => {
+                assert_eq!(piece_count, 3, "every piece is counted, not just two");
+                assert_eq!(main_faces, 7, "the body is the LARGEST component");
+                assert_eq!(
+                    detached_faces, 3,
+                    "and the report names the largest DETACHED one — not the \
+                     smallest (1), not their sum (4), not the body (7)"
+                );
+            }
+            other => panic!("expected PlugMatingFeatureDetached, got {other:?}"),
+        }
     }
 }

@@ -1861,6 +1861,12 @@ fn mesh_and_gate_v2_one_plug(
         crate::canal::filter_plug_debris(&mut mesh, target)?;
     }
     let mesh = apply_mating_transforms(mesh, &mating_transforms, target)?;
+    // The floor lock is unioned in on the line above, so this is the first
+    // point at which it is possible to see whether it actually fused to the
+    // plug. It does not once the cavity inset has lifted the plug's base clear
+    // of the cap-plane the lock is anchored to — which ships a loose pyramid
+    // and a plug with nothing to seat it, and did so silently until this.
+    crate::plug::ensure_plug_mating_features_attached(&mesh, &mating_transforms, target)?;
     let compose_mesh_s = t_compose.elapsed().as_secs_f64();
     let path = out_dir
         .join(STLS_SUBDIR)

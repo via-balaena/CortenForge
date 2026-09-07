@@ -281,4 +281,47 @@ pub enum CastError {
         /// Face count of the largest (kept) component.
         main_faces: usize,
     },
+
+    /// A plug's mating features did not fuse to the plug body.
+    ///
+    /// The plug-floor lock is placed at the ribbon's cap-plane, and the
+    /// ribbon is the cleaned scan's centerline — it does not move when
+    /// `cavity_inset_m` does. The plug is the scan offset inward by that
+    /// inset, so past a threshold its base has climbed clear of the lock
+    /// and the two mesh as separate bodies: a loose pyramid in the print,
+    /// and a plug with nothing to seat it in the mold.
+    ///
+    /// ⚠ The message names that mechanism but does not claim the detached
+    /// piece IS the lock — the check knows only that a lock was placed and
+    /// that something did not fuse. A torn scan would land here too, and
+    /// telling its operator to reduce the inset would be wrong.
+    ///
+    /// ⚠ Not a size heuristic, unlike [`Self::CanalPlugDetachedComponent`].
+    /// The lock is a feature this pipeline deliberately unioned in, so ANY
+    /// detachment is a defect no matter how few faces it has — at a fine
+    /// cell size the 20-face lock falls under the debris filter's 2% drop
+    /// ceiling and would be silently deleted instead.
+    ///
+    /// The threshold is not a property of the geometry alone: it moves
+    /// with the mesh cell size, because what bridges the last of the gap
+    /// is the thin tip of the offset solid, and a coarse grid cannot
+    /// resolve it. Measured 2026-09-07 on a 25-degree cone, the plug
+    /// detaches from 6 mm of inset at 3 mm cells, 7 mm at 1.5, and 8 mm at
+    /// 1.0 — which is why both levers are in the message.
+    #[error(
+        "{target} came out in {piece_count} pieces — a {main_faces}-face body with a \
+         {detached_faces}-face piece not fused to it. The floor lock sits at the scan's \
+         cap-plane and does not move with the cavity inset, so past a threshold the plug's \
+         base climbs clear of it. Reduce the cavity inset, or mesh finer."
+    )]
+    PlugMatingFeatureDetached {
+        /// Which plug failed.
+        target: CastTarget,
+        /// How many connected pieces the emitted plug would have had.
+        piece_count: usize,
+        /// Face count of the largest component — the plug body.
+        main_faces: usize,
+        /// Face count of the largest detached component.
+        detached_faces: usize,
+    },
 }
