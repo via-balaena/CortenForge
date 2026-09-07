@@ -1451,6 +1451,40 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The other side of `changing_the_floor_trim_drops_reconstruct`.
+    ///
+    /// ⚠ That gate only shows a CHANGED floor drops the fit. Nothing showed an
+    /// UNCHANGED one keeps it, so both `-` swaps in the comparison survived:
+    /// `+` makes `(200 + 200)` read as a change, `/` makes `(200 / 200)` read
+    /// as one. Under either, the user loses a floor reconstruction they spent
+    /// time fitting the moment any slider is touched again.
+    ///
+    /// The second arm gates which FIELD the comparison reads: moving the tip
+    /// must not disturb a floor fit.
+    #[test]
+    fn re_applying_the_same_floor_trim_keeps_the_reconstruction() {
+        let mut s = session(open_tube(6, 20f64.to_radians()));
+        s.detect_caps();
+        s.apply_trim(0.0, 200.0);
+        s.apply_reconstruct(25.0, ReconstructShape::Taper);
+        assert!(
+            s.reconstruct().is_some(),
+            "fixture: a reconstruction is fitted"
+        );
+
+        s.apply_trim(0.0, 200.0);
+        assert!(
+            s.reconstruct().is_some(),
+            "re-applying the SAME floor trim is not a change, so the fit stands"
+        );
+
+        s.apply_trim(60.0, 200.0);
+        assert!(
+            s.reconstruct().is_some(),
+            "the guard reads the FLOOR: moving only the tip leaves the fit alone"
+        );
+    }
+
     /// ⚠ `centerline.len()` is only ever 0 or `CENTERLINE_SLICES` (30).
     /// `compute_centerline_polyline` returns exactly `n_slices` points when it
     /// succeeds and none when it fails, and `detect_caps` always passes 30 — no
