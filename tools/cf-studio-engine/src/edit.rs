@@ -1050,7 +1050,16 @@ mod tests {
     /// warn threshold, so the scan must proceed rather than short-circuit.
     #[test]
     fn a_soup_at_exactly_the_warn_threshold_is_still_scanned() {
-        let mut s = session(soup_many(UNWELDED_LOOP_WARN));
+        let mesh = soup_many(UNWELDED_LOOP_WARN);
+        // ⚠ Without this the gate goes VACUOUS if the heuristic stops firing:
+        // `&&` would short-circuit on its first operand and the loop-count
+        // comparison this test exists for would never be evaluated.
+        assert!(
+            cf_scan_prep_core::mesh_looks_unwelded(mesh.vertices.len(), mesh.faces.len()),
+            "the soup does look unwelded, so only the loop count decides"
+        );
+
+        let mut s = session(mesh);
         let scan = s.detect_caps();
         assert!(
             !scan.looks_unwelded,
@@ -1535,6 +1544,13 @@ mod tests {
         );
 
         s.apply_trim(10.0, 5.0);
+        // ⚠ Without this the gate goes VACUOUS if `apply_trim` ever stops
+        // setting the trim: the guard's second disjunct would fire instead and
+        // the assertion below would still hold, testing nothing.
+        assert!(
+            s.trim_tip_mm() > 0.0 && s.trim_floor_mm() > 0.0,
+            "the trim is really set, so only the centerline half can short-circuit"
+        );
 
         assert_eq!(
             s.processed_mesh().faces,
