@@ -69,6 +69,20 @@ const INSETS_MM: [f64; 6] = [0.0, 2.0, 5.0, 8.0, 11.0, 20.0];
 /// socket that receives it is cut.
 const LOCK_BASE_Z_MM: f64 = -4.0;
 
+/// Marching-cubes cell size for the sweep, in meters.
+///
+/// ⚠ Load-bearing, not a speed knob: the detachment threshold moves with it,
+/// because what bridges the last of the gap is the thin tip of the offset solid
+/// and a coarse grid cannot resolve it. On this cone the plug detaches from
+/// 6.0 mm of inset at this cell size, 7.0 mm at 1.5 mm cells, and 8.0 mm at
+/// 1.0 mm.
+///
+/// The sweep survives that: measured 2026-09-07, both tests pass at 3.0, 1.5
+/// AND 1.0 mm cells (2.9 / 5.6 / 7.3 s), since every inset in [`INSETS_MM`]
+/// either casts whole or is declined at each of them. 3 mm is here for the
+/// cost, not because the gate needs it.
+const CELL_SIZE_M: f64 = 0.003;
+
 /// A cone open at both ends — `r0` at the base, `r1` at the top, `h` tall. Open
 /// so cap detection finds the two boundary loops the centerline is fitted
 /// between; tapered so the plug's base recedes from the cap plane under an
@@ -108,22 +122,27 @@ struct Piece {
 /// What a cast at one inset produced: either a refusal, or the plug's pieces
 /// largest first.
 ///
-/// ⚠ A refusal is a LEGITIMATE answer here and the gate accepts it. An inset
-/// that leaves the plug unreachable by its floor lock may be one the cast
-/// should decline rather than honour; what it must never do is emit the mold
-/// anyway with a loose pyramid in it. Gating the verdict rather than the
-/// geometry keeps this file from prejudging a fix that has not been chosen.
+/// ⚠ A refusal is a LEGITIMATE answer and the sweep accepts it — an inset that
+/// leaves the plug unreachable by its floor lock is one the cast may decline
+/// rather than honour. What it must never do is emit the mold anyway with a
+/// loose pyramid in it.
 enum Outcome {
     Refused(String),
     Cast(Vec<Piece>),
 }
 
-/// Cast the cone at `inset_m`.
+/// Cast the cone at `inset_m`, in a fixture directory named for `caller`.
 ///
 /// One layer and layer 0's plug only: the lock is a layer-0 cap-plane feature,
 /// and the cup halves cost more than the whole rest of the gate.
-fn cast_at(inset_m: f64) -> Outcome {
-    let label = format!("plug-lock-{}", (inset_m * 1e4).round() as i64);
+///
+/// ⚠ `caller` is what keeps the two tests apart, and it is load-bearing rather
+/// than decorative. Both of them cast 5 mm, `cargo test` runs them on parallel
+/// threads of ONE process, and this function opens by DELETING the directory it
+/// is about to build in — so a name derived from the inset alone gives both the
+/// same path and lets one wipe the other's fixture mid-cast.
+fn cast_at(caller: &str, inset_m: f64) -> Outcome {
+    let label = format!("plug-lock-{caller}-{}", (inset_m * 1e4).round() as i64);
     let dir = std::env::temp_dir().join(format!("cf-studio-engine-{label}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -150,7 +169,7 @@ fn cast_at(inset_m: f64) -> Outcome {
         &dir.join("synthetic.cleaned.stl"),
         &dir.join("synthetic.prep.toml"),
         &draft,
-        0.003,
+        CELL_SIZE_M,
         &RidgeOptions::default(),
         &PartSelection::from_ids([PartId::Plug { layer_index: 0 }]),
         CastMode::Detachable,
@@ -166,12 +185,17 @@ fn cast_at(inset_m: f64) -> Outcome {
 
     // Read the STL while the fixture still exists — a returned `PathBuf`
     // outlives the file it names.
-    let mut mesh = load_stl(&out.plug_stls[0]).unwrap();
+    let plug = out
+        .plug_stls
+        .first()
+        .expect("a cast that succeeded emitted the plug it was asked for");
+    let mut mesh = load_stl(plug).unwrap();
     let _ = std::fs::remove_dir_all(&dir);
 
     // Weld first: marching cubes emits per-triangle vertices, so an unwelded
-    // mesh has as many components as it has faces. 1 um, as the workshop
-    // inspector this gate replaces uses.
+    // mesh has as many components as it has faces. 1 um, the tolerance
+    // `design/cf-cast/tests/iter_connectivity_inspector.rs` uses on the same
+    // question.
     weld_vertices(&mut mesh, 1e-6);
     let mut pieces: Vec<Piece> = find_connected_components(&mesh)
         .components
@@ -233,7 +257,7 @@ fn report(pieces: &[Piece]) -> String {
 fn a_cast_never_emits_a_detached_plug_lock() {
     let mut problems = Vec::new();
     for inset_mm in INSETS_MM {
-        match cast_at(inset_mm / 1e3) {
+        match cast_at("sweep", inset_mm / 1e3) {
             // Declining is an answer, as long as it says what it declined —
             // otherwise an unrelated failure (a missing prep file, say) would
             // read as an acceptable one. The pairing test below is what stops a
@@ -279,7 +303,7 @@ fn a_cast_never_emits_a_detached_plug_lock() {
 /// print, not a test run, is what re-validates it.
 #[test]
 fn the_poured_configuration_still_gets_its_floor_lock() {
-    let Outcome::Cast(pieces) = cast_at(0.005) else {
+    let Outcome::Cast(pieces) = cast_at("poured", 0.005) else {
         panic!("5 mm is the shipped default and the poured config — it must cast");
     };
     assert_eq!(
