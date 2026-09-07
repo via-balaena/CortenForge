@@ -953,7 +953,7 @@ mod tests {
     /// `load` prepares the scan like the Bevy tool: an off-origin scan
     /// comes back auto-centered, with the offset recorded for provenance.
     #[test]
-    fn load_auto_centers_and_records_offset() {
+    fn load_auto_centers_and_records_both_provenance_values() {
         // An off-center triangle (~(10, 10, 10)) as a tiny ASCII STL.
         let stl = "solid s\n\
             facet normal 0 0 1\n\
@@ -981,6 +981,18 @@ mod tests {
         assert!(
             s.auto_center_offset_m().norm() > 1.0,
             "the non-trivial centering offset (~17) is recorded for provenance",
+        );
+        // ⚠ The other half of the same provenance pair. `load` records both
+        // side by side and `save` writes both into `[scan_prep]`, but only the
+        // offset was gated — so a `load` that dropped the rotation was silent.
+        // The verdict is "a real rotation was recorded", not its exact value:
+        // pinning the quaternion would gate cf-scan-prep-core's PCA, not this.
+        let pca = s
+            .auto_pca_quat()
+            .expect("a flat triangle has a dominant axis, so PCA is not degenerate");
+        assert!(
+            pca.angle() > 0.1,
+            "the non-trivial PCA rotation (~90 deg) is recorded beside the offset, got {pca:?}",
         );
 
         let _ = std::fs::remove_dir_all(&dir);
