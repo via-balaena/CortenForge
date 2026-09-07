@@ -75,7 +75,7 @@ pub(crate) mod tests {
             ..Studio::default()
         };
         studio.project.set_scan(ScanInput {
-            source_path: "scan.stl".into(),
+            source_path: dir.join("scan.stl"),
         });
         let built = [
             studio.project.set_prep(PrepInput {
@@ -107,6 +107,11 @@ pub(crate) mod tests {
     ///
     /// ⚠ Derived, not written down: "no two tests share a path" was asserted by
     /// hand across 28 labels twice, and was false the first time.
+    ///
+    /// ⚠ Holds only under the default harness. At `--test-threads=1` libtest
+    /// runs on the main thread, every label collapses to `main`, and all three
+    /// consumers share one directory — harmless today because nothing reads a
+    /// fixture back, and load-bearing the moment one does.
     pub(crate) fn test_label() -> String {
         std::thread::current()
             .name()

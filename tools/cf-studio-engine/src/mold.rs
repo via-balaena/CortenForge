@@ -48,8 +48,9 @@ use crate::pour::{LayerPour, build_pour_plan};
 /// cast run's `base_dir`.
 ///
 /// # Errors
-/// - [`EngineError::MoldGen`] if a path lacks a filename, the design write
-///   fails, or the cast run / output read-back fails.
+/// - [`EngineError::MoldGen`] if `cleaned_stl` is relative, a path lacks a
+///   filename, the design write fails, or the cast run / output read-back
+///   fails.
 /// - [`EngineError::WriteDesign`] / [`EngineError::InvalidDesign`] /
 ///   [`EngineError::UnknownMaterial`] if the draft can't be materialized.
 /// - [`EngineError::PourDataUnavailable`] if a layer has no cure data.
@@ -67,6 +68,17 @@ pub fn generate_molds_for_design(
     cast_mode: CastMode,
     output_dir_override: Option<&Path>,
 ) -> Result<MoldOutputs> {
+    // ⚠ Enforced, not just documented. `base_dir` is this path's parent, so a
+    // relative `cleaned_stl` silently makes the process's working directory the
+    // cast's output root and writes `<stem>.design.toml` there. Two callers had
+    // already got this wrong; a precondition every caller must remember is one
+    // some caller will forget.
+    if cleaned_stl.is_relative() {
+        return Err(EngineError::MoldGen(format!(
+            "cleaned_stl must be absolute — its parent is the cast's base_dir: {}",
+            cleaned_stl.display()
+        )));
+    }
     let base_dir = cleaned_stl.parent().unwrap_or_else(|| Path::new("."));
     let cleaned_name = file_name(cleaned_stl)?;
     let prep_name = file_name(prep_toml)?;
@@ -487,6 +499,40 @@ mod tests {
             file_name(Path::new("/")).unwrap_err(),
             EngineError::MoldGen(_)
         ));
+    }
+
+    /// The precondition the doc has always stated, now refused.
+    ///
+    /// ⚠ Unenforced, `base_dir` silently becomes the process's working
+    /// directory: the design.toml lands wherever the caller happened to be. Two
+    /// `cf-studio-gui` fixtures had already done exactly that.
+    #[test]
+    fn a_relative_cleaned_stl_is_refused() {
+        let draft = DesignDraft {
+            cavity_inset_m: 0.005,
+            layers: vec![LayerDraft {
+                thickness_m: 0.0175,
+                material_key: "ECOFLEX_00_30".to_string(),
+                slacker_fraction: 0.25,
+            }],
+        };
+
+        let err = generate_molds_for_design(
+            Path::new("base_mold.cleaned.stl"),
+            Path::new("base_mold.prep.toml"),
+            &draft,
+            0.003,
+            &RidgeOptions::default(),
+            &PartSelection::all(),
+            CastMode::Detachable,
+            None,
+        )
+        .unwrap_err();
+
+        assert!(
+            matches!(&err, EngineError::MoldGen(m) if m.contains("must be absolute")),
+            "a relative cleaned_stl must be refused by name: {err:?}"
+        );
     }
 
     #[test]

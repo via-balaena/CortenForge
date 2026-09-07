@@ -423,26 +423,6 @@ pub(crate) mod tests {
         app
     }
 
-    /// How long a `backdated` reading stays valid.
-    const CLOCK_MARGIN_MS: u64 = 900;
-
-    /// An `Instant` far enough back that `elapsed().as_secs() == secs`.
-    ///
-    /// ⚠ Landed 100 ms into the second, the widest margin available: the
-    /// reading holds for another `CLOCK_MARGIN_MS` and no longer.
-    ///
-    /// ⛔ Not replaced by an injected clock, deliberately.
-    /// `the_clock_follows_real_elapsed_time` exists to gate that the source IS
-    /// the real clock — a seam would make it vacuous — and the margin measured
-    /// 0 failures in 80 runs under 24 busy loops.
-    fn backdated(secs: u64) -> Instant {
-        Instant::now()
-            .checked_sub(Duration::from_millis(
-                secs * 1000 + (1000 - CLOCK_MARGIN_MS),
-            ))
-            .expect("a few seconds of uptime")
-    }
-
     /// Run frames until the app is handed back.
     ///
     /// ⚠ Wall clock, because these frames are nearly free and a fixed count
@@ -451,6 +431,13 @@ pub(crate) mod tests {
     /// deadline, and a long one turns that caught mutant into a timeout.
     fn run_until_idle(app: &mut App, what: &str) {
         const DEADLINE: Duration = Duration::from_secs(2);
+        // ⚠ Zero frames is a pass otherwise, exactly as in
+        // `run_plugin_update_until`: the caller's assertions then read the state
+        // it seeded rather than the poller's output.
+        assert!(
+            app.world().resource::<Studio>().busy,
+            "{what} was already idle before a frame ran"
+        );
         let deadline = Instant::now() + DEADLINE;
         while app.world().resource::<Studio>().busy {
             assert!(
@@ -864,14 +851,11 @@ endsolid t
             material_key: "ECOFLEX_00_30".to_string(),
             slacker_fraction: 0.0,
         };
-        // ⚠ Absolute, under this process's fixture root — the same rule
-        // `molds::tests::viewing_step_5_with` carries. `start_molds` spawns the
-        // real cast, and `generate_molds_for_design` writes `<stem>.design.toml`
-        // beside the cleaned scan before it fails on the missing input. Relative
-        // paths put that in the crate directory, where `.gitignore`'s `*.tmp`
-        // rule hides it from `git status`. It had already happened.
+        // ⚠ Absolute. `start_molds` spawns the real cast, and a relative path
+        // makes the crate directory the cast's `base_dir`. The engine rejects
+        // that now; this keeps the fixture on the right side of it without
+        // depending on the error.
         let dir = crate::molds::tests::fixture_root().join(crate::molds::tests::test_label());
-        std::fs::create_dir_all(&dir).expect("a fixture dir");
         let mut studio = Studio::default();
         studio.project.set_scan(ScanInput {
             source_path: dir.join("scan.stl"),
@@ -902,6 +886,24 @@ endsolid t
             .add_systems(Update, poll_molds_job);
         app.insert_resource(studio_ready_for_molds());
         app
+    }
+
+    /// How long a `backdated` reading stays valid.
+    const CLOCK_MARGIN_MS: u64 = 1000;
+
+    /// An `Instant` exactly `secs` in the past, so `elapsed().as_secs() == secs`.
+    ///
+    /// ⚠ No safety offset: `elapsed()` is read strictly after the `Instant::now()`
+    /// this is built from, so the reading is already `secs` and holds for the
+    /// whole next second. An offset would only spend that margin.
+    ///
+    /// ⛔ Not replaced by an injected clock, deliberately.
+    /// `the_clock_follows_real_elapsed_time` exists to gate that the source IS
+    /// the real clock — a seam would make it vacuous.
+    fn backdated(secs: u64) -> Instant {
+        Instant::now()
+            .checked_sub(Duration::from_millis(secs * 1000))
+            .expect("a few seconds of uptime")
     }
 
     /// Put a run into the job by hand: the task, when it started, and the
@@ -1054,7 +1056,7 @@ endsolid t
         let shown = shown_second(&app);
         assert_eq!(
             shown, WAITED,
-            "backdated {WAITED}s exactly, clock says {shown} \
+            "backdated {WAITED}s, clock says {shown} \
              (a stall over {CLOCK_MARGIN_MS} ms here reads as the next second)"
         );
         // ⚠ The literal, not `format_molds_progress(WAITED)`. An expectation
@@ -1106,8 +1108,8 @@ endsolid t
     /// never drawn and rebuild the identical line every frame.
     #[test]
     fn the_opening_line_and_the_seed_are_the_same_second() {
-        // Held for the task pool `start_molds` spawns onto.
-        let _pool = app_ready_for_molds();
+        // The pool `start_molds` spawns onto — the form `dialogs.rs` uses.
+        AsyncComputeTaskPool::get_or_init(bevy::tasks::TaskPool::default);
         let mut studio = studio_ready_for_molds();
         let mut job = MoldsJob::default();
 
