@@ -1040,6 +1040,28 @@ mod tests {
         assert_eq!(scan.centerline_segments, 0);
     }
 
+    /// The `valid.len() > UNWELDED_LOOP_WARN` boundary, at exactly the
+    /// constant.
+    ///
+    /// ⚠ `detect_caps_short_circuits_on_unwelded_soup` uses 101 loops — above
+    /// the bound, where `>` and `>=` agree, so `>` -> `>=` survived it. 100 is
+    /// the only count that separates them: the soup still looks unwelded
+    /// (300 vertices >= 2 x 100 faces), but the loop count has not passed the
+    /// warn threshold, so the scan must proceed rather than short-circuit.
+    #[test]
+    fn a_soup_at_exactly_the_warn_threshold_is_still_scanned() {
+        let mut s = session(soup_many(UNWELDED_LOOP_WARN));
+        let scan = s.detect_caps();
+        assert!(
+            !scan.looks_unwelded,
+            "at exactly {UNWELDED_LOOP_WARN} loops the threshold is not passed"
+        );
+        assert_eq!(
+            scan.loop_count, UNWELDED_LOOP_WARN,
+            "so every loop is built rather than discarded"
+        );
+    }
+
     #[test]
     fn detect_caps_short_circuits_on_unwelded_soup() {
         // 101 disjoint triangles: unwelded (303 ≥ 2·101) AND > 100 loops.
@@ -1214,6 +1236,13 @@ mod tests {
         s.detect_caps();
         s.apply_trim(10.0, 200.0);
         s.apply_reconstruct(25.0, ReconstructShape::Constant);
+
+        // ⚠ Assert the trims are SET before asserting `reset` clears them.
+        // Checking only the zeros afterwards is satisfied by a getter that
+        // always returns 0.0, which is exactly the mutant that survived.
+        assert_eq!(s.trim_tip_mm(), 10.0, "the tip trim is in place");
+        assert_eq!(s.trim_floor_mm(), 200.0, "and so is the floor trim");
+
         s.reset();
         assert_eq!(s.trim_tip_mm(), 0.0);
         assert_eq!(s.trim_floor_mm(), 0.0);
