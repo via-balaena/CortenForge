@@ -1436,29 +1436,36 @@ mod tests {
         );
     }
 
-    /// A free-standing triangle at `x`. Two of these are two components;
-    /// `find_connected_components` works on shared indices, and these share
-    /// none.
-    fn loose_triangle(x: f64) -> (Vec<Point3<f64>>, Vec<[u32; 3]>) {
-        (
-            vec![
-                Point3::new(x, 0.0, 0.0),
-                Point3::new(x + 0.001, 0.0, 0.0),
-                Point3::new(x, 0.001, 0.0),
-            ],
-            vec![[0, 1, 2]],
-        )
+    /// A fan of `n` triangles sharing a center vertex at `x` — ONE connected
+    /// component of exactly `n` faces.
+    #[allow(clippy::cast_precision_loss)]
+    fn fan(n: usize, x: f64) -> (Vec<Point3<f64>>, Vec<[u32; 3]>) {
+        let mut vertices = vec![Point3::new(x, 0.0, 0.0)];
+        for i in 0..=n {
+            let a = std::f64::consts::FRAC_PI_2 * i as f64 / n as f64;
+            vertices.push(Point3::new(x + 0.001 * a.cos(), 0.001 * a.sin(), 0.0));
+        }
+        let faces = (1..=u32::try_from(n).unwrap())
+            .map(|i| [0, i, i + 1])
+            .collect();
+        (vertices, faces)
     }
 
-    /// `n` disjoint triangles as one mesh — `n` connected components.
-    fn scattered_mesh(n: usize) -> IndexedMesh {
+    /// One mesh whose connected components have exactly the given face counts.
+    ///
+    /// ⚠ The counts must DIFFER for any test that reads more than one of them
+    /// back. An all-ones fixture cannot tell `main_faces` from
+    /// `detached_faces`, so the two could be swapped in the production code
+    /// and every assertion would still hold — and `cargo-mutants` does not
+    /// swap struct fields, so nothing else would catch it either.
+    #[allow(clippy::cast_precision_loss)]
+    fn mesh_of(component_faces: &[usize]) -> IndexedMesh {
         let mut mesh = IndexedMesh {
             vertices: Vec::new(),
             faces: Vec::new(),
         };
-        for i in 0..n {
-            #[allow(clippy::cast_precision_loss)]
-            let (v, f) = loose_triangle(i as f64 * 0.1);
+        for (i, &n) in component_faces.iter().enumerate() {
+            let (v, f) = fan(n, i as f64 * 0.1);
             let base = u32::try_from(mesh.vertices.len()).unwrap();
             mesh.vertices.extend(v);
             mesh.faces.extend(
@@ -1492,7 +1499,7 @@ mod tests {
         );
         assert!(
             ensure_plug_mating_features_attached(
-                &scattered_mesh(3),
+                &mesh_of(&[3, 2, 1]),
                 &transforms,
                 CastTarget::Plug { layer_index: None },
             )
@@ -1540,7 +1547,7 @@ mod tests {
         );
         assert!(
             ensure_plug_mating_features_attached(
-                &scattered_mesh(2),
+                &mesh_of(&[3, 1]),
                 &transforms,
                 CastTarget::Plug {
                     layer_index: Some(0)
@@ -1556,7 +1563,7 @@ mod tests {
     fn a_lock_fused_to_its_plug_passes() {
         assert!(
             ensure_plug_mating_features_attached(
-                &scattered_mesh(1),
+                &mesh_of(&[7]),
                 &axial_transforms(),
                 CastTarget::Plug {
                     layer_index: Some(0)
@@ -1577,7 +1584,7 @@ mod tests {
     #[test]
     fn a_lock_detached_from_its_plug_is_refused_whatever_its_size() {
         let err = ensure_plug_mating_features_attached(
-            &scattered_mesh(2),
+            &mesh_of(&[7, 3, 1]),
             &axial_transforms(),
             CastTarget::Plug {
                 layer_index: Some(0),
@@ -1591,9 +1598,13 @@ mod tests {
                 detached_faces,
                 ..
             } => {
-                assert_eq!(piece_count, 2, "both pieces are counted");
-                assert_eq!(main_faces, 1, "the body is the largest component");
-                assert_eq!(detached_faces, 1, "and the lock is what came off it");
+                assert_eq!(piece_count, 3, "every piece is counted, not just two");
+                assert_eq!(main_faces, 7, "the body is the LARGEST component");
+                assert_eq!(
+                    detached_faces, 3,
+                    "and the report names the largest DETACHED one — not the \
+                     smallest (1), not their sum (4), not the body (7)"
+                );
             }
             other => panic!("expected PlugMatingFeatureDetached, got {other:?}"),
         }

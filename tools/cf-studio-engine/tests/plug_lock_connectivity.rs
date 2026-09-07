@@ -7,8 +7,9 @@
 //! cap-plane. The ribbon is the cleaned scan's centerline: it does not move
 //! when `cavity_inset_m` changes. The plug is `scan.offset(-inset)`, and it
 //! does. Past a threshold the plug's base has climbed clear of the lock and the
-//! STL ships in two pieces — a loose pyramid in the print, and a plug with
-//! nothing holding it in the mold. `cf-studio-gui` offers 0-30 mm.
+//! two mesh as separate bodies — which shipped as a loose pyramid in the print
+//! and a plug with nothing holding it in the mold, until the refusal that lands
+//! with this file. `cf-studio-gui` offers 0-30 mm.
 //!
 //! ★★ WHY A CONE. A straight tube CANNOT show this: its inward offset shrinks
 //! it laterally and the cap-plane cut keeps the base pinned, so the body meets
@@ -30,13 +31,14 @@
 //!
 //! The lock is in the same place in every row. That is the whole finding.
 //!
-//! So across the range the GUI offers, on this cone, today: 0 - 5.5 mm is
-//! correct, 6 - 19 mm is SILENTLY WRONG, and from 20 mm the cast declines —
-//! but as `marching cubes produced an empty mesh for plug layer 0`, which is
-//! the mesher complaining downstream, not the cast telling the operator their
-//! inset is larger than this scan can take. Only the middle band is this
-//! arc's; the wording of the top one belongs with reconciling the offered
-//! range against the honourable one.
+//! Those rows are the state BEFORE the fix that ships with this file: across
+//! the range the GUI offers, 0 - 5.5 mm was correct, 6 - 19 mm was SILENTLY
+//! WRONG, and from 20 mm the cast already declined — though as `marching cubes
+//! produced an empty mesh for plug layer 0`, the mesher complaining downstream
+//! rather than the cast telling the operator their inset is larger than this
+//! scan can take. The middle band is what this arc closed; the wording of the
+//! top one belongs with reconciling the offered range against the honourable
+//! one, which is still open.
 //!
 //! ⚠ SCOPE. The cup pieces fragment too (2 -> 4 components at 11 mm), and both
 //! halves carry a 16-face sliver even at 2 mm. Cup-piece connectivity was the
@@ -214,10 +216,14 @@ fn report(pieces: &[Piece]) -> String {
 /// The invariant: whatever a cast does with an inset, it never hands the
 /// workshop a plug in two pieces.
 ///
-/// RED at 8 and 11 mm on today's code. What turns it green is not decided
-/// here — refusing the inset, dropping the lock for the documented
-/// hand-positioning mode, or growing the lock into a pedestal that spans the
-/// gap all satisfy it, and they are different products.
+/// Written RED — it failed at 8 and 11 mm at `0b0b0786`, one commit before the
+/// refusal that turns it green.
+///
+/// ★ It stays shaped as a VERDICT rather than a geometry assertion, and that
+/// outlives the choice it was written under. Refusing the inset (what the cast
+/// now does), dropping the lock for the documented hand-positioning mode, and
+/// growing the lock into a pedestal that spans the gap all satisfy it — so
+/// replacing the refusal with a pedestal later needs no edit here.
 ///
 /// ⚠ The whole sweep runs before anything is asserted. Failing on the first
 /// bad inset would stop at 8 mm and leave the refusal at 20 mm unreached — a

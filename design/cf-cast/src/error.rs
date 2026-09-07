@@ -291,6 +291,11 @@ pub enum CastError {
     /// and the two mesh as separate bodies: a loose pyramid in the print,
     /// and a plug with nothing to seat it in the mold.
     ///
+    /// ⚠ The message names that mechanism but does not claim the detached
+    /// piece IS the lock — the check knows only that a lock was placed and
+    /// that something did not fuse. A torn scan would land here too, and
+    /// telling its operator to reduce the inset would be wrong.
+    ///
     /// ⚠ Not a size heuristic, unlike [`Self::CanalPlugDetachedComponent`].
     /// The lock is a feature this pipeline deliberately unioned in, so ANY
     /// detachment is a defect no matter how few faces it has — at a fine
@@ -304,10 +309,10 @@ pub enum CastError {
     /// detaches from 6 mm of inset at 3 mm cells, 7 mm at 1.5, and 8 mm at
     /// 1.0 — which is why both levers are in the message.
     #[error(
-        "{target} came out in {piece_count} pieces — a {main_faces}-face body with its \
-         {detached_faces}-face floor lock detached. The lock sits at the scan's cap-plane \
-         and does not move with the cavity inset, so past a threshold the plug's base \
-         climbs clear of it. Reduce the cavity inset, or mesh finer."
+        "{target} came out in {piece_count} pieces — a {main_faces}-face body with a \
+         {detached_faces}-face piece not fused to it. The floor lock sits at the scan's \
+         cap-plane and does not move with the cavity inset, so past a threshold the plug's \
+         base climbs clear of it. Reduce the cavity inset, or mesh finer."
     )]
     PlugMatingFeatureDetached {
         /// Which plug failed.
