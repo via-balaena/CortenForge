@@ -1391,6 +1391,66 @@ mod tests {
         );
     }
 
+    /// A scratch dir for the `load` gates, which need real files on disk.
+    fn load_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("cf-edit-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    const UNIT_TRI_STL: &str = "solid s\nfacet normal 0 0 1\nouter loop\n\
+         vertex 0 0 0\nvertex 10 0 0\nvertex 0 10 0\n\
+         endloop\nendfacet\nendsolid s\n";
+
+    /// ⚠ Vertices WITHOUT faces, not an empty file. `vertices.is_empty() ||
+    /// faces.is_empty()` needs a mesh where exactly one side is empty, or
+    /// `||` -> `&&` survives: with both empty the mutant refuses too. An OBJ
+    /// carrying only `v` lines is the one input that separates them.
+    #[test]
+    fn load_rejects_a_point_cloud_with_no_surface() {
+        let dir = load_dir("vonly");
+        let obj = dir.join("cloud.obj");
+        std::fs::write(&obj, "v 0 0 0\nv 1 0 0\nv 0 1 0\n").unwrap();
+
+        let loaded = cortenforge::mesh::io::load_mesh(&obj).expect("the OBJ itself parses");
+        assert!(
+            !loaded.vertices.is_empty() && loaded.faces.is_empty(),
+            "fixture: vertices without faces, so exactly one side is empty"
+        );
+
+        let err = EditSession::load(&obj, 1.0).unwrap_err();
+        assert!(
+            matches!(err, EngineError::EmptyScan { .. }),
+            "a point cloud is refused as a scan, not carried as an empty session: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ⚠ The suite only ever loaded at `scale_to_m == 1.0`, which SKIPS the
+    /// scaling branch entirely — that is why every mutant in it survived.
+    /// The verdict is the AABB extent, which is invariant under the centring
+    /// and PCA rotation `load` also applies, so it isolates the scale.
+    #[test]
+    fn load_applies_the_unit_scale() {
+        let dir = load_dir("scale");
+        let stl = dir.join("tri.stl");
+        std::fs::write(&stl, UNIT_TRI_STL).unwrap();
+
+        let extent = |s: &EditSession| {
+            let a = s.aabb();
+            a.max.z - a.min.z
+        };
+        let as_is = extent(&EditSession::load(&stl, 1.0).unwrap());
+        let millimetres = extent(&EditSession::load(&stl, 0.001).unwrap());
+
+        assert!(as_is > 1.0, "fixture: the unscaled scan is order 10 units");
+        assert!(
+            (as_is - millimetres * 1000.0).abs() < 1e-9 * as_is,
+            "loading at 0.001 shrinks the scan by exactly 1000x: {as_is} vs {millimetres}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A tube bent through `bend_rad` in the x-z plane, scaled so its arc is
     /// ~1 unit long.
     ///
