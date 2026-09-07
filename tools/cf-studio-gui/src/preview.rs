@@ -234,10 +234,6 @@ pub(crate) fn drive_plug_preview(
     view.land_cache();
     view.land_mesh();
     view.start_cache(prep);
-    // ▶ `plug_draft` allocates a ridge `Vec` every frame the piece is up. A
-    // guard here was tried and deleted: it returns true in the steady state, so
-    // it never skipped the allocation. `start_mesh` cannot hold it either — the
-    // draft is built before it is entered.
     view.start_mesh(&shape.plug_draft());
 }
 

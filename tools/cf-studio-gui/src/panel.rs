@@ -2147,10 +2147,15 @@ pub(crate) mod tests {
             "the click must reach `start_molds` and hold the app: {:?}",
             studio.message
         );
-        assert!(
-            matches!(&studio.message, Some(Ok(text)) if text.contains("Making molds")),
-            "and say so on screen: {:?}",
-            studio.message
+        // ⚠ Exact, not `contains`. Seeding `shown_secs` and the opening line
+        // from different seconds passed all 172 while the app announced a cast
+        // that started this instant as already 0:07 elapsed.
+        const OPENING_LINE: &str =
+            "Making molds… 0:00 elapsed (this can take a while — the window stays responsive)";
+        assert_eq!(
+            studio.message,
+            Some(Ok(OPENING_LINE.to_string())),
+            "and say so on screen, at the second the run actually started"
         );
     }
 

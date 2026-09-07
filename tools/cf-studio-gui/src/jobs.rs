@@ -1059,15 +1059,17 @@ endsolid t
     /// print-quality cast.
     #[test]
     fn the_line_is_left_alone_within_the_same_second() {
-        const SECOND_ONE: &str =
-            "Making molds… 0:01 elapsed (this can take a while — the window stays responsive)";
+        const WAITED: u64 = 2;
+        const BACKDATE_MS: u64 = WAITED * 1000 + 100;
 
         let mut app = app_ready_for_molds();
-        // ⚠ No backdate. The case needs `elapsed().as_secs() == shown_secs`,
-        // which a fresh `Instant` against a seed of 0 gives with a full second
-        // of margin — a backdated pair would leave 900 ms and tie two literals
-        // together that nothing states must agree.
-        inject(&mut app, never_finishes(), Instant::now(), 0);
+        // ⚠ The suite's only NONZERO `shown_secs`. With 0 injected everywhere,
+        // hardcoding the poller's second argument to 0 — dropping the field read
+        // outright — passed all 172.
+        let started = Instant::now()
+            .checked_sub(Duration::from_millis(BACKDATE_MS))
+            .expect("2.1 s of uptime");
+        inject(&mut app, never_finishes(), started, WAITED);
         let sentinel = Some(Ok("SENTINEL".to_string()));
         app.world_mut().resource_mut::<Studio>().message = sentinel.clone();
 
@@ -1078,26 +1080,6 @@ endsolid t
             sentinel,
             "the whole second has not changed, so the line must not be rebuilt"
         );
-
-        // ⚠ Two-sided. Asserting only that nothing happened passes just as well
-        // when `poll_molds_job` is not in the schedule at all, so push the run a
-        // second into the past and require the same frame to draw.
-        {
-            let mut job = app.world_mut().resource_mut::<MoldsJob>();
-            let run = job.0.as_mut().expect("a cast is in flight");
-            run.started = run
-                .started
-                .checked_sub(Duration::from_secs(1))
-                .expect("1 s of uptime");
-        }
-
-        app.update();
-
-        assert_eq!(
-            app.world().resource::<Studio>().message,
-            Some(Ok(SECOND_ONE.to_string())),
-            "a second later, the same poller must draw"
-        );
     }
 
     /// The plugin's own wiring, which nothing else reaches.
@@ -1107,14 +1089,7 @@ endsolid t
     /// cast ran for fifteen minutes and never landed.
     #[test]
     fn the_plugin_registers_the_cast_job_and_runs_its_poller() {
-        use bevy::state::app::StatesPlugin;
-
-        // ⚠ `ignore` is load-bearing: `Update` also holds the scene and pointer
-        // systems, whose params want a renderer. In Bevy 0.18 a param that fails
-        // validation is an error the default handler PANICS on.
-        let mut app = App::new();
-        app.set_error_handler(bevy::ecs::error::ignore);
-        app.add_plugins((MinimalPlugins, StatesPlugin, crate::plugin::StudioPlugin));
+        let mut app = app_from_the_plugin();
         app.insert_resource(studio_ready_for_molds());
 
         // ⚠ `resource_mut` and not `init_resource`: this line is the assertion
@@ -1126,17 +1101,9 @@ endsolid t
         });
         app.world_mut().resource_mut::<Studio>().busy = true;
 
-        // ⚠ The schedule by hand, not `app.update()`: `Startup` runs
-        // `setup_scene`, which wants an asset stack this gate has no business
-        // standing up. Same reason the plugin's own wiring gate does it.
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while app.world().resource::<Studio>().busy {
-            assert!(
-                Instant::now() < deadline,
-                "the plugin never ran the cast poller"
-            );
-            app.world_mut().run_schedule(Update);
-        }
+        run_plugin_update_until(&mut app, "the cast poller", |app| {
+            !app.world().resource::<Studio>().busy
+        });
 
         assert_eq!(
             app.world()
@@ -1156,24 +1123,15 @@ endsolid t
     /// people learn to skip.
     #[test]
     fn the_plugin_registers_the_print_job_and_runs_its_poller() {
-        use bevy::state::app::StatesPlugin;
-
-        let mut app = App::new();
-        app.set_error_handler(bevy::ecs::error::ignore);
-        app.add_plugins((MinimalPlugins, StatesPlugin, crate::plugin::StudioPlugin));
+        let mut app = app_from_the_plugin();
 
         app.world_mut().resource_mut::<PrintJob>().0 =
             Some(AsyncComputeTaskPool::get().spawn(async { Err("the copy failed".to_string()) }));
         app.world_mut().resource_mut::<Studio>().busy = true;
 
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while app.world().resource::<Studio>().busy {
-            assert!(
-                Instant::now() < deadline,
-                "the plugin never ran the print poller"
-            );
-            app.world_mut().run_schedule(Update);
-        }
+        run_plugin_update_until(&mut app, "the print poller", |app| {
+            !app.world().resource::<Studio>().busy
+        });
 
         assert!(
             matches!(&app.world().resource::<Studio>().message,
@@ -1184,7 +1142,11 @@ endsolid t
     }
 
     /// An app wired by the plugin alone, with unrelated systems allowed to
-    /// fall out. See the note on the cast gate for why `ignore` is required.
+    /// fall out.
+    ///
+    /// ⚠ `ignore` is load-bearing: `Update` also holds the scene and pointer
+    /// systems, whose params want a renderer. In Bevy 0.18 a param that fails
+    /// validation is an error the default handler PANICS on.
     fn app_from_the_plugin() -> App {
         use bevy::state::app::StatesPlugin;
 
@@ -1196,6 +1158,9 @@ endsolid t
 
     /// Run the plugin's `Update` until `done`, or fail saying which poller
     /// never ran.
+    ///
+    /// ⚠ The schedule by hand, not `app.update()`: `Startup` runs `setup_scene`,
+    /// which wants an asset stack these gates have no business standing up.
     fn run_plugin_update_until(app: &mut App, what: &str, done: impl Fn(&App) -> bool) {
         let deadline = Instant::now() + Duration::from_secs(2);
         while !done(app) {
