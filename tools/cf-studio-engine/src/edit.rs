@@ -599,8 +599,11 @@ impl EditSession {
 
         // 2. Trim (+ reconstruct / flat-cap) in the baked world frame —
         //    bake the centerline through the same transform first.
+        // ⚠ No `centerline.len() >= 2` here: the refusal at the top of `save`
+        // already returned for that, and `&self` cannot have changed since. The
+        // conjunct was always true — it read as a guard and gated nothing.
         let mut trim_capped = 0_usize;
-        if (self.trim_tip_mm > 0.0 || self.trim_floor_mm > 0.0) && self.centerline.len() >= 2 {
+        if self.trim_tip_mm > 0.0 || self.trim_floor_mm > 0.0 {
             let centerline_world: Vec<Point3<f64>> = self
                 .centerline
                 .iter()
