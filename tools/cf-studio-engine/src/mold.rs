@@ -635,6 +635,14 @@ mod tests {
             matches!(&err, EngineError::MoldGen(m) if m.contains("must sit beside")),
             "a prep from another directory must be refused by name: {err:?}"
         );
+
+        // Both dirs, not just the one the assertion names. `temp_dir` CREATES
+        // them and this test made two, writing to neither. Measured before the
+        // fix: 2186 `cf-studio-engine-mold-test-*` directories in `$TMPDIR`, of
+        // which 2131 were EMPTY — this pair, one set per run since the test
+        // landed. The other 55 hold real fixture output and clean up already.
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&elsewhere);
     }
 
     #[test]
