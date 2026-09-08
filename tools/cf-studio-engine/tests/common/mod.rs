@@ -28,7 +28,7 @@ use cortenforge::mesh::types::{IndexedMesh, Point3};
 /// tube's inward offset shrinks it laterally while the cap-plane cut keeps its
 /// base pinned, so the plug meets the cap plane at every inset and neither the
 /// detachment of `plug_lock_connectivity` nor the seating-face changes of
-/// `mating_face_flatness` ever appear.
+/// `plug_seating_face` ever appear.
 pub fn open_cone(r0: f64, r1: f64, h: f64, segs: usize, rings: usize) -> IndexedMesh {
     let mut vertices = Vec::new();
     for i in 0..rings {
