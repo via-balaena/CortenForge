@@ -15,7 +15,7 @@ use cf_studio_engine::{
 };
 
 mod common;
-use common::{CastOutcome, cast_synthetic, open_cone};
+use common::{CastOutcome, cast_synthetic_with_ridges, open_cone};
 
 /// Cell size for both sides of the comparison.
 ///
@@ -85,51 +85,77 @@ fn the_preflight_returns_the_verdict_the_cast_would() {
     let dir = fixture("agrees");
     let (cleaned, prep) = paths(&dir);
     let mut problems = Vec::new();
-    let mut saw_cast = false;
-    let mut saw_refusal = false;
 
-    for inset_mm in INSETS_MM {
-        let inset_m = inset_mm / 1e3;
-        let preflight = plug_fit_preflight(
-            &cleaned,
-            &prep,
-            inset_m,
-            &RidgeOptions::default(),
-            CELL_SIZE_M,
-        )
-        .expect("the pre-flight must RUN — a broken fixture is not a verdict");
-        // The oracle: the same cast the wizard runs, same cell size, same
-        // one-layer stack the probe invents.
-        let cast = cast_synthetic(
-            &format!("preflight-oracle-{inset_mm}"),
-            cone(),
-            inset_m,
-            CELL_SIZE_M,
-            &PartSelection::from_ids([PartId::Plug { layer_index: 0 }]),
-        );
-        match (&preflight, &cast) {
-            (PlugFit::Casts, CastOutcome::Cast(stls)) => {
-                // The selection asks for exactly one part, so exactly one STL
-                // comes back — asserted rather than assumed, because a widened
-                // selection would quietly compare against a cup piece.
-                assert_eq!(
-                    stls.len(),
-                    1,
-                    "plug-only selection emits one STL, got {:?}",
-                    stls.iter().map(|(n, _)| n).collect::<Vec<_>>()
-                );
-                saw_cast = true;
-            }
-            (PlugFit::WillNotCast { .. }, CastOutcome::Refused(_)) => saw_refusal = true,
-            (PlugFit::Casts, CastOutcome::Refused(msg)) => problems.push(format!(
-                "{inset_mm} mm: pre-flight cleared it but the cast REFUSED — \
+    // ⚠ BOTH texture settings. Ridges route the plug through the canal path,
+    // which composes displacement onto it and overrides its mesh cell size —
+    // and that CHANGES THE VERDICT: measured 2026-09-08 on `~/scans/base_mold`,
+    // ridges ON refuse a 5 mm inset that ridges OFF cast. A sweep that only
+    // tried the smooth piece would have agreed with the cast about half the
+    // configurations the step-3 screen can produce.
+    let textures = [
+        ("smooth", RidgeOptions::default()),
+        (
+            "ridged",
+            RidgeOptions {
+                enabled: true,
+                ..RidgeOptions::default()
+            },
+        ),
+    ];
+    for (label, ridges) in &textures {
+        // ⚠ Per texture, not across both. Global flags would let the ridged
+        // sweep be entirely one-sided while the smooth one carried the claim —
+        // exactly the vacuity these are here to prevent.
+        let mut saw_cast = false;
+        let mut saw_refusal = false;
+        for inset_mm in INSETS_MM {
+            let inset_m = inset_mm / 1e3;
+            let preflight = plug_fit_preflight(&cleaned, &prep, inset_m, ridges, CELL_SIZE_M)
+                .expect("the pre-flight must RUN — a broken fixture is not a verdict");
+            // The oracle: the same cast the wizard runs, same cell size, same
+            // texture, same one-layer stack the probe invents.
+            let cast = cast_synthetic_with_ridges(
+                &format!("preflight-oracle-{label}-{inset_mm}"),
+                cone(),
+                inset_m,
+                CELL_SIZE_M,
+                &PartSelection::from_ids([PartId::Plug { layer_index: 0 }]),
+                ridges,
+            );
+            match (&preflight, &cast) {
+                (PlugFit::Casts, CastOutcome::Cast(stls)) => {
+                    // The selection asks for exactly one part, so exactly one STL
+                    // comes back — asserted rather than assumed, because a widened
+                    // selection would quietly compare against a cup piece.
+                    assert_eq!(
+                        stls.len(),
+                        1,
+                        "plug-only selection emits one STL, got {:?}",
+                        stls.iter().map(|(n, _)| n).collect::<Vec<_>>()
+                    );
+                    saw_cast = true;
+                }
+                (PlugFit::WillNotCast { .. }, CastOutcome::Refused(_)) => saw_refusal = true,
+                (PlugFit::Casts, CastOutcome::Refused(msg)) => problems.push(format!(
+                    "{label} {inset_mm} mm: pre-flight cleared it but the cast REFUSED — \
                  the operator would be told to go ahead and then lose the run: {msg}"
-            )),
-            (PlugFit::WillNotCast { reason }, CastOutcome::Cast(_)) => problems.push(format!(
-                "{inset_mm} mm: pre-flight refused an inset the cast HONOURS — \
+                )),
+                (PlugFit::WillNotCast { reason }, CastOutcome::Cast(_)) => problems.push(format!(
+                    "{label} {inset_mm} mm: pre-flight refused an inset the cast HONOURS — \
                  a usable configuration blocked: {reason}"
-            )),
+                )),
+            }
         }
+        assert!(
+            saw_cast,
+            "no inset in {INSETS_MM:?} mm cast with the {label} piece — that \
+             sweep is one-sided and proves nothing about agreement"
+        );
+        assert!(
+            saw_refusal,
+            "no inset in {INSETS_MM:?} mm was refused with the {label} piece — \
+             that sweep is one-sided and proves nothing about agreement"
+        );
     }
     let _ = std::fs::remove_dir_all(&dir);
 
@@ -137,16 +163,6 @@ fn the_preflight_returns_the_verdict_the_cast_would() {
         problems.is_empty(),
         "the pre-flight must answer what the cast answers:\n{}",
         problems.join("\n")
-    );
-    // Without these the sweep passes vacuously on a pre-flight (and an oracle)
-    // that only ever says one thing.
-    assert!(
-        saw_cast,
-        "no inset in {INSETS_MM:?} mm cast — the agreement above is one-sided"
-    );
-    assert!(
-        saw_refusal,
-        "no inset in {INSETS_MM:?} mm was refused — the agreement above is one-sided"
     );
 }
 
@@ -312,5 +328,58 @@ fn an_unusable_centerline_is_an_error_not_a_refusal() {
         !matches!(two, Err(EngineError::NoCenterline { .. })),
         "2 points is the minimum `Ribbon::new` accepts — rejecting it turns a \
          castable prep away, got {two:?}"
+    );
+}
+
+/// ★ The pre-flight must never refuse to RUN on a configuration the cast
+/// honours. Its invented layer is the thing that could make it.
+///
+/// The derivation gates the canal's suction bulge — which the GUI's tip-relief
+/// control maps straight onto — against BOTH the mold cup wall and the inner
+/// layer's thickness. The cup wall is a shared cast default, so failing it is a
+/// real failure the cast shares. The inner layer is INVENTED here, and failing
+/// that one would report a suction bulb blowing out a 6 mm shell the operator
+/// never configured.
+///
+/// ⚠ Which gate trips first is not something to reason about — it is a
+/// relationship between two constants in different crates. So this asks the
+/// cast, at a bulge far past anything the GUI can produce.
+#[test]
+fn a_ridge_setting_the_preflight_refuses_is_one_the_cast_refuses() {
+    let dir = fixture("deep-relief");
+    let (cleaned, prep) = paths(&dir);
+    let ridges = RidgeOptions {
+        enabled: true,
+        // 20 mm — four times the GUI's 5 mm ceiling, and past the probe layer,
+        // so if the invented layer can ever be the thing that fails, it fails
+        // here.
+        tip_relief_depth_m: 0.020,
+        ..RidgeOptions::default()
+    };
+    let preflight = plug_fit_preflight(&cleaned, &prep, 0.005, &ridges, CELL_SIZE_M);
+    // The oracle: the same cast, same ridges, same one-layer stack.
+    let draft = DesignDraft {
+        cavity_inset_m: 0.005,
+        layers: vec![LayerDraft {
+            thickness_m: 0.006,
+            material_key: "ECOFLEX_00_30".to_string(),
+            slacker_fraction: 0.25,
+        }],
+    };
+    let cast = generate_molds_for_design(
+        &cleaned,
+        &prep,
+        &draft,
+        CELL_SIZE_M,
+        &ridges,
+        &PartSelection::from_ids([PartId::Plug { layer_index: 0 }]),
+        CastMode::Detachable,
+        Some(Path::new("out")),
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        !(preflight.is_err() && cast.is_ok()),
+        "the pre-flight refused to run on ridges the cast honours — its invented \
+         layer is deciding the answer: {preflight:?}"
     );
 }

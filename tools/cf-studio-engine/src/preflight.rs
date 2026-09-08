@@ -51,6 +51,16 @@ pub enum PlugFit {
 /// ⚠ The verdict transfers; the MESH does not. The box grows with total stack
 /// thickness, which moves the marching-cubes grid and shifts the plug ~0.6 mm
 /// laterally. Never compare these bytes against a real cast's.
+///
+/// ⚠⚠ **Must stay above `[cast].wall_thickness_m` (5 mm).** The derivation
+/// gates the canal's suction bulge twice — against the cup wall, and against
+/// `layers.first().thickness_m`. The second one would be asked of THIS
+/// invented layer, and failing it would tell the operator a suction bulb blows
+/// out a 6 mm shell they never configured. It cannot fire while this constant
+/// exceeds the cup wall, because the cup-wall gate is stricter and trips
+/// first — and that gate reads a shared cast default, so tripping it is a real
+/// failure the cast shares. Drop this below 5 mm and that stops being true.
+/// Pinned by `the_probe_layer_outweighs_the_cup_wall` below.
 const PROBE_LAYER_THICKNESS_M: f64 = 0.006;
 /// Cure anchor for the probe layer. Any catalog material works — the layer
 /// exists to give the derivation a stack, and nothing here pours.
@@ -64,6 +74,15 @@ const PROBE_LAYER_MATERIAL: &str = "ECOFLEX_00_30";
 /// 2.0 mm and 3.0 mm cells cast a 6.3 mm inset that BOTH shipped sizes (0.5 mm
 /// Fine and 1.5 mm Fast) refuse. Asking at a convenient-but-unshipped size
 /// buys a fast answer to a question nobody asked.
+///
+/// ⚠ **Enabled `ridges` override it anyway**, and change both the cost and the
+/// answer. The canal path pins layer 0's plug at its own cell size (0.5 mm by
+/// default) whatever is passed here, and composes displacement onto the plug.
+/// Measured on `~/scans/base_mold` at 5 mm of inset: smooth CASTS in 6.9 s at
+/// 1.5 mm, ridged WILL-NOT-CAST in 234 s — and the cast agrees, refusing it in
+/// 244 s for the same reason. So with ridges on this is a ~4-minute answer,
+/// not a seconds-long one, and a caller that wants it off the UI thread should
+/// decide on THAT number.
 ///
 /// # Errors
 /// [`EngineError::ScanLoad`], [`EngineError::PrepInvalid`],
@@ -87,12 +106,13 @@ pub fn plug_fit_preflight(
     // ribbon and therefore answer a different question. The design PATH it
     // takes is never read: `design` is cleared on the next line in favour of
     // inline layers, so nothing has to exist on disk.
+    let canal = canal_config_from_ridges(ridges);
     let mut config = CastConfig::for_design(
         cleaned_stl.to_path_buf(),
         prep_toml.to_path_buf(),
         PathBuf::new(),
         mesh_cell_size_m,
-        canal_config_from_ridges(ridges),
+        canal.clone(),
     );
     config.design = None;
     config.layers = vec![LayerConfig {
@@ -102,6 +122,16 @@ pub fn plug_fit_preflight(
         display_name: None,
         slacker_fraction: None,
     }];
+
+    // The same two gates the run path applies before deriving (non-empty
+    // layers; the apex pour bore and the cavity-floor slab both needing the
+    // flat seam). They hold by construction for the config built above, and
+    // are called anyway so a future change to `for_design`'s defaults surfaces
+    // here as a clear error instead of somewhere inside the derivation.
+    config
+        .validate_layer_source()
+        .and_then(|()| config.validate_after_layer_source())
+        .map_err(|e| EngineError::MoldGen(format!("{e:#}")))?;
 
     // ⚠ Asked of the config rather than recomputed here. The run path needs
     // the same number, and a pre-flight that padded its flood fill differently
@@ -150,4 +180,37 @@ pub fn plug_fit_preflight(
             reason: e.to_string(),
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use cortenforge::cf_cast_cli::CastDefaults;
+
+    use super::*;
+
+    /// ★ The probe layer must outweigh the mold cup wall.
+    ///
+    /// This is a relationship between two constants that know nothing about
+    /// each other — one here, one a cast default — and it cannot be reached
+    /// behaviourally: while it HOLDS, the cup-wall gate trips first for every
+    /// suction bulge, so the invented-layer gate is unreachable and no input
+    /// can tell the two apart. That is exactly why it is asserted directly.
+    /// Lower [`PROBE_LAYER_THICKNESS_M`] under the cup wall and a window opens
+    /// in which the pre-flight fails on its own invented layer while the cast
+    /// succeeds — reported to the operator as a suction bulb blowing out a
+    /// shell they never configured.
+    #[test]
+    fn the_probe_layer_outweighs_the_cup_wall() {
+        let cup_wall_m = CastDefaults::default().wall_thickness_m;
+        assert!(
+            cup_wall_m > 0.0,
+            "a zero cup wall would make this pass for the wrong reason"
+        );
+        assert!(
+            PROBE_LAYER_THICKNESS_M > cup_wall_m,
+            "the probe layer ({PROBE_LAYER_THICKNESS_M} m) must exceed the cup \
+             wall ({cup_wall_m} m), or the canal's suction-bulge gate can fail \
+             the pre-flight on a layer the operator never chose"
+        );
+    }
 }
