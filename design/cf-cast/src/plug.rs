@@ -1535,23 +1535,38 @@ mod tests {
         mesh
     }
 
+    /// The lock an Axial ribbon places, as the mesh stage receives it.
+    fn axial_lock() -> PrismaticPinParams {
+        axial_transforms()
+            .iter()
+            .find_map(|t| match t {
+                MatingTransform::UnionTruncatedPyramid { params } => Some(params.clone()),
+                _ => None,
+            })
+            .expect("an Axial ribbon places a lock")
+    }
+
     /// The lock's centre in the emitted mesh's own units — MILLIMETRES, where
     /// [`PrismaticPinParams`] is in meters.
     fn lock_center_mm() -> Point3<f64> {
-        let transforms = axial_transforms();
-        let params = transforms
-            .iter()
-            .find_map(|t| match t {
-                MatingTransform::UnionTruncatedPyramid { params } => Some(params),
-                _ => None,
-            })
-            .expect("an Axial ribbon places a lock");
-        (params.pose.center_m.coords * crate::mesher::METERS_TO_MM).into()
+        (axial_lock().pose.center_m.coords * crate::mesher::METERS_TO_MM).into()
     }
 
     /// Somewhere the lock demonstrably is not: one metre off in +x.
     fn far_from_the_lock() -> Point3<f64> {
         lock_center_mm() + Vector3::new(1000.0, 0.0, 0.0)
+    }
+
+    /// The far corner of the region the lock is recognised by — every local
+    /// half-extent at once — in mm.
+    fn lock_corner_mm() -> Point3<f64> {
+        let lock = axial_lock();
+        let binormal = lock.pose.axis_unit.cross(&lock.pose.lateral_unit);
+        let corner_m = lock.pose.center_m.coords
+            + lock.pose.axis_unit.scale(lock.half_length_m)
+            + lock.pose.lateral_unit.scale(lock.base_half_extents_m.x)
+            + binormal.scale(lock.base_half_extents_m.y);
+        (corner_m * crate::mesher::METERS_TO_MM).into()
     }
 
     /// One mesh whose components have the given face counts, each centred on
@@ -1759,5 +1774,43 @@ mod tests {
             "debris is not the lock: the lock is the piece at the lock's own \
              extents, and here that piece is the body"
         );
+    }
+
+    /// ⚠ WHAT PINS THE SLACK. `cargo-mutants` mutated all four
+    /// `+ LOCK_IDENTITY_SLACK_M` terms — three to `-`, one to `*` — and every
+    /// one survived: the tests above place their components at the lock's
+    /// CENTRE, nowhere near the bound whose sign those mutants change.
+    ///
+    /// The slack is load-bearing in one direction. A detached lock is the
+    /// exact primitive's own hull, so its vertices land on the pyramid's own
+    /// faces and membership turns on floating-point equality; deflate the
+    /// bound and the lock stops matching itself, which turns this refusal into
+    /// the silent omission the docstring warns about.
+    ///
+    /// So a component straddling the far corner of the tested region must
+    /// still be the lock. The fan spans 1 µm against 10 µm of slack, so it
+    /// fits an inflated bound and misses a deflated one.
+    #[test]
+    fn a_lock_sitting_exactly_on_its_own_boundary_is_still_the_lock() {
+        let mesh = mesh_of_at(&[(7, far_from_the_lock()), (3, lock_corner_mm())]);
+        assert_eq!(
+            find_connected_components(&mesh).component_count,
+            2,
+            "the fixture has to really be in pieces"
+        );
+        let err = ensure_plug_mating_features_attached(
+            &mesh,
+            &axial_transforms(),
+            CastTarget::Plug {
+                layer_index: Some(0),
+            },
+        )
+        .expect_err("a lock on its own boundary is still a detached lock");
+        match err {
+            CastError::PlugMatingFeatureDetached { detached_faces, .. } => {
+                assert_eq!(detached_faces, 3, "and it is the piece at the corner");
+            }
+            other => panic!("expected PlugMatingFeatureDetached, got {other:?}"),
+        }
     }
 }
