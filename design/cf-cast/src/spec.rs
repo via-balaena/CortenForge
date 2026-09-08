@@ -30,7 +30,9 @@ use crate::plug::add_plug_pins;
 use crate::pour_volume::{POUR_VOLUME_MIN_CELL_SIZE_M, PourVolume, integrate_negative_sdf_volume};
 use crate::procedure::{generate_procedure_markdown, generate_procedure_markdown_v2_for_mode};
 use crate::ribbon::{PieceSide, Ribbon};
-use crate::scan_mesh_direct::{build_plug_body_mesh, repair_scan_mesh_for_mesh_csg};
+use crate::scan_mesh_direct::{
+    ScanMeshRepairSummary, build_plug_body_mesh, repair_scan_mesh_for_mesh_csg,
+};
 use crate::silhouette_2d::Point2;
 
 /// Subdirectory (under the cast output dir) the v2 pipeline writes its STLs into,
@@ -1770,28 +1772,48 @@ fn mesh_and_gate_v2_plugs(
         .collect::<Result<Vec<PendingPlug>, CastError>>()
 }
 
-/// Compose + mesh + F4-gate a SINGLE layer's plug. Extracted verbatim from
-/// the per-layer closure inside [`mesh_and_gate_v2_plugs`] so the
-/// selected-export path can mesh one plug without the full fan-out;
-/// behavior (and output bytes) are identical to the inlined version.
-fn mesh_and_gate_v2_one_plug(
+/// A composed, mating-feature-verified plug mesh — the compose half of
+/// [`mesh_and_gate_v2_one_plug`], before anything is written or F4-gated.
+struct ComposedPlug {
+    mesh: IndexedMesh,
+    /// Which path built it: `"scan-mesh-direct"` or `"compose+MC"`.
+    path_label: &'static str,
+    /// Present only on the scan-mesh-direct path; feeds the progress line.
+    repair_summary: Option<ScanMeshRepairSummary>,
+}
+
+/// Compose + mesh one layer's plug and verify its floor lock actually fused to
+/// it — everything [`mesh_and_gate_v2_one_plug`] does BEFORE the STL write and
+/// the F4 printability gate.
+///
+/// ★ Split out so a caller can reach the cast's OWN verdict on a plug without
+/// writing anything, which is exactly what a fit pre-flight needs (see
+/// [`plug_fit_verdict`]). [`mesh_and_gate_v2_one_plug`] calls it, so a
+/// pre-flight and the cast it predicts are ONE code path and cannot drift.
+///
+/// ⚠ Mirroring these ~80 lines in a frontend instead would put a second
+/// implementation between the operator and the truth. Its drift would surface
+/// as a WRONG verdict — worse than no verdict, because the operator would have
+/// been told the cast was fine. Two branches make that concrete: layer 0 can
+/// bypass SDF/MC entirely (`scan_mesh_for_plug_layer_0`), and the plug can mesh
+/// at its own cell size (`plug_layer_0_mesh_cell_size_m`), not the global one.
+///
+/// # Errors
+/// Any [`CastError`] the compose path raises — including
+/// [`CastError::PlugMatingFeatureDetached`] when the floor lock came out as a
+/// separate body.
+fn compose_plug_mesh(
     spec: &CastSpec,
     ribbon: &Ribbon,
-    out_dir: &Path,
-    progress: Progress,
     layer_index: usize,
-    layer_count: usize,
-) -> Result<PendingPlug, CastError> {
-    let t_compose = std::time::Instant::now();
+    target: CastTarget,
+) -> Result<ComposedPlug, CastError> {
     let base_plug = if layer_index == 0 {
         spec.plug.clone()
     } else {
         spec.layers[layer_index - 1].body.clone()
     };
     let (plug_solid, mating_transforms) = add_plug_pins(base_plug, ribbon);
-    let target = CastTarget::Plug {
-        layer_index: Some(layer_index),
-    };
     // S1 of CF_CAST_SCAN_MESH_DIRECT_RECON.md: when the
     // feature flag is set, layer 0 bypasses the SDF → MC
     // pipeline and copies the cf-scan-prep cleaned scan mesh
@@ -1867,6 +1889,61 @@ fn mesh_and_gate_v2_one_plug(
     // of the cap-plane the lock is anchored to — which ships a loose pyramid
     // and a plug with nothing to seat it, and did so silently until this.
     crate::plug::ensure_plug_mating_features_attached(&mesh, &mating_transforms, target)?;
+    Ok(ComposedPlug {
+        mesh,
+        path_label,
+        repair_summary,
+    })
+}
+
+/// The cast's own verdict on whether layer `layer_index`'s plug casts as one
+/// piece, without writing an STL or running the printability gate.
+///
+/// This is [`compose_plug_mesh`] with the mesh dropped — the SAME code the
+/// cast runs, so a frontend can ask "will this cast?" and get the answer the
+/// cast itself would give. Meshing dominates the cost, so this is not free;
+/// it is merely far cheaper than the export it predicts.
+///
+/// ⚠ The verdict is specific to `spec.mesh_cell_size_m`. Detachment turns on
+/// sub-cell grid alignment, so a verdict computed at one cell size does not
+/// transfer to another — measured 2026-09-08 on `~/scans/base_mold`, where
+/// 2.0 mm and 3.0 mm cells cast a 6.3 mm inset that BOTH shipped cell sizes
+/// (0.5 mm and 1.5 mm) refuse. Ask at the size you intend to cast at.
+///
+/// # Errors
+/// As [`compose_plug_mesh`].
+pub fn plug_fit_verdict(
+    spec: &CastSpec,
+    ribbon: &Ribbon,
+    layer_index: usize,
+) -> Result<(), CastError> {
+    let target = CastTarget::Plug {
+        layer_index: Some(layer_index),
+    };
+    compose_plug_mesh(spec, ribbon, layer_index, target).map(|_| ())
+}
+
+/// Compose + mesh + F4-gate a SINGLE layer's plug. Extracted verbatim from
+/// the per-layer closure inside [`mesh_and_gate_v2_plugs`] so the
+/// selected-export path can mesh one plug without the full fan-out;
+/// behavior (and output bytes) are identical to the inlined version.
+fn mesh_and_gate_v2_one_plug(
+    spec: &CastSpec,
+    ribbon: &Ribbon,
+    out_dir: &Path,
+    progress: Progress,
+    layer_index: usize,
+    layer_count: usize,
+) -> Result<PendingPlug, CastError> {
+    let t_compose = std::time::Instant::now();
+    let target = CastTarget::Plug {
+        layer_index: Some(layer_index),
+    };
+    let ComposedPlug {
+        mesh,
+        path_label,
+        repair_summary,
+    } = compose_plug_mesh(spec, ribbon, layer_index, target)?;
     let compose_mesh_s = t_compose.elapsed().as_secs_f64();
     let path = out_dir
         .join(STLS_SUBDIR)
