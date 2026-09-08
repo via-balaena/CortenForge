@@ -75,11 +75,18 @@ pub enum CastOutcome {
 /// two casts whose label collides let one wipe the other's fixture mid-run.
 /// Give every call site a distinct `caller`.
 ///
-/// Meshes come back WELDED at 1 µm (the tolerance
-/// `design/cf-cast/tests/iter_connectivity_inspector.rs` uses on the same
-/// question). Marching cubes emits per-triangle vertices, so an unwelded mesh
-/// has as many connected components as it has faces. Welding merges coincident
-/// vertices without moving any of them, so it is safe for geometry gates too.
+/// Meshes come back WELDED. Marching cubes emits per-triangle vertices, so an
+/// unwelded mesh has as many connected components as it has faces. Welding
+/// merges coincident vertices without moving any of them, so it is safe for
+/// geometry gates as well as connectivity ones.
+///
+/// ⚠ The tolerance is `1e-6` in the mesh's own units, and cf-cast writes STLs
+/// in MILLIMETRES — so it is 1 nanometre, not the 1 µm that
+/// `design/cf-cast/tests/iter_connectivity_inspector.rs` calls the same
+/// constant. That is fine here rather than lucky: the corners marching cubes
+/// shares between triangles are bit-identical, so even a zero tolerance would
+/// merge them. Do not read this as headroom for near-coincident vertices —
+/// there is none.
 pub fn cast_synthetic(
     caller: &str,
     scan: IndexedMesh,
