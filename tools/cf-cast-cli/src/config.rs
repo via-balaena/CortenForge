@@ -150,6 +150,25 @@ impl CastConfig {
             canal,
         }
     }
+
+    /// Padding (meters) the scan SDF's flood fill must carry so it covers
+    /// every point [`crate::derive_spec_and_ribbon`] will query.
+    ///
+    /// The consumer side grows the scan AABB by `cumulative_thickness +
+    /// wall_thickness_m` — the outermost layer's surface sits at
+    /// `scan_surface + cumulative_thickness`, and the bounding region grows
+    /// that outward again by the cup wall. Build the SDF over a smaller domain
+    /// and the mesher walks off the end of it.
+    ///
+    /// ★ Lives here so the run path and any pre-flight compute it from ONE
+    /// place. Both need it and they must not disagree: an under-padded SDF
+    /// does not fail loudly, it answers questions about a domain it does not
+    /// cover.
+    #[must_use]
+    pub fn sdf_bounds_padding_m(&self) -> f64 {
+        let cumulative_thickness: f64 = self.layers.iter().map(|l| l.thickness_m).sum();
+        cumulative_thickness + self.cast.wall_thickness_m
+    }
 }
 
 /// Slice 9 — `[design]` block. Points cf-cast-cli at the
@@ -1004,6 +1023,63 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
+
+    /// The flood-fill padding must COVER both contributions it exists to cover.
+    ///
+    /// ★ Asserted as a property, not by restating the formula — an oracle that
+    /// recomputes `cumulative + wall` would pass for any arithmetic the
+    /// function happened to contain, including the wrong one.
+    ///
+    /// Under-padding is the failure that matters and it is silent: the SDF
+    /// simply stops describing the domain the mesher walks.
+    #[test]
+    fn sdf_padding_covers_every_contribution_it_must() {
+        let mut config = CastConfig::for_design(
+            std::path::PathBuf::from("s.cleaned.stl"),
+            std::path::PathBuf::from("s.prep.toml"),
+            std::path::PathBuf::from("s.design.toml"),
+            0.0015,
+            CanalConfig::default(),
+        );
+        config.layers = vec![
+            LayerConfig {
+                thickness_m: 0.018,
+                material: "ECOFLEX_00_30".to_string(),
+                density_kg_m3: None,
+                display_name: None,
+                slacker_fraction: None,
+            },
+            LayerConfig {
+                thickness_m: 0.008,
+                material: "DRAGON_SKIN_10A".to_string(),
+                density_kg_m3: None,
+                display_name: None,
+                slacker_fraction: None,
+            },
+        ];
+        let stack: f64 = config.layers.iter().map(|l| l.thickness_m).sum();
+        let wall = config.cast.wall_thickness_m;
+        assert!(
+            wall > 0.0,
+            "the wall must contribute, or this proves nothing"
+        );
+        let padding = config.sdf_bounds_padding_m();
+        assert!(
+            padding >= stack,
+            "padding {padding} does not reach the outermost layer at {stack}"
+        );
+        assert!(
+            padding >= wall,
+            "padding {padding} does not reach the cup wall at {wall}"
+        );
+        // Every layer has to count: dropping one must shrink the padding.
+        let mut fewer = config.clone();
+        fewer.layers.pop();
+        assert!(
+            fewer.sdf_bounds_padding_m() < padding,
+            "removing a layer left the padding unchanged — layers are not counted"
+        );
+    }
 
     #[test]
     fn for_design_builds_a_valid_design_sourced_config() {

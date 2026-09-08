@@ -162,8 +162,7 @@ fn prepare_cast(
     // cumulative_thickness + wall_thickness_m)`. Compute the same
     // padding here so the SDF built in `load_scan_sdf` covers the same
     // domain the mesher walks downstream.
-    let cumulative_thickness: f64 = config.layers.iter().map(|l| l.thickness_m).sum();
-    let bounds_padding_m = cumulative_thickness + config.cast.wall_thickness_m;
+    let bounds_padding_m = config.sdf_bounds_padding_m();
     let loaded_scan = scan::load_scan_sdf(
         &scan_stl_path,
         bounds_padding_m,

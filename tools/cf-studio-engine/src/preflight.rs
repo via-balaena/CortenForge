@@ -103,12 +103,11 @@ pub fn plug_fit_preflight(
         slacker_fraction: None,
     }];
 
-    // The flood fill must cover every point the derivation queries, which is
-    // `scan_aabb` grown by the whole stack plus the cup wall. Computed from
-    // `config` rather than from the constants above, so the two cannot fall
-    // out of step if the probe layer changes.
-    let cumulative_thickness: f64 = config.layers.iter().map(|l| l.thickness_m).sum();
-    let bounds_padding_m = cumulative_thickness + config.cast.wall_thickness_m;
+    // ⚠ Asked of the config rather than recomputed here. The run path needs
+    // the same number, and a pre-flight that padded its flood fill differently
+    // would not fail loudly — it would answer questions about a domain it does
+    // not cover.
+    let bounds_padding_m = config.sdf_bounds_padding_m();
     let loaded = load_scan_sdf(cleaned_stl, bounds_padding_m, mesh_cell_size_m).map_err(|e| {
         EngineError::ScanLoad {
             path: cleaned_stl.display().to_string(),

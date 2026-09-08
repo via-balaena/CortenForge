@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use cf_studio_core::{DesignDraft, LayerDraft, RidgeOptions};
 use cf_studio_engine::{
-    CastMode, EditSession, PartId, PartSelection, PlugFit, generate_molds_for_design,
+    CastMode, EditSession, EngineError, PartId, PartSelection, PlugFit, generate_molds_for_design,
     plug_fit_preflight,
 };
 
@@ -229,4 +229,88 @@ fn listing(dir: &Path) -> Vec<String> {
         .collect();
     names.sort();
     names
+}
+
+/// Rewrite `prep`'s centerline down to `n` points, keeping the file valid TOML.
+fn truncate_centerline(prep: &Path, n: usize) {
+    let text = std::fs::read_to_string(prep).unwrap();
+    let head = text
+        .find("[centerline]")
+        .expect("prep has a [centerline] section");
+    let open = head
+        + text[head..]
+            .find("points_m = [")
+            .expect("centerline has points");
+    let start = open + "points_m = [".len();
+    let mut depth = 1usize;
+    let mut end = start;
+    for (i, c) in text[start..].char_indices() {
+        match c {
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = start + i;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(
+        depth,
+        0,
+        "unbalanced centerline array in {}",
+        prep.display()
+    );
+    // Distinct points: `Ribbon::new` rejects a zero-length segment, so two
+    // copies of the same point would fail for a different reason than the one
+    // under test.
+    let pts: String = (0..n)
+        .map(|i| format!("[0.0, 0.0, {:.3}],\n", i as f64 * 0.01))
+        .collect();
+    std::fs::write(prep, format!("{}{}{}", &text[..start], pts, &text[end..])).unwrap();
+}
+
+/// ★ A prep the pre-flight cannot use is an ERROR, not a verdict.
+///
+/// The distinction is the whole reason [`PlugFit`] and [`EngineError`] are
+/// separate types: if a missing centerline came back as "will not cast", the
+/// operator would be told to reduce an inset that was never the problem.
+///
+/// ⚠ Both sides of the boundary, because one side does not pin it. Asserting
+/// only that 1 point is refused leaves "refuse 2 as well" — which rejects a
+/// centerline the cast accepts — passing just as happily.
+#[test]
+fn an_unusable_centerline_is_an_error_not_a_refusal() {
+    let dir = fixture("centerline");
+    let (cleaned, prep) = paths(&dir);
+
+    truncate_centerline(&prep, 1);
+    let one = plug_fit_preflight(
+        &cleaned,
+        &prep,
+        0.005,
+        &RidgeOptions::default(),
+        CELL_SIZE_M,
+    );
+    assert!(
+        matches!(one, Err(EngineError::NoCenterline { .. })),
+        "a 1-point centerline must be reported as a missing centerline, got {one:?}"
+    );
+
+    truncate_centerline(&prep, 2);
+    let two = plug_fit_preflight(
+        &cleaned,
+        &prep,
+        0.005,
+        &RidgeOptions::default(),
+        CELL_SIZE_M,
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        !matches!(two, Err(EngineError::NoCenterline { .. })),
+        "2 points is the minimum `Ribbon::new` accepts — rejecting it turns a \
+         castable prep away, got {two:?}"
+    );
 }
