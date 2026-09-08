@@ -1899,7 +1899,7 @@ fn compose_plug_mesh(
 /// The cast's own verdict on whether layer `layer_index`'s plug casts as one
 /// piece, without writing an STL or running the printability gate.
 ///
-/// This is [`compose_plug_mesh`] with the mesh dropped — the SAME code the
+/// This is `compose_plug_mesh` with the mesh dropped — the SAME code the
 /// cast runs, so a frontend can ask "will this cast?" and get the answer the
 /// cast itself would give. Meshing dominates the cost, so this is not free;
 /// it is merely far cheaper than the export it predicts.
@@ -1911,7 +1911,7 @@ fn compose_plug_mesh(
 /// (0.5 mm and 1.5 mm) refuse. Ask at the size you intend to cast at.
 ///
 /// # Errors
-/// As [`compose_plug_mesh`].
+/// As `compose_plug_mesh`.
 pub fn plug_fit_verdict(
     spec: &CastSpec,
     ribbon: &Ribbon,
