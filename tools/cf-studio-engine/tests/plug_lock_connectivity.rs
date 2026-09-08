@@ -49,13 +49,11 @@
 // errors are values, but a test failure has to be readable.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::path::{Path, PathBuf};
+use cf_studio_engine::{PartId, PartSelection};
+use cortenforge::mesh::repair::components::find_connected_components;
 
-use cf_studio_core::{DesignDraft, LayerDraft, RidgeOptions};
-use cf_studio_engine::{CastMode, EditSession, PartId, PartSelection, generate_molds_for_design};
-use cortenforge::mesh::io::load_stl;
-use cortenforge::mesh::repair::{components::find_connected_components, weld_vertices};
-use cortenforge::mesh::types::{IndexedMesh, Point3};
+mod common;
+use common::{CastOutcome, cast_synthetic, open_cone};
 
 /// Insets to sweep, in mm. 5 is the shipped default and the one configuration
 /// that has been physically poured; 0 is the degenerate floor. 20 is past the
@@ -83,43 +81,7 @@ const LOCK_BASE_Z_MM: f64 = -4.0;
 /// cost, not because the gate needs it.
 const CELL_SIZE_M: f64 = 0.003;
 
-/// A cone open at both ends — `r0` at the base, `r1` at the top, `h` tall. Open
-/// so cap detection finds the two boundary loops the centerline is fitted
-/// between; tapered so the plug's base recedes from the cap plane under an
-/// inward offset, which is the condition the defect needs.
-fn open_cone(r0: f64, r1: f64, h: f64, segs: usize, rings: usize) -> IndexedMesh {
-    let mut vertices = Vec::new();
-    for i in 0..rings {
-        let f = i as f64 / (rings - 1) as f64;
-        let (z, r) = (h * f, r0 + (r1 - r0) * f);
-        for s in 0..segs {
-            let a = std::f64::consts::TAU * s as f64 / segs as f64;
-            vertices.push(Point3::new(r * a.cos(), r * a.sin(), z));
-        }
-    }
-    let mut faces = Vec::new();
-    for i in 0..rings - 1 {
-        let b = (i * segs) as u32;
-        let t = ((i + 1) * segs) as u32;
-        for s in 0..segs {
-            let s2 = ((s + 1) % segs) as u32;
-            let s = s as u32;
-            faces.push([b + s, b + s2, t + s2]);
-            faces.push([b + s, t + s2, t + s]);
-        }
-    }
-    IndexedMesh { vertices, faces }
-}
-
-/// One connected piece of the emitted plug: its face count and its z-range.
-struct Piece {
-    faces: usize,
-    z_min: f64,
-    z_max: f64,
-    extent: [f64; 3],
-}
-
-/// What a cast at one inset produced: either a refusal, or the plug's pieces
+/// What a cast at one inset produced here: a refusal, or the plug's pieces
 /// largest first.
 ///
 /// ⚠ A refusal is a LEGITIMATE answer and the sweep accepts it — an inset that
@@ -131,73 +93,45 @@ enum Outcome {
     Cast(Vec<Piece>),
 }
 
-/// Cast the cone at `inset_m`, in a fixture directory named for `caller`.
+/// One connected piece of the emitted plug: its face count and its z-range.
+struct Piece {
+    faces: usize,
+    z_min: f64,
+    z_max: f64,
+    extent: [f64; 3],
+}
+
+/// Cast the cone at `inset_m` and return the emitted plug's pieces.
 ///
 /// One layer and layer 0's plug only: the lock is a layer-0 cap-plane feature,
 /// and the cup halves cost more than the whole rest of the gate.
 ///
-/// ⚠ `caller` is what keeps the two tests apart, and it is load-bearing rather
-/// than decorative. Both of them cast 5 mm, `cargo test` runs them on parallel
-/// threads of ONE process, and this function opens by DELETING the directory it
-/// is about to build in — so a name derived from the inset alone gives both the
-/// same path and lets one wipe the other's fixture mid-cast.
+/// ⚠ `caller` is what keeps the two tests apart — see [`cast_synthetic`], which
+/// deletes the directory it builds in.
 fn cast_at(caller: &str, inset_m: f64) -> Outcome {
-    let label = format!("plug-lock-{caller}-{}", (inset_m * 1e4).round() as i64);
-    let dir = std::env::temp_dir().join(format!("cf-studio-engine-{label}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-
-    let mut session = EditSession::from_mesh(
-        PathBuf::from("synthetic.stl"),
+    let outcome = cast_synthetic(
+        &format!("plug-lock-{caller}"),
         open_cone(0.006, 0.020, 0.030, 24, 13),
-    );
-    let scan = session.detect_caps();
-    assert_eq!(scan.loop_count, 2, "an open cone has two boundary loops");
-    session
-        .save(&dir, "synthetic", "mm", 0)
-        .expect("prep saves");
-
-    let draft = DesignDraft {
-        cavity_inset_m: inset_m,
-        layers: vec![LayerDraft {
-            thickness_m: 0.006,
-            material_key: "ECOFLEX_00_30".to_string(),
-            slacker_fraction: 0.25,
-        }],
-    };
-    let cast = generate_molds_for_design(
-        &dir.join("synthetic.cleaned.stl"),
-        &dir.join("synthetic.prep.toml"),
-        &draft,
+        inset_m,
         CELL_SIZE_M,
-        &RidgeOptions::default(),
         &PartSelection::from_ids([PartId::Plug { layer_index: 0 }]),
-        CastMode::Detachable,
-        Some(Path::new("out")),
     );
-    let out = match cast {
-        Ok(out) => out,
-        Err(e) => {
-            let _ = std::fs::remove_dir_all(&dir);
-            return Outcome::Refused(e.to_string());
-        }
+    let emitted = match outcome {
+        CastOutcome::Refused(msg) => return Outcome::Refused(msg),
+        CastOutcome::Cast(meshes) => meshes,
     };
-
-    // Read the STL while the fixture still exists — a returned `PathBuf`
-    // outlives the file it names.
-    let plug = out
-        .plug_stls
-        .first()
-        .expect("a cast that succeeded emitted the plug it was asked for");
-    let mut mesh = load_stl(plug).unwrap();
-    let _ = std::fs::remove_dir_all(&dir);
-
-    // Weld first: marching cubes emits per-triangle vertices, so an unwelded
-    // mesh has as many components as it has faces. 1 um, the tolerance
-    // `design/cf-cast/tests/iter_connectivity_inspector.rs` uses on the same
-    // question.
-    weld_vertices(&mut mesh, 1e-6);
-    let mut pieces: Vec<Piece> = find_connected_components(&mesh)
+    // The selection above asks for exactly one part, so exactly one STL comes
+    // back — asserted rather than assumed, because `cast_synthetic` returns
+    // cup halves ahead of plugs and a widened selection would silently make
+    // `[0]` a cup.
+    assert_eq!(
+        emitted.len(),
+        1,
+        "plug-only selection emits one STL, got {:?}",
+        emitted.iter().map(|(n, _)| n).collect::<Vec<_>>()
+    );
+    let (_, mesh) = &emitted[0];
+    let mut pieces: Vec<Piece> = find_connected_components(mesh)
         .components
         .iter()
         .map(|c| {
