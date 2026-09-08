@@ -578,12 +578,17 @@ pub fn add_plug_pins(plug: Solid, ribbon: &Ribbon) -> (Solid, Vec<MatingTransfor
 ///
 /// Counting components conflates them. Measured 2026-09-08 on
 /// `~/scans/base_mold` at 0.5 mm cells and 6 mm of inset, the extra component
-/// was 0.149 x 0.037 x 0.154 mm and sat 55 mm from the cap plane — debris,
-/// refused as a detached lock, with a message telling the operator to reduce
-/// the inset or mesh FINER when meshing finer is what produced it. The same
-/// scan at 3 mm cells and 7 or 11 mm of inset yields a 10.635 x 10.635 x
-/// 8.000 mm piece, bit-identically placed at both insets: that one is the
-/// lock, and 8.000 mm is its 4 mm half-length doubled.
+/// was 0.149 x 0.037 x 0.154 mm — debris, refused as a detached lock, with a
+/// message telling the operator to reduce the inset or mesh FINER when meshing
+/// finer is what produced it. The same scan at 3 mm cells and 7 or 11 mm of
+/// inset yields a 10.635 x 10.635 x 8.000 mm piece, bit-identically placed at
+/// both insets: that one is the lock, and 8.000 mm is its 4 mm half-length
+/// doubled.
+///
+/// ★ Note WHERE the debris was, because it decides the shape of the test: 1.3
+/// mm off the cap plane, well inside the lock's 8 mm axial band, and 7.6 mm
+/// outside it laterally. A test that only asked how far along the pin's axis
+/// a piece sits would have taken that sliver for the lock.
 ///
 /// So a component is the lock when it lies within the lock's own extents —
 /// the BOX those extents span, not the frustum inside it — measured in the
@@ -1751,7 +1756,8 @@ mod tests {
     ///
     /// Marching cubes sheds slivers on a real scan — measured 2026-09-08 on
     /// `~/scans/base_mold` at 0.5 mm cells and 6 mm of inset: one component of
-    /// 0.149 x 0.037 x 0.154 mm, 55 mm from the cap plane. The count-based
+    /// 0.149 x 0.037 x 0.154 mm, sitting inside the lock's axial band but
+    /// 7.6 mm outside it laterally. The count-based
     /// predicate refused that as a detached floor lock and told the operator
     /// to reduce the inset or mesh FINER, when meshing finer is precisely what
     /// produced it. The same scan casts clean at 3.0 and 1.5 mm cells.
