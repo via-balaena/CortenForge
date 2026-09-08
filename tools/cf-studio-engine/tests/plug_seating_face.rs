@@ -24,15 +24,24 @@
 //! the seal and the print. Gating it one-sided admits the accepted chamfer by
 //! construction rather than reopening a settled call.
 //!
-//! ## ⚠ The cell sizes are the ones that SHIP, and that is the whole point
+//! ## ⚠ The cell sizes are the ones that SHIP
 //!
-//! An earlier draft of this file gated at 3 mm cells and measured beautiful
-//! numbers there. `cell_size_m_for_quality` offers **0.5 mm Fine** (the print
-//! default) and **1.5 mm Fast preview** — and `tools/cf-studio-gui/src/lib.rs`
-//! says outright that *"3 mm is never offered (it drops the flange web)"*. A
-//! gate whose thesis is "check what ships" that runs at a forbidden cell size
-//! is the same mistake one level up, so it sweeps both real qualities instead
-//! of one convenient number.
+//! `cell_size_m_for_quality` offers **0.5 mm Fine** (the print default) and
+//! **1.5 mm Fast preview**, and this gate sweeps both — a fine grid resolves
+//! thin features a coarse one misses, and the claim here is about the artifact
+//! a printer actually receives.
+//!
+//! An earlier revision of this PR also gated the CUP SEAM, at 3 mm cells, where
+//! it measured beautiful numbers that did not survive contact with either real
+//! quality. 3 mm is not a shippable size: `tools/cf-studio-gui/src/lib.rs` says
+//! outright that *"3 mm is never offered (it drops the flange web)"*, so those
+//! numbers described a cup nobody prints.
+//!
+//! ⚠ That is NOT an indictment of `plug_lock_connectivity`, which casts at 3 mm
+//! deliberately and is right to. A dropped flange web is a CUP feature and
+//! cannot reach a plug-only cast, and that gate treats a refusal as an
+//! acceptable answer, so it tolerates the detach threshold moving with the
+//! grid. A seam gate could do neither.
 
 // `unwrap`/`expect`/`panic` are the integration-test idiom here: the crate
 // denies them for library code, where errors are values, but a test failure
@@ -53,7 +62,7 @@ use common::{CastOutcome, cast_synthetic, open_cone};
 /// which Cendrillon does not take), and cell size moves real geometry: the
 /// floor lock detaches from 12 mm of inset at 1.5 mm cells and 14 mm at 0.5 mm.
 /// A gate pinned to one size cannot see a defect that only appears at the
-/// other. → `[[feedback-vary-the-fixture-input-not-just-the-assertion]]`
+/// other. → [[feedback-vary-the-fixture-input-not-just-the-assertion]]
 const SHIPPED_CELL_SIZES_M: [f64; 2] = [0.0015, 0.0005];
 
 /// How far a plug vertex may sit BELOW the cap-plane trim, in mm.
