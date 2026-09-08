@@ -27,9 +27,15 @@
 //! above it is a recessed dimple and still seats; material below it is what
 //! breaks the seal and the print.
 //!
-//! Measured 2026-09-08 on `main` `dfa11ac2`, this fixture, 3 mm cells:
-//! seam deviation [-0.27, +0.27] µm, and 0 plug vertices below the trim plane
-//! at every inset on both a narrow and a wide cone.
+//! Measured 2026-09-08 on `main` `dfa11ac2`, this fixture, 3 mm cells: seam
+//! deviation within ±0.27 µm on both halves, and not one plug vertex below the
+//! trim plane at any inset that HAS a seating face.
+//!
+//! ⚠ That qualifier is load-bearing. On a narrow cone (r0 = 6 mm, lift-off at
+//! `r0·cos a` = 5.44 mm) the seating face has shrunk to nothing by 2 mm of
+//! inset, so "zero vertices below the plane" there is vacuously true of an
+//! empty set. This gate runs the wide cone and asserts the face exists before
+//! believing anything it says about it.
 
 // `unwrap`/`expect`/`panic` are the integration-test idiom here: the crate
 // denies them for library code, where errors are values, but a test failure
@@ -122,10 +128,10 @@ fn area(mesh: &IndexedMesh, f: [u32; 3]) -> f64 {
 /// Every planar face of `mesh`, largest area first.
 ///
 /// ⚠ Faces are bucketed by normal AND plane offset together. Bucketing on the
-/// normal alone merges parallel-but-separate planes: on a mold half that reads
-/// the box's flat top and its flat bottom as ONE plane 65 mm "thick", which is
-/// how the first draft of this measurement produced a 39 mm deviation and a
-/// clean pass. → `[[feedback_your_verification_tooling_lies_quietly]]`
+/// normal alone lumps every parallel plane into one: measured on a mold half,
+/// the `+Z` cluster then spanned 39.25 mm and reported that as its "deviation"
+/// — a nonsense number that still arrived as a clean pass, because nothing
+/// about it was an error. → [[feedback-your-verification-tooling-lies-quietly]]
 ///
 /// The buckets are a `BTreeMap` rather than a `HashMap` so the returned order
 /// is the same on every run — hash iteration order is how a scan trim ended up
