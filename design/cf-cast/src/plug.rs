@@ -585,9 +585,13 @@ pub fn add_plug_pins(plug: Solid, ribbon: &Ribbon) -> (Solid, Vec<MatingTransfor
 /// 8.000 mm piece, bit-identically placed at both insets: that one is the
 /// lock, and 8.000 mm is its 4 mm half-length doubled.
 ///
-/// So a component is the lock when it lies within the lock's own extents,
-/// tested in the pin's LOCAL frame — a world AABB
-/// would grow with the pin's rotation and swallow debris beside it.
+/// So a component is the lock when it lies within the lock's own extents —
+/// the BOX those extents span, not the frustum inside it — measured in the
+/// pin's LOCAL frame. A world AABB would not do: it grows with the pin's
+/// rotation about the ribbon, and on `base_mold` it grows a lot. The lock's
+/// base is 8.000 mm square (`PrismaticPinSpec`, 4 mm half-extents) and its
+/// world box measured 10.635 mm across — a third wider than the part, all of
+/// it slack in which a sliver beside the lock would read as the lock.
 ///
 /// ⚠ Deliberately NOT a size heuristic, unlike
 /// [`crate::canal::filter_plug_debris`], which drops any component under
@@ -646,8 +650,14 @@ pub fn ensure_plug_mating_features_attached(
 /// The lock is unioned POST-marching-cubes from an exact primitive, so a
 /// detached one is that primitive's own hull and its vertices land on the
 /// pyramid's exact faces — this absorbs the mesh-CSG boolean's intersection
-/// arithmetic, nothing more. Deliberately an order of magnitude under the
-/// smallest debris it must not swallow (0.149 mm, measured above).
+/// arithmetic, nothing more.
+///
+/// ⚠ What bounds it from above is not the size of the debris but its DISTANCE
+/// outside the region: a sliver is excluded by sitting beyond the lock's
+/// extents, however small it is. The measured one sat at least 7.6 mm beyond
+/// them — that is its margin outside the lock's world BOX, which contains the
+/// local one, so the true margin is no smaller — against 0.01 mm here.
+/// Nothing is tuned against the 0.037 mm the sliver itself measured.
 const LOCK_IDENTITY_SLACK_M: f64 = 1.0e-5;
 
 /// Whether every vertex of `component` lies inside `lock`'s extents — the
@@ -1575,7 +1585,6 @@ mod tests {
     /// ⚠ The counts must DIFFER, for the reason [`mesh_of`] gives, AND the
     /// centres must be far enough apart not to weld — a fan spans 1 µm here,
     /// so any separation above that keeps them distinct components.
-    #[allow(clippy::cast_precision_loss)]
     fn mesh_of_at(components: &[(usize, Point3<f64>)]) -> IndexedMesh {
         let mut mesh = IndexedMesh {
             vertices: Vec::new(),
