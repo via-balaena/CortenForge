@@ -1,19 +1,11 @@
-//! "Will this cavity inset actually cast?" — asked while the operator is still
-//! holding the slider, instead of half an hour into the export.
+//! "Will this cavity inset actually cast?", asked at step 3 instead of half an
+//! hour into the export.
 //!
-//! ★ The answer comes from the cast itself. [`plug_fit_verdict`] is the compose
-//! half of the very function the export runs, so this is not a prediction *of*
-//! the cast — it is the cast's own verdict, reached without writing anything.
-//! There is no second implementation to drift.
-//!
-//! ⚠ It writes NOTHING. That is load-bearing, not tidiness: the obvious way to
-//! ask this question is to run [`crate::generate_molds_for_design`] somewhere
-//! harmless, and that function materializes `<stem>.design.toml` beside the
-//! cleaned scan. A pre-flight carrying an invented layer stack would therefore
-//! overwrite the operator's real design with a one-layer draft — on a flat scan
-//! folder like `~/scans`, their actual saved work. Going through the derivation
-//! directly removes the hazard rather than managing it.
-
+//! ⚠ Writes NOTHING, and that is the design. Asking this through
+//! [`crate::generate_molds_for_design`] would materialize `<stem>.design.toml`
+//! beside the cleaned scan — and with the invented layer stack below, that
+//! overwrites the operator's real design. `~/scans` is flat, so it sits right
+//! next to the STL.
 use std::path::{Path, PathBuf};
 
 use cf_studio_core::RidgeOptions;
@@ -39,28 +31,17 @@ pub enum PlugFit {
     },
 }
 
-/// The layer stack the probe invents.
+/// The layer stack the probe invents, because step 3 runs before step 4 picks
+/// the real one.
 ///
-/// ★ Step 3 sets the inset; the layer stack is not chosen until step 4, so a
-/// pre-flight at step 3 has to supply one. Measured 2026-09-08 on
-/// `~/scans/base_mold` at 0.5 mm cells: a one-layer stack and the real
-/// three-layer stack give the SAME verdict on both sides of the threshold
-/// (6.1 and 6.2 mm cast, 6.5 mm refuses), for 4.9× less time — the thin stack
-/// shrinks the mold box, so there is far less to mesh.
+/// The VERDICT transfers (measured 2026-09-08 on `~/scans/base_mold` at 0.5 mm:
+/// thin and the real 3-layer stack agree on both sides of the threshold, for
+/// 4.9× less time). The MESH does not — the box grows with stack thickness,
+/// moving the MC grid ~0.6 mm.
 ///
-/// ⚠ The verdict transfers; the MESH does not. The box grows with total stack
-/// thickness, which moves the marching-cubes grid and shifts the plug ~0.6 mm
-/// laterally. Never compare these bytes against a real cast's.
-///
-/// ⚠⚠ **Must stay above `[cast].wall_thickness_m` (5 mm).** The derivation
-/// gates the canal's suction bulge twice — against the cup wall, and against
-/// `layers.first().thickness_m`. The second one would be asked of THIS
-/// invented layer, and failing it would tell the operator a suction bulb blows
-/// out a 6 mm shell they never configured. It cannot fire while this constant
-/// exceeds the cup wall, because the cup-wall gate is stricter and trips
-/// first — and that gate reads a shared cast default, so tripping it is a real
-/// failure the cast shares. Drop this below 5 mm and that stops being true.
-/// Pinned by `the_probe_layer_outweighs_the_cup_wall` below.
+/// ⚠⚠ Must stay above `[cast].wall_thickness_m`. The canal gates its suction
+/// bulge against both the cup wall and `layers.first()`, and the second would
+/// be asked of THIS invented layer. See `the_probe_layer_outweighs_the_cup_wall`.
 const PROBE_LAYER_THICKNESS_M: f64 = 0.006;
 /// Cure anchor for the probe layer. Any catalog material works — the layer
 /// exists to give the derivation a stack, and nothing here pours.
@@ -69,29 +50,22 @@ const PROBE_LAYER_MATERIAL: &str = "ECOFLEX_00_30";
 /// Ask whether layer 0's plug casts as one piece at `cavity_inset_m`.
 ///
 /// `mesh_cell_size_m` is not a speed knob — **pass the size you intend to cast
-/// at**. Detachment turns on sub-cell grid alignment, so the verdict does not
+/// at**. Detachment turns on sub-cell grid alignment, so verdicts do not
 /// transfer between cell sizes: measured 2026-09-08 on `~/scans/base_mold`,
-/// 2.0 mm and 3.0 mm cells cast a 6.3 mm inset that BOTH shipped sizes (0.5 mm
-/// Fine and 1.5 mm Fast) refuse. Asking at a convenient-but-unshipped size
-/// buys a fast answer to a question nobody asked.
+/// 2.0 and 3.0 mm cells cast a 6.3 mm inset that both shipped sizes refuse.
 ///
-/// ⚠ **Enabled `ridges` override it anyway**, and change both the cost and the
-/// answer. The canal path pins layer 0's plug at its own cell size (0.5 mm by
-/// default) whatever is passed here, and composes displacement onto the plug.
-/// Measured on `~/scans/base_mold` at 5 mm of inset: smooth CASTS in 6.9 s at
-/// 1.5 mm, ridged WILL-NOT-CAST in 234 s — and the cast agrees, refusing it in
-/// 244 s for the same reason. So with ridges on this is a ~4-minute answer,
-/// not a seconds-long one, and a caller that wants it off the UI thread should
-/// decide on THAT number.
+/// ⚠ Enabled `ridges` override it anyway. The canal path pins layer 0's plug
+/// at its own cell size (0.5 mm) whatever is passed, and composes displacement
+/// onto the plug — which changes the answer AND the cost. Measured at 5 mm of
+/// inset: smooth casts in 6.9 s, ridged refuses in 234 s, and the cast agrees.
+/// Budget ~4 minutes with ridges on, not seconds.
 ///
 /// # Errors
 /// [`EngineError::ScanLoad`], [`EngineError::PrepInvalid`],
 /// [`EngineError::NoCenterline`] or [`EngineError::MoldGen`] if the pre-flight
-/// could not be *run*.
-///
-/// ⚠ A cast that runs and declines is [`PlugFit::WillNotCast`], NOT an error.
-/// Keeping the two apart is what stops a missing prep file from being reported
-/// to the operator as "your inset is too large".
+/// could not be *run*. A cast that runs and declines is
+/// [`PlugFit::WillNotCast`], not an error — otherwise a missing prep file
+/// reaches the operator as "your inset is too large".
 pub fn plug_fit_preflight(
     cleaned_stl: &Path,
     prep_toml: &Path,
@@ -106,13 +80,12 @@ pub fn plug_fit_preflight(
     // ribbon and therefore answer a different question. The design PATH it
     // takes is never read: `design` is cleared on the next line in favour of
     // inline layers, so nothing has to exist on disk.
-    let canal = canal_config_from_ridges(ridges);
     let mut config = CastConfig::for_design(
         cleaned_stl.to_path_buf(),
         prep_toml.to_path_buf(),
         PathBuf::new(),
         mesh_cell_size_m,
-        canal.clone(),
+        canal_config_from_ridges(ridges),
     );
     config.design = None;
     config.layers = vec![LayerConfig {
@@ -133,18 +106,6 @@ pub fn plug_fit_preflight(
         .and_then(|()| config.validate_after_layer_source())
         .map_err(|e| EngineError::MoldGen(format!("{e:#}")))?;
 
-    // ⚠ Asked of the config rather than recomputed here. The run path needs
-    // the same number, and a pre-flight that padded its flood fill differently
-    // would not fail loudly — it would answer questions about a domain it does
-    // not cover.
-    let bounds_padding_m = config.sdf_bounds_padding_m();
-    let loaded = load_scan_sdf(cleaned_stl, bounds_padding_m, mesh_cell_size_m).map_err(|e| {
-        EngineError::ScanLoad {
-            path: cleaned_stl.display().to_string(),
-            reason: format!("{e:#}"),
-        }
-    })?;
-
     let prep_text = std::fs::read_to_string(prep_toml).map_err(|e| EngineError::PrepInvalid {
         path: prep_toml.display().to_string(),
         reason: e.to_string(),
@@ -164,6 +125,19 @@ pub fn plug_fit_preflight(
         reason: format!("{e:#}"),
     })?;
 
+    // Asked of the config rather than recomputed: the run path needs the same
+    // number, and an under-padded flood fill does not fail loudly — it answers
+    // questions about a domain it does not cover.
+    let loaded = load_scan_sdf(
+        cleaned_stl,
+        config.sdf_bounds_padding_m(),
+        config.cast.mesh_cell_size_m,
+    )
+    .map_err(|e| EngineError::ScanLoad {
+        path: cleaned_stl.display().to_string(),
+        reason: format!("{e:#}"),
+    })?;
+
     let DerivedSpec { spec, ribbon } = derive_spec_and_ribbon(
         &config,
         &loaded.sdf,
@@ -174,7 +148,7 @@ pub fn plug_fit_preflight(
     )
     .map_err(|e| EngineError::MoldGen(format!("{e:#}")))?;
 
-    Ok(match plug_fit_verdict(&spec, &ribbon, 0) {
+    Ok(match plug_fit_verdict(&spec, &ribbon) {
         Ok(()) => PlugFit::Casts,
         Err(e) => PlugFit::WillNotCast {
             reason: e.to_string(),

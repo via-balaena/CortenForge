@@ -1896,13 +1896,13 @@ fn compose_plug_mesh(
     })
 }
 
-/// The cast's own verdict on whether layer `layer_index`'s plug casts as one
-/// piece, without writing an STL or running the printability gate.
+/// The cast's own verdict on whether **layer 0's** plug casts as one piece,
+/// without writing an STL or running the printability gate.
 ///
-/// This is `compose_plug_mesh` with the mesh dropped — the SAME code the
-/// cast runs, so a frontend can ask "will this cast?" and get the answer the
-/// cast itself would give. Meshing dominates the cost, so this is not free;
-/// it is merely far cheaper than the export it predicts.
+/// This is `compose_plug_mesh` with the mesh dropped — the SAME code the cast
+/// runs, so a frontend can ask "will this cast?" and get the answer the cast
+/// itself would give. Meshing dominates the cost, so it is not free; it is
+/// merely far cheaper than the export it predicts.
 ///
 /// ⚠ The verdict is specific to `spec.mesh_cell_size_m`. Detachment turns on
 /// sub-cell grid alignment, so a verdict computed at one cell size does not
@@ -1910,17 +1910,17 @@ fn compose_plug_mesh(
 /// 2.0 mm and 3.0 mm cells cast a 6.3 mm inset that BOTH shipped cell sizes
 /// (0.5 mm and 1.5 mm) refuse. Ask at the size you intend to cast at.
 ///
+/// ★ Layer 0 rather than a caller-supplied index: the floor lock is anchored
+/// at the cap plane, so this is the plug a fit check is about, and an index
+/// would admit `spec.layers[layer_index - 1]` panicking on a public API.
+///
 /// # Errors
 /// As `compose_plug_mesh`.
-pub fn plug_fit_verdict(
-    spec: &CastSpec,
-    ribbon: &Ribbon,
-    layer_index: usize,
-) -> Result<(), CastError> {
+pub fn plug_fit_verdict(spec: &CastSpec, ribbon: &Ribbon) -> Result<(), CastError> {
     let target = CastTarget::Plug {
-        layer_index: Some(layer_index),
+        layer_index: Some(0),
     };
-    compose_plug_mesh(spec, ribbon, layer_index, target).map(|_| ())
+    compose_plug_mesh(spec, ribbon, 0, target).map(|_| ())
 }
 
 /// Compose + mesh + F4-gate a SINGLE layer's plug. Extracted verbatim from
