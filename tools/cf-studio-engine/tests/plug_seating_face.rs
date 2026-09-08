@@ -76,7 +76,8 @@ const PLUG_PROTRUSION_MAX_MM: f64 = 1e-4;
 /// shifts the plane 1 µm inward so the trim bites rather than grazing.
 const PLUG_TRIM_Z_MM: f64 = 0.001;
 
-/// How steeply a facet must face downward to count as seating face — cos 15°.
+/// How steeply a facet must face downward to count as seating face: -cos 15°,
+/// since a normal pointing straight down is -1, not +1.
 ///
 /// The seating face is planar, so its own facets sit at exactly -1. The margin
 /// is for the chamfered rim, not for admitting steep walls.
