@@ -207,15 +207,9 @@ pub fn derive_spec_and_ribbon(
 
     let cumulative_thickness: f64 = config.layers.iter().map(|l| l.thickness_m).sum();
 
-    // Pad the SDF evaluation bounds by the cumulative outward offset
-    // PLUS the cup-wall thickness — the outer-most layer's surface
-    // lives at `scan_surface + cumulative_thickness`, and the bounding
-    // region grows that outward by another `wall_thickness_m`. The
-    // mesher walks the SDF over `bounding_region.bounds()`, so the
-    // SDF must produce finite distances over that whole domain.
-    // The inward `cavity_inset_m` shift can only shrink the outermost
-    // surface, so the existing padding stays an upper bound.
-    let sdf_bounds_pad = cumulative_thickness + config.cast.wall_thickness_m;
+    // The inward `cavity_inset_m` shift can only shrink the outermost surface,
+    // so this padding stays an upper bound.
+    let sdf_bounds_pad = config.sdf_bounds_padding_m();
     let sdf_bounds = scan_aabb.expanded(sdf_bounds_pad);
 
     // Candidate-A two-SDF construction (per the redesign spec §2 A5

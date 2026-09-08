@@ -1776,6 +1776,9 @@ fn mesh_and_gate_v2_plugs(
 /// [`mesh_and_gate_v2_one_plug`], before anything is written or F4-gated.
 struct ComposedPlug {
     mesh: IndexedMesh,
+    /// The target the compose ran against, so callers reporting on this plug
+    /// name the same layer it did.
+    target: CastTarget,
     /// Which path built it: `"scan-mesh-direct"` or `"compose+MC"`.
     path_label: &'static str,
     /// Present only on the scan-mesh-direct path; feeds the progress line.
@@ -1806,8 +1809,10 @@ fn compose_plug_mesh(
     spec: &CastSpec,
     ribbon: &Ribbon,
     layer_index: usize,
-    target: CastTarget,
 ) -> Result<ComposedPlug, CastError> {
+    let target = CastTarget::Plug {
+        layer_index: Some(layer_index),
+    };
     let base_plug = if layer_index == 0 {
         spec.plug.clone()
     } else {
@@ -1891,6 +1896,7 @@ fn compose_plug_mesh(
     crate::plug::ensure_plug_mating_features_attached(&mesh, &mating_transforms, target)?;
     Ok(ComposedPlug {
         mesh,
+        target,
         path_label,
         repair_summary,
     })
@@ -1917,10 +1923,7 @@ fn compose_plug_mesh(
 /// # Errors
 /// As `compose_plug_mesh`.
 pub fn plug_fit_verdict(spec: &CastSpec, ribbon: &Ribbon) -> Result<(), CastError> {
-    let target = CastTarget::Plug {
-        layer_index: Some(0),
-    };
-    compose_plug_mesh(spec, ribbon, 0, target).map(|_| ())
+    compose_plug_mesh(spec, ribbon, 0).map(|_| ())
 }
 
 /// Compose + mesh + F4-gate a SINGLE layer's plug. Extracted verbatim from
@@ -1936,14 +1939,12 @@ fn mesh_and_gate_v2_one_plug(
     layer_count: usize,
 ) -> Result<PendingPlug, CastError> {
     let t_compose = std::time::Instant::now();
-    let target = CastTarget::Plug {
-        layer_index: Some(layer_index),
-    };
     let ComposedPlug {
         mesh,
+        target,
         path_label,
         repair_summary,
-    } = compose_plug_mesh(spec, ribbon, layer_index, target)?;
+    } = compose_plug_mesh(spec, ribbon, layer_index)?;
     let compose_mesh_s = t_compose.elapsed().as_secs_f64();
     let path = out_dir
         .join(STLS_SUBDIR)
