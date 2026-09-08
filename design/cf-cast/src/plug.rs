@@ -164,7 +164,7 @@ use mesh_types::IndexedMesh;
 
 use crate::error::{CastError, CastTarget};
 use crate::mesh_csg::MatingTransform;
-use crate::prismatic_pin::{PrismaticPinPose, PrismaticPinSpec};
+use crate::prismatic_pin::{PrismaticPinParams, PrismaticPinPose, PrismaticPinSpec};
 use crate::ribbon::Ribbon;
 
 /// Inward offset bias (meters) applied to
@@ -569,13 +569,42 @@ pub fn add_plug_pins(plug: Solid, ribbon: &Ribbon) -> (Solid, Vec<MatingTransfor
 /// before that the plug is legitimately one body and this would pass on
 /// every input.
 ///
+/// ★★★ Asks WHICH piece came loose, not HOW MANY there are. A plug can mesh
+/// into several components for two unrelated reasons, and only one of them is
+/// this function's business:
+///
+/// - the floor lock climbed clear of the plug's base (the defect), or
+/// - marching cubes shed a sliver somewhere on the body (an artifact).
+///
+/// Counting components conflates them. Measured 2026-09-08 on
+/// `~/scans/base_mold` at 0.5 mm cells and 6 mm of inset, the extra component
+/// was 0.149 x 0.037 x 0.154 mm — debris, refused as a detached lock, with a
+/// message telling the operator to reduce the inset or mesh FINER when meshing
+/// finer is what produced it. The same scan at 3 mm cells and 7 or 11 mm of
+/// inset yields a 10.635 x 10.635 x 8.000 mm piece, bit-identically placed at
+/// both insets: that one is the lock, and 8.000 mm is its 4 mm half-length
+/// doubled.
+///
+/// ★ Note WHERE the debris was, because it decides the shape of the test: 1.3
+/// mm off the cap plane, well inside the lock's 8 mm axial band, and 7.6 mm
+/// outside it laterally. A test that only asked how far along the pin's axis
+/// a piece sits would have taken that sliver for the lock.
+///
+/// So a component is the lock when it lies within the lock's own extents —
+/// the BOX those extents span, not the frustum inside it — measured in the
+/// pin's LOCAL frame. A world AABB would not do: it grows with the pin's
+/// rotation about the ribbon, and on `base_mold` it grows a lot. The lock's
+/// base is 8.000 mm square (`PrismaticPinSpec`, 4 mm half-extents) and its
+/// world box measured 10.635 mm across — a third wider than the part, all of
+/// it slack in which a sliver beside the lock would read as the lock.
+///
 /// ⚠ Deliberately NOT a size heuristic, unlike
 /// [`crate::canal::filter_plug_debris`], which drops any component under
 /// [`crate::canal::CANAL_DEBRIS_MAX_DROP_FRACTION`] of the body as
-/// marching-cubes noise. The lock is a feature this pipeline placed on
-/// purpose, so any detachment is a defect however small — and it is small:
-/// 20 faces against a body of hundreds, which at a fine cell size slips
-/// under that ceiling and gets silently deleted.
+/// marching-cubes noise. The lock is unioned in as an EXACT primitive, so its
+/// face count does not grow with the grid: it is ~20 faces whether the body
+/// is 2,988 or 119,156. Filtering by size would delete a genuinely detached
+/// lock at a fine cell size and turn this refusal into a silent omission.
 ///
 /// No-op when no lock was placed ([`PlugPinKind::None`], where the workshop
 /// user hand-positions the plug), so this cannot refuse a cast that never
@@ -584,35 +613,80 @@ pub fn add_plug_pins(plug: Solid, ribbon: &Ribbon) -> (Solid, Vec<MatingTransfor
 /// # Errors
 ///
 /// [`CastError::PlugMatingFeatureDetached`] when a lock was placed and the
-/// emitted plug is not a single connected component.
+/// emitted plug carries it as a component of its own.
 pub fn ensure_plug_mating_features_attached(
     mesh: &IndexedMesh,
     transforms: &[MatingTransform],
     target: CastTarget,
 ) -> Result<(), CastError> {
-    let placed_lock = transforms
-        .iter()
-        .any(|t| matches!(t, MatingTransform::UnionTruncatedPyramid { .. }));
-    if !placed_lock {
+    let Some(lock) = transforms.iter().find_map(|t| match t {
+        MatingTransform::UnionTruncatedPyramid { params } => Some(params),
+        _ => None,
+    }) else {
         return Ok(());
-    }
+    };
     let analysis = find_connected_components(mesh);
     if analysis.component_count <= 1 {
         return Ok(());
     }
     // `components` is sorted largest-first, so [0] is the plug body and the
-    // rest are whatever failed to fuse to it.
+    // rest are whatever failed to fuse to it. Debris among them is not this
+    // function's business — see the ★★★ note above.
+    let Some(detached) = analysis
+        .components
+        .iter()
+        .skip(1)
+        .filter(|component| lock_owns_component(mesh, component, lock))
+        .max_by_key(|component| component.len())
+    else {
+        return Ok(());
+    };
     Err(CastError::PlugMatingFeatureDetached {
         target,
         piece_count: analysis.component_count,
         main_faces: analysis.largest_component_size,
-        detached_faces: analysis
-            .components
-            .iter()
-            .skip(1)
-            .map(Vec::len)
-            .max()
-            .unwrap_or(0),
+        detached_faces: detached.len(),
+    })
+}
+
+/// Slack on the lock's own extents when deciding whether `component` IS the
+/// lock, in meters.
+///
+/// The lock is unioned POST-marching-cubes from an exact primitive, so a
+/// detached one is that primitive's own hull and its vertices land on the
+/// pyramid's exact faces — this absorbs the mesh-CSG boolean's intersection
+/// arithmetic, nothing more.
+///
+/// ⚠ What bounds it from above is not the size of the debris but its DISTANCE
+/// outside the region: a sliver is excluded by sitting beyond the lock's
+/// extents, however small it is. The measured one sat at least 7.6 mm beyond
+/// them — that is its margin outside the lock's world BOX, which contains the
+/// local one, so the true margin is no smaller — against 0.01 mm here.
+/// Nothing is tuned against the 0.037 mm the sliver itself measured.
+const LOCK_IDENTITY_SLACK_M: f64 = 1.0e-5;
+
+/// Whether every vertex of `component` lies inside `lock`'s extents — the
+/// test that tells a detached floor lock from marching-cubes debris.
+///
+/// Works in the pin's local frame (`axis_unit`, `lateral_unit`, and their
+/// cross product), so it is exact under any pin rotation. EVERY vertex, not
+/// any: a sliver that merely overlaps the lock's box is not the lock, and a
+/// detached lock is wholly inside its own extents by construction.
+fn lock_owns_component(mesh: &IndexedMesh, component: &[u32], lock: &PrismaticPinParams) -> bool {
+    let binormal = lock.pose.axis_unit.cross(&lock.pose.lateral_unit);
+    let lateral_max = lock.base_half_extents_m.x + LOCK_IDENTITY_SLACK_M;
+    let binormal_max = lock.base_half_extents_m.y + LOCK_IDENTITY_SLACK_M;
+    let axial_max = lock.half_length_m + LOCK_IDENTITY_SLACK_M;
+    component.iter().all(|&face| {
+        mesh.faces[face as usize].iter().all(|&vertex| {
+            // ⚠ The mesh is in MILLIMETRES (`solid_to_mm_mesh_with_skin`) and
+            // the pin params are in METERS.
+            let offset = mesh.vertices[vertex as usize].coords / crate::mesher::METERS_TO_MM
+                - lock.pose.center_m.coords;
+            offset.dot(&lock.pose.axis_unit).abs() <= axial_max
+                && offset.dot(&lock.pose.lateral_unit).abs() <= lateral_max
+                && offset.dot(&binormal).abs() <= binormal_max
+        })
     })
 }
 
@@ -1476,6 +1550,64 @@ mod tests {
         mesh
     }
 
+    /// The lock an Axial ribbon places, as the mesh stage receives it.
+    fn axial_lock() -> PrismaticPinParams {
+        axial_transforms()
+            .iter()
+            .find_map(|t| match t {
+                MatingTransform::UnionTruncatedPyramid { params } => Some(params.clone()),
+                _ => None,
+            })
+            .expect("an Axial ribbon places a lock")
+    }
+
+    /// The lock's centre in the emitted mesh's own units — MILLIMETRES, where
+    /// [`PrismaticPinParams`] is in meters.
+    fn lock_center_mm() -> Point3<f64> {
+        (axial_lock().pose.center_m.coords * crate::mesher::METERS_TO_MM).into()
+    }
+
+    /// Somewhere the lock demonstrably is not: one metre off in +x.
+    fn far_from_the_lock() -> Point3<f64> {
+        lock_center_mm() + Vector3::new(1000.0, 0.0, 0.0)
+    }
+
+    /// The far corner of the region the lock is recognised by — every local
+    /// half-extent at once — in mm.
+    fn lock_corner_mm() -> Point3<f64> {
+        let lock = axial_lock();
+        let binormal = lock.pose.axis_unit.cross(&lock.pose.lateral_unit);
+        let corner_m = lock.pose.center_m.coords
+            + lock.pose.axis_unit.scale(lock.half_length_m)
+            + lock.pose.lateral_unit.scale(lock.base_half_extents_m.x)
+            + binormal.scale(lock.base_half_extents_m.y);
+        (corner_m * crate::mesher::METERS_TO_MM).into()
+    }
+
+    /// One mesh whose components have the given face counts, each centred on
+    /// the point beside it (mm).
+    ///
+    /// ⚠ The counts must DIFFER, for the reason [`mesh_of`] gives, AND the
+    /// centres must be far enough apart not to weld — a fan spans 1 µm here,
+    /// so any separation above that keeps them distinct components.
+    fn mesh_of_at(components: &[(usize, Point3<f64>)]) -> IndexedMesh {
+        let mut mesh = IndexedMesh {
+            vertices: Vec::new(),
+            faces: Vec::new(),
+        };
+        for &(n, center) in components {
+            let (v, f) = fan(n, 0.0);
+            let base = u32::try_from(mesh.vertices.len()).unwrap();
+            mesh.vertices
+                .extend(v.into_iter().map(|p| p + center.coords));
+            mesh.faces.extend(
+                f.into_iter()
+                    .map(|t| [t[0] + base, t[1] + base, t[2] + base]),
+            );
+        }
+        mesh
+    }
+
     /// The plug-lock transforms an Axial ribbon actually produces — the same
     /// pair `add_plug_pins` hands the mesh stage.
     fn axial_transforms() -> Vec<MatingTransform> {
@@ -1581,10 +1713,19 @@ mod tests {
     /// [`crate::canal::CANAL_DEBRIS_MAX_DROP_FRACTION`] would drop as noise.
     /// A check that shared that ceiling would delete the lock instead of
     /// reporting it, which is why this one has no size threshold at all.
+    ///
+    /// ★★ The fixture is the shape a real refusal has: a body, a lock that
+    /// came loose AT the lock's own extents, and a speck of marching-cubes
+    /// debris somewhere else. `piece_count` counts all three — the plug really
+    /// did come out in three pieces — while `detached_faces` names the lock.
     #[test]
     fn a_lock_detached_from_its_plug_is_refused_whatever_its_size() {
         let err = ensure_plug_mating_features_attached(
-            &mesh_of(&[7, 3, 1]),
+            &mesh_of_at(&[
+                (7, far_from_the_lock()),
+                (3, lock_center_mm()),
+                (1, far_from_the_lock() + Vector3::new(10.0, 0.0, 0.0)),
+            ]),
             &axial_transforms(),
             CastTarget::Plug {
                 layer_index: Some(0),
@@ -1605,6 +1746,84 @@ mod tests {
                     "and the report names the largest DETACHED one — not the \
                      smallest (1), not their sum (4), not the body (7)"
                 );
+            }
+            other => panic!("expected PlugMatingFeatureDetached, got {other:?}"),
+        }
+    }
+
+    /// ★★★ THE REGRESSION, and the reason this check asks WHICH piece came
+    /// loose rather than HOW MANY there are.
+    ///
+    /// Marching cubes sheds slivers on a real scan — measured 2026-09-08 on
+    /// `~/scans/base_mold` at 0.5 mm cells and 6 mm of inset: one component of
+    /// 0.149 x 0.037 x 0.154 mm, sitting inside the lock's axial band but
+    /// 7.6 mm outside it laterally. The count-based
+    /// predicate refused that as a detached floor lock and told the operator
+    /// to reduce the inset or mesh FINER, when meshing finer is precisely what
+    /// produced it. The same scan casts clean at 3.0 and 1.5 mm cells.
+    ///
+    /// ⚠ Written RED against the pre-fix predicate, where three components
+    /// with a lock placed was a refusal wherever they sat.
+    #[test]
+    fn debris_away_from_the_lock_is_not_a_detached_lock() {
+        let mesh = mesh_of_at(&[
+            (7, lock_center_mm()),
+            (3, far_from_the_lock()),
+            (1, far_from_the_lock() + Vector3::new(10.0, 0.0, 0.0)),
+        ]);
+        assert_eq!(
+            find_connected_components(&mesh).component_count,
+            3,
+            "the fixture has to really be in pieces, or this passes for the \
+             wrong reason — the check returns early on a single component"
+        );
+        assert!(
+            ensure_plug_mating_features_attached(
+                &mesh,
+                &axial_transforms(),
+                CastTarget::Plug {
+                    layer_index: Some(0)
+                },
+            )
+            .is_ok(),
+            "debris is not the lock: the lock is the piece at the lock's own \
+             extents, and here that piece is the body"
+        );
+    }
+
+    /// ⚠ WHAT PINS THE SLACK. `cargo-mutants` mutated all four
+    /// `+ LOCK_IDENTITY_SLACK_M` terms — three to `-`, one to `*` — and every
+    /// one survived: the tests above place their components at the lock's
+    /// CENTRE, nowhere near the bound whose sign those mutants change.
+    ///
+    /// The slack is load-bearing in one direction. A detached lock is the
+    /// exact primitive's own hull, so its vertices land on the pyramid's own
+    /// faces and membership turns on floating-point equality; deflate the
+    /// bound and the lock stops matching itself, which turns this refusal into
+    /// the silent omission the docstring warns about.
+    ///
+    /// So a component straddling the far corner of the tested region must
+    /// still be the lock. The fan spans 1 µm against 10 µm of slack, so it
+    /// fits an inflated bound and misses a deflated one.
+    #[test]
+    fn a_lock_sitting_exactly_on_its_own_boundary_is_still_the_lock() {
+        let mesh = mesh_of_at(&[(7, far_from_the_lock()), (3, lock_corner_mm())]);
+        assert_eq!(
+            find_connected_components(&mesh).component_count,
+            2,
+            "the fixture has to really be in pieces"
+        );
+        let err = ensure_plug_mating_features_attached(
+            &mesh,
+            &axial_transforms(),
+            CastTarget::Plug {
+                layer_index: Some(0),
+            },
+        )
+        .expect_err("a lock on its own boundary is still a detached lock");
+        match err {
+            CastError::PlugMatingFeatureDetached { detached_faces, .. } => {
+                assert_eq!(detached_faces, 3, "and it is the piece at the corner");
             }
             other => panic!("expected PlugMatingFeatureDetached, got {other:?}"),
         }
