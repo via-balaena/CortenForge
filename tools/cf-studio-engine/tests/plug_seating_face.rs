@@ -76,6 +76,23 @@ const PLUG_PROTRUSION_MAX_MM: f64 = 1e-4;
 /// shifts the plane 1 µm inward so the trim bites rather than grazing.
 const PLUG_TRIM_Z_MM: f64 = 0.001;
 
+/// How steeply a facet must face downward to count as seating face — cos 15°.
+///
+/// The seating face is planar, so its own facets sit at exactly -1. The margin
+/// is for the chamfered rim, not for admitting steep walls.
+const SEATING_FACE_MAX_TILT_COS: f64 = -0.966;
+
+/// Below this height, in mm, a downward facet belongs to the floor lock rather
+/// than to the seating face.
+///
+/// ⚠ Coupled to the lock's geometry, not free. The lock is symmetric across the
+/// cap plane with a 4 mm half-length, so its own base sits at z = -4 mm
+/// (`plug_lock_connectivity::LOCK_BASE_Z_MM`) and this clears it by 1 mm. If
+/// that half-length ever shrinks past 3 mm the lock's base lands ABOVE this
+/// line, gets counted as seating face, and this gate starts reporting a
+/// millimetres-deep protrusion that is really the lock doing its job.
+const SEATING_FACE_MIN_Z_MM: f64 = -3.0;
+
 /// The scan this gate drives.
 ///
 /// r0 = 12 mm rather than the 6 mm `plug_lock_connectivity` uses: that cone
@@ -104,13 +121,16 @@ fn normal(mesh: &IndexedMesh, f: [u32; 3]) -> [f64; 3] {
 }
 
 /// The heights, in mm, of every vertex on the plug's cap-plane seating face:
-/// the downward-facing facets above the floor lock's own base at z = -4 mm.
+/// the downward-facing facets that are not the floor lock.
 fn seating_face_heights(mesh: &IndexedMesh) -> Vec<f64> {
     mesh.faces
         .iter()
         .copied()
-        .filter(|&f| normal(mesh, f)[2] < -0.966)
-        .filter(|f| f.iter().all(|&v| mesh.vertices[v as usize][2] > -3.0))
+        .filter(|&f| normal(mesh, f)[2] < SEATING_FACE_MAX_TILT_COS)
+        .filter(|f| {
+            f.iter()
+                .all(|&v| mesh.vertices[v as usize][2] > SEATING_FACE_MIN_Z_MM)
+        })
         .flat_map(|f| {
             f.iter()
                 .map(|&v| mesh.vertices[v as usize][2])
