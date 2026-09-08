@@ -154,5 +154,5 @@ pub use seam_solver::{
 pub use spec::{
     CastLayer, CastSpec, DowelArtifact, FunnelArtifact, MeshSummary, MoldArtifact,
     MoldExportReport, PieceArtifact, PlatformArtifact, PlugArtifact, SelectedExportReport,
-    V2LayerReport, V2MoldExportReport,
+    V2LayerReport, V2MoldExportReport, plug_fit_verdict,
 };

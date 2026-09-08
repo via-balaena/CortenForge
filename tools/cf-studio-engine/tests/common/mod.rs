@@ -87,12 +87,42 @@ pub enum CastOutcome {
 /// shares between triangles are bit-identical, so even a zero tolerance would
 /// merge them. Do not read this as headroom for near-coincident vertices —
 /// there is none.
+// ⚠ `common` is compiled separately INTO each test binary, so an item every
+// binary does not use reads as dead code in the ones that do not. This is used
+// by `plug_lock_connectivity` and `plug_seating_face`; `plug_fit_preflight`
+// drives the ridged variant below instead.
+#[allow(dead_code)]
 pub fn cast_synthetic(
     caller: &str,
     scan: IndexedMesh,
     inset_m: f64,
     cell_size_m: f64,
     parts: &PartSelection,
+) -> CastOutcome {
+    cast_synthetic_with_ridges(
+        caller,
+        scan,
+        inset_m,
+        cell_size_m,
+        parts,
+        &RidgeOptions::default(),
+    )
+}
+
+/// As [`cast_synthetic`], with the surface texture spelled out.
+///
+/// ⚠ Ridges are not cosmetic to a cast gate. Enabling them routes layer 0's
+/// plug through the canal path, which composes displacement onto the plug AND
+/// overrides its mesh cell size (`plug_mesh_cell_size_m`, 0.5 mm by default)
+/// regardless of the cell size asked for. Measured 2026-09-08 on
+/// `~/scans/base_mold`: ridges ON refuse a 5 mm inset that ridges OFF cast.
+pub fn cast_synthetic_with_ridges(
+    caller: &str,
+    scan: IndexedMesh,
+    inset_m: f64,
+    cell_size_m: f64,
+    parts: &PartSelection,
+    ridges: &RidgeOptions,
 ) -> CastOutcome {
     let label = format!("{caller}-{}", (inset_m * 1e4).round() as i64);
     let dir = std::env::temp_dir().join(format!("cf-studio-engine-{label}-{}", std::process::id()));
@@ -122,7 +152,7 @@ pub fn cast_synthetic(
         &dir.join("synthetic.prep.toml"),
         &draft,
         cell_size_m,
-        &RidgeOptions::default(),
+        ridges,
         parts,
         CastMode::Detachable,
         Some(Path::new("out")),
