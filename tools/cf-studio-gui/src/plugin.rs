@@ -9,7 +9,7 @@ use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiGlobalSettings, EguiPrimaryContextPass, egui};
 use cf_bevy_common::camera::OrbitCameraPlugin;
 
-use crate::design::DesignControls;
+use crate::design::{DesignControls, drive_design_controls};
 use crate::dialogs::PendingDialog;
 use crate::edit::EditControls;
 use crate::input::arbitrate_pointer_over_egui;
@@ -25,7 +25,7 @@ use crate::scene::{
     draw_centerline, fit_viewport_to_free_space, setup_scene, show_plug, show_scan,
     show_the_step_subject,
 };
-use crate::shape::ShapeControls;
+use crate::shape::{ShapeControls, drive_shape_controls};
 use crate::state::{Screen, Studio};
 use crate::waiver::waiver_screen;
 
@@ -99,11 +99,25 @@ impl Plugin for StudioPlugin {
                         .after(poll_dialogs)
                         .after(poll_simplify_job)
                         .run_if(resource_changed::<ScanEdit>),
-                    // Step 3's preview: drive the jobs, land the mesh, then
-                    // choose which body the step is looking at. Chained because
-                    // each reads what the one before it wrote, and a frame's lag
-                    // between them is a frame of the wrong body on screen.
-                    (drive_plug_preview, show_plug, show_the_step_subject).chain(),
+                    // Step 3, end to end: the fields follow the committed
+                    // plug, the preview follows the fields, and the viewport
+                    // follows the preview. Chained because each reads what the
+                    // one before it wrote, and a frame's lag between them is a
+                    // frame of the wrong body on screen. After `poll_dialogs`
+                    // for `show_scan`'s reason: that is where the project
+                    // changes, and the whole chain is downstream of it.
+                    (
+                        drive_shape_controls,
+                        drive_plug_preview,
+                        show_plug,
+                        show_the_step_subject,
+                    )
+                        .chain()
+                        .after(poll_dialogs),
+                    // Step 4's rows, kept in step with the committed design.
+                    // Not chained with the above: it writes only its own
+                    // resource, and nothing this frame reads it.
+                    drive_design_controls.after(poll_dialogs),
                     // Step 5's part picker, kept in step with the committed
                     // design. Not chained with the preview above: it writes
                     // only its own resource, and nothing this frame reads it.

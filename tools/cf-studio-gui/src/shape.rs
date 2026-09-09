@@ -3,9 +3,18 @@
 
 use bevy::prelude::*;
 use cf_studio_core::{PlugDraft, RidgeOptions};
-use cf_studio_gui::{BoundedField, RidgeToggles, RingRow, apply_plug, ridge_options_from_rows};
+use cf_studio_gui::{
+    BoundedField, RidgeToggles, RingRow, apply_plug, m_to_mm, m_to_tenths_mm,
+    ridge_options_from_rows, whole_degrees,
+};
 
 use crate::state::Studio;
+
+/// The cavity inset's stepper range, in whole millimetres.
+const CAVITY_RANGE: (i32, i32) = (0, 30);
+
+/// What a fresh screen shows before anything is committed.
+const CAVITY_DEFAULT_MM: i32 = 5;
 
 /// The step-3 screen's field state, which outlives any one frame.
 #[derive(Resource)]
@@ -17,13 +26,20 @@ pub(crate) struct ShapeControls {
     pub(crate) cavity_mm: BoundedField,
     /// The ridges cut into the piece's gripping face.
     pub(crate) ridges: RidgeFields,
+    /// The committed plug these fields were last agreed with.
+    ///
+    /// ⚠ The whole plug, not a summary: [`drive_shape_controls`] re-derives the
+    /// fields the moment this stops matching the project, so anything it left
+    /// out would be a change the screen never followed.
+    followed: Option<PlugDraft>,
 }
 
 impl Default for ShapeControls {
     fn default() -> Self {
         Self {
-            cavity_mm: BoundedField::new(5, (0, 30)),
+            cavity_mm: BoundedField::new(CAVITY_DEFAULT_MM, CAVITY_RANGE),
             ridges: RidgeFields::default(),
+            followed: None,
         }
     }
 }
@@ -36,10 +52,50 @@ impl ShapeControls {
             ridges: ridge_options_from_rows(&self.ridges.rings, self.ridges.toggles()),
         }
     }
+
+    /// The fields that would cut `plug` — the inverse of [`Self::plug_draft`].
+    ///
+    /// ⚠ Lossy in one direction on purpose: the steppers edit whole
+    /// millimetres, tenths of a millimetre and whole degrees, so a plug written
+    /// off that grid — by hand, or by the CLI, which has no steppers — is shown
+    /// rounded and clamped. What the fields say is what the piece is cut at.
+    pub(crate) fn from_plug(plug: &PlugDraft) -> Self {
+        Self {
+            cavity_mm: BoundedField::clamped(m_to_mm(plug.cavity_inset_m), CAVITY_RANGE),
+            ridges: RidgeFields::from_options(&plug.ridges),
+            followed: Some(plug.clone()),
+        }
+    }
+}
+
+/// Keep step 3's fields in step with the committed plug.
+///
+/// ⚠ A per-frame reconcile, not an entry hook — [`crate::molds::drive_part_picker`]
+/// is the house pattern. Unlike that one it is *not* gated on the viewed step:
+/// its trigger is the exact plug the fields were last agreed with, so there is
+/// no frame on which running it could throw the user's editing away.
+///
+/// ★ Nothing in a session can desync these — the fields are the only writer of
+/// the plug. Loading a project from disk can, which is what this is for.
+pub(crate) fn drive_shape_controls(mut controls: ResMut<ShapeControls>, studio: Res<Studio>) {
+    let plug = studio.project.plug();
+    if controls.followed.as_ref() == plug {
+        return;
+    }
+    match plug {
+        Some(plug) => *controls = ShapeControls::from_plug(plug),
+        // ⚠ Nothing committed means nothing to follow, and the fields are then
+        // the user's own. Re-picking the scan or re-cleaning it clears the
+        // plug, and resetting the screen at that point would throw away numbers
+        // they typed rather than reproduce a project. The stamp still goes: it
+        // names an artifact that no longer exists.
+        None => controls.followed = None,
+    }
 }
 
 /// The ridge editor's fields: a master switch, the grip rings, then a toggle
 /// and a scalar for each of the remaining features.
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct RidgeFields {
     /// The whole feature. Off is the smooth piece.
     pub(crate) enabled: bool,
@@ -94,6 +150,66 @@ impl Default for RidgeFields {
 }
 
 impl RidgeFields {
+    /// The fields that would cut `options` — the inverse of [`Self::toggles`]
+    /// composed with [`ridge_options_from_rows`].
+    ///
+    /// ⚠ `gate_ridge_options` zeroes a disabled feature's scalar, so the number
+    /// sitting behind an unticked toggle is not in the artifact at all. It
+    /// comes back as this screen's own default rather than as 0, which would
+    /// make re-ticking the feature do nothing visible.
+    pub(crate) fn from_options(options: &RidgeOptions) -> Self {
+        let defaults = Self::default();
+        // A zeroed depth is the gated form of "this feature is off".
+        let depth = |depth_m: f64, default: BoundedField| {
+            if depth_m == 0.0 {
+                (false, default)
+            } else {
+                (
+                    true,
+                    BoundedField::clamped(m_to_tenths_mm(depth_m), default.range),
+                )
+            }
+        };
+        let (texture_enabled, texture_depth) =
+            depth(options.texture_depth_m, defaults.texture_depth);
+        let (side_pinch_enabled, side_pinch) =
+            depth(options.side_pinch_depth_m, defaults.side_pinch);
+        let (tip_relief_enabled, tip_relief) =
+            depth(options.tip_relief_depth_m, defaults.tip_relief);
+        Self {
+            enabled: options.enabled,
+            // An empty ring list is the gated form of "rings off", and the rows
+            // behind the unticked box are this screen's own — as in a fresh
+            // session, which also opens with rings to turn on.
+            rings_enabled: !options.rings.is_empty(),
+            rings: if options.rings.is_empty() {
+                defaults.rings
+            } else {
+                options.rings.iter().map(RingRow::from_ridge).collect()
+            },
+            texture_enabled,
+            texture_depth,
+            // ⚠ Carried whether or not the texture is on: the pitch passes
+            // through `gate_ridge_options` ungated, being inert at zero depth.
+            texture_spacing: BoundedField::clamped(
+                m_to_tenths_mm(options.texture_spacing_m),
+                defaults.texture_spacing.range,
+            ),
+            side_pinch_enabled,
+            side_pinch,
+            tip_relief_enabled,
+            tip_relief,
+            // ⚠ Always on, where the four above are read back: 0° *is* the
+            // default direction, so "off" and "on at 0°" cut the same piece —
+            // and "on at 0°" is the state a fresh screen opens in.
+            orientation_enabled: true,
+            orientation: BoundedField::clamped(
+                whole_degrees(options.orientation_deg),
+                defaults.orientation.range,
+            ),
+        }
+    }
+
     /// What the toggles and fields say, in the units
     /// [`ridge_options_from_rows`] reads.
     fn toggles(&self) -> RidgeToggles {
@@ -120,9 +236,14 @@ impl RidgeFields {
 }
 
 /// Commit the shaped plug, and move on to the layer stack if it took.
-pub(crate) fn commit_plug(draft: PlugDraft, studio: &mut Studio) {
+pub(crate) fn commit_plug(draft: PlugDraft, controls: &mut ShapeControls, studio: &mut Studio) {
     let outcome = apply_plug(&mut studio.project, draft);
     if outcome.is_ok() {
+        // ⚠ The fields ARE the plug that just landed, so say so. Left for
+        // [`drive_shape_controls`] to work out, it would re-derive them from
+        // the artifact and throw away every number parked behind an unticked
+        // toggle — `gate_ridge_options` does not record those.
+        controls.followed = studio.project.plug().cloned();
         // ⚠ Before the report, not after: `Studio::next` clears the message, so
         // reporting first would land on step 4 with nothing said.
         studio.next();
@@ -136,6 +257,7 @@ pub(crate) mod tests {
 
     use std::path::PathBuf;
 
+    use bevy::ecs::system::RunSystemOnce;
     use cf_studio_core::{PrepInput, Project, RidgeRing, ScanInput, Step};
     use cf_studio_gui::{StepBoxState, WizardCursor};
 
@@ -454,7 +576,8 @@ pub(crate) mod tests {
     fn a_committed_plug_advances_the_wizard_and_says_what_it_shaped() {
         let mut studio = shaping(ready_to_shape());
 
-        commit_plug(ShapeControls::default().plug_draft(), &mut studio);
+        let mut controls = ShapeControls::default();
+        commit_plug(controls.plug_draft(), &mut controls, &mut studio);
 
         assert_eq!(studio.cursor.viewed(), Step::DesignLayers, "it moves on");
         assert_eq!(
@@ -476,7 +599,8 @@ pub(crate) mod tests {
     fn a_refused_plug_leaves_the_wizard_where_it_was() {
         let mut studio = shaping(Project::new("no cleaned scan"));
 
-        commit_plug(ShapeControls::default().plug_draft(), &mut studio);
+        let mut controls = ShapeControls::default();
+        commit_plug(controls.plug_draft(), &mut controls, &mut studio);
 
         assert_eq!(studio.cursor.viewed(), Step::ShapePiece, "it stays put");
         assert!(studio.project.plug().is_none(), "and records nothing");
@@ -484,6 +608,372 @@ pub(crate) mod tests {
             matches!(&studio.message, Some(Err(_))),
             "with the reason on screen: {:?}",
             studio.message
+        );
+    }
+
+    // ── the fields follow the committed plug ────────────────────────────
+
+    /// A screen shaped into a piece nothing else in this file produces: every
+    /// scalar on its own number, the ridges actually on, and a cavity off the
+    /// default — so "followed the plug" and "never moved" cannot pass as each
+    /// other.
+    fn a_shaped_screen() -> ShapeControls {
+        let mut controls = distinct_scalars();
+        controls.cavity_mm = BoundedField::new(12, CAVITY_RANGE);
+        controls.ridges.enabled = true;
+        controls
+    }
+
+    /// `project`, with `controls`' piece committed to it.
+    fn shaped_into(controls: &ShapeControls) -> Project {
+        let mut project = ready_to_shape();
+        project
+            .set_plug(controls.plug_draft())
+            .expect("a cleaned scan accepts a plug");
+        project
+    }
+
+    /// Run the real reconcile once and hand back what it left.
+    fn reconcile(studio: Studio, controls: ShapeControls) -> ShapeControls {
+        let mut app = App::new();
+        app.insert_resource(studio).insert_resource(controls);
+        app.world_mut()
+            .run_system_once(drive_shape_controls)
+            .expect("the reconcile must run");
+        app.world_mut()
+            .remove_resource::<ShapeControls>()
+            .expect("controls survive")
+    }
+
+    /// ★★★ The property the reconcile rests on: what the fields would cut,
+    /// read back into fields, cuts the same piece. Without it a project drifts
+    /// a little every time it is reopened.
+    ///
+    /// ⚠ The oracle is `plug_draft` — the function the app commits through —
+    /// not a second copy of `from_plug`'s arithmetic, which would agree with
+    /// its own mistakes.
+    #[test]
+    fn reading_a_plug_back_into_the_fields_cuts_the_same_piece() {
+        let mut all_off = a_shaped_screen();
+        all_off.ridges.rings_enabled = false;
+        all_off.ridges.texture_enabled = false;
+        all_off.ridges.side_pinch_enabled = false;
+        all_off.ridges.tip_relief_enabled = false;
+        all_off.ridges.orientation_enabled = false;
+
+        let mut some_off = a_shaped_screen();
+        some_off.ridges.texture_enabled = false;
+        some_off.ridges.side_pinch_enabled = false;
+
+        for (label, controls) in [
+            ("the screen's own opening state", ShapeControls::default()),
+            (
+                "every feature on, each on its own number",
+                a_shaped_screen(),
+            ),
+            ("every feature switched off", all_off),
+            ("rings, tip relief and orientation only", some_off),
+        ] {
+            let plug = controls.plug_draft();
+            assert_eq!(
+                ShapeControls::from_plug(&plug).plug_draft(),
+                plug,
+                "{label} does not survive the round trip"
+            );
+        }
+    }
+
+    /// ★ Reopening a project shaped at the defaults must hand back the screen
+    /// the app launches with — the same toggles and the same numbers, not
+    /// merely the same piece.
+    ///
+    /// ⚠ This is the only gate on the one read-back that is *not* "zero means
+    /// off": 0° is a direction, not an absence, so the orientation switch
+    /// comes back on. Every round trip below passes either way, because both
+    /// readings cut the identical piece.
+    #[test]
+    fn the_opening_state_reads_back_as_the_opening_state() {
+        let opening = ShapeControls::default();
+
+        let read_back = ShapeControls::from_plug(&opening.plug_draft());
+
+        assert_eq!(read_back.cavity_mm, opening.cavity_mm, "the cavity field");
+        assert_eq!(read_back.ridges, opening.ridges, "and every ridge field");
+    }
+
+    /// ⚠ The number behind an unticked toggle is not in the artifact —
+    /// `gate_ridge_options` zeroes it. Reading it back as 0 rather than as the
+    /// screen's own default would make re-ticking the feature do nothing.
+    #[test]
+    fn a_feature_that_was_off_comes_back_with_a_number_to_turn_on() {
+        let mut off = a_shaped_screen();
+        off.ridges.texture_enabled = false;
+
+        let read_back = ShapeControls::from_plug(&off.plug_draft()).ridges;
+
+        assert!(!read_back.texture_enabled, "still off");
+        assert_eq!(
+            read_back.texture_depth.value(),
+            RidgeFields::default().texture_depth.value(),
+            "and showing a depth that would cut something once ticked"
+        );
+    }
+
+    /// ⚠ A stepper prints the number it is handed, so a project written off
+    /// the field's grid — by hand, or by the CLI, which has no steppers — must
+    /// be rounded and clamped on the way in. Asserted on `state`, not on
+    /// `value()`: `BoundedField::value` clamps on read, so a field carrying 51
+    /// reads as 30 while showing 51.
+    #[test]
+    fn a_plug_off_the_fields_grid_is_shown_rounded_and_clamped() {
+        let plug = PlugDraft {
+            // 51.2 mm, where the stepper stops at 30.
+            cavity_inset_m: 0.0512,
+            ridges: RidgeOptions {
+                enabled: true,
+                rings: vec![RidgeRing {
+                    position_frac: 3.0,
+                    depth_m: 0.001_52,
+                    half_width_frac: 0.0,
+                }],
+                texture_depth_m: 0.000_16,
+                // 50 mm of pitch, where the stepper stops at 30.
+                texture_spacing_m: 0.05,
+                orientation_deg: 400.0,
+                ..RidgeOptions::default()
+            },
+        };
+
+        let fields = ShapeControls::from_plug(&plug);
+
+        assert_eq!(fields.cavity_mm.state.value(), 30, "the cavity is clamped");
+        assert_eq!(
+            fields.ridges.texture_spacing.state.value(),
+            300,
+            "and so is a scalar the ridge editor holds"
+        );
+        assert_eq!(
+            fields.ridges.orientation.state.value(),
+            360,
+            "and one it holds in degrees rather than tenths of a mm"
+        );
+        let ring = fields.ridges.rings.first().expect("the ring is carried");
+        assert_eq!(ring.position.state.value(), 100, "and so is the position");
+        assert_eq!(ring.width.state.value(), 1, "a ring of no width is not one");
+        assert_eq!(ring.depth.state.value(), 15, "15.2 tenths of a mm rounds");
+        assert_eq!(
+            fields.ridges.texture_depth.state.value(),
+            2,
+            "and 1.6 tenths rounds up"
+        );
+    }
+
+    /// Every stepper on the screen, with the name a failure should print.
+    fn every_stepper(controls: &ShapeControls) -> Vec<(String, &BoundedField)> {
+        let r = &controls.ridges;
+        let mut fields = vec![
+            ("cavity".to_string(), &controls.cavity_mm),
+            ("texture depth".to_string(), &r.texture_depth),
+            ("texture spacing".to_string(), &r.texture_spacing),
+            ("side pinch".to_string(), &r.side_pinch),
+            ("tip relief".to_string(), &r.tip_relief),
+            ("orientation".to_string(), &r.orientation),
+        ];
+        for (i, ring) in r.rings.iter().enumerate() {
+            fields.push((format!("ring {i} position"), &ring.position));
+            fields.push((format!("ring {i} depth"), &ring.depth));
+            fields.push((format!("ring {i} width"), &ring.width));
+        }
+        fields
+    }
+
+    /// ★★ The universal the spot checks above cannot state: whatever a project
+    /// holds, every stepper shows a number inside its own range.
+    ///
+    /// ⚠ Asserted on `state`, not `value()` — the latter clamps on read, so a
+    /// field can read correctly while printing something the piece is not cut
+    /// at. And swept over extremes rather than checked at one value: a scalar
+    /// wired past the clamp is invisible until something impossible is put in
+    /// it, and `side_pinch` and `tip_relief` are in range in every other gate
+    /// here.
+    #[test]
+    fn no_project_can_make_a_stepper_print_a_number_outside_its_range() {
+        for value in [-1.0e6, -1.0, -1.0e-9, 0.0, 1.0e-9, 1.0, 1.0e6] {
+            let plug = PlugDraft {
+                cavity_inset_m: value,
+                ridges: RidgeOptions {
+                    enabled: true,
+                    rings: vec![RidgeRing {
+                        position_frac: value,
+                        depth_m: value,
+                        half_width_frac: value,
+                    }],
+                    texture_depth_m: value,
+                    texture_spacing_m: value,
+                    side_pinch_depth_m: value,
+                    tip_relief_depth_m: value,
+                    orientation_deg: value,
+                },
+            };
+
+            let fields = ShapeControls::from_plug(&plug);
+
+            for (name, field) in every_stepper(&fields) {
+                let (min, max) = field.range;
+                let shown = field.state.value();
+                assert!(
+                    (min..=max).contains(&shown),
+                    "a project holding {value} makes the {name} stepper print \
+                     {shown}, outside its own {min}..={max}"
+                );
+            }
+        }
+    }
+
+    /// ★★ What resume is for. A project carrying a plug this session never
+    /// shaped has to reach the fields — Continue commits what they say, so
+    /// left on the defaults it would write 5 mm and no ridges over the user's
+    /// real piece.
+    #[test]
+    fn the_fields_follow_a_plug_the_session_did_not_shape() {
+        let shaped = a_shaped_screen();
+
+        let after = reconcile(
+            shaping(shaped_into(&shaped)),
+            // ⚠ A fresh screen, exactly as launching the app hands one over.
+            ShapeControls::default(),
+        );
+
+        assert_eq!(
+            after.plug_draft(),
+            shaped.plug_draft(),
+            "the fields cut the committed piece"
+        );
+    }
+
+    /// ⚠⚠ This runs every frame step 3 is up. Re-deriving unconditionally
+    /// would throw away every number typed since the last commit, so a user
+    /// could not change anything — and the screen would look like it was
+    /// ignoring the mouse.
+    #[test]
+    fn a_redraw_does_not_clobber_what_the_user_is_typing() {
+        let shaped = a_shaped_screen();
+        let project = shaped_into(&shaped);
+        let mut typing = ShapeControls::from_plug(&shaped.plug_draft());
+        typing.cavity_mm.state = StepBoxState::new(9);
+
+        let after = reconcile(shaping(project), typing);
+
+        assert_eq!(after.cavity_mm.value(), 9, "the number being typed stands");
+    }
+
+    /// ★★ Continue is the moment the fields and the project agree, and it says
+    /// so. Left for the reconcile to work out, the next frame would re-derive
+    /// the fields from the artifact — which does not record the number behind
+    /// an unticked toggle, so a screen left with the texture off at 1.1 mm
+    /// would come back at the default 1.5.
+    #[test]
+    fn committing_a_plug_leaves_the_number_behind_an_unticked_toggle_alone() {
+        let mut controls = a_shaped_screen();
+        controls.ridges.texture_enabled = false;
+        let mut studio = shaping(ready_to_shape());
+
+        commit_plug(controls.plug_draft(), &mut controls, &mut studio);
+        let after = reconcile(studio, controls);
+
+        assert!(!after.ridges.texture_enabled, "still unticked");
+        assert_eq!(
+            after.ridges.texture_depth.value(),
+            11,
+            "and still showing the number the user left in the box"
+        );
+    }
+
+    /// ⚠ The other side of the gate above, and it is a *leave alone*.
+    /// `set_scan` clears the plug, but the fields are an editor, not a display
+    /// of the project: wiping them because an upstream step was redone would
+    /// discard numbers the user typed — which is what the screen did before
+    /// this reconcile existed, and what it must go on doing.
+    ///
+    /// ⚠ The stamp still has to go, or the next frame re-runs this one.
+    #[test]
+    fn dropping_the_plug_leaves_the_fields_for_the_user() {
+        let shaped = a_shaped_screen();
+        let mut project = shaped_into(&shaped);
+        let followed = reconcile(shaping(project.clone()), ShapeControls::default());
+        assert_eq!(
+            followed.cavity_mm.value(),
+            12,
+            "the fixture must start on the shaped piece"
+        );
+
+        project.set_scan(ScanInput {
+            source_path: PathBuf::from("another.stl"),
+        });
+        let after = reconcile(shaping(project.clone()), followed);
+
+        assert_eq!(
+            after.plug_draft(),
+            shaped.plug_draft(),
+            "the numbers on screen are still the user's"
+        );
+        // Re-running it must be a no-op, or the stamp was not cleared.
+        let mut typing = reconcile(shaping(project.clone()), after);
+        typing.cavity_mm.state = StepBoxState::new(7);
+        let settled = reconcile(shaping(project), typing);
+        assert_eq!(settled.cavity_mm.value(), 7, "and still editable");
+    }
+
+    /// ⚠ The stamp goes with the plug it named. Left behind, a project
+    /// carrying that very plug reads as "already followed" and the fields
+    /// never move to it — Continue then commits whatever is on screen over the
+    /// piece that was loaded. Reachable the moment resume exists: pick a scan,
+    /// resume its project, pick the same scan again.
+    #[test]
+    fn a_dropped_plug_takes_its_stamp_with_it() {
+        let shaped = a_shaped_screen();
+        let mut project = shaped_into(&shaped);
+        let followed = reconcile(shaping(project.clone()), ShapeControls::default());
+
+        // The scan is re-picked, which clears the plug and leaves the fields.
+        project.set_scan(ScanInput {
+            source_path: PathBuf::from("another.stl"),
+        });
+        let mut edited = reconcile(shaping(project), followed);
+        edited.cavity_mm.state = StepBoxState::new(7);
+
+        // Then a project carrying that same piece arrives.
+        let after = reconcile(shaping(shaped_into(&shaped)), edited);
+
+        assert_eq!(
+            after.cavity_mm.value(),
+            12,
+            "the fields follow the plug that landed, not the stamp of the one that left"
+        );
+    }
+
+    /// The plugin's wiring: every gate above calls the system directly, so
+    /// they say nothing about what runs it.
+    #[test]
+    fn the_plugin_runs_the_reconcile() {
+        use bevy::state::app::StatesPlugin;
+
+        let mut app = App::new();
+        app.set_error_handler(bevy::ecs::error::ignore);
+        app.add_plugins((MinimalPlugins, StatesPlugin, crate::plugin::StudioPlugin));
+        app.insert_resource(shaping(shaped_into(&a_shaped_screen())));
+
+        assert_eq!(
+            app.world().resource::<ShapeControls>().cavity_mm.value(),
+            CAVITY_DEFAULT_MM,
+            "nothing is followed before the schedule runs"
+        );
+        app.world_mut().run_schedule(Update);
+
+        assert_eq!(
+            app.world().resource::<ShapeControls>().cavity_mm.value(),
+            12,
+            "the plugin's own schedule put the committed plug on the fields"
         );
     }
 }

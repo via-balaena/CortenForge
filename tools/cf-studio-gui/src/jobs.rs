@@ -24,7 +24,6 @@ use cf_studio_gui::{
 };
 use mesh_types::IndexedMesh;
 
-use crate::design::DesignControls;
 use crate::dialogs::{DialogKind, PendingDialog};
 use crate::edit::{EditControls, land_edit};
 use crate::save::{save_into, settle};
@@ -41,7 +40,6 @@ pub(crate) fn poll_dialogs(
     mut studio: ResMut<Studio>,
     mut job: ResMut<PrintJob>,
     mut scan: ResMut<ScanEdit>,
-    mut design: ResMut<DesignControls>,
 ) {
     let Some((kind, picked)) = dialog.poll() else {
         return;
@@ -95,9 +93,7 @@ pub(crate) fn poll_dialogs(
             let Some(path) = picked else { return };
             let outcome = apply_design(&mut studio.project, &path);
             let reported = match (outcome, studio.project.design()) {
-                (Ok(message), Some(loaded)) => {
-                    Ok(message + &show_loaded_design(loaded, &mut design))
-                }
+                (Ok(message), Some(loaded)) => Ok(message + &show_loaded_design(loaded)),
                 (outcome, _) => outcome,
             };
             studio.message = Some(reported);
@@ -105,27 +101,19 @@ pub(crate) fn poll_dialogs(
     }
 }
 
-/// Put the design the project just took delivery of onto the rows that edit it,
-/// and report anything the rows had to change to show it.
+/// Report anything the rows will have to change to show the design that just
+/// landed. Putting it *on* the rows is [`crate::design::drive_design_controls`].
 ///
-/// ⚠ The rows are what "Use this design" commits. Left on the previous stack
-/// they do not merely look wrong — the next click replaces the file that just
-/// landed with them.
-///
-/// ⚠ [`LayerStack::from_drafts`] returning `None` leaves the rows alone with
-/// nothing said, and nothing here can reach it — measured, not assumed:
-/// `load_design_toml` refuses an unknown silicone ("names unknown anchor key")
-/// and a file with no layers ("missing field `layers`") before either can land
-/// on the project. It stays a branch because
-/// [`cf_studio_gui::Silicone::from_key`] is fallible, not because a file gets
-/// here that way.
-fn show_loaded_design(loaded: &DesignDraft, design: &mut DesignControls) -> String {
-    let Some(rows) = LayerStack::from_drafts(&loaded.layers) else {
-        return String::new();
-    };
-    let note = format_inexact_design(&rows, &loaded.layers).unwrap_or_default();
-    design.layers = rows;
-    note
+/// ⚠ [`LayerStack::from_drafts`] returning `None` says nothing, and nothing
+/// here can reach it — measured, not assumed: `load_design_toml` refuses an
+/// unknown silicone ("names unknown anchor key") and a file with no layers
+/// ("missing field `layers`") before either can land on the project. It stays a
+/// branch because [`cf_studio_gui::Silicone::from_key`] is fallible, not
+/// because a file gets here that way.
+fn show_loaded_design(loaded: &DesignDraft) -> String {
+    LayerStack::from_drafts(&loaded.layers)
+        .and_then(|rows| format_inexact_design(&rows, &loaded.layers))
+        .unwrap_or_default()
 }
 
 /// Spawn the export off-thread.
@@ -611,6 +599,7 @@ pub(crate) mod tests {
     use mesh_types::unit_cube;
 
     use super::*;
+    use crate::design::{DesignControls, drive_design_controls};
     use crate::scan::{ActiveScan, ViewUpdate};
 
     const TARGET: usize = 1_000;
@@ -1817,7 +1806,9 @@ visible = true
             .init_resource::<ScanEdit>()
             .init_resource::<DesignControls>()
             .init_resource::<PendingDialog>()
-            .add_systems(Update, poll_dialogs);
+            // ⚠ The real wiring's order: the rows follow the project, so the
+            // reconcile has to run after the load that moved it.
+            .add_systems(Update, (poll_dialogs, drive_design_controls).chain());
         load_into(&mut app, label, toml);
         app
     }
@@ -1838,9 +1829,21 @@ visible = true
     /// are the point: the rows follow the file as closely as the steppers
     /// allow, **and** the message says they had to round it — because the
     /// button beside them would then write 18 / 8 / 5 back over 17.5 / 7.5 / 5.
+    ///
+    /// ⚠⚠ The load-then-edit before the real load is not decoration.
+    /// `base_mold`'s 17.5 / 7.5 / 5 stack rounds to exactly the opening stack's
+    /// 18 / 8 / 5, so against a fresh app "followed the file" and "never moved"
+    /// are the same assertion — the trap the sibling gate below already carries
+    /// a warning about. Starting from two rows of something else makes them
+    /// different; this gate was vacuous without it.
     #[test]
     fn a_design_the_steppers_cannot_hold_is_shown_clamped_and_reported() {
-        let app = app_after_loading("validated-design", VALIDATED_DESIGN);
+        let mut app = app_after_loading("validated-design-edit", ONE_LAYER_DESIGN);
+        app.world_mut()
+            .resource_mut::<DesignControls>()
+            .layers
+            .add();
+        load_into(&mut app, "validated-design", VALIDATED_DESIGN);
         let world = app.world();
 
         let shown: Vec<i32> = world

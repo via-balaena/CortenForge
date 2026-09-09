@@ -31,7 +31,8 @@ pub enum StudioError {
 
     /// A loaded project violated the workflow invariants (artifacts
     /// must form a contiguous prefix; the current step must be
-    /// reachable). The string names the specific violation.
+    /// reachable; the design's cavity inset must be the plug's). The
+    /// string names the specific violation.
     #[error("project file is invalid: {0}")]
     InvalidProject(String),
 

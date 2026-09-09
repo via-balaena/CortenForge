@@ -818,6 +818,18 @@ impl BoundedField {
         }
     }
 
+    /// A field showing `value` pulled inside `range`.
+    ///
+    /// ⚠ For reading a committed artifact back into the screen that edits it.
+    /// The stepper prints the number it is handed, so an artifact from outside
+    /// the range has to be clamped on the way in — [`Self::value`] clamps on
+    /// read, the text does not.
+    #[must_use]
+    pub fn clamped(value: i32, range: (i32, i32)) -> Self {
+        let (min, max) = range;
+        Self::new(value.clamp(min, max), range)
+    }
+
     /// The value, inside its bounds.
     ///
     /// ⚠ Clamped here because typing does not commit: a number typed and left
@@ -853,13 +865,15 @@ pub struct RingRow {
 }
 
 impl RingRow {
-    /// A row at the UI's own units, inside the bounds its steppers offer.
+    /// A row at the UI's own units, inside the bounds its steppers offer —
+    /// which it is held to: the stepper renders the number it is given, so a
+    /// row outside the range would print a value the piece is not cut at.
     #[must_use]
     pub fn new(position_pct: i32, depth_tenths_mm: i32, width_pct: i32) -> Self {
         Self {
-            position: BoundedField::new(position_pct, RING_POSITION_RANGE),
-            depth: BoundedField::new(depth_tenths_mm, RING_DEPTH_RANGE),
-            width: BoundedField::new(width_pct, RING_WIDTH_RANGE),
+            position: BoundedField::clamped(position_pct, RING_POSITION_RANGE),
+            depth: BoundedField::clamped(depth_tenths_mm, RING_DEPTH_RANGE),
+            width: BoundedField::clamped(width_pct, RING_WIDTH_RANGE),
         }
     }
 
@@ -868,7 +882,7 @@ impl RingRow {
     pub fn from_ridge(ring: &RidgeRing) -> Self {
         Self::new(
             scale_to_i32(ring.position_frac, 100.0),
-            scale_to_i32(ring.depth_m, 10_000.0),
+            m_to_tenths_mm(ring.depth_m),
             scale_to_i32(ring.half_width_frac, 100.0),
         )
     }
@@ -892,6 +906,25 @@ impl RingRow {
 #[must_use]
 pub fn tenths_mm_to_m(tenths: i32) -> f64 {
     f64::from(tenths) / 10_000.0
+}
+
+/// Meters → tenths of a millimetre. The inverse of [`tenths_mm_to_m`], for
+/// reading a committed artifact back into the fields that produced it.
+#[must_use]
+pub fn m_to_tenths_mm(m: f64) -> i32 {
+    scale_to_i32(m, 10_000.0)
+}
+
+/// Meters → whole millimetres.
+#[must_use]
+pub fn m_to_mm(m: f64) -> i32 {
+    scale_to_i32(m, 1000.0)
+}
+
+/// An angle → the whole degrees the orientation stepper edits.
+#[must_use]
+pub fn whole_degrees(deg: f64) -> i32 {
+    scale_to_i32(deg, 1.0)
 }
 
 /// A fraction/length → the UI's integer unit, rounded.
@@ -1034,8 +1067,8 @@ impl LayerRow {
     pub fn new(material: Silicone, thickness_mm: i32, slacker_pct: i32) -> Self {
         Self {
             material,
-            thickness_mm: BoundedField::new(thickness_mm, LAYER_THICKNESS_RANGE),
-            slacker_pct: BoundedField::new(slacker_pct, LAYER_SLACKER_RANGE),
+            thickness_mm: BoundedField::clamped(thickness_mm, LAYER_THICKNESS_RANGE),
+            slacker_pct: BoundedField::clamped(slacker_pct, LAYER_SLACKER_RANGE),
         }
     }
 
@@ -1060,17 +1093,12 @@ impl LayerRow {
     /// reads 18 / 8 / 5 — see [`format_inexact_design`], which is what tells
     /// the user before the button beside the rows commits them.
     ///
-    /// Clamped here rather than left to [`BoundedField::value`], which clamps
-    /// on read: an out-of-range number would otherwise be shown and never used.
     #[must_use]
     pub fn from_draft(draft: &LayerDraft) -> Option<Self> {
-        let into = |value: f64, scale: f64, (min, max): (i32, i32)| {
-            scale_to_i32(value, scale).clamp(min, max)
-        };
         Some(Self::new(
             Silicone::from_key(&draft.material_key)?,
-            into(draft.thickness_m, 1000.0, LAYER_THICKNESS_RANGE),
-            into(draft.slacker_fraction, 100.0, LAYER_SLACKER_RANGE),
+            m_to_mm(draft.thickness_m),
+            scale_to_i32(draft.slacker_fraction, 100.0),
         ))
     }
 }

@@ -640,6 +640,23 @@ impl Project {
                 )));
             }
         }
+        // Invariant 3: the design's inset is a *copy* of the plug's.
+        //
+        // ★ The plug step owns the value; `DesignDraft` carries it only so the
+        // design is self-contained for the cast engine. When the two disagree,
+        // the piece previewed and fit-checked from the plug is not the cavity
+        // the molds are cast against — the defect Cendrillon shipped and #898
+        // fixed. Every writer copies one `f64`, so this is exact equality on
+        // purpose: any difference at all means the value was set twice.
+        if let (Some(plug), Some(design)) = (&self.plug, &self.design)
+            && plug.cavity_inset_m != design.cavity_inset_m
+        {
+            return Err(StudioError::InvalidProject(format!(
+                "the design's cavity inset ({} m) is not the shaped plug's ({} m); \
+                 the plug owns that value and the design only copies it",
+                design.cavity_inset_m, plug.cavity_inset_m
+            )));
+        }
         Ok(())
     }
 
@@ -1048,6 +1065,56 @@ mod tests {
         let tampered: Project = serde_json::from_value(value).unwrap();
         let err = tampered.validate().unwrap_err();
         assert!(matches!(err, StudioError::InvalidProject(_)));
+    }
+
+    /// ★★ The defect Cendrillon shipped, caught at the file boundary: the
+    /// preview and the fit check read the plug's inset, the cast reads the
+    /// design's. A project that carries two different values casts a cavity the
+    /// user was never shown.
+    ///
+    /// ⚠ Driven through `load`, not `validate` — `migrate` runs first, and a
+    /// migration that "helpfully" copied the plug's inset over the design's
+    /// would make this gate unreachable on the one path that matters.
+    #[test]
+    fn load_rejects_a_design_inset_that_is_not_the_plugs() {
+        let dir =
+            std::env::temp_dir().join(format!("cf-studio-core-two-insets-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("two-insets.json");
+
+        let mut p = Project::new("two insets");
+        p.set_scan(scan());
+        p.set_prep(prep()).unwrap();
+        p.set_plug(plug()).unwrap();
+        p.set_design(design()).unwrap();
+        let mut value = serde_json::to_value(&p).unwrap();
+        value["design"]["cavity_inset_m"] = serde_json::json!(0.012);
+        std::fs::write(&path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
+
+        let err = Project::load(&path).unwrap_err();
+
+        assert!(
+            matches!(&err, StudioError::InvalidProject(_)),
+            "a project with two insets is invalid, not unreadable: {err:?}"
+        );
+        let text = err.to_string();
+        // ⚠ Both values, or the message cannot say which one is wrong.
+        assert!(text.contains("0.012"), "the design's inset: {text}");
+        assert!(text.contains("0.005"), "and the plug's: {text}");
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    /// The other side of the same gate: a project with no design yet cannot
+    /// violate an invariant about the design, and must not be refused for it.
+    #[test]
+    fn a_shaped_plug_with_no_design_yet_validates() {
+        let mut p = Project::new("shaped, not designed");
+        p.set_scan(scan());
+        p.set_prep(prep()).unwrap();
+        p.set_plug(plug()).unwrap();
+        p.validate().unwrap();
     }
 
     #[test]
