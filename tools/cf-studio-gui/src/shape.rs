@@ -60,12 +60,8 @@ impl ShapeControls {
     /// off that grid — by hand, or by the CLI, which has no steppers — is shown
     /// rounded and clamped. What the fields say is what the piece is cut at.
     pub(crate) fn from_plug(plug: &PlugDraft) -> Self {
-        let (min, max) = CAVITY_RANGE;
         Self {
-            cavity_mm: BoundedField::new(
-                m_to_mm(plug.cavity_inset_m).clamp(min, max),
-                CAVITY_RANGE,
-            ),
+            cavity_mm: BoundedField::clamped(m_to_mm(plug.cavity_inset_m), CAVITY_RANGE),
             ridges: RidgeFields::from_options(&plug.ridges),
             followed: Some(plug.clone()),
         }
@@ -163,20 +159,15 @@ impl RidgeFields {
     /// make re-ticking the feature do nothing visible.
     pub(crate) fn from_options(options: &RidgeOptions) -> Self {
         let defaults = Self::default();
-        // Every scalar here is drawn by a stepper, which prints the number it
-        // is handed — so an off-grid or out-of-range artifact must be rounded
-        // and clamped on the way in, or the screen states a value the piece is
-        // not cut at.
-        let clamped = |value: i32, field: BoundedField| {
-            let (min, max) = field.range;
-            BoundedField::new(value.clamp(min, max), field.range)
-        };
         // A zeroed depth is the gated form of "this feature is off".
         let depth = |depth_m: f64, default: BoundedField| {
             if depth_m == 0.0 {
                 (false, default)
             } else {
-                (true, clamped(m_to_tenths_mm(depth_m), default))
+                (
+                    true,
+                    BoundedField::clamped(m_to_tenths_mm(depth_m), default.range),
+                )
             }
         };
         let (texture_enabled, texture_depth) =
@@ -200,9 +191,9 @@ impl RidgeFields {
             texture_depth,
             // ⚠ Carried whether or not the texture is on: the pitch passes
             // through `gate_ridge_options` ungated, being inert at zero depth.
-            texture_spacing: clamped(
+            texture_spacing: BoundedField::clamped(
                 m_to_tenths_mm(options.texture_spacing_m),
-                defaults.texture_spacing,
+                defaults.texture_spacing.range,
             ),
             side_pinch_enabled,
             side_pinch,
@@ -212,7 +203,10 @@ impl RidgeFields {
             // default direction, so "off" and "on at 0°" cut the same piece —
             // and "on at 0°" is the state a fresh screen opens in.
             orientation_enabled: true,
-            orientation: clamped(whole_degrees(options.orientation_deg), defaults.orientation),
+            orientation: BoundedField::clamped(
+                whole_degrees(options.orientation_deg),
+                defaults.orientation.range,
+            ),
         }
     }
 
