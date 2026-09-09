@@ -288,10 +288,39 @@ const LINUX_DEPS: &[&str] = &[
 /// measured nothing.
 const LINUX_DEPS_OPTIONAL: &[&str] = &["mesa-vulkan-drivers"];
 
-const SCHEDULED: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../.github/workflows/scheduled.yml"
-));
+/// Every workflow file, read from disk at test time.
+///
+/// Enumerated rather than listed by name: a NEW workflow that installs Linux
+/// deps has to be covered the day it lands, and a hard-coded list would simply
+/// not see it — the same hole [`every_gating_job_is_in_quality_gate_needs`]
+/// closes for a new job. The count assert below is what keeps a wrong path from
+/// turning this into a gate that reads nothing.
+fn workflow_files() -> Vec<(String, String)> {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../.github/workflows");
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        // No panic: an unreadable directory yields no files, and the count
+        // assert below reports that far better than a read error would.
+        return Vec::new();
+    };
+    let mut files: Vec<(String, String)> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|ext| ext == "yml" || ext == "yaml")
+        })
+        .map(|path| {
+            let name = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+            (name, std::fs::read_to_string(&path).unwrap_or_default())
+        })
+        .collect();
+    files.sort();
+    files
+}
 const RELEASE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../.github/workflows/release.yml"
@@ -350,24 +379,28 @@ fn parse_package_lists(yaml: &str) -> Vec<Vec<String>> {
 
 #[test]
 fn every_linux_job_installs_the_same_dep_list() {
-    let sites: Vec<(&str, Vec<String>)> = [
-        ("quality-gate.yml", WORKFLOW),
-        ("scheduled.yml", SCHEDULED),
-        ("release.yml", RELEASE),
-    ]
-    .into_iter()
-    .flat_map(|(name, yaml)| {
-        parse_package_lists(yaml)
-            .into_iter()
-            .map(move |pkgs| (name, pkgs))
-    })
-    .collect();
+    let files = workflow_files();
+    assert!(
+        files.len() >= 4,
+        "found only {} workflow file(s) — the path is wrong, and a gate that reads \
+         no workflows passes while checking nothing",
+        files.len()
+    );
+    let sites: Vec<(&str, Vec<String>)> = files
+        .iter()
+        .flat_map(|(name, yaml)| {
+            parse_package_lists(yaml)
+                .into_iter()
+                .map(move |pkgs| (name.as_str(), pkgs))
+        })
+        .collect();
 
     assert!(
         sites.len() >= 10,
-        "parser found only {} `packages:` input(s) across the three workflows — \
-         the format likely changed, and a gate that parses nothing passes silently",
-        sites.len()
+        "parser found only {} `packages:` input(s) across {} workflow(s) — the \
+         format likely changed, and a gate that parses nothing passes silently",
+        sites.len(),
+        files.len()
     );
 
     // The optional list must not rot: an entry nothing installs any more would
@@ -435,11 +468,36 @@ fn parse_package_lists_folds_continuations_and_stops_at_the_next_key() {
     );
 }
 
-/// The Cendrillon install page, which tells readers what to `apt-get install`.
-const SITE_INSTALL_PAGE: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../site/cendrillon/index.html"
-));
+/// Every published page. Enumerated for the same reason as [`workflow_files`]:
+/// a page added later that carries install instructions must be covered without
+/// anyone remembering to add it here.
+fn site_pages() -> Vec<(String, String)> {
+    fn walk(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<(String, String)>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for path in entries.filter_map(Result::ok).map(|e| e.path()) {
+            if path.is_dir() {
+                walk(root, &path, out);
+            } else if path.extension().is_some_and(|ext| ext == "html") {
+                let body = std::fs::read_to_string(&path).unwrap_or_default();
+                // Named against the ROOT, not the directory being walked: an
+                // assert message is read by a person, and every nested page
+                // would otherwise report as the same bare file name.
+                let shown = path.strip_prefix(root).map_or_else(
+                    |_| path.display().to_string(),
+                    |rel| rel.display().to_string(),
+                );
+                out.push((shown, body));
+            }
+        }
+    }
+    let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../site"));
+    let mut pages = Vec::new();
+    walk(root, root, &mut pages);
+    pages.sort();
+    pages
+}
 
 /// Every `lib…-dev` token in a document, wherever it appears.
 ///
@@ -466,17 +524,23 @@ fn dev_packages_named_in(text: &str) -> Vec<String> {
 /// user-facing, and nothing connected it to the CI lists it was meant to mirror.
 #[test]
 fn the_install_instructions_name_no_library_ci_does_not_install() {
-    for (source, text) in [
-        ("site/cendrillon/index.html", SITE_INSTALL_PAGE),
-        ("release.yml release notes", RELEASE),
-    ] {
-        let named = dev_packages_named_in(text);
-        assert!(
-            !named.is_empty(),
-            "found no `lib…-dev` in {source} — the install instructions moved or \
-             changed shape, and this gate would pass while checking nothing"
-        );
-        for pkg in &named {
+    let pages = site_pages();
+    assert!(
+        pages.len() >= 2,
+        "found only {} page(s) under site/ — the path is wrong, and release.yml \
+         alone would satisfy the count below while no page was ever read",
+        pages.len()
+    );
+    let mut sources: Vec<(String, String)> = pages
+        .into_iter()
+        .map(|(name, body)| (format!("site/{name}"), body))
+        .collect();
+    sources.push(("release.yml release notes".to_owned(), RELEASE.to_owned()));
+
+    let mut named_anywhere = 0;
+    for (source, text) in &sources {
+        for pkg in dev_packages_named_in(text) {
+            named_anywhere += 1;
             assert!(
                 LINUX_DEPS.contains(&pkg.as_str()) || LINUX_DEPS_OPTIONAL.contains(&pkg.as_str()),
                 "{source} names `{pkg}`, which no CI job installs. \
@@ -486,4 +550,10 @@ fn the_install_instructions_name_no_library_ci_does_not_install() {
             );
         }
     }
+    assert!(
+        named_anywhere > 0,
+        "no `lib…-dev` named in any of the {} source(s) — the install instructions \
+         moved or changed shape, and this gate would pass while checking nothing",
+        sources.len()
+    );
 }
