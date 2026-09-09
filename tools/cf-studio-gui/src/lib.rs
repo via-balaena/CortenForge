@@ -3285,6 +3285,44 @@ visible = true
         );
     }
 
+    /// ⚠⚠ A refusal and a broken check both land in red carrying the cast's
+    /// own words, and only the wording keeps them apart. Every other gate here
+    /// looks for the REASON — which both carry — so a failure that borrowed the
+    /// refusal's phrasing passes all of them while telling the operator their
+    /// inset is too large when the real problem is a file that would not open.
+    ///
+    /// ⚠ The last assertion is what stops the middle one going vacuous: if the
+    /// refusal ever stopped claiming "will not cast", not finding that phrase
+    /// in the failure would prove nothing.
+    #[test]
+    fn a_broken_check_does_not_read_as_a_verdict_on_the_inset() {
+        const REASON: &str = "scan.cleaned.stl: no such file";
+        let refused = format_fit_verdict(
+            &PlugFit::WillNotCast {
+                reason: REASON.to_string(),
+            },
+            &PlugDraft {
+                cavity_inset_m: 0.011,
+                ..PlugDraft::default()
+            },
+        );
+
+        let broken = format_fit_failure(REASON);
+
+        assert!(
+            broken.contains(REASON),
+            "the words it came back with are carried: {broken}"
+        );
+        assert!(
+            !broken.contains("will not cast"),
+            "a check that never ran must not borrow the refusal's verdict: {broken}"
+        );
+        assert!(
+            matches!(&refused, Err(text) if text.contains("will not cast")),
+            "which is the phrase the refusal owns: {refused:?}"
+        );
+    }
+
     /// ⚠ The two costs are two orders of magnitude apart — seconds smooth,
     /// minutes with ridges on — so the slow one has to say so or it reads as a
     /// hang. Both still carry the clock.
