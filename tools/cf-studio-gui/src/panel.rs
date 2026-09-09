@@ -1820,6 +1820,10 @@ pub(crate) mod tests {
         // Step 4's inexact-design warning — the first message in the app to
         // carry U+26A0 `⚠`, which is exactly the shape of the U+2713 miss above.
         messages.push(inexact_design_note());
+        messages.push(
+            cf_studio_gui::format_ignored_inset(0.012, 0.005)
+                .expect("a file that disagrees with the plug must say so"),
+        );
 
         for message in messages {
             assert_renders(&harness.ctx, &message);

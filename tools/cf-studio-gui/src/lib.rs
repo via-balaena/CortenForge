@@ -98,14 +98,40 @@ pub fn apply_prep(project: &mut Project, cleaned_stl: &Path, prep_toml: &Path) -
 /// # Errors
 /// The failure message if the design is invalid or the scan isn't cleaned.
 pub fn apply_design(project: &mut Project, design_toml: &Path) -> StepOutcome {
-    let draft = draft_from_design_toml(design_toml).map_err(|e| e.to_string())?;
+    let mut draft = draft_from_design_toml(design_toml).map_err(|e| e.to_string())?;
+    // ⚠ The plug owns the cavity inset, exactly as `commit_design` has it: the
+    // stack builds outward off the piece step 3 shaped, and that piece is what
+    // the preview draws and what "Check fit" gave its verdict on. Taking the
+    // file's would leave `Project::plug` and `Project::design` disagreeing, and
+    // the cast reads the second — so the mould would not be the cavity the user
+    // was shown.
+    let from_file = draft.cavity_inset_m;
+    if let Some(plug) = project.plug() {
+        draft.cavity_inset_m = plug.cavity_inset_m;
+    }
     let message = format!(
         "✔ Design set: {} layer(s), {:.1} mm cavity inset.",
         draft.layers.len(),
         draft.cavity_inset_m * 1000.0
     );
+    let ignored = format_ignored_inset(from_file, draft.cavity_inset_m);
     project.set_design(draft).map_err(|e| e.to_string())?;
-    Ok(message)
+    Ok(message + &ignored.unwrap_or_default())
+}
+
+/// What to add when a loaded design named a cavity inset this app did not use.
+///
+/// `None` when the file agreed with the plug — which it does whenever the file
+/// came out of this app, since that is where its inset was written from.
+#[must_use]
+pub fn format_ignored_inset(from_file_m: f64, used_m: f64) -> Option<String> {
+    (from_file_m != used_m).then(|| {
+        format!(
+            " \u{26a0} Its {:.1} mm cavity inset was not used \u{2014} the piece you shaped \
+             on step 3 sets that.",
+            from_file_m * 1000.0,
+        )
+    })
 }
 
 /// Step 3 action — set a layer design built in-app (the layer-stack
@@ -1640,6 +1666,75 @@ visible = true
     fn apply_scan_missing_file_is_an_error_message() {
         let mut p = Project::new("t");
         assert!(apply_scan(&mut p, Path::new("/no/such/scan.stl")).is_err());
+    }
+
+    /// A design file walked onto `plug`, and what came back.
+    fn design_file_onto(
+        label: &str,
+        toml: &str,
+        plug: cf_studio_core::PlugDraft,
+    ) -> (Project, String) {
+        let d = dir(label);
+        let (stl, cleaned, prep, design) = (
+            d.join("s.stl"),
+            d.join("c.stl"),
+            d.join("p.prep.toml"),
+            d.join("x.design.toml"),
+        );
+        std::fs::write(&stl, ONE_TRIANGLE_STL).unwrap();
+        std::fs::write(&cleaned, ONE_TRIANGLE_STL).unwrap();
+        std::fs::write(&prep, PREP_WITH_CENTERLINE).unwrap();
+        std::fs::write(&design, toml).unwrap();
+
+        let mut p = Project::new("t");
+        apply_scan(&mut p, &stl).unwrap();
+        apply_prep(&mut p, &cleaned, &prep).unwrap();
+        apply_plug(&mut p, plug).unwrap();
+        let message = apply_design(&mut p, &design).unwrap();
+        let _ = std::fs::remove_dir_all(&d);
+        (p, message)
+    }
+
+    /// ★★ `Project::plug` and `Project::design` each carry a cavity inset, and
+    /// two different parts of the app read them: the preview and "Check fit"
+    /// read the plug, `start_molds` casts the design. A file that set one and
+    /// not the other made the mould a different cavity from the one the user
+    /// was shown — silently, and with the fit check's ✔ still on screen.
+    #[test]
+    fn a_design_files_cavity_inset_does_not_override_the_shaped_piece() {
+        let shaped = cf_studio_core::PlugDraft {
+            cavity_inset_m: 0.005,
+            ..cf_studio_core::PlugDraft::default()
+        };
+        // DESIGN_TOML says 5 mm; make the file disagree with the plug.
+        let toml = DESIGN_TOML.replace("inset_m = 0.005", "inset_m = 0.012");
+        let (project, message) = design_file_onto("inset-clash", &toml, shaped);
+
+        assert_eq!(
+            project.design().map(|d| d.cavity_inset_m),
+            project.plug().map(|p| p.cavity_inset_m),
+            "the two insets must not be allowed to differ",
+        );
+        assert!(
+            message.contains("5.0 mm cavity inset") && message.contains("12.0 mm"),
+            "and the message names both what was used and what was dropped: {message}",
+        );
+    }
+
+    /// A file this app wrote carries the inset it wrote from, so the common
+    /// case says nothing extra — or the warning stops meaning anything.
+    #[test]
+    fn a_design_file_that_agrees_with_the_piece_is_reported_plainly() {
+        let shaped = cf_studio_core::PlugDraft {
+            cavity_inset_m: 0.005,
+            ..cf_studio_core::PlugDraft::default()
+        };
+        let (_, message) = design_file_onto("inset-agrees", DESIGN_TOML, shaped);
+
+        assert_eq!(
+            message, "✔ Design set: 1 layer(s), 5.0 mm cavity inset.",
+            "nothing was dropped, so nothing is said about it",
+        );
     }
 
     #[test]
