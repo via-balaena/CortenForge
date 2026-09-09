@@ -321,10 +321,23 @@ fn workflow_files() -> Vec<(String, String)> {
     files.sort();
     files
 }
-const RELEASE: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../.github/workflows/release.yml"
-));
+
+/// Count the steps that invoke the Linux deps action.
+///
+/// The mirror oracle for [`parse_package_lists`]: the action takes exactly one
+/// `packages:` input per use, so the two counts must agree. Without this the
+/// parser's blind spots are silent — `with: {packages: …}` on one line is valid
+/// YAML that GitHub accepts and really does install what it names, but the
+/// line-oriented reader below cannot see it, and a floor on the site count
+/// cannot tell "ten sites" from "eleven sites, one of them unread".
+fn count_action_uses(yaml: &str) -> usize {
+    yaml.lines()
+        .filter(|line| {
+            let trimmed = line.trim_start();
+            trimmed.starts_with("uses:") && trimmed.contains("install-linux-deps")
+        })
+        .count()
+}
 
 /// Drop a trailing YAML comment. A package name cannot contain `" #"`, so the
 /// first occurrence ends the value — and this file comments nearly everything,
@@ -403,6 +416,17 @@ fn every_linux_job_installs_the_same_dep_list() {
         files.len()
     );
 
+    let uses: usize = files.iter().map(|(_, yaml)| count_action_uses(yaml)).sum();
+    assert_eq!(
+        sites.len(),
+        uses,
+        "{uses} step(s) invoke install-linux-deps but {} `packages:` input(s) were \
+         read, so a call site is installing packages this gate never checked. Write \
+         the input as `packages:` on its own line under `with:` — an inline \
+         `with: {{packages: …}}` is valid YAML that this reader cannot see.",
+        sites.len()
+    );
+
     // The optional list must not rot: an entry nothing installs any more would
     // go on silently permitting a package. Same rule as `UNGATED_JOBS` above.
     for extra in LINUX_DEPS_OPTIONAL {
@@ -467,6 +491,16 @@ fn parse_package_lists_folds_continuations_and_stops_at_the_next_key() {
         vec![vec!["libudev-dev", "libasound2-dev"]]
     );
 }
+
+/// The release-notes template, which carries the same install instructions.
+///
+/// `include_str!` rather than a lookup in [`workflow_files`]: a renamed
+/// release.yml should break the build loudly, not quietly drop a source this
+/// gate believes it is checking.
+const RELEASE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../.github/workflows/release.yml"
+));
 
 /// Every published page. Enumerated for the same reason as [`workflow_files`]:
 /// a page added later that carries install instructions must be covered without
