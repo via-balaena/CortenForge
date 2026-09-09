@@ -2991,9 +2991,12 @@ pub(crate) mod tests {
 
         let painted = painted_texts(&app);
         let reached = saved.furthest_completed().expect("a walked project");
+        // ⚠ The whole question, not the step title inside it: the checklist
+        // paints all seven titles on every frame, so a `contains(title)` here
+        // passes with this modal deleted.
         assert!(
-            painted.iter().any(|text| text.contains(reached.title())),
-            "the question names how far the saved session got: {painted:?}"
+            painted.contains(&format_resume_question(reached)),
+            "the modal draws the question, about the step reached: {painted:?}"
         );
         assert!(
             painted
