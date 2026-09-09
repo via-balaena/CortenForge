@@ -93,7 +93,7 @@ pub fn apply_prep(project: &mut Project, cleaned_stl: &Path, prep_toml: &Path) -
     Ok("✔ Accepted cleaned scan + prep.".to_string())
 }
 
-/// Step 3 action — load a layer design from a `.design.toml`.
+/// Step 4 action — load a layer design from a `.design.toml`.
 ///
 /// # Errors
 /// The failure message if the design is invalid or the scan isn't cleaned.
@@ -114,14 +114,22 @@ pub fn apply_design(project: &mut Project, design_toml: &Path) -> StepOutcome {
 /// inset". A difference the user cannot see is not one to explain.
 #[must_use]
 pub fn format_ignored_inset(from_file_m: f64, used_m: f64) -> Option<String> {
-    let shown = |m: f64| format!("{:.1}", m * 1000.0);
-    (shown(from_file_m) != shown(used_m)).then(|| {
+    (shown_inset_mm(from_file_m) != shown_inset_mm(used_m)).then(|| {
         format!(
-            " \u{26a0} Its {:.1} mm cavity inset was not used \u{2014} the piece you shaped \
+            " \u{26a0} Its {} mm cavity inset was not used \u{2014} the piece you shaped \
              on step 3 sets that.",
-            from_file_m * 1000.0,
+            shown_inset_mm(from_file_m),
         )
     })
+}
+
+/// A cavity inset in millimetres, as every message about one prints it.
+///
+/// ⚠ One definition because [`format_ignored_inset`] *compares* insets at this
+/// precision and both messages *print* at it. Split, a precision changed on one
+/// side brings back a note that fires while showing the same number twice.
+fn shown_inset_mm(inset_m: f64) -> String {
+    format!("{:.1}", inset_m * 1000.0)
 }
 
 /// Step 4 action — set the layer stack, however it was arrived at: built in the
@@ -142,9 +150,9 @@ pub fn apply_design_draft(project: &mut Project, layers: Vec<LayerDraft>) -> Ste
         layers,
     };
     let message = format!(
-        "✔ Design set: {} layer(s), {:.1} mm cavity inset.",
+        "✔ Design set: {} layer(s), {} mm cavity inset.",
         draft.layers.len(),
-        draft.cavity_inset_m * 1000.0
+        shown_inset_mm(draft.cavity_inset_m),
     );
     project.set_design(draft).map_err(|e| e.to_string())?;
     Ok(message)
