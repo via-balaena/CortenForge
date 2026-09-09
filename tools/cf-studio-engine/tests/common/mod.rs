@@ -14,7 +14,9 @@
 use std::path::{Path, PathBuf};
 
 use cf_studio_core::{DesignDraft, LayerDraft, RidgeOptions};
-use cf_studio_engine::{CastMode, EditSession, PartSelection, generate_molds_for_design};
+use cf_studio_engine::{
+    CastMode, EditSession, PROBE_LAYER_THICKNESS_M, PartSelection, generate_molds_for_design,
+};
 use cortenforge::mesh::io::load_stl;
 use cortenforge::mesh::repair::weld_vertices;
 use cortenforge::mesh::types::{IndexedMesh, Point3};
@@ -131,16 +133,9 @@ pub fn cast_synthetic_with_ridges(
         cell_size_m,
         parts,
         ridges,
-        &[PROBE_STACK_M],
+        &[PROBE_LAYER_THICKNESS_M],
     )
 }
-
-/// The one-layer stack `plug_fit_preflight` invents, in metres.
-///
-/// ⚠ Kept equal to the engine's `PROBE_LAYER_THICKNESS_M` on purpose: the
-/// oracle gate compares composition and needs the stacks matched, so that they
-/// ARE matched has to be visible here rather than a coincidence of two numbers.
-pub const PROBE_STACK_M: f64 = 0.006;
 
 /// As [`cast_synthetic_with_ridges`], with the layer stack spelled out.
 ///
@@ -149,7 +144,8 @@ pub const PROBE_STACK_M: f64 = 0.006;
 /// mesher anchors its lattice at `bounds.min` and steps by exactly one cell —
 /// so a different stack TRANSLATES the sampling grid under the plug. That is
 /// the whole reason `the_invented_layer_stack_does_not_change_the_verdict`
-/// exists.
+/// exists, and why the oracle gate above passes the engine's own
+/// [`PROBE_LAYER_THICKNESS_M`] rather than a copy of the number.
 #[allow(dead_code)]
 pub fn cast_synthetic_with_layers(
     caller: &str,

@@ -10,14 +10,12 @@ use std::path::{Path, PathBuf};
 
 use cf_studio_core::{DesignDraft, LayerDraft, RidgeOptions};
 use cf_studio_engine::{
-    CastMode, EditSession, EngineError, PartId, PartSelection, PlugFit, generate_molds_for_design,
-    plug_fit_preflight,
+    CastMode, EditSession, EngineError, PROBE_LAYER_THICKNESS_M, PartId, PartSelection, PlugFit,
+    generate_molds_for_design, plug_fit_preflight,
 };
 
 mod common;
-use common::{
-    CastOutcome, PROBE_STACK_M, cast_synthetic_with_layers, cast_synthetic_with_ridges, open_cone,
-};
+use common::{CastOutcome, cast_synthetic_with_layers, cast_synthetic_with_ridges, open_cone};
 
 /// Cell size for both sides of the comparison.
 ///
@@ -92,7 +90,7 @@ const REAL_STACK_M: [f64; 3] = [0.018, 0.008, 0.005];
 /// quietly becoming that A/B.
 #[test]
 fn the_invented_layer_stack_does_not_change_the_verdict() {
-    let offset_cells = (REAL_STACK_M.iter().sum::<f64>() - PROBE_STACK_M) / CELL_SIZE_M;
+    let offset_cells = (REAL_STACK_M.iter().sum::<f64>() - PROBE_LAYER_THICKNESS_M) / CELL_SIZE_M;
     assert!(
         (offset_cells - offset_cells.round()).abs() > 0.2,
         "vacuous: the two stacks must sit a FRACTION of a cell apart, not a \

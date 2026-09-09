@@ -56,7 +56,7 @@ pub enum PlugFit {
 /// ⚠⚠ Must stay above `[cast].wall_thickness_m`. The canal gates its suction
 /// bulge against both the cup wall and `layers.first()`, and the second would
 /// be asked of THIS invented layer. See `the_probe_layer_outweighs_the_cup_wall`.
-const PROBE_LAYER_THICKNESS_M: f64 = 0.006;
+pub const PROBE_LAYER_THICKNESS_M: f64 = 0.006;
 /// Cure anchor for the probe layer. Any catalog material works — the layer
 /// exists to give the derivation a stack, and nothing here pours.
 const PROBE_LAYER_MATERIAL: &str = "ECOFLEX_00_30";
