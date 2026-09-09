@@ -93,31 +93,66 @@ pub fn apply_prep(project: &mut Project, cleaned_stl: &Path, prep_toml: &Path) -
     Ok("✔ Accepted cleaned scan + prep.".to_string())
 }
 
-/// Step 3 action — load a layer design from a `.design.toml`.
+/// Step 4 action — load a layer design from a `.design.toml`.
 ///
 /// # Errors
 /// The failure message if the design is invalid or the scan isn't cleaned.
 pub fn apply_design(project: &mut Project, design_toml: &Path) -> StepOutcome {
     let draft = draft_from_design_toml(design_toml).map_err(|e| e.to_string())?;
-    let message = format!(
-        "✔ Design set: {} layer(s), {:.1} mm cavity inset.",
-        draft.layers.len(),
-        draft.cavity_inset_m * 1000.0
-    );
-    project.set_design(draft).map_err(|e| e.to_string())?;
-    Ok(message)
+    let from_file = draft.cavity_inset_m;
+    let message = apply_design_draft(project, draft.layers)?;
+    let used = project.design().map_or(from_file, |set| set.cavity_inset_m);
+    Ok(message + &format_ignored_inset(from_file, used).unwrap_or_default())
 }
 
-/// Step 3 action — set a layer design built in-app (the layer-stack
-/// editor), rather than loaded from a file.
+/// What to add when a loaded design named a cavity inset this app did not use.
+///
+/// ⚠ Compared **as the message prints them**, not as `f64`s. A `.design.toml`
+/// carries the inset to 1 µm and other tools write it from float sliders, so an
+/// exact `!=` fires on differences no one can see — and the note would then
+/// read "Its 5.0 mm cavity inset was not used" directly after "5.0 mm cavity
+/// inset". A difference the user cannot see is not one to explain.
+#[must_use]
+pub fn format_ignored_inset(from_file_m: f64, used_m: f64) -> Option<String> {
+    (shown_inset_mm(from_file_m) != shown_inset_mm(used_m)).then(|| {
+        format!(
+            " \u{26a0} Its {} mm cavity inset was not used \u{2014} the piece you shaped \
+             on step 3 sets that.",
+            shown_inset_mm(from_file_m),
+        )
+    })
+}
+
+/// A cavity inset in millimetres, as every message about one prints it.
+///
+/// ⚠ One definition because [`format_ignored_inset`] *compares* insets at this
+/// precision and both messages *print* at it. Split, a precision changed on one
+/// side brings back a note that fires while showing the same number twice.
+fn shown_inset_mm(inset_m: f64) -> String {
+    format!("{:.1}", inset_m * 1000.0)
+}
+
+/// Step 4 action — set the layer stack, however it was arrived at: built in the
+/// editor, or read out of a `.design.toml`.
+///
+/// ★ The cavity inset is **not** a parameter. It belongs to the piece step 3
+/// shaped — that piece is what the preview draws and what "Check fit" gave its
+/// verdict on, and `start_molds` casts the design. A caller allowed to supply
+/// its own would be allowed to leave `Project::plug` and `Project::design`
+/// disagreeing, and the mould would then not be the cavity the user was shown.
+/// One funnel, so no caller can.
 ///
 /// # Errors
 /// The failure message if the design is invalid or the scan isn't cleaned.
-pub fn apply_design_draft(project: &mut Project, draft: DesignDraft) -> StepOutcome {
+pub fn apply_design_draft(project: &mut Project, layers: Vec<LayerDraft>) -> StepOutcome {
+    let draft = DesignDraft {
+        cavity_inset_m: project.plug().map_or(0.0, |plug| plug.cavity_inset_m),
+        layers,
+    };
     let message = format!(
-        "✔ Design set: {} layer(s), {:.1} mm cavity inset.",
+        "✔ Design set: {} layer(s), {} mm cavity inset.",
         draft.layers.len(),
-        draft.cavity_inset_m * 1000.0
+        shown_inset_mm(draft.cavity_inset_m),
     );
     project.set_design(draft).map_err(|e| e.to_string())?;
     Ok(message)
@@ -1013,6 +1048,31 @@ impl LayerRow {
             slacker_fraction: f64::from(self.slacker_pct.value()) / 100.0,
         }
     }
+
+    /// The row for `draft`, or `None` if its silicone is not one the catalog
+    /// carries — the editor has no picker entry to show it with, and a row
+    /// that substituted another silicone would be committed as if the user
+    /// had chosen it.
+    ///
+    /// ⚠ Lossy the other way, and it matters: this editor edits **whole**
+    /// millimetres and whole percent, while a `.design.toml` carries neither
+    /// bound. `base_mold`'s own stack is 17.5 / 7.5 / 5 mm, so a row for it
+    /// reads 18 / 8 / 5 — see [`format_inexact_design`], which is what tells
+    /// the user before the button beside the rows commits them.
+    ///
+    /// Clamped here rather than left to [`BoundedField::value`], which clamps
+    /// on read: an out-of-range number would otherwise be shown and never used.
+    #[must_use]
+    pub fn from_draft(draft: &LayerDraft) -> Option<Self> {
+        let into = |value: f64, scale: f64, (min, max): (i32, i32)| {
+            scale_to_i32(value, scale).clamp(min, max)
+        };
+        Some(Self::new(
+            Silicone::from_key(&draft.material_key)?,
+            into(draft.thickness_m, 1000.0, LAYER_THICKNESS_RANGE),
+            into(draft.slacker_fraction, 100.0, LAYER_SLACKER_RANGE),
+        ))
+    }
 }
 
 /// The step-4 silicone stack: the layers built outward off the shaped plug,
@@ -1059,6 +1119,25 @@ impl LayerStack {
         &mut self.rows
     }
 
+    /// The stack `layers` describes, or `None` if it is empty or names a
+    /// silicone the catalog no longer carries.
+    ///
+    /// `None` means the caller leaves its rows as they are: a screen showing
+    /// a stack this editor substituted would be committed as the user's own
+    /// choice by the button beside it.
+    #[must_use]
+    pub fn from_drafts(layers: &[LayerDraft]) -> Option<Self> {
+        if layers.is_empty() {
+            return None;
+        }
+        Some(Self {
+            rows: layers
+                .iter()
+                .map(LayerRow::from_draft)
+                .collect::<Option<Vec<_>>>()?,
+        })
+    }
+
     /// Whether a layer can be dropped: the cast needs a stack, so the last one
     /// stays. Read by both the ✖ that offers the drop and [`Self::remove`] that
     /// performs it, which is how they cannot disagree.
@@ -1088,6 +1167,25 @@ impl LayerStack {
     pub fn drafts(&self) -> Vec<LayerDraft> {
         self.rows.iter().map(LayerRow::draft).collect()
     }
+}
+
+/// What to add to the "design set" message when the rows cannot hold the design
+/// that just landed, exactly.
+///
+/// `None` when the rows **are** the design. It matters because the button beside
+/// them commits the rows, not the file.
+///
+/// ⚠ Names no cause, because there are three and each describes the others
+/// wrongly: the steppers round (17.5 mm → 18), clamp up (0.2 mm → 1) and clamp
+/// down (150 mm → 100), and the slacker field does the same. The rows are on
+/// screen carrying the real numbers, so the message points at them instead.
+#[must_use]
+pub fn format_inexact_design(shown: &LayerStack, loaded: &[LayerDraft]) -> Option<String> {
+    (shown.drafts() != loaded).then(|| {
+        " \u{26a0} Not exactly this file \u{2014} the rows below are what \"Use this design\" \
+         would write."
+            .to_string()
+    })
 }
 
 /// The step-5 part picker: which cast pieces to generate.
@@ -1579,6 +1677,97 @@ visible = true
         assert!(apply_scan(&mut p, Path::new("/no/such/scan.stl")).is_err());
     }
 
+    /// The piece DESIGN_TOML is written for — a 5 mm cavity, so a fixture
+    /// pairing the two carries no inset clash.
+    fn shaped_at_5mm() -> cf_studio_core::PlugDraft {
+        cf_studio_core::PlugDraft {
+            cavity_inset_m: 0.005,
+            ..cf_studio_core::PlugDraft::default()
+        }
+    }
+
+    /// A design file walked onto `plug`, and what came back.
+    fn design_file_onto(
+        label: &str,
+        toml: &str,
+        plug: cf_studio_core::PlugDraft,
+    ) -> (Project, String) {
+        let d = dir(label);
+        let (stl, cleaned, prep, design) = (
+            d.join("s.stl"),
+            d.join("c.stl"),
+            d.join("p.prep.toml"),
+            d.join("x.design.toml"),
+        );
+        std::fs::write(&stl, ONE_TRIANGLE_STL).unwrap();
+        std::fs::write(&cleaned, ONE_TRIANGLE_STL).unwrap();
+        std::fs::write(&prep, PREP_WITH_CENTERLINE).unwrap();
+        std::fs::write(&design, toml).unwrap();
+
+        let mut p = Project::new("t");
+        apply_scan(&mut p, &stl).unwrap();
+        apply_prep(&mut p, &cleaned, &prep).unwrap();
+        apply_plug(&mut p, plug).unwrap();
+        let message = apply_design(&mut p, &design).unwrap();
+        let _ = std::fs::remove_dir_all(&d);
+        (p, message)
+    }
+
+    /// ★★ `Project::plug` and `Project::design` each carry a cavity inset, and
+    /// two different parts of the app read them: the preview and "Check fit"
+    /// read the plug, `start_molds` casts the design. A file that set one and
+    /// not the other made the mould a different cavity from the one the user
+    /// was shown — silently, and with the fit check's ✔ still on screen.
+    #[test]
+    fn a_design_files_cavity_inset_does_not_override_the_shaped_piece() {
+        // DESIGN_TOML says 5 mm; make the file disagree with the plug.
+        let toml = DESIGN_TOML.replace("inset_m = 0.005", "inset_m = 0.012");
+        let (project, message) = design_file_onto("inset-clash", &toml, shaped_at_5mm());
+
+        assert_eq!(
+            project.design().map(|d| d.cavity_inset_m),
+            project.plug().map(|p| p.cavity_inset_m),
+            "the two insets must not be allowed to differ",
+        );
+        assert!(
+            message.contains("5.0 mm cavity inset") && message.contains("12.0 mm"),
+            "and the message names both what was used and what was dropped: {message}",
+        );
+    }
+
+    /// ★ A `.design.toml` carries the inset to 1 µm, and the tools that write
+    /// one do it from float sliders — `round_to_micrometers` exists in
+    /// `cf-device-types` because of the IEEE-754 noise that produces. Compared
+    /// as `f64`s, the note fires on a difference nobody can see and then reads
+    /// "Its 5.0 mm cavity inset was not used" right after "5.0 mm cavity
+    /// inset". It is compared as the message prints it instead.
+    #[test]
+    fn an_inset_difference_too_small_to_show_is_not_reported() {
+        assert_eq!(
+            format_ignored_inset(0.005_01, 0.005),
+            None,
+            "5.01 mm and 5.0 mm both print as 5.0",
+        );
+        let seen = format_ignored_inset(0.005_5, 0.005).unwrap_or_default();
+        assert!(
+            seen.contains("5.5 mm"),
+            "but a difference that shows is reported, and names the file's own \
+             number: {seen}",
+        );
+    }
+
+    /// A file this app wrote carries the inset it wrote from, so the common
+    /// case says nothing extra — or the warning stops meaning anything.
+    #[test]
+    fn a_design_file_that_agrees_with_the_piece_is_reported_plainly() {
+        let (_, message) = design_file_onto("inset-agrees", DESIGN_TOML, shaped_at_5mm());
+
+        assert_eq!(
+            message, "✔ Design set: 1 layer(s), 5.0 mm cavity inset.",
+            "nothing was dropped, so nothing is said about it",
+        );
+    }
+
     #[test]
     fn apply_prep_then_design_completes_steps_2_and_3() {
         let d = dir("flow");
@@ -1595,9 +1784,15 @@ visible = true
         apply_scan(&mut p, &stl).unwrap();
         apply_prep(&mut p, &cleaned, &prep).unwrap();
         assert!(p.is_complete(Step::CleanScan));
-        apply_plug(&mut p, cf_studio_core::PlugDraft::default()).unwrap();
+        // ⚠ 5 mm, matching DESIGN_TOML's own `inset_m`. A plug that
+        // disagreed would put the ignored-inset note on every message
+        // these fixtures produce, about a clash they are not testing.
+        apply_plug(&mut p, shaped_at_5mm()).unwrap();
         let msg = apply_design(&mut p, &design).unwrap();
-        assert!(msg.contains("Design set"), "got: {msg}");
+        // Exact, not `contains`: a fixture whose plug drifts off DESIGN_TOML's
+        // own inset appends the ignored-inset note here, and a substring match
+        // stays green while the fixture quietly stops being the case it names.
+        assert_eq!(msg, "✔ Design set: 1 layer(s), 5.0 mm cavity inset.");
         assert!(p.is_complete(Step::DesignLayers));
 
         let _ = std::fs::remove_dir_all(&d);
@@ -1618,20 +1813,34 @@ visible = true
         let mut p = Project::new("t");
         apply_scan(&mut p, &stl).unwrap();
         apply_prep(&mut p, &cleaned, &prep).unwrap();
-        apply_plug(&mut p, cf_studio_core::PlugDraft::default()).unwrap();
+        apply_plug(
+            &mut p,
+            cf_studio_core::PlugDraft {
+                cavity_inset_m: 0.005,
+                ..cf_studio_core::PlugDraft::default()
+            },
+        )
+        .unwrap();
 
-        // A design built in-app (the layer-stack editor's output).
-        let draft = DesignDraft {
-            cavity_inset_m: 0.005,
-            layers: vec![LayerDraft {
+        // A stack built in-app (the layer-stack editor's output). It carries no
+        // inset — the funnel takes that off the plug above, which is the whole
+        // reason `Project::plug` and `Project::design` cannot come apart.
+        let msg = apply_design_draft(
+            &mut p,
+            vec![LayerDraft {
                 thickness_m: 0.0175,
                 material_key: "ECOFLEX_00_30".to_string(),
                 slacker_fraction: 0.25,
             }],
-        };
-        let msg = apply_design_draft(&mut p, draft).unwrap();
-        assert!(msg.contains("Design set"), "got: {msg}");
+        )
+        .unwrap();
+        assert!(msg.contains("5.0 mm cavity inset"), "got: {msg}");
         assert!(p.is_complete(Step::DesignLayers));
+        assert_eq!(
+            p.design().map(|d| d.cavity_inset_m),
+            p.plug().map(|plug| plug.cavity_inset_m),
+            "the stack took the shaped piece's inset, not one of its own",
+        );
 
         let _ = std::fs::remove_dir_all(&d);
     }
@@ -1670,7 +1879,10 @@ visible = true
 
         apply_scan(&mut p, &stl).unwrap();
         apply_prep(&mut p, &cleaned, &prep).unwrap();
-        apply_plug(&mut p, cf_studio_core::PlugDraft::default()).unwrap();
+        // ⚠ 5 mm, matching DESIGN_TOML's own `inset_m`. A plug that
+        // disagreed would put the ignored-inset note on every message
+        // these fixtures produce, about a clash they are not testing.
+        apply_plug(&mut p, shaped_at_5mm()).unwrap();
         apply_design(&mut p, &design).unwrap();
 
         // Molds made, not yet exported → "ready to save N".
@@ -2420,7 +2632,10 @@ visible = true
         let mut p = Project::new("t");
         apply_scan(&mut p, &stl).unwrap();
         apply_prep(&mut p, &cleaned, &prep).unwrap();
-        apply_plug(&mut p, cf_studio_core::PlugDraft::default()).unwrap();
+        // ⚠ 5 mm, matching DESIGN_TOML's own `inset_m`. A plug that
+        // disagreed would put the ignored-inset note on every message
+        // these fixtures produce, about a clash they are not testing.
+        apply_plug(&mut p, shaped_at_5mm()).unwrap();
         apply_design(&mut p, &design).unwrap();
         p.set_molds(MoldOutputs {
             out_dir: PathBuf::from("/tmp/out"),
@@ -2656,6 +2871,126 @@ visible = true
             keys,
             ["ECOFLEX_00_30", "DRAGON_SKIN_10A", "DRAGON_SKIN_20A"]
         );
+    }
+
+    /// A layer stack in the SDK's units, from the given `(key, mm, pct)` rows.
+    fn drafts_of(rows: &[(&str, f64, f64)]) -> Vec<LayerDraft> {
+        rows.iter()
+            .map(|&(key, thickness_mm, slacker_pct)| LayerDraft {
+                thickness_m: thickness_mm / 1000.0,
+                material_key: key.to_string(),
+                slacker_fraction: slacker_pct / 100.0,
+            })
+            .collect()
+    }
+
+    /// A design in whole millimetres is shown exactly as it arrived — the case
+    /// the "…or load a file" button has to get right, because the button
+    /// beside the rows commits them.
+    #[test]
+    fn a_whole_millimetre_design_seeds_the_rows_unchanged() {
+        let loaded = drafts_of(&[("ECOFLEX_00_30", 7.0, 25.0), ("DRAGON_SKIN_10A", 3.0, 0.0)]);
+        let stack = LayerStack::from_drafts(&loaded).expect("a catalog silicone in whole mm");
+
+        assert_eq!(
+            stack_census(&stack),
+            vec![("ECOFLEX_00_30", 7, 25), ("DRAGON_SKIN_10A", 3, 0)],
+        );
+        assert_eq!(stack.drafts(), loaded, "and nothing was changed to show it");
+        assert_eq!(
+            format_inexact_design(&stack, &loaded),
+            None,
+            "so there is nothing to warn about",
+        );
+    }
+
+    /// ★★ `base_mold`'s own stack — the one physically validated cast — is
+    /// **17.5 / 7.5 / 5 mm**, and this editor edits whole millimetres. The rows
+    /// therefore cannot be the design, and the user has to be told before the
+    /// button beside them rounds it.
+    #[test]
+    fn the_validated_stack_does_not_survive_this_editor_and_says_so() {
+        let loaded = drafts_of(&[
+            ("ECOFLEX_00_30", 17.5, 25.0),
+            ("DRAGON_SKIN_10A", 7.5, 0.0),
+            ("DRAGON_SKIN_20A", 5.0, 0.0),
+        ]);
+        let stack = LayerStack::from_drafts(&loaded).expect("every silicone is in the catalog");
+
+        assert_eq!(
+            stack_census(&stack),
+            vec![
+                ("ECOFLEX_00_30", 18, 25),
+                ("DRAGON_SKIN_10A", 8, 0),
+                ("DRAGON_SKIN_20A", 5, 0),
+            ],
+            "rounded to the nearest millimetre, not truncated",
+        );
+        assert_eq!(
+            format_inexact_design(&stack, &loaded),
+            Some(
+                " \u{26a0} Not exactly this file \u{2014} the rows below are what \"Use this \
+                 design\" would write."
+                    .to_string()
+            ),
+            "and the user is told before the button beside those rows writes them",
+        );
+    }
+
+    /// Both refusals. The rows are left as they were rather than showing a
+    /// stack the editor made up — one it would then commit as the user's own.
+    #[test]
+    fn a_design_this_editor_cannot_show_builds_no_rows() {
+        assert_eq!(
+            LayerStack::from_drafts(&[]),
+            None,
+            "an empty stack is not a stack",
+        );
+        assert_eq!(
+            LayerStack::from_drafts(&drafts_of(&[
+                ("ECOFLEX_00_30", 5.0, 0.0),
+                ("NOT_A_SILICONE", 5.0, 0.0),
+            ])),
+            None,
+            "and one unknown silicone refuses the whole stack, not just its row",
+        );
+    }
+
+    /// A `.design.toml` is bounded by neither of this editor's steppers, and
+    /// the clamp is at construction rather than left to `BoundedField::value`:
+    /// a row *showing* 0 mm that *commits* 1 mm is a screen telling the user
+    /// something untrue. Asserted on the raw state for that reason — reading
+    /// through `value()` would clamp either way and prove nothing.
+    ///
+    /// ★ The note claims no cause, because the steppers do three different
+    /// things here. It said "rounded to the nearest millimetre" until a probe
+    /// showed 150 mm being shown as 100 — a 50 mm discrepancy described as a
+    /// sub-millimetre one, in the only message standing between the user and
+    /// the overwrite.
+    #[test]
+    fn a_layer_outside_the_steppers_is_clamped_where_it_is_shown_and_flagged() {
+        for (label, thickness_mm, slacker_pct, shown_mm, shown_pct) in [
+            ("below the floor", 0.2, 400.0, 1, 100),
+            ("above the ceiling", 150.0, 0.0, 100, 0),
+        ] {
+            let loaded = drafts_of(&[("ECOFLEX_00_30", thickness_mm, slacker_pct)]);
+            let stack = LayerStack::from_drafts(&loaded).expect("the silicone is in the catalog");
+            let row = &stack.rows()[0];
+
+            assert_eq!(
+                (
+                    row.thickness_mm.state.value(),
+                    row.slacker_pct.state.value()
+                ),
+                (shown_mm, shown_pct),
+                "{label}: shown at the bound it will be used at",
+            );
+            let note = format_inexact_design(&stack, &loaded).unwrap_or_default();
+            assert!(
+                !note.contains("round") && note.contains("rows below"),
+                "{label}: the note points at the rows, not at a cause: {note:?}",
+            );
+        }
     }
 
     #[test]

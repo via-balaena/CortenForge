@@ -2,7 +2,7 @@
 //! piece.
 
 use bevy::prelude::*;
-use cf_studio_core::{DesignDraft, LayerDraft};
+use cf_studio_core::LayerDraft;
 use cf_studio_gui::{LayerStack, apply_design_draft};
 
 use crate::state::Studio;
@@ -20,19 +20,5 @@ pub(crate) struct DesignControls {
 /// screen left you on step 4 with Next → newly enabled, beside two buttons you
 /// might reasonably reach for next.
 pub(crate) fn commit_design(layers: Vec<LayerDraft>, studio: &mut Studio) {
-    // The cavity inset belongs to "Shape your piece" — the layer stack builds
-    // outward off the plug that step shaped, and carries a copy so the design
-    // is self-contained for the cast engine.
-    let cavity_inset_m = studio
-        .project
-        .plug()
-        .map_or(0.0, |plug| plug.cavity_inset_m);
-    let outcome = apply_design_draft(
-        &mut studio.project,
-        DesignDraft {
-            cavity_inset_m,
-            layers,
-        },
-    );
-    studio.message = Some(outcome);
+    studio.message = Some(apply_design_draft(&mut studio.project, layers));
 }
