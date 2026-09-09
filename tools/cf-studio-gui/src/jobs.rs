@@ -4,6 +4,9 @@
 //! control that could clobber one. Simplify (step 2), the cast (step 5), the
 //! print export (step 6). The cast is measured in minutes — **408 s at 1.5 mm,
 //! 2187 s at 0.5**, bonded — which is why it reports its own elapsed time.
+//!
+//! ⚠ Step 3's fit check is the one background op that does NOT take `busy`.
+//! See [`start_plug_fit`].
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -12,11 +15,12 @@ use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, futures_lite::future};
 use cf_studio_core::{DesignDraft, MoldOutputs, RidgeOptions};
 use cf_studio_engine::{
-    PartSelection, PrintExportReport, export_print_package, generate_molds_for_design, run_simplify,
+    PartSelection, PlugFit, PrintExportReport, export_print_package, generate_molds_for_design,
+    plug_fit_preflight, run_simplify,
 };
 use cf_studio_gui::{
-    CENDRILLON_CAST_MODE, PourSession, apply_design, format_molds_progress, format_simplify_done,
-    format_simplify_started,
+    CENDRILLON_CAST_MODE, FitQuestion, FitView, PourSession, apply_design, fit_view,
+    format_molds_progress, format_simplify_done, format_simplify_started,
 };
 use mesh_types::IndexedMesh;
 
@@ -299,6 +303,177 @@ pub(crate) fn poll_molds_job(mut job: ResMut<MoldsJob>, mut studio: ResMut<Studi
         },
         Err(msg) => Err(format!("Mold generation failed: {msg}")),
     });
+}
+
+/// A fit check in flight: the question it is answering, when it started, and
+/// the task.
+///
+/// ⚠ The question is carried so the answer can be matched back to it. Nothing
+/// stops the user editing step 3 while this runs, and an answer about settings
+/// they have moved on from is worse than no answer.
+struct FitRun {
+    question: FitQuestion,
+    started: Instant,
+    task: Task<Result<PlugFit, String>>,
+}
+
+/// Step 3's fit check: the run in flight, and the last answer with the question
+/// it answers.
+///
+/// ⚠ Both halves live here rather than on [`Studio`], for two reasons.
+/// `Studio::next`/`back` clear the step message, so a verdict kept there would
+/// vanish on a trip to step 4 and back while the fields it describes had not
+/// moved. And keeping the answer beside its question puts the staleness rule in
+/// one place — [`PlugFitJob::view`].
+#[derive(Resource, Default)]
+pub(crate) struct PlugFitJob {
+    running: Option<FitRun>,
+    /// What the last check came back with, and the question it answers: the
+    /// cast's verdict, or why it could not run at all.
+    ///
+    /// ⚠ The failure lives here too, rather than on `Studio::message`. This is
+    /// the one job that leaves `Studio::busy` alone, so the operator can walk
+    /// to another step while it runs — and the shared message would follow them
+    /// there, over the top of a running cast's progress line.
+    answered: Option<(FitQuestion, Result<PlugFit, String>)>,
+}
+
+impl PlugFitJob {
+    /// Whether a check is in flight — for any question, which is why the button
+    /// this disables needs no question of its own.
+    pub(crate) const fn is_running(&self) -> bool {
+        self.running.is_some()
+    }
+
+    /// What step 3 should show about `current`.
+    pub(crate) fn view(&self, current: &FitQuestion) -> FitView<'_> {
+        fit_view(
+            self.running
+                .as_ref()
+                .map(|run| (&run.question, run.started.elapsed().as_secs())),
+            self.answered.as_ref(),
+            current,
+        )
+    }
+}
+
+/// The two states step 3 can be drawn against, built directly.
+///
+/// ⚠ Constructors, not a second implementation: [`PlugFitJob::view`] and the
+/// panel's use of it are exactly the code under test. The in-flight task is a
+/// future that never resolves, so the running state holds for as long as the
+/// gate needs it.
+#[cfg(test)]
+impl PlugFitJob {
+    pub(crate) fn in_flight(question: FitQuestion, task: Task<Result<PlugFit, String>>) -> Self {
+        Self {
+            running: Some(FitRun {
+                question,
+                started: Instant::now(),
+                task,
+            }),
+            answered: None,
+        }
+    }
+
+    pub(crate) fn running_for(question: FitQuestion) -> Self {
+        Self::in_flight(
+            question,
+            AsyncComputeTaskPool::get_or_init(bevy::tasks::TaskPool::default)
+                .spawn(std::future::pending::<Result<PlugFit, String>>()),
+        )
+    }
+
+    pub(crate) fn answered_with(question: FitQuestion, outcome: Result<PlugFit, String>) -> Self {
+        Self {
+            running: None,
+            answered: Some((question, outcome)),
+        }
+    }
+
+    /// The question the check in flight is answering.
+    pub(crate) fn asking(&self) -> Option<&FitQuestion> {
+        self.running.as_ref().map(|run| &run.question)
+    }
+}
+
+/// What a panicked fit check is reported as.
+const FIT_PANICKED: &str = "internal error (panic) during the fit check";
+
+/// What is missing when the check is somehow asked for without a cleaned scan.
+const FIT_NO_PREP: &str = "Clean and save the scan first (step 2).";
+
+/// Start a fit check for `question`.
+///
+/// ⚠⚠ `Studio::busy` is deliberately NOT taken, and this is the only job here
+/// that leaves it alone. The check is opt-in and runs for minutes once ridges
+/// are on; freezing every control behind it would make asking the question
+/// worse than never asking. Nothing downstream reads a verdict, so a Continue
+/// mid-run is safe — the answer lands into [`fit_view`]'s staleness drop.
+///
+/// ⚠ `studio` is borrowed immutably, and that is the other half of leaving
+/// `busy` alone: the operator can walk to another step while this runs, so
+/// nothing about the check may reach state their new screen is reading.
+pub(crate) fn start_plug_fit(question: FitQuestion, studio: &Studio, job: &mut PlugFitJob) {
+    // A click queued in the same frame the button disabled itself still
+    // arrives, and a second check would race the first for minutes.
+    if job.running.is_some() {
+        return;
+    }
+    let Some(prep) = studio.project.prep() else {
+        job.answered = Some((question, Err(FIT_NO_PREP.to_string())));
+        return;
+    };
+    let (cleaned_stl, prep_toml) = (prep.cleaned_stl.clone(), prep.prep_toml.clone());
+    job.running = Some(FitRun {
+        task: spawn_plug_fit(cleaned_stl, prep_toml, question.clone()),
+        started: Instant::now(),
+        question,
+    });
+}
+
+/// Run the pre-flight off-thread.
+fn spawn_plug_fit(
+    cleaned_stl: PathBuf,
+    prep_toml: PathBuf,
+    question: FitQuestion,
+) -> Task<Result<PlugFit, String>> {
+    AsyncComputeTaskPool::get().spawn(async move {
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            plug_fit_preflight(
+                &cleaned_stl,
+                &prep_toml,
+                question.plug.cavity_inset_m,
+                &question.plug.ridges,
+                question.cell_size_m,
+            )
+        }));
+        match outcome {
+            Ok(Ok(fit)) => Ok(fit),
+            Ok(Err(e)) => Err(e.to_string()),
+            Err(_) => Err(FIT_PANICKED.to_string()),
+        }
+    })
+}
+
+/// Land a finished fit check.
+///
+/// ⚠ No clock to tick, unlike the cast: [`PlugFitJob::view`] reads the elapsed
+/// time straight off the run, so the progress line needs no bookkeeping here.
+///
+/// ⚠ Takes no `Studio` at all. A verdict and a failure are told apart by
+/// [`FitView`], not by which channel they arrive on — and neither may touch the
+/// screen the operator walked to while this ran.
+pub(crate) fn poll_plug_fit_job(mut job: ResMut<PlugFitJob>) {
+    let Some(run) = job.running.as_mut() else {
+        return;
+    };
+    let Some(result) = future::block_on(future::poll_once(&mut run.task)) else {
+        return;
+    };
+    let question = run.question.clone();
+    job.running = None;
+    job.answered = Some((question, result));
 }
 
 /// What a panicked decimation is reported as.
@@ -1166,6 +1341,170 @@ endsolid t
                     .to_string()
             )),
             "and the opening line shows that same second"
+        );
+    }
+
+    /// The step-3 question these gates ask: `base_mold`'s own saved inset, at
+    /// the quality step 5 opens on.
+    fn fit_question() -> FitQuestion {
+        FitQuestion {
+            plug: cf_studio_core::PlugDraft {
+                cavity_inset_m: 0.011,
+                ridges: RidgeOptions::default(),
+            },
+            cell_size_m: 0.0005,
+            scan: None,
+        }
+    }
+
+    fn fit_finished(result: Result<PlugFit, String>) -> Task<Result<PlugFit, String>> {
+        AsyncComputeTaskPool::get().spawn(async move { result })
+    }
+
+    /// Enough app to own a task pool and the fit poller — no window, no cast.
+    fn app_polling_fit() -> App {
+        let mut app = App::new();
+        app.add_plugins(TaskPoolPlugin::default())
+            .init_resource::<PlugFitJob>()
+            .add_systems(Update, poll_plug_fit_job);
+        app.insert_resource(Studio {
+            project: crate::shape::tests::ready_to_shape(),
+            ..Studio::default()
+        });
+        app
+    }
+
+    /// Put a check into the job by hand.
+    fn inject_fit(app: &mut App, question: FitQuestion, task: Task<Result<PlugFit, String>>) {
+        *app.world_mut().resource_mut::<PlugFitJob>() = PlugFitJob::in_flight(question, task);
+    }
+
+    /// Run `Update` until the check lands.
+    fn run_until_landed(app: &mut App) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while app.world().resource::<PlugFitJob>().is_running() {
+            assert!(
+                Instant::now() < deadline,
+                "the poller never landed the check"
+            );
+            app.world_mut().run_schedule(Update);
+        }
+    }
+
+    /// ⚠⚠ Two outcomes that must not be confused — a refusal is the cast's
+    /// verdict, a broken check is no verdict at all — told apart by [`FitView`]
+    /// rather than by which channel they arrive on.
+    ///
+    /// ★★★ And NEITHER may reach `Studio::message`. Every other job here takes
+    /// `Studio::busy`, which disables the nav and pins the operator on the step
+    /// that started it; this one does not, so anything sent to the shared
+    /// message would surface on whatever step they walked to — over the top of
+    /// a running cast's progress line.
+    #[test]
+    fn a_refusal_and_a_broken_check_land_on_step_three_and_nowhere_else() {
+        let refusal = PlugFit::WillNotCast {
+            reason: "plug layer 0 came out in 3 pieces".to_string(),
+        };
+
+        let mut app = app_polling_fit();
+        let task = fit_finished(Ok(refusal.clone()));
+        inject_fit(&mut app, fit_question(), task);
+        run_until_landed(&mut app);
+
+        assert_eq!(
+            app.world().resource::<PlugFitJob>().view(&fit_question()),
+            FitView::Answered(&refusal),
+            "the refusal is the cast's verdict, and step 3 can read it back"
+        );
+        assert!(
+            app.world().resource::<Studio>().message.is_none(),
+            "and nothing about it reached the shared message: {:?}",
+            app.world().resource::<Studio>().message
+        );
+
+        let mut app = app_polling_fit();
+        let task = fit_finished(Err("scan.cleaned.stl: no such file".to_string()));
+        inject_fit(&mut app, fit_question(), task);
+        run_until_landed(&mut app);
+
+        assert_eq!(
+            app.world().resource::<PlugFitJob>().view(&fit_question()),
+            FitView::Failed("scan.cleaned.stl: no such file"),
+            "a check that could not run is a failure, not a verdict"
+        );
+        assert!(
+            app.world().resource::<Studio>().message.is_none(),
+            "and it does not follow the operator to the step they walked to: {:?}",
+            app.world().resource::<Studio>().message
+        );
+    }
+
+    /// ⚠ A click queued in the same frame the button disabled itself still
+    /// arrives. Without the guard a second check runs beside the first for
+    /// minutes, and whichever lands last wins.
+    #[test]
+    fn a_second_check_is_refused_while_one_is_in_flight() {
+        let first = fit_question();
+        let mut job = PlugFitJob::running_for(first.clone());
+        let studio = Studio {
+            project: crate::shape::tests::ready_to_shape(),
+            ..Studio::default()
+        };
+
+        start_plug_fit(
+            FitQuestion {
+                cell_size_m: 0.0015,
+                ..first.clone()
+            },
+            &studio,
+            &mut job,
+        );
+
+        assert_eq!(
+            job.asking(),
+            Some(&first),
+            "the check already in flight is the one still running"
+        );
+    }
+
+    /// ⚠ Names the step that produces the input, not the one that is missing
+    /// it: step 3 is reachable only once step 2 has saved, so this is a
+    /// should-not-happen that still has to say something useful.
+    #[test]
+    fn a_check_asked_for_without_a_cleaned_scan_says_so_instead_of_running() {
+        let mut job = PlugFitJob::default();
+        let studio = Studio::default();
+
+        start_plug_fit(fit_question(), &studio, &mut job);
+
+        assert!(!job.is_running(), "nothing was started");
+        assert!(
+            matches!(job.view(&fit_question()), FitView::Failed(text) if text.contains("step 2")),
+            "and it says so on step 3, naming the step that produces the input"
+        );
+    }
+
+    /// The fourth of the four, and the same hole. Every gate above inserts
+    /// `PlugFitJob` by hand, so dropping the `init_resource` or the schedule
+    /// entry leaves them green while a landed verdict never reaches the screen.
+    #[test]
+    fn the_plugin_registers_the_fit_job_and_runs_its_poller() {
+        let mut app = app_from_the_plugin();
+        let question = fit_question();
+
+        // ⚠ `resource_mut`, not `insert_resource`: this line is the assertion
+        // that the PLUGIN registered it.
+        *app.world_mut().resource_mut::<PlugFitJob>() =
+            PlugFitJob::in_flight(question.clone(), fit_finished(Ok(PlugFit::Casts)));
+
+        run_plugin_update_until(&mut app, "the fit poller", |app| {
+            !app.world().resource::<PlugFitJob>().is_running()
+        });
+
+        assert_eq!(
+            app.world().resource::<PlugFitJob>().view(&question),
+            FitView::Answered(&PlugFit::Casts),
+            "the verdict landed through the plugin's own wiring"
         );
     }
 

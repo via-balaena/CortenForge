@@ -41,7 +41,7 @@ pub use mold::{generate_molds, generate_molds_for_design};
 // them without a separate cf-cast-cli dependency.
 pub use cortenforge::cf_cast_cli::{CastConfig, CastMode, PartId, PartSelection, PieceSide};
 pub use pour::{LayerPour, build_pour_plan};
-pub use preflight::{PlugFit, plug_fit_preflight};
+pub use preflight::{PROBE_LAYER_THICKNESS_M, PlugFit, plug_fit_preflight};
 pub use prep::accept_prep;
 pub use preview::{PlugPreview, proxy_preview_mesh};
 pub use print::{PrintExportReport, export_print_package};

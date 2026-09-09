@@ -13,7 +13,8 @@ use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
 use cf_studio_core::{LayerDraft, PlugDraft, Step};
 use cf_studio_gui::{
-    BoundedField, CENDRILLON_CAST_MODE, LayerRow, RingRow, Silicone, cell_size_m_for_quality,
+    BoundedField, CENDRILLON_CAST_MODE, FitQuestion, FitView, LayerRow, RingRow, Silicone,
+    cell_size_m_for_quality, format_fit_failure, format_fit_progress, format_fit_verdict,
     format_molds_summary, format_pour_active, format_pour_plan, format_scan_stats, nav_state,
     pour_countdown, print_step_summary, step_rows,
 };
@@ -24,7 +25,9 @@ use crate::edit::{
     EditControls, EditIntent, FloorShape, SIMPLIFY_STEP_FACES, SMOOTHING_STEP, STEP_MM,
     apply_edit_intent, simplify_range, smoothing_range,
 };
-use crate::jobs::{MoldsJob, MoldsStart, SimplifyJob, start_molds, start_simplify};
+use crate::jobs::{
+    MoldsJob, MoldsStart, PlugFitJob, SimplifyJob, start_molds, start_plug_fit, start_simplify,
+};
 use crate::molds::MoldControls;
 use crate::preview::PlugView;
 use crate::save;
@@ -120,6 +123,13 @@ struct Acted {
     /// and `save` carry theirs: the executor must not see a field the user has
     /// changed since the click.
     plug: Option<PlugDraft>,
+    /// The question a step-3 "Check fit" was clicked with.
+    ///
+    /// ⚠ Carried like `plug`, and it matters more here: the answer is matched
+    /// back against this exact snapshot to decide whether it still describes
+    /// the screen, so a question re-read at execution time would always match
+    /// and the staleness rule would never fire.
+    check_fit: Option<FitQuestion>,
     /// The layer stack a step-4 "Use this design" was clicked with, carried
     /// for the same reason as `plug`.
     design: Option<Vec<LayerDraft>>,
@@ -137,6 +147,7 @@ impl Acted {
         self.simplify = inner.simplify.or(self.simplify);
         self.save = inner.save.or(self.save);
         self.plug = inner.plug.or(self.plug.take());
+        self.check_fit = inner.check_fit.or(self.check_fit.take());
         self.design = inner.design.or(self.design.take());
         self.molds = inner.molds.or(self.molds.take());
     }
@@ -178,6 +189,7 @@ pub(crate) fn wizard_screen(
     mut molds: ResMut<MoldControls>,
     mut job: ResMut<SimplifyJob>,
     mut molds_job: ResMut<MoldsJob>,
+    mut fit_job: ResMut<PlugFitJob>,
     preview: Res<PlugView>,
 ) -> bevy::ecs::error::Result {
     let ctx = contexts.ctx_mut()?;
@@ -207,6 +219,7 @@ pub(crate) fn wizard_screen(
                 design: &mut design,
                 molds: &mut molds,
             },
+            &fit_job,
             preview.showing_proxy(),
         ));
     });
@@ -237,6 +250,9 @@ pub(crate) fn wizard_screen(
     }
     if let Some(draft) = acted.plug {
         commit_plug(draft, &mut studio);
+    }
+    if let Some(question) = acted.check_fit {
+        start_plug_fit(question, &studio, &mut fit_job);
     }
     if let Some(layers) = acted.design {
         commit_design(layers, &mut studio);
@@ -348,6 +364,7 @@ fn draw_body(
     dialog: &PendingDialog,
     scan: &ScanEdit,
     editors: &mut Editors<'_>,
+    fit_job: &PlugFitJob,
     showing_a_stand_in: bool,
 ) -> Acted {
     let viewed = studio.cursor.viewed();
@@ -391,7 +408,20 @@ fn draw_body(
             acted.merge(draw_clean_scan(ui, studio, dialog, scan, editors.controls));
         }
         Step::ShapePiece => {
-            acted.plug = draw_shape_piece(ui, studio, dialog, editors.shape);
+            // ⚠ Read before the mutable borrow of `shape`, and read from step
+            // 5's live picker rather than pinned here: the pre-flight's own doc
+            // says to ask at the size the cast will run at, because detachment
+            // turns on sub-cell grid alignment and verdicts do not transfer
+            // between cell sizes.
+            let cell_size_m = cell_size_m_for_quality(editors.molds.quality_idx);
+            acted.merge(draw_shape_piece(
+                ui,
+                studio,
+                dialog,
+                editors.shape,
+                fit_job,
+                cell_size_m,
+            ));
         }
         Step::DesignLayers => {
             acted.merge(draw_design_layers(ui, studio, dialog, editors.design));
@@ -959,15 +989,24 @@ fn make_molds_label(busy: bool) -> &'static str {
     }
 }
 
+/// The fit button's text, relabelled while a check runs rather than growing a
+/// spinner — the same thing [`make_molds_label`] does for the cast.
+fn check_fit_label(checking: bool) -> &'static str {
+    if checking { "Checking…" } else { "Check fit" }
+}
+
 /// Step 3 — how snugly the piece fits, what is cut into it, then commit.
 fn draw_shape_piece(
     ui: &mut egui::Ui,
     studio: &Studio,
     dialog: &PendingDialog,
     shape: &mut ShapeControls,
-) -> Option<PlugDraft> {
+    fit_job: &PlugFitJob,
+    cell_size_m: f64,
+) -> Acted {
     let ready = accepting_actions(studio, dialog);
-    let mut draft = None;
+    let checking = fit_job.is_running();
+    let mut acted = Acted::default();
     ui.add_space(8.0);
     wrapped_label(
         ui,
@@ -975,25 +1014,78 @@ fn draw_shape_piece(
          scan's surface, all the way round.",
     );
     ui.add_space(SECTION_GAP);
-    ui.vertical_centered(|ui| {
-        ui.horizontal(|ui| {
-            ui.colored_label(CONTROL_TEXT, "Cavity inset");
-            bounded_step_box(ui, &mut shape.cavity_mm, ready);
-            ui.colored_label(CONTROL_TEXT, "mm");
-        });
-    });
+    // ⚠ The click is only remembered here. The question it asks is built at the
+    // bottom, once the ridge fields below have been drawn — those are half of
+    // what the verdict depends on, and reading them before they are drawn would
+    // ask about the previous frame.
+    let check_clicked = ui
+        .vertical_centered(|ui| {
+            ui.horizontal(|ui| {
+                ui.colored_label(CONTROL_TEXT, "Cavity inset");
+                bounded_step_box(ui, &mut shape.cavity_mm, ready);
+                ui.colored_label(CONTROL_TEXT, "mm");
+                ui.add_space(ROW_GAP);
+                ui.add_enabled(
+                    ready && !checking,
+                    egui::Button::new(check_fit_label(checking)),
+                )
+                .clicked()
+            })
+            .inner
+        })
+        .inner;
     ui.add_space(SECTION_GAP);
     draw_ridges(ui, &mut shape.ridges, ready);
+
+    let question = FitQuestion {
+        plug: shape.plug_draft(),
+        cell_size_m,
+        scan: studio.project.prep().and_then(crate::preview::scan_stamp),
+    };
+    draw_fit_view(ui, &fit_job.view(&question), &question.plug);
+    if check_clicked {
+        acted.check_fit = Some(question);
+    }
+
     ui.add_space(SECTION_GAP);
     ui.vertical_centered(|ui| {
+        // ⚠ Never gated on the fit check. The check is opt-in and can run for
+        // minutes; blocking Continue behind it would put a wall in front of the
+        // ordinary path to buy an answer nothing downstream reads.
         if ui
             .add_enabled(ready, egui::Button::new("Continue"))
             .clicked()
         {
-            draft = Some(shape.plug_draft());
+            acted.plug = Some(shape.plug_draft());
         }
     });
-    draft
+    acted
+}
+
+/// The fit check's line: a running clock, a verdict about the fields on screen,
+/// or nothing at all.
+///
+/// Coloured like the step message above it — green settled, red refused — so
+/// the two read as the same kind of statement.
+fn draw_fit_view(ui: &mut egui::Ui, view: &FitView<'_>, plug: &PlugDraft) {
+    let (text, color) = match *view {
+        FitView::Idle => return,
+        FitView::Checking {
+            elapsed_secs,
+            slow,
+            inset_mm,
+        } => (
+            format_fit_progress(elapsed_secs, slow, inset_mm),
+            CONTROL_TEXT,
+        ),
+        FitView::Answered(fit) => match format_fit_verdict(fit, plug) {
+            Ok(text) => (text, DONE_TEXT),
+            Err(text) => (text, ERROR_TEXT),
+        },
+        FitView::Failed(reason) => (format_fit_failure(reason), ERROR_TEXT),
+    };
+    ui.add_space(ROW_GAP);
+    centered_wrapped(ui, MESSAGE_SIZE, color, text);
 }
 
 /// The ridge editor: a master switch, and — once it is on — the card of
@@ -1706,6 +1798,25 @@ pub(crate) mod tests {
         ];
         // Each urgency band words itself differently.
         messages.extend([600_i64, 120, -30].map(|secs| pour_countdown(secs).text));
+        // Step 3's fit check: both verdicts and both progress lines. The
+        // refusal carries the cast's own words, em dash and all.
+        let refused_plug = PlugDraft {
+            cavity_inset_m: 0.011,
+            ..PlugDraft::default()
+        };
+        messages.extend(
+            [
+                cf_studio_engine::PlugFit::Casts,
+                cf_studio_engine::PlugFit::WillNotCast {
+                    reason: "plug layer 0 came out in 3 pieces — a 62128-face body with a \
+                             1044-face fragment beside it"
+                        .to_string(),
+                },
+            ]
+            .map(|fit| format_fit_verdict(&fit, &refused_plug).unwrap_or_else(|text| text)),
+        );
+        messages.extend([false, true].map(|slow| format_fit_progress(7, slow, 11.0)));
+        messages.push(format_fit_failure("scan.cleaned.stl: no such file"));
 
         for message in messages {
             assert_renders(&harness.ctx, &message);
@@ -1922,6 +2033,7 @@ pub(crate) mod tests {
                 "−",
                 "TextInput",
                 "+",
+                CHECK_FIT,
                 "Add surface ridges (advanced)",
                 "Continue"
             ]
@@ -2644,6 +2756,7 @@ pub(crate) mod tests {
             .init_resource::<MoldControls>()
             .init_resource::<SimplifyJob>()
             .init_resource::<MoldsJob>()
+            .init_resource::<PlugFitJob>()
             .init_resource::<PlugView>()
             .add_systems(Update, (begin, wizard_screen, end).chain());
         app
@@ -2950,6 +3063,9 @@ pub(crate) mod tests {
     /// The ridge editor's master switch, by the name the census gives it.
     const MASTER_SWITCH: &str = "Add surface ridges (advanced)";
 
+    /// The fit check's button, idle.
+    const CHECK_FIT: &str = "Check fit";
+
     /// Step 3 with the ridge editor asked for — the state everything below
     /// this measures.
     fn ridges_on() -> ShapeControls {
@@ -2958,10 +3074,21 @@ pub(crate) mod tests {
         shape
     }
 
-    /// The step-3 body for `shape`, on an app holding nothing.
+    /// The cell size these gates ask at.
+    const STEP_THREE_CELL_M: f64 = 0.0005;
+
+    /// The step-3 body for `shape`, on an app holding nothing and with no fit
+    /// check asked for.
     fn shape_body(shape: &mut ShapeControls) -> impl FnMut(&mut egui::Ui) + '_ {
         move |ui| {
-            let _ = draw_shape_piece(ui, &Studio::default(), &PendingDialog::default(), shape);
+            let _ = draw_shape_piece(
+                ui,
+                &Studio::default(),
+                &PendingDialog::default(),
+                shape,
+                &PlugFitJob::default(),
+                STEP_THREE_CELL_M,
+            );
         }
     }
 
@@ -2999,6 +3126,7 @@ pub(crate) mod tests {
             controls,
             [
                 &STEPPER[..],
+                &[CHECK_FIT],
                 &[MASTER_SWITCH],
                 &["Grip rings"],
                 &RING_CARD,
@@ -3415,10 +3543,252 @@ pub(crate) mod tests {
         let mut shape = shape();
         controls_disabled(
             |ui| {
-                let _ = draw_shape_piece(ui, studio, dialog, &mut shape);
+                let _ = draw_shape_piece(
+                    ui,
+                    studio,
+                    dialog,
+                    &mut shape,
+                    &PlugFitJob::default(),
+                    STEP_THREE_CELL_M,
+                );
             },
             name,
         )
+    }
+
+    /// The step-3 question the opening screen asks, at step 5's own default
+    /// quality.
+    fn opening_fit_question() -> FitQuestion {
+        FitQuestion {
+            plug: ShapeControls::default().plug_draft(),
+            cell_size_m: STEP_THREE_CELL_M,
+            // `Studio::default()` names no prep, so nothing is stamped — the
+            // state these layout gates draw against.
+            scan: None,
+        }
+    }
+
+    /// Every piece of text `body` puts on screen, prose included.
+    ///
+    /// ⚠ `value()` as well as `label()`, for the reason
+    /// [`controls_in_column`] gives: a verdict is prose on a `Role::Label`, and
+    /// reading only `label()` would make it look as though nothing was drawn.
+    fn prose_in_column(mut body: impl FnMut(&mut egui::Ui)) -> Vec<String> {
+        use egui_kittest::kittest::NodeT;
+
+        column_harness(&mut body)
+            .root()
+            .children_recursive()
+            .filter_map(|node| {
+                let widget = node.accesskit_node();
+                widget.label().or_else(|| widget.value())
+            })
+            .collect()
+    }
+
+    /// Step 3 drawn against `job`, with nothing holding the app.
+    fn shape_body_with(job: &PlugFitJob) -> impl FnMut(&mut egui::Ui) + '_ {
+        move |ui| {
+            let mut shape = ShapeControls::default();
+            let _ = draw_shape_piece(
+                ui,
+                &Studio::default(),
+                &PendingDialog::default(),
+                &mut shape,
+                job,
+                STEP_THREE_CELL_M,
+            );
+        }
+    }
+
+    /// ★★ Step 3's fit wiring, which nothing else reaches. `draw_shape_piece`
+    /// hands back a question and `start_plug_fit` runs one, but a call site is
+    /// not a function anyone can call — deleting the dispatch leaves both ends
+    /// tested and the button dead.
+    ///
+    /// ⚠ Clicked through one `+` first, for the reason
+    /// [`clicking_continue_in_the_running_wizard_shapes_the_piece`] does it:
+    /// the check has to carry the number on screen. A constant, or the field
+    /// read at its own default, passes without it.
+    ///
+    /// ⚠ No poller runs on this app, so the spawned check stays in flight and
+    /// the question it was started with can be read back.
+    #[test]
+    fn clicking_check_fit_in_the_running_wizard_asks_about_the_field_on_screen() {
+        let mut app = wizard_on_step_three();
+        app.add_plugins(bevy::prelude::TaskPoolPlugin::default());
+        // ⚠ Off its default, for the same reason the `+` below is clicked: at
+        // index 0 a check pinned to print quality asks the right question by
+        // accident, and reading step 5's picker at all goes ungated.
+        app.world_mut().resource_mut::<MoldControls>().quality_idx = FAST_QUALITY_IDX;
+
+        click_on(&mut app, "+");
+        click_on(&mut app, CHECK_FIT);
+
+        let job = app.world().resource::<PlugFitJob>();
+        assert_eq!(
+            job.asking().map(|question| question.plug.cavity_inset_m),
+            Some(0.006),
+            "the 5 mm field stepped once is what the check asked about"
+        );
+        assert_eq!(
+            job.asking().map(|question| question.cell_size_m),
+            Some(cell_size_m_for_quality(FAST_QUALITY_IDX)),
+            "and it asked at the quality step 5 would have cast at"
+        );
+    }
+
+    /// Step 5's Fast preview, the quality that is not the default.
+    const FAST_QUALITY_IDX: i32 = 1;
+
+    /// ★★★ The axis no field on step 3 can carry, driven end to end. Step 2 is
+    /// reachable from here and a second Save rewrites the cleaned scan in
+    /// place: every field on this screen reads the same afterwards, and the
+    /// body does not. A panel that left `scan` at `None` would keep the old
+    /// verdict on screen, and `fit_view`'s own gate would still pass.
+    ///
+    /// ⚠ Two-sided. The first assertion says the scan is named at all; the
+    /// second says the name follows the file rather than the path, which never
+    /// moved.
+    #[test]
+    fn the_question_names_the_scan_it_is_about_not_the_path_to_it() {
+        let dir = crate::save::tests::temp_dir("step3-fit-scan");
+        let cleaned_stl = dir.join("s.cleaned.stl");
+        // Never parsed — `scan_stamp` reads the file's metadata, not its body.
+        let written = [
+            std::fs::write(&cleaned_stl, b"first"),
+            std::fs::write(dir.join("s.prep.toml"), b""),
+        ];
+        assert!(written.iter().all(Result::is_ok), "the fixture must write");
+
+        let mut app = app_running_the_wizard();
+        app.add_plugins(bevy::prelude::TaskPoolPlugin::default());
+        app.insert_resource(Studio {
+            project: crate::preview::tests::cleaned(cf_studio_core::PrepInput {
+                cleaned_stl: cleaned_stl.clone(),
+                prep_toml: dir.join("s.prep.toml"),
+            }),
+            cursor: WizardCursor::new(Step::ShapePiece),
+            ..Studio::default()
+        });
+
+        click_on(&mut app, CHECK_FIT);
+        let before = app
+            .world()
+            .resource::<PlugFitJob>()
+            .asking()
+            .map(|q| q.scan);
+
+        // A Save at a different smoothing: same path, a different body. The job
+        // is cleared because nothing here polls one, and a check in flight
+        // relabels the button it would be clicked with.
+        *app.world_mut().resource_mut::<PlugFitJob>() = PlugFitJob::default();
+        let rewritten = std::fs::write(&cleaned_stl, b"second, and longer");
+        click_on(&mut app, CHECK_FIT);
+        let after = app
+            .world()
+            .resource::<PlugFitJob>()
+            .asking()
+            .map(|q| q.scan);
+
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(rewritten.is_ok(), "the fixture must be rewritable");
+        assert!(
+            before.flatten().is_some(),
+            "the question has to name the scan it is about: {before:?}"
+        );
+        assert_ne!(
+            before, after,
+            "a scan rewritten in place is a different question, at the same path"
+        );
+    }
+
+    /// ★★★ The one thing that must not regress: the check is opt-in, so
+    /// Continue may never wait on it. A four-minute wall in front of an
+    /// ordinary click is worse than never asking the question.
+    ///
+    /// ⚠ Three assertions, and the middle one is what says the button changed
+    /// state rather than merely gaining a second label.
+    #[test]
+    fn a_running_check_stands_its_own_button_down_and_leaves_continue_alone() {
+        let running = PlugFitJob::running_for(opening_fit_question());
+        let mut body = shape_body_with(&running);
+
+        // ⚠ The census, not a search for the name: it says there is exactly ONE
+        // fit button — the same one relabelled rather than a second appearing —
+        // and `controls_in_column` asserts the wider label still fits the
+        // column, which no other gate draws this state to find out.
+        assert_eq!(
+            controls_in_column(&mut body),
+            [
+                "−",
+                "TextInput",
+                "+",
+                "Checking…",
+                MASTER_SWITCH,
+                "Continue"
+            ],
+            "the running screen is the opening one with the fit button relabelled"
+        );
+        assert_eq!(
+            controls_disabled(&mut body, "Checking…"),
+            vec![true],
+            "which refuses a second check while the first is in flight"
+        );
+        assert_eq!(
+            controls_disabled(&mut body, "Continue"),
+            vec![false],
+            "Continue is never gated on the fit check"
+        );
+    }
+
+    /// ★★★ The staleness rule reaching the screen. `fit_view` gates what came
+    /// back on the question, but a panel that drew `answered` directly would
+    /// show it about an inset the user has already changed — and the pure gate
+    /// in the lib would still pass.
+    ///
+    /// ⚠ Both outcomes, because the panel draws them through arms of their own:
+    /// one arm left out is an outcome the operator never sees.
+    ///
+    /// ⚠ Two-sided per outcome. Without the first assertion, a screen that
+    /// draws nothing at all passes the second.
+    #[test]
+    fn what_the_check_came_back_with_is_drawn_only_while_it_describes_the_screen() {
+        const REASON: &str = "plug layer 0 came out in 3 pieces";
+        let outcomes: [(&str, Result<cf_studio_engine::PlugFit, String>); 2] = [
+            (
+                "the cast's refusal",
+                Ok(cf_studio_engine::PlugFit::WillNotCast {
+                    reason: REASON.to_string(),
+                }),
+            ),
+            ("a check that could not run", Err(REASON.to_string())),
+        ];
+        let says_why = |job: &PlugFitJob| {
+            prose_in_column(shape_body_with(job))
+                .iter()
+                .any(|text| text.contains(REASON))
+        };
+
+        let asked = opening_fit_question();
+        let moved_on = FitQuestion {
+            plug: PlugDraft {
+                cavity_inset_m: 0.006,
+                ..asked.plug.clone()
+            },
+            ..asked.clone()
+        };
+
+        for (what, outcome) in outcomes {
+            assert!(
+                says_why(&PlugFitJob::answered_with(asked.clone(), outcome.clone())),
+                "{what} about the screen is on it, in the words it came back with"
+            );
+            assert!(
+                !says_why(&PlugFitJob::answered_with(moved_on.clone(), outcome)),
+                "{what} about an inset the screen has left is not shown at all"
+            );
+        }
     }
 
     /// ⚠ `accepting_actions` is gated on its own, but nothing said step 3 hands
@@ -3462,13 +3832,14 @@ pub(crate) mod tests {
             (
                 "closed",
                 ShapeControls::default,
-                &["Continue", "+", MASTER_SWITCH],
+                &["Continue", CHECK_FIT, "+", MASTER_SWITCH],
             ),
             (
                 "open",
                 ridges_on,
                 &[
                     "Continue",
+                    CHECK_FIT,
                     "+",
                     MASTER_SWITCH,
                     "CheckBox",

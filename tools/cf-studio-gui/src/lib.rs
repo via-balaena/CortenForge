@@ -21,12 +21,12 @@ use std::path::Path;
 use std::time::Duration;
 
 use cf_studio_core::{
-    DesignDraft, LayerDraft, MoldOutputs, PourPlan, PourStep, Project, RidgeOptions, RidgeRing,
-    Step,
+    DesignDraft, LayerDraft, MoldOutputs, PlugDraft, PourPlan, PourStep, Project, RidgeOptions,
+    RidgeRing, Step,
 };
 use cf_studio_engine::{
-    CastMode, PartId, PartSelection, PieceSide, accept_prep, draft_from_design_toml, load_scan,
-    silicone_catalog,
+    CastMode, PartId, PartSelection, PieceSide, PlugFit, accept_prep, draft_from_design_toml,
+    load_scan, silicone_catalog,
 };
 
 /// A workflow step as the checklist shows it. `done` / `current` come
@@ -1281,6 +1281,167 @@ pub fn format_save_done(stem: &str, face_count: usize) -> String {
         "✔ Saved {stem}.cleaned.stl ({face_count} faces) + {stem}.prep.toml — \
          step complete, click Next →."
     )
+}
+
+/// Everything a plug-fit verdict depends on, snapshotted when the check was
+/// asked for.
+///
+/// ★ The staleness rule, as one value. A verdict is only ever about a
+/// particular question, so the screen compares the whole question rather than
+/// watching fields go by: the cavity inset, the ridge master switch, every ring
+/// row and all five ridge scalars live inside [`PlugDraft`], and a ridge field
+/// added later is covered without anyone remembering to hook it up.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FitQuestion {
+    /// The plug as step 3's fields read when the check was started.
+    pub plug: PlugDraft,
+    /// The cell size the cast would run at — part of the question, not a speed
+    /// knob. Detachment turns on sub-cell grid alignment, so a verdict does not
+    /// transfer between cell sizes; see `cf_studio_engine::plug_fit_preflight`.
+    pub cell_size_m: f64,
+    /// Which cleaned scan it is about: length and modified time, or `None` when
+    /// that could not be read.
+    ///
+    /// ⚠ Not the path, and this is the axis the fields cannot cover. Step 2 is
+    /// reachable from step 3 and a second Save writes the cleaned scan back to
+    /// the same place at a different smoothing — the inset never moves, the
+    /// body does, and without this a verdict about the body that was replaced
+    /// stays on screen. Stamped by `crate::preview::scan_stamp`, which tells
+    /// the 3D preview the same thing.
+    pub scan: Option<(u64, std::time::SystemTime)>,
+}
+
+/// What step 3 has to say about the fit, this frame.
+#[derive(Debug, Clone, PartialEq)]
+pub enum FitView<'a> {
+    /// Nothing has been asked about the settings on screen.
+    Idle,
+    /// A check is in flight, and has been for this many whole seconds.
+    Checking {
+        /// Whole seconds since it started.
+        elapsed_secs: u64,
+        /// Whether this one runs in minutes rather than seconds — see
+        /// [`fit_check_is_slow`].
+        slow: bool,
+        /// The inset being checked, in millimetres — ⚠ NOT necessarily the one
+        /// on screen. Nothing stops the fields moving while a check runs, and
+        /// the answer is then dropped on arrival; naming the question in flight
+        /// is what stops a five-minute wait ending in nothing anyone can
+        /// explain.
+        inset_mm: f64,
+    },
+    /// The cast's verdict on the settings on screen.
+    Answered(&'a PlugFit),
+    /// The check could not be RUN — an unreadable scan, a bad prep file. ⚠ Not
+    /// a verdict: the inset may be perfectly fine and nobody found out.
+    Failed(&'a str),
+}
+
+/// Decide what step 3 shows about the fit.
+///
+/// ⚠ A running check outranks a standing answer. The answer it is about to
+/// replace describes the same question, so leaving it up would read as settled
+/// while the screen is busy deciding whether it still is.
+///
+/// ⚠ An answer to a question nobody is asking any more is dropped, not
+/// relabelled: what step 3 shows describes the fields as they read *now*. A run
+/// whose fields move mid-flight lands into that same drop, which is why nothing
+/// needs to cancel it — a stale run costs time, never a wrong answer.
+#[must_use]
+pub fn fit_view<'a>(
+    running: Option<(&FitQuestion, u64)>,
+    answered: Option<&'a (FitQuestion, Result<PlugFit, String>)>,
+    current: &FitQuestion,
+) -> FitView<'a> {
+    if let Some((asked, elapsed_secs)) = running {
+        return FitView::Checking {
+            elapsed_secs,
+            slow: fit_check_is_slow(asked),
+            inset_mm: asked.plug.cavity_inset_m * 1000.0,
+        };
+    }
+    match answered {
+        Some((asked, Ok(fit))) if asked == current => FitView::Answered(fit),
+        Some((asked, Err(reason))) if asked == current => FitView::Failed(reason),
+        _ => FitView::Idle,
+    }
+}
+
+/// The fit verdict as step 3's status line: `Ok` reads as settled, `Err` as a
+/// refusal.
+///
+/// ⚠⚠ THE TWO DIRECTIONS ARE NOT EQUALLY STRONG, and the wording follows that.
+/// A refusal is sound: the cast composes the same plug and declines the same
+/// way. A pass is NOT — `plug_fit_verdict` runs the compose half only, and the
+/// export F4-gates the mesh afterwards and can still refuse
+/// (`CastError::PrintabilityCritical`). `cf-studio-engine`'s own gate is
+/// one-directional for exactly this reason. So the settled line claims what was
+/// actually checked — the plug came out in one piece — and never that the cast
+/// will succeed.
+///
+/// ⚠ The refusal carries the cast's own words verbatim. They already name the
+/// operator's levers, and a paraphrase here would be a second explanation of
+/// the same failure, free to drift from the one the cast will give.
+pub fn format_fit_verdict(fit: &PlugFit, plug: &PlugDraft) -> StepOutcome {
+    let inset_mm = plug.cavity_inset_m * 1000.0;
+    match fit {
+        PlugFit::Casts => Ok(format!(
+            "✔ A {inset_mm:.1} mm inset leaves the plug in one piece."
+        )),
+        PlugFit::WillNotCast { reason } => Err(format!(
+            "✖ A {inset_mm:.1} mm inset will not cast: {reason}"
+        )),
+    }
+}
+
+/// Whether a fit check runs in minutes rather than seconds.
+///
+/// Two things drive the cost, and ridges are only one of them. Enabled ridges
+/// pin layer 0's plug at the canal's own 0.5 mm whatever cell size is passed,
+/// so they are slow at every quality; smooth, the cost tracks the cell size —
+/// which is why the comparison is against [`cell_size_m_for_quality`]'s own
+/// Fast size rather than a number written down here.
+///
+/// Measured 2026-09-08 on `~/scans/base_mold`, one smooth plug: **6.7 s at
+/// 1.5 mm, 80.3 s at 0.5 mm, 289.4 s ridged**. Only the Fast-quality smooth
+/// case is quick, and it is not the quality step 5 opens on.
+#[must_use]
+pub fn fit_check_is_slow(question: &FitQuestion) -> bool {
+    question.plug.ridges.enabled || question.cell_size_m < cell_size_m_for_quality(FAST_QUALITY)
+}
+
+/// The quality index whose cell size is the one a fit check can be quick at.
+const FAST_QUALITY: i32 = 1;
+
+/// A check that could not run, as step 3's status line.
+///
+/// ⚠ Reported here rather than through `Studio::message`, and that is the
+/// point. Every other job in `jobs.rs` takes `Studio::busy`, which disables the
+/// nav and pins the operator on the step that started it — so the shared
+/// message always lands where it makes sense. This one deliberately does not,
+/// so a failure sent there would surface on whatever step they had walked on
+/// to, and would replace a running cast's progress line while it did.
+#[must_use]
+pub fn format_fit_failure(reason: &str) -> String {
+    format!("✖ Couldn't check the fit: {reason}")
+}
+
+/// The check's progress line.
+///
+/// ⚠ Every field here is read off the question the run was *started* with,
+/// never off the live screen. Editing the inset, the ridge switch or step 5's
+/// quality mid-run changes neither what is running nor what it will cost — and
+/// the inset is named precisely so a run the screen has moved away from is
+/// visibly about something else, rather than looking like it is checking what
+/// the operator is now looking at.
+#[must_use]
+pub fn format_fit_progress(elapsed_secs: u64, slow: bool, inset_mm: f64) -> String {
+    let cost = if slow {
+        " — this takes a few minutes."
+    } else {
+        ""
+    };
+    format!("Checking {inset_mm:.1} mm… {elapsed_secs}s{cost}")
 }
 
 #[cfg(test)]
@@ -2879,5 +3040,321 @@ visible = true
         let line = format_simplify_started(50_000);
         assert!(line.contains("50000 faces"), "the target: {line}");
         assert!(line.contains("~10–40 s"), "the estimate: {line}");
+    }
+
+    /// The step-3 question as the screen's opening fields ask it: a 5 mm inset,
+    /// no ridges, at step 5's default quality.
+    fn opening_question() -> FitQuestion {
+        FitQuestion {
+            plug: PlugDraft {
+                cavity_inset_m: 0.005,
+                ridges: RidgeOptions::default(),
+            },
+            cell_size_m: 0.0005,
+            scan: Some((1_234, std::time::UNIX_EPOCH)),
+        }
+    }
+
+    /// The same question with the ridge master switch on.
+    fn ridged(question: &FitQuestion) -> FitQuestion {
+        FitQuestion {
+            plug: PlugDraft {
+                ridges: RidgeOptions {
+                    enabled: true,
+                    ..RidgeOptions::default()
+                },
+                ..question.plug.clone()
+            },
+            ..question.clone()
+        }
+    }
+
+    /// ★★★ The staleness rule, on every axis the verdict turns on. One
+    /// comparison stands in for the inset, the master switch, every ring row
+    /// and five scalars — so the gate has to show it actually separates them.
+    /// A `fit_view` that compared insets alone passes a case that moves only
+    /// the inset, and would then leave a stale verdict up for every ridge edit
+    /// on the screen.
+    ///
+    /// ⚠ Two-sided. Without the first assertion, a `fit_view` that never shows
+    /// an answer at all passes the whole loop below.
+    #[test]
+    fn an_answer_is_shown_only_while_it_describes_the_question_on_screen() {
+        let asked = opening_question();
+        let answered = (asked.clone(), Ok(PlugFit::Casts));
+
+        assert_eq!(
+            fit_view(None, Some(&answered), &asked),
+            FitView::Answered(&PlugFit::Casts),
+            "the question it was asked about keeps its answer"
+        );
+
+        let moved: [(&str, FitQuestion); 5] = [
+            (
+                "the cavity inset",
+                FitQuestion {
+                    plug: PlugDraft {
+                        cavity_inset_m: 0.006,
+                        ..asked.plug.clone()
+                    },
+                    ..asked.clone()
+                },
+            ),
+            ("the ridge master switch", ridged(&asked)),
+            (
+                // Three levels down, and the switch above it never moves —
+                // the shape of edit a per-field hook is most likely to miss.
+                "one ridge scalar",
+                FitQuestion {
+                    plug: PlugDraft {
+                        ridges: RidgeOptions {
+                            texture_depth_m: 0.0021,
+                            ..RidgeOptions::default()
+                        },
+                        ..asked.plug.clone()
+                    },
+                    ..asked.clone()
+                },
+            ),
+            (
+                "the cell size",
+                FitQuestion {
+                    cell_size_m: 0.0015,
+                    ..asked.clone()
+                },
+            ),
+            (
+                // ⚠ The axis no field on step 3 can carry. Step 2 is reachable
+                // from here, and a second Save rewrites the cleaned scan in
+                // place: every field reads the same, and the body does not.
+                "the cleaned scan under it",
+                FitQuestion {
+                    scan: Some((5_678, std::time::UNIX_EPOCH)),
+                    ..asked.clone()
+                },
+            ),
+        ];
+
+        for (what, current) in moved {
+            assert_eq!(
+                fit_view(None, Some(&answered), &current),
+                FitView::Idle,
+                "moving {what} must drop an answer that no longer describes the screen"
+            );
+        }
+    }
+
+    /// ⚠ A check that could not run is its own view, never a refusal: the
+    /// operator's inset may be perfectly fine and nobody found out. It goes
+    /// stale with the question like any other answer, so a failure about
+    /// settings they have left does not sit on the screen either.
+    #[test]
+    fn a_check_that_could_not_run_reads_as_a_failure_not_as_a_refusal() {
+        const BROKEN: &str = "scan.cleaned.stl: no such file";
+        let asked = opening_question();
+        let outcome: (FitQuestion, Result<PlugFit, String>) =
+            (asked.clone(), Err(BROKEN.to_string()));
+
+        assert_eq!(
+            fit_view(None, Some(&outcome), &asked),
+            FitView::Failed(BROKEN),
+            "no verdict was reached, and the line has to say which"
+        );
+        assert_eq!(
+            fit_view(None, Some(&outcome), &ridged(&asked)),
+            FitView::Idle,
+            "and it goes stale with the question, like any other answer"
+        );
+    }
+
+    /// ⚠ A running check outranks the answer it is about to replace. With the
+    /// arms the other way round, a verdict sits on screen reading as settled
+    /// while the screen is busy deciding whether it still is.
+    #[test]
+    fn a_running_check_replaces_the_answer_it_is_about_to_supersede() {
+        let asked = opening_question();
+        let answered = (asked.clone(), Ok(PlugFit::Casts));
+
+        assert_eq!(
+            fit_view(Some((&asked, 12)), Some(&answered), &asked),
+            FitView::Checking {
+                elapsed_secs: 12,
+                slow: true,
+                inset_mm: 5.0,
+            },
+            "the clock, not the answer under it"
+        );
+    }
+
+    /// ★★ Every field of the running view is read off the question the run was
+    /// STARTED with, not off the screen. Editing step 3 mid-run changes neither
+    /// what is running nor what it will cost.
+    ///
+    /// ⚠ The inset especially. Nothing stops the fields moving while a check
+    /// runs, the answer is dropped on arrival when they have, and a line naming
+    /// the SCREEN's inset would spend those minutes claiming to check a value
+    /// nobody is checking — and then show nothing.
+    #[test]
+    fn the_running_line_describes_the_check_that_is_actually_running() {
+        // Started at the opening 5 mm, smooth, Fast quality.
+        let in_flight = FitQuestion {
+            cell_size_m: 0.0015,
+            ..opening_question()
+        };
+        // The screen has since moved to 11 mm.
+        let on_screen = FitQuestion {
+            plug: PlugDraft {
+                cavity_inset_m: 0.011,
+                ..in_flight.plug.clone()
+            },
+            ..in_flight.clone()
+        };
+
+        assert_eq!(
+            fit_view(Some((&in_flight, 30)), None, &ridged(&on_screen)),
+            FitView::Checking {
+                elapsed_secs: 30,
+                slow: false,
+                inset_mm: 5.0,
+            },
+            "the run in flight is a quick 5 mm one, whatever the screen now reads"
+        );
+        assert_eq!(
+            fit_view(Some((&ridged(&in_flight), 30)), None, &on_screen),
+            FitView::Checking {
+                elapsed_secs: 30,
+                slow: true,
+                inset_mm: 5.0,
+            },
+            "and a ridged run stays ridged while the screen reads smooth"
+        );
+    }
+
+    /// ★★ Both drivers, and the gate needs both: ridges are slow at every
+    /// quality, and the print-quality cell size is slow even with none. A
+    /// predicate reading only `ridges.enabled` calls step 3's DEFAULT question
+    /// quick, and an 80-second wait then arrives with no warning at all.
+    #[test]
+    fn a_check_is_quick_only_when_it_is_a_fast_quality_smooth_one() {
+        let fine_smooth = opening_question();
+        let fast_smooth = FitQuestion {
+            cell_size_m: 0.0015,
+            ..fine_smooth.clone()
+        };
+
+        assert!(
+            !fit_check_is_slow(&fast_smooth),
+            "1.5 mm with no ridges is the one quick case: 6.7 s measured"
+        );
+        assert!(
+            fit_check_is_slow(&fine_smooth),
+            "the quality step 5 opens on is 80 s even with no ridges"
+        );
+        assert!(
+            fit_check_is_slow(&ridged(&fast_smooth)),
+            "ridges pin the plug at 0.5 mm whatever cell size is passed"
+        );
+    }
+
+    /// ⚠ Two-sided, and the refusal verbatim: the cast's words already name
+    /// the operator's levers, and a paraphrase would be a second explanation
+    /// of the same failure, free to drift from the one the cast gives.
+    #[test]
+    fn the_verdict_reads_as_settled_or_refused_and_names_the_inset() {
+        let plug = PlugDraft {
+            cavity_inset_m: 0.011,
+            ..PlugDraft::default()
+        };
+
+        let casts = format_fit_verdict(&PlugFit::Casts, &plug);
+        assert!(
+            matches!(&casts, Ok(text) if text.contains("11.0 mm")),
+            "a settled fit reads as one, at the inset asked: {casts:?}"
+        );
+        // ★★ And claims ONLY what was checked. `plug_fit_verdict` runs the
+        // compose half; the export still F4-gates the mesh and can refuse
+        // after it, so a settled line saying the inset "casts" promises an
+        // outcome nobody established. The two halves guard each other: drop
+        // the first and any wording passes, drop the second and the promise
+        // comes back.
+        assert!(
+            matches!(&casts, Ok(text) if text.contains("one piece") && !text.contains("cast")),
+            "the settled line claims one-piece-ness, never that the cast succeeds: {casts:?}"
+        );
+
+        let reason = "the floor lock did not fuse to the plug";
+        let refused = format_fit_verdict(
+            &PlugFit::WillNotCast {
+                reason: reason.to_string(),
+            },
+            &plug,
+        );
+        assert!(
+            matches!(&refused, Err(text) if text.contains("11.0 mm") && text.contains(reason)),
+            "a refusal reads as one, carrying the cast's own words: {refused:?}"
+        );
+    }
+
+    /// ⚠⚠ A refusal and a broken check both land in red carrying the cast's
+    /// own words, and only the wording keeps them apart. Every other gate here
+    /// looks for the REASON — which both carry — so a failure that borrowed the
+    /// refusal's phrasing passes all of them while telling the operator their
+    /// inset is too large when the real problem is a file that would not open.
+    ///
+    /// ⚠ The last assertion is what stops the middle one going vacuous: if the
+    /// refusal ever stopped claiming "will not cast", not finding that phrase
+    /// in the failure would prove nothing.
+    #[test]
+    fn a_broken_check_does_not_read_as_a_verdict_on_the_inset() {
+        const REASON: &str = "scan.cleaned.stl: no such file";
+        let refused = format_fit_verdict(
+            &PlugFit::WillNotCast {
+                reason: REASON.to_string(),
+            },
+            &PlugDraft {
+                cavity_inset_m: 0.011,
+                ..PlugDraft::default()
+            },
+        );
+
+        let broken = format_fit_failure(REASON);
+
+        assert!(
+            broken.contains(REASON),
+            "the words it came back with are carried: {broken}"
+        );
+        assert!(
+            !broken.contains("will not cast"),
+            "a check that never ran must not borrow the refusal's verdict: {broken}"
+        );
+        assert!(
+            matches!(&refused, Err(text) if text.contains("will not cast")),
+            "which is the phrase the refusal owns: {refused:?}"
+        );
+    }
+
+    /// ⚠ The two costs are two orders of magnitude apart — seconds smooth,
+    /// minutes with ridges on — so the slow one has to say so or it reads as a
+    /// hang. Both still carry the clock.
+    #[test]
+    fn the_progress_line_warns_only_when_the_check_is_the_slow_one() {
+        let quick = format_fit_progress(3, false, 5.0);
+        let slow = format_fit_progress(3, true, 5.0);
+
+        assert!(
+            !quick.contains("minutes"),
+            "a seconds-long check must not promise minutes: {quick}"
+        );
+        assert!(
+            slow.contains("minutes"),
+            "a minutes-long one must say so: {slow}"
+        );
+        for line in [&quick, &slow] {
+            assert!(line.contains("3s"), "both carry the clock: {line}");
+            assert!(
+                line.contains("5.0 mm"),
+                "and both name the inset in flight: {line}"
+            );
+        }
     }
 }

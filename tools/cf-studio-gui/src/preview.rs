@@ -208,7 +208,11 @@ impl PlugView {
 /// to the same place at a different smoothing: the path does not move, the body
 /// does, and none of it reaches `ScanEdit` — which a Save borrows immutably on
 /// purpose.
-fn scan_stamp(prep: &PrepInput) -> Option<(u64, SystemTime)> {
+///
+/// Shared with step 3's [`cf_studio_gui::FitQuestion`], which needs the same
+/// answer to the same question: a verdict about the body this names stops
+/// describing the screen the moment a Save replaces it.
+pub(crate) fn scan_stamp(prep: &PrepInput) -> Option<(u64, SystemTime)> {
     let file = std::fs::metadata(&prep.cleaned_stl).ok()?;
     Some((file.len(), file.modified().ok()?))
 }
