@@ -98,34 +98,24 @@ pub fn apply_prep(project: &mut Project, cleaned_stl: &Path, prep_toml: &Path) -
 /// # Errors
 /// The failure message if the design is invalid or the scan isn't cleaned.
 pub fn apply_design(project: &mut Project, design_toml: &Path) -> StepOutcome {
-    let mut draft = draft_from_design_toml(design_toml).map_err(|e| e.to_string())?;
-    // ⚠ The plug owns the cavity inset, exactly as `commit_design` has it: the
-    // stack builds outward off the piece step 3 shaped, and that piece is what
-    // the preview draws and what "Check fit" gave its verdict on. Taking the
-    // file's would leave `Project::plug` and `Project::design` disagreeing, and
-    // the cast reads the second — so the mould would not be the cavity the user
-    // was shown.
+    let draft = draft_from_design_toml(design_toml).map_err(|e| e.to_string())?;
     let from_file = draft.cavity_inset_m;
-    if let Some(plug) = project.plug() {
-        draft.cavity_inset_m = plug.cavity_inset_m;
-    }
-    let message = format!(
-        "✔ Design set: {} layer(s), {:.1} mm cavity inset.",
-        draft.layers.len(),
-        draft.cavity_inset_m * 1000.0
-    );
-    let ignored = format_ignored_inset(from_file, draft.cavity_inset_m);
-    project.set_design(draft).map_err(|e| e.to_string())?;
-    Ok(message + &ignored.unwrap_or_default())
+    let message = apply_design_draft(project, draft.layers)?;
+    let used = project.design().map_or(from_file, |set| set.cavity_inset_m);
+    Ok(message + &format_ignored_inset(from_file, used).unwrap_or_default())
 }
 
 /// What to add when a loaded design named a cavity inset this app did not use.
 ///
-/// `None` when the file agreed with the plug — which it does whenever the file
-/// came out of this app, since that is where its inset was written from.
+/// ⚠ Compared **as the message prints them**, not as `f64`s. A `.design.toml`
+/// carries the inset to 1 µm and other tools write it from float sliders, so an
+/// exact `!=` fires on differences no one can see — and the note would then
+/// read "Its 5.0 mm cavity inset was not used" directly after "5.0 mm cavity
+/// inset". A difference the user cannot see is not one to explain.
 #[must_use]
 pub fn format_ignored_inset(from_file_m: f64, used_m: f64) -> Option<String> {
-    (from_file_m != used_m).then(|| {
+    let shown = |m: f64| format!("{:.1}", m * 1000.0);
+    (shown(from_file_m) != shown(used_m)).then(|| {
         format!(
             " \u{26a0} Its {:.1} mm cavity inset was not used \u{2014} the piece you shaped \
              on step 3 sets that.",
@@ -134,12 +124,23 @@ pub fn format_ignored_inset(from_file_m: f64, used_m: f64) -> Option<String> {
     })
 }
 
-/// Step 3 action — set a layer design built in-app (the layer-stack
-/// editor), rather than loaded from a file.
+/// Step 4 action — set the layer stack, however it was arrived at: built in the
+/// editor, or read out of a `.design.toml`.
+///
+/// ★ The cavity inset is **not** a parameter. It belongs to the piece step 3
+/// shaped — that piece is what the preview draws and what "Check fit" gave its
+/// verdict on, and `start_molds` casts the design. A caller allowed to supply
+/// its own would be allowed to leave `Project::plug` and `Project::design`
+/// disagreeing, and the mould would then not be the cavity the user was shown.
+/// One funnel, so no caller can.
 ///
 /// # Errors
 /// The failure message if the design is invalid or the scan isn't cleaned.
-pub fn apply_design_draft(project: &mut Project, draft: DesignDraft) -> StepOutcome {
+pub fn apply_design_draft(project: &mut Project, layers: Vec<LayerDraft>) -> StepOutcome {
+    let draft = DesignDraft {
+        cavity_inset_m: project.plug().map_or(0.0, |plug| plug.cavity_inset_m),
+        layers,
+    };
     let message = format!(
         "✔ Design set: {} layer(s), {:.1} mm cavity inset.",
         draft.layers.len(),
@@ -1721,6 +1722,27 @@ visible = true
         );
     }
 
+    /// ★ A `.design.toml` carries the inset to 1 µm, and the tools that write
+    /// one do it from float sliders — `round_to_micrometers` exists in
+    /// `cf-device-types` because of the IEEE-754 noise that produces. Compared
+    /// as `f64`s, the note fires on a difference nobody can see and then reads
+    /// "Its 5.0 mm cavity inset was not used" right after "5.0 mm cavity
+    /// inset". It is compared as the message prints it instead.
+    #[test]
+    fn an_inset_difference_too_small_to_show_is_not_reported() {
+        assert_eq!(
+            format_ignored_inset(0.005_01, 0.005),
+            None,
+            "5.01 mm and 5.0 mm both print as 5.0",
+        );
+        let seen = format_ignored_inset(0.005_5, 0.005).unwrap_or_default();
+        assert!(
+            seen.contains("5.5 mm"),
+            "but a difference that shows is reported, and names the file's own \
+             number: {seen}",
+        );
+    }
+
     /// A file this app wrote carries the inset it wrote from, so the common
     /// case says nothing extra — or the warning stops meaning anything.
     #[test]
@@ -1776,20 +1798,34 @@ visible = true
         let mut p = Project::new("t");
         apply_scan(&mut p, &stl).unwrap();
         apply_prep(&mut p, &cleaned, &prep).unwrap();
-        apply_plug(&mut p, cf_studio_core::PlugDraft::default()).unwrap();
+        apply_plug(
+            &mut p,
+            cf_studio_core::PlugDraft {
+                cavity_inset_m: 0.005,
+                ..cf_studio_core::PlugDraft::default()
+            },
+        )
+        .unwrap();
 
-        // A design built in-app (the layer-stack editor's output).
-        let draft = DesignDraft {
-            cavity_inset_m: 0.005,
-            layers: vec![LayerDraft {
+        // A stack built in-app (the layer-stack editor's output). It carries no
+        // inset — the funnel takes that off the plug above, which is the whole
+        // reason `Project::plug` and `Project::design` cannot come apart.
+        let msg = apply_design_draft(
+            &mut p,
+            vec![LayerDraft {
                 thickness_m: 0.0175,
                 material_key: "ECOFLEX_00_30".to_string(),
                 slacker_fraction: 0.25,
             }],
-        };
-        let msg = apply_design_draft(&mut p, draft).unwrap();
-        assert!(msg.contains("Design set"), "got: {msg}");
+        )
+        .unwrap();
+        assert!(msg.contains("5.0 mm cavity inset"), "got: {msg}");
         assert!(p.is_complete(Step::DesignLayers));
+        assert_eq!(
+            p.design().map(|d| d.cavity_inset_m),
+            p.plug().map(|plug| plug.cavity_inset_m),
+            "the stack took the shaped piece's inset, not one of its own",
+        );
 
         let _ = std::fs::remove_dir_all(&d);
     }
