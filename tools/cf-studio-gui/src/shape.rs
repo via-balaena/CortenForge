@@ -244,11 +244,13 @@ pub(crate) fn commit_plug(draft: PlugDraft, controls: &mut ShapeControls, studio
         // the artifact and throw away every number parked behind an unticked
         // toggle — `gate_ridge_options` does not record those.
         controls.followed = studio.project.plug().cloned();
-        // ⚠ Before the report, not after: `Studio::next` clears the message, so
-        // reporting first would land on step 4 with nothing said.
+        // ⚠ Before the report, not after. `Studio::say` stamps the step being
+        // VIEWED, and this report belongs on the step the commit lands on —
+        // reporting first would stamp it step 3 and arrive at step 4 with
+        // nothing said.
         studio.next();
     }
-    studio.message = Some(outcome);
+    studio.say(outcome);
 }
 
 #[cfg(test)]
@@ -570,8 +572,13 @@ pub(crate) mod tests {
         }
     }
 
-    /// ★ The order is the trap: [`Studio::next`] clears the message, so a
-    /// commit that reported before advancing lands on step 4 with nothing said.
+    /// ★ The order is the trap: [`Studio::say`] stamps the step being VIEWED,
+    /// so a commit that reported before advancing stamps step 3 and arrives at
+    /// step 4 with nothing said.
+    ///
+    /// ⚠ Asserted through `note_for`, not `outcome()`. Step-blind, this test
+    /// passed with the two lines swapped — the trap it names went ungated while
+    /// its own comment described it.
     #[test]
     fn a_committed_plug_advances_the_wizard_and_says_what_it_shaped() {
         let mut studio = shaping(ready_to_shape());
@@ -586,9 +593,9 @@ pub(crate) mod tests {
             "carrying the inset it was handed"
         );
         assert!(
-            matches!(&studio.message, Some(Ok(text)) if text.contains("5.0 mm")),
-            "and the report survives the advance: {:?}",
-            studio.message
+            matches!(studio.note_for(Step::DesignLayers), Some(Ok(text)) if text.contains("5.0 mm")),
+            "and the report lands on the step it advanced TO: {:?}",
+            studio.outcome()
         );
     }
 
@@ -605,9 +612,9 @@ pub(crate) mod tests {
         assert_eq!(studio.cursor.viewed(), Step::ShapePiece, "it stays put");
         assert!(studio.project.plug().is_none(), "and records nothing");
         assert!(
-            matches!(&studio.message, Some(Err(_))),
+            matches!(studio.outcome(), Some(Err(_))),
             "with the reason on screen: {:?}",
-            studio.message
+            studio.outcome()
         );
     }
 

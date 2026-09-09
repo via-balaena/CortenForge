@@ -65,7 +65,7 @@ pub(crate) fn commit_design(
         // The rows ARE the design that just landed. See [`crate::shape::commit_plug`].
         controls.followed = studio.project.design().map(|design| design.layers.clone());
     }
-    studio.message = Some(outcome);
+    studio.say(outcome);
 }
 
 #[cfg(test)]

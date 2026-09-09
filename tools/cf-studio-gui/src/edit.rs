@@ -266,10 +266,10 @@ pub(crate) fn land_edit(
     // ⚠ Only a trim reaches it: `simplify_mesh` cannot empty a mesh that had
     // faces, and the pre-port `apply_edit` shared this message too.
     if scan.view() == ViewUpdate::Hold {
-        studio.message = Some(Err(OVER_TRIM_MESSAGE.to_string()));
+        studio.say(Err(OVER_TRIM_MESSAGE.to_string()));
         return;
     }
-    studio.message = Some(outcome);
+    studio.say(outcome);
 
     // ⚠ Only while a centerline exists to measure against. Every op that clears
     // one — weld, Simplify, reset — reports an arc length of 0, which
@@ -463,9 +463,9 @@ endsolid t
         let _ = std::fs::remove_file(&path);
 
         assert!(
-            matches!(&studio.message, Some(Ok(text)) if text.contains("Welded")),
+            matches!(studio.outcome(), Some(Ok(text)) if text.contains("Welded")),
             "the op must run and report success: {:?}",
-            studio.message
+            studio.outcome()
         );
         assert_eq!(
             scan.view(),
@@ -495,9 +495,9 @@ endsolid t
         let _ = std::fs::remove_file(&path);
 
         assert!(
-            matches!(&studio.message, Some(Err(text)) if text.contains("Apply a floor trim first")),
+            matches!(studio.outcome(), Some(Err(text)) if text.contains("Apply a floor trim first")),
             "with no trim there is nothing to rebuild: {:?}",
-            studio.message
+            studio.outcome()
         );
     }
 

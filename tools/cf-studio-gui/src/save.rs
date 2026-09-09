@@ -111,7 +111,7 @@ pub(crate) fn write_into(scan: &ScanEdit, studio: &mut Studio, dir: &Path, smoot
 /// leave the app inert with nothing on screen to explain why.
 pub(crate) fn settle(studio: &mut Studio, outcome: cf_studio_gui::StepOutcome) {
     studio.pending_save = None;
-    studio.message = Some(outcome);
+    studio.say(outcome);
 }
 
 #[cfg(test)]
@@ -153,7 +153,7 @@ pub(crate) mod tests {
                 .is_some_and(|s| s.has_centerline()),
             "the fixture must stand up, or every save below fails for that reason \
              instead of the one it is testing; last message: {:?}",
-            studio.message
+            studio.outcome()
         );
         studio.project = Project::new("save gate");
         studio.project.set_scan(ScanInput {
@@ -176,12 +176,12 @@ pub(crate) mod tests {
         assert!(
             studio.project.prep().is_some(),
             "accepted as step 2's artifact — the files alone are not the step: {:?}",
-            studio.message
+            studio.outcome()
         );
         assert!(
-            studio.message.as_ref().is_some_and(Result::is_ok),
+            studio.outcome().is_some_and(Result::is_ok),
             "and reported as a success: {:?}",
-            studio.message
+            studio.outcome()
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -292,9 +292,9 @@ pub(crate) mod tests {
             "{entry} left the app held with no question on screen"
         );
         assert!(
-            matches!(&studio.message, Some(Err(text)) if text.contains("step 1")),
+            matches!(studio.outcome(), Some(Err(text)) if text.contains("step 1")),
             "{entry} did not say which step is missing: {:?}",
-            studio.message
+            studio.outcome()
         );
     }
 
@@ -317,9 +317,9 @@ pub(crate) mod tests {
             "a save with nothing to write"
         );
         assert!(
-            matches!(&studio.message, Some(Err(text)) if text.contains("step 1")),
+            matches!(studio.outcome(), Some(Err(text)) if text.contains("step 1")),
             "and it says which step is missing: {:?}",
-            studio.message
+            studio.outcome()
         );
 
         // A scan that was never stood up — this one does reach the engine, and
@@ -330,9 +330,9 @@ pub(crate) mod tests {
         write_into(&unlevelled, &mut studio, &dir, 0);
         assert!(studio.pending_save.is_none(), "a save the engine refused");
         assert!(
-            matches!(&studio.message, Some(Err(text)) if text.starts_with("Save failed")),
+            matches!(studio.outcome(), Some(Err(text)) if text.starts_with("Save failed")),
             "and it passes the engine's reason on: {:?}",
-            studio.message
+            studio.outcome()
         );
 
         studio.pending_save = Some(PendingSave::Confirming {
