@@ -120,6 +120,20 @@ pub fn autosave_path(source: &Path) -> PathBuf {
     dir.join(format!("{stem}{PROJECT_SUFFIX}"))
 }
 
+/// How far a project has got, when that is further than the scan pick itself —
+/// the one test for "there is something here worth keeping".
+///
+/// ★★★ One definition, used both ways round. A session below this bar is not
+/// worth a file, and a file below it is not worth a question. Two definitions
+/// would let the writer drop a project file beside every scan the user ever
+/// clicked, each one the reader then ignores.
+#[must_use]
+pub fn worth_keeping(project: &Project) -> Option<Step> {
+    project
+        .furthest_completed()
+        .filter(|&reached| reached > Step::AddScan)
+}
+
 /// What the project file beside a scan has to say when that scan is picked.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ResumeOffer {
@@ -152,12 +166,12 @@ pub fn inspect_autosave(path: &Path) -> ResumeOffer {
     match Project::load(path) {
         // ⚠ A scan picked and abandoned records nothing worth a question, and
         // asking about it would put a modal in front of an ordinary re-pick.
-        Ok(project) => match project.furthest_completed() {
-            Some(reached) if reached > Step::AddScan => ResumeOffer::Resumable {
+        Ok(project) => match worth_keeping(&project) {
+            Some(reached) => ResumeOffer::Resumable {
                 project: Box::new(project),
                 reached,
             },
-            _ => ResumeOffer::Fresh,
+            None => ResumeOffer::Fresh,
         },
         // ⚠ Asked of the error rather than of `path.exists()`: two reads can
         // disagree, and the one that says "unreadable" about a file that is not
@@ -174,8 +188,8 @@ pub fn inspect_autosave(path: &Path) -> ResumeOffer {
 pub fn format_resume_question(reached: Step) -> String {
     format!(
         "A saved session for this scan is already on disk. It got as far as \
-         step {} — {}.\n\nPicking up leaves that work as it is. Starting over \
-         replaces it.",
+         step {} — {}.\n\nPick up to carry on from that work. Start over to \
+         leave it behind — this session takes its place.",
         reached.number(),
         reached.title(),
     )
@@ -1908,7 +1922,7 @@ mod tests {
             "the step the user would come back to: {question}"
         );
         assert!(
-            question.contains("Starting over replaces it"),
+            question.contains("this session takes its place"),
             "and what the other answer costs: {question}"
         );
     }

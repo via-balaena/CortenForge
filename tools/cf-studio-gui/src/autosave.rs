@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use bevy::prelude::*;
 use cf_studio_core::{Project, Step};
-use cf_studio_gui::{ResumeOffer, autosave_path, inspect_autosave};
+use cf_studio_gui::{ResumeOffer, autosave_path, inspect_autosave, worth_keeping};
 
 use crate::scan::{ActiveScan, ScanEdit};
 use crate::state::Studio;
@@ -153,11 +153,18 @@ impl Autosave {
         }
     }
 
-    /// Write `project`, unless writing is held or it is what was last written.
+    /// Write `project`, unless writing is held, it is what was last written, or
+    /// there is nothing in it yet worth a file.
     fn write(&mut self, project: &Project) {
         let (Saving::Yes, Some(path)) = (&self.state, &self.path) else {
             return;
         };
+        // ★ The same bar the reader uses. A scan picked and looked at records
+        // nothing the pick would not reproduce, and `~/scans` is flat — every
+        // scan the user ever clicked would leave a file there for nothing.
+        if worth_keeping(project).is_none() {
+            return;
+        }
         if self.last_attempt.as_ref() == Some(project) {
             return;
         }
@@ -309,6 +316,29 @@ mod tests {
         (autosave, studio)
     }
 
+    /// Record step 2's artifact — the first thing a session has that is worth a
+    /// file.
+    ///
+    /// ⚠ Plain data: the setter gates on the previous step, not on anything
+    /// being on disk.
+    fn clean_the_scan(studio: &mut Studio, dir: &Path) {
+        studio
+            .project
+            .set_prep(PrepInput {
+                cleaned_stl: dir.join("base.cleaned.stl"),
+                prep_toml: dir.join("base.prep.toml"),
+            })
+            .expect("in workflow order");
+    }
+
+    /// This session with the scan in `dir` picked *and* cleaned — the first
+    /// point at which there is anything to save.
+    fn picked_and_cleaned(dir: &Path) -> (Autosave, Studio) {
+        let (autosave, mut studio) = just_picked(dir);
+        clean_the_scan(&mut studio, dir);
+        (autosave, studio)
+    }
+
     /// Run the real autosave system `frames` times, and hand back what it left.
     fn drive(autosave: Autosave, studio: Studio, frames: usize) -> (Autosave, Studio) {
         let mut app = App::new();
@@ -344,7 +374,11 @@ mod tests {
             .expect("the previous session");
         let before = std::fs::read_to_string(&path).expect("a file to protect");
 
-        let (autosave, studio) = just_picked(&dir);
+        // ⚠ Cleaned, not just picked. A session holding nothing yet is not
+        // written at all, so the suspension would never be reached — and this
+        // gate would pass with it deleted. What it protects is a named file,
+        // whatever the session happens to hold.
+        let (autosave, studio) = picked_and_cleaned(&dir);
         let (autosave, _) = drive(autosave, studio, 5);
 
         assert_eq!(
@@ -416,7 +450,7 @@ mod tests {
             .save(&path)
             .expect("the previous session");
 
-        let (mut autosave, studio) = just_picked(&dir);
+        let (mut autosave, studio) = picked_and_cleaned(&dir);
         start_over(&mut autosave);
         let (_, studio) = drive(autosave, studio, 1);
 
@@ -424,7 +458,7 @@ mod tests {
         assert_eq!(back, studio.project, "the file is this session's project");
         assert_eq!(
             back.furthest_completed(),
-            Some(Step::AddScan),
+            Some(Step::CleanScan),
             "and the saved session is gone, which is what was asked for"
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -437,11 +471,11 @@ mod tests {
     fn the_project_is_written_when_it_changes_and_not_when_it_has_not() {
         let dir = scans("dirty-check");
         let path = autosave_path(&dir.join("base.stl"));
-        let (autosave, studio) = just_picked(&dir);
+        let (autosave, studio) = picked_and_cleaned(&dir);
         let (autosave, studio) = drive(autosave, studio, 1);
         assert!(
             path.is_file(),
-            "the pick itself is saved: {:?}",
+            "the session is saved: {:?}",
             autosave.note()
         );
 
@@ -456,10 +490,7 @@ mod tests {
 
         studio
             .project
-            .set_prep(PrepInput {
-                cleaned_stl: dir.join("base.cleaned.stl"),
-                prep_toml: dir.join("base.prep.toml"),
-            })
+            .set_plug(PlugDraft::default())
             .expect("in workflow order");
         let (_, studio) = drive(autosave, studio, 1);
 
@@ -478,7 +509,7 @@ mod tests {
     fn a_failed_write_is_not_retried_until_there_is_something_new_to_save() {
         let dir = scans("failed-write");
         let path = autosave_path(&dir.join("base.stl"));
-        let (autosave, studio) = just_picked(&dir);
+        let (autosave, studio) = picked_and_cleaned(&dir);
         // The folder goes out from under the write, which is what a read-only
         // or unmounted one does to it.
         std::fs::remove_dir_all(&dir).expect("take the folder away");
@@ -522,7 +553,7 @@ mod tests {
         const HAND_EDITED: &str = "{ not json at all";
         std::fs::write(&path, HAND_EDITED).expect("a file to protect");
 
-        let (autosave, studio) = just_picked(&dir);
+        let (autosave, studio) = picked_and_cleaned(&dir);
         let (autosave, _) = drive(autosave, studio, 30);
 
         assert_eq!(
@@ -565,7 +596,7 @@ mod tests {
             let path = autosave_path(&dir.join("base.stl"));
             const HAND_EDITED: &str = "{ not json at all";
             std::fs::write(&path, HAND_EDITED).expect("a file to protect");
-            let (mut autosave, mut studio) = just_picked(&dir);
+            let (mut autosave, mut studio) = picked_and_cleaned(&dir);
             assert_eq!(autosave.asking_about(), None, "nothing is being asked");
 
             answer(&mut autosave, &mut studio, &mut ScanEdit::default());
@@ -601,14 +632,15 @@ mod tests {
     fn picking_a_second_scan_starts_saving_beside_that_one() {
         let first = scans("second-pick-first");
         let second = scans("second-pick-second");
-        let (autosave, studio) = just_picked(&first);
+        let (autosave, studio) = picked_and_cleaned(&first);
         let (mut autosave, mut studio) = drive(autosave, studio, 1);
         let first_file = autosave_path(&first.join("base.stl"));
-        assert!(first_file.is_file(), "the first pick is saved");
+        assert!(first_file.is_file(), "the first session is saved");
 
         let scan = second.join("base.stl");
         studio.record_scan(&scan).expect("the second scan loads");
         autosave.follow(&scan);
+        clean_the_scan(&mut studio, &second);
         let (_, studio) = drive(autosave, studio, 1);
 
         let second_file = autosave_path(&scan);
@@ -626,31 +658,72 @@ mod tests {
         let _ = std::fs::remove_dir_all(&second);
     }
 
-    /// ★ Picking the same scan again is how a user gets back a project file
-    /// that has gone missing — deleted by hand, or on a drive that came back
-    /// empty. The record of what was last written has to go with the pick, or
-    /// the session compares equal to a file that is no longer there and never
-    /// writes it back.
+    /// ★ Redoing the same work on the same scan is how a user gets back a
+    /// project file that has gone missing — deleted by hand, or on a drive that
+    /// came back empty. The record of what was last written has to go with the
+    /// pick, or the redone session compares equal to a file that is no longer
+    /// there and is never written back.
+    ///
+    /// ⚠ The precondition is asserted, because it is the whole trap: the redone
+    /// project has to be *identical* to the one already recorded, or the dirty
+    /// check lets the write through for a reason that has nothing to do with
+    /// the pick clearing it.
     #[test]
-    fn re_picking_a_scan_writes_the_session_back_to_a_file_that_has_gone() {
+    fn redoing_the_work_writes_the_session_back_to_a_file_that_has_gone() {
         let dir = scans("re-pick");
         let scan = dir.join("base.stl");
         let path = autosave_path(&scan);
-        let (autosave, studio) = just_picked(&dir);
+        let (autosave, studio) = picked_and_cleaned(&dir);
         let (mut autosave, mut studio) = drive(autosave, studio, 1);
-        assert!(path.is_file(), "the pick itself is saved");
+        assert!(path.is_file(), "the first session is saved");
+        let first = studio.project.clone();
 
         std::fs::remove_file(&path).expect("the file goes missing");
         studio
             .record_scan(&scan)
             .expect("the same scan, picked again");
         autosave.follow(&scan);
+        clean_the_scan(&mut studio, &dir);
+        assert_eq!(
+            studio.project, first,
+            "the redone session must be indistinguishable from the recorded one"
+        );
+
         let (_, studio) = drive(autosave, studio, 1);
 
         assert_eq!(
             Project::load(&path).expect("the file is back"),
             studio.project,
-            "the re-pick wrote the session back"
+            "redoing the work wrote it back"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★★ A scan picked and looked at is not work. Writing it would drop a
+    /// project file beside every scan the user ever clicked — into `~/scans`,
+    /// which is flat — and the reader would classify every one of them as
+    /// nothing and ignore it.
+    #[test]
+    fn a_scan_picked_and_looked_at_leaves_no_file_behind() {
+        let dir = scans("just-looking");
+        let path = autosave_path(&dir.join("base.stl"));
+        let (autosave, studio) = just_picked(&dir);
+
+        let (autosave, mut studio) = drive(autosave, studio, 30);
+
+        assert!(
+            !path.exists(),
+            "nothing is left beside the scan: {:?}",
+            autosave.note()
+        );
+
+        // ...and the first real step is saved, or nothing ever would be.
+        clean_the_scan(&mut studio, &dir);
+        let (_, studio) = drive(autosave, studio, 1);
+        assert_eq!(
+            Project::load(&path).expect("readable"),
+            studio.project,
+            "the first step past the pick is what starts the file"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -695,7 +768,7 @@ mod tests {
 
         let dir = scans("plugin-wiring");
         let path = autosave_path(&dir.join("base.stl"));
-        let (autosave, studio) = just_picked(&dir);
+        let (autosave, studio) = picked_and_cleaned(&dir);
         let mut app = App::new();
         app.set_error_handler(bevy::ecs::error::ignore);
         app.add_plugins((MinimalPlugins, StatesPlugin, crate::plugin::StudioPlugin));
