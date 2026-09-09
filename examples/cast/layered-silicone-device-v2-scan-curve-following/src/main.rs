@@ -227,7 +227,7 @@ fn build_centerline() -> Vec<Point3<f64>> {
 /// 2's `export_molds_v2` derives a per-layer plug for each layer
 /// (`spec.plug` for layer 0, `layers[N - 1].body` for `N > 0`)
 /// and extends it with the ribbon's plug-anchor pin geometry
-/// internally via `add_plug_pins(base_solid, ribbon)`. Each
+/// internally via `add_plug_pins(base_solid, ribbon, cell)`. Each
 /// layer's plug therefore matches its own inner cavity (an
 /// independent detachable cast), and the ribbon's
 /// [`PlugPinKind::Axial`] kind makes the parallel

@@ -2,14 +2,21 @@
 //! must never do is emit the mold anyway with the plug's floor lock lying
 //! loose beside it.
 //!
-//! ★★★ THE DEFECT. `cf_cast::add_plug_pins(plug, ribbon)` takes the ribbon and
-//! nothing else, and both transforms it returns are anchored on the ribbon's
-//! cap-plane. The ribbon is the cleaned scan's centerline: it does not move
-//! when `cavity_inset_m` changes. The plug is `scan.offset(-inset)`, and it
-//! does. Past a threshold the plug's base has climbed clear of the lock and the
-//! two mesh as separate bodies — which shipped as a loose pyramid in the print
-//! and a plug with nothing holding it in the mold, until the refusal that lands
-//! with this file. `cf-studio-gui` offers 0-30 mm.
+//! ★★★ THE DEFECT, and it is CLOSED — read the tables below as history.
+//! `cf_cast::add_plug_pins` took the ribbon and nothing else, and both
+//! transforms it returned were anchored on the ribbon's cap-plane. The ribbon
+//! is the cleaned scan's centerline: it does not move when `cavity_inset_m`
+//! changes. The plug is `scan.offset(-inset)`, and it does. Past a threshold
+//! the plug's base had climbed clear of the lock and the two meshed as separate
+//! bodies — which shipped as a loose pyramid in the print, until the refusal
+//! that landed with this file. `cf-studio-gui` offers 0-30 mm.
+//!
+//! It now takes the plug's mesh cell size and READS the plug, standing the lock
+//! on a PEDESTAL that carries it back down to the cap plane
+//! (`cf_cast::build_plug_lock_pedestal_transform`). The refusal stays as the
+//! backstop for insets no column can reach, which is what the sweep still
+//! gates; `an_inset_that_lifts_the_plug_clear_of_its_lock_is_cast_anyway`
+//! gates the capability that replaced it.
 //!
 //! ★★ WHY A CONE. A straight tube CANNOT show this: its inward offset shrinks
 //! it laterally and the cap-plane cut keeps the base pinned, so the body meets
