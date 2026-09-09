@@ -19,12 +19,11 @@ use cf_studio_gui::{
 ///
 /// The pair is the point: an outcome with no owner gets shown on whatever
 /// screen happens to be up, and gets cleared by whatever happens to page.
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StepNote {
     /// The step whose action produced this.
-    pub(crate) step: Step,
+    step: Step,
     /// `Ok` reads as a success line, `Err` as a refusal.
-    pub(crate) outcome: StepOutcome,
+    outcome: StepOutcome,
 }
 
 /// The two top-level screens. The waiver is a *screen*, not an overlay: it is a
@@ -99,8 +98,12 @@ pub(crate) struct Studio {
     /// ⚠ Carried TOGETHER on purpose. Held apart, a message can outlive the
     /// screen that produced it — which is how a step-5 refusal came to be
     /// wiped by a page turn, leaving the operator with a cast that had failed
-    /// and an app that said nothing. Read it through [`Studio::note_for`], so
-    /// a message can only ever be shown where it means something.
+    /// and an app that said nothing.
+    ///
+    /// ⚠ [`StepNote`]'s own fields are private, so this can be seen from a
+    /// sibling module but not taken apart there: [`Studio::note_for`] is the
+    /// only way to the outcome, and [`Studio::say`] the only way to set one.
+    /// The rule is the compiler's, not this comment's.
     pub(crate) message: Option<StepNote>,
     /// A long job is running — gates the buttons that could clobber it.
     pub(crate) busy: bool,
