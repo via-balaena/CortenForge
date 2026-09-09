@@ -915,7 +915,7 @@ pub fn m_to_tenths_mm(m: f64) -> i32 {
     scale_to_i32(m, 10_000.0)
 }
 
-/// Meters → whole millimetres — the cavity inset's own unit.
+/// Meters → whole millimetres.
 #[must_use]
 pub fn m_to_mm(m: f64) -> i32 {
     scale_to_i32(m, 1000.0)
