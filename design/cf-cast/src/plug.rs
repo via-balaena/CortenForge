@@ -157,7 +157,7 @@
 //! [`Solid::union`]: cf_design::Solid::union
 
 use cf_design::{Aabb, Solid};
-use nalgebra::{Point3, UnitVector3, Vector3};
+use nalgebra::{Point3, UnitVector3, Vector2, Vector3};
 
 use mesh_repair::components::find_connected_components;
 use mesh_types::IndexedMesh;
@@ -708,28 +708,36 @@ pub fn build_plug_lock_pedestal_transform(
     let (spec, pose) = build_plug_lock_pose(ribbon)?;
     let half_length_m = spec.lock_spec.pin_half_length_m;
     let half_extents_m = spec.lock_spec.pin_tip_half_extents_m;
-    let lateral = pose.lateral_unit.into_inner() * half_extents_m.x;
-    let binormal = pose.axis_unit.cross(&pose.lateral_unit) * half_extents_m.y;
-    let march = PedestalMarch {
-        plug,
-        pose: &pose,
-        rays: [
-            Vector3::zeros(),
-            lateral + binormal,
-            lateral - binormal,
-            -lateral + binormal,
-            -lateral - binormal,
-        ],
-        min_step_m: PEDESTAL_MARCH_MIN_STEP_CELLS * mesh_cell_size_m,
-        limit_m: far_side_of(&plug.bounds()?, &pose),
+    let limit_m = far_side_of(&plug.bounds()?, &pose);
+    let march = |half_extents: Vector2<f64>| {
+        let lateral = pose.lateral_unit.into_inner() * half_extents.x;
+        let binormal = pose.axis_unit.cross(&pose.lateral_unit) * half_extents.y;
+        PedestalMarch {
+            plug,
+            pose: &pose,
+            rays: [
+                Vector3::zeros(),
+                lateral + binormal,
+                lateral - binormal,
+                -lateral + binormal,
+                -lateral - binormal,
+            ],
+            min_step_m: PEDESTAL_MARCH_MIN_STEP_CELLS * mesh_cell_size_m,
+            limit_m,
+        }
     };
-    if march
+    // ⚠ Asked over the LOCK's own footprint, which is WIDER than the column's.
+    // The question here is whether the frustum touches the plug, and the
+    // frustum is `pin_base_half_extents_m` across at its base — measuring it
+    // with the narrower column would miss material the lock does reach, and
+    // answering "orphaned" there would add a column to a cast that needs none.
+    if march(spec.lock_spec.pin_base_half_extents_m)
         .depth_where_any_reaches(0.0, -half_length_m, half_length_m)
         .is_some()
     {
         return None;
     }
-    let top_m = march
+    let top_m = march(half_extents_m)
         .depth_where_all_reach(-PEDESTAL_ENGAGEMENT_CELLS * mesh_cell_size_m, half_length_m)?;
     Some(MatingTransform::UnionLockPedestal {
         params: LockPedestalParams {
@@ -1480,6 +1488,91 @@ mod tests {
         );
     }
 
+    /// ★★★ WHY CORNERS, and not the axis alone — and why all FOUR of them.
+    /// The column has to fuse across its whole cross-section, so a plug that
+    /// fails to cover any ONE corner cannot hold it.
+    ///
+    /// ⚠ Enumerated, not sampled. `cargo-mutants` permuted the four corner
+    /// rays freely and nothing noticed: every other fixture here is symmetric
+    /// about the lock's axis, so the corners always agreed and any one stood
+    /// for all four. A single flip DUPLICATES one corner and DROPS another, so
+    /// only a fixture that turns on the dropped corner can see it — which
+    /// means one fixture per corner, not one clever fixture.
+    ///
+    /// Each round notches the plug at exactly one corner, leaving the axis and
+    /// the other three in material. The notch is 4 mm across against a 1 mm
+    /// engagement, so the corners it does not touch stay well inside.
+    #[test]
+    fn every_corner_of_the_columns_footprint_is_consulted() {
+        let ribbon = iter1_like_ribbon();
+        let tip = PlugPinSpec::iter1().lock_spec.pin_tip_half_extents_m;
+        assert!(
+            build_plug_lock_pedestal_transform(&box_plug(-0.040), &ribbon, PEDESTAL_TEST_CELL_M)
+                .is_some(),
+            "the control: unnotched, the plug covers every corner and gets a column",
+        );
+        for (sx, sy) in [(1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)] {
+            let notched = box_plug(-0.040).subtract(
+                Solid::cuboid(Vector3::new(0.002, 0.002, 0.060)).translate(Vector3::new(
+                    sx * tip.x,
+                    sy * tip.y,
+                    0.0,
+                )),
+            );
+            assert!(
+                build_plug_lock_pedestal_transform(&notched, &ribbon, PEDESTAL_TEST_CELL_M)
+                    .is_none(),
+                "a plug notched at the ({sx}, {sy}) corner cannot hold the column, \
+                 however much material the other three sit in",
+            );
+        }
+    }
+
+    /// The march's loop bound, pinned directly.
+    ///
+    /// ⚠ Nothing else can. Every fixture above converges in one or two
+    /// sphere-traced steps, so `cargo-mutants` replaced the whole budget with
+    /// `1` and all of them still passed.
+    ///
+    /// ⚠⚠ The last row is the load-bearing one. `min_step_m` is a multiple of
+    /// the mesh cell size, so a zero cell divides to infinity — and if the
+    /// guard let that through, `inf as usize` SATURATES rather than wrapping
+    /// and the march would run `usize::MAX` times at five field evaluations
+    /// apiece.
+    #[test]
+    fn the_march_budget_counts_steps_and_yields_none_where_it_cannot() {
+        let plug = box_plug(-0.040);
+        let ribbon = iter1_like_ribbon();
+        let (_, pose) = build_plug_lock_pose(&ribbon).expect("Axial kind");
+        let march = |min_step_m| PedestalMarch {
+            plug: &plug,
+            pose: &pose,
+            rays: [Vector3::zeros(); 5],
+            min_step_m,
+            limit_m: 1.0,
+        };
+        assert_eq!(
+            march(0.000_125).step_budget(0.0, 0.010),
+            80,
+            "10 mm at 0.125 mm a step is 80 steps",
+        );
+        assert_eq!(
+            march(0.000_125).step_budget(0.0, 0.010_001),
+            81,
+            "and a hair over 10 mm needs one more, not 80",
+        );
+        assert_eq!(
+            march(0.000_125).step_budget(0.010, 0.0),
+            0,
+            "a span that runs backwards buys no steps",
+        );
+        assert_eq!(
+            march(0.0).step_budget(0.0, 0.010),
+            0,
+            "nor does a zero step, whose division is not finite",
+        );
+    }
+
     /// ⚠ The scan-mesh-direct contract: no cell size, no column.
     ///
     /// That path meshes the cleaned scan rather than this `Solid`, so a
@@ -1987,11 +2080,11 @@ mod tests {
 
     /// The far corner of the region the lock is recognised by — every local
     /// half-extent at once — in mm.
-    fn lock_corner_mm() -> Point3<f64> {
+    fn lock_corner_mm(axial_sign: f64) -> Point3<f64> {
         let lock = axial_lock();
         let binormal = lock.pose.axis_unit.cross(&lock.pose.lateral_unit);
         let corner_m = lock.pose.center_m.coords
-            + lock.pose.axis_unit.scale(lock.half_length_m)
+            + lock.pose.axis_unit.scale(axial_sign * lock.half_length_m)
             + lock.pose.lateral_unit.scale(lock.base_half_extents_m.x)
             + binormal.scale(lock.base_half_extents_m.y);
         (corner_m * crate::mesher::METERS_TO_MM).into()
@@ -2220,25 +2313,34 @@ mod tests {
     /// fits an inflated bound and misses a deflated one.
     #[test]
     fn a_lock_sitting_exactly_on_its_own_boundary_is_still_the_lock() {
-        let mesh = mesh_of_at(&[(7, far_from_the_lock()), (3, lock_corner_mm())]);
-        assert_eq!(
-            find_connected_components(&mesh).component_count,
-            2,
-            "the fixture has to really be in pieces"
-        );
-        let err = ensure_plug_mating_features_attached(
-            &mesh,
-            &axial_transforms(),
-            CastTarget::Plug {
-                layer_index: Some(0),
-            },
-        )
-        .expect_err("a lock on its own boundary is still a detached lock");
-        match err {
-            CastError::PlugMatingFeatureDetached { detached_faces, .. } => {
-                assert_eq!(detached_faces, 3, "and it is the piece at the corner");
+        // ⚠ BOTH axial ends. The axial test used to be one `.abs()` and one
+        // bound; a pedestal made it asymmetric (`[-half_length, top]`), so the
+        // base end now has a bound of its own — and `cargo-mutants` flipped
+        // that one's slack freely while this test only ever sat at the tip.
+        for axial_sign in [1.0, -1.0] {
+            let mesh = mesh_of_at(&[(7, far_from_the_lock()), (3, lock_corner_mm(axial_sign))]);
+            assert_eq!(
+                find_connected_components(&mesh).component_count,
+                2,
+                "the fixture has to really be in pieces"
+            );
+            let err = ensure_plug_mating_features_attached(
+                &mesh,
+                &axial_transforms(),
+                CastTarget::Plug {
+                    layer_index: Some(0),
+                },
+            )
+            .expect_err("a lock on its own boundary is still a detached lock");
+            match err {
+                CastError::PlugMatingFeatureDetached { detached_faces, .. } => {
+                    assert_eq!(
+                        detached_faces, 3,
+                        "and it is the piece at the corner (axial_sign {axial_sign})",
+                    );
+                }
+                other => panic!("expected PlugMatingFeatureDetached, got {other:?}"),
             }
-            other => panic!("expected PlugMatingFeatureDetached, got {other:?}"),
         }
     }
 

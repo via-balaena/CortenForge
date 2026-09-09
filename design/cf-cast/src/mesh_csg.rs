@@ -1282,6 +1282,51 @@ mod tests {
         assert!((bb.1.z - 1.5).abs() < 0.1, "max.z: {}", bb.1.z);
     }
 
+    /// The pedestal's size, place and orientation — the only gate that holds
+    /// the column's geometry at the primitive layer.
+    ///
+    /// ⚠ Every number here is chosen to make a specific mistake visible, since
+    /// a square column on a symmetric span posed by an identity rotation would
+    /// survive most of them:
+    ///
+    /// - **half-extents 4 x 2 mm, not square** — a lateral/binormal swap moves
+    ///   the extents between world axes instead of cancelling out.
+    /// - **span (1, 15) mm, neither symmetric nor zero-based** — reading it as
+    ///   `±` or as a length lands the column somewhere else entirely.
+    /// - **axis +Z with lateral +X**, so the pose rotation is NOT the identity:
+    ///   the local `(x, y, z)` lands at world `(x, -z, y)`. Dropping the
+    ///   rotation gives `z ∈ [-2, 2]` where this expects `[6, 20]`.
+    /// - **a centre with NO zero component.** `cargo-mutants` found this: with
+    ///   `z = 0` the metres→mm scale on that axis could be a multiply or a
+    ///   divide and the fixture could not tell, because both give zero.
+    #[test]
+    fn lock_pedestal_spans_its_axial_range_in_the_poses_frame() {
+        let params = LockPedestalParams {
+            pose: PrismaticPinPose::new(
+                Point3::new(0.030, 0.010, 0.005),
+                Vector3::z_axis(),
+                Vector3::x_axis(),
+            ),
+            half_extents_m: Vector2::new(0.004, 0.002),
+            axial_span_m: (0.001, 0.015),
+        };
+        let (lo, hi) = build_lock_pedestal_via_hull_pts(&params)
+            .bounding_box_nalgebra()
+            .unwrap();
+        // Centre (30, 10, 5) mm + local box x ∈ [-4, 4], axial ∈ [1, 15],
+        // binormal ∈ [-2, 2], mapped by (x, y, z) → (x, -z, y).
+        for (got, want, name) in [
+            (lo.x, 26.0, "min.x"),
+            (hi.x, 34.0, "max.x"),
+            (lo.y, 8.0, "min.y"),
+            (hi.y, 12.0, "max.y"),
+            (lo.z, 6.0, "min.z"),
+            (hi.z, 20.0, "max.z"),
+        ] {
+            assert!((got - want).abs() < 1e-6, "{name}: {got} != {want}");
+        }
+    }
+
     #[test]
     fn cylinder_along_negative_z_axis_handles_antipodal_branch() {
         // axis = -Z is the rotation_between(z, axis) -> None case;
