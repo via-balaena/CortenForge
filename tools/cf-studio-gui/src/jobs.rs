@@ -1729,7 +1729,13 @@ visible = true
                 cleaned_stl: "scan.cleaned.stl".into(),
                 prep_toml: "scan.prep.toml".into(),
             }),
-            studio.project.set_plug(PlugDraft::default()),
+            // ⚠ 5 mm, matching every fixture design's `inset_m`. A plug that
+            // disagreed would put the ignored-inset note on every message here
+            // and hide whichever one a test was actually about.
+            studio.project.set_plug(PlugDraft {
+                cavity_inset_m: 0.005,
+                ..PlugDraft::default()
+            }),
         ];
         assert!(
             staged.iter().all(Result::is_ok),
@@ -1882,9 +1888,9 @@ visible = true
     fn a_design_the_steppers_can_hold_is_reported_without_a_warning() {
         let app = app_after_loading("exact-design", ONE_LAYER_DESIGN);
         let message = loaded_message(&app);
-        assert!(
-            message.contains("1 layer(s)") && !message.contains("Not exactly"),
-            "nothing was changed to show it, so nothing is warned about: {message}"
+        assert_eq!(
+            message, "✔ Design set: 1 layer(s), 5.0 mm cavity inset.",
+            "nothing was changed to show it, so the whole message is the report",
         );
     }
 }
