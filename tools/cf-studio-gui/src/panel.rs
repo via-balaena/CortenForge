@@ -1040,6 +1040,7 @@ fn draw_shape_piece(
     let question = FitQuestion {
         plug: shape.plug_draft(),
         cell_size_m,
+        scan: studio.project.prep().and_then(crate::preview::scan_stamp),
     };
     draw_fit_view(ui, &fit_job.view(&question), &question.plug);
     if check_clicked {
@@ -3554,6 +3555,9 @@ pub(crate) mod tests {
         FitQuestion {
             plug: ShapeControls::default().plug_draft(),
             cell_size_m: STEP_THREE_CELL_M,
+            // `Studio::default()` names no prep, so nothing is stamped — the
+            // state these layout gates draw against.
+            scan: None,
         }
     }
 
@@ -3629,6 +3633,68 @@ pub(crate) mod tests {
 
     /// Step 5's Fast preview, the quality that is not the default.
     const FAST_QUALITY_IDX: i32 = 1;
+
+    /// ★★★ The axis no field on step 3 can carry, driven end to end. Step 2 is
+    /// reachable from here and a second Save rewrites the cleaned scan in
+    /// place: every field on this screen reads the same afterwards, and the
+    /// body does not. A panel that left `scan` at `None` would keep the old
+    /// verdict on screen, and `fit_view`'s own gate would still pass.
+    ///
+    /// ⚠ Two-sided. The first assertion says the scan is named at all; the
+    /// second says the name follows the file rather than the path, which never
+    /// moved.
+    #[test]
+    fn the_question_names_the_scan_it_is_about_not_the_path_to_it() {
+        let dir = crate::save::tests::temp_dir("step3-fit-scan");
+        let cleaned_stl = dir.join("s.cleaned.stl");
+        // Never parsed — `scan_stamp` reads the file's metadata, not its body.
+        let written = [
+            std::fs::write(&cleaned_stl, b"first"),
+            std::fs::write(dir.join("s.prep.toml"), b""),
+        ];
+        assert!(written.iter().all(Result::is_ok), "the fixture must write");
+
+        let mut app = app_running_the_wizard();
+        app.add_plugins(bevy::prelude::TaskPoolPlugin::default());
+        app.insert_resource(Studio {
+            project: crate::preview::tests::cleaned(cf_studio_core::PrepInput {
+                cleaned_stl: cleaned_stl.clone(),
+                prep_toml: dir.join("s.prep.toml"),
+            }),
+            cursor: WizardCursor::new(Step::ShapePiece),
+            ..Studio::default()
+        });
+
+        click_on(&mut app, CHECK_FIT);
+        let before = app
+            .world()
+            .resource::<PlugFitJob>()
+            .asking()
+            .map(|q| q.scan);
+
+        // A Save at a different smoothing: same path, a different body. The job
+        // is cleared because nothing here polls one, and a check in flight
+        // relabels the button it would be clicked with.
+        *app.world_mut().resource_mut::<PlugFitJob>() = PlugFitJob::default();
+        let rewritten = std::fs::write(&cleaned_stl, b"second, and longer");
+        click_on(&mut app, CHECK_FIT);
+        let after = app
+            .world()
+            .resource::<PlugFitJob>()
+            .asking()
+            .map(|q| q.scan);
+
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(rewritten.is_ok(), "the fixture must be rewritable");
+        assert!(
+            before.flatten().is_some(),
+            "the question has to name the scan it is about: {before:?}"
+        );
+        assert_ne!(
+            before, after,
+            "a scan rewritten in place is a different question, at the same path"
+        );
+    }
 
     /// ★★★ The one thing that must not regress: the check is opt-in, so
     /// Continue may never wait on it. A four-minute wall in front of an

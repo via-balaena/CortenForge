@@ -1346,6 +1346,7 @@ endsolid t
                 ridges: RidgeOptions::default(),
             },
             cell_size_m: 0.0005,
+            scan: None,
         }
     }
 

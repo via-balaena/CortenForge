@@ -1299,6 +1299,16 @@ pub struct FitQuestion {
     /// knob. Detachment turns on sub-cell grid alignment, so a verdict does not
     /// transfer between cell sizes; see `cf_studio_engine::plug_fit_preflight`.
     pub cell_size_m: f64,
+    /// Which cleaned scan it is about: length and modified time, or `None` when
+    /// that could not be read.
+    ///
+    /// ⚠ Not the path, and this is the axis the fields cannot cover. Step 2 is
+    /// reachable from step 3 and a second Save writes the cleaned scan back to
+    /// the same place at a different smoothing — the inset never moves, the
+    /// body does, and without this a verdict about the body that was replaced
+    /// stays on screen. Stamped by `crate::preview::scan_stamp`, which tells
+    /// the 3D preview the same thing.
+    pub scan: Option<(u64, std::time::SystemTime)>,
 }
 
 /// What step 3 has to say about the fit, this frame.
@@ -3002,6 +3012,7 @@ visible = true
                 ridges: RidgeOptions::default(),
             },
             cell_size_m: 0.0005,
+            scan: Some((1_234, std::time::UNIX_EPOCH)),
         }
     }
 
@@ -3039,7 +3050,7 @@ visible = true
             "the question it was asked about keeps its answer"
         );
 
-        let moved: [(&str, FitQuestion); 4] = [
+        let moved: [(&str, FitQuestion); 5] = [
             (
                 "the cavity inset",
                 FitQuestion {
@@ -3070,6 +3081,16 @@ visible = true
                 "the cell size",
                 FitQuestion {
                     cell_size_m: 0.0015,
+                    ..asked.clone()
+                },
+            ),
+            (
+                // ⚠ The axis no field on step 3 can carry. Step 2 is reachable
+                // from here, and a second Save rewrites the cleaned scan in
+                // place: every field reads the same, and the body does not.
+                "the cleaned scan under it",
+                FitQuestion {
+                    scan: Some((5_678, std::time::UNIX_EPOCH)),
                     ..asked.clone()
                 },
             ),
