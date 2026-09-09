@@ -14,8 +14,8 @@ use crate::dialogs::PendingDialog;
 use crate::edit::EditControls;
 use crate::input::arbitrate_pointer_over_egui;
 use crate::jobs::{
-    MoldsJob, PrintJob, SimplifyJob, poll_dialogs, poll_molds_job, poll_print_job,
-    poll_simplify_job,
+    MoldsJob, PlugFitJob, PrintJob, SimplifyJob, poll_dialogs, poll_molds_job, poll_plug_fit_job,
+    poll_print_job, poll_simplify_job,
 };
 use crate::molds::{MoldControls, drive_part_picker};
 use crate::panel::wizard_screen;
@@ -49,6 +49,7 @@ impl Plugin for StudioPlugin {
             .init_resource::<Studio>()
             .init_resource::<PendingDialog>()
             .init_resource::<MoldsJob>()
+            .init_resource::<PlugFitJob>()
             .init_resource::<PrintJob>()
             .init_resource::<SimplifyJob>()
             .init_resource::<ScanEdit>()
@@ -88,6 +89,7 @@ impl Plugin for StudioPlugin {
                     arbitrate_pointer_over_egui,
                     poll_dialogs,
                     poll_molds_job,
+                    poll_plug_fit_job,
                     poll_print_job,
                     poll_simplify_job,
                     // After both writers, so a landing scan or a landed
