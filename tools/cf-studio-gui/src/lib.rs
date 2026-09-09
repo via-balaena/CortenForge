@@ -3269,7 +3269,17 @@ visible = true
         let casts = format_fit_verdict(&PlugFit::Casts, &plug);
         assert!(
             matches!(&casts, Ok(text) if text.contains("11.0 mm")),
-            "a fit that casts reads as settled, at the inset asked: {casts:?}"
+            "a settled fit reads as one, at the inset asked: {casts:?}"
+        );
+        // ★★ And claims ONLY what was checked. `plug_fit_verdict` runs the
+        // compose half; the export still F4-gates the mesh and can refuse
+        // after it, so a settled line saying the inset "casts" promises an
+        // outcome nobody established. The two halves guard each other: drop
+        // the first and any wording passes, drop the second and the promise
+        // comes back.
+        assert!(
+            matches!(&casts, Ok(text) if text.contains("one piece") && !text.contains("cast")),
+            "the settled line claims one-piece-ness, never that the cast succeeds: {casts:?}"
         );
 
         let reason = "the floor lock did not fuse to the plug";

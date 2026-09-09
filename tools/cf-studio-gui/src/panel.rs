@@ -3074,7 +3074,7 @@ pub(crate) mod tests {
         shape
     }
 
-    /// The cell size step 3 asks its question at — step 5's default, Fine.
+    /// The cell size these gates ask at.
     const STEP_THREE_CELL_M: f64 = 0.0005;
 
     /// The step-3 body for `shape`, on an app holding nothing and with no fit
