@@ -612,6 +612,35 @@ mod tests {
         let _ = std::fs::remove_dir_all(&second);
     }
 
+    /// ★ Picking the same scan again is how a user gets back a project file
+    /// that has gone missing — deleted by hand, or on a drive that came back
+    /// empty. The record of what was last written has to go with the pick, or
+    /// the session compares equal to a file that is no longer there and never
+    /// writes it back.
+    #[test]
+    fn re_picking_a_scan_writes_the_session_back_to_a_file_that_has_gone() {
+        let dir = scans("re-pick");
+        let scan = dir.join("base.stl");
+        let path = autosave_path(&scan);
+        let (autosave, studio) = just_picked(&dir);
+        let (mut autosave, mut studio) = drive(autosave, studio, 1);
+        assert!(path.is_file(), "the pick itself is saved");
+
+        std::fs::remove_file(&path).expect("the file goes missing");
+        studio
+            .record_scan(&scan)
+            .expect("the same scan, picked again");
+        autosave.follow(&scan);
+        let (_, studio) = drive(autosave, studio, 1);
+
+        assert_eq!(
+            Project::load(&path).expect("the file is back"),
+            studio.project,
+            "the re-pick wrote the session back"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// ⚠⚠ The autosave keeps writing where it read from. A resumed project
     /// records the scan path it was *saved* with, and that scan may have moved
     /// since — re-deriving the file from it would write this session back to
