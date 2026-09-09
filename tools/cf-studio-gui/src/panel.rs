@@ -1817,6 +1817,19 @@ pub(crate) mod tests {
         );
         messages.extend([false, true].map(|slow| format_fit_progress(7, slow, 11.0)));
         messages.push(format_fit_failure("scan.cleaned.stl: no such file"));
+        // Step 4's rounding warning — the first message in the app to carry
+        // U+26A0 `⚠`, which is exactly the shape of the U+2713 miss above.
+        messages.push(
+            cf_studio_gui::format_design_rounding(
+                &cf_studio_gui::LayerStack::default(),
+                &[cf_studio_core::LayerDraft {
+                    thickness_m: 0.0175,
+                    material_key: "ECOFLEX_00_30".to_string(),
+                    slacker_fraction: 0.25,
+                }],
+            )
+            .expect("a stack the steppers cannot hold must warn"),
+        );
 
         for message in messages {
             assert_renders(&harness.ctx, &message);
