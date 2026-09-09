@@ -1070,9 +1070,14 @@ fn draw_shape_piece(
 fn draw_fit_view(ui: &mut egui::Ui, view: &FitView<'_>, plug: &PlugDraft) {
     let (text, color) = match *view {
         FitView::Idle => return,
-        FitView::Checking { elapsed_secs, slow } => {
-            (format_fit_progress(elapsed_secs, slow), CONTROL_TEXT)
-        }
+        FitView::Checking {
+            elapsed_secs,
+            slow,
+            inset_mm,
+        } => (
+            format_fit_progress(elapsed_secs, slow, inset_mm),
+            CONTROL_TEXT,
+        ),
         FitView::Answered(fit) => match format_fit_verdict(fit, plug) {
             Ok(text) => (text, DONE_TEXT),
             Err(text) => (text, ERROR_TEXT),
@@ -1810,7 +1815,7 @@ pub(crate) mod tests {
             ]
             .map(|fit| format_fit_verdict(&fit, &refused_plug).unwrap_or_else(|text| text)),
         );
-        messages.extend([false, true].map(|slow| format_fit_progress(7, slow)));
+        messages.extend([false, true].map(|slow| format_fit_progress(7, slow, 11.0)));
         messages.push(format_fit_failure("scan.cleaned.stl: no such file"));
 
         for message in messages {

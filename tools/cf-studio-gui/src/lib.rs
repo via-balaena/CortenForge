@@ -1323,6 +1323,12 @@ pub enum FitView<'a> {
         /// Whether this one runs in minutes rather than seconds — see
         /// [`fit_check_is_slow`].
         slow: bool,
+        /// The inset being checked, in millimetres — ⚠ NOT necessarily the one
+        /// on screen. Nothing stops the fields moving while a check runs, and
+        /// the answer is then dropped on arrival; naming the question in flight
+        /// is what stops a five-minute wait ending in nothing anyone can
+        /// explain.
+        inset_mm: f64,
     },
     /// The cast's verdict on the settings on screen.
     Answered(&'a PlugFit),
@@ -1351,6 +1357,7 @@ pub fn fit_view<'a>(
         return FitView::Checking {
             elapsed_secs,
             slow: fit_check_is_slow(asked),
+            inset_mm: asked.plug.cavity_inset_m * 1000.0,
         };
     }
     match answered {
@@ -1421,16 +1428,20 @@ pub fn format_fit_failure(reason: &str) -> String {
 
 /// The check's progress line.
 ///
-/// ⚠ `slow` is read off the question the run was *started* with, never off the
-/// live screen: editing the ridge switch or step 5's quality mid-run cannot
-/// change what the check already running is going to cost.
+/// ⚠ Every field here is read off the question the run was *started* with,
+/// never off the live screen. Editing the inset, the ridge switch or step 5's
+/// quality mid-run changes neither what is running nor what it will cost — and
+/// the inset is named precisely so a run the screen has moved away from is
+/// visibly about something else, rather than looking like it is checking what
+/// the operator is now looking at.
 #[must_use]
-pub fn format_fit_progress(elapsed_secs: u64, slow: bool) -> String {
-    if slow {
-        format!("Checking the fit… {elapsed_secs}s — this takes a few minutes.")
+pub fn format_fit_progress(elapsed_secs: u64, slow: bool, inset_mm: f64) -> String {
+    let cost = if slow {
+        " — this takes a few minutes."
     } else {
-        format!("Checking the fit… {elapsed_secs}s")
-    }
+        ""
+    };
+    format!("Checking {inset_mm:.1} mm… {elapsed_secs}s{cost}")
 }
 
 #[cfg(test)]
@@ -3169,32 +3180,53 @@ visible = true
             FitView::Checking {
                 elapsed_secs: 12,
                 slow: true,
+                inset_mm: 5.0,
             },
             "the clock, not the answer under it"
         );
     }
 
-    /// ★ Read off the question the run was STARTED with, not off the screen.
-    /// Editing the ridge switch or step 5's quality mid-run cannot change what
-    /// the check already running is going to cost.
+    /// ★★ Every field of the running view is read off the question the run was
+    /// STARTED with, not off the screen. Editing step 3 mid-run changes neither
+    /// what is running nor what it will cost.
+    ///
+    /// ⚠ The inset especially. Nothing stops the fields moving while a check
+    /// runs, the answer is dropped on arrival when they have, and a line naming
+    /// the SCREEN's inset would spend those minutes claiming to check a value
+    /// nobody is checking — and then show nothing.
     #[test]
-    fn the_progress_line_costs_the_check_that_is_actually_running() {
-        let fast_and_smooth = FitQuestion {
+    fn the_running_line_describes_the_check_that_is_actually_running() {
+        // Started at the opening 5 mm, smooth, Fast quality.
+        let in_flight = FitQuestion {
             cell_size_m: 0.0015,
             ..opening_question()
         };
+        // The screen has since moved to 11 mm.
+        let on_screen = FitQuestion {
+            plug: PlugDraft {
+                cavity_inset_m: 0.011,
+                ..in_flight.plug.clone()
+            },
+            ..in_flight.clone()
+        };
 
         assert_eq!(
-            fit_view(
-                Some((&ridged(&fast_and_smooth), 30)),
-                None,
-                &fast_and_smooth
-            ),
+            fit_view(Some((&in_flight, 30)), None, &ridged(&on_screen)),
+            FitView::Checking {
+                elapsed_secs: 30,
+                slow: false,
+                inset_mm: 5.0,
+            },
+            "the run in flight is a quick 5 mm one, whatever the screen now reads"
+        );
+        assert_eq!(
+            fit_view(Some((&ridged(&in_flight), 30)), None, &on_screen),
             FitView::Checking {
                 elapsed_secs: 30,
                 slow: true,
+                inset_mm: 5.0,
             },
-            "a ridged run stays a ridged run while the screen reads smooth"
+            "and a ridged run stays ridged while the screen reads smooth"
         );
     }
 
@@ -3258,8 +3290,8 @@ visible = true
     /// hang. Both still carry the clock.
     #[test]
     fn the_progress_line_warns_only_when_the_check_is_the_slow_one() {
-        let quick = format_fit_progress(3, false);
-        let slow = format_fit_progress(3, true);
+        let quick = format_fit_progress(3, false, 5.0);
+        let slow = format_fit_progress(3, true, 5.0);
 
         assert!(
             !quick.contains("minutes"),
@@ -3271,6 +3303,10 @@ visible = true
         );
         for line in [&quick, &slow] {
             assert!(line.contains("3s"), "both carry the clock: {line}");
+            assert!(
+                line.contains("5.0 mm"),
+                "and both name the inset in flight: {line}"
+            );
         }
     }
 }
