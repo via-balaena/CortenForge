@@ -17,12 +17,13 @@
 //! binary's modules (they need a display to *run*, but compile headlessly).
 
 use std::fmt::Write as _;
-use std::path::Path;
+use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use cf_studio_core::{
     DesignDraft, LayerDraft, MoldOutputs, PlugDraft, PourPlan, PourStep, Project, RidgeOptions,
-    RidgeRing, Step,
+    RidgeRing, Step, StudioError,
 };
 use cf_studio_engine::{
     CastMode, PartId, PartSelection, PieceSide, PlugFit, accept_prep, draft_from_design_toml,
@@ -81,6 +82,101 @@ pub fn apply_scan(project: &mut Project, scan_file: &Path) -> StepOutcome {
     );
     project.set_scan(loaded.artifact());
     Ok(message)
+}
+
+/// Used when a scan's filename yields no usable stem — in practice, one that is
+/// not valid UTF-8.
+pub const FALLBACK_STEM: &str = "scan";
+
+/// What a session's project file is called, after the scan's own stem.
+const PROJECT_SUFFIX: &str = ".cfproject.json";
+
+/// The folder a scan's derived files land in, and the stem they are named
+/// after — the scan's own folder and filename, so everything cut from a scan
+/// sits beside it.
+///
+/// ★ One definition, because step 2's cleaned pair and [`autosave_path`] are
+/// both named from it. Named apart, a project file could point at a cleaned
+/// scan whose name says it came from somewhere else.
+#[must_use]
+pub fn scan_outputs(source: &Path) -> (PathBuf, String) {
+    let dir = source
+        .parent()
+        .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+    let stem = source
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(FALLBACK_STEM)
+        .to_owned();
+    (dir, stem)
+}
+
+/// Where a session working from `source` saves its project.
+#[must_use]
+pub fn autosave_path(source: &Path) -> PathBuf {
+    let (dir, stem) = scan_outputs(source);
+    dir.join(format!("{stem}{PROJECT_SUFFIX}"))
+}
+
+/// What the project file beside a scan has to say when that scan is picked.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ResumeOffer {
+    /// Nothing worth asking about: no file, or one recording only the pick
+    /// itself. Saving may start straight away.
+    Fresh,
+    /// A session to offer back.
+    Resumable {
+        /// The saved project, carried **whole** — "resume" has to produce this,
+        /// and re-reading the file after the question was answered would let it
+        /// change under the answer.
+        project: Box<Project>,
+        /// How far it got. Resolved here, where the test for "worth asking
+        /// about" is actually made, so no consumer has to re-derive it and find
+        /// the `None` this variant already rules out.
+        reached: Step,
+    },
+    /// A file this build cannot read: hand-edited, or written by a newer
+    /// Cendrillon. The string is why, for the screen.
+    Unreadable(String),
+}
+
+/// Read the project file at `path`, and decide what to offer.
+///
+/// ★★★ Call this **before** the session's first write to `path`. A write first
+/// lands this session's empty project on the very file being read, and there is
+/// nothing left to offer.
+#[must_use]
+pub fn inspect_autosave(path: &Path) -> ResumeOffer {
+    match Project::load(path) {
+        // ⚠ A scan picked and abandoned records nothing worth a question, and
+        // asking about it would put a modal in front of an ordinary re-pick.
+        Ok(project) => match project.furthest_completed() {
+            Some(reached) if reached > Step::AddScan => ResumeOffer::Resumable {
+                project: Box::new(project),
+                reached,
+            },
+            _ => ResumeOffer::Fresh,
+        },
+        // ⚠ Asked of the error rather than of `path.exists()`: two reads can
+        // disagree, and the one that says "unreadable" about a file that is not
+        // there would stop the session saving at all.
+        Err(StudioError::Io { source, .. }) if source.kind() == ErrorKind::NotFound => {
+            ResumeOffer::Fresh
+        }
+        Err(e) => ResumeOffer::Unreadable(e.to_string()),
+    }
+}
+
+/// The resume question, naming how far the saved session got.
+#[must_use]
+pub fn format_resume_question(reached: Step) -> String {
+    format!(
+        "A saved session for this scan is already on disk. It got as far as \
+         step {} — {}.\n\nPicking up leaves that work as it is. Starting over \
+         replaces it.",
+        reached.number(),
+        reached.title(),
+    )
 }
 
 /// Step 2 action — accept a cleaned scan + its `.prep.toml`.
@@ -1577,6 +1673,235 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+
+    /// A folder of this test's own, named and PID-scoped so concurrent runs
+    /// cannot read each other's files.
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("cf-autosave-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        dir
+    }
+
+    /// A project taken as far as `furthest`, with every artifact on the way.
+    ///
+    /// ⚠ Plain data all the way: the setters gate on the previous step, not on
+    /// anything being on disk, so this needs no cast run and no scan file.
+    fn walked_to(furthest: Step) -> Project {
+        use cf_studio_core::{PrepInput, ScanInput};
+
+        let mut project = Project::new("resume gate");
+        project.set_scan(ScanInput {
+            source_path: "/scans/base.stl".into(),
+        });
+        if furthest >= Step::CleanScan {
+            project
+                .set_prep(PrepInput {
+                    cleaned_stl: "/scans/base.cleaned.stl".into(),
+                    prep_toml: "/scans/base.prep.toml".into(),
+                })
+                .expect("in workflow order");
+        }
+        if furthest >= Step::ShapePiece {
+            project
+                .set_plug(PlugDraft::default())
+                .expect("in workflow order");
+        }
+        assert_eq!(
+            project.furthest_completed(),
+            Some(furthest),
+            "the fixture must stop exactly where it says"
+        );
+        project
+    }
+
+    /// ★ The naming rule, and the coupling it exists for: the project and the
+    /// cleaned scan it points at are named off the same `(dir, stem)`, so they
+    /// cannot end up in different folders or under different names.
+    #[test]
+    fn the_project_file_is_named_off_the_same_stem_as_the_cleaned_scan() {
+        let scan = Path::new("/scans/left-forearm.stl");
+        let (dir, stem) = scan_outputs(scan);
+
+        assert_eq!(dir, PathBuf::from("/scans"), "beside the scan");
+        assert_eq!(stem, "left-forearm");
+        assert_eq!(
+            autosave_path(scan),
+            dir.join(format!("{stem}.cfproject.json")),
+            "and named off that same stem"
+        );
+    }
+
+    /// The awkward paths, because this is a total function and every caller
+    /// treats what it returns as somewhere to write.
+    #[test]
+    fn every_scan_path_names_exactly_one_file_to_write() {
+        assert_eq!(
+            autosave_path(Path::new("base.stl")),
+            PathBuf::from("base.cfproject.json"),
+            "no folder named means the working directory, beside the scan"
+        );
+        assert_eq!(
+            autosave_path(Path::new("/scans/.stl")),
+            PathBuf::from("/scans/.stl.cfproject.json"),
+            "a dotfile's whole name is its stem"
+        );
+        // ⚠ A path with no filename at all still has to name a file, or the
+        // fallback stem is dead code and this writes to a directory.
+        assert_eq!(
+            autosave_path(Path::new("/")),
+            PathBuf::from(format!("./{FALLBACK_STEM}.cfproject.json")),
+            "nothing to name it after falls back rather than writing nowhere"
+        );
+    }
+
+    /// ⚠ No file is the ordinary case — the first time any scan is picked — and
+    /// it has to read as "go ahead and save", not as a reason to stop.
+    #[test]
+    fn a_scan_with_no_project_beside_it_is_fresh() {
+        let dir = temp_dir("no-file");
+
+        assert_eq!(
+            inspect_autosave(&dir.join("nothing-here.cfproject.json")),
+            ResumeOffer::Fresh
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★★ A pick and nothing else is not work worth a question. Without this
+    /// the modal lands in front of an ordinary re-pick of the same scan, and
+    /// the only answer that gets the user anywhere is the one that overwrites.
+    #[test]
+    fn a_project_recording_only_the_scan_is_fresh() {
+        let dir = temp_dir("scan-only");
+        let path = dir.join("base.cfproject.json");
+        walked_to(Step::AddScan)
+            .save(&path)
+            .expect("a fixture file");
+
+        assert_eq!(inspect_autosave(&path), ResumeOffer::Fresh);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★★★ The offer itself, carrying the project whole — "resume" has to
+    /// produce it — and the step it reached, which is the whole question.
+    #[test]
+    fn a_project_past_the_scan_is_offered_back_whole() {
+        let dir = temp_dir("resumable");
+        let path = dir.join("base.cfproject.json");
+        let saved = walked_to(Step::ShapePiece);
+        saved.save(&path).expect("a fixture file");
+
+        assert_eq!(
+            inspect_autosave(&path),
+            ResumeOffer::Resumable {
+                project: Box::new(saved),
+                reached: Step::ShapePiece,
+            },
+            "the project comes back as it went in, and says how far it got"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The boundary between the two, one step apart. Asserted as a pair
+    /// because a `>=` for the `>` moves it by exactly one step, and either
+    /// side alone reads as correct.
+    #[test]
+    fn the_offer_starts_at_the_first_step_past_the_pick() {
+        let dir = temp_dir("boundary");
+        let scan_only = dir.join("a.cfproject.json");
+        let cleaned = dir.join("b.cfproject.json");
+        walked_to(Step::AddScan).save(&scan_only).expect("a file");
+        walked_to(Step::CleanScan).save(&cleaned).expect("a file");
+
+        assert_eq!(inspect_autosave(&scan_only), ResumeOffer::Fresh);
+        assert!(
+            matches!(
+                inspect_autosave(&cleaned),
+                ResumeOffer::Resumable {
+                    reached: Step::CleanScan,
+                    ..
+                }
+            ),
+            "one step further is worth asking about"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★★★ Every way a file can be unreadable, because the consequence is the
+    /// same one and it is the worst one: a build that treats an unreadable file
+    /// as "nothing there" overwrites work it merely failed to understand.
+    ///
+    /// ⚠ Enumerated over real failures — hand-edited, written by a newer
+    /// Cendrillon, and a file this build's own invariants reject (#899's).
+    #[test]
+    fn a_file_this_build_cannot_read_is_never_treated_as_absent() {
+        use cf_studio_core::PROJECT_SCHEMA_VERSION;
+
+        let dir = temp_dir("unreadable");
+        let hand_edited = dir.join("a.cfproject.json");
+        std::fs::write(&hand_edited, b"{ not json at all").expect("a file");
+
+        // ⚠ Written by editing what `save` produced, not by hand: a hand-written
+        // body could be refused for a typo instead of for its version, and this
+        // would pass while measuring nothing.
+        let from_the_future = dir.join("b.cfproject.json");
+        let written = dir.join("current.cfproject.json");
+        walked_to(Step::ShapePiece).save(&written).expect("a file");
+        let body = std::fs::read_to_string(&written).expect("what save wrote");
+        let bumped = body.replace(
+            &format!("\"schema_version\": {PROJECT_SCHEMA_VERSION}"),
+            &format!("\"schema_version\": {}", PROJECT_SCHEMA_VERSION + 1),
+        );
+        assert_ne!(bumped, body, "the version must actually have moved");
+        std::fs::write(&from_the_future, bumped).expect("a file");
+
+        // #899's invariant: the design's inset is a copy of the plug's.
+        let disagreeing = dir.join("c.cfproject.json");
+        let mut project = walked_to(Step::ShapePiece);
+        project
+            .set_design(DesignDraft {
+                cavity_inset_m: 0.010,
+                layers: vec![LayerDraft {
+                    thickness_m: 0.003,
+                    material_key: "ECOFLEX_00_30".to_string(),
+                    slacker_fraction: 0.0,
+                }],
+            })
+            .expect("in workflow order");
+        // `save` is the no-corruption primitive, not an invariant gate, so a
+        // project the loader will refuse can be written — which is the point.
+        project.save(&disagreeing).expect("a file");
+
+        for (what, path) in [
+            ("hand-edited", &hand_edited),
+            ("from a newer build", &from_the_future),
+            ("failing this build's invariants", &disagreeing),
+        ] {
+            assert!(
+                matches!(inspect_autosave(path), ResumeOffer::Unreadable(_)),
+                "a file {what} must never be overwritten: {:?}",
+                inspect_autosave(path)
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The question names the step, not the file — it is the only thing the
+    /// user can use to decide.
+    #[test]
+    fn the_resume_question_names_how_far_the_saved_session_got() {
+        let question = format_resume_question(Step::DesignLayers);
+
+        assert!(
+            question.contains(Step::DesignLayers.title()),
+            "the step the user would come back to: {question}"
+        );
+        assert!(
+            question.contains("Starting over replaces it"),
+            "and what the other answer costs: {question}"
+        );
+    }
 
     const ONE_TRIANGLE_STL: &str = "\
 solid t

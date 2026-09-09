@@ -24,6 +24,7 @@ use cf_studio_gui::{
 };
 use mesh_types::IndexedMesh;
 
+use crate::autosave::Autosave;
 use crate::dialogs::{DialogKind, PendingDialog};
 use crate::edit::{EditControls, land_edit};
 use crate::save::{save_into, settle};
@@ -40,6 +41,7 @@ pub(crate) fn poll_dialogs(
     mut studio: ResMut<Studio>,
     mut job: ResMut<PrintJob>,
     mut scan: ResMut<ScanEdit>,
+    mut autosave: ResMut<Autosave>,
 ) {
     let Some((kind, picked)) = dialog.poll() else {
         return;
@@ -57,6 +59,12 @@ pub(crate) fn poll_dialogs(
                     let recorded = studio.record_scan(&path);
                     if recorded.is_ok() {
                         scan.set(active);
+                        // ★★★ Before the project this pick just changed can be
+                        // written anywhere. `follow` reads the file beside the
+                        // scan first, and holds the write on the answer — a
+                        // write here instead would put this empty project over
+                        // the session the user is about to be offered.
+                        autosave.follow(&path);
                     }
                     recorded
                 }
@@ -770,6 +778,7 @@ pub(crate) mod tests {
         app.add_plugins(TaskPoolPlugin::default())
             .init_resource::<PrintJob>()
             .init_resource::<DesignControls>()
+            .init_resource::<Autosave>()
             .add_systems(Update, poll_dialogs);
         app.insert_resource(studio);
         app.insert_resource(scan);
@@ -866,6 +875,7 @@ endsolid t
             .init_resource::<ScanEdit>()
             .init_resource::<PrintJob>()
             .init_resource::<DesignControls>()
+            .init_resource::<Autosave>()
             .add_systems(Update, poll_dialogs);
         app.insert_resource(PendingDialog::resolved(DialogKind::ScanFile, Some(file)));
 
@@ -890,6 +900,55 @@ endsolid t
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// ★★★ The pick is the only moment the file beside a scan is read, and
+    /// this is the call site — `Autosave::follow` is a method nothing else in
+    /// the app calls. Drop the line and every autosave gate stays green while
+    /// the app writes this session's empty project over the last one's work.
+    ///
+    /// ⚠ Driven through the real `poll_dialogs`, in its own order: the read has
+    /// to happen on the frame that records the scan, not a frame later.
+    #[test]
+    fn picking_a_scan_reads_the_saved_session_beside_it() {
+        use cf_studio_gui::autosave_path;
+
+        let dir = crate::save::tests::temp_dir("pick-reads-the-file");
+        let file = dir.join("pick.stl");
+        std::fs::write(&file, ONE_TRIANGLE_STL).expect("a scan to pick");
+        // A previous session that got as far as cleaning the scan.
+        let mut previous = cf_studio_core::Project::new("last time");
+        previous.set_scan(cf_studio_core::ScanInput {
+            source_path: file.clone(),
+        });
+        previous
+            .set_prep(cf_studio_core::PrepInput {
+                cleaned_stl: dir.join("pick.cleaned.stl"),
+                prep_toml: dir.join("pick.prep.toml"),
+            })
+            .expect("in workflow order");
+        previous
+            .save(&autosave_path(&file))
+            .expect("the previous session");
+
+        let mut app = App::new();
+        app.add_plugins(TaskPoolPlugin::default())
+            .init_resource::<Studio>()
+            .init_resource::<ScanEdit>()
+            .init_resource::<PrintJob>()
+            .init_resource::<DesignControls>()
+            .init_resource::<Autosave>()
+            .add_systems(Update, poll_dialogs);
+        app.insert_resource(PendingDialog::resolved(DialogKind::ScanFile, Some(file)));
+
+        run_until_answered(&mut app);
+
+        assert_eq!(
+            app.world().resource::<Autosave>().asking_about(),
+            Some(cf_studio_core::Step::CleanScan),
+            "the pick raised the question, about the step that session reached"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// ⚠ `busy` and the spawned job are one decision: the app tells the user it
     /// is saving, so something must actually be saving.
     #[test]
@@ -900,6 +959,7 @@ endsolid t
             .init_resource::<ScanEdit>()
             .init_resource::<PrintJob>()
             .init_resource::<DesignControls>()
+            .init_resource::<Autosave>()
             .add_systems(Update, poll_dialogs);
         app.insert_resource(Studio {
             project: crate::panel::tests::ready_to_pour(),
@@ -1806,6 +1866,7 @@ visible = true
             .init_resource::<ScanEdit>()
             .init_resource::<DesignControls>()
             .init_resource::<PendingDialog>()
+            .init_resource::<Autosave>()
             // ⚠ The real wiring's order: the rows follow the project, so the
             // reconcile has to run after the load that moved it.
             .add_systems(Update, (poll_dialogs, drive_design_controls).chain());

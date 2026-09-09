@@ -11,17 +11,13 @@
 
 use std::path::{Path, PathBuf};
 
-use cf_studio_gui::{apply_prep, format_save_done};
+use cf_studio_gui::{FALLBACK_STEM, apply_prep, format_save_done, scan_outputs};
 
 use crate::scan::{ActiveScan, ScanEdit};
 use crate::state::{PendingSave, Studio};
 
 /// The unit the cleaned STL records itself in, as the pre-port save did.
 const STL_UNITS: &str = "mm";
-
-/// Used when the scan's filename yields no usable stem — in practice, one that
-/// is not valid UTF-8.
-const FALLBACK_STEM: &str = "scan";
 
 /// Reported when a Save is asked for with no scan to write.
 ///
@@ -36,16 +32,7 @@ const NO_SCAN: &str = "Add a scan in step 1 first.";
 /// `None` when no scan is recorded. The Save control is not offered then, so
 /// this is the second guard, not the first.
 fn scan_target(studio: &Studio) -> Option<(PathBuf, String)> {
-    let source = &studio.project.scan()?.source_path;
-    let dir = source
-        .parent()
-        .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
-    let stem = source
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or(FALLBACK_STEM)
-        .to_owned();
-    Some((dir, stem))
+    Some(scan_outputs(&studio.project.scan()?.source_path))
 }
 
 /// Whether saving `stem` into `dir` would overwrite something already there.

@@ -74,7 +74,7 @@ impl PendingSave {
 /// only when a step is *completed*.
 #[derive(Resource)]
 pub(crate) struct Studio {
-    /// The session's project. In-memory only — autosave/resume is a later PR.
+    /// The session's project. Saved beside the scan by [`crate::autosave`].
     pub(crate) project: Project,
     /// Which screen of the wizard is being looked at.
     pub(crate) cursor: WizardCursor,
@@ -140,6 +140,23 @@ impl Studio {
             self.pour_deadline = None;
         }
         outcome
+    }
+
+    /// Take a project read back from disk as this session's own.
+    ///
+    /// ⚠ Everything else here is session-only and goes with it. The pour cursor
+    /// and its countdown point into a plan this project may not have, and an
+    /// `Instant` means nothing across runs — a pot-life countdown cannot
+    /// resume, it restarts, which is what the pour screen already expects.
+    pub(crate) fn resume(&mut self, project: Project) {
+        // ⚠ `current_step`, not the furthest completed step derived here: the
+        // file records where the user was, and a second definition of that
+        // would drift from the one [`Project::migrate`] repairs.
+        self.cursor = WizardCursor::new(project.current_step());
+        self.project = project;
+        self.pour = PourSession::default();
+        self.pour_deadline = None;
+        self.message = None;
     }
 
     /// Start (or restart) the current layer's pot-life countdown.
