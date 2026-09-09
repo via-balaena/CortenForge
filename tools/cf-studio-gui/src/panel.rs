@@ -3709,14 +3709,26 @@ pub(crate) mod tests {
         let running = PlugFitJob::running_for(opening_fit_question());
         let mut body = shape_body_with(&running);
 
+        // ⚠ The census, not a search for the name: it says there is exactly ONE
+        // fit button — the same one relabelled rather than a second appearing —
+        // and `controls_in_column` asserts the wider label still fits the
+        // column, which no other gate draws this state to find out.
+        assert_eq!(
+            controls_in_column(&mut body),
+            [
+                "−",
+                "TextInput",
+                "+",
+                "Checking…",
+                MASTER_SWITCH,
+                "Continue"
+            ],
+            "the running screen is the opening one with the fit button relabelled"
+        );
         assert_eq!(
             controls_disabled(&mut body, "Checking…"),
             vec![true],
-            "the fit button is on screen, refusing a second check"
-        );
-        assert!(
-            controls_disabled(&mut body, CHECK_FIT).is_empty(),
-            "and it is the same button relabelled, not a second one"
+            "which refuses a second check while the first is in flight"
         );
         assert_eq!(
             controls_disabled(&mut body, "Continue"),
