@@ -256,3 +256,201 @@ jobs:
     assert_eq!(parse_needs(yaml, "build"), vec!["affected"]);
     assert!(parse_needs(yaml, "missing").is_empty());
 }
+
+// ============================================================================
+// The shared Linux dependency list
+// ============================================================================
+// Eleven jobs across three workflows install the same apt packages through
+// `install-linux-deps`, and the list is written out longhand at every one.
+// `release.yml` states the hazard on its own copy: a divergent list on the
+// BLOCKING release leg "would fail only at tag time, invisible on every PR".
+//
+// It has already bitten twice in the other direction, on the same 2026-08-18
+// weekly run: the bench job had no dependency step at all, and clippy-drift's
+// list was missing a package. Both died in a dependency's build script before
+// running anything, and the reds were read as a bench regression and as
+// toolchain drift rather than as what they were.
+//
+// So the list gets the same treatment as `quality-gate.needs`: enforced, not
+// asserted in a comment. Editing ten of the eleven copies is now a test failure.
+
+/// The packages every Linux job installs.
+const LINUX_DEPS: &[&str] = &[
+    "libwayland-dev",
+    "libxkbcommon-dev",
+    "libasound2-dev",
+    "libudev-dev",
+];
+
+/// Packages a job may add on top of [`LINUX_DEPS`] for a reason local to it.
+/// `mesa-vulkan-drivers` provides lavapipe, a CPU Vulkan device — the jobs that
+/// execute `sim-gpu`'s suite need an adapter or those tests return `ok` having
+/// measured nothing.
+const LINUX_DEPS_OPTIONAL: &[&str] = &["mesa-vulkan-drivers"];
+
+const SCHEDULED: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../.github/workflows/scheduled.yml"
+));
+const RELEASE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../.github/workflows/release.yml"
+));
+
+/// Every `packages:` input in a workflow, folded continuation lines included.
+///
+/// A value may run onto following lines, which YAML folds into one scalar:
+///
+/// ```text
+///   packages: libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev
+///     mesa-vulkan-drivers
+/// ```
+///
+/// A continuation is more-indented than the `packages:` key and carries no `:`
+/// of its own, which is what separates it from the next mapping key.
+fn parse_package_lists(yaml: &str) -> Vec<Vec<String>> {
+    let mut lists = Vec::new();
+    let mut lines = yaml.lines().peekable();
+    while let Some(raw) = lines.next() {
+        let trimmed = raw.trim_start();
+        let Some(tail) = trimmed.strip_prefix("packages:") else {
+            continue;
+        };
+        let indent = raw.len() - trimmed.len();
+        let mut pkgs: Vec<String> = tail.split_whitespace().map(str::to_owned).collect();
+        while let Some(next) = lines.peek() {
+            let t = next.trim_start();
+            if t.is_empty()
+                || t.starts_with('#')
+                || t.contains(':')
+                || next.len() - t.len() <= indent
+            {
+                break;
+            }
+            pkgs.extend(t.split_whitespace().map(str::to_owned));
+            lines.next();
+        }
+        lists.push(pkgs);
+    }
+    lists
+}
+
+#[test]
+fn every_linux_job_installs_the_same_dep_list() {
+    let sites: Vec<(&str, Vec<String>)> = [
+        ("quality-gate.yml", WORKFLOW),
+        ("scheduled.yml", SCHEDULED),
+        ("release.yml", RELEASE),
+    ]
+    .into_iter()
+    .flat_map(|(name, yaml)| {
+        parse_package_lists(yaml)
+            .into_iter()
+            .map(move |pkgs| (name, pkgs))
+    })
+    .collect();
+
+    assert!(
+        sites.len() >= 10,
+        "parser found only {} `packages:` input(s) across the three workflows — \
+         the format likely changed, and a gate that parses nothing passes silently",
+        sites.len()
+    );
+
+    for (workflow, pkgs) in &sites {
+        let base: Vec<&str> = pkgs
+            .iter()
+            .map(String::as_str)
+            .filter(|p| !LINUX_DEPS_OPTIONAL.contains(p))
+            .collect();
+        assert_eq!(
+            base, LINUX_DEPS,
+            "a Linux dep list in `{workflow}` has drifted from the shared list. \
+             Every `install-linux-deps` call site installs the same packages, and \
+             the copies are longhand — so editing one means editing all of them \
+             (`grep -rn 'packages: libwayland' .github/`). A divergence on the \
+             release leg would surface only at tag time. Found: {pkgs:?}"
+        );
+    }
+}
+
+#[test]
+fn parse_package_lists_folds_continuations_and_stops_at_the_next_key() {
+    let yaml = "\
+      - name: Install system dependencies
+        uses: ./.github/actions/install-linux-deps
+        with:
+          packages: libwayland-dev libudev-dev
+            mesa-vulkan-drivers
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          packages: libwayland-dev
+";
+    assert_eq!(
+        parse_package_lists(yaml),
+        vec![
+            vec!["libwayland-dev", "libudev-dev", "mesa-vulkan-drivers"],
+            vec!["libwayland-dev"],
+        ]
+    );
+    // A same-indent sibling key is not swallowed as a continuation.
+    assert_eq!(
+        parse_package_lists("          packages: a\n          other: b\n"),
+        vec![vec!["a"]]
+    );
+}
+
+/// The Cendrillon install page, which tells readers what to `apt-get install`.
+const SITE_INSTALL_PAGE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../site/cendrillon/index.html"
+));
+
+/// Every `lib…-dev` token in a document, wherever it appears.
+///
+/// Deliberately not scoped to the `apt-get` block: the defect below stated the
+/// package in a command AND justified it in the sentence above, and only the
+/// command would have been caught by a narrower reader.
+fn dev_packages_named_in(text: &str) -> Vec<String> {
+    let mut found: Vec<String> = text
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '.'))
+        .filter(|t| t.starts_with("lib") && t.ends_with("-dev"))
+        .map(str::to_owned)
+        .collect();
+    found.sort_unstable();
+    found.dedup();
+    found
+}
+
+/// The install instructions must not name a library CI does not install.
+///
+/// ⚠ This is not hypothetical tidiness. The install page told readers to install
+/// `libfontconfig1-dev` and gave "the build fails inside `yeslogic-fontconfig-sys`"
+/// as the reason, for months after the Slint→Bevy port removed that crate from the
+/// lockfile entirely. The page is published on merge, so the false instruction was
+/// user-facing, and nothing connected it to the CI lists it was meant to mirror.
+#[test]
+fn the_install_instructions_name_no_library_ci_does_not_install() {
+    for (source, text) in [
+        ("site/cendrillon/index.html", SITE_INSTALL_PAGE),
+        ("release.yml release notes", RELEASE),
+    ] {
+        let named = dev_packages_named_in(text);
+        assert!(
+            !named.is_empty(),
+            "found no `lib…-dev` in {source} — the install instructions moved or \
+             changed shape, and this gate would pass while checking nothing"
+        );
+        for pkg in &named {
+            assert!(
+                LINUX_DEPS.contains(&pkg.as_str()) || LINUX_DEPS_OPTIONAL.contains(&pkg.as_str()),
+                "{source} names `{pkg}`, which no CI job installs. \
+                 Either the workspace genuinely needs it (add it to LINUX_DEPS and to \
+                 every `install-linux-deps` call site, so CI proves it is needed), or \
+                 the instructions have outlived the dependency and should drop it."
+            );
+        }
+    }
+}
