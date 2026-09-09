@@ -774,6 +774,68 @@ pub(crate) mod tests {
         );
     }
 
+    /// Every stepper on the screen, with the name a failure should print.
+    fn every_stepper(controls: &ShapeControls) -> Vec<(String, &BoundedField)> {
+        let r = &controls.ridges;
+        let mut fields = vec![
+            ("cavity".to_string(), &controls.cavity_mm),
+            ("texture depth".to_string(), &r.texture_depth),
+            ("texture spacing".to_string(), &r.texture_spacing),
+            ("side pinch".to_string(), &r.side_pinch),
+            ("tip relief".to_string(), &r.tip_relief),
+            ("orientation".to_string(), &r.orientation),
+        ];
+        for (i, ring) in r.rings.iter().enumerate() {
+            fields.push((format!("ring {i} position"), &ring.position));
+            fields.push((format!("ring {i} depth"), &ring.depth));
+            fields.push((format!("ring {i} width"), &ring.width));
+        }
+        fields
+    }
+
+    /// ★★ The universal the spot checks above cannot state: whatever a project
+    /// holds, every stepper shows a number inside its own range.
+    ///
+    /// ⚠ Asserted on `state`, not `value()` — the latter clamps on read, so a
+    /// field can read correctly while printing something the piece is not cut
+    /// at. And swept over extremes rather than checked at one value: a scalar
+    /// wired past the clamp is invisible until something impossible is put in
+    /// it, and `side_pinch` and `tip_relief` are in range in every other gate
+    /// here.
+    #[test]
+    fn no_project_can_make_a_stepper_print_a_number_outside_its_range() {
+        for value in [-1.0e6, -1.0, -1.0e-9, 0.0, 1.0e-9, 1.0, 1.0e6] {
+            let plug = PlugDraft {
+                cavity_inset_m: value,
+                ridges: RidgeOptions {
+                    enabled: true,
+                    rings: vec![RidgeRing {
+                        position_frac: value,
+                        depth_m: value,
+                        half_width_frac: value,
+                    }],
+                    texture_depth_m: value,
+                    texture_spacing_m: value,
+                    side_pinch_depth_m: value,
+                    tip_relief_depth_m: value,
+                    orientation_deg: value,
+                },
+            };
+
+            let fields = ShapeControls::from_plug(&plug);
+
+            for (name, field) in every_stepper(&fields) {
+                let (min, max) = field.range;
+                let shown = field.state.value();
+                assert!(
+                    (min..=max).contains(&shown),
+                    "a project holding {value} makes the {name} stepper print \
+                     {shown}, outside its own {min}..={max}"
+                );
+            }
+        }
+    }
+
     /// ★★ What resume is for. A project carrying a plug this session never
     /// shaped has to reach the fields — Continue commits what they say, so
     /// left on the defaults it would write 5 mm and no ridges over the user's
