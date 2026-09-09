@@ -413,9 +413,10 @@ fn draw_body(
         centered_wrapped(ui, MESSAGE_SIZE, color, text.clone());
     }
 
-    // ⚠ On every step, and above the fold, because it is the one note the user
-    // must not miss and the one the step message cannot carry: `Studio::message`
-    // is wiped by the next step action, and this outlives every click.
+    // ⚠ On every step, beside the step message and for its reason — at the top
+    // of the body rather than the bottom of a long scrolling one. It cannot BE
+    // the step message: that is wiped by the next step action, and this has to
+    // outlive every click until saving works again.
     if let Some(note) = saving_note {
         ui.add_space(ROW_GAP);
         centered_wrapped(ui, RIDGE_NOTE_SIZE, WARN_TEXT, note.to_owned());

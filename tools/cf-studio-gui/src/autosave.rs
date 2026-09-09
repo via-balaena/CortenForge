@@ -36,8 +36,16 @@ pub(crate) enum Saving {
     },
     /// ⛔ Off: a file this build cannot read sits where the project would go.
     /// Overwriting it would throw away work this build merely fails to
-    /// understand. The string is the reason, for the screen.
-    Refusing(String),
+    /// understand.
+    Refusing {
+        /// Where that file is. Carried, because the note has to tell the user
+        /// which file to move before saving can start — and the only other
+        /// place to get it is [`Autosave::path`], where a `None` this variant
+        /// already rules out would need an arm nothing can reach.
+        file: String,
+        /// The engine's reason, for the screen.
+        why: String,
+    },
 }
 
 /// Where this session's project is saved, and what it last wrote there.
@@ -73,7 +81,12 @@ impl Autosave {
         self.state = match inspect_autosave(&path) {
             ResumeOffer::Fresh => Saving::Yes,
             ResumeOffer::Resumable { project, reached } => Saving::Asking { project, reached },
-            ResumeOffer::Unreadable(why) => Saving::Refusing(why),
+            ResumeOffer::Unreadable(why) => Saving::Refusing {
+                // ⚠ The whole path, not the filename: it is what the user has
+                // to go and find, and every scan folder holds one of these.
+                file: path.display().to_string(),
+                why,
+            },
         };
         self.path = Some(path);
         // A different file, which this session has never written.
@@ -115,10 +128,10 @@ impl Autosave {
     /// "your work is not being saved" has to outlive the click after it.
     pub(crate) fn note(&self) -> Option<String> {
         match (&self.state, &self.failed) {
-            (Saving::Refusing(why), _) => Some(format!(
-                "⚠ Your work isn't being saved. There's already a project file \
-                 beside this scan that this version can't read, and it won't be \
-                 overwritten. ({why})"
+            (Saving::Refusing { file, why }, _) => Some(format!(
+                "⚠ Your work isn't being saved: this version can't read \
+                 {file}, so it won't be overwritten. Move or rename that file \
+                 to start saving here. ({why})"
             )),
             (_, Some(why)) => Some(format!("⚠ Your work isn't being saved: {why}")),
             _ => None,
@@ -518,12 +531,13 @@ mod tests {
             "the file is left exactly as it was"
         );
         assert_eq!(autosave.asking_about(), None, "and no question is raised");
+        // ⚠ Names the file, and says what to do about it. A note that only
+        // reports the trouble leaves a non-technical user with no next step —
+        // and every scan folder holds a file with this name.
+        let note = autosave.note().unwrap_or_default();
         assert!(
-            autosave
-                .note()
-                .is_some_and(|note| note.contains("can't read")),
-            "but the screen says why nothing is being saved: {:?}",
-            autosave.note()
+            note.contains(&path.display().to_string()) && note.contains("Move or rename"),
+            "the screen says which file, and how to get saving again: {note}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -59,11 +59,10 @@ pub(crate) fn poll_dialogs(
                     let recorded = studio.record_scan(&path);
                     if recorded.is_ok() {
                         scan.set(active);
-                        // ★★★ Before the project this pick just changed can be
-                        // written anywhere. `follow` reads the file beside the
-                        // scan first, and holds the write on the answer — a
-                        // write here instead would put this empty project over
-                        // the session the user is about to be offered.
+                        // ★★★ The one read of the file beside this scan, and it
+                        // happens before anything can write to it: `follow` is
+                        // what suspends the write until whatever it found there
+                        // has been answered.
                         autosave.follow(&path);
                     }
                     recorded

@@ -11,7 +11,9 @@
 //!   action against the engine and return a user-facing message (the
 //!   GUI's analog of the CLI's `cmd_*`, but file-dialog picking lives in
 //!   the binary);
-//! - [`nav_state`] computes the gated Back/Next availability.
+//! - [`nav_state`] computes the gated Back/Next availability;
+//! - [`inspect_autosave`] decides what the project file beside a scan has
+//!   to say when that scan is picked again.
 //!
 //! The Bevy app, the egui panels and the file-dialog glue live in the
 //! binary's modules (they need a display to *run*, but compile headlessly).
@@ -1856,6 +1858,13 @@ mod tests {
         assert_ne!(bumped, body, "the version must actually have moved");
         std::fs::write(&from_the_future, bumped).expect("a file");
 
+        // ⚠ Not every unreadable file is unreadable for a reason inside it. A
+        // folder in the file's place — a sync tool's doing, or a hand-made
+        // mistake — fails the read with an I/O error that is NOT "not found",
+        // and reading that as "nothing there" writes over whatever it holds.
+        let in_the_way = dir.join("d.cfproject.json");
+        std::fs::create_dir(&in_the_way).expect("something else in the file's place");
+
         // #899's invariant: the design's inset is a copy of the plug's.
         let disagreeing = dir.join("c.cfproject.json");
         let mut project = walked_to(Step::ShapePiece);
@@ -1877,6 +1886,7 @@ mod tests {
             ("hand-edited", &hand_edited),
             ("from a newer build", &from_the_future),
             ("failing this build's invariants", &disagreeing),
+            ("not a file at all", &in_the_way),
         ] {
             assert!(
                 matches!(inspect_autosave(path), ResumeOffer::Unreadable(_)),
