@@ -1013,6 +1013,31 @@ impl LayerRow {
             slacker_fraction: f64::from(self.slacker_pct.value()) / 100.0,
         }
     }
+
+    /// The row for `draft`, or `None` if its silicone is not one the catalog
+    /// carries — the editor has no picker entry to show it with, and a row
+    /// that substituted another silicone would be committed as if the user
+    /// had chosen it.
+    ///
+    /// ⚠ Lossy the other way, and it matters: this editor edits **whole**
+    /// millimetres and whole percent, while a `.design.toml` carries neither
+    /// bound. `base_mold`'s own stack is 17.5 / 7.5 / 5 mm, so a row for it
+    /// reads 18 / 8 / 5 — see [`format_design_rounding`], which is what tells
+    /// the user before the button beside the rows commits them.
+    ///
+    /// Clamped here rather than left to [`BoundedField::value`], which clamps
+    /// on read: an out-of-range number would otherwise be shown and never used.
+    #[must_use]
+    pub fn from_draft(draft: &LayerDraft) -> Option<Self> {
+        let into = |value: f64, scale: f64, (min, max): (i32, i32)| {
+            scale_to_i32(value, scale).clamp(min, max)
+        };
+        Some(Self::new(
+            Silicone::from_key(&draft.material_key)?,
+            into(draft.thickness_m, 1000.0, LAYER_THICKNESS_RANGE),
+            into(draft.slacker_fraction, 100.0, LAYER_SLACKER_RANGE),
+        ))
+    }
 }
 
 /// The step-4 silicone stack: the layers built outward off the shaped plug,
@@ -1059,6 +1084,25 @@ impl LayerStack {
         &mut self.rows
     }
 
+    /// The stack `layers` describes, or `None` if it is empty or names a
+    /// silicone the catalog no longer carries.
+    ///
+    /// `None` means the caller leaves its rows as they are: a screen showing
+    /// a stack this editor substituted would be committed as the user's own
+    /// choice by the button beside it.
+    #[must_use]
+    pub fn from_drafts(layers: &[LayerDraft]) -> Option<Self> {
+        if layers.is_empty() {
+            return None;
+        }
+        Some(Self {
+            rows: layers
+                .iter()
+                .map(LayerRow::from_draft)
+                .collect::<Option<Vec<_>>>()?,
+        })
+    }
+
     /// Whether a layer can be dropped: the cast needs a stack, so the last one
     /// stays. Read by both the ✖ that offers the drop and [`Self::remove`] that
     /// performs it, which is how they cannot disagree.
@@ -1088,6 +1132,22 @@ impl LayerStack {
     pub fn drafts(&self) -> Vec<LayerDraft> {
         self.rows.iter().map(LayerRow::draft).collect()
     }
+}
+
+/// What to add to the "design set" message when the rows cannot show the
+/// design that just landed, exactly.
+///
+/// `None` when the rows **are** the design. The warning matters because the
+/// button beside them commits the rows, not the file: `base_mold`'s own stack
+/// is 17.5 / 7.5 / 5 mm and this editor edits whole millimetres, so pressing
+/// it would round the design the user had just loaded — silently, and after
+/// the message said the design was set.
+#[must_use]
+pub fn format_design_rounding(shown: &LayerStack, loaded: &[LayerDraft]) -> Option<String> {
+    (shown.drafts() != loaded).then(|| {
+        " \u{26a0} Shown to the nearest millimetre \u{2014} using this design here would round it."
+            .to_string()
+    })
 }
 
 /// The step-5 part picker: which cast pieces to generate.
@@ -2655,6 +2715,106 @@ visible = true
         assert_eq!(
             keys,
             ["ECOFLEX_00_30", "DRAGON_SKIN_10A", "DRAGON_SKIN_20A"]
+        );
+    }
+
+    /// A layer stack in the SDK's units, from the given `(key, mm, pct)` rows.
+    fn drafts_of(rows: &[(&str, f64, f64)]) -> Vec<LayerDraft> {
+        rows.iter()
+            .map(|&(key, thickness_mm, slacker_pct)| LayerDraft {
+                thickness_m: thickness_mm / 1000.0,
+                material_key: key.to_string(),
+                slacker_fraction: slacker_pct / 100.0,
+            })
+            .collect()
+    }
+
+    /// A design in whole millimetres is shown exactly as it arrived — the case
+    /// the "…or load a file" button has to get right, because the button
+    /// beside the rows commits them.
+    #[test]
+    fn a_whole_millimetre_design_seeds_the_rows_unchanged() {
+        let loaded = drafts_of(&[("ECOFLEX_00_30", 7.0, 25.0), ("DRAGON_SKIN_10A", 3.0, 0.0)]);
+        let stack = LayerStack::from_drafts(&loaded).expect("a catalog silicone in whole mm");
+
+        assert_eq!(
+            stack_census(&stack),
+            vec![("ECOFLEX_00_30", 7, 25), ("DRAGON_SKIN_10A", 3, 0)],
+        );
+        assert_eq!(stack.drafts(), loaded, "and nothing was changed to show it");
+        assert_eq!(
+            format_design_rounding(&stack, &loaded),
+            None,
+            "so there is nothing to warn about",
+        );
+    }
+
+    /// ★★ `base_mold`'s own stack — the one physically validated cast — is
+    /// **17.5 / 7.5 / 5 mm**, and this editor edits whole millimetres. The rows
+    /// therefore cannot be the design, and the user has to be told before the
+    /// button beside them rounds it.
+    #[test]
+    fn the_validated_stack_does_not_survive_this_editor_and_says_so() {
+        let loaded = drafts_of(&[
+            ("ECOFLEX_00_30", 17.5, 25.0),
+            ("DRAGON_SKIN_10A", 7.5, 0.0),
+            ("DRAGON_SKIN_20A", 5.0, 0.0),
+        ]);
+        let stack = LayerStack::from_drafts(&loaded).expect("every silicone is in the catalog");
+
+        assert_eq!(
+            stack_census(&stack),
+            vec![
+                ("ECOFLEX_00_30", 18, 25),
+                ("DRAGON_SKIN_10A", 8, 0),
+                ("DRAGON_SKIN_20A", 5, 0),
+            ],
+            "rounded to the nearest millimetre, not truncated",
+        );
+        let note = format_design_rounding(&stack, &loaded).unwrap_or_default();
+        assert!(
+            note.contains("round"),
+            "and the rounding is reported: {note:?}",
+        );
+    }
+
+    /// Both refusals. The rows are left as they were rather than showing a
+    /// stack the editor made up — one it would then commit as the user's own.
+    #[test]
+    fn a_design_this_editor_cannot_show_builds_no_rows() {
+        assert_eq!(
+            LayerStack::from_drafts(&[]),
+            None,
+            "an empty stack is not a stack",
+        );
+        assert_eq!(
+            LayerStack::from_drafts(&drafts_of(&[
+                ("ECOFLEX_00_30", 5.0, 0.0),
+                ("NOT_A_SILICONE", 5.0, 0.0),
+            ])),
+            None,
+            "and one unknown silicone refuses the whole stack, not just its row",
+        );
+    }
+
+    /// A `.design.toml` is bounded by neither of this editor's steppers. The
+    /// clamp is at construction, not left to `BoundedField::value`: a row
+    /// showing 0 mm that commits 1 mm is a screen telling the user something
+    /// untrue.
+    #[test]
+    fn a_layer_outside_the_steppers_is_clamped_where_it_is_shown() {
+        let loaded = drafts_of(&[("ECOFLEX_00_30", 0.2, 400.0)]);
+        let stack = LayerStack::from_drafts(&loaded).expect("the silicone is in the catalog");
+
+        assert_eq!(
+            stack.rows()[0].thickness_mm.state.value(),
+            1,
+            "0.2 mm rounds to 0, which is not a layer — the floor is shown",
+        );
+        assert_eq!(
+            stack.rows()[0].slacker_pct.state.value(),
+            100,
+            "and 400 % is shown at the ceiling it will be used at",
         );
     }
 

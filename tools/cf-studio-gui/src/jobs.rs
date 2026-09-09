@@ -19,11 +19,12 @@ use cf_studio_engine::{
     plug_fit_preflight, run_simplify,
 };
 use cf_studio_gui::{
-    CENDRILLON_CAST_MODE, FitQuestion, FitView, PourSession, apply_design, fit_view,
-    format_molds_progress, format_simplify_done, format_simplify_started,
+    CENDRILLON_CAST_MODE, FitQuestion, FitView, LayerStack, PourSession, apply_design, fit_view,
+    format_design_rounding, format_molds_progress, format_simplify_done, format_simplify_started,
 };
 use mesh_types::IndexedMesh;
 
+use crate::design::DesignControls;
 use crate::dialogs::{DialogKind, PendingDialog};
 use crate::edit::{EditControls, land_edit};
 use crate::save::{save_into, settle};
@@ -40,6 +41,7 @@ pub(crate) fn poll_dialogs(
     mut studio: ResMut<Studio>,
     mut job: ResMut<PrintJob>,
     mut scan: ResMut<ScanEdit>,
+    mut design: ResMut<DesignControls>,
 ) {
     let Some((kind, picked)) = dialog.poll() else {
         return;
@@ -91,9 +93,38 @@ pub(crate) fn poll_dialogs(
         }
         DialogKind::DesignFile => {
             let Some(path) = picked else { return };
-            studio.message = Some(apply_design(&mut studio.project, &path));
+            studio.message = Some(
+                apply_design(&mut studio.project, &path)
+                    .map(|message| message + &show_loaded_design(&studio, &mut design)),
+            );
         }
     }
+}
+
+/// Put the design the project just took delivery of onto the rows that edit it,
+/// and report anything the rows had to change to show it.
+///
+/// ⚠ The rows are what "Use this design" commits. Left on the previous stack
+/// they do not merely look wrong — the next click replaces the file that just
+/// landed with them.
+///
+/// ⚠ [`LayerStack::from_drafts`] returning `None` leaves the rows alone with
+/// nothing said, and nothing here can reach it — measured, not assumed:
+/// `load_design_toml` refuses an unknown silicone ("names unknown anchor key")
+/// and a file with no layers ("missing field `layers`") before either can land
+/// on the project. It stays a branch because
+/// [`cf_studio_gui::Silicone::from_key`] is fallible, not because a file gets
+/// here that way.
+fn show_loaded_design(studio: &Studio, design: &mut DesignControls) -> String {
+    let Some(loaded) = studio.project.design() else {
+        return String::new();
+    };
+    let Some(rows) = LayerStack::from_drafts(&loaded.layers) else {
+        return String::new();
+    };
+    let note = format_design_rounding(&rows, &loaded.layers).unwrap_or_default();
+    design.layers = rows;
+    note
 }
 
 /// Spawn the export off-thread.
@@ -748,6 +779,7 @@ pub(crate) mod tests {
         let mut app = App::new();
         app.add_plugins(TaskPoolPlugin::default())
             .init_resource::<PrintJob>()
+            .init_resource::<DesignControls>()
             .add_systems(Update, poll_dialogs);
         app.insert_resource(studio);
         app.insert_resource(scan);
@@ -843,6 +875,7 @@ endsolid t
             .init_resource::<Studio>()
             .init_resource::<ScanEdit>()
             .init_resource::<PrintJob>()
+            .init_resource::<DesignControls>()
             .add_systems(Update, poll_dialogs);
         app.insert_resource(PendingDialog::resolved(DialogKind::ScanFile, Some(file)));
 
@@ -876,6 +909,7 @@ endsolid t
         app.add_plugins(TaskPoolPlugin::default())
             .init_resource::<ScanEdit>()
             .init_resource::<PrintJob>()
+            .init_resource::<DesignControls>()
             .add_systems(Update, poll_dialogs);
         app.insert_resource(Studio {
             project: crate::panel::tests::ready_to_pour(),
@@ -1659,6 +1693,171 @@ endsolid t
             matches!(&studio.message, Some(Ok(text)) if text == "untouched"),
             "and nothing rewrites the message: {:?}",
             studio.message
+        );
+    }
+
+    /// A `.design.toml` holding a stack the step-4 editor does not open on:
+    /// **one** layer at 7 mm, against the three the screen starts with.
+    const ONE_LAYER_DESIGN: &str = "\
+[device_design]
+tool_version = \"x\"
+generated_at = \"2026-01-01T00:00:00Z\"
+schema_version = 1
+[scan_ref]
+cleaned_stl = \"c.stl\"
+[cavity]
+inset_m = 0.005
+visible = true
+[[layers]]
+thickness_m = 0.007
+material_anchor_key = \"ECOFLEX_00_30\"
+slacker_fraction = 0.25
+visible = true
+";
+
+    /// A project standing on step 4 with everything before it done, so
+    /// `set_design` is legal.
+    fn ready_for_a_design() -> Studio {
+        use cf_studio_core::{PlugDraft, PrepInput, ScanInput};
+        let mut studio = Studio::default();
+        studio.project.set_scan(ScanInput {
+            source_path: "scan.stl".into(),
+        });
+        let staged = [
+            studio.project.set_prep(PrepInput {
+                cleaned_stl: "scan.cleaned.stl".into(),
+                prep_toml: "scan.prep.toml".into(),
+            }),
+            studio.project.set_plug(PlugDraft::default()),
+        ];
+        assert!(
+            staged.iter().all(Result::is_ok),
+            "the fixture must reach step 4: {staged:?}"
+        );
+        studio
+    }
+
+    /// ★ The two halves of "load a file" have to agree. `apply_design` puts the
+    /// file's stack on the *project*; the rows are what the "Use this design"
+    /// button commits. Rows left on the old stack do not merely look wrong —
+    /// the next click replaces the file the user just loaded with them.
+    #[test]
+    fn a_loaded_design_file_reaches_the_rows_that_would_commit_it() {
+        let app = app_after_loading("loaded-design", ONE_LAYER_DESIGN);
+        let world = app.world();
+        let loaded = world
+            .resource::<Studio>()
+            .project
+            .design()
+            .expect("the file must land on the project")
+            .layers
+            .clone();
+        assert_eq!(loaded.len(), 1, "the fixture design is one layer");
+
+        let rows = world.resource::<DesignControls>().layers.drafts();
+        assert_eq!(
+            rows, loaded,
+            "the rows that would be committed must be the ones just loaded"
+        );
+    }
+
+    /// ★★ `base_mold`'s validated stack, 17.5 / 7.5 / 5 mm — thicknesses this
+    /// editor's whole-millimetre steppers cannot hold.
+    const VALIDATED_DESIGN: &str = "\
+[device_design]
+tool_version = \"x\"
+generated_at = \"2026-01-01T00:00:00Z\"
+schema_version = 1
+[scan_ref]
+cleaned_stl = \"c.stl\"
+[cavity]
+inset_m = 0.005
+visible = true
+[[layers]]
+thickness_m = 0.0175
+material_anchor_key = \"ECOFLEX_00_30\"
+slacker_fraction = 0.25
+visible = true
+[[layers]]
+thickness_m = 0.0075
+material_anchor_key = \"DRAGON_SKIN_10A\"
+slacker_fraction = 0.0
+visible = true
+[[layers]]
+thickness_m = 0.005
+material_anchor_key = \"DRAGON_SKIN_20A\"
+slacker_fraction = 0.0
+visible = true
+";
+
+    /// What the app is reporting after a design load, failing on the error it
+    /// carries rather than on a bare `None`.
+    fn loaded_message(app: &App) -> String {
+        app.world()
+            .resource::<Studio>()
+            .message
+            .clone()
+            .expect("the load must report something")
+            .expect("and the design must have loaded")
+    }
+
+    /// Load `toml` through the design picker and hand back the finished app.
+    fn app_after_loading(label: &str, toml: &str) -> App {
+        let dir =
+            std::env::temp_dir().join(format!("cf-studio-gui-{label}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("the fixture dir must be writable");
+        let design = dir.join("fixture.design.toml");
+        std::fs::write(&design, toml).expect("the fixture must be writable");
+
+        let mut app = App::new();
+        app.add_plugins(TaskPoolPlugin::default())
+            .insert_resource(ready_for_a_design())
+            .init_resource::<PrintJob>()
+            .init_resource::<ScanEdit>()
+            .init_resource::<DesignControls>()
+            .insert_resource(PendingDialog::resolved(
+                DialogKind::DesignFile,
+                Some(design),
+            ))
+            .add_systems(Update, poll_dialogs);
+        run_until_answered(&mut app);
+        app
+    }
+
+    /// ★★ The design the app is *for* is the one it cannot show. Both halves
+    /// are the point: the rows follow the file as closely as the steppers
+    /// allow, **and** the message says they had to round it — because the
+    /// button beside them would then write 18 / 8 / 5 back over 17.5 / 7.5 / 5.
+    #[test]
+    fn a_design_the_steppers_cannot_hold_is_rounded_on_screen_and_reported() {
+        let app = app_after_loading("validated-design", VALIDATED_DESIGN);
+        let world = app.world();
+
+        let shown: Vec<i32> = world
+            .resource::<DesignControls>()
+            .layers
+            .rows()
+            .iter()
+            .map(|row| row.thickness_mm.value())
+            .collect();
+        assert_eq!(shown, vec![18, 8, 5], "the rows round to whole millimetres");
+
+        let message = loaded_message(&app);
+        assert!(
+            message.contains("3 layer(s)") && message.contains("round"),
+            "the message reports the load AND what it cost: {message}"
+        );
+    }
+
+    /// The other side of it: a design the steppers *can* hold is reported
+    /// without a warning, or the warning stops meaning anything.
+    #[test]
+    fn a_design_the_steppers_can_hold_is_reported_without_a_warning() {
+        let app = app_after_loading("exact-design", ONE_LAYER_DESIGN);
+        let message = loaded_message(&app);
+        assert!(
+            message.contains("1 layer(s)") && !message.contains("round"),
+            "nothing was changed to show it, so nothing is warned about: {message}"
         );
     }
 }
