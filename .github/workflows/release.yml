@@ -86,7 +86,7 @@ jobs:
           # BLOCKING leg would fail only at tag time, invisible on every PR.
           # ⚠ NOT the notes' list: this job only COMPILES (no GPU driver), and
           # the runner preinstalls cmake/g++/pkg-config that users lack.
-          packages: libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev libfontconfig1-dev
+          packages: libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev
       - run: cargo build --release --locked -p cf-studio-gui --target ${{ matrix.target }}
 
   # ============================================================================
@@ -251,7 +251,7 @@ jobs:
             sudo apt-get update
             sudo apt-get install git cmake build-essential pkg-config \
               libwayland-dev libxkbcommon-dev libasound2-dev \
-              libudev-dev libfontconfig1-dev mesa-vulkan-drivers
+              libudev-dev mesa-vulkan-drivers
             ```
 
             Then:

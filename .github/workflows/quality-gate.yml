@@ -356,7 +356,7 @@ jobs:
       - name: Install system dependencies
         uses: ./.github/actions/install-linux-deps
         with:
-          packages: libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev libfontconfig1-dev
+          packages: libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -585,7 +585,7 @@ jobs:
       - name: Install system dependencies
         uses: ./.github/actions/install-linux-deps
         with:
-          packages: libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev libfontconfig1-dev
+          packages: libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev
             mesa-vulkan-drivers
 
       - name: Install Rust
@@ -693,7 +693,7 @@ jobs:
       - name: Install system dependencies
         uses: ./.github/actions/install-linux-deps
         with:
-          packages: libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev libfontconfig1-dev
+          packages: libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -1000,7 +1000,7 @@ jobs:
       - name: Install system dependencies
         uses: ./.github/actions/install-linux-deps
         with:
-          packages: libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev libfontconfig1-dev
+          packages: libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -1344,7 +1344,7 @@ jobs:
         if: steps.scope.outputs.run == 'true'
         uses: ./.github/actions/install-linux-deps
         with:
-          packages: libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev libfontconfig1-dev
+          packages: libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev
 
       - name: Install Rust
         if: steps.scope.outputs.run == 'true'
