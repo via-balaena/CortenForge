@@ -74,7 +74,7 @@ impl PendingSave {
 /// only when a step is *completed*.
 #[derive(Resource)]
 pub(crate) struct Studio {
-    /// The session's project. In-memory only — autosave/resume is a later PR.
+    /// The session's project. Saved beside the scan by [`crate::autosave`].
     pub(crate) project: Project,
     /// Which screen of the wizard is being looked at.
     pub(crate) cursor: WizardCursor,
@@ -140,6 +140,23 @@ impl Studio {
             self.pour_deadline = None;
         }
         outcome
+    }
+
+    /// Take a project read back from disk as this session's own.
+    ///
+    /// ⚠ Everything else here is session-only and goes with it. The pour cursor
+    /// and its countdown point into a plan this project may not have, and an
+    /// `Instant` means nothing across runs — a pot-life countdown cannot
+    /// resume, it restarts, which is what the pour screen already expects.
+    pub(crate) fn resume(&mut self, project: Project) {
+        // ⚠ `current_step`, not the furthest completed step derived here: the
+        // file records where the user was, and a second definition of that
+        // would drift from the one [`Project::migrate`] repairs.
+        self.cursor = WizardCursor::new(project.current_step());
+        self.project = project;
+        self.pour = PourSession::default();
+        self.pour_deadline = None;
+        self.message = None;
     }
 
     /// Start (or restart) the current layer's pot-life countdown.
@@ -381,6 +398,31 @@ endsolid t
         assert!(outcome.is_ok(), "the fixture must load: {outcome:?}");
         assert_eq!(s.pour.current(), 0, "the pour cursor was the old scan's");
         assert!(s.pour_deadline.is_none(), "and so was its countdown");
+    }
+
+    /// The sibling of the gate above, and the same reason: a resumed project
+    /// carries its own pour plan, so a cursor and a countdown into the one
+    /// being replaced point into work this session no longer has.
+    ///
+    /// ⚠ `Instant` means nothing across runs, so the countdown cannot resume —
+    /// it restarts, which is what the pour screen already expects.
+    #[test]
+    fn resuming_a_project_drops_the_replaced_sessions_pour_cursor() {
+        let mut s = with_pour_plan();
+        s.pour.advance(2);
+        s.start_pour_timer();
+        assert_eq!(s.pour.current(), 1, "the fixture must start mid-pour");
+        assert!(s.pour_deadline.is_some(), "with a countdown running");
+
+        s.resume(Project::new("resumed"));
+
+        assert_eq!(s.pour.current(), 0, "the cursor was the replaced plan's");
+        assert!(s.pour_deadline.is_none(), "and so was its countdown");
+        assert_eq!(
+            s.cursor.viewed(),
+            Step::FIRST,
+            "and the screen is the one the resumed project records"
+        );
     }
 
     #[test]

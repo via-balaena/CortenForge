@@ -4,6 +4,7 @@
 //! those systems make are plain functions in the lib, which is where the tests
 //! are.
 
+mod autosave;
 mod design;
 mod dialogs;
 mod edit;

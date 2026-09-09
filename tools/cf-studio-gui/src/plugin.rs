@@ -9,6 +9,7 @@ use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiGlobalSettings, EguiPrimaryContextPass, egui};
 use cf_bevy_common::camera::OrbitCameraPlugin;
 
+use crate::autosave::{Autosave, drive_autosave};
 use crate::design::{DesignControls, drive_design_controls};
 use crate::dialogs::PendingDialog;
 use crate::edit::EditControls;
@@ -53,6 +54,7 @@ impl Plugin for StudioPlugin {
             .init_resource::<PrintJob>()
             .init_resource::<SimplifyJob>()
             .init_resource::<ScanEdit>()
+            .init_resource::<Autosave>()
             .init_resource::<EditControls>()
             .init_resource::<ShapeControls>()
             .init_resource::<DesignControls>()
@@ -114,6 +116,13 @@ impl Plugin for StudioPlugin {
                     )
                         .chain()
                         .after(poll_dialogs),
+                    // After `poll_dialogs` for the reconciles' reason: that is
+                    // where the project changes, so the file a frame writes is
+                    // the project that frame settled on rather than the one
+                    // before it. What actually protects a saved session from
+                    // being overwritten is `Autosave::follow` reading it and
+                    // suspending the write, not this edge.
+                    drive_autosave.after(poll_dialogs),
                     // Step 4's rows, kept in step with the committed design.
                     // Not chained with the above: it writes only its own
                     // resource, and nothing this frame reads it.

@@ -15,10 +15,11 @@ use cf_studio_core::{LayerDraft, PlugDraft, Step};
 use cf_studio_gui::{
     BoundedField, CENDRILLON_CAST_MODE, FitQuestion, FitView, LayerRow, RingRow, Silicone,
     cell_size_m_for_quality, format_fit_failure, format_fit_progress, format_fit_verdict,
-    format_molds_summary, format_pour_active, format_pour_plan, format_scan_stats, nav_state,
-    pour_countdown, print_step_summary, step_rows,
+    format_molds_summary, format_pour_active, format_pour_plan, format_resume_question,
+    format_scan_stats, nav_state, pour_countdown, print_step_summary, step_rows,
 };
 
+use crate::autosave::{self, Autosave};
 use crate::design::{DesignControls, commit_design};
 use crate::dialogs::{DialogKind, PendingDialog};
 use crate::edit::{
@@ -190,10 +191,15 @@ pub(crate) fn wizard_screen(
     mut job: ResMut<SimplifyJob>,
     mut molds_job: ResMut<MoldsJob>,
     mut fit_job: ResMut<PlugFitJob>,
+    mut autosave: ResMut<Autosave>,
     preview: Res<PlugView>,
 ) -> bevy::ecs::error::Result {
     let ctx = contexts.ctx_mut()?;
     let mut acted = Acted::default();
+    // ★ Once, and threaded down as a `bool`. Every screen used to re-derive it
+    // from the resources it happened to hold, so a gate added here reached only
+    // the screens somebody remembered to hand the new resource to.
+    let ready = accepting_actions(&studio, &dialog, &autosave);
 
     egui::SidePanel::left("checklist")
         .resizable(false)
@@ -201,7 +207,7 @@ pub(crate) fn wizard_screen(
         .show(ctx, |ui| draw_checklist(ui, &studio));
 
     egui::TopBottomPanel::bottom("nav").show(ctx, |ui| {
-        acted.nav = draw_nav(ui, &studio, &dialog).or(acted.nav);
+        acted.nav = draw_nav(ui, &studio, ready).or(acted.nav);
     });
 
     body_column(ctx, |ui| {
@@ -211,7 +217,8 @@ pub(crate) fn wizard_screen(
         acted.merge(draw_body(
             ui,
             &studio,
-            &dialog,
+            ready,
+            autosave.note().as_deref(),
             &scan,
             &mut Editors {
                 controls: &mut controls,
@@ -232,6 +239,15 @@ pub(crate) fn wizard_screen(
     {
         // ⚠ `&scan`, immutably — a Save only reads the session.
         apply_save_choice(choice, &dir, smoothing, &scan, &mut studio, &mut dialog);
+    }
+
+    // ⚠ Drawn from the autosave's own state, outside the step match, for the
+    // Save modal's reason: the value that suspends every write and the question
+    // that explains why are one and the same, so neither can outlive the other.
+    if let Some(reached) = autosave.asking_about()
+        && let Some(choice) = draw_resume_modal(ctx, &format_resume_question(reached))
+    {
+        apply_resume_choice(choice, &mut autosave, &mut studio, &mut scan);
     }
 
     if let Some(intent) = acted.nav {
@@ -298,18 +314,21 @@ fn draw_checklist(ui: &mut egui::Ui, studio: &Studio) {
 /// Whether the wizard is accepting actions.
 ///
 /// A long job owns the app until it finishes, an open OS dialog owns it until
-/// it resolves, and an unanswered Save owns it until it is answered — and
-/// **paging counts**: the picker's result lands on whichever step the cursor
-/// has reached by then, and a scan landing resets the project to step 1. One
-/// definition so a new control cannot honour half of it.
-fn accepting_actions(studio: &Studio, dialog: &PendingDialog) -> bool {
-    !studio.busy && !dialog.is_open() && studio.pending_save.is_none()
+/// it resolves, an unanswered Save owns it until it is answered, and so does an
+/// unanswered resume question — and **paging counts**: the picker's result lands
+/// on whichever step the cursor has reached by then, and a scan landing resets
+/// the project to step 1. One definition so a new control cannot honour half of
+/// it, evaluated once per frame in [`wizard_screen`].
+fn accepting_actions(studio: &Studio, dialog: &PendingDialog, autosave: &Autosave) -> bool {
+    !studio.busy
+        && !dialog.is_open()
+        && studio.pending_save.is_none()
+        && autosave.asking_about().is_none()
 }
 
 /// Back / Help / Next, gated by [`nav_state`].
-fn draw_nav(ui: &mut egui::Ui, studio: &Studio, dialog: &PendingDialog) -> Option<Intent> {
+fn draw_nav(ui: &mut egui::Ui, studio: &Studio, ready: bool) -> Option<Intent> {
     let nav = nav_state(&studio.project, studio.cursor.viewed());
-    let ready = accepting_actions(studio, dialog);
     let mut intent = None;
     ui.add_space(6.0);
     ui.horizontal(|ui| {
@@ -358,10 +377,15 @@ struct Editors<'a> {
 /// *"so it's always visible, not buried at the bottom of a long, scrolling
 /// step."* Step 2 is that long step, and it is the one whose ops the message
 /// reports on, so the note's own reason applies here first.
+// Seven step bodies read from here, and each new one needs what it needs. A
+// bundle would only move the list somewhere the compiler stops checking that
+// every caller supplies it.
+#[allow(clippy::too_many_arguments)]
 fn draw_body(
     ui: &mut egui::Ui,
     studio: &Studio,
-    dialog: &PendingDialog,
+    ready: bool,
+    saving_note: Option<&str>,
     scan: &ScanEdit,
     editors: &mut Editors<'_>,
     fit_job: &PlugFitJob,
@@ -389,6 +413,15 @@ fn draw_body(
         centered_wrapped(ui, MESSAGE_SIZE, color, text.clone());
     }
 
+    // ⚠ On every step, beside the step message and for its reason — at the top
+    // of the body rather than the bottom of a long scrolling one. It cannot BE
+    // the step message: that is wiped by the next step action, and this has to
+    // outlive every click until saving works again.
+    if let Some(note) = saving_note {
+        ui.add_space(ROW_GAP);
+        centered_wrapped(ui, RIDGE_NOTE_SIZE, WARN_TEXT, note.to_owned());
+    }
+
     // ⚠ On every step that shows the piece. It lived in `draw_shape_piece`,
     // correct while step 3 was the only such screen — once 4 and 5 showed it
     // too, a failed scan meant committing to a 36-minute cast against a
@@ -403,9 +436,9 @@ fn draw_body(
     // step added later; this way the compiler names the new arm.
     let mut acted = Acted::default();
     match viewed {
-        Step::AddScan => acted.nav = draw_add_scan(ui, studio, dialog),
+        Step::AddScan => acted.nav = draw_add_scan(ui, studio, ready),
         Step::CleanScan => {
-            acted.merge(draw_clean_scan(ui, studio, dialog, scan, editors.controls));
+            acted.merge(draw_clean_scan(ui, ready, scan, editors.controls));
         }
         Step::ShapePiece => {
             // ⚠ Read before the mutable borrow of `shape`, and read from step
@@ -417,19 +450,19 @@ fn draw_body(
             acted.merge(draw_shape_piece(
                 ui,
                 studio,
-                dialog,
+                ready,
                 editors.shape,
                 fit_job,
                 cell_size_m,
             ));
         }
         Step::DesignLayers => {
-            acted.merge(draw_design_layers(ui, studio, dialog, editors.design));
+            acted.merge(draw_design_layers(ui, ready, editors.design));
         }
         Step::MakeMolds => {
-            acted.merge(draw_make_molds(ui, studio, dialog, editors.molds));
+            acted.merge(draw_make_molds(ui, studio, ready, editors.molds));
         }
-        Step::Print => acted.nav = draw_print(ui, studio, dialog),
+        Step::Print => acted.nav = draw_print(ui, studio, ready),
         Step::Pour => acted.nav = draw_pour(ui, studio),
     }
     acted
@@ -441,8 +474,7 @@ fn draw_body(
 /// is obvious, with later sections revealed only as earlier ones complete.
 fn draw_clean_scan(
     ui: &mut egui::Ui,
-    studio: &Studio,
-    dialog: &PendingDialog,
+    ready: bool,
     scan: &ScanEdit,
     controls: &mut EditControls,
 ) -> Acted {
@@ -456,7 +488,6 @@ fn draw_clean_scan(
     // Reconstruct is offered once a floor trim has been applied *and* the
     // centerline it was cut along still exists.
     let has_floor_trim = session.reconstruct_available() && has_centerline;
-    let ready = accepting_actions(studio, dialog);
     let mut acted = Acted::default();
 
     centered_wrapped(
@@ -692,6 +723,64 @@ fn draw_save_modal(ctx: &egui::Context, question: &str) -> Option<SaveChoice> {
     choice
 }
 
+/// How the resume question was answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResumeChoice {
+    /// Take the saved session as this session's project.
+    Resume,
+    /// Keep this session's own project, and let it replace the saved one.
+    StartOver,
+}
+
+/// The resume question, over the whole window.
+///
+/// ⚠ No Escape, and no dismissal by clicking the backdrop, unlike
+/// [`draw_save_modal`]. There is no safe default to map them to: closing as
+/// "start over" throws away the saved session on a stray key, and closing as
+/// "resume" answers for the user. The two buttons are the only way out, and
+/// nothing is saved until one of them is pressed.
+fn draw_resume_modal(ctx: &egui::Context, question: &str) -> Option<ResumeChoice> {
+    let mut choice = None;
+    egui::Modal::new(egui::Id::new("resume-session")).show(ctx, |ui| {
+        ui.set_max_width(MODAL_WIDTH);
+        centered_wrapped(
+            ui,
+            SUBHEADING_SIZE,
+            HEADING_TEXT,
+            "Pick up where you left off?",
+        );
+        ui.add_space(ROW_GAP);
+        wrapped_label(ui, question);
+        ui.add_space(SECTION_GAP);
+        ui.horizontal(|ui| {
+            if ui.button("Pick up where I left off").clicked() {
+                choice = Some(ResumeChoice::Resume);
+            }
+            if ui.button("Start over from this scan").clicked() {
+                choice = Some(ResumeChoice::StartOver);
+            }
+        });
+    });
+    choice
+}
+
+/// Execute the answer.
+///
+/// ⚠ Extracted for [`apply_save_choice`]'s reason, which applies harder here:
+/// one branch replaces the whole project and the other authorises overwriting a
+/// file, and neither is reachable from a test while it lives in a closure.
+fn apply_resume_choice(
+    choice: ResumeChoice,
+    autosave: &mut Autosave,
+    studio: &mut Studio,
+    scan: &mut ScanEdit,
+) {
+    match choice {
+        ResumeChoice::Resume => autosave::resume(autosave, studio, scan),
+        ResumeChoice::StartOver => autosave::start_over(autosave),
+    }
+}
+
 /// Re-cap the chopped floor. Titled so it is clear this rebuilds the floor the
 /// trim above just took off, rather than being another way to trim.
 fn draw_reconstruct_row(
@@ -755,7 +844,7 @@ fn draw_reconstruct_row(
 }
 
 /// Step 1 — choose the scan. The 3D view behind the panel shows it.
-fn draw_add_scan(ui: &mut egui::Ui, studio: &Studio, dialog: &PendingDialog) -> Option<Intent> {
+fn draw_add_scan(ui: &mut egui::Ui, studio: &Studio, ready: bool) -> Option<Intent> {
     let mut intent = None;
     let has_scan = studio.project.is_complete(Step::AddScan);
     ui.add_space(8.0);
@@ -768,10 +857,7 @@ fn draw_add_scan(ui: &mut egui::Ui, studio: &Studio, dialog: &PendingDialog) -> 
     } else {
         "Choose scan file…"
     };
-    if ui
-        .add_enabled(accepting_actions(studio, dialog), egui::Button::new(label))
-        .clicked()
-    {
+    if ui.add_enabled(ready, egui::Button::new(label)).clicked() {
         intent = Some(Intent::PickScan);
     }
     ui.add_space(8.0);
@@ -794,10 +880,9 @@ fn draw_add_scan(ui: &mut egui::Ui, studio: &Studio, dialog: &PendingDialog) -> 
 fn draw_make_molds(
     ui: &mut egui::Ui,
     studio: &Studio,
-    dialog: &PendingDialog,
+    ready: bool,
     molds: &mut MoldControls,
 ) -> Acted {
-    let ready = accepting_actions(studio, dialog);
     let mut acted = Acted::default();
     ui.add_space(8.0);
     wrapped_label(
@@ -999,12 +1084,11 @@ fn check_fit_label(checking: bool) -> &'static str {
 fn draw_shape_piece(
     ui: &mut egui::Ui,
     studio: &Studio,
-    dialog: &PendingDialog,
+    ready: bool,
     shape: &mut ShapeControls,
     fit_job: &PlugFitJob,
     cell_size_m: f64,
 ) -> Acted {
-    let ready = accepting_actions(studio, dialog);
     let checking = fit_job.is_running();
     let mut acted = Acted::default();
     ui.add_space(8.0);
@@ -1272,13 +1356,7 @@ fn bounded_step_box(ui: &mut egui::Ui, field: &mut BoundedField, enabled: bool) 
 }
 
 /// Step 4 — the silicone stack, built outward off the shaped piece.
-fn draw_design_layers(
-    ui: &mut egui::Ui,
-    studio: &Studio,
-    dialog: &PendingDialog,
-    design: &mut DesignControls,
-) -> Acted {
-    let ready = accepting_actions(studio, dialog);
+fn draw_design_layers(ui: &mut egui::Ui, ready: bool, design: &mut DesignControls) -> Acted {
     let mut acted = Acted::default();
     ui.add_space(8.0);
     wrapped_label(
@@ -1392,7 +1470,7 @@ fn silicone_picker(ui: &mut egui::Ui, index: usize, material: &mut Silicone, rea
 }
 
 /// Step 6 — save the printable files, then hand off to the slicer.
-fn draw_print(ui: &mut egui::Ui, studio: &Studio, dialog: &PendingDialog) -> Option<Intent> {
+fn draw_print(ui: &mut egui::Ui, studio: &Studio, ready: bool) -> Option<Intent> {
     let mut intent = None;
     ui.add_space(8.0);
     wrapped_label(
@@ -1404,7 +1482,6 @@ fn draw_print(ui: &mut egui::Ui, studio: &Studio, dialog: &PendingDialog) -> Opt
     ui.add_space(12.0);
 
     let exported = studio.project.print().is_some();
-    let ready = accepting_actions(studio, dialog);
     // `busy` alone, not `ready`: an open dialog is not yet a running save.
     let label = if studio.busy {
         "Saving…"
@@ -1604,32 +1681,39 @@ pub(crate) mod tests {
 
     /// ★ The one definition every control on every screen is gated on.
     ///
-    /// ⚠ Enumerated, not branched: it is a three-way `&&`, so a constant
-    /// answer, a dropped term or an `||` each leave the app either frozen with
-    /// nothing running or clickable in the middle of a job — and none of those
-    /// report themselves. Eight states is all of them.
+    /// ⚠ Enumerated, not branched: it is a four-way `&&`, so a constant answer,
+    /// a dropped term or an `||` each leave the app either frozen with nothing
+    /// running or clickable in the middle of a job — and none of those report
+    /// themselves. Sixteen states is all of them.
     #[test]
     fn actions_are_accepted_only_when_nothing_else_holds_the_app() {
         for busy in [false, true] {
             for dialog_open in [false, true] {
                 for saving in [false, true] {
-                    let studio = Studio {
-                        busy,
-                        pending_save: saving
-                            .then_some(PendingSave::ChoosingFolder { smoothing: 0 }),
-                        ..Studio::default()
-                    };
-                    let dialog = if dialog_open {
-                        PendingDialog::opened(DialogKind::ScanFile)
-                    } else {
-                        PendingDialog::default()
-                    };
+                    for asking in [false, true] {
+                        let studio = Studio {
+                            busy,
+                            pending_save: saving
+                                .then_some(PendingSave::ChoosingFolder { smoothing: 0 }),
+                            ..Studio::default()
+                        };
+                        let dialog = if dialog_open {
+                            PendingDialog::opened(DialogKind::ScanFile)
+                        } else {
+                            PendingDialog::default()
+                        };
+                        let autosave = if asking {
+                            Autosave::asking(Project::new("held"), Step::CleanScan)
+                        } else {
+                            Autosave::default()
+                        };
 
-                    assert_eq!(
-                        accepting_actions(&studio, &dialog),
-                        !busy && !dialog_open && !saving,
-                        "busy={busy} dialog_open={dialog_open} saving={saving}"
-                    );
+                        assert_eq!(
+                            accepting_actions(&studio, &dialog, &autosave),
+                            !busy && !dialog_open && !saving && !asking,
+                            "busy={busy} dialog_open={dialog_open} saving={saving} asking={asking}"
+                        );
+                    }
                 }
             }
         }
@@ -1872,7 +1956,6 @@ pub(crate) mod tests {
     /// block, and the state #878 was found in.
     struct CleanupScreen {
         studio: Studio,
-        dialog: PendingDialog,
         scan: ScanEdit,
         controls: EditControls,
     }
@@ -1902,7 +1985,6 @@ pub(crate) mod tests {
         );
         CleanupScreen {
             studio,
-            dialog: PendingDialog::default(),
             scan,
             controls,
         }
@@ -1967,13 +2049,7 @@ pub(crate) mod tests {
         let mut screen = cleanup_screen();
 
         let controls = controls_in_column(|ui| {
-            let _ = draw_clean_scan(
-                ui,
-                &screen.studio,
-                &screen.dialog,
-                &screen.scan,
-                &mut screen.controls,
-            );
+            let _ = draw_clean_scan(ui, true, &screen.scan, &mut screen.controls);
         });
 
         assert_eq!(
@@ -2025,11 +2101,10 @@ pub(crate) mod tests {
     #[test]
     fn every_control_on_the_simpler_screens_is_inside_the_body_column() {
         let studio = Studio::default();
-        let dialog = PendingDialog::default();
 
         assert_eq!(
             controls_in_column(|ui| {
-                let _ = draw_add_scan(ui, &studio, &dialog);
+                let _ = draw_add_scan(ui, &studio, true);
             }),
             ["Choose scan file…"]
         );
@@ -2047,13 +2122,13 @@ pub(crate) mod tests {
         );
         assert_eq!(
             controls_in_column(|ui| {
-                let _ = draw_print(ui, &studio, &dialog);
+                let _ = draw_print(ui, &studio, true);
             }),
             ["Save files for printing…"]
         );
         assert_eq!(
             controls_in_column(|ui| {
-                let _ = draw_nav(ui, &studio, &dialog);
+                let _ = draw_nav(ui, &studio, true);
             }),
             ["← Back", "Help", "Next →"]
         );
@@ -2066,13 +2141,11 @@ pub(crate) mod tests {
     /// accessible name, app-wide, as with the stepper's `TextInput`.
     #[test]
     fn every_control_on_the_make_molds_screen_is_inside_the_body_column() {
-        let dialog = PendingDialog::default();
-
         let studio = Studio::default();
         let mut empty = MoldControls::default();
         assert_eq!(
             controls_in_column(|ui| {
-                let _ = draw_make_molds(ui, &studio, &dialog, &mut empty);
+                let _ = draw_make_molds(ui, &studio, true, &mut empty);
             }),
             ["ComboBox", "Make molds", "All", "None"],
             "with no design the picker offers nothing to check"
@@ -2082,7 +2155,7 @@ pub(crate) mod tests {
         let mut molds = crate::molds::tests::controls_for(1);
         assert_eq!(
             controls_in_column(|ui| {
-                let _ = draw_make_molds(ui, &studio, &dialog, &mut molds);
+                let _ = draw_make_molds(ui, &studio, true, &mut molds);
             }),
             [
                 "ComboBox",
@@ -2216,14 +2289,13 @@ pub(crate) mod tests {
             cursor: WizardCursor::new(Step::MakeMolds),
             ..Studio::default()
         };
-        let dialog = PendingDialog::default();
 
         for name in ["All", "None", "Make molds"] {
             let mut empty = MoldControls::default();
             assert_eq!(
                 controls_disabled(
                     |ui| {
-                        let _ = draw_make_molds(ui, &studio, &dialog, &mut empty);
+                        let _ = draw_make_molds(ui, &studio, true, &mut empty);
                     },
                     name
                 ),
@@ -2239,7 +2311,7 @@ pub(crate) mod tests {
             assert_eq!(
                 controls_disabled(
                     |ui| {
-                        let _ = draw_make_molds(ui, &ready, &dialog, &mut molds);
+                        let _ = draw_make_molds(ui, &ready, true, &mut molds);
                     },
                     name
                 ),
@@ -2573,13 +2645,7 @@ pub(crate) mod tests {
         };
         assert!(
             controls_in_column(|ui| {
-                let _ = draw_clean_scan(
-                    ui,
-                    &empty.studio,
-                    &empty.dialog,
-                    &empty.scan,
-                    &mut empty.controls,
-                );
+                let _ = draw_clean_scan(ui, true, &empty.scan, &mut empty.controls);
             })
             .is_empty(),
             "with no scan there is nothing to offer but the line saying so"
@@ -2589,13 +2655,7 @@ pub(crate) mod tests {
         screen.scan.set(ActiveScan::synthetic(open_tube()));
 
         let controls = controls_in_column(|ui| {
-            let _ = draw_clean_scan(
-                ui,
-                &screen.studio,
-                &screen.dialog,
-                &screen.scan,
-                &mut screen.controls,
-            );
+            let _ = draw_clean_scan(ui, true, &screen.scan, &mut screen.controls);
         });
 
         assert_eq!(
@@ -2617,17 +2677,11 @@ pub(crate) mod tests {
     }
 
     /// Whether step 2's Save is disabled, for a screen that has — or has not —
-    /// been stood up.
-    fn save_button_disabled(screen: &mut CleanupScreen) -> Vec<bool> {
+    /// been stood up, against an app that is — or is not — accepting actions.
+    fn save_button_disabled(screen: &mut CleanupScreen, ready: bool) -> Vec<bool> {
         controls_disabled(
             |ui| {
-                let _ = draw_clean_scan(
-                    ui,
-                    &screen.studio,
-                    &screen.dialog,
-                    &screen.scan,
-                    &mut screen.controls,
-                );
+                let _ = draw_clean_scan(ui, ready, &screen.scan, &mut screen.controls);
             },
             "Save cleaned scan",
         )
@@ -2674,12 +2728,12 @@ pub(crate) mod tests {
     ///
     /// ⚠ `EditSession::save` refuses without a centerline, so an enabled button
     /// there buys the user a click and a "Save failed" for it; and a Save that
-    /// ran during a job or an open picker would write while the question that
+    /// ran while something held the app would write while the question that
     /// gated it is still on screen.
     #[test]
     fn save_is_offered_only_once_the_scan_is_stood_up_and_the_app_is_free() {
         assert_eq!(
-            save_button_disabled(&mut cleanup_screen()),
+            save_button_disabled(&mut cleanup_screen(), true),
             [false],
             "stood up, nothing else running"
         );
@@ -2687,18 +2741,16 @@ pub(crate) mod tests {
         let mut flat = cleanup_screen();
         // Back to a freshly loaded scan: no centerline, so no cast frame.
         flat.scan.set(ActiveScan::synthetic(open_tube()));
-        assert_eq!(save_button_disabled(&mut flat), [true], "not yet stood up");
-
-        let mut busy = cleanup_screen();
-        busy.studio.busy = true;
-        assert_eq!(save_button_disabled(&mut busy), [true], "a job is running");
-
-        let mut asking = cleanup_screen();
-        asking.dialog = PendingDialog::opened(DialogKind::PrepDest);
         assert_eq!(
-            save_button_disabled(&mut asking),
+            save_button_disabled(&mut flat, true),
             [true],
-            "a picker is open"
+            "not yet stood up"
+        );
+
+        assert_eq!(
+            save_button_disabled(&mut cleanup_screen(), false),
+            [true],
+            "stood up, but something holds the app"
         );
     }
 
@@ -2756,6 +2808,7 @@ pub(crate) mod tests {
         let mut app = egui_harness::app();
         app.init_resource::<Studio>()
             .init_resource::<PendingDialog>()
+            .init_resource::<Autosave>()
             .init_resource::<ScanEdit>()
             .init_resource::<EditControls>()
             .init_resource::<ShapeControls>()
@@ -2912,6 +2965,135 @@ pub(crate) mod tests {
             dir.join("base.cleaned.stl").is_file() && studio.project.prep().is_some(),
             "the click wrote the files and completed the step: {:?}",
             studio.message
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The wizard with a saved session offered back, and what it is offering.
+    fn wizard_asking_to_resume() -> (App, Project) {
+        let saved = ready_to_pour();
+        let reached = saved
+            .furthest_completed()
+            .expect("the fixture is a walked project");
+        let mut app = app_running_the_wizard();
+        app.insert_resource(Autosave::asking(saved.clone(), reached));
+        (app, saved)
+    }
+
+    /// ⚠ The modal is drawn from the autosave in `wizard_screen` alone. Delete
+    /// that block and the session sits with writing suspended, the question
+    /// that suspended it nowhere on screen, and no test the wiser.
+    #[test]
+    fn a_saved_session_puts_its_question_on_screen() {
+        let (mut app, saved) = wizard_asking_to_resume();
+
+        settle(&mut app);
+
+        let painted = painted_texts(&app);
+        let reached = saved.furthest_completed().expect("a walked project");
+        // ⚠ The whole question, not the step title inside it: the checklist
+        // paints all seven titles on every frame, so a `contains(title)` here
+        // passes with this modal deleted.
+        assert!(
+            painted.contains(&format_resume_question(reached)),
+            "the modal draws the question, about the step reached: {painted:?}"
+        );
+        assert!(
+            painted
+                .iter()
+                .any(|text| text.contains("Pick up where I left off")),
+            "and offers both answers: {painted:?}"
+        );
+    }
+
+    /// ★★ The answers' own wiring. `draw_resume_modal` reports a choice and
+    /// `apply_resume_choice` executes one, but a call site is not a function
+    /// anyone can call — and this is the click that replaces the whole project.
+    #[test]
+    fn picking_up_in_the_running_wizard_takes_the_saved_session() {
+        let (mut app, saved) = wizard_asking_to_resume();
+
+        click_on(&mut app, "Pick up where I left off");
+
+        let studio = app.world().resource::<Studio>();
+        assert_eq!(
+            studio.project, saved,
+            "the click landed the saved session: {:?}",
+            studio.message
+        );
+        assert_eq!(
+            app.world().resource::<Autosave>().asking_about(),
+            None,
+            "and answered the question"
+        );
+    }
+
+    /// ⚠ The other answer, through the same modal. Wiring both buttons to the
+    /// same branch is a one-character mistake, and the one that resumes is the
+    /// one that would silently discard this session instead.
+    #[test]
+    fn starting_over_in_the_running_wizard_keeps_this_sessions_project() {
+        let (mut app, saved) = wizard_asking_to_resume();
+        let mine = app.world().resource::<Studio>().project.clone();
+        assert_ne!(mine, saved, "the two must differ, or neither answer shows");
+
+        click_on(&mut app, "Start over from this scan");
+
+        assert_eq!(
+            app.world().resource::<Studio>().project,
+            mine,
+            "this session's project stands"
+        );
+        assert_eq!(
+            app.world().resource::<Autosave>().asking_about(),
+            None,
+            "and the question is answered either way"
+        );
+    }
+
+    /// ★★★ `accepting_actions` is gated on its own, and every screen is gated
+    /// on the `bool` it is handed — but nothing said `wizard_screen` hands them
+    /// the real one. Replaced by `true`, every control on every screen goes
+    /// live in the middle of a job, and both of those gates stay green.
+    #[test]
+    fn the_wizard_hands_its_screens_the_real_gate() {
+        let mut app = wizard_on_step_three();
+        app.world_mut().resource_mut::<Studio>().busy = true;
+
+        click_on(&mut app, "Continue");
+
+        assert_eq!(
+            app.world().resource::<Studio>().project.plug(),
+            None,
+            "a job is running, so Continue must not commit"
+        );
+    }
+
+    /// ⚠ The note has to be on the screen the user is looking at, whichever one
+    /// that is — `Studio::message` is wiped by the next step action, and this
+    /// says their work is not being saved.
+    #[test]
+    fn a_session_that_cannot_save_says_so_on_the_screen() {
+        let dir = crate::save::tests::temp_dir("cannot-save");
+        let scan = dir.join("base.stl");
+        std::fs::write(
+            cf_studio_gui::autosave_path(&scan),
+            b"written by something else",
+        )
+        .expect("a file this build cannot read");
+        let mut autosave = Autosave::default();
+        autosave.follow(&scan);
+        let mut app = app_running_the_wizard();
+        app.insert_resource(autosave);
+
+        settle(&mut app);
+
+        let painted = painted_texts(&app);
+        assert!(
+            painted
+                .iter()
+                .any(|text| text.contains("isn't being saved")),
+            "the screen says the work is not being saved: {painted:?}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -3091,7 +3273,7 @@ pub(crate) mod tests {
             let _ = draw_shape_piece(
                 ui,
                 &Studio::default(),
-                &PendingDialog::default(),
+                true,
                 shape,
                 &PlugFitJob::default(),
                 STEP_THREE_CELL_M,
@@ -3540,20 +3722,15 @@ pub(crate) mod tests {
     }
 
     /// Whether each control called `name` on step 3 is disabled, drawn from a
-    /// fresh `shape` against an app held — or not — by `studio` and `dialog`.
-    fn shape_controls_disabled(
-        shape: fn() -> ShapeControls,
-        studio: &Studio,
-        dialog: &PendingDialog,
-        name: &str,
-    ) -> Vec<bool> {
+    /// fresh `shape` against an app that is — or is not — accepting actions.
+    fn shape_controls_disabled(shape: fn() -> ShapeControls, ready: bool, name: &str) -> Vec<bool> {
         let mut shape = shape();
         controls_disabled(
             |ui| {
                 let _ = draw_shape_piece(
                     ui,
-                    studio,
-                    dialog,
+                    &Studio::default(),
+                    ready,
                     &mut shape,
                     &PlugFitJob::default(),
                     STEP_THREE_CELL_M,
@@ -3600,7 +3777,7 @@ pub(crate) mod tests {
             let _ = draw_shape_piece(
                 ui,
                 &Studio::default(),
-                &PendingDialog::default(),
+                true,
                 &mut shape,
                 job,
                 STEP_THREE_CELL_M,
@@ -3803,35 +3980,17 @@ pub(crate) mod tests {
     /// advances behind an open picker — and the folder that picker returns then
     /// lands on a step the user has already left.
     ///
-    /// ⚠ Every control, and each way the app is held. A screen that gates only
-    /// its button still lets the values under it move while a job reads them —
-    /// and the ridge editor is drawn by a function of its own, which took
-    /// `ready` with nothing asking whether it used it.
+    /// ⚠ Every control. A screen that gates only its button still lets the
+    /// values under it move while a job reads them — and the ridge editor is
+    /// drawn by a function of its own, which took `ready` with nothing asking
+    /// whether it used it.
+    ///
+    /// ⚠ One held case, not one per way of holding the app: what holds it is
+    /// [`accepting_actions`]'s own gate above, and re-deriving that here would
+    /// have this test agree with it three times over instead of asking what
+    /// this screen does with the answer.
     #[test]
     fn step_threes_controls_are_offered_only_while_the_app_is_free() {
-        let held = [
-            (
-                "a job",
-                Studio {
-                    busy: true,
-                    ..Studio::default()
-                },
-                PendingDialog::default(),
-            ),
-            (
-                "a picker",
-                Studio::default(),
-                PendingDialog::opened(DialogKind::ScanFile),
-            ),
-            (
-                "a save",
-                Studio {
-                    pending_save: Some(PendingSave::ChoosingFolder { smoothing: 0 }),
-                    ..Studio::default()
-                },
-                PendingDialog::default(),
-            ),
-        ];
         // ⚠ "CheckBox" is the four ridge switches, which carry no name of their
         // own. Without them the row helper could drop `ready` from its checkbox
         // alone and every other control would still report correctly.
@@ -3859,12 +4018,7 @@ pub(crate) mod tests {
 
         for (screen, shape, names) in screens {
             for name in names {
-                let offered = shape_controls_disabled(
-                    shape,
-                    &Studio::default(),
-                    &PendingDialog::default(),
-                    name,
-                );
+                let offered = shape_controls_disabled(shape, true, name);
                 assert!(
                     !offered.is_empty(),
                     "{name} is on the {screen} editor at all"
@@ -3874,16 +4028,14 @@ pub(crate) mod tests {
                     "{name} is offered on the {screen} editor when nothing holds the app"
                 );
 
-                for (what, studio, dialog) in &held {
-                    // ⚠ The length too. `all` over an empty result is true, so
-                    // a control that vanished while the app was held — rather
-                    // than being offered and refused — would pass.
-                    assert_eq!(
-                        shape_controls_disabled(shape, studio, dialog, name),
-                        vec![true; offered.len()],
-                        "{name} is withheld on the {screen} editor while {what} holds the app"
-                    );
-                }
+                // ⚠ The length too. `all` over an empty result is true, so a
+                // control that vanished while the app was held — rather than
+                // being offered and refused — would pass.
+                assert_eq!(
+                    shape_controls_disabled(shape, false, name),
+                    vec![true; offered.len()],
+                    "{name} is withheld on the {screen} editor while something holds the app"
+                );
             }
         }
     }
@@ -4040,7 +4192,7 @@ pub(crate) mod tests {
     /// Step 4's body, laid out with `design` behind it.
     fn design_body(design: &mut DesignControls) -> impl FnMut(&mut egui::Ui) + '_ {
         move |ui| {
-            let _ = draw_design_layers(ui, &Studio::default(), &PendingDialog::default(), design);
+            let _ = draw_design_layers(ui, true, design);
         }
     }
 
@@ -4112,12 +4264,8 @@ pub(crate) mod tests {
         use egui_kittest::kittest::NodeT;
 
         let mut design = DesignControls::default();
-        let busy = Studio {
-            busy: true,
-            ..Studio::default()
-        };
         let mut body = |ui: &mut egui::Ui| {
-            let _ = draw_design_layers(ui, &busy, &PendingDialog::default(), &mut design);
+            let _ = draw_design_layers(ui, false, &mut design);
         };
 
         let disabled: Vec<bool> = column_harness(&mut body)
@@ -4417,12 +4565,7 @@ pub(crate) mod tests {
         {
             let borrowed = std::cell::RefCell::new(&mut *design);
             let mut body = |ui: &mut egui::Ui| {
-                let acted = draw_design_layers(
-                    ui,
-                    &Studio::default(),
-                    &PendingDialog::default(),
-                    &mut borrowed.borrow_mut(),
-                );
+                let acted = draw_design_layers(ui, true, &mut borrowed.borrow_mut());
                 if let Some(intent) = acted.nav {
                     reported.set(Some(intent));
                 }
