@@ -34,10 +34,24 @@ pub enum PlugFit {
 /// The layer stack the probe invents, because step 3 runs before step 4 picks
 /// the real one.
 ///
-/// The VERDICT transfers (measured 2026-09-08 on `~/scans/base_mold` at 0.5 mm:
-/// thin and the real 3-layer stack agree on both sides of the threshold, for
-/// 4.9× less time). The MESH does not — the box grows with stack thickness,
-/// moving the MC grid ~0.6 mm.
+/// ⚠ The thickness is not inert. It feeds `sdf_bounds_padding_m`, the SDF box
+/// is the scan AABB expanded by that, and the mesher anchors its lattice at
+/// `bounds.min` stepping exactly one cell — so a different stack TRANSLATES the
+/// grid the plug is sampled on.
+///
+/// ⚠⚠ Which makes the cell size an A/B's confound, not a detail.
+/// `~/scans/base_mold`'s real stack sits 25 mm of padding from this probe, and
+/// at the 0.5 mm print cell that is EXACTLY 50 cells — the two lattices
+/// coincide, and comparing them agrees for reasons that have nothing to do with
+/// the verdict transferring. This comment used to cite that run.
+///
+/// The claim as it now stands, measured 2026-09-08 at 1.5 mm, where the same
+/// two stacks sit ⅓ of a cell apart and the meshes genuinely differ (face
+/// counts throughout, and the plug breaks into a different NUMBER of pieces at
+/// 7, 8 and 9 mm): **the verdict agrees at all 31 insets step 3's
+/// integer-millimetre field can produce**, threshold 6→7 mm on both, at 2.5×
+/// less time. Gated on the synthetic cone by
+/// `the_invented_layer_stack_does_not_change_the_verdict`.
 ///
 /// ⚠⚠ Must stay above `[cast].wall_thickness_m`. The canal gates its suction
 /// bulge against both the cup wall and `layers.first()`, and the second would
