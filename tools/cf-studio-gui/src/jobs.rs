@@ -20,7 +20,7 @@ use cf_studio_engine::{
 };
 use cf_studio_gui::{
     CENDRILLON_CAST_MODE, FitQuestion, FitView, LayerStack, PourSession, apply_design, fit_view,
-    format_design_rounding, format_molds_progress, format_simplify_done, format_simplify_started,
+    format_inexact_design, format_molds_progress, format_simplify_done, format_simplify_started,
 };
 use mesh_types::IndexedMesh;
 
@@ -93,10 +93,14 @@ pub(crate) fn poll_dialogs(
         }
         DialogKind::DesignFile => {
             let Some(path) = picked else { return };
-            studio.message = Some(
-                apply_design(&mut studio.project, &path)
-                    .map(|message| message + &show_loaded_design(&studio, &mut design)),
-            );
+            let outcome = apply_design(&mut studio.project, &path);
+            let reported = match (outcome, studio.project.design()) {
+                (Ok(message), Some(loaded)) => {
+                    Ok(message + &show_loaded_design(loaded, &mut design))
+                }
+                (outcome, _) => outcome,
+            };
+            studio.message = Some(reported);
         }
     }
 }
@@ -115,14 +119,11 @@ pub(crate) fn poll_dialogs(
 /// on the project. It stays a branch because
 /// [`cf_studio_gui::Silicone::from_key`] is fallible, not because a file gets
 /// here that way.
-fn show_loaded_design(studio: &Studio, design: &mut DesignControls) -> String {
-    let Some(loaded) = studio.project.design() else {
-        return String::new();
-    };
+fn show_loaded_design(loaded: &DesignDraft, design: &mut DesignControls) -> String {
     let Some(rows) = LayerStack::from_drafts(&loaded.layers) else {
         return String::new();
     };
-    let note = format_design_rounding(&rows, &loaded.layers).unwrap_or_default();
+    let note = format_inexact_design(&rows, &loaded.layers).unwrap_or_default();
     design.layers = rows;
     note
 }
@@ -1829,7 +1830,7 @@ visible = true
     /// allow, **and** the message says they had to round it — because the
     /// button beside them would then write 18 / 8 / 5 back over 17.5 / 7.5 / 5.
     #[test]
-    fn a_design_the_steppers_cannot_hold_is_rounded_on_screen_and_reported() {
+    fn a_design_the_steppers_cannot_hold_is_shown_clamped_and_reported() {
         let app = app_after_loading("validated-design", VALIDATED_DESIGN);
         let world = app.world();
 
@@ -1844,8 +1845,37 @@ visible = true
 
         let message = loaded_message(&app);
         assert!(
-            message.contains("3 layer(s)") && message.contains("round"),
-            "the message reports the load AND what it cost: {message}"
+            message.contains("3 layer(s)") && message.contains("Not exactly this file"),
+            "the message reports the load AND that the rows are not it: {message}"
+        );
+    }
+
+    /// ★ The case that rewrote this message. `load_design_toml` accepts a
+    /// 150 mm layer; the stepper's ceiling is 100. The note used to call that
+    /// "rounded to the nearest millimetre" — a 50 mm discrepancy reported as a
+    /// sub-millimetre one, by the only line standing between the user and the
+    /// overwrite.
+    #[test]
+    fn a_layer_the_loader_accepts_but_the_steppers_cannot_hold_is_still_flagged() {
+        let app = app_after_loading(
+            "oversize-design",
+            &ONE_LAYER_DESIGN.replace("0.007", "0.15"),
+        );
+
+        let shown: Vec<i32> = app
+            .world()
+            .resource::<DesignControls>()
+            .layers
+            .rows()
+            .iter()
+            .map(|row| row.thickness_mm.value())
+            .collect();
+        assert_eq!(shown, vec![100], "clamped to the stepper's ceiling");
+
+        let message = loaded_message(&app);
+        assert!(
+            message.contains("Not exactly this file") && !message.contains("round"),
+            "and reported without claiming a rounding: {message}"
         );
     }
 
@@ -1856,7 +1886,7 @@ visible = true
         let app = app_after_loading("exact-design", ONE_LAYER_DESIGN);
         let message = loaded_message(&app);
         assert!(
-            message.contains("1 layer(s)") && !message.contains("round"),
+            message.contains("1 layer(s)") && !message.contains("Not exactly"),
             "nothing was changed to show it, so nothing is warned about: {message}"
         );
     }

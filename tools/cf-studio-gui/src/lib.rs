@@ -1022,7 +1022,7 @@ impl LayerRow {
     /// ⚠ Lossy the other way, and it matters: this editor edits **whole**
     /// millimetres and whole percent, while a `.design.toml` carries neither
     /// bound. `base_mold`'s own stack is 17.5 / 7.5 / 5 mm, so a row for it
-    /// reads 18 / 8 / 5 — see [`format_design_rounding`], which is what tells
+    /// reads 18 / 8 / 5 — see [`format_inexact_design`], which is what tells
     /// the user before the button beside the rows commits them.
     ///
     /// Clamped here rather than left to [`BoundedField::value`], which clamps
@@ -1134,18 +1134,21 @@ impl LayerStack {
     }
 }
 
-/// What to add to the "design set" message when the rows cannot show the
-/// design that just landed, exactly.
+/// What to add to the "design set" message when the rows cannot hold the design
+/// that just landed, exactly.
 ///
-/// `None` when the rows **are** the design. The warning matters because the
-/// button beside them commits the rows, not the file: `base_mold`'s own stack
-/// is 17.5 / 7.5 / 5 mm and this editor edits whole millimetres, so pressing
-/// it would round the design the user had just loaded — silently, and after
-/// the message said the design was set.
+/// `None` when the rows **are** the design. It matters because the button beside
+/// them commits the rows, not the file.
+///
+/// ⚠ Names no cause, because there are three and each describes the others
+/// wrongly: the steppers round (17.5 mm → 18), clamp up (0.2 mm → 1) and clamp
+/// down (150 mm → 100), and the slacker field does the same. The rows are on
+/// screen carrying the real numbers, so the message points at them instead.
 #[must_use]
-pub fn format_design_rounding(shown: &LayerStack, loaded: &[LayerDraft]) -> Option<String> {
+pub fn format_inexact_design(shown: &LayerStack, loaded: &[LayerDraft]) -> Option<String> {
     (shown.drafts() != loaded).then(|| {
-        " \u{26a0} Shown to the nearest millimetre \u{2014} using this design here would round it."
+        " \u{26a0} Not exactly this file \u{2014} the rows below are what \"Use this design\" \
+         would write."
             .to_string()
     })
 }
@@ -2743,7 +2746,7 @@ visible = true
         );
         assert_eq!(stack.drafts(), loaded, "and nothing was changed to show it");
         assert_eq!(
-            format_design_rounding(&stack, &loaded),
+            format_inexact_design(&stack, &loaded),
             None,
             "so there is nothing to warn about",
         );
@@ -2771,10 +2774,14 @@ visible = true
             ],
             "rounded to the nearest millimetre, not truncated",
         );
-        let note = format_design_rounding(&stack, &loaded).unwrap_or_default();
-        assert!(
-            note.contains("round"),
-            "and the rounding is reported: {note:?}",
+        assert_eq!(
+            format_inexact_design(&stack, &loaded),
+            Some(
+                " \u{26a0} Not exactly this file \u{2014} the rows below are what \"Use this \
+                 design\" would write."
+                    .to_string()
+            ),
+            "and the user is told before the button beside those rows writes them",
         );
     }
 
@@ -2797,25 +2804,41 @@ visible = true
         );
     }
 
-    /// A `.design.toml` is bounded by neither of this editor's steppers. The
-    /// clamp is at construction, not left to `BoundedField::value`: a row
-    /// showing 0 mm that commits 1 mm is a screen telling the user something
-    /// untrue.
+    /// A `.design.toml` is bounded by neither of this editor's steppers, and
+    /// the clamp is at construction rather than left to `BoundedField::value`:
+    /// a row *showing* 0 mm that *commits* 1 mm is a screen telling the user
+    /// something untrue. Asserted on the raw state for that reason — reading
+    /// through `value()` would clamp either way and prove nothing.
+    ///
+    /// ★ The note claims no cause, because the steppers do three different
+    /// things here. It said "rounded to the nearest millimetre" until a probe
+    /// showed 150 mm being shown as 100 — a 50 mm discrepancy described as a
+    /// sub-millimetre one, in the only message standing between the user and
+    /// the overwrite.
     #[test]
-    fn a_layer_outside_the_steppers_is_clamped_where_it_is_shown() {
-        let loaded = drafts_of(&[("ECOFLEX_00_30", 0.2, 400.0)]);
-        let stack = LayerStack::from_drafts(&loaded).expect("the silicone is in the catalog");
+    fn a_layer_outside_the_steppers_is_clamped_where_it_is_shown_and_flagged() {
+        for (label, thickness_mm, slacker_pct, shown_mm, shown_pct) in [
+            ("below the floor", 0.2, 400.0, 1, 100),
+            ("above the ceiling", 150.0, 0.0, 100, 0),
+        ] {
+            let loaded = drafts_of(&[("ECOFLEX_00_30", thickness_mm, slacker_pct)]);
+            let stack = LayerStack::from_drafts(&loaded).expect("the silicone is in the catalog");
+            let row = &stack.rows()[0];
 
-        assert_eq!(
-            stack.rows()[0].thickness_mm.state.value(),
-            1,
-            "0.2 mm rounds to 0, which is not a layer — the floor is shown",
-        );
-        assert_eq!(
-            stack.rows()[0].slacker_pct.state.value(),
-            100,
-            "and 400 % is shown at the ceiling it will be used at",
-        );
+            assert_eq!(
+                (
+                    row.thickness_mm.state.value(),
+                    row.slacker_pct.state.value()
+                ),
+                (shown_mm, shown_pct),
+                "{label}: shown at the bound it will be used at",
+            );
+            let note = format_inexact_design(&stack, &loaded).unwrap_or_default();
+            assert!(
+                !note.contains("round") && note.contains("rows below"),
+                "{label}: the note points at the rows, not at a cause: {note:?}",
+            );
+        }
     }
 
     #[test]
