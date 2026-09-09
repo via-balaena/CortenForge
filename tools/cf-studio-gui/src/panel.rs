@@ -401,7 +401,7 @@ fn draw_body(
     ));
     ui.separator();
 
-    if let Some(message) = &studio.message {
+    if let Some(message) = studio.note_for(viewed) {
         ui.add_space(8.0);
         // Centred, larger than body text, and green when it went well — the
         // pre-port status line's own styling. #870 rendered it as a plain label,
@@ -1622,14 +1622,14 @@ fn apply_intent(intent: Intent, studio: &mut Studio, dialog: &mut PendingDialog)
         Intent::OpenExportFolder => match studio.project.print().map(|p| p.export_dir.clone()) {
             Some(dir) => crate::jobs::reveal_in_file_manager(&dir),
             None => {
-                studio.message = Some(Err(
+                studio.say(Err(
                     "Nothing exported yet — save the files first.".to_string()
                 ));
             }
         },
         Intent::ExportPrint => {
             if studio.project.molds().is_none() {
-                studio.message = Some(Err("Make the molds first (step 5).".to_string()));
+                studio.say(Err("Make the molds first (step 5).".to_string()));
                 return;
             }
             dialog.pick_folder(
@@ -1926,7 +1926,7 @@ pub(crate) mod tests {
                 &mut screen.studio,
                 &mut screen.controls,
             );
-            let reported = screen.studio.message.as_ref().expect("every op reports");
+            let reported = screen.studio.outcome().expect("every op reports");
             let (Ok(text) | Err(text)) = reported;
             assert_renders(&harness.ctx, text);
             reports.push(text.clone());
@@ -1981,7 +1981,7 @@ pub(crate) mod tests {
         assert!(
             session.is_some_and(|s| s.has_centerline() && s.reconstruct_available()),
             "the fixture must reveal every section; last message: {:?}",
-            studio.message
+            studio.outcome()
         );
         CleanupScreen {
             studio,
@@ -2336,7 +2336,7 @@ pub(crate) mod tests {
         assert!(
             studio.busy,
             "the click must reach `start_molds` and hold the app: {:?}",
-            studio.message
+            studio.outcome()
         );
         // ⚠ Exact, not `contains`. Seeding `shown_secs` and the opening line
         // from different seconds passed all 172 while the app announced a cast
@@ -2344,7 +2344,7 @@ pub(crate) mod tests {
         const OPENING_LINE: &str =
             "Making molds… 0:00 elapsed (this can take a while — the window stays responsive)";
         assert_eq!(
-            studio.message,
+            studio.outcome().cloned(),
             Some(Ok(OPENING_LINE.to_string())),
             "and say so on screen, at the second the run actually started"
         );
@@ -2964,7 +2964,7 @@ pub(crate) mod tests {
         assert!(
             dir.join("base.cleaned.stl").is_file() && studio.project.prep().is_some(),
             "the click wrote the files and completed the step: {:?}",
-            studio.message
+            studio.outcome()
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -3017,9 +3017,10 @@ pub(crate) mod tests {
 
         let studio = app.world().resource::<Studio>();
         assert_eq!(
-            studio.project, saved,
+            studio.project,
+            saved,
             "the click landed the saved session: {:?}",
-            studio.message
+            studio.outcome()
         );
         assert_eq!(
             app.world().resource::<Autosave>().asking_about(),
@@ -3155,7 +3156,7 @@ pub(crate) mod tests {
         assert!(
             dir.join("base.cleaned.stl").is_file() && studio.project.prep().is_some(),
             "Overwrite writes and completes the step: {:?}",
-            studio.message
+            studio.outcome()
         );
 
         let (scan, mut studio) = crate::save::tests::ready_to_save(&dir);
@@ -3205,7 +3206,7 @@ pub(crate) mod tests {
             studio.project.plug().map(|plug| plug.cavity_inset_m),
             Some(0.006),
             "the 5 mm field, stepped once, committed 6 mm: {:?}",
-            studio.message
+            studio.outcome()
         );
         assert_eq!(
             studio.cursor.viewed(),
@@ -3634,7 +3635,7 @@ pub(crate) mod tests {
                 },
             ]),
             "the two the ✖ left, then the one the button added: {:?}",
-            studio.message
+            studio.outcome()
         );
     }
 
@@ -3662,7 +3663,7 @@ pub(crate) mod tests {
                 ..RidgeOptions::default()
             }),
             "the rings alone are gone: {:?}",
-            studio.message
+            studio.outcome()
         );
     }
 
@@ -3717,7 +3718,7 @@ pub(crate) mod tests {
                 ..RidgeOptions::default()
             }),
             "the switch reached the committed plug: {:?}",
-            studio.message
+            studio.outcome()
         );
     }
 
@@ -4679,7 +4680,7 @@ pub(crate) mod tests {
                 "DRAGON_SKIN_10A"
             ]),
             "the opening stack plus the layer added on the outside: {:?}",
-            studio.message
+            studio.outcome()
         );
     }
 
@@ -4767,15 +4768,15 @@ pub(crate) mod tests {
         let mut bare = Studio::default();
         apply_intent(Intent::ExportPrint, &mut bare, &mut dialog);
         assert!(
-            matches!(&bare.message, Some(Err(text)) if text.contains("molds")),
+            matches!(bare.outcome(), Some(Err(text)) if text.contains("molds")),
             "ExportPrint without molds says so: {:?}",
-            bare.message
+            bare.outcome()
         );
         apply_intent(Intent::OpenExportFolder, &mut bare, &mut dialog);
         assert!(
-            matches!(&bare.message, Some(Err(text)) if text.contains("Nothing exported")),
+            matches!(bare.outcome(), Some(Err(text)) if text.contains("Nothing exported")),
             "OpenExportFolder with nothing exported says so: {:?}",
-            bare.message
+            bare.outcome()
         );
     }
 }

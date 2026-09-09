@@ -10,10 +10,22 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use bevy::prelude::*;
-use cf_studio_core::{PourRecord, Project};
+use cf_studio_core::{PourRecord, Project, Step};
 use cf_studio_gui::{
     PourAdvance, PourSession, StepOutcome, WizardCursor, apply_scan, pot_life_duration,
 };
+
+/// A step's outcome, and the step that produced it.
+///
+/// The pair is the point: an outcome with no owner gets shown on whatever
+/// screen happens to be up, and gets cleared by whatever happens to page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StepNote {
+    /// The step whose action produced this.
+    pub(crate) step: Step,
+    /// `Ok` reads as a success line, `Err` as a refusal.
+    pub(crate) outcome: StepOutcome,
+}
 
 /// The two top-level screens. The waiver is a *screen*, not an overlay: it is a
 /// full-window gate, and modelling it as state keeps the wizard's systems from
@@ -82,8 +94,14 @@ pub(crate) struct Studio {
     pub(crate) pour: PourSession,
     /// Deadline of the running pot-life countdown; `None` = no timer.
     pub(crate) pour_deadline: Option<Instant>,
-    /// The step message under the body, and whether it reads as an error.
-    pub(crate) message: Option<StepOutcome>,
+    /// The step message under the body, and the step it belongs to.
+    ///
+    /// ⚠ Carried TOGETHER on purpose. Held apart, a message can outlive the
+    /// screen that produced it — which is how a step-5 refusal came to be
+    /// wiped by a page turn, leaving the operator with a cast that had failed
+    /// and an app that said nothing. Read it through [`Studio::note_for`], so
+    /// a message can only ever be shown where it means something.
+    pub(crate) message: Option<StepNote>,
     /// A long job is running — gates the buttons that could clobber it.
     pub(crate) busy: bool,
     /// A Save waiting on the user; `None` unless one asked a question.
@@ -105,10 +123,44 @@ impl Default for Studio {
 }
 
 impl Studio {
-    /// Page back one screen, clearing the step message like the original did.
+    /// Record the outcome of an action taken on the step now being viewed.
+    ///
+    /// The only way to set a message: the step is stamped here rather than by
+    /// the caller, so no writer can leave a note that does not know where it
+    /// belongs.
+    pub(crate) fn say(&mut self, outcome: StepOutcome) {
+        self.message = Some(StepNote {
+            step: self.cursor.viewed(),
+            outcome,
+        });
+    }
+
+    /// The note's outcome, whatever step owns it.
+    ///
+    /// ⚠ For assertions and censuses only. The UI must go through
+    /// [`Self::note_for`] — reading the outcome without its step is exactly
+    /// what let a step-5 refusal render under step 3.
+    #[cfg(test)]
+    pub(crate) fn outcome(&self) -> Option<&StepOutcome> {
+        self.message.as_ref().map(|note| &note.outcome)
+    }
+
+    /// The message to show while `viewed` is on screen, if it is that step's.
+    pub(crate) fn note_for(&self, viewed: Step) -> Option<&StepOutcome> {
+        self.message
+            .as_ref()
+            .filter(|note| note.step == viewed)
+            .map(|note| &note.outcome)
+    }
+
+    /// Page back one screen.
+    ///
+    /// ⚠ Does NOT clear the step message, and that is the fix: it used to,
+    /// "like the original did", so a refusal the operator paged away from was
+    /// destroyed rather than remembered. The note names its own step and
+    /// [`Studio::note_for`] shows it only there, so leaving it is safe.
     pub(crate) fn back(&mut self) {
         self.cursor.back();
-        self.message = None;
     }
 
     /// Page forward.
@@ -121,7 +173,6 @@ impl Studio {
     /// copy leaves the other passing.
     pub(crate) fn next(&mut self) {
         self.cursor.next(&self.project);
-        self.message = None;
     }
 
     /// Record a newly chosen scan.
@@ -194,10 +245,11 @@ impl Studio {
         }
         self.pour_deadline = None;
         if let PourAdvance::Complete { layers_poured } = advance {
-            self.message = Some(match self.project.set_pour(PourRecord { layers_poured }) {
+            let outcome = match self.project.set_pour(PourRecord { layers_poured }) {
                 Ok(()) => Ok("🎉 All layers poured — your device is complete!".to_string()),
                 Err(e) => Err(format!("Couldn't record completion: {e}")),
-            });
+            };
+            self.say(outcome);
         }
     }
 }
@@ -232,15 +284,69 @@ mod tests {
         );
     }
 
+    /// ★★★ A refusal must outlive a page turn.
+    ///
+    /// It did not. `back`/`next` wiped the message "like the original did", so
+    /// an operator who paged away from a failed step-5 cast came back to an app
+    /// that said nothing — the molds had not been made and the report was gone.
+    /// Found by hand-driving, 2026-09-09; the cast really had refused.
+    ///
+    /// ⚠ Two-sided, and both halves are load-bearing. The note is tied to the
+    /// step that produced it, so paging away must HIDE it — a step-2 refusal
+    /// means nothing under step 1 — while leaving it INTACT for the return. Drop
+    /// the first half and the old wipe passes; drop the second and so does a
+    /// note that leaks onto every screen.
     #[test]
-    fn paging_clears_the_step_message() {
+    fn a_refusal_survives_paging_away_but_is_shown_only_on_its_own_step() {
         let mut s = fresh();
-        s.message = Some(Err("stale".to_string()));
+        s.cursor = WizardCursor::new(Step::CleanScan);
+        s.say(Err("the molds did not cast".to_string()));
+
+        assert!(
+            matches!(s.note_for(Step::CleanScan), Some(Err(text)) if text.contains("did not cast")),
+            "the note shows on the step that produced it: {:?}",
+            s.outcome()
+        );
+        assert!(
+            s.note_for(Step::AddScan).is_none(),
+            "and on no other — a step-2 refusal means nothing under step 1"
+        );
+
         s.back();
-        assert!(s.message.is_none(), "Back clears the message");
-        s.message = Some(Err("stale".to_string()));
+        assert_eq!(s.cursor.viewed(), Step::AddScan, "the page turned");
+        assert!(
+            s.note_for(Step::AddScan).is_none(),
+            "so it is not shown here"
+        );
+        assert!(
+            matches!(s.note_for(Step::CleanScan), Some(Err(text)) if text.contains("did not cast")),
+            "but it was NOT destroyed — it is waiting on its own step: {:?}",
+            s.outcome()
+        );
+
+        // Gated `next` (step 1 is incomplete) must not destroy it either.
         s.next();
-        assert!(s.message.is_none(), "Next clears it too, even when gated");
+        assert!(
+            s.note_for(Step::CleanScan).is_some(),
+            "a refused page turn is still not a reason to forget a refusal"
+        );
+    }
+
+    /// A success line is a note like any other: it belongs to its step and is
+    /// not wiped by paging. ⚠ Without this, "keep only `Err`" would pass every
+    /// assertion above while silently dropping every "✔ …" the moment the
+    /// operator looked at another screen.
+    #[test]
+    fn a_success_line_is_kept_on_its_own_step_too() {
+        let mut s = fresh();
+        s.cursor = WizardCursor::new(Step::CleanScan);
+        s.say(Ok("✔ Welded".to_string()));
+        s.back();
+        assert!(
+            matches!(s.note_for(Step::CleanScan), Some(Ok(text)) if text.contains("Welded")),
+            "the success line is still on step 2: {:?}",
+            s.outcome()
+        );
     }
 
     #[test]
@@ -250,7 +356,7 @@ mod tests {
         let mut s = fresh();
         s.mark_poured();
         assert_eq!(s.pour.current(), 0, "no plan, no advance");
-        assert!(s.message.is_none(), "and nothing reported as finished");
+        assert!(s.outcome().is_none(), "and nothing reported as finished");
     }
 
     #[test]

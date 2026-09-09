@@ -68,18 +68,18 @@ pub(crate) fn poll_dialogs(
                     recorded
                 }
             };
-            studio.message = Some(outcome);
+            studio.say(outcome);
         }
         DialogKind::PrintDest => {
             // `None` is a cancel, which is a complete outcome: leave the app
             // exactly as it was, with no message.
             let Some(dest) = picked else { return };
             let Some(molds) = studio.project.molds().cloned() else {
-                studio.message = Some(Err("Make the molds first (step 5).".to_string()));
+                studio.say(Err("Make the molds first (step 5).".to_string()));
                 return;
             };
             studio.busy = true;
-            studio.message = Some(Ok("Saving the printable files…".to_string()));
+            studio.say(Ok("Saving the printable files…".to_string()));
             job.0 = Some(spawn_export(molds, dest));
         }
         DialogKind::PrepDest => {
@@ -103,7 +103,7 @@ pub(crate) fn poll_dialogs(
                 (Ok(message), Some(loaded)) => Ok(message + &show_loaded_design(loaded)),
                 (outcome, _) => outcome,
             };
-            studio.message = Some(reported);
+            studio.say(reported);
         }
     }
 }
@@ -153,7 +153,7 @@ pub(crate) fn poll_print_job(mut job: ResMut<PrintJob>, mut studio: ResMut<Studi
     };
     job.0 = None;
     studio.busy = false;
-    studio.message = Some(match result {
+    let outcome = match result {
         Ok(report) => {
             let dest = report.export.export_dir.clone();
             let stl_count = report.stl_count;
@@ -175,7 +175,8 @@ pub(crate) fn poll_print_job(mut job: ResMut<PrintJob>, mut studio: ResMut<Studi
             }
         }
         Err(msg) => Err(format!("Couldn't save the files: {msg}")),
-    });
+    };
+    studio.say(outcome);
 }
 
 /// A cast in flight: when it started, the last whole second put on screen, and
@@ -241,7 +242,7 @@ pub(crate) fn start_molds(start: &MoldsStart, studio: &mut Studio, job: &mut Mol
             )
         });
     let Some((cleaned_stl, prep_toml, draft)) = inputs else {
-        studio.message = Some(Err(MOLDS_NO_INPUTS.to_string()));
+        studio.say(Err(MOLDS_NO_INPUTS.to_string()));
         return;
     };
     // The ridges were committed with the plug on "Shape your piece". The one
@@ -255,7 +256,7 @@ pub(crate) fn start_molds(start: &MoldsStart, studio: &mut Studio, job: &mut Mol
     // `shown_secs` means "already on screen", so the seed and the opening line
     // have to be the same second or the poller suppresses the line it never drew.
     const OPENING: u64 = 0;
-    studio.message = Some(Ok(format_molds_progress(OPENING)));
+    studio.say(Ok(format_molds_progress(OPENING)));
     job.0 = Some(MoldsRun {
         started: Instant::now(),
         shown_secs: OPENING,
@@ -309,13 +310,13 @@ pub(crate) fn poll_molds_job(mut job: ResMut<MoldsJob>, mut studio: ResMut<Studi
         // it out.
         if let Some(secs) = clock_to_draw(run.started.elapsed().as_secs(), run.shown_secs) {
             run.shown_secs = secs;
-            studio.message = Some(Ok(format_molds_progress(secs)));
+            studio.say(Ok(format_molds_progress(secs)));
         }
         return;
     };
     job.0 = None;
     studio.busy = false;
-    studio.message = Some(match result {
+    let outcome = match result {
         Ok(outputs) => match studio.project.set_molds(outputs) {
             Ok(()) => {
                 // ⚠ New molds mean a new pour. `set_molds` clears the project's
@@ -329,7 +330,8 @@ pub(crate) fn poll_molds_job(mut job: ResMut<MoldsJob>, mut studio: ResMut<Studi
             Err(e) => Err(format!("Molds made, but couldn't record them: {e}")),
         },
         Err(msg) => Err(format!("Mold generation failed: {msg}")),
-    });
+    };
+    studio.say(outcome);
 }
 
 /// A fit check in flight: the question it is answering, when it started, and
@@ -525,7 +527,7 @@ pub(crate) fn start_simplify(
     let Some(active) = scan.active() else { return };
     let working = active.session().working_clone();
     studio.busy = true;
-    studio.message = Some(Ok(format_simplify_started(target_faces)));
+    studio.say(Ok(format_simplify_started(target_faces)));
     job.0 = Some((target_faces, spawn_simplify(working, target_faces)));
 }
 
@@ -574,7 +576,7 @@ pub(crate) fn poll_simplify_job(
                 &mut controls,
             );
         }
-        Err(message) => studio.message = Some(Err(message)),
+        Err(message) => studio.say(Err(message)),
     }
 }
 
@@ -670,10 +672,10 @@ pub(crate) mod tests {
             "the app is held for the length of the run"
         );
         assert!(
-            matches!(&app.world().resource::<Studio>().message,
+            matches!(app.world().resource::<Studio>().outcome(),
                      Some(Ok(text)) if text.contains("Simplifying to 1000 faces")),
             "and says what it is doing: {:?}",
-            app.world().resource::<Studio>().message
+            app.world().resource::<Studio>().outcome()
         );
 
         run_until_idle(&mut app, "the job");
@@ -681,10 +683,10 @@ pub(crate) mod tests {
         let world = app.world();
         assert!(!world.resource::<Studio>().busy, "and is handed back after");
         assert!(
-            matches!(&world.resource::<Studio>().message,
+            matches!(world.resource::<Studio>().outcome(),
                      Some(Ok(text)) if text.contains("✔ Simplified to 1000 faces")),
             "the landing must report itself: {:?}",
-            world.resource::<Studio>().message
+            world.resource::<Studio>().outcome()
         );
         assert!(
             world
@@ -747,10 +749,10 @@ pub(crate) mod tests {
             "a failed run must still hand the app back"
         );
         assert!(
-            matches!(&app.world().resource::<Studio>().message,
+            matches!(app.world().resource::<Studio>().outcome(),
                      Some(Err(text)) if text.contains("higher target face count")),
             "and must say what to try instead: {:?}",
-            app.world().resource::<Studio>().message
+            app.world().resource::<Studio>().outcome()
         );
     }
 
@@ -838,9 +840,9 @@ pub(crate) mod tests {
         let studio = app.world().resource::<Studio>();
         assert!(studio.pending_save.is_none(), "the held save is let go");
         assert!(
-            matches!(&studio.message, Some(Ok(text)) if text.contains("cancelled")),
+            matches!(studio.outcome(), Some(Ok(text)) if text.contains("cancelled")),
             "and it says so: {:?}",
-            studio.message
+            studio.outcome()
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -888,13 +890,13 @@ endsolid t
         assert!(
             studio.project.scan().is_some(),
             "and the project recorded it: {:?}",
-            studio.message
+            studio.outcome()
         );
         // ⚠ Landing it silently is its own failure.
         assert!(
-            matches!(&studio.message, Some(Ok(text)) if !text.is_empty()),
+            matches!(studio.outcome(), Some(Ok(text)) if !text.is_empty()),
             "and it said so: {:?}",
-            studio.message
+            studio.outcome()
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1043,7 +1045,7 @@ endsolid t
                 .collect::<Vec<_>>()),
             Some(vec!["DRAGON_SKIN_20A"]),
             "the file's own stack, not the editor's: {:?}",
-            studio.message
+            studio.outcome()
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1055,13 +1057,17 @@ endsolid t
         let dir = crate::save::tests::temp_dir("cancelled-design-file");
         let mut app =
             app_ready_for_a_design(&dir, PendingDialog::resolved(DialogKind::DesignFile, None));
-        let before = app.world().resource::<Studio>().message.clone();
+        let before = app.world().resource::<Studio>().outcome().cloned();
 
         run_until_answered(&mut app);
 
         let studio = app.world().resource::<Studio>();
         assert!(studio.project.design().is_none(), "no design was set");
-        assert_eq!(studio.message, before, "and nothing new was reported");
+        assert_eq!(
+            studio.outcome().cloned(),
+            before,
+            "and nothing new was reported"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1214,9 +1220,9 @@ endsolid t
             "the outputs must reach the PROJECT, not just the message"
         );
         assert!(
-            matches!(&studio.message, Some(Ok(text)) if text.contains("Molds ready")),
+            matches!(studio.outcome(), Some(Ok(text)) if text.contains("Molds ready")),
             "and it says so: {:?}",
-            studio.message
+            studio.outcome()
         );
         assert!(
             app.world().resource::<MoldsJob>().0.is_none(),
@@ -1270,9 +1276,9 @@ endsolid t
         let studio = app.world().resource::<Studio>();
         assert!(!studio.busy, "a failure must hand the app back too");
         assert!(
-            matches!(&studio.message, Some(Err(text)) if text.contains("the mesher gave up")),
+            matches!(studio.outcome(), Some(Err(text)) if text.contains("the mesher gave up")),
             "and carry the reason, not just 'it failed': {:?}",
-            studio.message
+            studio.outcome()
         );
         assert!(
             studio.project.molds().is_none(),
@@ -1321,7 +1327,7 @@ endsolid t
         // built by calling the subject is a mirror; the one excuse for it was
         // "lib.rs owns the wording", which round seven proved false.
         assert_eq!(
-            app.world().resource::<Studio>().message,
+            app.world().resource::<Studio>().outcome().cloned(),
             Some(Ok(LINE.to_string())),
             "and the line the run is on must reach the screen"
         );
@@ -1345,14 +1351,16 @@ endsolid t
         // hardcoding the poller's second argument to 0 — dropping the field read
         // outright — passed all 172.
         inject(&mut app, never_finishes(), started, WAITED);
-        let sentinel = Some(Ok("SENTINEL".to_string()));
-        app.world_mut().resource_mut::<Studio>().message = sentinel.clone();
+        let sentinel = Ok("SENTINEL".to_string());
+        app.world_mut()
+            .resource_mut::<Studio>()
+            .say(sentinel.clone());
 
         app.update();
 
         assert_eq!(
-            app.world().resource::<Studio>().message,
-            sentinel,
+            app.world().resource::<Studio>().outcome().cloned(),
+            Some(sentinel),
             "the whole second has not changed, so the line must not be rebuilt \
              (a stall over {CLOCK_MARGIN_MS} ms here reads as the next second)"
         );
@@ -1373,7 +1381,9 @@ endsolid t
 
         let mut app = app_ready_for_molds();
         inject(&mut app, never_finishes(), backdated(ELAPSED), SHOWN);
-        app.world_mut().resource_mut::<Studio>().message = Some(Ok("SENTINEL".to_string()));
+        app.world_mut()
+            .resource_mut::<Studio>()
+            .say(Ok("SENTINEL".to_string()));
 
         app.update();
 
@@ -1383,7 +1393,7 @@ endsolid t
             "the second on screen must advance off a nonzero seed"
         );
         assert_eq!(
-            app.world().resource::<Studio>().message,
+            app.world().resource::<Studio>().outcome().cloned(),
             Some(Ok(LINE.to_string())),
             "and the line must be redrawn \
              (a stall over {CLOCK_MARGIN_MS} ms here reads as the next second)"
@@ -1418,7 +1428,7 @@ endsolid t
             "the seed is the second already on screen"
         );
         assert_eq!(
-            studio.message,
+            studio.outcome().cloned(),
             Some(Ok(
                 "Making molds… 0:00 elapsed (this can take a while — the window stays responsive)"
                     .to_string()
@@ -1500,9 +1510,9 @@ endsolid t
             "the refusal is the cast's verdict, and step 3 can read it back"
         );
         assert!(
-            app.world().resource::<Studio>().message.is_none(),
+            app.world().resource::<Studio>().outcome().is_none(),
             "and nothing about it reached the shared message: {:?}",
-            app.world().resource::<Studio>().message
+            app.world().resource::<Studio>().outcome()
         );
 
         let mut app = app_polling_fit();
@@ -1516,9 +1526,9 @@ endsolid t
             "a check that could not run is a failure, not a verdict"
         );
         assert!(
-            app.world().resource::<Studio>().message.is_none(),
+            app.world().resource::<Studio>().outcome().is_none(),
             "and it does not follow the operator to the step they walked to: {:?}",
-            app.world().resource::<Studio>().message
+            app.world().resource::<Studio>().outcome()
         );
     }
 
@@ -1639,10 +1649,10 @@ endsolid t
         run_plugin_until_idle(&mut app, "the print poller");
 
         assert!(
-            matches!(&app.world().resource::<Studio>().message,
+            matches!(app.world().resource::<Studio>().outcome(),
                      Some(Err(text)) if text.contains("the copy failed")),
             "the export landed through the plugin's own wiring: {:?}",
-            app.world().resource::<Studio>().message
+            app.world().resource::<Studio>().outcome()
         );
     }
 
@@ -1698,10 +1708,10 @@ endsolid t
         run_plugin_until_idle(&mut app, "the simplify poller");
 
         assert!(
-            matches!(&app.world().resource::<Studio>().message,
+            matches!(app.world().resource::<Studio>().outcome(),
                      Some(Err(text)) if text.contains("the decimator gave up")),
             "the Simplify landed through the plugin's own wiring: {:?}",
-            app.world().resource::<Studio>().message
+            app.world().resource::<Studio>().outcome()
         );
     }
 
@@ -1719,29 +1729,31 @@ endsolid t
         ));
 
         run_plugin_update_until(&mut app, "the dialog poller", |app| {
-            app.world().resource::<Studio>().message.is_some()
+            app.world().resource::<Studio>().outcome().is_some()
         });
 
         assert!(
-            matches!(&app.world().resource::<Studio>().message,
+            matches!(app.world().resource::<Studio>().outcome(),
                      Some(Err(text)) if text.contains("Make the molds first")),
             "the picked folder was routed through the plugin's own wiring: {:?}",
-            app.world().resource::<Studio>().message
+            app.world().resource::<Studio>().outcome()
         );
     }
 
     #[test]
     fn the_poller_leaves_an_idle_app_alone() {
         let mut app = app_ready_for_molds();
-        app.world_mut().resource_mut::<Studio>().message = Some(Ok("untouched".to_string()));
+        app.world_mut()
+            .resource_mut::<Studio>()
+            .say(Ok("untouched".to_string()));
         app.update();
 
         let studio = app.world().resource::<Studio>();
         assert!(!studio.busy, "no run, so nothing holds the app");
         assert!(
-            matches!(&studio.message, Some(Ok(text)) if text == "untouched"),
+            matches!(studio.outcome(), Some(Ok(text)) if text == "untouched"),
             "and nothing rewrites the message: {:?}",
-            studio.message
+            studio.outcome()
         );
     }
 
@@ -1850,8 +1862,8 @@ visible = true
     fn loaded_message(app: &App) -> String {
         app.world()
             .resource::<Studio>()
-            .message
-            .clone()
+            .outcome()
+            .cloned()
             .expect("the load must report something")
             .expect("and the design must have loaded")
     }
@@ -1970,7 +1982,7 @@ visible = true
             Some(1),
             "and so is the project's design",
         );
-        let reported = &world.resource::<Studio>().message;
+        let reported = world.resource::<Studio>().outcome();
         assert!(
             matches!(reported, Some(Err(text)) if text.contains("NOT_A_SILICONE")),
             "with the loader's own reason on screen: {reported:?}",

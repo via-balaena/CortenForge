@@ -248,7 +248,7 @@ pub(crate) fn commit_plug(draft: PlugDraft, controls: &mut ShapeControls, studio
         // reporting first would land on step 4 with nothing said.
         studio.next();
     }
-    studio.message = Some(outcome);
+    studio.say(outcome);
 }
 
 #[cfg(test)]
@@ -586,9 +586,9 @@ pub(crate) mod tests {
             "carrying the inset it was handed"
         );
         assert!(
-            matches!(&studio.message, Some(Ok(text)) if text.contains("5.0 mm")),
+            matches!(studio.outcome(), Some(Ok(text)) if text.contains("5.0 mm")),
             "and the report survives the advance: {:?}",
-            studio.message
+            studio.outcome()
         );
     }
 
@@ -605,9 +605,9 @@ pub(crate) mod tests {
         assert_eq!(studio.cursor.viewed(), Step::ShapePiece, "it stays put");
         assert!(studio.project.plug().is_none(), "and records nothing");
         assert!(
-            matches!(&studio.message, Some(Err(_))),
+            matches!(studio.outcome(), Some(Err(_))),
             "with the reason on screen: {:?}",
-            studio.message
+            studio.outcome()
         );
     }
 

@@ -189,7 +189,7 @@ pub(crate) fn resume(autosave: &mut Autosave, studio: &mut Studio, scan: &mut Sc
     // from, and that is not the same as the file its own scan path would give:
     // the scan may have moved since it was saved.
     studio.resume(*project);
-    studio.message = Some(match reload_body(&studio.project, scan) {
+    studio.say(match reload_body(&studio.project, scan) {
         None => Ok(format!(
             "✔ Picked up where you left off — step {} of {}.",
             studio.project.current_step().number(),
@@ -421,9 +421,9 @@ mod tests {
              raw one is not what this session was looking at"
         );
         assert!(
-            studio.message.as_ref().is_some_and(Result::is_ok),
+            studio.outcome().is_some_and(Result::is_ok),
             "and said so: {:?}",
-            studio.message
+            studio.outcome()
         );
         assert_eq!(autosave.asking_about(), None, "the question is answered");
 
@@ -930,9 +930,9 @@ mod tests {
         assert_eq!(studio.project, saved, "the work comes back regardless");
         assert!(scan.active().is_none(), "with no body to show");
         assert!(
-            matches!(&studio.message, Some(Err(why)) if why.contains("Picked up")),
+            matches!(studio.outcome(), Some(Err(why)) if why.contains("Picked up")),
             "and the screen says both halves: {:?}",
-            studio.message
+            studio.outcome()
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
