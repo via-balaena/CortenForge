@@ -20,7 +20,8 @@ use crate::state::Studio;
 /// why not.
 #[derive(Default)]
 pub(crate) enum Saving {
-    /// Writing after every change.
+    /// Nothing is holding the write. See [`Autosave::write`] for what it then
+    /// takes to actually write.
     #[default]
     Yes,
     /// ⛔ Suspended: a saved session was found for this scan and the question is
@@ -757,6 +758,127 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&here);
         let _ = std::fs::remove_dir_all(&gone);
+    }
+
+    /// ★★★ The whole workflow, one step at a time, through the real system:
+    /// after every step the file beside the scan holds what the session holds,
+    /// and a fresh session picking that scan back up gets all of it.
+    ///
+    /// ⚠ Every other gate here exercises one or two steps. This is the only one
+    /// that asks whether a *late* artifact survives the round trip — a step
+    /// whose artifact failed to serialize, or that the loader's invariants
+    /// rejected, would stay invisible until a user lost a finished cast.
+    #[test]
+    fn every_step_of_a_whole_session_reaches_the_file_and_comes_back() {
+        use cf_studio_core::{
+            DesignDraft, LayerDraft, MoldOutputs, PourPlan, PourRecord, PourStep, PrintExport,
+            RidgeOptions,
+        };
+
+        let dir = scans("whole-session");
+        let scan = dir.join("base.stl");
+        let path = autosave_path(&scan);
+        let (autosave, studio) = just_picked(&dir);
+        let (mut autosave, mut studio) = drive(autosave, studio, 1);
+        assert!(!path.exists(), "the pick on its own writes nothing");
+
+        let steps: [(&str, fn(&mut Project, &Path)); 6] = [
+            ("clean the scan", |p, dir| {
+                p.set_prep(PrepInput {
+                    cleaned_stl: dir.join("base.cleaned.stl"),
+                    prep_toml: dir.join("base.prep.toml"),
+                })
+                .expect("in workflow order");
+            }),
+            ("shape the piece", |p, _| {
+                p.set_plug(PlugDraft {
+                    cavity_inset_m: 0.005,
+                    ridges: RidgeOptions::default(),
+                })
+                .expect("in workflow order");
+            }),
+            ("choose the layers", |p, _| {
+                p.set_design(DesignDraft {
+                    // ⚠ The plug's, or `Project::load` refuses the pair (#899).
+                    cavity_inset_m: 0.005,
+                    layers: vec![LayerDraft {
+                        thickness_m: 0.0175,
+                        material_key: "ECOFLEX_00_30".to_string(),
+                        slacker_fraction: 0.25,
+                    }],
+                })
+                .expect("in workflow order");
+            }),
+            ("make the molds", |p, dir| {
+                p.set_molds(MoldOutputs {
+                    out_dir: dir.join("out"),
+                    mold_stls: vec![dir.join("out/mold.stl")],
+                    plug_stls: vec![dir.join("out/plug.stl")],
+                    accessory_stls: Vec::new(),
+                    procedure_path: dir.join("out/procedure.md"),
+                    total_mass_g: 842.0,
+                    pour_plan: PourPlan {
+                        steps: vec![PourStep {
+                            layer_index: 0,
+                            material_display_name: "Ecoflex 00-30".to_string(),
+                            mass_g: 500.0,
+                            mix_ratio_a_to_b: "1:1".to_string(),
+                            pot_life_minutes: 25,
+                            cure_time_hours: 4.0,
+                            slacker_fraction: Some(0.25),
+                        }],
+                    },
+                })
+                .expect("in workflow order");
+            }),
+            ("print them", |p, dir| {
+                p.set_print(PrintExport {
+                    export_dir: dir.join("print"),
+                })
+                .expect("in workflow order");
+            }),
+            ("pour the silicone", |p, _| {
+                p.set_pour(PourRecord { layers_poured: 1 })
+                    .expect("in workflow order");
+            }),
+        ];
+
+        for (what, apply) in steps {
+            apply(&mut studio.project, &dir);
+            let (back, on) = drive(autosave, studio, 1);
+            (autosave, studio) = (back, on);
+            assert_eq!(
+                Project::load(&path).expect("the file is readable"),
+                studio.project,
+                "the file holds the session after: {what} ({:?})",
+                autosave.note()
+            );
+        }
+        assert!(studio.project.is_finished(), "the fixture ran the workflow");
+
+        // ...and a fresh session picking the same scan back up gets all of it.
+        let saved = studio.project.clone();
+        let mut later = Studio::default();
+        later
+            .record_scan(&scan)
+            .expect("the same scan, next launch");
+        let mut autosave = Autosave::default();
+        autosave.follow(&scan);
+        assert_eq!(
+            autosave.asking_about(),
+            Some(Step::Pour),
+            "the finished session is what is offered back"
+        );
+
+        resume(&mut autosave, &mut later, &mut ScanEdit::default());
+
+        assert_eq!(later.project, saved, "every step of it came back");
+        assert_eq!(
+            later.cursor.viewed(),
+            Step::Pour,
+            "on the screen it was left on"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The plugin's wiring: every gate above runs the system by hand. Left out
