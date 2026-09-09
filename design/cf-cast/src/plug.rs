@@ -543,6 +543,21 @@ const PEDESTAL_ENGAGEMENT_CELLS: f64 = 1.0;
 /// been evaluated, not extrapolated.
 const PEDESTAL_MARCH_MIN_STEP_CELLS: f64 = 0.125;
 
+/// Ceiling on one march step, in marching-cubes cells.
+///
+/// ⚠⚠ Sphere-marching assumes the field is a DISTANCE BOUND, and on the canal
+/// path it is not. `canal::CanalFeatureSdf` evaluates `base_distance +
+/// inset_field`, so its gradient carries the ridge displacement's on top of the
+/// base's unit one, and a step of the field's own value can carry the cursor
+/// past real material. ⛔ `Solid::lipschitz_factor` cannot rescue this — it
+/// reports 1.0 for every `from_sdf` node, this one included.
+///
+/// One cell is the honest ceiling. Material thinner than the mesher's own grid
+/// does not survive meshing, so a march that never steps further than a cell
+/// cannot skip anything the EMITTED plug would have carried — which is the only
+/// plug either question is about.
+const PEDESTAL_MARCH_MAX_STEP_CELLS: f64 = 1.0;
+
 /// The rays the pedestal is decided on: the column's four footprint
 /// corners and its centre, marched along the lock's axis.
 ///
@@ -560,6 +575,8 @@ struct PedestalMarch<'a> {
     rays: [Vector3<f64>; 5],
     /// Smallest step the march will take (meters).
     min_step_m: f64,
+    /// Largest step the march will take (meters).
+    max_step_m: f64,
     /// Depth past which [`Self::depth_where_all_reach`] gives up (meters).
     limit_m: f64,
 }
@@ -617,7 +634,7 @@ impl PedestalMarch<'_> {
             if field <= target {
                 return Some(depth);
             }
-            depth += (field - target).max(self.min_step_m);
+            depth += (field - target).clamp(self.min_step_m, self.max_step_m);
         }
         None
     }
@@ -723,15 +740,22 @@ pub fn build_plug_lock_pedestal_transform(
                 -lateral - binormal,
             ],
             min_step_m: PEDESTAL_MARCH_MIN_STEP_CELLS * mesh_cell_size_m,
+            max_step_m: PEDESTAL_MARCH_MAX_STEP_CELLS * mesh_cell_size_m,
             limit_m,
         }
     };
-    // ⚠ Asked over the LOCK's own footprint, which is WIDER than the column's.
-    // The question here is whether the frustum touches the plug, and the
-    // frustum is `pin_base_half_extents_m` across at its base — measuring it
-    // with the narrower column would miss material the lock does reach, and
-    // answering "orphaned" there would add a column to a cast that needs none.
-    if march(spec.lock_spec.pin_base_half_extents_m)
+    // ⚠⚠ Asked over the COLUMN's footprint, NOT the lock's wider base, and
+    // that is MEASURED rather than reasoned. The frustum is
+    // `pin_base_half_extents_m` across, so asking over the lock's own width
+    // looks more faithful — it is not. On `~/scans/base_mold` at 7 mm of inset
+    // it turns a cast into a refusal: the extra width finds the thin tapering
+    // rind at the lock's periphery, calls the lock fused, and withholds the
+    // column the mesher then proves it needed.
+    //
+    // ⇒ The question is not whether the frustum meets the plug's FIELD. It is
+    // whether it will meet the plug the mesher EMITS, and material near the
+    // axis is the part that reliably survives meshing.
+    if march(half_extents_m)
         .depth_where_any_reaches(0.0, -half_length_m, half_length_m)
         .is_some()
     {
@@ -992,6 +1016,7 @@ mod tests {
     use crate::prismatic_pin::build_prismatic_pin_sdf;
     use crate::ribbon::{Ribbon, SplitNormal};
     use approx::assert_abs_diff_eq;
+    use cf_design::Sdf;
     use nalgebra::Point3;
 
     /// Test-only SDF-side shim — re-derives the plug-lock pin SDF
@@ -1528,6 +1553,58 @@ mod tests {
         }
     }
 
+    /// ★★★ THE STEP CEILING, and the field that needs it.
+    ///
+    /// ⚠ Sphere-marching is only safe while the field is a distance BOUND.
+    /// The canal path's is not — `CanalFeatureSdf` is `base_distance +
+    /// inset_field` — so a step of the field's own value can clear real
+    /// material. This fixture is that shape, exaggerated: a field reporting
+    /// THREE TIMES the true distance, over a plug carrying a thin slab inside
+    /// the lock's span and its bulk far above.
+    ///
+    /// Uncapped, one step from the bottom of the lock reads 15 mm and lands
+    /// past the top of it: the slab is never seen, the lock is called orphaned
+    /// and a column is grown through a plug the lock is already sitting in.
+    /// Capped at a cell, the march walks onto the slab and finds it.
+    ///
+    /// ⚠ The slab is 2 mm thick against a 1 mm cell — thinner than the grid
+    /// and the mesher would drop it anyway, which is exactly why the ceiling
+    /// is a cell and not something smaller.
+    #[test]
+    fn a_field_that_overstates_distance_cannot_step_over_the_lock() {
+        /// Reports three times the distance its inner solid does — the canal
+        /// field's shape, with the exaggeration turned up.
+        struct Overstated(Solid);
+        impl Sdf for Overstated {
+            fn eval(&self, p: Point3<f64>) -> f64 {
+                self.0.evaluate(&p) * 3.0
+            }
+            fn grad(&self, p: Point3<f64>) -> Vector3<f64> {
+                self.0.gradient(&p)
+            }
+        }
+
+        // A slab across depths 1-3 mm (inside the lock's ±4 mm), plus the bulk
+        // from 14 mm up, so a march that misses the slab still finds something
+        // to stand a column on — and emits one.
+        let slab = Solid::cuboid(Vector3::new(0.020, 0.020, 0.001))
+            .translate(Vector3::new(0.0, 0.0, -0.052));
+        let honest = slab.union(box_plug(-0.040));
+        let bounds = honest.bounds().expect("a bounded plug");
+        let overstated = Solid::from_sdf(Overstated(honest.clone()), bounds);
+        let ribbon = iter1_like_ribbon();
+        assert!(
+            build_plug_lock_pedestal_transform(&honest, &ribbon, PEDESTAL_TEST_CELL_M).is_none(),
+            "the control: the lock is sitting in the slab, so there is nothing to bridge",
+        );
+        assert!(
+            build_plug_lock_pedestal_transform(&overstated, &ribbon, PEDESTAL_TEST_CELL_M)
+                .is_none(),
+            "and an overstated field must not step over that slab and decide \
+             the lock is orphaned",
+        );
+    }
+
     /// The march's loop bound, pinned directly.
     ///
     /// ⚠ Nothing else can. Every fixture above converges in one or two
@@ -1549,6 +1626,7 @@ mod tests {
             pose: &pose,
             rays: [Vector3::zeros(); 5],
             min_step_m,
+            max_step_m: 1.0,
             limit_m: 1.0,
         };
         assert_eq!(
