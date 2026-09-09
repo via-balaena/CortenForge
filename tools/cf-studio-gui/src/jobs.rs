@@ -349,11 +349,12 @@ struct FitRun {
 /// Step 3's fit check: the run in flight, and the last answer with the question
 /// it answers.
 ///
-/// ⚠ Both halves live here rather than on [`Studio`], for two reasons.
-/// `Studio::next`/`back` clear the step message, so a verdict kept there would
-/// vanish on a trip to step 4 and back while the fields it describes had not
-/// moved. And keeping the answer beside its question puts the staleness rule in
-/// one place — [`PlugFitJob::view`].
+/// ⚠ Both halves live here rather than on [`Studio`]. This is the one job that
+/// leaves [`Studio::busy`] alone, so the operator can walk to another step while
+/// it runs — and [`Studio::say`] stamps the step being VIEWED, so the verdict
+/// would be filed against wherever they had wandered to. Keeping the answer
+/// beside its question also puts the staleness rule in one place —
+/// [`PlugFitJob::view`].
 #[derive(Resource, Default)]
 pub(crate) struct PlugFitJob {
     running: Option<FitRun>,
