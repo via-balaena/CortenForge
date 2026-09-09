@@ -1804,10 +1804,7 @@ visible = true
 
     /// Load `toml` through the design picker and hand back the finished app.
     fn app_after_loading(label: &str, toml: &str) -> App {
-        let dir =
-            std::env::temp_dir().join(format!("cf-studio-gui-{label}-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("the fixture dir must be writable");
-        let design = dir.join("fixture.design.toml");
+        let design = crate::save::tests::temp_dir(label).join("fixture.design.toml");
         std::fs::write(&design, toml).expect("the fixture must be writable");
 
         let mut app = App::new();

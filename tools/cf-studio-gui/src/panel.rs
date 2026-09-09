@@ -1819,17 +1819,7 @@ pub(crate) mod tests {
         messages.push(format_fit_failure("scan.cleaned.stl: no such file"));
         // Step 4's inexact-design warning — the first message in the app to
         // carry U+26A0 `⚠`, which is exactly the shape of the U+2713 miss above.
-        messages.push(
-            cf_studio_gui::format_inexact_design(
-                &cf_studio_gui::LayerStack::default(),
-                &[cf_studio_core::LayerDraft {
-                    thickness_m: 0.0175,
-                    material_key: "ECOFLEX_00_30".to_string(),
-                    slacker_fraction: 0.25,
-                }],
-            )
-            .expect("a stack the steppers cannot hold must warn"),
-        );
+        messages.push(inexact_design_note());
 
         for message in messages {
             assert_renders(&harness.ctx, &message);
@@ -4185,6 +4175,35 @@ pub(crate) mod tests {
 
     /// The buttons under the cards, in the order the pre-port screen had them.
     const ACTIONS: [&str; 3] = ["+ Add layer", "Use this design", "…or load a file"];
+
+    /// The note the lib writes when the rows cannot hold a loaded design —
+    /// `base_mold`'s 17.5 mm layer against the opening stack's 18.
+    fn inexact_design_note() -> String {
+        cf_studio_gui::format_inexact_design(
+            &cf_studio_gui::LayerStack::default(),
+            &[cf_studio_core::LayerDraft {
+                thickness_m: 0.0175,
+                material_key: "ECOFLEX_00_30".to_string(),
+                slacker_fraction: 0.25,
+            }],
+        )
+        .expect("a stack the steppers cannot hold must warn")
+    }
+
+    /// ★ That note quotes this screen's commit button by name, and the two live
+    /// in different files — the lib cannot see a label the panel draws.
+    /// `ACTIONS` is pinned to the drawn buttons by
+    /// `the_layer_screen_is_laid_out_inside_the_body_column`, so tying the note
+    /// to it is the only thing stopping a renamed button from leaving the note
+    /// pointing at a control that is no longer there.
+    #[test]
+    fn the_inexact_design_note_names_the_button_that_would_write_the_rows() {
+        let note = inexact_design_note();
+        assert!(
+            note.contains(ACTIONS[1]),
+            "the note must name the button it warns about: {note}"
+        );
+    }
 
     /// The column the body lays out in, and the three action buttons' rects
     /// inside it, in the order they are drawn.
