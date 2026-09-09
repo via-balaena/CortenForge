@@ -2447,6 +2447,58 @@ pub(crate) mod tests {
         }
     }
 
+    /// ★★★ The refusal reaches the SCREEN, on its own step and no other.
+    ///
+    /// ⚠ Without this the fix is only half gated. `Studio::note_for` is
+    /// covered — cargo-mutants catches its `==`/`!=` — but nothing checked that
+    /// the panel READS it: reverting this call site to the unfiltered note, the
+    /// exact behaviour the fix removes, left all 332 tests green.
+    ///
+    /// Two-sided, and both halves are needed. Assert only presence and the
+    /// unfiltered read passes; assert only absence and so does a panel that
+    /// draws no message at all.
+    #[test]
+    fn a_refusal_is_painted_on_its_own_step_and_on_no_other() {
+        // ⚠ A needle nothing else on the screen paints. Asserted absent on
+        // another step below, which is what keeps it a needle rather than a
+        // phrase the chrome supplies.
+        const REFUSAL: &str = "the floor lock did not fuse";
+
+        let mut app = app_running_the_wizard();
+        let mut studio = crate::molds::tests::viewing_step_5_with(1);
+        studio.say(Err(REFUSAL.to_string()));
+        app.insert_resource(studio);
+        settle(&mut app);
+        assert!(
+            painted_texts(&app)
+                .iter()
+                .any(|text| text.contains(REFUSAL)),
+            "the step that refused must show it: {:?}",
+            painted_texts(&app)
+        );
+
+        app.world_mut().resource_mut::<Studio>().back();
+        settle(&mut app);
+        assert!(
+            !painted_texts(&app)
+                .iter()
+                .any(|text| text.contains(REFUSAL)),
+            "and no other step may: {:?}",
+            painted_texts(&app)
+        );
+
+        app.world_mut().resource_mut::<Studio>().next();
+        settle(&mut app);
+        assert!(
+            painted_texts(&app)
+                .iter()
+                .any(|text| text.contains(REFUSAL)),
+            "coming back, it is still there — paging hides a refusal, never \
+             destroys it: {:?}",
+            painted_texts(&app)
+        );
+    }
+
     /// The summary is derived from the project, not stored — so it must appear
     /// on a screen that was never the one the cast landed on.
     #[test]
