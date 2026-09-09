@@ -1677,6 +1677,15 @@ visible = true
         assert!(apply_scan(&mut p, Path::new("/no/such/scan.stl")).is_err());
     }
 
+    /// The piece DESIGN_TOML is written for — a 5 mm cavity, so a fixture
+    /// pairing the two carries no inset clash.
+    fn shaped_at_5mm() -> cf_studio_core::PlugDraft {
+        cf_studio_core::PlugDraft {
+            cavity_inset_m: 0.005,
+            ..cf_studio_core::PlugDraft::default()
+        }
+    }
+
     /// A design file walked onto `plug`, and what came back.
     fn design_file_onto(
         label: &str,
@@ -1711,13 +1720,9 @@ visible = true
     /// was shown — silently, and with the fit check's ✔ still on screen.
     #[test]
     fn a_design_files_cavity_inset_does_not_override_the_shaped_piece() {
-        let shaped = cf_studio_core::PlugDraft {
-            cavity_inset_m: 0.005,
-            ..cf_studio_core::PlugDraft::default()
-        };
         // DESIGN_TOML says 5 mm; make the file disagree with the plug.
         let toml = DESIGN_TOML.replace("inset_m = 0.005", "inset_m = 0.012");
-        let (project, message) = design_file_onto("inset-clash", &toml, shaped);
+        let (project, message) = design_file_onto("inset-clash", &toml, shaped_at_5mm());
 
         assert_eq!(
             project.design().map(|d| d.cavity_inset_m),
@@ -1755,11 +1760,7 @@ visible = true
     /// case says nothing extra — or the warning stops meaning anything.
     #[test]
     fn a_design_file_that_agrees_with_the_piece_is_reported_plainly() {
-        let shaped = cf_studio_core::PlugDraft {
-            cavity_inset_m: 0.005,
-            ..cf_studio_core::PlugDraft::default()
-        };
-        let (_, message) = design_file_onto("inset-agrees", DESIGN_TOML, shaped);
+        let (_, message) = design_file_onto("inset-agrees", DESIGN_TOML, shaped_at_5mm());
 
         assert_eq!(
             message, "✔ Design set: 1 layer(s), 5.0 mm cavity inset.",
@@ -1783,9 +1784,15 @@ visible = true
         apply_scan(&mut p, &stl).unwrap();
         apply_prep(&mut p, &cleaned, &prep).unwrap();
         assert!(p.is_complete(Step::CleanScan));
-        apply_plug(&mut p, cf_studio_core::PlugDraft::default()).unwrap();
+        // ⚠ 5 mm, matching DESIGN_TOML's own `inset_m`. A plug that
+        // disagreed would put the ignored-inset note on every message
+        // these fixtures produce, about a clash they are not testing.
+        apply_plug(&mut p, shaped_at_5mm()).unwrap();
         let msg = apply_design(&mut p, &design).unwrap();
-        assert!(msg.contains("Design set"), "got: {msg}");
+        // Exact, not `contains`: a fixture whose plug drifts off DESIGN_TOML's
+        // own inset appends the ignored-inset note here, and a substring match
+        // stays green while the fixture quietly stops being the case it names.
+        assert_eq!(msg, "✔ Design set: 1 layer(s), 5.0 mm cavity inset.");
         assert!(p.is_complete(Step::DesignLayers));
 
         let _ = std::fs::remove_dir_all(&d);
@@ -1872,7 +1879,10 @@ visible = true
 
         apply_scan(&mut p, &stl).unwrap();
         apply_prep(&mut p, &cleaned, &prep).unwrap();
-        apply_plug(&mut p, cf_studio_core::PlugDraft::default()).unwrap();
+        // ⚠ 5 mm, matching DESIGN_TOML's own `inset_m`. A plug that
+        // disagreed would put the ignored-inset note on every message
+        // these fixtures produce, about a clash they are not testing.
+        apply_plug(&mut p, shaped_at_5mm()).unwrap();
         apply_design(&mut p, &design).unwrap();
 
         // Molds made, not yet exported → "ready to save N".
@@ -2622,7 +2632,10 @@ visible = true
         let mut p = Project::new("t");
         apply_scan(&mut p, &stl).unwrap();
         apply_prep(&mut p, &cleaned, &prep).unwrap();
-        apply_plug(&mut p, cf_studio_core::PlugDraft::default()).unwrap();
+        // ⚠ 5 mm, matching DESIGN_TOML's own `inset_m`. A plug that
+        // disagreed would put the ignored-inset note on every message
+        // these fixtures produce, about a clash they are not testing.
+        apply_plug(&mut p, shaped_at_5mm()).unwrap();
         apply_design(&mut p, &design).unwrap();
         p.set_molds(MoldOutputs {
             out_dir: PathBuf::from("/tmp/out"),
