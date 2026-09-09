@@ -157,7 +157,7 @@
 //! [`Solid::union`]: cf_design::Solid::union
 
 use cf_design::{Aabb, Solid};
-use nalgebra::{Point3, UnitVector3, Vector2, Vector3};
+use nalgebra::{Point3, UnitVector3, Vector3};
 
 use mesh_repair::components::find_connected_components;
 use mesh_types::IndexedMesh;
@@ -722,27 +722,31 @@ pub fn build_plug_lock_pedestal_transform(
     ribbon: &Ribbon,
     mesh_cell_size_m: f64,
 ) -> Option<MatingTransform> {
+    // ⚠ A cell size that is not a length sizes no engagement — and worse,
+    // `f64::clamp` PANICS on the bounds a negative one produces, because
+    // `PEDESTAL_MARCH_MIN_STEP_CELLS * cell` is then GREATER than
+    // `PEDESTAL_MARCH_MAX_STEP_CELLS * cell`. This crate answers with values.
+    if !(mesh_cell_size_m.is_finite() && mesh_cell_size_m > 0.0) {
+        return None;
+    }
     let (spec, pose) = build_plug_lock_pose(ribbon)?;
     let half_length_m = spec.lock_spec.pin_half_length_m;
     let half_extents_m = spec.lock_spec.pin_tip_half_extents_m;
-    let limit_m = far_side_of(&plug.bounds()?, &pose);
-    let march = |half_extents: Vector2<f64>| {
-        let lateral = pose.lateral_unit.into_inner() * half_extents.x;
-        let binormal = pose.axis_unit.cross(&pose.lateral_unit) * half_extents.y;
-        PedestalMarch {
-            plug,
-            pose: &pose,
-            rays: [
-                Vector3::zeros(),
-                lateral + binormal,
-                lateral - binormal,
-                -lateral + binormal,
-                -lateral - binormal,
-            ],
-            min_step_m: PEDESTAL_MARCH_MIN_STEP_CELLS * mesh_cell_size_m,
-            max_step_m: PEDESTAL_MARCH_MAX_STEP_CELLS * mesh_cell_size_m,
-            limit_m,
-        }
+    let lateral = pose.lateral_unit.into_inner() * half_extents_m.x;
+    let binormal = pose.axis_unit.cross(&pose.lateral_unit) * half_extents_m.y;
+    let march = PedestalMarch {
+        plug,
+        pose: &pose,
+        rays: [
+            Vector3::zeros(),
+            lateral + binormal,
+            lateral - binormal,
+            -lateral + binormal,
+            -lateral - binormal,
+        ],
+        min_step_m: PEDESTAL_MARCH_MIN_STEP_CELLS * mesh_cell_size_m,
+        max_step_m: PEDESTAL_MARCH_MAX_STEP_CELLS * mesh_cell_size_m,
+        limit_m: far_side_of(&plug.bounds()?, &pose),
     };
     // ⚠⚠ Asked over the COLUMN's footprint, NOT the lock's wider base, and
     // that is MEASURED rather than reasoned. The frustum is
@@ -755,13 +759,13 @@ pub fn build_plug_lock_pedestal_transform(
     // ⇒ The question is not whether the frustum meets the plug's FIELD. It is
     // whether it will meet the plug the mesher EMITS, and material near the
     // axis is the part that reliably survives meshing.
-    if march(half_extents_m)
+    if march
         .depth_where_any_reaches(0.0, -half_length_m, half_length_m)
         .is_some()
     {
         return None;
     }
-    let top_m = march(half_extents_m)
+    let top_m = march
         .depth_where_all_reach(-PEDESTAL_ENGAGEMENT_CELLS * mesh_cell_size_m, half_length_m)?;
     Some(MatingTransform::UnionLockPedestal {
         params: LockPedestalParams {
@@ -1603,6 +1607,54 @@ mod tests {
             "and an overstated field must not step over that slab and decide \
              the lock is orphaned",
         );
+    }
+
+    /// ★ THE TRIGGER'S UPPER BOUND: material just PAST the lock's tip is not
+    /// material the lock reaches.
+    ///
+    /// ⚠ `cargo-mutants` turned `depth > end` into `depth == end`, which lets
+    /// the march run past the lock's span and pick up whatever it finds above
+    /// — and every other fixture here survived it, because their plugs start
+    /// far enough up that the cursor happened to land on `end` exactly. That
+    /// is floating-point luck, not a gate.
+    ///
+    /// This plug's base sits at 5 mm where the lock's tip reaches 4, so the
+    /// lock is orphaned by 1 mm and a column is due. A march that overruns its
+    /// end finds the plug, calls the lock fused, and withholds it.
+    #[test]
+    fn material_one_millimetre_past_the_locks_tip_is_not_reached() {
+        // ⚠⚠ 0.3 mm, NOT `PEDESTAL_TEST_CELL_M`. The step ceiling is one cell,
+        // so a 1 mm cell walks the lock's 8 mm span in exact 1 mm strides and
+        // lands ON the end — which is the floating-point luck that let a
+        // `depth == end` bound pass for a `depth > end` one. 0.3 mm does not
+        // divide 8, so the cursor OVERSHOOTS the end and only a bound that
+        // stops it stops the march.
+        let transforms = add_plug_pins(box_plug(-0.049), &iter1_like_ribbon(), Some(0.000_3)).1;
+        let pedestal = pedestal_of(&transforms)
+            .expect("a plug clear of the lock by 1 mm is still clear of it");
+        assert_eq!(
+            pedestal.axial_span_m.0, 0.0,
+            "and the column still starts at the cap plane",
+        );
+    }
+
+    /// ⚠ PUBLIC API, on a crate whose posture is errors-as-values.
+    ///
+    /// A cell size that is not a positive length sizes no engagement, and a
+    /// NEGATIVE one inverts the march's step bounds — `f64::clamp` panics when
+    /// its minimum exceeds its maximum, which `0.125 * cell` does against
+    /// `1.0 * cell` the moment `cell` goes negative. Measured 2026-09-09: it
+    /// panicked before the guard this pins.
+    #[test]
+    fn a_cell_size_that_is_not_a_length_yields_no_column() {
+        let plug = box_plug(-0.040);
+        let ribbon = iter1_like_ribbon();
+        for cell_m in [-0.001, 0.0, f64::NAN, f64::INFINITY] {
+            assert!(
+                build_plug_lock_pedestal_transform(&plug, &ribbon, cell_m).is_none(),
+                "a cell size of {cell_m} is not a length: no column, and no panic",
+            );
+        }
     }
 
     /// The march's loop bound, pinned directly.
