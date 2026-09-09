@@ -1810,22 +1810,28 @@ visible = true
 
     /// Load `toml` through the design picker and hand back the finished app.
     fn app_after_loading(label: &str, toml: &str) -> App {
-        let design = crate::save::tests::temp_dir(label).join("fixture.design.toml");
-        std::fs::write(&design, toml).expect("the fixture must be writable");
-
         let mut app = App::new();
         app.add_plugins(TaskPoolPlugin::default())
             .insert_resource(ready_for_a_design())
             .init_resource::<PrintJob>()
             .init_resource::<ScanEdit>()
             .init_resource::<DesignControls>()
-            .insert_resource(PendingDialog::resolved(
-                DialogKind::DesignFile,
-                Some(design),
-            ))
+            .init_resource::<PendingDialog>()
             .add_systems(Update, poll_dialogs);
-        run_until_answered(&mut app);
+        load_into(&mut app, label, toml);
         app
+    }
+
+    /// Put `toml` through the design picker of an app already running, so a
+    /// second load can be made to land on the state a first one left.
+    fn load_into(app: &mut App, label: &str, toml: &str) {
+        let design = crate::save::tests::temp_dir(label).join("fixture.design.toml");
+        std::fs::write(&design, toml).expect("the fixture must be writable");
+        app.insert_resource(PendingDialog::resolved(
+            DialogKind::DesignFile,
+            Some(design),
+        ));
+        run_until_answered(app);
     }
 
     /// ★★ The design the app is *for* is the one it cannot show. Both halves
@@ -1850,6 +1856,61 @@ visible = true
         assert!(
             message.contains("3 layer(s)") && message.contains("Not exactly this file"),
             "the message reports the load AND that the rows are not it: {message}"
+        );
+    }
+
+    /// ★ The third way out of a design pick, and the one with no gate: not a
+    /// cancel, not a success. The rows are this PR's whole subject, and a file
+    /// that did not load must not move them — a screen showing a stack from a
+    /// file the message says failed is worse than the bug this fixed.
+    ///
+    /// ⚠ A **good** load first, deliberately. Written against a fresh app the
+    /// rows are the opening stack, so "left alone" and "reset to the opening
+    /// stack" are the same assertion and two mutants walked through it.
+    ///
+    /// The rejection is also why `LayerStack::from_drafts` can never return
+    /// `None` here: the loader refuses an unknown silicone before the editor
+    /// is ever asked to show one.
+    #[test]
+    fn a_design_file_that_does_not_load_moves_neither_the_project_nor_the_rows() {
+        let mut app = app_after_loading("rejected-first", ONE_LAYER_DESIGN);
+        // ⚠ Then edit, as "+ Add layer" does. Without an edit the rows equal
+        // the project's design, and re-seeding them on the failure path is
+        // invisible — a mutant that did exactly that walked through this test.
+        // The edit is also the case that matters: a tweak in progress must
+        // survive picking the wrong file.
+        app.world_mut()
+            .resource_mut::<DesignControls>()
+            .layers
+            .add();
+        let edited = app.world().resource::<DesignControls>().layers.clone();
+        assert_eq!(edited.rows().len(), 2, "the fixture must carry an edit");
+
+        load_into(
+            &mut app,
+            "rejected-second",
+            &ONE_LAYER_DESIGN.replace("ECOFLEX_00_30", "NOT_A_SILICONE"),
+        );
+
+        let world = app.world();
+        assert_eq!(
+            world.resource::<DesignControls>().layers,
+            edited,
+            "the rows still carry the edit, untouched by the file that failed",
+        );
+        assert_eq!(
+            world
+                .resource::<Studio>()
+                .project
+                .design()
+                .map(|d| d.layers.len()),
+            Some(1),
+            "and so is the project's design",
+        );
+        let reported = &world.resource::<Studio>().message;
+        assert!(
+            matches!(reported, Some(Err(text)) if text.contains("NOT_A_SILICONE")),
+            "with the loader's own reason on screen: {reported:?}",
         );
     }
 
