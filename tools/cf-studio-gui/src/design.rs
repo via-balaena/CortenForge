@@ -32,17 +32,21 @@ pub(crate) fn drive_design_controls(mut controls: ResMut<DesignControls>, studio
     if controls.followed.as_deref() == committed {
         return;
     }
-    controls.followed = committed.map(<[LayerDraft]>::to_vec);
-    match committed.map(LayerStack::from_drafts) {
-        // Nothing committed — the stack a fresh session opens on.
-        None => controls.layers = LayerStack::default(),
-        Some(Some(rows)) => controls.layers = rows,
-        // ▶ A committed design naming a silicone this build no longer carries.
-        // The rows cannot show it, so they are left as they were rather than
-        // replaced by a stack that is not this design. Unreachable until a
-        // project is loaded from disk, and nothing says so on screen yet — the
-        // resume action is where that message belongs.
-        Some(None) => {}
+    let Some(layers) = committed else {
+        // ⚠ Nothing committed means nothing to follow, and the rows are then
+        // the user's own — see [`crate::shape::drive_shape_controls`]. The
+        // stamp still has to go, or the next frame re-runs this one.
+        controls.followed = None;
+        return;
+    };
+    controls.followed = Some(layers.to_vec());
+    // ▶ `from_drafts` is `None` for a design naming a silicone this build no
+    // longer carries. The rows cannot show it, so they are left as they were
+    // rather than replaced by a stack that is not this design. Unreachable
+    // until a project is loaded from disk, and nothing says so on screen yet —
+    // the resume action is where that message belongs.
+    if let Some(rows) = LayerStack::from_drafts(layers) {
+        controls.layers = rows;
     }
 }
 
@@ -174,11 +178,12 @@ mod tests {
         assert_eq!(after.layers.rows().len(), 2, "the added row stands");
     }
 
-    /// ⚠ The other side of it: `set_plug` clears the design, so the rows must
-    /// go back to the stack a fresh screen opens on rather than keep a stack
-    /// the project no longer holds.
+    /// ⚠ The other side of it, and it is a *leave alone*. `set_plug` clears
+    /// the design, but the rows are an editor: wiping them because step 3 was
+    /// redone would discard the stack the user built, which is what the screen
+    /// did before this reconcile existed.
     #[test]
-    fn a_design_the_project_dropped_puts_the_rows_back_to_the_opening_stack() {
+    fn dropping_the_design_leaves_the_rows_for_the_user() {
         let mut project = designed(&[("DRAGON_SKIN_10A", 0.002)]);
         let followed = reconcile(on_step_4(project.clone()), DesignControls::default());
         assert_eq!(shown(&followed), vec![2], "the fixture must start followed");
@@ -186,13 +191,14 @@ mod tests {
         project
             .set_plug(PlugDraft::default())
             .expect("re-shaping clears the design");
-        let after = reconcile(on_step_4(project), followed);
+        let after = reconcile(on_step_4(project.clone()), followed);
 
-        assert_eq!(
-            after.layers,
-            LayerStack::default(),
-            "back to what a fresh screen opens on"
-        );
+        assert_eq!(shown(&after), vec![2], "the rows are still the user's");
+        // Re-running it must be a no-op, or the stamp was not cleared.
+        let mut editing = reconcile(on_step_4(project.clone()), after);
+        editing.layers.add();
+        let settled = reconcile(on_step_4(project), editing);
+        assert_eq!(settled.layers.rows().len(), 2, "and still editable");
     }
 
     /// ▶ The branch `jobs.rs` cannot reach: the design picker refuses an
@@ -239,6 +245,30 @@ mod tests {
             after.layers.rows().len(),
             LayerStack::default().rows().len() + 1,
             "the row added after the commit is still there"
+        );
+    }
+
+    /// ⚠ See [`crate::shape::tests::a_dropped_plug_takes_its_stamp_with_it`]:
+    /// a stamp left behind makes the design that matches it invisible to the
+    /// rows, and "Use this design" then writes over it.
+    #[test]
+    fn a_dropped_design_takes_its_stamp_with_it() {
+        let stack = [("DRAGON_SKIN_10A", 0.002)];
+        let mut project = designed(&stack);
+        let followed = reconcile(on_step_4(project.clone()), DesignControls::default());
+
+        project
+            .set_plug(PlugDraft::default())
+            .expect("re-shaping clears the design");
+        let mut edited = reconcile(on_step_4(project), followed);
+        edited.layers.add();
+
+        let after = reconcile(on_step_4(designed(&stack)), edited);
+
+        assert_eq!(
+            shown(&after),
+            vec![2],
+            "the rows follow the design that landed, not the stamp of the one that left"
         );
     }
 

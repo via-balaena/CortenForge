@@ -86,7 +86,15 @@ pub(crate) fn drive_shape_controls(mut controls: ResMut<ShapeControls>, studio: 
     if controls.followed.as_ref() == plug {
         return;
     }
-    *controls = plug.map_or_else(ShapeControls::default, ShapeControls::from_plug);
+    match plug {
+        Some(plug) => *controls = ShapeControls::from_plug(plug),
+        // ⚠ Nothing committed means nothing to follow, and the fields are then
+        // the user's own. Re-picking the scan or re-cleaning it clears the
+        // plug, and resetting the screen at that point would throw away numbers
+        // they typed rather than reproduce a project. The stamp still goes: it
+        // names an artifact that no longer exists.
+        None => controls.followed = None,
+    }
 }
 
 /// The ridge editor's fields: a master switch, the grip rings, then a toggle
@@ -825,12 +833,15 @@ pub(crate) mod tests {
         );
     }
 
-    /// ⚠ The other side of the gate above. `set_scan` clears the plug, so the
-    /// fields must go back to a fresh screen rather than keep the piece the
-    /// previous scan was shaped into — Continue would otherwise commit the old
-    /// scan's ridges onto the new one.
+    /// ⚠ The other side of the gate above, and it is a *leave alone*.
+    /// `set_scan` clears the plug, but the fields are an editor, not a display
+    /// of the project: wiping them because an upstream step was redone would
+    /// discard numbers the user typed — which is what the screen did before
+    /// this reconcile existed, and what it must go on doing.
+    ///
+    /// ⚠ The stamp still has to go, or the next frame re-runs this one.
     #[test]
-    fn a_new_scan_puts_the_fields_back_to_a_fresh_screen() {
+    fn dropping_the_plug_leaves_the_fields_for_the_user() {
         let shaped = a_shaped_screen();
         let mut project = shaped_into(&shaped);
         let followed = reconcile(shaping(project.clone()), ShapeControls::default());
@@ -843,12 +854,45 @@ pub(crate) mod tests {
         project.set_scan(ScanInput {
             source_path: PathBuf::from("another.stl"),
         });
-        let after = reconcile(shaping(project), followed);
+        let after = reconcile(shaping(project.clone()), followed);
 
         assert_eq!(
             after.plug_draft(),
-            ShapeControls::default().plug_draft(),
-            "back to what a launch hands over"
+            shaped.plug_draft(),
+            "the numbers on screen are still the user's"
+        );
+        // Re-running it must be a no-op, or the stamp was not cleared.
+        let mut typing = reconcile(shaping(project.clone()), after);
+        typing.cavity_mm.state = StepBoxState::new(7);
+        let settled = reconcile(shaping(project), typing);
+        assert_eq!(settled.cavity_mm.value(), 7, "and still editable");
+    }
+
+    /// ⚠ The stamp goes with the plug it named. Left behind, a project
+    /// carrying that very plug reads as "already followed" and the fields
+    /// never move to it — Continue then commits whatever is on screen over the
+    /// piece that was loaded. Reachable the moment resume exists: pick a scan,
+    /// resume its project, pick the same scan again.
+    #[test]
+    fn a_dropped_plug_takes_its_stamp_with_it() {
+        let shaped = a_shaped_screen();
+        let mut project = shaped_into(&shaped);
+        let followed = reconcile(shaping(project.clone()), ShapeControls::default());
+
+        // The scan is re-picked, which clears the plug and leaves the fields.
+        project.set_scan(ScanInput {
+            source_path: PathBuf::from("another.stl"),
+        });
+        let mut edited = reconcile(shaping(project), followed);
+        edited.cavity_mm.state = StepBoxState::new(7);
+
+        // Then a project carrying that same piece arrives.
+        let after = reconcile(shaping(shaped_into(&shaped)), edited);
+
+        assert_eq!(
+            after.cavity_mm.value(),
+            12,
+            "the fields follow the plug that landed, not the stamp of the one that left"
         );
     }
 
