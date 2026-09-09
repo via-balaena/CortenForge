@@ -104,8 +104,8 @@ impl Plugin for StudioPlugin {
                     // follows the preview. Chained because each reads what the
                     // one before it wrote, and a frame's lag between them is a
                     // frame of the wrong body on screen. After `poll_dialogs`
-                    // for `show_scan`'s reason: a landing scan resets the
-                    // project, and the fields with it.
+                    // for `show_scan`'s reason: that is where the project
+                    // changes, and the whole chain is downstream of it.
                     (
                         drive_shape_controls,
                         drive_plug_preview,
@@ -114,11 +114,13 @@ impl Plugin for StudioPlugin {
                     )
                         .chain()
                         .after(poll_dialogs),
-                    // Step 4's rows, kept in step with the committed design,
-                    // and step 5's part picker likewise. Not chained with the
-                    // above: each writes only its own resource, and nothing
-                    // this frame reads it.
+                    // Step 4's rows, kept in step with the committed design.
+                    // Not chained with the above: it writes only its own
+                    // resource, and nothing this frame reads it.
                     drive_design_controls.after(poll_dialogs),
+                    // Step 5's part picker, kept in step with the committed
+                    // design. Not chained with the preview above: it writes
+                    // only its own resource, and nothing this frame reads it.
                     drive_part_picker,
                     // Immediate mode: gizmos are re-emitted every frame, so
                     // this one is NOT gated on the resource changing.
