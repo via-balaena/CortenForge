@@ -1363,13 +1363,24 @@ pub fn fit_view<'a>(
 /// The fit verdict as step 3's status line: `Ok` reads as settled, `Err` as a
 /// refusal.
 ///
+/// ⚠⚠ THE TWO DIRECTIONS ARE NOT EQUALLY STRONG, and the wording follows that.
+/// A refusal is sound: the cast composes the same plug and declines the same
+/// way. A pass is NOT — `plug_fit_verdict` runs the compose half only, and the
+/// export F4-gates the mesh afterwards and can still refuse
+/// (`CastError::PrintabilityCritical`). `cf-studio-engine`'s own gate is
+/// one-directional for exactly this reason. So the settled line claims what was
+/// actually checked — the plug came out in one piece — and never that the cast
+/// will succeed.
+///
 /// ⚠ The refusal carries the cast's own words verbatim. They already name the
 /// operator's levers, and a paraphrase here would be a second explanation of
 /// the same failure, free to drift from the one the cast will give.
 pub fn format_fit_verdict(fit: &PlugFit, plug: &PlugDraft) -> StepOutcome {
     let inset_mm = plug.cavity_inset_m * 1000.0;
     match fit {
-        PlugFit::Casts => Ok(format!("✔ A {inset_mm:.1} mm inset casts.")),
+        PlugFit::Casts => Ok(format!(
+            "✔ A {inset_mm:.1} mm inset leaves the plug in one piece."
+        )),
         PlugFit::WillNotCast { reason } => Err(format!(
             "✖ A {inset_mm:.1} mm inset will not cast: {reason}"
         )),
