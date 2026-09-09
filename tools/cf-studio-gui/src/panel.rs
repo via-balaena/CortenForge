@@ -14,9 +14,9 @@ use bevy_egui::{EguiContexts, egui};
 use cf_studio_core::{LayerDraft, PlugDraft, Step};
 use cf_studio_gui::{
     BoundedField, CENDRILLON_CAST_MODE, FitQuestion, FitView, LayerRow, RingRow, Silicone,
-    cell_size_m_for_quality, format_fit_progress, format_fit_verdict, format_molds_summary,
-    format_pour_active, format_pour_plan, format_scan_stats, nav_state, pour_countdown,
-    print_step_summary, step_rows,
+    cell_size_m_for_quality, format_fit_failure, format_fit_progress, format_fit_verdict,
+    format_molds_summary, format_pour_active, format_pour_plan, format_scan_stats, nav_state,
+    pour_countdown, print_step_summary, step_rows,
 };
 
 use crate::design::{DesignControls, commit_design};
@@ -252,7 +252,7 @@ pub(crate) fn wizard_screen(
         commit_plug(draft, &mut studio);
     }
     if let Some(question) = acted.check_fit {
-        start_plug_fit(question, &mut studio, &mut fit_job);
+        start_plug_fit(question, &studio, &mut fit_job);
     }
     if let Some(layers) = acted.design {
         commit_design(layers, &mut studio);
@@ -1077,6 +1077,7 @@ fn draw_fit_view(ui: &mut egui::Ui, view: &FitView<'_>, plug: &PlugDraft) {
             Ok(text) => (text, DONE_TEXT),
             Err(text) => (text, ERROR_TEXT),
         },
+        FitView::Failed(reason) => (format_fit_failure(reason), ERROR_TEXT),
     };
     ui.add_space(ROW_GAP);
     centered_wrapped(ui, MESSAGE_SIZE, color, text);
@@ -1810,6 +1811,7 @@ pub(crate) mod tests {
             .map(|fit| format_fit_verdict(&fit, &refused_plug).unwrap_or_else(|text| text)),
         );
         messages.extend([false, true].map(|slow| format_fit_progress(7, slow)));
+        messages.push(format_fit_failure("scan.cleaned.stl: no such file"));
 
         for message in messages {
             assert_renders(&harness.ctx, &message);
@@ -3723,24 +3725,28 @@ pub(crate) mod tests {
         );
     }
 
-    /// ★★★ The staleness rule reaching the screen. `fit_view` gates the answer
-    /// on the question, but a panel that drew `answered` directly would show a
-    /// verdict about an inset the user has already changed — and its pure gate
+    /// ★★★ The staleness rule reaching the screen. `fit_view` gates what came
+    /// back on the question, but a panel that drew `answered` directly would
+    /// show it about an inset the user has already changed — and the pure gate
     /// in the lib would still pass.
     ///
-    /// ⚠ Two-sided. Without the first half, a screen that draws no verdict at
-    /// all passes the second.
+    /// ⚠ Both outcomes, because the panel draws them through arms of their own:
+    /// one arm left out is an outcome the operator never sees.
+    ///
+    /// ⚠ Two-sided per outcome. Without the first assertion, a screen that
+    /// draws nothing at all passes the second.
     #[test]
-    fn a_verdict_is_drawn_only_while_it_describes_the_screen() {
+    fn what_the_check_came_back_with_is_drawn_only_while_it_describes_the_screen() {
         const REASON: &str = "plug layer 0 came out in 3 pieces";
-        let refused = |question: FitQuestion| {
-            PlugFitJob::answered_with(
-                question,
-                cf_studio_engine::PlugFit::WillNotCast {
+        let outcomes: [(&str, Result<cf_studio_engine::PlugFit, String>); 2] = [
+            (
+                "the cast's refusal",
+                Ok(cf_studio_engine::PlugFit::WillNotCast {
                     reason: REASON.to_string(),
-                },
-            )
-        };
+                }),
+            ),
+            ("a check that could not run", Err(REASON.to_string())),
+        ];
         let says_why = |job: &PlugFitJob| {
             prose_in_column(shape_body_with(job))
                 .iter()
@@ -3748,22 +3754,24 @@ pub(crate) mod tests {
         };
 
         let asked = opening_fit_question();
-        assert!(
-            says_why(&refused(asked.clone())),
-            "the refusal the screen asked for is on it, in the cast's own words"
-        );
-
         let moved_on = FitQuestion {
             plug: PlugDraft {
                 cavity_inset_m: 0.006,
-                ..asked.plug
+                ..asked.plug.clone()
             },
-            ..asked
+            ..asked.clone()
         };
-        assert!(
-            !says_why(&refused(moved_on)),
-            "an answer about an inset the screen has left is not shown at all"
-        );
+
+        for (what, outcome) in outcomes {
+            assert!(
+                says_why(&PlugFitJob::answered_with(asked.clone(), outcome.clone())),
+                "{what} about the screen is on it, in the words it came back with"
+            );
+            assert!(
+                !says_why(&PlugFitJob::answered_with(moved_on.clone(), outcome)),
+                "{what} about an inset the screen has left is not shown at all"
+            );
+        }
     }
 
     /// ⚠ `accepting_actions` is gated on its own, but nothing said step 3 hands

@@ -328,7 +328,14 @@ struct FitRun {
 #[derive(Resource, Default)]
 pub(crate) struct PlugFitJob {
     running: Option<FitRun>,
-    answered: Option<(FitQuestion, PlugFit)>,
+    /// What the last check came back with, and the question it answers: the
+    /// cast's verdict, or why it could not run at all.
+    ///
+    /// ⚠ The failure lives here too, rather than on `Studio::message`. This is
+    /// the one job that leaves `Studio::busy` alone, so the operator can walk
+    /// to another step while it runs — and the shared message would follow them
+    /// there, over the top of a running cast's progress line.
+    answered: Option<(FitQuestion, Result<PlugFit, String>)>,
 }
 
 impl PlugFitJob {
@@ -377,10 +384,10 @@ impl PlugFitJob {
         )
     }
 
-    pub(crate) fn answered_with(question: FitQuestion, fit: PlugFit) -> Self {
+    pub(crate) fn answered_with(question: FitQuestion, outcome: Result<PlugFit, String>) -> Self {
         Self {
             running: None,
-            answered: Some((question, fit)),
+            answered: Some((question, outcome)),
         }
     }
 
@@ -403,14 +410,18 @@ const FIT_NO_PREP: &str = "Clean and save the scan first (step 2).";
 /// are on; freezing every control behind it would make asking the question
 /// worse than never asking. Nothing downstream reads a verdict, so a Continue
 /// mid-run is safe — the answer lands into [`fit_view`]'s staleness drop.
-pub(crate) fn start_plug_fit(question: FitQuestion, studio: &mut Studio, job: &mut PlugFitJob) {
+///
+/// ⚠ `studio` is borrowed immutably, and that is the other half of leaving
+/// `busy` alone: the operator can walk to another step while this runs, so
+/// nothing about the check may reach state their new screen is reading.
+pub(crate) fn start_plug_fit(question: FitQuestion, studio: &Studio, job: &mut PlugFitJob) {
     // A click queued in the same frame the button disabled itself still
-    // arrives, and a second check would race the first for four minutes.
+    // arrives, and a second check would race the first for minutes.
     if job.running.is_some() {
         return;
     }
     let Some(prep) = studio.project.prep() else {
-        studio.message = Some(Err(FIT_NO_PREP.to_string()));
+        job.answered = Some((question, Err(FIT_NO_PREP.to_string())));
         return;
     };
     let (cleaned_stl, prep_toml) = (prep.cleaned_stl.clone(), prep.prep_toml.clone());
@@ -450,11 +461,10 @@ fn spawn_plug_fit(
 /// ⚠ No clock to tick, unlike the cast: [`PlugFitJob::view`] reads the elapsed
 /// time straight off the run, so the progress line needs no bookkeeping here.
 ///
-/// ⚠ A refusal is an *answer* and is stored; a check that could not RUN is not,
-/// and goes to the step message where every other failure on this screen goes.
-/// Storing it as a verdict would tell the operator their inset is too large
-/// when the real problem is an unreadable prep file.
-pub(crate) fn poll_plug_fit_job(mut job: ResMut<PlugFitJob>, mut studio: ResMut<Studio>) {
+/// ⚠ Takes no `Studio` at all. A verdict and a failure are told apart by
+/// [`FitView`], not by which channel they arrive on — and neither may touch the
+/// screen the operator walked to while this ran.
+pub(crate) fn poll_plug_fit_job(mut job: ResMut<PlugFitJob>) {
     let Some(run) = job.running.as_mut() else {
         return;
     };
@@ -463,10 +473,7 @@ pub(crate) fn poll_plug_fit_job(mut job: ResMut<PlugFitJob>, mut studio: ResMut<
     };
     let question = run.question.clone();
     job.running = None;
-    match result {
-        Ok(fit) => job.answered = Some((question, fit)),
-        Err(msg) => studio.message = Some(Err(format!("Couldn't check the fit: {msg}"))),
-    }
+    job.answered = Some((question, result));
 }
 
 /// What a panicked decimation is reported as.
@@ -1384,12 +1391,17 @@ endsolid t
         }
     }
 
-    /// ⚠⚠ Two outcomes that must not be confused. A refusal is an ANSWER and is
-    /// kept for the screen; a check that could not RUN is not, and goes to the
-    /// step message instead — otherwise an unreadable prep file reaches the
-    /// operator as "your inset is too large".
+    /// ⚠⚠ Two outcomes that must not be confused — a refusal is the cast's
+    /// verdict, a broken check is no verdict at all — told apart by [`FitView`]
+    /// rather than by which channel they arrive on.
+    ///
+    /// ★★★ And NEITHER may reach `Studio::message`. Every other job here takes
+    /// `Studio::busy`, which disables the nav and pins the operator on the step
+    /// that started it; this one does not, so anything sent to the shared
+    /// message would surface on whatever step they walked to — over the top of
+    /// a running cast's progress line.
     #[test]
-    fn a_refusal_is_kept_as_an_answer_and_a_check_that_could_not_run_is_reported() {
+    fn a_refusal_and_a_broken_check_land_on_step_three_and_nowhere_else() {
         let refusal = PlugFit::WillNotCast {
             reason: "plug layer 0 came out in 3 pieces".to_string(),
         };
@@ -1402,11 +1414,11 @@ endsolid t
         assert_eq!(
             app.world().resource::<PlugFitJob>().view(&fit_question()),
             FitView::Answered(&refusal),
-            "the refusal is an answer, and the screen can read it back"
+            "the refusal is the cast's verdict, and step 3 can read it back"
         );
         assert!(
             app.world().resource::<Studio>().message.is_none(),
-            "and it is not ALSO reported as a failure: {:?}",
+            "and nothing about it reached the shared message: {:?}",
             app.world().resource::<Studio>().message
         );
 
@@ -1417,15 +1429,12 @@ endsolid t
 
         assert_eq!(
             app.world().resource::<PlugFitJob>().view(&fit_question()),
-            FitView::Idle,
-            "a check that could not run leaves no verdict behind"
+            FitView::Failed("scan.cleaned.stl: no such file"),
+            "a check that could not run is a failure, not a verdict"
         );
         assert!(
-            matches!(
-                &app.world().resource::<Studio>().message,
-                Some(Err(text)) if text.contains("no such file")
-            ),
-            "it is reported where every other failure on this screen is: {:?}",
+            app.world().resource::<Studio>().message.is_none(),
+            "and it does not follow the operator to the step they walked to: {:?}",
             app.world().resource::<Studio>().message
         );
     }
@@ -1437,7 +1446,7 @@ endsolid t
     fn a_second_check_is_refused_while_one_is_in_flight() {
         let first = fit_question();
         let mut job = PlugFitJob::running_for(first.clone());
-        let mut studio = Studio {
+        let studio = Studio {
             project: crate::shape::tests::ready_to_shape(),
             ..Studio::default()
         };
@@ -1447,7 +1456,7 @@ endsolid t
                 cell_size_m: 0.0015,
                 ..first.clone()
             },
-            &mut studio,
+            &studio,
             &mut job,
         );
 
@@ -1458,21 +1467,20 @@ endsolid t
         );
     }
 
-    /// ⚠ Named the step that produces the input, not the one that is missing
+    /// ⚠ Names the step that produces the input, not the one that is missing
     /// it: step 3 is reachable only once step 2 has saved, so this is a
     /// should-not-happen that still has to say something useful.
     #[test]
     fn a_check_asked_for_without_a_cleaned_scan_says_so_instead_of_running() {
         let mut job = PlugFitJob::default();
-        let mut studio = Studio::default();
+        let studio = Studio::default();
 
-        start_plug_fit(fit_question(), &mut studio, &mut job);
+        start_plug_fit(fit_question(), &studio, &mut job);
 
         assert!(!job.is_running(), "nothing was started");
         assert!(
-            matches!(&studio.message, Some(Err(text)) if text.contains("step 2")),
-            "and it names the step that produces the input: {:?}",
-            studio.message
+            matches!(job.view(&fit_question()), FitView::Failed(text) if text.contains("step 2")),
+            "and it says so on step 3, naming the step that produces the input"
         );
     }
 

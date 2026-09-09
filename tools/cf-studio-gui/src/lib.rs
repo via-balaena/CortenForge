@@ -1324,8 +1324,11 @@ pub enum FitView<'a> {
         /// [`fit_check_is_slow`].
         slow: bool,
     },
-    /// An answer that describes the settings on screen.
+    /// The cast's verdict on the settings on screen.
     Answered(&'a PlugFit),
+    /// The check could not be RUN — an unreadable scan, a bad prep file. ⚠ Not
+    /// a verdict: the inset may be perfectly fine and nobody found out.
+    Failed(&'a str),
 }
 
 /// Decide what step 3 shows about the fit.
@@ -1341,7 +1344,7 @@ pub enum FitView<'a> {
 #[must_use]
 pub fn fit_view<'a>(
     running: Option<(&FitQuestion, u64)>,
-    answered: Option<&'a (FitQuestion, PlugFit)>,
+    answered: Option<&'a (FitQuestion, Result<PlugFit, String>)>,
     current: &FitQuestion,
 ) -> FitView<'a> {
     if let Some((asked, elapsed_secs)) = running {
@@ -1351,7 +1354,8 @@ pub fn fit_view<'a>(
         };
     }
     match answered {
-        Some((asked, fit)) if asked == current => FitView::Answered(fit),
+        Some((asked, Ok(fit))) if asked == current => FitView::Answered(fit),
+        Some((asked, Err(reason))) if asked == current => FitView::Failed(reason),
         _ => FitView::Idle,
     }
 }
@@ -1390,6 +1394,19 @@ pub fn fit_check_is_slow(question: &FitQuestion) -> bool {
 
 /// The quality index whose cell size is the one a fit check can be quick at.
 const FAST_QUALITY: i32 = 1;
+
+/// A check that could not run, as step 3's status line.
+///
+/// ⚠ Reported here rather than through `Studio::message`, and that is the
+/// point. Every other job in `jobs.rs` takes `Studio::busy`, which disables the
+/// nav and pins the operator on the step that started it — so the shared
+/// message always lands where it makes sense. This one deliberately does not,
+/// so a failure sent there would surface on whatever step they had walked on
+/// to, and would replace a running cast's progress line while it did.
+#[must_use]
+pub fn format_fit_failure(reason: &str) -> String {
+    format!("✖ Couldn't check the fit: {reason}")
+}
 
 /// The check's progress line.
 ///
@@ -3042,7 +3059,7 @@ visible = true
     #[test]
     fn an_answer_is_shown_only_while_it_describes_the_question_on_screen() {
         let asked = opening_question();
-        let answered = (asked.clone(), PlugFit::Casts);
+        let answered = (asked.clone(), Ok(PlugFit::Casts));
 
         assert_eq!(
             fit_view(None, Some(&answered), &asked),
@@ -3105,13 +3122,36 @@ visible = true
         }
     }
 
+    /// ⚠ A check that could not run is its own view, never a refusal: the
+    /// operator's inset may be perfectly fine and nobody found out. It goes
+    /// stale with the question like any other answer, so a failure about
+    /// settings they have left does not sit on the screen either.
+    #[test]
+    fn a_check_that_could_not_run_reads_as_a_failure_not_as_a_refusal() {
+        const BROKEN: &str = "scan.cleaned.stl: no such file";
+        let asked = opening_question();
+        let outcome: (FitQuestion, Result<PlugFit, String>) =
+            (asked.clone(), Err(BROKEN.to_string()));
+
+        assert_eq!(
+            fit_view(None, Some(&outcome), &asked),
+            FitView::Failed(BROKEN),
+            "no verdict was reached, and the line has to say which"
+        );
+        assert_eq!(
+            fit_view(None, Some(&outcome), &ridged(&asked)),
+            FitView::Idle,
+            "and it goes stale with the question, like any other answer"
+        );
+    }
+
     /// ⚠ A running check outranks the answer it is about to replace. With the
     /// arms the other way round, a verdict sits on screen reading as settled
     /// while the screen is busy deciding whether it still is.
     #[test]
     fn a_running_check_replaces_the_answer_it_is_about_to_supersede() {
         let asked = opening_question();
-        let answered = (asked.clone(), PlugFit::Casts);
+        let answered = (asked.clone(), Ok(PlugFit::Casts));
 
         assert_eq!(
             fit_view(Some((&asked, 12)), Some(&answered), &asked),
