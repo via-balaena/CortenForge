@@ -99,21 +99,27 @@ impl Plugin for StudioPlugin {
                         .after(poll_dialogs)
                         .after(poll_simplify_job)
                         .run_if(resource_changed::<ScanEdit>),
-                    // Step 3's preview: drive the jobs, land the mesh, then
-                    // choose which body the step is looking at. Chained because
-                    // each reads what the one before it wrote, and a frame's lag
-                    // between them is a frame of the wrong body on screen.
-                    (drive_plug_preview, show_plug, show_the_step_subject).chain(),
-                    // Step 5's part picker, kept in step with the committed
-                    // design. Not chained with the preview above: it writes
-                    // only its own resource, and nothing this frame reads it.
-                    drive_part_picker,
-                    // Steps 3 and 4's fields, kept in step with the artifacts
-                    // they edit. After `poll_dialogs` for `show_scan`'s reason:
-                    // a landing scan resets the project, and a frame's lag is a
-                    // frame of the previous project's numbers on screen.
-                    drive_shape_controls.after(poll_dialogs),
+                    // Step 3, end to end: the fields follow the committed
+                    // plug, the preview follows the fields, and the viewport
+                    // follows the preview. Chained because each reads what the
+                    // one before it wrote, and a frame's lag between them is a
+                    // frame of the wrong body on screen. After `poll_dialogs`
+                    // for `show_scan`'s reason: a landing scan resets the
+                    // project, and the fields with it.
+                    (
+                        drive_shape_controls,
+                        drive_plug_preview,
+                        show_plug,
+                        show_the_step_subject,
+                    )
+                        .chain()
+                        .after(poll_dialogs),
+                    // Step 4's rows, kept in step with the committed design,
+                    // and step 5's part picker likewise. Not chained with the
+                    // above: each writes only its own resource, and nothing
+                    // this frame reads it.
                     drive_design_controls.after(poll_dialogs),
+                    drive_part_picker,
                     // Immediate mode: gizmos are re-emitted every frame, so
                     // this one is NOT gated on the resource changing.
                     draw_centerline,
