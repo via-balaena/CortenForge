@@ -249,13 +249,13 @@ pub(crate) fn wizard_screen(
         save::save_to_default(&scan, &mut studio, smoothing);
     }
     if let Some(draft) = acted.plug {
-        commit_plug(draft, &mut studio);
+        commit_plug(draft, &mut shape, &mut studio);
     }
     if let Some(question) = acted.check_fit {
         start_plug_fit(question, &studio, &mut fit_job);
     }
     if let Some(layers) = acted.design {
-        commit_design(layers, &mut studio);
+        commit_design(layers, &mut design, &mut studio);
     }
     if let Some(start) = acted.molds {
         start_molds(&start, &mut studio, &mut molds_job);

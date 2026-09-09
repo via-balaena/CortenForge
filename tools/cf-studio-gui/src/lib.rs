@@ -864,12 +864,19 @@ impl RingRow {
     }
 
     /// Build a row from an owned SDK ring (meters/fractions → integer UI units).
+    ///
+    /// ⚠ Clamped into each stepper's range, for [`LayerRow::from_draft`]'s
+    /// reason: the stepper renders the number it is given, so a ring outside
+    /// the range would print a value the piece is not cut at.
     #[must_use]
     pub fn from_ridge(ring: &RidgeRing) -> Self {
+        let into = |value: f64, scale: f64, (min, max): (i32, i32)| {
+            scale_to_i32(value, scale).clamp(min, max)
+        };
         Self::new(
-            scale_to_i32(ring.position_frac, 100.0),
-            scale_to_i32(ring.depth_m, 10_000.0),
-            scale_to_i32(ring.half_width_frac, 100.0),
+            into(ring.position_frac, 100.0, RING_POSITION_RANGE),
+            into(ring.depth_m, 10_000.0, RING_DEPTH_RANGE),
+            into(ring.half_width_frac, 100.0, RING_WIDTH_RANGE),
         )
     }
 
@@ -892,6 +899,25 @@ impl RingRow {
 #[must_use]
 pub fn tenths_mm_to_m(tenths: i32) -> f64 {
     f64::from(tenths) / 10_000.0
+}
+
+/// Meters → tenths of a millimetre. The inverse of [`tenths_mm_to_m`], for
+/// reading a committed artifact back into the fields that produced it.
+#[must_use]
+pub fn m_to_tenths_mm(m: f64) -> i32 {
+    scale_to_i32(m, 10_000.0)
+}
+
+/// Meters → whole millimetres — the cavity inset's own unit.
+#[must_use]
+pub fn m_to_mm(m: f64) -> i32 {
+    scale_to_i32(m, 1000.0)
+}
+
+/// An angle → the whole degrees the orientation stepper edits.
+#[must_use]
+pub fn whole_degrees(deg: f64) -> i32 {
+    scale_to_i32(deg, 1.0)
 }
 
 /// A fraction/length → the UI's integer unit, rounded.

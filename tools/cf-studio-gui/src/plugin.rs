@@ -9,7 +9,7 @@ use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiGlobalSettings, EguiPrimaryContextPass, egui};
 use cf_bevy_common::camera::OrbitCameraPlugin;
 
-use crate::design::DesignControls;
+use crate::design::{DesignControls, drive_design_controls};
 use crate::dialogs::PendingDialog;
 use crate::edit::EditControls;
 use crate::input::arbitrate_pointer_over_egui;
@@ -25,7 +25,7 @@ use crate::scene::{
     draw_centerline, fit_viewport_to_free_space, setup_scene, show_plug, show_scan,
     show_the_step_subject,
 };
-use crate::shape::ShapeControls;
+use crate::shape::{ShapeControls, drive_shape_controls};
 use crate::state::{Screen, Studio};
 use crate::waiver::waiver_screen;
 
@@ -108,6 +108,12 @@ impl Plugin for StudioPlugin {
                     // design. Not chained with the preview above: it writes
                     // only its own resource, and nothing this frame reads it.
                     drive_part_picker,
+                    // Steps 3 and 4's fields, kept in step with the artifacts
+                    // they edit. After `poll_dialogs` for `show_scan`'s reason:
+                    // a landing scan resets the project, and a frame's lag is a
+                    // frame of the previous project's numbers on screen.
+                    drive_shape_controls.after(poll_dialogs),
+                    drive_design_controls.after(poll_dialogs),
                     // Immediate mode: gizmos are re-emitted every frame, so
                     // this one is NOT gated on the resource changing.
                     draw_centerline,
