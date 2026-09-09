@@ -124,6 +124,42 @@ pub fn cast_synthetic_with_ridges(
     parts: &PartSelection,
     ridges: &RidgeOptions,
 ) -> CastOutcome {
+    cast_synthetic_with_layers(
+        caller,
+        scan,
+        inset_m,
+        cell_size_m,
+        parts,
+        ridges,
+        &[PROBE_STACK_M],
+    )
+}
+
+/// The one-layer stack `plug_fit_preflight` invents, in metres.
+///
+/// ⚠ Kept equal to the engine's `PROBE_LAYER_THICKNESS_M` on purpose: the
+/// oracle gate compares composition and needs the stacks matched, so that they
+/// ARE matched has to be visible here rather than a coincidence of two numbers.
+pub const PROBE_STACK_M: f64 = 0.006;
+
+/// As [`cast_synthetic_with_ridges`], with the layer stack spelled out.
+///
+/// ⚠ The stack is not inert geometry. Every thickness feeds
+/// `sdf_bounds_padding_m`, the SDF box is the scan AABB expanded by it, and the
+/// mesher anchors its lattice at `bounds.min` and steps by exactly one cell —
+/// so a different stack TRANSLATES the sampling grid under the plug. That is
+/// the whole reason `the_invented_layer_stack_does_not_change_the_verdict`
+/// exists.
+#[allow(dead_code)]
+pub fn cast_synthetic_with_layers(
+    caller: &str,
+    scan: IndexedMesh,
+    inset_m: f64,
+    cell_size_m: f64,
+    parts: &PartSelection,
+    ridges: &RidgeOptions,
+    layers_m: &[f64],
+) -> CastOutcome {
     let label = format!("{caller}-{}", (inset_m * 1e4).round() as i64);
     let dir = std::env::temp_dir().join(format!("cf-studio-engine-{label}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -141,11 +177,14 @@ pub fn cast_synthetic_with_ridges(
 
     let draft = DesignDraft {
         cavity_inset_m: inset_m,
-        layers: vec![LayerDraft {
-            thickness_m: 0.006,
-            material_key: "ECOFLEX_00_30".to_string(),
-            slacker_fraction: 0.25,
-        }],
+        layers: layers_m
+            .iter()
+            .map(|thickness_m| LayerDraft {
+                thickness_m: *thickness_m,
+                material_key: "ECOFLEX_00_30".to_string(),
+                slacker_fraction: 0.25,
+            })
+            .collect(),
     };
     let cast = generate_molds_for_design(
         &dir.join("synthetic.cleaned.stl"),

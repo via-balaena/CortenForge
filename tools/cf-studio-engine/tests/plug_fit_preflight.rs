@@ -15,7 +15,9 @@ use cf_studio_engine::{
 };
 
 mod common;
-use common::{CastOutcome, cast_synthetic_with_ridges, open_cone};
+use common::{
+    CastOutcome, PROBE_STACK_M, cast_synthetic_with_layers, cast_synthetic_with_ridges, open_cone,
+};
 
 /// Cell size for both sides of the comparison.
 ///
@@ -67,6 +69,75 @@ fn paths(dir: &Path) -> (PathBuf, PathBuf) {
         dir.join("synthetic.cleaned.stl"),
         dir.join("synthetic.prep.toml"),
     )
+}
+
+/// A real three-layer stack — `~/scans/base_mold`'s own design, in metres.
+const REAL_STACK_M: [f64; 3] = [0.018, 0.008, 0.005];
+
+/// ★★★ The stack the pre-flight INVENTS must not change the verdict.
+///
+/// Step 3 runs before step 4 picks the layers, so the pre-flight probes with
+/// one 6 mm layer and the operator then casts their real stack. That thickness
+/// is not inert: it feeds `sdf_bounds_padding_m`, the SDF box is the scan AABB
+/// expanded by it, and the mesher anchors its lattice at `bounds.min` stepping
+/// exactly one cell — so a different stack TRANSLATES the sampling grid under
+/// the plug. `the_preflight_returns_the_verdict_the_cast_would` cannot see any
+/// of this: it matches the stacks on both sides on purpose.
+///
+/// ⚠⚠ THE MISALIGNMENT IS THE GATE. Measured 2026-09-08: `base_mold`'s real
+/// stack sits 25 mm of padding from the probe, which at the 0.5 mm print cell
+/// is EXACTLY 50 cells — the two lattices coincide, the meshes come out the
+/// same, and an A/B run there agrees for reasons that have nothing to do with
+/// the verdict transferring. The first assertion below is what stops this gate
+/// quietly becoming that A/B.
+#[test]
+fn the_invented_layer_stack_does_not_change_the_verdict() {
+    let offset_cells = (REAL_STACK_M.iter().sum::<f64>() - PROBE_STACK_M) / CELL_SIZE_M;
+    assert!(
+        (offset_cells - offset_cells.round()).abs() > 0.2,
+        "vacuous: the two stacks must sit a FRACTION of a cell apart, not a \
+         whole number of them — {offset_cells} cells of {CELL_SIZE_M} m"
+    );
+
+    let dir = fixture("transfers");
+    let (cleaned, prep) = paths(&dir);
+    let smooth = RidgeOptions::default();
+    let (mut saw_cast, mut saw_refusal) = (false, false);
+    let mut problems = Vec::new();
+
+    for inset_mm in INSETS_MM {
+        let inset_m = inset_mm / 1e3;
+        let probed = plug_fit_preflight(&cleaned, &prep, inset_m, &smooth, CELL_SIZE_M)
+            .expect("the pre-flight must RUN — a broken fixture is not a verdict");
+        // The oracle: the cast the operator actually runs at step 5, with a
+        // stack the pre-flight never saw.
+        let cast = cast_synthetic_with_layers(
+            &format!("preflight-transfer-{inset_mm}"),
+            cone(),
+            inset_m,
+            CELL_SIZE_M,
+            &PartSelection::from_ids([PartId::Plug { layer_index: 0 }]),
+            &smooth,
+            &REAL_STACK_M,
+        );
+        match (&probed, &cast) {
+            (PlugFit::Casts, CastOutcome::Cast(_)) => saw_cast = true,
+            (PlugFit::WillNotCast { .. }, CastOutcome::Refused(_)) => saw_refusal = true,
+            (PlugFit::Casts, CastOutcome::Refused(why)) => problems.push(format!(
+                "{inset_mm} mm: the probe stack cast, the real stack refused — {why}"
+            )),
+            (PlugFit::WillNotCast { reason }, CastOutcome::Cast(_)) => problems.push(format!(
+                "{inset_mm} mm: the probe stack refused, the real stack cast — {reason}"
+            )),
+        }
+    }
+
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+    assert!(
+        saw_cast && saw_refusal,
+        "both verdicts must be reached or the agreement is one-sided: \
+         cast={saw_cast} refusal={saw_refusal}"
+    );
 }
 
 /// ★ THE GATE. The pre-flight's verdict must equal the cast's, at every inset.
