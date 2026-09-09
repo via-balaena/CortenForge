@@ -297,6 +297,16 @@ const RELEASE: &str = include_str!(concat!(
     "/../.github/workflows/release.yml"
 ));
 
+/// Drop a trailing YAML comment. A package name cannot contain `" #"`, so the
+/// first occurrence ends the value — and this file comments nearly everything,
+/// so an annotated package list is an edit to expect, not a malformed one.
+fn strip_comment(s: &str) -> &str {
+    match s.find(" #") {
+        Some(i) => &s[..i],
+        None => s,
+    }
+}
+
 /// Every `packages:` input in a workflow, folded continuation lines included.
 ///
 /// A value may run onto following lines, which YAML folds into one scalar:
@@ -317,7 +327,10 @@ fn parse_package_lists(yaml: &str) -> Vec<Vec<String>> {
             continue;
         };
         let indent = raw.len() - trimmed.len();
-        let mut pkgs: Vec<String> = tail.split_whitespace().map(str::to_owned).collect();
+        let mut pkgs: Vec<String> = strip_comment(tail)
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect();
         while let Some(next) = lines.peek() {
             let t = next.trim_start();
             if t.is_empty()
@@ -327,7 +340,7 @@ fn parse_package_lists(yaml: &str) -> Vec<Vec<String>> {
             {
                 break;
             }
-            pkgs.extend(t.split_whitespace().map(str::to_owned));
+            pkgs.extend(strip_comment(t).split_whitespace().map(str::to_owned));
             lines.next();
         }
         lists.push(pkgs);
@@ -356,6 +369,18 @@ fn every_linux_job_installs_the_same_dep_list() {
          the format likely changed, and a gate that parses nothing passes silently",
         sites.len()
     );
+
+    // The optional list must not rot: an entry nothing installs any more would
+    // go on silently permitting a package. Same rule as `UNGATED_JOBS` above.
+    for extra in LINUX_DEPS_OPTIONAL {
+        assert!(
+            sites
+                .iter()
+                .any(|(_, pkgs)| pkgs.iter().any(|p| p == extra)),
+            "LINUX_DEPS_OPTIONAL allows `{extra}`, which no job installs any more — \
+             prune it, or the exemption outlives the reason for it."
+        );
+    }
 
     for (workflow, pkgs) in &sites {
         let base: Vec<&str> = pkgs
@@ -399,6 +424,14 @@ fn parse_package_lists_folds_continuations_and_stops_at_the_next_key() {
     assert_eq!(
         parse_package_lists("          packages: a\n          other: b\n"),
         vec![vec!["a"]]
+    );
+    // A trailing comment is not part of the value, on the key line or a
+    // continuation — YAML ends a plain scalar at ` #`, and so must this.
+    assert_eq!(
+        parse_package_lists(
+            "          packages: libudev-dev  # why\n            libasound2-dev # and\n"
+        ),
+        vec![vec!["libudev-dev", "libasound2-dev"]]
     );
 }
 
