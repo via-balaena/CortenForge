@@ -356,7 +356,7 @@ jobs:
       - name: Install system dependencies
         uses: ./.github/actions/install-linux-deps
         with:
-          packages: libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev libfontconfig1-dev
+          packages: libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -416,8 +416,15 @@ jobs:
   # all-features cleanliness — was false; see the header block.)
   # SHARDING (3 legs, mirrors `tests-release` + `grade`): on a foundational
   # `sim-core` PR the affected set is nearly the whole crate list, so this job is
-  # COMPILE-bound. (Test *execution* is trivial: the slowest single suite
-  # measured ~39 s; the cost is compilation.)
+  # dominated by COMPILE. Measured on the full main run at `e0935ea0`:
+  #   shard 1  30.5 min = 23.0 compile + 7.5 execute
+  #   shard 2   7.2 min =  2.4 compile + 4.9 execute
+  #   shard 3  17.5 min = 13.3 compile + 4.2 execute
+  # (run 34352398827; the next main run, `a01df141`, reproduced shards 2 and 3
+  # at 7m38s / 17m17s, so these are not a one-run artifact.)
+  # ⚠ Execution is NOT negligible on shard 1 any more: the six `example-ml-*`
+  # suites are 6m51s of its 7.5 min (slowest, `6dof-cem-linear`, 1m50s). The
+  # "slowest single suite ~39 s" this note used to claim predated them.
   #
   # The split is BY DEPENDENCY TREE, not round-robin: a first attempt that
   # round-robined crates by count left one shard compiling BOTH giant optional
@@ -498,8 +505,18 @@ jobs:
   #     or pre-commit covers its tests — neither runs them.
   # All 326 of these tests execute in ~1.6 s; the cost of adding them is COMPILE +
   # test-binary LINK time, not test execution. Each Bevy+egui bin statically links
-  # the full tree, so watch shard 1's wall time (21.9/30 min as of #554) and
-  # rebalance — or add a 4th shard — if it drifts past ~25 min.
+  # the full tree.
+  #
+  # ⛔ DO NOT answer shard 1's 30.5 min by splitting it or adding a 4th shard.
+  # MEASURED: it spends 22.9 min before running its FIRST test, and that prefix
+  # is almost entirely SHARED. It builds the sim/mesh stack regardless
+  # (cf-studio-gui → cf-studio-engine → mesh-*; example-ml-* → sim-rl) — the
+  # stack shard 3 alone prices at 13.3 min — with the Bevy render tree on top,
+  # and EVERY crate here pulls that tree (checked with `cargo tree`: the
+  # example-ml-* crates carry bevy_render/wgpu/naga/winit, same as
+  # cf-studio-gui). So a split pays the 22.9-min prefix TWICE and can only
+  # divide the ~7.6 min of test execution that follows it. The cost is the
+  # TREE, not the crate count; the lever is what the Bevy tools depend on.
   #
   # The `quality-gate` job `needs: [tests-debug]` waits for ALL matrix legs and
   # fails if any shard fails, so the `Quality Gate` required check still gates
@@ -509,10 +526,11 @@ jobs:
     runs-on: ubuntu-latest
     # Raised 30 -> 45 alongside the 2026-08-22 regrouping. 30 was not a
     # considered bound, it was a cliff: shard 2 ran 28-29 min for weeks (94-97%
-    # of cap), was KILLED at 30:10 on #799, and cleared the re-run by 32 s. The
-    # regrouping should drop it well below that, but this lands BEFORE the new
-    # balance is measured, so the cap must not be the thing that proves it.
-    # Re-read all three shard times from a full run and tighten.
+    # of cap), was KILLED at 30:10 on #799, and cleared the re-run by 32 s.
+    # ✅ Re-read from the full main run at `e0935ea0`: 30.5 / 7.2 / 17.5 min.
+    # 45 STAYS — 1.5× the slowest shard. Tightening toward 35 would put the cap
+    # back in the business of deciding runs on a cold cache, which is exactly
+    # what made 30 a cliff.
     timeout-minutes: 45
     # PR-scoped to each shard's crate list (see the `affected` job); always runs
     # (`if: !cancelled()`) so it is never a skipped required check, and falls
@@ -546,10 +564,12 @@ jobs:
           # the whole stack the way `cortenforge` pulled it (32 workspace crates,
           # itself excluded) — which is why cortenforge moved and these did not.
           #
-          # ⚠ Whether this shard should still exist is now an open REBALANCE
-          # question: two of three shards carry no giant tree. Deciding it needs
-          # measured times from a run WITHOUT Slint, which this change is the
-          # first to produce — so it is left alone here on purpose.
+          # ✅ ANSWERED (measured, `e0935ea0`): it stays. At 7.2 min against a
+          # 45-minute cap this is the idlest leg, and merging it into shard 3
+          # would free a runner — but shard 1 is the critical path at 30.5 min,
+          # so the merge buys no wall-clock — only churn in a hand-maintained
+          # crate list, which is the one place a crate silently drifts out of
+          # coverage. Revisit if shard 1 ever stops being the long pole.
           - id: 2
             crates: cf-studio-core cf-studio-engine cf-studio
               cf-geometry cf-spatial cf-scan-prep-core
@@ -562,8 +582,8 @@ jobs:
           # and `mesh` (umbrella) belong here because they re-export this stack
           # and nothing else; measured, cortenforge adds only 3 workspace crates
           # this shard was not already building.
-          # ⚠ "expected", not measured — this shard was 7.6 min with 18 crates
-          # and is now 34. Its real time comes from this change's own CI run.
+          # ✅ Measured (`e0935ea0`): 17.5 min at 34 crates — 13.3 compile, 4.2
+          # execute. The "cheap per crate" expectation held.
           - id: 3
             crates: sim-soft sim-core sim-mjcf sim-urdf sim-gpu sim-types
               sim-truss sim-gpu-benches
@@ -585,7 +605,7 @@ jobs:
       - name: Install system dependencies
         uses: ./.github/actions/install-linux-deps
         with:
-          packages: libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev libfontconfig1-dev
+          packages: libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev
             mesa-vulkan-drivers
 
       - name: Install Rust
@@ -654,6 +674,12 @@ jobs:
   # on the right shard; further gains need per-test partitioning or a faster
   # linker, deferred until measurement shows they're needed.
   #
+  # ✅ RE-MEASURED (main run `a01df141`): 5m46s / 13m21s / 19m32s; `e0935ea0`
+  # gave 7 / 13 / 19. nextest did collapse the thermostat leg as predicted —
+  # but THE LONG POLE MOVED, and nothing above anticipated where. Shard 3
+  # (sim-ml-chassis, sim-rl, cf-codesign) is the binding leg at ~19.5 min,
+  # while thermostat's shard 2 lands at ~13. Aim further work at shard 3.
+  #
   # sim-rl-baselines sits in shard 1 (with conformance/coupling, the lightest
   # leg): it holds the RL-baseline fixtures moved out of thermostat/therm-env/
   # opt, nearly all `#[ignore]`d (only two ~0.3s parity checks run), so in CI
@@ -668,8 +694,9 @@ jobs:
   tests-release:
     name: Tests (release, heavy — shard ${{ matrix.id }}/3)
     runs-on: ubuntu-latest
-    # Heavy stochastic validators; 45 min guards a hung test without masking a
-    # genuine ~9-10 min shard (post-nextest). Tune down once re-measured.
+    # Heavy stochastic validators. ✅ Re-measured: 5m46s / 13m21s / 19m32s, so
+    # 45 is 2.3× the slowest leg — it guards a hung test without masking a real
+    # one. The "~9-10 min post-nextest" this note predicted never arrived.
     timeout-minutes: 45
     # PR-scoped to the affected crates (see the `affected` job); always runs so
     # it is never a skipped required check, and falls back to the full shard
@@ -693,7 +720,7 @@ jobs:
       - name: Install system dependencies
         uses: ./.github/actions/install-linux-deps
         with:
-          packages: libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev libfontconfig1-dev
+          packages: libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -1000,7 +1027,7 @@ jobs:
       - name: Install system dependencies
         uses: ./.github/actions/install-linux-deps
         with:
-          packages: libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev libfontconfig1-dev
+          packages: libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -1344,7 +1371,7 @@ jobs:
         if: steps.scope.outputs.run == 'true'
         uses: ./.github/actions/install-linux-deps
         with:
-          packages: libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev libfontconfig1-dev
+          packages: libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev
 
       - name: Install Rust
         if: steps.scope.outputs.run == 'true'
