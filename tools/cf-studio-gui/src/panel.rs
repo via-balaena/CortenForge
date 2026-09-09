@@ -3606,6 +3606,10 @@ pub(crate) mod tests {
     fn clicking_check_fit_in_the_running_wizard_asks_about_the_field_on_screen() {
         let mut app = wizard_on_step_three();
         app.add_plugins(bevy::prelude::TaskPoolPlugin::default());
+        // ⚠ Off its default, for the same reason the `+` below is clicked: at
+        // index 0 a check pinned to print quality asks the right question by
+        // accident, and reading step 5's picker at all goes ungated.
+        app.world_mut().resource_mut::<MoldControls>().quality_idx = FAST_QUALITY_IDX;
 
         click_on(&mut app, "+");
         click_on(&mut app, CHECK_FIT);
@@ -3618,10 +3622,13 @@ pub(crate) mod tests {
         );
         assert_eq!(
             job.asking().map(|question| question.cell_size_m),
-            Some(cell_size_m_for_quality(0)),
+            Some(cell_size_m_for_quality(FAST_QUALITY_IDX)),
             "and it asked at the quality step 5 would have cast at"
         );
     }
+
+    /// Step 5's Fast preview, the quality that is not the default.
+    const FAST_QUALITY_IDX: i32 = 1;
 
     /// ★★★ The one thing that must not regress: the check is opt-in, so
     /// Continue may never wait on it. A four-minute wall in front of an
