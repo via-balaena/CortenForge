@@ -125,6 +125,21 @@ impl Autosave {
         }
     }
 
+    /// Take the offered session and resume writing, if a question is up.
+    ///
+    /// ⚠ Puts the state back when there is no offer. `mem::take` leaves
+    /// [`Saving::Yes`] behind, so a bare `take` would answer for a session that
+    /// is *refusing* to write and set it saving over the file it is protecting.
+    fn take_offer(&mut self) -> Option<Box<Project>> {
+        match std::mem::take(&mut self.state) {
+            Saving::Asking { project, .. } => Some(project),
+            held => {
+                self.state = held;
+                None
+            }
+        }
+    }
+
     /// Write `project`, unless writing is held or it is what was last written.
     fn write(&mut self, project: &Project) {
         let (Saving::Yes, Some(path)) = (&self.state, &self.path) else {
@@ -146,7 +161,7 @@ pub(crate) fn drive_autosave(mut autosave: ResMut<Autosave>, studio: Res<Studio>
 /// Take the offered session: it becomes this session's project, and the body it
 /// was cut from comes back on screen.
 pub(crate) fn resume(autosave: &mut Autosave, studio: &mut Studio, scan: &mut ScanEdit) {
-    let Saving::Asking { project, .. } = std::mem::take(&mut autosave.state) else {
+    let Some(project) = autosave.take_offer() else {
         return;
     };
     // ⚠ The path is left as it is. It already names the file this project came
@@ -168,10 +183,11 @@ pub(crate) fn resume(autosave: &mut Autosave, studio: &mut Studio, scan: &mut Sc
 }
 
 /// Keep this session's own project, and let it replace the saved one.
+///
+/// The offer is dropped, and [`Autosave::take_offer`] resumes writing — which
+/// is what makes this session's project replace the saved one on the next frame.
 pub(crate) fn start_over(autosave: &mut Autosave) {
-    if matches!(autosave.state, Saving::Asking { .. }) {
-        autosave.state = Saving::Yes;
-    }
+    autosave.take_offer();
 }
 
 /// Put the resumed project's body back on screen. Returns why it could not be,
@@ -180,12 +196,11 @@ pub(crate) fn start_over(autosave: &mut Autosave) {
 /// ⚠ Synchronous, like step 1's own load: [`crate::jobs::poll_dialogs`] already
 /// calls [`ActiveScan::load`] on the main thread for exactly this.
 fn reload_body(project: &Project, scan: &mut ScanEdit) -> Option<String> {
-    // The cleaned scan once step 2 is done, the raw one before that — the same
-    // body the session was looking at when it stopped.
-    let source = project.prep().map_or_else(
-        || project.scan().map(|s| s.source_path.clone()),
-        |prep| Some(prep.cleaned_stl.clone()),
-    )?;
+    // ★ The cleaned scan, and only ever that: a session is offered back only
+    // once it is past the pick, so step 2 is always done by the time this runs.
+    // The raw scan is what step 1 shows, and it is not what this session was
+    // looking at.
+    let source = project.prep()?.cleaned_stl.clone();
     match ActiveScan::load(&source) {
         Ok(active) => {
             scan.set(active);
@@ -205,26 +220,42 @@ mod tests {
     use super::*;
     use crate::save::tests::temp_dir;
 
-    /// A minimal valid ASCII STL — one triangle, enough for [`ActiveScan::load`].
-    const ONE_TRIANGLE_STL: &str = "\
-solid t
-facet normal 0 0 1
-  outer loop
-    vertex 0 0 0
-    vertex 1 0 0
-    vertex 0 1 0
-  endloop
-endfacet
-endsolid t
-";
+    /// An ASCII STL of `faces` disjoint triangles — enough for
+    /// [`ActiveScan::load`], and countable once it is loaded.
+    fn stl(faces: usize) -> String {
+        (0..faces)
+            .map(|n| {
+                #[allow(clippy::cast_precision_loss)] // A handful of triangles.
+                let z = n as f32;
+                format!(
+                    "facet normal 0 0 1\n  outer loop\n    vertex 0 0 {z}\n    \
+                     vertex 1 0 {z}\n    vertex 0 1 {z}\n  endloop\nendfacet\n"
+                )
+            })
+            .fold("solid t\n".to_string(), |body, facet| body + &facet)
+            + "endsolid t\n"
+    }
 
-    /// A folder with a scan and its cleaned twin, both real enough to load.
+    /// The raw scan's face count, and the cleaned scan's.
+    ///
+    /// ⚠ Different, and that is the whole point: which of the two a resume puts
+    /// back on screen is a decision, and two identical files cannot tell.
+    const RAW_FACES: usize = 1;
+    const CLEANED_FACES: usize = 3;
+
+    /// A folder with a scan and its cleaned twin, both real enough to load and
+    /// told apart by their face counts.
     fn scans(name: &str) -> PathBuf {
         let dir = temp_dir(name);
-        for file in ["base.stl", "base.cleaned.stl"] {
-            std::fs::write(dir.join(file), ONE_TRIANGLE_STL).expect("a scan to load");
-        }
+        std::fs::write(dir.join("base.stl"), stl(RAW_FACES)).expect("a scan to load");
+        std::fs::write(dir.join("base.cleaned.stl"), stl(CLEANED_FACES))
+            .expect("a cleaned scan to load");
         dir
+    }
+
+    /// How many faces the viewport is showing.
+    fn faces_on_screen(scan: &ScanEdit) -> Option<usize> {
+        scan.active().map(|active| active.display().faces.len())
     }
 
     /// A project taken as far as `furthest`, pointing at the files in `dir`.
@@ -335,9 +366,11 @@ endsolid t
             Step::CleanScan,
             "on the screen the file says it was left on"
         );
-        assert!(
-            scan.active().is_some(),
-            "with its body back in the viewport"
+        assert_eq!(
+            faces_on_screen(&scan),
+            Some(CLEANED_FACES),
+            "with the cleaned scan back in the viewport — step 2 is done, so the \
+             raw one is not what this session was looking at"
         );
         assert!(
             studio.message.as_ref().is_some_and(Result::is_ok),
@@ -493,6 +526,44 @@ endsolid t
             autosave.note()
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ⚠⚠ The answer to a question that was never asked. `mem::take` leaves
+    /// `Saving::Yes` behind, so taking the offer without putting the state back
+    /// turns a session that is *refusing* to write into one that writes — over
+    /// the very file it was refusing to touch.
+    ///
+    /// ⚠ Both answers, because they take the same path and either one alone
+    /// leaves the other free to do it.
+    #[test]
+    fn answering_a_question_that_was_never_asked_starts_nothing() {
+        for (what, answer) in [
+            (
+                "resume",
+                &resume as &dyn Fn(&mut Autosave, &mut Studio, &mut ScanEdit),
+            ),
+            (
+                "start over",
+                &|autosave: &mut Autosave, _: &mut Studio, _: &mut ScanEdit| start_over(autosave),
+            ),
+        ] {
+            let dir = scans("never-asked");
+            let path = autosave_path(&dir.join("base.stl"));
+            const HAND_EDITED: &str = "{ not json at all";
+            std::fs::write(&path, HAND_EDITED).expect("a file to protect");
+            let (mut autosave, mut studio) = just_picked(&dir);
+            assert_eq!(autosave.asking_about(), None, "nothing is being asked");
+
+            answer(&mut autosave, &mut studio, &mut ScanEdit::default());
+            let (_, _) = drive(autosave, studio, 5);
+
+            assert_eq!(
+                std::fs::read_to_string(&path).expect("still there"),
+                HAND_EDITED,
+                "{what} must not talk a refusing session into writing"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     /// Before a scan is picked there is nowhere to write, and the session must

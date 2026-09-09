@@ -400,6 +400,31 @@ endsolid t
         assert!(s.pour_deadline.is_none(), "and so was its countdown");
     }
 
+    /// The sibling of the gate above, and the same reason: a resumed project
+    /// carries its own pour plan, so a cursor and a countdown into the one
+    /// being replaced point into work this session no longer has.
+    ///
+    /// ⚠ `Instant` means nothing across runs, so the countdown cannot resume —
+    /// it restarts, which is what the pour screen already expects.
+    #[test]
+    fn resuming_a_project_drops_the_replaced_sessions_pour_cursor() {
+        let mut s = with_pour_plan();
+        s.pour.advance(2);
+        s.start_pour_timer();
+        assert_eq!(s.pour.current(), 1, "the fixture must start mid-pour");
+        assert!(s.pour_deadline.is_some(), "with a countdown running");
+
+        s.resume(Project::new("resumed"));
+
+        assert_eq!(s.pour.current(), 0, "the cursor was the replaced plan's");
+        assert!(s.pour_deadline.is_none(), "and so was its countdown");
+        assert_eq!(
+            s.cursor.viewed(),
+            Step::FIRST,
+            "and the screen is the one the resumed project records"
+        );
+    }
+
     #[test]
     fn an_expired_deadline_reads_as_zero_not_as_stopped() {
         // The distinction the pour screen rests on: `None` hides the countdown,
