@@ -807,7 +807,14 @@ mod tests {
         // Regression: cf-scan-prep's Taubin smoothing drifts cap-face
         // vertices off the cap plane by mm. Face-normal rule still
         // catches them.
-        let h = 0.5_f64;
+        // ⚠ NOT 0.5. At h = 0.5 the faces are 1 m squares, their cross product
+        // has norm exactly 1.0, and dividing by it is indistinguishable from
+        // multiplying — `cargo-mutants` swapped `/` for `*` in the normal
+        // normalization and every test stayed green. 0.25 makes the norm 0.25,
+        // so the two differ by 16x and this test sees it.
+        let h = 0.25_f64;
+        // Past `CAP_FACE_VERTEX_DIST_M`, so only the NORMAL test can strip this
+        // face — which is the point of the fixture.
         let drift = 1e-3_f64;
         let v = vec![
             Point3::new(-h, -h, -h),
