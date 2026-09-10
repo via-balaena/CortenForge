@@ -156,9 +156,9 @@ pub fn record_run(stls_dir: &Path, written: &[PathBuf]) -> Result<RunProvenance>
 /// run number burned. `stale` is everything not from the manifest's `latest_run`,
 /// so [`RunProvenance::warning_line`] reads the same as it does after a cast.
 ///
-/// `None` when the folder has no manifest, or one that cannot be read — a
-/// folder last written by a build that did not stamp is genuinely of
-/// **unknown** provenance, which is not the same as clean.
+/// `None` means **unknown**, which is not the same as clean: no readable
+/// manifest, or one recording nothing usable. Callers must not report a
+/// folder as current on the strength of it.
 #[must_use]
 pub fn folder_provenance(out_dir: &Path) -> Option<RunProvenance> {
     let stls_dir = out_dir.join(cf_cast::STLS_SUBDIR);

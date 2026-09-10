@@ -481,8 +481,9 @@ pub fn format_molds_summary(out: &MoldOutputs) -> String {
 ///
 /// ⚠ Call only where a cast has been recorded — the panel gates this on the
 /// same `project.molds()` the summary above it uses. A `None` `provenance`
-/// then means the folder carries no record, which is **unknown**, not clean,
-/// and says so rather than staying quiet.
+/// then means **unknown**, not clean, and says so rather than staying quiet.
+/// It does not say WHY: `folder_provenance` returns `None` down four
+/// different paths, and three of them have their own gates.
 ///
 /// A part at [`UNKNOWN_RUN`] was already in the folder when the first
 /// manifest was written: it is of unknown vintage, not merely older, and the
@@ -491,8 +492,8 @@ pub fn format_molds_summary(out: &MoldOutputs) -> String {
 pub fn format_stale_parts(provenance: Option<&RunProvenance>) -> Option<String> {
     let Some(p) = provenance else {
         return Some(
-            "⚠ This folder was written before parts were recorded, so which of \
-             them are current is unknown. The next cast will record it."
+            "⚠ This folder carries no record of which parts are current. \
+             The next cast will record it."
                 .to_string(),
         );
     };
@@ -2866,7 +2867,15 @@ visible = true
     #[test]
     fn a_folder_with_no_record_says_unknown_rather_than_nothing() {
         let note = format_stale_parts(None).expect("silence would be the bug");
-        assert!(note.contains("unknown"), "got: {note}");
+        assert!(note.contains("no record"), "got: {note}");
+        // ⚠ And it must not name a CAUSE. `folder_provenance` reaches `None`
+        // down four paths — no manifest, an unparseable one, a `latest_run`
+        // of `UNKNOWN_RUN`, an unlistable folder — and three of those have
+        // their own gates. Any single explanation here is wrong three ways.
+        assert!(
+            !note.contains("written before"),
+            "the note explains a cause it has not established: {note}"
+        );
     }
 
     /// Nothing stale, nothing said — a note on every cast is one nobody reads.
