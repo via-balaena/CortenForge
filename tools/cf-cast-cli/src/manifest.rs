@@ -180,12 +180,25 @@ fn load(stls_dir: &Path) -> StlManifest {
 }
 
 /// Serialize the manifest under [`MANIFEST_HEADER`].
+///
+/// Written to a temp file and renamed, the way `save_design_toml` writes the
+/// design: [`load`] discards an unparseable manifest whole, so a half-written
+/// one costs every file its recorded run, not just the tail.
 fn save(stls_dir: &Path, manifest: &StlManifest) -> Result<()> {
     let path = stls_dir.join(MANIFEST_FILENAME);
     let body = toml::to_string_pretty(manifest)
         .with_context(|| format!("serialize {}", path.display()))?;
-    std::fs::write(&path, format!("{MANIFEST_HEADER}\n{body}"))
-        .with_context(|| format!("write {}", path.display()))
+
+    let tmp = path.with_extension("toml.tmp");
+    std::fs::write(&tmp, format!("{MANIFEST_HEADER}\n{body}"))
+        .with_context(|| format!("write {}", tmp.display()))?;
+    if let Err(e) = std::fs::rename(&tmp, &path) {
+        // Best-effort, so a failed rename does not leave the .tmp behind.
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e)
+            .with_context(|| format!("rename {} \u{2192} {}", tmp.display(), path.display()));
+    }
+    Ok(())
 }
 
 /// The `.stl` filenames directly in `stls_dir`.
@@ -200,6 +213,11 @@ fn list_stls(stls_dir: &Path) -> Result<std::collections::BTreeSet<String>> {
         let path = entry
             .with_context(|| format!("read an entry in {}", stls_dir.display()))?
             .path();
+        // A directory named `foo.stl` is not a part. `cf-viewer`'s scan of
+        // this same folder skips non-files explicitly; so does this.
+        if !path.is_file() {
+            continue;
+        }
         if let Some(name) = stl_file_name(&path) {
             names.insert(name);
         }
@@ -447,6 +465,15 @@ mod tests {
         let parsed: StlManifest = toml::from_str(&text).unwrap();
         assert_eq!(parsed.latest_run, 1);
         assert_eq!(parsed.parts.len(), 1);
+        // ⚠ Not `!manifest.toml.tmp.exists()` — that passes just as well if
+        // the temp file is named something else entirely. Name what the
+        // folder MAY hold, so any leftover fails whatever it is called.
+        let mut left: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .collect();
+        left.sort();
+        assert_eq!(left, vec!["manifest.toml", "plug_layer_0.stl"]);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -497,6 +524,24 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&out);
+    }
+
+    /// A directory named `something.stl` is not a part.
+    ///
+    /// ⚠ `cf-viewer`'s equivalent scan skips non-files explicitly; this one
+    /// filtered on the extension alone.
+    #[test]
+    fn a_directory_that_looks_like_an_stl_is_not_a_part() {
+        let dir = stls_dir("phantom", &["plug_layer_0.stl"]);
+        std::fs::create_dir_all(dir.join("phantom.stl")).unwrap();
+
+        let p = record_run(&dir, &[dir.join("plug_layer_0.stl")]).unwrap();
+
+        assert_eq!(run_of(&dir, "plug_layer_0.stl"), Some(1), "the real one is");
+        assert_eq!(run_of(&dir, "phantom.stl"), None, "the directory is not");
+        assert!(p.stale.is_empty(), "got: {:?}", stale_names(&p));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A missing directory is a real error — the caller passed a path that
