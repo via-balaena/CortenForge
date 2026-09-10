@@ -1825,6 +1825,26 @@ pub(crate) mod tests {
             .collect()
     }
 
+    /// Every piece of text the column draws, prose included.
+    ///
+    /// ⚠ Prose sits on `Role::Label` and carries its text in `value()`, not
+    /// `label()` — the same trap [`controls_in_column`] documents. Reading
+    /// only `label()` here would make every card look empty.
+    fn text_in_column(mut body: impl FnMut(&mut egui::Ui)) -> Vec<String> {
+        use egui_kittest::kittest::NodeT;
+
+        let mut body = |ui: &mut egui::Ui| body(ui);
+        let harness = column_harness(&mut body);
+        harness
+            .root()
+            .children_recursive()
+            .filter_map(|node| {
+                let widget = node.accesskit_node();
+                widget.label().or_else(|| widget.value())
+            })
+            .collect()
+    }
+
     /// A control, and what these gates call it: its accessible name, or its
     /// role when it has none.
     ///
@@ -2170,6 +2190,45 @@ pub(crate) mod tests {
             ["← Back", "Help", "Next →"]
         );
         assert!(controls_in_column(|ui| draw_checklist(ui, &studio)).is_empty());
+    }
+
+    /// ⚠⚠ Does anything DRAW it? The formatter has three gates and the two
+    /// refresh points have one each, and not one of them says the panel puts
+    /// the note on the screen. Deleting the card leaves all six green.
+    #[test]
+    fn the_caution_card_reaches_the_screen() {
+        let mut studio = crate::molds::tests::viewing_step_5_with(1);
+        studio
+            .project
+            .set_molds(cf_studio_core::MoldOutputs {
+                out_dir: std::path::PathBuf::from("out"),
+                mold_stls: Vec::new(),
+                plug_stls: Vec::new(),
+                accessory_stls: Vec::new(),
+                procedure_path: std::path::PathBuf::from("out/procedure.md"),
+                total_mass_g: 80.0,
+                pour_plan: cf_studio_core::PourPlan { steps: Vec::new() },
+            })
+            .expect("in workflow order");
+        studio.stale = Some(cf_studio_gui::RunProvenance {
+            run: 3,
+            stale: vec![cf_studio_gui::ManifestEntry {
+                file: "plug_layer_1.stl".to_string(),
+                run: 1,
+            }],
+        });
+        let note =
+            cf_studio_gui::format_stale_parts(studio.stale.as_ref()).expect("one part is stale");
+
+        let mut molds = crate::molds::tests::controls_for(1);
+        let drawn = text_in_column(|ui| {
+            let _ = draw_make_molds(ui, &studio, true, &mut molds);
+        });
+
+        assert!(
+            drawn.contains(&note),
+            "the caution card is not on the screen; drawn: {drawn:?}"
+        );
     }
 
     /// Step 5's controls, in the order they are laid out.

@@ -164,6 +164,12 @@ pub fn folder_provenance(out_dir: &Path) -> Option<RunProvenance> {
     let stls_dir = out_dir.join(cf_cast::STLS_SUBDIR);
     let manifest = load_existing(&stls_dir)?;
     let run = manifest.latest_run;
+    // ⚠ [`UNKNOWN_RUN`] is 0, so a manifest claiming 0 as its latest run would
+    // make every unknown-vintage part compare EQUAL to it — a folder of
+    // entirely unknown parts reported as current. 0 means unknown here too.
+    if run == UNKNOWN_RUN {
+        return None;
+    }
     // A read must not repair the folder, so a reconcile failure is unknown
     // rather than an error to report.
     let parts = reconcile(&stls_dir, seed(manifest)).ok()?;
@@ -714,6 +720,33 @@ mod tests {
         assert!(
             folder_provenance(&out).unwrap().stale.is_empty(),
             "gone is not stale"
+        );
+
+        let _ = std::fs::remove_dir_all(&out);
+    }
+
+    /// ⚠⚠ `UNKNOWN_RUN` is 0, and 0 must never also mean "the latest run".
+    /// A manifest claiming `latest_run = 0` would otherwise make every
+    /// unknown-vintage part compare EQUAL to the latest run — reporting a
+    /// folder of entirely unknown parts as current, which is silence exactly
+    /// where this feature exists to speak.
+    #[test]
+    fn a_manifest_whose_latest_run_is_the_unknown_sentinel_is_unknown() {
+        let out = out_dir("run-zero", &["a.stl", "b.stl"]);
+        let stls = out.join(cf_cast::STLS_SUBDIR);
+        std::fs::write(
+            stls.join(MANIFEST_FILENAME),
+            format!(
+                "latest_run = {UNKNOWN_RUN}\n\n[[part]]\nfile = \"a.stl\"\nrun = \
+                 {UNKNOWN_RUN}\n\n[[part]]\nfile = \"b.stl\"\nrun = {UNKNOWN_RUN}\n"
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(
+            folder_provenance(&out),
+            None,
+            "a folder of entirely unknown parts is unknown, not current"
         );
 
         let _ = std::fs::remove_dir_all(&out);
