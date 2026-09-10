@@ -3946,6 +3946,14 @@ mod tests {
         let coarse_reach_m = reach_at(&spec);
         spec.mesh_cell_size_m = 0.003;
         let fine_reach_m = reach_at(&spec);
+        //    ⚠⚠ And it reads the PER-PLUG cell, not the global one. This is
+        //    the canal path — `cf-cast-cli`'s `derive.rs` is the only producer
+        //    of `plug_layer_0_mesh_cell_size_m`, and NO test in this crate set
+        //    it before this line: `plug_compose_inputs` could have dropped the
+        //    field for `spec.mesh_cell_size_m` and stayed green.
+        spec.plug_layer_0_mesh_cell_size_m = Some(0.012);
+        let per_plug_reach_m = reach_at(&spec);
+        spec.plug_layer_0_mesh_cell_size_m = None;
         assert!(
             (fine_reach_m - 0.007_375).abs() < 1e-9,
             "3 mm cells reach 7.375 mm into this plug, got {fine_reach_m}"
@@ -3954,6 +3962,12 @@ mod tests {
             coarse_reach_m > fine_reach_m,
             "a coarser cell marches deeper for the same engagement: \
              12 mm gave {coarse_reach_m}, 3 mm gave {fine_reach_m}"
+        );
+        assert!(
+            (per_plug_reach_m - coarse_reach_m).abs() < 1e-9,
+            "the per-plug cell must win over the global one: 12 mm per-plug \
+             against a 3 mm global gave {per_plug_reach_m}, not the \
+             {coarse_reach_m} that cell reaches"
         );
 
         // 3. It reads the SCAN-MESH-DIRECT branch: there the emitted mesh is
