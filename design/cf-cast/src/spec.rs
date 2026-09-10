@@ -3715,6 +3715,85 @@ mod tests {
         (spec, ribbon)
     }
 
+    /// ★★★ On the scan-mesh-direct branch, `spec.plug` reaches the emitted
+    /// mesh through NO route — not as the body, and not as a pedestal sized
+    /// from it. `compose_plug_mesh` says so by withholding the cell size from
+    /// `add_plug_pins`, and until this gate nothing held it: handing over
+    /// `Some(cell_size_m)` unconditionally left all 410 cf-cast tests green.
+    /// Both ENDS were covered — `add_plug_pins(_, _, None)` yields no column —
+    /// and the call site that chooses `None` was not.
+    ///
+    /// ⚠⚠ The two assertions above the oracle are what stop this being
+    /// vacuous, and the first draft of it WAS: at the fixture's own 12 mm cells
+    /// no plug gets a column at all, so byte identity held with the invariant
+    /// deleted. They say the pair actually straddles the decision.
+    #[test]
+    fn a_scan_mesh_direct_plug_takes_no_column_from_the_solid_it_never_meshed() {
+        use std::sync::Arc;
+
+        let (mut spec, ribbon) = v2_fixture();
+        let ribbon = ribbon.with_plug_pins(crate::plug::PlugPinKind::Axial(
+            crate::plug::PlugPinSpec::iter1(),
+        ));
+        // Fine enough that the column is derivable at all — see the vacuity
+        // warning above.
+        spec.mesh_cell_size_m = 0.003;
+        spec.scan_mesh_for_plug_layer_0 = Some(Arc::new(unit_cube_indexed_mesh_in_meters(
+            Point3::new(0.0, 0.0, 0.040),
+            0.012,
+        )));
+
+        // ⚠ Placed off the LOCK, not off the origin. The first draft measured
+        // from the origin and the "seated" block landed clear of the lock — the
+        // positive control below is what said so.
+        let pose = match crate::plug::add_plug_pins(spec.plug.clone(), &ribbon, None)
+            .1
+            .first()
+        {
+            Some(crate::mesh_csg::MatingTransform::UnionTruncatedPyramid { params }) => {
+                params.pose.clone()
+            }
+            other => panic!("the fixture must carry a floor lock, got {other:?}"),
+        };
+        // Along the lock's own axis: one block the lock reaches, one lifted 4 mm
+        // clear of it — exactly the pair a pedestal exists to bridge.
+        let block = |gap_m: f64| {
+            let centre = pose.center_m + pose.axis_unit.into_inner() * (0.020 + gap_m);
+            Solid::cuboid(Vector3::new(0.020, 0.020, 0.020)).translate(centre.coords)
+        };
+        let (seated, lifted) = (block(0.0), block(0.004));
+        let columned = |plug: &Solid| {
+            crate::plug::add_plug_pins(plug.clone(), &ribbon, Some(spec.mesh_cell_size_m))
+                .1
+                .iter()
+                .any(|t| {
+                    matches!(
+                        t,
+                        crate::mesh_csg::MatingTransform::UnionLockPedestal { .. }
+                    )
+                })
+        };
+        assert!(!columned(&seated), "the seated plug needs no column");
+        assert!(columned(&lifted), "the lifted plug would get one");
+
+        let mesh_of = |spec: &CastSpec| {
+            // `unwrap`, not `expect` — the module denies `expect_used` and the
+            // `CastError` prints itself.
+            super::compose_plug_mesh(spec, &ribbon, 0).unwrap().mesh
+        };
+        spec.plug = seated;
+        let from_seated = mesh_of(&spec);
+        spec.plug = lifted;
+        let from_lifted = mesh_of(&spec);
+
+        assert_eq!(
+            (from_seated.vertices, from_seated.faces),
+            (from_lifted.vertices, from_lifted.faces),
+            "the emitted mesh is the cleaned scan plus its lock — the plug \
+             solid must not reach it, by any route"
+        );
+    }
+
     fn clean_dir(out_dir: &std::path::Path) {
         match std::fs::remove_dir_all(out_dir) {
             Ok(()) => {}

@@ -6,9 +6,9 @@
 //! beside the cleaned scan — and with the invented layer stack below, that
 //! overwrites the operator's real design. `~/scans` is flat, so it sits right
 //! next to the STL.
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use cf_studio_core::RidgeOptions;
+use cf_studio_core::{PlugDraft, PrepInput};
 use cortenforge::cf_cap_planes::parse_cap_planes;
 use cortenforge::cf_cast::plug_fit_verdict;
 use cortenforge::cf_cast_cli::{
@@ -81,12 +81,19 @@ const PROBE_LAYER_MATERIAL: &str = "ECOFLEX_00_30";
 /// [`PlugFit::WillNotCast`], not an error — otherwise a missing prep file
 /// reaches the operator as "your inset is too large".
 pub fn plug_fit_preflight(
-    cleaned_stl: &Path,
-    prep_toml: &Path,
-    cavity_inset_m: f64,
-    ridges: &RidgeOptions,
+    prep: &PrepInput,
+    plug: &PlugDraft,
     mesh_cell_size_m: f64,
 ) -> Result<PlugFit> {
+    // ⚠ Still swappable, unlike the arguments above: these four are what the
+    // caller used to hand over positionally, where every swap compiled and the
+    // whole cf-studio-gui suite passed either way. Here they are held by the
+    // pre-flight's own gates — swap the two paths and 4 of the 5 in
+    // `tests/plug_fit_preflight.rs` fail.
+    let cleaned_stl = prep.cleaned_stl.as_path();
+    let prep_toml = prep.prep_toml.as_path();
+    let cavity_inset_m = plug.cavity_inset_m;
+    let ridges = &plug.ridges;
     // ⚠ `for_design` is used for its CastDefaults — planar seam, split normal,
     // apex-axial pour gate, plug pins on — because those are what the wizard's
     // own cast uses, and they decide where the floor lock is anchored. A

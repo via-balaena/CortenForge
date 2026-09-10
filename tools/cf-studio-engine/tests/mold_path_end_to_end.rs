@@ -24,7 +24,7 @@
 
 use std::path::{Path, PathBuf};
 
-use cf_studio_core::{DesignDraft, LayerDraft, MoldOutputs, RidgeOptions};
+use cf_studio_core::{DesignDraft, LayerDraft, MoldOutputs, PrepInput, RidgeOptions};
 use cf_studio_engine::{CastMode, EditSession, PartId, PartSelection, generate_molds_for_design};
 use cortenforge::mesh::types::{IndexedMesh, Point3};
 
@@ -126,8 +126,10 @@ fn cast_with(
         .expect("prep saves");
 
     let out = generate_molds_for_design(
-        &dir.join("synthetic.cleaned.stl"),
-        &dir.join("synthetic.prep.toml"),
+        &PrepInput {
+            cleaned_stl: dir.join("synthetic.cleaned.stl"),
+            prep_toml: dir.join("synthetic.prep.toml"),
+        },
         &draft(layers),
         0.003,
         ridges,

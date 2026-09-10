@@ -8,7 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
-use cf_studio_core::{DesignDraft, LayerDraft, RidgeOptions};
+use cf_studio_core::{DesignDraft, LayerDraft, PlugDraft, PrepInput, RidgeOptions};
 use cf_studio_engine::{
     CastMode, EditSession, EngineError, PROBE_LAYER_THICKNESS_M, PartId, PartSelection, PlugFit,
     generate_molds_for_design, plug_fit_preflight,
@@ -61,12 +61,21 @@ fn fixture(caller: &str) -> PathBuf {
     dir
 }
 
-/// `(cleaned scan, prep)` inside a fixture directory.
-fn paths(dir: &Path) -> (PathBuf, PathBuf) {
-    (
-        dir.join("synthetic.cleaned.stl"),
-        dir.join("synthetic.prep.toml"),
-    )
+/// The cleaned scan + prep inside a fixture directory.
+fn paths(dir: &Path) -> PrepInput {
+    PrepInput {
+        cleaned_stl: dir.join("synthetic.cleaned.stl"),
+        prep_toml: dir.join("synthetic.prep.toml"),
+    }
+}
+
+/// The plug a pre-flight is asked about: the inset and the ridges that shape
+/// it, bound to their names rather than passed as two loose scalars.
+fn plug_of(cavity_inset_m: f64, ridges: &RidgeOptions) -> PlugDraft {
+    PlugDraft {
+        cavity_inset_m,
+        ridges: ridges.clone(),
+    }
 }
 
 /// A real three-layer stack — `~/scans/base_mold`'s own design, in metres.
@@ -98,14 +107,14 @@ fn the_invented_layer_stack_does_not_change_the_verdict() {
     );
 
     let dir = fixture("transfers");
-    let (cleaned, prep) = paths(&dir);
+    let prep = paths(&dir);
     let smooth = RidgeOptions::default();
     let (mut saw_cast, mut saw_refusal) = (false, false);
     let mut problems = Vec::new();
 
     for inset_mm in INSETS_MM {
         let inset_m = inset_mm / 1e3;
-        let probed = plug_fit_preflight(&cleaned, &prep, inset_m, &smooth, CELL_SIZE_M)
+        let probed = plug_fit_preflight(&prep, &plug_of(inset_m, &smooth), CELL_SIZE_M)
             .expect("the pre-flight must RUN — a broken fixture is not a verdict");
         // The oracle: the cast the operator actually runs at step 5, with a
         // stack the pre-flight never saw.
@@ -152,7 +161,7 @@ fn the_invented_layer_stack_does_not_change_the_verdict() {
 #[test]
 fn the_preflight_returns_the_verdict_the_cast_would() {
     let dir = fixture("agrees");
-    let (cleaned, prep) = paths(&dir);
+    let prep = paths(&dir);
     let mut problems = Vec::new();
 
     // ⚠ BOTH texture settings. Ridges route the plug through the canal path,
@@ -179,7 +188,7 @@ fn the_preflight_returns_the_verdict_the_cast_would() {
         let mut saw_refusal = false;
         for inset_mm in INSETS_MM {
             let inset_m = inset_mm / 1e3;
-            let preflight = plug_fit_preflight(&cleaned, &prep, inset_m, ridges, CELL_SIZE_M)
+            let preflight = plug_fit_preflight(&prep, &plug_of(inset_m, ridges), CELL_SIZE_M)
                 .expect("the pre-flight must RUN — a broken fixture is not a verdict");
             // The oracle: the same cast the wizard runs, same cell size, same
             // texture, same one-layer stack the probe invents.
@@ -251,17 +260,15 @@ fn the_preflight_returns_the_verdict_the_cast_would() {
 #[test]
 fn the_preflight_leaves_the_scan_folder_alone() {
     let dir = fixture("no-writes");
-    let (cleaned, prep) = paths(&dir);
+    let prep = paths(&dir);
     let design = dir.join("synthetic.design.toml");
     const SENTINEL: &str = "# the operator's real design — must survive a pre-flight\n";
     std::fs::write(&design, SENTINEL).unwrap();
     let before: Vec<_> = listing(&dir);
 
     plug_fit_preflight(
-        &cleaned,
         &prep,
-        0.005,
-        &RidgeOptions::default(),
+        &plug_of(0.005, &RidgeOptions::default()),
         CELL_SIZE_M,
     )
     .expect("the pre-flight must run");
@@ -288,7 +295,6 @@ fn the_preflight_leaves_the_scan_folder_alone() {
         }],
     };
     let _ = generate_molds_for_design(
-        &cleaned,
         &prep,
         &draft,
         CELL_SIZE_M,
@@ -369,14 +375,12 @@ fn truncate_centerline(prep: &Path, n: usize) {
 #[test]
 fn an_unusable_centerline_is_an_error_not_a_refusal() {
     let dir = fixture("centerline");
-    let (cleaned, prep) = paths(&dir);
+    let prep = paths(&dir);
 
-    truncate_centerline(&prep, 1);
+    truncate_centerline(&prep.prep_toml, 1);
     let one = plug_fit_preflight(
-        &cleaned,
         &prep,
-        0.005,
-        &RidgeOptions::default(),
+        &plug_of(0.005, &RidgeOptions::default()),
         CELL_SIZE_M,
     );
     assert!(
@@ -384,12 +388,10 @@ fn an_unusable_centerline_is_an_error_not_a_refusal() {
         "a 1-point centerline must be reported as a missing centerline, got {one:?}"
     );
 
-    truncate_centerline(&prep, 2);
+    truncate_centerline(&prep.prep_toml, 2);
     let two = plug_fit_preflight(
-        &cleaned,
         &prep,
-        0.005,
-        &RidgeOptions::default(),
+        &plug_of(0.005, &RidgeOptions::default()),
         CELL_SIZE_M,
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -416,7 +418,7 @@ fn an_unusable_centerline_is_an_error_not_a_refusal() {
 #[test]
 fn a_ridge_setting_the_preflight_refuses_is_one_the_cast_refuses() {
     let dir = fixture("deep-relief");
-    let (cleaned, prep) = paths(&dir);
+    let prep = paths(&dir);
     let ridges = RidgeOptions {
         enabled: true,
         // 20 mm — four times the GUI's 5 mm ceiling, and past the probe layer,
@@ -425,7 +427,7 @@ fn a_ridge_setting_the_preflight_refuses_is_one_the_cast_refuses() {
         tip_relief_depth_m: 0.020,
         ..RidgeOptions::default()
     };
-    let preflight = plug_fit_preflight(&cleaned, &prep, 0.005, &ridges, CELL_SIZE_M);
+    let preflight = plug_fit_preflight(&prep, &plug_of(0.005, &ridges), CELL_SIZE_M);
     // The oracle: the same cast, same ridges, same one-layer stack.
     let draft = DesignDraft {
         cavity_inset_m: 0.005,
@@ -436,7 +438,6 @@ fn a_ridge_setting_the_preflight_refuses_is_one_the_cast_refuses() {
         }],
     };
     let cast = generate_molds_for_design(
-        &cleaned,
         &prep,
         &draft,
         CELL_SIZE_M,

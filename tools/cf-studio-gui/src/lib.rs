@@ -2628,8 +2628,10 @@ visible = true
         let selection = picker.selection(CENDRILLON_CAST_MODE);
 
         let out = cf_studio_engine::generate_molds_for_design(
-            &cleaned,
-            &prep,
+            &cf_studio_core::PrepInput {
+                cleaned_stl: cleaned.clone(),
+                prep_toml: prep.clone(),
+            },
             &draft,
             cell_size_m,
             &RidgeOptions::default(),

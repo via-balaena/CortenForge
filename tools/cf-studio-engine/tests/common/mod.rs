@@ -13,7 +13,7 @@
 
 use std::path::{Path, PathBuf};
 
-use cf_studio_core::{DesignDraft, LayerDraft, RidgeOptions};
+use cf_studio_core::{DesignDraft, LayerDraft, PrepInput, RidgeOptions};
 use cf_studio_engine::{
     CastMode, EditSession, PROBE_LAYER_THICKNESS_M, PartSelection, generate_molds_for_design,
 };
@@ -183,8 +183,10 @@ pub fn cast_synthetic_with_layers(
             .collect(),
     };
     let cast = generate_molds_for_design(
-        &dir.join("synthetic.cleaned.stl"),
-        &dir.join("synthetic.prep.toml"),
+        &PrepInput {
+            cleaned_stl: dir.join("synthetic.cleaned.stl"),
+            prep_toml: dir.join("synthetic.prep.toml"),
+        },
         &draft,
         cell_size_m,
         ridges,

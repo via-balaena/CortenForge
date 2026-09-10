@@ -13,7 +13,7 @@ use std::time::Instant;
 
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, futures_lite::future};
-use cf_studio_core::{DesignDraft, MoldOutputs, RidgeOptions};
+use cf_studio_core::{DesignDraft, MoldOutputs, PrepInput, RidgeOptions};
 use cf_studio_engine::{
     PartSelection, PlugFit, PrintExportReport, export_print_package, generate_molds_for_design,
     plug_fit_preflight, run_simplify,
@@ -234,14 +234,8 @@ pub(crate) fn start_molds(start: &MoldsStart, studio: &mut Studio, job: &mut Mol
         .project
         .prep()
         .zip(studio.project.design())
-        .map(|(prep, design)| {
-            (
-                prep.cleaned_stl.clone(),
-                prep.prep_toml.clone(),
-                design.clone(),
-            )
-        });
-    let Some((cleaned_stl, prep_toml, draft)) = inputs else {
+        .map(|(prep, design)| (prep.clone(), design.clone()));
+    let Some((prep, draft)) = inputs else {
         studio.say(Err(MOLDS_NO_INPUTS.to_string()));
         return;
     };
@@ -260,7 +254,7 @@ pub(crate) fn start_molds(start: &MoldsStart, studio: &mut Studio, job: &mut Mol
     job.0 = Some(MoldsRun {
         started: Instant::now(),
         shown_secs: OPENING,
-        task: spawn_molds(cleaned_stl, prep_toml, draft, start.clone(), ridges),
+        task: spawn_molds(prep, draft, start.clone(), ridges),
     });
 }
 
@@ -270,8 +264,7 @@ pub(crate) fn start_molds(start: &MoldsStart, studio: &mut Studio, job: &mut Mol
 /// here than anywhere: a panic half an hour in would otherwise leave `busy`
 /// stuck on with no way back.
 fn spawn_molds(
-    cleaned_stl: PathBuf,
-    prep_toml: PathBuf,
+    prep: PrepInput,
     draft: DesignDraft,
     start: MoldsStart,
     ridges: RidgeOptions,
@@ -279,8 +272,7 @@ fn spawn_molds(
     AsyncComputeTaskPool::get().spawn(async move {
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             generate_molds_for_design(
-                &cleaned_stl,
-                &prep_toml,
+                &prep,
                 &draft,
                 start.cell_size_m,
                 &ridges,
@@ -455,29 +447,23 @@ pub(crate) fn start_plug_fit(question: FitQuestion, studio: &Studio, job: &mut P
         job.answered = Some((question, Err(FIT_NO_PREP.to_string())));
         return;
     };
-    let (cleaned_stl, prep_toml) = (prep.cleaned_stl.clone(), prep.prep_toml.clone());
+    let prep = prep.clone();
     job.running = Some(FitRun {
-        task: spawn_plug_fit(cleaned_stl, prep_toml, question.clone()),
+        task: spawn_plug_fit(prep, question.clone()),
         started: Instant::now(),
         question,
     });
 }
 
 /// Run the pre-flight off-thread.
-fn spawn_plug_fit(
-    cleaned_stl: PathBuf,
-    prep_toml: PathBuf,
-    question: FitQuestion,
-) -> Task<Result<PlugFit, String>> {
+fn spawn_plug_fit(prep: PrepInput, question: FitQuestion) -> Task<Result<PlugFit, String>> {
     AsyncComputeTaskPool::get().spawn(async move {
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            plug_fit_preflight(
-                &cleaned_stl,
-                &prep_toml,
-                question.plug.cavity_inset_m,
-                &question.plug.ridges,
-                question.cell_size_m,
-            )
+            // ⚠ The whole `PrepInput` and the whole `PlugDraft`, never their
+            // fields. Both used to be taken apart here and handed over
+            // positionally: two `&Path` and two `f64`, every swap compiling and
+            // every test green either way.
+            plug_fit_preflight(&prep, &question.plug, question.cell_size_m)
         }));
         match outcome {
             Ok(Ok(fit)) => Ok(fit),
