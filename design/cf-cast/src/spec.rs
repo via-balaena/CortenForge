@@ -22,11 +22,11 @@ use crate::error::{CastError, CastTarget};
 use crate::flange::FlangeKind;
 use crate::gasket_mold::{GASKET_MAX_CELL_SIZE_M, compose_gasket_mold_solid};
 use crate::material::MoldingMaterial;
-use crate::mesh_csg::apply_mating_transforms;
+use crate::mesh_csg::{LockPedestalParams, MatingTransform, apply_mating_transforms};
 use crate::mesher::{solid_to_mm_mesh, solid_to_mm_mesh_with_skin};
 use crate::part_selection::{PartId, PartSelection};
 use crate::piece::{PieceShared, compose_piece_shared, compose_piece_with_shared, layer_mc_bounds};
-use crate::plug::add_plug_pins;
+use crate::plug::{add_plug_pins, build_plug_lock_pedestal_transform};
 use crate::pour_volume::{POUR_VOLUME_MIN_CELL_SIZE_M, PourVolume, integrate_negative_sdf_volume};
 use crate::procedure::{generate_procedure_markdown, generate_procedure_markdown_v2_for_mode};
 use crate::ribbon::{PieceSide, Ribbon};
@@ -1536,6 +1536,37 @@ pub fn carved_features(spec: &CastSpec, ribbon: &Ribbon) -> CarvedFeatures {
     }
 }
 
+/// Per layer: the floor-lock PEDESTAL that layer's plug compose will union on,
+/// or `None` where it gets no column.
+///
+/// ★ Whether a column exists turns on THREE things at once — the plug solid,
+/// the mesh cell size, and whether the layer takes the scan-mesh-direct branch
+/// — so anything downstream that needs the answer has to ask the decision
+/// rather than re-derive it from the config. This runs that decision over the
+/// same [`PlugComposeInputs`] the compose path uses, which is what makes it
+/// one answer instead of two that agree today.
+///
+/// ⚠ COST. Five SDF ray-marches per layer, and no meshing — cheap beside the
+/// compose, but not free, and it is paid again by every caller. A caller that
+/// already holds a plug's mating transforms should read
+/// [`MatingTransform::UnionLockPedestal`] out of those instead of asking here.
+#[must_use]
+pub fn plug_pedestals(spec: &CastSpec, ribbon: &Ribbon) -> Vec<Option<LockPedestalParams>> {
+    (0..spec.layers.len())
+        .map(|layer_index| {
+            let inputs = plug_compose_inputs(spec, layer_index);
+            let cell_size_m = inputs.pedestal_cell_size_m()?;
+            match build_plug_lock_pedestal_transform(&inputs.base_plug, ribbon, cell_size_m)? {
+                MatingTransform::UnionLockPedestal { params } => Some(params),
+                // `build_plug_lock_pedestal_transform` emits that variant or
+                // nothing; a different one means the column moved elsewhere and
+                // this answer would be stale rather than merely absent.
+                other => unreachable!("pedestal builder emitted {other:?}"),
+            }
+        })
+        .collect()
+}
+
 /// Compose, mesh, and F4-gate every (layer × piece) pair.
 /// Returns the v2 pending buffer organized as `[Negative, Positive]`
 /// per-layer pairs, so the writer phase consumes them without
@@ -1785,6 +1816,70 @@ struct ComposedPlug {
     repair_summary: Option<ScanMeshRepairSummary>,
 }
 
+/// Everything one layer's plug compose turns on, derived from the spec alone
+/// — before anything is meshed.
+///
+/// ★ ONE origin for three inputs that must not disagree: the base plug solid,
+/// the cell the transforms are applied at, and whether this layer takes the
+/// scan-mesh-direct branch. The floor lock's PEDESTAL is decided by all three
+/// at once (`plug::build_plug_lock_pedestal_transform`), so anything else that
+/// needs to know whether a column exists has to ask from here rather than
+/// re-deriving them.
+struct PlugComposeInputs<'a> {
+    /// `spec.plug` for layer 0, `spec.layers[N - 1].body` above it.
+    base_plug: Solid,
+    /// The cf-scan-prep cleaned scan mesh, copied through instead of meshed,
+    /// when layer 0 takes that branch. `None` means SDF → marching cubes.
+    scan_mesh: Option<&'a Arc<IndexedMesh>>,
+    /// The cell this plug meshes at.
+    cell_size_m: f64,
+}
+
+impl PlugComposeInputs<'_> {
+    /// The cell size [`add_plug_pins`] may size a floor-lock pedestal from.
+    ///
+    /// `None` on the scan-mesh-direct branch: there the emitted mesh is the
+    /// cleaned scan, so `base_plug` describes nothing about it and a column
+    /// sized from it would describe a body that was never meshed.
+    fn pedestal_cell_size_m(&self) -> Option<f64> {
+        self.scan_mesh.is_none().then_some(self.cell_size_m)
+    }
+}
+
+/// See [`PlugComposeInputs`].
+fn plug_compose_inputs(spec: &CastSpec, layer_index: usize) -> PlugComposeInputs<'_> {
+    let base_plug = if layer_index == 0 {
+        spec.plug.clone()
+    } else {
+        spec.layers[layer_index - 1].body.clone()
+    };
+    // S1 of CF_CAST_SCAN_MESH_DIRECT_RECON.md: when the
+    // feature flag is set, layer 0 bypasses the SDF → MC
+    // pipeline and copies the cf-scan-prep cleaned scan mesh
+    // directly. Mating-feature transforms still apply post-
+    // copy (cap-plane SeamTrim + plug-lock pyramid union).
+    // Layers 1+ stay on the SDF/MC path until S2 of the
+    // recon extends scan-mesh-direct to the offset cases.
+    let scan_mesh = if layer_index == 0 {
+        spec.scan_mesh_for_plug_layer_0.as_ref()
+    } else {
+        None
+    };
+    // Every plug uses the per-plug fine cell size when set (the canal
+    // path): layer-0's plug and the N>0 plugs (the textured layer
+    // bodies) all carry the canal field now, so they all need the fine
+    // cell for the sub-cm rings + ~1.5 mm texture to survive meshing.
+    // Canal off → `None` → the global cell, byte-identical to before.
+    let cell_size_m = spec
+        .plug_layer_0_mesh_cell_size_m
+        .unwrap_or(spec.mesh_cell_size_m);
+    PlugComposeInputs {
+        base_plug,
+        scan_mesh,
+        cell_size_m,
+    }
+}
+
 /// Compose + mesh one layer's plug and verify its floor lock actually fused to
 /// it — everything [`mesh_and_gate_v2_one_plug`] does BEFORE the STL write and
 /// the F4 printability gate.
@@ -1813,44 +1908,18 @@ fn compose_plug_mesh(
     let target = CastTarget::Plug {
         layer_index: Some(layer_index),
     };
-    let base_plug = if layer_index == 0 {
-        spec.plug.clone()
-    } else {
-        spec.layers[layer_index - 1].body.clone()
-    };
-    // S1 of CF_CAST_SCAN_MESH_DIRECT_RECON.md: when the
-    // feature flag is set, layer 0 bypasses the SDF → MC
-    // pipeline and copies the cf-scan-prep cleaned scan mesh
-    // directly. Mating-feature transforms still apply post-
-    // copy (cap-plane SeamTrim + plug-lock pyramid union).
-    // Layers 1+ stay on the SDF/MC path until S2 of the
-    // recon extends scan-mesh-direct to the offset cases.
-    let scan_mesh = if layer_index == 0 {
-        spec.scan_mesh_for_plug_layer_0.as_ref()
-    } else {
-        None
-    };
-    // Every plug uses the per-plug fine cell size when set (the canal
-    // path): layer-0's plug and the N>0 plugs (the textured layer
-    // bodies) all carry the canal field now, so they all need the fine
-    // cell for the sub-cm rings + ~1.5 mm texture to survive meshing.
-    // Canal off → `None` → the global cell, byte-identical to before.
-    let cell_size_m = spec
-        .plug_layer_0_mesh_cell_size_m
-        .unwrap_or(spec.mesh_cell_size_m);
-    // ⚠ `None` on the scan-mesh-direct branch, and that is the caveat this
-    // block used to carry as a prediction: `add_plug_pins` READS the plug
-    // now, to size the floor lock's pedestal. On that branch the emitted
-    // mesh is the cleaned scan, not `base_plug`, so a transform sized from
-    // `base_plug` would describe a body that was never meshed. Withholding
-    // the cell size is what says so — the plug still passes through
-    // unchanged either way, so discarding `plug_solid` there stays a
-    // `Solid::clone` waste and nothing more.
-    let (plug_solid, mating_transforms) = add_plug_pins(
+    let inputs = plug_compose_inputs(spec, layer_index);
+    let pedestal_cell_size_m = inputs.pedestal_cell_size_m();
+    let PlugComposeInputs {
         base_plug,
-        ribbon,
-        scan_mesh.is_none().then_some(cell_size_m),
-    );
+        scan_mesh,
+        cell_size_m,
+    } = inputs;
+    // ⚠ The plug passes through unchanged on both branches, so discarding
+    // `plug_solid` on the scan-mesh-direct one is a `Solid::clone` waste and
+    // nothing more. See `PlugComposeInputs::pedestal_cell_size_m` for why that
+    // branch withholds the cell size.
+    let (plug_solid, mating_transforms) = add_plug_pins(base_plug, ribbon, pedestal_cell_size_m);
     let (mut mesh, path_label) = if let Some(scan_mesh) = scan_mesh {
         (build_plug_body_mesh(scan_mesh), "scan-mesh-direct")
     } else {
@@ -3792,6 +3861,215 @@ mod tests {
             "the emitted mesh is the cleaned scan plus its lock — the plug \
              solid must not reach it, by any route"
         );
+    }
+
+    /// ★★★ The column `plug_pedestals` reports is the one the compose path
+    /// would union — asserted over each of the THREE inputs the decision turns
+    /// on, plus the layer indexing that picks which plug is asked about.
+    ///
+    /// ⚠ WIRING, not arithmetic. Every miss this catches is a swap the
+    /// compiler accepts: the wrong layer's body, the global cell instead of
+    /// the plug's, the scan-mesh branch ignored.
+    /// `build_plug_lock_pedestal_transform` has its own gates for whether the
+    /// column is RIGHT; this one holds that the question reaches it unaltered.
+    #[test]
+    fn the_column_reported_is_the_one_the_compose_would_union() {
+        use std::sync::Arc;
+
+        let (mut spec, ribbon) = v2_fixture();
+        let ribbon = ribbon.with_plug_pins(crate::plug::PlugPinKind::Axial(
+            crate::plug::PlugPinSpec::iter1(),
+        ));
+        // Fine enough that a column is derivable at all — at the fixture's own
+        // 12 mm cells no plug gets one, which assertion 2 relies on and which
+        // made an earlier gate here vacuous.
+        spec.mesh_cell_size_m = 0.003;
+
+        let pose = match crate::plug::add_plug_pins(spec.plug.clone(), &ribbon, None)
+            .1
+            .first()
+        {
+            Some(crate::mesh_csg::MatingTransform::UnionTruncatedPyramid { params }) => {
+                params.pose.clone()
+            }
+            other => panic!("the fixture must carry a floor lock, got {other:?}"),
+        };
+        // Along the lock's own axis: one block the lock reaches, one lifted
+        // clear of it — the pair a pedestal exists to bridge.
+        let block = |gap_m: f64| {
+            let centre = pose.center_m + pose.axis_unit.into_inner() * (0.020 + gap_m);
+            Solid::cuboid(Vector3::new(0.020, 0.020, 0.020)).translate(centre.coords)
+        };
+        let (seated, lifted) = (block(0.0), block(0.004));
+        let column_on = |spec: &CastSpec, layer_index: usize| -> bool {
+            super::plug_pedestals(spec, &ribbon)
+                .get(layer_index)
+                .and_then(Option::as_ref)
+                .is_some()
+        };
+
+        // 1. It reads the PLUG.
+        spec.plug = seated.clone();
+        assert!(
+            !column_on(&spec, 0),
+            "a plug its lock already reaches takes no column"
+        );
+        spec.plug = lifted.clone();
+        assert!(
+            column_on(&spec, 0),
+            "a plug lifted clear of its lock takes one"
+        );
+
+        // 2. It reads the CELL SIZE — same lifted plug, a cell too coarse to
+        //    march it.
+        //    ⚠ NOT a presence flip: this plug gets a column at both cell
+        //    sizes, and asserting otherwise is what failed here first. What
+        //    the cell moves is how far the column REACHES — engagement is
+        //    `PEDESTAL_ENGAGEMENT_CELLS` cells inside, so a coarser cell has
+        //    to march deeper to satisfy it.
+        let reach_at = |spec: &CastSpec| -> f64 {
+            super::plug_pedestals(spec, &ribbon)
+                .first()
+                .and_then(Option::as_ref)
+                .map_or(f64::NAN, |p| p.axial_span_m.1)
+        };
+        spec.mesh_cell_size_m = 0.012;
+        let coarse_reach_m = reach_at(&spec);
+        spec.mesh_cell_size_m = 0.003;
+        let fine_reach_m = reach_at(&spec);
+        assert!(
+            (fine_reach_m - 0.007_375).abs() < 1e-9,
+            "3 mm cells reach 7.375 mm into this plug, got {fine_reach_m}"
+        );
+        assert!(
+            coarse_reach_m > fine_reach_m,
+            "a coarser cell marches deeper for the same engagement: \
+             12 mm gave {coarse_reach_m}, 3 mm gave {fine_reach_m}"
+        );
+
+        // 3. It reads the SCAN-MESH-DIRECT branch: there the emitted mesh is
+        //    the cleaned scan, so the plug solid must reach it by no route.
+        spec.scan_mesh_for_plug_layer_0 = Some(Arc::new(unit_cube_indexed_mesh_in_meters(
+            Point3::new(0.0, 0.0, 0.040),
+            0.012,
+        )));
+        assert!(
+            !column_on(&spec, 0),
+            "a scan-mesh-direct layer takes no column from a solid it never meshed"
+        );
+        spec.scan_mesh_for_plug_layer_0 = None;
+
+        // 4. It asks about each layer's OWN plug: layer 0's is `spec.plug`,
+        //    layer 1's is `layers[0].body`. Seated below, lifted above — so an
+        //    off-by-one reports the pair reversed rather than merely wrong.
+        spec.plug = seated;
+        spec.layers = vec![
+            CastLayer {
+                body: lifted,
+                material: reference_material(),
+            },
+            CastLayer {
+                body: Solid::cuboid(Vector3::new(0.035, 0.035, 0.030)),
+                material: reference_material(),
+            },
+        ];
+        let per_layer: Vec<bool> = super::plug_pedestals(&spec, &ribbon)
+            .iter()
+            .map(Option::is_some)
+            .collect();
+        assert_eq!(
+            per_layer,
+            vec![false, true],
+            "layer 0's plug is `spec.plug`, layer 1's is `layers[0].body`"
+        );
+    }
+
+    /// ★★★ The sheet names the column exactly when the cast grows one — end to
+    /// end, through the production entry point, grepped for the noun the
+    /// bencher would read.
+    ///
+    /// ⚠ The PAIR is the gate. Asserting only the presence half passes on a
+    /// sheet that names the column unconditionally, which is the exact failure
+    /// this bullet's own neighbours were fixed for: `funnel_bullet` and the
+    /// `platform.stl` gate both once sent a bencher to verify geometry a
+    /// correct cast never carries, under "do NOT proceed to print".
+    #[test]
+    fn the_sheet_names_the_column_exactly_when_the_cast_grows_one() {
+        use crate::CastMode;
+        use crate::procedure::generate_procedure_markdown_v2_for_mode;
+
+        let (mut spec, ribbon) = v2_fixture();
+        let ribbon = ribbon.with_plug_pins(crate::plug::PlugPinKind::Axial(
+            crate::plug::PlugPinSpec::iter1(),
+        ));
+        spec.mesh_cell_size_m = 0.003;
+
+        let pose = match crate::plug::add_plug_pins(spec.plug.clone(), &ribbon, None)
+            .1
+            .first()
+        {
+            Some(crate::mesh_csg::MatingTransform::UnionTruncatedPyramid { params }) => {
+                params.pose.clone()
+            }
+            other => panic!("the fixture must carry a floor lock, got {other:?}"),
+        };
+        let block = |gap_m: f64| {
+            let centre = pose.center_m + pose.axis_unit.into_inner() * (0.020 + gap_m);
+            Solid::cuboid(Vector3::new(0.020, 0.020, 0.020)).translate(centre.coords)
+        };
+        let sheet_for = |spec: &CastSpec| -> String {
+            // `unwrap`, not `expect` — the module denies `expect_used`.
+            let pour_volumes = spec.compute_pour_volumes().unwrap();
+            generate_procedure_markdown_v2_for_mode(
+                spec,
+                &pour_volumes,
+                &ribbon,
+                CastMode::Detachable,
+            )
+        };
+
+        spec.plug = block(0.0);
+        let seated_sheet = sheet_for(&spec);
+        spec.plug = block(0.004);
+        let lifted_sheet = sheet_for(&spec);
+
+        // The two sheets must straddle the decision, or neither assertion
+        // below is about the pedestal.
+        assert!(
+            !column_on_layer_0(&spec, &ribbon, &block(0.0)),
+            "the seated plug must take no column"
+        );
+        assert!(
+            column_on_layer_0(&spec, &ribbon, &block(0.004)),
+            "the lifted plug must take one"
+        );
+
+        assert!(
+            lifted_sheet.contains("COLUMN"),
+            "a cast that grows a column must tell the bencher to check it"
+        );
+        assert!(
+            !seated_sheet.contains("COLUMN"),
+            "a cast with no column must not send the bencher looking for one"
+        );
+        // Both sheets still describe the lock itself, so the difference above
+        // is the column and not the whole plug-lock section vanishing.
+        for (label, sheet) in [("seated", &seated_sheet), ("lifted", &lifted_sheet)] {
+            assert!(
+                sheet.contains("truncated-pyramid lock"),
+                "the {label} sheet lost the lock bullet entirely"
+            );
+        }
+    }
+
+    /// Does layer 0 of `spec`, with `plug` installed, grow a lock pedestal.
+    fn column_on_layer_0(spec: &CastSpec, ribbon: &Ribbon, plug: &Solid) -> bool {
+        let mut probe = spec.clone();
+        probe.plug = plug.clone();
+        super::plug_pedestals(&probe, ribbon)
+            .first()
+            .and_then(Option::as_ref)
+            .is_some()
     }
 
     fn clean_dir(out_dir: &std::path::Path) {

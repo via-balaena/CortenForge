@@ -431,6 +431,18 @@ pub fn generate_procedure_markdown_v2_for_mode(
     // defaults it OFF, so the DEFAULT cast has no socket and no pyramid — yet
     // the checklist demanded both under "do NOT proceed to print".
     let has_plug_lock = !matches!(ribbon.plug_pins, crate::plug::PlugPinKind::None);
+    // ★ Fourth feature decided by the CARVE rather than the config, and the
+    // sharpest of them: two casts with identical ribbons differ here purely by
+    // how far `cavity_inset_m` lifted the plug off its lock.
+    //
+    // ⚠ COST. Five SDF ray-marches per layer, paid on every sheet render. The
+    // `has_plug_lock` short-circuit is what keeps the default cast free —
+    // without a lock there is no pose to march from, so the answer is a
+    // definite no and asking for it is waste.
+    let has_pedestal = has_plug_lock
+        && crate::spec::plug_pedestals(spec, ribbon)
+            .iter()
+            .any(Option::is_some);
     let has_pour_gate = !matches!(ribbon.pour_gate, PourGateKind::None);
     let has_flange = !matches!(ribbon.flange, FlangeKind::None);
     let has_gasket = matches!(ribbon.gasket, GasketKind::Mold(_));
@@ -442,6 +454,7 @@ pub fn generate_procedure_markdown_v2_for_mode(
         has_dowels,
         bolts_carved,
         has_plug_lock,
+        has_pedestal,
         has_pour_gate,
         has_vent,
     };
@@ -1740,6 +1753,11 @@ struct SheetFeatures {
     has_dowels: bool,
     bolts_carved: bool,
     has_plug_lock: bool,
+    /// Does any plug piece carry the floor lock's PEDESTAL — the column a deep
+    /// cavity inset puts between the lock and the plug body. Decided by
+    /// `spec::plug_pedestals`, never by a predicate over the config: it turns
+    /// on the plug solid, the mesh cell size AND the scan-mesh-direct branch.
+    has_pedestal: bool,
     /// `PourGateKind::None` exports no `funnel.stl` and carves no vent, so
     /// every sentence naming one has to be gated the same way.
     has_pour_gate: bool,
@@ -1922,25 +1940,39 @@ fn seam_face_check(present: &[SeamFeature]) -> String {
 /// instruction is "do NOT proceed to print".
 ///
 /// ▶ **DEFERRED, and named rather than guessed at: neither bullet mentions the
-/// lock's PEDESTAL** ([`crate::plug::build_plug_lock_pedestal_transform`]), the
-/// column a deep cavity inset puts under the lock. Both stay TRUE when one is
-/// present — the lock still protrudes from the cap-plane face with flat tapered
-/// sides — so this is incompleteness, not a wrong instruction, which is why it
-/// is a note and not a rushed sentence.
+/// lock's PEDESTAL, the column a deep cavity inset puts between the lock and
+/// the plug body.
 ///
-/// ⛔ Do NOT close it by recomputing the pedestal here. Whether one exists
-/// turns on the plug solid, the mesh cell size AND the scan-mesh-direct branch,
-/// and this sheet is rendered BEFORE the plugs are meshed
-/// (`CastSpec::export_molds_v2` writes the procedure, then meshes) — so a copy
-/// of that decision would be a third definition free to drift from the two that
-/// matter. The shape that works is the one `carved_features` already uses:
-/// compute it ONCE where it is decided and hand the answer to the sheet.
-const fn plug_piece_checks(has_plug_lock: bool) -> (&'static str, &'static str) {
+/// ⚠ `has_pedestal` comes from `spec::plug_pedestals`, which runs the decision
+/// where it is made. It is NOT derivable here: the sheet is rendered BEFORE the
+/// plugs are meshed (`CastSpec::export_molds_v2` writes the procedure, then
+/// meshes), and whether a column exists turns on the plug solid, the mesh cell
+/// size AND the scan-mesh-direct branch.
+///
+/// ⚠ A column that is ABSENT gets no bullet, deliberately. The bullets sit
+/// under "do NOT proceed to print", and this sheet has twice sent a bencher to
+/// verify geometry a correct cast never carries — see `funnel_bullet` and the
+/// `platform.stl` gate. Naming what must be there is safe; naming what must not
+/// be needs the same evidence as the carve, and this function does not have it.
+const fn plug_piece_checks(
+    has_plug_lock: bool,
+    has_pedestal: bool,
+) -> (&'static str, &'static str) {
     if has_plug_lock {
         (
-            "- Cap-plane face carries a single truncated-pyramid lock \
-             protruding from the cap-plane face along `cap_normal` (S4); \
-             flat tapered lateral faces, sharp edges.",
+            if has_pedestal {
+                "- Cap-plane face carries a single truncated-pyramid lock \
+                 protruding from the cap-plane face along `cap_normal` (S4); \
+                 flat tapered lateral faces, sharp edges. A square, untapered \
+                 COLUMN bridges the lock's top face to the plug body — same \
+                 width as that face and flush with it. It must be FUSED at \
+                 both ends: a visible seam or gap at either one is the \
+                 detached-lock failure, and the piece is scrap."
+            } else {
+                "- Cap-plane face carries a single truncated-pyramid lock \
+                 protruding from the cap-plane face along `cap_normal` (S4); \
+                 flat tapered lateral faces, sharp edges."
+            },
             "- Dome end is smooth and closed; the workshop-visible pyramid \
              above the cap-plane is the unchamfered main-taper only (the \
              chamfer band lives inside the plug body and is not visible from \
@@ -2046,6 +2078,7 @@ fn write_cfview_sanity_check_v2(
         has_dowels,
         bolts_carved,
         has_plug_lock,
+        has_pedestal,
         has_pour_gate,
         has_vent: _,
     } = carved;
@@ -2090,7 +2123,7 @@ fn write_cfview_sanity_check_v2(
          {socket_check}"
     );
     md.push('\n');
-    let (lock_check, dome_check) = plug_piece_checks(has_plug_lock);
+    let (lock_check, dome_check) = plug_piece_checks(has_plug_lock, has_pedestal);
     let _ = writeln!(
         md,
         "2. **Plug pieces** (`plug_layer_*.stl`):\n   \
@@ -4062,6 +4095,7 @@ mod tests {
                 has_dowels: true,
                 bolts_carved: true,
                 has_plug_lock: false,
+                has_pedestal: false,
                 has_pour_gate: true,
                 has_vent: true,
             },
@@ -4094,6 +4128,7 @@ mod tests {
                 has_dowels: true,
                 bolts_carved: true,
                 has_plug_lock: false,
+                has_pedestal: false,
                 has_pour_gate: true,
                 has_vent: true,
             },
@@ -4157,6 +4192,7 @@ mod tests {
                 has_dowels: true,
                 bolts_carved: true,
                 has_plug_lock: false,
+                has_pedestal: false,
                 has_pour_gate: true,
                 has_vent: true,
             },
@@ -4269,6 +4305,7 @@ mod tests {
                         has_dowels: false,
                         bolts_carved,
                         has_plug_lock: false,
+                        has_pedestal: false,
                         has_pour_gate: true,
                         has_vent: true,
                     },
@@ -4359,6 +4396,7 @@ mod tests {
                     has_dowels: false,
                     bolts_carved,
                     has_plug_lock: false,
+                    has_pedestal: false,
                     has_pour_gate: true,
                     has_vent: true,
                 },
@@ -4419,6 +4457,7 @@ mod tests {
                     has_dowels: false,
                     bolts_carved: true,
                     has_plug_lock: false,
+                    has_pedestal: false,
                     has_pour_gate: true,
                     has_vent: true,
                 },
@@ -4469,6 +4508,7 @@ mod tests {
                     has_dowels: false,
                     bolts_carved: false,
                     has_plug_lock: false,
+                    has_pedestal: false,
                     has_pour_gate: true,
                     has_vent: true,
                 },
