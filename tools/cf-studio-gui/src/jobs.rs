@@ -144,6 +144,35 @@ fn spawn_export(
     })
 }
 
+/// What a landed export reports: where the files went, and — when the two
+/// differ — what the destination holds now as against what this save wrote.
+///
+/// ⚠ Extracted for `apply_save_choice`'s reason, and it had the problem
+/// worse. The arm this came from calls `reveal_in_file_manager`, so the one
+/// gate driving a landed export takes the FAILURE path on purpose — nobody
+/// wants a suite that opens Finder windows. That left the success message,
+/// the line telling someone what their slicer is about to open, with no gate
+/// of any kind.
+fn export_landed_message(report: &PrintExportReport) -> String {
+    let guide = if report.procedure_copied {
+        " + the guide"
+    } else {
+        ""
+    };
+    // What was copied and what the folder holds are different numbers, and
+    // only the second one is what gets printed.
+    let held =
+        cf_studio_gui::format_print_destination_note(report.stl_count, report.dest_stl_count)
+            .map(|note| format!(" {note}"))
+            .unwrap_or_default();
+    format!(
+        "✔ Saved {n} file(s){guide} to {} — opening it now.{held} \
+         Print each piece, then click Next →.",
+        report.export.export_dir.display(),
+        n = report.stl_count,
+    )
+}
+
 /// Land a finished export: record it on the project, reveal the folder, and
 /// report what happened.
 pub(crate) fn poll_print_job(mut job: ResMut<PrintJob>, mut studio: ResMut<Studio>) {
@@ -156,20 +185,11 @@ pub(crate) fn poll_print_job(mut job: ResMut<PrintJob>, mut studio: ResMut<Studi
     let outcome = match result {
         Ok(report) => {
             let dest = report.export.export_dir.clone();
-            let stl_count = report.stl_count;
-            let guide = if report.procedure_copied {
-                " + the guide"
-            } else {
-                ""
-            };
+            let message = export_landed_message(&report);
             match studio.project.set_print(report.export) {
                 Ok(()) => {
                     reveal_in_file_manager(&dest);
-                    Ok(format!(
-                        "✔ Saved {stl_count} file(s){guide} to {} — opening it now. \
-                         Print each piece, then click Next →.",
-                        dest.display(),
-                    ))
+                    Ok(message)
                 }
                 Err(e) => Err(format!("Copied the files, but couldn't record: {e}")),
             }
@@ -605,6 +625,57 @@ pub(crate) mod tests {
     use crate::scan::{ActiveScan, ViewUpdate};
 
     const TARGET: usize = 1_000;
+
+    /// A report for the landed-export message, with the two counts the
+    /// message turns on.
+    fn landed(stl_count: usize, dest_stl_count: Option<usize>) -> PrintExportReport {
+        PrintExportReport {
+            export: cf_studio_core::PrintExport {
+                export_dir: PathBuf::from("/tmp/print-dest"),
+            },
+            stl_count,
+            dest_stl_count,
+            procedure_copied: true,
+        }
+    }
+
+    /// A selective recast copies one part into a folder still holding the
+    /// rest of the previous package, and the message has to say so — the
+    /// number that matters is what the slicer opens, not what was copied.
+    #[test]
+    fn a_landed_export_names_what_the_destination_holds() {
+        let message = export_landed_message(&landed(1, Some(5)));
+
+        assert!(
+            message.contains("/tmp/print-dest"),
+            "where they went: {message}"
+        );
+        assert!(
+            message.contains("Saved 1 file(s)"),
+            "what this save copied: {message}"
+        );
+        assert!(
+            message.contains("holds 5 printable file(s)"),
+            "what the folder holds now: {message}"
+        );
+    }
+
+    /// The other side of that rule. A warning on every save is one nobody
+    /// reads, so a folder holding exactly what was just written gets none —
+    /// while still reporting the save itself.
+    #[test]
+    fn a_landed_export_into_a_clean_folder_carries_no_warning() {
+        let message = export_landed_message(&landed(5, Some(5)));
+
+        assert!(
+            message.contains("Saved 5 file(s)"),
+            "it still reports the save: {message}"
+        );
+        assert!(
+            !message.contains('⚠'),
+            "nothing was left over, so nothing to caution about: {message}"
+        );
+    }
 
     /// Enough app to own a task pool and the poller — no window, no renderer.
     fn app_with_a_loaded_scan() -> App {

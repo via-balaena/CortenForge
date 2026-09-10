@@ -6,7 +6,7 @@
 //! stay behind, and on disk they are indistinguishable from fresh ones —
 //! same folder, same extension, same naming scheme.
 //!
-//! Two claims are gated here, end to end through the real cast:
+//! Three claims are gated here, end to end through the real cast:
 //!
 //! 1. A run reports **only what it wrote**. This used to be false on the
 //!    full-cast path, which globbed the folder and handed every `.stl` in
@@ -14,6 +14,9 @@
 //!    list to the slicer folder, so an orphan got printed.
 //! 2. The folder **records which run wrote which file**, so the leftovers
 //!    can be named rather than guessed at.
+//! 3. The **print package** one layer downstream accumulates the same way,
+//!    and the export reports what its destination holds rather than only
+//!    what it copied there.
 //!
 //! ★ Synthetic, for the reason `common` gives: the real configuration
 //! lives outside the repo in `~/scans`, where a gate rots because nothing
@@ -28,7 +31,8 @@ use std::path::{Path, PathBuf};
 
 use cf_studio_core::{DesignDraft, LayerDraft, MoldOutputs, PrepInput, RidgeOptions};
 use cf_studio_engine::{
-    CastMode, EditSession, PROBE_LAYER_THICKNESS_M, PartSelection, generate_molds_for_design,
+    CastMode, EditSession, PROBE_LAYER_THICKNESS_M, PartSelection, export_print_package,
+    generate_molds_for_design,
 };
 use common::open_cone;
 
@@ -208,4 +212,46 @@ fn the_manifest_separates_this_runs_output_from_what_was_already_there() {
     );
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The print folder is the one that actually feeds the printer, and it
+/// accumulates exactly the way `stls/` does — one layer downstream.
+///
+/// A selective recast reports one part, so the export copies ONE file into a
+/// destination still holding the rest of the previous package. ⚠ The two
+/// exports below leave a destination of **identical size**: nothing about the
+/// folder distinguishes them, which is the whole reason the report has to
+/// carry both numbers.
+#[test]
+fn a_selective_recast_exports_one_part_into_a_folder_that_still_holds_the_rest() {
+    let dir = temp_dir("print-src");
+    let dest = temp_dir("print-dest");
+
+    let first = cast_into(&dir, &PartSelection::all());
+    let full = export_print_package(&first, &dest).expect("the full package exports");
+    assert_eq!(full.stl_count, 5, "the full cast had five parts to copy");
+    assert_eq!(
+        full.dest_stl_count,
+        Some(5),
+        "a fresh destination holds exactly what was copied into it"
+    );
+
+    let plug_only =
+        PartSelection::from_ids([cortenforge::cf_cast_cli::PartId::Plug { layer_index: 0 }]);
+    let second = cast_into(&dir, &plug_only);
+    let partial = export_print_package(&second, &dest).expect("the selective package exports");
+
+    assert_eq!(
+        partial.stl_count, 1,
+        "the selective recast had one part to copy"
+    );
+    assert_eq!(
+        partial.dest_stl_count,
+        Some(5),
+        "and the folder the slicer opens still holds all five — four of them \
+         written by run 1, against whatever design was current then"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&dest);
 }

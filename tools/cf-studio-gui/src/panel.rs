@@ -951,14 +951,15 @@ fn draw_make_molds(
     ui.add_space(SECTION_GAP);
     draw_parts_picker(ui, molds, ready, has_rows);
 
-    if let Some(summary) = studio.project.molds().map(format_molds_summary) {
+    if let Some(outputs) = studio.project.molds() {
+        let summary = format_molds_summary(outputs);
         ui.add_space(SECTION_GAP);
         card(ui, GOOD_FILL, |ui| {
             wrapped_colored(ui, GOOD_TEXT, summary);
         });
         // A separate card, not appended to the summary above: that one is
         // about THIS CAST, and this is about the folder it landed in.
-        if let Some(note) = format_stale_parts(studio.stale.as_ref()) {
+        if let Some(note) = format_stale_parts(studio.stale.as_ref(), &outputs.out_dir) {
             ui.add_space(SECTION_GAP);
             card(ui, WARN_FILL, |ui| {
                 wrapped_colored(ui, WARN_NOTE_TEXT, note);
@@ -1534,6 +1535,18 @@ fn draw_print(ui: &mut egui::Ui, studio: &Studio, ready: bool) -> Option<Intent>
         ui.add_space(12.0);
         card(ui, GOOD_FILL, |ui| wrapped_colored(ui, GOOD_TEXT, summary));
     }
+
+    // ⚠ The same roster step 5 draws, on the step where it costs filament.
+    // Not a duplicate for its own sake: a session resumed days later opens
+    // here, and step 5's card is then a screen the user never looks at.
+    if let Some(outputs) = studio.project.molds()
+        && let Some(note) = format_stale_parts(studio.stale.as_ref(), &outputs.out_dir)
+    {
+        ui.add_space(12.0);
+        card(ui, WARN_FILL, |ui| {
+            wrapped_colored(ui, WARN_NOTE_TEXT, note);
+        });
+    }
     intent
 }
 
@@ -1921,17 +1934,23 @@ pub(crate) mod tests {
             cf_studio_gui::format_elapsed(3671),
             cf_studio_gui::print_step_summary(&project),
             cf_studio_gui::format_molds_summary(&molds),
-            // Both step-5 provenance forms: the folder with no record, and
-            // the one naming older parts. ⚠ and • are the glyphs at risk.
-            cf_studio_gui::format_stale_parts(None).expect("the unknown form"),
-            cf_studio_gui::format_stale_parts(Some(&cf_studio_gui::RunProvenance {
-                run: 3,
-                stale: vec![cf_studio_gui::ManifestEntry {
-                    file: "plug_layer_1.stl".to_string(),
-                    run: cf_studio_gui::UNKNOWN_RUN,
-                }],
-            }))
+            // Every provenance form: the folder with no record, the one
+            // naming older parts, and the print folder holding more than the
+            // save wrote. ⚠ and • are the glyphs at risk.
+            cf_studio_gui::format_stale_parts(None, std::path::Path::new("/tmp/out"))
+                .expect("the unknown form"),
+            cf_studio_gui::format_stale_parts(
+                Some(&cf_studio_gui::RunProvenance {
+                    run: 3,
+                    stale: vec![cf_studio_gui::ManifestEntry {
+                        file: "plug_layer_1.stl".to_string(),
+                        run: cf_studio_gui::UNKNOWN_RUN,
+                    }],
+                }),
+                std::path::Path::new("/tmp/out"),
+            )
             .expect("the stale form"),
+            cf_studio_gui::format_print_destination_note(1, Some(5)).expect("the leftover form"),
             format_pour_plan(&molds.pour_plan),
             format_pour_active(&molds.pour_plan, 0),
             crate::save::overwrite_question(&studio, &dir),
@@ -2218,7 +2237,8 @@ pub(crate) mod tests {
             }],
         });
         let note =
-            cf_studio_gui::format_stale_parts(studio.stale.as_ref()).expect("one part is stale");
+            cf_studio_gui::format_stale_parts(studio.stale.as_ref(), std::path::Path::new("out"))
+                .expect("one part is stale");
 
         let mut molds = crate::molds::tests::controls_for(1);
         let drawn = text_in_column(|ui| {
@@ -2228,6 +2248,51 @@ pub(crate) mod tests {
         assert!(
             drawn.contains(&note),
             "the caution card is not on the screen; drawn: {drawn:?}"
+        );
+    }
+
+    /// ⚠⚠ And on the step where it costs filament.
+    ///
+    /// Step 5's card and this one are separate draws of the same roster, so
+    /// the gate above says nothing about this one: deleting the step-6 card
+    /// leaves every other gate in this crate green. That is the shape of
+    /// wiring, which no mutation sweep reaches.
+    ///
+    /// This is the screen a resumed session opens on — the case where the
+    /// user has not seen step 5's card at all.
+    #[test]
+    fn the_caution_card_reaches_the_print_screen() {
+        let mut studio = crate::molds::tests::viewing_step_5_with(1);
+        studio
+            .project
+            .set_molds(cf_studio_core::MoldOutputs {
+                out_dir: std::path::PathBuf::from("out"),
+                mold_stls: Vec::new(),
+                plug_stls: Vec::new(),
+                accessory_stls: Vec::new(),
+                procedure_path: std::path::PathBuf::from("out/procedure.md"),
+                total_mass_g: 80.0,
+                pour_plan: cf_studio_core::PourPlan { steps: Vec::new() },
+            })
+            .expect("in workflow order");
+        studio.stale = Some(cf_studio_gui::RunProvenance {
+            run: 3,
+            stale: vec![cf_studio_gui::ManifestEntry {
+                file: "plug_layer_1.stl".to_string(),
+                run: 1,
+            }],
+        });
+        let note =
+            cf_studio_gui::format_stale_parts(studio.stale.as_ref(), std::path::Path::new("out"))
+                .expect("one part is stale");
+
+        let drawn = text_in_column(|ui| {
+            let _ = draw_print(ui, &studio, true);
+        });
+
+        assert!(
+            drawn.contains(&note),
+            "the caution card is not on the print screen; drawn: {drawn:?}"
         );
     }
 
