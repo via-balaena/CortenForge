@@ -436,10 +436,11 @@ const FIT_NO_PREP: &str = "Clean and save the scan first (step 2).";
 /// Start a fit check for `question`.
 ///
 /// ⚠⚠ `Studio::busy` is deliberately NOT taken, and this is the only job here
-/// that leaves it alone. The check is opt-in and runs for minutes once ridges
-/// are on; freezing every control behind it would make asking the question
-/// worse than never asking. Nothing downstream reads a verdict, so a Continue
-/// mid-run is safe — the answer lands into [`fit_view`]'s staleness drop.
+/// that leaves it alone. It runs for minutes once ridges are on, and since
+/// `fit_check_is_due` it starts without being clicked for — so freezing every
+/// control behind it would mean a screen that locks itself. Nothing downstream
+/// reads a verdict, so a Continue mid-run is safe: the answer lands into
+/// [`fit_view`]'s staleness drop.
 ///
 /// ⚠ `studio` is borrowed immutably, and that is the other half of leaving
 /// `busy` alone: the operator can walk to another step while this runs, so

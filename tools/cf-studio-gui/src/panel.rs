@@ -9,14 +9,17 @@
 //!
 //! ⚠ The split is **not** an accident of growth — see [`Acted`].
 
+use std::time::Instant;
+
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
 use cf_studio_core::{LayerDraft, PlugDraft, Step};
 use cf_studio_gui::{
     BoundedField, CENDRILLON_CAST_MODE, FitQuestion, FitView, LayerRow, RingRow, Silicone,
-    cell_size_m_for_quality, format_fit_failure, format_fit_progress, format_fit_verdict,
-    format_molds_summary, format_pour_active, format_pour_plan, format_resume_question,
-    format_scan_stats, nav_state, pour_countdown, print_step_summary, step_rows,
+    cell_size_m_for_quality, fit_check_is_due, format_fit_failure, format_fit_progress,
+    format_fit_verdict, format_molds_summary, format_pour_active, format_pour_plan,
+    format_resume_question, format_scan_stats, nav_state, pour_countdown, print_step_summary,
+    step_rows,
 };
 
 use crate::autosave::{self, Autosave};
@@ -124,7 +127,8 @@ struct Acted {
     /// and `save` carry theirs: the executor must not see a field the user has
     /// changed since the click.
     plug: Option<PlugDraft>,
-    /// The question a step-3 "Check fit" was clicked with.
+    /// The question a step-3 fit check is to answer — the one "Check fit" was
+    /// clicked with, or the one the fields settled on with nobody clicking.
     ///
     /// ⚠ Carried like `plug`, and it matters more here: the answer is matched
     /// back against this exact snapshot to decide whether it still describes
@@ -1081,6 +1085,12 @@ fn check_fit_label(checking: bool) -> &'static str {
 }
 
 /// Step 3 — how snugly the piece fits, what is cut into it, then commit.
+///
+/// ★ The fit check starts itself once the fields stop moving, which is what
+/// keeps the cavity stepper's fixed 0-30 mm honest: see
+/// [`cf_studio_gui::fit_check_is_due`]. The button stays because it asks
+/// immediately, and because it is the only way back from a check that could not
+/// run at all.
 fn draw_shape_piece(
     ui: &mut egui::Ui,
     studio: &Studio,
@@ -1126,16 +1136,23 @@ fn draw_shape_piece(
         cell_size_m,
         scan: studio.project.prep().and_then(crate::preview::scan_stamp),
     };
-    draw_fit_view(ui, &fit_job.view(&question), &question.plug);
-    if check_clicked {
+    let view = fit_job.view(&question);
+    draw_fit_view(ui, &view, &question.plug);
+    // ⚠ Advanced every frame, clicked or not. The clock is what tells an inset
+    // the operator stepped through from the one they stopped on, and it is read
+    // here rather than in a system of its own so it watches the question this
+    // screen actually built — a second construction of it could drift.
+    let settled_for = shape.settle.settled_for(&question, Instant::now());
+    let askable = ready && studio.project.prep().is_some();
+    if check_clicked || fit_check_is_due(&view, settled_for, askable) {
         acted.check_fit = Some(question);
     }
 
     ui.add_space(SECTION_GAP);
     ui.vertical_centered(|ui| {
-        // ⚠ Never gated on the fit check. The check is opt-in and can run for
-        // minutes; blocking Continue behind it would put a wall in front of the
-        // ordinary path to buy an answer nothing downstream reads.
+        // ⚠ Never gated on the fit check, and less so now that the check
+        // starts itself: one that runs for minutes without being asked for
+        // would, gated here, be a wall the operator never chose to build.
         if ui
             .add_enabled(ready, egui::Button::new("Continue"))
             .clicked()
@@ -3875,6 +3892,147 @@ pub(crate) mod tests {
         );
     }
 
+    /// Pretend the question on screen has stood still long enough to settle.
+    ///
+    /// ⚠ The gates below run their frames in microseconds. Without this each
+    /// would have to wait out [`cf_studio_gui::FIT_SETTLE`] in real time.
+    fn stand_still(app: &mut App) {
+        app.world_mut()
+            .resource_mut::<ShapeControls>()
+            .settle
+            .back_date(cf_studio_gui::FIT_SETTLE);
+    }
+
+    /// ★★★ The unasked check, driven end to end through the system every click
+    /// reaches the app by. `fit_check_is_due` and `FitSettle` are both tested
+    /// on their own, and a call site is not a function anyone can call: delete
+    /// the `||` in `draw_shape_piece` and both ends stay green while step 3
+    /// goes back to costing a full cast to find out.
+    ///
+    /// ⚠ Clicked through one `+` first, for the reason
+    /// [`clicking_check_fit_in_the_running_wizard_asks_about_the_field_on_screen`]
+    /// does it: the check has to carry the number on screen, and a constant
+    /// passes without it.
+    ///
+    /// ⚠ Two-sided. The first assertion is what says the settle is load-bearing
+    /// — without it, a check that fires on the very first frame passes.
+    #[test]
+    fn an_inset_left_alone_is_checked_without_anyone_clicking() {
+        let mut app = wizard_on_step_three();
+        app.add_plugins(bevy::prelude::TaskPoolPlugin::default());
+        app.world_mut().resource_mut::<MoldControls>().quality_idx = FAST_QUALITY_IDX;
+
+        click_on(&mut app, "+");
+        assert!(
+            app.world().resource::<PlugFitJob>().asking().is_none(),
+            "a stepper still being clicked has not settled on anything"
+        );
+
+        stand_still(&mut app);
+        app.update();
+
+        assert_eq!(
+            app.world()
+                .resource::<PlugFitJob>()
+                .asking()
+                .map(|question| question.plug.cavity_inset_m),
+            Some(0.006),
+            "the 5 mm field stepped once is what settled, and what was checked"
+        );
+    }
+
+    /// ⚠ The other half of `askable`, and the only one that shows on screen.
+    /// Step 3 is reachable before step 2 is saved; a check started there cannot
+    /// run, and `start_plug_fit` answers it with "Clean and save the scan
+    /// first" — which would then appear by itself, an error nobody asked for,
+    /// every time the operator walked to step 3 early.
+    ///
+    /// ⚠⚠ The absence is asserted against a POSITIVE CONTROL in the same app,
+    /// because absence alone is not evidence: the first version of this gate
+    /// read `PlugFitJob::asking()`, which only ever names a check that got as
+    /// far as SPAWNING. A refusal for want of a scan never does, so dropping
+    /// the scan half of `askable` left the gate green. Clicking the button
+    /// proves the line is reachable here at all.
+    #[test]
+    fn nothing_checks_itself_with_no_scan_to_run_on() {
+        let mut app = app_running_the_wizard();
+        app.add_plugins(bevy::prelude::TaskPoolPlugin::default());
+        app.insert_resource(Studio {
+            cursor: WizardCursor::new(Step::ShapePiece),
+            ..Studio::default()
+        });
+        let refused = |app: &App| {
+            painted_texts(app)
+                .iter()
+                .any(|text| text.contains("Clean and save"))
+        };
+
+        settle(&mut app);
+        stand_still(&mut app);
+        settle(&mut app);
+        let unasked = refused(&app);
+
+        click_on(&mut app, CHECK_FIT);
+        settle(&mut app);
+
+        assert!(!unasked, "a settled screen with no scan asked nothing");
+        assert!(
+            refused(&app),
+            "and the line it would have posted is reachable here: {:?}",
+            painted_texts(&app)
+        );
+    }
+
+    /// ★★★ The loop the operator actually lives in: read a verdict, move the
+    /// inset, read the next one. Both halves of it, and neither is reachable
+    /// from a gate that only watches the FIRST check start.
+    ///
+    /// ⚠ The answer is landed by handing back the question the check itself
+    /// asked, never by rebuilding one here. A reconstructed question is a
+    /// second copy of what `draw_shape_piece` composes, and a gate holding one
+    /// agrees with itself while the screen drifts.
+    #[test]
+    fn a_moved_inset_is_checked_again_over_the_answer_it_replaces() {
+        let mut app = wizard_on_step_three();
+        app.add_plugins(bevy::prelude::TaskPoolPlugin::default());
+        app.world_mut().resource_mut::<MoldControls>().quality_idx = FAST_QUALITY_IDX;
+
+        settle(&mut app);
+        stand_still(&mut app);
+        app.update();
+        let first = app
+            .world()
+            .resource::<PlugFitJob>()
+            .asking()
+            .cloned()
+            .expect("the opening screen settles into a check of its own");
+
+        // The state the operator is left looking at once it lands: a verdict
+        // about exactly what is on screen.
+        *app.world_mut().resource_mut::<PlugFitJob>() =
+            PlugFitJob::answered_with(first.clone(), Ok(cf_studio_engine::PlugFit::Casts));
+        settle(&mut app);
+        stand_still(&mut app);
+        app.update();
+        assert!(
+            app.world().resource::<PlugFitJob>().asking().is_none(),
+            "a question already answered is not asked again, however long it stands"
+        );
+
+        click_on(&mut app, "+");
+        stand_still(&mut app);
+        app.update();
+
+        assert_eq!(
+            app.world()
+                .resource::<PlugFitJob>()
+                .asking()
+                .map(|question| question.plug.cavity_inset_m),
+            Some(first.plug.cavity_inset_m + 0.001),
+            "and a stepped inset is asked about over the verdict it just stale-dropped"
+        );
+    }
+
     /// Step 5's Fast preview, the quality that is not the default.
     const FAST_QUALITY_IDX: i32 = 1;
 
@@ -3940,9 +4098,9 @@ pub(crate) mod tests {
         );
     }
 
-    /// ★★★ The one thing that must not regress: the check is opt-in, so
-    /// Continue may never wait on it. A four-minute wall in front of an
-    /// ordinary click is worse than never asking the question.
+    /// ★★★ The one thing that must not regress: Continue may never wait on the
+    /// check. It was the rule when the check was opt-in, and it is a harder one
+    /// now that a settled screen starts a four-minute run on its own.
     ///
     /// ⚠ Three assertions, and the middle one is what says the button changed
     /// state rather than merely gaining a second label.
