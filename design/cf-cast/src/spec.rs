@@ -674,6 +674,13 @@ impl CastSpec {
     /// marching cubes, sampled as a Riemann sum over corner-SDF
     /// signs.
     ///
+    /// ⚠ The plug's floor-lock COLUMN is not subtracted, so a cast that grows
+    /// one reports slightly MORE silicone than the mold holds. Left alone
+    /// deliberately: the error is conservative, and at 0.06–0.22 % of the
+    /// shell across the inset range it is smaller than the integration grid
+    /// resolves. `the_column_the_pour_volume_ignores_stays_negligible` holds
+    /// that bound and names the correction for the day it fires.
+    ///
     /// Useful at design time when only the pour-mass numbers are
     /// needed — e.g., for sweeping layer thicknesses against the
     /// budget without paying the meshing + F4-gate cost. Both
@@ -4070,6 +4077,114 @@ mod tests {
             .first()
             .and_then(Option::as_ref)
             .is_some()
+    }
+
+    /// ★★★ `compute_pour_volumes` derives silicone as `layer.body - plug`,
+    /// and the floor lock's COLUMN is neither — so the pour it reports is
+    /// overstated by whatever part of that column stands inside the shell.
+    /// This holds the size of that error across the inset range, so the day it
+    /// stops being negligible something says so.
+    ///
+    /// Measured 2026-09-10: 0.057 % of the shell at 4 mm of lift, rising to
+    /// 0.223 % at 18 mm — against the 25 % mix slacker, two orders of
+    /// magnitude below a margin that is already deliberate.
+    ///
+    /// ⚠ NOT corrected, and that is a decision rather than an omission. The
+    /// error is CONSERVATIVE — it tells the operator to mix more than the mold
+    /// holds — and the 2 mm integration grid quantizes it into whole 0.096 mL
+    /// cells, so subtracting the column would move a number the grid rounds
+    /// anyway. `LockPedestalParams::as_solid` is the correction, ready for the
+    /// day this gate fires.
+    ///
+    /// ⚠ This bounds the SIZE of the ignored column, and takes its SHAPE on
+    /// trust: `as_solid` is held by
+    /// `the_column_solid_and_the_column_mesh_are_the_same_column`, which is
+    /// what catches a column of the wrong span or footprint. A constant-span
+    /// column survives every assertion here — measured, not assumed, because
+    /// lifting the plug exposes more of even a fixed column.
+    ///
+    /// ⚠⚠ The two POSITIVE CONTROLS are what stop this being vacuous. A sweep
+    /// over lifts that grow no column asserts "under 0.5 %" about nothing at
+    /// all — which is exactly how an earlier pedestal gate in this file passed
+    /// with the invariant deleted.
+    #[test]
+    fn the_column_the_pour_volume_ignores_stays_negligible() {
+        /// Share of the shell the ignored column may occupy before this stops
+        /// being a rounding difference and starts being a wrong instruction.
+        const OVERCOUNT_BUDGET: f64 = 0.005;
+
+        let (mut spec, ribbon) = v2_fixture();
+        let ribbon = ribbon.with_plug_pins(crate::plug::PlugPinKind::Axial(
+            crate::plug::PlugPinSpec::iter1(),
+        ));
+        spec.mesh_cell_size_m = 0.003;
+        let pose = match crate::plug::add_plug_pins(spec.plug.clone(), &ribbon, None)
+            .1
+            .first()
+        {
+            Some(crate::mesh_csg::MatingTransform::UnionTruncatedPyramid { params }) => {
+                params.pose.clone()
+            }
+            other => panic!("the fixture must carry a floor lock, got {other:?}"),
+        };
+        // ⚠ WIDER than `v2_fixture`'s own layer body, deliberately. That one
+        // spans x ∈ [-25, 25] mm while the lock lands at x = 50 mm, so the
+        // column falls outside the shell and every over-count measures zero —
+        // a green sweep about nothing, which is what the first draft measured.
+        let wide = Solid::cuboid(Vector3::new(0.060, 0.025, 0.020));
+
+        let mut overcounts_ml: Vec<f64> = Vec::new();
+        for lift_mm in [0.0_f64, 2.0, 4.0, 6.0, 8.0, 11.0, 14.0, 18.0] {
+            let centre = pose.center_m + pose.axis_unit.into_inner() * (0.020 + lift_mm / 1000.0);
+            spec.plug = Solid::cuboid(Vector3::new(0.020, 0.020, 0.020)).translate(centre.coords);
+            let Some(params) = super::plug_pedestals(&spec, &ribbon)
+                .first()
+                .and_then(Option::as_ref)
+                .cloned()
+            else {
+                continue;
+            };
+            let shell = wide.clone().subtract(spec.plug.clone());
+            let corrected = shell.clone().subtract(params.as_solid());
+            let target = CastTarget::LayerBody { layer_index: 0 };
+            // `unwrap`, not `expect` — the module denies `expect_used`.
+            let counted = super::integrate_negative_sdf_volume(&shell, 0.002, target).unwrap();
+            let actual = super::integrate_negative_sdf_volume(&corrected, 0.002, target).unwrap();
+            let overcount = counted - actual;
+            assert!(
+                overcount / counted < OVERCOUNT_BUDGET,
+                "at {lift_mm} mm of lift the ignored column is \
+                 {:.3} % of the shell, over the {:.1} % budget — the pour \
+                 number now misinforms the bench, and \
+                 `LockPedestalParams::as_solid` is the correction",
+                overcount / counted * 100.0,
+                OVERCOUNT_BUDGET * 100.0
+            );
+            // POSITIVE CONTROL 1: this lift grew a column that actually stands
+            // in the shell. Without it the assertion above passes on a sweep
+            // that measures nothing.
+            assert!(
+                overcount > 0.0,
+                "at {lift_mm} mm the column is outside the shell, so this \
+                 iteration gates nothing"
+            );
+            overcounts_ml.push(overcount * 1e6);
+        }
+
+        // POSITIVE CONTROL 2: the sweep straddled the decision — some lifts
+        // grow no column at all, and several do.
+        assert!(
+            overcounts_ml.len() >= 3,
+            "only {} of 8 lifts grew a column; the sweep no longer spans the \
+             range this bounds",
+            overcounts_ml.len()
+        );
+        // A longer column displaces more. Quantization makes it flat in
+        // places, so this is non-decreasing rather than strictly increasing.
+        assert!(
+            overcounts_ml.windows(2).all(|w| w[1] >= w[0]),
+            "the ignored volume stopped tracking the inset: {overcounts_ml:?}"
+        );
     }
 
     fn clean_dir(out_dir: &std::path::Path) {
