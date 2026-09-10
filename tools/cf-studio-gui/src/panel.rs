@@ -2697,6 +2697,131 @@ pub(crate) mod tests {
         }
     }
 
+    /// ⚠⚠ Step 1 — the screen the app opens on — through the real dispatch.
+    ///
+    /// The third of three, and the reason the other two exist: auditing every
+    /// arm of `wizard_screen`'s match found that the ONE-LINE arms
+    /// (`acted.nav = draw_x(..)`) were the ungated ones — steps 1, 6 and 7 —
+    /// while every block-form arm was already held by 1 to 11 gates. Whether
+    /// the form is why has not been established; the counts are what was
+    /// measured.
+    #[test]
+    fn the_first_screen_is_reached_through_the_wizards_own_dispatch() {
+        let mut app = app_running_the_wizard();
+        settle(&mut app);
+        let painted = painted_texts(&app);
+
+        assert!(
+            painted.iter().any(|text| text.contains("Choose scan file")),
+            "the app's opening screen never reached it: {painted:?}"
+        );
+        assert!(
+            painted
+                .iter()
+                .any(|text| text.contains("Works with STL, OBJ, PLY, and 3MF scans.")),
+            "step 1 drew its control but lost the rest of the screen: {painted:?}"
+        );
+    }
+
+    /// ⚠⚠ Step 6 through the wizard's OWN dispatch, not a direct call.
+    ///
+    /// `the_caution_card_reaches_the_print_screen` calls `draw_print` itself,
+    /// which proves the card is drawn but says nothing about the screen being
+    /// reached. Measured: replacing `Step::Print`'s arm in `wizard_screen`
+    /// with `None` blanks step 6 entirely — no Save button, no summary, no
+    /// card — and all 357 gates stayed green.
+    #[test]
+    fn the_print_screen_is_reached_through_the_wizards_own_dispatch() {
+        let mut app = app_running_the_wizard();
+        let mut studio = crate::molds::tests::viewing_step_5_with(1);
+        studio
+            .project
+            .set_molds(crate::jobs::tests::some_molds("out-print-dispatch"))
+            .expect("the fixture records a cast");
+        studio.stale = Some(cf_studio_gui::RunProvenance {
+            run: 3,
+            stale: vec![cf_studio_gui::ManifestEntry {
+                file: "plug_layer_1.stl".to_string(),
+                run: 1,
+            }],
+        });
+        studio.next();
+        assert_eq!(
+            studio.cursor.viewed(),
+            Step::Print,
+            "the fixture must be looking at step 6 for this to mean anything"
+        );
+        app.insert_resource(studio);
+
+        settle(&mut app);
+        let painted = painted_texts(&app);
+
+        assert!(
+            painted
+                .iter()
+                .any(|text| text.contains("Save files for printing")),
+            "step 6's own control never reached the screen: {painted:?}"
+        );
+        // ⚠ The whole galley, for the reason the summary gate above gives: a
+        // card that had lost everything below its first line would pass an
+        // assertion on the header alone.
+        let card = painted
+            .iter()
+            .find(|text| text.contains("were NOT regenerated"))
+            .map_or("", String::as_str);
+        for expected in [
+            "1 part(s) in out-print-dispatch",
+            "(run 3)",
+            "• plug_layer_1.stl — run 1",
+        ] {
+            assert!(
+                card.contains(expected),
+                "the caution card must carry {expected:?}: {card:?}"
+            );
+        }
+    }
+
+    /// ⚠⚠ The sibling of the gate above, found by auditing EVERY arm of the
+    /// dispatch rather than only the one this branch touched.
+    ///
+    /// Same measurement, same result: replacing `Step::Pour`'s arm with `None`
+    /// blanked step 7 and nothing in the suite noticed. Steps 4 and 5 were
+    /// already held by 4 and 8 gates respectively — it was the two arms
+    /// written as one-line expressions that had none.
+    #[test]
+    fn the_pour_screen_is_reached_through_the_wizards_own_dispatch() {
+        let mut app = app_running_the_wizard();
+        let mut studio = crate::molds::tests::viewing_step_5_with(1);
+        studio
+            .project
+            .set_molds(crate::jobs::tests::some_molds("out-pour-dispatch"))
+            .expect("the fixture records a cast");
+        studio
+            .project
+            .set_print(cf_studio_core::PrintExport {
+                export_dir: std::path::PathBuf::from("out-pour-dispatch/print"),
+            })
+            .expect("the fixture records an export");
+        studio.next();
+        studio.next();
+        assert_eq!(
+            studio.cursor.viewed(),
+            Step::Pour,
+            "the fixture must be looking at step 7 for this to mean anything"
+        );
+        app.insert_resource(studio);
+
+        settle(&mut app);
+        let painted = painted_texts(&app);
+
+        assert!(
+            painted
+                .iter()
+                .any(|text| text.contains("Pour plan — 2 layer(s), innermost first:")),
+            "step 7's plan never reached the screen: {painted:?}"
+        );
+    }
+
     /// Step 5 rendered for real, with `molds` as the step-5 controls.
     fn wizard_on_step_5(studio: Studio, molds: MoldControls) -> App {
         let mut app = app_running_the_wizard();
