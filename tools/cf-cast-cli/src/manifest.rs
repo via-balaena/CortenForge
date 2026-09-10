@@ -151,7 +151,7 @@ pub fn record_run(stls_dir: &Path, written: &[PathBuf]) -> Result<RunProvenance>
     // BTreeMap iterates sorted, so the file is diff-stable across runs.
     let parts: Vec<ManifestEntry> = runs
         .into_iter()
-        .map(|(file, run)| ManifestEntry { file, run })
+        .map(|(file, wrote)| ManifestEntry { file, run: wrote })
         .collect();
     let stale: Vec<ManifestEntry> = parts.iter().filter(|e| e.run != run).cloned().collect();
 
@@ -215,6 +215,34 @@ fn stl_file_name(path: &Path) -> Option<String> {
     path.file_name()
         .and_then(|n| n.to_str())
         .map(str::to_string)
+}
+
+/// Record this run in the output folder's manifest and warn about STLs it
+/// did not regenerate.
+///
+/// **Never fails the run.** The STLs are the product and are already on
+/// disk by the time this is called; losing a minutes-long cast to a
+/// bookkeeping write would be the worse outcome. A failure is reported and
+/// returns `None`, which callers carry as "not known" rather than
+/// flattening to "nothing stale".
+pub(crate) fn stamp_output_folder(out_dir: &Path, written: &[PathBuf]) -> Option<RunProvenance> {
+    let stls_dir = out_dir.join(cf_cast::STLS_SUBDIR);
+    match record_run(&stls_dir, written) {
+        Ok(provenance) => {
+            if let Some(warning) = provenance.warning_line() {
+                eprintln!("[cf-cast-cli] \u{26a0} {warning}");
+            }
+            Some(provenance)
+        }
+        Err(e) => {
+            eprintln!(
+                "[cf-cast-cli] \u{26a0} could not record {dir}/{MANIFEST_FILENAME}, so this \
+                 run's output cannot be told from what was already there: {e:#}",
+                dir = stls_dir.display(),
+            );
+            None
+        }
+    }
 }
 
 #[cfg(test)]
@@ -413,6 +441,54 @@ mod tests {
         assert_eq!(parsed.parts.len(), 1);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The whole point of the non-fatal policy: a cast that already wrote
+    /// its STLs must survive a folder it cannot record.
+    ///
+    /// ⚠ `record_run` on the same path is an `Err` (the gate below), so
+    /// this is the wrapper's own decision being tested, not the absence of
+    /// a failure to swallow.
+    #[test]
+    fn a_folder_that_cannot_be_recorded_does_not_fail_the_run() {
+        let missing = Path::new("/no/such/cast/out");
+        assert!(
+            record_run(&missing.join(cf_cast::STLS_SUBDIR), &[]).is_err(),
+            "the fixture must actually fail, or this gate proves nothing"
+        );
+
+        assert_eq!(
+            stamp_output_folder(missing, &[]),
+            None,
+            "reported as not-known; the run carries on"
+        );
+    }
+
+    /// The other side of it — a folder it CAN record comes back populated,
+    /// so `None` means "could not record" and never "nothing to say".
+    #[test]
+    fn a_folder_it_can_record_comes_back_populated() {
+        let out = std::env::temp_dir().join(format!(
+            "cf-cast-cli-manifest-test-{}-stamp",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&out);
+        let stls = out.join(cf_cast::STLS_SUBDIR);
+        std::fs::create_dir_all(&stls).unwrap();
+        std::fs::write(stls.join("left_behind.stl"), b"solid\n").unwrap();
+
+        let provenance = stamp_output_folder(&out, &[]).expect("a writable folder records");
+
+        assert_eq!(provenance.run, 1);
+        assert_eq!(
+            provenance.stale,
+            vec![ManifestEntry {
+                file: "left_behind.stl".to_string(),
+                run: UNKNOWN_RUN,
+            }],
+        );
+
+        let _ = std::fs::remove_dir_all(&out);
     }
 
     /// A missing directory is a real error — the caller passed a path that

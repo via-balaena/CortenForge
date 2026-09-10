@@ -46,7 +46,7 @@
 mod config;
 mod derive;
 pub mod design_ref;
-pub mod manifest;
+mod manifest;
 mod prep;
 mod procedure_post;
 mod scan;
@@ -321,7 +321,7 @@ pub fn run_with_config(
         );
     }
     let written = written_paths(&report);
-    let provenance = stamp_output_folder(&out_dir, &written);
+    let provenance = manifest::stamp_output_folder(&out_dir, &written);
     eprintln!("[cf-cast-cli] done — {}", procedure_path.display());
 
     Ok(RunReport {
@@ -406,7 +406,7 @@ pub fn run_selected_with_config(
         .collect();
     procedure_post::inject_slacker_recipe_section(&procedure_path, &slacker_recipes)
         .context("post-process procedure.md to surface slacker recipe")?;
-    let provenance = stamp_output_folder(&out_dir, &report.written);
+    let provenance = manifest::stamp_output_folder(&out_dir, &report.written);
     eprintln!("[cf-cast-cli] done — {}", procedure_path.display());
 
     Ok(SelectedRunReport {
@@ -514,34 +514,6 @@ fn written_paths(report: &cf_cast::V2MoldExportReport) -> Vec<PathBuf> {
     written.extend(gasket_molds.iter().map(|a| a.path.clone()));
     written.extend(dowel.iter().map(|a| a.path.clone()));
     written
-}
-
-/// Record this run in the output folder's manifest and warn about STLs it
-/// did not regenerate.
-///
-/// **Never fails the run.** The STLs are the product and are already on
-/// disk by the time this is called; losing a minutes-long cast to a
-/// bookkeeping write would be the worse outcome. A failure is reported and
-/// returns `None`, which callers carry as "not known" rather than
-/// flattening to "nothing stale".
-fn stamp_output_folder(out_dir: &Path, written: &[PathBuf]) -> Option<RunProvenance> {
-    let stls_dir = out_dir.join(cf_cast::STLS_SUBDIR);
-    match manifest::record_run(&stls_dir, written) {
-        Ok(provenance) => {
-            if let Some(warning) = provenance.warning_line() {
-                eprintln!("[cf-cast-cli] \u{26a0} {warning}");
-            }
-            Some(provenance)
-        }
-        Err(e) => {
-            eprintln!(
-                "[cf-cast-cli] \u{26a0} could not record {dir}/{MANIFEST_FILENAME}, so this \
-                 run's output cannot be told from what was already there: {e:#}",
-                dir = stls_dir.display(),
-            );
-            None
-        }
-    }
 }
 
 /// Resolve a path field from the TOML against the cast TOML's
