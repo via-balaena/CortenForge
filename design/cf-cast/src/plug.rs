@@ -1822,6 +1822,48 @@ mod tests {
     /// So a component straddling the far corner of the tested region must
     /// still be the lock. The fan spans 1 µm against 10 µm of slack, so it
     /// fits an inflated bound and misses a deflated one.
+    /// ★★★ And a piece JUST BEYOND either axial end is not the lock.
+    ///
+    /// The companion to the boundary test above, which only ever proves the
+    /// bound is wide ENOUGH. `cargo-mutants` turned `-lock.half_length_m -
+    /// LOCK_IDENTITY_SLACK_M` into `-lock.half_length_m / ...` — a bound five
+    /// orders of magnitude too permissive — and every test stayed green,
+    /// because nothing asked what sits outside it.
+    ///
+    /// ⚠ A too-wide bound calls marching-cubes debris a detached lock and
+    /// REFUSES a mold that is fine. The refusal is the safe direction, which is
+    /// exactly why nothing noticed.
+    #[test]
+    fn a_piece_just_beyond_either_axial_end_is_not_the_lock() {
+        for axial_sign in [1.0_f64, -1.0] {
+            let lock = axial_lock();
+            // One slack past the bound, along the lock's own axis.
+            let beyond_m = lock.pose.center_m.coords
+                + lock
+                    .pose
+                    .axis_unit
+                    .scale(axial_sign * (lock.half_length_m + 10.0 * LOCK_IDENTITY_SLACK_M));
+            let beyond: Point3<f64> = (beyond_m * crate::mesher::METERS_TO_MM).into();
+            let mesh = mesh_of_at(&[(7, far_from_the_lock()), (3, beyond)]);
+            assert_eq!(
+                find_connected_components(&mesh).component_count,
+                2,
+                "the fixture has to really be in pieces"
+            );
+            assert!(
+                ensure_plug_mating_features_attached(
+                    &mesh,
+                    &axial_transforms(),
+                    CastTarget::Plug {
+                        layer_index: Some(0),
+                    },
+                )
+                .is_ok(),
+                "a piece past the {axial_sign} axial end is debris, not the lock"
+            );
+        }
+    }
+
     #[test]
     fn a_lock_sitting_exactly_on_its_own_boundary_is_still_the_lock() {
         // ⚠ BOTH axial ends. Each has a bound of its own, and `cargo-mutants`
