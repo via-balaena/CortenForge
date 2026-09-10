@@ -184,6 +184,11 @@ fn the_manifest_separates_this_runs_output_from_what_was_already_there() {
     // `folder_provenance` reading it are each gated on their own, and until
     // here the whole was an inference from that — through literal fixtures,
     // never through a manifest a real cast produced.
+    //
+    // ★ Not redundant with the three assertions above, which read the file as
+    // TEXT and never call the read API. Measured: make `folder_provenance`
+    // read the wrong directory and this is the only assertion in the test
+    // that fails — the text ones pass throughout.
     let read_back = cortenforge::cf_cast_cli::folder_provenance(&first.out_dir)
         .expect("the cast wrote a manifest this build can read");
     assert_eq!(read_back.run, 2, "the run the file records");
