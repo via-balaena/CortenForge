@@ -431,18 +431,7 @@ pub fn generate_procedure_markdown_v2_for_mode(
     // defaults it OFF, so the DEFAULT cast has no socket and no pyramid — yet
     // the checklist demanded both under "do NOT proceed to print".
     let has_plug_lock = !matches!(ribbon.plug_pins, crate::plug::PlugPinKind::None);
-    // ★ Fourth feature decided by the CARVE rather than the config, and the
-    // sharpest of them: two casts with identical ribbons differ here purely by
-    // how far `cavity_inset_m` lifted the plug off its lock.
-    //
-    // ⚠ COST. Five SDF ray-marches per layer, paid on every sheet render. The
-    // `has_plug_lock` short-circuit is what keeps the default cast free —
-    // without a lock there is no pose to march from, so the answer is a
-    // definite no and asking for it is waste.
-    let has_pedestal = has_plug_lock
-        && crate::spec::plug_pedestals(spec, ribbon)
-            .iter()
-            .any(Option::is_some);
+    let columns = columns_on_plugs(spec, ribbon, has_plug_lock);
     let has_pour_gate = !matches!(ribbon.pour_gate, PourGateKind::None);
     let has_flange = !matches!(ribbon.flange, FlangeKind::None);
     let has_gasket = matches!(ribbon.gasket, GasketKind::Mold(_));
@@ -454,7 +443,7 @@ pub fn generate_procedure_markdown_v2_for_mode(
         has_dowels,
         bolts_carved,
         has_plug_lock,
-        has_pedestal,
+        columns,
         has_pour_gate,
         has_vent,
     };
@@ -1753,11 +1742,10 @@ struct SheetFeatures {
     has_dowels: bool,
     bolts_carved: bool,
     has_plug_lock: bool,
-    /// Does any plug piece carry the floor lock's PEDESTAL — the column a deep
-    /// cavity inset puts between the lock and the plug body. Decided by
+    /// How many plug pieces carry the floor lock's COLUMN. Decided by
     /// `spec::plug_pedestals`, never by a predicate over the config: it turns
     /// on the plug solid, the mesh cell size AND the scan-mesh-direct branch.
-    has_pedestal: bool,
+    columns: ColumnsOnPlugs,
     /// `PourGateKind::None` exports no `funnel.stl` and carves no vent, so
     /// every sentence naming one has to be gated the same way.
     has_pour_gate: bool,
@@ -1954,25 +1942,12 @@ fn seam_face_check(present: &[SeamFeature]) -> String {
 /// verify geometry a correct cast never carries — see `funnel_bullet` and the
 /// `platform.stl` gate. Naming what must be there is safe; naming what must not
 /// be needs the same evidence as the carve, and this function does not have it.
-const fn plug_piece_checks(
-    has_plug_lock: bool,
-    has_pedestal: bool,
-) -> (&'static str, &'static str) {
+const fn plug_piece_checks(has_plug_lock: bool) -> (&'static str, &'static str) {
     if has_plug_lock {
         (
-            if has_pedestal {
-                "- Cap-plane face carries a single truncated-pyramid lock \
-                 protruding from the cap-plane face along `cap_normal` (S4); \
-                 flat tapered lateral faces, sharp edges. A square, untapered \
-                 COLUMN bridges the lock's top face to the plug body — same \
-                 width as that face and flush with it. It must be FUSED at \
-                 both ends: a visible seam or gap at either one is the \
-                 detached-lock failure, and the piece is scrap."
-            } else {
-                "- Cap-plane face carries a single truncated-pyramid lock \
-                 protruding from the cap-plane face along `cap_normal` (S4); \
-                 flat tapered lateral faces, sharp edges."
-            },
+            "- Cap-plane face carries a single truncated-pyramid lock \
+             protruding from the cap-plane face along `cap_normal` (S4); \
+             flat tapered lateral faces, sharp edges.",
             "- Dome end is smooth and closed; the workshop-visible pyramid \
              above the cap-plane is the unchamfered main-taper only (the \
              chamfer band lives inside the plug body and is not visible from \
@@ -1985,6 +1960,78 @@ const fn plug_piece_checks(
              regression.",
             "- Dome end is smooth and closed.",
         )
+    }
+}
+
+/// How many of this cast's plug pieces grow the floor lock's column.
+///
+/// ★ The fourth feature decided by the CARVE rather than the config, and the
+/// sharpest of them: two casts with identical ribbons differ here purely by how
+/// far `cavity_inset_m` lifted each plug off its lock.
+///
+/// ⚠ The `grown == 0` arm must be tested BEFORE `grown == per_layer.len()`, or
+/// a cast with no layers reports `Every`.
+///
+/// ⚠ COST. Five SDF ray-marches per layer, paid on every sheet render. The
+/// `has_plug_lock` short-circuit is what keeps the default cast free — without
+/// a lock there is no pose to march from, so the answer is a definite no and
+/// asking for it is waste.
+fn columns_on_plugs(spec: &CastSpec, ribbon: &Ribbon, has_plug_lock: bool) -> ColumnsOnPlugs {
+    if !has_plug_lock {
+        return ColumnsOnPlugs::None;
+    }
+    let per_layer = crate::spec::plug_pedestals(spec, ribbon);
+    let grown = per_layer.iter().filter(|p| p.is_some()).count();
+    if grown == 0 {
+        ColumnsOnPlugs::None
+    } else if grown == per_layer.len() {
+        ColumnsOnPlugs::Every
+    } else {
+        ColumnsOnPlugs::Some
+    }
+}
+
+/// How many of this cast's plug pieces carry the floor lock's COLUMN.
+///
+/// ⚠⚠ NOT a bool, and that is the whole point. Every layer's plug is a
+/// different solid — layer 0's is the inset scan, layer N's is
+/// `layers[N-1].body`, which is fatter and more likely to reach its lock
+/// unaided — so a cast where only SOME plug pieces grow a column is the
+/// expected shape, not a corner case.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ColumnsOnPlugs {
+    None,
+    Some,
+    Every,
+}
+
+/// The cf-view bullet for the plug's floor-lock COLUMN.
+///
+/// ⚠ `Some` and `Every` are separate sentences because the sheet cannot
+/// address plug pieces individually: one section covers `plug_layer_*.stl`.
+/// Saying "every plug piece carries a column" on a mixed cast sends the
+/// bencher to find one on a piece that correctly has none — under a heading
+/// whose failure instruction is "do NOT proceed to print". This file has that
+/// scar twice already (`funnel_bullet`, the `platform.stl` gate); an `any()`
+/// over the layers would have made it three.
+const fn plug_column_bullet(columns: ColumnsOnPlugs) -> &'static str {
+    match columns {
+        ColumnsOnPlugs::None => "",
+        ColumnsOnPlugs::Some => {
+            "\n   - SOME plug pieces carry a square, untapered COLUMN between \
+             the lock's top face and the plug body — same width as that face \
+             and flush with it. Which ones depends on how far the inset lifted \
+             each plug off its lock, so a piece without one is not a fault. A \
+             visible seam or gap where a column meets either end IS: that is \
+             the detached-lock failure, and the piece is scrap."
+        }
+        ColumnsOnPlugs::Every => {
+            "\n   - Every plug piece carries a square, untapered COLUMN \
+             between the lock's top face and the plug body — same width as \
+             that face and flush with it, FUSED at both ends. A visible seam \
+             or gap at either one is the detached-lock failure, and the piece \
+             is scrap."
+        }
     }
 }
 
@@ -2078,7 +2125,7 @@ fn write_cfview_sanity_check_v2(
         has_dowels,
         bolts_carved,
         has_plug_lock,
-        has_pedestal,
+        columns,
         has_pour_gate,
         has_vent: _,
     } = carved;
@@ -2123,11 +2170,12 @@ fn write_cfview_sanity_check_v2(
          {socket_check}"
     );
     md.push('\n');
-    let (lock_check, dome_check) = plug_piece_checks(has_plug_lock, has_pedestal);
+    let (lock_check, dome_check) = plug_piece_checks(has_plug_lock);
+    let column_check = plug_column_bullet(columns);
     let _ = writeln!(
         md,
         "2. **Plug pieces** (`plug_layer_*.stl`):\n   \
-         {lock_check}\n   \
+         {lock_check}{column_check}\n   \
          - No T-bar / stem / cylindrical-shaft remnants (pre-S4 \
          geometry retired); no separate dome-pin (pre-S4 dome-pin \
          gone too).\n   \
@@ -3948,7 +3996,7 @@ mod tests {
     // report "None" and hide which sheet failed.
     #![allow(clippy::panic, clippy::unwrap_used)]
 
-    use super::SheetFeatures;
+    use super::{ColumnsOnPlugs, SheetFeatures};
     use super::{
         TDS_LOOKUP_PLACEHOLDER, cure_protocol_cells, layer_position_label, write_v2_assembly_note,
         write_v2_cup_half_clamping_note, write_v2_plug_anchor_note,
@@ -4095,7 +4143,7 @@ mod tests {
                 has_dowels: true,
                 bolts_carved: true,
                 has_plug_lock: false,
-                has_pedestal: false,
+                columns: ColumnsOnPlugs::None,
                 has_pour_gate: true,
                 has_vent: true,
             },
@@ -4128,7 +4176,7 @@ mod tests {
                 has_dowels: true,
                 bolts_carved: true,
                 has_plug_lock: false,
-                has_pedestal: false,
+                columns: ColumnsOnPlugs::None,
                 has_pour_gate: true,
                 has_vent: true,
             },
@@ -4192,7 +4240,7 @@ mod tests {
                 has_dowels: true,
                 bolts_carved: true,
                 has_plug_lock: false,
-                has_pedestal: false,
+                columns: ColumnsOnPlugs::None,
                 has_pour_gate: true,
                 has_vent: true,
             },
@@ -4305,7 +4353,7 @@ mod tests {
                         has_dowels: false,
                         bolts_carved,
                         has_plug_lock: false,
-                        has_pedestal: false,
+                        columns: ColumnsOnPlugs::None,
                         has_pour_gate: true,
                         has_vent: true,
                     },
@@ -4396,7 +4444,7 @@ mod tests {
                     has_dowels: false,
                     bolts_carved,
                     has_plug_lock: false,
-                    has_pedestal: false,
+                    columns: ColumnsOnPlugs::None,
                     has_pour_gate: true,
                     has_vent: true,
                 },
@@ -4457,7 +4505,7 @@ mod tests {
                     has_dowels: false,
                     bolts_carved: true,
                     has_plug_lock: false,
-                    has_pedestal: false,
+                    columns: ColumnsOnPlugs::None,
                     has_pour_gate: true,
                     has_vent: true,
                 },
@@ -4508,7 +4556,7 @@ mod tests {
                     has_dowels: false,
                     bolts_carved: false,
                     has_plug_lock: false,
-                    has_pedestal: false,
+                    columns: ColumnsOnPlugs::None,
                     has_pour_gate: true,
                     has_vent: true,
                 },

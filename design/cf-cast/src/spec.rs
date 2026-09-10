@@ -4054,12 +4054,49 @@ mod tests {
         );
 
         assert!(
-            lifted_sheet.contains("COLUMN"),
-            "a cast that grows a column must tell the bencher to check it"
+            lifted_sheet.contains("Every plug piece carries"),
+            "a cast whose every plug piece grows a column must say so"
         );
         assert!(
             !seated_sheet.contains("COLUMN"),
             "a cast with no column must not send the bencher looking for one"
+        );
+
+        // ⚠⚠ THE MIXED CAST, and it is the PRODUCTION shape rather than a
+        // corner: layer 0's plug is the inset scan, layer 1's is
+        // `layers[0].body` — fatter, and it reaches its own lock unaided. An
+        // `any()` over the layers renders the uniform sentence here and sends
+        // the bencher to find a column on `plug_layer_1.stl`, which correctly
+        // has none, under "do NOT proceed to print".
+        spec.plug = block(0.004);
+        spec.layers = vec![
+            CastLayer {
+                body: block(0.0),
+                material: reference_material(),
+            },
+            CastLayer {
+                body: Solid::cuboid(Vector3::new(0.035, 0.035, 0.030)),
+                material: reference_material(),
+            },
+        ];
+        let mixed: Vec<bool> = super::plug_pedestals(&spec, &ribbon)
+            .iter()
+            .map(Option::is_some)
+            .collect();
+        assert_eq!(
+            mixed,
+            vec![true, false],
+            "this fixture must straddle the layers, or the sheet below is not \
+             a mixed cast at all"
+        );
+        let mixed_sheet = sheet_for(&spec);
+        assert!(
+            mixed_sheet.contains("SOME plug pieces carry"),
+            "a mixed cast must say which pieces are in question"
+        );
+        assert!(
+            !mixed_sheet.contains("Every plug piece carries"),
+            "a mixed cast must NOT demand a column on the piece that has none"
         );
         // Both sheets still describe the lock itself, so the difference above
         // is the column and not the whole plug-lock section vanishing.

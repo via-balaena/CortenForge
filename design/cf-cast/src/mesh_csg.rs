@@ -737,6 +737,14 @@ impl LockPedestalParams {
     /// come from `spec::plug_pedestals`; this only re-expresses them, and
     /// `the_column_solid_and_the_column_mesh_are_the_same_column` holds it to
     /// the mesh builder's own footprint and span.
+    ///
+    /// # Panics
+    ///
+    /// Panics via [`Solid::cuboid`] if either half-extent, or the axial span,
+    /// is zero. Not reachable from `plug::build_plug_lock_pedestal_transform`,
+    /// which marches out from the lock's tip and so returns a span of at least
+    /// `pin_half_length_m` — but every field here is `pub`, so a hand-built
+    /// `LockPedestalParams` can reach it.
     #[must_use]
     pub fn as_solid(&self) -> Solid {
         let lateral = self.pose.lateral_unit.into_inner();
