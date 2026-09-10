@@ -54,10 +54,6 @@ use crate::pour::{LayerPour, build_pour_plan};
 /// - [`EngineError::WriteDesign`] / [`EngineError::InvalidDesign`] /
 ///   [`EngineError::UnknownMaterial`] if the draft can't be materialized.
 /// - [`EngineError::PourDataUnavailable`] if a layer has no cure data.
-// The wizard's single "make molds" entry point genuinely needs all of these
-// inputs (scan paths, design, quality, ridges, part selection, cast mode);
-// bundling them into a struct would just move the argument list, not shorten it.
-#[allow(clippy::too_many_arguments)]
 pub fn generate_molds_for_design(
     prep: &PrepInput,
     draft: &DesignDraft,
