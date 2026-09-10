@@ -431,6 +431,13 @@ pub fn generate_procedure_markdown_v2_for_mode(
     // defaults it OFF, so the DEFAULT cast has no socket and no pyramid — yet
     // the checklist demanded both under "do NOT proceed to print".
     let has_plug_lock = !matches!(ribbon.plug_pins, crate::plug::PlugPinKind::None);
+    // ⚠ COST. Five SDF ray-marches per layer, paid on every sheet render. The
+    // `has_plug_lock` short-circuit keeps the default cast free — without a
+    // lock there is no pose to march from.
+    let has_column = has_plug_lock
+        && crate::spec::plug_pedestals(spec, ribbon)
+            .iter()
+            .any(Option::is_some);
     let has_pour_gate = !matches!(ribbon.pour_gate, PourGateKind::None);
     let has_flange = !matches!(ribbon.flange, FlangeKind::None);
     let has_gasket = matches!(ribbon.gasket, GasketKind::Mold(_));
@@ -442,6 +449,7 @@ pub fn generate_procedure_markdown_v2_for_mode(
         has_dowels,
         bolts_carved,
         has_plug_lock,
+        has_column,
         has_pour_gate,
         has_vent,
     };
@@ -1740,6 +1748,10 @@ struct SheetFeatures {
     has_dowels: bool,
     bolts_carved: bool,
     has_plug_lock: bool,
+    /// Does any plug piece carry the floor lock's COLUMN. Decided by
+    /// `spec::plug_pedestals`, never by a predicate over the config: it turns
+    /// on the plug solid, the mesh cell size AND the scan-mesh-direct branch.
+    has_column: bool,
     /// `PourGateKind::None` exports no `funnel.stl` and carves no vent, so
     /// every sentence naming one has to be gated the same way.
     has_pour_gate: bool,
@@ -1921,20 +1933,7 @@ fn seam_face_check(present: &[SeamFeature]) -> String {
 /// pyramid the default cast never generates — inside a checklist whose failure
 /// instruction is "do NOT proceed to print".
 ///
-/// ▶ **DEFERRED, and named rather than guessed at: neither bullet mentions the
-/// lock's PEDESTAL** ([`crate::plug::build_plug_lock_pedestal_transform`]), the
-/// column a deep cavity inset puts under the lock. Both stay TRUE when one is
-/// present — the lock still protrudes from the cap-plane face with flat tapered
-/// sides — so this is incompleteness, not a wrong instruction, which is why it
-/// is a note and not a rushed sentence.
-///
-/// ⛔ Do NOT close it by recomputing the pedestal here. Whether one exists
-/// turns on the plug solid, the mesh cell size AND the scan-mesh-direct branch,
-/// and this sheet is rendered BEFORE the plugs are meshed
-/// (`CastSpec::export_molds_v2` writes the procedure, then meshes) — so a copy
-/// of that decision would be a third definition free to drift from the two that
-/// matter. The shape that works is the one `carved_features` already uses:
-/// compute it ONCE where it is decided and hand the answer to the sheet.
+/// The lock's COLUMN is a separate bullet — see [`plug_column_bullet`].
 const fn plug_piece_checks(has_plug_lock: bool) -> (&'static str, &'static str) {
     if has_plug_lock {
         (
@@ -1953,6 +1952,32 @@ const fn plug_piece_checks(has_plug_lock: bool) -> (&'static str, &'static str) 
              regression.",
             "- Dome end is smooth and closed.",
         )
+    }
+}
+
+/// The cf-view bullet for the plug's floor-lock COLUMN.
+///
+/// ⚠ ONE sentence, true whether every plug piece grows a column or only some.
+/// Each layer's plug is a different solid — layer 0's is the inset scan,
+/// layer N's is `layers[N-1].body`, fatter and more likely to reach its lock
+/// unaided — so a mixed cast is the expected shape, and this section covers
+/// `plug_layer_*.stl` as a group. A sentence that distinguished the two cases
+/// would have to promise a column on pieces this function cannot name.
+///
+/// ⚠ It does not ask the bench to confirm a column is PRESENT. A column that
+/// failed to fuse never reaches the bench: `plug::ensure_plug_mating_features_attached`
+/// tracks `pedestal_top_m` and refuses the export. What the bench can see, and
+/// the cast cannot, is the seam.
+const fn plug_column_bullet(has_column: bool) -> &'static str {
+    if has_column {
+        "\n   - Where a plug piece's lock stands clear of the body, a square, \
+         untapered COLUMN bridges them — same width as the lock's top face and \
+         flush with it. A piece without one is not a fault; which pieces carry \
+         one depends on how far the inset lifted each plug. A visible seam or \
+         gap where a column meets either end IS a fault: that is the \
+         detached-lock failure, and the piece is scrap."
+    } else {
+        ""
     }
 }
 
@@ -2046,6 +2071,7 @@ fn write_cfview_sanity_check_v2(
         has_dowels,
         bolts_carved,
         has_plug_lock,
+        has_column,
         has_pour_gate,
         has_vent: _,
     } = carved;
@@ -2091,10 +2117,11 @@ fn write_cfview_sanity_check_v2(
     );
     md.push('\n');
     let (lock_check, dome_check) = plug_piece_checks(has_plug_lock);
+    let column_check = plug_column_bullet(has_column);
     let _ = writeln!(
         md,
         "2. **Plug pieces** (`plug_layer_*.stl`):\n   \
-         {lock_check}\n   \
+         {lock_check}{column_check}\n   \
          - No T-bar / stem / cylindrical-shaft remnants (pre-S4 \
          geometry retired); no separate dome-pin (pre-S4 dome-pin \
          gone too).\n   \
@@ -4033,6 +4060,73 @@ mod tests {
         )
     }
 
+    /// ★★★ Sibling audit from #906's review. `cargo-mutants` found
+    /// `funnel_bullet` and `pin_remnant_bullet` ENTIRELY ungated — 5 missed
+    /// mutants across the two, including `delete !` in `funnel_bullet`, which
+    /// swaps "this cast has no pour gate, nothing to check" for the bullet
+    /// demanding a bent-spout `funnel.stl`, and back. Both bullets sit under
+    /// "do NOT proceed to print", which is where every scar in this file came
+    /// from.
+    ///
+    /// ⚠ Each case asserts the expected bullet AND the absence of the others.
+    /// Presence alone passes on a writer that emits all three, and the
+    /// inversion mutant is exactly a case of emitting the wrong one.
+    ///
+    /// ⚠ Asserted with the line prefix. A bare phrase match would also find
+    /// these words elsewhere in the sheet — the failure that left
+    /// `plug_piece_checks` ungated through two review passes.
+    #[test]
+    fn each_gate_and_lock_state_gets_its_own_checklist_bullet() {
+        const FUNNEL_NONE: &str = "\n3. **Funnel**: *none*";
+        const FUNNEL_APEX: &str = "\n3. **Funnel**: *no separate STL*";
+        const FUNNEL_STL: &str = "\n3. **Funnel** (`funnel.stl`)";
+        const PIN_PLAIN: &str = "\n   - No trapezoidal / truncated-pyramid pin remnants";
+        const PIN_RAISED: &str = "\n   - No trapezoidal / truncated-pyramid pin PROTRUSIONS";
+
+        for (label, has_pour_gate, apex_pour, has_plug_lock, want_funnel, want_pin) in [
+            ("gateless", false, false, false, FUNNEL_NONE, PIN_PLAIN),
+            ("apex", true, true, false, FUNNEL_APEX, PIN_PLAIN),
+            ("v-at-dome", true, false, false, FUNNEL_STL, PIN_PLAIN),
+            ("with plug lock", true, false, true, FUNNEL_STL, PIN_RAISED),
+        ] {
+            let mut md = String::new();
+            super::write_cfview_sanity_check_v2(
+                &mut md,
+                apex_pour,
+                &dowelled_ribbon(),
+                SheetFeatures {
+                    has_dowels: false,
+                    bolts_carved: false,
+                    has_plug_lock,
+                    has_column: false,
+                    has_pour_gate,
+                    has_vent: false,
+                },
+                false,
+            );
+            for (kind, want, all) in [
+                (
+                    "funnel",
+                    want_funnel,
+                    [FUNNEL_NONE, FUNNEL_APEX, FUNNEL_STL].as_slice(),
+                ),
+                ("pin", want_pin, [PIN_PLAIN, PIN_RAISED].as_slice()),
+            ] {
+                assert!(
+                    md.contains(want),
+                    "{label}: the {kind} bullet should be {want:?}"
+                );
+                for other in all.iter().filter(|o| **o != want) {
+                    assert!(
+                        !md.contains(other),
+                        "{label}: the {kind} bullet also emitted {other:?}, \
+                         which describes a different cast"
+                    );
+                }
+            }
+        }
+    }
+
     fn dowelled_ribbon() -> Ribbon {
         let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
         let split = SplitNormal::new(Vector3::new(0.0, 0.0, 1.0)).unwrap();
@@ -4062,6 +4156,7 @@ mod tests {
                 has_dowels: true,
                 bolts_carved: true,
                 has_plug_lock: false,
+                has_column: false,
                 has_pour_gate: true,
                 has_vent: true,
             },
@@ -4094,6 +4189,7 @@ mod tests {
                 has_dowels: true,
                 bolts_carved: true,
                 has_plug_lock: false,
+                has_column: false,
                 has_pour_gate: true,
                 has_vent: true,
             },
@@ -4157,6 +4253,7 @@ mod tests {
                 has_dowels: true,
                 bolts_carved: true,
                 has_plug_lock: false,
+                has_column: false,
                 has_pour_gate: true,
                 has_vent: true,
             },
@@ -4269,6 +4366,7 @@ mod tests {
                         has_dowels: false,
                         bolts_carved,
                         has_plug_lock: false,
+                        has_column: false,
                         has_pour_gate: true,
                         has_vent: true,
                     },
@@ -4359,6 +4457,7 @@ mod tests {
                     has_dowels: false,
                     bolts_carved,
                     has_plug_lock: false,
+                    has_column: false,
                     has_pour_gate: true,
                     has_vent: true,
                 },
@@ -4419,6 +4518,7 @@ mod tests {
                     has_dowels: false,
                     bolts_carved: true,
                     has_plug_lock: false,
+                    has_column: false,
                     has_pour_gate: true,
                     has_vent: true,
                 },
@@ -4469,6 +4569,7 @@ mod tests {
                     has_dowels: false,
                     bolts_carved: false,
                     has_plug_lock: false,
+                    has_column: false,
                     has_pour_gate: true,
                     has_vent: true,
                 },

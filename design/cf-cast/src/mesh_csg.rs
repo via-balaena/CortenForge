@@ -59,6 +59,7 @@
 
 use std::collections::HashMap;
 
+use cf_design::Solid;
 use manifold3d::Manifold;
 use mesh_types::IndexedMesh;
 use nalgebra::{Isometry3, Point3, Rotation3, Translation3, UnitVector3, Vector2, Vector3};
@@ -727,6 +728,46 @@ pub fn build_lock_pedestal_via_hull_pts(params: &LockPedestalParams) -> Manifold
     Manifold::hull_pts(&pts).transform(&affine_12_from_isometry(&pose_to_world_mm(&params.pose)))
 }
 
+impl LockPedestalParams {
+    /// The same column as an exact [`Solid`], for consumers that reason in
+    /// SDF space rather than about the emitted mesh — the pour volume, whose
+    /// shell is a CSG difference taken before anything is meshed.
+    ///
+    /// ⚠ SECOND RENDERING of one decision, not a second decision. The params
+    /// come from `spec::plug_pedestals`; this only re-expresses them, and
+    /// `the_column_solid_and_the_column_mesh_are_the_same_column` holds it to
+    /// the mesh builder's own footprint and span.
+    ///
+    /// # Panics
+    ///
+    /// Panics via [`Solid::cuboid`] if either half-extent, or the axial span,
+    /// is zero. Not reachable from `plug::build_plug_lock_pedestal_transform`,
+    /// which marches out from the lock's tip and so returns a span of at least
+    /// `pin_half_length_m` — but every field here is `pub`, so a hand-built
+    /// `LockPedestalParams` can reach it.
+    #[must_use]
+    pub fn as_solid(&self) -> Solid {
+        let lateral = self.pose.lateral_unit.into_inner();
+        let axis = self.pose.axis_unit.into_inner();
+        // Same basis as `pose_to_world_mm`: local X lateral, Y axial, Z third.
+        let third = lateral.cross(&axis);
+        let rotation =
+            nalgebra::UnitQuaternion::from_rotation_matrix(&Rotation3::from_matrix_unchecked(
+                nalgebra::Matrix3::from_columns(&[lateral, axis, third]),
+            ));
+        let (from_m, to_m) = self.axial_span_m;
+        let half_span_m = (to_m - from_m).abs() / 2.0;
+        let mid_m = f64::midpoint(from_m, to_m);
+        Solid::cuboid(Vector3::new(
+            self.half_extents_m.x,
+            half_span_m,
+            self.half_extents_m.y,
+        ))
+        .rotate(rotation)
+        .translate(self.pose.center_m.coords + axis * mid_m)
+    }
+}
+
 /// Build a slab `Manifold` for half-space intersection.
 ///
 /// The slab is oriented so its `+normal`-facing face passes through
@@ -1324,6 +1365,42 @@ mod tests {
             (hi.z, 20.0, "max.z"),
         ] {
             assert!((got - want).abs() < 1e-6, "{name}: {got} != {want}");
+        }
+    }
+
+    /// The SDF column and the emitted column are the same column.
+    ///
+    /// ★ Asserted against the SAME LITERALS as
+    /// `lock_pedestal_spans_its_axial_range_in_the_poses_frame`, in metres
+    /// rather than millimetres — not against `build_lock_pedestal_via_hull_pts`
+    /// itself. Comparing the two builders to each other would pass with both
+    /// wrong the same way, which is the only failure worth fearing when one
+    /// exists to re-express the other.
+    ///
+    /// The fixture is that test's, chosen there to make a lateral/binormal
+    /// swap, a mis-read span and a dropped rotation each visible.
+    #[test]
+    fn the_column_solid_and_the_column_mesh_are_the_same_column() {
+        let params = LockPedestalParams {
+            pose: PrismaticPinPose::new(
+                Point3::new(0.030, 0.010, 0.005),
+                Vector3::z_axis(),
+                Vector3::x_axis(),
+            ),
+            half_extents_m: Vector2::new(0.004, 0.002),
+            axial_span_m: (0.001, 0.015),
+        };
+        // `unwrap`, not `expect` — the module denies `expect_used`.
+        let bounds = params.as_solid().bounds().unwrap();
+        for (got, want, name) in [
+            (bounds.min.x, 0.026, "min.x"),
+            (bounds.max.x, 0.034, "max.x"),
+            (bounds.min.y, 0.008, "min.y"),
+            (bounds.max.y, 0.012, "max.y"),
+            (bounds.min.z, 0.006, "min.z"),
+            (bounds.max.z, 0.020, "max.z"),
+        ] {
+            assert!((got - want).abs() < 1e-9, "{name}: {got} != {want}");
         }
     }
 
