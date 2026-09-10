@@ -3941,23 +3941,28 @@ pub(crate) mod tests {
         );
     }
 
-    /// ⚠ The other half of `askable`, and the only one that shows on screen.
-    /// Step 3 is reachable before step 2 is saved; a check started there cannot
-    /// run, and `start_plug_fit` answers it with "Clean and save the scan
-    /// first" — which would then appear by itself, an error nobody asked for,
-    /// every time the operator walked to step 3 early.
+    /// ⚠ The scan half of `askable`, on the fixture that pins WHICH artifact it
+    /// names. The raw scan is accepted and step 2 is not saved, so `prep` is
+    /// absent where `scan` is present — and `start_plug_fit` needs the cleaned
+    /// one. Against a project with neither, `prep()` and `scan()` read alike
+    /// and either passes.
     ///
     /// ⚠⚠ The absence is asserted against a POSITIVE CONTROL in the same app,
     /// because absence alone is not evidence: the first version of this gate
     /// read `PlugFitJob::asking()`, which only ever names a check that got as
     /// far as SPAWNING. A refusal for want of a scan never does, so dropping
-    /// the scan half of `askable` left the gate green. Clicking the button
-    /// proves the line is reachable here at all.
+    /// the guard left the gate green. Clicking the button proves the line is
+    /// reachable here at all.
     #[test]
-    fn nothing_checks_itself_with_no_scan_to_run_on() {
+    fn nothing_checks_itself_until_the_scan_is_cleaned() {
         let mut app = app_running_the_wizard();
         app.add_plugins(bevy::prelude::TaskPoolPlugin::default());
+        let mut scanned = Project::new("fit gate");
+        scanned.set_scan(ScanInput {
+            source_path: PathBuf::from("scan.stl"),
+        });
         app.insert_resource(Studio {
+            project: scanned,
             cursor: WizardCursor::new(Step::ShapePiece),
             ..Studio::default()
         });
@@ -4024,12 +4029,16 @@ pub(crate) mod tests {
         app.update();
 
         assert_eq!(
+            first.plug.cavity_inset_m, 0.005,
+            "the opening screen's own 5 mm is what settled first"
+        );
+        assert_eq!(
             app.world()
                 .resource::<PlugFitJob>()
                 .asking()
                 .map(|question| question.plug.cavity_inset_m),
-            Some(first.plug.cavity_inset_m + 0.001),
-            "and a stepped inset is asked about over the verdict it just stale-dropped"
+            Some(0.006),
+            "and the stepped 6 mm is asked about over the verdict it stale-dropped"
         );
     }
 

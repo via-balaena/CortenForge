@@ -1676,12 +1676,18 @@ pub const FIT_SETTLE: Duration = Duration::from_millis(1500);
 /// deliberately not included: it is a check that could not RUN, so re-firing on
 /// it would spin.
 ///
-/// ⚠ `askable` is the app accepting actions AND there being a cleaned scan to
-/// run on. The second half is the one that shows: without it, walking to step 3
-/// before step 2 is saved posts "Clean and save the scan first" that nobody
-/// asked for. The first is the same gate the button beside this takes — nothing
-/// reachable on step 3 trips it today, and no test here can, so it is carried
-/// for one reason only: the two paths to one action must not come to disagree.
+/// ⚠ `askable` is the app accepting actions AND the CLEANED scan being present
+/// — `prep`, exactly what `start_plug_fit` needs, not the raw scan that arrives
+/// a step earlier.
+///
+/// ⚠⚠ Nothing in the app as it stands can trip either half: `nav_state` will
+/// not carry the operator to step 3 before step 2 completes, and a loaded
+/// project has its `current_step` clamped by `Project::migrate` and its gaps
+/// rejected by `Project::validate`. They are here because the check now starts
+/// with NO ONE in the loop. A button that answers "Clean and save the scan
+/// first" is informative; a screen that posts it by itself — onto a `Failed`
+/// that never re-fires — is a red line the operator did not ask for and cannot
+/// clear.
 #[must_use]
 pub fn fit_check_is_due(view: &FitView<'_>, settled_for: Duration, askable: bool) -> bool {
     askable && settled_for >= FIT_SETTLE && matches!(view, FitView::Idle)
@@ -4007,8 +4013,7 @@ visible = true
     /// ★★★ What starts a check nobody clicked for, on all three axes at once.
     /// Drop any one and the predicate still passes a happy-path gate: without
     /// the settle it fires on every keystroke of a two-digit inset, without
-    /// `askable` it posts "Clean and save the scan first" at a screen nobody
-    /// asked anything of.
+    /// `askable` it runs against a scan that is not there.
     ///
     /// ⚠ The settle is asserted AT the boundary in both directions. A `>` where
     /// `>=` belongs is a mutant no comfortable margin can kill.
