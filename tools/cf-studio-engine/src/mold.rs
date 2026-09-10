@@ -279,7 +279,13 @@ pub fn generate_molds(
         .collect();
     let pour_plan = build_pour_plan(&pour_inputs(draft, &masses_kg)?)?;
 
-    let stls = collect_stls(&report.out_dir)?;
+    // Bucket the run's AUTHORITATIVE written-paths list, exactly as the
+    // selective path does. The output dir is persistent and never cleared,
+    // so globbing it merges in whatever an earlier run left behind: turn
+    // the gasket off, or drop the layer count from 3 to 2, and the orphans
+    // are reported as this run's output — and `export_print_package`
+    // copies them to the slicer folder.
+    let stls = categorize_stls(report.written);
     Ok(MoldOutputs {
         out_dir: report.out_dir,
         mold_stls: stls.mold,
@@ -331,6 +337,9 @@ struct CategorizedStls {
 /// Categorize STL paths by filename: `mold_layer_*` → mold halves,
 /// `plug_layer_*` → plugs, everything else (platform, dowel, funnel) →
 /// accessories. Sorted within each bucket. Non-`.stl` paths are dropped.
+///
+/// Always fed a cast run's own written-paths list — never a directory
+/// listing. See the call site in [`generate_molds`] for why.
 fn categorize_stls(paths: impl IntoIterator<Item = PathBuf>) -> CategorizedStls {
     let mut mold = Vec::new();
     let mut plug = Vec::new();
@@ -359,29 +368,6 @@ fn categorize_stls(paths: impl IntoIterator<Item = PathBuf>) -> CategorizedStls 
         plug,
         accessory,
     }
-}
-
-/// Read + categorize the `.stl` files the run wrote under `out_dir/stls` by
-/// globbing the directory (robust to which optional artifacts the run
-/// emitted). Used by the **full-cast** path, where every file in the dir
-/// belongs to this run. The selective path must NOT glob (the dir is
-/// persistent + may hold stale pieces) — it categorizes the run's authoritative
-/// written-paths list via [`categorize_stls`].
-fn collect_stls(out_dir: &Path) -> Result<CategorizedStls> {
-    let stls_dir = out_dir.join("stls");
-    let entries = std::fs::read_dir(&stls_dir).map_err(|e| {
-        EngineError::MoldGen(format!("read output dir {}: {e}", stls_dir.display()))
-    })?;
-    let mut paths = Vec::new();
-    for entry in entries {
-        let path = entry
-            .map_err(|e| {
-                EngineError::MoldGen(format!("read dir entry in {}: {e}", stls_dir.display()))
-            })?
-            .path();
-        paths.push(path);
-    }
-    Ok(categorize_stls(paths))
 }
 
 #[cfg(test)]
@@ -699,30 +685,6 @@ mod tests {
     }
 
     #[test]
-    fn collect_stls_buckets_by_filename() {
-        let dir = temp_dir("collect");
-        let stls = dir.join("stls");
-        std::fs::create_dir_all(&stls).unwrap();
-        for f in [
-            "mold_layer_0_piece_0.stl",
-            "mold_layer_0_piece_1.stl",
-            "plug_layer_0.stl",
-            "platform.stl",
-            "dowel.stl",
-            "procedure.md", // non-stl, ignored
-        ] {
-            std::fs::write(stls.join(f), b"x").unwrap();
-        }
-
-        let cat = collect_stls(&dir).unwrap();
-        assert_eq!(cat.mold.len(), 2, "two mold halves");
-        assert_eq!(cat.plug.len(), 1, "one plug");
-        assert_eq!(cat.accessory.len(), 2, "platform + dowel; .md ignored");
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
     fn categorize_stls_buckets_only_the_given_paths() {
         // The selective-export fix: bucket the run's authoritative written-paths
         // list, NOT a glob of the persistent dir — so a stale prior-run STL that
@@ -744,12 +706,6 @@ mod tests {
                 .chain(&cat.accessory)
                 .any(|p| p.ends_with("mold_layer_0_piece_0.stl")),
         );
-    }
-
-    #[test]
-    fn missing_output_dir_is_a_mold_gen_error() {
-        let err = collect_stls(Path::new("/no/such/out")).unwrap_err();
-        assert!(matches!(err, EngineError::MoldGen(_)), "got: {err:?}");
     }
 
     /// Drive the wizard mold-gen path (for_design recipe) on the real

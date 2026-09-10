@@ -153,6 +153,6 @@ pub use seam_solver::{
 };
 pub use spec::{
     CastLayer, CastSpec, DowelArtifact, FunnelArtifact, MeshSummary, MoldArtifact,
-    MoldExportReport, PieceArtifact, PlatformArtifact, PlugArtifact, SelectedExportReport,
-    V2LayerReport, V2MoldExportReport, plug_fit_verdict,
+    MoldExportReport, PieceArtifact, PlatformArtifact, PlugArtifact, STLS_SUBDIR,
+    SelectedExportReport, V2LayerReport, V2MoldExportReport, plug_fit_verdict,
 };

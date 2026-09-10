@@ -46,6 +46,7 @@
 mod config;
 mod derive;
 pub mod design_ref;
+pub mod manifest;
 mod prep;
 mod procedure_post;
 mod scan;
@@ -55,7 +56,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
-pub use cf_cast::{CastMode, PartId, PartSelection, PieceSide};
+pub use cf_cast::{CastMode, PartId, PartSelection, PieceSide, STLS_SUBDIR};
 pub use config::{
     CanalConfig, CastConfig, CastDefaults, DesignSourceConfig, LayerConfig, PlugPinConfig,
     PourGateConfig, RingConfig, ScanConfig,
@@ -64,6 +65,7 @@ pub use derive::{
     DerivedSpec, density_for_anchor, derive_spec_and_ribbon, display_name_for_anchor,
     resolve_canal_spec,
 };
+pub use manifest::{MANIFEST_FILENAME, ManifestEntry, RunProvenance, UNKNOWN_RUN};
 pub use prep::parse_centerline_from_prep_toml;
 pub use scan::{SharedScanSdf, load_scan_sdf};
 
@@ -318,6 +320,8 @@ pub fn run_with_config(
             total = config.layers.len()
         );
     }
+    let written = written_paths(&report);
+    let provenance = stamp_output_folder(&out_dir, &written);
     eprintln!("[cf-cast-cli] done — {}", procedure_path.display());
 
     Ok(RunReport {
@@ -332,6 +336,8 @@ pub fn run_with_config(
         v2: report,
         arc_length_mm: ribbon.arc_length() * 1000.0,
         max_tangent_rotation_deg: ribbon.max_tangent_rotation_rad().to_degrees(),
+        written,
+        provenance,
     })
 }
 
@@ -400,6 +406,7 @@ pub fn run_selected_with_config(
         .collect();
     procedure_post::inject_slacker_recipe_section(&procedure_path, &slacker_recipes)
         .context("post-process procedure.md to surface slacker recipe")?;
+    let provenance = stamp_output_folder(&out_dir, &report.written);
     eprintln!("[cf-cast-cli] done — {}", procedure_path.display());
 
     Ok(SelectedRunReport {
@@ -412,6 +419,7 @@ pub fn run_selected_with_config(
             .sum(),
         layer_pour_masses_kg: report.layer_pours.iter().map(|p| p.pour_mass_kg).collect(),
         written: report.written,
+        provenance,
     })
 }
 
@@ -433,6 +441,11 @@ pub struct SelectedRunReport {
     pub layer_pour_masses_kg: Vec<f64>,
     /// Filesystem paths of the STLs actually written this run.
     pub written: Vec<PathBuf>,
+    /// Which export wrote each STL now in the output folder, or `None`
+    /// when the manifest could not be updated. `None` is "not known",
+    /// not "nothing stale" — the STLs are the run's product and a
+    /// bookkeeping failure does not fail it.
+    pub provenance: Option<RunProvenance>,
 }
 
 /// Console-printable summary of a successful [`run`].
@@ -455,6 +468,80 @@ pub struct RunReport {
     /// Max inter-segment tangent rotation in degrees (for the stdout
     /// summary).
     pub max_tangent_rotation_deg: f64,
+    /// Filesystem paths of the STLs this run wrote — the authoritative
+    /// set, so a caller never has to glob the persistent output folder
+    /// and merge in files an earlier run left behind.
+    pub written: Vec<PathBuf>,
+    /// As [`SelectedRunReport::provenance`].
+    pub provenance: Option<RunProvenance>,
+}
+
+/// Every STL path a full export wrote, in emission order.
+///
+/// [`cf_cast::V2MoldExportReport`] carries a `path` on each artifact, so
+/// the written set is derivable exactly — no globbing the output folder,
+/// which is persistent and can hold an earlier run's files.
+///
+/// ⚠ Both reports are destructured **exhaustively**, on purpose. A glob
+/// picks up a newly added artifact for free; this list does not, and a
+/// missed one would be dropped from the caller's outputs and then marked
+/// stale by every later run. Naming every field makes adding an artifact a
+/// compile error here rather than a silent omission — the compiler holds
+/// this, not a test that would need remembering to update.
+fn written_paths(report: &cf_cast::V2MoldExportReport) -> Vec<PathBuf> {
+    let cf_cast::V2MoldExportReport {
+        layers,
+        platform,
+        funnel,
+        gasket_molds,
+        dowel,
+    } = report;
+
+    let mut written = Vec::new();
+    for layer in layers {
+        let cf_cast::V2LayerReport {
+            layer_index: _,
+            material_display_name: _,
+            pour_volume: _,
+            pieces,
+            plug,
+        } = layer;
+        written.extend(pieces.iter().map(|p| p.path.clone()));
+        written.push(plug.path.clone());
+    }
+    written.extend(platform.iter().map(|a| a.path.clone()));
+    written.extend(funnel.iter().map(|a| a.path.clone()));
+    written.extend(gasket_molds.iter().map(|a| a.path.clone()));
+    written.extend(dowel.iter().map(|a| a.path.clone()));
+    written
+}
+
+/// Record this run in the output folder's manifest and warn about STLs it
+/// did not regenerate.
+///
+/// **Never fails the run.** The STLs are the product and are already on
+/// disk by the time this is called; losing a minutes-long cast to a
+/// bookkeeping write would be the worse outcome. A failure is reported and
+/// returns `None`, which callers carry as "not known" rather than
+/// flattening to "nothing stale".
+fn stamp_output_folder(out_dir: &Path, written: &[PathBuf]) -> Option<RunProvenance> {
+    let stls_dir = out_dir.join(cf_cast::STLS_SUBDIR);
+    match manifest::record_run(&stls_dir, written) {
+        Ok(provenance) => {
+            if let Some(warning) = provenance.warning_line() {
+                eprintln!("[cf-cast-cli] \u{26a0} {warning}");
+            }
+            Some(provenance)
+        }
+        Err(e) => {
+            eprintln!(
+                "[cf-cast-cli] \u{26a0} could not record {dir}/{MANIFEST_FILENAME}, so this \
+                 run's output cannot be told from what was already there: {e:#}",
+                dir = stls_dir.display(),
+            );
+            None
+        }
+    }
 }
 
 /// Resolve a path field from the TOML against the cast TOML's
