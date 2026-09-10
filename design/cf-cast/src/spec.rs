@@ -1563,12 +1563,14 @@ pub fn plug_pedestals(spec: &CastSpec, ribbon: &Ribbon) -> Vec<Option<LockPedest
         .map(|layer_index| {
             let inputs = plug_compose_inputs(spec, layer_index);
             let cell_size_m = inputs.pedestal_cell_size_m()?;
+            // ⚠ DEFENSIVE ONLY — `build_plug_lock_pedestal_transform` emits
+            // this variant or nothing. A total function rather than an
+            // `unreachable!`, because this runs on every sheet render and
+            // pour-volume bake, including from the GUI: the crate answers with
+            // values, and a missing bullet beats a panic on the operator.
             match build_plug_lock_pedestal_transform(&inputs.base_plug, ribbon, cell_size_m)? {
                 MatingTransform::UnionLockPedestal { params } => Some(params),
-                // `build_plug_lock_pedestal_transform` emits that variant or
-                // nothing; a different one means the column moved elsewhere and
-                // this answer would be stale rather than merely absent.
-                other => unreachable!("pedestal builder emitted {other:?}"),
+                _ => None,
             }
         })
         .collect()
