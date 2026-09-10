@@ -23,9 +23,14 @@ pub(crate) const ERROR_TEXT: egui::Color32 = egui::Color32::from_rgb(0xc6, 0x28,
 /// Warning amber: under five minutes of working time left.
 pub(crate) const WARN_TEXT: egui::Color32 = egui::Color32::from_rgb(0xe6, 0x51, 0x00);
 /// A caution card, for a result that stands but wants checking before it is
-/// acted on. Pairs with [`WARN_TEXT`], as [`RIDGE_FILL`] pairs with
-/// [`RIDGE_NOTE_TEXT`].
+/// acted on.
 pub(crate) const WARN_FILL: egui::Color32 = egui::Color32::from_rgb(0xfb, 0xec, 0xdc);
+/// Text on [`WARN_FILL`], as [`RIDGE_NOTE_TEXT`] is text on [`RIDGE_FILL`].
+///
+/// ⚠ Not [`WARN_TEXT`], which is chosen to sit on the app background: on this
+/// fill it measures 3.3:1, against 5.6-8.4:1 for every other card in the app.
+/// `every_card_pairing_clears_the_readability_bar` holds the difference.
+pub(crate) const WARN_NOTE_TEXT: egui::Color32 = egui::Color32::from_rgb(0x8a, 0x3b, 0x00);
 /// The ridge editor's card — warmer than the result cards, as the pre-port
 /// screen had it.
 pub(crate) const RIDGE_FILL: egui::Color32 = egui::Color32::from_rgb(0xf4, 0xf1, 0xea);
@@ -205,4 +210,63 @@ pub(crate) fn card(ui: &mut egui::Ui, fill: egui::Color32, add: impl FnOnce(&mut
             ui.set_width(ui.available_width());
             add(ui);
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// WCAG 2.x relative luminance.
+    fn luminance(c: egui::Color32) -> f64 {
+        fn channel(v: u8) -> f64 {
+            let v = f64::from(v) / 255.0;
+            if v <= 0.040_45 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        }
+        0.2126 * channel(c.r()) + 0.7152 * channel(c.g()) + 0.0722 * channel(c.b())
+    }
+
+    /// WCAG 2.x contrast ratio between two opaque colours.
+    fn contrast(fg: egui::Color32, bg: egui::Color32) -> f64 {
+        let (a, b) = (luminance(fg), luminance(bg));
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    /// ⚠ The doc comments name which text goes on which fill, and nothing
+    /// held them to being readable together. A caution card shipped at 3.3:1
+    /// — every other card in the app is 5.6:1 or better — because the fill
+    /// was picked by eye and the text was borrowed from the background
+    /// palette. 4.5:1 is AA for normal text.
+    #[test]
+    fn every_card_pairing_clears_the_readability_bar() {
+        for (card, fg, bg) in [
+            ("results", GOOD_TEXT, GOOD_FILL),
+            ("ridge editor", RIDGE_NOTE_TEXT, RIDGE_FILL),
+            ("caution", WARN_NOTE_TEXT, WARN_FILL),
+            ("stats", STATS_TEXT, RING_FILL),
+        ] {
+            let ratio = contrast(fg, bg);
+            assert!(
+                ratio >= 4.5,
+                "{card} card is {ratio:.2}:1, below the 4.5:1 bar for normal text"
+            );
+        }
+    }
+
+    /// The instrument itself, against two ends it cannot get wrong.
+    #[test]
+    fn the_contrast_measure_agrees_with_its_own_extremes() {
+        let (black, white) = (egui::Color32::BLACK, egui::Color32::WHITE);
+        assert!(
+            (contrast(black, white) - 21.0).abs() < 0.01,
+            "black on white"
+        );
+        assert!(
+            (contrast(white, white) - 1.0).abs() < 0.01,
+            "white on white"
+        );
+    }
 }
