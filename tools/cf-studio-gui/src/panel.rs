@@ -18,8 +18,8 @@ use cf_studio_gui::{
     BoundedField, CENDRILLON_CAST_MODE, FitQuestion, FitView, LayerRow, RingRow, Silicone,
     cell_size_m_for_quality, fit_check_is_due, format_fit_failure, format_fit_progress,
     format_fit_verdict, format_molds_summary, format_pour_active, format_pour_plan,
-    format_resume_question, format_scan_stats, nav_state, pour_countdown, print_step_summary,
-    step_rows,
+    format_resume_question, format_scan_stats, format_stale_parts, nav_state, pour_countdown,
+    print_step_summary, step_rows,
 };
 
 use crate::autosave::{self, Autosave};
@@ -40,8 +40,9 @@ use crate::shape::{RidgeFields, ShapeControls, commit_plug};
 use crate::state::{PendingSave, Studio};
 use crate::widgets::{
     ACTIVE_TEXT, CONTROL_TEXT, DONE_TEXT, ERROR_TEXT, GOOD_FILL, GOOD_TEXT, HEADING_TEXT,
-    HINT_TEXT, LAYER_FILL, RIDGE_FILL, RIDGE_NOTE_TEXT, RING_FILL, STATS_TEXT, WARN_TEXT, card,
-    centered_wrapped, cleanup_section, field_grid, step_box, wrapped_colored, wrapped_label,
+    HINT_TEXT, LAYER_FILL, RIDGE_FILL, RIDGE_NOTE_TEXT, RING_FILL, STATS_TEXT, WARN_FILL,
+    WARN_NOTE_TEXT, WARN_TEXT, card, centered_wrapped, cleanup_section, field_grid, step_box,
+    wrapped_colored, wrapped_label,
 };
 
 /// The checklist column's width.
@@ -955,6 +956,14 @@ fn draw_make_molds(
         card(ui, GOOD_FILL, |ui| {
             wrapped_colored(ui, GOOD_TEXT, summary);
         });
+        // A separate card, not appended to the summary above: that one is
+        // about THIS CAST, and this is about the folder it landed in.
+        if let Some(note) = format_stale_parts(studio.stale.as_ref()) {
+            ui.add_space(SECTION_GAP);
+            card(ui, WARN_FILL, |ui| {
+                wrapped_colored(ui, WARN_NOTE_TEXT, note);
+            });
+        }
     }
     acted
 }
@@ -1816,6 +1825,26 @@ pub(crate) mod tests {
             .collect()
     }
 
+    /// Every piece of text the column draws, prose included.
+    ///
+    /// ⚠ Prose sits on `Role::Label` and carries its text in `value()`, not
+    /// `label()` — the same trap [`controls_in_column`] documents. Reading
+    /// only `label()` here would make every card look empty.
+    fn text_in_column(mut body: impl FnMut(&mut egui::Ui)) -> Vec<String> {
+        use egui_kittest::kittest::NodeT;
+
+        let mut body = |ui: &mut egui::Ui| body(ui);
+        let harness = column_harness(&mut body);
+        harness
+            .root()
+            .children_recursive()
+            .filter_map(|node| {
+                let widget = node.accesskit_node();
+                widget.label().or_else(|| widget.value())
+            })
+            .collect()
+    }
+
     /// A control, and what these gates call it: its accessible name, or its
     /// role when it has none.
     ///
@@ -1892,6 +1921,17 @@ pub(crate) mod tests {
             cf_studio_gui::format_elapsed(3671),
             cf_studio_gui::print_step_summary(&project),
             cf_studio_gui::format_molds_summary(&molds),
+            // Both step-5 provenance forms: the folder with no record, and
+            // the one naming older parts. ⚠ and • are the glyphs at risk.
+            cf_studio_gui::format_stale_parts(None).expect("the unknown form"),
+            cf_studio_gui::format_stale_parts(Some(&cf_studio_gui::RunProvenance {
+                run: 3,
+                stale: vec![cf_studio_gui::ManifestEntry {
+                    file: "plug_layer_1.stl".to_string(),
+                    run: cf_studio_gui::UNKNOWN_RUN,
+                }],
+            }))
+            .expect("the stale form"),
             format_pour_plan(&molds.pour_plan),
             format_pour_active(&molds.pour_plan, 0),
             crate::save::overwrite_question(&studio, &dir),
@@ -2150,6 +2190,45 @@ pub(crate) mod tests {
             ["← Back", "Help", "Next →"]
         );
         assert!(controls_in_column(|ui| draw_checklist(ui, &studio)).is_empty());
+    }
+
+    /// ⚠⚠ Does anything DRAW it? The formatter has three gates and the two
+    /// refresh points have one each, and not one of them says the panel puts
+    /// the note on the screen. Deleting the card leaves all six green.
+    #[test]
+    fn the_caution_card_reaches_the_screen() {
+        let mut studio = crate::molds::tests::viewing_step_5_with(1);
+        studio
+            .project
+            .set_molds(cf_studio_core::MoldOutputs {
+                out_dir: std::path::PathBuf::from("out"),
+                mold_stls: Vec::new(),
+                plug_stls: Vec::new(),
+                accessory_stls: Vec::new(),
+                procedure_path: std::path::PathBuf::from("out/procedure.md"),
+                total_mass_g: 80.0,
+                pour_plan: cf_studio_core::PourPlan { steps: Vec::new() },
+            })
+            .expect("in workflow order");
+        studio.stale = Some(cf_studio_gui::RunProvenance {
+            run: 3,
+            stale: vec![cf_studio_gui::ManifestEntry {
+                file: "plug_layer_1.stl".to_string(),
+                run: 1,
+            }],
+        });
+        let note =
+            cf_studio_gui::format_stale_parts(studio.stale.as_ref()).expect("one part is stale");
+
+        let mut molds = crate::molds::tests::controls_for(1);
+        let drawn = text_in_column(|ui| {
+            let _ = draw_make_molds(ui, &studio, true, &mut molds);
+        });
+
+        assert!(
+            drawn.contains(&note),
+            "the caution card is not on the screen; drawn: {drawn:?}"
+        );
     }
 
     /// Step 5's controls, in the order they are laid out.

@@ -11,6 +11,7 @@ use std::time::Instant;
 
 use bevy::prelude::*;
 use cf_studio_core::{PourRecord, Project, Step};
+use cf_studio_engine::{RunProvenance, folder_provenance};
 use cf_studio_gui::{
     PourAdvance, PourSession, StepOutcome, WizardCursor, apply_scan, pot_life_duration,
 };
@@ -109,6 +110,14 @@ pub(crate) struct Studio {
     pub(crate) busy: bool,
     /// A Save waiting on the user; `None` unless one asked a question.
     pub(crate) pending_save: Option<PendingSave>,
+    /// What the output folder holds, re-read when a cast finishes and when a
+    /// project is resumed.
+    ///
+    /// ⚠ NEVER saved. Staleness is a property of the folder **now**, so a
+    /// persisted answer would itself go stale — which is the exact failure
+    /// this warns about. `None` = not known: no molds yet, or a folder no
+    /// cast has stamped.
+    pub(crate) stale: Option<RunProvenance>,
 }
 
 impl Default for Studio {
@@ -121,11 +130,25 @@ impl Default for Studio {
             message: None,
             busy: false,
             pending_save: None,
+            stale: None,
         }
     }
 }
 
 impl Studio {
+    /// Re-read the output folder's provenance from disk.
+    ///
+    /// Called when a cast finishes and when a project is resumed — the two
+    /// moments the answer can have changed. Reading rather than remembering
+    /// is the point: a project reopened days later sees the folder as it is
+    /// now, including parts deleted or added outside the app.
+    pub(crate) fn refresh_folder_provenance(&mut self) {
+        self.stale = self
+            .project
+            .molds()
+            .and_then(|molds| folder_provenance(&molds.out_dir));
+    }
+
     /// Record the outcome of an action taken on the step now being viewed.
     ///
     /// The only way to set a message: the step is stamped here rather than by
@@ -192,6 +215,9 @@ impl Studio {
         if outcome.is_ok() {
             self.pour = PourSession::default();
             self.pour_deadline = None;
+            // A new scan is a new project with no molds, so the previous
+            // one's folder is not this project's answer to anything.
+            self.stale = None;
         }
         outcome
     }

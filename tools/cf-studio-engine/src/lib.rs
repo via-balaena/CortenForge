@@ -39,7 +39,10 @@ pub use mold::{generate_molds, generate_molds_for_design};
 // Re-export the config type `generate_molds` takes + the part-selection
 // types `generate_molds_for_design` takes, so a frontend can build/parse
 // them without a separate cf-cast-cli dependency.
-pub use cortenforge::cf_cast_cli::{CastConfig, CastMode, PartId, PartSelection, PieceSide};
+pub use cortenforge::cf_cast_cli::{
+    CastConfig, CastMode, ManifestEntry, PartId, PartSelection, PieceSide, RunProvenance,
+    UNKNOWN_RUN, folder_provenance,
+};
 pub use pour::{LayerPour, build_pour_plan};
 pub use preflight::{PROBE_LAYER_THICKNESS_M, PlugFit, plug_fit_preflight};
 pub use prep::accept_prep;

@@ -189,6 +189,10 @@ pub(crate) fn resume(autosave: &mut Autosave, studio: &mut Studio, scan: &mut Sc
     // from, and that is not the same as the file its own scan path would give:
     // the scan may have moved since it was saved.
     studio.resume(*project);
+    // The folder may have changed since this project was last open — parts
+    // deleted, or a cast run from the CLI. Read it now rather than trust
+    // anything the last session recorded.
+    studio.refresh_folder_provenance();
     studio.say(match reload_body(&studio.project, scan) {
         None => Ok(format!(
             "✔ Picked up where you left off — step {} of {}.",
@@ -727,6 +731,108 @@ mod tests {
             "the first step past the pick is what starts the file"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ⚠ The sibling reset. `record_scan` already clears the pour cursor and
+    /// its countdown for exactly this reason — a new scan is a new project,
+    /// and the previous one's answers point at work this project has not done.
+    /// The folder reading is one of those answers.
+    #[test]
+    fn picking_a_new_scan_drops_the_previous_folder_reading() {
+        let dir = scans("new-scan-drops-reading");
+        let mut studio = Studio {
+            stale: Some(cf_studio_engine::RunProvenance {
+                run: 2,
+                stale: vec![cf_studio_engine::ManifestEntry {
+                    file: "old.stl".to_string(),
+                    run: 1,
+                }],
+            }),
+            ..Studio::default()
+        };
+
+        studio
+            .record_scan(&dir.join("base.stl"))
+            .expect("the fixture scan loads");
+
+        assert!(
+            studio.stale.is_none(),
+            "a new project inherited the last one's folder reading"
+        );
+    }
+
+    /// ⚠⚠ The wiring no mutation sweep reaches, and the reason nothing about
+    /// staleness is persisted: a project reopened days later must read the
+    /// folder as it is NOW. If `resume` does not re-read, the panel is silent
+    /// about a folder full of parts from three different casts.
+    ///
+    /// ⚠ The manifest is a LITERAL here, not built by the code that writes
+    /// manifests — an oracle produced by the system under test agrees with it
+    /// whatever either of them does.
+    #[test]
+    fn a_resumed_session_re_reads_what_the_output_folder_holds() {
+        use cf_studio_core::{DesignDraft, LayerDraft, MoldOutputs, PourPlan};
+
+        let dir = scans("resume-provenance");
+        let stls = dir.join("out").join("stls");
+        std::fs::create_dir_all(&stls).expect("an output folder");
+        std::fs::write(stls.join("fresh.stl"), b"solid\n").expect("a fresh part");
+        std::fs::write(stls.join("old.stl"), b"solid\n").expect("an older part");
+        std::fs::write(
+            stls.join("manifest.toml"),
+            "latest_run = 2\n\n[[part]]\nfile = \"fresh.stl\"\nrun = 2\n\n\
+             [[part]]\nfile = \"old.stl\"\nrun = 1\n",
+        )
+        .expect("a manifest");
+
+        let mut saved = walked_to(&dir, Step::ShapePiece);
+        saved
+            .set_design(DesignDraft {
+                cavity_inset_m: PlugDraft::default().cavity_inset_m,
+                layers: vec![LayerDraft {
+                    thickness_m: 0.0175,
+                    material_key: "ECOFLEX_00_30".to_string(),
+                    slacker_fraction: 0.25,
+                }],
+            })
+            .expect("in workflow order");
+        saved
+            .set_molds(MoldOutputs {
+                out_dir: dir.join("out"),
+                mold_stls: vec![stls.join("fresh.stl")],
+                plug_stls: Vec::new(),
+                accessory_stls: Vec::new(),
+                procedure_path: dir.join("out/procedure.md"),
+                total_mass_g: 80.0,
+                pour_plan: PourPlan { steps: Vec::new() },
+            })
+            .expect("in workflow order");
+        saved
+            .save(&autosave_path(&dir.join("base.stl")))
+            .expect("the previous session");
+
+        let (mut autosave, mut studio) = just_picked(&dir);
+        assert!(
+            studio.stale.is_none(),
+            "nothing is known before the project is back"
+        );
+
+        resume(&mut autosave, &mut studio, &mut ScanEdit::default());
+
+        let provenance = studio
+            .stale
+            .as_ref()
+            .expect("the folder carries a manifest, so this is not unknown");
+        assert_eq!(provenance.run, 2, "the manifest's latest run");
+        assert_eq!(
+            provenance
+                .stale
+                .iter()
+                .map(|e| e.file.as_str())
+                .collect::<Vec<_>>(),
+            vec!["old.stl"],
+            "the part that run did not write"
+        );
     }
 
     /// ⚠⚠ The autosave keeps writing where it read from. A resumed project

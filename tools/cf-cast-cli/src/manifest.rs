@@ -126,34 +126,17 @@ pub fn record_run(stls_dir: &Path, written: &[PathBuf]) -> Result<RunProvenance>
     let previous = load(stls_dir);
     let run = previous.latest_run.saturating_add(1);
 
-    // Filename → run. Seeded with what the manifest knew, so a file this
-    // run did not touch keeps the run that wrote it.
-    let mut runs: BTreeMap<String, u32> = previous
-        .parts
-        .into_iter()
-        .map(|e| (e.file, e.run))
-        .collect();
-
+    // Seeded with what the manifest knew, so a file this run did not touch
+    // keeps the run that wrote it.
+    let mut runs = seed(previous);
     for path in written {
         if let Some(name) = stl_file_name(path) {
             runs.insert(name, run);
         }
     }
 
-    // Reconcile against the folder itself: absent files leave, unlisted
-    // ones arrive as UNKNOWN_RUN.
-    let on_disk = list_stls(stls_dir)?;
-    runs.retain(|file, _| on_disk.contains(file));
-    for file in on_disk {
-        runs.entry(file).or_insert(UNKNOWN_RUN);
-    }
-
-    // BTreeMap iterates sorted, so the file is diff-stable across runs.
-    let parts: Vec<ManifestEntry> = runs
-        .into_iter()
-        .map(|(file, wrote)| ManifestEntry { file, run: wrote })
-        .collect();
-    let stale: Vec<ManifestEntry> = parts.iter().filter(|e| e.run != run).cloned().collect();
+    let parts = reconcile(stls_dir, runs)?;
+    let stale = not_from_run(&parts, run);
 
     save(
         stls_dir,
@@ -166,17 +149,92 @@ pub fn record_run(stls_dir: &Path, written: &[PathBuf]) -> Result<RunProvenance>
     Ok(RunProvenance { run, stale })
 }
 
+/// What the output folder holds **now**, without touching it.
+///
+/// The read-only sibling of `record_run` (private — a caller outside this
+/// crate reads the folder, it never stamps one): same reconcile, no write, no
+/// run number burned. `stale` is everything not from the manifest's `latest_run`,
+/// so [`RunProvenance::warning_line`] reads the same as it does after a cast.
+///
+/// `None` means **unknown**, which is not the same as clean: no readable
+/// manifest, or one recording nothing usable. Callers must not report a
+/// folder as current on the strength of it.
+#[must_use]
+pub fn folder_provenance(out_dir: &Path) -> Option<RunProvenance> {
+    let stls_dir = out_dir.join(cf_cast::STLS_SUBDIR);
+    let manifest = load_existing(&stls_dir)?;
+    let run = manifest.latest_run;
+    // ⚠ [`UNKNOWN_RUN`] is 0, so a manifest claiming 0 as its latest run would
+    // make every unknown-vintage part compare EQUAL to it — a folder of
+    // entirely unknown parts reported as current. 0 means unknown here too.
+    if run == UNKNOWN_RUN {
+        return None;
+    }
+    // A read must not repair the folder, so a reconcile failure is unknown
+    // rather than an error to report.
+    let parts = reconcile(&stls_dir, seed(manifest)).ok()?;
+    Some(RunProvenance {
+        run,
+        stale: not_from_run(&parts, run),
+    })
+}
+
+/// The manifest's entries as a filename → run map.
+fn seed(manifest: StlManifest) -> BTreeMap<String, u32> {
+    manifest
+        .parts
+        .into_iter()
+        .map(|e| (e.file, e.run))
+        .collect()
+}
+
+/// Reconcile `runs` against what `stls_dir` actually holds: entries whose file
+/// is gone leave, files the seed does not name arrive as [`UNKNOWN_RUN`].
+///
+/// ⚠ Shared by [`record_run`] and [`folder_provenance`] on purpose. Two paths
+/// deciding separately what the folder holds is how they come to disagree
+/// about which parts are stale.
+///
+/// `BTreeMap` iterates sorted, so the manifest stays diff-stable across runs.
+///
+/// # Errors
+/// If `stls_dir` cannot be listed.
+fn reconcile(stls_dir: &Path, mut runs: BTreeMap<String, u32>) -> Result<Vec<ManifestEntry>> {
+    let on_disk = list_stls(stls_dir)?;
+    runs.retain(|file, _| on_disk.contains(file));
+    for file in on_disk {
+        runs.entry(file).or_insert(UNKNOWN_RUN);
+    }
+    Ok(runs
+        .into_iter()
+        .map(|(file, run)| ManifestEntry { file, run })
+        .collect())
+}
+
+/// The entries not written by `run`.
+fn not_from_run(parts: &[ManifestEntry], run: u32) -> Vec<ManifestEntry> {
+    parts.iter().filter(|e| e.run != run).cloned().collect()
+}
+
 /// Read the manifest, or a default when it is absent or unparseable.
 ///
 /// Unparseable is deliberately not an error: the manifest is advisory
 /// bookkeeping, and its content is unrecoverable in that case anyway.
 /// [`record_run`] then rebuilds it from the folder.
 fn load(stls_dir: &Path) -> StlManifest {
+    load_existing(stls_dir).unwrap_or_default()
+}
+
+/// The manifest, or `None` when there is not a readable one.
+///
+/// Distinct from [`load`]'s default: a folder with no manifest and a folder
+/// with an empty one are the same to [`record_run`], which rebuilds either
+/// way, but not to [`folder_provenance`], which must say **unknown** rather
+/// than report a clean folder it has never seen.
+fn load_existing(stls_dir: &Path) -> Option<StlManifest> {
     let path = stls_dir.join(MANIFEST_FILENAME);
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return StlManifest::default();
-    };
-    toml::from_str(&text).unwrap_or_default()
+    let text = std::fs::read_to_string(&path).ok()?;
+    toml::from_str(&text).ok()
 }
 
 /// Serialize the manifest under [`MANIFEST_HEADER`].
@@ -294,6 +352,17 @@ mod tests {
             .into_iter()
             .find(|e| e.file == file)
             .map(|e| e.run)
+    }
+
+    /// Sorted file names in `dir`, so "a read left something behind" is
+    /// checkable by more than the one name I expected it to use.
+    fn listing(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .collect();
+        names.sort();
+        names
     }
 
     fn stale_names(p: &RunProvenance) -> Vec<String> {
@@ -542,6 +611,145 @@ mod tests {
         assert!(p.stale.is_empty(), "got: {:?}", stale_names(&p));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An `out/` with an `stls/` inside, the shape `folder_provenance` takes.
+    fn out_dir(label: &str, existing: &[&str]) -> PathBuf {
+        let out = std::env::temp_dir().join(format!(
+            "cf-cast-cli-manifest-test-{}-{label}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&out);
+        let stls = out.join(cf_cast::STLS_SUBDIR);
+        std::fs::create_dir_all(&stls).unwrap();
+        for f in existing {
+            std::fs::write(stls.join(f), b"solid\n").unwrap();
+        }
+        out
+    }
+
+    /// Reading the folder must not repair, renumber, or rewrite it.
+    ///
+    /// ⚠ The bytes, not just `latest_run` — a rewrite that happened to
+    /// reproduce the same run number would still have burned one, and would
+    /// still be a write where a read was promised.
+    #[test]
+    fn reading_the_folder_does_not_touch_it() {
+        let out = out_dir("read-only", &["plug_layer_0.stl", "platform.stl"]);
+        let stls = out.join(cf_cast::STLS_SUBDIR);
+        record_run(&stls, &[stls.join("plug_layer_0.stl")]).unwrap();
+
+        let before = std::fs::read(stls.join(MANIFEST_FILENAME)).unwrap();
+        let listing_before = listing(&stls);
+
+        let first = folder_provenance(&out).expect("the folder has a manifest");
+        let second = folder_provenance(&out).expect("and reading it again is fine");
+
+        assert_eq!(
+            std::fs::read(stls.join(MANIFEST_FILENAME)).unwrap(),
+            before,
+            "the manifest was rewritten by a read"
+        );
+        assert_eq!(listing(&stls), listing_before, "the folder gained a file");
+        assert_eq!(first, second, "two reads of one folder must agree");
+        assert_eq!(first.run, 1, "and must not advance the run");
+
+        let _ = std::fs::remove_dir_all(&out);
+    }
+
+    /// The read reports the same thing the cast reported, read back off disk
+    /// instead of returned from the run.
+    #[test]
+    fn folder_provenance_names_what_the_last_run_did_not_write() {
+        let out = out_dir("read-stale", &["plug_layer_0.stl", "platform.stl"]);
+        let stls = out.join(cf_cast::STLS_SUBDIR);
+        let from_run = record_run(&stls, &[stls.join("plug_layer_0.stl")]).unwrap();
+
+        let from_disk = folder_provenance(&out).expect("a manifest is there");
+
+        assert_eq!(
+            stale_names(&from_disk),
+            vec!["platform.stl"],
+            "the one the run did not write"
+        );
+        assert_eq!(from_disk, from_run, "the disk and the run agree");
+
+        let _ = std::fs::remove_dir_all(&out);
+    }
+
+    /// ⚠ A folder last cast by a build that did not stamp is of UNKNOWN
+    /// provenance. Reporting it clean would be the original bug, dressed up
+    /// as an answer.
+    #[test]
+    fn a_folder_with_no_manifest_is_unknown_not_clean() {
+        let out = out_dir("no-manifest", &["plug_layer_0.stl", "plug_layer_1.stl"]);
+
+        assert_eq!(folder_provenance(&out), None);
+
+        let _ = std::fs::remove_dir_all(&out);
+    }
+
+    /// As above for a manifest that cannot be parsed — and unlike
+    /// `record_run`, which rebuilds one, a read has nothing to say.
+    #[test]
+    fn an_unparseable_manifest_reads_as_unknown() {
+        let out = out_dir("read-corrupt", &["plug_layer_0.stl"]);
+        let stls = out.join(cf_cast::STLS_SUBDIR);
+        std::fs::write(stls.join(MANIFEST_FILENAME), b"} not toml {").unwrap();
+
+        assert_eq!(folder_provenance(&out), None);
+
+        let _ = std::fs::remove_dir_all(&out);
+    }
+
+    /// A part deleted outside the app is gone, not stale — the read
+    /// reconciles against the folder, it does not trust the manifest alone.
+    #[test]
+    fn a_part_deleted_outside_the_app_is_not_reported() {
+        let out = out_dir("read-deleted", &["plug_layer_0.stl", "funnel.stl"]);
+        let stls = out.join(cf_cast::STLS_SUBDIR);
+        record_run(&stls, &[stls.join("plug_layer_0.stl")]).unwrap();
+        assert_eq!(
+            stale_names(&folder_provenance(&out).unwrap()),
+            vec!["funnel.stl"],
+            "stale while it is there"
+        );
+
+        std::fs::remove_file(stls.join("funnel.stl")).unwrap();
+
+        assert!(
+            folder_provenance(&out).unwrap().stale.is_empty(),
+            "gone is not stale"
+        );
+
+        let _ = std::fs::remove_dir_all(&out);
+    }
+
+    /// ⚠⚠ `UNKNOWN_RUN` is 0, and 0 must never also mean "the latest run".
+    /// A manifest claiming `latest_run = 0` would otherwise make every
+    /// unknown-vintage part compare EQUAL to the latest run — reporting a
+    /// folder of entirely unknown parts as current, which is silence exactly
+    /// where this feature exists to speak.
+    #[test]
+    fn a_manifest_whose_latest_run_is_the_unknown_sentinel_is_unknown() {
+        let out = out_dir("run-zero", &["a.stl", "b.stl"]);
+        let stls = out.join(cf_cast::STLS_SUBDIR);
+        std::fs::write(
+            stls.join(MANIFEST_FILENAME),
+            format!(
+                "latest_run = {UNKNOWN_RUN}\n\n[[part]]\nfile = \"a.stl\"\nrun = \
+                 {UNKNOWN_RUN}\n\n[[part]]\nfile = \"b.stl\"\nrun = {UNKNOWN_RUN}\n"
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(
+            folder_provenance(&out),
+            None,
+            "a folder of entirely unknown parts is unknown, not current"
+        );
+
+        let _ = std::fs::remove_dir_all(&out);
     }
 
     /// A missing directory is a real error — the caller passed a path that

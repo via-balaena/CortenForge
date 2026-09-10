@@ -323,6 +323,11 @@ pub(crate) fn poll_molds_job(mut job: ResMut<MoldsJob>, mut studio: ResMut<Studi
         },
         Err(msg) => Err(format!("Mold generation failed: {msg}")),
     };
+    // ⚠ Whatever the outcome. A cast writes its STLs as it goes, so one that
+    // failed part-way has still changed the folder — and left it without the
+    // manifest update a successful run ends with. Keeping the previous answer
+    // there would be the stale reading this whole feature exists to stop.
+    studio.refresh_folder_provenance();
     studio.say(outcome);
 }
 
@@ -1190,6 +1195,111 @@ endsolid t
             .as_ref()
             .map(|run| run.shown_secs)
             .expect("a cast is in flight")
+    }
+
+    /// An output folder holding one part from the latest run and one from an
+    /// earlier one.
+    ///
+    /// ⚠ The manifest is written here as a LITERAL, not by the code that
+    /// writes manifests — an oracle built by the system under test agrees
+    /// with it by construction.
+    fn folder_with_a_stale_part(label: &str) -> std::path::PathBuf {
+        let out = std::env::temp_dir().join(format!(
+            "cf-studio-gui-stale-{}-{label}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&out);
+        let stls = out.join("stls");
+        std::fs::create_dir_all(&stls).expect("an output folder");
+        std::fs::write(stls.join("fresh.stl"), b"solid\n").expect("a fresh part");
+        std::fs::write(stls.join("old.stl"), b"solid\n").expect("an older part");
+        std::fs::write(
+            stls.join("manifest.toml"),
+            b"latest_run = 2\n\n[[part]]\nfile = \"fresh.stl\"\nrun = 2\n\n\
+              [[part]]\nfile = \"old.stl\"\nrun = 1\n",
+        )
+        .expect("a manifest");
+        out
+    }
+
+    /// ⚠ A cast that FAILED has still been writing STLs into the folder, and
+    /// has NOT reached the manifest update a successful run ends with. Keeping
+    /// the previous answer on screen there is the stale reading this feature
+    /// exists to stop, so the re-read does not hang off the success arm.
+    #[test]
+    fn a_failed_cast_still_re_reads_what_the_output_folder_holds() {
+        let out = folder_with_a_stale_part("failed");
+        let mut app = app_ready_for_molds();
+        // The project already has molds from an earlier cast — the folder the
+        // failed run was writing into.
+        let mut molds = some_molds("unused");
+        molds.out_dir = out.clone();
+        app.world_mut()
+            .resource_mut::<Studio>()
+            .project
+            .set_molds(molds)
+            .expect("in workflow order");
+
+        inject(
+            &mut app,
+            finished(Err("marching cubes gave up".to_string())),
+            Instant::now(),
+            0,
+        );
+        run_until_idle(&mut app, "the cast");
+
+        let studio = app.world().resource::<Studio>();
+        assert!(
+            matches!(studio.outcome(), Some(Err(text)) if text.contains("gave up")),
+            "the failure is still reported: {:?}",
+            studio.outcome()
+        );
+        let provenance = studio
+            .stale
+            .as_ref()
+            .expect("the folder was read despite the failure");
+        assert_eq!(
+            provenance
+                .stale
+                .iter()
+                .map(|e| e.file.as_str())
+                .collect::<Vec<_>>(),
+            vec!["old.stl"],
+        );
+
+        let _ = std::fs::remove_dir_all(&out);
+    }
+
+    /// ⚠⚠ The WIRING, which no mutation sweep reaches: `refresh_folder_
+    /// provenance` can be perfect and still never be called. A cast that
+    /// lands must leave the panel able to name what it did not regenerate.
+    #[test]
+    fn a_landed_cast_re_reads_what_the_output_folder_holds() {
+        let out = folder_with_a_stale_part("landed");
+        let mut app = app_ready_for_molds();
+        let mut molds = some_molds("unused");
+        molds.out_dir = out.clone();
+        inject(&mut app, finished(Ok(molds)), Instant::now(), 0);
+
+        run_until_idle(&mut app, "the cast");
+
+        let studio = app.world().resource::<Studio>();
+        let provenance = studio
+            .stale
+            .as_ref()
+            .expect("the folder has a manifest, so this is not unknown");
+        assert_eq!(provenance.run, 2, "the manifest's latest run");
+        assert_eq!(
+            provenance
+                .stale
+                .iter()
+                .map(|e| e.file.as_str())
+                .collect::<Vec<_>>(),
+            vec!["old.stl"],
+            "the part the latest run did not write",
+        );
+
+        let _ = std::fs::remove_dir_all(&out);
     }
 
     #[test]
