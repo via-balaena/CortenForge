@@ -180,5 +180,27 @@ fn the_manifest_separates_this_runs_output_from_what_was_already_there() {
         "the untouched cup half kept run 1:\n{after_second}"
     );
 
+    // ⚠ The two halves composed. `record_run` writing this file and
+    // `folder_provenance` reading it are each gated on their own, and until
+    // here the whole was an inference from that — through literal fixtures,
+    // never through a manifest a real cast produced.
+    let read_back = cortenforge::cf_cast_cli::folder_provenance(&first.out_dir)
+        .expect("the cast wrote a manifest this build can read");
+    assert_eq!(read_back.run, 2, "the run the file records");
+    assert_eq!(
+        read_back
+            .stale
+            .iter()
+            .map(|e| e.file.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "dowel.stl",
+            "mold_layer_0_piece_0.stl",
+            "mold_layer_0_piece_1.stl",
+            "platform.stl",
+        ],
+        "everything the selective run did not regenerate, read off disk"
+    );
+
     let _ = std::fs::remove_dir_all(&dir);
 }
