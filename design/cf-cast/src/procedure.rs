@@ -431,13 +431,6 @@ pub fn generate_procedure_markdown_v2_for_mode(
     // defaults it OFF, so the DEFAULT cast has no socket and no pyramid — yet
     // the checklist demanded both under "do NOT proceed to print".
     let has_plug_lock = !matches!(ribbon.plug_pins, crate::plug::PlugPinKind::None);
-    // ⚠ COST. Five SDF ray-marches per layer, paid on every sheet render. The
-    // `has_plug_lock` short-circuit keeps the default cast free — without a
-    // lock there is no pose to march from.
-    let has_column = has_plug_lock
-        && crate::spec::plug_pedestals(spec, ribbon)
-            .iter()
-            .any(Option::is_some);
     let has_pour_gate = !matches!(ribbon.pour_gate, PourGateKind::None);
     let has_flange = !matches!(ribbon.flange, FlangeKind::None);
     let has_gasket = matches!(ribbon.gasket, GasketKind::Mold(_));
@@ -449,7 +442,6 @@ pub fn generate_procedure_markdown_v2_for_mode(
         has_dowels,
         bolts_carved,
         has_plug_lock,
-        has_column,
         has_pour_gate,
         has_vent,
     };
@@ -1748,10 +1740,6 @@ struct SheetFeatures {
     has_dowels: bool,
     bolts_carved: bool,
     has_plug_lock: bool,
-    /// Does any plug piece carry the floor lock's COLUMN. Decided by
-    /// `spec::plug_pedestals`, never by a predicate over the config: it turns
-    /// on the plug solid, the mesh cell size AND the scan-mesh-direct branch.
-    has_column: bool,
     /// `PourGateKind::None` exports no `funnel.stl` and carves no vent, so
     /// every sentence naming one has to be gated the same way.
     has_pour_gate: bool,
@@ -1955,32 +1943,6 @@ const fn plug_piece_checks(has_plug_lock: bool) -> (&'static str, &'static str) 
     }
 }
 
-/// The cf-view bullet for the plug's floor-lock COLUMN.
-///
-/// ⚠ ONE sentence, true whether every plug piece grows a column or only some.
-/// Each layer's plug is a different solid — layer 0's is the inset scan,
-/// layer N's is `layers[N-1].body`, fatter and more likely to reach its lock
-/// unaided — so a mixed cast is the expected shape, and this section covers
-/// `plug_layer_*.stl` as a group. A sentence that distinguished the two cases
-/// would have to promise a column on pieces this function cannot name.
-///
-/// ⚠ It does not ask the bench to confirm a column is PRESENT. A column that
-/// failed to fuse never reaches the bench: `plug::ensure_plug_mating_features_attached`
-/// tracks `pedestal_top_m` and refuses the export. What the bench can see, and
-/// the cast cannot, is the seam.
-const fn plug_column_bullet(has_column: bool) -> &'static str {
-    if has_column {
-        "\n   - Where a plug piece's lock stands clear of the body, a square, \
-         untapered COLUMN bridges them — same width as the lock's top face and \
-         flush with it. A piece without one is not a fault; which pieces carry \
-         one depends on how far the inset lifted each plug. A visible seam or \
-         gap where a column meets either end IS a fault: that is the \
-         detached-lock failure, and the piece is scrap."
-    } else {
-        ""
-    }
-}
-
 /// The cf-view "no retired pin remnants" bullet.
 ///
 /// ⚠ With a plug lock, the bullet above it REQUIRES a truncated-pyramid socket
@@ -2071,7 +2033,6 @@ fn write_cfview_sanity_check_v2(
         has_dowels,
         bolts_carved,
         has_plug_lock,
-        has_column,
         has_pour_gate,
         has_vent: _,
     } = carved;
@@ -2117,11 +2078,10 @@ fn write_cfview_sanity_check_v2(
     );
     md.push('\n');
     let (lock_check, dome_check) = plug_piece_checks(has_plug_lock);
-    let column_check = plug_column_bullet(has_column);
     let _ = writeln!(
         md,
         "2. **Plug pieces** (`plug_layer_*.stl`):\n   \
-         {lock_check}{column_check}\n   \
+         {lock_check}\n   \
          - No T-bar / stem / cylindrical-shaft remnants (pre-S4 \
          geometry retired); no separate dome-pin (pre-S4 dome-pin \
          gone too).\n   \
@@ -4098,7 +4058,6 @@ mod tests {
                     has_dowels: false,
                     bolts_carved: false,
                     has_plug_lock,
-                    has_column: false,
                     has_pour_gate,
                     has_vent: false,
                 },
@@ -4156,7 +4115,6 @@ mod tests {
                 has_dowels: true,
                 bolts_carved: true,
                 has_plug_lock: false,
-                has_column: false,
                 has_pour_gate: true,
                 has_vent: true,
             },
@@ -4189,7 +4147,6 @@ mod tests {
                 has_dowels: true,
                 bolts_carved: true,
                 has_plug_lock: false,
-                has_column: false,
                 has_pour_gate: true,
                 has_vent: true,
             },
@@ -4253,7 +4210,6 @@ mod tests {
                 has_dowels: true,
                 bolts_carved: true,
                 has_plug_lock: false,
-                has_column: false,
                 has_pour_gate: true,
                 has_vent: true,
             },
@@ -4366,7 +4322,6 @@ mod tests {
                         has_dowels: false,
                         bolts_carved,
                         has_plug_lock: false,
-                        has_column: false,
                         has_pour_gate: true,
                         has_vent: true,
                     },
@@ -4457,7 +4412,6 @@ mod tests {
                     has_dowels: false,
                     bolts_carved,
                     has_plug_lock: false,
-                    has_column: false,
                     has_pour_gate: true,
                     has_vent: true,
                 },
@@ -4518,7 +4472,6 @@ mod tests {
                     has_dowels: false,
                     bolts_carved: true,
                     has_plug_lock: false,
-                    has_column: false,
                     has_pour_gate: true,
                     has_vent: true,
                 },
@@ -4569,7 +4522,6 @@ mod tests {
                     has_dowels: false,
                     bolts_carved: false,
                     has_plug_lock: false,
-                    has_column: false,
                     has_pour_gate: true,
                     has_vent: true,
                 },

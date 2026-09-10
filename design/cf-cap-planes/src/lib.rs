@@ -97,6 +97,19 @@ pub const CAP_FACE_PLANARITY_EPS_M: f64 = 1e-6;
 /// are perpendicular to the cap normal so `|dot| ≈ 0`).
 pub const CAP_FACE_NORMAL_DOT_MIN: f64 = 0.95;
 
+/// How far a vertex may sit from a cap plane and still count as ON it.
+///
+/// The cap's vertices are projected onto the plane before the fan is emitted,
+/// so the true value is ~0 and this is slack for the round trip through f32
+/// STL storage and any later vertex welding.
+///
+/// ★ MEASURED, and the point is the PLATEAU, not the number. On `base_mold`
+/// this strips 804 faces — the whole fan, exactly — at BOTH 0.5 mm and 1.0 mm,
+/// and 2412 (over-stripping) only once it reaches 2.0 mm. A criterion that
+/// gives the same answer across a 2x range of its own tolerance is reading a
+/// real gap in the geometry rather than a tuned edge.
+pub const CAP_FACE_VERTEX_DIST_M: f64 = 0.0008;
+
 /// Maximum face-centroid-to-cap-plane distance (meters) for cap-face
 /// classification.
 ///
@@ -331,29 +344,49 @@ pub fn dome_wall_only_mesh(cleaned_mesh: &IndexedMesh, cap_planes: &[CapPlane]) 
                 cleaned_mesh.vertices[face[1] as usize],
                 cleaned_mesh.vertices[face[2] as usize],
             ];
-            // Compute face normal once per triangle. Degenerate (zero-
-            // area) triangles can't be classified — keep them (SDF
-            // construction tolerates them; downstream hygiene passes can
-            // strip them later if needed).
             let e1 = v[1].coords - v[0].coords;
             let e2 = v[2].coords - v[0].coords;
             let face_normal_unnorm = e1.cross(&e2);
             let face_area2 = face_normal_unnorm.norm();
-            if face_area2 < 1e-18 {
-                return true;
-            }
-            let face_normal = face_normal_unnorm / face_area2;
             let face_centroid = (v[0].coords + v[1].coords + v[2].coords) / 3.0;
-            // Cap face iff ANY cap plane matches both conditions
-            // (normal aligned AND centroid near). Survives iff NO cap
-            // plane matches both.
+            // Cap face iff ANY cap plane matches EITHER test. Survives iff no
+            // plane matches either.
+            //
+            // ★★ TWO tests because the caps arrive two ways, and neither test
+            // covers both. `save.rs` projects the loop onto the plane and fans
+            // from a fresh centroid AFTER smoothing, so those vertices are ON
+            // the plane exactly; `auto_cap_open_boundaries` runs BEFORE
+            // Taubin smoothing, which then drifts its cap vertices off the
+            // plane by mm (see
+            // `dome_wall_only_mesh_strips_taubin_drifted_cap_face`).
+            //
+            // ⚠ The VERTEX test is the one that has to exist, and the normal
+            // test is why. Measured on `base_mold` 2026-09-10: its cap is an
+            // 804-face fan, mean tilt 1.5 deg — and TWO faces are
+            // near-degenerate slivers tilted 50 deg, whose normals mean
+            // nothing. The normal test kept them, they sat 1.00 mm from the
+            // floor centre, and the cavity rind then ate the floor: the plug
+            // shipped with its base 9.5 mm inside the cap plane instead of
+            // pinned to it. A sliver has no reliable normal; it does have
+            // vertices.
             !cap_planes.iter().any(|plane| {
-                let normal_aligned = face_normal.dot(&plane.normal).abs() > CAP_FACE_NORMAL_DOT_MIN;
-                let centroid_near = (face_centroid - plane.centroid.coords)
-                    .dot(&plane.normal)
-                    .abs()
-                    < CAP_FACE_CENTROID_DIST_M;
-                normal_aligned && centroid_near
+                let on_plane = v.iter().all(|p| {
+                    (p.coords - plane.centroid.coords).dot(&plane.normal).abs()
+                        < CAP_FACE_VERTEX_DIST_M
+                });
+                // Degenerate (zero-area) faces have no normal to test; the
+                // vertex test above is their only chance.
+                let by_normal = face_area2 >= 1e-18 && {
+                    let face_normal = face_normal_unnorm / face_area2;
+                    let normal_aligned =
+                        face_normal.dot(&plane.normal).abs() > CAP_FACE_NORMAL_DOT_MIN;
+                    let centroid_near = (face_centroid - plane.centroid.coords)
+                        .dot(&plane.normal)
+                        .abs()
+                        < CAP_FACE_CENTROID_DIST_M;
+                    normal_aligned && centroid_near
+                };
+                on_plane || by_normal
             })
         })
         .copied()
@@ -711,12 +744,77 @@ mod tests {
         }
     }
 
+    /// ★★★ A SLIVER cap face has no usable normal — strip it by its vertices.
+    ///
+    /// Measured on `~/scans/base_mold` 2026-09-10. Its cap is an 804-face
+    /// centroid fan, mean tilt 1.5 deg from the cap normal, and TWO faces are
+    /// long thin slivers: a sub-mm out-of-plane wobble at one vertex swings the
+    /// cross product tens of degrees, so the normal test kept them. They landed
+    /// 1.00 mm from the floor centre, `pinned_floor_shell`'s rind reached the
+    /// floor through them, and the shipped plug had its base 9.5 mm INSIDE the
+    /// cap plane instead of pinned to it — a visibly concave, ragged bottom on
+    /// a part whose cleaned scan is flat.
+    ///
+    /// The geometry below is that failure in miniature: a 10 mm x 1 um triangle
+    /// with one vertex 0.5 mm off the plane tilts ~27 deg, past the 18 deg the
+    /// normal test allows.
+    ///
+    /// ⚠ The second half is the positive control. A sliver that is genuinely
+    /// NOT on the cap plane must survive, or this test would pass on a rule
+    /// that strips every sliver in the mesh.
+    #[test]
+    fn dome_wall_only_mesh_strips_a_sliver_cap_face_the_normal_test_cannot_see() {
+        let cap = cap_plane_at(Point3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 0.0, -1.0));
+        let sliver_at = |z_off: f64| {
+            let verts = vec![
+                Point3::new(0.0, 0.0, z_off),
+                Point3::new(0.010, 0.0, z_off),
+                Point3::new(0.005, 1e-6, z_off + 0.0005),
+            ];
+            IndexedMesh {
+                vertices: verts,
+                faces: vec![[0, 1, 2]],
+            }
+        };
+
+        // Sanity: the fixture really does defeat the normal test, or the
+        // assertion below proves nothing.
+        let on_plane = sliver_at(0.0);
+        let e1 = on_plane.vertices[1].coords - on_plane.vertices[0].coords;
+        let e2 = on_plane.vertices[2].coords - on_plane.vertices[0].coords;
+        let tilt = (e1.cross(&e2).normalize().dot(&cap.normal)).abs();
+        assert!(
+            tilt < CAP_FACE_NORMAL_DOT_MIN,
+            "fixture no longer defeats the normal test: |dot| = {tilt}"
+        );
+
+        assert!(
+            dome_wall_only_mesh(&on_plane, std::slice::from_ref(&cap))
+                .faces
+                .is_empty(),
+            "a sliver whose vertices lie ON the cap plane is a cap face"
+        );
+        // POSITIVE CONTROL: the same sliver, well clear of the plane, is wall.
+        assert_eq!(
+            dome_wall_only_mesh(&sliver_at(0.020), &[cap]).faces.len(),
+            1,
+            "a sliver 20 mm off the cap plane must survive"
+        );
+    }
+
     #[test]
     fn dome_wall_only_mesh_strips_taubin_drifted_cap_face() {
         // Regression: cf-scan-prep's Taubin smoothing drifts cap-face
         // vertices off the cap plane by mm. Face-normal rule still
         // catches them.
-        let h = 0.5_f64;
+        // ⚠ NOT 0.5. At h = 0.5 the faces are 1 m squares, their cross product
+        // has norm exactly 1.0, and dividing by it is indistinguishable from
+        // multiplying — `cargo-mutants` swapped `/` for `*` in the normal
+        // normalization and every test stayed green. 0.25 makes the norm 0.25,
+        // so the two differ by 16x and this test sees it.
+        let h = 0.25_f64;
+        // Past `CAP_FACE_VERTEX_DIST_M`, so only the NORMAL test can strip this
+        // face — which is the point of the fixture.
         let drift = 1e-3_f64;
         let v = vec![
             Point3::new(-h, -h, -h),

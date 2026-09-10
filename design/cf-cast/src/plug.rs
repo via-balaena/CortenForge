@@ -156,14 +156,14 @@
 //! [`CastSpec`]: crate::CastSpec
 //! [`Solid::union`]: cf_design::Solid::union
 
-use cf_design::{Aabb, Solid};
+use cf_design::Solid;
 use nalgebra::{Point3, UnitVector3, Vector3};
 
 use mesh_repair::components::find_connected_components;
 use mesh_types::IndexedMesh;
 
 use crate::error::{CastError, CastTarget};
-use crate::mesh_csg::{LockPedestalParams, MatingTransform};
+use crate::mesh_csg::MatingTransform;
 use crate::prismatic_pin::{PrismaticPinParams, PrismaticPinPose, PrismaticPinSpec};
 use crate::ribbon::Ribbon;
 
@@ -513,281 +513,6 @@ pub fn build_cup_cap_trim_transform(ribbon: &Ribbon) -> Option<MatingTransform> 
     })
 }
 
-/// How far inside the plug's surface the pedestal's top corners must
-/// sit, in marching-cubes cells.
-///
-/// The column is unioned onto the MESHED plug, and marching cubes puts
-/// that mesh's surface within about a cell of the solid's. Ending the
-/// column where the SOLID says its material begins would therefore be a
-/// coin toss at the grid's resolution — the same sensitivity that moved
-/// the detachment threshold 6.0 / 7.0 / 8.0 mm at 3 / 1.5 / 1.0 mm
-/// cells on the cone fixture. One cell is that error.
-///
-/// ⚠ The corners carry most of the weight here, not this margin. A
-/// depth where all four are inside is a depth where the plug spans the
-/// column's diagonal — 7.9 mm for the default lock, several cells at
-/// every quality the wizard offers — so the mesher has certainly built
-/// something there. The margin is what stops the top face landing ON
-/// that surface.
-///
-/// ⇒ **A plug narrower than the column's diagonal plus two of these
-/// cannot hold a pedestal anywhere**, and the cast refuses rather than
-/// grow a column out through the side of one.
-const PEDESTAL_ENGAGEMENT_CELLS: f64 = 1.0;
-
-/// Floor on the sphere-marching step, in marching-cubes cells.
-///
-/// A ray running alongside a surface it never reaches would otherwise
-/// creep by the field's own vanishing value. The floor costs a slightly
-/// deeper answer, never a wrong one: every depth the march returns has
-/// been evaluated, not extrapolated.
-const PEDESTAL_MARCH_MIN_STEP_CELLS: f64 = 0.125;
-
-/// Ceiling on one march step, in marching-cubes cells.
-///
-/// ⚠⚠ Sphere-marching assumes the field is a DISTANCE BOUND, and on the canal
-/// path it is not. `canal::CanalFeatureSdf` evaluates `base_distance +
-/// inset_field`, so its gradient carries the ridge displacement's on top of the
-/// base's unit one, and a step of the field's own value can carry the cursor
-/// past real material. ⛔ `Solid::lipschitz_factor` cannot rescue this — it
-/// reports 1.0 for every `from_sdf` node, this one included.
-///
-/// One cell is the honest ceiling. Material thinner than the mesher's own grid
-/// does not survive meshing, so a march that never steps further than a cell
-/// cannot skip anything the EMITTED plug would have carried — which is the only
-/// plug either question is about.
-const PEDESTAL_MARCH_MAX_STEP_CELLS: f64 = 1.0;
-
-// The march clamps its step between these two, and `f64::clamp` PANICS when
-// its minimum exceeds its maximum. `build_plug_lock_pedestal_transform` refuses
-// a cell size that could invert them; this refuses an EDIT that would.
-const _: () = assert!(
-    PEDESTAL_MARCH_MIN_STEP_CELLS < PEDESTAL_MARCH_MAX_STEP_CELLS,
-    "the march's step floor must stay below its ceiling, or `f64::clamp` panics",
-);
-
-/// The rays the pedestal is decided on: the column's four footprint
-/// corners and its centre, marched along the lock's axis.
-///
-/// ⚠ Corners, not the axis alone. The column has to fuse across its
-/// whole cross-section, and a plug whose remaining material sits
-/// off-centre answers the axis question yes and the column's question
-/// no.
-struct PedestalMarch<'a> {
-    /// The plug this pedestal would be added to — the one solid in the
-    /// pair that `cavity_inset_m` actually moves.
-    plug: &'a Solid,
-    /// The lock's pose. The column is coaxial with it.
-    pose: &'a PrismaticPinPose,
-    /// Ray origins, as world offsets from `pose.center_m`.
-    rays: [Vector3<f64>; 5],
-    /// Smallest step the march will take (meters).
-    min_step_m: f64,
-    /// Largest step the march will take (meters).
-    max_step_m: f64,
-    /// Depth past which [`Self::depth_where_all_reach`] gives up (meters).
-    limit_m: f64,
-}
-
-impl PedestalMarch<'_> {
-    /// The shallowest depth at or past `start` where the plug's field is
-    /// at or below `target` on EVERY ray, or `None` by [`Self::limit_m`].
-    fn depth_where_all_reach(&self, target: f64, start: f64) -> Option<f64> {
-        self.march(target, start, self.limit_m, f64::NEG_INFINITY, f64::max)
-    }
-
-    /// The shallowest depth in `[start, end]` where the plug's field is
-    /// at or below `target` on ANY ray, or `None`.
-    fn depth_where_any_reaches(&self, target: f64, start: f64, end: f64) -> Option<f64> {
-        self.march(target, start, end, f64::INFINITY, f64::min)
-    }
-
-    /// Sphere-march one depth cursor until the `reduce`d field across
-    /// the rays is at or below `target`.
-    ///
-    /// ★ Why the step is safe either way it is reduced. The field is a
-    /// distance bound, so no ray can close a shortfall of `d` in less
-    /// than `d` of travel. Reduced by `max`, the step is the WORST ray's
-    /// shortfall and every ray needs at least that far; reduced by
-    /// `min`, it is the BEST ray's and no other ray can beat it. In both
-    /// the cursor lands on or before the shallowest depth that answers
-    /// the question.
-    ///
-    /// ⚠ The loop is bounded by a COUNT, not by the cursor. Every step
-    /// is at least `min_step_m`, so crossing `[start, end]` cannot take
-    /// more than that many — which is a termination proof rather than an
-    /// argument about a float that keeps growing.
-    fn march(
-        &self,
-        target: f64,
-        start: f64,
-        end: f64,
-        identity: f64,
-        reduce: fn(f64, f64) -> f64,
-    ) -> Option<f64> {
-        let axis = self.pose.axis_unit.into_inner();
-        let mut depth = start;
-        for _ in 0..=self.step_budget(start, end) {
-            if depth > end {
-                return None;
-            }
-            let field = self
-                .rays
-                .iter()
-                .map(|ray| {
-                    self.plug
-                        .evaluate(&(self.pose.center_m + ray + axis * depth))
-                })
-                .fold(identity, reduce);
-            if field <= target {
-                return Some(depth);
-            }
-            depth += (field - target).clamp(self.min_step_m, self.max_step_m);
-        }
-        None
-    }
-
-    /// The most steps of [`Self::min_step_m`] that fit in `[start, end]`.
-    ///
-    /// Saturates to zero on an empty or non-finite span — a march with
-    /// nowhere to go still evaluates its starting depth, which is the
-    /// `0..=` above.
-    // Both cast lints are answered by the guard above the cast: the sign is
-    // checked, and a float→int cast in Rust SATURATES rather than wrapping, so
-    // a span too large to count exhausts `usize` instead of truncating into a
-    // small budget. Either way the budget only ever bounds the loop — a short
-    // one ends the march, which is the refusing direction.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    fn step_budget(&self, start: f64, end: f64) -> usize {
-        let steps = ((end - start) / self.min_step_m).ceil();
-        if steps.is_finite() && steps > 0.0 {
-            steps as usize
-        } else {
-            0
-        }
-    }
-}
-
-/// How far the plug's bounding box reaches along the lock's axis, measured
-/// from the lock — the depth past which a march is looking at nothing.
-///
-/// ⚠ Not the box's diagonal. Once the cavity inset has lifted the plug clear
-/// of the cap plane the lock is ANCHORED OUTSIDE that box, so a bound measured
-/// within it stops the march short of the plug entirely: the cone fixture at
-/// 11 mm of inset put the box 16 mm up the axis and 25 mm across, and a march
-/// that gave up at 25 mm never reached the material waiting at 28.
-///
-/// `(centre − lock) · axis` plus the box's own support along the axis, which
-/// for an AABB is `Σ |axis_i| · half_extent_i`.
-fn far_side_of(bounds: &Aabb, pose: &PrismaticPinPose) -> f64 {
-    let axis = pose.axis_unit.into_inner();
-    let to_centre = (bounds.center() - pose.center_m).dot(&axis);
-    let support = bounds
-        .half_extents()
-        .iter()
-        .zip(axis.iter())
-        .map(|(half, component)| half * component.abs())
-        .sum::<f64>();
-    to_centre + support
-}
-
-/// Build the plug-side PEDESTAL: the square column that carries the
-/// floor lock down to the cap plane once the cavity inset has lifted
-/// the plug's base clear of it.
-///
-/// `None` when the ribbon carries no lock, when the lock reaches the
-/// plug on its own, or when no reachable plug material would hold a
-/// column — in the last case the cast still refuses through
-/// [`ensure_plug_mating_features_attached`], which stays the backstop.
-///
-/// ★★★ THE ARGUMENT WIRE, CLOSED. `add_plug_pins(plug, ribbon)`
-/// received the plug and never read it: both transforms came off the
-/// ribbon, which is the scan's centerline and does not move with
-/// `cavity_inset_m`, while the plug it has to hold is
-/// `scan.offset(-inset)` and does. This is the function that reads it.
-///
-/// ⚠ The lock's own frustum is untouched, and so is the socket cut for
-/// it in the cup floor. Both come from `build_plug_lock_pose` — one
-/// pose, two sides — so moving the plug-side pyramid alone would
-/// un-mate it from a socket that stayed put. The column is a SEPARATE
-/// union, living on the plug's side of the cap plane where the cup has
-/// nothing to match.
-///
-/// # What decides the reach
-///
-/// - **It exists only when the lock is orphaned**: no plug material
-///   anywhere in the lock's own axial span. Every inset that casts
-///   today takes the other branch, including the 5 mm that has been
-///   physically poured, so their geometry does not move.
-/// - **It ends** at the shallowest depth where the plug's field is
-///   `PEDESTAL_ENGAGEMENT_CELLS` cells inside on all four footprint
-///   corners and on the axis. That is the depth at which the plug is at
-///   least as wide as the column, which is what makes the union survive
-///   the mesher rather than end in a void the grid rounded away.
-#[must_use]
-pub fn build_plug_lock_pedestal_transform(
-    plug: &Solid,
-    ribbon: &Ribbon,
-    mesh_cell_size_m: f64,
-) -> Option<MatingTransform> {
-    // ⚠ A cell size that is not a length sizes no engagement — and worse,
-    // `f64::clamp` PANICS on the bounds a negative one produces, because
-    // `PEDESTAL_MARCH_MIN_STEP_CELLS * cell` is then GREATER than
-    // `PEDESTAL_MARCH_MAX_STEP_CELLS * cell`. This crate answers with values.
-    if !(mesh_cell_size_m.is_finite() && mesh_cell_size_m > 0.0) {
-        return None;
-    }
-    let (spec, pose) = build_plug_lock_pose(ribbon)?;
-    let half_length_m = spec.lock_spec.pin_half_length_m;
-    let half_extents_m = spec.lock_spec.pin_tip_half_extents_m;
-    let lateral = pose.lateral_unit.into_inner() * half_extents_m.x;
-    let binormal = pose.axis_unit.cross(&pose.lateral_unit) * half_extents_m.y;
-    let march = PedestalMarch {
-        plug,
-        pose: &pose,
-        rays: [
-            Vector3::zeros(),
-            lateral + binormal,
-            lateral - binormal,
-            -lateral + binormal,
-            -lateral - binormal,
-        ],
-        min_step_m: PEDESTAL_MARCH_MIN_STEP_CELLS * mesh_cell_size_m,
-        max_step_m: PEDESTAL_MARCH_MAX_STEP_CELLS * mesh_cell_size_m,
-        limit_m: far_side_of(&plug.bounds()?, &pose),
-    };
-    // ⚠⚠ Asked over the COLUMN's footprint, NOT the lock's wider base, and
-    // that is MEASURED rather than reasoned. The frustum is
-    // `pin_base_half_extents_m` across, so asking over the lock's own width
-    // looks more faithful — it is not. On `~/scans/base_mold` at 7 mm of inset
-    // it turns a cast into a refusal: the extra width finds the thin tapering
-    // rind at the lock's periphery, calls the lock fused, and withholds the
-    // column the mesher then proves it needed.
-    //
-    // ⇒ The question is not whether the frustum meets the plug's FIELD. It is
-    // whether it will meet the plug the mesher EMITS, and material near the
-    // axis is the part that reliably survives meshing.
-    if march
-        .depth_where_any_reaches(0.0, -half_length_m, half_length_m)
-        .is_some()
-    {
-        return None;
-    }
-    let top_m = march
-        .depth_where_all_reach(-PEDESTAL_ENGAGEMENT_CELLS * mesh_cell_size_m, half_length_m)?;
-    Some(MatingTransform::UnionLockPedestal {
-        params: LockPedestalParams {
-            pose,
-            half_extents_m,
-            // From the cap plane, not from the lock's tip: everything
-            // below the tip is inside the frustum already, and starting
-            // there is what makes the two overlap whatever the mesher
-            // made of the plug.
-            axial_span_m: (0.0, top_m),
-        },
-    })
-}
-
 /// Pair a user-supplied plug [`Solid`] with the plug-floor-lock.
 ///
 /// Returns `(plug_unchanged, transforms)` for downstream
@@ -800,14 +525,8 @@ pub fn build_plug_lock_pedestal_transform(
 /// by [`crate::apply_mating_transforms`]. For [`PlugPinKind::None`]
 /// the transforms Vec is empty.
 ///
-/// `mesh_cell_size_m` is the cell the returned transforms will be
-/// applied at, and is what sizes the floor lock's pedestal — see
-/// [`build_plug_lock_pedestal_transform`]. Pass `None` when the
-/// emitted mesh does NOT come from `plug`, which is the
-/// scan-mesh-direct path (`CastSpec::scan_mesh_for_plug_layer_0`,
-/// zero inset): there `plug` describes nothing about the mesh, so no
-/// pedestal may be derived from it. ⚠ The plug still passes through
-/// unchanged on both — this reads it, it does not compose into it.
+/// ⚠ `plug` is READ, never composed into: it passes through unchanged and the
+/// lock is unioned onto the emitted mesh afterwards.
 ///
 /// [`CastSpec::export_molds_v2`] calls this internally for each
 /// per-layer plug (derived from `spec.plug` for layer 0 and
@@ -820,11 +539,7 @@ pub fn build_plug_lock_pedestal_transform(
 /// [`Ribbon::with_plug_pins`]: crate::ribbon::Ribbon::with_plug_pins
 /// [`CastSpec::export_molds_v2`]: crate::CastSpec::export_molds_v2
 #[must_use]
-pub fn add_plug_pins(
-    plug: Solid,
-    ribbon: &Ribbon,
-    mesh_cell_size_m: Option<f64>,
-) -> (Solid, Vec<MatingTransform>) {
+pub fn add_plug_pins(plug: Solid, ribbon: &Ribbon) -> (Solid, Vec<MatingTransform>) {
     // **Cap-plane trim RE-ENABLED 2026-05-26 (§Q-4 S1 probe).** The
     // 2026-05-24 disabling here was caused by a face-coincident
     // trim plane (recon-4 (P) §F-2 WELDED-TO-BULK paradigm-boundary
@@ -847,12 +562,6 @@ pub fn add_plug_pins(
     let mut transforms: Vec<MatingTransform> = Vec::new();
     transforms.extend(build_plug_cap_trim_transform(ribbon));
     transforms.extend(build_plug_lock_transform(ribbon));
-    // After the lock, so the column unions onto a pyramid that is
-    // already there.
-    transforms
-        .extend(mesh_cell_size_m.and_then(|cell_size_m| {
-            build_plug_lock_pedestal_transform(&plug, ribbon, cell_size_m)
-        }));
     (plug, transforms)
 }
 
@@ -919,13 +628,6 @@ pub fn ensure_plug_mating_features_attached(
     }) else {
         return Ok(());
     };
-    // A pedestal is part of the same feature: it is unioned onto the lock, so
-    // an assembly that comes loose comes loose as one piece and reaches
-    // further up the axis than the frustum does.
-    let pedestal_top_m = transforms.iter().find_map(|t| match t {
-        MatingTransform::UnionLockPedestal { params } => Some(params.axial_span_m.1),
-        _ => None,
-    });
     let analysis = find_connected_components(mesh);
     if analysis.component_count <= 1 {
         return Ok(());
@@ -937,7 +639,7 @@ pub fn ensure_plug_mating_features_attached(
         .components
         .iter()
         .skip(1)
-        .filter(|component| lock_owns_component(mesh, component, lock, pedestal_top_m))
+        .filter(|component| lock_owns_component(mesh, component, lock))
         .max_by_key(|component| component.len())
     else {
         return Ok(());
@@ -973,29 +675,12 @@ const LOCK_IDENTITY_SLACK_M: f64 = 1.0e-5;
 /// cross product), so it is exact under any pin rotation. EVERY vertex, not
 /// any: a sliver that merely overlaps the lock's box is not the lock, and a
 /// detached lock is wholly inside its own extents by construction.
-///
-/// ⚠ `pedestal_top_m` is what keeps this honest once a pedestal exists. The
-/// column is unioned onto the lock, so the two come loose together and the
-/// assembly reaches `pedestal_top_m` up the axis instead of the frustum's
-/// `half_length_m`. Measured against the frustum alone, that assembly is NOT
-/// the lock — and the refusal that is this arc's whole point would go quiet
-/// exactly when the fix for it failed.
-fn lock_owns_component(
-    mesh: &IndexedMesh,
-    component: &[u32],
-    lock: &PrismaticPinParams,
-    pedestal_top_m: Option<f64>,
-) -> bool {
+fn lock_owns_component(mesh: &IndexedMesh, component: &[u32], lock: &PrismaticPinParams) -> bool {
     let binormal = lock.pose.axis_unit.cross(&lock.pose.lateral_unit);
     let lateral_max = lock.base_half_extents_m.x + LOCK_IDENTITY_SLACK_M;
     let binormal_max = lock.base_half_extents_m.y + LOCK_IDENTITY_SLACK_M;
-    // Asymmetric once a pedestal exists: the column grows off the lock's TIP
-    // end only, never past its base into the cup floor.
     let axial_min = -lock.half_length_m - LOCK_IDENTITY_SLACK_M;
-    let axial_max = pedestal_top_m
-        .unwrap_or(lock.half_length_m)
-        .max(lock.half_length_m)
-        + LOCK_IDENTITY_SLACK_M;
+    let axial_max = lock.half_length_m + LOCK_IDENTITY_SLACK_M;
     component.iter().all(|&face| {
         mesh.faces[face as usize].iter().all(|&vertex| {
             // ⚠ The mesh is in MILLIMETRES (`solid_to_mm_mesh_with_skin`) and
@@ -1028,7 +713,6 @@ mod tests {
     use crate::prismatic_pin::build_prismatic_pin_sdf;
     use crate::ribbon::{Ribbon, SplitNormal};
     use approx::assert_abs_diff_eq;
-    use cf_design::Sdf;
     use nalgebra::Point3;
 
     /// Test-only SDF-side shim — re-derives the plug-lock pin SDF
@@ -1195,7 +879,7 @@ mod tests {
         let split = SplitNormal::new(Vector3::new(1.0, 0.0, 0.0)).unwrap();
         let ribbon = Ribbon::new(centerline, split).unwrap();
         let plug = Solid::capsule(0.005, 0.020);
-        let (returned_plug, transforms) = add_plug_pins(plug.clone(), &ribbon, None);
+        let (returned_plug, transforms) = add_plug_pins(plug.clone(), &ribbon);
         for q in [
             Point3::new(0.0, 0.0, 0.0),
             Point3::new(0.010, 0.0, 0.0),
@@ -1332,7 +1016,7 @@ mod tests {
     fn add_plug_pins_axial_unions_pyramid_into_plug() {
         let ribbon = iter1_like_ribbon();
         let plug = Solid::capsule(0.005, 0.020);
-        let (returned_plug, transforms) = add_plug_pins(plug.clone(), &ribbon, None);
+        let (returned_plug, transforms) = add_plug_pins(plug.clone(), &ribbon);
 
         // Returned plug Solid is the BARE plug — lock geometry no
         // longer composed into it pre-MC.
@@ -1404,219 +1088,6 @@ mod tests {
         assert!(returned_plug.evaluate(&probe_outside) > 0.0);
     }
 
-    /// The cell size the pedestal tests ask at, in meters.
-    ///
-    /// 1 mm so the engagement margin ([`PEDESTAL_ENGAGEMENT_CELLS`] cells) is
-    /// 1 mm, which keeps the depths below whole millimetres and hand-checkable.
-    const PEDESTAL_TEST_CELL_M: f64 = 0.001;
-
-    /// A 40 mm square plug whose cap-plane end is the plane `base_z_m`.
-    ///
-    /// ⚠ A BOX, and not for tidiness. Its field is exact and separable, so the
-    /// depth the march is supposed to find can be WRITTEN DOWN — `base_z_m`
-    /// plus one engagement cell — instead of read back off the function under
-    /// test. It is also 40 mm across against the column's 7.9 mm diagonal, so
-    /// the answer is set by the base plane alone and not by the sides.
-    fn box_plug(base_z_m: f64) -> Solid {
-        Solid::cuboid(Vector3::new(0.020, 0.020, 0.040)).translate(Vector3::new(
-            0.0,
-            0.0,
-            base_z_m + 0.040,
-        ))
-    }
-
-    /// The pedestal among some transforms, or `None`.
-    fn pedestal_of(transforms: &[MatingTransform]) -> Option<&LockPedestalParams> {
-        transforms.iter().find_map(|t| match t {
-            MatingTransform::UnionLockPedestal { params } => Some(params),
-            _ => None,
-        })
-    }
-
-    /// ★★★ THE CAPABILITY. A plug the cavity inset has lifted clear of its
-    /// floor lock gets a column that carries the lock back down to the cap
-    /// plane — instead of the cast refusing the inset.
-    ///
-    /// The fixture puts the plug's base at z = -0.040 while the lock's cap
-    /// plane is at z = -0.054 and its tip reaches only -0.050. So the plug is
-    /// 10 mm clear of the lock, and one 1 mm engagement cell inside the plug
-    /// is z = -0.039 — **15 mm of column**, measured from the cap plane.
-    #[test]
-    fn a_plug_clear_of_its_lock_gets_a_column_from_the_cap_plane_into_it() {
-        let transforms = add_plug_pins(
-            box_plug(-0.040),
-            &iter1_like_ribbon(),
-            Some(PEDESTAL_TEST_CELL_M),
-        )
-        .1;
-        assert_eq!(
-            transforms.len(),
-            3,
-            "cap trim, lock, then the column that reaches it; got {transforms:#?}",
-        );
-        let pedestal = pedestal_of(&transforms).expect("a plug clear of its lock gets a column");
-        assert_eq!(
-            pedestal.axial_span_m.0, 0.0,
-            "the column starts at the CAP PLANE, so the plug seats on the cup \
-             floor through it — everything below the lock's tip is inside the \
-             frustum already and is there for the overlap",
-        );
-        // ⚠ One minimum march step of slack, not a tolerance: the march lands
-        // ON -0.039 when the field arithmetic is exact and one floor-step past
-        // it when rounding leaves it a hair short. Both are correct; anything
-        // beyond is the march overshooting.
-        let min_step_m = PEDESTAL_MARCH_MIN_STEP_CELLS * PEDESTAL_TEST_CELL_M;
-        assert!(
-            (0.015..=0.015 + min_step_m).contains(&pedestal.axial_span_m.1),
-            "the column ends one engagement cell inside the plug's base — \
-             z = -0.039 against a cap plane at z = -0.054 is 15 mm — got {} mm",
-            pedestal.axial_span_m.1 * 1e3,
-        );
-        assert_eq!(
-            pedestal.half_extents_m,
-            PlugPinSpec::iter1().lock_spec.pin_tip_half_extents_m,
-            "the column continues the lock's TIP face, flush",
-        );
-    }
-
-    /// ⚠⚠ THE GUARD ON EVERY CONFIGURATION THAT ALREADY CASTS, and on the one
-    /// that has been physically poured. A plug the lock reaches on its own
-    /// gets NO column: the geometry those casts emit does not move.
-    ///
-    /// Same fixture, dropped so the lock's span (z = -0.058 to -0.050) is
-    /// buried in plug material.
-    #[test]
-    fn a_plug_its_lock_already_reaches_gets_no_column() {
-        let transforms = add_plug_pins(
-            box_plug(-0.070),
-            &iter1_like_ribbon(),
-            Some(PEDESTAL_TEST_CELL_M),
-        )
-        .1;
-        assert!(
-            pedestal_of(&transforms).is_none(),
-            "the lock is inside the plug here, so there is nothing to bridge; \
-             got {transforms:#?}",
-        );
-        assert_eq!(transforms.len(), 2, "cap trim and lock, as before");
-    }
-
-    /// ⚠ THE SCOPE BOUND. A plug too narrow to contain the column gets none,
-    /// and the cast goes on refusing the inset rather than growing a column
-    /// out through the side of the part.
-    ///
-    /// ⚠ The width that matters is the column's DIAGONAL, not its side: the
-    /// march asks about the footprint's corners, at 2.8 * sqrt(2) = 3.96 mm
-    /// from the axis. This capsule carries 3.5 mm, so no cell size lets it in
-    /// — measured 2026-09-09, the 5 mm-radius capsule the tests above use
-    /// clears the corners by 1.04 mm and DOES take a column at 0.5 mm cells,
-    /// which is what this fixture had to be narrowed past.
-    #[test]
-    fn a_plug_too_narrow_to_hold_the_column_gets_none() {
-        let transforms = add_plug_pins(
-            Solid::capsule(0.0035, 0.020),
-            &iter1_like_ribbon(),
-            Some(0.0005),
-        )
-        .1;
-        assert!(
-            pedestal_of(&transforms).is_none(),
-            "a column wider than the plug is not an answer; got {transforms:#?}",
-        );
-    }
-
-    /// ★★★ WHY CORNERS, and not the axis alone — and why all FOUR of them.
-    /// The column has to fuse across its whole cross-section, so a plug that
-    /// fails to cover any ONE corner cannot hold it.
-    ///
-    /// ⚠ Enumerated, not sampled. `cargo-mutants` permuted the four corner
-    /// rays freely and nothing noticed: every other fixture here is symmetric
-    /// about the lock's axis, so the corners always agreed and any one stood
-    /// for all four. A single flip DUPLICATES one corner and DROPS another, so
-    /// only a fixture that turns on the dropped corner can see it — which
-    /// means one fixture per corner, not one clever fixture.
-    ///
-    /// Each round notches the plug at exactly one corner, leaving the axis and
-    /// the other three in material. The notch is 4 mm across against a 1 mm
-    /// engagement, so the corners it does not touch stay well inside.
-    #[test]
-    fn every_corner_of_the_columns_footprint_is_consulted() {
-        let ribbon = iter1_like_ribbon();
-        let tip = PlugPinSpec::iter1().lock_spec.pin_tip_half_extents_m;
-        assert!(
-            build_plug_lock_pedestal_transform(&box_plug(-0.040), &ribbon, PEDESTAL_TEST_CELL_M)
-                .is_some(),
-            "the control: unnotched, the plug covers every corner and gets a column",
-        );
-        for (sx, sy) in [(1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)] {
-            let notched = box_plug(-0.040).subtract(
-                Solid::cuboid(Vector3::new(0.002, 0.002, 0.060)).translate(Vector3::new(
-                    sx * tip.x,
-                    sy * tip.y,
-                    0.0,
-                )),
-            );
-            assert!(
-                build_plug_lock_pedestal_transform(&notched, &ribbon, PEDESTAL_TEST_CELL_M)
-                    .is_none(),
-                "a plug notched at the ({sx}, {sy}) corner cannot hold the column, \
-                 however much material the other three sit in",
-            );
-        }
-    }
-
-    /// ★★★ THE STEP CEILING, and the field that needs it.
-    ///
-    /// ⚠ Sphere-marching is only safe while the field is a distance BOUND.
-    /// The canal path's is not — `CanalFeatureSdf` is `base_distance +
-    /// inset_field` — so a step of the field's own value can clear real
-    /// material. This fixture is that shape, exaggerated: a field reporting
-    /// THREE TIMES the true distance, over a plug carrying a thin slab inside
-    /// the lock's span and its bulk far above.
-    ///
-    /// Uncapped, one step from the bottom of the lock reads 15 mm and lands
-    /// past the top of it: the slab is never seen, the lock is called orphaned
-    /// and a column is grown through a plug the lock is already sitting in.
-    /// Capped at a cell, the march walks onto the slab and finds it.
-    ///
-    /// ⚠ The slab is 2 mm thick against a 1 mm cell — thinner than the grid
-    /// and the mesher would drop it anyway, which is exactly why the ceiling
-    /// is a cell and not something smaller.
-    #[test]
-    fn a_field_that_overstates_distance_cannot_step_over_the_lock() {
-        /// Reports three times the distance its inner solid does — the canal
-        /// field's shape, with the exaggeration turned up.
-        struct Overstated(Solid);
-        impl Sdf for Overstated {
-            fn eval(&self, p: Point3<f64>) -> f64 {
-                self.0.evaluate(&p) * 3.0
-            }
-            fn grad(&self, p: Point3<f64>) -> Vector3<f64> {
-                self.0.gradient(&p)
-            }
-        }
-
-        // A slab across depths 1-3 mm (inside the lock's ±4 mm), plus the bulk
-        // from 14 mm up, so a march that misses the slab still finds something
-        // to stand a column on — and emits one.
-        let slab = Solid::cuboid(Vector3::new(0.020, 0.020, 0.001))
-            .translate(Vector3::new(0.0, 0.0, -0.052));
-        let honest = slab.union(box_plug(-0.040));
-        let bounds = honest.bounds().expect("a bounded plug");
-        let overstated = Solid::from_sdf(Overstated(honest.clone()), bounds);
-        let ribbon = iter1_like_ribbon();
-        assert!(
-            build_plug_lock_pedestal_transform(&honest, &ribbon, PEDESTAL_TEST_CELL_M).is_none(),
-            "the control: the lock is sitting in the slab, so there is nothing to bridge",
-        );
-        assert!(
-            build_plug_lock_pedestal_transform(&overstated, &ribbon, PEDESTAL_TEST_CELL_M)
-                .is_none(),
-            "and an overstated field must not step over that slab and decide \
-             the lock is orphaned",
-        );
-    }
-
     /// ★ THE TRIGGER'S UPPER BOUND: material just PAST the lock's tip is not
     /// material the lock reaches.
     ///
@@ -1628,104 +1099,6 @@ mod tests {
     ///
     /// This plug's base sits at 5 mm where the lock's tip reaches 4, so the
     /// lock is orphaned by 1 mm and a column is due. A march that overruns its
-    /// end finds the plug, calls the lock fused, and withholds it.
-    #[test]
-    fn material_one_millimetre_past_the_locks_tip_is_not_reached() {
-        // ⚠⚠ 0.3 mm, NOT `PEDESTAL_TEST_CELL_M`. The step ceiling is one cell,
-        // so a 1 mm cell walks the lock's 8 mm span in exact 1 mm strides and
-        // lands ON the end — which is the floating-point luck that let a
-        // `depth == end` bound pass for a `depth > end` one. 0.3 mm does not
-        // divide 8, so the cursor OVERSHOOTS the end and only a bound that
-        // stops it stops the march.
-        let transforms = add_plug_pins(box_plug(-0.049), &iter1_like_ribbon(), Some(0.000_3)).1;
-        let pedestal = pedestal_of(&transforms)
-            .expect("a plug clear of the lock by 1 mm is still clear of it");
-        assert_eq!(
-            pedestal.axial_span_m.0, 0.0,
-            "and the column still starts at the cap plane",
-        );
-    }
-
-    /// ⚠ PUBLIC API, on a crate whose posture is errors-as-values.
-    ///
-    /// A cell size that is not a positive length sizes no engagement, and a
-    /// NEGATIVE one inverts the march's step bounds — `f64::clamp` panics when
-    /// its minimum exceeds its maximum, which `0.125 * cell` does against
-    /// `1.0 * cell` the moment `cell` goes negative. Measured 2026-09-09: it
-    /// panicked before the guard this pins.
-    #[test]
-    fn a_cell_size_that_is_not_a_length_yields_no_column() {
-        let plug = box_plug(-0.040);
-        let ribbon = iter1_like_ribbon();
-        for cell_m in [-0.001, 0.0, f64::NAN, f64::INFINITY] {
-            assert!(
-                build_plug_lock_pedestal_transform(&plug, &ribbon, cell_m).is_none(),
-                "a cell size of {cell_m} is not a length: no column, and no panic",
-            );
-        }
-    }
-
-    /// The march's loop bound, pinned directly.
-    ///
-    /// ⚠ Nothing else can. Every fixture above converges in one or two
-    /// sphere-traced steps, so `cargo-mutants` replaced the whole budget with
-    /// `1` and all of them still passed.
-    ///
-    /// ⚠⚠ The last row is the load-bearing one. `min_step_m` is a multiple of
-    /// the mesh cell size, so a zero cell divides to infinity — and if the
-    /// guard let that through, `inf as usize` SATURATES rather than wrapping
-    /// and the march would run `usize::MAX` times at five field evaluations
-    /// apiece.
-    #[test]
-    fn the_march_budget_counts_steps_and_yields_none_where_it_cannot() {
-        let plug = box_plug(-0.040);
-        let ribbon = iter1_like_ribbon();
-        let (_, pose) = build_plug_lock_pose(&ribbon).expect("Axial kind");
-        let march = |min_step_m| PedestalMarch {
-            plug: &plug,
-            pose: &pose,
-            rays: [Vector3::zeros(); 5],
-            min_step_m,
-            max_step_m: 1.0,
-            limit_m: 1.0,
-        };
-        assert_eq!(
-            march(0.000_125).step_budget(0.0, 0.010),
-            80,
-            "10 mm at 0.125 mm a step is 80 steps",
-        );
-        assert_eq!(
-            march(0.000_125).step_budget(0.0, 0.010_001),
-            81,
-            "and a hair over 10 mm needs one more, not 80",
-        );
-        assert_eq!(
-            march(0.000_125).step_budget(0.010, 0.0),
-            0,
-            "a span that runs backwards buys no steps",
-        );
-        assert_eq!(
-            march(0.0).step_budget(0.0, 0.010),
-            0,
-            "nor does a zero step, whose division is not finite",
-        );
-    }
-
-    /// ⚠ The scan-mesh-direct contract: no cell size, no column.
-    ///
-    /// That path meshes the cleaned scan rather than this `Solid`, so a
-    /// transform sized from this one would describe a body that was never
-    /// meshed. Same fixture as the capability test above, which DOES get a
-    /// column — so this pins the withholding, not the geometry.
-    #[test]
-    fn a_plug_that_did_not_produce_the_mesh_gets_no_column() {
-        let transforms = add_plug_pins(box_plug(-0.040), &iter1_like_ribbon(), None).1;
-        assert!(
-            pedestal_of(&transforms).is_none(),
-            "`None` withholds the pedestal; got {transforms:#?}",
-        );
-    }
-
     /// §G-10 #1 bit-precise fit invariant at the spec layer: lock
     /// pin extents differ from socket extents by exactly
     /// `clearance / 2` per axis within machine epsilon. SDF-side
@@ -2255,7 +1628,7 @@ mod tests {
     /// The plug-lock transforms an Axial ribbon actually produces — the same
     /// pair `add_plug_pins` hands the mesh stage.
     fn axial_transforms() -> Vec<MatingTransform> {
-        add_plug_pins(Solid::capsule(0.005, 0.020), &iter1_like_ribbon(), None).1
+        add_plug_pins(Solid::capsule(0.005, 0.020), &iter1_like_ribbon()).1
     }
 
     /// ⚠ THE SCOPE BOUND, and the reason this is not just "plugs are one
@@ -2268,7 +1641,7 @@ mod tests {
         let centerline = vec![Point3::new(0.0, 0.0, 0.073), Point3::new(0.0, 0.0, -0.054)];
         let split = SplitNormal::new(Vector3::new(1.0, 0.0, 0.0)).unwrap();
         let no_pins = Ribbon::new(centerline, split).unwrap();
-        let transforms = add_plug_pins(Solid::capsule(0.005, 0.020), &no_pins, None).1;
+        let transforms = add_plug_pins(Solid::capsule(0.005, 0.020), &no_pins).1;
         assert!(
             transforms.is_empty(),
             "a ribbon without plug pins places no lock; got {transforms:#?}"
@@ -2314,7 +1687,7 @@ mod tests {
             build_plug_lock_pose(&collapsed).is_none(),
             "a collapsed lateral reference must drop the lock, not skew it"
         );
-        let transforms = add_plug_pins(Solid::capsule(0.005, 0.020), &collapsed, None).1;
+        let transforms = add_plug_pins(Solid::capsule(0.005, 0.020), &collapsed).1;
         assert!(
             !transforms
                 .iter()
@@ -2451,10 +1824,9 @@ mod tests {
     /// fits an inflated bound and misses a deflated one.
     #[test]
     fn a_lock_sitting_exactly_on_its_own_boundary_is_still_the_lock() {
-        // ⚠ BOTH axial ends. The axial test used to be one `.abs()` and one
-        // bound; a pedestal made it asymmetric (`[-half_length, top]`), so the
-        // base end now has a bound of its own — and `cargo-mutants` flipped
-        // that one's slack freely while this test only ever sat at the tip.
+        // ⚠ BOTH axial ends. Each has a bound of its own, and `cargo-mutants`
+        // flipped the base end's slack freely while this test only ever sat at
+        // the tip.
         for axial_sign in [1.0, -1.0] {
             let mesh = mesh_of_at(&[(7, far_from_the_lock()), (3, lock_corner_mm(axial_sign))]);
             assert_eq!(
@@ -2482,73 +1854,45 @@ mod tests {
         }
     }
 
-    /// The transforms a plug clear of its lock produces — lock AND column.
-    fn axial_transforms_with_pedestal() -> Vec<MatingTransform> {
-        add_plug_pins(
-            box_plug(-0.040),
-            &iter1_like_ribbon(),
-            Some(PEDESTAL_TEST_CELL_M),
-        )
-        .1
-    }
-
-    /// A point on the lock's axis `depth_m` past the cap plane, in mm.
-    fn on_lock_axis_mm(depth_m: f64) -> Point3<f64> {
-        let lock = axial_lock();
-        ((lock.pose.center_m.coords + lock.pose.axis_unit.scale(depth_m))
-            * crate::mesher::METERS_TO_MM)
-            .into()
-    }
-
-    /// ★★★ THE REFUSAL SURVIVES ITS OWN FIX. A lock that came loose WITH its
-    /// column is still a detached lock, and still refused.
+    /// ★★★ And a piece JUST BEYOND either axial end is not the lock.
     ///
-    /// ⚠ Why this needs saying. The column is unioned onto the lock, so the
-    /// two come off as one piece reaching 15 mm up the axis where the frustum
-    /// reaches 4. Measured against the frustum alone that assembly is not the
-    /// lock, `ensure_plug_mating_features_attached` finds nothing it owns, and
-    /// the loudest refusal in this arc goes SILENT at exactly the moment the
-    /// fix for it failed.
+    /// The companion to the boundary test above, which only ever proves the
+    /// bound is wide ENOUGH. `cargo-mutants` turned `-lock.half_length_m -
+    /// LOCK_IDENTITY_SLACK_M` into `-lock.half_length_m / ...` — a bound five
+    /// orders of magnitude too permissive — and every test stayed green,
+    /// because nothing asked what sits outside it.
     ///
-    /// The paired assertion is what proves that is a live hazard rather than a
-    /// worry: the SAME mesh against the SAME lock without the column in the
-    /// transforms is accepted.
+    /// ⚠ A too-wide bound calls marching-cubes debris a detached lock and
+    /// REFUSES a mold that is fine. The refusal is the safe direction, which is
+    /// exactly why nothing noticed.
     #[test]
-    fn a_lock_that_came_loose_with_its_pedestal_is_still_refused() {
-        // 10 mm along the axis: past the frustum's 4 mm tip, inside the
-        // column's 15 mm.
-        let mesh = mesh_of_at(&[(7, far_from_the_lock()), (3, on_lock_axis_mm(0.010))]);
-        assert_eq!(
-            find_connected_components(&mesh).component_count,
-            2,
-            "the fixture has to really be in pieces"
-        );
-        let err = ensure_plug_mating_features_attached(
-            &mesh,
-            &axial_transforms_with_pedestal(),
-            CastTarget::Plug {
-                layer_index: Some(0),
-            },
-        )
-        .expect_err("a lock and its column are one mating feature, and it came loose");
-        match err {
-            CastError::PlugMatingFeatureDetached { detached_faces, .. } => {
-                assert_eq!(detached_faces, 3, "and the report names that piece");
-            }
-            other => panic!("expected PlugMatingFeatureDetached, got {other:?}"),
+    fn a_piece_just_beyond_either_axial_end_is_not_the_lock() {
+        for axial_sign in [1.0_f64, -1.0] {
+            let lock = axial_lock();
+            // One slack past the bound, along the lock's own axis.
+            let beyond_m = lock.pose.center_m.coords
+                + lock
+                    .pose
+                    .axis_unit
+                    .scale(axial_sign * (lock.half_length_m + 10.0 * LOCK_IDENTITY_SLACK_M));
+            let beyond: Point3<f64> = (beyond_m * crate::mesher::METERS_TO_MM).into();
+            let mesh = mesh_of_at(&[(7, far_from_the_lock()), (3, beyond)]);
+            assert_eq!(
+                find_connected_components(&mesh).component_count,
+                2,
+                "the fixture has to really be in pieces"
+            );
+            assert!(
+                ensure_plug_mating_features_attached(
+                    &mesh,
+                    &axial_transforms(),
+                    CastTarget::Plug {
+                        layer_index: Some(0),
+                    },
+                )
+                .is_ok(),
+                "a piece past the {axial_sign} axial end is debris, not the lock"
+            );
         }
-        assert!(
-            ensure_plug_mating_features_attached(
-                &mesh,
-                &axial_transforms(),
-                CastTarget::Plug {
-                    layer_index: Some(0)
-                },
-            )
-            .is_ok(),
-            "WITHOUT the column in the transforms the same piece sits outside \
-             the frustum's reach and is not the lock — which is the whole \
-             reason the check has to be told about the column",
-        );
     }
 }

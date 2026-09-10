@@ -120,18 +120,16 @@ pub use gasket_mold::{
 };
 pub use material::MoldingMaterial;
 pub use mesh_csg::{
-    CylinderParams, CylinderParent, LockPedestalParams, MatingTransform, WELD_TOLERANCE_M,
-    apply_mating_transforms, build_cylinder_along_axis, build_half_space_slab,
-    build_lock_pedestal_via_hull_pts, build_truncated_pyramid_via_hull_pts, geometric_equivalence,
-    weld_in_place,
+    CylinderParams, CylinderParent, MatingTransform, WELD_TOLERANCE_M, apply_mating_transforms,
+    build_cylinder_along_axis, build_half_space_slab, build_truncated_pyramid_via_hull_pts,
+    geometric_equivalence, weld_in_place,
 };
 pub use part_selection::{PartId, PartSelection};
 pub use piece::compose_piece_solid;
 pub use platform::build_platform_solid;
 pub use plug::{
     PlugPinKind, PlugPinSpec, add_plug_pins, build_cup_cap_trim_transform,
-    build_plug_cap_trim_transform, build_plug_lock_pedestal_transform,
-    build_plug_lock_socket_transform, build_plug_lock_transform,
+    build_plug_cap_trim_transform, build_plug_lock_socket_transform, build_plug_lock_transform,
     ensure_plug_mating_features_attached,
 };
 pub use pour::{PourGateKind, PourGateLayout, PourGateSpec, build_pour_gate_transforms};

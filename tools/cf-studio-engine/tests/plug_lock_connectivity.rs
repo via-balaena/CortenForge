@@ -3,20 +3,19 @@
 //! loose beside it.
 //!
 //! ★★★ THE DEFECT, and it is CLOSED — read the tables below as history.
-//! `cf_cast::add_plug_pins` took the ribbon and nothing else, and both
-//! transforms it returned were anchored on the ribbon's cap-plane. The ribbon
-//! is the cleaned scan's centerline: it does not move when `cavity_inset_m`
-//! changes. The plug is `scan.offset(-inset)`, and it does. Past a threshold
-//! the plug's base had climbed clear of the lock and the two meshed as separate
-//! bodies — which shipped as a loose pyramid in the print, until the refusal
-//! that landed with this file. `cf-studio-gui` offers 0-30 mm.
+//! `cf_cast::add_plug_pins` anchors both transforms on the ribbon's cap plane.
+//! The ribbon is the cleaned scan's centerline and does not move when
+//! `cavity_inset_m` changes; the plug is `scan.offset(-inset)`. If the plug's
+//! base climbs clear of the lock the two mesh as separate bodies, which ships
+//! as a loose pyramid in the print — until the refusal that landed with this
+//! file.
 //!
-//! It now takes the plug's mesh cell size and READS the plug, standing the lock
-//! on a PEDESTAL that carries it back down to the cap plane
-//! (`cf_cast::build_plug_lock_pedestal_transform`). The refusal stays as the
-//! backstop for insets no column can reach, which is what the sweep still
-//! gates; `an_inset_that_lifts_the_plug_clear_of_its_lock_is_cast_anyway`
-//! gates the capability that replaced it.
+//! ⚠ The base no longer climbs. `pinned_floor_shell` holds the plug's floor at
+//! the cap plane, so the lock is embedded in it at every inset the GUI offers
+//! — measured 0-30 mm on `base_mold` after the cap-sliver fix. A PEDESTAL was
+//! built for the lifted case and is now deleted: with the floor pinned no
+//! column was ever generated. The refusal below stays as the backstop, and it
+//! is deliberately agnostic about HOW the lock stays attached.
 //!
 //! ★★ WHY A CONE. A straight tube CANNOT show this: its inward offset shrinks
 //! it laterally and the cap-plane cut keeps the base pinned, so the body meets
@@ -91,7 +90,6 @@ const LOCK_BASE_Z_MM: f64 = -4.0;
 /// [`INSETS_MM`] either casts whole or is declined at each of them. 3 mm is
 /// here for the cost, not because the gate needs it.
 ///
-/// ⚠ The pedestal gate below does NOT share it — see [`PEDESTAL_CELL_SIZE_M`],
 /// which asks at a cell size the product actually offers.
 const CELL_SIZE_M: f64 = 0.003;
 
@@ -194,8 +192,8 @@ fn report(pieces: &[Piece]) -> String {
 /// ★ It stays shaped as a VERDICT rather than a geometry assertion, and that
 /// outlives the choice it was written under. Refusing the inset (what the cast
 /// now does), dropping the lock for the documented hand-positioning mode, and
-/// growing the lock into a pedestal that spans the gap all satisfy it — so
-/// replacing the refusal with a pedestal later needs no edit here.
+/// growing the lock down to the plug all satisfy it — the gate is agnostic
+/// about HOW the lock stays attached.
 ///
 /// ⚠ The whole sweep runs before anything is asserted. Failing on the first
 /// bad inset would stop at 8 mm and leave the refusal at 20 mm unreached — a
@@ -238,78 +236,6 @@ fn a_cast_never_emits_a_detached_plug_lock() {
     assert!(
         problems.is_empty(),
         "a cast must hand back one connected plug or say what it declined:\n{}",
-        problems.join("\n")
-    );
-}
-
-/// The insets the pedestal is for: past the point where this cone's plug has
-/// climbed clear of its floor lock, and short of the point where the cone has
-/// no plug left to mesh at all (20 mm, which keeps its empty-mesh refusal).
-///
-/// Both are rows of the sweep above — 8 and 11 mm shipped a loose pyramid
-/// before #893 and were declined by name after it. This is where that band
-/// gets its capability back.
-const PEDESTAL_INSETS_MM: [f64; 2] = [8.0, 11.0];
-
-/// Marching-cubes cell size for the pedestal gate, in meters — and it is NOT
-/// [`CELL_SIZE_M`].
-///
-/// 1.5 mm is `Fast`, the coarser of the two the wizard actually offers. The
-/// pedestal engages one cell deep, so the cell size is a demand on the plug as
-/// well as on the mesher, and at the 3 mm the sweep runs for its cost this cone
-/// cannot meet it: measured 2026-09-09, the deepest ANY point of its remaining
-/// tip lies inside the plug at 11 mm of inset is 2.48 mm, against 3 mm asked.
-/// It declines instead — the safe direction, and a cell size no operator can
-/// select.
-///
-/// ⚠ So the capability claim below is scoped to shipped quality. Casting the
-/// sweep's own 3 mm here would gate a resolution the product never uses and
-/// would report the fixture's size as the feature's limit.
-const PEDESTAL_CELL_SIZE_M: f64 = 0.0015;
-
-/// ★★★ THE CAPABILITY, and the reason the sweep above cannot stand alone: it
-/// ACCEPTS a refusal, so it stayed green for the whole time these insets could
-/// not be cast at all.
-///
-/// An inset that lifts the plug's base clear of its floor lock is cast anyway,
-/// with the lock carried back down to the cap plane on a pedestal — a column
-/// derived from the plug that `cf_cast::add_plug_pins` used to receive and
-/// ignore. `cf-studio-gui` offers 0-30 mm and the operator's own scan refused
-/// at 7.
-///
-/// ⚠ Written RED: both rows refused by name at the commit before the pedestal.
-#[test]
-fn an_inset_that_lifts_the_plug_clear_of_its_lock_is_cast_anyway() {
-    let mut problems = Vec::new();
-    for inset_mm in PEDESTAL_INSETS_MM {
-        match cast_at("pedestal", inset_mm / 1e3, PEDESTAL_CELL_SIZE_M) {
-            Outcome::Refused(msg) => problems.push(format!(
-                "{inset_mm} mm: declined, when the plug should have ridden down \
-                 to the cap plane on a column: {msg}"
-            )),
-            Outcome::Cast(pieces) => {
-                if pieces.len() != 1 {
-                    problems.push(format!(
-                        "{inset_mm} mm: the plug ships in {} pieces:{}",
-                        pieces.len(),
-                        report(&pieces)
-                    ));
-                } else if (pieces[0].z_min - LOCK_BASE_Z_MM).abs() >= 0.1 {
-                    problems.push(format!(
-                        "{inset_mm} mm: the plug's lowest point is {:.3} mm, not \
-                         the {LOCK_BASE_Z_MM} mm the floor lock reaches — the \
-                         column carried the plug down but not the lock:{}",
-                        pieces[0].z_min,
-                        report(&pieces)
-                    ));
-                }
-            }
-        }
-    }
-    assert!(
-        problems.is_empty(),
-        "an inset the plug has climbed away from is one the pedestal makes \
-         castable:\n{}",
         problems.join("\n")
     );
 }
