@@ -4060,6 +4060,73 @@ mod tests {
         )
     }
 
+    /// ★★★ Sibling audit from #906's review. `cargo-mutants` found
+    /// `funnel_bullet` and `pin_remnant_bullet` ENTIRELY ungated — 5 missed
+    /// mutants across the two, including `delete !` in `funnel_bullet`, which
+    /// swaps "this cast has no pour gate, nothing to check" for the bullet
+    /// demanding a bent-spout `funnel.stl`, and back. Both bullets sit under
+    /// "do NOT proceed to print", which is where every scar in this file came
+    /// from.
+    ///
+    /// ⚠ Each case asserts the expected bullet AND the absence of the others.
+    /// Presence alone passes on a writer that emits all three, and the
+    /// inversion mutant is exactly a case of emitting the wrong one.
+    ///
+    /// ⚠ Asserted with the line prefix. A bare phrase match would also find
+    /// these words elsewhere in the sheet — the failure that left
+    /// `plug_piece_checks` ungated through two review passes.
+    #[test]
+    fn each_gate_and_lock_state_gets_its_own_checklist_bullet() {
+        const FUNNEL_NONE: &str = "\n3. **Funnel**: *none*";
+        const FUNNEL_APEX: &str = "\n3. **Funnel**: *no separate STL*";
+        const FUNNEL_STL: &str = "\n3. **Funnel** (`funnel.stl`)";
+        const PIN_PLAIN: &str = "\n   - No trapezoidal / truncated-pyramid pin remnants";
+        const PIN_RAISED: &str = "\n   - No trapezoidal / truncated-pyramid pin PROTRUSIONS";
+
+        for (label, has_pour_gate, apex_pour, has_plug_lock, want_funnel, want_pin) in [
+            ("gateless", false, false, false, FUNNEL_NONE, PIN_PLAIN),
+            ("apex", true, true, false, FUNNEL_APEX, PIN_PLAIN),
+            ("v-at-dome", true, false, false, FUNNEL_STL, PIN_PLAIN),
+            ("with plug lock", true, false, true, FUNNEL_STL, PIN_RAISED),
+        ] {
+            let mut md = String::new();
+            super::write_cfview_sanity_check_v2(
+                &mut md,
+                apex_pour,
+                &dowelled_ribbon(),
+                SheetFeatures {
+                    has_dowels: false,
+                    bolts_carved: false,
+                    has_plug_lock,
+                    has_column: false,
+                    has_pour_gate,
+                    has_vent: false,
+                },
+                false,
+            );
+            for (kind, want, all) in [
+                (
+                    "funnel",
+                    want_funnel,
+                    [FUNNEL_NONE, FUNNEL_APEX, FUNNEL_STL].as_slice(),
+                ),
+                ("pin", want_pin, [PIN_PLAIN, PIN_RAISED].as_slice()),
+            ] {
+                assert!(
+                    md.contains(want),
+                    "{label}: the {kind} bullet should be {want:?}"
+                );
+                for other in all.iter().filter(|o| **o != want) {
+                    assert!(
+                        !md.contains(other),
+                        "{label}: the {kind} bullet also emitted {other:?}, \
+                         which describes a different cast"
+                    );
+                }
+            }
+        }
+    }
+
     fn dowelled_ribbon() -> Ribbon {
         let centerline = vec![Point3::new(-0.050, 0.0, 0.0), Point3::new(0.050, 0.0, 0.0)];
         let split = SplitNormal::new(Vector3::new(0.0, 0.0, 1.0)).unwrap();
