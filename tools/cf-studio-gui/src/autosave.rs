@@ -733,6 +733,34 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// ⚠ The sibling reset. `record_scan` already clears the pour cursor and
+    /// its countdown for exactly this reason — a new scan is a new project,
+    /// and the previous one's answers point at work this project has not done.
+    /// The folder reading is one of those answers.
+    #[test]
+    fn picking_a_new_scan_drops_the_previous_folder_reading() {
+        let dir = scans("new-scan-drops-reading");
+        let mut studio = Studio {
+            stale: Some(cf_studio_engine::RunProvenance {
+                run: 2,
+                stale: vec![cf_studio_engine::ManifestEntry {
+                    file: "old.stl".to_string(),
+                    run: 1,
+                }],
+            }),
+            ..Studio::default()
+        };
+
+        studio
+            .record_scan(&dir.join("base.stl"))
+            .expect("the fixture scan loads");
+
+        assert!(
+            studio.stale.is_none(),
+            "a new project inherited the last one's folder reading"
+        );
+    }
+
     /// ⚠⚠ The wiring no mutation sweep reaches, and the reason nothing about
     /// staleness is persisted: a project reopened days later must read the
     /// folder as it is NOW. If `resume` does not re-read, the panel is silent

@@ -215,6 +215,9 @@ impl Studio {
         if outcome.is_ok() {
             self.pour = PourSession::default();
             self.pour_deadline = None;
+            // A new scan is a new project with no molds, so the previous
+            // one's folder is not this project's answer to anything.
+            self.stale = None;
         }
         outcome
     }

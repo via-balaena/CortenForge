@@ -40,8 +40,9 @@ use crate::shape::{RidgeFields, ShapeControls, commit_plug};
 use crate::state::{PendingSave, Studio};
 use crate::widgets::{
     ACTIVE_TEXT, CONTROL_TEXT, DONE_TEXT, ERROR_TEXT, GOOD_FILL, GOOD_TEXT, HEADING_TEXT,
-    HINT_TEXT, LAYER_FILL, RIDGE_FILL, RIDGE_NOTE_TEXT, RING_FILL, STATS_TEXT, WARN_TEXT, card,
-    centered_wrapped, cleanup_section, field_grid, step_box, wrapped_colored, wrapped_label,
+    HINT_TEXT, LAYER_FILL, RIDGE_FILL, RIDGE_NOTE_TEXT, RING_FILL, STATS_TEXT, WARN_FILL,
+    WARN_TEXT, card, centered_wrapped, cleanup_section, field_grid, step_box, wrapped_colored,
+    wrapped_label,
 };
 
 /// The checklist column's width.
@@ -959,7 +960,7 @@ fn draw_make_molds(
         // about THIS CAST, and this is about the folder it landed in.
         if let Some(note) = format_stale_parts(studio.stale.as_ref()) {
             ui.add_space(SECTION_GAP);
-            card(ui, RIDGE_FILL, |ui| {
+            card(ui, WARN_FILL, |ui| {
                 wrapped_colored(ui, WARN_TEXT, note);
             });
         }

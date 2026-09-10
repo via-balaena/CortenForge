@@ -317,16 +317,17 @@ pub(crate) fn poll_molds_job(mut job: ResMut<MoldsJob>, mut studio: ResMut<Studi
                 // progress. `Studio::record_scan` resets the same pair.
                 studio.pour = PourSession::default();
                 studio.pour_deadline = None;
-                // The folder just changed. Re-read it rather than keep what
-                // the run reported: a selective cast leaves parts it did not
-                // touch, and naming them is the whole point.
-                studio.refresh_folder_provenance();
                 Ok("✔ Molds ready — click Next →.".to_string())
             }
             Err(e) => Err(format!("Molds made, but couldn't record them: {e}")),
         },
         Err(msg) => Err(format!("Mold generation failed: {msg}")),
     };
+    // ⚠ Whatever the outcome. A cast writes its STLs as it goes, so one that
+    // failed part-way has still changed the folder — and left it without the
+    // manifest update a successful run ends with. Keeping the previous answer
+    // there would be the stale reading this whole feature exists to stop.
+    studio.refresh_folder_provenance();
     studio.say(outcome);
 }
 
@@ -1219,6 +1220,54 @@ endsolid t
         )
         .expect("a manifest");
         out
+    }
+
+    /// ⚠ A cast that FAILED has still been writing STLs into the folder, and
+    /// has NOT reached the manifest update a successful run ends with. Keeping
+    /// the previous answer on screen there is the stale reading this feature
+    /// exists to stop, so the re-read does not hang off the success arm.
+    #[test]
+    fn a_failed_cast_still_re_reads_what_the_output_folder_holds() {
+        let out = folder_with_a_stale_part("failed");
+        let mut app = app_ready_for_molds();
+        // The project already has molds from an earlier cast — the folder the
+        // failed run was writing into.
+        let mut molds = some_molds("unused");
+        molds.out_dir = out.clone();
+        app.world_mut()
+            .resource_mut::<Studio>()
+            .project
+            .set_molds(molds)
+            .expect("in workflow order");
+
+        inject(
+            &mut app,
+            finished(Err("marching cubes gave up".to_string())),
+            Instant::now(),
+            0,
+        );
+        run_until_idle(&mut app, "the cast");
+
+        let studio = app.world().resource::<Studio>();
+        assert!(
+            matches!(studio.outcome(), Some(Err(text)) if text.contains("gave up")),
+            "the failure is still reported: {:?}",
+            studio.outcome()
+        );
+        let provenance = studio
+            .stale
+            .as_ref()
+            .expect("the folder was read despite the failure");
+        assert_eq!(
+            provenance
+                .stale
+                .iter()
+                .map(|e| e.file.as_str())
+                .collect::<Vec<_>>(),
+            vec!["old.stl"],
+        );
+
+        let _ = std::fs::remove_dir_all(&out);
     }
 
     /// ⚠⚠ The WIRING, which no mutation sweep reaches: `refresh_folder_

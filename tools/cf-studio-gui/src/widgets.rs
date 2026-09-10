@@ -22,6 +22,10 @@ pub(crate) const ACTIVE_TEXT: egui::Color32 = egui::Color32::from_rgb(0x15, 0x65
 pub(crate) const ERROR_TEXT: egui::Color32 = egui::Color32::from_rgb(0xc6, 0x28, 0x28);
 /// Warning amber: under five minutes of working time left.
 pub(crate) const WARN_TEXT: egui::Color32 = egui::Color32::from_rgb(0xe6, 0x51, 0x00);
+/// A caution card, for a result that stands but wants checking before it is
+/// acted on. Pairs with [`WARN_TEXT`], as [`RIDGE_FILL`] pairs with
+/// [`RIDGE_NOTE_TEXT`].
+pub(crate) const WARN_FILL: egui::Color32 = egui::Color32::from_rgb(0xfb, 0xec, 0xdc);
 /// The ridge editor's card — warmer than the result cards, as the pre-port
 /// screen had it.
 pub(crate) const RIDGE_FILL: egui::Color32 = egui::Color32::from_rgb(0xf4, 0xf1, 0xea);
