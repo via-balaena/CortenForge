@@ -2762,6 +2762,15 @@ pub(crate) mod tests {
                 .any(|text| text.contains("Save files for printing")),
             "step 6's own control never reached the screen: {painted:?}"
         );
+        // ⚠ `cargo-mutants` found this ungated: deleting the `!` from
+        // `if !summary.is_empty()` drops the status line from the screen
+        // entirely, and every hand-picked mutation in this branch missed it.
+        assert!(
+            painted
+                .iter()
+                .any(|text| text.contains("Ready to save the 2 part(s) this cast made")),
+            "step 6's status line never reached the screen: {painted:?}"
+        );
         // ⚠ The whole galley, for the reason the summary gate above gives: a
         // card that had lost everything below its first line would pass an
         // assertion on the header alone.
