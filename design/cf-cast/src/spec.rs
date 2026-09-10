@@ -4053,9 +4053,12 @@ mod tests {
             "the lifted plug must take one"
         );
 
+        // Asserted WITH its list-item prefix: the bullet carries its own
+        // indentation, so a call site re-indented around it would produce
+        // broken markdown that a bare substring match would not see.
         assert!(
-            lifted_sheet.contains("Every plug piece carries"),
-            "a cast whose every plug piece grows a column must say so"
+            lifted_sheet.contains("\n   - Where a plug piece's lock stands clear"),
+            "a cast that grows a column must tell the bencher what to look for"
         );
         assert!(
             !seated_sheet.contains("COLUMN"),
@@ -4091,12 +4094,14 @@ mod tests {
         );
         let mixed_sheet = sheet_for(&spec);
         assert!(
-            mixed_sheet.contains("SOME plug pieces carry"),
-            "a mixed cast must say which pieces are in question"
+            mixed_sheet.contains("A piece without one is not a fault"),
+            "a mixed cast must not demand a column on the piece that has none"
         );
+        // ONE sentence serves both casts, which is what makes the over-claim
+        // unrepresentable rather than merely gated.
         assert!(
-            !mixed_sheet.contains("Every plug piece carries"),
-            "a mixed cast must NOT demand a column on the piece that has none"
+            mixed_sheet.contains("\n   - Where a plug piece's lock stands clear"),
+            "the mixed cast must carry the same bullet as the uniform one"
         );
         // Both sheets still describe the lock itself, so the difference above
         // is the column and not the whole plug-lock section vanishing.
