@@ -65,7 +65,9 @@ pub use derive::{
     DerivedSpec, density_for_anchor, derive_spec_and_ribbon, display_name_for_anchor,
     resolve_canal_spec,
 };
-pub use manifest::{MANIFEST_FILENAME, ManifestEntry, RunProvenance, UNKNOWN_RUN};
+pub use manifest::{
+    MANIFEST_FILENAME, ManifestEntry, RunProvenance, UNKNOWN_RUN, folder_provenance,
+};
 pub use prep::parse_centerline_from_prep_toml;
 pub use scan::{SharedScanSdf, load_scan_sdf};
 

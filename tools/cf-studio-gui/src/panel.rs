@@ -18,8 +18,8 @@ use cf_studio_gui::{
     BoundedField, CENDRILLON_CAST_MODE, FitQuestion, FitView, LayerRow, RingRow, Silicone,
     cell_size_m_for_quality, fit_check_is_due, format_fit_failure, format_fit_progress,
     format_fit_verdict, format_molds_summary, format_pour_active, format_pour_plan,
-    format_resume_question, format_scan_stats, nav_state, pour_countdown, print_step_summary,
-    step_rows,
+    format_resume_question, format_scan_stats, format_stale_parts, nav_state, pour_countdown,
+    print_step_summary, step_rows,
 };
 
 use crate::autosave::{self, Autosave};
@@ -955,6 +955,14 @@ fn draw_make_molds(
         card(ui, GOOD_FILL, |ui| {
             wrapped_colored(ui, GOOD_TEXT, summary);
         });
+        // A separate card, not appended to the summary above: that one is
+        // about THIS CAST, and this is about the folder it landed in.
+        if let Some(note) = format_stale_parts(studio.stale.as_ref()) {
+            ui.add_space(SECTION_GAP);
+            card(ui, RIDGE_FILL, |ui| {
+                wrapped_colored(ui, WARN_TEXT, note);
+            });
+        }
     }
     acted
 }
@@ -1892,6 +1900,17 @@ pub(crate) mod tests {
             cf_studio_gui::format_elapsed(3671),
             cf_studio_gui::print_step_summary(&project),
             cf_studio_gui::format_molds_summary(&molds),
+            // Both step-5 provenance forms: the folder with no record, and
+            // the one naming older parts. ⚠ and • are the glyphs at risk.
+            cf_studio_gui::format_stale_parts(None).expect("the unknown form"),
+            cf_studio_gui::format_stale_parts(Some(&cf_studio_gui::RunProvenance {
+                run: 3,
+                stale: vec![cf_studio_gui::ManifestEntry {
+                    file: "plug_layer_1.stl".to_string(),
+                    run: cf_studio_gui::UNKNOWN_RUN,
+                }],
+            }))
+            .expect("the stale form"),
             format_pour_plan(&molds.pour_plan),
             format_pour_active(&molds.pour_plan, 0),
             crate::save::overwrite_question(&studio, &dir),
