@@ -550,8 +550,8 @@ pub fn format_print_destination_note(
     let total = dest_stl_count?;
     let extra = total.checked_sub(stl_count).filter(|n| *n > 0)?;
     Some(format!(
-        "⚠ That folder now holds {total} printable file(s) — {extra} left by an \
-         earlier save, which this one did not replace."
+        "⚠ That folder now holds {total} printable file(s) — {extra} this save \
+         did not write."
     ))
 }
 
@@ -2998,7 +2998,7 @@ visible = true
             "what the folder holds: {note}"
         );
         assert!(
-            note.contains("4 left by an earlier save"),
+            note.contains("4 this save did not write"),
             "how many this save did not write: {note}"
         );
     }
