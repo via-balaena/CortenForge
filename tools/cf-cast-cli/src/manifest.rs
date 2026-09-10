@@ -57,8 +57,11 @@ const MANIFEST_HEADER: &str = "\
 /// ⚠ The ONE definition. A message that names a different folder than the one
 /// [`folder_provenance`] read is a warning pointing at a directory the files
 /// are not in — which is exactly what the warning exists to prevent.
+///
+/// Named `_in` because `stls_dir` is the parameter name in five functions
+/// below, and a binding of that name would shadow this in every one of them.
 #[must_use]
-pub fn stls_dir(out_dir: &Path) -> PathBuf {
+pub fn stls_dir_in(out_dir: &Path) -> PathBuf {
     out_dir.join(cf_cast::STLS_SUBDIR)
 }
 
@@ -171,7 +174,7 @@ pub fn record_run(stls_dir: &Path, written: &[PathBuf]) -> Result<RunProvenance>
 /// folder as current on the strength of it.
 #[must_use]
 pub fn folder_provenance(out_dir: &Path) -> Option<RunProvenance> {
-    let stls_dir = stls_dir(out_dir);
+    let stls_dir = stls_dir_in(out_dir);
     let manifest = load_existing(&stls_dir)?;
     let run = manifest.latest_run;
     // ⚠ [`UNKNOWN_RUN`] is 0, so a manifest claiming 0 as its latest run would
@@ -312,7 +315,7 @@ fn stl_file_name(path: &Path) -> Option<String> {
 /// returns `None`, which callers carry as "not known" rather than
 /// flattening to "nothing stale".
 pub(crate) fn stamp_output_folder(out_dir: &Path, written: &[PathBuf]) -> Option<RunProvenance> {
-    let stls_dir = stls_dir(out_dir);
+    let stls_dir = stls_dir_in(out_dir);
     match record_run(&stls_dir, written) {
         Ok(provenance) => {
             if let Some(warning) = provenance.warning_line() {

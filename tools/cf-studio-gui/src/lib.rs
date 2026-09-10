@@ -29,7 +29,7 @@ use cf_studio_core::{
 };
 use cf_studio_engine::{
     CastMode, PartId, PartSelection, PieceSide, PlugFit, accept_prep, draft_from_design_toml,
-    load_scan, silicone_catalog, stls_dir,
+    load_scan, silicone_catalog, stls_dir_in,
 };
 pub use cf_studio_engine::{ManifestEntry, RunProvenance, UNKNOWN_RUN};
 
@@ -514,7 +514,7 @@ pub fn format_stale_parts(provenance: Option<&RunProvenance>, out_dir: &Path) ->
     // ⚠ Not `out_dir`. The roster is read from the `stls` folder beneath it,
     // and naming the parent sends someone to a directory holding none of the
     // files the message goes on to list.
-    let parts_dir = stls_dir(out_dir);
+    let parts_dir = stls_dir_in(out_dir);
     let dir = parts_dir.display();
     let Some(p) = provenance else {
         return Some(format!(
