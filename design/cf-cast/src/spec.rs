@@ -4152,9 +4152,16 @@ mod tests {
     /// This holds the size of that error across the inset range, so the day it
     /// stops being negligible something says so.
     ///
-    /// Measured 2026-09-10: 0.057 % of the shell at 4 mm of lift, rising to
-    /// 0.223 % at 18 mm — against the 25 % mix slacker, two orders of
-    /// magnitude below a margin that is already deliberate.
+    /// Measured 2026-09-10 at the cell this spec integrates at: 0.070 % of the
+    /// shell at 4 mm of lift, 0.209 % at 11 mm — the deepest inset `base_mold`
+    /// casts — and 0.406 % at 18 mm, past anything tested on a real scan.
+    ///
+    /// ⚠ An earlier draft of this test read 0.223 % at 18 mm because it
+    /// integrated at a hard-coded 2 mm. `compute_pour_volumes` floors the cell
+    /// at `POUR_VOLUME_MIN_CELL_SIZE_M` and otherwise uses the spec's own, so
+    /// that number belonged to a cast this fixture is not. The budget has ONE
+    /// quantum of headroom left at 18 mm — the 3 mm grid moves this in steps of
+    /// 0.108 mL, about 0.068 % of the shell.
     ///
     /// ⚠ NOT corrected, and that is a decision rather than an omission. The
     /// error is CONSERVATIVE — it tells the operator to mix more than the mold
@@ -4199,6 +4206,14 @@ mod tests {
         // column falls outside the shell and every over-count measures zero —
         // a green sweep about nothing, which is what the first draft measured.
         let wide = Solid::cuboid(Vector3::new(0.060, 0.025, 0.020));
+        spec.layers = vec![CastLayer {
+            body: wide.clone(),
+            material: reference_material(),
+        }];
+        // ⚠ DERIVED from the spec, not hard-coded: `compute_pour_volumes`
+        // floors the integration cell at `POUR_VOLUME_MIN_CELL_SIZE_M`, so a
+        // literal 2 mm here would measure a cell this cast never uses.
+        let pour_cell_m = spec.mesh_cell_size_m.max(POUR_VOLUME_MIN_CELL_SIZE_M);
 
         let mut overcounts_ml: Vec<f64> = Vec::new();
         for lift_mm in [0.0_f64, 2.0, 4.0, 6.0, 8.0, 11.0, 14.0, 18.0] {
@@ -4211,12 +4226,23 @@ mod tests {
             else {
                 continue;
             };
-            let shell = wide.clone().subtract(spec.plug.clone());
-            let corrected = shell.clone().subtract(params.as_solid());
-            let target = CastTarget::LayerBody { layer_index: 0 };
+            // COUNTED comes from the production path, so a change to how it
+            // derives the shell — or to its integration cell — moves this
+            // bound instead of slipping past a hand-built copy of it.
             // `unwrap`, not `expect` — the module denies `expect_used`.
-            let counted = super::integrate_negative_sdf_volume(&shell, 0.002, target).unwrap();
-            let actual = super::integrate_negative_sdf_volume(&corrected, 0.002, target).unwrap();
+            let counted = spec
+                .compute_pour_volumes()
+                .unwrap()
+                .first()
+                .map(|v| v.shell_volume_m3)
+                .unwrap();
+            let corrected = wide
+                .clone()
+                .subtract(spec.plug.clone())
+                .subtract(params.as_solid());
+            let target = CastTarget::LayerBody { layer_index: 0 };
+            let actual =
+                super::integrate_negative_sdf_volume(&corrected, pour_cell_m, target).unwrap();
             let overcount = counted - actual;
             assert!(
                 overcount / counted < OVERCOUNT_BUDGET,
