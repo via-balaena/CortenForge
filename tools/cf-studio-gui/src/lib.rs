@@ -1651,6 +1651,48 @@ pub fn fit_check_is_slow(question: &FitQuestion) -> bool {
 /// The quality index whose cell size is the one a fit check can be quick at.
 const FAST_QUALITY: i32 = 1;
 
+/// How long step 3's settings must stand still before the fit check runs
+/// without anyone clicking for it.
+///
+/// ⚠ The trade it sets is lopsided in cost. Too short, and a value merely
+/// stepped through buys a check that is dropped the moment it lands — 80 s at
+/// the quality step 5 opens on, 291 s with ridges (see [`fit_check_is_slow`]).
+/// Too long, and the operator is on step 4 before the answer arrives, which is
+/// the whole failure this exists to stop.
+pub const FIT_SETTLE: Duration = Duration::from_millis(1500);
+
+/// Whether step 3 should run the fit check nobody clicked for.
+///
+/// ★ This is what makes the inset range honest. Step 3's cavity stepper offers
+/// a fixed 0-30 mm whatever scan is loaded, and what a scan can take is neither
+/// a constant nor predictable from the scan: `~/scans/base_mold`, measured
+/// 2026-09-09, refuses above 11 mm at Fast and 12 at Fine, and past ~20 mm has
+/// no plug left to mesh at all. So the range stays wide — a clamp would refuse
+/// insets that do cast — and the cast's own verdict arrives at step 3 instead
+/// of being bought with a full cast at step 5.
+///
+/// ⚠ Only from [`FitView::Idle`], which is the single state meaning nothing is
+/// in flight and nothing on screen already answers these settings. `Failed` is
+/// deliberately not included: it is a check that could not RUN, so re-firing on
+/// it would spin.
+///
+/// ⚠ `askable` is the app accepting actions AND the CLEANED scan being present
+/// — `prep`, exactly what `start_plug_fit` needs, not the raw scan that arrives
+/// a step earlier.
+///
+/// ⚠⚠ Nothing in the app as it stands can trip either half: `nav_state` will
+/// not carry the operator to step 3 before step 2 completes, and a loaded
+/// project has its `current_step` clamped by `Project::migrate` and its gaps
+/// rejected by `Project::validate`. They are here because the check now starts
+/// with NO ONE in the loop. A button that answers "Clean and save the scan
+/// first" is informative; a screen that posts it by itself — onto a `Failed`
+/// that never re-fires — is a red line the operator did not ask for and cannot
+/// clear.
+#[must_use]
+pub fn fit_check_is_due(view: &FitView<'_>, settled_for: Duration, askable: bool) -> bool {
+    askable && settled_for >= FIT_SETTLE && matches!(view, FitView::Idle)
+}
+
 /// A check that could not run, as step 3's status line.
 ///
 /// ⚠ Reported here rather than through `Studio::message`, and that is the
@@ -3966,6 +4008,56 @@ visible = true
             fit_check_is_slow(&ridged(&fast_smooth)),
             "ridges pin the plug at 0.5 mm whatever cell size is passed"
         );
+    }
+
+    /// ★★★ What starts a check nobody clicked for, on all three axes at once.
+    /// Drop any one and the predicate still passes a happy-path gate: without
+    /// the settle it fires on every keystroke of a two-digit inset, without
+    /// `askable` it runs against a scan that is not there.
+    ///
+    /// ⚠ The settle is asserted AT the boundary in both directions. A `>` where
+    /// `>=` belongs is a mutant no comfortable margin can kill.
+    #[test]
+    fn a_question_that_has_stopped_moving_is_checked_without_being_clicked() {
+        let just_short = FIT_SETTLE - Duration::from_millis(1);
+
+        assert!(
+            fit_check_is_due(&FitView::Idle, FIT_SETTLE, true),
+            "settled exactly on the boundary is settled"
+        );
+        assert!(
+            !fit_check_is_due(&FitView::Idle, just_short, true),
+            "a question still moving is not one to spend eighty seconds on"
+        );
+        assert!(
+            !fit_check_is_due(&FitView::Idle, FIT_SETTLE, false),
+            "and nothing starts itself with the app held or no scan to run on"
+        );
+    }
+
+    /// ★★ Every state but `Idle`, and `Failed` is the one that matters. It is a
+    /// check that could not RUN, so a predicate that fires on it starts the
+    /// same doomed check every 1.5 s for as long as the screen is open — and a
+    /// gate covering only `Checking` and `Answered` would not notice.
+    #[test]
+    fn nothing_starts_a_second_check_over_one_running_answered_or_failed() {
+        let long_settled = FIT_SETTLE * 4;
+        let views = [
+            FitView::Checking {
+                elapsed_secs: 12,
+                slow: true,
+                inset_mm: 9.0,
+            },
+            FitView::Answered(&PlugFit::Casts),
+            FitView::Failed("the cleaned scan could not be read"),
+        ];
+
+        for view in &views {
+            assert!(
+                !fit_check_is_due(view, long_settled, true),
+                "{view:?} already answers, or is answering, the settings on screen"
+            );
+        }
     }
 
     /// ⚠ Two-sided, and the refusal verbatim: the cast's words already name

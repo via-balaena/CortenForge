@@ -1,16 +1,24 @@
 //! Step 3's field state: how snugly the finished piece fits, and the ridges cut
 //! into it.
 
+use std::time::{Duration, Instant};
+
 use bevy::prelude::*;
 use cf_studio_core::{PlugDraft, RidgeOptions};
 use cf_studio_gui::{
-    BoundedField, RidgeToggles, RingRow, apply_plug, m_to_mm, m_to_tenths_mm,
+    BoundedField, FitQuestion, RidgeToggles, RingRow, apply_plug, m_to_mm, m_to_tenths_mm,
     ridge_options_from_rows, whole_degrees,
 };
 
 use crate::state::Studio;
 
 /// The cavity inset's stepper range, in whole millimetres.
+///
+/// ⚠ Deliberately NOT a ceiling on what the loaded scan can take. That number
+/// is scan- AND cell-size-dependent — `base_mold` refuses above 11 mm at Fast
+/// and 12 at Fine — so no constant here could be honest about it, and a clamp
+/// would refuse insets that do cast. What the scan can take is answered by the
+/// fit check instead; see `cf_studio_gui::fit_check_is_due`.
 const CAVITY_RANGE: (i32, i32) = (0, 30);
 
 /// What a fresh screen shows before anything is committed.
@@ -26,6 +34,8 @@ pub(crate) struct ShapeControls {
     pub(crate) cavity_mm: BoundedField,
     /// The ridges cut into the piece's gripping face.
     pub(crate) ridges: RidgeFields,
+    /// How long the fit question these fields spell out has stood still.
+    pub(crate) settle: FitSettle,
     /// The committed plug these fields were last agreed with.
     ///
     /// ⚠ The whole plug, not a summary: [`drive_shape_controls`] re-derives the
@@ -39,6 +49,7 @@ impl Default for ShapeControls {
         Self {
             cavity_mm: BoundedField::new(CAVITY_DEFAULT_MM, CAVITY_RANGE),
             ridges: RidgeFields::default(),
+            settle: FitSettle::default(),
             followed: None,
         }
     }
@@ -63,7 +74,35 @@ impl ShapeControls {
         Self {
             cavity_mm: BoundedField::clamped(m_to_mm(plug.cavity_inset_m), CAVITY_RANGE),
             ridges: RidgeFields::from_options(&plug.ridges),
+            settle: FitSettle::default(),
             followed: Some(plug.clone()),
+        }
+    }
+}
+
+/// How long step 3's fit question has read exactly as it does now.
+///
+/// ⚠ The whole [`FitQuestion`], compared as one value, for the reason that type
+/// is compared whole rather than field by field: a ridge field added later
+/// restarts this clock without anyone remembering to hook it up. The cell size
+/// and the cleaned scan's stamp are in there too, so re-saving step 2 or moving
+/// step 5's quality picker restarts it as well.
+#[derive(Default)]
+pub(crate) struct FitSettle {
+    /// The question last seen, and when it first read that way.
+    seen: Option<(FitQuestion, Instant)>,
+}
+
+impl FitSettle {
+    /// How long `current` has stood still, restarting at zero the moment it
+    /// moves.
+    pub(crate) fn settled_for(&mut self, current: &FitQuestion, now: Instant) -> Duration {
+        match &self.seen {
+            Some((asked, since)) if asked == current => now.saturating_duration_since(*since),
+            _ => {
+                self.seen = Some((current.clone(), now));
+                Duration::ZERO
+            }
         }
     }
 }
@@ -264,6 +303,21 @@ pub(crate) mod tests {
     use cf_studio_gui::{StepBoxState, WizardCursor};
 
     use super::*;
+
+    impl FitSettle {
+        /// Back-date the settle clock, so a gate can reach a settled question
+        /// without waiting out [`cf_studio_gui::FIT_SETTLE`] in real time.
+        ///
+        /// ⚠ Panics on a clock that has seen nothing. A silent no-op there
+        /// would let a gate that forgot to draw a frame first pass while
+        /// proving nothing.
+        pub(crate) fn back_date(&mut self, elapsed: Duration) {
+            let (_, since) = self.seen.as_mut().expect("no question has been seen yet");
+            *since = since
+                .checked_sub(elapsed)
+                .expect("the process has not been up long enough to back-date that far");
+        }
+    }
 
     /// A project with a cleaned scan accepted — the state step 3 is reached in,
     /// since [`Project::set_plug`] refuses before it.
@@ -981,6 +1035,75 @@ pub(crate) mod tests {
             app.world().resource::<ShapeControls>().cavity_mm.value(),
             12,
             "the plugin's own schedule put the committed plug on the fields"
+        );
+    }
+
+    /// The step-3 question `controls` spells out, at step 5's default quality
+    /// and against a scan that never changes underneath.
+    fn asking(controls: &ShapeControls) -> FitQuestion {
+        FitQuestion {
+            plug: controls.plug_draft(),
+            cell_size_m: 0.0005,
+            scan: Some((1_234, std::time::UNIX_EPOCH)),
+        }
+    }
+
+    /// ⚠ The third reading is what carries this. A clock that restarted every
+    /// frame would give the first two answers exactly as written and then say
+    /// 1.3 s where 2 s belongs — and no question would ever settle.
+    #[test]
+    fn a_question_that_does_not_move_accumulates_time() {
+        let t0 = Instant::now();
+        let mut clock = FitSettle::default();
+        let smooth = asking(&ShapeControls::default());
+
+        assert_eq!(
+            clock.settled_for(&smooth, t0),
+            Duration::ZERO,
+            "the frame it is first seen on, it has stood still for nothing"
+        );
+        assert_eq!(
+            clock.settled_for(&smooth, t0 + Duration::from_millis(700)),
+            Duration::from_millis(700)
+        );
+        assert_eq!(
+            clock.settled_for(&smooth, t0 + Duration::from_secs(2)),
+            Duration::from_secs(2),
+            "measured from when it stopped moving, not from the frame before"
+        );
+    }
+
+    /// ★★ Moved on a RIDGE field, not the inset. The clock exists for the
+    /// cavity stepper, so a fixture that moves the inset would pass against a
+    /// clock watching the inset alone — and every ridge edit would then inherit
+    /// a settle that had already run out.
+    ///
+    /// ⚠ The last reading is the two-sided half: without it, a clock that
+    /// answered `ZERO` forever after any change would pass.
+    #[test]
+    fn a_moved_question_restarts_the_clock() {
+        let mut ridged = ShapeControls::default();
+        ridged.ridges.enabled = true;
+        let (smooth, ridged) = (asking(&ShapeControls::default()), asking(&ridged));
+        assert_ne!(smooth, ridged, "the fixture has to actually move it");
+
+        let t0 = Instant::now();
+        let mut clock = FitSettle::default();
+        let _ = clock.settled_for(&smooth, t0);
+
+        assert_eq!(
+            clock.settled_for(&smooth, t0 + Duration::from_secs(3)),
+            Duration::from_secs(3)
+        );
+        assert_eq!(
+            clock.settled_for(&ridged, t0 + Duration::from_secs(4)),
+            Duration::ZERO,
+            "the ridge switch is a different question, however long the inset sat"
+        );
+        assert_eq!(
+            clock.settled_for(&ridged, t0 + Duration::from_secs(5)),
+            Duration::from_secs(1),
+            "and it restarts FROM the move, rather than sticking at zero"
         );
     }
 }
