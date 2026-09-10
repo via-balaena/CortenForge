@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use cf_studio_core::{DesignDraft, MoldOutputs, RidgeOptions};
+use cf_studio_core::{DesignDraft, MoldOutputs, PrepInput, RidgeOptions};
 use cortenforge::cf_cast_cli::{
     CanalConfig, CastConfig, CastMode, PartSelection, RingConfig, run_selected_with_config,
     run_with_config,
@@ -59,8 +59,7 @@ use crate::pour::{LayerPour, build_pour_plan};
 // bundling them into a struct would just move the argument list, not shorten it.
 #[allow(clippy::too_many_arguments)]
 pub fn generate_molds_for_design(
-    cleaned_stl: &Path,
-    prep_toml: &Path,
+    prep: &PrepInput,
     draft: &DesignDraft,
     mesh_cell_size_m: f64,
     ridges: &RidgeOptions,
@@ -68,6 +67,9 @@ pub fn generate_molds_for_design(
     cast_mode: CastMode,
     output_dir_override: Option<&Path>,
 ) -> Result<MoldOutputs> {
+    // ⚠ One statement each, never a positional pair — see `plug_fit_preflight`.
+    let cleaned_stl = prep.cleaned_stl.as_path();
+    let prep_toml = prep.prep_toml.as_path();
     // ⚠ Enforced, not just documented. `base_dir` is this path's parent, so a
     // relative `cleaned_stl` silently makes the process's working directory the
     // cast's output root and writes `<stem>.design.toml` there. Two callers had
@@ -584,8 +586,10 @@ mod tests {
         };
 
         let err = generate_molds_for_design(
-            Path::new("base_mold.cleaned.stl"),
-            Path::new("base_mold.prep.toml"),
+            &PrepInput {
+                cleaned_stl: "base_mold.cleaned.stl".into(),
+                prep_toml: "base_mold.prep.toml".into(),
+            },
             &draft,
             0.003,
             &RidgeOptions::default(),
@@ -620,8 +624,10 @@ mod tests {
         };
 
         let err = generate_molds_for_design(
-            &dir.join("base_mold.cleaned.stl"),
-            &elsewhere.join("base_mold.prep.toml"),
+            &PrepInput {
+                cleaned_stl: dir.join("base_mold.cleaned.stl"),
+                prep_toml: elsewhere.join("base_mold.prep.toml"),
+            },
             &draft,
             0.003,
             &RidgeOptions::default(),
@@ -669,8 +675,10 @@ mod tests {
         // We don't care whether the cast run succeeds — only that the
         // design.toml was written first (the materialization is the new glue).
         let _ = generate_molds_for_design(
-            &cleaned,
-            &prep,
+            &PrepInput {
+                cleaned_stl: cleaned.clone(),
+                prep_toml: prep.clone(),
+            },
             &draft,
             0.003,
             &RidgeOptions::default(),
@@ -782,8 +790,10 @@ mod tests {
         };
 
         let out = generate_molds_for_design(
-            &cleaned,
-            &prep,
+            &PrepInput {
+                cleaned_stl: cleaned.clone(),
+                prep_toml: prep.clone(),
+            },
             &draft,
             cell_size_m,
             ridges,
@@ -987,8 +997,10 @@ mod tests {
         let out_name = "cast_base_mold_studio_verify_plug_only";
 
         let out = generate_molds_for_design(
-            &cleaned,
-            &prep,
+            &PrepInput {
+                cleaned_stl: cleaned.clone(),
+                prep_toml: prep.clone(),
+            },
             &draft,
             0.0015,
             &RidgeOptions::default(),
