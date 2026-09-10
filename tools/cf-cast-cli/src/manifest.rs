@@ -371,6 +371,11 @@ mod tests {
 
         let p = record_run(&dir, &[dir.join("a.stl"), dir.join("b.stl")]).unwrap();
 
+        // ⚠ Both claims below are ABSENCES, and "nothing tracked" satisfies
+        // them just as well as "nothing stale". Pin the presence first.
+        assert_eq!(run_of(&dir, "a.stl"), Some(1));
+        assert_eq!(run_of(&dir, "b.stl"), Some(1));
+
         assert!(p.stale.is_empty());
         assert_eq!(p.warning_line(), None, "silent when the folder is current");
 
@@ -404,6 +409,9 @@ mod tests {
 
         let p = record_run(&dir, &[dir.join("plug_layer_0.stl")]).unwrap();
 
+        // ⚠ As above: the STL must be tracked, or "the .md is not tracked"
+        // is a claim about a manifest that tracks nothing at all.
+        assert_eq!(run_of(&dir, "plug_layer_0.stl"), Some(1), "the STL is");
         assert!(p.stale.is_empty(), "got: {:?}", stale_names(&p));
         assert_eq!(run_of(&dir, "procedure.md"), None);
         assert_eq!(run_of(&dir, "notes.txt"), None);

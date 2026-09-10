@@ -123,10 +123,14 @@ fn a_full_cast_never_reports_a_file_an_earlier_run_left_behind() {
         "the cast must not delete it either — the fix is to stop CLAIMING it, \
          not to throw away a file the user may still want"
     );
-    let names = reported(&second);
-    assert!(
-        !names.contains(&ORPHAN.to_string()),
-        "reported a file this run did not write: {names:?}"
+    // ⚠ Not `!contains(ORPHAN)` alone — an empty list satisfies that, so a
+    // run that reported NOTHING would pass. Same design, same parts, so the
+    // second cast must report exactly what the first did: the orphan
+    // excluded AND nothing legitimate dropped.
+    assert_eq!(
+        reported(&second),
+        reported(&first),
+        "a re-cast of the same design must report its own output, and only that"
     );
 
     let _ = std::fs::remove_dir_all(&dir);
