@@ -35,11 +35,16 @@ use crate::scan_mesh_direct::{
 };
 use crate::silhouette_2d::Point2;
 
-/// Subdirectory (under the cast output dir) the v2 pipeline writes its STLs into,
-/// so `procedure.md` sits alone at the output-dir root and the workshop reads it
-/// first, then prints from `stls/`. `cf-viewer` transparently descends into this
-/// subdir when pointed at the cast dir. (v1 `export_molds` stays flat — legacy.)
-const STLS_SUBDIR: &str = "stls";
+/// Subdirectory of a cast's output dir that the v2 pipeline writes STLs into.
+///
+/// `procedure.md` sits alone at the output-dir root, so the workshop reads it
+/// first and then prints from `stls/`. `cf-viewer` transparently descends into
+/// this subdir when pointed at the cast dir. (v1 `export_molds` stays flat —
+/// legacy.)
+///
+/// Public so tooling that reads a cast's output folder back names the same
+/// directory this writes into, rather than repeating the literal.
+pub const STLS_SUBDIR: &str = "stls";
 
 /// Shared `[k/total]` progress counter for the v2 export's slow MC-bound artifacts
 /// (the `layers × 3` cup pieces + plugs — matching the cf-cast-cli startup headline's

@@ -62,6 +62,10 @@ pub fn open_cone(r0: f64, r1: f64, h: f64, segs: usize, rings: usize) -> Indexed
 /// honour — see `CastError::PlugMatingFeatureDetached`. What it must never do
 /// is emit the mold anyway. Every gate here has to decide for itself what a
 /// refusal means for its own claim.
+// ⚠ As with the helpers below: `common` is compiled into EACH test binary,
+// so this reads as dead code in a binary that drives the cast directly
+// rather than through `cast_synthetic` (`output_folder_provenance`).
+#[allow(dead_code)]
 pub enum CastOutcome {
     /// The cast declined, carrying the reason it gave.
     Refused(String),
