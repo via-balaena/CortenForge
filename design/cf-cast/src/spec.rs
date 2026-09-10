@@ -1818,7 +1818,6 @@ fn compose_plug_mesh(
     } else {
         spec.layers[layer_index - 1].body.clone()
     };
-    let (plug_solid, mating_transforms) = add_plug_pins(base_plug, ribbon);
     // S1 of CF_CAST_SCAN_MESH_DIRECT_RECON.md: when the
     // feature flag is set, layer 0 bypasses the SDF → MC
     // pipeline and copies the cf-scan-prep cleaned scan mesh
@@ -1826,40 +1825,47 @@ fn compose_plug_mesh(
     // copy (cap-plane SeamTrim + plug-lock pyramid union).
     // Layers 1+ stay on the SDF/MC path until S2 of the
     // recon extends scan-mesh-direct to the offset cases.
-    //
-    // Caveat: `add_plug_pins` is currently pure-transforms
-    // (returns its `base_plug` input unchanged + a Vec of
-    // mating transforms), so discarding `plug_solid` on the
-    // scan-mesh-direct branch is just a cheap `Solid::clone`
-    // waste. If `add_plug_pins` ever re-grows SDF-side
-    // composition (e.g., a §G-7-style plug-shaft re-added
-    // pre-MC), the discard would silently skip that
-    // composition on the scan-mesh-direct path — pull the
-    // mating-transforms construction out independently then.
-    let (mut mesh, path_label) =
-        if let (0, Some(scan_mesh)) = (layer_index, spec.scan_mesh_for_plug_layer_0.as_ref()) {
-            (build_plug_body_mesh(scan_mesh), "scan-mesh-direct")
-        } else {
-            // Every plug uses the per-plug fine cell size when set (the canal
-            // path): layer-0's plug and the N>0 plugs (the textured layer
-            // bodies) all carry the canal field now, so they all need the fine
-            // cell for the sub-cm rings + ~1.5 mm texture to survive meshing.
-            // Canal off → `None` → the global cell, byte-identical to before.
-            let cell_size_m = spec
-                .plug_layer_0_mesh_cell_size_m
-                .unwrap_or(spec.mesh_cell_size_m);
-            // Every plug carries the canal feature's non-1-Lipschitz
-            // displacement now: layer-0's plug is the textured plug, and the
-            // N>0 plugs ARE the textured layer bodies (post scan-surface
-            // unification). Pass the canal-field skin so the narrow-band skip
-            // stays byte-identical to the dense bake. Canal off → `None` →
-            // 0.0, plain CSG, identical to before.
-            let field_skin_m = spec.plug_layer_0_field_skin_m.unwrap_or(0.0);
-            (
-                solid_to_mm_mesh_with_skin(&plug_solid, cell_size_m, target, field_skin_m)?,
-                "compose+MC",
-            )
-        };
+    let scan_mesh = if layer_index == 0 {
+        spec.scan_mesh_for_plug_layer_0.as_ref()
+    } else {
+        None
+    };
+    // Every plug uses the per-plug fine cell size when set (the canal
+    // path): layer-0's plug and the N>0 plugs (the textured layer
+    // bodies) all carry the canal field now, so they all need the fine
+    // cell for the sub-cm rings + ~1.5 mm texture to survive meshing.
+    // Canal off → `None` → the global cell, byte-identical to before.
+    let cell_size_m = spec
+        .plug_layer_0_mesh_cell_size_m
+        .unwrap_or(spec.mesh_cell_size_m);
+    // ⚠ `None` on the scan-mesh-direct branch, and that is the caveat this
+    // block used to carry as a prediction: `add_plug_pins` READS the plug
+    // now, to size the floor lock's pedestal. On that branch the emitted
+    // mesh is the cleaned scan, not `base_plug`, so a transform sized from
+    // `base_plug` would describe a body that was never meshed. Withholding
+    // the cell size is what says so — the plug still passes through
+    // unchanged either way, so discarding `plug_solid` there stays a
+    // `Solid::clone` waste and nothing more.
+    let (plug_solid, mating_transforms) = add_plug_pins(
+        base_plug,
+        ribbon,
+        scan_mesh.is_none().then_some(cell_size_m),
+    );
+    let (mut mesh, path_label) = if let Some(scan_mesh) = scan_mesh {
+        (build_plug_body_mesh(scan_mesh), "scan-mesh-direct")
+    } else {
+        // Every plug carries the canal feature's non-1-Lipschitz
+        // displacement now: layer-0's plug is the textured plug, and the
+        // N>0 plugs ARE the textured layer bodies (post scan-surface
+        // unification). Pass the canal-field skin so the narrow-band skip
+        // stays byte-identical to the dense bake. Canal off → `None` →
+        // 0.0, plain CSG, identical to before.
+        let field_skin_m = spec.plug_layer_0_field_skin_m.unwrap_or(0.0);
+        (
+            solid_to_mm_mesh_with_skin(&plug_solid, cell_size_m, target, field_skin_m)?,
+            "compose+MC",
+        )
+    };
     // S1.1 of CF_CAST_SCAN_MESH_DIRECT_RECON.md (recon §SMD-7
     // follow-up #1): the cf-scan-prep cleaned scan mesh fails
     // manifold3d's `indexed_mesh_to_manifold` precondition

@@ -2,14 +2,21 @@
 //! must never do is emit the mold anyway with the plug's floor lock lying
 //! loose beside it.
 //!
-//! ★★★ THE DEFECT. `cf_cast::add_plug_pins(plug, ribbon)` takes the ribbon and
-//! nothing else, and both transforms it returns are anchored on the ribbon's
-//! cap-plane. The ribbon is the cleaned scan's centerline: it does not move
-//! when `cavity_inset_m` changes. The plug is `scan.offset(-inset)`, and it
-//! does. Past a threshold the plug's base has climbed clear of the lock and the
-//! two mesh as separate bodies — which shipped as a loose pyramid in the print
-//! and a plug with nothing holding it in the mold, until the refusal that lands
-//! with this file. `cf-studio-gui` offers 0-30 mm.
+//! ★★★ THE DEFECT, and it is CLOSED — read the tables below as history.
+//! `cf_cast::add_plug_pins` took the ribbon and nothing else, and both
+//! transforms it returned were anchored on the ribbon's cap-plane. The ribbon
+//! is the cleaned scan's centerline: it does not move when `cavity_inset_m`
+//! changes. The plug is `scan.offset(-inset)`, and it does. Past a threshold
+//! the plug's base had climbed clear of the lock and the two meshed as separate
+//! bodies — which shipped as a loose pyramid in the print, until the refusal
+//! that landed with this file. `cf-studio-gui` offers 0-30 mm.
+//!
+//! It now takes the plug's mesh cell size and READS the plug, standing the lock
+//! on a PEDESTAL that carries it back down to the cap plane
+//! (`cf_cast::build_plug_lock_pedestal_transform`). The refusal stays as the
+//! backstop for insets no column can reach, which is what the sweep still
+//! gates; `an_inset_that_lifts_the_plug_clear_of_its_lock_is_cast_anyway`
+//! gates the capability that replaced it.
 //!
 //! ★★ WHY A CONE. A straight tube CANNOT show this: its inward offset shrinks
 //! it laterally and the cap-plane cut keeps the base pinned, so the body meets
@@ -69,16 +76,23 @@ const LOCK_BASE_Z_MM: f64 = -4.0;
 
 /// Marching-cubes cell size for the sweep, in meters.
 ///
-/// ⚠ Load-bearing, not a speed knob: the detachment threshold moves with it,
-/// because what bridges the last of the gap is the thin tip of the offset solid
-/// and a coarse grid cannot resolve it. On this cone the plug detaches from
-/// 6.0 mm of inset at this cell size, 7.0 mm at 1.5 mm cells, and 8.0 mm at
-/// 1.0 mm.
+/// ⚠ Load-bearing, not a speed knob: the detachment threshold moves with it.
+/// On THIS cone the plug detaches from 6.0 mm of inset at this cell size,
+/// 7.0 mm at 1.5 mm cells and 8.0 mm at 1.0 mm — finer resolves more of the
+/// thin tip that bridges the last of the gap, so it tolerates more inset.
 ///
-/// The sweep survives that: measured 2026-09-07, both tests pass at 3.0, 1.5
-/// AND 1.0 mm cells (2.9 / 5.6 / 7.3 s), since every inset in [`INSETS_MM`]
-/// either casts whole or is declined at each of them. 3 mm is here for the
-/// cost, not because the gate needs it.
+/// ⛔ That direction is this fixture's, NOT a law. `~/scans/base_mold` REVERSES
+/// it, and a third measured point killed the resolution story twice: what is
+/// really moving is sub-cell GRID ALIGNMENT. Do not carry the mechanism to
+/// another scan; carry only that the threshold is cell-size dependent.
+///
+/// The sweep survives that: measured 2026-09-07, both sweep tests pass at 3.0,
+/// 1.5 AND 1.0 mm cells (2.9 / 5.6 / 7.3 s), since every inset in
+/// [`INSETS_MM`] either casts whole or is declined at each of them. 3 mm is
+/// here for the cost, not because the gate needs it.
+///
+/// ⚠ The pedestal gate below does NOT share it — see [`PEDESTAL_CELL_SIZE_M`],
+/// which asks at a cell size the product actually offers.
 const CELL_SIZE_M: f64 = 0.003;
 
 /// What a cast at one inset produced here: a refusal, or the plug's pieces
@@ -108,12 +122,12 @@ struct Piece {
 ///
 /// ⚠ `caller` is what keeps the two tests apart — see [`cast_synthetic`], which
 /// deletes the directory it builds in.
-fn cast_at(caller: &str, inset_m: f64) -> Outcome {
+fn cast_at(caller: &str, inset_m: f64, cell_size_m: f64) -> Outcome {
     let outcome = cast_synthetic(
         &format!("plug-lock-{caller}"),
         open_cone(0.006, 0.020, 0.030, 24, 13),
         inset_m,
-        CELL_SIZE_M,
+        cell_size_m,
         &PartSelection::from_ids([PartId::Plug { layer_index: 0 }]),
     );
     let emitted = match outcome {
@@ -191,7 +205,7 @@ fn report(pieces: &[Piece]) -> String {
 fn a_cast_never_emits_a_detached_plug_lock() {
     let mut problems = Vec::new();
     for inset_mm in INSETS_MM {
-        match cast_at("sweep", inset_mm / 1e3) {
+        match cast_at("sweep", inset_mm / 1e3, CELL_SIZE_M) {
             // Declining is an answer, as long as it says what it declined —
             // otherwise an unrelated failure (a missing prep file, say) would
             // read as an acceptable one. The pairing test below is what stops a
@@ -228,6 +242,78 @@ fn a_cast_never_emits_a_detached_plug_lock() {
     );
 }
 
+/// The insets the pedestal is for: past the point where this cone's plug has
+/// climbed clear of its floor lock, and short of the point where the cone has
+/// no plug left to mesh at all (20 mm, which keeps its empty-mesh refusal).
+///
+/// Both are rows of the sweep above — 8 and 11 mm shipped a loose pyramid
+/// before #893 and were declined by name after it. This is where that band
+/// gets its capability back.
+const PEDESTAL_INSETS_MM: [f64; 2] = [8.0, 11.0];
+
+/// Marching-cubes cell size for the pedestal gate, in meters — and it is NOT
+/// [`CELL_SIZE_M`].
+///
+/// 1.5 mm is `Fast`, the coarser of the two the wizard actually offers. The
+/// pedestal engages one cell deep, so the cell size is a demand on the plug as
+/// well as on the mesher, and at the 3 mm the sweep runs for its cost this cone
+/// cannot meet it: measured 2026-09-09, the deepest ANY point of its remaining
+/// tip lies inside the plug at 11 mm of inset is 2.48 mm, against 3 mm asked.
+/// It declines instead — the safe direction, and a cell size no operator can
+/// select.
+///
+/// ⚠ So the capability claim below is scoped to shipped quality. Casting the
+/// sweep's own 3 mm here would gate a resolution the product never uses and
+/// would report the fixture's size as the feature's limit.
+const PEDESTAL_CELL_SIZE_M: f64 = 0.0015;
+
+/// ★★★ THE CAPABILITY, and the reason the sweep above cannot stand alone: it
+/// ACCEPTS a refusal, so it stayed green for the whole time these insets could
+/// not be cast at all.
+///
+/// An inset that lifts the plug's base clear of its floor lock is cast anyway,
+/// with the lock carried back down to the cap plane on a pedestal — a column
+/// derived from the plug that `cf_cast::add_plug_pins` used to receive and
+/// ignore. `cf-studio-gui` offers 0-30 mm and the operator's own scan refused
+/// at 7.
+///
+/// ⚠ Written RED: both rows refused by name at the commit before the pedestal.
+#[test]
+fn an_inset_that_lifts_the_plug_clear_of_its_lock_is_cast_anyway() {
+    let mut problems = Vec::new();
+    for inset_mm in PEDESTAL_INSETS_MM {
+        match cast_at("pedestal", inset_mm / 1e3, PEDESTAL_CELL_SIZE_M) {
+            Outcome::Refused(msg) => problems.push(format!(
+                "{inset_mm} mm: declined, when the plug should have ridden down \
+                 to the cap plane on a column: {msg}"
+            )),
+            Outcome::Cast(pieces) => {
+                if pieces.len() != 1 {
+                    problems.push(format!(
+                        "{inset_mm} mm: the plug ships in {} pieces:{}",
+                        pieces.len(),
+                        report(&pieces)
+                    ));
+                } else if (pieces[0].z_min - LOCK_BASE_Z_MM).abs() >= 0.1 {
+                    problems.push(format!(
+                        "{inset_mm} mm: the plug's lowest point is {:.3} mm, not \
+                         the {LOCK_BASE_Z_MM} mm the floor lock reaches — the \
+                         column carried the plug down but not the lock:{}",
+                        pieces[0].z_min,
+                        report(&pieces)
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        problems.is_empty(),
+        "an inset the plug has climbed away from is one the pedestal makes \
+         castable:\n{}",
+        problems.join("\n")
+    );
+}
+
 /// The pairing, and it carries its own weight twice over.
 ///
 /// ⚠ Without it the invariant above passes VACUOUSLY two ways: a cast that
@@ -242,7 +328,7 @@ fn a_cast_never_emits_a_detached_plug_lock() {
 /// print, not a test run, is what re-validates it.
 #[test]
 fn the_poured_configuration_still_gets_its_floor_lock() {
-    let Outcome::Cast(pieces) = cast_at("poured", 0.005) else {
+    let Outcome::Cast(pieces) = cast_at("poured", 0.005, CELL_SIZE_M) else {
         panic!("5 mm is the shipped default and the poured config — it must cast");
     };
     assert_eq!(

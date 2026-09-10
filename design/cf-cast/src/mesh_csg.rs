@@ -61,11 +61,11 @@ use std::collections::HashMap;
 
 use manifold3d::Manifold;
 use mesh_types::IndexedMesh;
-use nalgebra::{Isometry3, Point3, Rotation3, Translation3, UnitVector3, Vector3};
+use nalgebra::{Isometry3, Point3, Rotation3, Translation3, UnitVector3, Vector2, Vector3};
 
 use crate::error::{CastError, CastTarget};
 use crate::mesher::METERS_TO_MM;
-use crate::prismatic_pin::PrismaticPinParams;
+use crate::prismatic_pin::{PrismaticPinParams, PrismaticPinPose};
 
 /// Cross-piece shared geometry triple.
 ///
@@ -159,6 +159,39 @@ pub struct FloorSlabParams {
     /// Seam clip offset (meters): keeps `seam_keep_normal · p >
     /// seam_offset_m`, already biased 1 µm into the kept side.
     pub seam_offset_m: f64,
+}
+
+/// Plug-floor-lock pedestal payload for
+/// [`MatingTransform::UnionLockPedestal`].
+///
+/// A square column, coaxial with the lock, spanning from the plug's
+/// cap-plane face up to plug material the lock cannot reach on its
+/// own. `cavity_inset_m` offsets the plug inward, and where the scan
+/// tapers toward the cap plane that lifts the plug's base clear of
+/// the lock — which is anchored on the ribbon and does not move. See
+/// [`crate::plug::build_plug_lock_pedestal_transform`] for how far it
+/// reaches and what decides that.
+///
+/// **Not a [`PrismaticPinParams`].** This column mates with nothing,
+/// so it carries no clearance and no chamfer — and it has no taper,
+/// which `PrismaticPinParams` asserts (`tip < base`, the
+/// truncated-pyramid contract) rather than merely expects.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LockPedestalParams {
+    /// The lock's own pose — same centre, axis and lateral reference.
+    /// Sharing it is what makes the column coaxial with the lock by
+    /// construction rather than by a second derivation that could
+    /// drift from it.
+    pub pose: PrismaticPinPose,
+    /// Half-extents `(lateral, binormal)` in the pose frame (meters).
+    /// The lock's TIP extents, so the column continues its top face
+    /// flush instead of stepping out over it.
+    pub half_extents_m: Vector2<f64>,
+    /// Axial span `(from, to)` along `pose.axis_unit`, relative to
+    /// `pose.center_m` (meters). `from` is the cap plane; the part
+    /// below the lock's tip is inside the lock frustum already and is
+    /// there so the two overlap whatever the mesher made of the plug.
+    pub axial_span_m: (f64, f64),
 }
 
 /// One mating-feature mesh-CSG operation.
@@ -255,6 +288,16 @@ pub enum MatingTransform {
         /// `PrismaticPin` geometry + pose payload.
         params: PrismaticPinParams,
     },
+    /// Mesh-union of the plug-floor lock's PEDESTAL — the square
+    /// column that carries the lock down to the cap plane once the
+    /// cavity inset has lifted the plug's base clear of it. Emitted
+    /// only when the lock does not reach the plug on its own, so
+    /// every inset that casts without one is untouched. See
+    /// [`LockPedestalParams`].
+    UnionLockPedestal {
+        /// Column geometry + the lock's pose.
+        params: LockPedestalParams,
+    },
     /// Mesh-union of a flat-topped cavity-floor disc, seam-clipped to
     /// this cup piece's side. §MA-S1b option A — replaces the MC'd
     /// cavity-floor region with an exact plane so the floor↔socket↔seam
@@ -339,6 +382,10 @@ fn apply_one(m: &Manifold, t: &MatingTransform) -> Manifold {
         MatingTransform::SubtractTruncatedPyramid { params } => {
             let pyramid = build_truncated_pyramid_via_hull_pts(params);
             m.difference(&pyramid)
+        }
+        MatingTransform::UnionLockPedestal { params } => {
+            let pedestal = build_lock_pedestal_via_hull_pts(params);
+            m.union(&pedestal)
         }
         MatingTransform::UnionFloorSlab { params } => {
             // Flat-topped prism whose footprint follows the cavity
@@ -621,10 +668,19 @@ pub fn build_truncated_pyramid_via_hull_pts(params: &PrismaticPinParams) -> Mani
 
     let local_pyramid = Manifold::hull_pts(&pts);
 
-    // Pose pin-local → world. Mirrors PrismaticPinPose::rotation_local_to_world:
-    // rotation matrix has columns = (lateral_unit, axis_unit, lateral × axis).
-    // Translation is pose.center_m converted to mm.
-    let pose = &params.pose;
+    local_pyramid.transform(&affine_12_from_isometry(&pose_to_world_mm(&params.pose)))
+}
+
+/// The pin-local → world-mm isometry for a [`PrismaticPinPose`].
+///
+/// Mirrors `PrismaticPinPose::rotation_local_to_world`: the rotation's
+/// columns are `(lateral_unit, axis_unit, lateral × axis)`, and the
+/// translation is `center_m` in millimetres.
+///
+/// ★ Shared by every primitive posed on the plug-floor lock — the
+/// frustum and its pedestal — so the column cannot come out in a
+/// different frame from the lock it extends.
+fn pose_to_world_mm(pose: &PrismaticPinPose) -> Isometry3<f64> {
     let lateral = pose.lateral_unit.into_inner();
     let axis = pose.axis_unit.into_inner();
     let third = lateral.cross(&axis);
@@ -635,8 +691,40 @@ pub fn build_truncated_pyramid_via_hull_pts(params: &PrismaticPinParams) -> Mani
         pose.center_m.y * METERS_TO_MM,
         pose.center_m.z * METERS_TO_MM,
     );
-    let iso = Isometry3::from_parts(Translation3::from(center_mm.coords), rotation.into());
-    local_pyramid.transform(&affine_12_from_isometry(&iso))
+    Isometry3::from_parts(Translation3::from(center_mm.coords), rotation.into())
+}
+
+/// Build the plug-floor lock's pedestal — the square column that
+/// carries the lock down to the plug's cap-plane face when the cavity
+/// inset has lifted the plug body clear of it.
+///
+/// Eight hull points: the footprint at each end of
+/// [`LockPedestalParams::axial_span_m`], in the lock's own frame, posed
+/// into world millimetres by the same `pose_to_world_mm` the lock
+/// uses.
+///
+/// Zero taper is the point. The column continues the lock's tip face
+/// without a step, and mates with nothing, so it wants neither draft
+/// nor chamfer — which is also why it is not a
+/// [`build_truncated_pyramid_via_hull_pts`] call with equal extents:
+/// that primitive's params assert a strict taper.
+#[must_use]
+pub fn build_lock_pedestal_via_hull_pts(params: &LockPedestalParams) -> Manifold {
+    let lateral_mm = params.half_extents_m.x * METERS_TO_MM;
+    let third_mm = params.half_extents_m.y * METERS_TO_MM;
+    let mut pts: Vec<[f64; 3]> = Vec::new();
+    for axial_m in [params.axial_span_m.0, params.axial_span_m.1] {
+        for s_third in [-1.0, 1.0] {
+            for s_lateral in [-1.0, 1.0] {
+                pts.push([
+                    s_lateral * lateral_mm,
+                    axial_m * METERS_TO_MM,
+                    s_third * third_mm,
+                ]);
+            }
+        }
+    }
+    Manifold::hull_pts(&pts).transform(&affine_12_from_isometry(&pose_to_world_mm(&params.pose)))
 }
 
 /// Build a slab `Manifold` for half-space intersection.
@@ -1192,6 +1280,51 @@ mod tests {
         assert!((bb.1.x - 31.5).abs() < 0.1, "max.x: {}", bb.1.x);
         assert!((bb.1.y - 15.0).abs() < 0.05, "max.y: {}", bb.1.y);
         assert!((bb.1.z - 1.5).abs() < 0.1, "max.z: {}", bb.1.z);
+    }
+
+    /// The pedestal's size, place and orientation — the only gate that holds
+    /// the column's geometry at the primitive layer.
+    ///
+    /// ⚠ Every number here is chosen to make a specific mistake visible, since
+    /// a square column on a symmetric span posed by an identity rotation would
+    /// survive most of them:
+    ///
+    /// - **half-extents 4 x 2 mm, not square** — a lateral/binormal swap moves
+    ///   the extents between world axes instead of cancelling out.
+    /// - **span (1, 15) mm, neither symmetric nor zero-based** — reading it as
+    ///   `±` or as a length lands the column somewhere else entirely.
+    /// - **axis +Z with lateral +X**, so the pose rotation is NOT the identity:
+    ///   the local `(x, y, z)` lands at world `(x, -z, y)`. Dropping the
+    ///   rotation gives `z ∈ [-2, 2]` where this expects `[6, 20]`.
+    /// - **a centre with NO zero component.** `cargo-mutants` found this: with
+    ///   `z = 0` the metres→mm scale on that axis could be a multiply or a
+    ///   divide and the fixture could not tell, because both give zero.
+    #[test]
+    fn lock_pedestal_spans_its_axial_range_in_the_poses_frame() {
+        let params = LockPedestalParams {
+            pose: PrismaticPinPose::new(
+                Point3::new(0.030, 0.010, 0.005),
+                Vector3::z_axis(),
+                Vector3::x_axis(),
+            ),
+            half_extents_m: Vector2::new(0.004, 0.002),
+            axial_span_m: (0.001, 0.015),
+        };
+        let (lo, hi) = build_lock_pedestal_via_hull_pts(&params)
+            .bounding_box_nalgebra()
+            .unwrap();
+        // Centre (30, 10, 5) mm + local box x ∈ [-4, 4], axial ∈ [1, 15],
+        // binormal ∈ [-2, 2], mapped by (x, y, z) → (x, -z, y).
+        for (got, want, name) in [
+            (lo.x, 26.0, "min.x"),
+            (hi.x, 34.0, "max.x"),
+            (lo.y, 8.0, "min.y"),
+            (hi.y, 12.0, "max.y"),
+            (lo.z, 6.0, "min.z"),
+            (hi.z, 20.0, "max.z"),
+        ] {
+            assert!((got - want).abs() < 1e-6, "{name}: {got} != {want}");
+        }
     }
 
     #[test]

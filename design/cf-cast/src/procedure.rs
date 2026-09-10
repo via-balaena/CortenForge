@@ -1920,6 +1920,21 @@ fn seam_face_check(present: &[SeamFeature]) -> String {
 /// ⚠ `PlugPinKind` is OFF by default, so the unconditional form demanded a
 /// pyramid the default cast never generates — inside a checklist whose failure
 /// instruction is "do NOT proceed to print".
+///
+/// ▶ **DEFERRED, and named rather than guessed at: neither bullet mentions the
+/// lock's PEDESTAL** ([`crate::plug::build_plug_lock_pedestal_transform`]), the
+/// column a deep cavity inset puts under the lock. Both stay TRUE when one is
+/// present — the lock still protrudes from the cap-plane face with flat tapered
+/// sides — so this is incompleteness, not a wrong instruction, which is why it
+/// is a note and not a rushed sentence.
+///
+/// ⛔ Do NOT close it by recomputing the pedestal here. Whether one exists
+/// turns on the plug solid, the mesh cell size AND the scan-mesh-direct branch,
+/// and this sheet is rendered BEFORE the plugs are meshed
+/// (`CastSpec::export_molds_v2` writes the procedure, then meshes) — so a copy
+/// of that decision would be a third definition free to drift from the two that
+/// matter. The shape that works is the one `carved_features` already uses:
+/// compute it ONCE where it is decided and hand the answer to the sheet.
 const fn plug_piece_checks(has_plug_lock: bool) -> (&'static str, &'static str) {
     if has_plug_lock {
         (
