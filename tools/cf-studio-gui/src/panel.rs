@@ -951,14 +951,15 @@ fn draw_make_molds(
     ui.add_space(SECTION_GAP);
     draw_parts_picker(ui, molds, ready, has_rows);
 
-    if let Some(summary) = studio.project.molds().map(format_molds_summary) {
+    if let Some(outputs) = studio.project.molds() {
+        let summary = format_molds_summary(outputs);
         ui.add_space(SECTION_GAP);
         card(ui, GOOD_FILL, |ui| {
             wrapped_colored(ui, GOOD_TEXT, summary);
         });
         // A separate card, not appended to the summary above: that one is
         // about THIS CAST, and this is about the folder it landed in.
-        if let Some(note) = format_stale_parts(studio.stale.as_ref()) {
+        if let Some(note) = format_stale_parts(studio.stale.as_ref(), &outputs.out_dir) {
             ui.add_space(SECTION_GAP);
             card(ui, WARN_FILL, |ui| {
                 wrapped_colored(ui, WARN_NOTE_TEXT, note);
@@ -1534,6 +1535,18 @@ fn draw_print(ui: &mut egui::Ui, studio: &Studio, ready: bool) -> Option<Intent>
         ui.add_space(12.0);
         card(ui, GOOD_FILL, |ui| wrapped_colored(ui, GOOD_TEXT, summary));
     }
+
+    // ⚠ The same roster step 5 draws, on the step where it costs filament.
+    // Not a duplicate for its own sake: a session resumed days later opens
+    // here, and step 5's card is then a screen the user never looks at.
+    if let Some(outputs) = studio.project.molds()
+        && let Some(note) = format_stale_parts(studio.stale.as_ref(), &outputs.out_dir)
+    {
+        ui.add_space(12.0);
+        card(ui, WARN_FILL, |ui| {
+            wrapped_colored(ui, WARN_NOTE_TEXT, note);
+        });
+    }
     intent
 }
 
@@ -1921,17 +1934,23 @@ pub(crate) mod tests {
             cf_studio_gui::format_elapsed(3671),
             cf_studio_gui::print_step_summary(&project),
             cf_studio_gui::format_molds_summary(&molds),
-            // Both step-5 provenance forms: the folder with no record, and
-            // the one naming older parts. ⚠ and • are the glyphs at risk.
-            cf_studio_gui::format_stale_parts(None).expect("the unknown form"),
-            cf_studio_gui::format_stale_parts(Some(&cf_studio_gui::RunProvenance {
-                run: 3,
-                stale: vec![cf_studio_gui::ManifestEntry {
-                    file: "plug_layer_1.stl".to_string(),
-                    run: cf_studio_gui::UNKNOWN_RUN,
-                }],
-            }))
+            // Every provenance form: the folder with no record, the one
+            // naming older parts, and the print folder holding more than the
+            // save wrote. ⚠ and • are the glyphs at risk.
+            cf_studio_gui::format_stale_parts(None, std::path::Path::new("/tmp/out"))
+                .expect("the unknown form"),
+            cf_studio_gui::format_stale_parts(
+                Some(&cf_studio_gui::RunProvenance {
+                    run: 3,
+                    stale: vec![cf_studio_gui::ManifestEntry {
+                        file: "plug_layer_1.stl".to_string(),
+                        run: cf_studio_gui::UNKNOWN_RUN,
+                    }],
+                }),
+                std::path::Path::new("/tmp/out"),
+            )
             .expect("the stale form"),
+            cf_studio_gui::format_print_destination_note(1, Some(5)).expect("the leftover form"),
             format_pour_plan(&molds.pour_plan),
             format_pour_active(&molds.pour_plan, 0),
             crate::save::overwrite_question(&studio, &dir),
@@ -2218,7 +2237,8 @@ pub(crate) mod tests {
             }],
         });
         let note =
-            cf_studio_gui::format_stale_parts(studio.stale.as_ref()).expect("one part is stale");
+            cf_studio_gui::format_stale_parts(studio.stale.as_ref(), std::path::Path::new("out"))
+                .expect("one part is stale");
 
         let mut molds = crate::molds::tests::controls_for(1);
         let drawn = text_in_column(|ui| {
@@ -2228,6 +2248,51 @@ pub(crate) mod tests {
         assert!(
             drawn.contains(&note),
             "the caution card is not on the screen; drawn: {drawn:?}"
+        );
+    }
+
+    /// ⚠⚠ And on the step where it costs filament.
+    ///
+    /// Step 5's card and this one are separate draws of the same roster, so
+    /// the gate above says nothing about this one: deleting the step-6 card
+    /// leaves every other gate in this crate green. That is the shape of
+    /// wiring, which no mutation sweep reaches.
+    ///
+    /// This is the screen a resumed session opens on — the case where the
+    /// user has not seen step 5's card at all.
+    #[test]
+    fn the_caution_card_reaches_the_print_screen() {
+        let mut studio = crate::molds::tests::viewing_step_5_with(1);
+        studio
+            .project
+            .set_molds(cf_studio_core::MoldOutputs {
+                out_dir: std::path::PathBuf::from("out"),
+                mold_stls: Vec::new(),
+                plug_stls: Vec::new(),
+                accessory_stls: Vec::new(),
+                procedure_path: std::path::PathBuf::from("out/procedure.md"),
+                total_mass_g: 80.0,
+                pour_plan: cf_studio_core::PourPlan { steps: Vec::new() },
+            })
+            .expect("in workflow order");
+        studio.stale = Some(cf_studio_gui::RunProvenance {
+            run: 3,
+            stale: vec![cf_studio_gui::ManifestEntry {
+                file: "plug_layer_1.stl".to_string(),
+                run: 1,
+            }],
+        });
+        let note =
+            cf_studio_gui::format_stale_parts(studio.stale.as_ref(), std::path::Path::new("out"))
+                .expect("one part is stale");
+
+        let drawn = text_in_column(|ui| {
+            let _ = draw_print(ui, &studio, true);
+        });
+
+        assert!(
+            drawn.contains(&note),
+            "the caution card is not on the print screen; drawn: {drawn:?}"
         );
     }
 
@@ -2630,6 +2695,138 @@ pub(crate) mod tests {
                 "the summary card must carry {expected:?}, not just its first line: {card:?}"
             );
         }
+    }
+
+    /// ⚠⚠ Step 1 — the screen the app opens on — through the real dispatch.
+    ///
+    /// The third of three, and the reason the other two exist: auditing every
+    /// arm of `wizard_screen`'s match found that the ONE-LINE arms
+    /// (`acted.nav = draw_x(..)`) were the ungated ones — steps 1, 6 and 7 —
+    /// while every block-form arm was already held by 1 to 11 gates. Whether
+    /// the form is why has not been established; the counts are what was
+    /// measured.
+    #[test]
+    fn the_first_screen_is_reached_through_the_wizards_own_dispatch() {
+        let mut app = app_running_the_wizard();
+        settle(&mut app);
+        let painted = painted_texts(&app);
+
+        assert!(
+            painted.iter().any(|text| text.contains("Choose scan file")),
+            "the app's opening screen never reached it: {painted:?}"
+        );
+        assert!(
+            painted
+                .iter()
+                .any(|text| text.contains("Works with STL, OBJ, PLY, and 3MF scans.")),
+            "step 1 drew its control but lost the rest of the screen: {painted:?}"
+        );
+    }
+
+    /// ⚠⚠ Step 6 through the wizard's OWN dispatch, not a direct call.
+    ///
+    /// `the_caution_card_reaches_the_print_screen` calls `draw_print` itself,
+    /// which proves the card is drawn but says nothing about the screen being
+    /// reached. Measured: replacing `Step::Print`'s arm in `wizard_screen`
+    /// with `None` blanks step 6 entirely — no Save button, no summary, no
+    /// card — and every other gate in the crate stayed green.
+    #[test]
+    fn the_print_screen_is_reached_through_the_wizards_own_dispatch() {
+        let mut app = app_running_the_wizard();
+        let mut studio = crate::molds::tests::viewing_step_5_with(1);
+        studio
+            .project
+            .set_molds(crate::jobs::tests::some_molds("out-print-dispatch"))
+            .expect("the fixture records a cast");
+        studio.stale = Some(cf_studio_gui::RunProvenance {
+            run: 3,
+            stale: vec![cf_studio_gui::ManifestEntry {
+                file: "plug_layer_1.stl".to_string(),
+                run: 1,
+            }],
+        });
+        studio.next();
+        assert_eq!(
+            studio.cursor.viewed(),
+            Step::Print,
+            "the fixture must be looking at step 6 for this to mean anything"
+        );
+        app.insert_resource(studio);
+
+        settle(&mut app);
+        let painted = painted_texts(&app);
+
+        assert!(
+            painted
+                .iter()
+                .any(|text| text.contains("Save files for printing")),
+            "step 6's own control never reached the screen: {painted:?}"
+        );
+        // ⚠ `cargo-mutants` found this ungated: deleting the `!` from
+        // `if !summary.is_empty()` drops the status line from the screen
+        // entirely, and every hand-picked mutation in this branch missed it.
+        assert!(
+            painted
+                .iter()
+                .any(|text| text.contains("Ready to save the 2 part(s) this cast made")),
+            "step 6's status line never reached the screen: {painted:?}"
+        );
+        // ⚠ The whole galley, for the reason the summary gate above gives: a
+        // card that had lost everything below its first line would pass an
+        // assertion on the header alone.
+        let card = painted
+            .iter()
+            .find(|text| text.contains("were NOT regenerated"))
+            .map_or("", String::as_str);
+        for expected in [
+            "1 part(s) in out-print-dispatch/stls",
+            "(run 3)",
+            "• plug_layer_1.stl — run 1",
+        ] {
+            assert!(
+                card.contains(expected),
+                "the caution card must carry {expected:?}: {card:?}"
+            );
+        }
+    }
+
+    /// ⚠⚠ The sibling of the gate above, found by auditing EVERY arm of the
+    /// dispatch rather than only the one this branch touched.
+    ///
+    /// Same measurement, same result: replacing `Step::Pour`'s arm with `None`
+    /// blanked step 7 and nothing in the suite noticed.
+    #[test]
+    fn the_pour_screen_is_reached_through_the_wizards_own_dispatch() {
+        let mut app = app_running_the_wizard();
+        let mut studio = crate::molds::tests::viewing_step_5_with(1);
+        studio
+            .project
+            .set_molds(crate::jobs::tests::some_molds("out-pour-dispatch"))
+            .expect("the fixture records a cast");
+        studio
+            .project
+            .set_print(cf_studio_core::PrintExport {
+                export_dir: std::path::PathBuf::from("out-pour-dispatch/print"),
+            })
+            .expect("the fixture records an export");
+        studio.next();
+        studio.next();
+        assert_eq!(
+            studio.cursor.viewed(),
+            Step::Pour,
+            "the fixture must be looking at step 7 for this to mean anything"
+        );
+        app.insert_resource(studio);
+
+        settle(&mut app);
+        let painted = painted_texts(&app);
+
+        assert!(
+            painted
+                .iter()
+                .any(|text| text.contains("Pour plan — 2 layer(s), innermost first:")),
+            "step 7's plan never reached the screen: {painted:?}"
+        );
     }
 
     /// Step 5 rendered for real, with `molds` as the step-5 controls.

@@ -66,7 +66,7 @@ pub use derive::{
     resolve_canal_spec,
 };
 pub use manifest::{
-    MANIFEST_FILENAME, ManifestEntry, RunProvenance, UNKNOWN_RUN, folder_provenance,
+    MANIFEST_FILENAME, ManifestEntry, RunProvenance, UNKNOWN_RUN, folder_provenance, stls_dir_in,
 };
 pub use prep::parse_centerline_from_prep_toml;
 pub use scan::{SharedScanSdf, load_scan_sdf};

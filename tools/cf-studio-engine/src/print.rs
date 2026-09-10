@@ -21,6 +21,19 @@ pub struct PrintExportReport {
     pub export: PrintExport,
     /// Number of `.stl` files copied (mold halves + plugs + accessories).
     pub stl_count: usize,
+    /// Number of `.stl` files `dest_dir` holds **after** the copy, or `None`
+    /// if the folder could not be read back.
+    ///
+    /// The destination is never cleared, so it ends up holding the union of
+    /// what was already there and what this export wrote. That makes
+    /// `Some(n)` with `n > stl_count` the exact test for "this folder holds a
+    /// printable this export did not write" — equality means every file
+    /// already present was overwritten.
+    ///
+    /// ⚠ `None`, not `0`, when the read fails: zero is a real answer (an
+    /// export that copied nothing into an empty folder) and must not double
+    /// as "couldn't look".
+    pub dest_stl_count: Option<usize>,
     /// Whether the `procedure.md` was copied too (absent on a run that
     /// somehow didn't emit one).
     pub procedure_copied: bool,
@@ -32,7 +45,12 @@ pub struct PrintExportReport {
 /// the [`PrintExport`] to record on the project.
 ///
 /// Files are copied (not moved) so the cast's output directory stays
-/// intact; re-exporting overwrites same-named files in `dest_dir`.
+/// intact; re-exporting overwrites same-named files in `dest_dir` and
+/// **leaves every other file where it is**. A selective cast reports only
+/// the part it regenerated, so re-exporting after one copies that part into
+/// a folder still holding the rest of the previous package.
+/// [`PrintExportReport::dest_stl_count`] reports what the folder holds once
+/// the copy is done; deciding what to do about it is the caller's.
 ///
 /// # Errors
 /// [`EngineError::ExportPrint`] if `dest_dir` can't be created, a source
@@ -65,8 +83,36 @@ pub fn export_print_package(molds: &MoldOutputs, dest_dir: &Path) -> Result<Prin
             export_dir: dest_dir.to_path_buf(),
         },
         stl_count,
+        dest_stl_count: count_stls(dest_dir),
         procedure_copied,
     })
+}
+
+/// How many `.stl` files `dir` holds, or `None` if it could not be read.
+///
+/// ⚠ This reads a directory that outlives the run, which the cast's own
+/// export was once deleted for doing — but the claim is the opposite one.
+/// That glob answered *"what did this run produce"*, which a directory cannot
+/// know, and handed back orphans from earlier casts as the run's own output.
+/// This answers *"what does this folder hold now"*, which is the only
+/// question a directory can answer and the only way to tell someone what
+/// their slicer is about to see.
+///
+/// A directory named `foo.stl` is not a printable file.
+fn count_stls(dir: &Path) -> Option<usize> {
+    Some(
+        std::fs::read_dir(dir)
+            .ok()?
+            .flatten()
+            .filter(|e| {
+                let path = e.path();
+                path.is_file()
+                    && path
+                        .extension()
+                        .is_some_and(|x| x.eq_ignore_ascii_case("stl"))
+            })
+            .count(),
+    )
 }
 
 /// Copy `src` into `dest_dir` under its filename. Skips the copy when the
@@ -109,6 +155,16 @@ mod tests {
             "cf-studio-engine-print-test-{}-{label}",
             std::process::id()
         ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A directory guaranteed empty, for the tests that assert a COUNT: a
+    /// run that panicked before its cleanup would otherwise leave files
+    /// behind and move the number.
+    fn fresh_dir(label: &str) -> PathBuf {
+        let dir = temp_dir(label);
+        std::fs::remove_dir_all(&dir).unwrap();
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -213,6 +269,62 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(&src);
+    }
+
+    /// The destination is never cleared, so the report has to say what the
+    /// folder HOLDS — not only what this export put in it.
+    ///
+    /// ⚠ The two numbers answer different questions: `stl_count` is "what did
+    /// I copy", `dest_stl_count` is "what will the slicer see". A selective
+    /// cast makes them differ, and only the second one gets printed.
+    #[test]
+    fn the_report_counts_what_the_destination_holds_not_only_what_it_copied() {
+        let src = fresh_dir("src-dest-count");
+        let dest = fresh_dir("dest-dest-count");
+        let molds = molds_with_files(&src);
+
+        // Already there, from an export nothing in this run knows about.
+        std::fs::write(dest.join("plug_layer_7.stl"), b"solid old\n").unwrap();
+        // A DIRECTORY whose name ends in `.stl` is not a printable file —
+        // the trap that got past two review rounds on the manifest.
+        std::fs::create_dir_all(dest.join("not_a_part.stl")).unwrap();
+
+        let report = export_print_package(&molds, &dest).unwrap();
+
+        assert_eq!(report.stl_count, 4, "this export copied four parts");
+        assert_eq!(
+            report.dest_stl_count,
+            Some(5),
+            "the four copied plus the leftover — the directory is not a part, \
+             and procedure.md is not a printable"
+        );
+
+        let _ = std::fs::remove_dir_all(&src);
+        let _ = std::fs::remove_dir_all(&dest);
+    }
+
+    /// The negative control for the gate above.
+    ///
+    /// Equality is what tells the caller there is nothing else in the folder,
+    /// so it has to actually hold on a clean export — a count wrong in the
+    /// other direction would warn on every save, and a warning that always
+    /// fires stops being read.
+    #[test]
+    fn a_clean_export_leaves_the_two_counts_equal() {
+        let src = fresh_dir("src-clean-count");
+        let dest = fresh_dir("dest-clean-count");
+        let molds = molds_with_files(&src);
+
+        let report = export_print_package(&molds, &dest).unwrap();
+
+        assert_eq!(
+            report.dest_stl_count,
+            Some(report.stl_count),
+            "nothing was in this folder that the export did not write"
+        );
+
+        let _ = std::fs::remove_dir_all(&src);
+        let _ = std::fs::remove_dir_all(&dest);
     }
 
     #[test]
