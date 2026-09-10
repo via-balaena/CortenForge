@@ -558,6 +558,14 @@ const PEDESTAL_MARCH_MIN_STEP_CELLS: f64 = 0.125;
 /// plug either question is about.
 const PEDESTAL_MARCH_MAX_STEP_CELLS: f64 = 1.0;
 
+// The march clamps its step between these two, and `f64::clamp` PANICS when
+// its minimum exceeds its maximum. `build_plug_lock_pedestal_transform` refuses
+// a cell size that could invert them; this refuses an EDIT that would.
+const _: () = assert!(
+    PEDESTAL_MARCH_MIN_STEP_CELLS < PEDESTAL_MARCH_MAX_STEP_CELLS,
+    "the march's step floor must stay below its ceiling, or `f64::clamp` panics",
+);
+
 /// The rays the pedestal is decided on: the column's four footprint
 /// corners and its centre, marched along the lock's axis.
 ///
