@@ -2729,7 +2729,7 @@ pub(crate) mod tests {
     /// which proves the card is drawn but says nothing about the screen being
     /// reached. Measured: replacing `Step::Print`'s arm in `wizard_screen`
     /// with `None` blanks step 6 entirely — no Save button, no summary, no
-    /// card — and all 357 gates stayed green.
+    /// card — and every other gate in the crate stayed green.
     #[test]
     fn the_print_screen_is_reached_through_the_wizards_own_dispatch() {
         let mut app = app_running_the_wizard();
@@ -2785,9 +2785,7 @@ pub(crate) mod tests {
     /// dispatch rather than only the one this branch touched.
     ///
     /// Same measurement, same result: replacing `Step::Pour`'s arm with `None`
-    /// blanked step 7 and nothing in the suite noticed. Steps 4 and 5 were
-    /// already held by 4 and 8 gates respectively — it was the two arms
-    /// written as one-line expressions that had none.
+    /// blanked step 7 and nothing in the suite noticed.
     #[test]
     fn the_pour_screen_is_reached_through_the_wizards_own_dispatch() {
         let mut app = app_running_the_wizard();
