@@ -52,6 +52,16 @@ const MANIFEST_HEADER: &str = "\
 # file then present is recorded as run = 0.
 ";
 
+/// Where a cast's STLs live under its output directory.
+///
+/// ⚠ The ONE definition. A message that names a different folder than the one
+/// [`folder_provenance`] read is a warning pointing at a directory the files
+/// are not in — which is exactly what the warning exists to prevent.
+#[must_use]
+pub fn stls_dir(out_dir: &Path) -> PathBuf {
+    out_dir.join(cf_cast::STLS_SUBDIR)
+}
+
 /// One STL in the folder, and the export that wrote it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManifestEntry {
@@ -161,7 +171,7 @@ pub fn record_run(stls_dir: &Path, written: &[PathBuf]) -> Result<RunProvenance>
 /// folder as current on the strength of it.
 #[must_use]
 pub fn folder_provenance(out_dir: &Path) -> Option<RunProvenance> {
-    let stls_dir = out_dir.join(cf_cast::STLS_SUBDIR);
+    let stls_dir = stls_dir(out_dir);
     let manifest = load_existing(&stls_dir)?;
     let run = manifest.latest_run;
     // ⚠ [`UNKNOWN_RUN`] is 0, so a manifest claiming 0 as its latest run would
@@ -302,7 +312,7 @@ fn stl_file_name(path: &Path) -> Option<String> {
 /// returns `None`, which callers carry as "not known" rather than
 /// flattening to "nothing stale".
 pub(crate) fn stamp_output_folder(out_dir: &Path, written: &[PathBuf]) -> Option<RunProvenance> {
-    let stls_dir = out_dir.join(cf_cast::STLS_SUBDIR);
+    let stls_dir = stls_dir(out_dir);
     match record_run(&stls_dir, written) {
         Ok(provenance) => {
             if let Some(warning) = provenance.warning_line() {

@@ -29,7 +29,7 @@ use cf_studio_core::{
 };
 use cf_studio_engine::{
     CastMode, PartId, PartSelection, PieceSide, PlugFit, accept_prep, draft_from_design_toml,
-    load_scan, silicone_catalog,
+    load_scan, silicone_catalog, stls_dir,
 };
 pub use cf_studio_engine::{ManifestEntry, RunProvenance, UNKNOWN_RUN};
 
@@ -511,7 +511,11 @@ fn stale_bullets(stale: &[ManifestEntry]) -> String {
 /// different paths, and three of them have their own gates.
 #[must_use]
 pub fn format_stale_parts(provenance: Option<&RunProvenance>, out_dir: &Path) -> Option<String> {
-    let dir = out_dir.display();
+    // ⚠ Not `out_dir`. The roster is read from the `stls` folder beneath it,
+    // and naming the parent sends someone to a directory holding none of the
+    // files the message goes on to list.
+    let parts_dir = stls_dir(out_dir);
+    let dir = parts_dir.display();
     let Some(p) = provenance else {
         return Some(format!(
             "⚠ {dir} carries no record of which parts are current. \
@@ -2914,7 +2918,7 @@ visible = true
             .expect("silence would be the bug");
         assert!(note.contains("no record"), "got: {note}");
         assert!(
-            note.contains("/tmp/scans/session-7/out"),
+            note.contains("/tmp/scans/session-7/out/stls"),
             "it must name the folder it read, or step 6 reads it as a claim \
              about the print folder: {note}"
         );
@@ -2968,7 +2972,7 @@ visible = true
         // is read from the CAST's folder and this line is also drawn on step
         // 6, where the screen is about a print folder the user picked.
         assert!(
-            note.contains("/tmp/scans/session-7/out"),
+            note.contains("/tmp/scans/session-7/out/stls"),
             "it must name the folder it read: {note}"
         );
         assert!(note.contains("(run 3)"), "names the latest run: {note}");

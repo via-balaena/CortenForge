@@ -2770,7 +2770,7 @@ pub(crate) mod tests {
             .find(|text| text.contains("were NOT regenerated"))
             .map_or("", String::as_str);
         for expected in [
-            "1 part(s) in out-print-dispatch",
+            "1 part(s) in out-print-dispatch/stls",
             "(run 3)",
             "• plug_layer_1.stl — run 1",
         ] {
