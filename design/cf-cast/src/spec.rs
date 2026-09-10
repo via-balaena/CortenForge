@@ -1792,58 +1792,6 @@ struct ComposedPlug {
     repair_summary: Option<ScanMeshRepairSummary>,
 }
 
-/// Everything one layer's plug compose turns on, derived from the spec alone
-/// — before anything is meshed.
-///
-/// ★ ONE origin for three inputs that must not disagree: the base plug solid,
-/// the cell the transforms are applied at, and whether this layer takes the
-/// scan-mesh-direct branch.
-struct PlugComposeInputs<'a> {
-    /// `spec.plug` for layer 0, `spec.layers[N - 1].body` above it.
-    base_plug: Solid,
-    /// The cf-scan-prep cleaned scan mesh, copied through instead of meshed,
-    /// when layer 0 takes that branch. `None` means SDF → marching cubes.
-    scan_mesh: Option<&'a Arc<IndexedMesh>>,
-    /// The cell this plug meshes at.
-    cell_size_m: f64,
-}
-
-impl PlugComposeInputs<'_> {}
-
-/// See [`PlugComposeInputs`].
-fn plug_compose_inputs(spec: &CastSpec, layer_index: usize) -> PlugComposeInputs<'_> {
-    let base_plug = if layer_index == 0 {
-        spec.plug.clone()
-    } else {
-        spec.layers[layer_index - 1].body.clone()
-    };
-    // S1 of CF_CAST_SCAN_MESH_DIRECT_RECON.md: when the
-    // feature flag is set, layer 0 bypasses the SDF → MC
-    // pipeline and copies the cf-scan-prep cleaned scan mesh
-    // directly. Mating-feature transforms still apply post-
-    // copy (cap-plane SeamTrim + plug-lock pyramid union).
-    // Layers 1+ stay on the SDF/MC path until S2 of the
-    // recon extends scan-mesh-direct to the offset cases.
-    let scan_mesh = if layer_index == 0 {
-        spec.scan_mesh_for_plug_layer_0.as_ref()
-    } else {
-        None
-    };
-    // Every plug uses the per-plug fine cell size when set (the canal
-    // path): layer-0's plug and the N>0 plugs (the textured layer
-    // bodies) all carry the canal field now, so they all need the fine
-    // cell for the sub-cm rings + ~1.5 mm texture to survive meshing.
-    // Canal off → `None` → the global cell, byte-identical to before.
-    let cell_size_m = spec
-        .plug_layer_0_mesh_cell_size_m
-        .unwrap_or(spec.mesh_cell_size_m);
-    PlugComposeInputs {
-        base_plug,
-        scan_mesh,
-        cell_size_m,
-    }
-}
-
 /// Compose + mesh one layer's plug and verify its floor lock actually fused to
 /// it — everything [`mesh_and_gate_v2_one_plug`] does BEFORE the STL write and
 /// the F4 printability gate.
@@ -1872,12 +1820,29 @@ fn compose_plug_mesh(
     let target = CastTarget::Plug {
         layer_index: Some(layer_index),
     };
-    let inputs = plug_compose_inputs(spec, layer_index);
-    let PlugComposeInputs {
-        base_plug,
-        scan_mesh,
-        cell_size_m,
-    } = inputs;
+    let base_plug = if layer_index == 0 {
+        spec.plug.clone()
+    } else {
+        spec.layers[layer_index - 1].body.clone()
+    };
+    // S1 of CF_CAST_SCAN_MESH_DIRECT_RECON.md: when the feature flag is set,
+    // layer 0 bypasses the SDF → MC pipeline and copies the cf-scan-prep
+    // cleaned scan mesh directly. Mating-feature transforms still apply post-
+    // copy. Layers 1+ stay on the SDF/MC path until S2 of the recon extends
+    // scan-mesh-direct to the offset cases.
+    let scan_mesh = if layer_index == 0 {
+        spec.scan_mesh_for_plug_layer_0.as_ref()
+    } else {
+        None
+    };
+    // Every plug uses the per-plug fine cell size when set (the canal path):
+    // layer-0's plug and the N>0 plugs (the textured layer bodies) all carry
+    // the canal field, so they all need the fine cell for the sub-cm rings +
+    // ~1.5 mm texture to survive meshing. Canal off → `None` → the global
+    // cell, byte-identical to before.
+    let cell_size_m = spec
+        .plug_layer_0_mesh_cell_size_m
+        .unwrap_or(spec.mesh_cell_size_m);
     // ⚠ The plug passes through unchanged, so discarding `plug_solid` on the
     // scan-mesh-direct branch is a `Solid::clone` waste and nothing more.
     let (plug_solid, mating_transforms) = add_plug_pins(base_plug, ribbon);
@@ -3743,6 +3708,90 @@ mod tests {
         let split = SplitNormal::new(Vector3::new(0.0, 1.0, 0.0)).unwrap();
         let ribbon = Ribbon::new(centerline, split).unwrap();
         (spec, ribbon)
+    }
+
+    /// ★★★ The plug meshes at the PER-PLUG cell when the canal path sets one,
+    /// not the global cell.
+    ///
+    /// `cf-cast-cli`'s `derive.rs` is the only producer of
+    /// `plug_layer_0_mesh_cell_size_m` and it is the path that ships. NO test
+    /// in this crate set it before: `compose_plug_mesh` could drop the field
+    /// for `spec.mesh_cell_size_m` and stay green. That hole was found once in
+    /// review, gated inside the plug-lock pedestal's wiring test, and reopened
+    /// when the pedestal was deleted — so it lives on its own now.
+    ///
+    /// ⚠ EQUALITY, not "a bit coarser". A per-plug cell of X must give the
+    /// same mesh as a global cell of X, which pins WHICH value reached the
+    /// mesher; a triangle-count inequality would also pass on a cell that is
+    /// merely wrong in the right direction.
+    #[test]
+    fn the_plug_meshes_at_the_per_plug_cell_not_the_global_one() {
+        let (mut spec, ribbon) = v2_fixture();
+        // `unwrap`, not `expect` — the module denies `expect_used`.
+        let mesh_of = |spec: &CastSpec| super::compose_plug_mesh(spec, &ribbon, 0).unwrap().mesh;
+
+        spec.mesh_cell_size_m = 0.012;
+        spec.plug_layer_0_mesh_cell_size_m = None;
+        let global_coarse = mesh_of(&spec);
+
+        spec.mesh_cell_size_m = 0.006;
+        spec.plug_layer_0_mesh_cell_size_m = Some(0.012);
+        let per_plug_coarse = mesh_of(&spec);
+
+        spec.plug_layer_0_mesh_cell_size_m = None;
+        let global_fine = mesh_of(&spec);
+
+        // The control: the two cells really do produce different meshes, or
+        // the equality below holds for the wrong reason.
+        assert_ne!(
+            global_coarse.faces.len(),
+            global_fine.faces.len(),
+            "6 mm and 12 mm cells must mesh differently for this to gate anything"
+        );
+        assert_eq!(
+            (per_plug_coarse.vertices, per_plug_coarse.faces),
+            (global_coarse.vertices, global_coarse.faces),
+            "a 12 mm per-plug cell against a 6 mm global one must mesh as 12 mm"
+        );
+    }
+
+    /// ★★★ Each layer's plug is cast against the surface it must fit: layer 0
+    /// takes `spec.plug`, layer N takes `layers[N - 1].body` — the previous
+    /// layer's OUTER surface, so the cured tubes nest.
+    ///
+    /// ⚠ Gated because NOTHING else catches it. Taking `spec.plug` for every
+    /// layer — the off-by-one this pins — left all 417 tests green when
+    /// measured 2026-09-10. The assertion that used to cover it rode inside the
+    /// plug-lock pedestal's wiring test and went out with the pedestal.
+    ///
+    /// ⚠ EQUALITY against a spec whose plug IS `layers[0].body`, not merely
+    /// "layer 1 differs from layer 0": difference alone passes on any wrong
+    /// solid, and the failure mode here is using the wrong one, not none.
+    #[test]
+    fn each_layers_plug_is_the_previous_layers_outer_surface() {
+        let (spec, ribbon) = two_layer_fixture();
+        // `unwrap`, not `expect` — the module denies `expect_used`.
+        let mesh_of = |spec: &CastSpec, layer: usize| {
+            super::compose_plug_mesh(spec, &ribbon, layer).unwrap().mesh
+        };
+
+        let layer_1_plug = mesh_of(&spec, 1);
+        let mut as_if_layer_0 = spec.clone();
+        as_if_layer_0.plug = spec.layers[0].body.clone();
+        let expected = mesh_of(&as_if_layer_0, 0);
+
+        // The control: the two layers' plugs really are different solids, so
+        // the equality below is not trivially satisfied.
+        assert_ne!(
+            mesh_of(&spec, 0).faces.len(),
+            layer_1_plug.faces.len(),
+            "the fixture's two layers must give different plugs to gate this"
+        );
+        assert_eq!(
+            (layer_1_plug.vertices, layer_1_plug.faces),
+            (expected.vertices, expected.faces),
+            "layer 1's plug must be composed from `layers[0].body`"
+        );
     }
 
     fn clean_dir(out_dir: &std::path::Path) {
