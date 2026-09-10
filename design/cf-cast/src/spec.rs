@@ -4117,12 +4117,21 @@ mod tests {
             mixed_sheet.contains("\n   - Where a plug piece's lock stands clear"),
             "the mixed cast must carry the same bullet as the uniform one"
         );
-        // Both sheets still describe the lock itself, so the difference above
-        // is the column and not the whole plug-lock section vanishing.
+        // Both sheets still carry the lock and dome bullets, so the column
+        // difference above is the column and not the section collapsing.
+        //
+        // ⚠ Asserted WITH the list-item prefix. A bare "truncated-pyramid
+        // lock" also matches `write_print_orientation_plug_pieces`, so the
+        // first version of this held nothing: `cargo-mutants` emptied
+        // `plug_piece_checks` and every test stayed green.
         for (label, sheet) in [("seated", &seated_sheet), ("lifted", &lifted_sheet)] {
             assert!(
-                sheet.contains("truncated-pyramid lock"),
-                "the {label} sheet lost the lock bullet entirely"
+                sheet.contains("\n   - Cap-plane face carries a single truncated-pyramid lock"),
+                "the {label} sheet lost the plug-piece lock bullet"
+            );
+            assert!(
+                sheet.contains("\n   - Dome end is smooth and closed"),
+                "the {label} sheet lost the plug-piece dome bullet"
             );
         }
     }
