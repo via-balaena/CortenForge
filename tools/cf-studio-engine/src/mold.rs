@@ -67,7 +67,8 @@ pub fn generate_molds_for_design(
     cast_mode: CastMode,
     output_dir_override: Option<&Path>,
 ) -> Result<MoldOutputs> {
-    // ⚠ One statement each, never a positional pair — see `plug_fit_preflight`.
+    // ⚠ Swappable, unlike the arguments above — see `plug_fit_preflight`. Held
+    // here by `generate_molds_for_design_writes_the_design_toml_before_running`.
     let cleaned_stl = prep.cleaned_stl.as_path();
     let prep_toml = prep.prep_toml.as_path();
     // ⚠ Enforced, not just documented. `base_dir` is this path's parent, so a

@@ -85,11 +85,11 @@ pub fn plug_fit_preflight(
     plug: &PlugDraft,
     mesh_cell_size_m: f64,
 ) -> Result<PlugFit> {
-    // ⚠ Bound one per statement, never as a tuple or a positional pair. The two
-    // paths are interchangeable to the compiler and so were the inset and the
-    // cell size, and the caller used to hand all four over positionally: every
-    // swap compiled, and all 340 cf-studio-gui tests passed either way. Taking
-    // the structs the caller ALREADY HOLDS is what makes a swap a type error.
+    // ⚠ Still swappable, unlike the arguments above: these four are what the
+    // caller used to hand over positionally, where every swap compiled and the
+    // whole cf-studio-gui suite passed either way. Here they are held by the
+    // pre-flight's own gates — swap the two paths and 4 of the 5 in
+    // `tests/plug_fit_preflight.rs` fail.
     let cleaned_stl = prep.cleaned_stl.as_path();
     let prep_toml = prep.prep_toml.as_path();
     let cavity_inset_m = plug.cavity_inset_m;
