@@ -1822,6 +1822,38 @@ mod tests {
     /// So a component straddling the far corner of the tested region must
     /// still be the lock. The fan spans 1 µm against 10 µm of slack, so it
     /// fits an inflated bound and misses a deflated one.
+    #[test]
+    fn a_lock_sitting_exactly_on_its_own_boundary_is_still_the_lock() {
+        // ⚠ BOTH axial ends. Each has a bound of its own, and `cargo-mutants`
+        // flipped the base end's slack freely while this test only ever sat at
+        // the tip.
+        for axial_sign in [1.0, -1.0] {
+            let mesh = mesh_of_at(&[(7, far_from_the_lock()), (3, lock_corner_mm(axial_sign))]);
+            assert_eq!(
+                find_connected_components(&mesh).component_count,
+                2,
+                "the fixture has to really be in pieces"
+            );
+            let err = ensure_plug_mating_features_attached(
+                &mesh,
+                &axial_transforms(),
+                CastTarget::Plug {
+                    layer_index: Some(0),
+                },
+            )
+            .expect_err("a lock on its own boundary is still a detached lock");
+            match err {
+                CastError::PlugMatingFeatureDetached { detached_faces, .. } => {
+                    assert_eq!(
+                        detached_faces, 3,
+                        "and it is the piece at the corner (axial_sign {axial_sign})",
+                    );
+                }
+                other => panic!("expected PlugMatingFeatureDetached, got {other:?}"),
+            }
+        }
+    }
+
     /// ★★★ And a piece JUST BEYOND either axial end is not the lock.
     ///
     /// The companion to the boundary test above, which only ever proves the
@@ -1861,38 +1893,6 @@ mod tests {
                 .is_ok(),
                 "a piece past the {axial_sign} axial end is debris, not the lock"
             );
-        }
-    }
-
-    #[test]
-    fn a_lock_sitting_exactly_on_its_own_boundary_is_still_the_lock() {
-        // ⚠ BOTH axial ends. Each has a bound of its own, and `cargo-mutants`
-        // flipped the base end's slack freely while this test only ever sat at
-        // the tip.
-        for axial_sign in [1.0, -1.0] {
-            let mesh = mesh_of_at(&[(7, far_from_the_lock()), (3, lock_corner_mm(axial_sign))]);
-            assert_eq!(
-                find_connected_components(&mesh).component_count,
-                2,
-                "the fixture has to really be in pieces"
-            );
-            let err = ensure_plug_mating_features_attached(
-                &mesh,
-                &axial_transforms(),
-                CastTarget::Plug {
-                    layer_index: Some(0),
-                },
-            )
-            .expect_err("a lock on its own boundary is still a detached lock");
-            match err {
-                CastError::PlugMatingFeatureDetached { detached_faces, .. } => {
-                    assert_eq!(
-                        detached_faces, 3,
-                        "and it is the piece at the corner (axial_sign {axial_sign})",
-                    );
-                }
-                other => panic!("expected PlugMatingFeatureDetached, got {other:?}"),
-            }
         }
     }
 }
