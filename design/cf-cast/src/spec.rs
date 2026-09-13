@@ -620,8 +620,16 @@ impl CastSpec {
 
             // §MA-17/S2: floor the integration cell so a fine production
             // cup cell (0.5 mm) doesn't pay a cubic, multi-minute
-            // pour-volume bake per layer. Mass-budget accuracy below
-            // ~2 mm is sub-0.4 %; see `POUR_VOLUME_MIN_CELL_SIZE_M`.
+            // pour-volume bake per layer.
+            //
+            // ⚠⚠ THE FLOOR PINS THE MASS NUMBER, and a finer mesh cell cannot
+            // move it — `max()` only ever raises the integration cell. The
+            // wheel reads −5.38 % against its closed form at 2 mm and reads
+            // exactly that at 1.5 mm and 1 mm too, because both floor to 2 mm.
+            // (This comment used to claim accuracy below ~2 mm is "sub-0.4 %",
+            // a figure #916 showed was a convergence comparison between two
+            // biased estimates. What the floor actually costs is curvature
+            // error at 2 mm — see `POUR_VOLUME_MIN_CELL_SIZE_M`.)
             let pour_volume_cell_m = self.mesh_cell_size_m.max(POUR_VOLUME_MIN_CELL_SIZE_M);
             let shell_volume_m3 = integrate_negative_sdf_volume(
                 &shell,
