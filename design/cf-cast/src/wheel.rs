@@ -25,10 +25,11 @@
 //! | `layers[0].material` | 95A PU — [`crate::MoldingMaterial`] at [`NOMINAL_PU_95A_DENSITY_KG_M3`] |
 //!
 //! Those three are the wheel's, and so is the seam — [`wheel_ribbon`] builds
-//! it, because where a wheel parts is a property of the wheel. The rest of
-//! [`crate::CastSpec`] — `bounding_region`, `wall_thickness_m`,
-//! `mass_budget_kg`, the flange and the mating features — belongs to the cast
-//! rather than to the part, and this module still sets none of it.
+//! it, because where a wheel parts is a property of the wheel.
+//! [`wheel_mold_ribbon`] goes one step further and applies the physically
+//! proven mold configuration to that seam. What this module does NOT set is
+//! the `CastSpec` assembly itself: `bounding_region`, `wall_thickness_m`,
+//! `mass_budget_kg` and the export are the cast's.
 //!
 //! ⚠⚠ `layers[i].body` is the **cumulative solid**, never an annulus — an
 //! annular body re-introduces the plug cavity as "inside the mold piece" (see
@@ -78,6 +79,10 @@
 
 use nalgebra::{Point3, UnitQuaternion, Vector3};
 
+use crate::bolt_pattern::{BoltPatternKind, BoltPatternSpec};
+use crate::dowel_hole::{DowelHoleKind, DowelHoleSpec};
+use crate::flange::{DemandFlangeSpec, FlangeKind};
+use crate::gasket_mold::GasketKind;
 use crate::ribbon::{Ribbon, RibbonError, SplitNormal};
 
 use cf_design::Solid;
@@ -427,6 +432,47 @@ pub fn wheel_ribbon(spec: &WheelSpec) -> Result<Ribbon, RibbonError> {
         .with_planar_seam_at(Point3::origin(), Vector3::z()))
 }
 
+/// The wheel's seam carrying the mating features of the **physically proven
+/// mold configuration** — Demand flange, bolt pattern, symmetric dowel holes,
+/// and no gasket.
+///
+/// That is the `base_mold` config that silicone was actually poured and cured
+/// against, and the bolt clamp IS the seal there, which is why
+/// [`crate::GasketKind::None`] is correct and not a shortcut.
+///
+/// ⛔ Gasket-none is also the only safe choice: `crate::gasket_mold` builds its
+/// channel around a stored `seam_plane_y` and projects queries onto it
+/// (`gasket_mold.rs:406`), with no seam-normal check anywhere, and the wheel's
+/// seam is Z-normal. What such a mismatch would actually produce is untested —
+/// nothing here builds one.
+///
+/// ⚠ **One component of the proven config is missing here: the apex-axial
+/// integral funnel.** No pour gate is set, so this carries that config's
+/// registration and clamping, not its filling. The gate is M2c.
+///
+/// A starting point, not a constraint: every field is a `Ribbon` builder call
+/// the caller can override.
+///
+/// ⚠ What the placement solver does with a CIRCLE is not obvious — dowels are
+/// seeded at the loop's principal-axis extremes, and a circle has no principal
+/// axis. `dowels_land_diametrically_opposite_on_an_isotropic_loop` measures
+/// the documented isotropic fallback actually firing.
+///
+/// # Errors
+///
+/// Propagates [`RibbonError`] from [`wheel_ribbon`].
+///
+/// # Panics
+///
+/// Panics if `spec` is not well-formed — see [`WheelSpec`].
+pub fn wheel_mold_ribbon(spec: &WheelSpec) -> Result<Ribbon, RibbonError> {
+    Ok(wheel_ribbon(spec)?
+        .with_flange(FlangeKind::Demand(DemandFlangeSpec::iter1()))
+        .with_dowel_hole(DowelHoleKind::Auto(DowelHoleSpec::iter1()))
+        .with_bolt_pattern(BoltPatternKind::Auto(BoltPatternSpec::iter1()))
+        .with_gasket(GasketKind::None))
+}
+
 /// The cured tire — the PU actually poured.
 ///
 /// Built as `cast_body ∖ rim`, the same difference
@@ -494,15 +540,20 @@ mod tests {
 
     use super::{
         DimpleSpec, KeyingKind, NOMINAL_PU_95A_DENSITY_KG_M3, WheelSpec, cast_body_solid,
-        locating_pin_is_solid, nominal_tire_volume_m3, rim_solid, tire_solid, wheel_ribbon,
+        locating_pin_is_solid, nominal_tire_volume_m3, rim_solid, tire_solid, wheel_mold_ribbon,
+        wheel_ribbon,
     };
+    use crate::bolt_pattern::{BoltPatternSpec, plan_smart_bolt_placements};
+    use crate::dowel_hole::{DowelHoleSpec, plan_smart_dowel_placements, smart_dowel_footprint};
     use crate::error::CastTarget;
     use crate::piece::compose_piece_solid;
     use crate::pour_volume::{
         DEFAULT_MASS_BUDGET_KG, POUR_VOLUME_MIN_CELL_SIZE_M, integrate_negative_sdf_volume,
     };
     use crate::ribbon::PieceSide;
+    use crate::ribbon::Ribbon;
     use crate::seam_profile::SeamProfile;
+    use crate::seam_solver::DEFAULT_MAX_PITCH_M;
     use crate::silhouette_2d::{SeamPlaneBasis, Silhouette2d};
 
     /// The production integration cell, so the volume gate measures the path
@@ -995,6 +1046,253 @@ mod tests {
                 "{side:?} pin fills the clearance ring"
             );
         }
+    }
+
+    /// Build the loop the placement solver works from, the way
+    /// `compose_piece_solid` does.
+    fn seam_loops(spec: &WheelSpec, ribbon: &Ribbon) -> Vec<crate::seam_placement::LayerLoop> {
+        let body = cast_body_solid(spec);
+        let bounds = crate::piece::layer_mc_bounds(&body, WALL_M, ribbon).unwrap();
+        crate::seam_placement::build_layer_loops(&[&body], &[bounds], ribbon, &ribbon.flange)
+    }
+
+    #[test]
+    fn the_seam_loop_builds_on_a_circular_parting_plane() {
+        // Everything the placement solver does starts here. Its own fixtures
+        // are ELONGATED — a rotated `Solid::cylinder` (`bolt_pattern.rs:431`,
+        // `dowel_hole.rs:505`) — so a principal axis is well defined there.
+        // A circle has none, so it takes a code path those fixtures do not.
+        let spec = WheelSpec::iter1();
+        let ribbon = wheel_mold_ribbon(&spec).unwrap();
+        let loops = seam_loops(&spec, &ribbon);
+        let (profile, exclusions) = loops[0].as_ref().expect("a circular seam must form a loop");
+        assert_relative_eq!(
+            profile.perimeter(),
+            std::f64::consts::TAU * spec.tire_outer_radius_m,
+            epsilon = 5e-5
+        );
+        assert!(
+            exclusions.is_empty(),
+            "nothing should be excluded on a bare wheel seam; got {exclusions:?}"
+        );
+    }
+
+    #[test]
+    fn dowels_land_diametrically_opposite_on_an_isotropic_loop() {
+        // ★ THE DEGENERACY GATE. `plan_smart_dowel_placements` seeds at the
+        // loop's PRINCIPAL-AXIS extremes (PCA over the stations) — and a
+        // circle has no principal axis. `dowel_hole.rs` documents a fallback
+        // to a coordinate axis for the near-isotropic case; every placement
+        // fixture I checked (`bolt_pattern.rs:431`, `:861`,
+        // `dowel_hole.rs:505`, `:670`) is a rotated cylinder, so none of them
+        // reaches that branch.
+        //
+        // Two dowels, equal radius, 180° apart is the correct answer for a
+        // circle: any diameter is as good as any other, so the fallback is not
+        // a compromise here.
+        let spec = WheelSpec::iter1();
+        let ribbon = wheel_mold_ribbon(&spec).unwrap();
+        let dowels = plan_smart_dowel_placements(
+            &seam_loops(&spec, &ribbon),
+            &DowelHoleSpec::iter1(),
+            &ribbon.flange,
+            WALL_M,
+        );
+        assert_eq!(dowels[0].len(), 2, "clamshell registration wants two");
+
+        let (a, b) = (dowels[0][0], dowels[0][1]);
+        let (ra, rb) = (a.x.hypot(a.z), b.x.hypot(b.z));
+        assert_relative_eq!(ra, rb, epsilon = 1e-6);
+        assert!(
+            ra > spec.tire_outer_radius_m + WALL_M,
+            "dowels must sit outboard of the cup wall, got r={ra}"
+        );
+        let sweep = (b.z.atan2(b.x) - a.z.atan2(a.x)).abs().to_degrees();
+        assert!(
+            (sweep - 180.0).abs() < 1.0,
+            "maximum moment arm means diametrically opposite; got {sweep}°"
+        );
+    }
+
+    #[test]
+    fn bolts_ring_the_flange_clear_of_the_dowels() {
+        let spec = WheelSpec::iter1();
+        let ribbon = wheel_mold_ribbon(&spec).unwrap();
+        let loops = seam_loops(&spec, &ribbon);
+        let dspec = DowelHoleSpec::iter1();
+        let dowels = plan_smart_dowel_placements(&loops, &dspec, &ribbon.flange, WALL_M);
+        let footprint = smart_dowel_footprint(&dspec);
+        let bolts = plan_smart_bolt_placements(
+            &loops,
+            &BoltPatternSpec::iter1(),
+            &ribbon.flange,
+            WALL_M,
+            Some(footprint),
+            Some(&dowels),
+        );
+        assert_eq!(bolts[0].len(), 16, "iter1 bolt count for this perimeter");
+
+        // One ring. ⚠ NOT exactly one radius: a bolt centre is
+        // `P(s) + d·n̂(s)` and the seam loop is a POLYGON, so the outward
+        // normal wobbles between stations. Measured spread is 1.4 µm on a
+        // 77 mm radius — 18 ppm. A 1e-6 tolerance failed here and that was the
+        // instrument, not the geometry.
+        let radii: Vec<f64> = bolts[0].iter().map(|b| b.x.hypot(b.z)).collect();
+        let (lo, hi) = (
+            radii.iter().copied().fold(f64::MAX, f64::min),
+            radii.iter().copied().fold(0.0_f64, f64::max),
+        );
+        assert!(
+            hi - lo < 1e-5,
+            "bolt ring should be one radius to within the loop's own faceting; \
+             spread {} m",
+            hi - lo
+        );
+        assert!(hi > spec.tire_outer_radius_m + WALL_M);
+
+        // Pitch is set along the SEAM LOOP, not the bolt circle — measured on
+        // the loop it is 25.5 mm, inside the 30 mm maximum.
+        let profile = loops[0].as_ref().unwrap().0.perimeter();
+        let pitch = profile / 16.0;
+        assert!(
+            pitch <= DEFAULT_MAX_PITCH_M,
+            "bolt pitch {pitch} exceeds the {DEFAULT_MAX_PITCH_M} maximum"
+        );
+
+        // §3.6: bolts are excluded from the dowel footprints.
+        for b in &bolts[0] {
+            for d in &dowels[0] {
+                let gap = (b.x - d.x).hypot(b.z - d.z);
+                assert!(
+                    gap > footprint,
+                    "bolt at {b:?} intrudes on dowel {d:?} ({gap} <= {footprint})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn placement_is_deterministic() {
+        // Six rims get printed against one mold. If placement moved between
+        // runs the halves would stop registering, and a PCA fallback on an
+        // isotropic loop is exactly where a tie could be broken arbitrarily.
+        // `dowel_hole.rs` says ties break to the lowest arc length; this is
+        // that claim, run.
+        //
+        // ⚠ A control for this gate must vary `tire_outer_radius_m`. Changing
+        // `width_m` or `bore_radius_m` leaves the placements bit-identical,
+        // because the seam loop is the z = 0 cross-section's OUTER boundary
+        // and the pin-bore loop is the one that gets discarded
+        // (`the_seam_profile_rings_the_tire_not_the_bore`). Perturbing the
+        // width looked like a control and proved nothing.
+        let spec = WheelSpec::iter1();
+        let dspec = DowelHoleSpec::iter1();
+        let first = {
+            let r = wheel_mold_ribbon(&spec).unwrap();
+            plan_smart_dowel_placements(&seam_loops(&spec, &r), &dspec, &r.flange, WALL_M)
+        };
+        for _ in 0..3 {
+            let r = wheel_mold_ribbon(&spec).unwrap();
+            let again =
+                plan_smart_dowel_placements(&seam_loops(&spec, &r), &dspec, &r.flange, WALL_M);
+            assert_eq!(again, first, "placement moved between identical builds");
+        }
+    }
+
+    #[test]
+    fn the_locating_pin_survives_the_flange_stage() {
+        // ✅ CLOSES THE DEFERRAL CARRIED SINCE M1. No earlier pin gate
+        // exercised the flange stage: two never called `compose_piece_solid`
+        // at all, and the one that did used `wheel_ribbon`, which carries
+        // `FlangeKind::None` — and that makes `compose_piece_solid` skip its
+        // whole placement branch. This one runs it: Demand flange, 16 bolt
+        // holes and 2 dowel holes all carving near the seam plane, with the
+        // pin standing in the middle of it.
+        let spec = WheelSpec::iter1();
+        let ribbon = wheel_mold_ribbon(&spec).unwrap();
+        let body = cast_body_solid(&spec);
+        let half = spec.width_m / 2.0;
+        for (side, sign) in [(PieceSide::Negative, -1.0), (PieceSide::Positive, 1.0)] {
+            let (piece, transforms) = compose_piece_solid(&body, WALL_M, &ribbon, side).unwrap();
+            assert_eq!(
+                transforms.len(),
+                18,
+                "16 bolt holes + 2 dowel holes should be emitted post-MC"
+            );
+            for frac in [0.2_f64, 0.5, 0.8] {
+                let z = sign * frac * half;
+                assert!(
+                    piece.evaluate(&Point3::new(0.0, 0.0, z)) < 0.0,
+                    "{side:?} lost the locating pin at z={z} once the flange stage ran"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_flanged_piece_meshes_cleanly_through_mesh_csg() {
+        // The real risk in this step: manifold3d's boolean carving 18 holes
+        // into a genus-1 shell. Asserts component count BEFORE and AFTER the
+        // CSG, because that is what caught a shattered mesh the winding
+        // counters called clean.
+        //
+        // ★ Measured while proving this gate can fail: THE FLANGE ROUGHLY
+        // DOUBLES THE COARSE-CELL TOLERANCE. Unflanged, the piece fragments at
+        // a 5 mm cell (`a_mold_piece_meshes_as_one_closed_orientable_shell`);
+        // flanged it survives 8 mm and fragments at 10 mm. Consistent with the
+        // cup wall being what binds — the flange adds a thicker slab that
+        // holds the piece together. ⚠ Do NOT read that as licence to coarsen:
+        // the cavity surface is still the 5 mm wall.
+        use crate::error::CastTarget;
+        use crate::mesh_csg::apply_mating_transforms;
+        use crate::mesher::solid_to_mm_mesh;
+        use mesh_repair::components::find_connected_components;
+        use mesh_repair::validate_mesh;
+
+        let spec = WheelSpec::iter1();
+        let ribbon = wheel_mold_ribbon(&spec).unwrap();
+        let (solid, transforms) = compose_piece_solid(
+            &cast_body_solid(&spec),
+            WALL_M,
+            &ribbon,
+            PieceSide::Positive,
+        )
+        .unwrap();
+        let target = CastTarget::MoldPiece {
+            layer_index: 0,
+            piece_side: PieceSide::Positive,
+        };
+        let mesh = solid_to_mm_mesh(&solid, 0.0015, target).expect("marching cubes");
+        assert_eq!(
+            find_connected_components(&mesh).component_count,
+            1,
+            "the flanged half must mesh as one shell before any CSG"
+        );
+        let mesh = apply_mating_transforms(mesh, &transforms, target).expect("mesh-CSG");
+        assert_eq!(
+            find_connected_components(&mesh).component_count,
+            1,
+            "carving 18 holes must not detach anything"
+        );
+        let report = validate_mesh(&mesh);
+        let census = report
+            .winding
+            .as_ref()
+            .expect("validate_mesh enables the census by default");
+        assert!(
+            census.has_judgeable_edges(),
+            "vacuous clean bill; {census:?}"
+        );
+        assert_eq!(
+            (
+                census.boundary_edges,
+                census.non_manifold_edges,
+                census.degenerate_faces
+            ),
+            (0, 0, 0),
+            "any of these hides the consistency check below; {census:?}"
+        );
+        assert_eq!(census.inconsistent_edges, 0, "{census:?}");
     }
 
     #[test]
