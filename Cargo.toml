@@ -424,7 +424,6 @@ members = [
     "examples/sim-soft/scan-fit-3layer-sleeve-yeoh-axial-zoned-ramp-open-mouth",
 
     # Physical-cast tooling (Track F)
-    "examples/cast/layered-silicone-device-v1",
     "examples/cast/layered-silicone-device-v2-scan-curve-following",
 
     # Foundation (active development)

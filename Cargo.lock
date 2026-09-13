@@ -2010,7 +2010,7 @@ dependencies = [
 
 [[package]]
 name = "cf-cast"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "approx 0.5.1",
  "cf-design",
@@ -3617,17 +3617,6 @@ dependencies = [
  "nalgebra 0.34.2",
  "sim-ml-chassis",
  "sim-soft",
-]
-
-[[package]]
-name = "example-cast-layered-silicone-device-v1"
-version = "1.0.0"
-dependencies = [
- "anyhow",
- "cf-cast",
- "cf-design",
- "mesh-printability",
- "nalgebra 0.34.2",
 ]
 
 [[package]]

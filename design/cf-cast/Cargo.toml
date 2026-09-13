@@ -3,7 +3,19 @@ name = "cf-cast"
 description = "Physical-cast tooling — mold/plug STL extraction for layered silicone devices"
 keywords = ["mesh", "casting", "mold", "3d-printing", "manufacturing"]
 categories = ["graphics", "science", "algorithms"]
-version.workspace = true
+# ⚠ NOT `version.workspace` — retiring the v1 single-piece path (2026-09-12)
+# removed `export_molds`, `write_procedure`, `generate_procedure_markdown`,
+# `MoldArtifact`, `MoldExportReport` and `CastTarget::Mold` from the public
+# API. That is a real break, so it is versioned here rather than absorbed by
+# the workspace number. Same rationale as `mesh/mesh-repair`.
+#
+# ⚠ The `semver` CI job checks mesh-repair ONLY, so nothing automated would
+# have caught this break — it is declared by hand or not at all.
+#
+# ⚠ CONSEQUENCE: this crate no longer follows `[workspace.package] version`.
+# A future workspace-wide bump will skip it silently — nothing enforces the
+# relationship. Bump it explicitly, or re-inherit once its version catches up.
+version = "2.0.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
