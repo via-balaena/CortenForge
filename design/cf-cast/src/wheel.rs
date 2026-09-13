@@ -1144,8 +1144,8 @@ mod tests {
         // loop the principal axis is numerically ARBITRARY: perturbing the
         // tire radius by 0.1 mm swings the pair's absolute bearing from −0.05°
         // to +68.4° to +27.9°. Only the SEPARATION was stable locally
-        // (179.6°–180.0°) — and on Linux the same code places them 157.9°
-        // apart. The seeds start opposite; the feasibility solve then moves
+        // (179.57°–180.00°) — and on Linux the same code separates them by
+        // 157.940°. The seeds start opposite; the feasibility solve then moves
         // them, and by how much depends on an axis that is chosen by
         // floating-point noise.
         //
@@ -1249,10 +1249,10 @@ mod tests {
         //
         // ⚠⚠ SCOPE: same binary, same platform. It does NOT establish
         // cross-platform reproducibility, and that is not a hypothetical —
-        // this geometry places its dowels 179.9° apart on macOS and 157.9°
-        // apart on Linux, because the principal axis of an isotropic loop is
-        // decided by floating-point noise. Both are valid molds; they are not
-        // the SAME mold. Re-exporting on a different machine after printing
+        // this geometry separates its dowels by 180.000° on macOS and
+        // 157.940° on Linux, because the principal axis of an isotropic loop
+        // is decided by floating-point noise. Both are valid molds; they are
+        // not the SAME mold. Re-exporting on a different machine after printing
         // one half is a workshop hazard nothing here guards.
         //
         // ⚠ A control for this gate must vary `tire_outer_radius_m`. Changing
