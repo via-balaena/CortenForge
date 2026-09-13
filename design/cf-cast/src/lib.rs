@@ -67,6 +67,7 @@
 pub mod bolt_pattern;
 pub mod canal;
 pub mod cast_mode;
+pub mod cup_core;
 pub mod cure;
 pub mod dowel;
 pub mod dowel_hole;
@@ -102,6 +103,7 @@ pub use canal::{
     build_canal_plug_framed, filter_plug_debris,
 };
 pub use cast_mode::CastMode;
+pub use cup_core::CupCoreKind;
 pub use cure::CureProtocol;
 pub use error::{CastError, CastTarget};
 pub use flange::{DemandFlangeSpec, FlangeKind, FlangeSpec};
@@ -148,5 +150,6 @@ pub use spec::{
 pub use wheel::{
     DimpleSpec, KeyingKind, SpokeKind, SpokeSpec, WheelSpec, cast_body_solid, keying_solid,
     locating_pin_is_solid, nominal_tire_volume_m3, rim_solid, spoke_cores_are_solid,
-    spoke_slots_solid, spoke_web_m, tire_solid, wheel_cast_spec, wheel_mold_ribbon, wheel_ribbon,
+    spoke_slots_solid, spoke_web_m, tire_solid, wheel_cast_spec, wheel_cup_cores,
+    wheel_mold_ribbon, wheel_ribbon,
 };

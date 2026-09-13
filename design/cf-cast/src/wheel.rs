@@ -80,6 +80,7 @@
 use nalgebra::{Point3, UnitQuaternion, Vector3};
 
 use crate::bolt_pattern::{BoltPatternKind, BoltPatternSpec};
+use crate::cup_core::CupCoreKind;
 use crate::dowel_hole::{DowelHoleKind, DowelHoleSpec};
 use crate::flange::{DemandFlangeSpec, FlangeKind};
 use crate::gasket_mold::GasketKind;
@@ -302,16 +303,18 @@ pub enum SpokeKind {
     None,
     /// Straight radial slots.
     ///
-    /// ⛔ **THE BENCH SHEET DOES NOT KNOW ABOUT THESE.** `procedure.rs`
-    /// renders from `CastSpec` + `Ribbon`, neither of which carries spokes, so
-    /// a spoked cast produces a sheet byte-identical to a solid one — and its
-    /// cf-view checklist then tells the reader that the cup's cap-plane wall
-    /// "carries the body-cavity opening perimeter and nothing else" and that
-    /// protrusions are a regression. The cores are exactly that. **The sheet
-    /// would have the workshop file a regression issue against correct
-    /// geometry.** Fixing it needs the sheet to learn a "the cup carries
-    /// cores" concept, the way it learned [`crate::PlugRole`]; until then, do
-    /// not hand a spoked cast's sheet to anyone without saying so.
+    /// ✅ The CUP side of the bench sheet now knows: [`wheel_mold_ribbon`]
+    /// declares [`crate::CupCoreKind`], so the cf-view checklist lists the
+    /// cores as expected instead of condemning them.
+    ///
+    /// ⛔ **The PLUG side does not.** Checklist bullet 2 still asserts "Dome
+    /// end is smooth and closed" of `plug_layer_0.stl`, and a slotted rim is
+    /// neither — under a block whose failure instruction is "do NOT proceed to
+    /// print". It is wrong for a SOLID wheel too (a rim has no dome at all),
+    /// so it predates spokes. Fixing it needs a PLUG-side topology concept:
+    /// `cup_cores` describes voids in the BODY, and a cast can have those
+    /// while its plug is solid, so reusing it here would grant a false
+    /// permission on exactly the cast that should be flagged.
     Radial(SpokeSpec),
 }
 
@@ -832,6 +835,7 @@ pub fn wheel_ribbon(spec: &WheelSpec) -> Result<Ribbon, RibbonError> {
 pub fn wheel_mold_ribbon(spec: &WheelSpec) -> Result<Ribbon, RibbonError> {
     Ok(wheel_ribbon(spec)?
         .with_plug_role(PlugRole::Insert)
+        .with_cup_cores(wheel_cup_cores(spec))
         .with_flange(FlangeKind::Demand(DemandFlangeSpec::iter1()))
         .with_dowel_hole(DowelHoleKind::Auto(DowelHoleSpec::iter1()))
         .with_bolt_pattern(BoltPatternKind::Auto(BoltPatternSpec::iter1()))
@@ -840,6 +844,40 @@ pub fn wheel_mold_ribbon(spec: &WheelSpec) -> Result<Ribbon, RibbonError> {
             layout: PourGateLayout::ApexAxial,
             ..PourGateSpec::iter1()
         })))
+}
+
+/// What the bencher will see standing inside the cavity, as
+/// [`CupCoreKind`] — **generated**, never typed.
+///
+/// ★ Every wheel has at least one core: [`cast_body_solid`] subtracts the bore
+/// column, so the cup wall fills it and grows the locating pin. Spokes add one
+/// per slot. Both counts are read off the same spec that cuts them, so the
+/// sentence the workshop reads cannot drift from the geometry it describes —
+/// which a hand-written "six spoke cores" would, the first time the count
+/// changed.
+///
+/// ⚠ This exists because the cf-view checklist condemned those cores. See
+/// [`crate::cup_core`].
+///
+/// # Panics
+///
+/// Panics if `spec` is not well-formed — see [`WheelSpec`].
+#[must_use]
+pub fn wheel_cup_cores(spec: &WheelSpec) -> CupCoreKind {
+    spec.assert_well_formed();
+    let pin = format!(
+        "one {:.1} mm Ø locating pin through the axle bore",
+        spec.locating_pin_radius_m() * 2000.0
+    );
+    let text = match spec.spokes.spoke_spec() {
+        None => pin,
+        Some(spokes) => format!(
+            "{pin}, and {} radial spoke cores {:.1} mm wide",
+            spokes.count,
+            spokes.slot_width_m * 1000.0
+        ),
+    };
+    CupCoreKind::Present(text)
 }
 
 /// Assemble the wheel's [`crate::CastSpec`], ready for
@@ -2310,6 +2348,71 @@ mod tests {
             ..WheelSpec::iter1()
         };
         assert!(std::panic::catch_unwind(|| rim_solid(&spec)).is_err());
+    }
+
+    #[test]
+    fn every_wheel_declares_its_cores_and_the_numbers_match_the_geometry() {
+        // ★★★ THE ANTI-DRIFT GATE. The description is prose a human reads at a
+        // bench, inside a checklist whose failure instruction is "do NOT
+        // proceed to print". It is GENERATED from the spec that cuts the
+        // cores, and this asserts the generated numbers against that spec —
+        // so a changed spoke count cannot leave a stale sentence behind.
+        //
+        // ⚠ EVERY wheel has a core, spoked or not: `cast_body_solid` subtracts
+        // the bore column and the cup wall fills it. That is why this is not
+        // conditional on spokes, and why the sheet was wrong for the SOLID
+        // wheel too, from #913 until now.
+        for (label, spec) in [("solid", WheelSpec::iter1()), ("spoked", spoked())] {
+            let ribbon = wheel_mold_ribbon(&spec).unwrap();
+            let text = ribbon
+                .cup_cores
+                .description()
+                .unwrap_or_else(|| panic!("{label} wheel must declare its cores"))
+                .to_string();
+
+            // The pin, by its generated diameter.
+            let pin_mm = spec.locating_pin_radius_m() * 2000.0;
+            assert!(
+                text.contains(&format!("{pin_mm:.1} mm")),
+                "{label}: the pin's diameter is not in {text:?}"
+            );
+            assert!(text.contains("locating pin"), "{label}: {text:?}");
+
+            match spec.spokes.spoke_spec() {
+                None => assert!(
+                    !text.contains("spoke"),
+                    "a solid wheel must not claim spoke cores: {text:?}"
+                ),
+                Some(spokes) => {
+                    assert!(
+                        text.contains(&format!("{} radial spoke cores", spokes.count)),
+                        "{label}: the spoke COUNT is not in {text:?}"
+                    );
+                    assert!(
+                        text.contains(&format!("{:.1} mm wide", spokes.slot_width_m * 1000.0)),
+                        "{label}: the slot WIDTH is not in {text:?}"
+                    );
+                }
+            }
+        }
+
+        // ⚠ And the declaration must match the GEOMETRY, not just itself: the
+        // cup wall really is solid where the description says a core stands.
+        let spec = spoked();
+        let spokes = spec.spokes.spoke_spec().unwrap();
+        let mold = cup_wall(&spec, SPOKED_WALL_M);
+        assert!(
+            mold.evaluate(&Point3::new(0.0, 0.0, 0.0)) < 0.0,
+            "the declared locating pin is not solid mold"
+        );
+        let mid = f64::midpoint(
+            spokes.hub_radius_m,
+            spec.rim_outer_radius_m - spokes.rim_band_m,
+        );
+        assert!(
+            mold.evaluate(&on_slot_centreline(spokes, 0, mid)) < 0.0,
+            "a declared spoke core is not solid mold"
+        );
     }
 
     #[test]

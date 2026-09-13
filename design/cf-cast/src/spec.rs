@@ -3336,6 +3336,115 @@ mod tests {
         );
     }
 
+    /// Bullets that condemn RAISED material outright. A cup that cores a
+    /// through-void grows exactly that, so each of these needs the exemption
+    /// bullet ahead of it or it calls correct geometry a regression — inside a
+    /// block whose failure instruction is "do NOT proceed to print".
+    const RAISED_CONDEMNING_BULLETS: &[&str] = &[
+        "No trapezoidal / truncated-pyramid pin",
+        "No cylindrical pin PROTRUSIONS",
+        "carries the body-cavity opening perimeter and nothing else",
+    ];
+
+    /// ★ `CupCoreKind::None` is a pure addition: the sheet is unchanged.
+    #[test]
+    fn a_cast_without_cores_renders_the_sheet_it_always_did() {
+        let (spec, base) = v2_fixture();
+        let (deta_default, bonded_default) = procedure_pair(&spec, &base);
+        let explicit = base
+            .clone()
+            .with_cup_cores(crate::cup_core::CupCoreKind::None);
+        let (deta_none, bonded_none) = procedure_pair(&spec, &explicit);
+        assert!(
+            deta_default == deta_none && bonded_default == bonded_none,
+            "an explicit CupCoreKind::None must render the default sheet"
+        );
+
+        // Positive anchor: declaring cores DOES move it, or the equality above
+        // would hold for a flag that is wired to nothing.
+        let cored = base.with_cup_cores(crate::cup_core::CupCoreKind::Present(
+            "two probe cores".to_string(),
+        ));
+        let (deta_cored, _) = procedure_pair(&spec, &cored);
+        assert_ne!(
+            deta_default, deta_cored,
+            "declaring cores must change the sheet"
+        );
+    }
+
+    /// ★★★ The defect this fixes: a cored cast used to condemn its own cores.
+    #[test]
+    fn a_cored_cast_stops_condemning_its_own_cores() {
+        let (spec, base) = v2_fixture();
+        let (plain, _) = procedure_pair(&spec, &base);
+        let cored = base.with_cup_cores(crate::cup_core::CupCoreKind::Present(
+            "one 7.8 mm locating pin".to_string(),
+        ));
+        let (md, _) = procedure_pair(&spec, &cored);
+
+        // The caller's own words reach the bencher, and the cores are listed
+        // among what they should SEE.
+        assert!(
+            md.contains("one 7.8 mm locating pin"),
+            "the description must reach the sheet verbatim"
+        );
+        assert!(md.contains("solid CORES standing inside that opening"));
+        assert!(
+            md.contains("Solid cores stand PROUD of the cavity floor, and are\n         correct")
+                || md.contains("Solid cores stand PROUD"),
+            "the exemption bullet must render"
+        );
+
+        // ⚠ ANCHORED BOTH WAYS. The condemning bullets are still THERE — the
+        // fix exempts the cores, it does not delete the checks. And the plain
+        // sheet must carry them without any exemption, or the "before" half of
+        // this gate is vacuous.
+        for bullet in RAISED_CONDEMNING_BULLETS {
+            assert!(
+                md.contains(bullet),
+                "the fix must not delete the check: {bullet:?}"
+            );
+            assert!(
+                plain.contains(bullet),
+                "the uncored sheet must carry it too: {bullet:?}"
+            );
+        }
+        assert!(
+            !plain.contains("Solid cores stand PROUD"),
+            "an uncored cast has nothing to exempt"
+        );
+
+        // The exemption must come BEFORE the bullets it exempts, because a
+        // checklist is read top-to-bottom.
+        let exemption = md.find("Solid cores stand PROUD").unwrap();
+        for bullet in RAISED_CONDEMNING_BULLETS {
+            assert!(
+                md.find(bullet).unwrap() > exemption,
+                "the exemption must precede {bullet:?}"
+            );
+        }
+    }
+
+    /// A cored sheet through the same two prose checks the big matrix runs —
+    /// without doubling a 6144-sheet matrix for one bullet.
+    #[test]
+    fn a_cored_sheet_is_well_formed_and_resolves_its_references() {
+        use crate::cast_mode::CastMode;
+        use crate::procedure::generate_procedure_markdown_v2_for_mode;
+        for (label, (spec, base)) in [("1-layer", v2_fixture()), ("2-layer", two_layer_fixture())] {
+            let pours = spec.compute_pour_volumes().unwrap();
+            let r = base.with_cup_cores(crate::cup_core::CupCoreKind::Present(
+                "one probe core".to_string(),
+            ));
+            for mode in [CastMode::Detachable, CastMode::Bonded] {
+                let md = generate_procedure_markdown_v2_for_mode(&spec, &pours, &r, mode);
+                let case = format!("{label} / {mode:?} / cored");
+                assert_cross_refs_resolve(&md, &case);
+                assert_prose_is_well_formed(&md, &case);
+            }
+        }
+    }
+
     /// ★★ Every `## Section` the sheet points at must EXIST in that same
     /// sheet, across the whole config matrix.
     ///

@@ -46,6 +46,7 @@ use cf_design::{Aabb, Sdf, Solid};
 use nalgebra::{Point3, Unit, Vector3};
 
 use crate::bolt_pattern::BoltPatternKind;
+use crate::cup_core::CupCoreKind;
 use crate::dowel_hole::DowelHoleKind;
 use crate::flange::FlangeKind;
 use crate::gasket_mold::GasketKind;
@@ -289,6 +290,15 @@ pub struct Ribbon {
     /// finished part. Geometry is identical either way — this is
     /// read only by the procedure sheet.
     pub plug_role: PlugRole,
+    /// Solid cores the cup grows INTO the pour cavity. Default
+    /// [`CupCoreKind::None`].
+    ///
+    /// ⚠ Set it whenever the layer body carries a through-void, or the
+    /// cf-view checklist condemns the resulting core as a regression inside a
+    /// block whose failure instruction is "do NOT proceed to print" — which is
+    /// what every wheel cast did to its own locating pin. See
+    /// [`crate::cup_core`].
+    pub cup_cores: CupCoreKind,
     /// Per-layer gasket-mold kind. Default [`GasketKind::None`] (no
     /// gasket mold emission — cup halves hand-clamped without a
     /// silicone seal). S3 of the seam-gasket-mold arc adds
@@ -511,6 +521,7 @@ impl Ribbon {
             pour_gate: PourGateKind::None,
             plug_pins: PlugPinKind::None,
             plug_role: PlugRole::Tooling,
+            cup_cores: CupCoreKind::None,
             gasket: GasketKind::None,
             flange: FlangeKind::None,
             dowel_hole: DowelHoleKind::None,
@@ -632,6 +643,20 @@ impl Ribbon {
     #[must_use]
     pub const fn with_plug_role(mut self, plug_role: PlugRole) -> Self {
         self.plug_role = plug_role;
+        self
+    }
+
+    /// Builder: declare that the cup grows solid cores into the cavity.
+    ///
+    /// Carves nothing — the cores are already there, formed by the body's own
+    /// through-voids. This is what lets the bench sheet call them expected
+    /// instead of condemning them.
+    ///
+    /// ⚠ The description is read by a human at a bench. Generate it from the
+    /// geometry that makes the cores; do not type a count.
+    #[must_use]
+    pub fn with_cup_cores(mut self, cup_cores: CupCoreKind) -> Self {
+        self.cup_cores = cup_cores;
         self
     }
 
