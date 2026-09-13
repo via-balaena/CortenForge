@@ -30,6 +30,7 @@ use crate::cure::lookup as lookup_cure;
 use crate::flange::FlangeKind;
 use crate::gasket_mold::GasketKind;
 use crate::plug::PlugPinKind;
+use crate::plug_role::PlugRole;
 use crate::pour::{PourGateKind, PourGateLayout};
 use crate::pour_volume::PourVolume;
 use crate::prismatic_pin::PrismaticPinSpec;
@@ -69,7 +70,7 @@ fn write_materials_table(md: &mut String, spec: &CastSpec, pour_volumes: &[PourV
     md.push('\n');
 }
 
-fn write_generic_guidance(md: &mut String, layer_count: usize) {
+fn write_generic_guidance(md: &mut String, layer_count: usize, role: PlugRole) {
     let _ = writeln!(md, "## Generic Smooth-On Guidance");
     md.push('\n');
     let _ = writeln!(
@@ -94,7 +95,26 @@ fn write_generic_guidance(md: &mut String, layer_count: usize) {
              interfaces are the #1 first-cast failure mode."
         );
     }
-    if layer_count == 1 {
+    if plug_stays_in(role, 0) {
+        // ⚠ The multi-layer arm below carries a SECOND fact — that cured
+        // silicones bond to each other without release — which has nothing to
+        // do with the plug. An insert cast must not lose it.
+        let (when, inter_layer) = if layer_count == 1 {
+            ("the pour", "")
+        } else {
+            (
+                "each pour",
+                " Layer-to-layer adhesion between cured silicones is \
+                 generally strong without release.",
+            )
+        };
+        let _ = writeln!(
+            md,
+            "- Apply mold release to the CUP HALVES before {when} — \
+             printed-mold-to-silicone separation needs it. Not to \
+             `plug_layer_0.stl`: it stays in the finished part.{inter_layer}"
+        );
+    } else if layer_count == 1 {
         let _ = writeln!(
             md,
             "- Apply mold release to printed surfaces before the pour — \
@@ -295,6 +315,7 @@ pub fn generate_procedure_markdown_v2_for_mode(
         &ribbon.pour_gate,
         PourGateKind::Default(g) if g.layout == PourGateLayout::VAtDome && g.include_vent
     );
+    let role = ribbon.plug_role;
     let features = SheetFeatures {
         has_dowels,
         bolts_carved,
@@ -306,10 +327,10 @@ pub fn generate_procedure_markdown_v2_for_mode(
     let mut md = String::new();
     match mode {
         CastMode::Detachable => {
-            write_header_v2(&mut md, spec, apex_pour, has_flange, features);
+            write_header_v2(&mut md, spec, apex_pour, has_flange, features, role);
         }
         CastMode::Bonded => {
-            write_header_v2_bonded(&mut md, spec, apex_pour, has_pour_gate, has_vent);
+            write_header_v2_bonded(&mut md, spec, apex_pour, has_pour_gate, has_vent, role);
         }
     }
     write_cast_geometry_v2(&mut md, ribbon);
@@ -338,7 +359,7 @@ pub fn generate_procedure_markdown_v2_for_mode(
     write_cap_plane_chamfer_v2(&mut md, has_plug_lock);
     write_seam_face_edge_v2(&mut md, has_plug_lock, seam_is_planar);
     write_materials_table(&mut md, spec, pour_volumes);
-    write_generic_guidance(&mut md, spec.layers.len());
+    write_generic_guidance(&mut md, spec.layers.len(), role);
     write_v2_assembly_note(&mut md, ribbon, spec.layers.len(), features, has_gasket);
     write_v2_cup_half_clamping_note(&mut md, ribbon, mode, spec.layers.len(), features);
     write_v2_pour_gate_note(&mut md, ribbon, spec.layers.len(), bolts_carved);
@@ -360,10 +381,10 @@ pub fn generate_procedure_markdown_v2_for_mode(
     }
     match mode {
         CastMode::Detachable => {
-            write_v2_post_cure_assembly(&mut md, spec, mode, has_pour_gate, has_vent);
+            write_v2_post_cure_assembly(&mut md, spec, mode, has_pour_gate, has_vent, role);
         }
         CastMode::Bonded => {
-            write_v2_bonded_finishing(&mut md, spec, mode, has_pour_gate, has_vent);
+            write_v2_bonded_finishing(&mut md, spec, mode, has_pour_gate, has_vent, role);
         }
     }
     write_mass_budget_summary(&mut md, spec, pour_volumes);
@@ -386,12 +407,69 @@ const fn post_demold_section(mode: CastMode, layer_count: usize) -> &'static str
     }
 }
 
+/// Does THIS layer's plug stay inside the finished part?
+///
+/// ★ The ONE decision [`PlugRole`] makes. Every sentence that releases a plug
+/// or pulls one out reads it from here, so the sheet cannot tell the bencher
+/// both things — the `carved_features` pattern, applied to prose.
+///
+/// Only `plug_layer_0` can stay in: the plugs above it are printed positives
+/// of the layer below and come out under either role.
+const fn plug_stays_in(role: PlugRole, layer_index: usize) -> bool {
+    matches!(role, PlugRole::Insert) && layer_index == 0
+}
+
+/// What demold does with this layer's plug.
+const fn demold_plug_sentence(stays_in: bool) -> &'static str {
+    if stays_in {
+        "Leave the plug IN — lift it and the cured layer out of the cup \
+         halves together."
+    } else {
+        "Pull the plug axially out of the cured silicone shell."
+    }
+}
+
+/// The clause in the detachable header that [`PlugRole`] rewrites: what the
+/// cast does with its plug, and what you are left holding.
+const fn detachable_header_clause(stays_in: bool, single: bool) -> &'static str {
+    match (stays_in, single) {
+        (true, true) => {
+            "The layer is cast ONTO `plug_layer_0`, which stays inside it: \
+             the plug and the cured layer together are the finished part."
+        }
+        (true, false) => {
+            "Layer 0 is cast ONTO `plug_layer_0`, which stays inside it; the \
+             layers above are cast against their own plugs and nest over it \
+             post-cure."
+        }
+        (false, true) => {
+            "The layer is cast against its own plug and demolds as one \
+             standalone silicone tube — that tube IS the finished device."
+        }
+        (false, false) => {
+            "Each layer is cast independently against its own plug, producing \
+             a detachable cured silicone tube that nests with the other \
+             layers post-cure for assembly + disassembly."
+        }
+    }
+}
+
+/// Which printed surfaces get mold release, as a noun phrase.
+const fn release_surfaces(stays_in: bool) -> &'static str {
+    if stays_in {
+        "the two cup halves only, never the plug, which stays in the part"
+    } else {
+        "every printed surface it touches: both cup halves and the plug"
+    }
+}
+
 fn write_v2_post_cure_assembly(
     md: &mut String,
     spec: &CastSpec,
     mode: CastMode,
     has_pour_gate: bool,
     has_vent: bool,
+    role: PlugRole,
 ) {
     // ⚠ A previous round added a "(except at the plug-floor-lock socket …
     // nesting leaves a small pyramid-shaped void — expected)" clause here. It
@@ -416,28 +494,51 @@ fn write_v2_post_cure_assembly(
     if spec.layers.len() == 1 {
         let _ = writeln!(md, "{}", post_demold_section(mode, spec.layers.len()));
         md.push('\n');
-        let _ = writeln!(
-            md,
-            "This is a single-layer cast: once layer 0 cures and demolds, you are \
-             done. The cured tube IS the device — there is no second layer to nest \
-             it into and no assembly step. Inspect the tube for voids and trim any \
-             seam flash{gate_flash} flush with a sharp blade."
-        );
-        md.push('\n');
-        let _ = writeln!(
-            md,
-            "**Replacement**: a worn single-layer device is replaced by re-casting \
-             it. There is no independent layer to peel off and swap."
-        );
+        if plug_stays_in(role, 0) {
+            let _ = writeln!(
+                md,
+                "This is a single-layer cast: once layer 0 cures and demolds, you are \
+                 done. The cured layer on `plug_layer_0` IS the part — there is no \
+                 second layer to nest it into and no assembly step. Inspect it for \
+                 voids and trim any seam flash{gate_flash} flush with a sharp blade."
+            );
+            md.push('\n');
+            let _ = writeln!(
+                md,
+                "**Replacement**: a worn part is replaced by casting a new one on \
+                 a new plug — the old plug does not come back out."
+            );
+        } else {
+            let _ = writeln!(
+                md,
+                "This is a single-layer cast: once layer 0 cures and demolds, you are \
+                 done. The cured tube IS the device — there is no second layer to nest \
+                 it into and no assembly step. Inspect the tube for voids and trim any \
+                 seam flash{gate_flash} flush with a sharp blade."
+            );
+            md.push('\n');
+            let _ = writeln!(
+                md,
+                "**Replacement**: a worn single-layer device is replaced by re-casting \
+                 it. There is no independent layer to peel off and swap."
+            );
+        }
         md.push('\n');
         return;
     }
     let _ = writeln!(md, "{}", post_demold_section(mode, spec.layers.len()));
     md.push('\n');
+    // Under `PlugRole::Insert` layer 0 comes off the mold still on its plug,
+    // so it is not one of the standalone tubes.
+    let tube_kind = if plug_stays_in(role, 0) {
+        "cured silicone tubes — one per layer, layer 0 still on \
+         `plug_layer_0`"
+    } else {
+        "standalone silicone tubes — one per layer"
+    };
     let _ = writeln!(
         md,
-        "After all {} layers cure + demold, you have {} standalone \
-         silicone tubes — one per layer — each with the next-inner \
+        "After all {} layers cure + demold, you have {} {tube_kind} — each with the next-inner \
          tube's outer geometry as its inner cavity (innermost = \
          layer 0; outermost = layer {}). Trim any seam flash{gate_flash} \
          flush with a sharp blade on every tube BEFORE nesting — each \
@@ -485,6 +586,7 @@ fn write_header_v2_bonded(
     apex_pour: bool,
     has_pour_gate: bool,
     has_vent: bool,
+    role: PlugRole,
 ) {
     // ⚠ Same clause as the detachable header — its twin, again.
     let header_vent_clause = if has_vent {
@@ -498,22 +600,37 @@ fn write_header_v2_bonded(
         "# Cast Procedure (v2.1 curve-following, bonded cast-in-place)"
     );
     md.push('\n');
+    let overmold = plug_stays_in(role, 0);
+    // One plug, so one clause carries its fate — attached to the sentence
+    // about the single pour at one layer, and to the plug itself above that.
+    let (one_layer_fate, plug_suffix) = if overmold {
+        (
+            "this is a single pour ONTO the plug, which stays inside the \
+             finished part.",
+            ", which stays inside the finished part",
+        )
+    } else {
+        (
+            "this is a single pour against the plug, and it demolds as one \
+             silicone body of one durometer.",
+            "",
+        )
+    };
     if spec.layers.len() == 1 {
         let _ = writeln!(
             md,
             "Generated by `cf-cast` for a **single-layer bonded** cast with v2.1 \
              curve-following 2-piece molds + one printed plug (`plug_layer_0`). \
-             With only one layer there is nothing to bond to: this is a single \
-             pour against the plug, and it demolds as one silicone body of one \
-             durometer. Bonded mode's cast-in-place build-up — each layer poured \
-             onto the previous cured one — starts at two layers."
+             With only one layer there is nothing to bond to: {one_layer_fate} \
+             Bonded mode's cast-in-place build-up — each layer poured onto the \
+             previous cured one — starts at two layers."
         );
     } else {
         let _ = writeln!(
             md,
             "Generated by `cf-cast` for a {}-layer **bonded** cast (innermost-first) \
              with v2.1 curve-following 2-piece molds + a SINGLE printed plug \
-             (`plug_layer_0`). Each layer is poured **onto the previous cured \
+             (`plug_layer_0`{plug_suffix}). Each layer is poured **onto the previous cured \
              layer** so the silicone bonds as it cures — you build up one \
              integrated multi-durometer part on the one plug, instead of \
              separate nesting shells. The cured layer N is the plug for layer \
@@ -615,6 +732,9 @@ fn write_per_layer_sections_v2_bonded(
     } else {
         ""
     };
+    // Bonded casts print exactly one plug (`plug_layer_0`), so the role
+    // answers for the whole section rather than per layer.
+    let stays_in = plug_stays_in(ribbon.plug_role, 0);
     let _ = writeln!(md, "## Per-Layer Procedure (bonded, cast-in-place)");
     md.push('\n');
     if n == 1 {
@@ -625,7 +745,8 @@ fn write_per_layer_sections_v2_bonded(
             md,
             "Cast the one layer on the plug, then demold it. There is no inter-layer \
              bond step — that applies only from two layers up — so mold release goes \
-             on every printed surface it touches: both cup halves and the plug."
+             on {}.",
+            release_surfaces(stays_in)
         );
     } else {
         let _ = writeln!(
@@ -636,6 +757,11 @@ fn write_per_layer_sections_v2_bonded(
              (outermost) layer is fully demolded."
         );
         md.push('\n');
+        let release_scope = if stays_in {
+            "release goes on the printed cup only — not the plug, which stays in"
+        } else {
+            "release goes on the printed cup + the plug only"
+        };
         let _ = writeln!(
             md,
             "> **Inter-layer bond (important).** Fresh silicone bonds to cured silicone \
@@ -645,8 +771,7 @@ fn write_per_layer_sections_v2_bonded(
              primary retention; and/or (b) lightly wipe the cured surface with isopropyl \
              alcohol and let it flash off, or brush on a silicone tie-coat / fresh \
              uncured base of the same system, before the next pour. Avoid mold release on \
-             the *inter-layer* faces — it would prevent bonding (release goes on the \
-             printed cup + the plug only)."
+             the *inter-layer* faces — it would prevent bonding ({release_scope})."
         );
     }
     md.push('\n');
@@ -664,12 +789,18 @@ fn write_per_layer_sections_v2_bonded(
         let protocol = layer.material.anchor_key.and_then(lookup_cure);
 
         if i == 0 {
+            let release = if stays_in {
+                "Apply mold release to both cup halves — NOT to the plug, which \
+                 stays in the finished part."
+            } else {
+                "Apply mold release to the plug + both cup halves."
+            };
             let _ = writeln!(
                 md,
                 "1. Print `mold_layer_0_piece_0.stl` + `mold_layer_0_piece_1.stl` + \
-                 `plug_layer_0.stl` (the only plug). Apply mold release to the plug + \
-                 both cup halves. {gasket_cue}Assemble the two halves around the \
-                 plug per the \"v2 Mold Assembly\" section above."
+                 `plug_layer_0.stl` (the only plug). {release} {gasket_cue}Assemble \
+                 the two halves around the plug per the \"v2 Mold Assembly\" \
+                 section above."
             );
         } else {
             let _ = writeln!(
@@ -735,6 +866,17 @@ fn write_per_layer_sections_v2_bonded(
                  directly onto this cured surface.",
                 i + 1
             );
+        } else if stays_in {
+            let integrated = if n == 1 {
+                String::new()
+            } else {
+                format!(" — one integrated {n}-layer part on its plug")
+            };
+            let _ = writeln!(
+                md,
+                "5. Open the two cup halves and lift the part out — the plug is \
+                 inside it and stays there. The part is complete{integrated}."
+            );
         } else if n == 1 {
             let _ = writeln!(
                 md,
@@ -786,6 +928,7 @@ fn write_v2_bonded_finishing(
     mode: CastMode,
     has_pour_gate: bool,
     has_vent: bool,
+    role: PlugRole,
 ) {
     // ⚠ Three bugs lived in this one binding: the single-layer branch below
     // ignored it entirely (hard-coding "pour-gate / vent flash" on a gateless
@@ -801,11 +944,21 @@ fn write_v2_bonded_finishing(
     };
     let _ = writeln!(md, "{}", post_demold_section(mode, spec.layers.len()));
     md.push('\n');
+    // "pull the part off the plug" vs "lift the part out" — the one clause
+    // the plug's role changes in this section.
+    let (demold_clause, on_plug) = if plug_stays_in(role, 0) {
+        (
+            "you lift the part out (the plug inside it stays there)",
+            " on its plug",
+        )
+    } else {
+        ("you pull the part off the plug", "")
+    };
     if spec.layers.len() == 1 {
         let _ = writeln!(
             md,
-            "After the layer cures and you pull the part off the plug, the device is a \
-             single silicone body of one durometer — with one layer there are no \
+            "After the layer cures and {demold_clause}, the device is a \
+             single silicone body of one durometer{on_plug} — with one layer there are no \
              bonded interfaces and nothing to delaminate. Trim any seam flash{gate_flash} \
              flush with a sharp blade, and inspect the body for voids (a missed \
              degas shows as a trapped bubble — re-pour if so)."
@@ -813,8 +966,8 @@ fn write_v2_bonded_finishing(
     } else {
         let _ = writeln!(
             md,
-            "After the outermost layer ({}) cures and you pull the part off the plug, the \
-             device is a SINGLE integrated {}-layer silicone body — the durometers \
+            "After the outermost layer ({}) cures and {demold_clause}, the \
+             device is a SINGLE integrated {}-layer silicone body{on_plug} — the durometers \
              transition through the bonded interfaces (soft inner, firmer outer). Unlike \
              the detachable model, the layers are not separable; you cannot swap one out \
              without re-casting. Trim any seam flash{gate_flash} flush with a sharp blade, \
@@ -833,6 +986,7 @@ fn write_header_v2(
     apex_pour: bool,
     has_flange: bool,
     carved: SheetFeatures,
+    role: PlugRole,
 ) {
     let SheetFeatures {
         has_pour_gate,
@@ -874,23 +1028,22 @@ fn write_header_v2(
         "# Cast Procedure (v2.1 curve-following, detachable-shell)"
     );
     md.push('\n');
-    if spec.layers.len() == 1 {
+    let single = spec.layers.len() == 1;
+    let clause = detachable_header_clause(plug_stays_in(role, 0), single);
+    if single {
         let _ = writeln!(
             md,
             "Generated by `cf-cast` for a **single-layer** cast with v2.1 \
-             curve-following 2-piece molds + one printed plug. The layer is \
-             cast against its own plug and demolds as one standalone silicone \
-             tube — that tube IS the finished device. There are no other \
-             layers to nest with, so this sheet has no post-cure assembly step."
+             curve-following 2-piece molds + one printed plug. {clause} There \
+             are no other layers to nest with, so this sheet has no post-cure \
+             assembly step."
         );
     } else {
         let _ = writeln!(
             md,
             "Generated by `cf-cast` for a {}-layer cast (innermost-first) \
              with v2.1 curve-following 2-piece molds + one printed plug \
-             per layer. Each layer is cast independently against its own \
-             plug, producing a detachable cured silicone tube that nests \
-             with the other layers post-cure for assembly + disassembly.",
+             per layer. {clause}",
             spec.layers.len()
         );
     }
@@ -3600,7 +3753,17 @@ fn write_per_layer_sections_v2(
         let half_g = mass_g / 2.0;
         let protocol = layer.material.anchor_key.and_then(lookup_cure);
 
-        if single {
+        let stays_in = plug_stays_in(ribbon.plug_role, pour.layer_index);
+        if stays_in {
+            let _ = writeln!(
+                md,
+                "1. Print STLs `mold_layer_{0}_piece_0.stl` + \
+                 `mold_layer_{0}_piece_1.stl` + `plug_layer_{0}.stl` \
+                 (the plug — it stays in the finished part, so print one per \
+                 part, not one to reuse).",
+                pour.layer_index,
+            );
+        } else if single {
             let _ = writeln!(
                 md,
                 "1. Print STLs `mold_layer_{0}_piece_0.stl` + \
@@ -3619,7 +3782,17 @@ fn write_per_layer_sections_v2(
                 pour.layer_index,
             );
         }
-        let _ = writeln!(md, "2. Apply mold release to all printed surfaces.");
+        if stays_in {
+            let _ = writeln!(
+                md,
+                "2. Apply mold release to the two cup halves. NOT to \
+                 `plug_layer_{0}.stl` — release is what lets a cast let go, \
+                 and this plug is meant to stay in.",
+                pour.layer_index,
+            );
+        } else {
+            let _ = writeln!(md, "2. Apply mold release to all printed surfaces.");
+        }
         let _ = writeln!(
             md,
             "3. Assemble the two pieces along the curve-following seam \
@@ -3713,13 +3886,20 @@ fn write_per_layer_sections_v2(
                  Apply the clamping protocol from the section above."
                 .to_string(),
         };
-        let _ = writeln!(
-            md,
-            "6. Apply mold release to `plug_layer_{0}.stl` (Smooth-On \
-             Ease Release 200 standard) and {seat_plug}. {closing_protocol} \
-             {pour_sentence}",
-            pour.layer_index,
-        );
+        let release_step = if stays_in {
+            format!(
+                "`plug_layer_{0}.stl` gets NO mold release — it stays in the \
+                 finished part. Then {seat_plug}.",
+                pour.layer_index,
+            )
+        } else {
+            format!(
+                "Apply mold release to `plug_layer_{0}.stl` (Smooth-On \
+                 Ease Release 200 standard) and {seat_plug}.",
+                pour.layer_index,
+            )
+        };
+        let _ = writeln!(md, "6. {release_step} {closing_protocol} {pour_sentence}");
         if let Some(protocol) = protocol {
             let _ = writeln!(
                 md,
@@ -3732,20 +3912,25 @@ fn write_per_layer_sections_v2(
                 "7. Cure per the Smooth-On TDS at 73 °F (pot life per TDS)."
             );
         }
-        let demold_tail = if single {
+        let demold_tail = if stays_in {
+            "That assembly — plug plus cured layer — is the finished part."
+        } else if single {
             "The cured layer detaches as a standalone silicone tube — \
              the finished device."
         } else {
             "The cured layer detaches as a standalone silicone tube \
              ready to nest with the other layers post-cure."
         };
+        let plug_action = demold_plug_sentence(stays_in);
+        // The lock-release clause narrates the plug leaving the cast, so it
+        // has nothing to say when the plug stays in.
+        let lock_release = if stays_in { "" } else { lock_release };
         let _ = writeln!(
             md,
             "8. Demold: open the two mold halves along the ribbon \
              seam (remove `piece_0` first, then `piece_1` for clean \
              centerline-axis slide release on curved centerlines). \
-             Pull the plug axially out of the cured silicone \
-             shell.{lock_release} {demold_tail}"
+             {plug_action}{lock_release} {demold_tail}"
         );
         md.push('\n');
     }

@@ -84,6 +84,7 @@ use crate::dowel_hole::{DowelHoleKind, DowelHoleSpec};
 use crate::flange::{DemandFlangeSpec, FlangeKind};
 use crate::gasket_mold::GasketKind;
 use crate::material::MoldingMaterial;
+use crate::plug_role::PlugRole;
 use crate::pour::{PourGateKind, PourGateLayout, PourGateSpec};
 use crate::pour_volume::DEFAULT_MASS_BUDGET_KG;
 use crate::ribbon::{Ribbon, RibbonError, SplitNormal};
@@ -484,6 +485,10 @@ pub fn wheel_ribbon(spec: &WheelSpec) -> Result<Ribbon, RibbonError> {
 /// with the integral split funnel fused into each cup. `include_vent` is
 /// ignored for this layout — the workshop hand-drills vents at high spots.
 ///
+/// ✅ [`PlugRole::Insert`]: the rim is the product, not tooling. It carves
+/// nothing — it is what stops the sheet telling the bencher to release the rim
+/// and pull it out of the tire, which on a wheel destroys the part.
+///
 /// A starting point, not a constraint: every field is a `Ribbon` builder call
 /// the caller can override.
 ///
@@ -503,6 +508,7 @@ pub fn wheel_ribbon(spec: &WheelSpec) -> Result<Ribbon, RibbonError> {
 /// Panics if `spec` is not well-formed — see [`WheelSpec`].
 pub fn wheel_mold_ribbon(spec: &WheelSpec) -> Result<Ribbon, RibbonError> {
     Ok(wheel_ribbon(spec)?
+        .with_plug_role(PlugRole::Insert)
         .with_flange(FlangeKind::Demand(DemandFlangeSpec::iter1()))
         .with_dowel_hole(DowelHoleKind::Auto(DowelHoleSpec::iter1()))
         .with_bolt_pattern(BoltPatternKind::Auto(BoltPatternSpec::iter1()))
@@ -632,6 +638,7 @@ mod tests {
 
     use nalgebra::{Point3, Vector3};
 
+    use super::PlugRole;
     use super::{
         DimpleSpec, KeyingKind, NOMINAL_PU_95A_DENSITY_KG_M3, WheelSpec, cast_body_solid,
         locating_pin_is_solid, nominal_tire_volume_m3, rim_solid, tire_solid, wheel_cast_spec,
@@ -1632,6 +1639,55 @@ mod tests {
         assert!(
             mass_g * 6.0 < DEFAULT_MASS_BUDGET_KG * 1000.0,
             "six tires must fit the 2 lb budget"
+        );
+    }
+
+    #[test]
+    fn the_wheels_sheet_casts_the_tire_onto_the_rim_and_leaves_it_there() {
+        // ★ THE PROSE PATH, GATED. The rim is the product, so the two
+        // workshop instructions a silicone cast takes for granted — release
+        // the plug, then pull it out — each destroy a wheel. This renders the
+        // sheet `write_procedure_v2` writes and reads it for both.
+        //
+        // ⚠ Rendered, not reasoned: `wheel_mold_ribbon` sets the role, but
+        // what reaches the bencher is markdown, and every previous prose bug
+        // in this crate was a writer that never learned about a flag.
+        let spec = WheelSpec::iter1();
+        let ribbon = wheel_mold_ribbon(&spec).unwrap();
+        assert_eq!(
+            ribbon.plug_role,
+            PlugRole::Insert,
+            "the rim is the product, not tooling"
+        );
+        let cast = wheel_cast_spec(
+            &spec,
+            WORKSHOP_WALL_M,
+            PRODUCTION_CELL_M,
+            mesh_printability::PrinterConfig::fdm_default(),
+        );
+        let pours = cast.compute_pour_volumes().unwrap();
+        let md = crate::procedure::generate_procedure_markdown_v2(&cast, &pours, &ribbon);
+
+        for phrase in ["Pull the plug", "off the plug", "release to all printed"] {
+            assert!(
+                !md.contains(phrase),
+                "the wheel sheet still treats the rim as tooling: {phrase:?}"
+            );
+        }
+        // ⚠ Anchors, not decoration. Without them this gate passes on an empty
+        // string, and `contains` on a whole sheet cannot tell a sentence about
+        // the CUPS from one about the plug — so assert the sentence PREFIX.
+        assert!(
+            md.contains("2. Apply mold release to the two cup halves."),
+            "the cup halves still need release"
+        );
+        assert!(
+            md.contains("`plug_layer_0.stl` gets NO mold release"),
+            "and the rim still needs to be told it does not"
+        );
+        assert!(
+            md.contains("Leave the plug IN"),
+            "demold has to say what happens to the rim"
         );
     }
 
