@@ -83,6 +83,7 @@ use crate::bolt_pattern::{BoltPatternKind, BoltPatternSpec};
 use crate::dowel_hole::{DowelHoleKind, DowelHoleSpec};
 use crate::flange::{DemandFlangeSpec, FlangeKind};
 use crate::gasket_mold::GasketKind;
+use crate::pour::{PourGateKind, PourGateLayout, PourGateSpec};
 use crate::ribbon::{Ribbon, RibbonError, SplitNormal};
 
 use cf_design::Solid;
@@ -231,6 +232,22 @@ impl WheelSpec {
     #[must_use]
     pub fn tread_depth_m(&self) -> f64 {
         self.tire_outer_radius_m - self.rim_outer_radius_m
+    }
+
+    /// Radius at which the pour gate anchors — mid-tread, halfway between the
+    /// rim and the tire's outer surface.
+    ///
+    /// ★ **The one derivation, and it is load-bearing twice over.**
+    /// [`wheel_ribbon`]'s stub runs through `±` this radius, which is what
+    /// makes `apex_axial_pose` put the gate at 12 o'clock in the seam plane.
+    /// And it must land **strictly inside** the cast body: the integral funnel
+    /// ray-marches the body from the apex and silently degrades to a bore with
+    /// no funnel if the apex is not interior. On the tire's outer surface the
+    /// body SDF reads exactly `0.0` and the funnel vanishes;
+    /// `the_pour_gate_carries_its_funnel` is the gate for that.
+    #[must_use]
+    pub const fn gate_anchor_radius_m(&self) -> f64 {
+        f64::midpoint(self.tire_outer_radius_m, self.rim_outer_radius_m)
     }
 
     /// Radius of the locating pin the mold grows through the axle bore —
@@ -397,9 +414,18 @@ pub fn locating_pin_is_solid(spec: &WheelSpec, wall_thickness_m: f64) -> bool {
 /// The wheel has no centerline and cannot have one — `Ribbon.points` is an
 /// OPEN polyline and no producer emits a closed loop — but a planar seam
 /// bypasses the curve machinery entirely: [`Ribbon::sdf`] short-circuits to the
-/// signed distance to one flat plane. So the ribbon carries a two-point stub
-/// along the wheel axis purely to exist, and the parting plane is set
-/// explicitly to `z = 0` with normal `+Z`.
+/// signed distance to one flat plane. The parting plane is set explicitly to
+/// `z = 0` with normal `+Z`.
+///
+/// ⚠⚠ **The stub is NOT inert.** It was, until the pour gate started reading
+/// it: `apex_axial_pose` anchors the gate at `centerline[0]` with its axis
+/// along `-tangent`. So the stub runs **12 o'clock → 6 o'clock** through
+/// [`WheelSpec::gate_anchor_radius_m`], which puts the gate at the top of the
+/// wheel with its axis in the seam plane. Pointed along the wheel AXIS — the
+/// obvious choice, and what this did through M2b — `outward` is parallel to
+/// the seam normal, `apex_axial_pose` takes its documented pathological
+/// branch, and the bore lands on the axis pointing out of the seam plane,
+/// straight through the locating pin.
 ///
 /// ⚠ `split_normal` is a FRAME HINT, not the parting-plane normal — the cut
 /// normal is `tangent × split_normal`, so setting it to the wheel axis would
@@ -423,10 +449,13 @@ pub fn locating_pin_is_solid(spec: &WheelSpec, wall_thickness_m: f64) -> bool {
 /// Panics if `spec` is not well-formed — see [`WheelSpec`].
 pub fn wheel_ribbon(spec: &WheelSpec) -> Result<Ribbon, RibbonError> {
     spec.assert_well_formed();
-    let half_width = spec.width_m / 2.0;
+    // Top first: `v_apex_anchor` takes `centerline[0]` with outward
+    // `-tangent`, so 12 → 6 o'clock points the gate UP. Reversed, it aims at
+    // 6 o'clock and the cavity fills against gravity.
+    let anchor = spec.gate_anchor_radius_m();
     let stub = vec![
-        Point3::new(0.0, 0.0, -half_width),
-        Point3::new(0.0, 0.0, half_width),
+        Point3::new(0.0, anchor, 0.0),
+        Point3::new(0.0, -anchor, 0.0),
     ];
     Ok(Ribbon::new(stub, SplitNormal::default())?
         .with_planar_seam_at(Point3::origin(), Vector3::z()))
@@ -446,17 +475,20 @@ pub fn wheel_ribbon(spec: &WheelSpec) -> Result<Ribbon, RibbonError> {
 /// seam is Z-normal. What such a mismatch would actually produce is untested —
 /// nothing here builds one.
 ///
-/// ⚠ **One component of the proven config is missing here: the apex-axial
-/// integral funnel.** No pour gate is set, so this carries that config's
-/// registration and clamping, not its filling. The gate is M2c.
+/// ✅ The apex-axial gate completes the proven config: a single bore lying in
+/// the seam plane so separating the halves bisects it into open half-troughs,
+/// with the integral split funnel fused into each cup. `include_vent` is
+/// ignored for this layout — the workshop hand-drills vents at high spots.
 ///
 /// A starting point, not a constraint: every field is a `Ribbon` builder call
 /// the caller can override.
 ///
 /// ⚠ What the placement solver does with a CIRCLE is not obvious — dowels are
 /// seeded at the loop's principal-axis extremes, and a circle has no principal
-/// axis. `dowels_land_diametrically_opposite_on_an_isotropic_loop` measures
-/// the documented isotropic fallback actually firing.
+/// axis, so the one it picks is decided by floating-point noise.
+/// `dowels_land_far_apart_on_an_isotropic_loop` asserts what survives that:
+/// two dowels, one radius, a large moment arm. Their absolute bearing does
+/// not survive it, and is not the same on every platform.
 ///
 /// # Errors
 ///
@@ -470,7 +502,11 @@ pub fn wheel_mold_ribbon(spec: &WheelSpec) -> Result<Ribbon, RibbonError> {
         .with_flange(FlangeKind::Demand(DemandFlangeSpec::iter1()))
         .with_dowel_hole(DowelHoleKind::Auto(DowelHoleSpec::iter1()))
         .with_bolt_pattern(BoltPatternKind::Auto(BoltPatternSpec::iter1()))
-        .with_gasket(GasketKind::None))
+        .with_gasket(GasketKind::None)
+        .with_pour_gate(PourGateKind::Default(PourGateSpec {
+            layout: PourGateLayout::ApexAxial,
+            ..PourGateSpec::iter1()
+        })))
 }
 
 /// The cured tire — the PU actually poured.
@@ -532,7 +568,7 @@ pub fn nominal_tire_volume_m3(spec: &WheelSpec) -> f64 {
 mod tests {
     // Mirrors `dowel_hole` / `funnel`: test-only escapes so a fixture that
     // fails to build aborts the test loudly instead of being handled.
-    #![allow(clippy::expect_used, clippy::unwrap_used)]
+    #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
     use approx::assert_relative_eq;
 
@@ -546,7 +582,9 @@ mod tests {
     use crate::bolt_pattern::{BoltPatternSpec, plan_smart_bolt_placements};
     use crate::dowel_hole::{DowelHoleSpec, plan_smart_dowel_placements, smart_dowel_footprint};
     use crate::error::CastTarget;
+    use crate::mesh_csg::MatingTransform;
     use crate::piece::compose_piece_solid;
+    use crate::pour::build_pour_gate_transforms;
     use crate::pour_volume::{
         DEFAULT_MASS_BUDGET_KG, POUR_VOLUME_MIN_CELL_SIZE_M, integrate_negative_sdf_volume,
     };
@@ -1071,25 +1109,50 @@ mod tests {
             std::f64::consts::TAU * spec.tire_outer_radius_m,
             epsilon = 5e-5
         );
+        // ⚠ This asserted `exclusions.is_empty()` through M2b, which was true
+        // only because the ribbon had no pour gate. Now it has one, and the
+        // solver excludes the bore as a swept channel so fasteners bracket it
+        // rather than collide with it. An empty list here would mean the
+        // placement solver does not know the gate exists.
+        assert_eq!(exclusions.len(), 1, "the pour bore must be excluded once");
+        let crate::seam_solver::Exclusion::Channel { a, b, half_width } = exclusions[0] else {
+            panic!("the pour gate excludes a swept channel; got {exclusions:?}")
+        };
+        // The channel runs outward from the gate anchor along the loop's
+        // in-plane v axis — 12 o'clock, on the x = 0 meridian.
+        assert_relative_eq!(a.x, 0.0, epsilon = 1e-9);
+        assert_relative_eq!(b.x, 0.0, epsilon = 1e-9);
+        assert_relative_eq!(a.z, spec.gate_anchor_radius_m(), epsilon = 1e-9);
         assert!(
-            exclusions.is_empty(),
-            "nothing should be excluded on a bare wheel seam; got {exclusions:?}"
+            b.z > spec.tire_outer_radius_m,
+            "the bore must reach past the cavity to outside; ends at {}",
+            b.z
         );
+        assert!(half_width > 0.0);
     }
 
     #[test]
-    fn dowels_land_diametrically_opposite_on_an_isotropic_loop() {
+    fn dowels_land_far_apart_on_an_isotropic_loop() {
         // ★ THE DEGENERACY GATE. `plan_smart_dowel_placements` seeds at the
         // loop's PRINCIPAL-AXIS extremes (PCA over the stations) — and a
-        // circle has no principal axis. `dowel_hole.rs` documents a fallback
-        // to a coordinate axis for the near-isotropic case; every placement
-        // fixture I checked (`bolt_pattern.rs:431`, `:861`,
-        // `dowel_hole.rs:505`, `:670`) is a rotated cylinder, so none of them
-        // reaches that branch.
+        // circle has no principal axis. Every placement fixture I checked
+        // (`bolt_pattern.rs:431`, `:861`, `dowel_hole.rs:505`, `:670`) is a
+        // rotated cylinder, so none of them reaches that branch.
         //
-        // Two dowels, equal radius, 180° apart is the correct answer for a
-        // circle: any diameter is as good as any other, so the fallback is not
-        // a compromise here.
+        // ⚠⚠ WHAT IS GUARANTEED IS MUCH WEAKER THAN "DIAMETRICALLY OPPOSITE",
+        // and this gate asserted that until CI disproved it. On an isotropic
+        // loop the principal axis is numerically ARBITRARY: perturbing the
+        // tire radius by 0.1 mm swings the pair's absolute bearing from −0.05°
+        // to +68.4° to +27.9°. Only the SEPARATION was stable locally
+        // (179.57°–180.00°) — and on Linux the same code separates them by
+        // 157.940°. The seeds start opposite; the feasibility solve then moves
+        // them, and by how much depends on an axis that is chosen by
+        // floating-point noise.
+        //
+        // ⇒ assert what registration actually needs — two dowels, one radius,
+        // a large moment arm — not a number that happens to hold on one
+        // platform. `placement_is_deterministic` covers same-platform
+        // reproducibility, which is what matters for one exported mold.
         let spec = WheelSpec::iter1();
         let ribbon = wheel_mold_ribbon(&spec).unwrap();
         let dowels = plan_smart_dowel_placements(
@@ -1107,10 +1170,15 @@ mod tests {
             ra > spec.tire_outer_radius_m + WALL_M,
             "dowels must sit outboard of the cup wall, got r={ra}"
         );
-        let sweep = (b.z.atan2(b.x) - a.z.atan2(a.x)).abs().to_degrees();
+        // ⚠ The raw difference must be WRAPPED. `(θb − θa).abs()` reads 202°
+        // for a pair that is 158° apart, which is how the Linux failure first
+        // looked like a 202° impossibility.
+        let raw = (b.z.atan2(b.x) - a.z.atan2(a.x)).abs().to_degrees();
+        let separation = raw.min(360.0 - raw);
         assert!(
-            (sweep - 180.0).abs() < 1.0,
-            "maximum moment arm means diametrically opposite; got {sweep}°"
+            separation > 120.0,
+            "clamshell registration needs a large moment arm; the dowels are \
+             only {separation}° apart"
         );
     }
 
@@ -1179,6 +1247,14 @@ mod tests {
         // `dowel_hole.rs` says ties break to the lowest arc length; this is
         // that claim, run.
         //
+        // ⚠⚠ SCOPE: same binary, same platform. It does NOT establish
+        // cross-platform reproducibility, and that is not a hypothetical —
+        // this geometry separates its dowels by 180.000° on macOS and
+        // 157.940° on Linux, because the principal axis of an isotropic loop
+        // is decided by floating-point noise. Both are valid molds; they are
+        // not the SAME mold. Re-exporting on a different machine after printing
+        // one half is a workshop hazard nothing here guards.
+        //
         // ⚠ A control for this gate must vary `tire_outer_radius_m`. Changing
         // `width_m` or `bore_radius_m` leaves the placements bit-identical,
         // because the seam loop is the z = 0 cross-section's OUTER boundary
@@ -1197,6 +1273,109 @@ mod tests {
                 plan_smart_dowel_placements(&seam_loops(&spec, &r), &dspec, &r.flange, WALL_M);
             assert_eq!(again, first, "placement moved between identical builds");
         }
+    }
+
+    #[test]
+    fn the_pour_gate_sits_at_twelve_oclock_in_the_seam_plane() {
+        // ★ The orientation decision, finally expressed in code. The plan said
+        // stand the wheel up so the cavity has ONE high point and gate there;
+        // until now that lived only in prose, because the design frame says
+        // nothing about gravity.
+        //
+        // `apex_axial_pose` anchors at `centerline[0]` along `-tangent`, so
+        // this is decided entirely by which way `wheel_ribbon`'s stub runs.
+        let spec = WheelSpec::iter1();
+        let ribbon = wheel_mold_ribbon(&spec).unwrap();
+        let tf = build_pour_gate_transforms(&ribbon);
+        assert_eq!(tf.len(), 1, "apex-axial is a single bore, no splayed vent");
+        let MatingTransform::SubtractCylinder { params } = &tf[0] else {
+            panic!("the pour gate carves a cylinder; got {:?}", tf[0])
+        };
+        let (c, axis) = (params.parent.center_m, params.parent.axis.into_inner());
+
+        // In the seam plane (z = 0) and on the x = 0 meridian …
+        assert_relative_eq!(c[2], 0.0, epsilon = 1e-9);
+        assert_relative_eq!(c[0], 0.0, epsilon = 1e-9);
+        // … pointing UP, not down: 12 o'clock, not 6.
+        assert!(c[1] > 0.0, "gate anchored below the axle; got y={}", c[1]);
+        assert_relative_eq!(axis.y, 1.0, epsilon = 1e-9);
+
+        // ⚠ THE CONDITION THAT MAKES IT WORK: the bore axis must lie IN the
+        // seam plane. An axis-aligned stub makes `outward` parallel to the
+        // seam normal, which takes `apex_axial_pose`'s documented pathological
+        // branch — the bore then points out of the seam, does not split
+        // evenly, and runs down the wheel axis through the locating pin.
+        let seam_normal = ribbon.seam_plane_reference().1.into_inner();
+        assert_relative_eq!(axis.dot(&seam_normal), 0.0, epsilon = 1e-9);
+    }
+
+    #[test]
+    fn the_pour_gate_carries_its_funnel() {
+        // The integral split funnel ray-marches the body from the apex, and a
+        // non-interior apex degrades it to a bore with NO funnel — silently,
+        // returning `Some(channel)` either way. Anchoring mid-tread keeps the
+        // apex inside the body; on the tire's outer surface the body SDF reads
+        // exactly 0.0 and the cone disappears.
+        //
+        // ⚠⚠ "Does the piece protrude?" IS NOT A DETECTOR for this. The funnel
+        // is `INTEGRAL_FUNNEL_HEIGHT_M` = 18 mm tall and the Demand flange
+        // already reaches ~21.5 mm, so the cone never leaves the flange's
+        // bounding box. Checking protrusion reported the funnel missing for
+        // every anchor, including ones that had it.
+        let spec = WheelSpec::iter1();
+        let body = cast_body_solid(&spec);
+        assert!(
+            body.evaluate(&Point3::new(0.0, spec.gate_anchor_radius_m(), 0.0)) < 0.0,
+            "the gate anchor must be strictly interior or the funnel degrades away"
+        );
+        let ribbon = wheel_mold_ribbon(&spec).unwrap();
+        let channel = crate::pour::build_integral_pour_channel(&ribbon, &body, 0.005)
+            .expect("apex-axial builds an integral channel");
+        let cone = channel
+            .funnel_cone
+            .expect("a funnel, not a bore-only degrade");
+        let cb = cone.bounds().expect("the funnel is a bounded cone");
+        // It starts at the cavity's outer surface and rises outward from there.
+        assert!(cb.min.y >= spec.tire_outer_radius_m - 1e-3);
+        assert!(cb.max.y > cb.min.y);
+    }
+
+    #[test]
+    fn the_bore_breaches_the_wall_and_leaves_the_pin_alone() {
+        // The bore has to open the cavity to the outside world at 12 o'clock,
+        // and it has to do that without going anywhere near the axle, where
+        // the locating pin stands. With the stub along the wheel axis it did
+        // the opposite: a 5 mm-radius bore straight down the axis, through a
+        // 3.9 mm-radius pin. (The 9.5 mm in the transform is the funnel's
+        // FASTENER-CLEARANCE footprint — bore + funnel wall + gap — not the
+        // bore; the SDF carve uses `gate_radius_m`.)
+        let spec = WheelSpec::iter1();
+        let ribbon = wheel_mold_ribbon(&spec).unwrap();
+        let (piece, _tf) = compose_piece_solid(
+            &cast_body_solid(&spec),
+            WALL_M,
+            &ribbon,
+            PieceSide::Positive,
+        )
+        .unwrap();
+
+        // Through the cup wall at 12 o'clock the bore is open …
+        for y in [0.066_f64, 0.068, 0.070] {
+            assert!(
+                piece.evaluate(&Point3::new(0.0, y, 0.001)) > 0.0,
+                "the bore is blocked at y={y}"
+            );
+        }
+        // … while the same wall a centimetre to the side is solid.
+        assert!(
+            piece.evaluate(&Point3::new(0.013, 0.068, 0.001)) < 0.0,
+            "the bore removed the whole wall, not just its own lumen"
+        );
+        // … and the pin is untouched.
+        assert!(
+            piece.evaluate(&Point3::new(0.0, 0.0, spec.width_m / 4.0)) < 0.0,
+            "the bore reached the locating pin"
+        );
     }
 
     #[test]
