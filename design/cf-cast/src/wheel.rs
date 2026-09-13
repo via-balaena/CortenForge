@@ -128,6 +128,47 @@ const DEFAULT_DIMPLE_COUNT: u32 = 8;
 /// pocket in the rim and a hemispherical rivet on the tire.
 const DEFAULT_DIMPLE_RADIUS_M: f64 = 0.003;
 
+/// Spoke slots around a spoked rim (6).
+const DEFAULT_SPOKE_COUNT: u32 = 6;
+
+/// Spoke slot width (16 mm).
+///
+/// ⚠ **Bounded by the MOLD, not by taste.** The cup wall cores a slot only
+/// where the body-tracking shell reaches its centreline, so the widest slot a
+/// given cast can core is `2 x wall_thickness_m`. This default assumes an
+/// **8 mm** wall, which cores up to 16 mm — 15 leaves a millimetre of margin
+/// rather than sitting on a knife edge. The 5 mm workshop wall cores only 10.
+/// [`spoke_cores_are_solid`] is the check; nothing here can make it, because
+/// the wall belongs to the cast rather than to the wheel.
+const DEFAULT_SLOT_WIDTH_M: f64 = 0.015;
+
+/// Hub material radius (20 mm) — kept around the bore so the spokes have
+/// something to spring from.
+///
+/// ⚠ Sized by the WEB, not by the bore. Slots crowd at their inner ends, and
+/// at a 16 mm hub the six default slots leave a **1.14 mm** web — which passes
+/// a "web is positive" check and would have shipped. 20 mm leaves 5.6 mm.
+const DEFAULT_HUB_RADIUS_M: f64 = 0.020;
+
+/// Rim band kept inboard of the rim's outer surface (8 mm), so the tire has a
+/// continuous ring to key into rather than bearing onto spoke ends.
+const DEFAULT_RIM_BAND_M: f64 = 0.008;
+
+/// Spoke slot corner radius (2 mm). Sharp internal corners are stress risers,
+/// and this is the one number here that exists for strength rather than for
+/// geometry.
+const DEFAULT_SPOKE_FILLET_M: f64 = 0.002;
+
+/// Least rim material permitted between two adjacent slots at the hub.
+///
+/// ⚠ **This floor exists because no other gate can catch a thin one.** The F4
+/// printability gate's `ThinWall` finding is EXCUSED for `CastTarget::Plug` by
+/// `spec::function_excuses_thinness`, and the rim IS the plug — so a hair-thin
+/// spoke web passes the export silently. 1 mm is F4's own default minimum
+/// wall, used here as a floor against silent failure; it is NOT a strength
+/// claim, and nothing in this module analyses a spoke.
+const MIN_SPOKE_WEB_M: f64 = 0.001;
+
 /// Slack applied to subtracted cylinders' half-height so their flat caps sit
 /// outside the parent's faces, keeping the boolean off coincident planes.
 /// Same role as [`crate::dowel_hole::HOLE_AXIAL_SLACK_M`].
@@ -200,6 +241,91 @@ impl KeyingKind {
     }
 }
 
+/// Straight radial slots cut through the rim, leaving spokes between them.
+///
+/// ★ **Why slots and not holes.** A void in the rim stays OPEN only if the
+/// mold cores it, and the mold cores it only where the body-tracking cup-wall
+/// shell reaches — within `wall_thickness_m` of the body surface. For a round
+/// hole that bounds the RADIUS; for a slot it bounds only the HALF-WIDTH, so a
+/// slot may be arbitrarily long. That is the whole reason this is a slot spec
+/// and not a hole spec. See [`spoke_cores_are_solid`].
+///
+/// ⚠ Straight and full-width by construction: the slot runs the rim's entire
+/// axial depth, so the spokes are straight extruded walls. On FDM that is zero
+/// overhang and zero bridging, and it puts the maximum section where layer
+/// adhesion is weakest — a wheel bends about a diameter under cornering load.
+///
+/// ⚠ **No structural claim is made here.** Nothing in this module analyses a
+/// spoke. The count and width are parameters for exactly that reason.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SpokeSpec {
+    /// How many slots around the rim.
+    pub count: u32,
+    /// Slot width (metres) — the gap between adjacent spokes.
+    pub slot_width_m: f64,
+    /// Radius of the solid hub kept around the bore (metres).
+    pub hub_radius_m: f64,
+    /// Solid rim band kept inboard of `rim_outer_radius_m` (metres).
+    pub rim_band_m: f64,
+    /// Corner radius applied to the slot (metres).
+    pub fillet_m: f64,
+}
+
+impl SpokeSpec {
+    /// A six-spoke rim sized for an 8 mm cup wall.
+    #[must_use]
+    pub const fn iter1() -> Self {
+        Self {
+            count: DEFAULT_SPOKE_COUNT,
+            slot_width_m: DEFAULT_SLOT_WIDTH_M,
+            hub_radius_m: DEFAULT_HUB_RADIUS_M,
+            rim_band_m: DEFAULT_RIM_BAND_M,
+            fillet_m: DEFAULT_SPOKE_FILLET_M,
+        }
+    }
+}
+
+impl Default for SpokeSpec {
+    fn default() -> Self {
+        Self::iter1()
+    }
+}
+
+/// Whether the rim carries spokes.
+///
+/// Follows `KeyingKind`'s shape. [`SpokeKind::None`] is the default and is the
+/// solid disc every wheel before 2026-09-13 was.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum SpokeKind {
+    /// A solid disc.
+    #[default]
+    None,
+    /// Straight radial slots.
+    ///
+    /// ⛔ **THE BENCH SHEET DOES NOT KNOW ABOUT THESE.** `procedure.rs`
+    /// renders from `CastSpec` + `Ribbon`, neither of which carries spokes, so
+    /// a spoked cast produces a sheet byte-identical to a solid one — and its
+    /// cf-view checklist then tells the reader that the cup's cap-plane wall
+    /// "carries the body-cavity opening perimeter and nothing else" and that
+    /// protrusions are a regression. The cores are exactly that. **The sheet
+    /// would have the workshop file a regression issue against correct
+    /// geometry.** Fixing it needs the sheet to learn a "the cup carries
+    /// cores" concept, the way it learned [`crate::PlugRole`]; until then, do
+    /// not hand a spoked cast's sheet to anyone without saying so.
+    Radial(SpokeSpec),
+}
+
+impl SpokeKind {
+    /// The inner [`SpokeSpec`] for [`SpokeKind::Radial`], `None` otherwise.
+    #[must_use]
+    pub const fn spoke_spec(self) -> Option<SpokeSpec> {
+        match self {
+            Self::None => None,
+            Self::Radial(spec) => Some(spec),
+        }
+    }
+}
+
 /// A wheel: a PU tire overmolded on a printed rim, both about `+Z`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WheelSpec {
@@ -216,6 +342,8 @@ pub struct WheelSpec {
     pub width_m: f64,
     /// Mechanical keying between tire and rim.
     pub keying: KeyingKind,
+    /// Spokes cut through the rim. Default [`SpokeKind::None`] — a solid disc.
+    pub spokes: SpokeKind,
 }
 
 impl WheelSpec {
@@ -230,6 +358,7 @@ impl WheelSpec {
             bore_clearance_m: DEFAULT_BORE_CLEARANCE_M,
             width_m: DEFAULT_WIDTH_M,
             keying: KeyingKind::Dimples(DimpleSpec::iter1()),
+            spokes: SpokeKind::None,
         }
     }
 
@@ -316,6 +445,76 @@ impl WheelSpec {
                 self.width_m / 2.0
             );
         }
+        if let Some(spokes) = self.spokes.spoke_spec() {
+            self.assert_spokes_well_formed(spokes);
+        }
+    }
+
+    /// The spoke half of [`Self::assert_well_formed`], split out because the
+    /// two together outgrew one function.
+    fn assert_spokes_well_formed(&self, spokes: SpokeSpec) {
+        // ⚠ TWO, not one. A single slot leaves a statically unbalanced
+        // rotating part — the defect is vibration at speed, not geometry,
+        // so nothing downstream would catch it.
+        assert!(
+            spokes.count >= 2,
+            "a spoked rim needs at least 2 slots or it is unbalanced, got {}",
+            spokes.count
+        );
+        assert!(
+            spokes.slot_width_m > 0.0 && spokes.slot_width_m.is_finite(),
+            "slot width must be positive and finite, got {}",
+            spokes.slot_width_m
+        );
+        assert!(
+            spokes.hub_radius_m > self.bore_radius_m,
+            "hub radius ({}) must leave material outside the bore ({})",
+            spokes.hub_radius_m,
+            self.bore_radius_m
+        );
+        assert!(
+            spokes.rim_band_m > 0.0 && spokes.rim_band_m.is_finite(),
+            "rim band must be positive and finite, got {}",
+            spokes.rim_band_m
+        );
+        let slot_outer = self.rim_outer_radius_m - spokes.rim_band_m;
+        assert!(
+            slot_outer > spokes.hub_radius_m,
+            "the rim band ({}) leaves no room for a slot between the hub \
+             ({}) and the rim's outer radius ({})",
+            spokes.rim_band_m,
+            spokes.hub_radius_m,
+            self.rim_outer_radius_m
+        );
+        assert!(
+            spokes.fillet_m > 0.0 && spokes.fillet_m.is_finite(),
+            "slot fillet must be positive and finite, got {}",
+            spokes.fillet_m
+        );
+        // `round` grows the box by its radius, so the box is built
+        // undersize by that much and every half-extent must survive it.
+        assert!(
+            spokes.fillet_m < (slot_outer - spokes.hub_radius_m) / 2.0
+                && spokes.fillet_m < spokes.slot_width_m / 2.0
+                && spokes.fillet_m < self.width_m / 2.0,
+            "slot fillet ({}) must be smaller than every half-extent of \
+             the slot it rounds",
+            spokes.fillet_m
+        );
+        // ★ The hub is where slots crowd. Zero web there means the hub is
+        // no longer attached to the rim.
+        let web = raw_spoke_web_m(spokes);
+        assert!(
+            web > MIN_SPOKE_WEB_M,
+            "{} slots {} m wide leave only {} m of spoke at the hub radius \
+             {} m (floor {} m) — at zero the hub would detach from the rim, \
+             and F4 excuses ThinWall on a plug so nothing downstream looks",
+            spokes.count,
+            spokes.slot_width_m,
+            web,
+            spokes.hub_radius_m,
+            MIN_SPOKE_WEB_M
+        );
     }
 }
 
@@ -323,6 +522,120 @@ impl Default for WheelSpec {
     fn default() -> Self {
         Self::iter1()
     }
+}
+
+/// Rim material left between two adjacent slots, measured at the hub radius —
+/// `None` when the rim carries no spokes.
+///
+/// ★ **The one derivation, and the hub is where it binds.** Slots are closest
+/// together at their inner ends, so if the web goes to zero anywhere it goes
+/// there first — and when it does, the hub separates from the rim band and the
+/// "wheel" is two loose pieces.
+///
+/// Exact, not small-angle: a slot of width `w` is straight-sided, so at radius
+/// `r` it consumes the arc `2r·asin(w / 2r)`, which is longer than `w`. Using
+/// `w` directly would overestimate the surviving web — the optimistic
+/// direction, which is the wrong way for a check to be wrong.
+///
+/// # Panics
+///
+/// Panics if `spec` is not well-formed — see [`WheelSpec`].
+#[must_use]
+pub fn spoke_web_m(spec: &WheelSpec) -> Option<f64> {
+    spec.assert_well_formed();
+    let spokes = spec.spokes.spoke_spec()?;
+    Some(raw_spoke_web_m(spokes))
+}
+
+/// [`spoke_web_m`] without the well-formedness assertion, so
+/// `assert_well_formed` can use it without recursing into itself.
+fn raw_spoke_web_m(spokes: SpokeSpec) -> f64 {
+    let r = spokes.hub_radius_m;
+    let half_chord = spokes.slot_width_m / 2.0;
+    // A chord wider than the diameter subtends no arc; the slots have already
+    // swallowed the hub, and the caller's assertion reports it.
+    if half_chord >= r {
+        return f64::NEG_INFINITY;
+    }
+    let pitch_arc = std::f64::consts::TAU * r / f64::from(spokes.count);
+    let slot_arc = 2.0 * r * (half_chord / r).asin();
+    pitch_arc - slot_arc
+}
+
+/// The spoke slots as one solid, or `None` when the rim carries no spokes.
+///
+/// ★★ **The one derivation, and it is subtracted TWICE on purpose.**
+/// [`rim_solid`] removes it so the rim has spokes, and [`cast_body_solid`]
+/// removes the *same solid* so the mold grows a core there instead of the pour
+/// filling it. Cutting it from the rim alone would not fail — it would quietly
+/// turn every slot into polyurethane, at roughly +90 g per wheel.
+/// `coring_leaves_the_pour_unchanged` is the gate on that.
+///
+/// Each slot is a straight box spanning the rim's full axial depth plus
+/// a sliver of axial slack, rounded by `fillet_m`, running from `hub_radius_m` out
+/// to `rim_outer_radius_m − rim_band_m`.
+///
+/// ⚠ Polar repeat by folding, as [`keying_solid`] does: `cf-design`'s
+/// `repeat`/`repeat_bounded` are Cartesian grids and the SDF kernel has no
+/// polar domain-repeat, so N rotations it is. `count` is small.
+///
+/// # Panics
+///
+/// Panics if `spec` is not well-formed — see [`WheelSpec`].
+#[must_use]
+pub fn spoke_slots_solid(spec: &WheelSpec) -> Option<Solid> {
+    spec.assert_well_formed();
+    let spokes = spec.spokes.spoke_spec()?;
+    let f = spokes.fillet_m;
+    let inner = spokes.hub_radius_m;
+    let outer = spec.rim_outer_radius_m - spokes.rim_band_m;
+
+    // `round` grows the solid by its radius in every direction, so the box is
+    // built undersize by exactly that and comes out at the asked-for size.
+    let half_len = (outer - inner) / 2.0 - f;
+    let half_width = spokes.slot_width_m / 2.0 - f;
+    let half_depth = spec.width_m / 2.0 + AXIAL_SLACK_M - f;
+    let seed = Solid::cuboid(Vector3::new(half_len, half_width, half_depth))
+        .round(f)
+        .translate(Vector3::new(f64::midpoint(inner, outer), 0.0, 0.0));
+
+    let mut slots = seed.clone();
+    for i in 1..spokes.count {
+        let theta = std::f64::consts::TAU * f64::from(i) / f64::from(spokes.count);
+        let rotation = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), theta);
+        slots = slots.union(seed.clone().rotate(rotation));
+    }
+    Some(slots)
+}
+
+/// Whether the mold can core every spoke slot at the given cup-wall thickness.
+///
+/// ★★★ **The design rule the whole spoke feature turns on.** The cup wall is a
+/// shell reaching `wall_thickness_m` outward from the body surface, so it fills
+/// a slot only out to that depth from the slot's walls. A slot's deepest
+/// interior point is `slot_width_m / 2` from its nearest wall, so the mold
+/// cores it exactly while **`slot_width_m < 2 × wall_thickness_m`**. Wider, and
+/// what forms is a hollow rind around the slot with a void down the middle —
+/// which is not a core, and which the pour then finds.
+///
+/// ⇒ **the mold's wall thickness sets the widest spoke opening available.**
+/// 10 mm slots at the 5 mm workshop wall; 16 mm at 8 mm; 20 mm at 10 mm.
+///
+/// ⚠ Not part of [`WheelSpec`]'s own validation, for the same reason
+/// [`locating_pin_is_solid`] is not: the wall belongs to the cast, not to the
+/// wheel, so a `WheelSpec` cannot check it alone.
+///
+/// Returns `true` for a wheel with no spokes — there is nothing to core.
+///
+/// # Panics
+///
+/// Panics if `spec` is not well-formed — see [`WheelSpec`].
+#[must_use]
+pub fn spoke_cores_are_solid(spec: &WheelSpec, wall_thickness_m: f64) -> bool {
+    spec.assert_well_formed();
+    spec.spokes
+        .spoke_spec()
+        .is_none_or(|spokes| spokes.slot_width_m < 2.0 * wall_thickness_m)
 }
 
 /// The keying spheres, centered on the rim's outer surface in the plane
@@ -376,6 +689,9 @@ pub fn rim_solid(spec: &WheelSpec) -> Solid {
     if let Some(keys) = keying_solid(spec) {
         disc = disc.subtract(keys);
     }
+    if let Some(slots) = spoke_slots_solid(spec) {
+        disc = disc.subtract(slots);
+    }
     disc
 }
 
@@ -392,10 +708,17 @@ pub fn rim_solid(spec: &WheelSpec) -> Solid {
 pub fn cast_body_solid(spec: &WheelSpec) -> Solid {
     spec.assert_well_formed();
     let half_width = spec.width_m / 2.0;
-    Solid::cylinder(spec.tire_outer_radius_m, half_width).subtract(Solid::cylinder(
+    let mut body = Solid::cylinder(spec.tire_outer_radius_m, half_width).subtract(Solid::cylinder(
         spec.locating_pin_radius_m(),
         half_width + AXIAL_SLACK_M,
-    ))
+    ));
+    // ★ The SAME solid `rim_solid` removes. Taking it out of the body too is
+    // what makes the mold core the slot; without this the slots are still
+    // slots, but they are full of polyurethane.
+    if let Some(slots) = spoke_slots_solid(spec) {
+        body = body.subtract(slots);
+    }
+    body
 }
 
 /// Whether the mold's locating pin is solid to the axis, given the cup wall's
@@ -636,13 +959,15 @@ mod tests {
 
     use approx::assert_relative_eq;
 
+    use cf_design::Solid;
     use nalgebra::{Point3, Vector3};
 
     use super::PlugRole;
     use super::{
-        DimpleSpec, KeyingKind, NOMINAL_PU_95A_DENSITY_KG_M3, WheelSpec, cast_body_solid,
-        locating_pin_is_solid, nominal_tire_volume_m3, rim_solid, tire_solid, wheel_cast_spec,
-        wheel_mold_ribbon, wheel_ribbon,
+        DimpleSpec, KeyingKind, NOMINAL_PU_95A_DENSITY_KG_M3, SpokeKind, SpokeSpec, WheelSpec,
+        cast_body_solid, keying_solid, locating_pin_is_solid, nominal_tire_volume_m3,
+        raw_spoke_web_m, rim_solid, spoke_cores_are_solid, spoke_slots_solid, spoke_web_m,
+        tire_solid, wheel_cast_spec, wheel_mold_ribbon, wheel_ribbon,
     };
     use crate::bolt_pattern::{BoltPatternSpec, plan_smart_bolt_placements};
     use crate::dowel_hole::{DowelHoleSpec, plan_smart_dowel_placements, smart_dowel_footprint};
@@ -1640,6 +1965,466 @@ mod tests {
             mass_g * 6.0 < DEFAULT_MASS_BUDGET_KG * 1000.0,
             "six tires must fit the 2 lb budget"
         );
+    }
+
+    // ── spokes ────────────────────────────────────────────────────────────
+
+    /// The cup wall a spoked wheel needs. ★ NOT `WORKSHOP_WALL_M`: the mold
+    /// cores a slot only while `slot_width < 2 x wall`, so the 16 mm default
+    /// slot demands 8 mm. That coupling is the point, and
+    /// `a_slot_wider_than_twice_the_wall_has_a_hollow_core` is its gate.
+    const SPOKED_WALL_M: f64 = 0.008;
+
+    fn spoked() -> WheelSpec {
+        WheelSpec {
+            spokes: SpokeKind::Radial(SpokeSpec::iter1()),
+            ..WheelSpec::iter1()
+        }
+    }
+
+    /// A point on slot `i`'s centreline at radius `r`, in the seam plane.
+    fn on_slot_centreline(spokes: SpokeSpec, i: u32, r: f64) -> Point3<f64> {
+        let theta = std::f64::consts::TAU * f64::from(i) / f64::from(spokes.count);
+        Point3::new(r * theta.cos(), r * theta.sin(), 0.0)
+    }
+
+    #[test]
+    fn a_wheel_without_spokes_is_a_plain_dimpled_disc() {
+        // ★ The pure-addition claim, as a MIRROR ORACLE rather than "the old
+        // tests still pass". The expected disc is rebuilt here from the same
+        // primitives the pre-spoke `rim_solid` used, so a `SpokeKind::None`
+        // that quietly cut something would show up as a field difference.
+        let spec = WheelSpec::iter1();
+        assert_eq!(spec.spokes, SpokeKind::None, "iter1 is a solid disc");
+        assert!(spoke_slots_solid(&spec).is_none());
+        assert!(spoke_web_m(&spec).is_none());
+
+        let half_width = spec.width_m / 2.0;
+        let expected = Solid::cylinder(spec.rim_outer_radius_m, half_width)
+            .subtract(Solid::cylinder(
+                spec.bore_radius_m,
+                half_width + super::AXIAL_SLACK_M,
+            ))
+            .subtract(keying_solid(&spec).unwrap());
+        let actual = rim_solid(&spec);
+
+        // Sample well outside the part too — a lattice that stops inside it
+        // cannot see material added beyond the envelope.
+        let mut checked = 0_u32;
+        for ix in -8..=8 {
+            for iy in -8..=8 {
+                for iz in -3..=3 {
+                    let p = Point3::new(
+                        f64::from(ix) * 0.01,
+                        f64::from(iy) * 0.01,
+                        f64::from(iz) * 0.008,
+                    );
+                    assert_relative_eq!(
+                        actual.evaluate(&p),
+                        expected.evaluate(&p),
+                        epsilon = 1e-12
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert_eq!(checked, 17 * 17 * 7, "the lattice must actually have run");
+    }
+
+    #[test]
+    fn the_mold_cores_every_slot() {
+        // ★★★ THE DESIGN RULE, GATED. The mold never sees the plug
+        // (`compose_piece_solid` takes only the body), so a slot stays open
+        // only because `cast_body_solid` subtracts it too and the cup-wall
+        // shell then fills it. This walks every slot's centreline and looks.
+        //
+        // ⚠ The shell is modelled by `cup_wall`, which is set algebra over
+        // `cast_body_solid` — NOT the retired `bounding ∖ body` form, and not
+        // a transcription of `CupWallShellSdf`'s arithmetic.
+        let spec = spoked();
+        let spokes = spec.spokes.spoke_spec().unwrap();
+        assert!(spoke_cores_are_solid(&spec, SPOKED_WALL_M));
+        let mold = cup_wall(&spec, SPOKED_WALL_M);
+
+        let inner = spokes.hub_radius_m;
+        let outer = spec.rim_outer_radius_m - spokes.rim_band_m;
+        let mut sampled = 0_u32;
+        for i in 0..spokes.count {
+            for step in 1..=8 {
+                let t = f64::from(step) / 9.0;
+                let r = inner + (outer - inner) * t;
+                let p = on_slot_centreline(spokes, i, r);
+                assert!(
+                    mold.evaluate(&p) < 0.0,
+                    "slot {i} is not cored at r={r} — the pour would fill it"
+                );
+                sampled += 1;
+            }
+        }
+        assert_eq!(sampled, spokes.count * 8, "every slot must be walked");
+    }
+
+    #[test]
+    fn a_slot_wider_than_twice_the_wall_has_a_hollow_core() {
+        // The negative control for `the_mold_cores_every_slot`, and the rule
+        // stated from both sides so neither arm can go vacuous.
+        let mut spokes = SpokeSpec::iter1();
+        spokes.slot_width_m = 0.016;
+        let spec = WheelSpec {
+            spokes: SpokeKind::Radial(spokes),
+            ..WheelSpec::iter1()
+        };
+        assert!(
+            spoke_cores_are_solid(&spec, 0.0081),
+            "16 mm slot cores at an 8.1 mm wall"
+        );
+        assert!(
+            !spoke_cores_are_solid(&spec, 0.0079),
+            "16 mm slot cannot core at a 7.9 mm wall"
+        );
+
+        // And the geometry agrees with the predicate: at too thin a wall the
+        // slot's centreline is NOT mold material.
+        let thin = cup_wall(&spec, 0.005);
+        let mid = f64::midpoint(
+            spokes.hub_radius_m,
+            spec.rim_outer_radius_m - spokes.rim_band_m,
+        );
+        assert!(
+            thin.evaluate(&on_slot_centreline(spokes, 0, mid)) > 0.0,
+            "a 5 mm wall leaves a void down the middle of a 16 mm slot"
+        );
+        assert!(
+            spoke_cores_are_solid(&WheelSpec::iter1(), 0.001),
+            "a wheel with no spokes has nothing to core"
+        );
+    }
+
+    #[test]
+    fn slots_do_not_merge_at_the_hub() {
+        // The hub is where slots crowd, so the web binds there first. If it
+        // closes, the hub stops being attached to the rim band and the print
+        // is two loose pieces — which no printability detector would call an
+        // error.
+        let spec = spoked();
+        let spokes = spec.spokes.spoke_spec().unwrap();
+        let rim = rim_solid(&spec);
+        let web = spoke_web_m(&spec).unwrap();
+        assert!(web > 0.0, "web {web} m");
+
+        // Midway between adjacent slots, at the hub radius: rim material.
+        for i in 0..spokes.count {
+            let theta = std::f64::consts::TAU * (f64::from(i) + 0.5) / f64::from(spokes.count);
+            let r = spokes.hub_radius_m;
+            let p = Point3::new(r * theta.cos(), r * theta.sin(), 0.0);
+            assert!(
+                rim.evaluate(&p) < 0.0,
+                "no spoke between slots {i} and {}",
+                (i + 1) % spokes.count
+            );
+        }
+        // ⚠ The measure must agree with the geometry, not just be positive.
+        // Widen the slot to the full pitch arc and the web must vanish.
+        let mut closed = spokes;
+        closed.slot_width_m = std::f64::consts::TAU * spokes.hub_radius_m / f64::from(spokes.count);
+        assert!(
+            raw_spoke_web_m(closed) <= 0.0,
+            "a slot as wide as the pitch leaves no web"
+        );
+    }
+
+    #[test]
+    fn the_hub_ring_is_continuous() {
+        // ⚠ ADDED BECAUSE A MUTATION FIRED NOTHING. `slots_do_not_merge_at_the
+        // _hub` samples between slot CENTRES at the hub radius — but a slot
+        // that reaches further INWARD than declared merges with its
+        // neighbours nearer the axis, severing the hub from everything, and
+        // that check never looks there. It passed a rim in pieces.
+        //
+        // This sweeps a full circle inboard of the declared hub radius, so it
+        // does not care WHY material went missing.
+        let spec = spoked();
+        let spokes = spec.spokes.spoke_spec().unwrap();
+        let rim = rim_solid(&spec);
+        let r = f64::midpoint(spec.bore_radius_m, spokes.hub_radius_m);
+        assert!(r > spec.bore_radius_m && r < spokes.hub_radius_m);
+
+        for step in 0..96 {
+            let theta = std::f64::consts::TAU * f64::from(step) / 96.0;
+            let p = Point3::new(r * theta.cos(), r * theta.sin(), 0.0);
+            assert!(
+                rim.evaluate(&p) < 0.0,
+                "the hub ring is cut at {:.1}° (r={r} m)",
+                theta.to_degrees()
+            );
+        }
+        // Positive anchor: the same sweep OUTSIDE the rim must be all void, so
+        // the loop above is reading geometry and not a solid half-space.
+        let outside = spec.tire_outer_radius_m * 1.5;
+        for step in 0..8 {
+            let theta = std::f64::consts::TAU * f64::from(step) / 8.0;
+            let p = Point3::new(outside * theta.cos(), outside * theta.sin(), 0.0);
+            assert!(
+                rim.evaluate(&p) > 0.0,
+                "the sweep must be able to read void"
+            );
+        }
+    }
+
+    #[test]
+    fn slots_are_through_voids_on_both_faces() {
+        // Cores must be rooted in BOTH end caps or they are floating shards
+        // of mold material — the failure `piece.rs` already documents for the
+        // flange case.
+        let spec = spoked();
+        let spokes = spec.spokes.spoke_spec().unwrap();
+        let rim = rim_solid(&spec);
+        let mid = f64::midpoint(
+            spokes.hub_radius_m,
+            spec.rim_outer_radius_m - spokes.rim_band_m,
+        );
+        let face = spec.width_m / 2.0 - 1e-4;
+        for i in 0..spokes.count {
+            let mut p = on_slot_centreline(spokes, i, mid);
+            for z in [face, -face] {
+                p.z = z;
+                assert!(
+                    rim.evaluate(&p) > 0.0,
+                    "slot {i} does not reach the face at z={z}"
+                );
+            }
+        }
+        // Positive anchor: the SPOKE beside it is solid at the same z, so the
+        // check above is reading the slot and not an empty envelope.
+        let theta = std::f64::consts::PI / f64::from(spokes.count);
+        let p = Point3::new(mid * theta.cos(), mid * theta.sin(), face);
+        assert!(rim.evaluate(&p) < 0.0, "the spoke itself must be solid");
+    }
+
+    #[test]
+    fn coring_leaves_the_pour_unchanged() {
+        // ★★ THE CLAIM THE WHOLE DESIGN RESTS ON. The slots come out of the
+        // rim AND out of the cast body, from one function — so `body ∖ rim`
+        // is untouched in the slot region and the spokes cost zero
+        // polyurethane. Cut from the rim alone they would fill with PU at
+        // roughly +90 g per wheel.
+        let solid = WheelSpec::iter1();
+        let with_spokes = spoked();
+        let plain_g = integrate(&solid, PRODUCTION_CELL_M);
+        let spoked_g = integrate(&with_spokes, PRODUCTION_CELL_M);
+        assert_relative_eq!(spoked_g, plain_g, epsilon = 1e-12);
+
+        // ⚠ POSITIVE ANCHOR. Without this the test passes just as well on a
+        // `spoke_slots_solid` that returns an empty solid: the RIM must lose
+        // volume even though the pour does not.
+        let rim_volume = |spec: &WheelSpec| {
+            integrate_negative_sdf_volume(
+                &rim_solid(spec),
+                PRODUCTION_CELL_M,
+                CastTarget::Plug {
+                    layer_index: Some(0),
+                },
+            )
+            .unwrap()
+        };
+        let plain_rim = rim_volume(&solid);
+        let spoked_rim = rim_volume(&with_spokes);
+        assert!(
+            spoked_rim < plain_rim * 0.9,
+            "the slots removed almost nothing: {spoked_rim} vs {plain_rim} m³"
+        );
+    }
+
+    #[test]
+    fn a_single_slot_is_rejected_as_unbalanced() {
+        let spokes = SpokeSpec {
+            count: 1,
+            ..SpokeSpec::iter1()
+        };
+        let spec = WheelSpec {
+            spokes: SpokeKind::Radial(spokes),
+            ..WheelSpec::iter1()
+        };
+        let err = std::panic::catch_unwind(|| rim_solid(&spec)).unwrap_err();
+        let msg = err
+            .downcast_ref::<String>()
+            .map_or("", String::as_str)
+            .to_string();
+        assert!(msg.contains("unbalanced"), "got {msg:?}");
+    }
+
+    #[test]
+    fn a_hub_inside_the_bore_is_rejected() {
+        let spokes = SpokeSpec {
+            hub_radius_m: 0.003,
+            ..SpokeSpec::iter1()
+        };
+        let spec = WheelSpec {
+            spokes: SpokeKind::Radial(spokes),
+            ..WheelSpec::iter1()
+        };
+        assert!(std::panic::catch_unwind(|| rim_solid(&spec)).is_err());
+    }
+
+    #[test]
+    fn a_rim_band_that_leaves_no_slot_is_rejected() {
+        let spokes = SpokeSpec {
+            rim_band_m: 0.050,
+            ..SpokeSpec::iter1()
+        };
+        let spec = WheelSpec {
+            spokes: SpokeKind::Radial(spokes),
+            ..WheelSpec::iter1()
+        };
+        assert!(std::panic::catch_unwind(|| rim_solid(&spec)).is_err());
+    }
+
+    #[test]
+    fn slots_that_swallow_the_hub_are_rejected() {
+        // 6 slots of 20 mm at a 16 mm hub radius: the pitch arc is 16.8 mm,
+        // so the webs are gone and the hub would float free.
+        let spokes = SpokeSpec {
+            slot_width_m: 0.020,
+            ..SpokeSpec::iter1()
+        };
+        let spec = WheelSpec {
+            spokes: SpokeKind::Radial(spokes),
+            ..WheelSpec::iter1()
+        };
+        let err = std::panic::catch_unwind(|| rim_solid(&spec)).unwrap_err();
+        let msg = err
+            .downcast_ref::<String>()
+            .map_or("", String::as_str)
+            .to_string();
+        assert!(msg.contains("detach"), "got {msg:?}");
+    }
+
+    #[test]
+    fn a_fillet_larger_than_the_slot_is_rejected() {
+        let spokes = SpokeSpec {
+            fillet_m: 0.009,
+            ..SpokeSpec::iter1()
+        };
+        let spec = WheelSpec {
+            spokes: SpokeKind::Radial(spokes),
+            ..WheelSpec::iter1()
+        };
+        assert!(std::panic::catch_unwind(|| rim_solid(&spec)).is_err());
+    }
+
+    #[test]
+    fn a_cored_mold_piece_is_still_one_shell() {
+        // ⚠ ADDED AFTER LOOKING AT THE MESH. Its sibling
+        // `a_mold_piece_meshes_as_one_closed_orientable_shell` has only ever
+        // been given `WheelSpec::iter1()` — a SOLID wheel. Six cores standing
+        // in the cavity, joined to the cup only at the far end cap, are
+        // exactly the topology that fragments, and a screenshot cannot tell
+        // one shell from seven.
+        //
+        // ⚠ The cell matters here for the same reason the sibling records:
+        // one cell through the thinnest member is not enough. The cores are
+        // 15 mm across and the wall is 8 mm, so 1.5 mm is comfortable.
+        use crate::error::CastTarget;
+        use crate::mesher::solid_to_mm_mesh;
+        use mesh_repair::components::find_connected_components;
+        use mesh_repair::validate_mesh;
+
+        let spec = spoked();
+        let (piece, _tf) = compose_piece_solid(
+            &cast_body_solid(&spec),
+            SPOKED_WALL_M,
+            &wheel_ribbon(&spec).unwrap(),
+            PieceSide::Positive,
+        )
+        .unwrap();
+        let mesh = solid_to_mm_mesh(
+            &piece,
+            0.0015,
+            CastTarget::MoldPiece {
+                layer_index: 0,
+                piece_side: PieceSide::Positive,
+            },
+        )
+        .expect("marching cubes on a cored wheel cup-wall half");
+
+        let components = find_connected_components(&mesh).component_count;
+        assert_eq!(
+            components, 1,
+            "a core broke away from the cup — it would print as a loose island \
+             and leave its slot open to the pour; got {components} components"
+        );
+        let report = validate_mesh(&mesh);
+        let census = report
+            .winding
+            .as_ref()
+            .expect("validate_mesh enables the census by default");
+        assert!(
+            census.has_judgeable_edges(),
+            "no interior edge was judged, so a clean reading is vacuous; {census:?}"
+        );
+        assert_eq!(
+            (
+                census.boundary_edges,
+                census.non_manifold_edges,
+                census.degenerate_faces,
+                census.inconsistent_edges
+            ),
+            (0, 0, 0, 0),
+            "the cored piece is not a closed orientable shell; {census:?}"
+        );
+    }
+
+    #[test]
+    fn a_spoked_wheel_exports_a_full_mold_set() {
+        // ★ The cores through the F4 gate. Every other spoke gate reasons over
+        // `Solid` algebra; this one meshes the cored cups and the slotted rim
+        // and runs the printability gate on them, at the STRICT 1 mm min wall.
+        //
+        // ⚠ Cores are the shape `piece.rs` warns about — material rooted in an
+        // end cap, standing free of the cup body. If marching cubes or the
+        // half-space cut orphaned one, this is where it surfaces.
+        let spec = spoked();
+        let ribbon = wheel_mold_ribbon(&spec).unwrap();
+        let cast = wheel_cast_spec(
+            &spec,
+            SPOKED_WALL_M,
+            0.0020,
+            mesh_printability::PrinterConfig::fdm_default(),
+        );
+        assert!(spoke_cores_are_solid(&spec, SPOKED_WALL_M));
+
+        let out = std::env::temp_dir().join(format!("cf-cast-wheel-spoked-{}", std::process::id()));
+        std::fs::remove_dir_all(&out).ok();
+        std::fs::create_dir_all(&out).expect("temp dir");
+        let report = cast.export_molds_v2(&ribbon, &out);
+        let observed = report.map(|r| {
+            let mut stls: Vec<String> = std::fs::read_dir(out.join(STLS_SUBDIR))
+                .map(|d| {
+                    d.flatten()
+                        .map(|e| e.file_name().to_string_lossy().into_owned())
+                        .collect()
+                })
+                .unwrap_or_default();
+            stls.sort();
+            (stls, r.layers[0].pour_volume.pour_mass_kg * 1000.0)
+        });
+        std::fs::remove_dir_all(&out).ok();
+
+        let (stls, mass_g) =
+            observed.expect("a cored mold must survive the F4 gate at 1 mm min wall");
+        assert_eq!(
+            stls,
+            vec![
+                "dowel.stl".to_string(),
+                "mold_layer_0_piece_0.stl".to_string(),
+                "mold_layer_0_piece_1.stl".to_string(),
+                "plug_layer_0.stl".to_string(),
+            ]
+        );
+        // ⚠ The SAME 115.11 g the solid wheel pours. Spokes are cored, not
+        // filled — `coring_leaves_the_pour_unchanged` proves it on the SDF,
+        // and this proves the export agrees.
+        assert_relative_eq!(mass_g, 115.11, epsilon = 0.01);
     }
 
     #[test]
