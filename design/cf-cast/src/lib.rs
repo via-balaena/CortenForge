@@ -94,6 +94,7 @@ pub mod seam_profile;
 pub mod seam_solver;
 pub mod silhouette_2d;
 mod spec;
+pub mod wheel;
 
 pub use canal::{
     CANAL_DEBRIS_MAX_DROP_FRACTION, CanalFrame, CanalSpec, RingSpec, build_canal_plug,
@@ -141,4 +142,8 @@ pub use spec::{
     CastLayer, CastSpec, DowelArtifact, FunnelArtifact, MeshSummary, PieceArtifact,
     PlatformArtifact, PlugArtifact, STLS_SUBDIR, SelectedExportReport, V2LayerReport,
     V2MoldExportReport, plug_fit_verdict,
+};
+pub use wheel::{
+    DimpleSpec, KeyingKind, WheelSpec, cast_body_solid, keying_solid, locating_pin_is_solid,
+    nominal_tire_volume_m3, rim_solid, tire_solid,
 };
