@@ -82,6 +82,7 @@ pub mod part_selection;
 pub mod piece;
 pub mod platform;
 pub mod plug;
+pub mod plug_form;
 pub mod plug_role;
 pub mod pour;
 mod pour_volume;
@@ -125,6 +126,7 @@ pub use plug::{
     build_plug_cap_trim_transform, build_plug_lock_socket_transform, build_plug_lock_transform,
     ensure_plug_mating_features_attached,
 };
+pub use plug_form::PlugFormKind;
 pub use plug_role::PlugRole;
 pub use pour::{PourGateKind, PourGateLayout, PourGateSpec, build_pour_gate_transforms};
 pub use pour_volume::{DEFAULT_MASS_BUDGET_KG, POUR_VOLUME_MIN_CELL_SIZE_M, PourVolume};
@@ -151,5 +153,5 @@ pub use wheel::{
     DimpleSpec, KeyingKind, SpokeKind, SpokeSpec, WheelSpec, cast_body_solid, keying_solid,
     locating_pin_is_solid, nominal_tire_volume_m3, rim_solid, spoke_cores_are_solid,
     spoke_slots_solid, spoke_web_m, tire_solid, wheel_cast_spec, wheel_cup_cores,
-    wheel_mold_ribbon, wheel_ribbon,
+    wheel_mold_ribbon, wheel_plug_form, wheel_ribbon,
 };

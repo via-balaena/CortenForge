@@ -51,6 +51,7 @@ use crate::dowel_hole::DowelHoleKind;
 use crate::flange::FlangeKind;
 use crate::gasket_mold::GasketKind;
 use crate::plug::PlugPinKind;
+use crate::plug_form::PlugFormKind;
 use crate::plug_role::PlugRole;
 use crate::pour::PourGateKind;
 use crate::silhouette_2d::SeamPlaneBasis;
@@ -299,6 +300,16 @@ pub struct Ribbon {
     /// what every wheel cast did to its own locating pin. See
     /// [`crate::cup_core`].
     pub cup_cores: CupCoreKind,
+    /// What the plug LOOKS LIKE. Default [`PlugFormKind::DomedCapsule`].
+    ///
+    /// ⚠ Set it whenever the plug is not a dome-ended capsule, or the cf-view
+    /// checklist asserts a smooth closed dome of it inside a block whose
+    /// failure instruction is "do NOT proceed to print" — which is what every
+    /// wheel cast did to its own rim. See [`crate::plug_form`].
+    ///
+    /// ⚠ Independent of [`Self::cup_cores`]: that is the BODY's topology, this
+    /// is the PLUG's shape, and a cast can have either without the other.
+    pub plug_form: PlugFormKind,
     /// Per-layer gasket-mold kind. Default [`GasketKind::None`] (no
     /// gasket mold emission — cup halves hand-clamped without a
     /// silicone seal). S3 of the seam-gasket-mold arc adds
@@ -522,6 +533,7 @@ impl Ribbon {
             plug_pins: PlugPinKind::None,
             plug_role: PlugRole::Tooling,
             cup_cores: CupCoreKind::None,
+            plug_form: PlugFormKind::DomedCapsule,
             gasket: GasketKind::None,
             flange: FlangeKind::None,
             dowel_hole: DowelHoleKind::None,
@@ -657,6 +669,20 @@ impl Ribbon {
     #[must_use]
     pub fn with_cup_cores(mut self, cup_cores: CupCoreKind) -> Self {
         self.cup_cores = cup_cores;
+        self
+    }
+
+    /// Builder: describe a plug that is not a dome-ended capsule.
+    ///
+    /// Carves nothing — the plug already has whatever shape the caller built.
+    /// This is what lets the bench sheet describe it instead of asserting a
+    /// dome it does not have.
+    ///
+    /// ⚠ The description is read by a human at a bench. Generate it from the
+    /// geometry that makes the shape; do not type a count.
+    #[must_use]
+    pub fn with_plug_form(mut self, plug_form: PlugFormKind) -> Self {
+        self.plug_form = plug_form;
         self
     }
 

@@ -18,7 +18,8 @@
 //!    silently fell back to V-at-dome.
 //! 3. The pour mass is the pinned 115.11 g.
 //! 4. Six tires fit the 2 lb holdings with room for a retry.
-//! 5. The sheet never tells the bencher to release the rim or pull it out.
+//! 5. The sheet never tells the bencher to release the rim or pull it out,
+//!    and it describes the rim rather than asserting a dome end it lacks.
 //!
 //! ⚠ (5) is not decoration. The rim is an INSERT: it stays inside the cured
 //! tire. A silicone cast's two reflexes — mold-release the plug, then pull it
@@ -333,15 +334,6 @@ fn main() -> Result<()> {
             args.rim_band_mm,
             web * MM_PER_M
         );
-        // ⚠ The CUP half of the sheet is fixed; the PLUG half is not. Say
-        // which, precisely — a stale warning about a fixed bug is its own
-        // defect, and this one is read at a bench.
-        println!(
-            "       ⚠ procedure.md lists the cup's cores as expected, but its plug\n\
-             \x20         bullet still says \"Dome end is smooth and closed\" — a slotted\n\
-             \x20         rim is neither, under \"do NOT proceed to print\". Ignore that\n\
-             \x20         one line; everything else on the checklist stands."
-        );
     }
     println!(
         "cell:  {:.2} mm, wall {:.1} mm  →  {}",
@@ -413,6 +405,9 @@ fn check_oracle(
         "Pull the plug",
         "off the plug",
         "Apply mold release to all printed",
+        // A rim has no dome end. This line sat under "do NOT proceed to
+        // print" and condemned every correct wheel the example exported.
+        "Dome end",
     ] {
         if sheet.contains(gone) {
             bail!("the sheet still treats the rim as tooling: {gone:?}");
@@ -422,6 +417,7 @@ fn check_oracle(
         "2. Apply mold release to the two cup halves.",
         "`plug_layer_0.stl` gets NO mold release",
         "Leave the plug IN",
+        "\n   - The plug is a ",
     ] {
         if !sheet.contains(needed) {
             bail!("the sheet lost an overmold instruction: {needed:?}");

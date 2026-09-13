@@ -3443,6 +3443,86 @@ mod tests {
         }
     }
 
+    /// ★ `PlugFormKind::DomedCapsule` is a pure addition: the sheet is
+    /// unchanged, MEASURED rather than assumed.
+    #[test]
+    fn a_domed_plug_renders_the_sheet_it_always_did() {
+        use crate::plug_form::PlugFormKind;
+        let (spec, base) = v2_fixture();
+        let (deta_default, bonded_default) = procedure_pair(&spec, &base);
+        let explicit = base.clone().with_plug_form(PlugFormKind::DomedCapsule);
+        let (deta_domed, bonded_domed) = procedure_pair(&spec, &explicit);
+        assert!(
+            deta_default == deta_domed && bonded_default == bonded_domed,
+            "an explicit PlugFormKind::DomedCapsule must render the default sheet"
+        );
+        assert!(
+            deta_default.contains("- Dome end is smooth and closed."),
+            "the domed arm must still carry the prose that shipped"
+        );
+
+        // Positive anchor: describing a plug DOES move it, or the equality
+        // above would hold for a flag wired to nothing.
+        let described = base.with_plug_form(PlugFormKind::Described("a probe disc".to_string()));
+        let (deta_described, _) = procedure_pair(&spec, &described);
+        assert_ne!(
+            deta_default, deta_described,
+            "describing the plug must change the sheet"
+        );
+        assert!(
+            deta_described.contains("- The plug is a probe disc")
+                && !deta_described.contains("Dome end"),
+            "the caller's words must replace the dome claim"
+        );
+    }
+
+    /// ⛔⛔ THE TRAP, gated. Cavity topology is NOT permission for plug
+    /// openings.
+    ///
+    /// `cup_cores` describes through-voids in the layer BODY. A cast can carry
+    /// those while its plug is a solid capsule — a cored cup around a plain
+    /// dome-ended plug is the ordinary case, not the wheel. Folding the two
+    /// concepts together would have excused the dome claim on exactly the cast
+    /// that should still be flagged for losing its dome.
+    #[test]
+    fn cup_cores_alone_do_not_excuse_the_plug_bullet() {
+        let (spec, base) = v2_fixture();
+        let cored = base.with_cup_cores(crate::cup_core::CupCoreKind::Present(
+            "two probe cores".to_string(),
+        ));
+        let (md, _) = procedure_pair(&spec, &cored);
+        assert!(
+            md.contains("solid CORES standing inside that opening"),
+            "the cores must reach the sheet, or this gate proves nothing"
+        );
+        assert!(
+            md.contains("- Dome end is smooth and closed."),
+            "a cored cup must NOT excuse the plug bullet — the plug is still \
+             a dome-ended capsule and the sheet must still say so"
+        );
+    }
+
+    /// A described-plug sheet through the same two prose checks the big matrix
+    /// runs — without doubling a 6144-sheet matrix for one bullet.
+    #[test]
+    fn a_described_plug_sheet_is_well_formed_and_resolves_its_references() {
+        use crate::cast_mode::CastMode;
+        use crate::plug_form::PlugFormKind;
+        use crate::procedure::generate_procedure_markdown_v2_for_mode;
+        for (label, (spec, base)) in [("1-layer", v2_fixture()), ("2-layer", two_layer_fixture())] {
+            let pours = spec.compute_pour_volumes().unwrap();
+            let r = base.with_plug_form(PlugFormKind::Described(
+                "a 105.0 mm Ø × 25.0 mm rim disc with an 8.0 mm Ø axle bore through it".to_string(),
+            ));
+            for mode in [CastMode::Detachable, CastMode::Bonded] {
+                let md = generate_procedure_markdown_v2_for_mode(&spec, &pours, &r, mode);
+                let case = format!("{label} / {mode:?} / described plug");
+                assert_cross_refs_resolve(&md, &case);
+                assert_prose_is_well_formed(&md, &case);
+            }
+        }
+    }
+
     /// ★★ Every `## Section` the sheet points at must EXIST in that same
     /// sheet, across the whole config matrix.
     ///

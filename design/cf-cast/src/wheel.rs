@@ -85,6 +85,7 @@ use crate::dowel_hole::{DowelHoleKind, DowelHoleSpec};
 use crate::flange::{DemandFlangeSpec, FlangeKind};
 use crate::gasket_mold::GasketKind;
 use crate::material::MoldingMaterial;
+use crate::plug_form::PlugFormKind;
 use crate::plug_role::PlugRole;
 use crate::pour::{PourGateKind, PourGateLayout, PourGateSpec};
 use crate::pour_volume::DEFAULT_MASS_BUDGET_KG;
@@ -303,18 +304,11 @@ pub enum SpokeKind {
     None,
     /// Straight radial slots.
     ///
-    /// ✅ The CUP side of the bench sheet now knows: [`wheel_mold_ribbon`]
-    /// declares [`crate::CupCoreKind`], so the cf-view checklist lists the
-    /// cores as expected instead of condemning them.
-    ///
-    /// ⛔ **The PLUG side does not.** Checklist bullet 2 still asserts "Dome
-    /// end is smooth and closed" of `plug_layer_0.stl`, and a slotted rim is
-    /// neither — under a block whose failure instruction is "do NOT proceed to
-    /// print". It is wrong for a SOLID wheel too (a rim has no dome at all),
-    /// so it predates spokes. Fixing it needs a PLUG-side topology concept:
-    /// `cup_cores` describes voids in the BODY, and a cast can have those
-    /// while its plug is solid, so reusing it here would grant a false
-    /// permission on exactly the cast that should be flagged.
+    /// ✅ Both sides of the bench sheet know. [`wheel_mold_ribbon`] declares
+    /// [`crate::CupCoreKind`], so the cf-view checklist lists the mold's cores
+    /// as expected rather than condemning them, and [`crate::PlugFormKind`],
+    /// so it describes the rim instead of asserting a dome the rim has never
+    /// had — spoked or solid.
     Radial(SpokeSpec),
 }
 
@@ -836,6 +830,7 @@ pub fn wheel_mold_ribbon(spec: &WheelSpec) -> Result<Ribbon, RibbonError> {
     Ok(wheel_ribbon(spec)?
         .with_plug_role(PlugRole::Insert)
         .with_cup_cores(wheel_cup_cores(spec))
+        .with_plug_form(wheel_plug_form(spec))
         .with_flange(FlangeKind::Demand(DemandFlangeSpec::iter1()))
         .with_dowel_hole(DowelHoleKind::Auto(DowelHoleSpec::iter1()))
         .with_bolt_pattern(BoltPatternKind::Auto(BoltPatternSpec::iter1()))
@@ -878,6 +873,66 @@ pub fn wheel_cup_cores(spec: &WheelSpec) -> CupCoreKind {
         ),
     };
     CupCoreKind::Present(text)
+}
+
+/// What the bencher will see holding `plug_layer_0.stl`, as
+/// [`PlugFormKind`] — **generated**, never typed.
+///
+/// ⚠ **Every wheel needs this, spoked or not.** A rim has no dome end at all,
+/// so the checklist's "Dome end is smooth and closed" was wrong for the SOLID
+/// wheel from #913 — spokes only made it obvious. That is why this is not
+/// conditional on [`SpokeKind::Radial`].
+///
+/// Each clause is read off the spec that cuts the feature, so the sentence the
+/// workshop reads cannot drift from the geometry it describes.
+///
+/// ⚠ Deliberately NOT derived from [`wheel_cup_cores`]: those are voids in the
+/// cast BODY and these are openings in the PLUG. They coincide on a wheel and
+/// on nothing else — see [`crate::plug_form`].
+///
+/// # Panics
+///
+/// Panics if `spec` is not well-formed — see [`WheelSpec`].
+#[must_use]
+pub fn wheel_plug_form(spec: &WheelSpec) -> PlugFormKind {
+    spec.assert_well_formed();
+    // The bore is unconditional; dimples and slots are not. Building the list
+    // and joining it once is what keeps a one-feature rim from reading "disc
+    // with , 8 dimples" and a two-feature one from "bore, 8 dimples".
+    let mut features = vec![format!(
+        "an {:.1} mm Ø axle bore through it",
+        spec.bore_radius_m * 2000.0
+    )];
+    if let Some(dimples) = spec.keying.dimple_spec() {
+        // Depth IS the sphere radius — the sphere is centered on the rim's
+        // outer surface, so exactly half of it is inside. See `DimpleSpec`.
+        features.push(format!(
+            "{} hemispherical keying dimples {:.1} mm deep around its \
+             circumference",
+            dimples.count,
+            dimples.radius_m * 1000.0
+        ));
+    }
+    if let Some(spokes) = spec.spokes.spoke_spec() {
+        features.push(format!(
+            "{} radial through-slots {:.1} mm wide",
+            spokes.count,
+            spokes.slot_width_m * 1000.0
+        ));
+    }
+    // Total by construction — no arm can panic on an empty list, even though
+    // the bore means it is never empty.
+    let suffix = match features.split_last() {
+        None => String::new(),
+        Some((last, [])) => format!(" with {last}"),
+        Some((last, [only])) => format!(" with {only} and {last}"),
+        Some((last, head)) => format!(" with {}, and {last}", head.join(", ")),
+    };
+    PlugFormKind::Described(format!(
+        "a {:.1} mm Ø × {:.1} mm rim disc{suffix}",
+        spec.rim_outer_radius_m * 2000.0,
+        spec.width_m * 1000.0,
+    ))
 }
 
 /// Assemble the wheel's [`crate::CastSpec`], ready for
@@ -1005,7 +1060,7 @@ mod tests {
         DimpleSpec, KeyingKind, NOMINAL_PU_95A_DENSITY_KG_M3, SpokeKind, SpokeSpec, WheelSpec,
         cast_body_solid, keying_solid, locating_pin_is_solid, nominal_tire_volume_m3,
         raw_spoke_web_m, rim_solid, spoke_cores_are_solid, spoke_slots_solid, spoke_web_m,
-        tire_solid, wheel_cast_spec, wheel_mold_ribbon, wheel_ribbon,
+        tire_solid, wheel_cast_spec, wheel_mold_ribbon, wheel_plug_form, wheel_ribbon,
     };
     use crate::bolt_pattern::{BoltPatternSpec, plan_smart_bolt_placements};
     use crate::dowel_hole::{DowelHoleSpec, plan_smart_dowel_placements, smart_dowel_footprint};
@@ -2413,6 +2468,162 @@ mod tests {
             mold.evaluate(&on_slot_centreline(spokes, 0, mid)) < 0.0,
             "a declared spoke core is not solid mold"
         );
+    }
+
+    /// ★★★ THE ANTI-DRIFT GATE for the PLUG, sibling of the cup-core one
+    /// above. Same reasoning, independent axis: this description is generated
+    /// from the spec that cuts the features, and read at a bench.
+    ///
+    /// ⚠ EVERY wheel gets described, spoked or not — a rim has no dome end at
+    /// all, so the checklist was wrong for the SOLID wheel too, from #913.
+    /// A gate conditional on spokes would have let that half stand.
+    ///
+    /// ⚠ The fixtures VARY: a uniform input keeps a stale formatter firing.
+    /// The third row changes every number the sentence carries.
+    #[test]
+    fn every_wheel_describes_its_plug_and_the_numbers_match_the_geometry() {
+        let odd = WheelSpec {
+            rim_outer_radius_m: 0.0475,
+            width_m: 0.030,
+            bore_radius_m: 0.005,
+            keying: KeyingKind::Dimples(DimpleSpec {
+                count: 5,
+                radius_m: 0.002,
+            }),
+            spokes: SpokeKind::Radial(SpokeSpec {
+                count: 7,
+                slot_width_m: 0.012,
+                ..SpokeSpec::iter1()
+            }),
+            ..WheelSpec::iter1()
+        };
+        // ⚠ `plain` carries ONE feature and no keying. Without it the
+        // "must not claim dimples" arm below never runs, and the one-clause
+        // join arm is never built — two vacuous branches in a gate that looks
+        // thorough.
+        let plain = WheelSpec {
+            keying: KeyingKind::None,
+            ..WheelSpec::iter1()
+        };
+        for (label, spec) in [
+            ("solid", WheelSpec::iter1()),
+            ("spoked", spoked()),
+            ("odd", odd),
+            ("plain", plain),
+        ] {
+            let text = wheel_plug_form(&spec)
+                .description()
+                .unwrap_or_else(|| panic!("{label} wheel must describe its plug"))
+                .to_string();
+
+            // Every number, against the spec that cut it — not against a
+            // re-run of the formatter.
+            for (what, mm) in [
+                ("rim Ø", spec.rim_outer_radius_m * 2000.0),
+                ("width", spec.width_m * 1000.0),
+                ("bore Ø", spec.bore_radius_m * 2000.0),
+            ] {
+                assert!(
+                    text.contains(&format!("{mm:.1} mm")),
+                    "{label}: the {what} is not in {text:?}"
+                );
+            }
+            assert!(text.contains("rim disc"), "{label}: {text:?}");
+            // ⚠ The clause JOIN, per arity. A bare-comma join between two
+            // clauses reads as a list that lost its conjunction, and no
+            // number assertion above can see it.
+            let clauses = 1
+                + usize::from(spec.keying.dimple_spec().is_some())
+                + usize::from(spec.spokes.spoke_spec().is_some());
+            match clauses {
+                1 => assert!(
+                    !text.contains(", ") && !text.contains(" and "),
+                    "{label}: one clause needs no conjunction: {text:?}"
+                ),
+                2 => assert!(
+                    text.contains(" and ") && !text.contains(", and "),
+                    "{label}: two clauses join with a bare 'and': {text:?}"
+                ),
+                _ => assert!(
+                    text.contains(", and "),
+                    "{label}: three or more clauses need an Oxford join: {text:?}"
+                ),
+            }
+
+            match spec.keying.dimple_spec() {
+                None => assert!(
+                    !text.contains("dimple"),
+                    "{label}: an undimpled rim must not claim dimples: {text:?}"
+                ),
+                Some(d) => assert!(
+                    text.contains(&format!("{} hemispherical keying dimples", d.count))
+                        && text.contains(&format!("{:.1} mm deep", d.radius_m * 1000.0)),
+                    "{label}: the dimple count or depth is not in {text:?}"
+                ),
+            }
+            match spec.spokes.spoke_spec() {
+                None => assert!(
+                    !text.contains("through-slot"),
+                    "{label}: a solid rim must not claim slots: {text:?}"
+                ),
+                Some(sp) => assert!(
+                    text.contains(&format!("{} radial through-slots", sp.count))
+                        && text.contains(&format!("{:.1} mm wide", sp.slot_width_m * 1000.0)),
+                    "{label}: the slot count or width is not in {text:?}"
+                ),
+            }
+        }
+
+        // ⚠ And the description must match the GEOMETRY, not just the spec:
+        // the rim really is open where the sentence says a slot goes through.
+        let spec = spoked();
+        let sp = spec.spokes.spoke_spec().unwrap();
+        let rim = rim_solid(&spec);
+        let mid = f64::midpoint(sp.hub_radius_m, spec.rim_outer_radius_m - sp.rim_band_m);
+        assert!(
+            rim.evaluate(&on_slot_centreline(sp, 0, mid)) > 0.0,
+            "a declared through-slot is not open in the rim"
+        );
+    }
+
+    /// ★★★ THE DEFECT, gated at the SHEET. A rim is not a smooth closed dome,
+    /// and the checklist that said so ends with "do NOT proceed to print".
+    ///
+    /// ⚠ Rendered markdown, not the generator — the whole bug was a writer
+    /// that never learned about the subject, and only the sheet reaches the
+    /// bencher.
+    #[test]
+    fn a_wheel_sheet_never_calls_the_rim_a_smooth_closed_dome() {
+        for (label, spec, wall) in [
+            ("solid", WheelSpec::iter1(), WORKSHOP_WALL_M),
+            ("spoked", spoked(), SPOKED_WALL_M),
+        ] {
+            let ribbon = wheel_mold_ribbon(&spec).unwrap();
+            let cast = wheel_cast_spec(
+                &spec,
+                wall,
+                PRODUCTION_CELL_M,
+                mesh_printability::PrinterConfig::fdm_default(),
+            );
+            let pours = cast.compute_pour_volumes().unwrap();
+            let md = crate::procedure::generate_procedure_markdown_v2(&cast, &pours, &ribbon);
+
+            assert!(
+                !md.contains("Dome end"),
+                "{label}: the sheet still calls the rim a dome"
+            );
+            // ⚠ Anchored by the LINE PREFIX. A bare phrase match finds these
+            // words elsewhere in the sheet — the failure that left this
+            // bullet ungated through two review passes.
+            assert!(
+                md.contains("\n   - The plug is a "),
+                "{label}: the sheet must describe the rim instead"
+            );
+            assert!(
+                md.contains("nothing else should stand proud of it or open through it"),
+                "{label}: the bullet must still close the set"
+            );
+        }
     }
 
     #[test]
