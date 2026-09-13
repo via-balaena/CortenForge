@@ -3620,17 +3620,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-cast-layered-silicone-device-v1"
-version = "1.0.0"
-dependencies = [
- "anyhow",
- "cf-cast",
- "cf-design",
- "mesh-printability",
- "nalgebra 0.34.2",
-]
-
-[[package]]
 name = "example-cast-layered-silicone-device-v2-scan-curve-following"
 version = "1.0.0"
 dependencies = [

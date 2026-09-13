@@ -36,7 +36,7 @@ const GRID_PADDING_CELLS: usize = 2;
 /// coordinates.
 ///
 /// `target` labels the operation for error reporting — per-layer
-/// mold output uses [`CastTarget::Mold`], the shared plug uses
+/// mold pieces use [`CastTarget::MoldPiece`], plugs use
 /// [`CastTarget::Plug`].
 ///
 /// For solids whose field is a plain ≤1-Lipschitz distance (every cf-cast
@@ -288,7 +288,8 @@ mod tests {
         // produce a closed mesh well inside the f64 range and well
         // above the empty-mesh threshold.
         let sphere = Solid::sphere(0.010);
-        let mesh = solid_to_mm_mesh(&sphere, 0.001, CastTarget::Mold { layer_index: 0 }).unwrap();
+        let mesh =
+            solid_to_mm_mesh(&sphere, 0.001, CastTarget::Plug { layer_index: None }).unwrap();
 
         assert!(!mesh.vertices.is_empty(), "MC should produce vertices");
         assert!(!mesh.faces.is_empty(), "MC should produce faces");

@@ -88,7 +88,7 @@ pub struct PourVolume {
     /// Pour mass in kilograms — `shell_volume_m3 *
     /// material.density_kg_m3`. Compared against
     /// [`crate::CastSpec::mass_budget_kg`] by
-    /// [`crate::CastSpec::export_molds`] before any STL is written.
+    /// [`crate::CastSpec::export_molds_v2`] before any STL is written.
     pub pour_mass_kg: f64,
 }
 

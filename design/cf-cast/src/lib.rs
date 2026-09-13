@@ -6,17 +6,8 @@
 //! per-layer mold + plug exporters for the layered-silicone-device
 //! cast workflow.
 //!
-//! # Two export pipelines
+//! # The export pipeline
 //!
-//! cf-cast ships two pipelines that share the [`CastSpec`] data
-//! carrier:
-//!
-//! - [`CastSpec::export_molds`] — **v1 single-piece cup** (Stage 2).
-//!   Each layer's mold is one `bounding_region ∖ layer_body ∖
-//!   clip_above(layer_body)` cup; the shared [`CastSpec::plug`]
-//!   shapes the innermost layer's cavity. `+z` is the hardcoded
-//!   demolding axis. Artifact count: **N mold cup STLs + 1 plug
-//!   STL = N + 1**.
 //! - [`CastSpec::export_molds_v2`] — **v2 curve-following multi-
 //!   piece** + **v2.1 detachable-shell**. Each layer's mold cup
 //!   is split into 2 pieces along a curve-following [`Ribbon`]
@@ -67,9 +58,7 @@
 //! Positive piece's `+binormal` side, vent leg on the Negative
 //! piece's `-binormal` side. v2.1 callers orient the assembled
 //! mold **`+Z` up** during pour + cure so the V is at the top of
-//! the assembly and trapped air rises out the vent leg. v1's
-//! [`CastSpec::export_molds`] uses `+z` as the demolding axis
-//! (clip cuboid above each layer body's `z_max`).
+//! the assembly and trapped air rises out the vent leg.
 //!
 //! See the [casting roadmap][rmp] for the full Track F trajectory.
 //!
@@ -139,10 +128,7 @@ pub use prismatic_pin::{
     LATERAL_ORTHOGONALITY_TOLERANCE, PrismaticPinParams, PrismaticPinPose, PrismaticPinSpec,
     build_prismatic_pin_sdf,
 };
-pub use procedure::{
-    generate_procedure_markdown, generate_procedure_markdown_v2,
-    generate_procedure_markdown_v2_for_mode,
-};
+pub use procedure::{generate_procedure_markdown_v2, generate_procedure_markdown_v2_for_mode};
 pub use ribbon::{PieceSide, Ribbon, RibbonError, RibbonSegment, SplitNormal};
 pub use scan_mesh_direct::{build_plug_body_mesh, repair_scan_mesh_for_mesh_csg};
 pub use seam_fit::best_fit_planar_seam;
@@ -152,7 +138,7 @@ pub use seam_solver::{
     SeedKind, place_fasteners,
 };
 pub use spec::{
-    CastLayer, CastSpec, DowelArtifact, FunnelArtifact, MeshSummary, MoldArtifact,
-    MoldExportReport, PieceArtifact, PlatformArtifact, PlugArtifact, STLS_SUBDIR,
-    SelectedExportReport, V2LayerReport, V2MoldExportReport, plug_fit_verdict,
+    CastLayer, CastSpec, DowelArtifact, FunnelArtifact, MeshSummary, PieceArtifact,
+    PlatformArtifact, PlugArtifact, STLS_SUBDIR, SelectedExportReport, V2LayerReport,
+    V2MoldExportReport, plug_fit_verdict,
 };

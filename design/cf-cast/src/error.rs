@@ -21,13 +21,6 @@ pub enum CastTarget {
         /// Index into `CastSpec::layers`.
         layer_index: usize,
     },
-    /// Output mesh: a per-layer mold cup. Indexed parallel to
-    /// `CastSpec::layers`. Used by v1's single-piece
-    /// [`crate::CastSpec::export_molds`] pipeline.
-    Mold {
-        /// Index into `CastSpec::layers`.
-        layer_index: usize,
-    },
     /// Output mesh: one of the two v2 curve-following mold pieces for
     /// a given layer. Used by v2's
     /// [`crate::CastSpec::export_molds_v2`] pipeline.
@@ -94,7 +87,6 @@ impl fmt::Display for CastTarget {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::LayerBody { layer_index } => write!(f, "layer {layer_index} body"),
-            Self::Mold { layer_index } => write!(f, "mold layer {layer_index}"),
             Self::MoldPiece {
                 layer_index,
                 piece_side,
@@ -116,7 +108,7 @@ impl fmt::Display for CastTarget {
 #[derive(thiserror::Error, Debug)]
 pub enum CastError {
     /// [`CastSpec::layers`] was empty. At least one [`crate::CastLayer`]
-    /// must be supplied for [`crate::CastSpec::export_molds`] to have
+    /// must be supplied for [`crate::CastSpec::export_molds_v2`] to have
     /// work to do.
     ///
     /// [`CastSpec::layers`]: crate::CastSpec::layers
@@ -144,9 +136,9 @@ pub enum CastError {
     /// walls, small features, trapped volumes). Tolerated Criticals
     /// (overhangs, bridges, MC self-intersection noise) do not
     /// trigger this variant; they surface via
-    /// [`MoldExportReport`]'s validation fields for caller inspection.
+    /// [`V2MoldExportReport`]'s validation fields for caller inspection.
     ///
-    /// [`MoldExportReport`]: crate::MoldExportReport
+    /// [`V2MoldExportReport`]: crate::V2MoldExportReport
     #[error("mesh failed printability gate for {target} ({issue_count} blocking issue(s), {path})")]
     PrintabilityCritical {
         /// Which output failed.

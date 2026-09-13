@@ -52,16 +52,12 @@
 //! sub-MC-cell features erased; the §G-7 evidence was measured on a
 //! tree with inside-out MC winding and retracted by #764).
 //!
-//! # v1 vs v2 mold cup
+//! # The mold cup
 //!
-//! v1's [`crate::CastSpec::export_molds`] carved the cup as
-//! `bounding_region ∖ layer_body ∖ clip_above(layer_body)` — the
-//! `clip_above` cuboid opened the cup at the `+Z` end for
-//! straight-pull demolding. v2 replaces the straight `+Z` clip with
-//! the ribbon-side intersection: the mold pieces separate along the
-//! ribbon's curved surface, so the cup is closed at every face and
-//! only opens where the pieces themselves come apart. No `+Z` axis
-//! is privileged in v2.
+//! The cup is carved by ribbon-side intersection: the mold pieces
+//! separate along the ribbon's curved surface, so the cup is closed
+//! at every face and only opens where the pieces themselves come
+//! apart. No `+Z` axis is privileged.
 //!
 //! # Inter-piece seam mating (post-§M-S1 flush)
 //!
