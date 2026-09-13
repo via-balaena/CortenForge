@@ -896,9 +896,11 @@ pub fn wheel_cup_cores(spec: &WheelSpec) -> CupCoreKind {
 #[must_use]
 pub fn wheel_plug_form(spec: &WheelSpec) -> PlugFormKind {
     spec.assert_well_formed();
-    // The bore is unconditional; dimples and slots are not. Building the list
-    // and joining it once is what keeps a one-feature rim from reading "disc
-    // with , 8 dimples" and a two-feature one from "bore, 8 dimples".
+    // The bore is unconditional; dimples and slots are not, so the sentence
+    // carries one, two or three clauses. Joining the list once is what keeps
+    // the two-clause rim from reading "…bore through it, 8 dimples…" — a list
+    // that lost its conjunction. All three arities are gated in
+    // `every_wheel_describes_its_plug_and_the_numbers_match_the_geometry`.
     let mut features = vec![format!(
         "an {:.1} mm Ø axle bore through it",
         spec.bore_radius_m * 2000.0

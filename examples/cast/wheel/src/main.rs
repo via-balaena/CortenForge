@@ -401,30 +401,43 @@ fn check_oracle(
     }
     // ⚠ Assert the sentence PREFIX, never the noun — `contains` matches the
     // WHOLE sheet, and "mold release" must survive for the CUP HALVES.
-    for gone in [
-        "Pull the plug",
-        "off the plug",
-        "Apply mold release to all printed",
+    // ⚠ Each phrase carries its OWN reason. One shared message would have
+    // blamed the dome claim on the tooling/insert confusion, which is a
+    // different bug in a different writer.
+    for (gone, why) in [
+        ("Pull the plug", "still treats the rim as tooling"),
+        ("off the plug", "still treats the rim as tooling"),
+        (
+            "Apply mold release to all printed",
+            "still treats the rim as tooling",
+        ),
         // A rim has no dome end. This line sat under "do NOT proceed to
         // print" and condemned every correct wheel the example exported.
-        "Dome end",
+        ("Dome end", "still calls the rim a smooth closed dome"),
     ] {
         if sheet.contains(gone) {
-            bail!("the sheet still treats the rim as tooling: {gone:?}");
+            bail!("the sheet {why}: {gone:?}");
         }
     }
-    for needed in [
-        "2. Apply mold release to the two cup halves.",
-        "`plug_layer_0.stl` gets NO mold release",
-        "Leave the plug IN",
-        "\n   - The plug is a ",
+    for (needed, why) in [
+        (
+            "2. Apply mold release to the two cup halves.",
+            "lost an overmold instruction",
+        ),
+        (
+            "`plug_layer_0.stl` gets NO mold release",
+            "lost an overmold instruction",
+        ),
+        ("Leave the plug IN", "lost an overmold instruction"),
+        ("\n   - The plug is a ", "stopped describing the rim"),
     ] {
         if !sheet.contains(needed) {
-            bail!("the sheet lost an overmold instruction: {needed:?}");
+            bail!("the sheet {why}: {needed:?}");
         }
     }
 
-    println!("\noracle: PASS — roster, integral funnel, pour mass, budget, and the sheet's");
-    println!("        overmold instructions all hold on the stock wheel.");
+    println!("\noracle: PASS — roster, integral funnel, pour mass, budget, the sheet's");
+    println!("        overmold instructions, and its description of the rim all hold");
+    println!("        on the stock wheel.");
     Ok(())
 }
