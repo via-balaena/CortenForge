@@ -101,9 +101,9 @@ const DEFAULT_BORE_CLEARANCE_M: f64 = 0.0001;
 /// Tread width (25 mm), shared by rim and tire so their side faces are flush.
 ///
 /// Set by the PU on hand, not by the build plate: six tires at this width are
-/// 695 cm³ of the 864 cm³ in 2 lb, leaving 169 cm³ — about 1.4 tires, so the
-/// arc absorbs one failed pour. `six_tires_leave_enough_polyurethane_for_one_retry`
-/// asserts it.
+/// 695 cm³ of the 864 cm³ in 2 lb, leaving 169 cm³ — enough that the arc
+/// absorbs one failed pour, which
+/// `six_tires_leave_enough_polyurethane_for_one_retry` asserts.
 const DEFAULT_WIDTH_M: f64 = 0.025;
 
 /// Keying dimples around the rim (8).
@@ -128,8 +128,8 @@ pub const NOMINAL_PU_95A_DENSITY_KG_M3: f64 = 1050.0;
 
 /// Hemispherical keying dimples, equally spaced around the rim's outer face.
 ///
-/// Dimples resist rotation AND axial walk-off; an axisymmetric groove resists
-/// only walk-off. That is the reason to prefer them.
+/// Dimples resist rotation and axial walk-off; an axisymmetric groove resists
+/// only walk-off.
 ///
 /// ⚠ Which load actually governs is unmeasured, as are the *count* and
 /// *radius* — nothing has been poured, so no shear load exists to size them
@@ -800,10 +800,10 @@ mod tests {
     #[test]
     #[should_panic(expected = "must fit inside the half-width")]
     fn a_dimple_wider_than_the_tread_face_is_rejected() {
-        // A dimple wider than half the width breaks out through the wheel's
-        // side faces. Needs a narrow wheel to reach: at the defaults the
-        // tread depth and the half-width are both 12.5 mm, so the tread-depth
-        // assert fires first.
+        // A dimple whose radius reaches half the wheel's width breaks out
+        // through its side faces. Needs a narrow wheel to reach: at the
+        // defaults the tread depth and the half-width are both 12.5 mm, so
+        // the tread-depth assert fires first.
         let mut spec = WheelSpec::iter1();
         spec.width_m = 0.004;
         drop(rim_solid(&spec));
