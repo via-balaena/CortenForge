@@ -425,6 +425,9 @@ members = [
 
     # Physical-cast tooling (Track F)
     "examples/cast/layered-silicone-device-v2-scan-curve-following",
+    # The wheel: a PU tire cast onto a printed rim. A VALIDATOR — it asserts an
+    # oracle, so CI runs the export rather than type-checking it.
+    "examples/cast/wheel",
 
     # Foundation (active development)
     "design/cf-geometry",

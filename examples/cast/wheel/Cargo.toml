@@ -1,0 +1,32 @@
+[package]
+name = "example-cast-wheel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Headless VALIDATOR — asserts an oracle, so `xtask run-validators` RUNS it in
+# CI rather than merely type-checking it.
+#
+# ⚠ This is deliberate and it is the lesson this arc opened with: the v1 cast
+# example was a `demo`, so CI compiled it for four months while it was BROKEN
+# AT RUNTIME. Nobody found out until it was run by hand and failed the F4 gate.
+# A `demo` rots silently; a `validator` cannot.
+#
+# ⚠ `run-validators` invokes `cargo run --release --quiet -p <name>` with NO
+# ARGUMENTS, so the zero-argument path must be the asserted one.
+[package.metadata.cortenforge]
+example_kind = "validator"
+
+[dependencies]
+# `WheelSpec` + the whole wheel family, `CastSpec::export_molds_v2` and
+# `write_procedure_v2`. This example is the only supported entry point for
+# getting wheel STLs onto disk.
+cf-cast = { workspace = true }
+# `PrinterConfig::fdm_default` for the F4 printability gate.
+mesh-printability = { workspace = true }
+# `Result<()>` + error-context wrapping.
+anyhow = { workspace = true }
+
+[lints]
+workspace = true
