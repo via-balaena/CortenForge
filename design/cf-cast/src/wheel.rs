@@ -671,32 +671,30 @@ mod tests {
         // versus the closed form. Catches a wrong radius or a missing
         // subtraction, which move the answer by tens of percent.
         //
-        // ⚠ The tolerance is wide because the INTEGRATOR is. Measured relative
-        // error against the closed form: −5.5 % at 2 mm, −1.4 % at 1 mm,
-        // −2.2 % at 0.5 mm — an undercount at every cell tried, and NOT
-        // monotone in the cell size.
+        // ⚠ HISTORY, because the numbers here used to be much worse and the
+        // gate encoded that. Under CORNER sampling this read −5.5 % at 2 mm,
+        // −1.4 % at 1 mm and −2.2 % at 0.5 mm — an undercount at every cell,
+        // and NOT monotone, because the error was an alignment artifact: a
+        // face on a grid plane contributed no corners. This test asserted
+        // `rel < 0.0` on the strength of it. `pour_volume` now samples cell
+        // CENTRES, the wheel's flat side faces stop costing a plane, and what
+        // remains is curvature — which converges.
         //
-        // ⚠ Why it is not monotone has not been isolated. What is established
-        // by reading the integrator: the count is strict `< 0`, so a corner
-        // lying exactly on a face is excluded, and the grid origin is derived
-        // from the solid's own bounds — so which faces carry corners changes
-        // with the cell size. This module does not fix that; it records it,
-        // because the same bias reaches the mass budget the workshop pours
-        // against.
+        // ⇒ assert the convergence, not a sign. A pinned tolerance per cell
+        // would pass a rule that got the right answers for the wrong reason.
         let spec = WheelSpec::iter1();
         let nominal = nominal_tire_volume_m3(&spec);
-        for (cell_m, tolerance) in [(PRODUCTION_CELL_M, 0.07), (0.001, 0.03)] {
-            let measured = integrate(&spec, cell_m);
-            let rel = (measured - nominal) / nominal;
-            assert!(
-                rel.abs() < tolerance,
-                "cell {cell_m} m: integrated {measured} m³ vs nominal {nominal} m³ ({rel:+.4})"
-            );
-            assert!(
-                rel < 0.0,
-                "cell {cell_m} m: expected an undercount, got {rel:+.4}"
-            );
-        }
+        let rel = |cell_m: f64| (integrate(&spec, cell_m) - nominal) / nominal;
+        let (coarse, fine) = (rel(PRODUCTION_CELL_M), rel(0.001));
+        assert!(
+            coarse.abs() < 0.07,
+            "production cell {PRODUCTION_CELL_M} m is off by {coarse:+.4}"
+        );
+        assert!(fine.abs() < 0.01, "1 mm cell is off by {fine:+.4}");
+        assert!(
+            fine.abs() < coarse.abs(),
+            "refining the cell must reduce the error; {coarse:+.4} → {fine:+.4}"
+        );
     }
 
     #[test]
