@@ -3047,8 +3047,6 @@ mod tests {
         "peel each tube off the next-inner one",
         "sized to the previous layer's outer surface",
         "of the seam before the next layer",
-        "reuse across every layer's pour",
-        "reused across every layer's pour",
     ];
 
     /// Bonded-mode prose that presupposes a second layer.
@@ -4005,13 +4003,21 @@ mod tests {
     }
 
     fn tally_coverage(md: &str, plate_flange: bool, cover: &mut MatrixCoverage) {
-        if md.contains("integral to each cup") {
+        // ⚠ Re-pointed 2026-09-13 for the same reason as the plug-lock tally
+        // below: "integral to each cup" lived only in the DELETED
+        // print-orientation section. `seam_face_features` emits this one, and
+        // only for `PourGateLayout::ApexAxial`.
+        if md.contains("the apex pour bore + integral funnel") {
             cover.apex += 1;
         }
         if md.contains("**Symmetric dowel holes**") {
             cover.dowelled += 1;
         }
-        if md.contains("truncated-pyramid lock pointing UP") {
+        // ⚠ Re-pointed 2026-09-13: this counted "truncated-pyramid lock
+        // pointing UP", emitted only by the DELETED print-orientation section.
+        // A tally keyed on prose that no longer renders reports the branch as
+        // unexercised — which this gate's own self-check catches, and did.
+        if md.contains("clean rectangular plug-floor-lock socket") {
             cover.plug_lock += 1;
         }
         if md.contains("no vent leg is carved") {
@@ -5396,9 +5402,11 @@ mod tests {
         assert!(md.contains("## Cast Geometry"));
         assert!(md.contains("## v2 Mold Assembly"));
         // S6 print-prep sections (recon-1 §G-3 / §G-4 / §G-6 / §G-11 #3).
-        assert!(md.contains("## Per-Piece Print Orientation"));
-        assert!(md.contains("## First-Layer Chamfer Recipe"));
-        assert!(md.contains("## Target FDM Floor (Bambu A1 + Default + Jayo)"));
+        // ⚠ 2026-09-13: `## Per-Piece Print Orientation`, `## First-Layer
+        // Chamfer Recipe` and `## Target FDM Floor` were DELETED — they told
+        // the reader how to run their slicer, which this crate cannot know.
+        // What replaced them states what the PART requires.
+        assert!(md.contains("## What the Geometry Requires"));
         assert!(md.contains("## cf-view Sanity-Check Workflow"));
         assert!(md.contains("## Cap-Plane Edge Chamfer (Expected MC Quantization)"));
         assert!(md.contains("## Seam-Face Edge Non-Flatness (Expected Centerline Curvature + MC)"));
@@ -5412,58 +5420,6 @@ mod tests {
         assert!(md.contains("## Generic Smooth-On Guidance"));
         assert!(md.contains("## Per-Layer Procedure"));
         assert!(md.contains("## Mass Budget"));
-    }
-
-    #[test]
-    fn generate_procedure_markdown_v2_includes_print_orientation_revision() {
-        // ⚠⚠ THIS TEST USED TO PIN THE DEFECT. It asserted
-        // `"Orient seam face UP"` and described recon-1 §G-4's original
-        // seam-face-on-bed lock as "geometrically-falsified" — but the thing
-        // that falsified it was S3's registration pins crossing the seam, and
-        // §M-S4 (2026-05-27) retired those entirely. The conclusion was never
-        // re-derived, so the sheet kept instructing the OPPOSITE of the hard
-        // flat-mating-face constraint (workshop 2026-05-30: the cup halves
-        // print mating-face-DOWN so the bed backstops the seal faces'
-        // flatness) — and this assertion is what held it in place.
-        // Corrected 2026-08-31: seam-face-on-bed is the lock again, now
-        // gated on the seam actually BEING planar.
-        // ⚠ Plug pins ENABLED. `PlugPinKind` defaults OFF, and the
-        // plug-lock prose this test pins is now gated on the cast actually
-        // carrying a lock — an unconditional "cap-plane-face-DOWN is INVALID"
-        // was describing a pyramid the default cast never generates.
-        let (spec, ribbon) = v2_procedure_fixture();
-        let ribbon = ribbon.with_plug_pins(crate::plug::PlugPinKind::Axial(
-            crate::plug::PlugPinSpec::iter1(),
-        ));
-        let pours = spec.compute_pour_volumes().unwrap();
-        let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
-        // The shared fixture's ribbon is curve-following (`with_planar_seam`
-        // is never called on it), so it CANNOT satisfy the constraint and must
-        // get a stop-work block rather than any orientation at all.
-        assert!(
-            md.contains("STOP — this cast's seam is NOT planar"),
-            "non-planar seam must stop work, not pick an orientation: {md}"
-        );
-        assert!(
-            !md.contains("Orient seam face UP"),
-            "the retired seam-face-UP lock must not reappear: {md}"
-        );
-        assert!(
-            !md.contains("Orient the mating (seam) face DOWN"),
-            "a curve-following seam has no flat mating face to lay down: {md}"
-        );
-        assert!(
-            md.contains("Orient dome end DOWN"),
-            "plug-piece dome-end-DOWN guidance missing in: {md}"
-        );
-        assert!(
-            md.contains("Cap-plane-face-DOWN is INVALID"),
-            "plug cap-plane-face-DOWN INVALID call-out missing in: {md}"
-        );
-        assert!(
-            md.contains("§G-4 revision"),
-            "§G-4 revision header missing in: {md}"
-        );
     }
 
     /// The constraint-correct branch — which NO fixture exercised before
@@ -5616,33 +5572,6 @@ mod tests {
     }
 
     #[test]
-    fn generate_procedure_markdown_v2_lists_target_fdm_floor() {
-        // S6 anchors the recon-1 §G-3 consumer-FDM tolerance floor —
-        // Bambu A1 + Bambu Studio default settings + Jayo PLA. These
-        // exact vocabulary anchors gate any future rewrite that
-        // silently drifts the regression target toward
-        // calibrated-printer tolerances.
-        let (spec, ribbon) = v2_procedure_fixture();
-        let pours = spec.compute_pour_volumes().unwrap();
-        let md = crate::procedure::generate_procedure_markdown_v2(&spec, &pours, &ribbon);
-        assert!(md.contains("Bambu A1"), "Bambu A1 anchor missing in: {md}");
-        assert!(
-            md.contains("default settings"),
-            "default settings anchor missing in: {md}"
-        );
-        assert!(md.contains("Jayo"), "Jayo filament anchor missing in: {md}");
-        // Slicer baseline elephant-foot compensation must be 0.0 mm
-        // (the geometry includes chamfer bands per S6 §"First-Layer
-        // Chamfer Recipe"; non-zero slicer compensation would
-        // double-correct and tighten the pin/socket fit beyond
-        // the spec's diametral clearance budget).
-        assert!(
-            md.contains("Elephant-foot compensation**: 0.0 mm"),
-            "0.0 mm elephant-foot compensation guidance missing in: {md}"
-        );
-    }
-
-    #[test]
     fn generate_procedure_markdown_v2_cap_plane_chamfer_section_accepts_edge_band() {
         // 2026-05-25 (4') decision (post-bisect): the ~3 mm-wide
         // cap-plane EDGE chamfer band (≤100 µm vertex deviation) is
@@ -5679,16 +5608,11 @@ mod tests {
             md.contains("EDGE not the CENTER"),
             "EDGE-vs-CENTER diagnostic anchor missing in: {md}"
         );
-        // The new section must explicitly disambiguate from the
-        // existing First-Layer Chamfer Recipe (different concept —
-        // deliberate PrismaticPin geometry primitive vs
-        // MC-quantization byproduct; the band is part of the
-        // primitive on both emitters, so the old "SDF-side" label
-        // was wrong).
-        assert!(
-            md.contains("Distinct from `## First-Layer Chamfer Recipe`"),
-            "disambiguation from First-Layer Chamfer Recipe missing in: {md}"
-        );
+        // ⚠ 2026-09-13: an assertion here required the section to
+        // disambiguate itself from `## First-Layer Chamfer Recipe`. That
+        // section was DELETED — it prescribed slicer settings — so there is
+        // nothing left to disambiguate from, and the paragraph that did it
+        // went with it. Deleted rather than weakened: its subject is gone.
     }
 
     #[test]
