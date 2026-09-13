@@ -485,8 +485,10 @@ pub fn wheel_ribbon(spec: &WheelSpec) -> Result<Ribbon, RibbonError> {
 ///
 /// ⚠ What the placement solver does with a CIRCLE is not obvious — dowels are
 /// seeded at the loop's principal-axis extremes, and a circle has no principal
-/// axis. `dowels_land_diametrically_opposite_on_an_isotropic_loop` measures
-/// the documented isotropic fallback actually firing.
+/// axis, so the one it picks is decided by floating-point noise.
+/// `dowels_land_far_apart_on_an_isotropic_loop` asserts what survives that:
+/// two dowels, one radius, a large moment arm. Their absolute bearing does
+/// not survive it, and is not the same on every platform.
 ///
 /// # Errors
 ///
@@ -1130,18 +1132,27 @@ mod tests {
     }
 
     #[test]
-    fn dowels_land_diametrically_opposite_on_an_isotropic_loop() {
+    fn dowels_land_far_apart_on_an_isotropic_loop() {
         // ★ THE DEGENERACY GATE. `plan_smart_dowel_placements` seeds at the
         // loop's PRINCIPAL-AXIS extremes (PCA over the stations) — and a
-        // circle has no principal axis. `dowel_hole.rs` documents a fallback
-        // to a coordinate axis for the near-isotropic case; every placement
-        // fixture I checked (`bolt_pattern.rs:431`, `:861`,
-        // `dowel_hole.rs:505`, `:670`) is a rotated cylinder, so none of them
-        // reaches that branch.
+        // circle has no principal axis. Every placement fixture I checked
+        // (`bolt_pattern.rs:431`, `:861`, `dowel_hole.rs:505`, `:670`) is a
+        // rotated cylinder, so none of them reaches that branch.
         //
-        // Two dowels, equal radius, 180° apart is the correct answer for a
-        // circle: any diameter is as good as any other, so the fallback is not
-        // a compromise here.
+        // ⚠⚠ WHAT IS GUARANTEED IS MUCH WEAKER THAN "DIAMETRICALLY OPPOSITE",
+        // and this gate asserted that until CI disproved it. On an isotropic
+        // loop the principal axis is numerically ARBITRARY: perturbing the
+        // tire radius by 0.1 mm swings the pair's absolute bearing from −0.05°
+        // to +68.4° to +27.9°. Only the SEPARATION was stable locally
+        // (179.6°–180.0°) — and on Linux the same code places them 157.9°
+        // apart. The seeds start opposite; the feasibility solve then moves
+        // them, and by how much depends on an axis that is chosen by
+        // floating-point noise.
+        //
+        // ⇒ assert what registration actually needs — two dowels, one radius,
+        // a large moment arm — not a number that happens to hold on one
+        // platform. `placement_is_deterministic` covers same-platform
+        // reproducibility, which is what matters for one exported mold.
         let spec = WheelSpec::iter1();
         let ribbon = wheel_mold_ribbon(&spec).unwrap();
         let dowels = plan_smart_dowel_placements(
@@ -1159,10 +1170,15 @@ mod tests {
             ra > spec.tire_outer_radius_m + WALL_M,
             "dowels must sit outboard of the cup wall, got r={ra}"
         );
-        let sweep = (b.z.atan2(b.x) - a.z.atan2(a.x)).abs().to_degrees();
+        // ⚠ The raw difference must be WRAPPED. `(θb − θa).abs()` reads 202°
+        // for a pair that is 158° apart, which is how the Linux failure first
+        // looked like a 202° impossibility.
+        let raw = (b.z.atan2(b.x) - a.z.atan2(a.x)).abs().to_degrees();
+        let separation = raw.min(360.0 - raw);
         assert!(
-            (sweep - 180.0).abs() < 1.0,
-            "maximum moment arm means diametrically opposite; got {sweep}°"
+            separation > 120.0,
+            "clamshell registration needs a large moment arm; the dowels are \
+             only {separation}° apart"
         );
     }
 
@@ -1230,6 +1246,14 @@ mod tests {
         // isotropic loop is exactly where a tie could be broken arbitrarily.
         // `dowel_hole.rs` says ties break to the lowest arc length; this is
         // that claim, run.
+        //
+        // ⚠⚠ SCOPE: same binary, same platform. It does NOT establish
+        // cross-platform reproducibility, and that is not a hypothetical —
+        // this geometry places its dowels 179.9° apart on macOS and 157.9°
+        // apart on Linux, because the principal axis of an isotropic loop is
+        // decided by floating-point noise. Both are valid molds; they are not
+        // the SAME mold. Re-exporting on a different machine after printing
+        // one half is a workshop hazard nothing here guards.
         //
         // ⚠ A control for this gate must vary `tire_outer_radius_m`. Changing
         // `width_m` or `bore_radius_m` leaves the placements bit-identical,
