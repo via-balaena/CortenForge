@@ -687,7 +687,7 @@ mod tests {
     fn unkeyed_wheel_is_a_plain_annulus_plus_the_pin_gap() {
         let mut spec = WheelSpec::iter1();
         spec.keying = KeyingKind::None;
-        // Annulus 115 355.355 mm³ + pin gap 62.047 mm³, no hemispheres.
+        // The annulus plus the pin gap, with no hemispheres.
         let v_mm3 = nominal_tire_volume_m3(&spec) * 1e9;
         assert_relative_eq!(v_mm3, 115_417.402, epsilon = 0.001);
 
