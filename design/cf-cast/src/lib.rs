@@ -145,5 +145,5 @@ pub use spec::{
 };
 pub use wheel::{
     DimpleSpec, KeyingKind, WheelSpec, cast_body_solid, keying_solid, locating_pin_is_solid,
-    nominal_tire_volume_m3, rim_solid, tire_solid, wheel_ribbon,
+    nominal_tire_volume_m3, rim_solid, tire_solid, wheel_mold_ribbon, wheel_ribbon,
 };
