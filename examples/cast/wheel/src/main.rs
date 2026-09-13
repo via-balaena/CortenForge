@@ -28,14 +28,14 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use cf_cast::wheel::{
-    DimpleSpec, KeyingKind, NOMINAL_PU_95A_DENSITY_KG_M3, WheelSpec, nominal_tire_volume_m3,
-    wheel_cast_spec, wheel_mold_ribbon,
+    DimpleSpec, KeyingKind, NOMINAL_PU_95A_DENSITY_KG_M3, SpokeKind, SpokeSpec, WheelSpec,
+    nominal_tire_volume_m3, spoke_cores_are_solid, spoke_web_m, wheel_cast_spec, wheel_mold_ribbon,
 };
 use cf_cast::{DEFAULT_MASS_BUDGET_KG, STLS_SUBDIR};
 use mesh_printability::PrinterConfig;
 
-/// Cup-wall thickness the workshop prints at.
-const WALL_M: f64 = 0.005;
+/// Cup-wall thickness the workshop prints at, when not overridden.
+const DEFAULT_WALL_MM: f64 = 5.0;
 /// Tires per trike set, times two sets. The number the budget is checked against.
 const TIRES_WANTED: f64 = 6.0;
 const MM_PER_M: f64 = 1000.0;
@@ -59,9 +59,21 @@ OPTIONS (all lengths in mm; defaults are the stock wheel):
     --bore <mm>        axle bore diameter           [8]
     --dimples <n>      keying dimples, 0 = none     [8]
     --dimple-r <mm>    dimple radius                [3]
+    --wall <mm>        mold cup wall                [5]
     --cell-mm <mm>     marching-cubes cell          [2.0]
     --out <dir>        output directory             [<this crate>/out]
     --help
+
+SPOKES (omit --spokes for a solid disc):
+    --spokes <n>       radial slots, 0 = solid      [0]
+    --slot-width <mm>  gap between spokes           [15]
+    --hub-radius <mm>  solid material round the bore[20]
+    --rim-band <mm>    solid ring inboard of the rim[8]
+
+    ⚠ THE MOLD WALL SETS THE WIDEST SLOT. A slot stays open only because the
+    cup wall cores it, and that shell reaches `wall` in from the slot's sides
+    — so `slot-width < 2 x wall`. The 5 mm default wall cores 10 mm slots; the
+    15 mm default slot needs `--wall 8`. This is checked, not assumed.
 
 NOTES:
     --cell-mm is a SURFACE-QUALITY choice only. The reported pour mass is
@@ -81,6 +93,11 @@ struct Args {
     dimples: u32,
     dimple_r_mm: f64,
     cell_mm: f64,
+    wall_mm: f64,
+    spokes: u32,
+    slot_width_mm: f64,
+    hub_radius_mm: f64,
+    rim_band_mm: f64,
     out: PathBuf,
     /// Did any GEOMETRY flag get passed? The oracle's size-dependent half is
     /// asserted only on the stock wheel.
@@ -107,6 +124,13 @@ impl Default for Args {
             dimples: dimple.map_or(0, |d| d.count),
             dimple_r_mm: dimple.map_or(0.0, |d| d.radius_m * MM_PER_M),
             cell_mm: 2.0,
+            wall_mm: DEFAULT_WALL_MM,
+            // ⚠ Read OFF `SpokeSpec::iter1` for the same reason the wheel
+            // dimensions are: the usage text and the crate cannot drift.
+            spokes: 0,
+            slot_width_mm: SpokeSpec::iter1().slot_width_m * MM_PER_M,
+            hub_radius_mm: SpokeSpec::iter1().hub_radius_m * MM_PER_M,
+            rim_band_mm: SpokeSpec::iter1().rim_band_m * MM_PER_M,
             stock: true,
             // ⚠ Anchored to the CRATE, not the cwd. `cargo run` runs from
             // the workspace ROOT, so a relative "out" drops a directory there
@@ -126,12 +150,24 @@ impl Args {
                 radius_m: self.dimple_r_mm / MM_PER_M,
             })
         };
+        let spokes = if self.spokes == 0 {
+            SpokeKind::None
+        } else {
+            SpokeKind::Radial(SpokeSpec {
+                count: self.spokes,
+                slot_width_m: self.slot_width_mm / MM_PER_M,
+                hub_radius_m: self.hub_radius_mm / MM_PER_M,
+                rim_band_m: self.rim_band_mm / MM_PER_M,
+                ..SpokeSpec::iter1()
+            })
+        };
         WheelSpec {
             tire_outer_radius_m: self.tire_od_mm / 2.0 / MM_PER_M,
             rim_outer_radius_m: self.rim_od_mm / 2.0 / MM_PER_M,
             bore_radius_m: self.bore_mm / 2.0 / MM_PER_M,
             width_m: self.width_mm / MM_PER_M,
             keying,
+            spokes,
             ..WheelSpec::iter1()
         }
     }
@@ -183,6 +219,27 @@ fn parse() -> Result<Option<Args>> {
                 args.dimple_r_mm = mm(value()?)?;
                 args.stock = false;
             }
+            "--slot-width" => {
+                args.slot_width_mm = mm(value()?)?;
+                args.stock = false;
+            }
+            "--hub-radius" => {
+                args.hub_radius_mm = mm(value()?)?;
+                args.stock = false;
+            }
+            "--rim-band" => {
+                args.rim_band_mm = mm(value()?)?;
+                args.stock = false;
+            }
+            // ⚠ The wall belongs to the CAST, not the wheel, so it does not
+            // make the geometry non-stock — but it does decide whether the
+            // slots can be cored.
+            "--wall" => args.wall_mm = mm(value()?)?,
+            "--spokes" => {
+                let v = value()?;
+                args.spokes = v.parse().with_context(|| format!("{v:?} is not a count"))?;
+                args.stock = false;
+            }
             "--cell-mm" => args.cell_mm = mm(value()?)?,
             "--dimples" => {
                 let v = value()?;
@@ -223,9 +280,25 @@ fn main() -> Result<()> {
         args.tire_od_mm, args.rim_od_mm, args.width_mm, args.bore_mm, args.dimples
     );
     let ribbon = wheel_mold_ribbon(&spec).context("build the wheel's mold ribbon")?;
+    // ★★★ THE DESIGN RULE, CHECKED BEFORE ANYTHING IS WRITTEN. A slot wider
+    // than the wall can core does not fail loudly later — it quietly stops
+    // being a void and becomes polyurethane.
+    if !spoke_cores_are_solid(&spec, args.wall_mm / MM_PER_M) {
+        bail!(
+            "a {:.1} mm slot cannot be cored by a {:.1} mm mold wall — the cup \
+             shell reaches only {:.1} mm in from each side, leaving a void down \
+             the middle that the pour would fill.\n       Use --wall {:.1} or \
+             wider, or --slot-width under {:.1}.",
+            args.slot_width_mm,
+            args.wall_mm,
+            args.wall_mm,
+            args.slot_width_mm / 2.0 + 0.5,
+            2.0 * args.wall_mm
+        );
+    }
     let cast = wheel_cast_spec(
         &spec,
-        WALL_M,
+        args.wall_mm / MM_PER_M,
         args.cell_mm / MM_PER_M,
         PrinterConfig::fdm_default(),
     );
@@ -249,7 +322,34 @@ fn main() -> Result<()> {
     let analytic_g = nominal_tire_volume_m3(&spec) * NOMINAL_PU_95A_DENSITY_KG_M3 * G_PER_KG;
     let budget_g = DEFAULT_MASS_BUDGET_KG * G_PER_KG;
 
-    println!("cell:  {:.2} mm  →  {}", args.cell_mm, args.out.display());
+    if let Some(web) = spoke_web_m(&spec) {
+        println!(
+            "spokes: {} slots {:.1} mm wide, hub r{:.1} mm, rim band {:.1} mm\n\
+             \x20       web between slots at the hub: {:.2} mm (the narrowest \
+             point of the load path)",
+            args.spokes,
+            args.slot_width_mm,
+            args.hub_radius_mm,
+            args.rim_band_mm,
+            web * MM_PER_M
+        );
+        // ⛔ The sheet renders from `CastSpec` + `Ribbon`, and neither carries
+        // spokes — so it is byte-identical to a solid wheel's and its cf-view
+        // checklist calls the cores a regression. Say so where someone will
+        // actually read it.
+        println!(
+            "       ⛔ procedure.md does NOT know this rim has spokes. Its cf-view\n\
+             \x20         checklist says the cup wall carries \"nothing else\" and that\n\
+             \x20         protrusions are a regression — the six cores ARE protrusions.\n\
+             \x20         Do not hand that sheet to the workshop as-is."
+        );
+    }
+    println!(
+        "cell:  {:.2} mm, wall {:.1} mm  →  {}",
+        args.cell_mm,
+        args.wall_mm,
+        args.out.display()
+    );
     println!("files: {}", stls.join(", "));
     println!("pour:  {pour_g:.2} g reported, {analytic_g:.2} g closed-form");
     // ⚠ Report the SIGNED difference and stop there. The first draft of this
@@ -273,7 +373,20 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    // ── the oracle ────────────────────────────────────────────────────────
+    check_oracle(&stls, report.funnel.is_some(), pour_g, budget_g, &sheet)
+}
+
+/// The stock wheel's oracle. Split out of `main`, which outgrew one function.
+///
+/// ⚠ Only ever called for the STOCK geometry — a custom wheel may legitimately
+/// fail the size-dependent half.
+fn check_oracle(
+    stls: &[String],
+    has_funnel: bool,
+    pour_g: f64,
+    budget_g: f64,
+    sheet: &str,
+) -> Result<()> {
     let expected = [
         "dowel.stl",
         "mold_layer_0_piece_0.stl",
@@ -283,7 +396,7 @@ fn main() -> Result<()> {
     if stls != expected {
         bail!("STL roster changed: expected {expected:?}, wrote {stls:?}");
     }
-    if report.funnel.is_some() {
+    if has_funnel {
         bail!("a separate funnel.stl means apex-axial fell back to V-at-dome");
     }
     if (pour_g - STOCK_POUR_G).abs() > 0.01 {

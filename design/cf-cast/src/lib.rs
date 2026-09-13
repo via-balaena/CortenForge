@@ -146,7 +146,7 @@ pub use spec::{
     V2MoldExportReport, plug_fit_verdict,
 };
 pub use wheel::{
-    DimpleSpec, KeyingKind, WheelSpec, cast_body_solid, keying_solid, locating_pin_is_solid,
-    nominal_tire_volume_m3, rim_solid, tire_solid, wheel_cast_spec, wheel_mold_ribbon,
-    wheel_ribbon,
+    DimpleSpec, KeyingKind, SpokeKind, SpokeSpec, WheelSpec, cast_body_solid, keying_solid,
+    locating_pin_is_solid, nominal_tire_volume_m3, rim_solid, spoke_cores_are_solid,
+    spoke_slots_solid, spoke_web_m, tire_solid, wheel_cast_spec, wheel_mold_ribbon, wheel_ribbon,
 };
