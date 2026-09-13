@@ -50,6 +50,7 @@ use crate::dowel_hole::DowelHoleKind;
 use crate::flange::FlangeKind;
 use crate::gasket_mold::GasketKind;
 use crate::plug::PlugPinKind;
+use crate::plug_role::PlugRole;
 use crate::pour::PourGateKind;
 use crate::silhouette_2d::SeamPlaneBasis;
 
@@ -281,6 +282,13 @@ pub struct Ribbon {
     /// (post-S4 of the FDM-friendly geometry arc; pre-S4 was a
     /// cylindrical shaft + T-bar mechanism).
     pub plug_pins: PlugPinKind,
+    /// What `plug_layer_0` becomes once the pour cures. Default
+    /// [`PlugRole::Tooling`] (pulled out and reused). Set
+    /// [`PlugRole::Insert`] via the [`Ribbon::with_plug_role`]
+    /// builder for an overmold, where the plug stays inside the
+    /// finished part. Geometry is identical either way — this is
+    /// read only by the procedure sheet.
+    pub plug_role: PlugRole,
     /// Per-layer gasket-mold kind. Default [`GasketKind::None`] (no
     /// gasket mold emission — cup halves hand-clamped without a
     /// silicone seal). S3 of the seam-gasket-mold arc adds
@@ -502,6 +510,7 @@ impl Ribbon {
             split_normal,
             pour_gate: PourGateKind::None,
             plug_pins: PlugPinKind::None,
+            plug_role: PlugRole::Tooling,
             gasket: GasketKind::None,
             flange: FlangeKind::None,
             dowel_hole: DowelHoleKind::None,
@@ -610,6 +619,19 @@ impl Ribbon {
     #[must_use]
     pub const fn with_plug_pins(mut self, plug_pins: PlugPinKind) -> Self {
         self.plug_pins = plug_pins;
+        self
+    }
+
+    /// Builder: set what `plug_layer_0` becomes once the pour
+    /// cures. [`PlugRole::Insert`] marks an overmold — the plug is
+    /// part of the finished product and stays in it, so the sheet
+    /// stops telling the bencher to release it and pull it out.
+    ///
+    /// Carves nothing: the cast geometry is identical under either
+    /// role. Orthogonal to every other `with_*` builder.
+    #[must_use]
+    pub const fn with_plug_role(mut self, plug_role: PlugRole) -> Self {
+        self.plug_role = plug_role;
         self
     }
 
@@ -976,6 +998,24 @@ mod tests {
 
     use super::*;
     use approx::assert_relative_eq;
+
+    /// A fresh ribbon casts a mold, so its plug is tooling. Nothing before the
+    /// wheel ever asked for anything else, and the whole prose layer keys off
+    /// this default.
+    #[test]
+    fn a_fresh_ribbon_treats_its_plug_as_tooling() {
+        let ribbon = Ribbon::new(
+            vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 0.0, 0.05)],
+            SplitNormal::new(Vector3::new(1.0, 0.0, 0.0)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(ribbon.plug_role, PlugRole::Tooling);
+        assert_eq!(
+            ribbon.with_plug_role(PlugRole::Insert).plug_role,
+            PlugRole::Insert,
+            "the builder is the only way to move it"
+        );
+    }
 
     fn polyline_along_x(n: usize) -> Vec<Point3<f64>> {
         (0..n)

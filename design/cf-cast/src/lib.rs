@@ -81,6 +81,7 @@ pub mod part_selection;
 pub mod piece;
 pub mod platform;
 pub mod plug;
+pub mod plug_role;
 pub mod pour;
 mod pour_volume;
 pub mod preview;
@@ -122,6 +123,7 @@ pub use plug::{
     build_plug_cap_trim_transform, build_plug_lock_socket_transform, build_plug_lock_transform,
     ensure_plug_mating_features_attached,
 };
+pub use plug_role::PlugRole;
 pub use pour::{PourGateKind, PourGateLayout, PourGateSpec, build_pour_gate_transforms};
 pub use pour_volume::{DEFAULT_MASS_BUDGET_KG, POUR_VOLUME_MIN_CELL_SIZE_M, PourVolume};
 pub use preview::{preview_textured_plug, preview_textured_solid};

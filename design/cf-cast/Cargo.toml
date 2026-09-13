@@ -15,7 +15,15 @@ categories = ["graphics", "science", "algorithms"]
 # ⚠ CONSEQUENCE: this crate no longer follows `[workspace.package] version`.
 # A future workspace-wide bump will skip it silently — nothing enforces the
 # relationship. Bump it explicitly, or re-inherit once its version catches up.
-version = "2.0.0"
+#
+# 2.1.0 (2026-09-13) — additive. `pub mod wheel` (#912-#918) and `pub mod
+# plug_role` + `Ribbon::with_plug_role`. ⚠ `Ribbon` also gained a public
+# `plug_role` FIELD, which strict semver calls a break. It is treated as
+# additive because `Ribbon` carries a computed invariant
+# (`segments.len() == points.len() - 1`) that only `Ribbon::new` establishes,
+# so literal construction is not a supported path and no site in this
+# workspace does it. Declared here because nothing checks it.
+version = "2.1.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true

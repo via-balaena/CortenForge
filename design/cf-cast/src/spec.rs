@@ -2781,6 +2781,7 @@ mod tests {
 
     // ----- v2 export_molds_v2 -------------------------------------
 
+    use crate::plug_role::PlugRole;
     use crate::pour::{PourGateKind, PourGateSpec};
     use crate::ribbon::{PieceSide, Ribbon, SplitNormal};
     use nalgebra::Point3;
@@ -3177,6 +3178,164 @@ mod tests {
         }
     }
 
+    /// Sentences that say the plug leaves the cast — either as an instruction
+    /// to remove it, or as a claim that the cured layer alone is the finished
+    /// thing. Under [`PlugRole::Insert`] none may render.
+    ///
+    /// ⚠ Each phrase is also asserted PRESENT somewhere in the `Tooling`
+    /// renders. A list of phrases nothing emits would make the absence check
+    /// pass on a sheet that says the opposite in words I mistyped.
+    const PLUG_REMOVAL_PHRASES: &[&str] = &[
+        "Pull the plug axially out of the cured silicone shell.",
+        "pull the part axially off the plug",
+        "pull the whole bonded part axially off the plug",
+        "you pull the part off the plug",
+        "it demolds as one silicone body of one durometer",
+    ];
+
+    /// Sentences that put mold release on the plug. Release is what lets a
+    /// cast let go; an insert is not meant to.
+    ///
+    /// ⚠ Asserted present under `Tooling` for the same reason as above.
+    /// ⚠ The bare noun "mold release" is NOT on this list and must not be —
+    /// the CUP HALVES still get it under every role, so a `contains("mold
+    /// release")` check would be unsatisfiable rather than strict.
+    const PLUG_RELEASE_PHRASES: &[&str] = &[
+        "Apply mold release to all printed surfaces.",
+        "Apply mold release to `plug_layer_0.stl`",
+        "mold release goes on every printed surface it touches: both cup halves and the plug",
+        "release goes on the printed cup + the plug only",
+        "Apply mold release to the plug + both cup halves.",
+        "- Apply mold release to printed surfaces before the pour",
+        "- Apply mold release to printed surfaces before each pour",
+    ];
+
+    /// ★ [`PlugRole`] is a pure addition: `Tooling` is the default and renders
+    /// the sheet this crate has always rendered.
+    ///
+    /// Both halves carry weight. Byte-equality pins `Ribbon::new`'s default to
+    /// `Tooling` through the entire prose layer — every writer that grew a
+    /// role parameter is covered at once, and one that defaulted the other way
+    /// fails here. Inequality is the positive anchor: without it the gate
+    /// would pass just as happily if `PlugRole` changed nothing at all.
+    #[test]
+    fn tooling_is_the_default_and_only_insert_moves_the_sheet() {
+        for (label, (spec, base)) in [("1-layer", v2_fixture()), ("2-layer", two_layer_fixture())] {
+            let (deta_default, bonded_default) = procedure_pair(&spec, &base);
+
+            let explicit = base.clone().with_plug_role(PlugRole::Tooling);
+            let (deta_tooling, bonded_tooling) = procedure_pair(&spec, &explicit);
+            assert!(
+                deta_default == deta_tooling && bonded_default == bonded_tooling,
+                "{label}: an explicit Tooling role must render the default sheet"
+            );
+
+            let insert = base.with_plug_role(PlugRole::Insert);
+            let (deta_insert, bonded_insert) = procedure_pair(&spec, &insert);
+            assert_ne!(
+                deta_default, deta_insert,
+                "{label}: Insert must change the detachable sheet"
+            );
+            assert_ne!(
+                bonded_default, bonded_insert,
+                "{label}: Insert must change the bonded sheet"
+            );
+        }
+    }
+
+    /// An overmold sheet never tells the bencher to take the plug out, and
+    /// never puts release on it.
+    ///
+    /// ★ The zeros are anchored: the same phrase lists are asserted PRESENT in
+    /// the `Tooling` renders, so a phrase nothing emits fails the gate instead
+    /// of passing it vacuously.
+    #[test]
+    fn an_insert_sheet_neither_releases_the_plug_nor_pulls_it_out() {
+        let mut tooling_seen = vec![false; PLUG_REMOVAL_PHRASES.len()];
+        let mut release_seen = vec![false; PLUG_RELEASE_PHRASES.len()];
+
+        for (label, (spec, base)) in [("1-layer", v2_fixture()), ("2-layer", two_layer_fixture())] {
+            let (deta_tool, bonded_tool) = procedure_pair(&spec, &base);
+            for md in [&deta_tool, &bonded_tool] {
+                for (i, phrase) in PLUG_REMOVAL_PHRASES.iter().enumerate() {
+                    tooling_seen[i] |= md.contains(phrase);
+                }
+                for (i, phrase) in PLUG_RELEASE_PHRASES.iter().enumerate() {
+                    release_seen[i] |= md.contains(phrase);
+                }
+            }
+
+            let insert = base.with_plug_role(PlugRole::Insert);
+            let (deta_ins, bonded_ins) = procedure_pair(&spec, &insert);
+            // ⚠ `2-layer` detachable keeps BOTH phrase families for layer 1 —
+            // plug_layer_1 is tooling under every role. That case has its own
+            // gate; here only the bonded sheet (one plug, always layer 0) and
+            // the single-layer detachable sheet must come back clean.
+            let strict: &[(&str, &String)] = if spec.layers.len() == 1 {
+                &[("detachable", &deta_ins), ("bonded", &bonded_ins)]
+            } else {
+                &[("bonded", &bonded_ins)]
+            };
+            for (mode, md) in strict {
+                for phrase in PLUG_REMOVAL_PHRASES {
+                    assert!(
+                        !md.contains(phrase),
+                        "{label} {mode} insert sheet still removes the plug: {phrase:?}"
+                    );
+                }
+                for phrase in PLUG_RELEASE_PHRASES {
+                    assert!(
+                        !md.contains(phrase),
+                        "{label} {mode} insert sheet still releases the plug: {phrase:?}"
+                    );
+                }
+                assert!(
+                    md.contains("mold release"),
+                    "{label} {mode}: the CUP HALVES still need release — a sheet \
+                     that dropped the word entirely would pass every check above"
+                );
+            }
+        }
+
+        for (i, phrase) in PLUG_REMOVAL_PHRASES.iter().enumerate() {
+            assert!(
+                tooling_seen[i],
+                "no Tooling sheet emits {phrase:?} — the absence check above is vacuous"
+            );
+        }
+        for (i, phrase) in PLUG_RELEASE_PHRASES.iter().enumerate() {
+            assert!(
+                release_seen[i],
+                "no Tooling sheet emits {phrase:?} — the absence check above is vacuous"
+            );
+        }
+    }
+
+    /// Only `plug_layer_0` can be the insert. `plug_layer_1` is a printed
+    /// positive of layer 0's outer surface — tooling under every role — so its
+    /// section must keep releasing it and pulling it out.
+    #[test]
+    fn plugs_above_layer_zero_stay_tooling_under_insert() {
+        let (spec, base) = two_layer_fixture();
+        let (md, _) = procedure_pair(&spec, &base.with_plug_role(PlugRole::Insert));
+        assert!(
+            md.contains("### Layer 1 —"),
+            "a 2-layer sheet must have a Layer 1 section to split on"
+        );
+        let (layer0, layer1) = md.split_once("### Layer 1 —").unwrap();
+
+        assert!(
+            !layer0.contains("Pull the plug axially out")
+                && !layer0.contains("Apply mold release to all printed surfaces."),
+            "layer 0's plug is the insert"
+        );
+        assert!(
+            layer1.contains("Pull the plug axially out")
+                && layer1.contains("Apply mold release to all printed surfaces."),
+            "layer 1's plug is tooling and must still be released and withdrawn"
+        );
+    }
+
     /// ★★ Every `## Section` the sheet points at must EXIST in that same
     /// sheet, across the whole config matrix.
     ///
@@ -3188,9 +3347,9 @@ mod tests {
     /// rendering the whole document and resolving its own references can.
     ///
     /// `compute_pour_volumes` depends only on the spec, so it is computed once
-    /// per layer count and reused across every ribbon × mode variation
-    /// (3 flanges × 2 gaskets × 2 dowel kinds × 2 bolt kinds × 4 pour gates ×
-    /// 2 plug-pin kinds × 2 modes = 384 per layer config, 1536 in total).
+    /// per layer count and reused across every ribbon × mode variation. The
+    /// matrix size is asserted at the end of the test rather than described
+    /// here — the description had already rotted once.
     #[test]
     fn every_cross_referenced_section_exists_in_the_same_sheet() {
         use crate::bolt_pattern::{BoltPatternKind, BoltPatternSpec};
@@ -3210,6 +3369,7 @@ mod tests {
         // ★ Self-verifying coverage: a matrix that renders no bolted sheet
         // would pass this gate vacuously on the very path it was widened for.
         let mut cover = MatrixCoverage::default();
+        let mut rendered = 0usize;
         let thin = |pair: (CastSpec, Ribbon)| {
             let (mut spec, base) = pair;
             spec.wall_thickness_m = 0.004;
@@ -3282,8 +3442,21 @@ mod tests {
                                     // they carry — rendered in ZERO of the
                                     // sheets this gate checks.
                                     for planar in [false, true] {
-                                        for mode in [CastMode::Detachable, CastMode::Bonded] {
+                                        // ⚠ Paired with `mode` rather than
+                                        // nested: the role branches inside the
+                                        // headers, the per-layer steps and the
+                                        // finishing section of BOTH modes, so
+                                        // it has to vary against both — but a
+                                        // ninth nesting level would make this
+                                        // loop unreadable.
+                                        for (mode, role) in [
+                                            (CastMode::Detachable, PlugRole::Tooling),
+                                            (CastMode::Detachable, PlugRole::Insert),
+                                            (CastMode::Bonded, PlugRole::Tooling),
+                                            (CastMode::Bonded, PlugRole::Insert),
+                                        ] {
                                             let mut r = base.clone();
+                                            r.plug_role = role;
                                             r.flange = flange;
                                             r.gasket = gasket;
                                             r.bolt_pattern = bolts;
@@ -3302,7 +3475,8 @@ mod tests {
                                                 "{layers} / {flange:?} / {gasket:?} \
                                              / dowels={dowels:?} / {bolts:?} \
                                              / {gate:?} / pins={pins:?} \
-                                             / {mode:?} / planar={planar}"
+                                             / {mode:?} / planar={planar} \
+                                             / role={role:?}"
                                             );
                                             tally_coverage(
                                                 &md,
@@ -3311,6 +3485,7 @@ mod tests {
                                             );
                                             assert_cross_refs_resolve(&md, &case);
                                             assert_prose_is_well_formed(&md, &case);
+                                            rendered += 1;
                                         }
                                     }
                                 }
@@ -3320,6 +3495,10 @@ mod tests {
                 }
             }
         }
+        // ★ The matrix size, as a measurement rather than a comment. The
+        // prose count this replaces had already gone stale once — it was
+        // written before `planar` became a dimension and still said 1536.
+        assert_eq!(rendered, 6144, "the matrix lost or gained a dimension");
         assert_matrix_not_vacuous(&cover);
     }
 
