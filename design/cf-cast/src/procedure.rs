@@ -1255,7 +1255,7 @@ fn write_geometry_requirements_v2(
     md.push('\n');
 }
 
-/// The same claim as [`funnel_reuse_tail`], phrased as the standalone
+/// Whether `funnel.stl` is printed once or once per layer, as the standalone
 /// sentence the pour-gate note uses.
 const fn funnel_print_once_sentence(layer_count: usize) -> &'static str {
     if layer_count == 1 {
@@ -1521,8 +1521,6 @@ fn seam_face_check(present: &[SeamFeature]) -> String {
 /// ⚠ `PlugPinKind` is OFF by default, so the unconditional form demanded a
 /// pyramid the default cast never generates — inside a checklist whose failure
 /// instruction is "do NOT proceed to print".
-///
-/// The lock's COLUMN is a separate bullet — see [`plug_column_bullet`].
 ///
 /// Its sibling is [`plug_form_bullet`], which describes the rest of the plug.
 const fn plug_cap_plane_bullet(has_plug_lock: bool) -> &'static str {
@@ -3708,8 +3706,9 @@ mod tests {
     /// inversion mutant is exactly a case of emitting the wrong one.
     ///
     /// ⚠ Asserted with the line prefix. A bare phrase match would also find
-    /// these words elsewhere in the sheet — the failure that left
-    /// `plug_piece_checks` ungated through two review passes.
+    /// these words elsewhere in the sheet — the failure that left the
+    /// plug-piece bullets ([`plug_cap_plane_bullet`] / [`plug_form_bullet`],
+    /// then one function) ungated through two review passes.
     #[test]
     fn each_gate_and_lock_state_gets_its_own_checklist_bullet() {
         const FUNNEL_NONE: &str = "\n3. **Funnel**: *none*";
