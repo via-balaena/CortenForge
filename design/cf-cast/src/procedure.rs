@@ -33,7 +33,6 @@ use crate::plug::PlugPinKind;
 use crate::plug_role::PlugRole;
 use crate::pour::{PourGateKind, PourGateLayout};
 use crate::pour_volume::PourVolume;
-use crate::prismatic_pin::PrismaticPinSpec;
 use crate::ribbon::Ribbon;
 use crate::spec::CastSpec;
 
@@ -339,22 +338,7 @@ pub fn generate_procedure_markdown_v2_for_mode(
     // layer already branches on it, and before 2026-08-31 the prose layer
     // could not see it at all and hard-coded the opposite orientation.
     let seam_is_planar = ribbon.planar_seam.is_some();
-    write_print_orientation_v2(
-        &mut md,
-        apex_pour,
-        spec.layers.len(),
-        features,
-        seam_is_planar,
-    );
-    write_chamfer_recipe_v2(&mut md, has_plug_lock, has_dowels, bolts_carved);
-    write_target_fdm_floor_v2(
-        &mut md,
-        has_pour_gate && !apex_pour,
-        features,
-        has_gasket,
-        apex_pour,
-        seam_is_planar,
-    );
+    write_geometry_requirements_v2(&mut md, apex_pour, features, seam_is_planar);
     write_cfview_sanity_check_v2(&mut md, apex_pour, ribbon, features, has_gasket);
     write_cap_plane_chamfer_v2(&mut md, has_plug_lock);
     write_seam_face_edge_v2(&mut md, has_plug_lock, seam_is_planar);
@@ -1123,13 +1107,15 @@ fn write_cast_geometry_v2(md: &mut String, ribbon: &Ribbon) {
     md.push('\n');
 }
 
-// ===== S6 — print-prep documentation ==============================
-// Per-piece print orientation (recon-1 §G-4, S6-revised then corrected
-// 2026-08-31 back to seam-face-on-bed), first-layer
-// chamfer recipe (§G-6 reframed under S6 orientation), Bambu A1 +
-// default + Jayo target FDM floor (§G-3), and the cf-view sanity-
-// check workflow gating §G-11 #3 before the workshop user starts
-// slicing.
+// ===== What the geometry requires, and how to verify it ===========
+// ⚠ 2026-09-13: the per-piece print-orientation prose, the first-layer
+// chamfer recipe (§G-6) and the Bambu/Jayo target FDM floor (§G-3) were
+// DELETED — ~500 lines that prescribed layer height, wall loops, infill,
+// supports, a printer and a filament. A geometry library does not know
+// what a slicer will do, and this one asserted "Supports: none for cup
+// pieces" while the slicer wanted support inside the cavity (measured
+// 2026-09-13). What survives states what the PART requires; the process
+// is the reader's. The cf-view workflow stays — it verifies OUR geometry.
 
 /// ⚠⚠ **The cup orientation is MATING-FACE-DOWN, and it is a HARD
 /// workshop constraint (2026-05-30), not a preference:** the seam
@@ -1150,189 +1136,122 @@ fn write_cast_geometry_v2(md: &mut String, ribbon: &Ribbon) {
 /// ⇒ Gated on `seam_is_planar` (`Ribbon::planar_seam`). A
 /// curve-following seam has NO flat mating face, cannot satisfy the
 /// constraint, and gets a stop-work block instead of an orientation.
-fn write_print_orientation_v2(
+/// What the geometry REQUIRES — as distinct from how to make it.
+///
+/// ★★★ **The line this section exists to hold.** For every sentence, ask: *is
+/// this true of the PART, or of one way of making it?* The part is ours; the
+/// process is the reader's, and their slicer's.
+///
+/// ⚠ This replaced ~500 lines of writers that prescribed layer height, wall
+/// loops, infill density, elephant-foot compensation, a printer and a filament
+/// brand — and asserted `Supports: none for cup pieces`. **Measured
+/// 2026-09-13: the slicer wants support inside the cavity.** A geometry
+/// library cannot know that, and this one guessed wrong, in a document a
+/// workshop follows.
+/// "a", "a and b", "a, b and c" — so a one-item list does not read as a list.
+fn join_and(items: &[&str]) -> String {
+    match items {
+        [] => String::new(),
+        [a] => (*a).to_string(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+fn write_geometry_requirements_v2(
     md: &mut String,
     apex_pour: bool,
-    layer_count: usize,
     carved: SheetFeatures,
     seam_is_planar: bool,
 ) {
     let SheetFeatures {
-        has_dowels,
         has_plug_lock,
-        has_pour_gate,
+        has_dowels,
+        bolts_carved,
         ..
     } = carved;
-    let _ = writeln!(md, "## Per-Piece Print Orientation");
+    let _ = writeln!(md, "## What the Geometry Requires");
     md.push('\n');
     let _ = writeln!(
         md,
-        "Each STL has one geometrically-correct print orientation \
-         picked from the FDM-friendly geometry contract (recon-1 \
-         §G-4 in `docs/CF_CAST_FDM_FRIENDLY_GEOMETRY_RECON.md`, \
-         §M-S4-corrected — see §G-4 revision note at the end of this \
-         section)."
+        "These are properties of the PART. How you slice and print it is \
+         yours — this sheet does not prescribe layer heights, supports or a \
+         machine, and does not know what your slicer will decide."
     );
     md.push('\n');
-    write_print_orientation_cup_pieces(md, has_dowels, has_plug_lock, seam_is_planar);
-    write_print_orientation_plug_pieces(md, has_plug_lock);
-    write_print_orientation_funnel_platform(
-        md,
-        apex_pour,
-        layer_count,
-        has_pour_gate,
-        has_plug_lock,
-        integral_funnel_lock_clause(seam_is_planar),
-    );
-    write_print_orientation_g4_revision(md, seam_is_planar, has_dowels);
-}
 
-fn write_print_orientation_cup_pieces(
-    md: &mut String,
-    has_dowels: bool,
-    has_plug_lock: bool,
-    seam_is_planar: bool,
-) {
-    let _ = writeln!(md, "### Cup pieces (`mold_layer_*_piece_{{0|1}}.stl`)");
-    md.push('\n');
-
-    if !seam_is_planar {
-        // ⛔ No flat mating face exists, so there is no orientation that
-        // satisfies the hard constraint. Say so instead of picking one — a
-        // curve-following seam cannot be clamped into a reliable PLA-on-PLA
-        // seal, and that is a stop-work fact, not a printing preference.
+    if seam_is_planar {
         let _ = writeln!(
             md,
-            "> ⛔ **STOP — this cast's seam is NOT planar, so it has no flat \
-             mating face.** The cup halves meet along a curve-following \
-             (ribbon-cut) seam, which cannot satisfy the hard \
-             flat-mating-face constraint: the seam faces ARE the PLA-on-PLA \
-             clamp seal, and a non-flat seam is not guaranteed to close. \
-             **Do not print this for a pour.** Set `[cast] planar_seam = \
-             true` and regenerate. If you are deliberately printing a \
-             curve-following cast for geometry inspection only, lay the \
-             outer curved cup surface DOWN with a 5-8 mm brim and treat the \
-             seam as unsealed."
-        );
-        md.push('\n');
-        return;
-    }
-
-    let _ = writeln!(
-        md,
-        "**Orient the mating (seam) face DOWN, flat on the bed.** The bed \
-         backstops its flatness, which is the whole point: the two seam \
-         faces ARE the PLA-on-PLA clamp seal, and the hard \
-         flat-mating-face constraint exists because a dished or bulged \
-         mating face defeats it. A seam printed as a TOP surface \
-         (perimeters + infill) carries no equivalent flatness guarantee. \
-         Bed contact is the full mating face, so adhesion is not the \
-         constraint here and a brim is optional."
-    );
-    md.push('\n');
-    // ⚠ Do NOT promise "no bridging" here. Every seam-face recess opens
-    // DOWNWARD under this lock, so each one carries a ceiling. They are short
-    // spans the slicer bridges unsupported — but they are real, and the
-    // retired seam-face-UP prose claimed their absence as a selling point.
-    if has_dowels {
-        let _ = writeln!(
-            md,
-            "The §M-S2 symmetric dowel holes carve straight through the seam \
-             face along the ribbon binormal (perpendicular to the seam \
-             plane), so under this lock each one opens DOWNWARD against the \
-             bed and closes with a short bridged ceiling at its far end. \
-             Those spans are the hole diameter — bridged without support. \
-             Expect a small amount of bridge extrusion in the slice; that is \
-             this lock working as intended, not a fault."
+            "- **The two seam faces ARE the seal. Orient the mating (seam) face \
+             DOWN, flat on the bed.** They form the PLA-on-PLA clamp seal, and \
+             the bed backstops their flatness — that is the whole point. They \
+             are flat by construction (gated at 1 µm, see `## Seam Face (Flat \
+             by Construction)`), and a seam printed as a TOP surface carries \
+             no equivalent guarantee. This one is geometry, not preference; \
+             the rest of how you print it is yours."
         );
     } else {
-        // ⚠ NOT "plain": the §B M5 clearance holes go through this same face,
-        // and the cf-view checklist below says so under a heading whose
-        // failure instruction is "do NOT proceed to print".
         let _ = writeln!(
             md,
-            "This cast carves no dowel holes. The seam face still opens onto \
-             the body cavity, and may carry other recesses depending on \
-             configuration — `## cf-view Sanity-Check Workflow` below lists \
-             exactly what to expect. Under this lock each such recess opens \
-             DOWNWARD against the bed; blind ones close with a short bridged \
-             ceiling, and §B M5 clearance holes pass clean through."
+            "- **The seam is curve-following, not planar**, so the mating \
+             surfaces cannot be laid flat on a bed. Whatever orientation you \
+             choose, they are the seal and must come out unmarred."
         );
     }
-    md.push('\n');
-    let _ = writeln!(
-        md,
-        "⚠ **Check your elephant-foot compensation before committing a full \
-         set.** With the seam face on the bed, the tuned mating clearances \
-         (§M-S2 dowel-hole radial, §G-8 plug-lock) and the flange seal land \
-         are ALL first-layer geometry. `## First-Layer Chamfer Recipe` below \
-         specifies 0.0 mm slicer compensation on the grounds that those \
-         clearances are already tuned in the geometry — that reasoning was \
-         written for the retired seam-face-UP lock, where none of those \
-         features touched the bed. Verify it against a first layer rather \
-         than assuming it carries over."
-    );
-    md.push('\n');
-    if has_plug_lock {
-        // ⚠ The retired prose asserted the cap-plane wall "is a vertical wall
-        // in this orientation" — true under seam-face-UP, unverified under this
-        // lock. State only what the SEAM BISECTION guarantees.
-        let _ = writeln!(
-            md,
-            "The S4 plug-floor-lock socket is bisected by the seam, so each \
-             cup half carries one side of the truncated-pyramid recess on \
-             its mating face. Under this lock that half-recess opens \
-             DOWNWARD against the bed like the other seam-face features."
-        );
-        md.push('\n');
-    }
-}
-
-fn write_print_orientation_plug_pieces(md: &mut String, has_plug_lock: bool) {
-    let (lock_up, cap_down_verdict) = if has_plug_lock {
-        (
-            ", the truncated-pyramid lock pointing UP",
-            "**Cap-plane-face-DOWN is INVALID** — the S4 truncated pyramid \
-             protrudes from the cap-plane face along `cap_normal` (away from \
-             plug body), so cap-plane-face-down would put the pyramid INTO \
-             the bed (geometrically impossible).",
-        )
-    } else {
-        (
-            "",
-            "Cap-plane-face-DOWN is geometrically valid on this cast \
-             (`PlugPinKind::None` — nothing protrudes from the cap-plane \
-             face), but dome-end-DOWN remains the recommendation: it keeps \
-             the flat cap-plane as the top surface.",
-        )
+    // ⚠ Name only what this cast actually carves. The first draft asserted
+    // "the §M-S2 dowel fit and the §B bolt clearances" unconditionally, on a
+    // cast that carves neither — `a_cast_without_dowels_never_says_to_register
+    // _on_them` caught it.
+    let tuned: &[&str] = match (has_dowels, bolts_carved) {
+        (true, true) => &["the §M-S2 dowel fit", "the §B bolt clearances"],
+        (true, false) => &["the §M-S2 dowel fit"],
+        (false, true) => &["the §B bolt clearances"],
+        (false, false) => &[],
     };
-    let _ = writeln!(md, "### Plug pieces (`plug_layer_*.stl`)");
-    md.push('\n');
-    let _ = writeln!(
-        md,
-        "**Orient dome end DOWN on bed, cap-plane face UP{lock_up}.** \
-         Add a brim (5-8 mm, 1 layer) for the dome contact patch; brief \
-         minor supports may be needed for the first dome-curvature layers."
-    );
-    md.push('\n');
-    let _ = writeln!(
-        md,
-        "{cap_down_verdict} Side-orient (centerline horizontal) is \
-         geometrically valid but requires extensive supports for \
-         body curvature overhangs; not recommended."
-    );
-    md.push('\n');
-}
-
-/// Funnel-reuse tail for the print-orientation note. One funnel serves the
-/// whole cast either way; only the "reuse it across the other layers" half
-/// needs more than one layer to be true, so at one layer it is dropped.
-const fn funnel_reuse_tail(layer_count: usize) -> &'static str {
-    if layer_count == 1 {
-        ""
+    if tuned.is_empty() {
+        let _ = writeln!(
+            md,
+            "- **Mating surfaces assume ±0.1 mm dimensional tolerance.** This \
+             cast carves no registration or fastener holes, so nothing here \
+             depends on a hole fit — but the seam faces still have to meet."
+        );
     } else {
-        " Print once for the whole multi-layer device — reuse across every layer's pour."
+        let _ = writeln!(
+            md,
+            "- **Mating clearances assume ±0.1 mm dimensional tolerance** — \
+             {} {} tuned in the geometry against that figure. Any process \
+             that holds it will fit; one that does not will need the holes \
+             reaming.",
+            join_and(tuned),
+            if tuned.len() == 1 { "is" } else { "are" }
+        );
     }
+    if has_plug_lock {
+        let _ = writeln!(
+            md,
+            "- **The plug cannot be oriented cap-plane-face-down.** Its S4 \
+             truncated-pyramid lock protrudes from that face, so laying it \
+             down puts the pyramid inside the bed. That is geometry, not \
+             preference."
+        );
+    }
+    if apex_pour {
+        let _ = writeln!(
+            md,
+            "- **The integral funnel's split face is coplanar with the mating \
+             face.** It is part of the cup, not a separate print, and it does \
+             not stand proud of the seam plane."
+        );
+    }
+    let _ = writeln!(
+        md,
+        "- ⚠ **The cavity is a roofed void in that orientation.** On a convex \
+         body the cup wall closes over the cavity as it rises from the seam, \
+         so that roof overhangs. Whether your slicer wants support there, and \
+         what it leaves on the cavity surface — which is the surface that \
+         shapes the part — is yours to judge."
+    );
+    md.push('\n');
 }
 
 /// The same claim as [`funnel_reuse_tail`], phrased as the standalone
@@ -1343,89 +1262,6 @@ const fn funnel_print_once_sentence(layer_count: usize) -> &'static str {
     } else {
         "Print `funnel.stl` once for the whole multi-layer device — reused across \
          every layer's pour."
-    }
-}
-
-fn write_print_orientation_funnel_platform(
-    md: &mut String,
-    apex_pour: bool,
-    layer_count: usize,
-    has_pour_gate: bool,
-    has_plug_lock: bool,
-    funnel_lock: &str,
-) {
-    let funnel_reuse = funnel_reuse_tail(layer_count);
-    // ⚠ Name only what this cast actually prints. With neither a pour gate
-    // nor a plug lock the section announced two one-time prints and listed
-    // none.
-    // ⚠ `has_pour_gate` is NOT the funnel-STL predicate — `build_funnel_solid`
-    // returns `None` for ApexAxial too. Keyed on the gate alone, the
-    // PRODUCTION apex cast announced "### Funnel (one-time print)" and then
-    // listed no files at all.
-    let has_funnel_stl = has_pour_gate && !apex_pour;
-    let one_time_heading = match (has_funnel_stl, has_plug_lock) {
-        (true, true) => "### Funnel + platform (one-time prints)",
-        (true, false) => "### Funnel (one-time print)",
-        (false, true) => "### Platform (one-time print)",
-        (false, false) => "### One-time prints: none",
-    };
-    let _ = writeln!(md, "{one_time_heading}");
-    md.push('\n');
-    if !has_pour_gate {
-        // ⚠ `build_funnel_solid` returns `None` for `PourGateKind::None`, so
-        // no `funnel.stl` is exported — telling the bencher to print one, with
-        // slicer support settings, sends them after a file that is not there.
-        let _ = writeln!(
-            md,
-            "**No funnel to print** — this cast has no pour gate \
-             (`PourGateKind::None`), so no `funnel.stl` is generated. Pour \
-             through the open seam as described in `## Pour Gate + Vent` below."
-        );
-    } else if apex_pour {
-        let funnel_height_mm = crate::pour::INTEGRAL_FUNNEL_HEIGHT_M * 1000.0;
-        let _ = writeln!(
-            md,
-            "**No separate funnel to print** — the apex pour funnel is \
-             **integral to each cup**: a split cone rising from the apex \
-             bore, half on each cup piece, that forms a full pour funnel \
-             when the two halves are clamped. Its lumen runs continuously \
-             into the bore (no inserted nipple), so there is no throat \
-             constriction. It prints as part of the cup pieces (the \
-             half-cone rises {funnel_height_mm:.0} mm above the cup's outer surface \
-             {funnel_lock}). \
-             Pour silicone straight into the assembled funnel at the apex; \
-             the funnel + bore silicone cures as one sprue that lifts out \
-             of the open half-troughs when the halves separate — trim it \
-             flush off the cast."
-        );
-    } else {
-        let _ = writeln!(
-            md,
-            "`funnel.stl`: **bent-spout funnel** with a vertical bowl + \
-             angled nipple matching the pour-gate's 30° splay (the cup \
-             pour-gate cylinder is tilted 30° from the dome's outward \
-             axis; the bent nipple lets the workshop user orient the \
-             assembled mold +Z up with the bowl mouth facing straight up \
-             for ladle-pouring). Print with the **bowl-mouth disk DOWN on \
-             the build plate** (mouth disk = first layer; the bowl widens \
-             upward from the mouth; the tilted nipple cantilevers ~7.5 mm \
-             horizontally from the bowl side). **Enable auto-supports in \
-             the slicer**: the cantilevered nipple needs supports to \
-             print clean — cleaned off after the print. Alternative: \
-             rotate the print so the nipple lies along the build plate \
-             (bowl tilted on its side) to avoid supports — slicer choice; \
-             STL is unchanged.{funnel_reuse}"
-        );
-    }
-    md.push('\n');
-    if has_plug_lock {
-        let _ = writeln!(
-            md,
-            "`platform.stl`: post-S4 bare flat slab (pre-S4 T-bar pocket \
-         retired with the plug-shaft removal). Trivial orientation \
-         — any face down works; no supports."
-        );
-        md.push('\n');
     }
 }
 
@@ -1449,288 +1285,6 @@ const fn integral_funnel_lock_clause(seam_is_planar: bool) -> &'static str {
          half-cone flat on the bed — check what your slicer gives it before \
          printing"
     }
-}
-
-fn write_print_orientation_g4_revision(md: &mut String, seam_is_planar: bool, has_dowels: bool) {
-    let _ = writeln!(md, "### §G-4 revision note");
-    md.push('\n');
-    let _ = writeln!(
-        md,
-        "Recon-1 §G-4 originally locked cup pieces to **seam face on bed** \
-         — correct, and the current lock. S3 then shipped registration pins \
-         extending symmetrically across the seam plane, whose workshop-\
-         visible ridge would point INTO the bed under that lock, so S6 \
-         flipped it to seam-face-UP. **§M-S4 (2026-05-27) retired the \
-         prismatic-pin path entirely, deleting S6's only premise — but the \
-         flipped lock was never re-derived**, so this sheet kept instructing \
-         seam-face-UP for months, contradicting the hard flat-mating-face \
-         constraint. Corrected 2026-08-31: the lock is mating-face-DOWN \
-         whenever the seam is planar."
-    );
-    md.push('\n');
-    // ⚠ S6's stated reason was the dowel-hole pattern, so rebutting it is
-    // only coherent on a cast that HAS dowels. Naming them otherwise trips
-    // `a_cast_without_dowels_never_says_to_register_on_them` — correctly.
-    if has_dowels {
-        let _ = writeln!(
-            md,
-            "The §M-S2 dowel holes S6 cited are printable either way — \
-             downward-opening they close with a short bridged ceiling — so \
-             they were never a reason to give up the bed as the flatness \
-             reference for the two faces that form the seal."
-        );
-        md.push('\n');
-    }
-    if !seam_is_planar {
-        let _ = writeln!(
-            md,
-            "⚠ This cast's seam is not planar, so no orientation satisfies \
-             the constraint — see the stop-work block under `### Cup pieces` \
-             above."
-        );
-        md.push('\n');
-    }
-}
-
-fn write_chamfer_recipe_v2(
-    md: &mut String,
-    has_plug_lock: bool,
-    has_dowels: bool,
-    bolts_carved: bool,
-) {
-    let plug_chamfer_mm = PrismaticPinSpec::plug_lock_default().base_chamfer_m * 1000.0;
-    // ⚠ With `PlugPinKind::None` there is no lock pyramid, so the only
-    // remaining chamfer does not exist either and the whole section would be
-    // describing geometry the same sheet says is absent.
-    //
-    // ⚠ Only point at the dowel-hole replacement when this cast carves one.
-    let dowel_replacement = if has_dowels {
-        " (see `## v2 Mold Assembly` below for the symmetric dowel-hole \
-         replacement)"
-    } else {
-        ""
-    };
-    let chamfer_intro: String = if has_plug_lock {
-        format!(
-            "Recon-1 §G-6 envisioned the chamfer band on each \
-         `PrismaticPin` as bed-adjacent FDM-elephant-foot relief. \
-         Post-§M-S4 the cup-pin registration path is retired{dowel_replacement}; \
-         only the plug-floor-lock chamfer remains. \
-         Under the dome-end-DOWN plug orientation the chamfer band \
-         lives at the `-axis_unit` end of the lock pyramid — deep \
-         inside the plug body, never at the bed-touching first \
-         layer, never workshop-visible from outside the printed \
-         part. The chamfer is **SDF/MC topology continuity at the \
-         deepest-in-material corner**, retained at the §G-6 \
-         typed-range default pending S7 caliper data."
-        )
-    } else {
-        "Recon-1 §G-6 envisioned a chamfer band on each `PrismaticPin` as \
-         bed-adjacent FDM-elephant-foot relief. This cast carries neither \
-         path: §M-S4 retired the cup-pin registration, and `PlugPinKind::None` \
-         generates no plug-floor lock. There is no chamfer band on this cast."
-            .to_string()
-    };
-    let _ = writeln!(md, "## First-Layer Chamfer Recipe");
-    md.push('\n');
-    let _ = writeln!(md, "{chamfer_intro}");
-    md.push('\n');
-    if has_plug_lock {
-        let _ = writeln!(
-            md,
-            "**Plug-lock chamfer** ({plug_chamfer_mm:.2} mm default per \
-             `PrismaticPinSpec::plug_lock_default`, typed-range §G-6 / \
-             pinned post-S7 §G-8): retained at default. Under the dome-\
-             end-DOWN plug orientation `+axis_unit = +cap_normal` \
-             points UP, so the chamfer band at `-axis_unit` lives \
-             **inside the plug body** (below the cap-plane face). The \
-             workshop-visible pyramid above the cap-plane is the \
-             unchamfered main-taper portion only. The matching socket's \
-             chamfer band on each cup-piece carves into the cup body \
-             cavity (no-op subtract)."
-        );
-        md.push('\n');
-    }
-    // ⚠ "both fits" only reads correctly when two are named.
-    let (slicer_tuned_by, slicer_tighten) = if has_plug_lock && has_dowels {
-        (
-            "plug-lock pyramid/socket diametral + axial clearances are tuned \
-             by `PrismaticPinSpec` (S7 caliper pass per §G-8); the dowel-hole \
-             radial clearance is tuned by `DowelHoleSpec` (§M-S2 / §M-S3)",
-            ". Adding slicer-level compensation on top would tighten both fits \
-             past their spec budgets and the per-layer cup-wall surface past \
-             spec wall-thickness.",
-        )
-    } else if has_plug_lock {
-        (
-            "plug-lock pyramid/socket diametral + axial clearances are tuned \
-             by `PrismaticPinSpec` (S7 caliper pass per §G-8)",
-            ". Adding slicer-level compensation on top would tighten that fit \
-             past its spec budget and the per-layer cup-wall surface past spec \
-             wall-thickness.",
-        )
-    } else {
-        (
-            "dowel-hole radial clearance is tuned by `DowelHoleSpec` \
-             (§M-S2 / §M-S3)",
-            ". Adding slicer-level compensation on top would tighten that fit \
-             past its spec budget and the per-layer cup-wall surface past spec \
-             wall-thickness.",
-        )
-    };
-    // ⚠ With no dowels carved either, there is no mating fit left to protect
-    // — only the cup-wall surface.
-    // ⚠ BOLTS are a mating fit too — §B dimensions M5 clearance holes "with
-    // no slide-fit slack" and has the bencher ream them, which is exactly the
-    // budget slicer compensation would eat.
-    let (slicer_tuned_by, slicer_tighten) = if has_plug_lock || has_dowels {
-        (slicer_tuned_by, slicer_tighten)
-    } else if bolts_carved {
-        (
-            "§B M5 bolt clearance is tuned by `BoltPatternSpec` \
-             (`clearance_diameter_m`)",
-            ". Adding slicer-level compensation on top would tighten that fit \
-             past its spec budget and the per-layer cup-wall surface past spec \
-             wall-thickness.",
-        )
-    } else {
-        (
-            "cast carves no mating features at all",
-            ". Adding slicer-level compensation would still push the per-layer \
-             cup-wall surface past spec wall-thickness.",
-        )
-    };
-    let _ = writeln!(
-        md,
-        "**Slicer-level elephant-foot compensation** (Bambu Studio \
-         / PrusaSlicer / OrcaSlicer): set to **0.0 mm**. The \
-         {slicer_tuned_by}{slicer_tighten}"
-    );
-    md.push('\n');
-}
-
-// Same reasoning as `SheetFeatures` above: these are four INDEPENDENT facts the
-// bullet list has to gate on, and every one of them has already been the source
-// of a sheet that described geometry the cast does not have. Bundling them
-// would hide the enumeration this file exists to keep honest.
-#[allow(clippy::fn_params_excessive_bools)]
-fn write_target_fdm_floor_v2(
-    md: &mut String,
-    has_funnel_stl: bool,
-    carved: SheetFeatures,
-    has_gasket: bool,
-    apex_pour: bool,
-    seam_is_planar: bool,
-) {
-    // ⚠⚠ This bullet used to assert the apex funnel is "a cantilevered
-    // protrusion on that same piece" UNCONDITIONALLY under `apex_pour`, which
-    // — once the orientation section was corrected — contradicted a paragraph
-    // two headings above it in the SAME SHEET. Whether that half-cone is a
-    // cantilever is a fact about the LOCK, not about the pour layout: under
-    // mating-face-DOWN its split face is coplanar with the mating face and it
-    // lies flat on the bed. Found by READING the rendered sheet; no test saw it.
-    let cup_supports = match (apex_pour, seam_is_planar) {
-        (true, true) => {
-            "none for cup pieces — the cup body builds from a continuous \
-             bottom contour and the integral apex funnel's split face is \
-             coplanar with the mating face, so it lies flat on the bed too;"
-        }
-        (true, false) => {
-            "none for the cup body (continuous bottom contour), but the \
-             integral apex funnel is a cantilevered protrusion on that same \
-             piece under this non-planar seam — see \
-             `## Per-Piece Print Orientation`;"
-        }
-        (false, _) => "none for cup pieces (continuous bottom contour);",
-    };
-    // ⚠ Brim rationale is also lock-dependent: mating-face-DOWN lands the full
-    // flat seam on the bed, so a brim is optional, not an adhesion necessity.
-    let cup_brim = if seam_is_planar {
-        "brim optional for cup pieces (the flat mating face is the bed \
-         contact)"
-    } else {
-        "brim 5-8 mm 1-layer for cup outer-surface adhesion"
-    };
-    let SheetFeatures {
-        has_dowels,
-        has_plug_lock,
-        ..
-    } = carved;
-    // ⚠ Both of these describe plug-lock geometry. With `PlugPinKind::None`
-    // the chamfer section two headings up ends "There is no chamfer band on
-    // this cast", and §M-S4 retired the cup pins — so the unconditional forms
-    // cite two features the same sheet has just declared absent.
-    let chamfer_reason = if has_plug_lock {
-        " (geometry includes chamfer bands per the previous section)"
-    } else {
-        " (this cast carves no chamfer bands — see the previous section)"
-    };
-    let clearance_note = if has_plug_lock {
-        "`PrismaticPinSpec::plug_lock_default` diametral + axial clearances \
-         default to the §G-6 typed-range mid-points; exact values are pinned \
-         to caliper data from the S7 workshop-physical Bambu A1 calibration \
-         pass."
-    } else {
-        "This cast generates no plug-floor lock (`PlugPinKind::None`) and the \
-         §M-S4-retired cup pins are gone, so no `PrismaticPinSpec` clearances \
-         apply to it."
-    };
-    // ⚠ `funnel.stl` and `platform.stl` are not always exported — the
-    // regression-target list must name only the files this cast produces.
-    // `build_funnel_solid` returns `None` for BOTH `PourGateKind::None` and
-    // `ApexAxial` (the apex funnel is integral to the cups), so a pour gate
-    // alone does not imply a funnel STL.
-    // ⚠ `export_molds_v2` also writes `dowel.stl` and `gasket_mold_layer_*`,
-    // so naming only mold/plug/funnel/platform under-counts the files the cast
-    // produces — the same "name what this cast makes" goal, in the other
-    // direction.
-    let mut files: Vec<&str> = vec!["mold", "plug"];
-    if has_funnel_stl {
-        files.push("funnel");
-    }
-    if has_plug_lock {
-        files.push("platform");
-    }
-    if has_dowels {
-        files.push("dowel");
-    }
-    if has_gasket {
-        files.push("gasket-mold");
-    }
-    let print_list = files.join(" + ");
-    let _ = writeln!(md, "## Target FDM Floor (Bambu A1 + Default + Jayo)");
-    md.push('\n');
-    let _ = writeln!(
-        md,
-        "Recon-1 §G-3 picks **Bambu A1 + Bambu Studio default settings \
-         + Jayo generic PLA** as the consumer-FDM tolerance floor for \
-         the mating-feature geometry. Print {print_list} \
-         STLs against this baseline as the regression \
-         target. Calibrated Bambu Lab (X1C / P1S with PEI sheet + \
-         tuned profile + Bambu PLA) is acceptable as a side-\
-         comparison reference but is NOT the regression target — \
-         chasing calibrated-printer tolerances would let the geometry \
-         drift past Bambu A1 + default capabilities."
-    );
-    md.push('\n');
-    let _ = writeln!(md, "Slicer baseline:");
-    md.push('\n');
-    let _ = writeln!(
-        md,
-        "- **Layer height**: 0.2 mm (Bambu Studio default).\n\
-         - **Wall loops**: 3 (default).\n\
-         - **Infill**: 15% gyroid (default; mold pieces don't need \
-         structural infill — silicone pour pressure is low).\n\
-         - **Supports**: {cup_supports} {cup_brim}; brim + brief \
-         dome-curvature supports for plug.\n\
-         - **Elephant-foot compensation**: 0.0 mm{chamfer_reason}.\n\
-         - **Filament**: Jayo PLA generic profile (~220 °C nozzle, \
-         60 °C bed); equivalent generic-PLA profile if Jayo \
-         unavailable."
-    );
-    md.push('\n');
-    let _ = writeln!(md, "{clearance_note}");
-    md.push('\n');
 }
 
 /// The optional geometry a sheet may describe, resolved ONCE per render.
@@ -2186,22 +1740,12 @@ fn write_cfview_sanity_check_v2(
          §G-11 #1 (§R1 connectivity inspector) + §G-11 #2 \
          (`PrismaticPin` bit-precise fit invariant) pass on cargo \
          tests; this cf-view gate is the workshop-user-physical \
-         third gate before the Bambu A1 print gate (§G-11 #4)."
+         third gate before you print (§G-11 #4)."
     );
     md.push('\n');
 }
 
 fn write_cap_plane_chamfer_v2(md: &mut String, has_plug_lock: bool) {
-    // ⚠ That section says "There is no chamfer band on this cast" when no plug
-    // lock is carved, so describing it as being ABOUT one contradicts it.
-    let chamfer_distinct = if has_plug_lock {
-        "that section concerns the first-layer chamfer BAND on pin/lock \
-         features (a deliberate `PrismaticPin` geometry primitive for FDM \
-         topology continuity at the deepest-in-material corner)."
-    } else {
-        "that section covers the first-layer chamfer band on pin/lock \
-         features, which this cast does not carve."
-    };
     let socket_perimeter = if has_plug_lock {
         " It does NOT appear at the plug-lock socket recess perimeter (the \
          truncated-pyramid socket has FLAT lateral walls, no derivative \
@@ -2246,10 +1790,10 @@ fn write_cap_plane_chamfer_v2(md: &mut String, has_plug_lock: bool) {
     let _ = writeln!(
         md,
         "- **Do NOT sand the cap-plane edge flat.** The chamfer \
-         band's max deviation (~100 µm) is below the §G-3 target \
-         FDM floor's slicer-to-print quantization (Bambu A1 default \
-         0.4 mm extrusion / 0.2 mm layer height; typical 0.1-0.2 mm \
-         dimensional tolerance). Sanding the STL-level chamfer \
+         band's max deviation (~100 µm) sits under the ±0.1 mm \
+         dimensional tolerance the mating clearances already assume, \
+         so no process that meets this sheet's requirements can \
+         resolve it. Sanding the STL-level chamfer \
          would not change the printed plug-to-cup-floor mating \
          interface — the printer quantizes the edge to its own \
          grid regardless.\n\
@@ -2267,15 +1811,6 @@ fn write_cap_plane_chamfer_v2(md: &mut String, has_plug_lock: bool) {
          ~3 mm-wide perimeter ring), THAT would be a regression — \
          file an issue with a cf-view screenshot. The center-flat \
          vs edge-chamfered distinction is the diagnostic."
-    );
-    md.push('\n');
-    let _ = writeln!(
-        md,
-        "**Distinct from `## First-Layer Chamfer Recipe`** above: \
-         {chamfer_distinct} The cap-plane edge chamfer \
-         documented here is an MC-quantization byproduct of the \
-         body × cap-plane derivative discontinuity, NOT a \
-         deliberately-emitted feature."
     );
     md.push('\n');
 }
@@ -2354,9 +1889,9 @@ fn write_seam_face_edge_v2(md: &mut String, has_plug_lock: bool, seam_is_planar:
          regions (verified empirically 2026-05-25 against \
          `~/scans/cast_iter1*/mold_layer_*_piece_*.stl`). Same \
          below-print-resolution argument as `## Cap-Plane Edge \
-         Chamfer` above: a 200 µm STL-level deviation does not \
-         survive the Bambu A1 default 0.4 mm extrusion / 0.2 mm layer \
-         height quantization."
+         Chamfer` above: a 200 µm STL-level deviation sits under the \
+         ±0.1 mm dimensional tolerance this sheet's mating clearances \
+         assume."
     );
     md.push('\n');
     let _ = writeln!(md, "**Workshop guidance:**");
@@ -2914,8 +2449,8 @@ fn write_v2_plug_anchor_note(md: &mut String, ribbon: &Ribbon) {
                  wrap the pyramid base with PTFE tape until snug, OR \
                  tighten `PrismaticPinSpec::plug_lock_default()`'s \
                  `diametral_clearance_m` for the next print. \
-                 Document fit tolerances for the S7 workshop-physical \
-                 calibration pass on Bambu A1 + default + Jayo."
+                 Record the fit you actually got — that is the number \
+                 the clearance should be tuned against."
             );
         }
     }
