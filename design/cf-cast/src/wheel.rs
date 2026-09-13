@@ -24,10 +24,11 @@
 //! | `layers[0].body` | [`cast_body_solid`] |
 //! | `layers[0].material` | 95A PU — [`crate::MoldingMaterial`] at [`NOMINAL_PU_95A_DENSITY_KG_M3`] |
 //!
-//! Those three are the wheel's. The rest of [`crate::CastSpec`] —
-//! `bounding_region`, `wall_thickness_m`, `mass_budget_kg`, the ribbon and its
-//! mating features — belongs to the cast rather than to the part, and this
-//! module deliberately sets none of it.
+//! Those three are the wheel's, and so is the seam — [`wheel_ribbon`] builds
+//! it, because where a wheel parts is a property of the wheel. The rest of
+//! [`crate::CastSpec`] — `bounding_region`, `wall_thickness_m`,
+//! `mass_budget_kg`, the flange and the mating features — belongs to the cast
+//! rather than to the part, and this module still sets none of it.
 //!
 //! ⚠⚠ `layers[i].body` is the **cumulative solid**, never an annulus — an
 //! annular body re-introduces the plug cavity as "inside the mold piece" (see
@@ -75,7 +76,9 @@
 //! form. `tire_outer_surface_is_transversal_at_the_parting_plane` asserts it
 //! rather than leaving it as a symmetry argument.
 
-use nalgebra::{UnitQuaternion, Vector3};
+use nalgebra::{Point3, UnitQuaternion, Vector3};
+
+use crate::ribbon::{Ribbon, RibbonError, SplitNormal};
 
 use cf_design::Solid;
 
@@ -384,6 +387,46 @@ pub fn locating_pin_is_solid(spec: &WheelSpec, wall_thickness_m: f64) -> bool {
     spec.locating_pin_radius_m() < wall_thickness_m
 }
 
+/// The wheel's seam, as a [`Ribbon`] cf-cast's mold pipeline accepts.
+///
+/// The wheel has no centerline and cannot have one — `Ribbon.points` is an
+/// OPEN polyline and no producer emits a closed loop — but a planar seam
+/// bypasses the curve machinery entirely: [`Ribbon::sdf`] short-circuits to the
+/// signed distance to one flat plane. So the ribbon carries a two-point stub
+/// along the wheel axis purely to exist, and the parting plane is set
+/// explicitly to `z = 0` with normal `+Z`.
+///
+/// ⚠ `split_normal` is a FRAME HINT, not the parting-plane normal — the cut
+/// normal is `tangent × split_normal`, so setting it to the wheel axis would
+/// be wrong. The planar seam is what decides the cut here, measured by
+/// `wheel_ribbon_seam_is_exactly_the_parting_plane`;
+/// [`SplitNormal::default`] (world `+X`, perpendicular to the axis) keeps the
+/// ribbon well-formed either way and is its one infallible constructor.
+///
+/// The returned ribbon carries no flange, fasteners or pour gate; those are
+/// the cast's to add.
+///
+/// # Errors
+///
+/// Returns [`RibbonError`] if the two-point stub is rejected. A well-formed
+/// [`WheelSpec`] has a positive width, so the points are distinct and this
+/// cannot happen — it is propagated rather than asserted because library code
+/// in this crate does not panic on a fallible call.
+///
+/// # Panics
+///
+/// Panics if `spec` is not well-formed — see [`WheelSpec`].
+pub fn wheel_ribbon(spec: &WheelSpec) -> Result<Ribbon, RibbonError> {
+    spec.assert_well_formed();
+    let half_width = spec.width_m / 2.0;
+    let stub = vec![
+        Point3::new(0.0, 0.0, -half_width),
+        Point3::new(0.0, 0.0, half_width),
+    ];
+    Ok(Ribbon::new(stub, SplitNormal::default())?
+        .with_planar_seam_at(Point3::origin(), Vector3::z()))
+}
+
 /// The cured tire — the PU actually poured.
 ///
 /// Built as `cast_body ∖ rim`, the same difference
@@ -441,19 +484,26 @@ pub fn nominal_tire_volume_m3(spec: &WheelSpec) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    // Mirrors `dowel_hole` / `funnel`: test-only escapes so a fixture that
+    // fails to build aborts the test loudly instead of being handled.
+    #![allow(clippy::expect_used, clippy::unwrap_used)]
 
     use approx::assert_relative_eq;
-    use nalgebra::Point3;
+
+    use nalgebra::{Point3, Vector3};
 
     use super::{
         DimpleSpec, KeyingKind, NOMINAL_PU_95A_DENSITY_KG_M3, WheelSpec, cast_body_solid,
-        locating_pin_is_solid, nominal_tire_volume_m3, rim_solid, tire_solid,
+        locating_pin_is_solid, nominal_tire_volume_m3, rim_solid, tire_solid, wheel_ribbon,
     };
     use crate::error::CastTarget;
+    use crate::piece::compose_piece_solid;
     use crate::pour_volume::{
         DEFAULT_MASS_BUDGET_KG, POUR_VOLUME_MIN_CELL_SIZE_M, integrate_negative_sdf_volume,
     };
+    use crate::ribbon::PieceSide;
+    use crate::seam_profile::SeamProfile;
+    use crate::silhouette_2d::{SeamPlaneBasis, Silhouette2d};
 
     /// The production integration cell, so the volume gate measures the path
     /// `CastSpec::compute_pour_volumes` actually takes.
@@ -795,6 +845,228 @@ mod tests {
         // the workshop starting point.
         assert_eq!(WheelSpec::default(), WheelSpec::iter1());
         assert_eq!(DimpleSpec::default(), DimpleSpec::iter1());
+    }
+
+    /// The cup-wall thickness these mold gates compose at — `cf-cast-cli`'s
+    /// `default_wall_thickness_m`.
+    const WALL_M: f64 = WORKSHOP_WALL_M;
+
+    #[test]
+    fn wheel_ribbon_seam_is_exactly_the_parting_plane() {
+        // A planar seam short-circuits `Ribbon::sdf` to the distance to one
+        // flat plane, so the curve machinery the wheel cannot supply is never
+        // reached. The seam must therefore read back as plain `z`.
+        let ribbon = wheel_ribbon(&WheelSpec::iter1()).unwrap();
+        for &r in &[0.0, 0.03, 0.065] {
+            for &z in &[-0.012, -0.004, 0.0, 0.004, 0.012] {
+                let d = ribbon.sdf(&Point3::new(r, 0.0, z));
+                assert_relative_eq!(d, z, epsilon = 1e-12);
+            }
+        }
+    }
+
+    #[test]
+    fn the_seam_profile_rings_the_tire_not_the_bore() {
+        // ⚠ `longest_polyline_with_arc_length` keeps only the LONGEST loop and
+        // drops the rest silently. The wheel's parting-plane cross-section has
+        // two, so the seal ring is chosen for the wheel rather than by it —
+        // correct here, but by accident, which is why it is asserted.
+        //
+        // ★ The plan predicted the dropped loop would be the RIM. It is not:
+        // the silhouette is taken of the CAST BODY, whose inner boundary is
+        // the locating-pin column, not the rim. Same conclusion, different
+        // geometry, and the number below is what distinguishes them.
+        let spec = WheelSpec::iter1();
+        let basis = SeamPlaneBasis::from_anchor_normal(Point3::origin(), Vector3::z());
+        let reach = spec.tire_outer_radius_m * 1.25;
+        let sil = Silhouette2d::from_body_in_plane(
+            &cast_body_solid(&spec),
+            basis,
+            -reach,
+            reach,
+            -reach,
+            reach,
+        );
+
+        let loops = sil.polylines();
+        assert_eq!(loops.len(), 2, "expected the tire OD and the pin bore");
+        // Max radius per loop — for concentric circles that IS the radius, and
+        // it avoids a precision-losing `len()` cast.
+        let radii: Vec<f64> = loops
+            .iter()
+            .map(|l| l.iter().map(|q| q.x.hypot(q.z)).fold(0.0_f64, f64::max))
+            .collect();
+        let (outer, inner) = (
+            radii.iter().copied().fold(0.0_f64, f64::max),
+            radii.iter().copied().fold(f64::MAX, f64::min),
+        );
+        assert_relative_eq!(outer, spec.tire_outer_radius_m, epsilon = 5e-4);
+        assert_relative_eq!(inner, spec.locating_pin_radius_m(), epsilon = 5e-4);
+        assert!(
+            (inner - spec.rim_outer_radius_m).abs() > 0.04,
+            "the dropped loop is the pin bore, not the rim"
+        );
+
+        // The kept loop is the tire's circumference, so the seal rings the
+        // cavity's outer edge.
+        let (_poly, _cum, perimeter) = sil
+            .longest_polyline_with_arc_length()
+            .expect("a closed silhouette");
+        assert_relative_eq!(
+            perimeter,
+            std::f64::consts::TAU * spec.tire_outer_radius_m,
+            epsilon = 5e-4
+        );
+        // ⚠ `SeamProfile` RESAMPLES the kept loop at a uniform arc-length step,
+        // so it is not the same polygon and its perimeter is not the same
+        // number — comparing the two at 1e-9 was an instrument error, not a
+        // finding. Both are checked against the analytic circumference
+        // instead: the silhouette polygon reads −3.6 ppm low and the
+        // resampled profile −1.6e-5 relative, both from inscribing a circle
+        // with chords.
+        let profile = SeamProfile::from_silhouette(&sil).expect("profile from the kept loop");
+        assert_relative_eq!(
+            profile.perimeter(),
+            std::f64::consts::TAU * spec.tire_outer_radius_m,
+            epsilon = 5e-5
+        );
+    }
+
+    #[test]
+    fn each_mold_piece_is_one_half() {
+        // The seam cut is SDF-side: `compose_piece_solid` intersects the cup
+        // wall with the ribbon's half-space, so a piece must hold material on
+        // its own side of z = 0 and none on the other.
+        let spec = WheelSpec::iter1();
+        let body = cast_body_solid(&spec);
+        let r = spec.tire_outer_radius_m + WALL_M / 2.0;
+        for (side, sign) in [(PieceSide::Negative, -1.0), (PieceSide::Positive, 1.0)] {
+            let (piece, _tf) =
+                compose_piece_solid(&body, WALL_M, &wheel_ribbon(&spec).unwrap(), side).unwrap();
+            for &z in &[0.004, 0.010] {
+                assert!(
+                    piece.evaluate(&Point3::new(r, 0.0, sign * z)) < 0.0,
+                    "{side:?} has no cup wall on its own side at z={}",
+                    sign * z
+                );
+                assert!(
+                    piece.evaluate(&Point3::new(r, 0.0, -sign * z)) > 0.0,
+                    "{side:?} reaches across the seam to z={}",
+                    -sign * z
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_locating_pin_survives_piece_composition() {
+        // M1 could only show the pin in the shell set algebra and said the
+        // composed piece was M2's to prove. This is that: after the ribbon's
+        // half-space intersect, each half still carries a solid pin down its
+        // own half of the bore.
+        //
+        // ⚠ Scope: `wheel_ribbon` carries `FlangeKind::None`, and
+        // `compose_piece_solid` skips the whole placement branch unless
+        // `lateral_reach_m()` is `Some`. So the flange, bolt and dowel stages
+        // did NOT run here — re-check the pin when M2b adds the Demand
+        // flange, which is what puts geometry near the seam plane.
+        let spec = WheelSpec::iter1();
+        assert!(locating_pin_is_solid(&spec, WALL_M));
+        let body = cast_body_solid(&spec);
+        let half = spec.width_m / 2.0;
+        for (side, sign) in [(PieceSide::Negative, -1.0), (PieceSide::Positive, 1.0)] {
+            let (piece, _tf) =
+                compose_piece_solid(&body, WALL_M, &wheel_ribbon(&spec).unwrap(), side).unwrap();
+            for frac in [0.2_f64, 0.5, 0.8] {
+                let z = sign * frac * half;
+                assert!(
+                    piece.evaluate(&Point3::new(0.0, 0.0, z)) < 0.0,
+                    "{side:?} lost the locating pin at z={z}"
+                );
+            }
+            // …and it stops at the pin radius, leaving the clearance ring free.
+            let z = sign * half / 2.0;
+            assert!(
+                piece.evaluate(&Point3::new(spec.bore_radius_m, 0.0, z)) > 0.0,
+                "{side:?} pin fills the clearance ring"
+            );
+        }
+    }
+
+    #[test]
+    fn a_mold_piece_meshes_as_one_closed_orientable_shell() {
+        // "Does a genus-1 body survive the mesher" was an inference from
+        // reading. The cast body is a disc with a bore, and the cup wall that
+        // tracks it wraps both surfaces — so this is the first time marching
+        // cubes has been asked for that topology here. It does: clean at every
+        // cell from 0.5 mm to 4 mm.
+        //
+        // ⚠ There is a resolution floor, and it is the CUP WALL, not the pin.
+        // At a 5 mm cell the default 5 mm wall fragments into 3 components
+        // (23 at 6 mm); holding the cell at 5 mm and thickening the wall to
+        // 8 mm returns it to 1, while shrinking the pin to ~0.5 mm leaves it
+        // at 3. One cell through the wall is not enough. ⇒ a production cell
+        // must sit comfortably under `wall_thickness_m`.
+        //
+        // ★★ Every winding counter read ZERO at 6 mm, with 23 components. So
+        // `boundary_edges == 0` would have called a shattered mesh clean — the
+        // component precondition is the assertion that actually catches this,
+        // which is the funnel docstring's warning made concrete.
+        //
+        // Follows `funnel::funnel_mesh_is_consistently_wound_and_outward`: a
+        // zero inconsistent-edge count means nothing unless one shell was
+        // meshed, the census had edges to judge, and it judged ALL of them.
+        use crate::error::CastTarget;
+        use crate::mesher::solid_to_mm_mesh;
+        use mesh_repair::components::find_connected_components;
+        use mesh_repair::validate_mesh;
+
+        let spec = WheelSpec::iter1();
+        let (piece, _tf) = compose_piece_solid(
+            &cast_body_solid(&spec),
+            WALL_M,
+            &wheel_ribbon(&spec).unwrap(),
+            PieceSide::Positive,
+        )
+        .unwrap();
+        let mesh = solid_to_mm_mesh(
+            &piece,
+            0.0015,
+            CastTarget::MoldPiece {
+                layer_index: 0,
+                piece_side: PieceSide::Positive,
+            },
+        )
+        .expect("marching cubes on the wheel cup-wall half");
+
+        let components = find_connected_components(&mesh).component_count;
+        assert_eq!(
+            components, 1,
+            "the winding checks below compare nothing across shells, so they              are unsound unless there is exactly one; got {components}"
+        );
+        let report = validate_mesh(&mesh);
+        let census = report
+            .winding
+            .as_ref()
+            .expect("validate_mesh enables the census by default");
+        assert!(
+            census.has_judgeable_edges(),
+            "no interior edge was judged, so a clean reading is vacuous; {census:?}"
+        );
+        assert_eq!(
+            (
+                census.boundary_edges,
+                census.non_manifold_edges,
+                census.degenerate_faces
+            ),
+            (0, 0, 0),
+            "a non-manifold edge is dropped before the consistency check and a              degenerate face is skipped whole, so both hide from the assertion              below; {census:?}"
+        );
+        assert_eq!(
+            census.inconsistent_edges, 0,
+            "{} interior edges are walked the same way by both their faces;              {census:?}",
+            census.inconsistent_edges
+        );
     }
 
     #[test]
