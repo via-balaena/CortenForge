@@ -128,12 +128,12 @@ pub const NOMINAL_PU_95A_DENSITY_KG_M3: f64 = 1050.0;
 
 /// Hemispherical keying dimples, equally spaced around the rim's outer face.
 ///
-/// The tire's matching rivets resist rotation (the failure mode that matters
-/// for a driven wheel — a purely axisymmetric groove resists none of it) and,
-/// being bumps, also resist axial walk-off.
+/// Dimples resist rotation AND axial walk-off; an axisymmetric groove resists
+/// only walk-off. That is the reason to prefer them.
 ///
-/// ⚠ The *count* and *radius* are unvalidated: nothing has been poured, so no
-/// shear load has been measured. They are parameters for that reason.
+/// ⚠ Which load actually governs is unmeasured, as are the *count* and
+/// *radius* — nothing has been poured, so no shear load exists to size them
+/// against. They are parameters for that reason.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DimpleSpec {
     /// How many dimples around the rim.
@@ -162,9 +162,10 @@ impl Default for DimpleSpec {
 
 /// How the tire is mechanically keyed to the rim.
 ///
-/// Follows the crate's `FlangeKind` / `GasketKind` / `DowelHoleKind` shape,
-/// but unlike those the default is **not** `None`: an unkeyed tire spins on
-/// its rim, so it is not a wheel.
+/// Follows the crate's `FlangeKind` / `GasketKind` / `DowelHoleKind` shape.
+/// ⚠ Unlike those it has no `Default` of its own, and [`WheelSpec::iter1`]
+/// deliberately does not start it at `None`: an unkeyed tire spins on its rim,
+/// so it is not a wheel.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum KeyingKind {
     /// No keying. The tire is a plain annulus bonded only by adhesion — for
@@ -328,8 +329,8 @@ pub fn keying_solid(spec: &WheelSpec) -> Option<Solid> {
 
 /// The printed rim — [`crate::CastSpec::plug`].
 ///
-/// A disc at the rim's outer radius, bored for the axle and dimpled for
-/// keying.
+/// A disc at the rim's outer radius, bored for the axle, and dimpled when
+/// [`WheelSpec::keying`] asks for it.
 ///
 /// # Panics
 ///
@@ -533,13 +534,16 @@ mod tests {
         //
         // ⚠ The tolerance is wide because the INTEGRATOR is. Measured relative
         // error against the closed form: −5.5 % at 2 mm, −1.4 % at 1 mm,
-        // −2.2 % at 0.5 mm. It is a strict `< 0` corner count, so a corner
-        // lying exactly on a face is excluded — and whether corners land on
-        // the faces at all depends on float rounding in
-        // `ScalarGrid::from_bounds`. Hence: always an undercount, and neither
-        // monotone nor smooth in the cell size. This module does not fix that;
-        // it records it, because the same bias applies to the mass budget the
-        // workshop pours against.
+        // −2.2 % at 0.5 mm — an undercount at every cell tried, and NOT
+        // monotone in the cell size.
+        //
+        // ⚠ Why it is not monotone has not been isolated. What is established
+        // by reading the integrator: the count is strict `< 0`, so a corner
+        // lying exactly on a face is excluded, and the grid origin is derived
+        // from the solid's own bounds — so which faces carry corners changes
+        // with the cell size. This module does not fix that; it records it,
+        // because the same bias reaches the mass budget the workshop pours
+        // against.
         let spec = WheelSpec::iter1();
         let nominal = nominal_tire_volume_m3(&spec);
         for (cell_m, tolerance) in [(PRODUCTION_CELL_M, 0.07), (0.001, 0.03)] {
@@ -683,7 +687,7 @@ mod tests {
     fn unkeyed_wheel_is_a_plain_annulus_plus_the_pin_gap() {
         let mut spec = WheelSpec::iter1();
         spec.keying = KeyingKind::None;
-        // Annulus 115 355.371 mm³ + pin gap 62.046 mm³, no hemispheres.
+        // Annulus 115 355.355 mm³ + pin gap 62.047 mm³, no hemispheres.
         let v_mm3 = nominal_tire_volume_m3(&spec) * 1e9;
         assert_relative_eq!(v_mm3, 115_417.402, epsilon = 0.001);
 
@@ -699,7 +703,7 @@ mod tests {
     }
 
     #[test]
-    fn the_bore_column_belongs_to_the_mold_not_the_body() {
+    fn the_bore_column_is_outside_every_wheel_solid() {
         // The locating pin exists because `cast_body_solid` subtracts an
         // undersized column, putting it outside the body where the cup wall's
         // shell fills it. This asserts the body side of that — the column is
@@ -767,8 +771,9 @@ mod tests {
     #[test]
     fn a_bore_wider_than_the_wall_leaves_a_tube_not_a_pin() {
         // The condition the shell form introduced and the retired difference
-        // form did not: a shell reaches only `wall_thickness_m` inward, so a
-        // wide bore grows a tube with a void down its middle.
+        // form did not: the shell reaches only `wall_thickness_m` out from the
+        // body's surface, so a wide bore grows a tube with a void down its
+        // middle.
         let mut spec = WheelSpec::iter1();
         spec.bore_radius_m = 0.010;
         assert!(!locating_pin_is_solid(&spec, WORKSHOP_WALL_M));
@@ -795,7 +800,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "must fit inside the half-width")]
     fn a_dimple_wider_than_the_tread_face_is_rejected() {
-        // A dimple deeper than half the width breaks out through the tire's
+        // A dimple wider than half the width breaks out through the wheel's
         // side faces. Needs a narrow wheel to reach: at the defaults the
         // tread depth and the half-width are both 12.5 mm, so the tread-depth
         // assert fires first.
