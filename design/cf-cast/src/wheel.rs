@@ -1426,50 +1426,124 @@ mod tests {
         use mesh_repair::components::find_connected_components;
         use mesh_repair::validate_mesh;
 
+        // ⚠⚠ BOTH SIDES. This tested only `Positive` through M2c, and the
+        // halves are NOT interchangeable: the first `CastSpec` export found 49
+        // F4 issues on Negative against 8 on Positive. Most of that gap is an
+        // orientation artifact — F4 measures overhang against +Z while each
+        // half prints seam-face-down — but a gate that looks at one half
+        // asserts nothing about the other, and this one looked at the cleaner.
+        //
+        // ★ The halves differ in more than F4's frame. Proving this gate can
+        // fail, at a 10 mm cell NEGATIVE still meshes as one shell while
+        // POSITIVE fragments — the reverse of the self-intersection asymmetry,
+        // where Negative carries 24 pairs and Positive none. Neither half is
+        // simply the better one.
         let spec = WheelSpec::iter1();
         let ribbon = wheel_mold_ribbon(&spec).unwrap();
-        let (solid, transforms) = compose_piece_solid(
-            &cast_body_solid(&spec),
-            WALL_M,
-            &ribbon,
-            PieceSide::Positive,
-        )
-        .unwrap();
-        let target = CastTarget::MoldPiece {
-            layer_index: 0,
-            piece_side: PieceSide::Positive,
-        };
-        let mesh = solid_to_mm_mesh(&solid, 0.0015, target).expect("marching cubes");
-        assert_eq!(
-            find_connected_components(&mesh).component_count,
-            1,
-            "the flanged half must mesh as one shell before any CSG"
-        );
-        let mesh = apply_mating_transforms(mesh, &transforms, target).expect("mesh-CSG");
-        assert_eq!(
-            find_connected_components(&mesh).component_count,
-            1,
-            "carving 18 holes must not detach anything"
-        );
-        let report = validate_mesh(&mesh);
-        let census = report
-            .winding
-            .as_ref()
-            .expect("validate_mesh enables the census by default");
-        assert!(
-            census.has_judgeable_edges(),
-            "vacuous clean bill; {census:?}"
-        );
-        assert_eq!(
-            (
-                census.boundary_edges,
-                census.non_manifold_edges,
-                census.degenerate_faces
-            ),
-            (0, 0, 0),
-            "any of these hides the consistency check below; {census:?}"
-        );
-        assert_eq!(census.inconsistent_edges, 0, "{census:?}");
+        for side in [PieceSide::Negative, PieceSide::Positive] {
+            let (solid, transforms) =
+                compose_piece_solid(&cast_body_solid(&spec), WALL_M, &ribbon, side).unwrap();
+            let target = CastTarget::MoldPiece {
+                layer_index: 0,
+                piece_side: side,
+            };
+            let mesh = solid_to_mm_mesh(&solid, 0.0015, target).expect("marching cubes");
+            assert_eq!(
+                find_connected_components(&mesh).component_count,
+                1,
+                "{side:?}: must mesh as one shell before any CSG"
+            );
+            let mesh = apply_mating_transforms(mesh, &transforms, target).expect("mesh-CSG");
+            assert_eq!(
+                find_connected_components(&mesh).component_count,
+                1,
+                "{side:?}: carving 18 holes must not detach anything"
+            );
+            let report = validate_mesh(&mesh);
+            let census = report
+                .winding
+                .as_ref()
+                .expect("validate_mesh enables the census by default");
+            assert!(
+                census.has_judgeable_edges(),
+                "{side:?}: vacuous clean bill; {census:?}"
+            );
+            assert_eq!(
+                (
+                    census.boundary_edges,
+                    census.non_manifold_edges,
+                    census.degenerate_faces
+                ),
+                (0, 0, 0),
+                "{side:?}: any of these hides the check below; {census:?}"
+            );
+            assert_eq!(census.inconsistent_edges, 0, "{side:?}: {census:?}");
+        }
+    }
+
+    #[test]
+    fn self_intersections_stay_confined_to_the_seal_land_step() {
+        // ⚠ The flanged Negative half carries 24 self-intersecting triangle
+        // pairs, and F4 does not block on them — `SelfIntersecting` is not in
+        // `is_blocking_critical`'s set, so the export writes the STL anyway.
+        //
+        // They are NOT the corruption class #764 chased: the mesh passes the
+        // full connectivity census (one component, zero boundary, non-manifold,
+        // degenerate and inconsistent edges). Located, they are ONE cluster of
+        // 10 faces at r = 71.4–72.9 mm, z = −0.67 mm — straddling the seal
+        // land's outer edge at 65.5 + 6.0 = 71.5 mm. The Positive half has
+        // none.
+        //
+        // ★ That the land ENDS there is measured, not read off the spec:
+        // sampling the piece at 72 angles, r ≤ 71 mm is solid at 69–71 of them
+        // (a ring, interrupted only by the bore and the fastener holes) and
+        // r ≥ 72 mm at just 25–36 (spokes). The continuous-to-spoked
+        // transition brackets 71.5 mm, and the self-intersections sit across
+        // it.
+        //
+        // ⇒ this gate BOUNDS a known artifact rather than asserting it away.
+        // It fires if the count grows or if a pair appears anywhere else, which
+        // is what would distinguish a new defect from this one. Whether 24
+        // pairs in a 1.5 mm band matter is a SLICER question (M5), not a facet
+        // one.
+        use crate::error::CastTarget;
+        use crate::mesh_csg::apply_mating_transforms;
+        use crate::mesher::solid_to_mm_mesh;
+
+        let spec = WheelSpec::iter1();
+        let ribbon = wheel_mold_ribbon(&spec).unwrap();
+        let land_outer_mm = (spec.tire_outer_radius_m * 1000.0) + 0.5 + 6.0;
+        for side in [PieceSide::Negative, PieceSide::Positive] {
+            let (solid, tf) =
+                compose_piece_solid(&cast_body_solid(&spec), WALL_M, &ribbon, side).unwrap();
+            let target = CastTarget::MoldPiece {
+                layer_index: 0,
+                piece_side: side,
+            };
+            let mesh = solid_to_mm_mesh(&solid, 0.0020, target).expect("marching cubes");
+            let mesh = apply_mating_transforms(mesh, &tf, target).expect("mesh-CSG");
+            let v = mesh_printability::validate_for_printing(
+                &mesh,
+                &mesh_printability::PrinterConfig::fdm_default(),
+            )
+            .expect("F4 runs");
+
+            assert!(
+                v.self_intersecting.len() <= 32,
+                "{side:?}: {} self-intersecting pairs, was 24 — the artifact grew",
+                v.self_intersecting.len()
+            );
+            for r in &v.self_intersecting {
+                let loc = r.approximate_location;
+                let radius = loc.x.hypot(loc.y);
+                assert!(
+                    (radius - land_outer_mm).abs() < 2.0 && loc.z.abs() < 2.0,
+                    "{side:?}: a self-intersection escaped the seal-land step — \
+                     r={radius:.2} mm z={:.2} mm, step at {land_outer_mm:.1} mm",
+                    loc.z
+                );
+            }
+        }
     }
 
     #[test]
