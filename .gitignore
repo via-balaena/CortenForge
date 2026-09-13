@@ -186,11 +186,11 @@ MUJOCO_LOG.TXT
 *.3ds
 *.wrl
 
-# Cast example STL artifacts (regenerate via
-# `cargo run -p example-cast-layered-silicone-device-v1`).
-# procedure.md is committed as a workshop reference; STLs are large
-# binaries with no GitHub-browse value. Redundant with the blanket rule above,
-# kept because it documents WHY that particular directory is disposable.
+# Cast example STL artifacts — large binaries with no GitHub-browse value.
+# Regenerate with the example that wrote them, e.g.
+# `cargo run --release -p example-cast-wheel`.
+# Redundant with the blanket rule above, kept because it documents WHY that
+# particular directory is disposable.
 examples/cast/*/out/*.stl
 
 # =============================================================================
