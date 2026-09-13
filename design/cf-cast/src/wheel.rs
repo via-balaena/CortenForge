@@ -2529,6 +2529,18 @@ mod tests {
                 );
             }
             assert!(text.contains("rim disc"), "{label}: {text:?}");
+            // ⚠ The GENERATED text never reaches `assert_prose_is_well_formed`
+            // — that helper is private to `spec::tests` and its fixtures type
+            // the description out by hand. So the two defects a line
+            // continuation actually causes are checked here, at the source.
+            assert!(
+                !text.contains("  "),
+                "{label}: double space in generated prose: {text:?}"
+            );
+            assert!(
+                !text.contains("- "),
+                "{label}: a line continuation split a hyphenated word: {text:?}"
+            );
             // ⚠ The clause JOIN, per arity. A bare-comma join between two
             // clauses reads as a list that lost its conjunction, and no
             // number assertion above can see it.
