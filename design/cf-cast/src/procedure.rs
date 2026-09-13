@@ -1803,11 +1803,19 @@ const GASKET_NO_CHANNEL: &str = "The cup seam face is FLAT — there is no chann
 /// so it condemned a trough the bullet above had just called expected. One
 /// list, filtered two ways, cannot drift like that.
 struct SeamFeature {
-    /// How bullet 1 describes the recess.
-    prose: &'static str,
-    /// `Some(short name)` iff the recess is CYLINDRICAL, and so must also
+    /// How bullet 1 describes the feature.
+    prose: String,
+    /// `Some(short name)` iff the feature is CYLINDRICAL, and so must also
     /// appear in the cylinder-remnant bullet's expected list.
     cylindrical: Option<&'static str>,
+    /// `Some(short name)` iff the feature STANDS PROUD of the cavity floor
+    /// instead of being cut into the face — a core.
+    ///
+    /// ⚠⚠ The protrusion bullets condemn raised material outright, so a core
+    /// missing from here is called a regression inside "do NOT proceed to
+    /// print". That is what every wheel cast did to its own locating pin
+    /// between #913 and this change.
+    raised: Option<&'static str>,
 }
 
 /// The cf-view seam-face bullet: what the bencher should SEE in a seam face.
@@ -1846,28 +1854,48 @@ fn seam_face_features(
     // a checklist whose failure instruction is "do NOT proceed to print".
     // Not cylindrical: it is the body's own cross-section.
     let mut present: Vec<SeamFeature> = vec![SeamFeature {
-        prose: if has_gasket {
+        raised: None,
+        prose: (if has_gasket {
             "the body-cavity opening, bisected by the seam into an open half-trough \
              on each piece (this is the cavity the silicone fills, and the face the \
              gasket lies on)"
         } else {
             "the body-cavity opening, bisected by the seam into an open half-trough \
              on each piece (this is the cavity the silicone fills)"
-        },
+        })
+        .to_string(),
         cylindrical: None,
     }];
+    // ⚠⚠ SECOND, because it sits INSIDE the cavity opening the bullet above
+    // describes. The cup wall is a shell tracking the body, so a through-void
+    // in the body becomes solid mold standing in the pour cavity — bisected by
+    // the seam like everything else, so each face shows it as a solid island.
+    if let Some(what) = ribbon.cup_cores.description() {
+        present.push(SeamFeature {
+            prose: format!(
+                "solid CORES standing inside that opening ({what}) — the cup \
+                 wall filling the body's through-voids"
+            ),
+            cylindrical: None,
+            raised: Some("the cup cores"),
+        });
+    }
     if has_dowels {
         present.push(SeamFeature {
             prose: "the §M-S2 symmetric dowel holes (cylindrical recesses at the \
-                    body's long-axis extremes, mirrored across the seam plane)",
+                    body's long-axis extremes, mirrored across the seam plane)"
+                .to_string(),
             cylindrical: Some("the §M-S2 dowel holes"),
+            raised: None,
         });
     }
     if bolts_carved {
         present.push(SeamFeature {
             prose: "the §B M5 bolt clearance holes (cylindrical, through the flange \
-                    band, mirrored across the seam plane)",
+                    band, mirrored across the seam plane)"
+                .to_string(),
             cylindrical: Some("the §B bolt clearance holes"),
+            raised: None,
         });
     }
     match &ribbon.pour_gate {
@@ -1876,8 +1904,10 @@ fn seam_face_features(
             PourGateLayout::ApexAxial => present.push(SeamFeature {
                 prose: "the apex pour bore + integral funnel, bisected lengthwise \
                         into an open half-trough and half-cone (the bore lies IN the \
-                        seam plane, so each half carries one side of it)",
+                        seam plane, so each half carries one side of it)"
+                    .to_string(),
                 cylindrical: Some("the apex pour bore"),
+                raised: None,
             }),
             // ⚠ These legs ARE cylinders — `pour::leg_transform` emits one
             // `MatingTransform::SubtractCylinder` per leg. Omitting them from
@@ -1886,18 +1916,22 @@ fn seam_face_features(
                 prose: "ONE half-trough at the dome end per piece — the V's legs \
                         splay along the binormal, so the Positive piece carries the \
                         pour leg's and the Negative piece the vent leg's, not both \
-                        in each face",
+                        in each face"
+                    .to_string(),
                 cylindrical: Some("the V's pour + vent legs at the dome end"),
+                raised: None,
             }),
             PourGateLayout::VAtDome => present.push(SeamFeature {
                 prose: "ONE half-trough at the dome end, on the Positive piece only \
                         (`include_vent = false` — no vent leg is carved, so the \
-                        Negative seam face has none)",
+                        Negative seam face has none)"
+                    .to_string(),
                 // ⚠ NOT "the V's pour leg" — this sheet says three times over
                 // that `include_vent = false` means "there is no V". Naming one
                 // here reintroduces the branch's own bug class inside the "do
                 // NOT proceed to print" checklist.
                 cylindrical: Some("the pour leg at the dome end"),
+                raised: None,
             }),
         },
     }
@@ -1906,8 +1940,10 @@ fn seam_face_features(
         present.push(SeamFeature {
             prose: "the plug-floor-lock socket on the cap-plane wall, bisected by \
                     the seam (each half carries one side of the truncated-pyramid \
-                    recess)",
+                    recess)"
+                .to_string(),
             cylindrical: None,
+            raised: None,
         });
     }
     present
@@ -1918,7 +1954,7 @@ fn seam_face_check(present: &[SeamFeature]) -> String {
     // face is never featureless. An "anything here is a regression" fallback
     // would be unreachable AND wrong, which is how this bullet blocked correct
     // prints four times.
-    let prose: Vec<&str> = present.iter().map(|f| f.prose).collect();
+    let prose: Vec<&str> = present.iter().map(|f| f.prose.as_str()).collect();
     format!(
         "- Seam faces carry {}. Nothing else should be recessed into them.",
         prose.join("; and ")
@@ -1987,6 +2023,10 @@ const fn pin_remnant_bullet(has_plug_lock: bool) -> &'static str {
 /// author was not thinking about.
 fn cylinder_remnant_bullet(present: &[SeamFeature]) -> String {
     let recesses: Vec<&str> = present.iter().filter_map(|f| f.cylindrical).collect();
+    // ⚠⚠ The sixth under-count, and the worst: this bullet condemns raised
+    // material outright, and a cup that cores a through-void grows exactly
+    // that. Every wheel cast since #913 was told its own locating pin was a
+    // regression, inside "do NOT proceed to print".
     if recesses.is_empty() {
         return "- No cylindrical pin remnants (pre-S3 cylinder primitive \
                 retired)."
@@ -1996,6 +2036,30 @@ fn cylinder_remnant_bullet(present: &[SeamFeature]) -> String {
         "- No cylindrical pin PROTRUSIONS (pre-S3 cylinder primitive retired) \
          — the cylindrical recesses listed above ({}) are expected.",
         recesses.join(", ")
+    )
+}
+
+/// The one bullet that exempts the cup's cores from the three bullets below
+/// it, which condemn raised material outright. Empty when there are none.
+///
+/// ★ Derived from the SAME list the other bullets filter, for the reason
+/// [`seam_face_features`] exists: two bullets built from separate
+/// enumerations disagreed the moment one of them was extended.
+///
+/// ⚠ ONE bullet, ahead of the three — not the same sentence stapled to each.
+/// The first draft did that and put 120 words of identical warning into a
+/// checklist a bencher reads at a screen.
+fn raised_exception_bullet(present: &[SeamFeature]) -> String {
+    let raised: Vec<&str> = present.iter().filter_map(|f| f.raised).collect();
+    if raised.is_empty() {
+        return String::new();
+    }
+    format!(
+        "- ⚠ **Solid cores stand PROUD of the cavity floor, and are \
+         correct** ({}). The three bullets that follow condemn raised \
+         material; they do not condemn these. Raised material that is NOT \
+         one of them is the regression.\n   ",
+        raised.join(" + ")
     )
 }
 
@@ -2076,11 +2140,14 @@ fn write_cfview_sanity_check_v2(
          nothing else (`PlugPinKind::None` — no plug-floor-lock socket is \
          carved). A socket recess here would be a regression."
     };
+    // ★ ONE exemption bullet, emitted ahead of the three that condemn raised
+    // material — including the unqualified "nothing else" above.
+    let raised_check = raised_exception_bullet(&seam);
     let _ = writeln!(
         md,
         "1. **Cup pieces** (`mold_layer_*_piece_0.stl` + `_piece_1.stl`):\n   \
          {dowel_check}\n   \
-         {pin_remnant_check}\n   \
+         {raised_check}{pin_remnant_check}\n   \
          {cyl_remnant_check}\n   \
          - No T-bar / stem / T-slot remnants on the cap-plane wall \
          (pre-S4 plug-shaft mechanism retired).\n   \

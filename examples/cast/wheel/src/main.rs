@@ -333,15 +333,14 @@ fn main() -> Result<()> {
             args.rim_band_mm,
             web * MM_PER_M
         );
-        // ⛔ The sheet renders from `CastSpec` + `Ribbon`, and neither carries
-        // spokes — so it is byte-identical to a solid wheel's and its cf-view
-        // checklist calls the cores a regression. Say so where someone will
-        // actually read it.
+        // ⚠ The CUP half of the sheet is fixed; the PLUG half is not. Say
+        // which, precisely — a stale warning about a fixed bug is its own
+        // defect, and this one is read at a bench.
         println!(
-            "       ⛔ procedure.md does NOT know this rim has spokes. Its cf-view\n\
-             \x20         checklist says the cup wall carries \"nothing else\" and that\n\
-             \x20         protrusions are a regression — the six cores ARE protrusions.\n\
-             \x20         Do not hand that sheet to the workshop as-is."
+            "       ⚠ procedure.md lists the cup's cores as expected, but its plug\n\
+             \x20         bullet still says \"Dome end is smooth and closed\" — a slotted\n\
+             \x20         rim is neither, under \"do NOT proceed to print\". Ignore that\n\
+             \x20         one line; everything else on the checklist stands."
         );
     }
     println!(
