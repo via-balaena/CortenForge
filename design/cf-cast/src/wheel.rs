@@ -83,8 +83,12 @@ use crate::bolt_pattern::{BoltPatternKind, BoltPatternSpec};
 use crate::dowel_hole::{DowelHoleKind, DowelHoleSpec};
 use crate::flange::{DemandFlangeSpec, FlangeKind};
 use crate::gasket_mold::GasketKind;
+use crate::material::MoldingMaterial;
 use crate::pour::{PourGateKind, PourGateLayout, PourGateSpec};
+use crate::pour_volume::DEFAULT_MASS_BUDGET_KG;
 use crate::ribbon::{Ribbon, RibbonError, SplitNormal};
+use crate::spec::{CastLayer, CastSpec};
+use mesh_printability::PrinterConfig;
 
 use cf_design::Solid;
 
@@ -509,6 +513,60 @@ pub fn wheel_mold_ribbon(spec: &WheelSpec) -> Result<Ribbon, RibbonError> {
         })))
 }
 
+/// Assemble the wheel's [`crate::CastSpec`], ready for
+/// [`crate::CastSpec::export_molds_v2`] with [`wheel_mold_ribbon`].
+///
+/// The wheel supplies what it knows — the cast body, the rim as plug, the 95A
+/// PU layer material, the bounding region, and the PU holdings as the mass
+/// budget. The caller supplies what belongs to the cast rather than the part:
+/// the cup-wall thickness, the marching-cubes cell, and the printer.
+///
+/// ⚠ `wall_thickness_m` is not free: the mold's locating pin is solid only
+/// while [`locating_pin_is_solid`] holds against it.
+///
+/// ⚠⚠ **`mesh_cell_size_m` does NOT move the reported pour mass.**
+/// `compute_pour_volumes` floors the integration cell at
+/// [`crate::POUR_VOLUME_MIN_CELL_SIZE_M`] (2 mm) with `max()`, which only ever
+/// raises it — so 1.5 mm and 1 mm mesh cells both integrate at 2 mm and report
+/// the identical figure. Measured on this wheel: 115.11 g at 2 mm, 1.5 mm and
+/// 1 mm alike; only a 3 mm cell differs, because 3 mm is coarser than the
+/// floor. The cell is a SURFACE-QUALITY and EXPORT-TIME choice, nothing more.
+///
+/// # Panics
+///
+/// Panics if `spec` is not well-formed — see [`WheelSpec`].
+#[must_use]
+pub fn wheel_cast_spec(
+    spec: &WheelSpec,
+    wall_thickness_m: f64,
+    mesh_cell_size_m: f64,
+    printer_config: PrinterConfig,
+) -> CastSpec {
+    CastSpec {
+        layers: vec![CastLayer {
+            body: cast_body_solid(spec),
+            material: MoldingMaterial {
+                display_name: "95A polyurethane".to_string(),
+                density_kg_m3: NOMINAL_PU_95A_DENSITY_KG_M3,
+                anchor_key: None,
+            },
+        }],
+        plug: rim_solid(spec),
+        // The documented convention: the outermost body grown by the wall.
+        // ⚠ Post-§Q-1 this no longer bounds the cup wall — that is a
+        // body-tracking shell — but the field is still required and feeds the
+        // platform and gasket paths, neither of which the wheel uses.
+        bounding_region: cast_body_solid(spec).offset(wall_thickness_m),
+        wall_thickness_m,
+        mesh_cell_size_m,
+        printer_config,
+        mass_budget_kg: DEFAULT_MASS_BUDGET_KG,
+        scan_mesh_for_plug_layer_0: None,
+        plug_layer_0_mesh_cell_size_m: None,
+        plug_layer_0_field_skin_m: None,
+    }
+}
+
 /// The cured tire — the PU actually poured.
 ///
 /// Built as `cast_body ∖ rim`, the same difference
@@ -576,8 +634,8 @@ mod tests {
 
     use super::{
         DimpleSpec, KeyingKind, NOMINAL_PU_95A_DENSITY_KG_M3, WheelSpec, cast_body_solid,
-        locating_pin_is_solid, nominal_tire_volume_m3, rim_solid, tire_solid, wheel_mold_ribbon,
-        wheel_ribbon,
+        locating_pin_is_solid, nominal_tire_volume_m3, rim_solid, tire_solid, wheel_cast_spec,
+        wheel_mold_ribbon, wheel_ribbon,
     };
     use crate::bolt_pattern::{BoltPatternSpec, plan_smart_bolt_placements};
     use crate::dowel_hole::{DowelHoleSpec, plan_smart_dowel_placements, smart_dowel_footprint};
@@ -593,6 +651,7 @@ mod tests {
     use crate::seam_profile::SeamProfile;
     use crate::seam_solver::DEFAULT_MAX_PITCH_M;
     use crate::silhouette_2d::{SeamPlaneBasis, Silhouette2d};
+    use crate::spec::STLS_SUBDIR;
 
     /// The production integration cell, so the volume gate measures the path
     /// `CastSpec::compute_pour_volumes` actually takes.
@@ -1479,6 +1538,101 @@ mod tests {
             );
             assert_eq!(census.inconsistent_edges, 0, "{side:?}: {census:?}");
         }
+    }
+
+    #[test]
+    fn the_wheel_exports_a_full_mold_set() {
+        // ★ THE EXPORT PATH, GATED. Every other wheel test drives
+        // `compose_piece_solid` directly; this is the only one that runs
+        // `export_molds_v2` — the entry point that assembles a `CastSpec`,
+        // computes the pour volume, runs the F4 printability gate and writes
+        // STLs. Without it the arc has "it worked when I ran it once".
+        //
+        // ⚠ The F4 gate here is the one that refused the v1 example on
+        // 2026-05-12 and started this whole arc. It passes at the STRICT 1 mm
+        // default min wall — the v2 scan example needs 0.1 mm.
+        //
+        // ⚠ Files: written under a pid-scoped temp dir and removed BEFORE the
+        // assertions, so a failing assert cannot leak them.
+        let spec = WheelSpec::iter1();
+        let ribbon = wheel_mold_ribbon(&spec).unwrap();
+        let cast = wheel_cast_spec(
+            &spec,
+            WALL_M,
+            // 2 mm keeps CI cheap (~1.4 s). Finer is a surface-quality choice
+            // and does NOT change the reported mass — see `wheel_cast_spec`.
+            0.0020,
+            mesh_printability::PrinterConfig::fdm_default(),
+        );
+
+        let out = std::env::temp_dir().join(format!("cf-cast-wheel-{}", std::process::id()));
+        std::fs::remove_dir_all(&out).ok();
+        std::fs::create_dir_all(&out).expect("temp dir");
+        let report = cast.export_molds_v2(&ribbon, &out);
+
+        // Collect everything, THEN clean up, THEN assert.
+        let observed = report.map(|r| {
+            let stls: Vec<String> = std::fs::read_dir(out.join(STLS_SUBDIR))
+                .map(|d| {
+                    let mut v: Vec<String> = d
+                        .flatten()
+                        .map(|e| e.file_name().to_string_lossy().into_owned())
+                        .collect();
+                    v.sort();
+                    v
+                })
+                .unwrap_or_default();
+            let mass_g = r.layers[0].pour_volume.pour_mass_kg * 1000.0;
+            let blocking: usize = r.layers[0]
+                .pieces
+                .iter()
+                .map(|p| p.validation.issues.len())
+                .sum();
+            (
+                r.layers.len(),
+                r.platform.is_some(),
+                r.funnel.is_some(),
+                stls,
+                mass_g,
+                blocking,
+            )
+        });
+        std::fs::remove_dir_all(&out).ok();
+
+        let (layers, platform, funnel, stls, mass_g, _issues) =
+            observed.expect("the wheel must survive the F4 gate at the strict 1 mm min wall");
+        assert_eq!(layers, 1, "one pour");
+        assert!(!platform, "no axial plug pins ⇒ no platform");
+        assert!(
+            !funnel,
+            "apex-axial fuses the funnel into the cups — a separate funnel STL \
+             would mean the layout silently fell back to V-at-dome"
+        );
+        assert_eq!(
+            stls,
+            vec![
+                "dowel.stl".to_string(),
+                "mold_layer_0_piece_0.stl".to_string(),
+                "mold_layer_0_piece_1.stl".to_string(),
+                "plug_layer_0.stl".to_string(),
+            ],
+            "two mold halves, the plug, and the printed dowel"
+        );
+
+        // ⚠ 115.11 g, not the 121.66 g the closed form gives. The integration
+        // cell is floored at 2 mm and a 12.5 mm curved section reads −5.4 %
+        // there; a finer mesh cell cannot change it. Pinned so the number the
+        // workshop weighs against cannot drift unnoticed.
+        assert_relative_eq!(mass_g, 115.11, epsilon = 0.01);
+        let analytic_g = nominal_tire_volume_m3(&spec) * NOMINAL_PU_95A_DENSITY_KG_M3 * 1000.0;
+        assert!(
+            mass_g < analytic_g,
+            "the reported mass still under-reads the closed form: {mass_g} vs {analytic_g}"
+        );
+        assert!(
+            mass_g * 6.0 < DEFAULT_MASS_BUDGET_KG * 1000.0,
+            "six tires must fit the 2 lb budget"
+        );
     }
 
     #[test]
