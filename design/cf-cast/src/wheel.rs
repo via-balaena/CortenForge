@@ -796,11 +796,15 @@ mod tests {
         // prose; this runs the set algebra and looks.
         //
         // ⚠ Scope, twice over. (a) This is the SHELL, not
-        // `compose_piece_solid`'s full pipeline — that it survives the
-        // half-space intersect, the flange union and marching cubes is M2's
-        // to show. (b) A FIRST version of this test used
-        // `bounding.subtract(body)`, the composition §Q-1 retired in May. It
-        // passed, on algebra the crate no longer runs.
+        // `compose_piece_solid`'s full pipeline. Two of the three stages it
+        // deferred to have since run: the half-space intersect
+        // (`the_locating_pin_survives_piece_composition`) and marching cubes
+        // (`a_mold_piece_meshes_as_one_closed_orientable_shell`). The FLANGE
+        // stage has not — `wheel_ribbon` carries `FlangeKind::None`, and
+        // `compose_piece_solid` skips that branch whole unless
+        // `lateral_reach_m()` is `Some`. M2b. (b) A FIRST
+        // version of this test used `bounding.subtract(body)`, the composition
+        // §Q-1 retired in May. It passed, on algebra the crate no longer runs.
         let spec = WheelSpec::iter1();
         assert!(locating_pin_is_solid(&spec, WORKSHOP_WALL_M));
         let mold = cup_wall(&spec, WORKSHOP_WALL_M);
