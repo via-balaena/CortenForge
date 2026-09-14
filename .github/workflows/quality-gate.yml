@@ -573,7 +573,7 @@ jobs:
           - id: 2
             crates: cf-studio-core cf-studio-engine cf-studio
               cf-geometry cf-spatial cf-scan-prep-core
-              cf-msk-fit cf-anthro cf-cap-planes cf-device-types xtask
+              cf-msk-fit cf-anthro cf-cap-planes cf-device-types cf-vehicle xtask
           # shard 3 = sim + mesh + design: one shared dependency stack, no giant
           # optional tree. Largest by COUNT, and expected to stay cheap per
           # crate — mesh-types/io/repair/sdf/offset/printability were ALREADY
