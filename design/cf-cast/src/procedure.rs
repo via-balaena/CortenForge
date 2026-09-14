@@ -30,6 +30,7 @@ use crate::cure::lookup as lookup_cure;
 use crate::flange::FlangeKind;
 use crate::gasket_mold::GasketKind;
 use crate::plug::PlugPinKind;
+use crate::plug_form::PlugFormKind;
 use crate::plug_role::PlugRole;
 use crate::pour::{PourGateKind, PourGateLayout};
 use crate::pour_volume::PourVolume;
@@ -1254,8 +1255,10 @@ fn write_geometry_requirements_v2(
     md.push('\n');
 }
 
-/// The same claim as [`funnel_reuse_tail`], phrased as the standalone
-/// sentence the pour-gate note uses.
+/// The "print it once" sentence, standalone, as the pour-gate note uses it.
+///
+/// Both arms say once; the multi-layer arm adds why one funnel serves every
+/// pour.
 const fn funnel_print_once_sentence(layer_count: usize) -> &'static str {
     if layer_count == 1 {
         "Print `funnel.stl` once."
@@ -1515,32 +1518,59 @@ fn seam_face_check(present: &[SeamFeature]) -> String {
     )
 }
 
-/// The two cf-view plug-piece bullets, which describe the plug-floor lock.
+/// The cf-view plug-piece bullet for the plug-floor lock's cap-plane face.
 ///
 /// ⚠ `PlugPinKind` is OFF by default, so the unconditional form demanded a
 /// pyramid the default cast never generates — inside a checklist whose failure
 /// instruction is "do NOT proceed to print".
 ///
-/// The lock's COLUMN is a separate bullet — see [`plug_column_bullet`].
-const fn plug_piece_checks(has_plug_lock: bool) -> (&'static str, &'static str) {
+/// Its sibling is [`plug_form_bullet`], which describes the rest of the plug.
+const fn plug_cap_plane_bullet(has_plug_lock: bool) -> &'static str {
     if has_plug_lock {
-        (
-            "- Cap-plane face carries a single truncated-pyramid lock \
-             protruding from the cap-plane face along `cap_normal` (S4); \
-             flat tapered lateral faces, sharp edges.",
-            "- Dome end is smooth and closed; the workshop-visible pyramid \
-             above the cap-plane is the unchamfered main-taper only (the \
-             chamfer band lives inside the plug body and is not visible from \
-             outside).",
-        )
+        "- Cap-plane face carries a single truncated-pyramid lock \
+         protruding from the cap-plane face along `cap_normal` (S4); \
+         flat tapered lateral faces, sharp edges."
     } else {
-        (
-            "- Cap-plane face is FLAT (`PlugPinKind::None` — no plug-floor \
-             lock is generated). Any pyramid protruding from it is a \
-             regression.",
-            "- Dome end is smooth and closed.",
-        )
+        "- Cap-plane face is FLAT (`PlugPinKind::None` — no plug-floor \
+         lock is generated). Any pyramid protruding from it is a \
+         regression."
     }
+}
+
+/// The cf-view bullet describing the plug's shape away from the cap plane.
+///
+/// ⚠ This bullet asserted "Dome end is smooth and closed" of EVERY plug. That
+/// is the sock-over-capsule paradigm's shape, and the wheel's plug is a rim —
+/// a bored, dimpled, sometimes slotted disc with no dome on it. So the sheet
+/// condemned a correct rim under "do NOT proceed to print", which is where
+/// every scar in this file came from. [`PlugFormKind`] lets the subject say
+/// what its plug actually is.
+///
+/// ⚠ It reads [`Ribbon::plug_form`] and NOT `cup_cores`: cavity topology and
+/// plug shape are independent, so cores must not excuse plug openings — see
+/// [`crate::plug_form`].
+fn plug_form_bullet(has_plug_lock: bool, form: &PlugFormKind) -> String {
+    // ★ Composed head + tail so the domed arms stay byte-identical to the
+    // prose that shipped, in both lock states. The described arm keeps the
+    // checklist's condemning force — it enumerates what is expected and
+    // closes the set — rather than merely deleting a false claim.
+    let head = form.description().map_or_else(
+        || "Dome end is smooth and closed".to_string(),
+        |what| {
+            format!(
+                "The plug is {what} — nothing else should stand proud of it \
+                 or open through it"
+            )
+        },
+    );
+    let tail = if has_plug_lock {
+        "; the workshop-visible pyramid above the cap-plane is the \
+         unchamfered main-taper only (the chamfer band lives inside the plug \
+         body and is not visible from outside)"
+    } else {
+        ""
+    };
+    format!("- {head}{tail}.")
 }
 
 /// The cf-view "no retired pin remnants" bullet.
@@ -1708,7 +1738,8 @@ fn write_cfview_sanity_check_v2(
          {socket_check}"
     );
     md.push('\n');
-    let (lock_check, dome_check) = plug_piece_checks(has_plug_lock);
+    let lock_check = plug_cap_plane_bullet(has_plug_lock);
+    let form_check = plug_form_bullet(has_plug_lock, &ribbon.plug_form);
     let _ = writeln!(
         md,
         "2. **Plug pieces** (`plug_layer_*.stl`):\n   \
@@ -1716,7 +1747,7 @@ fn write_cfview_sanity_check_v2(
          - No T-bar / stem / cylindrical-shaft remnants (pre-S4 \
          geometry retired); no separate dome-pin (pre-S4 dome-pin \
          gone too).\n   \
-         {dome_check}"
+         {form_check}"
     );
     md.push('\n');
     let _ = writeln!(md, "{}", funnel_bullet(has_pour_gate, apex_pour));
@@ -3677,8 +3708,9 @@ mod tests {
     /// inversion mutant is exactly a case of emitting the wrong one.
     ///
     /// ⚠ Asserted with the line prefix. A bare phrase match would also find
-    /// these words elsewhere in the sheet — the failure that left
-    /// `plug_piece_checks` ungated through two review passes.
+    /// these words elsewhere in the sheet — the failure that left the
+    /// plug-piece bullets ([`plug_cap_plane_bullet`] and [`plug_form_bullet`],
+    /// a single function at the time) ungated through two review passes.
     #[test]
     fn each_gate_and_lock_state_gets_its_own_checklist_bullet() {
         const FUNNEL_NONE: &str = "\n3. **Funnel**: *none*";
@@ -3727,6 +3759,59 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// ★★★ The plug bullet, as LITERALS, across both axes it depends on.
+    ///
+    /// ⚠ The two domed rows are the pure-addition claim, MEASURED: adding
+    /// [`PlugFormKind`] must leave every sheet that shipped byte-identical,
+    /// and the bullet is composed head + tail, so byte-identity has to hold in
+    /// BOTH lock states, not just the default one.
+    ///
+    /// ⚠ Asserted against typed-out literals rather than against the function
+    /// under test — a mirror oracle that re-derived the string would pass on
+    /// any wording the writer produced, including a lost pyramid clause.
+    #[test]
+    fn the_plug_bullet_describes_the_plug_in_both_lock_states() {
+        use crate::plug_form::PlugFormKind;
+        const DOMED: &str = "- Dome end is smooth and closed.";
+        const DOMED_LOCKED: &str = "- Dome end is smooth and closed; the \
+             workshop-visible pyramid above the cap-plane is the unchamfered \
+             main-taper only (the chamfer band lives inside the plug body and \
+             is not visible from outside).";
+        const RIM: &str = "a 105.0 mm Ø rim disc";
+        const DESCRIBED: &str = "- The plug is a 105.0 mm Ø rim disc — nothing \
+             else should stand proud of it or open through it.";
+        const DESCRIBED_LOCKED: &str = "- The plug is a 105.0 mm Ø rim disc — \
+             nothing else should stand proud of it or open through it; the \
+             workshop-visible pyramid above the cap-plane is the unchamfered \
+             main-taper only (the chamfer band lives inside the plug body and \
+             is not visible from outside).";
+
+        let domed = PlugFormKind::DomedCapsule;
+        let described = PlugFormKind::Described(RIM.to_string());
+        for (label, has_lock, form, want) in [
+            ("domed", false, &domed, DOMED),
+            ("domed + lock", true, &domed, DOMED_LOCKED),
+            ("described", false, &described, DESCRIBED),
+            ("described + lock", true, &described, DESCRIBED_LOCKED),
+        ] {
+            assert_eq!(
+                super::plug_form_bullet(has_lock, form),
+                want,
+                "{label}: the plug bullet drifted"
+            );
+        }
+
+        // ⚠ A described plug must not carry the dome claim in EITHER lock
+        // state — the whole defect was a sheet asserting a dome of a rim.
+        for has_lock in [false, true] {
+            let bullet = super::plug_form_bullet(has_lock, &described);
+            assert!(
+                !bullet.contains("Dome end"),
+                "a described plug still claims a dome (lock={has_lock})"
+            );
         }
     }
 
