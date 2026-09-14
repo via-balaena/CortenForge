@@ -16,7 +16,7 @@ use crate::forward::mj_fwd_position;
 
 /// Compute tendon lengths and Jacobians from current joint state.
 ///
-/// For fixed tendons: L = Σ coef_i * qpos[dof_adr_i], J[dof_adr_i] = coef_i.
+/// For fixed tendons: `L = Σ coef_i * qpos[dof_adr_i]`, `J[dof_adr_i] = coef_i`.
 /// For spatial tendons: 3D pairwise routing via `mj_fwd_tendon_spatial()`,
 /// with wrap visualization data (`wrap_xpos`/`wrap_obj`, §40b).
 ///

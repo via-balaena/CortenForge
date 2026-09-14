@@ -123,7 +123,7 @@ impl ModelBuilder {
 /// # Errors
 ///
 /// Returns `ModelConversionError` if:
-/// - Path resolution fails (see [`resolve_mesh_path`])
+/// - Path resolution fails (see [`resolve_asset_path`])
 /// - File format is unsupported or corrupt
 /// - Mesh contains no vertices or faces
 pub fn load_mesh_file(

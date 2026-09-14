@@ -157,7 +157,7 @@ pub(super) fn assemble_contact_rows(
 /// Post-process R scaling for pyramidal contacts (§32).
 ///
 /// MuJoCo's mj_makeImpedance computes R per-row from each row's own diagApprox,
-/// then overrides all facet rows with Rpy = 2 · μ_reg² · R[first_facet].
+/// then overrides all facet rows with `Rpy = 2 · μ_reg² · R[first_facet]`.
 pub(super) fn postprocess_pyramidal_r_scaling(
     model: &Model,
     data: &mut Data,

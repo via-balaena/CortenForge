@@ -30,7 +30,7 @@ pub const DEFAULT_MASS_FALLBACK: f64 = 1.0;
 /// ## Algorithm Overview
 ///
 /// 1. Forward pass: initialize composite inertias from body spatial inertias
-/// 2. Backward pass: Ic[parent] += transform(Ic[child])
+/// 2. Backward pass: `Ic[parent] += transform(Ic[child])`
 /// 3. For each joint, compute M elements from Ic and joint motion subspace
 ///
 /// Reference: Featherstone, "Rigid Body Dynamics Algorithms", Chapter 6

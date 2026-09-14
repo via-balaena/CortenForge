@@ -3947,7 +3947,7 @@ pub struct MjcfFlex {
     pub name: String,
     /// Dimensionality: 1=cable, 2=shell, 3=solid.
     pub dim: usize,
-    /// Collision vertex radius [m].
+    /// Collision vertex radius `[m]`.
     pub radius: f64,
     /// Body names for vertex attachment (one per vertex). Required on `<flex>`.
     /// For `<flexcomp>`, auto-generated during expansion (one body per vertex).
@@ -3968,7 +3968,7 @@ pub struct MjcfFlex {
     pub friction: Vector3<f64>,
     /// Collision contact dimensionality (1, 3, or 4).
     pub condim: i32,
-    /// Collision margin [m].
+    /// Collision margin `[m]`.
     pub margin: f64,
     /// Solver reference parameters.
     pub solref: [f64; 2],
@@ -3997,13 +3997,13 @@ pub struct MjcfFlex {
     pub passive: bool,
 
     // --- <flex><elasticity> child element attributes ---
-    /// Young's modulus [Pa].
+    /// Young's modulus `[Pa]`.
     pub young: f64,
     /// Poisson's ratio.
     pub poisson: f64,
     /// Damping coefficient.
     pub damping: f64,
-    /// Shell thickness [m] (dim=2 only). -1 = "not set".
+    /// Shell thickness `[m]` (dim=2 only). -1 = "not set".
     pub thickness: f64,
 
     /// Bending model selection (default: Cotangent = MuJoCo-conformant).
@@ -4018,7 +4018,7 @@ pub struct MjcfFlex {
     pub edge_damping: f64,
 
     // --- Internal / derived ---
-    /// Total mass [kg] for uniform distribution across all vertices (including pinned).
+    /// Total mass `[kg]` for uniform distribution across all vertices (including pinned).
     /// MuJoCo semantics: `mass / npnt` per vertex, pinned share silently discarded.
     /// When `Some`, overrides element-based mass lumping from `density`.
     pub mass: Option<f64>,

@@ -98,7 +98,7 @@ pub struct SparseHessian {
     row_idx: Vec<usize>,
     /// CSC values (length nnz).
     vals: Vec<f64>,
-    /// Elimination tree: parent[j] = parent of column j in etree, or None for root.
+    /// Elimination tree: `parent[j]` = parent of column j in etree, or None for root.
     etree: Vec<Option<usize>>,
     /// CSC column pointers for L factor (length nv+1).
     l_col_ptr: Vec<usize>,

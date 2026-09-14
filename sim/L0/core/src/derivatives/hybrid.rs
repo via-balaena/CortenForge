@@ -121,7 +121,7 @@ pub fn mjd_passive_vel(model: &Model, data: &mut Data) {
 ///   ∂force/∂V = (∂gain/∂V) · input + (∂bias/∂V)
 ///
 /// The velocity V maps to qvel through the transmission:
-///   Joint:  V = gear · qvel[dof_adr]
+///   Joint:  `V = gear · qvel[dof_adr]`
 ///   Tendon: V = gear · J · qvel
 ///   Site:   V = moment^T · qvel
 ///
@@ -269,10 +269,10 @@ pub fn mjd_actuator_vel(model: &Model, data: &mut Data) {
 ///   result_lin = w × s_lin + v_lin × s_ang
 ///
 /// Derivative w.r.t. v = [w; v_lin] with s fixed:
-///   d(result_ang)/d(w) = -[s_ang]×  (3×3)
+///   `d(result_ang)/d(w) = -[s_ang]×`  (3×3)
 ///   d(result_ang)/d(v_lin) = 0
-///   d(result_lin)/d(w) = -[s_lin]×  (3×3)
-///   d(result_lin)/d(v_lin) = -[s_ang]× (3×3)
+///   `d(result_lin)/d(w) = -[s_lin]×`  (3×3)
+///   `d(result_lin)/d(v_lin) = -[s_ang]×` (3×3)
 fn mjd_cross_motion_vel(s: &SpatialVector) -> Matrix6<f64> {
     let s_ang = Vector3::new(s[0], s[1], s[2]);
     let s_lin = Vector3::new(s[3], s[4], s[5]);
@@ -299,9 +299,9 @@ fn mjd_cross_motion_vel(s: &SpatialVector) -> Matrix6<f64> {
 ///   result_lin = w × f_lin
 ///
 /// Derivative w.r.t. v = [w; v_lin] with f fixed:
-///   d(result_ang)/d(w) = -[f_ang]×
-///   d(result_ang)/d(v_lin) = -[f_lin]×
-///   d(result_lin)/d(w) = -[f_lin]×
+///   `d(result_ang)/d(w) = -[f_ang]×`
+///   `d(result_ang)/d(v_lin) = -[f_lin]×`
+///   `d(result_lin)/d(w) = -[f_lin]×`
 ///   d(result_lin)/d(v_lin) = 0
 fn mjd_cross_force_vel(f: &SpatialVector) -> Matrix6<f64> {
     let f_ang = Vector3::new(f[0], f[1], f[2]);
@@ -329,10 +329,10 @@ fn mjd_cross_force_vel(f: &SpatialVector) -> Matrix6<f64> {
 ///   result_lin = w × f_lin
 ///
 /// Derivative w.r.t. f = [f_ang; f_lin] with v fixed:
-///   d(result_ang)/d(f_ang) = [w]×
-///   d(result_ang)/d(f_lin) = [v_lin]×
+///   `d(result_ang)/d(f_ang) = [w]×`
+///   `d(result_ang)/d(f_lin) = [v_lin]×`
 ///   d(result_lin)/d(f_ang) = 0
-///   d(result_lin)/d(f_lin) = [w]×
+///   `d(result_lin)/d(f_lin) = [w]×`
 ///
 /// Note: `d(a × b)/d(b) = [a]×` (positive skew), whereas
 /// `d(a × b)/d(a) = -[b]×` (negative skew). This function differentiates
@@ -355,7 +355,7 @@ fn mjd_cross_force_frc(v: &SpatialVector) -> Matrix6<f64> {
     m
 }
 
-/// Negative skew-symmetric matrix: -[a]×.
+/// Negative skew-symmetric matrix: `-[a]×`.
 ///
 /// `[a]× · b = a × b`, so `-[a]× · b = -(a × b) = b × a`.
 ///
@@ -365,7 +365,7 @@ fn neg_skew(a: &Vector3<f64>) -> nalgebra::Matrix3<f64> {
     nalgebra::Matrix3::new(0.0, a[2], -a[1], -a[2], 0.0, a[0], a[1], -a[0], 0.0)
 }
 
-/// Positive skew-symmetric matrix: [a]×.
+/// Positive skew-symmetric matrix: `[a]×`.
 ///
 /// `[a]× · b = a × b`.
 ///
