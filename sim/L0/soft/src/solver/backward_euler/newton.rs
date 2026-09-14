@@ -923,7 +923,7 @@ where
     /// `docs/F3_LM_REGULARIZATION_SPEC.md` §2.5). Same Newton loop,
     /// but returns `Result<(NewtonStep, f64), SolverFailure>` instead
     /// of panicking. The `f64` is the Newton-final λ (threaded into
-    /// the IFT-adjoint factor by [`Self::try_step`] per spec §2.1).
+    /// the IFT-adjoint factor by [`crate::solver::Solver::try_step`] per spec §2.1).
     ///
     /// `x_partial` on each `SolverFailure` variant is `x_curr` at the
     /// START of the failed Newton iter (per spec §2.5 `ArmijoStall`

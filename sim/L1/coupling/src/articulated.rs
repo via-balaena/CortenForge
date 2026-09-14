@@ -43,7 +43,8 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// for the rotating normal: column `j` is the [`sim_soft::RigidTwist`] the plane
     /// undergoes per unit `qvel_j` (`δn̂ = ω×n̂`, `δoffset = v_O·n̂` reproduce
     /// `∂n̂/∂q = −[n̂]×·J_ang` and `∂offset/∂q = n̂ᵀ·J_lin + xiposᵀ·∂n̂/∂q`, S0-validated).
-    /// Threaded by [`PoseTwistSeamVjp`] (`∂L/∂qpos = J_spatialᵀ·∂L/∂T`). Rotating-normal
+    /// Threaded by [`crate::vjp::PoseTwistSeamVjp`] (`∂L/∂qpos = J_spatialᵀ·∂L/∂T`).
+    /// Rotating-normal
     /// pose seam, PR2; see `docs/keystone/rotating_normal_recon.md`.
     pub(super) fn pose_twist_jacobian(&self) -> DMatrix<f64> {
         mj_jac_point(&self.model, &self.data, self.body, &Vec3::zeros())
@@ -51,7 +52,8 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
 
     /// `J_lin = ∂c/∂qpos`: the body COM's linear (translational) world Jacobian
     /// (`mj_jac_point` at `xipos`, rows 3–5) — `3 × nv`. The moment about the COM
-    /// `c = xipos(q)` depends on `q` through `c`, so [`ContactWrenchTrajVjp`] needs
+    /// `c = xipos(q)` depends on `q` through `c`, so
+    /// [`crate::vjp::ContactWrenchTrajVjp`] needs
     /// this to thread `∂τ/∂qpos = [f]_× · J_lin`. Read at the same (stale) FK config
     /// as the pose seam.
     pub(super) fn com_linear_jacobian(&self) -> DMatrix<f64> {
@@ -75,7 +77,8 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// world Jacobian (`mj_jac_point` at `geom_xpos[contact_geom]`, rows 3–5) — `3 × nv`.
     /// The moving-end-effector pose seam: with [`Self::with_contact_geom`] the sphere
     /// centre rides the geom, so the trajectory adjoint threads `∂centre/∂q = J_geom`
-    /// (the [`PoseCentreVjp`] seam), the 3-vector generalization of [`Self::pose_seam_jz`]'s
+    /// (the [`crate::vjp::PoseCentreVjp`] seam), the 3-vector generalization of
+    /// [`Self::pose_seam_jz`]'s
     /// scalar height channel. Read at the same (fresh-FK) config as the wrench node.
     ///
     /// # Panics
@@ -365,7 +368,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     ///
     /// `J_state = A + Δt·M⁻¹·∂(Jᵀw)/∂q` (velocity rows; the position rows follow the
     /// semi-implicit integrator, scaled by `Δt`), where `A` is the **unloaded**
-    /// transition ([`Data::transition_derivatives`]) and the second term is the
+    /// transition ([`sim_core::Data::transition_derivatives`]) and the second term is the
     /// applied wrench's geometric/load stiffness that `A` drops. This replaces the FD
     /// loaded Jacobian's noise with the exact term (deterministic, no eps) — making the
     /// single-hinge articulated gradient machine-exact at every horizon (paired with the
@@ -465,7 +468,8 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// `loaded_J = A + Δt·∂(M_impl⁻¹·Jᵀw)/∂q` on the velocity-position block and `+ Δt²·∂(…)` on
     /// the position-position block (semi-implicit `q' = q + Δt·v'`), where `M_impl = M + Δt·D` is
     /// the Euler eulerdamp solve matrix (`= M` when undamped), and:
-    /// - `A` is the **unloaded** transition ([`Data::transition_derivatives`]) — already
+    /// - `A` is the **unloaded** transition
+    ///   ([`sim_core::Data::transition_derivatives`]) — already
     ///   machine-exact (its `∂v'/∂q` block captures the mass-matrix config dependence via
     ///   `sim-core`'s `mjd_rne_pos` inertia-transport derivatives, and it routes the Euler
     ///   velocity solve through `M_impl` under damping).

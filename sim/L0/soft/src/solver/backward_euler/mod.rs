@@ -104,7 +104,7 @@ struct ElementGeometry {
 /// **curved** higher-order element (midsides moved off the edge midpoints)
 /// instead varies `detJ(ξ_q)` per point too — the genuine isoparametric
 /// Jacobian built by
-/// [`curved_gauss_geometry`](super::construct); this cache holds those per-point
+/// [`curved_gauss_geometry`](self::construct); this cache holds those per-point
 /// weights when `construct` selects the curved path.
 ///
 /// - **Tet4** monomorphizes to `(N, G) = (4, 1)`: the single centroid point,
@@ -191,7 +191,8 @@ pub struct CpuNewtonSolver<
     /// ⚠ **Every one, not just the lowest-numbered.** An earlier revision kept only
     /// the first, on the reasoning that the gate is first-violator-wins in ascending
     /// order so no later defect could be the message. That holds only while EVERY
-    /// material declares [`InversionHandling::RequireOrientation`]: a lower-numbered
+    /// material declares [`crate::material::InversionHandling::RequireOrientation`]: a
+    /// lower-numbered
     /// element whose material opts out is skipped by the gate, and the defect it
     /// consumed would then hide a higher-numbered one the gate does reach — which
     /// would pass on an element with an invalid rest. Today
@@ -209,7 +210,7 @@ pub struct CpuNewtonSolver<
     ///
     /// ⚠ Held rather than raised at construction. Surfacing it through the gate
     /// keeps a malformed rest mesh on the existing
-    /// [`SolverFailure::ValidityViolation`] channel — which `try_step` callers
+    /// [`crate::solver::SolverFailure::ValidityViolation`] channel — which `try_step` callers
     /// already handle by skipping the design — instead of adding a fourth panic
     /// to `new()`. It is still fail-closed: the first step boundary reports it.
     rest_orientation_defects: Vec<(usize, RestValidity)>,

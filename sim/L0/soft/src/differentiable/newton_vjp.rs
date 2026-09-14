@@ -302,7 +302,8 @@ pub struct MaterialStepVjp {
 
 impl MaterialStepVjp {
     /// Construct a material-parameter VJP for one converged Newton step.
-    /// Crate-private: built only by [`CpuNewtonSolver::material_step_vjp`].
+    /// Crate-private: built only by
+    /// [`crate::solver::backward_euler::CpuNewtonSolver::material_step_vjp`].
     #[must_use]
     pub(crate) fn new(
         factor: FactoredFreeTangent,
@@ -421,7 +422,8 @@ pub struct StateStepVjp {
 
 impl StateStepVjp {
     /// Construct a prev-state VJP for one converged Newton step.
-    /// Crate-private: built only by [`CpuNewtonSolver::state_step_vjp`].
+    /// Crate-private: built only by
+    /// [`crate::solver::backward_euler::CpuNewtonSolver::state_step_vjp`].
     #[must_use]
     pub(crate) fn new(
         factor: FactoredFreeTangent,
@@ -548,7 +550,8 @@ pub struct TrajectoryStepVjp {
     /// friction-grip path (`trajectory_step_vjp_grip`), where the soft step gains a
     /// fifth scalar parent for the rigid surface's within-step tangential drift
     /// `Δ_surf`; `None` (the frictionless keystone path) keeps the four-parent shape
-    /// byte-for-byte. See [`CpuNewtonSolver::equilibrium_drift_sensitivity`].
+    /// byte-for-byte. See
+    /// [`crate::solver::backward_euler::CpuNewtonSolver::equilibrium_drift_sensitivity`].
     dr_ddrift_free: Option<Vec<f64>>,
     /// Per active-pair friction coupling of the `x_prev` state parent: `(vertex, the vertex's
     /// three free-DOF indices — `None` per pinned axis, and `∇²D`)`. The friction reference

@@ -124,7 +124,7 @@ pub(super) fn sample_analysis_at_point<M: Material>(
 /// 0.25` cell size — see [`TetGrid::build`] for the cell-size choice
 /// rationale).
 ///
-/// Built once per [`design_surface`] call; cost is `O(n_tets × cells_
+/// Built once per [`crate::viz::design::design_surface`] call; cost is `O(n_tets × cells_
 /// per_tet)` to register each tet in every cell its AABB overlaps.
 pub(super) struct TetGrid {
     /// Grid origin (mesh-AABB minimum corner, lightly padded).
@@ -289,7 +289,7 @@ impl TetGrid {
 /// barycentric-interpolated per-vertex displacement; same enclosing-
 /// tet-or-nearest-fallback logic as [`sample_analysis_at_point`] but
 /// returning a [`Vec3`] instead of a per-scalar [`Vec`]. Used by
-/// [`design_surface_deformed`].
+/// [`crate::viz::design::design_surface_deformed`].
 //
 // `cast_possible_truncation` allowed for VertexId casts (u32 crate-wide).
 #[allow(clippy::cast_possible_truncation, clippy::similar_names)]
@@ -365,10 +365,12 @@ pub(super) fn sample_displacement_at_point<M: Material>(
 /// through the nearest-tet path that preserves the integer; anything
 /// else (`psi_j_per_m3`, `displacement_magnitude`, …) is treated as a
 /// continuous field and routed through the per-primitive continuous-
-/// scalar path — volume-weighted-per-vertex (on [`boundary_surface`]),
+/// scalar path — volume-weighted-per-vertex (on
+/// [`crate::viz::analysis::boundary_surface`]),
 /// linear-along-edge from the volume-weighted-per-vertex field (on
-/// [`slab_cut`] / [`slab_cut_deformed`] / [`design_slab_cut`]), or
-/// Shepard kNN-IDW (on [`design_surface`] and its deformed/scene
+/// [`crate::viz::analysis::slab_cut`] / [`crate::viz::analysis::slab_cut_deformed`]
+/// / [`crate::viz::design::design_slab_cut`]), or
+/// Shepard kNN-IDW (on [`crate::viz::design::design_surface`] and its deformed/scene
 /// siblings; see [`idw_k_nearest_tet_centroids`]).
 ///
 /// Continuous-scalar smoothing breaks the categorical invariant —
@@ -393,12 +395,15 @@ pub(super) fn is_categorical_scalar_name(name: &str) -> bool {
 /// `probe`, returning its tet ID. Returns `None` when `candidate_tets`
 /// is empty.
 ///
-/// Used by the C2 categorical sampling path on [`design_surface`]
-/// (and its deformed/scene siblings) and on [`design_slab_cut`]: one
+/// Used by the C2 categorical sampling path on
+/// [`crate::viz::design::design_surface`]
+/// (and its deformed/scene siblings) and on
+/// [`crate::viz::design::design_slab_cut`]: one
 /// nearest-tet lookup per probe is shared across every categorical
 /// scalar in flight (all categorical scalars sample from the same
-/// nearest tet, so the centroid search amortizes). [`slab_cut`] /
-/// [`slab_cut_deformed`] use a related position-based pick via
+/// nearest tet, so the centroid search amortizes).
+/// [`crate::viz::analysis::slab_cut`] /
+/// [`crate::viz::analysis::slab_cut_deformed`] use a related position-based pick via
 /// `SlabCutState`'s `cut_owner_dist2` tracking rather than calling
 /// this helper directly — the cut-vertex's edge-star tets are visited
 /// one-at-a-time as the marching-tet loop iterates, so the winner
