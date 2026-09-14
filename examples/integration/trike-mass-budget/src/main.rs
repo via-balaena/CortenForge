@@ -19,8 +19,14 @@
 //!
 //! 1. Every part's grid-integrated mass matches its **closed-form** mass. The
 //!    closed form is arithmetic on the same dimensions, evaluated without
-//!    touching the integrator — so it catches a unit slip, a wrong radius, and
-//!    a cell size too coarse to resolve a tube wall.
+//!    touching the integrator, so what it checks is the **integrator**: a unit
+//!    slip, a wrong density, a cell too coarse to resolve a tube wall.
+//!    ⚠ It does **not** catch a wrong dimension. The formula and the solid
+//!    share the radius, so both move together — measured, a rim's inner radius
+//!    moved 10 mm and agreement stayed at 0.214%, well inside the 0.5%
+//!    tolerance. Dimensions are covered by (2) for the three that set the
+//!    contact patches, and by (3) as a regression, and the rim/tyre radii are
+//!    shared constants so they cannot drift apart in the first place.
 //! 2. The wheelbase and track **read back out of the joint anchors** equal the
 //!    nominal numbers `cf-vehicle` was given. Placement is a chain of anchors;
 //!    a single mis-typed offset moves a contact patch.
@@ -116,6 +122,14 @@ const UPRIGHT_OD_MM: f64 = 25.4;
 const UPRIGHT_WALL_MM: f64 = 3.0;
 /// Half the front wheel's width. The hub is its widest part.
 const FRONT_WHEEL_HALF_WIDTH_MM: f64 = 25.0;
+/// Where the front rim ends and its tyre begins. Shared by both so the two
+/// cannot drift apart into a gap or an interpenetration — a class the
+/// closed-form check above is blind to.
+const FRONT_RIM_OUTER_MM: f64 = 180.0;
+/// Where the rear rim ends and the cast polyurethane tyre begins.
+const REAR_RIM_OUTER_MM: f64 = 115.0;
+/// Half the rear wheel's width — rim and tyre are the same width.
+const REAR_WHEEL_HALF_WIDTH_MM: f64 = 12.5;
 
 /// A weld, expressed in the only vocabulary [`JointKind`] offers: a revolute
 /// whose range is too narrow to be motion. `with_range` rejects `0.0, 0.0`.
@@ -124,7 +138,8 @@ const WELD_RANGE_RAD: f64 = 1e-9;
 /// How far a grid-integrated mass may sit from its closed form.
 ///
 /// Set just above the worst part measured (0.318%, `rim_fr`), so a coarsened
-/// cell or a changed dimension trips it rather than passing quietly.
+/// cell trips it rather than passing quietly. ⚠ A changed *dimension* does not
+/// trip it — see the note on oracle 1.
 const MASS_TOLERANCE: f64 = 0.005;
 
 /// Polyurethane on asphalt, at the optimistic end of 0.6-1.0.
@@ -340,7 +355,7 @@ fn plan() -> Result<Vec<PartPlan>> {
             range_rad: None,
             material: aluminium.clone(),
             piece: joined(vec![
-                onto_y(annulus(180.0, 160.0, 15.0)),
+                onto_y(annulus(FRONT_RIM_OUTER_MM, 160.0, 15.0)),
                 onto_y(disc(30.0, FRONT_WHEEL_HALF_WIDTH_MM)),
             ])?,
             cell_mm: 2.0,
@@ -354,7 +369,7 @@ fn plan() -> Result<Vec<PartPlan>> {
             range_rad: None,
             material: aluminium.clone(),
             piece: joined(vec![
-                onto_y(annulus(180.0, 160.0, 15.0)),
+                onto_y(annulus(FRONT_RIM_OUTER_MM, 160.0, 15.0)),
                 onto_y(disc(30.0, FRONT_WHEEL_HALF_WIDTH_MM)),
             ])?,
             cell_mm: 2.0,
@@ -367,7 +382,11 @@ fn plan() -> Result<Vec<PartPlan>> {
             axis: Vector3::y(),
             range_rad: Some((-WELD_RANGE_RAD, WELD_RANGE_RAD)),
             material: Material::new("16in pneumatic tyre", FRONT_TYRE_KG_M3),
-            piece: onto_y(annulus(FRONT_RADIUS_MM, 180.0, FRONT_WHEEL_HALF_WIDTH_MM)),
+            piece: onto_y(annulus(
+                FRONT_RADIUS_MM,
+                FRONT_RIM_OUTER_MM,
+                FRONT_WHEEL_HALF_WIDTH_MM,
+            )),
             cell_mm: 2.0,
         },
         PartPlan {
@@ -378,7 +397,11 @@ fn plan() -> Result<Vec<PartPlan>> {
             axis: Vector3::y(),
             range_rad: Some((-WELD_RANGE_RAD, WELD_RANGE_RAD)),
             material: Material::new("16in pneumatic tyre", FRONT_TYRE_KG_M3),
-            piece: onto_y(annulus(FRONT_RADIUS_MM, 180.0, FRONT_WHEEL_HALF_WIDTH_MM)),
+            piece: onto_y(annulus(
+                FRONT_RADIUS_MM,
+                FRONT_RIM_OUTER_MM,
+                FRONT_WHEEL_HALF_WIDTH_MM,
+            )),
             cell_mm: 2.0,
         },
         PartPlan {
@@ -409,7 +432,7 @@ fn plan() -> Result<Vec<PartPlan>> {
             axis: Vector3::y(),
             range_rad: None,
             material: Material::new("PLA", PLA_KG_M3),
-            piece: onto_y(disc(115.0, 12.5)),
+            piece: onto_y(disc(REAR_RIM_OUTER_MM, REAR_WHEEL_HALF_WIDTH_MM)),
             cell_mm: 1.0,
         },
         PartPlan {
@@ -420,7 +443,11 @@ fn plan() -> Result<Vec<PartPlan>> {
             axis: Vector3::y(),
             range_rad: Some((-WELD_RANGE_RAD, WELD_RANGE_RAD)),
             material: Material::new("95A polyurethane", PU_95A_KG_M3),
-            piece: onto_y(annulus(REAR_RADIUS_MM, 115.0, 12.5)),
+            piece: onto_y(annulus(
+                REAR_RADIUS_MM,
+                REAR_RIM_OUTER_MM,
+                REAR_WHEEL_HALF_WIDTH_MM,
+            )),
             cell_mm: 1.0,
         },
         PartPlan {
