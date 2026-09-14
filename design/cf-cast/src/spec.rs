@@ -3695,6 +3695,52 @@ mod tests {
         }
     }
 
+    /// ★★ The UNANCHORED arm through both prose checkers.
+    ///
+    /// ⚠⚠ This gate was pre-registered for this branch and then not written.
+    /// Verification found it by grepping for `anchor_key: None` and getting
+    /// exactly one hit — inside the defect gate. Every other sheet the suite
+    /// renders uses an ANCHORED material, so the bullet that only an
+    /// unanchored cast produces had never reached
+    /// [`assert_prose_is_well_formed`] or [`assert_cross_refs_resolve`].
+    ///
+    /// It matters concretely: that bullet is the only one in the section
+    /// carrying a `## Section` cross-reference, and its prose spans four
+    /// source-line continuations — the shape that produced "half- cone" in
+    /// this file before.
+    #[test]
+    fn the_unanchored_mix_bullet_is_well_formed_and_resolves_its_reference() {
+        use crate::cast_mode::CastMode;
+        use crate::procedure::generate_procedure_markdown_v2_for_mode;
+        for (label, (mut spec, base)) in
+            [("1-layer", v2_fixture()), ("2-layer", two_layer_fixture())]
+        {
+            for layer in &mut spec.layers {
+                layer.material = MoldingMaterial {
+                    display_name: "95A polyurethane".to_string(),
+                    density_kg_m3: 1070.0,
+                    anchor_key: None,
+                };
+            }
+            let pours = spec.compute_pour_volumes().unwrap();
+            for role in [PlugRole::Tooling, PlugRole::Insert] {
+                let r = base.clone().with_plug_role(role);
+                for mode in [CastMode::Detachable, CastMode::Bonded] {
+                    let md = generate_procedure_markdown_v2_for_mode(&spec, &pours, &r, mode);
+                    let case = format!("{label} / {role:?} / {mode:?} / unanchored");
+                    // Anchored first: the arm under test must actually be the
+                    // one rendering, or both checkers pass on the other one.
+                    assert!(
+                        guidance_section(&md).contains("has no cure data"),
+                        "[{case}] this fixture did not render the unanchored arm"
+                    );
+                    assert_cross_refs_resolve(&md, &case);
+                    assert_prose_is_well_formed(&md, &case);
+                }
+            }
+        }
+    }
+
     /// ★★ Every `## Section` the sheet points at must EXIST in that same
     /// sheet, across the whole config matrix.
     ///
