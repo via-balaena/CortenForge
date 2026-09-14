@@ -30,8 +30,13 @@ pub struct StaticLoads {
     pub paired_axle_share: f64,
     /// Centre of gravity, metres aft of the front contact patch.
     pub cg_x_m: f64,
-    /// Centre of gravity height, metres.
+    /// Centre of gravity height, metres — as measured with a tape.
     pub cg_z_m: f64,
+    /// The CG height the roll arithmetic sees, metres.
+    ///
+    /// Equal to `cg_z_m` on a rigid vehicle; taller once
+    /// [`RollCompliance`](crate::spec::RollCompliance) is modelled.
+    pub effective_cg_z_m: f64,
 }
 
 impl StaticLoads {
@@ -60,6 +65,7 @@ impl StaticLoads {
             paired_axle_share,
             cg_x_m: spec.cg_x_m(),
             cg_z_m: spec.cg_z_m(),
+            effective_cg_z_m: spec.effective_cg_height_m(),
         }
     }
 
@@ -126,7 +132,12 @@ impl CorneringLoads {
              {lateral_accel_g}"
         );
         let statics = StaticLoads::of(spec);
-        let transfer_n = statics.total_weight_n * lateral_accel_g * statics.cg_z_m / spec.track_m;
+        // ⚠ The EFFECTIVE height, not the measured one. With roll
+        // modelled the leaning body adds `W · Δy` to the roll moment, and
+        // that extra term is exactly what `effective_cg_height_m` folds
+        // into the height — so transfer and threshold stay consistent.
+        let transfer_n =
+            statics.total_weight_n * lateral_accel_g * statics.effective_cg_z_m / spec.track_m;
         Self {
             lateral_accel_g,
             single_wheel_n: statics.single_wheel_n,
@@ -207,6 +218,10 @@ impl CorneringLoads {
 /// ⚠ Quasi-static. Kerbs, camber and abrupt steering all tip vehicles that
 /// clear this number.
 ///
+/// ⚠⚠ **With `spec.roll` set to [`None`] this is an UPPER BOUND**, not an
+/// estimate. Every real spring rate raises the effective CG height and
+/// lowers the answer — see [`RollCompliance`](crate::spec::RollCompliance).
+///
 /// # Panics
 ///
 /// Panics if `spec` is not well-formed — see
@@ -214,7 +229,7 @@ impl CorneringLoads {
 #[must_use]
 pub fn rollover_threshold_g(spec: &TrikeSpec) -> f64 {
     spec.assert_well_formed();
-    spec.paired_axle_share() * spec.track_m / (2.0 * spec.cg_z_m())
+    spec.paired_axle_share() * spec.track_m / (2.0 * spec.effective_cg_height_m())
 }
 
 /// Front-end steering geometry.
@@ -273,7 +288,7 @@ impl SteeringGeometry {
 mod tests {
     use super::{CorneringLoads, StaticLoads, SteeringGeometry, rollover_threshold_g};
     use crate::spec::Layout;
-    use crate::{MassItem, TrikeSpec};
+    use crate::{MassItem, RollCompliance, TrikeSpec};
     use approx::assert_relative_eq;
 
     /// A spec that is `iter1` except for its mass budget.
@@ -726,6 +741,150 @@ mod tests {
             epsilon = 1e-9
         );
         assert_relative_eq!(limit.inner_wheel_n, 0.0, epsilon = 1e-9);
+    }
+
+    #[test]
+    fn a_rigid_spec_is_untouched_by_the_roll_model_existing() {
+        // ★ PURE ADDITION, MEASURED. With `roll: None` the effective
+        // height must BE the measured height, so every number this crate
+        // produced before the roll model still holds exactly.
+        let spec = TrikeSpec::iter1();
+        assert_eq!(spec.roll, None);
+        assert_relative_eq!(spec.effective_cg_height_m(), spec.cg_z_m(), epsilon = 0.0);
+        assert_relative_eq!(rollover_threshold_g(&spec), 0.983_746_898, epsilon = 1e-9);
+    }
+
+    #[test]
+    fn roll_compliance_is_exactly_a_taller_centre_of_gravity() {
+        // ★★★ THE CLAIM, AS A MIRROR ORACLE. If the whole effect of
+        // suspension really is the substitution `h -> h_eff`, then a
+        // compliant vehicle and a RIGID one built at that taller height
+        // must be indistinguishable — same threshold, same wheel loads, at
+        // every acceleration. Nothing about the compliant path is reused
+        // to build the rigid twin except the one number under test.
+        let compliant = TrikeSpec {
+            roll: Some(RollCompliance::from_wheel_rate(96.0, 0.20, 20_000.0, 0.90)),
+            ..TrikeSpec::iter1()
+        };
+        let h_eff = compliant.effective_cg_height_m();
+        assert!(h_eff > compliant.cg_z_m());
+
+        let rigid_twin = TrikeSpec {
+            masses: vec![MassItem::new(
+                "lumped",
+                compliant.total_mass_kg(),
+                compliant.cg_x_m(),
+                h_eff,
+            )],
+            roll: None,
+            ..TrikeSpec::iter1()
+        };
+        assert_relative_eq!(rigid_twin.cg_z_m(), h_eff, epsilon = 1e-12);
+
+        assert_relative_eq!(
+            rollover_threshold_g(&compliant),
+            rollover_threshold_g(&rigid_twin),
+            epsilon = 1e-12
+        );
+        for accel in [0.0, 0.25, 0.60, 0.90] {
+            let (a, b) = (
+                CorneringLoads::at(&compliant, accel),
+                CorneringLoads::at(&rigid_twin, accel),
+            );
+            assert_relative_eq!(a.outer_wheel_n, b.outer_wheel_n, epsilon = 1e-9);
+            assert_relative_eq!(a.inner_wheel_n, b.inner_wheel_n, epsilon = 1e-9);
+        }
+    }
+
+    #[test]
+    fn the_sign_of_the_roll_axis_separation_does_not_matter() {
+        // ⚠ A roll axis ABOVE the sprung CG makes the body lean INTO the
+        // corner — but the CG is then below the axis and still swings
+        // outboard by the same amount. The separation enters squared, and
+        // that is not an accident of algebra.
+        let at = |sep: f64| {
+            rollover_threshold_g(&TrikeSpec {
+                roll: Some(RollCompliance::from_wheel_rate(96.0, sep, 20_000.0, 0.90)),
+                ..TrikeSpec::iter1()
+            })
+        };
+        assert_relative_eq!(at(0.20), at(-0.20), epsilon = 1e-12);
+        // And a CG exactly on the roll axis cannot roll at all, so it is
+        // the rigid case.
+        assert_relative_eq!(
+            at(0.0),
+            rollover_threshold_g(&TrikeSpec::iter1()),
+            epsilon = 1e-12
+        );
+    }
+
+    #[test]
+    fn every_finite_roll_stiffness_lowers_the_threshold() {
+        // ⚠⚠ THE REASON THE RIGID NUMBER IS A BOUND, NOT AN ESTIMATE.
+        // Monotone in stiffness, and the rigid answer is the unreachable
+        // limit as the springs go solid.
+        let rigid = rollover_threshold_g(&TrikeSpec::iter1());
+        let at = |k: f64| {
+            rollover_threshold_g(&TrikeSpec {
+                roll: Some(RollCompliance::from_wheel_rate(96.0, 0.20, k, 0.90)),
+                ..TrikeSpec::iter1()
+            })
+        };
+        let mut previous = 0.0;
+        for wheel_rate in [5_000.0, 10_000.0, 20_000.0, 40_000.0, 1.0e9] {
+            let now = at(wheel_rate);
+            assert!(
+                now < rigid,
+                "{wheel_rate} N/m gave {now}, not below {rigid}"
+            );
+            assert!(
+                now > previous,
+                "stiffer springs must not lower the threshold"
+            );
+            previous = now;
+        }
+        assert_relative_eq!(at(1.0e12), rigid, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn the_roll_penalty_on_the_planned_trike() {
+        // Hand-computed, and the reason this model was worth building: the
+        // rigid 0.984 g needs only 15 mm of extra track to clear µ = 1.0,
+        // and roll compliance eats more than that on its own.
+        for (wheel_rate, expected) in [(20_000.0, 0.967_013_444), (10_000.0, 0.950_839_737)] {
+            let spec = TrikeSpec {
+                roll: Some(RollCompliance::from_wheel_rate(
+                    96.0, 0.20, wheel_rate, 0.90,
+                )),
+                ..TrikeSpec::iter1()
+            };
+            assert_relative_eq!(rollover_threshold_g(&spec), expected, epsilon = 1e-9);
+            assert!(!CorneringLoads::at(&spec, 0.5).slides_before_it_tips(1.00));
+        }
+
+        // ⚠ AND THE RIGID FIX IS NOT ENOUGH. 15 mm of track clears µ = 1.0
+        // on the rigid model; on a 20 N/mm wheel rate it does not.
+        let widened = TrikeSpec {
+            track_m: 0.92,
+            roll: Some(RollCompliance::from_wheel_rate(96.0, 0.20, 20_000.0, 0.92)),
+            ..TrikeSpec::iter1()
+        };
+        assert!(!CorneringLoads::at(&widened, 0.5).slides_before_it_tips(1.00));
+    }
+
+    #[test]
+    fn the_wheel_rate_helper_squares_the_track() {
+        // `K = wheel_rate · track² / 2`. The square is the part that gets
+        // dropped, so it gets a gate: doubling the track must quadruple
+        // the roll stiffness.
+        let narrow = RollCompliance::from_wheel_rate(96.0, 0.20, 20_000.0, 0.90);
+        let wide = RollCompliance::from_wheel_rate(96.0, 0.20, 20_000.0, 1.80);
+        assert_relative_eq!(narrow.roll_stiffness_n_m_per_rad, 8100.0, epsilon = 1e-9);
+        assert_relative_eq!(
+            wide.roll_stiffness_n_m_per_rad,
+            4.0 * narrow.roll_stiffness_n_m_per_rad,
+            epsilon = 1e-9
+        );
     }
 
     #[test]

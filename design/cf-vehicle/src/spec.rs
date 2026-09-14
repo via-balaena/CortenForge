@@ -44,6 +44,63 @@ impl Layout {
     }
 }
 
+/// How far the sprung mass leans, and what that costs.
+///
+/// ★★★ **Roll compliance is exactly equivalent to raising the centre of
+/// gravity.** Working the moment balance with a roll angle in it, every
+/// appearance of the CG height `h` is replaced by
+///
+/// ```text
+/// h_eff  =  h  +  g · m_sprung · h_roll² / K_roll
+/// ```
+///
+/// and nothing else changes. The vertical reactions stay statically
+/// determinate — a three-wheeler always is — so the whole effect of
+/// suspension on rollover is this one substitution.
+///
+/// ⚠ `h_roll` enters **squared**, so it hurts twice: a taller sprung mass
+/// above the roll axis makes the roll moment bigger *and* makes the same
+/// roll angle carry the CG further outboard.
+///
+/// ⚠ Its **sign does not matter**. A roll axis above the sprung CG makes
+/// the body lean *into* the corner, but the CG is then below the axis and
+/// still swings outboard. Only the magnitude of the separation counts.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RollCompliance {
+    /// Mass carried on the springs, kilograms — everything except wheels,
+    /// uprights and the outboard half of the linkages.
+    pub sprung_mass_kg: f64,
+    /// Separation between the sprung mass's centre of gravity and the roll
+    /// axis, metres. Positive when the CG is above the axis, which is the
+    /// usual case; see the type docs on why the sign is immaterial.
+    pub sprung_cg_above_roll_axis_m: f64,
+    /// Total roll stiffness, newton-metres per radian — springs **and**
+    /// any anti-roll bar, summed.
+    pub roll_stiffness_n_m_per_rad: f64,
+}
+
+impl RollCompliance {
+    /// Build from a wheel rate: `K = wheel_rate · track² / 2`.
+    ///
+    /// ⚠ **Wheel rate, not spring rate.** The rate measured at the contact
+    /// patch is the unambiguous quantity; a coil mounted inboard on a
+    /// linkage contributes `spring_rate × motion_ratio²`, and forgetting
+    /// that square is how roll stiffness gets overestimated by half.
+    #[must_use]
+    pub fn from_wheel_rate(
+        sprung_mass_kg: f64,
+        sprung_cg_above_roll_axis_m: f64,
+        wheel_rate_n_per_m: f64,
+        track_m: f64,
+    ) -> Self {
+        Self {
+            sprung_mass_kg,
+            sprung_cg_above_roll_axis_m,
+            roll_stiffness_n_m_per_rad: wheel_rate_n_per_m * track_m * track_m / 2.0,
+        }
+    }
+}
+
 /// One lumped mass in a vehicle's budget.
 ///
 /// ★ **A budget line, not a part.** The rider, the frame, the front end,
@@ -107,6 +164,13 @@ pub struct TrikeSpec {
     pub steering_offset_m: f64,
     /// Every mass the vehicle carries, rider included.
     pub masses: Vec<MassItem>,
+    /// Suspension roll compliance, or [`None`] for a rigid vehicle.
+    ///
+    /// ⚠ [`None`] is not "no suspension fitted" — it is "roll is not
+    /// modelled". A rigid threshold is an **upper bound**: every real
+    /// spring rate lowers it, so a design that only just clears with
+    /// [`None`] does not clear at all.
+    pub roll: Option<RollCompliance>,
 }
 
 impl TrikeSpec {
@@ -141,6 +205,9 @@ impl TrikeSpec {
                 MassItem::new("rear wheel, swingarm and drive", 10.0, 1.25, 0.15),
                 MassItem::new("seat", 2.0, 0.50, 0.22),
             ],
+            // ⚠ Rigid, because no suspension has been laid out yet — so
+            // every threshold this spec reports is an upper bound.
+            roll: None,
         }
     }
 
@@ -210,6 +277,32 @@ impl TrikeSpec {
                 item.z_m
             );
         }
+        if let Some(roll) = self.roll {
+            assert!(
+                roll.sprung_mass_kg > 0.0 && roll.sprung_mass_kg.is_finite(),
+                "sprung mass must be positive and finite, got {}",
+                roll.sprung_mass_kg
+            );
+            assert!(
+                roll.sprung_mass_kg <= self.total_mass_kg(),
+                "sprung mass ({}) exceeds the vehicle's total mass ({})",
+                roll.sprung_mass_kg,
+                self.total_mass_kg()
+            );
+            assert!(
+                roll.sprung_cg_above_roll_axis_m.is_finite(),
+                "the sprung CG to roll axis separation must be finite, got {}",
+                roll.sprung_cg_above_roll_axis_m
+            );
+            assert!(
+                roll.roll_stiffness_n_m_per_rad > 0.0
+                    && roll.roll_stiffness_n_m_per_rad.is_finite(),
+                "roll stiffness must be positive and finite, got {} — a \
+                 vehicle with zero roll stiffness has no resistance to \
+                 overturning at all",
+                roll.roll_stiffness_n_m_per_rad
+            );
+        }
         // ★ The one check that is engineering rather than hygiene. Outside
         // the wheelbase the static reaction at one axle goes negative,
         // which physically means that axle lifts — the vehicle is on its
@@ -276,6 +369,25 @@ impl TrikeSpec {
         (self.cg_x_m() - single_x).abs() / self.wheelbase_m
     }
 
+    /// The centre-of-gravity height the roll arithmetic actually sees.
+    ///
+    /// Equal to [`TrikeSpec::cg_z_m`] for a rigid vehicle. With roll
+    /// compliance it is taller, by `g · m_sprung · h_roll² / K_roll` — see
+    /// [`RollCompliance`] for why that single substitution is the whole
+    /// effect of suspension on rollover.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the mass budget is empty.
+    #[must_use]
+    pub fn effective_cg_height_m(&self) -> f64 {
+        let h = self.cg_z_m();
+        self.roll.map_or(h, |roll| {
+            h + GRAVITY_M_S2 * roll.sprung_mass_kg * roll.sprung_cg_above_roll_axis_m.powi(2)
+                / roll.roll_stiffness_n_m_per_rad
+        })
+    }
+
     /// Rolling radius of the wheels on the paired axle, metres.
     #[must_use]
     pub const fn paired_wheel_radius_m(&self) -> f64 {
@@ -297,7 +409,7 @@ impl TrikeSpec {
 
 #[cfg(test)]
 mod tests {
-    use super::{Layout, MassItem, TrikeSpec};
+    use super::{Layout, MassItem, RollCompliance, TrikeSpec};
     use approx::assert_relative_eq;
 
     #[test]
@@ -430,6 +542,34 @@ mod tests {
         );
         assert_relative_eq!(refined.cg_x_m(), spec.cg_x_m(), epsilon = 1e-12);
         assert_relative_eq!(refined.cg_z_m(), spec.cg_z_m(), epsilon = 1e-12);
+    }
+
+    #[test]
+    #[should_panic(expected = "no resistance to overturning")]
+    fn zero_roll_stiffness_is_rejected() {
+        TrikeSpec {
+            roll: Some(RollCompliance {
+                sprung_mass_kg: 96.0,
+                sprung_cg_above_roll_axis_m: 0.20,
+                roll_stiffness_n_m_per_rad: 0.0,
+            }),
+            ..TrikeSpec::iter1()
+        }
+        .assert_well_formed();
+    }
+
+    #[test]
+    #[should_panic(expected = "exceeds the vehicle's total mass")]
+    fn a_sprung_mass_larger_than_the_vehicle_is_rejected() {
+        // ⚠ Sprung mass is a SUBSET — wheels, uprights and the outboard
+        // half of the linkages are not on the springs. Handing it the
+        // whole vehicle mass is the easy mistake, and it silently
+        // overstates the roll penalty.
+        TrikeSpec {
+            roll: Some(RollCompliance::from_wheel_rate(500.0, 0.20, 20_000.0, 0.90)),
+            ..TrikeSpec::iter1()
+        }
+        .assert_well_formed();
     }
 
     #[test]

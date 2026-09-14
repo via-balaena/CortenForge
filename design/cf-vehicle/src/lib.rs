@@ -64,7 +64,7 @@ pub mod analysis;
 pub mod spec;
 
 pub use analysis::{CorneringLoads, StaticLoads, SteeringGeometry};
-pub use spec::{Layout, MassItem, TrikeSpec};
+pub use spec::{Layout, MassItem, RollCompliance, TrikeSpec};
 
 /// Standard gravity, m/s².
 ///
