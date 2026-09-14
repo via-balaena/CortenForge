@@ -3770,7 +3770,13 @@ mod tests {
         for phrase in ["the cavity the pour fills", "Total pour mass"] {
             assert!(
                 md.contains(phrase),
-                "the neutral noun is missing: {phrase:?}"
+                "the neutral noun is missing: {phrase:?}\n\
+                 \u{26A0} SECOND SURFACE: `tools/cf-cast-cli/src/main.rs` \
+                 prints its own \"Total pour mass\" line to stdout. Different \
+                 sentence, different crate — nothing makes the two agree by \
+                 construction, so a noun changed here must be changed there \
+                 too or the CLI and the sheet it just wrote will disagree \
+                 about the same number."
             );
         }
         for gone in [
