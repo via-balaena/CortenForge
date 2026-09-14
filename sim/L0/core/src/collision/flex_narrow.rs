@@ -352,7 +352,7 @@ pub fn make_contact_flex_self(
 /// Side 1: nearest vertex from flex1 (`flex_vertex`).
 /// Side 2: nearest vertex from flex2 (`flex_vertex2`).
 /// No rigid geom — `geom1`/`geom2` set to `usize::MAX` (sentinel).
-/// Margin = flex_margin[f1] + flex_margin[f2] (additive, not doubled).
+/// Margin = `flex_margin[f1] + flex_margin[f2]` (additive, not doubled).
 pub fn make_contact_flex_flex(
     model: &Model,
     vertex1: usize,

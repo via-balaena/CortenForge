@@ -36,7 +36,7 @@
 //!
 //! The body is any [`cf_design::Sdf`], so either target routes against an analytic
 //! [`Solid`](cf_design::Solid) **or** a real triangle mesh — an anatomical vertebra,
-//! an imported part — via [`mesh_body`] / [`solid_mesh_body`] (a grid-cached signed
+//! an imported part — via [`mesh_body()`] / [`solid_mesh_body`] (a grid-cached signed
 //! distance field). Unlike the material and policy axes, this one takes its gradient by
 //! finite differences over a handful of control-point degrees of freedom rather than
 //! through the coupling tape.

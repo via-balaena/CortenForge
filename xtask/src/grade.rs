@@ -2818,13 +2818,32 @@ pub(crate) fn is_coverage_report_only(crate_name: &str) -> bool {
 /// Returns the exit code and stderr. Colour is forced off because CI sets
 /// `CARGO_TERM_COLOR=always`, which injects ANSI escapes into stderr (e.g.
 /// `error\x1b[0m:`) and breaks the caller's substring counts.
+///
+/// ★ `--document-private-items` is load-bearing, not tidiness. Without it a
+/// doc link from a private item to a renamed or deleted symbol resolves to
+/// nothing and is never checked, so this criterion returned **A** on crates
+/// carrying them — 94 across ten crates when it was first measured. Three of
+/// those were orphaned by renames made days earlier and found by hand during
+/// review, which is what this flag exists to stop.
+///
+/// ⚠ `rustdoc::redundant_explicit_links` is ALLOWED deliberately. It fires on
+/// `[`Foo`](path::Foo)` where the bare text would resolve — a style nit, not
+/// rot — and it is redundant only WITH private items documented, so "fixing"
+/// the 26 occurrences could break them in a default doc build. Gating the
+/// links without gating their formatting is the point.
 fn run_cargo_doc(sh: &Shell, crate_name: &str, targets: &[&str]) -> Result<(i32, String)> {
-    let output = cmd!(sh, "cargo doc --no-deps -p {crate_name}")
-        .args(targets)
-        .env("RUSTDOCFLAGS", "-D warnings")
-        .env("CARGO_TERM_COLOR", "never")
-        .ignore_status()
-        .output()?;
+    let output = cmd!(
+        sh,
+        "cargo doc --no-deps --document-private-items -p {crate_name}"
+    )
+    .args(targets)
+    .env(
+        "RUSTDOCFLAGS",
+        "-D warnings -A rustdoc::redundant_explicit_links",
+    )
+    .env("CARGO_TERM_COLOR", "never")
+    .ignore_status()
+    .output()?;
     Ok((
         output.status.code().unwrap_or(1),
         String::from_utf8_lossy(&output.stderr).into_owned(),

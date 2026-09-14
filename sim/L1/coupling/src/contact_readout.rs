@@ -185,7 +185,8 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
 
     /// Per active contact pair at `positions` with the collider posed at `height`:
     /// `(vertex_id, ∂fz/∂x_v, ∂fz/∂height)` — the PRECOMPUTED z-force gradient factors
-    /// the free-body contact crossing scatters ([`ContactForceVjp`], [`ContactForceTrajVjp`]),
+    /// the free-body contact crossing scatters ([`crate::vjp::ContactForceVjp`],
+    /// [`crate::vjp::ContactForceTrajVjp`]),
     /// curvature-correct for any collider (the L1b carry, dual to the FD-validated
     /// single-step [`Self::contact_force_height_total_jacobian`]).
     ///

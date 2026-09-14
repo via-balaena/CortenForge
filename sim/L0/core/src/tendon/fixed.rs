@@ -14,10 +14,10 @@ use crate::types::{Data, Model, WrapType};
 /// Fixed tendon kinematics for a single tendon.
 ///
 /// Fixed tendon length is a linear combination of joint positions:
-///   L_t = Σ_w coef_w * qpos[jnt_qposadr_w]
+///   `L_t = Σ_w coef_w * qpos[jnt_qposadr_w]`
 ///
 /// The Jacobian is constant (configuration-independent):
-///   J_t[dof_adr_w] = coef_w
+///   `J_t[dof_adr_w] = coef_w`
 ///
 /// `wrap_objid[w]` stores the DOF address (`jnt_dof_adr`) for the joint.
 /// For length, we look up the joint's qpos address via `dof_jnt` → `jnt_qpos_adr`.

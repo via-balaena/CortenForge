@@ -7,7 +7,7 @@
 //! - [`VoxelCoord`] - Integer voxel coordinates
 //! - [`GridBounds`] - Axis-aligned bounds in grid space
 //! - [`OccupancyMap`] - Probabilistic occupancy grid for SLAM/sensor fusion
-//! - [`Ray`] and [`raycast`] - Ray-voxel intersection and line of sight queries
+//! - [`Ray`] and [`raycast()`] - Ray-voxel intersection and line of sight queries
 //! - [`Aabb`] and [`Sphere`] - Geometric primitives for overlap queries
 //!
 //! # Layer 0 Crate

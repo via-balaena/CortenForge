@@ -89,7 +89,7 @@ pub fn robot_to_mjcf(robot: &UrdfRobot) -> Result<String> {
 
 /// A mimic constraint collected during tree walk.
 struct MimicEntry {
-    /// The follower joint name (the joint that has <mimic>).
+    /// The follower joint name (the joint that has `<mimic>`).
     follower: String,
     /// The leader joint name.
     leader: String,

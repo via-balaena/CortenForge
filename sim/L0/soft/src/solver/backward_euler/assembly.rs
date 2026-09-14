@@ -77,7 +77,9 @@ impl<'a> FreeTangentAccumulator<'a> {
 
     /// `(col, row)` pairs in CSC order — the column index recovered from
     /// `col_ptr`. Shared by [`Self::into_triplets`] and the test-only
-    /// [`Self::iter`] so the two cannot disagree about ordering.
+    /// `Self::iter` so the two cannot disagree about ordering. (Not a doc
+    /// link: `iter` is `#[cfg(test)]`, so there is no such item in a doc
+    /// build.)
     fn coords(
         col_ptr: &'a [usize],
         rows: &'a [usize],

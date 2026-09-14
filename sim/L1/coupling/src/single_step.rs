@@ -20,7 +20,8 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     /// Hessian (`κ` for penalty, `κ·b''(sd)` for IPC). The single source of the
     /// per-pair readout + curvature extraction (projected by
     /// [`Self::active_pair_force_factors`] into the free-body z-force gradient factors);
-    /// the moment routing + its [`ContactWrenchTrajVjp`] gradient additionally use the
+    /// the moment routing + its [`crate::vjp::ContactWrenchTrajVjp`] gradient
+    /// additionally use the
     /// force `gᵢ` and contact point `rᵢ`. Does not re-solve/mutate.
     pub(super) fn active_pair_wrench_data(
         &self,

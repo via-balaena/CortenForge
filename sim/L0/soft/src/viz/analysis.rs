@@ -474,7 +474,7 @@ fn slab_cut_at_positions<M: Material>(
 /// avoiding the analysis-mesh stair-step and speckle artifacts a
 /// volume-only rule produces at layer interfaces on a regular
 /// BCC + IS mesh. Matches the position-based pick `design_surface`
-/// uses via [`nearest_tet_centroid_idx`].
+/// uses via [`crate::viz::scalar_transfer::nearest_tet_centroid_idx`].
 ///
 /// Continuous scalars are determined by the edge endpoints alone
 /// (linear interp of the volume-weighted-per-vertex average) and are

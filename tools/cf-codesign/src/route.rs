@@ -14,7 +14,7 @@
 //!
 //! The body is any [`cf_design::Sdf`], so a route can be optimized against an
 //! analytic [`Solid`](cf_design::Solid) *or* a real triangle mesh — an anatomical
-//! vertebra, an imported part — via [`mesh_body`](crate::mesh_body) /
+//! vertebra, an imported part — via [`mesh_body`](crate::mesh_body()) /
 //! [`solid_mesh_body`](crate::solid_mesh_body). The optimizer is identical either
 //! way; only the signed-distance source differs.
 //!
@@ -38,7 +38,7 @@
 //! consumer needs them.
 //!
 //! For a **mesh** body the field is the grid-cached, trilinearly-interpolated signed
-//! distance ([`mesh_body`](crate::mesh_body)); its gradient has seams on the grid
+//! distance ([`mesh_body`](crate::mesh_body())); its gradient has seams on the grid
 //! lattice rather than a closed form, but at the finite-difference step (`1e-6`) —
 //! far below the cell size — the stencil sits inside one smooth cell, so the FD
 //! gradient is measured stable to ~`1e-6` relative and a route recovered against a

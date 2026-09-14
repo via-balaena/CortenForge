@@ -640,7 +640,7 @@ impl PenaltyRigidContact {
     /// [`ContactModel::energy`], [`ContactModel::gradient`],
     /// [`ContactModel::hessian`] —
     /// via [`Self::pair_contribution`] which delegates to this gate —
-    /// and [`ActivePairsFor::active_pairs`] — directly) inherit the
+    /// and [`crate::contact::ActivePairsFor::active_pairs`] — directly) inherit the
     /// change for free. See §2.5 of
     /// `docs/CANDIDATE_C_SMOOTHED_CONTACT_SPEC.md` for the
     /// mirror-on-change-prevention rationale.

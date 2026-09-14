@@ -881,7 +881,7 @@ where
     }
 
     /// Graceful-failure mirror of [`Self::factor_at_position`] (F3.3
-    /// per spec §2.5). Used by [`Self::try_step`] for the IFT-adjoint
+    /// per spec §2.5). Used by [`crate::solver::Solver::try_step`] for the IFT-adjoint
     /// factor at converged `x_final`. On doubly-failed factor returns
     /// `Err(SolverFailure::DoublyFailedFactor)` with
     /// `x_partial = x_curr` (which IS `x_final` here — the natural
