@@ -691,7 +691,14 @@ mod tests {
                 ..TrikeSpec::iter1()
             };
             // share · t / (2h) = 1  ⇒  t = 2h / share
-            2.0 * s.cg_z_m() / s.paired_axle_share() - s.track_m
+            //
+            // ⚠ The EFFECTIVE height. Identical to `cg_z_m` while `iter1`
+            // is rigid, but the moment it gains roll compliance the two
+            // part company — and only this one keeps the pins honest.
+            // With a 20 N/mm wheel rate the real answer is 30.7 mm, not
+            // 14.9, and the rigid spelling would have gone on asserting
+            // 14.9 without failing.
+            2.0 * s.effective_cg_height_m() / s.paired_axle_share() - s.track_m
         };
         assert_relative_eq!(
             track_to_clear(Layout::Tadpole),
