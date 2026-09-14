@@ -440,6 +440,37 @@ mod tests {
 
     use super::*;
 
+    /// ★★ This crate's OWN stdout label, pinned. `cf-cast` writes another
+    /// pour-mass line into the sheet this crate just produced — different
+    /// sentence, different crate, nothing making them agree.
+    ///
+    /// ⚠⚠ **This does NOT compare the two.** It reads this crate's source
+    /// and nothing else. The pairing works because BOTH sides are pinned to
+    /// the same literal: `cf_cast`'s
+    /// `the_neutral_nouns_render_where_silicone_used_to` pins the sheet's,
+    /// this pins stdout's, so either one drifting fails a test. Measured:
+    /// changing cf-cast's label alone fails cf-cast's gate and passes this
+    /// one — which is correct, and is why the name no longer claims a
+    /// comparison. An earlier name did.
+    ///
+    /// ⚠ I first costed this as a shared const or a sheet-rendering fixture,
+    /// judged both too expensive for a cosmetic divergence, and wrote the
+    /// coupling down as prose instead. That skipped the cheap option: read
+    /// our own source. Five lines, and the invariant is checked rather than
+    /// described.
+    #[test]
+    fn the_cli_pins_its_own_pour_mass_label() {
+        let main_rs = include_str!("main.rs");
+        assert!(
+            main_rs.contains("Total pour mass"),
+            "this crate's stdout label drifted from the sheet's"
+        );
+        assert!(
+            !main_rs.contains("Total silicone mass"),
+            "the pour is not necessarily silicone — cf-cast stopped saying so"
+        );
+    }
+
     const FIXTURE_V2: &str = "\
 # Cast Procedure\n\
 \n\

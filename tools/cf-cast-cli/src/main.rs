@@ -62,7 +62,7 @@ fn run() -> Result<()> {
     println!("  procedure  →  {}", report.procedure_path.display());
     println!();
     println!(
-        "Total silicone mass: {:.2} g across {} layers.",
+        "Total pour mass: {:.2} g across {} layers.",
         report.total_mass_g, report.layer_count,
     );
     println!();

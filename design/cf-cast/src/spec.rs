@@ -3751,6 +3751,72 @@ mod tests {
         }
     }
 
+    /// ★★ The sheet does not name a chemistry it was never told.
+    ///
+    /// ⚠ Rewriting nine sentences in this sheet broke ZERO tests. The nouns
+    /// were entirely ungated, which is why "silicone" survived into a
+    /// urethane pour's bench sheet for as long as it did.
+    ///
+    /// ⚠⚠ **The negative half alone is satisfied by deleting every mention.**
+    /// [`the_silicone_path_still_speaks_silicone`] is the other half, and
+    /// neither is worth anything without it.
+    #[test]
+    fn the_neutral_nouns_render_where_silicone_used_to() {
+        let (spec, base) = v2_fixture();
+        let (md, _) = procedure_pair(&spec, &base);
+        // ⚠ Only phrases THIS fixture renders. The bolt-clamp, apex-pour and
+        // vent sentences need a flange + apex-axial gate, and are asserted on
+        // the wheel's own sheet in `wheel::tests`, where all of them render.
+        for phrase in ["the cavity the pour fills", "Total pour mass"] {
+            assert!(
+                md.contains(phrase),
+                "the neutral noun is missing: {phrase:?}\n\
+                 \u{26A0} SECOND SURFACE: `tools/cf-cast-cli/src/main.rs` \
+                 prints its own \"Total pour mass\" line to stdout. Different \
+                 sentence, different crate — nothing makes the two agree by \
+                 construction, so a noun changed here must be changed there \
+                 too or the CLI and the sheet it just wrote will disagree \
+                 about the same number."
+            );
+        }
+        for gone in [
+            "the cavity the silicone fills",
+            "silicone hydrostatic",
+            "Total silicone mass",
+            "silicone-displacement",
+        ] {
+            assert!(
+                !md.contains(gone),
+                "a chemistry-specific noun survives: {gone:?}"
+            );
+        }
+    }
+
+    /// ★★★ The other half: the SILICONE path still says silicone.
+    ///
+    /// ⚠ Without this, [`the_neutral_nouns_render_where_silicone_used_to`]
+    /// passes on a writer that deleted the word everywhere — which would make
+    /// every layered-silicone sheet vaguer to serve one urethane subject.
+    /// The word is correct there; it was only ever wrong as an ASSUMPTION.
+    #[test]
+    fn the_silicone_path_still_speaks_silicone() {
+        use crate::cast_mode::CastMode;
+        use crate::procedure::generate_procedure_markdown_v2_for_mode;
+        let (spec, base) = two_layer_fixture();
+        let pours = spec.compute_pour_volumes().unwrap();
+        let md = generate_procedure_markdown_v2_for_mode(&spec, &pours, &base, CastMode::Bonded);
+        for phrase in [
+            "Fresh silicone bonds to cured silicone",
+            "silicone tie-coat",
+            "silicone body",
+        ] {
+            assert!(
+                md.contains(phrase),
+                "the silicone path lost prose that is CORRECT there: {phrase:?}"
+            );
+        }
+    }
+
     /// ★★ Every `## Section` the sheet points at must EXIST in that same
     /// sheet, across the whole config matrix.
     ///

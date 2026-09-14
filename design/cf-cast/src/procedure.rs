@@ -199,7 +199,7 @@ fn write_mass_budget_summary(md: &mut String, spec: &CastSpec, pour_volumes: &[P
     let budget_g = spec.mass_budget_kg * KG_TO_G;
     let _ = writeln!(
         md,
-        "- Total silicone mass {}: **{:.2} g** ({} layer{}).",
+        "- Total pour mass {}: **{:.2} g** ({} layer{}).",
         if spec.layers.len() == 1 {
             "for this cast"
         } else {
@@ -1463,11 +1463,11 @@ fn seam_face_features(
         raised: None,
         prose: (if has_gasket {
             "the body-cavity opening, bisected by the seam into an open half-trough \
-             on each piece (this is the cavity the silicone fills, and the face the \
+             on each piece (this is the cavity the pour fills, and the face the \
              gasket lies on)"
         } else {
             "the body-cavity opening, bisected by the seam into an open half-trough \
-             on each piece (this is the cavity the silicone fills)"
+             on each piece (this is the cavity the pour fills)"
         })
         .to_string(),
         cylindrical: None,
@@ -2424,7 +2424,7 @@ fn write_v2_bolt_pattern_note(
          halves, slip a washer under each head + nut, and hand-tighten \
          crosswise (like a car lug pattern) for even flange clamp \
          pressure (~1 MPa across the flange contact area at \
-         hand-torqued M5 — exceeds the silicone hydrostatic leak \
+         hand-torqued M5 — exceeds the pour's hydrostatic leak \
          pressure by ~1000×{seal_claim}). Engine-valve-cover \
          torque level — snug, not stripped; PLA threads in the \
          workshop user's hand-tools strip well before the bolt design \
@@ -2453,7 +2453,7 @@ fn write_v2_plug_anchor_note(md: &mut String, ribbon: &Ribbon) {
                  pyramid press-fit lock to the plug's cap-plane face \
                  + a matching socket recessed into each cup-piece's \
                  cap-plane interior surface; recommended for any \
-                 cast where the plug's silicone-displacement weight \
+                 cast where the plug's displacement weight \
                  + curve geometry makes hand-positioning fiddly."
             );
         }
@@ -3168,7 +3168,7 @@ fn write_apex_axial_pour_note(
          the seam so it splits evenly between the two cup halves \
          ({gate_length_mm:.1} mm total channel). Pouring at the highest \
          point makes complete fill self-evident: the cavity is full the \
-         instant silicone reaches the bore, because no point sits above \
+         instant the pour reaches the bore, because no point sits above \
          it, and trapped air migrates up to that same point."
     );
     md.push('\n');
@@ -3179,10 +3179,11 @@ fn write_apex_axial_pour_note(
          dome apex beside the pour bore and at any other local high \
          spots a test pour reveals air stranding (e.g. over the plug \
          grip rings or suction bulb). Air's very low viscosity escapes \
-         a sub-millimetre hole that the honey-thick silicone will not \
-         weep through, so the vents stay clean and the residue is a \
-         negligible thread. Start with one apex vent; add more only \
-         where a pour shows a trapped bubble."
+         a sub-millimetre hole. Whether the pour follows it through \
+         depends on the material's viscosity, which nothing here has \
+         measured — a test pour is what tells you, and the vent size \
+         follows from what it shows. Start with one apex vent; add \
+         more only where a pour shows a trapped bubble."
     );
     md.push('\n');
     let _ = writeln!(
@@ -3208,8 +3209,8 @@ fn write_apex_axial_pour_note(
          ~{funnel_height_mm:.0} mm tall. It prints as part of the cups (the \
          half-cone rises {funnel_height_mm:.0} mm above the cup's outer surface \
              {funnel_lock}). \
-         Ladle silicone straight into the assembled funnel at the apex; the \
-         funnel + bore silicone cures as one sprue that lifts out of the open \
+         Ladle the mix straight into the assembled funnel at the apex; the \
+         funnel + bore fill cures as one sprue that lifts out of the open \
          half-troughs when the halves separate (apply mold release first), \
          then trim it flush off the cast. If the funnel seam weeps during a \
          pour, band the assembled funnel — it is sacrificial sprue territory, \
@@ -3345,7 +3346,7 @@ fn write_v2_pour_gate_note(
             }
             let _ = writeln!(
                 md,
-                "Pour silicone slowly into the {gate_dia_mm:.1} mm Ø \
+                "Pour slowly into the {gate_dia_mm:.1} mm Ø \
                  pour leg (+binormal hole, Positive piece).{air_escape}"
             );
             md.push('\n');
@@ -3499,11 +3500,11 @@ fn write_per_layer_sections_v2(
         let pour_sentence = match &ribbon.pour_gate {
             PourGateKind::Default(s) if s.layout == PourGateLayout::ApexAxial => {
                 "Orient the assembled mold **+Z up** (dome apex on top). Pour \
-                 silicone slowly into the integral apex funnel (the split cone \
+                 slowly into the integral apex funnel (the split cone \
                  formed when the cup halves clamp) — feeding the bore at the \
                  highest point of the cavity — so the shell fills bottom-up; \
                  trapped air escapes the hand-drilled vent(s) at the apex and \
-                 any high spots. The cast is full the instant silicone reaches \
+                 any high spots. The cast is full the instant the pour reaches \
                  the bore (no point sits above it)."
             }
             PourGateKind::Default(s) if s.include_vent => {
