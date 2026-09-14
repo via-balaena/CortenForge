@@ -675,10 +675,36 @@ mod tests {
         assert!(!corner.slides_before_it_tips(1.00));
 
         // ⚠ AND THE FIX IS NEARLY FREE, WHICH IS THE ARGUMENT FOR THE
-        // LAYOUT. 15 mm of extra track clears the entire range. The same
-        // mass budget as a delta needed 156 mm — an order of magnitude
-        // more — because a delta puts the rider AWAY from its paired axle
-        // while a reverse trike puts them towards it.
+        // LAYOUT. 15 mm of extra track clears the entire range, and THIS
+        // SAME BUDGET read as a delta needs 402 mm — 27× more — because a
+        // delta puts the rider AWAY from its paired axle while a reverse
+        // trike puts them towards it.
+        //
+        // ⚠⚠ DERIVED, NOT QUOTED. An earlier revision carried a 156 mm
+        // here, correct for the delta-shaped mass budget this crate had
+        // before the layout was fixed and silently wrong for the one it
+        // has now. A number that is recomputed from the spec cannot rot
+        // that way; a number retyped into a comment can.
+        let track_to_clear = |layout| {
+            let s = TrikeSpec {
+                layout,
+                ..TrikeSpec::iter1()
+            };
+            // share · t / (2h) = 1  ⇒  t = 2h / share
+            2.0 * s.cg_z_m() / s.paired_axle_share() - s.track_m
+        };
+        assert_relative_eq!(
+            track_to_clear(Layout::Tadpole),
+            0.014_869_466_5,
+            epsilon = 1e-9
+        );
+        assert_relative_eq!(
+            track_to_clear(Layout::Delta),
+            0.402_100_161_6,
+            epsilon = 1e-9
+        );
+        assert!(track_to_clear(Layout::Delta) / track_to_clear(Layout::Tadpole) > 25.0);
+
         let wide = TrikeSpec {
             track_m: 0.92,
             ..TrikeSpec::iter1()
