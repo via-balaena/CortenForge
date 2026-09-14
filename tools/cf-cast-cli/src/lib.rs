@@ -103,8 +103,9 @@ pub fn run(cast_toml_path: &Path, output_dir_override: Option<&Path>) -> Result<
 }
 
 /// The derived inputs shared by [`run_with_config`] +
-/// [`run_selected_with_config`]: the lifted config + the [`CastSpec`] /
-/// [`Ribbon`] / output dir / cavity inset, ready for either export.
+/// [`run_selected_with_config`]: the lifted config + the
+/// [`cf_cast::CastSpec`] / [`cf_cast::Ribbon`] / output dir / cavity inset,
+/// ready for either export.
 struct Prepared {
     config: CastConfig,
     spec: cf_cast::CastSpec,
@@ -115,7 +116,8 @@ struct Prepared {
 
 /// Front half of the cast pipeline shared by the full + selective exports:
 /// validate, lift the design layers, load the scan SDF + centerline + caps,
-/// derive the [`CastSpec`] + [`Ribbon`], and resolve the output dir.
+/// derive the [`cf_cast::CastSpec`] + [`cf_cast::Ribbon`], and resolve the
+/// output dir.
 ///
 /// # Errors
 /// Layer-source validation, design-TOML load, scan/prep load, or ribbon

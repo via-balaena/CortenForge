@@ -331,7 +331,7 @@ pub enum FieldNode {
     /// For count `[3, 1, 1]` with spacing `(5, 1, 1)`, copies are at
     /// x ∈ {−5, 0, 5}.
     ///
-    /// Unlike [`Repeat`], has finite bounds and can be meshed directly.
+    /// Unlike [`Self::Repeat`], has finite bounds and can be meshed directly.
     /// Uses clamped repetition index — outermost cells extend to infinity
     /// (no wrapping at boundaries).
     ///
@@ -345,7 +345,7 @@ pub enum FieldNode {
 
     /// Smooth union with spatially varying blend radius.
     ///
-    /// Like [`SmoothUnion`] but the blend radius `k` is determined by a
+    /// Like [`Self::SmoothUnion`] but the blend radius `k` is determined by a
     /// user-provided closure evaluated at each point. `max_k` is the upper
     /// bound on the radius function, used for conservative interval
     /// evaluation.

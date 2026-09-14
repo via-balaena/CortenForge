@@ -4,8 +4,10 @@
 //! through the MJCF XML round-trip. This enables:
 //!
 //! - **SDF collision geoms**: each part's implicit surface is discretized into an
-//!   [`SdfGrid`] for O(1) collision queries with exact distance semantics.
-//! - **High-res visual meshes**: the same [`Solid`] produces a separate triangle
+//!   [`cf_geometry::SdfGrid`] for O(1) collision queries with exact distance
+//!   semantics.
+//! - **High-res visual meshes**: the same [`crate::Solid`] produces a separate
+//!   triangle
 //!   mesh for Bevy rendering, ensuring visual/physics alignment.
 //! - **Standard collision filtering**: parent-child bodies are filtered
 //!   (default). SDF collision works for non-parent-child geom pairs. Parent-child

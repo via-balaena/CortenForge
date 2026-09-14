@@ -939,8 +939,9 @@ fn build_parry_trimesh(mesh: &IndexedMesh) -> Option<TriMesh> {
 /// pure O(face²) Möller-Trumbore double-loop. Per-mesh wall-clock
 /// drops from ~540 s to ~1-2 s on production 400 k-face gasket
 /// meshes (~300-500× algorithmic speedup). The
-/// [`flag_thin_wall_faces_reference`] function preserves the O(n²)
-/// implementation for regression testing.
+/// `flag_thin_wall_faces_reference` function preserves the O(n²)
+/// implementation for regression testing. It is `#[cfg(test)]`, so it is
+/// deliberately NOT a doc link — there is no such item in a doc build.
 fn flag_thin_wall_faces(
     mesh: &IndexedMesh,
     config: &PrinterConfig,

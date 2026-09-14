@@ -11,7 +11,7 @@
 //!    iterates the components in order, performing the split-borrow
 //!    dance once per step so component authors never see the mutable
 //!    `Data` borrow.
-//! 3. Exposes per-component stochastic gating via [`Stochastic`] and
+//! 3. Exposes per-component stochastic gating via [`crate::Stochastic`] and
 //!    the [`StochasticGuard`] RAII helper, so finite-difference and
 //!    autograd contexts can wrap a block of code in
 //!    [`PassiveStack::disable_stochastic`] and have every stochastic
