@@ -1255,8 +1255,10 @@ fn write_geometry_requirements_v2(
     md.push('\n');
 }
 
-/// Whether `funnel.stl` is printed once or once per layer, as the standalone
-/// sentence the pour-gate note uses.
+/// The "print it once" sentence, standalone, as the pour-gate note uses it.
+///
+/// Both arms say once; the multi-layer arm adds why one funnel serves every
+/// pour.
 const fn funnel_print_once_sentence(layer_count: usize) -> &'static str {
     if layer_count == 1 {
         "Print `funnel.stl` once."
@@ -3707,8 +3709,8 @@ mod tests {
     ///
     /// ⚠ Asserted with the line prefix. A bare phrase match would also find
     /// these words elsewhere in the sheet — the failure that left the
-    /// plug-piece bullets ([`plug_cap_plane_bullet`] / [`plug_form_bullet`],
-    /// then one function) ungated through two review passes.
+    /// plug-piece bullets ([`plug_cap_plane_bullet`] and [`plug_form_bullet`],
+    /// a single function at the time) ungated through two review passes.
     #[test]
     fn each_gate_and_lock_state_gets_its_own_checklist_bullet() {
         const FUNNEL_NONE: &str = "\n3. **Funnel**: *none*";

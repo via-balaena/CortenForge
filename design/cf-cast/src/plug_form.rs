@@ -25,8 +25,8 @@ pub enum PlugFormKind {
     #[default]
     DomedCapsule,
     /// The plug is some other shape. The payload is what the bencher should
-    /// expect to SEE, in their words, with no leading article — it is read
-    /// into a sentence.
+    /// expect to SEE, in their words — a noun phrase, article and all, that
+    /// reads after "The plug is ".
     ///
     /// ⚠ **Generate this from the geometry that makes the shape — never type
     /// it.** A hand-written "six slots" outlives the day someone changes the

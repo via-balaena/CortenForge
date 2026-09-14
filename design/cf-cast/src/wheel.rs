@@ -887,8 +887,10 @@ pub fn wheel_cup_cores(spec: &WheelSpec) -> CupCoreKind {
 /// workshop reads cannot drift from the geometry it describes.
 ///
 /// ⚠ Deliberately NOT derived from [`wheel_cup_cores`]: those are voids in the
-/// cast BODY and these are openings in the PLUG. They coincide on a wheel and
-/// on nothing else — see [`crate::plug_form`].
+/// cast BODY and these are openings in the PLUG. Even on a wheel the two lists
+/// differ — [`cast_body_solid`] subtracts the locating-pin column and the
+/// slots, [`rim_solid`] subtracts the bore, the keying dimples and the slots,
+/// so only the slots are common to both. See [`crate::plug_form`].
 ///
 /// # Panics
 ///
