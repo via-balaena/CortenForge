@@ -2693,6 +2693,67 @@ mod tests {
         );
     }
 
+    /// ★★★ The wheel's sheet names no chemistry it was never told.
+    ///
+    /// ⚠ The wheel pours 95A polyurethane, and its sheet said "silicone" on
+    /// EIGHT lines. Asserted on the rendered artifact, and on the WHEEL
+    /// because it is the only subject that renders the demand flange, the
+    /// bolt clamp, the apex pour AND the vent bullet together — the sections
+    /// those sentences live in.
+    ///
+    /// ⚠ Rewriting them broke zero tests. This is the gate that was missing.
+    ///
+    /// ⚠⚠ Anchored BOTH ways. A bare "no silicone" assertion is satisfied by
+    /// deleting the sentences; each neutral noun is asserted present, and
+    /// `spec::tests::the_silicone_path_still_speaks_silicone` holds the other
+    /// side — the word is correct on a silicone cast.
+    #[test]
+    fn the_wheel_sheet_names_no_chemistry() {
+        let spec = WheelSpec::iter1();
+        let ribbon = wheel_mold_ribbon(&spec).unwrap();
+        let cast = wheel_cast_spec(
+            &spec,
+            WORKSHOP_WALL_M,
+            PRODUCTION_CELL_M,
+            mesh_printability::PrinterConfig::fdm_default(),
+        );
+        let pours = cast.compute_pour_volumes().unwrap();
+        let md = crate::procedure::generate_procedure_markdown_v2(&cast, &pours, &ribbon);
+
+        assert!(
+            !md.to_lowercase().contains("silicone"),
+            "the wheel pours urethane; its sheet still says silicone"
+        );
+        for phrase in [
+            "the cavity the pour fills",
+            "exceeds the pour's hydrostatic leak",
+            "the instant the pour reaches the bore",
+            "Ladle the mix straight into the assembled funnel",
+            "the funnel + bore fill cures as one sprue",
+            "Total pour mass",
+        ] {
+            assert!(md.contains(phrase), "a neutral noun is missing: {phrase:?}");
+        }
+
+        // ⚠ The vent bullet: the REQUIREMENT survives, the viscosity claim
+        // does not. It used to call a sub-millimetre hole one "the
+        // honey-thick silicone will not weep through" — a property of one
+        // material family, never measured for this one.
+        assert!(
+            md.contains("Air vents are NOT modeled"),
+            "the vent bullet must render, or the next two assertions are vacuous"
+        );
+        assert!(
+            !md.contains("honey-thick"),
+            "the vent bullet still asserts the pour's viscosity"
+        );
+        assert!(
+            md.contains("Air's very low viscosity escapes a sub-millimetre hole")
+                && md.contains("a test pour is what tells you"),
+            "the vent REQUIREMENT was cut along with the claim"
+        );
+    }
+
     #[test]
     fn a_cored_mold_piece_is_still_one_shell() {
         // ⚠ ADDED AFTER LOOKING AT THE MESH. Its sibling
