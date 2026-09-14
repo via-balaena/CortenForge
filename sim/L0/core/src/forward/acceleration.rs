@@ -381,7 +381,7 @@ fn mj_fwd_acceleration_implicit_full(model: &Model, data: &mut Data) -> Result<(
 ///
 /// 3. **cfrc_int backward pass** (leaf→root):
 ///    `cfrc_int[b] = I*cacc[b] + v×*(I*v) - cfrc_ext[b]`, accumulated into parent.
-///    Propagation includes world body (cfrc_int[0] = total gravity force).
+///    Propagation includes world body (`cfrc_int[0]` = total gravity force).
 ///
 /// Mirrors the RNE algorithm structure but uses actual `qacc` instead of bias-only.
 ///

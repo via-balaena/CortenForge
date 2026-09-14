@@ -309,7 +309,7 @@ pub fn mj_transmission_body_dispatch(model: &Model, data: &mut Data) {
 /// 4. Compute derivatives dlda, dldv via chain rule
 /// 5. Compute Jacobians: `mj_jac_site` on crank, `mj_jac_point_axis` on slider
 /// 6. Compose moment via chain rule
-/// 7. Scale length and moment by gear[0]
+/// 7. Scale length and moment by `gear[0]`
 ///
 /// Must run after `mj_fwd_position` (needs site_xpos, site_xmat, FK results).
 /// MuJoCo equivalent: `mjTRN_SLIDERCRANK` case in `mj_transmission()`.

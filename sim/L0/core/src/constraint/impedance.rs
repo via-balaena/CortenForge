@@ -104,13 +104,13 @@ pub fn compute_impedance(solimp: [f64; 5], violation: f64) -> f64 {
 /// Compute KBIP stiffness K and damping B from solref parameters (§15.1).
 ///
 /// Returns `(K, B)` where:
-/// - Standard mode (solref[0] > 0):
+/// - Standard mode (`solref[0] > 0`):
 ///   - K = 1/(dmax²·timeconst²·dampratio²)
 ///   - B = 2/(dmax·timeconst)          when dampratio > 0
 ///   - B = -dampratio/dmax             when dampratio ≤ 0
-/// - Direct mode (solref[0] ≤ 0): K = -solref[0]/dmax², B = -solref[1]/dmax
+/// - Direct mode (`solref[0] ≤ 0`): `K = -solref[0]/dmax²`, `B = -solref[1]/dmax`
 ///
-/// `dmax` = solimp[1] (clamped to [mjMINIMP, mjMAXIMP]).
+/// `dmax` = `solimp[1]` (clamped to `[mjMINIMP, mjMAXIMP]`).
 ///
 /// S4.15: When `DISABLE_REFSAFE` is NOT set (default), standard-mode
 /// `solref[0]` is clamped to `max(solref[0], 2 * timestep)`. This prevents

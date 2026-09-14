@@ -139,7 +139,7 @@ impl ModelBuilder {
     /// eq_data layout (matching MuJoCo's engine_setconst.c):
     ///   `[0..3]` = anchor in body2's local frame (user-specified `anchor` attr)
     ///   `[3..6]` = anchor in body1's local frame (auto-computed)
-    ///   `[6..10]` = relpose quaternion [w,x,y,z] = neg(q1_ref) * q2_ref
+    ///   `[6..10]` = relpose quaternion `[w,x,y,z]` = `neg(q1_ref) * q2_ref`
     ///
     /// MuJoCo convention: the `anchor` XML attribute is in body2's frame.
     /// Body1's anchor is auto-computed so both anchor points map to the same
