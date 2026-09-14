@@ -3596,8 +3596,9 @@ mod tests {
         );
     }
 
-    /// ★ The positive arm. Without it the gate above passes on a writer that
-    /// never states a ratio at all, for any material.
+    /// ★ The positive arm. Without it
+    /// [`the_guidance_never_states_a_ratio_the_table_does_not`] passes on a
+    /// writer that never states a ratio at all, for any material.
     #[test]
     fn a_known_anchor_still_states_its_ratio_and_the_table_agrees() {
         let (spec, base) = v2_fixture();
@@ -3633,9 +3634,11 @@ mod tests {
     /// ⚠⚠ **What it cannot see.** [`stated_ratio`] matches the SHAPE `NA:NB`,
     /// so a ratio spelled "one part A to one part B" is invisible to this gate
     /// and it passes — measured, not assumed. The wording of both arms is
-    /// pinned as whole literals by the two gates above, which is where such a
-    /// rewrite fails. This gate's own claim is the narrower one: for
-    /// digit-shaped ratios, the two sections never disagree.
+    /// pinned as whole literals by
+    /// [`the_guidance_never_states_a_ratio_the_table_does_not`] and
+    /// [`a_known_anchor_still_states_its_ratio_and_the_table_agrees`], which
+    /// is where such a rewrite fails. This gate's own claim is the narrower
+    /// one: for digit-shaped ratios, the two sections never disagree.
     #[test]
     fn the_guidance_and_the_table_never_disagree() {
         for (label, anchor) in [("anchored", Some("ECOFLEX_00_30")), ("unanchored", None)] {
