@@ -2642,19 +2642,26 @@ mod tests {
         }
     }
 
-    /// ★★ The wheel's own sheet states no mix ratio.
+    /// ★★ The wheel's material is unanchored, and its sheet renders the
+    /// no-ratio arm because of that.
     ///
     /// ⚠ Distinct from the synthetic-fixture gate in `spec::tests`, which
     /// builds an unanchored material by hand. This one asserts the WHEEL's
     /// material — `wheel_cast_spec` sets `anchor_key: None` — so giving the
-    /// wheel a silicone anchor one day would fail HERE, where the subject
-    /// lives, rather than silently start printing a ratio on the sheet a
-    /// bencher reads.
+    /// wheel a silicone anchor one day fails HERE, where the subject lives,
+    /// rather than silently printing a ratio on the sheet a bencher reads.
     ///
-    /// ⚠ It was pre-registered for that branch and not written. The plan file
+    /// ⚠⚠ **What it cannot see.** The ratio check below matches the SHAPE
+    /// `NA:NB`; a ratio spelled "one part A to one part B" passes it —
+    /// measured, not assumed. The arm's exact wording is pinned by
+    /// `spec::tests::the_guidance_never_states_a_ratio_the_table_does_not`,
+    /// which is where a reworded bullet fails. This gate's own claim is the
+    /// narrower one its name now states: the wheel reaches that arm at all.
+    ///
+    /// ⚠ It was pre-registered for this branch and not written. The plan file
     /// is not self-enforcing; auditing it against the code is what found this.
     #[test]
-    fn the_wheel_sheet_states_no_mix_ratio() {
+    fn the_wheel_renders_the_unanchored_mix_arm() {
         let spec = WheelSpec::iter1();
         let ribbon = wheel_mold_ribbon(&spec).unwrap();
         let cast = wheel_cast_spec(

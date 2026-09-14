@@ -3629,6 +3629,13 @@ mod tests {
 
     /// ★★ The invariant, over both arms and both plug roles: whatever ratio
     /// the guidance names, the table names it too.
+    ///
+    /// ⚠⚠ **What it cannot see.** [`stated_ratio`] matches the SHAPE `NA:NB`,
+    /// so a ratio spelled "one part A to one part B" is invisible to this gate
+    /// and it passes — measured, not assumed. The wording of both arms is
+    /// pinned as whole literals by the two gates above, which is where such a
+    /// rewrite fails. This gate's own claim is the narrower one: for
+    /// digit-shaped ratios, the two sections never disagree.
     #[test]
     fn the_guidance_and_the_table_never_disagree() {
         for (label, anchor) in [("anchored", Some("ECOFLEX_00_30")), ("unanchored", None)] {
