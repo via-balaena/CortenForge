@@ -451,6 +451,11 @@ members = [
     # full public surface + the pinned-floor scope-C spec for the
     # architectural arc that introduced it.
     "design/cf-cap-planes",
+    # Vehicle-scale parametric specs. The wheel/frame/axle arcs size parts
+    # against numbers; this is where those numbers are derived rather than
+    # chosen. Geometry + a lumped mass budget -> axle split, cornering
+    # loads, rollover threshold, steering trail.
+    "design/cf-vehicle",
 
     # Shared device-design domain types (cavity + layer-stack state,
     # scan resources, sim-design projection, slacker recipe data).
@@ -719,6 +724,7 @@ mesh = { path = "mesh/mesh" }
 
 # Geometric kernel
 cf-geometry = { path = "design/cf-geometry" }
+cf-vehicle = { path = "design/cf-vehicle" }
 cf-fsu-geometry = { path = "design/cf-fsu-geometry" }
 cf-routing = { path = "design/cf-routing" }
 cf-routing-tests = { path = "design/cf-routing-tests" }
