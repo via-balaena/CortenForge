@@ -1,0 +1,23 @@
+[package]
+name = "cf-vehicle"
+description = "Parametric vehicle specs for CortenForge — a rider-carried three-wheeler as geometry plus a lumped mass budget, deriving the axle-load split, per-wheel static and cornering loads, quasi-static rollover threshold and steering trail that downstream part design (wheels, frame, axles) is sized against"
+keywords = ["vehicle", "mechanics", "statics", "design", "trike"]
+categories = ["science", "mathematics"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[package.metadata.cortenforge]
+tier = "L0"
+
+[lints]
+workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+# Relative-tolerance float assertions for the derived-load gates.
+approx = { workspace = true }
