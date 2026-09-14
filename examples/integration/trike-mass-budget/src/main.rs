@@ -21,12 +21,12 @@
 //!    closed form is arithmetic on the same dimensions, evaluated without
 //!    touching the integrator, so what it checks is the **integrator**: a unit
 //!    slip, a wrong density, a cell too coarse to resolve a tube wall.
-//!    ⚠ It does **not** catch a wrong dimension. The formula and the solid
-//!    share the radius, so both move together — measured, a rim's inner radius
-//!    moved 10 mm and agreement stayed at 0.214%, well inside the 0.5%
-//!    tolerance. Dimensions are covered by (2) for the three that set the
-//!    contact patches, and by (3) as a regression, and the rim/tyre radii are
-//!    shared constants so they cannot drift apart in the first place.
+//!    ⚠ It does **not** catch a wrong dimension: the closed form is built from
+//!    the same `r_outer` and `r_inner` as the solid, so a wrong one moves both
+//!    and the check stays satisfied. Dimensions are covered by (2) for the
+//!    three that set the contact patches and by (3) as a regression, and the
+//!    rim/tyre mating radii are shared constants so that pair cannot drift at
+//!    all.
 //! 2. The wheelbase and track **read back out of the joint anchors** equal the
 //!    nominal numbers `cf-vehicle` was given. Placement is a chain of anchors;
 //!    a single mis-typed offset moves a contact patch.
@@ -53,10 +53,10 @@
 //!   follows the bounding box and the thinnest feature, not the amount of
 //!   material. *Where* a part sits is free — `bounds.rs:185` shifts a
 //!   translated box without growing it — but *how many parts* it is is not,
-//!   and that is decided by the missing weld joint above. The run prints the
-//!   measurement: the spine and cross-member cost 16.6 M cells as two members
-//!   and 250.4 M as the one weldment they physically are, 15.1x, because the
-//!   single box spans both and is nearly all air.
+//!   and that is decided by the missing weld joint above. Every run prints the
+//!   comparison: the spine and cross-member cost an **order of magnitude**
+//!   more as the one weldment they physically are than as two members,
+//!   because that single box spans both and is nearly all air.
 //! - ⚠ **Nothing aggregates an assembly.** `subtree_com[0]` is the whole-model
 //!   centre of mass, but it exists only after `to_model` plus a forward
 //!   kinematics pass. [`world_origins`] below is that walk, done directly on
