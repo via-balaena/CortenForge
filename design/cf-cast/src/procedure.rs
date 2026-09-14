@@ -79,9 +79,10 @@ fn write_materials_table(md: &mut String, spec: &CastSpec, pour_volumes: &[PourV
 /// three lines above it said "consult Smooth-On TDS" for the same material.
 ///
 /// ⚠ The disagreement arm is unreachable today — every anchor in
-/// [`crate::cure`] is 1A:1B, and `cure::tests::all_anchors_share_one_to_one_\
-/// mix_ratio` keeps it that way — so it is handled here but deliberately not
-/// gated. A gate that cannot be made to fail is worse than none.
+/// [`crate::cure`] is 1A:1B, and that crate's
+/// `all_anchors_share_one_to_one_mix_ratio` keeps it so — so the arm is
+/// handled here but deliberately not gated. A gate that cannot be made to
+/// fail is worse than none.
 fn agreed_mix_ratio(spec: &CastSpec) -> Option<&'static str> {
     let mut agreed: Option<&'static str> = None;
     for layer in &spec.layers {
