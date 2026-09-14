@@ -618,8 +618,9 @@ pub fn generate_infill(
 /// Builds bridging struts from each near-shell lattice node to its
 /// closest point on the inner shell.
 ///
-/// Iteration is O(M × log N) per node thanks to the parry BVH that
-/// backs [`TriMeshDistance::closest_point`]. On the canonical cube
+/// Iteration is O(M × log N) per node thanks to the parry BVH that backs
+/// [`mesh_sdf::UnsignedDistance::closest_point`], as implemented for
+/// `mesh_sdf::TriMeshDistance`. On the canonical cube
 /// fixture (~50 unique nodes × ~75 000 inner-offset faces) this runs
 /// in milliseconds in release mode — well within v1.0 example budgets.
 ///

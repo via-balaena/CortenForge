@@ -122,7 +122,7 @@ pub struct PrimalQuad {
     pub cone_map: Vec<(usize, usize)>,
 
     /// Gauss term quadratic: [constant, linear, quadratic].
-    /// cost_gauss(alpha) = quad_gauss[0] + alpha*quad_gauss[1] + alpha²*quad_gauss[2]
+    /// `cost_gauss(alpha) = quad_gauss[0] + alpha*quad_gauss[1] + alpha²*quad_gauss[2]`
     pub quad_gauss: [f64; 3],
 
     /// Norm of the search direction ||search||.

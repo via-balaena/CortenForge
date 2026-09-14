@@ -514,7 +514,7 @@ pub struct ModelBuilder {
     pub(crate) geom_rgba: Vec<[f64; 4]>,
     /// Fluid interaction data per geom: 12 elements matching MuJoCo's `geom_fluid`.
     /// See §40 spec for layout: [interaction_coef, C_blunt, C_slender, C_ang, C_K, C_M,
-    /// virtual_mass[3], virtual_inertia[3]].
+    /// `virtual_mass[3]`, `virtual_inertia[3]`].
     pub(crate) geom_fluid: Vec<[f64; 12]>,
 
     // Mesh arrays (built from MJCF <asset><mesh> elements)

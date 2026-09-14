@@ -104,7 +104,7 @@ pub struct SparseHessian {
     l_col_ptr: Vec<usize>,
     /// CSC row indices for L factor.
     l_row_idx: Vec<usize>,
-    /// Numeric values of L factor (unit lower triangular: L[j,j] = 1, not stored).
+    /// Numeric values of L factor (unit lower triangular: `L[j,j]` = 1, not stored).
     l_vals: Vec<f64>,
     /// Diagonal D from LDL^T factorization (length nv).
     l_diag: Vec<f64>,
@@ -665,7 +665,7 @@ pub fn hessian_incremental(
 ///
 /// For each cone-state contact with a stored `efc_cone_hessian[ci]`:
 /// 1. Factor the local dim×dim H_c via Cholesky → L_local
-/// 2. For each column k of L_local, build v = L_local[:,k]^T * J_contact (nv vector)
+/// 2. For each column k of L_local, build `v = L_local[:,k]^T * J_contact` (nv vector)
 /// 3. Apply rank-1 update to L_cone with v
 ///
 /// Returns the modified Cholesky factor, or falls back to full `assemble_hessian` if

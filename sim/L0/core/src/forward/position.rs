@@ -245,7 +245,7 @@ pub fn mj_fwd_position(model: &Model, data: &mut Data) {
 /// standard rotated-box AABB formula:
 ///
 ///   world_center = pos + mat * local_center
-///   world_half[i] = Σ_j |mat[i,j]| * local_half[j]
+///   `world_half[i] = Σ_j |mat[i,j]| * local_half[j]`
 ///
 /// Works for all geom types uniformly — no type dispatch needed at runtime.
 #[inline]

@@ -206,7 +206,7 @@ pub fn collide_hfield_multi(
 /// Build a triangular prism for one triangle of a heightfield grid cell.
 ///
 /// Returns 6 vertices: [bottom0, bottom1, bottom2, top0, top1, top2].
-/// Bottom vertices are at Z = -size[3] (base elevation).
+/// Bottom vertices are at `Z = -size[3]` (base elevation).
 /// Top vertices are at Z = height + margin (surface elevation).
 ///
 /// `i=0`: lower-left triangle (vertices at (c,r), (c+1,r), (c,r+1))

@@ -101,7 +101,7 @@ pub fn extract_connect_jacobian(
 /// MuJoCo convention: separate anchor points per body. eq_data layout:
 ///   [0..3] = anchor in body2's local frame
 ///   [3..6] = anchor in body1's local frame (auto-computed at model build)
-///   [6..10] = relpose quaternion [w,x,y,z] = inv(q1_ref) * q2_ref
+///   `[6..10]` = relpose quaternion `[w,x,y,z]` = `inv(q1_ref) * q2_ref`
 ///
 /// Constraint: pos_body1 = pos_body2 AND orientation match.
 pub fn extract_weld_jacobian(model: &Model, data: &Data, eq_id: usize) -> EqualityConstraintRows {

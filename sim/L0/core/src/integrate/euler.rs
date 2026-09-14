@@ -39,7 +39,7 @@ struct PositionIntegrateVisitor<'a> {
 
 impl PositionIntegrateVisitor<'_> {
     /// Integrate a quaternion with angular velocity on SO(3) manifold.
-    /// `qpos_offset` is the offset into qpos where the quaternion starts [w,x,y,z].
+    /// `qpos_offset` is the offset into qpos where the quaternion starts `[w,x,y,z]`.
     /// `omega` is the angular velocity vector.
     #[inline]
     fn integrate_quaternion(&mut self, qpos_offset: usize, omega: Vector3<f64>) {
