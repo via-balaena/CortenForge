@@ -3577,9 +3577,22 @@ mod tests {
             None,
             "the guidance states a ratio for an unanchored material:\n{guidance}"
         );
-        assert!(
-            guidance.contains("`## Materials Summary` above has no cure data"),
-            "and it must say WHY no ratio is given:\n{guidance}"
+        // ⚠⚠ `stated_ratio` finds the SHAPE `NA:NB`, not the MEANING "a
+        // ratio". A hardcode reading "one part A to one part B" passed every
+        // gate on this branch until this literal was added — the original bug
+        // and all eight mutations happened to wear digits, which is exactly
+        // how a mutation sweep can look convincing and prove the wrong thing.
+        // The whole bullet is pinned, so ANY wording change fails.
+        assert_eq!(
+            guidance
+                .lines()
+                .find(|l| l.starts_with("- Weigh Part A"))
+                .unwrap_or("<the mix bullet is missing>"),
+            "- Weigh Part A + Part B on a gram scale, at the ratio on its TDS. \
+             No ratio is stated here: `## Materials Summary` above has no cure \
+             data for this cast's material. Weight typically beats volume for \
+             a low-viscosity pour.",
+            "the unanchored mix bullet drifted"
         );
     }
 
@@ -3593,6 +3606,17 @@ mod tests {
         let ratio = stated_ratio(guidance)
             .unwrap_or_else(|| panic!("an anchored material must get its ratio:\n{guidance}"));
         assert_eq!(ratio, "1A:1B", "Ecoflex 00-30's TDS ratio");
+        // ⚠ Pinned whole, for the same reason as the unanchored arm above.
+        assert_eq!(
+            guidance
+                .lines()
+                .find(|l| l.starts_with("- Weigh Part A"))
+                .unwrap_or("<the mix bullet is missing>"),
+            "- Weigh Part A + Part B on a gram scale. 1A:1B is by weight or \
+             volume per TDS — choose the more accurate path for the equipment \
+             on hand (weight typically beats volume for a low-viscosity pour).",
+            "the anchored mix bullet drifted"
+        );
         // ⚠ The whole point: ONE source, so the two cannot disagree.
         let table = md
             .split_once("## Generic Smooth-On Guidance")
