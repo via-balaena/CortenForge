@@ -27,6 +27,17 @@
 //!   is **symmetric about the centreline**, which for a single seated
 //!   rider it very nearly is, and which [`CorneringLoads`] depends on.
 //!
+//! # Which end is doubled
+//!
+//! ★★★ [`Layout`] is the most consequential field in the spec. One axle
+//! has two wheels and one has a single wheel on the centreline, and **only
+//! the paired axle can resist a roll moment** — so the layout decides
+//! which end of the mass budget buys stability. A
+//! [`Tadpole`](spec::Layout::Tadpole) (two wheels forward — a *reverse
+//! trike*) wants weight forward; a [`Delta`](spec::Layout::Delta) wants it
+//! rearward. Same arithmetic, opposite sign, and every downstream
+//! conclusion follows from that one bit.
+//!
 //! # The design rule this crate exists to state
 //!
 //! ★★★ **A drift trike must slide before it tips.** Two independent
@@ -36,8 +47,8 @@
 //!   can generate before they break away, which is `µ`, a property of the
 //!   compound;
 //! - the **rollover threshold** — how much lateral acceleration the
-//!   geometry survives before the inner rear wheel lifts, which is track,
-//!   wheelbase and centre-of-gravity height.
+//!   geometry survives before the inner wheel of the paired axle lifts,
+//!   which is track, axle share and centre-of-gravity height.
 //!
 //! Whichever is lower is what actually happens in a corner. Choosing a
 //! tyre hardness is therefore a **stability decision**, not a feel one, and
@@ -53,7 +64,7 @@ pub mod analysis;
 pub mod spec;
 
 pub use analysis::{CorneringLoads, StaticLoads, SteeringGeometry};
-pub use spec::{MassItem, TrikeSpec};
+pub use spec::{Layout, MassItem, TrikeSpec};
 
 /// Standard gravity, m/s².
 ///

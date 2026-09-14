@@ -2,10 +2,52 @@
 
 use crate::GRAVITY_M_S2;
 
+/// Which end of the vehicle carries two wheels.
+///
+/// ★★★ **This is the single most consequential field in the spec.** One
+/// axle has two wheels and one has a single wheel on the centreline, and
+/// only the paired axle can resist a roll moment — so the layout decides
+/// which end of the mass budget buys stability. Everything else about the
+/// two layouts is shared; this one bit inverts the sign.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Layout {
+    /// **Two wheels at the front, one at the rear** — a *reverse trike*,
+    /// the Polaris Slingshot arrangement. Roll is resisted at the front,
+    /// so weight **forward** is what makes it stable.
+    #[default]
+    Tadpole,
+    /// **One wheel at the front, two at the rear** — the classic pedal
+    /// drift trike. Roll is resisted at the rear, so weight **rearward**
+    /// is what makes it stable.
+    Delta,
+}
+
+impl Layout {
+    /// Where the lone wheel sits, in metres aft of the front contact
+    /// patch, on a vehicle of the given wheelbase.
+    #[must_use]
+    pub const fn single_wheel_x_m(self, wheelbase_m: f64) -> f64 {
+        match self {
+            Self::Tadpole => wheelbase_m,
+            Self::Delta => 0.0,
+        }
+    }
+
+    /// Whether the paired axle is the one that steers.
+    ///
+    /// True for a [`Layout::Tadpole`], whose two front wheels steer on
+    /// kingpins; false for a [`Layout::Delta`], whose single front wheel
+    /// steers on a fork.
+    #[must_use]
+    pub const fn steers_on_the_paired_axle(self) -> bool {
+        matches!(self, Self::Tadpole)
+    }
+}
+
 /// One lumped mass in a vehicle's budget.
 ///
 /// ★ **A budget line, not a part.** The rider, the frame, the front end,
-/// the rear axle assembly — each is one entry with a mass and a position.
+/// the rear assembly — each is one entry with a mass and a position.
 /// Splitting an entry in two is always safe (the centroid is unchanged if
 /// the pieces are placed correctly); merging two into one loses the
 /// ability to correct either independently.
@@ -38,61 +80,66 @@ impl MassItem {
     }
 }
 
-/// A rider-carried three-wheeler: one steered wheel at the front, two
-/// driven-or-free wheels on a rear axle.
-///
-/// This is a **delta** layout (1 front, 2 rear), which is what a slingshot
-/// drift trike is. ⚠ The rollover arithmetic in
-/// [`CorneringLoads`](crate::CorneringLoads) is specific to that layout —
-/// a tadpole (2 front, 1 rear) tips about a different line and this crate
-/// does not model it.
+/// A rider-carried three-wheeler.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TrikeSpec {
-    /// Front contact patch to rear axle contact line, metres.
+    /// Which end carries two wheels. See [`Layout`].
+    pub layout: Layout,
+    /// Front contact patch to rear contact patch, metres.
     pub wheelbase_m: f64,
-    /// Lateral distance between the two rear contact patches, metres.
-    pub rear_track_m: f64,
+    /// Lateral distance between the **paired** axle's two contact
+    /// patches, metres. The lone wheel is on the centreline and has no
+    /// track of its own.
+    pub track_m: f64,
     /// Front wheel rolling radius, metres.
     pub front_wheel_radius_m: f64,
     /// Rear wheel rolling radius, metres.
     pub rear_wheel_radius_m: f64,
     /// Steering axis angle from the **horizontal**, degrees.
     ///
-    /// ⚠ From horizontal, not from vertical. 90° is a vertical head tube;
-    /// smaller is slacker, i.e. raked back like a cruiser.
-    pub head_angle_deg: f64,
-    /// Fork offset — the perpendicular distance from the steering axis to
-    /// the front wheel's centre, metres. Positive forward.
-    pub fork_rake_m: f64,
+    /// ⚠ From horizontal, not from vertical. 90° is a vertical axis;
+    /// smaller is raked back. A fork's head angle and a kingpin's caster
+    /// are the same quantity in this convention — a 7° caster is 83° here.
+    pub steering_axis_angle_deg: f64,
+    /// Longitudinal offset of the steered wheel's centre from the steering
+    /// axis, metres, positive forward. Fork rake on a delta, caster offset
+    /// on a tadpole.
+    pub steering_offset_m: f64,
     /// Every mass the vehicle carries, rider included.
     pub masses: Vec<MassItem>,
 }
 
 impl TrikeSpec {
-    /// The planned first trike.
+    /// The planned first trike: a **reverse trike**, two wheels forward.
     ///
     /// ⚠ **Every mass here is an estimate and is meant to be corrected by
     /// weighing.** They are written as separate lines precisely so that a
-    /// bathroom scale can replace them one at a time. The geometry is a
-    /// conventional rideable slingshot layout: a 20″ front wheel, 11″ rear
-    /// wheels, and a rider seated low and well aft.
+    /// bathroom scale can replace them one at a time.
+    ///
+    /// The rider sits behind the front axle and low, which is what the
+    /// layout wants: on a tadpole, weight forward raises the rollover
+    /// threshold *and* unloads the lone rear wheel that is meant to break
+    /// away. Both effects pull the same way, which is the engineering
+    /// argument for the layout.
     #[must_use]
     pub fn iter1() -> Self {
         Self {
+            layout: Layout::Tadpole,
             wheelbase_m: 1.25,
-            rear_track_m: 0.75,
-            // 20″ BMX front, 508 mm outside diameter.
-            front_wheel_radius_m: 0.254,
-            // 11″ rear, 280 mm outside diameter.
+            track_m: 0.90,
+            // 16″ front, 406 mm outside diameter.
+            front_wheel_radius_m: 0.2032,
+            // 11″ rear, 280 mm outside diameter — the polyurethane one.
             rear_wheel_radius_m: 0.140,
-            head_angle_deg: 68.0,
-            fork_rake_m: 0.040,
+            // 8° of caster.
+            steering_axis_angle_deg: 82.0,
+            steering_offset_m: 0.010,
             masses: vec![
-                MassItem::new("rider", 80.0, 0.95, 0.35),
-                MassItem::new("frame", 12.0, 0.60, 0.25),
-                MassItem::new("front wheel, fork and bars", 4.0, 0.0, 0.30),
-                MassItem::new("rear axle assembly", 6.0, 1.25, 0.14),
-                MassItem::new("seat", 2.0, 0.95, 0.25),
+                MassItem::new("rider", 80.0, 0.50, 0.30),
+                MassItem::new("frame", 14.0, 0.60, 0.25),
+                MassItem::new("front suspension, wheels and steering", 14.0, 0.0, 0.20),
+                MassItem::new("rear wheel, swingarm and drive", 10.0, 1.25, 0.15),
+                MassItem::new("seat", 2.0, 0.50, 0.22),
             ],
         }
     }
@@ -101,11 +148,11 @@ impl TrikeSpec {
     ///
     /// # Panics
     ///
-    /// Panics if any dimension is non-positive or non-finite, if the head
-    /// angle is outside `(0°, 90°]`, if the mass budget is empty or holds
-    /// a non-positive mass, or if the centre of gravity does not fall
-    /// **between the two axles** — a vehicle whose CG is outside its
-    /// wheelbase tips over standing still.
+    /// Panics if any dimension is non-positive or non-finite, if the
+    /// steering axis angle is outside `(0°, 90°]`, if the mass budget is
+    /// empty or holds a non-positive mass, or if the centre of gravity
+    /// does not fall **between the two axles** — a vehicle whose CG is
+    /// outside its wheelbase tips over standing still.
     pub fn assert_well_formed(&self) {
         assert!(
             self.wheelbase_m > 0.0 && self.wheelbase_m.is_finite(),
@@ -113,9 +160,9 @@ impl TrikeSpec {
             self.wheelbase_m
         );
         assert!(
-            self.rear_track_m > 0.0 && self.rear_track_m.is_finite(),
-            "rear track must be positive and finite, got {}",
-            self.rear_track_m
+            self.track_m > 0.0 && self.track_m.is_finite(),
+            "track must be positive and finite, got {}",
+            self.track_m
         );
         assert!(
             self.front_wheel_radius_m > 0.0 && self.front_wheel_radius_m.is_finite(),
@@ -128,15 +175,15 @@ impl TrikeSpec {
             self.rear_wheel_radius_m
         );
         assert!(
-            self.head_angle_deg > 0.0 && self.head_angle_deg <= 90.0,
-            "head angle is measured from the horizontal and must lie in \
-             (0, 90] degrees, got {}",
-            self.head_angle_deg
+            self.steering_axis_angle_deg > 0.0 && self.steering_axis_angle_deg <= 90.0,
+            "the steering axis angle is measured from the horizontal and \
+             must lie in (0, 90] degrees, got {}",
+            self.steering_axis_angle_deg
         );
         assert!(
-            self.fork_rake_m >= 0.0 && self.fork_rake_m.is_finite(),
-            "fork rake must be non-negative and finite, got {}",
-            self.fork_rake_m
+            self.steering_offset_m.is_finite(),
+            "steering offset must be finite, got {}",
+            self.steering_offset_m
         );
         assert!(
             !self.masses.is_empty(),
@@ -211,11 +258,46 @@ impl TrikeSpec {
         assert!(total > 0.0, "an empty mass budget has no centre of gravity");
         self.masses.iter().map(|m| m.mass_kg * m.z_m).sum::<f64>() / total
     }
+
+    /// The fraction of the total weight carried by the **paired** axle.
+    ///
+    /// ★ **One derivation, both layouts.** Moments about the lone wheel
+    /// give the paired axle's share directly: it is the CG's distance from
+    /// the lone wheel, as a fraction of the wheelbase. The layout does
+    /// nothing but say where the lone wheel is, and the sign of every
+    /// stability conclusion follows from that alone.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the mass budget is empty.
+    #[must_use]
+    pub fn paired_axle_share(&self) -> f64 {
+        let single_x = self.layout.single_wheel_x_m(self.wheelbase_m);
+        (self.cg_x_m() - single_x).abs() / self.wheelbase_m
+    }
+
+    /// Rolling radius of the wheels on the paired axle, metres.
+    #[must_use]
+    pub const fn paired_wheel_radius_m(&self) -> f64 {
+        match self.layout {
+            Layout::Tadpole => self.front_wheel_radius_m,
+            Layout::Delta => self.rear_wheel_radius_m,
+        }
+    }
+
+    /// Rolling radius of the lone wheel, metres.
+    #[must_use]
+    pub const fn single_wheel_radius_m(&self) -> f64 {
+        match self.layout {
+            Layout::Tadpole => self.rear_wheel_radius_m,
+            Layout::Delta => self.front_wheel_radius_m,
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{MassItem, TrikeSpec};
+    use super::{Layout, MassItem, TrikeSpec};
     use approx::assert_relative_eq;
 
     #[test]
@@ -253,15 +335,58 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "measured from the horizontal")]
-    fn a_head_angle_past_vertical_is_rejected() {
-        // ⚠ The classic unit trap: quoting a head angle from the VERTICAL
-        // (a 22° "rake") instead of from the horizontal silently inverts
-        // the trail. 112 degrees is the shape that mistake takes.
+    fn a_steering_axis_angle_past_vertical_is_rejected() {
+        // ⚠ The classic unit trap: quoting the angle from the VERTICAL (an
+        // 8° "caster") instead of from the horizontal silently inverts the
+        // trail. 112 degrees is the shape that mistake takes.
         TrikeSpec {
-            head_angle_deg: 112.0,
+            steering_axis_angle_deg: 112.0,
             ..TrikeSpec::iter1()
         }
         .assert_well_formed();
+    }
+
+    #[test]
+    fn the_layout_only_says_where_the_lone_wheel_is() {
+        // ★ The whole delta/tadpole difference, in one place. Everything
+        // downstream reads `paired_axle_share`, which reads this.
+        assert_relative_eq!(
+            Layout::Tadpole.single_wheel_x_m(1.25),
+            1.25,
+            epsilon = 1e-12
+        );
+        assert_relative_eq!(Layout::Delta.single_wheel_x_m(1.25), 0.0, epsilon = 1e-12);
+        assert!(Layout::Tadpole.steers_on_the_paired_axle());
+        assert!(!Layout::Delta.steers_on_the_paired_axle());
+        assert_eq!(Layout::default(), Layout::Tadpole);
+    }
+
+    #[test]
+    fn the_paired_share_is_a_distance_from_the_lone_wheel() {
+        // Both layouts, one derivation: the CG's distance from whichever
+        // wheel is alone, over the wheelbase.
+        let masses = vec![MassItem::new("all", 100.0, 0.40, 0.30)];
+        let tadpole = TrikeSpec {
+            layout: Layout::Tadpole,
+            masses: masses.clone(),
+            ..TrikeSpec::iter1()
+        };
+        let delta = TrikeSpec {
+            layout: Layout::Delta,
+            masses,
+            ..TrikeSpec::iter1()
+        };
+        assert_relative_eq!(
+            tadpole.paired_axle_share(),
+            (1.25 - 0.40) / 1.25,
+            epsilon = 1e-12
+        );
+        assert_relative_eq!(delta.paired_axle_share(), 0.40 / 1.25, epsilon = 1e-12);
+        assert_relative_eq!(
+            tadpole.paired_axle_share() + delta.paired_axle_share(),
+            1.0,
+            epsilon = 1e-12
+        );
     }
 
     #[test]

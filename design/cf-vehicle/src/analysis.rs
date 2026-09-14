@@ -6,6 +6,12 @@
 //! number in this module is solved, not apportioned. Four-wheelers need a
 //! roll-stiffness split to answer the same question, and that split is an
 //! assumption. We get to skip it.
+//!
+//! ★★★ **Both layouts share one derivation.** Nothing here branches on
+//! [`Layout`](crate::spec::Layout) except through
+//! [`TrikeSpec::paired_axle_share`], because the physics does not care
+//! which end is doubled — only that one axle has two contact patches and
+//! the other has one on the centreline.
 
 use crate::TrikeSpec;
 
@@ -14,14 +20,14 @@ use crate::TrikeSpec;
 pub struct StaticLoads {
     /// Total weight, newtons.
     pub total_weight_n: f64,
-    /// Vertical reaction at the single front contact patch, newtons.
-    pub front_n: f64,
-    /// Vertical reaction summed over both rear contact patches, newtons.
-    pub rear_total_n: f64,
-    /// Vertical reaction at one rear wheel, newtons.
-    pub per_rear_wheel_n: f64,
-    /// Fraction of the total weight carried by the rear axle, `0..1`.
-    pub rear_share: f64,
+    /// Vertical reaction at the lone centreline wheel, newtons.
+    pub single_wheel_n: f64,
+    /// Vertical reaction summed over the paired axle, newtons.
+    pub paired_axle_total_n: f64,
+    /// Vertical reaction at one wheel of the paired axle, newtons.
+    pub per_paired_wheel_n: f64,
+    /// Fraction of the total weight carried by the paired axle, `0..1`.
+    pub paired_axle_share: f64,
     /// Centre of gravity, metres aft of the front contact patch.
     pub cg_x_m: f64,
     /// Centre of gravity height, metres.
@@ -31,10 +37,10 @@ pub struct StaticLoads {
 impl StaticLoads {
     /// Solve the standing-still load case.
     ///
-    /// Moments about the rear axle give the front reaction directly:
-    /// `front = W · (L − x_cg) / L`, so the **rear share is `x_cg / L`** and
-    /// nothing else. ★ This is the number the wheel arc previously carried
-    /// as a hand-written 70 %.
+    /// Moments about the lone wheel give the paired axle's reaction
+    /// directly, so the **paired share is the CG's distance from the lone
+    /// wheel over the wheelbase** and nothing else. ★ This is the number
+    /// the wheel arc previously carried as a hand-written 70 %.
     ///
     /// # Panics
     ///
@@ -44,69 +50,69 @@ impl StaticLoads {
     pub fn of(spec: &TrikeSpec) -> Self {
         spec.assert_well_formed();
         let total_weight_n = spec.total_weight_n();
-        let cg_x_m = spec.cg_x_m();
-        let rear_share = cg_x_m / spec.wheelbase_m;
-        let rear_total_n = total_weight_n * rear_share;
+        let paired_axle_share = spec.paired_axle_share();
+        let paired_axle_total_n = total_weight_n * paired_axle_share;
         Self {
             total_weight_n,
-            front_n: total_weight_n - rear_total_n,
-            rear_total_n,
-            per_rear_wheel_n: rear_total_n / 2.0,
-            rear_share,
-            cg_x_m,
+            single_wheel_n: total_weight_n - paired_axle_total_n,
+            paired_axle_total_n,
+            per_paired_wheel_n: paired_axle_total_n / 2.0,
+            paired_axle_share,
+            cg_x_m: spec.cg_x_m(),
             cg_z_m: spec.cg_z_m(),
         }
     }
 
-    /// One rear wheel's vertical load multiplied by a dynamic factor.
+    /// A wheel's vertical load multiplied by a dynamic factor.
     ///
     /// ⚠ **The factor is the caller's, deliberately.** Kerbs, drops and
     /// potholes are not derivable from a static mass budget, and a
     /// hard-coded 3× buried in a library is exactly the kind of unowned
     /// number this crate exists to abolish. Pass one you can defend.
     #[must_use]
-    pub fn per_rear_wheel_dynamic_n(&self, factor: f64) -> f64 {
-        self.per_rear_wheel_n * factor
+    pub fn dynamic_n(wheel_load_n: f64, factor: f64) -> f64 {
+        wheel_load_n * factor
     }
 }
 
 /// The vehicle in a steady-state corner on level ground.
 ///
 /// ⚠ **Valid only below [`CorneringLoads::rollover_threshold_g`].** Above
-/// it the inner rear wheel has left the ground, the vehicle is on two
-/// contacts, and these numbers describe a rigid body that no longer
-/// matches reality. [`CorneringLoads::inner_rear_lifted`] reports it.
+/// it the inner wheel of the paired axle has left the ground, the vehicle
+/// is on two contacts, and these numbers describe a rigid body that no
+/// longer matches reality. [`CorneringLoads::inner_wheel_lifted`] reports
+/// it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CorneringLoads {
     /// The lateral acceleration solved for, in units of `g`.
     pub lateral_accel_g: f64,
-    /// Vertical reaction at the front contact patch, newtons.
+    /// Vertical reaction at the lone centreline wheel, newtons.
     ///
     /// ★ Unchanged from static. A pure lateral acceleration makes no
     /// moment about the lateral axis, so it cannot move load fore or aft.
-    pub front_n: f64,
-    /// Vertical reaction at the **outer** rear wheel, newtons.
-    pub outer_rear_n: f64,
-    /// Vertical reaction at the **inner** rear wheel, newtons.
+    pub single_wheel_n: f64,
+    /// Vertical reaction at the **outer** wheel of the paired axle.
+    pub outer_wheel_n: f64,
+    /// Vertical reaction at the **inner** wheel of the paired axle.
     ///
     /// Negative means the rigid-body solution would need the wheel to pull
     /// down on the road; physically it has lifted.
-    pub inner_rear_n: f64,
-    /// Lateral acceleration at which the inner rear wheel lifts, in `g`.
+    pub inner_wheel_n: f64,
+    /// Lateral acceleration at which the inner wheel lifts, in `g`.
     pub rollover_threshold_g: f64,
 }
 
 impl CorneringLoads {
     /// Solve the cornering load case at a given lateral acceleration.
     ///
-    /// ★★★ **The whole roll moment lands on the rear axle.** The front
-    /// contact patch sits on the centreline, so it has no lateral lever
-    /// about the roll axis and resists none of it — the two rear wheels
-    /// take all of `W · (a/g) · z_cg`, reacted as a couple across the
-    /// track. That, and not a low CG alone, is why three-wheelers tip.
+    /// ★★★ **The whole roll moment lands on the paired axle.** The lone
+    /// wheel sits on the centreline, so it has no lateral lever about the
+    /// roll axis and resists none of it — the two paired wheels take all
+    /// of `W · (a/g) · z_cg`, reacted as a couple across the track. That,
+    /// and not a high CG alone, is why three-wheelers tip.
     ///
     /// The transfer is therefore `ΔF = W · (a/g) · z_cg / t`, using the
-    /// **total** weight and not the rear axle's share of it.
+    /// **total** weight and not the paired axle's share of it.
     ///
     /// # Panics
     ///
@@ -120,42 +126,42 @@ impl CorneringLoads {
              {lateral_accel_g}"
         );
         let statics = StaticLoads::of(spec);
-        let transfer_n =
-            statics.total_weight_n * lateral_accel_g * statics.cg_z_m / spec.rear_track_m;
+        let transfer_n = statics.total_weight_n * lateral_accel_g * statics.cg_z_m / spec.track_m;
         Self {
             lateral_accel_g,
-            front_n: statics.front_n,
-            outer_rear_n: statics.per_rear_wheel_n + transfer_n,
-            inner_rear_n: statics.per_rear_wheel_n - transfer_n,
+            single_wheel_n: statics.single_wheel_n,
+            outer_wheel_n: statics.per_paired_wheel_n + transfer_n,
+            inner_wheel_n: statics.per_paired_wheel_n - transfer_n,
             rollover_threshold_g: rollover_threshold_g(spec),
         }
     }
 
-    /// Whether the inner rear wheel has left the ground.
+    /// Whether the inner wheel of the paired axle has left the ground.
     #[must_use]
-    pub fn inner_rear_lifted(&self) -> bool {
-        self.inner_rear_n <= 0.0
+    pub fn inner_wheel_lifted(&self) -> bool {
+        self.inner_wheel_n <= 0.0
     }
 
-    /// The lateral force one rear wheel transmits at its contact patch at
-    /// a given tyre friction coefficient, newtons.
+    /// The lateral force the outer paired wheel transmits at its contact
+    /// patch at a given tyre friction coefficient, newtons.
     ///
     /// This is what loads a wheel out of its own plane — on an FDM rim,
     /// straight into the layer-adhesion axis.
     #[must_use]
-    pub fn outer_rear_lateral_n(&self, tyre_mu: f64) -> f64 {
-        self.outer_rear_n * tyre_mu
+    pub fn outer_wheel_lateral_n(&self, tyre_mu: f64) -> f64 {
+        self.outer_wheel_n * tyre_mu
     }
 
-    /// The moment that lateral force applies at the rear hub, newton-metres.
+    /// The moment that lateral force applies at the outer wheel's hub,
+    /// newton-metres.
     ///
     /// # Panics
     ///
     /// Panics if `spec` is not well-formed.
     #[must_use]
-    pub fn outer_rear_hub_moment_n_m(&self, spec: &TrikeSpec, tyre_mu: f64) -> f64 {
+    pub fn outer_wheel_hub_moment_n_m(&self, spec: &TrikeSpec, tyre_mu: f64) -> f64 {
         spec.assert_well_formed();
-        self.outer_rear_lateral_n(tyre_mu) * spec.rear_wheel_radius_m
+        self.outer_wheel_lateral_n(tyre_mu) * spec.paired_wheel_radius_m()
     }
 
     /// ★★★ **Does it slide before it tips?**
@@ -174,25 +180,29 @@ impl CorneringLoads {
     }
 }
 
-/// The lateral acceleration, in `g`, at which the inner rear wheel lifts.
+/// The lateral acceleration, in `g`, at which the inner wheel of the
+/// paired axle lifts.
 ///
-/// Setting the inner reaction to zero and solving gives a compact result:
+/// Setting that wheel's reaction to zero and solving gives a compact
+/// result that holds for either layout:
 ///
 /// ```text
-/// a/g  =  rear_share · track / (2 · cg_height)
+/// a/g  =  paired_axle_share · track / (2 · cg_height)
 /// ```
 ///
 /// ★ **That is the familiar two-wheeled static stability factor,
-/// `t / 2h`, scaled by the rear share** — a delta trike is exactly
-/// `rear_share` as roll-stable as a four-wheeler of the same track and CG
-/// height. Two consequences fall straight out, and the second one is
-/// counter-intuitive:
+/// `t / 2h`, scaled by the paired axle's share of the weight** — a trike
+/// is exactly `paired_axle_share` as roll-stable as a four-wheeler of the
+/// same track and CG height. Two consequences fall straight out, and the
+/// second one is where the layouts part company:
 ///
-/// - the term that dominates is **CG height**, not track;
-/// - moving weight **rearward makes a delta trike more stable**, because
-///   the tipping line runs from the single front contact to the outer rear
-///   one, and a CG further aft sits further inboard of it. The opposite is
-///   true of a tadpole, which this crate does not model.
+/// - the term that dominates is **CG height**, not track, because track
+///   enters linearly and CG height as its reciprocal;
+/// - weight moved **towards the paired axle** raises the threshold. On a
+///   [`Tadpole`](crate::spec::Layout::Tadpole) that means weight
+///   **forward**; on a [`Delta`](crate::spec::Layout::Delta) it means
+///   weight **rearward**. The same mass budget gives two different answers
+///   depending on which end is doubled.
 ///
 /// ⚠ Quasi-static. Kerbs, camber and abrupt steering all tip vehicles that
 /// clear this number.
@@ -204,15 +214,18 @@ impl CorneringLoads {
 #[must_use]
 pub fn rollover_threshold_g(spec: &TrikeSpec) -> f64 {
     spec.assert_well_formed();
-    let rear_share = spec.cg_x_m() / spec.wheelbase_m;
-    rear_share * spec.rear_track_m / (2.0 * spec.cg_z_m())
+    spec.paired_axle_share() * spec.track_m / (2.0 * spec.cg_z_m())
 }
 
 /// Front-end steering geometry.
+///
+/// ⚠ Models the **steered axis**, which is the front end in both layouts:
+/// a fork on a delta, a pair of kingpins on a tadpole. The arithmetic is
+/// the same; only the hardware differs.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SteeringGeometry {
-    /// Ground trail — how far behind the steering axis the front contact
-    /// patch drags, measured along the ground, metres.
+    /// Ground trail — how far behind the steering axis the contact patch
+    /// drags, measured along the ground, metres.
     pub trail_m: f64,
     /// Mechanical trail — the perpendicular distance from the contact
     /// patch to the steering axis, metres. This is the lever the tyre's
@@ -222,16 +235,17 @@ pub struct SteeringGeometry {
 }
 
 impl SteeringGeometry {
-    /// Derive trail from head angle, fork rake and front wheel radius.
+    /// Derive trail from the steering axis angle, the steering offset and
+    /// the front wheel radius.
     ///
-    /// With the head angle `α` measured from the horizontal,
-    /// `trail = (R · cos α − rake) / sin α`, and mechanical trail is that
-    /// times `sin α`, i.e. `R · cos α − rake`.
+    /// With the axis angle `α` measured from the horizontal,
+    /// `trail = (R · cos α − offset) / sin α`, and mechanical trail is that
+    /// times `sin α`, i.e. `R · cos α − offset`.
     ///
-    /// ⚠ Negative trail is geometrically possible — enough fork rake puts
-    /// the contact patch *ahead* of the steering axis — and it makes the
+    /// ⚠ Negative trail is geometrically possible — enough offset puts the
+    /// contact patch *ahead* of the steering axis — and it makes the
     /// steering diverge instead of self-centre. It is reported, not
-    /// rejected, because the caller may be sweeping rake deliberately.
+    /// rejected, because the caller may be sweeping offset deliberately.
     ///
     /// # Panics
     ///
@@ -240,8 +254,8 @@ impl SteeringGeometry {
     #[must_use]
     pub fn of(spec: &TrikeSpec) -> Self {
         spec.assert_well_formed();
-        let alpha = spec.head_angle_deg.to_radians();
-        let mechanical_trail_m = spec.front_wheel_radius_m * alpha.cos() - spec.fork_rake_m;
+        let alpha = spec.steering_axis_angle_deg.to_radians();
+        let mechanical_trail_m = spec.front_wheel_radius_m * alpha.cos() - spec.steering_offset_m;
         Self {
             trail_m: mechanical_trail_m / alpha.sin(),
             mechanical_trail_m,
@@ -258,6 +272,7 @@ impl SteeringGeometry {
 #[cfg(test)]
 mod tests {
     use super::{CorneringLoads, StaticLoads, SteeringGeometry, rollover_threshold_g};
+    use crate::spec::Layout;
     use crate::{MassItem, TrikeSpec};
     use approx::assert_relative_eq;
 
@@ -270,31 +285,28 @@ mod tests {
     }
 
     #[test]
-    fn the_rear_share_is_the_cg_position_not_a_chosen_fraction() {
+    fn the_paired_share_is_the_cg_position_not_a_chosen_fraction() {
         // ★ THE CLAIM THIS CRATE EXISTS FOR. The wheel arc carried a
-        // hand-written 70 %. A rear share is `x_cg / L` and cannot be
-        // anything else, so it must MOVE when the mass budget moves.
+        // hand-written 70 %. An axle share is a CG distance over a
+        // wheelbase and cannot be anything else, so it must MOVE when the
+        // mass budget moves.
         let spec = TrikeSpec::iter1();
         let base = StaticLoads::of(&spec);
         assert_relative_eq!(
-            base.rear_share,
-            spec.cg_x_m() / spec.wheelbase_m,
+            base.paired_axle_share,
+            (spec.wheelbase_m - spec.cg_x_m()) / spec.wheelbase_m,
             epsilon = 1e-12
         );
 
-        // Slide the rider 150 mm aft: the share must rise, and by the
-        // amount the CG moved — not by some damped fraction of it.
-        let mut aft = spec.masses.clone();
-        aft[0].x_m += 0.15;
-        let moved = StaticLoads::of(&with_masses(aft));
-        assert!(
-            moved.rear_share > base.rear_share,
-            "moving the rider aft left the rear share at {}",
-            moved.rear_share
-        );
+        // Slide the rider 150 mm forward. On a tadpole that moves weight
+        // TOWARDS the paired axle, so the share must rise — and by exactly
+        // what the CG moved, not a damped fraction of it.
+        let mut fwd = spec.masses.clone();
+        fwd[0].x_m -= 0.15;
+        let moved = StaticLoads::of(&with_masses(fwd));
         let expected_delta = 0.15 * 80.0 / spec.total_mass_kg() / spec.wheelbase_m;
         assert_relative_eq!(
-            moved.rear_share - base.rear_share,
+            moved.paired_axle_share - base.paired_axle_share,
             expected_delta,
             epsilon = 1e-12
         );
@@ -303,96 +315,196 @@ mod tests {
     #[test]
     fn the_axle_reactions_sum_to_the_weight() {
         // Conservation. Nothing may be created or lost between the CG and
-        // the three contact patches.
-        for shift in [-0.30, -0.10, 0.0, 0.10, 0.25] {
-            let mut masses = TrikeSpec::iter1().masses;
-            for m in &mut masses {
-                m.x_m += shift;
+        // the three contact patches — in either layout.
+        for layout in [Layout::Tadpole, Layout::Delta] {
+            for shift in [-0.30, -0.10, 0.0, 0.10, 0.25] {
+                let mut masses = TrikeSpec::iter1().masses;
+                for m in &mut masses {
+                    m.x_m += shift;
+                }
+                let loads = StaticLoads::of(&TrikeSpec {
+                    layout,
+                    masses,
+                    ..TrikeSpec::iter1()
+                });
+                assert_relative_eq!(
+                    loads.single_wheel_n + loads.paired_axle_total_n,
+                    loads.total_weight_n,
+                    epsilon = 1e-9
+                );
+                assert_relative_eq!(
+                    loads.per_paired_wheel_n * 2.0,
+                    loads.paired_axle_total_n,
+                    epsilon = 1e-12
+                );
             }
-            let loads = StaticLoads::of(&with_masses(masses));
-            assert_relative_eq!(
-                loads.front_n + loads.rear_total_n,
-                loads.total_weight_n,
-                epsilon = 1e-9
-            );
-            assert_relative_eq!(
-                loads.per_rear_wheel_n * 2.0,
-                loads.rear_total_n,
-                epsilon = 1e-12
-            );
         }
     }
 
     #[test]
-    fn a_cg_over_the_rear_axle_puts_every_newton_on_it() {
+    fn a_cg_over_the_paired_axle_puts_every_newton_on_it() {
         // Limit case, approached rather than reached: `assert_well_formed`
-        // rejects a CG exactly on an axle. At 99 % of the wheelbase the
-        // front must carry exactly the remaining 1 %.
+        // rejects a CG exactly on an axle. At 99 % of the way there, the
+        // lone wheel must carry exactly the remaining 1 %.
         let spec = TrikeSpec::iter1();
-        let x = 0.99 * spec.wheelbase_m;
+        let x = 0.01 * spec.wheelbase_m; // 99 % of the way to the front pair
         let loads = StaticLoads::of(&with_masses(vec![MassItem::new("all", 100.0, x, 0.3)]));
-        assert_relative_eq!(loads.rear_share, 0.99, epsilon = 1e-12);
-        assert_relative_eq!(loads.front_n, 0.01 * loads.total_weight_n, epsilon = 1e-9);
+        assert_relative_eq!(loads.paired_axle_share, 0.99, epsilon = 1e-12);
+        assert_relative_eq!(
+            loads.single_wheel_n,
+            0.01 * loads.total_weight_n,
+            epsilon = 1e-9
+        );
     }
 
     #[test]
-    fn the_front_wheel_resists_no_roll_moment() {
-        // ★★★ THE NON-OBVIOUS ONE. The front contact sits on the
-        // centreline, so it has no lever about the roll axis: the rear
-        // axle takes the WHOLE roll moment, sized by the TOTAL weight and
-        // not by the rear axle's share of it.
+    fn the_lone_wheel_resists_no_roll_moment() {
+        // ★★★ THE NON-OBVIOUS ONE. The lone wheel sits on the centreline,
+        // so it has no lever about the roll axis: the paired axle takes
+        // the WHOLE roll moment, sized by the TOTAL weight and not by that
+        // axle's share of it.
         //
         // Two vehicles, same total mass, same track, same CG height,
-        // wildly different fore-aft balance. If the transfer used the rear
-        // share, these would differ by 80 %.
+        // wildly different fore-aft balance. If the transfer used the
+        // paired share, these would differ by more than half.
         let level = 0.30;
         let a = with_masses(vec![
-            MassItem::new("fore", 50.0, 0.40, level),
-            MassItem::new("aft", 50.0, 0.85, level),
+            MassItem::new("fore", 50.0, 0.10, level),
+            MassItem::new("aft", 50.0, 0.35, level),
         ]);
         let b = with_masses(vec![
-            MassItem::new("fore", 50.0, 1.00, level),
-            MassItem::new("aft", 50.0, 1.25, level),
+            MassItem::new("fore", 50.0, 0.65, level),
+            MassItem::new("aft", 50.0, 1.05, level),
         ]);
         assert_relative_eq!(a.cg_z_m(), b.cg_z_m(), epsilon = 1e-12);
         assert_relative_eq!(a.total_mass_kg(), b.total_mass_kg(), epsilon = 1e-12);
         assert!(
-            (a.cg_x_m() - b.cg_x_m()).abs() > 0.4,
+            (a.paired_axle_share() - b.paired_axle_share()).abs() > 0.3,
             "the two fixtures must actually differ in balance"
         );
 
         let transfer = |spec: &TrikeSpec| {
             let c = CorneringLoads::at(spec, 0.5);
-            (c.outer_rear_n - c.inner_rear_n) / 2.0
+            (c.outer_wheel_n - c.inner_wheel_n) / 2.0
         };
         assert_relative_eq!(transfer(&a), transfer(&b), epsilon = 1e-9);
 
-        // And it is the total weight, not the rear share, that sets it.
-        let expected = 100.0 * crate::GRAVITY_M_S2 * 0.5 * level / a.rear_track_m;
+        // And it is the total weight, not the paired share, that sets it.
+        let expected = 100.0 * crate::GRAVITY_M_S2 * 0.5 * level / a.track_m;
         assert_relative_eq!(transfer(&a), expected, epsilon = 1e-9);
     }
 
     #[test]
-    fn the_inner_rear_lifts_exactly_at_the_closed_form_threshold() {
+    fn a_tadpole_and_a_delta_are_mirror_images() {
+        // ★★★ THE LAYOUT INVARIANT. Reflecting every mass about the
+        // wheelbase midpoint and swapping which end is doubled must leave
+        // the stability arithmetic bit-for-bit unchanged. Nothing in the
+        // physics knows which way the vehicle points; only which axle has
+        // two contact patches.
+        //
+        // ⚠ This is the gate that would have caught building the whole
+        // crate for the wrong layout, which is exactly what happened.
+        let delta = TrikeSpec {
+            layout: Layout::Delta,
+            ..TrikeSpec::iter1()
+        };
+        let mirrored = TrikeSpec {
+            layout: Layout::Tadpole,
+            masses: delta
+                .masses
+                .iter()
+                .map(|m| MassItem::new(m.name.clone(), m.mass_kg, delta.wheelbase_m - m.x_m, m.z_m))
+                .collect(),
+            ..TrikeSpec::iter1()
+        };
+
+        assert_relative_eq!(
+            delta.paired_axle_share(),
+            mirrored.paired_axle_share(),
+            epsilon = 1e-12
+        );
+        assert_relative_eq!(
+            rollover_threshold_g(&delta),
+            rollover_threshold_g(&mirrored),
+            epsilon = 1e-12
+        );
+
+        let (d, m) = (StaticLoads::of(&delta), StaticLoads::of(&mirrored));
+        assert_relative_eq!(d.per_paired_wheel_n, m.per_paired_wheel_n, epsilon = 1e-9);
+        assert_relative_eq!(d.single_wheel_n, m.single_wheel_n, epsilon = 1e-9);
+
+        // And the two layouts really are different vehicles when NOT
+        // mirrored — otherwise the invariant above would be vacuous.
+        // The same budget really does give the two layouts different
+        // answers — 0.98 g pointing one way, 0.69 g the other — so the
+        // invariant above is not vacuously true of everything.
+        assert!(rollover_threshold_g(&TrikeSpec::iter1()) > 0.98);
+        assert!(rollover_threshold_g(&delta) < 0.70);
+    }
+
+    #[test]
+    fn weight_towards_the_paired_axle_stabilises_either_layout() {
+        // ⚠ THE SIGN FLIP, GATED IN BOTH DIRECTIONS. The tipping line runs
+        // from the lone contact to the outer paired one, so a CG nearer
+        // the paired axle sits further inboard of it. Forward helps a
+        // reverse trike; rearward helps a delta. Writing the rule once and
+        // gating one layout is how the wrong sign survives.
+        let shifted = |layout: Layout, dx: f64| {
+            let mut masses = TrikeSpec::iter1().masses;
+            masses[0].x_m += dx;
+            rollover_threshold_g(&TrikeSpec {
+                layout,
+                masses,
+                ..TrikeSpec::iter1()
+            })
+        };
+        for (layout, towards) in [(Layout::Tadpole, -0.15), (Layout::Delta, 0.15)] {
+            let base = shifted(layout, 0.0);
+            assert!(
+                shifted(layout, towards) > base,
+                "{layout:?}: moving towards the paired axle must raise the \
+                 threshold, got {} vs {base}",
+                shifted(layout, towards)
+            );
+            assert!(
+                shifted(layout, -towards) < base,
+                "{layout:?}: moving away must lower it, got {} vs {base}",
+                shifted(layout, -towards)
+            );
+        }
+    }
+
+    #[test]
+    fn the_inner_wheel_lifts_exactly_at_the_closed_form_threshold() {
         // ★ CROSS-CHECK THAT BYPASSES THE ARTIFACT. `rollover_threshold_g`
         // is a closed form. This finds the same number by bisecting the
         // *solved load case* for the acceleration at which the inner
         // reaction crosses zero — a different code path entirely.
-        for spec in [
-            TrikeSpec::iter1(),
-            with_masses(vec![MassItem::new("low", 90.0, 0.70, 0.18)]),
-            with_masses(vec![MassItem::new("high", 60.0, 1.10, 0.55)]),
-        ] {
+        let mut specs = Vec::new();
+        for layout in [Layout::Tadpole, Layout::Delta] {
+            for masses in [
+                TrikeSpec::iter1().masses,
+                vec![MassItem::new("low", 90.0, 0.70, 0.18)],
+                vec![MassItem::new("high", 60.0, 0.40, 0.55)],
+            ] {
+                specs.push(TrikeSpec {
+                    layout,
+                    masses,
+                    ..TrikeSpec::iter1()
+                });
+            }
+        }
+        for spec in specs {
             let (mut lo, mut hi) = (0.0_f64, 10.0_f64);
             assert!(
                 !CorneringLoads::at(&spec, hi)
-                    .inner_rear_n
+                    .inner_wheel_n
                     .is_sign_positive(),
                 "10 g must be past the threshold for any sane trike"
             );
             for _ in 0..200 {
                 let mid = f64::midpoint(lo, hi);
-                if CorneringLoads::at(&spec, mid).inner_rear_n > 0.0 {
+                if CorneringLoads::at(&spec, mid).inner_wheel_n > 0.0 {
                     lo = mid;
                 } else {
                     hi = mid;
@@ -407,68 +519,41 @@ mod tests {
     }
 
     #[test]
-    fn a_cg_on_the_rear_axle_recovers_the_two_wheel_stability_factor() {
+    fn a_cg_on_the_paired_axle_recovers_the_two_wheel_stability_factor() {
         // Round numbers on purpose: track 0.8 m at a CG height of 0.4 m is
-        // a four-wheeler SSF of exactly 1.0 g. A delta trike with 80 % of
-        // its weight aft must land on exactly 0.8 of that.
+        // a four-wheeler SSF of exactly 1.0 g. A trike with 80 % of its
+        // weight on the paired axle must land on exactly 0.8 of that.
         let spec = TrikeSpec {
+            layout: Layout::Tadpole,
             wheelbase_m: 1.0,
-            rear_track_m: 0.80,
-            masses: vec![MassItem::new("all", 100.0, 0.80, 0.40)],
+            track_m: 0.80,
+            masses: vec![MassItem::new("all", 100.0, 0.20, 0.40)],
             ..TrikeSpec::iter1()
         };
-        assert_relative_eq!(
-            spec.rear_track_m / (2.0 * spec.cg_z_m()),
-            1.0,
-            epsilon = 1e-12
-        );
+        assert_relative_eq!(spec.track_m / (2.0 * spec.cg_z_m()), 1.0, epsilon = 1e-12);
+        assert_relative_eq!(spec.paired_axle_share(), 0.80, epsilon = 1e-12);
         assert_relative_eq!(rollover_threshold_g(&spec), 0.80, epsilon = 1e-12);
-    }
-
-    #[test]
-    fn moving_weight_rearward_makes_a_delta_trike_more_stable() {
-        // ⚠ COUNTER-INTUITIVE, AND GATED BECAUSE OF IT. The tipping line
-        // runs from the single front contact to the outer rear one, so a
-        // CG further aft sits further inboard of it. A tadpole behaves the
-        // other way round; this crate does not model one.
-        let spec = TrikeSpec::iter1();
-        let base = rollover_threshold_g(&spec);
-        let shifted = |dx: f64| {
-            let mut masses = spec.masses.clone();
-            masses[0].x_m += dx;
-            rollover_threshold_g(&with_masses(masses))
-        };
-        assert!(
-            shifted(0.15) > base,
-            "rearward must raise the threshold: {} vs {base}",
-            shifted(0.15)
-        );
-        assert!(
-            shifted(-0.15) < base,
-            "forward must lower it: {} vs {base}",
-            shifted(-0.15)
-        );
     }
 
     #[test]
     fn trail_matches_an_independent_vector_construction() {
         // ★ MIRROR ORACLE. The implementation uses the closed form
-        // `(R cos α − rake) / sin α`. This builds the steering axis and the
-        // wheel centre as vectors, drops the contact patch onto the ground
-        // and measures — never touching that expression.
-        for (head_deg, rake, radius) in [
-            (68.0, 0.040, 0.254),
+        // `(R cos α − offset) / sin α`. This builds the steering axis and
+        // the wheel centre as vectors, drops the contact patch onto the
+        // ground and measures — never touching that expression.
+        for (axis_deg, offset, radius) in [
+            (82.0, 0.010, 0.2032),
             (71.0, 0.045, 0.350),
             (90.0, 0.000, 0.200),
             (55.0, 0.070, 0.300),
         ] {
             let spec = TrikeSpec {
-                head_angle_deg: head_deg,
-                fork_rake_m: rake,
+                steering_axis_angle_deg: axis_deg,
+                steering_offset_m: offset,
                 front_wheel_radius_m: radius,
                 ..TrikeSpec::iter1()
             };
-            let a = head_deg.to_radians();
+            let a = axis_deg.to_radians();
             // Steering axis through the origin, pointing down and forward;
             // it therefore meets the ground at x = 0.
             let axis = (a.cos(), -a.sin());
@@ -476,8 +561,8 @@ mod tests {
             let normal = (a.sin(), a.cos());
             // Slide along the axis until the offset wheel centre sits at
             // exactly one wheel radius above the ground.
-            let t = (rake * normal.1 - radius) / -axis.1;
-            let centre_x = t * axis.0 + rake * normal.0;
+            let t = (offset * normal.1 - radius) / -axis.1;
+            let centre_x = t * axis.0 + offset * normal.0;
             // The contact patch is directly below the centre, and the axis
             // met the ground at the origin.
             let constructed_trail = -centre_x;
@@ -493,92 +578,19 @@ mod tests {
     }
 
     #[test]
-    fn a_vertical_head_tube_has_trail_equal_to_minus_the_rake() {
+    fn a_vertical_steering_axis_has_trail_equal_to_minus_the_offset() {
         // Sharp limit: with the steering axis vertical the contact patch
-        // sits exactly `rake` AHEAD of it, so trail is negative and the
+        // sits exactly `offset` AHEAD of it, so trail is negative and the
         // front end diverges instead of self-centring.
-        let spec = TrikeSpec {
-            head_angle_deg: 90.0,
-            fork_rake_m: 0.040,
+        let geo = SteeringGeometry::of(&TrikeSpec {
+            steering_axis_angle_deg: 90.0,
+            steering_offset_m: 0.040,
             ..TrikeSpec::iter1()
-        };
-        let geo = SteeringGeometry::of(&spec);
+        });
         assert_relative_eq!(geo.trail_m, -0.040, epsilon = 1e-12);
         assert_relative_eq!(geo.mechanical_trail_m, -0.040, epsilon = 1e-12);
         assert!(!geo.self_centres());
         assert!(SteeringGeometry::of(&TrikeSpec::iter1()).self_centres());
-    }
-
-    #[test]
-    fn iter1_is_the_planned_trike() {
-        // Hand-computed from the mass budget, so a spec edit is visible
-        // rather than silently re-baselined.
-        let spec = TrikeSpec::iter1();
-        assert_relative_eq!(spec.total_mass_kg(), 104.0, epsilon = 1e-12);
-        assert_relative_eq!(spec.cg_x_m(), 0.890_384_615_384_6, epsilon = 1e-9);
-        assert_relative_eq!(spec.cg_z_m(), 0.3225, epsilon = 1e-12);
-
-        let loads = StaticLoads::of(&spec);
-        assert_relative_eq!(loads.total_weight_n, 1019.8916, epsilon = 1e-4);
-        assert_relative_eq!(loads.rear_share, 0.712_307_692_3, epsilon = 1e-9);
-        assert_relative_eq!(loads.front_n, 293.415, epsilon = 1e-3);
-        assert_relative_eq!(loads.per_rear_wheel_n, 363.238, epsilon = 1e-3);
-
-        assert_relative_eq!(rollover_threshold_g(&spec), 0.828_265, epsilon = 1e-6);
-
-        let geo = SteeringGeometry::of(&spec);
-        assert_relative_eq!(geo.trail_m, 0.059_481, epsilon = 1e-6);
-        assert_relative_eq!(geo.mechanical_trail_m, 0.055_150, epsilon = 1e-6);
-    }
-
-    #[test]
-    fn the_polyurethane_grip_range_straddles_the_rollover_threshold() {
-        // ★★★ THE FINDING, GATED. Cast polyurethane on asphalt runs about
-        // µ = 0.6–1.0. The iter1 geometry tips at 0.83 g, so the SAME
-        // vehicle slides at the slippery end of that range and rolls over
-        // at the grippy end. Tyre hardness is a stability decision here,
-        // not a feel one.
-        let corner = CorneringLoads::at(&TrikeSpec::iter1(), 0.5);
-        assert!(corner.slides_before_it_tips(0.60));
-        assert!(!corner.slides_before_it_tips(1.00));
-
-        // ★ AND THE CHEAPER FIX IS NOT THE OBVIOUS ONE. Track enters
-        // linearly and CG height enters as its reciprocal, so buying the
-        // same margin costs +156 mm of track but only 72 mm of seat drop
-        // — and a slingshot trike is already trying to sit low. A whole
-        // 150 mm of extra track still MISSES, at 0.994 g.
-        let wide = TrikeSpec {
-            rear_track_m: 0.90,
-            ..TrikeSpec::iter1()
-        };
-        assert!(
-            !CorneringLoads::at(&wide, 0.5).slides_before_it_tips(1.00),
-            "+150 mm of track was expected to fall just short at 0.994 g"
-        );
-
-        let mut lowered = TrikeSpec::iter1().masses;
-        lowered[0].z_m -= 0.075;
-        assert!(
-            CorneringLoads::at(&with_masses(lowered), 0.5).slides_before_it_tips(1.00),
-            "dropping the rider 75 mm should clear the whole grip range"
-        );
-    }
-
-    #[test]
-    fn a_corner_below_the_threshold_keeps_both_rear_wheels_down() {
-        let spec = TrikeSpec::iter1();
-        let threshold = rollover_threshold_g(&spec);
-        let safe = CorneringLoads::at(&spec, threshold * 0.9);
-        assert!(!safe.inner_rear_lifted());
-        assert!(safe.outer_rear_n > safe.inner_rear_n);
-        let past = CorneringLoads::at(&spec, threshold * 1.1);
-        assert!(past.inner_rear_lifted());
-        // Fore-aft balance is untouched by a pure lateral acceleration.
-        assert_relative_eq!(
-            safe.front_n,
-            StaticLoads::of(&spec).front_n,
-            epsilon = 1e-12
-        );
     }
 
     #[test]
@@ -597,13 +609,13 @@ mod tests {
     fn zero_trail_does_not_self_centre() {
         // Trail IS the restoring lever, so at exactly zero there is none
         // and the front end is neutral. Same rule as above: neutral must
-        // not report as stable. Rake of `R cos α` zeroes it exactly.
-        let head = 68.0_f64;
-        let radius = 0.254;
+        // not report as stable. An offset of `R cos α` zeroes it exactly.
+        let axis = 82.0_f64;
+        let radius = 0.2032;
         let geo = SteeringGeometry::of(&TrikeSpec {
-            head_angle_deg: head,
+            steering_axis_angle_deg: axis,
             front_wheel_radius_m: radius,
-            fork_rake_m: radius * head.to_radians().cos(),
+            steering_offset_m: radius * axis.to_radians().cos(),
             ..TrikeSpec::iter1()
         });
         assert_relative_eq!(geo.trail_m, 0.0, epsilon = 1e-15);
@@ -611,60 +623,141 @@ mod tests {
     }
 
     #[test]
-    fn the_rear_wheel_load_case_a_spoke_design_must_survive() {
-        // ★ THE HANDOFF. These are the numbers a rear wheel is sized
-        // against, pinned here so that changing the trike changes them
-        // visibly rather than silently.
+    fn iter1_is_the_planned_reverse_trike() {
+        // Hand-computed from the mass budget, so a spec edit is visible
+        // rather than silently re-baselined.
+        let spec = TrikeSpec::iter1();
+        assert_eq!(spec.layout, Layout::Tadpole);
+        assert!(spec.layout.steers_on_the_paired_axle());
+        assert_relative_eq!(spec.total_mass_kg(), 120.0, epsilon = 1e-12);
+        assert_relative_eq!(spec.cg_x_m(), 0.515_833_333_3, epsilon = 1e-9);
+        assert_relative_eq!(spec.cg_z_m(), 0.268_666_666_7, epsilon = 1e-9);
+
+        let loads = StaticLoads::of(&spec);
+        assert_relative_eq!(loads.total_weight_n, 1176.798, epsilon = 1e-3);
+        assert_relative_eq!(loads.paired_axle_share, 0.587_333_333_3, epsilon = 1e-9);
+        assert_relative_eq!(loads.per_paired_wheel_n, 345.586, epsilon = 1e-3);
+        assert_relative_eq!(loads.single_wheel_n, 485.625, epsilon = 1e-3);
+
+        assert_relative_eq!(rollover_threshold_g(&spec), 0.983_747, epsilon = 1e-6);
+
+        let geo = SteeringGeometry::of(&spec);
+        assert_relative_eq!(geo.trail_m, 0.018_460, epsilon = 1e-6);
+        assert_relative_eq!(geo.mechanical_trail_m, 0.018_280, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn the_reverse_layout_is_a_hairs_breadth_from_clearing_the_grip_range() {
+        // ★★★ THE FINDING, GATED. Cast polyurethane on asphalt runs about
+        // µ = 0.6–1.0. The reverse trike tips at 0.984 g, so it slides
+        // across almost the whole range and is marginal only at the very
+        // grippy end.
+        let corner = CorneringLoads::at(&TrikeSpec::iter1(), 0.5);
+        assert!(corner.slides_before_it_tips(0.60));
+        assert!(!corner.slides_before_it_tips(1.00));
+
+        // ⚠ AND THE FIX IS NEARLY FREE, WHICH IS THE ARGUMENT FOR THE
+        // LAYOUT. 15 mm of extra track clears the entire range. The same
+        // mass budget as a delta needed 156 mm — an order of magnitude
+        // more — because a delta puts the rider AWAY from its paired axle
+        // while a reverse trike puts them towards it.
+        let wide = TrikeSpec {
+            track_m: 0.92,
+            ..TrikeSpec::iter1()
+        };
+        assert!(CorneringLoads::at(&wide, 0.5).slides_before_it_tips(1.00));
+
+        let as_delta = TrikeSpec {
+            layout: Layout::Delta,
+            track_m: 0.92,
+            ..TrikeSpec::iter1()
+        };
+        assert!(
+            !CorneringLoads::at(&as_delta, 0.5).slides_before_it_tips(1.00),
+            "the same widened track must NOT rescue the delta"
+        );
+    }
+
+    #[test]
+    fn a_corner_below_the_threshold_keeps_both_paired_wheels_down() {
+        let spec = TrikeSpec::iter1();
+        let threshold = rollover_threshold_g(&spec);
+        let safe = CorneringLoads::at(&spec, threshold * 0.9);
+        assert!(!safe.inner_wheel_lifted());
+        assert!(safe.outer_wheel_n > safe.inner_wheel_n);
+        assert!(CorneringLoads::at(&spec, threshold * 1.1).inner_wheel_lifted());
+        // Fore-aft balance is untouched by a pure lateral acceleration.
+        assert_relative_eq!(
+            safe.single_wheel_n,
+            StaticLoads::of(&spec).single_wheel_n,
+            epsilon = 1e-12
+        );
+    }
+
+    #[test]
+    fn the_wheel_load_case_a_spoke_design_must_survive() {
+        // ★ THE HANDOFF. These are the numbers a wheel is sized against.
         //
-        // ⚠ Note what the cornering case does to the static one: at the
-        // tipping point the inner wheel carries nothing, so the OUTER
-        // wheel alone carries the whole rear axle load — exactly twice its
-        // static share. A wheel sized on the static number is sized on
-        // half the load it sees in a corner.
+        // ⚠ Note what the cornering case does: at the tipping point the
+        // inner wheel carries nothing, so the OUTER wheel alone carries
+        // the whole paired axle — exactly twice its static share. A wheel
+        // sized on the static number is sized on half the load.
         let spec = TrikeSpec::iter1();
         let statics = StaticLoads::of(&spec);
-        assert_relative_eq!(statics.per_rear_wheel_n, 363.238, epsilon = 0.01);
+        assert_relative_eq!(statics.per_paired_wheel_n, 345.586, epsilon = 0.01);
+        // The lone REAR wheel is the polyurethane one, and it is the most
+        // heavily loaded single wheel on the vehicle.
+        assert!(statics.single_wheel_n > statics.per_paired_wheel_n);
+        assert_relative_eq!(statics.single_wheel_n, 485.625, epsilon = 0.01);
 
-        // A realistic drift: hard polyurethane, µ = 0.6.
         let drift = CorneringLoads::at(&spec, 0.60);
-        assert_relative_eq!(drift.outer_rear_n, 626.370, epsilon = 0.01);
-        assert_relative_eq!(drift.inner_rear_n, 100.106, epsilon = 0.01);
-        assert_relative_eq!(drift.outer_rear_lateral_n(0.60), 375.822, epsilon = 0.01);
+        assert_relative_eq!(drift.outer_wheel_n, 556.363_943, epsilon = 0.001);
+        assert_relative_eq!(drift.inner_wheel_n, 134.808_749, epsilon = 0.001);
         assert_relative_eq!(
-            drift.outer_rear_hub_moment_n_m(&spec, 0.60),
-            52.615,
-            epsilon = 0.01
+            drift.outer_wheel_lateral_n(0.60),
+            333.818_366,
+            epsilon = 0.001
         );
 
-        // At the limit the outer wheel takes the entire rear axle load.
         let limit = CorneringLoads::at(&spec, rollover_threshold_g(&spec));
-        assert_relative_eq!(limit.outer_rear_n, statics.rear_total_n, epsilon = 1e-9);
-        assert_relative_eq!(limit.inner_rear_n, 0.0, epsilon = 1e-9);
         assert_relative_eq!(
-            limit.outer_rear_n,
-            2.0 * statics.per_rear_wheel_n,
+            limit.outer_wheel_n,
+            statics.paired_axle_total_n,
             epsilon = 1e-9
         );
+        assert_relative_eq!(limit.inner_wheel_n, 0.0, epsilon = 1e-9);
     }
 
     #[test]
     fn the_dynamic_factor_belongs_to_the_caller() {
         let loads = StaticLoads::of(&TrikeSpec::iter1());
         assert_relative_eq!(
-            loads.per_rear_wheel_dynamic_n(3.0),
-            loads.per_rear_wheel_n * 3.0,
+            StaticLoads::dynamic_n(loads.single_wheel_n, 3.0),
+            loads.single_wheel_n * 3.0,
             epsilon = 1e-9
         );
     }
 
     #[test]
-    fn the_hub_moment_is_the_lateral_force_on_the_wheel_radius() {
+    fn the_hub_moment_is_the_lateral_force_on_the_paired_wheel_radius() {
         let spec = TrikeSpec::iter1();
         let corner = CorneringLoads::at(&spec, 0.5);
         assert_relative_eq!(
-            corner.outer_rear_hub_moment_n_m(&spec, 0.8),
-            corner.outer_rear_n * 0.8 * spec.rear_wheel_radius_m,
+            corner.outer_wheel_hub_moment_n_m(&spec, 0.8),
+            corner.outer_wheel_n * 0.8 * spec.front_wheel_radius_m,
             epsilon = 1e-9
+        );
+        // ⚠ On a tadpole the paired wheels are the FRONT ones, so the hub
+        // moment must use the front radius, not the rear.
+        assert_relative_eq!(
+            spec.paired_wheel_radius_m(),
+            spec.front_wheel_radius_m,
+            epsilon = 1e-12
+        );
+        assert_relative_eq!(
+            spec.single_wheel_radius_m(),
+            spec.rear_wheel_radius_m,
+            epsilon = 1e-12
         );
     }
 }
