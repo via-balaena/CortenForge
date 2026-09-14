@@ -376,6 +376,7 @@ members = [
     "examples/integration/design-to-print",
     "examples/integration/sim-informed-design",
     "examples/integration/full-pipeline",
+    "examples/integration/trike-mass-budget",
 
     # Examples — mesh
     "examples/mesh/ply-with-custom-attributes",

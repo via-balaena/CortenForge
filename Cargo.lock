@@ -5789,6 +5789,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-trike-mass-budget"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "cf-design",
+ "cf-vehicle",
+ "nalgebra 0.34.2",
+]
+
+[[package]]
 name = "example-urdf-continuous"
 version = "1.0.0"
 dependencies = [
