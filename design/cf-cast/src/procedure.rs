@@ -70,69 +70,117 @@ fn write_materials_table(md: &mut String, spec: &CastSpec, pour_volumes: &[PourV
     md.push('\n');
 }
 
-fn write_generic_guidance(md: &mut String, layer_count: usize, role: PlugRole) {
+/// The mix ratio every layer agrees on, or `None` if any layer's material has
+/// no anchored cure protocol.
+///
+/// ⚠ Resolved through the SAME [`lookup_cure`] path that fills
+/// `## Materials Summary`, so the guidance bullet and the table cannot name
+/// different ratios. They did: the bullet hardcoded `1A:1B` while the table
+/// three lines above it said "consult Smooth-On TDS" for the same material.
+///
+/// ⚠ The disagreement arm is unreachable today — every anchor in
+/// [`crate::cure`] is 1A:1B, and `cure::tests::all_anchors_share_one_to_one_\
+/// mix_ratio` keeps it that way — so it is handled here but deliberately not
+/// gated. A gate that cannot be made to fail is worse than none.
+fn agreed_mix_ratio(spec: &CastSpec) -> Option<&'static str> {
+    let mut agreed: Option<&'static str> = None;
+    for layer in &spec.layers {
+        let protocol = lookup_cure(layer.material.anchor_key?)?;
+        match agreed {
+            None => agreed = Some(protocol.mix_ratio_a_to_b),
+            Some(seen) if seen == protocol.mix_ratio_a_to_b => {}
+            Some(_) => return None,
+        }
+    }
+    agreed
+}
+
+fn write_generic_guidance(md: &mut String, spec: &CastSpec, role: PlugRole) {
+    let layer_count = spec.layers.len();
     let _ = writeln!(md, "## Generic Smooth-On Guidance");
     md.push('\n');
-    let _ = writeln!(
-        md,
-        "- Weigh Part A + Part B on a gram scale. 1A:1B is by weight or \
-         volume per TDS — choose the more accurate path for the equipment \
-         on hand (weight typically beats volume for low-viscosity \
-         silicones)."
-    );
+    // ⛔ NEVER type a ratio here. `## Materials Summary` resolves it per
+    // material and says so when it cannot; a literal in this bullet
+    // contradicted that table for any material without an anchor — which is
+    // every material the cure table does not list.
+    match agreed_mix_ratio(spec) {
+        Some(ratio) => {
+            let _ = writeln!(
+                md,
+                "- Weigh Part A + Part B on a gram scale. {ratio} is by \
+                 weight or volume per TDS — choose the more accurate path \
+                 for the equipment on hand (weight typically beats volume \
+                 for a low-viscosity pour)."
+            );
+        }
+        None => {
+            let _ = writeln!(
+                md,
+                "- Weigh Part A + Part B on a gram scale, at the ratio on \
+                 its TDS. No ratio is stated here: `## Materials Summary` \
+                 above has no cure data for this cast's material. Weight \
+                 typically beats volume for a low-viscosity pour."
+            );
+        }
+    }
     if layer_count == 1 {
         let _ = writeln!(
             md,
-            "- Vacuum-degas the mixed silicone at ≥27 inHg for 2-3 minutes \
-             before pouring. Bubbles trapped at cavity surfaces are the #1 \
+            "- Vacuum-degas the mix at ≥27 inHg for 2-3 minutes before \
+             pouring. Bubbles trapped at cavity surfaces are the #1 \
              first-cast failure mode."
         );
     } else {
         let _ = writeln!(
             md,
-            "- Vacuum-degas the mixed silicone at ≥27 inHg for 2-3 minutes \
-             before pouring. Bubbles trapped at cavity surfaces or layer \
+            "- Vacuum-degas the mix at ≥27 inHg for 2-3 minutes before \
+             pouring. Bubbles trapped at cavity surfaces or layer \
              interfaces are the #1 first-cast failure mode."
         );
     }
     if plug_stays_in(role, 0) {
-        // ⚠ The multi-layer arm below carries a SECOND fact — that cured
-        // silicones bond to each other without release — which has nothing to
-        // do with the plug. An insert cast must not lose it.
+        // ⚠ The multi-layer arm below carries a SECOND instruction — do not
+        // release BETWEEN layers — which has nothing to do with the plug. An
+        // insert cast must not lose it.
+        //
+        // ⚠ It used to justify itself with "cured silicones bond to each
+        // other without release". That is a claim about one chemistry, and
+        // this sheet is rendered for whatever the caller pours. The
+        // instruction is a property of a layered cast; the justification was
+        // not. Instruction kept, justification cut.
         let (when, inter_layer) = if layer_count == 1 {
             ("the pour", "")
         } else {
             (
                 "each pour",
-                " Layer-to-layer adhesion between cured silicones is \
-                 generally strong without release.",
+                " Do not release BETWEEN layers — they are meant to bond.",
             )
         };
         let _ = writeln!(
             md,
             "- Apply mold release to the CUP HALVES before {when} — \
-             printed-mold-to-silicone separation needs it. Not to \
-             `plug_layer_0.stl`: it stays in the finished part.{inter_layer}"
+             separating the cured pour from the printed mold needs it. Not \
+             to `plug_layer_0.stl`: it stays in the finished part.\
+             {inter_layer}"
         );
     } else if layer_count == 1 {
         let _ = writeln!(
             md,
             "- Apply mold release to printed surfaces before the pour — \
-             printed-mold-to-silicone separation needs it."
+             separating the cured pour from the printed mold needs it."
         );
     } else {
         let _ = writeln!(
             md,
-            "- Apply mold release to printed surfaces before each pour. \
-             Layer-to-layer adhesion between cured silicones is generally \
-             strong without release, but printed-mold-to-silicone separation \
-             needs it."
+            "- Apply mold release to printed surfaces before each pour — \
+             separating the cured pour from the printed mold needs it. Do \
+             not release BETWEEN layers: they are meant to bond."
         );
     }
     let _ = writeln!(
         md,
-        "- Pour into the deepest point of the cavity and let the silicone \
-         self-level outward; pouring across surfaces traps air."
+        "- Pour into the deepest point of the cavity and let it self-level \
+         outward; pouring across surfaces traps air."
     );
     let _ = writeln!(
         md,
@@ -344,7 +392,7 @@ pub fn generate_procedure_markdown_v2_for_mode(
     write_cap_plane_chamfer_v2(&mut md, has_plug_lock);
     write_seam_face_edge_v2(&mut md, has_plug_lock, seam_is_planar);
     write_materials_table(&mut md, spec, pour_volumes);
-    write_generic_guidance(&mut md, spec.layers.len(), role);
+    write_generic_guidance(&mut md, spec, role);
     write_v2_assembly_note(&mut md, ribbon, spec.layers.len(), features, has_gasket);
     write_v2_cup_half_clamping_note(&mut md, ribbon, mode, spec.layers.len(), features);
     write_v2_pour_gate_note(&mut md, ribbon, spec.layers.len(), bolts_carved);

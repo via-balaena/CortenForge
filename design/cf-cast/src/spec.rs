@@ -3523,6 +3523,117 @@ mod tests {
         }
     }
 
+    /// The `## Generic Smooth-On Guidance` section only — from its heading to
+    /// the next `## `.
+    ///
+    /// ⚠ Section-scoped on purpose. A whole-sheet `contains("1A:1B")` also
+    /// matches the `## Materials Summary` cell, so the "states no ratio"
+    /// assertion below would pass on a sheet that states one — and would have
+    /// started passing silently the day a material anchored.
+    fn guidance_section(md: &str) -> &str {
+        let start = md.find("## Generic Smooth-On Guidance").unwrap_or_else(|| {
+            panic!("the guidance heading is a cf-cast-cli anchor; it must render")
+        });
+        let rest = &md[start..];
+        rest.find("\n## ").map_or(rest, |end| &rest[..end])
+    }
+
+    /// Any `<digit>A:<digit>B` ratio in the text, e.g. `1A:1B`.
+    fn stated_ratio(text: &str) -> Option<String> {
+        let b: Vec<char> = text.chars().collect();
+        b.windows(5)
+            .find(|w| {
+                w[0].is_ascii_digit()
+                    && w[1] == 'A'
+                    && w[2] == ':'
+                    && w[3].is_ascii_digit()
+                    && w[4] == 'B'
+            })
+            .map(|w| w.iter().collect())
+    }
+
+    /// ⛔ THE DEFECT. The guidance bullet hardcoded `1A:1B` while the
+    /// `## Materials Summary` table three lines above it said "consult
+    /// Smooth-On TDS" for the same material — a ratio asserted for a material
+    /// the generator had just admitted it has no data for.
+    #[test]
+    fn the_guidance_never_states_a_ratio_the_table_does_not() {
+        let (mut spec, base) = v2_fixture();
+        spec.layers[0].material = MoldingMaterial {
+            display_name: "95A polyurethane".to_string(),
+            density_kg_m3: 1070.0,
+            anchor_key: None,
+        };
+        let (md, _) = procedure_pair(&spec, &base);
+        let guidance = guidance_section(&md);
+
+        assert!(
+            md.contains("consult Smooth-On TDS"),
+            "the table must be admitting it has no cure data, or this gate \
+             proves nothing"
+        );
+        assert_eq!(
+            stated_ratio(guidance),
+            None,
+            "the guidance states a ratio for an unanchored material:\n{guidance}"
+        );
+        assert!(
+            guidance.contains("`## Materials Summary` above has no cure data"),
+            "and it must say WHY no ratio is given:\n{guidance}"
+        );
+    }
+
+    /// ★ The positive arm. Without it the gate above passes on a writer that
+    /// never states a ratio at all, for any material.
+    #[test]
+    fn a_known_anchor_still_states_its_ratio_and_the_table_agrees() {
+        let (spec, base) = v2_fixture();
+        let (md, _) = procedure_pair(&spec, &base);
+        let guidance = guidance_section(&md);
+        let ratio = stated_ratio(guidance)
+            .unwrap_or_else(|| panic!("an anchored material must get its ratio:\n{guidance}"));
+        assert_eq!(ratio, "1A:1B", "Ecoflex 00-30's TDS ratio");
+        // ⚠ The whole point: ONE source, so the two cannot disagree.
+        let table = md
+            .split_once("## Generic Smooth-On Guidance")
+            .map_or("", |(before, _)| before);
+        assert!(
+            table.contains(&ratio),
+            "the table must carry the same ratio the guidance names"
+        );
+    }
+
+    /// ★★ The invariant, over both arms and both plug roles: whatever ratio
+    /// the guidance names, the table names it too.
+    #[test]
+    fn the_guidance_and_the_table_never_disagree() {
+        for (label, anchor) in [("anchored", Some("ECOFLEX_00_30")), ("unanchored", None)] {
+            for role in [PlugRole::Tooling, PlugRole::Insert] {
+                let (mut spec, base) = v2_fixture();
+                spec.layers[0].material = MoldingMaterial {
+                    display_name: "probe".to_string(),
+                    density_kg_m3: 1070.0,
+                    anchor_key: anchor,
+                };
+                let (md, _) = procedure_pair(&spec, &base.clone().with_plug_role(role));
+                let guidance = guidance_section(&md);
+                let table = md
+                    .split_once("## Generic Smooth-On Guidance")
+                    .map_or("", |(before, _)| before);
+                match stated_ratio(guidance) {
+                    None => assert_eq!(
+                        anchor, None,
+                        "[{label}/{role:?}] an anchored material lost its ratio"
+                    ),
+                    Some(r) => assert!(
+                        table.contains(&r),
+                        "[{label}/{role:?}] guidance says {r}, table does not"
+                    ),
+                }
+            }
+        }
+    }
+
     /// ★★ Every `## Section` the sheet points at must EXIST in that same
     /// sheet, across the whole config matrix.
     ///
