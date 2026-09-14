@@ -3634,6 +3634,43 @@ mod tests {
         }
     }
 
+    /// ★★ The inter-layer release instruction, gated at last.
+    ///
+    /// ⚠ `write_generic_guidance` carried a comment reading "An insert cast
+    /// must not lose it" about this clause — and NOTHING enforced it. The
+    /// clause was rewritten wholesale while the suite stayed green. A warning
+    /// in a comment is not a gate.
+    ///
+    /// Two facts share one bullet on the insert path: release the CUP HALVES,
+    /// and do NOT release between layers. A single-layer cast has no layers to
+    /// bond, so it must NOT carry the second — the arm that would send a
+    /// bencher looking for an interface that does not exist.
+    #[test]
+    fn a_multi_layer_cast_says_not_to_release_between_layers() {
+        const BETWEEN: &str = "Do not release BETWEEN layers";
+        for (label, (spec, base)) in [("1-layer", v2_fixture()), ("2-layer", two_layer_fixture())] {
+            let multi = spec.layers.len() > 1;
+            for role in [PlugRole::Tooling, PlugRole::Insert] {
+                let (md, _) = procedure_pair(&spec, &base.clone().with_plug_role(role));
+                let guidance = guidance_section(&md);
+                assert_eq!(
+                    guidance.contains(BETWEEN),
+                    multi,
+                    "[{label}/{role:?}] inter-layer release instruction present={}, \
+                     expected={multi}:\n{guidance}",
+                    guidance.contains(BETWEEN)
+                );
+                // Anchored the other way: the release instruction that is
+                // ALWAYS there must survive both arms, or the equality above
+                // passes on a writer that emits nothing at all.
+                assert!(
+                    guidance.contains("Apply mold release"),
+                    "[{label}/{role:?}] lost the release instruction entirely"
+                );
+            }
+        }
+    }
+
     /// ★★ Every `## Section` the sheet points at must EXIST in that same
     /// sheet, across the whole config matrix.
     ///
