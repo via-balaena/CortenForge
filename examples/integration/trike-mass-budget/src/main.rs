@@ -142,6 +142,17 @@ const WELD_RANGE_RAD: f64 = 1e-9;
 /// trip it — see the note on oracle 1.
 const MASS_TOLERANCE: f64 = 0.005;
 
+/// Parts the plan is expected to produce.
+///
+/// ⚠ Asserted because every oracle below walks a collection, and a walk over
+/// an empty one passes without doing anything. An empty `Mechanism` builds
+/// happily — `validate` skips the orphan check below two parts — so nothing
+/// upstream would object.
+const EXPECTED_PARTS: usize = 13;
+
+/// Number of members welded into the frame, whose grid cost is compared.
+const WELDED_FRAME_MEMBERS: usize = 2;
+
 /// Polyurethane on asphalt, at the optimistic end of 0.6-1.0.
 const TYRE_MU: f64 = 1.0;
 
@@ -511,10 +522,10 @@ fn assemble(plan: Vec<PartPlan>) -> Result<Mechanism> {
 /// `to_model` plus a forward kinematics pass already does, at the cost of
 /// meshing every part.
 fn world_origins(mechanism: &Mechanism) -> Result<HashMap<String, Vector3<f64>>> {
-    // ⚠ One joint per child. `to_model` resolves a part with several parent
-    // joints by taking the *first* (`model_builder.rs:808`); a map would
-    // silently take the last, so the two placements would disagree. Refuse
-    // instead of diverging.
+    // ⚠ One joint per child. `to_model` places a body from the *first* joint
+    // naming it as child (`model_builder.rs:262`, and `:808` again for the
+    // mesh offset); a map would silently keep the last, so the two placements
+    // would disagree. Refuse instead of diverging.
     let mut parent_of: HashMap<&str, (&str, Vector3<f64>)> = HashMap::new();
     for j in mechanism.joints() {
         if parent_of
@@ -643,6 +654,14 @@ fn main() -> Result<()> {
     let origins = world_origins(&mechanism)?;
     let derived = derive(&mechanism, &cells, &origins)?;
 
+    if derived.len() != EXPECTED_PARTS {
+        bail!(
+            "derived {} parts, expected {EXPECTED_PARTS} — every oracle below \
+             walks this collection, and a short walk passes quietly",
+            derived.len()
+        );
+    }
+
     println!("reverse trike — {} parts\n", mechanism.parts().len());
     println!(
         "{:<12} {:>10} {:>12} {:>9}   {:>8} {:>8} {:>8} {:>7} {:>9}",
@@ -700,6 +719,12 @@ fn main() -> Result<()> {
         .iter()
         .filter(|d| d.name == "frame_spine" || d.name == "frame_cross")
         .collect();
+    if weld_members.len() != WELDED_FRAME_MEMBERS {
+        bail!(
+            "found {} welded frame members, expected {WELDED_FRAME_MEMBERS}",
+            weld_members.len()
+        );
+    }
     if let Some((first, rest)) = weld_members.split_first() {
         let as_members: f64 = weld_members
             .iter()
