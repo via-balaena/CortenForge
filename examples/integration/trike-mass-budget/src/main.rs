@@ -10,9 +10,10 @@
 //!
 //! # The layering this deliberately preserves
 //!
-//! `cf-vehicle` does **not** depend on `cf-design`: it stays geometry-free and
-//! takes a budget. This crate is the composition point, which is why it lives
-//! in `examples/integration` rather than inside either library.
+//! `cf-vehicle` declares **no dependencies at all** — it stays geometry-free
+//! and takes a budget — and this arc does not give it one. This crate is the
+//! composition point, which is why it lives in `examples/integration` rather
+//! than inside either library.
 //!
 //! # What the oracle checks
 //!
@@ -42,14 +43,18 @@
 //! - ⛔ **A `Part` carries exactly one `Material`.** A wheel is a rim and a
 //!   tyre; a rigid body of two materials cannot have its mass derived, so each
 //!   material is its own part welded to the next, inflating the part count.
-//! - ⚠ **`mass_properties` grids the solid's AABB**, so a part must be built
-//!   part-local or the cost is the whole vehicle cubed. A 1.25 m frame at the
-//!   0.5 mm cell its 2 mm wall needs would be 787 M evaluations; built local
-//!   and rotated, the same member is 9 M.
+//! - ⚠ **`mass_properties` grids the solid's AABB at a uniform cell**, so cost
+//!   follows the bounding box and the thinnest feature, not the amount of
+//!   material. *Where* a part sits is free — `bounds.rs:185` shifts a
+//!   translated box without growing it — but *how many parts* it is is not,
+//!   and that is decided by the missing weld joint above. The run prints the
+//!   measurement: the spine and cross-member cost 16.6 M cells as two members
+//!   and 250.4 M as the one weldment they physically are, 15.1x, because the
+//!   single box spans both and is nearly all air.
 //! - ⚠ **Nothing aggregates an assembly.** `subtree_com[0]` is the whole-model
 //!   centre of mass, but it exists only after `to_model` plus a forward
-//!   kinematics pass. [`world_origins`] below is the missing walk, in 20
-//!   lines, and is the thing to extract if this shape proves out.
+//!   kinematics pass. [`world_origins`] below is that walk, done directly on
+//!   the joint anchors, and is the thing to extract if this shape proves out.
 
 #![allow(clippy::too_many_lines)]
 
@@ -58,7 +63,7 @@ use std::f64::consts::{FRAC_PI_2, PI};
 
 use anyhow::{Result, bail};
 use cf_design::mechanism::mass::mass_properties;
-use cf_design::{JointDef, JointKind, Material, Mechanism, Part, Solid};
+use cf_design::{Aabb, JointDef, JointKind, Material, Mechanism, Part, Solid};
 use cf_vehicle::analysis::rollover_threshold_g;
 use cf_vehicle::{CorneringLoads, MassItem, StaticLoads, TrikeSpec};
 use nalgebra::{Point3, UnitQuaternion, Vector3};
@@ -100,6 +105,17 @@ const FRAME_OD_MM: f64 = 31.75;
 const FRAME_WALL_MM: f64 = 2.0;
 /// Half the frame tube's outside diameter — where members butt onto it.
 const FRAME_R_MM: f64 = FRAME_OD_MM / 2.0;
+
+/// The spine stops this far short of the rear contact patch; the swingarm
+/// carries the rest.
+const TAIL_SETBACK_MM: f64 = 100.0;
+
+/// Upright (hub carrier) tube outside diameter.
+const UPRIGHT_OD_MM: f64 = 25.4;
+/// Upright tube wall — thicker than the frame's, it takes the steering loads.
+const UPRIGHT_WALL_MM: f64 = 3.0;
+/// Half the front wheel's width. The hub is its widest part.
+const FRONT_WHEEL_HALF_WIDTH_MM: f64 = 25.0;
 
 /// A weld, expressed in the only vocabulary [`JointKind`] offers: a revolute
 /// whose range is too narrow to be motion. `with_range` rejects `0.0, 0.0`.
@@ -251,12 +267,12 @@ fn plan() -> Result<Vec<PartPlan>> {
     let aluminium = Material::new("aluminium 6061", ALUMINIUM_KG_M3);
 
     // Spine: butts onto the cross-member's outside and runs to the tail.
-    let spine_length = WHEELBASE_MM - FRAME_R_MM - 100.0;
+    let spine_length = WHEELBASE_MM - FRAME_R_MM - TAIL_SETBACK_MM;
     let spine_x = FRAME_R_MM + spine_length / 2.0;
 
     // Uprights sit inboard of the wheels by half a wheel's width plus the
     // upright's own radius, so the contact patches land on the nominal track.
-    let upright_y = TRACK_MM / 2.0 - 37.7;
+    let upright_y = TRACK_MM / 2.0 - (FRONT_WHEEL_HALF_WIDTH_MM + UPRIGHT_OD_MM / 2.0);
     let upright_length = 74.125;
     let upright_z = FRAME_Z_MM + FRAME_R_MM + upright_length / 2.0;
 
@@ -301,7 +317,7 @@ fn plan() -> Result<Vec<PartPlan>> {
             axis: steering_axis(),
             range_rad: Some((-0.6, 0.6)),
             material: steel.clone(),
-            piece: tube(25.4, 3.0, upright_length),
+            piece: tube(UPRIGHT_OD_MM, UPRIGHT_WALL_MM, upright_length),
             cell_mm: 0.5,
         },
         PartPlan {
@@ -312,7 +328,7 @@ fn plan() -> Result<Vec<PartPlan>> {
             axis: steering_axis(),
             range_rad: Some((-0.6, 0.6)),
             material: steel.clone(),
-            piece: tube(25.4, 3.0, upright_length),
+            piece: tube(UPRIGHT_OD_MM, UPRIGHT_WALL_MM, upright_length),
             cell_mm: 0.5,
         },
         PartPlan {
@@ -325,7 +341,7 @@ fn plan() -> Result<Vec<PartPlan>> {
             material: aluminium.clone(),
             piece: joined(vec![
                 onto_y(annulus(180.0, 160.0, 15.0)),
-                onto_y(disc(30.0, 25.0)),
+                onto_y(disc(30.0, FRONT_WHEEL_HALF_WIDTH_MM)),
             ])?,
             cell_mm: 2.0,
         },
@@ -339,7 +355,7 @@ fn plan() -> Result<Vec<PartPlan>> {
             material: aluminium.clone(),
             piece: joined(vec![
                 onto_y(annulus(180.0, 160.0, 15.0)),
-                onto_y(disc(30.0, 25.0)),
+                onto_y(disc(30.0, FRONT_WHEEL_HALF_WIDTH_MM)),
             ])?,
             cell_mm: 2.0,
         },
@@ -351,7 +367,7 @@ fn plan() -> Result<Vec<PartPlan>> {
             axis: Vector3::y(),
             range_rad: Some((-WELD_RANGE_RAD, WELD_RANGE_RAD)),
             material: Material::new("16in pneumatic tyre", FRONT_TYRE_KG_M3),
-            piece: onto_y(annulus(FRONT_RADIUS_MM, 180.0, 25.0)),
+            piece: onto_y(annulus(FRONT_RADIUS_MM, 180.0, FRONT_WHEEL_HALF_WIDTH_MM)),
             cell_mm: 2.0,
         },
         PartPlan {
@@ -362,7 +378,7 @@ fn plan() -> Result<Vec<PartPlan>> {
             axis: Vector3::y(),
             range_rad: Some((-WELD_RANGE_RAD, WELD_RANGE_RAD)),
             material: Material::new("16in pneumatic tyre", FRONT_TYRE_KG_M3),
-            piece: onto_y(annulus(FRONT_RADIUS_MM, 180.0, 25.0)),
+            piece: onto_y(annulus(FRONT_RADIUS_MM, 180.0, FRONT_WHEEL_HALF_WIDTH_MM)),
             cell_mm: 2.0,
         },
         PartPlan {
@@ -433,7 +449,7 @@ fn plan() -> Result<Vec<PartPlan>> {
 }
 
 /// Turn the plan into a validated [`Mechanism`], consuming the solids.
-fn assemble(plan: Vec<PartPlan>) -> Mechanism {
+fn assemble(plan: Vec<PartPlan>) -> Result<Mechanism> {
     let mut builder = Mechanism::builder("reverse trike");
     for p in plan {
         builder = builder.part(Part::new(p.name, p.piece.solid, p.material));
@@ -450,7 +466,11 @@ fn assemble(plan: Vec<PartPlan>) -> Mechanism {
             None => joint,
         });
     }
-    builder.build()
+    let errors = builder.validate();
+    if !errors.is_empty() {
+        bail!("the mechanism does not validate: {errors:?}");
+    }
+    Ok(builder.build())
 }
 
 // ── The walk cf-design does not have ────────────────────────────────────
@@ -464,11 +484,23 @@ fn assemble(plan: Vec<PartPlan>) -> Mechanism {
 /// `to_model` plus a forward kinematics pass already does, at the cost of
 /// meshing every part.
 fn world_origins(mechanism: &Mechanism) -> Result<HashMap<String, Vector3<f64>>> {
-    let parent_of: HashMap<&str, (&str, Vector3<f64>)> = mechanism
-        .joints()
-        .iter()
-        .map(|j| (j.child(), (j.parent(), j.anchor().coords)))
-        .collect();
+    // ⚠ One joint per child. `to_model` resolves a part with several parent
+    // joints by taking the *first* (`model_builder.rs:808`); a map would
+    // silently take the last, so the two placements would disagree. Refuse
+    // instead of diverging.
+    let mut parent_of: HashMap<&str, (&str, Vector3<f64>)> = HashMap::new();
+    for j in mechanism.joints() {
+        if parent_of
+            .insert(j.child(), (j.parent(), j.anchor().coords))
+            .is_some()
+        {
+            bail!(
+                "part {} is the child of more than one joint, so its placement \
+                 here and in `to_model` would differ",
+                j.child()
+            );
+        }
+    }
 
     let mut origins = HashMap::new();
     for part in mechanism.parts() {
@@ -496,12 +528,36 @@ fn world_origins(mechanism: &Mechanism) -> Result<HashMap<String, Vector3<f64>>>
 
 // ── Derivation ──────────────────────────────────────────────────────────
 
-/// One part's mass, both ways, and where its centre of mass sits.
+/// Cells [`mass_properties`] evaluates for this box at this spacing.
+///
+/// The same arithmetic it does internally — it expands the bounds by half a
+/// cell each side, then takes `ceil(size / cell)` per axis — so this is the
+/// real cost, not an estimate of it.
+fn grid_cells(bounds: &Aabb, cell_mm: f64) -> f64 {
+    let size = bounds.max - bounds.min;
+    ((size.x + cell_mm) / cell_mm).ceil()
+        * ((size.y + cell_mm) / cell_mm).ceil()
+        * ((size.z + cell_mm) / cell_mm).ceil()
+}
+
+/// Smallest box containing both.
+fn merged(a: &Aabb, b: &Aabb) -> Aabb {
+    Aabb::new(
+        Point3::from(a.min.coords.inf(&b.min.coords)),
+        Point3::from(a.max.coords.sup(&b.max.coords)),
+    )
+}
+
+/// One part's mass, both ways, where its centre of mass sits, and what it
+/// cost to find out.
 struct Derived {
     name: String,
     grid_kg: f64,
     closed_form_kg: f64,
     world_com_mm: Vector3<f64>,
+    /// The part's box, placed in the world frame.
+    world_bounds: Aabb,
+    cell_mm: f64,
 }
 
 impl Derived {
@@ -529,11 +585,19 @@ fn derive(
         let Some(props) = mass_properties(part.solid(), density, cell_mm) else {
             bail!("mass_properties found no interior for part {}", part.name());
         };
+        let Some(local) = part.solid().bounds() else {
+            bail!("part {} has no finite bounds", part.name());
+        };
         out.push(Derived {
             name: part.name().to_owned(),
             grid_kg: props.mass,
             closed_form_kg: volume_mm3 * 1e-9 * density,
             world_com_mm: origin + props.center_of_mass.coords,
+            world_bounds: Aabb::new(
+                Point3::from(local.min.coords + origin),
+                Point3::from(local.max.coords + origin),
+            ),
+            cell_mm,
         });
     }
     Ok(out)
@@ -548,18 +612,18 @@ fn main() -> Result<()> {
         .map(|p| (p.name, (p.piece.volume_mm3, p.cell_mm)))
         .collect();
 
-    let mechanism = assemble(plan);
+    let mechanism = assemble(plan)?;
     let origins = world_origins(&mechanism)?;
     let derived = derive(&mechanism, &cells, &origins)?;
 
     println!("reverse trike — {} parts\n", mechanism.parts().len());
     println!(
-        "{:<12} {:>10} {:>12} {:>9}   {:>8} {:>8} {:>8}",
-        "part", "grid kg", "closed kg", "rel err", "com x", "com y", "com z"
+        "{:<12} {:>10} {:>12} {:>9}   {:>8} {:>8} {:>8} {:>7} {:>9}",
+        "part", "grid kg", "closed kg", "rel err", "com x", "com y", "com z", "cell", "cells"
     );
     for d in &derived {
         println!(
-            "{:<12} {:>10.4} {:>12.4} {:>8.3}% {:>9.1} {:>8.1} {:>8.1}",
+            "{:<12} {:>10.4} {:>12.4} {:>8.3}% {:>9.1} {:>8.1} {:>8.1} {:>7.1} {:>8.2}M",
             d.name,
             d.grid_kg,
             d.closed_form_kg,
@@ -567,6 +631,8 @@ fn main() -> Result<()> {
             d.world_com_mm.x,
             d.world_com_mm.y,
             d.world_com_mm.z,
+            d.cell_mm,
+            grid_cells(&d.world_bounds, d.cell_mm) / 1e6,
         );
     }
 
@@ -592,6 +658,39 @@ fn main() -> Result<()> {
                 MASS_TOLERANCE * 100.0
             );
         }
+    }
+
+    // ── What the missing weld joint costs, measured ─────────────────
+    //
+    // `mass_properties` evaluates a uniform grid over the solid's bounding
+    // box, so cost follows the box and the thinnest feature, not the amount
+    // of material. Translation does not grow a box (`bounds.rs:185` shifts
+    // min and max by the offset), so WHERE a part sits is free. What is not
+    // free is how many parts it is: the spine and the cross-member are one
+    // weldment, and integrating them as one part means gridding the empty
+    // box that spans both.
+    let weld_members: Vec<&Derived> = derived
+        .iter()
+        .filter(|d| d.name == "frame_spine" || d.name == "frame_cross")
+        .collect();
+    if let Some((first, rest)) = weld_members.split_first() {
+        let as_members: f64 = weld_members
+            .iter()
+            .map(|d| grid_cells(&d.world_bounds, d.cell_mm))
+            .sum();
+        let box_of_all = rest
+            .iter()
+            .fold(first.world_bounds, |acc, d| merged(&acc, &d.world_bounds));
+        let as_one = grid_cells(&box_of_all, first.cell_mm);
+        println!(
+            "\nframe weldment at a {:.1} mm cell: {:.1}M cells as {} members, \
+             {:.1}M as one part ({:.1}x)",
+            first.cell_mm,
+            as_members / 1e6,
+            weld_members.len(),
+            as_one / 1e6,
+            as_one / as_members,
+        );
     }
 
     // ── Oracle 2: the geometry the anchors actually describe ────────
