@@ -611,6 +611,43 @@ mod tests {
     }
 
     #[test]
+    fn the_rear_wheel_load_case_a_spoke_design_must_survive() {
+        // ★ THE HANDOFF. These are the numbers a rear wheel is sized
+        // against, pinned here so that changing the trike changes them
+        // visibly rather than silently.
+        //
+        // ⚠ Note what the cornering case does to the static one: at the
+        // tipping point the inner wheel carries nothing, so the OUTER
+        // wheel alone carries the whole rear axle load — exactly twice its
+        // static share. A wheel sized on the static number is sized on
+        // half the load it sees in a corner.
+        let spec = TrikeSpec::iter1();
+        let statics = StaticLoads::of(&spec);
+        assert_relative_eq!(statics.per_rear_wheel_n, 363.238, epsilon = 0.01);
+
+        // A realistic drift: hard polyurethane, µ = 0.6.
+        let drift = CorneringLoads::at(&spec, 0.60);
+        assert_relative_eq!(drift.outer_rear_n, 626.370, epsilon = 0.01);
+        assert_relative_eq!(drift.inner_rear_n, 100.106, epsilon = 0.01);
+        assert_relative_eq!(drift.outer_rear_lateral_n(0.60), 375.822, epsilon = 0.01);
+        assert_relative_eq!(
+            drift.outer_rear_hub_moment_n_m(&spec, 0.60),
+            52.615,
+            epsilon = 0.01
+        );
+
+        // At the limit the outer wheel takes the entire rear axle load.
+        let limit = CorneringLoads::at(&spec, rollover_threshold_g(&spec));
+        assert_relative_eq!(limit.outer_rear_n, statics.rear_total_n, epsilon = 1e-9);
+        assert_relative_eq!(limit.inner_rear_n, 0.0, epsilon = 1e-9);
+        assert_relative_eq!(
+            limit.outer_rear_n,
+            2.0 * statics.per_rear_wheel_n,
+            epsilon = 1e-9
+        );
+    }
+
+    #[test]
     fn the_dynamic_factor_belongs_to_the_caller() {
         let loads = StaticLoads::of(&TrikeSpec::iter1());
         assert_relative_eq!(
