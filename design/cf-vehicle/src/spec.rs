@@ -85,7 +85,9 @@ impl RollCompliance {
     /// ⚠ **Wheel rate, not spring rate.** The rate measured at the contact
     /// patch is the unambiguous quantity; a coil mounted inboard on a
     /// linkage contributes `spring_rate × motion_ratio²`, and forgetting
-    /// that square is how roll stiffness gets overestimated by half.
+    /// that square inflates the answer by `1 / motion_ratio²` — at a
+    /// motion ratio of 0.7 the real stiffness is barely half what the
+    /// spring rate alone suggests.
     #[must_use]
     pub fn from_wheel_rate(
         sprung_mass_kg: f64,
@@ -362,9 +364,13 @@ impl TrikeSpec {
     ///
     /// # Panics
     ///
-    /// Panics if the mass budget is empty.
+    /// Panics if `self` is not well-formed. ⚠ The validation is not
+    /// ceremony: the `abs` below would otherwise turn a centre of gravity
+    /// that has fallen outside the wheelbase into a small, entirely
+    /// plausible-looking share instead of an obvious error.
     #[must_use]
     pub fn paired_axle_share(&self) -> f64 {
+        self.assert_well_formed();
         let single_x = self.layout.single_wheel_x_m(self.wheelbase_m);
         (self.cg_x_m() - single_x).abs() / self.wheelbase_m
     }
@@ -378,9 +384,12 @@ impl TrikeSpec {
     ///
     /// # Panics
     ///
-    /// Panics if the mass budget is empty.
+    /// Panics if `self` is not well-formed. ⚠ Again load-bearing: a roll
+    /// stiffness of zero would divide to infinity here and report a
+    /// rollover threshold of exactly zero, which reads like an answer.
     #[must_use]
     pub fn effective_cg_height_m(&self) -> f64 {
+        self.assert_well_formed();
         let h = self.cg_z_m();
         self.roll.map_or(h, |roll| {
             h + GRAVITY_M_S2 * roll.sprung_mass_kg * roll.sprung_cg_above_roll_axis_m.powi(2)

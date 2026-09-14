@@ -207,8 +207,11 @@ impl CorneringLoads {
 /// same track and CG height. Two consequences fall straight out, and the
 /// second one is where the layouts part company:
 ///
-/// - the term that dominates is **CG height**, not track, because track
-///   enters linearly and CG height as its reciprocal;
+/// - **per millimetre, CG height is the stronger lever**, by exactly
+///   `track / cg_height` — 3.4× on the planned trike. ⚠ *Not* because one
+///   term is reciprocal: the relative sensitivities are exactly `+1` and
+///   `−1`, equal in magnitude. Height wins only because it is the smaller
+///   number, so a millimetre is a larger fraction of it;
 /// - weight moved **towards the paired axle** raises the threshold. On a
 ///   [`Tadpole`](crate::spec::Layout::Tadpole) that means weight
 ///   **forward**; on a [`Delta`](crate::spec::Layout::Delta) it means
@@ -885,6 +888,89 @@ mod tests {
             4.0 * narrow.roll_stiffness_n_m_per_rad,
             epsilon = 1e-9
         );
+    }
+
+    #[test]
+    fn the_layout_swaps_which_wheel_radius_is_which() {
+        // ⚠ FOUND BY COVERAGE, NOT BY MUTATION. Both `Delta` arms here were
+        // unexercised — every other test uses a tadpole — and mutation
+        // still reported zero missed, because replacing a whole function
+        // body is caught by the tadpole path while a wrong arm is not.
+        // This is the one place the layout inversion is written twice.
+        let tadpole = TrikeSpec::iter1();
+        let delta = TrikeSpec {
+            layout: Layout::Delta,
+            ..TrikeSpec::iter1()
+        };
+        assert_relative_eq!(
+            tadpole.paired_wheel_radius_m(),
+            tadpole.front_wheel_radius_m,
+            epsilon = 1e-12
+        );
+        assert_relative_eq!(
+            tadpole.single_wheel_radius_m(),
+            tadpole.rear_wheel_radius_m,
+            epsilon = 1e-12
+        );
+        assert_relative_eq!(
+            delta.paired_wheel_radius_m(),
+            delta.rear_wheel_radius_m,
+            epsilon = 1e-12
+        );
+        assert_relative_eq!(
+            delta.single_wheel_radius_m(),
+            delta.front_wheel_radius_m,
+            epsilon = 1e-12
+        );
+        // ⚠ Vacuous if the fixture's two radii happen to match.
+        assert!(
+            (tadpole.front_wheel_radius_m - tadpole.rear_wheel_radius_m).abs() > 0.01,
+            "the fixture must be able to tell the two radii apart"
+        );
+    }
+
+    #[test]
+    fn a_millimetre_of_cg_height_buys_track_over_height_millimetres_of_track() {
+        // ★ AN EXPLANATION MADE EXECUTABLE. It is tempting to say CG height
+        // matters more "because track enters linearly and height as its
+        // reciprocal" — that reasoning is wrong, and this measures why: the
+        // RELATIVE sensitivities are exactly +1 and −1, equal in magnitude.
+        //
+        // Height is the better lever for an arithmetic reason instead. It
+        // is simply the smaller number, so a millimetre is a larger
+        // fraction of it, and the exchange rate is exactly `t / h`.
+        let spec = TrikeSpec::iter1();
+        let eps = 1.0e-5;
+        let by_track = |dt: f64| {
+            rollover_threshold_g(&TrikeSpec {
+                track_m: spec.track_m + dt,
+                ..TrikeSpec::iter1()
+            })
+        };
+        let by_height = |dz: f64| {
+            rollover_threshold_g(&with_masses(
+                spec.masses
+                    .iter()
+                    .map(|m| MassItem::new(m.name.clone(), m.mass_kg, m.x_m, m.z_m + dz))
+                    .collect(),
+            ))
+        };
+        let d_track = (by_track(eps) - by_track(-eps)) / (2.0 * eps);
+        let d_height = (by_height(eps) - by_height(-eps)) / (2.0 * eps);
+
+        // The exchange rate, per millimetre.
+        assert_relative_eq!(
+            d_height.abs() / d_track,
+            spec.track_m / spec.cg_z_m(),
+            max_relative = 1e-6
+        );
+        assert_relative_eq!(spec.track_m / spec.cg_z_m(), 3.349_9, max_relative = 1e-4);
+
+        // And the elasticities really are equal and opposite, which is what
+        // makes the "reciprocal, therefore dominant" story false.
+        let n = rollover_threshold_g(&spec);
+        assert_relative_eq!(d_track * spec.track_m / n, 1.0, max_relative = 1e-6);
+        assert_relative_eq!(d_height * spec.cg_z_m() / n, -1.0, max_relative = 1e-6);
     }
 
     #[test]
