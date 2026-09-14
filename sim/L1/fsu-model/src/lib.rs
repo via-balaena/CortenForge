@@ -947,10 +947,14 @@ fn build_bonded_disc_at(
     ))
 }
 
-/// Bond an already-[`prepare_disc`]d mesh with the **linear** element.
+/// Bond an already-`prepare_disc`d mesh with the **linear** element.
+///
+/// (`prepare_disc` is `#[cfg(test)]`, so it is deliberately not a doc link —
+/// there is no such item in a doc build.)
 ///
 /// Split from [`build_bonded_disc_at`] so a caller that needs both element arms can prepare
-/// **once** ([`PreparedDisc::duplicate`]) instead of re-meshing per arm. That is a large cost
+/// **once** (`PreparedDisc::duplicate`, also `#[cfg(test)]`) instead of
+/// re-meshing per arm. That is a large cost
 /// saving on every two-arm gate, and — more importantly — it makes rung 1's attribution
 /// argument structural: the arms then share one mesh *object*, rather than each re-deriving
 /// the same geometry from the same constructor and the reader having to check they match.
@@ -1067,7 +1071,7 @@ fn prepared_tet10_mesh(
     tet10.with_projected_midsides(&moves, floors.midside)
 }
 
-/// Bond an already-[`prepare_disc`]d mesh with the **quadratic** element: enrich, project the
+/// Bond an already-`prepare_disc`d mesh with the **quadratic** element: enrich, project the
 /// bonded-face boundary midsides if `endplates` is given, widen the band to a full-face tie.
 ///
 /// The quadratic half of the prepare-once/bond-twice split — see [`bond_prepared_tet4`].

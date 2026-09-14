@@ -6,13 +6,13 @@
 //!
 //! # Ray casting
 //!
-//! [`ray_cast`] dispatches on [`Shape`](crate::Shape) to the appropriate
+//! [`ray_cast()`] dispatches on [`Shape`](crate::Shape) to the appropriate
 //! per-shape analytic or numerical algorithm. [`ray_triangle`] is the
 //! standalone Möller–Trumbore ray–triangle test.
 //!
 //! # Closest point
 //!
-//! [`closest_point`] dispatches on [`Shape`](crate::Shape) to per-shape
+//! [`closest_point()`] dispatches on [`Shape`](crate::Shape) to per-shape
 //! implementations. [`closest_point_on_triangle`], [`closest_point_segment`],
 //! and [`closest_points_segments`] are standalone free functions for common
 //! proximity queries.
