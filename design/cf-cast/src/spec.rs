@@ -3523,6 +3523,234 @@ mod tests {
         }
     }
 
+    /// The `## Generic Smooth-On Guidance` section only — from its heading to
+    /// the next `## `.
+    ///
+    /// ⚠ Section-scoped on purpose. A whole-sheet `contains("1A:1B")` also
+    /// matches the `## Materials Summary` cell, so the "states no ratio"
+    /// assertion below would pass on a sheet that states one — and would have
+    /// started passing silently the day a material anchored.
+    fn guidance_section(md: &str) -> &str {
+        let start = md.find("## Generic Smooth-On Guidance").unwrap_or_else(|| {
+            panic!("the guidance heading is a cf-cast-cli anchor; it must render")
+        });
+        let rest = &md[start..];
+        rest.find("\n## ").map_or(rest, |end| &rest[..end])
+    }
+
+    /// Any `<digit>A:<digit>B` ratio in the text, e.g. `1A:1B`.
+    fn stated_ratio(text: &str) -> Option<String> {
+        let b: Vec<char> = text.chars().collect();
+        b.windows(5)
+            .find(|w| {
+                w[0].is_ascii_digit()
+                    && w[1] == 'A'
+                    && w[2] == ':'
+                    && w[3].is_ascii_digit()
+                    && w[4] == 'B'
+            })
+            .map(|w| w.iter().collect())
+    }
+
+    /// ⛔ THE DEFECT. The guidance bullet hardcoded `1A:1B` while the
+    /// `## Materials Summary` table three lines above it said "consult
+    /// Smooth-On TDS" for the same material — a ratio asserted for a material
+    /// the generator had just admitted it has no data for.
+    #[test]
+    fn the_guidance_never_states_a_ratio_the_table_does_not() {
+        let (mut spec, base) = v2_fixture();
+        spec.layers[0].material = MoldingMaterial {
+            display_name: "95A polyurethane".to_string(),
+            density_kg_m3: 1070.0,
+            anchor_key: None,
+        };
+        let (md, _) = procedure_pair(&spec, &base);
+        let guidance = guidance_section(&md);
+
+        assert!(
+            md.contains("consult Smooth-On TDS"),
+            "the table must be admitting it has no cure data, or this gate \
+             proves nothing"
+        );
+        assert_eq!(
+            stated_ratio(guidance),
+            None,
+            "the guidance states a ratio for an unanchored material:\n{guidance}"
+        );
+        // ⚠⚠ `stated_ratio` finds the SHAPE `NA:NB`, not the MEANING "a
+        // ratio". A hardcode reading "one part A to one part B" passed every
+        // gate on this branch until this literal was added — the original bug
+        // and all eight mutations happened to wear digits, which is exactly
+        // how a mutation sweep can look convincing and prove the wrong thing.
+        // The whole bullet is pinned, so ANY wording change fails.
+        assert_eq!(
+            guidance
+                .lines()
+                .find(|l| l.starts_with("- Weigh Part A"))
+                .unwrap_or("<the mix bullet is missing>"),
+            "- Weigh Part A + Part B on a gram scale, at the ratio on its TDS. \
+             No ratio is stated here: `## Materials Summary` above has no cure \
+             data for this cast's material. Weight typically beats volume for \
+             a low-viscosity pour.",
+            "the unanchored mix bullet drifted"
+        );
+    }
+
+    /// ★ The positive arm. Without it
+    /// [`the_guidance_never_states_a_ratio_the_table_does_not`] passes on a
+    /// writer that never states a ratio at all, for any material.
+    #[test]
+    fn a_known_anchor_still_states_its_ratio_and_the_table_agrees() {
+        let (spec, base) = v2_fixture();
+        let (md, _) = procedure_pair(&spec, &base);
+        let guidance = guidance_section(&md);
+        let ratio = stated_ratio(guidance)
+            .unwrap_or_else(|| panic!("an anchored material must get its ratio:\n{guidance}"));
+        assert_eq!(ratio, "1A:1B", "Ecoflex 00-30's TDS ratio");
+        // ⚠ Pinned whole, for the same reason as the unanchored arm above.
+        assert_eq!(
+            guidance
+                .lines()
+                .find(|l| l.starts_with("- Weigh Part A"))
+                .unwrap_or("<the mix bullet is missing>"),
+            "- Weigh Part A + Part B on a gram scale. 1A:1B is by weight or \
+             volume per TDS — choose the more accurate path for the equipment \
+             on hand (weight typically beats volume for a low-viscosity pour).",
+            "the anchored mix bullet drifted"
+        );
+        // ⚠ The whole point: ONE source, so the two cannot disagree.
+        let table = md
+            .split_once("## Generic Smooth-On Guidance")
+            .map_or("", |(before, _)| before);
+        assert!(
+            table.contains(&ratio),
+            "the table must carry the same ratio the guidance names"
+        );
+    }
+
+    /// ★★ The invariant, over both arms and both plug roles: whatever ratio
+    /// the guidance names, the table names it too.
+    ///
+    /// ⚠⚠ **What it cannot see.** [`stated_ratio`] matches the SHAPE `NA:NB`,
+    /// so a ratio spelled "one part A to one part B" is invisible to this gate
+    /// and it passes — measured, not assumed. The wording of both arms is
+    /// pinned as whole literals by
+    /// [`the_guidance_never_states_a_ratio_the_table_does_not`] and
+    /// [`a_known_anchor_still_states_its_ratio_and_the_table_agrees`], which
+    /// is where such a rewrite fails. This gate's own claim is the narrower
+    /// one: for digit-shaped ratios, the two sections never disagree.
+    #[test]
+    fn the_guidance_and_the_table_never_disagree() {
+        for (label, anchor) in [("anchored", Some("ECOFLEX_00_30")), ("unanchored", None)] {
+            for role in [PlugRole::Tooling, PlugRole::Insert] {
+                let (mut spec, base) = v2_fixture();
+                spec.layers[0].material = MoldingMaterial {
+                    display_name: "probe".to_string(),
+                    density_kg_m3: 1070.0,
+                    anchor_key: anchor,
+                };
+                let (md, _) = procedure_pair(&spec, &base.clone().with_plug_role(role));
+                let guidance = guidance_section(&md);
+                let table = md
+                    .split_once("## Generic Smooth-On Guidance")
+                    .map_or("", |(before, _)| before);
+                match stated_ratio(guidance) {
+                    None => assert_eq!(
+                        anchor, None,
+                        "[{label}/{role:?}] an anchored material lost its ratio"
+                    ),
+                    Some(r) => assert!(
+                        table.contains(&r),
+                        "[{label}/{role:?}] guidance says {r}, table does not"
+                    ),
+                }
+            }
+        }
+    }
+
+    /// ★★ The inter-layer release instruction, gated at last.
+    ///
+    /// ⚠ `write_generic_guidance` carried a comment reading "An insert cast
+    /// must not lose it" about this clause — and NOTHING enforced it. The
+    /// clause was rewritten wholesale while the suite stayed green. A warning
+    /// in a comment is not a gate.
+    ///
+    /// Two facts share one bullet on the insert path: release the CUP HALVES,
+    /// and do NOT release between layers. A single-layer cast has no layers to
+    /// bond, so it must NOT carry the second — the arm that would send a
+    /// bencher looking for an interface that does not exist.
+    #[test]
+    fn a_multi_layer_cast_says_not_to_release_between_layers() {
+        const BETWEEN: &str = "Do not release BETWEEN layers";
+        for (label, (spec, base)) in [("1-layer", v2_fixture()), ("2-layer", two_layer_fixture())] {
+            let multi = spec.layers.len() > 1;
+            for role in [PlugRole::Tooling, PlugRole::Insert] {
+                let (md, _) = procedure_pair(&spec, &base.clone().with_plug_role(role));
+                let guidance = guidance_section(&md);
+                assert_eq!(
+                    guidance.contains(BETWEEN),
+                    multi,
+                    "[{label}/{role:?}] inter-layer release instruction present={}, \
+                     expected={multi}:\n{guidance}",
+                    guidance.contains(BETWEEN)
+                );
+                // Anchored the other way: the release instruction that is
+                // ALWAYS there must survive both arms, or the equality above
+                // passes on a writer that emits nothing at all.
+                assert!(
+                    guidance.contains("Apply mold release"),
+                    "[{label}/{role:?}] lost the release instruction entirely"
+                );
+            }
+        }
+    }
+
+    /// ★★ The UNANCHORED arm through both prose checkers.
+    ///
+    /// ⚠⚠ This gate was pre-registered for this branch and then not written.
+    /// Verification found it by grepping for `anchor_key: None` and getting
+    /// exactly one hit — inside the defect gate. Every other sheet the suite
+    /// renders uses an ANCHORED material, so the bullet that only an
+    /// unanchored cast produces had never reached
+    /// [`assert_prose_is_well_formed`] or [`assert_cross_refs_resolve`].
+    ///
+    /// It matters concretely: that bullet is the only one in the section
+    /// carrying a `## Section` cross-reference, and its prose spans four
+    /// source-line continuations — the shape that produced "half- cone" in
+    /// this file before.
+    #[test]
+    fn the_unanchored_mix_bullet_is_well_formed_and_resolves_its_reference() {
+        use crate::cast_mode::CastMode;
+        use crate::procedure::generate_procedure_markdown_v2_for_mode;
+        for (label, (mut spec, base)) in
+            [("1-layer", v2_fixture()), ("2-layer", two_layer_fixture())]
+        {
+            for layer in &mut spec.layers {
+                layer.material = MoldingMaterial {
+                    display_name: "95A polyurethane".to_string(),
+                    density_kg_m3: 1070.0,
+                    anchor_key: None,
+                };
+            }
+            let pours = spec.compute_pour_volumes().unwrap();
+            for role in [PlugRole::Tooling, PlugRole::Insert] {
+                let r = base.clone().with_plug_role(role);
+                for mode in [CastMode::Detachable, CastMode::Bonded] {
+                    let md = generate_procedure_markdown_v2_for_mode(&spec, &pours, &r, mode);
+                    let case = format!("{label} / {role:?} / {mode:?} / unanchored");
+                    // Anchored first: the arm under test must actually be the
+                    // one rendering, or both checkers pass on the other one.
+                    assert!(
+                        guidance_section(&md).contains("has no cure data"),
+                        "[{case}] this fixture did not render the unanchored arm"
+                    );
+                    assert_cross_refs_resolve(&md, &case);
+                    assert_prose_is_well_formed(&md, &case);
+                }
+            }
+        }
+    }
+
     /// ★★ Every `## Section` the sheet points at must EXIST in that same
     /// sheet, across the whole config matrix.
     ///

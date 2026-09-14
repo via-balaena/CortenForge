@@ -2642,6 +2642,57 @@ mod tests {
         }
     }
 
+    /// ★★ The wheel's material is unanchored, and its sheet renders the
+    /// no-ratio arm because of that.
+    ///
+    /// ⚠ Distinct from the synthetic-fixture gate in `spec::tests`, which
+    /// builds an unanchored material by hand. This one asserts the WHEEL's
+    /// material — `wheel_cast_spec` sets `anchor_key: None` — so giving the
+    /// wheel a silicone anchor one day fails HERE, where the subject lives,
+    /// rather than silently printing a ratio on the sheet a bencher reads.
+    ///
+    /// ⚠⚠ **What it cannot see.** The ratio check below matches the SHAPE
+    /// `NA:NB`; a ratio spelled "one part A to one part B" passes it —
+    /// measured, not assumed. The arm's exact wording is pinned by
+    /// `spec::tests::the_guidance_never_states_a_ratio_the_table_does_not`,
+    /// which is where a reworded bullet fails. This gate's own claim is the
+    /// narrower one its name now states: the wheel reaches that arm at all.
+    ///
+    /// ⚠ It was pre-registered for this branch and not written. The plan file
+    /// is not self-enforcing; auditing it against the code is what found this.
+    #[test]
+    fn the_wheel_renders_the_unanchored_mix_arm() {
+        let spec = WheelSpec::iter1();
+        let ribbon = wheel_mold_ribbon(&spec).unwrap();
+        let cast = wheel_cast_spec(
+            &spec,
+            WORKSHOP_WALL_M,
+            PRODUCTION_CELL_M,
+            mesh_printability::PrinterConfig::fdm_default(),
+        );
+        let pours = cast.compute_pour_volumes().unwrap();
+        let md = crate::procedure::generate_procedure_markdown_v2(&cast, &pours, &ribbon);
+
+        // The table must be admitting it has no cure data, or the absence
+        // below proves nothing about the guidance.
+        assert!(
+            md.contains("| 95A polyurethane |") && md.contains("consult Smooth-On TDS"),
+            "the wheel's material must render as unanchored"
+        );
+        let (_, after) = md
+            .split_once("## Generic Smooth-On Guidance")
+            .unwrap_or_else(|| panic!("the guidance section must render"));
+        let guidance = after.split_once("\n## ").map_or(after, |(sec, _)| sec);
+        assert!(
+            !guidance.contains("A:1B") && !guidance.contains("1A:"),
+            "the wheel's guidance states a mix ratio:\n{guidance}"
+        );
+        assert!(
+            guidance.contains("has no cure data for this cast's material"),
+            "and it must say why it gives none:\n{guidance}"
+        );
+    }
+
     #[test]
     fn a_cored_mold_piece_is_still_one_shell() {
         // ⚠ ADDED AFTER LOOKING AT THE MESH. Its sibling
