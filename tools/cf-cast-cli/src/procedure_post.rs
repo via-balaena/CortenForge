@@ -440,6 +440,33 @@ mod tests {
 
     use super::*;
 
+    /// ★★ This crate prints its OWN pour-mass line, and `cf-cast` writes
+    /// another into the sheet this crate just produced. Different sentences,
+    /// different crates, nothing making them agree.
+    ///
+    /// ⚠ `cf_cast`'s `the_neutral_nouns_render_where_silicone_used_to` pins
+    /// its side, and its failure message names this file — but that message
+    /// only renders on failure, so it can go stale in silence. This pins the
+    /// other side, so the pair cannot drift without a test failing.
+    ///
+    /// ⚠ I first costed this as a shared const or a sheet-rendering fixture,
+    /// judged both too expensive for a cosmetic divergence, and wrote the
+    /// coupling down as prose instead. That skipped the cheap option: read
+    /// our own source. Five lines, and the invariant is checked rather than
+    /// described.
+    #[test]
+    fn the_cli_prints_the_same_pour_mass_noun_as_the_sheet() {
+        let main_rs = include_str!("main.rs");
+        assert!(
+            main_rs.contains("Total pour mass"),
+            "this crate's stdout label drifted from the sheet's"
+        );
+        assert!(
+            !main_rs.contains("Total silicone mass"),
+            "the pour is not necessarily silicone — cf-cast stopped saying so"
+        );
+    }
+
     const FIXTURE_V2: &str = "\
 # Cast Procedure\n\
 \n\
