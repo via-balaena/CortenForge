@@ -457,6 +457,7 @@ members = [
     # chosen. Geometry + a lumped mass budget -> axle split, cornering
     # loads, rollover threshold, steering trail.
     "design/cf-vehicle",
+    "design/cf-trike",
 
     # Shared device-design domain types (cavity + layer-stack state,
     # scan resources, sim-design projection, slacker recipe data).
@@ -726,6 +727,7 @@ mesh = { path = "mesh/mesh" }
 # Geometric kernel
 cf-geometry = { path = "design/cf-geometry" }
 cf-vehicle = { path = "design/cf-vehicle" }
+cf-trike = { path = "design/cf-trike" }
 cf-fsu-geometry = { path = "design/cf-fsu-geometry" }
 cf-routing = { path = "design/cf-routing" }
 cf-routing-tests = { path = "design/cf-routing-tests" }
