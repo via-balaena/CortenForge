@@ -62,6 +62,14 @@
 //!   less. ⇒ Splitting a weldment and welding it is still the cheaper option,
 //!   but "an order of magnitude" was only true while every member ran along an
 //!   axis.
+//! - ⛔ **A `Mechanism` is a kinematic tree, so a linkage cannot close.** A
+//!   steering tie rod ties both arms together, which is a loop. The physics
+//!   layer has the constraint — `Model::eq_type` carries Connect, Weld, Joint,
+//!   Tendon and Distance — but cf-design exposes no way to ask for one, so the
+//!   rod here is welded to the left arm and the right wheel steers
+//!   independently of it. Mass and geometry are right; kinematics are not.
+//!   Same shape as the weld gap: the capability exists downstream, the design
+//!   vocabulary lacks it.
 //! - ⚠ **Nothing aggregates an assembly.** `subtree_com[0]` is the whole-model
 //!   centre of mass, but it exists only after `to_model` plus a forward
 //!   kinematics pass. [`world_origins`] below is that walk, done directly on
@@ -143,6 +151,24 @@ const PAN_LENGTH_MM: f64 = 250.0;
 const SEAT_BACK_LENGTH_MM: f64 = 500.0;
 /// Recline, measured from vertical. A cruiser sits up more than a racer.
 const SEAT_BACK_ANGLE_DEG: f64 = 45.0;
+/// Steering arm: how far aft of the kingpin the tie rod picks up. Longer is
+/// lighter steering and less feedback.
+const STEER_ARM_AFT_MM: f64 = 120.0;
+/// How far inboard the arm end sits from the kingpin.
+const STEER_ARM_INBOARD_MM: f64 = 42.3;
+/// Height of the steering linkage above the ground.
+const STEER_LINKAGE_Z_MM: f64 = 175.0;
+/// Steering arm and tie rod stock.
+const STEER_TUBE_OD_MM: f64 = 19.05;
+/// Steering tube wall.
+const STEER_TUBE_WALL_MM: f64 = 1.5;
+/// Where the rider's hands fall, beside the hip.
+const GRIP_X_MM: f64 = 620.0;
+/// Grip half-spacing.
+const GRIP_Y_MM: f64 = 280.0;
+/// Grip height.
+const GRIP_Z_MM: f64 = 320.0;
+
 /// Hip to pedal, extended. Sets where the bottom bracket goes, and with it
 /// where the hip has to sit for a given wheelbase.
 const LEG_REACH_MM: f64 = 950.0;
@@ -193,7 +219,7 @@ const MASS_TOLERANCE: f64 = 0.005;
 
 /// Welds in the assembly: three frame members and seven seat members onto the
 /// spine, all three tyres onto their rims, and the rider's two halves.
-const EXPECTED_WELDS: usize = 15;
+const EXPECTED_WELDS: usize = 20;
 
 /// Degrees of freedom the machine actually has: the free body, two steering
 /// pivots, three wheels spinning, and the swingarm.
@@ -205,7 +231,7 @@ const EXPECTED_DOF: usize = 12;
 /// an empty one passes without doing anything. An empty `Mechanism` builds
 /// happily — `validate` skips the orphan check below two parts — so nothing
 /// upstream would object.
-const EXPECTED_PARTS: usize = 22;
+const EXPECTED_PARTS: usize = 27;
 
 /// Members welded into the frame, whose grid cost is compared: spine,
 /// cross-member and the two diagonals.
@@ -447,6 +473,30 @@ fn plan() -> Result<Vec<PartPlan>> {
             HIP_Z_MM + SEAT_BACK_LENGTH_MM * recline.cos(),
         )
     };
+    // ── Steering ────────────────────────────────────────────────────
+    //
+    // Each upright carries an arm aft of its kingpin; a tie rod across the two
+    // arm ends makes the wheels turn together, and a bar from each upright
+    // reaches back to the rider's hands — direct steering, as a tadpole has.
+    let steer_member = |a, b| tube_between(a, b, STEER_TUBE_OD_MM, STEER_TUBE_WALL_MM);
+    let kingpin_pickup = |sign: f64| Point3::new(0.0, sign * upright_y, STEER_LINKAGE_Z_MM);
+    let arm_end = |sign: f64| {
+        Point3::new(
+            STEER_ARM_AFT_MM,
+            sign * (upright_y - STEER_ARM_INBOARD_MM),
+            STEER_LINKAGE_Z_MM,
+        )
+    };
+    let grip = |sign: f64| Point3::new(GRIP_X_MM, sign * GRIP_Y_MM, GRIP_Z_MM);
+    let upright_top =
+        |sign: f64| Point3::new(0.0, sign * upright_y, upright_z + upright_length / 2.0);
+    let (steer_arm_left, steer_arm_left_at) = steer_member(kingpin_pickup(1.0), arm_end(1.0));
+    let (steer_arm_right, steer_arm_right_at) = steer_member(kingpin_pickup(-1.0), arm_end(-1.0));
+    let (tie_rod, tie_rod_at) = steer_member(arm_end(1.0), arm_end(-1.0));
+    let (bar_left, bar_left_at) = steer_member(upright_top(1.0), grip(1.0));
+    let (bar_right, bar_right_at) = steer_member(upright_top(-1.0), grip(-1.0));
+    let upright_centre = |sign: f64| Vector3::new(0.0, sign * upright_y, upright_z);
+
     let seat_member = |a, b| tube_between(a, b, SEAT_TUBE_OD_MM, SEAT_TUBE_WALL_MM);
     let (pan_rail_left, pan_rail_left_at) = seat_member(pan_front(half_width), hip(half_width));
     let (pan_rail_right, pan_rail_right_at) = seat_member(pan_front(-half_width), hip(-half_width));
@@ -653,6 +703,72 @@ fn plan() -> Result<Vec<PartPlan>> {
                 REAR_WHEEL_HALF_WIDTH_MM,
             )),
             cell_mm: 1.0,
+        },
+        // ── Steering ────────────────────────────────────────────
+        //
+        // The arms and bars are children of their uprights, so they turn with
+        // the wheel. ⚠ The tie rod is NOT: it should tie both arms together,
+        // which is a closed loop, and a `Mechanism` is a kinematic tree. The
+        // physics layer has the constraint — `Model::eq_type` carries Connect,
+        // Weld, Joint, Tendon and Distance — but cf-design exposes no way to
+        // ask for one, so this rod is welded to the left arm and the right
+        // wheel steers independently of it. The mass and the geometry are
+        // right; the kinematics are not, and that is the next gap in the
+        // assembly primitive after the weld.
+        PartPlan {
+            name: "steer_arm_l",
+            parent: "upright_l",
+            anchor_mm: steer_arm_left_at - upright_centre(1.0),
+            kind: JointKind::Fixed,
+            axis: Vector3::y(),
+            range_rad: None,
+            material: steel.clone(),
+            piece: steer_arm_left,
+            cell_mm: 0.4,
+        },
+        PartPlan {
+            name: "steer_arm_r",
+            parent: "upright_r",
+            anchor_mm: steer_arm_right_at - upright_centre(-1.0),
+            kind: JointKind::Fixed,
+            axis: Vector3::y(),
+            range_rad: None,
+            material: steel.clone(),
+            piece: steer_arm_right,
+            cell_mm: 0.4,
+        },
+        PartPlan {
+            name: "tie_rod",
+            parent: "steer_arm_l",
+            anchor_mm: tie_rod_at - steer_arm_left_at,
+            kind: JointKind::Fixed,
+            axis: Vector3::y(),
+            range_rad: None,
+            material: steel.clone(),
+            piece: tie_rod,
+            cell_mm: 0.4,
+        },
+        PartPlan {
+            name: "bar_l",
+            parent: "upright_l",
+            anchor_mm: bar_left_at - upright_centre(1.0),
+            kind: JointKind::Fixed,
+            axis: Vector3::y(),
+            range_rad: None,
+            material: steel.clone(),
+            piece: bar_left,
+            cell_mm: 0.4,
+        },
+        PartPlan {
+            name: "bar_r",
+            parent: "upright_r",
+            anchor_mm: bar_right_at - upright_centre(-1.0),
+            kind: JointKind::Fixed,
+            axis: Vector3::y(),
+            range_rad: None,
+            material: steel.clone(),
+            piece: bar_right,
+            cell_mm: 0.4,
         },
         // ── The seat frame ──────────────────────────────────────
         // The cross tube at the hip is the load path: the rider's weight
@@ -1282,13 +1398,13 @@ fn main() -> Result<()> {
     // regression gate, not a design target: change a tube, change a rider,
     // and they are supposed to fire so the new numbers get read.
     for (label, got, want) in [
-        ("total mass (kg)", spec.total_mass_kg(), 102.819_250_020),
-        ("cg x (m)", spec.cg_x_m(), 0.602_390_420),
-        ("cg z (m)", spec.cg_z_m(), 0.337_627_432),
+        ("total mass (kg)", spec.total_mass_kg(), 104.351_864_886),
+        ("cg x (m)", spec.cg_x_m(), 0.596_749_662),
+        ("cg z (m)", spec.cg_z_m(), 0.336_096_728),
         (
             "rollover threshold (g)",
             rollover_threshold_g(&spec),
-            0.690_522_826,
+            0.699_709_643,
         ),
     ] {
         if (got - want).abs() > want.abs() * PIN_TOLERANCE {
