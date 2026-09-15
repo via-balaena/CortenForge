@@ -53,11 +53,13 @@
 //! - ⚠ **`mass_properties` grids the solid's AABB at a uniform cell**, so cost
 //!   follows the bounding box and the thinnest feature, not the amount of
 //!   material. *Where* a part sits is free — `bounds.rs:185` shifts a
-//!   translated box without growing it — but *how many parts* it is is not,
-//!   and that is decided by the missing weld joint above. Every run prints the
-//!   comparison: the spine and cross-member cost an **order of magnitude**
-//!   more as the one weldment they physically are than as two members,
-//!   because that single box spans both and is nearly all air.
+//!   translated box without growing it — but *how many parts* it is is not.
+//!   Every run prints the comparison: the spine and cross-member cost an
+//!   **order of magnitude** more as the one part they physically are than as
+//!   two members, because that single box spans both and is nearly all air.
+//!   ⇒ With [`JointKind::Fixed`] available this is an argument *for* splitting
+//!   a weldment into members and welding them, which is what this example now
+//!   does. Before the weld existed it was a cost with no way out.
 //! - ⚠ **Nothing aggregates an assembly.** `subtree_com[0]` is the whole-model
 //!   centre of mass, but it exists only after `to_model` plus a forward
 //!   kinematics pass. [`world_origins`] below is that walk, done directly on
