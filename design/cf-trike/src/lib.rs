@@ -1184,6 +1184,36 @@ mod tests {
         );
     }
 
+    /// The exported file describes the same machine the model does.
+    ///
+    /// ⚠ This reads the artifact, not the builder. `to_mjcf` once wrote all
+    /// 28 mesh assets into an empty `<worldbody>` — every check that asked
+    /// the `Mechanism` what it held was green throughout, because the
+    /// `Mechanism` was right and only the file was wrong.
+    ///
+    /// ⚠ Structure only. At 20 mm, eight parts thinner than the cell mesh to
+    /// nothing and their `<mesh>` assets come out empty, which MuJoCo will
+    /// not load; 4 mm leaves none empty and costs 20 MB. This asserts the
+    /// body tree, not that the file compiles.
+    #[test]
+    fn the_exported_file_has_a_body_for_every_part() {
+        let t = trike().unwrap();
+        let xml = t.mechanism.to_mjcf(20.0);
+
+        for part in t.mechanism.parts() {
+            assert!(
+                xml.contains(&format!("<body name=\"{}\"", part.name())),
+                "{} has a mesh asset but no body",
+                part.name()
+            );
+        }
+        assert_eq!(
+            xml.matches("<freejoint").count(),
+            1,
+            "the frame reaches the world exactly once"
+        );
+    }
+
     /// The tie rod's far end ties a part that exists, and takes three dof.
     #[test]
     fn the_linkage_ties_two_parts_that_exist() {

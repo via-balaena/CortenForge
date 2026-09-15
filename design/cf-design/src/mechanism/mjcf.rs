@@ -171,11 +171,17 @@ fn write_worldbody(xml: &mut String, mechanism: &Mechanism) {
         }
     }
 
-    // Roots: parts that never appear as a child in any joint.
+    // Roots: parts that are never a child, or whose parent is "world".
+    //
+    // ⚠ The second clause is not decoration. `"world"` is the documented way
+    // to anchor a base (`builder.rs`, and `model_builder.rs` spells this rule
+    // the same way). Without it, a mechanism that names it has no root at all
+    // here, and the whole worldbody comes out empty while `to_model` builds
+    // every body — two paths, one assembly, and only one of them a machine.
     let roots: Vec<&str> = parts
         .iter()
         .map(Part::name)
-        .filter(|n| !child_parent.contains_key(n))
+        .filter(|n| matches!(child_parent.get(n), None | Some(&"world")))
         .collect();
 
     // Site map: part_name → [(site_name, [x, y, z])].
@@ -731,6 +737,106 @@ mod tests {
         );
     }
 
+    /// A part anchored to `"world"` is a top-level body, not nothing at all.
+    ///
+    /// ⚠ `"world"` is a parent name, not a part, so a root that names it *is*
+    /// a child in the joint list. Filtering roots on "never a child" dropped
+    /// it, and with it every body hanging beneath — the trike exported 28
+    /// mesh assets into an empty `<worldbody>`, and nothing said so, because
+    /// no test here anchored anything to the world.
+    #[test]
+    fn a_part_anchored_to_the_world_is_a_top_level_body() {
+        let m = Mechanism::builder("anchored")
+            .part(sphere_part("base"))
+            .part(sphere_part("arm"))
+            .joint(JointDef::new(
+                "to_world",
+                "world",
+                "base",
+                JointKind::Free,
+                Point3::new(0.0, 0.0, 7.0),
+                Vector3::z(),
+            ))
+            .joint(JointDef::new(
+                "elbow",
+                "base",
+                "arm",
+                JointKind::Revolute,
+                Point3::new(3.0, 0.0, 0.0),
+                Vector3::y(),
+            ))
+            .build();
+
+        let xml = m.to_mjcf(RES);
+        for name in ["base", "arm"] {
+            assert!(
+                xml.contains(&format!("<body name=\"{name}\"")),
+                "{name} is missing from the worldbody:\n{xml}"
+            );
+        }
+        assert!(xml.contains("<freejoint"), "the base lost its free joint");
+    }
+
+    /// An equality names bodies the same file defines.
+    ///
+    /// A constraint between names that are not in the document is not a soft
+    /// constraint — it is an unloadable file. Reading the trike's export is
+    /// what turned this up, so it is the artifact checking itself.
+    #[test]
+    fn an_equality_names_bodies_the_file_defines() {
+        let m = Mechanism::builder("anchored loop")
+            .part(sphere_part("base"))
+            .part(sphere_part("arm"))
+            .joint(JointDef::new(
+                "to_world",
+                "world",
+                "base",
+                JointKind::Free,
+                Point3::new(0.0, 0.0, 7.0),
+                Vector3::z(),
+            ))
+            .joint(JointDef::new(
+                "elbow",
+                "base",
+                "arm",
+                JointKind::Revolute,
+                Point3::new(3.0, 0.0, 0.0),
+                Vector3::y(),
+            ))
+            .linkage(LinkageDef::new(
+                "tie",
+                "arm",
+                "base",
+                LinkageKind::Ball,
+                Point3::new(1.0, 0.0, 0.0),
+            ))
+            .build();
+
+        let xml = m.to_mjcf(RES);
+        let defined: Vec<&str> = xml
+            .match_indices("<body name=\"")
+            .map(|(i, pat)| {
+                let rest = &xml[i + pat.len()..];
+                &rest[..rest.find('"').unwrap()]
+            })
+            .collect();
+
+        let found = xml
+            .lines()
+            .find(|l| l.trim_start().starts_with("<connect "));
+        assert!(found.is_some(), "no connect element:\n{xml}");
+        let connect = found.unwrap();
+        for attr in ["body1=\"", "body2=\""] {
+            let rest = &connect[connect.find(attr).unwrap() + attr.len()..];
+            let named = &rest[..rest.find('"').unwrap()];
+            assert!(
+                defined.contains(&named),
+                "the constraint names {named}, which the file never defines; \
+                 bodies present: {defined:?}"
+            );
+        }
+    }
+
     /// The file and the model describe the **same** constraint.
     ///
     /// ⚠ Two paths build a linkage — `to_model` fills `eq_solimp`, `to_mjcf`
@@ -777,10 +883,19 @@ mod tests {
             "solref=\"{} {}\"",
             model.eq_solref[0][0], model.eq_solref[0][1]
         );
+
+        // ⚠ On the element, not in the sheet. Asking whether the *document*
+        // contains these numbers passes with them written into a comment,
+        // which is to say it passes with the constraint left soft.
+        let found = xml
+            .lines()
+            .find(|l| l.trim_start().starts_with("<connect "));
+        assert!(found.is_some(), "no connect element:\n{xml}");
+        let connect = found.unwrap();
         assert!(
-            xml.contains(&solimp) && xml.contains(&solref),
-            "the exported file would be solved differently from the model \
-             it came from: wanted {solimp} {solref} in\n{xml}"
+            connect.contains(&solimp) && connect.contains(&solref),
+            "the exported file would be solved differently from the model it \
+             came from: wanted {solimp} {solref} on\n{connect}"
         );
     }
 
