@@ -1359,6 +1359,20 @@ mod tests {
             .unwrap();
         assert_eq!(model.njnt, 1, "only the hinge is a joint");
         assert_eq!(model.nv, 1);
+        // ⚠ The per-body counts are what the weld filter actually feeds; njnt
+        // and nv come from a different path and pass regardless. Without
+        // these, restoring `jnt_count` to `Vec::len` left this test green.
+        let body = |name: &str| {
+            model
+                .body_name
+                .iter()
+                .position(|n| n.as_deref() == Some(name))
+                .expect("body")
+        };
+        assert_eq!(model.body_jnt_num[body("b")], 1, "b carries the hinge");
+        assert_eq!(model.body_dof_num[body("b")], 1);
+        assert_eq!(model.body_jnt_num[body("c")], 0, "c is welded to b");
+        assert_eq!(model.body_dof_num[body("c")], 0);
     }
 
     // ── 9. Free joint to world ──────────────────────────────────────
