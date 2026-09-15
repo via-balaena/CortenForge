@@ -866,7 +866,7 @@ fn main() -> Result<()> {
         // threshold = share * track / (2 * h_eff).
         let track_to_clear = 2.0 * s.effective_cg_height_m() * TYRE_MU / s.paired_axle_share();
         println!(
-            "{:<8} threshold {:.4} g at mu {TYRE_MU:.1} — {}; needs {:+.1} mm of track",
+            "{:<8} threshold {:.4} g at mu {TYRE_MU:.1} — {}; needs {:+.1} mm of track{}",
             which,
             rollover_threshold_g(s),
             if c.slides_before_it_tips(TYRE_MU) {
@@ -875,6 +875,16 @@ fn main() -> Result<()> {
                 "TIPS BEFORE IT SLIDES"
             },
             (track_to_clear - s.track_m) * 1000.0,
+            // ⚠ Conditional, so it disappears on its own once a suspension is
+            // laid out: a rigid spec cannot roll, so its centre of gravity
+            // never moves outboard in a corner and every threshold it reports
+            // is a ceiling. cf-vehicle measures the gap — a 20 N/mm wheel rate
+            // turns the typed +14.9 mm into +30.7 mm.
+            if s.roll.is_none() {
+                "  [RIGID — upper bound]"
+            } else {
+                ""
+            },
         );
     }
 
