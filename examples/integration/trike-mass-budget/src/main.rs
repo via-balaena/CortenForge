@@ -237,7 +237,13 @@ fn export_stls(
     dir: &Path,
     tolerance_mm: f64,
 ) -> Result<()> {
-    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    // ⚠ Parts go in their own directory, and the merged file stays out of it.
+    // `cf-view --assembly` spawns EVERY stl in a directory at its world
+    // position, so a merged copy sitting beside the parts draws the whole
+    // vehicle twice — once in pieces and once on top of itself.
+    let parts_dir = dir.join("parts");
+    std::fs::create_dir_all(&parts_dir)
+        .with_context(|| format!("creating {}", parts_dir.display()))?;
     let mut assembly = IndexedMesh::default();
     let mut total = 0usize;
 
@@ -279,7 +285,7 @@ fn export_stls(
                 .map(|f| [f[0] + base, f[1] + base, f[2] + base]),
         );
 
-        let path = dir.join(format!("{}.stl", part.name()));
+        let path = parts_dir.join(format!("{}.stl", part.name()));
         mesh_io::save_stl(&mesh, &path, true)
             .with_context(|| format!("writing {}", path.display()))?;
         let refined = if tol < tolerance_mm { " (refined)" } else { "" };
@@ -309,6 +315,11 @@ fn export_stls(
         hi.y,
         lo.z,
         hi.z
+    );
+    println!(
+        "  assembled, part by part, with a visibility toggle each:\n    \
+         cargo run --release -p cf-viewer --bin cf-view -- --assembly {}",
+        parts_dir.display()
     );
 
     // The assembly must actually span the vehicle. If placement silently
