@@ -1288,6 +1288,66 @@ mod tests {
     }
 
     #[test]
+    fn a_part_cannot_be_welded_and_articulated_at_once() {
+        // A weld says the child cannot move; a hinge says it can. Before this
+        // was refused, `validate` returned no errors and `to_model` silently
+        // kept the hinge (njnt 1, nv 1), dropping the weld the author wrote.
+        let errors = Mechanism::builder("contradiction")
+            .part(cuboid_part("a"))
+            .part(cuboid_part("b"))
+            .joint(JointDef::new(
+                "weld",
+                "a",
+                "b",
+                JointKind::Fixed,
+                Point3::new(5.0, 0.0, 0.0),
+                Vector3::x(),
+            ))
+            .joint(JointDef::new(
+                "hinge",
+                "a",
+                "b",
+                JointKind::Revolute,
+                Point3::new(5.0, 0.0, 0.0),
+                Vector3::x(),
+            ))
+            .validate();
+        assert!(
+            errors.iter().any(|e| matches!(
+                e,
+                MechanismError::PartIsWeldedAndArticulated { part, .. } if part == "b"
+            )),
+            "expected a welded-and-articulated error, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn two_welds_on_different_children_are_fine() {
+        let errors = Mechanism::builder("tree")
+            .part(cuboid_part("a"))
+            .part(cuboid_part("b"))
+            .part(cuboid_part("c"))
+            .joint(JointDef::new(
+                "w1",
+                "a",
+                "b",
+                JointKind::Fixed,
+                Point3::new(5.0, 0.0, 0.0),
+                Vector3::x(),
+            ))
+            .joint(JointDef::new(
+                "w2",
+                "b",
+                "c",
+                JointKind::Fixed,
+                Point3::new(5.0, 0.0, 0.0),
+                Vector3::x(),
+            ))
+            .validate();
+        assert!(errors.is_empty(), "a chain of welds is legal: {errors:?}");
+    }
+
+    #[test]
     fn a_weld_adds_no_joint_and_no_degree_of_freedom() {
         let model = welded(JointKind::Fixed).to_model(2.0, 2.0).unwrap();
         assert_eq!(model.njnt, 0, "a weld must emit no joint");
