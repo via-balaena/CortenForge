@@ -1543,6 +1543,13 @@ fn main() -> Result<()> {
     // It also cross-checks the degree-of-freedom count against a second,
     // independent path: this file sums `JointKind::dof()`, and the physics
     // layer counts `nv` for itself.
+    //
+    // ⚠ What it does NOT prove. The model is stepped in free fall — no ground,
+    // no contacts — so this says nothing about whether the vehicle stands up,
+    // rolls, or corners. It says the assembly builds (56 geoms over 28 parts),
+    // integrates without diverging, and holds its welds. Standing it on a
+    // ground plane needs one, and a bare `Plane` has no finite bounds, so a
+    // `Mechanism` cannot carry it.
     {
         let model = mechanism
             .to_model(SIM_RESOLUTION_MM, SIM_RESOLUTION_MM)
