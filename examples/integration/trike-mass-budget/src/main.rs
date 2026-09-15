@@ -167,6 +167,11 @@ const WELDED_FRAME_MEMBERS: usize = 2;
 /// of the answer is a choice rather than a measurement.
 const CG_PROBE_MM: f64 = 50.0;
 
+/// Floor for the refinement in [`export_stls`]. A part still empty here has a
+/// feature finer than a third of a millimetre and wants saying so, not
+/// halving again.
+const MIN_STL_TOLERANCE_MM: f64 = 0.25;
+
 /// Default meshing tolerance for `--out`, in millimetres.
 ///
 /// ⚠ This is for *looking at* the vehicle, not for printing it. At 1.0 mm the
@@ -674,22 +679,51 @@ fn derive(
 /// ⚠ Opt-in via `--out <dir>`. `xtask run-validators` invokes this example
 /// with **no arguments**, and a validator that writes files on every CI run
 /// would leave litter behind; the asserted zero-argument path stays read-only.
+///
+/// ⚠ **A part can mesh to nothing.** [`Mechanism::to_stl_kit`] meshes every
+/// part at one tolerance, and that tolerance is a *cell size*: the 3 mm seat
+/// pan vanished entirely at the 4 mm default that suits a 1.25 m frame, and
+/// wrote an 84-byte STL containing no triangles — a valid, correctly named,
+/// empty file. So each part is meshed at the requested tolerance and only what
+/// vanishes is refined, halving down to [`MIN_STL_TOLERANCE_MM`].
+///
+/// ⚠ Refining *everything* to its mass-integration cell instead was measured
+/// at 8.1 M triangles and 388 MB: that cell is chosen for integration
+/// accuracy, and a 2 mm wall does not need 0.5 mm triangles to look right.
 fn export_stls(mechanism: &Mechanism, dir: &Path, tolerance_mm: f64) -> Result<()> {
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     let mut total = 0usize;
-    for (name, mesh) in mechanism.to_stl_kit(tolerance_mm) {
-        let path = dir.join(format!("{name}.stl"));
+    for part in mechanism.parts() {
+        // Mesh at what was asked for, and refine only what vanishes. The
+        // tolerance is a cell size, so a part thinner than one cell meshes to
+        // nothing at all — which is a silent, correctly named, empty file
+        // rather than an error.
+        let mut tol = tolerance_mm;
+        let mut mesh = part.solid().mesh(tol).geometry;
+        while mesh.faces.is_empty() && tol > MIN_STL_TOLERANCE_MM {
+            tol /= 2.0;
+            mesh = part.solid().mesh(tol).geometry;
+        }
+        if mesh.faces.is_empty() {
+            bail!(
+                "part {} meshed to nothing even at {MIN_STL_TOLERANCE_MM} mm — \
+                 its thinnest feature is finer than that",
+                part.name()
+            );
+        }
+        let path = dir.join(format!("{}.stl", part.name()));
         mesh_io::save_stl(&mesh, &path, true)
             .with_context(|| format!("writing {}", path.display()))?;
+        let refined = if tol < tolerance_mm { " (refined)" } else { "" };
         println!(
-            "  {:<12} {:>7} triangles -> {}",
-            name,
+            "  {:<12} {:>8} triangles at {:>5} mm{refined}",
+            part.name(),
             mesh.faces.len(),
-            path.display()
+            tol,
         );
         total += mesh.faces.len();
     }
-    println!("  {total} triangles total at a {tolerance_mm} mm tolerance");
+    println!("  {total} triangles total -> {}", dir.display());
     Ok(())
 }
 
