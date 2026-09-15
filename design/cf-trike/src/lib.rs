@@ -666,8 +666,10 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
         0.0,
         HIP_Z_MM + 10.0 + SEAT_TUBE_OD_MM / 2.0,
     );
-    let back_panel_at = (hip(0.0).coords + back_top(0.0).coords) / 2.0
-        + Vector3::new(-recline.cos(), 0.0, recline.sin()) * (SEAT_TUBE_OD_MM / 2.0);
+    // Out of the rails by half a tube, so the panel sits ON them.
+    let back_normal = Vector3::new(-recline.cos(), 0.0, recline.sin());
+    let back_panel_at =
+        (hip(0.0).coords + back_top(0.0).coords) / 2.0 + back_normal * (SEAT_TUBE_OD_MM / 2.0);
 
     // ── The rider, as a posture ─────────────────────────────────────
     //
@@ -680,7 +682,16 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
     // horizontal run is what is left of the leg after the rise.
     let leg_run = (LEG_REACH_MM * LEG_REACH_MM - LEG_RISE_MM * LEG_RISE_MM).sqrt();
     let bottom_bracket = Point3::new(HIP_X_MM - leg_run, 0.0, HIP_Z_MM + LEG_RISE_MM);
-    let torso_at = (hip(0.0).coords + back_top(0.0).coords) / 2.0;
+    // ⚠ Clear of the seat back, not in it. This was the rail centreline, so a
+    // 170 mm-radius torso was centred in the plane of the panel and half the
+    // rider sat behind the seat. The masses and volumes were right throughout;
+    // only the position was wrong, which is why every gate passed and it took
+    // looking at the assembly to see it.
+    //
+    // Half a tube to the panel, its own half-thickness to the panel's face,
+    // and a torso radius from there.
+    let torso_at = (hip(0.0).coords + back_top(0.0).coords) / 2.0
+        + back_normal * (SEAT_TUBE_OD_MM / 2.0 + SEAT_PANEL_HALF_MM + TORSO_RADIUS_MM);
     let legs_at = (hip(0.0).coords + bottom_bracket.coords) / 2.0;
     let legs_dir = bottom_bracket - hip(0.0);
 
@@ -1596,6 +1607,31 @@ mod tests {
                 j.child()
             );
         }
+    }
+
+    /// The rider sits against the seat back, not inside it.
+    ///
+    /// ⚠ This is the one defect on this vehicle that no number could show.
+    /// The torso was centred on the seat-back rails, so a 170 mm-radius
+    /// capsule had half of itself behind the panel. Its mass was right, its
+    /// volume was right to 0.008%, every weld and clash and simulation gate
+    /// passed — and the rider was 186 mm inside the seat, which put the
+    /// centre of gravity 69 mm too low and the rollover threshold 0.11 g too
+    /// high. It took rendering the assembly and looking at it.
+    #[test]
+    fn the_rider_clears_the_seat_back() {
+        let t = trike().unwrap();
+        let recline = SEAT_BACK_ANGLE_DEG.to_radians();
+        let normal = Vector3::new(-recline.cos(), 0.0, recline.sin());
+        let gap = (t.origins["rider_torso"] - t.origins["seat_back"]).dot(&normal);
+
+        let want = TORSO_RADIUS_MM + SEAT_PANEL_HALF_MM;
+        assert!(
+            gap >= want - 1e-9,
+            "the torso axis is {gap:.1} mm off the seat back and needs \
+             {want:.1} — the rider is {:.0} mm inside the seat",
+            want - gap
+        );
     }
 
     /// Building it twice gives the same machine.

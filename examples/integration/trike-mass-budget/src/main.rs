@@ -1040,12 +1040,12 @@ fn main() -> Result<()> {
     let mut drifted: Vec<String> = Vec::new();
     for (label, got, want) in [
         ("total mass (kg)", spec.total_mass_kg(), 105.134_566_389),
-        ("cg x (m)", spec.cg_x_m(), 0.443_529_234),
-        ("cg z (m)", spec.cg_z_m(), 0.304_006_782),
+        ("cg x (m)", spec.cg_x_m(), 0.374_042_138),
+        ("cg z (m)", spec.cg_z_m(), 0.373_493_878),
         (
             "rollover threshold (g)",
             rollover_threshold_g(&spec),
-            0.955_009_865,
+            0.844_310_573,
         ),
     ] {
         if (got - want).abs() > want.abs() * PIN_TOLERANCE {
