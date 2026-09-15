@@ -22,6 +22,7 @@
 //! | [`JointDef`](super::JointDef) (Ball) | `<joint type="ball">` |
 //! | [`JointDef`](super::JointDef) (Free) | `<freejoint>` |
 //! | [`JointDef`](super::JointDef) (Fixed) | **nothing** — a jointless body is welded to its parent |
+//! | [`LinkageDef`](super::LinkageDef) (Ball) | `<equality><connect>` — a loop the tree cannot hold |
 //! | [`TendonDef`](super::TendonDef) | `<spatial>` tendon with `<site>` waypoints |
 //! | [`ActuatorDef`](super::ActuatorDef) (Motor) | `<general>` actuator |
 //! | [`ActuatorDef`](super::ActuatorDef) (Muscle) | `<muscle>` actuator |
@@ -32,11 +33,11 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
-use nalgebra::Vector3;
-
 use super::actuator::ActuatorKind;
 use super::builder::Mechanism;
 use super::joint::{JointDef, JointKind};
+use super::linkage::LinkageKind;
+use super::model_builder::{LINKAGE_SOLIMP, LINKAGE_SOLREF, compute_geom_offset};
 use super::part::Part;
 use super::tendon::TendonDef;
 
@@ -64,6 +65,7 @@ pub(super) fn generate(mechanism: &Mechanism, resolution: f64) -> String {
 
     write_assets(&mut xml, mechanism, resolution);
     write_worldbody(&mut xml, mechanism);
+    write_equality(&mut xml, mechanism);
     write_tendons(&mut xml, mechanism);
     write_actuators(&mut xml, mechanism);
 
@@ -73,6 +75,14 @@ pub(super) fn generate(mechanism: &Mechanism, resolution: f64) -> String {
 }
 
 // ── XML helpers ─────────────────────────────────────────────────────────
+
+/// Space-separate a numeric attribute, MJCF's spelling for a vector.
+fn join(v: &[f64]) -> String {
+    v.iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
 
 /// Escape XML special characters in attribute values.
 fn esc(s: &str) -> String {
@@ -159,11 +169,17 @@ fn write_worldbody(xml: &mut String, mechanism: &Mechanism) {
         }
     }
 
-    // Roots: parts that never appear as a child in any joint.
+    // Roots: parts that are never a child, or whose parent is "world".
+    //
+    // ⚠ The second clause is not decoration. `"world"` is the documented way
+    // to anchor a base (`builder.rs`, and `model_builder.rs` spells this rule
+    // the same way). Without it, a mechanism that names it has no root at all
+    // here, and the whole worldbody comes out empty while `to_model` builds
+    // every body — two paths, one assembly, and only one of them a machine.
     let roots: Vec<&str> = parts
         .iter()
         .map(Part::name)
-        .filter(|n| !child_parent.contains_key(n))
+        .filter(|n| matches!(child_parent.get(n), None | Some(&"world")))
         .collect();
 
     // Site map: part_name → [(site_name, [x, y, z])].
@@ -300,69 +316,6 @@ fn write_body(
 
     let _ = writeln!(xml, "{pad}</body>");
 }
-
-/// Compute a geom position offset so child parts extend outward from the joint.
-///
-/// For root bodies (no joints), returns zero. For child bodies with an explicit
-/// `joint_origin`, returns `-origin` (the mesh point that should coincide with
-/// the joint). Otherwise falls back to bbox-based alignment: the near edge of
-/// the bounding box (on the longest axis) is placed at the body origin so the
-/// part extends outward from the joint.
-fn compute_geom_offset(part: &Part, joints_on: &HashMap<&str, Vec<&JointDef>>) -> Vector3<f64> {
-    let jlist = match joints_on.get(part.name()) {
-        Some(jl) if !jl.is_empty() => jl,
-        _ => return Vector3::zeros(), // root body — no offset needed
-    };
-
-    // Explicit joint origin — the user declared exactly where the part attaches.
-    if let Some(origin) = part.joint_origin() {
-        return -origin;
-    }
-
-    let anchor = jlist[0].anchor();
-    let anchor_vec = anchor.coords;
-    let anchor_norm = anchor_vec.norm();
-    if anchor_norm < 1e-10 {
-        return Vector3::zeros();
-    }
-
-    // Compute bounding box from a coarse mesh (just for extents).
-    let mesh = part.solid().mesh(1.0);
-    if mesh.geometry.vertices.is_empty() {
-        return Vector3::zeros();
-    }
-
-    let mut min = mesh.geometry.vertices[0].coords;
-    let mut max = mesh.geometry.vertices[0].coords;
-    for v in &mesh.geometry.vertices {
-        min = min.inf(&v.coords);
-        max = max.sup(&v.coords);
-    }
-    let extents = max - min;
-    let center = (max + min) * 0.5;
-
-    // Find the bbox's longest axis — that's the part's primary extension direction.
-    let longest_axis = if extents.x >= extents.y && extents.x >= extents.z {
-        0
-    } else if extents.y >= extents.z {
-        1
-    } else {
-        2
-    };
-
-    // Near edge: the bbox edge closest to the parent (toward the joint).
-    // If the anchor points in the +Z direction, the near edge is min[Z].
-    // Offset = -near_edge so the near edge sits at the body origin (the joint).
-    let near_edge = if anchor_vec[longest_axis] >= 0.0 {
-        min[longest_axis]
-    } else {
-        max[longest_axis]
-    };
-    let mut offset = center;
-    offset[longest_axis] = -near_edge;
-    offset
-}
-
 /// Write a single `<joint>` or `<freejoint>` element.
 ///
 /// `body_anchor` is the body's position in parent frame (from the first joint).
@@ -424,6 +377,40 @@ fn write_joint(
 }
 
 // ── Tendons ─────────────────────────────────────────────────────────────
+
+/// Write `<equality>` for the mechanism's linkages.
+///
+/// MJCF's `<connect>` takes one anchor, in body1's frame, and derives the
+/// other from the reference pose — the same contract
+/// [`LinkageDef`](super::LinkageDef) has, so
+/// the anchor passes straight through.
+fn write_equality(xml: &mut String, mechanism: &Mechanism) {
+    if mechanism.linkages().is_empty() {
+        return;
+    }
+    let _ = writeln!(xml, "  <equality>");
+    for linkage in mechanism.linkages() {
+        match linkage.kind() {
+            LinkageKind::Ball => {
+                let a = linkage.anchor();
+                let _ = writeln!(
+                    xml,
+                    "    <connect name=\"{}\" body1=\"{}\" body2=\"{}\" \
+                     anchor=\"{} {} {}\" solimp=\"{}\" solref=\"{}\"/>",
+                    esc(linkage.name()),
+                    esc(linkage.a()),
+                    esc(linkage.b()),
+                    a.x,
+                    a.y,
+                    a.z,
+                    join(&LINKAGE_SOLIMP),
+                    join(&LINKAGE_SOLREF)
+                );
+            }
+        }
+    }
+    let _ = writeln!(xml, "  </equality>");
+}
 
 fn write_tendons(xml: &mut String, mechanism: &Mechanism) {
     if mechanism.tendons().is_empty() {
@@ -504,8 +491,8 @@ mod tests {
     use nalgebra::{Point3, Vector3};
 
     use crate::{
-        ActuatorDef, ActuatorKind, JointDef, JointKind, Material, Mechanism, Part, Solid,
-        TendonDef, TendonWaypoint,
+        ActuatorDef, ActuatorKind, JointDef, JointKind, LinkageDef, LinkageKind, Material,
+        Mechanism, Part, Solid, TendonDef, TendonWaypoint,
     };
 
     // ── Helpers ─────────────────────────────────────────────────────
@@ -651,6 +638,422 @@ mod tests {
         // ⚠ The body must still exist and still be placed — a weld attaches,
         // it does not delete.
         assert!(xml.contains("name=\"b\""), "welded body missing:\n{xml}");
+    }
+
+    /// A linkage must survive into the XML, or an exported model quietly
+    /// loses the loop it was built to close.
+    #[test]
+    fn a_linkage_becomes_an_equality_constraint() {
+        let m = Mechanism::builder("loop")
+            .part(sphere_part("a"))
+            .part(sphere_part("b"))
+            .joint(JointDef::new(
+                "j",
+                "a",
+                "b",
+                JointKind::Revolute,
+                Point3::new(3.0, 0.0, 0.0),
+                Vector3::y(),
+            ))
+            .linkage(LinkageDef::new(
+                "coupler",
+                "a",
+                "b",
+                LinkageKind::Ball,
+                Point3::new(1.0, -2.0, 3.0),
+            ))
+            .build();
+
+        let xml = m.to_mjcf(RES);
+        assert!(xml.contains("<equality>"), "no equality block:\n{xml}");
+        assert!(
+            xml.contains("<connect name=\"coupler\" body1=\"a\" body2=\"b\" anchor=\"1 -2 3\""),
+            "the connect is wrong or missing:\n{xml}"
+        );
+    }
+
+    /// A part anchored to `"world"` is a top-level body, not nothing at all.
+    ///
+    /// ⚠ `"world"` is a parent name, not a part, so a root that names it *is*
+    /// a child in the joint list. Filtering roots on "never a child" dropped
+    /// it, and with it every body hanging beneath — the trike exported 28
+    /// mesh assets into an empty `<worldbody>`, and nothing said so, because
+    /// no test here anchored anything to the world.
+    #[test]
+    fn a_part_anchored_to_the_world_is_a_top_level_body() {
+        let m = Mechanism::builder("anchored")
+            .part(sphere_part("base"))
+            .part(sphere_part("arm"))
+            .joint(JointDef::new(
+                "to_world",
+                "world",
+                "base",
+                JointKind::Free,
+                Point3::new(0.0, 0.0, 7.0),
+                Vector3::z(),
+            ))
+            .joint(JointDef::new(
+                "elbow",
+                "base",
+                "arm",
+                JointKind::Revolute,
+                Point3::new(3.0, 0.0, 0.0),
+                Vector3::y(),
+            ))
+            .build();
+
+        let xml = m.to_mjcf(RES);
+        for name in ["base", "arm"] {
+            assert!(
+                xml.contains(&format!("<body name=\"{name}\"")),
+                "{name} is missing from the worldbody:\n{xml}"
+            );
+        }
+        assert!(xml.contains("<freejoint"), "the base lost its free joint");
+    }
+
+    /// The file places geometry inside a body where the model does.
+    ///
+    /// ⚠ `compute_geom_offset` used to exist twice, once per path, and the
+    /// copies had drifted: `Fixed` and `Free` were exempted from bbox
+    /// alignment on the model side only. A welded part therefore sat 100 mm
+    /// away in the exported file, and every body-level check agreed, because
+    /// the bodies were right and only the geometry inside them was not.
+    ///
+    /// There is one implementation now. This is what keeps it that way.
+    #[test]
+    fn the_file_places_geometry_where_the_model_does() {
+        for kind in [JointKind::Fixed, JointKind::Free, JointKind::Revolute] {
+            let m = Mechanism::builder("g")
+                .part(sphere_part("base"))
+                .part(Part::new(
+                    "arm",
+                    Solid::cuboid(nalgebra::Vector3::new(100.0, 5.0, 5.0)),
+                    Material::new("steel", 7850.0),
+                ))
+                .joint(JointDef::new(
+                    "j",
+                    "base",
+                    "arm",
+                    kind,
+                    Point3::new(40.0, 0.0, 0.0),
+                    Vector3::y(),
+                ))
+                .build();
+
+            let model = m.to_model(4.0, 4.0).unwrap();
+            let xml = m.to_mjcf(4.0);
+
+            let line = xml.lines().find(|l| l.contains("mesh=\"arm_mesh\""));
+            assert!(line.is_some(), "no geom for arm:\n{xml}");
+            let in_file = line.unwrap().find("pos=\"").map_or([0.0; 3], |i| {
+                let r = &line.unwrap()[i + 5..];
+                let v: Vec<f64> = r[..r.find('"').unwrap()]
+                    .split_whitespace()
+                    .map(|x| x.parse().unwrap())
+                    .collect();
+                [v[0], v[1], v[2]]
+            });
+
+            let gid = model
+                .geom_body
+                .iter()
+                .position(|&b| model.body_name[b].as_deref() == Some("arm"));
+            assert!(gid.is_some(), "the model has no geom on arm");
+            let in_model = model.geom_pos[gid.unwrap()];
+
+            for (k, want) in [in_model.x, in_model.y, in_model.z].iter().enumerate() {
+                assert!(
+                    (in_file[k] - want).abs() < 1e-9,
+                    "with a {kind:?} joint the file puts the geometry at \
+                     {in_file:?} and the model at [{}, {}, {}]",
+                    in_model.x,
+                    in_model.y,
+                    in_model.z
+                );
+            }
+        }
+    }
+
+    /// The file's body tree is the model's body tree.
+    ///
+    /// Both paths turn one mechanism into a set of placed bodies, and this
+    /// branch found them disagreeing once, with an export that had no bodies
+    /// at all. Body *count* alone would have caught that; parentage and world
+    /// position are what a consumer of the file actually relies on.
+    ///
+    /// ⚠ Bodies only. Where the *geometry* sits inside each body is a separate
+    /// axis, pinned by `the_file_places_geometry_where_the_model_does`.
+    ///
+    /// The fixture has depth and siblings — a two-body one cannot tell a
+    /// nesting bug from a flat list.
+    #[test]
+    fn the_body_tree_matches_the_model() {
+        let m = Mechanism::builder("tree")
+            .part(sphere_part("base"))
+            .part(sphere_part("arm"))
+            .part(sphere_part("hand"))
+            .part(sphere_part("bracket"))
+            .joint(JointDef::new(
+                "to_world",
+                "world",
+                "base",
+                JointKind::Free,
+                Point3::new(0.0, 0.0, 7.0),
+                Vector3::z(),
+            ))
+            .joint(JointDef::new(
+                "shoulder",
+                "base",
+                "arm",
+                JointKind::Revolute,
+                Point3::new(3.0, -1.0, 0.0),
+                Vector3::y(),
+            ))
+            .joint(JointDef::new(
+                "wrist",
+                "arm",
+                "hand",
+                JointKind::Revolute,
+                Point3::new(0.0, 4.0, -2.0),
+                Vector3::z(),
+            ))
+            .joint(JointDef::new(
+                "weld",
+                "base",
+                "bracket",
+                JointKind::Fixed,
+                Point3::new(-5.0, 0.0, 1.0),
+                Vector3::z(),
+            ))
+            .build();
+
+        let model = m.to_model(2.0, 2.0).unwrap();
+        let want = model_tree(&model);
+        let got = file_tree(&m.to_mjcf(RES));
+
+        assert_eq!(
+            got.len(),
+            want.len(),
+            "the file and the model hold different bodies"
+        );
+        for (name, (at, parent)) in &got {
+            let entry = want.get(name);
+            assert!(entry.is_some(), "{name} is in the file but not the model");
+            let (wanted_at, wanted_parent) = entry.unwrap();
+            assert_eq!(
+                parent, wanted_parent,
+                "{name} hangs off {parent} in the file and {wanted_parent} in the model"
+            );
+            for k in 0..3 {
+                assert!(
+                    (at[k] - wanted_at[k]).abs() < 1e-9,
+                    "{name} is at {at:?} in the file and {wanted_at:?} in the model"
+                );
+            }
+        }
+    }
+
+    type Placed = std::collections::HashMap<String, ([f64; 3], String)>;
+
+    /// World position and parent name of every body the model holds.
+    fn model_tree(model: &sim_core::Model) -> Placed {
+        let mut out = Placed::new();
+        for b in 1..model.nbody {
+            let (mut at, mut i) = (Vector3::zeros(), b);
+            while i != 0 {
+                at += model.body_pos[i];
+                i = model.body_parent[i];
+            }
+            let parent = model.body_parent[b];
+            let parent_name = if parent == 0 {
+                "world".to_owned()
+            } else {
+                model.body_name[parent].clone().unwrap_or_default()
+            };
+            out.insert(
+                model.body_name[b].clone().unwrap_or_default(),
+                ([at.x, at.y, at.z], parent_name),
+            );
+        }
+        out
+    }
+
+    /// The same, read back out of the XML by walking its nesting.
+    fn file_tree(xml: &str) -> Placed {
+        let mut out = Placed::new();
+        let mut stack: Vec<(String, [f64; 3])> = vec![("world".to_owned(), [0.0; 3])];
+        for line in xml.lines() {
+            let s = line.trim();
+            if s == "</body>" {
+                stack.pop();
+                continue;
+            }
+            let Some(rest) = s.strip_prefix("<body name=\"") else {
+                continue;
+            };
+            let name = rest[..rest.find('"').unwrap()].to_owned();
+            let pos = s.find("pos=\"").map_or([0.0; 3], |i| {
+                let r = &s[i + 5..];
+                let v: Vec<f64> = r[..r.find('"').unwrap()]
+                    .split_whitespace()
+                    .map(|x| x.parse().unwrap())
+                    .collect();
+                [v[0], v[1], v[2]]
+            });
+            let (parent_name, parent_at) = stack.last().unwrap().clone();
+            let at = [
+                parent_at[0] + pos[0],
+                parent_at[1] + pos[1],
+                parent_at[2] + pos[2],
+            ];
+            out.insert(name.clone(), (at, parent_name));
+            stack.push((name, at));
+        }
+        out
+    }
+
+    /// An equality names bodies the same file defines.
+    ///
+    /// A constraint between names that are not in the document is not a soft
+    /// constraint — it is an unloadable file. Reading the trike's export is
+    /// what turned this up, so it is the artifact checking itself.
+    #[test]
+    fn an_equality_names_bodies_the_file_defines() {
+        let m = Mechanism::builder("anchored loop")
+            .part(sphere_part("base"))
+            .part(sphere_part("arm"))
+            .joint(JointDef::new(
+                "to_world",
+                "world",
+                "base",
+                JointKind::Free,
+                Point3::new(0.0, 0.0, 7.0),
+                Vector3::z(),
+            ))
+            .joint(JointDef::new(
+                "elbow",
+                "base",
+                "arm",
+                JointKind::Revolute,
+                Point3::new(3.0, 0.0, 0.0),
+                Vector3::y(),
+            ))
+            .linkage(LinkageDef::new(
+                "tie",
+                "arm",
+                "base",
+                LinkageKind::Ball,
+                Point3::new(1.0, 0.0, 0.0),
+            ))
+            .build();
+
+        let xml = m.to_mjcf(RES);
+        let defined: Vec<&str> = xml
+            .match_indices("<body name=\"")
+            .map(|(i, pat)| {
+                let rest = &xml[i + pat.len()..];
+                &rest[..rest.find('"').unwrap()]
+            })
+            .collect();
+
+        let found = xml
+            .lines()
+            .find(|l| l.trim_start().starts_with("<connect "));
+        assert!(found.is_some(), "no connect element:\n{xml}");
+        let connect = found.unwrap();
+        for attr in ["body1=\"", "body2=\""] {
+            let rest = &connect[connect.find(attr).unwrap() + attr.len()..];
+            let named = &rest[..rest.find('"').unwrap()];
+            assert!(
+                defined.contains(&named),
+                "the constraint names {named}, which the file never defines; \
+                 bodies present: {defined:?}"
+            );
+        }
+    }
+
+    /// The file and the model describe the **same** constraint.
+    ///
+    /// ⚠ Two paths build a linkage — `to_model` fills `eq_solimp`, `to_mjcf`
+    /// writes an attribute — and only one of them was made stiff at first.
+    /// A `<connect>` with no `solimp` is not neutral: MuJoCo supplies its
+    /// contact default, which is the setting measured at 32.9 mm of drift.
+    /// So this compares the two paths rather than restating a literal.
+    #[test]
+    fn the_file_and_the_model_agree_on_how_stiff_a_linkage_is() {
+        let m = Mechanism::builder("loop")
+            .part(sphere_part("a"))
+            .part(sphere_part("b"))
+            .joint(JointDef::new(
+                "j",
+                "a",
+                "b",
+                JointKind::Revolute,
+                Point3::new(3.0, 0.0, 0.0),
+                Vector3::y(),
+            ))
+            .linkage(LinkageDef::new(
+                "coupler",
+                "a",
+                "b",
+                LinkageKind::Ball,
+                Point3::new(1.0, -2.0, 3.0),
+            ))
+            .build();
+
+        let xml = m.to_mjcf(RES);
+        let model = m.to_model(2.0, 2.0).unwrap();
+
+        // ⚠ Spelled out rather than calling the writer's own `join`: an
+        // oracle that shares the formatter agrees with it by construction.
+        let solimp = format!(
+            "solimp=\"{} {} {} {} {}\"",
+            model.eq_solimp[0][0],
+            model.eq_solimp[0][1],
+            model.eq_solimp[0][2],
+            model.eq_solimp[0][3],
+            model.eq_solimp[0][4]
+        );
+        let solref = format!(
+            "solref=\"{} {}\"",
+            model.eq_solref[0][0], model.eq_solref[0][1]
+        );
+
+        // ⚠ On the element, not in the sheet. Asking whether the *document*
+        // contains these numbers passes with them written into a comment,
+        // which is to say it passes with the constraint left soft.
+        let found = xml
+            .lines()
+            .find(|l| l.trim_start().starts_with("<connect "));
+        assert!(found.is_some(), "no connect element:\n{xml}");
+        let connect = found.unwrap();
+        assert!(
+            connect.contains(&solimp) && connect.contains(&solref),
+            "the exported file would be solved differently from the model it \
+             came from: wanted {solimp} {solref} on\n{connect}"
+        );
+    }
+
+    #[test]
+    fn a_mechanism_without_linkages_emits_no_equality_block() {
+        let m = Mechanism::builder("plain")
+            .part(sphere_part("a"))
+            .part(sphere_part("b"))
+            .joint(JointDef::new(
+                "j",
+                "a",
+                "b",
+                JointKind::Revolute,
+                Point3::new(3.0, 0.0, 0.0),
+                Vector3::y(),
+            ))
+            .build();
+        let xml = m.to_mjcf(RES);
+        assert!(
+            !xml.contains("<equality>"),
+            "an empty equality block is noise:\n{xml}"
+        );
     }
 
     /// A weld emits no `<joint>`, but the body it attaches must still be

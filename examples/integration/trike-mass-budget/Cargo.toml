@@ -21,6 +21,8 @@ cf-vehicle = { workspace = true }
 # The vehicle itself. This crate composes a budget from it; it knows nothing
 # about loads, and cf-vehicle knows nothing about geometry.
 cf-trike = { workspace = true }
+# `Model` — the physics model the simulation gate builds and inspects.
+sim-core = { workspace = true }
 nalgebra = { workspace = true }
 # `save_stl` — the optional `--out <dir>` export. The zero-argument path, which
 # is the one `run-validators` runs, writes nothing.

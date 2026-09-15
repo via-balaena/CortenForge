@@ -43,8 +43,8 @@ use std::sync::Arc;
 
 use nalgebra::{Point3, UnitQuaternion, Vector3};
 use sim_core::{
-    ActuatorDynamics, ActuatorTransmission, BiasType, GainType, GeomType, MjJointType, Model,
-    PhysicsShape, SolverType, TendonType, WrapType,
+    ActuatorDynamics, ActuatorTransmission, BiasType, EqualityType, GainType, GeomType,
+    MjJointType, Model, PhysicsShape, SolverType, TendonType, WrapType,
 };
 
 use crate::mechanism::analytical_shape::AnalyticalShape;
@@ -52,6 +52,7 @@ use crate::mechanism::analytical_shape::AnalyticalShape;
 use super::actuator::ActuatorKind;
 use super::builder::{Mechanism, MechanismError};
 use super::joint::{JointDef, JointKind};
+use super::linkage::LinkageKind;
 use super::part::Part;
 use super::tendon::TendonDef;
 
@@ -93,6 +94,100 @@ impl Mechanism {
 }
 
 // ── Model construction ──────────────────────────────────────────────────
+
+/// Constraint time constant for a linkage — MJCF's default, and fine.
+pub(super) const LINKAGE_SOLREF: [f64; 2] = [0.02, 1.0];
+
+/// Constraint impedance for a linkage: **stiff**, unlike MJCF's default.
+///
+/// ⚠ This started as `[0.9, 0.95, …]`, MJCF's default, on the reasoning that a
+/// linkage built here should behave like the same constraint parsed from a
+/// file. That reasoning was wrong. **MJCF's default is tuned for contacts**,
+/// which are meant to give a little; a linkage is structure, and a tie rod
+/// that stretches is not a tie rod.
+///
+/// Measured on the trike's steering, a 0.49 kg rod on a 740 mm lever:
+///
+/// | impedance | ends drift apart |
+/// |---|---|
+/// | `0.9, 0.95` (MJCF) | 32.9 mm |
+/// | `0.99, 0.999` | 5.8 mm |
+/// | `0.9999, 0.99999` | 0.6 mm |
+///
+/// The softness is invisible at small scale — a four-bar of gram-weight cubes
+/// holds to 46 µm on the loose setting — so it takes a real machine to see.
+///
+/// [`Mechanism::to_mjcf`](super::Mechanism::to_mjcf) writes this onto the
+/// `<connect>` element. Leaving it off would hand a reader of the file
+/// MuJoCo's default — the 32.9 mm row — from the same declared assembly.
+pub(super) const LINKAGE_SOLIMP: [f64; 5] = [0.9999, 0.99999, 0.001, 0.5, 2.0];
+
+/// World position of a body at the reference configuration.
+///
+/// `body_pos` is relative to the parent and every `body_quat` is identity
+/// here, so composing the chain is a sum. ⚠ That identity is what makes this
+/// a sum rather than a transform chain; if bodies ever gain a reference
+/// orientation, this has to compose rotations too.
+fn body_world_position(model: &Model, mut body: usize) -> Vector3<f64> {
+    let mut at = Vector3::zeros();
+    for _ in 0..model.nbody {
+        if body == 0 {
+            break;
+        }
+        at += model.body_pos[body];
+        body = model.body_parent[body];
+    }
+    at
+}
+
+/// Emit one equality constraint per linkage.
+///
+/// The anchor is given on `a` only; where it falls on `b` is whatever point of
+/// `b` coincides with it at the reference configuration. That mirrors MJCF's
+/// `<connect>` and means a linkage cannot be declared inconsistently.
+fn emit_linkages(
+    mechanism: &Mechanism,
+    model: &mut Model,
+    part_to_body: &HashMap<&str, usize>,
+) -> Result<(), MechanismError> {
+    for linkage in mechanism.linkages() {
+        let body_a = *part_to_body.get(linkage.a()).ok_or_else(|| {
+            MechanismError::LinkageRefersToUnknownPart {
+                linkage: linkage.name().to_owned(),
+                part: linkage.a().to_owned(),
+            }
+        })?;
+        let body_b = *part_to_body.get(linkage.b()).ok_or_else(|| {
+            MechanismError::LinkageRefersToUnknownPart {
+                linkage: linkage.name().to_owned(),
+                part: linkage.b().to_owned(),
+            }
+        })?;
+
+        let anchor_a = linkage.anchor().coords;
+        let anchor_world = body_world_position(model, body_a) + anchor_a;
+        let anchor_b = anchor_world - body_world_position(model, body_b);
+
+        let mut data = [0.0; 11];
+        data[0..3].copy_from_slice(anchor_a.as_slice());
+        data[3..6].copy_from_slice(anchor_b.as_slice());
+
+        model.eq_type.push(match linkage.kind() {
+            LinkageKind::Ball => EqualityType::Connect,
+        });
+        model.eq_obj1id.push(body_a);
+        model.eq_obj2id.push(body_b);
+        model.eq_data.push(data);
+        model.eq_active.push(true);
+        model.eq_solimp.push(LINKAGE_SOLIMP);
+        model.eq_solref.push(LINKAGE_SOLREF);
+        let id = model.eq_name.len();
+        model.eq_name_to_id.insert(linkage.name().to_owned(), id);
+        model.eq_name.push(Some(linkage.name().to_owned()));
+    }
+    model.neq = model.eq_type.len();
+    Ok(())
+}
 
 /// Build a sim-core Model from a validated mechanism.
 fn generate(
@@ -717,6 +812,9 @@ fn generate(
     model.compute_stat_meaninertia();
     model.compute_invweight0();
 
+    // ── Linkages: the loops the tree cannot hold ────────────────────
+    emit_linkages(mechanism, &mut model, &part_to_body)?;
+
     // Bounding geometry
     compute_geom_bounding(&mut model);
 
@@ -787,7 +885,10 @@ fn push_geom(
 }
 
 /// Compute geom position offset for child parts (same logic as mjcf.rs).
-fn compute_geom_offset(part: &Part, joints_on: &HashMap<&str, Vec<&JointDef>>) -> Vector3<f64> {
+pub(super) fn compute_geom_offset(
+    part: &Part,
+    joints_on: &HashMap<&str, Vec<&JointDef>>,
+) -> Vector3<f64> {
     let jlist = match joints_on.get(part.name()) {
         Some(jl) if !jl.is_empty() => jl,
         _ => return Vector3::zeros(), // root body
@@ -1007,10 +1108,10 @@ mod tests {
     use nalgebra::{Point3, Vector3};
 
     use crate::{
-        ActuatorDef, ActuatorKind, JointDef, JointKind, Material, Mechanism, MechanismError, Part,
-        Solid, TendonDef, TendonWaypoint,
+        ActuatorDef, ActuatorKind, JointDef, JointKind, LinkageDef, LinkageKind, Material,
+        Mechanism, MechanismError, Part, Solid, TendonDef, TendonWaypoint,
     };
-    use sim_core::GeomType;
+    use sim_core::{EqualityType, GeomType, Model};
 
     fn pla() -> Material {
         Material::new("PLA", 1250.0)
@@ -1457,6 +1558,133 @@ mod tests {
             twist_h > 1e-3,
             "a hinged arm must rotate relative to its base, got {twist_h:.2e} — \
              the rigidity assertion above would then be measuring nothing"
+        );
+    }
+
+    // ── 9b. Linkages close loops ────────────────────────────────────
+
+    /// Two arms hinged to a static base, optionally tied tip to tip. With the
+    /// linkage this is a four-bar; without it the arms are independent.
+    fn four_bar(tied: bool) -> Mechanism {
+        let mut m = Mechanism::builder("four_bar")
+            .part(cuboid_part("base"))
+            .part(cuboid_part("arm_a"))
+            .part(cuboid_part("arm_b"))
+            .joint(JointDef::new(
+                "anchor",
+                "world",
+                "base",
+                JointKind::Fixed,
+                Point3::origin(),
+                Vector3::z(),
+            ))
+            .joint(JointDef::new(
+                "pivot_a",
+                "base",
+                "arm_a",
+                JointKind::Revolute,
+                Point3::new(0.0, 0.0, -20.0),
+                Vector3::y(),
+            ))
+            .joint(JointDef::new(
+                "pivot_b",
+                "base",
+                "arm_b",
+                JointKind::Revolute,
+                Point3::new(30.0, 0.0, -20.0),
+                Vector3::y(),
+            ));
+        if tied {
+            m = m.linkage(LinkageDef::new(
+                "coupler",
+                "arm_a",
+                "arm_b",
+                LinkageKind::Ball,
+                Point3::new(0.0, 0.0, -10.0),
+            ));
+        }
+        m.build()
+    }
+
+    /// How far apart the two tied points are, after stepping.
+    fn coupler_gap_after(model: &Model, steps: usize) -> f64 {
+        let idx = |n: &str| {
+            model
+                .body_name
+                .iter()
+                .position(|b| b.as_deref() == Some(n))
+                .expect("body")
+        };
+        let (a, b) = (idx("arm_a"), idx("arm_b"));
+        // The pair of points the linkage holds, in each body's own frame.
+        let anchor_a = Vector3::new(0.0, 0.0, -10.0);
+        let anchor_b = anchor_a + model.body_pos[a] - model.body_pos[b];
+        let mut data = model.make_data();
+        data.forward(model).unwrap();
+        for _ in 0..steps {
+            data.step(model).unwrap();
+        }
+        let pa = data.xpos[a] + data.xmat[a] * anchor_a;
+        let pb = data.xpos[b] + data.xmat[b] * anchor_b;
+        (pa - pb).norm()
+    }
+
+    #[test]
+    fn a_linkage_emits_an_equality_constraint() {
+        let model = four_bar(true).to_model(2.0, 2.0).unwrap();
+        assert_eq!(model.neq, 1, "one linkage, one equality constraint");
+        assert_eq!(model.eq_type[0], EqualityType::Connect);
+        assert_eq!(model.eq_name[0].as_deref(), Some("coupler"));
+        // The tree is untouched: a linkage adds no joint and no coordinate.
+        let plain = four_bar(false).to_model(2.0, 2.0).unwrap();
+        assert_eq!(model.njnt, plain.njnt, "a linkage is not a joint");
+        assert_eq!(model.nv, plain.nv, "and costs no degree of freedom");
+        assert_eq!(plain.neq, 0);
+    }
+
+    /// A linkage is emitted **stiff**, not as soft as a contact.
+    ///
+    /// ⚠ This pins a constant rather than measuring dynamics, and it does so
+    /// because the dynamics cannot be measured here. The four-bar below is
+    /// gram-weight cubes on a 30 mm lever, and it passes at MJCF's default
+    /// impedance — which lets a 0.49 kg rod on a 740 mm lever drift 32.9 mm.
+    /// Scaling this fixture up to load the constraint properly costs 145 s.
+    ///
+    /// So the evidence for the value lives where the load is (the trike's
+    /// steering, in `example-trike-mass-budget`), and this holds the line
+    /// against a quiet return to contact softness.
+    #[test]
+    fn a_linkage_is_stiffer_than_a_contact() {
+        let model = four_bar(true).to_model(2.0, 2.0).unwrap();
+        let (dmin, dmax) = (model.eq_solimp[0][0], model.eq_solimp[0][1]);
+        assert!(
+            dmin > 0.99 && dmax > 0.999,
+            "a linkage is structure, not a contact: impedance {dmin}..{dmax} is \
+             soft enough to stretch under load"
+        );
+    }
+
+    /// The claim, under simulation: a linkage holds its two points together
+    /// while the arms swing. Carries its own control, because a scene where
+    /// nothing moved would satisfy the tied case for the wrong reason.
+    ///
+    /// ⚠ What it does NOT prove: that the constraint is stiff enough. These
+    /// cubes weigh about a gram, and it passes at MJCF's contact-soft default
+    /// too. Stiffness is pinned by `a_linkage_is_stiffer_than_a_contact` and
+    /// measured on a real machine downstream.
+    #[test]
+    fn a_linkage_holds_while_an_untied_pair_comes_apart() {
+        const STEPS: usize = 300;
+        let tied = coupler_gap_after(&four_bar(true).to_model(2.0, 2.0).unwrap(), STEPS);
+        let free = coupler_gap_after(&four_bar(false).to_model(2.0, 2.0).unwrap(), STEPS);
+        assert!(
+            free > 1.0,
+            "the untied arms must drift apart, else the tied case proves nothing \
+             (gap {free:.3e} mm)"
+        );
+        assert!(
+            tied < free / 10.0,
+            "the linkage must hold: tied gap {tied:.3e} mm against untied {free:.3e} mm"
         );
     }
 

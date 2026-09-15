@@ -46,6 +46,7 @@ use cf_trike::{
 use cf_vehicle::analysis::rollover_threshold_g;
 use cf_vehicle::{CorneringLoads, MassItem, StaticLoads, TrikeSpec};
 use nalgebra::{Point3, UnitQuaternion, Vector3};
+use sim_core::Model;
 
 /// How far a grid-integrated mass may sit from its closed form.
 ///
@@ -69,10 +70,17 @@ const PIN_TOLERANCE: f64 = 1e-6;
 const EXPECTED_PARTS: usize = 28;
 /// Welds in the assembly: three frame members and seven seat members onto the
 /// spine, all three tyres onto their rims, and the rider's two halves.
-const EXPECTED_WELDS: usize = 21;
-/// Degrees of freedom the machine actually has: the free body, two steering
-/// pivots, three wheels spinning, and the swingarm.
-const EXPECTED_DOF: usize = 12;
+const EXPECTED_WELDS: usize = 20;
+
+/// Loops the joint tree cannot hold: the tie rod's far end.
+const EXPECTED_LINKAGES: usize = 1;
+/// Degrees of freedom in the **tree**: the free body, two steering pivots,
+/// three wheels spinning, the swingarm, and the tie rod's near rod end, which
+/// is a ball and so worth three.
+///
+/// ⚠ Not what the machine has. The linkage at the rod's far end takes those
+/// three back, so the trike really has twelve — see `EXPECTED_LINKAGES`.
+const EXPECTED_DOF: usize = 15;
 /// Members welded into the frame, whose grid cost is compared: spine,
 /// cross-member and the two diagonals.
 const WELDED_FRAME_MEMBERS: usize = 4;
@@ -92,6 +100,13 @@ const STL_TOLERANCE_MM: f64 = 4.0;
 /// feature finer than a third of a millimetre and wants saying so, not
 /// halving again.
 const MIN_STL_TOLERANCE_MM: f64 = 0.25;
+
+/// How far a linkage may let the two points it holds drift apart.
+const MAX_LINKAGE_GAP_MM: f64 = 1.0;
+
+/// How far a part's geometry may sit from its own solid in the physics model.
+/// Measured at 0.00 mm once every part declares its joint origin.
+const MAX_GEOM_DISPLACEMENT_MM: f64 = 0.5;
 
 /// Voxel resolution for the simulation check. Coarse on purpose: this asks
 /// whether the assembly is simulable, not what it collides with, and 8 mm cost
@@ -299,6 +314,20 @@ fn export_stls(
     Ok(())
 }
 
+/// World position of a body at the reference configuration: `body_pos` is
+/// relative to the parent, so composing the chain is a sum.
+fn body_world(model: &Model, mut body: usize) -> Vector3<f64> {
+    let mut at = Vector3::zeros();
+    for _ in 0..model.nbody {
+        if body == 0 {
+            break;
+        }
+        at += model.body_pos[body];
+        body = model.body_parent[body];
+    }
+    at
+}
+
 /// Axis-aligned extent of a mesh.
 fn bounds_of(mesh: &IndexedMesh) -> Result<(Vector3<f64>, Vector3<f64>)> {
     let Some(first) = mesh.vertices.first() else {
@@ -362,10 +391,24 @@ fn main() -> Result<()> {
         .filter(|j| j.kind().is_weld())
         .count();
     let dof: usize = mechanism.joints().iter().map(|j| j.kind().dof()).sum();
+    let held: usize = mechanism
+        .linkages()
+        .iter()
+        .map(|l| l.kind().constrained_dof())
+        .sum();
     println!(
-        "reverse trike — {} parts, {welds} welds, {dof} dof",
-        mechanism.parts().len()
+        "reverse trike — {} parts, {welds} welds, {dof} dof in the tree, {} \
+         linkage holding {held} of them: {} left",
+        mechanism.parts().len(),
+        mechanism.linkages().len(),
+        dof - held
     );
+    if mechanism.linkages().len() != EXPECTED_LINKAGES {
+        bail!(
+            "{} linkages, expected {EXPECTED_LINKAGES}",
+            mechanism.linkages().len()
+        );
+    }
     if welds != EXPECTED_WELDS {
         bail!("{welds} welds, expected {EXPECTED_WELDS}");
     }
@@ -678,6 +721,40 @@ fn main() -> Result<()> {
             );
         }
 
+        // ⚠ The model's geometry must sit where the solid says. `to_model`
+        // bbox-aligns an articulated part to its joint anchor unless the part
+        // declares a joint origin — right for a finger segment modelled at the
+        // origin, wrong for a vehicle whose solids are already placed. It was
+        // displacing the front wheels 180 mm and the swingarm 188, and nothing
+        // here would have noticed: the masses come from the solids, and free
+        // fall has no contacts to be in the wrong place for.
+        for d in &derived {
+            let Some(b) = body(&d.name) else {
+                bail!("no body for part {}", d.name);
+            };
+            let in_model = body_world(&model, b) + model.body_ipos[b];
+            let displaced = (in_model - d.world_com_mm).norm();
+            if displaced > MAX_GEOM_DISPLACEMENT_MM {
+                bail!(
+                    "part {} sits {displaced:.1} mm from its solid in the physics \
+                     model — its geometry has been aligned somewhere else",
+                    d.name
+                );
+            }
+        }
+
+        // ⚠ The mechanism's linkages must reach the model. Counting them on
+        // the mechanism proves only that they were declared; if `to_model`
+        // dropped them, `nv` would be unchanged — a linkage costs no degree of
+        // freedom — and nothing else here would object.
+        if model.neq != EXPECTED_LINKAGES {
+            bail!(
+                "the physics model holds {} equality constraints, and the \
+                 mechanism declares {EXPECTED_LINKAGES}",
+                model.neq
+            );
+        }
+
         let mut data = model.make_data();
         data.forward(&model)
             .map_err(|e| anyhow::anyhow!("forward kinematics failed: {e:?}"))?;
@@ -699,6 +776,26 @@ fn main() -> Result<()> {
                 worst = (name.clone(), drift);
             }
         }
+        // The linkage's own claim: the two points it holds stay together while
+        // the machine moves. cf-design proves this on a four-bar; this proves
+        // it on the vehicle, where the rod ties two steering arms that the
+        // joint tree leaves free of each other.
+        let mut held_apart: f64 = 0.0;
+        for eq in 0..model.neq {
+            let (a, b) = (model.eq_obj1id[eq], model.eq_obj2id[eq]);
+            let d = model.eq_data[eq];
+            let pa = data.xpos[a] + data.xmat[a] * Vector3::new(d[0], d[1], d[2]);
+            let pb = data.xpos[b] + data.xmat[b] * Vector3::new(d[3], d[4], d[5]);
+            held_apart = held_apart.max((pa - pb).norm());
+        }
+        if held_apart > MAX_LINKAGE_GAP_MM {
+            bail!(
+                "a linkage let its ends drift {held_apart:.3} mm apart over \
+                 {SIM_STEPS} steps — it is supposed to hold them together"
+            );
+        }
+        println!("  linkage ends held to {:.1} um", held_apart * 1000.0);
+
         println!(
             "simulated {SIM_STEPS} steps: {} welded bodies, worst drift {:.1} um ({})",
             rigid.len(),

@@ -5807,6 +5807,7 @@ dependencies = [
  "cf-vehicle",
  "mesh-io",
  "nalgebra 0.34.2",
+ "sim-core",
 ]
 
 [[package]]
