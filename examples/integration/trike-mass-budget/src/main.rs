@@ -153,6 +153,10 @@ const EXPECTED_PARTS: usize = 13;
 /// Number of members welded into the frame, whose grid cost is compared.
 const WELDED_FRAME_MEMBERS: usize = 2;
 
+/// How far to move the heaviest item's centre of mass when probing how much
+/// of the answer is a choice rather than a measurement.
+const CG_PROBE_MM: f64 = 50.0;
+
 /// Polyurethane on asphalt, at the optimistic end of 0.6-1.0.
 const TYRE_MU: f64 = 1.0;
 
@@ -841,6 +845,55 @@ fn main() -> Result<()> {
     ] {
         if (got - want).abs() > want.abs() * PIN_TOLERANCE {
             bail!("{label} came out {got:.9}, pinned at {want:.9}");
+        }
+    }
+
+    // ── How much of this is a choice? ───────────────────────────────
+    //
+    // ⚠ The heaviest item dominates the centre of gravity, and its height here
+    // is a seat height picked while modelling, not a measurement. A threshold
+    // quoted to four digits off a chosen number reads far more certain than it
+    // is, so the choice is priced rather than caveated.
+    if let Some(heaviest) = derived
+        .iter()
+        .max_by(|a, b| a.grid_kg.total_cmp(&b.grid_kg))
+    {
+        let probe = |dz_mm: f64| {
+            let shifted: Vec<MassItem> = derived
+                .iter()
+                .map(|d| {
+                    let z_mm = if d.name == heaviest.name {
+                        d.world_com_mm.z + dz_mm
+                    } else {
+                        d.world_com_mm.z
+                    };
+                    MassItem::new(
+                        d.name.clone(),
+                        d.grid_kg,
+                        d.world_com_mm.x / 1000.0,
+                        z_mm / 1000.0,
+                    )
+                })
+                .collect();
+            let s = TrikeSpec {
+                masses: shifted,
+                ..TrikeSpec::iter1()
+            };
+            let track_needed =
+                2.0 * s.effective_cg_height_m() * TYRE_MU / s.paired_axle_share() - s.track_m;
+            (rollover_threshold_g(&s), track_needed * 1000.0)
+        };
+        println!(
+            "\nheaviest item is {} at {:.1} kg, {:.0}% of the total, so it sets the cg.",
+            heaviest.name,
+            heaviest.grid_kg,
+            100.0 * heaviest.grid_kg / spec.total_mass_kg()
+        );
+        for dz in [-CG_PROBE_MM, 0.0, CG_PROBE_MM] {
+            let (threshold, track) = probe(dz);
+            println!(
+                "  its height {dz:+5.0} mm -> threshold {threshold:.4} g, needs {track:+7.1} mm of track"
+            );
         }
     }
 
