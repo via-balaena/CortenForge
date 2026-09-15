@@ -144,6 +144,11 @@ const REAR_WHEEL_CLEARANCE_MM: f64 = 20.0;
 /// without that term gave 4.1 mm of real air where 20 was asked for.
 const TAIL_SETBACK_MM: f64 = REAR_RADIUS_MM + REAR_WHEEL_CLEARANCE_MM + FRAME_R_MM;
 
+/// Full steering lock, in degrees — the range `upright_*` is given in radians.
+const STEER_LOCK_DEG: f64 = 34.0;
+/// Mesh tolerance for the steering-clash probe.
+const STEER_PROBE_MM: f64 = 6.0;
+
 /// Mesh tolerance for the weld-contact probe.
 const WELD_PROBE_MM: f64 = 2.0;
 
@@ -1467,6 +1472,54 @@ fn main() -> Result<()> {
                 -clearance
             );
         }
+    }
+
+    // ── Oracle 1d: the steering turns without hitting the frame ─────
+    //
+    // Every other check here is at the reference pose. A vehicle that is fine
+    // at rest and jams at full lock is still broken, and nothing above would
+    // notice: the masses are right, the welds touch, the contact patches are
+    // where they belong.
+    //
+    // ⚠ Sign only. `Solid::evaluate` on a CSG solid is a bound — it read a
+    // 40 mm interpenetration as 0.8 — so this asks whether any point of the
+    // turned wheel is INSIDE a frame member, never how far from it.
+    {
+        let by_name: HashMap<&str, &Part> =
+            mechanism.parts().iter().map(|p| (p.name(), p)).collect();
+        let kingpin_axis = nalgebra::Unit::new_normalize(steering_axis());
+        let pivot = *origins
+            .get("upright_l")
+            .ok_or_else(|| anyhow::anyhow!("no upright to steer about"))?;
+        let tyre = by_name
+            .get("tyre_fl")
+            .ok_or_else(|| anyhow::anyhow!("no front tyre"))?;
+        let tyre_origin = *origins
+            .get("tyre_fl")
+            .ok_or_else(|| anyhow::anyhow!("no front tyre origin"))?;
+        let probe = tyre.solid().mesh(STEER_PROBE_MM).geometry;
+        if probe.vertices.is_empty() {
+            bail!("the front tyre meshed to nothing at {STEER_PROBE_MM} mm");
+        }
+        for lock_deg in [STEER_LOCK_DEG, -STEER_LOCK_DEG] {
+            let rot = UnitQuaternion::from_axis_angle(&kingpin_axis, lock_deg.to_radians());
+            for member in ["frame_cross", "frame_diag_l"] {
+                let fixed = by_name
+                    .get(member)
+                    .ok_or_else(|| anyhow::anyhow!("no member {member}"))?;
+                let fixed_origin = *origins
+                    .get(member)
+                    .ok_or_else(|| anyhow::anyhow!("no origin for {member}"))?;
+                let inside = probe.vertices.iter().any(|v| {
+                    let world = pivot + rot * (v.coords + tyre_origin - pivot);
+                    fixed.solid().evaluate(&Point3::from(world - fixed_origin)) < 0.0
+                });
+                if inside {
+                    bail!("at {lock_deg:+.0} deg of lock the front tyre enters {member}");
+                }
+            }
+        }
+        println!("steering sweeps +/-{STEER_LOCK_DEG:.0} deg clear of the frame");
     }
 
     // ── Oracle 2: the geometry the anchors actually describe ────────
