@@ -38,6 +38,7 @@ use std::fmt;
 
 use super::actuator::ActuatorDef;
 use super::joint::JointDef;
+use super::linkage::LinkageDef;
 use super::part::Part;
 use super::print::PrintProfile;
 use super::tendon::TendonDef;
@@ -59,6 +60,15 @@ pub enum MechanismError {
     DuplicateTendon(String),
     /// Two actuators share the same name.
     DuplicateActuator(String),
+    /// Two linkages share the same name.
+    DuplicateLinkage(String),
+    /// A linkage references a part that does not exist.
+    LinkageRefersToUnknownPart {
+        /// Linkage name.
+        linkage: String,
+        /// The unknown part name.
+        part: String,
+    },
     /// A part is welded and articulated at the same time.
     ///
     /// A [`JointKind::Fixed`](super::JointKind::Fixed) joint says the child cannot
@@ -119,6 +129,11 @@ impl fmt::Display for MechanismError {
             Self::DuplicateJoint(name) => write!(f, "duplicate joint name: \"{name}\""),
             Self::DuplicateTendon(name) => write!(f, "duplicate tendon name: \"{name}\""),
             Self::DuplicateActuator(name) => write!(f, "duplicate actuator name: \"{name}\""),
+            Self::DuplicateLinkage(name) => write!(f, "duplicate linkage name: \"{name}\""),
+            Self::LinkageRefersToUnknownPart { linkage, part } => write!(
+                f,
+                "linkage \"{linkage}\" references unknown part \"{part}\""
+            ),
             Self::PartIsWeldedAndArticulated { part, weld, other } => write!(
                 f,
                 "part \"{part}\" is welded by \"{weld}\" and articulated by \"{other}\": \
@@ -165,6 +180,7 @@ pub struct MechanismBuilder {
     name: String,
     parts: Vec<Part>,
     joints: Vec<JointDef>,
+    linkages: Vec<LinkageDef>,
     tendons: Vec<TendonDef>,
     actuators: Vec<ActuatorDef>,
     print_profile: Option<PrintProfile>,
@@ -175,6 +191,13 @@ impl MechanismBuilder {
     #[must_use]
     pub fn part(mut self, part: Part) -> Self {
         self.parts.push(part);
+        self
+    }
+
+    /// Add a linkage closing a loop the joint tree cannot express.
+    #[must_use]
+    pub fn linkage(mut self, linkage: LinkageDef) -> Self {
+        self.linkages.push(linkage);
         self
     }
 
@@ -273,6 +296,21 @@ impl MechanismBuilder {
             }
         }
 
+        // ── Linkages ────────────────────────────────────────────────
+        check_duplicates(self.linkages.iter().map(LinkageDef::name), |name| {
+            errors.push(MechanismError::DuplicateLinkage(name));
+        });
+        for linkage in &self.linkages {
+            for part in [linkage.a(), linkage.b()] {
+                if !part_names.contains(part) {
+                    errors.push(MechanismError::LinkageRefersToUnknownPart {
+                        linkage: linkage.name().to_owned(),
+                        part: part.to_owned(),
+                    });
+                }
+            }
+        }
+
         // ── A weld forbids any other joint on the same child ────────
         // `to_model` emits nothing for a weld and keeps the articulation, so
         // an unnoticed contradiction silently drops the constraint the author
@@ -342,6 +380,7 @@ impl MechanismBuilder {
             name: self.name,
             parts,
             joints: self.joints,
+            linkages: self.linkages,
             tendons: self.tendons,
             actuators: self.actuators,
             print_profile: self.print_profile,
@@ -388,6 +427,7 @@ pub struct Mechanism {
     name: String,
     parts: Vec<Part>,
     joints: Vec<JointDef>,
+    linkages: Vec<LinkageDef>,
     tendons: Vec<TendonDef>,
     actuators: Vec<ActuatorDef>,
     print_profile: Option<PrintProfile>,
@@ -407,6 +447,7 @@ impl Mechanism {
             name,
             parts: Vec::new(),
             joints: Vec::new(),
+            linkages: Vec::new(),
             tendons: Vec::new(),
             actuators: Vec::new(),
             print_profile: None,
@@ -423,6 +464,12 @@ impl Mechanism {
     #[must_use]
     pub fn parts(&self) -> &[Part] {
         &self.parts
+    }
+
+    /// Linkages closing loops outside the joint tree.
+    #[must_use]
+    pub fn linkages(&self) -> &[LinkageDef] {
+        &self.linkages
     }
 
     /// Joint definitions.

@@ -22,6 +22,7 @@
 //! | [`JointDef`](super::JointDef) (Ball) | `<joint type="ball">` |
 //! | [`JointDef`](super::JointDef) (Free) | `<freejoint>` |
 //! | [`JointDef`](super::JointDef) (Fixed) | **nothing** — a jointless body is welded to its parent |
+//! | [`LinkageDef`](super::LinkageDef) (Ball) | `<equality><connect>` — a loop the tree cannot hold |
 //! | [`TendonDef`](super::TendonDef) | `<spatial>` tendon with `<site>` waypoints |
 //! | [`ActuatorDef`](super::ActuatorDef) (Motor) | `<general>` actuator |
 //! | [`ActuatorDef`](super::ActuatorDef) (Muscle) | `<muscle>` actuator |
@@ -37,6 +38,7 @@ use nalgebra::Vector3;
 use super::actuator::ActuatorKind;
 use super::builder::Mechanism;
 use super::joint::{JointDef, JointKind};
+use super::linkage::LinkageKind;
 use super::part::Part;
 use super::tendon::TendonDef;
 
@@ -64,6 +66,7 @@ pub(super) fn generate(mechanism: &Mechanism, resolution: f64) -> String {
 
     write_assets(&mut xml, mechanism, resolution);
     write_worldbody(&mut xml, mechanism);
+    write_equality(&mut xml, mechanism);
     write_tendons(&mut xml, mechanism);
     write_actuators(&mut xml, mechanism);
 
@@ -425,6 +428,37 @@ fn write_joint(
 
 // ── Tendons ─────────────────────────────────────────────────────────────
 
+/// Write `<equality>` for the mechanism's linkages.
+///
+/// MJCF's `<connect>` takes one anchor, in body1's frame, and derives the
+/// other from the reference pose — the same contract
+/// [`LinkageDef`](super::LinkageDef) has, so
+/// the anchor passes straight through.
+fn write_equality(xml: &mut String, mechanism: &Mechanism) {
+    if mechanism.linkages().is_empty() {
+        return;
+    }
+    let _ = writeln!(xml, "  <equality>");
+    for linkage in mechanism.linkages() {
+        match linkage.kind() {
+            LinkageKind::Ball => {
+                let a = linkage.anchor();
+                let _ = writeln!(
+                    xml,
+                    "    <connect name=\"{}\" body1=\"{}\" body2=\"{}\" anchor=\"{} {} {}\"/>",
+                    esc(linkage.name()),
+                    esc(linkage.a()),
+                    esc(linkage.b()),
+                    a.x,
+                    a.y,
+                    a.z
+                );
+            }
+        }
+    }
+    let _ = writeln!(xml, "  </equality>");
+}
+
 fn write_tendons(xml: &mut String, mechanism: &Mechanism) {
     if mechanism.tendons().is_empty() {
         return;
@@ -504,8 +538,8 @@ mod tests {
     use nalgebra::{Point3, Vector3};
 
     use crate::{
-        ActuatorDef, ActuatorKind, JointDef, JointKind, Material, Mechanism, Part, Solid,
-        TendonDef, TendonWaypoint,
+        ActuatorDef, ActuatorKind, JointDef, JointKind, LinkageDef, LinkageKind, Material,
+        Mechanism, Part, Solid, TendonDef, TendonWaypoint,
     };
 
     // ── Helpers ─────────────────────────────────────────────────────
@@ -657,6 +691,57 @@ mod tests {
     /// placed: MuJoCo positions a child body by `<body pos>`, which comes from
     /// the first joint's anchor whatever kind that joint is. Nothing checked
     /// that the weld path preserved it.
+    #[test]
+    fn a_linkage_becomes_an_equality_constraint() {
+        let m = Mechanism::builder("loop")
+            .part(sphere_part("a"))
+            .part(sphere_part("b"))
+            .joint(JointDef::new(
+                "j",
+                "a",
+                "b",
+                JointKind::Revolute,
+                Point3::new(3.0, 0.0, 0.0),
+                Vector3::y(),
+            ))
+            .linkage(LinkageDef::new(
+                "coupler",
+                "a",
+                "b",
+                LinkageKind::Ball,
+                Point3::new(1.0, -2.0, 3.0),
+            ))
+            .build();
+
+        let xml = m.to_mjcf(RES);
+        assert!(xml.contains("<equality>"), "no equality block:\n{xml}");
+        assert!(
+            xml.contains("<connect name=\"coupler\" body1=\"a\" body2=\"b\" anchor=\"1 -2 3\"/>"),
+            "the connect is wrong or missing:\n{xml}"
+        );
+    }
+
+    #[test]
+    fn a_mechanism_without_linkages_emits_no_equality_block() {
+        let m = Mechanism::builder("plain")
+            .part(sphere_part("a"))
+            .part(sphere_part("b"))
+            .joint(JointDef::new(
+                "j",
+                "a",
+                "b",
+                JointKind::Revolute,
+                Point3::new(3.0, 0.0, 0.0),
+                Vector3::y(),
+            ))
+            .build();
+        let xml = m.to_mjcf(RES);
+        assert!(
+            !xml.contains("<equality>"),
+            "an empty equality block is noise:\n{xml}"
+        );
+    }
+
     #[test]
     fn a_welded_body_keeps_its_pose_in_mjcf() {
         let m = Mechanism::builder("weld_pose")
