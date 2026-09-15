@@ -70,7 +70,9 @@
 use std::collections::HashMap;
 use std::f64::consts::{FRAC_PI_2, PI};
 
-use anyhow::{Result, bail};
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result, bail};
 use cf_design::mechanism::mass::mass_properties;
 use cf_design::{Aabb, JointDef, JointKind, Material, Mechanism, Part, Solid};
 use cf_vehicle::analysis::rollover_threshold_g;
@@ -164,6 +166,14 @@ const WELDED_FRAME_MEMBERS: usize = 2;
 /// How far to move the heaviest item's centre of mass when probing how much
 /// of the answer is a choice rather than a measurement.
 const CG_PROBE_MM: f64 = 50.0;
+
+/// Default meshing tolerance for `--out`, in millimetres.
+///
+/// ⚠ This is for *looking at* the vehicle, not for printing it. At 1.0 mm the
+/// assembly comes to 6.4 M triangles and ~300 MB of STL — the rider capsule
+/// alone is 2.8 M — because the tolerance is a cell size and the vehicle is
+/// 1.25 m long. Override with `--tolerance` when a wall section matters.
+const STL_TOLERANCE_MM: f64 = 4.0;
 
 /// Polyurethane on asphalt, at the optimistic end of 0.6-1.0.
 const TYRE_MU: f64 = 1.0;
@@ -657,9 +667,54 @@ fn derive(
     Ok(out)
 }
 
+// ── Looking at it ───────────────────────────────────────────────────────
+
+/// Mesh every part and write it to `dir` as an STL, one file per part.
+///
+/// ⚠ Opt-in via `--out <dir>`. `xtask run-validators` invokes this example
+/// with **no arguments**, and a validator that writes files on every CI run
+/// would leave litter behind; the asserted zero-argument path stays read-only.
+fn export_stls(mechanism: &Mechanism, dir: &Path, tolerance_mm: f64) -> Result<()> {
+    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    let mut total = 0usize;
+    for (name, mesh) in mechanism.to_stl_kit(tolerance_mm) {
+        let path = dir.join(format!("{name}.stl"));
+        mesh_io::save_stl(&mesh, &path, true)
+            .with_context(|| format!("writing {}", path.display()))?;
+        println!(
+            "  {:<12} {:>7} triangles -> {}",
+            name,
+            mesh.faces.len(),
+            path.display()
+        );
+        total += mesh.faces.len();
+    }
+    println!("  {total} triangles total at a {tolerance_mm} mm tolerance");
+    Ok(())
+}
+
 // ── Entry point ─────────────────────────────────────────────────────────
 
 fn main() -> Result<()> {
+    // ⚠ Arguments are optional and the zero-argument path is the asserted one.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let flag = |name: &str| {
+        args.iter()
+            .position(|a| a == name)
+            .and_then(|i| args.get(i + 1))
+            .cloned()
+    };
+    let out_dir = flag("--out").map(PathBuf::from);
+    let tolerance_mm = match flag("--tolerance") {
+        Some(t) => t
+            .parse::<f64>()
+            .with_context(|| format!("--tolerance {t} is not a number"))?,
+        None => STL_TOLERANCE_MM,
+    };
+    if !(tolerance_mm > 0.0 && tolerance_mm.is_finite()) {
+        bail!("--tolerance must be positive and finite, got {tolerance_mm}");
+    }
+
     let plan = plan()?;
     let cells: HashMap<&'static str, (f64, f64)> = plan
         .iter()
@@ -983,6 +1038,11 @@ fn main() -> Result<()> {
                 ""
             },
         );
+    }
+
+    if let Some(dir) = out_dir {
+        println!("\nmeshing the assembly:");
+        export_stls(&mechanism, &dir, tolerance_mm)?;
     }
 
     println!("\nOK");

@@ -5795,6 +5795,7 @@ dependencies = [
  "anyhow",
  "cf-design",
  "cf-vehicle",
+ "mesh-io",
  "nalgebra 0.34.2",
 ]
 
