@@ -57,7 +57,8 @@
 //!   Every run prints the comparison, and the size of it depends on how the
 //!   members lie. Two axis-aligned members — a spine and a cross — cost 15x
 //!   less split than merged. Add the two **diagonals** and the advantage falls
-//!   to 2x: a diagonal tube's bounding box is the box of the rotated tube, so
+//!   to about 2x: a diagonal tube's bounding box is the box of the rotated
+//!   tube, so
 //!   each diagonal already spans most of the frame and splitting buys much
 //!   less. ⇒ Splitting a weldment and welding it is still the cheaper option,
 //!   but "an order of magnitude" was only true while every member ran along an
@@ -192,10 +193,16 @@ const SEAT_WIDTH_MM: f64 = 300.0;
 ///
 /// | hip x | bottom bracket | share | threshold |
 /// |---|---|---|---|
-/// | 674 | -250 | 0.523 | 0.700 g |
-/// | 560 | -364 | 0.601 | 0.805 g |
-/// | **500** | **-424** | **0.642** | **0.860 g** |
-/// | 450 | -474 | 0.677 | 0.906 g |
+/// | 674 | -250 | 0.512 | 0.752 g |
+/// | 560 | -364 | 0.592 | 0.870 g |
+/// | **500** | **-424** | **0.634** | **0.932 g** |
+/// | 450 | -474 | 0.669 | 0.983 g |
+///
+/// ⚠ Re-measured. The first sweep was taken before the seat was seated on
+/// the frame and before the rims stopped being discs, and both moved the
+/// centre of gravity: it read 0.860 g at hip 500 where this reads 0.932. The
+/// ordering held, which is why the decision still stands, but a table of
+/// numbers that no longer reproduce is worse than no table.
 ///
 /// 500 is the chosen point. It takes the biggest step available for the price
 /// of boom tube, and it puts the pedals 424 mm ahead of the front contact
@@ -289,8 +296,9 @@ const REAR_WHEEL_HALF_WIDTH_MM: f64 = 12.5;
 
 /// How far a grid-integrated mass may sit from its closed form.
 ///
-/// Set just above the worst part measured (0.318%, `rim_fr`), so a coarsened
-/// cell trips it rather than passing quietly. ⚠ A changed *dimension* does not
+/// Set just above the worst part measured — currently 0.350% on `seat_back`,
+/// a 6 mm panel reclined 45 degrees — so a coarsened cell trips it rather
+/// than passing quietly. ⚠ A changed *dimension* does not
 /// trip it — see the note on oracle 1.
 const MASS_TOLERANCE: f64 = 0.005;
 
@@ -325,10 +333,10 @@ const MIN_STL_TOLERANCE_MM: f64 = 0.25;
 
 /// Default meshing tolerance for `--out`, in millimetres.
 ///
-/// ⚠ This is for *looking at* the vehicle, not for printing it. At 1.0 mm the
-/// assembly comes to 6.4 M triangles and ~300 MB of STL — the rider capsule
-/// alone is 2.8 M — because the tolerance is a cell size and the vehicle is
-/// 1.25 m long. Override with `--tolerance` when a wall section matters.
+/// ⚠ This is for *looking at* the vehicle, not for printing it. The tolerance
+/// is a cell size and the vehicle is 1.25 m long, so at 1.0 mm the assembly
+/// comes to just under a gigabyte of STL against 52 MB at this default.
+/// Override with `--tolerance` when a wall section matters.
 const STL_TOLERANCE_MM: f64 = 4.0;
 
 /// Polyurethane on asphalt, at the optimistic end of 0.6-1.0.
@@ -337,8 +345,8 @@ const TYRE_MU: f64 = 1.0;
 /// How far the composed budget may drift before the pins below fire.
 ///
 /// Loose enough to survive a last-ulp libm difference between platforms,
-/// tight enough that any real change of geometry is caught: 1e-6 of 90 kg is
-/// 90 mg, and 1e-6 of 0.315 m is 0.3 µm.
+/// tight enough that any real change of geometry is caught: 1e-6 of 100 kg is
+/// 0.1 g, and 1e-6 of 0.3 m is 0.3 µm.
 const PIN_TOLERANCE: f64 = 1e-6;
 
 // ── Pieces: a solid and its closed-form volume, built together ──────────
@@ -1126,9 +1134,9 @@ fn derive(
 ///
 /// ⚠ **A part can mesh to nothing.** [`Mechanism::to_stl_kit`] meshes every
 /// part at one tolerance, and that tolerance is a *cell size*: the 3 mm seat
-/// pan vanished entirely at the 4 mm default that suits a 1.25 m frame, and
-/// wrote an 84-byte STL containing no triangles — a valid, correctly named,
-/// empty file. So each part is meshed at the requested tolerance and only what
+/// pan, 3 mm thick at the time, vanished entirely at the 4 mm default that
+/// suits a 1.25 m frame and wrote an 84-byte STL containing no triangles — a
+/// valid, correctly named, empty file. So each part is meshed at the requested tolerance and only what
 /// vanishes is refined, halving down to [`MIN_STL_TOLERANCE_MM`].
 ///
 /// ⚠ Refining *everything* to its mass-integration cell instead was measured
