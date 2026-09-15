@@ -1,0 +1,25 @@
+[package]
+name = "example-trike-mass-budget"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Headless VALIDATOR — asserts its oracles, so `xtask run-validators` RUNS it
+# in CI rather than merely type-checking it. The zero-argument path is the
+# asserted one.
+[package.metadata.cortenforge]
+example_kind = "validator"
+
+[dependencies]
+# `Mechanism`/`Part`/`JointDef`/`Material` — the assembly primitive under test,
+# and `mechanism::mass::mass_properties`, the grid integrator being composed.
+cf-design = { workspace = true }
+# `TrikeSpec` + the load analysis the derived budget is fed into. cf-vehicle
+# does NOT depend on cf-design; this crate is the composition point.
+cf-vehicle = { workspace = true }
+nalgebra = { workspace = true }
+anyhow = { workspace = true }
+
+[lints]
+workspace = true
