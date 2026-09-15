@@ -70,7 +70,7 @@ pub struct PartMetrics {
 /// let t = cf_trike::trike()?;
 ///
 /// // The assembly, ready for to_model, to_stl_kit or inspection.
-/// assert_eq!(t.mechanism.parts().len(), 38);
+/// assert_eq!(t.mechanism.parts().len(), 36);
 ///
 /// // Twenty-three degrees of freedom in the tree — welds cost nothing, and
 /// // three joints are balls, worth three each. The three linkages take nine
@@ -297,6 +297,8 @@ const DIAGONAL_APEX_X_MM: f64 = 230.0;
 /// stated as a number here because the tube it came from no longer exists.
 /// It wants choosing on its own terms.
 const KINGPIN_OFFSET_MM: f64 = 37.7;
+/// Where the kingpin line sits, half a track in from the wheel.
+const UPRIGHT_Y_MM: f64 = TRACK_MM / 2.0 - KINGPIN_OFFSET_MM;
 /// Radius of the front rim's hub disc — what the bearing housing must fit in.
 const FRONT_HUB_R_MM: f64 = 30.0;
 /// Outer radius of the upright's wheel-bearing housing. Sized to live inside
@@ -312,6 +314,24 @@ const BALL_BOSS_R_MM: f64 = 18.0;
 const BALL_BOSS_HALF_MM: f64 = 12.0;
 /// Radius of the strut tying the two ball joints past the bearing.
 const UPRIGHT_STRUT_R_MM: f64 = 12.0;
+/// Wall around a bushing, between its outer sleeve and fresh air.
+const BUSH_HOUSING_WALL_MM: f64 = 3.5;
+/// Radius of the ball-joint cup at a wishbone's outboard end.
+const BALL_CUP_R_MM: f64 = 20.0;
+/// Half-height of the same, along the ball joint's axis.
+const BALL_CUP_HALF_MM: f64 = 12.0;
+/// Outer radius of a wishbone's legs.
+const WISHBONE_LEG_R_MM: f64 = 11.0;
+/// Wall of the same.
+///
+/// ⚠ A wishbone leg is a TUBE. Built solid it weighs three times as much for
+/// the same outside diameter and almost no extra stiffness — bending goes as
+/// the fourth power of radius, so the metal near the axis is carrying nothing
+/// but itself.
+const WISHBONE_LEG_WALL_MM: f64 = 2.5;
+/// Wall left around the ball cup's socket.
+const BALL_CUP_WALL_MM: f64 = 5.0;
+
 /// Fillet radius where the upright's members blend.
 ///
 /// ⚠ Not decoration. Every one of these joins is a corner in the load path
@@ -570,6 +590,75 @@ fn front_upright(sign: f64) -> Piece {
     }
 }
 
+/// The lower wishbone — one fabricated piece, not two welded legs.
+///
+/// Three interfaces: a bushing housing at each inboard pickup, and a
+/// ball-joint cup where the legs converge. Its own origin is the midpoint of
+/// the two pickups, which is a point ON its pivot axis, so the joint anchor
+/// and the geometry agree.
+///
+/// ⚠ **No closed-form volume**, for the reason the legs used to be two parts:
+/// they overlap at the ball cup, and `joined` sums analytic volumes only for
+/// pieces that do not. Authoring the arm as one blended solid says that
+/// honestly instead of splitting it to dodge the arithmetic.
+fn lower_wishbone(sign: f64) -> Piece {
+    let ball = Vector3::new(0.0, sign * (UPRIGHT_Y_MM - ARM_PICKUP_Y_MM), 0.0);
+    let pickup = |x: f64| Vector3::new(x, 0.0, 0.0);
+    let spread = ARM_PICKUP_HALF_SPREAD_MM;
+
+    // Housings lie along the pivot axis, which is x.
+    let along_x = UnitQuaternion::from_axis_angle(&Vector3::y_axis(), FRAC_PI_2);
+    let housing = |at: Vector3<f64>| {
+        Solid::cylinder(BUSH_OUTER_R_MM + BUSH_HOUSING_WALL_MM, BUSH_LENGTH_MM / 2.0)
+            .rotate(along_x)
+            .translate(at)
+    };
+    // The cup takes the ball on the upright, so it shares its axis.
+    let cup = Solid::cylinder(BALL_CUP_R_MM, BALL_CUP_HALF_MM)
+        .rotate(
+            UnitQuaternion::rotation_between(&Vector3::z(), &steering_axis())
+                .unwrap_or_else(UnitQuaternion::identity),
+        )
+        .translate(ball);
+    let leg = |x: f64, r: f64| Solid::pipe(vec![Point3::from(pickup(x)), Point3::from(ball)], r);
+
+    let body = Solid::smooth_union_all(
+        vec![
+            housing(pickup(-spread)),
+            housing(pickup(spread)),
+            cup,
+            leg(-spread, WISHBONE_LEG_R_MM),
+            leg(spread, WISHBONE_LEG_R_MM),
+        ],
+        UPRIGHT_FILLET_MM,
+    );
+
+    // Everything that comes out: the two bushing bores, the ball socket, and
+    // the bore down each leg. The legs are tubes, not rods.
+    let bore = |at: Vector3<f64>| {
+        Solid::cylinder(BUSH_OUTER_R_MM, BUSH_LENGTH_MM)
+            .rotate(along_x)
+            .translate(at)
+    };
+    let inner = WISHBONE_LEG_R_MM - WISHBONE_LEG_WALL_MM;
+    let socket = Solid::cylinder(BALL_CUP_R_MM - BALL_CUP_WALL_MM, BALL_CUP_HALF_MM)
+        .rotate(
+            UnitQuaternion::rotation_between(&Vector3::z(), &steering_axis())
+                .unwrap_or_else(UnitQuaternion::identity),
+        )
+        .translate(ball);
+
+    Piece {
+        solid: body
+            .subtract(bore(pickup(-spread)))
+            .subtract(bore(pickup(spread)))
+            .subtract(leg(-spread, inner))
+            .subtract(leg(spread, inner))
+            .subtract(socket),
+        volume_mm3: None,
+    }
+}
+
 /// Union of **disjoint** pieces: the analytic volume is their sum, which is
 /// true only because nothing here overlaps anything else in the same part.
 ///
@@ -641,7 +730,7 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
     //
     // Uprights sit inboard of the wheels by half a wheel's width plus the
     // upright's own radius, so the contact patches land on the nominal track.
-    let upright_y = TRACK_MM / 2.0 - KINGPIN_OFFSET_MM;
+    let upright_y = UPRIGHT_Y_MM;
 
     // Nose, the two kingpin bases, the apex the diagonals meet, and the tail.
     let node = |x: f64, y: f64| Point3::new(x, y, FRAME_Z_MM);
@@ -940,31 +1029,9 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
             axis: Vector3::x(),
             range_rad: Some((-0.35, 0.35)),
             material: steel.clone(),
-            piece: wishbone_leg(
-                1.0,
-                LOWER_PIVOT_Z_MM,
-                lower_ball(1.0),
-                -ARM_PICKUP_HALF_SPREAD_MM,
-            ),
+            piece: lower_wishbone(1.0),
             cell_mm: 0.4,
             bushing: Some(bush),
-        },
-        PartPlan {
-            name: "arm_lower_l_aft",
-            parent: "arm_lower_l",
-            anchor_mm: Vector3::zeros(),
-            kind: JointKind::Fixed,
-            axis: Vector3::x(),
-            range_rad: None,
-            material: steel.clone(),
-            piece: wishbone_leg(
-                1.0,
-                LOWER_PIVOT_Z_MM,
-                lower_ball(1.0),
-                ARM_PICKUP_HALF_SPREAD_MM,
-            ),
-            cell_mm: 0.4,
-            bushing: None,
         },
         PartPlan {
             name: "arm_upper_l",
@@ -1032,31 +1099,9 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
             axis: Vector3::x(),
             range_rad: Some((-0.35, 0.35)),
             material: steel.clone(),
-            piece: wishbone_leg(
-                -1.0,
-                LOWER_PIVOT_Z_MM,
-                lower_ball(-1.0),
-                -ARM_PICKUP_HALF_SPREAD_MM,
-            ),
+            piece: lower_wishbone(-1.0),
             cell_mm: 0.4,
             bushing: Some(bush),
-        },
-        PartPlan {
-            name: "arm_lower_r_aft",
-            parent: "arm_lower_r",
-            anchor_mm: Vector3::zeros(),
-            kind: JointKind::Fixed,
-            axis: Vector3::x(),
-            range_rad: None,
-            material: steel.clone(),
-            piece: wishbone_leg(
-                -1.0,
-                LOWER_PIVOT_Z_MM,
-                lower_ball(-1.0),
-                ARM_PICKUP_HALF_SPREAD_MM,
-            ),
-            cell_mm: 0.4,
-            bushing: None,
         },
         PartPlan {
             name: "arm_upper_r",

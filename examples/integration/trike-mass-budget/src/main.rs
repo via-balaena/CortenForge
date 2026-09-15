@@ -67,11 +67,12 @@ const PIN_TOLERANCE: f64 = 1e-6;
 /// an empty one passes without doing anything. An empty `Mechanism` builds
 /// happily — `validate` skips the orphan check below two parts — so nothing
 /// upstream would object.
-const EXPECTED_PARTS: usize = 38;
+const EXPECTED_PARTS: usize = 36;
 /// Welds in the assembly: three frame members and seven seat members onto the
 /// spine, all three tyres onto their rims, the rider's two halves, the two
-/// suspension towers, and each wishbone's aft leg onto its fore leg.
-const EXPECTED_WELDS: usize = 26;
+/// suspension towers, and the aft leg of each UPPER wishbone onto its fore
+/// leg. The lower wishbones are one authored piece each and need no weld.
+const EXPECTED_WELDS: usize = 24;
 
 /// Loops the joint tree cannot hold: the tie rod's far end, and the upper
 /// ball joint on each wishbone.
@@ -749,9 +750,7 @@ fn main() -> Result<()> {
 
         for arm in [
             "arm_lower_l",
-            "arm_lower_l_aft",
             "arm_lower_r",
-            "arm_lower_r_aft",
             "arm_upper_l",
             "arm_upper_l_aft",
             "arm_upper_r",
@@ -788,9 +787,7 @@ fn main() -> Result<()> {
                     "tower_r",
                     "seat_cross",
                     "arm_lower_l",
-                    "arm_lower_l_aft",
                     "arm_lower_r",
-                    "arm_lower_r_aft",
                     "arm_upper_l",
                     "arm_upper_l_aft",
                     "arm_upper_r",
@@ -1077,13 +1074,13 @@ fn main() -> Result<()> {
     // and they are supposed to fire so the new numbers get read.
     let mut drifted: Vec<String> = Vec::new();
     for (label, got, want) in [
-        ("total mass (kg)", spec.total_mass_kg(), 106.218_695_337),
-        ("cg x (m)", spec.cg_x_m(), 0.369_270_791),
-        ("cg z (m)", spec.cg_z_m(), 0.397_241_922),
+        ("total mass (kg)", spec.total_mass_kg(), 107.944_959_787),
+        ("cg x (m)", spec.cg_x_m(), 0.363_365_388),
+        ("cg z (m)", spec.cg_z_m(), 0.393_288_017),
         (
             "rollover threshold (g)",
             rollover_threshold_g(&spec),
-            0.798_159_754,
+            0.811_589_591,
         ),
     ] {
         if (got - want).abs() > want.abs() * PIN_TOLERANCE {
