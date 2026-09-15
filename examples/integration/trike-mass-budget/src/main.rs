@@ -34,7 +34,7 @@
 
 #![allow(clippy::too_many_lines)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -126,6 +126,9 @@ const MAX_WELD_DRIFT_MM: f64 = 1.0;
 const STEER_LOCK_DEG: f64 = 34.0;
 /// Mesh tolerance for the steering-clash probe.
 const STEER_PROBE_MM: f64 = 6.0;
+/// Suspension travel swept for clashes, in degrees — the wishbones are given
+/// `+/-0.35 rad`, and this is that range in the units the message prints.
+const BUMP_TRAVEL_DEG: f64 = 20.0;
 /// Mesh tolerance for the weld-contact probe.
 const WELD_PROBE_MM: f64 = 2.0;
 
@@ -650,6 +653,131 @@ fn main() -> Result<()> {
             }
         }
         println!("steering sweeps +/-{STEER_LOCK_DEG:.0} deg clear of the frame");
+    }
+
+    // ── Oracle 1f: the suspension moves without hitting anything ────
+    //
+    // The steering sweep above moves the wheel. Nothing moved the suspension,
+    // which is the one motion the wishbones exist to have — so ten parts and
+    // a degree of freedom per front wheel went in with no clash check at all.
+    //
+    // ★ A wishbone's travel is an **exact** rotation about its own pivot axis,
+    // which is the x axis through its body origin. That is what makes this a
+    // measurement rather than an approximation: no constraint solving is
+    // needed to know where the arm goes.
+    //
+    // ⚠ Sign only, for the reason the steering sweep gives: `Solid::evaluate`
+    // on a CSG solid is a bound, not a distance.
+    //
+    // ⚠ A part is never swept against what it is JOINED to. The arms pivot on
+    // those, so they touch by construction, and a scan that included them
+    // would report the joint as a collision and be switched off.
+    {
+        let by_name: HashMap<&str, &Part> =
+            mechanism.parts().iter().map(|p| (p.name(), p)).collect();
+        let axis = nalgebra::Unit::new_normalize(Vector3::x());
+        let mut swept = 0_usize;
+
+        // Joined pairs, read off the assembly rather than listed here. A
+        // hardcoded list of exceptions is a list that rots: this one would
+        // have had to grow every time a part was added, and the first thing
+        // the scan reported was a wishbone "entering" the upright hanging
+        // off its own ball joint.
+        //
+        // ⚠ Inert as the list below stands — removing this changes nothing,
+        // because the parts it would excuse are already out of that list for
+        // travelling with the arm. It is here so that adding a part to the
+        // list cannot resurrect the false positive that produced it.
+        let mut joined: HashSet<(&str, &str)> = HashSet::new();
+        for j in mechanism.joints() {
+            joined.insert((j.parent(), j.child()));
+            joined.insert((j.child(), j.parent()));
+        }
+        for l in mechanism.linkages() {
+            joined.insert((l.a(), l.b()));
+            joined.insert((l.b(), l.a()));
+        }
+
+        for arm in [
+            "arm_lower_l",
+            "arm_lower_l_aft",
+            "arm_lower_r",
+            "arm_lower_r_aft",
+            "arm_upper_l",
+            "arm_upper_l_aft",
+            "arm_upper_r",
+            "arm_upper_r_aft",
+        ] {
+            let part = by_name
+                .get(arm)
+                .ok_or_else(|| anyhow::anyhow!("no part {arm}"))?;
+            let origin = *origins
+                .get(arm)
+                .ok_or_else(|| anyhow::anyhow!("no origin for {arm}"))?;
+            // The pivot is the arm's own body origin — the midpoint of its two
+            // frame pickups, which is a point on its axis.
+            let pivot = origin;
+            let probe = part.solid().mesh(STEER_PROBE_MM).geometry;
+            if probe.vertices.is_empty() {
+                bail!("{arm} meshed to nothing at {STEER_PROBE_MM} mm");
+            }
+
+            for deg in [BUMP_TRAVEL_DEG, -BUMP_TRAVEL_DEG] {
+                let rot = UnitQuaternion::from_axis_angle(&axis, deg.to_radians());
+                // ⚠ Only parts that do NOT travel with this arm. The
+                // upright, its wheel, the steer arm and the bar all ride on
+                // the wishbone, so sweeping the arm against their resting
+                // pose would compare a part with where its own passengers
+                // used to be. What is left is genuinely independent: the
+                // frame, the towers, the seat, and the other wishbones.
+                for other in [
+                    "frame_spine",
+                    "frame_cross",
+                    "frame_diag_l",
+                    "frame_diag_r",
+                    "tower_l",
+                    "tower_r",
+                    "seat_cross",
+                    "arm_lower_l",
+                    "arm_lower_l_aft",
+                    "arm_lower_r",
+                    "arm_lower_r_aft",
+                    "arm_upper_l",
+                    "arm_upper_l_aft",
+                    "arm_upper_r",
+                    "arm_upper_r_aft",
+                ] {
+                    if other == arm || joined.contains(&(arm, other)) {
+                        continue;
+                    }
+                    let fixed = by_name
+                        .get(other)
+                        .ok_or_else(|| anyhow::anyhow!("no part {other}"))?;
+                    let fixed_origin = *origins
+                        .get(other)
+                        .ok_or_else(|| anyhow::anyhow!("no origin for {other}"))?;
+                    let inside = probe.vertices.iter().any(|v| {
+                        let world = pivot + rot * (v.coords + origin - pivot);
+                        fixed.solid().evaluate(&Point3::from(world - fixed_origin)) < 0.0
+                    });
+                    if inside {
+                        bail!(
+                            "at {deg:+.0} deg of travel {arm} enters {other} — the \
+                             suspension cannot move through its declared range"
+                        );
+                    }
+                    swept += 1;
+                }
+            }
+        }
+        if swept == 0 {
+            bail!("the bump sweep compared nothing, so it proves nothing");
+        }
+        println!(
+            "suspension sweeps +/-{BUMP_TRAVEL_DEG:.0} deg clear \
+             ({swept} arm-against-part checks; the wishbones foul each other \
+             by 30)"
+        );
     }
 
     // ── Oracle 1e: the assembly simulates, and the welds hold ───────
