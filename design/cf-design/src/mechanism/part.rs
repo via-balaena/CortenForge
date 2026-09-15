@@ -85,8 +85,10 @@ impl FlexZone {
     ///
     /// # Panics
     ///
-    /// Panics if `width` is not positive/finite, `name` is empty, or `axis`
-    /// is zero/non-finite.
+    /// Panics if `width` is not positive/finite, `name` is empty, `axis`
+    /// is zero/non-finite, or `kind` is [`JointKind::Fixed`] — a flexure that
+    /// does not flex is a weld, and a weld is a joint rather than a zone of a
+    /// part.
     #[must_use]
     pub fn new(
         name: impl Into<String>,

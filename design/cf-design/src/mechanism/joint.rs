@@ -180,7 +180,8 @@ impl JointDef {
     ///
     /// # Panics
     ///
-    /// Panics if `min >= max` or either bound is non-finite.
+    /// Panics if `min >= max`, if either bound is non-finite, or if this is a
+    /// [`JointKind::Fixed`] joint — a weld has no travel to limit.
     #[must_use]
     pub fn with_range(mut self, min: f64, max: f64) -> Self {
         assert!(
