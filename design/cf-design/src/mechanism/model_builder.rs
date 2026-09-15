@@ -337,7 +337,9 @@ fn generate(
         model.body_dof_adr[body_id] = nv;
 
         let jlist = joints_on.get(part_name);
-        let jnt_count = jlist.map_or(0, Vec::len);
+        // ⚠ Welds emit no joint, so this counts the joints actually pushed —
+        // not how many `JointDef`s name this part.
+        let jnt_count = jlist.map_or(0, |v| v.iter().filter(|j| !j.kind().is_weld()).count());
 
         if let Some(jlist) = jlist {
             for joint in jlist {
@@ -346,6 +348,10 @@ fn generate(
                     JointKind::Prismatic => MjJointType::Slide,
                     JointKind::Ball => MjJointType::Ball,
                     JointKind::Free => MjJointType::Free,
+                    // A weld is the absence of a joint: a body with none is
+                    // rigidly attached to its parent. The anchor has already
+                    // placed the body, so there is nothing further to emit.
+                    JointKind::Fixed => continue,
                 };
 
                 let jnt_id = model.jnt_type.len();
@@ -421,15 +427,7 @@ fn generate(
         }
 
         model.body_jnt_num[body_id] = jnt_count;
-        model.body_dof_num[body_id] = jlist.map_or(0, |v| {
-            v.iter()
-                .map(|j| match j.kind() {
-                    JointKind::Revolute | JointKind::Prismatic => 1,
-                    JointKind::Ball => 3,
-                    JointKind::Free => 6,
-                })
-                .sum()
-        });
+        model.body_dof_num[body_id] = jlist.map_or(0, |v| v.iter().map(|j| j.kind().dof()).sum());
     }
 
     model.njnt = model.jnt_type.len();
@@ -795,8 +793,10 @@ fn compute_geom_offset(part: &Part, joints_on: &HashMap<&str, Vec<&JointDef>>) -
         _ => return Vector3::zeros(), // root body
     };
 
-    // Free joints: geometry centered at body frame (no alignment needed)
-    if jlist[0].kind() == JointKind::Free {
+    // Free joints and welds: geometry stays in the body frame. A free body has
+    // nothing to align to, and a welded one must not be shifted away from where
+    // its solid places it relative to the parent.
+    if matches!(jlist[0].kind(), JointKind::Free | JointKind::Fixed) {
         return Vector3::zeros();
     }
 
@@ -1263,6 +1263,330 @@ mod tests {
         assert_eq!(model.nbody, 2); // world + body
         assert_eq!(model.njnt, 0);
         assert_eq!(model.ngeom, 2); // SDF + mesh
+    }
+
+    // ── 9a. Fixed joints are welds ──────────────────────────────────
+
+    /// Two parts welded together, with the child at `anchor`.
+    fn welded(kind: JointKind) -> Mechanism {
+        let mut joint = JointDef::new(
+            "weld",
+            "palm",
+            "finger",
+            kind,
+            Point3::new(5.0, 0.0, 0.0),
+            Vector3::x(),
+        );
+        if !kind.is_weld() {
+            joint = joint.with_range(-1e-9, 1e-9);
+        }
+        Mechanism::builder("welded")
+            .part(cuboid_part("palm"))
+            .part(cuboid_part("finger"))
+            .joint(joint)
+            .build()
+    }
+
+    #[test]
+    fn a_part_cannot_be_welded_and_articulated_at_once() {
+        // A weld says the child cannot move; a hinge says it can. Before this
+        // was refused, `validate` returned no errors and `to_model` silently
+        // kept the hinge (njnt 1, nv 1), dropping the weld the author wrote.
+        let errors = Mechanism::builder("contradiction")
+            .part(cuboid_part("a"))
+            .part(cuboid_part("b"))
+            .joint(JointDef::new(
+                "weld",
+                "a",
+                "b",
+                JointKind::Fixed,
+                Point3::new(5.0, 0.0, 0.0),
+                Vector3::x(),
+            ))
+            .joint(JointDef::new(
+                "hinge",
+                "a",
+                "b",
+                JointKind::Revolute,
+                Point3::new(5.0, 0.0, 0.0),
+                Vector3::x(),
+            ))
+            .validate();
+        assert!(
+            errors.iter().any(|e| matches!(
+                e,
+                MechanismError::PartIsWeldedAndArticulated { part, .. } if part == "b"
+            )),
+            "expected a welded-and-articulated error, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn two_welds_on_different_children_are_fine() {
+        let errors = Mechanism::builder("tree")
+            .part(cuboid_part("a"))
+            .part(cuboid_part("b"))
+            .part(cuboid_part("c"))
+            .joint(JointDef::new(
+                "w1",
+                "a",
+                "b",
+                JointKind::Fixed,
+                Point3::new(5.0, 0.0, 0.0),
+                Vector3::x(),
+            ))
+            .joint(JointDef::new(
+                "w2",
+                "b",
+                "c",
+                JointKind::Fixed,
+                Point3::new(5.0, 0.0, 0.0),
+                Vector3::x(),
+            ))
+            .validate();
+        assert!(errors.is_empty(), "a chain of welds is legal: {errors:?}");
+    }
+
+    #[test]
+    fn a_weld_adds_no_joint_and_no_degree_of_freedom() {
+        let model = welded(JointKind::Fixed).to_model(2.0, 2.0).unwrap();
+        assert_eq!(model.njnt, 0, "a weld must emit no joint");
+        assert_eq!(model.nv, 0, "a weld must add no velocity coordinate");
+        assert_eq!(model.nq, 0, "a weld must add no position coordinate");
+        let finger = model
+            .body_name
+            .iter()
+            .position(|n| n.as_deref() == Some("finger"))
+            .expect("finger body");
+        assert_eq!(model.body_jnt_num[finger], 0);
+        assert_eq!(model.body_dof_num[finger], 0);
+    }
+
+    /// The claim the docs make: a weld costs the solver nothing, whereas a
+    /// revolute pinched to a near-zero range is still a real coordinate.
+    #[test]
+    fn a_weld_is_cheaper_than_a_revolute_pinched_shut() {
+        let weld = welded(JointKind::Fixed).to_model(2.0, 2.0).unwrap();
+        let pinched = welded(JointKind::Revolute).to_model(2.0, 2.0).unwrap();
+        assert_eq!((weld.njnt, weld.nv), (0, 0));
+        assert_eq!(
+            (pinched.njnt, pinched.nv),
+            (1, 1),
+            "a 1e-9 rad revolute is still a degree of freedom — that is the \
+             whole reason Fixed exists"
+        );
+    }
+
+    /// Every other weld gate checks the model's *shape* — joint counts, poses,
+    /// degrees of freedom. This one steps it: a welded arm on a swinging
+    /// pendulum must keep its orientation relative to the base, which is what
+    /// "rigid" means and what no static assertion can see.
+    ///
+    /// ⚠ It runs the same pendulum twice, welded and hinged, because a
+    /// rigidity assertion that cannot tell those two apart is measuring
+    /// nothing. The hinged case is the positive control and must *fail*
+    /// rigidity; mutating the weld mapping breaks the model's bookkeeping in
+    /// three places at once and stops the pendulum swinging, so mutation
+    /// cannot supply that control from outside.
+    #[test]
+    fn a_weld_is_rigid_under_simulation_and_a_hinge_is_not() {
+        let relative_rotation = |second: JointKind| {
+            let model = Mechanism::builder("pendulum")
+                .part(cuboid_part("base"))
+                .part(cuboid_part("arm"))
+                .joint(JointDef::new(
+                    "pivot",
+                    "world",
+                    "base",
+                    JointKind::Revolute,
+                    Point3::origin(),
+                    Vector3::y(),
+                ))
+                .joint(JointDef::new(
+                    "j2",
+                    "base",
+                    "arm",
+                    second,
+                    Point3::new(10.0, 0.0, 0.0),
+                    Vector3::y(),
+                ))
+                .build()
+                .to_model(2.0, 2.0)
+                .unwrap();
+            let idx = |n: &str| {
+                model
+                    .body_name
+                    .iter()
+                    .position(|b| b.as_deref() == Some(n))
+                    .expect("body")
+            };
+            let (base, arm) = (idx("base"), idx("arm"));
+            let mut data = model.make_data();
+            data.forward(&model).unwrap();
+            let start = data.xmat[base];
+            for _ in 0..200 {
+                data.step(&model).unwrap();
+            }
+            let swung = (data.xmat[base] - start).norm();
+            let drift =
+                (data.xpos[arm] - (data.xpos[base] + data.xmat[base] * model.body_pos[arm])).norm();
+            let twist = (data.xmat[arm] - data.xmat[base]).norm();
+            (swung, drift, twist)
+        };
+
+        let (swung, drift, twist) = relative_rotation(JointKind::Fixed);
+        // Negative control: a scene that never moved would satisfy rigidity
+        // for the wrong reason.
+        assert!(
+            swung > 1e-3,
+            "the welded pendulum did not swing ({swung:.2e})"
+        );
+        assert!(
+            drift < 1e-9,
+            "welded arm drifted from its base by {drift:.2e}"
+        );
+        assert!(
+            twist < 1e-9,
+            "welded arm rotated relative to its base by {twist:.2e}"
+        );
+
+        // Positive control: the same assertions must be able to fail.
+        let (swung_h, _, twist_h) = relative_rotation(JointKind::Revolute);
+        assert!(swung_h > 1e-3, "the hinged pendulum did not swing");
+        assert!(
+            twist_h > 1e-3,
+            "a hinged arm must rotate relative to its base, got {twist_h:.2e} — \
+             the rigidity assertion above would then be measuring nothing"
+        );
+    }
+
+    /// Welding to `"world"` makes a static body — a bench, a fixture, a test
+    /// rig. It falls out of Fixed rather than being designed, so it is gated
+    /// before something quietly takes it away.
+    #[test]
+    fn a_part_welded_to_the_world_is_static() {
+        let model = Mechanism::builder("static")
+            .part(cuboid_part("bench"))
+            .joint(JointDef::new(
+                "anchor",
+                "world",
+                "bench",
+                JointKind::Fixed,
+                Point3::new(1.0, 2.0, 3.0),
+                Vector3::z(),
+            ))
+            .build()
+            .to_model(2.0, 2.0)
+            .unwrap();
+        let bench = model
+            .body_name
+            .iter()
+            .position(|n| n.as_deref() == Some("bench"))
+            .expect("bench body");
+        assert_eq!(model.njnt, 0, "a static body has no joint");
+        assert_eq!(model.nv, 0, "and no degree of freedom");
+        assert_eq!(model.body_parent[bench], 0, "parented to the world body");
+        assert!(
+            (model.body_pos[bench] - Vector3::new(1.0, 2.0, 3.0)).norm() < 1e-12,
+            "placed at its anchor, got {:?}",
+            model.body_pos[bench]
+        );
+    }
+
+    #[test]
+    fn a_weld_does_not_shift_its_geometry() {
+        // A welded part's solid sits where the solid says, relative to the
+        // body frame. Articulated parts get bbox-aligned to their joint anchor
+        // — predictable for a hinge, arbitrary for a weld — so welds take the
+        // same path as free bodies and are not moved.
+        let offset = 10.0;
+        let m = Mechanism::builder("offset_weld")
+            .part(cuboid_part("a"))
+            .part(Part::new(
+                "b",
+                Solid::cuboid(Vector3::new(5.0, 5.0, 5.0))
+                    .translate(Vector3::new(offset, 0.0, 0.0)),
+                pla(),
+            ))
+            .joint(JointDef::new(
+                "weld",
+                "a",
+                "b",
+                JointKind::Fixed,
+                Point3::new(5.0, 0.0, 0.0),
+                Vector3::x(),
+            ))
+            .build()
+            .to_model(2.0, 2.0)
+            .unwrap();
+        let b = m
+            .body_name
+            .iter()
+            .position(|n| n.as_deref() == Some("b"))
+            .expect("body b");
+        assert!(
+            (m.body_ipos[b].x - offset).abs() < 0.5,
+            "a weld must leave the solid where it is: body_ipos.x = {}, want {offset}",
+            m.body_ipos[b].x
+        );
+    }
+
+    #[test]
+    fn a_weld_still_places_the_body_at_its_anchor() {
+        let model = welded(JointKind::Fixed).to_model(2.0, 2.0).unwrap();
+        let finger = model
+            .body_name
+            .iter()
+            .position(|n| n.as_deref() == Some("finger"))
+            .expect("finger body");
+        assert!(
+            (model.body_pos[finger].x - 5.0).abs() < 1e-12,
+            "body_pos.x = {}",
+            model.body_pos[finger].x
+        );
+    }
+
+    #[test]
+    fn welding_one_of_two_joints_leaves_the_other_counted() {
+        let model = Mechanism::builder("mixed")
+            .part(cuboid_part("a"))
+            .part(cuboid_part("b"))
+            .part(cuboid_part("c"))
+            .joint(JointDef::new(
+                "hinge",
+                "a",
+                "b",
+                JointKind::Revolute,
+                Point3::new(5.0, 0.0, 0.0),
+                Vector3::x(),
+            ))
+            .joint(JointDef::new(
+                "weld",
+                "b",
+                "c",
+                JointKind::Fixed,
+                Point3::new(5.0, 0.0, 0.0),
+                Vector3::x(),
+            ))
+            .build()
+            .to_model(2.0, 2.0)
+            .unwrap();
+        assert_eq!(model.njnt, 1, "only the hinge is a joint");
+        assert_eq!(model.nv, 1);
+        // ⚠ The per-body counts are what the weld filter actually feeds; njnt
+        // and nv come from a different path and pass regardless. Without
+        // these, restoring `jnt_count` to `Vec::len` left this test green.
+        let body = |name: &str| {
+            model
+                .body_name
+                .iter()
+                .position(|n| n.as_deref() == Some(name))
+                .expect("body")
+        };
+        assert_eq!(model.body_jnt_num[body("b")], 1, "b carries the hinge");
+        assert_eq!(model.body_dof_num[body("b")], 1);
+        assert_eq!(model.body_jnt_num[body("c")], 0, "c is welded to b");
+        assert_eq!(model.body_dof_num[body("c")], 0);
     }
 
     // ── 9. Free joint to world ──────────────────────────────────────

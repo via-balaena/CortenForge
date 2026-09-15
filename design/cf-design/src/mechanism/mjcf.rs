@@ -21,6 +21,7 @@
 //! | [`JointDef`](super::JointDef) (Prismatic) | `<joint type="slide">` |
 //! | [`JointDef`](super::JointDef) (Ball) | `<joint type="ball">` |
 //! | [`JointDef`](super::JointDef) (Free) | `<freejoint>` |
+//! | [`JointDef`](super::JointDef) (Fixed) | **nothing** — a jointless body is welded to its parent |
 //! | [`TendonDef`](super::TendonDef) | `<spatial>` tendon with `<site>` waypoints |
 //! | [`ActuatorDef`](super::ActuatorDef) (Motor) | `<general>` actuator |
 //! | [`ActuatorDef`](super::ActuatorDef) (Muscle) | `<muscle>` actuator |
@@ -382,6 +383,9 @@ fn write_joint(
             let _ = writeln!(xml, "{pad}<freejoint name=\"{}\"/>", esc(joint.name()));
             return;
         }
+        // A weld is spelled by the absence of a joint element: MuJoCo attaches
+        // a jointless body rigidly to its parent.
+        JointKind::Fixed => return,
     };
 
     let _ = write!(
@@ -614,6 +618,65 @@ mod tests {
                 "expected type=\"{expected_type}\" for {kind:?}, got:\n{xml}"
             );
         }
+    }
+
+    #[test]
+    fn a_weld_emits_no_joint_element() {
+        let m = Mechanism::builder("weld_test")
+            .part(sphere_part("a"))
+            .part(sphere_part("b"))
+            .joint(JointDef::new(
+                "weld",
+                "a",
+                "b",
+                JointKind::Fixed,
+                Point3::new(3.0, 0.0, 0.0),
+                Vector3::z(),
+            ))
+            .build();
+
+        let xml = m.to_mjcf(RES);
+        assert!(
+            !xml.contains("<joint"),
+            "a weld must emit no <joint> element, got:\n{xml}"
+        );
+        assert!(
+            !xml.contains("<freejoint"),
+            "a weld is not a free joint, got:\n{xml}"
+        );
+        assert!(
+            !xml.contains("name=\"weld\""),
+            "the weld's name must not appear as a joint, got:\n{xml}"
+        );
+        // ⚠ The body must still exist and still be placed — a weld attaches,
+        // it does not delete.
+        assert!(xml.contains("name=\"b\""), "welded body missing:\n{xml}");
+    }
+
+    /// A weld emits no `<joint>`, but the body it attaches must still be
+    /// placed: MuJoCo positions a child body by `<body pos>`, which comes from
+    /// the first joint's anchor whatever kind that joint is. Nothing checked
+    /// that the weld path preserved it.
+    #[test]
+    fn a_welded_body_keeps_its_pose_in_mjcf() {
+        let m = Mechanism::builder("weld_pose")
+            .part(sphere_part("a"))
+            .part(sphere_part("b"))
+            .joint(JointDef::new(
+                "weld",
+                "a",
+                "b",
+                JointKind::Fixed,
+                Point3::new(3.0, -4.0, 5.0),
+                Vector3::z(),
+            ))
+            .build();
+
+        let xml = m.to_mjcf(RES);
+        assert!(
+            xml.contains("<body name=\"b\" pos=\"3 -4 5\">"),
+            "the welded body must keep the weld's anchor as its pose, got:\n{xml}"
+        );
     }
 
     #[test]

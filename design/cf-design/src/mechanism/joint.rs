@@ -1,14 +1,17 @@
 //! Joint definition types.
 //!
 //! A [`JointDef`] connects two [`super::Part`]s with a specific degree of
-//! freedom defined by [`JointKind`]. These map 1:1 to MJCF `<joint>` elements
-//! during MJCF generation (Session 10).
+//! freedom defined by [`JointKind`]. All but one map 1:1 to MJCF `<joint>`
+//! elements during MJCF generation (Session 10).
 //!
 //! Downstream mapping to sim-types:
 //! - `Revolute` → `MjJointType::Hinge`
 //! - `Prismatic` → `MjJointType::Slide`
 //! - `Ball` → `MjJointType::Ball`
 //! - `Free` → `MjJointType::Free`
+//! - `Fixed` → **no joint at all**. A body carrying no joint is rigidly
+//!   attached to its parent, which is how MuJoCo spells a weld, so a fixed
+//!   joint emits no `<joint>` element and contributes no degree of freedom.
 
 use nalgebra::{Point3, Vector3};
 
@@ -25,6 +28,36 @@ pub enum JointKind {
     Ball,
     /// 6 DOF floating body (unconstrained).
     Free,
+    /// **0 DOF — a weld.** The child is rigidly attached to the parent.
+    ///
+    /// This is how an assembly spells a weldment, a bolted bracket, or two
+    /// materials that share one rigid body: a rim and the tyre moulded onto
+    /// it are two [`super::Part`]s, because a part carries one
+    /// [`super::Material`], but one body.
+    ///
+    /// The anchor still places the child; the axis is unused. Physics emits
+    /// no joint for it, so it costs the solver nothing — unlike a revolute
+    /// pinched to a near-zero range, which remains a real degree of freedom.
+    Fixed,
+}
+
+impl JointKind {
+    /// Degrees of freedom this joint contributes.
+    #[must_use]
+    pub const fn dof(self) -> usize {
+        match self {
+            Self::Fixed => 0,
+            Self::Revolute | Self::Prismatic => 1,
+            Self::Ball => 3,
+            Self::Free => 6,
+        }
+    }
+
+    /// Whether this joint permits any motion at all.
+    #[must_use]
+    pub const fn is_weld(self) -> bool {
+        matches!(self, Self::Fixed)
+    }
 }
 
 /// Joint connecting two parts in a mechanism.
@@ -147,9 +180,15 @@ impl JointDef {
     ///
     /// # Panics
     ///
-    /// Panics if `min >= max` or either bound is non-finite.
+    /// Panics if `min >= max`, if either bound is non-finite, or if this is a
+    /// [`JointKind::Fixed`] joint — a weld has no travel to limit.
     #[must_use]
     pub fn with_range(mut self, min: f64, max: f64) -> Self {
+        assert!(
+            !self.kind.is_weld(),
+            "joint \"{}\" is Fixed and has no travel to limit",
+            self.name
+        );
         assert!(
             min.is_finite() && max.is_finite(),
             "joint range bounds must be finite"
@@ -414,6 +453,44 @@ mod tests {
             JointKind::Free,
             Point3::origin(),
             Vector3::x(),
+        );
+    }
+
+    #[test]
+    fn degrees_of_freedom_per_kind() {
+        assert_eq!(JointKind::Fixed.dof(), 0);
+        assert_eq!(JointKind::Revolute.dof(), 1);
+        assert_eq!(JointKind::Prismatic.dof(), 1);
+        assert_eq!(JointKind::Ball.dof(), 3);
+        assert_eq!(JointKind::Free.dof(), 6);
+    }
+
+    #[test]
+    fn only_fixed_is_a_weld() {
+        assert!(JointKind::Fixed.is_weld());
+        for moving in [
+            JointKind::Revolute,
+            JointKind::Prismatic,
+            JointKind::Ball,
+            JointKind::Free,
+        ] {
+            assert!(!moving.is_weld(), "{moving:?} moves");
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "has no travel to limit")]
+    fn a_weld_rejects_a_range() {
+        drop(
+            JointDef::new(
+                "weld",
+                "a",
+                "b",
+                JointKind::Fixed,
+                Point3::origin(),
+                Vector3::x(),
+            )
+            .with_range(-0.1, 0.1),
         );
     }
 }

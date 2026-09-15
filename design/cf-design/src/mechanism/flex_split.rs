@@ -11,6 +11,9 @@
 //! - **Revolute/Ball**: `k = E × I / L` (rotational stiffness, N·mm/rad)
 //! - **Prismatic**: `k = E × A / L` (translational stiffness, N/mm)
 //! - **Free**: `k = 0` (unconstrained)
+//! - **Fixed**: rejected by [`FlexZone::new`](super::FlexZone::new) — a
+//!   flexure that does not flex is a weld, and a weld is a joint rather than
+//!   a zone of a part
 //!
 //! Where `E` is Young's modulus (converted from Pa to N/mm²), `I` is the second
 //! moment of area about the flex axis, `A` is the cross-section area, and `L` is
@@ -319,6 +322,9 @@ fn compute_stiffness(
         JointKind::Revolute | JointKind::Ball => e * cs.second_moment / width,
         JointKind::Prismatic => e * cs.area / width,
         JointKind::Free => 0.0,
+        // A weld does not flex. `FlexZone::new` rejects it, so this is
+        // unreachable — and infinity is the right answer if it ever is not.
+        JointKind::Fixed => f64::INFINITY,
     };
 
     let c = DAMPING_TIME_CONSTANT * k;

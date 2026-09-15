@@ -41,22 +41,25 @@
 //!
 //! # What building this found that reading could not
 //!
-//! - ⛔ **There is no `Fixed`/weld joint.** [`JointKind`] is Revolute,
+//! - ✅ **There was no `Fixed`/weld joint.** [`JointKind`] was Revolute,
 //!   Prismatic, Ball or Free, and `with_range` *panics* when `min >= max`, so
-//!   a zero-range revolute is rejected too. A trike frame is a weldment and
-//!   every welded member here uses [`WELD_RANGE_RAD`], a range narrow enough
-//!   to be a weld and wide enough to be accepted.
-//! - ⛔ **A `Part` carries exactly one `Material`.** A wheel is a rim and a
-//!   tyre; a rigid body of two materials cannot have its mass derived, so each
-//!   material is its own part welded to the next, inflating the part count.
+//!   a zero-range revolute was rejected too. A trike frame is a weldment, so
+//!   every welded member here carried a 1e-9 radian revolute — a real degree
+//!   of freedom the solver still solved. [`JointKind::Fixed`] now exists and
+//!   this example uses it; the six welds cost the solver nothing.
+//! - ✅ **A `Part` carries exactly one `Material`**, so a rim and the tyre
+//!   moulded onto it cannot be one part. Welded, they are two parts and one
+//!   rigid body — the same fix, which is why they were one gap and not two.
 //! - ⚠ **`mass_properties` grids the solid's AABB at a uniform cell**, so cost
 //!   follows the bounding box and the thinnest feature, not the amount of
 //!   material. *Where* a part sits is free — `bounds.rs:185` shifts a
-//!   translated box without growing it — but *how many parts* it is is not,
-//!   and that is decided by the missing weld joint above. Every run prints the
-//!   comparison: the spine and cross-member cost an **order of magnitude**
-//!   more as the one weldment they physically are than as two members,
-//!   because that single box spans both and is nearly all air.
+//!   translated box without growing it — but *how many parts* it is is not.
+//!   Every run prints the comparison: the spine and cross-member cost an
+//!   **order of magnitude** more as the one part they physically are than as
+//!   two members, because that single box spans both and is nearly all air.
+//!   ⇒ With [`JointKind::Fixed`] available this is an argument *for* splitting
+//!   a weldment into members and welding them, which is what this example now
+//!   does. Before the weld existed it was a cost with no way out.
 //! - ⚠ **Nothing aggregates an assembly.** `subtree_com[0]` is the whole-model
 //!   centre of mass, but it exists only after `to_model` plus a forward
 //!   kinematics pass. [`world_origins`] below is that walk, done directly on
@@ -131,16 +134,21 @@ const REAR_RIM_OUTER_MM: f64 = 115.0;
 /// Half the rear wheel's width — rim and tyre are the same width.
 const REAR_WHEEL_HALF_WIDTH_MM: f64 = 12.5;
 
-/// A weld, expressed in the only vocabulary [`JointKind`] offers: a revolute
-/// whose range is too narrow to be motion. `with_range` rejects `0.0, 0.0`.
-const WELD_RANGE_RAD: f64 = 1e-9;
-
 /// How far a grid-integrated mass may sit from its closed form.
 ///
 /// Set just above the worst part measured (0.318%, `rim_fr`), so a coarsened
 /// cell trips it rather than passing quietly. ⚠ A changed *dimension* does not
 /// trip it — see the note on oracle 1.
 const MASS_TOLERANCE: f64 = 0.005;
+
+/// Welds in the assembly: the cross-member onto the spine, both front tyres
+/// onto their rims, the rear tyre onto its rim, the seat onto the spine, and
+/// the rider onto the seat.
+const EXPECTED_WELDS: usize = 6;
+
+/// Degrees of freedom the machine actually has: the free body, two steering
+/// pivots, three wheels spinning, and the swingarm.
+const EXPECTED_DOF: usize = 12;
 
 /// Parts the plan is expected to produce.
 ///
@@ -332,9 +340,9 @@ fn plan() -> Result<Vec<PartPlan>> {
             name: "frame_cross",
             parent: "frame_spine",
             anchor_mm: Vector3::new(-spine_x, 0.0, 0.0),
-            kind: JointKind::Revolute,
+            kind: JointKind::Fixed,
             axis: Vector3::y(),
-            range_rad: Some((-WELD_RANGE_RAD, WELD_RANGE_RAD)),
+            range_rad: None,
             material: steel.clone(),
             piece: onto_y(tube(FRAME_OD_MM, FRAME_WALL_MM, upright_y * 2.0)),
             cell_mm: 0.5,
@@ -393,9 +401,9 @@ fn plan() -> Result<Vec<PartPlan>> {
             name: "tyre_fl",
             parent: "rim_fl",
             anchor_mm: Vector3::zeros(),
-            kind: JointKind::Revolute,
+            kind: JointKind::Fixed,
             axis: Vector3::y(),
-            range_rad: Some((-WELD_RANGE_RAD, WELD_RANGE_RAD)),
+            range_rad: None,
             material: Material::new("16in pneumatic tyre", FRONT_TYRE_KG_M3),
             piece: onto_y(annulus(
                 FRONT_RADIUS_MM,
@@ -408,9 +416,9 @@ fn plan() -> Result<Vec<PartPlan>> {
             name: "tyre_fr",
             parent: "rim_fr",
             anchor_mm: Vector3::zeros(),
-            kind: JointKind::Revolute,
+            kind: JointKind::Fixed,
             axis: Vector3::y(),
-            range_rad: Some((-WELD_RANGE_RAD, WELD_RANGE_RAD)),
+            range_rad: None,
             material: Material::new("16in pneumatic tyre", FRONT_TYRE_KG_M3),
             piece: onto_y(annulus(
                 FRONT_RADIUS_MM,
@@ -454,9 +462,9 @@ fn plan() -> Result<Vec<PartPlan>> {
             name: "tyre_r",
             parent: "rim_r",
             anchor_mm: Vector3::zeros(),
-            kind: JointKind::Revolute,
+            kind: JointKind::Fixed,
             axis: Vector3::y(),
-            range_rad: Some((-WELD_RANGE_RAD, WELD_RANGE_RAD)),
+            range_rad: None,
             material: Material::new("95A polyurethane", PU_95A_KG_M3),
             piece: onto_y(annulus(
                 REAR_RADIUS_MM,
@@ -469,9 +477,9 @@ fn plan() -> Result<Vec<PartPlan>> {
             name: "seat_pan",
             parent: "frame_spine",
             anchor_mm: Vector3::new(seat_pan_x - spine_x, 0.0, seat_pan_z - FRAME_Z_MM),
-            kind: JointKind::Revolute,
+            kind: JointKind::Fixed,
             axis: Vector3::y(),
-            range_rad: Some((-WELD_RANGE_RAD, WELD_RANGE_RAD)),
+            range_rad: None,
             material: aluminium,
             piece: slab(seat_pan_half),
             cell_mm: 0.5,
@@ -480,9 +488,9 @@ fn plan() -> Result<Vec<PartPlan>> {
             name: "rider",
             parent: "seat_pan",
             anchor_mm: Vector3::new(0.0, 0.0, rider_radius),
-            kind: JointKind::Revolute,
+            kind: JointKind::Fixed,
             axis: Vector3::y(),
-            range_rad: Some((-WELD_RANGE_RAD, WELD_RANGE_RAD)),
+            range_rad: None,
             material: Material::new("rider", RIDER_KG_M3),
             piece: onto_x(capsule(rider_radius, rider_half_length)),
             cell_mm: 4.0,
@@ -670,7 +678,29 @@ fn main() -> Result<()> {
         );
     }
 
-    println!("reverse trike — {} parts\n", mechanism.parts().len());
+    // ── Oracle 0: the articulation is what it is meant to be ────────
+    //
+    // Welds are free: `JointKind::Fixed` emits no joint and no coordinate, so
+    // the six here cost the solver nothing. They were 1e-9 rad revolutes
+    // before cf-design grew a weld, and those were six real degrees of
+    // freedom pretending to be none.
+    let welds = mechanism
+        .joints()
+        .iter()
+        .filter(|j| j.kind().is_weld())
+        .count();
+    let dof: usize = mechanism.joints().iter().map(|j| j.kind().dof()).sum();
+    println!(
+        "reverse trike — {} parts, {welds} welds, {dof} dof",
+        mechanism.parts().len()
+    );
+    if welds != EXPECTED_WELDS {
+        bail!("{welds} welds, expected {EXPECTED_WELDS}");
+    }
+    if dof != EXPECTED_DOF {
+        bail!("{dof} degrees of freedom, expected {EXPECTED_DOF}");
+    }
+    println!();
     println!(
         "{:<12} {:>10} {:>12} {:>9}   {:>8} {:>8} {:>8} {:>7} {:>9}",
         "part", "grid kg", "closed kg", "rel err", "com x", "com y", "com z", "cell", "cells"

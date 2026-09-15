@@ -85,8 +85,10 @@ impl FlexZone {
     ///
     /// # Panics
     ///
-    /// Panics if `width` is not positive/finite, `name` is empty, or `axis`
-    /// is zero/non-finite.
+    /// Panics if `width` is not positive/finite, `name` is empty, `axis`
+    /// is zero/non-finite, or `kind` is [`JointKind::Fixed`] — a flexure that
+    /// does not flex is a weld, and a weld is a joint rather than a zone of a
+    /// part.
     #[must_use]
     pub fn new(
         name: impl Into<String>,
@@ -97,6 +99,11 @@ impl FlexZone {
     ) -> Self {
         let name = name.into();
         assert!(!name.is_empty(), "flex zone name must not be empty");
+        assert!(
+            !kind.is_weld(),
+            "flex zone \"{name}\" cannot be Fixed: a flexure that does not flex \
+             is a weld, and a weld is a joint, not a zone of a part"
+        );
         assert!(
             width > 0.0 && width.is_finite(),
             "flex zone width must be positive and finite, got {width}"
@@ -410,5 +417,17 @@ mod tests {
             JointKind::Revolute,
             Vector3::zeros(),
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot be Fixed")]
+    fn a_flex_zone_cannot_be_a_weld() {
+        drop(FlexZone::new(
+            "hinge",
+            Plane::new(Vector3::z(), 0.0),
+            2.0,
+            JointKind::Fixed,
+            Vector3::x(),
+        ));
     }
 }

@@ -33,7 +33,7 @@
 //! Validation runs automatically in [`MechanismBuilder::build`], or explicitly
 //! via [`MechanismBuilder::validate`].
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use super::actuator::ActuatorDef;
@@ -59,6 +59,20 @@ pub enum MechanismError {
     DuplicateTendon(String),
     /// Two actuators share the same name.
     DuplicateActuator(String),
+    /// A part is welded and articulated at the same time.
+    ///
+    /// A [`JointKind::Fixed`](super::JointKind::Fixed) joint says the child cannot
+    /// move relative to its parent; any other joint on the same child says it
+    /// can. The two cannot both hold, and physics would silently keep the
+    /// articulation and discard the weld, so this is refused instead.
+    PartIsWeldedAndArticulated {
+        /// The child part carrying both.
+        part: String,
+        /// The weld.
+        weld: String,
+        /// The joint that contradicts it.
+        other: String,
+    },
     /// A joint references a part that does not exist.
     JointRefersToUnknownPart {
         /// Joint name.
@@ -105,6 +119,11 @@ impl fmt::Display for MechanismError {
             Self::DuplicateJoint(name) => write!(f, "duplicate joint name: \"{name}\""),
             Self::DuplicateTendon(name) => write!(f, "duplicate tendon name: \"{name}\""),
             Self::DuplicateActuator(name) => write!(f, "duplicate actuator name: \"{name}\""),
+            Self::PartIsWeldedAndArticulated { part, weld, other } => write!(
+                f,
+                "part \"{part}\" is welded by \"{weld}\" and articulated by \"{other}\": \
+                 a weld permits no relative motion, so the two contradict"
+            ),
             Self::JointRefersToUnknownPart { joint, part } => {
                 write!(f, "joint \"{joint}\" references unknown part \"{part}\"")
             }
@@ -250,6 +269,24 @@ impl MechanismBuilder {
                 errors.push(MechanismError::ActuatorRefersToUnknownTendon {
                     actuator: actuator.name().to_owned(),
                     tendon: actuator.tendon().to_owned(),
+                });
+            }
+        }
+
+        // ── A weld forbids any other joint on the same child ────────
+        // `to_model` emits nothing for a weld and keeps the articulation, so
+        // an unnoticed contradiction silently drops the constraint the author
+        // wrote. Refuse rather than pick one.
+        let mut weld_of: HashMap<&str, &str> = HashMap::new();
+        for joint in self.joints.iter().filter(|j| j.kind().is_weld()) {
+            weld_of.insert(joint.child(), joint.name());
+        }
+        for joint in self.joints.iter().filter(|j| !j.kind().is_weld()) {
+            if let Some(weld) = weld_of.get(joint.child()) {
+                errors.push(MechanismError::PartIsWeldedAndArticulated {
+                    part: joint.child().to_owned(),
+                    weld: (*weld).to_owned(),
+                    other: joint.name().to_owned(),
                 });
             }
         }
