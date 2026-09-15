@@ -101,6 +101,9 @@ const STL_TOLERANCE_MM: f64 = 4.0;
 /// halving again.
 const MIN_STL_TOLERANCE_MM: f64 = 0.25;
 
+/// How far a linkage may let the two points it holds drift apart.
+const MAX_LINKAGE_GAP_MM: f64 = 1.0;
+
 /// How far a part's geometry may sit from its own solid in the physics model.
 /// Measured at 0.00 mm once every part declares its joint origin.
 const MAX_GEOM_DISPLACEMENT_MM: f64 = 0.5;
@@ -740,6 +743,18 @@ fn main() -> Result<()> {
             }
         }
 
+        // ⚠ The mechanism's linkages must reach the model. Counting them on
+        // the mechanism proves only that they were declared; if `to_model`
+        // dropped them, `nv` would be unchanged — a linkage costs no degree of
+        // freedom — and nothing else here would object.
+        if model.neq != EXPECTED_LINKAGES {
+            bail!(
+                "the physics model holds {} equality constraints, and the \
+                 mechanism declares {EXPECTED_LINKAGES}",
+                model.neq
+            );
+        }
+
         let mut data = model.make_data();
         data.forward(&model)
             .map_err(|e| anyhow::anyhow!("forward kinematics failed: {e:?}"))?;
@@ -761,6 +776,26 @@ fn main() -> Result<()> {
                 worst = (name.clone(), drift);
             }
         }
+        // The linkage's own claim: the two points it holds stay together while
+        // the machine moves. cf-design proves this on a four-bar; this proves
+        // it on the vehicle, where the rod ties two steering arms that the
+        // joint tree leaves free of each other.
+        let mut held_apart: f64 = 0.0;
+        for eq in 0..model.neq {
+            let (a, b) = (model.eq_obj1id[eq], model.eq_obj2id[eq]);
+            let d = model.eq_data[eq];
+            let pa = data.xpos[a] + data.xmat[a] * Vector3::new(d[0], d[1], d[2]);
+            let pb = data.xpos[b] + data.xmat[b] * Vector3::new(d[3], d[4], d[5]);
+            held_apart = held_apart.max((pa - pb).norm());
+        }
+        if held_apart > MAX_LINKAGE_GAP_MM {
+            bail!(
+                "a linkage let its ends drift {held_apart:.3} mm apart over \
+                 {SIM_STEPS} steps — it is supposed to hold them together"
+            );
+        }
+        println!("  linkage ends held to {:.1} um", held_apart * 1000.0);
+
         println!(
             "simulated {SIM_STEPS} steps: {} welded bodies, worst drift {:.1} um ({})",
             rigid.len(),

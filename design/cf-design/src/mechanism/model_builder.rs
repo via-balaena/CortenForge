@@ -95,13 +95,28 @@ impl Mechanism {
 
 // ── Model construction ──────────────────────────────────────────────────
 
-/// Constraint softness for a linkage, matching MJCF's defaults
-/// (`sim_mjcf::builder::DEFAULT_SOLREF`). Duplicated rather than imported:
-/// cf-design does not depend on the MJCF crate, and a linkage built here
-/// should behave like the same constraint parsed from a file.
+/// Constraint time constant for a linkage — MJCF's default, and fine.
 const LINKAGE_SOLREF: [f64; 2] = [0.02, 1.0];
-/// Constraint impedance for a linkage, matching `DEFAULT_SOLIMP`.
-const LINKAGE_SOLIMP: [f64; 5] = [0.9, 0.95, 0.001, 0.5, 2.0];
+
+/// Constraint impedance for a linkage: **stiff**, unlike MJCF's default.
+///
+/// ⚠ This started as `[0.9, 0.95, …]`, MJCF's default, on the reasoning that a
+/// linkage built here should behave like the same constraint parsed from a
+/// file. That reasoning was wrong. **MJCF's default is tuned for contacts**,
+/// which are meant to give a little; a linkage is structure, and a tie rod
+/// that stretches is not a tie rod.
+///
+/// Measured on the trike's steering, a 0.49 kg rod on a 740 mm lever:
+///
+/// | impedance | ends drift apart |
+/// |---|---|
+/// | `0.9, 0.95` (MJCF) | 32.9 mm |
+/// | `0.99, 0.999` | 5.8 mm |
+/// | `0.9999, 0.99999` | 0.6 mm |
+///
+/// The softness is invisible at small scale — a four-bar of gram-weight cubes
+/// holds to 46 µm on the loose setting — so it takes a real machine to see.
+const LINKAGE_SOLIMP: [f64; 5] = [0.9999, 0.99999, 0.001, 0.5, 2.0];
 
 /// World position of a body at the reference configuration.
 ///
