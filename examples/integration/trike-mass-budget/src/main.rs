@@ -144,6 +144,17 @@ const REAR_WHEEL_CLEARANCE_MM: f64 = 20.0;
 /// without that term gave 4.1 mm of real air where 20 was asked for.
 const TAIL_SETBACK_MM: f64 = REAR_RADIUS_MM + REAR_WHEEL_CLEARANCE_MM + FRAME_R_MM;
 
+/// The part everything else hangs from.
+const ROOT_PART: &str = "frame_spine";
+/// Voxel resolution for the simulation check. Coarse on purpose: this asks
+/// whether the assembly is simulable, not what it collides with, and 8 mm cost
+/// four times as long for the same answer.
+const SIM_RESOLUTION_MM: f64 = 20.0;
+/// Steps to take. Long enough for an unstable model to diverge.
+const SIM_STEPS: usize = 50;
+/// How far a welded body may move relative to the frame. Measured at 48 um.
+const MAX_WELD_DRIFT_MM: f64 = 1.0;
+
 /// Full steering lock, in degrees — the range `upright_*` is given in radians.
 const STEER_LOCK_DEG: f64 = 34.0;
 /// Mesh tolerance for the steering-clash probe.
@@ -1520,6 +1531,111 @@ fn main() -> Result<()> {
             }
         }
         println!("steering sweeps +/-{STEER_LOCK_DEG:.0} deg clear of the frame");
+    }
+
+    // ── Oracle 1e: the assembly simulates, and the welds hold ───────
+    //
+    // Everything above reads geometry. This builds the physics model and steps
+    // it, which is the only check here that the vehicle is a vehicle and not
+    // just a set of shapes: `to_model` can fail on an unreachable part or one
+    // with no finite bounds, and a model that is built can still go unstable.
+    //
+    // It also cross-checks the degree-of-freedom count against a second,
+    // independent path: this file sums `JointKind::dof()`, and the physics
+    // layer counts `nv` for itself.
+    {
+        let model = mechanism
+            .to_model(SIM_RESOLUTION_MM, SIM_RESOLUTION_MM)
+            .map_err(|e| anyhow::anyhow!("to_model failed: {e:?}"))?;
+        if model.nv != EXPECTED_DOF {
+            bail!(
+                "the physics model has {} degrees of freedom, this file counts \
+                 {EXPECTED_DOF}",
+                model.nv
+            );
+        }
+
+        // A part reached only through welds cannot move relative to the root.
+        // Anything past a hinge may, and does: in free fall the wheels and
+        // uprights turn under their own weight, which is why measuring every
+        // body indiscriminately showed 10.8 mm of "drift" that was not drift.
+        let mut parent_of: HashMap<String, (String, bool)> = HashMap::new();
+        for j in mechanism.joints() {
+            parent_of.insert(
+                j.child().to_owned(),
+                (j.parent().to_owned(), j.kind().is_weld()),
+            );
+        }
+        let welded_to_root = |start: &str| {
+            let mut n = start.to_owned();
+            for _ in 0..64 {
+                if n == ROOT_PART {
+                    return true;
+                }
+                match parent_of.get(&n) {
+                    None => return true,
+                    Some((p, true)) => n = p.clone(),
+                    Some((_, false)) => return false,
+                }
+            }
+            false
+        };
+        let body = |name: &str| {
+            model
+                .body_name
+                .iter()
+                .position(|b| b.as_deref() == Some(name))
+        };
+        let root = body(ROOT_PART).ok_or_else(|| anyhow::anyhow!("no {ROOT_PART} body"))?;
+        let rigid: Vec<(String, usize)> = mechanism
+            .parts()
+            .iter()
+            .map(Part::name)
+            .filter(|n| welded_to_root(n))
+            .filter_map(|n| body(n).map(|i| (n.to_owned(), i)))
+            .collect();
+        if rigid.len() < 2 {
+            bail!(
+                "only {} bodies are welded to the root — nothing to check",
+                rigid.len()
+            );
+        }
+
+        let mut data = model.make_data();
+        data.forward(&model)
+            .map_err(|e| anyhow::anyhow!("forward kinematics failed: {e:?}"))?;
+        let start: Vec<Vector3<f64>> = rigid
+            .iter()
+            .map(|(_, b)| data.xpos[*b] - data.xpos[root])
+            .collect();
+        for step in 0..SIM_STEPS {
+            data.step(&model)
+                .map_err(|e| anyhow::anyhow!("step {step} failed: {e:?}"))?;
+        }
+        if !data.xpos.iter().all(|p| p.iter().all(|v| v.is_finite())) {
+            bail!("a body position went non-finite within {SIM_STEPS} steps");
+        }
+        let mut worst = (String::new(), 0.0_f64);
+        for (i, (name, b)) in rigid.iter().enumerate() {
+            let drift = ((data.xpos[*b] - data.xpos[root]) - start[i]).norm();
+            if drift > worst.1 {
+                worst = (name.clone(), drift);
+            }
+        }
+        println!(
+            "simulated {SIM_STEPS} steps: {} welded bodies, worst drift {:.1} um ({})",
+            rigid.len(),
+            worst.1 * 1000.0,
+            worst.0
+        );
+        if worst.1 > MAX_WELD_DRIFT_MM {
+            bail!(
+                "{} moved {:.3} mm relative to the frame over {SIM_STEPS} steps — \
+                 it is welded to it",
+                worst.0,
+                worst.1
+            );
+        }
     }
 
     // ── Oracle 2: the geometry the anchors actually describe ────────
