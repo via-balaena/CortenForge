@@ -130,9 +130,19 @@ const FRAME_WALL_MM: f64 = 2.0;
 /// Half the frame tube's outside diameter — where members butt onto it.
 const FRAME_R_MM: f64 = FRAME_OD_MM / 2.0;
 
+/// Air between the spine's tail and the rear tyre.
+const REAR_WHEEL_CLEARANCE_MM: f64 = 20.0;
+
 /// The spine stops this far short of the rear contact patch; the swingarm
 /// carries the rest.
-const TAIL_SETBACK_MM: f64 = 100.0;
+///
+/// ⚠ Derived. At a typed 100 mm the spine ran to x = 1150 while the rear tyre
+/// reaches forward to x = 1110 — the wheel was 40 mm inside the frame.
+///
+/// ⚠ The frame radius is in here because [`Solid::pipe`] **domes its ends**: a
+/// member reaches a full radius past its endpoint node. Setting the clearance
+/// without that term gave 4.1 mm of real air where 20 was asked for.
+const TAIL_SETBACK_MM: f64 = REAR_RADIUS_MM + REAR_WHEEL_CLEARANCE_MM + FRAME_R_MM;
 
 /// Mesh tolerance for the weld-contact probe.
 const WELD_PROBE_MM: f64 = 2.0;
@@ -1412,6 +1422,37 @@ fn main() -> Result<()> {
         }
     }
 
+    // ── Oracle 1c: the rear wheel does not live inside the frame ────
+    //
+    // Measured off the built parts rather than off the constants, so it still
+    // means something if either moves. ⚠ Deliberately arithmetic on world
+    // bounding boxes: `Solid::evaluate` on a CSG solid returns a bound, not a
+    // distance — it reported this very clash as 0.8 mm deep when it is 40 —
+    // so its sign can be trusted and its magnitude cannot.
+    {
+        let bound = |name: &str| -> Result<Aabb> {
+            let d = derived
+                .iter()
+                .find(|d| d.name == name)
+                .ok_or_else(|| anyhow::anyhow!("no part {name}"))?;
+            Ok(d.world_bounds)
+        };
+        let spine_tail = bound("frame_spine")?.max.x;
+        let tyre_front = bound("tyre_r")?.min.x;
+        let clearance = tyre_front - spine_tail;
+        println!(
+            "rear wheel to spine tail: {clearance:+.1} mm (spine ends {spine_tail:.0}, \
+             tyre starts {tyre_front:.0})"
+        );
+        if clearance <= 0.0 {
+            bail!(
+                "the rear tyre reaches x={tyre_front:.0} and the spine runs to \
+                 x={spine_tail:.0} — the wheel is {:.0} mm inside the frame",
+                -clearance
+            );
+        }
+    }
+
     // ── Oracle 2: the geometry the anchors actually describe ────────
     let axle = |name: &str| -> Result<Vector3<f64>> {
         origins
@@ -1493,13 +1534,13 @@ fn main() -> Result<()> {
     // regression gate, not a design target: change a tube, change a rider,
     // and they are supposed to fire so the new numbers get read.
     for (label, got, want) in [
-        ("total mass (kg)", spec.total_mass_kg(), 104.417_406_324),
-        ("cg x (m)", spec.cg_x_m(), 0.447_628_327),
-        ("cg z (m)", spec.cg_z_m(), 0.303_799_419),
+        ("total mass (kg)", spec.total_mass_kg(), 104.306_102_433),
+        ("cg x (m)", spec.cg_x_m(), 0.446_903_414),
+        ("cg z (m)", spec.cg_z_m(), 0.303_963_540),
         (
             "rollover threshold (g)",
             rollover_threshold_g(&spec),
-            0.950_804_329,
+            0.951_149_506,
         ),
     ] {
         if (got - want).abs() > want.abs() * PIN_TOLERANCE {
