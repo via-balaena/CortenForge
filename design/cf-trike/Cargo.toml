@@ -1,0 +1,18 @@
+[package]
+name = "cf-trike"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.cortenforge]
+tier = "L0"
+
+[dependencies]
+# `Mechanism`, `Part`, `JointDef`, `Solid` — the assembly this crate builds.
+cf-design = { workspace = true }
+nalgebra = { workspace = true }
+# `Result` for the one fallible step, composing disjoint pieces.
+anyhow = { workspace = true }
+
+[lints]
+workspace = true

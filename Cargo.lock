@@ -2407,6 +2407,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cf-trike"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "cf-design",
+ "nalgebra 0.34.2",
+]
+
+[[package]]
 name = "cf-vehicle"
 version = "1.0.0"
 dependencies = [
@@ -5794,6 +5803,7 @@ version = "1.0.0"
 dependencies = [
  "anyhow",
  "cf-design",
+ "cf-trike",
  "cf-vehicle",
  "mesh-io",
  "nalgebra 0.34.2",
