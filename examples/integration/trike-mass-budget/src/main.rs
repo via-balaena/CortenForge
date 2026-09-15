@@ -142,7 +142,23 @@ const SEAT_TUBE_WALL_MM: f64 = 1.5;
 const SEAT_WIDTH_MM: f64 = 300.0;
 /// Hip point — where the pan meets the back, and where the seat's load goes
 /// into the spine. Set by leg length from the bottom bracket, not by taste.
-const HIP_X_MM: f64 = 674.0;
+///
+/// ★ This is the layout's dominant lever. On a tadpole, weight aft is weight
+/// off the paired axle, and the rider is half the machine. Measured over the
+/// hip positions this geometry allows, holding everything else fixed:
+///
+/// | hip x | bottom bracket | share | threshold |
+/// |---|---|---|---|
+/// | 674 | -250 | 0.523 | 0.700 g |
+/// | 560 | -364 | 0.601 | 0.805 g |
+/// | **500** | **-424** | **0.642** | **0.860 g** |
+/// | 450 | -474 | 0.677 | 0.906 g |
+///
+/// 500 is the chosen point. It takes the biggest step available for the price
+/// of boom tube, and it puts the pedals 424 mm ahead of the front contact
+/// patch — feet ahead of the front axle, which is what a tadpole recumbent
+/// looks like, not a compromise.
+const HIP_X_MM: f64 = 500.0;
 /// Hip height above the ground.
 const HIP_Z_MM: f64 = 210.0;
 /// Pan length forward of the hip.
@@ -1399,12 +1415,12 @@ fn main() -> Result<()> {
     // and they are supposed to fire so the new numbers get read.
     for (label, got, want) in [
         ("total mass (kg)", spec.total_mass_kg(), 104.351_864_886),
-        ("cg x (m)", spec.cg_x_m(), 0.596_749_662),
+        ("cg x (m)", spec.cg_x_m(), 0.447_241_698),
         ("cg z (m)", spec.cg_z_m(), 0.336_096_728),
         (
             "rollover threshold (g)",
             rollover_threshold_g(&spec),
-            0.699_709_643,
+            0.859_850_645,
         ),
     ] {
         if (got - want).abs() > want.abs() * PIN_TOLERANCE {
