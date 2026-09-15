@@ -858,6 +858,20 @@ fn main() -> Result<()> {
         .iter()
         .max_by(|a, b| a.grid_kg.total_cmp(&b.grid_kg))
     {
+        // ⚠ cf-vehicle asserts rather than returns: `rollover_threshold_g`,
+        // `effective_cg_height_m` and `paired_axle_share` all call
+        // `assert_well_formed`, which PANICS on a mass below the ground plane.
+        // Probing further down than the item's own height would abort with a
+        // panic trace instead of an explanation — measured at a 400 mm probe,
+        // exit 101. Refuse first, in this crate's own idiom.
+        if heaviest.world_com_mm.z < CG_PROBE_MM {
+            bail!(
+                "cannot probe {CG_PROBE_MM} mm below {}: it sits at {:.1} mm and \
+                 cf-vehicle panics on a mass under the ground plane",
+                heaviest.name,
+                heaviest.world_com_mm.z
+            );
+        }
         let probe = |dz_mm: f64| {
             let shifted: Vec<MassItem> = derived
                 .iter()
