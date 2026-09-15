@@ -777,6 +777,142 @@ mod tests {
         assert!(xml.contains("<freejoint"), "the base lost its free joint");
     }
 
+    /// The file's body tree is the model's body tree.
+    ///
+    /// Both paths turn one mechanism into a set of placed bodies, and this
+    /// branch found them disagreeing twice: geometry offset by up to 188 mm,
+    /// then an export with no bodies at all. Body *count* would have caught
+    /// only the second. This walks both trees and compares parentage and
+    /// world position, which is the claim a consumer of the file relies on.
+    ///
+    /// The fixture has depth and siblings — a two-body one cannot tell a
+    /// nesting bug from a flat list.
+    #[test]
+    fn the_body_tree_matches_the_model() {
+        let m = Mechanism::builder("tree")
+            .part(sphere_part("base"))
+            .part(sphere_part("arm"))
+            .part(sphere_part("hand"))
+            .part(sphere_part("bracket"))
+            .joint(JointDef::new(
+                "to_world",
+                "world",
+                "base",
+                JointKind::Free,
+                Point3::new(0.0, 0.0, 7.0),
+                Vector3::z(),
+            ))
+            .joint(JointDef::new(
+                "shoulder",
+                "base",
+                "arm",
+                JointKind::Revolute,
+                Point3::new(3.0, -1.0, 0.0),
+                Vector3::y(),
+            ))
+            .joint(JointDef::new(
+                "wrist",
+                "arm",
+                "hand",
+                JointKind::Revolute,
+                Point3::new(0.0, 4.0, -2.0),
+                Vector3::z(),
+            ))
+            .joint(JointDef::new(
+                "weld",
+                "base",
+                "bracket",
+                JointKind::Fixed,
+                Point3::new(-5.0, 0.0, 1.0),
+                Vector3::z(),
+            ))
+            .build();
+
+        let model = m.to_model(2.0, 2.0).unwrap();
+        let want = model_tree(&model);
+        let got = file_tree(&m.to_mjcf(RES));
+
+        assert_eq!(
+            got.len(),
+            want.len(),
+            "the file and the model hold different bodies"
+        );
+        for (name, (at, parent)) in &got {
+            let entry = want.get(name);
+            assert!(entry.is_some(), "{name} is in the file but not the model");
+            let (wanted_at, wanted_parent) = entry.unwrap();
+            assert_eq!(
+                parent, wanted_parent,
+                "{name} hangs off {parent} in the file and {wanted_parent} in the model"
+            );
+            for k in 0..3 {
+                assert!(
+                    (at[k] - wanted_at[k]).abs() < 1e-9,
+                    "{name} is at {at:?} in the file and {wanted_at:?} in the model"
+                );
+            }
+        }
+    }
+
+    type Placed = std::collections::HashMap<String, ([f64; 3], String)>;
+
+    /// World position and parent name of every body the model holds.
+    fn model_tree(model: &sim_core::Model) -> Placed {
+        let mut out = Placed::new();
+        for b in 1..model.nbody {
+            let (mut at, mut i) = (Vector3::zeros(), b);
+            while i != 0 {
+                at += model.body_pos[i];
+                i = model.body_parent[i];
+            }
+            let parent = model.body_parent[b];
+            let parent_name = if parent == 0 {
+                "world".to_owned()
+            } else {
+                model.body_name[parent].clone().unwrap_or_default()
+            };
+            out.insert(
+                model.body_name[b].clone().unwrap_or_default(),
+                ([at.x, at.y, at.z], parent_name),
+            );
+        }
+        out
+    }
+
+    /// The same, read back out of the XML by walking its nesting.
+    fn file_tree(xml: &str) -> Placed {
+        let mut out = Placed::new();
+        let mut stack: Vec<(String, [f64; 3])> = vec![("world".to_owned(), [0.0; 3])];
+        for line in xml.lines() {
+            let s = line.trim();
+            if s == "</body>" {
+                stack.pop();
+                continue;
+            }
+            let Some(rest) = s.strip_prefix("<body name=\"") else {
+                continue;
+            };
+            let name = rest[..rest.find('"').unwrap()].to_owned();
+            let pos = s.find("pos=\"").map_or([0.0; 3], |i| {
+                let r = &s[i + 5..];
+                let v: Vec<f64> = r[..r.find('"').unwrap()]
+                    .split_whitespace()
+                    .map(|x| x.parse().unwrap())
+                    .collect();
+                [v[0], v[1], v[2]]
+            });
+            let (parent_name, parent_at) = stack.last().unwrap().clone();
+            let at = [
+                parent_at[0] + pos[0],
+                parent_at[1] + pos[1],
+                parent_at[2] + pos[2],
+            ];
+            out.insert(name.clone(), (at, parent_name));
+            stack.push((name, at));
+        }
+        out
+    }
+
     /// An equality names bodies the same file defines.
     ///
     /// A constraint between names that are not in the document is not a soft
