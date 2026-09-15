@@ -54,12 +54,14 @@
 //!   follows the bounding box and the thinnest feature, not the amount of
 //!   material. *Where* a part sits is free — `bounds.rs:185` shifts a
 //!   translated box without growing it — but *how many parts* it is is not.
-//!   Every run prints the comparison: the spine and cross-member cost an
-//!   **order of magnitude** more as the one part they physically are than as
-//!   two members, because that single box spans both and is nearly all air.
-//!   ⇒ With [`JointKind::Fixed`] available this is an argument *for* splitting
-//!   a weldment into members and welding them, which is what this example now
-//!   does. Before the weld existed it was a cost with no way out.
+//!   Every run prints the comparison, and the size of it depends on how the
+//!   members lie. Two axis-aligned members — a spine and a cross — cost 15x
+//!   less split than merged. Add the two **diagonals** and the advantage falls
+//!   to 2x: a diagonal tube's bounding box is the box of the rotated tube, so
+//!   each diagonal already spans most of the frame and splitting buys much
+//!   less. ⇒ Splitting a weldment and welding it is still the cheaper option,
+//!   but "an order of magnitude" was only true while every member ran along an
+//!   axis.
 //! - ⚠ **Nothing aggregates an assembly.** `subtree_com[0]` is the whole-model
 //!   centre of mass, but it exists only after `to_model` plus a forward
 //!   kinematics pass. [`world_origins`] below is that walk, done directly on
@@ -121,6 +123,10 @@ const FRAME_R_MM: f64 = FRAME_OD_MM / 2.0;
 /// carries the rest.
 const TAIL_SETBACK_MM: f64 = 100.0;
 
+/// Where the two front diagonals meet the spine. Further aft makes a shallower
+/// triangle: stiffer in bending, heavier, and it eats the space the seat wants.
+const DIAGONAL_APEX_X_MM: f64 = 450.0;
+
 /// Upright (hub carrier) tube outside diameter.
 const UPRIGHT_OD_MM: f64 = 25.4;
 /// Upright tube wall — thicker than the frame's, it takes the steering loads.
@@ -143,10 +149,10 @@ const REAR_WHEEL_HALF_WIDTH_MM: f64 = 12.5;
 /// trip it — see the note on oracle 1.
 const MASS_TOLERANCE: f64 = 0.005;
 
-/// Welds in the assembly: the cross-member onto the spine, both front tyres
-/// onto their rims, the rear tyre onto its rim, the seat onto the spine, and
-/// the rider onto the seat.
-const EXPECTED_WELDS: usize = 6;
+/// Welds in the assembly: three frame members onto the spine, both front
+/// tyres onto their rims, the rear tyre onto its rim, the seat onto the
+/// spine, and the rider onto the seat.
+const EXPECTED_WELDS: usize = 8;
 
 /// Degrees of freedom the machine actually has: the free body, two steering
 /// pivots, three wheels spinning, and the swingarm.
@@ -158,10 +164,11 @@ const EXPECTED_DOF: usize = 12;
 /// an empty one passes without doing anything. An empty `Mechanism` builds
 /// happily — `validate` skips the orphan check below two parts — so nothing
 /// upstream would object.
-const EXPECTED_PARTS: usize = 13;
+const EXPECTED_PARTS: usize = 15;
 
-/// Number of members welded into the frame, whose grid cost is compared.
-const WELDED_FRAME_MEMBERS: usize = 2;
+/// Members welded into the frame, whose grid cost is compared: spine,
+/// cross-member and the two diagonals.
+const WELDED_FRAME_MEMBERS: usize = 4;
 
 /// How far to move the heaviest item's centre of mass when probing how much
 /// of the answer is a choice rather than a measurement.
@@ -200,6 +207,33 @@ const PIN_TOLERANCE: f64 = 1e-6;
 struct Piece {
     solid: Solid,
     volume_mm3: f64,
+}
+
+/// A tube running between two world points, built in its own frame.
+///
+/// Returns the piece and the world position of its centre, which is what the
+/// joint anchor needs. [`Solid::pipe`] sweeps a polyline with a spherical
+/// cross-section, so corners mitre themselves and the ends are domed — which
+/// is what a fillet weld looks like where members meet.
+///
+/// ⚠ The ends are capped: an outer capsule minus an inner one is a closed
+/// shell, not an open-ended tube. For a weldment that is the more honest
+/// shape, and the closed form below accounts for it.
+fn tube_between(a: Point3<f64>, b: Point3<f64>, od: f64, wall: f64) -> (Piece, Vector3<f64>) {
+    let mid = nalgebra::center(&a, &b);
+    let (la, lb) = (a - mid, b - mid);
+    let r_outer = od / 2.0;
+    let r_inner = r_outer - wall;
+    let length = (b - a).norm();
+    let path = |r: f64| Solid::pipe(vec![Point3::from(la), Point3::from(lb)], r);
+    let shell = |r: f64| PI * r * r * length + 4.0 / 3.0 * PI * r * r * r;
+    (
+        Piece {
+            solid: path(r_outer).subtract(path(r_inner)),
+            volume_mm3: shell(r_outer) - shell(r_inner),
+        },
+        mid.coords,
+    )
 }
 
 /// Z-aligned tube, centred at the origin.
@@ -319,13 +353,26 @@ fn plan() -> Result<Vec<PartPlan>> {
     let steel = Material::new("mild steel", STEEL_KG_M3);
     let aluminium = Material::new("aluminium 6061", ALUMINIUM_KG_M3);
 
-    // Spine: butts onto the cross-member's outside and runs to the tail.
-    let spine_length = WHEELBASE_MM - FRAME_R_MM - TAIL_SETBACK_MM;
-    let spine_x = FRAME_R_MM + spine_length / 2.0;
-
+    // ── The frame, as nodes and members ─────────────────────────────
+    //
     // Uprights sit inboard of the wheels by half a wheel's width plus the
     // upright's own radius, so the contact patches land on the nominal track.
     let upright_y = TRACK_MM / 2.0 - (FRONT_WHEEL_HALF_WIDTH_MM + UPRIGHT_OD_MM / 2.0);
+
+    // Nose, the two kingpin bases, the apex the diagonals meet, and the tail.
+    let node = |x: f64, y: f64| Point3::new(x, y, FRAME_Z_MM);
+    let front_centre = node(0.0, 0.0);
+    let kingpin_l = node(0.0, upright_y);
+    let kingpin_r = node(0.0, -upright_y);
+    let apex = node(DIAGONAL_APEX_X_MM, 0.0);
+    let tail = node(WHEELBASE_MM - TAIL_SETBACK_MM, 0.0);
+
+    let member = |a, b| tube_between(a, b, FRAME_OD_MM, FRAME_WALL_MM);
+    let (spine, spine_at) = member(front_centre, tail);
+    let (cross, cross_at) = member(kingpin_l, kingpin_r);
+    let (brace_left, brace_left_at) = member(kingpin_l, apex);
+    let (brace_right, brace_right_at) = member(kingpin_r, apex);
+    let spine_x = spine_at.x;
     let upright_length = 74.125;
     let upright_z = FRAME_Z_MM + FRAME_R_MM + upright_length / 2.0;
 
@@ -343,23 +390,49 @@ fn plan() -> Result<Vec<PartPlan>> {
         PartPlan {
             name: "frame_spine",
             parent: "world",
-            anchor_mm: Vector3::new(spine_x, 0.0, FRAME_Z_MM),
+            anchor_mm: spine_at,
             kind: JointKind::Free,
             axis: Vector3::z(),
             range_rad: None,
             material: steel.clone(),
-            piece: onto_x(tube(FRAME_OD_MM, FRAME_WALL_MM, spine_length)),
+            piece: spine,
             cell_mm: 0.5,
         },
         PartPlan {
             name: "frame_cross",
             parent: "frame_spine",
-            anchor_mm: Vector3::new(-spine_x, 0.0, 0.0),
+            anchor_mm: cross_at - spine_at,
             kind: JointKind::Fixed,
             axis: Vector3::y(),
             range_rad: None,
             material: steel.clone(),
-            piece: onto_y(tube(FRAME_OD_MM, FRAME_WALL_MM, upright_y * 2.0)),
+            piece: cross,
+            cell_mm: 0.5,
+        },
+        // ★ The triangulation. Without these two the front end is a T: the
+        // kingpins hang off a cross-member whose only tie to the spine is the
+        // single joint at the nose, so a cornering load reaches the frame as
+        // bending rather than as tension and compression down a diagonal.
+        PartPlan {
+            name: "frame_diag_l",
+            parent: "frame_spine",
+            anchor_mm: brace_left_at - spine_at,
+            kind: JointKind::Fixed,
+            axis: Vector3::z(),
+            range_rad: None,
+            material: steel.clone(),
+            piece: brace_left,
+            cell_mm: 0.5,
+        },
+        PartPlan {
+            name: "frame_diag_r",
+            parent: "frame_spine",
+            anchor_mm: brace_right_at - spine_at,
+            kind: JointKind::Fixed,
+            axis: Vector3::z(),
+            range_rad: None,
+            material: steel.clone(),
+            piece: brace_right,
             cell_mm: 0.5,
         },
         PartPlan {
@@ -913,7 +986,7 @@ fn main() -> Result<()> {
     // box that spans both.
     let weld_members: Vec<&Derived> = derived
         .iter()
-        .filter(|d| d.name == "frame_spine" || d.name == "frame_cross")
+        .filter(|d| d.name.starts_with("frame_"))
         .collect();
     if weld_members.len() != WELDED_FRAME_MEMBERS {
         bail!(
@@ -1022,13 +1095,13 @@ fn main() -> Result<()> {
     // regression gate, not a design target: change a tube, change a rider,
     // and they are supposed to fire so the new numbers get read.
     for (label, got, want) in [
-        ("total mass (kg)", spec.total_mass_kg(), 89.950_362_142),
-        ("cg x (m)", spec.cg_x_m(), 0.536_293_394),
-        ("cg z (m)", spec.cg_z_m(), 0.315_023_043),
+        ("total mass (kg)", spec.total_mass_kg(), 91.939_498_612),
+        ("cg x (m)", spec.cg_x_m(), 0.529_562_905),
+        ("cg z (m)", spec.cg_z_m(), 0.311_452_724),
         (
             "rollover threshold (g)",
             rollover_threshold_g(&spec),
-            0.815_605_029,
+            0.832_734_262,
         ),
     ] {
         if (got - want).abs() > want.abs() * PIN_TOLERANCE {
