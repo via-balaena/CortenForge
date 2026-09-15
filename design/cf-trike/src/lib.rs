@@ -30,7 +30,9 @@ use std::collections::HashMap;
 use std::f64::consts::{FRAC_PI_2, PI};
 
 use anyhow::{Result, bail};
-use cf_design::{JointDef, JointKind, LinkageDef, LinkageKind, Material, Mechanism, Part, Solid};
+use cf_design::{
+    Bushing, JointDef, JointKind, LinkageDef, LinkageKind, Material, Mechanism, Part, Solid,
+};
 use nalgebra::{Point3, UnitQuaternion, Vector3};
 
 /// A built trike: the assembly, and what a consumer needs to measure it.
@@ -66,16 +68,17 @@ pub struct PartMetrics {
 /// let t = cf_trike::trike()?;
 ///
 /// // The assembly, ready for to_model, to_stl_kit or inspection.
-/// assert_eq!(t.mechanism.parts().len(), 28);
+/// assert_eq!(t.mechanism.parts().len(), 38);
 ///
-/// // Fifteen degrees of freedom in the tree — welds cost nothing, and the
-/// // tie rod's near end is a ball. The linkage at its far end takes three
-/// // back, so the machine really has twelve.
+/// // Twenty-three degrees of freedom in the tree — welds cost nothing, and
+/// // three joints are balls, worth three each. The three linkages take nine
+/// // back, so the machine really has fourteen: it steers, three wheels turn,
+/// // the swingarm swings, and each front wheel moves in bump.
 /// let dof: usize = t.mechanism.joints().iter().map(|j| j.kind().dof()).sum();
 /// let held: usize = t.mechanism.linkages().iter().map(|l| l.kind().constrained_dof()).sum();
-/// assert_eq!(dof, 15);
-/// assert_eq!(held, 3);
-/// assert_eq!(dof - held, 12);
+/// assert_eq!(dof, 23);
+/// assert_eq!(held, 9);
+/// assert_eq!(dof - held, 14);
 ///
 /// // Each part carries what it takes to weigh it and where it sits.
 /// let spine = t.metrics[cf_trike::ROOT_PART];
@@ -273,6 +276,47 @@ const DIAGONAL_APEX_X_MM: f64 = 450.0;
 const UPRIGHT_OD_MM: f64 = 25.4;
 /// Upright tube wall — thicker than the frame's, it takes the steering loads.
 const UPRIGHT_WALL_MM: f64 = 3.0;
+
+/// Inboard pickup for both wishbones, from the centreline.
+const ARM_PICKUP_Y_MM: f64 = 120.0;
+/// Fore-aft half-spread of a wishbone's two frame pickups.
+///
+/// ★ This is what makes a wishbone a wishbone rather than a link: two pickups
+/// give the arm a pivot **axis**, and the spread between them is the lever
+/// that carries braking and cornering loads into the frame.
+const ARM_PICKUP_HALF_SPREAD_MM: f64 = 70.0;
+/// Height of the lower wishbone's frame pivot — level with the lower ball,
+/// so the arm runs flat at rest.
+const LOWER_PIVOT_Z_MM: f64 = FRAME_Z_MM;
+/// Height of the upper wishbone's frame pivot, on top of the tower.
+const UPPER_PIVOT_Z_MM: f64 = 300.0;
+/// Lower ball joint, on the upright.
+const LOWER_BALL_Z_MM: f64 = FRAME_Z_MM;
+/// Upper ball joint. The gap to the lower ball is the upright's working
+/// length; with the upper arm shorter than the lower, the wheel gains
+/// negative camber in bump, which is what keeps the tyre flat in a corner.
+const UPPER_BALL_Z_MM: f64 = 290.0;
+/// Wishbone tube stock.
+const ARM_OD_MM: f64 = 22.2;
+/// Wishbone tube wall.
+const ARM_WALL_MM: f64 = 2.0;
+/// Tower stock — it carries the upper wishbone above the frame.
+const TOWER_OD_MM: f64 = 25.4;
+/// Tower wall.
+const TOWER_WALL_MM: f64 = 2.0;
+
+/// Bore radius of the bushing at every inboard wishbone pivot.
+const BUSH_BORE_R_MM: f64 = 5.0;
+/// Outer radius of the same.
+const BUSH_OUTER_R_MM: f64 = 14.0;
+/// Length of the same.
+const BUSH_LENGTH_MM: f64 = 30.0;
+/// Hardness of the polyurethane in it.
+///
+/// ⚠⚠ 95A is the top of the Shore A scale, where the hardness-to-modulus
+/// correlation is steepest — five points doubles it. Read the rate this
+/// produces as an order of magnitude until the real material is measured.
+const BUSH_SHORE_A: f64 = 95.0;
 /// Half the front wheel's width. The hub is its widest part.
 const FRONT_WHEEL_HALF_WIDTH_MM: f64 = 25.0;
 /// Inside of the front rim's section.
@@ -353,17 +397,6 @@ fn tube_from(a: Point3<f64>, b: Point3<f64>, od: f64, wall: f64) -> (Piece, Vect
         },
         a.coords,
     )
-}
-
-/// Z-aligned tube, centred at the origin.
-#[must_use]
-fn tube(od: f64, wall: f64, length: f64) -> Piece {
-    let r_outer = od / 2.0;
-    let r_inner = r_outer - wall;
-    Piece {
-        solid: Solid::cylinder(r_outer, length / 2.0).subtract(Solid::cylinder(r_inner, length)),
-        volume_mm3: PI * (r_outer * r_outer - r_inner * r_inner) * length,
-    }
 }
 
 /// Z-aligned annulus, centred at the origin.
@@ -464,6 +497,13 @@ struct PartPlan {
     /// wall needs roughly four
     /// cells across it; a capsule needs nothing like that.
     cell_mm: f64,
+    /// The elastomer bushing at this joint, if it has one.
+    ///
+    /// ⚠ Its rate reaches the joint through
+    /// [`Bushing::joint_stiffness`], not the newton-metre figure: the
+    /// mechanism's torque unit is a microjoule, and the raw number would be a
+    /// millionth of what was meant.
+    bushing: Option<Bushing>,
 }
 
 /// The steering axis, leaning `CASTER_DEG` back from vertical.
@@ -501,8 +541,56 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
     let (cross, cross_at) = member(kingpin_l, kingpin_r);
     let (brace_left, brace_left_at) = member(kingpin_l, apex);
     let (brace_right, brace_right_at) = member(kingpin_r, apex);
-    let upright_length = 74.125;
-    let upright_z = FRAME_Z_MM + FRAME_R_MM + upright_length / 2.0 - WELD_OVERLAP_MM;
+    // ── The front suspension ────────────────────────────────────────
+    //
+    // Double wishbone. The upright is held at two ball joints, and the line
+    // through them **is** the steering axis — caster is a geometric fact
+    // here rather than a declared axis. Each wishbone picks up on the frame
+    // at two points spread fore and aft, which is what gives it a pivot axis
+    // instead of a point.
+    let lower_ball = |sign: f64| Point3::new(0.0, sign * upright_y, LOWER_BALL_Z_MM);
+    let upper_ball =
+        |sign: f64| lower_ball(sign) + steering_axis() * (UPPER_BALL_Z_MM - LOWER_BALL_Z_MM);
+    // A wishbone's body origin: the midpoint of its two frame pickups, which
+    // is a point ON its pivot axis, so the joint anchor and the geometry agree.
+    let pivot_mid = |sign: f64, z: f64| Vector3::new(0.0, sign * ARM_PICKUP_Y_MM, z);
+    let pickup = |sign: f64, z: f64, x: f64| Point3::new(x, sign * ARM_PICKUP_Y_MM, z);
+    let leg = |from: Point3<f64>, to: Point3<f64>, origin: Vector3<f64>| {
+        let (p, at) = tube_between(from, to, ARM_OD_MM, ARM_WALL_MM);
+        Piece {
+            solid: p.solid.translate(at - origin),
+            volume_mm3: p.volume_mm3,
+        }
+    };
+    // ⚠ Two parts per wishbone, welded, not one part of two legs: `joined`
+    // sums analytic volumes and is only right for pieces that do not overlap.
+    // These meet at the ball joint. The swingarm is built the same way.
+    let wishbone_leg = |sign: f64, z: f64, ball: Point3<f64>, x: f64| {
+        leg(pickup(sign, z, x), ball, pivot_mid(sign, z))
+    };
+    let tower_base = |sign: f64| Point3::new(0.0, sign * ARM_PICKUP_Y_MM, FRAME_Z_MM);
+    let tower = |sign: f64| {
+        tube_from(
+            tower_base(sign),
+            Point3::new(0.0, sign * ARM_PICKUP_Y_MM, UPPER_PIVOT_Z_MM),
+            TOWER_OD_MM,
+            TOWER_WALL_MM,
+        )
+    };
+    let upright_piece = |sign: f64| {
+        tube_from(
+            lower_ball(sign),
+            upper_ball(sign),
+            UPRIGHT_OD_MM,
+            UPRIGHT_WALL_MM,
+        )
+    };
+    let bush = Bushing::from_shore_a(
+        BUSH_BORE_R_MM,
+        BUSH_OUTER_R_MM,
+        BUSH_LENGTH_MM,
+        BUSH_SHORE_A,
+    );
 
     // Swingarm: two arms converging on the pivot, which is ON the spine —
     // parallel arms at y = +/-60 straddled it and touched nothing.
@@ -534,7 +622,13 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
     // arm ends makes the wheels turn together, and a bar from each upright
     // reaches back to the rider's hands — direct steering, as a tadpole has.
     let steer_member = |a, b| tube_between(a, b, STEER_TUBE_OD_MM, STEER_TUBE_WALL_MM);
-    let kingpin_pickup = |sign: f64| Point3::new(0.0, sign * upright_y, STEER_LINKAGE_Z_MM);
+    // On the steering axis at the linkage height, so the steer arm picks up
+    // where the upright actually turns.
+    let kingpin_pickup = |sign: f64| {
+        lower_ball(sign)
+            + steering_axis()
+                * ((STEER_LINKAGE_Z_MM - LOWER_BALL_Z_MM) / CASTER_DEG.to_radians().cos())
+    };
     let arm_end = |sign: f64| {
         Point3::new(
             STEER_ARM_AFT_MM,
@@ -543,8 +637,7 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
         )
     };
     let grip = |sign: f64| Point3::new(GRIP_X_MM, sign * GRIP_Y_MM, GRIP_Z_MM);
-    let upright_top =
-        |sign: f64| Point3::new(0.0, sign * upright_y, upright_z + upright_length / 2.0);
+    let upright_top = upper_ball;
     let (steer_arm_left, steer_arm_left_at) = steer_member(kingpin_pickup(1.0), arm_end(1.0));
     let (steer_arm_right, steer_arm_right_at) = steer_member(kingpin_pickup(-1.0), arm_end(-1.0));
     // ⚠ The rod pivots at its LEFT end, not its centre: a part is placed at
@@ -557,7 +650,7 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
     );
     let (bar_left, bar_left_at) = steer_member(upright_top(1.0), grip(1.0));
     let (bar_right, bar_right_at) = steer_member(upright_top(-1.0), grip(-1.0));
-    let upright_centre = |sign: f64| Vector3::new(0.0, sign * upright_y, upright_z);
+    let upright_centre = |sign: f64| lower_ball(sign).coords;
 
     let seat_member = |a, b| tube_between(a, b, SEAT_TUBE_OD_MM, SEAT_TUBE_WALL_MM);
     let (pan_rail_left, pan_rail_left_at) = seat_member(pan_front(half_width), hip(half_width));
@@ -597,13 +690,26 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
     // left arm; the other cannot be, because a tree gives a part one parent.
     // Without this the rod was welded to the left arm and the right wheel
     // steered independently of it.
-    let linkages = vec![LinkageDef::new(
-        "tie_rod_right",
-        "tie_rod",
-        "steer_arm_r",
-        LinkageKind::Ball,
-        Point3::from(arm_end(-1.0) - arm_end(1.0)),
-    )];
+    let upper_ball_linkage = |sign: f64, tag: &str, upright: &str| {
+        LinkageDef::new(
+            format!("upper_ball_{tag}"),
+            format!("arm_upper_{tag}"),
+            upright,
+            LinkageKind::Ball,
+            Point3::from(upper_ball(sign).coords - pivot_mid(sign, UPPER_PIVOT_Z_MM)),
+        )
+    };
+    let linkages = vec![
+        upper_ball_linkage(1.0, "l", "upright_l"),
+        upper_ball_linkage(-1.0, "r", "upright_r"),
+        LinkageDef::new(
+            "tie_rod_right",
+            "tie_rod",
+            "steer_arm_r",
+            LinkageKind::Ball,
+            Point3::from(arm_end(-1.0) - arm_end(1.0)),
+        ),
+    ];
 
     let parts = vec![
         PartPlan {
@@ -616,6 +722,7 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
             material: steel.clone(),
             piece: spine,
             cell_mm: 0.5,
+            bushing: None,
         },
         PartPlan {
             name: "frame_cross",
@@ -627,6 +734,7 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
             material: steel.clone(),
             piece: cross,
             cell_mm: 0.5,
+            bushing: None,
         },
         // ★ The triangulation. Without these two the front end is a T: the
         // kingpins hang off a cross-member whose only tie to the spine is the
@@ -642,6 +750,7 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
             material: steel.clone(),
             piece: brace_left,
             cell_mm: 0.5,
+            bushing: None,
         },
         PartPlan {
             name: "frame_diag_r",
@@ -653,33 +762,200 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
             material: steel.clone(),
             piece: brace_right,
             cell_mm: 0.5,
+            bushing: None,
+        },
+        PartPlan {
+            name: "tower_l",
+            parent: "frame_cross",
+            anchor_mm: tower_base(1.0).coords - cross_at,
+            kind: JointKind::Fixed,
+            axis: Vector3::z(),
+            range_rad: None,
+            material: steel.clone(),
+            piece: tower(1.0).0,
+            cell_mm: 0.5,
+            bushing: None,
+        },
+        PartPlan {
+            name: "arm_lower_l",
+            parent: "frame_cross",
+            anchor_mm: pivot_mid(1.0, LOWER_PIVOT_Z_MM) - cross_at,
+            kind: JointKind::Revolute,
+            axis: Vector3::x(),
+            range_rad: Some((-0.35, 0.35)),
+            material: steel.clone(),
+            piece: wishbone_leg(
+                1.0,
+                LOWER_PIVOT_Z_MM,
+                lower_ball(1.0),
+                -ARM_PICKUP_HALF_SPREAD_MM,
+            ),
+            cell_mm: 0.4,
+            bushing: Some(bush),
+        },
+        PartPlan {
+            name: "arm_lower_l_aft",
+            parent: "arm_lower_l",
+            anchor_mm: Vector3::zeros(),
+            kind: JointKind::Fixed,
+            axis: Vector3::x(),
+            range_rad: None,
+            material: steel.clone(),
+            piece: wishbone_leg(
+                1.0,
+                LOWER_PIVOT_Z_MM,
+                lower_ball(1.0),
+                ARM_PICKUP_HALF_SPREAD_MM,
+            ),
+            cell_mm: 0.4,
+            bushing: None,
+        },
+        PartPlan {
+            name: "arm_upper_l",
+            parent: "tower_l",
+            anchor_mm: pivot_mid(1.0, UPPER_PIVOT_Z_MM) - tower_base(1.0).coords,
+            kind: JointKind::Revolute,
+            axis: Vector3::x(),
+            range_rad: Some((-0.35, 0.35)),
+            material: steel.clone(),
+            piece: wishbone_leg(
+                1.0,
+                UPPER_PIVOT_Z_MM,
+                upper_ball(1.0),
+                -ARM_PICKUP_HALF_SPREAD_MM,
+            ),
+            cell_mm: 0.4,
+            bushing: Some(bush),
+        },
+        PartPlan {
+            name: "arm_upper_l_aft",
+            parent: "arm_upper_l",
+            anchor_mm: Vector3::zeros(),
+            kind: JointKind::Fixed,
+            axis: Vector3::x(),
+            range_rad: None,
+            material: steel.clone(),
+            piece: wishbone_leg(
+                1.0,
+                UPPER_PIVOT_Z_MM,
+                upper_ball(1.0),
+                ARM_PICKUP_HALF_SPREAD_MM,
+            ),
+            cell_mm: 0.4,
+            bushing: None,
         },
         PartPlan {
             name: "upright_l",
-            parent: "frame_cross",
-            anchor_mm: Vector3::new(0.0, upright_y, upright_z - FRAME_Z_MM),
-            kind: JointKind::Revolute,
+            parent: "arm_lower_l",
+            anchor_mm: lower_ball(1.0).coords - pivot_mid(1.0, LOWER_PIVOT_Z_MM),
+            kind: JointKind::Ball,
             axis: steering_axis(),
-            range_rad: Some((-0.6, 0.6)),
+            range_rad: None,
             material: steel.clone(),
-            piece: tube(UPRIGHT_OD_MM, UPRIGHT_WALL_MM, upright_length),
+            piece: upright_piece(1.0).0,
             cell_mm: 0.5,
+            bushing: None,
+        },
+        PartPlan {
+            name: "tower_r",
+            parent: "frame_cross",
+            anchor_mm: tower_base(-1.0).coords - cross_at,
+            kind: JointKind::Fixed,
+            axis: Vector3::z(),
+            range_rad: None,
+            material: steel.clone(),
+            piece: tower(-1.0).0,
+            cell_mm: 0.5,
+            bushing: None,
+        },
+        PartPlan {
+            name: "arm_lower_r",
+            parent: "frame_cross",
+            anchor_mm: pivot_mid(-1.0, LOWER_PIVOT_Z_MM) - cross_at,
+            kind: JointKind::Revolute,
+            axis: Vector3::x(),
+            range_rad: Some((-0.35, 0.35)),
+            material: steel.clone(),
+            piece: wishbone_leg(
+                -1.0,
+                LOWER_PIVOT_Z_MM,
+                lower_ball(-1.0),
+                -ARM_PICKUP_HALF_SPREAD_MM,
+            ),
+            cell_mm: 0.4,
+            bushing: Some(bush),
+        },
+        PartPlan {
+            name: "arm_lower_r_aft",
+            parent: "arm_lower_r",
+            anchor_mm: Vector3::zeros(),
+            kind: JointKind::Fixed,
+            axis: Vector3::x(),
+            range_rad: None,
+            material: steel.clone(),
+            piece: wishbone_leg(
+                -1.0,
+                LOWER_PIVOT_Z_MM,
+                lower_ball(-1.0),
+                ARM_PICKUP_HALF_SPREAD_MM,
+            ),
+            cell_mm: 0.4,
+            bushing: None,
+        },
+        PartPlan {
+            name: "arm_upper_r",
+            parent: "tower_r",
+            anchor_mm: pivot_mid(-1.0, UPPER_PIVOT_Z_MM) - tower_base(-1.0).coords,
+            kind: JointKind::Revolute,
+            axis: Vector3::x(),
+            range_rad: Some((-0.35, 0.35)),
+            material: steel.clone(),
+            piece: wishbone_leg(
+                -1.0,
+                UPPER_PIVOT_Z_MM,
+                upper_ball(-1.0),
+                -ARM_PICKUP_HALF_SPREAD_MM,
+            ),
+            cell_mm: 0.4,
+            bushing: Some(bush),
+        },
+        PartPlan {
+            name: "arm_upper_r_aft",
+            parent: "arm_upper_r",
+            anchor_mm: Vector3::zeros(),
+            kind: JointKind::Fixed,
+            axis: Vector3::x(),
+            range_rad: None,
+            material: steel.clone(),
+            piece: wishbone_leg(
+                -1.0,
+                UPPER_PIVOT_Z_MM,
+                upper_ball(-1.0),
+                ARM_PICKUP_HALF_SPREAD_MM,
+            ),
+            cell_mm: 0.4,
+            bushing: None,
         },
         PartPlan {
             name: "upright_r",
-            parent: "frame_cross",
-            anchor_mm: Vector3::new(0.0, -upright_y, upright_z - FRAME_Z_MM),
-            kind: JointKind::Revolute,
+            parent: "arm_lower_r",
+            anchor_mm: lower_ball(-1.0).coords - pivot_mid(-1.0, LOWER_PIVOT_Z_MM),
+            kind: JointKind::Ball,
             axis: steering_axis(),
-            range_rad: Some((-0.6, 0.6)),
+            range_rad: None,
             material: steel.clone(),
-            piece: tube(UPRIGHT_OD_MM, UPRIGHT_WALL_MM, upright_length),
+            piece: upright_piece(-1.0).0,
             cell_mm: 0.5,
+            bushing: None,
         },
         PartPlan {
             name: "rim_fl",
             parent: "upright_l",
-            anchor_mm: Vector3::new(0.0, TRACK_MM / 2.0 - upright_y, FRONT_RADIUS_MM - upright_z),
+            anchor_mm: Vector3::new(
+                0.0,
+                TRACK_MM / 2.0 - upright_y,
+                FRONT_RADIUS_MM - LOWER_BALL_Z_MM,
+            ),
             kind: JointKind::Revolute,
             axis: Vector3::y(),
             range_rad: None,
@@ -691,11 +967,16 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
             // ⚠ 1.0, not 2.0: the rim section is 6 mm, and three cells across
             // a wall put the integrator 0.688% off its closed form.
             cell_mm: 1.0,
+            bushing: None,
         },
         PartPlan {
             name: "rim_fr",
             parent: "upright_r",
-            anchor_mm: Vector3::new(0.0, upright_y - TRACK_MM / 2.0, FRONT_RADIUS_MM - upright_z),
+            anchor_mm: Vector3::new(
+                0.0,
+                upright_y - TRACK_MM / 2.0,
+                FRONT_RADIUS_MM - LOWER_BALL_Z_MM,
+            ),
             kind: JointKind::Revolute,
             axis: Vector3::y(),
             range_rad: None,
@@ -707,6 +988,7 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
             // ⚠ 1.0, not 2.0: the rim section is 6 mm, and three cells across
             // a wall put the integrator 0.688% off its closed form.
             cell_mm: 1.0,
+            bushing: None,
         },
         PartPlan {
             name: "tyre_fl",
@@ -722,6 +1004,7 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
                 FRONT_WHEEL_HALF_WIDTH_MM,
             )),
             cell_mm: 2.0,
+            bushing: None,
         },
         PartPlan {
             name: "tyre_fr",
@@ -737,6 +1020,7 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
                 FRONT_WHEEL_HALF_WIDTH_MM,
             )),
             cell_mm: 2.0,
+            bushing: None,
         },
         PartPlan {
             name: "swingarm",
@@ -748,6 +1032,7 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
             material: steel.clone(),
             piece: arm_left,
             cell_mm: 0.5,
+            bushing: None,
         },
         PartPlan {
             name: "swingarm_r",
@@ -759,6 +1044,7 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
             material: steel.clone(),
             piece: arm_right,
             cell_mm: 0.5,
+            bushing: None,
         },
         PartPlan {
             name: "rim_r",
@@ -770,6 +1056,7 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
             material: Material::new("PLA", PLA_KG_M3),
             piece: onto_y(disc(REAR_RIM_OUTER_MM, REAR_WHEEL_HALF_WIDTH_MM)),
             cell_mm: 1.0,
+            bushing: None,
         },
         PartPlan {
             name: "tyre_r",
@@ -785,6 +1072,7 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
                 REAR_WHEEL_HALF_WIDTH_MM,
             )),
             cell_mm: 1.0,
+            bushing: None,
         },
         // ── Steering ────────────────────────────────────────────
         //
@@ -800,6 +1088,7 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
             material: steel.clone(),
             piece: steer_arm_left,
             cell_mm: 0.4,
+            bushing: None,
         },
         PartPlan {
             name: "steer_arm_r",
@@ -811,6 +1100,7 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
             material: steel.clone(),
             piece: steer_arm_right,
             cell_mm: 0.4,
+            bushing: None,
         },
         PartPlan {
             name: "tie_rod",
@@ -824,6 +1114,7 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
             material: steel.clone(),
             piece: tie_rod,
             cell_mm: 0.4,
+            bushing: None,
         },
         PartPlan {
             name: "bar_l",
@@ -835,6 +1126,7 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
             material: steel.clone(),
             piece: bar_left,
             cell_mm: 0.4,
+            bushing: None,
         },
         PartPlan {
             name: "bar_r",
@@ -846,6 +1138,7 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
             material: steel.clone(),
             piece: bar_right,
             cell_mm: 0.4,
+            bushing: None,
         },
         // ── The seat frame ──────────────────────────────────────
         // The cross tube at the hip is the load path: the rider's weight
@@ -860,6 +1153,7 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
             material: steel.clone(),
             piece: seat_cross,
             cell_mm: 0.5,
+            bushing: None,
         },
         PartPlan {
             name: "seat_pan_rail_left",
@@ -871,6 +1165,7 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
             material: steel.clone(),
             piece: pan_rail_left,
             cell_mm: 0.5,
+            bushing: None,
         },
         PartPlan {
             name: "seat_pan_rail_right",
@@ -882,6 +1177,7 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
             material: steel.clone(),
             piece: pan_rail_right,
             cell_mm: 0.5,
+            bushing: None,
         },
         PartPlan {
             name: "seat_back_rail_left",
@@ -893,6 +1189,7 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
             material: steel.clone(),
             piece: back_rail_left,
             cell_mm: 0.5,
+            bushing: None,
         },
         PartPlan {
             name: "seat_back_rail_right",
@@ -904,6 +1201,7 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
             material: steel,
             piece: back_rail_right,
             cell_mm: 0.5,
+            bushing: None,
         },
         PartPlan {
             name: "seat_pan",
@@ -919,6 +1217,7 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
                 SEAT_PANEL_HALF_MM,
             )),
             cell_mm: 1.0,
+            bushing: None,
         },
         PartPlan {
             name: "seat_back",
@@ -937,6 +1236,7 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
                 FRAC_PI_2 - recline,
             ),
             cell_mm: 1.0,
+            bushing: None,
         },
         PartPlan {
             name: "rider_torso",
@@ -948,6 +1248,7 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
             material: Material::new("rider torso", RIDER_KG_M3),
             piece: tilted(capsule(TORSO_RADIUS_MM, TORSO_HALF_MM), FRAC_PI_2 - recline),
             cell_mm: 4.0,
+            bushing: None,
         },
         PartPlan {
             name: "rider_legs",
@@ -962,6 +1263,7 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
                 legs_dir.x.atan2(legs_dir.z),
             ),
             cell_mm: 4.0,
+            bushing: None,
         },
     ];
     Ok((parts, linkages))
@@ -995,8 +1297,18 @@ fn assemble(plan: Vec<PartPlan>, linkages: Vec<LinkageDef>) -> Result<Mechanism>
             Point3::from(p.anchor_mm),
             p.axis,
         );
-        builder = builder.joint(match p.range_rad {
+        let joint = match p.range_rad {
             Some((lo, hi)) => joint.with_range(lo, hi),
+            None => joint,
+        };
+        // A bushing is a rate, and a rate the model can feel — see
+        // `Bushing::joint_stiffness` for why the conversion is not optional.
+        // Damping is a fiftieth of it: enough to settle the arm without
+        // pretending this is a characterised loss factor.
+        builder = builder.joint(match p.bushing {
+            Some(b) => joint
+                .with_stiffness(b.joint_stiffness())
+                .with_damping(b.joint_stiffness() / 50.0),
             None => joint,
         });
     }
@@ -1214,13 +1526,17 @@ mod tests {
         );
     }
 
-    /// The tie rod's far end ties a part that exists, and takes three dof.
+    /// Every loop closes onto parts that exist, and each takes three dof.
+    ///
+    /// Three of them: the tie rod's far end, and the upper ball joint on each
+    /// wishbone — a double wishbone is two loops, because the upright is held
+    /// by two arms and a tree gives it one parent.
     #[test]
     fn the_linkage_ties_two_parts_that_exist() {
         let t = trike().unwrap();
         let names: Vec<&str> = t.mechanism.parts().iter().map(Part::name).collect();
 
-        assert_eq!(t.mechanism.linkages().len(), 1);
+        assert_eq!(t.mechanism.linkages().len(), 3);
         for l in t.mechanism.linkages() {
             assert!(
                 names.contains(&l.a()),
@@ -1235,6 +1551,50 @@ mod tests {
                 l.b()
             );
             assert_eq!(l.kind().constrained_dof(), 3);
+        }
+    }
+
+    /// The four inboard wishbone pivots are bushed, and nothing else is.
+    ///
+    /// ⚠ The rate is checked as a **physical** quantity — newton-metres per
+    /// radian, recovered from the model's own units — because that is the
+    /// number a suspension engineer would recognise. A bushing handed over in
+    /// N·m/rad rather than through `joint_stiffness` lands a million times
+    /// softer, and a test that only asked "is there a stiffness?" would pass.
+    #[test]
+    fn the_wishbone_pivots_are_bushed_and_nothing_else_is() {
+        let t = trike().unwrap();
+        let bushed: Vec<&str> = t
+            .mechanism
+            .joints()
+            .iter()
+            .filter(|j| j.stiffness().is_some_and(|k| k > 0.0))
+            .map(cf_design::JointDef::child)
+            .collect();
+
+        assert_eq!(
+            bushed.len(),
+            4,
+            "expected the four inboard pivots, got {bushed:?}"
+        );
+        for side in ["l", "r"] {
+            for height in ["lower", "upper"] {
+                let want = format!("arm_{height}_{side}");
+                assert!(bushed.contains(&want.as_str()), "{want} is not bushed");
+            }
+        }
+
+        for j in t.mechanism.joints() {
+            let Some(k) = j.stiffness() else { continue };
+            // Model torque is kg·mm²/s², a millionth of a newton-metre.
+            let n_m_per_rad = k / 1e6;
+            assert!(
+                (20.0..2000.0).contains(&n_m_per_rad),
+                "{} carries {n_m_per_rad:.1} N·m/rad, which is not a \
+                 suspension bushing — a rate this far out is the unit \
+                 conversion, not the design",
+                j.child()
+            );
         }
     }
 

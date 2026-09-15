@@ -67,20 +67,26 @@ const PIN_TOLERANCE: f64 = 1e-6;
 /// an empty one passes without doing anything. An empty `Mechanism` builds
 /// happily — `validate` skips the orphan check below two parts — so nothing
 /// upstream would object.
-const EXPECTED_PARTS: usize = 28;
+const EXPECTED_PARTS: usize = 38;
 /// Welds in the assembly: three frame members and seven seat members onto the
-/// spine, all three tyres onto their rims, and the rider's two halves.
-const EXPECTED_WELDS: usize = 20;
+/// spine, all three tyres onto their rims, the rider's two halves, the two
+/// suspension towers, and each wishbone's aft leg onto its fore leg.
+const EXPECTED_WELDS: usize = 26;
 
-/// Loops the joint tree cannot hold: the tie rod's far end.
-const EXPECTED_LINKAGES: usize = 1;
-/// Degrees of freedom in the **tree**: the free body, two steering pivots,
-/// three wheels spinning, the swingarm, and the tie rod's near rod end, which
-/// is a ball and so worth three.
+/// Loops the joint tree cannot hold: the tie rod's far end, and the upper
+/// ball joint on each wishbone.
 ///
-/// ⚠ Not what the machine has. The linkage at the rod's far end takes those
-/// three back, so the trike really has twelve — see `EXPECTED_LINKAGES`.
-const EXPECTED_DOF: usize = 15;
+/// ★ A double wishbone **is** a loop. The upright is held by two arms and a
+/// tree gives it one parent, so the second arm closes through a constraint.
+const EXPECTED_LINKAGES: usize = 3;
+/// Degrees of freedom in the **tree**: the free body, three wheels spinning,
+/// the swingarm, the tie rod's near rod end (a ball, worth three), four
+/// wishbones swinging, and each upright on its lower ball joint (three each).
+///
+/// ⚠ Not what the machine has. The three linkages take nine back, so the
+/// trike really has fourteen — the twelve it had, plus a bump degree of
+/// freedom at each front wheel.
+const EXPECTED_DOF: usize = 23;
 /// Members welded into the frame, whose grid cost is compared: spine,
 /// cross-member and the two diagonals.
 const WELDED_FRAME_MEMBERS: usize = 4;
@@ -892,19 +898,26 @@ fn main() -> Result<()> {
     // These are what this geometry weighs and where it balances. They are a
     // regression gate, not a design target: change a tube, change a rider,
     // and they are supposed to fire so the new numbers get read.
+    let mut drifted: Vec<String> = Vec::new();
     for (label, got, want) in [
-        ("total mass (kg)", spec.total_mass_kg(), 101.916_046_535),
-        ("cg x (m)", spec.cg_x_m(), 0.457_383_845),
-        ("cg z (m)", spec.cg_z_m(), 0.306_326_568),
+        ("total mass (kg)", spec.total_mass_kg(), 105.134_566_389),
+        ("cg x (m)", spec.cg_x_m(), 0.443_529_234),
+        ("cg z (m)", spec.cg_z_m(), 0.304_006_782),
         (
             "rollover threshold (g)",
             rollover_threshold_g(&spec),
-            0.931_495_486,
+            0.955_009_865,
         ),
     ] {
         if (got - want).abs() > want.abs() * PIN_TOLERANCE {
-            bail!("{label} came out {got:.9}, pinned at {want:.9}");
+            // ⚠ Collected, not bailed on. These four move together whenever
+            // the geometry changes, and failing at the first one costs a
+            // whole run per number to read the rest.
+            drifted.push(format!("{label} came out {got:.9}, pinned at {want:.9}"));
         }
+    }
+    if !drifted.is_empty() {
+        bail!("the pinned budget moved:\n  {}", drifted.join("\n  "));
     }
 
     // ── How much of this is a choice? ───────────────────────────────
