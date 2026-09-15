@@ -1635,9 +1635,36 @@ mod tests {
         assert_eq!(plain.neq, 0);
     }
 
+    /// A linkage is emitted **stiff**, not as soft as a contact.
+    ///
+    /// ⚠ This pins a constant rather than measuring dynamics, and it does so
+    /// because the dynamics cannot be measured here. The four-bar below is
+    /// gram-weight cubes on a 30 mm lever, and it passes at MJCF's default
+    /// impedance — which lets a 0.49 kg rod on a 740 mm lever drift 32.9 mm.
+    /// Scaling this fixture up to load the constraint properly costs 145 s.
+    ///
+    /// So the evidence for the value lives where the load is (the trike's
+    /// steering, in `example-trike-mass-budget`), and this holds the line
+    /// against a quiet return to contact softness.
+    #[test]
+    fn a_linkage_is_stiffer_than_a_contact() {
+        let model = four_bar(true).to_model(2.0, 2.0).unwrap();
+        let (dmin, dmax) = (model.eq_solimp[0][0], model.eq_solimp[0][1]);
+        assert!(
+            dmin > 0.99 && dmax > 0.999,
+            "a linkage is structure, not a contact: impedance {dmin}..{dmax} is \
+             soft enough to stretch under load"
+        );
+    }
+
     /// The claim, under simulation: a linkage holds its two points together
     /// while the arms swing. Carries its own control, because a scene where
     /// nothing moved would satisfy the tied case for the wrong reason.
+    ///
+    /// ⚠ What it does NOT prove: that the constraint is stiff enough. These
+    /// cubes weigh about a gram, and it passes at MJCF's contact-soft default
+    /// too. Stiffness is pinned by `a_linkage_is_stiffer_than_a_contact` and
+    /// measured on a real machine downstream.
     #[test]
     fn a_linkage_holds_while_an_untied_pair_comes_apart() {
         const STEPS: usize = 300;
