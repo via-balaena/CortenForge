@@ -86,18 +86,18 @@ pub fn trike() -> Result<Trike> {
 // ── Materials ───────────────────────────────────────────────────────────
 
 /// Mild steel tube — the frame, the uprights, the swingarm.
-pub const STEEL_KG_M3: f64 = 7850.0;
+const STEEL_KG_M3: f64 = 7850.0;
 /// 6061 — the front rims and the seat pan.
-pub const ALUMINIUM_KG_M3: f64 = 2700.0;
+const ALUMINIUM_KG_M3: f64 = 2700.0;
 /// A pneumatic tyre's casing is not solid rubber; this is the smeared density
 /// of the 16″ front tyre's annulus, not the density of rubber.
-pub const FRONT_TYRE_KG_M3: f64 = 420.0;
+const FRONT_TYRE_KG_M3: f64 = 420.0;
 /// The printed rear rim.
-pub const PLA_KG_M3: f64 = 1250.0;
+const PLA_KG_M3: f64 = 1250.0;
 /// The cast rear tyre — `cf_cast::wheel::NOMINAL_PU_95A_DENSITY_KG_M3`.
-pub const PU_95A_KG_M3: f64 = 1050.0;
+const PU_95A_KG_M3: f64 = 1050.0;
 /// Whole-body density of a person, near enough to water.
-pub const RIDER_KG_M3: f64 = 1010.0;
+const RIDER_KG_M3: f64 = 1010.0;
 
 // ── Nominal geometry, shared with `TrikeSpec::iter1` ────────────────────
 
@@ -113,16 +113,16 @@ pub const REAR_RADIUS_MM: f64 = 140.0;
 pub const CASTER_DEG: f64 = 8.0;
 
 /// Spine and cross-member centreline height.
-pub const FRAME_Z_MM: f64 = 150.0;
+const FRAME_Z_MM: f64 = 150.0;
 /// Frame tube outside diameter.
-pub const FRAME_OD_MM: f64 = 31.75;
+const FRAME_OD_MM: f64 = 31.75;
 /// Frame tube wall.
-pub const FRAME_WALL_MM: f64 = 2.0;
+const FRAME_WALL_MM: f64 = 2.0;
 /// Half the frame tube's outside diameter — where members butt onto it.
-pub const FRAME_R_MM: f64 = FRAME_OD_MM / 2.0;
+const FRAME_R_MM: f64 = FRAME_OD_MM / 2.0;
 
 /// Air between the spine's tail and the rear tyre.
-pub const REAR_WHEEL_CLEARANCE_MM: f64 = 20.0;
+const REAR_WHEEL_CLEARANCE_MM: f64 = 20.0;
 
 /// The spine stops this far short of the rear contact patch; the swingarm
 /// carries the rest.
@@ -133,15 +133,15 @@ pub const REAR_WHEEL_CLEARANCE_MM: f64 = 20.0;
 /// ⚠ The frame radius is in here because [`Solid::pipe`] **domes its ends**: a
 /// member reaches a full radius past its endpoint node. Setting the clearance
 /// without that term gave 4.1 mm of real air where 20 was asked for.
-pub const TAIL_SETBACK_MM: f64 = REAR_RADIUS_MM + REAR_WHEEL_CLEARANCE_MM + FRAME_R_MM;
+const TAIL_SETBACK_MM: f64 = REAR_RADIUS_MM + REAR_WHEEL_CLEARANCE_MM + FRAME_R_MM;
 
 /// The part everything else hangs from.
 pub const ROOT_PART: &str = "frame_spine";
 
 /// Pivot to rear axle.
-pub const SWINGARM_LENGTH_MM: f64 = 350.0;
+const SWINGARM_LENGTH_MM: f64 = 350.0;
 /// Half the spacing of the swingarm arms at the axle.
-pub const SWINGARM_HALF_WIDTH_MM: f64 = 60.0;
+const SWINGARM_HALF_WIDTH_MM: f64 = 60.0;
 
 /// How far a member that butts onto another sinks into it.
 ///
@@ -150,14 +150,14 @@ pub const SWINGARM_HALF_WIDTH_MM: f64 = 60.0;
 /// probe mesh may or may not land a vertex on it, which is why one upright
 /// read a 3.6 mm gap and its mirror read none — and unweldable in the real
 /// world. A saddled joint overlaps.
-pub const WELD_OVERLAP_MM: f64 = 6.0;
+const WELD_OVERLAP_MM: f64 = 6.0;
 
 /// Seat tube stock — lighter than the frame, it carries a person not a kerb.
-pub const SEAT_TUBE_OD_MM: f64 = 25.4;
+const SEAT_TUBE_OD_MM: f64 = 25.4;
 /// Seat tube wall.
-pub const SEAT_TUBE_WALL_MM: f64 = 1.5;
+const SEAT_TUBE_WALL_MM: f64 = 1.5;
 /// Rail centres sit this far apart.
-pub const SEAT_WIDTH_MM: f64 = 300.0;
+const SEAT_WIDTH_MM: f64 = 300.0;
 /// Hip point — where the pan meets the back, and where the seat's load goes
 /// into the spine. Set by leg length from the bottom bracket, not by taste.
 ///
@@ -182,7 +182,7 @@ pub const SEAT_WIDTH_MM: f64 = 300.0;
 /// of boom tube, and it puts the pedals 424 mm ahead of the front contact
 /// patch — feet ahead of the front axle, which is what a tadpole recumbent
 /// looks like, not a compromise.
-pub const HIP_X_MM: f64 = 500.0;
+const HIP_X_MM: f64 = 500.0;
 /// Hip height above the ground.
 ///
 /// ⚠ Derived, not chosen: the seat's cross tube rests on top of the spine, so
@@ -190,44 +190,44 @@ pub const HIP_X_MM: f64 = 500.0;
 /// centreline. Typed as 210 mm it left the whole seat — and the rider on it —
 /// floating 31 mm clear of the frame, welded in the joint graph and touching
 /// nothing.
-pub const HIP_Z_MM: f64 = FRAME_Z_MM + FRAME_R_MM + SEAT_TUBE_OD_MM / 2.0 - WELD_OVERLAP_MM;
+const HIP_Z_MM: f64 = FRAME_Z_MM + FRAME_R_MM + SEAT_TUBE_OD_MM / 2.0 - WELD_OVERLAP_MM;
 /// Pan length forward of the hip.
-pub const PAN_LENGTH_MM: f64 = 250.0;
+const PAN_LENGTH_MM: f64 = 250.0;
 /// Seat back length from the hip.
-pub const SEAT_BACK_LENGTH_MM: f64 = 500.0;
+const SEAT_BACK_LENGTH_MM: f64 = 500.0;
 /// Recline, measured from vertical. A cruiser sits up more than a racer.
-pub const SEAT_BACK_ANGLE_DEG: f64 = 45.0;
+const SEAT_BACK_ANGLE_DEG: f64 = 45.0;
 /// Steering arm: how far aft of the kingpin the tie rod picks up. Longer is
 /// lighter steering and less feedback.
-pub const STEER_ARM_AFT_MM: f64 = 120.0;
+const STEER_ARM_AFT_MM: f64 = 120.0;
 /// How far inboard the arm end sits from the kingpin.
-pub const STEER_ARM_INBOARD_MM: f64 = 42.3;
+const STEER_ARM_INBOARD_MM: f64 = 42.3;
 /// Height of the steering linkage above the ground.
-pub const STEER_LINKAGE_Z_MM: f64 = 175.0;
+const STEER_LINKAGE_Z_MM: f64 = 175.0;
 /// Steering arm and tie rod stock.
-pub const STEER_TUBE_OD_MM: f64 = 19.05;
+const STEER_TUBE_OD_MM: f64 = 19.05;
 /// Steering tube wall.
-pub const STEER_TUBE_WALL_MM: f64 = 1.5;
+const STEER_TUBE_WALL_MM: f64 = 1.5;
 /// Where the rider's hands fall, beside the hip.
-pub const GRIP_X_MM: f64 = 620.0;
+const GRIP_X_MM: f64 = 620.0;
 /// Grip half-spacing.
-pub const GRIP_Y_MM: f64 = 280.0;
+const GRIP_Y_MM: f64 = 280.0;
 /// Grip height.
-pub const GRIP_Z_MM: f64 = 320.0;
+const GRIP_Z_MM: f64 = 320.0;
 
 /// Hip to pedal, extended. Sets where the bottom bracket goes, and with it
 /// where the hip has to sit for a given wheelbase.
-pub const LEG_REACH_MM: f64 = 950.0;
+const LEG_REACH_MM: f64 = 950.0;
 /// How much higher than the hip the pedals sit.
-pub const LEG_RISE_MM: f64 = 220.0;
+const LEG_RISE_MM: f64 = 220.0;
 /// Torso capsule radius — a person across the shoulders, near enough.
-pub const TORSO_RADIUS_MM: f64 = 170.0;
+const TORSO_RADIUS_MM: f64 = 170.0;
 /// Torso capsule half-length along the seat back.
-pub const TORSO_HALF_MM: f64 = 190.0;
+const TORSO_HALF_MM: f64 = 190.0;
 /// Both legs together, as one capsule.
-pub const LEGS_RADIUS_MM: f64 = 105.0;
+const LEGS_RADIUS_MM: f64 = 105.0;
 /// Leg capsule half-length.
-pub const LEGS_HALF_MM: f64 = 340.0;
+const LEGS_HALF_MM: f64 = 340.0;
 
 /// Panel half-thickness for the pan and the back.
 ///
@@ -235,18 +235,18 @@ pub const LEGS_HALF_MM: f64 = 340.0;
 /// box of 354x300x354 that is almost entirely air, and the grid integrator
 /// came 0.835% off its closed form — over tolerance — because a tilted plate
 /// three cells thick is nearly all boundary. A seat shell is not foil anyway.
-pub const SEAT_PANEL_HALF_MM: f64 = 3.0;
+const SEAT_PANEL_HALF_MM: f64 = 3.0;
 
 /// Where the two front diagonals meet the spine. Further aft makes a shallower
 /// triangle: stiffer in bending, heavier, and it eats the space the seat wants.
-pub const DIAGONAL_APEX_X_MM: f64 = 450.0;
+const DIAGONAL_APEX_X_MM: f64 = 450.0;
 
 /// Upright (hub carrier) tube outside diameter.
-pub const UPRIGHT_OD_MM: f64 = 25.4;
+const UPRIGHT_OD_MM: f64 = 25.4;
 /// Upright tube wall — thicker than the frame's, it takes the steering loads.
-pub const UPRIGHT_WALL_MM: f64 = 3.0;
+const UPRIGHT_WALL_MM: f64 = 3.0;
 /// Half the front wheel's width. The hub is its widest part.
-pub const FRONT_WHEEL_HALF_WIDTH_MM: f64 = 25.0;
+const FRONT_WHEEL_HALF_WIDTH_MM: f64 = 25.0;
 /// Inside of the front rim's section.
 ///
 /// ⚠ 174, not the 160 this started at. A 20 mm-thick solid aluminium annulus
@@ -257,16 +257,16 @@ pub const FRONT_WHEEL_HALF_WIDTH_MM: f64 = 25.0;
 /// ⚠ Spokes are absent. They would add roughly 0.15 kg a wheel, at a radius
 /// that matters more for rotating inertia than for the mass budget, and this
 /// example does not model rotating inertia.
-pub const FRONT_RIM_INNER_MM: f64 = 174.0;
+const FRONT_RIM_INNER_MM: f64 = 174.0;
 
 /// Where the front rim ends and its tyre begins. Shared by both so the two
 /// cannot drift apart into a gap or an interpenetration — a class the
 /// closed-form check above is blind to.
-pub const FRONT_RIM_OUTER_MM: f64 = 180.0;
+const FRONT_RIM_OUTER_MM: f64 = 180.0;
 /// Where the rear rim ends and the cast polyurethane tyre begins.
-pub const REAR_RIM_OUTER_MM: f64 = 115.0;
+const REAR_RIM_OUTER_MM: f64 = 115.0;
 /// Half the rear wheel's width — rim and tyre are the same width.
-pub const REAR_WHEEL_HALF_WIDTH_MM: f64 = 12.5;
+const REAR_WHEEL_HALF_WIDTH_MM: f64 = 12.5;
 
 // ── Pieces: a solid and its closed-form volume, built together ──────────
 
@@ -276,7 +276,7 @@ pub const REAR_WHEEL_HALF_WIDTH_MM: f64 = 12.5;
 /// never goes through [`mass_properties`](cf_design::mechanism::mass::mass_properties) —
 /// that is the whole point of
 /// carrying it.
-pub struct Piece {
+struct Piece {
     /// The shape itself.
     pub solid: Solid,
     /// Its closed-form volume, computed beside it.
@@ -294,7 +294,7 @@ pub struct Piece {
 /// shell, not an open-ended tube. For a weldment that is the more honest
 /// shape, and the closed form below accounts for it.
 #[must_use]
-pub fn tube_between(a: Point3<f64>, b: Point3<f64>, od: f64, wall: f64) -> (Piece, Vector3<f64>) {
+fn tube_between(a: Point3<f64>, b: Point3<f64>, od: f64, wall: f64) -> (Piece, Vector3<f64>) {
     let mid = nalgebra::center(&a, &b);
     let (la, lb) = (a - mid, b - mid);
     let r_outer = od / 2.0;
@@ -313,7 +313,7 @@ pub fn tube_between(a: Point3<f64>, b: Point3<f64>, od: f64, wall: f64) -> (Piec
 
 /// Z-aligned tube, centred at the origin.
 #[must_use]
-pub fn tube(od: f64, wall: f64, length: f64) -> Piece {
+fn tube(od: f64, wall: f64, length: f64) -> Piece {
     let r_outer = od / 2.0;
     let r_inner = r_outer - wall;
     Piece {
@@ -324,7 +324,7 @@ pub fn tube(od: f64, wall: f64, length: f64) -> Piece {
 
 /// Z-aligned annulus, centred at the origin.
 #[must_use]
-pub fn annulus(r_outer: f64, r_inner: f64, half_width: f64) -> Piece {
+fn annulus(r_outer: f64, r_inner: f64, half_width: f64) -> Piece {
     Piece {
         solid: Solid::cylinder(r_outer, half_width)
             .subtract(Solid::cylinder(r_inner, half_width * 2.0)),
@@ -334,7 +334,7 @@ pub fn annulus(r_outer: f64, r_inner: f64, half_width: f64) -> Piece {
 
 /// Z-aligned solid disc, centred at the origin.
 #[must_use]
-pub fn disc(radius: f64, half_width: f64) -> Piece {
+fn disc(radius: f64, half_width: f64) -> Piece {
     Piece {
         solid: Solid::cylinder(radius, half_width),
         volume_mm3: PI * radius * radius * 2.0 * half_width,
@@ -343,7 +343,7 @@ pub fn disc(radius: f64, half_width: f64) -> Piece {
 
 /// Axis-aligned box, centred at the origin.
 #[must_use]
-pub fn slab(half: Vector3<f64>) -> Piece {
+fn slab(half: Vector3<f64>) -> Piece {
     Piece {
         solid: Solid::cuboid(half),
         volume_mm3: 8.0 * half.x * half.y * half.z,
@@ -352,7 +352,7 @@ pub fn slab(half: Vector3<f64>) -> Piece {
 
 /// Z-aligned capsule, centred at the origin.
 #[must_use]
-pub fn capsule(radius: f64, half_height: f64) -> Piece {
+fn capsule(radius: f64, half_height: f64) -> Piece {
     Piece {
         solid: Solid::capsule(radius, half_height),
         volume_mm3: PI * radius * radius * 2.0 * half_height
@@ -362,7 +362,7 @@ pub fn capsule(radius: f64, half_height: f64) -> Piece {
 
 /// Turn a Z-aligned piece into a Y-aligned one — wheels and cross-members.
 #[must_use]
-pub fn onto_y(p: Piece) -> Piece {
+fn onto_y(p: Piece) -> Piece {
     Piece {
         solid: p.solid.rotate(UnitQuaternion::from_axis_angle(
             &Vector3::x_axis(),
@@ -374,7 +374,7 @@ pub fn onto_y(p: Piece) -> Piece {
 
 /// Tilt a piece about the y axis, for anything that does not lie along one.
 #[must_use]
-pub fn tilted(p: Piece, angle_rad: f64) -> Piece {
+fn tilted(p: Piece, angle_rad: f64) -> Piece {
     Piece {
         solid: p.solid.rotate(UnitQuaternion::from_axis_angle(
             &Vector3::y_axis(),
@@ -389,7 +389,7 @@ pub fn tilted(p: Piece, angle_rad: f64) -> Piece {
 /// Fails if given no pieces at all.
 /// Union of **disjoint** pieces: the analytic volume is their sum, which is
 /// true only because nothing here overlaps anything else in the same part.
-pub fn joined(pieces: Vec<Piece>) -> Result<Piece> {
+fn joined(pieces: Vec<Piece>) -> Result<Piece> {
     let mut it = pieces.into_iter();
     let Some(first) = it.next() else {
         bail!("a part needs at least one piece");
@@ -403,7 +403,7 @@ pub fn joined(pieces: Vec<Piece>) -> Result<Piece> {
 // ── The plan ────────────────────────────────────────────────────────────
 
 /// One part, its placement, and the cell size its thinnest feature needs.
-pub struct PartPlan {
+struct PartPlan {
     name: &'static str,
     parent: &'static str,
     /// Joint anchor **in the parent's frame**, millimetres.
@@ -432,7 +432,7 @@ pub fn steering_axis() -> Vector3<f64> {
 ///
 /// Fails if a part is composed of no pieces.
 /// Build the part table, in tree order.
-pub fn plan() -> Result<Vec<PartPlan>> {
+fn plan() -> Result<Vec<PartPlan>> {
     let steel = Material::new("mild steel", STEEL_KG_M3);
     let aluminium = Material::new("aluminium 6061", ALUMINIUM_KG_M3);
 
@@ -909,7 +909,7 @@ pub fn plan() -> Result<Vec<PartPlan>> {
 /// Fails if the assembly does not validate — a joint naming a part that does
 /// not exist, a duplicate name, an orphan, or a part both welded and hinged.
 /// Turn the plan into a validated [`Mechanism`], consuming the solids.
-pub fn assemble(plan: Vec<PartPlan>) -> Result<Mechanism> {
+fn assemble(plan: Vec<PartPlan>) -> Result<Mechanism> {
     let mut builder = Mechanism::builder("reverse trike");
     for p in plan {
         builder = builder.part(Part::new(p.name, p.piece.solid, p.material));
