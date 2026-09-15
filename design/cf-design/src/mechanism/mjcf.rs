@@ -687,10 +687,8 @@ mod tests {
         assert!(xml.contains("name=\"b\""), "welded body missing:\n{xml}");
     }
 
-    /// A weld emits no `<joint>`, but the body it attaches must still be
-    /// placed: MuJoCo positions a child body by `<body pos>`, which comes from
-    /// the first joint's anchor whatever kind that joint is. Nothing checked
-    /// that the weld path preserved it.
+    /// A linkage must survive into the XML, or an exported model quietly
+    /// loses the loop it was built to close.
     #[test]
     fn a_linkage_becomes_an_equality_constraint() {
         let m = Mechanism::builder("loop")
@@ -742,6 +740,10 @@ mod tests {
         );
     }
 
+    /// A weld emits no `<joint>`, but the body it attaches must still be
+    /// placed: MuJoCo positions a child body by `<body pos>`, which comes from
+    /// the first joint's anchor whatever kind that joint is. Nothing checked
+    /// that the weld path preserved it.
     #[test]
     fn a_welded_body_keeps_its_pose_in_mjcf() {
         let m = Mechanism::builder("weld_pose")

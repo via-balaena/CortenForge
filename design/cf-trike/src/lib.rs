@@ -983,7 +983,14 @@ fn assemble(plan: Vec<PartPlan>, linkages: Vec<LinkageDef>) -> Result<Mechanism>
         builder = builder.linkage(linkage);
     }
     for p in plan {
-        builder = builder.part(Part::new(p.name, p.piece.solid, p.material));
+        // ⚠ Every part's solid is already built where the part goes, relative
+        // to its own body origin — so the joint IS at that origin. Saying so
+        // matters: without an explicit joint origin `to_model` bbox-aligns an
+        // articulated part's geometry to its anchor, which is right for a
+        // finger segment modelled at the origin and wrong for a vehicle. It
+        // was displacing the front wheels 180 mm and the swingarm 188.
+        builder = builder
+            .part(Part::new(p.name, p.piece.solid, p.material).with_joint_origin(Vector3::zeros()));
         let joint = JointDef::new(
             format!("{}_joint", p.name),
             p.parent,

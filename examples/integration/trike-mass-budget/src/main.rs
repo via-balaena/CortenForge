@@ -46,6 +46,7 @@ use cf_trike::{
 use cf_vehicle::analysis::rollover_threshold_g;
 use cf_vehicle::{CorneringLoads, MassItem, StaticLoads, TrikeSpec};
 use nalgebra::{Point3, UnitQuaternion, Vector3};
+use sim_core::Model;
 
 /// How far a grid-integrated mass may sit from its closed form.
 ///
@@ -99,6 +100,10 @@ const STL_TOLERANCE_MM: f64 = 4.0;
 /// feature finer than a third of a millimetre and wants saying so, not
 /// halving again.
 const MIN_STL_TOLERANCE_MM: f64 = 0.25;
+
+/// How far a part's geometry may sit from its own solid in the physics model.
+/// Measured at 0.00 mm once every part declares its joint origin.
+const MAX_GEOM_DISPLACEMENT_MM: f64 = 0.5;
 
 /// Voxel resolution for the simulation check. Coarse on purpose: this asks
 /// whether the assembly is simulable, not what it collides with, and 8 mm cost
@@ -304,6 +309,20 @@ fn export_stls(
         );
     }
     Ok(())
+}
+
+/// World position of a body at the reference configuration: `body_pos` is
+/// relative to the parent, so composing the chain is a sum.
+fn body_world(model: &Model, mut body: usize) -> Vector3<f64> {
+    let mut at = Vector3::zeros();
+    for _ in 0..model.nbody {
+        if body == 0 {
+            break;
+        }
+        at += model.body_pos[body];
+        body = model.body_parent[body];
+    }
+    at
 }
 
 /// Axis-aligned extent of a mesh.
@@ -697,6 +716,28 @@ fn main() -> Result<()> {
                 "only {} bodies are welded to the root — nothing to check",
                 rigid.len()
             );
+        }
+
+        // ⚠ The model's geometry must sit where the solid says. `to_model`
+        // bbox-aligns an articulated part to its joint anchor unless the part
+        // declares a joint origin — right for a finger segment modelled at the
+        // origin, wrong for a vehicle whose solids are already placed. It was
+        // displacing the front wheels 180 mm and the swingarm 188, and nothing
+        // here would have noticed: the masses come from the solids, and free
+        // fall has no contacts to be in the wrong place for.
+        for d in &derived {
+            let Some(b) = body(&d.name) else {
+                bail!("no body for part {}", d.name);
+            };
+            let in_model = body_world(&model, b) + model.body_ipos[b];
+            let displaced = (in_model - d.world_com_mm).norm();
+            if displaced > MAX_GEOM_DISPLACEMENT_MM {
+                bail!(
+                    "part {} sits {displaced:.1} mm from its solid in the physics \
+                     model — its geometry has been aligned somewhere else",
+                    d.name
+                );
+            }
         }
 
         let mut data = model.make_data();
