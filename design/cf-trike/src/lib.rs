@@ -50,8 +50,10 @@ pub struct Trike {
 #[derive(Debug, Clone, Copy)]
 pub struct PartMetrics {
     /// Closed-form volume in mm³, arithmetic on the same dimensions that built
-    /// the solid and never routed through a grid.
-    pub volume_mm3: f64,
+    /// the solid and never routed through a grid — `None` for authored
+    /// geometry, which has no elementary volume and is checked by refining the
+    /// grid instead.
+    pub volume_mm3: Option<f64>,
     /// Grid spacing fine enough for the part's thinnest feature.
     pub cell_mm: f64,
 }
@@ -82,7 +84,7 @@ pub struct PartMetrics {
 ///
 /// // Each part carries what it takes to weigh it and where it sits.
 /// let spine = t.metrics[cf_trike::ROOT_PART];
-/// assert!(spine.volume_mm3 > 0.0 && spine.cell_mm > 0.0);
+/// assert!(spine.volume_mm3.is_some_and(|v| v > 0.0) && spine.cell_mm > 0.0);
 /// assert!(t.origins[cf_trike::ROOT_PART].x > 0.0);
 /// # Ok::<(), anyhow::Error>(())
 /// ```
@@ -284,10 +286,37 @@ const RIDER_SETTLE_MM: f64 = 5.0;
 /// torso. 230 puts them on the spine ahead of the pan.
 const DIAGONAL_APEX_X_MM: f64 = 230.0;
 
-/// Upright (hub carrier) tube outside diameter.
-const UPRIGHT_OD_MM: f64 = 25.4;
-/// Upright tube wall — thicker than the frame's, it takes the steering loads.
-const UPRIGHT_WALL_MM: f64 = 3.0;
+/// How far the wheel centre sits outboard of the kingpin line.
+///
+/// ★ The kingpin offset, and a real suspension number: it is the lever the
+/// contact patch has about the steering axis, so it sets how much the bars
+/// fight back over bumps and under braking.
+///
+/// ⚠ 37.7 is inherited, not chosen. It is what the stand-in upright happened
+/// to give — half a wheel's width plus a 25.4 mm tube's radius — and it is
+/// stated as a number here because the tube it came from no longer exists.
+/// It wants choosing on its own terms.
+const KINGPIN_OFFSET_MM: f64 = 37.7;
+/// Radius of the front rim's hub disc — what the bearing housing must fit in.
+const FRONT_HUB_R_MM: f64 = 30.0;
+/// Outer radius of the upright's wheel-bearing housing. Sized to live inside
+/// the rim's hub rather than beside it.
+const BEARING_BOSS_R_MM: f64 = 27.0;
+/// Half-length of the same, along the axle.
+const BEARING_BOSS_HALF_MM: f64 = 21.0;
+/// Bore through it, for the stub axle.
+const BEARING_BORE_R_MM: f64 = 16.0;
+/// Radius of the boss carrying a ball joint at each end of the upright.
+const BALL_BOSS_R_MM: f64 = 18.0;
+/// Half-height of the same, along the steering axis.
+const BALL_BOSS_HALF_MM: f64 = 12.0;
+/// Radius of the strut tying the two ball joints past the bearing.
+const UPRIGHT_STRUT_R_MM: f64 = 12.0;
+/// Fillet radius where the upright's members blend.
+///
+/// ⚠ Not decoration. Every one of these joins is a corner in the load path
+/// between a ball joint and the wheel, and a sharp one is where it breaks.
+const UPRIGHT_FILLET_MM: f64 = 8.0;
 
 /// Inboard pickup for both wishbones, from the centreline.
 const ARM_PICKUP_Y_MM: f64 = 120.0;
@@ -363,8 +392,16 @@ const REAR_WHEEL_HALF_WIDTH_MM: f64 = 12.5;
 struct Piece {
     /// The shape itself.
     pub solid: Solid,
-    /// Its closed-form volume, computed beside it.
-    pub volume_mm3: f64,
+    /// Its closed-form volume, computed beside it — `None` when there is not
+    /// one.
+    ///
+    /// ⚠ Stock members have closed forms because they are unions of
+    /// **disjoint** primitives. Authored geometry does not: a part with
+    /// blended fillets, a bearing pocket and a boss has no elementary volume,
+    /// and inventing one would be worse than admitting it. Those are checked
+    /// by refining the grid instead — see the mass oracle in
+    /// `example-trike-mass-budget`.
+    pub volume_mm3: Option<f64>,
 }
 
 /// A tube running between two world points, built in its own frame.
@@ -389,7 +426,7 @@ fn tube_between(a: Point3<f64>, b: Point3<f64>, od: f64, wall: f64) -> (Piece, V
     (
         Piece {
             solid: path(r_outer).subtract(path(r_inner)),
-            volume_mm3: shell(r_outer) - shell(r_inner),
+            volume_mm3: Some(shell(r_outer) - shell(r_inner)),
         },
         mid.coords,
     )
@@ -417,7 +454,7 @@ fn annulus(r_outer: f64, r_inner: f64, half_width: f64) -> Piece {
     Piece {
         solid: Solid::cylinder(r_outer, half_width)
             .subtract(Solid::cylinder(r_inner, half_width * 2.0)),
-        volume_mm3: PI * (r_outer * r_outer - r_inner * r_inner) * 2.0 * half_width,
+        volume_mm3: Some(PI * (r_outer * r_outer - r_inner * r_inner) * 2.0 * half_width),
     }
 }
 
@@ -426,7 +463,7 @@ fn annulus(r_outer: f64, r_inner: f64, half_width: f64) -> Piece {
 fn disc(radius: f64, half_width: f64) -> Piece {
     Piece {
         solid: Solid::cylinder(radius, half_width),
-        volume_mm3: PI * radius * radius * 2.0 * half_width,
+        volume_mm3: Some(PI * radius * radius * 2.0 * half_width),
     }
 }
 
@@ -435,7 +472,7 @@ fn disc(radius: f64, half_width: f64) -> Piece {
 fn slab(half: Vector3<f64>) -> Piece {
     Piece {
         solid: Solid::cuboid(half),
-        volume_mm3: 8.0 * half.x * half.y * half.z,
+        volume_mm3: Some(8.0 * half.x * half.y * half.z),
     }
 }
 
@@ -444,8 +481,9 @@ fn slab(half: Vector3<f64>) -> Piece {
 fn capsule(radius: f64, half_height: f64) -> Piece {
     Piece {
         solid: Solid::capsule(radius, half_height),
-        volume_mm3: PI * radius * radius * 2.0 * half_height
-            + 4.0 / 3.0 * PI * radius * radius * radius,
+        volume_mm3: Some(
+            PI * radius * radius * 2.0 * half_height + 4.0 / 3.0 * PI * radius * radius * radius,
+        ),
     }
 }
 
@@ -473,6 +511,65 @@ fn tilted(p: Piece, angle_rad: f64) -> Piece {
     }
 }
 
+/// The front upright — the first part here that is designed rather than stood
+/// in for.
+///
+/// It carries four interfaces and exists to hold them in the right places:
+/// a ball joint at each end of the steering axis, a wheel bearing outboard,
+/// and the strut that ties them. The line through the two balls IS the
+/// steering axis, so the geometry is what makes caster real.
+///
+/// ⚠ **No closed-form volume.** The members are blended, not disjoint, and
+/// the bore is subtracted — there is no elementary volume, and the honest
+/// answer is `None` rather than a sum that quietly double-counts every
+/// fillet. Its mass is checked by refining the grid instead.
+fn front_upright(sign: f64) -> Piece {
+    let axis = steering_axis();
+    let upper = axis * (UPPER_BALL_Z_MM - LOWER_BALL_Z_MM);
+    let wheel = Vector3::new(
+        0.0,
+        sign * KINGPIN_OFFSET_MM,
+        FRONT_RADIUS_MM - LOWER_BALL_Z_MM,
+    );
+    // Bosses lie along the steering axis; the bearing lies along the axle.
+    let lean = UnitQuaternion::rotation_between(&Vector3::z(), &axis)
+        .unwrap_or_else(UnitQuaternion::identity);
+    let boss = |at: Vector3<f64>| {
+        Solid::cylinder(BALL_BOSS_R_MM, BALL_BOSS_HALF_MM)
+            .rotate(lean)
+            .translate(at)
+    };
+    let housing = Solid::cylinder(BEARING_BOSS_R_MM, BEARING_BOSS_HALF_MM)
+        .rotate(UnitQuaternion::from_axis_angle(
+            &Vector3::x_axis(),
+            FRAC_PI_2,
+        ))
+        .translate(wheel);
+    // One strut from ball to ball, mitred as it passes the bearing.
+    let strut = Solid::pipe(
+        vec![Point3::origin(), Point3::from(wheel), Point3::from(upper)],
+        UPRIGHT_STRUT_R_MM,
+    );
+
+    let body = Solid::smooth_union_all(
+        vec![boss(Vector3::zeros()), boss(upper), housing, strut],
+        UPRIGHT_FILLET_MM,
+    );
+    // Through-bore for the stub axle, and it must clear the housing on both
+    // faces or it is a blind pocket.
+    let bore = Solid::cylinder(BEARING_BORE_R_MM, BEARING_BOSS_HALF_MM * 2.0)
+        .rotate(UnitQuaternion::from_axis_angle(
+            &Vector3::x_axis(),
+            FRAC_PI_2,
+        ))
+        .translate(wheel);
+
+    Piece {
+        solid: body.subtract(bore),
+        volume_mm3: None,
+    }
+}
+
 /// Union of **disjoint** pieces: the analytic volume is their sum, which is
 /// true only because nothing here overlaps anything else in the same part.
 ///
@@ -484,9 +581,15 @@ fn joined(pieces: Vec<Piece>) -> Result<Piece> {
     let Some(first) = it.next() else {
         bail!("a part needs at least one piece");
     };
+    // ⚠ Sums only when every piece knows its own volume. One authored piece
+    // with no closed form makes the union's unknown too, which is the honest
+    // answer rather than a total that silently omits a term.
     Ok(it.fold(first, |acc, p| Piece {
         solid: acc.solid.union(p.solid),
-        volume_mm3: acc.volume_mm3 + p.volume_mm3,
+        volume_mm3: match (acc.volume_mm3, p.volume_mm3) {
+            (Some(a), Some(b)) => Some(a + b),
+            _ => None,
+        },
     }))
 }
 
@@ -538,7 +641,7 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
     //
     // Uprights sit inboard of the wheels by half a wheel's width plus the
     // upright's own radius, so the contact patches land on the nominal track.
-    let upright_y = TRACK_MM / 2.0 - (FRONT_WHEEL_HALF_WIDTH_MM + UPRIGHT_OD_MM / 2.0);
+    let upright_y = TRACK_MM / 2.0 - KINGPIN_OFFSET_MM;
 
     // Nose, the two kingpin bases, the apex the diagonals meet, and the tail.
     let node = |x: f64, y: f64| Point3::new(x, y, FRAME_Z_MM);
@@ -603,14 +706,6 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
             Point3::new(0.0, sign * ARM_PICKUP_Y_MM, UPPER_PIVOT_Z_MM),
             TOWER_OD_MM,
             TOWER_WALL_MM,
-        )
-    };
-    let upright_piece = |sign: f64| {
-        tube_from(
-            lower_ball(sign),
-            upper_ball(sign),
-            UPRIGHT_OD_MM,
-            UPRIGHT_WALL_MM,
         )
     };
     let bush = Bushing::from_shore_a(
@@ -913,7 +1008,7 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
             axis: steering_axis(),
             range_rad: None,
             material: steel.clone(),
-            piece: upright_piece(1.0).0,
+            piece: front_upright(1.0),
             cell_mm: 0.5,
             bushing: None,
         },
@@ -1005,7 +1100,7 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
             axis: steering_axis(),
             range_rad: None,
             material: steel.clone(),
-            piece: upright_piece(-1.0).0,
+            piece: front_upright(-1.0),
             cell_mm: 0.5,
             bushing: None,
         },
@@ -1023,7 +1118,7 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
             material: aluminium.clone(),
             piece: joined(vec![
                 onto_y(annulus(FRONT_RIM_OUTER_MM, FRONT_RIM_INNER_MM, 15.0)),
-                onto_y(disc(30.0, FRONT_WHEEL_HALF_WIDTH_MM)),
+                onto_y(disc(FRONT_HUB_R_MM, FRONT_WHEEL_HALF_WIDTH_MM)),
             ])?,
             // ⚠ 1.0, not 2.0: the rim section is 6 mm, and three cells across
             // a wall put the integrator 0.688% off its closed form.
@@ -1044,7 +1139,7 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
             material: aluminium.clone(),
             piece: joined(vec![
                 onto_y(annulus(FRONT_RIM_OUTER_MM, FRONT_RIM_INNER_MM, 15.0)),
-                onto_y(disc(30.0, FRONT_WHEEL_HALF_WIDTH_MM)),
+                onto_y(disc(FRONT_HUB_R_MM, FRONT_WHEEL_HALF_WIDTH_MM)),
             ])?,
             // ⚠ 1.0, not 2.0: the rim section is 6 mm, and three cells across
             // a wall put the integrator 0.688% off its closed form.
@@ -1477,11 +1572,11 @@ mod tests {
     fn every_metric_is_physical() {
         let t = trike().unwrap();
         for (name, m) in &t.metrics {
-            assert!(
-                m.volume_mm3.is_finite() && m.volume_mm3 > 0.0,
-                "{name} has volume {}",
-                m.volume_mm3
-            );
+            // ⚠ `None` is allowed and means "authored geometry, no elementary
+            // volume"; a *present* volume still has to be a real one.
+            if let Some(v) = m.volume_mm3 {
+                assert!(v.is_finite() && v > 0.0, "{name} has volume {v}");
+            }
             assert!(
                 m.cell_mm.is_finite() && m.cell_mm > 0.0,
                 "{name} has cell {}",
@@ -1490,25 +1585,48 @@ mod tests {
         }
     }
 
-    /// Each upright's outer wall meets its wheel's inboard face.
+    /// The bearing bore goes through the upright, and there is metal round it.
     ///
-    /// ⚠ This replaced a check that the front wheels sit `TRACK_MM` apart.
-    /// They do — and they do so for any upright position, because the wheel's
-    /// anchor is `TRACK_MM / 2 - upright_y` on a parent at `upright_y`, which
-    /// cancels. That assertion compared `TRACK_MM` with itself; moving the
-    /// uprights 3 mm left it green. What the track actually buys is where the
-    /// contact patches land, and that depends on this fit.
+    /// ⚠ This replaced a check that the upright's outer wall met the wheel's
+    /// inboard face. That was a statement about a 25.4 mm tube, and the tube
+    /// is gone — the upright is authored now, so the question is whether the
+    /// shape it describes is a housing or a lump.
+    ///
+    /// ★ Measured on the solid, not on the constants that built it. Asserting
+    /// `BEARING_BORE_R_MM < BEARING_BOSS_R_MM` is arithmetic the compiler
+    /// could do; whether a subtracted cylinder actually clears both faces is
+    /// not, and a bore that stops short is a blind pocket you cannot get an
+    /// axle through.
     #[test]
-    fn each_upright_meets_the_wheel_it_carries() {
+    fn the_bearing_bore_runs_right_through_the_upright() {
         let t = trike().unwrap();
-        for (upright, rim) in [("upright_l", "rim_fl"), ("upright_r", "rim_fr")] {
-            let outer_wall = t.origins[upright].y.abs() + UPRIGHT_OD_MM / 2.0;
-            let inboard_face = t.origins[rim].y.abs() - FRONT_WHEEL_HALF_WIDTH_MM;
+        let upright = t
+            .mechanism
+            .parts()
+            .iter()
+            .find(|p| p.name() == "upright_l")
+            .unwrap();
+        let solid = upright.solid();
+        let wheel_y = KINGPIN_OFFSET_MM;
+        let wheel_z = FRONT_RADIUS_MM - LOWER_BALL_Z_MM;
+
+        // Along the axle, from one face of the boss to the other: all air.
+        for k in -10..=10 {
+            let y = wheel_y + f64::from(k) / 10.0 * BEARING_BOSS_HALF_MM;
+            let at = Point3::new(0.0, y, wheel_z);
             assert!(
-                (outer_wall - inboard_face).abs() < 1e-9,
-                "{upright} ends at {outer_wall} mm and {rim} starts at \
-                 {inboard_face} mm — a gap here moves the contact patch off \
-                 the {TRACK_MM} mm track the rollover threshold is read from"
+                solid.evaluate(&at) > 0.0,
+                "the bore is blocked at y {y:.1} — it is a pocket, not a bore"
+            );
+        }
+
+        // And a ring of metal around it, or the bore has eaten the housing.
+        let mid_r = f64::midpoint(BEARING_BORE_R_MM, BEARING_BOSS_R_MM);
+        for (dx, dz) in [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
+            let at = Point3::new(dx * mid_r, wheel_y, wheel_z + dz * mid_r);
+            assert!(
+                solid.evaluate(&at) < 0.0,
+                "no metal at {at:?} — the housing is a rim of nothing"
             );
         }
     }
@@ -1724,9 +1842,9 @@ mod tests {
 
         for (name, m) in &a.metrics {
             let n = b.metrics[name];
+            assert_eq!(m.volume_mm3, n.volume_mm3, "{name} differs between builds");
             assert!(
-                (m.volume_mm3 - n.volume_mm3).abs() < f64::EPSILON
-                    && (m.cell_mm - n.cell_mm).abs() < f64::EPSILON,
+                (m.cell_mm - n.cell_mm).abs() < f64::EPSILON,
                 "{name} differs between builds"
             );
             assert_eq!(a.origins[name], b.origins[name], "{name} moved");

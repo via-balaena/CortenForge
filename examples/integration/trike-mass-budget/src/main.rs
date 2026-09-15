@@ -159,7 +159,12 @@ fn merged(a: &Aabb, b: &Aabb) -> Aabb {
 struct Derived {
     name: String,
     grid_kg: f64,
-    closed_form_kg: f64,
+    /// The closed form to check against, or `None` for authored geometry —
+    /// see [`Derived::relative_error`].
+    closed_form_kg: Option<f64>,
+    /// The same part integrated on a grid one step finer. Only carried when
+    /// there is no closed form, because that refinement is what replaces it.
+    refined_kg: Option<f64>,
     world_com_mm: Vector3<f64>,
     /// The part's box, placed in the world frame.
     world_bounds: Aabb,
@@ -167,9 +172,29 @@ struct Derived {
 }
 
 impl Derived {
-    /// How far the grid integrator sits from the closed form.
+    /// How far the grid integrator sits from the truth, however it is known.
+    ///
+    /// ★ Two ways, because authored geometry has only one of them. A part
+    /// built from **disjoint** primitives has an elementary volume, and the
+    /// grid is checked against it. A part with blended fillets, a pocket and a
+    /// boss has no such volume — inventing one would be worse than admitting
+    /// it — so the grid is checked against **itself, refined**: integrate at
+    /// the cell, integrate at half the cell, and require them to agree.
+    ///
+    /// ⚠ A convergence check is weaker. It catches a grid too coarse for the
+    /// feature, which is the failure that actually happens here, but it cannot
+    /// catch a solid that is the wrong shape in a way that refines smoothly.
     fn relative_error(&self) -> f64 {
-        (self.grid_kg - self.closed_form_kg).abs() / self.closed_form_kg
+        match (self.closed_form_kg, self.refined_kg) {
+            (Some(closed), _) => (self.grid_kg - closed).abs() / closed,
+            (None, Some(fine)) => (self.grid_kg - fine).abs() / fine,
+            (None, None) => f64::INFINITY,
+        }
+    }
+
+    /// What the grid was compared against, for the table.
+    fn reference_kg(&self) -> Option<f64> {
+        self.closed_form_kg.or(self.refined_kg)
     }
 }
 
@@ -201,7 +226,20 @@ fn derive(
         out.push(Derived {
             name: part.name().to_owned(),
             grid_kg: props.mass,
-            closed_form_kg: volume_mm3 * 1e-9 * density,
+            closed_form_kg: volume_mm3.map(|v| v * 1e-9 * density),
+            refined_kg: match volume_mm3 {
+                Some(_) => None,
+                // No closed form: integrate again at half the cell. If the
+                // coarse pass had missed a feature, halving it would move the
+                // answer.
+                None => match mass_properties(part.solid(), density, cell_mm / 2.0) {
+                    Some(fine) => Some(fine.mass),
+                    None => bail!(
+                        "part {} vanished at half its cell, so nothing checks its mass",
+                        part.name()
+                    ),
+                },
+            },
             world_com_mm: origin + props.center_of_mass.coords,
             world_bounds: Aabb::new(
                 Point3::from(local.min.coords + origin),
@@ -438,14 +476,14 @@ fn main() -> Result<()> {
     println!();
     println!(
         "{:<12} {:>10} {:>12} {:>9}   {:>8} {:>8} {:>8} {:>7} {:>9}",
-        "part", "grid kg", "closed kg", "rel err", "com x", "com y", "com z", "cell", "cells"
+        "part", "grid kg", "checked vs", "rel err", "com x", "com y", "com z", "cell", "cells"
     );
     for d in &derived {
         println!(
             "{:<12} {:>10.4} {:>12.4} {:>8.3}% {:>9.1} {:>8.1} {:>8.1} {:>7.1} {:>8.2}M",
             d.name,
             d.grid_kg,
-            d.closed_form_kg,
+            d.reference_kg().unwrap_or(f64::NAN),
             d.relative_error() * 100.0,
             d.world_com_mm.x,
             d.world_com_mm.y,
@@ -461,18 +499,18 @@ fn main() -> Result<()> {
         .max_by(|a, b| a.relative_error().total_cmp(&b.relative_error()));
     if let Some(w) = worst {
         println!(
-            "\nworst grid-vs-closed-form error: {:.3}% on {} (tolerance {:.1}%)",
+            "\nworst grid error (closed form, or the grid refined): {:.3}% on {} (tolerance {:.1}%)",
             w.relative_error() * 100.0,
             w.name,
             MASS_TOLERANCE * 100.0
         );
         if w.relative_error() > MASS_TOLERANCE {
             bail!(
-                "part {} integrated to {:.4} kg but its closed form is {:.4} kg — \
+                "part {} integrated to {:.4} kg against a reference of {:.4} kg — \
                  {:.3}% apart, over the {:.1}% tolerance",
                 w.name,
                 w.grid_kg,
-                w.closed_form_kg,
+                w.reference_kg().unwrap_or(f64::NAN),
                 w.relative_error() * 100.0,
                 MASS_TOLERANCE * 100.0
             );
@@ -1039,13 +1077,13 @@ fn main() -> Result<()> {
     // and they are supposed to fire so the new numbers get read.
     let mut drifted: Vec<String> = Vec::new();
     for (label, got, want) in [
-        ("total mass (kg)", spec.total_mass_kg(), 103.365_280_021),
-        ("cg x (m)", spec.cg_x_m(), 0.379_334_083),
-        ("cg z (m)", spec.cg_z_m(), 0.402_329_855),
+        ("total mass (kg)", spec.total_mass_kg(), 106.218_695_337),
+        ("cg x (m)", spec.cg_x_m(), 0.369_270_791),
+        ("cg z (m)", spec.cg_z_m(), 0.397_241_922),
         (
             "rollover threshold (g)",
             rollover_threshold_g(&spec),
-            0.779_061_573,
+            0.798_159_754,
         ),
     ] {
         if (got - want).abs() > want.abs() * PIN_TOLERANCE {
