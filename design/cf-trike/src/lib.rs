@@ -267,6 +267,13 @@ const LEGS_HALF_MM: f64 = 340.0;
 /// came 0.835% off its closed form — over tolerance — because a tilted plate
 /// three cells thick is nearly all boundary. A seat shell is not foil anyway.
 const SEAT_PANEL_HALF_MM: f64 = 3.0;
+/// How far the rider settles into the seat.
+///
+/// Flesh and a cushion compress, so a rider rests slightly *in* the seat
+/// rather than balanced on it. It also keeps the contact off a knife edge:
+/// the weld gate wants parts that touch, and exact tangency leaves that to
+/// the last bit of a float.
+const RIDER_SETTLE_MM: f64 = 5.0;
 
 /// Where the two front diagonals meet the spine. Further aft makes a shallower
 /// triangle: stiffer in bending, heavier, and it eats the space the seat wants.
@@ -681,7 +688,28 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
     // Pedals sit a leg's reach ahead of the hip and a little above it; the
     // horizontal run is what is left of the leg after the rise.
     let leg_run = (LEG_REACH_MM * LEG_REACH_MM - LEG_RISE_MM * LEG_RISE_MM).sqrt();
-    let bottom_bracket = Point3::new(HIP_X_MM - leg_run, 0.0, HIP_Z_MM + LEG_RISE_MM);
+    // ⚠ The rider's hip joint is NOT the seat's hip node. `hip()` is where the
+    // rails meet — a structural point on the frame — and taking it as the
+    // rider's put a 105 mm-radius thigh axis on the pan's centreline, so the
+    // legs ran 96 mm through the panel they are supposed to rest on. A person
+    // sits ON the pan: the hip joint is a thigh's radius above its face.
+    //
+    // ★ Its height is set by where the leg TOUCHES, not by the thigh radius.
+    // The capsule is shorter than the leg it stands for, so its rear cap hangs
+    // below the axis and reaches the pan first; lifting by a plain radius left
+    // the rider floating 31 mm above the seat, which the weld gate caught.
+    let leg_axis_rise = LEG_RISE_MM / LEG_REACH_MM;
+    let cap_back_from_hip = LEG_REACH_MM / 2.0 - LEGS_HALF_MM;
+    let rider_hip = Point3::new(
+        HIP_X_MM,
+        0.0,
+        pan_panel_at.z + SEAT_PANEL_HALF_MM + LEGS_RADIUS_MM
+            - cap_back_from_hip * leg_axis_rise
+            - RIDER_SETTLE_MM,
+    );
+    // Pedals keep their reach and rise from the hip, so lifting the rider
+    // lifts them with it rather than stretching the leg.
+    let bottom_bracket = Point3::new(HIP_X_MM - leg_run, 0.0, rider_hip.z + LEG_RISE_MM);
     // ⚠ Clear of the seat back, not in it. This was the rail centreline, so a
     // 170 mm-radius torso was centred in the plane of the panel and half the
     // rider sat behind the seat. The masses and volumes were right throughout;
@@ -691,9 +719,10 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
     // Half a tube to the panel, its own half-thickness to the panel's face,
     // and a torso radius from there.
     let torso_at = (hip(0.0).coords + back_top(0.0).coords) / 2.0
-        + back_normal * (SEAT_TUBE_OD_MM / 2.0 + SEAT_PANEL_HALF_MM + TORSO_RADIUS_MM);
-    let legs_at = (hip(0.0).coords + bottom_bracket.coords) / 2.0;
-    let legs_dir = bottom_bracket - hip(0.0);
+        + back_normal
+            * (SEAT_TUBE_OD_MM / 2.0 + SEAT_PANEL_HALF_MM + TORSO_RADIUS_MM - RIDER_SETTLE_MM);
+    let legs_at = (rider_hip.coords + bottom_bracket.coords) / 2.0;
+    let legs_dir = bottom_bracket - rider_hip;
 
     // ── The loop the tree cannot hold ───────────────────────────────
     //
@@ -1625,12 +1654,40 @@ mod tests {
         let normal = Vector3::new(-recline.cos(), 0.0, recline.sin());
         let gap = (t.origins["rider_torso"] - t.origins["seat_back"]).dot(&normal);
 
-        let want = TORSO_RADIUS_MM + SEAT_PANEL_HALF_MM;
+        let want = TORSO_RADIUS_MM + SEAT_PANEL_HALF_MM - RIDER_SETTLE_MM;
         assert!(
             gap >= want - 1e-9,
             "the torso axis is {gap:.1} mm off the seat back and needs \
              {want:.1} — the rider is {:.0} mm inside the seat",
             want - gap
+        );
+    }
+
+    /// The legs rest on the seat pan rather than passing through it.
+    ///
+    /// Same defect as the torso, and found the same way. The seat's hip node
+    /// is a point on the frame where the rails meet; taking it as the rider's
+    /// hip joint put a 105 mm-radius thigh axis on the pan's centreline, so
+    /// the legs ran 96 mm through the panel they sit on.
+    ///
+    /// ⚠ Checked from the placement, not from the derivation: the capsule's
+    /// rear cap is the part that reaches the pan, and this asks where that cap
+    /// ended up. The floating case — the other way to get this wrong — is
+    /// caught downstream by the weld oracle, which fired at 31 mm.
+    #[test]
+    fn the_legs_rest_on_the_seat_pan() {
+        let t = trike().unwrap();
+        let rise = LEG_RISE_MM / LEG_REACH_MM;
+        let cap_centre_z = t.origins["rider_legs"].z - LEGS_HALF_MM * rise;
+        let pan_face_z = t.origins["seat_pan"].z + SEAT_PANEL_HALF_MM;
+
+        let stand_off = cap_centre_z - pan_face_z;
+        let want = LEGS_RADIUS_MM - RIDER_SETTLE_MM;
+        assert!(
+            stand_off >= want - 1e-9,
+            "the thigh axis stands {stand_off:.1} mm off the pan and needs \
+             {want:.1} — the legs are {:.0} mm into the seat",
+            want - stand_off
         );
     }
 
