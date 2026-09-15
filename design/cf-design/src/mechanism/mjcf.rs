@@ -21,6 +21,7 @@
 //! | [`JointDef`](super::JointDef) (Prismatic) | `<joint type="slide">` |
 //! | [`JointDef`](super::JointDef) (Ball) | `<joint type="ball">` |
 //! | [`JointDef`](super::JointDef) (Free) | `<freejoint>` |
+//! | [`JointDef`](super::JointDef) (Fixed) | **nothing** — a jointless body is welded to its parent |
 //! | [`TendonDef`](super::TendonDef) | `<spatial>` tendon with `<site>` waypoints |
 //! | [`ActuatorDef`](super::ActuatorDef) (Motor) | `<general>` actuator |
 //! | [`ActuatorDef`](super::ActuatorDef) (Muscle) | `<muscle>` actuator |
