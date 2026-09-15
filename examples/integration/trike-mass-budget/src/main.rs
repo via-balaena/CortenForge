@@ -552,6 +552,10 @@ fn world_origins(mechanism: &Mechanism) -> Result<HashMap<String, Vector3<f64>>>
             }
             cursor = parent;
             hops += 1;
+            // ⚠ Not redundant: `MechanismBuilder::validate` checks duplicates,
+            // cross-references and orphans, but NOT cycles — a part that is its
+            // own ancestor builds happily and only surfaces at `to_model`, as
+            // `MechanismError::PartNotReachable`. Without this the walk spins.
             if hops > mechanism.parts().len() {
                 bail!(
                     "the joint chain from {} never reaches the world",
