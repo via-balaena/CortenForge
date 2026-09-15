@@ -937,7 +937,7 @@ $ cargo xtask grade mesh-types
 ╚══════════════════════════════════════════════════════════════╝
 ```
 
-`cargo xtask grade-all` runs the full sweep over all 301 workspace crates and reports a workspace-level pass/fail. It's the same gate CI runs (with `--skip-coverage` for runtime; coverage is a local-only gate per the note below).
+`cargo xtask grade-all` runs the full sweep over every workspace crate and reports a workspace-level pass/fail. It's the same gate CI runs (with `--skip-coverage` for runtime; coverage is a local-only gate per the note below).
 
 ⚠ **`xtask grade` cannot be run concurrently with itself.** The instrumented
 build uses one shared coverage target directory and resets it whenever the
