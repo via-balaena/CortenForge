@@ -1039,13 +1039,13 @@ fn main() -> Result<()> {
     // and they are supposed to fire so the new numbers get read.
     let mut drifted: Vec<String> = Vec::new();
     for (label, got, want) in [
-        ("total mass (kg)", spec.total_mass_kg(), 105.134_566_389),
-        ("cg x (m)", spec.cg_x_m(), 0.375_913_088),
-        ("cg z (m)", spec.cg_z_m(), 0.397_393_689),
+        ("total mass (kg)", spec.total_mass_kg(), 103.365_280_021),
+        ("cg x (m)", spec.cg_x_m(), 0.379_334_083),
+        ("cg z (m)", spec.cg_z_m(), 0.402_329_855),
         (
             "rollover threshold (g)",
             rollover_threshold_g(&spec),
-            0.791_837_658,
+            0.779_061_573,
         ),
     ] {
         if (got - want).abs() > want.abs() * PIN_TOLERANCE {

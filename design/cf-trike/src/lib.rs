@@ -275,9 +275,14 @@ const SEAT_PANEL_HALF_MM: f64 = 3.0;
 /// the last bit of a float.
 const RIDER_SETTLE_MM: f64 = 5.0;
 
-/// Where the two front diagonals meet the spine. Further aft makes a shallower
-/// triangle: stiffer in bending, heavier, and it eats the space the seat wants.
-const DIAGONAL_APEX_X_MM: f64 = 450.0;
+/// Where the two front diagonals meet the spine.
+///
+/// Further aft makes a shallower triangle: stiffer in bending, heavier, and it
+/// eats the space the seat wants. ⚠ That last clause stopped being a caution
+/// and became a measurement when the diagonals were re-aimed at the tower
+/// tops — at 450 they ran clean through the seat pan, the rider's legs and his
+/// torso. 230 puts them on the spine ahead of the pan.
+const DIAGONAL_APEX_X_MM: f64 = 230.0;
 
 /// Upright (hub carrier) tube outside diameter.
 const UPRIGHT_OD_MM: f64 = 25.4;
@@ -537,17 +542,33 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
 
     // Nose, the two kingpin bases, the apex the diagonals meet, and the tail.
     let node = |x: f64, y: f64| Point3::new(x, y, FRAME_Z_MM);
+    let node_at = |x: f64, y: f64, z: f64| Point3::new(x, y, z);
     let front_centre = node(0.0, 0.0);
-    let kingpin_l = node(0.0, upright_y);
-    let kingpin_r = node(0.0, -upright_y);
+    // ⚠ The frame ends at the suspension pickups, not out at the wheel.
+    //
+    // With rigid uprights it ran all the way to the kingpin, and that point is
+    // now the lower BALL JOINT — so the old cross-member and both diagonals
+    // reached 292 mm past the pickups, through the volume the lower wishbone
+    // swings in, welding the suspension solid. Every gate passed: the bump
+    // sweep only tested the travel extremes and never the rest pose, and a
+    // scan of non-joined pairs is what found it.
+    let pickup_l = node(0.0, ARM_PICKUP_Y_MM);
+    let pickup_r = node(0.0, -ARM_PICKUP_Y_MM);
     let apex = node(DIAGONAL_APEX_X_MM, 0.0);
     let tail = node(WHEELBASE_MM - TAIL_SETBACK_MM, 0.0);
 
     let member = |a, b| tube_between(a, b, FRAME_OD_MM, FRAME_WALL_MM);
     let (spine, spine_at) = member(front_centre, tail);
-    let (cross, cross_at) = member(kingpin_l, kingpin_r);
-    let (brace_left, brace_left_at) = member(kingpin_l, apex);
-    let (brace_right, brace_right_at) = member(kingpin_r, apex);
+    let (cross, cross_at) = member(pickup_l, pickup_r);
+    // ★ The diagonals brace the TOWER TOPS back to the spine, not the pickups.
+    //
+    // In the wishbone's own plane a diagonal ending at the pickup sits on the
+    // arm's pivot axis, so the arm can never move off it — the bump sweep said
+    // so the moment the frame was narrowed. Tying the tower top back instead
+    // reacts the upper arm's loads and leaves the lower arm's plane empty.
+    let tower_top = |sign: f64| node_at(0.0, sign * ARM_PICKUP_Y_MM, UPPER_PIVOT_Z_MM);
+    let (brace_left, brace_left_at) = member(tower_top(1.0), apex);
+    let (brace_right, brace_right_at) = member(tower_top(-1.0), apex);
     // ── The front suspension ────────────────────────────────────────
     //
     // Double wishbone. The upright is held at two ball joints, and the line
