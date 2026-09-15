@@ -61,10 +61,10 @@ pub enum MechanismError {
     DuplicateActuator(String),
     /// A part is welded and articulated at the same time.
     ///
-    /// A [`JointKind::Fixed`] joint says the child cannot move relative to its
-    /// parent; any other joint on the same child says it can. The two cannot
-    /// both hold, and physics would silently keep the articulation and discard
-    /// the weld, so this is refused instead.
+    /// A [`JointKind::Fixed`](super::JointKind::Fixed) joint says the child cannot
+    /// move relative to its parent; any other joint on the same child says it
+    /// can. The two cannot both hold, and physics would silently keep the
+    /// articulation and discard the weld, so this is refused instead.
     PartIsWeldedAndArticulated {
         /// The child part carrying both.
         part: String,
