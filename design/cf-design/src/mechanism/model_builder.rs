@@ -885,7 +885,10 @@ fn push_geom(
 }
 
 /// Compute geom position offset for child parts (same logic as mjcf.rs).
-fn compute_geom_offset(part: &Part, joints_on: &HashMap<&str, Vec<&JointDef>>) -> Vector3<f64> {
+pub(super) fn compute_geom_offset(
+    part: &Part,
+    joints_on: &HashMap<&str, Vec<&JointDef>>,
+) -> Vector3<f64> {
     let jlist = match joints_on.get(part.name()) {
         Some(jl) if !jl.is_empty() => jl,
         _ => return Vector3::zeros(), // root body

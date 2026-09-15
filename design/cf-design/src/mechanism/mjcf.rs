@@ -33,13 +33,11 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
-use nalgebra::Vector3;
-
 use super::actuator::ActuatorKind;
 use super::builder::Mechanism;
 use super::joint::{JointDef, JointKind};
 use super::linkage::LinkageKind;
-use super::model_builder::{LINKAGE_SOLIMP, LINKAGE_SOLREF};
+use super::model_builder::{LINKAGE_SOLIMP, LINKAGE_SOLREF, compute_geom_offset};
 use super::part::Part;
 use super::tendon::TendonDef;
 
@@ -318,69 +316,6 @@ fn write_body(
 
     let _ = writeln!(xml, "{pad}</body>");
 }
-
-/// Compute a geom position offset so child parts extend outward from the joint.
-///
-/// For root bodies (no joints), returns zero. For child bodies with an explicit
-/// `joint_origin`, returns `-origin` (the mesh point that should coincide with
-/// the joint). Otherwise falls back to bbox-based alignment: the near edge of
-/// the bounding box (on the longest axis) is placed at the body origin so the
-/// part extends outward from the joint.
-fn compute_geom_offset(part: &Part, joints_on: &HashMap<&str, Vec<&JointDef>>) -> Vector3<f64> {
-    let jlist = match joints_on.get(part.name()) {
-        Some(jl) if !jl.is_empty() => jl,
-        _ => return Vector3::zeros(), // root body — no offset needed
-    };
-
-    // Explicit joint origin — the user declared exactly where the part attaches.
-    if let Some(origin) = part.joint_origin() {
-        return -origin;
-    }
-
-    let anchor = jlist[0].anchor();
-    let anchor_vec = anchor.coords;
-    let anchor_norm = anchor_vec.norm();
-    if anchor_norm < 1e-10 {
-        return Vector3::zeros();
-    }
-
-    // Compute bounding box from a coarse mesh (just for extents).
-    let mesh = part.solid().mesh(1.0);
-    if mesh.geometry.vertices.is_empty() {
-        return Vector3::zeros();
-    }
-
-    let mut min = mesh.geometry.vertices[0].coords;
-    let mut max = mesh.geometry.vertices[0].coords;
-    for v in &mesh.geometry.vertices {
-        min = min.inf(&v.coords);
-        max = max.sup(&v.coords);
-    }
-    let extents = max - min;
-    let center = (max + min) * 0.5;
-
-    // Find the bbox's longest axis — that's the part's primary extension direction.
-    let longest_axis = if extents.x >= extents.y && extents.x >= extents.z {
-        0
-    } else if extents.y >= extents.z {
-        1
-    } else {
-        2
-    };
-
-    // Near edge: the bbox edge closest to the parent (toward the joint).
-    // If the anchor points in the +Z direction, the near edge is min[Z].
-    // Offset = -near_edge so the near edge sits at the body origin (the joint).
-    let near_edge = if anchor_vec[longest_axis] >= 0.0 {
-        min[longest_axis]
-    } else {
-        max[longest_axis]
-    };
-    let mut offset = center;
-    offset[longest_axis] = -near_edge;
-    offset
-}
-
 /// Write a single `<joint>` or `<freejoint>` element.
 ///
 /// `body_anchor` is the body's position in parent frame (from the first joint).
@@ -777,13 +712,78 @@ mod tests {
         assert!(xml.contains("<freejoint"), "the base lost its free joint");
     }
 
+    /// The file places geometry inside a body where the model does.
+    ///
+    /// ⚠ `compute_geom_offset` used to exist twice, once per path, and the
+    /// copies had drifted: `Fixed` and `Free` were exempted from bbox
+    /// alignment on the model side only. A welded part therefore sat 100 mm
+    /// away in the exported file, and every body-level check agreed, because
+    /// the bodies were right and only the geometry inside them was not.
+    ///
+    /// There is one implementation now. This is what keeps it that way.
+    #[test]
+    fn the_file_places_geometry_where_the_model_does() {
+        for kind in [JointKind::Fixed, JointKind::Free, JointKind::Revolute] {
+            let m = Mechanism::builder("g")
+                .part(sphere_part("base"))
+                .part(Part::new(
+                    "arm",
+                    Solid::cuboid(nalgebra::Vector3::new(100.0, 5.0, 5.0)),
+                    Material::new("steel", 7850.0),
+                ))
+                .joint(JointDef::new(
+                    "j",
+                    "base",
+                    "arm",
+                    kind,
+                    Point3::new(40.0, 0.0, 0.0),
+                    Vector3::y(),
+                ))
+                .build();
+
+            let model = m.to_model(4.0, 4.0).unwrap();
+            let xml = m.to_mjcf(4.0);
+
+            let line = xml.lines().find(|l| l.contains("mesh=\"arm_mesh\""));
+            assert!(line.is_some(), "no geom for arm:\n{xml}");
+            let in_file = line.unwrap().find("pos=\"").map_or([0.0; 3], |i| {
+                let r = &line.unwrap()[i + 5..];
+                let v: Vec<f64> = r[..r.find('"').unwrap()]
+                    .split_whitespace()
+                    .map(|x| x.parse().unwrap())
+                    .collect();
+                [v[0], v[1], v[2]]
+            });
+
+            let gid = model
+                .geom_body
+                .iter()
+                .position(|&b| model.body_name[b].as_deref() == Some("arm"));
+            assert!(gid.is_some(), "the model has no geom on arm");
+            let in_model = model.geom_pos[gid.unwrap()];
+
+            for (k, want) in [in_model.x, in_model.y, in_model.z].iter().enumerate() {
+                assert!(
+                    (in_file[k] - want).abs() < 1e-9,
+                    "with a {kind:?} joint the file puts the geometry at \
+                     {in_file:?} and the model at [{}, {}, {}]",
+                    in_model.x,
+                    in_model.y,
+                    in_model.z
+                );
+            }
+        }
+    }
+
     /// The file's body tree is the model's body tree.
     ///
     /// Both paths turn one mechanism into a set of placed bodies, and this
-    /// branch found them disagreeing twice: geometry offset by up to 188 mm,
-    /// then an export with no bodies at all. Body *count* would have caught
-    /// only the second. This walks both trees and compares parentage and
-    /// world position, which is the claim a consumer of the file relies on.
+    /// branch found them disagreeing once, with an export that had no bodies
+    /// at all. Body *count* alone would have caught that; parentage and world
+    /// position are what a consumer of the file actually relies on.
+    ///
+    /// ⚠ Bodies only. Where the *geometry* sits inside each body is a separate
+    /// axis, pinned by `the_file_places_geometry_where_the_model_does`.
     ///
     /// The fixture has depth and siblings — a two-body one cannot tell a
     /// nesting bug from a flat list.
