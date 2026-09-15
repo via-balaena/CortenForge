@@ -1377,6 +1377,39 @@ mod tests {
         );
     }
 
+    /// Welding to `"world"` makes a static body — a bench, a fixture, a test
+    /// rig. It falls out of Fixed rather than being designed, so it is gated
+    /// before something quietly takes it away.
+    #[test]
+    fn a_part_welded_to_the_world_is_static() {
+        let model = Mechanism::builder("static")
+            .part(cuboid_part("bench"))
+            .joint(JointDef::new(
+                "anchor",
+                "world",
+                "bench",
+                JointKind::Fixed,
+                Point3::new(1.0, 2.0, 3.0),
+                Vector3::z(),
+            ))
+            .build()
+            .to_model(2.0, 2.0)
+            .unwrap();
+        let bench = model
+            .body_name
+            .iter()
+            .position(|n| n.as_deref() == Some("bench"))
+            .expect("bench body");
+        assert_eq!(model.njnt, 0, "a static body has no joint");
+        assert_eq!(model.nv, 0, "and no degree of freedom");
+        assert_eq!(model.body_parent[bench], 0, "parented to the world body");
+        assert!(
+            (model.body_pos[bench] - Vector3::new(1.0, 2.0, 3.0)).norm() < 1e-12,
+            "placed at its anchor, got {:?}",
+            model.body_pos[bench]
+        );
+    }
+
     #[test]
     fn a_weld_does_not_shift_its_geometry() {
         // A welded part's solid sits where the solid says, relative to the
