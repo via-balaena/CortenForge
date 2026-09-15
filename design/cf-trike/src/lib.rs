@@ -56,6 +56,29 @@ pub struct PartMetrics {
 
 /// Build the trike.
 ///
+/// # Example
+///
+/// Everything a consumer needs is on [`Trike`]. This is compiled as an
+/// outside caller, so it sees only the public surface — which is the point of
+/// the crate existing.
+///
+/// ```
+/// let t = cf_trike::trike()?;
+///
+/// // The assembly, ready for to_model, to_stl_kit or inspection.
+/// assert_eq!(t.mechanism.parts().len(), 28);
+///
+/// // Twelve degrees of freedom: welds cost nothing.
+/// let dof: usize = t.mechanism.joints().iter().map(|j| j.kind().dof()).sum();
+/// assert_eq!(dof, 12);
+///
+/// // Each part carries what it takes to weigh it and where it sits.
+/// let spine = t.metrics[cf_trike::ROOT_PART];
+/// assert!(spine.volume_mm3 > 0.0 && spine.cell_mm > 0.0);
+/// assert!(t.origins[cf_trike::ROOT_PART].x > 0.0);
+/// # Ok::<(), anyhow::Error>(())
+/// ```
+///
 /// # Errors
 ///
 /// Fails if a part is composed of no pieces, if the assembly does not validate,
