@@ -30,7 +30,7 @@ use std::collections::HashMap;
 use std::f64::consts::{FRAC_PI_2, PI};
 
 use anyhow::{Result, bail};
-use cf_design::{JointDef, JointKind, Material, Mechanism, Part, Solid};
+use cf_design::{JointDef, JointKind, LinkageDef, LinkageKind, Material, Mechanism, Part, Solid};
 use nalgebra::{Point3, UnitQuaternion, Vector3};
 
 /// A built trike: the assembly, and what a consumer needs to measure it.
@@ -68,9 +68,14 @@ pub struct PartMetrics {
 /// // The assembly, ready for to_model, to_stl_kit or inspection.
 /// assert_eq!(t.mechanism.parts().len(), 28);
 ///
-/// // Twelve degrees of freedom: welds cost nothing.
+/// // Fifteen degrees of freedom in the tree — welds cost nothing, and the
+/// // tie rod's near end is a ball. The linkage at its far end takes three
+/// // back, so the machine really has twelve.
 /// let dof: usize = t.mechanism.joints().iter().map(|j| j.kind().dof()).sum();
-/// assert_eq!(dof, 12);
+/// let held: usize = t.mechanism.linkages().iter().map(|l| l.kind().constrained_dof()).sum();
+/// assert_eq!(dof, 15);
+/// assert_eq!(held, 3);
+/// assert_eq!(dof - held, 12);
 ///
 /// // Each part carries what it takes to weigh it and where it sits.
 /// let spine = t.metrics[cf_trike::ROOT_PART];
@@ -84,7 +89,7 @@ pub struct PartMetrics {
 /// Fails if a part is composed of no pieces, if the assembly does not validate,
 /// or if a joint chain never reaches the world.
 pub fn trike() -> Result<Trike> {
-    let plan = plan()?;
+    let (plan, linkages) = plan()?;
     let metrics: HashMap<String, PartMetrics> = plan
         .iter()
         .map(|p| {
@@ -97,7 +102,7 @@ pub fn trike() -> Result<Trike> {
             )
         })
         .collect();
-    let mechanism = assemble(plan)?;
+    let mechanism = assemble(plan, linkages)?;
     let origins = world_origins(&mechanism)?;
     Ok(Trike {
         mechanism,
@@ -334,6 +339,22 @@ fn tube_between(a: Point3<f64>, b: Point3<f64>, od: f64, wall: f64) -> (Piece, V
     )
 }
 
+/// A tube from `a` to `b`, with its own origin at `a` rather than its centre.
+///
+/// For a member that pivots about one end — a tie rod, a link — the body
+/// origin has to BE that end, because a part is placed at its joint's anchor.
+fn tube_from(a: Point3<f64>, b: Point3<f64>, od: f64, wall: f64) -> (Piece, Vector3<f64>) {
+    let (piece, mid) = tube_between(a, b, od, wall);
+    let shift = mid - a.coords;
+    (
+        Piece {
+            solid: piece.solid.translate(shift),
+            volume_mm3: piece.volume_mm3,
+        },
+        a.coords,
+    )
+}
+
 /// Z-aligned tube, centred at the origin.
 #[must_use]
 fn tube(od: f64, wall: f64, length: f64) -> Piece {
@@ -455,7 +476,7 @@ pub fn steering_axis() -> Vector3<f64> {
 ///
 /// Fails if a part is composed of no pieces.
 /// Build the part table, in tree order.
-fn plan() -> Result<Vec<PartPlan>> {
+fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
     let steel = Material::new("mild steel", STEEL_KG_M3);
     let aluminium = Material::new("aluminium 6061", ALUMINIUM_KG_M3);
 
@@ -524,7 +545,14 @@ fn plan() -> Result<Vec<PartPlan>> {
         |sign: f64| Point3::new(0.0, sign * upright_y, upright_z + upright_length / 2.0);
     let (steer_arm_left, steer_arm_left_at) = steer_member(kingpin_pickup(1.0), arm_end(1.0));
     let (steer_arm_right, steer_arm_right_at) = steer_member(kingpin_pickup(-1.0), arm_end(-1.0));
-    let (tie_rod, tie_rod_at) = steer_member(arm_end(1.0), arm_end(-1.0));
+    // ⚠ The rod pivots at its LEFT end, not its centre: a part is placed at
+    // its joint's anchor, so the body origin has to be the rod end.
+    let (tie_rod, tie_rod_at) = tube_from(
+        arm_end(1.0),
+        arm_end(-1.0),
+        STEER_TUBE_OD_MM,
+        STEER_TUBE_WALL_MM,
+    );
     let (bar_left, bar_left_at) = steer_member(upright_top(1.0), grip(1.0));
     let (bar_right, bar_right_at) = steer_member(upright_top(-1.0), grip(-1.0));
     let upright_centre = |sign: f64| Vector3::new(0.0, sign * upright_y, upright_z);
@@ -561,7 +589,21 @@ fn plan() -> Result<Vec<PartPlan>> {
     let legs_at = (hip(0.0).coords + bottom_bracket.coords) / 2.0;
     let legs_dir = bottom_bracket - hip(0.0);
 
-    Ok(vec![
+    // ── The loop the tree cannot hold ───────────────────────────────
+    //
+    // The tie rod has a rod end at each side. One is its tree joint, on the
+    // left arm; the other cannot be, because a tree gives a part one parent.
+    // Without this the rod was welded to the left arm and the right wheel
+    // steered independently of it.
+    let linkages = vec![LinkageDef::new(
+        "tie_rod_right",
+        "tie_rod",
+        "steer_arm_r",
+        LinkageKind::Ball,
+        Point3::from(arm_end(-1.0) - arm_end(1.0)),
+    )];
+
+    let parts = vec![
         PartPlan {
             name: "frame_spine",
             parent: "world",
@@ -779,7 +821,9 @@ fn plan() -> Result<Vec<PartPlan>> {
             name: "tie_rod",
             parent: "steer_arm_l",
             anchor_mm: tie_rod_at - steer_arm_left_at,
-            kind: JointKind::Fixed,
+            // A rod end, not a weld. The other end is a linkage, because a
+            // tree cannot give one part two parents.
+            kind: JointKind::Ball,
             axis: Vector3::y(),
             range_rad: None,
             material: steel.clone(),
@@ -924,7 +968,8 @@ fn plan() -> Result<Vec<PartPlan>> {
             ),
             cell_mm: 4.0,
         },
-    ])
+    ];
+    Ok((parts, linkages))
 }
 
 /// # Errors
@@ -932,8 +977,11 @@ fn plan() -> Result<Vec<PartPlan>> {
 /// Fails if the assembly does not validate — a joint naming a part that does
 /// not exist, a duplicate name, an orphan, or a part both welded and hinged.
 /// Turn the plan into a validated [`Mechanism`], consuming the solids.
-fn assemble(plan: Vec<PartPlan>) -> Result<Mechanism> {
+fn assemble(plan: Vec<PartPlan>, linkages: Vec<LinkageDef>) -> Result<Mechanism> {
     let mut builder = Mechanism::builder("reverse trike");
+    for linkage in linkages {
+        builder = builder.linkage(linkage);
+    }
     for p in plan {
         builder = builder.part(Part::new(p.name, p.piece.solid, p.material));
         let joint = JointDef::new(

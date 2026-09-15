@@ -69,10 +69,17 @@ const PIN_TOLERANCE: f64 = 1e-6;
 const EXPECTED_PARTS: usize = 28;
 /// Welds in the assembly: three frame members and seven seat members onto the
 /// spine, all three tyres onto their rims, and the rider's two halves.
-const EXPECTED_WELDS: usize = 21;
-/// Degrees of freedom the machine actually has: the free body, two steering
-/// pivots, three wheels spinning, and the swingarm.
-const EXPECTED_DOF: usize = 12;
+const EXPECTED_WELDS: usize = 20;
+
+/// Loops the joint tree cannot hold: the tie rod's far end.
+const EXPECTED_LINKAGES: usize = 1;
+/// Degrees of freedom in the **tree**: the free body, two steering pivots,
+/// three wheels spinning, the swingarm, and the tie rod's near rod end, which
+/// is a ball and so worth three.
+///
+/// ⚠ Not what the machine has. The linkage at the rod's far end takes those
+/// three back, so the trike really has twelve — see `EXPECTED_LINKAGES`.
+const EXPECTED_DOF: usize = 15;
 /// Members welded into the frame, whose grid cost is compared: spine,
 /// cross-member and the two diagonals.
 const WELDED_FRAME_MEMBERS: usize = 4;
@@ -362,10 +369,24 @@ fn main() -> Result<()> {
         .filter(|j| j.kind().is_weld())
         .count();
     let dof: usize = mechanism.joints().iter().map(|j| j.kind().dof()).sum();
+    let held: usize = mechanism
+        .linkages()
+        .iter()
+        .map(|l| l.kind().constrained_dof())
+        .sum();
     println!(
-        "reverse trike — {} parts, {welds} welds, {dof} dof",
-        mechanism.parts().len()
+        "reverse trike — {} parts, {welds} welds, {dof} dof in the tree, {} \
+         linkage holding {held} of them: {} left",
+        mechanism.parts().len(),
+        mechanism.linkages().len(),
+        dof - held
     );
+    if mechanism.linkages().len() != EXPECTED_LINKAGES {
+        bail!(
+            "{} linkages, expected {EXPECTED_LINKAGES}",
+            mechanism.linkages().len()
+        );
+    }
     if welds != EXPECTED_WELDS {
         bail!("{welds} welds, expected {EXPECTED_WELDS}");
     }
