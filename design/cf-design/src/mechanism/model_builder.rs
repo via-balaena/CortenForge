@@ -1378,6 +1378,44 @@ mod tests {
     }
 
     #[test]
+    fn a_weld_does_not_shift_its_geometry() {
+        // A welded part's solid sits where the solid says, relative to the
+        // body frame. Articulated parts get bbox-aligned to their joint anchor
+        // — predictable for a hinge, arbitrary for a weld — so welds take the
+        // same path as free bodies and are not moved.
+        let offset = 10.0;
+        let m = Mechanism::builder("offset_weld")
+            .part(cuboid_part("a"))
+            .part(Part::new(
+                "b",
+                Solid::cuboid(Vector3::new(5.0, 5.0, 5.0))
+                    .translate(Vector3::new(offset, 0.0, 0.0)),
+                pla(),
+            ))
+            .joint(JointDef::new(
+                "weld",
+                "a",
+                "b",
+                JointKind::Fixed,
+                Point3::new(5.0, 0.0, 0.0),
+                Vector3::x(),
+            ))
+            .build()
+            .to_model(2.0, 2.0)
+            .unwrap();
+        let b = m
+            .body_name
+            .iter()
+            .position(|n| n.as_deref() == Some("b"))
+            .expect("body b");
+        assert!(
+            (m.body_ipos[b].x - offset).abs() < 0.5,
+            "a weld must leave the solid where it is: body_ipos.x = {}, want {offset}",
+            m.body_ipos[b].x
+        );
+    }
+
+    #[test]
     fn a_weld_still_places_the_body_at_its_anchor() {
         let model = welded(JointKind::Fixed).to_model(2.0, 2.0).unwrap();
         let finger = model
