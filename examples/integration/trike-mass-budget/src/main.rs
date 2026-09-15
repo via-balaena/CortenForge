@@ -250,6 +250,18 @@ const UPRIGHT_OD_MM: f64 = 25.4;
 const UPRIGHT_WALL_MM: f64 = 3.0;
 /// Half the front wheel's width. The hub is its widest part.
 const FRONT_WHEEL_HALF_WIDTH_MM: f64 = 25.0;
+/// Inside of the front rim's section.
+///
+/// ⚠ 174, not the 160 this started at. A 20 mm-thick solid aluminium annulus
+/// is a disc, not a rim: it came to 2.12 kg a wheel where a real 16-inch rim,
+/// hub and spokes are about 0.9. A rim is a thin section — this one is 6 mm,
+/// which is still generous for what is really a hollow box.
+///
+/// ⚠ Spokes are absent. They would add roughly 0.15 kg a wheel, at a radius
+/// that matters more for rotating inertia than for the mass budget, and this
+/// example does not model rotating inertia.
+const FRONT_RIM_INNER_MM: f64 = 174.0;
+
 /// Where the front rim ends and its tyre begins. Shared by both so the two
 /// cannot drift apart into a gap or an interpenetration — a class the
 /// closed-form check above is blind to.
@@ -643,10 +655,12 @@ fn plan() -> Result<Vec<PartPlan>> {
             range_rad: None,
             material: aluminium.clone(),
             piece: joined(vec![
-                onto_y(annulus(FRONT_RIM_OUTER_MM, 160.0, 15.0)),
+                onto_y(annulus(FRONT_RIM_OUTER_MM, FRONT_RIM_INNER_MM, 15.0)),
                 onto_y(disc(30.0, FRONT_WHEEL_HALF_WIDTH_MM)),
             ])?,
-            cell_mm: 2.0,
+            // ⚠ 1.0, not 2.0: the rim section is 6 mm, and three cells across
+            // a wall put the integrator 0.688% off its closed form.
+            cell_mm: 1.0,
         },
         PartPlan {
             name: "rim_fr",
@@ -657,10 +671,12 @@ fn plan() -> Result<Vec<PartPlan>> {
             range_rad: None,
             material: aluminium.clone(),
             piece: joined(vec![
-                onto_y(annulus(FRONT_RIM_OUTER_MM, 160.0, 15.0)),
+                onto_y(annulus(FRONT_RIM_OUTER_MM, FRONT_RIM_INNER_MM, 15.0)),
                 onto_y(disc(30.0, FRONT_WHEEL_HALF_WIDTH_MM)),
             ])?,
-            cell_mm: 2.0,
+            // ⚠ 1.0, not 2.0: the rim section is 6 mm, and three cells across
+            // a wall put the integrator 0.688% off its closed form.
+            cell_mm: 1.0,
         },
         PartPlan {
             name: "tyre_fl",
@@ -1534,13 +1550,13 @@ fn main() -> Result<()> {
     // regression gate, not a design target: change a tube, change a rider,
     // and they are supposed to fire so the new numbers get read.
     for (label, got, want) in [
-        ("total mass (kg)", spec.total_mass_kg(), 104.306_102_433),
-        ("cg x (m)", spec.cg_x_m(), 0.446_903_414),
-        ("cg z (m)", spec.cg_z_m(), 0.303_963_540),
+        ("total mass (kg)", spec.total_mass_kg(), 101.916_046_535),
+        ("cg x (m)", spec.cg_x_m(), 0.457_383_845),
+        ("cg z (m)", spec.cg_z_m(), 0.306_326_568),
         (
             "rollover threshold (g)",
             rollover_threshold_g(&spec),
-            0.951_149_506,
+            0.931_495_486,
         ),
     ] {
         if (got - want).abs() > want.abs() * PIN_TOLERANCE {
