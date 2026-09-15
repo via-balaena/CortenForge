@@ -74,7 +74,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use cf_design::mechanism::mass::mass_properties;
-use cf_design::{Aabb, JointDef, JointKind, Material, Mechanism, Part, Solid};
+use cf_design::{Aabb, IndexedMesh, JointDef, JointKind, Material, Mechanism, Part, Solid};
 use cf_vehicle::analysis::rollover_threshold_g;
 use cf_vehicle::{CorneringLoads, MassItem, StaticLoads, TrikeSpec};
 use nalgebra::{Point3, UnitQuaternion, Vector3};
@@ -690,14 +690,20 @@ fn derive(
 /// ⚠ Refining *everything* to its mass-integration cell instead was measured
 /// at 8.1 M triangles and 388 MB: that cell is chosen for integration
 /// accuracy, and a 2 mm wall does not need 0.5 mm triangles to look right.
-fn export_stls(mechanism: &Mechanism, dir: &Path, tolerance_mm: f64) -> Result<()> {
+fn export_stls(
+    mechanism: &Mechanism,
+    origins: &HashMap<String, Vector3<f64>>,
+    dir: &Path,
+    tolerance_mm: f64,
+) -> Result<()> {
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    let mut assembly = IndexedMesh::default();
     let mut total = 0usize;
+
     for part in mechanism.parts() {
         // Mesh at what was asked for, and refine only what vanishes. The
         // tolerance is a cell size, so a part thinner than one cell meshes to
-        // nothing at all — which is a silent, correctly named, empty file
-        // rather than an error.
+        // nothing at all — a silent, correctly named, empty file.
         let mut tol = tolerance_mm;
         let mut mesh = part.solid().mesh(tol).geometry;
         while mesh.faces.is_empty() && tol > MIN_STL_TOLERANCE_MM {
@@ -711,6 +717,27 @@ fn export_stls(mechanism: &Mechanism, dir: &Path, tolerance_mm: f64) -> Result<(
                 part.name()
             );
         }
+
+        // ⚠ Place it. A part's solid is in its OWN frame; where it sits is in
+        // the joint anchors. Writing the mesh as-meshed puts every part on the
+        // origin, so opening the folder shows thirteen parts in a heap rather
+        // than a vehicle.
+        let Some(&origin) = origins.get(part.name()) else {
+            bail!("no world origin resolved for part {}", part.name());
+        };
+        for v in &mut mesh.vertices {
+            *v += origin;
+        }
+
+        let base = u32::try_from(assembly.vertices.len())
+            .with_context(|| "assembly exceeded u32 vertices")?;
+        assembly.vertices.extend(mesh.vertices.iter().copied());
+        assembly.faces.extend(
+            mesh.faces
+                .iter()
+                .map(|f| [f[0] + base, f[1] + base, f[2] + base]),
+        );
+
         let path = dir.join(format!("{}.stl", part.name()));
         mesh_io::save_stl(&mesh, &path, true)
             .with_context(|| format!("writing {}", path.display()))?;
@@ -723,8 +750,50 @@ fn export_stls(mechanism: &Mechanism, dir: &Path, tolerance_mm: f64) -> Result<(
         );
         total += mesh.faces.len();
     }
-    println!("  {total} triangles total -> {}", dir.display());
+
+    // One file with the whole thing in it, so "look at the trike" is a
+    // single open rather than thirteen.
+    let whole = dir.join("trike_assembled.stl");
+    mesh_io::save_stl(&assembly, &whole, true)
+        .with_context(|| format!("writing {}", whole.display()))?;
+
+    let (lo, hi) = bounds_of(&assembly)?;
+    println!(
+        "  {total} triangles -> {}\n  assembled: {} spans x {:.0}..{:.0}  y {:.0}..{:.0}  z {:.0}..{:.0} mm",
+        dir.display(),
+        whole.file_name().unwrap_or_default().to_string_lossy(),
+        lo.x,
+        hi.x,
+        lo.y,
+        hi.y,
+        lo.z,
+        hi.z
+    );
+
+    // The assembly must actually span the vehicle. If placement silently
+    // regressed, every part would sit on the origin and this would collapse.
+    let span_x = hi.x - lo.x;
+    if span_x < WHEELBASE_MM * 0.9 {
+        bail!(
+            "the assembled mesh spans only {span_x:.0} mm in x, but the wheelbase \
+             is {WHEELBASE_MM} mm — the parts are not placed"
+        );
+    }
     Ok(())
+}
+
+/// Axis-aligned extent of a mesh.
+fn bounds_of(mesh: &IndexedMesh) -> Result<(Vector3<f64>, Vector3<f64>)> {
+    let Some(first) = mesh.vertices.first() else {
+        bail!("cannot bound an empty mesh");
+    };
+    let mut lo = first.coords;
+    let mut hi = first.coords;
+    for v in &mesh.vertices {
+        lo = lo.inf(&v.coords);
+        hi = hi.sup(&v.coords);
+    }
+    Ok((lo, hi))
 }
 
 // ── Entry point ─────────────────────────────────────────────────────────
@@ -1076,7 +1145,7 @@ fn main() -> Result<()> {
 
     if let Some(dir) = out_dir {
         println!("\nmeshing the assembly:");
-        export_stls(&mechanism, &dir, tolerance_mm)?;
+        export_stls(&mechanism, &origins, &dir, tolerance_mm)?;
     }
 
     println!("\nOK");
