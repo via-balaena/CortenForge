@@ -428,11 +428,12 @@ fn tilted(p: Piece, angle_rad: f64) -> Piece {
     }
 }
 
+/// Union of **disjoint** pieces: the analytic volume is their sum, which is
+/// true only because nothing here overlaps anything else in the same part.
+///
 /// # Errors
 ///
 /// Fails if given no pieces at all.
-/// Union of **disjoint** pieces: the analytic volume is their sum, which is
-/// true only because nothing here overlaps anything else in the same part.
 fn joined(pieces: Vec<Piece>) -> Result<Piece> {
     let mut it = pieces.into_iter();
     let Some(first) = it.next() else {
@@ -472,10 +473,11 @@ pub fn steering_axis() -> Vector3<f64> {
     Vector3::new(caster.sin(), 0.0, caster.cos())
 }
 
+/// Build the part table, in tree order.
+///
 /// # Errors
 ///
 /// Fails if a part is composed of no pieces.
-/// Build the part table, in tree order.
 fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
     let steel = Material::new("mild steel", STEEL_KG_M3);
     let aluminium = Material::new("aluminium 6061", ALUMINIUM_KG_M3);
@@ -787,14 +789,7 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
         // ── Steering ────────────────────────────────────────────
         //
         // The arms and bars are children of their uprights, so they turn with
-        // the wheel. ⚠ The tie rod is NOT: it should tie both arms together,
-        // which is a closed loop, and a `Mechanism` is a kinematic tree. The
-        // physics layer has the constraint — `Model::eq_type` carries Connect,
-        // Weld, Joint, Tendon and Distance — but cf-design exposes no way to
-        // ask for one, so this rod is welded to the left arm and the right
-        // wheel steers independently of it. The mass and the geometry are
-        // right; the kinematics are not, and that is the next gap in the
-        // assembly primitive after the weld.
+        // the wheel. The tie rod is not: it ties both arms, which is a loop.
         PartPlan {
             name: "steer_arm_l",
             parent: "upright_l",
@@ -972,11 +967,12 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
     Ok((parts, linkages))
 }
 
+/// Turn the plan into a validated [`Mechanism`], consuming the solids.
+///
 /// # Errors
 ///
 /// Fails if the assembly does not validate — a joint naming a part that does
 /// not exist, a duplicate name, an orphan, or a part both welded and hinged.
-/// Turn the plan into a validated [`Mechanism`], consuming the solids.
 fn assemble(plan: Vec<PartPlan>, linkages: Vec<LinkageDef>) -> Result<Mechanism> {
     let mut builder = Mechanism::builder("reverse trike");
     for linkage in linkages {
@@ -1013,10 +1009,6 @@ fn assemble(plan: Vec<PartPlan>, linkages: Vec<LinkageDef>) -> Result<Mechanism>
 
 // ── The walk cf-design does not have ────────────────────────────────────
 
-/// # Errors
-///
-/// Fails if a part is the child of more than one joint, or if a joint chain
-/// never reaches the world.
 /// World-frame origin of every part, by summing joint anchors to the root.
 ///
 /// ⚠ Translations only. That is exact **at the reference configuration** here
@@ -1025,6 +1017,11 @@ fn assemble(plan: Vec<PartPlan>, linkages: Vec<LinkageDef>) -> Result<Mechanism>
 /// posed its joints would need the rotations composed too — which is what
 /// `to_model` plus a forward kinematics pass already does, at the cost of
 /// meshing every part.
+///
+/// # Errors
+///
+/// Fails if a part is the child of more than one joint, or if a joint chain
+/// never reaches the world.
 pub fn world_origins(mechanism: &Mechanism) -> Result<HashMap<String, Vector3<f64>>> {
     // ⚠ One joint per child. `to_model` places a body from the *first* joint
     // naming it as child (`model_builder.rs:262`, and `:808` again for the
@@ -1070,4 +1067,205 @@ pub fn world_origins(mechanism: &Mechanism) -> Result<HashMap<String, Vector3<f6
         origins.insert(part.name().to_owned(), here);
     }
     Ok(origins)
+}
+
+// ── Tests ───────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    /// The three collections on [`Trike`] describe the same machine.
+    ///
+    /// A consumer indexes `metrics` and `origins` by the names it reads off
+    /// `mechanism.parts()`. Nothing else checks that those key sets agree, and
+    /// a part added to the plan but not to the metric walk would read as a
+    /// missing key at the call site rather than as a build failure here.
+    #[test]
+    fn every_part_has_metrics_and_an_origin() {
+        let t = trike().unwrap();
+        let names: Vec<&str> = t.mechanism.parts().iter().map(Part::name).collect();
+
+        assert_eq!(names.len(), t.metrics.len(), "metrics: {names:?}");
+        assert_eq!(names.len(), t.origins.len(), "origins: {names:?}");
+        for name in &names {
+            assert!(t.metrics.contains_key(*name), "no metrics for {name}");
+            assert!(t.origins.contains_key(*name), "no origin for {name}");
+        }
+    }
+
+    /// Every metric is a quantity you could weigh or mesh with.
+    ///
+    /// A zero or non-finite cell is not a rounding problem: `seat_pan` once
+    /// exported as an 84-byte STL because its cell was coarser than the pan
+    /// was thick, and the volume beside it stayed plausible throughout.
+    #[test]
+    fn every_metric_is_physical() {
+        let t = trike().unwrap();
+        for (name, m) in &t.metrics {
+            assert!(
+                m.volume_mm3.is_finite() && m.volume_mm3 > 0.0,
+                "{name} has volume {}",
+                m.volume_mm3
+            );
+            assert!(
+                m.cell_mm.is_finite() && m.cell_mm > 0.0,
+                "{name} has cell {}",
+                m.cell_mm
+            );
+        }
+    }
+
+    /// Each upright's outer wall meets its wheel's inboard face.
+    ///
+    /// ⚠ This replaced a check that the front wheels sit `TRACK_MM` apart.
+    /// They do — and they do so for any upright position, because the wheel's
+    /// anchor is `TRACK_MM / 2 - upright_y` on a parent at `upright_y`, which
+    /// cancels. That assertion compared `TRACK_MM` with itself; moving the
+    /// uprights 3 mm left it green. What the track actually buys is where the
+    /// contact patches land, and that depends on this fit.
+    #[test]
+    fn each_upright_meets_the_wheel_it_carries() {
+        let t = trike().unwrap();
+        for (upright, rim) in [("upright_l", "rim_fl"), ("upright_r", "rim_fr")] {
+            let outer_wall = t.origins[upright].y.abs() + UPRIGHT_OD_MM / 2.0;
+            let inboard_face = t.origins[rim].y.abs() - FRONT_WHEEL_HALF_WIDTH_MM;
+            assert!(
+                (outer_wall - inboard_face).abs() < 1e-9,
+                "{upright} ends at {outer_wall} mm and {rim} starts at \
+                 {inboard_face} mm — a gap here moves the contact patch off \
+                 the {TRACK_MM} mm track the rollover threshold is read from"
+            );
+        }
+    }
+
+    /// The rear axle lands a wheelbase behind the front, through the chain.
+    ///
+    /// `rim_r` reaches the world through the swingarm and the spine, so this
+    /// is a claim about [`world_origins`] summing that chain correctly — not
+    /// about the constant, which the rear axle is placed from directly.
+    #[test]
+    fn the_rear_axle_lands_a_wheelbase_behind_the_front() {
+        let t = trike().unwrap();
+        let wheelbase = t.origins["rim_r"].x - t.origins["rim_fl"].x;
+        assert!(
+            (wheelbase - WHEELBASE_MM).abs() < 1e-9,
+            "the walk puts the axles {wheelbase} mm apart, not {WHEELBASE_MM}"
+        );
+        assert!(
+            t.origins["rim_r"].y.abs() < 1e-9,
+            "the lone wheel must sit on the centreline — off it, the roll \
+             moment no longer belongs wholly to the paired axle"
+        );
+    }
+
+    /// The steering axis leans back by the caster angle, and only back.
+    ///
+    /// ⚠ The oracle is `atan2` on the returned vector, not the `sin`/`cos`
+    /// the function itself used — an oracle built from the same trig would
+    /// agree with a sign error.
+    #[test]
+    fn the_steering_axis_leans_back_by_the_caster_angle() {
+        let axis = steering_axis();
+        assert!(
+            (axis.norm() - 1.0).abs() < 1e-12,
+            "axis is not a unit vector"
+        );
+        assert!(
+            axis.y.abs() < 1e-12,
+            "a caster angle leans back, not sideways"
+        );
+
+        let lean = axis.x.atan2(axis.z).to_degrees();
+        assert!(
+            (lean - CASTER_DEG).abs() < 1e-9,
+            "the axis leans {lean} deg, CASTER_DEG says {CASTER_DEG}"
+        );
+    }
+
+    /// The tie rod's far end ties a part that exists, and takes three dof.
+    #[test]
+    fn the_linkage_ties_two_parts_that_exist() {
+        let t = trike().unwrap();
+        let names: Vec<&str> = t.mechanism.parts().iter().map(Part::name).collect();
+
+        assert_eq!(t.mechanism.linkages().len(), 1);
+        for l in t.mechanism.linkages() {
+            assert!(
+                names.contains(&l.a()),
+                "{} names no part {}",
+                l.name(),
+                l.a()
+            );
+            assert!(
+                names.contains(&l.b()),
+                "{} names no part {}",
+                l.name(),
+                l.b()
+            );
+            assert_eq!(l.kind().constrained_dof(), 3);
+        }
+    }
+
+    /// Building it twice gives the same machine.
+    ///
+    /// The metrics and origins travel in `HashMap`s, whose iteration order is
+    /// not stable; anything derived by folding over one would wander between
+    /// runs while every single-part assertion still passed.
+    #[test]
+    fn building_it_twice_gives_the_same_machine() {
+        let a = trike().unwrap();
+        let b = trike().unwrap();
+
+        for (name, m) in &a.metrics {
+            let n = b.metrics[name];
+            assert!(
+                (m.volume_mm3 - n.volume_mm3).abs() < f64::EPSILON
+                    && (m.cell_mm - n.cell_mm).abs() < f64::EPSILON,
+                "{name} differs between builds"
+            );
+            assert_eq!(a.origins[name], b.origins[name], "{name} moved");
+        }
+    }
+
+    /// `world_origins` refuses a part with two parents rather than picking one.
+    ///
+    /// `to_model` places a body from the *first* joint naming it as a child.
+    /// A walk that kept the last would disagree with the model it is meant to
+    /// describe — and would do so quietly, which is the whole reason this
+    /// returns a `Result`.
+    #[test]
+    fn world_origins_refuses_a_part_with_two_parents() {
+        let ball = |name: &str| {
+            Part::new(
+                name,
+                Solid::sphere(10.0),
+                Material::new("steel", STEEL_KG_M3),
+            )
+        };
+        let joint = |name: &str, parent: &str, at: f64| {
+            JointDef::new(
+                name,
+                parent,
+                "child",
+                JointKind::Revolute,
+                Point3::new(at, 0.0, 0.0),
+                Vector3::y(),
+            )
+        };
+        let m = Mechanism::builder("two parents")
+            .part(ball("root"))
+            .part(ball("other"))
+            .part(ball("child"))
+            .joint(joint("j0", "root", 10.0))
+            .joint(joint("j1", "other", 90.0))
+            .build();
+
+        let err = world_origins(&m).unwrap_err().to_string();
+        assert!(
+            err.contains("child") && err.contains("more than one joint"),
+            "unhelpful refusal: {err}"
+        );
+    }
 }

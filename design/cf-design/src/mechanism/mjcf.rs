@@ -39,6 +39,7 @@ use super::actuator::ActuatorKind;
 use super::builder::Mechanism;
 use super::joint::{JointDef, JointKind};
 use super::linkage::LinkageKind;
+use super::model_builder::{LINKAGE_SOLIMP, LINKAGE_SOLREF};
 use super::part::Part;
 use super::tendon::TendonDef;
 
@@ -76,6 +77,14 @@ pub(super) fn generate(mechanism: &Mechanism, resolution: f64) -> String {
 }
 
 // ── XML helpers ─────────────────────────────────────────────────────────
+
+/// Space-separate a numeric attribute, MJCF's spelling for a vector.
+fn join(v: &[f64]) -> String {
+    v.iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
 
 /// Escape XML special characters in attribute values.
 fn esc(s: &str) -> String {
@@ -445,13 +454,16 @@ fn write_equality(xml: &mut String, mechanism: &Mechanism) {
                 let a = linkage.anchor();
                 let _ = writeln!(
                     xml,
-                    "    <connect name=\"{}\" body1=\"{}\" body2=\"{}\" anchor=\"{} {} {}\"/>",
+                    "    <connect name=\"{}\" body1=\"{}\" body2=\"{}\" \
+                     anchor=\"{} {} {}\" solimp=\"{}\" solref=\"{}\"/>",
                     esc(linkage.name()),
                     esc(linkage.a()),
                     esc(linkage.b()),
                     a.x,
                     a.y,
-                    a.z
+                    a.z,
+                    join(&LINKAGE_SOLIMP),
+                    join(&LINKAGE_SOLREF)
                 );
             }
         }
@@ -714,8 +726,61 @@ mod tests {
         let xml = m.to_mjcf(RES);
         assert!(xml.contains("<equality>"), "no equality block:\n{xml}");
         assert!(
-            xml.contains("<connect name=\"coupler\" body1=\"a\" body2=\"b\" anchor=\"1 -2 3\"/>"),
+            xml.contains("<connect name=\"coupler\" body1=\"a\" body2=\"b\" anchor=\"1 -2 3\""),
             "the connect is wrong or missing:\n{xml}"
+        );
+    }
+
+    /// The file and the model describe the **same** constraint.
+    ///
+    /// ⚠ Two paths build a linkage — `to_model` fills `eq_solimp`, `to_mjcf`
+    /// writes an attribute — and only one of them was made stiff at first.
+    /// A `<connect>` with no `solimp` is not neutral: MuJoCo supplies its
+    /// contact default, which is the setting measured at 32.9 mm of drift.
+    /// So this compares the two paths rather than restating a literal.
+    #[test]
+    fn the_file_and_the_model_agree_on_how_stiff_a_linkage_is() {
+        let m = Mechanism::builder("loop")
+            .part(sphere_part("a"))
+            .part(sphere_part("b"))
+            .joint(JointDef::new(
+                "j",
+                "a",
+                "b",
+                JointKind::Revolute,
+                Point3::new(3.0, 0.0, 0.0),
+                Vector3::y(),
+            ))
+            .linkage(LinkageDef::new(
+                "coupler",
+                "a",
+                "b",
+                LinkageKind::Ball,
+                Point3::new(1.0, -2.0, 3.0),
+            ))
+            .build();
+
+        let xml = m.to_mjcf(RES);
+        let model = m.to_model(2.0, 2.0).unwrap();
+
+        // ⚠ Spelled out rather than calling the writer's own `join`: an
+        // oracle that shares the formatter agrees with it by construction.
+        let solimp = format!(
+            "solimp=\"{} {} {} {} {}\"",
+            model.eq_solimp[0][0],
+            model.eq_solimp[0][1],
+            model.eq_solimp[0][2],
+            model.eq_solimp[0][3],
+            model.eq_solimp[0][4]
+        );
+        let solref = format!(
+            "solref=\"{} {}\"",
+            model.eq_solref[0][0], model.eq_solref[0][1]
+        );
+        assert!(
+            xml.contains(&solimp) && xml.contains(&solref),
+            "the exported file would be solved differently from the model \
+             it came from: wanted {solimp} {solref} in\n{xml}"
         );
     }
 

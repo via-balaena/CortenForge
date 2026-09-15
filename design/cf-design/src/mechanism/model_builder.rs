@@ -96,7 +96,7 @@ impl Mechanism {
 // ── Model construction ──────────────────────────────────────────────────
 
 /// Constraint time constant for a linkage — MJCF's default, and fine.
-const LINKAGE_SOLREF: [f64; 2] = [0.02, 1.0];
+pub(super) const LINKAGE_SOLREF: [f64; 2] = [0.02, 1.0];
 
 /// Constraint impedance for a linkage: **stiff**, unlike MJCF's default.
 ///
@@ -116,7 +116,11 @@ const LINKAGE_SOLREF: [f64; 2] = [0.02, 1.0];
 ///
 /// The softness is invisible at small scale — a four-bar of gram-weight cubes
 /// holds to 46 µm on the loose setting — so it takes a real machine to see.
-const LINKAGE_SOLIMP: [f64; 5] = [0.9999, 0.99999, 0.001, 0.5, 2.0];
+///
+/// [`Mechanism::to_mjcf`](super::Mechanism::to_mjcf) writes this onto the
+/// `<connect>` element. Leaving it off would hand a reader of the file
+/// MuJoCo's default — the 32.9 mm row — from the same declared assembly.
+pub(super) const LINKAGE_SOLIMP: [f64; 5] = [0.9999, 0.99999, 0.001, 0.5, 2.0];
 
 /// World position of a body at the reference configuration.
 ///
