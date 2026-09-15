@@ -319,6 +319,9 @@ fn compute_stiffness(
         JointKind::Revolute | JointKind::Ball => e * cs.second_moment / width,
         JointKind::Prismatic => e * cs.area / width,
         JointKind::Free => 0.0,
+        // A weld does not flex. `FlexZone::new` rejects it, so this is
+        // unreachable — and infinity is the right answer if it ever is not.
+        JointKind::Fixed => f64::INFINITY,
     };
 
     let c = DAMPING_TIME_CONSTANT * k;

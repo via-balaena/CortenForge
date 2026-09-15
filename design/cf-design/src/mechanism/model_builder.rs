@@ -337,7 +337,9 @@ fn generate(
         model.body_dof_adr[body_id] = nv;
 
         let jlist = joints_on.get(part_name);
-        let jnt_count = jlist.map_or(0, Vec::len);
+        // ⚠ Welds emit no joint, so this counts the joints actually pushed —
+        // not how many `JointDef`s name this part.
+        let jnt_count = jlist.map_or(0, |v| v.iter().filter(|j| !j.kind().is_weld()).count());
 
         if let Some(jlist) = jlist {
             for joint in jlist {
@@ -346,6 +348,10 @@ fn generate(
                     JointKind::Prismatic => MjJointType::Slide,
                     JointKind::Ball => MjJointType::Ball,
                     JointKind::Free => MjJointType::Free,
+                    // A weld is the absence of a joint: a body with none is
+                    // rigidly attached to its parent. The anchor has already
+                    // placed the body, so there is nothing further to emit.
+                    JointKind::Fixed => continue,
                 };
 
                 let jnt_id = model.jnt_type.len();
@@ -421,15 +427,7 @@ fn generate(
         }
 
         model.body_jnt_num[body_id] = jnt_count;
-        model.body_dof_num[body_id] = jlist.map_or(0, |v| {
-            v.iter()
-                .map(|j| match j.kind() {
-                    JointKind::Revolute | JointKind::Prismatic => 1,
-                    JointKind::Ball => 3,
-                    JointKind::Free => 6,
-                })
-                .sum()
-        });
+        model.body_dof_num[body_id] = jlist.map_or(0, |v| v.iter().map(|j| j.kind().dof()).sum());
     }
 
     model.njnt = model.jnt_type.len();
@@ -795,8 +793,10 @@ fn compute_geom_offset(part: &Part, joints_on: &HashMap<&str, Vec<&JointDef>>) -
         _ => return Vector3::zeros(), // root body
     };
 
-    // Free joints: geometry centered at body frame (no alignment needed)
-    if jlist[0].kind() == JointKind::Free {
+    // Free joints and welds: geometry stays in the body frame. A free body has
+    // nothing to align to, and a welded one must not be shifted away from where
+    // its solid places it relative to the parent.
+    if matches!(jlist[0].kind(), JointKind::Free | JointKind::Fixed) {
         return Vector3::zeros();
     }
 
@@ -1263,6 +1263,102 @@ mod tests {
         assert_eq!(model.nbody, 2); // world + body
         assert_eq!(model.njnt, 0);
         assert_eq!(model.ngeom, 2); // SDF + mesh
+    }
+
+    // ── 9a. Fixed joints are welds ──────────────────────────────────
+
+    /// Two parts welded together, with the child at `anchor`.
+    fn welded(kind: JointKind) -> Mechanism {
+        let mut joint = JointDef::new(
+            "weld",
+            "palm",
+            "finger",
+            kind,
+            Point3::new(5.0, 0.0, 0.0),
+            Vector3::x(),
+        );
+        if !kind.is_weld() {
+            joint = joint.with_range(-1e-9, 1e-9);
+        }
+        Mechanism::builder("welded")
+            .part(cuboid_part("palm"))
+            .part(cuboid_part("finger"))
+            .joint(joint)
+            .build()
+    }
+
+    #[test]
+    fn a_weld_adds_no_joint_and_no_degree_of_freedom() {
+        let model = welded(JointKind::Fixed).to_model(2.0, 2.0).unwrap();
+        assert_eq!(model.njnt, 0, "a weld must emit no joint");
+        assert_eq!(model.nv, 0, "a weld must add no velocity coordinate");
+        assert_eq!(model.nq, 0, "a weld must add no position coordinate");
+        let finger = model
+            .body_name
+            .iter()
+            .position(|n| n.as_deref() == Some("finger"))
+            .expect("finger body");
+        assert_eq!(model.body_jnt_num[finger], 0);
+        assert_eq!(model.body_dof_num[finger], 0);
+    }
+
+    /// The claim the docs make: a weld costs the solver nothing, whereas a
+    /// revolute pinched to a near-zero range is still a real coordinate.
+    #[test]
+    fn a_weld_is_cheaper_than_a_revolute_pinched_shut() {
+        let weld = welded(JointKind::Fixed).to_model(2.0, 2.0).unwrap();
+        let pinched = welded(JointKind::Revolute).to_model(2.0, 2.0).unwrap();
+        assert_eq!((weld.njnt, weld.nv), (0, 0));
+        assert_eq!(
+            (pinched.njnt, pinched.nv),
+            (1, 1),
+            "a 1e-9 rad revolute is still a degree of freedom — that is the \
+             whole reason Fixed exists"
+        );
+    }
+
+    #[test]
+    fn a_weld_still_places_the_body_at_its_anchor() {
+        let model = welded(JointKind::Fixed).to_model(2.0, 2.0).unwrap();
+        let finger = model
+            .body_name
+            .iter()
+            .position(|n| n.as_deref() == Some("finger"))
+            .expect("finger body");
+        assert!(
+            (model.body_pos[finger].x - 5.0).abs() < 1e-12,
+            "body_pos.x = {}",
+            model.body_pos[finger].x
+        );
+    }
+
+    #[test]
+    fn welding_one_of_two_joints_leaves_the_other_counted() {
+        let model = Mechanism::builder("mixed")
+            .part(cuboid_part("a"))
+            .part(cuboid_part("b"))
+            .part(cuboid_part("c"))
+            .joint(JointDef::new(
+                "hinge",
+                "a",
+                "b",
+                JointKind::Revolute,
+                Point3::new(5.0, 0.0, 0.0),
+                Vector3::x(),
+            ))
+            .joint(JointDef::new(
+                "weld",
+                "b",
+                "c",
+                JointKind::Fixed,
+                Point3::new(5.0, 0.0, 0.0),
+                Vector3::x(),
+            ))
+            .build()
+            .to_model(2.0, 2.0)
+            .unwrap();
+        assert_eq!(model.njnt, 1, "only the hinge is a joint");
+        assert_eq!(model.nv, 1);
     }
 
     // ── 9. Free joint to world ──────────────────────────────────────
