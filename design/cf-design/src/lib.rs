@@ -50,10 +50,10 @@ mod solid_layered;
 
 pub use mechanism::templates;
 pub use mechanism::{
-    ActuatorDef, ActuatorKind, CrossSection, DesignWarning, FlexJoint, FlexZone, JointDef,
+    ActuatorDef, ActuatorKind, Bushing, CrossSection, DesignWarning, FlexJoint, FlexZone, JointDef,
     JointKind, LinkageDef, LinkageKind, ManufacturingProcess, MassProperties, Material, Mechanism,
     MechanismBuilder, MechanismError, Part, Plane, PrintProfile, ShapeMode, SplitResult, TendonDef,
-    TendonWaypoint, split_part,
+    TendonWaypoint, shear_modulus_from_shore_a, split_part,
 };
 pub use param::{ParamRef, ParamStore};
 pub use solid::{InfillKind, ShapeHint, Solid};
