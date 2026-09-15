@@ -134,6 +134,23 @@ const FRAME_R_MM: f64 = FRAME_OD_MM / 2.0;
 /// carries the rest.
 const TAIL_SETBACK_MM: f64 = 100.0;
 
+/// Mesh tolerance for the weld-contact probe.
+const WELD_PROBE_MM: f64 = 2.0;
+
+/// Pivot to rear axle.
+const SWINGARM_LENGTH_MM: f64 = 350.0;
+/// Half the spacing of the swingarm arms at the axle.
+const SWINGARM_HALF_WIDTH_MM: f64 = 60.0;
+
+/// How far a member that butts onto another sinks into it.
+///
+/// ⚠ Not cosmetic. Sitting a round tube exactly on top of another leaves a
+/// single point of contact: geometrically tangent, numerically fragile — a
+/// probe mesh may or may not land a vertex on it, which is why one upright
+/// read a 3.6 mm gap and its mirror read none — and unweldable in the real
+/// world. A saddled joint overlaps.
+const WELD_OVERLAP_MM: f64 = 6.0;
+
 /// Seat tube stock — lighter than the frame, it carries a person not a kerb.
 const SEAT_TUBE_OD_MM: f64 = 25.4;
 /// Seat tube wall.
@@ -160,7 +177,13 @@ const SEAT_WIDTH_MM: f64 = 300.0;
 /// looks like, not a compromise.
 const HIP_X_MM: f64 = 500.0;
 /// Hip height above the ground.
-const HIP_Z_MM: f64 = 210.0;
+///
+/// ⚠ Derived, not chosen: the seat's cross tube rests on top of the spine, so
+/// the hip is a spine radius plus a seat-tube radius above the spine's
+/// centreline. Typed as 210 mm it left the whole seat — and the rider on it —
+/// floating 31 mm clear of the frame, welded in the joint graph and touching
+/// nothing.
+const HIP_Z_MM: f64 = FRAME_Z_MM + FRAME_R_MM + SEAT_TUBE_OD_MM / 2.0 - WELD_OVERLAP_MM;
 /// Pan length forward of the hip.
 const PAN_LENGTH_MM: f64 = 250.0;
 /// Seat back length from the hip.
@@ -235,7 +258,7 @@ const MASS_TOLERANCE: f64 = 0.005;
 
 /// Welds in the assembly: three frame members and seven seat members onto the
 /// spine, all three tyres onto their rims, and the rider's two halves.
-const EXPECTED_WELDS: usize = 20;
+const EXPECTED_WELDS: usize = 21;
 
 /// Degrees of freedom the machine actually has: the free body, two steering
 /// pivots, three wheels spinning, and the swingarm.
@@ -247,7 +270,7 @@ const EXPECTED_DOF: usize = 12;
 /// an empty one passes without doing anything. An empty `Mechanism` builds
 /// happily — `validate` skips the orphan check below two parts — so nothing
 /// upstream would object.
-const EXPECTED_PARTS: usize = 27;
+const EXPECTED_PARTS: usize = 28;
 
 /// Members welded into the frame, whose grid cost is compared: spine,
 /// cross-member and the two diagonals.
@@ -385,25 +408,6 @@ fn tilted(p: Piece, angle_rad: f64) -> Piece {
     }
 }
 
-/// Turn a Z-aligned piece into an X-aligned one — the spine and the swingarm.
-fn onto_x(p: Piece) -> Piece {
-    Piece {
-        solid: p.solid.rotate(UnitQuaternion::from_axis_angle(
-            &Vector3::y_axis(),
-            FRAC_PI_2,
-        )),
-        volume_mm3: p.volume_mm3,
-    }
-}
-
-/// Move a piece within its own part frame.
-fn shifted(p: Piece, offset: Vector3<f64>) -> Piece {
-    Piece {
-        solid: p.solid.translate(offset),
-        volume_mm3: p.volume_mm3,
-    }
-}
-
 /// Union of **disjoint** pieces: the analytic volume is their sum, which is
 /// true only because nothing here overlaps anything else in the same part.
 fn joined(pieces: Vec<Piece>) -> Result<Piece> {
@@ -466,12 +470,16 @@ fn plan() -> Result<Vec<PartPlan>> {
     let (cross, cross_at) = member(kingpin_l, kingpin_r);
     let (brace_left, brace_left_at) = member(kingpin_l, apex);
     let (brace_right, brace_right_at) = member(kingpin_r, apex);
-    let spine_x = spine_at.x;
     let upright_length = 74.125;
-    let upright_z = FRAME_Z_MM + FRAME_R_MM + upright_length / 2.0;
+    let upright_z = FRAME_Z_MM + FRAME_R_MM + upright_length / 2.0 - WELD_OVERLAP_MM;
 
-    let swingarm_length = 350.0;
-    let swingarm_x = WHEELBASE_MM - swingarm_length / 2.0;
+    // Swingarm: two arms converging on the pivot, which is ON the spine —
+    // parallel arms at y = +/-60 straddled it and touched nothing.
+    let pivot = Point3::new(WHEELBASE_MM - SWINGARM_LENGTH_MM, 0.0, REAR_RADIUS_MM);
+    let rear_axle = |y: f64| Point3::new(WHEELBASE_MM, y, REAR_RADIUS_MM);
+    let arm = |y: f64| tube_between(pivot, rear_axle(y), 25.4, 2.0);
+    let (arm_left, arm_left_at) = arm(SWINGARM_HALF_WIDTH_MM);
+    let (arm_right, arm_right_at) = arm(-SWINGARM_HALF_WIDTH_MM);
 
     // ── The seat, as a frame ────────────────────────────────────────
     //
@@ -677,27 +685,29 @@ fn plan() -> Result<Vec<PartPlan>> {
         PartPlan {
             name: "swingarm",
             parent: "frame_spine",
-            anchor_mm: Vector3::new(swingarm_x - spine_x, 0.0, REAR_RADIUS_MM - FRAME_Z_MM),
+            anchor_mm: arm_left_at - spine_at,
             kind: JointKind::Revolute,
             axis: Vector3::y(),
             range_rad: Some((-0.35, 0.35)),
             material: steel.clone(),
-            piece: joined(vec![
-                shifted(
-                    onto_x(tube(25.4, 2.0, swingarm_length)),
-                    Vector3::new(0.0, 60.0, 0.0),
-                ),
-                shifted(
-                    onto_x(tube(25.4, 2.0, swingarm_length)),
-                    Vector3::new(0.0, -60.0, 0.0),
-                ),
-            ])?,
+            piece: arm_left,
+            cell_mm: 0.5,
+        },
+        PartPlan {
+            name: "swingarm_r",
+            parent: "swingarm",
+            anchor_mm: arm_right_at - arm_left_at,
+            kind: JointKind::Fixed,
+            axis: Vector3::y(),
+            range_rad: None,
+            material: steel.clone(),
+            piece: arm_right,
             cell_mm: 0.5,
         },
         PartPlan {
             name: "rim_r",
             parent: "swingarm",
-            anchor_mm: Vector3::new(WHEELBASE_MM - swingarm_x, 0.0, 0.0),
+            anchor_mm: rear_axle(0.0).coords - arm_left_at,
             kind: JointKind::Revolute,
             axis: Vector3::y(),
             range_rad: None,
@@ -802,8 +812,8 @@ fn plan() -> Result<Vec<PartPlan>> {
         },
         PartPlan {
             name: "seat_pan_rail_left",
-            parent: "frame_spine",
-            anchor_mm: pan_rail_left_at - spine_at,
+            parent: "seat_cross",
+            anchor_mm: pan_rail_left_at - seat_cross_at,
             kind: JointKind::Fixed,
             axis: Vector3::y(),
             range_rad: None,
@@ -813,8 +823,8 @@ fn plan() -> Result<Vec<PartPlan>> {
         },
         PartPlan {
             name: "seat_pan_rail_right",
-            parent: "frame_spine",
-            anchor_mm: pan_rail_right_at - spine_at,
+            parent: "seat_cross",
+            anchor_mm: pan_rail_right_at - seat_cross_at,
             kind: JointKind::Fixed,
             axis: Vector3::y(),
             range_rad: None,
@@ -824,8 +834,8 @@ fn plan() -> Result<Vec<PartPlan>> {
         },
         PartPlan {
             name: "seat_back_rail_left",
-            parent: "frame_spine",
-            anchor_mm: back_rail_left_at - spine_at,
+            parent: "seat_cross",
+            anchor_mm: back_rail_left_at - seat_cross_at,
             kind: JointKind::Fixed,
             axis: Vector3::y(),
             range_rad: None,
@@ -835,8 +845,8 @@ fn plan() -> Result<Vec<PartPlan>> {
         },
         PartPlan {
             name: "seat_back_rail_right",
-            parent: "frame_spine",
-            anchor_mm: back_rail_right_at - spine_at,
+            parent: "seat_cross",
+            anchor_mm: back_rail_right_at - seat_cross_at,
             kind: JointKind::Fixed,
             axis: Vector3::y(),
             range_rad: None,
@@ -846,8 +856,8 @@ fn plan() -> Result<Vec<PartPlan>> {
         },
         PartPlan {
             name: "seat_pan",
-            parent: "frame_spine",
-            anchor_mm: pan_panel_at - spine_at,
+            parent: "seat_pan_rail_left",
+            anchor_mm: pan_panel_at - pan_rail_left_at,
             kind: JointKind::Fixed,
             axis: Vector3::y(),
             range_rad: None,
@@ -861,8 +871,8 @@ fn plan() -> Result<Vec<PartPlan>> {
         },
         PartPlan {
             name: "seat_back",
-            parent: "frame_spine",
-            anchor_mm: back_panel_at - spine_at,
+            parent: "seat_back_rail_left",
+            anchor_mm: back_panel_at - back_rail_left_at,
             kind: JointKind::Fixed,
             axis: Vector3::y(),
             range_rad: None,
@@ -879,8 +889,8 @@ fn plan() -> Result<Vec<PartPlan>> {
         },
         PartPlan {
             name: "rider_torso",
-            parent: "frame_spine",
-            anchor_mm: torso_at - spine_at,
+            parent: "seat_back",
+            anchor_mm: torso_at - back_panel_at,
             kind: JointKind::Fixed,
             axis: Vector3::y(),
             range_rad: None,
@@ -890,8 +900,8 @@ fn plan() -> Result<Vec<PartPlan>> {
         },
         PartPlan {
             name: "rider_legs",
-            parent: "frame_spine",
-            anchor_mm: legs_at - spine_at,
+            parent: "seat_pan",
+            anchor_mm: legs_at - pan_panel_at,
             kind: JointKind::Fixed,
             axis: Vector3::y(),
             range_rad: None,
@@ -1333,6 +1343,75 @@ fn main() -> Result<()> {
         );
     }
 
+    // ── Oracle 1b: every weld joins metal that touches ──────────────
+    //
+    // Nothing else here can see this. The mass gate checks each part alone,
+    // the anchor gates check three dimensions, and a part welded in the joint
+    // graph can float in space with all of them green. It did: the seat and
+    // the rider hung 31 mm clear of the frame, and the swingarm straddled the
+    // spine without reaching it — ten disconnected welds in all.
+    //
+    // ⚠ Welds only. A revolute is a bearing, and a wheel on an axle does not
+    // touch the arm that carries it, so requiring contact there would be
+    // asking the model to draw an axle it has no reason to draw.
+    {
+        let by_name: HashMap<&str, &Part> =
+            mechanism.parts().iter().map(|p| (p.name(), p)).collect();
+        let mut worst: Option<(String, f64)> = None;
+        for joint in mechanism.joints().iter().filter(|j| j.kind().is_weld()) {
+            let (Some(child), Some(parent)) =
+                (by_name.get(joint.child()), by_name.get(joint.parent()))
+            else {
+                continue;
+            };
+            let (Some(&co), Some(&po)) = (origins.get(joint.child()), origins.get(joint.parent()))
+            else {
+                bail!(
+                    "no world origin for {} or {}",
+                    joint.child(),
+                    joint.parent()
+                );
+            };
+            // ⚠ The probe tolerance is load-bearing. At 6 mm a 6 mm panel
+            // meshes to nothing and reads as an infinite gap, and a round tube
+            // sitting on a round tube reads several millimetres apart because
+            // no vertex lands on the tangent point.
+            let probe = child.solid().mesh(WELD_PROBE_MM).geometry;
+            if probe.vertices.is_empty() {
+                bail!(
+                    "part {} meshed to nothing at the {WELD_PROBE_MM} mm probe \
+                     tolerance, so its contact cannot be checked",
+                    joint.child()
+                );
+            }
+            let clearance = probe
+                .vertices
+                .iter()
+                .map(|v| parent.solid().evaluate(&Point3::from(v.coords + co - po)))
+                .fold(f64::INFINITY, f64::min);
+            if worst.as_ref().is_none_or(|(_, w)| clearance > *w) {
+                worst = Some((
+                    format!("{} -> {}", joint.parent(), joint.child()),
+                    clearance,
+                ));
+            }
+        }
+        match worst {
+            None => bail!("no welds found to check — the assembly lost its welds"),
+            Some((where_, clearance)) => {
+                println!(
+                    "loosest weld: {where_} at {clearance:+.2} mm (negative is metal in metal)"
+                );
+                if clearance > 0.0 {
+                    bail!(
+                        "weld {where_} joins parts {clearance:.2} mm apart — welded in \
+                         the joint graph, floating in space"
+                    );
+                }
+            }
+        }
+    }
+
     // ── Oracle 2: the geometry the anchors actually describe ────────
     let axle = |name: &str| -> Result<Vector3<f64>> {
         origins
@@ -1414,13 +1493,13 @@ fn main() -> Result<()> {
     // regression gate, not a design target: change a tube, change a rider,
     // and they are supposed to fire so the new numbers get read.
     for (label, got, want) in [
-        ("total mass (kg)", spec.total_mass_kg(), 104.351_864_886),
-        ("cg x (m)", spec.cg_x_m(), 0.447_241_698),
-        ("cg z (m)", spec.cg_z_m(), 0.336_096_728),
+        ("total mass (kg)", spec.total_mass_kg(), 104.417_406_324),
+        ("cg x (m)", spec.cg_x_m(), 0.447_628_327),
+        ("cg z (m)", spec.cg_z_m(), 0.303_799_419),
         (
             "rollover threshold (g)",
             rollover_threshold_g(&spec),
-            0.859_850_645,
+            0.950_804_329,
         ),
     ] {
         if (got - want).abs() > want.abs() * PIN_TOLERANCE {
