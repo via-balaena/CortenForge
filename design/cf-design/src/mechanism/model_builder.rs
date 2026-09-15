@@ -1377,6 +1377,77 @@ mod tests {
         );
     }
 
+    /// Every other weld gate checks the model's *shape* — joint counts, poses,
+    /// degrees of freedom. This one steps it: a welded arm on a swinging
+    /// pendulum must keep both its offset and its orientation relative to the
+    /// arm it is welded to, which is what "rigid" means and what no static
+    /// assertion can see.
+    #[test]
+    fn a_welded_arm_stays_rigid_while_the_assembly_swings() {
+        let model = Mechanism::builder("pendulum")
+            .part(cuboid_part("base"))
+            .part(cuboid_part("arm"))
+            .joint(JointDef::new(
+                "pivot",
+                "world",
+                "base",
+                JointKind::Revolute,
+                Point3::origin(),
+                Vector3::y(),
+            ))
+            .joint(JointDef::new(
+                "weld",
+                "base",
+                "arm",
+                JointKind::Fixed,
+                Point3::new(10.0, 0.0, 0.0),
+                Vector3::x(),
+            ))
+            .build()
+            .to_model(2.0, 2.0)
+            .unwrap();
+
+        let idx = |n: &str| {
+            model
+                .body_name
+                .iter()
+                .position(|b| b.as_deref() == Some(n))
+                .expect("body")
+        };
+        let (base, arm) = (idx("base"), idx("arm"));
+
+        let mut data = model.make_data();
+        data.forward(&model).unwrap();
+        let start = data.xmat[base];
+
+        for _ in 0..200 {
+            data.step(&model).unwrap();
+        }
+
+        // ⚠ Negative control: a scene that never moved would satisfy every
+        // assertion below for the wrong reason.
+        let swung = (data.xmat[base] - start).norm();
+        assert!(
+            swung > 1e-3,
+            "the pendulum did not swing ({swung:.2e}); the rigidity check \
+             below would pass vacuously"
+        );
+
+        // Rigid means: the arm sits where the base's pose puts it …
+        let expected = data.xpos[base] + data.xmat[base] * model.body_pos[arm];
+        assert!(
+            (data.xpos[arm] - expected).norm() < 1e-9,
+            "welded arm drifted: {:?} vs {:?}",
+            data.xpos[arm],
+            expected
+        );
+        // … and turns exactly with it.
+        assert!(
+            (data.xmat[arm] - data.xmat[base]).norm() < 1e-9,
+            "welded arm rotated relative to its base"
+        );
+    }
+
     /// Welding to `"world"` makes a static body — a bench, a fixture, a test
     /// rig. It falls out of Fixed rather than being designed, so it is gated
     /// before something quietly takes it away.
