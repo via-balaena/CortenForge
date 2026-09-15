@@ -19,6 +19,9 @@ cf-design = { workspace = true }
 # does NOT depend on cf-design; this crate is the composition point.
 cf-vehicle = { workspace = true }
 nalgebra = { workspace = true }
+# `save_stl` — the optional `--out <dir>` export. The zero-argument path, which
+# is the one `run-validators` runs, writes nothing.
+mesh-io = { workspace = true }
 anyhow = { workspace = true }
 
 [lints]
