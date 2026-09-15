@@ -1379,72 +1379,84 @@ mod tests {
 
     /// Every other weld gate checks the model's *shape* — joint counts, poses,
     /// degrees of freedom. This one steps it: a welded arm on a swinging
-    /// pendulum must keep both its offset and its orientation relative to the
-    /// arm it is welded to, which is what "rigid" means and what no static
-    /// assertion can see.
+    /// pendulum must keep its orientation relative to the base, which is what
+    /// "rigid" means and what no static assertion can see.
+    ///
+    /// ⚠ It runs the same pendulum twice, welded and hinged, because a
+    /// rigidity assertion that cannot tell those two apart is measuring
+    /// nothing. The hinged case is the positive control and must *fail*
+    /// rigidity; mutating the weld mapping breaks the model's bookkeeping in
+    /// three places at once and stops the pendulum swinging, so mutation
+    /// cannot supply that control from outside.
     #[test]
-    fn a_welded_arm_stays_rigid_while_the_assembly_swings() {
-        let model = Mechanism::builder("pendulum")
-            .part(cuboid_part("base"))
-            .part(cuboid_part("arm"))
-            .joint(JointDef::new(
-                "pivot",
-                "world",
-                "base",
-                JointKind::Revolute,
-                Point3::origin(),
-                Vector3::y(),
-            ))
-            .joint(JointDef::new(
-                "weld",
-                "base",
-                "arm",
-                JointKind::Fixed,
-                Point3::new(10.0, 0.0, 0.0),
-                Vector3::x(),
-            ))
-            .build()
-            .to_model(2.0, 2.0)
-            .unwrap();
-
-        let idx = |n: &str| {
-            model
-                .body_name
-                .iter()
-                .position(|b| b.as_deref() == Some(n))
-                .expect("body")
+    fn a_weld_is_rigid_under_simulation_and_a_hinge_is_not() {
+        let relative_rotation = |second: JointKind| {
+            let model = Mechanism::builder("pendulum")
+                .part(cuboid_part("base"))
+                .part(cuboid_part("arm"))
+                .joint(JointDef::new(
+                    "pivot",
+                    "world",
+                    "base",
+                    JointKind::Revolute,
+                    Point3::origin(),
+                    Vector3::y(),
+                ))
+                .joint(JointDef::new(
+                    "j2",
+                    "base",
+                    "arm",
+                    second,
+                    Point3::new(10.0, 0.0, 0.0),
+                    Vector3::y(),
+                ))
+                .build()
+                .to_model(2.0, 2.0)
+                .unwrap();
+            let idx = |n: &str| {
+                model
+                    .body_name
+                    .iter()
+                    .position(|b| b.as_deref() == Some(n))
+                    .expect("body")
+            };
+            let (base, arm) = (idx("base"), idx("arm"));
+            let mut data = model.make_data();
+            data.forward(&model).unwrap();
+            let start = data.xmat[base];
+            for _ in 0..200 {
+                data.step(&model).unwrap();
+            }
+            let swung = (data.xmat[base] - start).norm();
+            let drift =
+                (data.xpos[arm] - (data.xpos[base] + data.xmat[base] * model.body_pos[arm])).norm();
+            let twist = (data.xmat[arm] - data.xmat[base]).norm();
+            (swung, drift, twist)
         };
-        let (base, arm) = (idx("base"), idx("arm"));
 
-        let mut data = model.make_data();
-        data.forward(&model).unwrap();
-        let start = data.xmat[base];
-
-        for _ in 0..200 {
-            data.step(&model).unwrap();
-        }
-
-        // ⚠ Negative control: a scene that never moved would satisfy every
-        // assertion below for the wrong reason.
-        let swung = (data.xmat[base] - start).norm();
+        let (swung, drift, twist) = relative_rotation(JointKind::Fixed);
+        // Negative control: a scene that never moved would satisfy rigidity
+        // for the wrong reason.
         assert!(
             swung > 1e-3,
-            "the pendulum did not swing ({swung:.2e}); the rigidity check \
-             below would pass vacuously"
+            "the welded pendulum did not swing ({swung:.2e})"
+        );
+        assert!(
+            drift < 1e-9,
+            "welded arm drifted from its base by {drift:.2e}"
+        );
+        assert!(
+            twist < 1e-9,
+            "welded arm rotated relative to its base by {twist:.2e}"
         );
 
-        // Rigid means: the arm sits where the base's pose puts it …
-        let expected = data.xpos[base] + data.xmat[base] * model.body_pos[arm];
+        // Positive control: the same assertions must be able to fail.
+        let (swung_h, _, twist_h) = relative_rotation(JointKind::Revolute);
+        assert!(swung_h > 1e-3, "the hinged pendulum did not swing");
         assert!(
-            (data.xpos[arm] - expected).norm() < 1e-9,
-            "welded arm drifted: {:?} vs {:?}",
-            data.xpos[arm],
-            expected
-        );
-        // … and turns exactly with it.
-        assert!(
-            (data.xmat[arm] - data.xmat[base]).norm() < 1e-9,
-            "welded arm rotated relative to its base"
+            twist_h > 1e-3,
+            "a hinged arm must rotate relative to its base, got {twist_h:.2e} — \
+             the rigidity assertion above would then be measuring nothing"
         );
     }
 
