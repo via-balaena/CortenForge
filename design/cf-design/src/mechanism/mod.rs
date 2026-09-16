@@ -32,6 +32,7 @@ mod shapes;
 mod stl;
 pub mod templates;
 pub mod tendon;
+pub mod units;
 pub mod validate;
 
 pub use actuator::{ActuatorDef, ActuatorKind};

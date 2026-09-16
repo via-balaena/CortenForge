@@ -20,7 +20,7 @@ use std::f64::consts::PI;
 /// (`model_builder.rs` scales gravity to 9810 mm/s² for the same reason).
 /// A rate handed to `with_stiffness` in N·m/rad is therefore a million times
 /// too soft, and nothing would report it: the machine would simply sag.
-const N_M_PER_MODEL_TORQUE_UNIT: f64 = 1e-6;
+use super::units;
 
 /// A bonded cylindrical elastomer bushing.
 ///
@@ -132,7 +132,7 @@ impl Bushing {
     /// million: the model's torque unit is kg·mm²/s², a microjoule.
     #[must_use]
     pub fn joint_stiffness(&self) -> f64 {
-        self.torsional_rate_n_m_per_rad() / N_M_PER_MODEL_TORQUE_UNIT
+        units::model_stiffness_from_n_m_per_rad(self.torsional_rate_n_m_per_rad())
     }
 }
 

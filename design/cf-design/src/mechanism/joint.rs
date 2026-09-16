@@ -141,7 +141,26 @@ impl JointDef {
         }
     }
 
-    /// Set joint spring stiffness (N·mm/rad for revolute/ball, N/mm for prismatic).
+    /// Set joint spring stiffness, **in the model's own units**.
+    ///
+    /// ⛔⛔ **NOT N·mm/rad, which is what this doc used to say.** A
+    /// [`Mechanism`](super::Mechanism) is mm-kg-s, so its torque unit is
+    /// `kg·mm²/s²` — a microjoule — and a rotational rate arrives here already
+    /// converted: `1 N·m/rad` is `1e6` of these, `1 N·mm/rad` is `1e3`. The
+    /// value is stored and handed to the solver untouched, because nothing
+    /// here can tell what it was handed.
+    ///
+    /// ⚠ The old wording was not merely inaccurate. `split_part` derives
+    /// `E·I/L` in genuine N·mm/rad and templates passed it straight in, so
+    /// every flexure was a THOUSAND times softer than the number it carried —
+    /// a real 368 000 N·mm/rad finger reaching the solver as 368.
+    ///
+    /// ★ Cross with [`units::model_stiffness_from_n_m_per_rad`] or
+    /// [`units::model_stiffness_from_n_mm_per_rad`] rather than multiplying at
+    /// the call site.
+    ///
+    /// [`units::model_stiffness_from_n_m_per_rad`]: super::units::model_stiffness_from_n_m_per_rad
+    /// [`units::model_stiffness_from_n_mm_per_rad`]: super::units::model_stiffness_from_n_mm_per_rad
     ///
     /// Used to model compliant/flexure joints derived from `FlexZone` splitting.
     ///
