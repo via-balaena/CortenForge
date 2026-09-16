@@ -70,7 +70,7 @@ pub struct PartMetrics {
 /// let t = cf_trike::trike()?;
 ///
 /// // The assembly, ready for to_model, to_stl_kit or inspection.
-/// assert_eq!(t.mechanism.parts().len(), 36);
+/// assert_eq!(t.mechanism.parts().len(), 34);
 ///
 /// // Twenty-three degrees of freedom in the tree — welds cost nothing, and
 /// // three joints are balls, worth three each. The three linkages take nine
@@ -262,12 +262,6 @@ const STEER_LINKAGE_Z_MM: f64 = 175.0;
 const STEER_TUBE_OD_MM: f64 = 19.05;
 /// Steering tube wall.
 const STEER_TUBE_WALL_MM: f64 = 1.5;
-/// Where the rider's hands fall, beside the hip.
-const GRIP_X_MM: f64 = 620.0;
-/// Grip half-spacing.
-const GRIP_Y_MM: f64 = 280.0;
-/// Grip height.
-const GRIP_Z_MM: f64 = 320.0;
 
 /// Hip to pedal, extended. Sets where the bottom bracket goes, and with it
 /// where the hip has to sit for a given wheelbase.
@@ -887,8 +881,6 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
             STEER_LINKAGE_Z_MM,
         )
     };
-    let grip = |sign: f64| Point3::new(GRIP_X_MM, sign * GRIP_Y_MM, GRIP_Z_MM);
-    let upright_top = upper_ball;
     let (steer_arm_left, steer_arm_left_at) = steer_member(kingpin_pickup(1.0), arm_end(1.0));
     let (steer_arm_right, steer_arm_right_at) = steer_member(kingpin_pickup(-1.0), arm_end(-1.0));
     // ⚠ The rod pivots at its LEFT end, not its centre: a part is placed at
@@ -899,8 +891,6 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
         STEER_TUBE_OD_MM,
         STEER_TUBE_WALL_MM,
     );
-    let (bar_left, bar_left_at) = steer_member(upright_top(1.0), grip(1.0));
-    let (bar_right, bar_right_at) = steer_member(upright_top(-1.0), grip(-1.0));
     let upright_centre = |sign: f64| lower_ball(sign).coords;
 
     let seat_member = |a, b| tube_between(a, b, SEAT_TUBE_OD_MM, SEAT_TUBE_WALL_MM);
@@ -1071,7 +1061,13 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
             range_rad: Some((-0.35, 0.35)),
             material: steel.clone(),
             piece: lower_wishbone(1.0),
-            cell_mm: 0.4,
+            // ⚠ 0.6, not 0.4. The rule is roughly four cells across a tube
+            // wall and the wall is 2.5 mm, so 0.4 was buying 6 cells across it
+            // — on the largest part in the vehicle, integrated TWICE because
+            // an authored part has no closed form and is checked by refining.
+            // Halving the cell is 8x the work, so this one part was ~200 s of
+            // a 499 s validator.
+            cell_mm: 0.6,
             bushing: Some(bush),
         },
         PartPlan {
@@ -1143,7 +1139,7 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
             range_rad: Some((-0.35, 0.35)),
             material: steel.clone(),
             piece: lower_wishbone(-1.0),
-            cell_mm: 0.4,
+            cell_mm: 0.6,
             bushing: Some(bush),
         },
         PartPlan {
@@ -1361,30 +1357,6 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
             range_rad: None,
             material: steel.clone(),
             piece: tie_rod,
-            cell_mm: 0.4,
-            bushing: None,
-        },
-        PartPlan {
-            name: "bar_l",
-            parent: "upright_l",
-            anchor_mm: bar_left_at - upright_centre(1.0),
-            kind: JointKind::Fixed,
-            axis: Vector3::y(),
-            range_rad: None,
-            material: steel.clone(),
-            piece: bar_left,
-            cell_mm: 0.4,
-            bushing: None,
-        },
-        PartPlan {
-            name: "bar_r",
-            parent: "upright_r",
-            anchor_mm: bar_right_at - upright_centre(-1.0),
-            kind: JointKind::Fixed,
-            axis: Vector3::y(),
-            range_rad: None,
-            material: steel.clone(),
-            piece: bar_right,
             cell_mm: 0.4,
             bushing: None,
         },

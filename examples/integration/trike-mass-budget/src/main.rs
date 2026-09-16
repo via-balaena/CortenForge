@@ -67,12 +67,12 @@ const PIN_TOLERANCE: f64 = 1e-6;
 /// an empty one passes without doing anything. An empty `Mechanism` builds
 /// happily — `validate` skips the orphan check below two parts — so nothing
 /// upstream would object.
-const EXPECTED_PARTS: usize = 36;
+const EXPECTED_PARTS: usize = 34;
 /// Welds in the assembly: three frame members and seven seat members onto the
 /// spine, all three tyres onto their rims, the rider's two halves, the two
 /// suspension towers, and the aft leg of each UPPER wishbone onto its fore
 /// leg. The lower wishbones are one authored piece each and need no weld.
-const EXPECTED_WELDS: usize = 24;
+const EXPECTED_WELDS: usize = 22;
 
 /// Loops the joint tree cannot hold: the tie rod's far end, and the upper
 /// ball joint on each wishbone.
@@ -1125,13 +1125,13 @@ fn main() -> Result<()> {
     // and they are supposed to fire so the new numbers get read.
     let mut drifted: Vec<String> = Vec::new();
     for (label, got, want) in [
-        ("total mass (kg)", spec.total_mass_kg(), 250.629_561_399),
-        ("cg x (m)", spec.cg_x_m(), 1.273_115_768),
-        ("cg z (m)", spec.cg_z_m(), 0.355_626_821),
+        ("total mass (kg)", spec.total_mass_kg(), 249.572_030_642),
+        ("cg x (m)", spec.cg_x_m(), 1.277_113_943),
+        ("cg z (m)", spec.cg_z_m(), 0.355_550_483),
         (
             "rollover threshold (g)",
             rollover_threshold_g(&spec),
-            1.278_395_101,
+            1.274_957_384,
         ),
     ] {
         if (got - want).abs() > want.abs() * PIN_TOLERANCE {
