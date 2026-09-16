@@ -26,6 +26,7 @@
 //! and not of the check: a rider's torso and thigh are *supposed* to overlap at
 //! the hip, and two frame tubes are supposed to overlap at a node.
 
+pub mod connectivity;
 pub mod member_load;
 
 use std::collections::{HashMap, HashSet, VecDeque};

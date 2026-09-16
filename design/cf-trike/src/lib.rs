@@ -256,27 +256,47 @@ const SEAT_WIDTH_MM: f64 = 300.0;
 /// Hip point — where the pan meets the back, and where the seat's load goes
 /// into the spine. Set by leg length from the bottom bracket, not by taste.
 ///
-/// ★ This is the layout's dominant lever. On a tadpole, weight aft is weight
-/// off the paired axle, and the rider is half the machine. Measured over the
-/// hip positions this geometry allows, holding everything else fixed:
+/// ⛔⛔ **CARRIED FORWARD UNEXAMINED THROUGH THE RE-BASE, AND IT IS THE
+/// LAYOUT'S DOMINANT LEVER.**
 ///
-/// | hip x | bottom bracket | share | threshold |
+/// 500 mm was a sound choice for the rideable trike: on a 1250 mm wheelbase it
+/// put the driver 40% of the way back, which is where a driver belongs. The
+/// re-base took the wheelbase to 2650 and **never touched this constant**, so
+/// he slid to 19% — sitting all but on the front axle — without a line
+/// changing. That is harder to catch than a value that is simply wrong,
+/// because nothing about it moved.
+///
+/// ★★★ **The consequence is the headline verdict.** The driver is 84 kg, 39%
+/// of the derived mass, and his centre sits at x = 375 mm, 14% of the
+/// wheelbase. Measured, holding all else fixed:
+///
+/// | driver at | cg x | paired share | rollover |
 /// |---|---|---|---|
-/// | 674 | -250 | 0.512 | 0.752 g |
-/// | 560 | -364 | 0.592 | 0.870 g |
-/// | **500** | **-424** | **0.634** | **0.932 g** |
-/// | 450 | -474 | 0.669 | 0.983 g |
+/// | **19% — as built** | **1054 mm** | **0.602** | **1.462 g** |
+/// | 40% | 1322 mm | 0.501 | 1.217 g |
+/// | 45% | 1374 mm | 0.482 | 1.169 g |
 ///
-/// ⚠ Re-measured. The first sweep was taken before the seat was seated on
-/// the frame and before the rims stopped being discs, and both moved the
-/// centre of gravity: it read 0.860 g at hip 500 where this reads 0.932. The
-/// ordering held, which is why the decision still stands, but a table of
-/// numbers that no longer reproduce is worse than no table.
+/// ⇒ *"Slides before it tips"* is currently being bought, in part, by a
+/// recumbent seating position on a car-sized vehicle. Moving the driver to
+/// where one normally sits costs about 20% of the threshold.
 ///
-/// 500 is the chosen point. It takes the biggest step available for the price
-/// of boom tube, and it puts the pedals 424 mm ahead of the front contact
-/// patch — feet ahead of the front axle, which is what a tadpole recumbent
-/// looks like, not a compromise.
+/// ⚠ **No gate reads this.** Every check on this assembly is geometric,
+/// kinematic, topological or a mass bookkeeping — none of them has an opinion
+/// about where a driver belongs in a wheelbase, which is why five review
+/// passes went by it. It took rendering the assembly and looking at it, the
+/// second time that has been true of this seat.
+///
+/// ⛔ **What would discharge this**: choosing a hip position on the hypercar's
+/// own terms and re-deriving [`LEG_REACH_MM`], the pedal box and the seat
+/// height from it. That is a cabin-layout decision, not a cleanup, and it
+/// belongs to whoever makes it rather than to whoever noticed.
+///
+/// ⚠ A table of hip positions used to sit here with `share` and `threshold`
+/// columns measured on the 1250 mm vehicle. It read 0.634 and 0.932 g at this
+/// same hip 500 — against the 0.602 and 1.462 g above — and it carried its own
+/// warning that "a table of numbers that no longer reproduce is worse than no
+/// table". It had stopped reproducing. The figures above replace it and were
+/// taken on the vehicle as it stands.
 const HIP_X_MM: f64 = 500.0;
 /// Hip height above the ground.
 ///
@@ -466,6 +486,20 @@ const RIM_BARREL_SHARE: f64 = 0.85;
 const FRONT_RIM_HALF_WIDTH_MM: f64 = FRONT_WHEEL_HALF_WIDTH_MM * RIM_BARREL_SHARE;
 /// Half the hub face's thickness. A hub is a FACE, not a bar through the wheel.
 const FRONT_HUB_HALF_MM: f64 = 25.0;
+/// Half the thickness of the disc spanning hub to rim.
+///
+/// ⛔⛔ **Without this the wheel is not one object.** The barrel and the hub
+/// never touched — 180 mm of nothing between them — so `rim_fl` was a floating
+/// hoop and a separate plug declared as a single part. Mass integrated fine
+/// over the two, the convergence check agreed with itself, and a gate
+/// asserting the barrel was wider than the hub passed: every number was right
+/// about an object that could not exist.
+///
+/// ⚠ A real wheel does this with spokes or a shaped face, and a flat disc is
+/// heavier than either. It is the honest placeholder — it makes the part one
+/// body and moves the mass toward a real wheel rather than away — and the
+/// shaping belongs to the arc that authors the wheels properly.
+const FRONT_FACE_HALF_MM: f64 = 4.0;
 /// Inside of the front rim's section.
 ///
 /// ⚠ A rim is a thin section, and 6 mm is already generous for what is really
@@ -1298,6 +1332,11 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
                     FRONT_RIM_HALF_WIDTH_MM,
                 )),
                 onto_y(disc(FRONT_HUB_R_MM, FRONT_HUB_HALF_MM)),
+                onto_y(annulus(
+                    FRONT_RIM_INNER_MM,
+                    FRONT_HUB_R_MM,
+                    FRONT_FACE_HALF_MM,
+                )),
             ])?,
             // ⚠ 1.0, not 2.0: the rim section is 6 mm, and three cells across
             // a wall put the integrator 0.688% off its closed form.
@@ -1323,6 +1362,11 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
                     FRONT_RIM_HALF_WIDTH_MM,
                 )),
                 onto_y(disc(FRONT_HUB_R_MM, FRONT_HUB_HALF_MM)),
+                onto_y(annulus(
+                    FRONT_RIM_INNER_MM,
+                    FRONT_HUB_R_MM,
+                    FRONT_FACE_HALF_MM,
+                )),
             ])?,
             // ⚠ 1.0, not 2.0: the rim section is 6 mm, and three cells across
             // a wall put the integrator 0.688% off its closed form.

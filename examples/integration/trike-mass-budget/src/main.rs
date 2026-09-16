@@ -308,6 +308,14 @@ const ACCEPTED_OVER_YIELD: &[(&str, f64)] = &[
     ("seat_back_rail_left", 5.336),
     ("seat_cross", 1.929),
     ("seat_back", 1.472),
+    // ⚠ These two crossed when the front wheels gained a FACE — the barrel and
+    // the hub had never touched, so each wheel was a floating hoop and a plug
+    // until the connectivity check said so. Giving them a disc to span took
+    // each wheel from 4.7 kg to 7.6, against 9-11 for a real 17x8 alloy, and
+    // the lower wishbones carry that. Nothing is wrong with the wishbones; the
+    // model stopped understating what they hold.
+    ("arm_lower_r", 1.045),
+    ("arm_lower_l", 1.008),
 ];
 /// How much worse an accepted member may get before the gate fires.
 ///
@@ -1012,6 +1020,61 @@ fn main() -> Result<()> {
         );
     }
 
+    // ── Oracle 1h: every part is ONE body ───────────────────────────
+    //
+    // ★★★ Nothing above can see this. Mass integrates perfectly well over two
+    // lumps, a convergence check against a finer grid agrees with itself,
+    // interpenetration is about pairs rather than insides, and the member
+    // screen reads a load. Every one of those questions has a sensible answer
+    // for an object in two pieces.
+    //
+    // ⚠ Each part at its OWN cell — the one it is already integrated at. No
+    // single figure works: a 2300 mm rail needs a coarse cell to fit in memory
+    // and a 2 mm tube wall needs a fine one to survive the fill.
+    {
+        let cells: cf_assembly_checks::connectivity::Cells = metrics
+            .iter()
+            .map(|(name, m)| (name.clone(), m.cell_mm))
+            .collect();
+        let bodies = cf_assembly_checks::connectivity::disconnected_parts(&mechanism, &cells);
+        println!(
+            "{} of {} parts examined for connectivity{}",
+            bodies.examined,
+            bodies.examined + bodies.unreadable.len(),
+            if bodies.unreadable.is_empty() {
+                String::new()
+            } else {
+                // ⚠ NAMED, not counted. "5 unread" tells a reader nothing
+                // about which five, and a population that shrank silently is
+                // the defect this crate has now had three times.
+                format!(
+                    " — unread at their own cell: {}",
+                    bodies.unreadable.join(", ")
+                )
+            }
+        );
+        for s in &bodies.split {
+            println!(
+                "    {:<22} {} bodies, largest holds {:.1}%",
+                s.part,
+                s.components,
+                s.largest_share * 100.0
+            );
+        }
+        if !bodies.split.is_empty() {
+            bail!(
+                "{} part(s) are more than one body: {}",
+                bodies.split.len(),
+                bodies
+                    .split
+                    .iter()
+                    .map(|s| format!("{} ({})", s.part, s.components))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+    }
+
     // ── Oracle 1f: the suspension moves without hitting anything ────
     //
     // The steering sweep above moves the wheel. Nothing moved the suspension,
@@ -1551,21 +1614,26 @@ fn main() -> Result<()> {
     // regression gate, not a design target: change a tube, change a rider,
     // and they are supposed to fire so the new numbers get read.
     //
-    // ⚠ They last fired when the front wheels were given their right widths —
-    // the barrel had been 30 mm and the hub 235, so each wheel nearly doubled.
+    // ⚠ They last fired when the front wheels were given a FACE. The barrel
+    // and the hub had never touched — 180 mm of nothing between them — so each
+    // wheel was a floating hoop and a separate plug until the connectivity
+    // check said so. Spanning them took each wheel 4.7 -> 7.6 kg, and the
+    // budget moved the way the physics requires: mass forward of the front
+    // axle pulls the centre of gravity forward, which raises the paired-axle
+    // share, which on a tadpole raises the rollover threshold.
     // ★ The member screen did NOT move on the same change, and the pair of
     // them disagreeing is informative: nothing in the accepted set hangs off a
     // front wheel, so the two gates together localise the change to the parts
     // it touched.
     let mut drifted: Vec<String> = Vec::new();
     for (label, got, want) in [
-        ("total mass (kg)", spec.total_mass_kg(), 209.407_812_795),
-        ("cg x (m)", spec.cg_x_m(), 1.083_233_895),
-        ("cg z (m)", spec.cg_z_m(), 0.361_845_003),
+        ("total mass (kg)", spec.total_mass_kg(), 215.248_736_972),
+        ("cg x (m)", spec.cg_x_m(), 1.053_839_792),
+        ("cg z (m)", spec.cg_z_m(), 0.360_435_641),
         (
             "rollover threshold (g)",
             rollover_threshold_g(&spec),
-            1.429_696_216,
+            1.462_213_972,
         ),
     ] {
         if (got - want).abs() > want.abs() * PIN_TOLERANCE {
