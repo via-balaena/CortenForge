@@ -193,9 +193,23 @@ const TAIL_SETBACK_MM: f64 = REAR_RADIUS_MM + REAR_WHEEL_CLEARANCE_MM + FRAME_R_
 pub const ROOT_PART: &str = "frame_spine";
 
 /// Pivot to rear axle.
-const SWINGARM_LENGTH_MM: f64 = 350.0;
+///
+/// ⚠ **Must clear the tyre's leading edge before the arms turn outboard.** At
+/// 350 mm the pivot sat 25 mm ahead of a 650 mm tyre, so the arms had no room
+/// to reach y=±170 and clipped the tyre on the way out. A longer arm is better
+/// for a car anyway: less camber and squat change per millimetre of travel.
+const SWINGARM_LENGTH_MM: f64 = 650.0;
+/// Swingarm tube stock.
+const SWINGARM_OD_MM: f64 = 25.4;
+/// Swingarm tube wall.
+const SWINGARM_WALL_MM: f64 = 2.0;
 /// Half the spacing of the swingarm arms at the axle.
-const SWINGARM_HALF_WIDTH_MM: f64 = 60.0;
+///
+/// ⚠ **Derived from the tyre, not chosen.** At a fixed 60 mm the arms sat
+/// INSIDE a 275-section tyre and ran straight through it — the rear end was
+/// never re-based when the vehicle became a car, and three gates passed over
+/// it before the interpenetration scan said so.
+const SWINGARM_HALF_WIDTH_MM: f64 = REAR_WHEEL_HALF_WIDTH_MM + REAR_WHEEL_CLEARANCE_MM + 12.7;
 
 /// How far a member that butts onto another sinks into it.
 ///
@@ -841,7 +855,26 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
     // parallel arms at y = +/-60 straddled it and touched nothing.
     let pivot = Point3::new(WHEELBASE_MM - SWINGARM_LENGTH_MM, 0.0, REAR_RADIUS_MM);
     let rear_axle = |y: f64| Point3::new(WHEELBASE_MM, y, REAR_RADIUS_MM);
-    let arm = |y: f64| tube_between(pivot, rear_axle(y), 25.4, 2.0);
+    // ⚠ A dog-leg, not a straight run. Converging both arms on a single
+    // centreline pivot puts them at y≈59 partway along, and the rim spans
+    // ±137.5 — so a straight arm passes clean through the wheel. A real
+    // swingarm goes OUTBOARD first and stays there.
+    let knee = |y: f64| Point3::new(pivot.x + 60.0, y, REAR_RADIUS_MM);
+    let arm = |y: f64| {
+        // Built on world points, then shifted so the arm's own origin is its
+        // pivot — which is where its joint anchor is.
+        let local = |p: Point3<f64>| Point3::from(p - pivot);
+        let path = vec![local(pivot), local(knee(y)), local(rear_axle(y))];
+        let tube = Solid::pipe(path.clone(), SWINGARM_OD_MM / 2.0)
+            .subtract(Solid::pipe(path, SWINGARM_OD_MM / 2.0 - SWINGARM_WALL_MM));
+        (
+            Piece {
+                solid: tube,
+                volume_mm3: None,
+            },
+            pivot.coords,
+        )
+    };
     let (arm_left, arm_left_at) = arm(SWINGARM_HALF_WIDTH_MM);
     let (arm_right, arm_right_at) = arm(-SWINGARM_HALF_WIDTH_MM);
 
@@ -1472,8 +1505,13 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
         },
         PartPlan {
             name: "rider_legs",
-            parent: "seat_pan",
-            anchor_mm: legs_at - pan_panel_at,
+            // ⚠ On the TORSO, not the seat pan. A rider is one body: his legs
+            // meet his torso at the hip and overlap there by construction,
+            // which the interpenetration scan reported as 6735 points of two
+            // unrelated parts occupying the same space. Hanging them off the
+            // seat made two halves of one person strangers to each other.
+            parent: "rider_torso",
+            anchor_mm: legs_at - torso_at,
             kind: JointKind::Fixed,
             axis: Vector3::y(),
             range_rad: None,

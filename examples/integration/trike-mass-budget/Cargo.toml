@@ -17,6 +17,9 @@ example_kind = "validator"
 cf-design = { workspace = true }
 # `TrikeSpec` + the load analysis the derived budget is fed into. cf-vehicle
 # does NOT depend on cf-design; this crate is the composition point.
+# The vehicle-agnostic assembly checks. ⚠ It knows nothing about trikes: the
+# interpenetration scan below works on a gripper or a boat unchanged.
+cf-assembly-checks = { workspace = true }
 cf-vehicle = { workspace = true }
 # The vehicle itself. This crate composes a budget from it; it knows nothing
 # about loads, and cf-vehicle knows nothing about geometry.

@@ -146,6 +146,23 @@ const TARGET_CG_X_M: f64 = 2.650 * 0.55;
 const TARGET_CG_Z_M: f64 = 0.240;
 /// Mesh tolerance for the steering-clash probe.
 const STEER_PROBE_MM: f64 = 6.0;
+/// Mesh tolerance for the interpenetration scan.
+const PAIR_PROBE_MM: f64 = 6.0;
+/// What share of a part may be inside another and still count as node contact.
+///
+/// ★ **Extent is the discriminator, not adjacency** — measured on this
+/// assembly, parts meeting at a shared node ran 2-36 points while true
+/// interpenetration ran 257-6735. Two orders of magnitude apart.
+///
+/// ⚠ Graph distance looked like it should work and does NOT: six of the eight
+/// pairs more than two hops apart were legitimate — a brace ending on a tower,
+/// panels resting on their rails, a bar and an arm sharing a ball joint. Far
+/// apart in the TREE, adjacent in SPACE.
+///
+/// ⚠ A **fraction**, not a point count. An absolute count is tuned to one
+/// assembly's size: 120 points read node contact correctly on a 108 kg trike
+/// and misread it on the same vehicle at car scale.
+const MAX_NODE_OVERLAP: f64 = 0.06;
 /// Suspension travel swept for clashes, in degrees — the wishbones are given
 /// `+/-0.35 rad`, and this is that range in the units the message prints.
 const BUMP_TRAVEL_DEG: f64 = 20.0;
@@ -724,6 +741,46 @@ fn main() -> Result<()> {
         println!("steering sweeps +/-{STEER_LOCK_DEG:.0} deg clear of the frame");
     }
 
+    // ── Oracle 1g: nothing occupies the same space as anything else ─
+    //
+    // ★ The check that catches a part which is the right SHAPE, the right MASS
+    // and in the WRONG PLACE — which no mass or volume gate can see, because
+    // each of them reads one part at a time in its own frame. It found the
+    // frame still braced 292 mm past the suspension pickups, through the
+    // volume the lower wishbone swings in, after three other gates passed.
+    //
+    // ⚠ Lives in `cf-assembly-checks` and knows nothing about vehicles.
+    {
+        let found = cf_assembly_checks::overlapping_pairs(&mechanism, &origins, PAIR_PROBE_MM);
+        let bulk: Vec<_> = found
+            .iter()
+            .filter(|o| o.fraction > MAX_NODE_OVERLAP)
+            .collect();
+        println!(
+            "{} part pairs touch without being joined; deepest {:.1}% of {}",
+            found.len(),
+            found.first().map_or(0.0, |o| o.fraction) * 100.0,
+            found.first().map_or("none", |o| o.a.as_str()),
+        );
+        if !bulk.is_empty() {
+            bail!(
+                "these pairs interpenetrate rather than meeting at a node:\n  {}",
+                bulk.iter()
+                    .map(|o| {
+                        format!(
+                            "{} <-> {}: {:.1}% of one is inside the other ({} points)",
+                            o.a,
+                            o.b,
+                            o.fraction * 100.0,
+                            o.points
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n  ")
+            );
+        }
+    }
+
     // ── Oracle 1f: the suspension moves without hitting anything ────
     //
     // The steering sweep above moves the wheel. Nothing moved the suspension,
@@ -1125,13 +1182,13 @@ fn main() -> Result<()> {
     // and they are supposed to fire so the new numbers get read.
     let mut drifted: Vec<String> = Vec::new();
     for (label, got, want) in [
-        ("total mass (kg)", spec.total_mass_kg(), 249.572_030_642),
-        ("cg x (m)", spec.cg_x_m(), 1.277_113_943),
-        ("cg z (m)", spec.cg_z_m(), 0.355_550_483),
+        ("total mass (kg)", spec.total_mass_kg(), 250.529_923_465),
+        ("cg x (m)", spec.cg_x_m(), 1.280_271_555),
+        ("cg z (m)", spec.cg_z_m(), 0.355_432_882),
         (
             "rollover threshold (g)",
             rollover_threshold_g(&spec),
-            1.274_957_384,
+            1.272_445_090,
         ),
     ] {
         if (got - want).abs() > want.abs() * PIN_TOLERANCE {

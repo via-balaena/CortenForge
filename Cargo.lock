@@ -1990,6 +1990,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "cf-assembly-checks"
+version = "1.0.0"
+dependencies = [
+ "cf-design",
+ "nalgebra 0.34.2",
+]
+
+[[package]]
 name = "cf-bevy-common"
 version = "1.0.0"
 dependencies = [
@@ -5802,6 +5810,7 @@ name = "example-trike-mass-budget"
 version = "1.0.0"
 dependencies = [
  "anyhow",
+ "cf-assembly-checks",
  "cf-design",
  "cf-trike",
  "cf-vehicle",

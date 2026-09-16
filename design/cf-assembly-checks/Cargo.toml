@@ -1,0 +1,19 @@
+[package]
+name = "cf-assembly-checks"
+description = "Assembly checks that do not know what they are checking — interpenetration, weld contact, articulation sweeps and declared counts, over any cf-design Mechanism, whether it is a vehicle, a gripper or a boat"
+keywords = ["assembly", "verification", "geometry", "mechanism", "design"]
+categories = ["science", "simulation"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[package.metadata.cortenforge]
+tier = "L0"
+
+[dependencies]
+# The assembly these checks read. Nothing here knows what the assembly IS.
+cf-design = { workspace = true }
+nalgebra = { workspace = true }
