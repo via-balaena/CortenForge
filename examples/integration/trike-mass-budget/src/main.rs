@@ -38,6 +38,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use cf_assembly_checks::member_load::{LoadCase, MassMap, MassPoint, member_loads};
 use cf_design::mechanism::mass::mass_properties;
 use cf_design::{Aabb, IndexedMesh, Mechanism, Part};
 use cf_trike::{
@@ -196,6 +197,16 @@ const BUMP_TRAVEL_DEG: f64 = 20.0;
 const BUMP_FOUL_DEG: f64 = 30.0;
 /// Mesh tolerance for the weld-contact probe.
 const WELD_PROBE_MM: f64 = 2.0;
+/// The g multiple the member screen loads the structure at.
+///
+/// A kerb strike or a hard landing, which is the case that sizes a chassis
+/// member — not the static one, which nothing fails under.
+const BUMP_G: f64 = 3.0;
+/// Yield of mild steel tube, `MPa`. Nothing is derated: utilisation 1.0 is the
+/// edge of the material, and a real design wants a factor on top.
+const MILD_STEEL_YIELD_MPA: f64 = 250.0;
+/// Yield of 6061-T6, `MPa`. Same caveat.
+const AL_6061_YIELD_MPA: f64 = 276.0;
 
 // ── Derivation ──────────────────────────────────────────────────────────
 
@@ -1137,6 +1148,83 @@ fn main() -> Result<()> {
             front_l.z,
             rear.z
         );
+    }
+
+    // ── Oracle 2b: what the members are actually carrying ───────────
+    //
+    // ★★ The first check here that reads a LOAD. Every other oracle above is
+    // geometric, kinematic or bookkeeping — they ask where parts are, whether
+    // they interpenetrate, how many joints hold them. None of them can tell a
+    // sound member from one an order of magnitude past yield, which is exactly
+    // how the tube stock survived the re-base: the vehicle went from 108 kg to
+    // 785 and every gate that could see the change fired, while the ones that
+    // would have caught the sections did not exist.
+    //
+    // ⚠ **Reported, not gated, and deliberately so.** The screen says the
+    // swingarm is far past yield. Arming a bail here would fail the example on
+    // a defect this commit is not fixing; re-sizing the chassis is a design
+    // decision, not a cleanup. The numbers print every run so the decision
+    // cannot be quietly deferred.
+    //
+    // ⛔ Read `cf_assembly_checks::member_load` for the five things it cannot
+    // see. The root is chief among them: `frame_spine` has no parent joint to
+    // cantilever from and is NOT in this table.
+    {
+        let masses: MassMap = derived
+            .iter()
+            .map(|d| {
+                (
+                    d.name.clone(),
+                    MassPoint {
+                        kg: d.grid_kg,
+                        world_com_mm: d.world_com_mm,
+                    },
+                )
+            })
+            .collect();
+        // Yield, with no safety factor folded in: utilisation 1.0 is the edge
+        // of the material, not the edge of good practice.
+        let case = LoadCase::static_1g()
+            .at_g(BUMP_G)
+            .allowing("mild steel", MILD_STEEL_YIELD_MPA)
+            .allowing("aluminium 6061", AL_6061_YIELD_MPA);
+        let screen = member_loads(&mechanism, &origins, &masses, &case);
+        let over = screen
+            .members
+            .iter()
+            .filter(|l| l.utilisation.is_some_and(|u| u > 1.0))
+            .count();
+        println!(
+            "\nmember screen at {BUMP_G:.0} g — {} of {} members measured, {over} past yield",
+            screen.members.len(),
+            screen.members.len() + screen.unsampled.len()
+        );
+        for l in screen.members.iter().take(8) {
+            let verdict = match l.utilisation {
+                Some(u) if u > 1.0 => format!("{u:>6.1}x OVER"),
+                Some(u) => format!("{u:>6.2}x"),
+                None => "     --".to_owned(),
+            };
+            println!(
+                "  {:<16} {:>7.1} kg on {:>7.1} mm lever, Z {:>7.0} mm^3 -> {:>8.0} MPa {verdict}",
+                l.part, l.supported_kg, l.lever_mm, l.section_modulus_mm3, l.stress_mpa
+            );
+        }
+        if screen.members.is_empty() {
+            bail!("the member screen read nothing, so it proves nothing");
+        }
+        // ⛔ Unmeasured is not sound. This fired on its first real run: seven
+        // members were being dropped for want of interior sample points, the
+        // chassis rail and both swingarms among them, while the header counted
+        // only the survivors and looked clean.
+        if !screen.unsampled.is_empty() {
+            bail!(
+                "the member screen could not measure {} of {} members: {}",
+                screen.unsampled.len(),
+                screen.members.len() + screen.unsampled.len(),
+                screen.unsampled.join(", ")
+            );
+        }
     }
 
     // ── The budget, and what it says against the typed one ──────────
