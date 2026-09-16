@@ -105,6 +105,8 @@ pub fn disconnected_parts(mechanism: &Mechanism, cells: &Cells) -> Bodies {
                 if sizes.len() > 1 {
                     let total: usize = sizes.iter().sum();
                     let largest = sizes.iter().copied().max().unwrap_or(0);
+                    // Both are cell tallies; usize -> f64 is exact far beyond
+                    // any grid MAX_CELLS permits.
                     #[allow(clippy::cast_precision_loss)]
                     let share = largest as f64 / total as f64;
                     split.push(Split {
@@ -149,6 +151,9 @@ fn components_of(solid: &cf_design::Solid, cell_mm: f64) -> Option<Vec<usize>> {
     let mut cell = cell_mm;
     let (nx, ny, nz) = loop {
         let n = |extent: f64| -> usize {
+            // `span` is a positive finite extent and `cell` a positive finite
+            // step, so the quotient's `ceil()` is a positive whole number; the
+            // loop above caps the product before it is allocated.
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let c = (extent / cell).ceil() as usize;
             c.max(1)
@@ -165,6 +170,7 @@ fn components_of(solid: &cf_design::Solid, cell_mm: f64) -> Option<Vec<usize>> {
     let cell_mm = cell;
 
     let at = |ix: usize, iy: usize, iz: usize| -> Point3<f64> {
+        // Grid indices, bounded by MAX_CELLS; exact in f64.
         #[allow(clippy::cast_precision_loss)]
         let f = |i: usize| (i as f64 + 0.5) * cell_mm;
         Point3::new(
