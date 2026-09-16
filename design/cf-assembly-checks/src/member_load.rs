@@ -420,7 +420,11 @@ fn section_modulus(solid: &cf_design::Solid, cell_mm: f64) -> Option<(f64, Vecto
     if !cell_mm.is_finite() || cell_mm <= 0.0 {
         return None;
     }
-    let (centroid, axis, coarse) = long_axis_and_centroid(solid, cell_mm)?;
+    let CoarsePass {
+        centroid,
+        axis,
+        reach,
+    } = long_axis_and_centroid(solid, cell_mm)?;
 
     // An orthonormal basis across the section.
     let seed = if axis.x.abs() < 0.9 {
@@ -439,7 +443,6 @@ fn section_modulus(solid: &cf_design::Solid, cell_mm: f64) -> Option<(f64, Vecto
     // 21 million evaluations to read a 31.75 mm tube. The section can be no
     // wider than the material already found lying off the axis, plus a margin
     // for what the coarse grid stepped over.
-    let reach = coarse.reach;
     let area_cell = cell_mm * cell_mm;
     let mut sum = (0.0_f64, 0.0_f64);
     let mut cell_pts: Vec<(f64, f64)> = Vec::new();
@@ -499,9 +502,19 @@ fn section_modulus(solid: &cf_design::Solid, cell_mm: f64) -> Option<(f64, Vecto
     Some((i_min / c, axis))
 }
 
-/// What the coarse interior pass found: where the section sits and how far it
-/// reaches off the axis.
-struct Coarse {
+/// What the coarse interior pass found.
+///
+/// ⚠ All three together rather than two loose in a tuple beside a struct
+/// wrapping the third — which is what this was after `section_modulus` was
+/// split for length, and it made the signature read as though `reach` were the
+/// only result worth naming.
+struct CoarsePass {
+    /// Centre of the sampled interior.
+    centroid: Vector3<f64>,
+    /// The member's own long axis.
+    axis: Vector3<f64>,
+    /// How far the material reaches off that axis, plus a margin for what the
+    /// coarse grid stepped over.
     reach: f64,
 }
 
@@ -518,10 +531,7 @@ struct Coarse {
 /// until it has points or reaches the caller's cell, which bounds the work: a
 /// member that truly cannot be sampled costs four extra passes, not an
 /// unbounded search.
-fn long_axis_and_centroid(
-    solid: &cf_design::Solid,
-    cell_mm: f64,
-) -> Option<(Vector3<f64>, Vector3<f64>, Coarse)> {
+fn long_axis_and_centroid(solid: &cf_design::Solid, cell_mm: f64) -> Option<CoarsePass> {
     let bounds = solid.bounds()?;
     let (lo, hi) = (bounds.min, bounds.max);
     let span = hi - lo;
@@ -576,7 +586,11 @@ fn long_axis_and_centroid(
         })
         .fold(0.0_f64, f64::max)
         + coarse * 2.0;
-    Some((centroid, axis, Coarse { reach }))
+    Some(CoarsePass {
+        centroid,
+        axis,
+        reach,
+    })
 }
 
 /// A count as a float.

@@ -626,35 +626,32 @@ fn main() -> Result<()> {
     // the welds here cost the solver nothing. They were 1e-9 rad revolutes
     // before cf-design grew a weld, and those were six real degrees of
     // freedom pretending to be none.
-    let welds = mechanism
-        .joints()
-        .iter()
-        .filter(|j| j.kind().is_weld())
-        .count();
-    let dof: usize = mechanism.joints().iter().map(|j| j.kind().dof()).sum();
-    let held: usize = mechanism
-        .linkages()
-        .iter()
-        .map(|l| l.kind().constrained_dof())
-        .sum();
+    // ⚠ Read from the harness rather than recomputed here. These five
+    // expressions existed inline AND in `cf_assembly_checks::counts` — the
+    // crate was extracted and this caller was never switched over, which left
+    // a public function with no users and its only user duplicating it.
+    let tally = cf_assembly_checks::counts(&mechanism);
     println!(
-        "reverse trike — {} parts, {welds} welds, {dof} dof in the tree, {} \
-         linkage holding {held} of them: {} left",
-        mechanism.parts().len(),
-        mechanism.linkages().len(),
-        dof - held
+        "reverse trike — {} parts, {} welds, {} dof in the tree, {} \
+         linkage holding {} of them: {} left",
+        tally.parts,
+        tally.welds,
+        tally.tree_dof,
+        tally.linkages,
+        tally.held_dof,
+        tally.free_dof()
     );
-    if mechanism.linkages().len() != EXPECTED_LINKAGES {
+    if tally.linkages != EXPECTED_LINKAGES {
+        bail!("{} linkages, expected {EXPECTED_LINKAGES}", tally.linkages);
+    }
+    if tally.welds != EXPECTED_WELDS {
+        bail!("{} welds, expected {EXPECTED_WELDS}", tally.welds);
+    }
+    if tally.tree_dof != EXPECTED_DOF {
         bail!(
-            "{} linkages, expected {EXPECTED_LINKAGES}",
-            mechanism.linkages().len()
+            "{} degrees of freedom, expected {EXPECTED_DOF}",
+            tally.tree_dof
         );
-    }
-    if welds != EXPECTED_WELDS {
-        bail!("{welds} welds, expected {EXPECTED_WELDS}");
-    }
-    if dof != EXPECTED_DOF {
-        bail!("{dof} degrees of freedom, expected {EXPECTED_DOF}");
     }
     println!();
     println!(
@@ -942,63 +939,65 @@ fn main() -> Result<()> {
                 found.unreadable.join(", ")
             );
         }
-        let bulk: Vec<_> = found
-            .pairs
-            .iter()
-            .filter(|o| o.fraction > MAX_NODE_OVERLAP)
-            .collect();
+        // ⚠ Judged by the same [`pin_verdict`] the over-yield acceptances
+        // use. The two lists were written out longhand side by side and had
+        // already drifted apart on what counts as stale; one rule, worded
+        // twice, is the shape that lets that happen.
         let allowance = |a: &str, b: &str| {
             ALLOWED_OVERLAPS
                 .iter()
                 .find(|(x, y, _, _)| (*x == a && *y == b) || (*x == b && *y == a))
+                .map(|(_, _, was, _)| *was)
         };
         let mut objections: Vec<String> = Vec::new();
-        for o in &bulk {
-            match allowance(&o.a, &o.b) {
-                None => objections.push(format!(
-                    "{} <-> {}: {:.1}% of one is inside the other ({} points), and \
-                     nothing declares that legitimate",
+        for o in &found.pairs {
+            let pct = o.fraction * 100.0;
+            match pin_verdict(
+                o.fraction,
+                allowance(&o.a, &o.b),
+                MAX_NODE_OVERLAP,
+                ALLOWED_OVERLAP_DRIFT,
+            ) {
+                Some(Pin::Unaccepted) => objections.push(format!(
+                    "{} <-> {}: {pct:.1}% of one is inside the other ({} points), \
+                     and nothing declares that legitimate",
+                    o.a, o.b, o.points
+                )),
+                Some(Pin::Worse(was)) => objections.push(format!(
+                    "{} <-> {} was allowed at {:.1}% and is now {pct:.1}%",
                     o.a,
                     o.b,
-                    o.fraction * 100.0,
-                    o.points
+                    was * 100.0
                 )),
-                Some((_, _, was, _)) if o.fraction > was * (1.0 + ALLOWED_OVERLAP_DRIFT) => {
-                    objections.push(format!(
-                        "{} <-> {} was allowed at {:.1}% and is now {:.1}%",
-                        o.a,
-                        o.b,
-                        was * 100.0,
-                        o.fraction * 100.0
-                    ));
-                }
-                Some(_) => {}
-            }
-        }
-        // ⚠ Staleness is "no longer NEAR the threshold", not "no longer over
-        // it". A declared pair that straddles — the two upper wishbone mirrors
-        // read 6.05% and 5.53% against a 6% line — is still legitimately
-        // declared, and demanding it stay strictly over would make the gate
-        // fire on probe noise. What is genuinely stale is a pair that has
-        // dropped clear of the threshold or left the scan altogether.
-        for (a, b, was, _) in ALLOWED_OVERLAPS {
-            let current = found
-                .pairs
-                .iter()
-                .find(|o| (o.a == *a && o.b == *b) || (o.a == *b && o.b == *a));
-            match current {
-                None => objections.push(format!(
-                    "{a} <-> {b} is declared but the scan no longer reports the pair \
-                     at all — take it out of the allowance list"
+                Some(Pin::Better(was)) => objections.push(format!(
+                    "{} <-> {} was allowed at {:.1}% and is now {pct:.1}% — re-pin it",
+                    o.a,
+                    o.b,
+                    was * 100.0
                 )),
-                Some(o) if o.fraction < MAX_NODE_OVERLAP / 2.0 => objections.push(format!(
-                    "{a} <-> {b} is allowed at {:.1}% and now reads {:.1}%, clear of \
+                Some(Pin::Clear(was)) => objections.push(format!(
+                    "{} <-> {} is allowed at {:.1}% and now reads {pct:.1}%, clear of \
                      the {:.1}% line — take it out of the allowance list",
+                    o.a,
+                    o.b,
                     was * 100.0,
-                    o.fraction * 100.0,
                     MAX_NODE_OVERLAP * 100.0
                 )),
-                Some(_) => {}
+                None => {}
+            }
+        }
+        // The one rule with no analogue on the yield side: a declared pair the
+        // scan stopped reporting altogether, which reads as compliance.
+        for (a, b, _, _) in ALLOWED_OVERLAPS {
+            if !found
+                .pairs
+                .iter()
+                .any(|o| (o.a == *a && o.b == *b) || (o.a == *b && o.b == *a))
+            {
+                objections.push(format!(
+                    "{a} <-> {b} is declared but the scan no longer reports the pair \
+                     at all — take it out of the allowance list"
+                ));
             }
         }
         if !objections.is_empty() {
@@ -1715,40 +1714,75 @@ fn main() -> Result<()> {
 /// ⚠ Extracted from the oracle so it can be gated in milliseconds. Exercising
 /// it through the integration run costs four minutes a mutation, and a check
 /// that expensive to test is a check that goes untested.
+/// What a pinned set has to say about one measured value.
+///
+/// ★★ The over-yield acceptances and the declared overlaps are the SAME shape:
+/// a value, the figure it was pinned at, a line it counts as over, and a drift
+/// band. Both were written out longhand, and the two copies had already
+/// diverged — the overlap side learned that a value straddling the line is
+/// still legitimately declared, and this side had not, so a member falling to
+/// 0.99x would have been told to leave a list it belongs on.
+///
+/// ⚠ Judgement only, no wording. The two callers measure in different units —
+/// multiples of yield and shares of a part — and a shared formatter would have
+/// to be told which, which is how the duplication would grow back.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Pin {
+    /// Over the line, and nothing accepts it.
+    Unaccepted,
+    /// Accepted, and materially worse than the figure recorded.
+    Worse(f64),
+    /// Accepted, materially better, and still over — the pin wants re-taking.
+    Better(f64),
+    /// Accepted, and now clear of the line entirely.
+    ///
+    /// ⚠ CLEAR of it, at half, not merely under it. A value hovering at the
+    /// threshold is still legitimately pinned, and demanding it stay strictly
+    /// over makes the gate fire on sampling noise.
+    Clear(f64),
+}
+
+/// Judge one measured value against its pin.
+const fn pin_verdict(current: f64, pinned: Option<f64>, line: f64, drift: f64) -> Option<Pin> {
+    match (current > line, pinned) {
+        (true, None) => Some(Pin::Unaccepted),
+        (true, Some(was)) if current > was * (1.0 + drift) => Some(Pin::Worse(was)),
+        (true, Some(was)) if current < was * (1.0 - drift) => Some(Pin::Better(was)),
+        (false, Some(was)) if current < line / 2.0 => Some(Pin::Clear(was)),
+        _ => None,
+    }
+}
+
+/// Audit the over-yield acceptances against a screen.
+///
+/// Per-item judgement is [`pin_verdict`]; what lives here is the iteration, the
+/// wording in multiples of yield, and the one rule with no analogue on the
+/// overlap side — an accepted member the screen never measured at all, which
+/// would otherwise read as compliance.
 fn audit_accepted(members: &[MemberLoad], accepted: &[(&str, f64)], drift: f64) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for l in members {
         let Some(u) = l.utilisation else { continue };
-        let pin = accepted.iter().find(|(n, _)| *n == l.part);
-        match (u > 1.0, pin) {
-            (true, None) => {
+        let pin = accepted.iter().find(|(n, _)| *n == l.part).map(|(_, k)| *k);
+        let part = &l.part;
+        match pin_verdict(u, pin, 1.0, drift) {
+            Some(Pin::Unaccepted) => {
+                out.push(format!("{part} is at {u:.3}x yield and nobody accepted it"));
+            }
+            Some(Pin::Worse(was)) => {
+                out.push(format!("{part} was accepted at {was:.3}x, now {u:.3}x"));
+            }
+            Some(Pin::Better(was)) => {
                 out.push(format!(
-                    "{} is at {u:.3}x yield and nobody accepted it",
-                    l.part
+                    "{part} accepted at {was:.3}x now reads {u:.3}x, re-pin it"
                 ));
             }
-            (true, Some((_, was))) if u > was * (1.0 + drift) => {
-                out.push(format!("{} was accepted at {was:.3}x, now {u:.3}x", l.part));
-            }
-            // ⛔ Materially BETTER but still over yield. This arm was missing,
-            // and its absence made the doc on the accepted set false: an
-            // acceptance that improves without crossing back under 1.0 would
-            // have sat at its old figure indefinitely. `swingarm` is the case
-            // in waiting — it carries a 56 kg placeholder wheel, and authoring
-            // that wheel improves it a long way while leaving it over.
-            (true, Some((_, was))) if u < was * (1.0 - drift) => {
+            Some(Pin::Clear(was)) => {
                 out.push(format!(
-                    "{} accepted at {was:.3}x now reads {u:.3}x, re-pin it",
-                    l.part
+                    "{part} accepted at {was:.3}x now reads {u:.3}x, take it out"
                 ));
             }
-            (false, Some((_, was))) => {
-                out.push(format!(
-                    "{} accepted at {was:.3}x now reads {u:.3}x, take it out",
-                    l.part
-                ));
-            }
-            _ => {}
+            None => {}
         }
     }
     for (name, _) in accepted {
@@ -1777,6 +1811,60 @@ mod tests {
             allowable_mpa: Some(250.0),
             utilisation,
         }
+    }
+
+    /// ★★ The one judgement both pinned lists now share, gated directly.
+    ///
+    /// It replaced two longhand copies that had already diverged: the overlap
+    /// side had learned that a value straddling the line is still legitimately
+    /// declared, and the yield side had not.
+    #[test]
+    fn a_pin_speaks_up_four_ways_and_stays_quiet_otherwise() {
+        let line = 1.0;
+        let drift = 0.15;
+        // Over the line with nothing accepting it.
+        assert_eq!(pin_verdict(2.0, None, line, drift), Some(Pin::Unaccepted));
+        // Under the line with nothing accepting it is not a finding.
+        assert_eq!(pin_verdict(0.5, None, line, drift), None);
+        // Accepted and holding, inside the band either way.
+        assert_eq!(pin_verdict(6.5, Some(6.5), line, drift), None);
+        assert_eq!(pin_verdict(7.2, Some(6.5), line, drift), None);
+        assert_eq!(pin_verdict(5.9, Some(6.5), line, drift), None);
+        // Accepted and materially worse, or materially better while still over.
+        assert_eq!(
+            pin_verdict(9.0, Some(6.5), line, drift),
+            Some(Pin::Worse(6.5))
+        );
+        assert_eq!(
+            pin_verdict(3.0, Some(6.5), line, drift),
+            Some(Pin::Better(6.5))
+        );
+        // Accepted and now clear of the line.
+        assert_eq!(
+            pin_verdict(0.2, Some(6.5), line, drift),
+            Some(Pin::Clear(6.5))
+        );
+    }
+
+    /// ⛔⛔ The straddle. A declared value hovering just under the line is
+    /// still legitimately declared — the trike's two upper-wishbone mirrors
+    /// read 6.05% and 5.53% against a 6% line, and a rule of "no longer over"
+    /// would have told one of them to leave a list its twin belongs on.
+    #[test]
+    fn a_pin_straddling_the_line_is_left_alone() {
+        let line = 0.06;
+        for current in [0.0605, 0.0553, 0.0301] {
+            assert_eq!(
+                pin_verdict(current, Some(0.061), line, 0.15),
+                None,
+                "{current} straddles {line} and should be left alone"
+            );
+        }
+        // Genuinely clear of it — below half — is a different matter.
+        assert_eq!(
+            pin_verdict(0.02, Some(0.061), line, 0.15),
+            Some(Pin::Clear(0.061))
+        );
     }
 
     #[test]
