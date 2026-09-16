@@ -38,7 +38,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use cf_assembly_checks::member_load::{LoadCase, MassMap, MassPoint, member_loads};
+use cf_assembly_checks::member_load::{LoadCase, MassMap, MassPoint, MemberLoad, member_loads};
 use cf_design::mechanism::mass::mass_properties;
 use cf_design::{Aabb, IndexedMesh, Mechanism, Part};
 use cf_trike::{
@@ -207,6 +207,34 @@ const BUMP_G: f64 = 3.0;
 const MILD_STEEL_YIELD_MPA: f64 = 250.0;
 /// Yield of 6061-T6, `MPa`. Same caveat.
 const AL_6061_YIELD_MPA: f64 = 276.0;
+/// Members knowingly past yield, with the utilisation each was accepted at.
+///
+/// ⛔⛔ **An ACCEPTANCE, not a silence.** The tube stock was sized for the
+/// 108 kg rideable trike and never re-based; the screen that says so did not
+/// exist until this arc. Re-sizing the chassis is a design decision and it is
+/// the next arc, so these four are recorded rather than fixed — but recorded
+/// means PINNED, and the gate below fires on a new member going over, on one
+/// of these getting worse, and on one of these getting BETTER, because an
+/// acceptance nobody revisits is how the list turns back into a mute.
+///
+/// ⚠ `swingarm` should improve on its own when the wheels are authored: it
+/// carries `rim_r`, a 56 kg solid slug standing in for an 18in wheel. The seat
+/// members will not — they carry the driver, and his mass is not a placeholder.
+///
+/// ⚠ Read `seat_back_rail_left` as about half what it says. The joint tree
+/// hands the whole driver to whichever rail is the parent and the other reads
+/// zero; two rails carry him between them.
+const ACCEPTED_OVER_YIELD: &[(&str, f64)] = &[
+    ("swingarm", 6.654),
+    ("seat_back_rail_left", 5.230),
+    ("seat_cross", 1.891),
+    ("seat_back", 1.350),
+];
+/// How much worse an accepted member may get before the gate fires.
+///
+/// Wide enough that re-meshing or a cell change does not trip it, narrow
+/// enough that a real regression does.
+const ACCEPTED_DRIFT: f64 = 0.15;
 
 // ── Derivation ──────────────────────────────────────────────────────────
 
@@ -1160,15 +1188,19 @@ fn main() -> Result<()> {
     // 785 and every gate that could see the change fired, while the ones that
     // would have caught the sections did not exist.
     //
-    // ⚠ **Reported, not gated, and deliberately so.** The screen says the
-    // swingarm is far past yield. Arming a bail here would fail the example on
-    // a defect this commit is not fixing; re-sizing the chassis is a design
-    // decision, not a cleanup. The numbers print every run so the decision
-    // cannot be quietly deferred.
+    // ★★★ **Gated against an ACCEPTED SET, which is not the same as ungated.**
+    // Four members are knowingly past yield and re-sizing the chassis is a
+    // design decision rather than a cleanup — but "knowingly" has to be worth
+    // something, so the acceptance is a PIN: anything NEW going over fires,
+    // an accepted member getting worse fires, and an accepted member that
+    // stops being over fires too, because a stale acceptance is how a list
+    // like this rots into a mute.
     //
-    // ⛔ Read `cf_assembly_checks::member_load` for the five things it cannot
-    // see. The root is chief among them: `frame_spine` has no parent joint to
-    // cantilever from and is NOT in this table.
+    // ⛔ Read `cf_assembly_checks::member_load` for what it cannot see. Chief
+    // among them here: the cantilever model is measured from each part's BODY
+    // ORIGIN, and `frame_spine`'s sits mid-structure, so its 0.69x is
+    // meaningless rather than reassuring — worse than an absent number,
+    // because it looks like an answer.
     {
         let masses: MassMap = derived
             .iter()
@@ -1212,6 +1244,29 @@ fn main() -> Result<()> {
         }
         if screen.members.is_empty() {
             bail!("the member screen read nothing, so it proves nothing");
+        }
+
+        // ── The accepted set ────────────────────────────────────────
+        let complaints = audit_accepted(&screen.members, ACCEPTED_OVER_YIELD, ACCEPTED_DRIFT);
+        if !complaints.is_empty() {
+            bail!("the member screen moved:\n  {}", complaints.join("\n  "));
+        }
+        println!(
+            "  {} member(s) knowingly past yield, pinned; re-sizing is the next arc",
+            ACCEPTED_OVER_YIELD.len()
+        );
+        // ⚠ Printed to three places so the pin above can be a MEASUREMENT
+        // rather than a figure read off a rounded table. A pin that only
+        // happens to fall inside its own tolerance is not a pin.
+        for (name, was) in ACCEPTED_OVER_YIELD {
+            if let Some(u) = screen
+                .members
+                .iter()
+                .find(|l| l.part == *name)
+                .and_then(|l| l.utilisation)
+            {
+                println!("    {name:<20} pinned {was:.3}  measured {u:.3}");
+            }
         }
         // ⛔ Unmeasured is not sound. This fired on its first real run: seven
         // members were being dropped for want of interior sample points, the
@@ -1438,4 +1493,122 @@ fn main() -> Result<()> {
 
     println!("\nOK");
     Ok(())
+}
+
+/// What the accepted set has to say about a screen.
+///
+/// ★★ **An acceptance is a PIN, not a mute.** Three ways this speaks up, and
+/// the third is the one that keeps the list honest:
+///
+/// 1. a member over yield that nobody accepted,
+/// 2. an accepted member that got WORSE by more than `drift`,
+/// 3. an accepted member that is **no longer over at all** — a stale
+///    acceptance is how a list like this rots back into the silence it
+///    replaced. It is self-discharging: author the wheels, `swingarm` improves
+///    on its own, and this says so rather than letting the old figure stand.
+///
+/// Plus an accepted name the screen never measured, which would otherwise read
+/// as compliance.
+///
+/// ⚠ Extracted from the oracle so it can be gated in milliseconds. Exercising
+/// it through the integration run costs four minutes a mutation, and a check
+/// that expensive to test is a check that goes untested.
+fn audit_accepted(members: &[MemberLoad], accepted: &[(&str, f64)], drift: f64) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for l in members {
+        let Some(u) = l.utilisation else { continue };
+        let pin = accepted.iter().find(|(n, _)| *n == l.part);
+        match (u > 1.0, pin) {
+            (true, None) => {
+                out.push(format!(
+                    "{} is at {u:.3}x yield and nobody accepted it",
+                    l.part
+                ));
+            }
+            (true, Some((_, was))) if u > was * (1.0 + drift) => {
+                out.push(format!("{} was accepted at {was:.3}x, now {u:.3}x", l.part));
+            }
+            (false, Some((_, was))) => {
+                out.push(format!(
+                    "{} accepted at {was:.3}x now reads {u:.3}x, take it out",
+                    l.part
+                ));
+            }
+            _ => {}
+        }
+    }
+    for (name, _) in accepted {
+        if !members.iter().any(|l| l.part == *name) {
+            out.push(format!(
+                "{name} is accepted but the screen never measured it"
+            ));
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn member(part: &str, utilisation: Option<f64>) -> MemberLoad {
+        MemberLoad {
+            part: part.to_owned(),
+            material: "mild steel".to_owned(),
+            supported_kg: 1.0,
+            lever_mm: 1.0,
+            load_n: 1.0,
+            section_modulus_mm3: 1.0,
+            stress_mpa: 1.0,
+            allowable_mpa: Some(250.0),
+            utilisation,
+        }
+    }
+
+    #[test]
+    fn a_screen_matching_its_accepted_set_is_silent() {
+        let m = [member("a", Some(6.5)), member("b", Some(0.4))];
+        assert!(audit_accepted(&m, &[("a", 6.5)], 0.15).is_empty());
+    }
+
+    #[test]
+    fn a_member_over_yield_that_nobody_accepted_is_reported() {
+        let out = audit_accepted(&[member("a", Some(2.0))], &[], 0.15);
+        assert!(
+            out.len() == 1 && out[0].contains("nobody accepted"),
+            "{out:?}"
+        );
+    }
+
+    #[test]
+    fn an_accepted_member_that_got_worse_is_reported() {
+        let out = audit_accepted(&[member("a", Some(8.0))], &[("a", 6.5)], 0.15);
+        assert!(out.len() == 1 && out[0].contains("now 8.000x"), "{out:?}");
+        assert!(
+            audit_accepted(&[member("a", Some(7.2))], &[("a", 6.5)], 0.15).is_empty(),
+            "inside the drift it should stay quiet"
+        );
+    }
+
+    /// ★★★ The clause that stops the list rotting into a mute.
+    #[test]
+    fn an_accepted_member_that_is_no_longer_over_is_reported() {
+        let out = audit_accepted(&[member("a", Some(0.4))], &[("a", 6.5)], 0.15);
+        assert!(out.len() == 1 && out[0].contains("take it out"), "{out:?}");
+    }
+
+    #[test]
+    fn an_accepted_member_the_screen_never_measured_is_reported() {
+        let out = audit_accepted(&[member("b", Some(0.2))], &[("a", 6.5)], 0.15);
+        assert!(
+            out.len() == 1 && out[0].contains("never measured"),
+            "{out:?}"
+        );
+    }
+
+    /// ⚠ An unscored member — no allowable declared — is not a finding.
+    #[test]
+    fn a_member_with_no_utilisation_is_passed_over() {
+        assert!(audit_accepted(&[member("a", None)], &[], 0.15).is_empty());
+    }
 }
