@@ -460,11 +460,134 @@ fn derive(
 /// ⚠ Refining *everything* to its mass-integration cell instead was measured
 /// at 8.1 M triangles and 388 MB: that cell is chosen for integration
 /// accuracy, and a 2 mm wall does not need 0.5 mm triangles to look right.
+/// An articulated pose to export, for looking at what a sweep only counted.
+///
+/// ⚠⚠ **Only what the corresponding gate actually tests.** These turn the
+/// wishbones and leave the wheel where it is, because that IS the comparison
+/// the sweep makes — the upright's true pose at travel is set by BOTH
+/// wishbones through the linkage, and nothing here solves that. Rendering a
+/// guess at it would put a picture on screen that no check stands behind.
+///
+/// ⛔⛔ **`Bump` MIRRORS the two sides; `Roll` does not, and the difference is
+/// not cosmetic.** A rotation about `+x` sends `+y` up and `-y` down, so ONE
+/// rotation applied to both wishbones lifts the left and drops the right — a
+/// roll pose. The first version of this called that "bump", and the render
+/// showed it immediately: left tip at z +324, right at z -24, from a rest of
+/// +150 on both.
+///
+/// ⚠ The SWEEP is unaffected and remains complete: it tests every arm at both
+/// extremes, which is the same set of arm positions either way. What was wrong
+/// was the name on the picture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pose {
+    /// As built.
+    Rest,
+    /// Both wishbones raised by `BUMP_TRAVEL_DEG`, wheel at rest.
+    Bump,
+    /// Both wishbones lowered by the same, wheel at rest.
+    Droop,
+    /// One rotation applied to both — left up, right down. What the sweep
+    /// itself does.
+    Roll,
+    /// Uprights, wheels and steer arms at `+STEER_LOCK_DEG` about the kingpin.
+    LockLeft,
+    /// The same, the other way.
+    LockRight,
+}
+
+impl Pose {
+    fn parse(name: &str) -> Option<Self> {
+        match name {
+            "rest" => Some(Self::Rest),
+            "bump" => Some(Self::Bump),
+            "droop" => Some(Self::Droop),
+            "roll" => Some(Self::Roll),
+            "lock-left" => Some(Self::LockLeft),
+            "lock-right" => Some(Self::LockRight),
+            _ => None,
+        }
+    }
+
+    /// Where a part's vertices go in this pose, given the assembly's origins.
+    ///
+    /// ★ The same pivot and axis the sweeps use: a wishbone turns about its own
+    /// body origin on x, and a steered corner turns about its upright's origin
+    /// on [`cf_trike::steering_axis`].
+    fn place(
+        self,
+        part: &str,
+        origins: &HashMap<String, Vector3<f64>>,
+    ) -> Option<(Vector3<f64>, UnitQuaternion<f64>)> {
+        const ARMS: [&str; 6] = [
+            "arm_lower_l",
+            "arm_lower_r",
+            "arm_upper_l",
+            "arm_upper_l_aft",
+            "arm_upper_r",
+            "arm_upper_r_aft",
+        ];
+        let corner = |side: char| -> [String; 4] {
+            [
+                format!("upright_{side}"),
+                format!("rim_f{side}"),
+                format!("tyre_f{side}"),
+                format!("steer_arm_{side}"),
+            ]
+        };
+        match self {
+            Self::Rest => None,
+            Self::Bump | Self::Droop | Self::Roll => {
+                if !ARMS.contains(&part) {
+                    return None;
+                }
+                let pivot = *origins.get(part)?;
+                // ⛔ Mirrored by the side the arm is on, or the pair rolls.
+                // `Roll` is the unmirrored case, kept because it is what the
+                // sweep applies.
+                let hand = if self == Self::Roll || pivot.y >= 0.0 {
+                    1.0
+                } else {
+                    -1.0
+                };
+                let deg = hand
+                    * if self == Self::Droop {
+                        -BUMP_TRAVEL_DEG
+                    } else {
+                        BUMP_TRAVEL_DEG
+                    };
+                let axis = nalgebra::Unit::new_normalize(Vector3::x());
+                Some((
+                    pivot,
+                    UnitQuaternion::from_axis_angle(&axis, deg.to_radians()),
+                ))
+            }
+            Self::LockLeft | Self::LockRight => {
+                let deg = if self == Self::LockLeft {
+                    STEER_LOCK_DEG
+                } else {
+                    -STEER_LOCK_DEG
+                };
+                let axis = nalgebra::Unit::new_normalize(cf_trike::steering_axis());
+                for side in ['l', 'r'] {
+                    if corner(side).iter().any(|n| n == part) {
+                        return Some((
+                            *origins.get(&format!("upright_{side}"))?,
+                            UnitQuaternion::from_axis_angle(&axis, deg.to_radians()),
+                        ));
+                    }
+                }
+                None
+            }
+        }
+    }
+}
+
 fn export_stls(
     mechanism: &Mechanism,
     origins: &HashMap<String, Vector3<f64>>,
     dir: &Path,
     tolerance_mm: f64,
+    pose: Pose,
 ) -> Result<()> {
     // ⚠ Parts go in their own directory, and the merged file stays out of it.
     // `cf-view --assembly` spawns EVERY stl in a directory at its world
@@ -501,8 +624,15 @@ fn export_stls(
         let Some(&origin) = origins.get(part.name()) else {
             bail!("no world origin resolved for part {}", part.name());
         };
+        // ★ Articulation uses the SAME pivot and rotation the sweeps do, so a
+        // picture of a pose is a picture of what the gate compared — not an
+        // independent re-derivation that could differ for its own reasons.
+        let articulate = pose.place(part.name(), origins);
         for v in &mut mesh.vertices {
             *v += origin;
+            if let Some((pivot, rot)) = articulate {
+                *v = rot * (*v - pivot) + pivot;
+            }
         }
 
         let base = u32::try_from(assembly.vertices.len())
@@ -603,6 +733,14 @@ fn main() -> Result<()> {
             .cloned()
     };
     let out_dir = flag("--out").map(PathBuf::from);
+    let pose = match flag("--pose") {
+        None => Pose::Rest,
+        Some(name) => Pose::parse(&name).ok_or_else(|| {
+            anyhow::anyhow!(
+                "--pose takes rest, bump, droop, roll, lock-left or lock-right, got {name}"
+            )
+        })?,
+    };
     let tolerance_mm = match flag("--tolerance") {
         Some(t) => t
             .parse::<f64>()
@@ -1756,7 +1894,7 @@ fn main() -> Result<()> {
 
     if let Some(dir) = out_dir {
         println!("\nmeshing the assembly:");
-        export_stls(&mechanism, &origins, &dir, tolerance_mm)?;
+        export_stls(&mechanism, &origins, &dir, tolerance_mm, pose)?;
     }
 
     println!("\nOK");
