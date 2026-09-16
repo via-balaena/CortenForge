@@ -1667,6 +1667,53 @@ pub fn world_origins(mechanism: &Mechanism) -> Result<HashMap<String, Vector3<f6
 mod tests {
     use super::*;
 
+    /// What share of `part`'s probe points lie BEHIND `panel`'s face.
+    ///
+    /// ⛔⛔ **Not "inside the panel" — behind it.** That was the second wrong
+    /// instrument here: a seat panel is 6 mm thick, so a 170 mm torso centred
+    /// in its plane still has only a sliver of itself *within* the panel
+    /// solid, and an inside-ness test reads the catastrophe and the correct
+    /// pose as nearly the same number. What distinguishes them is which SIDE
+    /// of the face the body is on.
+    ///
+    /// `normal` points from the panel toward the body.
+    fn share_behind(t: &Trike, part: &str, panel: &str, normal: Vector3<f64>) -> f64 {
+        let parts = t.mechanism.parts();
+        let solid = parts.iter().find(|p| p.name() == part).unwrap().solid();
+        let probe = solid.mesh(RIDER_PROBE_MM).geometry;
+        assert!(!probe.vertices.is_empty(), "{part} meshed to nothing");
+        let face = t.origins[panel] + normal * SEAT_PANEL_HALF_MM;
+        let origin = t.origins[part];
+        let behind = probe
+            .vertices
+            .iter()
+            .filter(|v| (v.coords + origin - face).dot(&normal) < 0.0)
+            .count();
+        #[allow(clippy::cast_precision_loss)]
+        let share = behind as f64 / probe.vertices.len() as f64;
+        share
+    }
+
+    /// Mesh tolerance for the rider-against-seat probe, millimetres.
+    const RIDER_PROBE_MM: f64 = 8.0;
+
+    /// What share of the rider may sit past the seat's face.
+    ///
+    /// ⚠ **Not zero on purpose.** A rider rests slightly *in* the seat — see
+    /// [`RIDER_SETTLE_MM`] — so the correct pose is not clean. Calibrated
+    /// against all four measurements rather than picked:
+    ///
+    /// | | correct | the defect this exists to catch |
+    /// |---|---|---|
+    /// | torso behind the seat back | 4.7% | 50.8% |
+    /// | legs below the pan face | 0.6% | 24.7% |
+    ///
+    /// ⚠ The torso's headroom is only about 2x, because a 170 mm capsule
+    /// pressed 5 mm into a panel already puts a real share of its surface
+    /// past the face. Growing [`RIDER_SETTLE_MM`] much beyond 10 mm will fire
+    /// this, which is wanted: that is no longer flesh compressing.
+    const MAX_RIDER_IN_SEAT: f64 = 0.10;
+
     /// The three collections on [`Trike`] describe the same machine.
     ///
     /// A consumer indexes `metrics` and `origins` by the names it reads off
@@ -1909,19 +1956,30 @@ mod tests {
     /// passed — and the rider was 186 mm inside the seat, which put the
     /// centre of gravity 69 mm too low and the rollover threshold 0.11 g too
     /// high. It took rendering the assembly and looking at it.
+    ///
+    /// ⛔⛔ **The first version of this gate was an IDENTITY.** It compared
+    /// `gap`, built from the origins, against `want`, built from the same
+    /// constants the placement used — so both sides moved together and the
+    /// margin was exactly `0.000` for every input. Sinking the rider 120 mm
+    /// into the seat left it green. A gate whose margin never moves is not
+    /// measuring; it is restating its own arithmetic.
+    ///
+    /// ★ Measured on the SOLIDS instead, which is what the bearing-bore gate
+    /// already did: how much of the rider's mesh falls inside the seat's. The
+    /// intended contact is a sliver — flesh and foam compress, which is what
+    /// [`RIDER_SETTLE_MM`] is for — so the threshold allows one and a defect
+    /// of this class puts tens of percent of the body inside the panel.
     #[test]
     fn the_rider_clears_the_seat_back() {
         let t = trike().unwrap();
         let recline = SEAT_BACK_ANGLE_DEG.to_radians();
         let normal = Vector3::new(-recline.cos(), 0.0, recline.sin());
-        let gap = (t.origins["rider_torso"] - t.origins["seat_back"]).dot(&normal);
-
-        let want = TORSO_RADIUS_MM + SEAT_PANEL_HALF_MM - RIDER_SETTLE_MM;
+        let buried = share_behind(&t, "rider_torso", "seat_back", normal);
         assert!(
-            gap >= want - 1e-9,
-            "the torso axis is {gap:.1} mm off the seat back and needs \
-             {want:.1} — the rider is {:.0} mm inside the seat",
-            want - gap
+            buried <= MAX_RIDER_IN_SEAT,
+            "{:.1}% of the torso is behind the seat back face, tolerance {:.1}%",
+            buried * 100.0,
+            MAX_RIDER_IN_SEAT * 100.0
         );
     }
 
@@ -1936,20 +1994,18 @@ mod tests {
     /// rear cap is the part that reaches the pan, and this asks where that cap
     /// ended up. The floating case — the other way to get this wrong — is
     /// caught downstream by the weld oracle, which fired at 31 mm.
+    ///
+    /// ⛔ Was an identity too, for the same reason and found by the same
+    /// mutation — see [`the_rider_clears_the_seat_back`].
     #[test]
     fn the_legs_rest_on_the_seat_pan() {
         let t = trike().unwrap();
-        let rise = LEG_RISE_MM / LEG_REACH_MM;
-        let cap_centre_z = t.origins["rider_legs"].z - LEGS_HALF_MM * rise;
-        let pan_face_z = t.origins["seat_pan"].z + SEAT_PANEL_HALF_MM;
-
-        let stand_off = cap_centre_z - pan_face_z;
-        let want = LEGS_RADIUS_MM - RIDER_SETTLE_MM;
+        let buried = share_behind(&t, "rider_legs", "seat_pan", Vector3::z());
         assert!(
-            stand_off >= want - 1e-9,
-            "the thigh axis stands {stand_off:.1} mm off the pan and needs \
-             {want:.1} — the legs are {:.0} mm into the seat",
-            want - stand_off
+            buried <= MAX_RIDER_IN_SEAT,
+            "{:.1}% of the legs are below the seat pan face, tolerance {:.1}%",
+            buried * 100.0,
+            MAX_RIDER_IN_SEAT * 100.0
         );
     }
 
