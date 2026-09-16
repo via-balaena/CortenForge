@@ -32,13 +32,13 @@
 //!
 //! ## ⛔ What this cannot see — read before trusting a green result
 //!
-//! - **A part that is never a joint's child is not reported at all**, having
-//!   nothing to cantilever from. ⚠ That is narrower than "the root": a root
-//!   anchored to the world by a joint — `parent: "world"`, which is not a
-//!   declared part — IS scored. What is true of such a root is worse than
-//!   silence: the lever is measured from a body origin sitting in the middle
-//!   of the structure rather than at a support, so the number is meaningless
-//!   rather than absent.
+//! - **A part with nothing holding it is not scored.** Never any joint's child
+//!   at all, or a child of a FREE joint — which is a joint in the tree but not
+//!   a support, so there is no reaction to cantilever against. The second case
+//!   used to be scored from the part's own body origin, which on a vehicle
+//!   sits mid-structure; the chassis rail read 0.69x and then 1.17x when the
+//!   wheels gained mass, and neither number meant anything. Both cases now
+//!   report as [`Unmeasured::NotSupported`] rather than as a figure.
 //! - **A member held at both ends is over-estimated.** A tie rod or a braced
 //!   diagonal is not a cantilever, and this reports it as one.
 //! - ⛔⛔ **THE TREE DECIDES THE LOAD PATH, AND A SYMMETRIC PAIR SPLITS
@@ -163,11 +163,37 @@ pub enum Unmeasured {
     /// and its number would look entirely ordinary — it is merely too small, by
     /// however much the absent children weigh.
     IncompleteSubtree,
+    /// Its parent joint holds it in no direction — a free joint is not a
+    /// support, so there is nothing to cantilever from.
+    ///
+    /// ⛔⛔ **Not scored rather than scored badly.** A root anchored to the
+    /// world by a free joint used to be measured from its own body origin,
+    /// which on a vehicle sits mid-structure: the trike's chassis rail read
+    /// 0.69x, then 1.17x when the wheels got heavier, and neither figure meant
+    /// anything. A number that looks like an answer is worse than no number,
+    /// and it will eventually cross a threshold and be argued about.
+    NotSupported,
     /// A mass, a centre of mass, an anchor or a load factor was not finite.
     ///
     /// ⚠ Withheld rather than reported, because `NaN > 1.0` is `false`: a `NaN`
     /// utilisation reads as "not over yield" at every call site that asks.
     NotFinite,
+}
+
+impl Unmeasured {
+    /// Whether nothing the caller could supply would make this member
+    /// measurable.
+    ///
+    /// ★ The distinction matters at the call site. [`Self::NotSupported`] is
+    /// structural — a body on a free joint has no reaction to cantilever
+    /// against, and no finer probe or fuller mass map changes that, so a
+    /// consumer should pass over it. Every other reason is the caller's input
+    /// or the caller's probe, and a consumer should treat those as a FAILURE
+    /// of the screen rather than a pass for the parts.
+    #[must_use]
+    pub const fn is_structural(self) -> bool {
+        matches!(self, Self::NotSupported)
+    }
 }
 
 /// A member the screen could not measure, and why.
@@ -237,7 +263,7 @@ pub struct MemberLoad {
 /// ⛔ Read [`Screen::unmeasured`] before reading the members. It is the list the
 /// header count does not include.
 ///
-/// See the module docs for the five things this cannot see.
+/// See the module docs for what this cannot see.
 #[must_use]
 pub fn member_loads(
     mechanism: &Mechanism,
@@ -253,24 +279,25 @@ pub fn member_loads(
         };
     };
     let children = child_index(mechanism);
-    let has_parent: HashSet<&str> = mechanism
-        .joints()
-        .iter()
-        .map(cf_design::JointDef::child)
-        .collect();
+    let parent_joint: HashMap<&str, &cf_design::JointDef> =
+        mechanism.joints().iter().map(|j| (j.child(), j)).collect();
 
     let mut out = Vec::new();
     for part in mechanism.parts() {
         let name = part.name();
-        if !has_parent.contains(name) {
-            continue; // the root: nothing to cantilever from. A stated blind spot.
-        }
+        let Some(joint) = parent_joint.get(name) else {
+            continue; // never any joint's child: nothing to cantilever from.
+        };
         let mut withhold = |why| {
             unmeasured.push(Unmeasurable {
                 part: name.to_owned(),
                 why,
             });
         };
+        if joint.kind().dof() >= 6 {
+            withhold(Unmeasured::NotSupported);
+            continue;
+        }
         let Some(&anchor) = origins.get(name) else {
             withhold(Unmeasured::NoOrigin);
             continue;
@@ -963,6 +990,70 @@ mod tests {
             (z - weak).abs() < weak * 0.01,
             "got {z:.1}; weak axis is {weak:.1}, strong is {strong:.1}"
         );
+    }
+
+    /// ⛔⛔ A FREE joint is a joint, but it is not a support. Scoring against
+    /// it produces a number from an arbitrary origin — the trike's chassis
+    /// rail read 0.69x, then 1.17x once the wheels got heavier, and crossing
+    /// 1.0 made a meaningless figure start failing a gate.
+    #[test]
+    fn a_member_hanging_from_a_free_joint_is_not_scored() {
+        let m = Mechanism::builder("t")
+            .part(tube("base", 25.4, 2.0, "steel"))
+            .part(tube("arm", 25.4, 2.0, "steel"))
+            .joint(JointDef::new(
+                "j",
+                "world",
+                "base",
+                JointKind::Free,
+                Point3::origin(),
+                Vector3::z(),
+            ))
+            .joint(JointDef::new(
+                "j2",
+                "base",
+                "arm",
+                JointKind::Revolute,
+                Point3::origin(),
+                Vector3::y(),
+            ))
+            .build();
+        let origins = Origins::from([
+            ("base".to_owned(), Vector3::zeros()),
+            ("arm".to_owned(), Vector3::new(500.0, 0.0, 0.0)),
+        ]);
+        let masses = MassMap::from([
+            (
+                "base".to_owned(),
+                MassPoint {
+                    kg: 50.0,
+                    world_com_mm: Vector3::new(300.0, 0.0, 0.0),
+                },
+            ),
+            (
+                "arm".to_owned(),
+                MassPoint {
+                    kg: 5.0,
+                    world_com_mm: Vector3::new(900.0, 0.0, 0.0),
+                },
+            ),
+        ]);
+        let screen = member_loads(&m, &origins, &masses, &LoadCase::static_1g());
+        assert!(
+            !screen.members.iter().any(|l| l.part == "base"),
+            "a body on a free joint was scored: {:?}",
+            screen.members
+        );
+        assert!(
+            screen
+                .unmeasured
+                .iter()
+                .any(|u| u.part == "base" && u.why == Unmeasured::NotSupported),
+            "got {:?}",
+            screen.unmeasured
+        );
+        // The member that DOES hang from a real joint is still scored.
+        assert!(screen.members.iter().any(|l| l.part == "arm"));
     }
 
     /// The stated blind spot, gated so it cannot quietly stop being true.

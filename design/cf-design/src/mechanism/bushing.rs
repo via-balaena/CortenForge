@@ -339,7 +339,7 @@ mod tests {
             thin_wall.torsional_rate_n_m_per_rad() / thick_wall.torsional_rate_n_m_per_rad();
         assert!(
             ratio > 4.0,
-            "halving the wall should stiffen it several-fold, got {ratio}×"
+            "thinning the wall should stiffen it several-fold, got {ratio}×"
         );
     }
 

@@ -76,8 +76,11 @@ pub struct PartMetrics {
 ///
 /// // Twenty-three degrees of freedom in the tree — welds cost nothing, and
 /// // three joints are balls, worth three each. The three linkages take nine
-/// // back, so the machine really has fourteen: it steers, three wheels turn,
-/// // the swingarm swings, and each front wheel moves in bump.
+/// // back, so the machine really has fourteen. Thirteen name themselves: the
+/// // vehicle's own six in space, the steering, three wheels turning, the
+/// // swingarm, and a bump degree at each front wheel. ⚠ The fourteenth is not
+/// // obvious by inspection — it falls out of how the three loops close — and
+/// // the assertion below, not this sentence, is the authority on the count.
 /// let dof: usize = t.mechanism.joints().iter().map(|j| j.kind().dof()).sum();
 /// let held: usize = t.mechanism.linkages().iter().map(|l| l.kind().constrained_dof()).sum();
 /// assert_eq!(dof, 23);
@@ -129,8 +132,10 @@ const ALUMINIUM_KG_M3: f64 = 2700.0;
 ///
 /// ⚠ **Calibrated against published masses, not chosen.** 280 kg/m³ puts the
 /// 235/40R17 at 10.2 kg and the 275/35R18 at 12.9 kg, against roughly 10.5 and
-/// 12.5 for a road performance tyre. One constant covers both because the two
-/// annuli differ by 6%.
+/// 12.5 for a road performance tyre. One constant covers both because the
+/// DENSITIES those masses imply differ by only 6% — 288 and 272 kg/m³. The
+/// annuli themselves differ by 26%, which is a different quantity and was
+/// what this sentence used to name.
 ///
 /// ⚠ It replaced a 420 that had been smeared over a **16″** casing and survived
 /// the re-base, which put 15.3 kg on each front tyre.
@@ -161,14 +166,20 @@ pub const REAR_RADIUS_MM: f64 = REAR_RIM_R_MM + REAR_SECTION_MM * REAR_ASPECT;
 
 /// Front tyre: **235/40R17**. Section width, millimetres.
 ///
-/// ★ Sized by LOAD, not ambition — 243 kg per front wheel. An Ariel Atom 4 is
-/// 595 kg on 235/40R17. A wider tyre on this mass never reaches its grip.
+/// ★ Sized by LOAD, not ambition. At the 785 kg target the front pair carries
+/// about 183 kg a wheel. An Ariel Atom 4 is 595 kg on 235/40R17, so this is
+/// well inside what the tyre is built for — and a wider one on this mass never
+/// reaches its grip.
+///
+/// ⚠ The figure this doc used to carry, 243 kg, implied a 62/38 split against
+/// the design's own 45/55 and traced to no measurement.
 const FRONT_SECTION_MM: f64 = 235.0;
 /// Front aspect ratio — sidewall height as a fraction of section width.
 const FRONT_ASPECT: f64 = 0.40;
 /// Front rim radius: 17 inches across the bead seats.
 const FRONT_RIM_R_MM: f64 = 17.0 * 25.4 / 2.0;
-/// Rear tyre: **275/35R18**. It carries 298 kg but does ALL the rear drive and
+/// Rear tyre: **275/35R18**. It carries about 419 kg at the target — more than
+/// twice a front wheel, because it is alone back there — and does ALL the drive and
 /// braking, so it is sized for work rather than load.
 ///
 /// ⚠ 305 and 335 were checked and are **underloaded** at this mass: they never
@@ -336,14 +347,15 @@ const DIAGONAL_APEX_X_MM: f64 = 230.0;
 /// How far the wheel centre sits outboard of the kingpin line.
 ///
 /// ★ The kingpin offset, and a real suspension number: it is the lever the
-/// contact patch has about the steering axis, so it sets how much the bars
+/// contact patch has about the steering axis, so it sets how much the driver
 /// fight back over bumps and under braking.
 ///
-/// ⚠ 37.7 is inherited, not chosen. It is what the stand-in upright happened
-/// to give — half a wheel's width plus a 25.4 mm tube's radius — and it is
-/// stated as a number here because the tube it came from no longer exists.
-/// It wants choosing on its own terms.
-const KINGPIN_OFFSET_MM: f64 = 60.0;
+/// ⚠ 60 is a round number, not a derived one. It replaced an inherited 37.7 —
+/// what the stand-in upright happened to give, half a wheel's width plus a
+/// 25.4 mm tube's radius — when the vehicle was re-based and that tube stopped
+/// existing. Neither figure was chosen on its own terms, and this one still
+/// wants to be.
+pub const KINGPIN_OFFSET_MM: f64 = 60.0;
 /// Where the kingpin line sits, half a track in from the wheel.
 const UPRIGHT_Y_MM: f64 = TRACK_MM / 2.0 - KINGPIN_OFFSET_MM;
 /// Radius of the front rim's hub disc — what the bearing housing must fit in.
@@ -435,18 +447,35 @@ const BUSH_LENGTH_MM: f64 = 30.0;
 /// correlation is steepest — five points doubles it. Read the rate this
 /// produces as an order of magnitude until the real material is measured.
 const BUSH_SHORE_A: f64 = 95.0;
-/// Half the front wheel's width. The hub is its widest part.
+/// Half the front tyre's section width — the widest the WHEEL ASSEMBLY gets.
 const FRONT_WHEEL_HALF_WIDTH_MM: f64 = FRONT_SECTION_MM / 2.0;
+/// Rim barrel width as a share of the tyre's section.
+///
+/// ⛔⛔ **This exists because the barrel and the hub had swapped roles.** The
+/// re-base moved [`FRONT_WHEEL_HALF_WIDTH_MM`] from 25 to 117.5, that constant
+/// fed the HUB disc, and the barrel one line above it kept a hardcoded `15.0`.
+/// The result was a 30 mm-wide rim carrying a 235 mm-long solid hub bar — the
+/// hub as wide as the tyre, and 73% of the wheel's mass. Its doc said "the hub
+/// is its widest part", which is the defect written down as if it were a
+/// choice.
+///
+/// A 235-section tyre runs on about an 8J rim, 203 mm, which is where 0.85
+/// comes from.
+const RIM_BARREL_SHARE: f64 = 0.85;
+/// Half the rim barrel's width.
+const FRONT_RIM_HALF_WIDTH_MM: f64 = FRONT_WHEEL_HALF_WIDTH_MM * RIM_BARREL_SHARE;
+/// Half the hub face's thickness. A hub is a FACE, not a bar through the wheel.
+const FRONT_HUB_HALF_MM: f64 = 25.0;
 /// Inside of the front rim's section.
 ///
-/// ⚠ 174, not the 160 this started at. A 20 mm-thick solid aluminium annulus
-/// is a disc, not a rim: it came to 2.12 kg a wheel where a real 16-inch rim,
-/// hub and spokes are about 0.9. A rim is a thin section — this one is 6 mm,
-/// which is still generous for what is really a hollow box.
+/// ⚠ A rim is a thin section, and 6 mm is already generous for what is really
+/// a hollow box. A solid annulus this deep would be a disc, not a rim.
 ///
-/// ⚠ Spokes are absent. They would add roughly 0.15 kg a wheel, at a radius
-/// that matters more for rotating inertia than for the mass budget, and this
-/// example does not model rotating inertia.
+/// ⚠⚠ **Still light, and knowingly.** Barrel plus hub comes to about 4.7 kg
+/// against 9-11 for a real 17x8 alloy, because nothing spans between them:
+/// there is no wheel face and there are no spokes. Authoring the wheels is the
+/// named next arc, and this is the part of the gap that belongs to it — as
+/// distinct from the hub-versus-barrel mix-up above, which was simply wrong.
 const FRONT_RIM_INNER_MM: f64 = FRONT_RIM_R_MM - 6.0;
 
 /// Where the front rim ends and its tyre begins. Shared by both so the two
@@ -785,8 +814,12 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
 
     // ── The frame, as nodes and members ─────────────────────────────
     //
-    // Uprights sit inboard of the wheels by half a wheel's width plus the
-    // upright's own radius, so the contact patches land on the nominal track.
+    // Uprights sit a kingpin offset inboard of the contact patches, so the
+    // patches land on the nominal track.
+    //
+    // ⚠ This used to read "half a wheel's width plus the upright's own
+    // radius", which was the stand-in upright's derivation. That upright is
+    // gone and [`KINGPIN_OFFSET_MM`] is a round number now — see its doc.
     let upright_y = UPRIGHT_Y_MM;
 
     // Nose, the two kingpin bases, the apex the diagonals meet, and the tail.
@@ -1259,8 +1292,12 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
             range_rad: None,
             material: aluminium.clone(),
             piece: joined(vec![
-                onto_y(annulus(FRONT_RIM_OUTER_MM, FRONT_RIM_INNER_MM, 15.0)),
-                onto_y(disc(FRONT_HUB_R_MM, FRONT_WHEEL_HALF_WIDTH_MM)),
+                onto_y(annulus(
+                    FRONT_RIM_OUTER_MM,
+                    FRONT_RIM_INNER_MM,
+                    FRONT_RIM_HALF_WIDTH_MM,
+                )),
+                onto_y(disc(FRONT_HUB_R_MM, FRONT_HUB_HALF_MM)),
             ])?,
             // ⚠ 1.0, not 2.0: the rim section is 6 mm, and three cells across
             // a wall put the integrator 0.688% off its closed form.
@@ -1280,8 +1317,12 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
             range_rad: None,
             material: aluminium.clone(),
             piece: joined(vec![
-                onto_y(annulus(FRONT_RIM_OUTER_MM, FRONT_RIM_INNER_MM, 15.0)),
-                onto_y(disc(FRONT_HUB_R_MM, FRONT_WHEEL_HALF_WIDTH_MM)),
+                onto_y(annulus(
+                    FRONT_RIM_OUTER_MM,
+                    FRONT_RIM_INNER_MM,
+                    FRONT_RIM_HALF_WIDTH_MM,
+                )),
+                onto_y(disc(FRONT_HUB_R_MM, FRONT_HUB_HALF_MM)),
             ])?,
             // ⚠ 1.0, not 2.0: the rim section is 6 mm, and three cells across
             // a wall put the integrator 0.688% off its closed form.
@@ -1806,6 +1847,54 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The rim barrel is wider than the hub face, on the built wheel.
+    ///
+    /// ⛔⛔ It was the other way round. The re-base moved
+    /// `FRONT_WHEEL_HALF_WIDTH_MM` 25 -> 117.5, that constant fed the HUB, and
+    /// the barrel beside it kept a hardcoded `15.0` — leaving a 30 mm rim
+    /// carrying a 235 mm solid hub bar that was 73% of the wheel's mass. Every
+    /// mass and volume gate passed: the numbers were self-consistent, the
+    /// SHAPE was absurd.
+    ///
+    /// ★ Measured on the solid, not on the two constants. Asserting
+    /// `FRONT_RIM_HALF_WIDTH_MM > FRONT_HUB_HALF_MM` is arithmetic the compiler
+    /// could do, and it would still pass if the pieces were assembled with the
+    /// widths swapped.
+    #[test]
+    fn the_rim_barrel_is_wider_than_the_hub_on_the_built_wheel() {
+        let t = trike().unwrap();
+        let rim = t
+            .mechanism
+            .parts()
+            .iter()
+            .find(|p| p.name() == "rim_fl")
+            .unwrap();
+        let solid = rim.solid();
+        // The wheel is laid onto y, so y runs along the axle and the radius
+        // lies in x. How far along the axle is there metal, at a given radius?
+        let half_at = |r: f64| {
+            let mut widest = 0.0_f64;
+            for i in 0..=400 {
+                let y = f64::from(i) * 0.5;
+                if solid.evaluate(&Point3::new(r, y, 0.0)) < 0.0 {
+                    widest = y;
+                }
+            }
+            widest
+        };
+        let barrel = half_at(f64::midpoint(FRONT_RIM_INNER_MM, FRONT_RIM_OUTER_MM));
+        let hub = half_at(FRONT_HUB_R_MM / 2.0);
+        assert!(
+            barrel > 0.0 && hub > 0.0,
+            "found no metal at all: barrel {barrel:.1}, hub {hub:.1}"
+        );
+        assert!(
+            barrel > hub,
+            "the hub is {hub:.1} mm wide and the barrel {barrel:.1} — a wheel \
+             whose hub is wider than its rim is not a wheel"
+        );
     }
 
     /// The rear axle lands a wheelbase behind the front, through the chain.

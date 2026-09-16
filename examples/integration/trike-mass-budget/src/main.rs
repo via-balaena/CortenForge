@@ -69,10 +69,29 @@ const PIN_TOLERANCE: f64 = 1e-6;
 /// happily — `validate` skips the orphan check below two parts — so nothing
 /// upstream would object.
 const EXPECTED_PARTS: usize = 34;
-/// Welds in the assembly: three frame members and seven seat members onto the
-/// spine, all three tyres onto their rims, the rider's two halves, the two
-/// suspension towers, and the aft leg of each UPPER wishbone onto its fore
-/// leg. The lower wishbones are one authored piece each and need no weld.
+/// Welds in the assembly. The list adds to the constant, which is the point of
+/// writing it out:
+///
+/// ```text
+///  3  frame_cross and both diagonals    onto frame_spine
+///  2  both towers                       onto frame_cross
+///  2  each upper wishbone's aft leg     onto its fore leg
+///  3  all three tyres                   onto their rims
+///  1  swingarm_r                        onto swingarm
+///  2  both steering arms                onto their uprights
+///  7  seat_cross onto the spine, four rails onto seat_cross, and the pan
+///     and back panels onto their rails
+///  2  rider_torso onto seat_back, rider_legs onto rider_torso
+/// --
+/// 22
+/// ```
+///
+/// ⚠ An earlier version named ten of the twenty-two and read as the whole
+/// list. ⚠⚠ And the first attempt at THIS list was also wrong — it put the
+/// seat members onto the spine (only `seat_cross` is) and then counted the
+/// panels twice. A count in prose beside a count in code is worth nothing
+/// unless the prose is derived from the code, which this was, by extracting
+/// every `JointKind::Fixed` and its parent.
 const EXPECTED_WELDS: usize = 22;
 
 /// Loops the joint tree cannot hold: the tie rod's far end, and the upper
@@ -117,8 +136,9 @@ const TYRE_MU: f64 = 1.0;
 /// Default meshing tolerance for `--out`, in millimetres.
 ///
 /// ⚠ This is for *looking at* the vehicle, not for printing it. The tolerance
-/// is a cell size and the vehicle is 1.25 m long, so at 1.0 mm the assembly
-/// comes to just under a gigabyte of STL against 52 MB at this default.
+/// is a cell size and the vehicle is 2.65 m long, so a fine cell turns the
+/// assembly into an enormous STL — the figures this doc used to quote were
+/// measured on the 1.25 m rideable trike and are not re-measured here.
 /// Override with `--tolerance` when a wall section matters.
 const STL_TOLERANCE_MM: f64 = 4.0;
 /// Floor for the refinement in [`export_stls`]. A part still empty here has a
@@ -152,7 +172,10 @@ const SIM_STEPS: usize = 50;
 /// included the root's rotation. A tolerance three orders above the quantity it
 /// bounds is not a gate.
 const MAX_WELD_DRIFT_MM: f64 = 0.01;
-/// Full steering lock, in degrees — the range `upright_*` is given in radians.
+/// Full steering lock, in degrees.
+///
+/// ⚠ A figure typed here, not read off the model: the uprights turn on ball
+/// joints, which carry no range, so nothing in the mechanism declares a lock.
 const STEER_LOCK_DEG: f64 = 34.0;
 /// Pairs that are SUPPOSED to share space, the share measured when each was
 /// allowed, and why it is not a defect.
@@ -203,7 +226,7 @@ const ALLOWED_OVERLAP_DRIFT: f64 = 0.15;
 /// ★ 55 % of the wheelbase back from the front axle — the Porsche-balanced
 /// 45/55 that the rollover table says is affordable at a 240 mm cg and a
 /// 1750 mm track, and not before.
-const TARGET_CG_X_M: f64 = 2.650 * 0.55;
+const TARGET_CG_X_M: f64 = cf_trike::WHEELBASE_MM / 1000.0 * 0.55;
 /// And how low it has to sit for that balance to clear a mu of 1.5.
 const TARGET_CG_Z_M: f64 = 0.240;
 /// Mesh tolerance for the steering-clash probe.
@@ -224,6 +247,12 @@ const PAIR_PROBE_MM: f64 = 5.0;
 /// ⚠ A **fraction**, not a point count. An absolute count is tuned to one
 /// assembly's size: 120 points read node contact correctly on a 108 kg trike
 /// and misread it on the same vehicle at car scale.
+///
+/// ⚠⚠ **It was calibrated against a scan that could not see `seat_pan`.** The
+/// 6 mm panel meshed to nothing at the 6 mm probe then in use, so "deepest
+/// 5.9%" described the probe rather than the vehicle. With a probe that
+/// resolves it, the legitimate deep overlaps are declared in
+/// [`ALLOWED_OVERLAPS`] instead of being held under a threshold.
 const MAX_NODE_OVERLAP: f64 = 0.06;
 /// Suspension travel swept for clashes, in degrees — the wishbones are given
 /// `+/-0.35 rad`, and this is that range in the units the message prints.
@@ -594,7 +623,7 @@ fn main() -> Result<()> {
     // ── Oracle 0: the articulation is what it is meant to be ────────
     //
     // Welds are free: `JointKind::Fixed` emits no joint and no coordinate, so
-    // the six here cost the solver nothing. They were 1e-9 rad revolutes
+    // the welds here cost the solver nothing. They were 1e-9 rad revolutes
     // before cf-design grew a weld, and those were six real degrees of
     // freedom pretending to be none.
     let welds = mechanism
@@ -1118,7 +1147,7 @@ fn main() -> Result<()> {
     //
     // ⚠ What it does NOT prove. The model is stepped in free fall — no ground,
     // no contacts — so this says nothing about whether the vehicle stands up,
-    // rolls, or corners. It says the assembly builds (56 geoms over 28 parts),
+    // rolls, or corners. It says the assembly builds — one geom per part —
     // integrates without diverging, and holds its welds. Standing it on a
     // ground plane needs one, and a bare `Plane` has no finite bounds, so a
     // `Mechanism` cannot carry it.
@@ -1363,9 +1392,15 @@ fn main() -> Result<()> {
             .filter(|l| l.utilisation.is_some_and(|u| u > 1.0))
             .count();
         println!(
-            "\nmember screen at {BUMP_G:.0} g — {} of {} members measured, {over} past yield",
+            "\nmember screen at {BUMP_G:.0} g — {} of {} members measured \
+             ({} unsupported), {over} past yield",
             screen.members.len(),
-            screen.members.len() + screen.unmeasured.len()
+            screen.members.len() + screen.unmeasured.len(),
+            screen
+                .unmeasured
+                .iter()
+                .filter(|u| u.why.is_structural())
+                .count()
         );
         for l in screen.members.iter().take(8) {
             let verdict = match l.utilisation {
@@ -1408,17 +1443,24 @@ fn main() -> Result<()> {
         // members were being dropped for want of interior sample points, the
         // chassis rail and both swingarms among them, while the header counted
         // only the survivors and looked clean.
-        if !screen.unmeasured.is_empty() {
-            let who: Vec<String> = screen
-                .unmeasured
-                .iter()
-                .map(|u| format!("{} ({:?})", u.part, u.why))
-                .collect();
+        // ⛔ Unmeasured is not sound — EXCEPT where nothing the caller could
+        // supply would help. A body on a free joint has no reaction to
+        // cantilever against, so `frame_spine` is passed over rather than
+        // scored; it used to read 0.69x from its own mid-structure origin, and
+        // when heavier wheels pushed that to 1.17x a meaningless number began
+        // failing a gate.
+        let unfixable: Vec<String> = screen
+            .unmeasured
+            .iter()
+            .filter(|u| !u.why.is_structural())
+            .map(|u| format!("{} ({:?})", u.part, u.why))
+            .collect();
+        if !unfixable.is_empty() {
             bail!(
                 "the member screen could not measure {} of {} members: {}",
-                screen.unmeasured.len(),
+                unfixable.len(),
                 screen.members.len() + screen.unmeasured.len(),
-                who.join(", ")
+                unfixable.join(", ")
             );
         }
     }
@@ -1448,6 +1490,11 @@ fn main() -> Result<()> {
         front_wheel_radius_m: cf_trike::FRONT_RADIUS_MM / 1000.0,
         rear_wheel_radius_m: cf_trike::REAR_RADIUS_MM / 1000.0,
         steering_axis_angle_deg: 90.0 - cf_trike::CASTER_DEG,
+        // ⚠ Inherited from `TrikeSpec::iter1()` until now, which is
+        // cf-vehicle's own illustrative sample — so the hypercar's mechanical
+        // trail was being computed with a 40 mm offset belonging to a
+        // different machine. cf-trike owns the geometry.
+        steering_offset_m: cf_trike::KINGPIN_OFFSET_MM / 1000.0,
         masses: Vec::new(),
         ..TrikeSpec::iter1()
     };
@@ -1455,8 +1502,14 @@ fn main() -> Result<()> {
     spec.assert_well_formed();
 
     // ★ The second column is the ARCHITECTURAL TARGET, not a stale guess:
-    // 785 kg at 45/55 with the centre of gravity at 240 mm is what the design
-    // is aiming for.
+    // 785 kg is what the design is aiming for.
+    //
+    // ⚠ **What it COMPOSES to is not what the design intends.** The intent is
+    // 45/55 with the centre of gravity at 240 mm. `TARGET_CG_Z_M` applies that
+    // 240 to the SPRUNG mass alone, and the unsprung at 310 mm and the driver
+    // at 350 pull the composite to 268 mm and the share to 46.7/53.3. Both
+    // figures are honest; they are answers to different questions, and this
+    // comment used to quote the intent as though it were the composition.
     //
     // ⚠ **The gap is not all work remaining.** Most of it is — no powertrain,
     // battery, body or brakes are modelled. But part of it is work WRONG: the
@@ -1498,15 +1551,22 @@ fn main() -> Result<()> {
     // These are what this geometry weighs and where it balances. They are a
     // regression gate, not a design target: change a tube, change a rider,
     // and they are supposed to fire so the new numbers get read.
+    //
+    // ⚠ They last fired when the front wheels were given their right widths —
+    // the barrel had been 30 mm and the hub 235, so each wheel nearly doubled.
+    // ★ The member screen did NOT move on the same change, and the pair of
+    // them disagreeing is informative: nothing in the accepted set hangs off a
+    // front wheel, so the two gates together localise the change to the parts
+    // it touched.
     let mut drifted: Vec<String> = Vec::new();
     for (label, got, want) in [
-        ("total mass (kg)", spec.total_mass_kg(), 204.875_148_168),
-        ("cg x (m)", spec.cg_x_m(), 1.107_198_711),
-        ("cg z (m)", spec.cg_z_m(), 0.362_993_549),
+        ("total mass (kg)", spec.total_mass_kg(), 209.407_812_795),
+        ("cg x (m)", spec.cg_x_m(), 1.083_233_895),
+        ("cg z (m)", spec.cg_z_m(), 0.361_845_003),
         (
             "rollover threshold (g)",
             rollover_threshold_g(&spec),
-            1.403_373_478,
+            1.429_696_216,
         ),
     ] {
         if (got - want).abs() > want.abs() * PIN_TOLERANCE {
@@ -1643,7 +1703,8 @@ fn main() -> Result<()> {
 ///
 /// 1. a member over yield that nobody accepted,
 /// 2. an accepted member that got WORSE by more than `drift`,
-/// 3. an accepted member that is **no longer over at all** — a stale
+/// 3. an accepted member that got materially BETTER while still over,
+/// 4. an accepted member that is **no longer over at all** — a stale
 ///    acceptance is how a list like this rots back into the silence it
 ///    replaced. It is self-discharging: author the wheels, `swingarm` improves
 ///    on its own, and this says so rather than letting the old figure stand.
@@ -1668,6 +1729,18 @@ fn audit_accepted(members: &[MemberLoad], accepted: &[(&str, f64)], drift: f64) 
             }
             (true, Some((_, was))) if u > was * (1.0 + drift) => {
                 out.push(format!("{} was accepted at {was:.3}x, now {u:.3}x", l.part));
+            }
+            // ⛔ Materially BETTER but still over yield. This arm was missing,
+            // and its absence made the doc on the accepted set false: an
+            // acceptance that improves without crossing back under 1.0 would
+            // have sat at its old figure indefinitely. `swingarm` is the case
+            // in waiting — it carries a 56 kg placeholder wheel, and authoring
+            // that wheel improves it a long way while leaving it over.
+            (true, Some((_, was))) if u < was * (1.0 - drift) => {
+                out.push(format!(
+                    "{} accepted at {was:.3}x now reads {u:.3}x, re-pin it",
+                    l.part
+                ));
             }
             (false, Some((_, was))) => {
                 out.push(format!(
@@ -1728,6 +1801,21 @@ mod tests {
         assert!(
             audit_accepted(&[member("a", Some(7.2))], &[("a", 6.5)], 0.15).is_empty(),
             "inside the drift it should stay quiet"
+        );
+    }
+
+    /// ⛔ The arm that was missing. An acceptance that improves without
+    /// crossing back under yield would otherwise keep its old figure forever —
+    /// and the doc above the accepted set promised this fires.
+    #[test]
+    fn an_accepted_member_that_improved_but_is_still_over_is_reported() {
+        let out = audit_accepted(&[member("a", Some(3.0))], &[("a", 6.5)], 0.15);
+        assert!(out.len() == 1 && out[0].contains("re-pin"), "{out:?}");
+        // Inside the drift band it stays quiet — this is a re-pin prompt, not
+        // a tripwire on sampling noise.
+        assert!(
+            audit_accepted(&[member("a", Some(6.0))], &[("a", 6.5)], 0.15).is_empty(),
+            "a 8% improvement is inside the band and should be silent"
         );
     }
 

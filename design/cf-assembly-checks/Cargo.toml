@@ -1,6 +1,6 @@
 [package]
 name = "cf-assembly-checks"
-description = "Assembly checks that do not know what they are checking — interpenetration, weld contact, articulation sweeps and declared counts, over any cf-design Mechanism, whether it is a vehicle, a gripper or a boat"
+description = "Assembly checks that do not know what they are checking — interpenetration with an unreadable-part channel, declared joint and linkage counts, and a first-order member-load screen, over any cf-design Mechanism, whether it is a vehicle, a gripper or a boat"
 keywords = ["assembly", "verification", "geometry", "mechanism", "design"]
 categories = ["science", "simulation"]
 version.workspace = true

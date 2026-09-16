@@ -134,6 +134,18 @@ pub fn overlapping_pairs(mechanism: &Mechanism, origins: &Origins, probe_mm: f64
             let (Some(&oa), Some(&ob)) = (origins.get(na), origins.get(nb)) else {
                 continue;
             };
+            // ⛔⛔ A non-finite origin is the SAME defect as an unreadable
+            // part, arriving by a different door: the inside test is
+            // `< 0.0`, and every comparison against NaN is false, so the part
+            // quietly drops out of every pair it is in and reads as innocent.
+            if !oa.iter().all(|c| c.is_finite()) || !ob.iter().all(|c| c.is_finite()) {
+                for (name, o) in [(na, oa), (nb, ob)] {
+                    if !o.iter().all(|c| c.is_finite()) && !unreadable.iter().any(|u| u == name) {
+                        unreadable.push(name.to_owned());
+                    }
+                }
+                continue;
+            }
             let inside = |from: &[Point3<f64>], shift: Vector3<f64>, into: &cf_design::Solid| {
                 from.iter()
                     .filter(|v| into.evaluate(&Point3::from(v.coords + shift)) < 0.0)
@@ -313,6 +325,89 @@ mod tests {
             ("c".to_owned(), Vector3::new(1.0, 0.0, 0.0)),
         ]);
         (m, origins)
+    }
+
+    /// ★★★ **The field the whole gate turns on, and nothing asserted it.**
+    /// `fraction` is the only thing the trike's interpenetration oracle reads;
+    /// hardcoding it to `0.0` passed every other test in this crate and
+    /// silenced that oracle completely. A number no test pins is a number that
+    /// can be replaced by a constant without anybody noticing.
+    ///
+    /// Two blocks with a known, computable share of one inside the other.
+    #[test]
+    fn the_fraction_is_the_share_of_the_smaller_part_that_is_swallowed() {
+        // A 20 mm cube and a 100 x 100 x 100 block, the cube's centre sitting
+        // exactly on the block's face: half of the cube is inside.
+        let m = Mechanism::builder("t")
+            .part(Part::new(
+                "block",
+                Solid::cuboid(Vector3::new(50.0, 50.0, 50.0)),
+                Material::new("steel", 7850.0),
+            ))
+            .part(Part::new(
+                "cube",
+                Solid::cuboid(Vector3::new(10.0, 10.0, 10.0)),
+                Material::new("steel", 7850.0),
+            ))
+            .part(Part::new(
+                "anchor",
+                Solid::sphere(3.0),
+                Material::new("steel", 7850.0),
+            ))
+            .joint(JointDef::new(
+                "j1",
+                "block",
+                "anchor",
+                JointKind::Fixed,
+                Point3::origin(),
+                Vector3::y(),
+            ))
+            .joint(JointDef::new(
+                "j2",
+                "anchor",
+                "cube",
+                JointKind::Fixed,
+                Point3::origin(),
+                Vector3::y(),
+            ))
+            .build();
+        let origins = Origins::from([
+            ("block".to_owned(), Vector3::zeros()),
+            ("anchor".to_owned(), Vector3::new(0.0, 0.0, 400.0)),
+            ("cube".to_owned(), Vector3::new(0.0, 0.0, 50.0)),
+        ]);
+        let scan = overlapping_pairs(&m, &origins, 1.0);
+        let pair = scan
+            .pairs
+            .iter()
+            .find(|o| (o.a == "block" && o.b == "cube") || (o.a == "cube" && o.b == "block"))
+            .expect("the cube straddles the block face and must be reported");
+        assert!(
+            (pair.fraction - 0.5).abs() < 0.08,
+            "half the cube sits inside the block, so the share should be near \
+             0.5 — got {:.3} from {} points",
+            pair.fraction,
+            pair.points
+        );
+        assert!(
+            pair.fraction > 0.0 && pair.fraction <= 1.0,
+            "a share must lie in 0..=1, got {}",
+            pair.fraction
+        );
+    }
+
+    /// ⛔ A `NaN` coordinate makes every `< 0.0` test false, so the part drops
+    /// out of every pair and reads as innocent. Named, like an unreadable one.
+    #[test]
+    fn a_part_with_a_non_finite_origin_is_named_not_passed_over() {
+        let (m, mut origins) = fixture();
+        origins.insert("c".to_owned(), Vector3::new(f64::NAN, 0.0, 0.0));
+        let scan = overlapping_pairs(&m, &origins, 2.0);
+        assert!(
+            scan.unreadable.contains(&"c".to_owned()),
+            "a part placed at NaN went unnamed: {:?}",
+            scan.unreadable
+        );
     }
 
     /// ⛔⛔ A part the probe cannot read is INVISIBLE, not innocent — it
