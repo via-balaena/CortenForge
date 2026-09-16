@@ -121,10 +121,29 @@ const MAX_GEOM_DISPLACEMENT_MM: f64 = 0.5;
 const SIM_RESOLUTION_MM: f64 = 20.0;
 /// Steps to take. Long enough for an unstable model to diverge.
 const SIM_STEPS: usize = 50;
-/// How far a welded body may move relative to the frame. Measured at 48 um.
-const MAX_WELD_DRIFT_MM: f64 = 1.0;
+/// How far a welded body may move **in the root's frame**. Measured at 0.0 um.
+///
+/// ⚠ **This is a STABILITY check, not a rigidity one, and the difference is
+/// worth stating.** A welded body has no joint between it and the root, so its
+/// offset in the root's frame is constant by construction — every mutation that
+/// breaks that (emitting a joint for a weld, re-declaring a weld as a hinge)
+/// changes the dof or weld COUNT, and those gates fire first. What is left for
+/// this one to catch is a rigid chain that wanders anyway: an unstable solve.
+///
+/// ⚠ Held at 10 um rather than the 1 mm it carried while the measurement still
+/// included the root's rotation. A tolerance three orders above the quantity it
+/// bounds is not a gate.
+const MAX_WELD_DRIFT_MM: f64 = 0.01;
 /// Full steering lock, in degrees — the range `upright_*` is given in radians.
 const STEER_LOCK_DEG: f64 = 34.0;
+/// Where the architecture wants the centre of gravity, longitudinally.
+///
+/// ★ 55 % of the wheelbase back from the front axle — the Porsche-balanced
+/// 45/55 that the rollover table says is affordable at a 240 mm cg and a
+/// 1750 mm track, and not before.
+const TARGET_CG_X_M: f64 = 2.650 * 0.55;
+/// And how low it has to sit for that balance to clear a mu of 1.5.
+const TARGET_CG_Z_M: f64 = 0.240;
 /// Mesh tolerance for the steering-clash probe.
 const STEER_PROBE_MM: f64 = 6.0;
 /// Suspension travel swept for clashes, in degrees — the wishbones are given
@@ -938,10 +957,19 @@ fn main() -> Result<()> {
         let mut data = model.make_data();
         data.forward(&model)
             .map_err(|e| anyhow::anyhow!("forward kinematics failed: {e:?}"))?;
-        let start: Vec<Vector3<f64>> = rigid
-            .iter()
-            .map(|(_, b)| data.xpos[*b] - data.xpos[root])
-            .collect();
+        // ⚠ In the ROOT'S FRAME, not merely relative to its position.
+        //
+        // A welded body has no joint between it and the root, so its offset in
+        // the root's frame is constant by construction and any motion measured
+        // here is a defect. Subtracting only `xpos[root]` leaves the root's
+        // ROTATION in: the vehicle turns on its free joint, a body 380 mm off
+        // centreline sweeps an arc, and that reads as drift. At a 900 mm track
+        // it hid inside the tolerance; at 1750 mm it reported 2.7 mm of drift
+        // for a part that cannot move.
+        let in_root = |data: &sim_core::Data, b: usize| {
+            data.xmat[root].transpose() * (data.xpos[b] - data.xpos[root])
+        };
+        let start: Vec<Vector3<f64>> = rigid.iter().map(|(_, b)| in_root(&data, *b)).collect();
         for step in 0..SIM_STEPS {
             data.step(&model)
                 .map_err(|e| anyhow::anyhow!("step {step} failed: {e:?}"))?;
@@ -951,7 +979,7 @@ fn main() -> Result<()> {
         }
         let mut worst = (String::new(), 0.0_f64);
         for (i, (name, b)) in rigid.iter().enumerate() {
-            let drift = ((data.xpos[*b] - data.xpos[root]) - start[i]).norm();
+            let drift = (in_root(&data, *b) - start[i]).norm();
             if drift > worst.1 {
                 worst = (name.clone(), drift);
             }
@@ -1038,13 +1066,36 @@ fn main() -> Result<()> {
             )
         })
         .collect();
-    let spec = TrikeSpec {
-        masses,
+    // ⚠ Geometry comes from cf-trike, not from cf-vehicle's own sample.
+    //
+    // `TrikeSpec::iter1()` is cf-vehicle's illustrative spec and it still
+    // describes the rideable trike this vehicle used to be. Inheriting its
+    // wheelbase left a centre of gravity at 1.27 m sitting outside a 1.25 m
+    // wheelbase, and cf-vehicle rightly panicked. **cf-trike owns the
+    // dimensions; cf-vehicle does the analysis.**
+    let geometry = TrikeSpec {
+        wheelbase_m: cf_trike::WHEELBASE_MM / 1000.0,
+        track_m: cf_trike::TRACK_MM / 1000.0,
+        front_wheel_radius_m: cf_trike::FRONT_RADIUS_MM / 1000.0,
+        rear_wheel_radius_m: cf_trike::REAR_RADIUS_MM / 1000.0,
+        steering_axis_angle_deg: 90.0 - cf_trike::CASTER_DEG,
+        masses: Vec::new(),
         ..TrikeSpec::iter1()
     };
+    let spec = TrikeSpec { masses, ..geometry };
     spec.assert_well_formed();
 
-    let typed = TrikeSpec::iter1();
+    // ★ The second column is now the ARCHITECTURAL TARGET, not a stale guess:
+    // 700 kg at 45/55 with the centre of gravity at 240 mm is what the design
+    // is aiming for, so the gap between the columns is the work remaining.
+    let typed = TrikeSpec {
+        masses: vec![
+            MassItem::new("target: sprung mass", 520.0, TARGET_CG_X_M, TARGET_CG_Z_M),
+            MassItem::new("target: unsprung", 180.0, TARGET_CG_X_M, 0.31),
+            MassItem::new("driver", 85.0, 1.05, 0.35),
+        ],
+        ..geometry
+    };
     println!("\n{:<28} {:>12} {:>12}", "", "derived", "typed");
     let row = |label: &str, a: f64, b: f64| {
         println!("{label:<28} {a:>12.4} {b:>12.4}");
@@ -1074,13 +1125,13 @@ fn main() -> Result<()> {
     // and they are supposed to fire so the new numbers get read.
     let mut drifted: Vec<String> = Vec::new();
     for (label, got, want) in [
-        ("total mass (kg)", spec.total_mass_kg(), 107.944_959_787),
-        ("cg x (m)", spec.cg_x_m(), 0.363_365_388),
-        ("cg z (m)", spec.cg_z_m(), 0.393_288_017),
+        ("total mass (kg)", spec.total_mass_kg(), 250.629_561_399),
+        ("cg x (m)", spec.cg_x_m(), 1.273_115_768),
+        ("cg z (m)", spec.cg_z_m(), 0.355_626_821),
         (
             "rollover threshold (g)",
             rollover_threshold_g(&spec),
-            0.811_589_591,
+            1.278_395_101,
         ),
     ] {
         if (got - want).abs() > want.abs() * PIN_TOLERANCE {
@@ -1137,7 +1188,7 @@ fn main() -> Result<()> {
                 .collect();
             let s = TrikeSpec {
                 masses: shifted,
-                ..TrikeSpec::iter1()
+                ..geometry.clone()
             };
             let track_needed =
                 2.0 * s.effective_cg_height_m() * TYRE_MU / s.paired_axle_share() - s.track_m;

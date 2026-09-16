@@ -135,13 +135,34 @@ const RIDER_KG_M3: f64 = 1010.0;
 // ── Nominal geometry, shared with `TrikeSpec::iter1` ────────────────────
 
 /// Front contact patch to rear contact patch.
-pub const WHEELBASE_MM: f64 = 1250.0;
+pub const WHEELBASE_MM: f64 = 2650.0;
 /// Centre to centre of the two front wheels.
-pub const TRACK_MM: f64 = 900.0;
+pub const TRACK_MM: f64 = 1750.0;
 /// 16″ front.
-pub const FRONT_RADIUS_MM: f64 = 203.2;
+pub const FRONT_RADIUS_MM: f64 = FRONT_RIM_R_MM + FRONT_SECTION_MM * FRONT_ASPECT;
 /// 11″ rear — the polyurethane one.
-pub const REAR_RADIUS_MM: f64 = 140.0;
+pub const REAR_RADIUS_MM: f64 = REAR_RIM_R_MM + REAR_SECTION_MM * REAR_ASPECT;
+
+/// Front tyre: **235/40R17**. Section width, millimetres.
+///
+/// ★ Sized by LOAD, not ambition — 243 kg per front wheel. An Ariel Atom 4 is
+/// 595 kg on 235/40R17. A wider tyre on this mass never reaches its grip.
+const FRONT_SECTION_MM: f64 = 235.0;
+/// Front aspect ratio — sidewall height as a fraction of section width.
+const FRONT_ASPECT: f64 = 0.40;
+/// Front rim radius: 17 inches across the bead seats.
+const FRONT_RIM_R_MM: f64 = 17.0 * 25.4 / 2.0;
+/// Rear tyre: **275/35R18**. It carries 298 kg but does ALL the rear drive and
+/// braking, so it is sized for work rather than load.
+///
+/// ⚠ 305 and 335 were checked and are **underloaded** at this mass: they never
+/// get warm or loaded enough to grip. Wider needs more mass on the rear, which
+/// is the rollover trade again.
+const REAR_SECTION_MM: f64 = 275.0;
+/// Rear aspect ratio.
+const REAR_ASPECT: f64 = 0.35;
+/// Rear rim radius: 18 inches.
+const REAR_RIM_R_MM: f64 = 18.0 * 25.4 / 2.0;
 /// Caster: the steering axis leans this far back from vertical.
 pub const CASTER_DEG: f64 = 8.0;
 
@@ -296,7 +317,7 @@ const DIAGONAL_APEX_X_MM: f64 = 230.0;
 /// to give — half a wheel's width plus a 25.4 mm tube's radius — and it is
 /// stated as a number here because the tube it came from no longer exists.
 /// It wants choosing on its own terms.
-const KINGPIN_OFFSET_MM: f64 = 37.7;
+const KINGPIN_OFFSET_MM: f64 = 60.0;
 /// Where the kingpin line sits, half a track in from the wheel.
 const UPRIGHT_Y_MM: f64 = TRACK_MM / 2.0 - KINGPIN_OFFSET_MM;
 /// Radius of the front rim's hub disc — what the bearing housing must fit in.
@@ -338,25 +359,35 @@ const BALL_CUP_WALL_MM: f64 = 5.0;
 /// between a ball joint and the wheel, and a sharp one is where it breaks.
 const UPRIGHT_FILLET_MM: f64 = 8.0;
 
-/// Inboard pickup for both wishbones, from the centreline.
-const ARM_PICKUP_Y_MM: f64 = 120.0;
+/// Inboard pickup for the LOWER wishbone, from the centreline.
+const LOWER_PICKUP_Y_MM: f64 = 300.0;
+/// Inboard pickup for the UPPER wishbone.
+///
+/// ★ **Further outboard than the lower one on purpose**, which makes the upper
+/// arm SHORTER. A short upper arm pulls the top of the wheel inboard as the
+/// suspension rises, so the wheel gains negative camber in bump — which is what
+/// keeps the tyre flat on the road when the body rolls in a corner.
+const UPPER_PICKUP_Y_MM: f64 = 380.0;
 /// Fore-aft half-spread of a wishbone's two frame pickups.
 ///
 /// ★ This is what makes a wishbone a wishbone rather than a link: two pickups
 /// give the arm a pivot **axis**, and the spread between them is the lever
 /// that carries braking and cornering loads into the frame.
-const ARM_PICKUP_HALF_SPREAD_MM: f64 = 70.0;
+const ARM_PICKUP_HALF_SPREAD_MM: f64 = 120.0;
 /// Height of the lower wishbone's frame pivot — level with the lower ball,
 /// so the arm runs flat at rest.
 const LOWER_PIVOT_Z_MM: f64 = FRAME_Z_MM;
 /// Height of the upper wishbone's frame pivot, on top of the tower.
-const UPPER_PIVOT_Z_MM: f64 = 300.0;
+const UPPER_PIVOT_Z_MM: f64 = 480.0;
 /// Lower ball joint, on the upright.
 const LOWER_BALL_Z_MM: f64 = FRAME_Z_MM;
-/// Upper ball joint. The gap to the lower ball is the upright's working
-/// length; with the upper arm shorter than the lower, the wheel gains
-/// negative camber in bump, which is what keeps the tyre flat in a corner.
-const UPPER_BALL_Z_MM: f64 = 290.0;
+/// Upper ball joint. The gap to the lower ball is the upright's working length.
+///
+/// ⚠ **280 mm, not 140.** At 140 the two arms were nearly parallel over a
+/// 735 mm span and fouled each other within the declared travel — the bump
+/// sweep said so the moment the vehicle was re-based to car dimensions. Ball
+/// separation has to scale with arm length or the linkage has no room to work.
+const UPPER_BALL_Z_MM: f64 = 430.0;
 /// Wishbone tube stock.
 const ARM_OD_MM: f64 = 22.2;
 /// Wishbone tube wall.
@@ -379,7 +410,7 @@ const BUSH_LENGTH_MM: f64 = 30.0;
 /// produces as an order of magnitude until the real material is measured.
 const BUSH_SHORE_A: f64 = 95.0;
 /// Half the front wheel's width. The hub is its widest part.
-const FRONT_WHEEL_HALF_WIDTH_MM: f64 = 25.0;
+const FRONT_WHEEL_HALF_WIDTH_MM: f64 = FRONT_SECTION_MM / 2.0;
 /// Inside of the front rim's section.
 ///
 /// ⚠ 174, not the 160 this started at. A 20 mm-thick solid aluminium annulus
@@ -390,16 +421,16 @@ const FRONT_WHEEL_HALF_WIDTH_MM: f64 = 25.0;
 /// ⚠ Spokes are absent. They would add roughly 0.15 kg a wheel, at a radius
 /// that matters more for rotating inertia than for the mass budget, and this
 /// example does not model rotating inertia.
-const FRONT_RIM_INNER_MM: f64 = 174.0;
+const FRONT_RIM_INNER_MM: f64 = FRONT_RIM_R_MM - 6.0;
 
 /// Where the front rim ends and its tyre begins. Shared by both so the two
 /// cannot drift apart into a gap or an interpenetration — a class the
 /// closed-form check above is blind to.
-const FRONT_RIM_OUTER_MM: f64 = 180.0;
+const FRONT_RIM_OUTER_MM: f64 = FRONT_RIM_R_MM;
 /// Where the rear rim ends and the cast polyurethane tyre begins.
-const REAR_RIM_OUTER_MM: f64 = 115.0;
+const REAR_RIM_OUTER_MM: f64 = REAR_RIM_R_MM;
 /// Half the rear wheel's width — rim and tyre are the same width.
-const REAR_WHEEL_HALF_WIDTH_MM: f64 = 12.5;
+const REAR_WHEEL_HALF_WIDTH_MM: f64 = REAR_SECTION_MM / 2.0;
 
 // ── Pieces: a solid and its closed-form volume, built together ──────────
 
@@ -602,7 +633,7 @@ fn front_upright(sign: f64) -> Piece {
 /// pieces that do not. Authoring the arm as one blended solid says that
 /// honestly instead of splitting it to dodge the arithmetic.
 fn lower_wishbone(sign: f64) -> Piece {
-    let ball = Vector3::new(0.0, sign * (UPRIGHT_Y_MM - ARM_PICKUP_Y_MM), 0.0);
+    let ball = Vector3::new(0.0, sign * (UPRIGHT_Y_MM - LOWER_PICKUP_Y_MM), 0.0);
     let pickup = |x: f64| Vector3::new(x, 0.0, 0.0);
     let spread = ARM_PICKUP_HALF_SPREAD_MM;
 
@@ -744,8 +775,16 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
     // swings in, welding the suspension solid. Every gate passed: the bump
     // sweep only tested the travel extremes and never the rest pose, and a
     // scan of non-joined pairs is what found it.
-    let pickup_l = node(0.0, ARM_PICKUP_Y_MM);
-    let pickup_r = node(0.0, -ARM_PICKUP_Y_MM);
+    // ⚠ The cross-member spans the OUTERMOST pickup, because it carries both:
+    // the lower wishbone pivots on it inboard, and the tower stands on its end.
+    // Ending it at the lower pickup left the towers floating 52 mm off it.
+    let cross_half = if UPPER_PICKUP_Y_MM > LOWER_PICKUP_Y_MM {
+        UPPER_PICKUP_Y_MM
+    } else {
+        LOWER_PICKUP_Y_MM
+    };
+    let pickup_l = node(0.0, cross_half);
+    let pickup_r = node(0.0, -cross_half);
     let apex = node(DIAGONAL_APEX_X_MM, 0.0);
     let tail = node(WHEELBASE_MM - TAIL_SETBACK_MM, 0.0);
 
@@ -758,7 +797,7 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
     // arm's pivot axis, so the arm can never move off it — the bump sweep said
     // so the moment the frame was narrowed. Tying the tower top back instead
     // reacts the upper arm's loads and leaves the lower arm's plane empty.
-    let tower_top = |sign: f64| node_at(0.0, sign * ARM_PICKUP_Y_MM, UPPER_PIVOT_Z_MM);
+    let tower_top = |sign: f64| node_at(0.0, sign * UPPER_PICKUP_Y_MM, UPPER_PIVOT_Z_MM);
     let (brace_left, brace_left_at) = member(tower_top(1.0), apex);
     let (brace_right, brace_right_at) = member(tower_top(-1.0), apex);
     // ── The front suspension ────────────────────────────────────────
@@ -773,8 +812,8 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
         |sign: f64| lower_ball(sign) + steering_axis() * (UPPER_BALL_Z_MM - LOWER_BALL_Z_MM);
     // A wishbone's body origin: the midpoint of its two frame pickups, which
     // is a point ON its pivot axis, so the joint anchor and the geometry agree.
-    let pivot_mid = |sign: f64, z: f64| Vector3::new(0.0, sign * ARM_PICKUP_Y_MM, z);
-    let pickup = |sign: f64, z: f64, x: f64| Point3::new(x, sign * ARM_PICKUP_Y_MM, z);
+    let pivot_mid = |sign: f64, y: f64, z: f64| Vector3::new(0.0, sign * y, z);
+    let pickup = |sign: f64, y: f64, z: f64, x: f64| Point3::new(x, sign * y, z);
     let leg = |from: Point3<f64>, to: Point3<f64>, origin: Vector3<f64>| {
         let (p, at) = tube_between(from, to, ARM_OD_MM, ARM_WALL_MM);
         Piece {
@@ -785,14 +824,14 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
     // ⚠ Two parts per wishbone, welded, not one part of two legs: `joined`
     // sums analytic volumes and is only right for pieces that do not overlap.
     // These meet at the ball joint. The swingarm is built the same way.
-    let wishbone_leg = |sign: f64, z: f64, ball: Point3<f64>, x: f64| {
-        leg(pickup(sign, z, x), ball, pivot_mid(sign, z))
+    let wishbone_leg = |sign: f64, y: f64, z: f64, ball: Point3<f64>, x: f64| {
+        leg(pickup(sign, y, z, x), ball, pivot_mid(sign, y, z))
     };
-    let tower_base = |sign: f64| Point3::new(0.0, sign * ARM_PICKUP_Y_MM, FRAME_Z_MM);
+    let tower_base = |sign: f64| Point3::new(0.0, sign * UPPER_PICKUP_Y_MM, FRAME_Z_MM);
     let tower = |sign: f64| {
         tube_from(
             tower_base(sign),
-            Point3::new(0.0, sign * ARM_PICKUP_Y_MM, UPPER_PIVOT_Z_MM),
+            Point3::new(0.0, sign * UPPER_PICKUP_Y_MM, UPPER_PIVOT_Z_MM),
             TOWER_OD_MM,
             TOWER_WALL_MM,
         )
@@ -941,7 +980,9 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
             format!("arm_upper_{tag}"),
             upright,
             LinkageKind::Ball,
-            Point3::from(upper_ball(sign).coords - pivot_mid(sign, UPPER_PIVOT_Z_MM)),
+            Point3::from(
+                upper_ball(sign).coords - pivot_mid(sign, UPPER_PICKUP_Y_MM, UPPER_PIVOT_Z_MM),
+            ),
         )
     };
     let linkages = vec![
@@ -1024,7 +1065,7 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
         PartPlan {
             name: "arm_lower_l",
             parent: "frame_cross",
-            anchor_mm: pivot_mid(1.0, LOWER_PIVOT_Z_MM) - cross_at,
+            anchor_mm: pivot_mid(1.0, LOWER_PICKUP_Y_MM, LOWER_PIVOT_Z_MM) - cross_at,
             kind: JointKind::Revolute,
             axis: Vector3::x(),
             range_rad: Some((-0.35, 0.35)),
@@ -1036,13 +1077,14 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
         PartPlan {
             name: "arm_upper_l",
             parent: "tower_l",
-            anchor_mm: pivot_mid(1.0, UPPER_PIVOT_Z_MM) - tower_base(1.0).coords,
+            anchor_mm: pivot_mid(1.0, UPPER_PICKUP_Y_MM, UPPER_PIVOT_Z_MM) - tower_base(1.0).coords,
             kind: JointKind::Revolute,
             axis: Vector3::x(),
             range_rad: Some((-0.35, 0.35)),
             material: steel.clone(),
             piece: wishbone_leg(
                 1.0,
+                UPPER_PICKUP_Y_MM,
                 UPPER_PIVOT_Z_MM,
                 upper_ball(1.0),
                 -ARM_PICKUP_HALF_SPREAD_MM,
@@ -1060,6 +1102,7 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
             material: steel.clone(),
             piece: wishbone_leg(
                 1.0,
+                UPPER_PICKUP_Y_MM,
                 UPPER_PIVOT_Z_MM,
                 upper_ball(1.0),
                 ARM_PICKUP_HALF_SPREAD_MM,
@@ -1070,7 +1113,7 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
         PartPlan {
             name: "upright_l",
             parent: "arm_lower_l",
-            anchor_mm: lower_ball(1.0).coords - pivot_mid(1.0, LOWER_PIVOT_Z_MM),
+            anchor_mm: lower_ball(1.0).coords - pivot_mid(1.0, LOWER_PICKUP_Y_MM, LOWER_PIVOT_Z_MM),
             kind: JointKind::Ball,
             axis: steering_axis(),
             range_rad: None,
@@ -1094,7 +1137,7 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
         PartPlan {
             name: "arm_lower_r",
             parent: "frame_cross",
-            anchor_mm: pivot_mid(-1.0, LOWER_PIVOT_Z_MM) - cross_at,
+            anchor_mm: pivot_mid(-1.0, LOWER_PICKUP_Y_MM, LOWER_PIVOT_Z_MM) - cross_at,
             kind: JointKind::Revolute,
             axis: Vector3::x(),
             range_rad: Some((-0.35, 0.35)),
@@ -1106,13 +1149,15 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
         PartPlan {
             name: "arm_upper_r",
             parent: "tower_r",
-            anchor_mm: pivot_mid(-1.0, UPPER_PIVOT_Z_MM) - tower_base(-1.0).coords,
+            anchor_mm: pivot_mid(-1.0, UPPER_PICKUP_Y_MM, UPPER_PIVOT_Z_MM)
+                - tower_base(-1.0).coords,
             kind: JointKind::Revolute,
             axis: Vector3::x(),
             range_rad: Some((-0.35, 0.35)),
             material: steel.clone(),
             piece: wishbone_leg(
                 -1.0,
+                UPPER_PICKUP_Y_MM,
                 UPPER_PIVOT_Z_MM,
                 upper_ball(-1.0),
                 -ARM_PICKUP_HALF_SPREAD_MM,
@@ -1130,6 +1175,7 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
             material: steel.clone(),
             piece: wishbone_leg(
                 -1.0,
+                UPPER_PICKUP_Y_MM,
                 UPPER_PIVOT_Z_MM,
                 upper_ball(-1.0),
                 ARM_PICKUP_HALF_SPREAD_MM,
@@ -1140,7 +1186,8 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
         PartPlan {
             name: "upright_r",
             parent: "arm_lower_r",
-            anchor_mm: lower_ball(-1.0).coords - pivot_mid(-1.0, LOWER_PIVOT_Z_MM),
+            anchor_mm: lower_ball(-1.0).coords
+                - pivot_mid(-1.0, LOWER_PICKUP_Y_MM, LOWER_PIVOT_Z_MM),
             kind: JointKind::Ball,
             axis: steering_axis(),
             range_rad: None,
