@@ -81,16 +81,43 @@ pub struct Overlap {
 /// `probe_mm` is the mesh resolution for the probe points; finer costs more and
 /// finds smaller overlaps.
 ///
+/// What the scan found, and what it could not read.
+///
+/// ⛔⛔ **The second field is why this is a struct and not a `Vec`.** A part
+/// that meshes to NO probe points contributes zero inside-points to every pair
+/// it is in, forever — so it cannot be reported as overlapping anything, and
+/// its absence is indistinguishable from innocence. Measured on the trike: a
+/// 6 mm seat panel probed at 6 mm meshed to nothing, and the deepest overlap
+/// the scan could see was 5.9% against a 6% tolerance. The same geometry at a
+/// 5 mm probe reads 29.7% and fails.
+///
+/// ⚠ A part meshing to nothing is a statement about the PROBE, not the part.
+/// The remedy is a finer probe, not a larger tolerance.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Scan {
+    /// Every unjoined pair found sharing space, in discovery order.
+    pub pairs: Vec<Overlap>,
+    /// Parts that meshed to no probe points at this tolerance, and so were
+    /// invisible to every comparison.
+    ///
+    /// ⛔ **Invisible, not innocent.**
+    pub unreadable: Vec<String>,
+}
+
 /// Pairs joined by a joint or a linkage are skipped: they touch by
 /// construction, and a scan that reported them would be switched off.
 #[must_use]
-pub fn overlapping_pairs(mechanism: &Mechanism, origins: &Origins, probe_mm: f64) -> Vec<Overlap> {
+pub fn overlapping_pairs(mechanism: &Mechanism, origins: &Origins, probe_mm: f64) -> Scan {
     let parts = mechanism.parts();
     let joined = adjacency(mechanism);
 
     let mut probes: HashMap<&str, Vec<Point3<f64>>> = HashMap::new();
+    let mut unreadable: Vec<String> = Vec::new();
     for p in parts {
         let mesh = p.solid().mesh(probe_mm).geometry;
+        if mesh.vertices.is_empty() {
+            unreadable.push(p.name().to_owned());
+        }
         probes.insert(
             p.name(),
             mesh.vertices.iter().map(|v| Point3::from(*v)).collect(),
@@ -117,7 +144,16 @@ pub fn overlapping_pairs(mechanism: &Mechanism, origins: &Origins, probe_mm: f64
             let points = a_in_b + b_in_a;
             if points > 0 {
                 let share = |n: usize, of: usize| {
-                    if of == 0 { 0.0 } else { n as f64 / of as f64 }
+                    if of == 0 {
+                        0.0
+                    } else {
+                        // Both are counts of probe points on a meshed part;
+                        // usize -> f64 is exact far beyond any mesh that fits
+                        // in memory.
+                        #[allow(clippy::cast_precision_loss)]
+                        let share = n as f64 / of as f64;
+                        share
+                    }
                 };
                 out.push(Overlap {
                     a: na.to_owned(),
@@ -135,7 +171,11 @@ pub fn overlapping_pairs(mechanism: &Mechanism, origins: &Origins, probe_mm: f64
             .then(x.a.cmp(&y.a))
             .then(x.b.cmp(&y.b))
     });
-    out
+    unreadable.sort();
+    Scan {
+        pairs: out,
+        unreadable,
+    }
 }
 
 /// What an assembly declares itself to be.
@@ -220,7 +260,7 @@ fn hops_between(mechanism: &Mechanism, from: &str, to: &str) -> usize {
         if node == to {
             return d;
         }
-        for next in adj.get(node).map(Vec::as_slice).unwrap_or(&[]) {
+        for next in adj.get(node).map_or(&[][..], Vec::as_slice) {
             if !seen.contains_key(next) {
                 seen.insert(next, d + 1);
                 queue.push_back(next);
@@ -233,7 +273,7 @@ fn hops_between(mechanism: &Mechanism, from: &str, to: &str) -> usize {
 // ── Tests ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use cf_design::{JointDef, JointKind, LinkageDef, LinkageKind, Material, Part, Solid};
 
@@ -275,30 +315,77 @@ mod tests {
         (m, origins)
     }
 
+    /// ⛔⛔ A part the probe cannot read is INVISIBLE, not innocent — it
+    /// contributes zero inside-points to every pair it is in, so it can never
+    /// be reported as overlapping anything.
+    ///
+    /// ★ The numbers here are the trike's own: a 6 mm seat panel against the
+    /// 6 mm probe the example shipped. It meshed to nothing, and the deepest
+    /// overlap the scan could see was 5.9% against a 6% tolerance.
+    ///
+    /// ⚠⚠ And mesh density is **NOT monotone in the probe** — measured on this
+    /// same panel: 0 vertices at 0.5 mm, 44 998 at 2 mm, 7 198 at 5 mm, 0 again
+    /// at 6 mm. "Probe finer to be safe" is not a rule you can rely on; the
+    /// only safe move is to ask the scan what it could not read.
+    #[test]
+    fn a_part_that_meshes_to_nothing_is_named_not_passed_over() {
+        let panel = |half: f64| {
+            Part::new(
+                "panel",
+                Solid::cuboid(Vector3::new(150.0, 150.0, half)),
+                Material::new("steel", 7850.0),
+            )
+        };
+        let m = Mechanism::builder("t")
+            .part(Part::new(
+                "block",
+                Solid::cuboid(Vector3::new(20.0, 20.0, 20.0)),
+                Material::new("steel", 7850.0),
+            ))
+            .part(panel(3.0))
+            .joint(JointDef::new(
+                "j",
+                "block",
+                "panel",
+                JointKind::Fixed,
+                Point3::origin(),
+                Vector3::y(),
+            ))
+            .build();
+        let origins = Origins::from([
+            ("block".to_owned(), Vector3::zeros()),
+            ("panel".to_owned(), Vector3::zeros()),
+        ]);
+
+        let blind = overlapping_pairs(&m, &origins, 6.0);
+        assert!(
+            blind.unreadable.contains(&"panel".to_owned()),
+            "a 6 mm panel probed at 6 mm meshes to nothing and must be named: {:?}",
+            blind.unreadable
+        );
+
+        let seeing = overlapping_pairs(&m, &origins, 5.0);
+        assert!(
+            !seeing.unreadable.contains(&"panel".to_owned()),
+            "at 5 mm the same panel meshes and must NOT be named: {:?}",
+            seeing.unreadable
+        );
+    }
+
     /// Two parts in the same place with nothing joining them is the finding.
     #[test]
     fn an_unjoined_pair_in_the_same_space_is_reported() {
         let (m, origins) = fixture();
         let found = overlapping_pairs(&m, &origins, 2.0);
-        let pair: Vec<&str> = found
-            .iter()
-            .map(|o| {
-                if o.a == "c" {
-                    o.b.as_str()
-                } else {
-                    o.a.as_str()
-                }
-            })
-            .collect();
         assert!(
-            found.iter().any(|o| o.a == "c" || o.b == "c"),
+            found.pairs.iter().any(|o| o.a == "c" || o.b == "c"),
             "c sits inside a and was not reported: {found:?}"
         );
         assert!(
-            found.iter().all(|o| o.points > 0),
+            found.pairs.iter().all(|o| o.points > 0),
             "reported a zero overlap"
         );
-        assert!(!pair.is_empty());
+        assert!(found.pairs.iter().any(|o| o.a == "c" || o.b == "c"));
     }
 
     /// ⚠ **Joined parts are skipped, and this is the gate for it.**
@@ -317,6 +404,7 @@ mod tests {
         let found = overlapping_pairs(&m, &origins, 2.0);
         assert!(
             !found
+                .pairs
                 .iter()
                 .any(|o| { (o.a == "a" && o.b == "b") || (o.a == "b" && o.b == "a") }),
             "a and b share a joint and must not be reported: {found:?}"
@@ -358,7 +446,7 @@ mod tests {
             .build();
         origins.insert("c".to_owned(), Vector3::new(1.0, 0.0, 0.0));
         assert!(
-            overlapping_pairs(&m, &origins, 2.0).is_empty(),
+            overlapping_pairs(&m, &origins, 2.0).pairs.is_empty(),
             "a linkage joins its pair as surely as a joint does"
         );
     }
@@ -368,7 +456,7 @@ mod tests {
     fn graph_distance_is_reported_beside_the_extent() {
         let (m, origins) = fixture();
         let found = overlapping_pairs(&m, &origins, 2.0);
-        let o = found.first().expect("an overlap");
+        let o = found.pairs.first().expect("an overlap");
         assert_eq!(o.hops, 2, "a and c are two hops apart, through b");
         assert!(o.points > 0);
     }

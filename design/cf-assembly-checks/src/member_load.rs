@@ -99,7 +99,7 @@ pub struct LoadCase {
     pub g_factor: f64,
     /// Which way the load acts. Need not be normalised.
     pub down: Vector3<f64>,
-    /// Allowable stress in MPa, keyed by the material's name. A material absent
+    /// Allowable stress in `MPa`, keyed by the material's name. A material absent
     /// from this map is **not checked** and is reported with an allowable of
     /// `None`, because inventing a number for it would be worse than saying so.
     pub allowable_mpa: HashMap<String, f64>,
@@ -127,17 +127,56 @@ impl LoadCase {
 
     /// Set the g multiplier.
     #[must_use]
-    pub fn at_g(mut self, g_factor: f64) -> Self {
+    pub const fn at_g(mut self, g_factor: f64) -> Self {
         self.g_factor = g_factor;
         self
     }
 
-    /// Declare what a material allows, in MPa.
+    /// Declare what a material allows, in `MPa`.
     #[must_use]
     pub fn allowing(mut self, material: impl Into<String>, mpa: f64) -> Self {
         self.allowable_mpa.insert(material.into(), mpa);
         self
     }
+}
+
+/// Why a member could not be measured.
+///
+/// ⚠ Four of these five are the CALLER's input being incomplete rather than the
+/// geometry defeating the sampler. They are kept apart because the remedy
+/// differs: one is "your map is missing an entry", the other is "this shape
+/// cannot be read at this cell".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Unmeasured {
+    /// Its section could not be sampled — a bent member whose centroid misses
+    /// its own material, one with no bounds, one that samples to nothing.
+    Section,
+    /// [`Origins`] has no entry for it, so there is nothing to cantilever from.
+    NoOrigin,
+    /// Its subtree carries no positive mass in the [`MassMap`].
+    NoMass,
+    /// Some part of its subtree is missing from the [`MassMap`], so the load it
+    /// carries is understated by an unknown amount.
+    ///
+    /// ⛔⛔ **This is the dangerous one.** The member is perfectly measurable
+    /// and its number would look entirely ordinary — it is merely too small, by
+    /// however much the absent children weigh.
+    IncompleteSubtree,
+    /// A mass, a centre of mass, an anchor or a load factor was not finite.
+    ///
+    /// ⚠ Withheld rather than reported, because `NaN > 1.0` is `false`: a `NaN`
+    /// utilisation reads as "not over yield" at every call site that asks.
+    NotFinite,
+}
+
+/// A member the screen could not measure, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unmeasurable {
+    /// The part.
+    pub part: String,
+    /// What stopped it.
+    pub why: Unmeasured,
 }
 
 /// What the screen measured, and what it could not.
@@ -146,17 +185,20 @@ impl LoadCase {
 /// cannot read always looks clean — it reports "27 members, 2 past yield" while
 /// seven went unmeasured, and the reader has no way to know. Unmeasured is
 /// reported here, never dropped.
+///
+/// ⚠ That sentence was once FALSE in this very function. Three of its four
+/// early exits pushed nothing, so a member absent from [`Origins`] or
+/// [`MassMap`] vanished from both fields while the doc above promised it could
+/// not. Every exit now names the member.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Screen {
     /// One entry per member whose section could be sampled, worst first.
     pub members: Vec<MemberLoad>,
-    /// Parts that hang from a joint and were **not measured**: a bent member
-    /// whose centroid misses its own material, a part with no bounds, one that
-    /// samples to nothing at this cell.
+    /// Every member that hangs from a joint and was **not measured**.
     ///
-    /// ⛔ **Unmeasured, not sound.** Treat a non-empty list as a failure of the
-    /// screen, not a pass for the parts.
-    pub unsampled: Vec<String>,
+    /// ⛔ **Unmeasured is not sound.** Treat a non-empty list as a failure of
+    /// the screen, not as a pass for the parts in it.
+    pub unmeasured: Vec<Unmeasurable>,
 }
 
 /// What one member carries and what that does to it.
@@ -175,7 +217,7 @@ pub struct MemberLoad {
     pub load_n: f64,
     /// Elastic section modulus about the weak axis, mm³.
     pub section_modulus_mm3: f64,
-    /// `moment / Z`, MPa.
+    /// `moment / Z`, `MPa`.
     pub stress_mpa: f64,
     /// What the material allows, if the caller declared it.
     pub allowable_mpa: Option<f64>,
@@ -192,7 +234,7 @@ pub struct MemberLoad {
 /// first** with unscored materials after the scored ones, plus the names of
 /// every member that could not be measured at all.
 ///
-/// ⛔ Read [`Screen::unsampled`] before reading the members. It is the list the
+/// ⛔ Read [`Screen::unmeasured`] before reading the members. It is the list the
 /// header count does not include.
 ///
 /// See the module docs for the five things this cannot see.
@@ -203,11 +245,11 @@ pub fn member_loads(
     masses: &MassMap,
     case: &LoadCase,
 ) -> Screen {
-    let mut unsampled = Vec::new();
+    let mut unmeasured: Vec<Unmeasurable> = Vec::new();
     let Some(down) = case.down.try_normalize(1e-12) else {
         return Screen {
             members: Vec::new(),
-            unsampled,
+            unmeasured,
         };
     };
     let children = child_index(mechanism);
@@ -223,18 +265,37 @@ pub fn member_loads(
         if !has_parent.contains(name) {
             continue; // the root: nothing to cantilever from. A stated blind spot.
         }
+        let mut withhold = |why| {
+            unmeasured.push(Unmeasurable {
+                part: name.to_owned(),
+                why,
+            });
+        };
         let Some(&anchor) = origins.get(name) else {
+            withhold(Unmeasured::NoOrigin);
             continue;
         };
         let supported = subtree(&children, name);
-        let (supported_kg, com) = combined_mass(&supported, masses);
+        let Some((supported_kg, com)) = combined_mass(&supported, masses) else {
+            withhold(Unmeasured::IncompleteSubtree);
+            continue;
+        };
         if supported_kg <= 0.0 {
+            withhold(Unmeasured::NoMass);
+            continue;
+        }
+        if !supported_kg.is_finite()
+            || !com.iter().all(|c| c.is_finite())
+            || !anchor.iter().all(|c| c.is_finite())
+            || !case.g_factor.is_finite()
+        {
+            withhold(Unmeasured::NotFinite);
             continue;
         }
         let Some((modulus, _)) =
             section_modulus(part.solid(), case.section_cell_mm).filter(|&(z, _)| z > 0.0)
         else {
-            unsampled.push(name.to_string());
+            withhold(Unmeasured::Section);
             continue;
         };
 
@@ -267,10 +328,10 @@ pub fn member_loads(
             .total_cmp(&a.utilisation.unwrap_or(f64::NEG_INFINITY))
             .then_with(|| b.stress_mpa.total_cmp(&a.stress_mpa))
     });
-    unsampled.sort();
+    unmeasured.sort_by(|lhs, rhs| lhs.part.cmp(&rhs.part));
     Screen {
         members: out,
-        unsampled,
+        unmeasured,
     }
 }
 
@@ -289,7 +350,7 @@ fn subtree<'a>(children: &HashMap<&'a str, Vec<&'a str>>, root: &'a str) -> Vec<
     let mut queue: VecDeque<&str> = VecDeque::from([root]);
     let mut out = vec![root];
     while let Some(node) = queue.pop_front() {
-        for next in children.get(node).map(Vec::as_slice).unwrap_or(&[]) {
+        for next in children.get(node).map_or(&[][..], Vec::as_slice) {
             if seen.insert(next) {
                 out.push(next);
                 queue.push_back(next);
@@ -299,20 +360,26 @@ fn subtree<'a>(children: &HashMap<&'a str, Vec<&'a str>>, root: &'a str) -> Vec<
     out
 }
 
-/// Total mass of a set of parts and where it acts.
-fn combined_mass(parts: &[&str], masses: &MassMap) -> (f64, Vector3<f64>) {
+/// Total mass of a subtree and where it acts, or `None` when the map does not
+/// cover all of it.
+///
+/// ⛔⛔ **Missing is not zero.** Summing what happens to be present and carrying
+/// on is how a parent comes to be scored against a fraction of the load it
+/// really holds — a number that is silently small and looks entirely ordinary.
+/// If any member of the subtree is absent the total is not knowable, and the
+/// caller is told so rather than handed the part of it that was.
+fn combined_mass(parts: &[&str], masses: &MassMap) -> Option<(f64, Vector3<f64>)> {
     let mut kg = 0.0;
     let mut moment = Vector3::zeros();
     for name in parts {
-        if let Some(m) = masses.get(*name) {
-            kg += m.kg;
-            moment += m.world_com_mm * m.kg;
-        }
+        let m = masses.get(*name)?;
+        kg += m.kg;
+        moment += m.world_com_mm * m.kg;
     }
     if kg <= 0.0 {
-        return (0.0, Vector3::zeros());
+        return Some((0.0, Vector3::zeros()));
     }
-    (kg, moment / kg)
+    Some((kg, moment / kg))
 }
 
 /// Elastic section modulus about the weak axis, and the axis it was taken
@@ -326,45 +393,133 @@ fn section_modulus(solid: &cf_design::Solid, cell_mm: f64) -> Option<(f64, Vecto
     if !cell_mm.is_finite() || cell_mm <= 0.0 {
         return None;
     }
-    let bounds = solid.bounds()?;
-    let lo = bounds.min;
-    let hi = bounds.max;
+    let (centroid, axis, coarse) = long_axis_and_centroid(solid, cell_mm)?;
 
-    // A coarse interior sample: enough to find the long axis and the centroid,
-    // cheap enough that it is not the cost of the check.
+    // An orthonormal basis across the section.
+    let seed = if axis.x.abs() < 0.9 {
+        Vector3::x()
+    } else {
+        Vector3::y()
+    };
+    let across_u = axis.cross(&seed).normalize();
+    let across_v = axis.cross(&across_u).normalize();
+
+    // Sample the plane through the centroid, normal to the long axis.
     //
-    // ⛔⛔ **The step is set by the member's SMALLEST span, not its largest.**
-    // Scaling it to the longest dimension is the obvious thing and it is wrong:
-    // a 2300 mm chassis rail of 31.75 mm tube then gets probed every 96 mm,
-    // lands inside a 2 mm wall essentially never, and the whole member is
-    // dropped for want of eight interior points. The step has to resolve the
-    // SECTION, and the section lives on the short axes.
+    // ⚠ **The half-extent comes from the coarse points, not from the body.**
+    // Using the body diagonal is "safe" and ruinous: a 2300 mm rail would have
+    // its section sampled over a 2300 x 2300 mm plane at half a millimetre —
+    // 21 million evaluations to read a 31.75 mm tube. The section can be no
+    // wider than the material already found lying off the axis, plus a margin
+    // for what the coarse grid stepped over.
+    let reach = coarse.reach;
+    let area_cell = cell_mm * cell_mm;
+    let mut sum = (0.0_f64, 0.0_f64);
+    let mut cell_pts: Vec<(f64, f64)> = Vec::new();
+    let side = steps_across(2.0 * reach, cell_mm);
+    for i in 0..=side {
+        let a = as_f64(i).mul_add(cell_mm, -reach);
+        for j in 0..=side {
+            let b = as_f64(j).mul_add(cell_mm, -reach);
+            let p = centroid + across_u * a + across_v * b;
+            if solid.evaluate(&Point3::from(p)) < 0.0 {
+                cell_pts.push((a, b));
+                sum.0 += a;
+                sum.1 += b;
+            }
+        }
+    }
+    if cell_pts.len() < 4 {
+        return None;
+    }
+
+    let n = as_f64(cell_pts.len());
+    let (ca, cb) = (sum.0 / n, sum.1 / n);
+    let (mut about_a, mut about_b, mut product) = (0.0, 0.0, 0.0);
+    for &(a, b) in &cell_pts {
+        let (da, db) = (a - ca, b - cb);
+        about_a += db * db * area_cell; // bending about the `a` axis
+        about_b += da * da * area_cell;
+        product -= da * db * area_cell;
+    }
+    let tensor = Matrix2::new(about_a, product, product, about_b);
+    let eig2 = tensor.symmetric_eigen();
+    let (weak, strong) = if eig2.eigenvalues[0] <= eig2.eigenvalues[1] {
+        (0, 1)
+    } else {
+        (1, 0)
+    };
+    let i_min = eig2.eigenvalues[weak];
+    // The extreme fibre is measured across the NEUTRAL axis of the weak
+    // bending mode, which is the strong principal direction.
     //
-    // ⚠ Adaptive, because even min-span/12 misses a thin enough wall. It
-    // halves until it has points or reaches the caller's cell, which bounds
-    // the work: a member that truly cannot be sampled costs four extra passes,
-    // not an unbounded search.
+    // ⚠⚠ **Plus half a cell, and that half cell is not a fudge.** A sample
+    // stands for the CELL around it, so the outermost sample's material
+    // reaches half a cell further out than its centre. Measuring to the centre
+    // biases `Z` high by exactly `(n + 1) / n` on a rectangle — one-sided, and
+    // high means a member reads LESS stressed than it is, which is the wrong
+    // direction for a screen. Carrying the half cell turns that into a
+    // `1 - 1/n²` shortfall: an order smaller, and conservative.
+    let neutral = eig2.eigenvectors.column(strong);
+    let c = cell_pts
+        .iter()
+        .map(|&(a, b)| (a - ca).mul_add(neutral[0], (b - cb) * neutral[1]).abs())
+        .fold(0.0_f64, f64::max)
+        + cell_mm / 2.0;
+    if c <= 0.0 {
+        return None;
+    }
+    Some((i_min / c, axis))
+}
+
+/// What the coarse interior pass found: where the section sits and how far it
+/// reaches off the axis.
+struct Coarse {
+    reach: f64,
+}
+
+/// Find the member's own long axis and centroid by sampling its interior.
+///
+/// ⛔⛔ **The step is set by the member's SMALLEST span, not its largest.**
+/// Scaling it to the longest dimension is the obvious thing and it is wrong: a
+/// 2300 mm chassis rail of 31.75 mm tube then gets probed every 96 mm, lands
+/// inside a 2 mm wall essentially never, and the whole member is dropped for
+/// want of eight interior points. The step has to resolve the SECTION, and the
+/// section lives on the short axes.
+///
+/// ⚠ Adaptive, because even min-span/12 misses a thin enough wall. It halves
+/// until it has points or reaches the caller's cell, which bounds the work: a
+/// member that truly cannot be sampled costs four extra passes, not an
+/// unbounded search.
+fn long_axis_and_centroid(
+    solid: &cf_design::Solid,
+    cell_mm: f64,
+) -> Option<(Vector3<f64>, Vector3<f64>, Coarse)> {
+    let bounds = solid.bounds()?;
+    let (lo, hi) = (bounds.min, bounds.max);
     let span = hi - lo;
     let min_span = span.x.min(span.y).min(span.z);
     let mut coarse = (min_span / 12.0).max(cell_mm);
     let mut pts: Vec<Vector3<f64>> = Vec::new();
     for _ in 0..5 {
         pts.clear();
-        let mut walk = lo.z + coarse * 0.5;
-        while walk < hi.z {
-            let mut y = lo.y + coarse * 0.5;
-            while y < hi.y {
-                let mut x = lo.x + coarse * 0.5;
-                while x < hi.x {
-                    let p = Vector3::new(x, y, walk);
+        let (nx, ny, nz) = (
+            steps_across(span.x, coarse),
+            steps_across(span.y, coarse),
+            steps_across(span.z, coarse),
+        );
+        for iz in 0..nz {
+            let z = (as_f64(iz) + 0.5).mul_add(coarse, lo.z);
+            for iy in 0..ny {
+                let y = (as_f64(iy) + 0.5).mul_add(coarse, lo.y);
+                for ix in 0..nx {
+                    let x = (as_f64(ix) + 0.5).mul_add(coarse, lo.x);
+                    let p = Vector3::new(x, y, z);
                     if solid.evaluate(&Point3::from(p)) < 0.0 {
                         pts.push(p);
                     }
-                    x += coarse;
                 }
-                y += coarse;
             }
-            walk += coarse;
         }
         if pts.len() >= 64 || coarse <= cell_mm {
             break;
@@ -375,33 +530,17 @@ fn section_modulus(solid: &cf_design::Solid, cell_mm: f64) -> Option<(f64, Vecto
         return None;
     }
 
-    let centroid = pts.iter().sum::<Vector3<f64>>() / pts.len() as f64;
+    let count = as_f64(pts.len());
+    let centroid = pts.iter().sum::<Vector3<f64>>() / count;
     let mut cov = Matrix3::zeros();
     for p in &pts {
         let d = p - centroid;
         cov += d * d.transpose();
     }
     let eig = cov.symmetric_eigen();
-    let long = (0..3).max_by(|&a, &b| eig.eigenvalues[a].total_cmp(&eig.eigenvalues[b]))?;
+    let long = (0..3).max_by(|&lhs, &rhs| eig.eigenvalues[lhs].total_cmp(&eig.eigenvalues[rhs]))?;
     let axis = Vector3::from(eig.eigenvectors.column(long)).normalize();
 
-    // An orthonormal basis across the section.
-    let seed = if axis.x.abs() < 0.9 {
-        Vector3::x()
-    } else {
-        Vector3::y()
-    };
-    let u = axis.cross(&seed).normalize();
-    let v = axis.cross(&u).normalize();
-
-    // Sample the plane through the centroid, normal to the long axis.
-    //
-    // ⚠ **The half-extent comes from the coarse points, not from the body.**
-    // Using the body diagonal is "safe" and ruinous: a 2300 mm rail would have
-    // its section sampled over a 2300 x 2300 mm plane at half a millimetre —
-    // 21 million evaluations to read a 31.75 mm tube. The section can be no
-    // wider than the material already found lying off the axis, plus a margin
-    // for what the coarse grid stepped over.
     let reach = pts
         .iter()
         .map(|p| {
@@ -410,60 +549,43 @@ fn section_modulus(solid: &cf_design::Solid, cell_mm: f64) -> Option<(f64, Vecto
         })
         .fold(0.0_f64, f64::max)
         + coarse * 2.0;
-    let area_cell = cell_mm * cell_mm;
-    let mut sum = Vector3::zeros();
-    let mut cell_pts: Vec<(f64, f64)> = Vec::new();
-    let mut a = -reach;
-    while a <= reach {
-        let mut b = -reach;
-        while b <= reach {
-            let p = centroid + u * a + v * b;
-            if solid.evaluate(&Point3::from(p)) < 0.0 {
-                cell_pts.push((a, b));
-                sum += Vector3::new(a, b, 0.0);
-            }
-            b += cell_mm;
-        }
-        a += cell_mm;
-    }
-    if cell_pts.len() < 4 {
-        return None;
-    }
+    Some((centroid, axis, Coarse { reach }))
+}
 
-    let n = cell_pts.len() as f64;
-    let (ca, cb) = (sum.x / n, sum.y / n);
-    let (mut i_aa, mut i_bb, mut i_ab) = (0.0, 0.0, 0.0);
-    for &(a, b) in &cell_pts {
-        let (da, db) = (a - ca, b - cb);
-        i_aa += db * db * area_cell; // bending about the `a` axis
-        i_bb += da * da * area_cell;
-        i_ab -= da * db * area_cell;
+/// A count as a float.
+///
+/// Every `usize` reaching this is a tally of sample points, and `usize -> f64`
+/// is exact below 2^53. A grid that reached nine quadrillion points would have
+/// exhausted memory many orders before it lost a bit of mantissa — so the cast
+/// is lossless in every reachable case, and this is the one place that says so
+/// rather than eight `#[allow]`s that do not.
+// The reachability argument above is the justification; see the doc comment.
+#[allow(clippy::cast_precision_loss)]
+const fn as_f64(n: usize) -> f64 {
+    n as f64
+}
+
+/// How many whole steps of `step` span `extent`, at least one.
+///
+/// ⚠ An integer count, deliberately. Walking a float cursor with `while x < hi`
+/// accumulates rounding across thousands of steps and makes the sample grid
+/// depend on where the body happens to sit.
+fn steps_across(extent: f64, step: f64) -> usize {
+    if !extent.is_finite() || !step.is_finite() || step <= 0.0 || extent <= 0.0 {
+        return 1;
     }
-    let tensor = Matrix2::new(i_aa, i_ab, i_ab, i_bb);
-    let eig2 = tensor.symmetric_eigen();
-    let (weak, strong) = if eig2.eigenvalues[0] <= eig2.eigenvalues[1] {
-        (0, 1)
-    } else {
-        (1, 0)
-    };
-    let i_min = eig2.eigenvalues[weak];
-    // The extreme fibre is measured across the NEUTRAL axis of the weak
-    // bending mode, which is the strong principal direction.
-    let neutral = eig2.eigenvectors.column(strong);
-    let c = cell_pts
-        .iter()
-        .map(|&(a, b)| ((a - ca) * neutral[0] + (b - cb) * neutral[1]).abs())
-        .fold(0.0_f64, f64::max);
-    if c <= 0.0 {
-        return None;
-    }
-    Some((i_min / c, axis))
+    // The guard above rules out the negative and non-finite quotients; what is
+    // left is a positive finite number whose `ceil()` is a whole value, and a
+    // step count that overflowed usize would have exhausted memory first.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let n = (extent / step).ceil() as usize;
+    n.max(1)
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use cf_design::{JointDef, JointKind, Material, Part, Solid};
 
@@ -536,6 +658,114 @@ mod tests {
         loads.members.into_iter().find(|l| l.part == "arm").unwrap()
     }
 
+    /// ★★★ **The only gate here that pins an ABSOLUTE stress**, and the reason
+    /// it exists: every other one is relative — more mass is more stress,
+    /// double the g and the stress doubles — and a screen can satisfy all of
+    /// them while being wrong by a constant factor. A tenfold gravity error, a
+    /// thousandfold mm-versus-metre slip of exactly the kind this repo has
+    /// already been bitten by, and a centre of mass averaged instead of
+    /// mass-weighted each pass every relative check in this file.
+    ///
+    /// Worked by hand, independently of the code:
+    ///
+    /// ```text
+    /// section   25.4 x 2.0 tube -> Z = pi(25.4^4 - 21.4^4)/(32 x 25.4)
+    ///                                = 798.169 mm^3
+    /// masses    1 kg at x=100, 9 kg at x=900
+    /// com       (1x100 + 9x900)/10 = 820 mm      <- WEIGHTED, not 500
+    /// load      10 kg x 9.81 m/s^2 = 98.10 N
+    /// moment    98.10 N x 820 mm   = 80 442 N.mm
+    /// stress    80 442 / 798.169   = 100.78 MPa
+    /// ```
+    ///
+    /// ⚠ The sampled `Z` runs a little under the closed form by construction —
+    /// see the direction assertion in
+    /// [`a_section_modulus_matches_the_closed_form_for_a_tube`] — so the
+    /// measured stress sits a little ABOVE 100.78. The tolerance covers that
+    /// and nothing like a factor.
+    #[test]
+    fn the_stress_of_a_hand_computed_cantilever_comes_out_right() {
+        let m = Mechanism::builder("t")
+            .part(tube("base", 25.4, 2.0, "steel"))
+            .part(tube("arm", 25.4, 2.0, "steel"))
+            .part(tube("tip", 25.4, 2.0, "steel"))
+            .joint(JointDef::new(
+                "j1",
+                "base",
+                "arm",
+                JointKind::Revolute,
+                Point3::origin(),
+                Vector3::y(),
+            ))
+            .joint(JointDef::new(
+                "j2",
+                "arm",
+                "tip",
+                JointKind::Fixed,
+                Point3::origin(),
+                Vector3::y(),
+            ))
+            .build();
+        let origins = Origins::from([
+            ("base".to_owned(), Vector3::zeros()),
+            ("arm".to_owned(), Vector3::zeros()),
+            ("tip".to_owned(), Vector3::new(900.0, 0.0, 0.0)),
+        ]);
+        let masses = MassMap::from([
+            (
+                "base".to_owned(),
+                MassPoint {
+                    kg: 1.0,
+                    world_com_mm: Vector3::zeros(),
+                },
+            ),
+            (
+                "arm".to_owned(),
+                MassPoint {
+                    kg: 1.0,
+                    world_com_mm: Vector3::new(100.0, 0.0, 0.0),
+                },
+            ),
+            (
+                "tip".to_owned(),
+                MassPoint {
+                    kg: 9.0,
+                    world_com_mm: Vector3::new(900.0, 0.0, 0.0),
+                },
+            ),
+        ]);
+
+        // ⚠ A finer cell than the 0.5 mm default, on purpose. At 0.5 the
+        // sampled `Z` runs about 2% under the closed form and the comparison
+        // goes slack; at 0.25 it is inside half a percent, which leaves the
+        // tolerance below tight enough to catch a real scale error rather than
+        // merely a gross one.
+        let mut case = LoadCase::static_1g();
+        case.section_cell_mm = 0.25;
+        let arm = arm_of(member_loads(&m, &origins, &masses, &case));
+        assert!(
+            (arm.supported_kg - 10.0).abs() < 1e-9,
+            "supported {} kg, hand figure 10",
+            arm.supported_kg
+        );
+        assert!(
+            (arm.lever_mm - 820.0).abs() < 1e-6,
+            "lever {:.3} mm, hand figure 820 — an UNWEIGHTED mean would read 500",
+            arm.lever_mm
+        );
+        assert!(
+            (arm.load_n - 98.10).abs() < 1e-6,
+            "load {:.4} N, hand figure 98.10",
+            arm.load_n
+        );
+        let want = 100.783;
+        assert!(
+            (arm.stress_mpa - want).abs() < want * 0.02,
+            "stress {:.3} MPa against a hand-computed {want:.3}",
+            arm.stress_mpa
+        );
+    }
+
     /// The instrument, against arithmetic it cannot influence.
     #[test]
     fn a_section_modulus_matches_the_closed_form_for_a_tube() {
@@ -546,8 +776,16 @@ mod tests {
         let id: f64 = od - 2.0 * wall;
         let exact = std::f64::consts::PI * (od.powi(4) - id.powi(4)) / (32.0 * od);
         assert!(
-            (z - exact).abs() < exact * 0.05,
+            (z - exact).abs() < exact * 0.02,
             "sampled Z {z:.1}, closed form {exact:.1}"
+        );
+        // ★★ The DIRECTION, not just the magnitude. A screen that reads Z high
+        // reports a member as less stressed than it is, which is the one error
+        // a screen must not make. Measuring the extreme fibre to the outer edge
+        // of the outermost cell rather than its centre is what buys this.
+        assert!(
+            z <= exact * 1.001,
+            "Z came out ABOVE the closed form ({z:.2} vs {exact:.2})"
         );
         assert!(
             axis.z.abs() > 0.99,
@@ -579,8 +817,12 @@ mod tests {
         let id: f64 = od - 2.0 * wall;
         let exact = std::f64::consts::PI * (od.powi(4) - id.powi(4)) / (32.0 * od);
         assert!(
-            (z - exact).abs() < exact * 0.08,
+            (z - exact).abs() < exact * 0.03,
             "a 72:1 tube sampled Z {z:.1} against {exact:.1}"
+        );
+        assert!(
+            z <= exact * 1.001,
+            "Z above the closed form: {z:.2}/{exact:.2}"
         );
         assert!(axis.z.abs() > 0.99, "long axis should be z, got {axis:?}");
     }
@@ -600,9 +842,111 @@ mod tests {
             screen.members
         );
         assert!(
-            screen.unsampled.contains(&"arm".to_owned()),
+            screen.unmeasured.iter().any(|u| u.part == "arm"),
             "the unmeasured member must be named, got {:?}",
-            screen.unsampled
+            screen.unmeasured
+        );
+    }
+
+    /// ⛔ A member the caller never placed. Silently dropping it shrinks the
+    /// denominator as well as the numerator, so the header reads clean.
+    #[test]
+    fn a_member_missing_from_origins_is_named_not_dropped() {
+        let (m, mut origins, masses) = fixture(Vector3::new(500.0, 0.0, 0.0));
+        origins.remove("arm");
+        let screen = member_loads(&m, &origins, &masses, &LoadCase::static_1g());
+        assert!(
+            !screen.members.iter().any(|l| l.part == "arm"),
+            "unplaceable member was scored anyway"
+        );
+        assert!(
+            screen
+                .unmeasured
+                .iter()
+                .any(|u| u.part == "arm" && u.why == Unmeasured::NoOrigin),
+            "got {:?}",
+            screen.unmeasured
+        );
+    }
+
+    /// ⛔⛔ The dangerous one: a member whose CHILD has no mass is still
+    /// perfectly measurable, and its number would look entirely ordinary while
+    /// being short by whatever the child weighs.
+    #[test]
+    fn a_member_whose_subtree_is_missing_a_mass_is_withheld_not_understated() {
+        let reach = Vector3::new(500.0, 0.0, 0.0);
+        let (m, origins, mut gappy) = fixture(reach);
+        let whole = member_loads(&m, &origins, &gappy, &LoadCase::static_1g())
+            .members
+            .into_iter()
+            .find(|l| l.part == "arm")
+            .unwrap();
+
+        gappy.remove("tip"); // the 10 kg at the end of the lever
+        let screen = member_loads(&m, &origins, &gappy, &LoadCase::static_1g());
+
+        assert!(
+            !screen.members.iter().any(|l| l.part == "arm"),
+            "arm was scored against a subtree the map does not cover: {:?}",
+            screen.members
+        );
+        assert!(
+            screen
+                .unmeasured
+                .iter()
+                .any(|u| u.part == "arm" && u.why == Unmeasured::IncompleteSubtree),
+            "got {:?}",
+            screen.unmeasured
+        );
+        // What the old behaviour would have reported, for the record: the arm
+        // carrying its own kilogram instead of eleven.
+        assert!(
+            whole.supported_kg > 10.0,
+            "fixture no longer loads the arm through its child"
+        );
+    }
+
+    /// ⚠ `NaN > 1.0` is false, so a `NaN` utilisation reads as "not over yield"
+    /// at every call site. Withheld, not reported.
+    #[test]
+    fn a_non_finite_mass_is_withheld_rather_than_scored_as_nan() {
+        let (m, origins, mut masses) = fixture(Vector3::new(500.0, 0.0, 0.0));
+        masses.get_mut("tip").unwrap().kg = f64::NAN;
+        let screen = member_loads(&m, &origins, &masses, &LoadCase::static_1g());
+        assert!(
+            !screen
+                .members
+                .iter()
+                .any(|l| l.stress_mpa.is_nan() || l.utilisation.is_some_and(f64::is_nan)),
+            "a NaN reached the members list: {:?}",
+            screen.members
+        );
+        assert!(
+            screen
+                .unmeasured
+                .iter()
+                .any(|u| u.why == Unmeasured::NotFinite),
+            "got {:?}",
+            screen.unmeasured
+        );
+    }
+
+    /// A weightless subtree is named too — it is not a member that passed.
+    #[test]
+    fn a_member_carrying_no_mass_at_all_is_named() {
+        let (m, origins, mut masses) = fixture(Vector3::new(500.0, 0.0, 0.0));
+        for v in masses.values_mut() {
+            v.kg = 0.0;
+        }
+        let screen = member_loads(&m, &origins, &masses, &LoadCase::static_1g());
+        assert!(screen.members.is_empty(), "{:?}", screen.members);
+        assert!(
+            screen
+                .unmeasured
+                .iter()
+                .any(|u| u.why == Unmeasured::NoMass),
+            "got {:?}",
+            screen.unmeasured
         );
     }
 
@@ -616,7 +960,7 @@ mod tests {
         let weak = 40.0 * 10.0_f64.powi(3) / 12.0 / 5.0;
         let strong = 10.0 * 40.0_f64.powi(3) / 12.0 / 20.0;
         assert!(
-            (z - weak).abs() < weak * 0.06,
+            (z - weak).abs() < weak * 0.01,
             "got {z:.1}; weak axis is {weak:.1}, strong is {strong:.1}"
         );
     }
@@ -636,12 +980,11 @@ mod tests {
     #[test]
     fn a_member_carrying_more_mass_is_more_stressed() {
         let reach = Vector3::new(500.0, 0.0, 0.0);
-        let (m, origins, masses) = fixture(reach);
+        let (m, origins, mut masses) = fixture(reach);
         let light = arm_of(member_loads(&m, &origins, &masses, &LoadCase::static_1g())).stress_mpa;
 
-        let mut heavier = masses.clone();
-        heavier.get_mut("tip").unwrap().kg = 100.0;
-        let heavy = arm_of(member_loads(&m, &origins, &heavier, &LoadCase::static_1g())).stress_mpa;
+        masses.get_mut("tip").unwrap().kg = 100.0;
+        let heavy = arm_of(member_loads(&m, &origins, &masses, &LoadCase::static_1g())).stress_mpa;
 
         assert!(
             heavy > light * 5.0,

@@ -1770,34 +1770,41 @@ mod tests {
     #[test]
     fn the_bearing_bore_runs_right_through_the_upright() {
         let t = trike().unwrap();
-        let upright = t
-            .mechanism
-            .parts()
-            .iter()
-            .find(|p| p.name() == "upright_l")
-            .unwrap();
-        let solid = upright.solid();
-        let wheel_y = KINGPIN_OFFSET_MM;
-        let wheel_z = FRONT_RADIUS_MM - LOWER_BALL_Z_MM;
+        // ⛔ BOTH, and that is not symmetry-for-its-own-sake. The uprights are
+        // two calls to `front_upright(sign)` and nothing else in this crate or
+        // in the example ever reads the right one's geometry: building it with
+        // the LEFT hand's sign passed all twelve tests here and every oracle
+        // downstream. A mirrored part is a different part.
+        for (name, sign) in [("upright_l", 1.0_f64), ("upright_r", -1.0_f64)] {
+            let upright = t
+                .mechanism
+                .parts()
+                .iter()
+                .find(|p| p.name() == name)
+                .unwrap();
+            let solid = upright.solid();
+            let wheel_y = sign * KINGPIN_OFFSET_MM;
+            let wheel_z = FRONT_RADIUS_MM - LOWER_BALL_Z_MM;
 
-        // Along the axle, from one face of the boss to the other: all air.
-        for k in -10..=10 {
-            let y = wheel_y + f64::from(k) / 10.0 * BEARING_BOSS_HALF_MM;
-            let at = Point3::new(0.0, y, wheel_z);
-            assert!(
-                solid.evaluate(&at) > 0.0,
-                "the bore is blocked at y {y:.1} — it is a pocket, not a bore"
-            );
-        }
+            // Along the axle, from one face of the boss to the other: all air.
+            for k in -10..=10 {
+                let y = sign.mul_add(f64::from(k) / 10.0 * BEARING_BOSS_HALF_MM, wheel_y);
+                let at = Point3::new(0.0, y, wheel_z);
+                assert!(
+                    solid.evaluate(&at) > 0.0,
+                    "{name}: the bore is blocked at y {y:.1} — a pocket, not a bore"
+                );
+            }
 
-        // And a ring of metal around it, or the bore has eaten the housing.
-        let mid_r = f64::midpoint(BEARING_BORE_R_MM, BEARING_BOSS_R_MM);
-        for (dx, dz) in [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
-            let at = Point3::new(dx * mid_r, wheel_y, wheel_z + dz * mid_r);
-            assert!(
-                solid.evaluate(&at) < 0.0,
-                "no metal at {at:?} — the housing is a rim of nothing"
-            );
+            // And a ring of metal around it, or the bore has eaten the housing.
+            let mid_r = f64::midpoint(BEARING_BORE_R_MM, BEARING_BOSS_R_MM);
+            for (dx, dz) in [(1.0_f64, 0.0_f64), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
+                let at = Point3::new(dx * mid_r, wheel_y, dz.mul_add(mid_r, wheel_z));
+                assert!(
+                    solid.evaluate(&at) < 0.0,
+                    "{name}: no metal at {at:?} — the housing is a rim of nothing"
+                );
+            }
         }
     }
 

@@ -17,3 +17,6 @@ tier = "L0"
 # The assembly these checks read. Nothing here knows what the assembly IS.
 cf-design = { workspace = true }
 nalgebra = { workspace = true }
+
+[lints]
+workspace = true

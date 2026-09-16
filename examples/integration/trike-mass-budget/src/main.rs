@@ -154,6 +154,50 @@ const SIM_STEPS: usize = 50;
 const MAX_WELD_DRIFT_MM: f64 = 0.01;
 /// Full steering lock, in degrees — the range `upright_*` is given in radians.
 const STEER_LOCK_DEG: f64 = 34.0;
+/// Pairs that are SUPPOSED to share space, the share measured when each was
+/// allowed, and why it is not a defect.
+///
+/// ⛔⛔ **An allowance, not a blanket.** `MAX_NODE_OVERLAP` was calibrated on a
+/// scan that could not see `seat_pan` at all — the 6 mm panel meshed to nothing
+/// at the 6 mm probe the example then used — so "deepest 5.9%" was a statement
+/// about what the probe could read, not about the vehicle. With a probe that
+/// resolves the pan, two pairs sit above the threshold and both are legitimate:
+/// the crate's own doc says a rider's torso and thigh are *supposed* to overlap
+/// at the hip, and two members are supposed to meet at a node.
+///
+/// ⚠ Each is PINNED. A new pair going over fires, an allowed one getting worse
+/// fires, and an allowed one that is no longer over fires too — a stale
+/// allowance is how a list like this decays back into a blanket.
+const ALLOWED_OVERLAPS: &[(&str, &str, f64, &str)] = &[
+    (
+        "seat_pan",
+        "rider_torso",
+        0.297,
+        "a torso stands in as a 170 mm capsule, which engulfs part of a 6 mm \
+         pan without the rider being inside the seat — the pose is checked \
+         properly by cf-trike's share_behind gates, which measure which SIDE \
+         of the panel face the body is on",
+    ),
+    (
+        "arm_upper_l_aft",
+        "upright_l",
+        0.061,
+        "they meet at the upper ball joint: two hops apart in the graph, \
+         adjacent by construction",
+    ),
+    (
+        "arm_upper_r_aft",
+        "upright_r",
+        0.056,
+        "the mirror of the pair above. ⚠ BOTH are declared even though only \
+         the left currently reads over the threshold — they measure 6.05% and \
+         5.53%, straddling it. The geometry is mirrored; what differs is where \
+         the probe grid happens to land on each solid, and leaving the right \
+         one undeclared would let that noise decide whether the gate fires",
+    ),
+];
+/// How much worse an allowed overlap may get before the gate fires.
+const ALLOWED_OVERLAP_DRIFT: f64 = 0.15;
 /// Where the architecture wants the centre of gravity, longitudinally.
 ///
 /// ★ 55 % of the wheelbase back from the front axle — the Porsche-balanced
@@ -165,7 +209,7 @@ const TARGET_CG_Z_M: f64 = 0.240;
 /// Mesh tolerance for the steering-clash probe.
 const STEER_PROBE_MM: f64 = 6.0;
 /// Mesh tolerance for the interpenetration scan.
-const PAIR_PROBE_MM: f64 = 6.0;
+const PAIR_PROBE_MM: f64 = 5.0;
 /// What share of a part may be inside another and still count as node contact.
 ///
 /// ★ **Extent is the discriminator, not adjacency** — measured on this
@@ -224,11 +268,17 @@ const AL_6061_YIELD_MPA: f64 = 276.0;
 /// ⚠ Read `seat_back_rail_left` as about half what it says. The joint tree
 /// hands the whole driver to whichever rail is the parent and the other reads
 /// zero; two rails carry him between them.
+///
+/// ⚠ These moved 1.5-9% when the section sampler stopped reading `Z` high —
+/// the extreme fibre now reaches the outer edge of the outermost sample cell
+/// rather than its centre, which makes the screen conservative and every
+/// utilisation here slightly larger. Re-pinned to what was measured, because a
+/// pin that merely survives its own tolerance band is not a pin.
 const ACCEPTED_OVER_YIELD: &[(&str, f64)] = &[
-    ("swingarm", 6.654),
-    ("seat_back_rail_left", 5.230),
-    ("seat_cross", 1.891),
-    ("seat_back", 1.350),
+    ("swingarm", 6.785),
+    ("seat_back_rail_left", 5.336),
+    ("seat_cross", 1.929),
+    ("seat_back", 1.472),
 ];
 /// How much worse an accepted member may get before the gate fires.
 ///
@@ -787,9 +837,37 @@ fn main() -> Result<()> {
         if probe.vertices.is_empty() {
             bail!("the front tyre meshed to nothing at {STEER_PROBE_MM} mm");
         }
+        // ⛔⛔ **The member list was two parts the tyre cannot reach.** It read
+        // `frame_cross` and `frame_diag_l` only, and the arithmetic forbids a
+        // clash with either at ANY angle: the kingpin sits at y = 815, the
+        // tyre's 310 mm radius sweeps inboard no further than y = 505, and the
+        // outermost thing those members touch is the 380 mm pickup line. That
+        // is 125 mm no steering angle can close — so the sweep was silent at
+        // full lock and silent at 180 degrees alike, and silence was the only
+        // answer it could give.
+        //
+        // What the steered wheel CAN reach is what runs out into its swept
+        // zone: the wishbones and the tower, which span from the pickups out
+        // to the upright the tyre is mounted on.
+        //
+        // ⚠⚠ Only parts that HOLD STILL under steering, which is a shorter list
+        // than it looks. `rim_fl`, `tyre_fl` and `steer_arm_l` ride on the
+        // upright. And the TIE ROD is pulled along by the steer arms — adding
+        // it here reported the tyre entering it at -34 deg, which is an
+        // artefact of comparing a turned wheel against an unturned rod, not a
+        // clash. The wishbones and towers are the genuine article: the upright
+        // rotates about the kingpin relative to them, so their resting pose IS
+        // where they are at lock.
         for lock_deg in [STEER_LOCK_DEG, -STEER_LOCK_DEG] {
             let rot = UnitQuaternion::from_axis_angle(&kingpin_axis, lock_deg.to_radians());
-            for member in ["frame_cross", "frame_diag_l"] {
+            for member in [
+                "frame_cross",
+                "frame_diag_l",
+                "tower_l",
+                "arm_lower_l",
+                "arm_upper_l",
+                "arm_upper_l_aft",
+            ] {
                 let fixed = by_name
                     .get(member)
                     .ok_or_else(|| anyhow::anyhow!("no member {member}"))?;
@@ -805,7 +883,10 @@ fn main() -> Result<()> {
                 }
             }
         }
-        println!("steering sweeps +/-{STEER_LOCK_DEG:.0} deg clear of the frame");
+        println!(
+            "steering sweeps +/-{STEER_LOCK_DEG:.0} deg clear of the frame, towers \
+             and wishbones"
+        );
     }
 
     // ── Oracle 1g: nothing occupies the same space as anything else ─
@@ -819,33 +900,88 @@ fn main() -> Result<()> {
     // ⚠ Lives in `cf-assembly-checks` and knows nothing about vehicles.
     {
         let found = cf_assembly_checks::overlapping_pairs(&mechanism, &origins, PAIR_PROBE_MM);
+        // ⛔⛔ Ask what the scan could NOT read before reading what it found. A
+        // part that meshes to no probe points contributes nothing to every
+        // pair it is in, so it cannot be reported as overlapping anything and
+        // its silence is indistinguishable from innocence.
+        if !found.unreadable.is_empty() {
+            bail!(
+                "the interpenetration scan could not read {} part(s) at a \
+                 {PAIR_PROBE_MM} mm probe, so they were invisible to every \
+                 comparison it made: {}",
+                found.unreadable.len(),
+                found.unreadable.join(", ")
+            );
+        }
         let bulk: Vec<_> = found
+            .pairs
             .iter()
             .filter(|o| o.fraction > MAX_NODE_OVERLAP)
             .collect();
-        println!(
-            "{} part pairs touch without being joined; deepest {:.1}% of {}",
-            found.len(),
-            found.first().map_or(0.0, |o| o.fraction) * 100.0,
-            found.first().map_or("none", |o| o.a.as_str()),
-        );
-        if !bulk.is_empty() {
+        let allowance = |a: &str, b: &str| {
+            ALLOWED_OVERLAPS
+                .iter()
+                .find(|(x, y, _, _)| (*x == a && *y == b) || (*x == b && *y == a))
+        };
+        let mut objections: Vec<String> = Vec::new();
+        for o in &bulk {
+            match allowance(&o.a, &o.b) {
+                None => objections.push(format!(
+                    "{} <-> {}: {:.1}% of one is inside the other ({} points), and \
+                     nothing declares that legitimate",
+                    o.a,
+                    o.b,
+                    o.fraction * 100.0,
+                    o.points
+                )),
+                Some((_, _, was, _)) if o.fraction > was * (1.0 + ALLOWED_OVERLAP_DRIFT) => {
+                    objections.push(format!(
+                        "{} <-> {} was allowed at {:.1}% and is now {:.1}%",
+                        o.a,
+                        o.b,
+                        was * 100.0,
+                        o.fraction * 100.0
+                    ));
+                }
+                Some(_) => {}
+            }
+        }
+        // ⚠ Staleness is "no longer NEAR the threshold", not "no longer over
+        // it". A declared pair that straddles — the two upper wishbone mirrors
+        // read 6.05% and 5.53% against a 6% line — is still legitimately
+        // declared, and demanding it stay strictly over would make the gate
+        // fire on probe noise. What is genuinely stale is a pair that has
+        // dropped clear of the threshold or left the scan altogether.
+        for (a, b, was, _) in ALLOWED_OVERLAPS {
+            let current = found
+                .pairs
+                .iter()
+                .find(|o| (o.a == *a && o.b == *b) || (o.a == *b && o.b == *a));
+            match current {
+                None => objections.push(format!(
+                    "{a} <-> {b} is declared but the scan no longer reports the pair \
+                     at all — take it out of the allowance list"
+                )),
+                Some(o) if o.fraction < MAX_NODE_OVERLAP / 2.0 => objections.push(format!(
+                    "{a} <-> {b} is allowed at {:.1}% and now reads {:.1}%, clear of \
+                     the {:.1}% line — take it out of the allowance list",
+                    was * 100.0,
+                    o.fraction * 100.0,
+                    MAX_NODE_OVERLAP * 100.0
+                )),
+                Some(_) => {}
+            }
+        }
+        if !objections.is_empty() {
             bail!(
-                "these pairs interpenetrate rather than meeting at a node:\n  {}",
-                bulk.iter()
-                    .map(|o| {
-                        format!(
-                            "{} <-> {}: {:.1}% of one is inside the other ({} points)",
-                            o.a,
-                            o.b,
-                            o.fraction * 100.0,
-                            o.points
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n  ")
+                "the interpenetration scan moved:\n  {}",
+                objections.join("\n  ")
             );
         }
+        println!(
+            "  {} declared overlap(s) allowed and pinned",
+            ALLOWED_OVERLAPS.len()
+        );
     }
 
     // ── Oracle 1f: the suspension moves without hitting anything ────
@@ -1229,7 +1365,7 @@ fn main() -> Result<()> {
         println!(
             "\nmember screen at {BUMP_G:.0} g — {} of {} members measured, {over} past yield",
             screen.members.len(),
-            screen.members.len() + screen.unsampled.len()
+            screen.members.len() + screen.unmeasured.len()
         );
         for l in screen.members.iter().take(8) {
             let verdict = match l.utilisation {
@@ -1272,12 +1408,17 @@ fn main() -> Result<()> {
         // members were being dropped for want of interior sample points, the
         // chassis rail and both swingarms among them, while the header counted
         // only the survivors and looked clean.
-        if !screen.unsampled.is_empty() {
+        if !screen.unmeasured.is_empty() {
+            let who: Vec<String> = screen
+                .unmeasured
+                .iter()
+                .map(|u| format!("{} ({:?})", u.part, u.why))
+                .collect();
             bail!(
                 "the member screen could not measure {} of {} members: {}",
-                screen.unsampled.len(),
-                screen.members.len() + screen.unsampled.len(),
-                screen.unsampled.join(", ")
+                screen.unmeasured.len(),
+                screen.members.len() + screen.unmeasured.len(),
+                who.join(", ")
             );
         }
     }
