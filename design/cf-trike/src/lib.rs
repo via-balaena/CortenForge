@@ -1,9 +1,11 @@
 //! The reverse trike, as geometry.
 //!
 //! One vehicle expressed as a [`cf_design::Mechanism`]: a triangulated frame,
-//! a seat frame with a reclined back, direct steering, a swingarm, three
-//! wheels and a rider. Everything is welded except the seven joints that
-//! actually move, so the machine has twelve degrees of freedom.
+//! a seat frame with a reclined back, double wishbones on bushed pivots,
+//! direct steering, a swingarm, three wheels and a rider. Everything is welded
+//! except the twelve joints that actually move, which give the tree twenty-three
+//! degrees of freedom; three linkages close the wishbone loops and take nine
+//! back, so the machine has fourteen.
 //!
 //! This crate is the definition. What is done with it — a mass budget, an STL
 //! export, a simulation — belongs to whoever consumes it, which is why
@@ -123,12 +125,26 @@ const STEEL_KG_M3: f64 = 7850.0;
 /// 6061 — the front rims and the seat pan.
 const ALUMINIUM_KG_M3: f64 = 2700.0;
 /// A pneumatic tyre's casing is not solid rubber; this is the smeared density
-/// of the 16″ front tyre's annulus, not the density of rubber.
-const FRONT_TYRE_KG_M3: f64 = 420.0;
-/// The printed rear rim.
-const PLA_KG_M3: f64 = 1250.0;
-/// The cast rear tyre — `cf_cast::wheel::NOMINAL_PU_95A_DENSITY_KG_M3`.
-const PU_95A_KG_M3: f64 = 1050.0;
+/// of a tyre's whole annulus, not the density of rubber.
+///
+/// ⚠ **Calibrated against published masses, not chosen.** 280 kg/m³ puts the
+/// 235/40R17 at 10.2 kg and the 275/35R18 at 12.9 kg, against roughly 10.5 and
+/// 12.5 for a road performance tyre. One constant covers both because the two
+/// annuli differ by 6%.
+///
+/// ⚠ It replaced a 420 that had been smeared over a **16″** casing and survived
+/// the re-base, which put 15.3 kg on each front tyre.
+const TYRE_KG_M3: f64 = 280.0;
+/// Stand-in density for the rear rim, which is still a placeholder.
+///
+/// ⚠⚠ **`rim_r` is not a wheel.** It is `disc(228.6, 137.5)` — a solid slug the
+/// full width of the tyre — where each front rim is a 6 mm annulus on a hub.
+/// At this density it weighs 56.4 kg, the heaviest part in the vehicle, and a
+/// real 18″ wheel is nearer 13. Neither the density nor the material name is a
+/// manufacturing decision: an 18″ car wheel is not printed in PLA. Authoring
+/// the wheels is the next arc, and until then this number is a placeholder
+/// that the mass budget calls out rather than a figure to reason from.
+const REAR_RIM_PLACEHOLDER_KG_M3: f64 = 1250.0;
 /// Whole-body density of a person, near enough to water.
 const RIDER_KG_M3: f64 = 1010.0;
 
@@ -138,9 +154,9 @@ const RIDER_KG_M3: f64 = 1010.0;
 pub const WHEELBASE_MM: f64 = 2650.0;
 /// Centre to centre of the two front wheels.
 pub const TRACK_MM: f64 = 1750.0;
-/// 16″ front.
+/// Rolling radius of the 235/40R17 front, derived from its markings below.
 pub const FRONT_RADIUS_MM: f64 = FRONT_RIM_R_MM + FRONT_SECTION_MM * FRONT_ASPECT;
-/// 11″ rear — the polyurethane one.
+/// Rolling radius of the 275/35R18 rear, derived from its markings below.
 pub const REAR_RADIUS_MM: f64 = REAR_RIM_R_MM + REAR_SECTION_MM * REAR_ASPECT;
 
 /// Front tyre: **235/40R17**. Section width, millimetres.
@@ -263,7 +279,9 @@ const HIP_Z_MM: f64 = FRAME_Z_MM + FRAME_R_MM + SEAT_TUBE_OD_MM / 2.0 - WELD_OVE
 const PAN_LENGTH_MM: f64 = 250.0;
 /// Seat back length from the hip.
 const SEAT_BACK_LENGTH_MM: f64 = 500.0;
-/// Recline, measured from vertical. A cruiser sits up more than a racer.
+/// Recline, measured from vertical. Upright enough to see over the nose,
+/// reclined enough to keep the driver's mass low — which is the whole argument
+/// on a tadpole, where only the paired axle resists roll.
 const SEAT_BACK_ANGLE_DEG: f64 = 45.0;
 /// Steering arm: how far aft of the kingpin the tie rod picks up. Longer is
 /// lighter steering and less feedback.
@@ -897,8 +915,11 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
     // ── Steering ────────────────────────────────────────────────────
     //
     // Each upright carries an arm aft of its kingpin; a tie rod across the two
-    // arm ends makes the wheels turn together, and a bar from each upright
-    // reaches back to the rider's hands — direct steering, as a tadpole has.
+    // arm ends makes the wheels turn together.
+    //
+    // ⚠ Nothing yet reaches back to the driver. The bar that did was the
+    // handlebar pair, deleted in the hypercar re-base; a steering column and
+    // rack are not modelled, so the tie rod is the end of the chain.
     let steer_member = |a, b| tube_between(a, b, STEER_TUBE_OD_MM, STEER_TUBE_WALL_MM);
     // On the steering axis at the linkage height, so the steer arm picks up
     // where the upright actually turns.
@@ -976,7 +997,7 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
     );
     // Pedals keep their reach and rise from the hip, so lifting the rider
     // lifts them with it rather than stretching the leg.
-    let bottom_bracket = Point3::new(HIP_X_MM - leg_run, 0.0, rider_hip.z + LEG_RISE_MM);
+    let pedal_box = Point3::new(HIP_X_MM - leg_run, 0.0, rider_hip.z + LEG_RISE_MM);
     // ⚠ Clear of the seat back, not in it. This was the rail centreline, so a
     // 170 mm-radius torso was centred in the plane of the panel and half the
     // rider sat behind the seat. The masses and volumes were right throughout;
@@ -988,8 +1009,8 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
     let torso_at = (hip(0.0).coords + back_top(0.0).coords) / 2.0
         + back_normal
             * (SEAT_TUBE_OD_MM / 2.0 + SEAT_PANEL_HALF_MM + TORSO_RADIUS_MM - RIDER_SETTLE_MM);
-    let legs_at = (rider_hip.coords + bottom_bracket.coords) / 2.0;
-    let legs_dir = bottom_bracket - rider_hip;
+    let legs_at = (rider_hip.coords + pedal_box.coords) / 2.0;
+    let legs_dir = pedal_box - rider_hip;
 
     // ── The loop the tree cannot hold ───────────────────────────────
     //
@@ -1274,7 +1295,7 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
             kind: JointKind::Fixed,
             axis: Vector3::y(),
             range_rad: None,
-            material: Material::new("16in pneumatic tyre", FRONT_TYRE_KG_M3),
+            material: Material::new("235/40R17", TYRE_KG_M3),
             piece: onto_y(annulus(
                 FRONT_RADIUS_MM,
                 FRONT_RIM_OUTER_MM,
@@ -1290,7 +1311,7 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
             kind: JointKind::Fixed,
             axis: Vector3::y(),
             range_rad: None,
-            material: Material::new("16in pneumatic tyre", FRONT_TYRE_KG_M3),
+            material: Material::new("235/40R17", TYRE_KG_M3),
             piece: onto_y(annulus(
                 FRONT_RADIUS_MM,
                 FRONT_RIM_OUTER_MM,
@@ -1330,7 +1351,7 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
             kind: JointKind::Revolute,
             axis: Vector3::y(),
             range_rad: None,
-            material: Material::new("PLA", PLA_KG_M3),
+            material: Material::new("rear rim PLACEHOLDER", REAR_RIM_PLACEHOLDER_KG_M3),
             piece: onto_y(disc(REAR_RIM_OUTER_MM, REAR_WHEEL_HALF_WIDTH_MM)),
             cell_mm: 1.0,
             bushing: None,
@@ -1342,7 +1363,7 @@ fn plan() -> Result<(Vec<PartPlan>, Vec<LinkageDef>)> {
             kind: JointKind::Fixed,
             axis: Vector3::y(),
             range_rad: None,
-            material: Material::new("95A polyurethane", PU_95A_KG_M3),
+            material: Material::new("275/35R18", TYRE_KG_M3),
             piece: onto_y(annulus(
                 REAR_RADIUS_MM,
                 REAR_RIM_OUTER_MM,

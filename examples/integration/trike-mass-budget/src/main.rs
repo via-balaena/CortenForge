@@ -94,7 +94,24 @@ const WELDED_FRAME_MEMBERS: usize = 4;
 /// How far to move the heaviest item's centre of mass when probing how much
 /// of the answer is a choice rather than a measurement.
 const CG_PROBE_MM: f64 = 50.0;
-/// Polyurethane on asphalt, at the optimistic end of 0.6-1.0.
+/// Road performance tyre on dry asphalt.
+///
+/// ⚠⚠ **The verdict turns on this number, and 1.0 is the conservative end.**
+/// The machine slides before it tips only while µ stays under the rollover
+/// threshold, which the run prints beside it — so read the two together rather
+/// than trusting the verdict alone. A modern performance tyre runs 1.0-1.3 dry
+/// and a semi-slick goes past it, which makes "slides before it tips" a claim
+/// about the tyre as much as about the vehicle.
+///
+/// ⚠ Deliberately NOT restating the threshold here. A number copied into prose
+/// beside the code that computes it is a number that rots: an earlier draft of
+/// this very comment said 1.27, and correcting the tyre densities moved it to
+/// 1.40 in the same session.
+///
+/// ⚠ It read "polyurethane on asphalt, at the optimistic end of 0.6-1.0" until
+/// the re-base fitted real pneumatic tyres and left the justification behind.
+/// Same value, inverted meaning: 1.0 was the optimistic end for cast PU and is
+/// the pessimistic end for a road tyre.
 const TYRE_MU: f64 = 1.0;
 /// Default meshing tolerance for `--out`, in millimetres.
 ///
@@ -166,6 +183,17 @@ const MAX_NODE_OVERLAP: f64 = 0.06;
 /// Suspension travel swept for clashes, in degrees — the wishbones are given
 /// `+/-0.35 rad`, and this is that range in the units the message prints.
 const BUMP_TRAVEL_DEG: f64 = 20.0;
+/// Where the sweep was demonstrated FAILING, which is what makes it a gate.
+///
+/// ★★ **Re-demonstrated after the re-base, and that is the point.** It first
+/// failed here on the rideable trike's suspension. The re-base then replaced
+/// that suspension outright — ball separation 140 to 280 mm, both pivots
+/// raised — so the old witness proved nothing about the new geometry. Re-run
+/// at this angle it still fails, `arm_lower_l` entering `arm_upper_l`.
+///
+/// ⚠ A gate is vacuous until it has been made to fail, and a witness measured
+/// on geometry that has since changed is no better than never having one.
+const BUMP_FOUL_DEG: f64 = 30.0;
 /// Mesh tolerance for the weld-contact probe.
 const WELD_PROBE_MM: f64 = 2.0;
 
@@ -342,7 +370,7 @@ fn export_stls(
 
         // ⚠ Place it. A part's solid is in its OWN frame; where it sits is in
         // the joint anchors. Writing the mesh as-meshed puts every part on the
-        // origin, so opening the folder shows thirteen parts in a heap rather
+        // origin, so opening the folder shows every part in a heap rather
         // than a vehicle.
         let Some(&origin) = origins.get(part.name()) else {
             bail!("no world origin resolved for part {}", part.name());
@@ -374,7 +402,7 @@ fn export_stls(
     }
 
     // One file with the whole thing in it, so "look at the trike" is a
-    // single open rather than thirteen.
+    // single open rather than one per part.
     let whole = dir.join("trike_assembled.stl");
     mesh_io::save_stl(&assembly, &whole, true)
         .with_context(|| format!("writing {}", whole.display()))?;
@@ -898,7 +926,7 @@ fn main() -> Result<()> {
         println!(
             "suspension sweeps +/-{BUMP_TRAVEL_DEG:.0} deg clear \
              ({swept} arm-against-part checks; the wishbones foul each other \
-             by 30)"
+             at {BUMP_FOUL_DEG:.0} deg)"
         );
     }
 
@@ -1142,9 +1170,15 @@ fn main() -> Result<()> {
     let spec = TrikeSpec { masses, ..geometry };
     spec.assert_well_formed();
 
-    // ★ The second column is now the ARCHITECTURAL TARGET, not a stale guess:
-    // 700 kg at 45/55 with the centre of gravity at 240 mm is what the design
-    // is aiming for, so the gap between the columns is the work remaining.
+    // ★ The second column is the ARCHITECTURAL TARGET, not a stale guess:
+    // 785 kg at 45/55 with the centre of gravity at 240 mm is what the design
+    // is aiming for.
+    //
+    // ⚠ **The gap is not all work remaining.** Most of it is — no powertrain,
+    // battery, body or brakes are modelled. But part of it is work WRONG: the
+    // wheels are placeholders in both directions, `rim_r` a solid slug four
+    // times too heavy and each front rim a bare annulus four times too light.
+    // Closing the gap will move the derived column both ways.
     let typed = TrikeSpec {
         masses: vec![
             MassItem::new("target: sprung mass", 520.0, TARGET_CG_X_M, TARGET_CG_Z_M),
@@ -1182,13 +1216,13 @@ fn main() -> Result<()> {
     // and they are supposed to fire so the new numbers get read.
     let mut drifted: Vec<String> = Vec::new();
     for (label, got, want) in [
-        ("total mass (kg)", spec.total_mass_kg(), 250.529_923_465),
-        ("cg x (m)", spec.cg_x_m(), 1.280_271_555),
-        ("cg z (m)", spec.cg_z_m(), 0.355_432_882),
+        ("total mass (kg)", spec.total_mass_kg(), 204.875_148_168),
+        ("cg x (m)", spec.cg_x_m(), 1.107_198_711),
+        ("cg z (m)", spec.cg_z_m(), 0.362_993_549),
         (
             "rollover threshold (g)",
             rollover_threshold_g(&spec),
-            1.272_445_090,
+            1.403_373_478,
         ),
     ] {
         if (got - want).abs() > want.abs() * PIN_TOLERANCE {

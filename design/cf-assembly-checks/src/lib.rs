@@ -2,8 +2,9 @@
 //!
 //! A [`Mechanism`] describes an assembly: parts, where they sit, and how they
 //! are joined. That description is the same whether the assembly is a reverse
-//! trike, a gripper, a boat or a humanoid — fifteen crates and examples in this
-//! workspace already build one. The checks that read it should be the same too.
+//! trike, a gripper, a boat or a humanoid — fourteen crates and examples in
+//! this workspace already build one. The checks that read it should be the
+//! same too.
 //!
 //! ## What belongs here, and what does not
 //!
