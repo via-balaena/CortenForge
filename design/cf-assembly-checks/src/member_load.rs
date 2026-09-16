@@ -54,9 +54,37 @@
 //!   cantilever gives `wL²/2`. Self-weight bending is not modelled.
 //! - **Linkages are not load paths here.** The subtree walk follows joints
 //!   only, so a part braced by a linkage reads worse than it is.
-//! - **Bending only.** No torsion, no buckling, no fatigue, no stress
-//!   concentration at a weld or a bore — and a thin tube fails by buckling
-//!   long before it reaches yield in bending.
+//! - ⛔⛔ **IT WEIGHS THE SUBTREE, AND SOME MEMBERS DO NOT CARRY THEIR
+//!   SUBTREE'S WEIGHT — THEY CARRY A GROUND REACTION.** This is the largest
+//!   blind spot here and the least obvious.
+//!
+//!   A seat rail genuinely holds the driver up, and his weight genuinely hangs
+//!   below it in the tree, so the model is right. A wishbone does NOT hold its
+//!   wheel up — the ground does — and what the wishbone actually transmits is
+//!   the CHASSIS load, downward, to the contact patch. The subtree is the
+//!   unsprung mass, which is the wrong quantity and much the smaller one.
+//!
+//!   Measured on the trike at 3 g: the screen loads a lower wishbone with its
+//!   22.2 kg subtree, 653 N, where the corner reaction is 1872 N as modelled
+//!   and 5391 N at the design target — understated **2.9x and 8.3x**.
+//!
+//!   ⚠ **And the error GROWS as the vehicle gets more real**, because what is
+//!   missing from the mass budget is sprung mass, and sprung mass is precisely
+//!   what a suspension member carries.
+//!
+//!   ⇒ For any member in a ground-reacted path, read its figure as a LOWER
+//!   BOUND. Supplying corner loads as a second load case is the fix, and it is
+//!   the caller's to supply — this crate does not know which parts touch
+//!   ground and must not learn.
+//! - **Bending only.** No torsion, no fatigue, no stress concentration at a
+//!   weld or a bore.
+//!
+//!   ⚠ Buckling was the stated worry here and has been CHECKED rather than
+//!   carried: a 22.2 x 2.0 wishbone leg, 500 mm pinned at both ends, has an
+//!   Euler load of 51.6 kN against a squash load of 31.7 kN — so squash
+//!   governs, at a slenderness of 70 against a steel transition near 126. The
+//!   real axial load is 4-10% of either. Buckling is not the binding mode for
+//!   these sections.
 //! - **The section is taken at the centroid**, so a member thin at its root and
 //!   fat in the middle reads stronger than it is.
 //!

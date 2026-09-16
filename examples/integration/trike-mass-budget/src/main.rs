@@ -294,6 +294,14 @@ const AL_6061_YIELD_MPA: f64 = 276.0;
 /// carries `rim_r`, a 56 kg solid slug standing in for an 18in wheel. The seat
 /// members will not — they carry the driver, and his mass is not a placeholder.
 ///
+/// ⛔⛔ **Three of these six are LOWER BOUNDS, not figures.** The screen loads
+/// a member with its subtree's weight, which is right for the seat members —
+/// the driver genuinely hangs below them — and wrong for anything reacted at
+/// the ground. `arm_lower_l`, `arm_lower_r` and `swingarm` carry a CHASSIS
+/// load down to a contact patch, not their own wheels' weight, and the screen
+/// understates them 2.9x as modelled and 8.3x at the design target. See
+/// `cf_assembly_checks::member_load`'s blind spots.
+///
 /// ⚠ Read `seat_back_rail_left` as about half what it says. The joint tree
 /// hands the whole driver to whichever rail is the parent and the other reads
 /// zero; two rails carry him between them.
