@@ -68,8 +68,14 @@ pub struct Overlap {
     /// far apart in the tree are often adjacent in space: a brace ending on a
     /// tower, a panel resting on its rails, two arms sharing a ball joint. On
     /// one assembly, six of the eight pairs more than two hops apart were
-    /// entirely legitimate. **[`Overlap::points`] is what separates them** —
-    /// node contact ran 2–36 points and true interpenetration 257–6735.
+    /// entirely legitimate. **[`Overlap::fraction`] is what separates them.**
+    ///
+    /// ⛔ This used to name [`Overlap::points`], and contradicted
+    /// [`Overlap::fraction`] two fields above — which says in as many words
+    /// that a raw point count is scale-dependent and wrong as a threshold. The
+    /// point count was the discriminator before the fraction existed; the
+    /// sentence outlived the change. A consumer reading the two fields in
+    /// order got opposite advice.
     pub hops: usize,
 }
 
