@@ -47,7 +47,7 @@ use cf_trike::{
 use cf_vehicle::analysis::rollover_threshold_g;
 use cf_vehicle::{CorneringLoads, MassItem, StaticLoads, TrikeSpec};
 use nalgebra::{Point3, UnitQuaternion, Vector3};
-use sim_core::Model;
+use sim_core::{DISABLE_CONTACT, Model};
 
 /// How far a grid-integrated mass may sit from its closed form.
 ///
@@ -146,8 +146,18 @@ const STL_TOLERANCE_MM: f64 = 4.0;
 /// halving again.
 const MIN_STL_TOLERANCE_MM: f64 = 0.25;
 
-/// How far a linkage may let the two points it holds drift apart.
-const MAX_LINKAGE_GAP_MM: f64 = 1.0;
+/// How far a linkage may let the two points it holds drift apart, at its
+/// **worst step**, not its last.
+///
+/// ⚠ This was 1.0 mm and sampled only the final step, and both halves of that
+/// were wrong. The gate read 0.34 mm at step 50 while the same run reached
+/// 15.19 mm at step 1131 and 31.87 mm by step 16958 — a single sample cannot
+/// support "it is supposed to hold them together". Measured now, with the
+/// contact set the run is supposed to have and the mass matrix coupled:
+/// **0.0000002 mm** over 20 000 steps, gravity on or off. 10 um is five
+/// orders of margin over that and still four under anything that has ever
+/// gone wrong here.
+const MAX_LINKAGE_GAP_MM: f64 = 0.01;
 
 /// How far a part's geometry may sit from its own solid in the physics model.
 /// Measured at 0.00 mm once every part declares its joint origin.
@@ -158,7 +168,12 @@ const MAX_GEOM_DISPLACEMENT_MM: f64 = 0.5;
 /// four times as long for the same answer.
 const SIM_RESOLUTION_MM: f64 = 20.0;
 /// Steps to take. Long enough for an unstable model to diverge.
-const SIM_STEPS: usize = 50;
+///
+/// ⚠ 50 was not. At 0.5 ms a step that is 25 ms, and the linkage defect this
+/// gate was built to catch peaked at step 1131 and again at 16 958 — both
+/// invisible from step 50. Without the collision set the assembly was never
+/// meant to have, 4 000 steps cost well under a second.
+const SIM_STEPS: usize = 4_000;
 /// How far a welded body may move **in the root's frame**. Measured at 0.0 um.
 ///
 /// ⚠ **This is a STABILITY check, not a rigidity one, and the difference is
@@ -1354,15 +1369,29 @@ fn main() -> Result<()> {
     // layer counts `nv` for itself.
     //
     // ⚠ What it does NOT prove. The model is stepped in free fall — no ground,
-    // no contacts — so this says nothing about whether the vehicle stands up,
-    // rolls, or corners. It says the assembly builds — one geom per part —
-    // integrates without diverging, and holds its welds. Standing it on a
-    // ground plane needs one, and a bare `Plane` has no finite bounds, so a
-    // `Mechanism` cannot carry it.
+    // and contacts explicitly OFF — so this says nothing about whether the
+    // vehicle stands up, rolls, or corners. It says the assembly builds — one
+    // geom per part — integrates without diverging, and holds its welds and
+    // its linkages. Standing it on a ground plane needs one, and a bare
+    // `Plane` has no finite bounds, so a `Mechanism` cannot carry it.
+    //
+    // ⚠⚠ **Contacts are disabled, and this used to claim they were absent.**
+    // They were not: measured, this model opens with **54 contacts** before a
+    // single step. 37 of them are between bodies in the same weld group —
+    // rigidly one body, unable to move relative to each other, and MuJoCo
+    // filters those on `body_weldid` where sim-core filters only direct
+    // parent-child. The other 17 are the assembly doing what an assembly
+    // does: a ball end sits 14.4 mm inside its upright, a rider sits 24 mm
+    // into a seat pan. Whether parts may interpenetrate is Oracle 1g's
+    // question, asked against declared allowances; feeding it to a collision
+    // solver instead let 216 contact rows push against 9 linkage rows and
+    // tore the steering 31.87 mm apart, which then read as a linkage defect.
+    // With them off the linkages hold to 0.0000002 mm over 20 000 steps.
     {
-        let model = mechanism
+        let mut model = mechanism
             .to_model(SIM_RESOLUTION_MM, SIM_RESOLUTION_MM)
             .map_err(|e| anyhow::anyhow!("to_model failed: {e:?}"))?;
+        model.disableflags |= DISABLE_CONTACT;
         if model.nv != EXPECTED_DOF {
             bail!(
                 "the physics model has {} degrees of freedom, this file counts \
@@ -1467,9 +1496,33 @@ fn main() -> Result<()> {
             data.xmat[root].transpose() * (data.xpos[b] - data.xpos[root])
         };
         let start: Vec<Vector3<f64>> = rigid.iter().map(|(_, b)| in_root(&data, *b)).collect();
+        // The linkage's own claim: the two points it holds stay together while
+        // the machine moves. cf-design proves this on a four-bar; this proves
+        // it on the vehicle, where the rod ties two steering arms that the
+        // joint tree leaves free of each other.
+        //
+        // ⚠ Measured EVERY step and kept at its worst. Reading it once at the
+        // end samples a phase of whatever the assembly is doing, and the
+        // defect that motivated this gate read 0.34 mm at the step it was
+        // sampled and 15.19 mm five hundred steps later.
+        let mut held_apart = (0.0_f64, 0usize, String::new());
         for step in 0..SIM_STEPS {
             data.step(&model)
                 .map_err(|e| anyhow::anyhow!("step {step} failed: {e:?}"))?;
+            for eq in 0..model.neq {
+                let (a, b) = (model.eq_obj1id[eq], model.eq_obj2id[eq]);
+                let d = model.eq_data[eq];
+                let pa = data.xpos[a] + data.xmat[a] * Vector3::new(d[0], d[1], d[2]);
+                let pb = data.xpos[b] + data.xmat[b] * Vector3::new(d[3], d[4], d[5]);
+                let gap = (pa - pb).norm();
+                if gap > held_apart.0 {
+                    held_apart = (
+                        gap,
+                        step,
+                        model.eq_name[eq].clone().unwrap_or_else(|| eq.to_string()),
+                    );
+                }
+            }
         }
         if !data.xpos.iter().all(|p| p.iter().all(|v| v.is_finite())) {
             bail!("a body position went non-finite within {SIM_STEPS} steps");
@@ -1481,25 +1534,18 @@ fn main() -> Result<()> {
                 worst = (name.clone(), drift);
             }
         }
-        // The linkage's own claim: the two points it holds stay together while
-        // the machine moves. cf-design proves this on a four-bar; this proves
-        // it on the vehicle, where the rod ties two steering arms that the
-        // joint tree leaves free of each other.
-        let mut held_apart: f64 = 0.0;
-        for eq in 0..model.neq {
-            let (a, b) = (model.eq_obj1id[eq], model.eq_obj2id[eq]);
-            let d = model.eq_data[eq];
-            let pa = data.xpos[a] + data.xmat[a] * Vector3::new(d[0], d[1], d[2]);
-            let pb = data.xpos[b] + data.xmat[b] * Vector3::new(d[3], d[4], d[5]);
-            held_apart = held_apart.max((pa - pb).norm());
-        }
-        if held_apart > MAX_LINKAGE_GAP_MM {
+        let (worst_gap, worst_step, worst_linkage) = held_apart;
+        if worst_gap > MAX_LINKAGE_GAP_MM {
             bail!(
-                "a linkage let its ends drift {held_apart:.3} mm apart over \
-                 {SIM_STEPS} steps — it is supposed to hold them together"
+                "linkage {worst_linkage} let its ends drift {worst_gap:.4} mm \
+                 apart at step {worst_step} of {SIM_STEPS} — it is supposed to \
+                 hold them together"
             );
         }
-        println!("  linkage ends held to {:.1} um", held_apart * 1000.0);
+        println!(
+            "  linkage ends held to {:.4} um at worst ({worst_linkage}, step {worst_step})",
+            worst_gap * 1000.0
+        );
 
         println!(
             "simulated {SIM_STEPS} steps: {} welded bodies, worst drift {:.1} um ({})",
