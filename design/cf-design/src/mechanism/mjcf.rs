@@ -267,7 +267,11 @@ fn write_body(
     // Geom referencing the mesh asset, with material density for mass computation.
     // For child bodies, offset the geom so the part extends outward from the joint
     // (away from parent body) rather than being centered on it.
-    let density = part.material().density;
+    // ⚠ MuJoCo computes mass as density × volume in the MODEL's length units,
+    // and this model is millimetres. `Material::density` is kg/m³, so it needs
+    // the same mm³→m³ bridge `mass_properties` applies — without it the
+    // trike's 215 kg loaded into real MuJoCo as 5.6e11 kg.
+    let density = part.material().density * super::mass::MM3_TO_M3;
     let geom_offset = compute_geom_offset(part, joints_on);
     if geom_offset.norm() > 1e-10 {
         let _ = writeln!(
@@ -543,7 +547,10 @@ mod tests {
         assert!(xml.contains("</asset>"));
         assert!(xml.contains("<worldbody>"));
         assert!(xml.contains("<body name=\"ball\">"));
-        assert!(xml.contains("<geom type=\"mesh\" mesh=\"ball_mesh\" density=\"1250\"/>"));
+        // ⚠ 1250 kg/m³ → 1.25e-6 kg/mm³. This asserted the raw 1250 and so
+        // PINNED the units bug: the file it was guarding gave MuJoCo a mass
+        // 1e9 too large, and the assertion passed the whole time.
+        assert!(xml.contains("<geom type=\"mesh\" mesh=\"ball_mesh\" density=\"0.00000125\"/>"));
         assert!(xml.contains("</body>"));
         assert!(xml.contains("</worldbody>"));
         assert!(xml.contains("</mujoco>"));

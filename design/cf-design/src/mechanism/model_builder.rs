@@ -41,7 +41,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use nalgebra::{Point3, UnitQuaternion, Vector3};
+use nalgebra::{Matrix3, Point3, Rotation3, UnitQuaternion, Vector3};
 use sim_core::{
     ActuatorDynamics, ActuatorTransmission, BiasType, EqualityType, GainType, GeomType,
     MjJointType, Model, PhysicsShape, SolverType, TendonType, WrapType,
@@ -378,12 +378,41 @@ fn generate(
         // Mass properties (computed from implicit field)
         let mass_props = super::mass::mass_properties(part.solid(), part.material().density, 1.0);
         if let Some(mp) = mass_props {
-            // Convert inertia from [Ixx, Iyy, Izz, Ixy, Ixz, Iyz] to diagonal Vector3
-            // sim-core stores diagonal inertia only (principal axes assumption)
             model.body_mass.push(mp.mass);
-            model
-                .body_inertia
-                .push(Vector3::new(mp.inertia[0], mp.inertia[1], mp.inertia[2]));
+            // ⚠ DIAGONALISE, do not truncate.
+            //
+            // `body_inertia` is the diagonal in the frame `body_iquat` names —
+            // sim-core builds `ximat = xquat * body_iquat` and forms
+            // `R I R^T` from it (`forward/position.rs`). Taking [Ixx, Iyy, Izz]
+            // and leaving `body_iquat` identity throws Ixy/Ixz/Iyz away, which
+            // is only correct for a part whose principal axes already line up
+            // with its body frame.
+            //
+            // Measured over the trike's 34 parts, worst product over largest
+            // diagonal: **19 parts above 1%, 17 above 10%**, worst 0.4999 —
+            // `seat_back`, a reclined panel whose principal axes sit ~45 deg
+            // off the body frame. The diagonal braces, the wishbones and the
+            // caster-angled uprights are all in that list.
+            let i = mp.inertia;
+            let tensor = Matrix3::new(
+                i[0], i[3], i[4], //
+                i[3], i[1], i[5], //
+                i[4], i[5], i[2],
+            );
+            let eigen = tensor.symmetric_eigen();
+            let mut axes = eigen.eigenvectors;
+            // ⚠ Eigenvectors are defined up to sign, so the matrix may come
+            // back a REFLECTION. A reflection is not a rotation and cannot be
+            // a quaternion; flipping one column fixes the handedness without
+            // changing the axes.
+            if axes.determinant() < 0.0 {
+                let flipped = -axes.column(2);
+                axes.set_column(2, &flipped);
+            }
+            model.body_inertia.push(eigen.eigenvalues);
+            model.body_iquat.push(UnitQuaternion::from_rotation_matrix(
+                &Rotation3::from_matrix_unchecked(axes),
+            ));
             // Center of mass in body frame = geom_offset + COM_in_solid_frame.
             // mass_properties returns COM in the solid's local frame (centered
             // at origin for symmetric shapes). The geom_offset translates the
@@ -392,9 +421,9 @@ fn generate(
         } else {
             model.body_mass.push(0.01); // fallback
             model.body_inertia.push(Vector3::new(1e-6, 1e-6, 1e-6));
+            model.body_iquat.push(UnitQuaternion::identity());
             model.body_ipos.push(geom_offset);
         }
-        model.body_iquat.push(UnitQuaternion::identity());
 
         // Placeholders for geom/jnt address tracking (set below)
         model.body_jnt_adr.push(0);
@@ -2119,7 +2148,12 @@ mod tests {
                 let v_origin = Vector3::new(data.cvel[b][3], data.cvel[b][4], data.cvel[b][5]);
                 let v = v_origin + w.cross(&(data.xipos[b] - data.xpos[b]));
                 via_bodies += 0.5 * model.body_mass[b] * v.norm_squared();
-                let wb = data.xquat[b].inverse() * w;
+                // ⚠ The principal frame, not the body frame. `body_inertia`
+                // is the diagonal in the frame `body_iquat` names, and
+                // `ximat = xquat * body_iquat` is that frame in world. Using
+                // `xquat` alone silently assumes the two coincide — which is
+                // exactly the assumption this file used to bake in.
+                let wb = data.ximat[b].transpose() * w;
                 via_bodies += 0.5
                     * (inertia.x * wb.x.powi(2)
                         + inertia.y * wb.y.powi(2)
@@ -2151,6 +2185,68 @@ mod tests {
                  geometry cannot detect a dropped off-diagonal"
             );
         }
+    }
+
+    /// The inertia the model carries is the inertia the solid has.
+    ///
+    /// `body_inertia` is a DIAGONAL, in the frame `body_iquat` names. The
+    /// identity is therefore `R * diag * R^T == the full tensor`, for `R` the
+    /// rotation `body_iquat` encodes — exact, for any part, with nothing
+    /// pinned.
+    ///
+    /// ⚠ This used to fail by construction: `to_model` took `[Ixx, Iyy, Izz]`
+    /// and left `body_iquat` identity, discarding Ixy/Ixz/Iyz. That is only
+    /// right for a part already aligned with its own principal axes. Measured
+    /// over cf-trike's 34 parts, worst product over largest diagonal: **19
+    /// above 1%, 17 above 10%**, worst 0.4999 (`seat_back`, a reclined panel).
+    ///
+    /// ⛔ The 40 deg rotation is load-bearing — an axis-aligned box has no
+    /// products of inertia and would pass against the broken build. The
+    /// `products` assertion below keeps the case honest.
+    #[test]
+    fn the_model_carries_the_inertia_the_solid_has() {
+        use nalgebra::{Matrix3, UnitQuaternion};
+
+        let tilted = Solid::cuboid(Vector3::new(120.0, 15.0, 40.0)).rotate(
+            UnitQuaternion::from_axis_angle(&Vector3::y_axis(), 40.0_f64.to_radians()),
+        );
+        // The same cell size `to_model` integrates with, so this compares the
+        // model against its own source and not against a finer grid.
+        let mp = super::super::mass::mass_properties(&tilted, 1250.0, 1.0).expect("mass");
+        let i = mp.inertia;
+        let truth = Matrix3::new(
+            i[0], i[3], i[4], //
+            i[3], i[1], i[5], //
+            i[4], i[5], i[2],
+        );
+        let products = i[3].abs().max(i[4].abs()).max(i[5].abs());
+        let diagonal = i[0].abs().max(i[1].abs()).max(i[2].abs());
+        assert!(
+            products / diagonal > 0.05,
+            "this geometry has no products of inertia to lose ({products} vs \
+             {diagonal}), so it cannot detect the truncation"
+        );
+
+        let model = Mechanism::builder("tilted")
+            .part(Part::new("block", tilted, pla()))
+            .build()
+            .to_model(5.0, 5.0)
+            .unwrap();
+
+        let b = 1;
+        let r = model.body_iquat[b].to_rotation_matrix();
+        let diag = Matrix3::from_diagonal(&model.body_inertia[b]);
+        let rebuilt = r.matrix() * diag * r.matrix().transpose();
+
+        let worst = (0..3)
+            .flat_map(|a| (0..3).map(move |c| (a, c)))
+            .map(|(a, c)| (rebuilt[(a, c)] - truth[(a, c)]).abs())
+            .fold(0.0_f64, f64::max);
+        assert!(
+            worst < 1e-6 * diagonal,
+            "the model's inertia differs from the solid's by {worst} \
+             (kg mm^2); rebuilt {rebuilt} truth {truth}"
+        );
     }
 
     #[test]
