@@ -509,6 +509,20 @@ fn generate(
                     // exactly none.
                     let dof_parent = if d > 0 {
                         Some(nv + d - 1)
+                    } else if nv > model.body_dof_adr[body_id] {
+                        // ⚠ Not the first joint on THIS body — a body may carry
+                        // several (a slide plus a hinge is a cylindrical joint).
+                        // Its dofs chain to the previous joint's last dof, not
+                        // up to the parent body: CRBA relies on this to write
+                        // the same-body cross terms `M[i, j]`, and skipping to
+                        // the ancestor leaves them zero.
+                        //
+                        // Measured on a free base with a slide and a hinge on
+                        // one arm, offset in z so the two are actually coupled:
+                        // `M[hinge, slide]` 0, and the kinetic energy computed
+                        // from M came out **39.5% under** the same energy summed
+                        // over the bodies.
+                        Some(nv - 1)
                     } else {
                         let mut ancestor = model.body_parent[body_id];
                         loop {
@@ -1981,6 +1995,162 @@ mod tests {
             "the mass matrix's free-translation coupling changed with the \
              weld: {m_no_weld} -> {m_weld}"
         );
+    }
+
+    /// The mass matrix is COMPLETE, checked against an independent energy sum.
+    ///
+    /// `0.5 qvel^T M qvel` reads the mass matrix. Koenig's theorem sums
+    /// `0.5 m|v|^2 + 0.5 w^T I w` over the bodies and never touches it. They
+    /// must agree for **any** velocity, so an entry M is missing shows up with
+    /// nothing pinned — and unlike a structural check on `dof_parent`, this
+    /// states what the omission COSTS.
+    ///
+    /// ⚠ Both topologies here have shipped wrong, for the same reason: CRBA
+    /// writes the off-diagonal entries by walking `dof_parent`, and any chain
+    /// that ends early leaves a block at zero while `qM` stays symmetric,
+    /// `nv` stays right and the model still integrates.
+    ///
+    /// | topology | was | energy error |
+    /// |---|---|---|
+    /// | a weld between two jointed bodies | `dof_parent` = `None` | free-fall accel 73.4 rad/s^2 |
+    /// | two joints on one body | chained past the sibling dof | **39.5% under** |
+    ///
+    /// ⚠ The second is invisible to
+    /// [`a_weld_in_the_chain_does_not_decouple_the_mass_matrix`], because the
+    /// entry it drops couples two INTERNAL dofs and free fall only exercises
+    /// internal-against-free.
+    ///
+    /// ⛔ The geometry is load-bearing. The first version put the arm's centre
+    /// of mass on the slide axis, where `M[hinge, slide]` is legitimately zero
+    /// — the test passed against the broken build. The `+80 mm` z offset is
+    /// what makes the coupling non-zero, and the `coupling` assertion below
+    /// keeps it that way.
+    #[test]
+    fn the_mass_matrix_is_complete_for_welds_and_for_multi_joint_bodies() {
+        let arm = || {
+            Part::new(
+                "arm",
+                Solid::cuboid(Vector3::new(100.0, 10.0, 10.0))
+                    .translate(Vector3::new(150.0, 0.0, 80.0)),
+                pla(),
+            )
+        };
+        let base = || Part::new("base", Solid::cuboid(Vector3::new(50.0, 50.0, 10.0)), pla());
+        let free = || {
+            JointDef::new(
+                "free",
+                "world",
+                "base",
+                JointKind::Free,
+                Point3::origin(),
+                Vector3::z(),
+            )
+        };
+
+        // (a) a weld sits between the free joint and the hinge.
+        let welded = Mechanism::builder("welded")
+            .part(base())
+            .part(Part::new(
+                "mount",
+                Solid::cuboid(Vector3::new(10.0, 10.0, 10.0))
+                    .translate(Vector3::new(40.0, 0.0, 0.0)),
+                pla(),
+            ))
+            .part(arm())
+            .joint(free())
+            .joint(JointDef::new(
+                "mount_weld",
+                "base",
+                "mount",
+                JointKind::Fixed,
+                Point3::new(40.0, 0.0, 0.0),
+                Vector3::z(),
+            ))
+            .joint(JointDef::new(
+                "hinge",
+                "mount",
+                "arm",
+                JointKind::Revolute,
+                Point3::new(50.0, 0.0, 0.0),
+                Vector3::y(),
+            ))
+            .build();
+
+        // (b) one body carries two joints — a cylindrical joint.
+        let cylindrical = Mechanism::builder("cylindrical")
+            .part(base())
+            .part(arm())
+            .joint(free())
+            .joint(JointDef::new(
+                "slide",
+                "base",
+                "arm",
+                JointKind::Prismatic,
+                Point3::new(50.0, 0.0, 0.0),
+                Vector3::x(),
+            ))
+            .joint(JointDef::new(
+                "hinge",
+                "base",
+                "arm",
+                JointKind::Revolute,
+                Point3::new(50.0, 0.0, 0.0),
+                Vector3::y(),
+            ))
+            .build();
+
+        for (label, mechanism) in [
+            ("weld in the chain", welded),
+            ("two joints on one body", cylindrical),
+        ] {
+            let model = mechanism.to_model(5.0, 5.0).unwrap();
+            let mut data = model.make_data();
+            // Every dof moving, at distinct rates, so no cross term cancels.
+            for i in 0..model.nv {
+                data.qvel[i] = 0.1 * (i as f64 + 1.0);
+            }
+            data.forward(&model).expect("forward kinematics");
+
+            let via_m = 0.5 * data.qvel.dot(&(&data.qM * &data.qvel));
+            let mut via_bodies = 0.0;
+            for b in 1..model.nbody {
+                let inertia = model.body_inertia[b];
+                let w = Vector3::new(data.cvel[b][0], data.cvel[b][1], data.cvel[b][2]);
+                let v_origin = Vector3::new(data.cvel[b][3], data.cvel[b][4], data.cvel[b][5]);
+                let v = v_origin + w.cross(&(data.xipos[b] - data.xpos[b]));
+                via_bodies += 0.5 * model.body_mass[b] * v.norm_squared();
+                let wb = data.xquat[b].inverse() * w;
+                via_bodies += 0.5
+                    * (inertia.x * wb.x.powi(2)
+                        + inertia.y * wb.y.powi(2)
+                        + inertia.z * wb.z.powi(2));
+            }
+
+            assert!(
+                via_bodies > 0.0,
+                "{label}: nothing is moving, so this proves nothing"
+            );
+            let error = (via_m - via_bodies).abs() / via_bodies;
+            assert!(
+                error < 1e-9,
+                "{label}: kinetic energy is {via_m} through the mass matrix and \
+                 {via_bodies} summed over the bodies — {:.2}% apart, so the mass \
+                 matrix is missing a term",
+                error * 100.0
+            );
+
+            // ⛔ Keep the case non-degenerate: the coupling the walk has to
+            // write must actually be non-zero here, or agreement is free.
+            let last = model.nv - 1;
+            let coupling = (0..last)
+                .map(|j| data.qM[(last, j)].abs())
+                .fold(0.0_f64, f64::max);
+            assert!(
+                coupling > 1.0,
+                "{label}: the last dof couples to nothing ({coupling}), so this \
+                 geometry cannot detect a dropped off-diagonal"
+            );
+        }
     }
 
     #[test]
