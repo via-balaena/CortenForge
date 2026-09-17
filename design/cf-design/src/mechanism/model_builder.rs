@@ -3125,14 +3125,45 @@ mod tests {
         eprintln!("  newton_csg_subtract: all 4 test points match Solid::gradient() exactly");
     }
 
-    /// Hinge pendulum energy conservation: a frictionless geometry-driven
-    /// hinge should oscillate without artificial damping.
+    /// An arm released into a pin-in-bore hinge does not GAIN energy.
     ///
-    /// This is the critical dynamics validation test. A pendulum arm
-    /// hanging from a pin-in-bore geometry hinge, released from horizontal,
-    /// should swing with < 1% energy loss per period.
+    /// ⚠⚠ **This was called `hinge_pendulum_energy_conservation` and billed as
+    /// "the critical dynamics validation test", claiming a frictionless hinge
+    /// oscillates with <1% loss per period. It could not see whether that was
+    /// true, for two independent reasons, and it was not true.**
+    ///
+    /// 1. **The energy was summed over ALL bodies**, and the socket is
+    ///    500 000 kg/m³ so it may act as an anchor. Its potential energy is
+    ///    **59 925** against the arm's entire budget of **53.7** — three orders
+    ///    of magnitude. The reported "0.5% loss" was the socket settling
+    ///    0.1 mm; the pendulum was invisible inside it.
+    /// 2. **Potential energy used `9.81` in a MILLIMETRE model** where gravity
+    ///    is 9810 mm/s². PE came out 1000x under, so `KE + PE` was
+    ///    approximately KE — and KE alone is not conserved by a pendulum, it
+    ///    trades with PE every swing. Comparing KE at two arbitrary steps is a
+    ///    phase coincidence, not a conservation law.
+    ///
+    /// ⛔ **What the arm actually does**, measured arm-only with g = 9810:
+    ///
+    /// | step | arm energy | arm KE |
+    /// |---|---|---|
+    /// | 0 | 53.652 | 0 |
+    /// | 100 | 49.250 | 0.0885 |
+    /// | 150-450 | ~50.0 | **0.0005** |
+    ///
+    /// A free swing from 45 deg would peak at **KE ~ 3.57**. It reaches
+    /// **0.0885 — 2.5%** — and is at rest by step 150. The hinge destroys
+    /// ~97% of the swing energy in a single half-swing and never oscillates.
+    ///
+    /// ★ So this asserts what it CAN: the arm loses energy and never gains
+    /// it, measured on the arm alone so the socket cannot hide the result.
+    /// The 3% line DISCRIMINATES — friction 2.0 on the bore, the one thing
+    /// this setup exists to exclude, takes the loss to 4.5% and fires it.
+    /// That the hinge should oscillate and does not is a sim-core contact
+    /// question, recorded rather than pinned here — pinning 97% dissipation
+    /// as "expected" would cement it.
     #[test]
-    fn hinge_pendulum_energy_conservation() {
+    fn an_arm_released_into_a_bore_does_not_gain_energy() {
         use nalgebra::UnitQuaternion;
 
         // ── Geometry: socket + arm-with-pin ──────────────────────────────
@@ -3280,6 +3311,8 @@ mod tests {
             // Total energy = KE + PE
             let mut ke = 0.0;
             let mut pe = 0.0;
+            let mut swing_kinetic = 0.0;
+            let mut swing_potential = 0.0;
             for body in 1..model.nbody {
                 let mass = model.body_mass[body];
                 if body < data.cvel.len() {
@@ -3291,12 +3324,22 @@ mod tests {
                 }
                 if body < data.xipos.len() {
                     let z = data.xipos[body].z;
-                    pe += mass * 9.81 * z;
+                    pe += mass * -super::GRAVITY_MM_PER_S2 * z;
+                }
+                if body == 2 {
+                    if body < data.cvel.len() {
+                        let cv = &data.cvel[body];
+                        swing_kinetic =
+                            0.5 * mass * (cv[3] * cv[3] + cv[4] * cv[4] + cv[5] * cv[5]);
+                    }
+                    swing_potential = mass * -super::GRAVITY_MM_PER_S2 * data.xipos[body].z;
                 }
             }
 
-            let total = ke + pe;
-            energies.push(total);
+            // ⚠ The ARM's energy, not the model's. The socket outweighs the
+            // pendulum by three orders of magnitude and would hide any result.
+            let _ = (ke, pe);
+            energies.push(swing_kinetic + swing_potential);
 
             if step % 50 == 0 || step < 5 {
                 // Body positions
@@ -3344,15 +3387,31 @@ mod tests {
             loss_fraction * 100.0
         );
 
-        // Energy conservation: with analytical CSG normals from the contact
-        // patch system, a frictionless geometry-driven hinge conserves energy.
-        // Grid normals would cause > 50% loss from virtual friction.
-        // Threshold 6%: exact SDF evaluation in Tier 3 surface tracing
-        // (PhysicsShape threading) gives sharper normals at bore-pin interface,
-        // slightly changing solver dynamics vs the old grid interpolation.
+        // ⛔ Energy may not be CREATED. A contact solve that adds energy is
+        // unstable and will diverge given long enough; one that removes it is
+        // dissipative, which is the state this hinge is measured to be in.
+        //
+        // ⚠ **This half is NOT demonstrated failing.** Three mutations —
+        // friction 2.0, an under-damped `solref`, and a 0.004 s timestep — all
+        // produced LOSS (4.5%, 100%, 82.2%), never gain. It is kept rather
+        // than dropped because without it `loss_fraction < 0.03` passes
+        // silently when energy is created: a negative loss is still less than
+        // three percent. An undemonstrated guard over a real hole is worth
+        // more than a tidy gap, but it has not earned the word "gated".
         assert!(
-            loss_fraction < 0.06,
-            "energy loss {:.1}% exceeds 6% threshold — indicates virtual friction or solver instability",
+            loss_fraction > -0.001,
+            "the arm GAINED {:.2}% of its energy between step 50 and 450 — a \
+             contact solve that creates energy is unstable",
+            -loss_fraction * 100.0
+        );
+        // And it may not bleed. Measured **1.7%** over this window with the arm
+        // already at rest. ⛔ The line sits at 3% because that DISCRIMINATES:
+        // giving the bore friction 2.0 — the one thing the setup exists to
+        // exclude — takes it to **4.5%**, and a threshold above that would
+        // pass the very defect this test is named for.
+        assert!(
+            loss_fraction < 0.03,
+            "the arm lost {:.1}% of its energy between step 50 and 450",
             loss_fraction * 100.0
         );
     }
