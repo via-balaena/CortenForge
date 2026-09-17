@@ -105,7 +105,7 @@ fn bio_gripper_mechanism() -> Mechanism {
 #[test]
 fn mjcf_parse_round_trip() {
     let mechanism = two_part_mechanism();
-    let xml = mechanism.to_mjcf(2.0);
+    let xml = mechanism.to_mjcf(2.0).expect("to_mjcf");
 
     // Parse the generated MJCF through sim-mjcf.
     let model = sim_mjcf::load_model(&xml)
@@ -120,7 +120,7 @@ fn mjcf_parse_round_trip() {
 #[test]
 fn mjcf_bio_gripper_parse() {
     let mechanism = bio_gripper_mechanism();
-    let xml = mechanism.to_mjcf(2.0);
+    let xml = mechanism.to_mjcf(2.0).expect("to_mjcf");
 
     let model = sim_mjcf::load_model(&xml)
         .unwrap_or_else(|e| panic!("sim-mjcf failed to parse bio-gripper MJCF: {e}"));
@@ -139,7 +139,7 @@ fn mjcf_bio_gripper_parse() {
 #[test]
 fn mjcf_simulation_step() {
     let mechanism = two_part_mechanism();
-    let xml = mechanism.to_mjcf(2.0);
+    let xml = mechanism.to_mjcf(2.0).expect("to_mjcf");
 
     let model = sim_mjcf::load_model(&xml).unwrap_or_else(|e| panic!("load_model failed: {e}"));
 
@@ -275,7 +275,7 @@ fn phase3_bio_gripper_full_integration() {
     );
 
     // ── MJCF generation ─────────────────────────────────────────────
-    let xml = mechanism.to_mjcf(2.0);
+    let xml = mechanism.to_mjcf(2.0).expect("to_mjcf");
 
     // Verify spring-damper attributes from flex zone splitting.
     assert!(
@@ -333,19 +333,37 @@ fn phase3_bio_gripper_full_integration() {
 ///   parameterized geometry → re-mesh → MJCF → parse → simulate → contact
 ///   force → FD gradient → parameter update → repeat.
 ///
-/// A parameterized sphere (adjustable radius) on a free joint falls onto
-/// a ground plane. The optimizer maximizes steady-state contact force
-/// by increasing the sphere's radius — larger sphere = more mass = more
-/// weight = more contact force. Contact force ∝ mass × g ∝ R³.
+/// A parameterized sphere (adjustable radius) on a free joint falls onto a
+/// ground plane. The optimizer drives the radius until the ball rests at a
+/// target height.
 ///
 /// Gradient chain:
 ///   `∂J/∂θ ≈ [J(θ+ε) − J(θ−ε)] / 2ε`
-/// where each `J(θ)` = re-mesh → MJCF → `load_model` → simulate → measure force.
+/// where each `J(θ)` = re-mesh → MJCF → `load_model` → simulate → measure.
+///
+/// ⚠⚠ **This measured contact force and could not.** The objective summed
+/// `|efc_force|` over every contact row — normal AND friction, several rows
+/// per contact, fighting each other — and that sum is not a force. Measured
+/// once the exported density stopped being 1e9 too large: it grows exactly
+/// linearly at 4.04e20 per step and is **bit-identical for r = 15.00 and
+/// r = 15.50**, while `z` sits rock-steady at 14.847. A quantity that does not
+/// move when the mass changes by 10% is not measuring the mass, and the
+/// optimizer read it as a converged objective and stopped after one step.
+///
+/// ⛔ It only ever varied because the ball weighed 2.7e7 kg. The test was
+/// reading a saturated number in a regime nothing real occupies.
+/// sim-core's `efc_force` on mesh-vs-plane contacts is its own arc.
+///
+/// ★ The resting HEIGHT is sound and is what this uses instead: stable to
+/// 1e-5 mm across the window, monotone in radius, and it exercises exactly the
+/// same chain — re-mesh, export, parse, simulate.
 #[test]
 fn phase5_parameterized_grasp_optimization() {
+    /// Where the ball is asked to come to rest, in mm.
+    const REST_TARGET_Z_MM: f64 = 16.0;
+
     use cf_design::ParamStore;
     use cf_design::optim::{OptimConfig, minimize_fd};
-    use sim_core::ConstraintType;
 
     let store = ParamStore::new();
     let _radius = store.add("ball_radius", 15.0);
@@ -354,9 +372,10 @@ fn phase5_parameterized_grasp_optimization() {
 
     let config = OptimConfig {
         max_iters: 3,
-        // Contact force = mg = (4/3)πR³ρg. At R=15 (sim-core meters), ρ=1250:
-        //   ∂F/∂R = 4πR²ρg ≈ 3.5e7 → lr=1e-9 gives ΔR≈0.035 per step.
-        learning_rate: 1e-9,
+        // The ball rests at z ≈ R − δ with δ ≈ 0.15 mm, so J = (z − target)²
+        // has ∂J/∂R ≈ 2(z − target) ≈ −0.3 at the start. lr = 0.2 gives
+        // ΔR ≈ 0.06 per step, which converges inside `max_iters`.
+        learning_rate: 0.2,
         fd_eps: 0.5,
         grad_tol: 1e-10,
     };
@@ -387,7 +406,7 @@ fn phase5_parameterized_grasp_optimization() {
                 .build();
 
             // Full pipeline: parameterized geometry → mesh → MJCF → parse → simulate.
-            let mut xml = mechanism.to_mjcf(2.0);
+            let mut xml = mechanism.to_mjcf(2.0).expect("to_mjcf");
 
             // Inject a ground plane for the ball to land on.
             let insert_pos = xml.find("<body").unwrap_or(0);
@@ -408,27 +427,23 @@ fn phase5_parameterized_grasp_optimization() {
                     .unwrap_or_else(|e| panic!("step failed: {e}"));
             }
 
-            // Measure: average steady-state contact force.
-            let mut contact_force = 0.0_f64;
+            // Measure: mean resting height over the window.
+            let mut height_sum = 0.0_f64;
+            let ball = model.nbody - 1;
             for _ in 0..measure_steps {
                 data.step(&model)
                     .unwrap_or_else(|e| panic!("step failed: {e}"));
-                // Sum only contact constraint forces — excludes joint limits,
-                // equality constraints, friction loss, etc.
-                for (i, ct) in data.efc_type.iter().enumerate() {
-                    if matches!(
-                        ct,
-                        ConstraintType::ContactFrictionless
-                            | ConstraintType::ContactPyramidal
-                            | ConstraintType::ContactElliptic
-                    ) {
-                        contact_force += data.efc_force[i].abs();
-                    }
-                }
+                height_sum += data.xpos[ball].z;
             }
+            let height = height_sum / f64::from(measure_steps);
+            assert!(
+                height.is_finite() && height > 0.0,
+                "the ball did not come to rest on the plane: z = {height}"
+            );
 
-            // Objective: maximize contact force (negate for minimization).
-            -(contact_force / f64::from(measure_steps))
+            // Objective: sit at the target height. Squared so the optimizer
+            // has a minimum to find rather than a direction to run in.
+            (height - REST_TARGET_Z_MM).powi(2)
         },
         &config,
     );

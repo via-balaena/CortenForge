@@ -438,6 +438,7 @@ members = [
     "design/cf-spatial",
 
     # Design kernel (active development)
+    "design/cf-assembly-checks",
     "design/cf-design",
     "design/cf-design-tests",
 
@@ -727,6 +728,7 @@ mesh = { path = "mesh/mesh" }
 # Geometric kernel
 cf-geometry = { path = "design/cf-geometry" }
 cf-vehicle = { path = "design/cf-vehicle" }
+cf-assembly-checks = { path = "design/cf-assembly-checks" }
 cf-trike = { path = "design/cf-trike" }
 cf-fsu-geometry = { path = "design/cf-fsu-geometry" }
 cf-routing = { path = "design/cf-routing" }

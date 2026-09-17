@@ -27,7 +27,12 @@ use crate::Solid;
 /// 1 mm³ = 1e-9 m³.
 ///
 /// Geometry is in mm, density is in kg/m³. This factor bridges the two.
-const MM3_TO_M3: f64 = 1e-9;
+///
+/// ⚠ `pub(super)` because [`mjcf`](super::mjcf) needs the SAME bridge and did
+/// not have it: it wrote the raw kg/m³ figure onto `<geom density=…>` of a
+/// model whose vertices are in mm, so MuJoCo computed every mass 1e9 too
+/// large — 5.6e11 kg for a 215 kg vehicle. One derivation, two call sites.
+pub(super) const MM3_TO_M3: f64 = 1e-9;
 
 /// Mass properties of a solid body: mass, center of mass, and inertia tensor.
 ///

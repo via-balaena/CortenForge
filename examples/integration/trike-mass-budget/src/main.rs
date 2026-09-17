@@ -34,10 +34,11 @@
 
 #![allow(clippy::too_many_lines)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use cf_assembly_checks::member_load::{LoadCase, MassMap, MassPoint, MemberLoad, member_loads};
 use cf_design::mechanism::mass::mass_properties;
 use cf_design::{Aabb, IndexedMesh, Mechanism, Part};
 use cf_trike::{
@@ -46,7 +47,7 @@ use cf_trike::{
 use cf_vehicle::analysis::rollover_threshold_g;
 use cf_vehicle::{CorneringLoads, MassItem, StaticLoads, TrikeSpec};
 use nalgebra::{Point3, UnitQuaternion, Vector3};
-use sim_core::Model;
+use sim_core::{DISABLE_CONTACT, Model};
 
 /// How far a grid-integrated mass may sit from its closed form.
 ///
@@ -67,33 +68,77 @@ const PIN_TOLERANCE: f64 = 1e-6;
 /// an empty one passes without doing anything. An empty `Mechanism` builds
 /// happily — `validate` skips the orphan check below two parts — so nothing
 /// upstream would object.
-const EXPECTED_PARTS: usize = 28;
-/// Welds in the assembly: three frame members and seven seat members onto the
-/// spine, all three tyres onto their rims, and the rider's two halves.
-const EXPECTED_WELDS: usize = 20;
-
-/// Loops the joint tree cannot hold: the tie rod's far end.
-const EXPECTED_LINKAGES: usize = 1;
-/// Degrees of freedom in the **tree**: the free body, two steering pivots,
-/// three wheels spinning, the swingarm, and the tie rod's near rod end, which
-/// is a ball and so worth three.
+const EXPECTED_PARTS: usize = 34;
+/// Welds in the assembly. The list adds to the constant, which is the point of
+/// writing it out:
 ///
-/// ⚠ Not what the machine has. The linkage at the rod's far end takes those
-/// three back, so the trike really has twelve — see `EXPECTED_LINKAGES`.
-const EXPECTED_DOF: usize = 15;
+/// ```text
+///  3  frame_cross and both diagonals    onto frame_spine
+///  2  both towers                       onto frame_cross
+///  2  each upper wishbone's aft leg     onto its fore leg
+///  3  all three tyres                   onto their rims
+///  1  swingarm_r                        onto swingarm
+///  2  both steering arms                onto their uprights
+///  7  seat_cross onto the spine, four rails onto seat_cross, and the pan
+///     and back panels onto their rails
+///  2  rider_torso onto seat_back, rider_legs onto rider_torso
+/// --
+/// 22
+/// ```
+///
+/// ⚠ An earlier version named ten of the twenty-two and read as the whole
+/// list. ⚠⚠ And the first attempt at THIS list was also wrong — it put the
+/// seat members onto the spine (only `seat_cross` is) and then counted the
+/// panels twice. A count in prose beside a count in code is worth nothing
+/// unless the prose is derived from the code, which this was, by extracting
+/// every `JointKind::Fixed` and its parent.
+const EXPECTED_WELDS: usize = 22;
+
+/// Loops the joint tree cannot hold: the tie rod's far end, and the upper
+/// ball joint on each wishbone.
+///
+/// ★ A double wishbone **is** a loop. The upright is held by two arms and a
+/// tree gives it one parent, so the second arm closes through a constraint.
+const EXPECTED_LINKAGES: usize = 3;
+/// Degrees of freedom in the **tree**: the free body, three wheels spinning,
+/// the swingarm, the tie rod's near rod end (a ball, worth three), four
+/// wishbones swinging, and each upright on its lower ball joint (three each).
+///
+/// ⚠ Not what the machine has. The three linkages take nine back, so the
+/// trike really has fourteen — the twelve it had, plus a bump degree of
+/// freedom at each front wheel.
+const EXPECTED_DOF: usize = 23;
 /// Members welded into the frame, whose grid cost is compared: spine,
 /// cross-member and the two diagonals.
 const WELDED_FRAME_MEMBERS: usize = 4;
 /// How far to move the heaviest item's centre of mass when probing how much
 /// of the answer is a choice rather than a measurement.
 const CG_PROBE_MM: f64 = 50.0;
-/// Polyurethane on asphalt, at the optimistic end of 0.6-1.0.
+/// Road performance tyre on dry asphalt.
+///
+/// ⚠⚠ **The verdict turns on this number, and 1.0 is the conservative end.**
+/// The machine slides before it tips only while µ stays under the rollover
+/// threshold, which the run prints beside it — so read the two together rather
+/// than trusting the verdict alone. A modern performance tyre runs 1.0-1.3 dry
+/// and a semi-slick goes past it, which makes "slides before it tips" a claim
+/// about the tyre as much as about the vehicle.
+///
+/// ⚠ Deliberately NOT restating the threshold here. A number copied into prose
+/// beside the code that computes it is a number that rots: an earlier draft of
+/// this very comment said 1.27, and correcting the tyre densities moved it to
+/// 1.40 in the same session.
+///
+/// ⚠ It read "polyurethane on asphalt, at the optimistic end of 0.6-1.0" until
+/// the re-base fitted real pneumatic tyres and left the justification behind.
+/// Same value, inverted meaning: 1.0 was the optimistic end for cast PU and is
+/// the pessimistic end for a road tyre.
 const TYRE_MU: f64 = 1.0;
 /// Default meshing tolerance for `--out`, in millimetres.
 ///
 /// ⚠ This is for *looking at* the vehicle, not for printing it. The tolerance
-/// is a cell size and the vehicle is 1.25 m long, so at 1.0 mm the assembly
-/// comes to just under a gigabyte of STL against 52 MB at this default.
+/// is a cell size and the vehicle is 2.65 m long, so a fine cell turns the
+/// assembly into an enormous STL — the figures this doc used to quote were
+/// measured on the 1.25 m rideable trike and are not re-measured here.
 /// Override with `--tolerance` when a wall section matters.
 const STL_TOLERANCE_MM: f64 = 4.0;
 /// Floor for the refinement in [`export_stls`]. A part still empty here has a
@@ -101,8 +146,42 @@ const STL_TOLERANCE_MM: f64 = 4.0;
 /// halving again.
 const MIN_STL_TOLERANCE_MM: f64 = 0.25;
 
-/// How far a linkage may let the two points it holds drift apart.
-const MAX_LINKAGE_GAP_MM: f64 = 1.0;
+/// How far an exported mesh may sit from the part's closed-form volume.
+///
+/// ⚠ The mesh is what gets MANUFACTURED, and a cell-size tolerance thins a
+/// slender part rather than deleting it. Measured at the 4 mm default:
+/// `frame_spine` exported at 8.7% of its volume, `tie_rod` at 4.6% — both with
+/// thousands of faces, so an "is it empty" check passed them. Grid integration
+/// agrees with the closed form to ~0.1% at every cell size tried, so the closed
+/// form is the referent and the mesh is the thing on trial.
+const STL_VOLUME_TOLERANCE: f64 = 0.05;
+
+/// Signed volume of a closed triangle mesh, by the divergence theorem.
+fn mesh_volume_mm3(mesh: &IndexedMesh) -> f64 {
+    mesh.faces
+        .iter()
+        .map(|f| {
+            let a = mesh.vertices[f[0] as usize].coords;
+            let b = mesh.vertices[f[1] as usize].coords;
+            let c = mesh.vertices[f[2] as usize].coords;
+            a.dot(&b.cross(&c))
+        })
+        .sum::<f64>()
+        / 6.0
+}
+
+/// How far a linkage may let the two points it holds drift apart, at its
+/// **worst step**, not its last.
+///
+/// ⚠ This was 1.0 mm and sampled only the final step, and both halves of that
+/// were wrong. The gate read 0.34 mm at step 50 while the same run reached
+/// 15.19 mm at step 1131 and 31.87 mm by step 16958 — a single sample cannot
+/// support "it is supposed to hold them together". Measured now, with the
+/// contact set the run is supposed to have and the mass matrix coupled:
+/// **0.0000002 mm** over 20 000 steps, gravity on or off. 10 um is five
+/// orders of margin over that and still four under anything that has ever
+/// gone wrong here.
+const MAX_LINKAGE_GAP_MM: f64 = 0.01;
 
 /// How far a part's geometry may sit from its own solid in the physics model.
 /// Measured at 0.00 mm once every part declares its joint origin.
@@ -113,15 +192,232 @@ const MAX_GEOM_DISPLACEMENT_MM: f64 = 0.5;
 /// four times as long for the same answer.
 const SIM_RESOLUTION_MM: f64 = 20.0;
 /// Steps to take. Long enough for an unstable model to diverge.
-const SIM_STEPS: usize = 50;
-/// How far a welded body may move relative to the frame. Measured at 48 um.
-const MAX_WELD_DRIFT_MM: f64 = 1.0;
-/// Full steering lock, in degrees — the range `upright_*` is given in radians.
+///
+/// ⚠ 50 was not. At 0.5 ms a step that is 25 ms, and the linkage defect this
+/// gate was built to catch peaked at step 1131 and again at 16 958 — both
+/// invisible from step 50. Without the collision set the assembly was never
+/// meant to have, 4 000 steps cost well under a second.
+const SIM_STEPS: usize = 4_000;
+/// How far a welded body may move **in the root's frame**. Measured at 0.0 um.
+///
+/// ⚠ **This is a STABILITY check, not a rigidity one, and the difference is
+/// worth stating.** A welded body has no joint between it and the root, so its
+/// offset in the root's frame is constant by construction — every mutation that
+/// breaks that (emitting a joint for a weld, re-declaring a weld as a hinge)
+/// changes the dof or weld COUNT, and those gates fire first. What is left for
+/// this one to catch is a rigid chain that wanders anyway: an unstable solve.
+///
+/// ⚠ Held at 10 um rather than the 1 mm it carried while the measurement still
+/// included the root's rotation. A tolerance three orders above the quantity it
+/// bounds is not a gate.
+const MAX_WELD_DRIFT_MM: f64 = 0.01;
+/// Full steering lock, in degrees.
+///
+/// ⚠ A figure typed here, not read off the model: the uprights turn on ball
+/// joints, which carry no range, so nothing in the mechanism declares a lock.
 const STEER_LOCK_DEG: f64 = 34.0;
+/// Pairs that are SUPPOSED to share space, the share measured when each was
+/// allowed, and why it is not a defect.
+///
+/// ⛔⛔ **An allowance, not a blanket.** `MAX_NODE_OVERLAP` was calibrated on a
+/// scan that could not see `seat_pan` at all — the 6 mm panel meshed to nothing
+/// at the 6 mm probe the example then used — so "deepest 5.9%" was a statement
+/// about what the probe could read, not about the vehicle. With a probe that
+/// resolves the pan, two pairs sit above the threshold and both are legitimate:
+/// the crate's own doc says a rider's torso and thigh are *supposed* to overlap
+/// at the hip, and two members are supposed to meet at a node.
+///
+/// ⚠ Each is PINNED. A new pair going over fires, an allowed one getting worse
+/// fires, and an allowed one that is no longer over fires too — a stale
+/// allowance is how a list like this decays back into a blanket.
+const ALLOWED_OVERLAPS: &[(&str, &str, f64, &str)] = &[
+    (
+        "seat_pan",
+        "rider_torso",
+        0.297,
+        "a torso stands in as a 170 mm capsule, which engulfs part of a 6 mm \
+         pan without the rider being inside the seat — the pose is checked \
+         properly by cf-trike's share_behind gates, which measure which SIDE \
+         of the panel face the body is on",
+    ),
+    (
+        "arm_upper_l_aft",
+        "upright_l",
+        0.061,
+        "they meet at the upper ball joint: two hops apart in the graph, \
+         adjacent by construction",
+    ),
+    (
+        "arm_upper_r_aft",
+        "upright_r",
+        0.056,
+        "the mirror of the pair above. ⚠ BOTH are declared even though only \
+         the left currently reads over the threshold — they measure 6.05% and \
+         5.53%, straddling it. The geometry is mirrored; what differs is where \
+         the probe grid happens to land on each solid, and leaving the right \
+         one undeclared would let that noise decide whether the gate fires",
+    ),
+];
+/// How much worse an allowed overlap may get before the gate fires.
+const ALLOWED_OVERLAP_DRIFT: f64 = 0.15;
+/// Where the architecture wants the centre of gravity, longitudinally.
+///
+/// ★ 55 % of the wheelbase back from the front axle — the Porsche-balanced
+/// 45/55 that the rollover table says is affordable at a 240 mm cg and a
+/// 1750 mm track, and not before.
+const TARGET_CG_X_M: f64 = cf_trike::WHEELBASE_MM / 1000.0 * 0.55;
+/// And how low it has to sit for that balance to clear a mu of 1.5.
+const TARGET_CG_Z_M: f64 = 0.240;
 /// Mesh tolerance for the steering-clash probe.
 const STEER_PROBE_MM: f64 = 6.0;
+/// Mesh tolerance for the interpenetration scan.
+const PAIR_PROBE_MM: f64 = 5.0;
+/// What share of a part may be inside another and still count as node contact.
+///
+/// ★ **Extent is the discriminator, not adjacency** — measured on this
+/// assembly, parts meeting at a shared node ran 2-36 points while true
+/// interpenetration ran 257-6735. Two orders of magnitude apart.
+///
+/// ⚠ Graph distance looked like it should work and does NOT: six of the eight
+/// pairs more than two hops apart were legitimate — a brace ending on a tower,
+/// panels resting on their rails, a bar and an arm sharing a ball joint. Far
+/// apart in the TREE, adjacent in SPACE.
+///
+/// ⚠ A **fraction**, not a point count. An absolute count is tuned to one
+/// assembly's size: 120 points read node contact correctly on a 108 kg trike
+/// and misread it on the same vehicle at car scale.
+///
+/// ⚠⚠ **It was calibrated against a scan that could not see `seat_pan`.** The
+/// 6 mm panel meshed to nothing at the 6 mm probe then in use, so "deepest
+/// 5.9%" described the probe rather than the vehicle. With a probe that
+/// resolves it, the legitimate deep overlaps are declared in
+/// [`ALLOWED_OVERLAPS`] instead of being held under a threshold.
+const MAX_NODE_OVERLAP: f64 = 0.06;
+/// Suspension travel swept for clashes, in degrees — the wishbones are given
+/// `+/-0.35 rad`, and this is that range in the units the message prints.
+const BUMP_TRAVEL_DEG: f64 = 20.0;
+/// Where the sweep was demonstrated FAILING, which is what makes it a gate.
+///
+/// ★★ **Re-demonstrated after the re-base, and that is the point.** It first
+/// failed here on the rideable trike's suspension. The re-base then replaced
+/// that suspension outright — ball separation 140 to 280 mm, both pivots
+/// raised — so the old witness proved nothing about the new geometry. Re-run
+/// at this angle it still fails, `arm_lower_l` entering `arm_upper_l`.
+///
+/// ⚠ A gate is vacuous until it has been made to fail, and a witness measured
+/// on geometry that has since changed is no better than never having one.
+const BUMP_FOUL_DEG: f64 = 30.0;
+
+/// Bushing rate used to DRIVE the lower wishbone to a travel angle, and the
+/// damping that stops it ringing there. Not a design value: it exists only so
+/// the loop can be solved at a chosen pose.
+const TRAVEL_DRIVE_STIFFNESS: f64 = 1.0e11;
+/// Damping for the same drive. ⚠ Overdamped on purpose — this is a solve, not
+/// a simulation of how the suspension behaves.
+const TRAVEL_DRIVE_DAMPING: f64 = 2.0e9;
+/// Steps to let the driven pose settle.
+///
+/// Measured: the loop closes to **0.0106 mm at 8 000 steps and 0.0106 mm at
+/// 30 000** — the residual is the constraint's own softness, not a transient,
+/// so 8 000 buys the same answer for a quarter of the time.
+const TRAVEL_SETTLE_STEPS: usize = 8_000;
+/// How far the linkage's two held points may sit apart before a settled pose
+/// is read. ⛔ Read a pose that has not converged and the sweep tests a
+/// vehicle that does not exist.
+const MAX_LOOP_RESIDUAL_MM: f64 = 0.05;
+/// Steering-against-travel clashes that are KNOWN and accepted, as
+/// `(member, travel_deg, lock_deg, why)`.
+///
+/// ⚠ These are a DESIGN defect, not a modelling one: at full bump the tyre
+/// reaches the lower wishbone and at full droop it reaches the upper. Neither
+/// single-axis sweep can see them — Oracle 1d steers with the suspension at
+/// rest, Oracle 1f moves the suspension with the wheel at rest, and the
+/// upright rotates 27-37 deg relative to the arms between those two.
+///
+/// ⛔ Pinned rather than fixed because the fix is geometry — steering lock,
+/// pickup placement, upright offset — and that belongs to the chassis re-size
+/// this PR's member screen was built to serve. Pinning keeps the gate live:
+/// anything NEW fails, and a pinned clash that stops happening fails too, so
+/// the list cannot quietly go stale.
+const ACCEPTED_TRAVEL_CLASHES: &[(&str, f64, f64, &str)] = &[
+    (
+        "arm_lower_l",
+        BUMP_TRAVEL_DEG,
+        STEER_LOCK_DEG,
+        "at full bump the tyre reaches the lower wishbone at full left lock",
+    ),
+    (
+        "arm_upper_l",
+        -BUMP_TRAVEL_DEG,
+        STEER_LOCK_DEG,
+        "at full droop the tyre reaches the upper wishbone at full left lock",
+    ),
+];
+
+/// How far the driven arm may sit from the angle it was asked for.
+const TRAVEL_REACHED_TOLERANCE_DEG: f64 = 0.5;
 /// Mesh tolerance for the weld-contact probe.
 const WELD_PROBE_MM: f64 = 2.0;
+/// The g multiple the member screen loads the structure at.
+///
+/// A kerb strike or a hard landing, which is the case that sizes a chassis
+/// member — not the static one, which nothing fails under.
+const BUMP_G: f64 = 3.0;
+/// Yield of mild steel tube, `MPa`. Nothing is derated: utilisation 1.0 is the
+/// edge of the material, and a real design wants a factor on top.
+const MILD_STEEL_YIELD_MPA: f64 = 250.0;
+/// Yield of 6061-T6, `MPa`. Same caveat.
+const AL_6061_YIELD_MPA: f64 = 276.0;
+/// Members knowingly past yield, with the utilisation each was accepted at.
+///
+/// ⛔⛔ **An ACCEPTANCE, not a silence.** The tube stock was sized for the
+/// 108 kg rideable trike and never re-based; the screen that says so did not
+/// exist until this arc. Re-sizing the chassis is a design decision and it is
+/// the next arc, so these four are recorded rather than fixed — but recorded
+/// means PINNED, and the gate below fires on a new member going over, on one
+/// of these getting worse, and on one of these getting BETTER, because an
+/// acceptance nobody revisits is how the list turns back into a mute.
+///
+/// ⚠ `swingarm` should improve on its own when the wheels are authored: it
+/// carries `rim_r`, a 56 kg solid slug standing in for an 18in wheel. The seat
+/// members will not — they carry the driver, and his mass is not a placeholder.
+///
+/// ⛔⛔ **Three of these six are LOWER BOUNDS, not figures.** The screen loads
+/// a member with its subtree's weight, which is right for the seat members —
+/// the driver genuinely hangs below them — and wrong for anything reacted at
+/// the ground. `arm_lower_l`, `arm_lower_r` and `swingarm` carry a CHASSIS
+/// load down to a contact patch, not their own wheels' weight, and the screen
+/// understates them 2.9x as modelled and 8.3x at the design target. See
+/// `cf_assembly_checks::member_load`'s blind spots.
+///
+/// ⚠ Read `seat_back_rail_left` as about half what it says. The joint tree
+/// hands the whole driver to whichever rail is the parent and the other reads
+/// zero; two rails carry him between them.
+///
+/// ⚠ These moved 1.5-9% when the section sampler stopped reading `Z` high —
+/// the extreme fibre now reaches the outer edge of the outermost sample cell
+/// rather than its centre, which makes the screen conservative and every
+/// utilisation here slightly larger. Re-pinned to what was measured, because a
+/// pin that merely survives its own tolerance band is not a pin.
+const ACCEPTED_OVER_YIELD: &[(&str, f64)] = &[
+    ("swingarm", 6.785),
+    ("seat_back_rail_left", 5.336),
+    ("seat_cross", 1.929),
+    ("seat_back", 1.472),
+    // ⚠ These two crossed when the front wheels gained a FACE — the barrel and
+    // the hub had never touched, so each wheel was a floating hoop and a plug
+    // until the connectivity check said so. Giving them a disc to span took
+    // each wheel from 4.7 kg to 7.6, against 9-11 for a real 17x8 alloy, and
+    // the lower wishbones carry that. Nothing is wrong with the wishbones; the
+    // model stopped understating what they hold.
+    ("arm_lower_r", 1.045),
+    ("arm_lower_l", 1.008),
+];
+/// How much worse an accepted member may get before the gate fires.
+///
+/// Wide enough that re-meshing or a cell change does not trip it, narrow
+/// enough that a real regression does.
+const ACCEPTED_DRIFT: f64 = 0.15;
 
 // ── Derivation ──────────────────────────────────────────────────────────
 
@@ -150,7 +446,12 @@ fn merged(a: &Aabb, b: &Aabb) -> Aabb {
 struct Derived {
     name: String,
     grid_kg: f64,
-    closed_form_kg: f64,
+    /// The closed form to check against, or `None` for authored geometry —
+    /// see [`Derived::relative_error`].
+    closed_form_kg: Option<f64>,
+    /// The same part integrated on a grid one step finer. Only carried when
+    /// there is no closed form, because that refinement is what replaces it.
+    refined_kg: Option<f64>,
     world_com_mm: Vector3<f64>,
     /// The part's box, placed in the world frame.
     world_bounds: Aabb,
@@ -158,9 +459,29 @@ struct Derived {
 }
 
 impl Derived {
-    /// How far the grid integrator sits from the closed form.
+    /// How far the grid integrator sits from the truth, however it is known.
+    ///
+    /// ★ Two ways, because authored geometry has only one of them. A part
+    /// built from **disjoint** primitives has an elementary volume, and the
+    /// grid is checked against it. A part with blended fillets, a pocket and a
+    /// boss has no such volume — inventing one would be worse than admitting
+    /// it — so the grid is checked against **itself, refined**: integrate at
+    /// the cell, integrate at half the cell, and require them to agree.
+    ///
+    /// ⚠ A convergence check is weaker. It catches a grid too coarse for the
+    /// feature, which is the failure that actually happens here, but it cannot
+    /// catch a solid that is the wrong shape in a way that refines smoothly.
     fn relative_error(&self) -> f64 {
-        (self.grid_kg - self.closed_form_kg).abs() / self.closed_form_kg
+        match (self.closed_form_kg, self.refined_kg) {
+            (Some(closed), _) => (self.grid_kg - closed).abs() / closed,
+            (None, Some(fine)) => (self.grid_kg - fine).abs() / fine,
+            (None, None) => f64::INFINITY,
+        }
+    }
+
+    /// What the grid was compared against, for the table.
+    fn reference_kg(&self) -> Option<f64> {
+        self.closed_form_kg.or(self.refined_kg)
     }
 }
 
@@ -192,7 +513,20 @@ fn derive(
         out.push(Derived {
             name: part.name().to_owned(),
             grid_kg: props.mass,
-            closed_form_kg: volume_mm3 * 1e-9 * density,
+            closed_form_kg: volume_mm3.map(|v| v * 1e-9 * density),
+            refined_kg: match volume_mm3 {
+                Some(_) => None,
+                // No closed form: integrate again at half the cell. If the
+                // coarse pass had missed a feature, halving it would move the
+                // answer.
+                None => match mass_properties(part.solid(), density, cell_mm / 2.0) {
+                    Some(fine) => Some(fine.mass),
+                    None => bail!(
+                        "part {} vanished at half its cell, so nothing checks its mass",
+                        part.name()
+                    ),
+                },
+            },
             world_com_mm: origin + props.center_of_mass.coords,
             world_bounds: Aabb::new(
                 Point3::from(local.min.coords + origin),
@@ -206,39 +540,210 @@ fn derive(
 
 // ── Looking at it ───────────────────────────────────────────────────────
 
+/// An articulated pose to export, for looking at what a sweep only counted.
+///
+/// ⚠⚠ **Only what the corresponding gate actually tests.** These turn the
+/// wishbones and leave the wheel where it is, because that IS the comparison
+/// the sweep makes — the upright's true pose at travel is set by BOTH
+/// wishbones through the linkage, and nothing here solves that. Rendering a
+/// guess at it would put a picture on screen that no check stands behind.
+///
+/// ⛔⛔ **`Bump` MIRRORS the two sides; `Roll` does not, and the difference is
+/// not cosmetic.** A rotation about `+x` sends `+y` up and `-y` down, so ONE
+/// rotation applied to both wishbones lifts the left and drops the right — a
+/// roll pose. The first version of this called that "bump", and the render
+/// showed it immediately: left tip at z +324, right at z -24, from a rest of
+/// +150 on both.
+///
+/// ⚠ The SWEEP is unaffected and remains complete: it tests every arm at both
+/// extremes, which is the same set of arm positions either way. What was wrong
+/// was the name on the picture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pose {
+    /// As built.
+    Rest,
+    /// Both wishbones raised by `BUMP_TRAVEL_DEG`, wheel at rest.
+    Bump,
+    /// Both wishbones lowered by the same, wheel at rest.
+    Droop,
+    /// One rotation applied to both — left up, right down. What the sweep
+    /// itself does.
+    Roll,
+    /// Uprights, wheels and steer arms at `+STEER_LOCK_DEG` about the kingpin.
+    LockLeft,
+    /// The same, the other way.
+    LockRight,
+}
+
+impl Pose {
+    fn parse(name: &str) -> Option<Self> {
+        match name {
+            "rest" => Some(Self::Rest),
+            "bump" => Some(Self::Bump),
+            "droop" => Some(Self::Droop),
+            "roll" => Some(Self::Roll),
+            "lock-left" => Some(Self::LockLeft),
+            "lock-right" => Some(Self::LockRight),
+            _ => None,
+        }
+    }
+
+    /// Where a part's vertices go in this pose, given the assembly's origins.
+    ///
+    /// ★ The same pivot and axis the sweeps use: a wishbone turns about its own
+    /// body origin on x, and a steered corner turns about its upright's origin
+    /// on [`cf_trike::steering_axis`].
+    fn place(
+        self,
+        part: &str,
+        origins: &HashMap<String, Vector3<f64>>,
+    ) -> Option<(Vector3<f64>, UnitQuaternion<f64>)> {
+        const ARMS: [&str; 6] = [
+            "arm_lower_l",
+            "arm_lower_r",
+            "arm_upper_l",
+            "arm_upper_l_aft",
+            "arm_upper_r",
+            "arm_upper_r_aft",
+        ];
+        let corner = |side: char| -> [String; 4] {
+            [
+                format!("upright_{side}"),
+                format!("rim_f{side}"),
+                format!("tyre_f{side}"),
+                format!("steer_arm_{side}"),
+            ]
+        };
+        match self {
+            Self::Rest => None,
+            Self::Bump | Self::Droop | Self::Roll => {
+                if !ARMS.contains(&part) {
+                    return None;
+                }
+                let pivot = *origins.get(part)?;
+                // ⛔ Mirrored by the side the arm is on, or the pair rolls.
+                // `Roll` is the unmirrored case, kept because it is what the
+                // sweep applies.
+                let hand = if self == Self::Roll || pivot.y >= 0.0 {
+                    1.0
+                } else {
+                    -1.0
+                };
+                let deg = hand
+                    * if self == Self::Droop {
+                        -BUMP_TRAVEL_DEG
+                    } else {
+                        BUMP_TRAVEL_DEG
+                    };
+                let axis = nalgebra::Unit::new_normalize(Vector3::x());
+                Some((
+                    pivot,
+                    UnitQuaternion::from_axis_angle(&axis, deg.to_radians()),
+                ))
+            }
+            Self::LockLeft | Self::LockRight => {
+                let deg = if self == Self::LockLeft {
+                    STEER_LOCK_DEG
+                } else {
+                    -STEER_LOCK_DEG
+                };
+                let axis = nalgebra::Unit::new_normalize(cf_trike::steering_axis());
+                for side in ['l', 'r'] {
+                    if corner(side).iter().any(|n| n == part) {
+                        return Some((
+                            *origins.get(&format!("upright_{side}"))?,
+                            UnitQuaternion::from_axis_angle(&axis, deg.to_radians()),
+                        ));
+                    }
+                }
+                None
+            }
+        }
+    }
+}
+
 /// Mesh every part and write it to `dir` as an STL, one file per part.
 ///
 /// ⚠ Opt-in via `--out <dir>`. `xtask run-validators` invokes this example
 /// with **no arguments**, and a validator that writes files on every CI run
 /// would leave litter behind; the asserted zero-argument path stays read-only.
 ///
-/// ⚠ **A part can mesh to nothing.** [`Mechanism::to_stl_kit`] meshes every
-/// part at one tolerance, and that tolerance is a *cell size*: the 3 mm seat
-/// pan, 3 mm thick at the time, vanished entirely at the 4 mm default that
-/// suits a 1.25 m frame and wrote an 84-byte STL containing no triangles — a
-/// valid, correctly named, empty file. So each part is meshed at the requested tolerance and only what
-/// vanishes is refined, halving down to [`MIN_STL_TOLERANCE_MM`].
+/// ⚠ **A part can mesh to nothing.** The tolerance is a *cell size*: the 3 mm
+/// seat pan, 3 mm thick at the time, vanished entirely at the 4 mm default
+/// that suits a 1.25 m frame and wrote an 84-byte STL containing no triangles
+/// — a valid, correctly named, empty file.
 ///
-/// ⚠ Refining *everything* to its mass-integration cell instead was measured
-/// at 8.1 M triangles and 388 MB: that cell is chosen for integration
-/// accuracy, and a 2 mm wall does not need 0.5 mm triangles to look right.
+/// ⚠⚠ **And worse, it can mesh to a THIN version of itself**, which is not
+/// empty and so passed. Refinement used to trigger on `faces.is_empty()` —
+/// "did it produce anything", not "is it right". Measured at the 4 mm default
+/// against each part's closed-form volume: `frame_spine` **8.7%**, `tie_rod`
+/// **4.6%**, `frame_diag_l` **11.1%**, all with thousands of faces. These are
+/// the files that get manufactured.
+///
+/// So each part is now refined until its mesh volume is within
+/// [`STL_VOLUME_TOLERANCE`] of its closed form, halving down to
+/// [`MIN_STL_TOLERANCE_MM`] — and parts with no closed form are reported as
+/// unverified rather than assumed right.
+///
+/// ⚠ **What that costs, measured**: 5.68 M triangles and 558 MB on disk, with
+/// the slender parts landing at 1 mm. A wall needs cells finer than the wall;
+/// there is no cheaper faithful mesh of a thin tube. Refining
+/// *everything* to its mass-integration cell — a different and worse rule —
+/// was measured at 8.1 M triangles, since that cell is chosen for integration
+/// accuracy rather than for fidelity of the surface.
 fn export_stls(
     mechanism: &Mechanism,
     origins: &HashMap<String, Vector3<f64>>,
+    metrics: &HashMap<String, PartMetrics>,
     dir: &Path,
     tolerance_mm: f64,
+    pose: Pose,
 ) -> Result<()> {
-    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    // ⚠ Parts go in their own directory, and the merged file stays out of it.
+    // `cf-view --assembly` spawns EVERY stl in a directory at its world
+    // position, so a merged copy sitting beside the parts draws the whole
+    // vehicle twice — once in pieces and once on top of itself.
+    let parts_dir = dir.join("parts");
+    std::fs::create_dir_all(&parts_dir)
+        .with_context(|| format!("creating {}", parts_dir.display()))?;
     let mut assembly = IndexedMesh::default();
     let mut total = 0usize;
 
+    let mut unchecked: Vec<&str> = Vec::new();
     for part in mechanism.parts() {
-        // Mesh at what was asked for, and refine only what vanishes. The
-        // tolerance is a cell size, so a part thinner than one cell meshes to
-        // nothing at all — a silent, correctly named, empty file.
+        // Mesh at what was asked for, and refine until the mesh is the PART.
+        //
+        // ⚠⚠ This used to refine only what VANISHED — `faces.is_empty()` — and
+        // that criterion is "did it produce anything", not "is it right". The
+        // tolerance is a cell size, so a slender part does not vanish, it
+        // *thins*, and a thinned part has plenty of faces. Measured at the
+        // 4 mm default against each part's closed-form volume:
+        //
+        // | part | exported | true |
+        // |---|---|---|
+        // | `frame_spine` | **8.7%** | 433 492 mm^3 |
+        // | `tie_rod` | **4.6%** | 129 263 mm^3 |
+        // | `frame_diag_l` | **11.1%** | 109 005 mm^3 |
+        //
+        // These are the files that get MANUFACTURED, and nothing objected.
+        //
+        // ⚠ The closed form is the referent, and not every part has one —
+        // authored geometry does not. Those are reported at the end rather
+        // than silently treated as correct: a part this cannot read is not a
+        // part this has checked.
+        let closed_form = metrics.get(part.name()).and_then(|m| m.volume_mm3);
+        let faithful = |mesh: &IndexedMesh| match closed_form {
+            None => true,
+            Some(want) if want <= 0.0 => true,
+            Some(want) => ((mesh_volume_mm3(mesh) - want) / want).abs() <= STL_VOLUME_TOLERANCE,
+        };
+        if closed_form.is_none() {
+            unchecked.push(part.name());
+        }
+
         let mut tol = tolerance_mm;
         let mut mesh = part.solid().mesh(tol).geometry;
-        while mesh.faces.is_empty() && tol > MIN_STL_TOLERANCE_MM {
+        while (mesh.faces.is_empty() || !faithful(&mesh)) && tol > MIN_STL_TOLERANCE_MM {
             tol /= 2.0;
             mesh = part.solid().mesh(tol).geometry;
         }
@@ -249,16 +754,36 @@ fn export_stls(
                 part.name()
             );
         }
+        if let Some(want) = closed_form.filter(|v| *v > 0.0) {
+            let got = mesh_volume_mm3(&mesh);
+            let off = (got - want) / want;
+            if off.abs() > STL_VOLUME_TOLERANCE {
+                bail!(
+                    "part {} still meshes to {:.1}% of its closed-form volume at \
+                     {MIN_STL_TOLERANCE_MM} mm ({got:.0} vs {want:.0} mm^3) — the \
+                     exported solid is not the part",
+                    part.name(),
+                    100.0 * got / want
+                );
+            }
+        }
 
         // ⚠ Place it. A part's solid is in its OWN frame; where it sits is in
         // the joint anchors. Writing the mesh as-meshed puts every part on the
-        // origin, so opening the folder shows thirteen parts in a heap rather
+        // origin, so opening the folder shows every part in a heap rather
         // than a vehicle.
         let Some(&origin) = origins.get(part.name()) else {
             bail!("no world origin resolved for part {}", part.name());
         };
+        // ★ Articulation uses the SAME pivot and rotation the sweeps do, so a
+        // picture of a pose is a picture of what the gate compared — not an
+        // independent re-derivation that could differ for its own reasons.
+        let articulate = pose.place(part.name(), origins);
         for v in &mut mesh.vertices {
             *v += origin;
+            if let Some((pivot, rot)) = articulate {
+                *v = rot * (*v - pivot) + pivot;
+            }
         }
 
         let base = u32::try_from(assembly.vertices.len())
@@ -270,7 +795,7 @@ fn export_stls(
                 .map(|f| [f[0] + base, f[1] + base, f[2] + base]),
         );
 
-        let path = dir.join(format!("{}.stl", part.name()));
+        let path = parts_dir.join(format!("{}.stl", part.name()));
         mesh_io::save_stl(&mesh, &path, true)
             .with_context(|| format!("writing {}", path.display()))?;
         let refined = if tol < tolerance_mm { " (refined)" } else { "" };
@@ -283,8 +808,25 @@ fn export_stls(
         total += mesh.faces.len();
     }
 
+    // ⚠ Say what could not be checked. A part with no closed form was meshed
+    // and written like any other, but nothing verified the mesh IS the part —
+    // and a silent pass reads identically to a verified one.
+    if unchecked.is_empty() {
+        println!(
+            "  every part's mesh within {:.0}% of its closed-form volume",
+            STL_VOLUME_TOLERANCE * 100.0
+        );
+    } else {
+        println!(
+            "  {} of {} parts have no closed form and their meshes are UNVERIFIED: {}",
+            unchecked.len(),
+            mechanism.parts().len(),
+            unchecked.join(", ")
+        );
+    }
+
     // One file with the whole thing in it, so "look at the trike" is a
-    // single open rather than thirteen.
+    // single open rather than one per part.
     let whole = dir.join("trike_assembled.stl");
     mesh_io::save_stl(&assembly, &whole, true)
         .with_context(|| format!("writing {}", whole.display()))?;
@@ -300,6 +842,11 @@ fn export_stls(
         hi.y,
         lo.z,
         hi.z
+    );
+    println!(
+        "  assembled, part by part, with a visibility toggle each:\n    \
+         cargo run --release -p cf-viewer --bin cf-view -- --assembly {}",
+        parts_dir.display()
     );
 
     // The assembly must actually span the vehicle. If placement silently
@@ -354,6 +901,14 @@ fn main() -> Result<()> {
             .cloned()
     };
     let out_dir = flag("--out").map(PathBuf::from);
+    let pose = match flag("--pose") {
+        None => Pose::Rest,
+        Some(name) => Pose::parse(&name).ok_or_else(|| {
+            anyhow::anyhow!(
+                "--pose takes rest, bump, droop, roll, lock-left or lock-right, got {name}"
+            )
+        })?,
+    };
     let tolerance_mm = match flag("--tolerance") {
         Some(t) => t
             .parse::<f64>()
@@ -382,50 +937,47 @@ fn main() -> Result<()> {
     // ── Oracle 0: the articulation is what it is meant to be ────────
     //
     // Welds are free: `JointKind::Fixed` emits no joint and no coordinate, so
-    // the six here cost the solver nothing. They were 1e-9 rad revolutes
+    // the welds here cost the solver nothing. They were 1e-9 rad revolutes
     // before cf-design grew a weld, and those were six real degrees of
     // freedom pretending to be none.
-    let welds = mechanism
-        .joints()
-        .iter()
-        .filter(|j| j.kind().is_weld())
-        .count();
-    let dof: usize = mechanism.joints().iter().map(|j| j.kind().dof()).sum();
-    let held: usize = mechanism
-        .linkages()
-        .iter()
-        .map(|l| l.kind().constrained_dof())
-        .sum();
+    // ⚠ Read from the harness rather than recomputed here. These five
+    // expressions existed inline AND in `cf_assembly_checks::counts` — the
+    // crate was extracted and this caller was never switched over, which left
+    // a public function with no users and its only user duplicating it.
+    let tally = cf_assembly_checks::counts(&mechanism);
     println!(
-        "reverse trike — {} parts, {welds} welds, {dof} dof in the tree, {} \
-         linkage holding {held} of them: {} left",
-        mechanism.parts().len(),
-        mechanism.linkages().len(),
-        dof - held
+        "reverse trike — {} parts, {} welds, {} dof in the tree, {} \
+         linkage holding {} of them: {} left",
+        tally.parts,
+        tally.welds,
+        tally.tree_dof,
+        tally.linkages,
+        tally.held_dof,
+        tally.free_dof()
     );
-    if mechanism.linkages().len() != EXPECTED_LINKAGES {
+    if tally.linkages != EXPECTED_LINKAGES {
+        bail!("{} linkages, expected {EXPECTED_LINKAGES}", tally.linkages);
+    }
+    if tally.welds != EXPECTED_WELDS {
+        bail!("{} welds, expected {EXPECTED_WELDS}", tally.welds);
+    }
+    if tally.tree_dof != EXPECTED_DOF {
         bail!(
-            "{} linkages, expected {EXPECTED_LINKAGES}",
-            mechanism.linkages().len()
+            "{} degrees of freedom, expected {EXPECTED_DOF}",
+            tally.tree_dof
         );
-    }
-    if welds != EXPECTED_WELDS {
-        bail!("{welds} welds, expected {EXPECTED_WELDS}");
-    }
-    if dof != EXPECTED_DOF {
-        bail!("{dof} degrees of freedom, expected {EXPECTED_DOF}");
     }
     println!();
     println!(
         "{:<12} {:>10} {:>12} {:>9}   {:>8} {:>8} {:>8} {:>7} {:>9}",
-        "part", "grid kg", "closed kg", "rel err", "com x", "com y", "com z", "cell", "cells"
+        "part", "grid kg", "checked vs", "rel err", "com x", "com y", "com z", "cell", "cells"
     );
     for d in &derived {
         println!(
             "{:<12} {:>10.4} {:>12.4} {:>8.3}% {:>9.1} {:>8.1} {:>8.1} {:>7.1} {:>8.2}M",
             d.name,
             d.grid_kg,
-            d.closed_form_kg,
+            d.reference_kg().unwrap_or(f64::NAN),
             d.relative_error() * 100.0,
             d.world_com_mm.x,
             d.world_com_mm.y,
@@ -441,18 +993,18 @@ fn main() -> Result<()> {
         .max_by(|a, b| a.relative_error().total_cmp(&b.relative_error()));
     if let Some(w) = worst {
         println!(
-            "\nworst grid-vs-closed-form error: {:.3}% on {} (tolerance {:.1}%)",
+            "\nworst grid error (closed form, or the grid refined): {:.3}% on {} (tolerance {:.1}%)",
             w.relative_error() * 100.0,
             w.name,
             MASS_TOLERANCE * 100.0
         );
         if w.relative_error() > MASS_TOLERANCE {
             bail!(
-                "part {} integrated to {:.4} kg but its closed form is {:.4} kg — \
+                "part {} integrated to {:.4} kg against a reference of {:.4} kg — \
                  {:.3}% apart, over the {:.1}% tolerance",
                 w.name,
                 w.grid_kg,
-                w.closed_form_kg,
+                w.reference_kg().unwrap_or(f64::NAN),
                 w.relative_error() * 100.0,
                 MASS_TOLERANCE * 100.0
             );
@@ -625,9 +1177,37 @@ fn main() -> Result<()> {
         if probe.vertices.is_empty() {
             bail!("the front tyre meshed to nothing at {STEER_PROBE_MM} mm");
         }
+        // ⛔⛔ **The member list was two parts the tyre cannot reach.** It read
+        // `frame_cross` and `frame_diag_l` only, and the arithmetic forbids a
+        // clash with either at ANY angle: the kingpin sits at y = 815, the
+        // tyre's 310 mm radius sweeps inboard no further than y = 505, and the
+        // outermost thing those members touch is the 380 mm pickup line. That
+        // is 125 mm no steering angle can close — so the sweep was silent at
+        // full lock and silent at 180 degrees alike, and silence was the only
+        // answer it could give.
+        //
+        // What the steered wheel CAN reach is what runs out into its swept
+        // zone: the wishbones and the tower, which span from the pickups out
+        // to the upright the tyre is mounted on.
+        //
+        // ⚠⚠ Only parts that HOLD STILL under steering, which is a shorter list
+        // than it looks. `rim_fl`, `tyre_fl` and `steer_arm_l` ride on the
+        // upright. And the TIE ROD is pulled along by the steer arms — adding
+        // it here reported the tyre entering it at -34 deg, which is an
+        // artefact of comparing a turned wheel against an unturned rod, not a
+        // clash. The wishbones and towers are the genuine article: the upright
+        // rotates about the kingpin relative to them, so their resting pose IS
+        // where they are at lock.
         for lock_deg in [STEER_LOCK_DEG, -STEER_LOCK_DEG] {
             let rot = UnitQuaternion::from_axis_angle(&kingpin_axis, lock_deg.to_radians());
-            for member in ["frame_cross", "frame_diag_l"] {
+            for member in [
+                "frame_cross",
+                "frame_diag_l",
+                "tower_l",
+                "arm_lower_l",
+                "arm_upper_l",
+                "arm_upper_l_aft",
+            ] {
                 let fixed = by_name
                     .get(member)
                     .ok_or_else(|| anyhow::anyhow!("no member {member}"))?;
@@ -643,7 +1223,471 @@ fn main() -> Result<()> {
                 }
             }
         }
-        println!("steering sweeps +/-{STEER_LOCK_DEG:.0} deg clear of the frame");
+        println!(
+            "steering sweeps +/-{STEER_LOCK_DEG:.0} deg clear of the frame, towers \
+             and wishbones"
+        );
+    }
+
+    // ── Oracle 1g: nothing occupies the same space as anything else ─
+    //
+    // ★ The check that catches a part which is the right SHAPE, the right MASS
+    // and in the WRONG PLACE — which no mass or volume gate can see, because
+    // each of them reads one part at a time in its own frame. It found the
+    // frame still braced 292 mm past the suspension pickups, through the
+    // volume the lower wishbone swings in, after three other gates passed.
+    //
+    // ⚠ Lives in `cf-assembly-checks` and knows nothing about vehicles.
+    {
+        let found = cf_assembly_checks::overlapping_pairs(&mechanism, &origins, PAIR_PROBE_MM);
+        // ⛔⛔ Ask what the scan could NOT read before reading what it found. A
+        // part that meshes to no probe points contributes nothing to every
+        // pair it is in, so it cannot be reported as overlapping anything and
+        // its silence is indistinguishable from innocence.
+        if !found.unreadable.is_empty() {
+            bail!(
+                "the interpenetration scan could not read {} part(s) at a \
+                 {PAIR_PROBE_MM} mm probe, so they were invisible to every \
+                 comparison it made: {}",
+                found.unreadable.len(),
+                found.unreadable.join(", ")
+            );
+        }
+        // ⚠ Judged by the same [`pin_verdict`] the over-yield acceptances
+        // use. The two lists were written out longhand side by side and had
+        // already drifted apart on what counts as stale; one rule, worded
+        // twice, is the shape that lets that happen.
+        let allowance = |a: &str, b: &str| {
+            ALLOWED_OVERLAPS
+                .iter()
+                .find(|(x, y, _, _)| (*x == a && *y == b) || (*x == b && *y == a))
+                .map(|(_, _, was, _)| *was)
+        };
+        let mut objections: Vec<String> = Vec::new();
+        for o in &found.pairs {
+            let pct = o.fraction * 100.0;
+            match pin_verdict(
+                o.fraction,
+                allowance(&o.a, &o.b),
+                MAX_NODE_OVERLAP,
+                ALLOWED_OVERLAP_DRIFT,
+            ) {
+                Some(Pin::Unaccepted) => objections.push(format!(
+                    "{} <-> {}: {pct:.1}% of one is inside the other ({} points), \
+                     and nothing declares that legitimate",
+                    o.a, o.b, o.points
+                )),
+                Some(Pin::Worse(was)) => objections.push(format!(
+                    "{} <-> {} was allowed at {:.1}% and is now {pct:.1}%",
+                    o.a,
+                    o.b,
+                    was * 100.0
+                )),
+                Some(Pin::Better(was)) => objections.push(format!(
+                    "{} <-> {} was allowed at {:.1}% and is now {pct:.1}% — re-pin it",
+                    o.a,
+                    o.b,
+                    was * 100.0
+                )),
+                Some(Pin::Clear(was)) => objections.push(format!(
+                    "{} <-> {} is allowed at {:.1}% and now reads {pct:.1}%, clear of \
+                     the {:.1}% line — take it out of the allowance list",
+                    o.a,
+                    o.b,
+                    was * 100.0,
+                    MAX_NODE_OVERLAP * 100.0
+                )),
+                None => {}
+            }
+        }
+        // The one rule with no analogue on the yield side: a declared pair the
+        // scan stopped reporting altogether, which reads as compliance.
+        for (a, b, _, _) in ALLOWED_OVERLAPS {
+            if !found
+                .pairs
+                .iter()
+                .any(|o| (o.a == *a && o.b == *b) || (o.a == *b && o.b == *a))
+            {
+                objections.push(format!(
+                    "{a} <-> {b} is declared but the scan no longer reports the pair \
+                     at all — take it out of the allowance list"
+                ));
+            }
+        }
+        if !objections.is_empty() {
+            bail!(
+                "the interpenetration scan moved:\n  {}",
+                objections.join("\n  ")
+            );
+        }
+        println!(
+            "  {} declared overlap(s) allowed and pinned",
+            ALLOWED_OVERLAPS.len()
+        );
+    }
+
+    // ── Oracle 1h: every part is ONE body ───────────────────────────
+    //
+    // ★★★ Nothing above can see this. Mass integrates perfectly well over two
+    // lumps, a convergence check against a finer grid agrees with itself,
+    // interpenetration is about pairs rather than insides, and the member
+    // screen reads a load. Every one of those questions has a sensible answer
+    // for an object in two pieces.
+    //
+    // ⚠ Each part at its OWN cell — the one it is already integrated at. No
+    // single figure works: a 2300 mm rail needs a coarse cell to fit in memory
+    // and a 2 mm tube wall needs a fine one to survive the fill.
+    {
+        let cells: cf_assembly_checks::connectivity::Cells = metrics
+            .iter()
+            .map(|(name, m)| (name.clone(), m.cell_mm))
+            .collect();
+        let bodies = cf_assembly_checks::connectivity::disconnected_parts(&mechanism, &cells);
+        println!(
+            "{} of {} parts examined for connectivity{}",
+            bodies.examined,
+            bodies.examined + bodies.unreadable.len(),
+            if bodies.unreadable.is_empty() {
+                String::new()
+            } else {
+                // ⚠ NAMED, not counted. "5 unread" tells a reader nothing
+                // about which five, and a population that shrank silently is
+                // the defect this crate has now had three times.
+                format!(
+                    " — unread at their own cell: {}",
+                    bodies.unreadable.join(", ")
+                )
+            }
+        );
+        for s in &bodies.split {
+            println!(
+                "    {:<22} {} bodies, largest holds {:.1}%",
+                s.part,
+                s.components,
+                s.largest_share * 100.0
+            );
+        }
+        if !bodies.split.is_empty() {
+            bail!(
+                "{} part(s) are more than one body: {}",
+                bodies.split.len(),
+                bodies
+                    .split
+                    .iter()
+                    .map(|s| format!("{} ({})", s.part, s.components))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+    }
+
+    // ── Oracle 1f: the suspension moves without hitting anything ────
+    //
+    // The steering sweep above moves the wheel. Nothing moved the suspension,
+    // which is the one motion the wishbones exist to have — so ten parts and
+    // a degree of freedom per front wheel went in with no clash check at all.
+    //
+    // ★ A wishbone's travel is an **exact** rotation about its own pivot axis,
+    // which is the x axis through its body origin. That is what makes this a
+    // measurement rather than an approximation: no constraint solving is
+    // needed to know where the arm goes.
+    //
+    // ⚠ Sign only, for the reason the steering sweep gives: `Solid::evaluate`
+    // on a CSG solid is a bound, not a distance.
+    //
+    // ⚠ A part is never swept against what it is JOINED to. The arms pivot on
+    // those, so they touch by construction, and a scan that included them
+    // would report the joint as a collision and be switched off.
+    {
+        let by_name: HashMap<&str, &Part> =
+            mechanism.parts().iter().map(|p| (p.name(), p)).collect();
+        let axis = nalgebra::Unit::new_normalize(Vector3::x());
+        let mut swept = 0_usize;
+
+        // Joined pairs, read off the assembly rather than listed here. A
+        // hardcoded list of exceptions is a list that rots: this one would
+        // have had to grow every time a part was added, and the first thing
+        // the scan reported was a wishbone "entering" the upright hanging
+        // off its own ball joint.
+        //
+        // ⚠ Inert as the list below stands — removing this changes nothing,
+        // because the parts it would excuse are already out of that list for
+        // travelling with the arm. It is here so that adding a part to the
+        // list cannot resurrect the false positive that produced it.
+        let mut joined: HashSet<(&str, &str)> = HashSet::new();
+        for j in mechanism.joints() {
+            joined.insert((j.parent(), j.child()));
+            joined.insert((j.child(), j.parent()));
+        }
+        for l in mechanism.linkages() {
+            joined.insert((l.a(), l.b()));
+            joined.insert((l.b(), l.a()));
+        }
+
+        for arm in [
+            "arm_lower_l",
+            "arm_lower_r",
+            "arm_upper_l",
+            "arm_upper_l_aft",
+            "arm_upper_r",
+            "arm_upper_r_aft",
+        ] {
+            let part = by_name
+                .get(arm)
+                .ok_or_else(|| anyhow::anyhow!("no part {arm}"))?;
+            let origin = *origins
+                .get(arm)
+                .ok_or_else(|| anyhow::anyhow!("no origin for {arm}"))?;
+            // The pivot is the arm's own body origin — the midpoint of its two
+            // frame pickups, which is a point on its axis.
+            let pivot = origin;
+            let probe = part.solid().mesh(STEER_PROBE_MM).geometry;
+            if probe.vertices.is_empty() {
+                bail!("{arm} meshed to nothing at {STEER_PROBE_MM} mm");
+            }
+
+            for deg in [BUMP_TRAVEL_DEG, -BUMP_TRAVEL_DEG] {
+                let rot = UnitQuaternion::from_axis_angle(&axis, deg.to_radians());
+                // ⚠ Only parts that do NOT travel with this arm. The
+                // upright, its wheel, the steer arm and the bar all ride on
+                // the wishbone, so sweeping the arm against their resting
+                // pose would compare a part with where its own passengers
+                // used to be. What is left is genuinely independent: the
+                // frame, the towers, the seat, and the other wishbones.
+                for other in [
+                    "frame_spine",
+                    "frame_cross",
+                    "frame_diag_l",
+                    "frame_diag_r",
+                    "tower_l",
+                    "tower_r",
+                    "seat_cross",
+                    "arm_lower_l",
+                    "arm_lower_r",
+                    "arm_upper_l",
+                    "arm_upper_l_aft",
+                    "arm_upper_r",
+                    "arm_upper_r_aft",
+                ] {
+                    if other == arm || joined.contains(&(arm, other)) {
+                        continue;
+                    }
+                    let fixed = by_name
+                        .get(other)
+                        .ok_or_else(|| anyhow::anyhow!("no part {other}"))?;
+                    let fixed_origin = *origins
+                        .get(other)
+                        .ok_or_else(|| anyhow::anyhow!("no origin for {other}"))?;
+                    let inside = probe.vertices.iter().any(|v| {
+                        let world = pivot + rot * (v.coords + origin - pivot);
+                        fixed.solid().evaluate(&Point3::from(world - fixed_origin)) < 0.0
+                    });
+                    if inside {
+                        bail!(
+                            "at {deg:+.0} deg of travel {arm} enters {other} — the \
+                             suspension cannot move through its declared range"
+                        );
+                    }
+                    swept += 1;
+                }
+            }
+        }
+        if swept == 0 {
+            bail!("the bump sweep compared nothing, so it proves nothing");
+        }
+        println!(
+            "suspension sweeps +/-{BUMP_TRAVEL_DEG:.0} deg clear \
+             ({swept} arm-against-part checks; the wishbones foul each other \
+             at {BUMP_FOUL_DEG:.0} deg)"
+        );
+    }
+
+    // ── Oracle 1h: it steers AT TRAVEL, not only at rest ────────────
+    //
+    // Oracle 1d steers the wheel with the suspension at rest. Oracle 1f moves
+    // the suspension with the wheel at rest. Interference lives in the PRODUCT
+    // of those, and neither sweep enters it.
+    //
+    // ⚠ That gap is not small. Measured here: driving the lower wishbone to
+    // +20 deg pulls the upper to **+23.0 deg**, and the upright ends up
+    // **27.1 deg** rotated relative to `arm_upper_l` (36.8 deg at droop). The
+    // wishbone sweeps roughly a quarter-turn past the wheel it carries, so
+    // where the tyre may go at rest says nothing about where it may go at
+    // travel.
+    //
+    // ⛔⛔ **The two arms do NOT travel by the same angle.** That difference
+    // IS the camber change. Forcing both to one angle is not a pose the
+    // linkage has: measured, it leaves the ball joints **45.7 mm** apart.
+    // `Pose::Bump` turns both together and is honest about being a picture of
+    // what Oracle 1f compares, not of a pose the vehicle can hold.
+    //
+    // ★ So the pose is SOLVED, not assumed: the lower arm is driven by its own
+    // bushing and the loop is left to close, which is the one thing here that
+    // needs the physics rather than the geometry. The residual is asserted
+    // before any pose is read — an unconverged solve would otherwise hand this
+    // sweep a vehicle that does not exist.
+    {
+        let by_name: HashMap<&str, &Part> =
+            mechanism.parts().iter().map(|p| (p.name(), p)).collect();
+        let mut model = mechanism
+            .to_model(SIM_RESOLUTION_MM, SIM_RESOLUTION_MM)
+            .map_err(|e| anyhow::anyhow!("to_model failed: {e:?}"))?;
+        model.disableflags |= DISABLE_CONTACT;
+        model.gravity = Vector3::zeros();
+        let body_of = |m: &Model, name: &str| -> Result<usize> {
+            (0..m.nbody)
+                .find(|&b| m.body_name[b].as_deref() == Some(name))
+                .ok_or_else(|| anyhow::anyhow!("no body {name}"))
+        };
+        let joint_of = |m: &Model, name: &str| -> Result<usize> {
+            (0..m.njnt)
+                .find(|&j| m.jnt_name[j].as_deref() == Some(name))
+                .ok_or_else(|| anyhow::anyhow!("no joint {name}"))
+        };
+
+        // Rest poses, for the body-frame offset of each solid.
+        let mut rest = model.make_data();
+        rest.forward(&model)
+            .map_err(|e| anyhow::anyhow!("forward failed: {e:?}"))?;
+        let rest_pos: Vec<Vector3<f64>> = rest.xpos.clone();
+
+        let settle =
+            |deg: f64| -> Result<(Vec<Vector3<f64>>, Vec<nalgebra::Matrix3<f64>>, f64, f64)> {
+                let mut m = model.clone();
+                for name in ["arm_lower_l_joint", "arm_lower_r_joint"] {
+                    let j = joint_of(&m, name)?;
+                    // ⚠ `qpos_spring`, not `jnt_springref` — sim-core writes the
+                    // latter and never reads it.
+                    m.qpos_spring[m.jnt_qpos_adr[j]] = deg.to_radians();
+                    m.jnt_stiffness[j] = TRAVEL_DRIVE_STIFFNESS;
+                    m.jnt_damping[j] = TRAVEL_DRIVE_DAMPING;
+                    let d0 = m.jnt_dof_adr[j];
+                    m.dof_damping[d0] = TRAVEL_DRIVE_DAMPING;
+                    m.implicit_stiffness[d0] = TRAVEL_DRIVE_STIFFNESS;
+                    m.implicit_damping[d0] = TRAVEL_DRIVE_DAMPING;
+                }
+                let mut d = m.make_data();
+                d.forward(&m)
+                    .map_err(|e| anyhow::anyhow!("forward failed: {e:?}"))?;
+                for step in 0..TRAVEL_SETTLE_STEPS {
+                    d.step(&m)
+                        .map_err(|e| anyhow::anyhow!("settle step {step} failed: {e:?}"))?;
+                }
+                let mut loop_gap: f64 = 0.0;
+                for e in 0..m.neq {
+                    let (a, b) = (m.eq_obj1id[e], m.eq_obj2id[e]);
+                    let dd = m.eq_data[e];
+                    let pa = d.xpos[a] + d.xmat[a] * Vector3::new(dd[0], dd[1], dd[2]);
+                    let pb = d.xpos[b] + d.xmat[b] * Vector3::new(dd[3], dd[4], dd[5]);
+                    loop_gap = loop_gap.max((pa - pb).norm());
+                }
+                let reached =
+                    d.qpos[m.jnt_qpos_adr[joint_of(&m, "arm_lower_l_joint")?]].to_degrees();
+                if (reached - deg).abs() > TRAVEL_REACHED_TOLERANCE_DEG {
+                    bail!(
+                        "the lower wishbone was driven to {deg:+.0} deg and reached \
+                     {reached:+.2} — the pose this sweep tests is not the pose \
+                     it asked for"
+                    );
+                }
+                if loop_gap > MAX_LOOP_RESIDUAL_MM {
+                    bail!(
+                        "the linkage did not close at {deg:+.0} deg of travel \
+                     ({loop_gap:.3} mm apart) — no pose to sweep"
+                    );
+                }
+                Ok((d.xpos.clone(), d.xmat.clone(), reached, loop_gap))
+            };
+
+        let tyre = by_name
+            .get("tyre_fl")
+            .ok_or_else(|| anyhow::anyhow!("no front tyre"))?;
+        let probe = tyre.solid().mesh(STEER_PROBE_MM).geometry;
+        if probe.vertices.is_empty() {
+            bail!("the front tyre meshed to nothing at {STEER_PROBE_MM} mm");
+        }
+        let tyre_b = body_of(&model, "tyre_fl")?;
+        let upright_b = body_of(&model, "upright_l")?;
+        let tyre_origin = *origins
+            .get("tyre_fl")
+            .ok_or_else(|| anyhow::anyhow!("no tyre origin"))?;
+        let upright_origin = *origins
+            .get("upright_l")
+            .ok_or_else(|| anyhow::anyhow!("no upright origin"))?;
+
+        let mut checks = 0_usize;
+        let mut accepted = 0_usize;
+        let mut worst_residual: f64 = 0.0;
+        for travel in [0.0, BUMP_TRAVEL_DEG, -BUMP_TRAVEL_DEG] {
+            let (pos, mat, reached, residual) = settle(travel)?;
+            worst_residual = worst_residual.max(residual);
+            // A solid sits at `origin` in world at rest, and the body frame is
+            // at `rest_pos`; that offset is constant in the body frame, so the
+            // solid's world placement at any pose is pos + mat * offset.
+            let place = |b: usize, origin: Vector3<f64>, local: Vector3<f64>| -> Vector3<f64> {
+                pos[b] + mat[b] * (local + origin - rest_pos[b])
+            };
+            let unplace = |b: usize, origin: Vector3<f64>, world: Vector3<f64>| -> Vector3<f64> {
+                mat[b].transpose() * (world - pos[b]) - (origin - rest_pos[b])
+            };
+            // The kingpin travels with the upright, so both its point and its
+            // direction come from the settled pose rather than from rest.
+            let kingpin_point = place(upright_b, upright_origin, Vector3::zeros());
+            let kingpin_axis =
+                nalgebra::Unit::new_normalize(mat[upright_b] * cf_trike::steering_axis());
+
+            for lock_deg in [STEER_LOCK_DEG, -STEER_LOCK_DEG] {
+                let steer = UnitQuaternion::from_axis_angle(&kingpin_axis, lock_deg.to_radians());
+                for member in ["arm_lower_l", "arm_upper_l", "arm_upper_l_aft", "tower_l"] {
+                    let fixed = by_name
+                        .get(member)
+                        .ok_or_else(|| anyhow::anyhow!("no member {member}"))?;
+                    let fixed_b = body_of(&model, member)?;
+                    let fixed_origin = *origins
+                        .get(member)
+                        .ok_or_else(|| anyhow::anyhow!("no origin for {member}"))?;
+                    let inside = probe.vertices.iter().any(|v| {
+                        let at_travel = place(tyre_b, tyre_origin, v.coords);
+                        let steered = kingpin_point + steer * (at_travel - kingpin_point);
+                        fixed.solid().evaluate(&Point3::from(unplace(
+                            fixed_b,
+                            fixed_origin,
+                            steered,
+                        ))) < 0.0
+                    });
+                    checks += 1;
+                    let pinned = ACCEPTED_TRAVEL_CLASHES.iter().any(|(m, t, l, _)| {
+                        *m == member && (*t - travel).abs() < 0.5 && (*l - lock_deg).abs() < 0.5
+                    });
+                    match (inside, pinned) {
+                        (true, false) => bail!(
+                            "at {travel:+.0} deg of travel (arm at {reached:+.2}) and \
+                             {lock_deg:+.0} deg of lock, the front tyre enters {member}"
+                        ),
+                        (false, true) => bail!(
+                            "{member} is pinned as fouling at {travel:+.0} deg travel \
+                             and {lock_deg:+.0} deg lock and no longer does — take it \
+                             off the list rather than leaving a clash pinned that is \
+                             not there"
+                        ),
+                        (true, true) => accepted += 1,
+                        (false, false) => {}
+                    }
+                }
+            }
+        }
+        println!(
+            "steering vs travel: {checks} checks at {{0, +/-{BUMP_TRAVEL_DEG:.0}}} deg \
+             travel x +/-{STEER_LOCK_DEG:.0} deg lock, {accepted} accepted clash(es) \
+             pinned; loops closed to {worst_residual:.4} mm"
+        );
+        if accepted != ACCEPTED_TRAVEL_CLASHES.len() {
+            bail!(
+                "{accepted} of {} pinned clashes were reached — the sweep no longer \
+                 visits the poses the list describes",
+                ACCEPTED_TRAVEL_CLASHES.len()
+            );
+        }
     }
 
     // ── Oracle 1e: the assembly simulates, and the welds hold ───────
@@ -658,15 +1702,29 @@ fn main() -> Result<()> {
     // layer counts `nv` for itself.
     //
     // ⚠ What it does NOT prove. The model is stepped in free fall — no ground,
-    // no contacts — so this says nothing about whether the vehicle stands up,
-    // rolls, or corners. It says the assembly builds (56 geoms over 28 parts),
-    // integrates without diverging, and holds its welds. Standing it on a
-    // ground plane needs one, and a bare `Plane` has no finite bounds, so a
-    // `Mechanism` cannot carry it.
+    // and contacts explicitly OFF — so this says nothing about whether the
+    // vehicle stands up, rolls, or corners. It says the assembly builds — one
+    // geom per part — integrates without diverging, and holds its welds and
+    // its linkages. Standing it on a ground plane needs one, and a bare
+    // `Plane` has no finite bounds, so a `Mechanism` cannot carry it.
+    //
+    // ⚠⚠ **Contacts are disabled, and this used to claim they were absent.**
+    // They were not: measured, this model opens with **54 contacts** before a
+    // single step. 37 of them are between bodies in the same weld group —
+    // rigidly one body, unable to move relative to each other, and MuJoCo
+    // filters those on `body_weldid` where sim-core filters only direct
+    // parent-child. The other 17 are the assembly doing what an assembly
+    // does: a ball end sits 14.4 mm inside its upright, a rider sits 24 mm
+    // into a seat pan. Whether parts may interpenetrate is Oracle 1g's
+    // question, asked against declared allowances; feeding it to a collision
+    // solver instead let 216 contact rows push against 9 linkage rows and
+    // tore the steering 31.87 mm apart, which then read as a linkage defect.
+    // With them off the linkages hold to 0.0000002 mm over 20 000 steps.
     {
-        let model = mechanism
+        let mut model = mechanism
             .to_model(SIM_RESOLUTION_MM, SIM_RESOLUTION_MM)
             .map_err(|e| anyhow::anyhow!("to_model failed: {e:?}"))?;
+        model.disableflags |= DISABLE_CONTACT;
         if model.nv != EXPECTED_DOF {
             bail!(
                 "the physics model has {} degrees of freedom, this file counts \
@@ -758,43 +1816,69 @@ fn main() -> Result<()> {
         let mut data = model.make_data();
         data.forward(&model)
             .map_err(|e| anyhow::anyhow!("forward kinematics failed: {e:?}"))?;
-        let start: Vec<Vector3<f64>> = rigid
-            .iter()
-            .map(|(_, b)| data.xpos[*b] - data.xpos[root])
-            .collect();
+        // ⚠ In the ROOT'S FRAME, not merely relative to its position.
+        //
+        // A welded body has no joint between it and the root, so its offset in
+        // the root's frame is constant by construction and any motion measured
+        // here is a defect. Subtracting only `xpos[root]` leaves the root's
+        // ROTATION in: the vehicle turns on its free joint, a body 380 mm off
+        // centreline sweeps an arc, and that reads as drift. At a 900 mm track
+        // it hid inside the tolerance; at 1750 mm it reported 2.7 mm of drift
+        // for a part that cannot move.
+        let in_root = |data: &sim_core::Data, b: usize| {
+            data.xmat[root].transpose() * (data.xpos[b] - data.xpos[root])
+        };
+        let start: Vec<Vector3<f64>> = rigid.iter().map(|(_, b)| in_root(&data, *b)).collect();
+        // The linkage's own claim: the two points it holds stay together while
+        // the machine moves. cf-design proves this on a four-bar; this proves
+        // it on the vehicle, where the rod ties two steering arms that the
+        // joint tree leaves free of each other.
+        //
+        // ⚠ Measured EVERY step and kept at its worst. Reading it once at the
+        // end samples a phase of whatever the assembly is doing, and the
+        // defect that motivated this gate read 0.34 mm at the step it was
+        // sampled and 15.19 mm five hundred steps later.
+        let mut held_apart = (0.0_f64, 0usize, String::new());
         for step in 0..SIM_STEPS {
             data.step(&model)
                 .map_err(|e| anyhow::anyhow!("step {step} failed: {e:?}"))?;
+            for eq in 0..model.neq {
+                let (a, b) = (model.eq_obj1id[eq], model.eq_obj2id[eq]);
+                let d = model.eq_data[eq];
+                let pa = data.xpos[a] + data.xmat[a] * Vector3::new(d[0], d[1], d[2]);
+                let pb = data.xpos[b] + data.xmat[b] * Vector3::new(d[3], d[4], d[5]);
+                let gap = (pa - pb).norm();
+                if gap > held_apart.0 {
+                    held_apart = (
+                        gap,
+                        step,
+                        model.eq_name[eq].clone().unwrap_or_else(|| eq.to_string()),
+                    );
+                }
+            }
         }
         if !data.xpos.iter().all(|p| p.iter().all(|v| v.is_finite())) {
             bail!("a body position went non-finite within {SIM_STEPS} steps");
         }
         let mut worst = (String::new(), 0.0_f64);
         for (i, (name, b)) in rigid.iter().enumerate() {
-            let drift = ((data.xpos[*b] - data.xpos[root]) - start[i]).norm();
+            let drift = (in_root(&data, *b) - start[i]).norm();
             if drift > worst.1 {
                 worst = (name.clone(), drift);
             }
         }
-        // The linkage's own claim: the two points it holds stay together while
-        // the machine moves. cf-design proves this on a four-bar; this proves
-        // it on the vehicle, where the rod ties two steering arms that the
-        // joint tree leaves free of each other.
-        let mut held_apart: f64 = 0.0;
-        for eq in 0..model.neq {
-            let (a, b) = (model.eq_obj1id[eq], model.eq_obj2id[eq]);
-            let d = model.eq_data[eq];
-            let pa = data.xpos[a] + data.xmat[a] * Vector3::new(d[0], d[1], d[2]);
-            let pb = data.xpos[b] + data.xmat[b] * Vector3::new(d[3], d[4], d[5]);
-            held_apart = held_apart.max((pa - pb).norm());
-        }
-        if held_apart > MAX_LINKAGE_GAP_MM {
+        let (worst_gap, worst_step, worst_linkage) = held_apart;
+        if worst_gap > MAX_LINKAGE_GAP_MM {
             bail!(
-                "a linkage let its ends drift {held_apart:.3} mm apart over \
-                 {SIM_STEPS} steps — it is supposed to hold them together"
+                "linkage {worst_linkage} let its ends drift {worst_gap:.4} mm \
+                 apart at step {worst_step} of {SIM_STEPS} — it is supposed to \
+                 hold them together"
             );
         }
-        println!("  linkage ends held to {:.1} um", held_apart * 1000.0);
+        println!(
+            "  linkage ends held to {:.4} um at worst ({worst_linkage}, step {worst_step})",
+            worst_gap * 1000.0
+        );
 
         println!(
             "simulated {SIM_STEPS} steps: {} welded bodies, worst drift {:.1} um ({})",
@@ -846,6 +1930,128 @@ fn main() -> Result<()> {
         );
     }
 
+    // ── Oracle 2b: what the members are actually carrying ───────────
+    //
+    // ★★ The first check here that reads a LOAD. Every other oracle above is
+    // geometric, kinematic or bookkeeping — they ask where parts are, whether
+    // they interpenetrate, how many joints hold them. None of them can tell a
+    // sound member from one an order of magnitude past yield, which is exactly
+    // how the tube stock survived the re-base: the vehicle went from 108 kg to
+    // 785 and every gate that could see the change fired, while the ones that
+    // would have caught the sections did not exist.
+    //
+    // ★★★ **Gated against an ACCEPTED SET, which is not the same as ungated.**
+    // Four members are knowingly past yield and re-sizing the chassis is a
+    // design decision rather than a cleanup — but "knowingly" has to be worth
+    // something, so the acceptance is a PIN: anything NEW going over fires,
+    // an accepted member getting worse fires, and an accepted member that
+    // stops being over fires too, because a stale acceptance is how a list
+    // like this rots into a mute.
+    //
+    // ⛔ Read `cf_assembly_checks::member_load` for what it cannot see. Chief
+    // among them here: the cantilever model is measured from each part's BODY
+    // ORIGIN, and `frame_spine`'s sits mid-structure, so its 0.69x is
+    // meaningless rather than reassuring — worse than an absent number,
+    // because it looks like an answer.
+    {
+        let masses: MassMap = derived
+            .iter()
+            .map(|d| {
+                (
+                    d.name.clone(),
+                    MassPoint {
+                        kg: d.grid_kg,
+                        world_com_mm: d.world_com_mm,
+                    },
+                )
+            })
+            .collect();
+        // Yield, with no safety factor folded in: utilisation 1.0 is the edge
+        // of the material, not the edge of good practice.
+        let case = LoadCase::static_1g()
+            .at_g(BUMP_G)
+            .allowing("mild steel", MILD_STEEL_YIELD_MPA)
+            .allowing("aluminium 6061", AL_6061_YIELD_MPA);
+        let screen = member_loads(&mechanism, &origins, &masses, &case);
+        let over = screen
+            .members
+            .iter()
+            .filter(|l| l.utilisation.is_some_and(|u| u > 1.0))
+            .count();
+        println!(
+            "\nmember screen at {BUMP_G:.0} g — {} of {} members measured \
+             ({} unsupported), {over} past yield",
+            screen.members.len(),
+            screen.members.len() + screen.unmeasured.len(),
+            screen
+                .unmeasured
+                .iter()
+                .filter(|u| u.why.is_structural())
+                .count()
+        );
+        for l in screen.members.iter().take(8) {
+            let verdict = match l.utilisation {
+                Some(u) if u > 1.0 => format!("{u:>6.1}x OVER"),
+                Some(u) => format!("{u:>6.2}x"),
+                None => "     --".to_owned(),
+            };
+            println!(
+                "  {:<16} {:>7.1} kg on {:>7.1} mm lever, Z {:>7.0} mm^3 -> {:>8.0} MPa {verdict}",
+                l.part, l.supported_kg, l.lever_mm, l.section_modulus_mm3, l.stress_mpa
+            );
+        }
+        if screen.members.is_empty() {
+            bail!("the member screen read nothing, so it proves nothing");
+        }
+
+        // ── The accepted set ────────────────────────────────────────
+        let complaints = audit_accepted(&screen.members, ACCEPTED_OVER_YIELD, ACCEPTED_DRIFT);
+        if !complaints.is_empty() {
+            bail!("the member screen moved:\n  {}", complaints.join("\n  "));
+        }
+        println!(
+            "  {} member(s) knowingly past yield, pinned; re-sizing is the next arc",
+            ACCEPTED_OVER_YIELD.len()
+        );
+        // ⚠ Printed to three places so the pin above can be a MEASUREMENT
+        // rather than a figure read off a rounded table. A pin that only
+        // happens to fall inside its own tolerance is not a pin.
+        for (name, was) in ACCEPTED_OVER_YIELD {
+            if let Some(u) = screen
+                .members
+                .iter()
+                .find(|l| l.part == *name)
+                .and_then(|l| l.utilisation)
+            {
+                println!("    {name:<20} pinned {was:.3}  measured {u:.3}");
+            }
+        }
+        // ⛔ Unmeasured is not sound. This fired on its first real run: seven
+        // members were being dropped for want of interior sample points, the
+        // chassis rail and both swingarms among them, while the header counted
+        // only the survivors and looked clean.
+        // ⛔ Unmeasured is not sound — EXCEPT where nothing the caller could
+        // supply would help. A body on a free joint has no reaction to
+        // cantilever against, so `frame_spine` is passed over rather than
+        // scored; it used to read 0.69x from its own mid-structure origin, and
+        // when heavier wheels pushed that to 1.17x a meaningless number began
+        // failing a gate.
+        let unfixable: Vec<String> = screen
+            .unmeasured
+            .iter()
+            .filter(|u| !u.why.is_structural())
+            .map(|u| format!("{} ({:?})", u.part, u.why))
+            .collect();
+        if !unfixable.is_empty() {
+            bail!(
+                "the member screen could not measure {} of {} members: {}",
+                unfixable.len(),
+                screen.members.len() + screen.unmeasured.len(),
+                unfixable.join(", ")
+            );
+        }
+    }
+
     // ── The budget, and what it says against the typed one ──────────
     let masses: Vec<MassItem> = derived
         .iter()
@@ -858,13 +2064,53 @@ fn main() -> Result<()> {
             )
         })
         .collect();
-    let spec = TrikeSpec {
-        masses,
+    // ⚠ Geometry comes from cf-trike, not from cf-vehicle's own sample.
+    //
+    // `TrikeSpec::iter1()` is cf-vehicle's illustrative spec and it still
+    // describes the rideable trike this vehicle used to be. Inheriting its
+    // wheelbase left a centre of gravity at 1.27 m sitting outside a 1.25 m
+    // wheelbase, and cf-vehicle rightly panicked. **cf-trike owns the
+    // dimensions; cf-vehicle does the analysis.**
+    let geometry = TrikeSpec {
+        wheelbase_m: cf_trike::WHEELBASE_MM / 1000.0,
+        track_m: cf_trike::TRACK_MM / 1000.0,
+        front_wheel_radius_m: cf_trike::FRONT_RADIUS_MM / 1000.0,
+        rear_wheel_radius_m: cf_trike::REAR_RADIUS_MM / 1000.0,
+        steering_axis_angle_deg: 90.0 - cf_trike::CASTER_DEG,
+        // ⚠ Inherited from `TrikeSpec::iter1()` until now, which is
+        // cf-vehicle's own illustrative sample — so the hypercar's mechanical
+        // trail was being computed with a 40 mm offset belonging to a
+        // different machine. cf-trike owns the geometry.
+        steering_offset_m: cf_trike::KINGPIN_OFFSET_MM / 1000.0,
+        masses: Vec::new(),
         ..TrikeSpec::iter1()
     };
+    let spec = TrikeSpec { masses, ..geometry };
     spec.assert_well_formed();
 
-    let typed = TrikeSpec::iter1();
+    // ★ The second column is the ARCHITECTURAL TARGET, not a stale guess:
+    // 785 kg is what the design is aiming for.
+    //
+    // ⚠ **What it COMPOSES to is not what the design intends.** The intent is
+    // 45/55 with the centre of gravity at 240 mm. `TARGET_CG_Z_M` applies that
+    // 240 to the SPRUNG mass alone, and the unsprung at 310 mm and the driver
+    // at 350 pull the composite to 268 mm and the share to 46.7/53.3. Both
+    // figures are honest; they are answers to different questions, and this
+    // comment used to quote the intent as though it were the composition.
+    //
+    // ⚠ **The gap is not all work remaining.** Most of it is — no powertrain,
+    // battery, body or brakes are modelled. But part of it is work WRONG: the
+    // wheels are placeholders in both directions, `rim_r` a solid slug four
+    // times too heavy and each front rim a bare annulus four times too light.
+    // Closing the gap will move the derived column both ways.
+    let typed = TrikeSpec {
+        masses: vec![
+            MassItem::new("target: sprung mass", 520.0, TARGET_CG_X_M, TARGET_CG_Z_M),
+            MassItem::new("target: unsprung", 180.0, TARGET_CG_X_M, 0.31),
+            MassItem::new("driver", 85.0, 1.05, 0.35),
+        ],
+        ..geometry
+    };
     println!("\n{:<28} {:>12} {:>12}", "", "derived", "typed");
     let row = |label: &str, a: f64, b: f64| {
         println!("{label:<28} {a:>12.4} {b:>12.4}");
@@ -892,19 +2138,38 @@ fn main() -> Result<()> {
     // These are what this geometry weighs and where it balances. They are a
     // regression gate, not a design target: change a tube, change a rider,
     // and they are supposed to fire so the new numbers get read.
+    //
+    // ⚠ They last fired when the front wheels were given a FACE. The barrel
+    // and the hub had never touched — 180 mm of nothing between them — so each
+    // wheel was a floating hoop and a separate plug until the connectivity
+    // check said so. Spanning them took each wheel 4.7 -> 7.6 kg, and the
+    // budget moved the way the physics requires: mass forward of the front
+    // axle pulls the centre of gravity forward, which raises the paired-axle
+    // share, which on a tadpole raises the rollover threshold.
+    // ★ The member screen did NOT move on the same change, and the pair of
+    // them disagreeing is informative: nothing in the accepted set hangs off a
+    // front wheel, so the two gates together localise the change to the parts
+    // it touched.
+    let mut drifted: Vec<String> = Vec::new();
     for (label, got, want) in [
-        ("total mass (kg)", spec.total_mass_kg(), 101.916_046_535),
-        ("cg x (m)", spec.cg_x_m(), 0.457_383_845),
-        ("cg z (m)", spec.cg_z_m(), 0.306_326_568),
+        ("total mass (kg)", spec.total_mass_kg(), 215.248_736_972),
+        ("cg x (m)", spec.cg_x_m(), 1.053_839_792),
+        ("cg z (m)", spec.cg_z_m(), 0.360_435_641),
         (
             "rollover threshold (g)",
             rollover_threshold_g(&spec),
-            0.931_495_486,
+            1.462_213_972,
         ),
     ] {
         if (got - want).abs() > want.abs() * PIN_TOLERANCE {
-            bail!("{label} came out {got:.9}, pinned at {want:.9}");
+            // ⚠ Collected, not bailed on. These four move together whenever
+            // the geometry changes, and failing at the first one costs a
+            // whole run per number to read the rest.
+            drifted.push(format!("{label} came out {got:.9}, pinned at {want:.9}"));
         }
+    }
+    if !drifted.is_empty() {
+        bail!("the pinned budget moved:\n  {}", drifted.join("\n  "));
     }
 
     // ── How much of this is a choice? ───────────────────────────────
@@ -950,7 +2215,7 @@ fn main() -> Result<()> {
                 .collect();
             let s = TrikeSpec {
                 masses: shifted,
-                ..TrikeSpec::iter1()
+                ..geometry.clone()
             };
             let track_needed =
                 2.0 * s.effective_cg_height_m() * TYRE_MU / s.paired_axle_share() - s.track_m;
@@ -1016,9 +2281,244 @@ fn main() -> Result<()> {
 
     if let Some(dir) = out_dir {
         println!("\nmeshing the assembly:");
-        export_stls(&mechanism, &origins, &dir, tolerance_mm)?;
+        export_stls(&mechanism, &origins, &metrics, &dir, tolerance_mm, pose)?;
     }
 
     println!("\nOK");
     Ok(())
+}
+
+/// What the accepted set has to say about a screen.
+///
+/// ★★ **An acceptance is a PIN, not a mute.** Three ways this speaks up, and
+/// the third is the one that keeps the list honest:
+///
+/// 1. a member over yield that nobody accepted,
+/// 2. an accepted member that got WORSE by more than `drift`,
+/// 3. an accepted member that got materially BETTER while still over,
+/// 4. an accepted member that is **no longer over at all** — a stale
+///    acceptance is how a list like this rots back into the silence it
+///    replaced. It is self-discharging: author the wheels, `swingarm` improves
+///    on its own, and this says so rather than letting the old figure stand.
+///
+/// Plus an accepted name the screen never measured, which would otherwise read
+/// as compliance.
+///
+/// ⚠ Extracted from the oracle so it can be gated in milliseconds. Exercising
+/// it through the integration run costs four minutes a mutation, and a check
+/// that expensive to test is a check that goes untested.
+/// What a pinned set has to say about one measured value.
+///
+/// ★★ The over-yield acceptances and the declared overlaps are the SAME shape:
+/// a value, the figure it was pinned at, a line it counts as over, and a drift
+/// band. Both were written out longhand, and the two copies had already
+/// diverged — the overlap side learned that a value straddling the line is
+/// still legitimately declared, and this side had not, so a member falling to
+/// 0.99x would have been told to leave a list it belongs on.
+///
+/// ⚠ Judgement only, no wording. The two callers measure in different units —
+/// multiples of yield and shares of a part — and a shared formatter would have
+/// to be told which, which is how the duplication would grow back.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Pin {
+    /// Over the line, and nothing accepts it.
+    Unaccepted,
+    /// Accepted, and materially worse than the figure recorded.
+    Worse(f64),
+    /// Accepted, materially better, and still over — the pin wants re-taking.
+    Better(f64),
+    /// Accepted, and now clear of the line entirely.
+    ///
+    /// ⚠ CLEAR of it, at half, not merely under it. A value hovering at the
+    /// threshold is still legitimately pinned, and demanding it stay strictly
+    /// over makes the gate fire on sampling noise.
+    Clear(f64),
+}
+
+/// Judge one measured value against its pin.
+const fn pin_verdict(current: f64, pinned: Option<f64>, line: f64, drift: f64) -> Option<Pin> {
+    match (current > line, pinned) {
+        (true, None) => Some(Pin::Unaccepted),
+        (true, Some(was)) if current > was * (1.0 + drift) => Some(Pin::Worse(was)),
+        (true, Some(was)) if current < was * (1.0 - drift) => Some(Pin::Better(was)),
+        (false, Some(was)) if current < line / 2.0 => Some(Pin::Clear(was)),
+        _ => None,
+    }
+}
+
+/// Audit the over-yield acceptances against a screen.
+///
+/// Per-item judgement is [`pin_verdict`]; what lives here is the iteration, the
+/// wording in multiples of yield, and the one rule with no analogue on the
+/// overlap side — an accepted member the screen never measured at all, which
+/// would otherwise read as compliance.
+fn audit_accepted(members: &[MemberLoad], accepted: &[(&str, f64)], drift: f64) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for l in members {
+        let Some(u) = l.utilisation else { continue };
+        let pin = accepted.iter().find(|(n, _)| *n == l.part).map(|(_, k)| *k);
+        let part = &l.part;
+        match pin_verdict(u, pin, 1.0, drift) {
+            Some(Pin::Unaccepted) => {
+                out.push(format!("{part} is at {u:.3}x yield and nobody accepted it"));
+            }
+            Some(Pin::Worse(was)) => {
+                out.push(format!("{part} was accepted at {was:.3}x, now {u:.3}x"));
+            }
+            Some(Pin::Better(was)) => {
+                out.push(format!(
+                    "{part} accepted at {was:.3}x now reads {u:.3}x, re-pin it"
+                ));
+            }
+            Some(Pin::Clear(was)) => {
+                out.push(format!(
+                    "{part} accepted at {was:.3}x now reads {u:.3}x, take it out"
+                ));
+            }
+            None => {}
+        }
+    }
+    for (name, _) in accepted {
+        if !members.iter().any(|l| l.part == *name) {
+            out.push(format!(
+                "{name} is accepted but the screen never measured it"
+            ));
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn member(part: &str, utilisation: Option<f64>) -> MemberLoad {
+        MemberLoad {
+            part: part.to_owned(),
+            material: "mild steel".to_owned(),
+            supported_kg: 1.0,
+            lever_mm: 1.0,
+            load_n: 1.0,
+            section_modulus_mm3: 1.0,
+            stress_mpa: 1.0,
+            allowable_mpa: Some(250.0),
+            utilisation,
+        }
+    }
+
+    /// ★★ The one judgement both pinned lists now share, gated directly.
+    ///
+    /// It replaced two longhand copies that had already diverged: the overlap
+    /// side had learned that a value straddling the line is still legitimately
+    /// declared, and the yield side had not.
+    #[test]
+    fn a_pin_speaks_up_four_ways_and_stays_quiet_otherwise() {
+        let line = 1.0;
+        let drift = 0.15;
+        // Over the line with nothing accepting it.
+        assert_eq!(pin_verdict(2.0, None, line, drift), Some(Pin::Unaccepted));
+        // Under the line with nothing accepting it is not a finding.
+        assert_eq!(pin_verdict(0.5, None, line, drift), None);
+        // Accepted and holding, inside the band either way.
+        assert_eq!(pin_verdict(6.5, Some(6.5), line, drift), None);
+        assert_eq!(pin_verdict(7.2, Some(6.5), line, drift), None);
+        assert_eq!(pin_verdict(5.9, Some(6.5), line, drift), None);
+        // Accepted and materially worse, or materially better while still over.
+        assert_eq!(
+            pin_verdict(9.0, Some(6.5), line, drift),
+            Some(Pin::Worse(6.5))
+        );
+        assert_eq!(
+            pin_verdict(3.0, Some(6.5), line, drift),
+            Some(Pin::Better(6.5))
+        );
+        // Accepted and now clear of the line.
+        assert_eq!(
+            pin_verdict(0.2, Some(6.5), line, drift),
+            Some(Pin::Clear(6.5))
+        );
+    }
+
+    /// ⛔⛔ The straddle. A declared value hovering just under the line is
+    /// still legitimately declared — the trike's two upper-wishbone mirrors
+    /// read 6.05% and 5.53% against a 6% line, and a rule of "no longer over"
+    /// would have told one of them to leave a list its twin belongs on.
+    #[test]
+    fn a_pin_straddling_the_line_is_left_alone() {
+        let line = 0.06;
+        for current in [0.0605, 0.0553, 0.0301] {
+            assert_eq!(
+                pin_verdict(current, Some(0.061), line, 0.15),
+                None,
+                "{current} straddles {line} and should be left alone"
+            );
+        }
+        // Genuinely clear of it — below half — is a different matter.
+        assert_eq!(
+            pin_verdict(0.02, Some(0.061), line, 0.15),
+            Some(Pin::Clear(0.061))
+        );
+    }
+
+    #[test]
+    fn a_screen_matching_its_accepted_set_is_silent() {
+        let m = [member("a", Some(6.5)), member("b", Some(0.4))];
+        assert!(audit_accepted(&m, &[("a", 6.5)], 0.15).is_empty());
+    }
+
+    #[test]
+    fn a_member_over_yield_that_nobody_accepted_is_reported() {
+        let out = audit_accepted(&[member("a", Some(2.0))], &[], 0.15);
+        assert!(
+            out.len() == 1 && out[0].contains("nobody accepted"),
+            "{out:?}"
+        );
+    }
+
+    #[test]
+    fn an_accepted_member_that_got_worse_is_reported() {
+        let out = audit_accepted(&[member("a", Some(8.0))], &[("a", 6.5)], 0.15);
+        assert!(out.len() == 1 && out[0].contains("now 8.000x"), "{out:?}");
+        assert!(
+            audit_accepted(&[member("a", Some(7.2))], &[("a", 6.5)], 0.15).is_empty(),
+            "inside the drift it should stay quiet"
+        );
+    }
+
+    /// ⛔ The arm that was missing. An acceptance that improves without
+    /// crossing back under yield would otherwise keep its old figure forever —
+    /// and the doc above the accepted set promised this fires.
+    #[test]
+    fn an_accepted_member_that_improved_but_is_still_over_is_reported() {
+        let out = audit_accepted(&[member("a", Some(3.0))], &[("a", 6.5)], 0.15);
+        assert!(out.len() == 1 && out[0].contains("re-pin"), "{out:?}");
+        // Inside the drift band it stays quiet — this is a re-pin prompt, not
+        // a tripwire on sampling noise.
+        assert!(
+            audit_accepted(&[member("a", Some(6.0))], &[("a", 6.5)], 0.15).is_empty(),
+            "a 8% improvement is inside the band and should be silent"
+        );
+    }
+
+    /// ★★★ The clause that stops the list rotting into a mute.
+    #[test]
+    fn an_accepted_member_that_is_no_longer_over_is_reported() {
+        let out = audit_accepted(&[member("a", Some(0.4))], &[("a", 6.5)], 0.15);
+        assert!(out.len() == 1 && out[0].contains("take it out"), "{out:?}");
+    }
+
+    #[test]
+    fn an_accepted_member_the_screen_never_measured_is_reported() {
+        let out = audit_accepted(&[member("b", Some(0.2))], &[("a", 6.5)], 0.15);
+        assert!(
+            out.len() == 1 && out[0].contains("never measured"),
+            "{out:?}"
+        );
+    }
+
+    /// ⚠ An unscored member — no allowable declared — is not a finding.
+    #[test]
+    fn a_member_with_no_utilisation_is_passed_over() {
+        assert!(audit_accepted(&[member("a", None)], &[], 0.15).is_empty());
+    }
 }

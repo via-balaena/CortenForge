@@ -41,7 +41,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use nalgebra::{Point3, UnitQuaternion, Vector3};
+use nalgebra::{Matrix3, Point3, Rotation3, UnitQuaternion, Vector3};
 use sim_core::{
     ActuatorDynamics, ActuatorTransmission, BiasType, EqualityType, GainType, GeomType,
     MjJointType, Model, PhysicsShape, SolverType, TendonType, WrapType,
@@ -95,6 +95,55 @@ impl Mechanism {
 
 // ── Model construction ──────────────────────────────────────────────────
 
+/// Gravity for a millimetre model, in mm/s².
+///
+/// ⚠ MuJoCo's default is `-9.81`, which is correct for a model in METRES. A
+/// millimetre model that inherits it runs at a thousandth of gravity, and
+/// [`Mechanism::to_mjcf`](super::Mechanism::to_mjcf) used to emit no `<option>`
+/// at all — so the same assembly fell at 9.81 mm/s² through the file and
+/// 9810 mm/s² through [`Mechanism::to_model`](super::Mechanism::to_model).
+pub(super) const GRAVITY_MM_PER_S2: f64 = -9810.0;
+
+/// Grid cell for the mass integration, in mm.
+///
+/// ⚠ [`mjcf`](super::mjcf) integrates with the SAME cell, so the exported file
+/// and the built model state one mass rather than two. Measured against
+/// cf-trike's closed-form volumes, this agrees to ~0.1% at every cell tried —
+/// it is the mesh, not the grid, that loses thin walls.
+pub(super) const MASS_CELL_MM: f64 = 1.0;
+
+/// Contact impedance for a millimetre model — MuJoCo's default, and fine.
+pub(super) const GEOM_SOLIMP: [f64; 5] = [0.9, 0.95, 0.001, 0.5, 2.0];
+
+/// Contact time constant for a millimetre model, in seconds.
+///
+/// MuJoCo's default `solref[0] = 0.02` is tuned for m-scale. At mm-scale
+/// (gravity 9810) it gives ~0.46 mm equilibrium penetration and spongy
+/// contacts. 0.005 — which must stay above `2 * timestep` — gives stiff,
+/// visually correct contact.
+///
+/// ⚠ [`Mechanism::to_mjcf`](super::Mechanism::to_mjcf) emitted no contact
+/// parameters, so the exported file used the m-scale default. Measured on
+/// `cf-design-tests`' dropped ball, once its mass was no longer 1e9 too large:
+/// the contact solve diverged and summed to **4.7e22** — the SAME value for
+/// every ball radius, which reads to an optimiser as a flat objective and so
+/// as "converged".
+pub(super) const GEOM_SOLREF: [f64; 2] = [0.005, 1.0];
+
+/// Integration timestep for a millimetre model, in seconds.
+///
+/// mm-scale bodies have tiny masses (O(10⁻⁴) kg), making the contact natural
+/// frequency ~1000x higher than at m-scale, and MuJoCo's default 0.002 s
+/// cannot resolve them. 2 kHz keeps the contact frequency inside the
+/// integrator's stability range.
+///
+/// ⚠ [`Mechanism::to_mjcf`](super::Mechanism::to_mjcf) emitted no `<option>`,
+/// so the exported file ran at the 0.002 s default. Measured on
+/// `cf-design-tests`' dropped ball once gravity was correct: the contact solve
+/// saturated at 4.7e22 and returned the SAME force for every radius — a flat
+/// objective that read as "converged" to the optimiser above it.
+pub(super) const TIMESTEP_S: f64 = 0.0005;
+
 /// Constraint time constant for a linkage — MJCF's default, and fine.
 pub(super) const LINKAGE_SOLREF: [f64; 2] = [0.02, 1.0];
 
@@ -122,22 +171,35 @@ pub(super) const LINKAGE_SOLREF: [f64; 2] = [0.02, 1.0];
 /// MuJoCo's default — the 32.9 mm row — from the same declared assembly.
 pub(super) const LINKAGE_SOLIMP: [f64; 5] = [0.9999, 0.99999, 0.001, 0.5, 2.0];
 
-/// World position of a body at the reference configuration.
+/// World pose of a body at the reference configuration.
 ///
-/// `body_pos` is relative to the parent and every `body_quat` is identity
-/// here, so composing the chain is a sum. ⚠ That identity is what makes this
-/// a sum rather than a transform chain; if bodies ever gain a reference
-/// orientation, this has to compose rotations too.
-fn body_world_position(model: &Model, mut body: usize) -> Vector3<f64> {
-    let mut at = Vector3::zeros();
+/// ⚠ This used to sum `body_pos` up the chain and return only a position,
+/// because every `body_quat` this builder emits is identity and under that
+/// assumption a transform chain IS a sum. The assumption was true, documented,
+/// and **unasserted** — so the day a body gained a reference orientation, the
+/// linkage anchors below would have been silently wrong, and a linkage holding
+/// the wrong two points presents as drift rather than as a build error.
+///
+/// Composing properly costs a vector rotation per level and removes the
+/// assumption instead of relying on it.
+fn body_world_pose(model: &Model, body: usize) -> (Vector3<f64>, UnitQuaternion<f64>) {
+    // Root-down, because a child's pose is expressed in its parent's frame.
+    let mut chain: Vec<usize> = Vec::new();
+    let mut b = body;
     for _ in 0..model.nbody {
-        if body == 0 {
+        if b == 0 {
             break;
         }
-        at += model.body_pos[body];
-        body = model.body_parent[body];
+        chain.push(b);
+        b = model.body_parent[b];
     }
-    at
+    let mut pos = Vector3::zeros();
+    let mut rot = UnitQuaternion::identity();
+    for &link in chain.iter().rev() {
+        pos += rot * model.body_pos[link];
+        rot *= model.body_quat[link];
+    }
+    (pos, rot)
 }
 
 /// Emit one equality constraint per linkage.
@@ -164,9 +226,15 @@ fn emit_linkages(
             }
         })?;
 
+        // The anchor is a point on `a`, in `a`'s own frame; where it falls on
+        // `b` is whatever point of `b` coincides with it at the reference
+        // configuration. Both directions go through the body's full pose, so
+        // a rotated reference frame lands the anchor in the right place.
         let anchor_a = linkage.anchor().coords;
-        let anchor_world = body_world_position(model, body_a) + anchor_a;
-        let anchor_b = anchor_world - body_world_position(model, body_b);
+        let (pos_a, rot_a) = body_world_pose(model, body_a);
+        let (pos_b, rot_b) = body_world_pose(model, body_b);
+        let anchor_world = pos_a + rot_a * anchor_a;
+        let anchor_b = rot_b.inverse() * (anchor_world - pos_b);
 
         let mut data = [0.0; 11];
         data[0..3].copy_from_slice(anchor_a.as_slice());
@@ -319,13 +387,14 @@ fn generate(
     model.name = mechanism.name().to_string();
 
     // cf-design geometry is in mm. Scale gravity from m/s² to mm/s².
-    model.gravity = nalgebra::Vector3::new(0.0, 0.0, -9810.0);
+    //
+    // ⚠ [`mjcf`](super::mjcf) has to say the same thing on the way out —
+    // MuJoCo's default is -9.81, which is right for a METRE model — so this is
+    // the one derivation and `GRAVITY_MM_PER_S2` is what both read.
+    model.gravity = nalgebra::Vector3::new(0.0, 0.0, GRAVITY_MM_PER_S2);
 
-    // mm-scale bodies have tiny masses (O(10⁻⁴) kg), making the contact
-    // natural frequency ~1000× higher than at m-scale. The default timestep
-    // (0.002s) can't resolve these dynamics. Use 0.0005s (2 kHz) which
-    // keeps the contact frequency within the integrator's stability range.
-    model.timestep = 0.0005;
+    // ⚠ Same story as gravity, and `mjcf` needs it for the same reason.
+    model.timestep = TIMESTEP_S;
 
     // Match MuJoCo's default diagApprox mode: bodyweight approximation.
     // The exact M⁻¹ solve (default in Model::empty()) produces different
@@ -376,14 +445,44 @@ fn generate(
         let geom_offset = compute_geom_offset(part, &joints_on);
 
         // Mass properties (computed from implicit field)
-        let mass_props = super::mass::mass_properties(part.solid(), part.material().density, 1.0);
+        let mass_props =
+            super::mass::mass_properties(part.solid(), part.material().density, MASS_CELL_MM);
         if let Some(mp) = mass_props {
-            // Convert inertia from [Ixx, Iyy, Izz, Ixy, Ixz, Iyz] to diagonal Vector3
-            // sim-core stores diagonal inertia only (principal axes assumption)
             model.body_mass.push(mp.mass);
-            model
-                .body_inertia
-                .push(Vector3::new(mp.inertia[0], mp.inertia[1], mp.inertia[2]));
+            // ⚠ DIAGONALISE, do not truncate.
+            //
+            // `body_inertia` is the diagonal in the frame `body_iquat` names —
+            // sim-core builds `ximat = xquat * body_iquat` and forms
+            // `R I R^T` from it (`forward/position.rs`). Taking [Ixx, Iyy, Izz]
+            // and leaving `body_iquat` identity throws Ixy/Ixz/Iyz away, which
+            // is only correct for a part whose principal axes already line up
+            // with its body frame.
+            //
+            // Measured over the trike's 34 parts, worst product over largest
+            // diagonal: **19 parts above 1%, 17 above 10%**, worst 0.4999 —
+            // `seat_back`, a reclined panel whose principal axes sit ~45 deg
+            // off the body frame. The diagonal braces, the wishbones and the
+            // caster-angled uprights are all in that list.
+            let i = mp.inertia;
+            let tensor = Matrix3::new(
+                i[0], i[3], i[4], //
+                i[3], i[1], i[5], //
+                i[4], i[5], i[2],
+            );
+            let eigen = tensor.symmetric_eigen();
+            let mut axes = eigen.eigenvectors;
+            // ⚠ Eigenvectors are defined up to sign, so the matrix may come
+            // back a REFLECTION. A reflection is not a rotation and cannot be
+            // a quaternion; flipping one column fixes the handedness without
+            // changing the axes.
+            if axes.determinant() < 0.0 {
+                let flipped = -axes.column(2);
+                axes.set_column(2, &flipped);
+            }
+            model.body_inertia.push(eigen.eigenvalues);
+            model.body_iquat.push(UnitQuaternion::from_rotation_matrix(
+                &Rotation3::from_matrix_unchecked(axes),
+            ));
             // Center of mass in body frame = geom_offset + COM_in_solid_frame.
             // mass_properties returns COM in the solid's local frame (centered
             // at origin for symmetric shapes). The geom_offset translates the
@@ -392,9 +491,9 @@ fn generate(
         } else {
             model.body_mass.push(0.01); // fallback
             model.body_inertia.push(Vector3::new(1e-6, 1e-6, 1e-6));
+            model.body_iquat.push(UnitQuaternion::identity());
             model.body_ipos.push(geom_offset);
         }
-        model.body_iquat.push(UnitQuaternion::identity());
 
         // Placeholders for geom/jnt address tracking (set below)
         model.body_jnt_adr.push(0);
@@ -490,21 +589,51 @@ fn generate(
                 for d in 0..dof_count {
                     model.dof_body.push(body_id);
                     model.dof_jnt.push(jnt_id);
-                    // dof_parent: previous dof in same body, or parent body's last dof
+                    // dof_parent: the previous dof in this body, or the last
+                    // dof of the nearest ancestor that HAS one.
+                    //
+                    // ⚠ Nearest ancestor that has one — not the parent. A weld
+                    // emits no joint, so a welded body has no dofs, and
+                    // stopping there cuts this dof off from everything above
+                    // it. CRBA walks exactly this chain to write the mass
+                    // matrix's off-diagonal entries (`crba.rs`, phase 3), so a
+                    // chain that ends early leaves `M[i, j]` at zero for every
+                    // ancestor past the weld.
+                    //
+                    // Measured on a free base, a welded mount and a hinged
+                    // arm: inserting the mount — which changes no physics,
+                    // only the body count — took `M[hinge, z]` from -62.99 to
+                    // 0 and gave the arm 73.4 rad/s^2 of angular acceleration
+                    // in free fall, where a free-floating assembly must have
+                    // exactly none.
                     let dof_parent = if d > 0 {
                         Some(nv + d - 1)
-                    } else if body_id > 1 {
-                        // Find last DOF of parent body
-                        let pbody = model.body_parent[body_id];
-                        let padr = model.body_dof_adr[pbody];
-                        let pnum = model.body_dof_num[pbody];
-                        if pnum > 0 {
-                            Some(padr + pnum - 1)
-                        } else {
-                            None
-                        }
+                    } else if nv > model.body_dof_adr[body_id] {
+                        // ⚠ Not the first joint on THIS body — a body may carry
+                        // several (a slide plus a hinge is a cylindrical joint).
+                        // Its dofs chain to the previous joint's last dof, not
+                        // up to the parent body: CRBA relies on this to write
+                        // the same-body cross terms `M[i, j]`, and skipping to
+                        // the ancestor leaves them zero.
+                        //
+                        // Measured on a free base with a slide and a hinge on
+                        // one arm, offset in z so the two are actually coupled:
+                        // `M[hinge, slide]` 0, and the kinetic energy computed
+                        // from M came out **39.5% under** the same energy summed
+                        // over the bodies.
+                        Some(nv - 1)
                     } else {
-                        None
+                        let mut ancestor = model.body_parent[body_id];
+                        loop {
+                            if ancestor == 0 {
+                                break None;
+                            }
+                            let pnum = model.body_dof_num[ancestor];
+                            if pnum > 0 {
+                                break Some(model.body_dof_adr[ancestor] + pnum - 1);
+                            }
+                            ancestor = model.body_parent[ancestor];
+                        }
                     };
                     model.dof_parent.push(dof_parent);
                     model.dof_armature.push(0.0);
@@ -856,12 +985,8 @@ fn push_geom(
     model.geom_gap.push(0.0);
     model.geom_priority.push(0);
     model.geom_solmix.push(1.0);
-    model.geom_solimp.push([0.9, 0.95, 0.001, 0.5, 2.0]);
-    // MuJoCo default solref[0]=0.02 is tuned for m-scale. At mm-scale
-    // (gravity=9810), that gives ~0.46 mm equilibrium penetration and
-    // spongy contacts. 0.005 (must be > 2×timestep) gives stiff,
-    // visually correct contact at mm-scale.
-    model.geom_solref.push([0.005, 1.0]);
+    model.geom_solimp.push(GEOM_SOLIMP);
+    model.geom_solref.push(GEOM_SOLREF);
     model.geom_name.push(name);
     model.geom_rbound.push(0.0); // computed in post-build
     model.geom_aabb.push([0.0; 6]); // computed in post-build
@@ -1105,13 +1230,13 @@ fn discover_kinematic_trees(model: &mut Model) {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use nalgebra::{Point3, Vector3};
+    use nalgebra::{Point3, UnitQuaternion, Vector3};
 
     use crate::{
         ActuatorDef, ActuatorKind, JointDef, JointKind, LinkageDef, LinkageKind, Material,
         Mechanism, MechanismError, Part, Solid, TendonDef, TendonWaypoint,
     };
-    use sim_core::{EqualityType, GeomType, Model};
+    use sim_core::{EqualityType, GeomType, MjJointType, Model};
 
     fn pla() -> Material {
         Material::new("PLA", 1250.0)
@@ -1157,18 +1282,31 @@ mod tests {
     }
 
     #[test]
-    fn unbounded_part_still_exportable() {
-        // The same unbounded part is valid for the mesh/MJCF export paths,
-        // which tolerate infinite geometry — they must not panic. This
-        // guards against re-tightening the check at build() time.
+    fn unbounded_part_is_reported_not_silently_exported() {
+        // An unbounded part still gets through `build()` — that is deliberate,
+        // and this guards against re-tightening the check there. What changed
+        // is what the MJCF export does with it.
+        //
+        // ⚠ It used to return XML carrying an EMPTY `<mesh>`, and this test
+        // asserted that as the desired behaviour. MuJoCo refuses a mesh under
+        // 4 vertices and refuses the whole file with it, so what was being
+        // guarded was the production of a file that could never be loaded.
+        //
+        // ★ The export must not PANIC, which was the real point, and it does
+        // not: it reports. A plane is a legitimate MJCF geom — `type="plane"`
+        // — just not a legitimate mesh, so emitting one directly would be a
+        // better answer still and is not what this does today.
         let mechanism = Mechanism::builder("with_floor")
             .part(Part::new("floor", Solid::plane(Vector3::z(), 0.0), pla()))
             .build();
 
-        let mjcf = mechanism.to_mjcf(1.0);
         assert!(
-            mjcf.contains("<mujoco model=\"with_floor\">"),
-            "expected MJCF XML, got: {mjcf}"
+            matches!(
+                mechanism.to_mjcf(1.0),
+                Err(MechanismError::PartMeshesTooCoarse { ref part, .. }) if part == "floor"
+            ),
+            "expected the export to name the part it could not mesh, got {:?}",
+            mechanism.to_mjcf(1.0).map(|x| x.len())
         );
     }
 
@@ -1841,6 +1979,474 @@ mod tests {
         assert_eq!(model.nv, 6); // 3 linear + 3 angular
         assert_eq!(model.ngeom, 2); // SDF + mesh
         assert_eq!(model.body_parent[1], 0); // parent is world
+    }
+
+    // ── 9b. A weld in the chain must not decouple the mass matrix ────
+
+    /// A free-floating assembly does not move against itself under gravity,
+    /// and putting a weld in the chain does not change that.
+    ///
+    /// The invariant: for a tree whose root is a free joint, gravity's
+    /// generalized force is exactly `M[:, z] * g_z`, so the solution of
+    /// `M qacc = qfrc` is uniform fall — **zero** acceleration on every
+    /// articulated degree of freedom. It holds for any geometry, so any
+    /// non-zero reading is the model, not the machine.
+    ///
+    /// ⚠ This is a `dof_parent` test wearing a physics costume, and it has to
+    /// be. `dof_parent` is the chain CRBA walks to write the mass matrix's
+    /// off-diagonal entries; when it ended early at a welded body, the
+    /// coupling between an articulated dof and everything above the weld was
+    /// silently left at zero. Asserting `dof_parent` alone would pass on a
+    /// chain that is well-formed and still wrong, and nothing downstream
+    /// objects: `nv` is unchanged, the model builds, it integrates, and the
+    /// masses are right. What it produced was a vehicle whose wishbones
+    /// accelerated relative to their own frame in free fall.
+    ///
+    /// Measured with the weld and without the fix: `M[hinge, z]` 0 instead of
+    /// -62.99, and 73.4 rad/s² on an arm that must have none.
+    #[test]
+    fn a_weld_in_the_chain_does_not_decouple_the_mass_matrix() {
+        // `weld_between` inserts a zero-dof body between the free base and
+        // the hinge. It changes the body count and nothing else: the mount is
+        // rigid with the base, so the gravity torque on the hinge is
+        // identical either way — asserted below, so this stays a controlled
+        // comparison rather than two unrelated machines.
+        let floater = |weld_between: bool| {
+            let mut b = Mechanism::builder("floater")
+                .part(Part::new(
+                    "base",
+                    Solid::cuboid(Vector3::new(50.0, 50.0, 10.0)),
+                    pla(),
+                ))
+                .part(Part::new(
+                    "arm",
+                    Solid::cuboid(Vector3::new(100.0, 10.0, 10.0))
+                        .translate(Vector3::new(150.0, 0.0, 0.0)),
+                    pla(),
+                ))
+                .joint(JointDef::new(
+                    "free",
+                    "world",
+                    "base",
+                    JointKind::Free,
+                    Point3::origin(),
+                    Vector3::z(),
+                ));
+            if weld_between {
+                b = b
+                    .part(Part::new(
+                        "mount",
+                        Solid::cuboid(Vector3::new(10.0, 10.0, 10.0))
+                            .translate(Vector3::new(40.0, 0.0, 0.0)),
+                        pla(),
+                    ))
+                    .joint(JointDef::new(
+                        "mount_weld",
+                        "base",
+                        "mount",
+                        JointKind::Fixed,
+                        Point3::new(40.0, 0.0, 0.0),
+                        Vector3::z(),
+                    ));
+            }
+            b.joint(JointDef::new(
+                "hinge",
+                if weld_between { "mount" } else { "base" },
+                "arm",
+                JointKind::Revolute,
+                Point3::new(50.0, 0.0, 0.0),
+                Vector3::y(),
+            ))
+            .build()
+            .to_model(5.0, 5.0)
+            .unwrap()
+        };
+
+        let mut readings = Vec::new();
+        for weld_between in [false, true] {
+            let model = floater(weld_between);
+            let hinge = model.nv - 1;
+            assert_eq!(model.nv, 7, "six free dofs and the hinge");
+
+            let mut data = model.make_data();
+            data.forward(&model).expect("forward kinematics");
+            let internal = (6..model.nv).fold(0.0_f64, |a, i| a.max(data.qacc_smooth[i].abs()));
+            assert!(
+                internal < 1e-6,
+                "a free-floating assembly accelerated against itself at \
+                 {internal} rad/s^2 under uniform gravity"
+            );
+            // The structural reason, asserted second so the physics above is
+            // what fails first and names the symptom.
+            assert_eq!(
+                model.dof_parent[hinge],
+                Some(5),
+                "the hinge's ancestor chain must reach the free joint's last \
+                 dof, weld in the way or not"
+            );
+            readings.push((data.qM[(hinge, 2)], -data.qfrc_bias[hinge]));
+        }
+
+        let (m_no_weld, torque_no_weld) = readings[0];
+        let (m_weld, torque_weld) = readings[1];
+        assert!(
+            (torque_weld - torque_no_weld).abs() < 1e-6,
+            "the weld was supposed to change no physics, but the gravity \
+             torque on the hinge went {torque_no_weld} -> {torque_weld}"
+        );
+        assert!(
+            m_no_weld.abs() > 1.0,
+            "the coupling this test is about has to be non-trivial, got {m_no_weld}"
+        );
+        assert!(
+            (m_weld - m_no_weld).abs() < 1e-9,
+            "the mass matrix's free-translation coupling changed with the \
+             weld: {m_no_weld} -> {m_weld}"
+        );
+    }
+
+    /// The mass matrix is COMPLETE, checked against an independent energy sum.
+    ///
+    /// `0.5 qvel^T M qvel` reads the mass matrix. Koenig's theorem sums
+    /// `0.5 m|v|^2 + 0.5 w^T I w` over the bodies and never touches it. They
+    /// must agree for **any** velocity, so an entry M is missing shows up with
+    /// nothing pinned — and unlike a structural check on `dof_parent`, this
+    /// states what the omission COSTS.
+    ///
+    /// ⚠ Both topologies here have shipped wrong, for the same reason: CRBA
+    /// writes the off-diagonal entries by walking `dof_parent`, and any chain
+    /// that ends early leaves a block at zero while `qM` stays symmetric,
+    /// `nv` stays right and the model still integrates.
+    ///
+    /// | topology | was | energy error |
+    /// |---|---|---|
+    /// | a weld between two jointed bodies | `dof_parent` = `None` | free-fall accel 73.4 rad/s^2 |
+    /// | two joints on one body | chained past the sibling dof | **39.5% under** |
+    ///
+    /// ⚠ The second is invisible to
+    /// [`a_weld_in_the_chain_does_not_decouple_the_mass_matrix`], because the
+    /// entry it drops couples two INTERNAL dofs and free fall only exercises
+    /// internal-against-free.
+    ///
+    /// ⛔ The geometry is load-bearing. The first version put the arm's centre
+    /// of mass on the slide axis, where `M[hinge, slide]` is legitimately zero
+    /// — the test passed against the broken build. The `+80 mm` z offset is
+    /// what makes the coupling non-zero, and the `coupling` assertion below
+    /// keeps it that way.
+    #[test]
+    fn the_mass_matrix_is_complete_for_welds_and_for_multi_joint_bodies() {
+        let arm = || {
+            Part::new(
+                "arm",
+                Solid::cuboid(Vector3::new(100.0, 10.0, 10.0))
+                    .translate(Vector3::new(150.0, 0.0, 80.0)),
+                pla(),
+            )
+        };
+        let base = || Part::new("base", Solid::cuboid(Vector3::new(50.0, 50.0, 10.0)), pla());
+        let free = || {
+            JointDef::new(
+                "free",
+                "world",
+                "base",
+                JointKind::Free,
+                Point3::origin(),
+                Vector3::z(),
+            )
+        };
+
+        // (a) a weld sits between the free joint and the hinge.
+        let welded = Mechanism::builder("welded")
+            .part(base())
+            .part(Part::new(
+                "mount",
+                Solid::cuboid(Vector3::new(10.0, 10.0, 10.0))
+                    .translate(Vector3::new(40.0, 0.0, 0.0)),
+                pla(),
+            ))
+            .part(arm())
+            .joint(free())
+            .joint(JointDef::new(
+                "mount_weld",
+                "base",
+                "mount",
+                JointKind::Fixed,
+                Point3::new(40.0, 0.0, 0.0),
+                Vector3::z(),
+            ))
+            .joint(JointDef::new(
+                "hinge",
+                "mount",
+                "arm",
+                JointKind::Revolute,
+                Point3::new(50.0, 0.0, 0.0),
+                Vector3::y(),
+            ))
+            .build();
+
+        // (b) one body carries two joints — a cylindrical joint.
+        let cylindrical = Mechanism::builder("cylindrical")
+            .part(base())
+            .part(arm())
+            .joint(free())
+            .joint(JointDef::new(
+                "slide",
+                "base",
+                "arm",
+                JointKind::Prismatic,
+                Point3::new(50.0, 0.0, 0.0),
+                Vector3::x(),
+            ))
+            .joint(JointDef::new(
+                "hinge",
+                "base",
+                "arm",
+                JointKind::Revolute,
+                Point3::new(50.0, 0.0, 0.0),
+                Vector3::y(),
+            ))
+            .build();
+
+        for (label, mechanism) in [
+            ("weld in the chain", welded),
+            ("two joints on one body", cylindrical),
+        ] {
+            let model = mechanism.to_model(5.0, 5.0).unwrap();
+            let mut data = model.make_data();
+            // Every dof moving, at distinct rates, so no cross term cancels.
+            for i in 0..model.nv {
+                data.qvel[i] = 0.1 * (i as f64 + 1.0);
+            }
+            data.forward(&model).expect("forward kinematics");
+
+            let via_m = 0.5 * data.qvel.dot(&(&data.qM * &data.qvel));
+            let mut via_bodies = 0.0;
+            for b in 1..model.nbody {
+                let inertia = model.body_inertia[b];
+                let w = Vector3::new(data.cvel[b][0], data.cvel[b][1], data.cvel[b][2]);
+                let v_origin = Vector3::new(data.cvel[b][3], data.cvel[b][4], data.cvel[b][5]);
+                let v = v_origin + w.cross(&(data.xipos[b] - data.xpos[b]));
+                via_bodies += 0.5 * model.body_mass[b] * v.norm_squared();
+                // ⚠ The principal frame, not the body frame. `body_inertia`
+                // is the diagonal in the frame `body_iquat` names, and
+                // `ximat = xquat * body_iquat` is that frame in world. Using
+                // `xquat` alone silently assumes the two coincide — which is
+                // exactly the assumption this file used to bake in.
+                let wb = data.ximat[b].transpose() * w;
+                via_bodies += 0.5
+                    * (inertia.x * wb.x.powi(2)
+                        + inertia.y * wb.y.powi(2)
+                        + inertia.z * wb.z.powi(2));
+            }
+
+            assert!(
+                via_bodies > 0.0,
+                "{label}: nothing is moving, so this proves nothing"
+            );
+            let error = (via_m - via_bodies).abs() / via_bodies;
+            assert!(
+                error < 1e-9,
+                "{label}: kinetic energy is {via_m} through the mass matrix and \
+                 {via_bodies} summed over the bodies — {:.2}% apart, so the mass \
+                 matrix is missing a term",
+                error * 100.0
+            );
+
+            // ⛔ Keep the case non-degenerate: the coupling the walk has to
+            // write must actually be non-zero here, or agreement is free.
+            let last = model.nv - 1;
+            let coupling = (0..last)
+                .map(|j| data.qM[(last, j)].abs())
+                .fold(0.0_f64, f64::max);
+            assert!(
+                coupling > 1.0,
+                "{label}: the last dof couples to nothing ({coupling}), so this \
+                 geometry cannot detect a dropped off-diagonal"
+            );
+        }
+    }
+
+    /// The inertia the model carries is the inertia the solid has.
+    ///
+    /// `body_inertia` is a DIAGONAL, in the frame `body_iquat` names. The
+    /// identity is therefore `R * diag * R^T == the full tensor`, for `R` the
+    /// rotation `body_iquat` encodes — exact, for any part, with nothing
+    /// pinned.
+    ///
+    /// ⚠ This used to fail by construction: `to_model` took `[Ixx, Iyy, Izz]`
+    /// and left `body_iquat` identity, discarding Ixy/Ixz/Iyz. That is only
+    /// right for a part already aligned with its own principal axes. Measured
+    /// over cf-trike's 34 parts, worst product over largest diagonal: **19
+    /// above 1%, 17 above 10%**, worst 0.4999 (`seat_back`, a reclined panel).
+    ///
+    /// ⛔ The 40 deg rotation is load-bearing — an axis-aligned box has no
+    /// products of inertia and would pass against the broken build. The
+    /// `products` assertion below keeps the case honest.
+    #[test]
+    fn the_model_carries_the_inertia_the_solid_has() {
+        use nalgebra::Matrix3;
+
+        let tilted = Solid::cuboid(Vector3::new(120.0, 15.0, 40.0)).rotate(
+            UnitQuaternion::from_axis_angle(&Vector3::y_axis(), 40.0_f64.to_radians()),
+        );
+        // The same cell size `to_model` integrates with, so this compares the
+        // model against its own source and not against a finer grid.
+        let mp = super::super::mass::mass_properties(&tilted, 1250.0, 1.0).expect("mass");
+        let i = mp.inertia;
+        let truth = Matrix3::new(
+            i[0], i[3], i[4], //
+            i[3], i[1], i[5], //
+            i[4], i[5], i[2],
+        );
+        let products = i[3].abs().max(i[4].abs()).max(i[5].abs());
+        let diagonal = i[0].abs().max(i[1].abs()).max(i[2].abs());
+        assert!(
+            products / diagonal > 0.05,
+            "this geometry has no products of inertia to lose ({products} vs \
+             {diagonal}), so it cannot detect the truncation"
+        );
+
+        let model = Mechanism::builder("tilted")
+            .part(Part::new("block", tilted, pla()))
+            .build()
+            .to_model(5.0, 5.0)
+            .unwrap();
+
+        let b = 1;
+        let r = model.body_iquat[b].to_rotation_matrix();
+        let diag = Matrix3::from_diagonal(&model.body_inertia[b]);
+        let rebuilt = r.matrix() * diag * r.matrix().transpose();
+
+        let worst = (0..3)
+            .flat_map(|a| (0..3).map(move |c| (a, c)))
+            .map(|(a, c)| (rebuilt[(a, c)] - truth[(a, c)]).abs())
+            .fold(0.0_f64, f64::max);
+        assert!(
+            worst < 1e-6 * diagonal,
+            "the model's inertia differs from the solid's by {worst} \
+             (kg mm^2); rebuilt {rebuilt} truth {truth}"
+        );
+    }
+
+    /// [`body_world_pose`] agrees with forward kinematics, rotations included.
+    ///
+    /// ⚠ It used to SUM `body_pos` up the chain and ignore `body_quat`, which
+    /// is correct only because every orientation this builder emits is
+    /// identity. That assumption was documented and **unasserted**, and it is
+    /// what places every linkage anchor — so a future reference orientation
+    /// would have moved the anchors silently, and a linkage holding the wrong
+    /// two points reads as drift rather than as a build error.
+    ///
+    /// The referent is sim-core's own `forward`, an independent implementation
+    /// of the same composition. Bodies are given orientations here because
+    /// nothing in this crate produces one yet: with all-identity quaternions
+    /// the old sum and the new chain are the same arithmetic, so an
+    /// unrotated case cannot tell them apart.
+    #[test]
+    fn the_reference_pose_walk_agrees_with_forward_kinematics() {
+        let mechanism = Mechanism::builder("chain")
+            .part(Part::new("base", Solid::sphere(10.0), pla()))
+            .part(Part::new("mid", Solid::sphere(8.0), pla()))
+            .part(Part::new("tip", Solid::sphere(6.0), pla()))
+            .joint(JointDef::new(
+                "free",
+                "world",
+                "base",
+                JointKind::Free,
+                Point3::origin(),
+                Vector3::z(),
+            ))
+            .joint(JointDef::new(
+                "hinge",
+                "base",
+                "mid",
+                JointKind::Revolute,
+                Point3::new(80.0, 15.0, 0.0),
+                Vector3::y(),
+            ))
+            .joint(JointDef::new(
+                "weld",
+                "mid",
+                "tip",
+                JointKind::Fixed,
+                Point3::new(40.0, 0.0, 25.0),
+                Vector3::z(),
+            ))
+            .build();
+
+        let mut model = mechanism.to_model(4.0, 4.0).unwrap();
+        // Give every body a distinct reference orientation. This is the state
+        // the old sum mishandled, and the one nothing emits yet.
+        for b in 1..model.nbody {
+            let k = b as f64;
+            model.body_quat[b] = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), 0.30 * k)
+                * UnitQuaternion::from_axis_angle(&Vector3::z_axis(), 0.20 * k);
+        }
+        // ⚠ A FREE joint's pose comes from `qpos0`, not from `body_quat` —
+        // forward kinematics reads the joint, the walk reads the body. They
+        // agree today only because both are identity. Keep them consistent
+        // here so the comparison below tests the WALK and not that coupling;
+        // the coupling itself is asserted separately at the end.
+        for j in 0..model.njnt {
+            if model.jnt_type[j] == MjJointType::Free {
+                let adr = model.jnt_qpos_adr[j];
+                let q = model.body_quat[model.jnt_body[j]];
+                model.qpos0[adr + 3] = q.w;
+                model.qpos0[adr + 4] = q.i;
+                model.qpos0[adr + 5] = q.j;
+                model.qpos0[adr + 6] = q.k;
+            }
+        }
+        let mut data = model.make_data();
+        data.forward(&model).expect("forward kinematics");
+
+        let mut rotated = false;
+        for b in 1..model.nbody {
+            let (pos, rot) = super::body_world_pose(&model, b);
+            let dp = (pos - data.xpos[b]).norm();
+            let dq = rot.angle_to(&data.xquat[b]);
+            assert!(
+                dp < 1e-9 && dq < 1e-9,
+                "body {b}: the reference walk says {pos:?} / {rot:?}, forward \
+                 kinematics says {:?} / {:?}",
+                data.xpos[b],
+                data.xquat[b]
+            );
+            if rot.angle() > 1e-6 {
+                rotated = true;
+            }
+        }
+        assert!(
+            rotated,
+            "no body ended up rotated, so this could not tell a composed \
+             chain from a sum"
+        );
+
+        // ⚠ The residual assumption, made executable. The walk reads
+        // `body_quat`; forward kinematics reads a free joint's `qpos0`. What
+        // this builder SHIPS keeps both at identity, and this asserts that
+        // rather than leaving it as a sentence — the two diverging is the one
+        // way the walk can still place an anchor wrongly.
+        let shipped = mechanism.to_model(4.0, 4.0).unwrap();
+        for j in 0..shipped.njnt {
+            if shipped.jnt_type[j] == MjJointType::Free {
+                let adr = shipped.jnt_qpos_adr[j];
+                let from_joint = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+                    shipped.qpos0[adr + 3],
+                    shipped.qpos0[adr + 4],
+                    shipped.qpos0[adr + 5],
+                    shipped.qpos0[adr + 6],
+                ));
+                let from_body = shipped.body_quat[shipped.jnt_body[j]];
+                assert!(
+                    from_joint.angle_to(&from_body) < 1e-12,
+                    "free joint {j} starts at {from_joint:?} while its body's \
+                     reference orientation is {from_body:?}; the linkage \
+                     anchors are placed from the body and the simulation \
+                     starts from the joint"
+                );
+            }
+        }
     }
 
     #[test]
@@ -2541,14 +3147,45 @@ mod tests {
         eprintln!("  newton_csg_subtract: all 4 test points match Solid::gradient() exactly");
     }
 
-    /// Hinge pendulum energy conservation: a frictionless geometry-driven
-    /// hinge should oscillate without artificial damping.
+    /// An arm released into a pin-in-bore hinge does not GAIN energy.
     ///
-    /// This is the critical dynamics validation test. A pendulum arm
-    /// hanging from a pin-in-bore geometry hinge, released from horizontal,
-    /// should swing with < 1% energy loss per period.
+    /// ⚠⚠ **This was called `hinge_pendulum_energy_conservation` and billed as
+    /// "the critical dynamics validation test", claiming a frictionless hinge
+    /// oscillates with <1% loss per period. It could not see whether that was
+    /// true, for two independent reasons, and it was not true.**
+    ///
+    /// 1. **The energy was summed over ALL bodies**, and the socket is
+    ///    500 000 kg/m³ so it may act as an anchor. Its potential energy is
+    ///    **59 925** against the arm's entire budget of **53.7** — three orders
+    ///    of magnitude. The reported "0.5% loss" was the socket settling
+    ///    0.1 mm; the pendulum was invisible inside it.
+    /// 2. **Potential energy used `9.81` in a MILLIMETRE model** where gravity
+    ///    is 9810 mm/s². PE came out 1000x under, so `KE + PE` was
+    ///    approximately KE — and KE alone is not conserved by a pendulum, it
+    ///    trades with PE every swing. Comparing KE at two arbitrary steps is a
+    ///    phase coincidence, not a conservation law.
+    ///
+    /// ⛔ **What the arm actually does**, measured arm-only with g = 9810:
+    ///
+    /// | step | arm energy | arm KE |
+    /// |---|---|---|
+    /// | 0 | 53.652 | 0 |
+    /// | 100 | 49.250 | 0.0885 |
+    /// | 150-450 | ~50.0 | **0.0005** |
+    ///
+    /// A free swing from 45 deg would peak at **KE ~ 3.57**. It reaches
+    /// **0.0885 — 2.5%** — and is at rest by step 150. The hinge destroys
+    /// ~97% of the swing energy in a single half-swing and never oscillates.
+    ///
+    /// ★ So this asserts what it CAN: the arm loses energy and never gains
+    /// it, measured on the arm alone so the socket cannot hide the result.
+    /// The 3% line DISCRIMINATES — friction 2.0 on the bore, the one thing
+    /// this setup exists to exclude, takes the loss to 4.5% and fires it.
+    /// That the hinge should oscillate and does not is a sim-core contact
+    /// question, recorded rather than pinned here — pinning 97% dissipation
+    /// as "expected" would cement it.
     #[test]
-    fn hinge_pendulum_energy_conservation() {
+    fn an_arm_released_into_a_bore_does_not_gain_energy() {
         use nalgebra::UnitQuaternion;
 
         // ── Geometry: socket + arm-with-pin ──────────────────────────────
@@ -2696,6 +3333,8 @@ mod tests {
             // Total energy = KE + PE
             let mut ke = 0.0;
             let mut pe = 0.0;
+            let mut swing_kinetic = 0.0;
+            let mut swing_potential = 0.0;
             for body in 1..model.nbody {
                 let mass = model.body_mass[body];
                 if body < data.cvel.len() {
@@ -2707,12 +3346,22 @@ mod tests {
                 }
                 if body < data.xipos.len() {
                     let z = data.xipos[body].z;
-                    pe += mass * 9.81 * z;
+                    pe += mass * -super::GRAVITY_MM_PER_S2 * z;
+                }
+                if body == 2 {
+                    if body < data.cvel.len() {
+                        let cv = &data.cvel[body];
+                        swing_kinetic =
+                            0.5 * mass * (cv[3] * cv[3] + cv[4] * cv[4] + cv[5] * cv[5]);
+                    }
+                    swing_potential = mass * -super::GRAVITY_MM_PER_S2 * data.xipos[body].z;
                 }
             }
 
-            let total = ke + pe;
-            energies.push(total);
+            // ⚠ The ARM's energy, not the model's. The socket outweighs the
+            // pendulum by three orders of magnitude and would hide any result.
+            let _ = (ke, pe);
+            energies.push(swing_kinetic + swing_potential);
 
             if step % 50 == 0 || step < 5 {
                 // Body positions
@@ -2760,15 +3409,31 @@ mod tests {
             loss_fraction * 100.0
         );
 
-        // Energy conservation: with analytical CSG normals from the contact
-        // patch system, a frictionless geometry-driven hinge conserves energy.
-        // Grid normals would cause > 50% loss from virtual friction.
-        // Threshold 6%: exact SDF evaluation in Tier 3 surface tracing
-        // (PhysicsShape threading) gives sharper normals at bore-pin interface,
-        // slightly changing solver dynamics vs the old grid interpolation.
+        // ⛔ Energy may not be CREATED. A contact solve that adds energy is
+        // unstable and will diverge given long enough; one that removes it is
+        // dissipative, which is the state this hinge is measured to be in.
+        //
+        // ⚠ **This half is NOT demonstrated failing.** Three mutations —
+        // friction 2.0, an under-damped `solref`, and a 0.004 s timestep — all
+        // produced LOSS (4.5%, 100%, 82.2%), never gain. It is kept rather
+        // than dropped because without it `loss_fraction < 0.03` passes
+        // silently when energy is created: a negative loss is still less than
+        // three percent. An undemonstrated guard over a real hole is worth
+        // more than a tidy gap, but it has not earned the word "gated".
         assert!(
-            loss_fraction < 0.06,
-            "energy loss {:.1}% exceeds 6% threshold — indicates virtual friction or solver instability",
+            loss_fraction > -0.001,
+            "the arm GAINED {:.2}% of its energy between step 50 and 450 — a \
+             contact solve that creates energy is unstable",
+            -loss_fraction * 100.0
+        );
+        // And it may not bleed. Measured **1.7%** over this window with the arm
+        // already at rest. ⛔ The line sits at 3% because that DISCRIMINATES:
+        // giving the bore friction 2.0 — the one thing the setup exists to
+        // exclude — takes it to **4.5%**, and a threshold above that would
+        // pass the very defect this test is named for.
+        assert!(
+            loss_fraction < 0.03,
+            "the arm lost {:.1}% of its energy between step 50 and 450",
             loss_fraction * 100.0
         );
     }

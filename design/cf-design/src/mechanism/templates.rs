@@ -10,6 +10,7 @@
 //! - [`link`] / [`link_infilled`] — bone-like structural link
 //! - [`bracket`] — flat mounting plate with rounded edges
 
+use super::units;
 use nalgebra::Vector3;
 
 use super::flex_split::split_part;
@@ -115,11 +116,15 @@ pub fn finger(
         .into_iter()
         .map(|fj| {
             let mut def = fj.def;
+            // ⛔⛔ `split_part` derives `E·I/L` in N·mm/rad — genuinely
+            // physical — and `with_stiffness` takes the model's microjoule
+            // torque units. Handing one straight to the other made every
+            // flexure here a thousand times softer than its own number said.
             if fj.stiffness > 0.0 {
-                def = def.with_stiffness(fj.stiffness);
+                def = def.with_stiffness(units::model_stiffness_from_n_mm_per_rad(fj.stiffness));
             }
             if fj.damping > 0.0 {
-                def = def.with_damping(fj.damping);
+                def = def.with_damping(units::model_stiffness_from_n_mm_per_rad(fj.damping));
             }
             def
         })
@@ -490,5 +495,43 @@ mod tests {
     #[should_panic(expected = "positive and finite")]
     fn bracket_rejects_zero_width() {
         drop(bracket("b", 0.0, 15.0, 3.0, pla()));
+    }
+
+    /// ⛔⛔ The unit bridge between a derived flexure rate and the model.
+    ///
+    /// `split_part` computes `k = E·I/L` and documents it — correctly — as
+    /// **N·mm/rad**. The model's torque unit is kg·mm²/s², a microjoule, so
+    /// 1 N·mm is a THOUSAND of them. Handing the physical number straight to
+    /// [`JointDef::with_stiffness`] made every templated flexure a thousand
+    /// times softer than the number it carried, and nothing said so: the
+    /// derivation was right, the storage was right, and only the crossing
+    /// between them was wrong.
+    ///
+    /// ★ Worked independently of the code, for a 10 x 2 mm PLA flexure 5 mm
+    /// long: `I = 10·2³/12 = 6.667 mm⁴`, `E = 3.5 GPa = 3500 N/mm²`, so
+    /// `k = 3500 × 6.667 / 5 = 4667 N·mm/rad` — and the model should see
+    /// 4.667e6 of its own units.
+    #[test]
+    fn a_flexure_reaches_the_model_in_the_model_s_own_torque_units() {
+        let material = pla();
+        let (parts, joints) = finger("f", 60.0, 5.0, 3, material);
+        assert!(parts.len() >= 2, "the finger did not split");
+
+        let sprung: Vec<f64> = joints.iter().filter_map(JointDef::stiffness).collect();
+        assert!(!sprung.is_empty(), "no flexure carried a stiffness");
+
+        for k_model in sprung {
+            // A 5 mm-radius PLA section is stiff: in N·mm/rad it lands in the
+            // tens of thousands, so in MODEL units it must land in the tens of
+            // millions. Anything in the tens of thousands means the physical
+            // number went across unconverted.
+            assert!(
+                k_model > 1.0e6,
+                "a PLA flexure reached the model at {k_model:.1} torque units. \
+                 In N·mm/rad that is {:.1}, which is the physical number \
+                 crossing unconverted — the model wants a thousand times more.",
+                k_model / 1.0e3
+            );
+        }
     }
 }

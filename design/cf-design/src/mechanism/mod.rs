@@ -18,6 +18,7 @@
 pub mod actuator;
 mod analytical_shape;
 pub mod builder;
+pub mod bushing;
 pub mod flex_split;
 pub mod joint;
 pub mod linkage;
@@ -31,11 +32,13 @@ mod shapes;
 mod stl;
 pub mod templates;
 pub mod tendon;
+pub mod units;
 pub mod validate;
 
 pub use actuator::{ActuatorDef, ActuatorKind};
 pub use analytical_shape::AnalyticalShape;
 pub use builder::{Mechanism, MechanismBuilder, MechanismError};
+pub use bushing::{Bushing, shear_modulus_from_shore_a};
 pub use flex_split::{CrossSection, FlexJoint, SplitResult, measure_cross_section, split_part};
 pub use joint::{JointDef, JointKind};
 pub use linkage::{LinkageDef, LinkageKind};
