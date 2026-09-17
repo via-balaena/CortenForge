@@ -146,6 +146,30 @@ const STL_TOLERANCE_MM: f64 = 4.0;
 /// halving again.
 const MIN_STL_TOLERANCE_MM: f64 = 0.25;
 
+/// How far an exported mesh may sit from the part's closed-form volume.
+///
+/// ⚠ The mesh is what gets MANUFACTURED, and a cell-size tolerance thins a
+/// slender part rather than deleting it. Measured at the 4 mm default:
+/// `frame_spine` exported at 8.7% of its volume, `tie_rod` at 4.6% — both with
+/// thousands of faces, so an "is it empty" check passed them. Grid integration
+/// agrees with the closed form to ~0.1% at every cell size tried, so the closed
+/// form is the referent and the mesh is the thing on trial.
+const STL_VOLUME_TOLERANCE: f64 = 0.05;
+
+/// Signed volume of a closed triangle mesh, by the divergence theorem.
+fn mesh_volume_mm3(mesh: &IndexedMesh) -> f64 {
+    mesh.faces
+        .iter()
+        .map(|f| {
+            let a = mesh.vertices[f[0] as usize].coords;
+            let b = mesh.vertices[f[1] as usize].coords;
+            let c = mesh.vertices[f[2] as usize].coords;
+            a.dot(&b.cross(&c))
+        })
+        .sum::<f64>()
+        / 6.0
+}
+
 /// How far a linkage may let the two points it holds drift apart, at its
 /// **worst step**, not its last.
 ///
@@ -595,19 +619,33 @@ impl Pose {
 /// with **no arguments**, and a validator that writes files on every CI run
 /// would leave litter behind; the asserted zero-argument path stays read-only.
 ///
-/// ⚠ **A part can mesh to nothing.** [`Mechanism::to_stl_kit`] meshes every
-/// part at one tolerance, and that tolerance is a *cell size*: the 3 mm seat
-/// pan, 3 mm thick at the time, vanished entirely at the 4 mm default that
-/// suits a 1.25 m frame and wrote an 84-byte STL containing no triangles — a
-/// valid, correctly named, empty file. So each part is meshed at the requested tolerance and only what
-/// vanishes is refined, halving down to [`MIN_STL_TOLERANCE_MM`].
+/// ⚠ **A part can mesh to nothing.** The tolerance is a *cell size*: the 3 mm
+/// seat pan, 3 mm thick at the time, vanished entirely at the 4 mm default
+/// that suits a 1.25 m frame and wrote an 84-byte STL containing no triangles
+/// — a valid, correctly named, empty file.
 ///
-/// ⚠ Refining *everything* to its mass-integration cell instead was measured
-/// at 8.1 M triangles and 388 MB: that cell is chosen for integration
-/// accuracy, and a 2 mm wall does not need 0.5 mm triangles to look right.
+/// ⚠⚠ **And worse, it can mesh to a THIN version of itself**, which is not
+/// empty and so passed. Refinement used to trigger on `faces.is_empty()` —
+/// "did it produce anything", not "is it right". Measured at the 4 mm default
+/// against each part's closed-form volume: `frame_spine` **8.7%**, `tie_rod`
+/// **4.6%**, `frame_diag_l` **11.1%**, all with thousands of faces. These are
+/// the files that get manufactured.
+///
+/// So each part is now refined until its mesh volume is within
+/// [`STL_VOLUME_TOLERANCE`] of its closed form, halving down to
+/// [`MIN_STL_TOLERANCE_MM`] — and parts with no closed form are reported as
+/// unverified rather than assumed right.
+///
+/// ⚠ **What that costs, measured**: 5.68 M triangles and 558 MB on disk, with
+/// the slender parts landing at 1 mm. A wall needs cells finer than the wall;
+/// there is no cheaper faithful mesh of a thin tube. Refining
+/// *everything* to its mass-integration cell — a different and worse rule —
+/// was measured at 8.1 M triangles, since that cell is chosen for integration
+/// accuracy rather than for fidelity of the surface.
 fn export_stls(
     mechanism: &Mechanism,
     origins: &HashMap<String, Vector3<f64>>,
+    metrics: &HashMap<String, PartMetrics>,
     dir: &Path,
     tolerance_mm: f64,
     pose: Pose,
@@ -622,13 +660,41 @@ fn export_stls(
     let mut assembly = IndexedMesh::default();
     let mut total = 0usize;
 
+    let mut unchecked: Vec<&str> = Vec::new();
     for part in mechanism.parts() {
-        // Mesh at what was asked for, and refine only what vanishes. The
-        // tolerance is a cell size, so a part thinner than one cell meshes to
-        // nothing at all — a silent, correctly named, empty file.
+        // Mesh at what was asked for, and refine until the mesh is the PART.
+        //
+        // ⚠⚠ This used to refine only what VANISHED — `faces.is_empty()` — and
+        // that criterion is "did it produce anything", not "is it right". The
+        // tolerance is a cell size, so a slender part does not vanish, it
+        // *thins*, and a thinned part has plenty of faces. Measured at the
+        // 4 mm default against each part's closed-form volume:
+        //
+        // | part | exported | true |
+        // |---|---|---|
+        // | `frame_spine` | **8.7%** | 433 492 mm^3 |
+        // | `tie_rod` | **4.6%** | 129 263 mm^3 |
+        // | `frame_diag_l` | **11.1%** | 109 005 mm^3 |
+        //
+        // These are the files that get MANUFACTURED, and nothing objected.
+        //
+        // ⚠ The closed form is the referent, and not every part has one —
+        // authored geometry does not. Those are reported at the end rather
+        // than silently treated as correct: a part this cannot read is not a
+        // part this has checked.
+        let closed_form = metrics.get(part.name()).and_then(|m| m.volume_mm3);
+        let faithful = |mesh: &IndexedMesh| match closed_form {
+            None => true,
+            Some(want) if want <= 0.0 => true,
+            Some(want) => ((mesh_volume_mm3(mesh) - want) / want).abs() <= STL_VOLUME_TOLERANCE,
+        };
+        if closed_form.is_none() {
+            unchecked.push(part.name());
+        }
+
         let mut tol = tolerance_mm;
         let mut mesh = part.solid().mesh(tol).geometry;
-        while mesh.faces.is_empty() && tol > MIN_STL_TOLERANCE_MM {
+        while (mesh.faces.is_empty() || !faithful(&mesh)) && tol > MIN_STL_TOLERANCE_MM {
             tol /= 2.0;
             mesh = part.solid().mesh(tol).geometry;
         }
@@ -638,6 +704,19 @@ fn export_stls(
                  its thinnest feature is finer than that",
                 part.name()
             );
+        }
+        if let Some(want) = closed_form.filter(|v| *v > 0.0) {
+            let got = mesh_volume_mm3(&mesh);
+            let off = (got - want) / want;
+            if off.abs() > STL_VOLUME_TOLERANCE {
+                bail!(
+                    "part {} still meshes to {:.1}% of its closed-form volume at \
+                     {MIN_STL_TOLERANCE_MM} mm ({got:.0} vs {want:.0} mm^3) — the \
+                     exported solid is not the part",
+                    part.name(),
+                    100.0 * got / want
+                );
+            }
         }
 
         // ⚠ Place it. A part's solid is in its OWN frame; where it sits is in
@@ -678,6 +757,23 @@ fn export_stls(
             tol,
         );
         total += mesh.faces.len();
+    }
+
+    // ⚠ Say what could not be checked. A part with no closed form was meshed
+    // and written like any other, but nothing verified the mesh IS the part —
+    // and a silent pass reads identically to a verified one.
+    if unchecked.is_empty() {
+        println!(
+            "  every part's mesh within {:.0}% of its closed-form volume",
+            STL_VOLUME_TOLERANCE * 100.0
+        );
+    } else {
+        println!(
+            "  {} of {} parts have no closed form and their meshes are UNVERIFIED: {}",
+            unchecked.len(),
+            mechanism.parts().len(),
+            unchecked.join(", ")
+        );
     }
 
     // One file with the whole thing in it, so "look at the trike" is a
@@ -1948,7 +2044,7 @@ fn main() -> Result<()> {
 
     if let Some(dir) = out_dir {
         println!("\nmeshing the assembly:");
-        export_stls(&mechanism, &origins, &dir, tolerance_mm, pose)?;
+        export_stls(&mechanism, &origins, &metrics, &dir, tolerance_mm, pose)?;
     }
 
     println!("\nOK");
