@@ -34,7 +34,7 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use super::actuator::ActuatorKind;
-use super::builder::Mechanism;
+use super::builder::{Mechanism, MechanismError};
 use super::joint::{JointDef, JointKind};
 use super::linkage::LinkageKind;
 use super::model_builder::{
@@ -54,7 +54,7 @@ use super::tendon::TendonDef;
 /// # Panics
 ///
 /// Panics if `resolution` is not positive and finite.
-pub(super) fn generate(mechanism: &Mechanism, resolution: f64) -> String {
+pub(super) fn generate(mechanism: &Mechanism, resolution: f64) -> Result<String, MechanismError> {
     assert!(
         resolution > 0.0 && resolution.is_finite(),
         "MJCF resolution must be positive and finite, got {resolution}"
@@ -77,7 +77,7 @@ pub(super) fn generate(mechanism: &Mechanism, resolution: f64) -> String {
         super::model_builder::GRAVITY_MM_PER_S2
     );
 
-    write_assets(&mut xml, mechanism, resolution);
+    write_assets(&mut xml, mechanism, resolution)?;
     write_worldbody(&mut xml, mechanism);
     write_equality(&mut xml, mechanism);
     write_tendons(&mut xml, mechanism);
@@ -85,7 +85,7 @@ pub(super) fn generate(mechanism: &Mechanism, resolution: f64) -> String {
 
     let _ = write!(xml, "</mujoco>");
     // No trailing newline — caller can add one if desired.
-    xml
+    Ok(xml)
 }
 
 // ── XML helpers ─────────────────────────────────────────────────────────
@@ -108,15 +108,58 @@ fn esc(s: &str) -> String {
 
 // ── Asset section ───────────────────────────────────────────────────────
 
-fn write_assets(xml: &mut String, mechanism: &Mechanism, resolution: f64) {
+/// Fewest vertices MuJoCo will accept in a `<mesh>`.
+///
+/// ⚠ Below this it refuses the WHOLE FILE — *"at least 4 vertices required"* —
+/// so one thin part takes the assembly with it.
+const MIN_MESH_VERTICES: usize = 4;
+
+/// How far the per-part resolution may be refined chasing those vertices.
+///
+/// A part still empty at a sixteenth of what was asked for has a feature that
+/// fine, and wants saying so rather than halving until it runs out of memory.
+const MAX_MESH_REFINEMENTS: u32 = 4;
+
+fn write_assets(
+    xml: &mut String,
+    mechanism: &Mechanism,
+    resolution: f64,
+) -> Result<(), MechanismError> {
     let parts = mechanism.parts();
     if parts.is_empty() {
-        return;
+        return Ok(());
     }
 
     let _ = writeln!(xml, "  <asset>");
     for part in parts {
-        let mesh = part.solid().mesh(resolution);
+        // ⚠⚠ A single resolution cannot serve an assembly that spans scales.
+        // Measured on cf-trike at the 20 mm its own model uses: **10 of 34
+        // parts mesh to ZERO vertices** — the frame spine, both towers, the
+        // tie rod, the seat pan — and MuJoCo then refuses the entire file.
+        // This used to emit them anyway and return a `String`, so there was no
+        // channel to say so; a cf-trike test comment carried the knowledge
+        // instead, which is no use to a caller who has not read it.
+        //
+        // ★ Refined only until the mesh LOADS, not until it is accurate. Those
+        // are different targets and only the first is this function's business
+        // — a part's mass and inertia are written explicitly below, so they no
+        // longer ride on how finely it happened to mesh.
+        let mut tol = resolution;
+        let mut mesh = part.solid().mesh(tol);
+        let mut refinements = 0;
+        while mesh.geometry.vertices.len() < MIN_MESH_VERTICES && refinements < MAX_MESH_REFINEMENTS
+        {
+            tol /= 2.0;
+            refinements += 1;
+            mesh = part.solid().mesh(tol);
+        }
+        if mesh.geometry.vertices.len() < MIN_MESH_VERTICES {
+            return Err(MechanismError::PartMeshesTooCoarse {
+                part: part.name().to_owned(),
+                requested_mm: resolution,
+                finest_mm: tol,
+            });
+        }
 
         let _ = write!(xml, "    <mesh name=\"{}_mesh\"", esc(part.name()));
 
@@ -147,6 +190,7 @@ fn write_assets(xml: &mut String, mechanism: &Mechanism, resolution: f64) {
         let _ = writeln!(xml, "/>");
     }
     let _ = writeln!(xml, "  </asset>");
+    Ok(())
 }
 
 // ── Worldbody ───────────────────────────────────────────────────────────
@@ -276,6 +320,39 @@ fn write_body(
         for joint in jlist {
             write_joint(xml, joint, &body_anchor, indent + 2);
         }
+    }
+
+    // ⚠⚠ The inertial properties are STATED, not left to be re-derived from
+    // the mesh. MuJoCo computes mass as density x mesh volume, so a part that
+    // meshes coarsely gets a mass to match: measured on cf-trike's frame
+    // spine, a 3 mm mesh holds **1.08 kg** where the part is **3.40**, because
+    // a 2 mm wall cannot survive a 3 mm cell. That made the exported vehicle's
+    // mass an artefact of a rendering parameter.
+    //
+    // These are the same numbers `to_model` uses — one `mass_properties` call,
+    // integrated on a 1 mm grid, which agrees with cf-trike's closed-form
+    // volumes to ~0.1% at every cell size tried. `fullinertia` is MuJoCo's
+    // `[Ixx, Iyy, Izz, Ixy, Ixz, Iyz]` about the centre of mass, which is the
+    // order and the sign convention `MassProperties` already uses.
+    //
+    // ★ With these present the mesh is collision and visual geometry only, so
+    // `resolution` stops being a claim about the vehicle's mass.
+    let geom_offset_for_inertia = compute_geom_offset(part, joints_on);
+    if let Some(mp) = super::mass::mass_properties(
+        part.solid(),
+        part.material().density,
+        super::model_builder::MASS_CELL_MM,
+    ) {
+        let com = geom_offset_for_inertia + mp.center_of_mass.coords;
+        let _ = writeln!(
+            xml,
+            "{pad}  <inertial pos=\"{} {} {}\" mass=\"{}\" fullinertia=\"{}\"/>",
+            com.x,
+            com.y,
+            com.z,
+            mp.mass,
+            join(&mp.inertia),
+        );
     }
 
     // Geom referencing the mesh asset, with material density for mass computation.
@@ -556,11 +633,90 @@ mod tests {
 
     // ── 1. Single part ──────────────────────────────────────────────
 
+    /// The file states the same mass as the model, at any resolution.
+    ///
+    /// ⚠⚠ It did not. MuJoCo derives mass from `density x mesh volume`, so a
+    /// part that meshed coarsely got a mass to match — cf-trike's frame spine
+    /// held **1.08 kg** at a 3 mm mesh where the part is **3.40**, because a
+    /// 2 mm wall cannot survive a 3 mm cell. The exported vehicle's mass was
+    /// an artefact of a rendering parameter, and at 20 mm — the resolution its
+    /// own model uses — 10 of 34 parts meshed to nothing and MuJoCo refused
+    /// the file outright.
+    ///
+    /// ★ Both halves are asserted here: the coarse export must still LOAD-able
+    /// (non-degenerate meshes) and must state the FINE export's mass.
+    ///
+    /// ⛔ The tube is load-bearing. A chunky solid meshes accurately at any
+    /// cell and would agree by luck; this asserts below that the coarse mesh
+    /// really does lose most of the volume, so a regression cannot hide behind
+    /// a geometry that never had a thin wall.
+    #[test]
+    fn the_exported_mass_does_not_depend_on_the_mesh_resolution() {
+        // A thin-walled tube: 20 mm across, 1.5 mm wall.
+        let tube = Solid::cylinder(10.0, 60.0).subtract(Solid::cylinder(8.5, 61.0));
+        let mechanism = Mechanism::builder("tube")
+            .part(Part::new(
+                "tube",
+                tube.clone(),
+                Material::new("steel", 7850.0),
+            ))
+            .build();
+
+        let mass_in = |xml: &str| -> f64 {
+            let at = xml.find("mass=\"").unwrap();
+            let rest = &xml[at + 6..];
+            let end = rest.find('"').unwrap();
+            rest[..end].parse().unwrap()
+        };
+
+        let coarse = mechanism.to_mjcf(8.0).unwrap();
+        let fine = mechanism.to_mjcf(0.5).unwrap();
+        let model = mechanism.to_model(2.0, 2.0).unwrap();
+
+        // ⛔ Non-degenerate: the coarse MESH must actually be wrong, or this
+        // proves nothing about stating the mass independently of it.
+        let vol = |tol: f64| {
+            let m = tube.mesh(tol).geometry;
+            m.faces
+                .iter()
+                .map(|f| {
+                    let (a, b, c) = (
+                        m.vertices[f[0] as usize].coords,
+                        m.vertices[f[1] as usize].coords,
+                        m.vertices[f[2] as usize].coords,
+                    );
+                    a.dot(&b.cross(&c))
+                })
+                .sum::<f64>()
+                / 6.0
+        };
+        let (coarse_vol, fine_vol) = (vol(8.0), vol(0.5));
+        assert!(
+            coarse_vol < 0.5 * fine_vol,
+            "the coarse mesh holds {coarse_vol} against {fine_vol} — this \
+             geometry does not lose enough volume to detect the defect"
+        );
+
+        let stated = mass_in(&coarse);
+        assert!(
+            (stated - mass_in(&fine)).abs() < 1e-9,
+            "the file states {stated} kg at 8 mm and {} at 0.5 mm — the mass \
+             is riding on the mesh",
+            mass_in(&fine)
+        );
+        assert!(
+            (stated - model.body_mass[1]).abs() < 1e-9,
+            "the file states {stated} kg and the model holds {} — two paths \
+             out of one mechanism have to agree",
+            model.body_mass[1]
+        );
+    }
+
     #[test]
     fn single_part_mjcf() {
         let m = Mechanism::builder("solo").part(sphere_part("ball")).build();
 
-        let xml = m.to_mjcf(RES);
+        let xml = m.to_mjcf(RES).unwrap();
 
         assert!(xml.contains("<mujoco model=\"solo\">"));
         assert!(xml.contains("<compiler angle=\"radian\"/>"));
@@ -589,7 +745,7 @@ mod tests {
 
     #[test]
     fn two_part_mjcf_structure() {
-        let xml = two_part_mechanism().to_mjcf(RES);
+        let xml = two_part_mechanism().to_mjcf(RES).unwrap();
 
         // Palm is root (never a child).
         assert!(xml.contains("<body name=\"palm\">"));
@@ -632,7 +788,7 @@ mod tests {
                 ))
                 .build();
 
-            let xml = m.to_mjcf(RES);
+            let xml = m.to_mjcf(RES).unwrap();
             assert!(
                 xml.contains(&format!("type=\"{expected_type}\"")),
                 "expected type=\"{expected_type}\" for {kind:?}, got:\n{xml}"
@@ -655,7 +811,7 @@ mod tests {
             ))
             .build();
 
-        let xml = m.to_mjcf(RES);
+        let xml = m.to_mjcf(RES).unwrap();
         assert!(
             !xml.contains("<joint"),
             "a weld must emit no <joint> element, got:\n{xml}"
@@ -697,7 +853,7 @@ mod tests {
             ))
             .build();
 
-        let xml = m.to_mjcf(RES);
+        let xml = m.to_mjcf(RES).unwrap();
         assert!(xml.contains("<equality>"), "no equality block:\n{xml}");
         assert!(
             xml.contains("<connect name=\"coupler\" body1=\"a\" body2=\"b\" anchor=\"1 -2 3\""),
@@ -735,7 +891,7 @@ mod tests {
             ))
             .build();
 
-        let xml = m.to_mjcf(RES);
+        let xml = m.to_mjcf(RES).unwrap();
         for name in ["base", "arm"] {
             assert!(
                 xml.contains(&format!("<body name=\"{name}\"")),
@@ -775,7 +931,7 @@ mod tests {
                 .build();
 
             let model = m.to_model(4.0, 4.0).unwrap();
-            let xml = m.to_mjcf(4.0);
+            let xml = m.to_mjcf(4.0).unwrap();
 
             let line = xml.lines().find(|l| l.contains("mesh=\"arm_mesh\""));
             assert!(line.is_some(), "no geom for arm:\n{xml}");
@@ -863,7 +1019,7 @@ mod tests {
 
         let model = m.to_model(2.0, 2.0).unwrap();
         let want = model_tree(&model);
-        let got = file_tree(&m.to_mjcf(RES));
+        let got = file_tree(&m.to_mjcf(RES).unwrap());
 
         assert_eq!(
             got.len(),
@@ -981,7 +1137,7 @@ mod tests {
             ))
             .build();
 
-        let xml = m.to_mjcf(RES);
+        let xml = m.to_mjcf(RES).unwrap();
         let defined: Vec<&str> = xml
             .match_indices("<body name=\"")
             .map(|(i, pat)| {
@@ -1035,7 +1191,7 @@ mod tests {
             ))
             .build();
 
-        let xml = m.to_mjcf(RES);
+        let xml = m.to_mjcf(RES).unwrap();
         let model = m.to_model(2.0, 2.0).unwrap();
 
         // ⚠ Spelled out rather than calling the writer's own `join`: an
@@ -1082,7 +1238,7 @@ mod tests {
                 Vector3::y(),
             ))
             .build();
-        let xml = m.to_mjcf(RES);
+        let xml = m.to_mjcf(RES).unwrap();
         assert!(
             !xml.contains("<equality>"),
             "an empty equality block is noise:\n{xml}"
@@ -1108,7 +1264,7 @@ mod tests {
             ))
             .build();
 
-        let xml = m.to_mjcf(RES);
+        let xml = m.to_mjcf(RES).unwrap();
         assert!(
             xml.contains("<body name=\"b\" pos=\"3 -4 5\">"),
             "the welded body must keep the weld's anchor as its pose, got:\n{xml}"
@@ -1130,7 +1286,7 @@ mod tests {
             ))
             .build();
 
-        let xml = m.to_mjcf(RES);
+        let xml = m.to_mjcf(RES).unwrap();
         assert!(
             xml.contains("<freejoint name=\"fj\"/>"),
             "expected <freejoint>, got:\n{xml}"
@@ -1157,14 +1313,14 @@ mod tests {
             )
             .build();
 
-        let xml = m.to_mjcf(RES);
+        let xml = m.to_mjcf(RES).unwrap();
         assert!(xml.contains("range=\"-1.5 1.5\""), "missing range attr");
         assert!(xml.contains("limited=\"true\""), "missing limited attr");
     }
 
     #[test]
     fn joint_without_range_has_no_limited() {
-        let xml = two_part_mechanism().to_mjcf(RES);
+        let xml = two_part_mechanism().to_mjcf(RES).unwrap();
         assert!(!xml.contains("limited="), "unexpected limited attr");
         assert!(!xml.contains("range="), "unexpected range attr");
     }
@@ -1196,7 +1352,7 @@ mod tests {
             ))
             .build();
 
-        let xml = m.to_mjcf(RES);
+        let xml = m.to_mjcf(RES).unwrap();
 
         // Sites on palm body.
         assert!(xml.contains("site name=\"flex_s0\" pos=\"1 2 3\""));
@@ -1246,7 +1402,7 @@ mod tests {
             )
             .build();
 
-        let xml = m.to_mjcf(RES);
+        let xml = m.to_mjcf(RES).unwrap();
         assert!(xml.contains("<tendon>"));
         assert!(xml.contains("<spatial name=\"cable\""));
         assert!(xml.contains("stiffness=\"200\""));
@@ -1286,7 +1442,7 @@ mod tests {
             )
             .build();
 
-        let xml = m.to_mjcf(RES);
+        let xml = m.to_mjcf(RES).unwrap();
         assert!(xml.contains("<actuator>"));
         assert!(xml.contains("<general name=\"motor_1\" tendon=\"t\""));
         assert!(xml.contains("forcerange=\"-50 50\""));
@@ -1326,7 +1482,7 @@ mod tests {
             ))
             .build();
 
-        let xml = m.to_mjcf(RES);
+        let xml = m.to_mjcf(RES).unwrap();
         assert!(xml.contains("<muscle name=\"bicep\" tendon=\"t\""));
         assert!(xml.contains("forcerange=\"0 200\""));
         // No ctrl_range set → attribute absent.
@@ -1387,7 +1543,7 @@ mod tests {
             )
             .build();
 
-        let xml = m.to_mjcf(RES);
+        let xml = m.to_mjcf(RES).unwrap();
 
         // ── Structural checks ───────────────────────────────────────
         // 3 bodies.
@@ -1447,7 +1603,7 @@ mod tests {
             )
             .build();
 
-        let xml = m.to_mjcf(RES);
+        let xml = m.to_mjcf(RES).unwrap();
         assert!(
             xml.contains("stiffness=\"1000\""),
             "missing stiffness attr in:\n{xml}"
@@ -1460,7 +1616,7 @@ mod tests {
 
     #[test]
     fn joint_without_stiffness_damping_omits_attrs() {
-        let xml = two_part_mechanism().to_mjcf(RES);
+        let xml = two_part_mechanism().to_mjcf(RES).unwrap();
         // No joints have stiffness/damping set → attributes absent.
         assert!(
             !xml.contains("stiffness="),
@@ -1482,7 +1638,7 @@ mod tests {
             .part(sphere_part("ball"))
             .build();
 
-        let xml = m.to_mjcf(RES);
+        let xml = m.to_mjcf(RES).unwrap();
 
         // The mesh element should have vertex and face data.
         assert!(xml.contains("vertex=\""), "missing vertex data");
@@ -1508,7 +1664,7 @@ mod tests {
     #[test]
     fn xml_well_formed() {
         let m = two_part_mechanism();
-        let xml = m.to_mjcf(RES);
+        let xml = m.to_mjcf(RES).unwrap();
 
         // Verify matching open/close tags for all structural elements.
         let tag_pairs = [

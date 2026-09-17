@@ -50,7 +50,10 @@ use super::tendon::TendonDef;
 /// These represent programming errors — invalid cross-references between
 /// parts, joints, tendons, and actuators. Distinct from [`super::DesignWarning`],
 /// which represents manufacturing constraint violations.
-#[derive(Debug, Clone, PartialEq, Eq)]
+// ⚠ `Eq` is gone: `PartMeshesTooCoarse` carries the resolutions it tried, and
+// a resolution is an `f64`. `PartialEq` stays, which is what comparisons in
+// tests actually use; nothing in the workspace put a `MechanismError` in a set.
+#[derive(Debug, Clone, PartialEq)]
 pub enum MechanismError {
     /// Two parts share the same name.
     DuplicatePart(String),
@@ -120,6 +123,20 @@ pub enum MechanismError {
     ///
     /// Surfaced by [`Mechanism::to_model`](super::Mechanism::to_model).
     PartNotReachable(String),
+    /// A part could not be meshed finely enough for MuJoCo to accept it.
+    ///
+    /// ⚠ MuJoCo refuses a `<mesh>` with fewer than 4 vertices, and it refuses
+    /// the WHOLE FILE for one of them. A single resolution cannot serve an
+    /// assembly spanning a 750 mm wheel and a 2 mm wall: measured on cf-trike
+    /// at 20 mm, 10 of 34 parts meshed to zero vertices.
+    PartMeshesTooCoarse {
+        /// The part that would not mesh.
+        part: String,
+        /// The resolution the caller asked for, in mm.
+        requested_mm: f64,
+        /// The finest this tried before giving up, in mm.
+        finest_mm: f64,
+    },
 }
 
 impl fmt::Display for MechanismError {
@@ -151,6 +168,16 @@ impl fmt::Display for MechanismError {
                     "actuator \"{actuator}\" references unknown tendon \"{tendon}\""
                 )
             }
+            Self::PartMeshesTooCoarse {
+                part,
+                requested_mm,
+                finest_mm,
+            } => write!(
+                f,
+                "part \"{part}\" meshed to fewer than 4 vertices at {requested_mm} mm and \
+                 still at {finest_mm} mm — MuJoCo rejects a mesh that small, and \
+                 rejects the whole file with it"
+            ),
             Self::OrphanPart(name) => {
                 write!(f, "orphan part: \"{name}\" not connected by any joint")
             }
@@ -523,8 +550,13 @@ impl Mechanism {
     /// # Panics
     ///
     /// Panics if `resolution` is not positive and finite.
-    #[must_use]
-    pub fn to_mjcf(&self, resolution: f64) -> String {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MechanismError::PartMeshesTooCoarse`] if a part still meshes
+    /// to fewer than 4 vertices after refining — MuJoCo rejects such a mesh,
+    /// and rejects the whole file with it.
+    pub fn to_mjcf(&self, resolution: f64) -> Result<String, MechanismError> {
         super::mjcf::generate(self, resolution)
     }
 

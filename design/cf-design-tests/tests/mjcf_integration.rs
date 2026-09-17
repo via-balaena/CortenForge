@@ -105,7 +105,7 @@ fn bio_gripper_mechanism() -> Mechanism {
 #[test]
 fn mjcf_parse_round_trip() {
     let mechanism = two_part_mechanism();
-    let xml = mechanism.to_mjcf(2.0);
+    let xml = mechanism.to_mjcf(2.0).expect("to_mjcf");
 
     // Parse the generated MJCF through sim-mjcf.
     let model = sim_mjcf::load_model(&xml)
@@ -120,7 +120,7 @@ fn mjcf_parse_round_trip() {
 #[test]
 fn mjcf_bio_gripper_parse() {
     let mechanism = bio_gripper_mechanism();
-    let xml = mechanism.to_mjcf(2.0);
+    let xml = mechanism.to_mjcf(2.0).expect("to_mjcf");
 
     let model = sim_mjcf::load_model(&xml)
         .unwrap_or_else(|e| panic!("sim-mjcf failed to parse bio-gripper MJCF: {e}"));
@@ -139,7 +139,7 @@ fn mjcf_bio_gripper_parse() {
 #[test]
 fn mjcf_simulation_step() {
     let mechanism = two_part_mechanism();
-    let xml = mechanism.to_mjcf(2.0);
+    let xml = mechanism.to_mjcf(2.0).expect("to_mjcf");
 
     let model = sim_mjcf::load_model(&xml).unwrap_or_else(|e| panic!("load_model failed: {e}"));
 
@@ -275,7 +275,7 @@ fn phase3_bio_gripper_full_integration() {
     );
 
     // ── MJCF generation ─────────────────────────────────────────────
-    let xml = mechanism.to_mjcf(2.0);
+    let xml = mechanism.to_mjcf(2.0).expect("to_mjcf");
 
     // Verify spring-damper attributes from flex zone splitting.
     assert!(
@@ -406,7 +406,7 @@ fn phase5_parameterized_grasp_optimization() {
                 .build();
 
             // Full pipeline: parameterized geometry → mesh → MJCF → parse → simulate.
-            let mut xml = mechanism.to_mjcf(2.0);
+            let mut xml = mechanism.to_mjcf(2.0).expect("to_mjcf");
 
             // Inject a ground plane for the ball to land on.
             let insert_pos = xml.find("<body").unwrap_or(0);

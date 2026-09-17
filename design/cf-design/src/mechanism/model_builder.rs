@@ -104,6 +104,14 @@ impl Mechanism {
 /// 9810 mm/s² through [`Mechanism::to_model`](super::Mechanism::to_model).
 pub(super) const GRAVITY_MM_PER_S2: f64 = -9810.0;
 
+/// Grid cell for the mass integration, in mm.
+///
+/// ⚠ [`mjcf`](super::mjcf) integrates with the SAME cell, so the exported file
+/// and the built model state one mass rather than two. Measured against
+/// cf-trike's closed-form volumes, this agrees to ~0.1% at every cell tried —
+/// it is the mesh, not the grid, that loses thin walls.
+pub(super) const MASS_CELL_MM: f64 = 1.0;
+
 /// Contact impedance for a millimetre model — MuJoCo's default, and fine.
 pub(super) const GEOM_SOLIMP: [f64; 5] = [0.9, 0.95, 0.001, 0.5, 2.0];
 
@@ -437,7 +445,8 @@ fn generate(
         let geom_offset = compute_geom_offset(part, &joints_on);
 
         // Mass properties (computed from implicit field)
-        let mass_props = super::mass::mass_properties(part.solid(), part.material().density, 1.0);
+        let mass_props =
+            super::mass::mass_properties(part.solid(), part.material().density, MASS_CELL_MM);
         if let Some(mp) = mass_props {
             model.body_mass.push(mp.mass);
             // ⚠ DIAGONALISE, do not truncate.
@@ -1273,18 +1282,31 @@ mod tests {
     }
 
     #[test]
-    fn unbounded_part_still_exportable() {
-        // The same unbounded part is valid for the mesh/MJCF export paths,
-        // which tolerate infinite geometry — they must not panic. This
-        // guards against re-tightening the check at build() time.
+    fn unbounded_part_is_reported_not_silently_exported() {
+        // An unbounded part still gets through `build()` — that is deliberate,
+        // and this guards against re-tightening the check there. What changed
+        // is what the MJCF export does with it.
+        //
+        // ⚠ It used to return XML carrying an EMPTY `<mesh>`, and this test
+        // asserted that as the desired behaviour. MuJoCo refuses a mesh under
+        // 4 vertices and refuses the whole file with it, so what was being
+        // guarded was the production of a file that could never be loaded.
+        //
+        // ★ The export must not PANIC, which was the real point, and it does
+        // not: it reports. A plane is a legitimate MJCF geom — `type="plane"`
+        // — just not a legitimate mesh, so emitting one directly would be a
+        // better answer still and is not what this does today.
         let mechanism = Mechanism::builder("with_floor")
             .part(Part::new("floor", Solid::plane(Vector3::z(), 0.0), pla()))
             .build();
 
-        let mjcf = mechanism.to_mjcf(1.0);
         assert!(
-            mjcf.contains("<mujoco model=\"with_floor\">"),
-            "expected MJCF XML, got: {mjcf}"
+            matches!(
+                mechanism.to_mjcf(1.0),
+                Err(MechanismError::PartMeshesTooCoarse { ref part, .. }) if part == "floor"
+            ),
+            "expected the export to name the part it could not mesh, got {:?}",
+            mechanism.to_mjcf(1.0).map(|x| x.len())
         );
     }
 

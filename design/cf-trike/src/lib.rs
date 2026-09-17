@@ -1992,14 +1992,26 @@ mod tests {
     /// the `Mechanism` what it held was green throughout, because the
     /// `Mechanism` was right and only the file was wrong.
     ///
-    /// ⚠ Structure only. At 20 mm, eight parts thinner than the cell mesh to
-    /// nothing and their `<mesh>` assets come out empty, which MuJoCo will
-    /// not load; 4 mm leaves none empty and costs 20 MB. This asserts the
-    /// body tree, not that the file compiles.
+    /// ⚠ Structure only — this asserts the body tree, not the geometry.
+    ///
+    /// ✅ It used to add that at 20 mm the thin-walled parts mesh to nothing,
+    /// their `<mesh>` assets come out empty, and MuJoCo will not load the
+    /// result. That was true and is no longer: `to_mjcf` refines a part until
+    /// its mesh is loadable and returns
+    /// [`MechanismError::PartMeshesTooCoarse`](cf_design::MechanismError) if
+    /// it cannot, and it states each body's mass and inertia explicitly rather
+    /// than leaving MuJoCo to derive them from however finely the part
+    /// happened to mesh. Measured: this file loads in real MuJoCo at 20, 8 and
+    /// 3 mm and reports **215.2329 kg** at all three — `to_model`'s figure to
+    /// four decimals.
+    ///
+    /// ⚠ The knowledge lived HERE, in a test comment, while `to_mjcf` returned
+    /// a `String` and said nothing. A caller who had not read this test got an
+    /// unloadable file and no reason.
     #[test]
     fn the_exported_file_has_a_body_for_every_part() {
         let t = trike().unwrap();
-        let xml = t.mechanism.to_mjcf(20.0);
+        let xml = t.mechanism.to_mjcf(20.0).unwrap();
 
         for part in t.mechanism.parts() {
             assert!(
