@@ -95,6 +95,47 @@ impl Mechanism {
 
 // ── Model construction ──────────────────────────────────────────────────
 
+/// Gravity for a millimetre model, in mm/s².
+///
+/// ⚠ MuJoCo's default is `-9.81`, which is correct for a model in METRES. A
+/// millimetre model that inherits it runs at a thousandth of gravity, and
+/// [`Mechanism::to_mjcf`](super::Mechanism::to_mjcf) used to emit no `<option>`
+/// at all — so the same assembly fell at 9.81 mm/s² through the file and
+/// 9810 mm/s² through [`Mechanism::to_model`](super::Mechanism::to_model).
+pub(super) const GRAVITY_MM_PER_S2: f64 = -9810.0;
+
+/// Contact impedance for a millimetre model — MuJoCo's default, and fine.
+pub(super) const GEOM_SOLIMP: [f64; 5] = [0.9, 0.95, 0.001, 0.5, 2.0];
+
+/// Contact time constant for a millimetre model, in seconds.
+///
+/// MuJoCo's default `solref[0] = 0.02` is tuned for m-scale. At mm-scale
+/// (gravity 9810) it gives ~0.46 mm equilibrium penetration and spongy
+/// contacts. 0.005 — which must stay above `2 * timestep` — gives stiff,
+/// visually correct contact.
+///
+/// ⚠ [`Mechanism::to_mjcf`](super::Mechanism::to_mjcf) emitted no contact
+/// parameters, so the exported file used the m-scale default. Measured on
+/// `cf-design-tests`' dropped ball, once its mass was no longer 1e9 too large:
+/// the contact solve diverged and summed to **4.7e22** — the SAME value for
+/// every ball radius, which reads to an optimiser as a flat objective and so
+/// as "converged".
+pub(super) const GEOM_SOLREF: [f64; 2] = [0.005, 1.0];
+
+/// Integration timestep for a millimetre model, in seconds.
+///
+/// mm-scale bodies have tiny masses (O(10⁻⁴) kg), making the contact natural
+/// frequency ~1000x higher than at m-scale, and MuJoCo's default 0.002 s
+/// cannot resolve them. 2 kHz keeps the contact frequency inside the
+/// integrator's stability range.
+///
+/// ⚠ [`Mechanism::to_mjcf`](super::Mechanism::to_mjcf) emitted no `<option>`,
+/// so the exported file ran at the 0.002 s default. Measured on
+/// `cf-design-tests`' dropped ball once gravity was correct: the contact solve
+/// saturated at 4.7e22 and returned the SAME force for every radius — a flat
+/// objective that read as "converged" to the optimiser above it.
+pub(super) const TIMESTEP_S: f64 = 0.0005;
+
 /// Constraint time constant for a linkage — MJCF's default, and fine.
 pub(super) const LINKAGE_SOLREF: [f64; 2] = [0.02, 1.0];
 
@@ -338,13 +379,14 @@ fn generate(
     model.name = mechanism.name().to_string();
 
     // cf-design geometry is in mm. Scale gravity from m/s² to mm/s².
-    model.gravity = nalgebra::Vector3::new(0.0, 0.0, -9810.0);
+    //
+    // ⚠ [`mjcf`](super::mjcf) has to say the same thing on the way out —
+    // MuJoCo's default is -9.81, which is right for a METRE model — so this is
+    // the one derivation and `GRAVITY_MM_PER_S2` is what both read.
+    model.gravity = nalgebra::Vector3::new(0.0, 0.0, GRAVITY_MM_PER_S2);
 
-    // mm-scale bodies have tiny masses (O(10⁻⁴) kg), making the contact
-    // natural frequency ~1000× higher than at m-scale. The default timestep
-    // (0.002s) can't resolve these dynamics. Use 0.0005s (2 kHz) which
-    // keeps the contact frequency within the integrator's stability range.
-    model.timestep = 0.0005;
+    // ⚠ Same story as gravity, and `mjcf` needs it for the same reason.
+    model.timestep = TIMESTEP_S;
 
     // Match MuJoCo's default diagApprox mode: bodyweight approximation.
     // The exact M⁻¹ solve (default in Model::empty()) produces different
@@ -934,12 +976,8 @@ fn push_geom(
     model.geom_gap.push(0.0);
     model.geom_priority.push(0);
     model.geom_solmix.push(1.0);
-    model.geom_solimp.push([0.9, 0.95, 0.001, 0.5, 2.0]);
-    // MuJoCo default solref[0]=0.02 is tuned for m-scale. At mm-scale
-    // (gravity=9810), that gives ~0.46 mm equilibrium penetration and
-    // spongy contacts. 0.005 (must be > 2×timestep) gives stiff,
-    // visually correct contact at mm-scale.
-    model.geom_solref.push([0.005, 1.0]);
+    model.geom_solimp.push(GEOM_SOLIMP);
+    model.geom_solref.push(GEOM_SOLREF);
     model.geom_name.push(name);
     model.geom_rbound.push(0.0); // computed in post-build
     model.geom_aabb.push([0.0; 6]); // computed in post-build

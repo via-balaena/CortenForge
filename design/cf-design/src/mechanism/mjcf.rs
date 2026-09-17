@@ -37,7 +37,9 @@ use super::actuator::ActuatorKind;
 use super::builder::Mechanism;
 use super::joint::{JointDef, JointKind};
 use super::linkage::LinkageKind;
-use super::model_builder::{LINKAGE_SOLIMP, LINKAGE_SOLREF, compute_geom_offset};
+use super::model_builder::{
+    GEOM_SOLIMP, GEOM_SOLREF, LINKAGE_SOLIMP, LINKAGE_SOLREF, compute_geom_offset,
+};
 use super::part::Part;
 use super::tendon::TendonDef;
 
@@ -62,6 +64,18 @@ pub(super) fn generate(mechanism: &Mechanism, resolution: f64) -> String {
 
     let _ = writeln!(xml, "<mujoco model=\"{}\">", esc(mechanism.name()));
     let _ = writeln!(xml, "  <compiler angle=\"radian\"/>");
+    // ⚠ The geometry is in MILLIMETRES and MuJoCo's defaults are for metres:
+    // gravity -9.81, timestep 0.002 s. Without this the same assembly falls a
+    // thousand times too slowly through the file, and once gravity is right
+    // the default timestep cannot resolve mm-scale contact — measured, the
+    // solve saturates and returns one constant force for every geometry.
+    // `to_model` sets both; two paths out of one `Mechanism` have to agree.
+    let _ = writeln!(
+        xml,
+        "  <option timestep=\"{}\" gravity=\"0 0 {}\"/>",
+        super::model_builder::TIMESTEP_S,
+        super::model_builder::GRAVITY_MM_PER_S2
+    );
 
     write_assets(&mut xml, mechanism, resolution);
     write_worldbody(&mut xml, mechanism);
@@ -276,8 +290,12 @@ fn write_body(
     if geom_offset.norm() > 1e-10 {
         let _ = writeln!(
             xml,
-            "{pad}  <geom type=\"mesh\" mesh=\"{}_mesh\" density=\"{density}\" pos=\"{} {} {}\"/>",
+            "{pad}  <geom type=\"mesh\" mesh=\"{}_mesh\" density=\"{density}\" \
+             solref=\"{} {}\" solimp=\"{}\" pos=\"{} {} {}\"/>",
             esc(part.name()),
+            GEOM_SOLREF[0],
+            GEOM_SOLREF[1],
+            join(&GEOM_SOLIMP),
             geom_offset.x,
             geom_offset.y,
             geom_offset.z,
@@ -285,8 +303,12 @@ fn write_body(
     } else {
         let _ = writeln!(
             xml,
-            "{pad}  <geom type=\"mesh\" mesh=\"{}_mesh\" density=\"{density}\"/>",
-            esc(part.name())
+            "{pad}  <geom type=\"mesh\" mesh=\"{}_mesh\" density=\"{density}\" \
+             solref=\"{} {}\" solimp=\"{}\"/>",
+            esc(part.name()),
+            GEOM_SOLREF[0],
+            GEOM_SOLREF[1],
+            join(&GEOM_SOLIMP)
         );
     }
 
@@ -550,7 +572,11 @@ mod tests {
         // ⚠ 1250 kg/m³ → 1.25e-6 kg/mm³. This asserted the raw 1250 and so
         // PINNED the units bug: the file it was guarding gave MuJoCo a mass
         // 1e9 too large, and the assertion passed the whole time.
-        assert!(xml.contains("<geom type=\"mesh\" mesh=\"ball_mesh\" density=\"0.00000125\"/>"));
+        assert!(xml.contains("<geom type=\"mesh\" mesh=\"ball_mesh\" density=\"0.00000125\""));
+        // ⚠ The mm-scale contact parameters travel with the geom. Without
+        // them the file inherits MuJoCo's m-scale defaults, and a correctly
+        // light body then diverges rather than resting.
+        assert!(xml.contains("solref=\"0.005 1\""));
         assert!(xml.contains("</body>"));
         assert!(xml.contains("</worldbody>"));
         assert!(xml.contains("</mujoco>"));

@@ -307,6 +307,55 @@ const BUMP_TRAVEL_DEG: f64 = 20.0;
 /// ⚠ A gate is vacuous until it has been made to fail, and a witness measured
 /// on geometry that has since changed is no better than never having one.
 const BUMP_FOUL_DEG: f64 = 30.0;
+
+/// Bushing rate used to DRIVE the lower wishbone to a travel angle, and the
+/// damping that stops it ringing there. Not a design value: it exists only so
+/// the loop can be solved at a chosen pose.
+const TRAVEL_DRIVE_STIFFNESS: f64 = 1.0e11;
+/// Damping for the same drive. ⚠ Overdamped on purpose — this is a solve, not
+/// a simulation of how the suspension behaves.
+const TRAVEL_DRIVE_DAMPING: f64 = 2.0e9;
+/// Steps to let the driven pose settle.
+///
+/// Measured: the loop closes to **0.0106 mm at 8 000 steps and 0.0106 mm at
+/// 30 000** — the residual is the constraint's own softness, not a transient,
+/// so 8 000 buys the same answer for a quarter of the time.
+const TRAVEL_SETTLE_STEPS: usize = 8_000;
+/// How far the linkage's two held points may sit apart before a settled pose
+/// is read. ⛔ Read a pose that has not converged and the sweep tests a
+/// vehicle that does not exist.
+const MAX_LOOP_RESIDUAL_MM: f64 = 0.05;
+/// Steering-against-travel clashes that are KNOWN and accepted, as
+/// `(member, travel_deg, lock_deg, why)`.
+///
+/// ⚠ These are a DESIGN defect, not a modelling one: at full bump the tyre
+/// reaches the lower wishbone and at full droop it reaches the upper. Neither
+/// single-axis sweep can see them — Oracle 1d steers with the suspension at
+/// rest, Oracle 1f moves the suspension with the wheel at rest, and the
+/// upright rotates 27-37 deg relative to the arms between those two.
+///
+/// ⛔ Pinned rather than fixed because the fix is geometry — steering lock,
+/// pickup placement, upright offset — and that belongs to the chassis re-size
+/// this PR's member screen was built to serve. Pinning keeps the gate live:
+/// anything NEW fails, and a pinned clash that stops happening fails too, so
+/// the list cannot quietly go stale.
+const ACCEPTED_TRAVEL_CLASHES: &[(&str, f64, f64, &str)] = &[
+    (
+        "arm_lower_l",
+        BUMP_TRAVEL_DEG,
+        STEER_LOCK_DEG,
+        "at full bump the tyre reaches the lower wishbone at full left lock",
+    ),
+    (
+        "arm_upper_l",
+        -BUMP_TRAVEL_DEG,
+        STEER_LOCK_DEG,
+        "at full droop the tyre reaches the upper wishbone at full left lock",
+    ),
+];
+
+/// How far the driven arm may sit from the angle it was asked for.
+const TRAVEL_REACHED_TOLERANCE_DEG: f64 = 0.5;
 /// Mesh tolerance for the weld-contact probe.
 const WELD_PROBE_MM: f64 = 2.0;
 /// The g multiple the member screen loads the structure at.
@@ -1451,6 +1500,194 @@ fn main() -> Result<()> {
              ({swept} arm-against-part checks; the wishbones foul each other \
              at {BUMP_FOUL_DEG:.0} deg)"
         );
+    }
+
+    // ── Oracle 1h: it steers AT TRAVEL, not only at rest ────────────
+    //
+    // Oracle 1d steers the wheel with the suspension at rest. Oracle 1f moves
+    // the suspension with the wheel at rest. Interference lives in the PRODUCT
+    // of those, and neither sweep enters it.
+    //
+    // ⚠ That gap is not small. Measured here: driving the lower wishbone to
+    // +20 deg pulls the upper to **+23.0 deg**, and the upright ends up
+    // **27.1 deg** rotated relative to `arm_upper_l` (36.8 deg at droop). The
+    // wishbone sweeps roughly a quarter-turn past the wheel it carries, so
+    // where the tyre may go at rest says nothing about where it may go at
+    // travel.
+    //
+    // ⛔⛔ **The two arms do NOT travel by the same angle.** That difference
+    // IS the camber change. Forcing both to one angle is not a pose the
+    // linkage has: measured, it leaves the ball joints **45.7 mm** apart.
+    // `Pose::Bump` turns both together and is honest about being a picture of
+    // what Oracle 1f compares, not of a pose the vehicle can hold.
+    //
+    // ★ So the pose is SOLVED, not assumed: the lower arm is driven by its own
+    // bushing and the loop is left to close, which is the one thing here that
+    // needs the physics rather than the geometry. The residual is asserted
+    // before any pose is read — an unconverged solve would otherwise hand this
+    // sweep a vehicle that does not exist.
+    {
+        let by_name: HashMap<&str, &Part> =
+            mechanism.parts().iter().map(|p| (p.name(), p)).collect();
+        let mut model = mechanism
+            .to_model(SIM_RESOLUTION_MM, SIM_RESOLUTION_MM)
+            .map_err(|e| anyhow::anyhow!("to_model failed: {e:?}"))?;
+        model.disableflags |= DISABLE_CONTACT;
+        model.gravity = Vector3::zeros();
+        let body_of = |m: &Model, name: &str| -> Result<usize> {
+            (0..m.nbody)
+                .find(|&b| m.body_name[b].as_deref() == Some(name))
+                .ok_or_else(|| anyhow::anyhow!("no body {name}"))
+        };
+        let joint_of = |m: &Model, name: &str| -> Result<usize> {
+            (0..m.njnt)
+                .find(|&j| m.jnt_name[j].as_deref() == Some(name))
+                .ok_or_else(|| anyhow::anyhow!("no joint {name}"))
+        };
+
+        // Rest poses, for the body-frame offset of each solid.
+        let mut rest = model.make_data();
+        rest.forward(&model)
+            .map_err(|e| anyhow::anyhow!("forward failed: {e:?}"))?;
+        let rest_pos: Vec<Vector3<f64>> = rest.xpos.clone();
+
+        let settle =
+            |deg: f64| -> Result<(Vec<Vector3<f64>>, Vec<nalgebra::Matrix3<f64>>, f64, f64)> {
+                let mut m = model.clone();
+                for name in ["arm_lower_l_joint", "arm_lower_r_joint"] {
+                    let j = joint_of(&m, name)?;
+                    // ⚠ `qpos_spring`, not `jnt_springref` — sim-core writes the
+                    // latter and never reads it.
+                    m.qpos_spring[m.jnt_qpos_adr[j]] = deg.to_radians();
+                    m.jnt_stiffness[j] = TRAVEL_DRIVE_STIFFNESS;
+                    m.jnt_damping[j] = TRAVEL_DRIVE_DAMPING;
+                    let d0 = m.jnt_dof_adr[j];
+                    m.dof_damping[d0] = TRAVEL_DRIVE_DAMPING;
+                    m.implicit_stiffness[d0] = TRAVEL_DRIVE_STIFFNESS;
+                    m.implicit_damping[d0] = TRAVEL_DRIVE_DAMPING;
+                }
+                let mut d = m.make_data();
+                d.forward(&m)
+                    .map_err(|e| anyhow::anyhow!("forward failed: {e:?}"))?;
+                for step in 0..TRAVEL_SETTLE_STEPS {
+                    d.step(&m)
+                        .map_err(|e| anyhow::anyhow!("settle step {step} failed: {e:?}"))?;
+                }
+                let mut loop_gap: f64 = 0.0;
+                for e in 0..m.neq {
+                    let (a, b) = (m.eq_obj1id[e], m.eq_obj2id[e]);
+                    let dd = m.eq_data[e];
+                    let pa = d.xpos[a] + d.xmat[a] * Vector3::new(dd[0], dd[1], dd[2]);
+                    let pb = d.xpos[b] + d.xmat[b] * Vector3::new(dd[3], dd[4], dd[5]);
+                    loop_gap = loop_gap.max((pa - pb).norm());
+                }
+                let reached =
+                    d.qpos[m.jnt_qpos_adr[joint_of(&m, "arm_lower_l_joint")?]].to_degrees();
+                if (reached - deg).abs() > TRAVEL_REACHED_TOLERANCE_DEG {
+                    bail!(
+                        "the lower wishbone was driven to {deg:+.0} deg and reached \
+                     {reached:+.2} — the pose this sweep tests is not the pose \
+                     it asked for"
+                    );
+                }
+                if loop_gap > MAX_LOOP_RESIDUAL_MM {
+                    bail!(
+                        "the linkage did not close at {deg:+.0} deg of travel \
+                     ({loop_gap:.3} mm apart) — no pose to sweep"
+                    );
+                }
+                Ok((d.xpos.clone(), d.xmat.clone(), reached, loop_gap))
+            };
+
+        let tyre = by_name
+            .get("tyre_fl")
+            .ok_or_else(|| anyhow::anyhow!("no front tyre"))?;
+        let probe = tyre.solid().mesh(STEER_PROBE_MM).geometry;
+        if probe.vertices.is_empty() {
+            bail!("the front tyre meshed to nothing at {STEER_PROBE_MM} mm");
+        }
+        let tyre_b = body_of(&model, "tyre_fl")?;
+        let upright_b = body_of(&model, "upright_l")?;
+        let tyre_origin = *origins
+            .get("tyre_fl")
+            .ok_or_else(|| anyhow::anyhow!("no tyre origin"))?;
+        let upright_origin = *origins
+            .get("upright_l")
+            .ok_or_else(|| anyhow::anyhow!("no upright origin"))?;
+
+        let mut checks = 0_usize;
+        let mut accepted = 0_usize;
+        let mut worst_residual: f64 = 0.0;
+        for travel in [0.0, BUMP_TRAVEL_DEG, -BUMP_TRAVEL_DEG] {
+            let (pos, mat, reached, residual) = settle(travel)?;
+            worst_residual = worst_residual.max(residual);
+            // A solid sits at `origin` in world at rest, and the body frame is
+            // at `rest_pos`; that offset is constant in the body frame, so the
+            // solid's world placement at any pose is pos + mat * offset.
+            let place = |b: usize, origin: Vector3<f64>, local: Vector3<f64>| -> Vector3<f64> {
+                pos[b] + mat[b] * (local + origin - rest_pos[b])
+            };
+            let unplace = |b: usize, origin: Vector3<f64>, world: Vector3<f64>| -> Vector3<f64> {
+                mat[b].transpose() * (world - pos[b]) - (origin - rest_pos[b])
+            };
+            // The kingpin travels with the upright, so both its point and its
+            // direction come from the settled pose rather than from rest.
+            let kingpin_point = place(upright_b, upright_origin, Vector3::zeros());
+            let kingpin_axis =
+                nalgebra::Unit::new_normalize(mat[upright_b] * cf_trike::steering_axis());
+
+            for lock_deg in [STEER_LOCK_DEG, -STEER_LOCK_DEG] {
+                let steer = UnitQuaternion::from_axis_angle(&kingpin_axis, lock_deg.to_radians());
+                for member in ["arm_lower_l", "arm_upper_l", "arm_upper_l_aft", "tower_l"] {
+                    let fixed = by_name
+                        .get(member)
+                        .ok_or_else(|| anyhow::anyhow!("no member {member}"))?;
+                    let fixed_b = body_of(&model, member)?;
+                    let fixed_origin = *origins
+                        .get(member)
+                        .ok_or_else(|| anyhow::anyhow!("no origin for {member}"))?;
+                    let inside = probe.vertices.iter().any(|v| {
+                        let at_travel = place(tyre_b, tyre_origin, v.coords);
+                        let steered = kingpin_point + steer * (at_travel - kingpin_point);
+                        fixed.solid().evaluate(&Point3::from(unplace(
+                            fixed_b,
+                            fixed_origin,
+                            steered,
+                        ))) < 0.0
+                    });
+                    checks += 1;
+                    let pinned = ACCEPTED_TRAVEL_CLASHES.iter().any(|(m, t, l, _)| {
+                        *m == member && (*t - travel).abs() < 0.5 && (*l - lock_deg).abs() < 0.5
+                    });
+                    match (inside, pinned) {
+                        (true, false) => bail!(
+                            "at {travel:+.0} deg of travel (arm at {reached:+.2}) and \
+                             {lock_deg:+.0} deg of lock, the front tyre enters {member}"
+                        ),
+                        (false, true) => bail!(
+                            "{member} is pinned as fouling at {travel:+.0} deg travel \
+                             and {lock_deg:+.0} deg lock and no longer does — take it \
+                             off the list rather than leaving a clash pinned that is \
+                             not there"
+                        ),
+                        (true, true) => accepted += 1,
+                        (false, false) => {}
+                    }
+                }
+            }
+        }
+        println!(
+            "steering vs travel: {checks} checks at {{0, +/-{BUMP_TRAVEL_DEG:.0}}} deg \
+             travel x +/-{STEER_LOCK_DEG:.0} deg lock, {accepted} accepted clash(es) \
+             pinned; loops closed to {worst_residual:.4} mm"
+        );
+        if accepted != ACCEPTED_TRAVEL_CLASHES.len() {
+            bail!(
+                "{accepted} of {} pinned clashes were reached — the sweep no longer \
+                 visits the poses the list describes",
+                ACCEPTED_TRAVEL_CLASHES.len()
+            );
+        }
     }
 
     // ── Oracle 1e: the assembly simulates, and the welds hold ───────
