@@ -122,22 +122,35 @@ pub(super) const LINKAGE_SOLREF: [f64; 2] = [0.02, 1.0];
 /// MuJoCo's default — the 32.9 mm row — from the same declared assembly.
 pub(super) const LINKAGE_SOLIMP: [f64; 5] = [0.9999, 0.99999, 0.001, 0.5, 2.0];
 
-/// World position of a body at the reference configuration.
+/// World pose of a body at the reference configuration.
 ///
-/// `body_pos` is relative to the parent and every `body_quat` is identity
-/// here, so composing the chain is a sum. ⚠ That identity is what makes this
-/// a sum rather than a transform chain; if bodies ever gain a reference
-/// orientation, this has to compose rotations too.
-fn body_world_position(model: &Model, mut body: usize) -> Vector3<f64> {
-    let mut at = Vector3::zeros();
+/// ⚠ This used to sum `body_pos` up the chain and return only a position,
+/// because every `body_quat` this builder emits is identity and under that
+/// assumption a transform chain IS a sum. The assumption was true, documented,
+/// and **unasserted** — so the day a body gained a reference orientation, the
+/// linkage anchors below would have been silently wrong, and a linkage holding
+/// the wrong two points presents as drift rather than as a build error.
+///
+/// Composing properly costs a vector rotation per level and removes the
+/// assumption instead of relying on it.
+fn body_world_pose(model: &Model, body: usize) -> (Vector3<f64>, UnitQuaternion<f64>) {
+    // Root-down, because a child's pose is expressed in its parent's frame.
+    let mut chain: Vec<usize> = Vec::new();
+    let mut b = body;
     for _ in 0..model.nbody {
-        if body == 0 {
+        if b == 0 {
             break;
         }
-        at += model.body_pos[body];
-        body = model.body_parent[body];
+        chain.push(b);
+        b = model.body_parent[b];
     }
-    at
+    let mut pos = Vector3::zeros();
+    let mut rot = UnitQuaternion::identity();
+    for &link in chain.iter().rev() {
+        pos += rot * model.body_pos[link];
+        rot *= model.body_quat[link];
+    }
+    (pos, rot)
 }
 
 /// Emit one equality constraint per linkage.
@@ -164,9 +177,15 @@ fn emit_linkages(
             }
         })?;
 
+        // The anchor is a point on `a`, in `a`'s own frame; where it falls on
+        // `b` is whatever point of `b` coincides with it at the reference
+        // configuration. Both directions go through the body's full pose, so
+        // a rotated reference frame lands the anchor in the right place.
         let anchor_a = linkage.anchor().coords;
-        let anchor_world = body_world_position(model, body_a) + anchor_a;
-        let anchor_b = anchor_world - body_world_position(model, body_b);
+        let (pos_a, rot_a) = body_world_pose(model, body_a);
+        let (pos_b, rot_b) = body_world_pose(model, body_b);
+        let anchor_world = pos_a + rot_a * anchor_a;
+        let anchor_b = rot_b.inverse() * (anchor_world - pos_b);
 
         let mut data = [0.0; 11];
         data[0..3].copy_from_slice(anchor_a.as_slice());
@@ -1164,13 +1183,13 @@ fn discover_kinematic_trees(model: &mut Model) {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use nalgebra::{Point3, Vector3};
+    use nalgebra::{Point3, UnitQuaternion, Vector3};
 
     use crate::{
         ActuatorDef, ActuatorKind, JointDef, JointKind, LinkageDef, LinkageKind, Material,
         Mechanism, MechanismError, Part, Solid, TendonDef, TendonWaypoint,
     };
-    use sim_core::{EqualityType, GeomType, Model};
+    use sim_core::{EqualityType, GeomType, MjJointType, Model};
 
     fn pla() -> Material {
         Material::new("PLA", 1250.0)
@@ -2205,7 +2224,7 @@ mod tests {
     /// `products` assertion below keeps the case honest.
     #[test]
     fn the_model_carries_the_inertia_the_solid_has() {
-        use nalgebra::{Matrix3, UnitQuaternion};
+        use nalgebra::Matrix3;
 
         let tilted = Solid::cuboid(Vector3::new(120.0, 15.0, 40.0)).rotate(
             UnitQuaternion::from_axis_angle(&Vector3::y_axis(), 40.0_f64.to_radians()),
@@ -2247,6 +2266,127 @@ mod tests {
             "the model's inertia differs from the solid's by {worst} \
              (kg mm^2); rebuilt {rebuilt} truth {truth}"
         );
+    }
+
+    /// [`body_world_pose`] agrees with forward kinematics, rotations included.
+    ///
+    /// ⚠ It used to SUM `body_pos` up the chain and ignore `body_quat`, which
+    /// is correct only because every orientation this builder emits is
+    /// identity. That assumption was documented and **unasserted**, and it is
+    /// what places every linkage anchor — so a future reference orientation
+    /// would have moved the anchors silently, and a linkage holding the wrong
+    /// two points reads as drift rather than as a build error.
+    ///
+    /// The referent is sim-core's own `forward`, an independent implementation
+    /// of the same composition. Bodies are given orientations here because
+    /// nothing in this crate produces one yet: with all-identity quaternions
+    /// the old sum and the new chain are the same arithmetic, so an
+    /// unrotated case cannot tell them apart.
+    #[test]
+    fn the_reference_pose_walk_agrees_with_forward_kinematics() {
+        let mechanism = Mechanism::builder("chain")
+            .part(Part::new("base", Solid::sphere(10.0), pla()))
+            .part(Part::new("mid", Solid::sphere(8.0), pla()))
+            .part(Part::new("tip", Solid::sphere(6.0), pla()))
+            .joint(JointDef::new(
+                "free",
+                "world",
+                "base",
+                JointKind::Free,
+                Point3::origin(),
+                Vector3::z(),
+            ))
+            .joint(JointDef::new(
+                "hinge",
+                "base",
+                "mid",
+                JointKind::Revolute,
+                Point3::new(80.0, 15.0, 0.0),
+                Vector3::y(),
+            ))
+            .joint(JointDef::new(
+                "weld",
+                "mid",
+                "tip",
+                JointKind::Fixed,
+                Point3::new(40.0, 0.0, 25.0),
+                Vector3::z(),
+            ))
+            .build();
+
+        let mut model = mechanism.to_model(4.0, 4.0).unwrap();
+        // Give every body a distinct reference orientation. This is the state
+        // the old sum mishandled, and the one nothing emits yet.
+        for b in 1..model.nbody {
+            let k = b as f64;
+            model.body_quat[b] = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), 0.30 * k)
+                * UnitQuaternion::from_axis_angle(&Vector3::z_axis(), 0.20 * k);
+        }
+        // ⚠ A FREE joint's pose comes from `qpos0`, not from `body_quat` —
+        // forward kinematics reads the joint, the walk reads the body. They
+        // agree today only because both are identity. Keep them consistent
+        // here so the comparison below tests the WALK and not that coupling;
+        // the coupling itself is asserted separately at the end.
+        for j in 0..model.njnt {
+            if model.jnt_type[j] == MjJointType::Free {
+                let adr = model.jnt_qpos_adr[j];
+                let q = model.body_quat[model.jnt_body[j]];
+                model.qpos0[adr + 3] = q.w;
+                model.qpos0[adr + 4] = q.i;
+                model.qpos0[adr + 5] = q.j;
+                model.qpos0[adr + 6] = q.k;
+            }
+        }
+        let mut data = model.make_data();
+        data.forward(&model).expect("forward kinematics");
+
+        let mut rotated = false;
+        for b in 1..model.nbody {
+            let (pos, rot) = super::body_world_pose(&model, b);
+            let dp = (pos - data.xpos[b]).norm();
+            let dq = rot.angle_to(&data.xquat[b]);
+            assert!(
+                dp < 1e-9 && dq < 1e-9,
+                "body {b}: the reference walk says {pos:?} / {rot:?}, forward \
+                 kinematics says {:?} / {:?}",
+                data.xpos[b],
+                data.xquat[b]
+            );
+            if rot.angle() > 1e-6 {
+                rotated = true;
+            }
+        }
+        assert!(
+            rotated,
+            "no body ended up rotated, so this could not tell a composed \
+             chain from a sum"
+        );
+
+        // ⚠ The residual assumption, made executable. The walk reads
+        // `body_quat`; forward kinematics reads a free joint's `qpos0`. What
+        // this builder SHIPS keeps both at identity, and this asserts that
+        // rather than leaving it as a sentence — the two diverging is the one
+        // way the walk can still place an anchor wrongly.
+        let shipped = mechanism.to_model(4.0, 4.0).unwrap();
+        for j in 0..shipped.njnt {
+            if shipped.jnt_type[j] == MjJointType::Free {
+                let adr = shipped.jnt_qpos_adr[j];
+                let from_joint = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+                    shipped.qpos0[adr + 3],
+                    shipped.qpos0[adr + 4],
+                    shipped.qpos0[adr + 5],
+                    shipped.qpos0[adr + 6],
+                ));
+                let from_body = shipped.body_quat[shipped.jnt_body[j]];
+                assert!(
+                    from_joint.angle_to(&from_body) < 1e-12,
+                    "free joint {j} starts at {from_joint:?} while its body's \
+                     reference orientation is {from_body:?}; the linkage \
+                     anchors are placed from the body and the simulation \
+                     starts from the joint"
+                );
+            }
+        }
     }
 
     #[test]
