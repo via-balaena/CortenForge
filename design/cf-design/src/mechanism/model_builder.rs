@@ -490,21 +490,37 @@ fn generate(
                 for d in 0..dof_count {
                     model.dof_body.push(body_id);
                     model.dof_jnt.push(jnt_id);
-                    // dof_parent: previous dof in same body, or parent body's last dof
+                    // dof_parent: the previous dof in this body, or the last
+                    // dof of the nearest ancestor that HAS one.
+                    //
+                    // ⚠ Nearest ancestor that has one — not the parent. A weld
+                    // emits no joint, so a welded body has no dofs, and
+                    // stopping there cuts this dof off from everything above
+                    // it. CRBA walks exactly this chain to write the mass
+                    // matrix's off-diagonal entries (`crba.rs`, phase 3), so a
+                    // chain that ends early leaves `M[i, j]` at zero for every
+                    // ancestor past the weld.
+                    //
+                    // Measured on a free base, a welded mount and a hinged
+                    // arm: inserting the mount — which changes no physics,
+                    // only the body count — took `M[hinge, z]` from -62.99 to
+                    // 0 and gave the arm 73.4 rad/s^2 of angular acceleration
+                    // in free fall, where a free-floating assembly must have
+                    // exactly none.
                     let dof_parent = if d > 0 {
                         Some(nv + d - 1)
-                    } else if body_id > 1 {
-                        // Find last DOF of parent body
-                        let pbody = model.body_parent[body_id];
-                        let padr = model.body_dof_adr[pbody];
-                        let pnum = model.body_dof_num[pbody];
-                        if pnum > 0 {
-                            Some(padr + pnum - 1)
-                        } else {
-                            None
-                        }
                     } else {
-                        None
+                        let mut ancestor = model.body_parent[body_id];
+                        loop {
+                            if ancestor == 0 {
+                                break None;
+                            }
+                            let pnum = model.body_dof_num[ancestor];
+                            if pnum > 0 {
+                                break Some(model.body_dof_adr[ancestor] + pnum - 1);
+                            }
+                            ancestor = model.body_parent[ancestor];
+                        }
                     };
                     model.dof_parent.push(dof_parent);
                     model.dof_armature.push(0.0);
@@ -1841,6 +1857,130 @@ mod tests {
         assert_eq!(model.nv, 6); // 3 linear + 3 angular
         assert_eq!(model.ngeom, 2); // SDF + mesh
         assert_eq!(model.body_parent[1], 0); // parent is world
+    }
+
+    // ── 9b. A weld in the chain must not decouple the mass matrix ────
+
+    /// A free-floating assembly does not move against itself under gravity,
+    /// and putting a weld in the chain does not change that.
+    ///
+    /// The invariant: for a tree whose root is a free joint, gravity's
+    /// generalized force is exactly `M[:, z] * g_z`, so the solution of
+    /// `M qacc = qfrc` is uniform fall — **zero** acceleration on every
+    /// articulated degree of freedom. It holds for any geometry, so any
+    /// non-zero reading is the model, not the machine.
+    ///
+    /// ⚠ This is a `dof_parent` test wearing a physics costume, and it has to
+    /// be. `dof_parent` is the chain CRBA walks to write the mass matrix's
+    /// off-diagonal entries; when it ended early at a welded body, the
+    /// coupling between an articulated dof and everything above the weld was
+    /// silently left at zero. Asserting `dof_parent` alone would pass on a
+    /// chain that is well-formed and still wrong, and nothing downstream
+    /// objects: `nv` is unchanged, the model builds, it integrates, and the
+    /// masses are right. What it produced was a vehicle whose wishbones
+    /// accelerated relative to their own frame in free fall.
+    ///
+    /// Measured with the weld and without the fix: `M[hinge, z]` 0 instead of
+    /// -62.99, and 73.4 rad/s² on an arm that must have none.
+    #[test]
+    fn a_weld_in_the_chain_does_not_decouple_the_mass_matrix() {
+        // `weld_between` inserts a zero-dof body between the free base and
+        // the hinge. It changes the body count and nothing else: the mount is
+        // rigid with the base, so the gravity torque on the hinge is
+        // identical either way — asserted below, so this stays a controlled
+        // comparison rather than two unrelated machines.
+        let floater = |weld_between: bool| {
+            let mut b = Mechanism::builder("floater")
+                .part(Part::new(
+                    "base",
+                    Solid::cuboid(Vector3::new(50.0, 50.0, 10.0)),
+                    pla(),
+                ))
+                .part(Part::new(
+                    "arm",
+                    Solid::cuboid(Vector3::new(100.0, 10.0, 10.0))
+                        .translate(Vector3::new(150.0, 0.0, 0.0)),
+                    pla(),
+                ))
+                .joint(JointDef::new(
+                    "free",
+                    "world",
+                    "base",
+                    JointKind::Free,
+                    Point3::origin(),
+                    Vector3::z(),
+                ));
+            if weld_between {
+                b = b
+                    .part(Part::new(
+                        "mount",
+                        Solid::cuboid(Vector3::new(10.0, 10.0, 10.0))
+                            .translate(Vector3::new(40.0, 0.0, 0.0)),
+                        pla(),
+                    ))
+                    .joint(JointDef::new(
+                        "mount_weld",
+                        "base",
+                        "mount",
+                        JointKind::Fixed,
+                        Point3::new(40.0, 0.0, 0.0),
+                        Vector3::z(),
+                    ));
+            }
+            b.joint(JointDef::new(
+                "hinge",
+                if weld_between { "mount" } else { "base" },
+                "arm",
+                JointKind::Revolute,
+                Point3::new(50.0, 0.0, 0.0),
+                Vector3::y(),
+            ))
+            .build()
+            .to_model(5.0, 5.0)
+            .unwrap()
+        };
+
+        let mut readings = Vec::new();
+        for weld_between in [false, true] {
+            let model = floater(weld_between);
+            let hinge = model.nv - 1;
+            assert_eq!(model.nv, 7, "six free dofs and the hinge");
+
+            let mut data = model.make_data();
+            data.forward(&model).expect("forward kinematics");
+            let internal = (6..model.nv).fold(0.0_f64, |a, i| a.max(data.qacc_smooth[i].abs()));
+            assert!(
+                internal < 1e-6,
+                "a free-floating assembly accelerated against itself at \
+                 {internal} rad/s^2 under uniform gravity"
+            );
+            // The structural reason, asserted second so the physics above is
+            // what fails first and names the symptom.
+            assert_eq!(
+                model.dof_parent[hinge],
+                Some(5),
+                "the hinge's ancestor chain must reach the free joint's last \
+                 dof, weld in the way or not"
+            );
+            readings.push((data.qM[(hinge, 2)], -data.qfrc_bias[hinge]));
+        }
+
+        let (m_no_weld, torque_no_weld) = readings[0];
+        let (m_weld, torque_weld) = readings[1];
+        assert!(
+            (torque_weld - torque_no_weld).abs() < 1e-6,
+            "the weld was supposed to change no physics, but the gravity \
+             torque on the hinge went {torque_no_weld} -> {torque_weld}"
+        );
+        assert!(
+            m_no_weld.abs() > 1.0,
+            "the coupling this test is about has to be non-trivial, got {m_no_weld}"
+        );
+        assert!(
+            (m_weld - m_no_weld).abs() < 1e-9,
+            "the mass matrix's free-translation coupling changed with the \
+             weld: {m_no_weld} -> {m_weld}"
+        );
     }
 
     #[test]
