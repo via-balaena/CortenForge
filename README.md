@@ -14,7 +14,7 @@ To prove the components compose end to end, we build a family of **hydrogen farm
 
 ## ⚠️ Disclaimer
 
-CortenForge — including the **Cendrillon** application — is general-purpose research and engineering software, provided **AS IS** under [MIT](./LICENSE-MIT) or [Apache-2.0](./LICENSE-APACHE) at your option, **without warranty of any kind**. **It is not a medical device** and makes no medical, therapeutic, or health claims. You use it — and make and use anything created with it — **entirely at your own risk**; you alone are responsible for choosing body-safe materials and for proper mixing, curing, and hygiene, and should always follow the manufacturer's safety data sheet (SDS). See **[DISCLAIMER.md](./DISCLAIMER.md)** for the full text.
+CortenForge — including the **Cendrillon** application — is general-purpose research and engineering software, provided **AS IS** under [MIT](./LICENSE-MIT) or [Apache-2.0](./LICENSE-APACHE) at your option, **without warranty of any kind**. **It is not a medical device** and makes no medical, therapeutic, or health claims. You use it — and make and use anything created with it — **entirely at your own risk**: you alone are responsible for deciding whether a design is fit for what you intend to do with it, and for the materials, fabrication, testing, and operation of anything you build. What you build with it can involve serious hazards — hydrogen and other compressed or flammable gases, pressure vessels, high-voltage systems, moving machinery, vehicles that are not certified for road use, and materials that contact the body. See **[DISCLAIMER.md](./DISCLAIMER.md)** for the full text.
 
 ## Stack
 
