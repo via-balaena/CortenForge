@@ -1,0 +1,19 @@
+[package]
+name = "cf-nebraska"
+description = "Nebraska OECD Tractor Test data as a calibration oracle — every figure carried in both printed unit systems so a transcription error has to survive a conversion check, and every figure the source does not contain recorded as absent rather than inferred"
+keywords = ["tractor", "drawbar", "calibration", "oracle", "agriculture"]
+categories = ["science", "simulation"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[package.metadata.cortenforge]
+tier = "L0"
+
+[dependencies]
+
+[lints]
+workspace = true

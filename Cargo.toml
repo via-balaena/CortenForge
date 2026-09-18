@@ -11,6 +11,10 @@ members = [
     # Development tooling
     "xtask",
 
+    # Nebraska OECD Tractor Test figures as a calibration oracle for the
+    # acres-per-season chain. Data only: no model, no chain, no acres.
+    "farm/cf-nebraska",
+
     # The SDK facade — one stable public surface re-exporting the SDK crates.
     "cortenforge",
 
