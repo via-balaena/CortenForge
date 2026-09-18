@@ -467,6 +467,7 @@ impl ModelBuilder {
             implicit_springref: DVector::zeros(self.nv),
 
             // Pre-computed kinematic data (will be populated by compute_ancestors)
+            body_weldid: vec![0; nbody], // Weld groups, computed by compute_ancestors
             body_ancestor_joints: vec![vec![]; nbody],
             body_ancestor_mask: vec![vec![]; nbody], // Multi-word bitmask, computed by compute_ancestors
 

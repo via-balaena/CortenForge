@@ -1,6 +1,6 @@
 {
   "mujoco_version": "3.4.0",
-  "generated_at": "2026-03-09T23:48:14Z",
+  "generated_at": "2026-09-18T03:38:20Z",
   "models": {
     "pendulum": {
       "nq": 1,
@@ -102,6 +102,18 @@
       ],
       "trajectory_steps": 200,
       "model_xml_md5": "6feefb66b5fe458ea3844f68ba45dbc8"
+    },
+    "weld_model": {
+      "nq": 9,
+      "nv": 8,
+      "nu": 0,
+      "na": 0,
+      "nsensor": 0,
+      "nsensordata": 0,
+      "ntendon": 0,
+      "ctrl": null,
+      "trajectory_steps": 100,
+      "model_xml_md5": "775eee89e33ccbe048204e98857060f3"
     }
   },
   "files": {
@@ -761,6 +773,113 @@
       "shape": [
         200,
         4
+      ],
+      "dtype": "float64"
+    },
+    "weld_model_fk_xpos.npy": {
+      "shape": [
+        7,
+        3
+      ],
+      "dtype": "float64"
+    },
+    "weld_model_fk_xquat.npy": {
+      "shape": [
+        7,
+        4
+      ],
+      "dtype": "float64"
+    },
+    "weld_model_fk_xipos.npy": {
+      "shape": [
+        7,
+        3
+      ],
+      "dtype": "float64"
+    },
+    "weld_model_crba_qM.npy": {
+      "shape": [
+        8,
+        8
+      ],
+      "dtype": "float64"
+    },
+    "weld_model_rne_qfrc_bias.npy": {
+      "shape": [
+        8
+      ],
+      "dtype": "float64"
+    },
+    "weld_model_passive_qfrc_passive.npy": {
+      "shape": [
+        8
+      ],
+      "dtype": "float64"
+    },
+    "weld_model_contact_pos.npy": {
+      "shape": [
+        5,
+        3
+      ],
+      "dtype": "float64"
+    },
+    "weld_model_contact_normal.npy": {
+      "shape": [
+        5,
+        3
+      ],
+      "dtype": "float64"
+    },
+    "weld_model_contact_depth.npy": {
+      "shape": [
+        5
+      ],
+      "dtype": "float64"
+    },
+    "weld_model_contact_geom_pairs.npy": {
+      "shape": [
+        5,
+        2
+      ],
+      "dtype": "int32"
+    },
+    "weld_model_constraint_efc_J.npy": {
+      "shape": [
+        20,
+        8
+      ],
+      "dtype": "float64"
+    },
+    "weld_model_constraint_efc_b.npy": {
+      "shape": [
+        20
+      ],
+      "dtype": "float64"
+    },
+    "weld_model_constraint_efc_force.npy": {
+      "shape": [
+        20
+      ],
+      "dtype": "float64"
+    },
+    "weld_model_trajectory_qpos.npy": {
+      "shape": [
+        100,
+        9
+      ],
+      "dtype": "float64"
+    },
+    "weld_model_trajectory_qvel.npy": {
+      "shape": [
+        100,
+        8
+      ],
+      "dtype": "float64"
+    },
+    "weld_model_trajectory_qacc.npy": {
+      "shape": [
+        100,
+        8
       ],
       "dtype": "float64"
     }

@@ -646,3 +646,46 @@ fn layer_b_constraint_equality_model() {
 fn layer_b_constraint_composite_model() {
     run_constraint_test("composite_model", &[1.0]);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// S7: Weld groups — the structural case no other conformance model had
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// ⛔ Every other model in this suite has `body_dofnum > 0` for every body, so
+// MuJoCo's weld branch — a body with no joint shares its parent's `body_weldid`,
+// and pairs within a weld group never collide — was exercised by nothing.
+//
+// `weld_model` carries four OVERLAPPING pairs that MuJoCo filters by rule
+// rather than by distance, which is what makes their absence evidence:
+//   anchor <-> anchor2   both welded to WORLD, so weld group 0
+//   link1  <-> weld1     same weld group
+//   link2  <-> weld1     ★ weld-vs-SIBLING — not a parent-child pair at all
+//   link1  <-> link2     parent-child
+// plus five real contacts, so the reference is not empty and the world
+// exemption (a free body reaching the floor) is exercised positively.
+
+#[test]
+fn layer_b_fk_weld_model() {
+    run_fk_test("weld_model", &[]);
+}
+
+#[test]
+fn layer_b_crba_weld_model() {
+    run_crba_test("weld_model", &[]);
+}
+
+#[test]
+fn layer_b_rne_weld_model() {
+    run_rne_test("weld_model", &[]);
+}
+
+#[test]
+fn layer_b_passive_weld_model() {
+    run_passive_test("weld_model", &[]);
+}
+
+/// ★★★ The gate this whole model exists for.
+#[test]
+fn layer_b_collision_weld_model() {
+    run_collision_test("weld_model", &[]);
+}
