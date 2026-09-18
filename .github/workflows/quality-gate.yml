@@ -1459,6 +1459,16 @@ jobs:
       - name: Every crate WITH tests still reaches a CI job
         run: cargo run -q -p xtask -- test-reachability
 
+      # The disclaimer is the same legal text in seven files, and until #939 the
+      # only thing holding them together was a comment asking the next editor to
+      # remember. #938 widened it and dropped a clause from two of the seven on
+      # the way: the files parsed, all 25 checks were green, and the new text
+      # read BETTER than the old. Belongs in this job for the same reason as its
+      # siblings — a PR editing DISCLAIMER.md does not touch xtask, so a
+      # test-only check would fire on `main`, a merge too late.
+      - name: The disclaimer's seven copies still agree
+        run: cargo run -q -p xtask -- disclaimer-sync
+
   quality-gate:
     name: Quality Gate
     needs: [format, ci-scripts, doc-theft, grade, tests-debug, tests-release, cross-os, feature-combos, dependencies, validate-examples, soft-contact-heavy, licensed-gates]

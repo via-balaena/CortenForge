@@ -30,6 +30,7 @@ mod check;
 mod complete;
 mod coverage;
 mod coverage_run;
+mod disclaimer_sync;
 mod doc_theft;
 mod grade;
 // Dual-purpose, and `xtask/build.rs` pulls the whole thing in via `include!`. It
@@ -308,6 +309,14 @@ enum Commands {
     #[command(long_about = test_reachability::LONG_ABOUT)]
     TestReachability,
 
+    /// The disclaimer's seven copies still agree.
+    //
+    // Third sibling of `release-gates` and `test-reachability`: those catch a
+    // gate CI stopped running and a crate CI never started. This catches legal
+    // text that drifted apart across the surfaces that duplicate it.
+    #[command(long_about = disclaimer_sync::LONG_ABOUT)]
+    DisclaimerSync,
+
     /// Set up development environment (git hooks, verify tools)
     Setup,
 
@@ -382,6 +391,7 @@ fn main() -> Result<()> {
         } => licensed_gates::run(only, run, check, jobs),
         Commands::ReleaseGates => release_gates::check(),
         Commands::TestReachability => test_reachability::check(),
+        Commands::DisclaimerSync => disclaimer_sync::check(),
         Commands::Setup => setup::run(),
         Commands::Uninstall => setup::uninstall(),
     }
