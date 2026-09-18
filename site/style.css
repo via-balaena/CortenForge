@@ -13,19 +13,26 @@
  * Deliberately dark-only: the palette is the identity, not a preference.
  */
 
+/* Dusk field, not twilight sky. Everything below the hero sits UNDER the
+   horizon — you scroll down through the sky, past the fence, into the ground —
+   so the darks are the field in shadow, not the sky. Rust weathers against
+   vegetation; that pairing is why the greens were right to begin with, and
+   these are the old greens warmed rather than re-hued.
+   ⚠ An earlier pass made these purple to match the sky's top stop. That was a
+   fact about the construction, not something a visitor could perceive. */
 :root {
-  --bg:        #080f0e;
-  --bg-lift:   #0b1413;
-  --surface:   #101a18;
+  --bg:        #0a0d08;
+  --bg-lift:   #10140d;
+  --surface:   #161b12;
 
-  --border:    #1f2d2a;
+  --border:    #2c3320;
   /* Clears 3:1 against the page (WCAG 1.4.11) as a control boundary,
      while staying recessive next to the filled primary. */
-  --border-hi: #506a60;
+  --border-hi: #6f7a54;
 
-  --text:      #e2e9e6;
-  --text-2:    #a4b2ad;
-  --text-3:    #7c8b86;
+  --text:      #e9ebe2;
+  --text-2:    #adb3a1;
+  --text-3:    #858c78;
 
   /* lantern — anything actionable */
   --accent:    #d9603a;
@@ -94,7 +101,7 @@ main:focus { outline: none; }
   z-index: 30;
   padding: 11px 18px;
   background: var(--accent);
-  color: #0a1211;
+  color: #0c1008;
   font-size: 15px;
   font-weight: 650;
   text-decoration: none;
@@ -171,9 +178,28 @@ nav.site a[aria-current="page"] {
 /* ---------- hero ---------- */
 
 .hero {
-  padding: 60px 0 46px;
+  padding: 60px 0 0;
   border-bottom: 1px solid var(--border);
 }
+
+.hero-copy { padding: 0 0 52px; max-width: 50rem; }
+
+/* The scene is a full-bleed BAND under the copy, not a backdrop behind it.
+   Text stays on the site's own black — which is what it was, and what reads
+   best — while the sunset does its work below. Earlier the sky sat behind the
+   headline and a turbine mast ran through the word "it". */
+.sky {
+  margin: 0 calc(50% - 50vw);
+  width: 100vw;
+  line-height: 0;
+}
+
+.sky svg {
+  display: block;
+  width: 100%;
+  height: clamp(240px, 32vw, 460px);
+}
+
 
 .eyebrow {
   font-family: var(--mono);
@@ -189,7 +215,7 @@ h1 {
   font-weight: 650;
   line-height: 1.18;
   letter-spacing: -0.025em;
-  color: #f2f7f5;
+  color: #f3f6ee;
   margin: 0 0 20px;
   max-width: 22ch;
 }
@@ -217,7 +243,7 @@ h1 {
 .cta {
   border-radius: 4px;
   background: var(--accent);
-  color: #0a1211;
+  color: #0c1008;
   border: 1px solid var(--accent);
   text-decoration: none;
   font-size: 15px;
@@ -246,7 +272,7 @@ h2 {
   font-size: 22px;
   font-weight: 650;
   letter-spacing: -0.018em;
-  color: #f2f7f5;
+  color: #f3f6ee;
   margin: 0 0 18px;
 }
 
@@ -428,7 +454,8 @@ footer.site a:hover { color: var(--sodium); border-bottom-color: var(--accent); 
   /* The bar wraps to two rows here, roughly halving again the space above
      an anchored heading. */
   html { scroll-padding-top: 96px; }
-  .hero { padding: 42px 0 34px; }
+  .hero { padding: 42px 0 0; }
+  .hero-copy { padding: 0 0 34px; }
   section { padding-top: 38px; }
   .bar { flex-wrap: wrap; gap: 10px; padding: 11px 0; }
   nav.site { gap: 16px; font-size: 13.5px; }
