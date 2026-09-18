@@ -2449,6 +2449,137 @@ mod tests {
         }
     }
 
+    /// ★★★ [`Mechanism::reference_origins`] agrees with sim-core's forward
+    /// kinematics on the model it claims to describe.
+    ///
+    /// ⛔ This is what makes *"translations only is exact"* a MEASUREMENT
+    /// rather than a paragraph. A `JointDef` carries no orientation today, so
+    /// summing anchors is the complete answer; add a reference rotation to it
+    /// and forward kinematics will account for it while the sum will not, and
+    /// this fails. The claim is in the walk's doc; the referent is here.
+    ///
+    /// ★ The oracle is sim-core's `forward` — an INDEPENDENT implementation —
+    /// not this crate's own `body_world_pose`.
+    ///
+    /// ⚠ `slider` carries TWO joints from ONE parent, with different anchors,
+    /// so this also pins the first-wins rule: the body is placed at the first
+    /// joint's anchor and the second becomes a degree of freedom on it. That
+    /// case is a cylindrical joint and is legitimate — an earlier draft of
+    /// `validate` rejected it.
+    #[test]
+    fn reference_origins_agree_with_forward_kinematics() {
+        let mechanism = Mechanism::builder("chain")
+            .part(Part::new("base", Solid::sphere(10.0), pla()))
+            .part(Part::new("mid", Solid::sphere(8.0), pla()))
+            .part(Part::new("tip", Solid::sphere(6.0), pla()))
+            .part(Part::new("slider", Solid::sphere(5.0), pla()))
+            .joint(JointDef::new(
+                "free",
+                "world",
+                "base",
+                JointKind::Free,
+                Point3::new(11.0, -3.0, 7.0),
+                Vector3::z(),
+            ))
+            .joint(JointDef::new(
+                "hinge",
+                "base",
+                "mid",
+                JointKind::Revolute,
+                Point3::new(80.0, 15.0, 0.0),
+                Vector3::y(),
+            ))
+            .joint(JointDef::new(
+                "weld",
+                "mid",
+                "tip",
+                JointKind::Fixed,
+                Point3::new(30.0, 0.0, 10.0),
+                Vector3::z(),
+            ))
+            .joint(JointDef::new(
+                "slide",
+                "mid",
+                "slider",
+                JointKind::Prismatic,
+                Point3::new(5.0, 20.0, 0.0),
+                Vector3::x(),
+            ))
+            .joint(JointDef::new(
+                "twist",
+                "mid",
+                "slider",
+                JointKind::Revolute,
+                Point3::new(9.0, 20.0, 0.0),
+                Vector3::x(),
+            ))
+            .build();
+
+        let origins = mechanism.reference_origins().unwrap();
+        let model = mechanism.to_model(4.0, 4.0).unwrap();
+        let mut data = model.make_data();
+        data.forward(&model).unwrap();
+
+        assert_eq!(
+            origins.len(),
+            model.nbody - 1,
+            "one origin per body, world excluded"
+        );
+        let mut checked = 0;
+        for b in 1..model.nbody {
+            let name = model.body_name[b].clone().unwrap();
+            let walked = origins[&name];
+            let fk = data.xpos[b];
+            assert!(
+                (walked - fk).norm() < 1e-9,
+                "{name}: the anchor sum says {walked:?}, forward kinematics \
+                 says {fk:?}"
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 4, "every part compared");
+
+        // The first-wins rule, stated as a number rather than trusted: the
+        // slider sits at `slide`'s anchor, not `twist`'s.
+        let mid = origins["mid"];
+        assert!(
+            (origins["slider"] - (mid + Vector3::new(5.0, 20.0, 0.0))).norm() < 1e-9,
+            "slider placed at {:?}, expected mid + the FIRST joint's anchor",
+            origins["slider"]
+        );
+    }
+
+    /// A part that is its own ancestor is refused rather than walked forever.
+    ///
+    /// ⚠ `validate` does not check for cycles, so this mechanism BUILDS.
+    #[test]
+    fn reference_origins_refuse_a_cycle() {
+        let m = Mechanism::builder("loop")
+            .part(Part::new("a", Solid::sphere(5.0), pla()))
+            .part(Part::new("b", Solid::sphere(5.0), pla()))
+            .joint(JointDef::new(
+                "j0",
+                "b",
+                "a",
+                JointKind::Revolute,
+                Point3::new(10.0, 0.0, 0.0),
+                Vector3::y(),
+            ))
+            .joint(JointDef::new(
+                "j1",
+                "a",
+                "b",
+                JointKind::Revolute,
+                Point3::new(10.0, 0.0, 0.0),
+                Vector3::y(),
+            ))
+            .build();
+        assert!(matches!(
+            m.reference_origins(),
+            Err(MechanismError::PartNotReachable(_))
+        ));
+    }
+
     #[test]
     fn sdf_sphere_stacking() {
         let material = Material::new("PLA", 1250.0);

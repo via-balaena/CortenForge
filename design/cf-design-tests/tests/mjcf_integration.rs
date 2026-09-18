@@ -100,6 +100,42 @@ fn bio_gripper_mechanism() -> Mechanism {
         .build()
 }
 
+// ── The error type is an error ──────────────────────────────────────────
+
+/// ⛔ `MechanismError` must be a [`std::error::Error`], or a consumer cannot
+/// carry it across a `?`.
+///
+/// ★ Written from OUTSIDE cf-design deliberately — this is a separate
+/// compilation unit, which is exactly where the gap bites and why nothing
+/// in-crate noticed. The evidence was already in this file: every other
+/// `to_mjcf` call here reads `.expect("to_mjcf")`. That was not a style
+/// choice; `?` did not compile.
+///
+/// ⚠ It matters more since `to_mjcf` became fallible — that put this type on
+/// the happy path for anyone exporting MJCF, where before it was reached
+/// mostly at build time.
+///
+/// ⚠⚠ This gate fails to COMPILE rather than to assert, which is the
+/// strongest form available for a trait impl: delete
+/// `impl std::error::Error for MechanismError` and this file stops building.
+#[test]
+fn a_mechanism_error_crosses_a_question_mark() -> Result<(), Box<dyn std::error::Error>> {
+    // The `?` is the assertion: it needs `From<MechanismError>` for the box,
+    // which exists only via `std::error::Error`.
+    let xml = two_part_mechanism().to_mjcf(2.0)?;
+    assert!(xml.contains("<mujoco"), "expected an MJCF document");
+
+    // And it survives as the trait object error plumbing actually stores.
+    let boxed: Box<dyn std::error::Error> =
+        Box::new(cf_design::MechanismError::DuplicatePart("palm".to_owned()));
+    assert!(
+        boxed.to_string().contains("duplicate part"),
+        "Display must survive the box: {boxed}"
+    );
+    assert!(boxed.source().is_none(), "these carry no wrapped cause");
+    Ok(())
+}
+
 // ── Round-trip parse test ───────────────────────────────────────────────
 
 #[test]

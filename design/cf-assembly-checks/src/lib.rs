@@ -35,6 +35,18 @@ use cf_design::mechanism::Mechanism;
 use nalgebra::{Point3, Vector3};
 
 /// Where every part sits, by name, in a common frame.
+///
+/// ★ Build one with
+/// [`Mechanism::reference_origins`](cf_design::Mechanism::reference_origins),
+/// which places every part at the reference configuration for the cost of
+/// summing anchors. A caller with its own poses — an assembly driven to full
+/// travel, say — supplies those instead; this crate never asks where the
+/// numbers came from.
+///
+/// ⚠ It used to live in **cf-trike**, so using these checks meant depending on
+/// a VEHICLE crate to place the parts of a gripper. The checks themselves
+/// never knew what they were checking; the primitive they needed was simply
+/// missing from the crate that owns `Mechanism`.
 pub type Origins = HashMap<String, Vector3<f64>>;
 
 /// How many of one part's probe points fall inside another.
@@ -138,7 +150,17 @@ pub fn overlapping_pairs(mechanism: &Mechanism, origins: &Origins, probe_mm: f64
             if joined.contains(&(na.to_owned(), nb.to_owned())) {
                 continue;
             }
+            // ⛔⛔ The same defect as a non-finite origin, arriving by a
+            // third door: a part with NO origin cannot be placed either, so
+            // it drops out of every pair it is in and reads as innocent.
+            // Named, never skipped — a 100% interpenetration used to come
+            // back as an empty scan with an empty `unreadable`.
             let (Some(&oa), Some(&ob)) = (origins.get(na), origins.get(nb)) else {
+                for name in [na, nb] {
+                    if !origins.contains_key(name) && !unreadable.iter().any(|u| u == name) {
+                        unreadable.push(name.to_owned());
+                    }
+                }
                 continue;
             };
             // ⛔⛔ A non-finite origin is the SAME defect as an unreadable
@@ -413,6 +435,37 @@ mod tests {
         assert!(
             scan.unreadable.contains(&"c".to_owned()),
             "a part placed at NaN went unnamed: {:?}",
+            scan.unreadable
+        );
+    }
+
+    /// ⛔⛔ The THIRD door onto one defect, and the one that was open. A part
+    /// absent from [`Origins`] cannot be placed, so it drops out of every pair
+    /// exactly like a `NaN` one — and unlike the `NaN` case it was not named,
+    /// so a total interpenetration came back as an empty scan.
+    ///
+    /// ★ The first assertion is the control: the pair must be REPORTED before
+    /// the origin is removed, or the test proves nothing by its absence.
+    #[test]
+    fn a_part_missing_from_origins_is_named_not_passed_over() {
+        let (m, mut origins) = fixture();
+        let seen = overlapping_pairs(&m, &origins, 2.0);
+        assert!(
+            seen.pairs.iter().any(|p| p.a == "c" || p.b == "c"),
+            "the fixture must pair `c` before its origin is removed: {:?}",
+            seen.pairs
+        );
+        origins.remove("c");
+        let scan = overlapping_pairs(&m, &origins, 2.0);
+        assert!(
+            !scan.pairs.iter().any(|p| p.a == "c" || p.b == "c"),
+            "a part with no origin cannot be placed, so it cannot be paired: {:?}",
+            scan.pairs
+        );
+        assert!(
+            scan.unreadable.contains(&"c".to_owned()),
+            "a part with no origin went unnamed, so its absence reads as \
+             innocence: {:?}",
             scan.unreadable
         );
     }

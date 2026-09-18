@@ -36,6 +36,8 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
+use nalgebra::Vector3;
+
 use super::actuator::ActuatorDef;
 use super::joint::JointDef;
 use super::linkage::LinkageDef;
@@ -53,7 +55,16 @@ use super::tendon::TendonDef;
 // ⚠ `Eq` is gone: `PartMeshesTooCoarse` carries the resolutions it tried, and
 // a resolution is an `f64`. `PartialEq` stays, which is what comparisons in
 // tests actually use; nothing in the workspace put a `MechanismError` in a set.
+// ⚠ `#[non_exhaustive]` so a new failure mode is an ADDITION rather than a
+// breaking change. This enum grows: `PartMeshesTooCoarse` arrived with the
+// MJCF refinement and `PartHasMultipleParents` with the one-parent rule, two
+// PRs running. Adding the attribute is itself breaking for an outside
+// exhaustive `match`, so it is free now — cf-design is not published and
+// nothing in the workspace matches on this — and costs a major version the
+// day it ships. Variants stay constructible; only exhaustive matching outside
+// this crate is refused, and the `Display` impl below is unaffected.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum MechanismError {
     /// Two parts share the same name.
     DuplicatePart(String),
@@ -71,6 +82,30 @@ pub enum MechanismError {
         linkage: String,
         /// The unknown part name.
         part: String,
+    },
+    /// A part's joints name more than one PARENT.
+    ///
+    /// ⚠⚠ **Not "more than one joint" — more than one parent.** Several joints
+    /// to the SAME parent are legitimate and tested: that is how a multi-DOF
+    /// connection is spelled without a ball joint, and a prismatic plus a
+    /// revolute is a cylindrical joint. `to_model` emits every one of them as
+    /// a degree of freedom and places each at its own anchor, so nothing is
+    /// lost. This error is only about a body claiming two PARENTS.
+    ///
+    /// ⛔⛔ Refused rather than resolved, because the resolution was SILENT.
+    /// A kinematic tree gives a body one parent, and `to_model` keeps the
+    /// FIRST parent named — so the second link was dropped and the body hung
+    /// off a different parent than the one written, with nothing to say so. A
+    /// tree that looks like an answer is worse than an error.
+    ///
+    /// ★ [`LinkageDef`](super::LinkageDef) is how a part is tied to something
+    /// that is not its tree parent — that is what it was added for.
+    PartHasMultipleParents {
+        /// The child part.
+        part: String,
+        /// The distinct parents its joints name, in declaration order. The
+        /// first is the one `to_model` would have used.
+        parents: Vec<String>,
     },
     /// A part is welded and articulated at the same time.
     ///
@@ -151,6 +186,18 @@ impl fmt::Display for MechanismError {
                 f,
                 "linkage \"{linkage}\" references unknown part \"{part}\""
             ),
+            Self::PartHasMultipleParents { part, parents } => write!(
+                f,
+                "part \"{part}\" is a child of more than one parent ({}): a \
+                 kinematic tree gives a body one parent, and only the first is \
+                 kept. Several joints to the SAME parent are fine — that is a \
+                 multi-DOF connection — but a second parent needs a LinkageDef",
+                parents
+                    .iter()
+                    .map(|p| format!("\"{p}\""))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
             Self::PartIsWeldedAndArticulated { part, weld, other } => write!(
                 f,
                 "part \"{part}\" is welded by \"{weld}\" and articulated by \"{other}\": \
@@ -194,6 +241,18 @@ impl fmt::Display for MechanismError {
         }
     }
 }
+
+/// ⛔ Hand-written rather than derived, matching the workspace's other error
+/// types (`sim_core::StepError`, `sim_mjcf::ModelConversionError`,
+/// `sim_gpu::GpuError`): `Display` above carries the message and there is no
+/// wrapped cause to surface, so the default `source()` is correct.
+///
+/// ★ It exists because a consumer cannot otherwise write `let xml =
+/// mechanism.to_mjcf(20.0)?;` — the `?` needs this to reach `anyhow::Error`
+/// or `Box<dyn Error>`. Gated from outside the crate by
+/// `a_mechanism_error_crosses_a_question_mark` in `cf-design-tests`, because
+/// in-crate the gap is invisible.
+impl std::error::Error for MechanismError {}
 
 // ── MechanismBuilder ────────────────────────────────────────────────────
 
@@ -356,6 +415,9 @@ impl MechanismBuilder {
             }
         }
 
+        // ── One PARENT per part ─────────────────────────────────────
+        errors.extend(multiple_parent_errors(&self.joints));
+
         // ── Orphan parts ────────────────────────────────────────────
         // A part is orphaned if it is not referenced by any joint as
         // parent or child. Exception: if there are 0 or 1 parts total,
@@ -423,6 +485,41 @@ fn format_errors(errors: &[MechanismError]) -> String {
         .map(|(i, e)| format!("  {}. {e}", i + 1))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Every part whose joints name more than one PARENT.
+///
+/// ⚠⚠ **Parents, not joints.** Several joints to the SAME parent are a
+/// multi-DOF connection — a prismatic plus a revolute is a cylindrical joint —
+/// and [`Mechanism::to_model`] emits every one as a degree of freedom at its
+/// own anchor, so nothing is lost and nothing is wrong. Counting JOINTS here
+/// instead rejects `the_mass_matrix_is_complete_for_welds_and_for_multi_joint_bodies`,
+/// which builds exactly that on purpose; an earlier draft of this did.
+///
+/// What a tree cannot hold is a second PARENT. `to_model` keeps the first
+/// parent it sees, so the other link is dropped and the body hangs somewhere
+/// other than where it was written, silently. [`LinkageDef`] is how a part is
+/// tied to something that is not its tree parent.
+fn multiple_parent_errors(joints: &[JointDef]) -> Vec<MechanismError> {
+    let mut parents_of: HashMap<&str, Vec<&str>> = HashMap::new();
+    for joint in joints {
+        let seen = parents_of.entry(joint.child()).or_default();
+        if !seen.contains(&joint.parent()) {
+            seen.push(joint.parent());
+        }
+    }
+    // ⚠ Sorted because `HashMap` iteration order is not stable, and this
+    // output is read by people and asserted by tests.
+    let mut multi: Vec<(&&str, &Vec<&str>)> =
+        parents_of.iter().filter(|(_, p)| p.len() > 1).collect();
+    multi.sort_unstable_by_key(|(child, _)| **child);
+    multi
+        .into_iter()
+        .map(|(child, parents)| MechanismError::PartHasMultipleParents {
+            part: (*child).to_owned(),
+            parents: parents.iter().map(|p| (*p).to_owned()).collect(),
+        })
+        .collect()
 }
 
 /// Report duplicate names via a callback.
@@ -560,6 +657,83 @@ impl Mechanism {
         super::mjcf::generate(self, resolution)
     }
 
+    /// World-frame origin of every part at the REFERENCE configuration.
+    ///
+    /// ★ The cheap answer to *"where does this part sit"*. The only other way
+    /// is [`to_model`](Self::to_model) plus forward kinematics, which meshes
+    /// every part — minutes on a large assembly, to recover a sum of anchors.
+    ///
+    /// A part hangs from the FIRST joint naming it as a child, and its origin
+    /// is that joint's anchor plus its parent's. That is `to_model`'s body
+    /// placement rule, and this does not merely copy it: the two are compared
+    /// against sim-core's own forward kinematics by
+    /// `reference_origins_agree_with_forward_kinematics`.
+    ///
+    /// ⚠ **Reference, not posed.** These are positions before any joint moves.
+    /// Driving a joint carries its whole subtree and this knows nothing of it.
+    ///
+    /// ⚠ **Several joints to one parent are normal** — a prismatic and a
+    /// revolute to the same parent is a cylindrical joint. The body is placed
+    /// at the first joint's anchor and the rest are degrees of freedom on it.
+    /// Two distinct PARENTS cannot happen here: `validate` refuses them.
+    ///
+    /// ## Translations only, and why that is exact rather than partial
+    ///
+    /// ★★★ A [`JointDef`] carries an anchor and an axis and **no
+    /// orientation**, so nothing is rotated relative to its parent at the
+    /// reference pose and `to_model` emits identity for every `body_quat`.
+    /// Summing translations is the complete answer for this type, not an
+    /// approximation of one — which is why this is safe to expose while
+    /// `body_world_pose`, which walks a `Model` that CAN carry rotations,
+    /// composes them.
+    ///
+    /// ⛔ Were a reference rotation ever added to `JointDef`, this would go
+    /// quietly wrong. It is gated against an independent implementation rather
+    /// than guarded by this paragraph, so that day it fails a test.
+    ///
+    /// # Errors
+    ///
+    /// [`MechanismError::PartNotReachable`] if a joint chain never reaches the
+    /// world — a part that is its own ancestor. [`validate`] does not check for
+    /// cycles, so such a mechanism builds happily and is caught here, as it is
+    /// by [`to_model`](Self::to_model).
+    ///
+    /// [`validate`]: MechanismBuilder::validate
+    pub fn reference_origins(&self) -> Result<HashMap<String, Vector3<f64>>, MechanismError> {
+        // ⚠ `or_insert_with` keeps the FIRST joint naming a child, which is
+        // what `to_model` does for both the parent link and the body offset.
+        // Keeping the last would place bodies somewhere the model does not.
+        let mut parent_of: HashMap<&str, (&str, Vector3<f64>)> = HashMap::new();
+        for joint in &self.joints {
+            parent_of
+                .entry(joint.child())
+                .or_insert_with(|| (joint.parent(), joint.anchor().coords));
+        }
+
+        let mut origins = HashMap::with_capacity(self.parts.len());
+        for part in &self.parts {
+            let mut here = Vector3::zeros();
+            let mut cursor = part.name();
+            let mut hops = 0_usize;
+            while let Some(&(parent, anchor)) = parent_of.get(cursor) {
+                here += anchor;
+                if parent == "world" {
+                    break;
+                }
+                cursor = parent;
+                hops += 1;
+                // A part that is its own ancestor would spin here forever.
+                // `validate` checks duplicates, cross-references and orphans,
+                // but not cycles.
+                if hops > self.parts.len() {
+                    return Err(MechanismError::PartNotReachable(part.name().to_owned()));
+                }
+            }
+            origins.insert(part.name().to_owned(), here);
+        }
+        Ok(origins)
+    }
+
     /// Generate collision shapes for cf-geometry.
     ///
     /// Returns `(part_name, Shape)` pairs in part declaration order.
@@ -603,6 +777,97 @@ mod tests {
     use crate::{ActuatorKind, JointKind, Material, Solid, TendonWaypoint};
 
     // ── Helpers ─────────────────────────────────────────────────────
+
+    // ── One parent per part ─────────────────────────────────────────
+
+    /// ⛔⛔ The distinction this check turns on, pinned from BOTH sides,
+    /// because getting it wrong in either direction is silent.
+    ///
+    /// Rejecting two PARENTS is the point: `to_model` keeps the first name it
+    /// sees, so the second link vanishes and the body hangs somewhere other
+    /// than where it was written.
+    ///
+    /// ⚠ Accepting two JOINTS on one parent matters just as much. A prismatic
+    /// plus a revolute is a CYLINDRICAL JOINT, `to_model` emits both as
+    /// degrees of freedom, and an earlier draft of this check counted joints
+    /// instead of parents and rejected it —
+    /// `the_mass_matrix_is_complete_for_welds_and_for_multi_joint_bodies`
+    /// caught that.
+    #[test]
+    fn validate_refuses_two_parents_and_allows_a_cylindrical_joint() {
+        let ball = |name: &str| Part::new(name, Solid::sphere(10.0), pla());
+        let joint = |name: &str, parent: &str, kind: JointKind, at: f64| {
+            JointDef::new(
+                name,
+                parent,
+                "child",
+                kind,
+                Point3::new(at, 0.0, 0.0),
+                Vector3::y(),
+            )
+        };
+
+        // Two parents: refused, and it names both.
+        let two_parents = Mechanism::builder("two parents")
+            .part(ball("root"))
+            .part(ball("other"))
+            .part(ball("child"))
+            .joint(joint("j0", "root", JointKind::Revolute, 10.0))
+            .joint(joint("j1", "other", JointKind::Revolute, 90.0))
+            .validate();
+        let complaint = two_parents
+            .iter()
+            .find(|e| matches!(e, MechanismError::PartHasMultipleParents { .. }))
+            .map(ToString::to_string)
+            .unwrap();
+        assert!(
+            complaint.contains("child")
+                && complaint.contains("\"root\"")
+                && complaint.contains("\"other\""),
+            "the refusal must name the part and both parents: {complaint}"
+        );
+
+        // Two joints, ONE parent: a cylindrical joint, and legitimate.
+        let cylindrical = Mechanism::builder("cylindrical")
+            .part(ball("root"))
+            .part(ball("child"))
+            .joint(joint("slide", "root", JointKind::Prismatic, 10.0))
+            .joint(joint("twist", "root", JointKind::Revolute, 10.0))
+            .validate();
+        assert!(
+            cylindrical.is_empty(),
+            "several joints to one parent are a multi-DOF connection, not an \
+             error: {cylindrical:?}"
+        );
+    }
+
+    /// The refusal reaches `build`, which is where most callers meet it.
+    #[test]
+    #[should_panic(expected = "more than one parent")]
+    fn build_panics_on_a_part_with_two_parents() {
+        let ball = |name: &str| Part::new(name, Solid::sphere(10.0), pla());
+        let _built = Mechanism::builder("two parents")
+            .part(ball("root"))
+            .part(ball("other"))
+            .part(ball("child"))
+            .joint(JointDef::new(
+                "j0",
+                "root",
+                "child",
+                JointKind::Revolute,
+                Point3::origin(),
+                Vector3::y(),
+            ))
+            .joint(JointDef::new(
+                "j1",
+                "other",
+                "child",
+                JointKind::Revolute,
+                Point3::origin(),
+                Vector3::y(),
+            ))
+            .build();
+    }
 
     fn pla() -> Material {
         Material::new("PLA", 1250.0)

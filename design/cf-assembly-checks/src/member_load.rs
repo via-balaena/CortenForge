@@ -33,12 +33,18 @@
 //! ## ⛔ What this cannot see — read before trusting a green result
 //!
 //! - **A part with nothing holding it is not scored.** Never any joint's child
-//!   at all, or a child of a FREE joint — which is a joint in the tree but not
-//!   a support, so there is no reaction to cantilever against. The second case
+//!   at all ([`Unmeasured::NoParentJoint`]), or a child of a FREE joint, which
+//!   is a joint in the tree but not a support ([`Unmeasured::NotSupported`]).
+//!   Either way there is no reaction to cantilever against. The second case
 //!   used to be scored from the part's own body origin, which on a vehicle
 //!   sits mid-structure; the chassis rail read 0.69x and then 1.17x when the
-//!   wheels gained mass, and neither number meant anything. Both cases now
-//!   report as [`Unmeasured::NotSupported`] rather than as a figure.
+//!   wheels gained mass, and neither number meant anything.
+//!
+//!   ⚠ **Not scored is not the same as not reported**, and this sentence
+//!   promised the second while delivering the first. The no-parent-joint case
+//!   named its part in NEITHER list until `NoParentJoint` existed, so a
+//!   gripper's palm simply vanished and `members + unmeasured` came out one
+//!   short of the assembly. Both cases are named now.
 //! - **A member held at both ends is over-estimated.** A tie rod or a braced
 //!   diagonal is not a cantilever, and this reports it as one.
 //! - ⛔⛔ **THE TREE DECIDES THE LOAD PATH, AND A SYMMETRIC PAIR SPLITS
@@ -206,6 +212,18 @@ pub enum Unmeasured {
     /// ⚠ Withheld rather than reported, because `NaN > 1.0` is `false`: a `NaN`
     /// utilisation reads as "not over yield" at every call site that asks.
     NotFinite,
+    /// It is not any joint's child, so there is no support to cantilever from.
+    ///
+    /// ⚠ Distinct from [`Self::NotSupported`], which has a parent joint that
+    /// happens to hold it in no direction. This one has no parent joint at
+    /// all — the usual case being an assembly's ROOT. Both are structural and
+    /// neither is scored; they are kept apart because a reader chasing a
+    /// missing member wants to know which.
+    ///
+    /// ⛔ A vehicle whose root is anchored to `"world"` by a declared joint
+    /// never produces this, which is why it went unnoticed: on the trike every
+    /// part is some joint's child. A gripper's palm is not.
+    NoParentJoint,
 }
 
 impl Unmeasured {
@@ -220,7 +238,7 @@ impl Unmeasured {
     /// of the screen rather than a pass for the parts.
     #[must_use]
     pub const fn is_structural(self) -> bool {
-        matches!(self, Self::NotSupported)
+        matches!(self, Self::NotSupported | Self::NoParentJoint)
     }
 }
 
@@ -240,10 +258,21 @@ pub struct Unmeasurable {
 /// seven went unmeasured, and the reader has no way to know. Unmeasured is
 /// reported here, never dropped.
 ///
-/// ⚠ That sentence was once FALSE in this very function. Three of its four
-/// early exits pushed nothing, so a member absent from [`Origins`] or
-/// [`MassMap`] vanished from both fields while the doc above promised it could
-/// not. Every exit now names the member.
+/// ⚠ That sentence was twice FALSE in this very function, and the second time
+/// is why the count is spelled out here. Three exits pushed nothing, so a
+/// member absent from [`Origins`] or [`MassMap`] vanished from both fields
+/// while the doc above promised it could not. They were fixed — against a
+/// tally of FOUR exits when there were SEVEN, and the one that went on
+/// dropping its member silently was outside the miscount.
+///
+/// ★ **All seven per-member exits now name the member**, and
+/// `the_screen_accounts_for_every_part` asserts the invariant they are
+/// instances of rather than leaving seven separate things to remember:
+/// `members + unmeasured` IS the assembly.
+///
+/// ⛔ The silent one was invisible on a vehicle: the trike's root is anchored
+/// to `"world"` by a declared joint, so every one of its parts is some joint's
+/// child. A gripper's palm is not, and the screen reported two parts of three.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Screen {
     /// One entry per member whose section could be sampled, worst first.
@@ -313,8 +342,17 @@ pub fn member_loads(
     let mut out = Vec::new();
     for part in mechanism.parts() {
         let name = part.name();
+        // ⛔ Never any joint's child, so there is nothing to cantilever
+        // from. NOT scored — and NOT dropped either: it used to `continue`
+        // without naming, the one exit of seven that did, so the part left
+        // `members` and `unmeasured` alike and `members + unmeasured` came
+        // out short of the assembly.
         let Some(joint) = parent_joint.get(name) else {
-            continue; // never any joint's child: nothing to cantilever from.
+            unmeasured.push(Unmeasurable {
+                part: name.to_owned(),
+                why: Unmeasured::NoParentJoint,
+            });
+            continue;
         };
         let mut withhold = |why| {
             unmeasured.push(Unmeasurable {
@@ -1098,16 +1136,62 @@ mod tests {
         assert!(screen.members.iter().any(|l| l.part == "arm"));
     }
 
-    /// The stated blind spot, gated so it cannot quietly stop being true.
+    /// The stated blind spot — NOT scored, because a part that is no joint's
+    /// child has nothing to cantilever from.
+    ///
+    /// ★ But stated means NAMED. It used to vanish from `members` and
+    /// `unmeasured` alike, so `members + unmeasured` under-counted the
+    /// assembly — and that sum is the denominator callers print. Invisible on
+    /// a vehicle whose root is anchored to `"world"` by a declared joint;
+    /// live on a gripper, whose palm is no joint's child.
     #[test]
-    fn a_part_with_no_parent_joint_is_not_reported() {
+    fn a_part_with_no_parent_joint_is_named_not_dropped() {
         let (m, origins, masses) = fixture(Vector3::new(500.0, 0.0, 0.0));
-        let loads = member_loads(&m, &origins, &masses, &LoadCase::static_1g()).members;
+        let screen = member_loads(&m, &origins, &masses, &LoadCase::static_1g());
         assert!(
-            !loads.iter().any(|l| l.part == "base"),
-            "the root has nothing to cantilever from and must not be scored: {loads:?}"
+            !screen.members.iter().any(|l| l.part == "base"),
+            "the root has nothing to cantilever from and must not be scored: {:?}",
+            screen.members
         );
-        assert!(loads.iter().any(|l| l.part == "arm"));
+        assert!(
+            screen
+                .unmeasured
+                .iter()
+                .any(|u| u.part == "base" && u.why == Unmeasured::NoParentJoint),
+            "the root vanished from BOTH lists: {:?}",
+            screen.unmeasured
+        );
+        assert!(screen.members.iter().any(|l| l.part == "arm"));
+    }
+
+    /// ★★★ The invariant the gate above is one instance of: every part is
+    /// either measured or named, so `members + unmeasured` IS the assembly.
+    ///
+    /// ⛔ Without this, each early exit has to be remembered one at a time —
+    /// which is how the fifth one stayed silent while the docs promised every
+    /// exit named its member.
+    #[test]
+    fn the_screen_accounts_for_every_part() {
+        let (m, origins, masses) = fixture(Vector3::new(500.0, 0.0, 0.0));
+        let screen = member_loads(&m, &origins, &masses, &LoadCase::static_1g());
+        let missing: Vec<&str> = m
+            .parts()
+            .iter()
+            .map(cf_design::Part::name)
+            .filter(|n| {
+                !screen.members.iter().any(|l| l.part == *n)
+                    && !screen.unmeasured.iter().any(|u| u.part == *n)
+            })
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "parts named in NEITHER list: {missing:?}"
+        );
+        assert_eq!(
+            screen.members.len() + screen.unmeasured.len(),
+            m.parts().len(),
+            "the screen's own population must be the assembly"
+        );
     }
 
     #[test]
