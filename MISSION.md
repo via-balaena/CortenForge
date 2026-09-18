@@ -6,7 +6,7 @@
 
 CortenForge is a software development kit for mechatronics and simulation — geometry, parametric design, meshing and fabrication, rigid- and soft-body physics, control and reinforcement learning, sim-to-real. **The kit is the product.**
 
-To prove the components are real and compose end to end, we build the hardest useful thing we can with them: **a family of hydrogen farm vehicles for the upper Midwest, and the fuel chain that powers them.**
+To prove the components are real and compose end to end, we build the hardest useful thing we can with them: **a family of hydrogen farm vehicles for the Great Plains and country like it, and the fuel chain that powers them.**
 
 - **Tractor** — for work.
 - **Truck** — for haul.

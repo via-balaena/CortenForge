@@ -10,7 +10,7 @@
 
 Composable Rust components for the full path **physical → digital → physical**: geometry, parametric design, meshing and fabrication, rigid- and soft-body physics, control and reinforcement learning, sim-to-real. **The kit is the product.**
 
-To prove the components compose end to end, we build a family of **hydrogen farm vehicles for the upper Midwest** — tractor, truck, trike — and the wind-to-hydrogen fuel chain that powers them, and answer one question: *how many acres per season can one farm run on its own wind?* **Not yet built.** See **[MISSION.md](./MISSION.md)**.
+To prove the components compose end to end, we build a family of **hydrogen farm vehicles for the Great Plains and country like it** — tractor, truck, trike — and the wind-to-hydrogen fuel chain that powers them, and answer one question: *how many acres per season can one farm run on its own wind?* **Not yet built.** See **[MISSION.md](./MISSION.md)**.
 
 Person-specific assistive robotics — stroke recovery, assistive living, sports equipment — runs on the same components and is sequenced behind the farm, not abandoned.
 
