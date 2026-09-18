@@ -10,26 +10,37 @@
 //!
 //! The individual 30-page test reports are served only through a CGI endpoint
 //! that refuses automated retrieval. What *is* retrievable is the Laboratory's
-//! annual compilation, and the copy of it that can be fetched is a **scan**:
-//! the text layer is OCR, and OCR of a numeric table is exactly the kind of
-//! input that produces a wrong number which looks right.
+//! annual compilation, and the copies that can be fetched are **scans**: the
+//! text layer is OCR, and OCR of a numeric table is exactly the kind of input
+//! that produces a wrong number which looks right.
 //!
-//! The compilation prints every figure **twice** — once in US customary units
-//! and once in SI. That redundancy is a checksum, and this crate is built
-//! around it: a figure is trustworthy only if its two printed forms reconcile
-//! under the unit conversion, allowing for the rounding implied by how many
-//! digits each was printed to. See [`Printed::read`].
+//! Two kinds of redundancy already in the sources do the verifying, and they
+//! catch different errors:
 //!
-//! Three figures in the 8245R column do **not** reconcile. They are not
-//! guessed at and not dropped — they are carried as [`Reading::Disputed`],
-//! which cannot be read as a single number without the caller acknowledging
-//! the disagreement.
+//! 1. **Each figure is printed twice** — once in US customary units, once in
+//!    SI. A misread digit almost never agrees with its own conversion, so the
+//!    two printed forms check each other. See [`Printed::internally_consistent`].
+//! 2. **The same table is reprinted every year.** A tractor tested once in 2014
+//!    appears in every compilation afterwards, independently scanned each time.
+//!    This catches what (1) cannot: a figure taken from the **wrong row**. A
+//!    neighbouring row's value reconciles perfectly — it is a real figure,
+//!    simply the wrong one — and adjacent rows here differ by as little as
+//!    0.17%. See [`reconcile`].
+//!
+//! Three of this tractor's figures are corrupt in the 2019 scan and were
+//! resolved by the 2016 and 2017 editions outvoting it; see [`CORRUPT_SCANS`],
+//! which records which edition failed and on what, because that is evidence
+//! about a scan rather than about the tractor.
+//!
+//! ⚠ Neither check says anything about whether the Laboratory **measured**
+//! correctly, or mis-printed a figure in every edition. They validate
+//! transcription, which is the error these sources actually introduce.
 //!
 //! # What this crate deliberately does NOT contain
 //!
-//! See [`ABSENT`]. The compilation carries no wheel-slip column, does not state
-//! the surface the drawbar tests were run on, and is ambiguous about the engine
-//! speed at PTO maximum power. All three are recorded as absences with their
+//! See [`ABSENT`]. No edition carries a wheel-slip column, none states
+//! the surface the drawbar tests were run on, and the engine speed at PTO
+//! maximum power is carried in one unit only. All three are recorded with their
 //! reasons, because the tempting move — supplying a plausible value from
 //! general knowledge — would put an unsourced number into the one part of the
 //! chain that exists to be validated.
@@ -140,8 +151,9 @@ impl Printed {
     ///
     /// ⚠ This is **transcription provenance, not a validated measurement**. It
     /// is whatever is on the page, including for a figure whose two printed
-    /// forms disagree. The validated value comes from [`Printed::read`], which
-    /// cannot hand back a number for a disputed figure without saying so.
+    /// forms disagree. The validated value comes from [`Datum::read`], which
+    /// weighs every edition and cannot hand back a number the sources do not
+    /// agree on.
     #[must_use]
     pub const fn as_printed_us(self) -> f64 {
         self.us
@@ -200,30 +212,24 @@ impl Printed {
         half_ulp(self.us_decimals) / self.us.abs() + half_ulp(self.si_decimals) / self.si.abs()
     }
 
-    /// Reconcile the two printed forms.
+    /// Whether this edition's two printed forms reconcile with each other.
     ///
     /// The printed US figure stands for a true value within its own rounding
     /// interval; converting that whole interval gives the range of SI values
     /// consistent with it. If that range overlaps the printed SI figure's own
     /// rounding interval, the two agree.
     #[must_use]
-    pub fn read(&self) -> Reading {
+    pub fn internally_consistent(&self) -> bool {
         let k = self.conversion.factor();
         let u = half_ulp(self.us_decimals);
         let s = half_ulp(self.si_decimals);
         let (lo, hi) = ((self.us - u) * k, (self.us + u) * k);
-        if hi < self.si - s || lo > self.si + s {
-            Reading::Disputed {
-                from_us: self.us * k,
-                as_printed: self.si,
-            }
-        } else {
-            Reading::Agreed(self.si)
-        }
+        !(hi < self.si - s || lo > self.si + s)
     }
 
-    /// The smallest relative error in the US figure this check is guaranteed
-    /// to catch, or `None` if the figure is already disputed.
+    /// The smallest relative error in the US figure the within-edition check is
+    /// guaranteed to catch, or `None` if the two printed forms already
+    /// disagree.
     ///
     /// The check's power is set by how many *significant* figures the source
     /// printed, not how many decimal places. `227.60 hp / 169.72 kW` is five
@@ -238,7 +244,9 @@ impl Printed {
     /// two directions are not symmetric.
     #[must_use]
     pub fn resolution(&self) -> Option<f64> {
-        self.read().agreed()?;
+        if !self.internally_consistent() {
+            return None;
+        }
         let k = self.conversion.factor();
         let u = half_ulp(self.us_decimals);
         let s = half_ulp(self.si_decimals);
@@ -247,129 +255,209 @@ impl Printed {
         let down = 1.0 - (self.si - s - u * k) / base;
         Some(up.max(down))
     }
+
+    /// The SI value this edition asserts, if its two printed forms agree.
+    #[must_use]
+    pub fn si_if_consistent(self) -> Option<f64> {
+        self.internally_consistent().then_some(self.si)
+    }
 }
 
-/// What a [`Printed`] figure can be trusted to say.
+/// What the sources, taken together, say a figure is.
 ///
-/// A figure whose two printed forms disagree is still *usable* — the
-/// disagreement is small and its bounds are known — but there is no path to a
-/// **validated** value that does not go through this enum, so a caller cannot
-/// treat a disputed figure as settled by accident.
+/// Two independent checks feed this, and they catch different things:
 ///
-/// ⚠ The raw printed figures remain reachable through
-/// [`Printed::as_printed_us`] and [`Printed::as_printed_si`], because
-/// transcription provenance is part of what this crate is for. They are named
-/// to announce what they are: what is on the page, not what has been checked.
+/// 1. **Within one edition** — do its two printed unit forms reconcile? This
+///    catches a misread digit, because a corrupted number almost never agrees
+///    with its own conversion.
+/// 2. **Across editions** — do the editions that pass check 1 agree with each
+///    other? This catches what check 1 cannot: a figure taken from the wrong
+///    row. A neighbouring row's value reconciles perfectly, because it is a
+///    real figure — it is simply the wrong one. Adjacent rows here differ by
+///    as little as 0.17%, so nothing within a single edition can separate them.
+///
+/// ⚠ Neither check says anything about whether the Laboratory *measured*
+/// correctly, or mis-printed a figure in every edition. They validate
+/// transcription, which is the error these sources actually introduce.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Reading {
-    /// The two printed forms reconcile. Carries the SI value.
-    Agreed(f64),
-    /// The two printed forms disagree: converting the printed US value does
-    /// not land within the printed SI value's rounding interval.
-    ///
-    /// Almost always a scanning error in one of the two, but which one cannot
-    /// be settled without the original report, so both candidates are kept.
-    Disputed {
-        /// SI value implied by the printed US figure.
-        from_us: f64,
-        /// SI value as printed.
-        as_printed: f64,
+    /// Every edition that reconciles internally agrees on this SI value.
+    Agreed {
+        /// The agreed SI value.
+        si: f64,
+        /// How many editions produced it.
+        agreeing: usize,
+        /// How many editions were set aside because their own two printed
+        /// forms disagreed — a corrupt scan, not a contested measurement.
+        rejected: usize,
     },
+    /// Editions that each reconcile internally disagree with one another.
+    ///
+    /// Not present in the current data. It would mean either a genuine change
+    /// between printings or a transcription from the wrong row, and both need
+    /// a human to look rather than a rule to pick a winner.
+    Conflicted {
+        /// Lowest SI value any internally-consistent edition gives.
+        low: f64,
+        /// Highest.
+        high: f64,
+    },
+    /// No edition's two printed forms reconcile, so nothing here is usable.
+    Unresolved,
 }
 
 impl Reading {
-    /// The SI value if the two printed forms agree, otherwise `None`.
+    /// The SI value if the sources agree, otherwise `None`.
     #[must_use]
     pub const fn agreed(self) -> Option<f64> {
         match self {
-            Self::Agreed(v) => Some(v),
-            Self::Disputed { .. } => None,
+            Self::Agreed { si, .. } => Some(si),
+            Self::Conflicted { .. } | Self::Unresolved => None,
         }
     }
 
-    /// The inclusive span the true SI value lies in, disputed or not.
+    /// The inclusive span the true SI value lies in, or `None` if nothing is
+    /// usable.
     ///
-    /// For an agreed figure this is a point. For a disputed one it spans both
-    /// candidates, so arithmetic over it propagates the disagreement instead
-    /// of silently picking a side.
+    /// A point for an agreed figure and the disagreement's range for a
+    /// conflicted one, so arithmetic over spans propagates doubt rather than
+    /// silently picking a side.
     #[must_use]
-    pub const fn span(self) -> (f64, f64) {
+    pub const fn span(self) -> Option<(f64, f64)> {
         match self {
-            Self::Agreed(v) => (v, v),
-            Self::Disputed {
-                from_us,
-                as_printed,
-            } => (from_us.min(as_printed), from_us.max(as_printed)),
+            Self::Agreed { si, .. } => Some((si, si)),
+            Self::Conflicted { low, high } => Some((low, high)),
+            Self::Unresolved => None,
+        }
+    }
+
+    /// How many editions were set aside as internally inconsistent.
+    ///
+    /// Non-zero means a scan was corrupt and the others outvoted it. Worth
+    /// surfacing: it is evidence about that edition's quality, not about the
+    /// figure.
+    #[must_use]
+    pub const fn rejected(self) -> usize {
+        match self {
+            Self::Agreed { rejected, .. } => rejected,
+            Self::Conflicted { .. } | Self::Unresolved => 0,
         }
     }
 }
 
-/// Where a figure came from, precisely enough to go and look.
+/// One printing of the compilation.
 ///
-/// Carried on the test rather than on each figure because every figure in a
-/// test comes off the same page of the same document. A number with no
-/// producer is not a measurement, so there is no way to build a [`TractorTest`]
-/// without one.
+/// The same test table is reprinted in every edition from the year after the
+/// test onward, so a figure measured once in 2014 has been scanned
+/// independently several times. That redundancy is the cross-edition check.
 #[derive(Clone, Copy, Debug)]
-pub struct Source {
-    /// Title of the document, as it titles itself.
-    pub document: &'static str,
-    /// Where the document was retrieved from.
+pub struct Edition {
+    /// Cover year of the compilation.
+    pub year: u16,
+    /// Title as the document titles itself.
+    pub title: &'static str,
+    /// Where it was retrieved.
     pub url: &'static str,
     /// ISO date of retrieval.
     pub retrieved: &'static str,
-    /// How to find the figures within the document.
-    pub locator: &'static str,
-    /// How the text was obtained, and what that costs in trustworthiness.
-    pub extraction: &'static str,
 }
 
-/// One named figure from a test.
+/// One edition's reading of one figure.
+#[derive(Clone, Copy, Debug)]
+pub struct Observation {
+    edition: u16,
+    printed: Printed,
+}
+
+impl Observation {
+    /// Record what one edition prints for a figure.
+    #[must_use]
+    pub const fn new(edition: u16, printed: Printed) -> Self {
+        Self { edition, printed }
+    }
+
+    /// Which edition this reading came from.
+    #[must_use]
+    pub const fn edition(self) -> u16 {
+        self.edition
+    }
+
+    /// The figure as that edition printed it.
+    #[must_use]
+    pub const fn printed(self) -> Printed {
+        self.printed
+    }
+}
+
+/// One figure, as read from every edition that carries it legibly.
 #[derive(Clone, Copy, Debug)]
 pub struct Datum {
     /// Row label, close to the source's own wording.
     pub name: &'static str,
-    /// The figure, in both printed unit systems.
-    pub printed: Printed,
+    /// What each edition prints. Never empty.
+    pub observations: &'static [Observation],
 }
 
-/// One tractor's test results.
-#[derive(Clone, Copy, Debug)]
-pub struct TractorTest {
-    /// Make and model as the source prints it.
-    pub make_model: &'static str,
-    /// Nebraska summary number.
-    pub summary_no: u32,
-    /// Year the test was conducted.
-    pub year_tested: u16,
-    /// Provenance for every figure below.
-    pub source: Source,
-    /// The figures.
-    pub data: &'static [Datum],
+/// How close two editions' SI values must be to count as the same reading.
+///
+/// They are transcribed literals, so agreement is exact in practice; this is a
+/// guard against a last-bit difference, not a tolerance for disagreement. Any
+/// real disagreement is orders of magnitude larger — the smallest in this data
+/// is 0.18%.
+const SAME: f64 = 1e-9;
+
+/// What a set of editions' readings, taken together, say a figure is.
+///
+/// Split out from [`Datum::read`] so the cross-edition rule can be exercised
+/// on observation sets that are not in the dataset — in particular the case it
+/// exists to catch, where one edition supplies a real figure from the wrong
+/// row. That case cannot be built by editing the table, because the table is
+/// what the rule is meant to protect.
+#[must_use]
+pub fn reconcile(observations: &[Observation]) -> Reading {
+    let consistent: Vec<f64> = observations
+        .iter()
+        .filter_map(|o| o.printed().si_if_consistent())
+        .collect();
+    let rejected = observations.len() - consistent.len();
+    let Some(&first) = consistent.first() else {
+        return Reading::Unresolved;
+    };
+    if consistent.iter().all(|v| (v - first).abs() <= SAME) {
+        return Reading::Agreed {
+            si: first,
+            agreeing: consistent.len(),
+            rejected,
+        };
+    }
+    let low = consistent.iter().copied().fold(f64::INFINITY, f64::min);
+    let high = consistent.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    Reading::Conflicted { low, high }
 }
 
-impl TractorTest {
-    /// Look up one figure by its row label.
+impl Datum {
+    /// What the editions, taken together, say this figure is.
     #[must_use]
-    pub fn get(&self, name: &str) -> Option<Reading> {
-        self.data
-            .iter()
-            .find(|d| d.name == name)
-            .map(|d| d.printed.read())
+    pub fn read(&self) -> Reading {
+        reconcile(self.observations)
     }
 
-    /// Every row label whose two printed forms disagree, in declaration order.
+    /// Editions whose two printed forms disagree with each other.
+    ///
+    /// These are corrupt scans, outvoted by the rest. Kept because which
+    /// edition failed, and on which figure, is evidence about that scan's
+    /// quality rather than about the tractor.
     #[must_use]
-    pub fn disputed(&self) -> Vec<&'static str> {
-        self.data
+    pub fn corrupt_editions(&self) -> Vec<u16> {
+        self.observations
             .iter()
-            .filter(|d| d.printed.read().agreed().is_none())
-            .map(|d| d.name)
+            .filter(|o| !o.printed().internally_consistent())
+            .map(|o| o.edition())
             .collect()
     }
 }
 
-/// Something the source does not contain, recorded so that its absence is a
+/// Something the sources do not contain, recorded so that its absence is a
 /// fact in the dataset rather than a gap somebody fills in later from memory.
 #[derive(Clone, Copy, Debug)]
 pub struct NotInSource {
@@ -379,51 +467,74 @@ pub struct NotInSource {
     pub why: &'static str,
 }
 
-/// What the retrievable source does not carry.
-///
-/// ⚠ MISSION names *"Nebraska Tractor Test drawbar **and slip**"* as the ground
-/// truth for the tractor half. Half of that oracle is not in the reachable
-/// document. Recording that here is the difference between a known gap and a
-/// number someone invents later.
+/// One tractor's test results, as printed across several editions.
+#[derive(Clone, Copy, Debug)]
+pub struct TractorTest {
+    /// Make and model as the sources print it.
+    pub make_model: &'static str,
+    /// Nebraska summary number.
+    pub summary_no: u32,
+    /// Year the test was conducted.
+    pub year_tested: u16,
+    /// The editions read, in year order.
+    pub editions: &'static [Edition],
+    /// The figures.
+    pub data: &'static [Datum],
+}
+
+impl TractorTest {
+    /// Look up one figure by its row label.
+    #[must_use]
+    pub fn get(&self, name: &str) -> Option<Reading> {
+        self.data.iter().find(|d| d.name == name).map(Datum::read)
+    }
+
+    /// Row labels for which at least one edition's scan is corrupt.
+    #[must_use]
+    pub fn with_corrupt_editions(&self) -> Vec<&'static str> {
+        self.data
+            .iter()
+            .filter(|d| !d.corrupt_editions().is_empty())
+            .map(|d| d.name)
+            .collect()
+    }
+}
+
+/// What the retrievable sources do not carry.
 pub const ABSENT: &[NotInSource] = &[
     NotInSource {
         what: "wheel slip, per load",
-        why: "The annual compilation's per-tractor columns carry no slip row; \
-              slip appears only in the methodology prose, which states that \
-              drawbar runs span the gears from one below the gear at which 15% \
-              slip occurs up to 10 mph (16.1 km/h). That bounds the test \
-              envelope but gives no slip figure for any load. Per-load slip is \
-              printed in the individual ~30-page report, which is served only \
-              through a CGI endpoint that refuses automated retrieval.",
+        why: "No edition's per-tractor columns carry a slip row; slip appears \
+              only in the methodology prose, which states that drawbar runs \
+              span the gears from one below the gear at which 15% slip occurs \
+              up to 10 mph (16.1 km/h). That bounds the test envelope but gives \
+              no slip figure for any load. Per-load slip is printed in the \
+              individual ~30-page report, which is served only through a CGI \
+              endpoint that refuses automated retrieval.",
     },
     NotInSource {
         what: "the engine speed at which PTO maximum power was measured",
-        why: "The row is labelled max power at RATED engine speed, and rated \
-              RPM for this tractor is printed as 2100 — but the figure in the \
-              8245R column reads as 2000, where both neighbouring columns read \
-              2100. The scan does not settle which, and the dual-unit check \
-              cannot help: an engine speed is printed once, in rpm, with no SI \
-              twin to reconcile against. Recorded rather than picked, because a \
-              fuel-rate model divides by this number.",
+        why: "Not absent so much as un-carried: three editions (2016, 2017, \
+              2018) read 2099 rpm and only the 2019 scan reads 2000, so the \
+              cross-edition evidence is strong. It is not a Datum because it is \
+              printed in one unit with no SI twin, and this crate's figures are \
+              dual-unit pairs. Closing it means an observation type for \
+              single-unit values, checked across editions only — worth doing \
+              when a fuel-rate model needs to divide by it.",
     },
     NotInSource {
         what: "the surface the drawbar tests were run on",
-        why: "The retrieved methodology section describes the load units, the \
-              gear selection and the part-load series, and mentions a test \
-              track only in the context of sound measurement. It does not \
-              state the drawbar surface. No surface is asserted here: the \
-              conversion from a measured drawbar figure to field performance \
-              is precisely what the soil model in this chain is for, so \
-              assuming the surface would prejudge the term being modelled.",
+        why: "The methodology section describes the load units, the gear \
+              selection and the part-load series, and mentions a test track \
+              only in the context of sound measurement. It does not state the \
+              drawbar surface. No surface is asserted here: the conversion from \
+              a measured drawbar figure to field performance is precisely what \
+              the soil model in this chain is for, so assuming the surface \
+              would prejudge the term being modelled.",
     },
 ];
 
-/// Rows the source prints for this tractor that are deliberately not carried.
-///
-/// The 25 figures in [`JOHN_DEERE_8245R`] are not the whole column, and
-/// `the_test_identifies_itself` pins that count — so what the count excludes
-/// has to be written down, or a reader cannot tell a deliberate omission from
-/// a transcription that stopped early.
+/// Rows the sources print for this tractor that are deliberately not carried.
 pub const NOT_TRANSCRIBED: &[NotInSource] = &[NotInSource {
     what: "engine bore and stroke, and displacement",
     why: "Both are printed in dual units and would reconcile like the rest, \
@@ -433,177 +544,403 @@ pub const NOT_TRANSCRIBED: &[NotInSource] = &[NotInSource {
               unchanged, the figures are in the same column of the same page.",
 }];
 
+/// Editions that carry this tractor but are not read here, and why.
+///
+/// ⛔ The reason matters more than the exclusion. A scan is excluded when its
+/// glyphs cannot be read **without reference to the value being checked** —
+/// and resolving an ambiguous glyph by picking whichever reading reconciles
+/// would make the reconciliation check circular for that figure. It could
+/// never fail again, because it was used to author the input.
+pub const EXCLUDED_EDITIONS: &[NotInSource] = &[
+    NotInSource {
+        what: "the 2015 edition",
+        why: "Heavily corrupted in this tractor's column: PTO maximum power \
+              renders as `2 1 5. &\\(Ii\"~` and its SI twin as `(J&J.98J0:'l.(}OO`. \
+              Reading those requires deciding what they ought to say, which is \
+              precisely what the check is supposed to test independently.",
+    },
+    NotInSource {
+        what: "the 2018 edition",
+        why: "Mostly legible and it does corroborate the contested figures, but \
+              it renders the 50% load fuel economy as `13.4 1(2.6'1)`, which is \
+              either 2.61 or 2.64 and cannot be settled from the glyphs alone. \
+              Picking the one that reconciles would author the answer into the \
+              input. Its 100% load SI figure is also a clear misread (118.04 \
+              where the conversion gives 148.04), so it would contribute a \
+              rejected observation rather than a deciding one.",
+    },
+];
+
 /// John Deere 8245R — the calibration target for the acres chain.
 ///
-/// A ~245 hp mechanical-front-wheel-drive row-crop tractor: the class that
-/// actually pulls primary tillage across the upper Midwest, and the class
-/// where on-farm hydrogen production is arguable rather than absurd.
+/// A mechanical-front-wheel-drive row-crop tractor of the class that pulls
+/// primary tillage across the upper Midwest. The "245" is a model designation,
+/// not a measurement: the measured PTO maximum is 215.88 hp / 160.98 kW.
 pub const JOHN_DEERE_8245R: TractorTest = TractorTest {
     make_model: "John Deere 8245R Dsl",
     summary_no: 963,
     year_tested: 2014,
-    source: Source {
-        document: "Nebraska and OECD Tractor Test Data for 2019 \
-                   (containing test data through December 2018), \
-                   Nebraska Tractor Test Laboratory, MP 37 TTL",
-        url: "https://govdocs.nebraska.gov/epubs/U2060/S001-2019.pdf",
-        retrieved: "2026-09-18",
-        locator: "John Deere section, three-column page carrying \
-                  7310R / 7310R / 8245R; the 8245R is the right-hand column",
-        extraction: "pdftotext -layout over a scanned page. The text layer is \
-                     OCR and is visibly lossy in the prose; every figure below \
-                     is therefore carried in both printed unit systems and \
-                     reconciled against its own conversion.",
-    },
+    editions: &[
+        Edition {
+            year: 2016,
+            title: "Nebraska and OECD Tractor Test Data for 2016, \
+                    Nebraska Tractor Test Laboratory, MP 37 TTL",
+            url: "https://govdocs.nebraska.gov/epubs/U2060/S001-2016.pdf",
+            retrieved: "2026-09-18",
+        },
+        Edition {
+            year: 2017,
+            title: "Nebraska and OECD Tractor Test Data for 2017, \
+                    Nebraska Tractor Test Laboratory, MP 37 TTL",
+            url: "https://govdocs.nebraska.gov/epubs/U2060/S001-2017.pdf",
+            retrieved: "2026-09-18",
+        },
+        Edition {
+            year: 2019,
+            title: "Nebraska and OECD Tractor Test Data for 2019, \
+                    Nebraska Tractor Test Laboratory, MP 37 TTL",
+            url: "https://govdocs.nebraska.gov/epubs/U2060/S001-2019.pdf",
+            retrieved: "2026-09-18",
+        },
+    ],
     data: &[
-        // ---- PTO -------------------------------------------------------
         Datum {
             name: "pto max power",
-            printed: Printed::new(215.88, 2, 160.98, 2, Conversion::HpToKw),
+            observations: &[
+                Observation::new(2016, Printed::new(215.88, 2, 160.98, 2, Conversion::HpToKw)),
+                Observation::new(2017, Printed::new(215.88, 2, 160.98, 2, Conversion::HpToKw)),
+                Observation::new(2019, Printed::new(215.88, 2, 160.98, 2, Conversion::HpToKw)),
+            ],
         },
         Datum {
             name: "pto max power fuel rate",
-            printed: Printed::new(11.84, 2, 44.81, 2, Conversion::GalPerHrToLPerH),
+            observations: &[
+                Observation::new(
+                    2016,
+                    Printed::new(11.84, 2, 44.81, 2, Conversion::GalPerHrToLPerH),
+                ),
+                Observation::new(
+                    2017,
+                    Printed::new(11.84, 2, 44.81, 2, Conversion::GalPerHrToLPerH),
+                ),
+                Observation::new(
+                    2019,
+                    Printed::new(11.84, 2, 44.81, 2, Conversion::GalPerHrToLPerH),
+                ),
+            ],
         },
         Datum {
             name: "pto max power fuel economy",
-            printed: Printed::new(18.24, 2, 3.59, 2, Conversion::HpHrPerGalToKwhPerL),
+            observations: &[
+                Observation::new(
+                    2016,
+                    Printed::new(18.24, 2, 3.59, 2, Conversion::HpHrPerGalToKwhPerL),
+                ),
+                Observation::new(
+                    2017,
+                    Printed::new(18.24, 2, 3.59, 2, Conversion::HpHrPerGalToKwhPerL),
+                ),
+                Observation::new(
+                    2019,
+                    Printed::new(18.24, 2, 3.59, 2, Conversion::HpHrPerGalToKwhPerL),
+                ),
+            ],
         },
         Datum {
             name: "pto power at standard 1000 rpm",
-            printed: Printed::new(235.92, 2, 175.93, 2, Conversion::HpToKw),
+            observations: &[
+                Observation::new(2016, Printed::new(235.92, 2, 175.93, 2, Conversion::HpToKw)),
+                Observation::new(2017, Printed::new(235.92, 2, 175.93, 2, Conversion::HpToKw)),
+                Observation::new(2019, Printed::new(235.92, 2, 175.93, 2, Conversion::HpToKw)),
+            ],
         },
         Datum {
             name: "pto 1000 rpm fuel rate",
-            printed: Printed::new(12.52, 2, 47.40, 2, Conversion::GalPerHrToLPerH),
+            observations: &[
+                Observation::new(
+                    2016,
+                    Printed::new(12.52, 2, 47.40, 2, Conversion::GalPerHrToLPerH),
+                ),
+                Observation::new(
+                    2017,
+                    Printed::new(12.52, 2, 47.40, 2, Conversion::GalPerHrToLPerH),
+                ),
+                Observation::new(
+                    2019,
+                    Printed::new(12.52, 2, 47.40, 2, Conversion::GalPerHrToLPerH),
+                ),
+            ],
         },
         Datum {
             name: "pto 1000 rpm fuel economy",
-            printed: Printed::new(18.84, 2, 3.71, 2, Conversion::HpHrPerGalToKwhPerL),
+            observations: &[
+                Observation::new(
+                    2016,
+                    Printed::new(18.84, 2, 3.71, 2, Conversion::HpHrPerGalToKwhPerL),
+                ),
+                Observation::new(
+                    2017,
+                    Printed::new(18.84, 2, 3.71, 2, Conversion::HpHrPerGalToKwhPerL),
+                ),
+                Observation::new(
+                    2019,
+                    Printed::new(18.84, 2, 3.71, 2, Conversion::HpHrPerGalToKwhPerL),
+                ),
+            ],
         },
-        // ---- mass ------------------------------------------------------
         Datum {
             name: "weight as tested",
-            printed: Printed::new(25380.0, 0, 11512.0, 0, Conversion::LbToKg),
+            observations: &[
+                Observation::new(
+                    2016,
+                    Printed::new(25380.0, 0, 11512.0, 0, Conversion::LbToKg),
+                ),
+                Observation::new(
+                    2017,
+                    Printed::new(25380.0, 0, 11512.0, 0, Conversion::LbToKg),
+                ),
+                Observation::new(
+                    2019,
+                    Printed::new(25380.0, 0, 11512.0, 0, Conversion::LbToKg),
+                ),
+            ],
         },
-        // ---- drawbar ---------------------------------------------------
         Datum {
             name: "drawbar max power short term",
-            printed: Printed::new(227.60, 2, 169.72, 2, Conversion::HpToKw),
+            observations: &[
+                Observation::new(2016, Printed::new(227.60, 2, 169.72, 2, Conversion::HpToKw)),
+                Observation::new(2017, Printed::new(227.60, 2, 169.72, 2, Conversion::HpToKw)),
+                Observation::new(2019, Printed::new(227.60, 2, 169.72, 2, Conversion::HpToKw)),
+            ],
         },
         Datum {
             name: "drawbar max power speed",
-            printed: Printed::new(6.80, 2, 10.94, 2, Conversion::MphToKmh),
+            observations: &[
+                Observation::new(2016, Printed::new(6.80, 2, 10.94, 2, Conversion::MphToKmh)),
+                Observation::new(2017, Printed::new(6.80, 2, 10.94, 2, Conversion::MphToKmh)),
+                Observation::new(2019, Printed::new(6.80, 2, 10.94, 2, Conversion::MphToKmh)),
+            ],
         },
         Datum {
             name: "drawbar 100pct load power",
-            printed: Printed::new(198.53, 2, 148.04, 2, Conversion::HpToKw),
+            observations: &[
+                Observation::new(2016, Printed::new(198.53, 2, 148.04, 2, Conversion::HpToKw)),
+                Observation::new(2017, Printed::new(198.53, 2, 148.04, 2, Conversion::HpToKw)),
+                Observation::new(2019, Printed::new(198.53, 2, 148.04, 2, Conversion::HpToKw)),
+            ],
         },
         Datum {
             name: "drawbar 100pct load speed",
-            printed: Printed::new(4.68, 2, 7.53, 2, Conversion::MphToKmh),
+            observations: &[
+                Observation::new(2016, Printed::new(4.68, 2, 7.53, 2, Conversion::MphToKmh)),
+                Observation::new(2017, Printed::new(4.68, 2, 7.53, 2, Conversion::MphToKmh)),
+                Observation::new(2019, Printed::new(4.68, 2, 7.53, 2, Conversion::MphToKmh)),
+            ],
         },
         Datum {
             name: "drawbar 100pct load fuel economy",
-            printed: Printed::new(16.82, 2, 3.31, 2, Conversion::HpHrPerGalToKwhPerL),
+            observations: &[
+                Observation::new(
+                    2016,
+                    Printed::new(16.82, 2, 3.31, 2, Conversion::HpHrPerGalToKwhPerL),
+                ),
+                Observation::new(
+                    2017,
+                    Printed::new(16.82, 2, 3.31, 2, Conversion::HpHrPerGalToKwhPerL),
+                ),
+                Observation::new(
+                    2019,
+                    Printed::new(16.82, 2, 3.31, 2, Conversion::HpHrPerGalToKwhPerL),
+                ),
+            ],
         },
         Datum {
             name: "drawbar 75pct load power",
-            printed: Printed::new(154.17, 2, 115.19, 2, Conversion::HpToKw),
+            observations: &[
+                Observation::new(2016, Printed::new(154.47, 2, 115.19, 2, Conversion::HpToKw)),
+                Observation::new(2017, Printed::new(154.47, 2, 115.19, 2, Conversion::HpToKw)),
+                Observation::new(2019, Printed::new(154.17, 2, 115.19, 2, Conversion::HpToKw)),
+            ],
         },
         Datum {
             name: "drawbar 75pct load speed",
-            printed: Printed::new(4.85, 2, 7.81, 2, Conversion::MphToKmh),
+            observations: &[
+                Observation::new(2016, Printed::new(4.85, 2, 7.81, 2, Conversion::MphToKmh)),
+                Observation::new(2017, Printed::new(4.85, 2, 7.81, 2, Conversion::MphToKmh)),
+                Observation::new(2019, Printed::new(4.85, 2, 7.81, 2, Conversion::MphToKmh)),
+            ],
         },
         Datum {
             name: "drawbar 75pct load fuel economy",
-            printed: Printed::new(15.72, 2, 3.10, 2, Conversion::HpHrPerGalToKwhPerL),
+            observations: &[
+                Observation::new(
+                    2016,
+                    Printed::new(15.72, 2, 3.10, 2, Conversion::HpHrPerGalToKwhPerL),
+                ),
+                Observation::new(
+                    2017,
+                    Printed::new(15.72, 2, 3.10, 2, Conversion::HpHrPerGalToKwhPerL),
+                ),
+                Observation::new(
+                    2019,
+                    Printed::new(15.72, 2, 3.10, 2, Conversion::HpHrPerGalToKwhPerL),
+                ),
+            ],
         },
         Datum {
             name: "drawbar 50pct load power",
-            printed: Printed::new(104.27, 2, 77.75, 2, Conversion::HpToKw),
+            observations: &[
+                Observation::new(2016, Printed::new(104.27, 2, 77.75, 2, Conversion::HpToKw)),
+                Observation::new(2017, Printed::new(104.27, 2, 77.75, 2, Conversion::HpToKw)),
+                Observation::new(2019, Printed::new(104.27, 2, 77.75, 2, Conversion::HpToKw)),
+            ],
         },
         Datum {
             name: "drawbar 50pct load speed",
-            printed: Printed::new(4.91, 2, 7.90, 2, Conversion::MphToKmh),
+            observations: &[
+                Observation::new(2016, Printed::new(4.91, 2, 7.90, 2, Conversion::MphToKmh)),
+                Observation::new(2017, Printed::new(4.91, 2, 7.90, 2, Conversion::MphToKmh)),
+                Observation::new(2019, Printed::new(4.91, 2, 7.90, 2, Conversion::MphToKmh)),
+            ],
         },
         Datum {
             name: "drawbar 50pct load fuel economy",
-            printed: Printed::new(13.41, 2, 2.61, 2, Conversion::HpHrPerGalToKwhPerL),
+            observations: &[
+                Observation::new(
+                    2016,
+                    Printed::new(13.41, 2, 2.64, 2, Conversion::HpHrPerGalToKwhPerL),
+                ),
+                Observation::new(
+                    2017,
+                    Printed::new(13.41, 2, 2.64, 2, Conversion::HpHrPerGalToKwhPerL),
+                ),
+                Observation::new(
+                    2019,
+                    Printed::new(13.41, 2, 2.61, 2, Conversion::HpHrPerGalToKwhPerL),
+                ),
+            ],
         },
         Datum {
             name: "drawbar 50pct load reduced rpm power",
-            printed: Printed::new(104.45, 2, 77.88, 2, Conversion::HpToKw),
+            observations: &[
+                Observation::new(2016, Printed::new(104.45, 2, 77.88, 2, Conversion::HpToKw)),
+                Observation::new(2017, Printed::new(104.45, 2, 77.88, 2, Conversion::HpToKw)),
+                Observation::new(2019, Printed::new(104.45, 2, 77.88, 2, Conversion::HpToKw)),
+            ],
         },
         Datum {
             name: "drawbar 50pct load reduced rpm speed",
-            printed: Printed::new(4.95, 2, 7.97, 2, Conversion::MphToKmh),
+            observations: &[
+                Observation::new(2016, Printed::new(4.95, 2, 7.97, 2, Conversion::MphToKmh)),
+                Observation::new(2017, Printed::new(4.95, 2, 7.97, 2, Conversion::MphToKmh)),
+                Observation::new(2019, Printed::new(4.95, 2, 7.97, 2, Conversion::MphToKmh)),
+            ],
         },
         Datum {
             name: "drawbar 50pct load reduced rpm fuel economy",
-            printed: Printed::new(16.66, 2, 3.28, 2, Conversion::HpHrPerGalToKwhPerL),
+            observations: &[
+                Observation::new(
+                    2016,
+                    Printed::new(16.66, 2, 3.28, 2, Conversion::HpHrPerGalToKwhPerL),
+                ),
+                Observation::new(
+                    2017,
+                    Printed::new(16.66, 2, 3.28, 2, Conversion::HpHrPerGalToKwhPerL),
+                ),
+                Observation::new(
+                    2019,
+                    Printed::new(16.66, 2, 3.28, 2, Conversion::HpHrPerGalToKwhPerL),
+                ),
+            ],
         },
         Datum {
             name: "drawbar max pull",
-            printed: Printed::new(24702.0, 0, 109.68, 2, Conversion::LbfToKn),
+            observations: &[
+                Observation::new(
+                    2016,
+                    Printed::new(24702.0, 0, 109.88, 2, Conversion::LbfToKn),
+                ),
+                Observation::new(
+                    2017,
+                    Printed::new(24702.0, 0, 109.88, 2, Conversion::LbfToKn),
+                ),
+                Observation::new(
+                    2019,
+                    Printed::new(24702.0, 0, 109.68, 2, Conversion::LbfToKn),
+                ),
+            ],
         },
         Datum {
             name: "drawbar max pull speed",
-            printed: Printed::new(2.43, 2, 3.90, 2, Conversion::MphToKmh),
+            observations: &[
+                Observation::new(2016, Printed::new(2.43, 2, 3.90, 2, Conversion::MphToKmh)),
+                Observation::new(2017, Printed::new(2.43, 2, 3.90, 2, Conversion::MphToKmh)),
+                Observation::new(2019, Printed::new(2.43, 2, 3.90, 2, Conversion::MphToKmh)),
+            ],
         },
-        // ---- hitch and hydraulics --------------------------------------
         Datum {
             name: "three point lift at 24in behind hitch",
-            printed: Printed::new(14274.0, 0, 63.5, 1, Conversion::LbfToKn),
+            observations: &[
+                Observation::new(2016, Printed::new(14274.0, 0, 63.5, 1, Conversion::LbfToKn)),
+                Observation::new(2017, Printed::new(14274.0, 0, 63.5, 1, Conversion::LbfToKn)),
+                Observation::new(2019, Printed::new(14274.0, 0, 63.5, 1, Conversion::LbfToKn)),
+            ],
         },
         Datum {
             name: "hydraulic flow",
-            printed: Printed::new(60.6, 1, 229.3, 1, Conversion::GalPerMinToLPerMin),
+            observations: &[
+                Observation::new(
+                    2016,
+                    Printed::new(60.6, 1, 229.3, 1, Conversion::GalPerMinToLPerMin),
+                ),
+                Observation::new(
+                    2017,
+                    Printed::new(60.6, 1, 229.3, 1, Conversion::GalPerMinToLPerMin),
+                ),
+                Observation::new(
+                    2019,
+                    Printed::new(60.6, 1, 229.3, 1, Conversion::GalPerMinToLPerMin),
+                ),
+            ],
         },
     ],
 };
 
-/// The figures in [`JOHN_DEERE_8245R`] whose two printed forms do not agree.
+/// Figures where one edition's scan is corrupt, and which edition it is.
 ///
-/// Pinned as a roster so that the set is checked in both directions: a figure
-/// that starts reconciling, or stops, fails the test rather than passing
-/// quietly. Each entry is a genuine disagreement in the scan, not a tolerance
-/// that wants loosening — see `disputed_entries_disagree_by_a_digit_not_a_rounding`.
-pub const DISPUTED_8245R: &[&str] = &[
-    "drawbar 75pct load power",
-    "drawbar 50pct load fuel economy",
-    "drawbar max pull",
+/// Every entry is an observation whose own two printed unit forms disagree, so
+/// it is set aside and the remaining editions decide. Pinned as a roster and
+/// checked in both directions: a scan that starts failing, or stops, changes
+/// this list rather than passing quietly.
+///
+/// ⚠ All three are the **2019** edition, and all three are its **SI** column —
+/// `115.19` printed against a US figure of `154.17` where the other editions
+/// print `154.47`, and `2.61` and `109.68` where the others give `2.64` and
+/// `109.88`. That pattern is evidence about one scan, which is exactly what a
+/// single-source dataset cannot tell you.
+pub const CORRUPT_SCANS: &[(&str, u16)] = &[
+    ("drawbar 75pct load power", 2019),
+    ("drawbar 50pct load fuel economy", 2019),
+    ("drawbar max pull", 2019),
 ];
 
-/// Figures whose two printed forms agree, but not tightly enough to catch an
-/// error the size of the ones this scan actually contains.
+/// Figures whose *within-edition* check is too coarse to catch an error the
+/// size this data actually contains.
 ///
-/// Reconciliation is not a binary: it resolves an error only down to the
-/// precision the source printed. Every entry here has a
-/// [`Printed::resolution`] coarser than 0.2%, the size of the real
-/// disagreements in [`DISPUTED_8245R`]. An OCR error of that size in one of
-/// these figures would pass unnoticed.
+/// Every observation of these resolves worse than [`CATCHABLE_ERROR`], so for
+/// them the cross-edition agreement is doing the work rather than the
+/// unit-conversion check.
 ///
-/// ⚠ The membership is not arbitrary, but it is one-directional, and an
-/// earlier draft of this comment had it backwards. **Every weakly-checked
-/// figure is a speed or a fuel economy** — those are printed at three
-/// significant figures where the powers and masses get five. The converse is
-/// false: 3 of the 6 speeds and 1 of the 5 undisputed fuel economies resolve
-/// better than 0.2% and are *not* listed here. `only_low_significance_figures_are_weakly_checked`
-/// tests the direction that holds, and nothing tests the one that does not,
-/// because it is not true.
-///
-/// ⇒ Lean the chain on the power, mass and pull figures; treat these seven as
-/// corroborating, not load-bearing.
-///
-/// The counterpart worth stating: `drawbar max pull` resolves to 0.008%, so
-/// its presence in [`DISPUTED_8245R`] is a real disagreement in the scan and
-/// not an artifact of coarse printing.
+/// ⚠ The membership is one-directional. **Every weakly-checked figure is a
+/// speed or a fuel economy** — printed at three significant figures where
+/// powers and masses get five. The converse is false: 3 of the 6 speeds and 1
+/// of the 6 fuel economies resolve better than 0.2% and are not listed.
 pub const WEAKLY_CHECKED_8245R: &[&str] = &[
     "pto max power fuel economy",
     "drawbar 100pct load fuel economy",
     "drawbar 75pct load speed",
     "drawbar 75pct load fuel economy",
+    "drawbar 50pct load fuel economy",
     "drawbar 50pct load reduced rpm speed",
     "drawbar 50pct load reduced rpm fuel economy",
     "drawbar max pull speed",
@@ -611,8 +948,7 @@ pub const WEAKLY_CHECKED_8245R: &[&str] = &[
 
 /// The relative error [`WEAKLY_CHECKED_8245R`] is defined against.
 ///
-/// Set to the size of the disagreements actually found in this scan — 0.19%
-/// for `154.17` against an implied `154.47`, 0.18% for `24702 lbf` against an
-/// implied `24657` — because a check that cannot resolve that would not have
-/// found either of them.
+/// Set to the size of the real scan errors this dataset contains: the 2019
+/// edition's `154.17` against the other editions' `154.47` is 0.19%, and its
+/// `109.68` against `109.88` is 0.18%.
 pub const CATCHABLE_ERROR: f64 = 0.002;
