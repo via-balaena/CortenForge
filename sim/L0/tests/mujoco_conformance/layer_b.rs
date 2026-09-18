@@ -663,6 +663,18 @@ fn layer_b_constraint_composite_model() {
 //   link1  <-> link2     parent-child
 // plus five real contacts, so the reference is not empty and the world
 // exemption (a free body reaching the floor) is exercised positively.
+//
+// ★ Each gate below has been WITNESSED failing:
+//   fk         — moving `link1` 0.12 -> 0.17
+//   crba, rne  — growing WELDED body `weld1` 0.1 -> 0.16, which must fold into
+//                its weld root's inertia. That is the "mass matrix decoupled
+//                by a weld" class, so these two are worth their keep.
+//   collision  — the pre-fix filter: "expected 5 contacts, got 6"
+//
+// ⛔ There was a `layer_b_passive_weld_model` and it is GONE. This model has no
+// springs or dampers, so `qfrc_passive` is all zeros — 0 of 8 nonzero — and the
+// gate asserted zeros against zeros. It survived BOTH mutations above. A gate
+// that cannot be made to fail is deleted, not kept.
 
 #[test]
 fn layer_b_fk_weld_model() {
@@ -677,11 +689,6 @@ fn layer_b_crba_weld_model() {
 #[test]
 fn layer_b_rne_weld_model() {
     run_rne_test("weld_model", &[]);
-}
-
-#[test]
-fn layer_b_passive_weld_model() {
-    run_passive_test("weld_model", &[]);
 }
 
 /// ★★★ The gate this whole model exists for.
