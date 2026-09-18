@@ -574,7 +574,7 @@ pub const EXCLUDED_EDITIONS: &[NotInSource] = &[
 /// John Deere 8245R — the calibration target for the acres chain.
 ///
 /// A mechanical-front-wheel-drive row-crop tractor of the class that pulls
-/// primary tillage across the upper Midwest. The "245" is a model designation,
+/// primary tillage across the Great Plains. The "245" is a model designation,
 /// not a measurement: the measured PTO maximum is 215.88 hp / 160.98 kW.
 pub const JOHN_DEERE_8245R: TractorTest = TractorTest {
     make_model: "John Deere 8245R Dsl",
