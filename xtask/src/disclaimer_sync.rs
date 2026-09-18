@@ -675,15 +675,10 @@ mod tests {
                 clause.index()
             );
         }
-        let distinct: BTreeSet<usize> = Clause::ALL.into_iter().map(Clause::index).collect();
-        assert_eq!(
-            distinct.len(),
-            Clause::COUNT,
-            "ALL holds {} distinct indices across {} slots — a clause is listed \
-             twice, or two share an index",
-            distinct.len(),
-            Clause::COUNT
-        );
+        // ⛔ A distinctness assertion stood here and was DELETED: it could not
+        // be made to fail. If every slot satisfies the loop above, the indices
+        // ARE 0..COUNT and therefore distinct by construction, so the check
+        // could only be reached once the loop had already failed.
     }
 
     /// ★★★ The canonical pair really is the FULL statement.
