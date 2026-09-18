@@ -316,6 +316,217 @@ impl Turbine {
     }
 }
 
+/// Anything that turns a wind speed into electrical power.
+///
+/// Exists so the chain can run on a **published power curve** or on the
+/// parametric model and compare them, rather than being told which to trust.
+/// A measurement of how far apart they are is worth more than a preference:
+/// here the parametric model lands within 3.4% of the real curve over a year,
+/// which is the sweep saying this term is not the weak one.
+pub trait Machine {
+    /// Electrical power at one wind speed, watts.
+    fn power_w(&self, speed_ms: f64, air: Air) -> f64;
+    /// Nameplate electrical power, watts.
+    fn rated_power_w(&self) -> f64;
+    /// Below this speed the machine produces nothing, m/s.
+    fn cut_in_ms(&self) -> f64;
+    /// At or above this the machine shuts down, m/s.
+    fn cut_out_ms(&self) -> f64;
+    /// What to call it.
+    fn name(&self) -> &'static str;
+}
+
+impl Machine for Turbine {
+    fn power_w(&self, speed_ms: f64, air: Air) -> f64 {
+        Self::power_w(self, speed_ms, air)
+    }
+    fn rated_power_w(&self) -> f64 {
+        self.rated_power_w
+    }
+    fn cut_in_ms(&self) -> f64 {
+        self.cut_in_ms
+    }
+    fn cut_out_ms(&self) -> f64 {
+        self.cut_out_ms
+    }
+    fn name(&self) -> &'static str {
+        self.name
+    }
+}
+
+/// A manufacturer's measured power curve, interpolated.
+///
+/// ⚠ **Not** a model — a table of what one machine actually produced on test.
+/// Its Cp varies from 0.32 at cut-in to 0.47 at 8 m/s and down to 0.05 at
+/// cut-out, which is the thing a single constant cannot represent and the
+/// reason to carry the real one.
+#[derive(Clone, Copy, Debug)]
+pub struct PowerCurve {
+    /// Machine name as the source names it.
+    pub name: &'static str,
+    /// Rotor diameter, metres.
+    pub rotor_diameter_m: f64,
+    /// Nameplate electrical power, watts.
+    pub rated_power_w: f64,
+    /// Air density the curve was measured or normalised at, kg/m³.
+    ///
+    /// ⚠⚠ **A recorded assumption, not a figure from the file.** The source CSV
+    /// carries speed, power and Cp and states no density; 1.225 kg/m³ is the
+    /// standard sea-level reference power curves are normally quoted at. If
+    /// that is wrong for this machine, every energy figure derived from it is
+    /// wrong by the density ratio — which is why it is a field with a warning
+    /// rather than a constant buried in the arithmetic.
+    pub reference_density_kg_m3: f64,
+    /// Where the curve came from and under what terms.
+    pub source: CurveSource,
+    points: &'static [(f64, f64)],
+}
+
+/// Where a published power curve came from, and what its licence requires.
+///
+/// Grouped rather than three loose fields so provenance travels with the curve
+/// and cannot be half-supplied — and so the constructor does not take eight
+/// positional arguments, four of them strings, which is an invitation to
+/// transpose two of them silently.
+#[derive(Clone, Copy, Debug)]
+pub struct CurveSource {
+    /// Where the curve came from.
+    pub origin: &'static str,
+    /// Licence the source data is published under.
+    pub licence: &'static str,
+    /// ISO date the curve was retrieved.
+    pub retrieved: &'static str,
+}
+
+impl PowerCurve {
+    /// Build a curve from a published (speed m/s, power W) table.
+    ///
+    /// Public because a power curve is a **seam**: a farm choosing a different
+    /// machine must be able to bring its own table without editing this crate.
+    /// A curve that only exists as the one constant shipped here would make the
+    /// machine a hard-coded choice, which is exactly what `Turbine` having no
+    /// `Default` was meant to prevent.
+    ///
+    /// ⚠ `points` must be in ascending speed order; [`PowerCurve::power_w`]
+    /// walks them in order and will interpolate nonsense otherwise.
+    /// `the_published_curve_matches_its_source` checks the shipped one.
+    #[must_use]
+    pub const fn new(
+        name: &'static str,
+        rotor_diameter_m: f64,
+        rated_power_w: f64,
+        reference_density_kg_m3: f64,
+        source: CurveSource,
+        points: &'static [(f64, f64)],
+    ) -> Self {
+        Self {
+            name,
+            rotor_diameter_m,
+            rated_power_w,
+            reference_density_kg_m3,
+            source,
+            points,
+        }
+    }
+
+    /// The (speed, power) points as published, in ascending speed order.
+    #[must_use]
+    pub const fn points(&self) -> &'static [(f64, f64)] {
+        self.points
+    }
+}
+
+impl Machine for PowerCurve {
+    /// Linear interpolation between published points, zero outside them.
+    ///
+    /// ⚠ Air density is applied as a simple ratio, `P x (rho / rho_ref)`.
+    /// IEC 61400-12-1 instead shifts the speed axis for pitch-regulated
+    /// machines, and the two differ. The simple ratio is used because it is
+    /// legible and because this stage's job is to be swappable, not to be the
+    /// last word — but it IS an approximation and is written down as one.
+    fn power_w(&self, speed_ms: f64, air: Air) -> f64 {
+        let (first, last) = match (self.points.first(), self.points.last()) {
+            (Some(f), Some(l)) => (*f, *l),
+            _ => return 0.0,
+        };
+        if speed_ms < first.0 || speed_ms > last.0 {
+            return 0.0;
+        }
+        let mut p = last.1;
+        for w in self.points.windows(2) {
+            let ((v0, p0), (v1, p1)) = (w[0], w[1]);
+            if speed_ms <= v1 {
+                let t = if (v1 - v0).abs() < f64::EPSILON {
+                    0.0
+                } else {
+                    (speed_ms - v0) / (v1 - v0)
+                };
+                p = p0 + t * (p1 - p0);
+                break;
+            }
+        }
+        p * (air.density_kg_m3 / self.reference_density_kg_m3)
+    }
+    fn rated_power_w(&self) -> f64 {
+        self.rated_power_w
+    }
+    fn cut_in_ms(&self) -> f64 {
+        self.points.first().map_or(0.0, |p| p.0)
+    }
+    fn cut_out_ms(&self) -> f64 {
+        self.points.last().map_or(0.0, |p| p.0)
+    }
+    fn name(&self) -> &'static str {
+        self.name
+    }
+}
+
+/// EWT DW54X — a 1 MW direct-drive machine built for distributed wind.
+///
+/// Chosen because MISSION's constraint is *fuel it yourself*: this is the class
+/// of turbine a single farm actually installs, not a utility-scale machine from
+/// a wind farm somebody else owns.
+///
+/// Data: NREL's `turbine-models` repository, BSD 3-Clause, Copyright 2020
+/// Alliance for Sustainable Energy, LLC. See this repository's NOTICE.
+pub const EWT_DW54X: PowerCurve = PowerCurve {
+    name: "EWT DW54X, 1 MW, 54.1 m rotor",
+    rotor_diameter_m: 54.1,
+    rated_power_w: 1.0e6,
+    reference_density_kg_m3: 1.225,
+    source: CurveSource {
+        origin: "https://github.com/NatLabRockies/turbine-models \
+                 turbine_models/data/Distributed/EWT_DW54X_1MW_54.1.csv",
+        licence: "BSD-3-Clause, Copyright 2020 Alliance for Sustainable Energy, LLC",
+        retrieved: "2026-09-18",
+    },
+    points: &[
+        (3.0, 12_000.0),
+        (4.0, 39_000.0),
+        (5.0, 78_000.0),
+        (6.0, 138_000.0),
+        (7.0, 222_000.0),
+        (8.0, 337_000.0),
+        (9.0, 464_000.0),
+        (10.0, 597_000.0),
+        (11.0, 743_000.0),
+        (12.0, 881_000.0),
+        (13.0, 960_000.0),
+        (14.0, 997_000.0),
+        (15.0, 1_000_000.0),
+        (16.0, 1_000_000.0),
+        (17.0, 1_000_000.0),
+        (18.0, 1_000_000.0),
+        (19.0, 1_000_000.0),
+        (20.0, 1_000_000.0),
+        (21.0, 1_000_000.0),
+        (22.0, 1_000_000.0),
+        (23.0, 1_000_000.0),
+        (24.0, 1_000_000.0),
+        (25.0, 1_000_000.0),
+    ],
+};
+
 /// What a turbine took from a wind year.
 #[derive(Clone, Copy, Debug)]
 pub struct AnnualEnergy {
@@ -338,27 +549,27 @@ pub struct AnnualEnergy {
 /// one believed weakest. A seam at the term you already suspect can only
 /// confirm you.
 #[must_use]
-pub fn annual_energy(year: &WindYear, turbine: &Turbine, air: Air) -> AnnualEnergy {
+pub fn annual_energy<M: Machine + ?Sized>(year: &WindYear, machine: &M, air: Air) -> AnnualEnergy {
     let mut joules = 0.0;
     let (mut becalmed, mut stormbound, mut at_rated) = (0usize, 0usize, 0usize);
     let mut n = 0.0f64;
     for v in year.speeds() {
         n += 1.0;
-        if v < turbine.cut_in_ms {
+        if v < machine.cut_in_ms() {
             becalmed += 1;
-        } else if v >= turbine.cut_out_ms {
+        } else if v >= machine.cut_out_ms() {
             stormbound += 1;
         }
-        let p = turbine.power_w(v, air);
-        if p >= turbine.rated_power_w {
+        let p = machine.power_w(v, air);
+        if p >= machine.rated_power_w() {
             at_rated += 1;
         }
         joules += p * year.interval_seconds();
     }
     let kwh = joules / 3.6e6;
     let hours = n * year.interval_seconds() / 3600.0;
-    let capacity_factor = if hours > 0.0 && turbine.rated_power_w > 0.0 {
-        kwh / (turbine.rated_power_w / 1000.0 * hours)
+    let capacity_factor = if hours > 0.0 && machine.rated_power_w() > 0.0 {
+        kwh / (machine.rated_power_w() / 1000.0 * hours)
     } else {
         0.0
     };

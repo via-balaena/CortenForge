@@ -9,8 +9,8 @@
 )]
 
 use cf_wind::{
-    Air, CARRINGTON_AIRPORT, FOSTER_COUNTY_ND_2012 as YEAR, NOT_MEASURED_HERE, Turbine, WindYear,
-    annual_energy,
+    Air, CARRINGTON_AIRPORT, CurveSource, EWT_DW54X, FOSTER_COUNTY_ND_2012 as YEAR, Machine,
+    NOT_MEASURED_HERE, PowerCurve, Turbine, WindYear, annual_energy,
 };
 
 /// The reference machine the pinned energy figures use.
@@ -592,5 +592,240 @@ fn the_corroboration_figures_are_physically_sensible() {
         (c.modelled_mean_ms - full).abs() > 1e-9,
         "the overlapping-hours mean is identical to the full-year mean, which \
          would mean the subset was never actually taken"
+    );
+}
+
+/// The published curve is the source's, point for point.
+///
+/// MUTATION: change any point and this fails.
+#[test]
+fn the_published_curve_matches_its_source() {
+    let c = EWT_DW54X;
+    let p = c.points();
+    assert_eq!(p.len(), 23, "the published curve has 23 points");
+    assert!((p[0].0 - 3.0).abs() < f64::EPSILON, "cut-in point");
+    assert!((p[0].1 - 12_000.0).abs() < f64::EPSILON, "power at cut-in");
+    assert!(
+        (p[p.len() - 1].0 - 25.0).abs() < f64::EPSILON,
+        "cut-out point"
+    );
+    assert!((c.rated_power_w - 1.0e6).abs() < f64::EPSILON);
+    // ascending speeds, and power never exceeds nameplate
+    for w in p.windows(2) {
+        assert!(w[1].0 > w[0].0, "points are not in ascending speed order");
+    }
+    for &(v, pw) in p {
+        assert!(
+            pw <= c.rated_power_w + 1e-6,
+            "point at {v} m/s exceeds nameplate"
+        );
+    }
+    assert!(
+        c.source.licence.contains("BSD-3")
+            && c.source.licence.contains("Alliance for Sustainable Energy"),
+        "the source licence and copyright holder must be recorded"
+    );
+    assert!(c.source.origin.contains("turbine-models"));
+}
+
+/// Interpolation is linear between points and zero outside them.
+#[test]
+fn the_curve_interpolates_and_cuts_out() {
+    let air = Air {
+        density_kg_m3: EWT_DW54X.reference_density_kg_m3,
+    };
+    // 8.0 -> 337 kW, 9.0 -> 464 kW, so 8.5 is the midpoint
+    let mid = EWT_DW54X.power_w(8.5, air);
+    assert!(
+        (mid - 400_500.0).abs() < 1.0,
+        "8.5 m/s gave {mid} W, not the midpoint of its bracketing points"
+    );
+    assert!(
+        EWT_DW54X.power_w(2.9, air).abs() < f64::EPSILON,
+        "produced power below cut-in"
+    );
+    assert!(
+        EWT_DW54X.power_w(25.1, air).abs() < f64::EPSILON,
+        "produced power above cut-out"
+    );
+    assert!(EWT_DW54X.power_w(0.0, air).abs() < f64::EPSILON);
+    // exact points reproduce exactly
+    for &(v, expect) in EWT_DW54X.points() {
+        let got = EWT_DW54X.power_w(v, air);
+        assert!(
+            (got - expect).abs() < 1e-6,
+            "at {v} m/s: {got} != published {expect}"
+        );
+    }
+}
+
+/// Thinner air yields less power, by the ratio the curve documents.
+///
+/// MUTATION: drop the density correction and this fails. ⚠ The correction is a
+/// simple ratio, not IEC 61400-12-1's speed-shift; the crate says so.
+#[test]
+fn the_curve_is_corrected_for_air_density() {
+    let refd = Air {
+        density_kg_m3: EWT_DW54X.reference_density_kg_m3,
+    };
+    let site = Air {
+        density_kg_m3: 1.16,
+    };
+    let a = EWT_DW54X.power_w(10.0, refd);
+    let b = EWT_DW54X.power_w(10.0, site);
+    assert!(b < a, "thinner air must give less power");
+    let expected = a * (1.16 / EWT_DW54X.reference_density_kg_m3);
+    assert!(
+        (b - expected).abs() < 1e-6,
+        "the correction is not the documented ratio"
+    );
+}
+
+/// ⛔⛔ What the real curve says about the model that was shipped without one.
+///
+/// The parametric constant-Cp machine lands within 3.4% of the measured curve
+/// over a full year, like for like. That is the sweep doing its job: this
+/// stage's turbine model is **not** the weak term, and effort spent refining it
+/// would have bought almost nothing. Recorded as a number so the next person
+/// does not have to guess — and pinned, so if either model drifts the
+/// comparison is re-examined rather than quietly assumed to still hold.
+#[test]
+fn the_parametric_model_is_close_to_the_measured_curve() {
+    let refd = Air {
+        density_kg_m3: EWT_DW54X.reference_density_kg_m3,
+    };
+    let like_for_like = Turbine {
+        name: "parametric match to the DW54X",
+        rotor_diameter_m: EWT_DW54X.rotor_diameter_m,
+        rated_power_w: EWT_DW54X.rated_power_w,
+        cut_in_ms: 3.0,
+        cut_out_ms: 25.0,
+        cp: 0.40,
+    };
+    let real = annual_energy(&YEAR, &EWT_DW54X, refd);
+    let param = annual_energy(&YEAR, &like_for_like, refd);
+    let gap = param.kwh / real.kwh - 1.0;
+    assert!(
+        (-0.06..=-0.01).contains(&gap),
+        "the parametric model is {:.2}% from the measured curve; the recorded \
+         figure is -3.4%, and a big move means one of the two changed",
+        gap * 100.0
+    );
+    assert!(
+        (real.kwh - 3_145_000.0).abs() < 5_000.0,
+        "real-curve energy moved: {:.0}",
+        real.kwh
+    );
+    assert!(
+        (0.30..0.42).contains(&real.capacity_factor),
+        "a 1 MW distributed machine at this site should sit near 36%, got {:.3}",
+        real.capacity_factor
+    );
+}
+
+/// The reference density is an assumption, and is labelled as one.
+///
+/// It is not in the source CSV. If it is wrong, every energy figure from this
+/// curve is wrong by the density ratio — so it is a field with a warning rather
+/// than a constant hidden in the arithmetic.
+#[test]
+fn the_curves_reference_density_is_a_recorded_assumption() {
+    assert!((EWT_DW54X.reference_density_kg_m3 - 1.225).abs() < f64::EPSILON);
+    // a `const` assertion: it describes the constant's definition, so a
+    // violation should fail the BUILD rather than one test run.
+    const {
+        assert!(
+            EWT_DW54X.reference_density_kg_m3 > 1.0 && EWT_DW54X.reference_density_kg_m3 < 1.4,
+            "an air density outside 1.0-1.4 kg/m3 is not a sea-level reference"
+        );
+    };
+}
+
+/// Both machines answer the same questions, so the chain can hold either.
+///
+/// MUTATION: break any trait forwarding method and this fails. Without it the
+/// `Machine` accessors are exercised only through `annual_energy`, which reads
+/// some of them and not others.
+#[test]
+fn both_machine_kinds_report_the_same_properties() {
+    let by_curve: &dyn Machine = &EWT_DW54X;
+    assert!((by_curve.rated_power_w() - 1.0e6).abs() < f64::EPSILON);
+    assert!(
+        (by_curve.cut_in_ms() - 3.0).abs() < f64::EPSILON,
+        "cut-in comes from the first point"
+    );
+    assert!(
+        (by_curve.cut_out_ms() - 25.0).abs() < f64::EPSILON,
+        "cut-out comes from the last"
+    );
+    assert!(by_curve.name().contains("DW54X"));
+
+    let by_model: &dyn Machine = &REF;
+    assert!((by_model.rated_power_w() - REF.rated_power_w).abs() < f64::EPSILON);
+    assert!((by_model.cut_in_ms() - REF.cut_in_ms).abs() < f64::EPSILON);
+    assert!((by_model.cut_out_ms() - REF.cut_out_ms).abs() < f64::EPSILON);
+    assert_eq!(by_model.name(), REF.name);
+
+    // and the chain accepts either through the same call
+    let air = Air {
+        density_kg_m3: 1.16,
+    };
+    assert!(annual_energy(&YEAR, by_curve, air).kwh > 0.0);
+    assert!(annual_energy(&YEAR, by_model, air).kwh > 0.0);
+}
+
+/// A caller can bring its own machine's curve.
+///
+/// The seam: a farm that buys something else must not have to edit this crate.
+/// Also covers the degenerate empty curve, which must produce nothing rather
+/// than panic or return `NaN`.
+#[test]
+fn a_caller_can_supply_its_own_curve() {
+    static MINE: [(f64, f64); 3] = [(4.0, 10_000.0), (10.0, 100_000.0), (20.0, 100_000.0)];
+    static NONE: [(f64, f64); 0] = [];
+    let mine = PowerCurve::new(
+        "a farm's own machine",
+        30.0,
+        100_000.0,
+        1.225,
+        CurveSource {
+            origin: "the manufacturer's datasheet",
+            licence: "unstated",
+            retrieved: "2026-09-18",
+        },
+        &MINE,
+    );
+    let air = Air {
+        density_kg_m3: 1.225,
+    };
+    assert!(
+        (mine.power_w(7.0, air) - 55_000.0).abs() < 1.0,
+        "midpoint interpolation"
+    );
+    assert!(mine.power_w(3.9, air).abs() < f64::EPSILON);
+    assert!(mine.power_w(20.1, air).abs() < f64::EPSILON);
+    assert!(annual_energy(&YEAR, &mine, air).kwh > 0.0);
+
+    let empty = PowerCurve::new(
+        "none",
+        0.0,
+        0.0,
+        1.225,
+        CurveSource {
+            origin: "-",
+            licence: "-",
+            retrieved: "2026-09-18",
+        },
+        &NONE,
+    );
+    assert!(
+        empty.power_w(10.0, air).abs() < f64::EPSILON,
+        "an empty curve produced power"
+    );
+    let e = annual_energy(&YEAR, &empty, air);
+    assert!(e.kwh.abs() < f64::EPSILON);
+    assert!(
+        !e.capacity_factor.is_nan(),
+        "empty curve gave a `NaN` capacity factor"
     );
 }
