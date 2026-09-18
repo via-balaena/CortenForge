@@ -710,7 +710,17 @@ jobs:
       matrix:
         include:
           - id: 1
+            # ⚠ The three contact-filtering examples live HERE, not in an
+            # idler shard, because they are bevy binaries and this shard already
+            # builds that tree for eighteen other crates; shard 2 would drag the
+            # whole bevy graph into a shard that has none of it. One test each —
+            # the settled contact set, pinned against MuJoCo. `run-validators`
+            # cannot cover them: it runs `cargo run`, which never builds a test
+            # target.
             crates: sim-conformance-tests sim-coupling cf-fsu-model sim-rl-baselines
+              example-contact-filtering-bitmask
+              example-contact-filtering-exclude-pairs
+              example-contact-filtering-ghost-layers
           - id: 2
             crates: sim-thermostat sim-opt mesh-printability
           - id: 3
