@@ -55,7 +55,16 @@ use super::tendon::TendonDef;
 // ⚠ `Eq` is gone: `PartMeshesTooCoarse` carries the resolutions it tried, and
 // a resolution is an `f64`. `PartialEq` stays, which is what comparisons in
 // tests actually use; nothing in the workspace put a `MechanismError` in a set.
+// ⚠ `#[non_exhaustive]` so a new failure mode is an ADDITION rather than a
+// breaking change. This enum grows: `PartMeshesTooCoarse` arrived with the
+// MJCF refinement and `PartHasMultipleParents` with the one-parent rule, two
+// PRs running. Adding the attribute is itself breaking for an outside
+// exhaustive `match`, so it is free now — cf-design is not published and
+// nothing in the workspace matches on this — and costs a major version the
+// day it ships. Variants stay constructible; only exhaustive matching outside
+// this crate is refused, and the `Display` impl below is unaffected.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum MechanismError {
     /// Two parts share the same name.
     DuplicatePart(String),
