@@ -69,12 +69,14 @@ cargo run --release -p cf-studio-gui</code></pre>
       <p class="note"><code>cf-studio-gui</code> is Cendrillon under its internal name. The first build compiles its dependency graph &mdash; a large fraction of the workspace, including the C++ kernel &mdash; so expect it to take a while; after that it is incremental.</p>
 
       <p class="note">There are no prebuilt downloads. Building from source also means none of the unsigned-binary warnings macOS and Windows show for an unnotarized app.</p>
+
+      <p class="note"><strong>Platforms, honestly:</strong> macOS is the only one it has been hand-tested on. Windows and Linux are built by CI but not driven by a person &mdash; they should work, and nobody has confirmed it. If you run it on either, we would like to hear what broke.</p>
     </section>
 
     <section>
       <h2>What it does</h2>
 
-      <p class="lead-in">A scan goes in; a set of printable mold pieces and a written fabrication procedure come out. Each step is guided; you can save the cleaned scan partway through, and export the printable files at the end.</p>
+      <p class="lead-in">A scan goes in; a set of printable mold pieces and a written fabrication procedure come out. Seven guided steps, start to finish &mdash; and it saves as you go, so quitting halfway costs you nothing. Reopen and you are where you left off.</p>
 
       <p>It runs on CortenForge end to end &mdash; scan ingestion and repair, SDF conversion, multi-material layer stacks, mold splitting with registration features, printability gating, and generated pour-and-demold instructions. Everything it does is available as library calls if you would rather drive the same path from code.</p>
 

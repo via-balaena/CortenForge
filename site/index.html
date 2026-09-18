@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>CortenForge — an SDK for the mechatronics and simulation space</title>
-  <meta name="description" content="A software development kit for the mechatronics and simulation space. Composable Rust components for geometry, design, meshing, fabrication, rigid- and soft-body physics, control, and reinforcement learning. Open source, MIT OR Apache-2.0.">
+  <title>CortenForge — machines you can fix, fuel, and own</title>
+  <meta name="description" content="An open Rust toolkit for designing and simulating machines — and the hydrogen farm vehicles built with it for the upper Midwest.">
   <link rel="canonical" href="https://cortenforge.com/">
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="CortenForge">
@@ -35,13 +35,196 @@
   <main class="wrap" id="main" tabindex="-1">
 
     <div class="hero">
-      <p class="eyebrow">Open source &middot; MIT OR Apache-2.0</p>
-      <h1>A software development kit for the mechatronics and simulation space.</h1>
-      <p class="standfirst">Composable Rust components for geometry, parametric design, meshing and fabrication, rigid- and soft-body physics, control, and reinforcement learning.</p>
+      <!-- Daylight. The technical site below stays dark; the top is a farm.
+           Barn keeps the brand accent, so this is the same palette in sunshine. -->
+      <div class="hero-copy">
+        <p class="eyebrow">Open source &middot; MIT OR Apache-2.0</p>
+        <h1>Machines you can fix yourself, fuel yourself, and own outright.</h1>
+        <p class="standfirst">An open Rust toolkit for designing and simulating machines &mdash; and the hydrogen farm vehicles we&rsquo;re building with it for the upper Midwest. Tractor, truck, trike, fuelled from the farm&rsquo;s own wind.</p>
 
-      <div class="actions">
-        <a class="cta" href="#install">Get started</a>
-        <a class="cta cta-secondary" href="https://github.com/via-balaena/CortenForge">View on GitHub</a>
+        <div class="actions">
+          <a class="cta" href="#install">Get started</a>
+          <a class="cta cta-secondary" href="https://github.com/via-balaena/CortenForge">View on GitHub</a>
+        </div>
+      <div class="sky" aria-hidden="true">
+        <svg viewBox="0 0 1440 620" preserveAspectRatio="xMidYMax slice" focusable="false">
+          <defs>
+            <linearGradient id="dusk" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0"    stop-color="#2b2540"/>
+              <stop offset="0.22" stop-color="#4b3a5c"/>
+              <stop offset="0.42" stop-color="#8a5570"/>
+              <stop offset="0.58" stop-color="#c86f5c"/>
+              <stop offset="0.70" stop-color="#e2904f"/>
+              <stop offset="0.79" stop-color="#f3bb63"/>
+              <stop offset="0.845" stop-color="#ffe0a3"/>
+            </linearGradient>
+            <linearGradient id="crop" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0"   stop-color="#b9a75e"/>
+              <stop offset="0.45" stop-color="#8f9a4e"/>
+              <stop offset="1"   stop-color="#4a5c33"/>
+            </linearGradient>
+            <linearGradient id="top" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0"   stop-color="#080f0e"/>
+              <stop offset="0.45" stop-color="#0d1018" stop-opacity="0.72"/>
+              <stop offset="1"   stop-color="#2b2540" stop-opacity="0"/>
+            </linearGradient>
+            <linearGradient id="towel" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0"   stop-color="#b8ced7"/>
+              <stop offset="0.5" stop-color="#a5c1cd"/>
+              <stop offset="1"   stop-color="#8fb0be"/>
+            </linearGradient>
+            <!-- Shading under the fold: SOFT, because a hard-edged band at
+                 stripe width reads as a third stripe, not as a shadow. -->
+            <linearGradient id="fold" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#1b3a47" stop-opacity="0.42"/>
+              <stop offset="1" stop-color="#1b3a47" stop-opacity="0"/>
+            </linearGradient>
+            <linearGradient id="fade" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0"   stop-color="#080f0e" stop-opacity="0"/>
+              <stop offset="0.6" stop-color="#080f0e" stop-opacity="0.72"/>
+              <stop offset="1"   stop-color="#080f0e"/>
+            </linearGradient>
+            <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+              <stop offset="0"    stop-color="#fff6dd" stop-opacity="0.95"/>
+              <stop offset="0.35" stop-color="#ffd489" stop-opacity="0.45"/>
+              <stop offset="1"    stop-color="#ffb35e" stop-opacity="0"/>
+            </radialGradient>
+          </defs>
+
+          <rect width="1440" height="620" fill="url(#dusk)"/>
+          <rect width="1440" height="200" fill="url(#top)"/>
+
+          <!-- the sun, sitting on the horizon -->
+          <ellipse cx="690" cy="446" rx="300" ry="150" fill="url(#glow)"/>
+          <circle cx="690" cy="444" r="15" fill="#fffdf2"/>
+
+          <!-- layered cloud bands: dark undersides, lit rims -->
+          <g opacity="0.92">
+            <path d="M0 96 Q120 74 240 92 Q330 68 430 90 Q520 76 600 96 L600 122 Q470 138 340 124 Q180 140 0 124 Z" fill="#3c3355"/>
+            <path d="M840 78 Q960 56 1080 76 Q1200 58 1330 80 Q1400 72 1440 84 L1440 116 Q1260 132 1090 116 Q930 130 840 108 Z" fill="#3c3355"/>
+            <path d="M180 186 Q320 164 470 184 Q600 166 740 188 L740 214 Q580 230 420 216 Q290 228 180 210 Z" fill="#584467"/>
+            <path d="M880 196 Q1020 176 1160 196 Q1300 180 1440 200 L1440 228 Q1280 244 1120 228 Q980 240 880 220 Z" fill="#584467"/>
+            <path d="M60 268 Q200 250 340 270 L340 288 Q200 302 60 286 Z" fill="#8a5f6e"/>
+            <path d="M980 276 Q1140 256 1300 278 Q1380 270 1440 282 L1440 300 Q1260 314 1080 298 Q1020 300 980 292 Z" fill="#8a5f6e"/>
+            <path d="M300 340 Q460 322 620 342 L620 356 Q460 368 300 354 Z" fill="#c07a5c" opacity="0.85"/>
+            <path d="M820 336 Q980 318 1140 338 L1140 352 Q980 364 820 350 Z" fill="#c07a5c" opacity="0.85"/>
+          </g>
+
+          <!-- distant treeline -->
+          <path d="M0 448 Q40 436 78 446 Q118 430 156 444 Q200 432 240 446 Q290 434 330 446
+                   Q380 432 424 446 Q470 436 512 446 L512 462 L0 462 Z" fill="#2f3140"/>
+          <path d="M760 446 Q810 434 856 446 Q904 432 950 446 Q1000 434 1046 446 Q1100 430 1150 446
+                   Q1200 434 1250 446 Q1310 432 1360 446 Q1404 438 1440 446 L1440 462 L760 462 Z" fill="#2f3140"/>
+          <!-- Tall tree on the right, as in the reference. The trunk has to
+               clear the canopy or it reads as a floating circle — which it did. -->
+          <g fill="#2a2c39">
+            <path d="M1359 462 L1361 406 Q1363 396 1367 406 L1369 462 Z"/>
+            <path d="M1364 398 L1348 386 L1352 384 L1364 392 Z"/>
+            <path d="M1364 402 L1382 388 L1385 391 L1365 404 Z"/>
+            <ellipse cx="1364" cy="378" rx="34" ry="25"/>
+            <ellipse cx="1340" cy="389" rx="22" ry="16"/>
+            <ellipse cx="1389" cy="387" rx="24" ry="17"/>
+            <ellipse cx="1355" cy="362" rx="21" ry="16"/>
+            <ellipse cx="1379" cy="366" rx="18" ry="14"/>
+          </g>
+
+          <!-- barn, backlit and weathered -->
+          <g>
+            <path d="M92 462 L92 396 L232 352 L372 396 L372 462 Z" fill="#9a5642"/>
+            <path d="M80 402 L232 350 L384 402 L372 414 L232 364 L92 414 Z" fill="#33303e"/>
+            <path d="M118 462 L118 424 L186 424 L186 462 Z" fill="#2f2b38"/>
+            <path d="M0 462 L0 430 L92 430 L92 462 Z" fill="#8a4c3b"/>
+            <path d="M0 430 L92 430 L92 422 L0 426 Z" fill="#33303e"/>
+          </g>
+
+          <!-- wind turbine and the old mill, dark against the light -->
+          <g fill="#2f3140">
+            <rect x="556" y="318" width="6" height="146"/>
+            <g transform="translate(559 318)">
+              <path d="M0 0 L-6 -78 L6 -78 Z"/><path d="M0 0 L68 38 L62 49 Z"/><path d="M0 0 L-68 38 L-62 49 Z"/>
+              <circle r="8"/>
+            </g>
+            <path d="M980 464 L986 392 L993 392 L999 464 Z"/>
+            <g transform="translate(989 388)">
+              <circle r="4"/>
+              <path d="M0 0 L-22 -13 L-19 -19 Z"/><path d="M0 0 L22 -13 L19 -19 Z"/>
+              <path d="M0 0 L-22 13 L-19 19 Z"/><path d="M0 0 L22 13 L19 19 Z"/>
+            </g>
+          </g>
+
+          <!-- the field, warm and low-lit -->
+          <path d="M0 462 L1440 462 L1440 620 L0 620 Z" fill="url(#crop)"/>
+          <g stroke="#cbb96a" stroke-opacity="0.28" stroke-width="2" fill="none">
+            <path d="M-80 620 L540 470"/><path d="M180 620 L640 470"/><path d="M440 620 L730 470"/>
+            <path d="M700 620 L820 470"/><path d="M960 620 L910 470"/><path d="M1220 620 L1000 470"/>
+            <path d="M1480 620 L1090 470"/>
+          </g>
+
+          <!-- fence line across the foreground -->
+          <g stroke="#3b3529" stroke-width="3" opacity="0.85">
+            <path d="M0 540 L1440 512" stroke-width="2"/>
+            <path d="M0 556 L1440 526" stroke-width="2"/>
+            <g stroke-width="4">
+              <path d="M60 566 L62 522"/><path d="M240 560 L242 518"/><path d="M420 554 L422 514"/>
+              <path d="M600 548 L602 510"/><path d="M780 542 L782 506"/><path d="M960 536 L962 502"/>
+              <path d="M1140 530 L1142 498"/><path d="M1320 524 L1322 494"/>
+            </g>
+          </g>
+
+          <!-- A towel over the wire. Farms do this; it is also the most
+               massively useful thing to know the whereabouts of — Douglas
+               Adams, "The Hitchhiker's Guide to the Galaxy" (1979), the joke
+               every later towel joke points at.
+               ⚠ Blue and sun-faded on purpose. What is protected elsewhere is
+               a CHARACTER — a name, and a towel with eyes and arms. A hue is
+               not; this is cloth on a wire.
+               ★★★ ONE shape, and it OCCLUDES the wire. It is folded over the
+               top wire, so the cloth is in front: the fence is visible either
+               side of the towel and nowhere across it. ⛔ Do not draw a wire
+               segment where the cloth is — five earlier versions failed, the
+               last by running both wires over the front, which reads as a towel
+               printed on the fence rather than hung on it. The two background
+               wires already pass behind this group; the sags below just dip
+               them under the weight. -->
+          <g>
+            <!-- wire sags either side under the weight -->
+            <path d="M1104 518.5 Q1130 520.5 1152 517.9" stroke="#3b3529"
+                  stroke-width="2" fill="none" opacity="0.9"/>
+            <path d="M1212 516.3 Q1238 518.3 1262 515.4" stroke="#3b3529"
+                  stroke-width="2" fill="none" opacity="0.9"/>
+
+            <!-- ⚠ WIDER THAN TALL. A towel folded over a line is landscape,
+                 not portrait — the previous version was 50x74 and read as a
+                 headstone. Flat top at the wire, only a sliver showing above
+                 it, straight sides, slightly uneven hem. -->
+            <path d="M1150 511 L1214 509.7
+                     L1215 558 Q1216 565 1211 567
+                     Q1199 570 1188 567 Q1174 571 1162 567
+                     Q1151 565 1150 557 Z"
+                  fill="url(#towel)"/>
+
+            <!-- ⚠ The fold is the ONLY thing left to say "there is a wire under
+                 here", now that no wire is drawn over the cloth. Top wire is
+                 y = 540 - 0.01944x, so ~517 at this x: a thin lit edge where the
+                 cloth crests it, then shadow FADING DOWN from the crease.
+                 ⛔ Not a filled band — at stripe width that reads as a stripe. -->
+            <path d="M1150 516.9 L1214 515.6 L1214 534 L1150 535.3 Z"
+                  fill="url(#fold)"/>
+            <path d="M1150 515.6 L1214 514.3 L1214 517.1 L1150 518.4 Z"
+                  fill="#c3dae2" opacity="0.34"/>
+
+            <!-- two stripes -->
+            <g opacity="0.92">
+              <path d="M1150 543 L1215 541.7 L1215 547 L1150 548.3 Z" fill="#e6eef0"/>
+              <path d="M1150 552 L1215 550.7 L1215 556 L1150 557.3 Z" fill="#e6eef0"/>
+            </g>
+
+          </g>
+
+          <rect y="500" width="1440" height="120" fill="url(#fade)"/>
+        </svg>
+      </div>
+
       </div>
     </div>
 
@@ -216,7 +399,7 @@ cargo xtask grade &lt;crate-name&gt;      # run the quality gate on a single cra
         <a class="card" href="https://github.com/via-balaena/CortenForge/blob/main/MISSION.md">
           <span class="card-label">Mission</span>
           <span class="card-title">Where this is going</span>
-          <span class="card-sub">The thesis, the capstone the work is building toward, and how it is sequenced.</span>
+          <span class="card-sub">The farm, the three constraints, and how many acres one farm can run on its own wind.</span>
         </a>
 
         <a class="card" href="/research/">
@@ -232,7 +415,7 @@ cargo xtask grade &lt;crate-name&gt;      # run the quality gate on a single cra
   <footer class="wrap site">
     <p>CortenForge is open-source software, free under MIT or Apache-2.0 at your option, built and maintained by <a href="https://viabalaena.com">Via Balaena</a>. Issues and pull requests are welcome on <a href="https://github.com/via-balaena/CortenForge">GitHub</a>.</p>
 
-    <p>CortenForge is general-purpose research and engineering software, provided <strong>as is</strong> without warranty of any kind. <strong>It is not a medical device</strong> and makes no medical, therapeutic, or health claims. See the <a href="https://github.com/via-balaena/CortenForge/blob/main/DISCLAIMER.md">full disclaimer</a>.</p>
+    <p>CortenForge is general-purpose research and engineering software, provided <strong>as is</strong> without warranty of any kind. <strong>It is not a medical device</strong> and makes no medical, therapeutic, or health claims. You use it &mdash; and make and use anything built with it &mdash; <strong>entirely at your own risk</strong>; what you build can involve serious hazards, including hydrogen and other compressed gases, pressure, high voltage, moving machinery, and vehicles that are not certified for road use. See the <a href="https://github.com/via-balaena/CortenForge/blob/main/DISCLAIMER.md">full disclaimer</a>.</p>
     <p>
       <a href="https://github.com/via-balaena/CortenForge">GitHub</a>
       <span class="sep" aria-hidden="true">&middot;</span>
