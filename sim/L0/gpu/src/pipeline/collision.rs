@@ -542,6 +542,30 @@ fn make_dispatch(
 
 // ── Pair plan builder ──────────────────────────────────────────────────
 
+/// ⛔⛔ **This does NOT implement the CPU's collision filter, and the gap has
+/// widened.**
+///
+/// `sim_core::collision::check_collision_affinity` rejects a pair for five
+/// reasons; this function implements TWO of them — the contype/conaffinity
+/// bitmask and the same-body test. It has never applied:
+///
+/// - `contact_excludes` (`<contact><exclude>`)
+/// - `contact_pair_set` (explicit `<pair>` entries)
+/// - parent filtering, and now **weld-group** filtering: bodies joined by
+///   zero-dof joints are one rigid body and MuJoCo never collides them. On
+///   cf-trike that alone is 113 of 183 step-0 contacts.
+///
+/// ⚠ **This is not caught by the GPU conformance suite, by design.**
+/// `contact_conformance_tests` INJECTS an identical hand-built contact set into
+/// both engines and skips collision entirely, because "the two engines never
+/// agree on the contact SET for the same geometry" — GPU emits one contact per
+/// penetrating SDF cell where the CPU emits one analytic contact. Collision
+/// conformance is called out there as "a separate later slice". So nothing
+/// fails when this drifts; it has to be read.
+///
+/// ⚠ Recorded here rather than only in a PR description, because a PR body is
+/// read once and a comment at the divergence is read by whoever next touches
+/// it.
 fn build_pair_plan(model: &Model) -> Vec<NarrowphasePair> {
     let ngeom = model.ngeom;
     let mut pairs = Vec::new();
