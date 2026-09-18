@@ -15,8 +15,9 @@
 
 use cf_electrolysis::{
     AFDC_2026, Electrolyser, FixedSpecificEnergy, H2A_CASES, H2A_RECORD_19009,
-    HHV_SOURCE_SPREAD_PERCENT, NOT_A_FARM_PLANT, Printed, TABLE_5_RESTATED_TOTALS,
-    ThermodynamicBound, annual_hydrogen, current_distributed,
+    HHV_SOURCE_SPREAD_PERCENT, NOT_A_FARM_PLANT, Printed, TABLE_5_COLUMN_OF_CASE,
+    TABLE_5_EFFICIENCY_ROW, ThermodynamicBound, annual_hydrogen, current_distributed,
+    table_5_restated_total,
 };
 use cf_wind::{Air, EWT_DW54X, FOSTER_COUNTY_ND_2012 as YEAR, Machine};
 
@@ -91,18 +92,48 @@ fn every_case_recovers_the_heating_values_from_its_own_ratio_rows() {
 
 #[test]
 fn table_five_restates_table_two_totals_in_a_different_column_order() {
-    assert_eq!(
-        TABLE_5_RESTATED_TOTALS.len(),
-        H2A_CASES.len(),
-        "the restated totals must cover every case"
-    );
-    for (case, restated) in H2A_CASES.iter().zip(TABLE_5_RESTATED_TOTALS) {
+    for (i, case) in H2A_CASES.iter().enumerate() {
+        let Some(restated) = table_5_restated_total(i) else {
+            panic!("case {i} has no Table 5 column")
+        };
         assert!(
-            close(case.total_kwh_per_kg.value(), *restated, 1e-12),
+            close(case.total_kwh_per_kg.value(), restated, 1e-12),
             "{}: Table 2 prints {} and Table 5 prints {restated}",
             case.name,
             case.total_kwh_per_kg.value()
         );
+    }
+    assert!(table_5_restated_total(H2A_CASES.len()).is_none());
+}
+
+#[test]
+fn the_two_tables_really_do_order_their_columns_differently() {
+    // The machine-checkable form of the claim that justifies carrying a third
+    // layer at all. If this permutation were sorted, the two sources would be
+    // in the same order and the cross-table check would be a self-comparison.
+    let sorted = TABLE_5_COLUMN_OF_CASE.windows(2).all(|w| w[0] < w[1]);
+    assert!(
+        !sorted,
+        "TABLE_5_COLUMN_OF_CASE is monotonic, so the orders no longer differ: \
+         {TABLE_5_COLUMN_OF_CASE:?}"
+    );
+    assert_eq!(TABLE_5_COLUMN_OF_CASE.len(), H2A_CASES.len());
+
+    // And the row really is Table 5's eight columns, not four of Table 2's
+    // padded out: the 2014 study's figures are different numbers entirely, so a
+    // copy of Table 2 could not produce them.
+    assert_eq!(TABLE_5_EFFICIENCY_ROW.len(), 8);
+    let totals_2019: Vec<f64> = H2A_CASES
+        .iter()
+        .map(|c| c.total_kwh_per_kg.value())
+        .collect();
+    for (i, v) in TABLE_5_EFFICIENCY_ROW.iter().enumerate() {
+        if !TABLE_5_COLUMN_OF_CASE.contains(&i) {
+            assert!(
+                !totals_2019.iter().any(|t| close(*t, *v, 1e-12)),
+                "column {i} ({v}) is a 2014 figure but matches a 2019 total"
+            );
+        }
     }
 }
 
@@ -124,10 +155,13 @@ fn the_cross_table_check_catches_what_the_other_two_cannot() {
             "layer 2 should be blind to a whole-column swap"
         );
     }
-    let caught = swapped
-        .iter()
-        .zip(TABLE_5_RESTATED_TOTALS)
-        .any(|(c, r)| !close(c.total_kwh_per_kg.value(), *r, 1e-12));
+    let caught = swapped.iter().enumerate().any(|(i, c)| {
+        !close(
+            c.total_kwh_per_kg.value(),
+            table_5_restated_total(i).unwrap_or(f64::NAN),
+            1e-12,
+        )
+    });
     assert!(caught, "layer 3 failed to catch a whole-column swap");
 }
 
@@ -254,6 +288,18 @@ fn hydrogen_never_carries_more_energy_than_the_electricity_that_made_it() {
         "{in_hydrogen:.0} kWh of hydrogen from {:.0} kWh of electricity",
         r.energy_converted_kwh
     );
+    // ⚠ The inequality alone is far too loose to fail -- 57% against a 100%
+    // ceiling. Pin the ratio, which is the case's own LHV efficiency and moves
+    // the moment any term in the conversion does.
+    let recovered = in_hydrogen / r.energy_converted_kwh;
+    assert!(
+        close(
+            recovered,
+            AFDC_2026.lhv_kwh_per_kg() / case.total_kwh_per_kg.value(),
+            1e-12
+        ),
+        "energy recovered as hydrogen drifted to {recovered:.6}"
+    );
 }
 
 #[test]
@@ -276,14 +322,29 @@ fn nothing_beats_the_thermodynamic_bound() {
 
 #[test]
 fn the_energy_balance_is_exhaustive() {
+    // ★★ Run at 400 kW, NOT at the pinned 1 MW. A plant matched to its turbine
+    // curtails nothing, so at 1 MW this gate asserted a three-term identity with
+    // one term pinned at zero -- deleting the curtailed term from the sum
+    // entirely still passed it. All three must be live for the claim to mean
+    // anything.
     let case = current_distributed();
-    let plant = FixedSpecificEnergy::from_case(&case, RATED_W, TURNDOWN);
+    let plant = FixedSpecificEnergy::from_case(&case, 400e3, TURNDOWN);
     let series = real_power_series();
     let offered: f64 = series
         .iter()
         .map(|p| p * YEAR.interval_seconds() / 3.6e6)
         .sum();
     let r = annual_hydrogen(series.iter().copied(), &plant, YEAR.interval_seconds());
+
+    assert!(r.energy_converted_kwh > 0.0, "conversion term must be live");
+    assert!(
+        r.energy_curtailed_kwh > 0.0,
+        "curtailment term must be live"
+    );
+    assert!(
+        r.energy_below_turndown_kwh > 0.0,
+        "below-turndown term must be live"
+    );
     assert!(
         close(r.energy_available_kwh(), offered, 1e-9),
         "converted + curtailed + below-turndown = {:.6} but {offered:.6} was offered",
@@ -297,6 +358,10 @@ fn the_chain_runs_on_the_real_wind_year() {
     let plant = FixedSpecificEnergy::from_case(&case, RATED_W, TURNDOWN);
     let r = annual_hydrogen(real_power_series(), &plant, YEAR.interval_seconds());
     assert_eq!(r.samples, 105_408, "the whole 2012 series must be consumed");
+    assert_eq!(
+        r.samples_not_finite, 0,
+        "the real series must be clean, or the pinned figures below cover only part of it"
+    );
     assert!(close(r.kg, 51_721.008, 1e-6), "kg drifted to {:.3}", r.kg);
     assert!(close(r.energy_converted_kwh, 2_886_032.246, 1e-6));
     assert!(close(r.energy_below_turndown_kwh, 92_071.231, 1e-6));
@@ -475,24 +540,98 @@ fn a_second_implementation_through_a_trait_object_gives_a_different_answer() {
         kgs[0]
     );
     assert_ne!(plants[0].name(), plants[1].name());
+
+    // ⚠ "They differ" is satisfied by dispatching to the wrong one. Each dyn
+    // call must match that implementation's own direct call.
+    let direct_fixed = annual_hydrogen(series.iter().copied(), &fixed, YEAR.interval_seconds()).kg;
+    let direct_bound = annual_hydrogen(series.iter().copied(), &bound, YEAR.interval_seconds()).kg;
+    assert!(
+        close(kgs[0], direct_fixed, 1e-12),
+        "dyn dispatch missed FixedSpecificEnergy"
+    );
+    assert!(
+        close(kgs[1], direct_bound, 1e-12),
+        "dyn dispatch missed ThermodynamicBound"
+    );
 }
 
 // ------------------------------------------------------------- hygiene
 
 #[test]
 fn the_outlet_pressure_travels_with_the_kilograms() {
+    // ★ Two different cases through the SAME code path. Asserting one literal
+    // let a hardcoded `20.6843` in the constructor pass; two cases with
+    // different outlet pressures cannot both be satisfied by any one constant.
+    let series = real_power_series();
+    let run = |case: &_| {
+        annual_hydrogen(
+            series.iter().copied(),
+            &FixedSpecificEnergy::from_case(case, RATED_W, TURNDOWN),
+            YEAR.interval_seconds(),
+        )
+        .outlet_pressure_bar
+    };
+    let current = run(&H2A_CASES[0]); // 300 psi
+    let future = run(&H2A_CASES[1]); // 700 psi
+    assert!(
+        close(current, 20.684_3, 1e-4),
+        "current drifted to {current:.4}"
+    );
+    assert!(
+        close(future, 48.263_0, 1e-4),
+        "future drifted to {future:.4}"
+    );
+    assert!(
+        future > current * 2.0,
+        "the two cases must be far apart, or one constant satisfies both"
+    );
+    assert!(
+        current < 50.0 && future < 100.0,
+        "both must stay far below storage pressure, or the caveat is wrong"
+    );
+}
+
+#[test]
+fn a_damaged_sample_cannot_reach_the_headline() {
+    // ⛔⛔ A NaN used to propagate straight into the annual kilograms with no
+    // diagnostic. An infinite sample was worse: the upper clip bounded it, so
+    // the mass came back finite and plausible while the energy balance broke.
     let case = current_distributed();
     let plant = FixedSpecificEnergy::from_case(&case, RATED_W, TURNDOWN);
-    let r = annual_hydrogen(real_power_series(), &plant, YEAR.interval_seconds());
-    assert!(
-        close(r.outlet_pressure_bar, 20.684_3, 1e-4),
-        "outlet pressure drifted to {:.4} bar",
-        r.outlet_pressure_bar
-    );
-    assert!(
-        r.outlet_pressure_bar < 50.0,
-        "this must stay far below storage pressure, or the caveat is wrong"
-    );
+    let good = [400e3, 600e3, 900e3];
+
+    let clean = annual_hydrogen(good, &plant, 300.0);
+    assert_eq!(clean.samples_not_finite, 0);
+
+    for (label, bad) in [
+        ("NaN", f64::NAN),
+        ("+inf", f64::INFINITY),
+        ("-inf", f64::NEG_INFINITY),
+    ] {
+        let mut series = good.to_vec();
+        series.push(bad);
+        let r = annual_hydrogen(series, &plant, 300.0);
+        assert_eq!(r.samples_not_finite, 1, "{label} was not counted");
+        assert_eq!(
+            r.samples, 4,
+            "{label}: every sample is still counted in total"
+        );
+        assert!(r.kg.is_finite(), "{label} reached the kilograms");
+        assert!(
+            close(r.kg, clean.kg, 1e-12),
+            "{label} changed the mass: {:.6} vs {:.6}",
+            r.kg,
+            clean.kg
+        );
+        assert!(
+            close(
+                r.energy_available_kwh(),
+                clean.energy_available_kwh(),
+                1e-12
+            ),
+            "{label} broke the energy balance"
+        );
+    }
 }
 
 #[test]
@@ -567,30 +706,6 @@ fn the_caveats_are_ranked_by_measured_effect() {
         );
         previous = size;
     }
-}
-
-#[test]
-fn the_transcription_finding_moves_the_headline_by_exactly_nothing() {
-    // The category distinction, made executable: the HHV source disagreement is
-    // a question about whether the source says what this crate thinks it says.
-    // It cannot change the kilograms, because kilograms depend on specific
-    // energy and never on a heating value. If that ever stops being true, the
-    // two categories have merged and the caveat ranking is misleading.
-    let case = current_distributed();
-    let plant = FixedSpecificEnergy::from_case(&case, RATED_W, TURNDOWN);
-    let before = annual_hydrogen(real_power_series(), &plant, YEAR.interval_seconds()).kg;
-
-    let mut shifted = AFDC_2026;
-    shifted.hhv_btu_per_lb = Printed::new(61_500.0, 0); // far beyond the 0.07%
-    let after = annual_hydrogen(real_power_series(), &plant, YEAR.interval_seconds()).kg;
-    assert!(
-        close(before, after, 1e-12),
-        "a heating value moved the kilograms: {before:.3} -> {after:.3}"
-    );
-    assert!(
-        shifted.hhv_kwh_per_kg() > AFDC_2026.hhv_kwh_per_kg(),
-        "the shift must be real, or this gate proves nothing"
-    );
 }
 
 #[test]

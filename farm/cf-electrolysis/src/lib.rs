@@ -35,7 +35,7 @@
 //! |---|---|---|
 //! | [`H2aCase::components_reconcile`] | additive, within a row group: stack + `BoP` == total | a whole column read from the wrong case |
 //! | [`H2aCase::implied_heating_values`] | multiplicative, within one row: value × %LHV recovers the LHV | the same wrong column, again |
-//! | [`TABLE_5_RESTATED_TOTALS`] | the same four totals reprinted on a different page in a **different column order** | a figure mis-printed identically in both tables |
+//! | [`TABLE_5_EFFICIENCY_ROW`] | the same four totals reprinted on a different page in a **different column order** | a figure mis-printed identically in both tables |
 //!
 //! ⚠ The third layer is the load-bearing one and the easiest to skip. A value
 //! taken consistently from the wrong column satisfies the first two perfectly —
@@ -289,7 +289,7 @@ const PSI_700_BAR: f64 = 700.0 * 6_894.757_293_168_361 / 1e5;
 
 /// The four cases of Table 2, in the record's own column order.
 ///
-/// ⚠ Order is load-bearing: [`TABLE_5_RESTATED_TOTALS`] checks these against a
+/// ⚠ Order is load-bearing: [`TABLE_5_EFFICIENCY_ROW`] checks these against a
 /// table that orders its columns differently, and that check only works if this
 /// array preserves the order it was read in.
 pub const H2A_CASES: &[H2aCase] = &[
@@ -339,18 +339,44 @@ pub const H2A_CASES: &[H2aCase] = &[
     },
 ];
 
-/// The same four totals, reprinted by Table 5 of the same record.
+/// Table 5's "Electrical Efficiency" row, **in Table 5's own column order**.
 ///
-/// ★★★ **This is the only layer that catches a consistently wrong column.**
-/// Table 5 compares the 2014 and 2019 studies and therefore interleaves its
-/// columns as Distributed-2014, Distributed-2019, Central-2014, Central-2019
-/// within each of Current and Future — a different order from Table 2. A figure
-/// taken from the wrong Table 2 column reconciles under both other layers,
-/// because both are computed inside that column; it lands on a different case
-/// here and is caught.
+/// ★★★ **Stored in the source's order, not re-indexed into [`H2A_CASES`]'s.**
+/// An earlier version held only the four 2019 figures already permuted into
+/// Table 2's order, which made the array byte-identical to Table 2's own totals
+/// — so the "different column order" claim, which is the entire reason to carry
+/// a third layer, survived only in this comment. Regenerating it by copying
+/// Table 2 would have been undetectable.
 ///
-/// Indexed to match [`H2A_CASES`].
-pub const TABLE_5_RESTATED_TOTALS: &[f64] = &[55.8, 51.4, 55.5, 51.3];
+/// Eight columns: each of Current-Distributed, Current-Central,
+/// Future-Distributed, Future-Central appears twice, as the 2014 case study
+/// then the 2019 one. The 2014 figures are different numbers entirely, which is
+/// what makes a copy of Table 2 impossible to pass off as this row.
+pub const TABLE_5_EFFICIENCY_ROW: &[f64] = &[
+    54.6, 55.8, // Current Distributed: 2014 study, 2019 study
+    54.3, 55.5, // Current Central
+    50.3, 51.4, // Future Distributed
+    50.2, 51.3, // Future Central
+];
+
+/// Which column of [`TABLE_5_EFFICIENCY_ROW`] restates each [`H2A_CASES`] entry.
+///
+/// ★ **This permutation is not the identity and not monotonic**, and a gate says
+/// so. That is the machine-checkable form of "the two tables order their columns
+/// differently": if it ever became sorted, the two sources would be in the same
+/// order and the cross-table layer would have stopped being a cross-check.
+pub const TABLE_5_COLUMN_OF_CASE: &[usize] = &[1, 5, 3, 7];
+
+/// The 2019 total each case should restate, pulled through the permutation.
+///
+/// ⚠ Derived, never typed in — typing it in is exactly how it would drift back
+/// into being a copy of Table 2.
+#[must_use]
+pub fn table_5_restated_total(case_index: usize) -> Option<f64> {
+    TABLE_5_EFFICIENCY_ROW
+        .get(*TABLE_5_COLUMN_OF_CASE.get(case_index)?)
+        .copied()
+}
 
 /// The Current Distributed case: 2019 technology, the honest "today" figure.
 ///
@@ -489,9 +515,11 @@ impl Electrolyser for ThermodynamicBound {
 
 /// What a plant made of a year's electricity, and what it did not.
 ///
-/// ⚠ The three energy terms are exhaustive and are asserted to sum to the
-/// energy offered. A loss that is not one of these three is a loss the model
-/// cannot represent, and the balance failing is how that would announce itself.
+/// ⚠ The three energy terms are exhaustive **over the finite samples** and are
+/// asserted to sum to the energy offered. A loss that is not one of these three
+/// is a loss the model cannot represent, and the balance failing is how that
+/// would announce itself. Samples that were not finite are excluded from all
+/// four figures and counted in [`AnnualHydrogen::samples_not_finite`].
 #[derive(Clone, Copy, Debug)]
 pub struct AnnualHydrogen {
     /// Hydrogen produced over the year, kg.
@@ -508,8 +536,17 @@ pub struct AnnualHydrogen {
     pub samples_below_turndown: usize,
     /// Intervals the plant spent clipped at rated power.
     pub samples_at_rated: usize,
-    /// Intervals counted in total.
+    /// Intervals counted in total, including any that were not finite.
     pub samples: usize,
+    /// Intervals whose power was `NaN` or infinite, and were therefore skipped.
+    ///
+    /// ⛔⛔ **Not cosmetic.** A single `NaN` sample used to propagate straight into
+    /// the annual kilograms with no diagnostic, and an infinite one was worse:
+    /// it produced a *finite, plausible-looking* mass, because the upper clip
+    /// bounded it, while silently breaking the energy balance. Both now land
+    /// here instead. A non-zero count means the series upstream is damaged and
+    /// every other figure in this struct covers only the finite remainder.
+    pub samples_not_finite: usize,
 }
 
 impl AnnualHydrogen {
@@ -556,9 +593,14 @@ where
     let mut curtailed_kwh = 0.0;
     let mut below_kwh = 0.0;
     let (mut n_below, mut n_rated, mut n) = (0usize, 0usize, 0usize);
+    let mut n_not_finite = 0usize;
 
     for p in power_w {
         n += 1;
+        if !p.is_finite() {
+            n_not_finite += 1;
+            continue;
+        }
         let offered_kwh = p * interval_seconds / KWH_J;
 
         if p < floor {
@@ -593,6 +635,7 @@ where
         samples_below_turndown: n_below,
         samples_at_rated: n_rated,
         samples: n,
+        samples_not_finite: n_not_finite,
     }
 }
 
@@ -625,6 +668,15 @@ pub struct Caveat {
 /// energy and never on a heating value. Integrity checks and sensitivity terms
 /// are different categories and a reader who sees them in one list will weight
 /// them wrongly.
+///
+/// ★ That property is structural, not asserted: [`Electrolyser`] takes no
+/// heating value, so nothing in the conversion path can consult one. A test
+/// that varied a heating value and checked the mass was unchanged would be
+/// unable to fail — one was written, found vacuous and deleted. The guard that
+/// **can** fail is
+/// `hydrogen_never_carries_more_energy_than_the_electricity_that_made_it`,
+/// which pins the recovered fraction to the case's own LHV efficiency and
+/// reddens the moment a heating value is wired into the arithmetic.
 ///
 /// ★ The largest term overall is **upstream**: inter-annual wind variability
 /// swings the headline about ±10.6%, which is more than everything here except
