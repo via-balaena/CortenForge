@@ -390,9 +390,17 @@ const AL_6061_YIELD_MPA: f64 = 276.0;
 /// understates them 2.9x as modelled and 8.3x at the design target. See
 /// `cf_assembly_checks::member_load`'s blind spots.
 ///
-/// ⚠ Read `seat_back_rail_left` as about half what it says. The joint tree
-/// hands the whole driver to whichever rail is the parent and the other reads
-/// zero; two rails carry him between them.
+/// ⚠ Read `seat_back_rail_left` AND `swingarm` as about half what they say.
+/// Wherever two parallel members share one load, the joint tree hands the
+/// whole of it to whichever one is the PARENT and the sibling is left holding
+/// its own weight alone. Measured off the screen: `seat_back_rail_left`
+/// carries 87.2 kg against `seat_back_rail_right`'s 0.46, and `swingarm`
+/// 71.2 kg against `swingarm_r`'s 0.92 — two rails carry the driver between
+/// them, two arms carry the rear wheel between them.
+///
+/// ⚠⚠ For `swingarm` that halving runs the OPPOSITE way to the 2.9-8.3x
+/// understatement above, so the two corrections partly cancel. It is over
+/// yield on any combination of them, which is why the pin stands either way.
 ///
 /// ⚠ These moved 1.5-9% when the section sampler stopped reading `Z` high —
 /// the extreme fibre now reaches the outer edge of the outermost sample cell
@@ -1949,10 +1957,19 @@ fn main() -> Result<()> {
     // like this rots into a mute.
     //
     // ⛔ Read `cf_assembly_checks::member_load` for what it cannot see. Chief
-    // among them here: the cantilever model is measured from each part's BODY
-    // ORIGIN, and `frame_spine`'s sits mid-structure, so its 0.69x is
-    // meaningless rather than reassuring — worse than an absent number,
-    // because it looks like an answer.
+    // among them here: the screen loads a member with its SUBTREE's weight,
+    // which is right for the seat members — the driver genuinely hangs below
+    // them — and wrong for anything reacted at the ground. And where two
+    // parallel members share one load, the tree hands all of it to whichever
+    // is the parent. Both are quantified on `ACCEPTED_OVER_YIELD`.
+    //
+    // ⚠ `frame_spine` is NOT scored: it hangs from a FREE joint, and a free
+    // joint is not a support, so it comes back `NotSupported`. It used to read
+    // 0.69x from its own mid-structure body origin — that number is gone, not
+    // merely caveated. This comment asserted the opposite while the one at the
+    // unmeasured check below had it right; the measurement settles it, and a
+    // claim about a number that no longer exists is exactly the kind that
+    // survives a sweep by being paraphrased.
     {
         let masses: MassMap = derived
             .iter()
