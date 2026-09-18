@@ -21,9 +21,10 @@ These include, without limitation: compressed, flammable, or cryogenic gases,
 including hydrogen; pressure vessels and pressurised systems; high-voltage
 electrical systems and battery packs; stored mechanical energy, moving
 machinery, and lifted or suspended loads; vehicles, which are **not** certified
-or approved for use on public roads; and materials that contact the body —
-improperly cured or non-body-safe silicone can cause serious injury. Always
-follow the manufacturer's official safety data sheet (SDS) and instructions for
+or approved for use on public roads; and materials that contact the body. You
+alone are responsible for choosing body-safe materials and for proper mixing,
+curing, cleaning, and hygiene; improperly cured or non-body-safe silicone can
+cause serious injury. Always follow the manufacturer's official safety data sheet (SDS) and instructions for
 any material you use, and comply with the codes, standards, and regulations
 that apply where you are.
 
