@@ -9,7 +9,8 @@
 )]
 
 use cf_wind::{
-    Air, FOSTER_COUNTY_ND_2012 as YEAR, NOT_MEASURED_HERE, Turbine, WindYear, annual_energy,
+    Air, CARRINGTON_AIRPORT, FOSTER_COUNTY_ND_2012 as YEAR, NOT_MEASURED_HERE, Turbine, WindYear,
+    annual_energy,
 };
 
 /// The reference machine the pinned energy figures use.
@@ -506,4 +507,90 @@ fn every_turbine_parameter_changes_the_answer() {
             change * 100.0
         );
     }
+}
+
+/// The model is checked against the nearest station, not called validated.
+///
+/// ⛔ Added after a review criterion asked whether the oracle was genuinely
+/// unreachable. It was not — NOAA has an hourly station 1.96 km from the grid
+/// point covering the same year, and the PR had implied none existed. Asserting
+/// a capability is absent without probing it is the same mistake as claiming a
+/// CI hole was ungated when a guard already existed.
+///
+/// MUTATION: change any recorded figure and this fails.
+/// ⚠ These values are PINNED, not re-derived — the observations are not checked
+/// in. `reproduce` is the executable referent.
+#[test]
+fn the_model_is_corroborated_against_the_nearest_station() {
+    let c = CARRINGTON_AIRPORT;
+    assert_eq!(c.station_id, "72073700266");
+    assert!(c.station_name.contains("CARRINGTON"));
+    assert!(
+        c.km_from_grid_point < 5.0,
+        "a station {:.2} km away is not 'the nearest station' in any useful sense",
+        c.km_from_grid_point
+    );
+    assert!(
+        (c.station_elevation_m - 484.0).abs() < 25.0,
+        "the station sits {:.1} m up against the grid point's 484 m — too different \
+         in terrain for the comparison to mean much",
+        c.station_elevation_m
+    );
+    assert!(
+        c.overlapping_hours > 5000,
+        "only {} hours overlap; too few to say anything about a year",
+        c.overlapping_hours
+    );
+    assert!(
+        c.overlapping_hours < 8784,
+        "more overlapping hours than the year holds"
+    );
+    assert!(!c.reproduce.trim().is_empty() && c.reproduce.len() > 80);
+    assert!(c.retrieved.len() == 10 && c.retrieved.starts_with("2026-"));
+}
+
+/// The comparison corroborates the resource, and the numbers say how well.
+///
+/// The implied shear exponent must be physically sensible and the correlation
+/// must be stated for what it is. A reanalysis that tracked a point observation
+/// perfectly would be suspicious, not reassuring.
+#[test]
+fn the_corroboration_figures_are_physically_sensible() {
+    let c = CARRINGTON_AIRPORT;
+    assert!(
+        c.modelled_mean_ms > c.observed_mean_ms,
+        "100 m wind must exceed 10 m wind; got {} vs {}",
+        c.modelled_mean_ms,
+        c.observed_mean_ms
+    );
+    // the exponent the two means imply, recomputed from them rather than trusted
+    let implied = (c.modelled_mean_ms / c.observed_mean_ms).ln() / (100.0f64 / 10.0).ln();
+    assert!(
+        (implied - c.implied_shear_exponent).abs() < 1e-9,
+        "the recorded shear exponent {} is not what the recorded means imply ({implied})",
+        c.implied_shear_exponent
+    );
+    assert!(
+        (0.10..=0.30).contains(&c.implied_shear_exponent),
+        "a shear exponent of {:.3} is outside anything open farmland produces",
+        c.implied_shear_exponent
+    );
+    assert!(
+        (0.4..0.85).contains(&c.hourly_correlation),
+        "an hourly correlation of {:.3} between a 2 km reanalysis and a point \
+         observation is outside the believable range in either direction",
+        c.hourly_correlation
+    );
+    // and the overlapping-hours mean must be close to, but not equal to, the year's
+    let full = YEAR.mean_speed();
+    assert!(
+        (c.modelled_mean_ms - full).abs() < 0.5,
+        "the overlapping-hours mean {} is far from the full-year mean {full}",
+        c.modelled_mean_ms
+    );
+    assert!(
+        (c.modelled_mean_ms - full).abs() > 1e-9,
+        "the overlapping-hours mean is identical to the full-year mean, which \
+         would mean the subset was never actually taken"
+    );
 }

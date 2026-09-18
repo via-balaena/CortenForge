@@ -20,8 +20,14 @@
 //!
 //! MISSION says *"that farm's measured wind year"*. **These are not
 //! measurements.** The WIND Toolkit is a WRF reanalysis on a 2 km grid — a
-//! physical model reconstructing the atmosphere, validated against observations
-//! but not an anemometer on this farm. See [`NOT_MEASURED_HERE`].
+//! physical model reconstructing the atmosphere, not an anemometer on this
+//! farm. See [`NOT_MEASURED_HERE`].
+//!
+//! ⚠ It is not unchecked, though. [`CARRINGTON_AIRPORT`] compares it against the
+//! nearest observing station — 1.96 km away, 6 m different in elevation — over
+//! 7128 overlapping hours of 2012: the implied 10 m → 100 m shear exponent is
+//! 0.209 and the hourly correlation is 0.61. The resource is corroborated; any
+//! individual hour is not.
 //!
 //! ⚠⚠ That also makes this crate's uncertainty a **different kind** from
 //! `cf-nebraska`'s. There, two printed copies of one number could disagree and
@@ -105,12 +111,12 @@ pub const NOT_MEASURED_HERE: &[Caveat] = &[
     Caveat {
         what: "these are modelled wind speeds, not measurements at this farm",
         why: "The WIND Toolkit is a Weather Research and Forecasting reanalysis \
-              on a 2 km grid. It is validated against observation networks and \
-              is the standard resource dataset, but no anemometer stood at this \
-              grid point. MISSION asks for a farm's MEASURED wind year, so this \
-              is a stand-in. Closing it means on-site measurement, or at minimum \
-              comparison against a nearby observing station — which would also \
-              quantify the model's bias here rather than assuming it is small.",
+              on a 2 km grid; no anemometer stood at this grid point, and \
+              MISSION asks for a farm's MEASURED wind year. It is not unchecked, \
+              though: see CARRINGTON_AIRPORT, which compares it against the \
+              nearest observing station rather than calling it validated in the \
+              abstract. Closing the gap entirely still means measurement on the \
+              farm itself.",
     },
     Caveat {
         what: "one year is not a wind resource",
@@ -364,6 +370,87 @@ pub fn annual_energy(year: &WindYear, turbine: &Turbine, air: Air) -> AnnualEner
         samples_at_rated: at_rated,
     }
 }
+
+/// What the nearest observing station says about the model, here.
+///
+/// A reanalysis is "validated against observation networks" in general. That
+/// sentence is true and says nothing about *this* grid point, which is the only
+/// place this chain's number comes from. These fields are the comparison
+/// actually run, against the nearest station there is.
+///
+/// ⚠ **The tests pin these values; they cannot re-derive them offline.** The
+/// observations are not checked in — they are a one-time validation of an
+/// input, not an input themselves, and carrying another 1.8 MB to re-prove a
+/// fixed result would be storage for its own sake. [`Corroboration::reproduce`]
+/// is the executable referent.
+#[derive(Clone, Copy, Debug)]
+pub struct Corroboration {
+    /// NOAA/NCEI station identifier.
+    pub station_id: &'static str,
+    /// Station name as NCEI records it.
+    pub station_name: &'static str,
+    /// Station latitude, degrees north.
+    pub station_latitude: f64,
+    /// Station longitude, degrees east.
+    pub station_longitude: f64,
+    /// Station elevation, metres — compare with the grid point's 484 m.
+    pub station_elevation_m: f64,
+    /// Distance from the modelled grid point, kilometres.
+    pub km_from_grid_point: f64,
+    /// Height the station's anemometer reports at, metres.
+    pub observed_height_m: f64,
+    /// Hours in 2012 with both a quality-passed observation and a modelled value.
+    pub overlapping_hours: usize,
+    /// Mean observed speed over those hours, m/s, at `observed_height_m`.
+    pub observed_mean_ms: f64,
+    /// Mean modelled speed over **the same hours**, m/s, at 100 m.
+    ///
+    /// ⚠ Not the full-year mean. Restricted to the overlapping hours, because
+    /// comparing a subset against a whole-year figure would flatter or damn the
+    /// model for the wrong reason.
+    pub modelled_mean_ms: f64,
+    /// Power-law exponent implied by the two means over the 10 m → 100 m span.
+    ///
+    /// Open farmland is usually quoted at 0.14–0.20. Slightly above that is what
+    /// a site with stable nocturnal boundary layers would give, and the northern
+    /// Plains have them. Corroboration, not proof.
+    pub implied_shear_exponent: f64,
+    /// Pearson correlation of hourly means, observed against modelled.
+    ///
+    /// ⚠ 0.61 is moderate, and it is the honest headline of this comparison: a
+    /// 2 km reanalysis tracks a point observation's hour-to-hour variation only
+    /// loosely. It corroborates the resource, not any individual hour — which
+    /// matters downstream, because hydrogen storage is sized by *when* the wind
+    /// blows and not only by how much of it there is.
+    pub hourly_correlation: f64,
+    /// ISO date the observations were pulled.
+    pub retrieved: &'static str,
+    /// How to obtain the observations again.
+    pub reproduce: &'static str,
+}
+
+/// The model against the station 1.96 km away, over 2012.
+pub const CARRINGTON_AIRPORT: Corroboration = Corroboration {
+    station_id: "72073700266",
+    station_name: "CARRINGTON MUNICIPAL AIRPORT, ND US",
+    station_latitude: 47.451,
+    station_longitude: -99.151,
+    station_elevation_m: 490.1,
+    km_from_grid_point: 1.96,
+    observed_height_m: 10.0,
+    overlapping_hours: 7128,
+    observed_mean_ms: 4.570_010_288_065_844,
+    modelled_mean_ms: 7.401_775_626_636_739,
+    implied_shear_exponent: 0.209_418_738_233_836,
+    hourly_correlation: 0.609_870_968_660_793,
+    retrieved: "2026-09-18",
+    reproduce: "GET https://www.ncei.noaa.gov/access/services/data/v1 with \
+                dataset=global-hourly, stations=72073700266, \
+                startDate=2012-01-01, endDate=2012-12-31, dataTypes=WND, \
+                format=csv; parse the WND field's 4th component (speed in m/s \
+                x10), keep quality codes 1 and 5, average to hourly, and compare \
+                against this crate's samples averaged to the same hours",
+};
 
 /// 2012 at a grid point in Foster County, North Dakota.
 ///
