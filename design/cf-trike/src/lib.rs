@@ -113,7 +113,7 @@ pub fn trike() -> Result<Trike> {
         })
         .collect();
     let mechanism = assemble(plan, linkages)?;
-    let origins = world_origins(&mechanism)?;
+    let origins = mechanism.reference_origins()?;
     Ok(Trike {
         mechanism,
         metrics,
@@ -1683,68 +1683,6 @@ fn assemble(plan: Vec<PartPlan>, linkages: Vec<LinkageDef>) -> Result<Mechanism>
     Ok(builder.build())
 }
 
-// ── The walk cf-design does not have ────────────────────────────────────
-
-/// World-frame origin of every part, by summing joint anchors to the root.
-///
-/// ⚠ Translations only. That is exact **at the reference configuration** here
-/// because every part's orientation is baked into its solid rather than into a
-/// joint, so no parent is rotated relative to its own parent. A mechanism that
-/// posed its joints would need the rotations composed too — which is what
-/// `to_model` plus a forward kinematics pass already does, at the cost of
-/// meshing every part.
-///
-/// # Errors
-///
-/// Fails if a part is the child of more than one joint, or if a joint chain
-/// never reaches the world.
-pub fn world_origins(mechanism: &Mechanism) -> Result<HashMap<String, Vector3<f64>>> {
-    // ⚠ One joint per child. `to_model` places a body from the *first* joint
-    // naming it as child (`model_builder.rs:262`, and `:808` again for the
-    // mesh offset); a map would silently keep the last, so the two placements
-    // would disagree. Refuse instead of diverging.
-    let mut parent_of: HashMap<&str, (&str, Vector3<f64>)> = HashMap::new();
-    for j in mechanism.joints() {
-        if parent_of
-            .insert(j.child(), (j.parent(), j.anchor().coords))
-            .is_some()
-        {
-            bail!(
-                "part {} is the child of more than one joint, so its placement \
-                 here and in `to_model` would differ",
-                j.child()
-            );
-        }
-    }
-
-    let mut origins = HashMap::new();
-    for part in mechanism.parts() {
-        let mut here = Vector3::zeros();
-        let mut cursor = part.name();
-        let mut hops = 0;
-        while let Some(&(parent, anchor)) = parent_of.get(cursor) {
-            here += anchor;
-            if parent == "world" {
-                break;
-            }
-            cursor = parent;
-            hops += 1;
-            // ⚠ Not redundant: `MechanismBuilder::validate` checks duplicates,
-            // cross-references and orphans, but NOT cycles — a part that is its
-            // own ancestor builds happily and only surfaces at `to_model`, as
-            // `MechanismError::PartNotReachable`. Without this the walk spins.
-            if hops > mechanism.parts().len() {
-                bail!(
-                    "the joint chain from {} never reaches the world",
-                    part.name()
-                );
-            }
-        }
-        origins.insert(part.name().to_owned(), here);
-    }
-    Ok(origins)
-}
-
 // ── Tests ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1944,7 +1882,7 @@ mod tests {
     /// The rear axle lands a wheelbase behind the front, through the chain.
     ///
     /// `rim_r` reaches the world through the swingarm and the spine, so this
-    /// is a claim about [`world_origins`] summing that chain correctly — not
+    /// is a claim about `Mechanism::reference_origins` summing that chain — not
     /// about the constant, which the rear axle is placed from directly.
     #[test]
     fn the_rear_axle_lands_a_wheelbase_behind_the_front() {
@@ -2180,45 +2118,5 @@ mod tests {
             );
             assert_eq!(a.origins[name], b.origins[name], "{name} moved");
         }
-    }
-
-    /// `world_origins` refuses a part with two parents rather than picking one.
-    ///
-    /// `to_model` places a body from the *first* joint naming it as a child.
-    /// A walk that kept the last would disagree with the model it is meant to
-    /// describe — and would do so quietly, which is the whole reason this
-    /// returns a `Result`.
-    #[test]
-    fn world_origins_refuses_a_part_with_two_parents() {
-        let ball = |name: &str| {
-            Part::new(
-                name,
-                Solid::sphere(10.0),
-                Material::new("steel", STEEL_KG_M3),
-            )
-        };
-        let joint = |name: &str, parent: &str, at: f64| {
-            JointDef::new(
-                name,
-                parent,
-                "child",
-                JointKind::Revolute,
-                Point3::new(at, 0.0, 0.0),
-                Vector3::y(),
-            )
-        };
-        let m = Mechanism::builder("two parents")
-            .part(ball("root"))
-            .part(ball("other"))
-            .part(ball("child"))
-            .joint(joint("j0", "root", 10.0))
-            .joint(joint("j1", "other", 90.0))
-            .build();
-
-        let err = world_origins(&m).unwrap_err().to_string();
-        assert!(
-            err.contains("child") && err.contains("more than one joint"),
-            "unhelpful refusal: {err}"
-        );
     }
 }

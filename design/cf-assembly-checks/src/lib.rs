@@ -35,6 +35,18 @@ use cf_design::mechanism::Mechanism;
 use nalgebra::{Point3, Vector3};
 
 /// Where every part sits, by name, in a common frame.
+///
+/// ★ Build one with
+/// [`Mechanism::reference_origins`](cf_design::Mechanism::reference_origins),
+/// which places every part at the reference configuration for the cost of
+/// summing anchors. A caller with its own poses — an assembly driven to full
+/// travel, say — supplies those instead; this crate never asks where the
+/// numbers came from.
+///
+/// ⚠ It used to live in **cf-trike**, so using these checks meant depending on
+/// a VEHICLE crate to place the parts of a gripper. The checks themselves
+/// never knew what they were checking; the primitive they needed was simply
+/// missing from the crate that owns `Mechanism`.
 pub type Origins = HashMap<String, Vector3<f64>>;
 
 /// How many of one part's probe points fall inside another.
