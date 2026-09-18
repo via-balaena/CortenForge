@@ -75,25 +75,44 @@ pub(crate) fn check_collision_affinity(model: &Model, geom1: usize, geom2: usize
         return false;
     }
 
-    // Parent-child filtering: bodies connected by a joint shouldn't collide
-    // Exception: World body (0) geometries (ground planes) should collide with
-    // any body, including direct children. The world body has no joints connecting
-    // it to children - children are simply anchored in world space.
+    // ── Weld-group filtering, matching MuJoCo ───────────────────────────
     //
-    // This is important because:
-    // - A ball with a free joint has body_parent[ball_body] = 0 (world)
-    // - But the ball should still collide with ground planes on body 0
-    // - The "parent-child" filter is for bodies connected by articulated joints
-    //   (hinge, slide, ball) where collision would be geometrically impossible
+    // ⛔ Compare WELD GROUPS, not bodies. Bodies joined by zero-dof joints are
+    // one rigid body; a contact force between them is work against a
+    // constraint that already holds. A `body_parent` test cannot see this —
+    // two SIBLINGS may share a weld group's interior (a welded plate and a
+    // hinged arm on the same chassis), and it read them as unrelated.
     //
-    // S4.12: Skip parent-child exclusion when DISABLE_FILTERPARENT is set,
-    // allowing parent-child geom pairs to collide.
-    if !disabled(model, DISABLE_FILTERPARENT)
-        && body1 != 0
-        && body2 != 0
-        && (model.body_parent[body1] == body2 || model.body_parent[body2] == body1)
-    {
+    // Measured against MuJoCo 3.4.0 rather than recalled, on a model built for
+    // it (`weld_model`), and each rule below is exercised there by a pair that
+    // genuinely OVERLAPS, so its absence is evidence:
+    //
+    //   same weld group        -> never collide, even with FILTERPARENT off
+    //   one group is the other's parent group -> filtered while FILTERPARENT is on
+    //   either group is world  -> exempt from the parent rule
+    //
+    // ⚠ The world exemption is not a special case bolted on: a jointless body
+    // joins weld group 0 along with the ground, so static bodies never collide
+    // with each other, while a free body still collides with the ground — and
+    // an articulated child of a STATIC body collides with it, which the old
+    // parent-only test wrongly suppressed.
+    let weld1 = model.body_weldid[body1];
+    let weld2 = model.body_weldid[body2];
+
+    // Same rigid body. Unconditional: FILTERPARENT relaxes the parent rule,
+    // never this one.
+    if weld1 == weld2 {
         return false;
+    }
+
+    // S4.12: Skip the parent exclusion when DISABLE_FILTERPARENT is set,
+    // allowing parent-child geom pairs to collide.
+    if !disabled(model, DISABLE_FILTERPARENT) && weld1 != 0 && weld2 != 0 {
+        let parent_weld1 = model.body_weldid[model.body_parent[weld1]];
+        let parent_weld2 = model.body_weldid[model.body_parent[weld2]];
+        if weld1 == parent_weld2 || weld2 == parent_weld1 {
+            return false;
+        }
     }
 
     // contype/conaffinity bitmask check

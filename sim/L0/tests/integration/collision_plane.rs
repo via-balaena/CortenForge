@@ -3,6 +3,28 @@
 //! This module validates collision detection between an infinite plane and all
 //! primitive geometry types: Sphere, Box, Capsule, Cylinder, Ellipsoid.
 //!
+//!
+//! # ⛔ Every collidable body here carries a joint, deliberately
+//!
+//! A body with no joint is WELDED to its parent, and a jointless body hanging
+//! off the world joins the world's weld group along with the ground. MuJoCo
+//! never collides two bodies in one weld group, so a fixture built from
+//! jointless bodies describes a model MuJoCo reports **zero contacts** for —
+//! measured: two overlapping jointless cubes give `ncon = 0`, and `ncon = 4`
+//! once one of them is given a free joint.
+//!
+//! These fixtures were written without joints and passed only because
+//! CortenForge's filter was more permissive than MuJoCo's. A `<joint
+//! type="free"/>` on each collidable body is what makes the model one MuJoCo
+//! agrees produces contacts, so the assertions below are about NARROWPHASE
+//! rather than about a filter that should have rejected the pair.
+//!
+//! ⚠ Do not remove them to "simplify" a fixture. A separation test
+//! (`*_separated`) is the one that rots most quietly: without a joint it
+//! asserts no-contact on a pair that could never have touched, and would pass
+//! with narrowphase entirely broken.
+//!
+//! ⚠ The ground plane stays on the world body and takes no joint.
 //! # Test Philosophy
 //!
 //! > **Todorov Standard**: Every geometric configuration must be tested.
@@ -43,6 +65,7 @@ fn sphere_plane_penetrating() {
             <worldbody>
                 <geom name="floor" type="plane" size="10 10 0.1"/>
                 <body name="ball" pos="0 0 0.4">
+                    <joint type="free"/>
                     <geom type="sphere" size="0.5"/>
                 </body>
             </worldbody>
@@ -97,6 +120,7 @@ fn sphere_plane_touching() {
             <worldbody>
                 <geom name="floor" type="plane" size="10 10 0.1"/>
                 <body name="ball" pos="0 0 0.5">
+                    <joint type="free"/>
                     <geom type="sphere" size="0.5"/>
                 </body>
             </worldbody>
@@ -134,6 +158,7 @@ fn sphere_plane_separated() {
             <worldbody>
                 <geom name="floor" type="plane" size="10 10 0.1"/>
                 <body name="ball" pos="0 0 0.6">
+                    <joint type="free"/>
                     <geom type="sphere" size="0.5"/>
                 </body>
             </worldbody>
@@ -161,6 +186,7 @@ fn sphere_plane_deep_penetration() {
             <worldbody>
                 <geom name="floor" type="plane" size="10 10 0.1"/>
                 <body name="ball" pos="0 0 0.1">
+                    <joint type="free"/>
                     <geom type="sphere" size="0.5"/>
                 </body>
             </worldbody>
@@ -202,6 +228,7 @@ fn box_plane_corner_penetrating() {
             <worldbody>
                 <geom name="floor" type="plane" size="10 10 0.1"/>
                 <body name="box" pos="0 0 0.4">
+                    <joint type="free"/>
                     <geom type="box" size="0.5 0.5 0.5"/>
                 </body>
             </worldbody>
@@ -243,6 +270,7 @@ fn box_plane_face_touching() {
             <worldbody>
                 <geom name="floor" type="plane" size="10 10 0.1"/>
                 <body name="box" pos="0 0 0.5">
+                    <joint type="free"/>
                     <geom type="box" size="0.5 0.5 0.5"/>
                 </body>
             </worldbody>
@@ -277,6 +305,7 @@ fn box_plane_edge_tilted() {
             <worldbody>
                 <geom name="floor" type="plane" size="10 10 0.1"/>
                 <body name="box" pos="0 0 0.6" euler="45 0 0">
+                    <joint type="free"/>
                     <geom type="box" size="0.3 0.3 0.3"/>
                 </body>
             </worldbody>
@@ -303,6 +332,7 @@ fn box_plane_corner_tilted_penetrating() {
             <worldbody>
                 <geom name="floor" type="plane" size="10 10 0.1"/>
                 <body name="box" pos="0 0 0.35" euler="45 0 0">
+                    <joint type="free"/>
                     <geom type="box" size="0.3 0.3 0.3"/>
                 </body>
             </worldbody>
@@ -352,6 +382,7 @@ fn capsule_plane_upright_penetrating() {
             <worldbody>
                 <geom name="floor" type="plane" size="10 10 0.1"/>
                 <body name="cap" pos="0 0 0.6">
+                    <joint type="free"/>
                     <geom type="capsule" size="0.2 0.5"/>
                 </body>
             </worldbody>
@@ -393,6 +424,7 @@ fn capsule_plane_horizontal_penetrating() {
             <worldbody>
                 <geom name="floor" type="plane" size="10 10 0.1"/>
                 <body name="cap" pos="0 0 0.15" euler="0 90 0">
+                    <joint type="free"/>
                     <geom type="capsule" size="0.2 0.5"/>
                 </body>
             </worldbody>
@@ -430,6 +462,7 @@ fn capsule_plane_tilted_45() {
             <worldbody>
                 <geom name="floor" type="plane" size="10 10 0.1"/>
                 <body name="cap" pos="0 0 0.5" euler="45 0 0">
+                    <joint type="free"/>
                     <geom type="capsule" size="0.2 0.5"/>
                 </body>
             </worldbody>
@@ -473,6 +506,7 @@ fn cylinder_plane_upright_penetrating() {
             <worldbody>
                 <geom name="floor" type="plane" size="10 10 0.1"/>
                 <body name="cyl" pos="0 0 0.4">
+                    <joint type="free"/>
                     <geom type="cylinder" size="0.3 0.5"/>
                 </body>
             </worldbody>
@@ -516,6 +550,7 @@ fn cylinder_plane_horizontal_penetrating() {
             <worldbody>
                 <geom name="floor" type="plane" size="10 10 0.1"/>
                 <body name="cyl" pos="0 0 0.25" euler="0 90 0">
+                    <joint type="free"/>
                     <geom type="cylinder" size="0.3 0.5"/>
                 </body>
             </worldbody>
@@ -557,6 +592,7 @@ fn cylinder_plane_tilted_45_penetrating() {
             <worldbody>
                 <geom name="floor" type="plane" size="10 10 0.1"/>
                 <body name="cyl" pos="0 0 0.5" euler="45 0 0">
+                    <joint type="free"/>
                     <geom type="cylinder" size="0.3 0.5"/>
                 </body>
             </worldbody>
@@ -607,6 +643,7 @@ fn cylinder_plane_separated() {
             <worldbody>
                 <geom name="floor" type="plane" size="10 10 0.1"/>
                 <body name="cyl" pos="0 0 1.0">
+                    <joint type="free"/>
                     <geom type="cylinder" size="0.3 0.5"/>
                 </body>
             </worldbody>
@@ -634,6 +671,7 @@ fn ellipsoid_plane_spherical_penetrating() {
             <worldbody>
                 <geom name="floor" type="plane" size="10 10 0.1"/>
                 <body name="ell" pos="0 0 0.4">
+                    <joint type="free"/>
                     <geom type="ellipsoid" size="0.5 0.5 0.5"/>
                 </body>
             </worldbody>
@@ -673,6 +711,7 @@ fn ellipsoid_plane_tall_vertical() {
             <worldbody>
                 <geom name="floor" type="plane" size="10 10 0.1"/>
                 <body name="ell" pos="0 0 0.4">
+                    <joint type="free"/>
                     <geom type="ellipsoid" size="0.2 0.2 0.5"/>
                 </body>
             </worldbody>
@@ -713,6 +752,7 @@ fn ellipsoid_plane_flat_vertical() {
             <worldbody>
                 <geom name="floor" type="plane" size="10 10 0.1"/>
                 <body name="ell" pos="0 0 0.15">
+                    <joint type="free"/>
                     <geom type="ellipsoid" size="0.5 0.5 0.2"/>
                 </body>
             </worldbody>
@@ -753,6 +793,7 @@ fn ellipsoid_plane_rotated_long_horizontal() {
             <worldbody>
                 <geom name="floor" type="plane" size="10 10 0.1"/>
                 <body name="ell" pos="0 0 0.15">
+                    <joint type="free"/>
                     <geom type="ellipsoid" size="0.5 0.2 0.2"/>
                 </body>
             </worldbody>
@@ -788,6 +829,7 @@ fn ellipsoid_plane_rotated_long_vertical() {
             <worldbody>
                 <geom name="floor" type="plane" size="10 10 0.1"/>
                 <body name="ell" pos="0 0 0.4" euler="0 90 0">
+                    <joint type="free"/>
                     <geom type="ellipsoid" size="0.5 0.2 0.2"/>
                 </body>
             </worldbody>
@@ -827,6 +869,7 @@ fn ellipsoid_plane_separated() {
             <worldbody>
                 <geom name="floor" type="plane" size="10 10 0.1"/>
                 <body name="ell" pos="0 0 1.0">
+                    <joint type="free"/>
                     <geom type="ellipsoid" size="0.5 0.5 0.5"/>
                 </body>
             </worldbody>
@@ -856,6 +899,7 @@ fn sphere_tilted_plane_penetrating() {
             <worldbody>
                 <geom name="floor" type="plane" size="10 10 0.1" euler="30 0 0"/>
                 <body name="ball" pos="0 0 0.4">
+                    <joint type="free"/>
                     <geom type="sphere" size="0.5"/>
                 </body>
             </worldbody>
@@ -907,6 +951,7 @@ fn sphere_plane_tiny_penetration() {
             <worldbody>
                 <geom name="floor" type="plane" size="10 10 0.1"/>
                 <body name="ball" pos="0 0 0.4999">
+                    <joint type="free"/>
                     <geom type="sphere" size="0.5"/>
                 </body>
             </worldbody>
@@ -941,6 +986,7 @@ fn sphere_plane_far_from_origin() {
             <worldbody>
                 <geom name="floor" type="plane" size="10000 10000 0.1" pos="{} 0 0"/>
                 <body name="ball" pos="{} 0 0.4">
+                    <joint type="free"/>
                     <geom type="sphere" size="0.5"/>
                 </body>
             </worldbody>
@@ -989,6 +1035,7 @@ fn box_plane_horizontal_4_contacts() {
             <worldbody>
                 <geom name="floor" type="plane" size="10 10 0.1"/>
                 <body name="box" pos="0 0 0.4">
+                    <joint type="free"/>
                     <geom type="box" size="0.5 0.5 0.5"/>
                 </body>
             </worldbody>
@@ -1033,6 +1080,7 @@ fn box_plane_tilted_4_contacts_distinct_depths() {
                 <geom name="floor" type="plane" size="10 10 0.1"
                       euler="10 0 0"/>
                 <body name="box" pos="0 0 0.2">
+                    <joint type="free"/>
                     <geom type="box" size="0.3 0.3 0.3"/>
                 </body>
             </worldbody>
@@ -1189,6 +1237,7 @@ fn capsule_plane_horizontal_2_contacts() {
             <worldbody>
                 <geom name="floor" type="plane" size="10 10 0.1"/>
                 <body name="cap" pos="0 0 0.1" euler="0 90 0">
+                    <joint type="free"/>
                     <geom type="capsule" size="0.2 0.5"/>
                 </body>
             </worldbody>
@@ -1235,6 +1284,7 @@ fn capsule_plane_upright_1_contact() {
             <worldbody>
                 <geom name="floor" type="plane" size="10 10 0.1"/>
                 <body name="cap" pos="0 0 0.6">
+                    <joint type="free"/>
                     <geom type="capsule" size="0.2 0.5"/>
                 </body>
             </worldbody>
@@ -1270,6 +1320,7 @@ fn cylinder_plane_horizontal_2_contacts() {
             <worldbody>
                 <geom name="floor" type="plane" size="10 10 0.1"/>
                 <body name="cyl" pos="0 0 0.25" euler="0 90 0">
+                    <joint type="free"/>
                     <geom type="cylinder" size="0.3 0.5"/>
                 </body>
             </worldbody>
@@ -1319,6 +1370,7 @@ fn cylinder_plane_upright_3_contacts() {
             <worldbody>
                 <geom name="floor" type="plane" size="10 10 0.1"/>
                 <body name="cyl" pos="0 0 0.4">
+                    <joint type="free"/>
                     <geom type="cylinder" size="0.3 0.5"/>
                 </body>
             </worldbody>
@@ -1359,6 +1411,7 @@ fn cylinder_plane_tilted_1_contact() {
             <worldbody>
                 <geom name="floor" type="plane" size="10 10 0.1"/>
                 <body name="cyl" pos="0 0 0.5" euler="45 0 0">
+                    <joint type="free"/>
                     <geom type="cylinder" size="0.3 0.5"/>
                 </body>
             </worldbody>
@@ -1397,6 +1450,7 @@ fn cylinder_plane_slight_tilt_3_contacts() {
             <worldbody>
                 <geom name="floor" type="plane" size="10 10 0.1"/>
                 <body name="cyl" pos="0 0 0.4" euler="10 0 0">
+                    <joint type="free"/>
                     <geom type="cylinder" size="0.3 0.5"/>
                 </body>
             </worldbody>
@@ -1449,6 +1503,7 @@ fn mesh_plane_box_3_contacts() {
             <worldbody>
                 <geom name="floor" type="plane" size="10 10 0.1"/>
                 <body name="mesh_box" pos="0 0 0.4">
+                    <joint type="free"/>
                     <geom type="mesh" mesh="box1"/>
                 </body>
             </worldbody>
@@ -1493,6 +1548,7 @@ fn mesh_plane_box_separated() {
             <worldbody>
                 <geom name="floor" type="plane" size="10 10 0.1"/>
                 <body name="mesh_box" pos="0 0 2.0">
+                    <joint type="free"/>
                     <geom type="mesh" mesh="box1"/>
                 </body>
             </worldbody>

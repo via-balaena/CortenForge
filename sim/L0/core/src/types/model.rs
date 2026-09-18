@@ -947,6 +947,23 @@ pub struct Model {
     // ==================== Pre-computed Kinematic Data ====================
     // These are computed once at model construction to avoid O(n) lookups
     // in the inner loops of CRBA and RNE, achieving O(n) vs O(n³) complexity.
+    /// For each body: the root of its WELD GROUP, mirroring `MuJoCo`'s
+    /// `body_weldid`.
+    ///
+    /// Bodies joined by zero-dof (fixed) joints are one rigid body and share a
+    /// weld id — the nearest ancestor that contributes degrees of freedom, or
+    /// the world. A body with no joint is welded to its parent, so a jointless
+    /// body hanging off the world joins **weld group 0** along with the ground.
+    ///
+    /// ⛔ This is what the collision filter must compare, not `body_parent`.
+    /// Two SIBLINGS can belong to one weld group's interior — a welded plate
+    /// and a hinged arm both hanging off the same chassis — and a parent-child
+    /// test cannot see that they may not collide.
+    ///
+    /// ⚠ Computed by [`compute_ancestors`](Self::compute_ancestors), not at
+    /// push time, because it needs the whole tree.
+    pub body_weldid: Vec<usize>,
+
     /// For each body: list of ancestor joint indices (from body to root).
     /// `body_ancestor_joints[i]` contains all joints in the kinematic chain
     /// from body `i` to the world. Empty for body 0 (world).

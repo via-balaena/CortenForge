@@ -5,7 +5,8 @@
 //! at every step against reference `.npy` files with step-aware growing
 //! tolerances.
 //!
-//! 8 trajectory tests — one per canonical conformance model.
+//! 8 trajectory tests — one per canonical conformance model, EXCEPT
+//! `weld_model`; see the note at the end of this file for why.
 
 use super::common;
 use common::{
@@ -319,3 +320,20 @@ fn layer_c_trajectory_composite_model() {
         false, // no free joint (4 hinge joints)
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Why `weld_model` has no trajectory test
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// ⛔ A DECISION, not an oversight — recorded because a missing entry in a
+// one-per-model list reads as one.
+//
+// `weld_model` gates collision FILTERING, so the pairs its assertions rest on
+// start deeply interpenetrating — `link1 <-> anchor2` at -0.14 m. A trajectory
+// from that state compares solver impulse handling, not dynamics: adding the
+// test put `qvel.dof[0]` 67 688x over tolerance at step ZERO, before anything
+// moved. Passing it would need a tolerance that asserts nothing.
+//
+// ⚠ Nor is it covered elsewhere. The trike steps a 15-body weld group for
+// 4 000 steps but with `DISABLE_CONTACT` (`main.rs:1735`), so weld-group
+// collision OVER TIME is an uncovered axis.

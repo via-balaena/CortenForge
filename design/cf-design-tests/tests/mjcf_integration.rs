@@ -424,16 +424,23 @@ fn phase5_parameterized_grasp_optimization() {
             // tracks the ball radius — keeping consistent ground clearance.
             let r = store.get("ball_radius").unwrap_or(15.0);
 
+            // ⚠ The free joint hangs off "world", not off a stand-in `frame`
+            // part. There WAS one — a 10 mm cuboid at the origin — and the
+            // ball at r = 15 sat z 0.5..30.5 straight through it. It never
+            // showed because the collision filter suppressed every
+            // parent-child pair, and the frame was the ball's parent. The
+            // frame is welded to the world, so it shares weld group 0, and
+            // MuJoCo exempts the world group from the parent rule: once the
+            // filter matched, the ball rested on the FRAME instead of the
+            // injected plane and the optimiser drove the radius DOWN.
+            //
+            // A free body's parent is the world. Deleting the stand-in is the
+            // fix; `model.nbody - 1` still indexes the ball.
             let mechanism = Mechanism::builder("grasp_opt")
-                .part(Part::new(
-                    "frame",
-                    Solid::cuboid(Vector3::new(10.0, 10.0, 10.0)),
-                    mat.clone(),
-                ))
                 .part(Part::new("ball", Solid::sphere(r), mat.clone()))
                 .joint(JointDef::new(
                     "drop",
-                    "frame",
+                    "world",
                     "ball",
                     JointKind::Free,
                     Point3::new(0.0, 0.0, r + 0.5), // ball bottom 0.5mm above plane

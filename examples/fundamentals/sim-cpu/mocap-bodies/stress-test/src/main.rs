@@ -209,8 +209,18 @@ fn check_4_contact_generation() -> (u32, u32) {
     let wall_id = model.body_id("wall").expect("wall body exists");
     let mocap_idx = model.body_mocapid[wall_id].expect("wall is mocap");
 
-    // Move wall right next to ball (ball is at x=0, wall geom half-size=0.05)
-    data.mocap_pos[mocap_idx] = Vector3::new(0.15, 0.0, 0.5);
+    // Move the wall so it actually PENETRATES the ball: its near face sits at
+    // x - 0.05, and the ball's edge is at x = 0.1.
+    //
+    // ⚠⚠ This was 0.15, putting the face at exactly 0.100 — tangent to the
+    // ball, no penetration, no contact. MuJoCo agrees: ncon = 0 at 0.15 and 1
+    // at 0.13. The check passed anyway because it counted the WALL CLIPPING
+    // THE FLOOR — the box spans z -0.5..1.5 and is buried half a metre in the
+    // ground plane — which produced 4 contacts that have nothing to do with
+    // the ball. A mocap body has no dofs, so it shares the world's weld group
+    // and MuJoCo never collides it with the ground; once the collision filter
+    // matched MuJoCo those 4 vanished and left the real answer, zero.
+    data.mocap_pos[mocap_idx] = Vector3::new(0.13, 0.0, 0.5);
 
     for _ in 0..10 {
         data.step(&model).expect("step");

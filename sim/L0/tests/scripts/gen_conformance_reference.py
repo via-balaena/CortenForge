@@ -40,6 +40,9 @@ MODEL_CONFIG = {
     "sensor_model":     {"ctrl": None,       "traj_steps": 100},
     "equality_model":   {"ctrl": None,       "traj_steps": 100},
     "composite_model":  {"ctrl": [1.0],      "traj_steps": 200},
+    # Weld-group collision filtering. No other model here has a single
+    # welded body, so MuJoCo's weld branch went unexercised.
+    "weld_model":       {"ctrl": None,       "traj_steps": 100},
 }
 
 

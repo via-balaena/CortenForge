@@ -257,3 +257,67 @@ fn diagnostics(
     ];
     let _ = print_report("Bitmask (t=5s)", &checks);
 }
+
+// ── Gate ────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::MJCF;
+
+    /// The settled contact set, pinned against MuJoCo 3.4.0.
+    ///
+    /// `full` (contype 1 / conaffinity 1) and `type_only` land on the ground;
+    /// `layer2` (2/2) and `off` (contype 0) fall straight through it. The set
+    /// equality is the point — it asserts the two that are FILTERED are absent
+    /// just as much as the two that land are present.
+    ///
+    /// ⛔ This example is a Bevy binary, so nothing in CI ever RAN it — and it
+    /// demonstrates contact FILTERING, which made it the code most exposed to a
+    /// change in the collision filter and the least covered. Asserting the exact
+    /// SET catches a filter that is too permissive AND one that is too
+    /// aggressive, which matters because the weld-group fix was wrong in both
+    /// directions at once.
+    ///
+    /// ⚠ **What this gate does and does not witness.** It guards the
+    /// contype/conaffinity path: demonstrated failing by replacing the bitmask test with `true`.
+    /// It does NOT witness the weld-group rule — this model has no welded
+    /// bodies, and disabling same-weld filtering leaves the set unchanged. The
+    /// weld rule is gated by `weld_model` in the conformance suite.
+    ///
+    /// ⚠ Measured, not guessed: MuJoCo reports the same set after the same
+    /// 800 steps. A reference-pose assertion would have read zero contacts
+    /// here — the bodies are still falling — and proved nothing.
+    #[test]
+    fn the_settled_contact_set_matches_mujoco() {
+        let model = sim_mjcf::load_model(MJCF).expect("parse");
+        let mut data = model.make_data();
+        data.forward(&model).expect("forward");
+        for _ in 0..800 {
+            data.step(&model).expect("step");
+        }
+
+        let name = |b: usize| {
+            model.body_name[b]
+                .clone()
+                .unwrap_or_else(|| "world".to_owned())
+        };
+        let mut got: Vec<String> = (0..data.ncon)
+            .map(|c| {
+                let con = &data.contacts[c];
+                let (mut a, mut b) = (
+                    name(model.geom_body[con.geom1]),
+                    name(model.geom_body[con.geom2]),
+                );
+                if a > b {
+                    std::mem::swap(&mut a, &mut b);
+                }
+                format!("{a}<->{b}")
+            })
+            .collect();
+        got.sort();
+        got.dedup();
+
+        let want: Vec<String> = vec!["full<->world".to_owned(), "type_only<->world".to_owned()];
+        assert_eq!(got, want, "contact set drifted from MuJoCo's");
+    }
+}

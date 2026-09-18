@@ -181,7 +181,7 @@ mod tests {
     /// a bushing of the given joint stiffness. Returns the sag in radians.
     fn sag_of_loaded_arm(joint_stiffness: f64) -> (f64, f64, f64) {
         let steel = Material::new("mild steel", 7850.0);
-        let m = Mechanism::builder("bushed arm")
+        let mut m = Mechanism::builder("bushed arm")
             .part(Part::new(
                 "post",
                 Solid::cuboid(Vector3::new(10.0, 10.0, 10.0)),
@@ -224,6 +224,21 @@ mod tests {
             .build()
             .to_model(4.0, 4.0)
             .unwrap();
+        // ⛔ This gate measures TORSIONAL SAG, not contact. The arm's solid
+        // necessarily passes through its own post at the pivot — measured, 8
+        // contacts at 7.5 mm and 2.5 mm depth — which is what a hinge lug
+        // inside a bracket looks like, and a real model excludes the pair.
+        //
+        // ⚠ Those contacts used to be absent for the WRONG reason: the
+        // collision filter suppressed any parent-child pair, and `post` is the
+        // arm's parent. `post` is welded to the world, so it belongs to weld
+        // group 0, and MuJoCo exempts the world group from the parent rule —
+        // it collides them. Once the filter matched MuJoCo the arm started
+        // resting on its own post and settled at 0.00086 rad against an
+        // arithmetic 0.00858, i.e. this gate began measuring contact stiffness
+        // instead of the bushing. Disabled explicitly rather than left to a
+        // filter bug.
+        m.disableflags |= sim_core::DISABLE_CONTACT;
 
         let arm = m
             .body_name

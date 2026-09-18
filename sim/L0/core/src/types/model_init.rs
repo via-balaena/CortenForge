@@ -370,6 +370,8 @@ impl Model {
             implicit_springref: DVector::zeros(0),
 
             // Pre-computed kinematic data (world body has no ancestors)
+            // The world is its own weld group.
+            body_weldid: vec![0],
             body_ancestor_joints: vec![vec![]],
             body_ancestor_mask: vec![vec![]], // Empty vec for world body (no joints yet)
 
@@ -919,6 +921,22 @@ impl Model {
         // Clear and resize
         self.body_ancestor_joints = vec![vec![]; self.nbody];
         self.body_ancestor_mask = vec![vec![0u64; num_words]; self.nbody];
+
+        // ── Weld groups (MuJoCo's `body_weldid`) ────────────────────
+        // Walk up while each body contributes no degrees of freedom: a
+        // zero-dof joint is a weld, so the body is rigidly part of its
+        // parent. The walk stops at the first body with dofs, or at the
+        // world — which is why a jointless body hanging off the world lands
+        // in weld group 0 together with the ground, and static bodies
+        // therefore never collide with each other.
+        self.body_weldid = vec![0; self.nbody];
+        for body_id in 0..self.nbody {
+            let mut current = body_id;
+            while current != 0 && self.body_dof_num[current] == 0 {
+                current = self.body_parent[current];
+            }
+            self.body_weldid[body_id] = current;
+        }
 
         // For each body, walk up to root collecting ancestor joints
         for body_id in 1..self.nbody {

@@ -1,0 +1,58 @@
+<!-- Weld-group collision filtering.
+
+     ⛔ The conformance set had NO welded body before this model: every one of
+     the other eight has `body_dofnum > 0` for all bodies, so the weld-group
+     branch of MuJoCo's collision filter was never exercised. That is why a
+     CortenForge/MuJoCo divergence there survived.
+
+     A body with no <joint> is WELDED to its parent and shares its `body_weldid`.
+     MuJoCo filters a geom pair when the two bodies share a weld id, and
+     (unless filterparent is disabled) when one weld group is the other's
+     parent — with an exemption when either group is the world (weld 0).
+
+     Geometry is spheres and a plane only, so contact positions/normals are
+     analytic and this model tests the FILTER rather than narrowphase accuracy.
+
+     ⚠ Which pairs overlap, and why it matters, is stated ONCE — beside the
+     assertions in layer_b.rs, not here. -->
+<mujoco model="weld_model">
+  <option timestep="0.002"/>
+  <worldbody>
+    <geom name="floor" type="plane" size="5 5 0.1"/>
+
+    <!-- Welded to WORLD (no joint): joins weld group 0 with the floor. -->
+    <body name="anchor" pos="0 0 0.5">
+      <geom name="g_anchor" type="sphere" size="0.1"/>
+
+      <!-- Articulated off the anchor. -->
+      <body name="link1" pos="0.12 0 0">
+        <joint name="j1" type="hinge" axis="0 1 0"/>
+        <geom name="g_link1" type="sphere" size="0.1"/>
+
+        <!-- WELDED to link1 -> same weld group, and overlapping it. -->
+        <body name="weld1" pos="0.09 0 0">
+          <geom name="g_weld1" type="sphere" size="0.1"/>
+        </body>
+
+        <!-- Articulated child of link1, hence a SIBLING of weld1. -->
+        <body name="link2" pos="0.09 0 0">
+          <joint name="j2" type="hinge" axis="0 1 0"/>
+          <geom name="g_link2" type="sphere" size="0.1"/>
+        </body>
+      </body>
+    </body>
+
+    <!-- A SECOND body welded to world, overlapping `anchor`. Both are weld 0,
+         so this pair is filtered by the RULE rather than by not touching. -->
+    <body name="anchor2" pos="0.06 0 0.5">
+      <geom name="g_anchor2" type="sphere" size="0.1"/>
+    </body>
+
+    <!-- Free body resting ON the floor: parent is world, and the world
+         exemption is what lets this contact exist at all. -->
+    <body name="ball" pos="0.4 0 0.09">
+      <freejoint/>
+      <geom name="g_ball" type="sphere" size="0.1"/>
+    </body>
+  </worldbody>
+</mujoco>
