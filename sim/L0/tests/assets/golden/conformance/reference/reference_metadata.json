@@ -1,6 +1,6 @@
 {
   "mujoco_version": "3.4.0",
-  "generated_at": "2026-09-18T03:38:20Z",
+  "generated_at": "2026-09-18T14:12:54Z",
   "models": {
     "pendulum": {
       "nq": 1,
@@ -113,7 +113,7 @@
       "ntendon": 0,
       "ctrl": null,
       "trajectory_steps": 100,
-      "model_xml_md5": "775eee89e33ccbe048204e98857060f3"
+      "model_xml_md5": "28962692bf508d8c49b5f3f0903ef688"
     }
   },
   "files": {

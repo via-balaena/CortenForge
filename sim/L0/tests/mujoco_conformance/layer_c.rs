@@ -344,5 +344,13 @@ fn layer_c_trajectory_composite_model() {
 // wide enough to assert nothing, or a differently-posed model — which would no
 // longer be the filter fixture.
 //
-// ★ The weld group IS covered dynamically, just not here: cf-trike steps 4 000
-// steps through a 15-body weld group in `example-trike-mass-budget`.
+// ⛔⛔ And do NOT read this as "covered elsewhere". An earlier draft of this
+// note said the weld group is covered dynamically by cf-trike, which steps a
+// 15-body weld group for 4 000 steps in `example-trike-mass-budget`. True, and
+// misleading in a note about COLLISION: that gate sets `DISABLE_CONTACT`
+// (`main.rs:1735`), so what it exercises is kinematics and the mass matrix.
+//
+// Measured: NOTHING steps a weld group with contacts enabled. `weld_model` is a
+// single `forward()`; the trike disables contacts; the three contact-filtering
+// examples have no welded bodies. Weld-group collision OVER TIME is an
+// uncovered axis, and saying so is the point of this paragraph.
