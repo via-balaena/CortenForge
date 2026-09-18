@@ -614,6 +614,34 @@ mod tests {
         }
     }
 
+    /// ★★★ The canonical pair really is the FULL statement.
+    ///
+    /// ⛔ The second review pass found the sibling test above blind to this:
+    /// it asks whether SOME tier claims each clause, which a ninth clause
+    /// assigned only to `General` would satisfy while the canonical documents
+    /// stopped stating it. Moving `sim-approx` out of `Canonical` and into
+    /// `General` left that test passing.
+    ///
+    /// ⚠ So the comment on `Tier::Canonical` — that it carries every clause —
+    /// was true by construction and enforced by nothing. This is what enforces
+    /// it. Both tests are needed: that one closes "a clause nobody claims",
+    /// this one closes "a clause the full statement stopped making".
+    #[test]
+    fn the_canonical_tier_requires_every_clause() {
+        let stated: BTreeSet<Clause> = FLOOR
+            .into_iter()
+            .chain(Tier::Canonical.required().iter().copied())
+            .collect();
+        let all: BTreeSet<Clause> = Clause::ALL.into_iter().collect();
+
+        let missing: Vec<&str> = all.difference(&stated).map(|c| c.name()).collect();
+        assert!(
+            missing.is_empty(),
+            "DISCLAIMER.md and NOTICE are the full statement, but nothing \
+             requires them to carry: {missing:?}"
+        );
+    }
+
     /// ★★★ Every exclusion earns its place, and hides nothing else.
     ///
     /// ⚠ The half that matters is the second assertion. An exclusion list is
