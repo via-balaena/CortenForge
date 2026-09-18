@@ -399,3 +399,111 @@ fn an_empty_year_yields_zeros_not_nan() {
     );
     assert!(e.capacity_factor.abs() < f64::EPSILON);
 }
+
+/// A machine never exceeds its own nameplate, and the cap actually binds.
+///
+/// ⛔ Added because a probe found `rated_power_w` was load-bearing in the code
+/// and load-bearing in no test: replacing the cap with the reference turbine's
+/// own rating changed nothing observable, because every other test either uses
+/// that turbine or only checks a smaller one produces less. A field the gates
+/// cannot see is a field that can silently stop working.
+#[test]
+fn rated_power_caps_output_and_the_cap_binds() {
+    for v in [0.0, 3.6, 5.0, 10.0, 15.0, 20.0, 24.9, 30.0] {
+        let p = REF.power_w(v, AIR);
+        assert!(
+            p <= REF.rated_power_w + 1e-6,
+            "at {v} m/s the machine produced {p} W, above its {} W nameplate",
+            REF.rated_power_w
+        );
+    }
+    // Same rotor, a tenth of the generator: the cap must bind for much of the
+    // year rather than being decorative.
+    let over_rotored = Turbine {
+        name: "reference rotor, small generator",
+        rated_power_w: 150e3,
+        ..REF
+    };
+    let e = annual_energy(&YEAR, &over_rotored, AIR);
+    assert!(
+        e.samples_at_rated > YEAR.len() / 2,
+        "a 150 kW generator on a 77 m rotor clipped only {} of {} samples",
+        e.samples_at_rated,
+        YEAR.len()
+    );
+    assert!(
+        e.capacity_factor > 0.75,
+        "an over-rotored machine should run near nameplate most of the time, got {:.3}",
+        e.capacity_factor
+    );
+    // and its energy must be far below the properly rated machine's
+    let full = annual_energy(&YEAR, &REF, AIR);
+    assert!(
+        e.kwh < full.kwh / 3.0,
+        "the cap did not reduce annual energy"
+    );
+}
+
+/// ⛔⛔ Every turbine parameter must move the answer on its own.
+///
+/// The seam tests above vary a whole machine at once, and that is not enough:
+/// probes showed `cp` and `rotor_diameter_m` could each be hard-coded to the
+/// reference value with every test still green, because a second parameter
+/// masked the first. A parameter no gate can see is a knob that can quietly
+/// stop being connected — and for a chain whose whole purpose is a sensitivity
+/// sweep, an unconnected knob is worse than a wrong one.
+///
+/// MUTATION: replace any field with a literal in `power_w` or `swept_area_m2`
+/// and this fails.
+#[test]
+fn every_turbine_parameter_changes_the_answer() {
+    let base = annual_energy(&YEAR, &REF, AIR).kwh;
+    let cases: [(&str, Turbine); 5] = [
+        (
+            "rotor_diameter_m",
+            Turbine {
+                rotor_diameter_m: REF.rotor_diameter_m * 0.5,
+                ..REF
+            },
+        ),
+        // rated high enough that the bigger rotor is not simply clipped away
+        (
+            "rated_power_w",
+            Turbine {
+                rated_power_w: REF.rated_power_w * 0.5,
+                ..REF
+            },
+        ),
+        (
+            "cut_in_ms",
+            Turbine {
+                cut_in_ms: 9.0,
+                ..REF
+            },
+        ),
+        (
+            "cut_out_ms",
+            Turbine {
+                cut_out_ms: 11.0,
+                ..REF
+            },
+        ),
+        (
+            "cp",
+            Turbine {
+                cp: REF.cp * 0.5,
+                ..REF
+            },
+        ),
+    ];
+    for (field, t) in cases {
+        let got = annual_energy(&YEAR, &t, AIR).kwh;
+        let change = (got - base).abs() / base;
+        assert!(
+            change > 0.02,
+            "halving/altering `{field}` moved annual energy by only {:.4}% \
+             ({got:.0} vs {base:.0} kWh) — the parameter is not connected",
+            change * 100.0
+        );
+    }
+}
