@@ -57,15 +57,21 @@ fn a_perturbed_figure_stops_reconciling() {
         if d.printed.read().agreed().is_none() || WEAKLY_CHECKED_8245R.contains(&d.name) {
             continue;
         }
-        let mut bumped = d.printed;
-        bumped.us *= 1.0 + CATCHABLE_ERROR;
-        assert!(
-            bumped.read().agreed().is_none(),
-            "{}: perturbing by {}% left it still reconciling, but it is not \
-             listed as weakly checked",
-            d.name,
-            CATCHABLE_ERROR * 100.0
-        );
+        // Both directions. The printed pair is rarely an exact conversion of
+        // each other, and that standing offset eats margin on one side only —
+        // so a one-directional probe can pass on a figure that is blind to the
+        // same error with its sign flipped.
+        for sign in [1.0, -1.0] {
+            let mut bumped = d.printed;
+            bumped.us *= 1.0 + sign * CATCHABLE_ERROR;
+            assert!(
+                bumped.read().agreed().is_none(),
+                "{}: perturbing by {}% in direction {sign} left it still \
+                 reconciling, but it is not listed as weakly checked",
+                d.name,
+                CATCHABLE_ERROR * 100.0
+            );
+        }
         proven += 1;
     }
     // ⛔ An empty loop passes. Assert the collection.
@@ -292,5 +298,30 @@ fn the_test_identifies_itself() {
         JOHN_DEERE_8245R.data.len(),
         25,
         "the number of transcribed figures changed"
+    );
+}
+
+/// An agreed figure's span is a point, so code that works in spans can treat
+/// agreed and disputed figures uniformly without special-casing.
+///
+/// MUTATION: make `span` widen an agreed reading and this fails.
+#[test]
+fn an_agreed_span_is_a_point() {
+    let mut checked = 0;
+    for d in JOHN_DEERE_8245R.data {
+        let reading = d.printed.read();
+        let Some(v) = reading.agreed() else { continue };
+        let (lo, hi) = reading.span();
+        assert!(
+            (lo - hi).abs() < f64::EPSILON && (lo - v).abs() < f64::EPSILON,
+            "{}: agreed span is not the point it agreed on",
+            d.name
+        );
+        checked += 1;
+    }
+    assert_eq!(
+        checked,
+        JOHN_DEERE_8245R.data.len() - DISPUTED_8245R.len(),
+        "wrong number of agreed figures"
     );
 }
