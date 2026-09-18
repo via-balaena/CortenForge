@@ -181,7 +181,7 @@ mod tests {
     /// a bushing of the given joint stiffness. Returns the sag in radians.
     fn sag_of_loaded_arm(joint_stiffness: f64) -> (f64, f64, f64) {
         let steel = Material::new("mild steel", 7850.0);
-        let m = Mechanism::builder("bushed arm")
+        let mut m = Mechanism::builder("bushed arm")
             .part(Part::new(
                 "post",
                 Solid::cuboid(Vector3::new(10.0, 10.0, 10.0)),
@@ -238,9 +238,7 @@ mod tests {
         // arithmetic 0.00858, i.e. this gate began measuring contact stiffness
         // instead of the bushing. Disabled explicitly rather than left to a
         // filter bug.
-        let mut m = m;
         m.disableflags |= sim_core::DISABLE_CONTACT;
-        let m = m;
 
         let arm = m
             .body_name
