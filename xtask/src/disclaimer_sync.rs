@@ -133,8 +133,17 @@ pub(crate) enum Clause {
 }
 
 impl Clause {
+    /// How many clauses there are.
+    ///
+    /// ⚠ Load-bearing, not decoration. [`Clause::ALL`] is typed
+    /// `[Clause; COUNT]`, so raising this without extending the literal does
+    /// not compile — and lowering it without shortening the literal does not
+    /// either. It is the link that turns "the list is short" into a build
+    /// failure rather than a silent hole.
+    const COUNT: usize = 8;
+
     /// Every clause, in the order a reader meets them.
-    const ALL: [Clause; 8] = [
+    const ALL: [Clause; Self::COUNT] = [
         Clause::AsIs,
         Clause::NoWarranty,
         Clause::NotMedical,
@@ -156,6 +165,26 @@ impl Clause {
             Clause::Hazards => "hazards",
             Clause::SimApprox => "sim-approx",
             Clause::NoLiability => "no-liability",
+        }
+    }
+
+    /// This clause's position in [`Clause::ALL`].
+    ///
+    /// ★ Exists to make a forgotten `ALL` entry LOUD. Adding a variant fails to
+    /// compile in three exhaustive matches — here, [`Clause::name`] and
+    /// [`Clause::needles`] — so no clause can be introduced without the author
+    /// being stopped and handed this list to update.
+    #[cfg_attr(not(test), allow(dead_code))]
+    const fn index(self) -> usize {
+        match self {
+            Clause::AsIs => 0,
+            Clause::NoWarranty => 1,
+            Clause::NotMedical => 2,
+            Clause::OwnRisk => 3,
+            Clause::BodySafeResponsibility => 4,
+            Clause::Hazards => 5,
+            Clause::SimApprox => 6,
+            Clause::NoLiability => 7,
         }
     }
 
@@ -612,6 +641,49 @@ mod tests {
                 clause.name()
             );
         }
+    }
+
+    /// ★★ `ALL` lists its clauses once each, in index order.
+    ///
+    /// ⚠ **What this actually closes, measured rather than reasoned.** Adding a
+    /// variant fails to compile in three exhaustive matches — [`Clause::name`],
+    /// [`Clause::needles`] and [`Clause::index`] — which is verified: a ninth
+    /// variant produces exactly 3 `E0004` errors. That is the guarantee: a
+    /// clause cannot be introduced without the author being stopped and handed
+    /// the lists to update.
+    ///
+    /// ⛔⛔ **An earlier version of this comment claimed more, and the claim was
+    /// FALSE.** It said giving the new variant the next index would fail this
+    /// test, then that raising `COUNT` would fail to compile against
+    /// `[Clause; COUNT]` — a chain ending only at `ALL`. Walking it showed the
+    /// chain breaks at the first step: this test iterates `ALL`, so a variant
+    /// holding index 8 while absent from `ALL` is never looked at, and the test
+    /// passes. Stable Rust cannot enumerate an enum's variants without a derive
+    /// macro, and no arrangement of hand-maintained lists substitutes for that.
+    ///
+    /// ⇒ So this test is scoped to what it can see: among the clauses `ALL`
+    /// does list, each sits at its own index and no two collide. Completeness
+    /// of `ALL` rests on the three compile errors, not on this.
+    #[test]
+    fn all_lists_every_clause_once_in_index_order() {
+        for (slot, clause) in Clause::ALL.into_iter().enumerate() {
+            assert_eq!(
+                clause.index(),
+                slot,
+                "{} sits at ALL[{slot}] but reports index {}",
+                clause.name(),
+                clause.index()
+            );
+        }
+        let distinct: BTreeSet<usize> = Clause::ALL.into_iter().map(Clause::index).collect();
+        assert_eq!(
+            distinct.len(),
+            Clause::COUNT,
+            "ALL holds {} distinct indices across {} slots — a clause is listed \
+             twice, or two share an index",
+            distinct.len(),
+            Clause::COUNT
+        );
     }
 
     /// ★★★ The canonical pair really is the FULL statement.
