@@ -195,11 +195,29 @@ impl Tier {
     /// Clauses this tier must carry beyond [`FLOOR`].
     const fn required(self) -> &'static [Clause] {
         match self {
-            // Checked against its sibling instead, which is stricter than any
-            // fixed list: the pair must agree whatever the list becomes.
-            Tier::Canonical => &[],
-            Tier::General => &[Clause::Hazards],
-            Tier::Scoped => &[Clause::BodySafeResponsibility],
+            // ⛔⛔ This was `&[]`, on the reasoning that checking the pair
+            // against each other is "stricter than any fixed list". That
+            // reasoning is FALSE, and the review of this PR proved it by
+            // mutation: agreement detects DIVERGENCE, never SHARED LOSS.
+            // Deleting the liability and simulation clauses from BOTH canonical
+            // documents left them in perfect agreement, satisfied every tier,
+            // and printed `✓ 7 surfaces agree` — because no tier required
+            // either clause, so nothing in the gate ever asserted they exist.
+            //
+            // The canonical pair is the FULL statement, so it carries every
+            // clause. Agreement and completeness are orthogonal; both are
+            // needed, and the fixed list is what makes "full" mean something.
+            Tier::Canonical => &[
+                Clause::NoWarranty,
+                Clause::BodySafeResponsibility,
+                Clause::Hazards,
+                Clause::SimApprox,
+                Clause::NoLiability,
+            ],
+            Tier::General => &[Clause::NoWarranty, Clause::Hazards],
+            Tier::Scoped => &[Clause::NoWarranty, Clause::BodySafeResponsibility],
+            // ⚠ Carries no-warranty nowhere, and that is correct: the release
+            // note points at DISCLAIMER.md rather than restating its terms.
             Tier::Pointer => &[],
         }
     }
@@ -563,6 +581,37 @@ mod tests {
     #[test]
     fn the_shipped_surfaces_are_in_sync() {
         check_at(workspace()).expect("the disclaimer's surfaces agree");
+    }
+
+    /// ★★★ Every clause is asserted by SOMEONE, so none can quietly vanish.
+    ///
+    /// ⛔⛔ The structural guard for the hole the review of this PR found by
+    /// mutation. A clause required by no tier is checked only for AGREEMENT
+    /// between the canonical pair — and agreement detects divergence, never
+    /// SHARED LOSS. Deleting the liability and simulation clauses from both
+    /// canonical documents left them agreeing perfectly and the gate green.
+    ///
+    /// ⚠ Written over `Clause::ALL` rather than as a list, so a clause added
+    /// later cannot arrive unasserted: this fails until some tier claims it.
+    /// Fixing the two instances without this test would have left the class
+    /// open, which is how the second one (`no-warranty`) was still sitting
+    /// there after the first was patched.
+    #[test]
+    fn every_clause_is_required_by_some_tier() {
+        let floor: BTreeSet<Clause> = FLOOR.into_iter().collect();
+        for clause in Clause::ALL {
+            let claimed = floor.contains(&clause)
+                || [Tier::Canonical, Tier::General, Tier::Scoped, Tier::Pointer]
+                    .into_iter()
+                    .any(|tier| tier.required().contains(&clause));
+            assert!(
+                claimed,
+                "{} is in no tier\u{27}s required set and not in the floor, so nothing \
+                 asserts it exists — both canonical copies could drop it together \
+                 and this gate would still report every surface in sync",
+                clause.name()
+            );
+        }
     }
 
     /// ★★★ Every exclusion earns its place, and hides nothing else.
