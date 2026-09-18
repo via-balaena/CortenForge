@@ -1,0 +1,24 @@
+[package]
+name = "cf-wind"
+description = "One farm site's wind year from the NREL WIND Toolkit, carried at the source's own resolution with its own geolocation — and the energy a named turbine would take from it, because power follows the mean of the cube and not the cube of the mean"
+keywords = ["wind", "resource", "energy", "turbine", "agriculture"]
+categories = ["science", "simulation"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[package.metadata.cortenforge]
+tier = "L0"
+
+[dependencies]
+# None. The one integrity check this crate needs — "has the checked-in series
+# drifted?" — is a 15-line FNV-1a over 206 KiB, not a reason to put the first
+# hash crate into the whole workspace's dependency graph. The SHA-256 that
+# matches the source is recorded in provenance and verified with `shasum`,
+# which is an executable referent even though it is not a unit test.
+
+[lints]
+workspace = true

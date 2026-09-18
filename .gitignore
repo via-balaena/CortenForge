@@ -96,6 +96,14 @@ cobertura.xml
 *.pth
 *.safetensors
 *.bin
+# ── Exception: measured/modelled source series a crate is built around ───────
+# The rule above is scoped by its own comment to model weights, which are large.
+# A farm-stage crate's source series is neither: cf-wind's is 206 KiB, and its
+# whole value is that it is byte-identical to what was retrieved and available
+# offline, so tests are deterministic and the digest in provenance means
+# something. Fetching it at build or test time would trade that away for nothing.
+# ⚠ Narrow on purpose — `farm/*/data/`, not a blanket un-ignore.
+!farm/*/data/*.bin
 
 # Datasets
 /data/
