@@ -27,11 +27,16 @@
 //!
 //! # What this crate deliberately does NOT contain
 //!
-//! See [`ABSENT`]. The compilation carries no wheel-slip column and does not
-//! state the surface the drawbar tests were run on. Both are recorded as
-//! absences with their reasons, because the tempting move — supplying a
-//! plausible value from general knowledge — would put an unsourced number
-//! into the one part of the chain that exists to be validated.
+//! See [`ABSENT`]. The compilation carries no wheel-slip column, does not state
+//! the surface the drawbar tests were run on, and is ambiguous about the engine
+//! speed at PTO maximum power. All three are recorded as absences with their
+//! reasons, because the tempting move — supplying a plausible value from
+//! general knowledge — would put an unsourced number into the one part of the
+//! chain that exists to be validated.
+//!
+//! [`NOT_TRANSCRIBED`] is the separate list: rows the source *does* carry that
+//! were skipped for relevance, so the transcribed count cannot be mistaken for
+//! the whole column.
 
 /// A unit conversion from a US customary quantity to its SI counterpart.
 ///
@@ -99,69 +104,102 @@ fn half_ulp(decimals: u8) -> f64 {
 /// the printed precision is what makes the reconciliation check meaningful.
 #[derive(Clone, Copy, Debug)]
 pub struct Printed {
-    /// The US customary value, as printed.
-    pub us: f64,
-    /// How many decimal places `us` was printed to.
-    pub us_decimals: u8,
-    /// The SI value, as printed.
-    pub si: f64,
-    /// How many decimal places `si` was printed to.
-    pub si_decimals: u8,
-    /// The conversion relating the two.
-    pub conversion: Conversion,
-}
-
-/// What a [`Printed`] figure can be trusted to say.
-///
-/// There is deliberately no accessor returning a bare `f64`. A figure whose
-/// two printed forms disagree is still *usable* — the disagreement is small
-/// and its bounds are known — but a caller has to see that it is disputed in
-/// order to get a number out of it.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Reading {
-    /// The two printed forms reconcile. Carries the SI value.
-    Agreed(f64),
-    /// The two printed forms disagree: converting the printed US value does
-    /// not land within the printed SI value's rounding interval.
-    ///
-    /// Almost always a scanning error in one of the two, but which one cannot
-    /// be settled without the original report, so both candidates are kept.
-    Disputed {
-        /// SI value implied by the printed US figure.
-        from_us: f64,
-        /// SI value as printed.
-        as_printed: f64,
-    },
-}
-
-impl Reading {
-    /// The SI value if the two printed forms agree, otherwise `None`.
-    #[must_use]
-    pub const fn agreed(self) -> Option<f64> {
-        match self {
-            Self::Agreed(v) => Some(v),
-            Self::Disputed { .. } => None,
-        }
-    }
-
-    /// The inclusive span the true SI value lies in, disputed or not.
-    ///
-    /// For an agreed figure this is a point. For a disputed one it spans both
-    /// candidates, so arithmetic over it propagates the disagreement instead
-    /// of silently picking a side.
-    #[must_use]
-    pub const fn span(self) -> (f64, f64) {
-        match self {
-            Self::Agreed(v) => (v, v),
-            Self::Disputed {
-                from_us,
-                as_printed,
-            } => (from_us.min(as_printed), from_us.max(as_printed)),
-        }
-    }
+    us: f64,
+    us_decimals: u8,
+    si: f64,
+    si_decimals: u8,
+    conversion: Conversion,
 }
 
 impl Printed {
+    /// Record a figure exactly as the source printed it, in both unit systems.
+    ///
+    /// `us_decimals` and `si_decimals` are the decimal places each was printed
+    /// to, which set the rounding slack and therefore how much the
+    /// reconciliation check can resolve. They are stored rather than inferred:
+    /// reading `60.6` as though it were `60.60` narrows the interval tenfold
+    /// and manufactures a disagreement the source does not contain.
+    #[must_use]
+    pub const fn new(
+        us: f64,
+        us_decimals: u8,
+        si: f64,
+        si_decimals: u8,
+        conversion: Conversion,
+    ) -> Self {
+        Self {
+            us,
+            us_decimals,
+            si,
+            si_decimals,
+            conversion,
+        }
+    }
+
+    /// The US customary figure exactly as the source printed it.
+    ///
+    /// ⚠ This is **transcription provenance, not a validated measurement**. It
+    /// is whatever is on the page, including for a figure whose two printed
+    /// forms disagree. The validated value comes from [`Printed::read`], which
+    /// cannot hand back a number for a disputed figure without saying so.
+    #[must_use]
+    pub const fn as_printed_us(self) -> f64 {
+        self.us
+    }
+
+    /// The SI figure exactly as the source printed it.
+    ///
+    /// ⚠ Provenance, not a validated measurement — see
+    /// [`Printed::as_printed_us`].
+    #[must_use]
+    pub const fn as_printed_si(self) -> f64 {
+        self.si
+    }
+
+    /// Decimal places the US figure was printed to.
+    #[must_use]
+    pub const fn us_decimals(self) -> u8 {
+        self.us_decimals
+    }
+
+    /// Decimal places the SI figure was printed to.
+    #[must_use]
+    pub const fn si_decimals(self) -> u8 {
+        self.si_decimals
+    }
+
+    /// The conversion relating the two printed forms.
+    #[must_use]
+    pub const fn conversion(self) -> Conversion {
+        self.conversion
+    }
+
+    /// The same figure with its US value moved by a relative amount.
+    ///
+    /// Exists so the reconciliation check can be probed against the real data
+    /// rather than a fixture: a gate nobody has made fail is vacuous, and the
+    /// way to make this one fail is to move a digit and watch it stop
+    /// reconciling.
+    #[must_use]
+    pub fn perturbed(self, relative: f64) -> Self {
+        Self {
+            us: self.us * (1.0 + relative),
+            ..self
+        }
+    }
+
+    /// The combined relative rounding slack of the two printed forms.
+    ///
+    /// The floor on what the reconciliation check could ever resolve: an
+    /// apparent disagreement smaller than this is explained by rounding alone
+    /// and says nothing about the transcription. Used to state how far a
+    /// disputed figure's disagreement exceeds what rounding can account for,
+    /// so that claim has a producer instead of being a number in a sentence.
+    #[must_use]
+    pub fn printing_slack(self) -> f64 {
+        half_ulp(self.us_decimals) / self.us.abs() + half_ulp(self.si_decimals) / self.si.abs()
+    }
+
     /// Reconcile the two printed forms.
     ///
     /// The printed US figure stands for a true value within its own rounding
@@ -208,6 +246,61 @@ impl Printed {
         let up = (self.si + s + u * k) / base - 1.0;
         let down = 1.0 - (self.si - s - u * k) / base;
         Some(up.max(down))
+    }
+}
+
+/// What a [`Printed`] figure can be trusted to say.
+///
+/// A figure whose two printed forms disagree is still *usable* — the
+/// disagreement is small and its bounds are known — but there is no path to a
+/// **validated** value that does not go through this enum, so a caller cannot
+/// treat a disputed figure as settled by accident.
+///
+/// ⚠ The raw printed figures remain reachable through
+/// [`Printed::as_printed_us`] and [`Printed::as_printed_si`], because
+/// transcription provenance is part of what this crate is for. They are named
+/// to announce what they are: what is on the page, not what has been checked.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Reading {
+    /// The two printed forms reconcile. Carries the SI value.
+    Agreed(f64),
+    /// The two printed forms disagree: converting the printed US value does
+    /// not land within the printed SI value's rounding interval.
+    ///
+    /// Almost always a scanning error in one of the two, but which one cannot
+    /// be settled without the original report, so both candidates are kept.
+    Disputed {
+        /// SI value implied by the printed US figure.
+        from_us: f64,
+        /// SI value as printed.
+        as_printed: f64,
+    },
+}
+
+impl Reading {
+    /// The SI value if the two printed forms agree, otherwise `None`.
+    #[must_use]
+    pub const fn agreed(self) -> Option<f64> {
+        match self {
+            Self::Agreed(v) => Some(v),
+            Self::Disputed { .. } => None,
+        }
+    }
+
+    /// The inclusive span the true SI value lies in, disputed or not.
+    ///
+    /// For an agreed figure this is a point. For a disputed one it spans both
+    /// candidates, so arithmetic over it propagates the disagreement instead
+    /// of silently picking a side.
+    #[must_use]
+    pub const fn span(self) -> (f64, f64) {
+        match self {
+            Self::Agreed(v) => (v, v),
+            Self::Disputed {
+                from_us,
+                as_printed,
+            } => (from_us.min(as_printed), from_us.max(as_printed)),
+        }
     }
 }
 
@@ -304,6 +397,16 @@ pub const ABSENT: &[NotInSource] = &[
               through a CGI endpoint that refuses automated retrieval.",
     },
     NotInSource {
+        what: "the engine speed at which PTO maximum power was measured",
+        why: "The row is labelled max power at RATED engine speed, and rated \
+              RPM for this tractor is printed as 2100 — but the figure in the \
+              8245R column reads as 2000, where both neighbouring columns read \
+              2100. The scan does not settle which, and the dual-unit check \
+              cannot help: an engine speed is printed once, in rpm, with no SI \
+              twin to reconcile against. Recorded rather than picked, because a \
+              fuel-rate model divides by this number.",
+    },
+    NotInSource {
         what: "the surface the drawbar tests were run on",
         why: "The retrieved methodology section describes the load units, the \
               gear selection and the part-load series, and mentions a test \
@@ -314,6 +417,21 @@ pub const ABSENT: &[NotInSource] = &[
               assuming the surface would prejudge the term being modelled.",
     },
 ];
+
+/// Rows the source prints for this tractor that are deliberately not carried.
+///
+/// The 25 figures in [`JOHN_DEERE_8245R`] are not the whole column, and
+/// `the_test_identifies_itself` pins that count — so what the count excludes
+/// has to be written down, or a reader cannot tell a deliberate omission from
+/// a transcription that stopped early.
+pub const NOT_TRANSCRIBED: &[NotInSource] = &[NotInSource {
+    what: "engine bore and stroke, and displacement",
+    why: "Both are printed in dual units and would reconcile like the rest, \
+              so they were skipped for relevance rather than difficulty: engine \
+              geometry does not enter a drawbar-to-acres chain at any stage. \
+              Add them if a combustion model ever needs them — the method is \
+              unchanged, the figures are in the same column of the same page.",
+}];
 
 /// John Deere 8245R — the calibration target for the acres chain.
 ///
@@ -341,256 +459,106 @@ pub const JOHN_DEERE_8245R: TractorTest = TractorTest {
         // ---- PTO -------------------------------------------------------
         Datum {
             name: "pto max power",
-            printed: Printed {
-                us: 215.88,
-                us_decimals: 2,
-                si: 160.98,
-                si_decimals: 2,
-                conversion: Conversion::HpToKw,
-            },
+            printed: Printed::new(215.88, 2, 160.98, 2, Conversion::HpToKw),
         },
         Datum {
             name: "pto max power fuel rate",
-            printed: Printed {
-                us: 11.84,
-                us_decimals: 2,
-                si: 44.81,
-                si_decimals: 2,
-                conversion: Conversion::GalPerHrToLPerH,
-            },
+            printed: Printed::new(11.84, 2, 44.81, 2, Conversion::GalPerHrToLPerH),
         },
         Datum {
             name: "pto max power fuel economy",
-            printed: Printed {
-                us: 18.24,
-                us_decimals: 2,
-                si: 3.59,
-                si_decimals: 2,
-                conversion: Conversion::HpHrPerGalToKwhPerL,
-            },
+            printed: Printed::new(18.24, 2, 3.59, 2, Conversion::HpHrPerGalToKwhPerL),
         },
         Datum {
             name: "pto power at standard 1000 rpm",
-            printed: Printed {
-                us: 235.92,
-                us_decimals: 2,
-                si: 175.93,
-                si_decimals: 2,
-                conversion: Conversion::HpToKw,
-            },
+            printed: Printed::new(235.92, 2, 175.93, 2, Conversion::HpToKw),
         },
         Datum {
             name: "pto 1000 rpm fuel rate",
-            printed: Printed {
-                us: 12.52,
-                us_decimals: 2,
-                si: 47.40,
-                si_decimals: 2,
-                conversion: Conversion::GalPerHrToLPerH,
-            },
+            printed: Printed::new(12.52, 2, 47.40, 2, Conversion::GalPerHrToLPerH),
         },
         Datum {
             name: "pto 1000 rpm fuel economy",
-            printed: Printed {
-                us: 18.84,
-                us_decimals: 2,
-                si: 3.71,
-                si_decimals: 2,
-                conversion: Conversion::HpHrPerGalToKwhPerL,
-            },
+            printed: Printed::new(18.84, 2, 3.71, 2, Conversion::HpHrPerGalToKwhPerL),
         },
         // ---- mass ------------------------------------------------------
         Datum {
             name: "weight as tested",
-            printed: Printed {
-                us: 25380.0,
-                us_decimals: 0,
-                si: 11512.0,
-                si_decimals: 0,
-                conversion: Conversion::LbToKg,
-            },
+            printed: Printed::new(25380.0, 0, 11512.0, 0, Conversion::LbToKg),
         },
         // ---- drawbar ---------------------------------------------------
         Datum {
             name: "drawbar max power short term",
-            printed: Printed {
-                us: 227.60,
-                us_decimals: 2,
-                si: 169.72,
-                si_decimals: 2,
-                conversion: Conversion::HpToKw,
-            },
+            printed: Printed::new(227.60, 2, 169.72, 2, Conversion::HpToKw),
         },
         Datum {
             name: "drawbar max power speed",
-            printed: Printed {
-                us: 6.80,
-                us_decimals: 2,
-                si: 10.94,
-                si_decimals: 2,
-                conversion: Conversion::MphToKmh,
-            },
+            printed: Printed::new(6.80, 2, 10.94, 2, Conversion::MphToKmh),
         },
         Datum {
             name: "drawbar 100pct load power",
-            printed: Printed {
-                us: 198.53,
-                us_decimals: 2,
-                si: 148.04,
-                si_decimals: 2,
-                conversion: Conversion::HpToKw,
-            },
+            printed: Printed::new(198.53, 2, 148.04, 2, Conversion::HpToKw),
         },
         Datum {
             name: "drawbar 100pct load speed",
-            printed: Printed {
-                us: 4.68,
-                us_decimals: 2,
-                si: 7.53,
-                si_decimals: 2,
-                conversion: Conversion::MphToKmh,
-            },
+            printed: Printed::new(4.68, 2, 7.53, 2, Conversion::MphToKmh),
         },
         Datum {
             name: "drawbar 100pct load fuel economy",
-            printed: Printed {
-                us: 16.82,
-                us_decimals: 2,
-                si: 3.31,
-                si_decimals: 2,
-                conversion: Conversion::HpHrPerGalToKwhPerL,
-            },
+            printed: Printed::new(16.82, 2, 3.31, 2, Conversion::HpHrPerGalToKwhPerL),
         },
         Datum {
             name: "drawbar 75pct load power",
-            printed: Printed {
-                us: 154.17,
-                us_decimals: 2,
-                si: 115.19,
-                si_decimals: 2,
-                conversion: Conversion::HpToKw,
-            },
+            printed: Printed::new(154.17, 2, 115.19, 2, Conversion::HpToKw),
         },
         Datum {
             name: "drawbar 75pct load speed",
-            printed: Printed {
-                us: 4.85,
-                us_decimals: 2,
-                si: 7.81,
-                si_decimals: 2,
-                conversion: Conversion::MphToKmh,
-            },
+            printed: Printed::new(4.85, 2, 7.81, 2, Conversion::MphToKmh),
         },
         Datum {
             name: "drawbar 75pct load fuel economy",
-            printed: Printed {
-                us: 15.72,
-                us_decimals: 2,
-                si: 3.10,
-                si_decimals: 2,
-                conversion: Conversion::HpHrPerGalToKwhPerL,
-            },
+            printed: Printed::new(15.72, 2, 3.10, 2, Conversion::HpHrPerGalToKwhPerL),
         },
         Datum {
             name: "drawbar 50pct load power",
-            printed: Printed {
-                us: 104.27,
-                us_decimals: 2,
-                si: 77.75,
-                si_decimals: 2,
-                conversion: Conversion::HpToKw,
-            },
+            printed: Printed::new(104.27, 2, 77.75, 2, Conversion::HpToKw),
         },
         Datum {
             name: "drawbar 50pct load speed",
-            printed: Printed {
-                us: 4.91,
-                us_decimals: 2,
-                si: 7.90,
-                si_decimals: 2,
-                conversion: Conversion::MphToKmh,
-            },
+            printed: Printed::new(4.91, 2, 7.90, 2, Conversion::MphToKmh),
         },
         Datum {
             name: "drawbar 50pct load fuel economy",
-            printed: Printed {
-                us: 13.41,
-                us_decimals: 2,
-                si: 2.61,
-                si_decimals: 2,
-                conversion: Conversion::HpHrPerGalToKwhPerL,
-            },
+            printed: Printed::new(13.41, 2, 2.61, 2, Conversion::HpHrPerGalToKwhPerL),
         },
         Datum {
             name: "drawbar 50pct load reduced rpm power",
-            printed: Printed {
-                us: 104.45,
-                us_decimals: 2,
-                si: 77.88,
-                si_decimals: 2,
-                conversion: Conversion::HpToKw,
-            },
+            printed: Printed::new(104.45, 2, 77.88, 2, Conversion::HpToKw),
         },
         Datum {
             name: "drawbar 50pct load reduced rpm speed",
-            printed: Printed {
-                us: 4.95,
-                us_decimals: 2,
-                si: 7.97,
-                si_decimals: 2,
-                conversion: Conversion::MphToKmh,
-            },
+            printed: Printed::new(4.95, 2, 7.97, 2, Conversion::MphToKmh),
         },
         Datum {
             name: "drawbar 50pct load reduced rpm fuel economy",
-            printed: Printed {
-                us: 16.66,
-                us_decimals: 2,
-                si: 3.28,
-                si_decimals: 2,
-                conversion: Conversion::HpHrPerGalToKwhPerL,
-            },
+            printed: Printed::new(16.66, 2, 3.28, 2, Conversion::HpHrPerGalToKwhPerL),
         },
         Datum {
             name: "drawbar max pull",
-            printed: Printed {
-                us: 24702.0,
-                us_decimals: 0,
-                si: 109.68,
-                si_decimals: 2,
-                conversion: Conversion::LbfToKn,
-            },
+            printed: Printed::new(24702.0, 0, 109.68, 2, Conversion::LbfToKn),
         },
         Datum {
             name: "drawbar max pull speed",
-            printed: Printed {
-                us: 2.43,
-                us_decimals: 2,
-                si: 3.90,
-                si_decimals: 2,
-                conversion: Conversion::MphToKmh,
-            },
+            printed: Printed::new(2.43, 2, 3.90, 2, Conversion::MphToKmh),
         },
         // ---- hitch and hydraulics --------------------------------------
         Datum {
             name: "three point lift at 24in behind hitch",
-            printed: Printed {
-                us: 14274.0,
-                us_decimals: 0,
-                si: 63.5,
-                si_decimals: 1,
-                conversion: Conversion::LbfToKn,
-            },
+            printed: Printed::new(14274.0, 0, 63.5, 1, Conversion::LbfToKn),
         },
         Datum {
             name: "hydraulic flow",
-            printed: Printed {
-                us: 60.6,
-                us_decimals: 1,
-                si: 229.3,
-                si_decimals: 1,
-                conversion: Conversion::GalPerMinToLPerMin,
-            },
+            printed: Printed::new(60.6, 1, 229.3, 1, Conversion::GalPerMinToLPerMin),
         },
     ],
 };
@@ -616,10 +584,17 @@ pub const DISPUTED_8245R: &[&str] = &[
 /// disagreements in [`DISPUTED_8245R`]. An OCR error of that size in one of
 /// these figures would pass unnoticed.
 ///
-/// ⚠ The membership is not arbitrary — it is every **speed** and every
-/// **fuel-economy** figure, because those are printed at three significant
-/// figures where the powers and masses get five. ⇒ Lean the chain on the
-/// power, mass and pull figures; treat these as corroborating, not load-bearing.
+/// ⚠ The membership is not arbitrary, but it is one-directional, and an
+/// earlier draft of this comment had it backwards. **Every weakly-checked
+/// figure is a speed or a fuel economy** — those are printed at three
+/// significant figures where the powers and masses get five. The converse is
+/// false: 3 of the 6 speeds and 1 of the 5 undisputed fuel economies resolve
+/// better than 0.2% and are *not* listed here. `only_low_significance_figures_are_weakly_checked`
+/// tests the direction that holds, and nothing tests the one that does not,
+/// because it is not true.
+///
+/// ⇒ Lean the chain on the power, mass and pull figures; treat these seven as
+/// corroborating, not load-bearing.
 ///
 /// The counterpart worth stating: `drawbar max pull` resolves to 0.008%, so
 /// its presence in [`DISPUTED_8245R`] is a real disagreement in the scan and

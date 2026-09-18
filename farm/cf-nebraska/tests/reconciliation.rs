@@ -13,7 +13,8 @@
 )]
 
 use cf_nebraska::{
-    ABSENT, CATCHABLE_ERROR, DISPUTED_8245R, JOHN_DEERE_8245R, Reading, WEAKLY_CHECKED_8245R,
+    ABSENT, CATCHABLE_ERROR, Conversion, DISPUTED_8245R, JOHN_DEERE_8245R, NOT_TRANSCRIBED,
+    Printed, Reading, WEAKLY_CHECKED_8245R,
 };
 
 #[test]
@@ -62,8 +63,7 @@ fn a_perturbed_figure_stops_reconciling() {
         // so a one-directional probe can pass on a figure that is blind to the
         // same error with its sign flipped.
         for sign in [1.0, -1.0] {
-            let mut bumped = d.printed;
-            bumped.us *= 1.0 + sign * CATCHABLE_ERROR;
+            let bumped = d.printed.perturbed(sign * CATCHABLE_ERROR);
             assert!(
                 bumped.read().agreed().is_none(),
                 "{}: perturbing by {}% in direction {sign} left it still \
@@ -122,8 +122,7 @@ fn weakly_checked_figures_are_still_checked() {
             "{name}: resolution is not a number"
         );
         for sign in [1.0, -1.0] {
-            let mut bumped = d.printed;
-            bumped.us *= 1.0 + sign * r * 1.001;
+            let bumped = d.printed.perturbed(sign * r * 1.001);
             assert!(
                 bumped.read().agreed().is_none(),
                 "{name}: an error of {:.4}% in direction {sign} was not caught, \
@@ -191,9 +190,19 @@ fn a_disputed_figure_cannot_be_read_as_a_single_number() {
 
 /// The disagreements are digits, not rounding — otherwise the honest fix would
 /// be to widen the interval, not to carry them as disputed.
+///
+/// Measured against each figure's OWN printing slack rather than a flat
+/// threshold, so the claim has a producer. The tightest of the three is
+/// `drawbar 50pct load fuel economy` at 5.3x its slack; `drawbar max pull`,
+/// the most load-bearing figure in the set, is 28x.
 #[test]
-fn disputed_entries_disagree_by_a_digit_not_a_rounding() {
+fn disputed_entries_exceed_what_rounding_could_explain() {
     for name in DISPUTED_8245R {
+        let d = JOHN_DEERE_8245R
+            .data
+            .iter()
+            .find(|d| &d.name == name)
+            .unwrap_or_else(|| panic!("{name} is listed as disputed but is not in the data"));
         let Some(Reading::Disputed {
             from_us,
             as_printed,
@@ -202,11 +211,15 @@ fn disputed_entries_disagree_by_a_digit_not_a_rounding() {
             panic!("{name} is not disputed");
         };
         let rel = (from_us - as_printed).abs() / as_printed.abs();
+        let slack = d.printed.printing_slack();
         assert!(
-            rel >= 0.001,
-            "{name}: the two printed forms differ by {:.4}%, which is rounding, \
-             not a misread digit — widen the interval instead of disputing it",
-            rel * 100.0
+            rel >= 3.0 * slack,
+            "{name}: the two printed forms differ by {:.4}%, only {:.1}x the \
+             {:.4}% that rounding alone allows — widen the interval instead of \
+             disputing it",
+            rel * 100.0,
+            rel / slack,
+            slack * 100.0
         );
     }
 }
@@ -323,5 +336,141 @@ fn an_agreed_span_is_a_point() {
         checked,
         JOHN_DEERE_8245R.data.len() - DISPUTED_8245R.len(),
         "wrong number of agreed figures"
+    );
+}
+
+/// The weakly-checked roster is one-directional, and an earlier draft of the
+/// documentation claimed otherwise.
+///
+/// Every weakly-checked figure is a speed or a fuel economy. The converse does
+/// NOT hold, and this test pins that so the stronger, false claim cannot creep
+/// back into the prose: if a future change ever made every speed and every fuel
+/// economy weak, this fails and the docs get revisited deliberately.
+#[test]
+fn the_weak_roster_does_not_contain_every_speed_and_fuel_economy() {
+    let strong_speeds = JOHN_DEERE_8245R
+        .data
+        .iter()
+        .filter(|d| d.name.contains("speed"))
+        .filter(|d| d.printed.resolution().is_some_and(|r| r <= CATCHABLE_ERROR))
+        .count();
+    let strong_fuel_economies = JOHN_DEERE_8245R
+        .data
+        .iter()
+        .filter(|d| d.name.contains("fuel economy"))
+        .filter(|d| d.printed.resolution().is_some_and(|r| r <= CATCHABLE_ERROR))
+        .count();
+    assert_eq!(
+        (strong_speeds, strong_fuel_economies),
+        (3, 1),
+        "the split between strongly- and weakly-checked speeds/fuel economies \
+         moved; the WEAKLY_CHECKED_8245R doc states these counts"
+    );
+}
+
+/// What the transcription deliberately left out is written down.
+///
+/// MUTATION: empty `NOT_TRANSCRIBED` and this fails. Guards the pinned count of
+/// 25 from being read as "the whole column".
+#[test]
+fn deliberate_omissions_are_recorded() {
+    assert!(!NOT_TRANSCRIBED.is_empty(), "NOT_TRANSCRIBED is empty");
+    for a in NOT_TRANSCRIBED {
+        assert!(!a.what.trim().is_empty(), "an omission has no subject");
+        assert!(
+            a.why.len() > 80,
+            "{}: the reason is too short to say why it was skipped",
+            a.what
+        );
+    }
+}
+
+/// The PTO operating-point ambiguity is recorded, not resolved by guessing.
+#[test]
+fn the_pto_operating_point_is_recorded_as_unknown() {
+    assert!(
+        ABSENT.iter().any(|a| a.what.contains("engine speed")),
+        "the ambiguous PTO max-power engine speed is not recorded as absent"
+    );
+}
+
+/// Every figure is paired with the conversion its units actually call for.
+///
+/// A mis-assigned conversion is mostly caught by reconciliation — a speed put
+/// through the horsepower factor will not agree with its own SI twin — but not
+/// always: the two gallons-per-something conversions share a factor, so
+/// swapping them is invisible to the checksum and visible only here.
+#[test]
+fn every_figure_uses_the_conversion_its_units_imply() {
+    for d in JOHN_DEERE_8245R.data {
+        let n = d.name;
+        let expected = if n.contains("speed") {
+            Conversion::MphToKmh
+        } else if n.contains("fuel economy") {
+            Conversion::HpHrPerGalToKwhPerL
+        } else if n.contains("fuel rate") {
+            Conversion::GalPerHrToLPerH
+        } else if n.contains("hydraulic flow") {
+            Conversion::GalPerMinToLPerMin
+        } else if n.contains("weight") {
+            Conversion::LbToKg
+        } else if n.contains("pull") || n.contains("lift") {
+            Conversion::LbfToKn
+        } else if n.contains("power") {
+            Conversion::HpToKw
+        } else {
+            panic!("{n}: no expected conversion for this row — extend the test")
+        };
+        assert_eq!(
+            d.printed.conversion(),
+            expected,
+            "{n}: conversion does not match the units the row name implies"
+        );
+    }
+}
+
+/// The printed figures come back exactly as the source printed them, precision
+/// included.
+///
+/// This is the provenance path — what is on the page, not what has been
+/// checked. Pinned on the figure the chain leans on hardest.
+#[test]
+fn printed_values_are_returned_as_provenance() {
+    let d = JOHN_DEERE_8245R
+        .data
+        .iter()
+        .find(|d| d.name == "drawbar max pull")
+        .unwrap_or_else(|| panic!("drawbar max pull is in the data"));
+    assert!((d.printed.as_printed_us() - 24702.0).abs() < f64::EPSILON);
+    assert!((d.printed.as_printed_si() - 109.68).abs() < 1e-9);
+    assert_eq!(
+        d.printed.us_decimals(),
+        0,
+        "lbf was printed as a whole number"
+    );
+    assert_eq!(d.printed.si_decimals(), 2, "kN was printed to two decimals");
+}
+
+/// A figure built through the constructor behaves like one from the table.
+///
+/// Pins that `Printed::new` is the only way in and that it stores precision
+/// rather than inferring it: the same numbers declared at different printed
+/// precisions reconcile differently, which is the bug that produced a phantom
+/// disagreement while this crate was being written.
+#[test]
+fn the_constructor_stores_precision_rather_than_inferring_it() {
+    let coarse = Printed::new(60.6, 1, 229.3, 1, Conversion::GalPerMinToLPerMin);
+    let fine = Printed::new(60.6, 2, 229.3, 2, Conversion::GalPerMinToLPerMin);
+    assert!(
+        coarse.read().agreed().is_some(),
+        "as the source printed it, this figure reconciles"
+    );
+    assert!(
+        fine.read().agreed().is_none(),
+        "claiming precision the source did not print manufactures a disagreement"
+    );
+    assert!(
+        coarse.printing_slack() > fine.printing_slack(),
+        "coarser printing must carry more slack"
     );
 }
