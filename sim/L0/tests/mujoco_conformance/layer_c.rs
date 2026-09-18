@@ -325,32 +325,15 @@ fn layer_c_trajectory_composite_model() {
 // Why `weld_model` has no trajectory test
 // ═══════════════════════════════════════════════════════════════════════════════
 //
-// ⛔ It is the one conformance model without an entry above, and that is a
-// DECISION rather than an oversight — recorded here because the gap otherwise
-// reads as one.
+// ⛔ A DECISION, not an oversight — recorded because a missing entry in a
+// one-per-model list reads as one.
 //
-// `weld_model` exists to gate collision FILTERING, so every pair in it
-// overlaps on purpose: a filtered pair's absence is then evidence of the rule
-// rather than of distance. Measured at the reference pose:
+// `weld_model` gates collision FILTERING, so the pairs its assertions rest on
+// start deeply interpenetrating — `link1 <-> anchor2` at -0.14 m. A trajectory
+// from that state compares solver impulse handling, not dynamics: adding the
+// test put `qvel.dof[0]` 67 688x over tolerance at step ZERO, before anything
+// moved. Passing it would need a tolerance that asserts nothing.
 //
-//     link1  <-> anchor2   dist = -0.1400   (70% of the radii sum)
-//     link2  <-> weld1     fully coincident, overlap 0.200
-//     anchor <-> link1     dist = -0.0800
-//
-// ⚠ That is exactly what makes it useless here. A 0.14 m initial penetration
-// puts an enormous impulse into step 0, and two solvers will not agree on it:
-// adding the test produced `qvel.dof[0]` off by 67 688x tolerance at step ZERO,
-// before any dynamics had run. The only ways to make it pass are a tolerance
-// wide enough to assert nothing, or a differently-posed model — which would no
-// longer be the filter fixture.
-//
-// ⛔⛔ And do NOT read this as "covered elsewhere". An earlier draft of this
-// note said the weld group is covered dynamically by cf-trike, which steps a
-// 15-body weld group for 4 000 steps in `example-trike-mass-budget`. True, and
-// misleading in a note about COLLISION: that gate sets `DISABLE_CONTACT`
-// (`main.rs:1735`), so what it exercises is kinematics and the mass matrix.
-//
-// Measured: NOTHING steps a weld group with contacts enabled. `weld_model` is a
-// single `forward()`; the trike disables contacts; the three contact-filtering
-// examples have no welded bodies. Weld-group collision OVER TIME is an
-// uncovered axis, and saying so is the point of this paragraph.
+// ⚠ Nor is it covered elsewhere. The trike steps a 15-body weld group for
+// 4 000 steps but with `DISABLE_CONTACT` (`main.rs:1735`), so weld-group
+// collision OVER TIME is an uncovered axis.

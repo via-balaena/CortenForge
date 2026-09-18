@@ -13,16 +13,8 @@
      Geometry is spheres and a plane only, so contact positions/normals are
      analytic and this model tests the FILTER rather than narrowphase accuracy.
 
-     ⚠ NOT every pair here overlaps — 9 of the 21 body pairs do. What matters is
-     that every pair the ASSERTIONS rest on overlaps deliberately, so a filtered
-     pair's absence is evidence of the RULE and not of distance:
-
-         anchor <-> anchor2   same weld group 0 (both static -> world)
-         link1  <-> weld1     same weld group
-         link2  <-> weld1     weld-vs-SIBLING, the case a parent test cannot see
-         link1  <-> link2     parent-child
-
-     The rest are far apart and prove nothing either way. -->
+     ⚠ Which pairs overlap, and why it matters, is stated ONCE — beside the
+     assertions in layer_b.rs, not here. -->
 <mujoco model="weld_model">
   <option timestep="0.002"/>
   <worldbody>
