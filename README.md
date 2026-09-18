@@ -12,6 +12,8 @@ Composable Rust components for the full path **physical → digital → physical
 
 To prove the components compose end to end, we build a family of **hydrogen farm vehicles for the upper Midwest** — tractor, truck, trike — and the wind-to-hydrogen fuel chain that powers them, and answer one question: *how many acres per season can one farm run on its own wind?* **Not yet built.** See **[MISSION.md](./MISSION.md)**.
 
+Person-specific assistive robotics — stroke recovery, assistive living, sports equipment — runs on the same components and is sequenced behind the farm, not abandoned.
+
 ## ⚠️ Disclaimer
 
 CortenForge — including the **Cendrillon** application — is general-purpose research and engineering software, provided **AS IS** under [MIT](./LICENSE-MIT) or [Apache-2.0](./LICENSE-APACHE) at your option, **without warranty of any kind**. **It is not a medical device** and makes no medical, therapeutic, or health claims. You use it — and make and use anything created with it — **entirely at your own risk**: you alone are responsible for deciding whether a design is fit for what you intend to do with it, and for the materials, fabrication, testing, and operation of anything you build. What you build with it can involve serious hazards — hydrogen and other compressed or flammable gases, pressure vessels, high-voltage systems, moving machinery, vehicles that are not certified for road use, and materials that contact the body. See **[DISCLAIMER.md](./DISCLAIMER.md)** for the full text.
