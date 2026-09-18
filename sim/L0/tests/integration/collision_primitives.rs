@@ -3,6 +3,28 @@
 //! This module validates collision detection between primitive geometry pairs
 //! that have analytical (closed-form) solutions, avoiding GJK/EPA.
 //!
+//!
+//! # ⛔ Every collidable body here carries a joint, deliberately
+//!
+//! A body with no joint is WELDED to its parent, and a jointless body hanging
+//! off the world joins the world's weld group along with the ground. MuJoCo
+//! never collides two bodies in one weld group, so a fixture built from
+//! jointless bodies describes a model MuJoCo reports **zero contacts** for —
+//! measured: two overlapping jointless cubes give `ncon = 0`, and `ncon = 4`
+//! once one of them is given a free joint.
+//!
+//! These fixtures were written without joints and passed only because
+//! CortenForge's filter was more permissive than MuJoCo's. A `<joint
+//! type="free"/>` on each collidable body is what makes the model one MuJoCo
+//! agrees produces contacts, so the assertions below are about NARROWPHASE
+//! rather than about a filter that should have rejected the pair.
+//!
+//! ⚠ Do not remove them to "simplify" a fixture. A separation test
+//! (`*_separated`) is the one that rots most quietly: without a joint it
+//! asserts no-contact on a pair that could never have touched, and would pass
+//! with narrowphase entirely broken.
+//!
+//! ⚠ The ground plane stays on the world body and takes no joint.
 //! # Test Philosophy
 //!
 //! > **Todorov Standard**: Analytical solutions are preferred over iterative ones.
@@ -48,9 +70,11 @@ fn sphere_sphere_overlap_x_axis() {
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="s1" pos="0 0 0">
+                    <joint type="free"/>
                     <geom type="sphere" size="0.5"/>
                 </body>
                 <body name="s2" pos="0.7 0 0">
+                    <joint type="free"/>
                     <geom type="sphere" size="0.3"/>
                 </body>
             </worldbody>
@@ -88,9 +112,11 @@ fn sphere_sphere_overlap_diagonal() {
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="s1" pos="0 0 0">
+                    <joint type="free"/>
                     <geom type="sphere" size="0.5"/>
                 </body>
                 <body name="s2" pos="0.4 0.4 0.4">
+                    <joint type="free"/>
                     <geom type="sphere" size="0.3"/>
                 </body>
             </worldbody>
@@ -124,9 +150,11 @@ fn sphere_sphere_touching() {
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="s1" pos="0 0 0">
+                    <joint type="free"/>
                     <geom type="sphere" size="0.5"/>
                 </body>
                 <body name="s2" pos="0.8 0 0">
+                    <joint type="free"/>
                     <geom type="sphere" size="0.3"/>
                 </body>
             </worldbody>
@@ -157,9 +185,11 @@ fn sphere_sphere_separated() {
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="s1" pos="0 0 0">
+                    <joint type="free"/>
                     <geom type="sphere" size="0.5"/>
                 </body>
                 <body name="s2" pos="1.0 0 0">
+                    <joint type="free"/>
                     <geom type="sphere" size="0.3"/>
                 </body>
             </worldbody>
@@ -181,9 +211,11 @@ fn sphere_sphere_coincident() {
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="s1" pos="0 0 0">
+                    <joint type="free"/>
                     <geom type="sphere" size="0.5"/>
                 </body>
                 <body name="s2" pos="0 0 0">
+                    <joint type="free"/>
                     <geom type="sphere" size="0.5"/>
                 </body>
             </worldbody>
@@ -228,9 +260,11 @@ fn sphere_capsule_side_contact() {
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="cap" pos="0 0 0">
+                    <joint type="free"/>
                     <geom type="capsule" size="0.2 0.5"/>
                 </body>
                 <body name="sph" pos="0.45 0 0">
+                    <joint type="free"/>
                     <geom type="sphere" size="0.3"/>
                 </body>
             </worldbody>
@@ -272,9 +306,11 @@ fn sphere_capsule_endpoint_contact() {
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="cap" pos="0 0 0">
+                    <joint type="free"/>
                     <geom type="capsule" size="0.2 0.5"/>
                 </body>
                 <body name="sph" pos="0 0 0.95">
+                    <joint type="free"/>
                     <geom type="sphere" size="0.3"/>
                 </body>
             </worldbody>
@@ -316,9 +352,11 @@ fn sphere_capsule_separated() {
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="cap" pos="0 0 0">
+                    <joint type="free"/>
                     <geom type="capsule" size="0.2 0.5"/>
                 </body>
                 <body name="sph" pos="1.0 0 0">
+                    <joint type="free"/>
                     <geom type="sphere" size="0.3"/>
                 </body>
             </worldbody>
@@ -347,9 +385,11 @@ fn capsule_capsule_parallel_side() {
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="cap1" pos="0 0 0">
+                    <joint type="free"/>
                     <geom type="capsule" size="0.2 0.5"/>
                 </body>
                 <body name="cap2" pos="0.35 0 0">
+                    <joint type="free"/>
                     <geom type="capsule" size="0.2 0.5"/>
                 </body>
             </worldbody>
@@ -388,9 +428,11 @@ fn capsule_capsule_perpendicular() {
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="cap1" pos="0 0 0">
+                    <joint type="free"/>
                     <geom type="capsule" size="0.2 0.5"/>
                 </body>
                 <body name="cap2" pos="0.35 0 0" euler="0 90 0">
+                    <joint type="free"/>
                     <geom type="capsule" size="0.2 0.5"/>
                 </body>
             </worldbody>
@@ -433,9 +475,11 @@ fn capsule_capsule_endpoint_endpoint() {
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="cap1" pos="0 0 0">
+                    <joint type="free"/>
                     <geom type="capsule" size="0.2 0.5"/>
                 </body>
                 <body name="cap2" pos="0 0 1.35">
+                    <joint type="free"/>
                     <geom type="capsule" size="0.2 0.5"/>
                 </body>
             </worldbody>
@@ -481,9 +525,11 @@ fn sphere_box_face_contact() {
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="box" pos="0 0 0">
+                    <joint type="free"/>
                     <geom type="box" size="0.5 0.5 0.5"/>
                 </body>
                 <body name="sph" pos="0.75 0 0">
+                    <joint type="free"/>
                     <geom type="sphere" size="0.3"/>
                 </body>
             </worldbody>
@@ -524,9 +570,11 @@ fn sphere_box_edge_contact() {
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="box" pos="0 0 0">
+                    <joint type="free"/>
                     <geom type="box" size="0.5 0.5 0.5"/>
                 </body>
                 <body name="sph" pos="0.6 0.6 0">
+                    <joint type="free"/>
                     <geom type="sphere" size="0.3"/>
                 </body>
             </worldbody>
@@ -560,9 +608,11 @@ fn sphere_box_corner_contact() {
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="box" pos="0 0 0">
+                    <joint type="free"/>
                     <geom type="box" size="0.5 0.5 0.5"/>
                 </body>
                 <body name="sph" pos="0.6 0.6 0.6">
+                    <joint type="free"/>
                     <geom type="sphere" size="0.3"/>
                 </body>
             </worldbody>
@@ -600,9 +650,11 @@ fn box_box_face_face() {
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="box1" pos="0 0 0">
+                    <joint type="free"/>
                     <geom type="box" size="0.5 0.5 0.5"/>
                 </body>
                 <body name="box2" pos="0.9 0 0">
+                    <joint type="free"/>
                     <geom type="box" size="0.5 0.5 0.5"/>
                 </body>
             </worldbody>
@@ -640,9 +692,11 @@ fn box_box_edge_edge() {
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="box1" pos="0 0 0">
+                    <joint type="free"/>
                     <geom type="box" size="0.3 0.3 0.3"/>
                 </body>
                 <body name="box2" pos="0.5 0 0" euler="0 0 45">
+                    <joint type="free"/>
                     <geom type="box" size="0.3 0.3 0.3"/>
                 </body>
             </worldbody>
@@ -674,9 +728,11 @@ fn box_box_separated() {
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="box1" pos="0 0 0">
+                    <joint type="free"/>
                     <geom type="box" size="0.5 0.5 0.5"/>
                 </body>
                 <body name="box2" pos="1.5 0 0">
+                    <joint type="free"/>
                     <geom type="box" size="0.5 0.5 0.5"/>
                 </body>
             </worldbody>
@@ -707,9 +763,11 @@ fn box_box_face_face_4_contacts() {
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="box1" pos="0 0 0">
+                    <joint type="free"/>
                     <geom type="box" size="0.5 0.5 0.5"/>
                 </body>
                 <body name="box2" pos="0.9 0 0">
+                    <joint type="free"/>
                     <geom type="box" size="0.5 0.5 0.5"/>
                 </body>
             </worldbody>
@@ -790,9 +848,11 @@ fn box_box_edge_edge_1_contact() {
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="box1" pos="0 0 0">
+                    <joint type="free"/>
                     <geom type="box" size="0.3 0.3 0.3"/>
                 </body>
                 <body name="box2" pos="0.5 0 0" euler="0 0 45">
+                    <joint type="free"/>
                     <geom type="box" size="0.3 0.3 0.3"/>
                 </body>
             </worldbody>
@@ -829,9 +889,11 @@ fn cylinder_sphere_side_contact() {
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="cyl" pos="0 0 0">
+                    <joint type="free"/>
                     <geom type="cylinder" size="0.3 0.5"/>
                 </body>
                 <body name="sph" pos="0.55 0 0">
+                    <joint type="free"/>
                     <geom type="sphere" size="0.3"/>
                 </body>
             </worldbody>
@@ -873,9 +935,11 @@ fn cylinder_sphere_cap_contact() {
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="cyl" pos="0 0 0">
+                    <joint type="free"/>
                     <geom type="cylinder" size="0.3 0.5"/>
                 </body>
                 <body name="sph" pos="0 0 0.75">
+                    <joint type="free"/>
                     <geom type="sphere" size="0.3"/>
                 </body>
             </worldbody>
@@ -916,9 +980,11 @@ fn cylinder_sphere_rim_contact() {
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="cyl" pos="0 0 0">
+                    <joint type="free"/>
                     <geom type="cylinder" size="0.3 0.5"/>
                 </body>
                 <body name="sph" pos="0.4 0 0.6">
+                    <joint type="free"/>
                     <geom type="sphere" size="0.2"/>
                 </body>
             </worldbody>
@@ -957,9 +1023,11 @@ fn cylinder_capsule_parallel_side() {
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="cyl" pos="0 0 0">
+                    <joint type="free"/>
                     <geom type="cylinder" size="0.3 0.5"/>
                 </body>
                 <body name="cap" pos="0.55 0 0">
+                    <joint type="free"/>
                     <geom type="capsule" size="0.2 0.4"/>
                 </body>
             </worldbody>
@@ -988,9 +1056,11 @@ fn cylinder_capsule_parallel_overlap() {
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="cyl" pos="0 0 0">
+                    <joint type="free"/>
                     <geom type="cylinder" size="0.3 0.5"/>
                 </body>
                 <body name="cap" pos="0.45 0 0">
+                    <joint type="free"/>
                     <geom type="capsule" size="0.2 0.4"/>
                 </body>
             </worldbody>
@@ -1023,9 +1093,11 @@ fn cylinder_capsule_perpendicular() {
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="cyl" pos="0 0 0">
+                    <joint type="free"/>
                     <geom type="cylinder" size="0.3 0.5"/>
                 </body>
                 <body name="cap" pos="0.45 0 0" euler="0 90 0">
+                    <joint type="free"/>
                     <geom type="capsule" size="0.2 0.4"/>
                 </body>
             </worldbody>
@@ -1069,9 +1141,11 @@ fn capsule_box_face_contact() {
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="box" pos="0 0 0">
+                    <joint type="free"/>
                     <geom type="box" size="0.5 0.5 0.5"/>
                 </body>
                 <body name="cap" pos="0.75 0 0">
+                    <joint type="free"/>
                     <geom type="capsule" size="0.2 0.4"/>
                 </body>
             </worldbody>
@@ -1099,9 +1173,11 @@ fn capsule_box_face_overlap() {
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="box" pos="0 0 0">
+                    <joint type="free"/>
                     <geom type="box" size="0.5 0.5 0.5"/>
                 </body>
                 <body name="cap" pos="0.65 0 0">
+                    <joint type="free"/>
                     <geom type="capsule" size="0.2 0.4"/>
                 </body>
             </worldbody>
@@ -1144,9 +1220,11 @@ fn capsule_capsule_parallel_2_contacts() {
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="cap1" pos="0 0 0">
+                    <joint type="free"/>
                     <geom type="capsule" size="0.2 0.5"/>
                 </body>
                 <body name="cap2" pos="0.35 0 0">
+                    <joint type="free"/>
                     <geom type="capsule" size="0.2 0.5"/>
                 </body>
             </worldbody>
@@ -1173,9 +1251,11 @@ fn capsule_capsule_perpendicular_1_contact() {
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="cap1" pos="0 0 0">
+                    <joint type="free"/>
                     <geom type="capsule" size="0.2 0.5"/>
                 </body>
                 <body name="cap2" pos="0.35 0 0" euler="0 90 0">
+                    <joint type="free"/>
                     <geom type="capsule" size="0.2 0.5"/>
                 </body>
             </worldbody>
@@ -1201,9 +1281,11 @@ fn capsule_box_face_2_contacts() {
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="box" pos="0 0 0">
+                    <joint type="free"/>
                     <geom type="box" size="1.0 1.0 0.5"/>
                 </body>
                 <body name="cap" pos="0 0 0.65">
+                    <joint type="free"/>
                     <geom type="capsule" size="0.2 0.4" euler="0 90 0"/>
                 </body>
             </worldbody>
@@ -1243,9 +1325,11 @@ fn capsule_box_edge_contact() {
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="box" pos="0 0 0">
+                    <joint type="free"/>
                     <geom type="box" size="0.5 0.5 0.5"/>
                 </body>
                 <body name="cap" pos="0.6 0.6 0.5">
+                    <joint type="free"/>
                     <geom type="capsule" size="0.15 0.3"/>
                 </body>
             </worldbody>
@@ -1281,9 +1365,11 @@ fn capsule_box_crossing_edge() {
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="box" pos="0 0 0">
+                    <joint type="free"/>
                     <geom type="box" size="0.5 0.5 0.5"/>
                 </body>
                 <body name="cap" pos="0 0 0.6" euler="90 0 0">
+                    <joint type="free"/>
                     <geom type="capsule" size="0.15 0.6"/>
                 </body>
             </worldbody>
@@ -1322,9 +1408,11 @@ fn capsule_box_oblique_face() {
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="box" pos="0 0 0">
+                    <joint type="free"/>
                     <geom type="box" size="0.5 0.5 0.5"/>
                 </body>
                 <body name="cap" pos="0.3 0 0.8" euler="0 45 0">
+                    <joint type="free"/>
                     <geom type="capsule" size="0.15 0.4"/>
                 </body>
             </worldbody>
@@ -1495,12 +1583,15 @@ fn sphere_stack_contacts() {
             <worldbody>
                 <geom name="floor" type="plane" size="10 10 0.1"/>
                 <body name="ball1" pos="0 0 0.5">
+                    <joint type="free"/>
                     <geom type="sphere" size="0.5"/>
                 </body>
                 <body name="ball2" pos="0 0 1.5">
+                    <joint type="free"/>
                     <geom type="sphere" size="0.5"/>
                 </body>
                 <body name="ball3" pos="0 0 2.5">
+                    <joint type="free"/>
                     <geom type="sphere" size="0.5"/>
                 </body>
             </worldbody>

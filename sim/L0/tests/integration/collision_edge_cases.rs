@@ -3,6 +3,28 @@
 //! This module targets floating-point edge cases that can cause collision
 //! detection to fail silently or produce incorrect results.
 //!
+//!
+//! # ⛔ Every collidable body here carries a joint, deliberately
+//!
+//! A body with no joint is WELDED to its parent, and a jointless body hanging
+//! off the world joins the world's weld group along with the ground. MuJoCo
+//! never collides two bodies in one weld group, so a fixture built from
+//! jointless bodies describes a model MuJoCo reports **zero contacts** for —
+//! measured: two overlapping jointless cubes give `ncon = 0`, and `ncon = 4`
+//! once one of them is given a free joint.
+//!
+//! These fixtures were written without joints and passed only because
+//! CortenForge's filter was more permissive than MuJoCo's. A `<joint
+//! type="free"/>` on each collidable body is what makes the model one MuJoCo
+//! agrees produces contacts, so the assertions below are about NARROWPHASE
+//! rather than about a filter that should have rejected the pair.
+//!
+//! ⚠ Do not remove them to "simplify" a fixture. A separation test
+//! (`*_separated`) is the one that rots most quietly: without a joint it
+//! asserts no-contact on a pair that could never have touched, and would pass
+//! with narrowphase entirely broken.
+//!
+//! ⚠ The ground plane stays on the world body and takes no joint.
 //! # Test Philosophy
 //!
 //! > **Todorov Standard**: Physics code must be robust to numerical edge cases.
@@ -42,6 +64,7 @@ fn cylinder_plane_near_parallel_axis() {
             <worldbody>
                 <geom name="floor" type="plane" size="10 10 0.1"/>
                 <body name="cyl" pos="0 0 0.4" euler="{} 0 0">
+                    <joint type="free"/>
                     <geom type="cylinder" size="0.3 0.5"/>
                 </body>
             </worldbody>
@@ -93,9 +116,11 @@ fn capsule_capsule_near_parallel() {
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="cap1" pos="0 0 0">
+                    <joint type="free"/>
                     <geom type="capsule" size="0.2 0.5"/>
                 </body>
                 <body name="cap2" pos="0.35 0 0" euler="{} 0 0">
+                    <joint type="free"/>
                     <geom type="capsule" size="0.2 0.5"/>
                 </body>
             </worldbody>
@@ -131,9 +156,11 @@ fn cylinder_sphere_axis_perpendicular_to_contact() {
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="cyl" pos="0 0 0" euler="0 90 0">
+                    <joint type="free"/>
                     <geom type="cylinder" size="0.3 0.5"/>
                 </body>
                 <body name="sph" pos="0 0.55 0">
+                    <joint type="free"/>
                     <geom type="sphere" size="0.3"/>
                 </body>
             </worldbody>
@@ -175,9 +202,11 @@ fn sphere_sphere_nearly_coincident() {
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="sph1" pos="0 0 0">
+                    <joint type="free"/>
                     <geom type="sphere" size="0.5"/>
                 </body>
                 <body name="sph2" pos="{} 0 0">
+                    <joint type="free"/>
                     <geom type="sphere" size="0.5"/>
                 </body>
             </worldbody>
@@ -224,9 +253,11 @@ fn sphere_box_center_on_face() {
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="box" pos="0 0 0">
+                    <joint type="free"/>
                     <geom type="box" size="0.5 0.5 0.5"/>
                 </body>
                 <body name="sph" pos="0.5 0 0">
+                    <joint type="free"/>
                     <geom type="sphere" size="0.3"/>
                 </body>
             </worldbody>
@@ -260,6 +291,7 @@ fn capsule_plane_endpoint_on_surface() {
             <worldbody>
                 <geom name="floor" type="plane" size="10 10 0.1"/>
                 <body name="cap" pos="0 0 0.7">
+                    <joint type="free"/>
                     <geom type="capsule" size="0.2 0.5"/>
                 </body>
             </worldbody>
@@ -302,6 +334,7 @@ fn sphere_plane_far_from_origin_1km() {
             <worldbody>
                 <geom name="floor" type="plane" size="10000 10000 0.1" pos="{} 0 0"/>
                 <body name="ball" pos="{} 0 0.4">
+                    <joint type="free"/>
                     <geom type="sphere" size="0.5"/>
                 </body>
             </worldbody>
@@ -340,6 +373,7 @@ fn sphere_plane_far_from_origin_1000km() {
             <worldbody>
                 <geom name="floor" type="plane" size="10000000 10000000 0.1" pos="{} 0 0"/>
                 <body name="ball" pos="{} 0 0.4">
+                    <joint type="free"/>
                     <geom type="sphere" size="0.5"/>
                 </body>
             </worldbody>
@@ -379,9 +413,11 @@ fn sphere_sphere_microscale() {
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="sph1" pos="0 0 0">
+                    <joint type="free"/>
                     <geom type="sphere" size="{}"/>
                 </body>
                 <body name="sph2" pos="{} 0 0">
+                    <joint type="free"/>
                     <geom type="sphere" size="{}"/>
                 </body>
             </worldbody>
@@ -423,6 +459,7 @@ fn cylinder_plane_tiny_radius() {
             <worldbody>
                 <geom name="floor" type="plane" size="10 10 0.1"/>
                 <body name="cyl" pos="0 0 0.4">
+                    <joint type="free"/>
                     <geom type="cylinder" size="0.001 0.5"/>
                 </body>
             </worldbody>
@@ -457,6 +494,7 @@ fn ellipsoid_plane_disk_like() {
             <worldbody>
                 <geom name="floor" type="plane" size="10 10 0.1"/>
                 <body name="ell" pos="0 0 0.0005">
+                    <joint type="free"/>
                     <geom type="ellipsoid" size="0.5 0.5 0.001"/>
                 </body>
             </worldbody>
@@ -491,6 +529,7 @@ fn box_plane_slab_like() {
             <worldbody>
                 <geom name="floor" type="plane" size="10 10 0.1"/>
                 <body name="box" pos="0 0 0.0005">
+                    <joint type="free"/>
                     <geom type="box" size="0.5 0.5 0.001"/>
                 </body>
             </worldbody>
@@ -529,6 +568,7 @@ fn capsule_plane_rod_like() {
             <worldbody>
                 <geom name="floor" type="plane" size="10 10 0.1"/>
                 <body name="cap" pos="0 0 0.4">
+                    <joint type="free"/>
                     <geom type="capsule" size="0.001 0.5"/>
                 </body>
             </worldbody>
@@ -570,6 +610,7 @@ fn sphere_plane_zero_radius() {
             <worldbody>
                 <geom name="floor" type="plane" size="10 10 0.1"/>
                 <body name="sph" pos="0 0 -0.1">
+                    <joint type="free"/>
                     <geom type="sphere" size="0.001"/>
                 </body>
             </worldbody>
@@ -597,9 +638,11 @@ fn box_box_cubes() {
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="cube1" pos="0 0 0">
+                    <joint type="free"/>
                     <geom type="box" size="0.5 0.5 0.5"/>
                 </body>
                 <body name="cube2" pos="0.9 0 0">
+                    <joint type="free"/>
                     <geom type="box" size="0.5 0.5 0.5"/>
                 </body>
             </worldbody>
@@ -641,9 +684,11 @@ fn sphere_sphere_symmetry() {
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="a" pos="0 0 0">
+                    <joint type="free"/>
                     <geom type="sphere" size="0.5"/>
                 </body>
                 <body name="b" pos="0.7 0 0">
+                    <joint type="free"/>
                     <geom type="sphere" size="0.3"/>
                 </body>
             </worldbody>
@@ -655,9 +700,11 @@ fn sphere_sphere_symmetry() {
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="b" pos="0.7 0 0">
+                    <joint type="free"/>
                     <geom type="sphere" size="0.3"/>
                 </body>
                 <body name="a" pos="0 0 0">
+                    <joint type="free"/>
                     <geom type="sphere" size="0.5"/>
                 </body>
             </worldbody>
@@ -697,9 +744,11 @@ fn box_box_symmetry() {
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="a" pos="0 0 0">
+                    <joint type="free"/>
                     <geom type="box" size="0.5 0.4 0.3"/>
                 </body>
                 <body name="b" pos="0.8 0 0" euler="0 0 30">
+                    <joint type="free"/>
                     <geom type="box" size="0.4 0.3 0.2"/>
                 </body>
             </worldbody>
@@ -711,9 +760,11 @@ fn box_box_symmetry() {
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="b" pos="0.8 0 0" euler="0 0 30">
+                    <joint type="free"/>
                     <geom type="box" size="0.4 0.3 0.2"/>
                 </body>
                 <body name="a" pos="0 0 0">
+                    <joint type="free"/>
                     <geom type="box" size="0.5 0.4 0.3"/>
                 </body>
             </worldbody>
@@ -770,7 +821,9 @@ fn many_spheres_pile() {
         let x = (i % 5) as f64 * 0.9 - 1.8;
         let y = (i / 5) as f64 * 0.9 - 0.45;
         bodies.push_str(&format!(
-            r#"<body name="s{}" pos="{} {} 0.5"><geom type="sphere" size="0.5"/></body>"#,
+            // ⚠ Built by `format!`, so the joint has to go in the TEMPLATE —
+            // this body never appears as a literal MJCF block.
+            r#"<body name="s{}" pos="{} {} 0.5"><joint type="free"/><geom type="sphere" size="0.5"/></body>"#,
             i, x, y
         ));
     }
