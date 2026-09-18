@@ -27,15 +27,22 @@
 //!
 //! # ★★ How the transcribed figures are checked
 //!
-//! Everything here is read off two scanned-or-rendered public documents, so the
-//! same discipline `cf-nebraska` needed applies: **three structurally different
-//! checks, because each is blind to what the others catch.**
+//! Everything here is read off two rendered public documents, so the same
+//! discipline `cf-nebraska` needed applies: **four structurally different
+//! checks, because each is blind to what the others catch.** Three of them are
+//! about the page and one is about the world.
 //!
 //! | layer | what it is | what it CANNOT see |
 //! |---|---|---|
 //! | [`H2aCase::components_reconcile`] | additive, within a row group: stack + `BoP` == total | a whole column read from the wrong case |
 //! | [`H2aCase::implied_heating_values`] | multiplicative, within one row: value × %LHV recovers the LHV | the same wrong column, again |
 //! | [`TABLE_5_EFFICIENCY_ROW`] | the same four totals reprinted on a different page in a **different column order** | a figure mis-printed identically in both tables |
+//! | [`H2aCase::faradaic_efficiency_band`] | **physics**: the cell voltage fixes the electricity per kilogram, so the stack figure must admit a Faradaic efficiency at or below 1.0 | anything the source got wrong *consistently and plausibly* — it bounds, it does not pin |
+//!
+//! ★ The first three all ask the same question — *did this crate copy the
+//! document correctly?* — and all three pass on a figure that is impossible.
+//! The fourth asks whether the document's numbers describe a real machine. It
+//! is the loosest of the four and the only one that is about the world.
 //!
 //! ⚠ The third layer is the load-bearing one and the easiest to skip. A value
 //! taken consistently from the wrong column satisfies the first two perfectly —
@@ -54,8 +61,20 @@ const BTU_IT_J: f64 = 1_055.055_852_62;
 const LB_KG: f64 = 0.453_592_37;
 /// Joules in a kilowatt-hour. Exact.
 const KWH_J: f64 = 3.6e6;
+/// Faraday constant, coulombs per mole. CODATA, exact by the 2019 SI redefinition.
+const FARADAY_C_PER_MOL: f64 = 96_485.332_12;
+/// Molar mass of hydrogen gas, kg/mol.
+const H2_MOLAR_MASS_KG: f64 = 2.016e-3;
 
-/// Where a figure was read, precisely enough to read it again.
+/// Electricity a stack must draw per kilogram, per volt of cell voltage.
+///
+/// Splitting water needs two electrons per H₂ molecule, so one kilogram needs
+/// `2 / M(H₂)` moles of electrons and `charge × voltage` joules to move them.
+/// That is **26.59 kWh/kg per volt**, and it is physics rather than a
+/// correlation: no cell design, catalyst or operating point changes it.
+const KWH_PER_KG_PER_VOLT: f64 = 2.0 / H2_MOLAR_MASS_KG * FARADAY_C_PER_MOL / KWH_J;
+
+/// Where a figure was read, precisely enough to read it again — and on what terms.
 #[derive(Clone, Copy, Debug)]
 pub struct Source {
     /// Publishing body and document title.
@@ -64,7 +83,34 @@ pub struct Source {
     pub url: &'static str,
     /// ISO date it was retrieved.
     pub retrieved: &'static str,
+    /// What the publisher's terms permit, **determined and not assumed**.
+    ///
+    /// ⛔⛔ **"It is a government document" is not a determination.** NIST is a
+    /// U.S. federal agency and its Standard Reference Data is explicitly
+    /// copyright-asserted under the Standard Reference Data Act — *"© by the
+    /// U.S. Secretary of Commerce on behalf of the United States of America.
+    /// All rights reserved."* So the general rule has at least one loud
+    /// exception, and a crate that leans on the rule without recording the
+    /// check is indistinguishable from one where nobody looked.
+    ///
+    /// ⚠ This field exists because the sibling crate has one. `cf-wind` carries
+    /// `CurveSource::licence` and needed it: its power curve is BSD-3 and put
+    /// the repository's first THIRD-PARTY DATA section into `NOTICE`. These
+    /// sources happen to impose nothing, and that is worth writing down exactly
+    /// because it is the answer that leaves no other trace.
+    pub terms: &'static str,
 }
+
+/// The determination for a work of the United States Government.
+///
+/// 17 U.S.C. §105: copyright protection is not available for any work of the
+/// U.S. Government. Both sources here are DOE publications and carry no
+/// additional assertion, so nothing is owed — no `NOTICE` entry, no attribution
+/// requirement, no redistribution limit.
+const US_GOV_PUBLIC_DOMAIN: &str = concat!(
+    "U.S. Government work, 17 U.S.C. §105 — no copyright, public domain; ",
+    "no attribution or redistribution obligation. Checked 2026-09-18."
+);
 
 /// A figure as the source printed it, with the precision it was printed to.
 ///
@@ -181,6 +227,7 @@ pub const AFDC_2026: HeatingValues = HeatingValues {
         document: "U.S. DOE Alternative Fuels Data Center, Fuel Properties Comparison",
         url: "https://afdc.energy.gov/fuels/properties",
         retrieved: "2026-09-18",
+        terms: US_GOV_PUBLIC_DOMAIN,
     },
 };
 
@@ -231,6 +278,12 @@ pub struct H2aCase {
     pub total_percent_lhv: Printed,
     /// System efficiency on the higher heating value, as the record prints it.
     pub total_percent_hhv: Printed,
+    /// Cell voltage as the record prints it, volts.
+    ///
+    /// ★ Carried so the stack figure can be checked against **physics** rather
+    /// than only against other printed numbers. See
+    /// [`H2aCase::faradaic_efficiency_band`].
+    pub cell_voltage_v: Printed,
     /// Pressure the hydrogen leaves the electrolyser at, bar.
     ///
     /// ⛔ **Not storage pressure.** See the crate documentation.
@@ -262,6 +315,53 @@ impl H2aCase {
         )
     }
 
+    /// Stack electricity the cell voltage implies, kWh/kg, as a rounding band.
+    ///
+    /// Returns `(low, high)` from the voltage's own printed interval. ⚠ The band
+    /// is **wide** — a voltage printed to one decimal carries ±0.05 V, which is
+    /// ±2.6% here. That is the honest cost of this layer and the reason it is a
+    /// fourth check rather than a replacement for the other three.
+    #[must_use]
+    pub fn stack_energy_band_from_voltage(&self) -> (f64, f64) {
+        (
+            KWH_PER_KG_PER_VOLT * self.cell_voltage_v.low(),
+            KWH_PER_KG_PER_VOLT * self.cell_voltage_v.high(),
+        )
+    }
+
+    /// Faradaic efficiency the printed figures imply, as `(low, high)`.
+    ///
+    /// ★★★ **The one check that is about the world rather than the page.** The
+    /// other three layers ask whether this crate copied the document correctly;
+    /// all three pass happily on a figure that is impossible. This one asks
+    /// whether the document's own numbers can describe a real electrolyser.
+    ///
+    /// Faradaic efficiency is the fraction of charge that actually makes
+    /// hydrogen, so it **cannot exceed 1.0**. A stack figure below what the cell
+    /// voltage requires implies more hydrogen than the charge can produce, and
+    /// no amount of cross-checking printed columns against each other would
+    /// notice.
+    #[must_use]
+    pub fn faradaic_efficiency_band(&self) -> (f64, f64) {
+        let (low, high) = self.stack_energy_band_from_voltage();
+        (
+            low / self.stack_kwh_per_kg.high(),
+            high / self.stack_kwh_per_kg.low(),
+        )
+    }
+
+    /// Whether the printed figures admit a physically possible electrolyser.
+    ///
+    /// True when some Faradaic efficiency in `(floor, 1.0]` is consistent with
+    /// the printed cell voltage and stack figure, both taken at their rounding
+    /// intervals. `floor` is the lowest efficiency worth believing for a PEM
+    /// stack; below it the figures describe a machine nobody would publish.
+    #[must_use]
+    pub fn physically_possible(&self, floor: f64) -> bool {
+        let (low, high) = self.faradaic_efficiency_band();
+        low <= 1.0 && high > floor
+    }
+
     /// Efficiency on the lower heating value, computed rather than read.
     #[must_use]
     pub fn efficiency_lhv(&self, hv: &HeatingValues) -> f64 {
@@ -280,6 +380,7 @@ pub const H2A_RECORD_19009: Source = Source {
     document: "DOE Hydrogen Program Record 19009, Hydrogen Production Cost From PEM Electrolysis (2019)",
     url: "https://www.hydrogen.energy.gov/docs/hydrogenprogramlibraries/pdfs/19009_h2_production_cost_pem_electrolysis_2019.pdf",
     retrieved: "2026-09-18",
+    terms: US_GOV_PUBLIC_DOMAIN,
 };
 
 /// 300 psi, the current cases' outlet pressure, in bar.
@@ -302,6 +403,7 @@ pub const H2A_CASES: &[H2aCase] = &[
         bop_kwh_per_kg: Printed::new(5.4, 1),
         total_percent_lhv: Printed::new(59.7, 1),
         total_percent_hhv: Printed::new(70.6, 1),
+        cell_voltage_v: Printed::new(1.9, 1),
         outlet_pressure_bar: PSI_300_BAR,
     },
     H2aCase {
@@ -313,6 +415,7 @@ pub const H2A_CASES: &[H2aCase] = &[
         bop_kwh_per_kg: Printed::new(3.66, 2),
         total_percent_lhv: Printed::new(64.8, 1),
         total_percent_hhv: Printed::new(76.6, 1),
+        cell_voltage_v: Printed::new(1.8, 1),
         outlet_pressure_bar: PSI_700_BAR,
     },
     H2aCase {
@@ -324,6 +427,7 @@ pub const H2A_CASES: &[H2aCase] = &[
         bop_kwh_per_kg: Printed::new(5.04, 2),
         total_percent_lhv: Printed::new(60.1, 1),
         total_percent_hhv: Printed::new(71.0, 1),
+        cell_voltage_v: Printed::new(1.9, 1),
         outlet_pressure_bar: PSI_300_BAR,
     },
     H2aCase {
@@ -335,6 +439,7 @@ pub const H2A_CASES: &[H2aCase] = &[
         bop_kwh_per_kg: Printed::new(3.54, 2),
         total_percent_lhv: Printed::new(65.0, 1),
         total_percent_hhv: Printed::new(76.8, 1),
+        cell_voltage_v: Printed::new(1.8, 1),
         outlet_pressure_bar: PSI_700_BAR,
     },
 ];

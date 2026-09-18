@@ -165,6 +165,72 @@ fn the_cross_table_check_catches_what_the_other_two_cannot() {
     assert!(caught, "layer 3 failed to catch a whole-column swap");
 }
 
+// ------------------------------- layer 4: PHYSICS, not the printed page
+
+#[test]
+fn every_case_admits_a_physically_possible_electrolyser() {
+    // Faradaic efficiency cannot exceed 1.0. The cell voltage fixes the
+    // electricity per kilogram exactly, so a stack figure below what the voltage
+    // requires would describe more hydrogen than the charge can make -- and all
+    // three transcription layers pass on it, because they only ever compare
+    // printed numbers with other printed numbers.
+    for case in H2A_CASES {
+        let (low, high) = case.faradaic_efficiency_band();
+        assert!(
+            case.physically_possible(0.90),
+            "{}: implied Faradaic efficiency {low:.4}..{high:.4} admits nothing \
+             between 0.90 and 1.0",
+            case.name
+        );
+        assert!(
+            low <= 1.0,
+            "{}: even the most generous reading needs {low:.4} Faradaic efficiency",
+            case.name
+        );
+    }
+}
+
+#[test]
+fn the_physics_check_rejects_an_impossible_stack_figure() {
+    // Non-vacuous: a stack drawing far less than its own cell voltage requires.
+    // Both other in-column layers are untouched by this -- only physics objects.
+    let mut impossible = H2A_CASES[0];
+    impossible.stack_kwh_per_kg = Printed::new(40.0, 1);
+    assert!(
+        !impossible.physically_possible(0.90),
+        "a stack drawing 40 kWh/kg at 1.9 V was accepted; that is {:.0}% Faradaic",
+        100.0 * impossible.faradaic_efficiency_band().0
+    );
+    // ...and the other direction: an absurdly thirsty stack is not "impossible",
+    // only inefficient, so the check must NOT reject it. A gate that rejects
+    // everything is as useless as one that accepts everything.
+    let mut thirsty = H2A_CASES[0];
+    thirsty.stack_kwh_per_kg = Printed::new(70.0, 1);
+    assert!(
+        thirsty.physically_possible(0.70),
+        "a thirsty but possible stack was rejected"
+    );
+}
+
+#[test]
+fn the_faraday_constant_is_physics_and_not_a_fitted_number() {
+    // 2 electrons per H2, one kilogram is 1/M(H2) moles. Pinned so a silent
+    // edit to either constant reddens rather than quietly rescaling the check.
+    let case = current_distributed();
+    let (low, high) = case.stack_energy_band_from_voltage();
+    let midpoint = f64::midpoint(low, high);
+    assert!(
+        close(midpoint / case.cell_voltage_v.value(), 26.588_8, 1e-4),
+        "kWh/kg per volt drifted to {:.4}",
+        midpoint / case.cell_voltage_v.value()
+    );
+    assert!(
+        low < case.stack_kwh_per_kg.value() && case.stack_kwh_per_kg.value() < high,
+        "the printed stack figure {} falls outside the voltage band {low:.2}..{high:.2}",
+        case.stack_kwh_per_kg.value()
+    );
+}
+
 // ----------------------------------------------- the heating values themselves
 
 #[test]
@@ -705,6 +771,32 @@ fn the_caveats_are_ranked_by_measured_effect() {
             caveat.what
         );
         previous = size;
+    }
+}
+
+#[test]
+fn every_source_records_its_terms_as_a_determination() {
+    // ⛔ "It is a government document" is not a determination. NIST is a federal
+    // agency whose Standard Reference Data IS copyright-asserted, so the general
+    // rule has a loud exception and leaning on it silently is indistinguishable
+    // from not having checked.
+    for source in [AFDC_2026.source, H2A_RECORD_19009] {
+        assert!(
+            !source.terms.is_empty(),
+            "{}: no terms recorded",
+            source.document
+        );
+        assert!(
+            source.terms.contains("17 U.S.C."),
+            "{}: terms cite no authority, so they are an assumption: {}",
+            source.document,
+            source.terms
+        );
+        assert!(
+            source.terms.contains("Checked"),
+            "{}: terms carry no date of determination",
+            source.document
+        );
     }
 }
 
