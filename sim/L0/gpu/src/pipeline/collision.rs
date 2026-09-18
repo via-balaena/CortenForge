@@ -545,15 +545,21 @@ fn make_dispatch(
 /// ⛔⛔ **This does NOT implement the CPU's collision filter, and the gap has
 /// widened.**
 ///
-/// `sim_core::collision::check_collision_affinity` rejects a pair for five
-/// reasons; this function implements TWO of them — the contype/conaffinity
-/// bitmask and the same-body test. It has never applied:
+/// `sim_core::collision::check_collision_affinity` can reject a pair SIX ways.
+/// This function implements two of them, and the count is enumerated rather
+/// than asserted so a reader can check it against that function directly:
 ///
-/// - `contact_excludes` (`<contact><exclude>`)
-/// - `contact_pair_set` (explicit `<pair>` entries)
-/// - parent filtering, and now **weld-group** filtering: bodies joined by
-///   zero-dof joints are one rigid body and MuJoCo never collides them. On
-///   cf-trike that alone is 113 of 183 step-0 contacts.
+/// | | rule | here? |
+/// |---|---|---|
+/// | 1 | `contact_excludes` (`<contact><exclude>`) | ⛔ no |
+/// | 2 | `contact_pair_set` (explicit `<pair>` entries) | ⛔ no |
+/// | 3 | same body | ✅ yes |
+/// | 4 | same WELD GROUP | ⛔ no |
+/// | 5 | parent weld group (unless FILTERPARENT is off) | ⛔ no |
+/// | 6 | contype/conaffinity bitmask | ✅ yes |
+///
+/// Rule 4 is the newest and the largest: on cf-trike, same-weld pairs alone are
+/// 113 of 183 step-0 contacts.
 ///
 /// ⚠ **This is not caught by the GPU conformance suite, by design.**
 /// `contact_conformance_tests` INJECTS an identical hand-built contact set into
