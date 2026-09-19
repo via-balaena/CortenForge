@@ -50,12 +50,19 @@ use std::collections::{HashMap, HashSet};
 /// the source's per-tet materials across verbatim.
 ///
 /// Generic over the material type `M`, defaulting to [`NeoHookean`] so that
-/// every pre-existing `Tet10Mesh` spelling keeps its meaning. The parameter is
-/// what lets a Tet10 scene run [`Yeoh`](crate::material::Yeoh): the scan-fit
-/// sleeve rows wall at `max_disp ≈ 7 mm` under Neo-Hookean's validity domain,
-/// so the 8 mm interference target is only reachable with a Yeoh material on a
-/// mesh that also exposes six-node boundary faces for the rung-8b
-/// surface-integrated contact barrier.
+/// every pre-existing `Tet10Mesh` spelling keeps its meaning.
+///
+/// The parameter exists because the two capabilities a scan-fit insertion
+/// scene needs sit on opposite sides of it: the rung-8b surface-integrated
+/// contact barrier is emitted only on a mesh exposing six-node boundary faces
+/// (i.e. Tet10), while the sleeve example rows wall at `max_disp ≈ 7 mm` under
+/// Neo-Hookean's validity domain, so the 8 mm interference target needs
+/// [`Yeoh`](crate::material::Yeoh).
+///
+/// ⚠ This makes `Tet10Mesh<Yeoh>` **constructible**; it does not establish
+/// that a Tet10 × Yeoh scene *solves*. That combination has never been run —
+/// convergence, Newton cost and contact-pressure behaviour at Tet10 order with
+/// a Yeoh material are all unmeasured.
 ///
 /// Fields are private — external code constructs only via
 /// [`Tet10Mesh::from_tet4`], which preserves the corner id-space and appends
@@ -84,6 +91,13 @@ pub struct Tet10Mesh<M: Material = NeoHookean> {
     boundary_faces6: Vec<[VertexId; 6]>,
 }
 
+// Bound note: the sibling meshes ([`SdfMeshedTetMesh`], [`SingleTetMesh`])
+// require `M: BuildableFromField` because they *construct* materials by
+// sampling a `MaterialField`. `Tet10Mesh` never does — [`Tet10Mesh::from_tet4`]
+// copies an already-built cache off the source mesh — so it asks only for what
+// that copy needs: `Material` for the `Mesh<M>` contract, `Clone` for the
+// `to_vec()`. The looser bound is deliberate; it lets a Tet10 mesh carry any
+// material its Tet4 source could, including ones no field can build.
 impl<M: Material + Clone> Tet10Mesh<M> {
     /// Enrich a linear (Tet4) [`Mesh`] into a [`Tet10Mesh`].
     ///
