@@ -25,6 +25,7 @@ members = [
     "farm/cf-electrolysis",
     "farm/cf-storage",
     "farm/cf-tillage",
+    "farm/cf-nitrogen",
 
     # The SDK facade — one stable public surface re-exporting the SDK crates.
     "cortenforge",
