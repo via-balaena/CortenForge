@@ -5,14 +5,16 @@ in one place, with **what each publisher requires**, because that answer differs
 source by source and the difference is not obvious.
 
 ⛔⛔ **"It is a government document, therefore it is free" is not a determination.**
-Twelve sources fall under **four** different sets of terms:
+Fourteen sources fall under **five** different sets of terms:
 
-- **nine** are U.S. *federal* works with no copyright (17 U.S.C. §105);
+- **ten** are U.S. *federal* works with no copyright (17 U.S.C. §105);
 - **one** is a U.S. federal database that **asserts copyright** anyway, under the
   Standard Reference Data Act, and is therefore never committed;
 - **one** is a national-laboratory dataset under **BSD-3**, which puts a notice in `NOTICE`;
 - **one** is a **state** publication whose copyright status this repository has
-  **not determined** — see below.
+  **not determined** — see below;
+- **one** is an **international** body's table, where the determination is that
+  the *values* are facts and the *tabulation* is theirs — see source 14.
 
 ⚠ An earlier draft of this page counted eight federal works and folded the state
 source in with them. §105 does not reach state works, so that was the very
@@ -27,6 +29,7 @@ inference the paragraph above warns against, made in its own opening line.
 | 2. electrolysis | `cf-electrolysis` | kg H₂/yr at the electrolyser outlet, ~21 bar |
 | 3. compression + storage | `cf-storage` | kg H₂/yr at tank pressure, and the tank |
 | 4. tillage window + demand | `cf-tillage` | the operating window, and the engine efficiency the season needs |
+| 5. nitrogen demand | `cf-nitrogen` | the hydrogen an acre's fertilizer needs, and the acres one turbine covers |
 
 ## Every source
 
@@ -45,7 +48,10 @@ inference the paragraph above warns against, made in its own opening line.
 | 11 | **USDA NASS Quick Stats**, crops — North Dakota weekly fieldwork and harvest progress | `cf-tillage` | U.S. Gov work, public domain (17 U.S.C. §105) | ✅ 921 rows (21 KiB) — see [`cf-tillage/NASS_VALIDATION.md`](cf-tillage/NASS_VALIDATION.md) |
 | 12 | **EPA NR-005c**, EPA420-P-04-005, nonroad load factors and annual activity (2004) | `cf-tillage` | U.S. Gov work, public domain (17 U.S.C. §105) | figures only |
 
-## The two that need more than a row
+| 13 | **USDA NASS Quick Stats**, environmental — North Dakota fertilizer application (Agricultural Chemical Use Program) | `cf-nitrogen` | U.S. Gov work, public domain (17 U.S.C. §105) | ✅ 356 rows (22 KiB) — see [`cf-nitrogen/NASS_FERTILIZER.md`](cf-nitrogen/NASS_FERTILIZER.md) |
+| 14 | **IUPAC / CIAAW**, standard atomic weights of nitrogen and hydrogen | `cf-nitrogen` | ⚠ the **values are facts** and not copyrightable; the tabulation is IUPAC's — see below | two numbers only |
+
+## The three that need more than a row
 
 ### ⚠ Source 1 — the one whose terms are NOT settled
 
@@ -73,6 +79,20 @@ and not the expression of them.
 NREL's `turbine-models` is BSD-3, so redistributing the power curve requires
 reproducing the copyright notice, the conditions and the disclaimer. That is why this
 repository has a **THIRD-PARTY DATA** section in `NOTICE`. It is the only entry in it.
+
+### ⚠ Source 14 — the one that is not a U.S. work at all
+
+IUPAC is an international scientific union, not a U.S. federal body, so
+17 U.S.C. §105 has nothing to say about it. `cf-nitrogen` transcribes **two**
+numbers from it — the standard atomic weights of nitrogen and hydrogen — and
+derives everything else (ammonia's molar mass, its nitrogen and hydrogen mass
+fractions) by stoichiometry.
+
+The determination is the same one this page already applies to the Nebraska
+tables: **a standard atomic weight is a fact, and a fact is not the expression
+of it.** What would be IUPAC's is the table, and the table is not reproduced.
+`every_source_states_its_own_terms` fails if this row ever borrows the federal
+reasoning it has no claim to.
 
 ### ⛔ Source 10 — the loud exception
 

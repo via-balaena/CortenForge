@@ -2253,6 +2253,17 @@ name = "cf-nebraska"
 version = "1.0.0"
 
 [[package]]
+name = "cf-nitrogen"
+version = "1.0.0"
+dependencies = [
+ "cf-electrolysis",
+ "cf-storage",
+ "cf-tillage",
+ "cf-wind",
+ "sha2",
+]
+
+[[package]]
 name = "cf-osim"
 version = "1.0.0"
 dependencies = [
