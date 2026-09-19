@@ -787,10 +787,19 @@ impl BopScaling {
     /// instrumentation, minimum pump sizes, freeze protection — do not shrink at
     /// all below some threshold, and that threshold is not in the measured span.
     /// See [`UNMEASURED_AT_FARM_SCALE`].
+    ///
+    /// Returns `None` for a plant size that is not a positive, finite number.
+    /// ⚠ An unguarded version returned `inf` at zero and `NaN` at a negative
+    /// size, and that value feeds a published caveat — the rest of this crate
+    /// hands back `Option` at exactly these boundaries ([`bop_scaling`],
+    /// [`table_5_restated_total`]) and this was the one place that did not.
     #[must_use]
-    pub fn extrapolate_bop(&self, kg_per_day: f64) -> f64 {
+    pub fn extrapolate_bop(&self, kg_per_day: f64) -> Option<f64> {
+        if !kg_per_day.is_finite() || kg_per_day <= 0.0 {
+            return None;
+        }
         let decades_below = (self.small_kg_per_day / kg_per_day).log10();
-        self.small_bop_kwh_per_kg + self.kwh_per_kg_per_decade() * decades_below
+        Some(self.small_bop_kwh_per_kg + self.kwh_per_kg_per_decade() * decades_below)
     }
 }
 
@@ -851,7 +860,9 @@ pub const UNMEASURED_AT_FARM_SCALE: &[Unknown] = &[Unknown {
              balance of plant is nearly flat between them. Two points fix a slope and \
              cannot reveal a knee, and a farm sits two decades below the bottom of that \
              span. The two technology years also disagree on the slope by a factor of \
-             three, which is itself a statement about what a two-point fit is worth.",
+             three (0.236 against 0.079 kWh/kg per decade), which is itself a statement \
+             about what a two-point fit is worth; pinned by \
+             `the_two_technology_years_disagree_on_the_slope`.",
     what_would_measure_it: "A published balance-of-plant breakdown for a PEM plant \
              under ~100 kg/day, or a component-level model of the fixed loads \
              (controls, instrumentation, minimum pump and cooling sizes, freeze \

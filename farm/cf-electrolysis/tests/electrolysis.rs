@@ -749,7 +749,9 @@ fn the_caveats_are_ranked_by_measured_effect() {
     let Some(scaling) = bop_scaling(&H2A_CASES[0], &H2A_CASES[2]) else {
         panic!("the two 2019 cases must be comparable")
     };
-    let farm_bop = scaling.extrapolate_bop(CAVEAT_FARM_SCALE_KG_PER_DAY);
+    let Some(farm_bop) = scaling.extrapolate_bop(CAVEAT_FARM_SCALE_KG_PER_DAY) else {
+        panic!("the caveat's farm scale must be extrapolable")
+    };
     let alternatives = [
         55.8 * 1.10,                                   // stack degradation over life
         55.8 + 1.923,                                  // compression to 700 bar
@@ -800,7 +802,9 @@ fn the_balance_of_plant_swing_is_measured_from_the_record_not_assumed() {
         scaling.kwh_per_kg_per_decade()
     );
     // Extrapolated two decades below the smallest published case.
-    let farm_bop = scaling.extrapolate_bop(CAVEAT_FARM_SCALE_KG_PER_DAY);
+    let Some(farm_bop) = scaling.extrapolate_bop(CAVEAT_FARM_SCALE_KG_PER_DAY) else {
+        panic!("the caveat's farm scale must be extrapolable")
+    };
     assert!(
         close(farm_bop, 5.872_789, 1e-5),
         "farm BoP drifted to {farm_bop:.6}"
@@ -808,6 +812,68 @@ fn the_balance_of_plant_swing_is_measured_from_the_record_not_assumed() {
     assert!(
         farm_bop < 3.0 * H2A_CASES[0].bop_kwh_per_kg.value(),
         "the measured trend must stay far below the tripling this once assumed"
+    );
+}
+
+#[test]
+fn the_two_technology_years_disagree_on_the_slope() {
+    // ⛔ The prose in UNMEASURED_AT_FARM_SCALE claims a factor of three. Until
+    // this gate existed, nothing computed it -- a numeric claim with no referent,
+    // which goes quietly false the moment any BoP figure is edited. The 2035
+    // pair is equally comparable and was never exercised at all.
+    let Some(current) = bop_scaling(&H2A_CASES[0], &H2A_CASES[2]) else {
+        panic!("the 2019 pair must be comparable")
+    };
+    let Some(future) = bop_scaling(&H2A_CASES[1], &H2A_CASES[3]) else {
+        panic!("the 2035 pair must be comparable too, and was never tested")
+    };
+    assert!(close(current.kwh_per_kg_per_decade(), 0.236_394, 1e-5));
+    assert!(close(future.kwh_per_kg_per_decade(), 0.078_798, 1e-5));
+
+    let ratio = current.kwh_per_kg_per_decade() / future.kwh_per_kg_per_decade();
+    assert!(
+        close(ratio, 3.000, 1e-3),
+        "the eras' slope ratio drifted to {ratio:.4}; the recorded unknown says \
+         'a factor of three'"
+    );
+    // ★ Both slopes must be POSITIVE, or the shared claim that balance of plant
+    // rises as a plant shrinks rests on one pair.
+    assert!(current.kwh_per_kg_per_decade() > 0.0 && future.kwh_per_kg_per_decade() > 0.0);
+    // ⚠ And the disagreement must be big enough to matter: if the two eras ever
+    // agreed closely, the recorded caution would be overstated rather than wrong.
+    assert!(
+        ratio > 2.0,
+        "the eras now agree to within {ratio:.2}x; the unknown's stated caution \
+         no longer matches the data"
+    );
+}
+
+#[test]
+fn the_extrapolation_refuses_a_plant_size_that_is_not_a_size() {
+    // ⚠ This value feeds a published caveat. Unguarded it returned inf at zero
+    // and NaN at a negative size, while the rest of the crate hands back Option
+    // at exactly these boundaries.
+    let Some(scaling) = bop_scaling(&H2A_CASES[0], &H2A_CASES[2]) else {
+        panic!("the two 2019 cases must be comparable")
+    };
+    for bad in [0.0, -10.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        assert!(
+            scaling.extrapolate_bop(bad).is_none(),
+            "{bad} was accepted as a plant size"
+        );
+    }
+    for good in [15.0, 1_500.0, 50_000.0] {
+        let Some(v) = scaling.extrapolate_bop(good) else {
+            panic!("{good} kg/day should extrapolate")
+        };
+        assert!(v.is_finite() && v > 0.0, "{good} gave {v}");
+    }
+    // Sanity of direction: smaller plant, more balance-of-plant electricity.
+    let small = scaling.extrapolate_bop(15.0).unwrap_or(f64::NAN);
+    let large = scaling.extrapolate_bop(50_000.0).unwrap_or(f64::NAN);
+    assert!(
+        small > large,
+        "shrinking the plant must not reduce balance of plant"
     );
 }
 
