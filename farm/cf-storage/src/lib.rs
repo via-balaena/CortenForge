@@ -27,8 +27,9 @@
 //!
 //! ⚠ **Read those two rows against the answer, not against each other.** A work
 //! error is diluted, because compression is only a ~3% debit; a density error
-//! passes straight into the vessel. Using ideal gas moves the delivered
-//! kilograms by **0.20%** and the tank volume by **18.0%** — both measured by
+//! passes straight into the vessel. At **273.15 K**, the temperature this farm's
+//! window averages, using ideal gas moves the delivered kilograms by **0.21%**
+//! and the tank volume by **19.2%** — both measured by
 //! `the_equation_of_state_moves_the_tank_far_more_than_the_energy`.
 //! ⇒ **Model the gas properly because of the tank, not because of the energy.**
 //!
