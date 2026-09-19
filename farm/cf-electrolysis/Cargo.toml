@@ -1,0 +1,27 @@
+[package]
+name = "cf-electrolysis"
+description = "Electricity into hydrogen at one farm, from the DOE H2A PEM electrolysis record — carrying the outlet pressure in the type, because kilograms at 21 bar are not kilograms in a tank"
+keywords = ["hydrogen", "electrolysis", "energy", "agriculture"]
+categories = ["science", "simulation"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[package.metadata.cortenforge]
+tier = "L0"
+
+[dependencies]
+# None. This stage is arithmetic over figures transcribed from two public
+# documents; its hard part is proving the transcription, which needs no crate.
+
+[dev-dependencies]
+# Stage 1, used ONLY to prove the two stages compose on the real series. The
+# library takes an iterator of watts and knows nothing about wind, so the chain
+# is demonstrated in tests instead of welded into the dependency graph.
+cf-wind = { path = "../cf-wind" }
+
+[lints]
+workspace = true

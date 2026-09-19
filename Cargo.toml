@@ -19,6 +19,11 @@ members = [
     # the energy a named turbine takes from it — stage 1 of the acres chain.
     "farm/cf-wind",
 
+    # Electricity into hydrogen (DOE H2A PEM electrolysis record 19009) —
+    # stage 2 of the acres chain. Carries the electrolyser outlet pressure
+    # in the type; compression to storage pressure is NOT debited here.
+    "farm/cf-electrolysis",
+
     # The SDK facade — one stable public surface re-exporting the SDK crates.
     "cortenforge",
 

@@ -2152,6 +2152,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "cf-electrolysis"
+version = "1.0.0"
+dependencies = [
+ "cf-wind",
+]
+
+[[package]]
 name = "cf-fsu-geometry"
 version = "1.0.0"
 dependencies = [

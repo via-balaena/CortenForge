@@ -1,0 +1,956 @@
+//! Electricity into hydrogen, at one farm, from one public record.
+//!
+//! This is stage 2 of the acres-per-season chain. Stage 1 (`cf-wind`) says how
+//! many kilowatt-hours the wind carries at one real site; this crate says how
+//! many kilograms of hydrogen those kilowatt-hours become.
+//!
+//! # ⛔⛔ The error this crate exists to make impossible
+//!
+//! **A kilogram of hydrogen is not a kilogram of hydrogen.** The figure every
+//! electrolysis study publishes is energy per kilogram *at the electrolyser's
+//! own outlet pressure* — here **300 psi, about 21 bar**. A tractor's tank is
+//! at 350 or 700 bar. The compression between the two is real electricity that
+//! this stage does **not** debit, and quoting this crate's output as "hydrogen
+//! the farm can burn" overstates the farm by that margin.
+//!
+//! So the boundary is carried in the type. [`AnnualHydrogen`] has an
+//! `outlet_pressure_bar` field and no constructor that omits it: the number
+//! cannot be moved around without the pressure it is true at.
+//!
+//! # ⛔ The second error: which heating value
+//!
+//! An electrolyser quoted at "70% efficient" is 70% on the **higher** heating
+//! value and about 60% on the **lower** one. The two differ by 18%, both are in
+//! common use, and neither is wrong — but a chain that mixes them is. See
+//! [`HeatingValues`], which carries both and states which one each efficiency
+//! figure is on.
+//!
+//! # ★★ How the transcribed figures are checked
+//!
+//! Everything here is read off two rendered public documents, so the same
+//! discipline `cf-nebraska` needed applies: **four structurally different
+//! checks, because each is blind to what the others catch.** Three of them are
+//! about the page and one is about the world.
+//!
+//! | layer | what it is | what it CANNOT see |
+//! |---|---|---|
+//! | [`H2aCase::components_reconcile`] | additive, within a row group: stack + `BoP` == total | a whole column read from the wrong case |
+//! | [`H2aCase::implied_heating_values`] | multiplicative, within one row: value × %LHV recovers the LHV | the same wrong column, again |
+//! | [`TABLE_5_EFFICIENCY_ROW`] | the same four totals reprinted on a different page in a **different column order** | a figure mis-printed identically in both tables |
+//! | [`H2aCase::faradaic_efficiency_band`] | **physics**: the cell voltage fixes the electricity per kilogram, so the stack figure must admit a Faradaic efficiency at or below 1.0 | anything the source got wrong *consistently and plausibly* — it bounds, it does not pin |
+//!
+//! ★ The first three all ask the same question — *did this crate copy the
+//! document correctly?* — and all three pass on a figure that is impossible.
+//! The fourth asks whether the document's numbers describe a real machine. It
+//! is the loosest of the four and the only one that is about the world.
+//!
+//! ⚠ The third layer is the load-bearing one and the easiest to skip. A value
+//! taken consistently from the wrong column satisfies the first two perfectly —
+//! they are both computed *within* the column. Only a source that orders its
+//! columns differently can catch it.
+//!
+//! ⛔ **The heating values are not derived from layer two.** They come from a
+//! separate document ([`AFDC_2026`]); layer two is then an independent check
+//! that can actually fail. Deriving them from the ratio rows and then checking
+//! the ratio rows against them would be a check that is unable to fail, which
+//! is worse than no check because it reads as one.
+
+/// One International Table Btu, in joules. Exact by definition.
+const BTU_IT_J: f64 = 1_055.055_852_62;
+/// One avoirdupois pound, in kilograms. Exact by definition.
+const LB_KG: f64 = 0.453_592_37;
+/// Joules in a kilowatt-hour. Exact.
+const KWH_J: f64 = 3.6e6;
+/// Faraday constant, coulombs per mole. CODATA, exact by the 2019 SI redefinition.
+const FARADAY_C_PER_MOL: f64 = 96_485.332_12;
+/// Molar mass of hydrogen gas, kg/mol.
+const H2_MOLAR_MASS_KG: f64 = 2.016e-3;
+
+/// Electricity a stack must draw per kilogram, per volt of cell voltage.
+///
+/// Splitting water needs two electrons per H₂ molecule, so one kilogram needs
+/// `2 / M(H₂)` moles of electrons and `charge × voltage` joules to move them.
+/// That is **26.59 kWh/kg per volt**, and it is physics rather than a
+/// correlation: no cell design, catalyst or operating point changes it.
+const KWH_PER_KG_PER_VOLT: f64 = 2.0 / H2_MOLAR_MASS_KG * FARADAY_C_PER_MOL / KWH_J;
+
+/// Where a figure was read, precisely enough to read it again — and on what terms.
+#[derive(Clone, Copy, Debug)]
+pub struct Source {
+    /// Publishing body and document title.
+    pub document: &'static str,
+    /// Where it lives.
+    pub url: &'static str,
+    /// ISO date it was retrieved.
+    pub retrieved: &'static str,
+    /// What the publisher's terms permit, **determined and not assumed**.
+    ///
+    /// ⛔⛔ **"It is a government document" is not a determination.** NIST is a
+    /// U.S. federal agency and its Standard Reference Data is explicitly
+    /// copyright-asserted under the Standard Reference Data Act — *"© by the
+    /// U.S. Secretary of Commerce on behalf of the United States of America.
+    /// All rights reserved."* So the general rule has at least one loud
+    /// exception, and a crate that leans on the rule without recording the
+    /// check is indistinguishable from one where nobody looked.
+    ///
+    /// ⚠ This field exists because the sibling crate has one. `cf-wind` carries
+    /// `CurveSource::licence` and needed it: its power curve is BSD-3 and put
+    /// the repository's first THIRD-PARTY DATA section into `NOTICE`. These
+    /// sources happen to impose nothing, and that is worth writing down exactly
+    /// because it is the answer that leaves no other trace.
+    pub terms: &'static str,
+}
+
+/// The determination for a work of the United States Government.
+///
+/// 17 U.S.C. §105: copyright protection is not available for any work of the
+/// U.S. Government. Both sources here are DOE publications and carry no
+/// additional assertion, so nothing is owed — no `NOTICE` entry, no attribution
+/// requirement, no redistribution limit.
+const US_GOV_PUBLIC_DOMAIN: &str = concat!(
+    "U.S. Government work, 17 U.S.C. §105 — no copyright, public domain; ",
+    "no attribution or redistribution obligation. Checked 2026-09-18."
+);
+
+/// A figure as the source printed it, with the precision it was printed to.
+///
+/// The decimals matter: two figures agree if their **rounding intervals
+/// overlap**, which is not the same set as "within 0.5%". A value printed to
+/// one decimal place carries ±0.05 of slack whatever its magnitude, so a
+/// percentage tolerance is too tight on small figures and too loose on large
+/// ones. `cf-nebraska` learned this on a table whose adjacent rows differed by
+/// 0.17%.
+#[derive(Clone, Copy, Debug)]
+pub struct Printed {
+    value: f64,
+    decimals: u8,
+}
+
+impl Printed {
+    /// A figure and the number of decimal places it was printed to.
+    #[must_use]
+    pub const fn new(value: f64, decimals: u8) -> Self {
+        Self { value, decimals }
+    }
+
+    /// The figure as printed.
+    #[must_use]
+    pub const fn value(&self) -> f64 {
+        self.value
+    }
+
+    /// Half of the last printed unit — how far the true value may lie either
+    /// side of what is on the page.
+    #[must_use]
+    pub fn half_ulp(&self) -> f64 {
+        0.5 * 10f64.powi(-i32::from(self.decimals))
+    }
+
+    /// Lowest value that would have been printed this way.
+    #[must_use]
+    pub fn low(&self) -> f64 {
+        self.value - self.half_ulp()
+    }
+
+    /// Highest value that would have been printed this way.
+    #[must_use]
+    pub fn high(&self) -> f64 {
+        self.value + self.half_ulp()
+    }
+
+    /// Whether two printed figures could be the same underlying number.
+    #[must_use]
+    pub fn overlaps(&self, other: &Self) -> bool {
+        self.low() <= other.high() && other.low() <= self.high()
+    }
+}
+
+/// Hydrogen's two heating values, and the fact that sources disagree slightly.
+///
+/// ⚠ The disagreement recorded in [`HHV_SOURCE_SPREAD_PERCENT`] is real and
+/// small. It is carried rather than resolved because resolving it would mean
+/// picking a side on no evidence, and because a later silent edit to either
+/// constant is exactly the drift a recorded spread catches.
+#[derive(Clone, Copy, Debug)]
+pub struct HeatingValues {
+    /// Lower heating value as printed, Btu/lb — the higher-resolution figure.
+    pub lhv_btu_per_lb: Printed,
+    /// Higher heating value as printed, Btu/lb.
+    pub hhv_btu_per_lb: Printed,
+    /// The LHV *also* printed in kWh/kg by the same table, to fewer figures.
+    ///
+    /// ★ This is the within-document checksum: a misread digit in the Btu/lb
+    /// figure does not survive conversion into agreement with this one.
+    /// ⚠ The HHV has no such second printing, which makes it the weakly
+    /// checked figure of the pair — and it is also the one that disagrees
+    /// across sources. Both facts are recorded rather than smoothed.
+    pub lhv_kwh_per_kg_printed: Printed,
+    /// Where these came from.
+    pub source: Source,
+}
+
+impl HeatingValues {
+    /// Lower heating value, kWh/kg, converted from the Btu/lb figure.
+    #[must_use]
+    pub fn lhv_kwh_per_kg(&self) -> f64 {
+        self.lhv_btu_per_lb.value * BTU_IT_J / LB_KG / KWH_J
+    }
+
+    /// Higher heating value, kWh/kg, converted from the Btu/lb figure.
+    #[must_use]
+    pub fn hhv_kwh_per_kg(&self) -> f64 {
+        self.hhv_btu_per_lb.value * BTU_IT_J / LB_KG / KWH_J
+    }
+
+    /// Whether the converted LHV agrees with the same table's kWh/kg printing.
+    ///
+    /// ⚠ Asymmetric on purpose: the Btu/lb figure has five significant digits
+    /// and the kWh/kg figure three, so the interval that must contain the
+    /// converted value is the *coarse* one.
+    #[must_use]
+    pub fn lhv_printings_agree(&self) -> bool {
+        let converted = self.lhv_kwh_per_kg();
+        converted >= self.lhv_kwh_per_kg_printed.low()
+            && converted <= self.lhv_kwh_per_kg_printed.high()
+    }
+}
+
+/// DOE Alternative Fuels Data Center fuel property comparison.
+///
+/// Chosen over the H2A record's own ratio rows deliberately: see the crate
+/// documentation on why a check must not validate its own input.
+pub const AFDC_2026: HeatingValues = HeatingValues {
+    lhv_btu_per_lb: Printed::new(51_585.0, 0),
+    hhv_btu_per_lb: Printed::new(61_013.0, 0),
+    lhv_kwh_per_kg_printed: Printed::new(33.3, 1),
+    source: Source {
+        document: "U.S. DOE Alternative Fuels Data Center, Fuel Properties Comparison",
+        url: "https://afdc.energy.gov/fuels/properties",
+        retrieved: "2026-09-18",
+        terms: US_GOV_PUBLIC_DOMAIN,
+    },
+};
+
+/// How far the two sources' higher heating values sit apart, in percent.
+///
+/// Measured against the **Current Distributed** case's own ratio row, which is
+/// the case this chain uses: 55.8 kWh/kg × 70.6% implies 39.395 kWh/kg, while
+/// AFDC's 61,013 Btu/lb converts to 39.421. Across all four cases the implied
+/// values span 39.372–39.405, so AFDC sits just above the whole band.
+///
+/// The physical reason is a convention difference in the condensation reference
+/// state. The reason to record it rather than pick a side is that 0.07% is far
+/// too small to notice by eye and far too large to be a typo.
+///
+/// ★ **This constant does real work.** The higher-heating-value efficiencies
+/// cannot all be reproduced from AFDC's HHV within their printed rounding
+/// intervals — Future Distributed misses by 0.045 percentage points — and this
+/// spread is exactly what closes the gap. Shrink it and a test reddens; that is
+/// the difference between a recorded disagreement and a fudge factor.
+///
+/// ⚠ The lower heating value has no such problem: AFDC's 33.330 sits inside
+/// the implied 33.307–33.355 band. HHV is the weakly checked figure of the
+/// pair, on both axes at once — it is also the one AFDC prints in only one unit.
+pub const HHV_SOURCE_SPREAD_PERCENT: f64 = 0.067;
+
+/// One case of the DOE H2A PEM electrolysis cost record.
+///
+/// ⚠ Fields are the figures **as printed**, in the table's own order. They were
+/// read by structural position, never by matching magnitudes to expectations:
+/// `cf-nebraska` had four figures silently taken from neighbouring rows that
+/// way, every one of which then reconciled perfectly because each was a real
+/// number from a real row.
+#[derive(Clone, Copy, Debug)]
+pub struct H2aCase {
+    /// The case as the record names it.
+    pub name: &'static str,
+    /// Technology year the case represents.
+    pub technology_year: u16,
+    /// Plant scale, kg H2 per day.
+    pub scale_kg_per_day: f64,
+    /// Total electrical usage, kWh/kg — stack plus balance of plant.
+    pub total_kwh_per_kg: Printed,
+    /// Stack electrical usage, kWh/kg.
+    pub stack_kwh_per_kg: Printed,
+    /// Balance-of-plant electrical usage, kWh/kg.
+    pub bop_kwh_per_kg: Printed,
+    /// System efficiency on the lower heating value, as the record prints it.
+    pub total_percent_lhv: Printed,
+    /// System efficiency on the higher heating value, as the record prints it.
+    pub total_percent_hhv: Printed,
+    /// Cell voltage as the record prints it, volts.
+    ///
+    /// ★ Carried so the stack figure can be checked against **physics** rather
+    /// than only against other printed numbers. See
+    /// [`H2aCase::faradaic_efficiency_band`].
+    pub cell_voltage_v: Printed,
+    /// Pressure the hydrogen leaves the electrolyser at, bar.
+    ///
+    /// ⛔ **Not storage pressure.** See the crate documentation.
+    pub outlet_pressure_bar: f64,
+}
+
+impl H2aCase {
+    /// Layer one: does stack plus balance of plant reproduce the printed total?
+    ///
+    /// Compared as **rounding intervals**, since all three figures are rounded
+    /// independently and their slacks add.
+    #[must_use]
+    pub fn components_reconcile(&self) -> bool {
+        let sum = self.stack_kwh_per_kg.value + self.bop_kwh_per_kg.value;
+        let slack = self.stack_kwh_per_kg.half_ulp() + self.bop_kwh_per_kg.half_ulp();
+        sum - slack <= self.total_kwh_per_kg.high() && self.total_kwh_per_kg.low() <= sum + slack
+    }
+
+    /// Layer two: the heating values this row implies, kWh/kg, as (LHV, HHV).
+    ///
+    /// An efficiency is `heating_value / specific_energy`, so multiplying the
+    /// printed efficiency back by the printed specific energy must return the
+    /// heating value — a check that uses only figures from this one row.
+    #[must_use]
+    pub fn implied_heating_values(&self) -> (f64, f64) {
+        (
+            self.total_kwh_per_kg.value * self.total_percent_lhv.value / 100.0,
+            self.total_kwh_per_kg.value * self.total_percent_hhv.value / 100.0,
+        )
+    }
+
+    /// Stack electricity the cell voltage implies, kWh/kg, as a rounding band.
+    ///
+    /// Returns `(low, high)` from the voltage's own printed interval. ⚠ The band
+    /// is **wide** — a voltage printed to one decimal carries ±0.05 V, which is
+    /// ±2.6% here. That is the honest cost of this layer and the reason it is a
+    /// fourth check rather than a replacement for the other three.
+    #[must_use]
+    pub fn stack_energy_band_from_voltage(&self) -> (f64, f64) {
+        (
+            KWH_PER_KG_PER_VOLT * self.cell_voltage_v.low(),
+            KWH_PER_KG_PER_VOLT * self.cell_voltage_v.high(),
+        )
+    }
+
+    /// Faradaic efficiency the printed figures imply, as `(low, high)`.
+    ///
+    /// ★★★ **The one check that is about the world rather than the page.** The
+    /// other three layers ask whether this crate copied the document correctly;
+    /// all three pass happily on a figure that is impossible. This one asks
+    /// whether the document's own numbers can describe a real electrolyser.
+    ///
+    /// Faradaic efficiency is the fraction of charge that actually makes
+    /// hydrogen, so it **cannot exceed 1.0**. A stack figure below what the cell
+    /// voltage requires implies more hydrogen than the charge can produce, and
+    /// no amount of cross-checking printed columns against each other would
+    /// notice.
+    #[must_use]
+    pub fn faradaic_efficiency_band(&self) -> (f64, f64) {
+        let (low, high) = self.stack_energy_band_from_voltage();
+        (
+            low / self.stack_kwh_per_kg.high(),
+            high / self.stack_kwh_per_kg.low(),
+        )
+    }
+
+    /// Whether the printed figures admit a physically possible electrolyser.
+    ///
+    /// True when some Faradaic efficiency in `(floor, 1.0]` is consistent with
+    /// the printed cell voltage and stack figure, both taken at their rounding
+    /// intervals. `floor` is the lowest efficiency worth believing for a PEM
+    /// stack; below it the figures describe a machine nobody would publish.
+    #[must_use]
+    pub fn physically_possible(&self, floor: f64) -> bool {
+        let (low, high) = self.faradaic_efficiency_band();
+        low <= 1.0 && high > floor
+    }
+
+    /// Efficiency on the lower heating value, computed rather than read.
+    #[must_use]
+    pub fn efficiency_lhv(&self, hv: &HeatingValues) -> f64 {
+        hv.lhv_kwh_per_kg() / self.total_kwh_per_kg.value
+    }
+
+    /// Efficiency on the higher heating value, computed rather than read.
+    #[must_use]
+    pub fn efficiency_hhv(&self, hv: &HeatingValues) -> f64 {
+        hv.hhv_kwh_per_kg() / self.total_kwh_per_kg.value
+    }
+}
+
+/// Where the H2A figures were read.
+pub const H2A_RECORD_19009: Source = Source {
+    document: "DOE Hydrogen Program Record 19009, Hydrogen Production Cost From PEM Electrolysis (2019)",
+    url: "https://www.hydrogen.energy.gov/docs/hydrogenprogramlibraries/pdfs/19009_h2_production_cost_pem_electrolysis_2019.pdf",
+    retrieved: "2026-09-18",
+    terms: US_GOV_PUBLIC_DOMAIN,
+};
+
+/// 300 psi, the current cases' outlet pressure, in bar.
+const PSI_300_BAR: f64 = 300.0 * 6_894.757_293_168_361 / 1e5;
+/// 700 psi, the future cases' outlet pressure, in bar.
+const PSI_700_BAR: f64 = 700.0 * 6_894.757_293_168_361 / 1e5;
+
+/// The four cases of Table 2, in the record's own column order.
+///
+/// ⚠ Order is load-bearing: [`TABLE_5_EFFICIENCY_ROW`] checks these against a
+/// table that orders its columns differently, and that check only works if this
+/// array preserves the order it was read in.
+pub const H2A_CASES: &[H2aCase] = &[
+    H2aCase {
+        name: "Current Distributed",
+        technology_year: 2019,
+        scale_kg_per_day: 1_500.0,
+        total_kwh_per_kg: Printed::new(55.8, 1),
+        stack_kwh_per_kg: Printed::new(50.4, 1),
+        bop_kwh_per_kg: Printed::new(5.4, 1),
+        total_percent_lhv: Printed::new(59.7, 1),
+        total_percent_hhv: Printed::new(70.6, 1),
+        cell_voltage_v: Printed::new(1.9, 1),
+        outlet_pressure_bar: PSI_300_BAR,
+    },
+    H2aCase {
+        name: "Future Distributed",
+        technology_year: 2035,
+        scale_kg_per_day: 1_500.0,
+        total_kwh_per_kg: Printed::new(51.4, 1),
+        stack_kwh_per_kg: Printed::new(47.8, 1),
+        bop_kwh_per_kg: Printed::new(3.66, 2),
+        total_percent_lhv: Printed::new(64.8, 1),
+        total_percent_hhv: Printed::new(76.6, 1),
+        cell_voltage_v: Printed::new(1.8, 1),
+        outlet_pressure_bar: PSI_700_BAR,
+    },
+    H2aCase {
+        name: "Current Central",
+        technology_year: 2019,
+        scale_kg_per_day: 50_000.0,
+        total_kwh_per_kg: Printed::new(55.5, 1),
+        stack_kwh_per_kg: Printed::new(50.4, 1),
+        bop_kwh_per_kg: Printed::new(5.04, 2),
+        total_percent_lhv: Printed::new(60.1, 1),
+        total_percent_hhv: Printed::new(71.0, 1),
+        cell_voltage_v: Printed::new(1.9, 1),
+        outlet_pressure_bar: PSI_300_BAR,
+    },
+    H2aCase {
+        name: "Future Central",
+        technology_year: 2035,
+        scale_kg_per_day: 50_000.0,
+        total_kwh_per_kg: Printed::new(51.3, 1),
+        stack_kwh_per_kg: Printed::new(47.8, 1),
+        bop_kwh_per_kg: Printed::new(3.54, 2),
+        total_percent_lhv: Printed::new(65.0, 1),
+        total_percent_hhv: Printed::new(76.8, 1),
+        cell_voltage_v: Printed::new(1.8, 1),
+        outlet_pressure_bar: PSI_700_BAR,
+    },
+];
+
+/// Table 5's "Electrical Efficiency" row, **in Table 5's own column order**.
+///
+/// ★★★ **Stored in the source's order, not re-indexed into [`H2A_CASES`]'s.**
+/// An earlier version held only the four 2019 figures already permuted into
+/// Table 2's order, which made the array byte-identical to Table 2's own totals
+/// — so the "different column order" claim, which is the entire reason to carry
+/// a third layer, survived only in this comment. Regenerating it by copying
+/// Table 2 would have been undetectable.
+///
+/// Eight columns: each of Current-Distributed, Current-Central,
+/// Future-Distributed, Future-Central appears twice, as the 2014 case study
+/// then the 2019 one. The 2014 figures are different numbers entirely, which is
+/// what makes a copy of Table 2 impossible to pass off as this row.
+pub const TABLE_5_EFFICIENCY_ROW: &[f64] = &[
+    54.6, 55.8, // Current Distributed: 2014 study, 2019 study
+    54.3, 55.5, // Current Central
+    50.3, 51.4, // Future Distributed
+    50.2, 51.3, // Future Central
+];
+
+/// Which column of [`TABLE_5_EFFICIENCY_ROW`] restates each [`H2A_CASES`] entry.
+///
+/// ★ **This permutation is not the identity and not monotonic**, and a gate says
+/// so. That is the machine-checkable form of "the two tables order their columns
+/// differently": if it ever became sorted, the two sources would be in the same
+/// order and the cross-table layer would have stopped being a cross-check.
+pub const TABLE_5_COLUMN_OF_CASE: &[usize] = &[1, 5, 3, 7];
+
+/// The 2019 total each case should restate, pulled through the permutation.
+///
+/// ⚠ Derived, never typed in — typing it in is exactly how it would drift back
+/// into being a copy of Table 2.
+#[must_use]
+pub fn table_5_restated_total(case_index: usize) -> Option<f64> {
+    TABLE_5_EFFICIENCY_ROW
+        .get(*TABLE_5_COLUMN_OF_CASE.get(case_index)?)
+        .copied()
+}
+
+/// The Current Distributed case: 2019 technology, the honest "today" figure.
+///
+/// ⚠ Chosen over the Future cases because a chain built on 2035 projections
+/// answers a question nobody asked. Its limits are in [`NOT_A_FARM_PLANT`].
+#[must_use]
+pub fn current_distributed() -> H2aCase {
+    H2A_CASES[0]
+}
+
+/// Something that turns electrical power into hydrogen.
+///
+/// The seam. Every stage of this chain gets one, including the stages nobody
+/// currently suspects — a seam placed only at the term you already believe
+/// dominates can do nothing but confirm you.
+pub trait Electrolyser {
+    /// Nameplate electrical input, watts.
+    fn rated_power_w(&self) -> f64;
+    /// Lowest fraction of rated power the stack will run at.
+    ///
+    /// Below this it shuts down, and the energy is unusable rather than merely
+    /// inefficient — which is why it is a separate term in [`AnnualHydrogen`].
+    fn min_load_fraction(&self) -> f64;
+    /// Electricity per kilogram at a given fraction of rated power, kWh/kg.
+    fn specific_energy_kwh_per_kg(&self, load_fraction: f64) -> f64;
+    /// Pressure the hydrogen leaves at, bar.
+    fn outlet_pressure_bar(&self) -> f64;
+    /// What to call it.
+    fn name(&self) -> &'static str;
+}
+
+/// An electrolyser whose specific energy does not vary with load.
+///
+/// ⚠ **A deliberate simplification, and a flat one.** A real stack is *more*
+/// efficient at part load, because cell voltage falls with current density —
+/// the record's own 1.9 V at 2.0 A/cm² is one point on a curve this type
+/// replaces with a horizontal line. Modelling the curve needs a polarisation
+/// dataset this crate does not have, so the flat line is used and named, rather
+/// than a shape being invented to look more sophisticated.
+///
+/// The direction of the resulting error is known even though its size is not:
+/// a wind-driven plant spends much of its year at part load, where the real
+/// machine does better than this one. **This type therefore understates
+/// production.** It is the conservative side, which is the correct side to be
+/// wrong on for a feasibility claim.
+#[derive(Clone, Copy, Debug)]
+pub struct FixedSpecificEnergy {
+    name: &'static str,
+    rated_power_w: f64,
+    min_load_fraction: f64,
+    specific_energy_kwh_per_kg: f64,
+    outlet_pressure_bar: f64,
+}
+
+impl FixedSpecificEnergy {
+    /// Build one from a published case, at a chosen plant size.
+    ///
+    /// `min_load_fraction` is a plant-integration choice, not a figure from the
+    /// record — the record sizes for steady operation and never states a
+    /// turndown limit. It is an argument rather than a constant so that it
+    /// shows up in a sweep instead of hiding in the arithmetic.
+    #[must_use]
+    pub const fn from_case(case: &H2aCase, rated_power_w: f64, min_load_fraction: f64) -> Self {
+        Self {
+            name: case.name,
+            rated_power_w,
+            min_load_fraction,
+            specific_energy_kwh_per_kg: case.total_kwh_per_kg.value,
+            outlet_pressure_bar: case.outlet_pressure_bar,
+        }
+    }
+}
+
+impl Electrolyser for FixedSpecificEnergy {
+    fn rated_power_w(&self) -> f64 {
+        self.rated_power_w
+    }
+    fn min_load_fraction(&self) -> f64 {
+        self.min_load_fraction
+    }
+    fn specific_energy_kwh_per_kg(&self, _load_fraction: f64) -> f64 {
+        self.specific_energy_kwh_per_kg
+    }
+    fn outlet_pressure_bar(&self) -> f64 {
+        self.outlet_pressure_bar
+    }
+    fn name(&self) -> &'static str {
+        self.name
+    }
+}
+
+/// The thermodynamic ceiling: every kilowatt-hour becomes hydrogen at its LHV.
+///
+/// ⛔ **Not a machine, and not a target.** No electrolyser reaches this and none
+/// ever will; it exists so the chain has a bound it cannot cross, and so a
+/// second implementation exercises the [`Electrolyser`] seam with different
+/// code rather than the same code holding different numbers.
+///
+/// It runs from zero load and clips only at rated power.
+#[derive(Clone, Copy, Debug)]
+pub struct ThermodynamicBound {
+    rated_power_w: f64,
+    lhv_kwh_per_kg: f64,
+    outlet_pressure_bar: f64,
+}
+
+impl ThermodynamicBound {
+    /// The bound at a chosen plant size, on a stated heating value.
+    #[must_use]
+    pub fn new(rated_power_w: f64, hv: &HeatingValues, outlet_pressure_bar: f64) -> Self {
+        Self {
+            rated_power_w,
+            lhv_kwh_per_kg: hv.lhv_kwh_per_kg(),
+            outlet_pressure_bar,
+        }
+    }
+}
+
+impl Electrolyser for ThermodynamicBound {
+    fn rated_power_w(&self) -> f64 {
+        self.rated_power_w
+    }
+    fn min_load_fraction(&self) -> f64 {
+        0.0
+    }
+    fn specific_energy_kwh_per_kg(&self, _load_fraction: f64) -> f64 {
+        self.lhv_kwh_per_kg
+    }
+    fn outlet_pressure_bar(&self) -> f64 {
+        self.outlet_pressure_bar
+    }
+    fn name(&self) -> &'static str {
+        "thermodynamic bound (LHV, not a machine)"
+    }
+}
+
+/// What a plant made of a year's electricity, and what it did not.
+///
+/// ⚠ The three energy terms are exhaustive **over the finite samples** and are
+/// asserted to sum to the energy offered. A loss that is not one of these three
+/// is a loss the model cannot represent, and the balance failing is how that
+/// would announce itself. Samples that were not finite are excluded from all
+/// four figures and counted in [`AnnualHydrogen::samples_not_finite`].
+#[derive(Clone, Copy, Debug)]
+pub struct AnnualHydrogen {
+    /// Hydrogen produced over the year, kg.
+    pub kg: f64,
+    /// ⛔ Pressure that hydrogen is at, bar. **Not storage pressure.**
+    pub outlet_pressure_bar: f64,
+    /// Energy that became hydrogen, kWh.
+    pub energy_converted_kwh: f64,
+    /// Energy offered above rated power and therefore spilled, kWh.
+    pub energy_curtailed_kwh: f64,
+    /// Energy offered below the turndown limit, with the stack off, kWh.
+    pub energy_below_turndown_kwh: f64,
+    /// Intervals the stack spent shut down for want of power.
+    pub samples_below_turndown: usize,
+    /// Intervals the plant spent clipped at rated power.
+    pub samples_at_rated: usize,
+    /// Intervals counted in total, including any that were not finite.
+    pub samples: usize,
+    /// Intervals whose power was `NaN` or infinite, and were therefore skipped.
+    ///
+    /// ⛔⛔ **Not cosmetic.** A single `NaN` sample used to propagate straight into
+    /// the annual kilograms with no diagnostic, and an infinite one was worse:
+    /// it produced a *finite, plausible-looking* mass, because the upper clip
+    /// bounded it, while silently breaking the energy balance. Both now land
+    /// here instead. A non-zero count means the series upstream is damaged and
+    /// every other figure in this struct covers only the finite remainder.
+    pub samples_not_finite: usize,
+}
+
+impl AnnualHydrogen {
+    /// Energy offered by the source over the year, kWh.
+    #[must_use]
+    pub fn energy_available_kwh(&self) -> f64 {
+        self.energy_converted_kwh + self.energy_curtailed_kwh + self.energy_below_turndown_kwh
+    }
+
+    /// Fraction of offered energy that became hydrogen.
+    #[must_use]
+    pub fn utilisation(&self) -> f64 {
+        let available = self.energy_available_kwh();
+        if available > 0.0 {
+            self.energy_converted_kwh / available
+        } else {
+            0.0
+        }
+    }
+}
+
+/// Run a plant against a series of electrical power samples.
+///
+/// `power_w` is whatever the stage upstream produced, sampled at a fixed
+/// interval; this crate does not know or care that it came from wind.
+///
+/// ⚠⚠ **This is not `mean(power)` put through the same arithmetic**, and the
+/// difference is this stage's version of the trap that sinks stage 1. The plant
+/// is clipped at both ends — nothing below turndown, nothing above rated — so
+/// it is a **nonlinear** function of the input, and a nonlinear function of an
+/// average is not the average of the function. The size *and sign* of that gap
+/// depend on the distribution and must be measured, never assumed.
+#[must_use]
+pub fn annual_hydrogen<E, I>(power_w: I, plant: &E, interval_seconds: f64) -> AnnualHydrogen
+where
+    E: Electrolyser + ?Sized,
+    I: IntoIterator<Item = f64>,
+{
+    let rated = plant.rated_power_w();
+    let floor = rated * plant.min_load_fraction();
+
+    let mut kg = 0.0;
+    let mut converted_kwh = 0.0;
+    let mut curtailed_kwh = 0.0;
+    let mut below_kwh = 0.0;
+    let (mut n_below, mut n_rated, mut n) = (0usize, 0usize, 0usize);
+    let mut n_not_finite = 0usize;
+
+    for p in power_w {
+        n += 1;
+        if !p.is_finite() {
+            n_not_finite += 1;
+            continue;
+        }
+        let offered_kwh = p * interval_seconds / KWH_J;
+
+        if p < floor {
+            n_below += 1;
+            below_kwh += offered_kwh;
+            continue;
+        }
+
+        let used_w = if p > rated {
+            n_rated += 1;
+            rated
+        } else {
+            p
+        };
+        let used_kwh = used_w * interval_seconds / KWH_J;
+        curtailed_kwh += offered_kwh - used_kwh;
+        converted_kwh += used_kwh;
+
+        let load_fraction = if rated > 0.0 { used_w / rated } else { 0.0 };
+        let specific = plant.specific_energy_kwh_per_kg(load_fraction);
+        if specific > 0.0 {
+            kg += used_kwh / specific;
+        }
+    }
+
+    AnnualHydrogen {
+        kg,
+        outlet_pressure_bar: plant.outlet_pressure_bar(),
+        energy_converted_kwh: converted_kwh,
+        energy_curtailed_kwh: curtailed_kwh,
+        energy_below_turndown_kwh: below_kwh,
+        samples_below_turndown: n_below,
+        samples_at_rated: n_rated,
+        samples: n,
+        samples_not_finite: n_not_finite,
+    }
+}
+
+/// How balance-of-plant electricity scales with plant size.
+///
+/// ★★★ **A measurement, and it was in the record the whole time.** The study
+/// publishes two plant sizes at the same technology year, and between them the
+/// **stack figure does not move at all** — so balance of plant is the only term
+/// that responds to scale, and the pair is a clean two-point measurement of how.
+///
+/// This exists because the crate previously asserted that balance of plant
+/// "does not scale down linearly" and booked a **−16.2%** swing from an assumed
+/// tripling, while calling the question uncheckable. The record answers it, and
+/// the answer is roughly a twentieth of the assumption.
+#[derive(Clone, Copy, Debug)]
+pub struct BopScaling {
+    /// Smaller plant, kg H2/day.
+    pub small_kg_per_day: f64,
+    /// Larger plant, kg H2/day.
+    pub large_kg_per_day: f64,
+    /// Balance-of-plant electricity at the smaller plant, kWh/kg.
+    pub small_bop_kwh_per_kg: f64,
+    /// Balance-of-plant electricity at the larger plant, kWh/kg.
+    pub large_bop_kwh_per_kg: f64,
+}
+
+impl BopScaling {
+    /// Orders of magnitude between the two plants.
+    #[must_use]
+    pub fn decades(&self) -> f64 {
+        (self.large_kg_per_day / self.small_kg_per_day).log10()
+    }
+
+    /// How much balance-of-plant electricity rises per decade of shrinking.
+    #[must_use]
+    pub fn kwh_per_kg_per_decade(&self) -> f64 {
+        (self.small_bop_kwh_per_kg - self.large_bop_kwh_per_kg) / self.decades()
+    }
+
+    /// Balance of plant extrapolated to a plant of `kg_per_day`, kWh/kg.
+    ///
+    /// ⛔⛔ **Extrapolation, and it is the weaker half of this type.** Two points
+    /// fix a slope and can say nothing about a knee. Fixed overheads — controls,
+    /// instrumentation, minimum pump sizes, freeze protection — do not shrink at
+    /// all below some threshold, and that threshold is not in the measured span.
+    /// See [`UNMEASURED_AT_FARM_SCALE`].
+    ///
+    /// Returns `None` for a plant size that is not a positive, finite number.
+    /// ⚠ An unguarded version returned `inf` at zero and `NaN` at a negative
+    /// size, and that value feeds a published caveat — the rest of this crate
+    /// hands back `Option` at exactly these boundaries ([`bop_scaling`],
+    /// [`table_5_restated_total`]) and this was the one place that did not.
+    #[must_use]
+    pub fn extrapolate_bop(&self, kg_per_day: f64) -> Option<f64> {
+        if !kg_per_day.is_finite() || kg_per_day <= 0.0 {
+            return None;
+        }
+        let decades_below = (self.small_kg_per_day / kg_per_day).log10();
+        Some(self.small_bop_kwh_per_kg + self.kwh_per_kg_per_decade() * decades_below)
+    }
+}
+
+/// Measure the scaling from two cases, if they are actually comparable.
+///
+/// Returns `None` unless the two cases share a technology year and an identical
+/// stack figure at different scales. ★ That guard is the whole validity of the
+/// measurement: if the stack term moved too, balance of plant would not be the
+/// only thing responding to scale and the slope would mean nothing.
+#[must_use]
+pub fn bop_scaling(small: &H2aCase, large: &H2aCase) -> Option<BopScaling> {
+    let same_stack =
+        (small.stack_kwh_per_kg.value - large.stack_kwh_per_kg.value).abs() < f64::EPSILON;
+    if small.technology_year != large.technology_year
+        || !same_stack
+        || small.scale_kg_per_day >= large.scale_kg_per_day
+    {
+        return None;
+    }
+    Some(BopScaling {
+        small_kg_per_day: small.scale_kg_per_day,
+        large_kg_per_day: large.scale_kg_per_day,
+        small_bop_kwh_per_kg: small.bop_kwh_per_kg.value,
+        large_bop_kwh_per_kg: large.bop_kwh_per_kg.value,
+    })
+}
+
+/// The scale the balance-of-plant caveat is evaluated at, kg H2/day.
+///
+/// ⚠ **A placeholder with an explicit distance, not a requirement.** What one
+/// farm actually needs is fixed by the tractor's fuel consumption, which is
+/// stage 3 and not yet built. Two decades below the smallest published case is
+/// chosen so the extrapolation distance is stated rather than buried.
+pub const CAVEAT_FARM_SCALE_KG_PER_DAY: f64 = 15.0;
+
+/// Something that matters and has **no measured magnitude**.
+///
+/// ⛔⛔ Deliberately a separate type from [`Caveat`], and a separate list. A
+/// caveat carries how far it moves the headline; this one cannot, and putting
+/// an unmeasured risk into a ranked list would place it somewhere — last, if it
+/// were given a zero — which is a claim about its size that nothing supports.
+/// *"We have not measured this"* is a stable sentence. A number invented so the
+/// item can be sorted is not.
+#[derive(Clone, Copy, Debug)]
+pub struct Unknown {
+    /// Short name.
+    pub what: &'static str,
+    /// Why no magnitude is given.
+    pub why_unmeasured: &'static str,
+    /// What would actually settle it.
+    pub what_would_measure_it: &'static str,
+}
+
+/// ⚠ Risks at farm scale with no measured size.
+pub const UNMEASURED_AT_FARM_SCALE: &[Unknown] = &[Unknown {
+    what: "a fixed-overhead knee in balance of plant below 1,500 kg/day",
+    why_unmeasured: "The record publishes two scales, 1,500 and 50,000 kg/day, and \
+             balance of plant is nearly flat between them. Two points fix a slope and \
+             cannot reveal a knee, and a farm sits two decades below the bottom of that \
+             span. The two technology years also disagree on the slope by a factor of \
+             three (0.236 against 0.079 kWh/kg per decade), which is itself a statement \
+             about what a two-point fit is worth; pinned by \
+             `the_two_technology_years_disagree_on_the_slope`.",
+    what_would_measure_it: "A published balance-of-plant breakdown for a PEM plant \
+             under ~100 kg/day, or a component-level model of the fixed loads \
+             (controls, instrumentation, minimum pump and cooling sizes, freeze \
+             protection) that do not shrink with throughput.",
+}];
+
+/// Something true about these numbers that the numbers themselves do not say.
+///
+/// ★★ **Every caveat carries how far it moves the headline**, because a flat
+/// list of worries is unreadable and invites the reader to weight them by the
+/// emphasis of their prose rather than their size. The figures are measured by
+/// `the_caveats_are_ranked_by_measured_effect`, not estimated here.
+#[derive(Clone, Copy, Debug)]
+pub struct Caveat {
+    /// Short name.
+    pub what: &'static str,
+    /// Why it matters to the chain.
+    pub why: &'static str,
+    /// How far this term moves the annual kilograms, percent, signed.
+    ///
+    /// ⚠ Not an error bar. It is the effect of one plausible alternative
+    /// assumption, stated in `why`, so that terms can be ranked against each
+    /// other instead of all reading as equally alarming.
+    pub headline_swing_percent: f64,
+}
+
+/// ⚠ What this stage's figures are not, **largest effect first**.
+///
+/// ⛔ **Do not confuse these with the transcription findings.** The
+/// disagreement recorded in [`HHV_SOURCE_SPREAD_PERCENT`] is a question about
+/// whether the source says what this crate thinks it says; it moves the annual
+/// kilograms by **exactly zero**, because the kilograms depend on specific
+/// energy and never on a heating value. Integrity checks and sensitivity terms
+/// are different categories and a reader who sees them in one list will weight
+/// them wrongly.
+///
+/// ★ That property is structural, not asserted: [`Electrolyser`] takes no
+/// heating value, so nothing in the conversion path can consult one. A test
+/// that varied a heating value and checked the mass was unchanged would be
+/// unable to fail — one was written, found vacuous and deleted. The guard that
+/// **can** fail is
+/// `hydrogen_never_carries_more_energy_than_the_electricity_that_made_it`,
+/// which pins the recovered fraction to the case's own LHV efficiency and
+/// reddens the moment a heating value is wired into the arithmetic.
+///
+/// ⛔⛔ **Everything here has a measured magnitude.** Risks without one live in
+/// [`UNMEASURED_AT_FARM_SCALE`] and are deliberately not in this list, because
+/// a ranked list places whatever you put in it.
+///
+/// ★ The largest term overall is **upstream**: inter-annual wind variability
+/// swings the headline about ±10.6%, more than anything here. See
+/// `cf_wind::NOT_MEASURED_HERE`.
+pub const NOT_A_FARM_PLANT: &[Caveat] = &[
+    Caveat {
+        what: "no degradation over stack life",
+        why: "The record carries a stack degradation rate of 1.5 mV/khr, which \
+              raises specific energy as the stack ages. A single year at beginning \
+              of life is the best case of the plant's service life. Swing shown is \
+              a 10% rise in specific energy.",
+        headline_swing_percent: -9.1,
+    },
+    Caveat {
+        what: "outlet is about 21 bar, not storage pressure",
+        why: "Compression from the outlet to a tractor's tank is unmodelled \
+              electricity that will reduce these kilograms. Smaller than it looks: \
+              an ideal-gas multi-stage estimate is 1.6 kWh/kg to 350 bar and 1.9 to \
+              700, against a 55.8 kWh/kg input. The real-gas figure is the next \
+              increment; this is an order of magnitude, not a result.",
+        headline_swing_percent: -3.3,
+    },
+    Caveat {
+        what: "specific energy does not vary with load",
+        why: "A real stack does better at part load, which is where a wind-driven \
+              plant spends most of its year. This is the one term that moves the \
+              answer UP, so the model is conservative in direction and unmeasured \
+              in size. Swing shown is a 3% fall in specific energy.",
+        headline_swing_percent: 3.1,
+    },
+    Caveat {
+        what: "the plant is 1,500 kg/day; a farm needs single-digit kg/day",
+        why: "★ MEASURED, not assumed. The record publishes two scales at one \
+              technology year with an IDENTICAL stack figure, so balance of plant is \
+              the only term that responds to size: 5.04 kWh/kg at 50,000 kg/day and \
+              5.40 at 1,500, which is +0.24 per decade of shrinking. Extrapolated two \
+              further decades it reaches 5.87, and the headline barely moves. This \
+              entry previously read -16.2% from an assumed tripling, while the crate \
+              called the question uncheckable; the record had answered it. ⚠ The \
+              extrapolation cannot see a knee — that is in UNMEASURED_AT_FARM_SCALE.",
+        headline_swing_percent: -0.8,
+    },
+];
