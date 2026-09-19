@@ -223,6 +223,7 @@ fn a_mistyped_rate_breaks_the_reciprocal() {
 
 #[test]
 fn the_anchor_implies_a_speed_the_tractor_could_actually_drive() {
+    const KMH_PER_MPH: f64 = 1.609_344;
     // ⚠ A DERIVED sanity check, not a figure the worksheet prints. If the rate
     // were wrong by a factor, the implied speed would be absurd.
     let plow = reference_plow().expect("reference row");
@@ -232,11 +233,25 @@ fn the_anchor_implies_a_speed_the_tractor_could_actually_drive() {
         close(ideal, 4.52, 0.01),
         "at 100% field efficiency, {ideal} mph"
     );
-    // Nebraska MEASURED 4.85 mph at 75% drawbar load. A real chisel plough runs
-    // at 70-90% field efficiency, which brackets that.
+    // ⚠ The reference speed is RECOMPUTED from `cf_nebraska`, not quoted. A
+    // figure retyped out of another crate goes stale without anything going red.
+    let measured_mph = cf_nebraska::JOHN_DEERE_8245R
+        .get("drawbar 75pct load speed")
+        .expect("the row exists")
+        .agreed()
+        .expect("the editions agree")
+        / KMH_PER_MPH;
+    assert!(
+        (4.5..5.2).contains(&measured_mph),
+        "Nebraska's 75% drawbar speed is {measured_mph} mph"
+    );
+    // A real chisel plough runs at 70-90% field efficiency, which brackets it.
     let slow = plow.implied_speed_mph(0.90).expect("speed");
     let fast = plow.implied_speed_mph(0.70).expect("speed");
-    assert!(slow < 5.1 && fast > 6.0, "{slow} to {fast} mph");
+    assert!(
+        slow < measured_mph + 0.3 && fast > measured_mph + 1.0,
+        "{slow} to {fast} mph against Nebraska's measured {measured_mph}"
+    );
     assert!(
         (4.0..7.0).contains(&ideal) && (4.0..7.0).contains(&fast),
         "outside anything a chisel plough is driven at"
@@ -546,9 +561,13 @@ fn the_crate_says_what_it_does_not_model() {
     // draft, slip and the surface as unmeasured, and the reference plow's
     // provenance must be stated wherever the rate is anchored.
     const LIB: &str = include_str!("../src/lib.rs");
+    // ⚠ Checks the CLAIM, not a sentence. An exact-string match fails on a
+    // semantically identical reword — over-strict rather than under-strict, but
+    // the same brittleness a previous PR was caught by.
+    let lower = LIB.to_lowercase();
     assert!(
-        LIB.contains("It is a ceiling model. It is not a soil model."),
-        "the scope must be stated outright"
+        lower.contains("ceiling model") && lower.contains("not a soil model"),
+        "the scope must be stated outright, in whatever words"
     );
     for term in ["draft", "slip", "surface"] {
         assert!(
@@ -625,5 +644,70 @@ fn a_degenerate_row_yields_no_speed_and_no_slack() {
     assert!(
         real.slack().is_finite(),
         "a real set of ceilings has finite slack"
+    );
+}
+
+#[test]
+fn the_slip_absence_is_read_from_the_source_not_asserted() {
+    // ⛔⛔ The module docs say no Nebraska edition carries per-load wheel slip.
+    // That is a claim about ANOTHER crate's data, and `cf_nebraska` publishes
+    // the answer as data — so it is read here rather than asserted, which is
+    // the mild form of the invented-corroboration defect a previous PR shipped.
+    assert!(
+        !cf_nebraska::ABSENT.is_empty(),
+        "the collection is populated, so this is not passing by being empty"
+    );
+    let slip = cf_nebraska::ABSENT
+        .iter()
+        .find(|a| a.what.contains("slip"))
+        .expect("cf_nebraska must record the slip absence");
+    assert!(
+        slip.what.contains("per load"),
+        "and it must be the PER-LOAD absence, not slip in general: {}",
+        slip.what
+    );
+    assert!(
+        slip.why.len() > 40,
+        "with a reason, not a shrug: {}",
+        slip.why
+    );
+    assert!(
+        UNMEASURED_HERE.iter().any(|u| u.what.contains("slip")),
+        "cf-acres must carry the same unknown"
+    );
+}
+
+#[test]
+fn the_reference_plow_matches_this_tractors_power_class() {
+    // ⚠ Recomputed from `cf_nebraska`. The worksheet recommends a 190 hp MFWD
+    // for this row; the arc locked a ~200 hp row-crop MFWD long before the
+    // worksheet was found, and the two must still agree.
+    const W_PER_HP: f64 = 745.699_871_582_270_2;
+    let plow = reference_plow().expect("reference row");
+    assert!(
+        plow.power_unit.contains("MFWD"),
+        "the recommended unit is mechanical front-wheel drive: {}",
+        plow.power_unit
+    );
+    assert!(
+        plow.power_unit.contains("190HP"),
+        "at 190 hp: {}",
+        plow.power_unit
+    );
+    let pto_hp = cf_nebraska::JOHN_DEERE_8245R
+        .get("pto max power")
+        .expect("the row exists")
+        .agreed()
+        .expect("the editions agree")
+        * 1000.0
+        / W_PER_HP;
+    assert!(
+        (200.0..230.0).contains(&pto_hp),
+        "this tractor measures {pto_hp} PTO hp"
+    );
+    assert!(
+        pto_hp > 190.0,
+        "and it is at or above the class the worksheet recommends, so the \
+         anchor is not applied to a tractor too small for it"
     );
 }

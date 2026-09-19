@@ -23,9 +23,12 @@
 //! - **ASABE D497's draft coefficients are paywalled** (sold through the ANSI
 //!   webstore). The model's *structure* is in the open literature; the
 //!   coefficient table is the standard's content, so it is not reproduced here.
-//! - **No Nebraska edition carries per-load wheel slip**, and the individual
-//!   reports that would are behind an endpoint that refuses automated
-//!   retrieval — re-confirmed on a second route in 2026-09.
+//! - **No Nebraska edition carries per-load wheel slip** — and that is not
+//!   asserted here, it is *read*: `cf_nebraska::ABSENT` records it as data, and
+//!   `the_slip_absence_is_read_from_the_source_not_asserted` fails if that
+//!   entry ever leaves. The individual reports that would carry it are behind
+//!   an endpoint that refuses automated retrieval, re-confirmed on a second
+//!   route in 2026-09.
 //! - **The Nebraska drawbar surface is not stated in any edition.**
 //!
 //! ⇒ Every one of those collapses into a single lumped term,
@@ -41,9 +44,10 @@
 //! engine at the pessimistic load factor — fuel still has 43% headroom.
 //! See [`ENERGY_NEVER_BINDS`].
 //!
-//! ⇒ That is the most useful thing here, because **four of the chain's six
-//! crates exist to measure exactly that ceiling.** Having measured it properly,
-//! the answer is that it is not the constraint.
+//! ⇒ That is the most useful thing here, because **the whole hydrogen half of
+//! the chain — `cf-wind`, `cf-electrolysis` and `cf-storage` — exists to
+//! measure that ceiling.** Having measured it properly, the answer is that it
+//! is not the constraint.
 //!
 //! ★★★ What binds instead **changes hands at
 //! [`BINDING_CEILING_FLIPS_AT_HOURS_PER_DAY`]**: work a shorter day and the
@@ -350,8 +354,11 @@ pub const LOAM_SHARE_PERCENT: Printed = Printed::new(81.65, 2);
 /// The worksheet row this crate anchors on.
 ///
 /// ★ Chosen because its recommended power unit is the class `cf_nebraska`'s
-/// tractor falls in — a 190 hp MFWD against a measured 215.88 PTO hp — and
-/// because the arc locked a ~200 hp row-crop MFWD before any of this was known.
+/// tractor falls in — a 190 hp MFWD against this tractor's measured PTO power —
+/// and because the arc locked a ~200 hp row-crop MFWD before any of this was
+/// known. ⚠ The comparison is **recomputed** from `cf_nebraska` by
+/// `the_reference_plow_matches_this_tractors_power_class`, not quoted: a figure
+/// retyped from another crate goes stale without anything going red.
 pub const REFERENCE_PLOW: &str = "Chisel Plow Folding 24'";
 
 /// The reference row, or `None` if the extract no longer carries it.
@@ -536,8 +543,9 @@ pub fn nitrogen_ceiling(available_kg: f64, lb_n_per_acre: f64) -> Option<f64> {
 /// Pinned by `the_energy_ceiling_never_binds`.
 ///
 /// ⇒ For this farm, at this scale, **fuel is not the question.** That is the
-/// single most useful thing this crate reports, because four of the chain's six
-/// crates exist to measure it.
+/// single most useful thing this crate reports, because the chain's whole
+/// hydrogen half — `cf-wind`, `cf-electrolysis`, `cf-storage` — exists to
+/// measure it.
 pub const ENERGY_NEVER_BINDS: bool = true;
 
 /// How much slack the energy ceiling has over the binding one: `(min, max)`.
