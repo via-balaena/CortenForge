@@ -2,9 +2,9 @@
 
 > **Status:** RECON SCAFFOLD (pre-implementation). Cold-read pass-1 included at end (§12).
 > **Date:** 2026-05-28
-> **Trigger:** Design conversation — "we are not sure that just the negative of a
-> penis is the best shape for the inside of a pocket pussy." Workshop user wants
-> to explore a *designed* interior canal rather than the literal scan negative.
+> **Trigger:** Design conversation — doubt that the plain scan negative is the
+> best shape for the device interior. Workshop user wants to explore a
+> *designed* interior canal rather than the literal scan negative.
 > **Direction locked (this session):** asymmetric / frenulum-targeted canal;
 > scan = length/girth **budget only** (not the cavity shape).
 > **Sequencing:** this arc composes on top of the shipped §M unified-mating-plane
@@ -17,7 +17,7 @@
 ## 1. Problem statement
 
 The current pipeline produces an interior cavity that is the **exact negative of
-the scanned object** (the penis/capsule), optionally inset inward by a uniform
+the scanned object** (the capsule), optionally inset inward by a uniform
 `cavity_inset_m`. Both the plug and every layer body are `pinned_floor_shell`
 offsets of the one shared scan SDF, built inline in
 `derive_spec_and_ribbon` (`tools/cf-cast-cli/src/derive.rs`):
@@ -35,7 +35,7 @@ When `cavity_inset_m == 0` and there are no cap planes, `pinned_floor_shell`
 degenerates to `Solid::from_sdf(scan).offset(...)` bit-for-bit — i.e. **the plug
 is the scan literal**.
 
-The cavity (`= negative of the plug`) is therefore the penis shape verbatim. That
+The cavity (`= negative of the plug`) is therefore the scan shape verbatim. That
 is **not** what high-quality strokers use, for physical reasons:
 
 1. **Interference fit is the whole point.** A 1:1 negative has zero interference;
@@ -66,7 +66,7 @@ still fits the intended user, with asymmetric (frenulum-biased) texture.
 | **layer N silicone shell** | `layer_body[N] − plug_for_layer[N]` (CSG subtract) | `spec.rs` `compute_pour_volumes` |
 | **interior cavity** | negative of the layer-0 plug | (emergent) |
 
-Everything is an **offset of the scan**. The cavity is the penis negative because
+Everything is an **offset of the scan**. The cavity is the scan negative because
 the plug is the scan.
 
 ### 2.2 The SDF system (what we build the canal with)
@@ -370,7 +370,7 @@ S0 is the immediate next action. Each code phase: cold-read pass + full gates
 - **C2 (load-bearing).** First draft treated the cavity change as "just swap the
   plug." Re-reading `derive.rs:112` shows the **outer body is also scan-derived**
   (offset outward). So changing only the plug yields **variable wall thickness**
-  between the designed canal and the penis-shaped housing — which is *fine and
+  between the designed canal and the capsule-shaped housing — which is *fine and
   desirable*, but mandates the canal-⊂-body wall gate (§6.1). Without it, an
   aggressive canal silently blows out the wall.
 - **C3 (the real surprise).** The plug-pull-out-from-silicone constraint (§6.2)
