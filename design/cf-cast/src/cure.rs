@@ -70,9 +70,14 @@ pub fn lookup(anchor_key: &str) -> Option<&'static CureProtocol> {
     }
 }
 
-// Per Smooth-On TDS at 73 °F (23 °C). Sources: smooth-on.com data
-// sheets per grade. Treat as starting-point reference; the workshop
-// user is the ultimate source of truth post-iter-1.
+// Per Smooth-On TDS at 73 °F (23 °C). Sources, retrieved
+// 2026-09-19 — the two series technical bulletins, whose rows are
+// quoted verbatim in `tests::TDS_ROWS` and checked against every
+// constant below:
+//   https://www.smooth-on.com/tb/files/ECOFLEX_SERIES_TB.pdf
+//   https://www.smooth-on.com/tb/files/DRAGON_SKIN_SERIES_TB.pdf
+// Treat as starting-point reference; the workshop user is the
+// ultimate source of truth post-iter-1.
 
 /// Ecoflex 00-10 cure protocol — Shore 00-10, softest Ecoflex grade.
 pub const ECOFLEX_00_10_CURE: CureProtocol = CureProtocol {
@@ -104,20 +109,25 @@ pub const ECOFLEX_00_50_CURE: CureProtocol = CureProtocol {
 };
 
 /// Dragon Skin 10A (Medium cure-speed variant) cure protocol —
-/// Shore 10A. Fast and Slow variants share the mechanical properties
-/// but differ in pot life / cure time; Medium is the default
-/// reference here.
+/// Shore 10A.
+///
+/// The bulletin lists five Shore-10A rows — Very Fast, Fast,
+/// Medium, Slow and 10 AF — which share every mechanical property
+/// (475 psi tensile, 22 psi 100 % modulus, 1000 % elongation,
+/// 102 pli tear) and differ only in pot life / cure time. Medium
+/// is the default reference here.
 pub const DRAGON_SKIN_10A_CURE: CureProtocol = CureProtocol {
     mix_ratio_a_to_b: "1A:1B",
-    pot_life_minutes: 30,
+    pot_life_minutes: 20,
     cure_time_hours: 5.0,
 };
 
-/// Dragon Skin 15 cure protocol — Shore 15A.
+/// Dragon Skin 15 cure protocol — Shore 15A. Single cure speed:
+/// unlike Dragon Skin 10, the bulletin lists exactly one 15A row.
 pub const DRAGON_SKIN_15_CURE: CureProtocol = CureProtocol {
     mix_ratio_a_to_b: "1A:1B",
-    pot_life_minutes: 35,
-    cure_time_hours: 5.0,
+    pot_life_minutes: 40,
+    cure_time_hours: 7.0,
 };
 
 /// Dragon Skin 20A cure protocol — Shore 20A.
@@ -158,6 +168,118 @@ mod tests {
         ("DRAGON_SKIN_20A", DRAGON_SKIN_20A_CURE),
         ("DRAGON_SKIN_30A", DRAGON_SKIN_30A_CURE),
     ];
+
+    /// The Smooth-On bulletin rows the constants above were read
+    /// from — verbatim as `pdftotext -layout` renders the two series
+    /// technical bulletins, whitespace collapsed, retrieved
+    /// 2026-09-19.
+    ///
+    /// Column order per the bulletin header: mixed viscosity,
+    /// specific gravity, specific volume, **pot life**, **cure
+    /// time**, Shore hardness, tensile strength, 100 % modulus,
+    /// elongation at break, die B tear strength, shrinkage.
+    ///
+    /// This is a **double-entry** check, not an independent one. It
+    /// catches a constant drifting away from the row it was read
+    /// from, and it puts the source text in the repository where a
+    /// reader can compare it against the data sheet without
+    /// refetching. It cannot catch an error already present in the
+    /// quoted row — only a second source can, and the two rows that
+    /// this check was written after were each confirmed against the
+    /// per-grade product page as well.
+    const TDS_ROWS: &[(&str, &str)] = &[
+        (
+            "ECOFLEX_00_10",
+            "Ecoflex\u{2122} 00-10 14,000 cps 1.04 26.6 30 min. 4 hours 00-10 120 psi 8 psi 800% 22 pli < .001 in./in.",
+        ),
+        (
+            "ECOFLEX_00_20",
+            "Ecoflex\u{2122} 00-20 3,000 cps 1.07 26.0 30 min. 4 hours 00-20 160 psi 8 psi 845% 30 pli < .001 in./in.",
+        ),
+        (
+            "ECOFLEX_00_30",
+            "Ecoflex\u{2122} 00-30 3,000 cps 1.07 26.0 45 min. 4 hours 00-30 200 psi 10 psi 900% 38 pli < .001 in./in.",
+        ),
+        (
+            "ECOFLEX_00_50",
+            "Ecoflex\u{2122} 00-50 8,000 cps 1.07 25.9 18 min. 3 hours 00-50 315 psi 12 psi 980% 50 pli < .001 in./in.",
+        ),
+        (
+            "DRAGON_SKIN_10A",
+            "Dragon Skin\u{2122} 10 Medium 23,000 cps 1.07 25.8 20 min. 5 hours 10A 475 psi 22 psi 1000% 102 pli < .001 in./in.",
+        ),
+        (
+            "DRAGON_SKIN_15",
+            "Dragon Skin\u{2122} 15 21,000 cps 1.07 25.8 40 min. 7 hours 15A 537 psi 40 psi 771% 112 pli < .001 in./in.",
+        ),
+        (
+            "DRAGON_SKIN_20A",
+            "Dragon Skin\u{2122} 20 20,000 cps 1.08 25.6 25 min. 4 hours 20A 550 psi 49 psi 620% 120 pli < .001 in./in.",
+        ),
+        (
+            "DRAGON_SKIN_30A",
+            "Dragon Skin\u{2122} 30 20,000 cps 1.08 25.7 45 min. 16 hours 30A 500 psi 86 psi 364% 108 pli < .001 in./in.",
+        ),
+    ];
+
+    /// Reads pot life and cure time out of a bulletin row: the token
+    /// before `min.` and the token before `hours` / `hour`.
+    ///
+    /// Panics rather than returning an `Option` so a row that stops
+    /// stating one of the two fails the test loudly instead of
+    /// silently skipping the comparison it exists to make.
+    fn pot_life_and_cure_from_row(row: &str) -> (u32, f64) {
+        let toks: Vec<&str> = row.split_whitespace().collect();
+        let mut pot: Option<u32> = None;
+        let mut cure: Option<f64> = None;
+        for (i, tok) in toks.iter().enumerate() {
+            if i == 0 {
+                continue;
+            }
+            if pot.is_none() && *tok == "min." {
+                pot = toks[i - 1].parse().ok();
+            }
+            if cure.is_none() && (*tok == "hours" || *tok == "hour") {
+                cure = toks[i - 1].parse().ok();
+            }
+        }
+        (
+            pot.expect("bulletin row states a pot life in minutes"),
+            cure.expect("bulletin row states a cure time in hours"),
+        )
+    }
+
+    #[test]
+    fn every_anchor_matches_its_verbatim_tds_row() {
+        // The collection first: a row silently dropped would make
+        // this test pass by checking nothing.
+        assert_eq!(
+            TDS_ROWS.len(),
+            ALL.len(),
+            "one quoted bulletin row per anchored grade"
+        );
+        for (key, _) in ALL {
+            assert!(
+                TDS_ROWS.iter().any(|(k, _)| k == key),
+                "{key}: anchored but has no quoted bulletin row"
+            );
+        }
+
+        for (key, row) in TDS_ROWS {
+            let (pot, cure) = pot_life_and_cure_from_row(row);
+            let got = lookup(key).expect("anchor key should resolve");
+            assert_eq!(
+                got.pot_life_minutes, pot,
+                "{key}: constant says {} min, bulletin row says {pot} min",
+                got.pot_life_minutes
+            );
+            assert!(
+                (got.cure_time_hours - cure).abs() < f64::EPSILON,
+                "{key}: constant says {} h, bulletin row says {cure} h",
+                got.cure_time_hours
+            );
+        }
+    }
 
     #[test]
     fn lookup_returns_some_for_every_anchor_in_table() {
