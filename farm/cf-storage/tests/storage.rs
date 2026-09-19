@@ -185,6 +185,69 @@ fn the_printed_efficiencies_reconcile_theory_with_practice() {
     );
 }
 
+/// Table 1 and the station figures scaled by the SAME factor — the mutation the
+/// multiplicative layer is, by construction, unable to notice.
+const EVERYTHING_SCALED_BY_TWO: (&[cf_storage::TheoreticalWork], &[cf_storage::StationFigure]) = (
+    &[
+        cf_storage::TheoreticalWork {
+            to_bar: 350.0,
+            printed: cf_storage::Printed::new(2.10, 2),
+        },
+        cf_storage::TheoreticalWork {
+            to_bar: 440.0,
+            printed: cf_storage::Printed::new(2.30, 2),
+        },
+        cf_storage::TheoreticalWork {
+            to_bar: 700.0,
+            printed: cf_storage::Printed::new(2.70, 2),
+        },
+        cf_storage::TheoreticalWork {
+            to_bar: 880.0,
+            printed: cf_storage::Printed::new(2.94, 2),
+        },
+    ],
+    &[
+        cf_storage::StationFigure {
+            who: "HDSAM, doubled",
+            to_bar: 440.0,
+            printed: cf_storage::Printed::new(4.46, 2),
+            efficiency_percent: Some(cf_storage::Printed::new(52.0, 0)),
+        },
+        cf_storage::StationFigure {
+            who: "HDSAM, doubled",
+            to_bar: 880.0,
+            printed: cf_storage::Printed::new(6.0, 1),
+            efficiency_percent: Some(cf_storage::Printed::new(49.0, 0)),
+        },
+    ],
+);
+
+#[test]
+fn the_multiplicative_layer_is_blind_to_a_common_scale_factor() {
+    // ⚠ The layer's stated blind spot, SHOWN rather than described. It divides
+    // theory by practice, so a factor applied to both cancels exactly. This gate
+    // existed only as a sentence in a doc comment until review asked for it.
+    let (theoretical, station) = EVERYTHING_SCALED_BY_TWO;
+    let doubled = cf_storage::Record9013 {
+        theoretical,
+        station,
+        ..RECORD_9013
+    };
+    assert!(
+        doubled.efficiencies_reconcile(),
+        "doubling theory AND practice leaves every ratio identical — the \
+         multiplicative layer cannot see it, and that is the property being pinned"
+    );
+    // …and the physical layer can, which is why there is more than one.
+    let w = Covolume
+        .isothermal_work_kwh_per_kg(RECORD_9013.inlet_bar, 350.0, RECORD_9013.temperature_k)
+        .expect("a state the model answers for");
+    assert!(
+        !doubled.theoretical[0].printed.admits(w),
+        "the model must reject the doubled figure the ratio check accepted"
+    );
+}
+
 #[test]
 fn the_multiplicative_layer_refuses_an_empty_roster() {
     // ⛔⛔ EMPTY is not evidence. A layer with nothing left to check must fail,
@@ -458,6 +521,44 @@ fn only_the_real_gas_model_reproduces_the_record() {
     assert!(
         !SEVEN_HUNDRED_BAR_AS_TABLED.admits(w700),
         "and outside Table 1's 1.35 — if both admitted it there would be no finding"
+    );
+}
+
+#[test]
+fn the_ideal_gas_understates_the_compression_work() {
+    // ★ The other half of this crate's opening claim, and it had no producer:
+    // the module doc asserted "~7%" and nothing measured it. It is 6.3–6.6%
+    // across the temperature range the farm's tank actually spans, and the
+    // contrast with the DENSITY error at the same pressure is the whole point.
+    let understatement = |t: f64| {
+        let ideal = IdealGas
+            .isothermal_work_kwh_per_kg(OUTLET_BAR, TANK_BAR, t)
+            .expect("a usable state");
+        let cov = Covolume
+            .isothermal_work_kwh_per_kg(OUTLET_BAR, TANK_BAR, t)
+            .expect("a usable state");
+        100.0 * (1.0 - ideal / cov)
+    };
+    let (low, high) = cf_storage::IDEAL_GAS_WORK_UNDERSTATEMENT_PERCENT;
+    let hot = understatement(RECORD_9013.temperature_k);
+    let cold = understatement(CARRINGTON_FALL.mean_k);
+    assert!(
+        close(hot, low, 5e-3),
+        "at 300 K measured {hot:.3}%, published {low}%"
+    );
+    assert!(
+        close(cold, high, 5e-3),
+        "at the window mean measured {cold:.3}%, published {high}%"
+    );
+    assert!(low < high, "the understatement must grow as the gas cools");
+
+    // ⛔⛔ The claim this crate is built on: the SAME equation of state is worth
+    // an order of magnitude more on the tank than on the energy.
+    let on_density = NIST_DENSITY_COMPARISON.ideal_at_350_bar_300k_percent;
+    assert!(
+        on_density > 3.0 * high,
+        "ideal gas costs {high:.2}% on work and {on_density:.2}% on volume — if \
+         those were comparable, modelling the gas properly would not be worth it"
     );
 }
 
@@ -852,9 +953,18 @@ fn the_sizing_refuses_what_it_cannot_answer() {
         "a negative starting fraction is not a state"
     );
     assert!(
-        minimum_tank_kg(&series, &fall_window(1.0), 1.5).is_none(),
+        minimum_tank_kg(&series, &fall_window(1.5), 1.5).is_none(),
         "nor is a tank more than full"
     );
+    // ⚠ The API accepts the whole interval, so the interval is exercised — only
+    // the two endpoints were, and a bisection that assumed monotonicity was
+    // being trusted at values no test had ever passed it.
+    for f in [0.25_f64, 0.5, 0.75] {
+        assert!(
+            minimum_tank_kg(&series, &fall_window(2_000.0), f).is_some(),
+            "a starting fraction of {f} is inside the accepted range"
+        );
+    }
     assert!(
         minimum_tank_kg(&series, &fall_window(f64::NAN), 0.0).is_none(),
         "nor is a demand that is not a number"
@@ -1075,11 +1185,50 @@ fn the_headline() {
             .expect("a usable state");
         println!(
             "    demand {demand:>7.0} kg  → tank {size:>7.0} kg = {vol:>6.1} m³  \
-             (ideal gas would say {ideal:>6.1} m³, {:>5.1}% low)",
-            100.0 * (ideal / vol - 1.0)
+             (ideal gas would say {ideal:>6.1} m³ — {:>4.1}% too small)",
+            100.0 * (1.0 - ideal / vol)
         );
     }
-    assert!(d.kg > 0.0 && d.kg < outlet);
+    // ★★ PINNED, not merely printed. Every figure this crate publishes lives
+    // here, so a drift in the wind series, the electrolyser case, the equation
+    // of state or the station efficiency reddens instead of silently rewriting
+    // the headline. `cf-electrolysis` pins 51_721.008 for the same reason; this
+    // test asserted only `kg > 0` until review pointed out it was a reporting
+    // function wearing a test's name.
+    assert!(
+        close(outlet, 51_721.008, 1e-6),
+        "outlet drifted to {outlet:.3} kg"
+    );
+    assert!(
+        close(w, 1.821_987, 1e-5),
+        "compression drifted to {w:.6} kWh/kg"
+    );
+    assert!(
+        close(d.kg, 50_085.61, 1e-5),
+        "delivered drifted to {:.2} kg",
+        d.kg
+    );
+    assert!(
+        close(d.lost_percent, 3.161, 1e-3),
+        "lost {:.3}%",
+        d.lost_percent
+    );
+    assert!(
+        close(cliff, 2_695.0, 1e-3),
+        "the cliff drifted to {cliff:.1} kg"
+    );
+    assert!(d.kg < outlet, "compression must always cost kilograms");
+
+    // ⚠ And the tank figures the headline quotes, at the cliff itself.
+    let at_cliff = minimum_tank_kg(&series, &fall_window(cliff), 0.0).expect("meetable");
+    assert!(
+        close(at_cliff, 683.0, 2e-3),
+        "tank at the cliff drifted to {at_cliff:.1} kg"
+    );
+    let vol = tank_sizing
+        .volume_m3(at_cliff, &Covolume)
+        .expect("a usable state");
+    assert!(close(vol, 27.8, 2e-3), "and its volume to {vol:.2} m³");
 }
 
 #[test]
@@ -1187,6 +1336,71 @@ fn the_caveat_magnitudes_are_the_measured_ones() {
     );
 }
 
+#[test]
+fn the_published_oracle_figures_are_internally_consistent() {
+    // ⛔⛔ The oracle test is #[ignore]d — correctly, since the data cannot be
+    // committed — so NOTHING in CI guarded these six figures and a typo would
+    // ship green. This cannot verify them against NIST, and does not claim to.
+    // It catches a fat finger, which is the failure mode that was unguarded.
+    let c = NIST_DENSITY_COMPARISON;
+    for (ideal, cov, where_) in [
+        (
+            c.ideal_at_350_bar_300k_percent,
+            c.covolume_at_350_bar_300k_percent,
+            "350/300",
+        ),
+        (
+            c.ideal_at_350_bar_273k_percent,
+            c.covolume_at_350_bar_273k_percent,
+            "350/273",
+        ),
+        (
+            c.ideal_at_700_bar_300k_percent,
+            c.covolume_at_700_bar_300k_percent,
+            "700/300",
+        ),
+        (
+            c.ideal_at_700_bar_273k_percent,
+            c.covolume_at_700_bar_273k_percent,
+            "700/273",
+        ),
+    ] {
+        assert!(
+            ideal > 0.0 && cov > 0.0,
+            "{where_}: both models overstate density"
+        );
+        assert!(
+            ideal > 5.0 * cov,
+            "{where_}: one parameter from 1964 must remove most of the error, \
+             {ideal:.2}% against {cov:.2}%"
+        );
+        assert!(
+            c.worst_ideal_percent >= ideal && c.worst_covolume_percent >= cov,
+            "{where_}: the worst case must bound every specific case"
+        );
+    }
+    // Colder and denser is harder for a truncated virial, at both pressures.
+    assert!(
+        c.covolume_at_350_bar_273k_percent > c.covolume_at_350_bar_300k_percent
+            && c.covolume_at_700_bar_273k_percent > c.covolume_at_700_bar_300k_percent,
+        "the residual must grow as the gas cools"
+    );
+    // And higher pressure is harder than lower, at both temperatures.
+    assert!(
+        c.covolume_at_700_bar_300k_percent > c.covolume_at_350_bar_300k_percent
+            && c.covolume_at_700_bar_273k_percent > c.covolume_at_350_bar_273k_percent,
+        "the residual must grow with pressure — that is the third virial term"
+    );
+    // The grid must contain every pressure the crate names.
+    for bar in [350.0, 440.0, 700.0, 880.0] {
+        assert!(
+            c.pressure_low_bar <= bar && bar <= c.pressure_high_bar,
+            "{bar} bar must lie inside the comparison's own range"
+        );
+    }
+    assert_eq!(c.states, 348, "four isotherms of 87 pressures");
+}
+
 // ══════════════════════════════════ the oracle: retrieved, never committed
 
 /// One state from a retrieved NIST isotherm.
@@ -1194,6 +1408,7 @@ struct NistState {
     pressure_bar: f64,
     density: f64,
     enthalpy_kj_kg: f64,
+    entropy_j_g_k: f64,
     volume: f64,
     internal_energy_kj_kg: f64,
 }
@@ -1225,10 +1440,11 @@ fn parse_isotherm(text: &str) -> Vec<NistState> {
         if out.iter().any(|s| (s.pressure_bar - p).abs() < 1e-9) {
             continue;
         }
-        let (Some(density), Some(volume), Some(h), Some(u)) = (
+        let (Some(density), Some(volume), Some(h), Some(entropy), Some(u)) = (
             get("Density (kg/m3)"),
             get("Volume (m3/kg)"),
             get("Enthalpy (kJ/kg)"),
+            get("Entropy (J/g*K)"),
             get("Internal Energy (kJ/kg)"),
         ) else {
             continue;
@@ -1238,6 +1454,7 @@ fn parse_isotherm(text: &str) -> Vec<NistState> {
             density,
             volume,
             enthalpy_kj_kg: h,
+            entropy_j_g_k: entropy,
             internal_energy_kj_kg: u,
         });
     }
@@ -1254,7 +1471,7 @@ fn the_residual_looks_like_a_missing_third_virial_term(t: f64, rows: &[NistState
     let r_specific = 8.314_462_618_153_24 / 2.016e-3;
     let implied: Vec<f64> = rows
         .iter()
-        .filter(|r| r.pressure_bar >= 101.0)
+        .filter(|r| r.pressure_bar >= 100.0)
         .map(|r| {
             let z_nist = r.pressure_bar * 1e5 * r.volume / (r_specific * t);
             let v = Covolume
@@ -1281,12 +1498,12 @@ fn the_residual_looks_like_a_missing_third_virial_term(t: f64, rows: &[NistState
 fn trust_the_retrieval(file: &str, rows: &[NistState]) {
     assert_eq!(
         rows.len(),
-        71,
-        "{file}: expected 71 distinct pressures from PLow=1 PHigh=701 PInc=10, got {}",
+        87,
+        "{file}: expected 87 distinct pressures from PLow=20 PHigh=880 PInc=10, got {}",
         rows.len()
     );
     for (i, r) in rows.iter().enumerate() {
-        let expected = 1.0 + 10.0 * i as f64;
+        let expected = 20.0 + 10.0 * i as f64;
         assert!(
             (r.pressure_bar - expected).abs() < 1e-9,
             "{file}: row {i} is at {} bar, not the requested {expected} — the CGI \
@@ -1330,6 +1547,8 @@ fn the_nist_comparison_reproduces() {
     let (mut worst_ideal, mut worst_cov) = (0.0_f64, 0.0_f64);
     let (mut at350_ideal_300, mut at350_cov_300) = (f64::NAN, f64::NAN);
     let (mut at350_ideal_273, mut at350_cov_273) = (f64::NAN, f64::NAN);
+    let (mut at700_ideal_300, mut at700_cov_300) = (f64::NAN, f64::NAN);
+    let (mut at700_ideal_273, mut at700_cov_273) = (f64::NAN, f64::NAN);
 
     for (t, file) in isotherms {
         let path = std::path::Path::new(&dir).join(file);
@@ -1350,13 +1569,22 @@ fn the_nist_comparison_reproduces() {
             let (ei, ec) = (err(&IdealGas), err(&Covolume));
             worst_ideal = worst_ideal.max(ei.abs());
             worst_cov = worst_cov.max(ec.abs());
-            if (r.pressure_bar - 351.0).abs() < 1e-9 {
-                if (t - 300.0).abs() < 1e-9 {
+            let (hot, cold) = ((t - 300.0).abs() < 1e-9, (t - 273.15).abs() < 1e-9);
+            if (r.pressure_bar - 350.0).abs() < 1e-9 {
+                if hot {
                     at350_ideal_300 = ei;
                     at350_cov_300 = ec;
-                } else if (t - 273.15).abs() < 1e-9 {
+                } else if cold {
                     at350_ideal_273 = ei;
                     at350_cov_273 = ec;
+                }
+            } else if (r.pressure_bar - 700.0).abs() < 1e-9 {
+                if hot {
+                    at700_ideal_300 = ei;
+                    at700_cov_300 = ec;
+                } else if cold {
+                    at700_ideal_273 = ei;
+                    at700_cov_273 = ec;
                 }
             }
         }
@@ -1364,43 +1592,129 @@ fn the_nist_comparison_reproduces() {
         the_residual_looks_like_a_missing_third_virial_term(t, &rows);
     }
 
-    println!("\n── NIST comparison, {states} states ──");
-    println!("  worst ideal    {worst_ideal:>7.2}%   worst covolume {worst_cov:>6.2}%");
-    println!("  350 bar 300 K  ideal {at350_ideal_300:>+7.2}%   covolume {at350_cov_300:>+6.2}%");
-    println!("  350 bar 273 K  ideal {at350_ideal_273:>+7.2}%   covolume {at350_cov_273:>+6.2}%");
+    pin_the_published_figures(
+        states,
+        [
+            worst_ideal,
+            at350_ideal_300,
+            at350_ideal_273,
+            at700_ideal_300,
+            at700_ideal_273,
+        ],
+        [
+            worst_cov,
+            at350_cov_300,
+            at350_cov_273,
+            at700_cov_300,
+            at700_cov_273,
+        ],
+    );
+    the_record_sits_below_the_current_nist_eos(&std::path::Path::new(&dir).join("nist_T300.tsv"));
+}
 
+/// Report the measured errors and pin every published figure against them.
+///
+/// Split out of the oracle test only so that test stays readable; the ordering
+/// is `[worst, 350/300, 350/273, 700/300, 700/273]` for each model.
+fn pin_the_published_figures(states: usize, ideal: [f64; 5], covolume: [f64; 5]) {
+    let labels = [
+        "worst",
+        "350 bar 300 K",
+        "350 bar 273 K",
+        "700 bar 300 K",
+        "700 bar 273 K",
+    ];
+    println!("\n── NIST comparison, {states} states ──");
+    for i in 0..5 {
+        println!(
+            "  {:<14} ideal {:>+7.2}%   covolume {:>+6.2}%",
+            labels[i], ideal[i], covolume[i]
+        );
+    }
     let c = NIST_DENSITY_COMPARISON;
     assert_eq!(
         states, c.states,
         "the comparison must cover the published count"
     );
-    let pin = |measured: f64, published: f64, what: &str| {
-        assert!(
-            close(measured, published, 5e-3),
-            "{what}: published {published:.2}%, measured {measured:.2}%"
-        );
-    };
-    pin(worst_ideal, c.worst_ideal_percent, "worst ideal");
-    pin(worst_cov, c.worst_covolume_percent, "worst covolume");
-    pin(
-        at350_ideal_300,
+    let published_ideal = [
+        c.worst_ideal_percent,
         c.ideal_at_350_bar_300k_percent,
-        "ideal 350/300",
-    );
-    pin(
-        at350_cov_300,
-        c.covolume_at_350_bar_300k_percent,
-        "covolume 350/300",
-    );
-    pin(
-        at350_ideal_273,
         c.ideal_at_350_bar_273k_percent,
-        "ideal 350/273",
-    );
-    pin(
-        at350_cov_273,
+        c.ideal_at_700_bar_300k_percent,
+        c.ideal_at_700_bar_273k_percent,
+    ];
+    let published_covolume = [
+        c.worst_covolume_percent,
+        c.covolume_at_350_bar_300k_percent,
         c.covolume_at_350_bar_273k_percent,
-        "covolume 350/273",
+        c.covolume_at_700_bar_300k_percent,
+        c.covolume_at_700_bar_273k_percent,
+    ];
+    for i in 0..5 {
+        assert!(
+            close(ideal[i], published_ideal[i], 5e-3),
+            "{} ideal: published {:.2}%, measured {:.2}%",
+            labels[i],
+            published_ideal[i],
+            ideal[i]
+        );
+        assert!(
+            close(covolume[i], published_covolume[i], 5e-3),
+            "{} covolume: published {:.2}%, measured {:.2}%",
+            labels[i],
+            published_covolume[i],
+            covolume[i]
+        );
+    }
+}
+
+/// The record's Table 1 against the equation of state it says it used.
+///
+/// ⛔⛔ Called from the oracle test rather than standing alone, because it needs
+/// the retrieval. [`RECORD_DISAGREEMENT_WITH_CURRENT_NIST_PERCENT`] previously
+/// had **no producer at all** while its documentation read as a measurement.
+///
+/// ⚠ Not an independent check of the record. Record 9013 says its figures came
+/// from NIST, so this compares the record against a *later version of its own
+/// source* — which is why the finding is a disagreement with a date on it and
+/// not a verdict.
+fn the_record_sits_below_the_current_nist_eos(path: &std::path::Path) {
+    let text = std::fs::read_to_string(path).expect("the 300 K isotherm");
+    let rows = parse_isotherm(&text);
+    let at = |bar: f64| {
+        rows.iter()
+            .find(|r| (r.pressure_bar - bar).abs() < 1e-9)
+            .unwrap_or_else(|| panic!("{bar} bar must be ON the retrieved grid"))
+    };
+    let inlet = at(RECORD_9013.inlet_bar);
+    let t = RECORD_9013.temperature_k;
+    let mut disagreeing = Vec::new();
+    for w in RECORD_9013.theoretical {
+        let state = at(w.to_bar);
+        // Reversible isothermal work is the exergy difference, h − T·s.
+        let nist = ((state.enthalpy_kj_kg - inlet.enthalpy_kj_kg) * 1e3
+            - t * (state.entropy_j_g_k - inlet.entropy_j_g_k) * 1e3)
+            / 3.6e6;
+        if !w.printed.admits(nist) {
+            disagreeing.push((w.to_bar, 100.0 * (nist / w.printed.value() - 1.0)));
+        }
+    }
+    assert_eq!(
+        disagreeing.iter().map(|d| d.0).collect::<Vec<_>>(),
+        vec![700.0, 880.0],
+        "exactly the two highest-pressure figures must disagree; got {disagreeing:?}"
+    );
+    for (bar, rel) in &disagreeing {
+        assert!(
+            *rel > 0.0,
+            "the record must be LOW at {bar} bar, not high: {rel:+.2}%"
+        );
+    }
+    let mean = disagreeing.iter().map(|d| d.1).sum::<f64>() / 2.0;
+    assert!(
+        close(mean, RECORD_DISAGREEMENT_WITH_CURRENT_NIST_PERCENT, 2e-2),
+        "the published {RECORD_DISAGREEMENT_WITH_CURRENT_NIST_PERCENT}% must be the \
+         mean of the two; measured {mean:.3}%"
     );
 }
 

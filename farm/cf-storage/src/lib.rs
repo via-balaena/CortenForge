@@ -14,12 +14,19 @@
 //!
 //! | quantity | ideal gas is wrong by | this crate's model is wrong by |
 //! |---|---|---|
-//! | compression **work**, 21 → 350 bar | ~7% | below the source's own printing |
-//! | tank **volume** at 350 bar, 300 K | **22.0%** | **1.5%** |
-//! | tank **volume** at 700 bar, 300 K | **44.9%** | **3.2%** |
+//! | compression **work**, 20.68 → 350 bar | **6.3–6.6%** | below the source's own printing |
+//! | tank **volume** at 350 bar, 300 K | **21.96%** | **1.48%** |
+//! | tank **volume** at 700 bar, 300 K | **44.87%** | **3.21%** |
 //!
-//! Compression is a ~3% debit on the chain, so a 7% error inside it is 0.2% of
-//! the headline and rigour there buys correctness rather than a different
+//! Every figure in that table is a constant a gate pins — the work row by
+//! [`IDEAL_GAS_WORK_UNDERSTATEMENT_PERCENT`], the volume rows by
+//! [`NIST_DENSITY_COMPARISON`]. ⚠ The pressures are exact: the oracle is
+//! retrieved on a grid containing 350, 440, 700 and 880 bar, because an earlier
+//! grid of `1 + 10k` put every measurement one bar away from the pressure its
+//! own field name claimed.
+//!
+//! Compression is a ~3% debit on the chain, so a 6.5% error inside it is 0.2%
+//! of the headline and rigour there buys correctness rather than a different
 //! answer. The same equation of state decides how much steel the farm buys, and
 //! there being wrong by 22% is the difference between a feasible tank and an
 //! infeasible one. ⇒ **Model the gas properly because of the tank, not because
@@ -73,6 +80,17 @@
 //! the command that reproduces the comparison. The test that performs it is
 //! `#[ignore]`d and reads a locally fetched file, the pattern
 //! `design/cf-fsu-geometry/BODYPARTS3D.md` established for licensed assets.
+
+/// How far [`IdealGas`] understates reversible compression work, percent.
+///
+/// From the electrolyser outlet (20.68 bar) to a 350 bar tank, across the
+/// temperature range [`CARRINGTON_FALL`] spans. ★ Small, and that is the point:
+/// the same equation of state worth 6.5% on the energy is worth twenty times
+/// that on the tank. Pinned by `the_ideal_gas_understates_the_compression_work`.
+///
+/// ⚠ Unlike the density figures this needs no oracle — it is one model against
+/// another, both in this crate, so it runs in CI.
+pub const IDEAL_GAS_WORK_UNDERSTATEMENT_PERCENT: (f64, f64) = (6.29, 6.57);
 
 /// Molar gas constant, J/(mol·K). Exact by the 2019 SI redefinition.
 const R_J_PER_MOL_K: f64 = 8.314_462_618_153_24;
@@ -550,6 +568,13 @@ pub struct NistDensityComparison {
     pub temperature_low_k: f64,
     /// Highest temperature of the comparison, kelvin.
     pub temperature_high_k: f64,
+    /// Lowest pressure of the comparison, bar.
+    ///
+    /// ⚠ 20 bar, not 1. The grid starts at the record's own inlet so every
+    /// pressure this crate names — 350, 440, 700, 880 — is **on** it. An earlier
+    /// grid of `1 + 10k` contained none of them, so each field named
+    /// `_at_350_bar_` was in fact measured at 351.
+    pub pressure_low_bar: f64,
     /// Highest pressure of the comparison, bar.
     pub pressure_high_bar: f64,
     /// Worst density error of [`IdealGas`] over those states, percent.
@@ -568,6 +593,17 @@ pub struct NistDensityComparison {
     pub ideal_at_350_bar_273k_percent: f64,
     /// [`Covolume`] density error at 350 bar and 273.15 K, percent.
     pub covolume_at_350_bar_273k_percent: f64,
+    /// [`IdealGas`] density error at 700 bar and 300 K, percent.
+    pub ideal_at_700_bar_300k_percent: f64,
+    /// [`Covolume`] density error at 700 bar and 300 K, percent.
+    pub covolume_at_700_bar_300k_percent: f64,
+    /// [`IdealGas`] density error at 700 bar and 273.15 K, percent.
+    pub ideal_at_700_bar_273k_percent: f64,
+    /// [`Covolume`] density error at 700 bar and 273.15 K, percent.
+    ///
+    /// ⚠ The worst case this farm could actually meet: a cold tank at the higher
+    /// service pressure. Every other row in this struct is a gentler condition.
+    pub covolume_at_700_bar_273k_percent: f64,
     /// How to obtain the reference values again.
     pub reproduce: &'static str,
 }
@@ -581,19 +617,24 @@ pub struct NistDensityComparison {
 /// nine tenths of that.
 pub const NIST_DENSITY_COMPARISON: NistDensityComparison = NistDensityComparison {
     source: NIST_WEBBOOK,
-    states: 284,
+    states: 348,
     temperature_low_k: 250.0,
     temperature_high_k: 330.0,
-    pressure_high_bar: 701.0,
-    worst_ideal_percent: 53.43,
-    worst_covolume_percent: 6.66,
-    ideal_at_350_bar_300k_percent: 22.03,
-    covolume_at_350_bar_300k_percent: 1.49,
-    ideal_at_350_bar_273k_percent: 23.88,
-    covolume_at_350_bar_273k_percent: 2.20,
+    pressure_low_bar: 20.0,
+    pressure_high_bar: 880.0,
+    worst_ideal_percent: 67.44,
+    worst_covolume_percent: 8.00,
+    ideal_at_350_bar_300k_percent: 21.96,
+    covolume_at_350_bar_300k_percent: 1.48,
+    ideal_at_350_bar_273k_percent: 23.80,
+    covolume_at_350_bar_273k_percent: 2.19,
+    ideal_at_700_bar_300k_percent: 44.87,
+    covolume_at_700_bar_300k_percent: 3.21,
+    ideal_at_700_bar_273k_percent: 49.06,
+    covolume_at_700_bar_273k_percent: 4.75,
     reproduce: "For each T in 250, 273.15, 300, 330 K: GET \
         https://webbook.nist.gov/cgi/fluid.cgi with Action=Data, Wide=on, \
-        ID=C1333740, Type=IsoTherm, Digits=8, PLow=1, PHigh=701, PInc=10, T=<T>, \
+        ID=C1333740, Type=IsoTherm, Digits=8, PLow=20, PHigh=880, PInc=10, T=<T>, \
         TUnit=K, PUnit=bar, DUnit=kg/m3, HUnit=kJ/kg, RefState=DEF. Save the four \
         files and point CF_NIST_H2_ISOTHERMS at the directory, then \
         `cargo test -p cf-storage --test storage -- --ignored --nocapture`. \
@@ -842,9 +883,9 @@ pub const RECORD_9013: Record9013 = Record9013 {
 /// a recorded spread catches. `the_record_disagrees_with_itself_about_700_bar`
 /// fails if they are ever made equal.
 ///
-/// ⚠⚠ It is not an isolated blemish. Three of the record's five theoretical
-/// figures sit 1.1–1.3% below both the current NIST equation of state and this
-/// crate's model, all in the same direction — see
+/// ⚠⚠ It is not an isolated blemish. **Two of Table 1's four** theoretical
+/// figures — 700 and 880 bar — sit below the current NIST equation of state in
+/// the same direction, while 350 and 440 agree. See
 /// [`RECORD_DISAGREEMENT_WITH_CURRENT_NIST_PERCENT`].
 pub const SEVEN_HUNDRED_BAR_AS_TABLED: Printed = Printed::new(1.35, 2);
 /// The same quantity as the record's Item section prints it, kWh/kg.
@@ -856,12 +897,16 @@ pub const SEVEN_HUNDRED_BAR_AS_ABSTRACTED: Printed = Printed::new(1.36, 2);
 /// 2009 and names no equation-of-state version; the `WebBook`'s hydrogen EOS has
 /// been revised since. Whether that is the cause **has not been isolated**, and
 /// a plausible story about it would be a permanent liability rather than a
-/// finding. What is measured is the size and the direction: the 350 and 440 bar
-/// figures agree, and the 1 atm→20 bar, 700 bar and 880 bar figures are all low
-/// by about this much.
+/// finding. What is measured is the size and the direction: **two of Table 1's
+/// four** figures disagree — 700 bar low by 1.30% and 880 bar low by 1.08%,
+/// mean 1.19% — while 350 and 440 bar agree within their own printed rounding.
 ///
 /// ★ It does not move the chain. Compression is a ~3% debit, so 1.2% inside it
 /// is 0.04% of the headline — which is itself the useful conclusion.
+///
+/// ⚠ **Now measured**: `the_record_sits_below_the_current_nist_eos` reproduces
+/// both figures against the oracle. This constant previously had no producer at
+/// all while its documentation read as a measurement.
 pub const RECORD_DISAGREEMENT_WITH_CURRENT_NIST_PERCENT: f64 = 1.2;
 
 // ─────────────────────────────────────────────────────────────────────────────

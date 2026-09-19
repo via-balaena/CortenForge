@@ -41,14 +41,18 @@ measurements forty-five years apart, not two unrelated observations.
 
 ## Fetch
 
-Four isotherms, normal hydrogen (CAS 1333-74-0, `ID=C1333740`), 1–701 bar in 10 bar steps:
+Four isotherms, normal hydrogen (CAS 1333-74-0, `ID=C1333740`), **20–880 bar in 10 bar
+steps**. ⚠ The lower bound is 20 rather than 1 deliberately: it is the record's own
+inlet, and starting there puts **350, 440, 700 and 880 bar on the grid**. An earlier
+grid of `1 + 10k` contained none of them, so every constant named `_at_350_bar_` was in
+fact measured at 351.
 
 ```sh
 out=$(mktemp -d)
 for T in 250 273.15 300 330; do
   curl -sS -o "$out/nist_T$T.tsv" \
     "https://webbook.nist.gov/cgi/fluid.cgi?Action=Data&Wide=on&ID=C1333740&Type=IsoTherm\
-&Digits=8&PLow=1&PHigh=701&PInc=10&T=$T&RefState=DEF&TUnit=K&PUnit=bar&DUnit=kg%2Fm3\
+&Digits=8&PLow=20&PHigh=880&PInc=10&T=$T&RefState=DEF&TUnit=K&PUnit=bar&DUnit=kg%2Fm3\
 &HUnit=kJ%2Fkg&WUnit=m%2Fs&VisUnit=uPa*s&STUnit=N%2Fm"
 done
 
@@ -61,10 +65,14 @@ rm -rf "$out"          # ⛔ do not leave these in the tree
 1. **`PInc` is a request, not a contract.** Asking for 1 bar steps over 1–901 bar
    returns **1.5 bar** steps — the CGI caps the response at roughly 600 rows and
    silently rescales. The test asserts the returned grid *is* the requested grid.
-2. **Rows are duplicated at a phase-label boundary.** The 1–701 bar isotherm returns
+2. **Rows are duplicated at a phase-label boundary.** A 1–701 bar isotherm returns
    **73 rows for 71 requested**: the 21 bar point appears three times as the `Phase`
    column flips from `vapor` to `supercritical`. Keying by row position would shift
-   every figure above 21 bar. The parser keys by the printed pressure.
+   every figure above 21 bar.
+   ⚠ **The grid above does not trigger this** — it starts at 20 bar, past the
+   boundary, and returns 87 distinct rows for 87. The parser still keys by the
+   printed pressure, because avoiding a trap by accident is not the same as being
+   immune to it.
 3. **The file self-validates, so check it before trusting it.** Every row satisfies
    `ρ·v = 1` and `U + Pv = H` to about 1 part in 10⁸. The test asserts both before it
    compares anything.
@@ -77,23 +85,36 @@ against the retrieval below.
 
 | file | bytes | SHA-256 |
 |---|---|---|
-| `nist_T250.tsv`    | 11139 | `6122d89fa8b17cd6b733985145184f0108ae8e5e6e3b44945575788c5f8c4d71` |
-| `nist_T273.15.tsv` | 11137 | `18ac98d1e0769f59ce31ea23e993b568013f667ab755860965c433ee1521c30b` |
-| `nist_T300.tsv`    | 11136 | `58b9d6bba58fa3302a7bb07ccaf909e344718384779553a4d338cbb1e4cd83b5` |
-| `nist_T330.tsv`    | 11135 | `4523db4faf36bac0ca9967ba0ca34170cd2c7640d1b3350d5ab11bbdae7c23f6` |
+| `nist_T250.tsv`    | 13265 | `7c0fb1148d4a73b3a6b439f0004838b1df8fc1ede98fc600ad48ffbe4dbb1bf1` |
+| `nist_T273.15.tsv` | 13264 | `70067ec7b6bd572bf42cd942461485745c10f0318f031bc173216e43db46bb82` |
+| `nist_T300.tsv`    | 13263 | `17f0de9759b9adb44bb29a4ea5f80b94f3fabeffeb3416ab3099cb72ffc703fb` |
+| `nist_T330.tsv`    | 13262 | `ace4d0861b02c598fd02cf6209ca05a8ff74d77e298170128f803412b3e41d57` |
 
 ## The measurement
 
-284 states, 250–330 K, 1–701 bar:
+348 states, 250–330 K, 20–880 bar:
 
-| model | worst density error | at 350 bar, 300 K | at 350 bar, 273 K |
-|---|---|---|---|
-| ideal gas | **53.43 %** | +22.03 % | +23.88 % |
-| second-virial covolume | **6.66 %** | +1.49 % | +2.20 % |
+| model | worst | 350 bar, 300 K | 350 bar, 273 K | 700 bar, 300 K | 700 bar, 273 K |
+|---|---|---|---|---|---|
+| ideal gas | **67.44 %** | +21.96 % | +23.80 % | +44.87 % | +49.06 % |
+| second-virial covolume | **8.00 %** | +1.48 % | +2.19 % | +3.21 % | +4.75 % |
 
-★ The second row is what one parameter from a 1964 paper buys. The 273 K column is the
-one this farm runs at — see `CARRINGTON_FALL`, measured from NOAA rather than adopted
-from the source document's 300 K convention.
+★ The second row is what one parameter from a 1964 paper buys. The 273 K columns are
+the ones this farm runs at — see `CARRINGTON_FALL`, measured from NOAA rather than
+adopted from the source document's 300 K convention.
+
+⚠ The worst case is now at **880 bar**, the refuelling overpressure Record 9013
+discusses, rather than at the old grid's 701 bar ceiling. Nothing about the model
+changed; the comparison simply reaches further.
+
+★ **A second thing the retrieval buys.** Because 350, 440, 700 and 880 bar are on the
+grid, the same isotherm checks the record's own Table 1 against the equation of state
+it says it used: two of its four theoretical figures agree, and the 700 and 880 bar
+ones sit **1.30 %** and **1.08 %** low. `RECORD_DISAGREEMENT_WITH_CURRENT_NIST_PERCENT`
+carried that claim with no producer at all until this gate existed.
+
+⛔ That is **not** an independent check of the record — Record 9013 says its figures
+came from NIST, so it compares the record with a later version of its own source.
 
 ⚠ The residual grows with pressure and shrinks with temperature, which is the signature
 of the **third** virial coefficient this model drops. That is checked by its shape —

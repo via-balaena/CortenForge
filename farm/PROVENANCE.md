@@ -5,10 +5,18 @@ in one place, with **what each publisher requires**, because that answer differs
 source by source and the difference is not obvious.
 
 ⛔⛔ **"It is a government document, therefore it is free" is not a determination.**
-Eight of the ten sources below are U.S. federal works with no copyright. The ninth is
-a national-laboratory dataset under BSD-3, which puts a notice in `NOTICE`. The tenth
-is a U.S. federal database that **asserts copyright** and is therefore never committed.
-That spread is why each crate records the terms in a field rather than in a comment.
+Ten sources fall under **four** different sets of terms:
+
+- **seven** are U.S. *federal* works with no copyright (17 U.S.C. §105);
+- **one** is a U.S. federal database that **asserts copyright** anyway, under the
+  Standard Reference Data Act, and is therefore never committed;
+- **one** is a national-laboratory dataset under **BSD-3**, which puts a notice in `NOTICE`;
+- **one** is a **state** publication whose copyright status this repository has
+  **not determined** — see below.
+
+⚠ An earlier draft of this page counted eight federal works and folded the state
+source in with them. §105 does not reach state works, so that was the very
+inference the paragraph above warns against, made in its own opening line.
 
 ## The chain
 
@@ -23,18 +31,35 @@ That spread is why each crate records the terms in a field rather than in a comm
 
 | # | source | used by | terms | committed? |
 |---|---|---|---|---|
-| 1 | Nebraska OECD Tractor Test reports, editions 2016 / 2017 / 2019 ([2016](https://govdocs.nebraska.gov/epubs/U2060/S001-2016.pdf)) | `cf-nebraska` | State of Nebraska public documents | figures only |
-| 2 | NREL **WIND Toolkit**, CONUS v1.0.0, `nrel-pds-wtk` S3 | `cf-wind` | U.S. Gov work, public domain | ✅ one grid point, one year (206 KiB) |
-| 3 | NOAA/NCEI Integrated Surface Database, station 72073700266 — **wind** | `cf-wind` | U.S. Gov work, public domain | summary statistics |
-| 4 | NOAA/NCEI Integrated Surface Database, station 72073700266 — **temperature** | `cf-storage` | U.S. Gov work, public domain | summary statistics |
+| 1 | Nebraska OECD Tractor Test reports, editions 2016 / 2017 / 2019 ([2016](https://govdocs.nebraska.gov/epubs/U2060/S001-2016.pdf)) | `cf-nebraska` | ⚠ **NOT DETERMINED** — a *state* publication, so §105 does not apply | figures only |
+| 2 | NREL **WIND Toolkit**, CONUS v1.0.0, `nrel-pds-wtk` S3 | `cf-wind` | U.S. Gov work, public domain (17 U.S.C. §105) | ✅ one grid point, one year (206 KiB) |
+| 3 | NOAA/NCEI Integrated Surface Database, station 72073700266 — **wind** | `cf-wind` | U.S. Gov work, public domain (17 U.S.C. §105) | summary statistics |
+| 4 | NOAA/NCEI Integrated Surface Database, station 72073700266 — **temperature** | `cf-storage` | U.S. Gov work, public domain (17 U.S.C. §105) | summary statistics |
 | 5 | NREL **turbine-models**, `EWT_DW54X` power curve | `cf-wind` | **BSD-3-Clause**, © 2020 Alliance for Sustainable Energy | ✅ 23 points — ⚠ see `NOTICE` |
-| 6 | DOE **Hydrogen Program Record 19009**, PEM electrolysis cost (2019) | `cf-electrolysis` | U.S. Gov work, 17 U.S.C. §105 | figures only |
-| 7 | DOE **Alternative Fuels Data Center**, fuel properties | `cf-electrolysis` | U.S. Gov work, 17 U.S.C. §105 | figures only |
-| 8 | DOE **Hydrogen Program Record 9013**, compression and liquefaction energy (2009) | `cf-storage` | U.S. Gov work, 17 U.S.C. §105 | figures only |
-| 9 | **Goodwin, Diller, Roder & Weber**, J. Res. NBS **68A**(1) 121–126, 1964, [doi:10.6028/jres.068A.011](https://doi.org/10.6028/jres.068A.011) | `cf-storage` | U.S. Gov work, public domain (the paper says so) | Table 2 and two equations |
+| 6 | DOE **Hydrogen Program Record 19009**, PEM electrolysis cost (2019) | `cf-electrolysis` | U.S. Gov work, public domain (17 U.S.C. §105) | figures only |
+| 7 | DOE **Alternative Fuels Data Center**, fuel properties | `cf-electrolysis` | U.S. Gov work, public domain (17 U.S.C. §105) | figures only |
+| 8 | DOE **Hydrogen Program Record 9013**, compression and liquefaction energy (2009) | `cf-storage` | U.S. Gov work, public domain (17 U.S.C. §105) | figures only |
+| 9 | **Goodwin, Diller, Roder & Weber**, J. Res. NBS **68A**(1) 121–126, 1964, [doi:10.6028/jres.068A.011](https://doi.org/10.6028/jres.068A.011) — ★ the only source that states its own status in terms | `cf-storage` | U.S. Gov work, public domain (17 U.S.C. §105) | Table 2 and two equations |
 | 10 | **NIST Chemistry WebBook**, SRD 69, hydrogen fluid properties | `cf-storage` | ⛔ **Standard Reference Data Act — copyright ASSERTED** | ❌ **never** — see [`cf-storage/NIST_VALIDATION.md`](cf-storage/NIST_VALIDATION.md) |
 
 ## The two that need more than a row
+
+### ⚠ Source 1 — the one whose terms are NOT settled
+
+The Nebraska OECD tractor test reports are published by the **Nebraska Tractor
+Test Laboratory at the University of Nebraska–Lincoln** — a *state* institution.
+17 U.S.C. §105 removes copyright from works of the **federal** government and
+says nothing about state ones, and Nebraska's public-records statute is about
+**access**, not copyright. So "it is a public document" is an access claim being
+mistaken for a licence.
+
+⛔ `cf-nebraska` carries **no `terms` field at all** — it predates the pattern,
+which `cf-electrolysis` introduced and `cf-storage` inherited. Until it has one
+and the determination is actually made, this row says *not determined* rather
+than guessing. Nothing is redistributed: only transcribed figures, which are
+facts and not the expression of them.
+
+**Trigger**: add the field when `cf-nebraska` is next touched for any reason.
 
 ### ⚠ Source 5 — the only one that obliges us
 
