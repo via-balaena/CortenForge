@@ -1,0 +1,15 @@
+# USDA NRCS Soil Data Access (SSURGO), survey area ND031 = Foster County, North Dakota
+# - the same county cf-wind's WTK grid point sits in.
+# SURFACE horizon only (hzdept_r = 0), major components, representative texture.
+# acres = mapunit acres x component percent, summed by texture class.
+# Retrieved 2026-09-19 via POST to sdmdataaccess.nrcs.usda.gov/Tabular/post.rest
+# 17 U.S.C. 105, no copyright.
+texture_class	component_weighted_acres
+Loam	233888.91
+Fine sandy loam	15881.79
+Silty clay loam	13115.65
+Silt loam	9215.02
+Sandy loam	6373.26
+Loamy fine sand	6277.13
+Loamy coarse sand	968.88
+Clay loam	726.10

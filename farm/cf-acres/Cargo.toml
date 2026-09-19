@@ -1,0 +1,34 @@
+[package]
+name = "cf-acres"
+description = "MISSION's headline, as the minimum of three measured ceilings — the days the ground is workable, the hydrogen the wind made, and the nitrogen the crop needs — and which one actually binds"
+keywords = ["agriculture", "hydrogen", "tillage", "acres"]
+categories = ["science", "simulation"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[package.metadata.cortenforge]
+tier = "L0"
+
+[dependencies]
+# The tractor, read live from the crate that reconciles five scanned editions.
+cf-nebraska = { path = "../cf-nebraska" }
+# The operating window and the season's shaft energy.
+cf-tillage = { path = "../cf-tillage" }
+# The nitrogen ceiling, and the hydrogen an acre's fertilizer needs.
+cf-nitrogen = { path = "../cf-nitrogen" }
+
+[dev-dependencies]
+# Stages 1-3, so every ceiling is recomputed from the real wind year rather
+# than quoted from the crate that first measured it.
+cf-wind = { path = "../cf-wind" }
+cf-electrolysis = { path = "../cf-electrolysis" }
+cf-storage = { path = "../cf-storage" }
+# So the two committed digests are measurements, not numbers nothing produces.
+sha2 = "0.10"
+
+[lints]
+workspace = true
