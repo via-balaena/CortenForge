@@ -116,15 +116,31 @@ the absence was checked against. Reproduce it before relying on the claim.
 ### The second instrument
 
 The published PDFs, checked here rather than taken from anywhere. The five 2012
-fall reports — weeks ending 30 Sep, 14 Oct, 28 Oct, 4 Nov and 18 Nov:
+fall reports — weeks ending 30 Sep, 14 Oct, 28 Oct, 4 Nov and 18 Nov. The file
+name is `cw-MMDD` for the week-ending date:
 
-| report | mention | where |
-|---|---|---|
-| cw-1015 | "anhydrous application and fall tillage occurred" | narrative prose |
-| cw-1105 | "Fertilizer application progressed in areas where moisture…" | narrative prose |
-| cw-1119 | "…included applying fertilizer and moving cattle" | narrative prose |
+```sh
+BASE="https://www.nass.usda.gov/Statistics_by_State/North_Dakota/Publications/Crop_Progress_&_Condition/2012"
+for f in cw-1001 cw-1015 cw-1029 cw-1105 cw-1119; do
+  curl -sL --fail "$BASE/$f.pdf" -o "$f.pdf"
+  pdftotext -layout "$f.pdf" "$f.txt"
+  grep -ic "fertiliz\|anhydrous" "$f.txt"
+done
+```
 
-**Three mentions, zero table rows.**
+| report | week ending | mention | where |
+|---|---|---|---|
+| cw-1001 | 30 Sep | — | — |
+| cw-1015 | 14 Oct | "anhydrous application and fall tillage occurred" | narrative prose |
+| cw-1029 | 28 Oct | — | — |
+| cw-1105 | 4 Nov | "Fertilizer application progressed in areas where moisture…" | narrative prose |
+| cw-1119 | 18 Nov | "…included applying fertilizer and moving cattle" | narrative prose |
+
+**Three mentions across five reports, zero table rows.**
+
+⚠ The five week-endings are the ones `cf-tillage`'s committed extract carries
+as days-suitable rows (6.8, 6.2, 4.2, 4.2, 4.1), so the *dates* are checkable in
+this repository even though the PDFs are not committed.
 
 ⚠ Two traps in getting that right. The reports are **two-column**, and
 `pdftotext -layout` merges the left column's prose with the right column's table

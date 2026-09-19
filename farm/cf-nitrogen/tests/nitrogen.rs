@@ -853,6 +853,8 @@ fn the_second_instrument_is_not_attributed_to_a_page_that_lacks_it() {
     // saying otherwise borrowed credibility from a document that has none to
     // lend.
     const TILLAGE_PAGE: &str = include_str!("../../cf-tillage/NASS_VALIDATION.md");
+    const PAGE: &str = include_str!("../NASS_FERTILIZER.md");
+    const TILLAGE_DATA: &str = include_str!("../../cf-tillage/data/nd_fall_fieldwork.tsv");
     assert!(
         !TILLAGE_PAGE.to_lowercase().contains("fertilizer"),
         "cf-tillage's page now mentions fertilizer; re-check what this crate says it records"
@@ -883,6 +885,32 @@ fn the_second_instrument_is_not_attributed_to_a_page_that_lacks_it() {
         assert!(
             discussed > 0,
             "{name}: the second instrument must be discussed at all"
+        );
+    }
+
+    // ⛔ And it must be RETRIEVABLE. An oracle cited by bare filename is one a
+    // reader cannot act on, and these PDFs are the only corroboration the
+    // window decision has.
+    assert!(
+        PAGE.contains("Crop_Progress_&_Condition/2012"),
+        "the page must give the path the PDFs come from"
+    );
+    for report in ["cw-1001", "cw-1015", "cw-1029", "cw-1105", "cw-1119"] {
+        assert!(PAGE.contains(report), "{report} must be named");
+    }
+
+    // The week-endings it quotes are checkable HERE, against stage 4's extract.
+    for (week, ds) in [
+        ("2012-09-30", "6.8"),
+        ("2012-10-14", "6.2"),
+        ("2012-10-28", "4.2"),
+        ("2012-11-04", "4.2"),
+        ("2012-11-18", "4.1"),
+    ] {
+        let row = format!("2012\t{week}\tDS\t{ds}");
+        assert!(
+            TILLAGE_DATA.contains(&row),
+            "{week} at {ds} days must be in stage 4's committed extract"
         );
     }
 }
