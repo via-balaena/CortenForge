@@ -8,7 +8,7 @@
 //! window itself. This crate builds the draw, and so decides which side of that
 //! cliff the farm lands on.
 //!
-//! # ★★★ The answer: the season closes, and with room
+//! # ★★★ The answer: the bar the season sets, and what it is half of
 //!
 //! The headline of this crate is not a kilogram count. It is
 //! [`break_even_engine_efficiency`]: **what thermal efficiency a hydrogen
@@ -17,21 +17,47 @@
 //! nobody can measure yet into the one term the answer is stated in, so no
 //! headline here rests on an invented engine.
 //!
-//! [`HYDROGEN_ENGINE_EFFICIENCY_NEEDED`] is **14.4% to 19.1%**. Real spark-
-//! ignition hydrogen engines run well above that, so the season closes on
-//! in-window production alone — [`SEASON_MARGIN_AT_FORTY_PERCENT`] puts the
-//! surplus at **2.1× to 2.8×**. ⇒ This farm sits **below** stage 3's storage
-//! cliff, and its buffer is sized by weather inside the window rather than by
-//! carrying hydrogen across seasons.
+//! [`HYDROGEN_ENGINE_EFFICIENCY_NEEDED`] is **14.4% to 19.1%**.
+//!
+//! ⛔⛔ **This crate does not say whether an engine reaches that**, and the
+//! temptation to add a sentence claiming it does is the reason this paragraph
+//! is written the way it is. There is no hydrogen-engine oracle anywhere in
+//! `farm/`; [`UNMEASURED_HERE`] records its absence, and an unsourced sentence
+//! asserting that real engines clear the bar would be exactly the transcribed
+//! figure the swept-parameter discipline exists to refuse.
+//!
+//! What can be said with a measurement behind it is a **ratio to the engine
+//! this tractor actually has**: the break-even is
+//! [`BREAK_EVEN_AS_SHARE_OF_MEASURED_DIESEL_PERCENT`] — **39.9% to 52.8%** of
+//! the brake thermal efficiency Nebraska measured for the 8245R's own diesel.
+//! So the season closes if a hydrogen engine reaches a little over half what
+//! the diesel beside it was measured doing. Whether one does is the reader's
+//! call, on evidence this crate does not hold.
+//!
+//! [`SEASON_MARGIN_AT_FORTY_PERCENT`] gives the same result as a surplus,
+//! **2.1× to 2.8×**, at an efficiency that is *stated as an illustration*
+//! rather than claimed.
 //!
 //! # ⛔⛔ The correction that produced that number
 //!
 //! The first version of this crate compared the window's demand against stage
-//! 3's published cliff of 2,695 kg. That figure is the production during stage
-//! 3's own illustrative **21-day** window, and the windows measured here run
-//! five to eight weeks. **Demand from one window against production from
-//! another** is the denominator error this chain keeps generating, and it made
-//! the load factor look as though it straddled the cliff when it does not.
+//! 3's published cliff of 2,695 kg. That comparison was wrong **twice over**,
+//! and the second one only surfaced when a review of this PR forced the figure
+//! to be recomputed instead of quoted:
+//!
+//! 1. **A different window.** 2,695 kg is production across stage 3's own
+//!    illustrative **21-day** window; the windows measured here run five to
+//!    eight weeks.
+//! 2. **A different side of the compression debit.** It is production at the
+//!    electrolyser *outlet*, before stage 3 charges compression against it.
+//!    This crate measures delivered kilograms. The same 21 days after the debit
+//!    hold about 2,610 kg — a 3.3% gap that a quoted number hides completely.
+//!
+//! **Demand from one window against production from another** is the
+//! denominator error this chain keeps generating, and it made the load factor
+//! look as though it straddled the cliff when it does not. Both halves are now
+//! recomputed by `stage_threes_own_illustration_is_what_the_correction_says_it_is`,
+//! so the narrative cannot rot when stage 3 moves.
 //!
 //! Recomputed consistently — the cliff re-derived for *every* window — the
 //! picture inverts: see [`WINDOW_RULE_CANCELS_WITHIN_PP`]. Demand and in-window
@@ -1261,12 +1287,28 @@ pub const NOMINAL_RULE: WindowRule = AFTER_SOYBEANS;
 /// window's figure.
 ///
 /// A hydrogen engine reaching 19% closes the season without touching hydrogen
-/// made at any other time of year. Spark-ignition hydrogen engines are
-/// comfortably above that, which is the finding: for this farm, fall tillage is
-/// **not** a storage problem.
+/// made at any other time of year. ⛔ Whether one reaches it is **not asserted
+/// here** — see [`BREAK_EVEN_AS_SHARE_OF_MEASURED_DIESEL_PERCENT`] for the one
+/// comparison this crate can make with a measurement behind it.
 ///
 /// Pinned by `the_break_even_band_is_the_measured_one`.
 pub const HYDROGEN_ENGINE_EFFICIENCY_NEEDED: (f64, f64) = (14.41, 19.05);
+
+/// The break-even as a share of the diesel's **measured** efficiency, percent.
+///
+/// `(at the applied load factor 0.59, at the measured 0.78)`:
+/// [`HYDROGEN_ENGINE_EFFICIENCY_NEEDED`] divided by
+/// [`DIESEL_PTO_THERMAL_EFFICIENCY_PERCENT`].
+///
+/// ★★ **The only engine comparison in this crate that rests on a measurement.**
+/// Nebraska ran the 8245R's diesel and this crate reads its fuel rate and power
+/// live, so "a little over half what the diesel does" is a statement about two
+/// numbers that both exist. A claim about where real hydrogen engines sit is
+/// not, and is deliberately absent: a gate scans the prose surfaces of this
+/// crate and fails if such a claim comes back.
+///
+/// Pinned by `the_break_even_is_a_fraction_of_the_measured_diesel`.
+pub const BREAK_EVEN_AS_SHARE_OF_MEASURED_DIESEL_PERCENT: (f64, f64) = (39.90, 52.76);
 
 /// How much more hydrogen the window makes than the season needs, at a 40%
 /// engine: `(at load factor 0.78, at 0.59)`.
@@ -1301,9 +1343,13 @@ pub const WINDOW_RULE_CANCELS_WITHIN_PP: f64 = 0.4;
 /// 17th of 19, i.e. 3rd best. **Same year, same data, opposite conclusions.**
 ///
 /// The mechanism is measurable rather than arguable: 2012's harvest was
-/// extraordinarily early — NASS reported corn 94% harvested by 28 October
-/// against a 2007–2011 average of 42% — so a poor run of weekly fieldwork days
-/// was more than repaid by the window opening weeks sooner. A fixed calendar
+/// extraordinarily early. Corn stood at **94% harvested on 28 October**, which
+/// is in this crate's own extract and gated by
+/// `the_early_harvest_that_drives_the_reversal`. ⚠ The same NASS report prints
+/// a 2007–2011 average of 42% beside it — *North Dakota Crop, Livestock &
+/// Weather Report*, week ending 28 October 2012 — but that five-year column is
+/// **not** in the committed extract and cannot be checked from this repository.
+/// It is quoted, not relied on: the gate uses the 94% alone. A fixed calendar
 /// holds the start date constant, and the start date is what varies.
 ///
 /// ⇒ [`WindowRule`] is swept, never picked. Pinned by
@@ -1339,8 +1385,10 @@ pub struct Caveat {
 ///
 /// ⚠ Every swing below recomputes the in-window production at each point. An
 /// earlier version held it fixed at a figure belonging to a different window,
-/// which put the window rule at the top of this list at 19.81 pp instead of the
-/// bottom at 0.39 — a factor of fifty, and the wrong ordering entirely.
+/// which put the window rule at the **top** of this list instead of the bottom
+/// — the wrong ordering entirely. Both numbers are measured by
+/// `the_inconsistent_comparison_inflates_the_window_rule`, which computes the
+/// inflated spread rather than quoting it.
 pub const BREAK_EVEN_CAVEATS: &[Caveat] = &[
     Caveat {
         what: "hours worked per operable day",

@@ -93,6 +93,15 @@ fn hydrogen_series() -> Vec<f64> {
         .collect()
 }
 
+/// Stage 1 into stage 2, before the compression debit.
+///
+/// ⛔ Kept separate from [`delivered_series`] because stage 3's published
+/// figures are on THIS side of the debit and this crate's are on the other. A
+/// review of this PR found the two silently mixed.
+fn outlet_series() -> Vec<f64> {
+    hydrogen_series()
+}
+
 /// Stage 3: the same series, compressed into a 350 bar tank.
 fn delivered_series() -> Vec<f64> {
     let tank = cf_storage::Tank::new(TANK_BAR, cf_storage::CARRINGTON_FALL.mean_k);
@@ -910,8 +919,9 @@ fn the_break_even_band_is_the_measured_one() {
     assert!(close(at(hi), want_hi, 0.05), "measured 0.78 -> {}%", at(hi));
     assert!(
         at(hi) < 25.0,
-        "even the pessimistic load factor needs only {}%, which is well under \
-         what a hydrogen engine reaches - that is the finding",
+        "even the pessimistic load factor needs only {}% - and what that is \
+         under is stated by the_break_even_is_a_fraction_of_the_measured_diesel, \
+         not by an unsourced claim about hydrogen engines",
         at(hi)
     );
 }
@@ -1489,5 +1499,219 @@ fn the_demand_profile_says_what_it_is() {
         d.name().contains("tillage") && d.name().contains("days suitable"),
         "a profile that does not name itself produces orphan numbers: {}",
         d.name()
+    );
+}
+
+// ══════════════════════════════════ gates added by the review of this PR
+
+#[test]
+fn the_break_even_is_a_fraction_of_the_measured_diesel() {
+    // Hoisted above the statements: an item declared after them reads as if
+    // it were scoped later than it is.
+    const BANNED: &[&str] = &[
+        "engines run well above",
+        "comfortably above",
+        "engines are above",
+    ];
+    // ⛔ The ONLY engine comparison this crate is entitled to make. It divides
+    // one measured number by another: the break-even against the brake thermal
+    // efficiency Nebraska measured for this tractor's own diesel. A claim about
+    // what hydrogen engines reach would need an oracle that does not exist in
+    // `farm/`, and `UNMEASURED_HERE` says so.
+    let t = john_deere_8245r().expect("tractor");
+    let diesel = t.pto_thermal_efficiency() * 100.0;
+    let (lo, hi) = HYDROGEN_ENGINE_EFFICIENCY_NEEDED;
+    let (want_lo, want_hi) = cf_tillage::BREAK_EVEN_AS_SHARE_OF_MEASURED_DIESEL_PERCENT;
+    assert!(
+        close(lo / diesel * 100.0, want_lo, 0.05),
+        "{lo}% of {diesel}% is {}%",
+        lo / diesel * 100.0
+    );
+    assert!(
+        close(hi / diesel * 100.0, want_hi, 0.05),
+        "{hi}% of {diesel}% is {}%",
+        hi / diesel * 100.0
+    );
+    assert!(
+        want_hi < 60.0 && want_hi > 50.0,
+        "the headline phrase is `a little over half` - {want_hi}% must support it"
+    );
+    // ⚠ And no surface may claim where real hydrogen engines sit.
+    // ⛔⛔ Scans the PROSE surfaces only. Including this file makes the check
+    // match its own banned list and fail always - the producer-matching-itself
+    // bug a previous PR shipped, reproduced here on the first run.
+    for (name, src) in [
+        ("src/lib.rs", include_str!("../src/lib.rs")),
+        ("NASS_VALIDATION.md", include_str!("../NASS_VALIDATION.md")),
+    ] {
+        for banned in BANNED {
+            assert!(
+                !src.contains(banned),
+                "{name}: an unsourced claim about hydrogen engines came back: {banned:?}"
+            );
+        }
+    }
+    // And the scan is not vacuous: it finds the phrase when it is there.
+    assert!(
+        BANNED
+            .iter()
+            .any(|b| "engines run well above that".contains(b)),
+        "the banned-phrase scan cannot detect its own target"
+    );
+}
+
+#[test]
+fn stage_threes_own_illustration_is_what_the_correction_says_it_is() {
+    // ⛔ The module doc attributes 2,695 kg over a 21-day window to stage 3, and
+    // the whole correction narrative turns on that being a DIFFERENT window from
+    // the ones measured here. Recomputed, so it cannot rot when stage 3 moves.
+    let outlet = outlet_series();
+    let delivered = delivered_series();
+    let twenty_one_days =
+        cf_storage::SeasonalDemand::new(1.0, 289, 21, outlet.len(), YEAR.interval_seconds())
+            .expect("21 days from 15 October, stage 3's illustration");
+    // ⛔ On the OUTLET series. Stage 3's cliff is production before its own
+    // compression debit; this crate's windows are measured after it. Asserting
+    // 2,695 against `delivered` gives 2,610 — which is how the second half of
+    // the mismatch was found.
+    let cliff = produced_during_demand(&outlet, &twenty_one_days);
+    assert!(
+        close(cliff, 2_695.0, 0.5),
+        "stage 3's 21-day cliff recomputes to {cliff} kg on the outlet series"
+    );
+    let after_debit = produced_during_demand(&delivered, &twenty_one_days);
+    assert!(
+        after_debit < cliff,
+        "and the same window after compression is smaller: {after_debit} kg"
+    );
+    // The point of the correction: this crate's windows are longer, so they
+    // carry far more in-window production and are not comparable to it.
+    let (_, mine) = in_window_kg(&delivered, NOMINAL_RULE);
+    assert!(
+        mine > cliff * 2.0,
+        "a seven-week window holds {mine} kg against the 21-day {cliff} kg - \
+         comparing a demand across them is the error this crate documents"
+    );
+}
+
+#[test]
+fn the_committed_extract_reproduces_the_published_reports() {
+    // ⛔ NASS_VALIDATION.md's oracle check, made executable. It is the only
+    // thing tying the committed extract to NASS's own published weekly reports,
+    // and it was prose.
+    //
+    // ⚠ Validates TRANSCRIPTION, not measurement: both renderings come from the
+    // same field office, so a survey error is invisible to it.
+    const PUBLISHED: &[(&str, f64)] = &[
+        ("2012-09-30", 6.8),
+        ("2012-10-14", 6.2),
+        ("2012-10-28", 4.2),
+        ("2012-11-04", 4.2),
+        ("2012-11-18", 4.1),
+    ];
+    let fy = FallYear::get(2012).expect("2012");
+    let days = fy.series(Series::DaysSuitable);
+    for &(week, printed) in PUBLISHED {
+        let got = days
+            .iter()
+            .find(|o| o.week_ending == week)
+            .unwrap_or_else(|| panic!("{week} is absent from the committed extract"));
+        assert!(
+            close(got.value, printed, 1e-9),
+            "{week}: the PDF prints {printed}, the extract holds {}",
+            got.value
+        );
+    }
+    assert_eq!(
+        PUBLISHED.len(),
+        5,
+        "five reports were read, and five are checked"
+    );
+}
+
+#[test]
+fn the_early_harvest_that_drives_the_reversal() {
+    // ⛔ The mechanism behind WINDOW_RULE_REVERSES_THE_RANKING. Only the half
+    // that is in the committed extract is gated; the five-year average the same
+    // report prints is quoted in the docs and deliberately not relied on.
+    let fy = FallYear::get(NOMINAL_YEAR).expect("2012");
+    let corn = fy.series(Series::Corn);
+    let late_october = corn
+        .iter()
+        .find(|o| o.week_ending == "2012-10-28")
+        .expect("the week the docs quote");
+    assert!(
+        close(late_october.value, 94.0, 1e-9),
+        "corn stood at {} on 28 October 2012",
+        late_october.value
+    );
+    // And it really is early: no other complete year is this far along by then.
+    let others: Vec<f64> = climatology(FIXED_OCT_NOV)
+        .expect("a climatology")
+        .years
+        .iter()
+        .filter(|&&y| y != NOMINAL_YEAR)
+        .filter_map(|&y| {
+            FallYear::get(y)?
+                .series(Series::Corn)
+                .into_iter()
+                .find(|o| o.month_day() >= "10-25" && o.month_day() <= "10-31")
+                .map(|o| o.value)
+        })
+        .collect();
+    assert!(!others.is_empty(), "the comparison set is populated");
+    let beaten = others.iter().filter(|&&v| v >= 94.0).count();
+    assert_eq!(
+        beaten, 0,
+        "2012 should lead every other complete year at that week, but {beaten} match it"
+    );
+}
+
+#[test]
+fn the_inconsistent_comparison_inflates_the_window_rule() {
+    // ⛔ The magnitude the docs used to quote as 19.81 pp, measured instead of
+    // written down. Holding the cliff at one window's value while varying the
+    // window is the error; this shows what it costs.
+    let delivered = delivered_series();
+    let t = john_deere_8245r().expect("tractor");
+    let h2 = HYDROGEN_LHV_KWH_PER_KG.value();
+    let (lo, _) = load_factor_band();
+    let spread = |fixed_cliff: Option<f64>| {
+        let v: Vec<f64> = SWEPT_RULES
+            .iter()
+            .map(|r| {
+                let (days, own) = in_window_kg(&delivered, *r);
+                break_even_engine_efficiency(
+                    &t,
+                    &Season {
+                        operable_days: days,
+                        hours_per_operable_day: NOMINAL_HOURS_PER_OPERABLE_DAY,
+                        load_factor: lo,
+                    },
+                    fixed_cliff.unwrap_or(own),
+                    h2,
+                )
+                .expect("a break-even")
+                    * 100.0
+            })
+            .collect();
+        v.iter().copied().fold(f64::MIN, f64::max) - v.iter().copied().fold(f64::MAX, f64::min)
+    };
+    let consistent = spread(None);
+    // ⛔ The historical error held the cliff at stage 3's published 2,695 kg —
+    // a figure from a 21-day window on the pre-compression series. Reproduced
+    // exactly, because the magnitude depends on WHICH wrong value was held.
+    let inflated = spread(Some(2_695.0));
+    assert!(
+        close(inflated, 19.81, 0.05),
+        "the inconsistent comparison spreads {inflated} pp"
+    );
+    assert!(
+        close(consistent, 0.39, 0.02),
+        "the consistent one spreads {consistent} pp"
+    );
+    assert!(
+        inflated > consistent * 40.0,
+        "{inflated} against {consistent} is the whole finding"
     );
 }

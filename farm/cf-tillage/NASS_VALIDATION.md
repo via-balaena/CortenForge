@@ -90,8 +90,13 @@ they can be compared. Over the five 2012 fall reports read:
 | 2012-11-04 | 4.2 | 4.2 |
 | 2012-11-18 | 4.1 | 4.1 |
 
-Five for five. ⚠ This validates **transcription**, not measurement: both come
-from the same NASS field office, so an error in the survey is invisible to it.
+Five for five, and **gated** by `the_committed_extract_reproduces_the_published_reports`
+rather than left as prose — this is the only thing tying the committed extract
+to NASS's own published reports, so it is the last claim on this page that
+should have been unexecutable.
+
+⚠ This validates **transcription**, not measurement: both come from the same
+NASS field office, so an error in the survey is invisible to it.
 
 ## ⚠ Traps
 
@@ -108,8 +113,14 @@ year publishing fewer than eight fieldwork weeks between 1 October and
 specifically.
 
 **Days suitable is state level only.** There is no agricultural-district or
-county breakdown of this series — checked across all 1,024 North Dakota
-observations, every one is `AGG_LEVEL_DESC = STATE`. The wind in `cf-wind` is
+county breakdown of this series — checked across all **1,024 days-suitable rows
+of the intermediate `nd_weekly.tsv`** produced by the command above, every one
+of which carries `AGG_LEVEL_DESC = STATE`.
+
+⚠ That count is of the **intermediate** file, not of the committed extract. The
+committed extract holds **404** days-suitable rows, because it keeps only weeks
+ending on or after 25 August. Reproduce `nd_weekly.tsv` to check the claim;
+counting the committed file will not reproduce it. The wind in `cf-wind` is
 one grid point in Foster County; the fieldwork days are statewide. That
 resolution mismatch is recorded in `UNMEASURED_HERE` rather than smoothed over.
 
@@ -129,5 +140,7 @@ half a percentage point, because a longer window buys operable days and
 in-window hydrogen together.
 
 Those are two different questions. An early version of this crate answered the
-second with evidence from the first, and ranked the window rule as the largest
-term in `BREAK_EVEN_CAVEATS` at 19.81 pp instead of the smallest at 0.39 pp.
+second with evidence from the first, and ranked the window rule as the **largest**
+term in `BREAK_EVEN_CAVEATS` instead of the smallest. Both magnitudes are
+measured by `the_inconsistent_comparison_inflates_the_window_rule`, which
+reproduces the original mistake rather than quoting what it cost.
