@@ -38,7 +38,7 @@ use super::{
 };
 use crate::Vec3;
 use crate::element::{ValidityBar, certify_rest};
-use crate::material::NeoHookean;
+use crate::material::{Material, NeoHookean};
 use crate::sdf_bridge::{Sdf, project_point_onto_sdf};
 use nalgebra::{Point3, SMatrix};
 use std::collections::{HashMap, HashSet};
@@ -46,14 +46,29 @@ use std::collections::{HashMap, HashSet};
 /// Enriched quadratic (Tet10) tet mesh — four corners plus six
 /// edge-midpoint nodes per tet.
 ///
-/// Constructed from a linear mesh via [`Tet10Mesh::from_tet4`]. Neo-Hookean
-/// per-tet materials (sibling of [`HandBuiltTetMesh`](super::HandBuiltTetMesh),
-/// which is likewise NH-only); a future rung generalizes the material type if
-/// a Yeoh Tet10 scene needs it. Fields are private — external code constructs
-/// only via [`Tet10Mesh::from_tet4`], which preserves the corner id-space and
-/// appends midside nodes after it.
+/// Constructed from a linear mesh via [`Tet10Mesh::from_tet4`], which carries
+/// the source's per-tet materials across verbatim.
+///
+/// Generic over the material type `M`, defaulting to [`NeoHookean`] so that
+/// every pre-existing `Tet10Mesh` spelling keeps its meaning.
+///
+/// The parameter exists because the two capabilities a scan-fit insertion
+/// scene needs sit on opposite sides of it: the rung-8b surface-integrated
+/// contact barrier is emitted only on a mesh exposing six-node boundary faces
+/// (i.e. Tet10), while the sleeve example rows wall at `max_disp ≈ 7 mm` under
+/// Neo-Hookean's validity domain, so the 8 mm interference target needs
+/// [`Yeoh`](crate::material::Yeoh).
+///
+/// ⚠ This makes `Tet10Mesh<Yeoh>` **constructible**; it does not establish
+/// that a Tet10 × Yeoh scene *solves*. That combination has never been run —
+/// convergence, Newton cost and contact-pressure behaviour at Tet10 order with
+/// a Yeoh material are all unmeasured.
+///
+/// Fields are private — external code constructs only via
+/// [`Tet10Mesh::from_tet4`], which preserves the corner id-space and appends
+/// midside nodes after it.
 #[derive(Clone, Debug)]
-pub struct Tet10Mesh {
+pub struct Tet10Mesh<M: Material = NeoHookean> {
     /// Corner positions (indices `0..n_corners`, verbatim from the source
     /// mesh) followed by the deduplicated edge-midpoint positions.
     positions: Vec<Vec3>,
@@ -67,7 +82,7 @@ pub struct Tet10Mesh {
     n_corners: usize,
     adj: MeshAdjacency,
     q: QualityMetrics,
-    material_cache: Vec<NeoHookean>,
+    material_cache: Vec<M>,
     interface_flags: Vec<bool>,
     boundary_faces: Vec<[VertexId; 3]>,
     /// Six-node (P2) boundary faces, built from the ten-node connectivity
@@ -76,7 +91,14 @@ pub struct Tet10Mesh {
     boundary_faces6: Vec<[VertexId; 6]>,
 }
 
-impl Tet10Mesh {
+// Bound note: the sibling meshes ([`SdfMeshedTetMesh`], [`SingleTetMesh`])
+// require `M: BuildableFromField` because they *construct* materials by
+// sampling a `MaterialField`. `Tet10Mesh` never does — [`Tet10Mesh::from_tet4`]
+// copies an already-built cache off the source mesh — so it asks only for what
+// that copy needs: `Material` for the `Mesh<M>` contract, `Clone` for the
+// `to_vec()`. The looser bound is deliberate; it lets a Tet10 mesh carry any
+// material its Tet4 source could, including ones no field can build.
+impl<M: Material + Clone> Tet10Mesh<M> {
     /// Enrich a linear (Tet4) [`Mesh`] into a [`Tet10Mesh`].
     ///
     /// Reads the source's four-corner connectivity and corner positions,
@@ -98,7 +120,7 @@ impl Tet10Mesh {
     // below `u32::MAX`.
     #[allow(clippy::cast_possible_truncation)]
     #[must_use]
-    pub fn from_tet4(mesh: &dyn Mesh) -> Self {
+    pub fn from_tet4(mesh: &dyn Mesh<M>) -> Self {
         // The source must be linear: an already-enriched mesh surfaces
         // midside nodes, and re-enriching it would treat those as corners.
         // Cheap sentinel — midside-ness is uniform, so tet 0 stands for all.
@@ -650,7 +672,7 @@ impl Tet10Mesh {
     }
 }
 
-impl Mesh for Tet10Mesh {
+impl<M: Material + Clone> Mesh<M> for Tet10Mesh<M> {
     fn n_tets(&self) -> usize {
         self.tets.len()
     }
@@ -681,7 +703,7 @@ impl Mesh for Tet10Mesh {
         &self.q
     }
 
-    fn materials(&self) -> &[NeoHookean] {
+    fn materials(&self) -> &[M] {
         &self.material_cache
     }
 
@@ -708,7 +730,7 @@ impl Mesh for Tet10Mesh {
     //
     // `as TetId` cast is the Mesh-trait API tax, as in `from_tet4` above.
     #[allow(clippy::cast_possible_truncation)]
-    fn equals_structurally(&self, other: &dyn Mesh) -> bool {
+    fn equals_structurally(&self, other: &dyn Mesh<M>) -> bool {
         if self.n_tets() != other.n_tets() {
             return false;
         }
