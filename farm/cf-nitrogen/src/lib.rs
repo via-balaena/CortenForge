@@ -12,17 +12,28 @@
 //! nitrogen. Stage 4's whole tillage season, run flat out for every operable
 //! day the weather allowed, needs a few thousand kilograms for the entire farm.
 //!
-//! ⇒ One 1 MW turbine's delivered hydrogen fertilizes
-//! [`ACRES_FERTILIZED_PER_TURBINE_YEAR`] — on the order of **4,300 acres** of
-//! corn. The fuel leg is not what sizes this farm's electrolyser; the nitrogen
-//! leg is.
+//! ⇒ One 1 MW turbine's delivered hydrogen covers
+//! [`ACRES_FERTILIZED_PER_TURBINE_YEAR`] — **4,334 acres that get treated**,
+//! or [`ACRES_PLANTED_SERVED_PER_TURBINE_YEAR`] **4,378 acres planted**, since
+//! the survey's rate is per treated acre and not every planted acre is treated.
+//! The fuel leg is not what sizes this farm's electrolyser; the nitrogen leg is.
+//!
+//! ⚠ For scale against stage 4: at the external field-operation figure this
+//! chain has **not** measured — 2 to 3 kg of hydrogen per corn acre for all
+//! passes — the nitrogen leg is **3.9× to 5.8×** the fuel leg here. That is
+//! below the 6–8× in circulation, and [`CORN_BELT_RATE_OVERSTATEMENT_PERCENT`]
+//! is why: the multiple is carried by the nitrogen rate, and North Dakota's is
+//! lower. Gated by
+//! `the_nitrogen_leg_outweighs_the_fuel_leg_by_less_than_advertised`.
 //!
 //! # ⛔⛔ The rate is a state's rate, and it is not the one in circulation
 //!
-//! A widely quoted figure for corn nitrogen is 150–200 lb N/acre. **North
-//! Dakota is not that.** Measured from the USDA NASS Agricultural Chemical Use
-//! survey, ND corn runs **118 to 160 lb N/acre/year** across every year the
-//! survey covers, and the most recent reading is the low end:
+//! The chain's own research context puts corn nitrogen at 150–200 lb N/acre and
+//! attributes it to *"USDA NASS / state extension rates"*. **North Dakota is
+//! not that** — and the attribution is the sharp part: read from the NASS
+//! Agricultural Chemical Use survey itself, ND corn runs **118 to 160
+//! lb N/acre/year** across every year surveyed, and the most recent reading is
+//! the low end:
 //!
 //! | year | lb N/acre/yr |
 //! |---|---|
@@ -61,11 +72,20 @@
 //! | the application window | — | ⛔ **decided**, and stated: see below |
 //!
 //! ⛔⛔ **NASS publishes no fertilizer-application timing series.** Checked
-//! across all 106,596 North Dakota weekly rows: zero mention fertilizer,
-//! anhydrous or application. What it does publish is the sentence this crate
-//! takes its window from — for the week ending 14 October 2012, *"anhydrous
-//! application and fall tillage occurred in areas of the state with adequate
-//! levels of soil moisture."*
+//! across the 106,596 North Dakota weekly rows of the intermediate file
+//! `cf-tillage/NASS_VALIDATION.md` gives the command for: zero mention
+//! fertilizer, anhydrous or application.
+//!
+//! ⚠ **That collection is not committed** — this crate commits 356 fertilizer
+//! rows and `cf-tillage` commits 921 fall-week rows, neither of which is the
+//! set the absence was checked against. Reproduce it from that page before
+//! relying on the claim. The second instrument is recorded there too: the 2012
+//! weekly PDFs carry anhydrous in prose and no fertilizer table.
+//!
+//! What NASS does publish is the sentence this crate takes its window from —
+//! for the week ending 14 October 2012, *"anhydrous application and fall
+//! tillage occurred in areas of the state with adequate levels of soil
+//! moisture."*
 //!
 //! ⇒ Fall nitrogen shares the operable-days window `cf-tillage` measures,
 //! because both need ground a machine can drive on and NASS reports them
@@ -553,10 +573,17 @@ pub const CORN_NITROGEN_LB_PER_ACRE: Printed = Printed::new(118.0, 0);
 /// `the_corn_acre_hydrogen_is_the_measured_one`.
 pub const CORN_HYDROGEN_KG_PER_ACRE: Printed = Printed::new(11.555, 3);
 
-/// Corn acres one 1 MW turbine's delivered hydrogen fertilizes in a year.
+/// **Treated** corn acres one 1 MW turbine's delivered hydrogen covers in a year.
 ///
 /// ★★★ The headline. Against the **50,086 kg** stages 1–3 measure at 350 bar
 /// for the Foster County 2012 wind year, at the rate above.
+///
+/// ⛔⛔ **Treated acres, not planted acres**, and the distinction is this
+/// crate's own: [`Measure::PerYear`] is pounds per *treated* acre, so dividing
+/// hydrogen by it yields the acres that get treated. A farm plants more than it
+/// treats — see [`ACRES_PLANTED_SERVED_PER_TURBINE_YEAR`], which applies the
+/// survey's own [`Measure::PctOfAreaPlanted`]. At 2021's 99% the two differ by
+/// 1%; at 1990's 80% they differ by **25%**.
 ///
 /// ⚠ A **ceiling**, for the reason [`hydrogen_kg_per_acre`] gives: it counts
 /// the hydrogen in the molecule and nothing that making the molecule costs.
@@ -564,6 +591,35 @@ pub const CORN_HYDROGEN_KG_PER_ACRE: Printed = Printed::new(11.555, 3);
 /// Pinned by `the_acres_fertilized_headline`, which recomputes the delivered
 /// kilograms from stages 1–3 rather than quoting them.
 pub const ACRES_FERTILIZED_PER_TURBINE_YEAR: Printed = Printed::new(4_334.0, 0);
+
+/// **Planted** corn acres the same hydrogen serves, at the surveyed treated share.
+///
+/// [`ACRES_FERTILIZED_PER_TURBINE_YEAR`] divided by the share of planted area
+/// the survey says was treated at all in [`CORN_REFERENCE_YEAR`].
+///
+/// ⚠ The two headlines answer different questions and neither is wrong. This
+/// one is what a farmer plants; the other is what gets a pass of anhydrous.
+/// Reporting one while naming the other is the denominator error this chain
+/// keeps finding, and an earlier version of this crate did exactly that —
+/// documenting the distinction in three places and then not applying it.
+///
+/// Pinned by `the_planted_acre_headline_uses_the_surveyed_treated_share`.
+pub const ACRES_PLANTED_SERVED_PER_TURBINE_YEAR: Printed = Printed::new(4_378.0, 0);
+
+/// Planted acres implied by `treated` acres at a `pct_of_area_planted` share.
+///
+/// Returns `None` unless the share is a finite percentage in `(0, 100]`.
+#[must_use]
+pub fn planted_acres(treated: f64, pct_of_area_planted: f64) -> Option<f64> {
+    if !treated.is_finite() || treated < 0.0 {
+        return None;
+    }
+    if !pct_of_area_planted.is_finite() || pct_of_area_planted <= 0.0 || pct_of_area_planted > 100.0
+    {
+        return None;
+    }
+    Some(treated / (pct_of_area_planted / 100.0))
+}
 
 /// How far the circulated 150–200 lb N/acre overstates North Dakota, percent.
 ///
@@ -670,9 +726,9 @@ pub const UNMEASURED_HERE: &[Unknown] = &[
     },
     Unknown {
         what: "when nitrogen is actually applied",
-        why_unmeasured: "NASS publishes NO fertilizer-timing series - checked across all \
-                         106,596 North Dakota weekly rows, zero mention fertilizer, anhydrous \
-                         or application",
+        why_unmeasured: "NASS publishes NO fertilizer-timing series - checked across the \
+                         106,596 weekly rows of the intermediate file cf-tillage/NASS_VALIDATION.md \
+                         gives the command for, which is NOT committed in this repository",
         what_would_measure_it: "a state extension survey of application timing, or a \
                                 soil-temperature rule; until then the window is the one NASS \
                                 puts anhydrous in the same sentence as tillage",

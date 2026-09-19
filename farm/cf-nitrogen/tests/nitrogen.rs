@@ -27,14 +27,14 @@
 
 use cf_electrolysis::{Electrolyser, FixedSpecificEnergy, current_distributed};
 use cf_nitrogen::{
-    ACRES_FERTILIZED_PER_TURBINE_YEAR, ALL_PRACTICES, CHECKSUM_DISAGREEMENTS,
-    CHECKSUM_INDETERMINATE, CHECKSUM_RECONCILES, CIAAW_ATOMIC_WEIGHTS,
+    ACRES_FERTILIZED_PER_TURBINE_YEAR, ACRES_PLANTED_SERVED_PER_TURBINE_YEAR, ALL_PRACTICES,
+    CHECKSUM_DISAGREEMENTS, CHECKSUM_INDETERMINATE, CHECKSUM_RECONCILES, CIAAW_ATOMIC_WEIGHTS,
     CIRCULATED_HYDROGEN_FRACTION, CORN_BELT_RATE_OVERSTATEMENT_PERCENT, CORN_HYDROGEN_KG_PER_ACRE,
     CORN_NITROGEN_LB_PER_ACRE, CORN_REFERENCE_YEAR, Cell, HYDROGEN_ATOMIC_WEIGHT, LB_KG, Measure,
     NASS_CHEMICAL_USE, NASS_TSV_SHA256, NITROGEN_ATOMIC_WEIGHT, NitrogenDemand, Printed,
     UNMEASURED_HERE, ammonia_kg_per_acre, ammonia_molar_mass, hydrogen_kg_per_acre,
-    hydrogen_mass_fraction, nitrogen_mass_fraction, observations, parse_line, record, records,
-    unparsed_lines,
+    hydrogen_mass_fraction, nitrogen_mass_fraction, observations, parse_line, planted_acres,
+    record, records, unparsed_lines,
 };
 use cf_storage::{Demand, debit_compression};
 use cf_tillage::{FallYear, NOMINAL_RULE, NOMINAL_YEAR};
@@ -749,5 +749,97 @@ fn the_demand_reports_the_rate_it_was_built_at() {
         relative < 1e-12,
         "relative error {relative} between {} and {want}",
         d.total_kg()
+    );
+}
+
+// ═════════════════════════ gates added by the review of this PR
+
+#[test]
+fn the_planted_acre_headline_uses_the_surveyed_treated_share() {
+    // ⛔⛔ The survey's rate is per TREATED acre, so dividing hydrogen by it
+    // yields treated acres. An earlier version of this crate documented that
+    // distinction in three places and then reported the treated figure while
+    // calling it "corn acres".
+    let delivered = delivered_series();
+    let annual: f64 = delivered.iter().fold(0.0, |a, b| a + b);
+    let per_acre = hydrogen_kg_per_acre(CORN_NITROGEN_LB_PER_ACRE.value()).expect("kg");
+    let treated = annual / per_acre;
+    assert!(
+        ACRES_FERTILIZED_PER_TURBINE_YEAR.admits(treated),
+        "treated = {treated}"
+    );
+
+    let share = record("CORN", "ALL CLASSES", ALL_PRACTICES, CORN_REFERENCE_YEAR)
+        .expect("record")
+        .pct_of_area_planted
+        .and_then(Cell::published)
+        .expect("a published treated share");
+    let planted = planted_acres(treated, share.value()).expect("planted");
+    assert!(
+        ACRES_PLANTED_SERVED_PER_TURBINE_YEAR.admits(planted),
+        "planted = {planted} against the pinned {}",
+        ACRES_PLANTED_SERVED_PER_TURBINE_YEAR.value()
+    );
+    assert!(planted > treated, "a farm plants more than it treats");
+
+    // And the gap is the survey's, not a constant: 1990's 80% share is 25%.
+    let early = record("CORN", "ALL CLASSES", ALL_PRACTICES, 1990)
+        .expect("1990")
+        .pct_of_area_planted
+        .and_then(Cell::published)
+        .expect("1990 share");
+    let then = planted_acres(treated, early.value()).expect("1990 planted");
+    let gap = (then / treated - 1.0) * 100.0;
+    assert!(close(gap, 25.0, 0.1), "at 1990's share the gap is {gap}%");
+}
+
+#[test]
+fn the_planted_conversion_refuses_what_it_cannot_answer() {
+    assert!(
+        planted_acres(100.0, 100.0).is_some(),
+        "a fully treated crop is the limit"
+    );
+    assert!(close(
+        planted_acres(100.0, 100.0).expect("full"),
+        100.0,
+        1e-12
+    ));
+    for bad in [0.0, -1.0, 100.1, f64::NAN, f64::INFINITY] {
+        assert!(
+            planted_acres(100.0, bad).is_none(),
+            "{bad} is not a percentage"
+        );
+    }
+    for bad in [-1.0, f64::NAN, f64::INFINITY] {
+        assert!(planted_acres(bad, 99.0).is_none(), "{bad} acres");
+    }
+}
+
+#[test]
+fn the_absence_claim_names_a_collection_this_crate_does_not_hold() {
+    // ⛔⛔ The window decision rests on "no fertilizer-timing series", checked
+    // against 106,596 rows that are NOT committed anywhere. The claim is
+    // reproducible, not verifiable in place, and every surface must say so.
+    const SURFACES: [(&str, &str); 2] = [
+        ("src/lib.rs", include_str!("../src/lib.rs")),
+        ("NASS_FERTILIZER.md", include_str!("../NASS_FERTILIZER.md")),
+    ];
+    for (name, src) in SURFACES {
+        for (n, _) in src.match_indices("106,596") {
+            let window = &src[n..(n + 700).min(src.len())];
+            // ⚠ Requires the EXPLICIT caveat, not merely the word
+            // "intermediate". Mutation testing showed an either-or accepted
+            // text with the caveat deleted, because the weaker word survived.
+            assert!(
+                window.to_lowercase().contains("not committed"),
+                "{name}: a 106,596-row absence claim must say the collection is NOT COMMITTED"
+            );
+        }
+    }
+    // And the committed collections really are smaller, so the caveat is not idle.
+    assert_eq!(observations().len(), 356, "this crate commits 356 rows");
+    assert!(
+        observations().len() < 106_596,
+        "the committed extract is not the collection the absence was checked against"
     );
 }

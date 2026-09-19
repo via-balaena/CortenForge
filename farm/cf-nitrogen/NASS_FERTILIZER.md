@@ -15,7 +15,8 @@ where fertilizer rates live — is filed under ENVIRONMENTAL. Looking in the
 is not evidence that NASS does not publish one.
 
 ⚠ **It is not in `SHORT_DESC` either.** Zero of the 23,947 North Dakota
-environmental rows mention "nitrogen" or "fertilizer" in that column. The
+environmental rows mention "nitrogen" or "fertilizer" in that column — that is
+the `nd_env.tsv` the command below produces, not the committed extract. The
 nutrient is in the **domain** dimension:
 
     DOMAIN_DESC    = FERTILIZER
@@ -103,8 +104,16 @@ All four withheld cells in this extract are the organic spring-wheat record.
 
 ## ⛔ There is no application-timing series
 
-Checked the same way the tillage window was: across all **106,596** North Dakota
-weekly rows, **zero** mention fertilizer, anhydrous or application.
+Checked the same way the tillage window was: across the **106,596** North Dakota
+weekly rows of the intermediate file, **zero** mention fertilizer, anhydrous or
+application.
+
+⚠ **That file is not committed.** It is the `nd_weekly.tsv` produced by the
+command in `cf-tillage/NASS_VALIDATION.md`; this crate commits 356 fertilizer
+rows and `cf-tillage` commits 921 fall-week rows, and neither is the collection
+the absence was checked against. Reproduce it before relying on the claim. The
+second instrument is on that page as well — the 2012 weekly PDFs carry anhydrous
+in prose and no fertilizer table.
 
 What exists is the sentence the window is taken from — week ending 14 October
 2012:
@@ -120,7 +129,9 @@ split, which this crate does not attempt.
 
 ## ⚠ North Dakota is not the Corn Belt
 
-A widely circulated figure for corn nitrogen is 150–200 lb N/acre. Measured:
+This chain's own research context puts corn nitrogen at 150–200 lb N/acre and
+attributes it to "USDA NASS / state extension rates". Read from the NASS survey
+itself:
 
 | year | lb N/acre/yr |
 |---|---|
