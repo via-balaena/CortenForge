@@ -836,16 +836,10 @@ fn the_two_technology_years_disagree_on_the_slope() {
         "the eras' slope ratio drifted to {ratio:.4}; the recorded unknown says \
          'a factor of three'"
     );
-    // ★ Both slopes must be POSITIVE, or the shared claim that balance of plant
-    // rises as a plant shrinks rests on one pair.
-    assert!(current.kwh_per_kg_per_decade() > 0.0 && future.kwh_per_kg_per_decade() > 0.0);
-    // ⚠ And the disagreement must be big enough to matter: if the two eras ever
-    // agreed closely, the recorded caution would be overstated rather than wrong.
-    assert!(
-        ratio > 2.0,
-        "the eras now agree to within {ratio:.2}x; the unknown's stated caution \
-         no longer matches the data"
-    );
+    // ⚠ Two further assertions stood here — that both slopes are positive, and
+    // that the ratio exceeds 2.0. Both are entailed by the pins above and could
+    // never fire, so they were documentation wearing an `assert!`. Cut rather
+    // than reworded: the pins already carry them.
 }
 
 #[test]
