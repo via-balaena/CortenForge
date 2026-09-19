@@ -541,24 +541,80 @@ fn the_ideal_gas_understates_the_compression_work() {
     };
     let (low, high) = cf_storage::IDEAL_GAS_WORK_UNDERSTATEMENT_PERCENT;
     let hot = understatement(RECORD_9013.temperature_k);
-    let cold = understatement(CARRINGTON_FALL.mean_k);
+    let cold = understatement(CARRINGTON_FALL.min_k);
     assert!(
         close(hot, low, 5e-3),
         "at 300 K measured {hot:.3}%, published {low}%"
     );
     assert!(
         close(cold, high, 5e-3),
-        "at the window mean measured {cold:.3}%, published {high}%"
+        "at the window's coldest hour measured {cold:.3}%, published {high}%"
     );
     assert!(low < high, "the understatement must grow as the gas cools");
+    // ⚠ And the pair must actually BOUND every temperature the crate evaluates
+    // at. The earlier pair was (300 K, window MEAN) while describing itself as
+    // spanning the window — the coldest hour fell outside it, at 6.65%.
+    let ladder = [
+        CARRINGTON_FALL.min_k,
+        CARRINGTON_FALL.mean_k,
+        CARRINGTON_FALL.max_k,
+        RECORD_9013.temperature_k,
+    ];
+    let mut previous = f64::INFINITY;
+    for t in ladder {
+        let u = understatement(t);
+        assert!(
+            u >= low - 1e-9 && u <= high + 1e-9,
+            "{t} K gives {u:.3}%, outside the published {low}–{high}%"
+        );
+        // …and "grows as the gas cools" is executable, not an adjective.
+        assert!(
+            u < previous,
+            "{t} K gives {u:.3}%, not less than the colder point's {previous:.3}%"
+        );
+        previous = u;
+    }
+}
 
-    // ⛔⛔ The claim this crate is built on: the SAME equation of state is worth
-    // an order of magnitude more on the tank than on the energy.
-    let on_density = NIST_DENSITY_COMPARISON.ideal_at_350_bar_300k_percent;
+#[test]
+fn the_equation_of_state_moves_the_tank_far_more_than_the_energy() {
+    // ⛔⛔ **Both sides as a fraction of THE ANSWER.** An earlier version of this
+    // compared a percent-of-work against a percent-of-volume — two denominators
+    // wearing the same unit — and produced a "twenty times" that was really 3.4.
+    // The claim only means something if each error is carried through to what it
+    // actually moves.
+    let (at_300k, _) = cf_storage::IDEAL_GAS_WORK_UNDERSTATEMENT_PERCENT;
+
+    // Energy: diluted, because compression is only a ~3% debit on the chain.
+    let w = Tank::new(TANK_BAR, CARRINGTON_FALL.mean_k)
+        .compression_kwh_per_kg(OUTLET_BAR, &Covolume, STATION_EFFICIENCY)
+        .expect("a usable state");
+    let kg = |work: f64| {
+        debit_compression(51_721.008, 55.8, work)
+            .expect("a usable case")
+            .kg
+    };
+    let on_kilograms = 100.0 * (kg(w * (1.0 - at_300k / 100.0)) / kg(w) - 1.0);
+
+    // Volume: undiluted. A density overstated by d understates volume by d/(1+d).
+    let d = NIST_DENSITY_COMPARISON.ideal_at_350_bar_300k_percent / 100.0;
+    let on_volume = 100.0 * (1.0 - 1.0 / (1.0 + d));
+
     assert!(
-        on_density > 3.0 * high,
-        "ideal gas costs {high:.2}% on work and {on_density:.2}% on volume — if \
-         those were comparable, modelling the gas properly would not be worth it"
+        close(on_kilograms, 0.199, 5e-3),
+        "ideal gas moves the delivered kilograms by {on_kilograms:.3}%"
+    );
+    assert!(
+        close(on_volume, 18.006, 5e-3),
+        "and the tank volume by {on_volume:.3}%"
+    );
+    // ★ The crate's thesis, as one measured ratio rather than an adjective.
+    let leverage = on_volume / on_kilograms;
+    assert!(
+        close(leverage, 90.5, 2e-2),
+        "the equation of state is worth {leverage:.0}x more on the tank than on \
+         the energy — if that ratio ever approaches 1, this crate's opening \
+         argument is wrong"
     );
 }
 

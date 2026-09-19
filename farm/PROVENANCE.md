@@ -39,7 +39,7 @@ inference the paragraph above warns against, made in its own opening line.
 | 6 | DOE **Hydrogen Program Record 19009**, PEM electrolysis cost (2019) | `cf-electrolysis` | U.S. Gov work, public domain (17 U.S.C. §105) | figures only |
 | 7 | DOE **Alternative Fuels Data Center**, fuel properties | `cf-electrolysis` | U.S. Gov work, public domain (17 U.S.C. §105) | figures only |
 | 8 | DOE **Hydrogen Program Record 9013**, compression and liquefaction energy (2009) | `cf-storage` | U.S. Gov work, public domain (17 U.S.C. §105) | figures only |
-| 9 | **Goodwin, Diller, Roder & Weber**, J. Res. NBS **68A**(1) 121–126, 1964, [doi:10.6028/jres.068A.011](https://doi.org/10.6028/jres.068A.011) — ★ the only source that states its own status in terms | `cf-storage` | U.S. Gov work, public domain (17 U.S.C. §105) | Table 2 and two equations |
+| 9 | **Goodwin, Diller, Roder & Weber**, J. Res. NBS **68A**(1) 121–126, 1964, [doi:10.6028/jres.068A.011](https://doi.org/10.6028/jres.068A.011) | `cf-storage` | U.S. Gov work, public domain (17 U.S.C. §105) | Table 2 and two equations |
 | 10 | **NIST Chemistry WebBook**, SRD 69, hydrogen fluid properties | `cf-storage` | ⛔ **Standard Reference Data Act — copyright ASSERTED** | ❌ **never** — see [`cf-storage/NIST_VALIDATION.md`](cf-storage/NIST_VALIDATION.md) |
 
 ## The two that need more than a row

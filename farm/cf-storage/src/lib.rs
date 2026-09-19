@@ -14,7 +14,7 @@
 //!
 //! | quantity | ideal gas is wrong by | this crate's model is wrong by |
 //! |---|---|---|
-//! | compression **work**, 20.68 → 350 bar | **6.3–6.6%** | below the source's own printing |
+//! | compression **work**, 20.68 → 350 bar | **6.29–6.65%** | below the source's own printing |
 //! | tank **volume** at 350 bar, 300 K | **21.96%** | **1.48%** |
 //! | tank **volume** at 700 bar, 300 K | **44.87%** | **3.21%** |
 //!
@@ -25,12 +25,12 @@
 //! grid of `1 + 10k` put every measurement one bar away from the pressure its
 //! own field name claimed.
 //!
-//! Compression is a ~3% debit on the chain, so a 6.5% error inside it is 0.2%
-//! of the headline and rigour there buys correctness rather than a different
-//! answer. The same equation of state decides how much steel the farm buys, and
-//! there being wrong by 22% is the difference between a feasible tank and an
-//! infeasible one. ⇒ **Model the gas properly because of the tank, not because
-//! of the energy.**
+//! ⚠ **Read those two rows against the answer, not against each other.** A work
+//! error is diluted, because compression is only a ~3% debit; a density error
+//! passes straight into the vessel. Using ideal gas moves the delivered
+//! kilograms by **0.20%** and the tank volume by **18.0%** — both measured by
+//! `the_equation_of_state_moves_the_tank_far_more_than_the_energy`.
+//! ⇒ **Model the gas properly because of the tank, not because of the energy.**
 //!
 //! # ⛔⛔ The second finding: storage is a cliff, not a slope
 //!
@@ -83,14 +83,20 @@
 
 /// How far [`IdealGas`] understates reversible compression work, percent.
 ///
-/// From the electrolyser outlet (20.68 bar) to a 350 bar tank, across the
-/// temperature range [`CARRINGTON_FALL`] spans. ★ Small, and that is the point:
-/// the same equation of state worth 6.5% on the energy is worth twenty times
-/// that on the tank. Pinned by `the_ideal_gas_understates_the_compression_work`.
+/// From the electrolyser outlet (20.68 bar) to a 350 bar tank, as
+/// `(smallest, largest)` over every temperature this crate evaluates at: the
+/// source document's 300 K convention at one end and [`CARRINGTON_FALL`]'s
+/// **coldest observed hour**, 265.15 K, at the other. The understatement grows
+/// as the gas cools.
 ///
-/// ⚠ Unlike the density figures this needs no oracle — it is one model against
-/// another, both in this crate, so it runs in CI.
-pub const IDEAL_GAS_WORK_UNDERSTATEMENT_PERCENT: (f64, f64) = (6.29, 6.57);
+/// ⚠ An earlier version paired 300 K with the window *mean* and described the
+/// two as spanning the window. They did not — the coldest hour sits outside
+/// them both, at 6.65%.
+///
+/// Pinned by `the_ideal_gas_understates_the_compression_work`. ⚠ Unlike the
+/// density figures this needs no oracle — one model against another, both in
+/// this crate, so it runs in CI.
+pub const IDEAL_GAS_WORK_UNDERSTATEMENT_PERCENT: (f64, f64) = (6.29, 6.65);
 
 /// Molar gas constant, J/(mol·K). Exact by the 2019 SI redefinition.
 const R_J_PER_MOL_K: f64 = 8.314_462_618_153_24;
