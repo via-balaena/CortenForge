@@ -744,6 +744,120 @@ where
     }
 }
 
+/// How balance-of-plant electricity scales with plant size.
+///
+/// ★★★ **A measurement, and it was in the record the whole time.** The study
+/// publishes two plant sizes at the same technology year, and between them the
+/// **stack figure does not move at all** — so balance of plant is the only term
+/// that responds to scale, and the pair is a clean two-point measurement of how.
+///
+/// This exists because the crate previously asserted that balance of plant
+/// "does not scale down linearly" and booked a **−16.2%** swing from an assumed
+/// tripling, while calling the question uncheckable. The record answers it, and
+/// the answer is roughly a twentieth of the assumption.
+#[derive(Clone, Copy, Debug)]
+pub struct BopScaling {
+    /// Smaller plant, kg H2/day.
+    pub small_kg_per_day: f64,
+    /// Larger plant, kg H2/day.
+    pub large_kg_per_day: f64,
+    /// Balance-of-plant electricity at the smaller plant, kWh/kg.
+    pub small_bop_kwh_per_kg: f64,
+    /// Balance-of-plant electricity at the larger plant, kWh/kg.
+    pub large_bop_kwh_per_kg: f64,
+}
+
+impl BopScaling {
+    /// Orders of magnitude between the two plants.
+    #[must_use]
+    pub fn decades(&self) -> f64 {
+        (self.large_kg_per_day / self.small_kg_per_day).log10()
+    }
+
+    /// How much balance-of-plant electricity rises per decade of shrinking.
+    #[must_use]
+    pub fn kwh_per_kg_per_decade(&self) -> f64 {
+        (self.small_bop_kwh_per_kg - self.large_bop_kwh_per_kg) / self.decades()
+    }
+
+    /// Balance of plant extrapolated to a plant of `kg_per_day`, kWh/kg.
+    ///
+    /// ⛔⛔ **Extrapolation, and it is the weaker half of this type.** Two points
+    /// fix a slope and can say nothing about a knee. Fixed overheads — controls,
+    /// instrumentation, minimum pump sizes, freeze protection — do not shrink at
+    /// all below some threshold, and that threshold is not in the measured span.
+    /// See [`UNMEASURED_AT_FARM_SCALE`].
+    #[must_use]
+    pub fn extrapolate_bop(&self, kg_per_day: f64) -> f64 {
+        let decades_below = (self.small_kg_per_day / kg_per_day).log10();
+        self.small_bop_kwh_per_kg + self.kwh_per_kg_per_decade() * decades_below
+    }
+}
+
+/// Measure the scaling from two cases, if they are actually comparable.
+///
+/// Returns `None` unless the two cases share a technology year and an identical
+/// stack figure at different scales. ★ That guard is the whole validity of the
+/// measurement: if the stack term moved too, balance of plant would not be the
+/// only thing responding to scale and the slope would mean nothing.
+#[must_use]
+pub fn bop_scaling(small: &H2aCase, large: &H2aCase) -> Option<BopScaling> {
+    let same_stack =
+        (small.stack_kwh_per_kg.value - large.stack_kwh_per_kg.value).abs() < f64::EPSILON;
+    if small.technology_year != large.technology_year
+        || !same_stack
+        || small.scale_kg_per_day >= large.scale_kg_per_day
+    {
+        return None;
+    }
+    Some(BopScaling {
+        small_kg_per_day: small.scale_kg_per_day,
+        large_kg_per_day: large.scale_kg_per_day,
+        small_bop_kwh_per_kg: small.bop_kwh_per_kg.value,
+        large_bop_kwh_per_kg: large.bop_kwh_per_kg.value,
+    })
+}
+
+/// The scale the balance-of-plant caveat is evaluated at, kg H2/day.
+///
+/// ⚠ **A placeholder with an explicit distance, not a requirement.** What one
+/// farm actually needs is fixed by the tractor's fuel consumption, which is
+/// stage 3 and not yet built. Two decades below the smallest published case is
+/// chosen so the extrapolation distance is stated rather than buried.
+pub const CAVEAT_FARM_SCALE_KG_PER_DAY: f64 = 15.0;
+
+/// Something that matters and has **no measured magnitude**.
+///
+/// ⛔⛔ Deliberately a separate type from [`Caveat`], and a separate list. A
+/// caveat carries how far it moves the headline; this one cannot, and putting
+/// an unmeasured risk into a ranked list would place it somewhere — last, if it
+/// were given a zero — which is a claim about its size that nothing supports.
+/// *"We have not measured this"* is a stable sentence. A number invented so the
+/// item can be sorted is not.
+#[derive(Clone, Copy, Debug)]
+pub struct Unknown {
+    /// Short name.
+    pub what: &'static str,
+    /// Why no magnitude is given.
+    pub why_unmeasured: &'static str,
+    /// What would actually settle it.
+    pub what_would_measure_it: &'static str,
+}
+
+/// ⚠ Risks at farm scale with no measured size.
+pub const UNMEASURED_AT_FARM_SCALE: &[Unknown] = &[Unknown {
+    what: "a fixed-overhead knee in balance of plant below 1,500 kg/day",
+    why_unmeasured: "The record publishes two scales, 1,500 and 50,000 kg/day, and \
+             balance of plant is nearly flat between them. Two points fix a slope and \
+             cannot reveal a knee, and a farm sits two decades below the bottom of that \
+             span. The two technology years also disagree on the slope by a factor of \
+             three, which is itself a statement about what a two-point fit is worth.",
+    what_would_measure_it: "A published balance-of-plant breakdown for a PEM plant \
+             under ~100 kg/day, or a component-level model of the fixed loads \
+             (controls, instrumentation, minimum pump and cooling sizes, freeze \
+             protection) that do not shrink with throughput.",
+}];
+
 /// Something true about these numbers that the numbers themselves do not say.
 ///
 /// ★★ **Every caveat carries how far it moves the headline**, because a flat
@@ -783,19 +897,14 @@ pub struct Caveat {
 /// which pins the recovered fraction to the case's own LHV efficiency and
 /// reddens the moment a heating value is wired into the arithmetic.
 ///
+/// ⛔⛔ **Everything here has a measured magnitude.** Risks without one live in
+/// [`UNMEASURED_AT_FARM_SCALE`] and are deliberately not in this list, because
+/// a ranked list places whatever you put in it.
+///
 /// ★ The largest term overall is **upstream**: inter-annual wind variability
-/// swings the headline about ±10.6%, which is more than everything here except
-/// plant scale. See `cf_wind::NOT_MEASURED_HERE`.
+/// swings the headline about ±10.6%, more than anything here. See
+/// `cf_wind::NOT_MEASURED_HERE`.
 pub const NOT_A_FARM_PLANT: &[Caveat] = &[
-    Caveat {
-        what: "the plant is 1,500 kg/day; a farm needs single-digit kg/day",
-        why: "H2A's smallest published PEM case is a fuelling station roughly two \
-              orders of magnitude larger than one farm. Balance of plant does not \
-              scale down linearly, so the 5.4 kWh/kg BoP term is the figure most \
-              likely to be optimistic here; the stack term is far less sensitive. \
-              Swing shown is BoP tripling to 16.2 kWh/kg.",
-        headline_swing_percent: -16.2,
-    },
     Caveat {
         what: "no degradation over stack life",
         why: "The record carries a stack degradation rate of 1.5 mV/khr, which \
@@ -820,5 +929,17 @@ pub const NOT_A_FARM_PLANT: &[Caveat] = &[
               answer UP, so the model is conservative in direction and unmeasured \
               in size. Swing shown is a 3% fall in specific energy.",
         headline_swing_percent: 3.1,
+    },
+    Caveat {
+        what: "the plant is 1,500 kg/day; a farm needs single-digit kg/day",
+        why: "★ MEASURED, not assumed. The record publishes two scales at one \
+              technology year with an IDENTICAL stack figure, so balance of plant is \
+              the only term that responds to size: 5.04 kWh/kg at 50,000 kg/day and \
+              5.40 at 1,500, which is +0.24 per decade of shrinking. Extrapolated two \
+              further decades it reaches 5.87, and the headline barely moves. This \
+              entry previously read -16.2% from an assumed tripling, while the crate \
+              called the question uncheckable; the record had answered it. ⚠ The \
+              extrapolation cannot see a knee — that is in UNMEASURED_AT_FARM_SCALE.",
+        headline_swing_percent: -0.8,
     },
 ];

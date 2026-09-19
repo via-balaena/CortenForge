@@ -14,10 +14,10 @@
 )]
 
 use cf_electrolysis::{
-    AFDC_2026, Electrolyser, FixedSpecificEnergy, H2A_CASES, H2A_RECORD_19009,
-    HHV_SOURCE_SPREAD_PERCENT, NOT_A_FARM_PLANT, Printed, TABLE_5_COLUMN_OF_CASE,
-    TABLE_5_EFFICIENCY_ROW, ThermodynamicBound, annual_hydrogen, current_distributed,
-    table_5_restated_total,
+    AFDC_2026, CAVEAT_FARM_SCALE_KG_PER_DAY, Electrolyser, FixedSpecificEnergy, H2A_CASES,
+    H2A_RECORD_19009, HHV_SOURCE_SPREAD_PERCENT, NOT_A_FARM_PLANT, Printed, TABLE_5_COLUMN_OF_CASE,
+    TABLE_5_EFFICIENCY_ROW, ThermodynamicBound, UNMEASURED_AT_FARM_SCALE, annual_hydrogen,
+    bop_scaling, current_distributed, table_5_restated_total,
 };
 use cf_wind::{Air, EWT_DW54X, FOSTER_COUNTY_ND_2012 as YEAR, Machine};
 
@@ -743,12 +743,18 @@ fn the_caveats_are_ranked_by_measured_effect() {
     };
     let base = kg_at(55.8);
 
-    // Each alternative is the one named in that caveat's `why`.
+    // Each alternative is the one named in that caveat's `why`, in the same
+    // order. ★ The balance-of-plant figure is DERIVED from the record's own two
+    // scales, not typed in, so it cannot drift back into being an assumption.
+    let Some(scaling) = bop_scaling(&H2A_CASES[0], &H2A_CASES[2]) else {
+        panic!("the two 2019 cases must be comparable")
+    };
+    let farm_bop = scaling.extrapolate_bop(CAVEAT_FARM_SCALE_KG_PER_DAY);
     let alternatives = [
-        55.8 + 10.8,  // balance of plant triples at farm scale
-        55.8 * 1.10,  // stack degradation over life
-        55.8 + 1.923, // compression to 700 bar, ideal-gas estimate
-        55.8 * 0.97,  // part-load gain
+        55.8 * 1.10,                                   // stack degradation over life
+        55.8 + 1.923,                                  // compression to 700 bar
+        55.8 * 0.97,                                   // part-load gain
+        base_case.stack_kwh_per_kg.value() + farm_bop, // balance of plant at farm scale
     ];
     assert_eq!(alternatives.len(), NOT_A_FARM_PLANT.len());
 
@@ -772,6 +778,105 @@ fn the_caveats_are_ranked_by_measured_effect() {
         );
         previous = size;
     }
+}
+
+#[test]
+fn the_balance_of_plant_swing_is_measured_from_the_record_not_assumed() {
+    // ★★★ The record publishes two plant scales at one technology year with an
+    // IDENTICAL stack figure, which is what makes balance of plant the only term
+    // responding to size. This entry once read -16.2% from an assumed tripling
+    // while the crate called the question uncheckable.
+    let Some(scaling) = bop_scaling(&H2A_CASES[0], &H2A_CASES[2]) else {
+        panic!("the two 2019 cases must be comparable")
+    };
+    assert!(close(scaling.decades(), 1.522_879, 1e-5));
+    assert!(
+        scaling.kwh_per_kg_per_decade() > 0.0,
+        "balance of plant must RISE as the plant shrinks"
+    );
+    assert!(
+        close(scaling.kwh_per_kg_per_decade(), 0.236_394, 1e-5),
+        "measured slope drifted to {:.6}",
+        scaling.kwh_per_kg_per_decade()
+    );
+    // Extrapolated two decades below the smallest published case.
+    let farm_bop = scaling.extrapolate_bop(CAVEAT_FARM_SCALE_KG_PER_DAY);
+    assert!(
+        close(farm_bop, 5.872_789, 1e-5),
+        "farm BoP drifted to {farm_bop:.6}"
+    );
+    assert!(
+        farm_bop < 3.0 * H2A_CASES[0].bop_kwh_per_kg.value(),
+        "the measured trend must stay far below the tripling this once assumed"
+    );
+}
+
+#[test]
+fn the_scaling_measurement_refuses_incomparable_cases() {
+    // The guard is the whole validity of the slope: if the stack figure moved
+    // too, balance of plant would not be the only term responding to scale.
+    assert!(
+        bop_scaling(&H2A_CASES[0], &H2A_CASES[1]).is_none(),
+        "cases from different technology years must not be compared"
+    );
+    assert!(
+        bop_scaling(&H2A_CASES[2], &H2A_CASES[0]).is_none(),
+        "the larger plant must not be passed as the smaller"
+    );
+    let mut tampered = H2A_CASES[2];
+    tampered.stack_kwh_per_kg = Printed::new(49.0, 1);
+    assert!(
+        bop_scaling(&H2A_CASES[0], &tampered).is_none(),
+        "a moving stack figure must void the measurement"
+    );
+
+    // ⚠ No REAL pair isolates the technology-year guard: every cross-year pair
+    // in the record also differs in stack figure, so the stack check rejects it
+    // first and the year check never runs. Removing the year guard entirely left
+    // every gate green. This synthetic pair is the only thing that exercises it.
+    let mut future_twin = H2A_CASES[2];
+    future_twin.technology_year = 2035;
+    assert!(
+        close(
+            future_twin.stack_kwh_per_kg.value(),
+            H2A_CASES[0].stack_kwh_per_kg.value(),
+            1e-12
+        ),
+        "the twin must differ ONLY in year, or this proves nothing"
+    );
+    assert!(
+        bop_scaling(&H2A_CASES[0], &future_twin).is_none(),
+        "cases from different technology years must not be compared even when \
+         their stack figures agree"
+    );
+}
+
+#[test]
+fn risks_without_a_measured_size_are_kept_out_of_the_ranked_list() {
+    // ⛔ A ranked list places whatever you put in it. An unmeasured risk given a
+    // zero would sort last, which is a claim about its size that nothing
+    // supports -- the exact error this whole ranking exists to prevent.
+    assert!(!UNMEASURED_AT_FARM_SCALE.is_empty());
+    for u in UNMEASURED_AT_FARM_SCALE {
+        assert!(!u.what.is_empty());
+        assert!(
+            !u.why_unmeasured.is_empty() && !u.what_would_measure_it.is_empty(),
+            "{}: an unknown must say why, and what would settle it",
+            u.what
+        );
+    }
+    let knee = UNMEASURED_AT_FARM_SCALE
+        .iter()
+        .any(|u| u.what.contains("knee"));
+    assert!(
+        knee,
+        "the balance-of-plant knee must be recorded as unmeasured"
+    );
+    let ranked: String = NOT_A_FARM_PLANT.iter().map(|c| c.what).collect();
+    assert!(
+        !ranked.contains("knee"),
+        "the knee has no measured magnitude and must not appear in the ranked list"
+    );
 }
 
 #[test]
