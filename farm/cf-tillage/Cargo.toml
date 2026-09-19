@@ -1,0 +1,37 @@
+[package]
+name = "cf-tillage"
+description = "What one farm's fall tillage actually demands of its own hydrogen — the operating window from USDA NASS fieldwork days, the tractor from a measured Nebraska test, and the engine efficiency solved for rather than assumed"
+keywords = ["hydrogen", "agriculture", "tillage", "tractor"]
+categories = ["science", "simulation"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[package.metadata.cortenforge]
+tier = "L0"
+
+[dependencies]
+# The tractor is not a set of numbers retyped here — it is read live from the
+# crate that reconciles five scanned editions, so a corrupt digit stays visible
+# at this end of the chain instead of being flattened into a literal.
+cf-nebraska = { path = "../cf-nebraska" }
+# Stage 4 supplies a `Demand`; it does not invent a new stage shape. This is the
+# seam stage 3 already published, so the dependency is the point rather than a
+# convenience.
+cf-storage = { path = "../cf-storage" }
+
+[dev-dependencies]
+# Stages 1 and 2, used ONLY to run the finished demand against the real wind
+# year and show which side of the storage cliff this farm lands on.
+cf-wind = { path = "../cf-wind" }
+cf-electrolysis = { path = "../cf-electrolysis" }
+# So NASS_TSV_SHA256 is a MEASUREMENT rather than a number nothing produces.
+# A pure-Rust digest beats shelling out to shasum/sha256sum, which differ by
+# platform; sha2 is already in the workspace lock.
+sha2 = "0.10"
+
+[lints]
+workspace = true

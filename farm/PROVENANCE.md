@@ -5,9 +5,9 @@ in one place, with **what each publisher requires**, because that answer differs
 source by source and the difference is not obvious.
 
 ⛔⛔ **"It is a government document, therefore it is free" is not a determination.**
-Ten sources fall under **four** different sets of terms:
+Twelve sources fall under **four** different sets of terms:
 
-- **seven** are U.S. *federal* works with no copyright (17 U.S.C. §105);
+- **nine** are U.S. *federal* works with no copyright (17 U.S.C. §105);
 - **one** is a U.S. federal database that **asserts copyright** anyway, under the
   Standard Reference Data Act, and is therefore never committed;
 - **one** is a national-laboratory dataset under **BSD-3**, which puts a notice in `NOTICE`;
@@ -26,6 +26,7 @@ inference the paragraph above warns against, made in its own opening line.
 | 1. wind | `cf-wind` | kWh/yr at one real site |
 | 2. electrolysis | `cf-electrolysis` | kg H₂/yr at the electrolyser outlet, ~21 bar |
 | 3. compression + storage | `cf-storage` | kg H₂/yr at tank pressure, and the tank |
+| 4. tillage window + demand | `cf-tillage` | the operating window, and the engine efficiency the season needs |
 
 ## Every source
 
@@ -37,10 +38,12 @@ inference the paragraph above warns against, made in its own opening line.
 | 4 | NOAA/NCEI Integrated Surface Database, station 72073700266 — **temperature** | `cf-storage` | U.S. Gov work, public domain (17 U.S.C. §105) | summary statistics |
 | 5 | NREL **turbine-models**, `EWT_DW54X` power curve | `cf-wind` | **BSD-3-Clause**, © 2020 Alliance for Sustainable Energy | ✅ 23 points — ⚠ see `NOTICE` |
 | 6 | DOE **Hydrogen Program Record 19009**, PEM electrolysis cost (2019) | `cf-electrolysis` | U.S. Gov work, public domain (17 U.S.C. §105) | figures only |
-| 7 | DOE **Alternative Fuels Data Center**, fuel properties | `cf-electrolysis` | U.S. Gov work, public domain (17 U.S.C. §105) | figures only |
+| 7 | DOE **Alternative Fuels Data Center**, fuel properties | `cf-electrolysis`, `cf-tillage` | U.S. Gov work, public domain (17 U.S.C. §105) | figures only |
 | 8 | DOE **Hydrogen Program Record 9013**, compression and liquefaction energy (2009) | `cf-storage` | U.S. Gov work, public domain (17 U.S.C. §105) | figures only |
 | 9 | **Goodwin, Diller, Roder & Weber**, J. Res. NBS **68A**(1) 121–126, 1964, [doi:10.6028/jres.068A.011](https://doi.org/10.6028/jres.068A.011) | `cf-storage` | U.S. Gov work, public domain (17 U.S.C. §105) | Table 2 and two equations |
 | 10 | **NIST Chemistry WebBook**, SRD 69, hydrogen fluid properties | `cf-storage` | ⛔ **Standard Reference Data Act — copyright ASSERTED** | ❌ **never** — see [`cf-storage/NIST_VALIDATION.md`](cf-storage/NIST_VALIDATION.md) |
+| 11 | **USDA NASS Quick Stats**, crops — North Dakota weekly fieldwork and harvest progress | `cf-tillage` | U.S. Gov work, public domain (17 U.S.C. §105) | ✅ 921 rows (21 KiB) — see [`cf-tillage/NASS_VALIDATION.md`](cf-tillage/NASS_VALIDATION.md) |
+| 12 | **EPA NR-005c**, EPA420-P-04-005, nonroad load factors and annual activity (2004) | `cf-tillage` | U.S. Gov work, public domain (17 U.S.C. §105) | figures only |
 
 ## The two that need more than a row
 
@@ -53,13 +56,17 @@ says nothing about state ones, and Nebraska's public-records statute is about
 **access**, not copyright. So "it is a public document" is an access claim being
 mistaken for a licence.
 
-⛔ `cf-nebraska` carries **no `terms` field at all** — it predates the pattern,
-which `cf-electrolysis` introduced and `cf-storage` inherited. Until it has one
-and the determination is actually made, this row says *not determined* rather
-than guessing. Nothing is redistributed: only transcribed figures, which are
-facts and not the expression of them.
+✅ **The field now exists.** `cf-nebraska` predated the pattern that
+`cf-electrolysis` introduced and `cf-storage` inherited; stage 4 touched the
+crate, so the trigger fired and `Edition::terms` was added, carrying
+`cf_nebraska::TERMS_NOT_DETERMINED`. `cf-tillage` references that constant
+rather than restating the determination, so there is one copy to keep true.
 
-**Trigger**: add the field when `cf-nebraska` is next touched for any reason.
+⚠ **The field records the question, not an answer.** It says *not determined*,
+and `every_edition_states_undetermined_terms` fails if it is ever made to read
+as permission — the gate specifically rejects the phrase "public domain".
+Nothing is redistributed either way: only transcribed figures, which are facts
+and not the expression of them.
 
 ### ⚠ Source 5 — the only one that obliges us
 
@@ -90,7 +97,19 @@ Before adding a redundancy, ask what frame of reference it shares with the other
 ## How to verify a source is still what this repo says
 
 Each crate carries the retrieval command with the figures — `Provenance::reproduce`
-in `cf-wind`, `Source` in `cf-electrolysis` and `cf-storage`, `Edition` in
-`cf-nebraska`. Committed binary data additionally carries a SHA-256 that is checked
-with `shasum`; that is what ties `cf-wind`'s series to the bucket it came from, and
-it is checked **after** a squash-merge, not only before.
+in `cf-wind`, `Source` in `cf-electrolysis`, `cf-storage` and `cf-tillage`,
+`Edition` in `cf-nebraska`.
+
+Committed data additionally carries a SHA-256, and the two crates that carry it
+check it **differently**, deliberately:
+
+- `cf-wind`'s 206 KiB binary series is checked with `shasum` by hand, **after** a
+  squash-merge rather than only before — the crate has no hashing dependency and
+  says so.
+- `cf-tillage`'s 21 KiB text extract is checked **in-process**, by
+  `the_committed_extract_matches_its_digest`, because a digest no test computes
+  is a 64-character string with no producer. That gate was added after a
+  mutation flipped the constant and nothing went red.
+
+⇒ If either file is edited, the digest beside it must be regenerated, and for
+`cf-tillage` CI will say so without being asked.
