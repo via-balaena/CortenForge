@@ -574,7 +574,7 @@ jobs:
             crates: cf-studio-core cf-studio-engine cf-studio
               cf-geometry cf-spatial cf-scan-prep-core
               cf-msk-fit cf-anthro cf-cap-planes cf-device-types cf-vehicle cf-trike cf-assembly-checks
-              cf-nebraska cf-wind cf-electrolysis cf-storage cf-tillage cf-nitrogen
+              cf-nebraska cf-wind cf-electrolysis cf-storage cf-tillage cf-nitrogen cf-acres
               example-trike-mass-budget xtask
           # shard 3 = sim + mesh + design: one shared dependency stack, no giant
           # optional tree. Largest by COUNT, and expected to stay cheap per

@@ -5,16 +5,19 @@ in one place, with **what each publisher requires**, because that answer differs
 source by source and the difference is not obvious.
 
 ⛔⛔ **"It is a government document, therefore it is free" is not a determination.**
-Fourteen sources fall under **five** different sets of terms:
+Sixteen sources fall under **six** different sets of terms:
 
-- **ten** are U.S. *federal* works with no copyright (17 U.S.C. §105);
+- **eleven** are U.S. *federal* works with no copyright (17 U.S.C. §105);
 - **one** is a U.S. federal database that **asserts copyright** anyway, under the
   Standard Reference Data Act, and is therefore never committed;
 - **one** is a national-laboratory dataset under **BSD-3**, which puts a notice in `NOTICE`;
 - **one** is a **state** publication whose copyright status this repository has
   **not determined** — see below;
 - **one** is an **international** body's table, where the determination is that
-  the *values* are facts and the *tabulation* is theirs — see source 14.
+  the *values* are facts and the *tabulation* is theirs — see source 14;
+- **one** is a **federal tool over a state source** — a USDA-ARS worksheet whose
+  data the tool itself says comes from a state university's crop budgets. The
+  federal wrapper does not launder the provenance — see source 16.
 
 ⚠ An earlier draft of this page counted eight federal works and folded the state
 source in with them. §105 does not reach state works, so that was the very
@@ -30,6 +33,7 @@ inference the paragraph above warns against, made in its own opening line.
 | 3. compression + storage | `cf-storage` | kg H₂/yr at tank pressure, and the tank |
 | 4. tillage window + demand | `cf-tillage` | the operating window, and the engine efficiency the season needs |
 | 5. nitrogen demand | `cf-nitrogen` | the hydrogen an acre's fertilizer needs, and the acres one turbine covers |
+| 6. acres per season | `cf-acres` | the three ceilings, and which one binds |
 
 ## Every source
 
@@ -51,7 +55,10 @@ inference the paragraph above warns against, made in its own opening line.
 | 13 | **USDA NASS Quick Stats**, environmental — North Dakota fertilizer application (Agricultural Chemical Use Program) | `cf-nitrogen` | U.S. Gov work, public domain (17 U.S.C. §105) | ✅ 356 rows (22 KiB) — see [`cf-nitrogen/NASS_FERTILIZER.md`](cf-nitrogen/NASS_FERTILIZER.md) |
 | 14 | **IUPAC / CIAAW**, standard atomic weights of nitrogen and hydrogen | `cf-nitrogen` | ⚠ the **values are facts** and not copyrightable; the tabulation is IUPAC's — see below | two numbers only |
 
-## The three that need more than a row
+| 15 | **USDA NRCS Soil Data Access** (SSURGO), survey area ND031 — Foster County surface texture | `cf-acres` | U.S. Gov work, public domain (17 U.S.C. §105) | ✅ 8 texture classes (1 KiB) |
+| 16 | **USDA-ARS** National Soil Dynamics Laboratory, *Tractor Power Requirement Recommendation Worksheet* | `cf-acres` | ⚠ **LAYERED** — federal tool, state data; **NOT DETERMINED** — see below | ✅ 8 chisel rows (1 KiB) |
+
+## The four that need more than a row
 
 ### ⚠ Source 1 — the one whose terms are NOT settled
 
@@ -79,6 +86,25 @@ and not the expression of them.
 NREL's `turbine-models` is BSD-3, so redistributing the power curve requires
 reproducing the copyright notice, the conditions and the disclaimer. That is why this
 repository has a **THIRD-PARTY DATA** section in `NOTICE`. It is the only entry in it.
+
+### ⚠⚠ Source 16 — a federal tool over a state source
+
+The worksheet is published by USDA-ARS, a federal laboratory, and would look
+like a plain §105 work from its URL alone. It is not. Its own introduction says:
+
+> "All implement recommendations and cost data incorporated into this tool are
+> derived from the published **Mississippi State University 2026 Crop Planning
+> Budgets**."
+
+⛔ **The federal wrapper does not change where the numbers came from.** The data
+is a *state* university's, which is the same §105-does-not-reach-it problem as
+source 1, arriving by a route that hides it. `cf-acres` records the terms as
+undetermined and `the_worksheets_terms_are_layered_and_say_so` fails if that row
+is ever made to read as a plain federal work.
+
+⚠ `cf-acres` also commits only the **implement rows**, not the cost columns —
+the economics are outside the model and are the part most specific to one
+state's budgets.
 
 ### ⚠ Source 14 — the one that is not a U.S. work at all
 

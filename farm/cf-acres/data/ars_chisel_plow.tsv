@@ -1,0 +1,18 @@
+# USDA ARS National Soil Dynamics Laboratory, Auburn AL:
+# 'Tractor Power Requirement Recommendation Worksheet' (.xlsx), sheet 3.
+# Chisel plow rows only. Cost columns deliberately OMITTED - economics are
+# outside this model, and they are the part most specific to one state's budgets.
+# ⛔ The worksheet states its own provenance: 'All implement recommendations and
+# cost data incorporated into this tool are derived from the published Mississippi
+# State University 2026 Crop Planning Budgets.' A STATE source inside a federal tool.
+# perf_rate_hr_per_acre x field_capacity_acres_per_hr == 1 is the worksheet's own checksum.
+# Retrieved 2026-09-19 from www.ars.usda.gov/ARSUserFiles/60100500/Worksheets/
+equipment	width_ft	power_unit	perf_rate_hr_per_acre	field_capacity_acres_per_hr
+Chisel Plow Folding 24'	24	TRACTOR_MFWD_190HP_CB	7.5999999999999998E-2	13.157894736842106
+Chisel Plow Folding 32'	32	TRACTOR_MFWD_225HP_CB	5.7000000000000002E-2	17.543859649122805
+Chisel Plow Folding 42'	42	TRACTOR_MFWD_225HP_CB	4.3999999999999997E-2	22.72727272727273
+Chisel Plow Folding 50'	50	TRACTOR_MFWD_225HP_CB	3.5999999999999997E-2	27.777777777777779
+Chisel Plow Folding 61'	61	TRACTOR_MFWD_225HP_CB	0.03	33.333333333333336
+Chisel Plow Rigid 10'	10	TRACTOR_MFWD_170HP_CB	0.184	5.4347826086956523
+Chisel Plow Rigid 15'	15	TRACTOR_2WD_130HP_CB	0.123	8.1300813008130088
+Chisel Plow Rigid 20'	20	TRACTOR_MFWD_225HP_CB	0.10199999999999999	9.8039215686274517
