@@ -1,0 +1,31 @@
+[package]
+name = "cf-storage"
+description = "Hydrogen from the electrolyser outlet into a farm tank — the compression it costs and the buffer it needs, from a virial equation of state whose one parameter comes from a 1964 NBS paper and whose error against NIST is measured, not assumed"
+keywords = ["hydrogen", "storage", "compression", "agriculture"]
+categories = ["science", "simulation"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[package.metadata.cortenforge]
+tier = "L0"
+
+[dependencies]
+# None. The equation of state is two closed forms over figures transcribed from
+# two public-domain documents; the hard part is proving the transcription and
+# measuring the model against an oracle that must NOT be committed, and neither
+# needs a crate.
+
+[dev-dependencies]
+# Stages 1 and 2, used ONLY to prove the three stages compose on the real
+# series. This library takes an iterator of kilograms and knows nothing about
+# electrolysis, exactly as `cf-electrolysis` takes watts and knows nothing about
+# wind, so the chain is demonstrated in tests instead of welded into the graph.
+cf-wind = { path = "../cf-wind" }
+cf-electrolysis = { path = "../cf-electrolysis" }
+
+[lints]
+workspace = true
