@@ -111,9 +111,32 @@ application.
 ⚠ **That file is not committed.** It is the `nd_weekly.tsv` produced by the
 command in `cf-tillage/NASS_VALIDATION.md`; this crate commits 356 fertilizer
 rows and `cf-tillage` commits 921 fall-week rows, and neither is the collection
-the absence was checked against. Reproduce it before relying on the claim. The
-second instrument is on that page as well — the 2012 weekly PDFs carry anhydrous
-in prose and no fertilizer table.
+the absence was checked against. Reproduce it before relying on the claim.
+
+### The second instrument
+
+The published PDFs, checked here rather than taken from anywhere. The five 2012
+fall reports — weeks ending 30 Sep, 14 Oct, 28 Oct, 4 Nov and 18 Nov:
+
+| report | mention | where |
+|---|---|---|
+| cw-1015 | "anhydrous application and fall tillage occurred" | narrative prose |
+| cw-1105 | "Fertilizer application progressed in areas where moisture…" | narrative prose |
+| cw-1119 | "…included applying fertilizer and moving cattle" | narrative prose |
+
+**Three mentions, zero table rows.**
+
+⚠ Two traps in getting that right. The reports are **two-column**, and
+`pdftotext -layout` merges the left column's prose with the right column's table
+onto one line — an unsplit check reported the anhydrous sentence as a table row
+carrying four numbers, which actually belonged to the Pasture Condition table
+beside it. And a "zero table rows" result means nothing unless the classifier
+can see a table row at all: the control finds three real ones (`Pasture and
+range`, 4 numeric columns) in the same files.
+
+⛔ An earlier version of this page attributed this finding to
+`cf-tillage/NASS_VALIDATION.md`. That page records no such thing — it documents
+that these PDFs carry no *tillage* table, and does not mention fertilizer.
 
 What exists is the sentence the window is taken from — week ending 14 October
 2012:
@@ -130,8 +153,9 @@ split, which this crate does not attempt.
 ## ⚠ North Dakota is not the Corn Belt
 
 This chain's own research context puts corn nitrogen at 150–200 lb N/acre and
-attributes it to "USDA NASS / state extension rates". Read from the NASS survey
-itself:
+attributes it to "USDA NASS / state extension rates". The same document states
+the nitrogen leg is "roughly 6–8× the fuel leg" and that hydrogen is "17.6% of
+NH3 by mass". Read from the NASS survey itself:
 
 | year | lb N/acre/yr |
 |---|---|

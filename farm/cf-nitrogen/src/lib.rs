@@ -21,7 +21,8 @@
 //! ⚠ For scale against stage 4: at the external field-operation figure this
 //! chain has **not** measured — 2 to 3 kg of hydrogen per corn acre for all
 //! passes — the nitrogen leg is **3.9× to 5.8×** the fuel leg here. That is
-//! below the 6–8× in circulation, and [`CORN_BELT_RATE_OVERSTATEMENT_PERCENT`]
+//! below the **6–8×** this chain's research context states, and
+//! [`CORN_BELT_RATE_OVERSTATEMENT_PERCENT`]
 //! is why: the multiple is carried by the nitrogen rate, and North Dakota's is
 //! lower. Gated by
 //! `the_nitrogen_leg_outweighs_the_fuel_leg_by_less_than_advertised`.
@@ -79,8 +80,16 @@
 //! ⚠ **That collection is not committed** — this crate commits 356 fertilizer
 //! rows and `cf-tillage` commits 921 fall-week rows, neither of which is the
 //! set the absence was checked against. Reproduce it from that page before
-//! relying on the claim. The second instrument is recorded there too: the 2012
-//! weekly PDFs carry anhydrous in prose and no fertilizer table.
+//! relying on the claim.
+//!
+//! ★★ **The second instrument is this crate's own**, and it is the published
+//! PDFs rather than the bulk file. Across the five 2012 fall reports (weeks
+//! ending 30 Sep, 14 Oct, 28 Oct, 4 Nov, 18 Nov), "fertilizer" or "anhydrous"
+//! appears **three times, every one in narrative prose, in zero table rows** —
+//! see `NASS_FERTILIZER.md`. ⛔ An earlier version of this sentence attributed
+//! that finding to `cf-tillage`'s page, which records no such thing: it
+//! documents that those PDFs carry no *tillage* table and never mentions
+//! fertilizer at all.
 //!
 //! What NASS does publish is the sentence this crate takes its window from —
 //! for the week ending 14 October 2012, *"anhydrous application and fall
@@ -229,10 +238,13 @@ pub fn hydrogen_mass_fraction() -> f64 {
     3.0 * HYDROGEN_ATOMIC_WEIGHT.value() / ammonia_molar_mass()
 }
 
-/// The hydrogen fraction as commonly quoted, for the gate that rejects it.
+/// The hydrogen fraction this chain's research context states, for the gate
+/// that rejects it.
 ///
-/// Carried so `the_circulated_hydrogen_fraction_is_not_the_stoichiometric_one`
-/// can measure the gap rather than assert it. ⛔ Never used in a calculation.
+/// That document puts it at *"17.6% of NH3 by mass"*; stoichiometry gives
+/// 17.756%. Carried so
+/// `the_circulated_hydrogen_fraction_is_not_the_stoichiometric_one` can measure
+/// the gap rather than assert it. ⛔ Never used in a calculation.
 pub const CIRCULATED_HYDROGEN_FRACTION: Printed = Printed::new(0.176, 3);
 
 /// The committed NASS extract: North Dakota nitrogen fertilizer, state level.

@@ -843,3 +843,46 @@ fn the_absence_claim_names_a_collection_this_crate_does_not_hold() {
         "the committed extract is not the collection the absence was checked against"
     );
 }
+
+#[test]
+fn the_second_instrument_is_not_attributed_to_a_page_that_lacks_it() {
+    // ⛔⛔ A review fix wrote that `cf-tillage`'s validation page records the
+    // 2012 PDFs carrying "no fertilizer table". That page documents no
+    // *tillage* table and does not contain the word fertilizer at all. The
+    // finding is real — checked in this crate — but it is this crate's, and
+    // saying otherwise borrowed credibility from a document that has none to
+    // lend.
+    const TILLAGE_PAGE: &str = include_str!("../../cf-tillage/NASS_VALIDATION.md");
+    assert!(
+        !TILLAGE_PAGE.to_lowercase().contains("fertilizer"),
+        "cf-tillage's page now mentions fertilizer; re-check what this crate says it records"
+    );
+    assert!(
+        TILLAGE_PAGE.contains("no tillage table"),
+        "and the control: that page does document the TILLAGE absence, so the \
+         scan is reading the right file"
+    );
+    // ⚠ Checks the CLAIM, not a phrase. An earlier version of this gate scanned
+    // for the literal "no fertilizer table" and a reworded attribution walked
+    // straight past it. Every place the second instrument is discussed must say
+    // whose check it is.
+    for (name, src) in [
+        ("src/lib.rs", include_str!("../src/lib.rs")),
+        ("NASS_FERTILIZER.md", include_str!("../NASS_FERTILIZER.md")),
+    ] {
+        let lower = src.to_lowercase();
+        let mut discussed = 0;
+        for (n, _) in lower.match_indices("second instrument") {
+            discussed += 1;
+            let window = &lower[n..(n + 500).min(lower.len())];
+            assert!(
+                window.contains("this crate's own") || window.contains("checked here"),
+                "{name}: the second instrument must say whose check it is"
+            );
+        }
+        assert!(
+            discussed > 0,
+            "{name}: the second instrument must be discussed at all"
+        );
+    }
+}
