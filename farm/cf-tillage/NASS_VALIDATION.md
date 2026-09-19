@@ -91,9 +91,8 @@ they can be compared. Over the five 2012 fall reports read:
 | 2012-11-18 | 4.1 | 4.1 |
 
 Five for five, and **gated** by `the_committed_extract_reproduces_the_published_reports`
-rather than left as prose — this is the only thing tying the committed extract
-to NASS's own published reports, so it is the last claim on this page that
-should have been unexecutable.
+rather than left as prose. It is the only check tying the committed extract to
+NASS's own published reports.
 
 ⚠ This validates **transcription**, not measurement: both come from the same
 NASS field office, so an error in the survey is invisible to it.

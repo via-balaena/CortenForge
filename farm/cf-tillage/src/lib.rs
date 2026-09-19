@@ -8,14 +8,13 @@
 //! window itself. This crate builds the draw, and so decides which side of that
 //! cliff the farm lands on.
 //!
-//! # ★★★ The answer: the bar the season sets, and what it is half of
+//! # ★★★ The answer: the bar the season sets, and what it is measured against
 //!
 //! The headline of this crate is not a kilogram count. It is
 //! [`break_even_engine_efficiency`]: **what thermal efficiency a hydrogen
 //! engine would have to reach** for fall tillage to run on the hydrogen the
-//! farm makes *during the tillage window itself*. That inverts the one term
-//! nobody can measure yet into the one term the answer is stated in, so no
-//! headline here rests on an invented engine.
+//! farm makes *during the tillage window itself*. No value for that efficiency
+//! is assumed anywhere in this crate.
 //!
 //! [`HYDROGEN_ENGINE_EFFICIENCY_NEEDED`] is **14.4% to 19.1%**.
 //!

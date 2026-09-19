@@ -72,7 +72,11 @@ fn close(a: f64, b: f64, tol: f64) -> bool {
 ///
 /// The same reconstruction `cf-storage`'s own tests use, so any drift in stages
 /// 1 or 2 reddens this crate rather than quietly moving its headline.
-fn hydrogen_series() -> Vec<f64> {
+///
+/// ⛔ **Before the compression debit**, unlike [`delivered_series`]. Stage 3's
+/// published figures are on this side of it and this crate's are on the other;
+/// a review of this PR found the two silently mixed.
+fn outlet_series() -> Vec<f64> {
     let plant = FixedSpecificEnergy::from_case(&current_distributed(), RATED_W, TURNDOWN);
     let floor = plant.rated_power_w() * plant.min_load_fraction();
     let dt = YEAR.interval_seconds();
@@ -93,15 +97,6 @@ fn hydrogen_series() -> Vec<f64> {
         .collect()
 }
 
-/// Stage 1 into stage 2, before the compression debit.
-///
-/// ⛔ Kept separate from [`delivered_series`] because stage 3's published
-/// figures are on THIS side of the debit and this crate's are on the other. A
-/// review of this PR found the two silently mixed.
-fn outlet_series() -> Vec<f64> {
-    hydrogen_series()
-}
-
 /// Stage 3: the same series, compressed into a 350 bar tank.
 fn delivered_series() -> Vec<f64> {
     let tank = cf_storage::Tank::new(TANK_BAR, cf_storage::CARRINGTON_FALL.mean_k);
@@ -110,7 +105,7 @@ fn delivered_series() -> Vec<f64> {
         .expect("compression work");
     let case = current_distributed();
     let specific = case.total_kwh_per_kg.value();
-    hydrogen_series()
+    outlet_series()
         .into_iter()
         .map(|kg| debit_compression(kg, specific, work).map_or(0.0, |d| d.kg))
         .collect()
@@ -1579,10 +1574,18 @@ fn stage_threes_own_illustration_is_what_the_correction_says_it_is() {
         close(cliff, 2_695.0, 0.5),
         "stage 3's 21-day cliff recomputes to {cliff} kg on the outlet series"
     );
+    // ⛔ Pinned, not merely compared. Round 1's fix wrote "about 2,610 kg - a
+    // 3.3% gap" into the module doc and gated only the inequality, which is the
+    // no-producer defect that fix existed to close.
     let after_debit = produced_during_demand(&delivered, &twenty_one_days);
     assert!(
-        after_debit < cliff,
-        "and the same window after compression is smaller: {after_debit} kg"
+        close(after_debit, 2_609.93, 0.5),
+        "the same window after compression holds {after_debit} kg"
+    );
+    let gap = (cliff / after_debit - 1.0) * 100.0;
+    assert!(
+        close(gap, 3.3, 0.05),
+        "the debit between stage 3's basis and this crate's is {gap}%"
     );
     // The point of the correction: this crate's windows are longer, so they
     // carry far more in-window production and are not comparable to it.
