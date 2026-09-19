@@ -24,6 +24,7 @@ members = [
     # in the type; compression to storage pressure is NOT debited here.
     "farm/cf-electrolysis",
     "farm/cf-storage",
+    "farm/cf-tillage",
 
     # The SDK facade — one stable public surface re-exporting the SDK crates.
     "cortenforge",

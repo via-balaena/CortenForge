@@ -13,7 +13,8 @@
 
 use cf_nebraska::{
     ABSENT, CATCHABLE_ERROR, CORRUPT_SCANS, Conversion, EXCLUDED_EDITIONS, JOHN_DEERE_8245R,
-    NOT_TRANSCRIBED, Observation, Printed, Reading, WEAKLY_CHECKED_8245R, reconcile,
+    NOT_TRANSCRIBED, Observation, Printed, Reading, TERMS_NOT_DETERMINED, WEAKLY_CHECKED_8245R,
+    reconcile,
 };
 
 fn datum(name: &str) -> &'static cf_nebraska::Datum {
@@ -559,4 +560,37 @@ fn a_resolved_figure_reports_the_vote() {
     let clean = datum("weight as tested").read();
     assert_eq!(clean.rejected(), 0, "no edition mis-scans the weight");
     assert_eq!(clean.agreed(), Some(11512.0));
+}
+
+/// Every edition states its terms, and states them as undetermined.
+///
+/// ⛔⛔ Added when stage 4 read this crate and found it leaning silently on
+/// "a government tractor test, therefore free". The laboratory is a **state**
+/// institution, so 17 U.S.C. §105 does not reach it — and the opposite
+/// conclusion is equally unsupported. The gate is that the field says neither.
+#[test]
+fn every_edition_states_undetermined_terms() {
+    assert!(
+        !JOHN_DEERE_8245R.editions.is_empty(),
+        "the collection is populated, so this is not passing by being empty"
+    );
+    for e in JOHN_DEERE_8245R.editions {
+        assert_eq!(
+            e.terms, TERMS_NOT_DETERMINED,
+            "edition {} must not claim a status nobody determined",
+            e.year
+        );
+    }
+    assert!(
+        TERMS_NOT_DETERMINED.contains("NOT DETERMINED"),
+        "the determination must read as undetermined, not as permission"
+    );
+    assert!(
+        TERMS_NOT_DETERMINED.contains("state"),
+        "and must say why the federal reasoning does not transfer"
+    );
+    assert!(
+        !TERMS_NOT_DETERMINED.contains("public domain"),
+        "⛔ the phrase that would turn an open question into a claim"
+    );
 }

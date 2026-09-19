@@ -360,7 +360,31 @@ pub struct Edition {
     pub url: &'static str,
     /// ISO date of retrieval.
     pub retrieved: &'static str,
+    /// What the publisher's terms permit, **determined and not assumed**.
+    ///
+    /// ⛔⛔ For these documents that determination is
+    /// [`TERMS_NOT_DETERMINED`], and the reason is worth stating at the point
+    /// of use: it is easy to read "a government tractor test" as a federal
+    /// work and conclude nothing is owed.
+    pub terms: &'static str,
 }
+
+/// The status of the Nebraska reports: **not determined**.
+///
+/// ⛔⛔ The Nebraska Tractor Test Laboratory is part of the University of
+/// Nebraska–Lincoln, a **state** institution. 17 U.S.C. §105 removes copyright
+/// from works of the **federal** government and does not reach state works, so
+/// the reasoning that makes the DOE, EPA and USDA sources in this workspace
+/// free does not transfer here — and neither does the opposite conclusion.
+/// What is recorded is that nobody has determined it.
+///
+/// ⚠ This crate commits **transcribed figures**, not the scanned documents.
+/// Whether that distinction matters is part of what is undetermined.
+///
+/// Stage 3 established the rule this follows: a source states its own terms
+/// rather than inheriting an assumption from its neighbours.
+pub const TERMS_NOT_DETERMINED: &str = "NOT DETERMINED - the Nebraska Tractor Test Laboratory is a State of Nebraska \
+     institution and 17 U.S.C. \u{a7}105 does not reach state works";
 
 /// One edition's reading of one figure.
 #[derive(Clone, Copy, Debug)]
@@ -587,6 +611,7 @@ pub const JOHN_DEERE_8245R: TractorTest = TractorTest {
                     Nebraska Tractor Test Laboratory, MP 37 TTL",
             url: "https://govdocs.nebraska.gov/epubs/U2060/S001-2016.pdf",
             retrieved: "2026-09-18",
+            terms: TERMS_NOT_DETERMINED,
         },
         Edition {
             year: 2017,
@@ -594,6 +619,7 @@ pub const JOHN_DEERE_8245R: TractorTest = TractorTest {
                     Nebraska Tractor Test Laboratory, MP 37 TTL",
             url: "https://govdocs.nebraska.gov/epubs/U2060/S001-2017.pdf",
             retrieved: "2026-09-18",
+            terms: TERMS_NOT_DETERMINED,
         },
         Edition {
             year: 2019,
@@ -601,6 +627,7 @@ pub const JOHN_DEERE_8245R: TractorTest = TractorTest {
                     Nebraska Tractor Test Laboratory, MP 37 TTL",
             url: "https://govdocs.nebraska.gov/epubs/U2060/S001-2019.pdf",
             retrieved: "2026-09-18",
+            terms: TERMS_NOT_DETERMINED,
         },
     ],
     data: &[
