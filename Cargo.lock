@@ -2383,6 +2383,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "cf-storage"
+version = "1.0.0"
+dependencies = [
+ "cf-electrolysis",
+ "cf-wind",
+]
+
+[[package]]
 name = "cf-studio"
 version = "1.0.0"
 dependencies = [
