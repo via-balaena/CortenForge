@@ -711,3 +711,98 @@ fn the_reference_plow_matches_this_tractors_power_class() {
          anchor is not applied to a tractor too small for it"
     );
 }
+
+#[test]
+fn the_oracle_page_is_held_to_the_artefacts_it_describes() {
+    // ⛔⛔ A retrieval record whose own numbers have no producer is the defect
+    // it was written to fix, one level up. Every other validation page in the
+    // chain is read by a gate; this one was not.
+    use sha2::{Digest, Sha256};
+    use std::fmt::Write as _;
+    const PAGE: &str = include_str!("../ORACLES.md");
+
+    // The digests it quotes, truncated, must be the real ones.
+    for (bytes, pinned) in [
+        (
+            include_bytes!("../data/nd031_surface_texture.tsv").as_slice(),
+            TEXTURE_TSV_SHA256,
+        ),
+        (
+            include_bytes!("../data/ars_chisel_plow.tsv").as_slice(),
+            CHISEL_TSV_SHA256,
+        ),
+    ] {
+        let mut hex = String::with_capacity(64);
+        for b in Sha256::digest(bytes) {
+            write!(hex, "{b:02x}").expect("writing to a String cannot fail");
+        }
+        assert_eq!(hex, pinned, "the constant must match the file first");
+        let quoted = format!("sha256 {}\u{2026}{}", &hex[..8], &hex[hex.len() - 9..]);
+        assert!(
+            PAGE.contains(&quoted),
+            "the page must quote {quoted}, so a stale digest there fails too"
+        );
+    }
+
+    // And the figures it leads with must be the ones the crate computes.
+    let loam = dominant_texture().expect("a dominant class");
+    let pct = 100.0 * loam.acres / surveyed_acres();
+    assert!(
+        PAGE.contains(&format!("{:.2}", loam.acres).replace("233888.91", "233,888.91")),
+        "the page must quote the loam acreage it claims"
+    );
+    assert!(
+        PAGE.contains(&format!("{pct:.4}")),
+        "and the share, to the precision it prints: {pct:.4}"
+    );
+    assert!(
+        PAGE.contains(&format!("{} classes", surface_textures().len())),
+        "and the class count"
+    );
+    assert!(
+        PAGE.contains("256 rows"),
+        "and the row count the query returns"
+    );
+
+    // The retrieval must be ACTIONABLE — this endpoint is a POST, so the URL
+    // alone is useless and the query is the thing that matters.
+    //
+    // ⚠ Scoped to the FENCED COMMAND BLOCKS. Checking the whole page let a
+    // clause deleted from the query pass, because the prose explaining that
+    // clause still mentions it by name — grepping for a token instead of the
+    // claim, which this chain has now been caught by three times.
+    let commands: String = PAGE
+        .split("```")
+        .skip(1)
+        .step_by(2)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        commands.len() > 400,
+        "the page must carry runnable commands, not just prose"
+    );
+    assert!(
+        commands.contains(NRCS_SOIL_DATA_ACCESS.url),
+        "the endpoint must be IN a command"
+    );
+    // ⚠ CLAUSES, not column names. `hzdept_r` also appears in the SELECT list,
+    // so checking the bare token let the WHERE clause be deleted — the same
+    // token-not-claim mistake one level deeper than the one above.
+    for fragment in [
+        "areasymbol = ",
+        "ND031",
+        "hzdept_r = 0",
+        "rvindicator = ",
+        "cht.texcl",
+        "majcompflag = ",
+    ] {
+        assert!(
+            commands.contains(fragment),
+            "the query in the command block must carry {fragment}"
+        );
+    }
+    assert!(
+        commands.contains("Worksheet.xlsx"),
+        "and the worksheet's filename, in the command that fetches it"
+    );
+}

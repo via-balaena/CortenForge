@@ -56,11 +56,16 @@ grid point sits in. Confirm with:
 a JSON parser reports as a parse failure rather than as the API's own message.
 Read the body.
 
-**`hzdept_r = 0` restricts to the surface horizon.** Without it every horizon in
-every component comes back and the area weighting is meaningless.
+**`hzdept_r = 0` restricts to the surface horizon.** Measured: dropping it
+returns **1,142 rows instead of 256** — every horizon of every component — and
+the area weighting becomes meaningless.
 
-**`rvindicator = 'Yes'`** selects the representative texture; without it a
-component contributes several.
+**`rvindicator = 'Yes'` selects the representative texture.** Measured:
+dropping it returns **287 rows instead of 256**. ⚠ That is **31 extra rows
+across 256**, not a second texture for every component — a minority of them
+carry one. An earlier draft of this page said "a component contributes several",
+which overstates it; the numbers are here so the next reader does not have to
+take either version on trust.
 
 ---
 
