@@ -118,38 +118,82 @@ Yeoh is not optional for this scene. Example row 22 records the wall:
 *"Neo-Hookean validity domain trips at `max_disp ≈ 7 mm`"*; row 23 pivoted to
 Yeoh to reach the 8 mm target (`examples/sim-soft/README.md`).
 
-### 4.2 The fork — the two cures fix different failure modes
+### 4.2 ⛔ CORRECTED — there is no fork; the choice was already measured
 
-`docs/studies/soft_body_architecture/src/20-materials/05-incompressibility/03-higher-order.md`
-states that Tet10 is **not** the locking cure:
+> **This section previously presented an A-vs-B fork (Tet10+Yeoh vs
+> Tet4+mixed-u-p). That framing was wrong** and is kept corrected rather than
+> deleted, because the way it was wrong is instructive: it was built from the
+> book's general argument without checking whether the code had already
+> decided. See §9.
 
-> *"A pure-displacement Tet10 element at ν = 0.499 still locks, just less
-> severely than Tet4."*
-> *"Tet10 lands at Phase H **not because of its locking behavior** but because
-> of its accuracy improvement on the rim-deformation failure mode."*
-> *"Tet4 + mixed u-p is cheaper than Tet10 for comparable accuracy."*
+**`MixedUP` is not missing by accident. It was deliberately not built**, because
+a pre-registered measurement found the higher-order element sufficient
+(`docs/SIM_SOFT_TET10_PLAN.md`, rung-6 verdict):
 
-| path | fixes | cost | implemented? |
-|---|---|---|---|
-| **A. Tet10 + Yeoh** | rim polygonalization, through-thickness bending | ~2.5× stiffness nonzeros; Cholesky super-linear in nonzeros | element ✅, `Mesh<Yeoh>` ❌ |
-| **B. Tet4 + mixed u-p** | volumetric locking at ν → 0.5 | book says cheaper | ❌ **`MixedUP` does not exist in `sim-soft`** (grep: 0 hits) |
+> **"★ rung 6 returned ACCEPT: pure-displacement Tet10 is adequate at ν = 0.49
+> and Taylor-Hood P2-P1 is NOT built"** — ν = 0.49 reads `0.0314` `Continuum` /
+> `0.0148` `Facet` against a **pre-registered ≤ 0.10 bar**, mesh-stable to h/4,
+> scoped to mean displacement, resting on `tet10_lame_decision.rs` +
+> `tet10_bending_locking.rs`.
 
-**Path A is recommended, and the reason is geometric, not general.** The
-rim-deformation chapter
-(`10-physical/02-what-goes-wrong/04-rim.md`) describes this product's exact
-geometry — *"the cavity's open rim... under probe insertion the rim flares
-outward, the interior inner surface conforms to the probe"* — and names a
-polygonal rim as corrupting **all four** reward terms: peak pressure fires on
-mesh artefacts, uniformity reports a rim ring of spikes and troughs, coverage
-biases at contact transitions, and design sensitivity goes noisy *within a
-single mesh*. Path B addresses none of that.
+⇒ **Tet10 is this codebase's near-incompressibility path *and* its rim path.**
+One change, both failure modes. The book's preference for mixed u-p is a
+general argument; rung 6 is a measurement on this solver, and it is the one
+that governs.
 
-⚠ The book's prescribed rim fix is **two** commitments — adaptive
-h-refinement **and** Tet10 — and states *"either alone leaves a residual."*
-**Adaptive h-refinement is also not implemented** (`mesh/mod.rs:146` names it
-as Phase H future work; the other grep hits are a uniform block subdivider and
-interval-arithmetic validity certification, neither of which is mesh
-refinement). Path A therefore buys the element half of a two-part fix.
+#### What does exist: F-bar, unused
+
+`solver/backward_euler/fbar.rs` (1,219 lines, enabled by `config.fbar`) is the
+nodal-averaged F-bar volumetric-locking cure. **Nothing in the sleeve path
+enables it** — `insertion_sim` and both scan-fit sleeve example rows grep to 0.
+
+Its own module doc ranks it, measured against the analytic Lamé thick-shell
+oracle on **cavity-wall displacement** — this product's quantity:
+
+| method | ν = 0.40 | ν = 0.49 |
+|---|---|---|
+| plain Tet4 | converges to analytic | **−23 %** (locked, under-predicts) |
+| Tet4 + F-bar | ~+5 % over-soft | **+21 %** over-soft |
+| mixed u-p / Tet10 | — | *"the quantitatively accurate near-incompressible paths"* |
+
+> *"Use F-bar for ν = 0.49 **stability** and qualitative / relative work; **do
+> not read 'cures locking' as 'accurate at ν = 0.49.'** Roadmap to the accurate
+> element: `docs/SIM_SOFT_TET10_PLAN.md`."*
+
+#### ★★ The prize is larger than rim accuracy: the ν the sleeve is modelled at
+
+`NeoHookean::from_young_poisson` carries a hard cap:
+
+```rust
+assert!(nu < 0.45, "standalone NeoHookean requires nu < 0.45; use the Ch 05 \
+        locking-fix decorator for higher Poisson ratios");
+```
+
+So `silicone_table.rs` runs silicone at **ν = 0.40**, and says so:
+
+> *"the 0.40 framing **deliberately introduces volumetric locking error** that
+> calibration absorbs into the effective μ at post-cast time. **Tet10 + F-bar at
+> Phase H recovers the near-incompressible regime without the ν shift.**"*
+
+Real silicone is **ν ≈ 0.499**
+(`20-materials/05-incompressibility.md`), which calls dropping ν to keep a Tet4
+solver converging *"what cheap soft-body pipelines do"* and names the failure
+mode directly:
+
+> *"a compressed **sleeve** appears to **deflate rather than bulge sideways**"*
+
+⇒ For an insertion device, bulge-versus-deflate is not a fidelity detail — it
+is the wall's entire mechanical behaviour. **The element change is what lets
+the sleeve be modelled as silicone rather than as a compressible
+approximation**, and that is a larger correctness gain than the rim geometry
+this section originally argued from.
+
+⚠ Still open, and not closed by the above: the book's prescribed rim fix is
+**two** commitments — adaptive h-refinement **and** Tet10 — and states *"Either
+alone leaves a residual."* **Adaptive h-refinement is not implemented**
+(`mesh/mod.rs:146` names it as Phase H future work; the other grep hits are a
+uniform block subdivider and interval-arithmetic validity certification, neither
+of which is mesh refinement). Tet10 buys the element half of a two-part fix.
 
 ### 4.3 The strongest single argument for Path A
 
@@ -263,21 +307,56 @@ Listed because the confidence of §4 rests on these being open, not closed.
    cf-studio and has no library API surface for `cargo xtask grade`. That is a
    packaging question this recon does not answer.
 
-## 8. Work items, in dependency order
+## 8. Work items — ordered by *when each becomes measurable*
 
-1. **`impl Mesh<M> for Tet10Mesh`** — generalise off the NeoHookean default.
-   Gates everything else. Nothing downstream can proceed without it.
-2. **Per-Gauss-point material sampling at Tet10** — per §7.6.
-3. **SdfMeshedTetMesh → Tet10Mesh bridge inside `insertion_sim`**, plus fresh
-   `d̂` / `κ`: IPC barrier parameters do not carry over from penalty's
-   smoothing and normal-averaging tuning.
-4. **Face-friction reconciliation**, or an explicit frictionless declaration
+> ⚠ **Reordered after the blast radius of item 4 was measured.** The original
+> ordering put per-Gauss-point material sampling second, on the reasoning that
+> breaking changes are cheapest while consumers are few. That reasoning does
+> not survive the count: `Mesh::materials()` has **4 implementors but 119 call
+> sites**, and wiring the reward adds **zero** new `materials()` consumers
+> (it reads contact and stress fields). So deferring the breaking change costs
+> nothing — while doing it first means spending 119 edits on a change whose
+> benefit cannot yet be measured.
+>
+> **The ordering principle is therefore: build the oracle, then change things
+> against it.**
+
+1. ✅ **`impl Mesh<M> for Tet10Mesh`** — generalise off the `NeoHookean`
+   default. Additive (a defaulted type parameter), zero downstream breakage.
+   Gates everything below: `Tet10Mesh<Yeoh>` is what pairs the rung-8b face
+   barrier with the only constitutive model that reaches the 8 mm target.
+
+2. **Wire `RewardBreakdown`** — §1's four terms, computed on the insertion
+   result. Additive. This is the step that gives example row 25
+   (`...-open-mouth`) — the geometry closest to the product — its first physics
+   oracle; it is currently a **demo, not a validator**, because the
+   interference-fit load case inverts the force sign and strain ordering that
+   its sibling rows gate on. ⛔ **Until this lands, no solver change below is
+   measurable — only different.**
+
+3. **`SdfMeshedTetMesh` → `Tet10Mesh` bridge inside `insertion_sim`**, plus
+   fresh `d̂` / `κ`: IPC barrier parameters do not carry over from penalty's
+   smoothing and normal-averaging tuning. This is the renovation proper, and
+   item 2 is what says whether it improved anything.
+
+4. **Per-Gauss-point material sampling** (§7.6). The expensive one: a
+   return-shape change to `Mesh::materials()` reaching 119 call sites.
+   Deferred to here so its benefit arrives as a number rather than a belief.
+
+   ⚠ **Scope it before writing it — per-GP is the right cure for a *smooth*
+   field and the wrong one for a *sharp* interface.** An element carrying four
+   different materials has a discontinuous constitutive response inside one
+   continuous shape-function basis. For a continuous gradient (filler fraction
+   φ, a thermal field, a blended zone) that is correct and is the whole point.
+   For a layer boundary it is not: it smears the interface at 4-point
+   resolution where the honest fix is mesh conformity, so the element does not
+   straddle at all. The repo already distinguishes the two —
+   [`Mesh::interface_flags`] implements the `|φ(x_c)| < L_e` straddle test and
+   is populated at construction — so this item should ship **with** a decision
+   about flagged tets, not merely "sample four times everywhere."
+
+5. **Face-friction reconciliation**, or an explicit frictionless declaration
    recorded as a known limitation (§5).
-5. **Wire `RewardBreakdown`** — §1's four terms become computable on a pressure
-   field that means something. Until then no solver change is *measurable*:
-   example row 25 (`...-open-mouth`), the geometry closest to the product, is a
-   **demo with no physics oracle** precisely because the interference-fit load
-   case inverts the force sign and strain ordering its sibling rows gate on.
 
 ## 9. Corrections made during this recon
 
@@ -293,3 +372,10 @@ Recorded because they are evidence about the method, which carries forward.
 - **"Tet10 cures volumetric locking" was wrong** (§4.2) — it mitigates,
   does not cure, and is adopted for rim accuracy instead.
 - **"Adopting IPC gets you friction" was wrong on the face path** (§5).
+- **§4.2's A-vs-B fork did not exist.** It was assembled from the book's
+  general preference for mixed u-p without checking the ladder's rung-6
+  verdict, which had already measured pure-displacement Tet10 as adequate at
+  ν = 0.49 and recorded Taylor-Hood P2-P1 as deliberately not built. ⇒ **When a
+  document and a codebase disagree about a design choice, the codebase may have
+  measured something the document only argued.** Check the ladder's verdicts
+  before reasoning from the study's chapters.
