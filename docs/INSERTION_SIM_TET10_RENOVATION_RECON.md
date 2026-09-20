@@ -339,6 +339,20 @@ Listed because the confidence of §4 rests on these being open, not closed.
    smoothing and normal-averaging tuning. This is the renovation proper, and
    item 2 is what says whether it improved anything.
 
+   ⚠ **Carries an open solver pathology** —
+   `docs/ICOSPHERE_ARMIJO_STALL_BOOKMARK.md`.
+   `sliding_insertion_ramp_converges_on_synthetic_icosphere` fails identically
+   on `main` and on the item-2 branch with `Armijo line-search stalled at
+   Newton iter 23, r_norm 6.143e-1` and repeated `Llt non-PD pivot` fallbacks.
+   The fixture's own safety net correctly reports it as **neither** the Yeoh
+   validity wall nor the SL.3 deep-interior mechanism — a third cause nobody
+   has chased. Two of the three candidate explanations are things this item
+   changes (penalty's indefinite contact tangent; Tet4 at ν = 0.40 with no
+   locking cure — `config.fbar` is referenced **zero** times in
+   `insertion_sim.rs`), so item 3 may dissolve it rather than fix it. ⛔ Do not
+   widen that assertion to accept Armijo stalls; it is the only detector
+   pointing at this.
+
 4. **Per-Gauss-point material sampling** (§7.6). The expensive one: a
    return-shape change to `Mesh::materials()` reaching 119 call sites.
    Deferred to here so its benefit arrives as a number rather than a belief.
