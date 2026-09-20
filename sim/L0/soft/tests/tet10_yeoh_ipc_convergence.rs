@@ -20,25 +20,48 @@
 //!
 //! ## What it found, measured 2026-09-20 at `d12e3bf9`
 //!
-//! - **It converges.** `Tet10Mesh<Yeoh>` + `IpcRigidContact` solves at rest
-//!   contact in 2 Newton iterations, residual 5.9e-13, over 4 240 tets /
-//!   24 993 DOF, with 961 active face pairs and a standoff of 0.483 mm.
+//! - **It converges, to 44 % engineering compression.** A marched compression
+//!   ramp runs clean to 5.29 mm of deflection on a 12 mm plate at
+//!   `κ = 1e7`, holding 0.357 mm of standoff throughout. Rest contact solves
+//!   in 2 Newton iterations at residual 5.9e-13 over 4 240 tets / 24 993 DOF.
 //! - **The face path is genuinely selected**, asserted on
 //!   `Mesh::boundary_faces6` — the selector, not the types, per the recon
 //!   doc's §9 correction.
-//! - **At rest contact the constitutive model does not matter yet.** Yeoh and
-//!   Neo-Hookean agree to four significant figures (7.0 µm vs 7.0 µm,
-//!   0.038321 N vs 0.038307 N) because 7 µm on a 12 mm plate is 0.06 % strain.
-//!   So "it converges" is, on its own, not yet a statement about Yeoh.
-//! - **Under a marched compression ramp it walls at `ArmijoStall(iter 0)`** —
-//!   at 0.0995 mm of deflection with 0.1 mm increments, 0.1455 mm with
-//!   0.025 mm increments. Refining the step buys 46 % and does not remove the
-//!   wall.
-//! - **`Ok` plus a tiny residual is not a contact solve.** The Tet4 per-vertex
-//!   arm at the same `(κ, d̂)` returns `Ok` at residual 9.3e-13 while resting
-//!   3.52 mm *inside* the plane, because the barrier clamps at
-//!   `d̂ · 1e-6`. Only `min_sd > 0` distinguishes the two, and every gate here
-//!   asserts it.
+//! - **`κ` carried over from rung 8b is wrong for this fixture by ≥ 3 orders.**
+//!   At `κ = 1e4` the ramp stalls at 0.83 % compression; 1e5 and 1e6 stall
+//!   later; 1e7 and 1e8 run clean. The stall is a *marching* failure, not a
+//!   solver limit: a barrier too soft to hold the plate ahead of the advancing
+//!   plane leaves less clearance than one increment, so the next increment
+//!   starts infeasible and the line search dies on Newton iteration 0. Every
+//!   iter-0 row in the sweep has `min_sd < RAMP_STEP`, and that relation is
+//!   asserted rather than narrated.
+//! - **The per-vertex barrier contacts vertices that are in no tetrahedron.**
+//!   `SdfMeshedTetMesh::positions()` is the BCC lattice, not the body: 1 244 of
+//!   its 2 348 entries are referenced by no tet. `active_vertex_pairs` iterates
+//!   `positions()`, so 386 of the Tet4 arm's 607 contact pairs land on dead
+//!   nodes — 338 of which sit below the plane in the *rest* configuration — and
+//!   the barrier's `d = sd.max(d̂ · 1e-6)` clamp reports ~4e9 N for them. The
+//!   face path is immune: `boundary_faces6()` is built from tet connectivity.
+//!   ⚠ `PenaltyRigidContact::active_pairs` has the same all-positions loop and
+//!   `insertion_sim` uses it, so the mechanism reaches the shipped sim; the
+//!   exposure there is unmeasured.
+//!
+//! ⚠ **Two claims retracted from an earlier revision of this file**, recorded
+//! because the corrections are the useful part.
+//!
+//! 1. It claimed Tet10 × Yeoh "walls at `ArmijoStall(iter 0)` by ~1 % strain",
+//!    with step-refinement evidence that the wall was not an increment
+//!    artefact. The refinement evidence was sound and the conclusion did not
+//!    follow — that comparison varied the *increment* and held `κ` fixed, so it
+//!    could never have separated a property of Tet10 × Yeoh from a property of
+//!    `κ = 1e4`. It was the latter.
+//! 2. It claimed the Tet4 arm "converges to a pose 3.52 mm inside the plane",
+//!    implying Newton descended past the clamped barrier. It does not: `min_sd`
+//!    is −3.52 mm **in the rest configuration** and the solve never moves it
+//!    — identical at `κ = 1e4` and `κ = 1e7`, which a stiffness-driven
+//!    penetration could not be. The cause is dead lattice vertices, above.
+//!    ★ What gave it away was the invariance: a number that does not move when
+//!    you change the thing that supposedly causes it is not caused by it.
 //!
 //! ## What this cannot see
 //!
@@ -48,15 +71,14 @@
 //! - **Graded materials.** One anchor everywhere. `insertion_sim` carries a
 //!   layered per-tet Yeoh field, and the material-validity wall row 23 hit was
 //!   a per-tet event at one tet.
-//! - **Large strain.** The ramp stops at ~1 % engineering compression, which is
-//!   below where Yeoh's `C₂` term separates from Neo-Hookean. Whether
-//!   Tet10 × Yeoh converges in the regime that motivates Yeoh is still open.
+//! - **A derived `κ`.** 1e7 is the smallest decade in a sweep that worked, not
+//!   a quantity anyone computed from the area-weighted face barrier. The
+//!   bracket is 1e6 (stalls) to 1e8 (holds contact 68 % of the band open).
+//! - **`d̂`.** Held fixed throughout. Sweeping it moves `STANDOFF` and so the
+//!   initial condition, which is a different experiment.
 //! - **Friction.** `SolverConfig::friction_mu` defaults to `0.0` and this
 //!   fixture leaves it there — the same frictionless regime `insertion_sim`
 //!   already runs in, and the regime rung 8b's face path requires.
-//! - **Tuned barrier parameters.** `κ` and `d̂` are carried over from the
-//!   rung-8b tests, scaled only for plate thickness. The recon doc is explicit
-//!   that they do not transfer, and nothing here has re-derived them.
 //!
 #![allow(
     clippy::expect_used,
@@ -73,7 +95,7 @@ use sim_soft::{
     Aabb3, ActivePairsFor, BoundaryConditions, ConstantField, ContactPair, CpuNewtonSolver,
     IpcRigidContact, MaterialField, Mesh, MeshingHints, NeoHookean, RigidPlane, Sdf,
     SdfMeshedTetMesh, Solver, SolverConfig, SolverFailure, Tet10Mesh, Vec3, VertexId, Yeoh,
-    peak_contact_pressure,
+    peak_contact_pressure, referenced_vertices,
 };
 
 // ── fixture geometry ────────────────────────────────────────────────
@@ -92,14 +114,64 @@ const CELL: f64 = 0.004;
 /// same ratio.
 const D_HAT: f64 = 0.0012;
 
-/// Barrier stiffness. The rung-8b face-contact tests' value, carried over
-/// unchanged — the recon doc is explicit that penalty's tuned `κ` does *not*
-/// transfer to IPC, and this fixture is where a Yeoh-appropriate value gets
-/// measured rather than assumed.
-const KAPPA: f64 = 1.0e4;
+/// The rung-8b face-contact tests' barrier stiffness, carried over unchanged.
+///
+/// ⛔ **Measured insufficient for this fixture** — see
+/// [`the_armijo_wall_against_barrier_stiffness`]. At this value the barrier
+/// cannot hold the plate far enough ahead of the advancing plane to keep the
+/// next increment feasible, and the ramp stalls at 0.83 % compression. Kept as
+/// the counterexample, not used by any gate.
+const RUNG_8B_KAPPA: f64 = 1.0e4;
+
+/// Barrier stiffness every gate here runs at.
+///
+/// ⚠ **An empirical floor, not a derivation.** It is the smallest decade in
+/// the `κ` sweep at which the compression ramp runs clean to
+/// `RAMP_MAX_PLANE_H` (44 % engineering compression): 1e6 still stalls, 1e7
+/// and 1e8 do not. 1e8 is not chosen because its standoff is 0.81 mm — 68 % of
+/// the barrier band — i.e. it holds contact open rather than enforcing it,
+/// where 1e7 sits at 30 %. Deriving `κ` for an area-weighted face barrier
+/// rather than bracketing it is still owed.
+const KAPPA: f64 = 1.0e7;
 
 /// Plane standoff inside the band, so the bottom face is engaged at rest.
+///
+/// ⚠ Tied to `D_HAT`, not to a swept `d̂`. A sweep that varied the band would
+/// also be varying the rest standoff, i.e. the initial condition — so
+/// [`Barrier`] sweeps are `κ`-only while this holds.
 const STANDOFF: f64 = 0.4 * D_HAT;
+
+/// The IPC barrier's two tuning parameters, passed rather than read from
+/// constants so they can be swept.
+///
+/// They are packaged together because they are not independent: `d̂` sets the
+/// band over which the barrier acts and `κ` its strength within that band, and
+/// a claim conditioned on one is conditioned on both.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Barrier {
+    kappa: f64,
+    d_hat: f64,
+}
+
+/// What every gate in this file runs at.
+const BASELINE: Barrier = Barrier {
+    kappa: KAPPA,
+    d_hat: D_HAT,
+};
+
+/// The rung-8b carry-over, retained so the failure it produces stays
+/// reproducible rather than becoming a sentence about a number nobody can run.
+const SOFT_BARRIER: Barrier = Barrier {
+    kappa: RUNG_8B_KAPPA,
+    d_hat: D_HAT,
+};
+
+impl Barrier {
+    /// The contact model for a plane at height `plane_h` under these parameters.
+    fn against(self, plane_h: f64) -> IpcRigidContact {
+        IpcRigidContact::with_params(vec![ground_at(plane_h)], self.kappa, self.d_hat)
+    }
+}
 
 /// Large `dt` ⇒ quasi-static: inertia negligible, contact and elasticity
 /// balance. Matches the rung-8b tests' `STATIC_DT`.
@@ -336,7 +408,7 @@ fn box_sdf_gradient_matches_finite_differences() {
 /// arm is the negative control that keeps this from passing vacuously.
 #[test]
 fn tet10_yeoh_takes_the_face_path_and_tet4_yeoh_takes_the_vertex_path() {
-    let contact = IpcRigidContact::with_params(vec![ground_at(REST_PLANE_H)], KAPPA, D_HAT);
+    let contact = BASELINE.against(REST_PLANE_H);
 
     let tet4 = tet4_yeoh();
     assert!(
@@ -407,6 +479,7 @@ struct Press {
 /// Displacement and contact readout at the converged pose.
 fn summarize<M: sim_soft::Material>(
     mesh: &dyn Mesh<M>,
+    barrier: Barrier,
     plane_h: f64,
     rest: &[f64],
     x_final: &[f64],
@@ -422,8 +495,7 @@ fn summarize<M: sim_soft::Material>(
         .chunks_exact(3)
         .map(|c| Vec3::new(c[0], c[1], c[2]))
         .collect();
-    let readouts = IpcRigidContact::with_params(vec![ground_at(plane_h)], KAPPA, D_HAT)
-        .per_pair_readout(mesh, &positions);
+    let readouts = barrier.against(plane_h).per_pair_readout(mesh, &positions);
     Press {
         iters,
         residual,
@@ -478,7 +550,7 @@ fn step_inputs(rest: &[f64]) -> (Tensor<f64>, Tensor<f64>, Tensor<f64>) {
 /// (`ArmijoStall`, `NewtonIterCap`, `DoublyFailedFactor`, `ValidityViolation`)
 /// come back as an `Err` variant naming which one fired, where the panicking
 /// path would only abort. Which surface fires is the finding.
-fn press_tet10_yeoh(plane_h: f64) -> Result<Press, String> {
+fn press_tet10_yeoh(barrier: Barrier, plane_h: f64) -> Result<Press, String> {
     let tet4 = tet4_yeoh();
     let mesh = Tet10Mesh::<Yeoh>::from_tet4(&tet4);
     let pins = top_face_pins(&mesh);
@@ -489,7 +561,7 @@ fn press_tet10_yeoh(plane_h: f64) -> Result<Press, String> {
         CpuNewtonSolver::new(
             Tet10,
             mesh.clone(),
-            IpcRigidContact::with_params(vec![ground_at(plane_h)], KAPPA, D_HAT),
+            barrier.against(plane_h),
             config(),
             BoundaryConditions::new(pins, Vec::new()),
         );
@@ -498,6 +570,7 @@ fn press_tet10_yeoh(plane_h: f64) -> Result<Press, String> {
         .map(|s| {
             summarize(
                 &mesh,
+                barrier,
                 plane_h,
                 &rest,
                 &s.x_final,
@@ -510,21 +583,15 @@ fn press_tet10_yeoh(plane_h: f64) -> Result<Press, String> {
 
 /// Tet4 × Yeoh — the per-vertex barrier on the same plate, same `(κ, d̂)`.
 ///
-/// ⛔ **Not a valid baseline at these parameters, and kept because that is the
-/// finding.** It reports `Ok`, 10 Newton iterations and residual 9.3e-13 —
-/// and `min_sd = −3.52 mm`, i.e. the converged pose is three and a half
-/// millimetres *through* the plane, with a net "contact force" of 4.06e9 N
-/// where the face path reads 0.038 N. `IpcRigidContact::barrier` clamps
-/// `d = sd.max(d_hat * 1e-6)`, which is what makes a penetrating state finite
-/// enough to converge onto.
-///
-/// What is established: at one shared `(κ, d̂)` the per-vertex and per-face
-/// barriers are not in the same regime, by eleven orders of magnitude in
-/// force, and only the face path holds standoff. What is NOT established is
-/// why — whether `κ = 1e4` is simply far too soft for 607 vertex pairs on this
-/// plate, or something else. That has not been isolated, and item 3 has to
-/// re-derive `(κ, d̂)` for the face path regardless.
-fn press_tet4_yeoh(plane_h: f64) -> Result<Press, String> {
+/// ⛔ **Not a valid comparison, and kept because that is the finding.** It
+/// reports `Ok` at a tiny residual with `min_sd = −3.52 mm` and a net "contact
+/// force" of ~4e9 N where the face path reads single-digit newtons — because
+/// 386 of its 607 pairs are on lattice vertices that belong to no tetrahedron
+/// and sat below the plane before the solve started. See
+/// [`the_vertex_barrier_contacts_vertices_that_are_in_no_tetrahedron`], which
+/// measures it. Its iteration count is meaningful; its force and `min_sd` are
+/// not a Tet4 property at all.
+fn press_tet4_yeoh(barrier: Barrier, plane_h: f64) -> Result<Press, String> {
     let mesh = tet4_yeoh();
     let pins = top_face_pins(&mesh);
     let rest = rest_dofs(&mesh);
@@ -533,7 +600,7 @@ fn press_tet4_yeoh(plane_h: f64) -> Result<Press, String> {
         CpuNewtonSolver::new(
             Tet4,
             mesh.clone(),
-            IpcRigidContact::with_params(vec![ground_at(plane_h)], KAPPA, D_HAT),
+            barrier.against(plane_h),
             config(),
             BoundaryConditions::new(pins, Vec::new()),
         );
@@ -542,6 +609,7 @@ fn press_tet4_yeoh(plane_h: f64) -> Result<Press, String> {
         .map(|s| {
             summarize(
                 &mesh,
+                barrier,
                 plane_h,
                 &rest,
                 &s.x_final,
@@ -554,7 +622,7 @@ fn press_tet4_yeoh(plane_h: f64) -> Result<Press, String> {
 
 /// Tet10 × Neo-Hookean — the element baseline, and the configuration
 /// `tet10_indentation_demand1` already exercises. Same plate, same contact.
-fn press_tet10_nh(plane_h: f64) -> Result<Press, String> {
+fn press_tet10_nh(barrier: Barrier, plane_h: f64) -> Result<Press, String> {
     let tet4 = tet4_nh();
     let mesh = Tet10Mesh::<NeoHookean>::from_tet4(&tet4);
     let pins = top_face_pins(&mesh);
@@ -564,7 +632,7 @@ fn press_tet10_nh(plane_h: f64) -> Result<Press, String> {
         CpuNewtonSolver::new(
             Tet10,
             mesh.clone(),
-            IpcRigidContact::with_params(vec![ground_at(plane_h)], KAPPA, D_HAT),
+            barrier.against(plane_h),
             config(),
             BoundaryConditions::new(pins, Vec::new()),
         );
@@ -573,6 +641,7 @@ fn press_tet10_nh(plane_h: f64) -> Result<Press, String> {
         .map(|s| {
             summarize(
                 &mesh,
+                barrier,
                 plane_h,
                 &rest,
                 &s.x_final,
@@ -596,11 +665,14 @@ fn tet10_yeoh_converges_under_the_ipc_face_barrier() {
     );
     eprintln!(
         "  Tet4  x Yeoh        : {:?}",
-        press_tet4_yeoh(REST_PLANE_H)
+        press_tet4_yeoh(BASELINE, REST_PLANE_H)
     );
-    eprintln!("  Tet10 x NeoHookean  : {:?}", press_tet10_nh(REST_PLANE_H));
+    eprintln!(
+        "  Tet10 x NeoHookean  : {:?}",
+        press_tet10_nh(BASELINE, REST_PLANE_H)
+    );
 
-    let p = press_tet10_yeoh(REST_PLANE_H)
+    let p = press_tet10_yeoh(BASELINE, REST_PLANE_H)
         .expect("Tet10 x Yeoh must converge under the IPC face barrier");
     eprintln!("  Tet10 x Yeoh        : {p:?}");
 
@@ -655,9 +727,17 @@ fn tet10_yeoh_converges_under_the_ipc_face_barrier() {
 /// intersection-free. 0.1 mm against `d̂ = 1.2` mm.
 const RAMP_STEP: f64 = 0.0001;
 
-/// Highest the plane is driven (m) — 3 mm into a 12 mm plate, 25 % engineering
-/// compression, well past where Yeoh and Neo-Hookean part company.
+/// Highest the plane is driven by the `κ` sweep (m) — 3 mm into a 12 mm plate.
 const RAMP_MAX_PLANE_H: f64 = 0.0030;
+
+/// Highest the plane is driven by the always-on envelope gate (m).
+///
+/// Shallower than the sweep's ceiling on purpose: 1 mm is 8.3 % engineering
+/// compression, already well past where Yeoh's `C₂` term separates from
+/// Neo-Hookean, and it costs ~15 increments instead of ~36. The gate's job is
+/// to certify that the ramp reaches real strain, not to re-measure how deep it
+/// can go — that is [`the_armijo_wall_against_barrier_stiffness`]'s job.
+const GATE_MAX_PLANE_H: f64 = 0.0010;
 
 /// March the plane up through the plate, re-solving from each converged state,
 /// and stop at the first rung that fails.
@@ -665,7 +745,11 @@ const RAMP_MAX_PLANE_H: f64 = 0.0030;
 /// Returns one entry per attempted plane height. The mesh, pins and rest
 /// configuration are built once; only the contact primitive changes per rung,
 /// which is the same per-increment rebuild `tet10_indentation_demand1` uses.
-fn ramp_tet10_yeoh(step: f64) -> Vec<(f64, Result<Press, String>)> {
+fn ramp_tet10_yeoh(
+    barrier: Barrier,
+    step: f64,
+    max_plane_h: f64,
+) -> Vec<(f64, Result<Press, String>)> {
     let tet4 = tet4_yeoh();
     let mesh = Tet10Mesh::<Yeoh>::from_tet4(&tet4);
     let pins = top_face_pins(&mesh);
@@ -679,14 +763,14 @@ fn ramp_tet10_yeoh(step: f64) -> Vec<(f64, Result<Press, String>)> {
     // Indexed, not accumulated: `h += step` drifts (the first cut of this loop
     // printed a +0.020000000000000025 mm plane height) and a float loop
     // condition is a lint besides.
-    let n_steps = ((RAMP_MAX_PLANE_H - REST_PLANE_H) / step).ceil() as usize;
+    let n_steps = ((max_plane_h - REST_PLANE_H) / step).ceil() as usize;
     for i in 0..=n_steps {
         let h = REST_PLANE_H + (i as f64) * step;
         let solver: CpuNewtonSolver<Tet10, Tet10Mesh<Yeoh>, IpcRigidContact, Yeoh, 10, 4> =
             CpuNewtonSolver::new(
                 Tet10,
                 mesh.clone(),
-                IpcRigidContact::with_params(vec![ground_at(h)], KAPPA, D_HAT),
+                barrier.against(h),
                 config(),
                 BoundaryConditions::new(pins.clone(), Vec::new()),
             );
@@ -699,6 +783,7 @@ fn ramp_tet10_yeoh(step: f64) -> Vec<(f64, Result<Press, String>)> {
             Ok(step) => {
                 let p = summarize(
                     &mesh,
+                    barrier,
                     h,
                     &rest,
                     &step.x_final,
@@ -717,14 +802,14 @@ fn ramp_tet10_yeoh(step: f64) -> Vec<(f64, Result<Press, String>)> {
     out
 }
 
-/// Where does Tet10 × Yeoh stop converging?
+/// Does the ramp reach strain where Yeoh actually differs from Neo-Hookean?
 ///
 /// The resting press above answers "does it solve", and the answer is yes — at
 /// 7 µm of deflection, 0.06 % strain. At that amplitude Yeoh and Neo-Hookean
-/// agree to four significant figures, so the resting press does not exercise
-/// the constitutive model that is the whole reason item 1 made `Tet10Mesh`
-/// generic. This walks the plane up through the plate under a pinned top face,
-/// which is a direct compression, and reports every rung.
+/// agree to four significant figures, so the resting press on its own does not
+/// exercise the constitutive model that is the whole reason item 1 made
+/// `Tet10Mesh` generic. This walks the plane up through the plate under a
+/// pinned top face — a direct compression — to 8.3 %, and reports every rung.
 ///
 /// ⚠ **The plane must be MARCHED, not placed.** A first cut at this test set
 /// the plane straight to each target depth from the rest configuration and got
@@ -737,11 +822,13 @@ fn ramp_tet10_yeoh(step: f64) -> Vec<(f64, Result<Press, String>)> {
 /// previous converged state, the same way `tet10_indentation_demand1` and
 /// `insertion_sim` march theirs.
 ///
-/// ⚠ This is a **probe, not a gate on a number**. It asserts that the ramp
-/// gets off the ground and that each converged rung is loaded; the depth at
-/// which it stops is printed, not asserted. Pinning that depth would pin a
+/// ⚠ **The depth reached is printed, not asserted.** Pinning it would pin a
 /// number that `κ`, `d̂`, mesh resolution and element order all move — and
-/// moving exactly those is item 3's job.
+/// moving exactly those is item 3's job. What IS asserted is the shape: the
+/// ramp clears rungs, every cleared rung is loaded and non-penetrating, and
+/// the deepest one moved the plate an order of magnitude further than the
+/// first. An earlier revision asserted a wall here; see the module header for
+/// why that was retracted.
 #[test]
 fn tet10_yeoh_convergence_envelope_under_increasing_compression() {
     let thickness = 2.0 * HALF[2];
@@ -752,15 +839,19 @@ fn tet10_yeoh_convergence_envelope_under_increasing_compression() {
         RAMP_STEP * 1e3,
     );
 
-    let rungs = ramp_tet10_yeoh(RAMP_STEP);
+    let rungs = ramp_tet10_yeoh(BASELINE, RAMP_STEP, GATE_MAX_PLANE_H);
     for (h, r) in &rungs {
-        let strain = (h / thickness).max(0.0) * 100.0;
         match r {
+            // `defl` is the largest nodal displacement as a fraction of plate
+            // thickness. An earlier revision printed plane travel here and
+            // called it strain, which read 0.00 % on a plate already deflected
+            // 0.63 mm — the plane is still below the rest face while the
+            // barrier band is loading it.
             Ok(p) => eprintln!(
-                "  plane {:+.2} mm (strain {:5.2} %): iters {:2}, r {:.2e}, \
+                "  plane {:+.2} mm: defl {:5.2} % of thickness, iters {:2}, r {:.2e}, \
                  disp {:.4} mm, Fz {:.4e} N, p_peak {:.3e} Pa, pairs {}",
                 h * 1e3,
-                strain,
+                100.0 * p.max_disp / thickness,
                 p.iters,
                 p.residual,
                 p.max_disp * 1e3,
@@ -768,7 +859,7 @@ fn tet10_yeoh_convergence_envelope_under_increasing_compression() {
                 p.peak_pressure,
                 p.n_pairs,
             ),
-            Err(e) => eprintln!("  plane {:+.2} mm (strain {:5.2} %): {e}", h * 1e3, strain),
+            Err(e) => eprintln!("  plane {:+.2} mm: {e}", h * 1e3),
         }
     }
 
@@ -790,11 +881,25 @@ fn tet10_yeoh_convergence_envelope_under_increasing_compression() {
     }
     let deepest = converged.last().expect("checked non-empty above");
     assert!(
-        deepest.max_disp > 10.0 * converged[0].max_disp,
-        "the ramp must actually load the plate: deepest rung moved {:e} m against \
-         the first rung's {:e} m",
+        deepest.max_disp > converged[0].max_disp,
+        "the ramp must load monotonically: deepest rung moved {:e} m against the \
+         first rung's {:e} m",
         deepest.max_disp,
         converged[0].max_disp,
+    );
+    // The load must reach a regime where the constitutive model is doing work.
+    // Stated against plate thickness rather than as a ratio to the first rung:
+    // an earlier revision asserted "10x the first rung", which was calibrated
+    // when a soft barrier made the first rung 7 um and silently became
+    // unsatisfiable once the first rung itself deflected 0.63 mm.
+    let deflection_fraction = deepest.max_disp / thickness;
+    assert!(
+        deflection_fraction > 0.10,
+        "the ramp must reach a real load: deepest deflection {:.4} mm is {:.2} % \
+         of a {:.0} mm plate, under the 10 % this gate exists to certify",
+        deepest.max_disp * 1e3,
+        deflection_fraction * 100.0,
+        thickness * 1e3,
     );
 }
 
@@ -828,7 +933,7 @@ fn tet10_yeoh_convergence_envelope_under_increasing_compression() {
 fn ramp_increment_refinement_extends_the_envelope_without_removing_it() {
     let mut reached = Vec::new();
     for step in [RAMP_STEP, RAMP_STEP / 4.0] {
-        let rungs = ramp_tet10_yeoh(step);
+        let rungs = ramp_tet10_yeoh(SOFT_BARRIER, step, RAMP_MAX_PLANE_H);
         let ok: Vec<&Press> = rungs.iter().filter_map(|(_, r)| r.as_ref().ok()).collect();
         let err = rungs.iter().find_map(|(_, r)| r.as_ref().err()).cloned();
         let deepest_plane = rungs.iter().rev().find(|(_, r)| r.is_ok()).map(|(h, _)| *h);
@@ -857,5 +962,239 @@ fn ramp_increment_refinement_extends_the_envelope_without_removing_it() {
     assert!(
         coarse_err.is_some() && fine_err.is_some(),
         "both ramps were expected to stop early; coarse {coarse_err:?}, fine {fine_err:?}",
+    );
+}
+
+// ── is the envelope κ-conditioned? ──────────────────────────────────
+
+/// `κ` must actually reach the solver.
+///
+/// Pre-registered *before* the sweep below, because a sweep whose parameter is
+/// silently dropped produces the most misleading possible result: every row
+/// identical, which reads as "κ does not matter" — a finding — rather than as
+/// "κ was never applied" — a bug. This is the threading check that tells the
+/// two apart, and it is definitional rather than empirical: the IPC barrier
+/// energy is linear in `κ`, so its force cannot be invariant to it.
+#[test]
+fn kappa_reaches_the_solver() {
+    let soft = SOFT_BARRIER;
+    let stiff = Barrier {
+        kappa: 10.0 * SOFT_BARRIER.kappa,
+        d_hat: D_HAT,
+    };
+    let a = press_tet10_yeoh(soft, REST_PLANE_H).expect("soft kappa must converge at rest");
+    let b = press_tet10_yeoh(stiff, REST_PLANE_H).expect("10x kappa must converge at rest");
+    eprintln!("  kappa {:e}: Fz {:e} N", soft.kappa, a.net_force_z);
+    eprintln!("  kappa {:e}: Fz {:e} N", stiff.kappa, b.net_force_z);
+    assert!(
+        (a.net_force_z - b.net_force_z).abs() > 0.0,
+        "10x kappa produced an identical contact force ({:e} N) — kappa is not \
+         reaching the barrier, and any sweep over it is measuring nothing",
+        a.net_force_z,
+    );
+}
+
+/// Is the `ArmijoStall` wall a property of Tet10 × Yeoh, or of `κ = 1e4`?
+///
+/// `#[ignore]` — one full ramp per `κ`, minutes. The envelope test varies the
+/// *increment* and holds `κ` fixed, so it supports "the wall is not a step
+/// artefact" and nothing more. A comparison supports only what it varied, and
+/// the headline "Tet10 × Yeoh walls at ~1 % strain" quietly reads as a
+/// statement about the element and material when it may be a statement about a
+/// barrier stiffness carried over from a fixture 8× larger.
+///
+/// `d̂` is held: sweeping it would move `STANDOFF` and therefore the initial
+/// condition, which is a different experiment.
+#[test]
+#[ignore = "one full compression ramp per kappa, several minutes — run it when \
+            the barrier parameters or the fixture geometry change"]
+fn the_armijo_wall_against_barrier_stiffness() {
+    eprintln!(
+        "kappa sweep, ramp step {:.3} mm, d_hat {D_HAT:e} held",
+        RAMP_STEP * 1e3
+    );
+    let mut rows = Vec::new();
+    for exp in 2..=8 {
+        let barrier = Barrier {
+            kappa: 10f64.powi(exp),
+            d_hat: D_HAT,
+        };
+        let rungs = ramp_tet10_yeoh(barrier, RAMP_STEP, RAMP_MAX_PLANE_H);
+        let ok: Vec<&Press> = rungs.iter().filter_map(|(_, r)| r.as_ref().ok()).collect();
+        let deepest_plane = rungs.iter().rev().find(|(_, r)| r.is_ok()).map(|(h, _)| *h);
+        let err = rungs.iter().find_map(|(_, r)| r.as_ref().err()).cloned();
+        let max_disp = ok.last().map_or(0.0, |p| p.max_disp);
+        let min_sd = ok.last().map_or(f64::NAN, |p| p.min_sd);
+        eprintln!(
+            "  kappa {:8.0e}: {:2} rungs, deepest plane {:+.3} mm, disp {:.4} mm, \
+             min_sd {:+.4} mm, ends {}",
+            barrier.kappa,
+            ok.len(),
+            deepest_plane.unwrap_or(f64::NAN) * 1e3,
+            max_disp * 1e3,
+            min_sd * 1e3,
+            err.clone()
+                .unwrap_or_else(|| "(ran clean to the ceiling)".into()),
+        );
+        // Whatever kappa does to the envelope, it must never buy convergence by
+        // letting the plate through the plane.
+        for p in &ok {
+            assert!(
+                p.min_sd > 0.0,
+                "kappa {:e} converged a penetrating rung: {p:?}",
+                barrier.kappa,
+            );
+        }
+        rows.push((barrier.kappa, max_disp, min_sd, err));
+    }
+
+    let depths: Vec<f64> = rows.iter().map(|(_, d, _, _)| *d).collect();
+    let spread = depths.iter().copied().fold(f64::MIN, f64::max)
+        / depths
+            .iter()
+            .copied()
+            .fold(f64::MAX, f64::min)
+            .max(f64::MIN_POSITIVE);
+    eprintln!("  deepest/shallowest displacement across 6 orders of kappa: {spread:.2}x");
+
+    // The sweep exists to answer whether the wall is kappa. It is: 1e7 and 1e8
+    // run clean to RAMP_MAX_PLANE_H where 1e4 stops at 0.83 % compression.
+    assert!(
+        rows.iter().any(|(_, _, _, e)| e.is_none()),
+        "no kappa in the sweep cleared the ramp — the wall would then NOT be \
+         a kappa artefact, and the module header's retraction is wrong",
+    );
+    assert!(
+        rows.iter().any(|(_, _, _, e)| e.is_some()),
+        "every kappa cleared the ramp — the sweep has no failing arm and so \
+         cannot support a claim about what kappa fixes",
+    );
+
+    // And WHY it is kappa, as a relation rather than a story: a stall at Newton
+    // iteration 0 is an infeasible starting point, which happens exactly when
+    // the increment outruns the standoff the barrier is holding. Every iter-0
+    // row must therefore have ended with less clearance than one step.
+    for (kappa, _, min_sd, err) in &rows {
+        if err.as_deref().is_some_and(stalled_on_the_first_newton_step) {
+            assert!(
+                *min_sd < RAMP_STEP,
+                "kappa {kappa:e} stalled at Newton iteration 0 while holding \
+                 {min_sd:e} m of clearance, which is MORE than the {RAMP_STEP:e} m \
+                 increment — the infeasible-start explanation does not cover \
+                 this row and something else is happening",
+            );
+        }
+    }
+}
+
+/// Did this failure land on the very first Newton step?
+///
+/// Reads the label [`failure_label`] produces, twenty lines up — an iter-0
+/// stall means the line search never found a decrease from the increment's
+/// starting point, i.e. the start was already infeasible, which is a different
+/// diagnosis from a stall part-way through a converging solve.
+fn stalled_on_the_first_newton_step(label: &str) -> bool {
+    label.starts_with("ArmijoStall(iter 0,")
+}
+
+/// The per-vertex barrier contacts vertices that belong to no tetrahedron.
+///
+/// This is the corrected form of a claim an earlier revision of this file got
+/// wrong. It reported that the Tet4 arm "converges to a pose 3.52 mm inside the
+/// plane", implying Newton descended through the barrier's clamped infinity.
+/// It does not. `min_sd` is **−3.52 mm in the rest configuration, before any
+/// solve**, and the solve does not move it — the value is identical at
+/// `κ = 1e4` and `κ = 1e7`, which a penetration driven by barrier stiffness
+/// could not be.
+///
+/// What is actually happening, measured below:
+///
+/// - `SdfMeshedTetMesh::positions()` carries the BCC lattice, not just the
+///   body: 2 348 entries of which **1 104 are referenced by a tet and 1 244 are
+///   dead**. The body itself is correct — `boundary_faces()` spans exactly
+///   `z ∈ [0, 12] mm` — but the lattice around it spans `z ∈ [−4, +18] mm`.
+/// - Every node below the plane at rest is dead. **Zero live vertices
+///   penetrate**, at any `κ`.
+/// - `IpcRigidContact::active_vertex_pairs` iterates `positions()`, so **386 of
+///   the 607 Tet4 pairs sit on vertices in no tetrahedron** — carrying no
+///   elastic force, placed wherever the lattice put them, and turned by the
+///   barrier's `d = sd.max(d̂ · 1e-6)` clamp into ~4e9 N of reported force.
+/// - The face path is immune: it iterates `boundary_faces6()`, which is built
+///   from tet connectivity and therefore contains only live vertices.
+///
+/// ⚠ **This reaches the shipped sim.** `PenaltyRigidContact::active_pairs`
+/// takes `_mesh` — it ignores the mesh entirely and loops the same
+/// `positions()` — and `insertion_sim` is `SdfMeshedTetMesh<Yeoh>` + penalty
+/// contact. Whether its primitives actually sit near dead lattice nodes is NOT
+/// measured here and is not claimed; the mechanism is present, the exposure is
+/// unquantified.
+#[test]
+fn the_vertex_barrier_contacts_vertices_that_are_in_no_tetrahedron() {
+    let t4 = tet4_yeoh();
+    let rest: Vec<Vec3> = t4.positions().to_vec();
+    let live: std::collections::BTreeSet<VertexId> = referenced_vertices(&t4 as &dyn Mesh<Yeoh>)
+        .into_iter()
+        .collect();
+
+    let dead = rest.len() - live.len();
+    let dead_below = (0..rest.len())
+        .filter(|i| !live.contains(&(*i as VertexId)) && rest[*i].z < REST_PLANE_H)
+        .count();
+    let live_below = (0..rest.len())
+        .filter(|i| live.contains(&(*i as VertexId)) && rest[*i].z < REST_PLANE_H)
+        .count();
+
+    let ro4 = BASELINE.against(REST_PLANE_H).per_pair_readout(&t4, &rest);
+    let on_dead = ro4
+        .iter()
+        .filter(|r| match r.pair {
+            ContactPair::Vertex { vertex_id, .. } => !live.contains(&vertex_id),
+            _ => false,
+        })
+        .count();
+    let min_sd4 = ro4.iter().map(|r| r.sd).fold(f64::INFINITY, f64::min);
+
+    let t10 = Tet10Mesh::<Yeoh>::from_tet4(&t4);
+    let quadratic_rest: Vec<Vec3> = t10.positions().to_vec();
+    let face_readout = BASELINE
+        .against(REST_PLANE_H)
+        .per_pair_readout(&t10, &quadratic_rest);
+    let min_sd10 = face_readout
+        .iter()
+        .map(|r| r.sd)
+        .fold(f64::INFINITY, f64::min);
+
+    eprintln!(
+        "  positions {}, live {}, dead {dead}",
+        rest.len(),
+        live.len()
+    );
+    eprintln!("  below the plane AT REST: {dead_below} dead, {live_below} live");
+    eprintln!(
+        "  vertex-path pairs on dead vertices: {on_dead} of {}",
+        ro4.len()
+    );
+    eprintln!("  REST min_sd: vertex path {min_sd4:+.6} m, face path {min_sd10:+.6} m");
+
+    assert!(
+        dead > 0,
+        "this fixture's premise is that SdfMeshedTetMesh retains dead lattice \
+         nodes; it retained none, so the rest of this test proves nothing",
+    );
+    assert_eq!(
+        live_below, 0,
+        "a LIVE vertex below the plane at rest would mean the body itself is \
+         penetrating, which is a different and worse problem than dead lattice",
+    );
+    assert!(
+        on_dead > 0 && min_sd4 < 0.0,
+        "the per-vertex path was expected to pick up dead vertices ({on_dead} \
+         pairs, min_sd {min_sd4:e}) — if it no longer does, the upstream \
+         behaviour changed and this file's Tet4 commentary is stale",
+    );
+    assert!(
+        min_sd10 > 0.0,
+        "the face path must see only live boundary vertices; it reported \
+         min_sd {min_sd10:e}",
     );
 }
