@@ -116,8 +116,8 @@ use sim_soft::material::silicone_table::ECOFLEX_00_30;
 use sim_soft::{
     Aabb3, ActivePairsFor, BoundaryConditions, ConstantField, ContactPair, CpuNewtonSolver,
     IpcRigidContact, MaterialField, Mesh, MeshingHints, NeoHookean, RigidPlane, Sdf,
-    SdfMeshedTetMesh, Solver, SolverConfig, SolverFailure, SphereSdf, Tet10Mesh, TranslatedSdf,
-    Vec3, VertexId, Yeoh, peak_contact_pressure, referenced_vertices,
+    SdfMeshedTetMesh, Solver, SolverConfig, SolverFailure, SphereSdf, Tet10Mesh, TetId,
+    TranslatedSdf, Vec3, VertexId, Yeoh, peak_contact_pressure, referenced_vertices,
 };
 
 // ── fixture geometry ────────────────────────────────────────────────
@@ -224,7 +224,7 @@ enum Indenter {
     /// Ground plane, normal `+z`. `Sdf::hessian` takes the trait's zero default.
     Plane,
     /// Sphere below the plate. `SphereSdf` **overrides** `Sdf::hessian`
-    /// (`sdf_bridge/sdf.rs`), so this is the cell that carries the curvature
+    /// (`sim/L0/soft/src/sdf_bridge/sdf.rs`), so this is the cell that carries the curvature
     /// term into the assembled tangent.
     Sphere,
 }
@@ -453,12 +453,14 @@ fn box_sdf_gradient_matches_finite_differences() {
     // Interior, each face's outside, an edge and a corner — the branches
     // `grad` distinguishes.
     //
-    // ⚠ Every interior probe is deliberately OFF the medial axis. At the
-    // plate's centre `(0, 0, 0.006)` the two z-faces are equidistant, the
-    // signed distance has a kink, and the gradient does not exist: the central
-    // difference reads exactly 0 while `grad` picks a side. That is a property
-    // of the distance function, not a defect in this impl, and it is why the
-    // interior probe sits at `z = 0.002` — nearest face unambiguous.
+    // ⚠ Every interior probe is deliberately OFF the medial SET — which is
+    // larger than the one case that first caught this. The obvious member is
+    // the plate's mid-plane, where the two z-faces are equidistant; but any
+    // interior point whose two largest `q` components tie is also on it, e.g.
+    // `(0.018, 0, 0.002)` where `q.x == q.z`. Everywhere on that set the
+    // signed distance has a kink and the gradient does not exist: the central
+    // difference reads a blend while `grad` picks a side by a strict `>`.
+    // That is a property of the distance function, not a defect in this impl.
     let probes = [
         Vec3::new(0.0, 0.0, 0.002),       // interior, below the medial plane
         Vec3::new(0.0, 0.0, 0.010),       // interior, above it
@@ -568,9 +570,9 @@ struct Press {
     /// node, not the peak one. That read out a negative tributary area at every
     /// rung and looked like a defect in `peak_contact_pressure`. It is not:
     /// quadratic-triangle corner weights are exactly zero on a flat face and
-    /// slightly negative on a curved one (`contact/face.rs`), such nodes report
+    /// slightly negative on a curved one (`sim/L0/soft/src/contact/face.rs`), such nodes report
     /// `NaN` pressure by design, and `peak_contact_pressure` already filters
-    /// them (`contact/mod.rs`).
+    /// them (`sim/L0/soft/src/contact/mod.rs`).
     peak_area: f64,
     median_area: f64,
     /// Active pairs whose pressure is non-finite — the degenerate corner nodes
@@ -799,16 +801,14 @@ fn tet10_yeoh_converges_under_the_ipc_face_barrier() {
         .expect("Tet10 x Yeoh must converge under the IPC face barrier");
     eprintln!("  Tet10 x Yeoh        : {p:?}");
 
-    assert!(
-        p.residual.is_finite(),
-        "converged step reported a non-finite residual {:e}",
-        p.residual,
-    );
-    assert!(
-        p.iters <= MAX_NEWTON_ITER,
-        "converged in {} iterations, past the {MAX_NEWTON_ITER} cap",
-        p.iters,
-    );
+    // ⛔ Two assertions were removed here, and are named so they do not get
+    // re-added: `p.residual.is_finite()` and `p.iters <= MAX_NEWTON_ITER`.
+    // Neither can fail. Newton converges on `r_norm < self.config.tol`
+    // (`sim/L0/soft/src/solver/backward_euler/newton.rs`), and `NaN < tol` is false, so a converged
+    // step cannot carry a non-finite residual; exceeding the cap returns
+    // `Err(SolverFailure::NewtonIterCap)`, so an `Ok` step is under the cap by
+    // construction. Both read as safety checks and neither constrains anything
+    // — the iteration COUNT is reported in the printout, where it is useful.
 
     // The loading witness. Without these three, the iteration count above is
     // compatible with a plate that never touched the plane.
@@ -1459,5 +1459,79 @@ fn tet10_yeoh_converges_against_a_curved_indenter() {
         converged.len() >= 2,
         "the curved ramp must clear at least two rungs; it cleared {}",
         converged.len(),
+    );
+}
+
+/// The meshed body is the box the fixture asked for.
+///
+/// `BoxSdf` is hand-written analytic geometry — exact signed distance and a
+/// hand-derived gradient — and every mesh in this file comes out of it, so an
+/// error there is an error in all of them. The gradient test above checks six
+/// points; this checks the pipeline's whole output against the shape it was
+/// asked for, which is the stronger statement: `SDF → BCC stuffing → boundary`
+/// has to reproduce the box's extent *and* its volume.
+///
+/// ⚠ Checks the **boundary**, not `positions()`, because here those are
+/// different things — see
+/// [`the_vertex_barrier_contacts_vertices_that_are_in_no_tetrahedron`]. The
+/// node set spans a full cell beyond the body on every side; the body does not.
+#[test]
+fn the_meshed_body_reproduces_the_box_extent_and_volume() {
+    let t4 = tet4_yeoh();
+    let pos = t4.positions();
+
+    let mut lo = Vec3::repeat(f64::INFINITY);
+    let mut hi = Vec3::repeat(f64::NEG_INFINITY);
+    for f in Mesh::<Yeoh>::boundary_faces(&t4) {
+        for &v in f {
+            let p = pos[v as usize];
+            for k in 0..3 {
+                lo[k] = lo[k].min(p[k]);
+                hi[k] = hi[k].max(p[k]);
+            }
+        }
+    }
+    let want_lo = Vec3::new(-HALF[0], -HALF[1], 0.0);
+    let want_hi = Vec3::new(HALF[0], HALF[1], 2.0 * HALF[2]);
+    eprintln!(
+        "  boundary bbox: [{:.3}, {:.3}] x [{:.3}, {:.3}] x [{:.3}, {:.3}] mm",
+        lo.x * 1e3,
+        hi.x * 1e3,
+        lo.y * 1e3,
+        hi.y * 1e3,
+        lo.z * 1e3,
+        hi.z * 1e3,
+    );
+    // A tenth of a cell: tight enough that a misplaced face fails, loose enough
+    // that it is not asserting exact float equality on a meshed surface.
+    let tol = 0.1 * CELL;
+    assert!(
+        (lo - want_lo).abs().max() < tol && (hi - want_hi).abs().max() < tol,
+        "boundary bbox [{lo:?}, {hi:?}] does not match the requested box \
+         [{want_lo:?}, {want_hi:?}] within {tol:e} m",
+    );
+
+    let mesh_volume: f64 = (0..t4.n_tets() as TetId)
+        .map(|t| {
+            let v = t4.tet_vertices(t);
+            let (v0, v1, v2, v3) = (
+                pos[v[0] as usize],
+                pos[v[1] as usize],
+                pos[v[2] as usize],
+                pos[v[3] as usize],
+            );
+            // Signed tet volume: (v1-v0) x (v2-v0) . (v3-v0) / 6.
+            (v1 - v0).cross(&(v2 - v0)).dot(&(v3 - v0)) / 6.0
+        })
+        .sum();
+    let analytic = 8.0 * HALF[0] * HALF[1] * HALF[2];
+    eprintln!(
+        "  volume: mesh {mesh_volume:.6e} m3 vs analytic {analytic:.6e} m3 (ratio {:.6})",
+        mesh_volume / analytic,
+    );
+    assert!(
+        (mesh_volume / analytic - 1.0).abs() < 1.0e-6,
+        "meshed volume {mesh_volume:e} m3 differs from the analytic box {analytic:e} m3 \
+         by more than 1e-6 relative",
     );
 }
