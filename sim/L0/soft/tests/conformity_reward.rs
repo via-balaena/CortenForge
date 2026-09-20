@@ -308,3 +308,96 @@ fn non_finite_pressures_are_counted_as_defects_not_silently_zeroed() {
         "both malformed readouts must be counted",
     );
 }
+
+// ------------------------------------------------------- Γ derivation (spec §3)
+
+use sim_soft::{SphereSdf, boundary_faces_on_isosurface};
+
+/// Three coplanar-ish triangles placed at known radii on the +x axis, so
+/// membership of a sphere isosurface is decidable by hand.
+fn radial_faces() -> (Vec<Vec3>, Vec<[VertexId; 3]>) {
+    // Each triangle is small (1 mm) so L_e stays well under the radial gaps.
+    let mut pos = Vec::new();
+    let mut faces = Vec::new();
+    let mut base: VertexId = 0;
+    for r in [0.050_f64, 0.060, 0.080] {
+        pos.push(Vec3::new(r, 0.0, 0.0));
+        pos.push(Vec3::new(r, 0.001, 0.0));
+        pos.push(Vec3::new(r, 0.0, 0.001));
+        faces.push([base, base + 1, base + 2]);
+        base += 3;
+    }
+    (pos, faces)
+}
+
+#[test]
+fn gamma_selects_only_faces_on_the_requested_isosurface() {
+    let (pos, faces) = radial_faces();
+    let sdf = SphereSdf { radius: 0.050 };
+
+    // level 0 -> the sphere itself: only the r = 0.050 face.
+    let (flags, area) = boundary_faces_on_isosurface(&pos, &faces, &sdf, 0.0);
+    assert_eq!(
+        flags,
+        vec![true, false, false],
+        "level 0 must select only r=0.050"
+    );
+    assert!(area > 0.0, "flagged area must be positive");
+
+    // level 0.010 -> the offset surface at r = 0.060.
+    let (flags10, _) = boundary_faces_on_isosurface(&pos, &faces, &sdf, 0.010);
+    assert_eq!(
+        flags10,
+        vec![false, true, false],
+        "a NON-ZERO level must select the offset surface — this is the case an \
+         insertion cavity actually uses, and a level-0-only implementation \
+         would pass the test above while failing here",
+    );
+}
+
+#[test]
+fn gamma_area_sums_only_the_flagged_faces() {
+    // Two faces ON the surface, one far off it. The area must be the sum of
+    // the two, not of all three — an implementation that summed every face
+    // would pass a flags-only test.
+    //
+    // ⚠ The tolerance is the face's OWN mean edge length (~1.1 mm here), so
+    // the selection cannot be widened by moving the level: these faces are
+    // 10-30 mm apart radially. An earlier version of this test assumed it
+    // could, and failed.
+    let mut pos = Vec::new();
+    let mut faces = Vec::new();
+    let mut base: VertexId = 0;
+    let mut z = 0.0_f64;
+    for r in [0.050_f64, 0.050, 0.080] {
+        pos.push(Vec3::new(r, 0.0, z));
+        pos.push(Vec3::new(r, 0.001, z));
+        pos.push(Vec3::new(r, 0.0, z + 0.001));
+        faces.push([base, base + 1, base + 2]);
+        base += 3;
+        z += 0.004; // separate the two r = 0.050 faces
+    }
+    let sdf = SphereSdf { radius: 0.050 };
+    let (flags, area) = boundary_faces_on_isosurface(&pos, &faces, &sdf, 0.0);
+
+    let n_on = flags.iter().filter(|&&f| f).count();
+    assert_eq!(
+        n_on, 2,
+        "exactly the two on-surface faces, got flags {flags:?}"
+    );
+
+    let expected: f64 = 2.0 * 0.5 * 0.001 * 0.001;
+    assert!(
+        (area - expected).abs() < 1e-12,
+        "area must sum ONLY the flagged faces: got {area}, expected {expected}",
+    );
+}
+
+#[test]
+fn gamma_is_empty_for_an_isosurface_no_face_lies_on() {
+    let (pos, faces) = radial_faces();
+    let sdf = SphereSdf { radius: 0.050 };
+    let (flags, area) = boundary_faces_on_isosurface(&pos, &faces, &sdf, 1.0);
+    assert!(flags.iter().all(|&f| !f), "nothing sits near r = 1.05");
+    assert!(area.abs() < 1e-18, "empty Γ has zero area, got {area}");
+}
