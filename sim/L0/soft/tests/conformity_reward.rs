@@ -521,3 +521,50 @@ fn gamma_is_a_proper_subset_of_the_boundary() {
         faces.len(),
     );
 }
+
+/// Coverage above 1 is flagged, not passed off as excellent conformity.
+///
+/// ⛔ Found in review pass 2. The caller's Γ membership rule decides the
+/// numerator while `|Γ|` is computed from faces, so an any-incident-face
+/// vertex rule at a rim admits readouts whose tributary area spans faces
+/// absent from `|Γ|` — `boundary_vertex_areas` gives a vertex a third of
+/// *every* incident face. Without the flag, a coverage of 1.4 reads as better
+/// than a perfect 1.0.
+#[test]
+fn coverage_above_one_is_flagged_as_an_area_inconsistency() {
+    let area = 1e-4;
+    // Γ is smaller than the area the readouts claim — the spill condition.
+    let undersized_gamma = 2.0 * area;
+    let p = ECOFLEX_00_30_TENSILE_PA * 0.1;
+    let rs = vec![readout(p, area), readout(p, area), readout(p, area)];
+
+    let out = conformity_breakdown(
+        &rs,
+        &ConformityParams::from_tensile_strength(ECOFLEX_00_30_TENSILE_PA, undersized_gamma),
+    );
+    assert!(
+        out.breakdown.coverage > 1.0,
+        "the fixture must actually overflow, got {}",
+        out.breakdown.coverage,
+    );
+    assert!(
+        out.coverage_overflow,
+        "coverage {} exceeds 1 and must be flagged",
+        out.breakdown.coverage,
+    );
+
+    // And a consistent Γ must NOT flag — otherwise the flag is vacuous.
+    let ok = conformity_breakdown(
+        &rs,
+        &ConformityParams::from_tensile_strength(ECOFLEX_00_30_TENSILE_PA, 3.0 * area),
+    );
+    assert!(
+        (ok.breakdown.coverage - 1.0).abs() < 1e-6,
+        "consistent Γ should land at 1.0, got {}",
+        ok.breakdown.coverage,
+    );
+    assert!(
+        !ok.coverage_overflow,
+        "a consistent Γ must not flag — a flag that always fires says nothing",
+    );
+}

@@ -1984,11 +1984,24 @@ impl GammaMask {
     ///   per-vertex fractional weight the `ContactPairReadout` surface does
     ///   not carry, so it cannot be done without widening that type.
     ///
-    /// Any-face is chosen because it errs toward *including* the rim, and an
-    /// over-inclusive Γ inflates the coverage denominator — which makes the
-    /// score conservative rather than flattering. ⚠ It is a choice, not a
-    /// derivation; the rim band is where `04-rim.md` says all four terms are
-    /// most fragile.
+    /// Any-face is chosen because it errs toward *including* the rim, which is
+    /// where `04-rim.md` says contact pressure concentrates.
+    ///
+    /// ⛔ **But be clear which side it inflates.** The vertex rule decides the
+    /// coverage **numerator** (which readouts count); `|Γ|` is computed from
+    /// **faces**. So any-face makes coverage *higher*, i.e. flattering, not
+    /// conservative — an earlier version of this comment had that backwards.
+    ///
+    /// ⚠ It also means **coverage can exceed 1** where Γ's vertex set spills
+    /// onto unflagged faces: `boundary_vertex_areas` gives a vertex a third of
+    /// *every* incident face, including faces absent from `|Γ|`. Measured on
+    /// the cube fixture Γ happens to be closed — its 1202 vertices' tributary
+    /// areas sum to exactly `|Γ|`, so coverage lands on 1.0 — but a cavity with
+    /// a real rim would spill. [`ConformityReadout::coverage_overflow`] flags
+    /// it rather than letting a >1 coverage read as excellent conformity.
+    ///
+    /// ⚠ A choice, not a derivation; the rim band is where `04-rim.md` says all
+    /// four terms are most fragile.
     pub(crate) fn build(
         rest_positions: &[Vec3],
         boundary_faces: &[[VertexId; 3]],
@@ -4416,9 +4429,16 @@ mod tests {
                  the force distribution, not that elements are unloaded",
             );
             assert!(
+                !c.coverage_overflow,
+                "coverage {} exceeded |Γ| — Γ's vertex set spilled onto faces \
+                 absent from the denominator. On this cube fixture Γ is closed \
+                 (its 1202 vertices' tributary areas sum to exactly |Γ|), so a \
+                 flag here means the Γ rule or the area accounting changed",
+                c.breakdown.coverage,
+            );
+            assert!(
                 (0.0..=1.0).contains(&c.breakdown.coverage),
-                "coverage must stay in [0, 1] — above 1 means the numerator's \
-                 deformed areas were divided by a rest |Γ|. got {}",
+                "coverage must stay in [0, 1]. got {}",
                 c.breakdown.coverage,
             );
             assert!(

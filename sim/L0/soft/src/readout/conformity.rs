@@ -178,6 +178,18 @@ pub struct ConformityReadout {
     /// underestimated peak inflates the margin to the ceiling, so the barrier
     /// reports slack that does not exist.
     pub lq_ratio: f64,
+    /// `true` when the coverage numerator exceeded `|Γ|`.
+    ///
+    /// ⛔ Coverage is *supposed* to be bounded by 1. It can exceed it when the
+    /// caller's Γ membership rule admits readouts whose tributary area spans
+    /// faces absent from `|Γ|` — for an any-incident-face vertex rule at a
+    /// rim, `boundary_vertex_areas` gives a vertex a third of *every* incident
+    /// face, including unflagged ones.
+    ///
+    /// ⚠ Without this flag a coverage of 1.4 reads as excellent conformity
+    /// rather than as an inconsistent area accounting. `coverage` itself is
+    /// left unclamped so the magnitude of the inconsistency stays visible.
+    pub coverage_overflow: bool,
     /// Contact pairs in Γ that carried a non-finite pressure.
     ///
     /// ⚠ A defect, never a zero. On a Tet10 mesh before rung 8d the loaded
@@ -326,6 +338,7 @@ pub fn conformity_breakdown(
         p_peak_smoothed,
         p_peak_true,
         lq_ratio,
+        coverage_overflow: coverage.is_finite() && coverage > 1.0 + 1e-9,
         non_finite_pressures,
     }
 }
