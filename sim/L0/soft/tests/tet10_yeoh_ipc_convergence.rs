@@ -26,7 +26,13 @@
 //! - **It converges, to 44 % engineering compression.** A marched compression
 //!   ramp runs clean to 5.29 mm of deflection on a 12 mm plate at
 //!   `κ = 1e7`, holding 0.357 mm of standoff throughout. Rest contact solves
-//!   in 2 Newton iterations at residual 5.9e-13 over 4 240 tets.
+//!   in 6 Newton iterations at residual 8.3e-14 over 4 240 tets.
+//!
+//!   ⚠ An earlier revision reported "2 Newton iterations at residual 5.9e-13"
+//!   here. Those are `κ = 1e4` numbers that survived the re-baseline to
+//!   `κ = 1e7` — the same class of defect as the three stale gate numbers that
+//!   re-baseline already produced. **Re-baselining invalidates every number
+//!   calibrated against the old baseline, in prose as well as in gates.**
 //!
 //!   ⚠ **The system solved is 18 738 free DOF, not the 24 993 that
 //!   `3 × positions()` suggests.** 1 244 of the 8 331 Tet10 positions are
@@ -1032,13 +1038,19 @@ fn tet10_yeoh_convergence_envelope_under_increasing_compression() {
 
 /// Is the envelope's end a step-size artefact, or a wall?
 ///
-/// `#[ignore]` — two full ramps, ~40 s. This is the discriminating experiment
+/// ⛔ **Runs at [`SOFT_BARRIER`] (`κ = 1e4`), not at `BASELINE`** — without
+/// that, every number below reads as a `κ = 1e7` result, and at `κ = 1e7`
+/// there is no wall to ask about: the ramp runs clean to the ceiling. This
+/// experiment only has a subject at the soft barrier, which is why it is
+/// pinned there rather than following the baseline.
+///
+/// `#[ignore]` — two full ramps, ~40 s. It is the discriminating experiment
 /// for the one question the envelope test cannot answer from a single step
 /// size: refining the increment either walks the ramp arbitrarily deep (in
 /// which case the end is bookkeeping) or moves it a little and hits the same
 /// fail-close surface (in which case something real is there).
 ///
-/// Measured 2026-09-20 at `d12e3bf9` + this fixture, 4 240 tets / 24 993 DOF:
+/// Measured 2026-09-20 at `d12e3bf9` + this fixture, 4 240 tets:
 ///
 /// | step | rungs | deepest plane | max displacement | ends with |
 /// |------|-------|---------------|------------------|-----------|
