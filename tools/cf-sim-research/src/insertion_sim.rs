@@ -4274,6 +4274,111 @@ mod tests {
         );
     }
 
+    /// End-to-end: a real ramp must produce a usable conformity score.
+    ///
+    /// `#[ignore]` because it runs a full FEM ramp (~24k tets) — too slow for
+    /// the default suite, but the only test here that exercises the reward on
+    /// an actual scene rather than a synthetic fixture. Run with
+    /// `--ignored --nocapture` to see the numbers.
+    ///
+    /// ★ **This test exists because a read-through could not have found what
+    /// it found.** Every other gate on this path uses hand-built pressure
+    /// arrays; running it once revealed `P_TH_FRACTION_OF_TENSILE` was
+    /// mis-scaled by ~25×, putting the contact threshold *inside* the
+    /// operating pressure distribution so that coverage measured "fraction
+    /// above 69 kPa" rather than "fraction in contact".
+    ///
+    /// ⚠ Gates invariants and the threshold separation, **not** exact values —
+    /// solver detail and mesher version move the numbers, and pinning them
+    /// would produce a test that fails on correct changes.
+    #[test]
+    #[ignore = "full FEM ramp; run with --ignored"]
+    fn real_ramp_produces_a_usable_conformity_score() {
+        let scan = small_test_cube();
+        let design = SimDesign {
+            cavity_inset_m: 0.003,
+            layers: vec![layer(0.005, "ECOFLEX_00_30")],
+        };
+        let geometry =
+            build_insertion_geometry(&scan, &design, &[], 2_500, 0.004).expect("geometry builds");
+        let tensile = geometry.cavity_tensile_strength_pa;
+        assert!(
+            tensile.is_finite() && tensile > 0.0,
+            "the innermost layer must carry a tensile strength, got {tensile}",
+        );
+        let p_th = sim_soft::readout::conformity::P_TH_FRACTION_OF_TENSILE * tensile;
+
+        let ramp = run_insertion_ramp(geometry, 3).expect("ramp runs");
+        let scored: Vec<&StepReadout> = ramp
+            .steps
+            .iter()
+            .map(|st| &st.readout)
+            .filter(|r| r.conformity.is_some())
+            .collect();
+        assert!(
+            !scored.is_empty(),
+            "no step produced a conformity score — Γ empty, or the ramp \
+             converged nothing ({} step(s) recorded)",
+            ramp.steps.len(),
+        );
+
+        for r in &scored {
+            let c = r.conformity.as_ref().expect("filtered to Some");
+            println!(
+                "  pairs {:4} | F {:7.3} N | unif {:+.4} cov {:.6} peak {:+.4} \
+                 | p_peak {:.0}/{:.0} Pa | peak/p_th {:.1} | lq {:.3}",
+                r.n_active_contact_pairs,
+                r.contact_force_magnitude_n,
+                c.breakdown.pressure_uniformity,
+                c.breakdown.coverage,
+                c.breakdown.peak_bound,
+                c.p_peak_smoothed,
+                c.p_peak_true,
+                c.p_peak_true / p_th,
+                c.lq_ratio,
+            );
+
+            assert_eq!(
+                c.non_finite_pressures, 0,
+                "a non-finite pressure means the readout path is mis-reporting \
+                 the force distribution, not that elements are unloaded",
+            );
+            assert!(
+                (0.0..=1.0).contains(&c.breakdown.coverage),
+                "coverage must stay in [0, 1] — above 1 means the numerator's \
+                 deformed areas were divided by a rest |Γ|. got {}",
+                c.breakdown.coverage,
+            );
+            assert!(
+                c.breakdown.pressure_uniformity <= 0.0,
+                "R_unif = -J_unif is a cost, so it can never be positive, got {}",
+                c.breakdown.pressure_uniformity,
+            );
+            assert!(
+                c.p_peak_smoothed <= c.p_peak_true + 1e-9,
+                "the L^q max must not exceed the true max: {} vs {}",
+                c.p_peak_smoothed,
+                c.p_peak_true,
+            );
+            assert!(
+                c.breakdown.stiffness_bound.is_nan(),
+                "k_min has no source; the term must stay NaN",
+            );
+
+            // ★ The regression guard for the mis-scaling this test found.
+            assert!(
+                c.p_peak_true / p_th > 10.0,
+                "p_th ({p_th:.0} Pa) must sit WELL BELOW the operating pressure \
+                 (peak {:.0} Pa, ratio {:.2}). At a ratio near 1 the threshold \
+                 falls inside the contact-pressure distribution and coverage \
+                 stops discriminating contact from no-contact — that is the \
+                 defect this test was written after.",
+                c.p_peak_true,
+                c.p_peak_true / p_th,
+            );
+        }
+    }
+
     /// An empty Γ yields `None`, not a flattering score. A scene whose cavity
     /// level selects nothing is a setup defect, and a number computed against
     /// no surface would hide it.
