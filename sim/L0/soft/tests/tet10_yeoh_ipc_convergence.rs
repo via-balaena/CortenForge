@@ -2,9 +2,12 @@
 //! face barrier at all?
 //!
 //! Item 1 (`6dc7ee03`) made `Tet10Mesh<M>` generic, so `Tet10Mesh<Yeoh>` is
-//! **constructible**. Constructible is not converged: the only Tet10 + IPC
-//! solver instantiation in the tree is `tests/tet10_indentation_demand1.rs`,
-//! and its material is `NeoHookean`. Before item 3 rewires the 6 416-line
+//! **constructible**. Constructible is not converged: when this file was
+//! written the *only* Tet10 + IPC solver instantiation in the tree was
+//! `tests/tet10_indentation_demand1.rs`, and its material was `NeoHookean`.
+//! (Stated in the past tense on purpose — this file adds three more, two of
+//! them Yeoh, so a present-tense version of that sentence would be falsified
+//! by the change that made it.) Before item 3 rewires the 6 416-line
 //! `tools/cf-sim-research/src/insertion_sim.rs`, this file answers the cheap
 //! question on a fixture that runs in seconds: does the triple (Tet10 element
 //! × Yeoh material × IPC face barrier) solve, and at what Newton cost relative
@@ -23,7 +26,12 @@
 //! - **It converges, to 44 % engineering compression.** A marched compression
 //!   ramp runs clean to 5.29 mm of deflection on a 12 mm plate at
 //!   `κ = 1e7`, holding 0.357 mm of standoff throughout. Rest contact solves
-//!   in 2 Newton iterations at residual 5.9e-13 over 4 240 tets / 24 993 DOF.
+//!   in 2 Newton iterations at residual 5.9e-13 over 4 240 tets.
+//!
+//!   ⚠ **The system solved is 18 738 free DOF, not the 24 993 that
+//!   `3 × positions()` suggests.** 1 244 of the 8 331 Tet10 positions are
+//!   orphans the solver auto-pins, and 889 more are the pinned top face. An
+//!   earlier revision reported 24 993 and that overstates the solve by 1.33×.
 //! - **It converges under CURVED contact too**, which is the cell
 //!   `insertion_sim` actually has. Against a 60 mm sphere at the same
 //!   `(κ, d̂)` and mesh: 4–5 Newton iterations per increment, residuals
@@ -1249,6 +1257,18 @@ fn stalled_on_the_first_newton_step(label: &str) -> bool {
 ///   barrier's `d = sd.max(d̂ · 1e-6)` clamp into ~4e9 N of reported force.
 /// - The face path is immune: it iterates `boundary_faces6()`, which is built
 ///   from tet connectivity and therefore contains only live vertices.
+///
+/// ★ **The solver already defends against this; the contact models do not.**
+/// `backward_euler/construct.rs` walks tet incidence and unions every
+/// unreferenced vertex into `effective_pinned`, because "an orphan free DOF
+/// would have zero mass ... AND zero element contribution to its Hessian
+/// row/column, leaving a singular diagonal that faer's Cholesky would either
+/// panic on ... or silently produce garbage" — and its comment names this
+/// exact case, that `SdfMeshedTetMesh` "retains the full BCC lattice in
+/// `positions()`". So the orphans never reach the linear system, which is why
+/// this fixture is well-posed. They DO reach `active_pairs`, which walks
+/// `positions()` with no incidence check of its own. ⇒ the gap is specifically
+/// in the contact models, not in the solver.
 ///
 /// ⚠ **This reaches the shipped sim.** `PenaltyRigidContact::active_pairs`
 /// takes `_mesh` — it ignores the mesh entirely and loops the same
