@@ -78,8 +78,12 @@
 //!   the barrier's `d = sd.max(d̂ · 1e-6)` clamp reports ~4e9 N for them. The
 //!   face path is immune: `boundary_faces6()` is built from tet connectivity.
 //!   ⚠ `PenaltyRigidContact::active_pairs` has the same all-positions loop and
-//!   `insertion_sim` uses it, so the mechanism reaches the shipped sim; the
-//!   exposure there is unmeasured.
+//!   `insertion_sim` uses it. **The exposure there has now been measured and is
+//!   far larger than here**: on its synthetic sliding fixture, 31 852 of 41 432
+//!   positions are dead, and **94.3 % of the active contact pairs at
+//!   interference 0 mm sit on them** (6 583 of 6 981). A shell body's cavity is
+//!   exactly where the lattice's dead nodes live and the intruder is driven
+//!   into the middle of them, so a solid plate understates it badly.
 //!
 //! ⚠ **Two claims retracted from an earlier revision of this file**, recorded
 //! because the corrections are the useful part.
@@ -1282,12 +1286,40 @@ fn stalled_on_the_first_newton_step(label: &str) -> bool {
 /// `positions()` with no incidence check of its own. ⇒ the gap is specifically
 /// in the contact models, not in the solver.
 ///
-/// ⚠ **This reaches the shipped sim.** `PenaltyRigidContact::active_pairs`
-/// takes `_mesh` — it ignores the mesh entirely and loops the same
-/// `positions()` — and `insertion_sim` is `SdfMeshedTetMesh<Yeoh>` + penalty
-/// contact. Whether its primitives actually sit near dead lattice nodes is NOT
-/// measured here and is not claimed; the mechanism is present, the exposure is
-/// unquantified.
+/// ⚠⚠ **This reaches the shipped sim, and there it is much worse.**
+/// `PenaltyRigidContact::active_pairs` takes `_mesh` — it ignores the mesh
+/// entirely and loops the same `positions()` — and `insertion_sim` is
+/// `SdfMeshedTetMesh<Yeoh>` + penalty contact. Measured on its synthetic
+/// sliding fixture (icosphere r = 40 mm, 3 mm cavity inset, 10 mm wall, 4 mm
+/// cell), 2026-09-20:
+///
+/// | quantity | value |
+/// |---|---|
+/// | `positions()` | 41 432 |
+/// | live (in some tet) | 9 580 |
+/// | **dead** | **31 852 — 76.9 %** |
+/// | active pairs @ interference 0 mm | 6 981, **6 583 dead = 94.3 %** |
+/// | active pairs @ interference 3 mm | 9 724, **6 618 dead = 68.1 %** |
+///
+/// A shell body's cavity is exactly where the BCC lattice's dead nodes sit and
+/// the intruder is driven into the middle of them, so this fixture's solid
+/// plate understates the effect badly.
+///
+/// ★ **It is waste, not corruption** — established, not assumed. A vertex
+/// pair's gradient is `contributions: vec![(vertex_id, force)]`, touching its
+/// own DOF and no other; orphans are auto-pinned out of the free system; and
+/// readouts are filtered by `filter_pair_readouts_to_referenced`. So the answer
+/// is right and ~6 600 SDF evaluations and gradient builds per Newton
+/// iteration are discarded. The hazard is for any NEW consumer that reads
+/// `active_pairs` without filtering.
+///
+/// ⚠ And the two `insertion_sim` paths are not equally defended:
+/// `intruder_contact_at` (used by `run_single_insertion_step` and
+/// `run_insertion_ramp`) passes **no interior cutoff**, while the sliding
+/// builder passes `2 × cavity_inset_m`. That cutoff is a depth heuristic, not
+/// a fix — applied to the same dead set it still leaves 2 864 active at 0 mm
+/// and 1 661 at 3 mm, because it only excludes nodes deeper than `c`. An
+/// incidence filter in `active_pairs` would be complete.
 #[test]
 fn the_vertex_barrier_contacts_vertices_that_are_in_no_tetrahedron() {
     let t4 = tet4_yeoh();
