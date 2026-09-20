@@ -419,9 +419,17 @@ impl SiliconeMaterial {
             // ONE modulus point; tensile strength is an independent property
             // that neither determines. A family default would be inventing
             // data at the exact place the conformity reward reads its
-            // peak-pressure ceiling, so the ceiling is undefined instead —
-            // `peak_bound` goes NaN and `RewardBreakdown::score_with` drops
-            // it, the same honest degradation the absent `k_min` gets.
+            // peak-pressure ceiling, so the ceiling is undefined instead.
+            //
+            // ⛔ The consequence is WIDER than the peak term, and an earlier
+            // version of this comment understated it. `p_th` is derived from
+            // tensile strength, so a NaN here poisons the uniformity weight
+            // and the coverage indicator as well: **all four reward terms go
+            // NaN**, `score_with` drops every one, and the composed score is
+            // `0.0` — which ranks ABOVE a genuinely-measured poor design
+            // scoring negative. `GammaMask::conformity` therefore refuses a
+            // non-finite ceiling outright rather than returning a score.
+            //
             // Callers with a measured tensile figure set the field directly.
             tensile_strength_pa: f64::NAN,
             validity_max_principal_stretch: f64::INFINITY,

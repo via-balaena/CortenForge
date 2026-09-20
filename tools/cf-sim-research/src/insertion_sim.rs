@@ -1969,6 +1969,26 @@ pub(crate) struct GammaMask {
 
 impl GammaMask {
     /// Build from the rest configuration and the scan SDF at the cavity level.
+    ///
+    /// # ⚠ The rim rule: a vertex counts if ANY of its faces is in Γ
+    ///
+    /// A vertex on the rim belongs to both cavity-wall and outer-envelope
+    /// faces. This marks it in-Γ. Two alternatives were considered:
+    ///
+    /// - **All-faces** (a vertex counts only if *every* incident face is in Γ)
+    ///   would exclude the entire rim ring, and the rim is where
+    ///   `04-rim.md` says contact pressure concentrates — dropping it
+    ///   discards the highest-pressure band from the very terms meant to
+    ///   measure it.
+    /// - **Area-weighted partial membership** is more faithful but needs a
+    ///   per-vertex fractional weight the `ContactPairReadout` surface does
+    ///   not carry, so it cannot be done without widening that type.
+    ///
+    /// Any-face is chosen because it errs toward *including* the rim, and an
+    /// over-inclusive Γ inflates the coverage denominator — which makes the
+    /// score conservative rather than flattering. ⚠ It is a choice, not a
+    /// derivation; the rim band is where `04-rim.md` says all four terms are
+    /// most fragile.
     pub(crate) fn build(
         rest_positions: &[Vec3],
         boundary_faces: &[[VertexId; 3]],
@@ -2052,6 +2072,14 @@ impl GammaMask {
         // `is_nan()` spelled out: a NaN area must reject, and a negated
         // partial-ord comparison hides that from the reader.
         if self.n_faces() == 0 || gamma_area.is_nan() || gamma_area <= 0.0 {
+            return None;
+        }
+        // ⛔ A non-finite ceiling must not be scored. `p_th` derives from it,
+        // so every term would go NaN, `score_with` would drop all four, and
+        // the composed score would be 0.0 — which ranks ABOVE a measured poor
+        // design scoring negative. `SiliconeMaterial::from_measured` produces
+        // exactly this ceiling on purpose.
+        if !tensile_strength_pa.is_finite() || tensile_strength_pa <= 0.0 {
             return None;
         }
         let on_gamma: Vec<ContactPairReadout> = readouts
@@ -4216,6 +4244,50 @@ mod tests {
              roughly double coverage. got {}",
             score.breakdown.coverage,
         );
+    }
+
+    /// A non-finite ceiling is refused, not scored.
+    ///
+    /// ⛔ `p_th` derives from tensile strength, so a `NaN` ceiling makes every
+    /// term `NaN`; `score_with` drops all four and returns `0.0`, which ranks
+    /// ABOVE a measured poor design scoring negative.
+    /// `SiliconeMaterial::from_measured` produces exactly this ceiling on
+    /// purpose, so a design using a measured inner layer would otherwise score
+    /// better than a real one.
+    #[test]
+    fn a_non_finite_ceiling_is_refused_rather_than_scored() {
+        let (pos, faces) = square_at(0.010);
+        let mask = GammaMask::build(&pos, &faces, pos.len(), &PlaneX, 0.010);
+        assert!(
+            mask.n_faces() > 0,
+            "Γ must be non-empty or this proves nothing"
+        );
+
+        let readouts = vec![ContactPairReadout {
+            pair: ContactPair::Vertex {
+                vertex_id: 0,
+                primitive_id: 0,
+            },
+            position: Vec3::zeros(),
+            sd: -1e-4,
+            normal: Vec3::new(1.0, 0.0, 0.0),
+            force_on_soft: Vec3::new(1.0, 0.0, 0.0),
+            tributary_area: 1.0e-7,
+            pressure: 5.0e5,
+        }];
+
+        // A finite ceiling scores.
+        assert!(
+            mask.conformity(&pos, &faces, &readouts, 1.379e6).is_some(),
+            "a finite ceiling must produce a score",
+        );
+        // NaN, infinite and non-positive ceilings must not.
+        for bad in [f64::NAN, f64::INFINITY, 0.0, -1.0] {
+            assert!(
+                mask.conformity(&pos, &faces, &readouts, bad).is_none(),
+                "ceiling {bad} must be refused, not scored",
+            );
+        }
     }
 
     /// A Tet10 `Face` pair is judged by its nodes, not dropped.

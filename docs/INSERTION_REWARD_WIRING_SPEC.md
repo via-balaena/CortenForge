@@ -199,7 +199,7 @@ B_stiff = same inverted IPC form with tolerance m̂_k
 
 | constant | what the book says | status |
 |---|---|---|
-| `p_th` | "a small fraction of the material's tensile strength" | ⛔ **no number** |
+| `p_th` | "a small fraction of the material's tensile strength" | ⚠ **0.2 %, chosen on evidence** — see below |
 | `β_c` | "typically somewhat larger (steeper) than `β_w`" | ⛔ **relative only** |
 | `m̂_k` | stiffness barrier tolerance | ⛔ none given — **moot**, `stiffness_bound` is `NaN` |
 | `k_min` | "material- and application-dependent minimum" | ⛔ no source — **moot**, see below |
@@ -209,6 +209,23 @@ free — `02-peak-bounds.md:33` sets it explicitly: *"Setting `m̂` at a fractio
 of the ceiling (typical: **10–25 % of `p_max`**) keeps the barrier's active
 region scale-consistent across materials without per-material retuning."*
 It belongs in §6.1 as sourced.
+
+### ⚠ `p_th` was set to 0.2 % after running the reward end-to-end
+
+The book gives no number and this spec originally left it unset; the first
+implementation used 5 %. A real ramp on Ecoflex 00-30 then put `p_th` at
+**68.9 kPa against a measured peak contact pressure of 91.8 kPa — a ratio of
+1.33**. At that scale the threshold sits *inside* the operating pressure
+distribution, so coverage measured "fraction of Γ above 69 kPa" rather than
+"fraction of Γ in contact", and a region genuinely contacting at 30 kPa scored
+≈ 0. 69 kPa is 10 psi; barely-touching is nearer 1 kPa.
+
+**0.2 %** puts the threshold at ≈ 2.8 kPa, about **33×** below the observed
+peak — the separation a contact/no-contact discriminator needs. Guarded by
+`real_ramp_produces_a_usable_conformity_score`, which fails below a ratio of 10.
+
+⚠ Still **chosen, not measured**: the ramp gave the operating *range*, not the
+pressure below which contact stops mattering.
 
 ★★★ **These must not be buried as literals.** Each is a named, documented input
 carrying either its derivation or an explicit *"chosen, not measured; here is
@@ -229,6 +246,10 @@ rather than computed against an invented floor.
 1. **Γ**: face count > 0; Γ ⊊ all boundary faces (strict); **stability under
    `tol` perturbation** (§3.1's rim-band risk). Negative control: a Γ test with
    `tol = ∞` must select every face and trip the strictness gate.
+   ⚠ The strictness and stability clauses were **initially not written** and
+   were caught only by reviewing the diff against pre-registered criteria —
+   `gamma_is_a_proper_subset_of_the_boundary` and
+   `gamma_selection_is_stable_under_small_level_perturbation` now cover them.
 2. **Uniformity**: `J_unif = 0` for a synthetic uniform pressure field;
    monotone increase under injected spread.
 
@@ -257,8 +278,11 @@ rather than computed against an invented floor.
    field-dependent and 13–25 % at `q = 16` for a narrow contact band, so it
    must be visible, not assumed. `B_peak = 0` when `m ≥ m̂`; finite and
    increasing as `m → 0⁺`; `+∞` only at `m ≤ 0`.
-5. **Stiffness**: `k_eff` matches a hand computation off
-   `force_displacement_curve` at a chosen step.
+5. ~~**Stiffness**: `k_eff` matches a hand computation off
+   `force_displacement_curve`~~ — **moot and deliberately not written.**
+   `stiffness_bound` is `NaN` because `k_min` has no source (§6.3), so there is
+   no `k_eff` to check. Recorded rather than deleted: a reader comparing this
+   plan to the gates that exist should find the absence explained, not silent.
 6. **Composition**: `score_with` on a known breakdown equals the hand-summed
    weighted value, including the `NaN`-drop path.
 

@@ -231,6 +231,21 @@ fn lq_smoothed_max(pressures: &[f64], areas: &[f64], gamma_area: f64, q: i32) ->
 /// denominator vanishes — no contact, or all pressures at zero.
 /// [`RewardBreakdown::score_with`] drops `NaN` terms, so a degenerate step
 /// scores on what it does have rather than poisoning the sum.
+///
+/// # ⛔ A non-finite `p_max` makes every term `NaN`, and that scores 0.0
+///
+/// [`ConformityParams::from_tensile_strength`] derives `p_th`, `beta_w`,
+/// `beta_c` and `m_hat` from the tensile strength, so a `NaN` ceiling — which
+/// `SiliconeMaterial::from_measured` produces deliberately — poisons **all
+/// four** terms, not just `peak_bound`. `score_with` then drops every one and
+/// returns `0.0`.
+///
+/// ⚠ `0.0` is **not** a neutral score: a uniformly-loaded, fully-covered field
+/// scores `+0.25` at the canonical weights while a spread, half-covered one
+/// scores `−0.035`. An all-`NaN` breakdown therefore ranks *above* a genuinely
+/// measured poor design. Callers must reject a non-finite ceiling rather than
+/// score it — [`crate::readout::ConformityParams`] does not do it for them, and
+/// `GammaMask::conformity` in `cf-sim-research` is the worked example.
 #[must_use]
 pub fn conformity_breakdown(
     gamma_readouts: &[ContactPairReadout],

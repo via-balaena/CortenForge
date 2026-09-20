@@ -401,3 +401,123 @@ fn gamma_is_empty_for_an_isosurface_no_face_lies_on() {
     assert!(flags.iter().all(|&f| !f), "nothing sits near r = 1.05");
     assert!(area.abs() < 1e-18, "empty Γ has zero area, got {area}");
 }
+
+// ------------------------------------------- the non-finite-ceiling hazard
+
+/// ⛔ Pins the hazard rather than merely documenting it.
+///
+/// `from_tensile_strength` derives `p_th`, `beta_w`, `beta_c` and `m_hat` from
+/// the ceiling, so a non-finite ceiling — which
+/// `SiliconeMaterial::from_measured` produces deliberately — makes **all four**
+/// terms `NaN`, not just `peak_bound`. `score_with` drops every one and returns
+/// `0.0`.
+///
+/// ★ And `0.0` is not neutral: it ranks **above** a genuinely measured poor
+/// design. That is why a caller must refuse a non-finite ceiling instead of
+/// scoring it, and this test fails if anyone makes the all-`NaN` case look
+/// harmless.
+#[test]
+fn a_non_finite_ceiling_scores_zero_which_beats_a_real_poor_design() {
+    let area = 1e-4;
+    let gamma = 4.0 * area;
+    let w = RewardWeights {
+        pressure_uniformity: 0.25,
+        coverage: 0.25,
+        peak_bound: 0.25,
+        stiffness_bound: 0.25,
+    };
+
+    // A real but poor field: spread pressure over half of Γ.
+    let p = ECOFLEX_00_30_TENSILE_PA * 0.1;
+    let poor = vec![
+        readout(0.2 * p, area),
+        readout(1.8 * p, area),
+        readout(0.0, area),
+        readout(0.0, area),
+    ];
+    let poor_score = conformity_breakdown(
+        &poor,
+        &ConformityParams::from_tensile_strength(ECOFLEX_00_30_TENSILE_PA, gamma),
+    )
+    .breakdown
+    .score_with(&w);
+
+    // The same field scored against an undefined ceiling.
+    let undefined = conformity_breakdown(
+        &poor,
+        &ConformityParams::from_tensile_strength(f64::NAN, gamma),
+    );
+    let b = &undefined.breakdown;
+    assert!(
+        b.pressure_uniformity.is_nan()
+            && b.coverage.is_nan()
+            && b.peak_bound.is_nan()
+            && b.stiffness_bound.is_nan(),
+        "a NaN ceiling must poison ALL FOUR terms — if only peak_bound is NaN \
+         here, the hazard this test guards has changed shape",
+    );
+
+    let undefined_score = b.score_with(&w);
+    assert!(
+        (undefined_score - 0.0).abs() < f64::EPSILON,
+        "all terms dropped must compose to 0.0, got {undefined_score}",
+    );
+    assert!(
+        poor_score < 0.0,
+        "the comparison only bites if the real design scores negative, got {poor_score}",
+    );
+    assert!(
+        undefined_score > poor_score,
+        "THE HAZARD: an undefined ceiling ({undefined_score}) outranks a measured \
+         poor design ({poor_score}). Callers must refuse a non-finite ceiling.",
+    );
+}
+
+/// Γ selection must not jump discontinuously as the isosurface level moves.
+///
+/// ⛔ **Spec §3.1 and §7 gate 1 both required this and it was not written** —
+/// found by reviewing the diff against pre-registered criteria. The rim band
+/// is where `04-rim.md` says all four reward terms are most fragile, and a Γ
+/// that flips membership under a sub-element level change would make every
+/// score depend on a coincidence of meshing.
+#[test]
+fn gamma_selection_is_stable_under_small_level_perturbation() {
+    let (pos, faces) = radial_faces();
+    let sdf = SphereSdf { radius: 0.050 };
+
+    // L_e for these faces is ~1.1 mm; perturb the level by a small fraction
+    // of that and the selected set must not change.
+    let (base, base_area) = boundary_faces_on_isosurface(&pos, &faces, &sdf, 0.0);
+    let n_base = base.iter().filter(|&&f| f).count();
+    assert!(n_base > 0, "baseline Γ must be non-empty");
+
+    for delta in [-2.0e-4_f64, -1.0e-4, 1.0e-4, 2.0e-4] {
+        let (flags, area) = boundary_faces_on_isosurface(&pos, &faces, &sdf, delta);
+        assert_eq!(
+            flags, base,
+            "Γ membership changed at level delta {delta} — selection is \
+             unstable within a fraction of the element size",
+        );
+        assert!(
+            (area - base_area).abs() < 1e-18,
+            "Γ area moved with the level although membership did not: {area} vs {base_area}",
+        );
+    }
+}
+
+/// Γ must be a *proper* subset of the boundary — spec §7 gate 1's strictness
+/// clause. A Γ equal to the whole boundary would put faces that can never
+/// contact into coverage's denominator.
+#[test]
+fn gamma_is_a_proper_subset_of_the_boundary() {
+    let (pos, faces) = radial_faces();
+    let sdf = SphereSdf { radius: 0.050 };
+    let (flags, _) = boundary_faces_on_isosurface(&pos, &faces, &sdf, 0.0);
+    let n_on = flags.iter().filter(|&&f| f).count();
+    assert!(n_on > 0, "Γ must be non-empty");
+    assert!(
+        n_on < faces.len(),
+        "Γ must be a PROPER subset: {n_on} of {} faces selected",
+        faces.len(),
+    );
+}
