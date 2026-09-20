@@ -9,6 +9,7 @@
 
 use sim_ml_chassis::{Tape, Tensor};
 
+pub mod conformity;
 pub mod edit_result;
 pub mod gradient_estimate;
 pub mod reward_breakdown;
@@ -16,6 +17,9 @@ pub mod reward_weights;
 pub mod scene;
 pub mod skeleton_forward_map;
 
+pub use conformity::{
+    ConformityParams, ConformityReadout, beta_w_from_threshold, conformity_breakdown,
+};
 pub use edit_result::EditResult;
 pub use gradient_estimate::GradientEstimate;
 pub use reward_breakdown::{ResidualCorrections, RewardBreakdown};
