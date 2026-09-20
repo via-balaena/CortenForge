@@ -38,16 +38,29 @@
 use crate::contact::ContactPairReadout;
 use crate::readout::RewardBreakdown;
 
-/// ⛔ **FREE PARAMETER — chosen, not measured.**
+/// ⛔ **FREE PARAMETER — chosen, not measured.** Revised once, on evidence.
 ///
 /// The book places the pressure threshold "at a small fraction of the
-/// material's tensile strength" and gives no number. 5 % is this
-/// implementation's choice.
+/// material's tensile strength" and gives no number.
+///
+/// **0.2 %, not the 5 % first chosen.** A real insertion ramp on Ecoflex 00-30
+/// put `p_th` at 68.9 kPa against a peak contact pressure of 91.8 kPa — a
+/// ratio of **1.33**. At that scale the threshold sits *inside* the operating
+/// pressure distribution, so coverage measured "fraction of Γ above 69 kPa"
+/// rather than "fraction of Γ in contact", and a region genuinely contacting
+/// at 30 kPa scored ≈ 0. 69 kPa is 10 psi; barely-touching is nearer 1 kPa.
+///
+/// At 0.2 % the threshold is ≈ 2.8 kPa for the same material, roughly 33×
+/// below the observed peak, which is the separation a contact/no-contact
+/// discriminator needs.
+///
+/// ⚠ Still chosen, not measured — the ramp gave the operating *range*, not the
+/// pressure below which contact stops mattering.
 ///
 /// **What would replace it:** the pressure below which contact is not
 /// mechanically meaningful for the application — measurable on a cast part as
 /// the pressure at which the sleeve stops transmitting perceptible load.
-pub const P_TH_FRACTION_OF_TENSILE: f64 = 0.05;
+pub const P_TH_FRACTION_OF_TENSILE: f64 = 0.002;
 
 /// ⛔ **FREE PARAMETER — chosen, not measured.**
 ///
