@@ -24,9 +24,30 @@
 //!   ramp runs clean to 5.29 mm of deflection on a 12 mm plate at
 //!   `κ = 1e7`, holding 0.357 mm of standoff throughout. Rest contact solves
 //!   in 2 Newton iterations at residual 5.9e-13 over 4 240 tets / 24 993 DOF.
+//! - **It converges under CURVED contact too**, which is the cell
+//!   `insertion_sim` actually has. Against a 60 mm sphere at the same
+//!   `(κ, d̂)` and mesh: 4–5 Newton iterations per increment, residuals
+//!   ~8.5e-14, clean to 13.4 % deflection, standoff decreasing monotonically
+//!   0.845 → 0.583 mm as the apex advances and the patch widening 185 → 473
+//!   pairs. This matters because `tet10_face_contact.rs` states at its own
+//!   rung-8c gate that *"8b's gate used a PLANE precisely because `∇²sd = 0`
+//!   hides the `b'·∇²sd` Hessian term"* — a flat fixture is structurally
+//!   incapable of exercising the curvature term, and the pre-existing curved
+//!   gate is `NeoHookean`, so curved × Yeoh was the untested cell.
 //! - **The face path is genuinely selected**, asserted on
 //!   `Mesh::boundary_faces6` — the selector, not the types, per the recon
-//!   doc's §9 correction.
+//!   doc's §9 correction. The curved cell gets the same treatment: its gate
+//!   asserts a non-zero `Sdf::hessian` of magnitude √2/R, because an indenter
+//!   that forgets to override the trait default is flat in the tangent however
+//!   round it looks.
+//! - **Raw `peak_contact_pressure` is corner-dominated on a curved patch.**
+//!   Along the curved ramp the net force rises smoothly and monotonically
+//!   (0.43 → 5.27 N) while `p_peak` wanders non-monotonically over a ~9× range,
+//!   because the winning pair's tributary area is ~1e-10 m² against a median of
+//!   2.7e-6 — four orders down — and 13–15 % of pairs are outright degenerate.
+//!   `peak_contact_pressure` filters `area ≤ 0`; it cannot filter `area ≈ 0⁺`.
+//!   Consistent with why the conformity readout carries `p_peak_smoothed` and
+//!   `lq_ratio` rather than the raw max. Reported here, not fixed here.
 //! - **`κ` carried over from rung 8b is wrong for this fixture by ≥ 3 orders.**
 //!   At `κ = 1e4` the ramp stalls at 0.83 % compression; 1e5 and 1e6 stall
 //!   later; 1e7 and 1e8 run clean. The stall is a *marching* failure, not a
@@ -65,9 +86,10 @@
 //!
 //! ## What this cannot see
 //!
-//! - **Curvature.** A flat face on a flat plane, so `Sdf::hessian` is the
-//!   default zero matrix and the curvature term rung 8c added is never
-//!   exercised. `insertion_sim` presses a curved intruder into a curved cavity.
+//! - **A closing cavity.** The curved cell is a convex indenter pressed into a
+//!   plate. `insertion_sim` is a compliant cavity closing *around* a probe —
+//!   conforming, enveloping contact rather than a Hertzian patch. Curvature is
+//!   now covered; enveloping geometry is not.
 //! - **Graded materials.** One anchor everywhere. `insertion_sim` carries a
 //!   layered per-tet Yeoh field, and the material-validity wall row 23 hit was
 //!   a per-tet event at one tet.
@@ -94,8 +116,8 @@ use sim_soft::material::silicone_table::ECOFLEX_00_30;
 use sim_soft::{
     Aabb3, ActivePairsFor, BoundaryConditions, ConstantField, ContactPair, CpuNewtonSolver,
     IpcRigidContact, MaterialField, Mesh, MeshingHints, NeoHookean, RigidPlane, Sdf,
-    SdfMeshedTetMesh, Solver, SolverConfig, SolverFailure, Tet10Mesh, Vec3, VertexId, Yeoh,
-    peak_contact_pressure, referenced_vertices,
+    SdfMeshedTetMesh, Solver, SolverConfig, SolverFailure, SphereSdf, Tet10Mesh, TranslatedSdf,
+    Vec3, VertexId, Yeoh, peak_contact_pressure, referenced_vertices,
 };
 
 // ── fixture geometry ────────────────────────────────────────────────
@@ -153,23 +175,90 @@ struct Barrier {
     d_hat: f64,
 }
 
-/// What every gate in this file runs at.
-const BASELINE: Barrier = Barrier {
+/// Barrier parameters every gate runs at.
+const BASELINE_BARRIER: Barrier = Barrier {
     kappa: KAPPA,
     d_hat: D_HAT,
 };
 
-/// The rung-8b carry-over, retained so the failure it produces stays
-/// reproducible rather than becoming a sentence about a number nobody can run.
-const SOFT_BARRIER: Barrier = Barrier {
-    kappa: RUNG_8B_KAPPA,
-    d_hat: D_HAT,
+/// The flat cell — what most gates here run at.
+const BASELINE: Setup = Setup {
+    barrier: BASELINE_BARRIER,
+    indenter: Indenter::Plane,
 };
 
-impl Barrier {
-    /// The contact model for a plane at height `plane_h` under these parameters.
-    fn against(self, plane_h: f64) -> IpcRigidContact {
-        IpcRigidContact::with_params(vec![ground_at(plane_h)], self.kappa, self.d_hat)
+/// The curved cell: same barrier, sphere instead of plane. This is the
+/// configuration `insertion_sim` actually has.
+const CURVED: Setup = Setup {
+    barrier: BASELINE_BARRIER,
+    indenter: Indenter::Sphere,
+};
+
+/// The rung-8b carry-over, retained so the failure it produces stays
+/// reproducible rather than becoming a sentence about a number nobody can run.
+const SOFT_BARRIER: Setup = Setup {
+    barrier: Barrier {
+        kappa: RUNG_8B_KAPPA,
+        d_hat: D_HAT,
+    },
+    indenter: Indenter::Plane,
+};
+
+/// Radius of the curved indenter (m).
+///
+/// 60 mm against the plate's 40 mm lateral extent — the same radius-to-extent
+/// ratio (1.5) the rung-8c gate in `tet10_face_contact.rs` uses. Large enough
+/// that curvature is gentle rather than a stress singularity, small enough that
+/// `∇²sd = (I − n̂n̂ᵀ)/‖p−c‖` is a real fraction of the barrier tangent.
+const SPHERE_R: f64 = 0.060;
+
+/// The rigid obstacle the plate is pressed onto.
+///
+/// ⭐ This axis exists because `tet10_face_contact.rs` says, at its own rung-8c
+/// gate: *"8b's gate used a PLANE precisely because `∇²sd = 0` hides the
+/// `b'·∇²sd` Hessian term."* A plane cannot exercise the curvature term the
+/// face barrier carries, and `insertion_sim` is a curved intruder in a curved
+/// cavity — so a flat-only result is not evidence about the case item 3 needs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Indenter {
+    /// Ground plane, normal `+z`. `Sdf::hessian` takes the trait's zero default.
+    Plane,
+    /// Sphere below the plate. `SphereSdf` **overrides** `Sdf::hessian`
+    /// (`sdf_bridge/sdf.rs`), so this is the cell that carries the curvature
+    /// term into the assembled tangent.
+    Sphere,
+}
+
+impl Indenter {
+    /// The primitive with its contact surface — the plane, or the sphere's
+    /// apex — at height `h`, so the two shapes are positioned comparably.
+    fn at(self, h: f64) -> Box<dyn Sdf> {
+        match self {
+            Self::Plane => Box::new(ground_at(h)),
+            // Centre a radius below the apex: `sd(0,0,h) = |h − (h−R)| − R = 0`.
+            Self::Sphere => Box::new(TranslatedSdf {
+                inner: SphereSdf { radius: SPHERE_R },
+                offset: Vec3::new(0.0, 0.0, h - SPHERE_R),
+            }),
+        }
+    }
+}
+
+/// One fixture configuration: barrier parameters plus the shape pressed on.
+#[derive(Clone, Copy, Debug)]
+struct Setup {
+    barrier: Barrier,
+    indenter: Indenter,
+}
+
+impl Setup {
+    /// The contact model with the obstacle's surface at height `h`.
+    fn against(self, h: f64) -> IpcRigidContact {
+        IpcRigidContact::with_params(
+            vec![self.indenter.at(h)],
+            self.barrier.kappa,
+            self.barrier.d_hat,
+        )
     }
 }
 
@@ -465,6 +554,29 @@ struct Press {
     /// Peak contact pressure (Pa) over `n_pairs` active pairs.
     peak_pressure: f64,
     n_pairs: usize,
+    /// Tributary area (m²) of the pair that produced `peak_pressure`, and the
+    /// median tributary area over all active pairs.
+    ///
+    /// `peak_pressure` is a max over per-pair `|force| / tributary_area`, so a
+    /// pair with a vanishing area would dominate it. These two say whether that
+    /// is happening rather than leaving it to inference.
+    ///
+    /// ⚠ **`peak_area` must filter non-finite pressures before taking the
+    /// argmax, and the first version of it did not.** `f64::total_cmp` orders
+    /// `NaN` **above** every finite value, so a bare
+    /// `max_by(|a, b| a.pressure.total_cmp(&b.pressure))` returns a *degenerate*
+    /// node, not the peak one. That read out a negative tributary area at every
+    /// rung and looked like a defect in `peak_contact_pressure`. It is not:
+    /// quadratic-triangle corner weights are exactly zero on a flat face and
+    /// slightly negative on a curved one (`contact/face.rs`), such nodes report
+    /// `NaN` pressure by design, and `peak_contact_pressure` already filters
+    /// them (`contact/mod.rs`).
+    peak_area: f64,
+    median_area: f64,
+    /// Active pairs whose pressure is non-finite — the degenerate corner nodes
+    /// above. A count, not a defect: it is expected to be non-zero on a curved
+    /// patch and zero on a flat one.
+    degenerate_pairs: usize,
     /// Smallest signed distance over the active pairs at the converged pose (m).
     ///
     /// The interior-point guarantee is `sd > 0`, but `IpcRigidContact::barrier`
@@ -479,7 +591,7 @@ struct Press {
 /// Displacement and contact readout at the converged pose.
 fn summarize<M: sim_soft::Material>(
     mesh: &dyn Mesh<M>,
-    barrier: Barrier,
+    setup: Setup,
     plane_h: f64,
     rest: &[f64],
     x_final: &[f64],
@@ -495,13 +607,24 @@ fn summarize<M: sim_soft::Material>(
         .chunks_exact(3)
         .map(|c| Vec3::new(c[0], c[1], c[2]))
         .collect();
-    let readouts = barrier.against(plane_h).per_pair_readout(mesh, &positions);
+    let readouts = setup.against(plane_h).per_pair_readout(mesh, &positions);
     Press {
         iters,
         residual,
         max_disp,
         net_force_z: readouts.iter().map(|r| r.force_on_soft.z).sum(),
         peak_pressure: peak_contact_pressure(&readouts),
+        peak_area: readouts
+            .iter()
+            .filter(|r| r.pressure.is_finite())
+            .max_by(|a, b| a.pressure.total_cmp(&b.pressure))
+            .map_or(f64::NAN, |r| r.tributary_area),
+        degenerate_pairs: readouts.iter().filter(|r| !r.pressure.is_finite()).count(),
+        median_area: {
+            let mut a: Vec<f64> = readouts.iter().map(|r| r.tributary_area).collect();
+            a.sort_by(f64::total_cmp);
+            a.get(a.len() / 2).copied().unwrap_or(f64::NAN)
+        },
         n_pairs: readouts.len(),
         min_sd: readouts.iter().map(|r| r.sd).fold(f64::INFINITY, f64::min),
     }
@@ -550,7 +673,7 @@ fn step_inputs(rest: &[f64]) -> (Tensor<f64>, Tensor<f64>, Tensor<f64>) {
 /// (`ArmijoStall`, `NewtonIterCap`, `DoublyFailedFactor`, `ValidityViolation`)
 /// come back as an `Err` variant naming which one fired, where the panicking
 /// path would only abort. Which surface fires is the finding.
-fn press_tet10_yeoh(barrier: Barrier, plane_h: f64) -> Result<Press, String> {
+fn press_tet10_yeoh(setup: Setup, plane_h: f64) -> Result<Press, String> {
     let tet4 = tet4_yeoh();
     let mesh = Tet10Mesh::<Yeoh>::from_tet4(&tet4);
     let pins = top_face_pins(&mesh);
@@ -561,7 +684,7 @@ fn press_tet10_yeoh(barrier: Barrier, plane_h: f64) -> Result<Press, String> {
         CpuNewtonSolver::new(
             Tet10,
             mesh.clone(),
-            barrier.against(plane_h),
+            setup.against(plane_h),
             config(),
             BoundaryConditions::new(pins, Vec::new()),
         );
@@ -570,7 +693,7 @@ fn press_tet10_yeoh(barrier: Barrier, plane_h: f64) -> Result<Press, String> {
         .map(|s| {
             summarize(
                 &mesh,
-                barrier,
+                setup,
                 plane_h,
                 &rest,
                 &s.x_final,
@@ -591,7 +714,7 @@ fn press_tet10_yeoh(barrier: Barrier, plane_h: f64) -> Result<Press, String> {
 /// [`the_vertex_barrier_contacts_vertices_that_are_in_no_tetrahedron`], which
 /// measures it. Its iteration count is meaningful; its force and `min_sd` are
 /// not a Tet4 property at all.
-fn press_tet4_yeoh(barrier: Barrier, plane_h: f64) -> Result<Press, String> {
+fn press_tet4_yeoh(setup: Setup, plane_h: f64) -> Result<Press, String> {
     let mesh = tet4_yeoh();
     let pins = top_face_pins(&mesh);
     let rest = rest_dofs(&mesh);
@@ -600,7 +723,7 @@ fn press_tet4_yeoh(barrier: Barrier, plane_h: f64) -> Result<Press, String> {
         CpuNewtonSolver::new(
             Tet4,
             mesh.clone(),
-            barrier.against(plane_h),
+            setup.against(plane_h),
             config(),
             BoundaryConditions::new(pins, Vec::new()),
         );
@@ -609,7 +732,7 @@ fn press_tet4_yeoh(barrier: Barrier, plane_h: f64) -> Result<Press, String> {
         .map(|s| {
             summarize(
                 &mesh,
-                barrier,
+                setup,
                 plane_h,
                 &rest,
                 &s.x_final,
@@ -622,7 +745,7 @@ fn press_tet4_yeoh(barrier: Barrier, plane_h: f64) -> Result<Press, String> {
 
 /// Tet10 × Neo-Hookean — the element baseline, and the configuration
 /// `tet10_indentation_demand1` already exercises. Same plate, same contact.
-fn press_tet10_nh(barrier: Barrier, plane_h: f64) -> Result<Press, String> {
+fn press_tet10_nh(setup: Setup, plane_h: f64) -> Result<Press, String> {
     let tet4 = tet4_nh();
     let mesh = Tet10Mesh::<NeoHookean>::from_tet4(&tet4);
     let pins = top_face_pins(&mesh);
@@ -632,7 +755,7 @@ fn press_tet10_nh(barrier: Barrier, plane_h: f64) -> Result<Press, String> {
         CpuNewtonSolver::new(
             Tet10,
             mesh.clone(),
-            barrier.against(plane_h),
+            setup.against(plane_h),
             config(),
             BoundaryConditions::new(pins, Vec::new()),
         );
@@ -641,7 +764,7 @@ fn press_tet10_nh(barrier: Barrier, plane_h: f64) -> Result<Press, String> {
         .map(|s| {
             summarize(
                 &mesh,
-                barrier,
+                setup,
                 plane_h,
                 &rest,
                 &s.x_final,
@@ -745,11 +868,7 @@ const GATE_MAX_PLANE_H: f64 = 0.0010;
 /// Returns one entry per attempted plane height. The mesh, pins and rest
 /// configuration are built once; only the contact primitive changes per rung,
 /// which is the same per-increment rebuild `tet10_indentation_demand1` uses.
-fn ramp_tet10_yeoh(
-    barrier: Barrier,
-    step: f64,
-    max_plane_h: f64,
-) -> Vec<(f64, Result<Press, String>)> {
+fn ramp_tet10_yeoh(setup: Setup, step: f64, max_plane_h: f64) -> Vec<(f64, Result<Press, String>)> {
     let tet4 = tet4_yeoh();
     let mesh = Tet10Mesh::<Yeoh>::from_tet4(&tet4);
     let pins = top_face_pins(&mesh);
@@ -770,7 +889,7 @@ fn ramp_tet10_yeoh(
             CpuNewtonSolver::new(
                 Tet10,
                 mesh.clone(),
-                barrier.against(h),
+                setup.against(h),
                 config(),
                 BoundaryConditions::new(pins.clone(), Vec::new()),
             );
@@ -783,7 +902,7 @@ fn ramp_tet10_yeoh(
             Ok(step) => {
                 let p = summarize(
                     &mesh,
-                    barrier,
+                    setup,
                     h,
                     &rest,
                     &step.x_final,
@@ -978,14 +1097,20 @@ fn ramp_increment_refinement_extends_the_envelope_without_removing_it() {
 #[test]
 fn kappa_reaches_the_solver() {
     let soft = SOFT_BARRIER;
-    let stiff = Barrier {
-        kappa: 10.0 * SOFT_BARRIER.kappa,
-        d_hat: D_HAT,
+    let stiff = Setup {
+        barrier: Barrier {
+            kappa: 10.0 * SOFT_BARRIER.barrier.kappa,
+            d_hat: D_HAT,
+        },
+        indenter: Indenter::Plane,
     };
     let a = press_tet10_yeoh(soft, REST_PLANE_H).expect("soft kappa must converge at rest");
     let b = press_tet10_yeoh(stiff, REST_PLANE_H).expect("10x kappa must converge at rest");
-    eprintln!("  kappa {:e}: Fz {:e} N", soft.kappa, a.net_force_z);
-    eprintln!("  kappa {:e}: Fz {:e} N", stiff.kappa, b.net_force_z);
+    eprintln!("  kappa {:e}: Fz {:e} N", soft.barrier.kappa, a.net_force_z);
+    eprintln!(
+        "  kappa {:e}: Fz {:e} N",
+        stiff.barrier.kappa, b.net_force_z
+    );
     assert!(
         (a.net_force_z - b.net_force_z).abs() > 0.0,
         "10x kappa produced an identical contact force ({:e} N) — kappa is not \
@@ -1015,11 +1140,14 @@ fn the_armijo_wall_against_barrier_stiffness() {
     );
     let mut rows = Vec::new();
     for exp in 2..=8 {
-        let barrier = Barrier {
-            kappa: 10f64.powi(exp),
-            d_hat: D_HAT,
+        let setup = Setup {
+            barrier: Barrier {
+                kappa: 10f64.powi(exp),
+                d_hat: D_HAT,
+            },
+            indenter: Indenter::Plane,
         };
-        let rungs = ramp_tet10_yeoh(barrier, RAMP_STEP, RAMP_MAX_PLANE_H);
+        let rungs = ramp_tet10_yeoh(setup, RAMP_STEP, RAMP_MAX_PLANE_H);
         let ok: Vec<&Press> = rungs.iter().filter_map(|(_, r)| r.as_ref().ok()).collect();
         let deepest_plane = rungs.iter().rev().find(|(_, r)| r.is_ok()).map(|(h, _)| *h);
         let err = rungs.iter().find_map(|(_, r)| r.as_ref().err()).cloned();
@@ -1028,7 +1156,7 @@ fn the_armijo_wall_against_barrier_stiffness() {
         eprintln!(
             "  kappa {:8.0e}: {:2} rungs, deepest plane {:+.3} mm, disp {:.4} mm, \
              min_sd {:+.4} mm, ends {}",
-            barrier.kappa,
+            setup.barrier.kappa,
             ok.len(),
             deepest_plane.unwrap_or(f64::NAN) * 1e3,
             max_disp * 1e3,
@@ -1042,10 +1170,10 @@ fn the_armijo_wall_against_barrier_stiffness() {
             assert!(
                 p.min_sd > 0.0,
                 "kappa {:e} converged a penetrating rung: {p:?}",
-                barrier.kappa,
+                setup.barrier.kappa,
             );
         }
-        rows.push((barrier.kappa, max_disp, min_sd, err));
+        rows.push((setup.barrier.kappa, max_disp, min_sd, err));
     }
 
     let depths: Vec<f64> = rows.iter().map(|(_, d, _, _)| *d).collect();
@@ -1196,5 +1324,140 @@ fn the_vertex_barrier_contacts_vertices_that_are_in_no_tetrahedron() {
         min_sd10 > 0.0,
         "the face path must see only live boundary vertices; it reported \
          min_sd {min_sd10:e}",
+    );
+}
+
+// ── the curved cell ─────────────────────────────────────────────────
+
+/// The curved cell must actually carry curvature.
+///
+/// The analogue of the `boundary_faces6` selector gate, one level up: there,
+/// the risk was measuring the vertex path while believing it was the face
+/// path; here, it is running a "curved" fixture whose barrier tangent is
+/// arithmetically identical to the flat one. `Sdf::hessian` defaults to the
+/// **zero matrix**, so an indenter that forgets to override it is flat as far
+/// as the assembled tangent is concerned, however round it looks.
+#[test]
+fn the_curved_cell_carries_a_nonzero_hessian_and_the_flat_one_does_not() {
+    let flat = Indenter::Plane.at(REST_PLANE_H);
+    let curved = Indenter::Sphere.at(REST_PLANE_H);
+
+    // Both surfaces pass through the same apex point, so the two cells are
+    // positioned comparably rather than differing in standoff as well as shape.
+    let apex = Point3::from(Vec3::new(0.0, 0.0, REST_PLANE_H));
+    assert!(
+        flat.eval(apex).abs() < 1.0e-12 && curved.eval(apex).abs() < 1.0e-12,
+        "both indenters must have their surface at REST_PLANE_H: flat {:e}, curved {:e}",
+        flat.eval(apex),
+        curved.eval(apex),
+    );
+
+    // Inside the contact patch, where it matters.
+    let probe = Point3::from(Vec3::new(0.005, 0.0, 0.0));
+    let flat_h = flat.hessian(probe);
+    let curved_h = curved.hessian(probe);
+    eprintln!(
+        "  |hessian| at the probe: flat {:e}, curved {:e}",
+        flat_h.norm(),
+        curved_h.norm()
+    );
+    assert_eq!(
+        flat_h,
+        nalgebra::Matrix3::zeros(),
+        "a plane's signed distance is affine, so its hessian must be exactly zero",
+    );
+    assert!(
+        curved_h.norm() > 0.0 && curved_h.norm().is_finite(),
+        "the sphere must contribute a non-zero curvature term; it gave {:e}",
+        curved_h.norm(),
+    );
+
+    // The barrier's curvature term scales with 1/R, so a sphere that is
+    // effectively flat at this scale would pass the test above while changing
+    // nothing. Check the magnitude is the 1/R the geometry implies.
+    let expected = 1.0 / SPHERE_R;
+    assert!(
+        (curved_h.norm() - expected * 2.0_f64.sqrt()).abs() < 0.2 * expected,
+        "a sphere's hessian is (I - n n^T)/|p-c|, norm sqrt(2)/R = {:e} near the \
+         apex; got {:e}",
+        expected * 2.0_f64.sqrt(),
+        curved_h.norm(),
+    );
+}
+
+/// Does Tet10 × Yeoh converge when the contact carries curvature?
+///
+/// This is the cell `insertion_sim` has and the one a flat fixture
+/// structurally cannot reach. Reported against the flat cell at the same
+/// heights, same `(κ, d̂)`, same mesh — the only thing varied is the shape.
+#[test]
+fn tet10_yeoh_converges_against_a_curved_indenter() {
+    let thickness = 2.0 * HALF[2];
+    let rest = press_tet10_yeoh(CURVED, REST_PLANE_H);
+    eprintln!("  curved, rest contact: {rest:?}");
+    let rest = rest.expect("Tet10 x Yeoh must converge against a curved indenter at rest");
+
+    assert!(
+        rest.n_pairs > 0,
+        "the curved indenter must engage: {rest:?}",
+    );
+    assert!(
+        rest.min_sd > 0.0,
+        "curved contact must not penetrate: min_sd {:e} m",
+        rest.min_sd,
+    );
+    assert!(
+        rest.net_force_z > 0.0 && rest.net_force_z.is_finite(),
+        "curved contact must push the plate up; got {:e} N",
+        rest.net_force_z,
+    );
+
+    // A curved indenter engages a PATCH, not the whole face. If it engaged as
+    // many pairs as the plane, the sphere is flat at this scale and the cell is
+    // curved in name only.
+    let flat = press_tet10_yeoh(BASELINE, REST_PLANE_H).expect("flat cell converges");
+    eprintln!("  flat,   rest contact: {flat:?}");
+    assert!(
+        rest.n_pairs < flat.n_pairs,
+        "the sphere must engage fewer pairs than the plane ({} vs {}) or it is \
+         not meaningfully curved at this scale",
+        rest.n_pairs,
+        flat.n_pairs,
+    );
+
+    let rungs = ramp_tet10_yeoh(CURVED, RAMP_STEP, GATE_MAX_PLANE_H);
+    for (h, r) in &rungs {
+        match r {
+            Ok(p) => eprintln!(
+                "  apex {:+.2} mm: defl {:5.2} % of thickness, iters {:2}, r {:.2e}, \
+                 disp {:.4} mm, Fz {:.4e} N, p_peak {:.3e} Pa (area {:.2e} vs median \
+                 {:.2e} m2), pairs {} ({} degenerate), min_sd {:+.4} mm",
+                h * 1e3,
+                100.0 * p.max_disp / thickness,
+                p.iters,
+                p.residual,
+                p.max_disp * 1e3,
+                p.net_force_z,
+                p.peak_pressure,
+                p.peak_area,
+                p.median_area,
+                p.n_pairs,
+                p.degenerate_pairs,
+                p.min_sd * 1e3,
+            ),
+            Err(e) => eprintln!("  apex {:+.2} mm: {e}", h * 1e3),
+        }
+    }
+    let converged: Vec<&Press> = rungs.iter().filter_map(|(_, r)| r.as_ref().ok()).collect();
+    for p in &converged {
+        assert!(
+            p.min_sd > 0.0 && p.n_pairs > 0 && p.net_force_z > 0.0,
+            "a converged curved rung must be loaded and non-penetrating: {p:?}",
+        );
+    }
+    assert!(
+        converged.len() >= 2,
+        "the curved ramp must clear at least two rungs; it cleared {}",
+        converged.len(),
     );
 }
