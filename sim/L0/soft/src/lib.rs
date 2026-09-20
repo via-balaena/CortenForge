@@ -66,7 +66,8 @@ pub use material::{
 };
 pub use mesh::{
     HandBuiltTetMesh, Mesh, MeshAdjacency, QualityMetrics, SingleTetMesh, Tet10Mesh, Tet10Topology,
-    TetId, VertexId, boundary_vertex_areas, enrich_tet4_to_tet10, referenced_vertices,
+    TetId, VertexId, boundary_faces_on_isosurface, boundary_vertex_areas, enrich_tet4_to_tet10,
+    referenced_vertices,
 };
 pub use observable::{BasicObservable, Observable, PressureField, StressField, TemperatureField};
 pub use readout::{

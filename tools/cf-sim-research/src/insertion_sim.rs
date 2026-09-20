@@ -73,18 +73,17 @@ use mesh_sdf::{CachedGridSdf, PseudoNormalSign, Signed, TriMeshDistance};
 use mesh_types::IndexedMesh;
 use nalgebra::{Isometry3, Matrix3, Point3, Vector3};
 use sim_ml_chassis::Tensor;
-#[cfg(test)]
-use sim_soft::ContactPair;
 use sim_soft::material::silicone_table::{
     DRAGON_SKIN_10A, DRAGON_SKIN_15, DRAGON_SKIN_20A, DRAGON_SKIN_30A, ECOFLEX_00_10,
     ECOFLEX_00_20, ECOFLEX_00_30, ECOFLEX_00_50,
 };
+use sim_soft::readout::{ConformityParams, ConformityReadout, conformity_breakdown};
 use sim_soft::{
-    Aabb3, BoundaryConditions, ConstantField, ContactPairReadout, CpuNewtonSolver, Field,
-    LayeredScalarField, LmConfig, Material, MaterialField, Mesh, MeshingHints, PenaltyRigidContact,
-    Sdf, SdfMeshedTetMesh, ShoreReading, SiliconeMaterial, Solver, SolverConfig, SolverFailure,
-    Tet4, TetId, Vec3, VertexId, Yeoh, filter_pair_readouts_to_referenced,
-    pick_vertices_by_predicate, referenced_vertices,
+    Aabb3, BoundaryConditions, ConstantField, ContactPair, ContactPairReadout, CpuNewtonSolver,
+    Field, LayeredScalarField, LmConfig, Material, MaterialField, Mesh, MeshingHints,
+    PenaltyRigidContact, Sdf, SdfMeshedTetMesh, ShoreReading, SiliconeMaterial, Solver,
+    SolverConfig, SolverFailure, Tet4, TetId, Vec3, VertexId, Yeoh, boundary_faces_on_isosurface,
+    filter_pair_readouts_to_referenced, pick_vertices_by_predicate, referenced_vertices,
 };
 
 /// Weld epsilon (meters) for the pre-decimation vertex weld — matches
@@ -554,7 +553,22 @@ pub struct InsertionGeometry {
     /// drove the body geometry; the solve offsets it per interference.
     pub intruder: GridSdf,
     /// Scan-SDF offset (m) of the cavity surface — `-cavity_inset_m`.
+    ///
+    /// This is the level that defines Γ, the intended contact surface: the
+    /// cavity wall is the scan isosurface at this offset.
     pub cavity_offset_m: f64,
+    /// Ultimate tensile strength (Pa) of the **innermost** layer — the one
+    /// that actually contacts the intruder.
+    ///
+    /// Read as the conformity reward's peak-pressure ceiling `p_max`. Layers
+    /// accumulate outward from the cavity (see [`layer_boundary_thresholds`]),
+    /// so `design.layers[0]` is the contacting material.
+    ///
+    /// ⚠ `NaN` when the innermost layer's material was built by
+    /// `SiliconeMaterial::from_measured`, which cannot know tensile strength.
+    /// The peak term then reports `NaN` and `score_with` drops it rather than
+    /// scoring against an invented ceiling.
+    pub cavity_tensile_strength_pa: f64,
     /// Scan-SDF offset (m) of the outer skin —
     /// `total_thickness - cavity_inset_m`.
     pub outer_offset_m: f64,
@@ -841,12 +855,21 @@ pub fn build_insertion_geometry(
         })
         .collect();
 
+    // Layers accumulate outward from the cavity, so layer 0 is the material
+    // that actually touches the intruder — its tensile strength is the ceiling
+    // the conformity reward's peak barrier diverges at.
+    let cavity_tensile_strength_pa = match design.layers.first() {
+        Some(inner) => silicone_for_anchor(&inner.anchor_key)?.tensile_strength_pa,
+        None => f64::NAN,
+    };
+
     Ok(InsertionGeometry {
         mesh,
         // The scan SDF doubles as the rigid intruder — the press-fit
         // ramp (7.2) drives this into the cavity.
         intruder: scan_sdf,
         cavity_offset_m,
+        cavity_tensile_strength_pa,
         outer_offset_m,
         bounds,
         cell_size_m,
@@ -1191,6 +1214,10 @@ pub fn run_single_insertion_step(
     }
 
     let InsertionGeometry {
+        // Not used here: a single static step records no conformity score —
+        // only the ramps aggregate one, because coverage and the peak barrier
+        // are read across the engagement sweep.
+        cavity_tensile_strength_pa: _,
         mesh,
         intruder,
         cavity_offset_m,
@@ -1690,6 +1717,16 @@ pub struct StepReadout {
     /// Maximum Frobenius norm of first-Piola stress (Pa) across every
     /// tet — the peak stress hotspot magnitude.
     pub max_first_piola_frobenius_pa: f64,
+    /// Conformity reward for this step, computed over Γ.
+    ///
+    /// `None` when Γ selected no faces or had no area — a score against
+    /// nothing is meaningless, and its absence marks a scene-setup defect
+    /// rather than a bad design.
+    ///
+    /// ⚠ Read [`ConformityReadout::lq_ratio`] before trusting `peak_bound`,
+    /// and [`ConformityReadout::non_finite_pressures`] before trusting any of
+    /// it. `stiffness_bound` is always `NaN` — `k_min` has no source.
+    pub conformity: Option<ConformityReadout>,
     /// Mean strain-energy density (J/m³) across every tet — the
     /// per-step "how strained" scalar; integrating `× tet_volume`
     /// recovers total elastic energy (volumes are in the mesh's
@@ -1905,11 +1942,175 @@ pub fn compute_tet_readouts(
         .collect()
 }
 
+/// Γ — the **intended contact surface** for an insertion scene.
+///
+/// The conformity reward integrates over Γ and divides coverage by `|Γ|`, so
+/// Γ must be the cavity wall alone. `Mesh::boundary_faces` also spans the
+/// outer envelope, which can never contact; using it would cap coverage
+/// structurally below 1.
+///
+/// # Rest membership, deformed area
+///
+/// ⚠ These come from different configurations, on purpose.
+///
+/// **Membership is evaluated on the REST positions.** Γ is a statement of
+/// design intent — which surface was *meant* to contact — and the scan SDF
+/// describes the undeformed geometry. Evaluating it at deformed positions
+/// would ask where the material has moved to, which is a different question.
+///
+/// **Area is evaluated on the DEFORMED positions**, because
+/// `ContactPairReadout::tributary_area` is a deformed area. Dividing deformed
+/// numerator areas by a rest `|Γ|` would let a stretched sleeve score coverage
+/// above 1.
+pub(crate) struct GammaMask {
+    face_flags: Vec<bool>,
+    vertex_flags: Vec<bool>,
+}
+
+impl GammaMask {
+    /// Build from the rest configuration and the scan SDF at the cavity level.
+    ///
+    /// # ⚠ The rim rule: a vertex counts if ANY of its faces is in Γ
+    ///
+    /// A vertex on the rim belongs to both cavity-wall and outer-envelope
+    /// faces. This marks it in-Γ. Two alternatives were considered:
+    ///
+    /// - **All-faces** (a vertex counts only if *every* incident face is in Γ)
+    ///   would exclude the entire rim ring, and the rim is where
+    ///   `04-rim.md` says contact pressure concentrates — dropping it
+    ///   discards the highest-pressure band from the very terms meant to
+    ///   measure it.
+    /// - **Area-weighted partial membership** is more faithful but needs a
+    ///   per-vertex fractional weight the `ContactPairReadout` surface does
+    ///   not carry, so it cannot be done without widening that type.
+    ///
+    /// Any-face is chosen because it errs toward *including* the rim, which is
+    /// where `04-rim.md` says contact pressure concentrates.
+    ///
+    /// ⛔ **But be clear which side it inflates.** The vertex rule decides the
+    /// coverage **numerator** (which readouts count); `|Γ|` is computed from
+    /// **faces**. So any-face makes coverage *higher*, i.e. flattering, not
+    /// conservative — an earlier version of this comment had that backwards.
+    ///
+    /// ⚠ It also means **coverage can exceed 1** where Γ's vertex set spills
+    /// onto unflagged faces: `boundary_vertex_areas` gives a vertex a third of
+    /// *every* incident face, including faces absent from `|Γ|`. Measured on
+    /// the cube fixture Γ happens to be closed — its 1202 vertices' tributary
+    /// areas sum to exactly `|Γ|`, so coverage lands on 1.0 — but a cavity with
+    /// a real rim would spill. [`ConformityReadout::coverage_overflow`] flags
+    /// it rather than letting a >1 coverage read as excellent conformity.
+    ///
+    /// ⚠ A choice, not a derivation; the rim band is where `04-rim.md` says all
+    /// four terms are most fragile.
+    pub(crate) fn build(
+        rest_positions: &[Vec3],
+        boundary_faces: &[[VertexId; 3]],
+        n_vertices: usize,
+        sdf: &dyn Sdf,
+        cavity_offset_m: f64,
+    ) -> Self {
+        let (face_flags, _rest_area) =
+            boundary_faces_on_isosurface(rest_positions, boundary_faces, sdf, cavity_offset_m);
+        let mut vertex_flags = vec![false; n_vertices];
+        for (face, &on) in boundary_faces.iter().zip(&face_flags) {
+            if on {
+                for &v in face {
+                    vertex_flags[v as usize] = true;
+                }
+            }
+        }
+        Self {
+            face_flags,
+            vertex_flags,
+        }
+    }
+
+    /// Number of boundary faces in Γ — zero means the level selected nothing,
+    /// which makes every reward term meaningless and must not pass silently.
+    pub(crate) fn n_faces(&self) -> usize {
+        self.face_flags.iter().filter(|&&f| f).count()
+    }
+
+    /// `|Γ|` at the supplied (deformed) positions.
+    fn area_at(&self, positions: &[Vec3], boundary_faces: &[[VertexId; 3]]) -> f64 {
+        boundary_faces
+            .iter()
+            .zip(&self.face_flags)
+            .filter(|(_, on)| **on)
+            .map(|(&[a, b, c], _)| {
+                let (va, vb, vc) = (
+                    positions[a as usize],
+                    positions[b as usize],
+                    positions[c as usize],
+                );
+                0.5 * (vb - va).cross(&(vc - va)).norm()
+            })
+            .sum()
+    }
+
+    /// Whether a contact readout lands on Γ.
+    ///
+    /// A `Face` pair counts when **any** of its six P2 nodes is in Γ: the
+    /// barrier is integrated over the whole face, so a face straddling the Γ
+    /// boundary contributes load to it. ⚠ `insertion_sim` runs Tet4 today and
+    /// emits only `Vertex` pairs; this arm exists so the Tet10 face-barrier
+    /// path is not silently dropped when it lands.
+    fn contains(&self, readout: &ContactPairReadout) -> bool {
+        match readout.pair {
+            ContactPair::Vertex { vertex_id, .. } => self
+                .vertex_flags
+                .get(vertex_id as usize)
+                .copied()
+                .unwrap_or(false),
+            ContactPair::Face { nodes, .. } => nodes
+                .iter()
+                .any(|&v| self.vertex_flags.get(v as usize).copied().unwrap_or(false)),
+            _ => false,
+        }
+    }
+
+    /// The conformity reward for one step.
+    ///
+    /// Returns `None` when Γ is empty or has no area — a score computed
+    /// against nothing would be a number with no meaning, and the caller
+    /// should treat its absence as a scene-setup defect.
+    pub(crate) fn conformity(
+        &self,
+        positions: &[Vec3],
+        boundary_faces: &[[VertexId; 3]],
+        readouts: &[ContactPairReadout],
+        tensile_strength_pa: f64,
+    ) -> Option<ConformityReadout> {
+        let gamma_area = self.area_at(positions, boundary_faces);
+        // `is_nan()` spelled out: a NaN area must reject, and a negated
+        // partial-ord comparison hides that from the reader.
+        if self.n_faces() == 0 || gamma_area.is_nan() || gamma_area <= 0.0 {
+            return None;
+        }
+        // ⛔ A non-finite ceiling must not be scored. `p_th` derives from it,
+        // so every term would go NaN, `score_with` would drop all four, and
+        // the composed score would be 0.0 — which ranks ABOVE a measured poor
+        // design scoring negative. `SiliconeMaterial::from_measured` produces
+        // exactly this ceiling on purpose.
+        if !tensile_strength_pa.is_finite() || tensile_strength_pa <= 0.0 {
+            return None;
+        }
+        let on_gamma: Vec<ContactPairReadout> = readouts
+            .iter()
+            .filter(|r| self.contains(r))
+            .cloned()
+            .collect();
+        let params = ConformityParams::from_tensile_strength(tensile_strength_pa, gamma_area);
+        Some(conformity_breakdown(&on_gamma, &params))
+    }
+}
+
 /// Reduce per-tet readouts + orphan-filtered contact-pair readouts to
 /// the scalar [`StepReadout`] aggregates a single ramp step records.
 fn aggregate_step_readout(
     per_tet: &[TetReadout],
     contact_readouts: &[ContactPairReadout],
+    conformity: Option<ConformityReadout>,
 ) -> StepReadout {
     let n_active_contact_pairs = contact_readouts.len();
     let contact_force_total_n: Vec3 = contact_readouts
@@ -1962,6 +2163,7 @@ fn aggregate_step_readout(
         min_principal_stretch,
         max_first_piola_frobenius_pa,
         mean_strain_energy_density_j_per_m3,
+        conformity,
     }
 }
 
@@ -2064,6 +2266,7 @@ pub fn run_insertion_ramp(geometry: InsertionGeometry, n_steps: usize) -> Result
     }
 
     let InsertionGeometry {
+        cavity_tensile_strength_pa,
         mesh,
         intruder,
         cavity_offset_m,
@@ -2096,6 +2299,18 @@ pub fn run_insertion_ramp(geometry: InsertionGeometry, n_steps: usize) -> Result
     let tets: Vec<[VertexId; 4]> = (0..n_tets as TetId).map(|t| mesh.tet_vertices(t)).collect();
     let materials: Vec<Yeoh> = mesh.materials().to_vec();
     let referenced: Vec<VertexId> = referenced_vertices(&mesh);
+
+    // Γ is a property of the REST configuration — which surface was meant to
+    // contact — so it is built once here rather than per step. Its AREA is
+    // re-measured per step on the deformed positions; see `GammaMask`.
+    let gamma_faces: Vec<[VertexId; 3]> = Mesh::<Yeoh>::boundary_faces(&mesh).to_vec();
+    let gamma = GammaMask::build(
+        &rest_positions,
+        &gamma_faces,
+        Mesh::<Yeoh>::n_vertices(&mesh),
+        &intruder,
+        cavity_offset_m,
+    );
 
     // Full press-fit interference = the cavity inset; the ramp seats
     // the intruder there in `n_steps` equal increments.
@@ -2146,7 +2361,13 @@ pub fn run_insertion_ramp(geometry: InsertionGeometry, n_steps: usize) -> Result
                     filter_pair_readouts_to_referenced(raw_readouts, &referenced);
                 let per_tet =
                     compute_tet_readouts(&rest_positions, &positions_k, &tets, &materials);
-                let step_readout = aggregate_step_readout(&per_tet, &contact_readouts);
+                let conformity = gamma.conformity(
+                    &positions_k,
+                    &gamma_faces,
+                    &contact_readouts,
+                    cavity_tensile_strength_pa,
+                );
+                let step_readout = aggregate_step_readout(&per_tet, &contact_readouts, conformity);
 
                 steps.push(RampStep {
                     interference_m,
@@ -2617,6 +2838,7 @@ pub fn run_sliding_insertion_ramp(
     }
 
     let InsertionGeometry {
+        cavity_tensile_strength_pa,
         mesh,
         intruder,
         cavity_offset_m,
@@ -2643,6 +2865,18 @@ pub fn run_sliding_insertion_ramp(
     let tets: Vec<[VertexId; 4]> = (0..n_tets as TetId).map(|t| mesh.tet_vertices(t)).collect();
     let materials: Vec<Yeoh> = mesh.materials().to_vec();
     let referenced: Vec<VertexId> = referenced_vertices(&mesh);
+
+    // Γ is a property of the REST configuration — which surface was meant to
+    // contact — so it is built once here rather than per step. Its AREA is
+    // re-measured per step on the deformed positions; see `GammaMask`.
+    let gamma_faces: Vec<[VertexId; 3]> = Mesh::<Yeoh>::boundary_faces(&mesh).to_vec();
+    let gamma = GammaMask::build(
+        &rest_positions,
+        &gamma_faces,
+        Mesh::<Yeoh>::n_vertices(&mesh),
+        &intruder,
+        cavity_offset_m,
+    );
     let l_m = polyline_arc_length_m(centerline_polyline_m);
 
     let config = insertion_solver_config();
@@ -2708,7 +2942,13 @@ pub fn run_sliding_insertion_ramp(
                     filter_pair_readouts_to_referenced(raw_readouts, &referenced);
                 let per_tet =
                     compute_tet_readouts(&rest_positions, &positions_k, &tets, &materials);
-                let step_readout = aggregate_step_readout(&per_tet, &contact_readouts);
+                let conformity = gamma.conformity(
+                    &positions_k,
+                    &gamma_faces,
+                    &contact_readouts,
+                    cavity_tensile_strength_pa,
+                );
+                let step_readout = aggregate_step_readout(&per_tet, &contact_readouts, conformity);
 
                 steps.push(SlideRampStep {
                     slide_fraction_t: t,
@@ -3875,12 +4115,382 @@ mod tests {
         );
     }
 
+    /// A 1 mm square split into two triangles, lying on the plane x = `at_x`.
+    ///
+    /// ⚠ Deliberately SMALL. The Γ tolerance is the face's own mean edge
+    /// length, so a unit-sized triangle has `L_e ≈ 1.14` and would swallow any
+    /// realistic offset whole — an earlier version of these fixtures used unit
+    /// squares and could not tell the cavity level from the zero level.
+    const FACE_MM: f64 = 0.001;
+
+    fn square_at(at_x: f64) -> (Vec<Vec3>, Vec<[VertexId; 3]>) {
+        let e = FACE_MM;
+        let pos = vec![
+            Vec3::new(at_x, 0.0, 0.0),
+            Vec3::new(at_x, e, 0.0),
+            Vec3::new(at_x, e, e),
+            Vec3::new(at_x, 0.0, e),
+        ];
+        (pos, vec![[0, 1, 2], [0, 2, 3]])
+    }
+
+    /// An SDF whose zero level is the plane `x = 0`, so the isosurface at
+    /// `level = d` is the plane `x = d`. Exact, so Γ membership is decidable
+    /// by hand.
+    struct PlaneX;
+
+    impl Sdf for PlaneX {
+        fn eval(&self, p: nalgebra::Point3<f64>) -> f64 {
+            p.x
+        }
+        fn grad(&self, _p: nalgebra::Point3<f64>) -> Vec3 {
+            Vec3::new(1.0, 0.0, 0.0)
+        }
+    }
+
+    /// Γ membership is read at the CAVITY level, not the zero level. An
+    /// implementation that ignored `cavity_offset_m` would pass a zero-level
+    /// test and silently select the wrong surface on every real scene.
+    #[test]
+    fn gamma_mask_selects_the_cavity_level_not_the_zero_level() {
+        let (pos, faces) = square_at(0.010);
+        let on = GammaMask::build(&pos, &faces, pos.len(), &PlaneX, 0.010);
+        assert_eq!(on.n_faces(), 2, "both triangles sit on x = 0.010");
+
+        let off = GammaMask::build(&pos, &faces, pos.len(), &PlaneX, 0.0);
+        assert_eq!(off.n_faces(), 0, "nothing sits on x = 0");
+    }
+
+    /// `|Γ|` is measured on the positions handed in, not baked at build time —
+    /// the step loop passes DEFORMED positions because
+    /// `ContactPairReadout::tributary_area` is a deformed area.
+    #[test]
+    fn gamma_area_tracks_the_supplied_positions() {
+        let (rest, faces) = square_at(0.010);
+        let mask = GammaMask::build(&rest, &faces, rest.len(), &PlaneX, 0.010);
+
+        let readout = |vid: VertexId| ContactPairReadout {
+            pair: ContactPair::Vertex {
+                vertex_id: vid,
+                primitive_id: 0,
+            },
+            position: Vec3::zeros(),
+            sd: -1e-4,
+            normal: Vec3::new(1.0, 0.0, 0.0),
+            force_on_soft: Vec3::new(1.0, 0.0, 0.0),
+            tributary_area: 0.25,
+            pressure: 1.0e5,
+        };
+        let readouts: Vec<ContactPairReadout> = (0..4).map(readout).collect();
+
+        let rest_score = mask
+            .conformity(&rest, &faces, &readouts, 1.379e6)
+            .expect("Γ is non-empty");
+
+        // Stretch the square 2x in z: |Γ| doubles, so coverage halves.
+        let stretched: Vec<Vec3> = rest
+            .iter()
+            .map(|p| Vec3::new(p.x, p.y, p.z * 2.0))
+            .collect();
+        let stretched_score = mask
+            .conformity(&stretched, &faces, &readouts, 1.379e6)
+            .expect("Γ is still non-empty");
+
+        assert!(
+            stretched_score.breakdown.coverage < rest_score.breakdown.coverage * 0.6,
+            "doubling |Γ| must roughly halve coverage: {} vs {}",
+            stretched_score.breakdown.coverage,
+            rest_score.breakdown.coverage,
+        );
+    }
+
+    /// Readouts OFF Γ must be excluded from the score.
+    ///
+    /// ⚠ Every other Γ test here places its readouts on Γ, so a `contains`
+    /// that accepted everything survived them all. This is the gate that
+    /// catches it: contacts on the outer envelope — which can never be
+    /// intended contact — must not inflate coverage.
+    #[test]
+    fn readouts_off_gamma_are_excluded_from_the_score() {
+        // Two surfaces: Γ at x = 0.010, an "envelope" at x = 0.050.
+        let e = FACE_MM;
+        let mut pos = Vec::new();
+        let mut faces = Vec::new();
+        let mut base: VertexId = 0;
+        for x in [0.010_f64, 0.050] {
+            pos.push(Vec3::new(x, 0.0, 0.0));
+            pos.push(Vec3::new(x, e, 0.0));
+            pos.push(Vec3::new(x, e, e));
+            faces.push([base, base + 1, base + 2]);
+            base += 3;
+        }
+        let mask = GammaMask::build(&pos, &faces, pos.len(), &PlaneX, 0.010);
+        assert_eq!(mask.n_faces(), 1, "only the x = 0.010 face is Γ");
+
+        let readout = |vid: VertexId| ContactPairReadout {
+            pair: ContactPair::Vertex {
+                vertex_id: vid,
+                primitive_id: 0,
+            },
+            position: Vec3::zeros(),
+            sd: -1e-4,
+            normal: Vec3::new(1.0, 0.0, 0.0),
+            force_on_soft: Vec3::new(1.0, 0.0, 0.0),
+            // Each readout carries a third of the Γ face's area, so the three
+            // Γ vertices alone tile it exactly and coverage lands at 1.
+            tributary_area: 0.5 * e * e / 3.0,
+            // Well past p_th (5 % of tensile = 69 kPa) so the coverage
+            // logistic is fully saturated — at 100 kPa it reads 0.99975 and a
+            // 1e-6 assertion fails on correct behaviour.
+            pressure: 5.0e5,
+        };
+        // Vertices 0..3 are on Γ; 3..6 are on the envelope.
+        let all: Vec<ContactPairReadout> = (0..6).map(readout).collect();
+
+        let score = mask
+            .conformity(&pos, &faces, &all, 1.379e6)
+            .expect("Γ is non-empty");
+
+        assert!(
+            (score.breakdown.coverage - 1.0).abs() < 1e-6,
+            "only the three Γ readouts may count — accepting all six would \
+             roughly double coverage. got {}",
+            score.breakdown.coverage,
+        );
+    }
+
+    /// A non-finite ceiling is refused, not scored.
+    ///
+    /// ⛔ `p_th` derives from tensile strength, so a `NaN` ceiling makes every
+    /// term `NaN`; `score_with` drops all four and returns `0.0`, which ranks
+    /// ABOVE a measured poor design scoring negative.
+    /// `SiliconeMaterial::from_measured` produces exactly this ceiling on
+    /// purpose, so a design using a measured inner layer would otherwise score
+    /// better than a real one.
+    #[test]
+    fn a_non_finite_ceiling_is_refused_rather_than_scored() {
+        let (pos, faces) = square_at(0.010);
+        let mask = GammaMask::build(&pos, &faces, pos.len(), &PlaneX, 0.010);
+        assert!(
+            mask.n_faces() > 0,
+            "Γ must be non-empty or this proves nothing"
+        );
+
+        let readouts = vec![ContactPairReadout {
+            pair: ContactPair::Vertex {
+                vertex_id: 0,
+                primitive_id: 0,
+            },
+            position: Vec3::zeros(),
+            sd: -1e-4,
+            normal: Vec3::new(1.0, 0.0, 0.0),
+            force_on_soft: Vec3::new(1.0, 0.0, 0.0),
+            tributary_area: 1.0e-7,
+            pressure: 5.0e5,
+        }];
+
+        // A finite ceiling scores.
+        assert!(
+            mask.conformity(&pos, &faces, &readouts, 1.379e6).is_some(),
+            "a finite ceiling must produce a score",
+        );
+        // NaN, infinite and non-positive ceilings must not.
+        for bad in [f64::NAN, f64::INFINITY, 0.0, -1.0] {
+            assert!(
+                mask.conformity(&pos, &faces, &readouts, bad).is_none(),
+                "ceiling {bad} must be refused, not scored",
+            );
+        }
+    }
+
+    /// A Tet10 `Face` pair is judged by its nodes, not dropped.
+    ///
+    /// ⚠ `insertion_sim` runs Tet4 today and emits only `Vertex` pairs, so no
+    /// other test here exercises this arm — a mutation that returned `false`
+    /// for every `Face` survived them all. When the Tet10 face barrier lands
+    /// (renovation item 3) that would silently discard the entire contact set
+    /// and report coverage 0 on a perfectly good design.
+    #[test]
+    fn tet10_face_pairs_are_judged_by_their_nodes() {
+        let (pos, faces) = square_at(0.010);
+        let mask = GammaMask::build(&pos, &faces, pos.len(), &PlaneX, 0.010);
+        assert!(
+            mask.n_faces() > 0,
+            "Γ must be non-empty for this to mean anything"
+        );
+
+        let face_pair = |nodes: [VertexId; 6]| ContactPairReadout {
+            pair: ContactPair::Face {
+                nodes,
+                primitive_id: 0,
+                rest_area: 1.0e-6,
+            },
+            position: Vec3::zeros(),
+            sd: -1e-4,
+            normal: Vec3::new(1.0, 0.0, 0.0),
+            force_on_soft: Vec3::new(1.0, 0.0, 0.0),
+            tributary_area: 1.0e-7,
+            pressure: 5.0e5,
+        };
+
+        // All six nodes are Γ vertices (0..4 exist on the square) -> counted.
+        let on_gamma = mask
+            .conformity(&pos, &faces, &[face_pair([0, 1, 2, 0, 1, 2])], 1.379e6)
+            .expect("Γ non-empty");
+        assert!(
+            on_gamma.breakdown.coverage > 0.0,
+            "a Face pair on Γ must contribute, got coverage {}",
+            on_gamma.breakdown.coverage,
+        );
+
+        // No node is a Γ vertex -> excluded, so coverage collapses to zero.
+        let off_gamma = mask
+            .conformity(
+                &pos,
+                &faces,
+                &[face_pair([90, 91, 92, 93, 94, 95])],
+                1.379e6,
+            )
+            .expect("Γ non-empty");
+        assert!(
+            off_gamma.breakdown.coverage.abs() < 1e-12,
+            "a Face pair with no Γ node must not contribute, got {}",
+            off_gamma.breakdown.coverage,
+        );
+    }
+
+    /// End-to-end: a real ramp must produce a usable conformity score.
+    ///
+    /// `#[ignore]` because it runs a full FEM ramp (~24k tets) — too slow for
+    /// the default suite, but the only test here that exercises the reward on
+    /// an actual scene rather than a synthetic fixture. Run with
+    /// `--ignored --nocapture` to see the numbers.
+    ///
+    /// ★ **This test exists because a read-through could not have found what
+    /// it found.** Every other gate on this path uses hand-built pressure
+    /// arrays; running it once revealed `P_TH_FRACTION_OF_TENSILE` was
+    /// mis-scaled by ~25×, putting the contact threshold *inside* the
+    /// operating pressure distribution so that coverage measured "fraction
+    /// above 69 kPa" rather than "fraction in contact".
+    ///
+    /// ⚠ Gates invariants and the threshold separation, **not** exact values —
+    /// solver detail and mesher version move the numbers, and pinning them
+    /// would produce a test that fails on correct changes.
+    #[test]
+    #[ignore = "full FEM ramp; run with --ignored"]
+    fn real_ramp_produces_a_usable_conformity_score() {
+        let scan = small_test_cube();
+        let design = SimDesign {
+            cavity_inset_m: 0.003,
+            layers: vec![layer(0.005, "ECOFLEX_00_30")],
+        };
+        let geometry =
+            build_insertion_geometry(&scan, &design, &[], 2_500, 0.004).expect("geometry builds");
+        let tensile = geometry.cavity_tensile_strength_pa;
+        assert!(
+            tensile.is_finite() && tensile > 0.0,
+            "the innermost layer must carry a tensile strength, got {tensile}",
+        );
+        let p_th = sim_soft::readout::conformity::P_TH_FRACTION_OF_TENSILE * tensile;
+
+        let ramp = run_insertion_ramp(geometry, 3).expect("ramp runs");
+        let scored: Vec<&StepReadout> = ramp
+            .steps
+            .iter()
+            .map(|st| &st.readout)
+            .filter(|r| r.conformity.is_some())
+            .collect();
+        assert!(
+            !scored.is_empty(),
+            "no step produced a conformity score — Γ empty, or the ramp \
+             converged nothing ({} step(s) recorded)",
+            ramp.steps.len(),
+        );
+
+        for r in &scored {
+            let c = r.conformity.as_ref().expect("filtered to Some");
+            println!(
+                "  pairs {:4} | F {:7.3} N | unif {:+.4} cov {:.6} peak {:+.4} \
+                 | p_peak {:.0}/{:.0} Pa | peak/p_th {:.1} | lq {:.3}",
+                r.n_active_contact_pairs,
+                r.contact_force_magnitude_n,
+                c.breakdown.pressure_uniformity,
+                c.breakdown.coverage,
+                c.breakdown.peak_bound,
+                c.p_peak_smoothed,
+                c.p_peak_true,
+                c.p_peak_true / p_th,
+                c.lq_ratio,
+            );
+
+            assert_eq!(
+                c.non_finite_pressures, 0,
+                "a non-finite pressure means the readout path is mis-reporting \
+                 the force distribution, not that elements are unloaded",
+            );
+            assert!(
+                !c.coverage_overflow,
+                "coverage {} exceeded |Γ| — Γ's vertex set spilled onto faces \
+                 absent from the denominator. On this cube fixture Γ is closed \
+                 (its 1202 vertices' tributary areas sum to exactly |Γ|), so a \
+                 flag here means the Γ rule or the area accounting changed",
+                c.breakdown.coverage,
+            );
+            assert!(
+                (0.0..=1.0).contains(&c.breakdown.coverage),
+                "coverage must stay in [0, 1]. got {}",
+                c.breakdown.coverage,
+            );
+            assert!(
+                c.breakdown.pressure_uniformity <= 0.0,
+                "R_unif = -J_unif is a cost, so it can never be positive, got {}",
+                c.breakdown.pressure_uniformity,
+            );
+            assert!(
+                c.p_peak_smoothed <= c.p_peak_true + 1e-9,
+                "the L^q max must not exceed the true max: {} vs {}",
+                c.p_peak_smoothed,
+                c.p_peak_true,
+            );
+            assert!(
+                c.breakdown.stiffness_bound.is_nan(),
+                "k_min has no source; the term must stay NaN",
+            );
+
+            // ★ The regression guard for the mis-scaling this test found.
+            assert!(
+                c.p_peak_true / p_th > 10.0,
+                "p_th ({p_th:.0} Pa) must sit WELL BELOW the operating pressure \
+                 (peak {:.0} Pa, ratio {:.2}). At a ratio near 1 the threshold \
+                 falls inside the contact-pressure distribution and coverage \
+                 stops discriminating contact from no-contact — that is the \
+                 defect this test was written after.",
+                c.p_peak_true,
+                c.p_peak_true / p_th,
+            );
+        }
+    }
+
+    /// An empty Γ yields `None`, not a flattering score. A scene whose cavity
+    /// level selects nothing is a setup defect, and a number computed against
+    /// no surface would hide it.
+    #[test]
+    fn empty_gamma_reports_none_rather_than_a_score() {
+        let (pos, faces) = square_at(0.010);
+        let mask = GammaMask::build(&pos, &faces, pos.len(), &PlaneX, 9.0);
+        assert_eq!(mask.n_faces(), 0);
+        assert!(
+            mask.conformity(&pos, &faces, &[], 1.379e6).is_none(),
+            "no Γ must produce no score",
+        );
+    }
+
     /// `aggregate_step_readout` over an empty per-tet slice + empty
     /// contact readouts must produce finite zeros — degenerate but
     /// non-panicking.
     #[test]
     fn aggregate_step_readout_empty_is_zeroed() {
-        let r = aggregate_step_readout(&[], &[]);
+        let r = aggregate_step_readout(&[], &[], None);
         assert_eq!(r.n_active_contact_pairs, 0);
         assert!(r.contact_force_total_n.norm() < 1e-12);
         assert!((r.contact_force_magnitude_n).abs() < 1e-12);
@@ -3934,7 +4544,7 @@ mod tests {
             },
         ];
 
-        let r = aggregate_step_readout(&per_tet, &readouts);
+        let r = aggregate_step_readout(&per_tet, &readouts, None);
         assert_eq!(r.n_active_contact_pairs, 2);
         assert!((r.contact_force_total_n.z - 8.0).abs() < 1e-12);
         assert!((r.contact_force_magnitude_n - 8.0).abs() < 1e-12);

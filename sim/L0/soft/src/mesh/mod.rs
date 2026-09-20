@@ -14,6 +14,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
+use crate::sdf_bridge::Sdf;
 use nalgebra::Point3;
 
 use crate::Vec3;
@@ -445,6 +446,72 @@ pub fn boundary_vertex_areas(positions: &[Vec3], boundary_faces: &[[VertexId; 3]
         areas[c as usize] += third_area;
     }
     areas
+}
+
+/// Partition boundary faces by membership of the isosurface `sdf(x) = level`,
+/// returning per-face flags and the total area of the flagged set.
+///
+/// This is how a caller builds the **intended contact surface** Γ for the
+/// conformity reward ([`crate::readout::conformity`]) on a scene whose
+/// contacting surface is a known offset of a source SDF — for an insertion
+/// cavity, the scan isosurface at the cavity offset.
+///
+/// # The rule, and why it is this rule
+///
+/// A face is on the isosurface when
+///
+/// ```text
+///     | sdf(x_c) − level |  <  L_e
+/// ```
+///
+/// with `x_c` the face centroid and `L_e` the arithmetic mean of its three
+/// edge lengths. This is deliberately the same shape as the book Part 7 §02 §01
+/// rule that [`Mesh::interface_flags`] already ships (`|φ(x_c)| < L_e` over a
+/// tet's six edges) — a mesh cannot resolve a surface finer than its own
+/// element size, so the representative edge length is the natural tolerance and
+/// needs no new tuning parameter.
+///
+/// # ⚠ Why derive Γ rather than tag it
+///
+/// Γ is not a fixed property of the mesh. For an insertion scene the cavity
+/// offset is the *design variable* an optimizer moves, so a tag baked in at
+/// construction would go stale exactly when it matters. Deriving keeps Γ
+/// correct as the geometry changes.
+///
+/// # ⛔ Do not substitute the full boundary
+///
+/// `boundary_faces` for a cavity body spans the outer envelope as well. Passing
+/// all of it as Γ caps coverage structurally below 1, because faces that can
+/// never contact would sit in the denominator.
+///
+/// Walked in face order (single-threaded) for determinism, sister of
+/// [`boundary_vertex_areas`].
+#[must_use]
+pub fn boundary_faces_on_isosurface(
+    positions: &[Vec3],
+    boundary_faces: &[[VertexId; 3]],
+    sdf: &dyn Sdf,
+    level: f64,
+) -> (Vec<bool>, f64) {
+    let mut flags = Vec::with_capacity(boundary_faces.len());
+    let mut area = 0.0_f64;
+    for &[a, b, c] in boundary_faces {
+        let (va, vb, vc) = (
+            positions[a as usize],
+            positions[b as usize],
+            positions[c as usize],
+        );
+        let centroid = (va + vb + vc) / 3.0;
+        // Three-edge mean — the face counterpart of `interface_flags`'
+        // six-edge tet mean. One divide, one rounding.
+        let l_e = ((vb - va).norm() + (vc - vb).norm() + (va - vc).norm()) / 3.0;
+        let on = (sdf.eval(Point3::from(centroid)) - level).abs() < l_e;
+        if on {
+            area += quality::triangle_area(va, vb, vc);
+        }
+        flags.push(on);
+    }
+    (flags, area)
 }
 
 /// Collect every vertex referenced by at least one tet, ascending.

@@ -214,6 +214,23 @@ pub struct SiliconeMaterial {
     pub c2: f64,
     /// Bulk density in kilograms per cubic meter.
     pub density: f64,
+    /// Ultimate tensile strength in pascals, from the Smooth-On technical
+    /// bulletin's *Tensile Strength* column.
+    ///
+    /// This is what the conformity reward reads as its peak-pressure ceiling
+    /// `p_max` (`appendices/03-notation.md`: "per-material, read from tensile
+    /// strength").
+    ///
+    /// ⛔ **NOT monotonic in durometer.** Dragon Skin 30 (500 psi) is *weaker*
+    /// than Dragon Skin 20 (550 psi) in the published data. Do **not** extend
+    /// `mu_is_non_decreasing_along_hardness_order` to this field — it would
+    /// fail on correct data.
+    ///
+    /// ⚠ Sourced from the bulletin, **not** from the study's material-db
+    /// appendix, which reads Dragon Skin 30A ≈3.6 `MPa` against the sheet's
+    /// 500 psi = 3.447 `MPa`. That is +4.4 %, and high is the *under-protective*
+    /// direction for a barrier that diverges at the ceiling.
+    pub tensile_strength_pa: f64,
     /// Tensile principal-stretch cap (Yeoh validity gate, memo D8).
     /// Calibrated as `0.8 · λ_break` per anchor.
     pub validity_max_principal_stretch: f64,
@@ -250,6 +267,7 @@ impl SiliconeMaterial {
         lambda: f64,
         c2: f64,
         density: f64,
+        tensile_strength_pa: f64,
         validity_max_principal_stretch: f64,
         validity_min_principal_stretch: f64,
         shore: ShoreReading,
@@ -259,6 +277,7 @@ impl SiliconeMaterial {
             lambda,
             c2,
             density,
+            tensile_strength_pa,
             validity_max_principal_stretch,
             validity_min_principal_stretch,
             shore,
@@ -328,6 +347,11 @@ impl SiliconeMaterial {
             lambda: lerp(low.lambda, high.lambda, weight),
             c2: lerp(low.c2, high.c2, weight),
             density: lerp(low.density, high.density, weight),
+            // Interpolated like every other property. ⚠ Because tensile
+            // strength is NOT monotonic in durometer (Dragon Skin 30 is weaker
+            // than Dragon Skin 20), the interpolated value can DECREASE as
+            // hardness rises. That is the published data, not a bug.
+            tensile_strength_pa: lerp(low.tensile_strength_pa, high.tensile_strength_pa, weight),
             validity_max_principal_stretch: lerp(
                 low.validity_max_principal_stretch,
                 high.validity_max_principal_stretch,
@@ -391,6 +415,23 @@ impl SiliconeMaterial {
             lambda,
             c2,
             density: silicone_default_density(&shore),
+            // ⛔ NaN, deliberately. This constructor is handed a durometer and
+            // ONE modulus point; tensile strength is an independent property
+            // that neither determines. A family default would be inventing
+            // data at the exact place the conformity reward reads its
+            // peak-pressure ceiling, so the ceiling is undefined instead.
+            //
+            // ⛔ The consequence is WIDER than the peak term, and an earlier
+            // version of this comment understated it. `p_th` is derived from
+            // tensile strength, so a NaN here poisons the uniformity weight
+            // and the coverage indicator as well: **all four reward terms go
+            // NaN**, `score_with` drops every one, and the composed score is
+            // `0.0` — which ranks ABOVE a genuinely-measured poor design
+            // scoring negative. `GammaMask::conformity` therefore refuses a
+            // non-finite ceiling outright rather than returning a score.
+            //
+            // Callers with a measured tensile figure set the field directly.
+            tensile_strength_pa: f64::NAN,
             validity_max_principal_stretch: f64::INFINITY,
             validity_min_principal_stretch: YEOH_MIN_PRINCIPAL_STRETCH,
             shore,
@@ -521,6 +562,32 @@ fn lerp(a: f64, b: f64, t: f64) -> f64 {
     (1.0 - t).mul_add(a, t * b)
 }
 
+/// ⛔ Tensile strength is **not** monotonic in durometer, and this guard exists
+/// to stop someone "fixing" that.
+///
+/// Dragon Skin 30 (500 psi) is weaker than Dragon Skin 20 (550 psi) on the
+/// published sheet. The [`mu_is_non_decreasing_along_hardness_order`] invariant
+/// does **not** generalise to tensile strength: extending it would produce a
+/// test that fails on correct data, and "correcting" the table to satisfy it
+/// would raise Dragon Skin 30A's peak-pressure ceiling above what the material
+/// can take — the under-protective direction for a barrier that diverges at the
+/// ceiling.
+///
+/// A **compile-time** assertion rather than a `#[test]`: both operands are
+/// constants, so a runtime check could never fail (clippy's
+/// `assertions_on_constants` says so). Building it into the type system means
+/// the table cannot be edited into monotonicity without failing the build.
+const _: () = assert!(
+    DRAGON_SKIN_30A.tensile_strength_pa < DRAGON_SKIN_20A.tensile_strength_pa,
+    "the published sheet has Dragon Skin 30 WEAKER than Dragon Skin 20; if this \
+     fails, the table was changed to satisfy an ordering the data does not have",
+);
+
+/// Pascals per psi. The Smooth-On bulletins publish tensile strength in psi,
+/// so every anchor below states the sheet's own number and converts here
+/// rather than burying a pre-multiplied pascal value.
+const PSI_TO_PA: f64 = 6894.757;
+
 // Per-anchor Yeoh validity bounds: tensile cap = 0.8 · λ_break,
 // compressive cap = 0.20 (family-uniform). λ_break per Smooth-On TDS
 // elongation-at-break rows; recon table at Yeoh arc memo §"Recon
@@ -565,6 +632,7 @@ pub const ECOFLEX_00_10: SiliconeMaterial = SiliconeMaterial::from_anchor(
     72_000.0,
     1_690.0,
     1040.0,
+    120.0 * PSI_TO_PA, // 120 psi, Smooth-On bulletin
     7.20,
     YEOH_MIN_PRINCIPAL_STRETCH,
     ShoreReading::DoubleZero(10.0),
@@ -579,6 +647,7 @@ pub const ECOFLEX_00_20: SiliconeMaterial = SiliconeMaterial::from_anchor(
     72_000.0,
     1_690.0,
     1070.0,
+    160.0 * PSI_TO_PA, // 160 psi, Smooth-On bulletin
     7.56,
     YEOH_MIN_PRINCIPAL_STRETCH,
     ShoreReading::DoubleZero(20.0),
@@ -592,6 +661,7 @@ pub const ECOFLEX_00_30: SiliconeMaterial = SiliconeMaterial::from_anchor(
     92_000.0,
     2_050.0,
     1070.0,
+    200.0 * PSI_TO_PA, // 200 psi, Smooth-On bulletin
     8.00,
     YEOH_MIN_PRINCIPAL_STRETCH,
     ShoreReading::DoubleZero(30.0),
@@ -618,6 +688,7 @@ pub const ECOFLEX_00_30_MEASURED: SiliconeMaterial = SiliconeMaterial {
     lambda: 66_716.0,
     c2: 239.0,
     density: 1070.0,
+    tensile_strength_pa: 200.0 * PSI_TO_PA,
     validity_max_principal_stretch: 8.00,
     validity_min_principal_stretch: YEOH_MIN_PRINCIPAL_STRETCH,
     shore: ShoreReading::DoubleZero(30.0),
@@ -646,6 +717,7 @@ pub const ECOFLEX_00_10_MEASURED: SiliconeMaterial = SiliconeMaterial {
     lambda: 32_448.0,
     c2: 136.0,
     density: 1040.0,
+    tensile_strength_pa: 120.0 * PSI_TO_PA,
     validity_max_principal_stretch: 7.20,
     validity_min_principal_stretch: YEOH_MIN_PRINCIPAL_STRETCH,
     shore: ShoreReading::DoubleZero(10.0),
@@ -662,6 +734,7 @@ pub const ECOFLEX_00_50: SiliconeMaterial = SiliconeMaterial::from_anchor(
     112_000.0,
     2_410.0,
     1070.0,
+    315.0 * PSI_TO_PA, // 315 psi, Smooth-On bulletin
     8.64,
     YEOH_MIN_PRINCIPAL_STRETCH,
     ShoreReading::DoubleZero(50.0),
@@ -678,6 +751,7 @@ pub const DRAGON_SKIN_10A: SiliconeMaterial = SiliconeMaterial::from_anchor(
     204_000.0,
     4_460.0,
     1070.0,
+    475.0 * PSI_TO_PA, // 475 psi, Smooth-On bulletin
     8.80,
     YEOH_MIN_PRINCIPAL_STRETCH,
     ShoreReading::A(10.0),
@@ -694,6 +768,7 @@ pub const DRAGON_SKIN_15: SiliconeMaterial = SiliconeMaterial::from_anchor(
     368_000.0,
     8_200.0,
     1070.0,
+    537.0 * PSI_TO_PA, // 537 psi, Smooth-On bulletin
     6.97,
     YEOH_MIN_PRINCIPAL_STRETCH,
     ShoreReading::A(15.0),
@@ -706,6 +781,7 @@ pub const DRAGON_SKIN_20A: SiliconeMaterial = SiliconeMaterial::from_anchor(
     452_000.0,
     10_000.0,
     1080.0,
+    550.0 * PSI_TO_PA, // 550 psi, Smooth-On bulletin
     5.76,
     YEOH_MIN_PRINCIPAL_STRETCH,
     ShoreReading::A(20.0),
@@ -720,6 +796,7 @@ pub const DRAGON_SKIN_30A: SiliconeMaterial = SiliconeMaterial::from_anchor(
     792_000.0,
     17_600.0,
     1080.0,
+    500.0 * PSI_TO_PA, // 500 psi, Smooth-On bulletin
     3.71,
     YEOH_MIN_PRINCIPAL_STRETCH,
     ShoreReading::A(30.0),
@@ -805,6 +882,35 @@ mod tests {
                 "{hi_name}'s mu ({}) must be ≥ {lo_name}'s mu ({})",
                 hi.mu,
                 lo.mu,
+            );
+        }
+    }
+
+    /// Every anchor's tensile strength is the Smooth-On bulletin's own psi
+    /// figure. Pinning the psi keeps the data sheet readable in the failure
+    /// message — a pascal-only assertion would force a reviewer to convert
+    /// before they could tell which number is wrong.
+    #[test]
+    fn tensile_strengths_match_the_published_bulletin() {
+        // Referenced by constant, not by a name lookup into `ALL` — `ALL`
+        // keys on display names, and a lookup miss would read as a data
+        // failure rather than a test-fixture one.
+        let expected_psi: &[(&str, SiliconeMaterial, f64)] = &[
+            ("ECOFLEX_00_10", ECOFLEX_00_10, 120.0),
+            ("ECOFLEX_00_20", ECOFLEX_00_20, 160.0),
+            ("ECOFLEX_00_30", ECOFLEX_00_30, 200.0),
+            ("ECOFLEX_00_50", ECOFLEX_00_50, 315.0),
+            ("DRAGON_SKIN_10A", DRAGON_SKIN_10A, 475.0),
+            ("DRAGON_SKIN_15", DRAGON_SKIN_15, 537.0),
+            ("DRAGON_SKIN_20A", DRAGON_SKIN_20A, 550.0),
+            ("DRAGON_SKIN_30A", DRAGON_SKIN_30A, 500.0),
+        ];
+        assert_eq!(expected_psi.len(), ALL.len(), "one row per anchored grade");
+        for (name, mat, psi) in expected_psi {
+            let got_psi = mat.tensile_strength_pa / PSI_TO_PA;
+            assert!(
+                (got_psi - psi).abs() < 1e-6,
+                "{name}: bulletin says {psi} psi, table has {got_psi} psi",
             );
         }
     }

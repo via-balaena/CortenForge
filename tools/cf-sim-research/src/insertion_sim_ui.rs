@@ -1983,6 +1983,7 @@ mod tests {
                             min_principal_stretch: 1.0,
                             max_first_piola_frobenius_pa: 0.0,
                             mean_strain_energy_density_j_per_m3: 0.0,
+                            conformity: None,
                         },
                     },
                     RampStep {
@@ -2001,6 +2002,7 @@ mod tests {
                             min_principal_stretch: 1.0,
                             max_first_piola_frobenius_pa: 0.0,
                             mean_strain_energy_density_j_per_m3: 0.0,
+                            conformity: None,
                         },
                     },
                 ],
@@ -2158,6 +2160,7 @@ mod tests {
                             min_principal_stretch: 1.0,
                             max_first_piola_frobenius_pa: 0.0,
                             mean_strain_energy_density_j_per_m3: 0.0,
+                            conformity: None,
                         },
                     })
                     .collect(),
