@@ -31,7 +31,7 @@ cf-electrolysis = { path = "../cf-electrolysis" }
 # So NASS_TSV_SHA256 is a MEASUREMENT rather than a number nothing produces.
 # A pure-Rust digest beats shelling out to shasum/sha256sum, which differ by
 # platform; sha2 is already in the workspace lock.
-sha2 = "0.10"
+sha2 = "0.11"
 
 [lints]
 workspace = true
