@@ -22,6 +22,13 @@
 //! 60 mm sphere ([`Indenter`]) — each pressed at rest contact and then MARCHED
 //! up through the plate as a compression ramp.
 //!
+//! ★ **This closes §7 item 1 of the recon doc**, which reads: *"No Tet10 solve
+//! has been run. Every type-level result above is a compile probe. Nothing
+//! here measures convergence, residuals, or wall-clock."* It does not close
+//! §7 item 3 (Newton cost for `insertion_sim`'s *scene*) — different geometry,
+//! and this file's Tet4 arm is measured-invalid, so there is no clean
+//! element-order comparison here either.
+//!
 //! ## What it found, measured 2026-09-20 at `d12e3bf9`
 //!
 //! - **It converges, to 44 % engineering compression.** A marched compression
@@ -111,6 +118,15 @@
 //!   plate. `insertion_sim` is a compliant cavity closing *around* a probe —
 //!   conforming, enveloping contact rather than a Hertzian patch. Curvature is
 //!   now covered; enveloping geometry is not.
+//! - **The strain regime where Yeoh's adequacy is undetermined.** Recon §7
+//!   item 2: Yeoh pairs with element order in **none** of the 310 study files,
+//!   the book's ladder runs NH → Mooney-Rivlin → **Ogden** with Ogden
+//!   *"dominating Ecoflex curve fits above 100% strain"*, and row 23's
+//!   stretches `[2.06, 1.22, 0.073]` sit above that line. This fixture tops out
+//!   at 44 % engineering compression (`λ ≈ 0.56`), comfortably inside the
+//!   regime Yeoh is fitted for — so it demonstrates that Tet10 × Yeoh
+//!   **solves**, and says nothing about whether Yeoh is the right model where
+//!   the book prefers Ogden.
 //! - **Graded materials.** One anchor everywhere. `insertion_sim` carries a
 //!   layered per-tet Yeoh field, and the material-validity wall row 23 hit was
 //!   a per-tet event at one tet.
@@ -152,9 +168,22 @@ const HALF: [f64; 3] = [0.020, 0.020, 0.006];
 /// convergence probe, not a resolution study.
 const CELL: f64 = 0.004;
 
-/// Barrier band (m). Scaled to the plate: the rung-8b tests use `d̂ = 0.01` on a
-/// 100 mm block, i.e. `d̂ / thickness = 0.1`; 1.2 mm on a 12 mm plate is the
-/// same ratio.
+/// Barrier band (m).
+///
+/// ★ **Chosen to satisfy the recon doc's governing rule, not by analogy.**
+/// `docs/INSERTION_SIM_TET10_RENOVATION_RECON.md` §6 gives
+/// **`d̂ < ℓ / 2`** — below `ℓ ≲ 2d̂` both barriers are active at interior
+/// vertices, the `b″` contributions add, the Hessian condition number spikes,
+/// and thin-material scenes need *"2–5× more Newton iterations per timestep"*.
+/// Here `ℓ = 12 mm` ⇒ `d̂ < 6 mm`, and 1.2 mm sits at `d̂/ℓ = 0.1`, an order
+/// inside the bound. The measured 4–6 Newton iterations per increment are
+/// consistent with the multiplier not firing — though that is consistency, not
+/// a test of §6, since nothing here goes thin enough to trip it.
+///
+/// ⚠ §6 also flags `d̂ < ℓ/2` as *"a practitioner-level engineering heuristic
+/// rather than a published theorem"*. It happens to coincide with the rung-8b
+/// tests' ratio (`d̂ = 0.01` on a 100 mm block), which is what an earlier
+/// revision cited instead — a precedent where a stated constraint existed.
 const D_HAT: f64 = 0.0012;
 
 /// The rung-8b face-contact tests' barrier stiffness, carried over unchanged.
