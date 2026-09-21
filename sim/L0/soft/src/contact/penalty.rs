@@ -1024,10 +1024,11 @@ impl<M: crate::material::Material> super::ActivePairsFor<M> for PenaltyRigidCont
     /// identity row and column, and `apply_tail`'s `t[j]` and `s[j]`
     /// are exact zeros. What it is NOT is free — each such column
     /// cost two sparse back-solves and a row and column of a DENSE
-    /// `k×k`. On the `insertion_sim` fixture that is 6 170 spurious
-    /// columns, i.e. a ~305 MB `M`. Removing them is the larger win
-    /// on that path, and no test reaches it (no friction fixture
-    /// uses a mesher-generated mesh).
+    /// `k×k`. On the `insertion_sim` fixture at interference 0 that
+    /// is **6 583 spurious columns of 6 981**, so `M` goes from
+    /// 6 981² (~390 MB) to 398² (~1.3 MB). Removing them is the
+    /// larger win on that path, and no test reaches it (no friction
+    /// fixture uses a mesher-generated mesh).
     ///
     /// So the pairs were wasted work and a misleading diagnostic,
     /// never a corrupted solve.
