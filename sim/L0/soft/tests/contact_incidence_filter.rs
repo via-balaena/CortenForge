@@ -57,7 +57,7 @@ use std::collections::BTreeSet;
 use sim_soft::{
     ActivePairsFor, ContactPair, CpuNewtonSolver, IpcRigidContact, MaterialField, Mesh,
     PenaltyRigidContact, PenaltyRigidContactSolver, RigidPlane, SceneInitial, SdfMeshedTetMesh,
-    SoftScene, Solver, SolverConfig, Tet4, Tet10Mesh, Vec3, VertexId,
+    SingleTetMesh, SoftScene, Solver, SolverConfig, Tet4, Tet10Mesh, Vec3, VertexId,
     filter_pair_readouts_to_referenced, referenced_vertex_mask, referenced_vertices,
 };
 
@@ -282,8 +282,9 @@ fn penalty_active_pairs_names_no_unreferenced_vertex() {
 /// The IPC barrier's per-vertex path (taken on a linear mesh, which
 /// surfaces no six-node boundary faces) names no unreferenced vertex.
 ///
-/// The barrier clamps `d` at `d̂·1e-6`, so a deeply buried orphan does
-/// not merely contribute a large force — it contributes the clamp's.
+/// The barrier floors `d` at `d̂·1e-6`, so a deeply buried orphan's
+/// force does not grow with depth — it saturates at the floor's
+/// `O(κ·d̂·1e6)`, the same 1 mm or 40 mm inside.
 #[test]
 fn ipc_vertex_pairs_name_no_unreferenced_vertex() {
     let (mesh, _bc, _initial, _theta) = sphere_fixture();
@@ -322,8 +323,8 @@ fn penalty_keeps_tet10_midside_nodes() {
     let tet10: Tet10Mesh = Tet10Mesh::from_tet4(&tet4);
     let mask = referenced_vertex_mask(&tet10 as &dyn Mesh<_>);
 
-    // The corner-only walk, built here so the gate compares against the
-    // mistake rather than describing it.
+    // The corner-only walk, built here so the gate compares against
+    // the mistake rather than describing it.
     let mut corners: BTreeSet<VertexId> = BTreeSet::new();
     let mut midsides: BTreeSet<VertexId> = BTreeSet::new();
     // Tet counts stay far below u32::MAX (the Mesh-trait `TetId` tax).
@@ -340,6 +341,16 @@ fn penalty_keeps_tet10_midside_nodes() {
     assert!(
         !midsides.is_empty(),
         "enrichment produced no midside nodes, so this gate cannot see the trap",
+    );
+    // The premise the midside count rests on: corners and midsides are
+    // disjoint sets, so a corner-only mask does not accidentally cover
+    // any midside. Without this, "a corner-only mask would have dropped
+    // all of them" is an assumption rather than a measurement.
+    assert!(
+        midsides.is_disjoint(&corners),
+        "{} midside node(s) are also corner nodes — a corner-only mask would then cover \\
+         part of the midside set, and this gate's premise does not hold",
+        midsides.intersection(&corners).count(),
     );
     for &m in &midsides {
         assert!(
@@ -399,6 +410,68 @@ fn ipc_face_pairs_are_structurally_referenced() {
         "a quadratic mesh must take the face barrier, not the vertex path",
     );
     assert_no_unreferenced_node(&pairs, &mask, "IpcRigidContact face path");
+}
+
+// ── The trait-level invariant, for mesh types that do not exist yet ──
+
+/// A vertex any boundary face names must be in the mask, on every
+/// `Mesh` impl in the tree.
+///
+/// This is the midside trap stated against the TRAIT instead of
+/// against one fixture. `referenced_vertex_mask` learns incidence from
+/// `tet_vertices` + `tet_midside_nodes`; the boundary-face channels are
+/// built from the same connectivity, so the two must agree — and if a
+/// future element type (P3, a shell) carries nodes the incidence walk
+/// does not know about, its faces will name them and this fails, where
+/// `penalty_keeps_tet10_midside_nodes` (which knows the word "midside")
+/// would not.
+///
+/// A corner-only mask reddens this on the Tet10 arm, which is the
+/// independent confirmation that it binds.
+#[test]
+fn every_boundary_face_node_is_in_the_mask() {
+    fn check<M: sim_soft::Material>(label: &str, mesh: &dyn Mesh<M>) {
+        let mask = referenced_vertex_mask(mesh);
+        let mut checked = 0_usize;
+        for face in mesh.boundary_faces() {
+            for &v in face {
+                assert!(
+                    mask[v as usize],
+                    "{label}: boundary_faces names vertex {v}, which the incidence mask \
+                     calls an orphan",
+                );
+                checked += 1;
+            }
+        }
+        if let Some(faces6) = mesh.boundary_faces6() {
+            for face in faces6 {
+                for &v in face {
+                    assert!(
+                        mask[v as usize],
+                        "{label}: boundary_faces6 names node {v}, which the incidence mask \
+                         calls an orphan",
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(
+            checked > 0,
+            "{label} surfaced no boundary-face nodes, so this gate checked nothing",
+        );
+    }
+
+    let field = MaterialField::uniform(MU, LAMBDA);
+    let (tet4, _bc, _initial, _theta) = sphere_fixture();
+    check("SdfMeshedTetMesh", &tet4);
+    check(
+        "Tet10Mesh",
+        &Tet10Mesh::<sim_soft::NeoHookean>::from_tet4(&tet4) as &dyn Mesh<_>,
+    );
+    let (block, _bc2, _init2, _c2) =
+        SoftScene::compressive_block_on_plane(0.02, 0.0025, 5.0e-5, &field);
+    check("HandBuiltTetMesh", &block);
+    check("SingleTetMesh", &SingleTetMesh::new(&field));
 }
 
 // ── The mechanism that licenses the filter ───────────────────────────

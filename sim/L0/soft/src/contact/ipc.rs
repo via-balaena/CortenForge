@@ -604,10 +604,12 @@ impl IpcRigidContact {
     /// [`referenced_vertex_mask`](crate::mesh::referenced_vertex_mask) for why
     /// it counts midside nodes.
     ///
-    /// ⚠ Worse here than under penalty: the log barrier clamps `d` at
-    /// `d̂·1e-6`, so an orphan buried deep inside a primitive does not merely
-    /// contribute a large force — it contributes the clamp's force, on a DOF
-    /// the solver has pinned.
+    /// ⚠ The log barrier floors `d` at `d̂·1e-6` (`Self::barrier`), so an
+    /// orphan buried deep inside a primitive does not produce a force that
+    /// grows with depth — it produces the FLOOR's, `O(κ·d̂·1e6)`, the same
+    /// whether it sits 1 mm or 40 mm inside. Penalty's `κ·(d̂ − sd)` grows
+    /// linearly instead, so the two models degrade differently on the same
+    /// dead vertex; neither reaches the free system.
     // `vid as VertexId` / `pid as u32` are Vec-iteration indices (see per_pair_readout).
     #[allow(clippy::cast_possible_truncation)]
     fn active_vertex_pairs(&self, positions: &[Vec3], referenced: &[bool]) -> Vec<ContactPair> {

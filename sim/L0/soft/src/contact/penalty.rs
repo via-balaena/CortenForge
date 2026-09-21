@@ -1005,14 +1005,33 @@ impl<M: crate::material::Material> super::ActivePairsFor<M> for PenaltyRigidCont
     /// rule is element-order-independent).
     ///
     /// ⚠ This changes the emitted pair LIST, not the converged
-    /// answer. An unreferenced vertex is Dirichlet-clamped by the
-    /// construction-time orphan auto-pin (`effective_pinned`), the
-    /// Armijo merit is the FREE residual norm, and a vertex pair's
+    /// answer — by two different mechanisms, because two paths
+    /// consume the list.
+    ///
+    /// **Assembly.** An unreferenced vertex is Dirichlet-clamped by
+    /// the construction-time orphan auto-pin (`effective_pinned`),
+    /// the Armijo merit is the FREE residual norm
+    /// (`newton.rs::free_residual_norm`), and a vertex pair's
     /// gradient and Hessian are diagonal in that one vertex — so its
     /// blocks only ever landed in a pinned row that
-    /// `full_to_free_idx` drops. The pairs were wasted SDF
-    /// evaluations and a misleading diagnostic, never a corrupted
-    /// solve. `tests/contact_incidence_filter.rs` pins both halves.
+    /// `full_to_free_idx` drops.
+    ///
+    /// **The friction Woodbury adjoint** (`factor.rs`) pushes a
+    /// `(u, v)` column pair per active pair with no zero guard, so
+    /// the pinned-row argument does not apply there. It is still
+    /// inert: every `full_to_free_idx` lookup for an orphan is
+    /// `None`, so both columns are exactly zero, `M` gains a clean
+    /// identity row and column, and `apply_tail`'s `t[j]` and `s[j]`
+    /// are exact zeros. What it is NOT is free — each such column
+    /// cost two sparse back-solves and a row and column of a DENSE
+    /// `k×k`. On the `insertion_sim` fixture that is 6 170 spurious
+    /// columns, i.e. a ~305 MB `M`. Removing them is the larger win
+    /// on that path, and no test reaches it (no friction fixture
+    /// uses a mesher-generated mesh).
+    ///
+    /// So the pairs were wasted work and a misleading diagnostic,
+    /// never a corrupted solve.
+    /// `tests/contact_incidence_filter.rs` pins the assembly half.
     // `vid as VertexId` and `pid as u32` are `Vec`-iteration indices;
     // in practice bounded by mesh / primitive counts that fit
     // comfortably in `u32`. The `as` cast matches the convention used
@@ -1021,16 +1040,32 @@ impl<M: crate::material::Material> super::ActivePairsFor<M> for PenaltyRigidCont
     // not load-bearing for Phase 5 mesh sizes.
     #[allow(clippy::cast_possible_truncation)]
     fn active_pairs(&self, mesh: &dyn Mesh<M>, positions: &[Vec3]) -> Vec<ContactPair> {
-        // One `O(n_tets)` walk per call, then `O(1)` per vertex —
-        // cheaper than what it skips, not an added cost. Measured on
-        // `insertion_sim`'s 41 432-vertex sliding fixture (9 580
-        // referenced), 100 calls, dev profile: 487 µs → 202 µs per
-        // call, 2.4× FASTER, because each skipped vertex saves a
-        // `GridSdf` evaluation that costs far more than a bool read.
-        // The mask itself is at most 74 µs of that (measured with a
-        // full extra pass over it, so an upper bound) — the headroom
-        // a per-mesh cache could buy, if a future caller ever needs
-        // it.
+        // One `O(n_tets)` walk per call, then `O(1)` per vertex. In
+        // isolation that cuts both ways, and the direction is set by
+        // how expensive the PRIMITIVE is, not by the mask:
+        //
+        //   insertion_sim sliding fixture, 41 432 verts / GridSdf
+        //     487 µs -> 202 µs per call   (2.4x FASTER — skipped
+        //     vertices each save a GridSdf eval worth far more than
+        //     a bool read)
+        //   cantilever beam, 729 verts / 3 072 tets / RigidPlane,
+        //   no orphans at all
+        //     1.5 µs -> 6.4 µs per call   (~4x SLOWER — the mask
+        //     dominates a plane's dot product, and saves nothing)
+        //
+        // Neither survives into a solve. Whole `replay_step` on that
+        // same no-orphan beam: 44.7-45.4 ms before, 44.8-45.1 ms
+        // after — the within-run spread is larger than the
+        // difference. And on the REDUCED path, where
+        // `SIM_SOFT_REALTIME_RECON.md` §2k puts this block at the
+        // largest single term of the irreducible time,
+        // `reduced_phase_shares` over four alternating runs reads
+        // contact 1.443 -> 1.420 ms/step and irreducible
+        // 2.776 -> 2.727 ms/step: also inside the noise.
+        //
+        // ⇒ a per-mesh cache (the `boundary_faces6()` idiom) would be
+        // the fix if this ever did show up. It does not, in either
+        // regime, on the fixture shape that flatters it least.
         let referenced = crate::mesh::referenced_vertex_mask(mesh);
         let mut pairs = Vec::new();
         for (vid, &p) in positions.iter().enumerate() {

@@ -543,6 +543,11 @@ pub fn boundary_faces_on_isosurface(
 /// silently. Every constructor in this crate builds `positions` and
 /// the tet table together, so this is a storage-invariant violation
 /// rather than a caller error.
+///
+/// Panicking is deliberate: the alternative, skipping an
+/// out-of-range id, would leave the mask UNDER-marked, and
+/// under-marking is the one direction that can delete a live DOF's
+/// contact. A loud stop beats a silently smaller body.
 //
 // `as TetId` is the Mesh-trait API tax: `n_tets()` returns `usize`
 // while `tet_vertices()` takes `TetId = u32`. Phase 3 meshes stay

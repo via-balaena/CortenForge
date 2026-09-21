@@ -359,11 +359,11 @@ fn penalty_ccd_toi_returns_infinity() {
 fn penalty_active_pairs_filters_by_d_hat() {
     let c = penalty_z_floor();
     let mesh = SingleTetMesh::new(&MaterialField::skeleton_default());
-    // Three vertices: above-band, in-band, penetrating. The mesh
-    // argument is unused by the Phase 5 vertex-vs-primitive walk
-    // (Mesh is part of the trait surface for Phase H IPC's edge-edge
-    // / face-face cases that need topology); only `positions.len()`
-    // governs the iteration.
+    // Three vertices: above-band, in-band, penetrating. The walk
+    // reads the mesh for tet incidence (#953) and iterates
+    // `positions`; `SingleTetMesh`'s one tet references all four of
+    // its vertices, so every probe index here is live and the band
+    // gate is what decides.
     let positions = [
         Vec3::new(0.0, 0.0, 5.0 * D_HAT),  // above band — filtered out
         Vec3::new(0.0, 0.0, 0.5 * D_HAT),  // in band — included
