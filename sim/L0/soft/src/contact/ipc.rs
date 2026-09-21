@@ -155,7 +155,9 @@ impl IpcRigidContact {
     /// tested against every primitive, the per-vertex barrier force
     /// `−κ·b'·n̂`, and a `boundary_vertex_areas` tributary (same walk order /
     /// band gate as [`ActivePairsFor::active_pairs`](super::ActivePairsFor::active_pairs)
-    /// on a linear mesh). On a quadratic (Tet10) mesh — where the *solver*
+    /// on a linear mesh, minus the tet-incidence filter — see
+    /// [`PenaltyRigidContact::per_pair_readout`](super::PenaltyRigidContact::per_pair_readout)
+    /// for why readouts keep the raw list). On a quadratic (Tet10) mesh — where the *solver*
     /// contact is the surface-integrated [`ContactPair::Face`] barrier (corners
     /// carry ~0, midsides carry the load) — a per-vertex readout would report the
     /// wrong force distribution and NaN-drop the loaded midsides (they lie on no
@@ -578,19 +580,46 @@ impl<M: crate::material::Material> super::ActivePairsFor<M> for IpcRigidContact 
         // surface-integrated face barrier (contact restricted to the boundary
         // surface). A linear mesh returns `None` → the per-vertex loop, which
         // is byte-identical to the pre-rung-8b path (Tet4 unchanged).
+        //
+        // Only the vertex path takes an incidence mask. `boundary_faces6` is
+        // derived from tet connectivity, so a face structurally cannot name a
+        // vertex that no tet references — the face path needs no filter, and
+        // building a mask for it would be pure cost.
         mesh.boundary_faces6().map_or_else(
-            || self.active_vertex_pairs(positions),
+            || self.active_vertex_pairs(positions, &crate::mesh::referenced_vertex_mask(mesh)),
             |faces6| self.active_face_pairs(faces6, positions, mesh.positions()),
         )
     }
 }
 
 impl IpcRigidContact {
+    /// Per-vertex barrier pairs, skipping any vertex `referenced` marks as
+    /// named by no tet.
+    ///
+    /// `positions()` is the mesh's storage array, not its body —
+    /// `SdfMeshedTetMesh` retains the full BCC lattice, and those orphan
+    /// corners sit at rest lattice coordinates that routinely land inside a
+    /// rigid primitive. Same rule and same rationale as
+    /// [`PenaltyRigidContact::active_pairs`](crate::PenaltyRigidContact); see
+    /// [`referenced_vertex_mask`](crate::mesh::referenced_vertex_mask) for why
+    /// it counts midside nodes.
+    ///
+    /// ⚠ The log barrier floors `d` at `d̂·1e-6` (`Self::barrier`), so an
+    /// orphan buried deep inside a primitive does not produce a force that
+    /// grows with depth — it produces the FLOOR's, `O(κ·d̂·1e6)`, the same
+    /// whether it sits 1 mm or 40 mm inside. Penalty's `κ·(d̂ − sd)` grows
+    /// linearly instead, so the two models degrade differently on the same
+    /// dead vertex; neither reaches the free system.
     // `vid as VertexId` / `pid as u32` are Vec-iteration indices (see per_pair_readout).
     #[allow(clippy::cast_possible_truncation)]
-    fn active_vertex_pairs(&self, positions: &[Vec3]) -> Vec<ContactPair> {
+    fn active_vertex_pairs(&self, positions: &[Vec3], referenced: &[bool]) -> Vec<ContactPair> {
         let mut pairs = Vec::new();
         for (vid, &p) in positions.iter().enumerate() {
+            // `positions` longer than the mesh's vertex array can only be
+            // indices no tet names, so `false` is the right answer there.
+            if !referenced.get(vid).copied().unwrap_or(false) {
+                continue;
+            }
             let p_pt = Point3::from(p);
             for (pid, prim) in self.primitives.iter().enumerate() {
                 if self.pair_is_active(prim.eval(p_pt)) {

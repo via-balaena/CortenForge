@@ -78,18 +78,23 @@
 //!   starts infeasible and the line search dies on Newton iteration 0. Every
 //!   iter-0 row in the sweep has `min_sd < RAMP_STEP`, and that relation is
 //!   asserted rather than narrated.
-//! - **The per-vertex barrier contacts vertices that are in no tetrahedron.**
+//! - **The per-vertex barrier contacted vertices that are in no tetrahedron
+//!   — FIXED in #953, and the numbers below are what motivated it.**
 //!   `SdfMeshedTetMesh::positions()` is the BCC lattice, not the body: 1 244 of
-//!   its 2 348 entries are referenced by no tet. `active_vertex_pairs` iterates
-//!   `positions()`, so 386 of the Tet4 arm's 607 contact pairs land on dead
-//!   nodes — 338 of which sit below the plane in the *rest* configuration — and
-//!   the barrier's `d = sd.max(d̂ · 1e-6)` clamp reports ~4e9 N for them. The
-//!   face path is immune: `boundary_faces6()` is built from tet connectivity.
-//!   ⚠ `PenaltyRigidContact::active_pairs` has the same all-positions loop and
-//!   `insertion_sim` uses it. **The exposure there has now been measured and is
-//!   far larger than here**: on its synthetic sliding fixture, 31 852 of 41 432
-//!   positions are dead, and **94.3 % of the active contact pairs at
-//!   interference 0 mm sit on them** (6 583 of 6 981). A shell body's cavity is
+//!   its 2 348 entries are referenced by no tet. That part is unchanged and is
+//!   still what this file's `the_vertex_barrier_contacts_vertices_that_are_in_no_tetrahedron`
+//!   measures, through `per_pair_readout`, which keeps the raw list by design.
+//!   What changed is the ACTIVE SET: both contact models' `active_pairs` now
+//!   apply a tet-incidence filter (`referenced_vertex_mask`), so the solver no
+//!   longer sees those pairs. Before that filter, 386 of the Tet4 arm's 607
+//!   contact pairs landed on dead nodes — 338 of which sit below the plane in
+//!   the *rest* configuration — and the barrier's `d = sd.max(d̂ · 1e-6)` floor
+//!   reported ~4e9 N for them. The face path never had the problem:
+//!   `boundary_faces6()` is built from tet connectivity.
+//!   ⚠ The exposure in the shipped sim was far larger than here: on
+//!   `insertion_sim`'s synthetic sliding fixture, 31 852 of 41 432 positions
+//!   are dead and **94.3 % of the active pairs at interference 0 mm sat on
+//!   them** (6 583 of 6 981; now 398 of 398 live). A shell body's cavity is
 //!   exactly where the lattice's dead nodes live and the intruder is driven
 //!   into the middle of them, so a solid plate understates it badly.
 //!
@@ -1390,16 +1395,21 @@ fn stalled_on_the_first_newton_step(label: &str) -> bool {
 /// panic on ... or silently produce garbage" — and its comment names this
 /// exact case, that `SdfMeshedTetMesh` "retains the full BCC lattice in
 /// `positions()`". So the orphans never reach the linear system, which is why
-/// this fixture is well-posed. They DO reach `active_pairs`, which walks
-/// `positions()` with no incidence check of its own. ⇒ the gap is specifically
-/// in the contact models, not in the solver.
+/// this fixture is well-posed.
 ///
-/// ⚠⚠ **This reaches the shipped sim, and there it is much worse.**
-/// `PenaltyRigidContact::active_pairs` takes `_mesh` — it ignores the mesh
-/// entirely and loops the same `positions()` — and `insertion_sim` is
+/// ✅ **They used to reach `active_pairs`; since #953 they do not.** Both
+/// contact models' `active_pairs` now consult `referenced_vertex_mask`, so the
+/// gap that was specifically in the contact models is closed. This test still
+/// measures the underlying exposure because it reads `per_pair_readout`, which
+/// keeps the unfiltered list by design — so the numbers below are the fixture's
+/// dead-node census, not a live defect in the active set.
+///
+/// ⚠⚠ **It reached the shipped sim, and there it was much worse.**
+/// `PenaltyRigidContact::active_pairs` took `_mesh` — it ignored the mesh
+/// entirely and looped the same `positions()` — and `insertion_sim` is
 /// `SdfMeshedTetMesh<Yeoh>` + penalty contact. Measured on its synthetic
 /// sliding fixture (icosphere r = 40 mm, 3 mm cavity inset, 10 mm wall, 4 mm
-/// cell), 2026-09-20:
+/// cell), 2026-09-20, BEFORE the filter:
 ///
 /// | quantity | value |
 /// |---|---|
@@ -1413,21 +1423,21 @@ fn stalled_on_the_first_newton_step(label: &str) -> bool {
 /// the intruder is driven into the middle of them, so this fixture's solid
 /// plate understates the effect badly.
 ///
-/// ★ **It is waste, not corruption** — established, not assumed. A vertex
+/// ★ **It was waste, not corruption** — established, not assumed. A vertex
 /// pair's gradient is `contributions: vec![(vertex_id, force)]`, touching its
 /// own DOF and no other; orphans are auto-pinned out of the free system; and
 /// readouts are filtered by `filter_pair_readouts_to_referenced`. So the answer
-/// is right and ~6 600 SDF evaluations and gradient builds per Newton
-/// iteration are discarded. The hazard is for any NEW consumer that reads
-/// `active_pairs` without filtering.
+/// was right, and ~6 600 SDF evaluations and gradient builds per Newton
+/// iteration were discarded. #953 verified that by hashing a converged step
+/// either side of the filter: bit-identical on both contact models.
 ///
-/// ⚠ And the two `insertion_sim` paths are not equally defended:
-/// `intruder_contact_at` (used by `run_single_insertion_step` and
-/// `run_insertion_ramp`) passes **no interior cutoff**, while the sliding
-/// builder passes `2 × cavity_inset_m`. That cutoff is a depth heuristic, not
-/// a fix — applied to the same dead set it still leaves 2 864 active at 0 mm
-/// and 1 661 at 3 mm, because it only excludes nodes deeper than `c`. An
-/// incidence filter in `active_pairs` would be complete.
+/// ⚠ The two `insertion_sim` paths were not equally defended, and the reason
+/// is worth keeping: `intruder_contact_at` passed **no interior cutoff**, while
+/// the sliding builder passed `2 × cavity_inset_m`. That cutoff is a DEPTH
+/// heuristic, not an incidence check — applied to the same dead set it still
+/// left 2 864 active at 0 mm, because it only excludes nodes deeper than `c`.
+/// The incidence filter is what made it complete; see
+/// `tests/contact_incidence_filter.rs`.
 #[test]
 fn the_vertex_barrier_contacts_vertices_that_are_in_no_tetrahedron() {
     let t4 = tet4_yeoh();

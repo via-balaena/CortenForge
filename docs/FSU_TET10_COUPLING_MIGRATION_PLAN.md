@@ -330,6 +330,26 @@ but it is private, so the two disagree by design. **Do not reuse `referenced_ver
 a Tet10 band.** (Orphan midsides cannot exist — midsides are created only inside the tet walk,
 `enrich.rs:83-103` — so no midside analogue of the orphan filter is needed.)
 
+> ## ✅ CLOSED by #953 (2026-09-20) — the trap above no longer exists, and the instruction is now wrong
+>
+> `referenced_vertices` is **no longer corner-only**. It is now the sorted-`Vec` shape of
+> `referenced_vertex_mask` (`sim/L0/soft/src/mesh/mod.rs:557`, with `referenced_vertices` at
+> `:591`), which walks `tet_vertices` **and** `tet_midside_nodes` — so on a `Tet10Mesh` it
+> returns corners *and* midsides, and `referenced.contains(v)` keeps midsides instead of
+> silently deleting them. The public helper and the solver's internal set
+> (`construct.rs:383-401`, `if N > 4`) **no longer disagree**; the mask is deliberately the
+> element-order-INDEPENDENT superset, so it is never a subset of the solver's free set.
+>
+> ⇒ **A Tet10 band MAY now reuse `referenced_vertices`.** The §2.2 topological-closure rule
+> is still the right modeling choice for its own reasons (stated below — it is not the same
+> set as a geometric slab), but it is no longer forced on you by this trap.
+>
+> ⚠ Every measured figure in this section predates that change and is kept as the record.
+> The parenthetical above is the part that generalised: #953 measured 3 092 midsides on an
+> enriched sphere fixture and **all of them referenced** — orphan midsides really cannot
+> exist, which is why widening the helper is safe. The 18 135 orphans it did find are all
+> Tet4 *corners* carried through enrichment.
+
 **★ Name the modeling choice.** The Tet4 band rule is purely **geometric** (a z-slab predicate
 over all positions); this midside rule is **topological** (closure over band corners). They are
 not the same set: a midside between an in-band corner and an out-of-band corner can sit

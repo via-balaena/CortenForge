@@ -707,6 +707,23 @@ impl PenaltyRigidContact {
     /// as `active_pairs(...)` at the same `positions` and the readouts
     /// appear in the same order.
     ///
+    /// ⚠ **One deliberate divergence: `active_pairs` applies the tet-incidence
+    /// filter and this does not.** On a mesh with unreferenced vertices
+    /// (`SdfMeshedTetMesh`'s retained BCC lattice) the readouts are the longer
+    /// list — raw by design, because the unfiltered set is a deterministic
+    /// regression surface. Apply
+    /// [`filter_pair_readouts_to_referenced`]
+    /// to recover `active_pairs` parity; on a mesh whose every vertex is in
+    /// some tet the two agree unconditionally.
+    ///
+    /// Contrast the interior cutoff, which D-Contact2
+    /// (`docs/SIM_ARC_SLIDING_INTRUDER_CONTACT_RECON.md` §3) deliberately
+    /// applies to BOTH walks: that one is a validity filter, and a readout
+    /// reporting a force the solver never applied would be wrong. Incidence
+    /// is an identity question, and the raw readout list is a diagnostic
+    /// surface on purpose — so the two filters land in different places by
+    /// design, not by oversight.
+    ///
     /// For the hard-penalty case (`smoothing_eps_m == 0.0`),
     /// `force_on_soft` resolves to `+κ·(d̂ − sd)·n` per the type docs'
     /// sign convention — a bit-equivalent reproduction of the energy
@@ -773,6 +790,11 @@ impl PenaltyRigidContact {
 
 /// Filter `per_pair_readout` results to vertices in the given referenced
 /// set, dropping orphan BCC lattice corners that are not in any tet.
+///
+/// The readout-side counterpart of the tet-incidence filter
+/// `ActivePairsFor::active_pairs` applies at source: the solver never
+/// sees an orphan pair, while readouts keep the raw list until a
+/// caller asks for this.
 ///
 /// [`PenaltyRigidContact::per_pair_readout`] returns one
 /// [`ContactPairReadout`] for every body vertex in the contact band
@@ -967,6 +989,59 @@ impl<M: crate::material::Material> super::ActivePairsFor<M> for PenaltyRigidCont
     /// `PenaltyRigidContact::pair_is_active` (private)
     /// (`sd < d̂ + smoothing_eps_m` and above the interior cutoff when
     /// set). Order is deterministic — no sort, no `HashMap`, no rayon.
+    ///
+    /// **A vertex in no tet is skipped.** `positions()` is the mesh's
+    /// storage array, not its body: `SdfMeshedTetMesh` retains the
+    /// full BCC lattice, including corners of lattice tets that fell
+    /// entirely outside the SDF, and those points sit at their rest
+    /// lattice coordinates wherever the lattice put them — routinely
+    /// inside a rigid primitive.
+    /// [`referenced_vertex_mask`](crate::mesh::referenced_vertex_mask) is the
+    /// incidence test; the sibling readout filter is
+    /// [`filter_pair_readouts_to_referenced`].
+    ///
+    /// The mask counts a quadratic mesh's midside nodes, so the
+    /// Tet10 DOFs rung 3b frees survive it (see its docs for why the
+    /// rule is element-order-independent).
+    ///
+    /// ⚠ This changes the emitted pair LIST, not the converged
+    /// answer — by two different mechanisms, because two paths
+    /// consume the list.
+    ///
+    /// **Assembly.** An unreferenced vertex is Dirichlet-clamped by
+    /// the construction-time orphan auto-pin (`effective_pinned`),
+    /// the Armijo merit is the FREE residual norm
+    /// (`newton.rs::free_residual_norm`), and a vertex pair's
+    /// gradient and Hessian are diagonal in that one vertex — so its
+    /// blocks only ever landed in a pinned row that
+    /// `full_to_free_idx` drops.
+    ///
+    /// **The friction Woodbury adjoint** (`factor.rs`) pushes a
+    /// `(u, v)` column pair per active pair with no zero guard, so
+    /// the pinned-row argument does not apply there. It is still
+    /// inert: every `full_to_free_idx` lookup for an orphan is
+    /// `None`, so both columns are exactly zero, `M` gains a clean
+    /// identity row and column, and `apply_tail`'s `t[j]` and `s[j]`
+    /// are exact zeros. What it would NOT be is free: each such
+    /// column costs two sparse back-solves and a row and column of a
+    /// DENSE `k×k`, and an orphan pair adds exactly one (its
+    /// curved-normal block is skipped by the same `None` lookups).
+    ///
+    /// ⚠ **Derived, not observed.** That path needs
+    /// `friction_mu > 0`, and the fixture whose numbers are quoted
+    /// here does not enable friction — nor does any test in the
+    /// workspace pair friction with a mesher-generated mesh. HAD it
+    /// run on `insertion_sim` at interference 0, `k` would have
+    /// carried **6 583 spurious columns of 6 981**, i.e. an `M` of
+    /// 6 981² (~390 MB) where the 398 live pairs need 398²
+    /// (~1.3 MB). `BondedSandwich<SdfMeshedTetMesh>` is that
+    /// combination and is licence-gated out of CI, so this is
+    /// reachable by a user and by no gate — which is the reason to
+    /// state it rather than leave it latent.
+    ///
+    /// So the pairs were wasted work and a misleading diagnostic,
+    /// never a corrupted solve.
+    /// `tests/contact_incidence_filter.rs` pins the assembly half.
     // `vid as VertexId` and `pid as u32` are `Vec`-iteration indices;
     // in practice bounded by mesh / primitive counts that fit
     // comfortably in `u32`. The `as` cast matches the convention used
@@ -974,9 +1049,41 @@ impl<M: crate::material::Material> super::ActivePairsFor<M> for PenaltyRigidCont
     // overflow on a 64-bit pointer would surface as wrapped indices;
     // not load-bearing for Phase 5 mesh sizes.
     #[allow(clippy::cast_possible_truncation)]
-    fn active_pairs(&self, _mesh: &dyn Mesh<M>, positions: &[Vec3]) -> Vec<ContactPair> {
+    fn active_pairs(&self, mesh: &dyn Mesh<M>, positions: &[Vec3]) -> Vec<ContactPair> {
+        // One `O(n_tets)` walk per call, then `O(1)` per vertex. In
+        // isolation that cuts both ways, and the direction is set by
+        // how expensive the PRIMITIVE is, not by the mask:
+        //
+        //   insertion_sim sliding fixture, 41 432 verts / GridSdf
+        //     487 µs -> 202 µs per call   (2.4x FASTER — skipped
+        //     vertices each save a GridSdf eval worth far more than
+        //     a bool read)
+        //   cantilever beam, 729 verts / 3 072 tets / RigidPlane,
+        //   no orphans at all
+        //     1.5 µs -> 6.4 µs per call   (~4x SLOWER — the mask
+        //     dominates a plane's dot product, and saves nothing)
+        //
+        // Neither survives into a solve. Whole `replay_step` on that
+        // same no-orphan beam: 44.7-45.4 ms before, 44.8-45.1 ms
+        // after — the within-run spread is larger than the
+        // difference. And on the REDUCED path, where
+        // `SIM_SOFT_REALTIME_RECON.md` §2k puts this block at the
+        // largest single term of the irreducible time,
+        // `reduced_phase_shares` over four alternating runs reads
+        // contact 1.443 -> 1.420 ms/step and irreducible
+        // 2.776 -> 2.727 ms/step: also inside the noise.
+        //
+        // ⇒ a per-mesh cache (the `boundary_faces6()` idiom) would be
+        // the fix if this ever did show up. It does not, in either
+        // regime, on the fixture shape that flatters it least.
+        let referenced = crate::mesh::referenced_vertex_mask(mesh);
         let mut pairs = Vec::new();
         for (vid, &p) in positions.iter().enumerate() {
+            // `positions` longer than the mesh's vertex array can only be
+            // indices no tet names, so `false` is the right answer there.
+            if !referenced.get(vid).copied().unwrap_or(false) {
+                continue;
+            }
             let p_pt = Point3::from(p);
             for (pid, prim) in self.primitives.iter().enumerate() {
                 let sd = prim.eval(p_pt);

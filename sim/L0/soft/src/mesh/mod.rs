@@ -12,7 +12,7 @@
 //! BCC-plus-Labelle-Shewchuk Isosurface Stuffing pipeline; lives in
 //! `sdf_bridge`), and [`Tet10Mesh`] (the enriched quadratic mesh).
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 
 use crate::sdf_bridge::Sdf;
 use nalgebra::Point3;
@@ -514,11 +514,66 @@ pub fn boundary_faces_on_isosurface(
     (flags, area)
 }
 
+/// Tet-incidence mask over the mesh's full `VertexId` space —
+/// `mask[v]` is `true` when vertex `v` is named by at least one tet.
+///
+/// Walks every tet once, marking its four corners from
+/// [`Mesh::tet_vertices`] and, on a quadratic mesh, its six midsides
+/// from [`Mesh::tet_midside_nodes`]. Length is [`Mesh::n_vertices`];
+/// building it is `O(n_tets)` with one allocation, and membership is
+/// then `O(1)` — the shape the contact hot path needs.
+/// [`referenced_vertices`] is the same walk in sorted-`Vec` shape for
+/// callers that iterate rather than test membership.
+///
+/// **Midsides count.** On a [`Tet10Mesh`] the edge-midside nodes live
+/// in [`Mesh::positions`] alongside the corners and carry real free
+/// DOFs under a Tet10 element (rung 3b), so a corner-only walk would
+/// call every one of them an orphan. The mask is therefore
+/// element-order-INDEPENDENT and deliberately conservative: it marks
+/// every vertex any element order could reference. A Tet4 element on
+/// an enriched `Tet10Mesh` leaves its midsides auto-pinned
+/// (`effective_pinned`, rung 3a), so the mask is a superset of that
+/// solver's free set — never a subset, which is the direction that
+/// would drop a live DOF.
+///
+/// # Panics
+///
+/// Panics if a tet names a vertex id at or beyond [`Mesh::n_vertices`]
+/// — a malformed mesh, which the old `BTreeSet` form absorbed
+/// silently. Every constructor in this crate builds `positions` and
+/// the tet table together, so this is a storage-invariant violation
+/// rather than a caller error.
+///
+/// Panicking is deliberate: the alternative, skipping an
+/// out-of-range id, would leave the mask UNDER-marked, and
+/// under-marking is the one direction that can delete a live DOF's
+/// contact. A loud stop beats a silently smaller body.
+//
+// `as TetId` is the Mesh-trait API tax: `n_tets()` returns `usize`
+// while `tet_vertices()` takes `TetId = u32`. Phase 3 meshes stay
+// well below `u32::MAX`.
+#[allow(clippy::cast_possible_truncation)]
+#[must_use]
+pub fn referenced_vertex_mask<M: Material>(mesh: &dyn Mesh<M>) -> Vec<bool> {
+    let mut mask = vec![false; mesh.n_vertices()];
+    for tet_id in 0..mesh.n_tets() as TetId {
+        for v in mesh.tet_vertices(tet_id) {
+            mask[v as usize] = true;
+        }
+        if let Some(midsides) = mesh.tet_midside_nodes(tet_id) {
+            for v in midsides {
+                mask[v as usize] = true;
+            }
+        }
+    }
+    mask
+}
+
 /// Collect every vertex referenced by at least one tet, ascending.
 ///
-/// Walks `mesh.tet_vertices(0..n_tets)`, accumulates ids into a
-/// `BTreeSet` (sorted-iteration determinism per scope memo §3
-/// Decision M D-3), returns the sorted `Vec<VertexId>`.
+/// Sorted-`Vec` shape of [`referenced_vertex_mask`] — same incidence
+/// rule (corners plus, on a quadratic mesh, midsides), ascending by
+/// construction (scope memo §3 Decision M D-3 determinism).
 ///
 /// Used to filter unreferenced "orphan" lattice points out of
 /// spatial-predicate boundary conditions on mesher-generated meshes:
@@ -530,20 +585,15 @@ pub fn boundary_faces_on_isosurface(
 /// (`tests/sdf_forward_map_gradcheck.rs`) filters its max-z load
 /// candidate through `referenced_vertices` before the argmax per
 /// scope memo §3 Decision K.
-//
-// `as TetId` is the Mesh-trait API tax: `n_tets()` returns `usize`
-// while `tet_vertices()` takes `TetId = u32`. Phase 3 meshes stay
-// well below `u32::MAX`.
+// `as VertexId` re-packs the mask index; same `u32` bound as the mask.
 #[allow(clippy::cast_possible_truncation)]
 #[must_use]
 pub fn referenced_vertices<M: Material>(mesh: &dyn Mesh<M>) -> Vec<VertexId> {
-    let mut set: BTreeSet<VertexId> = BTreeSet::new();
-    for tet_id in 0..mesh.n_tets() as TetId {
-        for v in mesh.tet_vertices(tet_id) {
-            set.insert(v);
-        }
-    }
-    set.into_iter().collect()
+    referenced_vertex_mask(mesh)
+        .iter()
+        .enumerate()
+        .filter_map(|(v, &referenced)| referenced.then_some(v as VertexId))
+        .collect()
 }
 
 #[cfg(test)]
