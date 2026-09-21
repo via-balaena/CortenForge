@@ -716,6 +716,14 @@ impl PenaltyRigidContact {
     /// to recover `active_pairs` parity; on a mesh whose every vertex is in
     /// some tet the two agree unconditionally.
     ///
+    /// Contrast the interior cutoff, which D-Contact2
+    /// (`docs/SIM_ARC_SLIDING_INTRUDER_CONTACT_RECON.md` §3) deliberately
+    /// applies to BOTH walks: that one is a validity filter, and a readout
+    /// reporting a force the solver never applied would be wrong. Incidence
+    /// is an identity question, and the raw readout list is a diagnostic
+    /// surface on purpose — so the two filters land in different places by
+    /// design, not by oversight.
+    ///
     /// For the hard-penalty case (`smoothing_eps_m == 0.0`),
     /// `force_on_soft` resolves to `+κ·(d̂ − sd)·n` per the type docs'
     /// sign convention — a bit-equivalent reproduction of the energy
