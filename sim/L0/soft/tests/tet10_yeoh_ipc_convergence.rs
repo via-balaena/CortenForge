@@ -78,6 +78,22 @@
 //!   starts infeasible and the line search dies on Newton iteration 0. Every
 //!   iter-0 row in the sweep has `min_sd < RAMP_STEP`, and that relation is
 //!   asserted rather than narrated.
+//! - **And that mechanism turns out to *derive* `κ`, not just explain it.**
+//!   The face barrier integrates `κ·b` over the rest area with quadrature
+//!   weights summing to 1, so **`κ·|b'(d)|` is a traction in pascals** —
+//!   measured against the solver to floating point by
+//!   `the_face_barrier_traction_law_holds_against_the_solver`. Requiring the
+//!   barrier to hold one ramp increment open under the measured design
+//!   traction gives a floor of **1.730e6**; requiring the standoff to stay
+//!   inside half the band gives a ceiling of **2.123e7**; **1e7 is the only
+//!   decade between them.** The sweep's bracket and the derivation were
+//!   computed from nothing in common, and they agree: at the design traction
+//!   1e6 holds 0.056 mm against a 0.1 mm increment (infeasible, and it stalls)
+//!   while 1e7 holds 0.424 mm (feasible, and it runs clean).
+//! - ⚠ **`κ`'s lower bound belongs to the *marching scheme*, not the physics.**
+//!   The material and the imposed compression set the traction; `RAMP_STEP`
+//!   sets how much clearance has to survive it. A different ramp schedule
+//!   moves the floor, which is why the bridge cannot inherit this number.
 //! - **The per-vertex barrier contacted vertices that are in no tetrahedron
 //!   — FIXED in #953, and the numbers below are what motivated it.**
 //!   `SdfMeshedTetMesh::positions()` is the BCC lattice, not the body: 1 244 of
@@ -135,9 +151,12 @@
 //! - **Graded materials.** One anchor everywhere. `insertion_sim` carries a
 //!   layered per-tet Yeoh field, and the material-validity wall row 23 hit was
 //!   a per-tet event at one tet.
-//! - **A derived `κ`.** 1e7 is the smallest decade in a sweep that worked, not
-//!   a quantity anyone computed from the area-weighted face barrier. The
-//!   bracket is 1e6 (stalls) to 1e8 (holds contact 68 % of the band open).
+//! - ~~**A derived `κ`.**~~ **No longer true — see the `κ` bullet above.** `κ`
+//!   is now computed from the face barrier's own traction relation, and
+//!   `kappa_is_derived_and_not_swept` re-derives it on every build. What
+//!   remains unseen is narrower and stated there: the derived interval is
+//!   12.3× wide, so it selects a decade only while the design traction is
+//!   known to better than roughly 0.5–6×.
 //! - **`d̂`.** Held fixed throughout. Sweeping it moves `STANDOFF` and so the
 //!   initial condition, which is a different experiment.
 //! - **Friction.** `SolverConfig::friction_mu` defaults to `0.0` and this
@@ -159,7 +178,8 @@ use sim_soft::{
     Aabb3, ActivePairsFor, BoundaryConditions, ConstantField, ContactPair, CpuNewtonSolver,
     IpcRigidContact, MaterialField, Mesh, MeshingHints, NeoHookean, RigidPlane, Sdf,
     SdfMeshedTetMesh, Solver, SolverConfig, SolverFailure, SphereSdf, Tet10Mesh, TetId,
-    TranslatedSdf, Vec3, VertexId, Yeoh, peak_contact_pressure, referenced_vertices,
+    TranslatedSdf, Vec3, VertexId, Yeoh, barrier_derivative, face_barrier_kappa,
+    face_barrier_standoff, peak_contact_pressure, referenced_vertices,
 };
 
 // ── fixture geometry ────────────────────────────────────────────────
@@ -200,15 +220,90 @@ const D_HAT: f64 = 0.0012;
 /// the counterexample, not used by any gate.
 const RUNG_8B_KAPPA: f64 = 1.0e4;
 
-/// Barrier stiffness every gate here runs at.
+/// Contact traction at the design point (Pa).
 ///
-/// ⚠ **An empirical floor, not a derivation.** It is the smallest decade in
-/// the `κ` sweep at which the compression ramp runs clean to
-/// `RAMP_MAX_PLANE_H` (44 % engineering compression): 1e6 still stalls, 1e7
-/// and 1e8 do not. 1e8 is not chosen because its standoff is 0.81 mm — 68 % of
-/// the barrier band — i.e. it holds contact open rather than enforcing it,
-/// where 1e7 sits at 30 %. Deriving `κ` for an area-weighted face barrier
-/// rather than bracketing it is still owed.
+/// **Measured, not chosen**: the area-mean barrier traction `F_z / A_flat` at
+/// the deepest rung of the baseline ramp — 5.2944 mm of deflection on the
+/// 12 mm plate, 44.1 % engineering compression.
+/// [`is_the_contact_traction_a_property_of_the_scene_or_of_kappa`] re-measures
+/// it and is the referent for this number; if the fixture's geometry, material
+/// or ramp ceiling moves, that probe is what says so.
+///
+/// ⚠ **It is not wholly independent of `κ`, and the probe quantifies that.**
+/// At a fixed plane height a stiffer barrier holds the plate further off the
+/// plane, which — the top face being pinned — compresses it *more*, not less.
+/// Measured over a **100×** span of `κ` at one common plane height, the
+/// traction spans **1.53×**. So it is dominated by the material and the
+/// imposed compression, and the residual `κ` coupling is a stated 1.53× over
+/// two decades rather than an assumed zero.
+const DESIGN_TRACTION_PA: f64 = 30_395.0;
+
+/// The flat contact patch [`DESIGN_TRACTION_PA`] was measured over (m^2).
+///
+/// Pinned as a measured area rather than computed from [`HALF`], because the
+/// meshed patch is **not** the nominal footprint in general — it is here only
+/// because 40 mm happens to tile exactly at [`CELL`] = 4 mm. Widening the
+/// plate to 50 mm, for instance, yields 1920 mm^2 and not 2000. Deriving this
+/// from the footprint would therefore assert a *meshing* coincidence while
+/// looking like it asserted the geometry.
+const DESIGN_CONTACT_AREA: f64 = 1.6e-3;
+
+/// Active face count on that patch — the resolution half of the same guard.
+const DESIGN_CONTACT_FACES: usize = 520;
+
+/// The standoff the barrier has to keep open, and where it comes from.
+///
+/// Not a comfort margin: it is the marching scheme's feasibility condition,
+/// read off the measured failure mode. An `ArmijoStall` at Newton **iteration
+/// 0** means the line search never found a decrease from the increment's
+/// starting point — the start was already infeasible — and that happens
+/// exactly when the plane advances further in one increment than the barrier
+/// was holding the plate off it. [`the_armijo_wall_against_barrier_stiffness`]
+/// asserts that relation directly (`min_sd < RAMP_STEP` on every iter-0 row).
+///
+/// ⭐ So the lower bound on `κ` is set by the **integration scheme**, not by
+/// the physics. The physics sets [`DESIGN_TRACTION_PA`]; the scheme sets how
+/// much clearance must survive under it. Halve [`RAMP_STEP`] and the floor
+/// falls with `|b'|` at the smaller gap.
+const REQUIRED_STANDOFF: f64 = RAMP_STEP;
+
+/// Barrier stiffness every gate here runs at — **derived, not swept**.
+///
+/// The surface-integrated face barrier is
+/// `E = A_rest · Σ_q ŵ_q · κ · b(sd)` with `Σ_q ŵ_q = 1`, so `κ·|b'(d)|` is a
+/// **traction in pascals** ([`sim_soft::contact::barrier`], and
+/// [`the_face_barrier_traction_law_holds_against_the_solver`] measures it
+/// against the solver). That makes `κ` determined by two requirements rather
+/// than found by sweeping decades:
+///
+/// ```text
+///   floor    the barrier must hold REQUIRED_STANDOFF open under the design
+///            traction, or the next ramp increment starts infeasible
+///              kappa >= sigma / |b'(REQUIRED_STANDOFF)|   = 1.730e6
+///
+///   ceiling  the standoff is a BIAS in the reported contact position, and
+///            must stay in the lower half of the tolerance band -- above that
+///            the barrier cushions rather than enforces
+///              kappa <= sigma / |b'(d_hat / 2)|           = 2.123e7
+/// ```
+///
+/// **`1e7` is the only decade in `[1.730e6, 2.123e7]`.** It is not the
+/// smallest decade that happened to converge; it is the one the two bounds
+/// leave. [`kappa_is_derived_and_not_swept`] evaluates both bounds from the
+/// shipped barrier and fails if this constant leaves the interval — including
+/// if it were lowered to 1e6 or raised to 1e8.
+///
+/// ✅ The derivation reproduces what the sweep measured, having been computed
+/// from neither: 1e6 holds only **0.056 mm** at the design traction, under the
+/// 0.1 mm increment ⇒ infeasible, and the sweep stalls there; 1e7 holds
+/// **0.424 mm** ⇒ feasible, and the sweep runs clean; 1e8 holds **0.885 mm**,
+/// 74 % of the band, which is the cushioning regime the ceiling excludes.
+///
+/// ⚠ **What the standoff costs, stated rather than hidden**: at `κ = 1e7` the
+/// converged pose floats 0.357 mm off the plane, **6.7 %** of the 5.29 mm
+/// deflection being measured. That is a systematic bias in every contact
+/// position this fixture reports, and shrinking it means a smaller `d̂`, not a
+/// larger `κ`.
 const KAPPA: f64 = 1.0e7;
 
 /// Plane standoff inside the band, so the bottom face is engaged at rest.
@@ -717,6 +812,17 @@ struct Press {
     /// This is the field that tells a physically-standing-off solve apart from
     /// one resting on the clamp.
     min_sd: f64,
+    /// Tributary-area-weighted **mean** signed distance over the active pairs
+    /// (m).
+    ///
+    /// [`Press::min_sd`] is an order statistic; this is the distribution it is
+    /// the bottom of. The pair matters: the barrier traction `kappa*|b'(d)|` is
+    /// convex in `d`, so the *mean traction* over a patch with a spread of gaps
+    /// is carried at an effective gap strictly between the minimum and the
+    /// mean. Comparing a mean traction against `min_sd` is a mean read against
+    /// an order statistic and reports a discrepancy that is the spread, not a
+    /// defect.
+    mean_sd: f64,
 }
 
 /// Displacement and contact readout at the converged pose.
@@ -758,6 +864,19 @@ fn summarize<M: sim_soft::Material>(
         },
         n_pairs: readouts.len(),
         min_sd: readouts.iter().map(|r| r.sd).fold(f64::INFINITY, f64::min),
+        mean_sd: {
+            // Weighted by the deformed tributary patch each node speaks for.
+            // Corner nodes report a non-positive area by design (see
+            // `Press::peak_area`) and carry ~0 force, so they are excluded
+            // rather than allowed to contribute negative weight.
+            let (num, den) = readouts
+                .iter()
+                .filter(|r| r.tributary_area > 0.0)
+                .fold((0.0, 0.0), |(n, d), r| {
+                    (r.sd.mul_add(r.tributary_area, n), d + r.tributary_area)
+                });
+            if den > 0.0 { num / den } else { f64::NAN }
+        },
     }
 }
 
@@ -1641,5 +1760,523 @@ fn tet10_yeoh_converges_against_a_curved_indenter() {
         converged.len() >= 2,
         "the curved ramp must clear at least two rungs; it cleared {}",
         converged.len(),
+    );
+}
+
+// ── the face-barrier traction law ───────────────────────────────────
+
+/// Rest-pose contact geometry at a prescribed uniform gap, so the barrier
+/// arithmetic can be checked against the shipped solver path without a solve.
+struct RestContact {
+    /// Every active face's rest area summed (m^2).
+    active_area: f64,
+    /// Rest area of only those faces lying wholly in the plate's bottom plane
+    /// (m^2) — the faces whose six Gauss points all sit at the prescribed gap.
+    flat_area: f64,
+    /// Net barrier force on the solid along +z (N), from the shipped readout.
+    net_force_z: f64,
+    /// Number of active face pairs — a direct proxy for surface resolution.
+    /// The contact *area* alone does not see a remesh: at [`CELL`] = 5 mm the
+    /// 40 mm footprint still tiles to exactly 1600 mm^2 with a different
+    /// number of faces, and a different discretisation carries a different
+    /// traction.
+    n_faces: usize,
+}
+
+/// Place the undeformed Tet10 plate `gap` above a plane and read the barrier.
+fn rest_contact_at(gap: f64, kappa: f64) -> RestContact {
+    let tet4 = tet4_yeoh();
+    let mesh = Tet10Mesh::<Yeoh>::from_tet4(&tet4);
+    let positions = mesh.positions().to_vec();
+    let contact = IpcRigidContact::with_params(vec![Indenter::Plane.at(-gap)], kappa, D_HAT);
+    let pairs = ActivePairsFor::<Yeoh>::active_pairs(&contact, &mesh, &positions);
+    let mut active_area = 0.0;
+    let mut flat_area = 0.0;
+    for p in &pairs {
+        if let ContactPair::Face {
+            rest_area, nodes, ..
+        } = p
+        {
+            active_area += *rest_area;
+            if nodes.iter().all(|n| positions[*n as usize].z.abs() < 1e-9) {
+                flat_area += *rest_area;
+            }
+        }
+    }
+    RestContact {
+        active_area,
+        flat_area,
+        n_faces: pairs.len(),
+        net_force_z: contact
+            .per_pair_readout(&mesh, &positions)
+            .iter()
+            .map(|r| r.force_on_soft.z)
+            .sum(),
+    }
+}
+
+/// Does `F = kappa * A * |b'(gap)|` actually describe the shipped face barrier,
+/// and **which `A`**?
+///
+/// This is the relation the derived kappa stands on, so it is measured against
+/// the solver rather than asserted from the energy expression. The subtlety is
+/// the area: a face is active if **any** of its six nodes is inside the band,
+/// so the plate's vertical side walls join the active set while most of their
+/// Gauss points sit outside it and contribute nothing. Summing rest area over
+/// every active face therefore over-counts the load-bearing surface, and the
+/// load-bearing area is the flat bottom face.
+///
+/// The gate is two-sided on purpose. The flat area must **under**-predict the
+/// force (the side walls add a little, they cannot subtract), and the excess
+/// must stay small — if it ever grew large, "the flat face carries the load"
+/// would have stopped being true and every kappa derived from it would be
+/// wrong by that factor.
+#[test]
+fn the_face_barrier_traction_law_holds_against_the_solver() {
+    eprintln!("face-barrier traction law at rest, d_hat {D_HAT:e} m, kappa {KAPPA:e}");
+    eprintln!(
+        "  {:>8} {:>11} {:>11} {:>7} {:>13} {:>13} {:>8}",
+        "gap/mm", "A_act/mm2", "A_flat/mm2", "flat%", "F_meas/N", "F_pred/N", "excess",
+    );
+    let mut excesses = Vec::new();
+    for frac in [0.2, 0.4, 0.6, 0.8] {
+        let gap = frac * D_HAT;
+        let c = rest_contact_at(gap, KAPPA);
+        assert!(c.flat_area > 0.0, "gap {gap:e}: no flat face in contact");
+        // The shipped barrier, not a local copy of its formula.
+        let predicted = KAPPA * c.flat_area * barrier_derivative(gap, D_HAT).abs();
+        let excess = c.net_force_z / predicted - 1.0;
+        eprintln!(
+            "  {:8.4} {:11.2} {:11.2} {:6.1}% {:13.6e} {:13.6e} {:+7.2}%",
+            gap * 1e3,
+            c.active_area * 1e6,
+            c.flat_area * 1e6,
+            100.0 * c.flat_area / c.active_area,
+            c.net_force_z,
+            predicted,
+            100.0 * excess,
+        );
+        assert!(
+            excess > -1e-12,
+            "gap {gap:e}: the flat bottom face alone predicts MORE force \
+             ({predicted:e} N) than the whole active set produces \
+             ({:e} N) — the side walls cannot subtract force, so either the \
+             flat-area identification or the traction law is wrong",
+            c.net_force_z,
+        );
+        excesses.push((gap, excess));
+    }
+    // Pinned from measurement, not chosen: the printed excesses are
+    // +1.55 %, +1.35 %, +0.48 %, -0.00 %.
+    for (gap, excess) in &excesses {
+        assert!(
+            *excess < 0.05,
+            "gap {gap:e}: the side walls contribute {:.1}% of the contact force, \
+             so the flat bottom face is no longer the load-bearing area and a \
+             kappa derived from it is wrong by that factor",
+            100.0 * excess,
+        );
+    }
+
+    // The excess shrinks as the gap opens, because the band stops reaching the
+    // side walls' Gauss points. At the widest gap probed it reaches zero, and
+    // there the traction law is not approximate at all: it is the energy
+    // expression evaluated, and must agree to floating point. This is the arm
+    // that says the law itself is exact and only the *area* was ever the
+    // approximation.
+    let (widest_gap, widest_excess) = excesses
+        .last()
+        .copied()
+        .expect("the sweep must produce at least one row");
+    assert!(
+        widest_excess.abs() < 1e-9,
+        "at gap {widest_gap:e} m no side-wall Gauss point is inside the band, so \
+         `F = kappa * A_flat * |b'(gap)|` should be an identity — it disagreed \
+         by {widest_excess:.3e} relative, which means the face barrier is not \
+         the energy this fixture thinks it is",
+    );
+    for w in excesses.windows(2) {
+        assert!(
+            w[1].1 <= w[0].1 + 1e-12,
+            "the side-wall excess must shrink as the gap opens ({:e} m -> {:.3}%, \
+             {:e} m -> {:.3}%); a rise means faces are ENTERING the band as it \
+             recedes, which no geometry here can do",
+            w[0].0,
+            100.0 * w[0].1,
+            w[1].0,
+            100.0 * w[1].1,
+        );
+    }
+}
+
+/// The contact patch [`DESIGN_TRACTION_PA`] was measured over — its flat rest
+/// area and its face count, both read from the mesh rather than assumed.
+///
+/// The flat bottom face is the load-bearing area, as
+/// [`the_face_barrier_traction_law_holds_against_the_solver`] establishes.
+fn design_contact_patch() -> RestContact {
+    rest_contact_at(0.5 * D_HAT, KAPPA)
+}
+
+/// Rest area of the plate's flat bottom face (m^2).
+fn flat_contact_area() -> f64 {
+    design_contact_patch().flat_area
+}
+
+/// **Is the contact traction a property of the scene, or of kappa?**
+///
+/// The whole derivation hinges on this. `kappa = sigma / |b'(d)|` is only a
+/// *derivation* if `sigma` — the traction the compressed plate pushes back
+/// with — is set by the material and the imposed compression rather than by
+/// the barrier stiffness being solved for. If `sigma` moved with `kappa`, the
+/// formula would just be re-deriving its own input.
+///
+/// It does move a little, and it must: a stiffer barrier holds the plate
+/// further off the plane, so at a **fixed plane height** it is compressed less
+/// and pushes back less. What matters is the size of that coupling against the
+/// spread of `kappa` driving it, and this probe measures it rather than
+/// assuming it is small.
+///
+/// ⚠ **Compared at a COMMON plane height, not at each arm's own last rung.**
+/// A soft `kappa` stalls early and a stiff one runs to the ceiling, so their
+/// final rungs are at different compressions; reading `sigma` off each arm's
+/// last rung would report a spread that is mostly *depth* and call it a
+/// *kappa* effect. The deepest plane height every arm reached is the only
+/// place the three are the same experiment.
+///
+/// `#[ignore]` — one compression ramp per kappa.
+#[test]
+#[ignore = "one compression ramp per kappa, minutes — the measurement the \
+            derived kappa is built on"]
+fn is_the_contact_traction_a_property_of_the_scene_or_of_kappa() {
+    let area = flat_contact_area();
+    eprintln!(
+        "contact traction vs kappa   [d_hat {D_HAT:e} m, flat area {:.1} mm2, \
+         ramp to {:+.2} mm]",
+        area * 1e6,
+        RAMP_MAX_PLANE_H * 1e3,
+    );
+    // Every arm's full (plane height -> converged pose) series, so the
+    // comparison can be taken at a height they all reached.
+    let mut arms: Vec<(f64, Vec<(f64, Press)>)> = Vec::new();
+    for exp in 6..=8 {
+        let kappa = 10f64.powi(exp);
+        let setup = Setup {
+            barrier: Barrier {
+                kappa,
+                d_hat: D_HAT,
+            },
+            indenter: Indenter::Plane,
+        };
+        let series: Vec<(f64, Press)> = ramp_tet10_yeoh(setup, RAMP_STEP, RAMP_MAX_PLANE_H)
+            .into_iter()
+            .filter_map(|(h, r)| r.ok().map(|p| (h, p)))
+            .collect();
+        eprintln!(
+            "  kappa {kappa:8.0e}: {:2} rungs converged, deepest plane {:+.3} mm",
+            series.len(),
+            series.last().map_or(f64::NAN, |(h, _)| h * 1e3),
+        );
+        arms.push((kappa, series));
+    }
+    assert!(
+        arms.iter().all(|(_, s)| !s.is_empty()),
+        "every kappa arm must converge at least one rung",
+    );
+
+    // The deepest plane height common to all arms.
+    let common_h = arms
+        .iter()
+        .map(|(_, s)| s.last().map_or(f64::NEG_INFINITY, |(h, _)| *h))
+        .fold(f64::INFINITY, f64::min);
+    eprintln!("  common plane height: {:+.4} mm", common_h * 1e3);
+    eprintln!(
+        "  {:>9} {:>10} {:>10} {:>10} {:>11} {:>12} {:>9}",
+        "kappa", "disp/mm", "min_sd/mm", "mean_sd", "sigma/kPa", "d_eff/mm", "in bracket",
+    );
+    let mut rows = Vec::new();
+    for (kappa, series) in &arms {
+        let (h, p) = series
+            .iter()
+            .rfind(|(h, _)| *h <= common_h + 1e-12)
+            .expect("every arm reached the common height by construction");
+        assert!(
+            (h - common_h).abs() < 0.5 * RAMP_STEP,
+            "arm kappa {kappa:e} has no rung at the common height {common_h:e} \
+             (nearest {h:e}) — the arms are not on the same ramp grid and the \
+             comparison would be between different compressions",
+        );
+        let sigma = p.net_force_z / area;
+        // The law, run forwards: given this traction, what standoff should a
+        // barrier of this stiffness hold? Compared against what it did hold.
+        let predicted_sd = face_barrier_standoff(*kappa, D_HAT, sigma);
+        eprintln!(
+            "  {:9.0e} {:10.4} {:10.4} {:10.4} {:11.3} {:12.4} {:>9}",
+            kappa,
+            p.max_disp * 1e3,
+            p.min_sd * 1e3,
+            p.mean_sd * 1e3,
+            sigma * 1e-3,
+            predicted_sd * 1e3,
+            if predicted_sd >= p.min_sd && predicted_sd <= p.mean_sd {
+                "yes"
+            } else {
+                "NO"
+            },
+        );
+        rows.push((*kappa, p.min_sd, p.mean_sd, sigma, predicted_sd));
+    }
+
+    let sig_lo = rows.iter().map(|r| r.3).fold(f64::INFINITY, f64::min);
+    let sig_hi = rows.iter().map(|r| r.3).fold(f64::NEG_INFINITY, f64::max);
+    let k_lo = rows.iter().map(|r| r.0).fold(f64::INFINITY, f64::min);
+    let k_hi = rows.iter().map(|r| r.0).fold(f64::NEG_INFINITY, f64::max);
+    eprintln!(
+        "  at one compression, kappa spans {:.0}x and sigma spans {:.3}x \
+         ({:.3} -> {:.3} kPa)",
+        k_hi / k_lo,
+        sig_hi / sig_lo,
+        sig_lo * 1e-3,
+        sig_hi * 1e-3,
+    );
+    // A DIFFERENT quantity, reported separately on purpose: the traction at
+    // the ramp ceiling on the baseline arm. The table above is a *controlled*
+    // comparison and can only be taken where every arm converged, which is
+    // wherever the softest one stalled — shallow. The design point is the
+    // deepest compression the fixture is required to reach, and only the
+    // baseline arm gets there. It is one arm, not three, and the table above
+    // is what licenses reading it as a property of the scene.
+    for (kappa, series) in &arms {
+        let Some((h, p)) = series.last() else {
+            continue;
+        };
+        eprintln!(
+            "  DESIGN POINT  kappa {:8.0e}: plane {:+.3} mm, disp {:.4} mm, \
+             sigma {:.3} kPa, min_sd {:.4} mm",
+            kappa,
+            h * 1e3,
+            p.max_disp * 1e3,
+            p.net_force_z / area * 1e-3,
+            p.min_sd * 1e3,
+        );
+    }
+
+    assert_the_derivation_holds_on(&arms, area, &rows);
+}
+
+/// One arm's reading at the common plane height:
+/// `(kappa, min_sd, mean_sd, sigma, effective gap)`.
+type LawRow = (f64, f64, f64, f64, f64);
+
+/// The assertions [`is_the_contact_traction_a_property_of_the_scene_or_of_kappa`]
+/// draws from its ramps, split out so each half stays readable: above, run the
+/// arms and report; here, hold the derivation against them.
+fn assert_the_derivation_holds_on(arms: &[(f64, Vec<(f64, Press)>)], area: f64, rows: &[LawRow]) {
+    // ── the two things this probe pins for the always-on derivation ──
+    //
+    // 1. DESIGN_TRACTION_PA itself. `kappa_is_derived_and_not_swept` evaluates
+    //    the floor and ceiling from that constant, and its interval is 12.27x
+    //    wide (the ratio |b'(step)| / |b'(d_hat/2)|, independent of traction),
+    //    so it tolerates the traction being wrong by roughly 0.47x-5.8x before
+    //    a different decade is selected. That slack is real and this is where
+    //    it is closed: the constant is checked against a fresh measurement.
+    let baseline = arms
+        .iter()
+        .find(|(k, _)| (*k - KAPPA).abs() < 1.0)
+        .and_then(|(_, s)| s.last())
+        .expect("the baseline kappa must be one of the swept arms");
+    let measured_design_traction = baseline.1.net_force_z / area;
+    let drift = (measured_design_traction / DESIGN_TRACTION_PA - 1.0).abs();
+    eprintln!(
+        "  DESIGN_TRACTION_PA {:.1} Pa vs measured {:.1} Pa ({:+.2} %)",
+        DESIGN_TRACTION_PA,
+        measured_design_traction,
+        100.0 * (measured_design_traction / DESIGN_TRACTION_PA - 1.0),
+    );
+    assert!(
+        drift < 0.05,
+        "DESIGN_TRACTION_PA is {DESIGN_TRACTION_PA:e} Pa but the fixture now          produces {measured_design_traction:e} Pa ({:.1}% off) at its design          point. Every bound in `kappa_is_derived_and_not_swept` is computed          from that constant, so it is stale and the derived kappa is a          derivation from the wrong number.",
+        100.0 * drift,
+    );
+
+    // 2. The wall each kappa hits. The derivation says a barrier stalls once
+    //    the traction exceeds `kappa * |b'(REQUIRED_STANDOFF)|`, because past
+    //    that it can no longer hold one increment of clearance. An arm that
+    //    stalled must therefore have stalled BELOW its threshold, and an arm
+    //    that ran clean must have stayed below it the whole way. This is the
+    //    prediction checked against ramps that know nothing about it.
+    for (kappa, series) in arms {
+        let threshold = kappa * barrier_derivative(REQUIRED_STANDOFF, D_HAT).abs();
+        let reached = series.last().map_or(0.0, |(_, p)| p.net_force_z / area);
+        let ran_clean = series
+            .last()
+            .is_some_and(|(h, _)| *h >= RAMP_MAX_PLANE_H - RAMP_STEP);
+        eprintln!(
+            "  kappa {kappa:8.0e}: predicted stall above {:7.3} kPa, reached              {:7.3} kPa, {}",
+            threshold * 1e-3,
+            reached * 1e-3,
+            if ran_clean { "ran clean" } else { "STALLED" },
+        );
+        assert!(
+            reached < threshold,
+            "kappa {kappa:e} carried {reached:e} Pa, ABOVE the {threshold:e} Pa              at which the derivation says it can no longer hold one ramp              increment open — so the feasibility argument that sets the kappa              floor does not describe this ramp",
+        );
+    }
+
+    // The law under load. The rest-pose gate
+    // `the_face_barrier_traction_law_holds_against_the_solver` tests it on a
+    // flat patch at one uniform gap; under load the patch bulges and the gaps
+    // spread, so there is no single gap to check against.
+    //
+    // What survives the spread is a bracket. `kappa*|b'(d)|` is convex and
+    // decreasing, so the effective gap that carries the *mean* traction —
+    // `face_barrier_standoff(kappa, d_hat, F/A)` — must lie between the
+    // minimum gap and the area-weighted mean gap. Below the minimum would mean
+    // the patch carries more load than its tightest point could; above the
+    // mean would mean convexity ran backwards.
+    for (kappa, min_sd, mean_sd, sigma, predicted) in rows {
+        assert!(
+            predicted >= min_sd,
+            "kappa {kappa:e}: the mean traction {sigma:e} Pa is carried at an \
+             effective gap of {predicted:e} m, BELOW the tightest gap in the \
+             patch ({min_sd:e} m) — no part of the patch is that loaded, so \
+             either the flat area or the traction law is wrong",
+        );
+        assert!(
+            predicted <= mean_sd,
+            "kappa {kappa:e}: the mean traction {sigma:e} Pa is carried at an \
+             effective gap of {predicted:e} m, ABOVE the area-weighted mean gap \
+             ({mean_sd:e} m). |b'| is convex, so the effective gap can never \
+             exceed the mean — this says the convexity argument does not hold \
+             on this patch",
+        );
+    }
+}
+
+// ── the derived kappa ───────────────────────────────────────────────
+
+/// **The derivation.** Both bounds on `κ`, evaluated on the shipped barrier.
+///
+/// Cheap by construction — no solve, only the barrier arithmetic — so it runs
+/// always-on and re-derives `κ` on every build rather than leaving a decade
+/// pinned by a sweep nobody re-runs. Every arm here can fail: lowering
+/// [`KAPPA`] to 1e6 trips the floor, raising it to 1e8 trips the ceiling, and
+/// a [`DESIGN_TRACTION_PA`] off by ~3× moves the interval off 1e7 entirely.
+///
+/// ⚠ **The bracket `(1e6, 1e7]` it is checked against is MEASURED**, by
+/// [`the_armijo_wall_against_barrier_stiffness`] — 1e6 stalls, 1e7 runs clean
+/// to the ramp ceiling. That independence is the point: the floor is computed
+/// from a traction and a barrier derivative, the bracket comes from running
+/// ramps, and they are only allowed to agree if the derivation is right.
+#[test]
+fn kappa_is_derived_and_not_swept() {
+    let floor = face_barrier_kappa(D_HAT, REQUIRED_STANDOFF, DESIGN_TRACTION_PA)
+        .expect("one ramp step must lie inside the barrier band");
+    let ceiling = face_barrier_kappa(D_HAT, 0.5 * D_HAT, DESIGN_TRACTION_PA)
+        .expect("half the band is inside the band");
+    let standoff = face_barrier_standoff(KAPPA, D_HAT, DESIGN_TRACTION_PA);
+    eprintln!(
+        "derived kappa: floor {floor:.4e} <= {KAPPA:.4e} <= ceiling {ceiling:.4e}\n  \
+         design traction {:.3} kPa, required standoff {:.4} mm, \
+         standoff held {:.4} mm ({:.1} % of band)",
+        DESIGN_TRACTION_PA * 1e-3,
+        REQUIRED_STANDOFF * 1e3,
+        standoff * 1e3,
+        100.0 * standoff / D_HAT,
+    );
+
+    // DESIGN_TRACTION_PA was measured on a specific contact patch, and only an
+    // `#[ignore]`d probe re-measures it. The always-on half of that guard is
+    // here: if the geometry it was measured on has moved, the constant is
+    // stale even though the arithmetic below still evaluates cleanly. The
+    // interval is wide enough (12.27x) to absorb a real traction shift without
+    // complaining, so this is the arm that would notice.
+    let patch = design_contact_patch();
+    let stale = |what: &str| -> String {
+        format!(
+            "the contact patch DESIGN_TRACTION_PA was measured on has changed \
+             ({what}), so the traction constant is stale. Re-run \
+             `is_the_contact_traction_a_property_of_the_scene_or_of_kappa` and \
+             update the constants before trusting any bound below."
+        )
+    };
+    assert!(
+        (patch.flat_area / DESIGN_CONTACT_AREA - 1.0).abs() < 1e-9,
+        "{}",
+        stale(&format!(
+            "flat area {:.1} mm2, was {:.1} mm2",
+            patch.flat_area * 1e6,
+            DESIGN_CONTACT_AREA * 1e6,
+        )),
+    );
+    assert_eq!(
+        patch.n_faces,
+        DESIGN_CONTACT_FACES,
+        "{}",
+        stale(&format!(
+            "{} active faces, was {DESIGN_CONTACT_FACES}",
+            patch.n_faces,
+        )),
+    );
+
+    assert!(
+        floor < ceiling,
+        "the two requirements are inconsistent: the barrier cannot both hold \
+         {REQUIRED_STANDOFF:e} m open (needs kappa >= {floor:e}) and stay \
+         inside half the band (needs kappa <= {ceiling:e}). That is not a \
+         kappa problem — d_hat is too small for this traction.",
+    );
+    assert!(
+        KAPPA >= floor,
+        "KAPPA = {KAPPA:e} is below the derived floor {floor:e}: under \
+         {DESIGN_TRACTION_PA:e} Pa it holds only {standoff:e} m, less than the \
+         {REQUIRED_STANDOFF:e} m increment, so the march starts infeasible and \
+         the ramp stalls at Newton iteration 0",
+    );
+    assert!(
+        KAPPA <= ceiling,
+        "KAPPA = {KAPPA:e} is above the derived ceiling {ceiling:e}: it holds \
+         {standoff:e} m of standoff, more than half the {D_HAT:e} m band, so \
+         it is cushioning the contact rather than enforcing it and every \
+         contact position it reports carries that bias",
+    );
+
+    // The interval must be narrow enough to SELECT a decade. An interval
+    // spanning two decades would make "1e7" a choice again, dressed up.
+    let decades_inside = (1..=12)
+        .map(|e| 10f64.powi(e))
+        .filter(|k| *k >= floor && *k <= ceiling)
+        .count();
+    assert_eq!(
+        decades_inside, 1,
+        "the derived interval [{floor:e}, {ceiling:e}] contains {decades_inside} \
+         decades, so it does not pin one. With more than one, KAPPA is still a \
+         preference; with none, the two requirements cannot both be met on a \
+         round number and the constant must be the bound itself.",
+    );
+
+    // And it must be the decade actually shipped.
+    assert!(
+        (KAPPA.log10() - KAPPA.log10().round()).abs() < 1e-12,
+        "KAPPA {KAPPA:e} is not a decade, so the decade-selection argument \
+         above does not describe how it was chosen",
+    );
+
+    // Cross-check against the MEASURED sweep: the floor has to explain why the
+    // decade below stalls and the shipped one does not.
+    let below = face_barrier_standoff(KAPPA / 10.0, D_HAT, DESIGN_TRACTION_PA);
+    assert!(
+        below < REQUIRED_STANDOFF,
+        "the derivation says kappa = {:e} holds {below:e} m, which clears the \
+         {REQUIRED_STANDOFF:e} m increment — but the sweep measured that decade \
+         STALLING. The derivation would then not explain the wall it was \
+         written to explain.",
+        KAPPA / 10.0,
+    );
+    assert!(
+        standoff > REQUIRED_STANDOFF,
+        "the derivation says the shipped kappa holds {standoff:e} m, under the \
+         {REQUIRED_STANDOFF:e} m increment — but the sweep measured it running \
+         clean to the ramp ceiling",
     );
 }

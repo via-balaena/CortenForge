@@ -273,6 +273,7 @@ pub(crate) fn face_hessian<F: Fn(Vec3) -> FaceBarrierEval>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::contact::barrier;
 
     /// Partition of unity and Kronecker-delta at the parametric node locations,
     /// exercising the `[c0,c1,c2,m01,m12,m02]` order the SUT relies on.
@@ -657,27 +658,12 @@ mod tests {
         let d_hat = 0.05_f64;
         let kappa = 1.0e4_f64;
         let n = Vec3::new(0.0, 0.0, 1.0);
-        move |x: Vec3| {
-            let sd = x.z;
-            if sd >= d_hat {
-                return FaceBarrierEval {
-                    normal: n,
-                    curvature: Matrix3::zeros(),
-                    b: 0.0,
-                    b_d: 0.0,
-                    b_dd: 0.0,
-                };
-            }
-            let d = sd.max(d_hat * 1e-6);
-            let r = d - d_hat;
-            let ln = (d / d_hat).ln();
-            FaceBarrierEval {
-                normal: n,
-                curvature: Matrix3::zeros(), // plane: ∇²sd = 0
-                b: kappa * (-(r * r) * ln),
-                b_d: kappa * (-2.0 * r * ln - r * r / d),
-                b_dd: kappa * (r * r / (d * d) - 4.0 * r / d - 2.0 * ln),
-            }
+        move |x: Vec3| FaceBarrierEval {
+            normal: n,
+            curvature: Matrix3::zeros(), // plane: ∇²sd = 0
+            b: kappa * barrier::barrier_value(x.z, d_hat),
+            b_d: kappa * barrier::barrier_derivative(x.z, d_hat),
+            b_dd: kappa * barrier::barrier_second_derivative(x.z, d_hat),
         }
     }
 
@@ -694,24 +680,12 @@ mod tests {
             let nhat = dvec / rnorm;
             let curvature = (Matrix3::identity() - nhat * nhat.transpose()) / rnorm;
             let sd = rnorm - radius;
-            if sd >= d_hat {
-                return FaceBarrierEval {
-                    normal: nhat,
-                    curvature,
-                    b: 0.0,
-                    b_d: 0.0,
-                    b_dd: 0.0,
-                };
-            }
-            let d = sd.max(d_hat * 1e-6);
-            let r = d - d_hat;
-            let ln = (d / d_hat).ln();
             FaceBarrierEval {
                 normal: nhat,
                 curvature,
-                b: kappa * (-(r * r) * ln),
-                b_d: kappa * (-2.0 * r * ln - r * r / d),
-                b_dd: kappa * (r * r / (d * d) - 4.0 * r / d - 2.0 * ln),
+                b: kappa * barrier::barrier_value(sd, d_hat),
+                b_d: kappa * barrier::barrier_derivative(sd, d_hat),
+                b_dd: kappa * barrier::barrier_second_derivative(sd, d_hat),
             }
         }
     }

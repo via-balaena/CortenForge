@@ -339,6 +339,25 @@ Listed because the confidence of §4 rests on these being open, not closed.
    smoothing and normal-averaging tuning. This is the renovation proper, and
    item 2 is what says whether it improved anything.
 
+   ✅ **`κ` is now derived rather than swept**, and the arithmetic is shared
+   code, not a note: `sim/L0/soft/src/contact/barrier.rs` holds the one
+   implementation of `b`/`b'`/`b''` (the solver calls it too) plus
+   `face_barrier_standoff` / `face_barrier_kappa`. Because the face barrier
+   integrates `κ·b` over the rest area with weights summing to 1, **`κ·|b'(d)|`
+   is a traction in pascals** — so `κ` is fixed by the traction the scene
+   carries and the standoff the march needs, between a floor
+   (`σ/|b'(ramp step)|`) and a ceiling (`σ/|b'(d̂/2)|`).
+   `kappa_is_derived_and_not_swept` in
+   `sim/L0/soft/tests/tet10_yeoh_ipc_convergence.rs` evaluates both on every
+   build.
+
+   ⚠ **Two things that do not carry to the bridge unexamined.** The floor is
+   set by the *marching increment*, not the physics, so a different ramp
+   schedule moves it. And the interval is `|b'(step)| / |b'(d̂/2)|` = **12.3×**
+   wide regardless of `σ`, so it selects a decade only while the design
+   traction is known to better than roughly 0.5–6×; `insertion_sim`'s traction
+   is its own measurement, not this fixture's **30.4 kPa**.
+
 4. **Per-Gauss-point material sampling** (§7.6). The expensive one: a
    return-shape change to `Mesh::materials()` reaching 119 call sites.
    Deferred to here so its benefit arrives as a number rather than a belief.
