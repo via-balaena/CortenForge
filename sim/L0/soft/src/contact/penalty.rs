@@ -1022,13 +1022,22 @@ impl<M: crate::material::Material> super::ActivePairsFor<M> for PenaltyRigidCont
     /// inert: every `full_to_free_idx` lookup for an orphan is
     /// `None`, so both columns are exactly zero, `M` gains a clean
     /// identity row and column, and `apply_tail`'s `t[j]` and `s[j]`
-    /// are exact zeros. What it is NOT is free — each such column
-    /// cost two sparse back-solves and a row and column of a DENSE
-    /// `k×k`. On the `insertion_sim` fixture at interference 0 that
-    /// is **6 583 spurious columns of 6 981**, so `M` goes from
-    /// 6 981² (~390 MB) to 398² (~1.3 MB). Removing them is the
-    /// larger win on that path, and no test reaches it (no friction
-    /// fixture uses a mesher-generated mesh).
+    /// are exact zeros. What it would NOT be is free: each such
+    /// column costs two sparse back-solves and a row and column of a
+    /// DENSE `k×k`, and an orphan pair adds exactly one (its
+    /// curved-normal block is skipped by the same `None` lookups).
+    ///
+    /// ⚠ **Derived, not observed.** That path needs
+    /// `friction_mu > 0`, and the fixture whose numbers are quoted
+    /// here does not enable friction — nor does any test in the
+    /// workspace pair friction with a mesher-generated mesh. HAD it
+    /// run on `insertion_sim` at interference 0, `k` would have
+    /// carried **6 583 spurious columns of 6 981**, i.e. an `M` of
+    /// 6 981² (~390 MB) where the 398 live pairs need 398²
+    /// (~1.3 MB). `BondedSandwich<SdfMeshedTetMesh>` is that
+    /// combination and is licence-gated out of CI, so this is
+    /// reachable by a user and by no gate — which is the reason to
+    /// state it rather than leave it latent.
     ///
     /// So the pairs were wasted work and a misleading diagnostic,
     /// never a corrupted solve.
