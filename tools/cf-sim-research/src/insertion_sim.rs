@@ -5977,8 +5977,9 @@ mod tests {
     /// filter — independent of the FEM solve. Pins the CR.2 wire-up:
     /// `intruder_contact_sliding_at` must call
     /// `PenaltyRigidContact::with_params_and_interior_cutoff` (NOT
-    /// `with_params`); regression to `with_params` would produce a
-    /// non-empty active set here.
+    /// `with_params`); regression to `with_params` puts the probe
+    /// vertex in the active set here. Verified by disabling the
+    /// cutoff: the gate fails with one pair on the probe vertex.
     ///
     /// **Scope**: this test is a wire-up gate, NOT a filter-math gate.
     /// The strict-vs-non-strict, sign-convention, and band-gate
@@ -6012,13 +6013,33 @@ mod tests {
             -0.003, // cavity_offset_m
             3.0e-3, // cavity_inset_m → 6 mm interior_cutoff
         );
-        let probe = vec![Vec3::new(0.0, 0.0, 0.0)];
+        // The probe must sit at a TET-REFERENCED vertex index.
+        // `active_pairs` filters the BCC lattice's orphan corners out
+        // of the active set, and vertex 0 of this mesh is one of them
+        // — a bare `vec![probe]` (index 0) would be excluded by
+        // incidence before the cutoff ever ran, and this gate would
+        // pass whether or not the cutoff was wired up.
+        let probe_vertex = sim_soft::referenced_vertices(&geometry.mesh)[0];
+        let mut probe = geometry.mesh.positions().to_vec();
+        probe[probe_vertex as usize] = Vec3::new(0.0, 0.0, 0.0);
         let pairs = contact.active_pairs(&geometry.mesh, &probe);
+        // Assert about the probe vertex only — the rest of the mesh
+        // sits at its own rest positions and may legitimately be in
+        // contact with the intruder at this pose.
+        let probe_pairs = pairs
+            .iter()
+            .filter(|p| {
+                matches!(
+                    **p,
+                    sim_soft::ContactPair::Vertex { vertex_id, .. } if vertex_id == probe_vertex
+                )
+            })
+            .count();
         assert!(
-            pairs.is_empty(),
+            probe_pairs == 0,
             "deep-interior probe at body center (composed sd ≈ -37 mm) must be \
-             excluded by the 6 mm interior_cutoff; got {} pairs",
-            pairs.len(),
+             excluded by the 6 mm interior_cutoff; vertex {probe_vertex} got \
+             {probe_pairs} pairs",
         );
     }
 
