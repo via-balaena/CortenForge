@@ -13,10 +13,12 @@
 //! directly, so the active set was dominated by points that are not
 //! the body.
 //!
-//! Measured on this file's fixture (a 1 cm sphere at a 3 mm cell,
-//! `SoftScene::sphere_on_plane`, plane cut 2 mm into the rest sphere) —
-//! `fixture_is_orphan_dominated` is the producer, and prints the
-//! current numbers on every run.
+//! Measured on this file's fixture — a 1 cm sphere at a 3 mm cell
+//! (`SoftScene::sphere_on_plane`) against a plane cut 2 mm into the
+//! rest sphere, which every gate here uses except the solve one (that
+//! takes the scene's own tangent plane, so the step is the shipped
+//! configuration). `fixture_is_orphan_dominated` is the producer and
+//! prints the current numbers on every run.
 //!
 //! # What it did NOT do
 //!
@@ -44,10 +46,6 @@
 //! 3 653 live nodes.
 
 #![allow(
-    // Fixture setup + per-pair assertion loops with diagnostic context
-    // legitimately exceed clippy's 100-line soft cap, per the
-    // `hertz_sphere_plane.rs` / `contact_drop_rest.rs` precedent.
-    clippy::too_many_lines,
     clippy::expect_used,
     // `pair_nodes` / `pair_key` refuse to guess an incidence rule for a
     // future `ContactPair` variant; a loud panic IS the gate there.

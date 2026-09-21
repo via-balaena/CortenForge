@@ -535,6 +535,14 @@ pub fn boundary_faces_on_isosurface(
 /// (`effective_pinned`, rung 3a), so the mask is a superset of that
 /// solver's free set — never a subset, which is the direction that
 /// would drop a live DOF.
+///
+/// # Panics
+///
+/// Panics if a tet names a vertex id at or beyond [`Mesh::n_vertices`]
+/// — a malformed mesh, which the old `BTreeSet` form absorbed
+/// silently. Every constructor in this crate builds `positions` and
+/// the tet table together, so this is a storage-invariant violation
+/// rather than a caller error.
 //
 // `as TetId` is the Mesh-trait API tax: `n_tets()` returns `usize`
 // while `tet_vertices()` takes `TetId = u32`. Phase 3 meshes stay
