@@ -9,7 +9,7 @@
 //! them Yeoh, so a present-tense version of that sentence would be falsified
 //! by the change that made it.) Before item 3 rewires the 6 416-line
 //! `tools/cf-sim-research/src/insertion_sim.rs`, this file answers the cheap
-//! question on a fixture that runs in seconds: does the triple (Tet10 element
+//! question on a fixture that runs in 33 s: does the triple (Tet10 element
 //! × Yeoh material × IPC face barrier) solve, and at what Newton cost relative
 //! to the two baselines that already work — Tet4 × Yeoh, and Tet10 ×
 //! `NeoHookean`?
@@ -17,9 +17,10 @@
 //! ## The fixture
 //!
 //! A 40 × 40 × 12 mm plate of Ecoflex 00-30, SDF-meshed through the same
-//! `SdfMeshedTetMesh::<Yeoh>::from_sdf_yeoh` path `insertion_sim` uses, then
-//! enriched to Tet10 and pressed onto a rigid plane held inside the barrier
-//! band. Top face pinned, one quasi-static step.
+//! `SdfMeshedTetMesh::<Yeoh>::from_sdf_yeoh` path `insertion_sim` uses and
+//! enriched to Tet10. Top face pinned. Two obstacle shapes — a plane and a
+//! 60 mm sphere ([`Indenter`]) — each pressed at rest contact and then MARCHED
+//! up through the plate as a compression ramp.
 //!
 //! ## What it found, measured 2026-09-20 at `d12e3bf9`
 //!
@@ -85,8 +86,10 @@
 //!   exactly where the lattice's dead nodes live and the intruder is driven
 //!   into the middle of them, so a solid plate understates it badly.
 //!
-//! ⚠ **Two claims retracted from an earlier revision of this file**, recorded
-//! because the corrections are the useful part.
+//! ⚠ **Claims retracted from an earlier revision of this file**, recorded
+//! because the corrections are the useful part. Two are structural enough to
+//! list; the stale-number retractions are inline above, beside the numbers
+//! that replaced them.
 //!
 //! 1. It claimed Tet10 × Yeoh "walls at `ArmijoStall(iter 0)` by ~1 % strain",
 //!    with step-refinement evidence that the wall was not an increment
@@ -503,6 +506,80 @@ fn box_sdf_gradient_matches_finite_differences() {
             "box SDF gradient at {p:?}: analytic {analytic:?} vs central-difference {fd:?}",
         );
     }
+}
+
+/// The meshed body is the box the fixture asked for.
+///
+/// `BoxSdf` is hand-written analytic geometry — exact signed distance and a
+/// hand-derived gradient — and every mesh in this file comes out of it, so an
+/// error there is an error in all of them. The gradient test above checks six
+/// points; this checks the pipeline's whole output against the shape it was
+/// asked for, which is the stronger statement: `SDF → BCC stuffing → boundary`
+/// has to reproduce the box's extent *and* its volume.
+///
+/// ⚠ Checks the **boundary**, not `positions()`, because here those are
+/// different things — see
+/// [`the_vertex_barrier_contacts_vertices_that_are_in_no_tetrahedron`]. The
+/// node set spans a full cell beyond the body on every side; the body does not.
+#[test]
+fn the_meshed_body_reproduces_the_box_extent_and_volume() {
+    let t4 = tet4_yeoh();
+    let pos = t4.positions();
+
+    let mut lo = Vec3::repeat(f64::INFINITY);
+    let mut hi = Vec3::repeat(f64::NEG_INFINITY);
+    for f in Mesh::<Yeoh>::boundary_faces(&t4) {
+        for &v in f {
+            let p = pos[v as usize];
+            for k in 0..3 {
+                lo[k] = lo[k].min(p[k]);
+                hi[k] = hi[k].max(p[k]);
+            }
+        }
+    }
+    let want_lo = Vec3::new(-HALF[0], -HALF[1], 0.0);
+    let want_hi = Vec3::new(HALF[0], HALF[1], 2.0 * HALF[2]);
+    eprintln!(
+        "  boundary bbox: [{:.3}, {:.3}] x [{:.3}, {:.3}] x [{:.3}, {:.3}] mm",
+        lo.x * 1e3,
+        hi.x * 1e3,
+        lo.y * 1e3,
+        hi.y * 1e3,
+        lo.z * 1e3,
+        hi.z * 1e3,
+    );
+    // A tenth of a cell: tight enough that a misplaced face fails, loose enough
+    // that it is not asserting exact float equality on a meshed surface.
+    let tol = 0.1 * CELL;
+    assert!(
+        (lo - want_lo).abs().max() < tol && (hi - want_hi).abs().max() < tol,
+        "boundary bbox [{lo:?}, {hi:?}] does not match the requested box \
+         [{want_lo:?}, {want_hi:?}] within {tol:e} m",
+    );
+
+    let mesh_volume: f64 = (0..t4.n_tets() as TetId)
+        .map(|t| {
+            let v = t4.tet_vertices(t);
+            let (v0, v1, v2, v3) = (
+                pos[v[0] as usize],
+                pos[v[1] as usize],
+                pos[v[2] as usize],
+                pos[v[3] as usize],
+            );
+            // Signed tet volume: (v1-v0) x (v2-v0) . (v3-v0) / 6.
+            (v1 - v0).cross(&(v2 - v0)).dot(&(v3 - v0)) / 6.0
+        })
+        .sum();
+    let analytic = 8.0 * HALF[0] * HALF[1] * HALF[2];
+    eprintln!(
+        "  volume: mesh {mesh_volume:.6e} m3 vs analytic {analytic:.6e} m3 (ratio {:.6})",
+        mesh_volume / analytic,
+    );
+    assert!(
+        (mesh_volume / analytic - 1.0).abs() < 1.0e-6,
+        "meshed volume {mesh_volume:e} m3 differs from the analytic box {analytic:e} m3 \
+         by more than 1e-6 relative",
+    );
 }
 
 // ── the selector, not the types ─────────────────────────────────────
@@ -1249,6 +1326,8 @@ fn stalled_on_the_first_newton_step(label: &str) -> bool {
     label.starts_with("ArmijoStall(iter 0,")
 }
 
+// ── positions() is not the body ──────────────────────────────
+
 /// The per-vertex barrier contacts vertices that belong to no tetrahedron.
 ///
 /// This is the corrected form of a claim an earlier revision of this file got
@@ -1523,79 +1602,5 @@ fn tet10_yeoh_converges_against_a_curved_indenter() {
         converged.len() >= 2,
         "the curved ramp must clear at least two rungs; it cleared {}",
         converged.len(),
-    );
-}
-
-/// The meshed body is the box the fixture asked for.
-///
-/// `BoxSdf` is hand-written analytic geometry — exact signed distance and a
-/// hand-derived gradient — and every mesh in this file comes out of it, so an
-/// error there is an error in all of them. The gradient test above checks six
-/// points; this checks the pipeline's whole output against the shape it was
-/// asked for, which is the stronger statement: `SDF → BCC stuffing → boundary`
-/// has to reproduce the box's extent *and* its volume.
-///
-/// ⚠ Checks the **boundary**, not `positions()`, because here those are
-/// different things — see
-/// [`the_vertex_barrier_contacts_vertices_that_are_in_no_tetrahedron`]. The
-/// node set spans a full cell beyond the body on every side; the body does not.
-#[test]
-fn the_meshed_body_reproduces_the_box_extent_and_volume() {
-    let t4 = tet4_yeoh();
-    let pos = t4.positions();
-
-    let mut lo = Vec3::repeat(f64::INFINITY);
-    let mut hi = Vec3::repeat(f64::NEG_INFINITY);
-    for f in Mesh::<Yeoh>::boundary_faces(&t4) {
-        for &v in f {
-            let p = pos[v as usize];
-            for k in 0..3 {
-                lo[k] = lo[k].min(p[k]);
-                hi[k] = hi[k].max(p[k]);
-            }
-        }
-    }
-    let want_lo = Vec3::new(-HALF[0], -HALF[1], 0.0);
-    let want_hi = Vec3::new(HALF[0], HALF[1], 2.0 * HALF[2]);
-    eprintln!(
-        "  boundary bbox: [{:.3}, {:.3}] x [{:.3}, {:.3}] x [{:.3}, {:.3}] mm",
-        lo.x * 1e3,
-        hi.x * 1e3,
-        lo.y * 1e3,
-        hi.y * 1e3,
-        lo.z * 1e3,
-        hi.z * 1e3,
-    );
-    // A tenth of a cell: tight enough that a misplaced face fails, loose enough
-    // that it is not asserting exact float equality on a meshed surface.
-    let tol = 0.1 * CELL;
-    assert!(
-        (lo - want_lo).abs().max() < tol && (hi - want_hi).abs().max() < tol,
-        "boundary bbox [{lo:?}, {hi:?}] does not match the requested box \
-         [{want_lo:?}, {want_hi:?}] within {tol:e} m",
-    );
-
-    let mesh_volume: f64 = (0..t4.n_tets() as TetId)
-        .map(|t| {
-            let v = t4.tet_vertices(t);
-            let (v0, v1, v2, v3) = (
-                pos[v[0] as usize],
-                pos[v[1] as usize],
-                pos[v[2] as usize],
-                pos[v[3] as usize],
-            );
-            // Signed tet volume: (v1-v0) x (v2-v0) . (v3-v0) / 6.
-            (v1 - v0).cross(&(v2 - v0)).dot(&(v3 - v0)) / 6.0
-        })
-        .sum();
-    let analytic = 8.0 * HALF[0] * HALF[1] * HALF[2];
-    eprintln!(
-        "  volume: mesh {mesh_volume:.6e} m3 vs analytic {analytic:.6e} m3 (ratio {:.6})",
-        mesh_volume / analytic,
-    );
-    assert!(
-        (mesh_volume / analytic - 1.0).abs() < 1.0e-6,
-        "meshed volume {mesh_volume:e} m3 differs from the analytic box {analytic:e} m3 \
-         by more than 1e-6 relative",
     );
 }
