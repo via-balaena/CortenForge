@@ -707,6 +707,15 @@ impl PenaltyRigidContact {
     /// as `active_pairs(...)` at the same `positions` and the readouts
     /// appear in the same order.
     ///
+    /// ⚠ **One deliberate divergence: `active_pairs` applies the tet-incidence
+    /// filter and this does not.** On a mesh with unreferenced vertices
+    /// (`SdfMeshedTetMesh`'s retained BCC lattice) the readouts are the longer
+    /// list — raw by design, because the unfiltered set is a deterministic
+    /// regression surface. Apply
+    /// [`filter_pair_readouts_to_referenced`](super::filter_pair_readouts_to_referenced)
+    /// to recover `active_pairs` parity; on a mesh whose every vertex is in
+    /// some tet the two agree unconditionally.
+    ///
     /// For the hard-penalty case (`smoothing_eps_m == 0.0`),
     /// `force_on_soft` resolves to `+κ·(d̂ − sd)·n` per the type docs'
     /// sign convention — a bit-equivalent reproduction of the energy
@@ -773,6 +782,11 @@ impl PenaltyRigidContact {
 
 /// Filter `per_pair_readout` results to vertices in the given referenced
 /// set, dropping orphan BCC lattice corners that are not in any tet.
+///
+/// The readout-side counterpart of the tet-incidence filter
+/// `ActivePairsFor::active_pairs` applies at source: the solver never
+/// sees an orphan pair, while readouts keep the raw list until a
+/// caller asks for this.
 ///
 /// [`PenaltyRigidContact::per_pair_readout`] returns one
 /// [`ContactPairReadout`] for every body vertex in the contact band
@@ -967,6 +981,29 @@ impl<M: crate::material::Material> super::ActivePairsFor<M> for PenaltyRigidCont
     /// `PenaltyRigidContact::pair_is_active` (private)
     /// (`sd < d̂ + smoothing_eps_m` and above the interior cutoff when
     /// set). Order is deterministic — no sort, no `HashMap`, no rayon.
+    ///
+    /// **A vertex in no tet is skipped.** `positions()` is the mesh's
+    /// storage array, not its body: `SdfMeshedTetMesh` retains the
+    /// full BCC lattice, including corners of lattice tets that fell
+    /// entirely outside the SDF, and those points sit at their rest
+    /// lattice coordinates wherever the lattice put them — routinely
+    /// inside a rigid primitive. [`referenced_vertex_mask`] is the
+    /// incidence test; the sibling readout filter is
+    /// [`filter_pair_readouts_to_referenced`].
+    ///
+    /// The mask counts a quadratic mesh's midside nodes, so the
+    /// Tet10 DOFs rung 3b frees survive it (see its docs for why the
+    /// rule is element-order-independent).
+    ///
+    /// ⚠ This changes the emitted pair LIST, not the converged
+    /// answer. An unreferenced vertex is Dirichlet-clamped by the
+    /// construction-time orphan auto-pin (`effective_pinned`), the
+    /// Armijo merit is the FREE residual norm, and a vertex pair's
+    /// gradient and Hessian are diagonal in that one vertex — so its
+    /// blocks only ever landed in a pinned row that
+    /// `full_to_free_idx` drops. The pairs were wasted SDF
+    /// evaluations and a misleading diagnostic, never a corrupted
+    /// solve. `tests/contact_incidence_filter.rs` pins both halves.
     // `vid as VertexId` and `pid as u32` are `Vec`-iteration indices;
     // in practice bounded by mesh / primitive counts that fit
     // comfortably in `u32`. The `as` cast matches the convention used
@@ -974,9 +1011,19 @@ impl<M: crate::material::Material> super::ActivePairsFor<M> for PenaltyRigidCont
     // overflow on a 64-bit pointer would surface as wrapped indices;
     // not load-bearing for Phase 5 mesh sizes.
     #[allow(clippy::cast_possible_truncation)]
-    fn active_pairs(&self, _mesh: &dyn Mesh<M>, positions: &[Vec3]) -> Vec<ContactPair> {
+    fn active_pairs(&self, mesh: &dyn Mesh<M>, positions: &[Vec3]) -> Vec<ContactPair> {
+        // One `O(n_tets)` walk per call, then `O(1)` per vertex. The
+        // skipped vertices dominate on mesher-generated meshes, so this
+        // is a net saving against the per-vertex SDF evaluations it
+        // replaces — not an added cost.
+        let referenced = crate::mesh::referenced_vertex_mask(mesh);
         let mut pairs = Vec::new();
         for (vid, &p) in positions.iter().enumerate() {
+            // `positions` longer than the mesh's vertex array can only be
+            // indices no tet names, so `false` is the right answer there.
+            if !referenced.get(vid).copied().unwrap_or(false) {
+                continue;
+            }
             let p_pt = Point3::from(p);
             for (pid, prim) in self.primitives.iter().enumerate() {
                 let sd = prim.eval(p_pt);
