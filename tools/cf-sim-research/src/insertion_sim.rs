@@ -913,10 +913,26 @@ const INSERTION_SOLVE_TOL: f64 = 1e-1;
 /// set for this tool. Used by [`run_single_insertion_step`] (7.2) and
 /// [`run_insertion_ramp`] (7.3b).
 fn insertion_solver_config() -> SolverConfig {
+    insertion_solver_config_at_tol(INSERTION_SOLVE_TOL)
+}
+
+/// The insertion solver config at a caller-chosen residual tolerance.
+///
+/// Exists so a test can ask what the solve does at a tolerance other
+/// than the shipped [`INSERTION_SOLVE_TOL`]. That const is pinned *at*
+/// the Armijo stall floor (see its docstring), which makes "converged"
+/// a statement about the tolerance rather than about the solution —
+/// and a claim like that is only worth making if it can be measured.
+/// `the_insertion_solves_convergence_is_bounded_by_its_tolerance` is
+/// what measures it.
+///
+/// Everything except `tol` is identical to [`insertion_solver_config`],
+/// which delegates here; there is one config, not two.
+fn insertion_solver_config_at_tol(tol: f64) -> SolverConfig {
     let mut config = SolverConfig::skeleton();
     config.dt = STATIC_DT;
     config.max_newton_iter = MAX_NEWTON_ITER;
-    config.tol = INSERTION_SOLVE_TOL;
+    config.tol = tol;
     // F3 recon candidate A — gated LM opt-in (per
     // `docs/F3_RECON_A_GATED_LM_SPEC.md`). The same `LmConfig::fork_b()`
     // preset F3.4 used; the behavioral change is in sim-soft's
@@ -1207,6 +1223,28 @@ pub fn run_single_insertion_step(
     geometry: InsertionGeometry,
     interference_m: f64,
 ) -> Result<InsertionStep> {
+    run_single_insertion_step_at_tol(geometry, interference_m, INSERTION_SOLVE_TOL)
+}
+
+/// [`run_single_insertion_step`] at a caller-chosen residual tolerance.
+///
+/// Same solve, same contact, same boundary conditions — only
+/// `SolverConfig::tol` moves (see [`insertion_solver_config_at_tol`]).
+/// A tolerance the solve cannot reach returns the `Err` describing how
+/// it failed, with the residual it floored at, which is the reading
+/// that makes the shipped tolerance's meaning measurable rather than
+/// asserted.
+///
+/// # Errors
+///
+/// As [`run_single_insertion_step`], plus: a `tol` below what this
+/// scene's Newton solve can reach returns the `NewtonIterCap` or
+/// `ArmijoStall` message carrying `last_r_norm`.
+pub fn run_single_insertion_step_at_tol(
+    geometry: InsertionGeometry,
+    interference_m: f64,
+    tol: f64,
+) -> Result<InsertionStep> {
     if !interference_m.is_finite() {
         return Err(anyhow!(
             "insertion interference is non-finite ({interference_m})"
@@ -1242,7 +1280,7 @@ pub fn run_single_insertion_step(
     let bc = outer_skin_bc(&mesh, &intruder, bounds, outer_offset_m, cell_size_m)?;
     let n_pinned = bc.pinned_vertices.len();
     let contact = intruder_contact_at(&intruder, bounds, interference_m, cavity_offset_m);
-    let config = insertion_solver_config();
+    let config = insertion_solver_config_at_tol(tol);
 
     let x_prev = Tensor::from_slice(&x_prev_flat, &[n_dof]);
     let v_prev = Tensor::zeros(&[n_dof]);
@@ -6432,6 +6470,188 @@ mod tests {
              ≥ 0.5 mm bound (would indicate the FEM is propagating deformation \
              uniformly, i.e. a regression to growing-intruder behavior)",
             max_far_displacement_m * 1e3,
+        );
+    }
+
+    // ── renovation item 4 (the bridge), step 0 ──────────────────────
+    //
+    // What this pipeline's "converged" means today, measured rather than
+    // asserted, so the bridge has something to be compared against.
+    //
+    // The three `#[ignore]`d ramps all reach 16/16 to their full 3 mm
+    // inset, which reads as a solved problem. It is not: at the shipped
+    // `INSERTION_SOLVE_TOL` of 1e-1 N, "converged" can mean "the first
+    // residual was already under the bar". Re-running those ramps at
+    // 1e-6 splits them — both synthetic fixtures still reach full depth
+    // (the analytical shell is *better* behaved there, 4-7 iters at
+    // ~1e-7, against 13 of 16 steps taking a single iteration at 1e-1),
+    // while the real iter-1 scan stalls at step 4 of 16, at 0.75 mm of
+    // the 3 mm inset, with an Armijo stall at r_norm 4.1e-3.
+    //
+    // So the shipped tolerance buys 4x the usable depth ON THE PRODUCT
+    // GEOMETRY and costs only iterations on the idealised ones. That is
+    // the finding the bridge has to move, and neither synthetic ramp can
+    // see it — which is why the gates below use a fixture chosen for
+    // CONDITIONING rather than for size.
+
+    /// The smallest synthetic scene that reproduces the real scan's
+    /// failure mode, so a CI-runnable gate can carry a claim the
+    /// repo-excluded scan cannot.
+    ///
+    /// Found by search, not taste: sweeping radius / wall / cell /
+    /// interference, the neighbours converge to 1e-6 in 9-14 iterations
+    /// (wall 6 mm and 5 mm at this radius, and every configuration at
+    /// 2.5 mm interference). This one Armijo-stalls at Newton iter 108
+    /// with `r_norm` 2.78e-3 — the same mode and the same residual
+    /// decade as the scan's 4.13e-3, at 9 258 tets and ~6 s instead of
+    /// 68 087 tets and a licensed fixture.
+    ///
+    /// Deterministic: two consecutive runs agree on iteration count,
+    /// residual to four significant figures, and the stalling iteration.
+    fn tolerance_fixture() -> InsertionGeometry {
+        let scan = icosphere(0.020, 2);
+        let design = SimDesign {
+            cavity_inset_m: 0.003,
+            layers: vec![layer(0.008, "ECOFLEX_00_30")],
+        };
+        build_insertion_geometry(&scan, &design, &[], 2_000, 0.004)
+            .expect("the tolerance fixture's geometry must build")
+    }
+
+    /// Interference (m) at which [`tolerance_fixture`] still solves to a
+    /// genuine tolerance — the control that keeps the stall below a
+    /// statement about DEPTH rather than about a broken fixture.
+    const TOL_FIXTURE_SHALLOW_M: f64 = 0.0025;
+
+    /// Interference (m) at which the same scene stops being solvable
+    /// past the shipped tolerance. 0.3 mm deeper than
+    /// [`TOL_FIXTURE_SHALLOW_M`], which is how sharp the edge is.
+    const TOL_FIXTURE_DEEP_M: f64 = 0.0028;
+
+    /// A residual tolerance an engineering answer would be expected to
+    /// reach. Two decades looser than the sim-soft Tet10 + IPC fixture's
+    /// measured 1.33e-12, and still two decades tighter than what this
+    /// pipeline ships.
+    const ENGINEERING_TOL: f64 = 1e-3;
+
+    /// **Renovation item 4 step 0 — the insertion solve's reported
+    /// convergence is bounded by its tolerance, not by its residual.**
+    ///
+    /// Pins three readings on one scene:
+    ///
+    /// 1. at 2.5 mm it solves to 1e-6 (so the scene is solvable);
+    /// 2. at 2.8 mm the shipped 1e-1 reports converged — while carrying
+    ///    a residual more than a decade above [`ENGINEERING_TOL`];
+    /// 3. at 2.8 mm, asked for [`ENGINEERING_TOL`], the same solve
+    ///    Armijo-stalls above the tolerance it was asked for.
+    ///
+    /// Together: the step-2 answer is one the solver cannot refine, and
+    /// nothing in the shipped path says so. The bridge (Tet10 + the IPC
+    /// face barrier) is what should move reading 3; when it does, these
+    /// numbers change and that change is the payoff.
+    ///
+    /// ⚠ This gate asserts a LIMITATION. It is expected to be rewritten,
+    /// not deleted, when the bridge lands — a rewrite whose diff is the
+    /// measurement.
+    #[test]
+    fn the_insertion_solves_convergence_is_bounded_by_its_tolerance() {
+        assert_eq!(
+            tolerance_fixture().n_tets,
+            9258,
+            "the fixture's tet count is part of what makes the stall below reproducible",
+        );
+
+        // (1) The control. Without it, the stall at 2.8 mm could just as
+        // well mean the fixture is degenerate at every depth.
+        let shallow =
+            run_single_insertion_step_at_tol(tolerance_fixture(), TOL_FIXTURE_SHALLOW_M, 1e-6)
+                .expect("the fixture must solve to 1e-6 at the shallow depth");
+        assert!(
+            shallow.final_residual_norm < 1e-6,
+            "the control solve reports converged at {:.3e}, which is not below 1e-6",
+            shallow.final_residual_norm,
+        );
+
+        // (2) The shipped tolerance, at the depth that breaks.
+        let loose = run_single_insertion_step_at_tol(
+            tolerance_fixture(),
+            TOL_FIXTURE_DEEP_M,
+            INSERTION_SOLVE_TOL,
+        )
+        .expect("the shipped tolerance reports this step converged");
+        assert!(
+            loose.final_residual_norm < INSERTION_SOLVE_TOL,
+            "a returned step must satisfy the tolerance it was solved at",
+        );
+        assert!(
+            loose.final_residual_norm > ENGINEERING_TOL,
+            "this gate is vacuous unless the shipped tolerance accepts a residual \
+             above {ENGINEERING_TOL:.0e}; got {:.3e}",
+            loose.final_residual_norm,
+        );
+
+        // (3) The same scene, same depth, asked for a real tolerance.
+        let err = run_single_insertion_step_at_tol(
+            tolerance_fixture(),
+            TOL_FIXTURE_DEEP_M,
+            ENGINEERING_TOL,
+        )
+        .expect_err("the engineering tolerance must not be reachable here")
+        .to_string();
+        // Mode first, number second: a different failure mode that happened
+        // to carry a parsable residual would otherwise read as this one.
+        assert!(
+            err.starts_with("insertion solve Armijo-stalled"),
+            "expected an Armijo stall, got: {err}",
+        );
+        let floor: f64 = err
+            .rsplit_once("r_norm ")
+            .and_then(|(_, v)| v.trim().parse::<f64>().ok())
+            .expect("the Armijo-stall message carries a parsable r_norm");
+        assert!(
+            floor > ENGINEERING_TOL,
+            "a stall floor of {floor:.3e} at or below the requested \
+             {ENGINEERING_TOL:.0e} would mean the solve did not actually fail",
+        );
+        assert!(
+            floor < loose.final_residual_norm,
+            "the tighter request should still drive the residual below what the \
+             shipped tolerance accepted ({floor:.3e} vs {:.3e})",
+            loose.final_residual_norm,
+        );
+    }
+
+    /// The tolerance knob added for the gate above changes the tolerance
+    /// and nothing else.
+    ///
+    /// [`insertion_solver_config`] delegates to
+    /// [`insertion_solver_config_at_tol`], so every other field — `dt`,
+    /// the Newton cap, the gated LM preset — has to survive the
+    /// delegation. Debug-equality covers fields a future `SolverConfig`
+    /// adds, which a hand-written field list would silently miss.
+    #[test]
+    fn the_tolerance_knob_changes_only_the_tolerance() {
+        let shipped = insertion_solver_config();
+        let delegated = insertion_solver_config_at_tol(INSERTION_SOLVE_TOL);
+        assert_eq!(
+            format!("{shipped:?}"),
+            format!("{delegated:?}"),
+            "the shipped config must be exactly the delegated one at the shipped tolerance",
+        );
+
+        let tightened = insertion_solver_config_at_tol(ENGINEERING_TOL);
+        assert!(
+            (tightened.tol - ENGINEERING_TOL).abs() < f64::EPSILON,
+            "the knob must set the tolerance it was given",
+        );
+        // `SolverConfig` is `#[non_exhaustive]`, so restore by mutation
+        // rather than struct-update syntax; it is `Copy`.
+        let mut restored = tightened;
+        restored.tol = shipped.tol;
+        assert_eq!(
+            format!("{restored:?}"),
+            format!("{shipped:?}"),
+            "restoring only `tol` must reproduce the shipped config",
         );
     }
 }

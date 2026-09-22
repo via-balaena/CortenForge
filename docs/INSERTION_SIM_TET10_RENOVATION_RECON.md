@@ -224,6 +224,13 @@ assert!(
 The smoothed-Coulomb model reads a per-vertex `λ = |force|` from each gradient
 contribution, which a face pair's six distributed forces do not satisfy.
 
+✅ **Measured correction (2026-09-22): this costs the bridge NOTHING today.**
+`friction` appears **zero times** in all of `tools/cf-sim-research/src/`, and
+`SolverConfig::skeleton()` sets `friction_mu: 0.0`
+(`solver/backward_euler/config.rs:369`) — so `insertion_sim` is **already
+frictionless**. The assert forecloses a future gain; it does not cause a
+regression, and this section should not be read as though it did.
+
 ⇒ **"Adopting IPC gets you friction" is true on Tet4 and false on the Tet10
 face path.** For an insertion device friction is not a detail — it is a large
 part of the transmitted axial force the stiffness-floor reward term measures —
@@ -437,6 +444,50 @@ Listed because the confidence of §4 rests on these being open, not closed.
    sleeve it proxies. ⇒ **read the 1.22–1.72× band as an upper bound** because
    the CELL is stiffer, not because of anything about which parameter carries
    the grading.
+
+   ✅✅ **STEP 0 — THE BASELINE, MEASURED (2026-09-22 at `a0cfa901`).** All
+   three `#[ignore]`d ramps reach **16/16 to their full 3.00 mm inset** in 67 s
+   release. ⚠ The depth envelope this renovation was partly argued from is
+   therefore **at ceiling**, and the archive's 31 % / 2.62 mm figures are
+   **pre-N3** — the Gaussian pre-smooth shipped as
+   `GRID_SDF_SMOOTH_SIGMA_CELLS` = 1.0 in slice 7.3d and took the scan to 100 %.
+   They should not be quoted as current.
+
+   ⭐⭐⭐ **What replaces it is a SPLIT result.** Re-running the same three
+   ramps at `tol` = 1e-6 instead of the shipped `INSERTION_SOLVE_TOL` = 1e-1:
+
+   | fixture | at 1e-1 | at 1e-6 |
+   |---|---|---|
+   | analytical sphere shell (46 584 tets) | 16/16 @ 3.00 mm, but **13 of 16 steps take ONE Newton iteration** and the residual *rises* 3.28e-2 → 6.50e-2 | 16/16 @ 3.00 mm, 4–7 iters, ~1e-7 |
+   | synthetic icosphere | 16/16 @ 3.00 mm | 16/16 @ 3.00 mm, iters spiking **73 / 35 / 73** |
+   | **real iter-1 scan (68 087 tets)** | **16/16 @ 3.00 mm** | ⛔ **stalls at step 4 — 0.75 mm, 25 % of the inset** — Armijo stall at Newton iter 3, `r_norm` **4.13e-3** |
+
+   ⇒ **On the product geometry the full-depth result is bought with the
+   tolerance: requiring a converged solution costs 4× the usable depth.** On
+   both idealised fixtures it costs *iterations*, not depth, and does not move
+   the answer — the icosphere's final step reads F 0.67 → 0.64 N, identical
+   `λ` ∈ [0.447, 1.239], max ‖P‖ 1.66e5 either way.
+
+   ⚠⚠ **This disqualifies the analytical sphere shell as *the* baseline.** It
+   was built in May to isolate SDF smoothness and it does that job — but it is
+   **too well-conditioned to see this failure**, so inheriting it as the
+   reference hides the only reading that matters. A fixture is fit for one
+   question; re-qualify it before reusing it for the next.
+
+   ✅ **Pinned in CI, on a fixture found by search rather than taste.** The
+   claim lives on the repo-excluded scan, so it cannot gate directly; a
+   **9 258-tet** synthetic scene (20 mm radius, 8 mm wall, 3 mm inset, 4 mm
+   cell) reproduces the same failure mode — Armijo stall, `r_norm` **2.78e-3**,
+   the same decade as the scan's 4.13e-3 — in ~6 s. Its neighbours all converge
+   to 1e-6 in 9–14 iterations, and 0.3 mm shallower it converges too, so the
+   stall is a statement about depth rather than a broken fixture. Two
+   consecutive runs agree on iteration count, residual to four significant
+   figures, and the stalling iteration.
+   `the_insertion_solves_convergence_is_bounded_by_its_tolerance` +
+   `the_tolerance_knob_changes_only_the_tolerance`
+   (`tools/cf-sim-research/src/insertion_sim.rs`) hold it. ⚠ The first asserts a
+   **limitation**, and is meant to be rewritten — not deleted — when the bridge
+   lands; that rewrite's diff is the payoff.
 
 4. **Per-Gauss-point material sampling** (§7.6). The expensive one: a
    return-shape change to `Mesh::materials()` reaching 119 call sites.
