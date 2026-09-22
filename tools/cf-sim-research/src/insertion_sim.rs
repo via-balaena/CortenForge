@@ -898,14 +898,43 @@ const MAX_NEWTON_ITER: usize = 150;
 /// (Fork B), and a `0.1`-N out-of-balance residual is physically
 /// negligible against the tens-of-newtons contact forces.
 ///
-/// `1e-1` is not arbitrary — the 7.3b.1 finding is that the deeper
-/// ramp steps Armijo-*stall* (non-SPD tangent near the solution; the
-/// capsule geometry's secondary pathology) at a residual floor right
-/// around `0.1 N`. Setting `tol` at that floor converts those stalls
-/// into clean (loose-but-physically-exact) convergences, which is
-/// what lets the ramp seat the intruder to a meaningful depth. The
-/// shallow steps still converge far below this (to ~`1e-5`) — `tol`
-/// only bites once a step hits the stall floor.
+/// `1e-1` was not arbitrary when it was chosen — the 7.3b.1 finding
+/// was that the deeper ramp steps Armijo-*stall* (non-SPD tangent near
+/// the solution) at a residual floor right around `0.1 N`, and putting
+/// `tol` at that floor converted those stalls into convergences, which
+/// is what let the ramp seat the intruder to a meaningful depth.
+///
+/// ⚠ **Three claims this docstring used to make are contradicted by
+/// measurement, and are corrected here rather than left standing.**
+/// Measured 2026-09-22 at `a0cfa901`, by re-running all three
+/// `#[ignore]`d ramps at `tol` = 1e-6:
+///
+/// 1. It said `0.1 N` is *"physically negligible against the
+///    tens-of-newtons contact forces"*. The synthetic ramp's contact
+///    force is **0.18 N rising to 0.67 N** — so the tolerance is
+///    between 15 % and 56 % of the total contact force it is being
+///    called negligible against, not a small fraction of tens of
+///    newtons.
+/// 2. It said the stall floor sits *"right around `0.1 N`"*. That was
+///    true before the slice-7.3d Gaussian pre-smooth
+///    ([`GRID_SDF_SMOOTH_SIGMA_CELLS`]). After it, **both synthetic
+///    ramps reach 16/16 at `tol` = 1e-6**; only the real scan stalls,
+///    and at `r_norm` **4.13e-3**, not 0.1.
+/// 3. It said the shallow steps *"converge far below this (to
+///    ~`1e-5`)"*. Measured, they land around **1e-2**.
+///
+/// ⛔ So "converged" at this tolerance is **not** the
+/// "loose-but-physically-exact" answer the original wording promised.
+/// On the same scene the solver reaches **2.286e-7** when asked for
+/// 1e-6 and returns **5.339e-2** when asked for `1e-1` — the same word,
+/// five decades apart. What the tolerance costs is measured per
+/// fixture: nothing on the idealised ones beyond iterations, and **4x
+/// the usable depth on the real scan** (3.00 mm against 0.75 mm).
+/// Pinned by `the_insertion_solves_convergence_is_bounded_by_its_tolerance`.
+///
+/// ▶ It is left at `1e-1` deliberately: changing it is a behaviour
+/// change to every consumer of this tool and belongs to the bridge, not
+/// to the measurement that found the problem.
 const INSERTION_SOLVE_TOL: f64 = 1e-1;
 
 /// Shared solver config for the insertion solve — the walking-
@@ -1008,11 +1037,19 @@ const INSERTION_CONTACT_DHAT: f64 = 1.0e-3;
 /// the tapered regime, degrading the assembled tangent's
 /// eigenstructure once past the optimum.
 ///
-/// **CAVITY-SPECIFIC**: the chosen ε = 0.075 mm converges 16/16 at
-/// cavity ≤ 5 mm but stalls at cavity 6 mm (C.3 probe gate,
-/// r_norm 0.536).  See `cf_device_types::CavityState::inset_slider_range_m`
-/// for the UI cap that enforces this bound + the bookmark
-/// §9.4 for the probe-gate data.  Generalizing past 5 mm would
+/// ⚠ **The cavity bound recorded here was measured before the
+/// slice-7.3d Gaussian pre-smooth and no longer holds.** It read:
+/// *"ε = 0.075 mm converges 16/16 at cavity ≤ 5 mm but stalls at
+/// cavity 6 mm (C.3 probe gate, r_norm 0.536)"*, and named
+/// `cf_device_types::CavityState::inset_slider_range_m` as "the UI cap
+/// that enforces this bound". Both halves are now wrong: measured
+/// 2026-09-22 on the synthetic icosphere ramp, **every inset from
+/// 3 mm to 8 mm converges 16/16** (3/4/5/6/7/8 mm, 35 670–45 654 tets,
+/// 12–55 s release); and that slider's cap is
+/// `cf_device_types::CAVITY_INSET_SLIDER_MAX_M` = **8 mm**, which
+/// never enforced a 5 mm bound. The bookmark §9.4 probe-gate data
+/// stands as history. Reproduce with
+/// `the_ramp_converges_across_the_whole_cavity_slider_range`.  Generalizing past 5 mm would
 /// require a per-cavity ε (would need a UI slider per
 /// [[feedback-strip-the-knob-when-default-works]] — deferred until
 /// empirical multi-modal evidence) or a composed mechanism
@@ -6488,26 +6525,33 @@ mod tests {
     // while the real iter-1 scan stalls at step 4 of 16, at 0.75 mm of
     // the 3 mm inset, with an Armijo stall at r_norm 4.1e-3.
     //
-    // So the shipped tolerance buys 4x the usable depth ON THE PRODUCT
-    // GEOMETRY and costs only iterations on the idealised ones. That is
-    // the finding the bridge has to move, and neither synthetic ramp can
-    // see it — which is why the gates below use a fixture chosen for
-    // CONDITIONING rather than for size.
+    // So the shipped tolerance costs 4x the usable depth ON THE PRODUCT
+    // GEOMETRY and only iterations on the idealised ones. That is the
+    // finding the bridge has to move, and neither synthetic ramp can see
+    // it — which is why the fixture below is chosen for CONDITIONING
+    // rather than for size.
 
-    /// The smallest synthetic scene that reproduces the real scan's
-    /// failure mode, so a CI-runnable gate can carry a claim the
-    /// repo-excluded scan cannot.
+    /// The smallest synthetic scene that exercises the same conditioning
+    /// the real scan runs into, so a CI-runnable gate can carry a claim
+    /// the repo-excluded scan cannot.
     ///
     /// Found by search, not taste: sweeping radius / wall / cell /
-    /// interference, the neighbours converge to 1e-6 in 9-14 iterations
+    /// interference, its neighbours converge to 1e-6 in 9-14 iterations
     /// (wall 6 mm and 5 mm at this radius, and every configuration at
-    /// 2.5 mm interference). This one Armijo-stalls at Newton iter 108
-    /// with `r_norm` 2.78e-3 — the same mode and the same residual
-    /// decade as the scan's 4.13e-3, at 9 258 tets and ~6 s instead of
-    /// 68 087 tets and a licensed fixture.
+    /// [`TOL_FIXTURE_SHALLOW_M`]), while this one is the one that gets
+    /// hard at [`TOL_FIXTURE_DEEP_M`] — 9 258 tets against the scan's
+    /// 68 087, and no licensed fixture.
     ///
-    /// Deterministic: two consecutive runs agree on iteration count,
-    /// residual to four significant figures, and the stalling iteration.
+    /// ⚠ **How hard it gets is platform-dependent and no gate may assert
+    /// it.** On macOS/ARM the deep step Armijo-stalls at Newton iter 108
+    /// with `r_norm` 2.78e-3 — the same mode and decade as the scan's
+    /// 4.13e-3, which is what made this scene worth finding. On
+    /// Linux/x86 the identical commit drives it past 1.44e-3 and keeps
+    /// going. See `the_deep_steps_stall_boundary_is_platform_dependent`.
+    ///
+    /// Deterministic *within* a platform: two consecutive runs agree on
+    /// iteration count, residual to four significant figures, and the
+    /// stalling iteration.
     fn tolerance_fixture() -> InsertionGeometry {
         let scan = icosphere(0.020, 2);
         let design = SimDesign {
@@ -6518,52 +6562,71 @@ mod tests {
             .expect("the tolerance fixture's geometry must build")
     }
 
-    /// Interference (m) at which [`tolerance_fixture`] still solves to a
-    /// genuine tolerance — the control that keeps the stall below a
-    /// statement about DEPTH rather than about a broken fixture.
+    /// Interference (m) at which [`tolerance_fixture`] solves to
+    /// [`TIGHT_TOL`] on every platform tried. The gates use this depth,
+    /// so what they measure is the *tolerance*, never the conditioning
+    /// edge.
     const TOL_FIXTURE_SHALLOW_M: f64 = 0.0025;
 
-    /// Interference (m) at which the same scene stops being solvable
-    /// past the shipped tolerance. 0.3 mm deeper than
-    /// [`TOL_FIXTURE_SHALLOW_M`], which is how sharp the edge is.
+    /// Interference (m), 0.3 mm deeper, at which the scene becomes hard
+    /// enough that the shipped tolerance's answer crosses
+    /// [`ENGINEERING_TOL`].
+    ///
+    /// ⚠ Whether a *tighter* request is reachable at this depth is
+    /// exactly the platform-dependent part — see [`tolerance_fixture`].
+    /// Nothing here asserts that it is not.
     const TOL_FIXTURE_DEEP_M: f64 = 0.0028;
 
     /// A residual tolerance an engineering answer would be expected to
-    /// reach. Two decades looser than the sim-soft Tet10 + IPC fixture's
-    /// measured 1.33e-12, and still two decades tighter than what this
-    /// pipeline ships.
+    /// reach: two decades tighter than the `1e-1` this pipeline ships.
+    ///
+    /// ⚠ Deliberately *not* compared against the sim-soft Tet10 + IPC
+    /// fixture's 1.33e-12. These are free-DOF residual norms in newtons
+    /// on different meshes, DOF counts and load scales, so their
+    /// absolute values are not comparable — an earlier revision of this
+    /// docstring made that comparison and got the decade count wrong by
+    /// seven in the process.
     const ENGINEERING_TOL: f64 = 1e-3;
 
-    /// A residual tolerance the solver demonstrably reaches on this scene at
-    /// the shallow depth, on both a macOS/ARM laptop and Linux/x86 CI.
+    /// A residual tolerance the solver demonstrably reaches on this
+    /// scene at [`TOL_FIXTURE_SHALLOW_M`], on both macOS/ARM and
+    /// Linux/x86 CI.
     const TIGHT_TOL: f64 = 1e-6;
 
     /// **Renovation item 4 step 0 — the insertion solve's reported
     /// convergence is bounded by its tolerance, not by its residual.**
     ///
-    /// Three readings on one scene:
+    /// Two readings on one scene:
     ///
-    /// 1. asked for [`TIGHT_TOL`], the solve reaches it;
-    /// 2. asked for the shipped [`INSERTION_SOLVE_TOL`] at the same depth, it
-    ///    returns an answer **orders of magnitude worse** — and reports the
-    ///    same "converged";
-    /// 3. deeper, the shipped tolerance accepts a residual above
+    /// 1. asked for [`TIGHT_TOL`] the solve reaches 2.286e-7; asked for
+    ///    the shipped [`INSERTION_SOLVE_TOL`] at the same depth it
+    ///    returns 5.339e-2 — **a 2.3e5x gap reported as the same
+    ///    "converged"**;
+    /// 2. 0.3 mm deeper, what the shipped tolerance accepts crosses
     ///    [`ENGINEERING_TOL`] outright.
     ///
-    /// Reading 2 is asserted as a **ratio, not a threshold**. Where Newton
-    /// lands on the first iterate under the bar is platform-dependent — the
-    /// size of the gap it leaves on the table is not. That distinction is not
-    /// theoretical: an earlier revision of this gate asserted that a *deeper*
-    /// step could not reach [`ENGINEERING_TOL`] at all, which held on
-    /// macOS/ARM (Armijo stall at `r_norm` 2.78e-3) and **failed on Linux/x86
-    /// CI**, where the same scene drove the residual to 1.44e-3 and below. The
-    /// stall boundary is sensitive to the arithmetic underneath it, so no gate
-    /// may assert where it falls. See
-    /// `the_deep_steps_stall_boundary_is_platform_dependent`.
+    /// ⚠ **Reading 1 is generic and reading 2 is not, and the difference
+    /// matters.** *Any* Newton solve asked for two tolerances leaves a
+    /// gap; the ratio alone says nothing about this pipeline. What is
+    /// specific is where the shipped constant sits — five decades above
+    /// what this scene supports — and reading 2, which is a statement
+    /// about this geometry at this depth.
     ///
-    /// ⚠ This gate asserts a LIMITATION on purpose. It is meant to be
-    /// rewritten, not deleted, when the bridge lands — that rewrite's diff is
-    /// the measurement.
+    /// The gap is asserted as a **ratio, not a threshold**: where Newton
+    /// lands on the first iterate under a bar is platform-dependent, the
+    /// size of what it leaves on the table is not. An earlier revision
+    /// asserted that the deep step *could not* reach [`ENGINEERING_TOL`]
+    /// at all, which held on macOS/ARM and failed on Linux/x86 CI.
+    ///
+    /// ⛔ **This gate is not expected to move when the bridge lands, and
+    /// an earlier revision claiming otherwise was wrong.** It pins a
+    /// property of [`INSERTION_SOLVE_TOL`] against achievable precision,
+    /// and the bridge does not change that constant — a *better*
+    /// conditioned solver would if anything reach further below
+    /// [`TIGHT_TOL`] and make the ratio **larger**. The quantity the
+    /// bridge must actually improve is the deepest interference solvable
+    /// at a tight tolerance, which is the platform-dependent one, so it
+    /// is **reported by a diagnostic on a named platform, not gated**.
     #[test]
     fn the_insertion_solves_convergence_is_bounded_by_its_tolerance() {
         assert_eq!(
@@ -6572,33 +6635,24 @@ mod tests {
             "the fixture's tet count is part of what makes these readings reproducible",
         );
 
-        // (1) What the solver can actually do on this scene.
+        // Both solves return only when their residual is under the
+        // tolerance they were given (`newton.rs`'s convergence test), so
+        // the `expect`s below carry the claim that each is REACHABLE —
+        // asserting `residual < tol` afterwards would restate the
+        // solver's own postcondition and could not fail.
         let tight =
             run_single_insertion_step_at_tol(tolerance_fixture(), TOL_FIXTURE_SHALLOW_M, TIGHT_TOL)
                 .expect("the fixture must solve to TIGHT_TOL at the shallow depth");
-        assert!(
-            tight.final_residual_norm < TIGHT_TOL,
-            "a returned step must satisfy the tolerance it was solved at; got {:.3e}",
-            tight.final_residual_norm,
-        );
-
-        // (2) What it reports at the shipped tolerance, same scene, same depth.
         let loose = run_single_insertion_step_at_tol(
             tolerance_fixture(),
             TOL_FIXTURE_SHALLOW_M,
             INSERTION_SOLVE_TOL,
         )
         .expect("the shipped tolerance reports this step converged");
-        assert!(
-            loose.final_residual_norm < INSERTION_SOLVE_TOL,
-            "a returned step must satisfy the tolerance it was solved at; got {:.3e}",
-            loose.final_residual_norm,
-        );
 
-        // The gap between "converged" and "solved", on identical inputs.
-        // Measured 2.3e5 on macOS/ARM (5.339e-2 against 2.286e-7); the bar is
-        // two decades, so the reading has room to move without the claim
-        // moving.
+        // Measured 2.3e5x on macOS/ARM (5.339e-2 against 2.286e-7). The
+        // bar is two decades, so the reading has three decades of room
+        // to move without the claim moving.
         let gap = loose.final_residual_norm / tight.final_residual_norm;
         assert!(
             gap > 100.0,
@@ -6608,8 +6662,6 @@ mod tests {
             tight.final_residual_norm,
         );
 
-        // (3) Deeper, the shipped tolerance accepts a residual an engineering
-        // answer would reject outright — no ratio needed to see it.
         let deep = run_single_insertion_step_at_tol(
             tolerance_fixture(),
             TOL_FIXTURE_DEEP_M,
@@ -6624,24 +6676,71 @@ mod tests {
         );
     }
 
-    /// **Where the deep step stops being solvable is platform-dependent, so
-    /// nothing may gate on it.**
+    /// The shipped entry point solves at the shipped tolerance.
+    ///
+    /// [`run_single_insertion_step`] now delegates to
+    /// [`run_single_insertion_step_at_tol`], which introduces a seam:
+    /// *which* tolerance the shipped path passes. Nothing else pins it —
+    /// changing that argument to `1e-6` passed the entire 107-test suite
+    /// before this gate existed, so a future edit could silently retune
+    /// every consumer of this tool.
+    ///
+    /// Compares the two calls on identical inputs. Every field has to
+    /// agree, including the converged positions: the solve is
+    /// deterministic within a platform, so a differing tolerance shows up
+    /// as a differing iteration count and residual.
+    #[test]
+    fn the_shipped_entry_point_solves_at_the_shipped_tolerance() {
+        let shipped = run_single_insertion_step(tolerance_fixture(), TOL_FIXTURE_SHALLOW_M)
+            .expect("the shipped entry point must solve the shallow step");
+        let explicit = run_single_insertion_step_at_tol(
+            tolerance_fixture(),
+            TOL_FIXTURE_SHALLOW_M,
+            INSERTION_SOLVE_TOL,
+        )
+        .expect("the explicit call at the shipped tolerance must solve it too");
+
+        assert_eq!(
+            shipped.iter_count, explicit.iter_count,
+            "the shipped entry point took {} iterations where the shipped tolerance takes {}",
+            shipped.iter_count, explicit.iter_count,
+        );
+        assert!(
+            (shipped.final_residual_norm - explicit.final_residual_norm).abs() < f64::EPSILON,
+            "residual {:.6e} from the shipped entry point against {:.6e} at the shipped tolerance",
+            shipped.final_residual_norm,
+            explicit.final_residual_norm,
+        );
+        assert_eq!(
+            shipped.x_final, explicit.x_final,
+            "the shipped entry point must return the same converged positions",
+        );
+    }
+
+    /// **Where the deep step stops being solvable is platform-dependent,
+    /// so nothing may gate on it.**
     ///
     /// Recorded because it cost a red CI run and would otherwise be
     /// rediscovered. At [`TOL_FIXTURE_DEEP_M`], asked for
     /// [`ENGINEERING_TOL`]:
     ///
-    /// - macOS/ARM (local): Armijo stall at Newton iter 108, `r_norm` 2.78e-3
-    ///   — the same failure mode and residual decade as the real iter-1 scan's
-    ///   4.13e-3, which is what made this fixture worth finding;
-    /// - Linux/x86 (CI): no stall — the residual passes 1.44e-3 by iter 39 and
-    ///   keeps falling.
+    /// - macOS/ARM (local): Armijo stall at Newton iter 108, `r_norm`
+    ///   2.78e-3 — the same failure mode and residual decade as the real
+    ///   iter-1 scan's 4.13e-3;
+    /// - Linux/x86 (CI): no stall — the residual passes 1.44e-3 by iter
+    ///   39 and keeps falling.
     ///
     /// Same commit, same inputs. The `faer` LU fallback fires on both (a
-    /// non-SPD tangent at a handful of recurring pivots), and which side of
-    /// the Armijo edge that lands on is decided by arithmetic this test cannot
-    /// pin. ⚠ **It also means the real scan's stall at `tol` = 1e-6 is a
-    /// single-platform measurement** and should be read as one.
+    /// non-SPD tangent at a handful of recurring pivots), and which side
+    /// of the Armijo edge that lands on is decided by arithmetic this
+    /// test cannot pin. ⚠ **It also means the real scan's stall at
+    /// `tol` = 1e-6 is a single-platform measurement** and should be read
+    /// as one.
+    ///
+    /// ▶ This is also where the bridge's payoff gets measured: the
+    /// deepest interference solvable at a tight tolerance is the quantity
+    /// Tet10 + the IPC face barrier has to improve, and it is reported
+    /// here on a named platform rather than gated.
     ///
     /// `#[ignore]` — a diagnostic, not a gate; it asserts nothing. Run:
     ///
@@ -6665,7 +6764,72 @@ mod tests {
         }
     }
 
-    /// The tolerance knob added for the gate above changes the tolerance
+    /// **The ramp reaches whatever cavity inset it is asked for, across
+    /// the whole product slider range** — which is what "the depth
+    /// envelope is at ceiling" rests on.
+    ///
+    /// The three shipped ramps all run at a 3 mm inset, and reaching a
+    /// requested 3 mm says nothing about 8 mm.
+    /// `cf_device_types::CAVITY_INSET_SLIDER_MAX_M` is **8 mm**, so the
+    /// claim needed the rest of the range. Measured 2026-09-22 on the
+    /// synthetic icosphere, release:
+    ///
+    /// | inset | tets | steps | wall clock |
+    /// |---|---|---|---|
+    /// | 3 mm | 45 654 | 16/16 | 12 s |
+    /// | 4 mm | 45 156 | 16/16 | 39 s |
+    /// | 5 mm | 42 981 | 16/16 | 55 s |
+    /// | 6 mm | 38 736 | 16/16 | 43 s |
+    /// | 7 mm | 37 884 | 16/16 | 42 s |
+    /// | 8 mm | 35 670 | 16/16 | 39 s |
+    ///
+    /// ⇒ no depth headroom for the bridge to win anywhere in the design
+    /// range, and [`INSERTION_CONTACT_SMOOTHING_EPS_M`]'s recorded
+    /// "stalls at cavity 6 mm" is pre-pre-smooth history.
+    ///
+    /// `#[ignore]` — six release-mode 16-step ramps, ~4 minutes. Run:
+    ///
+    /// ```text
+    /// cargo test -p cf-sim-research --release \
+    ///     the_ramp_converges_across_the_whole_cavity_slider_range -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "diagnostic — six release-mode ramps, ~4 minutes"]
+    fn the_ramp_converges_across_the_whole_cavity_slider_range() {
+        for inset_m in [0.003_f64, 0.004, 0.005, 0.006, 0.007, 0.008] {
+            let scan = icosphere(0.040, 3);
+            let design = SimDesign {
+                cavity_inset_m: inset_m,
+                layers: vec![layer(0.010, "ECOFLEX_00_30")],
+            };
+            let Ok(geometry) = build_insertion_geometry(&scan, &design, &[], 2_000, 0.004) else {
+                eprintln!("inset {:.1} mm: geometry failed to build", inset_m * 1e3);
+                continue;
+            };
+            let n_tets = geometry.n_tets;
+            match run_insertion_ramp(geometry, 16) {
+                Ok(ramp) => {
+                    let deepest = ramp.steps.last().map_or(0.0, |s| s.interference_m);
+                    eprintln!(
+                        "inset {:.1} mm: {n_tets} tets, {}/16 steps, deepest {:.2} mm{}",
+                        inset_m * 1e3,
+                        ramp.steps.len(),
+                        deepest * 1e3,
+                        ramp.failed_at_step.map_or_else(
+                            || " — all converged".to_owned(),
+                            |k| format!(
+                                " — STALL at step {k}: {}",
+                                ramp.failure_reason.as_deref().unwrap_or("<no reason>")
+                            ),
+                        ),
+                    );
+                }
+                Err(e) => eprintln!("inset {:.1} mm: ramp failed: {e}", inset_m * 1e3),
+            }
+        }
+    }
+
+    /// The tolerance knob added for the gates above changes the tolerance
     /// and nothing else.
     ///
     /// [`insertion_solver_config`] delegates to

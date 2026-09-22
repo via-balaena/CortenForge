@@ -447,11 +447,31 @@ Listed because the confidence of §4 rests on these being open, not closed.
 
    ✅✅ **STEP 0 — THE BASELINE, MEASURED (2026-09-22 at `a0cfa901`).** All
    three `#[ignore]`d ramps reach **16/16 to their full 3.00 mm inset** in 67 s
-   release. ⚠ The depth envelope this renovation was partly argued from is
-   therefore **at ceiling**, and the archive's 31 % / 2.62 mm figures are
+   release. ⚠ The archive's 31 % / 2.62 mm figures are
    **pre-N3** — the Gaussian pre-smooth shipped as
    `GRID_SDF_SMOOTH_SIGMA_CELLS` = 1.0 in slice 7.3d and took the scan to 100 %.
    They should not be quoted as current.
+
+   ⚠ **"Reaches 16/16" is not yet "at ceiling", and the first revision of this
+   section stated the conclusion from the weaker reading.** All three ramps run
+   at a **3 mm** inset; `cf_device_types::CAVITY_INSET_SLIDER_MAX_M` is
+   **8 mm**. Reaching a requested 3 mm says nothing about 8 mm. Measured
+   across the rest of the range (synthetic icosphere, release):
+
+   | inset | 3 mm | 4 mm | 5 mm | 6 mm | 7 mm | 8 mm |
+   |---|---|---|---|---|---|---|
+   | tets | 45 654 | 45 156 | 42 981 | 38 736 | 37 884 | 35 670 |
+   | steps | 16/16 | 16/16 | 16/16 | 16/16 | 16/16 | 16/16 |
+
+   ✅ **Now** the depth envelope is at ceiling — across the whole product
+   slider range, not at one point in it. Pinned by
+   `the_ramp_converges_across_the_whole_cavity_slider_range`.
+   ⭐ It also falsifies a claim in shipped code:
+   `INSERTION_CONTACT_SMOOTHING_EPS_M`'s docstring recorded *"converges 16/16 at
+   cavity ≤ 5 mm but stalls at cavity 6 mm"* and named the UI slider as *"the
+   cap that enforces this bound"*. Both are pre-pre-smooth history — 6, 7 and
+   8 mm all converge, and that cap is 8 mm and never enforced 5 mm. Corrected
+   at the const.
 
    ⭐⭐⭐ **What replaces it is a SPLIT result.** Re-running the same three
    ramps at `tol` = 1e-6 instead of the shipped `INSERTION_SOLVE_TOL` = 1e-1:
@@ -485,9 +505,18 @@ Listed because the confidence of §4 rests on these being open, not closed.
    tolerance accepts a residual above 1e-3 outright.
    `the_tolerance_knob_changes_only_the_tolerance` holds the delegation by
    Debug-equality, so a field a future `SolverConfig` adds cannot slip it.
-   ⚠ The first gate asserts a **limitation** deliberately, and is meant to be
-   **rewritten — not deleted — when the bridge lands**; that rewrite's diff is
-   the payoff.
+   ⛔⛔ **WHAT THAT GATE IS NOT: a measure of the bridge.** An earlier revision
+   of this section said it was *"meant to be rewritten when the bridge lands;
+   that rewrite's diff is the payoff."* Wrong. The gap is a property of
+   `INSERTION_SOLVE_TOL` measured against achievable precision, and **the bridge
+   does not change that constant** — a better-conditioned solver would if
+   anything reach further below 1e-6 and make the ratio **larger**. The gate is
+   expected to sit still.
+   ✅ **The quantity the bridge must actually improve is the deepest
+   interference solvable at a TIGHT tolerance** — which is exactly the
+   platform-dependent one below, so it is **reported by a diagnostic on a named
+   platform, not gated**
+   (`the_deep_steps_stall_boundary_is_platform_dependent`).
 
    ⛔⛔ **AND THE THING THAT GATE MAY NOT ASSERT: WHERE THE STALL FALLS.** The
    first revision of it asserted that the same scene, 0.3 mm deeper, *could
