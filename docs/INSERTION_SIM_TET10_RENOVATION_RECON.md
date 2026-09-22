@@ -586,6 +586,51 @@ Listed because the confidence of §4 rests on these being open, not closed.
    traction. ⛔ At the other end `κ = 1e2` has the *whole patch* through the
    intruder (`min_sd` −1.755 mm); its 25.22 kPa is not a traction on anything.
 
+   ✅✅ **The same sweep on the REAL SCAN agrees, and it also says what the
+   penetration above actually is.** Single-layer scene, 68 087 tets, full 3 mm:
+
+   | penalty `κ` | steps | `σ` (kPa) | `min_sd` (mm) | 5 % tail (mm) | `ρ(min)` | `ρ(tail)` |
+   |---|---|---|---|---|---|---|
+   | 1e2 | 16/16 | 26.23 | −2.059 | −1.733 | — | — |
+   | 1e3 (shipped) | 16/16 | 70.37 | **−0.373** | **−0.042** | — | — |
+   | **1e4** | 16/16 | 94.03 | **+0.760** | +0.834 | **1.177** | **1.073** |
+   | 1e5 | 16/16 | 98.08 | +0.972 | +0.982 | 1.017 | 1.007 |
+   | 1e6 | **0/16** | — | — | — | — | — |
+
+   ⭐⭐ **`κ` = 1e4 reaches the full inset WITHOUT penetrating.** The −0.373 mm
+   at the shipped `κ` is not the geometry refusing to seat — it is the penalty
+   being **an order of magnitude too soft to hold the wall out**, and one decade
+   of stiffening removes it entirely while reaching the same 16/16.
+
+   ⭐ **The two scenes agree to within their own noise**, which is the evidence
+   that this is a property of the path rather than of either fixture: `σ` spans
+   **3.74×** (scan) against **3.77×** (sphere); the last two arms sit **1.043×**
+   apart (scan) against **1.042×** (sphere); `κ` = 1e6 stalls on both. ⇒ **for
+   the bridge, `σ` ≈ 95 kPa as a lower bound and `ρ` ∈ [1.01, 1.18]**, read at
+   `κ` = 1e4–1e5 on a non-penetrating full-depth seat — not the 6.78 kPa / 1.22
+   the shipped stiffness reports off a 25 % seat.
+
+   ⭐⭐⭐ **THE DERIVATION AT THOSE NUMBERS** — evaluated at the stiffest arm
+   that solved on each scene, `ramp step` = 0.1875 mm:
+
+   | scene | `σ` | `ρ(tail)` | `d̂` = 1.0 mm | `d̂` = 1.2 mm | `d̂` = 2.0 mm |
+   |---|---|---|---|---|---|
+   | sphere @ 1e5 | 94.98 kPa | 1.004 | [1.53e7, 7.96e7] | [1.03e7, 6.63e7] | [3.65e6, 3.98e7] ✅ |
+   | **1-layer scan @ 1e5** | 98.08 kPa | 1.007 | [1.58e7, 8.22e7] | **[1.07e7, 6.85e7]** | [3.78e6, 4.11e7] ✅ |
+
+   ⇒ **`κ` for the bridge is ≈ 1.1e7–1.6e7 at `d̂` = 1.0–1.2 mm**, or `1e7` fits
+   at `d̂` = 2 mm (✅ marks the bands whose interval contains `1e7`).
+
+   ⭐ **The fixture's `1e7` misses the scan's floor at the fixture's own band by
+   8 %** — 1e7 against 1.07e7 at `d̂` = 1.2 mm. That is far closer than `σ`
+   differing **3.2×** (98.08 against 30.4 kPa) would suggest, because the two
+   errors partly cancel: this scene's required standoff is 0.191 mm against the
+   fixture's 0.13 mm, and a wider standoff needs *less* `κ`. ⛔ **Do not read
+   that near-miss as the constant transferring.** It transfers by coincidence at
+   one band, and the sign of the miss matters: `1e7` is **below** the floor, so
+   it is the value that does not hold one ramp increment open, which is the
+   failure the floor exists to exclude.
+
    ⭐ **The same sweep disposes of a `ρ` this document would otherwise have
    inherited.** At the shipped `κ` the sphere reports `ρ` = **4.92** at full
    depth, which reads like shape irregularity on a geometry that has none by
@@ -607,7 +652,8 @@ Listed because the confidence of §4 rests on these being open, not closed.
    vertex. **94** of 3 181 pairs have lost their tributary area entirely. `ρ`
    is negative there and the probe prints `undefined` for every bound rather
    than the arithmetic. ⇒ read that row as *the ramp completed*, not as *the
-   wall seated*.
+   wall seated*. ✅ **And it is the STIFFNESS, not the geometry** — the sweep
+   above seats this same scene cleanly at `κ` = 1e4.
 
    ⚠⚠ **That row is also about a scene the product does not run.** The GUI
    default — the dual-layer Ecoflex 00-30 + 50 % Slacker 10 mm / DS20A 3 mm
@@ -639,9 +685,12 @@ Listed because the confidence of §4 rests on these being open, not closed.
    **1.086–1.223**, inside the same band the idealised cell reported
    (`[1.176, 1.221]`) and under the `1.30` the floor is derived with. **Shape
    irregularity costs essentially nothing here** — what does cost is the contact
-   stiffness the number is read at, which was not on the list. ⚠ `σ` here is read at the
-   shipped stiffness on a scene that reached 25 % of its inset, so it is the
-   traction of a *shallow* seat — the two caveats above both apply to it.
+   stiffness the number is read at, which was not on the list.
+   ⚠⚠ **But do not carry these two numbers to the bridge.** They are read at the
+   shipped stiffness — the reading the sweep above disqualifies — off a seat that
+   reached 25 % of its inset. The ones to carry are the stiff-arm numbers: `σ`
+   ≈ 95 kPa, `ρ` ∈ [1.01, 1.18]. What this table shows is the *shape* of the
+   derivation on a real scan — a narrow interval that closes only at a small `d̂`.
 
    ✅ **The enveloping-patch cancellation, quantified inside this pipeline.**
    `Σ‖f‖/‖Σf‖` measures **1627→2123×** on the synthetic sphere, **331→214×** on
