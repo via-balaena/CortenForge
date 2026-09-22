@@ -504,7 +504,11 @@ Listed because the confidence of §4 rests on these being open, not closed.
    **2.3e5×**, measured 5.339e-2 against 2.286e-7. Deeper, the shipped
    tolerance accepts a residual above 1e-3 outright.
    `the_tolerance_knob_changes_only_the_tolerance` holds the delegation by
-   Debug-equality, so a field a future `SolverConfig` adds cannot slip it.
+   Debug-equality, so a field a future `SolverConfig` adds cannot slip it, and
+   `the_shipped_entry_point_solves_at_the_shipped_tolerance` holds the other
+   half of that seam — *which* tolerance the shipped path passes. ⚠ That one
+   exists because its absence was a surviving mutation: retuning the shipped
+   default to 1e-6 passed the whole 107-test suite.
    ⛔⛔ **WHAT THAT GATE IS NOT: a measure of the bridge.** An earlier revision
    of this section said it was *"meant to be rewritten when the bridge lands;
    that rewrite's diff is the payoff."* Wrong. The gap is a property of
