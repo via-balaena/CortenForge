@@ -257,14 +257,18 @@
 
 use nalgebra::Point3;
 use sim_ml_chassis::Tensor;
+use sim_soft::Material;
 use sim_soft::element::{Tet4, Tet10};
-use sim_soft::material::silicone_table::ECOFLEX_00_30;
+use sim_soft::material::silicone_table::{
+    DRAGON_SKIN_10A, DRAGON_SKIN_20A, ECOFLEX_00_20, ECOFLEX_00_30, SiliconeMaterial,
+};
 use sim_soft::{
     Aabb3, ActivePairsFor, BoundaryConditions, ConstantField, ContactPair, CpuNewtonSolver,
-    DifferenceSdf, IpcRigidContact, MaterialField, Mesh, MeshingHints, NeoHookean, RigidPlane, Sdf,
-    SdfMeshedTetMesh, Solver, SolverConfig, SolverFailure, SphereSdf, Tet10Mesh, TetId,
-    TranslatedSdf, Vec3, VertexId, Yeoh, barrier_derivative, boundary_faces_on_isosurface,
-    face_barrier_kappa, face_barrier_standoff, peak_contact_pressure, referenced_vertices,
+    DifferenceSdf, Field, IpcRigidContact, LayeredScalarField, MaterialField, Mesh, MeshingHints,
+    NeoHookean, RigidPlane, Sdf, SdfMeshedTetMesh, Solver, SolverConfig, SolverFailure, SphereSdf,
+    Tet10Mesh, TetId, TranslatedSdf, Vec3, VertexId, Yeoh, barrier_derivative,
+    boundary_faces_on_isosurface, face_barrier_kappa, face_barrier_standoff, peak_contact_pressure,
+    referenced_vertices,
 };
 
 // ── fixture geometry ────────────────────────────────────────────────
@@ -1187,6 +1191,18 @@ impl Cell {
     /// The thick spherical shell, outer skin pinned.
     fn shell() -> Self {
         let mesh = Tet10Mesh::<Yeoh>::from_tet4(&tet4_shell());
+        let pins = outer_skin_pins(&mesh, OUTER_SKIN_BAND);
+        Self {
+            mesh,
+            pins,
+            rest_advance: REST_BORE_W,
+            pin_label: "outer skin",
+        }
+    }
+
+    /// The same shell carrying the three-layer stack instead of one anchor.
+    fn graded_shell() -> Self {
+        let mesh = Tet10Mesh::<Yeoh>::from_tet4(&tet4_shell_with(CELL, graded_yeoh_field()));
         let pins = outer_skin_pins(&mesh, OUTER_SKIN_BAND);
         Self {
             mesh,
@@ -2693,15 +2709,47 @@ fn tet4_shell() -> SdfMeshedTetMesh<Yeoh> {
 /// the discretisation moves, which is what
 /// [`the_enveloping_patch_nonuniformity_is_a_property_of_the_MESH`] needs.
 fn tet4_shell_at(cell: f64) -> SdfMeshedTetMesh<Yeoh> {
+    tet4_shell_with(cell, yeoh_field())
+}
+
+/// The shell meshed at `cell` carrying `field` — the seam the graded cell
+/// enters through. `tet4_shell_at` is this with the uniform field.
+fn tet4_shell_with(cell: f64, field: MaterialField) -> SdfMeshedTetMesh<Yeoh> {
     let hints = MeshingHints {
         bbox: Aabb3::new(
             Vec3::new(-R_OUTER - cell, -R_OUTER - cell, -R_OUTER - cell),
             Vec3::new(R_OUTER + cell, R_OUTER + cell, R_OUTER + cell),
         ),
         cell_size: cell,
-        material_field: Some(yeoh_field()),
+        material_field: Some(field),
     };
     SdfMeshedTetMesh::<Yeoh>::from_sdf_yeoh(&shell(), &hints).expect("mesh the Yeoh shell")
+}
+
+/// The layer stack, innermost first — `insertion_sim`'s row-23 anchors.
+const STACK: [SiliconeMaterial; 3] = [ECOFLEX_00_20, DRAGON_SKIN_10A, DRAGON_SKIN_20A];
+
+/// Internal layer boundaries as offsets outward from the cavity wall (m),
+/// so three 4 mm layers across the 12 mm wall: r = 14 mm and r = 18 mm.
+const LAYER_BOUNDARIES: [f64; 2] = [0.004, 0.008];
+
+/// [`STACK`] over the wall, keyed on the cavity SDF exactly as
+/// `insertion_sim::layered_param_field` keys on the scan SDF.
+fn graded_yeoh_field() -> MaterialField {
+    fn layered(pick: fn(&SiliconeMaterial) -> f64) -> Box<dyn Field<f64>> {
+        Box::new(LayeredScalarField::new(
+            Box::new(SphereSdf { radius: R_CAVITY }),
+            LAYER_BOUNDARIES.to_vec(),
+            STACK.iter().map(pick).collect(),
+        ))
+    }
+    MaterialField::from_yeoh_fields_with_bounds(
+        layered(|m| m.mu),
+        layered(|m| m.c2),
+        layered(|m| m.lambda),
+        layered(|m| m.validity_max_principal_stretch),
+        layered(|m| m.validity_min_principal_stretch),
+    )
 }
 
 /// Outer-skin vertex ids — the pinned set.
@@ -3592,4 +3640,87 @@ fn the_enveloping_patch_nonuniformity_is_a_property_of_the_mesh() {
          from is wrong",
         hi - lo,
     );
+}
+
+// ═══ TEMPORARY item-3b recon probe — not a gate, remove before review ═══
+
+/// What does the three-layer stack actually look like on this mesh, and does
+/// the graded cavity still converge?
+#[test]
+#[ignore = "recon"]
+fn zz_graded_recon() {
+    let t4 = tet4_shell_with(CELL, graded_yeoh_field());
+    let mats = Mesh::<Yeoh>::materials(&t4);
+    let positions = Mesh::<Yeoh>::positions(&t4);
+    eprintln!(
+        "  tets {}, materials {}",
+        Mesh::<Yeoh>::n_tets(&t4),
+        mats.len(),
+    );
+
+    // Partition by the per-tet tensile cap — distinct per anchor
+    // (7.56 / 8.80 / 5.76), so it labels the layer without reading mu.
+    let mut buckets: Vec<(f64, usize, f64, f64)> = Vec::new();
+    for (tet, material) in mats.iter().enumerate() {
+        let cap = material
+            .validity()
+            .max_principal_stretch
+            .unwrap_or(f64::NAN);
+        let verts = Mesh::<Yeoh>::tet_vertices(&t4, tet as TetId);
+        let radius = (verts.iter().map(|&v| positions[v as usize]).sum::<Vec3>() * 0.25).norm();
+        match buckets.iter_mut().find(|b| (b.0 - cap).abs() < 1e-12) {
+            Some(bucket) => {
+                bucket.1 += 1;
+                bucket.2 = bucket.2.min(radius);
+                bucket.3 = bucket.3.max(radius);
+            }
+            None => buckets.push((cap, 1, radius, radius)),
+        }
+    }
+    buckets.sort_by(|a, b| a.2.total_cmp(&b.2));
+    for (cap, count, lo, hi) in &buckets {
+        let idx = STACK
+            .iter()
+            .position(|m| (m.validity_max_principal_stretch - cap).abs() < 1e-12);
+        eprintln!(
+            "    cap {cap:.2} (layer {idx:?}) : {count:5} tets, centroid r [{:.2}, {:.2}] mm",
+            lo * 1e3,
+            hi * 1e3,
+        );
+    }
+
+    // Interface straddle at each internal boundary.
+    for (index, offset) in LAYER_BOUNDARIES.iter().enumerate() {
+        let flagged = tet4_shell_with(
+            CELL,
+            graded_yeoh_field().with_interface_sdf(Box::new(SphereSdf {
+                radius: R_CAVITY + offset,
+            })),
+        );
+        let flags = Mesh::<Yeoh>::interface_flags(&flagged);
+        eprintln!(
+            "    boundary {index} at r = {:.1} mm : {} of {} tets straddle",
+            (R_CAVITY + offset) * 1e3,
+            flags.iter().filter(|&&x| x).count(),
+            flags.len(),
+        );
+    }
+
+    // Does it converge, and how does it compare to uniform?
+    for (label, cell) in [("uniform", Cell::shell()), ("graded", Cell::graded_shell())] {
+        eprintln!("  --- {label} ---");
+        for (w, r) in cell.ramp(CAVITY, RAMP_STEP, 0.006) {
+            match r {
+                Ok(p) => eprintln!(
+                    "    {:>7.3} it {:>2} trac {:>9.3} kPa  min_sd {:>10.3e}  maxdisp {:>8.3e}",
+                    w * 1e3,
+                    p.iters,
+                    p.mean_traction / 1e3,
+                    p.min_sd,
+                    p.max_disp,
+                ),
+                Err(e) => eprintln!("    {:>7.3} FAILED {e}", w * 1e3),
+            }
+        }
+    }
 }
