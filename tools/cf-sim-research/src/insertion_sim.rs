@@ -7002,9 +7002,15 @@ mod tests {
         /// `tet10_yeoh_ipc_convergence`'s own independent reading
         /// accumulates `flat_area += *rest_area`.
         ///
-        /// Measured on this scene the two differ by ~12–13 % at full
-        /// depth, the patch having stretched — which is a bias in a
-        /// number that sets a shipped constant, not a rounding detail.
+        /// Measured, the two differ by **22–23 %** at full depth
+        /// (117.01 against 94.98 kPa on the sphere), the patch having
+        /// stretched — a bias in a number that sets a shipped constant,
+        /// not a rounding detail.
+        ///
+        /// ⚠ An earlier revision of this line said "~12–13 %" and
+        /// called it measured. It was an ESTIMATE, extrapolated from
+        /// the patch area growing across the ramp, written before the
+        /// rest area was read — and it was low by nearly half.
         traction_rest_pa: f64,
         /// Contributing pairs whose rest area could not be attributed —
         /// a pair that is not a single vertex (a P2 face pair), or whose

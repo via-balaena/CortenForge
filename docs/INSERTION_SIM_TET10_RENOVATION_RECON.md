@@ -581,16 +581,24 @@ Listed because the confidence of §4 rests on these being open, not closed.
      the intruder — states this same section calls *"not a traction on
      anything"*.
 
-   ✅ **Measured like-for-like, per decade, over SEATED arms only** (`min_sd`
-   > 0), on the **rest**-area basis the derivation consumes:
+   ✅ **Measured per decade over the SAME arm set on both scenes** — the two
+   stiffest that solve, `κ` = 1e4→1e5, which are the only arms fully seated on
+   both — on the **rest**-area basis the derivation consumes:
 
    | | fixture | sphere | 1-layer scan |
    |---|---|---|---|
-   | seated arms | 3 (1e6–1e8) | 3 (1e3–1e5) | 2 (1e4–1e5) |
-   | `σ` span | 1.532× | 1.436× | 1.048× |
-   | **per decade** | **1.238×** | **1.198×** | **1.048×** |
+   | arms compared | 1e6→1e8 | **1e4→1e5** | **1e4→1e5** |
+   | **`σ` per decade** | **1.238×** | **1.047×** | **1.048×** |
 
-   ⇒ **`σ`'s coupling to `κ` here is TIGHTER than the fixture's, not looser.**
+   ⇒ **`σ`'s coupling to `κ` here is TIGHTER than the fixture's, not looser**,
+   and the two scenes agree with each other to **0.12 %**.
+   ⚠ **Widening the sphere's set to 1e3→1e5 gives 1.198× per decade instead**,
+   because its `κ` = 1e3 arm is only marginally seated (`min_sd` +0.054 mm, 8
+   pairs already at zero tributary area, `ρ` 4.92). That arm is the one this
+   section calls contaminated elsewhere, so it is excluded here — and an
+   earlier revision of this table quoted the wider sphere figure beside the
+   scan's narrower one, which is the same non-comparable-spans mistake it was
+   written to correct.
    The fixture's own docstring says the coupling is expected — *"It does move a
    little, and it must"* — and that what matters is its size against the spread
    of `κ` driving it. By that test this scene is the better-behaved one.
@@ -611,7 +619,8 @@ Listed because the confidence of §4 rests on these being open, not closed.
 
    ⚠ **The stiff limit is not reachable on this path.** `κ` = 1e6 stalls at
    **step 0** on both scenes, so 1e5 is the stiffest that solves and `σ` is
-   still moving 4.7 % from 1e4 ⇒ **a lower bound approaching ~117 kPa**, not a
+   still moving **4.7 % (sphere) / 4.8 % (scan)** from 1e4 ⇒ **a lower bound
+   approaching ~117 kPa**, not a
    converged rigid-contact traction.
 
    ⛔⛔ **`σ` must be read on the REST-area basis, and an earlier revision read
@@ -628,7 +637,7 @@ Listed because the confidence of §4 rests on these being open, not closed.
    ✅✅ **The same sweep on the REAL SCAN agrees, and it also says what the
    penetration above actually is.** Single-layer scene, 68 087 tets, full 3 mm:
 
-   | penalty `κ` | steps | `σ` (kPa) | `min_sd` (mm) | 5 % tail (mm) | `ρ(min)` | `ρ(tail)` |
+   | penalty `κ` | steps | `σ`(**rest**) kPa | `min_sd` (mm) | 5 % tail (mm) | `ρ(min)` | `ρ(tail)` |
    |---|---|---|---|---|---|---|
    | 1e2 | 16/16 | 28.74 | −2.059 | −1.733 | — | — |
    | 1e3 (shipped) | 16/16 | 83.23 | **−0.373** | **−0.042** | — | — |
@@ -643,9 +652,9 @@ Listed because the confidence of §4 rests on these being open, not closed.
 
    ⭐ **The two scenes agree to within their own noise**, which is the evidence
    that this is a property of the path rather than of either fixture: `σ` spans
-   **1.048× per decade** (scan) against **1.198×** (sphere) over seated arms,
-   both under the fixture's 1.238×; the last two arms sit **1.048×** apart
-   (scan) against **1.047×** (sphere); `κ` = 1e6 stalls on both. ⇒ **for the
+   **1.048× per decade** (scan) against **1.047×** (sphere) over the SAME arms
+   (`κ` = 1e4→1e5, the only ones seated on both), agreeing to 0.12 % and both
+   well under the fixture's 1.238×; `κ` = 1e6 stalls on both. ⇒ **for the
    bridge, `σ` ≈ 117 kPa as a lower bound and `ρ` ∈ [1.00, 1.18]**, read on the
    REST basis at `κ` = 1e4–1e5 on a non-penetrating full-depth seat — not the
    6.85 kPa / 1.22 the shipped stiffness reports off a 25 % seat.
@@ -750,9 +759,9 @@ Listed because the confidence of §4 rests on these being open, not closed.
    how enclosing the patch is"*. No enclosure metric was measured, and the
    ordering carries a confound that rules the simple reading out: `gui-dflt` and
    `1layer` are the **same scan** and differ **52×** at the **same depth**
-   (7.92 against 410.71 at 0.75 mm). What separates them is the layer stack and
-   the cap-plane topology — an open mouth with a pinned floor against the
-   closed-cavity short-circuit — not how much of the intruder the patch wraps.
+   (7.92 against 410.71 at 0.75 mm). They differ in **two things at once** —
+   the layer stack and the cap-plane topology — and neither was isolated, so
+   naming either as the cause would repeat the mistake being corrected here.
    ⇒ **the spread is measured; its cause is unidentified.** What the numbers do
    support is the operational point: the F-d curve remains a correct *net
    seating resistance*, and what it cannot be is divided by an area.
