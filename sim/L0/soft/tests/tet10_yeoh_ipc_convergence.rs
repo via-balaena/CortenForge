@@ -3724,3 +3724,82 @@ fn zz_graded_recon() {
         }
     }
 }
+
+/// `STACK` with per-layer tensile caps overridden — the fail-close lever.
+fn graded_field_capped(caps: [f64; 3]) -> MaterialField {
+    fn layered(values: Vec<f64>) -> Box<dyn Field<f64>> {
+        Box::new(LayeredScalarField::new(
+            Box::new(SphereSdf { radius: R_CAVITY }),
+            LAYER_BOUNDARIES.to_vec(),
+            values,
+        ))
+    }
+    MaterialField::from_yeoh_fields_with_bounds(
+        layered(STACK.iter().map(|m| m.mu).collect()),
+        layered(STACK.iter().map(|m| m.c2).collect()),
+        layered(STACK.iter().map(|m| m.lambda).collect()),
+        layered(caps.to_vec()),
+        layered(
+            STACK
+                .iter()
+                .map(|m| m.validity_min_principal_stretch)
+                .collect(),
+        ),
+    )
+}
+
+/// rho, coherence, and where a deliberately low cap trips.
+#[test]
+#[ignore = "recon"]
+fn zz_graded_recon2() {
+    let cell = Cell::graded_shell();
+    eprintln!(
+        "  {:>8} {:>7} {:>11} {:>10}",
+        "w(mm)", "rho", "coherence", "min_sd"
+    );
+    for (w, r) in cell.ramp(CAVITY, RAMP_STEP, 0.0035) {
+        match r {
+            Ok(press) => eprintln!(
+                "  {:>8.3} {:>7.4} {:>11.3e} {:>10.3e}",
+                w * 1e3,
+                face_barrier_standoff(KAPPA, D_HAT, press.mean_traction) / press.min_sd,
+                press.net_force.norm() / press.sum_force_mag,
+                press.min_sd,
+            ),
+            Err(e) => eprintln!("  {:>8.3} FAILED {e}", w * 1e3),
+        }
+    }
+
+    // Fail-close: drop the INNER layer's tensile cap far below the hoop
+    // stretch the bore forces, and see which tet the gate names.
+    let capped = Tet10Mesh::<Yeoh>::from_tet4(&tet4_shell_with(
+        CELL,
+        graded_field_capped([1.10, 8.80, 5.76]),
+    ));
+    let t4 = tet4_shell_with(CELL, graded_yeoh_field());
+    let positions = Mesh::<Yeoh>::positions(&t4);
+    let pins = outer_skin_pins(&capped, OUTER_SKIN_BAND);
+    let cell = Cell {
+        mesh: capped,
+        pins,
+        rest_advance: REST_BORE_W,
+        pin_label: "outer skin",
+    };
+    for (w, r) in cell.ramp(CAVITY, RAMP_STEP, 0.0035) {
+        if let Err(e) = r {
+            eprintln!("  capped inner layer FAILED at {:.3} mm: {e}", w * 1e3);
+            if let Some(rest) = e.strip_prefix("ValidityViolation(tet ") {
+                let id: usize = rest
+                    .split(':')
+                    .next()
+                    .and_then(|t| t.trim().parse().ok())
+                    .expect("tet id");
+                let verts = Mesh::<Yeoh>::tet_vertices(&t4, id as TetId);
+                let radius =
+                    (verts.iter().map(|&v| positions[v as usize]).sum::<Vec3>() * 0.25).norm();
+                eprintln!("    violating tet {id} centroid r = {:.2} mm", radius * 1e3);
+            }
+            break;
+        }
+    }
+}
