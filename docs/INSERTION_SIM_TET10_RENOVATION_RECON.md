@@ -547,9 +547,10 @@ Listed because the confidence of §4 rests on these being open, not closed.
    read as one. It is far deeper into failure — step 4 of 16, not a marginal
    edge — but it has not been reproduced on a second platform.
 
-   ✅✅ **`σ` AND `ρ` ARE NOW MEASURED FOR THIS SCENE (2026-09-22 at
-   `89169377`) — and the first thing they say is that the penalty path cannot
-   supply them.** Three `#[ignore]`d probes in
+   ✅✅ **`σ` AND `ρ` ARE NOW MEASURED FOR THIS SCENE — and the thing that
+   decides whether they are usable is not the contact model but WHERE they are
+   read: at the shipped `κ` the patch is through the wall, and on the wrong
+   area basis `σ` is 22 % low.** Three `#[ignore]`d probes in
    `tools/cf-sim-research/src/insertion_sim.rs` read the area-weighted mean
    traction `Σ‖f‖ / Σa` and the gap distribution off every converged step of a
    16-step ramp:
