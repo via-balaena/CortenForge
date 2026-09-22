@@ -1224,7 +1224,12 @@ impl Cell {
     /// [`the_per_tet_validity_gate_fires_in_the_layer_that_owns_the_cap`]
     /// pulls, since the real caps sit far above anything this cell reaches.
     fn capped_shell(caps: [f64; 3]) -> Self {
-        let mesh = Tet10Mesh::<Yeoh>::from_tet4(&tet4_shell_with(CELL, graded_field_capped(caps)));
+        Self::shell_with(graded_field_capped(caps))
+    }
+
+    /// The shell carrying an arbitrary material field.
+    fn shell_with(field: MaterialField) -> Self {
+        let mesh = Tet10Mesh::<Yeoh>::from_tet4(&tet4_shell_with(CELL, field));
         let pins = outer_skin_pins(&mesh, OUTER_SKIN_BAND);
         Self {
             mesh,
@@ -3657,24 +3662,41 @@ fn the_enveloping_patch_nonuniformity_is_a_property_of_the_mesh() {
 
 /// `STACK` with per-layer tensile caps overridden — the fail-close lever.
 fn graded_field_capped(caps: [f64; 3]) -> MaterialField {
-    fn layered(values: Vec<f64>) -> Box<dyn Field<f64>> {
+    graded_field_with(
+        [STACK[0].mu, STACK[1].mu, STACK[2].mu],
+        [STACK[0].c2, STACK[1].c2, STACK[2].c2],
+        [STACK[0].lambda, STACK[1].lambda, STACK[2].lambda],
+        caps,
+    )
+}
+
+/// Every per-layer parameter given explicitly — the seam
+/// [`which_field_drives_the_graded_stiffening`] needs, because flattening one
+/// parameter while the others stay graded is the only way to attribute the
+/// response to a parameter rather than to "the material".
+fn graded_field_with(
+    mu: [f64; 3],
+    c2: [f64; 3],
+    lambda: [f64; 3],
+    caps: [f64; 3],
+) -> MaterialField {
+    fn layered(values: [f64; 3]) -> Box<dyn Field<f64>> {
         Box::new(LayeredScalarField::new(
             Box::new(SphereSdf { radius: R_CAVITY }),
             LAYER_BOUNDARIES.to_vec(),
-            values,
+            values.to_vec(),
         ))
     }
     MaterialField::from_yeoh_fields_with_bounds(
-        layered(STACK.iter().map(|m| m.mu).collect()),
-        layered(STACK.iter().map(|m| m.c2).collect()),
-        layered(STACK.iter().map(|m| m.lambda).collect()),
-        layered(caps.to_vec()),
-        layered(
-            STACK
-                .iter()
-                .map(|m| m.validity_min_principal_stretch)
-                .collect(),
-        ),
+        layered(mu),
+        layered(c2),
+        layered(lambda),
+        layered(caps),
+        layered([
+            STACK[0].validity_min_principal_stretch,
+            STACK[1].validity_min_principal_stretch,
+            STACK[2].validity_min_principal_stretch,
+        ]),
     )
 }
 
@@ -3834,6 +3856,21 @@ fn the_layer_stack_partitions_the_wall_by_radius() {
 /// share is the wrong weight. ⇒ **sizing a graded sleeve from a volume-averaged
 /// modulus over-predicts its stiffness by about 2×.**
 ///
+/// ⚠⚠ **An earlier revision of this comment blamed `μ`, and that was wrong —
+/// the correction is the useful part.** A mutation that flattened `μ` alone
+/// SURVIVED this gate: the ratio stayed at 1.208-1.283, inside the band below.
+/// Flattening `λ` instead drops it to 1.162-1.235, about twice as far.
+/// [`which_field_drives_the_graded_stiffening`] measures the split and pins it.
+/// `λ` leads because this shell is **sealed** — 3a measured 22.7 % volumetric
+/// compression at depth — so the volumetric stiffness is what resists. The
+/// series-compliance argument above is unaffected (it is about WHERE the load
+/// enters, not which parameter carries it), but the band should be read as an
+/// **upper bound** for `insertion_sim`'s open-mouth sleeve, where material
+/// escapes axially and `λ` has less to push against.
+/// ⇒ the volume-average estimator is wrong twice over: it weights by volume
+/// where the geometry loads in series, and it weights `μ`, which is not even
+/// the dominant term.
+///
 /// The ratio *rising* with depth is the same mechanism seen from the other
 /// side: as the wall compresses, load transfers outward into the stiff layers.
 #[test]
@@ -3922,10 +3959,10 @@ fn the_graded_walls_stiffness_is_set_by_the_layer_the_load_enters() {
     );
     assert!(
         STACK[0].mu < ECOFLEX_00_30.mu,
-        "the mechanism above requires the innermost layer ({} Pa) to be SOFTER \
-         than the uniform baseline ({} Pa); with a stiffer bore layer the \
-         explanation for the gap does not hold and this gate's band is a \
-         coincidence",
+        "the series-compliance reading above requires the innermost layer \
+         ({} Pa) to be SOFTER than the uniform baseline ({} Pa); with a \
+         stiffer bore layer the volume average would no longer over-predict \
+         for the reason claimed, and this gate's band is a coincidence",
         STACK[0].mu,
         ECOFLEX_00_30.mu,
     );
@@ -4287,5 +4324,135 @@ fn how_deep_does_the_graded_cavity_converge() {
         "the ramp never crossed the required standoff before walling, so the \
          feasibility criterion is no longer conservative here and the kappa \
          floor's margin on a graded wall is unmeasured",
+    );
+}
+
+/// **Which of `(μ, C₂, λ)` actually carries the graded wall's stiffening?**
+///
+/// [`the_graded_walls_stiffness_is_set_by_the_layer_the_load_enters`] shows the
+/// material reaches the energy, and that the layer at the bore sets the scale.
+/// It does not say which *parameter* does the work, and an earlier revision of
+/// its doc asserted `μ` on the strength of a volume-weighted modulus. That was
+/// wrong in emphasis, and a surviving mutation is what exposed it: flattening
+/// `μ` alone left the ratio inside the gate's band, so the gate passed on a
+/// body whose `μ` was uniform.
+///
+/// Flattening one parameter at a time, against the uniform cell:
+///
+/// ```text
+/// baseline                        1.2218 -> 1.3320
+/// mu     flattened                1.2076 -> 1.2833   (-0.049 at depth)
+/// lambda flattened                1.1619 -> 1.2352   (-0.097 at depth)
+/// mu + C2 + lambda flattened      1.0000 -> 1.0000
+/// ```
+///
+/// ⭐⭐ **`λ` carries about twice what `μ` does**, and the all-flat row reading
+/// exactly 1.0 is what proves the comparison is wired to the material at all.
+///
+/// ⚠⚠ **That has a consequence for the bridge, which is why it is worth a
+/// probe rather than a sentence.** `λ` is the volumetric stiffness, and item 3a
+/// measured this shell is *sealed*: the outer skin is pinned all round and the
+/// bore is closed, forcing **22.7 % volumetric compression** at depth.
+/// `insertion_sim`'s sleeve is a sock over a capsule with an **open mouth**,
+/// where material escapes axially instead. ⇒ **the graded stiffening measured
+/// here leans on the seal more than a `μ`-driven one would**, so the
+/// 1.22-1.72× band should be read as an upper bound for the open-mouth case,
+/// not a transfer.
+#[test]
+#[ignore = "four shallow ramps plus the uniform baseline, ~4 min — the \
+            parameter attribution behind the stiffness gate's explanation"]
+fn which_field_drives_the_graded_stiffening() {
+    let mu = [STACK[0].mu, STACK[1].mu, STACK[2].mu];
+    let c2 = [STACK[0].c2, STACK[1].c2, STACK[2].c2];
+    let lambda = [STACK[0].lambda, STACK[1].lambda, STACK[2].lambda];
+    let caps = [
+        STACK[0].validity_max_principal_stretch,
+        STACK[1].validity_max_principal_stretch,
+        STACK[2].validity_max_principal_stretch,
+    ];
+    let flat = |v: f64| [v; 3];
+
+    let uniform: Vec<f64> = ramp_cavity(CAVITY, RAMP_STEP, CAVITY_GATE_MAX_W)
+        .into_iter()
+        .map(|(_, r)| r.expect("the uniform cell must converge").mean_traction)
+        .collect();
+
+    let variants = [
+        ("baseline", graded_field_with(mu, c2, lambda, caps)),
+        (
+            "mu flattened",
+            graded_field_with(flat(ECOFLEX_00_30.mu), c2, lambda, caps),
+        ),
+        (
+            "lambda flattened",
+            graded_field_with(mu, c2, flat(ECOFLEX_00_30.lambda), caps),
+        ),
+        (
+            "all flattened",
+            graded_field_with(
+                flat(ECOFLEX_00_30.mu),
+                flat(ECOFLEX_00_30.c2),
+                flat(ECOFLEX_00_30.lambda),
+                caps,
+            ),
+        ),
+    ];
+
+    let mut deepest = Vec::new();
+    for (label, field) in variants {
+        let ratios: Vec<f64> = Cell::shell_with(field)
+            .ramp(CAVITY, RAMP_STEP, CAVITY_GATE_MAX_W)
+            .into_iter()
+            .zip(&uniform)
+            .map(|((_, r), u)| r.expect("the graded cell must converge").mean_traction / u)
+            .collect();
+        assert_eq!(
+            ratios.len(),
+            uniform.len(),
+            "{label} did not ramp over the uniform cell's advances",
+        );
+        let (lo, hi) = (ratios[0], ratios[ratios.len() - 1]);
+        eprintln!("  {label:22} {lo:.4} -> {hi:.4}");
+        deepest.push((label, hi));
+    }
+
+    let at = |name: &str| {
+        deepest
+            .iter()
+            .find(|(l, _)| *l == name)
+            .map(|&(_, v)| v)
+            .ok_or_else(|| format!("no variant {name}"))
+            .expect("variant")
+    };
+    let (base, without_mu, without_lambda, all_flat) = (
+        at("baseline"),
+        at("mu flattened"),
+        at("lambda flattened"),
+        at("all flattened"),
+    );
+
+    assert!(
+        (all_flat - 1.0).abs() < 1.0e-9,
+        "flattening every parameter leaves the ratio at {all_flat:.6}, not 1.0. \
+         The two cells are then the same material, so anything but 1.0 means \
+         this comparison is reading something other than the material — and \
+         every attribution below is measuring that instead",
+    );
+    let (drop_mu, drop_lambda) = (base - without_mu, base - without_lambda);
+    eprintln!("  mu contributes {drop_mu:.4}, lambda contributes {drop_lambda:.4}");
+    assert!(
+        drop_mu > 0.0 && drop_lambda > 0.0,
+        "flattening a parameter did not reduce the stiffening \
+         (mu {drop_mu:+.4}, lambda {drop_lambda:+.4}) — with the stack soft at \
+         the bore, removing grading in either direction should soften it",
+    );
+    assert!(
+        drop_lambda > 1.5 * drop_mu,
+        "lambda now contributes {drop_lambda:.4} against mu's {drop_mu:.4}, \
+         under the 2x measured. The stiffness gate's explanation rests on \
+         lambda dominating BECAUSE this shell is sealed into volumetric \
+         compression; if the two have evened out, that reasoning — and the \
+         warning that the band is an upper bound for an open-mouth sleeve — \
+         needs re-deriving, not this bound relaxing",
     );
 }
