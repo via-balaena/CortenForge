@@ -301,8 +301,6 @@ mod tests {
         }
     }
 
-    /// Area-fraction weights sum to 1 (the physical rest area is applied
-    /// separately).
     /// Partition of unity **where it is used** — at the Gauss points and
     /// across the interior, not only at the nodes.
     ///
@@ -338,6 +336,8 @@ mod tests {
         }
     }
 
+    /// Area-fraction weights sum to 1 (the physical rest area is applied
+    /// separately).
     #[test]
     fn quadrature_weights_sum_to_one() {
         let sum: f64 = FACE_GP.iter().map(|&(_, _, w)| w).sum();
