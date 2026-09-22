@@ -8033,17 +8033,28 @@ mod tests {
         let stiffer =
             run_insertion_ramp_at_kappa(tolerance_fixture(), 2, 10.0 * INSERTION_CONTACT_KAPPA)
                 .expect("the fixture must ramp at ten times the shipped stiffness");
+        // ⛔ The stiffer arm is NOT required to converge. Whether a
+        // tenfold stiffer contact still solves is a STALL BOUNDARY, and
+        // a stall boundary is decided by arithmetic that differs
+        // between platforms - asserting it here would be asserting the
+        // LOCATION of an edge, which is the mistake step 0 already made
+        // once and had to fix in CI.
+        //
+        // What is asserted instead holds on either side of that edge:
+        // the two runs must DIFFER, in step count or in where the first
+        // step landed. Dropping the argument makes them identical in
+        // both, so the mutation still fails this.
         assert!(
-            !shipped.steps.is_empty() && !stiffer.steps.is_empty(),
-            "both arms must converge a step, or the comparison below compares nothing \
-             (shipped {} steps, stiffer {} steps)",
-            shipped.steps.len(),
-            stiffer.steps.len(),
+            !shipped.steps.is_empty(),
+            "the shipped arm must converge a step, or this half compares nothing",
         );
-        assert_ne!(
-            shipped.steps[0].x_final, stiffer.steps[0].x_final,
-            "a tenfold stiffer contact must converge somewhere else; identical positions \
-             mean the stiffness never reached the solve",
+        let differs = shipped.steps.len() != stiffer.steps.len()
+            || shipped.steps[0].x_final != stiffer.steps[0].x_final;
+        assert!(
+            differs,
+            "a tenfold stiffer contact must change the solve, and it converged the \
+             same {} step(s) to identical positions - the stiffness never reached it",
+            shipped.steps.len(),
         );
     }
 
