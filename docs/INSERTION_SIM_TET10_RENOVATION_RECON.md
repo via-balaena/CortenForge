@@ -358,11 +358,31 @@ Listed because the confidence of §4 rests on these being open, not closed.
    set by the *marching increment*, not the physics, so a different ramp
    schedule moves it. It also divides by `|b'|` at `ρ · step`, where `ρ` is the
    contact patch's **non-uniformity** (`d_eff / min_sd`, measured 1.04–1.26
-   here) — a closing cavity has no reason to share that number. And the
-   interval is `|b'(ρ·step)| / |b'(d̂/2)|` = **9.5×** wide regardless of `σ`, so
-   it selects a decade only while the design traction is known to within
-   roughly `[0.47×, 4.5×]`; `insertion_sim`'s traction is its own measurement,
-   not this fixture's **30.4 kPa**.
+   here). And the interval is `|b'(ρ·step)| / |b'(d̂/2)|` = **9.5×** wide
+   regardless of `σ`, so it selects a decade only while the design traction is
+   known to within roughly `[0.47×, 4.5×]`; `insertion_sim`'s traction is its
+   own measurement, not this fixture's **30.4 kPa**.
+
+   ✅ **`ρ` was the one of those three that could be checked before the bridge,
+   and it was — on an enveloping cell, where an earlier revision of this line
+   said a closing cavity *"has no reason to share that number."* It shares it.**
+   A 10 mm spherical bore in a 12 mm wall, driven by a growing rigid sphere,
+   reports `ρ ∈ [1.176, 1.221]` all the way to its convergence wall — under the
+   `1.30` the floor is derived with, and *tighter* than the flat plate's own
+   1.04–1.26 spread. ⚠ That is one idealised cavity: a sphere has a uniform
+   gap by symmetry, so this measures the discretisation's contribution to `ρ`
+   and not a scan-derived cavity's shape irregularity, which remains the
+   bridge's risk.
+
+   ⛔ **What did NOT survive is `σ`'s definition.** `F_z / A_flat` needs a net
+   force projected onto an axis, and on a closed patch every normal is radial:
+   measured, the enveloping cell's `|ΣF| / Σ|f|` is **6.8e-4 falling to 8.7e-5**
+   against the plate's 0.9992, so `F_z` understates its contact by three to four
+   orders of magnitude. There is no cavity analogue of `A_flat` because there is
+   no force to divide. The replacement is to stop going through force at all and
+   read the traction the barrier integrates — the area-weighted mean of
+   `κ·|b'(sd)|` — which tracks `F_z / A_flat` on the plate at a ratio constant
+   to **0.9360–0.9365 over thirteen rungs**.
 
 4. **Per-Gauss-point material sampling** (§7.6). The expensive one: a
    return-shape change to `Mesh::materials()` reaching 119 call sites.
