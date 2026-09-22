@@ -133,15 +133,14 @@ impl IpcRigidContact {
         if !self.pair_is_active(sd) {
             return None;
         }
-        let d = sd.max(self.d_hat * 1.0e-6);
-        let r = d - self.d_hat;
-        let ln = (d / self.d_hat).ln();
         // b = −(d−d̂)²·ln(d/d̂);  b' = −2(d−d̂)ln − (d−d̂)²/d;
-        // b'' = −2 ln − 4(d−d̂)/d + (d−d̂)²/d².
+        // b'' = −2 ln − 4(d−d̂)/d + (d−d̂)²/d². One implementation, in
+        // `super::barrier`, shared with the design arithmetic that derives κ —
+        // see that module's header for why a re-typed copy is a liability.
         Some(BarrierContribution {
-            energy: self.kappa * (-(r * r) * ln),
-            d_energy_d_sd: self.kappa * r.mul_add(-2.0 * ln, -(r * r) / d),
-            d2_energy_d_sd2: self.kappa * (r * r / (d * d) - 4.0 * r / d - 2.0 * ln),
+            energy: self.kappa * super::barrier_value(sd, self.d_hat),
+            d_energy_d_sd: self.kappa * super::barrier_derivative(sd, self.d_hat),
+            d2_energy_d_sd2: self.kappa * super::barrier_second_derivative(sd, self.d_hat),
         })
     }
 

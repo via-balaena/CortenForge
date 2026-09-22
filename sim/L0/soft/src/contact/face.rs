@@ -273,6 +273,7 @@ pub(crate) fn face_hessian<F: Fn(Vec3) -> FaceBarrierEval>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::contact::barrier;
 
     /// Partition of unity and Kronecker-delta at the parametric node locations,
     /// exercising the `[c0,c1,c2,m01,m12,m02]` order the SUT relies on.
@@ -295,6 +296,41 @@ mod tests {
                 assert!(
                     (nl - expect).abs() < 1e-14,
                     "N_{l} at node {k} = {nl}, expected {expect}",
+                );
+            }
+        }
+    }
+
+    /// Partition of unity **where it is used** — at the Gauss points and
+    /// across the interior, not only at the nodes.
+    ///
+    /// ⚠ [`shape_partition_and_kronecker`] checks `Σ N_i = 1` at the six
+    /// nodes, where `N` is a Kronecker delta and the sum is 1 for *any* nodal
+    /// basis — so at those points the partition assertion is entailed by the
+    /// delta assertion beside it and carries no information of its own. The
+    /// property is load-bearing away from the nodes: the barrier samples at
+    /// [`FACE_GP`], which is strictly interior by construction, and the total
+    /// contact force `F = A_rest · Σ_q ŵ_q κ b'` collapses out of the six
+    /// per-node gradients only because `Σ_i N_i ≡ 1` *there*. That identity is
+    /// what makes `κ·|b'|` readable as a traction at all.
+    #[test]
+    fn shape_partition_holds_at_the_gauss_points_and_across_the_interior() {
+        for &(u, v, _) in &FACE_GP {
+            let sum: f64 = face_shape(u, v).iter().sum();
+            assert!(
+                (sum - 1.0).abs() < 1e-14,
+                "partition of unity at Gauss point ({u}, {v}): sum = {sum}",
+            );
+        }
+        // A lattice over the reference triangle, so this is not three points.
+        let n = 40;
+        for i in 0..=n {
+            for j in 0..=(n - i) {
+                let (u, v) = (f64::from(i) / f64::from(n), f64::from(j) / f64::from(n));
+                let sum: f64 = face_shape(u, v).iter().sum();
+                assert!(
+                    (sum - 1.0).abs() < 1e-14,
+                    "partition of unity at ({u}, {v}): sum = {sum}",
                 );
             }
         }
@@ -657,27 +693,12 @@ mod tests {
         let d_hat = 0.05_f64;
         let kappa = 1.0e4_f64;
         let n = Vec3::new(0.0, 0.0, 1.0);
-        move |x: Vec3| {
-            let sd = x.z;
-            if sd >= d_hat {
-                return FaceBarrierEval {
-                    normal: n,
-                    curvature: Matrix3::zeros(),
-                    b: 0.0,
-                    b_d: 0.0,
-                    b_dd: 0.0,
-                };
-            }
-            let d = sd.max(d_hat * 1e-6);
-            let r = d - d_hat;
-            let ln = (d / d_hat).ln();
-            FaceBarrierEval {
-                normal: n,
-                curvature: Matrix3::zeros(), // plane: ∇²sd = 0
-                b: kappa * (-(r * r) * ln),
-                b_d: kappa * (-2.0 * r * ln - r * r / d),
-                b_dd: kappa * (r * r / (d * d) - 4.0 * r / d - 2.0 * ln),
-            }
+        move |x: Vec3| FaceBarrierEval {
+            normal: n,
+            curvature: Matrix3::zeros(), // plane: ∇²sd = 0
+            b: kappa * barrier::barrier_value(x.z, d_hat),
+            b_d: kappa * barrier::barrier_derivative(x.z, d_hat),
+            b_dd: kappa * barrier::barrier_second_derivative(x.z, d_hat),
         }
     }
 
@@ -694,24 +715,12 @@ mod tests {
             let nhat = dvec / rnorm;
             let curvature = (Matrix3::identity() - nhat * nhat.transpose()) / rnorm;
             let sd = rnorm - radius;
-            if sd >= d_hat {
-                return FaceBarrierEval {
-                    normal: nhat,
-                    curvature,
-                    b: 0.0,
-                    b_d: 0.0,
-                    b_dd: 0.0,
-                };
-            }
-            let d = sd.max(d_hat * 1e-6);
-            let r = d - d_hat;
-            let ln = (d / d_hat).ln();
             FaceBarrierEval {
                 normal: nhat,
                 curvature,
-                b: kappa * (-(r * r) * ln),
-                b_d: kappa * (-2.0 * r * ln - r * r / d),
-                b_dd: kappa * (r * r / (d * d) - 4.0 * r / d - 2.0 * ln),
+                b: kappa * barrier::barrier_value(sd, d_hat),
+                b_d: kappa * barrier::barrier_derivative(sd, d_hat),
+                b_dd: kappa * barrier::barrier_second_derivative(sd, d_hat),
             }
         }
     }
