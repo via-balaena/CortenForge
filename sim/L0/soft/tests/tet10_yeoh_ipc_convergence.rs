@@ -266,6 +266,8 @@
     clippy::cast_sign_loss
 )]
 
+use std::sync::OnceLock;
+
 use nalgebra::Point3;
 use sim_ml_chassis::Tensor;
 use sim_soft::Material;
@@ -953,7 +955,7 @@ fn tet10_yeoh_takes_the_face_path_and_tet4_yeoh_takes_the_vertex_path() {
 /// equilibrium immediately. The last three fields are what separate the two.
 /// Without them "Tet10 × Yeoh converges" would be a claim about an unloaded
 /// plate wearing the words of a claim about contact.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Press {
     iters: usize,
     residual: f64,
@@ -1166,7 +1168,7 @@ fn step_inputs(rest: &[f64]) -> (Tensor<f64>, Tensor<f64>, Tensor<f64>) {
 /// come back as an `Err` variant naming which one fired, where the panicking
 /// path would only abort. Which surface fires is the finding.
 fn press_tet10_yeoh(setup: Setup, plane_h: f64) -> Result<Press, String> {
-    Cell::plate().press(setup, plane_h)
+    plate_cell().press(setup, plane_h)
 }
 
 /// A Tet10 × Yeoh body and the boundary set that holds it.
@@ -1483,7 +1485,57 @@ const GATE_MAX_PLANE_H: f64 = 0.0010;
 /// configuration are built once; only the contact primitive changes per rung,
 /// which is the same per-increment rebuild `tet10_indentation_demand1` uses.
 fn ramp_tet10_yeoh(setup: Setup, step: f64, max_plane_h: f64) -> Vec<(f64, Result<Press, String>)> {
-    Cell::plate().ramp(setup, step, max_plane_h)
+    plate_cell().ramp(setup, step, max_plane_h)
+}
+
+// ── shared fixtures ─────────────────────────────────────────────────
+//
+// Meshing and Tet10 enrichment cost more than a shallow ramp does, and neither
+// depends on where the indenter is — so each cell is built once per test
+// binary rather than once per gate. `OnceLock` because the harness runs tests
+// on several threads and `get_or_init` is the only initialisation that is
+// safe under that without a lock held across the solve.
+
+/// The 40 × 40 × 12 mm plate, built once.
+fn plate_cell() -> &'static Cell {
+    static CELL_ONCE: OnceLock<Cell> = OnceLock::new();
+    CELL_ONCE.get_or_init(Cell::plate)
+}
+
+/// The uniform thick spherical shell, built once.
+fn shell_cell() -> &'static Cell {
+    static CELL_ONCE: OnceLock<Cell> = OnceLock::new();
+    CELL_ONCE.get_or_init(Cell::shell)
+}
+
+/// The graded shell, built once.
+fn graded_cell() -> &'static Cell {
+    static CELL_ONCE: OnceLock<Cell> = OnceLock::new();
+    CELL_ONCE.get_or_init(Cell::graded_shell)
+}
+
+/// The always-on plate ramp at [`BASELINE`], solved once and shared.
+///
+/// ⚠ Cached by NOTHING but the fact that every always-on caller asks for the
+/// same `(setup, step, depth)`. A caller wanting different parameters must
+/// call [`ramp_tet10_yeoh`] directly — this returns the `BASELINE` ramp
+/// whatever it is asked, because it is not asked.
+fn plate_rungs() -> &'static [(f64, Result<Press, String>)] {
+    static RUNGS: OnceLock<Vec<(f64, Result<Press, String>)>> = OnceLock::new();
+    RUNGS.get_or_init(|| ramp_tet10_yeoh(BASELINE, RAMP_STEP, GATE_MAX_PLANE_H))
+}
+
+/// The always-on uniform cavity ramp, solved once and shared across the four
+/// gates that read it.
+fn cavity_rungs() -> &'static [(f64, Result<Press, String>)] {
+    static RUNGS: OnceLock<Vec<(f64, Result<Press, String>)>> = OnceLock::new();
+    RUNGS.get_or_init(|| ramp_cavity(CAVITY, RAMP_STEP, CAVITY_GATE_MAX_W))
+}
+
+/// The always-on graded cavity ramp, solved once and shared.
+fn graded_rungs() -> &'static [(f64, Result<Press, String>)] {
+    static RUNGS: OnceLock<Vec<(f64, Result<Press, String>)>> = OnceLock::new();
+    RUNGS.get_or_init(|| ramp_graded(CAVITY_GATE_MAX_W))
 }
 
 /// Does the ramp reach strain where Yeoh actually differs from Neo-Hookean?
@@ -1523,8 +1575,8 @@ fn tet10_yeoh_convergence_envelope_under_increasing_compression() {
         RAMP_STEP * 1e3,
     );
 
-    let rungs = ramp_tet10_yeoh(BASELINE, RAMP_STEP, GATE_MAX_PLANE_H);
-    for (h, r) in &rungs {
+    let rungs = plate_rungs();
+    for (h, r) in rungs {
         match r {
             // `defl` is the largest nodal displacement as a fraction of plate
             // thickness. An earlier revision printed plane travel here and
@@ -2822,7 +2874,7 @@ const CAVITY: Setup = Setup {
 /// March the bore outward inside the cavity, re-solving from each converged
 /// state. The enveloping sibling of [`ramp_tet10_yeoh`].
 fn ramp_cavity(setup: Setup, step: f64, max_w: f64) -> Vec<(f64, Result<Press, String>)> {
-    Cell::shell().ramp(setup, step, max_w)
+    shell_cell().ramp(setup, step, max_w)
 }
 
 /// How far the always-on cavity gate drives the bore (m).
@@ -3149,8 +3201,9 @@ fn the_enveloping_patch_cancels_the_net_force_the_flat_patch_reports() {
 #[test]
 fn the_force_free_traction_tracks_force_over_area_on_the_plate() {
     let area = flat_contact_area();
-    let rungs: Vec<Press> = ramp_tet10_yeoh(BASELINE, RAMP_STEP, GATE_MAX_PLANE_H)
-        .into_iter()
+    let rungs: Vec<Press> = plate_rungs()
+        .iter()
+        .cloned()
         .map(|(h, r)| {
             r.map_err(|e| format!("plate rung {h:e} m failed: {e}"))
                 .expect("every plate rung must converge for the two definitions to be compared")
@@ -3223,7 +3276,7 @@ fn the_force_free_traction_tracks_force_over_area_on_the_plate() {
 /// outer skin, as `insertion_sim`'s `outer_skin_bc` pins it).
 #[test]
 fn tet10_yeoh_converges_against_a_closing_cavity() {
-    let rungs = ramp_cavity(CAVITY, RAMP_STEP, CAVITY_GATE_MAX_W);
+    let rungs = cavity_rungs();
     eprintln!(
         "cavity ramp  [R_cav {:.0} mm, wall {:.0} mm, kappa {KAPPA:e}, d_hat {D_HAT:e} m]",
         R_CAVITY * 1e3,
@@ -3234,7 +3287,7 @@ fn tet10_yeoh_converges_against_a_closing_cavity() {
         "w(mm)", "it", "resid", "trac(kPa)", "min_sd", "rho", "pairs",
     );
     let mut ok = Vec::new();
-    for (w, r) in &rungs {
+    for (w, r) in rungs {
         match r {
             Ok(p) => {
                 let rho = face_barrier_standoff(KAPPA, D_HAT, p.mean_traction) / p.min_sd;
@@ -3342,8 +3395,9 @@ fn tet10_yeoh_converges_against_a_closing_cavity() {
 /// `#[ignore]`d and runs in no CI job.
 #[test]
 fn the_flat_patchs_nonuniformity_constant_bounds_the_enveloping_patch() {
-    let rho: Vec<f64> = ramp_cavity(CAVITY, RAMP_STEP, CAVITY_GATE_MAX_W)
-        .into_iter()
+    let rho: Vec<f64> = cavity_rungs()
+        .iter()
+        .cloned()
         .map(|(w, r)| {
             let p = r
                 .map_err(|e| format!("cavity rung {w:e} m failed: {e}"))
@@ -3522,7 +3576,7 @@ fn how_deep_does_the_closing_cavity_converge() {
 /// and this gate does not claim to.
 #[test]
 fn the_force_free_traction_agrees_with_an_independent_reading_on_the_cavity() {
-    let cell = Cell::shell();
+    let cell = shell_cell();
     let (_, cavity_area_rest) = boundary_faces_on_isosurface(
         Mesh::<Yeoh>::positions(&cell.mesh),
         Mesh::<Yeoh>::boundary_faces(&cell.mesh),
@@ -3544,7 +3598,7 @@ fn the_force_free_traction_agrees_with_an_independent_reading_on_the_cavity() {
         "sum|f|/A(Pa)",
         "ratio",
     );
-    for (w, r) in cell.ramp(CAVITY, RAMP_STEP, CAVITY_GATE_MAX_W) {
+    for (w, r) in cavity_rungs().iter().cloned() {
         let p = r
             .map_err(|e| format!("cavity rung {w:e} m failed: {e}"))
             .expect("every cavity rung must converge for the two readings to be compared");
@@ -3704,7 +3758,7 @@ fn graded_field_with(
 
 /// Shallow graded ramp — the always-on depth, matching [`ramp_cavity`].
 fn ramp_graded(max_w: f64) -> Vec<(f64, Result<Press, String>)> {
-    Cell::graded_shell().ramp(CAVITY, RAMP_STEP, max_w)
+    graded_cell().ramp(CAVITY, RAMP_STEP, max_w)
 }
 
 /// Rest-configuration centroid radius of `tet` (m) — the coordinate the layer
@@ -3905,8 +3959,8 @@ fn the_layer_stack_partitions_the_wall_by_radius() {
 /// side: as the wall compresses, load transfers outward into the stiff layers.
 #[test]
 fn the_graded_walls_stiffness_is_set_by_the_layer_the_load_enters() {
-    let uniform = ramp_cavity(CAVITY, RAMP_STEP, CAVITY_GATE_MAX_W);
-    let graded = ramp_graded(CAVITY_GATE_MAX_W);
+    let uniform = cavity_rungs();
+    let graded = graded_rungs();
     assert_eq!(
         uniform.len(),
         graded.len(),
@@ -3927,7 +3981,7 @@ fn the_graded_walls_stiffness_is_set_by_the_layer_the_load_enters() {
     );
 
     let mut ratios = Vec::new();
-    for ((w, u), (wg, g)) in uniform.iter().zip(&graded) {
+    for ((w, u), (wg, g)) in uniform.iter().zip(graded) {
         let u = u
             .as_ref()
             .expect("the uniform cell must converge over this gate's depth");
@@ -4100,7 +4154,7 @@ fn the_interface_flag_cannot_isolate_a_layer_boundary_at_this_cell_size() {
 /// else.
 #[test]
 fn grading_keeps_the_enveloping_patchs_invariants() {
-    let rungs = ramp_graded(CAVITY_GATE_MAX_W);
+    let rungs = graded_rungs();
     // ⛔ An empty or truncated ramp makes every `all(..)` below vacuously
     // true. Assert the collection reached the declared depth, not just that
     // nothing in it was wrong.
@@ -4117,7 +4171,7 @@ fn grading_keeps_the_enveloping_patchs_invariants() {
         "w(mm)", "it", "resid", "min_sd", "rho", "coherence", "pairs",
     );
     let mut ok = Vec::new();
-    for (w, r) in &rungs {
+    for (w, r) in rungs {
         let p = r
             .as_ref()
             .map_err(|e| format!("the graded cavity must converge at {w}: {e}"))
@@ -4415,8 +4469,9 @@ fn which_field_drives_the_graded_stiffening() {
     ];
     let flat = |v: f64| [v; 3];
 
-    let uniform: Vec<f64> = ramp_cavity(CAVITY, RAMP_STEP, CAVITY_GATE_MAX_W)
-        .into_iter()
+    let uniform: Vec<f64> = cavity_rungs()
+        .iter()
+        .cloned()
         .map(|(_, r)| r.expect("the uniform cell must converge").mean_traction)
         .collect();
 
