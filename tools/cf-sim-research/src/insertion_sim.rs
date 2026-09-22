@@ -7970,58 +7970,71 @@ mod tests {
         );
     }
 
-    /// **One tight vertex must not set ρ.**
+    /// **One tight vertex must not set ρ — and the tail must be read
+    /// from the right end, by area.**
     ///
     /// The κ floor divides `|b'|` at `ρ · step`, so ρ's denominator is
     /// a number that moves a shipped constant. Built on `min_sd` that
     /// denominator is a single pair, and on a scan-derived patch a
     /// single bad tet is the expected case, not the pathological one.
     ///
-    /// 40 equal-area pairs: 39 sitting at 0.5 mm and one at 0.01 mm.
-    /// The outlier is 2.5 % of the patch area, under the 5 % tail, so
-    /// it sets `min_sd` and does not set `p05_sd` — and the two ρ come
-    /// out **50× apart**. Whichever a derivation uses, it must be the
-    /// one it says it uses.
+    /// ⭐ **The fixture is deliberately lopsided**, because a
+    /// symmetric one cannot tell three different implementations
+    /// apart. 12 pairs over 50 µm²: one outlier at 0.01 mm carrying
+    /// 1 µm², ten at 0.5 mm carrying 1 µm² each, and one at 0.9 mm
+    /// carrying the remaining 39 µm². The 5 % cut is 2.5 µm², which
+    /// lands strictly inside the 0.5 mm group, so
+    ///
+    /// - walking from the tight end gives **0.5 mm** — correct;
+    /// - walking from the loose end gives 0.9 mm;
+    /// - weighting by pair COUNT instead of area gives 0.01 mm, since
+    ///   one pair of twelve already exceeds 5 %.
+    ///
+    /// The two ρ then come out **exactly 50× apart**, which is the size
+    /// of the mistake available to a derivation that uses one while
+    /// saying the other.
     #[test]
     fn the_patch_nonuniformity_on_the_tail_is_not_moved_by_a_single_tight_pair() {
-        let area = 1.0e-6;
+        let micro = 1.0e-6;
         let force = Vec3::new(0.0, 0.0, -1.0);
-        let mut readouts: Vec<ContactPairReadout> =
-            (0..39).map(|i| readout(i, 0.5e-3, area, force)).collect();
-        readouts.push(readout(39, 0.01e-3, area, force));
+        let mut readouts = vec![readout(0, 0.01e-3, micro, force)];
+        for i in 1..=10 {
+            readouts.push(readout(i, 0.5e-3, micro, force));
+        }
+        readouts.push(readout(11, 0.9e-3, 39.0 * micro, force));
 
-        let stats = patch_stats(&readouts).expect("40 well-defined pairs");
+        let stats = patch_stats(&readouts).expect("12 well-defined pairs");
         let close = |got: f64, want: f64, what: &str| {
             assert!(
                 (got - want).abs() <= 1e-9 * want.abs().max(1.0),
                 "{what}: got {got:e}, want {want:e}",
             );
         };
-        assert_eq!(stats.n_pairs, 40, "every pair here has a surface patch");
+        assert_eq!(stats.n_pairs, 12, "every pair here has a surface patch");
+        close(stats.area_m2, 50.0 * micro, "the areas are 1 + 10 + 39 µm²");
         close(stats.min_sd_m, 0.01e-3, "the outlier is the tightest pair");
-        // 5 % of 40 µm² is 2 µm², which the outlier's 1 µm² does not
-        // reach — so the tail walks on to the next gap.
+        close(
+            stats.max_sd_m,
+            0.9e-3,
+            "the loose pair carries most of the area",
+        );
         close(
             stats.p05_sd_m,
             0.5e-3,
-            "the 5 % tail steps past a 2.5 %-area outlier",
+            "the 5 % tail walks from the TIGHT end, by AREA, past a 2 %-area outlier",
         );
-        close(
-            stats.mean_sd_m,
-            0.487_75e-3,
-            "the mean gap is (39·0.5 + 0.01) / 40",
-        );
+        // (1·0.01 + 10·0.5 + 39·0.9) / 50 = 0.8022 mm.
+        close(stats.mean_sd_m, 0.802_2e-3, "the mean gap is area-weighted");
         close(
             stats.rho_gap(),
-            48.775,
+            80.22,
             "ρ on the minimum is set by the one outlier",
         );
-        close(stats.rho_tail(), 0.975_5, "ρ on the tail is not");
-        assert!(
-            stats.rho_gap() / stats.rho_tail() > 40.0,
-            "the point of this fixture is that the two definitions disagree by a \
-             factor, not a percent; got {:.2}x",
+        close(stats.rho_tail(), 1.604_4, "ρ on the tail is not");
+        close(
             stats.rho_gap() / stats.rho_tail(),
+            50.0,
+            "the two definitions differ by a factor here, not a percent",
         );
     }
 }
