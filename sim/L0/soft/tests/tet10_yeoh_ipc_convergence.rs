@@ -1042,7 +1042,7 @@ struct Press {
     /// barrier itself integrates, read back at the converged pose.
     ///
     /// The plate is where the two definitions are checked against each other —
-    /// see [`the_traction_mean_agrees_with_force_over_area_on_the_plate`].
+    /// see [`the_force_free_traction_tracks_force_over_area_on_the_plate`].
     ///
     /// [`net_force_z`]: Press::net_force_z
     mean_traction: f64,
@@ -2795,7 +2795,7 @@ fn tet4_shell() -> SdfMeshedTetMesh<Yeoh> {
 
 /// The shell meshed at an arbitrary cell size — the geometry held fixed while
 /// the discretisation moves, which is what
-/// [`the_enveloping_patch_nonuniformity_is_a_property_of_the_MESH`] needs.
+/// [`the_enveloping_patch_nonuniformity_is_a_property_of_the_mesh`] needs.
 fn tet4_shell_at(cell: f64) -> SdfMeshedTetMesh<Yeoh> {
     tet4_shell_with(cell, yeoh_field())
 }
