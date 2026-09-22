@@ -3795,27 +3795,57 @@ fn the_layer_stack_partitions_the_wall_by_radius() {
         "the bands do not account for every tet",
     );
 
-    // Each band confined between the boundaries that define it. The stack is
-    // keyed on `|x| − R_CAVITY`, so band `i` spans `R_CAVITY + boundary[i−1]`
-    // to `R_CAVITY + boundary[i]`, open at both ends of the wall.
-    let edges = [
-        R_CAVITY,
-        R_CAVITY + LAYER_BOUNDARIES[0],
-        R_CAVITY + LAYER_BOUNDARIES[1],
-        R_OUTER,
-    ];
+    // Each band confined between the boundaries that define it — EXACTLY, with
+    // no tolerance, and the reason is worth stating because the obvious
+    // version of this check is nearly vacuous.
+    //
+    // `materials_from_field`'s `cache_walk` samples the field at
+    // `(v0 + v1 + v2 + v3) * 0.25` (`sim/L0/soft/src/material/material_field.rs`),
+    // which is the same expression [`centroid_radius`] recomputes. So a tet's
+    // band is *decided* by the quantity compared here and cannot be off by any
+    // margin at all. Comparisons run in the field's own space — `radius −
+    // R_CAVITY` against [`LAYER_BOUNDARIES`], not `radius` against a
+    // precomputed edge — so the two sides associate their arithmetic the same
+    // way and the boundary convention (`phi == threshold` lands in the OUTER
+    // shell) is reproduced rather than approximated.
+    //
+    // ⚠ A first cut allowed `± CELL`. That is ±4 mm on 4 mm layers: a
+    // partition shifted by a whole layer passes it. The gate stayed honest
+    // only because the population counts above are pinned.
     for (i, (cap, _, lo, hi)) in bands.iter().enumerate() {
-        assert!(
-            *lo >= edges[i] - CELL && *hi <= edges[i + 1] + CELL,
-            "band {i} (cap {cap:.2}) spans [{:.2}, {:.2}] mm, outside its \
-             declared [{:.2}, {:.2}] mm boundary pair widened by one cell — \
-             the field is not keyed on radius the way the stack assumes",
-            lo * 1e3,
-            hi * 1e3,
-            edges[i] * 1e3,
-            edges[i + 1] * 1e3,
-        );
+        if let Some(inner) = i.checked_sub(1).and_then(|j| LAYER_BOUNDARIES.get(j)) {
+            assert!(
+                lo - R_CAVITY >= *inner,
+                "band {i} (cap {cap:.2}) starts at {:.3} mm from the bore, \
+                 inside its own lower boundary at {:.3} mm — the field is not \
+                 keyed on the centroid radius this reads",
+                (lo - R_CAVITY) * 1e3,
+                inner * 1e3,
+            );
+        }
+        if let Some(outer) = LAYER_BOUNDARIES.get(i) {
+            assert!(
+                hi - R_CAVITY < *outer,
+                "band {i} (cap {cap:.2}) reaches {:.3} mm from the bore, at or \
+                 past its upper boundary at {:.3} mm",
+                (hi - R_CAVITY) * 1e3,
+                outer * 1e3,
+            );
+        }
     }
+    // The outer extremes are a MESH property, not a field one: nothing forces
+    // a tet straddling a curved surface to keep its centroid inside the body.
+    // Measured [10.03, 21.65] mm, so it holds here and is asserted as what it
+    // is rather than folded into the exact checks above.
+    assert!(
+        bands[0].2 >= R_CAVITY && bands[bands.len() - 1].3 <= R_OUTER,
+        "centroids run [{:.2}, {:.2}] mm, outside the shell's [{:.2}, {:.2}] mm \
+         — the mesher placed a centroid beyond the body it meshed",
+        bands[0].2 * 1e3,
+        bands[bands.len() - 1].3 * 1e3,
+        R_CAVITY * 1e3,
+        R_OUTER * 1e3,
+    );
 
     // Soft side at the bore. `insertion_sim` builds the stack innermost-first
     // and layer 0 is what touches the intruder; an inverted stack is the one
@@ -3936,6 +3966,19 @@ fn the_graded_walls_stiffness_is_set_by_the_layer_the_load_enters() {
 
     // The estimator finding, made executable rather than asserted in prose.
     let bands = graded_bands();
+    // The zip below pairs `STACK[i]` with `bands[i]`, which is only right
+    // because `graded_bands` sorts innermost-first and so does `STACK`. That
+    // coupling is asserted by `the_layer_stack_partitions_the_wall_by_radius`
+    // — but this gate must not depend on another test having run, so it is
+    // re-checked here where the zip actually happens.
+    assert!(
+        STACK
+            .iter()
+            .zip(&bands)
+            .all(|(m, b)| (m.validity_max_principal_stretch - b.0).abs() < 1e-12),
+        "the bands are not in stack order, so the volume weighting below pairs \
+         each layer's modulus with another layer's population",
+    );
     let total: usize = bands.iter().map(|b| b.1).sum();
     let volume_weighted = STACK
         .iter()
