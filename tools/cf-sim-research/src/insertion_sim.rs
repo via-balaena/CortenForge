@@ -6862,4 +6862,550 @@ mod tests {
             "restoring only `tol` must reproduce the shipped config",
         );
     }
+
+    use sim_soft::face_barrier_kappa;
+
+    // ─────────────────────────────────────────────────────────────────
+    // THE BRIDGE — the two quantities a derived face-barrier κ needs,
+    // measured for THIS scene rather than inherited.
+    //
+    // `sim_soft::contact::barrier` derives κ from two numbers:
+    // `κ = σ / |b'(standoff)|`, where σ is the traction the compressed
+    // wall pushes back with and the standoff is the gap the barrier
+    // must hold open at the TIGHTEST point of the patch — one ramp
+    // increment times a patch-non-uniformity factor ρ. Both were
+    // measured on `tet10_yeoh_ipc_convergence`'s fixture (σ ≈ 30.4 kPa,
+    // ρ = 1.30) and NEITHER transfers here: that fixture is a perfect
+    // sphere, whose gap is uniform by symmetry, marching a 0.1 mm
+    // increment through a 1.2 mm band. This scene is a scan-derived
+    // cavity closing on a 0.1875 mm increment.
+    //
+    // ⚠ These probes read a PENALTY solve. What transfers to the IPC
+    // path is the traction and the gap DISTRIBUTION — both set by the
+    // elastic wall and the geometry — not the barrier arithmetic, which
+    // is a different function on each path (see `barrier`'s module docs
+    // on the three non-comparable κ).
+    // ─────────────────────────────────────────────────────────────────
+
+    /// Area-weighted summary of one converged contact patch — the
+    /// reduction the bridge's κ derivation reads.
+    ///
+    /// Every field is computed over the pairs with a **well-defined
+    /// pressure** (`tributary_area > 0`); [`n_dropped`](Self::n_dropped)
+    /// counts the rest rather than letting them vanish, because a patch
+    /// that is mostly zero-area pairs is a degenerate readout and not a
+    /// low-traction one.
+    #[derive(Debug, Clone, Copy)]
+    struct PatchStats {
+        /// Pairs contributing to every other field.
+        n_pairs: usize,
+        /// Pairs excluded for a non-positive tributary area (the
+        /// `NaN`-pressure sentinel case). Reported, never assumed zero.
+        n_dropped: usize,
+        /// Σ tributary area over the contributing pairs (m²) — the
+        /// deformed patch area the traction is spread over.
+        area_m2: f64,
+        /// `|Σ f|` (N) — the vector sum, which is what the shipped F-d
+        /// curve plots. On an enveloping patch the radial components
+        /// cancel and this reads far under the load actually carried.
+        force_vector_sum_n: f64,
+        /// `Σ |f|` (N) — the magnitude sum, which does not cancel.
+        force_magnitude_sum_n: f64,
+        /// Area-weighted mean traction `Σ|f| / Σa` (Pa) — **σ**.
+        ///
+        /// Identically the area-weighted mean of the per-pair
+        /// `pressure`, since `pressure = |f| / a`. That is one reading,
+        /// not two: on the penalty path the reported force *is* the
+        /// barrier evaluation, so the cavity cross-check
+        /// `the_force_free_traction_agrees_with_an_independent_reading_on_the_cavity`
+        /// performs on the IPC fixture has no independent second source
+        /// here.
+        traction_pa: f64,
+        /// Tightest signed distance on the patch (m). **Negative means
+        /// the penalty solve is interpenetrating**, and then ρ below is
+        /// not a gap ratio at all.
+        min_sd_m: f64,
+        /// Area-weighted mean signed distance (m).
+        mean_sd_m: f64,
+        /// Loosest signed distance among active pairs (m) — bounded
+        /// above by `d̂` because the producer only emits active pairs.
+        max_sd_m: f64,
+    }
+
+    impl PatchStats {
+        /// `Σ|f| / |Σf|` — how much of the carried load the vector sum
+        /// cancels away. `1.0` on a patch pushing one direction; large
+        /// on an enveloping one.
+        fn cancellation(self) -> f64 {
+            self.force_magnitude_sum_n / self.force_vector_sum_n
+        }
+
+        /// `mean_sd / min_sd` — **ρ**, the patch non-uniformity, as a
+        /// ratio of measured gaps.
+        ///
+        /// ⚠ Not identical to the fixture's ρ, which is
+        /// `face_barrier_standoff(κ, d̂, σ) / min_sd`: an *inverted
+        /// barrier* standing in for the representative gap. The two
+        /// agree only where the traction–gap map is near-linear across
+        /// the patch's gap spread. This form is the model-free one and
+        /// is the one that transfers off the penalty path.
+        fn rho_gap(self) -> f64 {
+            self.mean_sd_m / self.min_sd_m
+        }
+    }
+
+    /// Reduce a step's orphan-filtered active-pair readouts to
+    /// [`PatchStats`]. `None` when no pair has a well-defined pressure
+    /// — there is no patch to summarize, which is a scene defect rather
+    /// than a zero-traction reading.
+    fn patch_stats(readouts: &[ContactPairReadout]) -> Option<PatchStats> {
+        let mut n_pairs = 0_usize;
+        let mut n_dropped = 0_usize;
+        let mut area_m2 = 0.0_f64;
+        let mut force_magnitude_sum_n = 0.0_f64;
+        let mut force_sum = Vec3::zeros();
+        let mut area_sd = 0.0_f64;
+        let mut min_sd_m = f64::INFINITY;
+        let mut max_sd_m = f64::NEG_INFINITY;
+        for r in readouts {
+            if r.tributary_area <= 0.0 || !r.tributary_area.is_finite() || !r.pressure.is_finite() {
+                n_dropped += 1;
+                continue;
+            }
+            n_pairs += 1;
+            area_m2 += r.tributary_area;
+            force_magnitude_sum_n += r.force_on_soft.norm();
+            force_sum += r.force_on_soft;
+            area_sd += r.tributary_area * r.sd;
+            min_sd_m = min_sd_m.min(r.sd);
+            max_sd_m = max_sd_m.max(r.sd);
+        }
+        if n_pairs == 0 || area_m2 <= 0.0 {
+            return None;
+        }
+        Some(PatchStats {
+            n_pairs,
+            n_dropped,
+            area_m2,
+            force_vector_sum_n: force_sum.norm(),
+            force_magnitude_sum_n,
+            traction_pa: force_magnitude_sum_n / area_m2,
+            min_sd_m,
+            mean_sd_m: area_sd / area_m2,
+            max_sd_m,
+        })
+    }
+
+    /// Candidate contact bands (m) the derivation is reported across.
+    ///
+    /// `d̂` is a free choice on the bridge, and the floor
+    /// `σ / |b'(ρ·step)|` is undefined once `ρ·step ≥ d̂` — the barrier
+    /// cannot hold open a gap wider than the band it acts over. Showing
+    /// the derivation at several bands is what makes that boundary
+    /// visible instead of a single number that happens to exist. The
+    /// shipped penalty band is 1.0 mm ([`INSERTION_CONTACT_DHAT`]); the
+    /// IPC fixture's is 1.2 mm.
+    const BRIDGE_DHAT_CANDIDATES_M: [f64; 4] = [0.5e-3, 1.0e-3, 1.2e-3, 2.0e-3];
+
+    /// Print the patch summary for one converged step.
+    fn print_patch_row(label: &str, interference_m: f64, stats: PatchStats) {
+        eprintln!(
+            "  {label:<9} {:>7.3} {:>6} {:>5} {:>10.2} {:>9.3} {:>9.3} {:>7.2} {:>9.2} \
+             {:>9.4} {:>9.4} {:>7.3}",
+            interference_m * 1e3,
+            stats.n_pairs,
+            stats.n_dropped,
+            stats.area_m2 * 1e6,
+            stats.force_magnitude_sum_n,
+            stats.force_vector_sum_n,
+            stats.cancellation(),
+            stats.traction_pa * 1e-3,
+            stats.min_sd_m * 1e3,
+            stats.mean_sd_m * 1e3,
+            stats.rho_gap(),
+        );
+    }
+
+    /// The column header matching [`print_patch_row`].
+    fn print_patch_header() {
+        eprintln!(
+            "  {:<9} {:>7} {:>6} {:>5} {:>10} {:>9} {:>9} {:>7} {:>9} {:>9} {:>9} {:>7}",
+            "",
+            "d/mm",
+            "pairs",
+            "drop",
+            "A/mm2",
+            "sum|f|/N",
+            "|sum f|/N",
+            "cancel",
+            "sigma/kPa",
+            "min_sd/mm",
+            "mean_sd",
+            "rho",
+        );
+    }
+
+    /// Run a straight-in insertion ramp and report the contact patch at
+    /// every converged step. Returns the deepest converged step's stats.
+    ///
+    /// Rebuilds the contact primitive at each step's interference to
+    /// read the patch back out of `x_final` — the same double-build
+    /// `run_insertion_ramp` itself uses, for the same reason
+    /// (`PenaltyRigidContact` is not `Clone`).
+    fn report_patch_over_ramp(
+        label: &str,
+        geometry: InsertionGeometry,
+        cavity_inset_m: f64,
+        n_steps: usize,
+    ) -> Option<PatchStats> {
+        let intruder = geometry.intruder.clone();
+        let bounds = geometry.bounds;
+        let cavity_offset_m = geometry.cavity_offset_m;
+        let mesh = geometry.mesh.clone();
+        let referenced: Vec<VertexId> = referenced_vertices(&geometry.mesh);
+        let n_tets = geometry.n_tets;
+
+        let t0 = Instant::now();
+        let ramp = match run_insertion_ramp(geometry, n_steps) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("  {label}: ramp FAILED to start: {e}");
+                return None;
+            }
+        };
+        eprintln!(
+            "  {label}: {} tets, {}/{} steps converged in {:.1}s",
+            n_tets,
+            ramp.steps.len(),
+            n_steps,
+            t0.elapsed().as_secs_f64(),
+        );
+        if let Some(k) = ramp.failed_at_step {
+            eprintln!(
+                "  {label}: STALL at step {k}: {}",
+                ramp.failure_reason.as_deref().unwrap_or("<no reason>"),
+            );
+        }
+
+        print_patch_header();
+        let mut deepest = None;
+        for step in &ramp.steps {
+            let positions: Vec<Vec3> = positions_from_flat(&step.x_final);
+            let readout_contact =
+                intruder_contact_at(&intruder, bounds, step.interference_m, cavity_offset_m);
+            let raw = readout_contact.per_pair_readout(&mesh, &positions);
+            let filtered = filter_pair_readouts_to_referenced(raw, &referenced);
+            match patch_stats(&filtered) {
+                Some(stats) => {
+                    print_patch_row(label, step.interference_m, stats);
+                    deepest = Some(stats);
+                }
+                None => eprintln!(
+                    "  {label:<9} {:>7.3}  no pair with a well-defined pressure \
+                     ({} raw active pairs)",
+                    step.interference_m * 1e3,
+                    filtered.len(),
+                ),
+            }
+        }
+        let _ = cavity_inset_m;
+        deepest
+    }
+
+    /// Report the derived face-barrier bounds this scene's σ and ρ
+    /// imply, across the candidate bands.
+    ///
+    /// `floor = σ / |b'(ρ · step)|` — hold one ramp increment open at
+    /// the tightest point of the patch, or the next increment starts
+    /// infeasible. `ceiling = σ / |b'(d̂/2)|` — a stated requirement,
+    /// that the standoff bias stay in the lower half of the band.
+    fn report_derived_face_kappa(label: &str, stats: PatchStats, ramp_step_m: f64) {
+        eprintln!(
+            "  {label} derivation — sigma = {:.2} kPa, rho = {:.3}, ramp step = {:.4} mm \
+             ⇒ required standoff {:.4} mm",
+            stats.traction_pa * 1e-3,
+            stats.rho_gap(),
+            ramp_step_m * 1e3,
+            ramp_step_m * stats.rho_gap() * 1e3,
+        );
+        if !stats.min_sd_m.is_finite() || stats.min_sd_m <= 0.0 {
+            eprintln!(
+                "  ⛔ min_sd = {:.4} mm is not positive — the penalty solve is \
+                 interpenetrating here, so rho is not a gap ratio and the floor below \
+                 is arithmetic on a meaningless number.",
+                stats.min_sd_m * 1e3,
+            );
+        }
+        eprintln!(
+            "  {:>9} {:>14} {:>14} {:>10} {:>14}",
+            "d_hat/mm", "floor", "ceiling", "decades", "1e7 inside?",
+        );
+        let standoff = ramp_step_m * stats.rho_gap();
+        for d_hat in BRIDGE_DHAT_CANDIDATES_M {
+            let floor = face_barrier_kappa(d_hat, standoff, stats.traction_pa);
+            let ceiling = face_barrier_kappa(d_hat, 0.5 * d_hat, stats.traction_pa);
+            match (floor, ceiling) {
+                (Some(f), Some(c)) => {
+                    let decades = if f > 0.0 && c > f {
+                        format!("{:.2}", (c / f).log10())
+                    } else {
+                        "EMPTY".to_owned()
+                    };
+                    eprintln!(
+                        "  {:>9.3} {:>14.4e} {:>14.4e} {:>10} {:>14}",
+                        d_hat * 1e3,
+                        f,
+                        c,
+                        decades,
+                        if (f..=c).contains(&1.0e7) {
+                            "yes"
+                        } else {
+                            "no"
+                        },
+                    );
+                }
+                _ => eprintln!(
+                    "  {:>9.3} {:>14} {:>14} {:>10} {:>14}",
+                    d_hat * 1e3,
+                    if floor.is_none() { "undefined" } else { "-" },
+                    if ceiling.is_none() { "undefined" } else { "-" },
+                    "-",
+                    "-",
+                ),
+            }
+        }
+    }
+
+    /// The patch summary is area-weighted, and a pair with no surface
+    /// patch contributes to NOTHING but the drop count.
+    ///
+    /// [`PatchStats`] is the reduction every number the bridge's κ
+    /// derivation rests on comes out of, and it runs only inside
+    /// `#[ignore]`d probes — so without this gate its arithmetic is
+    /// exercised in no CI job at all. The fixture is hand-built so
+    /// every field has a closed-form answer: three contributing pairs
+    /// with areas 2 : 6 : 2 µm² carrying 4 : 6 : 5 N, plus one
+    /// zero-area pair carrying 100 N that must not be seen.
+    ///
+    /// The zero-area pair is the load-bearing half. `pressure` is
+    /// `NaN` there by sim-soft's sentinel convention, and a summary
+    /// that summed its force anyway would report a traction 7.7× too
+    /// high while every other field still looked plausible.
+    #[test]
+    fn the_patch_summary_is_area_weighted_and_drops_undefined_pressures() {
+        let pair = |vertex_id: VertexId| ContactPair::Vertex {
+            vertex_id,
+            primitive_id: 0,
+        };
+        let readout = |vertex_id: VertexId, sd: f64, area: f64, f: Vec3| ContactPairReadout {
+            pair: pair(vertex_id),
+            position: Vec3::zeros(),
+            sd,
+            normal: if f.norm() > 0.0 { f.normalize() } else { f },
+            force_on_soft: f,
+            tributary_area: area,
+            pressure: if area > 0.0 {
+                f.norm() / area
+            } else {
+                f64::NAN
+            },
+        };
+        let readouts = vec![
+            readout(0, 0.2e-3, 2.0e-6, Vec3::new(0.0, 0.0, -4.0)),
+            readout(1, 0.6e-3, 6.0e-6, Vec3::new(0.0, 0.0, -6.0)),
+            // Not parallel to the others, so the vector sum genuinely
+            // cancels and `cancellation` is not trivially 1.
+            readout(2, 0.4e-3, 2.0e-6, Vec3::new(3.0, 0.0, 4.0)),
+            readout(3, 0.01e-3, 0.0, Vec3::new(0.0, 0.0, -100.0)),
+        ];
+
+        let stats = patch_stats(&readouts).expect("the fixture patch has well-defined pairs");
+        assert_eq!(stats.n_pairs, 3, "the zero-area pair must not contribute");
+        assert_eq!(
+            stats.n_dropped, 1,
+            "the zero-area pair must be counted, not silently skipped"
+        );
+
+        let close = |got: f64, want: f64, what: &str| {
+            assert!(
+                (got - want).abs() <= 1e-9 * want.abs().max(1.0),
+                "{what}: got {got:e}, want {want:e}",
+            );
+        };
+        close(
+            stats.area_m2,
+            10.0e-6,
+            "area is the sum of the three tributaries",
+        );
+        close(stats.force_magnitude_sum_n, 15.0, "sum of |f| is 4 + 6 + 5");
+        // Σf = (3, 0, -6) ⇒ |Σf| = 3√5, so the cancellation is exactly √5.
+        close(
+            stats.force_vector_sum_n,
+            45.0_f64.sqrt(),
+            "|Σf| over the three pairs",
+        );
+        close(
+            stats.cancellation(),
+            5.0_f64.sqrt(),
+            "cancellation is Σ|f| / |Σf|",
+        );
+        close(stats.traction_pa, 1.5e6, "σ is Σ|f| / Σa = 15 N / 10 mm²");
+        close(
+            stats.min_sd_m,
+            0.2e-3,
+            "the tightest gap is the first pair's",
+        );
+        close(
+            stats.max_sd_m,
+            0.6e-3,
+            "the loosest gap is the second pair's",
+        );
+        // (2·0.2 + 6·0.6 + 2·0.4) / 10 = 0.48 mm — NOT the unweighted
+        // mean of 0.4 mm, which is what makes this an area weighting.
+        close(stats.mean_sd_m, 0.48e-3, "the mean gap is area-weighted");
+        close(stats.rho_gap(), 2.4, "ρ is mean_sd / min_sd");
+
+        // A patch of nothing but undefined pressures is a scene defect,
+        // and must not summarize as a zero-traction patch.
+        let degenerate = vec![readout(3, 0.01e-3, 0.0, Vec3::new(0.0, 0.0, -100.0))];
+        assert!(
+            patch_stats(&degenerate).is_none(),
+            "a patch whose every pair has no surface area has no traction to report",
+        );
+    }
+
+    /// **σ and ρ on the synthetic sphere** — the comparison arm, and
+    /// the one whose ρ is known in advance to be about discretisation
+    /// rather than shape.
+    ///
+    /// A sphere's gap is uniform BY SYMMETRY, so whatever ρ this
+    /// reports is what the BCC lattice and the SDF grid contribute. The
+    /// scan probe's ρ minus this one is the part attributable to shape
+    /// irregularity — which is the quantity
+    /// `tet10_yeoh_ipc_convergence`'s `PATCH_NONUNIFORMITY = 1.30`
+    /// could not measure, since its fixture is a sphere too.
+    ///
+    /// Asserts nothing. The numbers are platform-dependent in the same
+    /// way the stall boundary is, and a probe that reports is worth
+    /// more than a gate that pins a machine.
+    ///
+    /// ```text
+    /// cargo test -p cf-sim-research --release --bin cf-sim-research \
+    ///     the_bridges_design_traction_and_patch_nonuniformity_on_the_synthetic_sphere \
+    ///     -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "release-mode 16-step ramp — measurement, asserts nothing; run with --ignored --nocapture"]
+    fn the_bridges_design_traction_and_patch_nonuniformity_on_the_synthetic_sphere() {
+        let cavity_inset_m = 0.003;
+        let n_steps = 16_usize;
+        let scan = icosphere(0.040, 3);
+        let design = SimDesign {
+            cavity_inset_m,
+            layers: vec![layer(0.010, "ECOFLEX_00_30")],
+        };
+        let geometry = build_insertion_geometry(&scan, &design, &[], 2_000, 0.004)
+            .expect("synthetic-sphere geometry should build");
+        eprintln!(
+            "SYNTHETIC SPHERE — icosphere(40 mm, 3), single ECOFLEX_00_30 10 mm wall, \
+             cavity {:.1} mm, cell 4 mm, {n_steps} steps",
+            cavity_inset_m * 1e3,
+        );
+        let Some(stats) = report_patch_over_ramp("sphere", geometry, cavity_inset_m, n_steps)
+        else {
+            eprintln!("  no converged step produced a well-defined patch — nothing to report");
+            return;
+        };
+        // 16 steps over the inset is the marching schedule this scene
+        // actually runs, and the floor is a statement about ONE of its
+        // increments.
+        #[allow(clippy::cast_precision_loss)]
+        let ramp_step_m = cavity_inset_m / n_steps as f64;
+        report_derived_face_kappa("sphere", stats, ramp_step_m);
+    }
+
+    /// **σ and ρ on the real scan** — the two numbers the bridge cannot
+    /// derive a face-barrier κ without, on the geometry it will
+    /// actually run.
+    ///
+    /// Scene is the iter-1 GUI default: `sock_over_capsule.cleaned.stl`
+    /// with ECOFLEX_00_30 + 50 % Slacker 10 mm INNER and
+    /// DRAGON_SKIN_20A 3 mm OUTER, cavity 3 mm, cell 4 mm, cap planes
+    /// from the same `prep.toml` the GUI loads — matching
+    /// [`h4_sweep_sliding_ramp_on_iter1_scan`]'s substrate, but on the
+    /// straight-in [`run_insertion_ramp`] the bridge targets rather
+    /// than the sliding ramp.
+    ///
+    /// ⛔ **Fails rather than skips when the fixture is missing.** The
+    /// other scan probes in this module return early with a `skip:`
+    /// line, which makes an `--ignored` sweep report success for a run
+    /// that measured nothing. This one is run deliberately, so not
+    /// finding the scan is a failure of the run, not a portability
+    /// accommodation. Point it elsewhere with
+    /// `CF_SIM_RESEARCH_SPIKE_SCAN`.
+    ///
+    /// Asserts nothing beyond the fixture being present — same
+    /// platform-dependence caveat as the sphere arm.
+    ///
+    /// ```text
+    /// cargo test -p cf-sim-research --release --bin cf-sim-research \
+    ///     the_bridges_design_traction_and_patch_nonuniformity_on_the_real_scan \
+    ///     -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "needs the repo-excluded iter-1 scan + a release ramp; run with --ignored --nocapture"]
+    fn the_bridges_design_traction_and_patch_nonuniformity_on_the_real_scan() {
+        let scan_path = std::env::var("CF_SIM_RESEARCH_SPIKE_SCAN").map_or_else(
+            |_| PathBuf::from("/Users/jonhillesheim/scans/sock_over_capsule.cleaned.stl"),
+            PathBuf::from,
+        );
+        assert!(
+            scan_path.exists(),
+            "the iter-1 scan fixture is not at {} — this probe measures the REAL \
+             geometry and has nothing to report without it; set \
+             CF_SIM_RESEARCH_SPIKE_SCAN to point it elsewhere",
+            scan_path.display(),
+        );
+        let prep_path = scan_path.with_extension("").with_extension("prep.toml");
+        let prep_text = std::fs::read_to_string(&prep_path)
+            .map_err(|e| format!("{}: {e}", prep_path.display()))
+            .expect("the prep.toml beside the scan must load — it carries the cap planes");
+        let cap_planes =
+            cf_cap_planes::parse_cap_planes(&prep_text).expect("parse cap planes from prep.toml");
+        assert!(
+            !cap_planes.is_empty(),
+            "iter-1's prep.toml carries one cap-plane loop; an empty list would route \
+             `pinned_floor_shell` through the CLOSED-cavity short-circuit and measure a \
+             structurally different problem than the GUI's open-mouth topology",
+        );
+        let scan = load_stl(&scan_path).expect("load the iter-1 cleaned scan");
+
+        let cavity_inset_m = 0.003;
+        let n_steps = 16_usize;
+        let design = SimDesign {
+            // Innermost-first, per `SimDesign.layers`.
+            layers: vec![
+                layer_with_slacker(0.010, "ECOFLEX_00_30", 0.5),
+                layer(0.003, "DRAGON_SKIN_20A"),
+            ],
+            cavity_inset_m,
+        };
+        let geometry = build_insertion_geometry(&scan, &design, &cap_planes, 2_500, 0.004)
+            .expect("iter-1 scan geometry should build");
+        eprintln!(
+            "REAL SCAN — {} ({} faces), Ecoflex 00-30 + 50% Slacker 10 mm INNER + \
+             DS20A 3 mm OUTER, cavity {:.1} mm, cell 4 mm, {} cap plane(s), {n_steps} steps",
+            scan_path.display(),
+            scan.faces.len(),
+            cavity_inset_m * 1e3,
+            cap_planes.len(),
+        );
+        let Some(stats) = report_patch_over_ramp("scan", geometry, cavity_inset_m, n_steps) else {
+            eprintln!("  no converged step produced a well-defined patch — nothing to report");
+            return;
+        };
+        #[allow(clippy::cast_precision_loss)]
+        let ramp_step_m = cavity_inset_m / n_steps as f64;
+        report_derived_face_kappa("scan", stats, ramp_step_m);
+    }
 }
