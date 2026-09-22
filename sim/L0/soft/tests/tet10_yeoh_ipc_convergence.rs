@@ -3781,15 +3781,28 @@ fn centroid_radius<M: sim_soft::Material>(mesh: &dyn Mesh<M>, tet: TetId) -> f64
 /// the cap but never evaluates it unless a violation fires.
 /// [`the_graded_walls_stiffness_is_set_by_the_layer_the_load_enters`] is the
 /// partner gate that reads the moduli through the solve.
-fn graded_bands() -> Vec<(f64, usize, f64, f64)> {
-    let mesh = tet4_shell_with(CELL, graded_yeoh_field());
+fn graded_bands() -> &'static [(f64, usize, f64, f64)] {
+    static BANDS: OnceLock<Vec<(f64, usize, f64, f64)>> = OnceLock::new();
+    BANDS.get_or_init(build_graded_bands)
+}
+
+/// The graded Tet4 mesh, built once — `graded_bands` and the population
+/// assertion both need it, and meshing it twice was the same duplication the
+/// ramp caches removed.
+fn graded_tet4() -> &'static SdfMeshedTetMesh<Yeoh> {
+    static MESH: OnceLock<SdfMeshedTetMesh<Yeoh>> = OnceLock::new();
+    MESH.get_or_init(|| tet4_shell_with(CELL, graded_yeoh_field()))
+}
+
+fn build_graded_bands() -> Vec<(f64, usize, f64, f64)> {
+    let mesh = graded_tet4();
     let mut bands: Vec<(f64, usize, f64, f64)> = Vec::new();
-    for (tet, material) in Mesh::<Yeoh>::materials(&mesh).iter().enumerate() {
+    for (tet, material) in Mesh::<Yeoh>::materials(mesh).iter().enumerate() {
         let cap = material
             .validity()
             .max_principal_stretch
             .unwrap_or(f64::NAN);
-        let radius = centroid_radius(&mesh, tet as TetId);
+        let radius = centroid_radius(mesh, tet as TetId);
         match bands.iter_mut().find(|b| (b.0 - cap).abs() < 1e-12) {
             Some(band) => {
                 band.1 += 1;
@@ -3821,7 +3834,7 @@ fn graded_bands() -> Vec<(f64, usize, f64, f64)> {
 #[test]
 fn the_layer_stack_partitions_the_wall_by_radius() {
     let bands = graded_bands();
-    for (cap, count, lo, hi) in &bands {
+    for (cap, count, lo, hi) in bands {
         eprintln!(
             "  cap {cap:.2} : {count:5} tets, centroid r [{:.2}, {:.2}] mm",
             lo * 1e3,
@@ -3848,7 +3861,7 @@ fn the_layer_stack_partitions_the_wall_by_radius() {
     );
     assert_eq!(
         bands.iter().map(|b| b.1).sum::<usize>(),
-        Mesh::<Yeoh>::n_tets(&tet4_shell_with(CELL, graded_yeoh_field())),
+        Mesh::<Yeoh>::n_tets(graded_tet4()),
         "the bands do not account for every tet",
     );
 
@@ -4040,7 +4053,7 @@ fn the_graded_walls_stiffness_is_set_by_the_layer_the_load_enters() {
     assert!(
         STACK
             .iter()
-            .zip(&bands)
+            .zip(bands)
             .all(|(m, b)| (m.validity_max_principal_stretch - b.0).abs() < 1e-12),
         "the bands are not in stack order, so the volume weighting below pairs \
          each layer's modulus with another layer's population",
@@ -4048,7 +4061,7 @@ fn the_graded_walls_stiffness_is_set_by_the_layer_the_load_enters() {
     let total: usize = bands.iter().map(|b| b.1).sum();
     let volume_weighted = STACK
         .iter()
-        .zip(&bands)
+        .zip(bands)
         .map(|(m, b)| m.mu * (b.1 as f64))
         .sum::<f64>()
         / (total as f64);
@@ -4237,13 +4250,29 @@ fn grading_keeps_the_enveloping_patchs_invariants() {
 
     // Topology, not material: the same mesh and the same rigid bore, so the
     // set of engaged faces should not know what the tets are made of.
+    // Topology, not material. ⚠ The claim is "the SAME as the uniform cell",
+    // so the oracle has to BE the uniform cell — an earlier revision asserted
+    // the literal 434 while the message spoke about a cell it never read, so
+    // a joint move would have passed with the message still claiming a
+    // comparison. Rule 3c: the relational check is the claim, the pinned
+    // literal catches a drift that moves both together.
     let pairs: Vec<usize> = ok.iter().map(|(p, ..)| p.n_pairs).collect();
+    let uniform_pairs: Vec<usize> = cavity_rungs()
+        .iter()
+        .map(|(_, r)| r.as_ref().expect("the uniform cell must converge").n_pairs)
+        .collect();
+    assert_eq!(
+        pairs, uniform_pairs,
+        "the graded cell engages a different active set from the uniform one. \
+         The set of engaged faces is a function of the mesh and the indenter, \
+         so a material-dependent one means the whole-wall-at-once regime is \
+         not purely geometric",
+    );
     assert!(
         pairs.iter().all(|&n| n == 434),
-        "the graded cell engages {pairs:?} pairs against the uniform cell's \
-         constant 434. The active set is a function of the mesh and the \
-         indenter, so a material-dependent one means the whole-wall-at-once \
-         regime is not purely geometric",
+        "both cells engage {pairs:?} pairs, agreeing with each other but not \
+         with the 434 measured — the geometry or the indenter moved, which the \
+         equality above cannot see",
     );
 }
 
@@ -4293,17 +4322,27 @@ fn the_per_tet_validity_gate_fires_in_the_layer_that_owns_the_cap() {
         .expect("a capped ramp must fail");
     eprintln!("  capped ramp failed at {:.3} mm: {label}", w * 1e3);
 
+    // ⚠ Two different failures, and an earlier revision reported both as the
+    // first: a ramp that stalled instead of violating, and a ramp that DID
+    // violate under a `failure_label` whose format moved. The second would
+    // have been reported as "not a ValidityViolation", which is false.
+    assert!(
+        label.starts_with("ValidityViolation"),
+        "the capped ramp failed with `{label}` instead of a ValidityViolation. \
+         A stall or a factor failure means the low cap changed the SOLVE \
+         rather than tripping the material gate, and the gate is unexercised",
+    );
     let rest = label
         .strip_prefix("ValidityViolation(tet ")
         .ok_or_else(|| {
             format!(
-                "the capped ramp failed with `{label}` instead of a \
-                 ValidityViolation. A stall or a factor failure means the low \
-                 cap changed the SOLVE rather than tripping the material gate, \
-                 and the gate is still unexercised",
+                "a ValidityViolation fired, but `failure_label` no longer \
+                 formats it as `ValidityViolation(tet N: ...)`, so the tet \
+                 cannot be recovered from `{label}`. The gate is sound and its \
+                 parser is stale — fix the parser, not the solver",
             )
         })
-        .expect("a validity violation");
+        .expect("the tet id");
     let tet: TetId = rest
         .split(':')
         .next()
