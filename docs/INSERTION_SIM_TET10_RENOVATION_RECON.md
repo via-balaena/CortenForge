@@ -482,7 +482,15 @@ Listed because the confidence of §4 rests on these being open, not closed.
    | synthetic icosphere | 16/16 @ 3.00 mm | 16/16 @ 3.00 mm, iters spiking **73 / 35 / 73** |
    | **real iter-1 scan (68 087 tets)** | **16/16 @ 3.00 mm** | ⛔ **stalls at step 4 — 0.75 mm, 25 % of the inset** — Armijo stall at Newton iter 3, `r_norm` **4.13e-3** |
 
-   ⇒ **On the product geometry the full-depth result is bought with the
+   ⚠⚠ **That scan row is ONE of two scenes, and not the product's.** It is
+   `run_insertion_ramp_on_iter1_scan` — a SINGLE Ecoflex 00-30 layer with NO cap
+   planes, which routes `pinned_floor_shell` through the closed-cavity
+   short-circuit. The GUI default is the dual-layer stack with the `prep.toml`
+   cap plane (72 935 tets) and does not reach 16/16 even at `tol` = 1e-1. Both
+   are measured below, under "`σ` AND `ρ` ARE NOW MEASURED" — which also finds
+   that this row's full depth is reached **through** the wall, not against it.
+
+   ⇒ **On the single-layer scan the full-depth result is bought with the
    tolerance: requiring a converged solution costs 4× the usable depth.** On
    both idealised fixtures it costs *iterations*, not depth, and does not move
    the answer — the icosphere's final step reads F 0.67 → 0.64 N, identical
@@ -538,6 +546,117 @@ Listed because the confidence of §4 rests on these being open, not closed.
    1e-6 is likewise a **single-platform measurement** (macOS/ARM) and should be
    read as one. It is far deeper into failure — step 4 of 16, not a marginal
    edge — but it has not been reproduced on a second platform.
+
+   ✅✅ **`σ` AND `ρ` ARE NOW MEASURED FOR THIS SCENE (2026-09-22 at
+   `89169377`) — and the first thing they say is that the penalty path cannot
+   supply them.** Three `#[ignore]`d probes in
+   `tools/cf-sim-research/src/insertion_sim.rs` read the area-weighted mean
+   traction `Σ‖f‖ / Σa` and the gap distribution off every converged step of a
+   16-step ramp:
+   `the_bridges_design_traction_and_patch_nonuniformity_on_the_synthetic_sphere`,
+   `…_on_the_real_scan` (two scenes), and
+   `the_design_traction_is_measured_against_the_stiffness_that_produced_it`.
+
+   ⛔⛔ **`σ` is NOT independent of the contact stiffness here, and the entire
+   derivation rests on it being so.** `tet10_yeoh_ipc_convergence` states the
+   condition in as many words — *"`κ = σ/|b'(d)|` is only a derivation if `σ` …
+   is a property of the material and the compression, not of the barrier
+   stiffness being solved for"* — and measures **1.003×** for it. Swept through
+   `insertion_sim`'s penalty path on the synthetic sphere, at the full 3 mm
+   inset:
+
+   | penalty `κ` | steps | `σ` (kPa) | `min_sd` (mm) | `ρ` | `Σ‖f‖/‖Σf‖` |
+   |---|---|---|---|---|---|
+   | 1e2 | 16/16 | 25.22 | **−1.755** | 0.788 | 946 |
+   | 1e3 (shipped) | 16/16 | 68.34 | 0.0544 | 4.923 | 2123 |
+   | 1e4 | 16/16 | 91.13 | 0.8517 | 1.054 | 1106 |
+   | 1e5 | 16/16 | 94.98 | 0.9841 | 1.005 | 958 |
+   | 1e6 | **0/16** | — | — | — | — |
+
+   ⇒ **`σ` spans 3.77×** where the fixture's spans 1.003×. The independence is a
+   property of a **stiff** contact — the gap adjusts and the load does not — and
+   at the shipped `κ = 1e3` the gaps sit a fifth of the way into a 1 mm band, so
+   the equilibrium moves with the stiffness. **A `σ` read at the shipped
+   stiffness is not the design traction.**
+
+   ⚠ **And the stiff limit is not reachable on this path.** `κ = 1e6` stalls at
+   **step 0** (Armijo, Newton iter 61, `r_norm` 1.96e1) — 1e5 is the stiffest
+   that solves, and `σ` is still moving 4 % between 1e4 and 1e5. What the sweep
+   supplies is a **lower bound approaching ~95 kPa**, not a converged rigid-body
+   traction. ⛔ At the other end `κ = 1e2` has the *whole patch* through the
+   intruder (`min_sd` −1.755 mm); its 25.22 kPa is not a traction on anything.
+
+   ⭐ **The same sweep disposes of a `ρ` this document would otherwise have
+   inherited.** At the shipped `κ` the sphere reports `ρ` = **4.92** at full
+   depth, which reads like shape irregularity on a geometry that has none by
+   symmetry. It is not: the same pose at `κ = 1e5` reports **1.005**. The 4.92
+   was a soft contact letting one region sink.
+
+   ⛔ **`min_sd` is ONE VERTEX**, and the floor divides `|b'|` at `ρ · step`, so
+   one bad tet on a scan-derived patch moves a shipped constant. `ρ` is now
+   reported against the **area-weighted 5 % tail** beside the minimum, and the
+   two are not close where it matters — sphere at full depth **4.923 vs 2.349**,
+   which at `d̂` = 1 mm is the difference between a floor of 3.65e9 (interval
+   **EMPTY**) and 4.20e7 (0.13 decades wide).
+
+   ⛔⛔ **The `16/16 @ 3.00 mm` scan row above is a PENETRATING state.**
+   Re-measured on the single-layer, cap-plane-free scene it was read off — the
+   probe reproduces its **68 087 tets** exactly — `min_sd` crosses zero at step
+   10 and reaches **−0.373 mm** at full depth, and the **5 % area tail** is
+   at **−0.042 mm**, so this is a *region* through the wall and not an outlier
+   vertex. **94** of 3 181 pairs have lost their tributary area entirely. `ρ`
+   is negative there and the probe prints `undefined` for every bound rather
+   than the arithmetic. ⇒ read that row as *the ramp completed*, not as *the
+   wall seated*.
+
+   ⚠⚠ **That row is also about a scene the product does not run.** The GUI
+   default — the dual-layer Ecoflex 00-30 + 50 % Slacker 10 mm / DS20A 3 mm
+   stack with the `prep.toml` cap plane, **72 935 tets** — reaches **step 4 of
+   16: 0.75 mm, 25 % of the inset**, at the *shipped* `INSERTION_SOLVE_TOL` =
+   1e-1. Armijo at Newton iter 136, `r_norm` **1.2131694152574887e-1**,
+   hovering just above the tolerance it is judged by, and reproduced
+   bit-identically across two runs.
+
+   ✅ **On that scene the derivation closes, and it is the most trustworthy `ρ`
+   of the three** — the patch is barely non-uniform, so the two definitions
+   nearly agree. `σ` = **6.78 kPa**, `ρ(min)` = **1.223**, `ρ(tail)` =
+   **1.086**, ramp step 0.1875 mm:
+
+   | `d̂` (mm) | floor | ceiling | decades | holds 1e7 |
+   |---|---|---|---|---|
+   | **0.5** | 9.14e6 | 1.14e7 | 0.09 | **yes** |
+   | 1.0 | 1.39e6 | 5.68e6 | 0.61 | no |
+   | 1.2 | 9.26e5 | 4.74e6 | 0.71 | no |
+   | 2.0 | 3.18e5 | 2.84e6 | 0.95 | no |
+
+   ⇒ at `d̂` = 0.5 mm the interval contains `1e7`; at the fixture's 1.2 mm it
+   does not, and `1e7` sits **above** the ceiling.
+
+   ✅ **This closes the `ρ` risk this section named.** The enveloping-cell check
+   above could only measure *the discretisation's* contribution, because a sphere
+   has a uniform gap by symmetry, and left *a scan-derived cavity's shape
+   irregularity* open as the bridge's own risk. Measured: the scan's `ρ` is
+   **1.086–1.223**, inside the same band the idealised cell reported
+   (`[1.176, 1.221]`) and under the `1.30` the floor is derived with. **Shape
+   irregularity costs essentially nothing here** — what does cost is the contact
+   stiffness the number is read at, which was not on the list. ⚠ `σ` here is read at the
+   shipped stiffness on a scene that reached 25 % of its inset, so it is the
+   traction of a *shallow* seat — the two caveats above both apply to it.
+
+   ✅ **The enveloping-patch cancellation, quantified inside this pipeline.**
+   `Σ‖f‖/‖Σf‖` measures **1627→2123×** on the synthetic sphere, **331→214×** on
+   the single-layer scan and **9.2→7.9×** on the GUI default, against the
+   idealised cell's 900–6900×. The effect's SIZE is a property of how enclosing
+   the patch is, and the product scan is the least enclosing of the three. The
+   F-d curve remains a correct *net seating resistance*; what it cannot be is
+   divided by an area.
+
+   ⚠ **What the marching schedule can and cannot fix.** The floor is the only
+   bound that moves with the increment, so a finer march widens the interval —
+   on the GUI default at `d̂` = 1 mm, 16 steps gives 0.61 decades and 512 gives
+   2.09. It never brings `1e7` inside at that band, because the *ceiling* is
+   fixed by `σ` and `d̂`. ⇒ **the band is the lever on the ceiling; the schedule
+   is the lever on the floor.**
 
 4. **Per-Gauss-point material sampling** (§7.6). The expensive one: a
    return-shape change to `Mesh::materials()` reaching 119 call sites.
