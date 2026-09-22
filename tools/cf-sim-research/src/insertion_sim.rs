@@ -7772,14 +7772,38 @@ mod tests {
             arms.push((contact_kappa, steps));
         }
 
-        let Some(common) = arms.iter().map(|(_, s)| s.len()).min().filter(|&n| n > 0) else {
+        // An arm that converged NOTHING is a result, not a reason to
+        // drop the comparison: a stiffness the solve cannot reach says
+        // the stiff limit is not available on this path. Take the
+        // common depth over the arms that got somewhere, and give the
+        // rest a row saying so.
+        let stalled: Vec<f64> = arms
+            .iter()
+            .filter(|(_, s)| s.is_empty())
+            .map(|(k, _)| *k)
+            .collect();
+        if !stalled.is_empty() {
             eprintln!(
-                "  {scene}: at least one stiffness produced no converged step with a \
-                 well-defined patch — there is no common depth to compare at",
+                "\n  ⛔ {scene}: {} of {} stiffnesses converged NO step at all \
+                 ({}) — the stiff end of this sweep is not reachable on this path, so \
+                 the limit below is the stiffest one that solved, not the rigid one.",
+                stalled.len(),
+                arms.len(),
+                stalled
+                    .iter()
+                    .map(|k| format!("{k:.0e}"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
             );
+        }
+        let Some(common) = arms.iter().map(|(_, s)| s.len()).filter(|&n| n > 0).min() else {
+            eprintln!("  {scene}: no stiffness converged a step — nothing to compare");
             return;
         };
-        let depth_m = arms[0].1[common - 1].0;
+        let depth_m = arms
+            .iter()
+            .find(|(_, s)| !s.is_empty())
+            .map_or(0.0, |(_, s)| s[common - 1].0);
         eprintln!(
             "\n  {scene}: deepest depth every arm reached: step {common}/{n_steps} = {:.4} mm",
             depth_m * 1e3,
@@ -7790,7 +7814,20 @@ mod tests {
         );
         let mut sigmas = Vec::new();
         for (contact_kappa, steps) in &arms {
-            let (d, stats) = steps[common - 1];
+            let Some(&(d, stats)) = steps.get(common - 1) else {
+                eprintln!(
+                    "  {:>10.1e} {:>8} {:>11} {:>11} {:>11} {:>9} {:>9} {:>11}",
+                    contact_kappa,
+                    steps.len(),
+                    "—",
+                    "—",
+                    "—",
+                    "—",
+                    "—",
+                    "—",
+                );
+                continue;
+            };
             assert!(
                 (d - depth_m).abs() < 1e-12,
                 "the arms must be compared at the same depth; got {d:e} vs {depth_m:e}",
@@ -7813,18 +7850,34 @@ mod tests {
             .fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), &(_, s)| {
                 (l.min(s), h.max(s))
             });
+        // The span is over the stiffnesses that actually reached the
+        // common depth — quoting the swept range would credit the
+        // comparison with arms that contributed nothing to it.
+        let (k_lo, k_hi) = sigmas
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), &(k, _)| {
+                (l.min(k), h.max(k))
+            });
         eprintln!(
-            "  {scene}: sigma spans {:.4}x while kappa spans {:.0}x. \
+            "  {scene}: sigma spans {:.4}x while kappa spans {:.0}x ({k_lo:.0e} to \
+             {k_hi:.0e}, the arms that reached the common depth). \
              `tet10_yeoh_ipc_convergence` measures 1.003x on its fixture, which is what \
              licenses calling its kappa DERIVED rather than swept.",
             hi / lo,
-            KAPPAS[KAPPAS.len() - 1] / KAPPAS[0],
+            k_hi / k_lo,
         );
         // The stiff end is the part that transfers: as the contact
         // approaches rigid the gap stops absorbing the load and sigma
         // stops moving. Two adjacent arms that agree are the evidence
         // that a limit was reached; two that do not mean the sweep
         // stopped early and the limit is not in hand.
+        if sigmas.len() < 2 {
+            eprintln!(
+                "  {scene}: fewer than two stiffnesses reached the common depth — there \
+                 is no span to report",
+            );
+            return;
+        }
         if let [.., (k_a, s_a), (k_b, s_b)] = sigmas.as_slice() {
             eprintln!(
                 "  {scene}: at the stiff end sigma reads {:.2} kPa at {k_a:.0e} and \
