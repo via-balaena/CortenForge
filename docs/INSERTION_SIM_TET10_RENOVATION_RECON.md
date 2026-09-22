@@ -405,6 +405,13 @@ Listed because the confidence of §4 rests on these being open, not closed.
    at the bore, where the stack is *softer* than the baseline (18 kPa against
    23 kPa), and the stiff shells carrying 56 % of the volume sit against the
    pinned skin — the layers load in **series**, not in parallel.
+   ⭐⭐ **That mechanism is measured, not asserted.** A volume average is
+   **order-blind** — the stack and its inverse weight identically — so
+   inverting the stack is a real falsifier for a claim about position.
+   Measured: **1.3320 → 2.3104**, the excess over unity going 0.3320 → 1.3104.
+   ⇒ the same three anchors in the same volume fractions give **74 % different
+   stiffening by ARRANGEMENT ALONE**, which is a sharper indictment of
+   volume-averaging than the 2× discrepancy on its own.
    ⭐ The finding does not depend on which modulus is averaged: volume-weighting
    gives 3.476× for `μ`, 3.476× for `λ` and 3.453× for `C₂`, because the
    anchors are a **self-similar family** (`λ = 4μ` exactly, `C₂ ≈ 0.089 μ`,

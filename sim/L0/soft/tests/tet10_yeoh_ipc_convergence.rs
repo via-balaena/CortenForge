@@ -240,7 +240,9 @@
 //!   4.720 mm) and stiffens the wall by only **1.22-1.72x** where a
 //!   volume-weighted modulus predicts 3.48x — the load enters through the
 //!   layer at the bore, which is SOFTER than the uniform baseline, so the
-//!   layers load in series and the volume share is the wrong weight. The
+//!   layers load in series and the volume share is the wrong weight —
+//!   measured by inverting the stack, which a volume average cannot see:
+//!   1.3320 -> **2.3104**, so arrangement alone moves it 74 %. The
 //!   stiffening is **linear-elastic**: holding ν fixed, the linear modulus
 //!   carries 18.5x what Yeoh's `C₂` does.
 //!   Both of 3a's readings survive: `rho` stays inside
