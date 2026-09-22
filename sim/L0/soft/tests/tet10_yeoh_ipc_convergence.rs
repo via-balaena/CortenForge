@@ -240,7 +240,9 @@
 //!   4.720 mm) and stiffens the wall by only **1.22-1.72x** where a
 //!   volume-weighted modulus predicts 3.48x — the load enters through the
 //!   layer at the bore, which is SOFTER than the uniform baseline, so the
-//!   layers load in series and the volume share is the wrong weight.
+//!   layers load in series and the volume share is the wrong weight. The
+//!   stiffening is **linear-elastic**: holding ν fixed, the linear modulus
+//!   carries 18.5x what Yeoh's `C₂` does.
 //!   Both of 3a's readings survive: `rho` stays inside
 //!   [`PATCH_NONUNIFORMITY`] and the net force still cancels.
 //!   ⛔ What remains unseen here is narrower and stated at
@@ -3725,7 +3727,8 @@ fn graded_field_capped(caps: [f64; 3]) -> MaterialField {
 }
 
 /// Every per-layer parameter given explicitly — the seam
-/// [`which_field_drives_the_graded_stiffening`] needs, because flattening one
+/// [`the_graded_stiffening_is_carried_by_the_linear_modulus`] needs, because
+/// flattening one
 /// parameter while the others stay graded is the only way to attribute the
 /// response to a parameter rather than to "the material".
 fn graded_field_with(
@@ -3940,20 +3943,29 @@ fn the_layer_stack_partitions_the_wall_by_radius() {
 /// share is the wrong weight. ⇒ **sizing a graded sleeve from a volume-averaged
 /// modulus over-predicts its stiffness by about 2×.**
 ///
-/// ⚠⚠ **An earlier revision of this comment blamed `μ`, and that was wrong —
-/// the correction is the useful part.** A mutation that flattened `μ` alone
-/// SURVIVED this gate: the ratio stayed at 1.208-1.283, inside the band below.
-/// Flattening `λ` instead drops it to 1.162-1.235, about twice as far.
-/// [`which_field_drives_the_graded_stiffening`] measures the split and pins it.
-/// `λ` leads because this shell is **sealed** — 3a measured 22.7 % volumetric
-/// compression at depth — so the volumetric stiffness is what resists. The
-/// series-compliance argument above is unaffected (it is about WHERE the load
-/// enters, not which parameter carries it), but the band should be read as an
-/// **upper bound** for `insertion_sim`'s open-mouth sleeve, where material
-/// escapes axially and `λ` has less to push against.
-/// ⇒ the volume-average estimator is wrong twice over: it weights by volume
-/// where the geometry loads in series, and it weights `μ`, which is not even
-/// the dominant term.
+/// ⭐ **The estimator finding does not depend on WHICH modulus is averaged.**
+/// Volume-weighting gives 3.476× for `μ`, 3.476× for `λ` and 3.453× for `C₂`,
+/// because the anchors are a self-similar family
+/// ([`the_stack_is_a_self_similar_family`]). So this is a statement about
+/// volume-averaging a graded wall, not about `μ` in particular.
+///
+/// ⚠⚠ **Two earlier revisions of this comment attributed the effect to a
+/// single Lamé parameter — first `μ`, then `λ` — and BOTH were wrong.** The
+/// first was caught by a surviving mutation; the second only by asking what
+/// the parameters physically are. `λ = 4μ` exactly for every anchor, so
+/// holding one fixed while the other grades produces a body whose ν varies by
+/// layer, which is not a silicone. There is no `μ`-versus-`λ` split to make,
+/// and the "`λ` leads because the shell is sealed" reasoning built on it is
+/// **retracted**. The split that is physical —
+/// [`the_graded_stiffening_is_carried_by_the_linear_modulus`] — holds ν fixed
+/// and finds the linear modulus carries **18.5×** what `C₂` does.
+///
+/// ⚠ **The open-mouth caveat stands, on its own evidence rather than on that
+/// reasoning.** Item 3a independently measured that this sealed cell forces
+/// 22.7 % volumetric compression at depth and is therefore stiffer than the
+/// open-mouth sleeve it proxies. ⇒ read the band as an **upper bound** for
+/// `insertion_sim`, because the CELL is stiffer, not because of anything about
+/// which parameter carries the grading.
 ///
 /// The ratio *rising* with depth is the same mechanism seen from the other
 /// side: as the wall compresses, load transfers outward into the stiff layers.
@@ -4424,41 +4436,94 @@ fn how_deep_does_the_graded_cavity_converge() {
     );
 }
 
-/// **Which of `(μ, C₂, λ)` actually carries the graded wall's stiffening?**
+/// **Are the layer anchors independent materials, or one material scaled?**
 ///
-/// [`the_graded_walls_stiffness_is_set_by_the_layer_the_load_enters`] shows the
-/// material reaches the energy, and that the layer at the bore sets the scale.
-/// It does not say which *parameter* does the work, and an earlier revision of
-/// its doc asserted `μ` on the strength of a volume-weighted modulus. That was
-/// wrong in emphasis, and a surviving mutation is what exposed it: flattening
-/// `μ` alone left the ratio inside the gate's band, so the gate passed on a
-/// body whose `μ` was uniform.
+/// Load-bearing premise, asserted because reasoning about this stack went
+/// wrong once without it. Every anchor used here — the three in [`STACK`] and
+/// the uniform baseline — satisfies `λ = 4μ` **exactly** and `C₂ ≈ 0.089 μ`.
+/// They are a **self-similar one-parameter family**: ν = 0.400 throughout, and
+/// a layer is the baseline scaled by a single stiffness factor.
 ///
-/// Flattening one parameter at a time, against the uniform cell:
+/// ⇒ **`μ` and `λ` cannot be attributed separately on this stack.** Holding
+/// one fixed while the other grades produces a body whose Poisson ratio varies
+/// by layer, which is not a silicone. That is why
+/// [`the_graded_stiffening_is_carried_by_the_linear_modulus`] splits
+/// `(μ, λ)`-together against `C₂` instead.
+///
+/// ⚠ **If this gate ever fails, the retracted experiment becomes meaningful.**
+/// An anchor whose `λ/μ` differs is a material with a different ν, and then
+/// separating the Lamé parameters is a real question rather than an artefact.
+/// So this is not a constant to update — it is a premise to re-read.
+#[test]
+fn the_stack_is_a_self_similar_family() {
+    let all = [STACK[0], STACK[1], STACK[2], ECOFLEX_00_30];
+    for m in all {
+        let ratio = m.lambda / m.mu;
+        let nu = m.lambda / (2.0 * (m.lambda + m.mu));
+        eprintln!(
+            "  mu {:>8.0} lambda {:>9.0} lambda/mu {ratio:.4} nu {nu:.4} C2/mu {:.4}",
+            m.mu,
+            m.lambda,
+            m.c2 / m.mu,
+        );
+        assert!(
+            (ratio - 4.0).abs() < 1.0e-12,
+            "an anchor has lambda/mu = {ratio}, not 4. The Lamé pair is no \
+             longer a single scaled parameter, so `mu` and `lambda` CAN be \
+             attributed separately and the retracted mu-vs-lambda experiment \
+             is meaningful again — re-read the reasoning, do not update this",
+        );
+        assert!(
+            (nu - 0.40).abs() < 1.0e-12,
+            "an anchor has nu = {nu}, not 0.40 — the family is no longer \
+             self-similar",
+        );
+        assert!(
+            (0.085..0.095).contains(&(m.c2 / m.mu)),
+            "an anchor has C2/mu = {:.4}, outside the 0.0875-0.0939 band the \
+             others share. C2 stops being a fixed small fraction of the linear \
+             modulus, so treating it as a uniform small correction no longer \
+             follows",
+            m.c2 / m.mu,
+        );
+    }
+}
+
+/// **Which part of the constitutive law carries the graded wall's stiffening —
+/// the linear modulus or Yeoh's `C₂` nonlinearity?**
+///
+/// ⛔⛔ **`μ` and `λ` CANNOT be separated on this stack, and an earlier
+/// revision of this fixture tried to.** Every anchor in [`STACK`] satisfies
+/// **`λ = 4μ` exactly** (ν = 0.400 by construction) and `C₂ ≈ 0.089 μ`, so the
+/// four silicones are a **self-similar one-parameter family**. Flattening one
+/// Lamé parameter alone lets Poisson's ratio float across the wall — measured
+/// **0.379 → 0.476** flattening `μ`, **0.418 → 0.224** flattening `λ` — which
+/// is not "the same material with one influence removed" but a different and
+/// unrealisable material. The earlier conclusion drawn that way ("`λ` carries
+/// twice what `μ` does, because the shell is sealed") was an artefact of that
+/// and is **retracted**. [`the_stack_is_a_self_similar_family`] pins the
+/// premise so the mistake cannot be made again silently.
+///
+/// The physical split holds ν fixed: `(μ, λ)` move together as the linear
+/// modulus, against `C₂` as the nonlinear term. Both variants below are
+/// realisable silicones.
 ///
 /// ```text
-/// baseline                        1.2218 -> 1.3320
-/// mu     flattened                1.2076 -> 1.2833   (-0.049 at depth)
-/// lambda flattened                1.1619 -> 1.2352   (-0.097 at depth)
-/// mu + C2 + lambda flattened      1.0000 -> 1.0000
+/// baseline                  1.2218 -> 1.3320     excess 0.3320
+/// linear (mu, lambda) flat  1.0488 -> 1.0566     excess 0.0566  (83 % gone)
+/// C2 flat                   1.2131 -> 1.3171     excess 0.3171  (4.5 % gone)
+/// all flat                  1.0000 -> 1.0000     excess 0
 /// ```
 ///
-/// ⭐⭐ **`λ` carries about twice what `μ` does**, and the all-flat row reading
-/// exactly 1.0 is what proves the comparison is wired to the material at all.
-///
-/// ⚠⚠ **That has a consequence for the bridge, which is why it is worth a
-/// probe rather than a sentence.** `λ` is the volumetric stiffness, and item 3a
-/// measured this shell is *sealed*: the outer skin is pinned all round and the
-/// bore is closed, forcing **22.7 % volumetric compression** at depth.
-/// `insertion_sim`'s sleeve is a sock over a capsule with an **open mouth**,
-/// where material escapes axially instead. ⇒ **the graded stiffening measured
-/// here leans on the seal more than a `μ`-driven one would**, so the
-/// 1.22-1.72× band should be read as an upper bound for the open-mouth case,
-/// not a transfer.
+/// ⭐⭐ **The linear modulus carries 18.5× what `C₂` does.** The stiffening is
+/// a linear-elastic effect of the layer arrangement, not a nonlinear one — at
+/// these stretches `C₂ ≈ 0.089 μ` is a small correction and it behaves like
+/// one. The all-flat row reading exactly 1.0 is what proves the comparison is
+/// wired to the material at all.
 #[test]
-#[ignore = "four shallow ramps plus the uniform baseline, ~4 min — the \
+#[ignore = "four shallow ramps plus the uniform baseline, ~3 min — the \
             parameter attribution behind the stiffness gate's explanation"]
-fn which_field_drives_the_graded_stiffening() {
+fn the_graded_stiffening_is_carried_by_the_linear_modulus() {
     let mu = [STACK[0].mu, STACK[1].mu, STACK[2].mu];
     let c2 = [STACK[0].c2, STACK[1].c2, STACK[2].c2];
     let lambda = [STACK[0].lambda, STACK[1].lambda, STACK[2].lambda];
@@ -4478,15 +4543,15 @@ fn which_field_drives_the_graded_stiffening() {
     let variants = [
         ("baseline", graded_field_with(mu, c2, lambda, caps)),
         (
-            "mu flattened",
-            graded_field_with(flat(ECOFLEX_00_30.mu), c2, lambda, caps),
+            "linear (mu, lambda) flat",
+            graded_field_with(flat(ECOFLEX_00_30.mu), c2, flat(ECOFLEX_00_30.lambda), caps),
         ),
         (
-            "lambda flattened",
-            graded_field_with(mu, c2, flat(ECOFLEX_00_30.lambda), caps),
+            "C2 flat",
+            graded_field_with(mu, flat(ECOFLEX_00_30.c2), lambda, caps),
         ),
         (
-            "all flattened",
+            "all flat",
             graded_field_with(
                 flat(ECOFLEX_00_30.mu),
                 flat(ECOFLEX_00_30.c2),
@@ -4510,7 +4575,7 @@ fn which_field_drives_the_graded_stiffening() {
             "{label} did not ramp over the uniform cell's advances",
         );
         let (lo, hi) = (ratios[0], ratios[ratios.len() - 1]);
-        eprintln!("  {label:22} {lo:.4} -> {hi:.4}");
+        eprintln!("  {label:26} {lo:.4} -> {hi:.4}   excess {:.4}", hi - 1.0);
         deepest.push((label, hi));
     }
 
@@ -4522,11 +4587,11 @@ fn which_field_drives_the_graded_stiffening() {
             .ok_or_else(|| format!("no variant {name}"))
             .expect("variant")
     };
-    let (base, without_mu, without_lambda, all_flat) = (
+    let (base, linear_flat, c2_flat, all_flat) = (
         at("baseline"),
-        at("mu flattened"),
-        at("lambda flattened"),
-        at("all flattened"),
+        at("linear (mu, lambda) flat"),
+        at("C2 flat"),
+        at("all flat"),
     );
 
     assert!(
@@ -4536,21 +4601,26 @@ fn which_field_drives_the_graded_stiffening() {
          this comparison is reading something other than the material — and \
          every attribution below is measuring that instead",
     );
-    let (drop_mu, drop_lambda) = (base - without_mu, base - without_lambda);
-    eprintln!("  mu contributes {drop_mu:.4}, lambda contributes {drop_lambda:.4}");
+    let (from_linear, from_c2) = (base - linear_flat, base - c2_flat);
+    eprintln!("  linear contributes {from_linear:.4}, C2 contributes {from_c2:.4}");
     assert!(
-        drop_mu > 0.0 && drop_lambda > 0.0,
-        "flattening a parameter did not reduce the stiffening \
-         (mu {drop_mu:+.4}, lambda {drop_lambda:+.4}) — with the stack soft at \
-         the bore, removing grading in either direction should soften it",
+        from_linear > 0.0 && from_c2 > 0.0,
+        "flattening a term did not reduce the stiffening (linear \
+         {from_linear:+.4}, C2 {from_c2:+.4}) — with the stack soft at the bore, \
+         removing grading in either term should soften it",
     );
     assert!(
-        drop_lambda > 1.5 * drop_mu,
-        "lambda now contributes {drop_lambda:.4} against mu's {drop_mu:.4}, \
-         under the 2x measured. The stiffness gate's explanation rests on \
-         lambda dominating BECAUSE this shell is sealed into volumetric \
-         compression; if the two have evened out, that reasoning — and the \
-         warning that the band is an upper bound for an open-mouth sleeve — \
-         needs re-deriving, not this bound relaxing",
+        from_linear > 10.0 * from_c2,
+        "the linear modulus contributes {from_linear:.4} against C2's \
+         {from_c2:.4}, under the 18.5x measured. The claim is that this \
+         stiffening is LINEAR-ELASTIC — a shrinking gap means C2's \
+         nonlinearity has become load-bearing at these stretches and the \
+         reasoning that treats it as a small correction needs re-deriving",
+    );
+    assert!(
+        linear_flat < 1.10,
+        "flattening the linear modulus leaves {linear_flat:.4}, well above the \
+         1.0566 measured — most of the stiffening survived a change that \
+         should have removed it",
     );
 }

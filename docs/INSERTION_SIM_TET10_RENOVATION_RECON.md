@@ -399,18 +399,37 @@ Listed because the confidence of §4 rests on these being open, not closed.
    Both readings are geometric, not artefacts of material uniformity, so the
    bridge can lean on them over a layered wall.
 
-   ⚠⚠ **A volume-weighted modulus is the wrong estimator for a graded wall,
-   twice over.** The stack volume-averages to **3.48×** the uniform anchor; the
-   measured stiffening is **1.222× at rest rising to 1.719×** at the wall.
-   First, load enters at the bore, where the stack is *softer* than the
-   baseline (18 kPa against 23 kPa), and the stiff shells carrying 56 % of the
-   volume sit against the pinned skin — the layers load in **series**, not in
-   parallel. Second, `μ` is not even the dominant term: flattening `μ` alone
-   moves the ratio by 0.049 where flattening **`λ` moves it by 0.097**.
-   ⛔ `λ` leads *because this shell is sealed* (22.7 % volumetric compression at
-   depth), and `insertion_sim`'s sleeve has an **open mouth** where material
-   escapes axially. ⇒ **read the 1.22–1.72× band as an upper bound for the
-   open-mouth case, not as a transfer.**
+   ⚠⚠ **A volume-weighted modulus is the wrong estimator for a graded wall.**
+   The stack volume-averages to **3.48×** the uniform anchor; the measured
+   stiffening is **1.222× at rest rising to 1.719×** at the wall. Load enters
+   at the bore, where the stack is *softer* than the baseline (18 kPa against
+   23 kPa), and the stiff shells carrying 56 % of the volume sit against the
+   pinned skin — the layers load in **series**, not in parallel.
+   ⭐ The finding does not depend on which modulus is averaged: volume-weighting
+   gives 3.476× for `μ`, 3.476× for `λ` and 3.453× for `C₂`, because the
+   anchors are a **self-similar family** (`λ = 4μ` exactly, `C₂ ≈ 0.089 μ`,
+   ν = 0.400 throughout).
+
+   ⚠⚠ **RETRACTED, and the retraction is the useful part.** An earlier revision
+   of this paragraph said *"`μ` is not even the dominant term — flattening `μ`
+   moves the ratio 0.049 where flattening `λ` moves it 0.097, and `λ` leads
+   because the shell is sealed."* Both halves are wrong. Because `λ = 4μ` for
+   every anchor, holding one Lamé parameter fixed while the other grades
+   produces a body whose **ν varies by layer** (0.379 → 0.476, or 0.418 →
+   0.224) — not a silicone, and not "the same material with one influence
+   removed". There is no `μ`-versus-`λ` split to make on this stack.
+   ✅ The split that IS physical holds ν fixed — `(μ, λ)` together against
+   `C₂` — and the linear modulus carries **18.5×** what `C₂` does
+   (excess above unity: 0.3320 baseline, 0.0566 with the linear part
+   flattened, 0.3171 with `C₂` flattened). ⇒ **the stiffening is
+   linear-elastic**, not a Yeoh-nonlinearity effect, at these stretches.
+
+   ⚠ **The open-mouth caveat stands on its own evidence, not on that
+   reasoning.** Item 3a independently measured that the sealed cell forces
+   22.7 % volumetric compression at depth and is stiffer than the open-mouth
+   sleeve it proxies. ⇒ **read the 1.22–1.72× band as an upper bound** because
+   the CELL is stiffer, not because of anything about which parameter carries
+   the grading.
 
 4. **Per-Gauss-point material sampling** (§7.6). The expensive one: a
    return-shape change to `Mesh::materials()` reaching 119 call sites.
