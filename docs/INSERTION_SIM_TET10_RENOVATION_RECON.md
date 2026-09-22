@@ -475,19 +475,36 @@ Listed because the confidence of §4 rests on these being open, not closed.
    question; re-qualify it before reusing it for the next.
 
    ✅ **Pinned in CI, on a fixture found by search rather than taste.** The
-   claim lives on the repo-excluded scan, so it cannot gate directly; a
+   claim lives on the repo-excluded scan, so it cannot gate directly. A
    **9 258-tet** synthetic scene (20 mm radius, 8 mm wall, 3 mm inset, 4 mm
-   cell) reproduces the same failure mode — Armijo stall, `r_norm` **2.78e-3**,
-   the same decade as the scan's 4.13e-3 — in ~6 s. Its neighbours all converge
-   to 1e-6 in 9–14 iterations, and 0.3 mm shallower it converges too, so the
-   stall is a statement about depth rather than a broken fixture. Two
-   consecutive runs agree on iteration count, residual to four significant
-   figures, and the stalling iteration.
-   `the_insertion_solves_convergence_is_bounded_by_its_tolerance` +
-   `the_tolerance_knob_changes_only_the_tolerance`
-   (`tools/cf-sim-research/src/insertion_sim.rs`) hold it. ⚠ The first asserts a
-   **limitation**, and is meant to be rewritten — not deleted — when the bridge
-   lands; that rewrite's diff is the payoff.
+   cell) carries it instead:
+   `the_insertion_solves_convergence_is_bounded_by_its_tolerance` measures what
+   the solver reaches when asked (1e-6), what it returns at the shipped
+   tolerance on the *same* scene and depth, and the gap between them —
+   **2.3e5×**, measured 5.339e-2 against 2.286e-7. Deeper, the shipped
+   tolerance accepts a residual above 1e-3 outright.
+   `the_tolerance_knob_changes_only_the_tolerance` holds the delegation by
+   Debug-equality, so a field a future `SolverConfig` adds cannot slip it.
+   ⚠ The first gate asserts a **limitation** deliberately, and is meant to be
+   **rewritten — not deleted — when the bridge lands**; that rewrite's diff is
+   the payoff.
+
+   ⛔⛔ **AND THE THING THAT GATE MAY NOT ASSERT: WHERE THE STALL FALLS.** The
+   first revision of it asserted that the same scene, 0.3 mm deeper, *could
+   not* reach 1e-3 at all. That held on macOS/ARM — Armijo stall at Newton
+   iter 108, `r_norm` **2.78e-3**, the same mode and decade as the scan's
+   4.13e-3, which is exactly why the fixture looked worth having — and
+   **failed on Linux/x86 CI**, where the identical commit drove the residual
+   past 1.44e-3 by iter 39 and kept going. The `faer` LU fallback fires on both
+   (a non-SPD tangent at a few recurring pivots); which side of the Armijo edge
+   that lands on is decided by arithmetic a test cannot pin.
+   ⇒ **assert the SIZE of the gap, which is a ratio, not the LOCATION of the
+   edge, which is a threshold.** Recorded as the `#[ignore]`d diagnostic
+   `the_deep_steps_stall_boundary_is_platform_dependent`.
+   ⚠⚠ **This conditions the table above**: the real scan's stall at `tol` =
+   1e-6 is likewise a **single-platform measurement** (macOS/ARM) and should be
+   read as one. It is far deeper into failure — step 4 of 16, not a marginal
+   edge — but it has not been reproduced on a second platform.
 
 4. **Per-Gauss-point material sampling** (§7.6). The expensive one: a
    return-shape change to `Mesh::materials()` reaching 119 call sites.

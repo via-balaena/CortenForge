@@ -6534,91 +6534,135 @@ mod tests {
     /// pipeline ships.
     const ENGINEERING_TOL: f64 = 1e-3;
 
+    /// A residual tolerance the solver demonstrably reaches on this scene at
+    /// the shallow depth, on both a macOS/ARM laptop and Linux/x86 CI.
+    const TIGHT_TOL: f64 = 1e-6;
+
     /// **Renovation item 4 step 0 — the insertion solve's reported
     /// convergence is bounded by its tolerance, not by its residual.**
     ///
-    /// Pins three readings on one scene:
+    /// Three readings on one scene:
     ///
-    /// 1. at 2.5 mm it solves to 1e-6 (so the scene is solvable);
-    /// 2. at 2.8 mm the shipped 1e-1 reports converged — while carrying
-    ///    a residual more than a decade above [`ENGINEERING_TOL`];
-    /// 3. at 2.8 mm, asked for [`ENGINEERING_TOL`], the same solve
-    ///    Armijo-stalls above the tolerance it was asked for.
+    /// 1. asked for [`TIGHT_TOL`], the solve reaches it;
+    /// 2. asked for the shipped [`INSERTION_SOLVE_TOL`] at the same depth, it
+    ///    returns an answer **orders of magnitude worse** — and reports the
+    ///    same "converged";
+    /// 3. deeper, the shipped tolerance accepts a residual above
+    ///    [`ENGINEERING_TOL`] outright.
     ///
-    /// Together: the step-2 answer is one the solver cannot refine, and
-    /// nothing in the shipped path says so. The bridge (Tet10 + the IPC
-    /// face barrier) is what should move reading 3; when it does, these
-    /// numbers change and that change is the payoff.
+    /// Reading 2 is asserted as a **ratio, not a threshold**. Where Newton
+    /// lands on the first iterate under the bar is platform-dependent — the
+    /// size of the gap it leaves on the table is not. That distinction is not
+    /// theoretical: an earlier revision of this gate asserted that a *deeper*
+    /// step could not reach [`ENGINEERING_TOL`] at all, which held on
+    /// macOS/ARM (Armijo stall at `r_norm` 2.78e-3) and **failed on Linux/x86
+    /// CI**, where the same scene drove the residual to 1.44e-3 and below. The
+    /// stall boundary is sensitive to the arithmetic underneath it, so no gate
+    /// may assert where it falls. See
+    /// `the_deep_steps_stall_boundary_is_platform_dependent`.
     ///
-    /// ⚠ This gate asserts a LIMITATION. It is expected to be rewritten,
-    /// not deleted, when the bridge lands — a rewrite whose diff is the
-    /// measurement.
+    /// ⚠ This gate asserts a LIMITATION on purpose. It is meant to be
+    /// rewritten, not deleted, when the bridge lands — that rewrite's diff is
+    /// the measurement.
     #[test]
     fn the_insertion_solves_convergence_is_bounded_by_its_tolerance() {
         assert_eq!(
             tolerance_fixture().n_tets,
             9258,
-            "the fixture's tet count is part of what makes the stall below reproducible",
+            "the fixture's tet count is part of what makes these readings reproducible",
         );
 
-        // (1) The control. Without it, the stall at 2.8 mm could just as
-        // well mean the fixture is degenerate at every depth.
-        let shallow =
-            run_single_insertion_step_at_tol(tolerance_fixture(), TOL_FIXTURE_SHALLOW_M, 1e-6)
-                .expect("the fixture must solve to 1e-6 at the shallow depth");
+        // (1) What the solver can actually do on this scene.
+        let tight =
+            run_single_insertion_step_at_tol(tolerance_fixture(), TOL_FIXTURE_SHALLOW_M, TIGHT_TOL)
+                .expect("the fixture must solve to TIGHT_TOL at the shallow depth");
         assert!(
-            shallow.final_residual_norm < 1e-6,
-            "the control solve reports converged at {:.3e}, which is not below 1e-6",
-            shallow.final_residual_norm,
+            tight.final_residual_norm < TIGHT_TOL,
+            "a returned step must satisfy the tolerance it was solved at; got {:.3e}",
+            tight.final_residual_norm,
         );
 
-        // (2) The shipped tolerance, at the depth that breaks.
+        // (2) What it reports at the shipped tolerance, same scene, same depth.
         let loose = run_single_insertion_step_at_tol(
             tolerance_fixture(),
-            TOL_FIXTURE_DEEP_M,
+            TOL_FIXTURE_SHALLOW_M,
             INSERTION_SOLVE_TOL,
         )
         .expect("the shipped tolerance reports this step converged");
         assert!(
             loose.final_residual_norm < INSERTION_SOLVE_TOL,
-            "a returned step must satisfy the tolerance it was solved at",
-        );
-        assert!(
-            loose.final_residual_norm > ENGINEERING_TOL,
-            "this gate is vacuous unless the shipped tolerance accepts a residual \
-             above {ENGINEERING_TOL:.0e}; got {:.3e}",
+            "a returned step must satisfy the tolerance it was solved at; got {:.3e}",
             loose.final_residual_norm,
         );
 
-        // (3) The same scene, same depth, asked for a real tolerance.
-        let err = run_single_insertion_step_at_tol(
+        // The gap between "converged" and "solved", on identical inputs.
+        // Measured 2.3e5 on macOS/ARM (5.339e-2 against 2.286e-7); the bar is
+        // two decades, so the reading has room to move without the claim
+        // moving.
+        let gap = loose.final_residual_norm / tight.final_residual_norm;
+        assert!(
+            gap > 100.0,
+            "the shipped tolerance is only meaningfully looser if it leaves a gap: \
+             {:.3e} against {:.3e} is {gap:.1e}x",
+            loose.final_residual_norm,
+            tight.final_residual_norm,
+        );
+
+        // (3) Deeper, the shipped tolerance accepts a residual an engineering
+        // answer would reject outright — no ratio needed to see it.
+        let deep = run_single_insertion_step_at_tol(
             tolerance_fixture(),
             TOL_FIXTURE_DEEP_M,
-            ENGINEERING_TOL,
+            INSERTION_SOLVE_TOL,
         )
-        .expect_err("the engineering tolerance must not be reachable here")
-        .to_string();
-        // Mode first, number second: a different failure mode that happened
-        // to carry a parsable residual would otherwise read as this one.
+        .expect("the shipped tolerance reports the deep step converged too");
         assert!(
-            err.starts_with("insertion solve Armijo-stalled"),
-            "expected an Armijo stall, got: {err}",
+            deep.final_residual_norm > ENGINEERING_TOL,
+            "this gate is vacuous unless the shipped tolerance accepts a residual \
+             above {ENGINEERING_TOL:.0e} somewhere on this scene; got {:.3e}",
+            deep.final_residual_norm,
         );
-        let floor: f64 = err
-            .rsplit_once("r_norm ")
-            .and_then(|(_, v)| v.trim().parse::<f64>().ok())
-            .expect("the Armijo-stall message carries a parsable r_norm");
-        assert!(
-            floor > ENGINEERING_TOL,
-            "a stall floor of {floor:.3e} at or below the requested \
-             {ENGINEERING_TOL:.0e} would mean the solve did not actually fail",
-        );
-        assert!(
-            floor < loose.final_residual_norm,
-            "the tighter request should still drive the residual below what the \
-             shipped tolerance accepted ({floor:.3e} vs {:.3e})",
-            loose.final_residual_norm,
-        );
+    }
+
+    /// **Where the deep step stops being solvable is platform-dependent, so
+    /// nothing may gate on it.**
+    ///
+    /// Recorded because it cost a red CI run and would otherwise be
+    /// rediscovered. At [`TOL_FIXTURE_DEEP_M`], asked for
+    /// [`ENGINEERING_TOL`]:
+    ///
+    /// - macOS/ARM (local): Armijo stall at Newton iter 108, `r_norm` 2.78e-3
+    ///   — the same failure mode and residual decade as the real iter-1 scan's
+    ///   4.13e-3, which is what made this fixture worth finding;
+    /// - Linux/x86 (CI): no stall — the residual passes 1.44e-3 by iter 39 and
+    ///   keeps falling.
+    ///
+    /// Same commit, same inputs. The `faer` LU fallback fires on both (a
+    /// non-SPD tangent at a handful of recurring pivots), and which side of
+    /// the Armijo edge that lands on is decided by arithmetic this test cannot
+    /// pin. ⚠ **It also means the real scan's stall at `tol` = 1e-6 is a
+    /// single-platform measurement** and should be read as one.
+    ///
+    /// `#[ignore]` — a diagnostic, not a gate; it asserts nothing. Run:
+    ///
+    /// ```text
+    /// cargo test -p cf-sim-research \
+    ///     the_deep_steps_stall_boundary_is_platform_dependent -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "diagnostic — prints where this platform's stall boundary falls"]
+    fn the_deep_steps_stall_boundary_is_platform_dependent() {
+        for tol in [INSERTION_SOLVE_TOL, 1e-2, ENGINEERING_TOL, 1e-4, TIGHT_TOL] {
+            let outcome =
+                run_single_insertion_step_at_tol(tolerance_fixture(), TOL_FIXTURE_DEEP_M, tol);
+            match outcome {
+                Ok(step) => eprintln!(
+                    "tol {tol:.0e}: converged in {} iters at {:.3e}",
+                    step.iter_count, step.final_residual_norm,
+                ),
+                Err(e) => eprintln!("tol {tol:.0e}: {e}"),
+            }
+        }
     }
 
     /// The tolerance knob added for the gate above changes the tolerance
