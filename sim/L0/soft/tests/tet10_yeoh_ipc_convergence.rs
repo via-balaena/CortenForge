@@ -3846,6 +3846,18 @@ fn the_graded_walls_stiffness_is_set_by_the_layer_the_load_enters() {
         "the two cells did not ramp over the same advances, so no rung-by-rung \
          ratio below is comparing like with like",
     );
+    let rungs = &graded;
+    // ⛔ An empty or truncated ramp makes every `all(..)` below vacuously
+    // true. Assert the collection reached the declared depth, not just that
+    // nothing in it was wrong.
+    assert!(
+        rungs.len() > 1 && rungs.last().is_some_and(|(w, _)| *w >= CAVITY_GATE_MAX_W),
+        "the ramp produced {} rungs ending at {:?} mm, short of the declared \
+         {:.3} mm — every `all(..)` over it below would pass on an empty set",
+        rungs.len(),
+        rungs.last().map(|(w, _)| w * 1e3),
+        CAVITY_GATE_MAX_W * 1e3,
+    );
 
     let mut ratios = Vec::new();
     for ((w, u), (wg, g)) in uniform.iter().zip(&graded) {
@@ -4009,6 +4021,17 @@ fn the_interface_flag_cannot_isolate_a_layer_boundary_at_this_cell_size() {
 #[test]
 fn grading_keeps_the_enveloping_patchs_invariants() {
     let rungs = ramp_graded(CAVITY_GATE_MAX_W);
+    // ⛔ An empty or truncated ramp makes every `all(..)` below vacuously
+    // true. Assert the collection reached the declared depth, not just that
+    // nothing in it was wrong.
+    assert!(
+        rungs.len() > 1 && rungs.last().is_some_and(|(w, _)| *w >= CAVITY_GATE_MAX_W),
+        "the ramp produced {} rungs ending at {:?} mm, short of the declared \
+         {:.3} mm — every `all(..)` over it below would pass on an empty set",
+        rungs.len(),
+        rungs.last().map(|(w, _)| w * 1e3),
+        CAVITY_GATE_MAX_W * 1e3,
+    );
     eprintln!(
         "  {:>8} {:>4} {:>10} {:>10} {:>7} {:>11} {:>6}",
         "w(mm)", "it", "resid", "min_sd", "rho", "coherence", "pairs",
