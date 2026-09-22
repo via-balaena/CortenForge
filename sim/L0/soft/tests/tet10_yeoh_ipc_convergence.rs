@@ -1,5 +1,13 @@
-//! Renovation item 3, step 0 — does `Tet10Mesh<Yeoh>` converge under the IPC
-//! face barrier at all?
+//! Renovation item 3 — does `Tet10Mesh<Yeoh>` converge under the IPC face
+//! barrier, on a flat patch, a curved one, and a cavity closing around a probe?
+//!
+//! ⭐ Step 0 asked only the first of those. The enveloping cell arrived later
+//! and is the one whose CONTACT TOPOLOGY `insertion_sim` has — a closed patch
+//! that engages at once, not a Hertzian front. ⚠ It is not the same BODY:
+//! `insertion_sim`'s sleeve is a sock over a capsule with an open mouth, and
+//! this shell is sealed (see "what this cannot see"). The sections below are
+//! written in the order the cells were added, because each answers a question
+//! the previous one raised.
 //!
 //! Item 1 (`6dc7ee03`) made `Tet10Mesh<M>` generic, so `Tet10Mesh<Yeoh>` is
 //! **constructible**. Constructible is not converged: when this file was
@@ -16,11 +24,20 @@
 //!
 //! ## The fixture
 //!
-//! A 40 × 40 × 12 mm plate of Ecoflex 00-30, SDF-meshed through the same
+//! Two bodies of Ecoflex 00-30, both SDF-meshed through the same
 //! `SdfMeshedTetMesh::<Yeoh>::from_sdf_yeoh` path `insertion_sim` uses and
-//! enriched to Tet10. Top face pinned. Two obstacle shapes — a plane and a
-//! 60 mm sphere ([`Indenter`]) — each pressed at rest contact and then MARCHED
-//! up through the plate as a compression ramp.
+//! enriched to Tet10, and both driven by the same [`Cell::ramp`]:
+//!
+//! - **The plate** — 40 × 40 × 12 mm, top face pinned, pressed onto a plane or
+//!   a 60 mm sphere ([`Indenter::Plane`], [`Indenter::Sphere`]) and MARCHED up
+//!   through the plate as a compression ramp. 4 240 tets.
+//! - **The shell** — a 10 mm spherical bore in a 12 mm wall, outer skin pinned
+//!   as `insertion_sim`'s `outer_skin_bc` pins it, with a rigid sphere GROWING
+//!   inside the bore ([`Indenter::Bore`]) as an interference ramp. 8 736 tets.
+//!
+//! ★ The two differ in the body and the boundary set and in nothing else —
+//! same element, material, barrier, solver config and ramp driver — which is
+//! what makes the contrasts below attributable to the geometry.
 //!
 //! ★ **This closes §7 item 1 of the recon doc**, which reads: *"No Tet10 solve
 //! has been run. Every type-level result above is a compile probe. Nothing
@@ -136,21 +153,86 @@
 //!    ★ What gave it away was the invariance: a number that does not move when
 //!    you change the thing that supposedly causes it is not caused by it.
 //!
+//! ## What the cavity cell found
+//!
+//! - **It converges when the material closes AROUND the probe.** The bore runs
+//!   clean to **4.72 mm of interference on a 10 mm bore — 47 % radial** at 4
+//!   Newton iterations rising to 8, residuals ~1e-13, then stalls at 4.82 mm.
+//!   Rest contact is 6 iterations over 8 736 tets.
+//! - **The whole wall engages at rest and never recruits** — **434 active pairs
+//!   at every rung**, against the curved plate cell's 185 → 473. That is the
+//!   regime `insertion_sim` names when it explains why penalty's `κ` had to be
+//!   softened there (*"the whole cavity wall engages at once, unlike the rows'
+//!   localized probe"*), reproduced under IPC and asserted rather than quoted.
+//! - ⛔ **`F_z / A_flat` does not survive the geometry.** Every contact normal
+//!   is radial, so the vector sum cancels: `‖ΣF‖ / Σ‖f‖` measures **1.11e-3
+//!   falling to 1.45e-4** against the plate's 0.9992. The net force understates
+//!   the cavity's contact by three to four orders of magnitude, so the question
+//!   "what plays the role of `A_flat`" has no answer — **nothing does, because
+//!   the force it divides is gone.** The replacement is to stop going through
+//!   force and read the traction the barrier integrates, and the plate is where
+//!   the two are shown to be the same measurement (ratio **0.9360–0.9365**,
+//!   constant over thirteen rungs). That replacement is then checked *on the
+//!   cavity itself* against a second, independent reading —
+//!   [`the_force_free_traction_agrees_with_an_independent_reading_on_the_cavity`]
+//!   — which agrees to **1.0074–1.0162**.
+//!
+//!   ⚠ An earlier revision reported **6.8e-4 → 8.7e-5** here. Those are the
+//!   `z` COMPONENT of the residual, not its magnitude, and they understate it
+//!   by ~1.65x: the cavity's residual is an artefact of mesh asymmetry and has
+//!   no preferred axis (measured at rest, `ΣF = (5.76, 5.12, 5.93) mN`). The
+//!   gate that produced them asserted on `z` alone while its failure message
+//!   claimed it would catch the shell being pushed *sideways* — which is
+//!   exactly the two components it never read.
+//! - ✅ **The flat plate's `ρ = 1.30` bounds the enveloping patch** —
+//!   `ρ ∈ [1.176, 1.221]` all the way to the wall, *tighter* than the plate's
+//!   own 1.04–1.26. The constant transfers; [`PATCH_NONUNIFORMITY`]'s warning
+//!   that a cavity "has no reason to share it" was right to demand the
+//!   measurement and wrong about the outcome.
+//! - ⚠ **The marching-feasibility criterion is conservative here, not binding.**
+//!   `min_sd` drops below `ρ · RAMP_STEP` at 3.82 mm and the ramp keeps
+//!   converging for ten more increments. What ends it is a stall at Newton
+//!   iteration **5** with a residual four orders above the scene's scale — not
+//!   the iteration-0 infeasible start the plate's `κ` floor is derived from.
+//!   The cause is unidentified.
+//!
 //! ## What this cannot see
 //!
-//! - **A closing cavity.** The curved cell is a convex indenter pressed into a
-//!   plate. `insertion_sim` is a compliant cavity closing *around* a probe —
-//!   conforming, enveloping contact rather than a Hertzian patch. Curvature is
-//!   now covered; enveloping geometry is not.
+//! - **An IRREGULAR closing cavity.** The bore is a sphere, so its gap is
+//!   uniform by symmetry and the `ρ` above measures what the DISCRETISATION
+//!   contributes — which is now measured rather than asserted:
+//!   [`the_enveloping_patch_nonuniformity_is_a_property_of_the_mesh`] holds the
+//!   geometry fixed and reports `ρ` = 1.1106 / 1.1759 / 1.0552 at `CELL` =
+//!   5 / 4 / 3 mm. ⇒ **the `[1.176, 1.221]` quoted above is a `CELL = 4 mm`
+//!   statement.** `insertion_sim`'s cavity is a scan isosurface; its
+//!   non-uniformity is a different quantity and is the bridge's risk, not this
+//!   cell's result.
+//! - ⛔⛔ **AN UNCONFINED WALL. The shell is SEALED and the sleeve is not.**
+//!   The outer skin is pinned all the way round and the bore is closed, so a
+//!   growing intruder has nowhere to send material: at the deepest converged
+//!   rung the wall must compress **22.7 % by volume (J = 0.773)**, since the
+//!   annulus outside a 14.72 mm bore holds 3.124e-5 m³ where the rest shell
+//!   held 4.041e-5. `insertion_sim`'s device wall is `outer.subtract(cavity)`
+//!   on a sock-over-capsule with an **open mouth**, where material escapes
+//!   axially instead. ⇒ **this cell is stiffer than the thing it stands for,
+//!   and the depth and traction magnitudes are conditional on that.** What does
+//!   NOT depend on it: the force cancellation (symmetry), the constant active
+//!   set (topology), and `ρ` (a ratio of gaps).
 //! - **The strain regime where Yeoh's adequacy is undetermined.** Recon §7
 //!   item 2: Yeoh pairs with element order in **none** of the 310 study files,
 //!   the book's ladder runs NH → Mooney-Rivlin → **Ogden** with Ogden
 //!   *"dominating Ecoflex curve fits above 100% strain"*, and row 23's
-//!   stretches `[2.06, 1.22, 0.073]` sit above that line. This fixture tops out
-//!   at 44 % engineering compression (`λ ≈ 0.56`), comfortably inside the
-//!   regime Yeoh is fitted for — so it demonstrates that Tet10 × Yeoh
-//!   **solves**, and says nothing about whether Yeoh is the right model where
-//!   the book prefers Ogden.
+//!   stretches `[2.06, 1.22, 0.073]` sit above that line. The plate cell tops
+//!   out at 44 % engineering compression (`λ ≈ 0.56`) and the cavity cell
+//!   drives the bore 47 % past its rest radius, which puts the wall in hoop
+//!   TENSION at a circumferential stretch of **at least 1.47** — a lower bound
+//!   that follows from the solve, since the wall stays outside a 14.72 mm
+//!   intruder that started at 10 mm. Both are inside the regime Yeoh is fitted
+//!   for. So this fixture demonstrates that Tet10 × Yeoh **solves**, in
+//!   compression and now in tension, and still says nothing about whether Yeoh
+//!   is the right model where the book prefers Ogden.
+//!   ⚠ The principal stretches themselves are not read out here; 1.47 is a
+//!   bound from the geometry, not the tensor.
 //! - **Graded materials.** One anchor everywhere. `insertion_sim` carries a
 //!   layered per-tet Yeoh field, and the material-validity wall row 23 hit was
 //!   a per-tet event at one tet.
@@ -179,10 +261,10 @@ use sim_soft::element::{Tet4, Tet10};
 use sim_soft::material::silicone_table::ECOFLEX_00_30;
 use sim_soft::{
     Aabb3, ActivePairsFor, BoundaryConditions, ConstantField, ContactPair, CpuNewtonSolver,
-    IpcRigidContact, MaterialField, Mesh, MeshingHints, NeoHookean, RigidPlane, Sdf,
+    DifferenceSdf, IpcRigidContact, MaterialField, Mesh, MeshingHints, NeoHookean, RigidPlane, Sdf,
     SdfMeshedTetMesh, Solver, SolverConfig, SolverFailure, SphereSdf, Tet10Mesh, TetId,
-    TranslatedSdf, Vec3, VertexId, Yeoh, barrier_derivative, face_barrier_kappa,
-    face_barrier_standoff, peak_contact_pressure, referenced_vertices,
+    TranslatedSdf, Vec3, VertexId, Yeoh, barrier_derivative, boundary_faces_on_isosurface,
+    face_barrier_kappa, face_barrier_standoff, peak_contact_pressure, referenced_vertices,
 };
 
 // ── fixture geometry ────────────────────────────────────────────────
@@ -443,11 +525,27 @@ enum Indenter {
     /// (`sim/L0/soft/src/sdf_bridge/sdf.rs`), so this is the cell that carries the curvature
     /// term into the assembled tangent.
     Sphere,
+    /// Sphere *inside* the cavity of the [`shell`] body — the enveloping cell.
+    ///
+    /// Same primitive as [`Self::Sphere`] and so the same non-zero
+    /// `Sdf::hessian`, but the soft material wraps it instead of being
+    /// indented by it. The consequences are not cosmetic: the contact patch is
+    /// a closed surface rather than a disc, every normal is radial, and the
+    /// whole patch engages at once instead of behind an advancing front.
+    Bore,
 }
 
 impl Indenter {
-    /// The primitive with its contact surface — the plane, or the sphere's
-    /// apex — at height `h`, so the two shapes are positioned comparably.
+    /// The primitive with its contact surface advanced by `h` past the soft
+    /// body's *rest* surface.
+    ///
+    /// ★ **`h` is the same physical quantity for all three shapes**, which is
+    /// what lets one ramp driver and one [`summarize`] serve every cell. The
+    /// plate rests with its contact face on `z = 0`, so the plane's height and
+    /// the sphere's apex height are both that advance directly; the shell
+    /// rests with its cavity wall at `R_CAVITY`, so the bore's advance is its
+    /// radius *beyond* `R_CAVITY`. In every case `h < 0` leaves a gap, `h = 0`
+    /// is exact touching, and `h > 0` is interference.
     fn at(self, h: f64) -> Box<dyn Sdf> {
         match self {
             Self::Plane => Box::new(ground_at(h)),
@@ -455,6 +553,12 @@ impl Indenter {
             Self::Sphere => Box::new(TranslatedSdf {
                 inner: SphereSdf { radius: SPHERE_R },
                 offset: Vec3::new(0.0, 0.0, h - SPHERE_R),
+            }),
+            // Centred at the origin, like the cavity it grows into: the soft
+            // shell is the region `|p| > R_CAVITY`, so `sd = |p| − (R_CAVITY+h)`
+            // is positive exactly where the material is.
+            Self::Bore => Box::new(SphereSdf {
+                radius: R_CAVITY + h,
             }),
         }
     }
@@ -842,7 +946,19 @@ struct Press {
     max_disp: f64,
     /// Net contact force on the solid along `+z` (N) at the converged pose.
     /// The plane is below with normal `+z`, so a loaded step is positive.
+    ///
+    /// ⚠ **One component. Use [`net_force`](Press::net_force) for any claim
+    /// about the net force cancelling** — on the flat cell `+z` carries all of
+    /// it, but on an enveloping patch the residual is spread across all three
+    /// axes and `z` alone understates it (measured 1.64x at rest).
     net_force_z: f64,
+    /// Net contact force as a VECTOR (N).
+    ///
+    /// The flat cell's normals all point `+z`, so `net_force_z` is the whole
+    /// story there and this adds nothing. The cavity's do not: the residual
+    /// after cancellation is an artefact of the mesh's asymmetry and has no
+    /// preferred axis, so a claim that it cancels has to read all three.
+    net_force: Vec3,
     /// Peak contact pressure (Pa) over `n_pairs` active pairs.
     peak_pressure: f64,
     n_pairs: usize,
@@ -889,6 +1005,28 @@ struct Press {
     /// an order statistic and reports a discrepancy that is the spread, not a
     /// defect.
     mean_sd: f64,
+    /// Tributary-area-weighted mean of the barrier traction `κ·|b′(sd)|` over
+    /// the active pairs (Pa).
+    ///
+    /// ★ **The force-free reading of the design traction.** [`net_force_z`] is
+    /// a projection onto one axis and needs a patch whose normals all point
+    /// along it; on an enveloping patch ([`Indenter::Bore`]) the radial forces
+    /// cancel and that projection reads ~0 regardless of how hard the contact
+    /// is working. This quantity does not project: it is the traction the face
+    /// barrier itself integrates, read back at the converged pose.
+    ///
+    /// The plate is where the two definitions are checked against each other —
+    /// see [`the_traction_mean_agrees_with_force_over_area_on_the_plate`].
+    ///
+    /// [`net_force_z`]: Press::net_force_z
+    mean_traction: f64,
+    /// Sum of per-pair force MAGNITUDES over the active pairs (N), and the
+    /// deformed tributary area they are spread over (m^2).
+    ///
+    /// The magnitude sum is the enveloping-safe replacement for
+    /// [`net_force_z`](Press::net_force_z): a vector sum cancels on a closed
+    /// patch, `Σ|f|` does not.
+    sum_force_mag: f64,
 }
 
 /// Displacement and contact readout at the converged pose.
@@ -916,6 +1054,7 @@ fn summarize<M: sim_soft::Material>(
         residual,
         max_disp,
         net_force_z: readouts.iter().map(|r| r.force_on_soft.z).sum(),
+        net_force: readouts.iter().map(|r| r.force_on_soft).sum(),
         peak_pressure: peak_contact_pressure(&readouts),
         peak_area: readouts
             .iter()
@@ -943,6 +1082,28 @@ fn summarize<M: sim_soft::Material>(
                 });
             if den > 0.0 { num / den } else { f64::NAN }
         },
+        mean_traction: {
+            // Same weights as `mean_sd` above, applied to the traction rather
+            // than the gap. Weighting the traction and then inverting is not
+            // the same as inverting the weighted gap — `|b′|` is convex — and
+            // it is the traction that the barrier integrates, so it is the
+            // traction that gets averaged.
+            let (num, den) =
+                readouts
+                    .iter()
+                    .filter(|r| r.tributary_area > 0.0)
+                    .fold((0.0, 0.0), |(n, d), r| {
+                        let t = setup.barrier.kappa
+                            * barrier_derivative(r.sd, setup.barrier.d_hat).abs();
+                        (t.mul_add(r.tributary_area, n), d + r.tributary_area)
+                    });
+            if den > 0.0 { num / den } else { f64::NAN }
+        },
+        sum_force_mag: readouts
+            .iter()
+            .filter(|r| r.tributary_area > 0.0)
+            .map(|r| r.force_on_soft.norm())
+            .sum(),
     }
 }
 
@@ -990,34 +1151,130 @@ fn step_inputs(rest: &[f64]) -> (Tensor<f64>, Tensor<f64>, Tensor<f64>) {
 /// come back as an `Err` variant naming which one fired, where the panicking
 /// path would only abort. Which surface fires is the finding.
 fn press_tet10_yeoh(setup: Setup, plane_h: f64) -> Result<Press, String> {
-    let tet4 = tet4_yeoh();
-    let mesh = Tet10Mesh::<Yeoh>::from_tet4(&tet4);
-    let pins = top_face_pins(&mesh);
-    assert!(!pins.is_empty(), "the pinned top face must not be empty");
-    let rest = rest_dofs(&mesh);
-    let (x, v, theta) = step_inputs(&rest);
-    let solver: CpuNewtonSolver<Tet10, Tet10Mesh<Yeoh>, IpcRigidContact, Yeoh, 10, 4> =
-        CpuNewtonSolver::new(
-            Tet10,
-            mesh.clone(),
-            setup.against(plane_h),
-            config(),
-            BoundaryConditions::new(pins, Vec::new()),
+    Cell::plate().press(setup, plane_h)
+}
+
+/// A Tet10 × Yeoh body and the boundary set that holds it.
+///
+/// The two cells differ in exactly these two things and in nothing about how
+/// they are driven, which is why one [`Cell::press`] and one [`Cell::ramp`]
+/// serve both. Built once per experiment and reused across a ramp's rungs —
+/// meshing and enrichment are the expensive part, and neither depends on where
+/// the indenter is.
+struct Cell {
+    mesh: Tet10Mesh<Yeoh>,
+    pins: Vec<VertexId>,
+    /// The indenter advance at rest contact, in [`Indenter::at`]'s convention:
+    /// the soft surface sits inside the barrier band, essentially unloaded.
+    rest_advance: f64,
+    /// What the pinned set is, for the assertion message.
+    pin_label: &'static str,
+}
+
+impl Cell {
+    /// The 40 × 40 × 12 mm plate, top face pinned.
+    fn plate() -> Self {
+        let mesh = Tet10Mesh::<Yeoh>::from_tet4(&tet4_yeoh());
+        let pins = top_face_pins(&mesh);
+        Self {
+            mesh,
+            pins,
+            rest_advance: REST_PLANE_H,
+            pin_label: "top face",
+        }
+    }
+
+    /// The thick spherical shell, outer skin pinned.
+    fn shell() -> Self {
+        let mesh = Tet10Mesh::<Yeoh>::from_tet4(&tet4_shell());
+        let pins = outer_skin_pins(&mesh, OUTER_SKIN_BAND);
+        Self {
+            mesh,
+            pins,
+            rest_advance: REST_BORE_W,
+            pin_label: "outer skin",
+        }
+    }
+
+    /// Solve one pose from the rest configuration.
+    fn press(&self, setup: Setup, advance: f64) -> Result<Press, String> {
+        let rest = rest_dofs(&self.mesh);
+        self.solve_from(setup, advance, &rest, &rest)
+            .map(|(p, _)| p)
+    }
+
+    /// Solve one pose warm-started from `x_prev`, reporting displacement
+    /// against `rest`.
+    ///
+    /// Returns the summary *and* the converged state, because a ramp needs
+    /// both: the summary is what is reported, the state is the next rung's
+    /// warm start.
+    fn solve_from(
+        &self,
+        setup: Setup,
+        advance: f64,
+        rest: &[f64],
+        x_prev: &[f64],
+    ) -> Result<(Press, Vec<f64>), String> {
+        assert!(
+            !self.pins.is_empty(),
+            "the pinned {} must not be empty",
+            self.pin_label,
         );
-    solver
-        .try_replay_step(&x, &v, &theta, STATIC_DT)
-        .map(|s| {
-            summarize(
-                &mesh,
-                setup,
-                plane_h,
-                &rest,
-                &s.x_final,
-                s.iter_count,
-                s.final_residual_norm,
-            )
-        })
-        .map_err(|e| failure_label(&e))
+        let (_, v, theta) = step_inputs(rest);
+        let x = Tensor::from_slice(x_prev, &[x_prev.len()]);
+        let solver: CpuNewtonSolver<Tet10, Tet10Mesh<Yeoh>, IpcRigidContact, Yeoh, 10, 4> =
+            CpuNewtonSolver::new(
+                Tet10,
+                self.mesh.clone(),
+                setup.against(advance),
+                config(),
+                BoundaryConditions::new(self.pins.clone(), Vec::new()),
+            );
+        solver
+            .try_replay_step(&x, &v, &theta, STATIC_DT)
+            .map(|s| {
+                let p = summarize(
+                    &self.mesh,
+                    setup,
+                    advance,
+                    rest,
+                    &s.x_final,
+                    s.iter_count,
+                    s.final_residual_norm,
+                );
+                (p, s.x_final)
+            })
+            .map_err(|e| failure_label(&e))
+    }
+
+    /// March the indenter from rest contact to `max_advance`, re-solving from
+    /// each converged state, and stop at the first rung that fails.
+    ///
+    /// Returns one entry per attempted advance.
+    fn ramp(&self, setup: Setup, step: f64, max_advance: f64) -> Vec<(f64, Result<Press, String>)> {
+        let rest = rest_dofs(&self.mesh);
+        let mut x_prev = rest.clone();
+        let mut out = Vec::new();
+        // Indexed, not accumulated: `h += step` drifts (the first cut of this
+        // loop printed a +0.020000000000000025 mm plane height) and a float
+        // loop condition is a lint besides.
+        let n_steps = ((max_advance - self.rest_advance) / step).ceil() as usize;
+        for i in 0..=n_steps {
+            let advance = self.rest_advance + (i as f64) * step;
+            match self.solve_from(setup, advance, &rest, &x_prev) {
+                Ok((p, x_final)) => {
+                    x_prev = x_final;
+                    out.push((advance, Ok(p)));
+                }
+                Err(e) => {
+                    out.push((advance, Err(e)));
+                    break;
+                }
+            }
+        }
+        out
+    }
 }
 
 /// Tet4 × Yeoh — the per-vertex barrier on the same plate, same `(κ, d̂)`.
@@ -1183,56 +1440,7 @@ const GATE_MAX_PLANE_H: f64 = 0.0010;
 /// configuration are built once; only the contact primitive changes per rung,
 /// which is the same per-increment rebuild `tet10_indentation_demand1` uses.
 fn ramp_tet10_yeoh(setup: Setup, step: f64, max_plane_h: f64) -> Vec<(f64, Result<Press, String>)> {
-    let tet4 = tet4_yeoh();
-    let mesh = Tet10Mesh::<Yeoh>::from_tet4(&tet4);
-    let pins = top_face_pins(&mesh);
-    let rest = rest_dofs(&mesh);
-    let n_dof = rest.len();
-    let zero_v = Tensor::from_slice(&vec![0.0; n_dof], &[n_dof]);
-    let theta = Tensor::from_slice(&[], &[0]);
-
-    let mut x_prev = rest.clone();
-    let mut out = Vec::new();
-    // Indexed, not accumulated: `h += step` drifts (the first cut of this loop
-    // printed a +0.020000000000000025 mm plane height) and a float loop
-    // condition is a lint besides.
-    let n_steps = ((max_plane_h - REST_PLANE_H) / step).ceil() as usize;
-    for i in 0..=n_steps {
-        let h = REST_PLANE_H + (i as f64) * step;
-        let solver: CpuNewtonSolver<Tet10, Tet10Mesh<Yeoh>, IpcRigidContact, Yeoh, 10, 4> =
-            CpuNewtonSolver::new(
-                Tet10,
-                mesh.clone(),
-                setup.against(h),
-                config(),
-                BoundaryConditions::new(pins.clone(), Vec::new()),
-            );
-        match solver.try_replay_step(
-            &Tensor::from_slice(&x_prev, &[n_dof]),
-            &zero_v,
-            &theta,
-            STATIC_DT,
-        ) {
-            Ok(step) => {
-                let p = summarize(
-                    &mesh,
-                    setup,
-                    h,
-                    &rest,
-                    &step.x_final,
-                    step.iter_count,
-                    step.final_residual_norm,
-                );
-                x_prev = step.x_final;
-                out.push((h, Ok(p)));
-            }
-            Err(e) => {
-                out.push((h, Err(failure_label(&e))));
-                break;
-            }
-        }
-    }
-    out
+    Cell::plate().ramp(setup, step, max_plane_h)
 }
 
 /// Does the ramp reach strain where Yeoh actually differs from Neo-Hookean?
@@ -2453,5 +2661,935 @@ fn the_ceiling_is_a_stated_requirement() {
         "d_hat/{} now admits KAPPA too, so the sweep no longer brackets where \
          the choice starts to bite and the stated width is stale",
         DENOMS[4],
+    );
+}
+
+// ── the closing cavity ──────────────────────────────────────────────
+
+/// Cavity radius at rest (m) — the bore the intruder closes against.
+const R_CAVITY: f64 = 0.010;
+
+/// Outer radius (m). `R_OUTER − R_CAVITY` is 12 mm of wall — the same
+/// thickness as the plate, so the two cells differ in *enveloping geometry*
+/// and not in the wall scale the renovation targets.
+const R_OUTER: f64 = 0.022;
+
+/// The cavity cell's soft body: a thick spherical shell,
+/// `SphereSdf{R_OUTER} \ SphereSdf{R_CAVITY}`.
+fn shell() -> DifferenceSdf {
+    DifferenceSdf::new(
+        Box::new(SphereSdf { radius: R_OUTER }),
+        Box::new(SphereSdf { radius: R_CAVITY }),
+    )
+}
+
+/// Tet4 shell carrying per-tet Yeoh materials, through the same
+/// `from_sdf_yeoh` path the plate uses.
+fn tet4_shell() -> SdfMeshedTetMesh<Yeoh> {
+    tet4_shell_at(CELL)
+}
+
+/// The shell meshed at an arbitrary cell size — the geometry held fixed while
+/// the discretisation moves, which is what
+/// [`the_enveloping_patch_nonuniformity_is_a_property_of_the_MESH`] needs.
+fn tet4_shell_at(cell: f64) -> SdfMeshedTetMesh<Yeoh> {
+    let hints = MeshingHints {
+        bbox: Aabb3::new(
+            Vec3::new(-R_OUTER - cell, -R_OUTER - cell, -R_OUTER - cell),
+            Vec3::new(R_OUTER + cell, R_OUTER + cell, R_OUTER + cell),
+        ),
+        cell_size: cell,
+        material_field: Some(yeoh_field()),
+    };
+    SdfMeshedTetMesh::<Yeoh>::from_sdf_yeoh(&shell(), &hints).expect("mesh the Yeoh shell")
+}
+
+/// Outer-skin vertex ids — the pinned set.
+///
+/// Follows `insertion_sim`'s `outer_skin_bc`: every vertex within a band of the
+/// outer envelope, with the intruder rather than a loaded BC driving the
+/// deformation.
+///
+/// ⚠ **One difference, measured rather than waved at.** `outer_skin_bc` also
+/// filters its band to solver-referenced vertices, because
+/// `SdfMeshedTetMesh::positions()` is the BCC lattice and not the body. This
+/// does not, and on this geometry the two agree exactly — orphans sit off both
+/// spheres, so a band around `R_OUTER` never selects one.
+/// [`the_meshed_shell_reproduces_the_analytic_hollow_sphere`] asserts the
+/// orphan-pin count is zero, so the equivalence is checked and not assumed.
+fn outer_skin_pins<M: sim_soft::Material>(mesh: &dyn Mesh<M>, band: f64) -> Vec<VertexId> {
+    mesh.positions()
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| (p.norm() - R_OUTER).abs() < band)
+        .map(|(v, _)| v as VertexId)
+        .collect()
+}
+
+/// Dirichlet band for [`outer_skin_pins`] (m).
+///
+/// `insertion_sim`'s `outer_skin_bc` uses half a cell; the plate's
+/// [`top_face_pins`] uses a quarter, and a quarter is what this takes. It
+/// selects 4 394 of the shell's 13 598 solver-referenced Tet10 nodes — not a
+/// set that needs widening to give the wall something to react against.
+const OUTER_SKIN_BAND: f64 = 0.25 * CELL;
+
+/// The bore's advance at rest contact — the cavity wall sits inside the
+/// barrier band with the bore not yet interfering. Mirrors [`REST_PLANE_H`].
+///
+/// ⚠ **"Rest" is not unloaded here, and it is less unloaded than on the
+/// plate.** The plate meets the band on one face and reacts against a pinned
+/// top. The shell meets it over a CLOSED surface with nothing to react against
+/// but its own hoop stress, so the barrier's standoff traction pressurises the
+/// cavity from the first rung — measured **7.3 kPa against the plate's
+/// 2.9 kPa** at the same [`STANDOFF`]. The interference ramp therefore starts
+/// from a pre-loaded state by construction, which is a property of enveloping
+/// contact and not of this fixture's choices.
+const REST_BORE_W: f64 = -STANDOFF;
+
+/// The cavity cell at the baseline barrier.
+const CAVITY: Setup = Setup {
+    barrier: BASELINE_BARRIER,
+    indenter: Indenter::Bore,
+};
+
+/// March the bore outward inside the cavity, re-solving from each converged
+/// state. The enveloping sibling of [`ramp_tet10_yeoh`].
+fn ramp_cavity(setup: Setup, step: f64, max_w: f64) -> Vec<(f64, Result<Press, String>)> {
+    Cell::shell().ramp(setup, step, max_w)
+}
+
+/// How far the always-on cavity gate drives the bore (m).
+///
+/// 0.5 mm into a 10 mm bore — 5 % radial interference, where the cavity
+/// carries ~20 kPa, the same order as the plate's design traction. Shallower
+/// than the wall on purpose: certifying that the enveloping cell reaches real
+/// load is this gate's job, and finding where it stops is
+/// [`how_deep_does_the_closing_cavity_converge`]'s.
+const CAVITY_GATE_MAX_W: f64 = 0.0005;
+
+/// The meshed shell is the hollow sphere the fixture asked for.
+///
+/// The enveloping sibling of
+/// [`the_meshed_body_reproduces_the_box_extent_and_volume`], and it matters
+/// more here: the plate's geometry comes from hand-written [`BoxSdf`] whose
+/// gradient this file also checks, while the shell comes from a
+/// [`DifferenceSdf`] of two library spheres through a `max(φa, −φb)` crease.
+/// A difference that silently produced a solid ball would still mesh, still
+/// solve, and still report contact.
+#[test]
+fn the_meshed_shell_reproduces_the_analytic_hollow_sphere() {
+    let t4 = tet4_shell();
+    let pos = Mesh::<Yeoh>::positions(&t4);
+
+    let (mut r_lo, mut r_hi) = (f64::INFINITY, f64::NEG_INFINITY);
+    for f in Mesh::<Yeoh>::boundary_faces(&t4) {
+        for &v in f {
+            let r = pos[v as usize].norm();
+            r_lo = r_lo.min(r);
+            r_hi = r_hi.max(r);
+        }
+    }
+    let mesh_volume: f64 = (0..Mesh::<Yeoh>::n_tets(&t4) as TetId)
+        .map(|t| {
+            let v = Mesh::<Yeoh>::tet_vertices(&t4, t);
+            let (v0, v1, v2, v3) = (
+                pos[v[0] as usize],
+                pos[v[1] as usize],
+                pos[v[2] as usize],
+                pos[v[3] as usize],
+            );
+            (v1 - v0).cross(&(v2 - v0)).dot(&(v3 - v0)) / 6.0
+        })
+        .sum();
+    let analytic_volume = 4.0 / 3.0
+        * std::f64::consts::PI
+        * R_OUTER.mul_add(R_OUTER * R_OUTER, -(R_CAVITY * R_CAVITY * R_CAVITY));
+    let (_, cavity_area) = boundary_faces_on_isosurface(
+        pos,
+        Mesh::<Yeoh>::boundary_faces(&t4),
+        &SphereSdf { radius: R_CAVITY },
+        0.0,
+    );
+    let analytic_area = 4.0 * std::f64::consts::PI * R_CAVITY * R_CAVITY;
+    eprintln!(
+        "  shell: boundary radius [{:.2}, {:.2}] mm (asked [{:.2}, {:.2}]), \
+         volume {:.3} vs {:.3} cm3 ({:.1} %), cavity area {:.1} vs {:.1} mm2 ({:.1} %)",
+        r_lo * 1e3,
+        r_hi * 1e3,
+        R_CAVITY * 1e3,
+        R_OUTER * 1e3,
+        mesh_volume * 1e6,
+        analytic_volume * 1e6,
+        100.0 * mesh_volume / analytic_volume,
+        cavity_area * 1e6,
+        analytic_area * 1e6,
+        100.0 * cavity_area / analytic_area,
+    );
+
+    // ── pointwise, because every check above is an INTEGRAL ──────────
+    // Volume, area and radial extent are all integrals: an off-centre bore, or
+    // a lobed one, passes every one of them. This is the exact companion rule
+    // 3c asks for — each boundary vertex must lie ON one of the two spheres.
+    let mut worst = 0.0_f64;
+    let mut worst_r = 0.0_f64;
+    for f in Mesh::<Yeoh>::boundary_faces(&t4) {
+        for &v in f {
+            let r = pos[v as usize].norm();
+            let dev = (r - R_CAVITY).abs().min((r - R_OUTER).abs());
+            if dev > worst {
+                worst = dev;
+                worst_r = r;
+            }
+        }
+    }
+    eprintln!(
+        "  worst boundary vertex deviation from either sphere: {:.4} mm at r={:.3} mm \
+         ({:.1} % of CELL)",
+        worst * 1e3,
+        worst_r * 1e3,
+        100.0 * worst / CELL,
+    );
+    assert!(
+        worst < 0.1 * CELL,
+        "a boundary vertex sits {worst:e} m from BOTH spheres (at r={worst_r:e} m). \
+         The integral checks below cannot see this: an off-centre or lobed bore \
+         has the right volume and the right area",
+    );
+
+    // The boundary must span BOTH surfaces and neither may be missing: a
+    // collapsed difference (a solid ball) has `r_lo ≈ 0`, and a difference
+    // taken the wrong way round has `r_hi ≈ R_CAVITY`.
+    let tol = 0.1 * CELL;
+    assert!(
+        (r_lo - R_CAVITY).abs() < tol,
+        "the meshed boundary's innermost radius is {r_lo:e} m, not the requested \
+         cavity radius {R_CAVITY:e} — the difference did not open a bore",
+    );
+    assert!(
+        (r_hi - R_OUTER).abs() < tol,
+        "the meshed boundary's outermost radius is {r_hi:e} m, not the requested \
+         outer radius {R_OUTER:e}",
+    );
+    // A faceted polyhedron through vertices ON both spheres cuts the corners of
+    // the outer surface and cuts INTO the cavity, so the two errors have
+    // opposite signs and the shell volume is not simply under-reported. A
+    // decile is loose enough to be a coarse-mesh statement and tight enough
+    // that a missing bore (+33 %) or a doubled one fails.
+    assert!(
+        (mesh_volume / analytic_volume - 1.0).abs() < 0.02,
+        "meshed shell volume {mesh_volume:e} m3 is not within 2 % of the \
+         analytic {analytic_volume:e} m3 (measured 99.6 %)",
+    );
+    assert!(
+        (cavity_area / analytic_area - 1.0).abs() < 0.06,
+        "the meshed cavity's area {cavity_area:e} m2 is not within 6 % of the \
+         analytic {analytic_area:e} m2 (measured 96.4 %) — the patch the barrier \
+         acts over is not the sphere the derivation assumes",
+    );
+}
+
+/// **The cavity's contact goes through the FACE path, and its pin set holds
+/// only vertices the solver can see.**
+///
+/// Split out of [`the_meshed_shell_reproduces_the_analytic_hollow_sphere`]:
+/// that gate is about the BODY, these two are about how the solver meets it,
+/// and they fail for entirely different reasons.
+#[test]
+fn the_cavity_takes_the_face_path_and_pins_only_live_vertices() {
+    let t4 = tet4_shell();
+    let t10 = Tet10Mesh::<Yeoh>::from_tet4(&t4);
+    // ── the FACE path, asserted on the selector and not assumed ──────
+    // `IpcRigidContact::active_pairs` is
+    // `mesh.boundary_faces6().map_or_else(vertex_path, face_path)`
+    // (`sim/L0/soft/src/contact/ipc.rs`), so `is_some()` IS the selector. Every
+    // traction claim on this cell is about the SURFACE-INTEGRATED barrier, and
+    // a shell that silently took the per-vertex path would still mesh, still
+    // solve and still report contact — the same way round the plate's own
+    // selector gate guards it.
+    let faces6 = Mesh::<Yeoh>::boundary_faces6(&t10);
+    assert!(
+        faces6.is_some(),
+        "the shell's Tet10 mesh surfaces no six-node boundary faces, so the \
+         cavity is running on the PER-VERTEX barrier and every traction claim \
+         about this cell is about a different energy",
+    );
+    assert!(
+        Mesh::<Yeoh>::boundary_faces6(&t4).is_none(),
+        "the Tet4 shell now surfaces six-node faces too, so the assertion above \
+         no longer discriminates between the two paths",
+    );
+
+    // ── the counts the doc comments quote, re-measured here ──────────
+    // They were measured once by a sizing probe that is not in the shipped
+    // file; without this they are numbers with no referent.
+    let referenced = referenced_vertices(&t10 as &dyn Mesh<Yeoh>).len();
+    let pins = outer_skin_pins(&t10, OUTER_SKIN_BAND);
+    eprintln!(
+        "  shell: {} tets, {} Tet10 positions, {referenced} referenced, {} pins, \
+         {} six-node boundary faces",
+        Mesh::<Yeoh>::n_tets(&t4),
+        Mesh::<Yeoh>::n_vertices(&t10),
+        pins.len(),
+        faces6.map_or(0, <[[VertexId; 6]]>::len),
+    );
+    assert_eq!(
+        (Mesh::<Yeoh>::n_tets(&t4), referenced, pins.len()),
+        (8736, 13598, 4394),
+        "the shell's discretisation moved; every count quoted in this file's doc \
+         comments was measured on the old one",
+    );
+    // F8: `outer_skin_bc` filters its band to solver-referenced vertices and
+    // `outer_skin_pins` does not. Measured equivalent here — orphans sit off
+    // both spheres, so the band never selects one — and this is what says so
+    // rather than the docstring's word "mirrors".
+    let ref_set: std::collections::BTreeSet<VertexId> =
+        referenced_vertices(&t10 as &dyn Mesh<Yeoh>)
+            .into_iter()
+            .collect();
+    let orphan_pins = pins.iter().filter(|v| !ref_set.contains(v)).count();
+    assert_eq!(
+        orphan_pins, 0,
+        "{orphan_pins} pinned vertices are in no tet, so this fixture's pin set \
+         is no longer equivalent to the referenced-filtered one it claims to \
+         mirror",
+    );
+}
+
+/// **What plays the role of `A_flat` on a closing cavity — and the answer is
+/// that nothing does, because the force it divides is gone.**
+///
+/// [`DESIGN_TRACTION_PA`] is `F_z / A_flat`: a net force projected onto one
+/// axis, over the flat rest patch that carries it. Both halves are properties
+/// of a plate pressed onto a plane. On an enveloping patch the projection is
+/// the half that fails first, and it fails completely rather than
+/// approximately — every contact normal is radial, so the vector sum cancels
+/// however hard the contact is working.
+///
+/// This measures both cells the same way and reports the contrast rather than
+/// asserting a threshold on one of them. The plate's own number is the control:
+/// if `|ΣF| / Σ|f|` were small there too, it would be measuring the readout,
+/// not the geometry.
+#[test]
+fn the_enveloping_patch_cancels_the_net_force_the_flat_patch_reports() {
+    let flat = Cell::plate()
+        .press(BASELINE, REST_PLANE_H)
+        .expect("the plate must reach rest contact");
+    let cavity = Cell::shell()
+        .press(CAVITY, REST_BORE_W)
+        .expect("the shell must reach rest contact");
+
+    // ⚠ **The FULL vector, not its z component.** A first cut of this gate used
+    // `net_force_z` and still passed — but it reported 6.74e-4 where the true
+    // residual is 1.11e-3, and its message claimed it would catch the shell
+    // "being pushed sideways", which is precisely the ΣF_x/ΣF_y it never read.
+    // The plate is unaffected (its normals are all `+z`); the cavity's residual
+    // has no preferred axis.
+    //
+    // The reciprocal is the reader-facing number — `F_z` divided by ANY area is
+    // that many times too small — so it is reported rather than asserted twice.
+    let coherence = |p: &Press| p.net_force.norm() / p.sum_force_mag;
+    eprintln!(
+        "  flat  : |F| {:.4} N (z {:.4}), sum|f| {:.4} N, coherence {:.4}, \
+         mean traction {:.3} kPa\n  \
+         cavity: |F| {:.3e} N (z {:.3e}), sum|f| {:.4} N, coherence {:.2e} (1/{:.0}), \
+         mean traction {:.3} kPa",
+        flat.net_force.norm(),
+        flat.net_force_z,
+        flat.sum_force_mag,
+        coherence(&flat),
+        flat.mean_traction / 1e3,
+        cavity.net_force.norm(),
+        cavity.net_force_z,
+        cavity.sum_force_mag,
+        coherence(&cavity),
+        1.0 / coherence(&cavity),
+        cavity.mean_traction / 1e3,
+    );
+
+    assert!(
+        coherence(&flat) > 0.9,
+        "the plate's contact forces no longer point the same way (coherence {:.4}) \
+         — this control is what licenses reading `F_z / A_flat` as a traction \
+         there, so the cavity contrast below means nothing without it",
+        coherence(&flat),
+    );
+    assert!(
+        coherence(&cavity) < 1.0e-2,
+        "the cavity's net force is {:.1} % of its force magnitude, not the ~0 a \
+         closed radial patch must give — either the bore is not enveloping the \
+         contact or the shell is being pushed sideways",
+        100.0 * coherence(&cavity),
+    );
+    // The force-free reading is not merely defined, it is in the same
+    // range as the plate's design traction — so it is a traction, not a
+    // residue of the cancellation.
+    assert!(
+        cavity.mean_traction > 1.0e3 && cavity.mean_traction < 1.0e6,
+        "the cavity's force-free traction reads {:e} Pa, outside the range any \
+         Ecoflex contact in this fixture occupies",
+        cavity.mean_traction,
+    );
+}
+
+/// The force-free traction reading is the same measurement as the plate's, up
+/// to a fixed calibration — which is what licenses using it where force is
+/// gone.
+///
+/// [`Press::mean_traction`] never mentions a force or a flat patch, so it
+/// survives the cavity. That is necessary and not sufficient: a quantity that
+/// survives is only useful if it agrees with the one it replaces *where both
+/// are defined*. The plate is the only place both are.
+///
+/// **Measured**: the ratio is 1.0001 while the active set is still growing,
+/// then settles to **0.9360–0.9364 and stays there for thirteen rungs** as the
+/// load rises fourfold. The agreement claim is therefore about the ratio being
+/// CONSTANT, not about it being one.
+///
+/// ⚠ **What the 6.4 % is has not been isolated, and two candidate explanations
+/// are measured false.** It is not the contact forces splaying off-axis: every
+/// active pair's force direction is within 26° of `+z` at every rung, and
+/// restricting the mean to those pairs changes it in no printed digit. Nor is
+/// it side-wall faces diluting an area-weighted mean: the face-level active set
+/// is a constant 520 faces at `flat / active = 0.7692` across every gap this
+/// fixture visits, and 0.769 is not 0.936. The two definitions differ in
+/// weighting (deformed nodal tributary vs flat rest area) and in sample points
+/// (nodal `sd` vs the face quadrature the barrier integrates); which dominates
+/// is unmeasured.
+///
+/// ★ **What the 6.4 % does establish is that `A_flat` is the right
+/// normaliser.** Replacing it with the pairs' own summed tributary area — the
+/// obvious geometry-free substitute — makes the agreement WORSE and, more
+/// importantly, unstable: that ratio drifts monotonically across the same
+/// rungs instead of holding, because tributary area is measured on the
+/// DEFORMED patch and grows as the plate bulges, while the face barrier
+/// integrates over the REST area (`E = A_rest · Σ_q ŵ_q b(sd)`,
+/// `sim/L0/soft/src/contact/face.rs`). A drifting normaliser cannot calibrate
+/// anything, so the enveloping cell inherits the traction mean and *not* a
+/// deformed-area denominator.
+///
+/// ⚠ **Provenance**: that drift was 1.032 → 1.154 over a deformed area of
+/// 1652 → 1976 mm², measured once on 2026-09-21 while choosing the normaliser.
+/// The probe is **not retained** — `Press` no longer carries a tributary-area
+/// sum, because nothing that shipped needs one — so those four numbers are a
+/// recorded measurement and not a re-checkable one. The conclusion they
+/// support is re-checked every run by the spread assertion below.
+///
+/// ★ It does not need to be isolated for the derivation to stand. `κ`'s
+/// bracket is `|b′(ρ·step)| / |b′(d̂/2)|` = 9.47× wide, so it selects a decade
+/// while `σ` is known to roughly `[0.47×, 4.46×]`. A 6.4 % calibration is
+/// fifteen times inside that. A *drifting* ratio would not be, which is why
+/// this gate asserts the spread and not just the value.
+#[test]
+fn the_force_free_traction_tracks_force_over_area_on_the_plate() {
+    let area = flat_contact_area();
+    let rungs: Vec<Press> = ramp_tet10_yeoh(BASELINE, RAMP_STEP, GATE_MAX_PLANE_H)
+        .into_iter()
+        .map(|(h, r)| {
+            r.map_err(|e| format!("plate rung {h:e} m failed: {e}"))
+                .expect("every plate rung must converge for the two definitions to be compared")
+        })
+        .collect();
+
+    // Compare only where the patch has stopped recruiting pairs. While it is
+    // still growing the two definitions are sampling different surfaces, and
+    // averaging that transient into the calibration would report a spread that
+    // is the recruitment, not the disagreement.
+    let engaged = rungs
+        .iter()
+        .map(|p| p.n_pairs)
+        .max()
+        .expect("the ramp must produce at least one rung");
+    let ratios: Vec<f64> = rungs
+        .iter()
+        .filter(|p| p.n_pairs == engaged)
+        .map(|p| p.mean_traction / (p.net_force_z / area))
+        .collect();
+    let (lo, hi) = ratios
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), &r| {
+            (l.min(r), h.max(r))
+        });
+    eprintln!(
+        "  {} of {} rungs fully engaged at {engaged} pairs; ratio in [{lo:.4}, {hi:.4}], \
+         spread {:.2e}",
+        ratios.len(),
+        rungs.len(),
+        hi - lo,
+    );
+
+    assert!(
+        ratios.len() >= 8,
+        "only {} rungs reached the fully-engaged patch, too few to call the \
+         calibration constant",
+        ratios.len(),
+    );
+    assert!(
+        (0.92..0.95).contains(&lo) && (0.92..0.95).contains(&hi),
+        "the force-free traction reads [{lo:.4}, {hi:.4}] of `F_z / A_flat`, \
+         outside the measured 0.9360-0.9364 band — the two are no longer the \
+         same measurement up to a calibration",
+    );
+    assert!(
+        hi - lo < 2.0e-3,
+        "the calibration DRIFTS by {:.2e} over the ramp, so it is not a \
+         calibration. A force-free traction that tracks force-over-area only at \
+         one load cannot stand in for it at another, which is the whole use",
+        hi - lo,
+    );
+}
+
+/// **Does `Tet10Mesh<Yeoh>` converge when the material closes AROUND the
+/// rigid body instead of being indented by it?**
+///
+/// The cell this file's own "what this cannot see" list named first. Curvature
+/// was covered by [`tet10_yeoh_converges_against_a_curved_indenter`], but a
+/// sphere pressed into a plate is still a Hertzian patch behind an advancing
+/// front: a growing disc of contact, surrounded by material that is not yet
+/// touching. `insertion_sim` is the opposite — a compliant bore closing on a
+/// probe, where *"the whole cavity wall engages at once"*
+/// (`tools/cf-sim-research/src/insertion_sim.rs`, on why penalty's `κ` had to
+/// be softened to `1e3` there). That sentence is the regime, and the active-set
+/// assertion below is what turns it from a quotation into a measurement.
+///
+/// Same element, material, barrier and solver config as the plate. What
+/// changes is the body (a thick spherical shell) and the boundary set (the
+/// outer skin, as `insertion_sim`'s `outer_skin_bc` pins it).
+#[test]
+fn tet10_yeoh_converges_against_a_closing_cavity() {
+    let rungs = ramp_cavity(CAVITY, RAMP_STEP, CAVITY_GATE_MAX_W);
+    eprintln!(
+        "cavity ramp  [R_cav {:.0} mm, wall {:.0} mm, kappa {KAPPA:e}, d_hat {D_HAT:e} m]",
+        R_CAVITY * 1e3,
+        (R_OUTER - R_CAVITY) * 1e3,
+    );
+    eprintln!(
+        "  {:>8} {:>4} {:>10} {:>10} {:>10} {:>7} {:>6}",
+        "w(mm)", "it", "resid", "trac(kPa)", "min_sd", "rho", "pairs",
+    );
+    let mut ok = Vec::new();
+    for (w, r) in &rungs {
+        match r {
+            Ok(p) => {
+                let rho = face_barrier_standoff(KAPPA, D_HAT, p.mean_traction) / p.min_sd;
+                eprintln!(
+                    "  {:>8.3} {:>4} {:>10.2e} {:>10.3} {:>10.3e} {:>7.4} {:>6}",
+                    w * 1e3,
+                    p.iters,
+                    p.residual,
+                    p.mean_traction / 1e3,
+                    p.min_sd,
+                    rho,
+                    p.n_pairs,
+                );
+                ok.push((*w, p, rho));
+            }
+            Err(e) => eprintln!("  {:>8.3} FAILED {e}", w * 1e3),
+        }
+    }
+
+    assert_eq!(
+        ok.len(),
+        rungs.len(),
+        "the cavity ramp stalled before its ceiling; every rung above is the \
+         measurement, and the first Err line names the surface that fired",
+    );
+    let last = ok
+        .last()
+        .expect("the ramp must produce at least one rung")
+        .1;
+
+    // ── the enveloping signature ─────────────────────────────────────
+    // A Hertzian patch RECRUITS: the curved plate cell goes 185 -> 473 pairs as
+    // the apex advances. A closing cavity cannot, because there is no
+    // not-yet-touching material to recruit — it is all touching at rest. This
+    // is the one assertion here that a convex indenter could not pass.
+    let pairs: Vec<usize> = ok.iter().map(|(_, p, _)| p.n_pairs).collect();
+    assert!(
+        pairs.windows(2).all(|w| w[0] == w[1]),
+        "the cavity's active set moved across the ramp ({pairs:?}) — an \
+         enveloping patch engages at rest and has nothing left to recruit, so \
+         either the bore is not enveloping or pairs are dropping out",
+    );
+
+    // ── it reaches real load, and does it cheaply ────────────────────
+    assert!(
+        last.mean_traction > 15.0e3,
+        "the deepest rung carries {:.1} kPa, which is not the order the plate's \
+         design point sits at ({:.1} kPa) — the ceiling is too shallow to be \
+         evidence about a loaded cavity",
+        last.mean_traction / 1e3,
+        DESIGN_TRACTION_PA / 1e3,
+    );
+    for (w, p, _) in &ok {
+        assert!(
+            p.iters <= 8,
+            "rung {:+.3} mm took {} Newton iterations; the plate takes 4-6 and a \
+             jump here is the enveloping tangent, which is the thing this cell \
+             exists to watch",
+            w * 1e3,
+            p.iters,
+        );
+        assert!(
+            p.residual < 1.0e-8,
+            "rung {:+.3} mm converged to {:e}, not to the ~1e-12 this fixture \
+             reaches elsewhere",
+            w * 1e3,
+            p.residual,
+        );
+        // Marching feasibility, the same condition the plate's kappa floor is
+        // derived from: the barrier has to hold more clearance than one
+        // increment consumes, or the next rung starts infeasible.
+        assert!(
+            p.min_sd > RAMP_STEP,
+            "rung {:+.3} mm came to rest holding {:e} m, less than the {RAMP_STEP:e} m \
+             the next increment takes — the ramp is running on borrowed \
+             feasibility and the rung after it is where that is spent",
+            w * 1e3,
+            p.min_sd,
+        );
+    }
+}
+
+/// **Does the flat plate's patch non-uniformity bound the enveloping one?**
+///
+/// [`PATCH_NONUNIFORMITY`] is the correction that makes `κ`'s floor a bound on
+/// the patch's TIGHTEST gap rather than its mean, and its value — 1.30 — was
+/// measured on a 40 × 40 mm flat patch against a plane. Its own docs say a
+/// cavity closing around a probe *"has no reason to share it"*. This is that
+/// measurement, and a failure here is a number to re-derive from, not a
+/// regression to paper over.
+///
+/// ⚠ **The two `ρ`s are not computed from the same `σ`, and the difference is
+/// in the safe direction.** The plate's probe inverts
+/// `σ = F_z / A_flat`; this one inverts the force-free
+/// [`Press::mean_traction`], because the cavity has no `F_z` to use. On the
+/// plate the force-free reading is 6.4 % LOWER, and
+/// [`face_barrier_standoff`] is decreasing in `σ` — a weaker traction inverts
+/// to a WIDER gap — so `d_eff` and therefore `ρ` come out slightly high here.
+/// A high `ρ` raises the floor, so this comparison errs toward rejecting the
+/// shipped `κ`, not toward admitting it.
+///
+/// ⚠ **This gate sees only as deep as [`CAVITY_GATE_MAX_W`].** The full-depth
+/// statement — `ρ` stays under the constant all the way to the convergence wall
+/// — comes from [`how_deep_does_the_closing_cavity_converge`], which is
+/// `#[ignore]`d and runs in no CI job.
+#[test]
+fn the_flat_patchs_nonuniformity_constant_bounds_the_enveloping_patch() {
+    let rho: Vec<f64> = ramp_cavity(CAVITY, RAMP_STEP, CAVITY_GATE_MAX_W)
+        .into_iter()
+        .map(|(w, r)| {
+            let p = r
+                .map_err(|e| format!("cavity rung {w:e} m failed: {e}"))
+                .expect("every cavity rung must converge for rho to be measured on it");
+            face_barrier_standoff(KAPPA, D_HAT, p.mean_traction) / p.min_sd
+        })
+        .collect();
+    let (lo, hi) = rho
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), &r| {
+            (l.min(r), h.max(r))
+        });
+    eprintln!(
+        "  enveloping rho in [{lo:.4}, {hi:.4}] over {} rungs; flat-plate \
+         constant {PATCH_NONUNIFORMITY}",
+        rho.len(),
+    );
+
+    assert!(
+        lo > 1.0,
+        "the enveloping patch reports rho {lo:.4} < 1, which says the gap \
+         carrying the mean traction is TIGHTER than the tightest gap — \
+         impossible for a convex `|b'|`, so the measurement is wrong rather \
+         than the geometry being kind",
+    );
+    assert!(
+        hi < PATCH_NONUNIFORMITY,
+        "the enveloping patch's non-uniformity reaches {hi:.4}, above the \
+         {PATCH_NONUNIFORMITY} this fixture's kappa floor is derived with. That \
+         floor is now optimistic on this geometry: RE-MEASURE and re-derive, do \
+         not raise the constant to make this green",
+    );
+}
+
+/// **How deep does the closing cavity go before it stops converging, and does
+/// `ρ` stay bounded all the way there?**
+///
+/// [`tet10_yeoh_converges_against_a_closing_cavity`] certifies that the cell
+/// reaches real load; this one walks it to the wall. The two are separated for
+/// the same reason the plate separates its envelope gate from
+/// [`the_armijo_wall_against_barrier_stiffness`]: finding the wall costs a full
+/// ramp, and re-finding it on every commit buys nothing.
+///
+/// **Measured 2026-09-21**: clean to **4.72 mm of interference on a 10 mm bore
+/// — 47 % radial** — at 4 Newton iterations rising to 8, then 15, then
+/// `ArmijoStall(iter 5, r 1.65e5)` at 4.82 mm. `ρ` falls 1.1759 → 1.1639 and
+/// then climbs back to **1.2209** at the last converged rung, staying under
+/// [`PATCH_NONUNIFORMITY`] throughout.
+///
+/// ⭐ **The stall is NOT the marching-feasibility one the plate's `κ` floor is
+/// derived from, and the derivation sees it coming anyway.** That floor
+/// requires `min_sd > ρ · RAMP_STEP` = 0.130 mm; the cavity crosses it at
+/// 3.82 mm and keeps converging for another ten increments, failing at 4.82 mm
+/// at Newton iteration **5** rather than iteration 0. So on this geometry the
+/// feasibility criterion is *conservative* — it predicts trouble a millimetre
+/// early — and what actually ends the ramp is something else, unidentified
+/// here. Two facts distinguish the modes and neither explains the cause: the
+/// plate's `κ`-sweep stalls have `last_iter == 0` and a residual at the
+/// scene's own scale, this one has neither.
+#[test]
+#[ignore = "one full ramp to the convergence wall, ~5 min — the depth and \
+            non-uniformity numbers the always-on cavity gates quote"]
+fn how_deep_does_the_closing_cavity_converge() {
+    let rungs = ramp_cavity(CAVITY, RAMP_STEP, 0.006);
+    eprintln!(
+        "  {:>8} {:>4} {:>10} {:>10} {:>7} {:>10} {:>10}",
+        "w(mm)", "it", "trac(kPa)", "min_sd", "rho", "feasible", "coherence",
+    );
+    let mut deepest = f64::NEG_INFINITY;
+    let mut rho_hi = f64::NEG_INFINITY;
+    let mut rho_lo = f64::INFINITY;
+    let mut first_infeasible = None;
+    let mut failure = None;
+    for (w, r) in &rungs {
+        match r {
+            Ok(p) => {
+                let rho = face_barrier_standoff(KAPPA, D_HAT, p.mean_traction) / p.min_sd;
+                let feasible = p.min_sd > REQUIRED_STANDOFF;
+                if !feasible && first_infeasible.is_none() {
+                    first_infeasible = Some(*w);
+                }
+                eprintln!(
+                    "  {:>8.3} {:>4} {:>10.3} {:>10.3e} {:>7.4} {:>10} {:>10.2e}",
+                    w * 1e3,
+                    p.iters,
+                    p.mean_traction / 1e3,
+                    p.min_sd,
+                    rho,
+                    feasible,
+                    p.net_force.norm() / p.sum_force_mag,
+                );
+                deepest = *w;
+                rho_hi = rho_hi.max(rho);
+                rho_lo = rho_lo.min(rho);
+            }
+            Err(e) => {
+                eprintln!("  {:>8.3} FAILED {e}", w * 1e3);
+                failure = Some(e.clone());
+            }
+        }
+    }
+    eprintln!(
+        "  deepest converged {:.3} mm = {:.1} % radial interference; \
+         rho in [{rho_lo:.4}, {rho_hi:.4}]; \
+         first rung below the required standoff {:?} mm",
+        deepest * 1e3,
+        100.0 * deepest / R_CAVITY,
+        first_infeasible.map(|w| w * 1e3),
+    );
+
+    assert!(
+        deepest > 0.004,
+        "the cavity walled at {:.3} mm of interference, short of the 4.7 mm \
+         measured — a regression in depth, or the wall moved",
+        deepest * 1e3,
+    );
+    // ⚠ Both ends. An upper bound ALONE accepts an inverted computation:
+    // `min_sd / d_eff` reads ~0.82 here, which is under 1.30 and would pass
+    // silently. The always-on gate carries this guard; a first cut of this
+    // probe did not, and the asymmetry was invisible because the number it
+    // printed looked right.
+    assert!(
+        rho_lo > 1.0,
+        "the enveloping patch reports rho {rho_lo:.4} < 1 at some rung — the gap \
+         carrying the mean traction cannot be tighter than the tightest gap, so \
+         the measurement is inverted or saturated, not the geometry kind",
+    );
+    assert!(
+        rho_hi < PATCH_NONUNIFORMITY,
+        "at full depth the enveloping patch's non-uniformity reaches {rho_hi:.4}, \
+         above the {PATCH_NONUNIFORMITY} the kappa floor is derived with — the \
+         always-on gate's shallower ceiling is hiding it",
+    );
+    // The mode matters more than the depth: an iteration-0 stall would mean the
+    // marching criterion was the binding one after all, and the claim above
+    // that it is conservative here would be wrong.
+    let label = failure.expect("the ramp must reach a rung it cannot solve");
+    assert!(
+        !label.contains("iter 0"),
+        "the cavity now ends on an iteration-0 stall ({label}), which IS the \
+         marching-feasibility failure the kappa floor bounds — so the floor is \
+         binding on this geometry and the conservative-by-a-millimetre reading \
+         above is stale",
+    );
+    let crossing = first_infeasible.expect("the ramp must cross the required standoff");
+    assert!(
+        crossing < deepest,
+        "the ramp never converged past the required standoff, so there is no \
+         margin to call conservative",
+    );
+}
+
+/// **The force-free traction, checked against an independent reading ON THE
+/// CAVITY — not on the plate.**
+///
+/// [`the_force_free_traction_tracks_force_over_area_on_the_plate`] is necessary
+/// and not sufficient: its oracle lives on the flat cell, so it says the two
+/// definitions agree *where both are defined* and says nothing about the cell
+/// that actually uses the force-free one. Without this gate the cavity's `σ` —
+/// and therefore its `ρ`, and therefore item 4's inherited floor — rests
+/// entirely on the definition transferring.
+///
+/// ★ **The check exists precisely BECAUSE of the geometry that killed
+/// `F_z`.** Vector sums cancel on a closed patch; magnitude sums do not. So
+/// `Σ|f| / A_cavity_rest` is a second reading of the same traction, built from
+/// the readout's forces and the mesh's rest area, sharing no arithmetic with
+/// [`Press::mean_traction`]'s barrier evaluation.
+///
+/// **Measured**: the two agree to **1.0162 falling to 1.0074** across the gate
+/// ramp — an order of magnitude tighter than the plate's 6.4 %, and tightening
+/// as the load rises.
+///
+/// ⭐ That contrast is itself evidence about the plate's unexplained 6.4 %: the
+/// discrepancy is ~0 on a UNIFORM patch and 6.4 % on a NON-UNIFORM one, which
+/// locates it in patch heterogeneity. It still does not identify the mechanism,
+/// and this gate does not claim to.
+#[test]
+fn the_force_free_traction_agrees_with_an_independent_reading_on_the_cavity() {
+    let cell = Cell::shell();
+    let (_, cavity_area_rest) = boundary_faces_on_isosurface(
+        Mesh::<Yeoh>::positions(&cell.mesh),
+        Mesh::<Yeoh>::boundary_faces(&cell.mesh),
+        &SphereSdf { radius: R_CAVITY },
+        0.0,
+    );
+    assert!(
+        cavity_area_rest > 0.0,
+        "no boundary face lies on the cavity isosurface, so there is no rest \
+         area to divide by and the independent reading does not exist",
+    );
+
+    let mut ratios = Vec::new();
+    eprintln!(
+        "  cavity rest area {:.1} mm2\n  {:>8} {:>12} {:>14} {:>8}",
+        cavity_area_rest * 1e6,
+        "w(mm)",
+        "mean_t(Pa)",
+        "sum|f|/A(Pa)",
+        "ratio",
+    );
+    for (w, r) in cell.ramp(CAVITY, RAMP_STEP, CAVITY_GATE_MAX_W) {
+        let p = r
+            .map_err(|e| format!("cavity rung {w:e} m failed: {e}"))
+            .expect("every cavity rung must converge for the two readings to be compared");
+        let sigma_force = p.sum_force_mag / cavity_area_rest;
+        eprintln!(
+            "  {:>8.3} {:>12.1} {:>14.1} {:>8.4}",
+            w * 1e3,
+            p.mean_traction,
+            sigma_force,
+            p.mean_traction / sigma_force,
+        );
+        ratios.push(p.mean_traction / sigma_force);
+    }
+
+    let (lo, hi) = ratios
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), &r| {
+            (l.min(r), h.max(r))
+        });
+    assert!(
+        (0.97..1.05).contains(&lo) && (0.97..1.05).contains(&hi),
+        "the two independent readings of the cavity's traction differ by \
+         [{lo:.4}, {hi:.4}], outside the measured 1.0074-1.0162 band — on a \
+         patch with a uniform gap they have no room to disagree, so one of them \
+         is not reading the traction",
+    );
+    // Tighter than the plate's, and that ordering is the load-bearing part: if
+    // the cavity ever disagreed MORE than the plate, the heterogeneity reading
+    // of the plate's 6.4 % would be backwards.
+    assert!(
+        hi - 1.0 < 0.064,
+        "the cavity's readings now disagree by {:.1} %, at or beyond the plate's \
+         6.4 % — which inverts the one thing that 6.4 % is currently explained \
+         by (a uniform patch has less room to disagree, not more)",
+        100.0 * (hi - 1.0),
+    );
+}
+
+/// **Is the enveloping patch's `ρ` a property of the GEOMETRY or of the MESH?**
+///
+/// [`the_flat_patchs_nonuniformity_constant_bounds_the_enveloping_patch`]
+/// reports `ρ ≈ 1.18` and this file states that on a sphere — whose gap is
+/// uniform by symmetry — that number is what the DISCRETISATION contributes
+/// rather than what shape irregularity would. That was an explanation with no
+/// referent until this gate; it is now a measurement.
+///
+/// Holds the geometry exactly fixed and moves only `cell_size`. **Measured at
+/// rest contact**: `ρ` = 1.1106 (5 mm) · 1.1759 (4 mm) · 1.0552 (3 mm). It
+/// moves by ±6 % with the mesh alone, which is the claim; it is **not
+/// monotone**, which is not claimed and is not explained here.
+///
+/// ⇒ The `[1.176, 1.221]` range quoted elsewhere in this file is a
+/// `CELL = 4 mm` statement, not a property of a spherical cavity.
+///
+/// `#[ignore]` — three meshes, the finest 19 752 tets.
+#[test]
+#[ignore = "three remeshes of the shell, the finest 19 752 tets — the \
+            measurement behind 'rho here is discretisation, not shape'"]
+fn the_enveloping_patch_nonuniformity_is_a_property_of_the_mesh() {
+    let mut rows = Vec::new();
+    eprintln!(
+        "  {:>9} {:>8} {:>7} {:>12} {:>8}",
+        "cell(mm)", "tets", "pairs", "min_sd(m)", "rho"
+    );
+    for cell in [0.005_f64, 0.004, 0.003] {
+        let tet4 = tet4_shell_at(cell);
+        let mesh = Tet10Mesh::<Yeoh>::from_tet4(&tet4);
+        let pins = outer_skin_pins(&mesh, 0.25 * cell);
+        assert!(!pins.is_empty(), "no outer-skin pin at cell {cell:e} m");
+        let shell_cell = Cell {
+            mesh,
+            pins,
+            rest_advance: REST_BORE_W,
+            pin_label: "outer skin",
+        };
+        let p = shell_cell
+            .press(CAVITY, REST_BORE_W)
+            .map_err(|e| format!("cell {cell:e} m rest contact failed: {e}"))
+            .expect("every cell size must reach rest contact for rho to be compared");
+        let rho = face_barrier_standoff(KAPPA, D_HAT, p.mean_traction) / p.min_sd;
+        eprintln!(
+            "  {:>9.0} {:>8} {:>7} {:>12.4e} {:>8.4}",
+            cell * 1e3,
+            Mesh::<Yeoh>::n_tets(&tet4),
+            p.n_pairs,
+            p.min_sd,
+            rho,
+        );
+        rows.push((cell, rho));
+    }
+
+    let (lo, hi) = rows
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), &(_, r)| {
+            (l.min(r), h.max(r))
+        });
+    assert!(
+        lo > 1.0 && hi < PATCH_NONUNIFORMITY,
+        "rho spans [{lo:.4}, {hi:.4}] across cell sizes, outside \
+         (1, {PATCH_NONUNIFORMITY}) — on a sphere the gap is uniform by \
+         symmetry, so anything here is discretisation and it has left the band \
+         the kappa floor is derived within",
+    );
+    // The claim is that the MESH moves it. If three cell sizes gave the same
+    // rho, that claim would be false and the number would be saying something
+    // about the geometry instead.
+    assert!(
+        hi - lo > 0.02,
+        "rho moved only {:.4} across cell sizes 3-5 mm, so it is NOT \
+         discretisation-driven and this file's explanation of where ~1.18 comes \
+         from is wrong",
+        hi - lo,
     );
 }
