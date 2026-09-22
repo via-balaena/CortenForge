@@ -1147,11 +1147,41 @@ fn intruder_contact_at(
     interference_m: f64,
     cavity_offset_m: f64,
 ) -> PenaltyRigidContact {
+    intruder_contact_at_kappa(
+        intruder,
+        bounds,
+        interference_m,
+        cavity_offset_m,
+        INSERTION_CONTACT_KAPPA,
+    )
+}
+
+/// [`intruder_contact_at`] with the penalty stiffness supplied rather
+/// than read from [`INSERTION_CONTACT_KAPPA`].
+///
+/// Exists so the contact stiffness can be *asked a question* without
+/// changing what ships, the same way
+/// [`run_single_insertion_step_at_tol`] does for the solve tolerance.
+/// The question is specific: the bridge derives its face-barrier `κ`
+/// from a traction `σ` read off this scene, and that derivation is only
+/// a derivation if `σ` is a property of the compressed wall rather than
+/// of the contact stiffness being solved with. On a *stiff* contact it
+/// is — the gap adjusts and the load does not. This scene's gaps sit a
+/// large fraction of the way into a 1 mm band, which is the regime
+/// where that stops being obvious, so it is measured rather than
+/// assumed.
+fn intruder_contact_at_kappa(
+    intruder: &GridSdf,
+    bounds: Aabb,
+    interference_m: f64,
+    cavity_offset_m: f64,
+    contact_kappa: f64,
+) -> PenaltyRigidContact {
     let intruder_solid =
         Solid::from_sdf(intruder.clone(), bounds).offset(interference_m + cavity_offset_m);
     PenaltyRigidContact::with_params_and_smoothing_and_normal_averaging(
         vec![intruder_solid],
-        INSERTION_CONTACT_KAPPA,
+        contact_kappa,
         INSERTION_CONTACT_DHAT,
         INSERTION_CONTACT_SMOOTHING_EPS_M,
         INSERTION_CONTACT_NORMAL_AVG_K,
@@ -2336,6 +2366,26 @@ fn solver_failure_message(failure: &SolverFailure) -> String {
 /// - `n_steps` is zero;
 /// - [`outer_skin_bc`] fails (no outer-skin vertex in the pin-band).
 pub fn run_insertion_ramp(geometry: InsertionGeometry, n_steps: usize) -> Result<InsertionRamp> {
+    run_insertion_ramp_at_kappa(geometry, n_steps, INSERTION_CONTACT_KAPPA)
+}
+
+/// [`run_insertion_ramp`] with the penalty contact stiffness supplied
+/// rather than read from [`INSERTION_CONTACT_KAPPA`] — see
+/// [`intruder_contact_at_kappa`] for why the knob exists.
+///
+/// Everything else about the ramp is unchanged, including the readout
+/// contact, which is rebuilt at the *same* stiffness as the solve so
+/// the reported patch is the one that was actually solved.
+///
+/// # Errors
+///
+/// Identical to [`run_insertion_ramp`]: `n_steps` is zero, or
+/// [`outer_skin_bc`] finds no outer-skin vertex in the pin-band.
+pub fn run_insertion_ramp_at_kappa(
+    geometry: InsertionGeometry,
+    n_steps: usize,
+    contact_kappa: f64,
+) -> Result<InsertionRamp> {
     if n_steps == 0 {
         return Err(anyhow!("insertion ramp needs at least one step"));
     }
@@ -2409,7 +2459,13 @@ pub fn run_insertion_ramp(geometry: InsertionGeometry, n_steps: usize) -> Result
         // k + 1 and n_steps are tiny — well under f64's exact-integer ceiling.
         #[allow(clippy::cast_precision_loss)]
         let interference_m = (k + 1) as f64 / n_steps as f64 * inset_m;
-        let contact = intruder_contact_at(&intruder, bounds, interference_m, cavity_offset_m);
+        let contact = intruder_contact_at_kappa(
+            &intruder,
+            bounds,
+            interference_m,
+            cavity_offset_m,
+            contact_kappa,
+        );
         let solver = CpuNewtonSolver::new(Tet4, mesh.clone(), contact, config, bc.clone());
         let x_prev = Tensor::from_slice(&x_prev_flat, &[n_dof]);
         // `replay_step` panics on non-convergence — catch it so the
@@ -2429,8 +2485,13 @@ pub fn run_insertion_ramp(geometry: InsertionGeometry, n_steps: usize) -> Result
                 // ("inspection_contact" in `scan-fit-3layer-sleeve-
                 // yeoh-ramp`).
                 let positions_k: Vec<Vec3> = positions_from_flat(&step.x_final);
-                let readout_contact =
-                    intruder_contact_at(&intruder, bounds, interference_m, cavity_offset_m);
+                let readout_contact = intruder_contact_at_kappa(
+                    &intruder,
+                    bounds,
+                    interference_m,
+                    cavity_offset_m,
+                    contact_kappa,
+                );
                 let raw_readouts = readout_contact.per_pair_readout(&mesh, &positions_k);
                 let contact_readouts =
                     filter_pair_readouts_to_referenced(raw_readouts, &referenced);
@@ -7052,12 +7113,13 @@ mod tests {
     /// read the patch back out of `x_final` — the same double-build
     /// `run_insertion_ramp` itself uses, for the same reason
     /// (`PenaltyRigidContact` is not `Clone`).
-    fn report_patch_over_ramp(
+    fn patch_over_ramp(
         label: &str,
         geometry: InsertionGeometry,
-        cavity_inset_m: f64,
         n_steps: usize,
-    ) -> Option<PatchStats> {
+        contact_kappa: f64,
+        verbose: bool,
+    ) -> Vec<(f64, PatchStats)> {
         let intruder = geometry.intruder.clone();
         let bounds = geometry.bounds;
         let cavity_offset_m = geometry.cavity_offset_m;
@@ -7066,11 +7128,11 @@ mod tests {
         let n_tets = geometry.n_tets;
 
         let t0 = Instant::now();
-        let ramp = match run_insertion_ramp(geometry, n_steps) {
+        let ramp = match run_insertion_ramp_at_kappa(geometry, n_steps, contact_kappa) {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("  {label}: ramp FAILED to start: {e}");
-                return None;
+                return Vec::new();
             }
         };
         eprintln!(
@@ -7087,18 +7149,30 @@ mod tests {
             );
         }
 
-        print_patch_header();
-        let mut deepest = None;
+        if verbose {
+            print_patch_header();
+        }
+        let mut out = Vec::with_capacity(ramp.steps.len());
         for step in &ramp.steps {
             let positions: Vec<Vec3> = positions_from_flat(&step.x_final);
-            let readout_contact =
-                intruder_contact_at(&intruder, bounds, step.interference_m, cavity_offset_m);
+            // Read the patch back at the SAME stiffness it was solved
+            // at — a readout contact built from the shipped const would
+            // report a patch nobody solved.
+            let readout_contact = intruder_contact_at_kappa(
+                &intruder,
+                bounds,
+                step.interference_m,
+                cavity_offset_m,
+                contact_kappa,
+            );
             let raw = readout_contact.per_pair_readout(&mesh, &positions);
             let filtered = filter_pair_readouts_to_referenced(raw, &referenced);
             match patch_stats(&filtered) {
                 Some(stats) => {
-                    print_patch_row(label, step.interference_m, stats);
-                    deepest = Some(stats);
+                    if verbose {
+                        print_patch_row(label, step.interference_m, stats);
+                    }
+                    out.push((step.interference_m, stats));
                 }
                 None => eprintln!(
                     "  {label:<9} {:>7.3}  no pair with a well-defined pressure \
@@ -7108,8 +7182,7 @@ mod tests {
                 ),
             }
         }
-        let _ = cavity_inset_m;
-        deepest
+        out
     }
 
     /// Report the derived face-barrier bounds this scene's σ and ρ
@@ -7311,8 +7384,8 @@ mod tests {
              cavity {:.1} mm, cell 4 mm, {n_steps} steps",
             cavity_inset_m * 1e3,
         );
-        let Some(stats) = report_patch_over_ramp("sphere", geometry, cavity_inset_m, n_steps)
-        else {
+        let steps = patch_over_ramp("sphere", geometry, n_steps, INSERTION_CONTACT_KAPPA, true);
+        let Some(&(_, stats)) = steps.last() else {
             eprintln!("  no converged step produced a well-defined patch — nothing to report");
             return;
         };
@@ -7322,19 +7395,32 @@ mod tests {
         #[allow(clippy::cast_precision_loss)]
         let ramp_step_m = cavity_inset_m / n_steps as f64;
         report_derived_face_kappa("sphere", stats, ramp_step_m);
+        report_required_marching_increment("sphere", stats, cavity_inset_m, INSERTION_CONTACT_DHAT);
     }
 
     /// **σ and ρ on the real scan** — the two numbers the bridge cannot
     /// derive a face-barrier κ without, on the geometry it will
     /// actually run.
     ///
-    /// Scene is the iter-1 GUI default: `sock_over_capsule.cleaned.stl`
-    /// with ECOFLEX_00_30 + 50 % Slacker 10 mm INNER and
-    /// DRAGON_SKIN_20A 3 mm OUTER, cavity 3 mm, cell 4 mm, cap planes
-    /// from the same `prep.toml` the GUI loads — matching
-    /// [`h4_sweep_sliding_ramp_on_iter1_scan`]'s substrate, but on the
-    /// straight-in [`run_insertion_ramp`] the bridge targets rather
-    /// than the sliding ramp.
+    /// ⭐ **Two scenes, because the recon's depth table is about one of
+    /// them and the product is the other.** Both are
+    /// `sock_over_capsule.cleaned.stl` at cavity 3 mm, cell 4 mm, on
+    /// the straight-in [`run_insertion_ramp`] the bridge targets:
+    ///
+    /// - `1layer` — a single ECOFLEX_00_30 10 mm layer, **no cap
+    ///   planes**. This is [`run_insertion_ramp_on_iter1_scan`]'s
+    ///   scene, and the one
+    ///   `docs/INSERTION_SIM_TET10_RENOVATION_RECON.md` §8's
+    ///   `16/16 @ 3.00 mm` row was read off (68 087 tets). No cap
+    ///   planes routes `pinned_floor_shell` through the closed-cavity
+    ///   short-circuit.
+    /// - `gui-dflt` — ECOFLEX_00_30 + 50 % Slacker 10 mm INNER and
+    ///   DRAGON_SKIN_20A 3 mm OUTER with the `prep.toml`'s cap plane,
+    ///   matching [`h4_sweep_sliding_ramp_on_iter1_scan`]'s substrate
+    ///   and the GUI: an open mouth with a pinned floor (72 935 tets).
+    ///
+    /// They do not reach the same depth, so a σ quoted without its
+    /// scene is a σ quoted at an unstated depth.
     ///
     /// ⛔ **Fails rather than skips when the fixture is missing.** The
     /// other scan probes in this module return early with a `skip:`
@@ -7382,30 +7468,364 @@ mod tests {
 
         let cavity_inset_m = 0.003;
         let n_steps = 16_usize;
-        let design = SimDesign {
-            // Innermost-first, per `SimDesign.layers`.
-            layers: vec![
-                layer_with_slacker(0.010, "ECOFLEX_00_30", 0.5),
-                layer(0.003, "DRAGON_SKIN_20A"),
-            ],
-            cavity_inset_m,
-        };
-        let geometry = build_insertion_geometry(&scan, &design, &cap_planes, 2_500, 0.004)
-            .expect("iter-1 scan geometry should build");
         eprintln!(
-            "REAL SCAN — {} ({} faces), Ecoflex 00-30 + 50% Slacker 10 mm INNER + \
-             DS20A 3 mm OUTER, cavity {:.1} mm, cell 4 mm, {} cap plane(s), {n_steps} steps",
+            "REAL SCAN — {} ({} faces), cavity {:.1} mm, cell 4 mm, {n_steps} steps",
             scan_path.display(),
             scan.faces.len(),
             cavity_inset_m * 1e3,
-            cap_planes.len(),
         );
-        let Some(stats) = report_patch_over_ramp("scan", geometry, cavity_inset_m, n_steps) else {
-            eprintln!("  no converged step produced a well-defined patch — nothing to report");
+
+        // TWO scenes, because the recon's depth table is about the
+        // first and the product is the second, and they are not the
+        // same problem. `run_insertion_ramp_on_iter1_scan` — the test
+        // §8's `16/16 @ 3.00 mm` row was read off — is a single
+        // Ecoflex layer with NO cap planes, which routes
+        // `pinned_floor_shell` through the closed-cavity short-circuit.
+        // The GUI default is the dual-layer stack with the prep.toml's
+        // cap plane, i.e. an open mouth with a pinned floor.
+        let scenes: [(&str, Vec<SimLayer>, bool); 2] = [
+            ("1layer", vec![layer(0.010, "ECOFLEX_00_30")], false),
+            (
+                "gui-dflt",
+                // Innermost-first, per `SimDesign.layers`.
+                vec![
+                    layer_with_slacker(0.010, "ECOFLEX_00_30", 0.5),
+                    layer(0.003, "DRAGON_SKIN_20A"),
+                ],
+                true,
+            ),
+        ];
+        for (label, layers, with_caps) in scenes {
+            let caps: &[CapPlane] = if with_caps { &cap_planes } else { &[] };
+            eprintln!(
+                "\n--- {label}: {} layer(s), {} cap plane(s) ---",
+                layers.len(),
+                caps.len(),
+            );
+            let design = SimDesign {
+                layers,
+                cavity_inset_m,
+            };
+            let geometry = match build_insertion_geometry(&scan, &design, caps, 2_500, 0.004) {
+                Ok(g) => g,
+                Err(e) => {
+                    eprintln!("  {label}: geometry FAILED to build: {e}");
+                    continue;
+                }
+            };
+            let steps = patch_over_ramp(label, geometry, n_steps, INSERTION_CONTACT_KAPPA, true);
+            let Some(&(depth_m, stats)) = steps.last() else {
+                eprintln!("  {label}: no converged step produced a well-defined patch");
+                continue;
+            };
+            eprintln!(
+                "  {label}: deepest converged depth {:.4} mm of {:.4} mm ({:.0} %)",
+                depth_m * 1e3,
+                cavity_inset_m * 1e3,
+                100.0 * depth_m / cavity_inset_m,
+            );
+            #[allow(clippy::cast_precision_loss)]
+            let ramp_step_m = cavity_inset_m / n_steps as f64;
+            report_derived_face_kappa(label, stats, ramp_step_m);
+            report_required_marching_increment(
+                label,
+                stats,
+                cavity_inset_m,
+                INSERTION_CONTACT_DHAT,
+            );
+        }
+    }
+
+    /// How finely the ramp would have to march for the derived κ
+    /// interval to be non-empty at a given band.
+    ///
+    /// The floor `σ / |b'(ρ·step)|` is the only one of the two bounds
+    /// that moves with the marching schedule, so when the interval is
+    /// empty the schedule is a lever on it and the band is the other.
+    /// Holds `σ` and `ρ` fixed while varying the increment, which is
+    /// first-order right — the converged state at a given depth is a
+    /// property of that depth, not of how many increments reached it —
+    /// and is exactly wrong if a finer march converges to a *different*
+    /// state, which is itself worth finding out.
+    fn report_required_marching_increment(
+        label: &str,
+        stats: PatchStats,
+        cavity_inset_m: f64,
+        d_hat: f64,
+    ) {
+        let Some(ceiling) = face_barrier_kappa(d_hat, 0.5 * d_hat, stats.traction_pa) else {
+            eprintln!("  {label}: no ceiling at d_hat = {:.3} mm", d_hat * 1e3);
             return;
         };
-        #[allow(clippy::cast_precision_loss)]
-        let ramp_step_m = cavity_inset_m / n_steps as f64;
-        report_derived_face_kappa("scan", stats, ramp_step_m);
+        eprintln!(
+            "  {label} marching schedule at d_hat = {:.3} mm (ceiling {ceiling:.4e}, \
+             rho {:.3} held fixed)",
+            d_hat * 1e3,
+            stats.rho_gap(),
+        );
+        eprintln!(
+            "  {:>8} {:>10} {:>12} {:>14} {:>12}",
+            "n_steps", "step/mm", "standoff/mm", "floor", "interval",
+        );
+        for n_steps in [16_u32, 32, 64, 128, 256, 512] {
+            let step_m = cavity_inset_m / f64::from(n_steps);
+            let standoff = step_m * stats.rho_gap();
+            let floor = face_barrier_kappa(d_hat, standoff, stats.traction_pa);
+            let verdict = match floor {
+                None => "undefined".to_owned(),
+                Some(f) if f > ceiling => "EMPTY".to_owned(),
+                Some(f) => format!("{:.2} decades", (ceiling / f).log10()),
+            };
+            eprintln!(
+                "  {:>8} {:>10.4} {:>12.4} {:>14} {:>12}",
+                n_steps,
+                step_m * 1e3,
+                standoff * 1e3,
+                floor.map_or_else(|| "undefined".to_owned(), |f| format!("{f:.4e}")),
+                verdict,
+            );
+        }
+    }
+
+    /// **Is σ a property of the compressed wall, or of the contact
+    /// stiffness that compressed it?**
+    ///
+    /// This is the assumption the whole κ derivation rests on, and
+    /// `tet10_yeoh_ipc_convergence` states it in as many words: *"`κ =
+    /// σ / |b'(d)|` is only a derivation if `σ` — the traction the
+    /// compressed plate pushes back with — is a property of the
+    /// material and the compression, not of the barrier stiffness being
+    /// solved for."* That fixture measured it and found σ spanning
+    /// 1.003× while κ spanned decades.
+    ///
+    /// ⚠ **It has no right to hold here, and that is why it is
+    /// measured.** On a stiff contact the gap adjusts and the load does
+    /// not; this scene's gaps sit a large fraction of the way into a
+    /// 1 mm band on a contact 4 orders softer, which is the regime where
+    /// the equilibrium position *is* set by the stiffness.
+    ///
+    /// ⭐ Compares at the deepest depth **every** arm reached, not at
+    /// each arm's own deepest. A stiffer contact may stall earlier, and
+    /// comparing σ at two different depths would be reading the ramp's
+    /// depth dependence as a stiffness dependence.
+    ///
+    /// Asserts nothing — it is the size of the span that is the finding,
+    /// and it is platform-dependent in the same way the stall boundary
+    /// is.
+    ///
+    /// ```text
+    /// cargo test -p cf-sim-research --release --bin cf-sim-research \
+    ///     the_design_traction_is_measured_against_the_stiffness_that_produced_it \
+    ///     -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "release-mode ramp per stiffness — measurement, asserts nothing; run with --ignored --nocapture"]
+    fn the_design_traction_is_measured_against_the_stiffness_that_produced_it() {
+        let cavity_inset_m = 0.003;
+        let n_steps = 16_usize;
+        let design = SimDesign {
+            cavity_inset_m,
+            layers: vec![layer(0.010, "ECOFLEX_00_30")],
+        };
+        eprintln!(
+            "SIGMA vs PENALTY STIFFNESS — synthetic sphere, cavity {:.1} mm, {n_steps} steps. \
+             Shipped kappa is {:.1e}.",
+            cavity_inset_m * 1e3,
+            INSERTION_CONTACT_KAPPA,
+        );
+
+        let mut arms: Vec<(f64, Vec<(f64, PatchStats)>)> = Vec::new();
+        for contact_kappa in [1.0e2_f64, 1.0e3, 1.0e4, 1.0e5] {
+            let scan = icosphere(0.040, 3);
+            let geometry = build_insertion_geometry(&scan, &design, &[], 2_000, 0.004)
+                .expect("synthetic-sphere geometry should build");
+            eprintln!("\n--- penalty kappa = {contact_kappa:.1e} ---");
+            let label = format!("k={contact_kappa:.0e}");
+            let steps = patch_over_ramp(&label, geometry, n_steps, contact_kappa, false);
+            arms.push((contact_kappa, steps));
+        }
+
+        let Some(common) = arms.iter().map(|(_, s)| s.len()).min().filter(|&n| n > 0) else {
+            eprintln!(
+                "  at least one stiffness produced no converged step with a well-defined \
+                 patch — there is no common depth to compare at",
+            );
+            return;
+        };
+        let depth_m = arms[0].1[common - 1].0;
+        eprintln!(
+            "\n  deepest depth every arm reached: step {common}/{n_steps} = {:.4} mm",
+            depth_m * 1e3,
+        );
+        eprintln!(
+            "  {:>10} {:>8} {:>11} {:>11} {:>9} {:>11}",
+            "kappa", "steps", "sigma/kPa", "min_sd/mm", "rho", "cancel",
+        );
+        let mut sigmas = Vec::new();
+        for (contact_kappa, steps) in &arms {
+            let (d, stats) = steps[common - 1];
+            assert!(
+                (d - depth_m).abs() < 1e-12,
+                "the arms must be compared at the same depth; got {d:e} vs {depth_m:e}",
+            );
+            eprintln!(
+                "  {:>10.1e} {:>8} {:>11.2} {:>11.4} {:>9.3} {:>11.1}",
+                contact_kappa,
+                steps.len(),
+                stats.traction_pa * 1e-3,
+                stats.min_sd_m * 1e3,
+                stats.rho_gap(),
+                stats.cancellation(),
+            );
+            sigmas.push(stats.traction_pa);
+        }
+        let (lo, hi) = sigmas
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), &s| {
+                (l.min(s), h.max(s))
+            });
+        eprintln!(
+            "\n  sigma spans {:.4}x while kappa spans {:.0}x.",
+            hi / lo,
+            1.0e5 / 1.0e2,
+        );
+        eprintln!(
+            "  For reference `tet10_yeoh_ipc_convergence` measures 1.003x on its fixture, \
+             which is what licenses calling its kappa DERIVED rather than swept.",
+        );
+    }
+
+    /// The shipped ramp is the delegated one at the shipped stiffness —
+    /// bit for bit.
+    ///
+    /// [`run_insertion_ramp`] now routes through
+    /// [`run_insertion_ramp_at_kappa`], which is a refactor of the
+    /// path every consumer of this module runs. Without this gate the
+    /// delegation could hand the shipped path a different stiffness and
+    /// nothing would fail: the probes that exercise the knob are all
+    /// `#[ignore]`d, and a ramp that converges at the wrong κ still
+    /// converges.
+    ///
+    /// ⭐ Compares `x_final` for **equality**, not closeness. The
+    /// delegation is supposed to be a rename, so anything at all in the
+    /// last bit is a change, and a tolerance here would be a place for
+    /// one to hide.
+    #[test]
+    fn the_shipped_ramp_runs_at_the_shipped_contact_stiffness() {
+        let n_steps = 2;
+        let shipped = run_insertion_ramp(tolerance_fixture(), n_steps)
+            .expect("the shipped ramp must run on the tolerance fixture");
+        let delegated =
+            run_insertion_ramp_at_kappa(tolerance_fixture(), n_steps, INSERTION_CONTACT_KAPPA)
+                .expect("the delegated ramp must run on the tolerance fixture");
+
+        // Two ramps that both converged nothing would compare equal and
+        // assert nothing at all.
+        assert!(
+            !shipped.steps.is_empty(),
+            "the fixture must converge at least one step, or this gate compares two \
+             empty ramps and passes on any stiffness",
+        );
+        assert_eq!(
+            shipped.steps.len(),
+            delegated.steps.len(),
+            "the delegation must converge the same number of steps",
+        );
+        assert_eq!(
+            shipped.n_pinned, delegated.n_pinned,
+            "the delegation must pin the same outer skin",
+        );
+        for (k, (a, b)) in shipped.steps.iter().zip(&delegated.steps).enumerate() {
+            assert_eq!(
+                a.iter_count, b.iter_count,
+                "step {k}: Newton iteration count"
+            );
+            assert_eq!(
+                a.final_residual_norm.to_bits(),
+                b.final_residual_norm.to_bits(),
+                "step {k}: final residual norm",
+            );
+            assert_eq!(
+                a.readout.n_active_contact_pairs, b.readout.n_active_contact_pairs,
+                "step {k}: active contact pair count",
+            );
+            assert_eq!(a.x_final, b.x_final, "step {k}: converged positions");
+        }
+    }
+
+    /// The stiffness knob reaches BOTH the solve and the readout.
+    ///
+    /// [`the_shipped_ramp_runs_at_the_shipped_contact_stiffness`] pins
+    /// the delegation's *default*, and cannot see the argument being
+    /// dropped: at the shipped value a
+    /// [`run_insertion_ramp_at_kappa`] that ignored `contact_kappa`
+    /// entirely would agree with the shipped ramp exactly. Everything
+    /// that exercises a non-shipped stiffness is `#[ignore]`d, so
+    /// without this gate the knob could be inert in CI and the
+    /// stiffness-independence probe would be measuring one κ four
+    /// times while printing four different labels.
+    ///
+    /// Two halves, because there are two places the argument is
+    /// threaded:
+    ///
+    /// - **the readout** — at FIXED positions the penalty traction is
+    ///   linear in κ, so tenfold κ is tenfold σ, exactly;
+    /// - **the solve** — a tenfold stiffer contact must converge
+    ///   somewhere else.
+    #[test]
+    fn the_contact_stiffness_knob_reaches_both_the_solve_and_the_readout() {
+        let geometry = tolerance_fixture();
+        let rest: Vec<Vec3> = geometry.mesh.positions().to_vec();
+        let referenced: Vec<VertexId> = referenced_vertices(&geometry.mesh);
+        let read_at = |kappa: f64| {
+            // `interference_m = 0` sits the intruder flush with the
+            // cavity wall, which is where the rest patch is engaged.
+            let contact = intruder_contact_at_kappa(
+                &geometry.intruder,
+                geometry.bounds,
+                0.0,
+                geometry.cavity_offset_m,
+                kappa,
+            );
+            let raw = contact.per_pair_readout(&geometry.mesh, &rest);
+            patch_stats(&filter_pair_readouts_to_referenced(raw, &referenced))
+        };
+        let base = read_at(INSERTION_CONTACT_KAPPA)
+            .expect("the fixture's cavity wall must carry an active patch at rest");
+        let tenfold = read_at(10.0 * INSERTION_CONTACT_KAPPA)
+            .expect("the fixture's cavity wall must carry an active patch at rest");
+        assert!(
+            base.n_pairs > 0,
+            "an empty patch would make every ratio below 0/0 and this gate vacuous",
+        );
+        assert_eq!(
+            base.n_pairs, tenfold.n_pairs,
+            "the active set is a GAP test, so it must not move with the stiffness",
+        );
+        let ratio = tenfold.traction_pa / base.traction_pa;
+        assert!(
+            (ratio - 10.0).abs() < 1.0e-9,
+            "at fixed positions the penalty traction is linear in κ, so tenfold κ must \
+             be tenfold σ; got {ratio}× — the readout is not using the stiffness it \
+             was handed",
+        );
+
+        let shipped = run_insertion_ramp_at_kappa(tolerance_fixture(), 2, INSERTION_CONTACT_KAPPA)
+            .expect("the fixture must ramp at the shipped stiffness");
+        let stiffer =
+            run_insertion_ramp_at_kappa(tolerance_fixture(), 2, 10.0 * INSERTION_CONTACT_KAPPA)
+                .expect("the fixture must ramp at ten times the shipped stiffness");
+        assert!(
+            !shipped.steps.is_empty() && !stiffer.steps.is_empty(),
+            "both arms must converge a step, or the comparison below compares nothing \
+             (shipped {} steps, stiffer {} steps)",
+            shipped.steps.len(),
+            stiffer.steps.len(),
+        );
+        assert_ne!(
+            shipped.steps[0].x_final, stiffer.steps[0].x_final,
+            "a tenfold stiffer contact must converge somewhere else; identical positions \
+             mean the stiffness never reached the solve",
+        );
     }
 }
