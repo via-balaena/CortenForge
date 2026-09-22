@@ -233,9 +233,24 @@
 //!   is the right model where the book prefers Ogden.
 //!   ⚠ The principal stretches themselves are not read out here; 1.47 is a
 //!   bound from the geometry, not the tensor.
-//! - **Graded materials.** One anchor everywhere. `insertion_sim` carries a
-//!   layered per-tet Yeoh field, and the material-validity wall row 23 hit was
-//!   a per-tet event at one tet.
+//! - ~~**Graded materials.**~~ **No longer true.** The shell now also carries
+//!   `insertion_sim`'s row-23 stack (Ecoflex 00-20 / Dragon Skin 10A / Dragon
+//!   Skin 20A, innermost first) through the same `LayeredScalarField` keyed on
+//!   the cavity SDF. Grading costs **32 % of the depth** (3.220 mm against
+//!   4.720 mm) and stiffens the wall by only **1.22-1.72x** where a
+//!   volume-weighted modulus predicts 3.48x — the load enters through the
+//!   layer at the bore, which is SOFTER than the uniform baseline, so the
+//!   layers load in series and the volume share is the wrong weight —
+//!   measured by inverting the stack, which a volume average cannot see:
+//!   1.3320 -> **2.3104**, so arrangement alone moves it 74 %. The
+//!   stiffening is **linear-elastic**: holding ν fixed, the linear modulus
+//!   carries 18.5x what Yeoh's `C₂` does.
+//!   Both of 3a's readings survive: `rho` stays inside
+//!   [`PATCH_NONUNIFORMITY`] and the net force still cancels.
+//!   ⛔ What remains unseen here is narrower and stated at
+//!   [`the_interface_flag_cannot_isolate_a_layer_boundary_at_this_cell_size`]:
+//!   at `CELL` = 4 mm the straddle flag selects 40-63 % of the mesh, so this
+//!   fixture says nothing about a layer boundary RESOLVED as a seam.
 //! - ~~**A derived `κ`.**~~ **No longer true — see the `κ` bullet above.** `κ`
 //!   is now computed from the face barrier's own traction relation, and
 //!   `kappa_is_derived_and_not_swept` re-derives it on every build. What
@@ -255,16 +270,22 @@
     clippy::cast_sign_loss
 )]
 
+use std::sync::OnceLock;
+
 use nalgebra::Point3;
 use sim_ml_chassis::Tensor;
+use sim_soft::Material;
 use sim_soft::element::{Tet4, Tet10};
-use sim_soft::material::silicone_table::ECOFLEX_00_30;
+use sim_soft::material::silicone_table::{
+    DRAGON_SKIN_10A, DRAGON_SKIN_20A, ECOFLEX_00_20, ECOFLEX_00_30, SiliconeMaterial,
+};
 use sim_soft::{
     Aabb3, ActivePairsFor, BoundaryConditions, ConstantField, ContactPair, CpuNewtonSolver,
-    DifferenceSdf, IpcRigidContact, MaterialField, Mesh, MeshingHints, NeoHookean, RigidPlane, Sdf,
-    SdfMeshedTetMesh, Solver, SolverConfig, SolverFailure, SphereSdf, Tet10Mesh, TetId,
-    TranslatedSdf, Vec3, VertexId, Yeoh, barrier_derivative, boundary_faces_on_isosurface,
-    face_barrier_kappa, face_barrier_standoff, peak_contact_pressure, referenced_vertices,
+    DifferenceSdf, Field, IpcRigidContact, LayeredScalarField, MaterialField, Mesh, MeshingHints,
+    NeoHookean, RigidPlane, Sdf, SdfMeshedTetMesh, Solver, SolverConfig, SolverFailure, SphereSdf,
+    Tet10Mesh, TetId, TranslatedSdf, Vec3, VertexId, Yeoh, barrier_derivative,
+    boundary_faces_on_isosurface, face_barrier_kappa, face_barrier_standoff, peak_contact_pressure,
+    referenced_vertices,
 };
 
 // ── fixture geometry ────────────────────────────────────────────────
@@ -930,6 +951,13 @@ fn tet10_yeoh_takes_the_face_path_and_tet4_yeoh_takes_the_vertex_path() {
 
 // ── the measurement ─────────────────────────────────────────────────
 
+/// One rung of a ramp: the indenter advance (m) and what the solve made of it.
+///
+/// Named because the raw tuple appears in every ramp signature and in the
+/// cached accessors' return types, where `clippy::type_complexity` is right
+/// that it had stopped being readable.
+type Rung = (f64, Result<Press, String>);
+
 /// What one quasi-static press did — the convergence numbers **and** the
 /// loading witness that says whether they describe a real load case.
 ///
@@ -938,7 +966,7 @@ fn tet10_yeoh_takes_the_face_path_and_tet4_yeoh_takes_the_vertex_path() {
 /// equilibrium immediately. The last three fields are what separate the two.
 /// Without them "Tet10 × Yeoh converges" would be a claim about an unloaded
 /// plate wearing the words of a claim about contact.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Press {
     iters: usize,
     residual: f64,
@@ -1016,7 +1044,7 @@ struct Press {
     /// barrier itself integrates, read back at the converged pose.
     ///
     /// The plate is where the two definitions are checked against each other —
-    /// see [`the_traction_mean_agrees_with_force_over_area_on_the_plate`].
+    /// see [`the_force_free_traction_tracks_force_over_area_on_the_plate`].
     ///
     /// [`net_force_z`]: Press::net_force_z
     mean_traction: f64,
@@ -1151,7 +1179,7 @@ fn step_inputs(rest: &[f64]) -> (Tensor<f64>, Tensor<f64>, Tensor<f64>) {
 /// come back as an `Err` variant naming which one fired, where the panicking
 /// path would only abort. Which surface fires is the finding.
 fn press_tet10_yeoh(setup: Setup, plane_h: f64) -> Result<Press, String> {
-    Cell::plate().press(setup, plane_h)
+    plate_cell().press(setup, plane_h)
 }
 
 /// A Tet10 × Yeoh body and the boundary set that holds it.
@@ -1187,6 +1215,34 @@ impl Cell {
     /// The thick spherical shell, outer skin pinned.
     fn shell() -> Self {
         let mesh = Tet10Mesh::<Yeoh>::from_tet4(&tet4_shell());
+        let pins = outer_skin_pins(&mesh, OUTER_SKIN_BAND);
+        Self {
+            mesh,
+            pins,
+            rest_advance: REST_BORE_W,
+            pin_label: "outer skin",
+        }
+    }
+
+    /// The same shell carrying the three-layer stack instead of one anchor.
+    fn graded_shell() -> Self {
+        Self::capped_shell([
+            STACK[0].validity_max_principal_stretch,
+            STACK[1].validity_max_principal_stretch,
+            STACK[2].validity_max_principal_stretch,
+        ])
+    }
+
+    /// The graded shell with its per-layer tensile caps overridden — the lever
+    /// [`the_per_tet_validity_gate_fires_in_the_layer_that_owns_the_cap`]
+    /// pulls, since the real caps sit far above anything this cell reaches.
+    fn capped_shell(caps: [f64; 3]) -> Self {
+        Self::shell_with(graded_field_capped(caps))
+    }
+
+    /// The shell carrying an arbitrary material field.
+    fn shell_with(field: MaterialField) -> Self {
+        let mesh = Tet10Mesh::<Yeoh>::from_tet4(&tet4_shell_with(CELL, field));
         let pins = outer_skin_pins(&mesh, OUTER_SKIN_BAND);
         Self {
             mesh,
@@ -1252,7 +1308,7 @@ impl Cell {
     /// each converged state, and stop at the first rung that fails.
     ///
     /// Returns one entry per attempted advance.
-    fn ramp(&self, setup: Setup, step: f64, max_advance: f64) -> Vec<(f64, Result<Press, String>)> {
+    fn ramp(&self, setup: Setup, step: f64, max_advance: f64) -> Vec<Rung> {
         let rest = rest_dofs(&self.mesh);
         let mut x_prev = rest.clone();
         let mut out = Vec::new();
@@ -1439,8 +1495,58 @@ const GATE_MAX_PLANE_H: f64 = 0.0010;
 /// Returns one entry per attempted plane height. The mesh, pins and rest
 /// configuration are built once; only the contact primitive changes per rung,
 /// which is the same per-increment rebuild `tet10_indentation_demand1` uses.
-fn ramp_tet10_yeoh(setup: Setup, step: f64, max_plane_h: f64) -> Vec<(f64, Result<Press, String>)> {
-    Cell::plate().ramp(setup, step, max_plane_h)
+fn ramp_tet10_yeoh(setup: Setup, step: f64, max_plane_h: f64) -> Vec<Rung> {
+    plate_cell().ramp(setup, step, max_plane_h)
+}
+
+// ── shared fixtures ─────────────────────────────────────────────────
+//
+// Meshing and Tet10 enrichment cost more than a shallow ramp does, and neither
+// depends on where the indenter is — so each cell is built once per test
+// binary rather than once per gate. `OnceLock` because the harness runs tests
+// on several threads and `get_or_init` is the only initialisation that is
+// safe under that without a lock held across the solve.
+
+/// The 40 × 40 × 12 mm plate, built once.
+fn plate_cell() -> &'static Cell {
+    static CELL_ONCE: OnceLock<Cell> = OnceLock::new();
+    CELL_ONCE.get_or_init(Cell::plate)
+}
+
+/// The uniform thick spherical shell, built once.
+fn shell_cell() -> &'static Cell {
+    static CELL_ONCE: OnceLock<Cell> = OnceLock::new();
+    CELL_ONCE.get_or_init(Cell::shell)
+}
+
+/// The graded shell, built once.
+fn graded_cell() -> &'static Cell {
+    static CELL_ONCE: OnceLock<Cell> = OnceLock::new();
+    CELL_ONCE.get_or_init(Cell::graded_shell)
+}
+
+/// The always-on plate ramp at [`BASELINE`], solved once and shared.
+///
+/// ⚠ Cached by NOTHING but the fact that every always-on caller asks for the
+/// same `(setup, step, depth)`. A caller wanting different parameters must
+/// call [`ramp_tet10_yeoh`] directly — this returns the `BASELINE` ramp
+/// whatever it is asked, because it is not asked.
+fn plate_rungs() -> &'static [Rung] {
+    static RUNGS: OnceLock<Vec<Rung>> = OnceLock::new();
+    RUNGS.get_or_init(|| ramp_tet10_yeoh(BASELINE, RAMP_STEP, GATE_MAX_PLANE_H))
+}
+
+/// The always-on uniform cavity ramp, solved once and shared across the four
+/// gates that read it.
+fn cavity_rungs() -> &'static [Rung] {
+    static RUNGS: OnceLock<Vec<Rung>> = OnceLock::new();
+    RUNGS.get_or_init(|| ramp_cavity(CAVITY, RAMP_STEP, CAVITY_GATE_MAX_W))
+}
+
+/// The always-on graded cavity ramp, solved once and shared.
+fn graded_rungs() -> &'static [Rung] {
+    static RUNGS: OnceLock<Vec<Rung>> = OnceLock::new();
+    RUNGS.get_or_init(|| ramp_graded(CAVITY_GATE_MAX_W))
 }
 
 /// Does the ramp reach strain where Yeoh actually differs from Neo-Hookean?
@@ -1480,8 +1586,8 @@ fn tet10_yeoh_convergence_envelope_under_increasing_compression() {
         RAMP_STEP * 1e3,
     );
 
-    let rungs = ramp_tet10_yeoh(BASELINE, RAMP_STEP, GATE_MAX_PLANE_H);
-    for (h, r) in &rungs {
+    let rungs = plate_rungs();
+    for (h, r) in rungs {
         match r {
             // `defl` is the largest nodal displacement as a fraction of plate
             // thickness. An earlier revision printed plane travel here and
@@ -2691,17 +2797,40 @@ fn tet4_shell() -> SdfMeshedTetMesh<Yeoh> {
 
 /// The shell meshed at an arbitrary cell size — the geometry held fixed while
 /// the discretisation moves, which is what
-/// [`the_enveloping_patch_nonuniformity_is_a_property_of_the_MESH`] needs.
+/// [`the_enveloping_patch_nonuniformity_is_a_property_of_the_mesh`] needs.
 fn tet4_shell_at(cell: f64) -> SdfMeshedTetMesh<Yeoh> {
+    tet4_shell_with(cell, yeoh_field())
+}
+
+/// The shell meshed at `cell` carrying `field` — the seam the graded cell
+/// enters through. `tet4_shell_at` is this with the uniform field.
+fn tet4_shell_with(cell: f64, field: MaterialField) -> SdfMeshedTetMesh<Yeoh> {
     let hints = MeshingHints {
         bbox: Aabb3::new(
             Vec3::new(-R_OUTER - cell, -R_OUTER - cell, -R_OUTER - cell),
             Vec3::new(R_OUTER + cell, R_OUTER + cell, R_OUTER + cell),
         ),
         cell_size: cell,
-        material_field: Some(yeoh_field()),
+        material_field: Some(field),
     };
     SdfMeshedTetMesh::<Yeoh>::from_sdf_yeoh(&shell(), &hints).expect("mesh the Yeoh shell")
+}
+
+/// The layer stack, innermost first — `insertion_sim`'s row-23 anchors.
+const STACK: [SiliconeMaterial; 3] = [ECOFLEX_00_20, DRAGON_SKIN_10A, DRAGON_SKIN_20A];
+
+/// Internal layer boundaries as offsets outward from the cavity wall (m),
+/// so three 4 mm layers across the 12 mm wall: r = 14 mm and r = 18 mm.
+const LAYER_BOUNDARIES: [f64; 2] = [0.004, 0.008];
+
+/// [`STACK`] over the wall, keyed on the cavity SDF exactly as
+/// `insertion_sim::layered_param_field` keys on the scan SDF.
+fn graded_yeoh_field() -> MaterialField {
+    graded_field_capped([
+        STACK[0].validity_max_principal_stretch,
+        STACK[1].validity_max_principal_stretch,
+        STACK[2].validity_max_principal_stretch,
+    ])
 }
 
 /// Outer-skin vertex ids — the pinned set.
@@ -2755,8 +2884,8 @@ const CAVITY: Setup = Setup {
 
 /// March the bore outward inside the cavity, re-solving from each converged
 /// state. The enveloping sibling of [`ramp_tet10_yeoh`].
-fn ramp_cavity(setup: Setup, step: f64, max_w: f64) -> Vec<(f64, Result<Press, String>)> {
-    Cell::shell().ramp(setup, step, max_w)
+fn ramp_cavity(setup: Setup, step: f64, max_w: f64) -> Vec<Rung> {
+    shell_cell().ramp(setup, step, max_w)
 }
 
 /// How far the always-on cavity gate drives the bore (m).
@@ -3083,8 +3212,9 @@ fn the_enveloping_patch_cancels_the_net_force_the_flat_patch_reports() {
 #[test]
 fn the_force_free_traction_tracks_force_over_area_on_the_plate() {
     let area = flat_contact_area();
-    let rungs: Vec<Press> = ramp_tet10_yeoh(BASELINE, RAMP_STEP, GATE_MAX_PLANE_H)
-        .into_iter()
+    let rungs: Vec<Press> = plate_rungs()
+        .iter()
+        .cloned()
         .map(|(h, r)| {
             r.map_err(|e| format!("plate rung {h:e} m failed: {e}"))
                 .expect("every plate rung must converge for the two definitions to be compared")
@@ -3157,7 +3287,7 @@ fn the_force_free_traction_tracks_force_over_area_on_the_plate() {
 /// outer skin, as `insertion_sim`'s `outer_skin_bc` pins it).
 #[test]
 fn tet10_yeoh_converges_against_a_closing_cavity() {
-    let rungs = ramp_cavity(CAVITY, RAMP_STEP, CAVITY_GATE_MAX_W);
+    let rungs = cavity_rungs();
     eprintln!(
         "cavity ramp  [R_cav {:.0} mm, wall {:.0} mm, kappa {KAPPA:e}, d_hat {D_HAT:e} m]",
         R_CAVITY * 1e3,
@@ -3168,7 +3298,7 @@ fn tet10_yeoh_converges_against_a_closing_cavity() {
         "w(mm)", "it", "resid", "trac(kPa)", "min_sd", "rho", "pairs",
     );
     let mut ok = Vec::new();
-    for (w, r) in &rungs {
+    for (w, r) in rungs {
         match r {
             Ok(p) => {
                 let rho = face_barrier_standoff(KAPPA, D_HAT, p.mean_traction) / p.min_sd;
@@ -3276,8 +3406,9 @@ fn tet10_yeoh_converges_against_a_closing_cavity() {
 /// `#[ignore]`d and runs in no CI job.
 #[test]
 fn the_flat_patchs_nonuniformity_constant_bounds_the_enveloping_patch() {
-    let rho: Vec<f64> = ramp_cavity(CAVITY, RAMP_STEP, CAVITY_GATE_MAX_W)
-        .into_iter()
+    let rho: Vec<f64> = cavity_rungs()
+        .iter()
+        .cloned()
         .map(|(w, r)| {
             let p = r
                 .map_err(|e| format!("cavity rung {w:e} m failed: {e}"))
@@ -3456,7 +3587,7 @@ fn how_deep_does_the_closing_cavity_converge() {
 /// and this gate does not claim to.
 #[test]
 fn the_force_free_traction_agrees_with_an_independent_reading_on_the_cavity() {
-    let cell = Cell::shell();
+    let cell = shell_cell();
     let (_, cavity_area_rest) = boundary_faces_on_isosurface(
         Mesh::<Yeoh>::positions(&cell.mesh),
         Mesh::<Yeoh>::boundary_faces(&cell.mesh),
@@ -3478,7 +3609,7 @@ fn the_force_free_traction_agrees_with_an_independent_reading_on_the_cavity() {
         "sum|f|/A(Pa)",
         "ratio",
     );
-    for (w, r) in cell.ramp(CAVITY, RAMP_STEP, CAVITY_GATE_MAX_W) {
+    for (w, r) in cavity_rungs().iter().cloned() {
         let p = r
             .map_err(|e| format!("cavity rung {w:e} m failed: {e}"))
             .expect("every cavity rung must converge for the two readings to be compared");
@@ -3591,5 +3722,1181 @@ fn the_enveloping_patch_nonuniformity_is_a_property_of_the_mesh() {
          discretisation-driven and this file's explanation of where ~1.18 comes \
          from is wrong",
         hi - lo,
+    );
+}
+
+/// `STACK` with per-layer tensile caps overridden — the fail-close lever.
+fn graded_field_capped(caps: [f64; 3]) -> MaterialField {
+    graded_field_with(
+        [STACK[0].mu, STACK[1].mu, STACK[2].mu],
+        [STACK[0].c2, STACK[1].c2, STACK[2].c2],
+        [STACK[0].lambda, STACK[1].lambda, STACK[2].lambda],
+        caps,
+    )
+}
+
+/// Every per-layer parameter given explicitly — the seam
+/// [`the_graded_stiffening_is_carried_by_the_linear_modulus`] needs, because
+/// flattening one
+/// parameter while the others stay graded is the only way to attribute the
+/// response to a parameter rather than to "the material".
+fn graded_field_with(
+    mu: [f64; 3],
+    c2: [f64; 3],
+    lambda: [f64; 3],
+    caps: [f64; 3],
+) -> MaterialField {
+    fn layered(values: [f64; 3]) -> Box<dyn Field<f64>> {
+        Box::new(LayeredScalarField::new(
+            Box::new(SphereSdf { radius: R_CAVITY }),
+            LAYER_BOUNDARIES.to_vec(),
+            values.to_vec(),
+        ))
+    }
+    MaterialField::from_yeoh_fields_with_bounds(
+        layered(mu),
+        layered(c2),
+        layered(lambda),
+        layered(caps),
+        layered([
+            STACK[0].validity_min_principal_stretch,
+            STACK[1].validity_min_principal_stretch,
+            STACK[2].validity_min_principal_stretch,
+        ]),
+    )
+}
+
+// ── the graded wall ─────────────────────────────────────────────────
+
+/// Shallow graded ramp — the always-on depth, matching [`ramp_cavity`].
+fn ramp_graded(max_w: f64) -> Vec<Rung> {
+    graded_cell().ramp(CAVITY, RAMP_STEP, max_w)
+}
+
+/// Mean of `tet`'s six edge lengths (m) — the `L_e` the straddle rule compares
+/// against.
+///
+/// Mirrors `interface_flags_from_field`'s own six-edge mean
+/// (`sim/L0/soft/src/mesh/mod.rs`), recomputed here so the saturation claim
+/// rests on a number this fixture measures rather than one quoted from a
+/// sizing probe that no longer exists.
+fn mean_edge_length<M: sim_soft::Material>(mesh: &dyn Mesh<M>, tet: TetId) -> f64 {
+    let positions = mesh.positions();
+    let v = mesh.tet_vertices(tet);
+    let edge = |a: usize, b: usize| (positions[v[a] as usize] - positions[v[b] as usize]).norm();
+    (edge(0, 1) + edge(0, 2) + edge(0, 3) + edge(1, 2) + edge(1, 3) + edge(2, 3)) / 6.0
+}
+
+/// Rest-configuration centroid radius of `tet` (m) — the coordinate the layer
+/// stack is keyed on, so it is what says which layer a tet belongs to.
+fn centroid_radius<M: sim_soft::Material>(mesh: &dyn Mesh<M>, tet: TetId) -> f64 {
+    let positions = mesh.positions();
+    let verts = mesh.tet_vertices(tet);
+    (verts.iter().map(|&v| positions[v as usize]).sum::<Vec3>() * 0.25).norm()
+}
+
+/// Per-tet `(cap, count, min centroid radius, max centroid radius)` over the
+/// graded shell, one entry per distinct tensile cap, innermost band first.
+///
+/// The cap is the label because the three anchors carry three distinct ones
+/// (7.56 / 8.80 / 5.76) and [`Yeoh`] exposes no modulus accessor. ⚠ That makes
+/// this a statement about the mesh, NOT about the energy — the solver carries
+/// the cap but never evaluates it unless a violation fires.
+/// [`the_graded_walls_stiffness_is_set_by_the_layer_the_load_enters`] is the
+/// partner gate that reads the moduli through the solve.
+fn graded_bands() -> &'static [(f64, usize, f64, f64)] {
+    static BANDS: OnceLock<Vec<(f64, usize, f64, f64)>> = OnceLock::new();
+    BANDS.get_or_init(build_graded_bands)
+}
+
+/// The graded Tet4 mesh, built once — `graded_bands` and the population
+/// assertion both need it, and meshing it twice was the same duplication the
+/// ramp caches removed.
+fn graded_tet4() -> &'static SdfMeshedTetMesh<Yeoh> {
+    static MESH: OnceLock<SdfMeshedTetMesh<Yeoh>> = OnceLock::new();
+    MESH.get_or_init(|| tet4_shell_with(CELL, graded_yeoh_field()))
+}
+
+fn build_graded_bands() -> Vec<(f64, usize, f64, f64)> {
+    let mesh = graded_tet4();
+    let mut bands: Vec<(f64, usize, f64, f64)> = Vec::new();
+    for (tet, material) in Mesh::<Yeoh>::materials(mesh).iter().enumerate() {
+        let cap = material
+            .validity()
+            .max_principal_stretch
+            .unwrap_or(f64::NAN);
+        let radius = centroid_radius(mesh, tet as TetId);
+        match bands.iter_mut().find(|b| (b.0 - cap).abs() < 1e-12) {
+            Some(band) => {
+                band.1 += 1;
+                band.2 = band.2.min(radius);
+                band.3 = band.3.max(radius);
+            }
+            None => bands.push((cap, 1, radius, radius)),
+        }
+    }
+    bands.sort_by(|a, b| a.2.total_cmp(&b.2));
+    bands
+}
+
+/// **Does the layer stack reach the mesh, keyed on radius and the right way
+/// round?**
+///
+/// The cheapest thing that can be wrong about a graded field is also the
+/// hardest to see downstream: a sign flip applies the stack outward-in, a
+/// threshold in the wrong units collapses it to one material, and the solve
+/// still converges and still reports plausible numbers in every case. So this
+/// pins the partition itself — three populations, each confined to its band,
+/// soft side at the bore.
+///
+/// ⚠ **Equal thickness is not equal population on a sphere, and it is not the
+/// `r³` volume share either.** Three 4 mm layers hold 17.6 / 26.4 / 56.0 % of
+/// the tets where the volume shares are 19.0 / 33.8 / 47.2 %. The counts are
+/// lattice-quantised (1536 = 3 · 512, 2304 = 9 · 256), so continuum arithmetic
+/// mis-sizes the middle layer by 18 %. Measure the split; do not derive it.
+#[test]
+fn the_layer_stack_partitions_the_wall_by_radius() {
+    let bands = graded_bands();
+    for (cap, count, lo, hi) in bands {
+        eprintln!(
+            "  cap {cap:.2} : {count:5} tets, centroid r [{:.2}, {:.2}] mm",
+            lo * 1e3,
+            hi * 1e3,
+        );
+    }
+
+    assert_eq!(
+        bands.len(),
+        STACK.len(),
+        "the graded field produced {} distinct per-tet materials, not the {} \
+         the stack declares — a collapsed partition still solves and still \
+         reports plausible numbers, which is why this is asserted and not \
+         inferred",
+        bands.len(),
+        STACK.len(),
+    );
+    assert_eq!(
+        bands.iter().map(|b| b.1).collect::<Vec<_>>(),
+        vec![1536, 2304, 4896],
+        "the layer populations moved. They are a function of `CELL`, \
+         `LAYER_BOUNDARIES` and the shell geometry alone, so re-measure and \
+         re-pin deliberately rather than loosening this",
+    );
+    assert_eq!(
+        bands.iter().map(|b| b.1).sum::<usize>(),
+        Mesh::<Yeoh>::n_tets(graded_tet4()),
+        "the bands do not account for every tet",
+    );
+
+    // Each band confined between the boundaries that define it — EXACTLY, with
+    // no tolerance, and the reason is worth stating because the obvious
+    // version of this check is nearly vacuous.
+    //
+    // `materials_from_field`'s `cache_walk` samples the field at
+    // `(v0 + v1 + v2 + v3) * 0.25` (`sim/L0/soft/src/material/material_field.rs`),
+    // which is the same expression [`centroid_radius`] recomputes. So a tet's
+    // band is *decided* by the quantity compared here and cannot be off by any
+    // margin at all. Comparisons run in the field's own space — `radius −
+    // R_CAVITY` against [`LAYER_BOUNDARIES`], not `radius` against a
+    // precomputed edge — so the two sides associate their arithmetic the same
+    // way and the boundary convention (`phi == threshold` lands in the OUTER
+    // shell) is reproduced rather than approximated.
+    //
+    // ⚠ A first cut allowed `± CELL`. That is ±4 mm on 4 mm layers: a
+    // partition shifted by a whole layer passes it. The gate stayed honest
+    // only because the population counts above are pinned.
+    for (i, (cap, _, lo, hi)) in bands.iter().enumerate() {
+        if let Some(inner) = i.checked_sub(1).and_then(|j| LAYER_BOUNDARIES.get(j)) {
+            assert!(
+                lo - R_CAVITY >= *inner,
+                "band {i} (cap {cap:.2}) starts at {:.3} mm from the bore, \
+                 inside its own lower boundary at {:.3} mm — the field is not \
+                 keyed on the centroid radius this reads",
+                (lo - R_CAVITY) * 1e3,
+                inner * 1e3,
+            );
+        }
+        if let Some(outer) = LAYER_BOUNDARIES.get(i) {
+            assert!(
+                hi - R_CAVITY < *outer,
+                "band {i} (cap {cap:.2}) reaches {:.3} mm from the bore, at or \
+                 past its upper boundary at {:.3} mm",
+                (hi - R_CAVITY) * 1e3,
+                outer * 1e3,
+            );
+        }
+    }
+    // The outer extremes are a MESH property, not a field one: nothing forces
+    // a tet straddling a curved surface to keep its centroid inside the body.
+    // Measured [10.03, 21.65] mm, so it holds here and is asserted as what it
+    // is rather than folded into the exact checks above.
+    assert!(
+        bands[0].2 >= R_CAVITY && bands[bands.len() - 1].3 <= R_OUTER,
+        "centroids run [{:.2}, {:.2}] mm, outside the shell's [{:.2}, {:.2}] mm \
+         — the mesher placed a centroid beyond the body it meshed",
+        bands[0].2 * 1e3,
+        bands[bands.len() - 1].3 * 1e3,
+        R_CAVITY * 1e3,
+        R_OUTER * 1e3,
+    );
+
+    // Soft side at the bore. `insertion_sim` builds the stack innermost-first
+    // and layer 0 is what touches the intruder; an inverted stack is the one
+    // error that leaves every count above unchanged.
+    let caps: Vec<f64> = bands.iter().map(|b| b.0).collect();
+    let declared: Vec<f64> = STACK
+        .iter()
+        .map(|m| m.validity_max_principal_stretch)
+        .collect();
+    assert_eq!(
+        caps, declared,
+        "the caps run {caps:?} from the bore outward but the stack declares \
+         {declared:?} — the layer order is reversed, which no population count \
+         can see",
+    );
+}
+
+/// **Do the per-tet moduli reach the ENERGY, or only the mesh?**
+///
+/// [`the_layer_stack_partitions_the_wall_by_radius`] reads the per-tet
+/// validity cap, which the solver carries but never evaluates unless a
+/// violation fires — so it would pass unchanged against a field whose `μ` was
+/// constant. This is its partner: the same ramp on the uniform and graded
+/// cells, and the only thing that differs between them is the material.
+///
+/// ⭐⭐ **The measured stiffening is half what a volume average predicts, and
+/// that is the transferable finding.** Volume-weighting the stack gives
+/// 79.9 kPa against Ecoflex 00-30's 23.0 kPa — a 3.48× body. The ramp reads
+/// **1.222× at rest rising to 1.332×** over this gate's depth (and 1.719× at
+/// the convergence wall, in
+/// [`how_deep_does_the_graded_cavity_converge`]).
+///
+/// The reason has a consequence, so it is worth stating: **the load enters at
+/// the bore, and there the graded stack is SOFTER than the uniform baseline**
+/// — Ecoflex 00-20 at 18 kPa against 00-30's 23 kPa. The Dragon Skin shells
+/// carrying 56 % of the volume sit far from the contact and up against the
+/// pinned skin. The layers load in series, not in parallel, so the volume
+/// share is the wrong weight. ⇒ **sizing a graded sleeve from a volume-averaged
+/// modulus over-predicts its stiffness by about 2×.**
+///
+/// ⭐ **That explanation is measured, not asserted.**
+/// [`the_stiffening_follows_the_layer_at_the_bore`] inverts the stack — same
+/// anchors, same volume fractions, so the same order-blind 3.4759× volume
+/// weighting — and the stiffening goes 1.3320 → **2.3104**. Arrangement alone
+/// moves the answer 74 %, which is the falsifier the series claim needed and
+/// did not have when it was first written.
+///
+/// ⭐ **The estimator finding does not depend on WHICH modulus is averaged.**
+/// Volume-weighting gives 3.476× for `μ`, 3.476× for `λ` and 3.453× for `C₂`,
+/// because the anchors are a self-similar family
+/// ([`the_stack_is_a_self_similar_family`]). So this is a statement about
+/// volume-averaging a graded wall, not about `μ` in particular.
+///
+/// ⚠⚠ **Two earlier revisions of this comment attributed the effect to a
+/// single Lamé parameter — first `μ`, then `λ` — and BOTH were wrong.** The
+/// first was caught by a surviving mutation; the second only by asking what
+/// the parameters physically are. `λ = 4μ` exactly for every anchor, so
+/// holding one fixed while the other grades produces a body whose ν varies by
+/// layer, which is not a silicone. There is no `μ`-versus-`λ` split to make,
+/// and the "`λ` leads because the shell is sealed" reasoning built on it is
+/// **retracted**. The split that is physical —
+/// [`the_graded_stiffening_is_carried_by_the_linear_modulus`] — holds ν fixed
+/// and finds the linear modulus carries **18.5×** what `C₂` does.
+///
+/// ⚠ **The open-mouth caveat stands, on its own evidence rather than on that
+/// reasoning.** Item 3a independently measured that this sealed cell forces
+/// 22.7 % volumetric compression at depth and is therefore stiffer than the
+/// open-mouth sleeve it proxies. ⇒ read the band as an **upper bound** for
+/// `insertion_sim`, because the CELL is stiffer, not because of anything about
+/// which parameter carries the grading.
+///
+/// The ratio *rising* with depth is the same mechanism seen from the other
+/// side: as the wall compresses, load transfers outward into the stiff layers.
+#[test]
+fn the_graded_walls_stiffness_is_set_by_the_layer_the_load_enters() {
+    let uniform = cavity_rungs();
+    let graded = graded_rungs();
+    assert_eq!(
+        uniform.len(),
+        graded.len(),
+        "the two cells did not ramp over the same advances, so no rung-by-rung \
+         ratio below is comparing like with like",
+    );
+    let rungs = &graded;
+    // ⛔ An empty or truncated ramp makes every `all(..)` below vacuously
+    // true. Assert the collection reached the declared depth, not just that
+    // nothing in it was wrong.
+    assert!(
+        rungs.len() > 1 && rungs.last().is_some_and(|(w, _)| *w >= CAVITY_GATE_MAX_W),
+        "the ramp produced {} rungs ending at {:?} mm, short of the declared \
+         {:.3} mm — every `all(..)` over it below would pass on an empty set",
+        rungs.len(),
+        rungs.last().map(|(w, _)| w * 1e3),
+        CAVITY_GATE_MAX_W * 1e3,
+    );
+
+    let mut ratios = Vec::new();
+    for ((w, u), (wg, g)) in uniform.iter().zip(graded) {
+        let u = u
+            .as_ref()
+            .expect("the uniform cell must converge over this gate's depth");
+        let g = g
+            .as_ref()
+            .expect("the graded cell must converge over this gate's depth");
+        assert!(
+            (w - wg).abs() < 1e-12,
+            "advance mismatch {w} vs {wg} — the zip above is misaligned",
+        );
+        eprintln!(
+            "  {:>8.3} uniform {:>8.3} kPa  graded {:>8.3} kPa  ratio {:>6.4}",
+            w * 1e3,
+            u.mean_traction / 1e3,
+            g.mean_traction / 1e3,
+            g.mean_traction / u.mean_traction,
+        );
+        ratios.push(g.mean_traction / u.mean_traction);
+    }
+
+    let lo = ratios.iter().copied().fold(f64::INFINITY, f64::min);
+    let hi = ratios.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    assert!(
+        (1.20..1.35).contains(&lo) && (1.20..1.35).contains(&hi),
+        "the graded/uniform traction ratio reads [{lo:.4}, {hi:.4}], outside \
+         the measured 1.222-1.332 band. Below 1.0 the stack is inverted; at \
+         1.0 the moduli never reached the energy and only the mesh was graded",
+    );
+    // ⚠ The band above is a PIN, not a physical bound: it leaves 1.8 % / 1.3 %
+    // and exists to detect drift. The claims that are PHYSICAL are asserted
+    // separately and with room, so an arch-to-arch float shift that trips the
+    // pin stays distinguishable from a result that is actually wrong — the
+    // pin says "this moved", these say "this is impossible".
+    assert!(
+        lo > 1.0,
+        "the graded wall is not stiffer than the uniform one at all \
+         ({lo:.4}) — with a stiffer stack outside a softer bore layer it must \
+         be, so either the stack is inverted or the material never reached the \
+         energy",
+    );
+    assert!(
+        ratios.windows(2).all(|w| w[1] > w[0]),
+        "the ratio is not strictly increasing: {ratios:?}. It rises because \
+         load transfers outward into the stiff layers as the wall compresses, \
+         so a flat or falling ratio means the grading is not where it is \
+         thought to be",
+    );
+
+    // The estimator finding, made executable rather than asserted in prose.
+    let bands = graded_bands();
+    // The zip below pairs `STACK[i]` with `bands[i]`, which is only right
+    // because `graded_bands` sorts innermost-first and so does `STACK`. That
+    // coupling is asserted by `the_layer_stack_partitions_the_wall_by_radius`
+    // — but this gate must not depend on another test having run, so it is
+    // re-checked here where the zip actually happens.
+    assert!(
+        STACK
+            .iter()
+            .zip(bands)
+            .all(|(m, b)| (m.validity_max_principal_stretch - b.0).abs() < 1e-12),
+        "the bands are not in stack order, so the volume weighting below pairs \
+         each layer's modulus with another layer's population",
+    );
+    let total: usize = bands.iter().map(|b| b.1).sum();
+    let volume_weighted = STACK
+        .iter()
+        .zip(bands)
+        .map(|(m, b)| m.mu * (b.1 as f64))
+        .sum::<f64>()
+        / (total as f64);
+    let predicted = volume_weighted / ECOFLEX_00_30.mu;
+    eprintln!(
+        "  volume-weighted mu {:.1} kPa = {predicted:.2}x uniform; measured \
+         stiffening tops out at {hi:.3}x",
+        volume_weighted / 1e3,
+    );
+    assert!(
+        predicted / hi > 2.4,
+        "the volume average over-predicts the measured stiffening by only \
+         {:.2}x. The whole point of this gate is that it over-predicts by ~2.6x \
+         because the load enters through the SOFT layer — if that gap closed, \
+         the series-compliance explanation is wrong",
+        predicted / hi,
+    );
+    assert!(
+        STACK[0].mu < ECOFLEX_00_30.mu,
+        "the series-compliance reading above requires the innermost layer \
+         ({} Pa) to be SOFTER than the uniform baseline ({} Pa); with a \
+         stiffer bore layer the volume average would no longer over-predict \
+         for the reason claimed, and this gate's band is a coincidence",
+        STACK[0].mu,
+        ECOFLEX_00_30.mu,
+    );
+}
+
+/// **What does the shipped interface-flag test actually resolve at this cell
+/// size?**
+///
+/// Ladder item 4 (per-GP material) plans to "ship with a decision about
+/// flagged tets" rather than sampling 4× everywhere, and the flag it means is
+/// [`Mesh::interface_flags`], populated by the book's `|φ(x_c)| < L_e` straddle
+/// rule with `L_e` the tet's six-edge mean. This gate measures what that
+/// selects here, because a decision applied to most of the body is a different
+/// decision from one applied to a seam.
+///
+/// ⛔⛔ **The flag is SATURATED at `CELL` = 4 mm and cannot isolate these
+/// boundaries.** The straddle band `2·L_e` is WIDER than the layer it
+/// delimits — measured in the gate itself, not quoted — so: **3 504 of 8 736 tets (40.1 %)** straddle the r = 14 mm
+/// boundary and **5 484 (62.8 %)** straddle r = 18 mm. The sharpest form of it
+/// — **boundary 0 flags more tets (3 504) than the entire layer it bounds
+/// contains (2 304)**.
+///
+/// ⚠ This is a property of the RESOLUTION, not a defect in the rule or in this
+/// fixture: the rule is scale-relative by construction and the mesh is simply
+/// too coarse for 4 mm layers. ⇒ item 4 needs either a finer cell or a
+/// criterion that is not `L_e`-wide. ⭐ And this is a *lower* bound on the
+/// problem: these boundaries are exactly concentric spheres, so a real scan's
+/// irregular offsets can only flag more.
+#[test]
+fn the_interface_flag_cannot_isolate_a_layer_boundary_at_this_cell_size() {
+    let bands = graded_bands();
+    let mut flagged = Vec::new();
+    for offset in LAYER_BOUNDARIES {
+        let mesh = tet4_shell_with(
+            CELL,
+            graded_yeoh_field().with_interface_sdf(Box::new(SphereSdf {
+                radius: R_CAVITY + offset,
+            })),
+        );
+        let flags = Mesh::<Yeoh>::interface_flags(&mesh);
+        let hits = flags.iter().filter(|&&f| f).count();
+        eprintln!(
+            "  boundary at r = {:.1} mm : {hits} of {} tets straddle ({:.1} %)",
+            (R_CAVITY + offset) * 1e3,
+            flags.len(),
+            100.0 * (hits as f64) / (flags.len() as f64),
+        );
+        flagged.push(hits);
+    }
+
+    // ⚠ The MECHANISM, measured here rather than quoted. An earlier revision
+    // cited "L_e ~ 3.4 mm" from a sizing probe that was later deleted — a
+    // number whose referent no longer existed anywhere in the tree.
+    let mesh = graded_tet4();
+    let n_tets = Mesh::<Yeoh>::n_tets(mesh);
+    let l_e = (0..n_tets)
+        .map(|t| mean_edge_length(mesh, t as TetId))
+        .sum::<f64>()
+        / (n_tets as f64);
+    eprintln!(
+        "  mean L_e {:.3} mm; straddle band 2*L_e = {:.3} mm against {:.3} mm layers",
+        l_e * 1e3,
+        2.0 * l_e * 1e3,
+        LAYER_BOUNDARIES[0] * 1e3,
+    );
+    assert!(
+        2.0 * l_e > LAYER_BOUNDARIES[0],
+        "the straddle band is 2*L_e = {:.3} mm against a {:.3} mm layer, so it \
+         is NARROWER than the layer it delimits and the flag could isolate an \
+         interface after all. That is the mechanism this gate's counts are \
+         explained by — if it no longer holds, the explanation is stale even \
+         if the counts happen to be unchanged",
+        2.0 * l_e * 1e3,
+        LAYER_BOUNDARIES[0] * 1e3,
+    );
+
+    assert_eq!(
+        flagged,
+        vec![3504, 5484],
+        "the straddle counts moved. They are what ladder item 4's flagged-tet \
+         decision would apply to, so a change here changes that decision's \
+         blast radius — re-measure and re-pin, do not loosen",
+    );
+
+    let total = bands.iter().map(|b| b.1).sum::<usize>();
+    assert!(
+        flagged.iter().all(|&f| 3 * f > total),
+        "the flag now selects under a third of the mesh ({flagged:?} of \
+         {total}), so it has become able to isolate an interface at this cell \
+         size. That is good news and this gate's premise is stale — item 4's \
+         note about flagged tets needs rewriting, not this assertion relaxing",
+    );
+    assert!(
+        flagged[0] > bands[1].1,
+        "boundary 0 flags {} tets while the middle layer it bounds holds {} — \
+         the band being WIDER than the layer is the whole finding, and it no \
+         longer holds",
+        flagged[0],
+        bands[1].1,
+    );
+}
+
+/// **Does grading break the solve, or either reading item 3a left the bridge?**
+///
+/// 3a handed forward two readings that survive an enveloping patch: the
+/// force-free traction (because `F_z / A_flat` dies when radial normals cancel)
+/// and `ρ`, the min-gap-versus-mean-traction reconciliation that
+/// [`PATCH_NONUNIFORMITY`] bounds. Both were measured on a uniform body. If
+/// either turned out to be a property of material uniformity rather than of
+/// the geometry, the bridge could not lean on it — `insertion_sim`'s wall is
+/// layered.
+///
+/// Measured here: the graded cavity converges at every rung, `ρ` lands in
+/// **[1.1632, 1.1761]** against the uniform cell's [1.1683, 1.1766] over the
+/// same span, and the cancellation coherence runs **1.068e-3 → 4.023e-4**
+/// against the uniform cell's 1.11e-3 → 1.45e-4. ⇒ **both readings are
+/// geometric.** Grading widens the `ρ` band by about ±4 % and moves nothing
+/// else.
+#[test]
+fn grading_keeps_the_enveloping_patchs_invariants() {
+    let rungs = graded_rungs();
+    // ⛔ An empty or truncated ramp makes every `all(..)` below vacuously
+    // true. Assert the collection reached the declared depth, not just that
+    // nothing in it was wrong.
+    assert!(
+        rungs.len() > 1 && rungs.last().is_some_and(|(w, _)| *w >= CAVITY_GATE_MAX_W),
+        "the ramp produced {} rungs ending at {:?} mm, short of the declared \
+         {:.3} mm — every `all(..)` over it below would pass on an empty set",
+        rungs.len(),
+        rungs.last().map(|(w, _)| w * 1e3),
+        CAVITY_GATE_MAX_W * 1e3,
+    );
+    eprintln!(
+        "  {:>8} {:>4} {:>10} {:>10} {:>7} {:>11} {:>6}",
+        "w(mm)", "it", "resid", "min_sd", "rho", "coherence", "pairs",
+    );
+    let mut ok = Vec::new();
+    for (w, r) in rungs {
+        let p = r
+            .as_ref()
+            .map_err(|e| format!("the graded cavity must converge at {w}: {e}"))
+            .expect("graded rung");
+        let rho = face_barrier_standoff(KAPPA, D_HAT, p.mean_traction) / p.min_sd;
+        let coherence = p.net_force.norm() / p.sum_force_mag;
+        eprintln!(
+            "  {:>8.3} {:>4} {:>10.2e} {:>10.3e} {:>7.4} {:>11.3e} {:>6}",
+            w * 1e3,
+            p.iters,
+            p.residual,
+            p.min_sd,
+            rho,
+            coherence,
+            p.n_pairs,
+        );
+        ok.push((p, rho, coherence));
+    }
+
+    assert_eq!(ok.len(), rungs.len(), "a rung failed");
+    assert!(
+        ok.iter().all(|(p, ..)| p.iters <= 8 && p.residual < 1.0e-8),
+        "grading cost convergence quality: the uniform cell holds 4-6 Newton \
+         iterations and a residual under 1e-8 over this span",
+    );
+    assert!(
+        ok.iter().all(|(p, ..)| p.min_sd > RAMP_STEP),
+        "a rung closed the gap below one ramp step, so the next increment is \
+         marching into the barrier rather than onto it",
+    );
+
+    let rho_lo = ok.iter().map(|&(_, r, _)| r).fold(f64::INFINITY, f64::min);
+    let rho_hi = ok
+        .iter()
+        .map(|&(_, r, _)| r)
+        .fold(f64::NEG_INFINITY, f64::max);
+    assert!(
+        rho_lo > 1.0 && rho_hi < PATCH_NONUNIFORMITY,
+        "graded rho reads [{rho_lo:.4}, {rho_hi:.4}], outside \
+         (1.0, {PATCH_NONUNIFORMITY}). Below 1.0 the ratio is inverted; above \
+         the constant, the kappa floor derived from it no longer covers a \
+         graded wall and `insertion_sim` cannot use it",
+    );
+    assert!(
+        ok.iter().all(|&(_, _, c)| c < 1.0e-2),
+        "the graded patch stopped cancelling its own net force, so the \
+         cancellation was a property of material uniformity and not of the \
+         enveloping geometry — which would retract 3a's reason for reading \
+         traction instead of force",
+    );
+
+    // Topology, not material: the same mesh and the same rigid bore, so the
+    // set of engaged faces should not know what the tets are made of.
+    // Topology, not material. ⚠ The claim is "the SAME as the uniform cell",
+    // so the oracle has to BE the uniform cell — an earlier revision asserted
+    // the literal 434 while the message spoke about a cell it never read, so
+    // a joint move would have passed with the message still claiming a
+    // comparison. Rule 3c: the relational check is the claim, the pinned
+    // literal catches a drift that moves both together.
+    let pairs: Vec<usize> = ok.iter().map(|(p, ..)| p.n_pairs).collect();
+    let uniform_pairs: Vec<usize> = cavity_rungs()
+        .iter()
+        .map(|(_, r)| r.as_ref().expect("the uniform cell must converge").n_pairs)
+        .collect();
+    assert_eq!(
+        pairs, uniform_pairs,
+        "the graded cell engages a different active set from the uniform one. \
+         The set of engaged faces is a function of the mesh and the indenter, \
+         so a material-dependent one means the whole-wall-at-once regime is \
+         not purely geometric",
+    );
+    assert!(
+        pairs.iter().all(|&n| n == 434),
+        "both cells engage {pairs:?} pairs, agreeing with each other but not \
+         with the 434 measured — the geometry or the indenter moved, which the \
+         equality above cannot see",
+    );
+}
+
+/// **Is the per-tet validity gate — the one that walled row 23 — live on this
+/// path, and does it name the right layer?**
+///
+/// ⛔ **The realistic stack never reaches it, and that is why this gate has to
+/// force the issue.** The anchors cap tensile stretch at 7.56 / 8.80 / 5.76;
+/// [`grading_keeps_the_enveloping_patchs_invariants`] carries the tightest of
+/// those on 56 % of its tets and the ramp still ends in an `ArmijoStall`. So a
+/// gate written against the shipped caps would pass forever without the
+/// validity path ever executing — vacuous in the exact way a green run cannot
+/// show. Dropping the innermost cap to 1.10 is what makes it fire.
+///
+/// Measured: `ValidityViolation` at **w = 0.220 mm, tet 1781**,
+/// `max_principal_stretch = 1.102` against the 1.100 bound, singular values
+/// **[1.102, 1.026, 0.807]** — hoop tension against radial compression, which
+/// is the closing-cavity kinematics. Its centroid sits at **r = 11.12 mm**,
+/// inside layer 0's [10.03, 13.75] mm.
+///
+/// ⭐ **The attribution is sound by construction, not by luck.** The solver
+/// reports the lowest-id violator, which is not the same as the first one
+/// geometrically — but the other two layers keep caps of 8.80 and 5.76, which
+/// this ramp comes nowhere near, so every tet that *can* violate is in layer 0.
+#[test]
+fn the_per_tet_validity_gate_fires_in_the_layer_that_owns_the_cap() {
+    const CAPPED_LAYER_STRETCH: f64 = 1.10;
+    let cell = Cell::capped_shell([
+        CAPPED_LAYER_STRETCH,
+        STACK[1].validity_max_principal_stretch,
+        STACK[2].validity_max_principal_stretch,
+    ]);
+
+    let failure = cell
+        .ramp(CAVITY, RAMP_STEP, CAVITY_GATE_MAX_W)
+        .into_iter()
+        .find_map(|(w, r)| r.err().map(|e| (w, e)));
+    let (w, label) = failure
+        .ok_or_else(|| {
+            format!(
+                "the whole ramp converged with the innermost layer capped at \
+                 {CAPPED_LAYER_STRETCH}, so the per-tet validity gate never \
+                 fired — either the cap is not reaching the solver, or this \
+                 cell no longer stretches the bore layer past it",
+            )
+        })
+        .expect("a capped ramp must fail");
+    eprintln!("  capped ramp failed at {:.3} mm: {label}", w * 1e3);
+
+    // ⚠ Two different failures, and an earlier revision reported both as the
+    // first: a ramp that stalled instead of violating, and a ramp that DID
+    // violate under a `failure_label` whose format moved. The second would
+    // have been reported as "not a ValidityViolation", which is false.
+    assert!(
+        label.starts_with("ValidityViolation"),
+        "the capped ramp failed with `{label}` instead of a ValidityViolation. \
+         A stall or a factor failure means the low cap changed the SOLVE \
+         rather than tripping the material gate, and the gate is unexercised",
+    );
+    let rest = label
+        .strip_prefix("ValidityViolation(tet ")
+        .ok_or_else(|| {
+            format!(
+                "a ValidityViolation fired, but `failure_label` no longer \
+                 formats it as `ValidityViolation(tet N: ...)`, so the tet \
+                 cannot be recovered from `{label}`. The gate is sound and its \
+                 parser is stale — fix the parser, not the solver",
+            )
+        })
+        .expect("the tet id");
+    let tet: TetId = rest
+        .split(':')
+        .next()
+        .and_then(|t| t.trim().parse().ok())
+        .ok_or_else(|| format!("no tet id in `{label}`"))
+        .expect("a tet id");
+
+    assert!(
+        label.contains("max_principal_stretch"),
+        "the violation fired on something other than the tensile cap this gate \
+         lowered: {label}",
+    );
+    let radius = centroid_radius(&cell.mesh, tet);
+    let inner_edge = R_CAVITY + LAYER_BOUNDARIES[0];
+    assert!(
+        radius < inner_edge,
+        "the gate named tet {tet} at r = {:.2} mm, outside the capped layer's \
+         [{:.2}, {:.2}] mm. Only layer 0 carries a reachable cap, so a violator \
+         anywhere else means the field is not keyed on radius the way \
+         `the_layer_stack_partitions_the_wall_by_radius` reads it",
+        radius * 1e3,
+        R_CAVITY * 1e3,
+        inner_edge * 1e3,
+    );
+}
+
+/// How deep does the graded wall go, and how does it stop?
+///
+/// The always-on gates run to [`CAVITY_GATE_MAX_W`]; this is the full ramp to
+/// the wall, and it is where the depth and stiffening numbers the other gates
+/// quote in prose are actually produced.
+///
+/// ⭐⭐ **Grading costs a third of the depth: 3.220 mm against the uniform
+/// cell's 4.720 mm**, with the traction ratio climbing to **1.719×** — still
+/// only half the 3.48× a volume-weighted modulus predicts, and by the same
+/// series-compliance argument
+/// [`the_graded_walls_stiffness_is_set_by_the_layer_the_load_enters`] makes.
+///
+/// ⭐⭐ **The stall MODE changes, and that is the part worth carrying
+/// forward.** The uniform cavity ends at `ArmijoStall(iter 5)` — 3a recorded
+/// that this is *not* the marching-feasibility mode the κ floor is derived
+/// against, because that one stalls at iteration **0**. The graded cavity ends
+/// at `ArmijoStall(iter 0, r 8.191e4)`, which is that mode. ⇒ on a graded wall
+/// the derived floor is describing the failure it was built to describe.
+/// The feasibility criterion stays conservative either way: graded `min_sd`
+/// drops under [`REQUIRED_STANDOFF`] at 2.720 mm and converges six more rungs,
+/// where the uniform cell crossed at 3.820 mm and converged ten more.
+#[test]
+#[ignore = "one full ramp to the graded convergence wall, ~4 min — the depth, \
+            stall mode and rho band the always-on graded gates quote"]
+fn how_deep_does_the_graded_cavity_converge() {
+    let rungs = ramp_graded(0.006);
+    eprintln!(
+        "  {:>8} {:>4} {:>10} {:>10} {:>7} {:>10}",
+        "w(mm)", "it", "trac(kPa)", "min_sd", "rho", "feasible",
+    );
+    let mut deepest = f64::NEG_INFINITY;
+    let mut rho_lo = f64::INFINITY;
+    let mut rho_hi = f64::NEG_INFINITY;
+    let mut first_infeasible = None;
+    let mut failure = None;
+    for (w, r) in &rungs {
+        match r {
+            Ok(p) => {
+                let rho = face_barrier_standoff(KAPPA, D_HAT, p.mean_traction) / p.min_sd;
+                let feasible = p.min_sd > REQUIRED_STANDOFF;
+                if !feasible && first_infeasible.is_none() {
+                    first_infeasible = Some(*w);
+                }
+                eprintln!(
+                    "  {:>8.3} {:>4} {:>10.3} {:>10.3e} {:>7.4} {:>10}",
+                    w * 1e3,
+                    p.iters,
+                    p.mean_traction / 1e3,
+                    p.min_sd,
+                    rho,
+                    feasible,
+                );
+                deepest = *w;
+                rho_lo = rho_lo.min(rho);
+                rho_hi = rho_hi.max(rho);
+            }
+            Err(e) => {
+                eprintln!("  {:>8.3} FAILED {e}", w * 1e3);
+                failure = Some(e.clone());
+            }
+        }
+    }
+    eprintln!(
+        "  deepest converged {:.3} mm = {:.1} % radial interference; rho in \
+         [{rho_lo:.4}, {rho_hi:.4}]; first rung below the required standoff \
+         {:?} mm",
+        deepest * 1e3,
+        100.0 * deepest / R_CAVITY,
+        first_infeasible.map(|w| w * 1e3),
+    );
+
+    assert!(
+        deepest > 0.003,
+        "the graded cavity walled at {:.3} mm, short of the 3.22 mm measured",
+        deepest * 1e3,
+    );
+    assert!(
+        deepest < 0.004,
+        "the graded cavity reached {:.3} mm, at or past the uniform cell's \
+         range — the 32 % depth cost of grading is the finding, so losing it \
+         means the stack is not reaching the energy",
+        deepest * 1e3,
+    );
+    // Both ends: an upper bound alone accepts `min_sd / d_eff`, the inverted
+    // computation, which reads under 1.0 and would pass silently.
+    assert!(
+        rho_lo > 1.0 && rho_hi < PATCH_NONUNIFORMITY,
+        "graded rho over the full ramp reads [{rho_lo:.4}, {rho_hi:.4}], \
+         outside (1.0, {PATCH_NONUNIFORMITY})",
+    );
+    let label = failure.expect("the ramp must reach a wall within 6 mm");
+    // ⚠ Two failures, one string — the same fragility the validity gate had.
+    // "the mode moved" is the finding; "`failure_label`'s format moved" is a
+    // stale parser, and reporting the second as the first is a lie.
+    assert!(
+        label.starts_with("ArmijoStall"),
+        "the graded wall is `{label}`, not an Armijo stall at all — a \
+         different failure mode entirely, not the iteration distinction below",
+    );
+    assert!(
+        label.contains("(iter 0"),
+        "the wall is an Armijo stall but not at iteration 0: `{label}`. The \
+         ITERATION is the whole distinction between the marching-feasibility \
+         mode the kappa floor describes and the unidentified iteration-5 mode \
+         the uniform cell hits — so either that finding has changed, or \
+         `failure_label` no longer prints the iteration this way and the \
+         parser is stale",
+    );
+    assert!(
+        first_infeasible.is_some_and(|w| w < deepest),
+        "the ramp never crossed the required standoff before walling, so the \
+         feasibility criterion is no longer conservative here and the kappa \
+         floor's margin on a graded wall is unmeasured",
+    );
+}
+
+/// **Are the layer anchors independent materials, or one material scaled?**
+///
+/// Load-bearing premise, asserted because reasoning about this stack went
+/// wrong once without it. Every anchor used here — the three in [`STACK`] and
+/// the uniform baseline — satisfies `λ = 4μ` **exactly** and `C₂ ≈ 0.089 μ`.
+/// They are a **self-similar one-parameter family**: ν = 0.400 throughout, and
+/// a layer is the baseline scaled by a single stiffness factor.
+///
+/// ⇒ **`μ` and `λ` cannot be attributed separately on this stack.** Holding
+/// one fixed while the other grades produces a body whose Poisson ratio varies
+/// by layer, which is not a silicone. That is why
+/// [`the_graded_stiffening_is_carried_by_the_linear_modulus`] splits
+/// `(μ, λ)`-together against `C₂` instead.
+///
+/// ⚠ **If this gate ever fails, the retracted experiment becomes meaningful.**
+/// An anchor whose `λ/μ` differs is a material with a different ν, and then
+/// separating the Lamé parameters is a real question rather than an artefact.
+/// So this is not a constant to update — it is a premise to re-read.
+#[test]
+fn the_stack_is_a_self_similar_family() {
+    let all = [STACK[0], STACK[1], STACK[2], ECOFLEX_00_30];
+    for m in all {
+        let ratio = m.lambda / m.mu;
+        let nu = m.lambda / (2.0 * (m.lambda + m.mu));
+        eprintln!(
+            "  mu {:>8.0} lambda {:>9.0} lambda/mu {ratio:.4} nu {nu:.4} C2/mu {:.4}",
+            m.mu,
+            m.lambda,
+            m.c2 / m.mu,
+        );
+        assert!(
+            (ratio - 4.0).abs() < 1.0e-12,
+            "an anchor has lambda/mu = {ratio}, not 4. The Lamé pair is no \
+             longer a single scaled parameter, so `mu` and `lambda` CAN be \
+             attributed separately and the retracted mu-vs-lambda experiment \
+             is meaningful again — re-read the reasoning, do not update this",
+        );
+        assert!(
+            (nu - 0.40).abs() < 1.0e-12,
+            "an anchor has nu = {nu}, not 0.40 — the family is no longer \
+             self-similar",
+        );
+        assert!(
+            (0.085..0.095).contains(&(m.c2 / m.mu)),
+            "an anchor has C2/mu = {:.4}, outside the 0.0875-0.0939 band the \
+             others share. C2 stops being a fixed small fraction of the linear \
+             modulus, so treating it as a uniform small correction no longer \
+             follows",
+            m.c2 / m.mu,
+        );
+    }
+}
+
+/// **Which part of the constitutive law carries the graded wall's stiffening —
+/// the linear modulus or Yeoh's `C₂` nonlinearity?**
+///
+/// ⛔⛔ **`μ` and `λ` CANNOT be separated on this stack, and an earlier
+/// revision of this fixture tried to.** Every anchor in [`STACK`] satisfies
+/// **`λ = 4μ` exactly** (ν = 0.400 by construction) and `C₂ ≈ 0.089 μ`, so the
+/// four silicones are a **self-similar one-parameter family**. Flattening one
+/// Lamé parameter alone lets Poisson's ratio float across the wall — measured
+/// **0.379 → 0.476** flattening `μ`, **0.418 → 0.224** flattening `λ` — which
+/// is not "the same material with one influence removed" but a different and
+/// unrealisable material. The earlier conclusion drawn that way ("`λ` carries
+/// twice what `μ` does, because the shell is sealed") was an artefact of that
+/// and is **retracted**. [`the_stack_is_a_self_similar_family`] pins the
+/// premise so the mistake cannot be made again silently.
+///
+/// The physical split holds ν fixed: `(μ, λ)` move together as the linear
+/// modulus, against `C₂` as the nonlinear term. Both variants below are
+/// realisable silicones.
+///
+/// ```text
+/// baseline                  1.2218 -> 1.3320     excess 0.3320
+/// linear (mu, lambda) flat  1.0488 -> 1.0566     excess 0.0566  (83 % gone)
+/// C2 flat                   1.2131 -> 1.3171     excess 0.3171  (4.5 % gone)
+/// all flat                  1.0000 -> 1.0000     excess 0
+/// ```
+///
+/// ⭐⭐ **The linear modulus carries 18.5× what `C₂` does.** The stiffening is
+/// a linear-elastic effect of the layer arrangement, not a nonlinear one — at
+/// these stretches `C₂ ≈ 0.089 μ` is a small correction and it behaves like
+/// one. The all-flat row reading exactly 1.0 is what proves the comparison is
+/// wired to the material at all.
+#[test]
+#[ignore = "four shallow ramps plus the uniform baseline, ~3 min — the \
+            parameter attribution behind the stiffness gate's explanation"]
+fn the_graded_stiffening_is_carried_by_the_linear_modulus() {
+    let mu = [STACK[0].mu, STACK[1].mu, STACK[2].mu];
+    let c2 = [STACK[0].c2, STACK[1].c2, STACK[2].c2];
+    let lambda = [STACK[0].lambda, STACK[1].lambda, STACK[2].lambda];
+    let caps = [
+        STACK[0].validity_max_principal_stretch,
+        STACK[1].validity_max_principal_stretch,
+        STACK[2].validity_max_principal_stretch,
+    ];
+    let flat = |v: f64| [v; 3];
+
+    let uniform: Vec<f64> = cavity_rungs()
+        .iter()
+        .cloned()
+        .map(|(_, r)| r.expect("the uniform cell must converge").mean_traction)
+        .collect();
+
+    let variants = [
+        ("baseline", graded_field_with(mu, c2, lambda, caps)),
+        (
+            "linear (mu, lambda) flat",
+            graded_field_with(flat(ECOFLEX_00_30.mu), c2, flat(ECOFLEX_00_30.lambda), caps),
+        ),
+        (
+            "C2 flat",
+            graded_field_with(mu, flat(ECOFLEX_00_30.c2), lambda, caps),
+        ),
+        (
+            "all flat",
+            graded_field_with(
+                flat(ECOFLEX_00_30.mu),
+                flat(ECOFLEX_00_30.c2),
+                flat(ECOFLEX_00_30.lambda),
+                caps,
+            ),
+        ),
+    ];
+
+    let mut deepest = Vec::new();
+    for (label, field) in variants {
+        let ratios: Vec<f64> = Cell::shell_with(field)
+            .ramp(CAVITY, RAMP_STEP, CAVITY_GATE_MAX_W)
+            .into_iter()
+            .zip(&uniform)
+            .map(|((_, r), u)| r.expect("the graded cell must converge").mean_traction / u)
+            .collect();
+        assert_eq!(
+            ratios.len(),
+            uniform.len(),
+            "{label} did not ramp over the uniform cell's advances",
+        );
+        let (lo, hi) = (ratios[0], ratios[ratios.len() - 1]);
+        eprintln!("  {label:26} {lo:.4} -> {hi:.4}   excess {:.4}", hi - 1.0);
+        deepest.push((label, hi));
+    }
+
+    let at = |name: &str| {
+        deepest
+            .iter()
+            .find(|(l, _)| *l == name)
+            .map(|&(_, v)| v)
+            .ok_or_else(|| format!("no variant {name}"))
+            .expect("variant")
+    };
+    let (base, linear_flat, c2_flat, all_flat) = (
+        at("baseline"),
+        at("linear (mu, lambda) flat"),
+        at("C2 flat"),
+        at("all flat"),
+    );
+
+    assert!(
+        (all_flat - 1.0).abs() < 1.0e-9,
+        "flattening every parameter leaves the ratio at {all_flat:.6}, not 1.0. \
+         The two cells are then the same material, so anything but 1.0 means \
+         this comparison is reading something other than the material — and \
+         every attribution below is measuring that instead",
+    );
+    let (from_linear, from_c2) = (base - linear_flat, base - c2_flat);
+    eprintln!("  linear contributes {from_linear:.4}, C2 contributes {from_c2:.4}");
+    assert!(
+        from_linear > 0.0 && from_c2 > 0.0,
+        "flattening a term did not reduce the stiffening (linear \
+         {from_linear:+.4}, C2 {from_c2:+.4}) — with the stack soft at the bore, \
+         removing grading in either term should soften it",
+    );
+    assert!(
+        from_linear > 10.0 * from_c2,
+        "the linear modulus contributes {from_linear:.4} against C2's \
+         {from_c2:.4}, under the 18.5x measured. The claim is that this \
+         stiffening is LINEAR-ELASTIC — a shrinking gap means C2's \
+         nonlinearity has become load-bearing at these stretches and the \
+         reasoning that treats it as a small correction needs re-deriving",
+    );
+    assert!(
+        linear_flat < 1.10,
+        "flattening the linear modulus leaves {linear_flat:.4}, well above the \
+         1.0566 measured — most of the stiffening survived a change that \
+         should have removed it",
+    );
+}
+
+/// **Does a cached ramp equal a freshly solved one, field for field?**
+///
+/// The memoisation let four pre-existing always-on gates stop solving their
+/// own ramps and read one shared result. That was justified on "the suite
+/// still passes", which is a statement about every gate's BOOLEAN and not
+/// about any number it read — the distinction item 3a's refactor was careful
+/// about and this one initially was not.
+///
+/// Re-solves each cached ramp and compares the whole `Debug` rendering of
+/// every rung, which is total over `Press`'s fields rather than a selection of
+/// them. Two claims at once:
+///
+/// - **the cache is neutral** — it changes WHEN a ramp runs, not what it
+///   produces;
+/// - **the solve is deterministic** — if it were not, memoisation would have
+///   silently replaced four independent draws with one, and a flake would
+///   change character rather than disappear.
+///
+/// ⚠ Ignored because it deliberately pays the cost the cache exists to avoid.
+#[test]
+#[ignore = "re-solves all three cached ramps to compare against the cache, \
+            ~2 min — the neutrality and determinism evidence for the \
+            OnceLock caches"]
+fn the_cached_ramps_equal_a_fresh_solve() {
+    let cases: [(&str, &[Rung], Vec<Rung>); 3] = [
+        (
+            "plate",
+            plate_rungs(),
+            ramp_tet10_yeoh(BASELINE, RAMP_STEP, GATE_MAX_PLANE_H),
+        ),
+        (
+            "cavity",
+            cavity_rungs(),
+            ramp_cavity(CAVITY, RAMP_STEP, CAVITY_GATE_MAX_W),
+        ),
+        ("graded", graded_rungs(), ramp_graded(CAVITY_GATE_MAX_W)),
+    ];
+
+    for (label, cached, fresh) in cases {
+        assert_eq!(
+            cached.len(),
+            fresh.len(),
+            "{label}: the cache holds {} rungs and a fresh solve produced {} — \
+             the cached accessor is not asking for what its callers ask for",
+            cached.len(),
+            fresh.len(),
+        );
+        assert!(
+            !cached.is_empty(),
+            "{label}: an empty ramp makes every comparison below vacuous",
+        );
+        for (i, ((wc, rc), (wf, rf))) in cached.iter().zip(&fresh).enumerate() {
+            assert!(
+                (wc - wf).abs() < 1.0e-15,
+                "{label} rung {i}: cached advance {wc:e} vs fresh {wf:e}",
+            );
+            assert_eq!(
+                format!("{rc:?}"),
+                format!("{rf:?}"),
+                "{label} rung {i} ({:.3} mm): the cached rung differs from a \
+                 freshly solved one. Either the cache is not neutral, or the \
+                 solve is not deterministic — and if it is the latter, the \
+                 caches replaced four independent draws with one shared draw \
+                 in four pre-existing gates",
+                wc * 1e3,
+            );
+        }
+        eprintln!(
+            "  {label}: {} rungs identical to a fresh solve",
+            cached.len()
+        );
+    }
+}
+
+/// **Is the stiffening really governed by the layer the load enters, or does
+/// the arrangement not matter?**
+///
+/// [`the_graded_walls_stiffness_is_set_by_the_layer_the_load_enters`] explains
+/// its 2× discrepancy against the volume average by series compliance: load
+/// enters at the bore, the bore layer is softer than the uniform baseline, and
+/// the stiff shells sit remote and against the pinned skin. ⚠ **That sentence
+/// had no referent.** The discrepancy would read the same if the mechanism
+/// were something else entirely — the pinned skin dominating, or a contact-area
+/// effect — so it was a plausible declarative of exactly the kind that produced
+/// two retracted attributions in this same file.
+///
+/// The falsifier: series compliance is a claim about POSITION, so inverting
+/// the stack must move the answer a lot. Same three anchors, same volume
+/// fractions, same everything but the order.
+///
+/// ```text
+/// uniform baseline                          1.0000
+/// soft at the bore (the real stack)         1.3320     excess 0.3320
+/// STIFF at the bore (inverted)              2.3104     excess 1.3104
+/// volume-weighted prediction                3.4759     order-blind
+/// ```
+///
+/// ⭐⭐ **Inverting the stack quadruples the excess** (0.3320 → 1.3104) with
+/// the same three anchors in the same volume fractions. That is what a
+/// position-governed response looks like and what a volume-governed one does
+/// not: a volume average is **order-blind** — both stacks weight to the same
+/// 3.4759× — so the 74 % difference between them is the arrangement, not the
+/// ingredients. The series-compliance explanation survives a real attempt to
+/// kill it, which is more than the two retracted attributions in this file
+/// ever faced.
+#[test]
+#[ignore = "two shallow ramps against the cached uniform baseline, ~2 min — \
+            the falsifier for the series-compliance explanation"]
+fn the_stiffening_follows_the_layer_at_the_bore() {
+    let uniform: Vec<f64> = cavity_rungs()
+        .iter()
+        .map(|(_, r)| {
+            r.as_ref()
+                .expect("the uniform cell must converge")
+                .mean_traction
+        })
+        .collect();
+
+    let ratio_at_depth = |stack: [SiliconeMaterial; 3]| -> f64 {
+        let pick = |f: fn(&SiliconeMaterial) -> f64| [f(&stack[0]), f(&stack[1]), f(&stack[2])];
+        let field = graded_field_with(
+            pick(|m| m.mu),
+            pick(|m| m.c2),
+            pick(|m| m.lambda),
+            pick(|m| m.validity_max_principal_stretch),
+        );
+        let rungs = Cell::shell_with(field).ramp(CAVITY, RAMP_STEP, CAVITY_GATE_MAX_W);
+        assert_eq!(rungs.len(), uniform.len(), "ramp length mismatch");
+        let last = rungs
+            .last()
+            .expect("a non-empty ramp")
+            .1
+            .as_ref()
+            .expect("the graded cell must converge")
+            .mean_traction;
+        last / uniform[uniform.len() - 1]
+    };
+
+    let soft_in = ratio_at_depth([STACK[0], STACK[1], STACK[2]]);
+    let stiff_in = ratio_at_depth([STACK[2], STACK[1], STACK[0]]);
+    eprintln!("  soft at the bore  {soft_in:.4}\n  stiff at the bore {stiff_in:.4}");
+
+    assert!(
+        stiff_in > 2.0 * (soft_in - 1.0) + 1.0,
+        "inverting the stack moved the stiffening from {soft_in:.4} to only \
+         {stiff_in:.4}. A volume average is ORDER-BLIND — both stacks weight to \
+         the same 3.4759x — so if the arrangement barely matters, the response \
+         is not governed by the layer the load enters and the series-compliance \
+         explanation is wrong, whatever the discrepancy against the volume \
+         average happens to be",
+    );
+    assert!(
+        stiff_in > soft_in,
+        "putting the STIFF layer at the bore ({stiff_in:.4}) did not stiffen \
+         the wall relative to the soft-bore stack ({soft_in:.4}) — the sign of \
+         the position effect is backwards",
     );
 }
