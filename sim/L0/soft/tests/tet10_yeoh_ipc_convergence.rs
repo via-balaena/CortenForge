@@ -957,6 +957,13 @@ fn tet10_yeoh_takes_the_face_path_and_tet4_yeoh_takes_the_vertex_path() {
 /// equilibrium immediately. The last three fields are what separate the two.
 /// Without them "Tet10 × Yeoh converges" would be a claim about an unloaded
 /// plate wearing the words of a claim about contact.
+/// One rung of a ramp: the indenter advance (m) and what the solve made of it.
+///
+/// Named because the raw tuple appears in every ramp signature and in the
+/// cached accessors' return types, where `clippy::type_complexity` is right
+/// that it had stopped being readable.
+type Rung = (f64, Result<Press, String>);
+
 #[derive(Debug, Clone)]
 struct Press {
     iters: usize,
@@ -1299,7 +1306,7 @@ impl Cell {
     /// each converged state, and stop at the first rung that fails.
     ///
     /// Returns one entry per attempted advance.
-    fn ramp(&self, setup: Setup, step: f64, max_advance: f64) -> Vec<(f64, Result<Press, String>)> {
+    fn ramp(&self, setup: Setup, step: f64, max_advance: f64) -> Vec<Rung> {
         let rest = rest_dofs(&self.mesh);
         let mut x_prev = rest.clone();
         let mut out = Vec::new();
@@ -1486,7 +1493,7 @@ const GATE_MAX_PLANE_H: f64 = 0.0010;
 /// Returns one entry per attempted plane height. The mesh, pins and rest
 /// configuration are built once; only the contact primitive changes per rung,
 /// which is the same per-increment rebuild `tet10_indentation_demand1` uses.
-fn ramp_tet10_yeoh(setup: Setup, step: f64, max_plane_h: f64) -> Vec<(f64, Result<Press, String>)> {
+fn ramp_tet10_yeoh(setup: Setup, step: f64, max_plane_h: f64) -> Vec<Rung> {
     plate_cell().ramp(setup, step, max_plane_h)
 }
 
@@ -1522,21 +1529,21 @@ fn graded_cell() -> &'static Cell {
 /// same `(setup, step, depth)`. A caller wanting different parameters must
 /// call [`ramp_tet10_yeoh`] directly — this returns the `BASELINE` ramp
 /// whatever it is asked, because it is not asked.
-fn plate_rungs() -> &'static [(f64, Result<Press, String>)] {
-    static RUNGS: OnceLock<Vec<(f64, Result<Press, String>)>> = OnceLock::new();
+fn plate_rungs() -> &'static [Rung] {
+    static RUNGS: OnceLock<Vec<Rung>> = OnceLock::new();
     RUNGS.get_or_init(|| ramp_tet10_yeoh(BASELINE, RAMP_STEP, GATE_MAX_PLANE_H))
 }
 
 /// The always-on uniform cavity ramp, solved once and shared across the four
 /// gates that read it.
-fn cavity_rungs() -> &'static [(f64, Result<Press, String>)] {
-    static RUNGS: OnceLock<Vec<(f64, Result<Press, String>)>> = OnceLock::new();
+fn cavity_rungs() -> &'static [Rung] {
+    static RUNGS: OnceLock<Vec<Rung>> = OnceLock::new();
     RUNGS.get_or_init(|| ramp_cavity(CAVITY, RAMP_STEP, CAVITY_GATE_MAX_W))
 }
 
 /// The always-on graded cavity ramp, solved once and shared.
-fn graded_rungs() -> &'static [(f64, Result<Press, String>)] {
-    static RUNGS: OnceLock<Vec<(f64, Result<Press, String>)>> = OnceLock::new();
+fn graded_rungs() -> &'static [Rung] {
+    static RUNGS: OnceLock<Vec<Rung>> = OnceLock::new();
     RUNGS.get_or_init(|| ramp_graded(CAVITY_GATE_MAX_W))
 }
 
@@ -2875,7 +2882,7 @@ const CAVITY: Setup = Setup {
 
 /// March the bore outward inside the cavity, re-solving from each converged
 /// state. The enveloping sibling of [`ramp_tet10_yeoh`].
-fn ramp_cavity(setup: Setup, step: f64, max_w: f64) -> Vec<(f64, Result<Press, String>)> {
+fn ramp_cavity(setup: Setup, step: f64, max_w: f64) -> Vec<Rung> {
     shell_cell().ramp(setup, step, max_w)
 }
 
@@ -3760,7 +3767,7 @@ fn graded_field_with(
 // ── the graded wall ─────────────────────────────────────────────────
 
 /// Shallow graded ramp — the always-on depth, matching [`ramp_cavity`].
-fn ramp_graded(max_w: f64) -> Vec<(f64, Result<Press, String>)> {
+fn ramp_graded(max_w: f64) -> Vec<Rung> {
     graded_cell().ramp(CAVITY, RAMP_STEP, max_w)
 }
 
@@ -4662,4 +4669,78 @@ fn the_graded_stiffening_is_carried_by_the_linear_modulus() {
          1.0566 measured — most of the stiffening survived a change that \
          should have removed it",
     );
+}
+
+/// **Does a cached ramp equal a freshly solved one, field for field?**
+///
+/// The memoisation let four pre-existing always-on gates stop solving their
+/// own ramps and read one shared result. That was justified on "the suite
+/// still passes", which is a statement about every gate's BOOLEAN and not
+/// about any number it read — the distinction item 3a's refactor was careful
+/// about and this one initially was not.
+///
+/// Re-solves each cached ramp and compares the whole `Debug` rendering of
+/// every rung, which is total over `Press`'s fields rather than a selection of
+/// them. Two claims at once:
+///
+/// - **the cache is neutral** — it changes WHEN a ramp runs, not what it
+///   produces;
+/// - **the solve is deterministic** — if it were not, memoisation would have
+///   silently replaced four independent draws with one, and a flake would
+///   change character rather than disappear.
+///
+/// ⚠ Ignored because it deliberately pays the cost the cache exists to avoid.
+#[test]
+#[ignore = "re-solves all three cached ramps to compare against the cache, \
+            ~2 min — the neutrality and determinism evidence for the \
+            OnceLock caches"]
+fn the_cached_ramps_equal_a_fresh_solve() {
+    let cases: [(&str, &[Rung], Vec<Rung>); 3] = [
+        (
+            "plate",
+            plate_rungs(),
+            ramp_tet10_yeoh(BASELINE, RAMP_STEP, GATE_MAX_PLANE_H),
+        ),
+        (
+            "cavity",
+            cavity_rungs(),
+            ramp_cavity(CAVITY, RAMP_STEP, CAVITY_GATE_MAX_W),
+        ),
+        ("graded", graded_rungs(), ramp_graded(CAVITY_GATE_MAX_W)),
+    ];
+
+    for (label, cached, fresh) in cases {
+        assert_eq!(
+            cached.len(),
+            fresh.len(),
+            "{label}: the cache holds {} rungs and a fresh solve produced {} — \
+             the cached accessor is not asking for what its callers ask for",
+            cached.len(),
+            fresh.len(),
+        );
+        assert!(
+            !cached.is_empty(),
+            "{label}: an empty ramp makes every comparison below vacuous",
+        );
+        for (i, ((wc, rc), (wf, rf))) in cached.iter().zip(&fresh).enumerate() {
+            assert!(
+                (wc - wf).abs() < 1.0e-15,
+                "{label} rung {i}: cached advance {wc:e} vs fresh {wf:e}",
+            );
+            assert_eq!(
+                format!("{rc:?}"),
+                format!("{rf:?}"),
+                "{label} rung {i} ({:.3} mm): the cached rung differs from a \
+                 freshly solved one. Either the cache is not neutral, or the \
+                 solve is not deterministic — and if it is the latter, the \
+                 caches replaced four independent draws with one shared draw \
+                 in four pre-existing gates",
+                wc * 1e3,
+            );
+        }
+        eprintln!(
+            "  {label}: {} rungs identical to a fresh solve",
+            cached.len()
+        );
+    }
 }
