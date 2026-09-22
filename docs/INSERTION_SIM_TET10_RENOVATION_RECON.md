@@ -224,6 +224,13 @@ assert!(
 The smoothed-Coulomb model reads a per-vertex `λ = |force|` from each gradient
 contribution, which a face pair's six distributed forces do not satisfy.
 
+✅ **Measured correction (2026-09-22): this costs the bridge NOTHING today.**
+`friction` appears **zero times** in all of `tools/cf-sim-research/src/`, and
+`SolverConfig::skeleton()` sets `friction_mu: 0.0`
+(`solver/backward_euler/config.rs:369`) — so `insertion_sim` is **already
+frictionless**. The assert forecloses a future gain; it does not cause a
+regression, and this section should not be read as though it did.
+
 ⇒ **"Adopting IPC gets you friction" is true on Tet4 and false on the Tet10
 face path.** For an insertion device friction is not a detail — it is a large
 part of the transmitted axial force the stiffness-floor reward term measures —
@@ -437,6 +444,100 @@ Listed because the confidence of §4 rests on these being open, not closed.
    sleeve it proxies. ⇒ **read the 1.22–1.72× band as an upper bound** because
    the CELL is stiffer, not because of anything about which parameter carries
    the grading.
+
+   ✅✅ **STEP 0 — THE BASELINE, MEASURED (2026-09-22 at `a0cfa901`).** All
+   three `#[ignore]`d ramps reach **16/16 to their full 3.00 mm inset** in 67 s
+   release. ⚠ The archive's 31 % / 2.62 mm figures are
+   **pre-N3** — the Gaussian pre-smooth shipped as
+   `GRID_SDF_SMOOTH_SIGMA_CELLS` = 1.0 in slice 7.3d and took the scan to 100 %.
+   They should not be quoted as current.
+
+   ⚠ **"Reaches 16/16" is not yet "at ceiling", and the first revision of this
+   section stated the conclusion from the weaker reading.** All three ramps run
+   at a **3 mm** inset; `cf_device_types::CAVITY_INSET_SLIDER_MAX_M` is
+   **8 mm**. Reaching a requested 3 mm says nothing about 8 mm. Measured
+   across the rest of the range (synthetic icosphere, release):
+
+   | inset | 3 mm | 4 mm | 5 mm | 6 mm | 7 mm | 8 mm |
+   |---|---|---|---|---|---|---|
+   | tets | 45 654 | 45 156 | 42 981 | 38 736 | 37 884 | 35 670 |
+   | steps | 16/16 | 16/16 | 16/16 | 16/16 | 16/16 | 16/16 |
+
+   ✅ **Now** the depth envelope is at ceiling — across the whole product
+   slider range, not at one point in it. Pinned by
+   `the_ramp_converges_across_the_whole_cavity_slider_range`.
+   ⭐ It also falsifies a claim in shipped code:
+   `INSERTION_CONTACT_SMOOTHING_EPS_M`'s docstring recorded *"converges 16/16 at
+   cavity ≤ 5 mm but stalls at cavity 6 mm"* and named the UI slider as *"the
+   cap that enforces this bound"*. Both are pre-pre-smooth history — 6, 7 and
+   8 mm all converge, and that cap is 8 mm and never enforced 5 mm. Corrected
+   at the const.
+
+   ⭐⭐⭐ **What replaces it is a SPLIT result.** Re-running the same three
+   ramps at `tol` = 1e-6 instead of the shipped `INSERTION_SOLVE_TOL` = 1e-1:
+
+   | fixture | at 1e-1 | at 1e-6 |
+   |---|---|---|
+   | analytical sphere shell (46 584 tets) | 16/16 @ 3.00 mm, but **13 of 16 steps take ONE Newton iteration** and the residual *rises* 3.28e-2 → 6.50e-2 | 16/16 @ 3.00 mm, 4–7 iters, ~1e-7 |
+   | synthetic icosphere | 16/16 @ 3.00 mm | 16/16 @ 3.00 mm, iters spiking **73 / 35 / 73** |
+   | **real iter-1 scan (68 087 tets)** | **16/16 @ 3.00 mm** | ⛔ **stalls at step 4 — 0.75 mm, 25 % of the inset** — Armijo stall at Newton iter 3, `r_norm` **4.13e-3** |
+
+   ⇒ **On the product geometry the full-depth result is bought with the
+   tolerance: requiring a converged solution costs 4× the usable depth.** On
+   both idealised fixtures it costs *iterations*, not depth, and does not move
+   the answer — the icosphere's final step reads F 0.67 → 0.64 N, identical
+   `λ` ∈ [0.447, 1.239], max ‖P‖ 1.66e5 either way.
+
+   ⚠⚠ **This disqualifies the analytical sphere shell as *the* baseline.** It
+   was built in May to isolate SDF smoothness and it does that job — but it is
+   **too well-conditioned to see this failure**, so inheriting it as the
+   reference hides the only reading that matters. A fixture is fit for one
+   question; re-qualify it before reusing it for the next.
+
+   ✅ **Pinned in CI, on a fixture found by search rather than taste.** The
+   claim lives on the repo-excluded scan, so it cannot gate directly. A
+   **9 258-tet** synthetic scene (20 mm radius, 8 mm wall, 3 mm inset, 4 mm
+   cell) carries it instead:
+   `the_insertion_solves_convergence_is_bounded_by_its_tolerance` measures what
+   the solver reaches when asked (1e-6), what it returns at the shipped
+   tolerance on the *same* scene and depth, and the gap between them —
+   **2.3e5×**, measured 5.339e-2 against 2.286e-7. Deeper, the shipped
+   tolerance accepts a residual above 1e-3 outright.
+   `the_tolerance_knob_changes_only_the_tolerance` holds the delegation by
+   Debug-equality, so a field a future `SolverConfig` adds cannot slip it, and
+   `the_shipped_entry_point_solves_at_the_shipped_tolerance` holds the other
+   half of that seam — *which* tolerance the shipped path passes. ⚠ That one
+   exists because its absence was a surviving mutation: retuning the shipped
+   default to 1e-6 passed the whole 107-test suite.
+   ⛔⛔ **WHAT THAT GATE IS NOT: a measure of the bridge.** An earlier revision
+   of this section said it was *"meant to be rewritten when the bridge lands;
+   that rewrite's diff is the payoff."* Wrong. The gap is a property of
+   `INSERTION_SOLVE_TOL` measured against achievable precision, and **the bridge
+   does not change that constant** — a better-conditioned solver would if
+   anything reach further below 1e-6 and make the ratio **larger**. The gate is
+   expected to sit still.
+   ✅ **The quantity the bridge must actually improve is the deepest
+   interference solvable at a TIGHT tolerance** — which is exactly the
+   platform-dependent one below, so it is **reported by a diagnostic on a named
+   platform, not gated**
+   (`the_deep_steps_stall_boundary_is_platform_dependent`).
+
+   ⛔⛔ **AND THE THING THAT GATE MAY NOT ASSERT: WHERE THE STALL FALLS.** The
+   first revision of it asserted that the same scene, 0.3 mm deeper, *could
+   not* reach 1e-3 at all. That held on macOS/ARM — Armijo stall at Newton
+   iter 108, `r_norm` **2.78e-3**, the same mode and decade as the scan's
+   4.13e-3, which is exactly why the fixture looked worth having — and
+   **failed on Linux/x86 CI**, where the identical commit drove the residual
+   past 1.44e-3 by iter 39 and kept going. The `faer` LU fallback fires on both
+   (a non-SPD tangent at a few recurring pivots); which side of the Armijo edge
+   that lands on is decided by arithmetic a test cannot pin.
+   ⇒ **assert the SIZE of the gap, which is a ratio, not the LOCATION of the
+   edge, which is a threshold.** Recorded as the `#[ignore]`d diagnostic
+   `the_deep_steps_stall_boundary_is_platform_dependent`.
+   ⚠⚠ **This conditions the table above**: the real scan's stall at `tol` =
+   1e-6 is likewise a **single-platform measurement** (macOS/ARM) and should be
+   read as one. It is far deeper into failure — step 4 of 16, not a marginal
+   edge — but it has not been reproduced on a second platform.
 
 4. **Per-Gauss-point material sampling** (§7.6). The expensive one: a
    return-shape change to `Mesh::materials()` reaching 119 call sites.
