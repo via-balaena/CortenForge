@@ -7720,7 +7720,7 @@ mod tests {
             INSERTION_CONTACT_KAPPA,
         );
 
-        report_sigma_vs_stiffness("sphere", n_steps, || {
+        report_sigma_vs_stiffness("sphere", cavity_inset_m, n_steps, || {
             let scan = icosphere(0.040, 3);
             build_insertion_geometry(&scan, &design, &[], 2_000, 0.004)
                 .expect("synthetic-sphere geometry should build")
@@ -7739,7 +7739,7 @@ mod tests {
                 cavity_inset_m,
                 layers: vec![layer(0.010, "ECOFLEX_00_30")],
             };
-            report_sigma_vs_stiffness("1layer", n_steps, || {
+            report_sigma_vs_stiffness("1layer", cavity_inset_m, n_steps, || {
                 build_insertion_geometry(&scan, &scan_design, &[], 2_500, 0.004)
                     .expect("iter-1 single-layer geometry should build")
             });
@@ -7759,6 +7759,7 @@ mod tests {
     /// Rebuilds the geometry per arm because the ramp consumes it.
     fn report_sigma_vs_stiffness(
         scene: &str,
+        cavity_inset_m: f64,
         n_steps: usize,
         build: impl Fn() -> InsertionGeometry,
     ) {
@@ -7877,6 +7878,21 @@ mod tests {
                  is no span to report",
             );
             return;
+        }
+        // The stiffest arm that SOLVED is the closest this path gets to
+        // a design traction, so the derivation is worth seeing there and
+        // not only at the shipped stiffness — which is the one reading
+        // the sweep has just disqualified.
+        let stiffest = sigmas.last().and_then(|&(k_stiff, _)| {
+            arms.iter()
+                .find(|(k, _)| (k - k_stiff).abs() < f64::EPSILON * k_stiff)
+                .and_then(|(_, steps)| steps.get(common - 1))
+                .map(|&(_, stats)| (k_stiff, stats))
+        });
+        if let Some((k_stiff, stats)) = stiffest {
+            #[allow(clippy::cast_precision_loss)]
+            let ramp_step_m = cavity_inset_m / n_steps as f64;
+            report_derived_face_kappa(&format!("{scene}@k={k_stiff:.0e}"), stats, ramp_step_m);
         }
         if let [.., (k_a, s_a), (k_b, s_b)] = sigmas.as_slice() {
             eprintln!(
