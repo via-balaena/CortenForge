@@ -949,6 +949,13 @@ fn tet10_yeoh_takes_the_face_path_and_tet4_yeoh_takes_the_vertex_path() {
 
 // ── the measurement ─────────────────────────────────────────────────
 
+/// One rung of a ramp: the indenter advance (m) and what the solve made of it.
+///
+/// Named because the raw tuple appears in every ramp signature and in the
+/// cached accessors' return types, where `clippy::type_complexity` is right
+/// that it had stopped being readable.
+type Rung = (f64, Result<Press, String>);
+
 /// What one quasi-static press did — the convergence numbers **and** the
 /// loading witness that says whether they describe a real load case.
 ///
@@ -957,13 +964,6 @@ fn tet10_yeoh_takes_the_face_path_and_tet4_yeoh_takes_the_vertex_path() {
 /// equilibrium immediately. The last three fields are what separate the two.
 /// Without them "Tet10 × Yeoh converges" would be a claim about an unloaded
 /// plate wearing the words of a claim about contact.
-/// One rung of a ramp: the indenter advance (m) and what the solve made of it.
-///
-/// Named because the raw tuple appears in every ramp signature and in the
-/// cached accessors' return types, where `clippy::type_complexity` is right
-/// that it had stopped being readable.
-type Rung = (f64, Result<Press, String>);
-
 #[derive(Debug, Clone)]
 struct Press {
     iters: usize,
