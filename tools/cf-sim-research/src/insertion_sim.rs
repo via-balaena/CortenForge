@@ -8107,15 +8107,18 @@ mod tests {
             } else {
                 f64::NAN
             };
+            // ⛔ SCENE-LOCAL. "Seated" is a per-scene predicate, so it
+            // selects a DIFFERENT arm set on each scene and the numbers
+            // it produces cannot be compared between them. Printed
+            // second, and labelled, because quoting it as a cross-scene
+            // figure is a mistake that has already been made twice.
             eprintln!(
-                "  {scene}: over the {} SEATED arms (min_sd > 0, kappa \
+                "  {scene}: SCENE-LOCAL — over all {} seated arms (min_sd > 0, kappa \
                  {ks_lo:.0e}..{ks_hi:.0e}) sigma spans {:.4}x = {per_decade:.4}x per \
-                 decade, against the fixture's {:.4}x per decade \
-                 ({FIXTURE_SIGMA_SPAN}x over {FIXTURE_SIGMA_SPAN_DECADES} decades, \
-                 measured by running its own probe).",
+                 decade. ⛔ NOT comparable across scenes: `seated` picks a \
+                 different arm set on each.",
                 sigmas_seated.len(),
                 s_hi / s_lo,
-                FIXTURE_SIGMA_SPAN.powf(1.0 / FIXTURE_SIGMA_SPAN_DECADES),
             );
         } else {
             eprintln!(
@@ -8152,12 +8155,20 @@ mod tests {
             report_derived_face_kappa(&format!("{scene}@k={k_stiff:.0e}"), stats, ramp_step_m);
         }
         if let [.., (k_a, s_a), (k_b, s_b)] = sigmas.as_slice() {
+            // ⭐ THE CROSS-SCENE FIGURE. The two stiffest arms that
+            // solved are the same κ on every scene here, so this is the
+            // one number that compares between them — and against the
+            // fixture, whose own value is recorded in
+            // [`FIXTURE_SIGMA_SPAN`] with the command that prints it.
             eprintln!(
-                "  {scene}: at the stiff end sigma reads {:.2} kPa at {k_a:.0e} and \
-                 {:.2} kPa at {k_b:.0e} — {:.4}x apart.",
+                "  {scene}: CROSS-SCENE — the two stiffest arms that solved \
+                 ({k_a:.0e} -> {k_b:.0e}) give sigma {:.2} -> {:.2} kPa = {:.4}x per \
+                 decade, against the fixture's {:.4}x per decade ({FIXTURE_SIGMA_SPAN}x \
+                 over {FIXTURE_SIGMA_SPAN_DECADES} decades).",
                 s_a * 1e-3,
                 s_b * 1e-3,
                 s_b / s_a,
+                FIXTURE_SIGMA_SPAN.powf(1.0 / FIXTURE_SIGMA_SPAN_DECADES),
             );
         }
     }
