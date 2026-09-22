@@ -384,6 +384,34 @@ Listed because the confidence of §4 rests on these being open, not closed.
    `κ·|b'(sd)|` — which tracks `F_z / A_flat` on the plate at a ratio constant
    to **0.9360–0.9365 over thirteen rungs**.
 
+   ✅ **GRADED MATERIALS (item 3b) — measured, and both readings above
+   survive.** The same shell now also carries `insertion_sim`'s row-23 stack
+   (Ecoflex 00-20 / Dragon Skin 10A / Dragon Skin 20A, innermost first) through
+   the same `LayeredScalarField` keyed on the cavity SDF. Grading costs **32 %
+   of the depth** — the wall moves from 4.720 mm of radial interference to
+   3.220 mm — and moves the stall mode with it: the uniform cell ends at
+   `ArmijoStall(iter 5)`, which is *not* the marching-feasibility mode the `κ`
+   floor is derived against, while the graded cell ends at **iter 0**, which
+   is. ⇒ on a graded wall the derived floor describes the failure it was built
+   to describe. What does **not** change: `ρ` stays inside `1.30`
+   (**[1.1632, 1.2115]**, a band about 4 % wider than uniform) and the
+   enveloping patch still cancels its own net force (**1.068e-3 → 1.281e-4**).
+   Both readings are geometric, not artefacts of material uniformity, so the
+   bridge can lean on them over a layered wall.
+
+   ⚠⚠ **A volume-weighted modulus is the wrong estimator for a graded wall,
+   twice over.** The stack volume-averages to **3.48×** the uniform anchor; the
+   measured stiffening is **1.222× at rest rising to 1.719×** at the wall.
+   First, load enters at the bore, where the stack is *softer* than the
+   baseline (18 kPa against 23 kPa), and the stiff shells carrying 56 % of the
+   volume sit against the pinned skin — the layers load in **series**, not in
+   parallel. Second, `μ` is not even the dominant term: flattening `μ` alone
+   moves the ratio by 0.049 where flattening **`λ` moves it by 0.097**.
+   ⛔ `λ` leads *because this shell is sealed* (22.7 % volumetric compression at
+   depth), and `insertion_sim`'s sleeve has an **open mouth** where material
+   escapes axially. ⇒ **read the 1.22–1.72× band as an upper bound for the
+   open-mouth case, not as a transfer.**
+
 4. **Per-Gauss-point material sampling** (§7.6). The expensive one: a
    return-shape change to `Mesh::materials()` reaching 119 call sites.
    Deferred to here so its benefit arrives as a number rather than a belief.
@@ -399,6 +427,21 @@ Listed because the confidence of §4 rests on these being open, not closed.
    [`Mesh::interface_flags`] implements the `|φ(x_c)| < L_e` straddle test and
    is populated at construction — so this item should ship **with** a decision
    about flagged tets, not merely "sample four times everywhere."
+
+   ⛔⛔ **MEASURED during item 3b, and it conditions the sentence above: at
+   `CELL` = 4 mm the straddle flag is SATURATED and cannot isolate a layer
+   boundary.** `L_e` is the tet's six-edge mean, ≈3.4 mm here, against 4 mm
+   layers — so the band is nearly as thick as the layer it delimits. On the
+   graded shell (8 736 tets) it flags **3 504 (40.1 %)** at the r = 14 mm
+   boundary and **5 484 (62.8 %)** at r = 18 mm; in its sharpest form,
+   **boundary 0 flags more tets (3 504) than the entire layer it bounds
+   contains (2 304)**. ⇒ "a decision about flagged tets" would at this
+   resolution be a decision about most of the body, which is not the seam
+   treatment the sentence intends. Item 4 needs either a finer cell or a
+   criterion that is not `L_e`-wide — and this is a *lower* bound on the
+   problem, since these boundaries are exactly concentric spheres and a real
+   scan's irregular offsets can only flag more.
+   Pinned by `the_interface_flag_cannot_isolate_a_layer_boundary_at_this_cell_size`.
 
 5. **Face-friction reconciliation**, or an explicit frictionless declaration
    recorded as a known limitation (§5).
