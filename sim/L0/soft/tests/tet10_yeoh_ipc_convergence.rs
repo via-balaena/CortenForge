@@ -4056,6 +4056,18 @@ fn the_graded_walls_stiffness_is_set_by_the_layer_the_load_enters() {
          the measured 1.222-1.332 band. Below 1.0 the stack is inverted; at \
          1.0 the moduli never reached the energy and only the mesh was graded",
     );
+    // ⚠ The band above is a PIN, not a physical bound: it leaves 1.8 % / 1.3 %
+    // and exists to detect drift. The claims that are PHYSICAL are asserted
+    // separately and with room, so an arch-to-arch float shift that trips the
+    // pin stays distinguishable from a result that is actually wrong — the
+    // pin says "this moved", these say "this is impossible".
+    assert!(
+        lo > 1.0,
+        "the graded wall is not stiffer than the uniform one at all \
+         ({lo:.4}) — with a stiffer stack outside a softer bore layer it must \
+         be, so either the stack is inverted or the material never reached the \
+         energy",
+    );
     assert!(
         ratios.windows(2).all(|w| w[1] > w[0]),
         "the ratio is not strictly increasing: {ratios:?}. It rises because \
@@ -4507,12 +4519,22 @@ fn how_deep_does_the_graded_cavity_converge() {
          outside (1.0, {PATCH_NONUNIFORMITY})",
     );
     let label = failure.expect("the ramp must reach a wall within 6 mm");
+    // ⚠ Two failures, one string — the same fragility the validity gate had.
+    // "the mode moved" is the finding; "`failure_label`'s format moved" is a
+    // stale parser, and reporting the second as the first is a lie.
     assert!(
-        label.contains("ArmijoStall(iter 0"),
-        "the graded wall is `{label}`, not the iteration-0 Armijo stall \
-         measured. The ITERATION is the whole distinction between the \
-         marching-feasibility mode the kappa floor describes and the \
-         unidentified iteration-5 mode the uniform cell hits",
+        label.starts_with("ArmijoStall"),
+        "the graded wall is `{label}`, not an Armijo stall at all — a \
+         different failure mode entirely, not the iteration distinction below",
+    );
+    assert!(
+        label.contains("(iter 0"),
+        "the wall is an Armijo stall but not at iteration 0: `{label}`. The \
+         ITERATION is the whole distinction between the marching-feasibility \
+         mode the kappa floor describes and the unidentified iteration-5 mode \
+         the uniform cell hits — so either that finding has changed, or \
+         `failure_label` no longer prints the iteration this way and the \
+         parser is stale",
     );
     assert!(
         first_infeasible.is_some_and(|w| w < deepest),
