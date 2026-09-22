@@ -3977,6 +3977,13 @@ fn the_layer_stack_partitions_the_wall_by_radius() {
 /// share is the wrong weight. ⇒ **sizing a graded sleeve from a volume-averaged
 /// modulus over-predicts its stiffness by about 2×.**
 ///
+/// ⭐ **That explanation is measured, not asserted.**
+/// [`the_stiffening_follows_the_layer_at_the_bore`] inverts the stack — same
+/// anchors, same volume fractions, so the same order-blind 3.4759× volume
+/// weighting — and the stiffening goes 1.3320 → **2.3104**. Arrangement alone
+/// moves the answer 74 %, which is the falsifier the series claim needed and
+/// did not have when it was first written.
+///
 /// ⭐ **The estimator finding does not depend on WHICH modulus is averaged.**
 /// Volume-weighting gives 3.476× for `μ`, 3.476× for `λ` and 3.453× for `C₂`,
 /// because the anchors are a self-similar family
@@ -4805,4 +4812,89 @@ fn the_cached_ramps_equal_a_fresh_solve() {
             cached.len()
         );
     }
+}
+
+/// **Is the stiffening really governed by the layer the load enters, or does
+/// the arrangement not matter?**
+///
+/// [`the_graded_walls_stiffness_is_set_by_the_layer_the_load_enters`] explains
+/// its 2× discrepancy against the volume average by series compliance: load
+/// enters at the bore, the bore layer is softer than the uniform baseline, and
+/// the stiff shells sit remote and against the pinned skin. ⚠ **That sentence
+/// had no referent.** The discrepancy would read the same if the mechanism
+/// were something else entirely — the pinned skin dominating, or a contact-area
+/// effect — so it was a plausible declarative of exactly the kind that produced
+/// two retracted attributions in this same file.
+///
+/// The falsifier: series compliance is a claim about POSITION, so inverting
+/// the stack must move the answer a lot. Same three anchors, same volume
+/// fractions, same everything but the order.
+///
+/// ```text
+/// uniform baseline                          1.0000
+/// soft at the bore (the real stack)         1.3320     excess 0.3320
+/// STIFF at the bore (inverted)              2.3104     excess 1.3104
+/// volume-weighted prediction                3.4759     order-blind
+/// ```
+///
+/// ⭐⭐ **Inverting the stack quadruples the excess** (0.3320 → 1.3104) with
+/// the same three anchors in the same volume fractions. That is what a
+/// position-governed response looks like and what a volume-governed one does
+/// not: a volume average is **order-blind** — both stacks weight to the same
+/// 3.4759× — so the 74 % difference between them is the arrangement, not the
+/// ingredients. The series-compliance explanation survives a real attempt to
+/// kill it, which is more than the two retracted attributions in this file
+/// ever faced.
+#[test]
+#[ignore = "two shallow ramps against the cached uniform baseline, ~2 min — \
+            the falsifier for the series-compliance explanation"]
+fn the_stiffening_follows_the_layer_at_the_bore() {
+    let uniform: Vec<f64> = cavity_rungs()
+        .iter()
+        .map(|(_, r)| {
+            r.as_ref()
+                .expect("the uniform cell must converge")
+                .mean_traction
+        })
+        .collect();
+
+    let ratio_at_depth = |stack: [SiliconeMaterial; 3]| -> f64 {
+        let pick = |f: fn(&SiliconeMaterial) -> f64| [f(&stack[0]), f(&stack[1]), f(&stack[2])];
+        let field = graded_field_with(
+            pick(|m| m.mu),
+            pick(|m| m.c2),
+            pick(|m| m.lambda),
+            pick(|m| m.validity_max_principal_stretch),
+        );
+        let rungs = Cell::shell_with(field).ramp(CAVITY, RAMP_STEP, CAVITY_GATE_MAX_W);
+        assert_eq!(rungs.len(), uniform.len(), "ramp length mismatch");
+        let last = rungs
+            .last()
+            .expect("a non-empty ramp")
+            .1
+            .as_ref()
+            .expect("the graded cell must converge")
+            .mean_traction;
+        last / uniform[uniform.len() - 1]
+    };
+
+    let soft_in = ratio_at_depth([STACK[0], STACK[1], STACK[2]]);
+    let stiff_in = ratio_at_depth([STACK[2], STACK[1], STACK[0]]);
+    eprintln!("  soft at the bore  {soft_in:.4}\n  stiff at the bore {stiff_in:.4}");
+
+    assert!(
+        stiff_in > 2.0 * (soft_in - 1.0) + 1.0,
+        "inverting the stack moved the stiffening from {soft_in:.4} to only \
+         {stiff_in:.4}. A volume average is ORDER-BLIND — both stacks weight to \
+         the same 3.4759x — so if the arrangement barely matters, the response \
+         is not governed by the layer the load enters and the series-compliance \
+         explanation is wrong, whatever the discrepancy against the volume \
+         average happens to be",
+    );
+    assert!(
+        stiff_in > soft_in,
+        "putting the STIFF layer at the bore ({stiff_in:.4}) did not stiffen \
+         the wall relative to the soft-bore stack ({soft_in:.4}) — the sign of \
+         the position effect is backwards",
+    );
 }
