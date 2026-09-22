@@ -376,9 +376,9 @@ Listed because the confidence of §4 rests on these being open, not closed.
 
    ⛔ **What did NOT survive is `σ`'s definition.** `F_z / A_flat` needs a net
    force projected onto an axis, and on a closed patch every normal is radial:
-   measured, the enveloping cell's `|ΣF| / Σ|f|` is **6.8e-4 falling to 8.7e-5**
-   against the plate's 0.9992, so `F_z` understates its contact by three to four
-   orders of magnitude. There is no cavity analogue of `A_flat` because there is
+   measured, the enveloping cell's `‖ΣF‖ / Σ‖f‖` is **1.11e-3 falling to 1.45e-4**
+   against the plate's 0.9992, so the net force understates its contact by three
+   to four orders of magnitude. There is no cavity analogue of `A_flat` because there is
    no force to divide. The replacement is to stop going through force at all and
    read the traction the barrier integrates — the area-weighted mean of
    `κ·|b'(sd)|` — which tracks `F_z / A_flat` on the plate at a ratio constant
