@@ -6991,7 +6991,26 @@ mod tests {
         /// Loosest signed distance among active pairs (m) — bounded
         /// above by `d̂` because the producer only emits active pairs.
         max_sd_m: f64,
+        /// The gap below which [`PATCH_TAIL_FRACTION`] of the patch
+        /// AREA lies (m) — the outlier-resistant stand-in for
+        /// [`min_sd_m`](Self::min_sd_m).
+        ///
+        /// ⛔ `min_sd` is one vertex. A ρ built on it is a ratio whose
+        /// denominator can be set by a single bad tet on a scan-derived
+        /// patch, and the κ floor divides by `|b'|` at `ρ · step` — so
+        /// an outlier there moves a shipped constant. This is the same
+        /// quantity read off the tail of the area distribution instead.
+        p05_sd_m: f64,
     }
+
+    /// Area fraction defining [`PatchStats::p05_sd_m`].
+    ///
+    /// 5 % is a stated choice, not a derived one: small enough that it
+    /// still reads the tight tail rather than the bulk, large enough
+    /// that it takes more than a handful of pairs to set it. The probes
+    /// print `min` and this side by side precisely so the choice is
+    /// visible rather than load-bearing in silence.
+    const PATCH_TAIL_FRACTION: f64 = 0.05;
 
     impl PatchStats {
         /// `Σ|f| / |Σf|` — how much of the carried load the vector sum
@@ -7013,6 +7032,42 @@ mod tests {
         fn rho_gap(self) -> f64 {
             self.mean_sd_m / self.min_sd_m
         }
+
+        /// [`rho_gap`](Self::rho_gap) against the area tail instead of
+        /// the single tightest pair.
+        ///
+        /// The two agree when the patch's tight end is a *region*; they
+        /// diverge when it is an *outlier*, and the size of the
+        /// divergence is the whole reason both are reported.
+        fn rho_tail(self) -> f64 {
+            self.mean_sd_m / self.p05_sd_m
+        }
+    }
+
+    /// One hand-built [`ContactPairReadout`], for the fixtures that
+    /// pin [`patch_stats`]'s arithmetic against closed-form answers.
+    ///
+    /// Mirrors sim-soft's own `pressure` convention exactly, including
+    /// the `NaN` sentinel at zero area — a fixture that wrote `0.0`
+    /// there would be testing against a patch the solver never
+    /// produces.
+    fn readout(vertex_id: VertexId, sd: f64, area: f64, f: Vec3) -> ContactPairReadout {
+        ContactPairReadout {
+            pair: ContactPair::Vertex {
+                vertex_id,
+                primitive_id: 0,
+            },
+            position: Vec3::zeros(),
+            sd,
+            normal: if f.norm() > 0.0 { f.normalize() } else { f },
+            force_on_soft: f,
+            tributary_area: area,
+            pressure: if area > 0.0 {
+                f.norm() / area
+            } else {
+                f64::NAN
+            },
+        }
     }
 
     /// Reduce a step's orphan-filtered active-pair readouts to
@@ -7028,6 +7083,7 @@ mod tests {
         let mut area_sd = 0.0_f64;
         let mut min_sd_m = f64::INFINITY;
         let mut max_sd_m = f64::NEG_INFINITY;
+        let mut by_gap: Vec<(f64, f64)> = Vec::with_capacity(readouts.len());
         for r in readouts {
             if r.tributary_area <= 0.0 || !r.tributary_area.is_finite() || !r.pressure.is_finite() {
                 n_dropped += 1;
@@ -7040,9 +7096,26 @@ mod tests {
             area_sd += r.tributary_area * r.sd;
             min_sd_m = min_sd_m.min(r.sd);
             max_sd_m = max_sd_m.max(r.sd);
+            by_gap.push((r.sd, r.tributary_area));
         }
         if n_pairs == 0 || area_m2 <= 0.0 {
             return None;
+        }
+        // Area-weighted tail: walk the patch from its tightest pair
+        // outward and stop where `PATCH_TAIL_FRACTION` of the area is
+        // behind. `total_cmp` orders the gaps without a `NaN` branch —
+        // a `NaN` gap cannot reach here, since its pressure would have
+        // been non-finite and the pair dropped above.
+        by_gap.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+        let cut = PATCH_TAIL_FRACTION * area_m2;
+        let mut cumulative = 0.0_f64;
+        let mut p05_sd_m = min_sd_m;
+        for (sd, area) in by_gap {
+            cumulative += area;
+            p05_sd_m = sd;
+            if cumulative >= cut {
+                break;
+            }
         }
         Some(PatchStats {
             n_pairs,
@@ -7054,6 +7127,7 @@ mod tests {
             min_sd_m,
             mean_sd_m: area_sd / area_m2,
             max_sd_m,
+            p05_sd_m,
         })
     }
 
@@ -7072,7 +7146,7 @@ mod tests {
     fn print_patch_row(label: &str, interference_m: f64, stats: PatchStats) {
         eprintln!(
             "  {label:<9} {:>7.3} {:>6} {:>5} {:>10.2} {:>9.3} {:>9.3} {:>7.2} {:>9.2} \
-             {:>9.4} {:>9.4} {:>7.3}",
+             {:>9.4} {:>9.4} {:>7.3} {:>9.4} {:>8.3}",
             interference_m * 1e3,
             stats.n_pairs,
             stats.n_dropped,
@@ -7084,13 +7158,16 @@ mod tests {
             stats.min_sd_m * 1e3,
             stats.mean_sd_m * 1e3,
             stats.rho_gap(),
+            stats.p05_sd_m * 1e3,
+            stats.rho_tail(),
         );
     }
 
     /// The column header matching [`print_patch_row`].
     fn print_patch_header() {
         eprintln!(
-            "  {:<9} {:>7} {:>6} {:>5} {:>10} {:>9} {:>9} {:>7} {:>9} {:>9} {:>9} {:>7}",
+            "  {:<9} {:>7} {:>6} {:>5} {:>10} {:>9} {:>9} {:>7} {:>9} {:>9} {:>9} {:>7} \
+             {:>9} {:>8}",
             "",
             "d/mm",
             "pairs",
@@ -7103,6 +7180,8 @@ mod tests {
             "min_sd/mm",
             "mean_sd",
             "rho",
+            "p05_sd/mm",
+            "rho_tail",
         );
     }
 
@@ -7194,57 +7273,67 @@ mod tests {
     /// that the standoff bias stay in the lower half of the band.
     fn report_derived_face_kappa(label: &str, stats: PatchStats, ramp_step_m: f64) {
         eprintln!(
-            "  {label} derivation — sigma = {:.2} kPa, rho = {:.3}, ramp step = {:.4} mm \
-             ⇒ required standoff {:.4} mm",
+            "  {label} derivation — sigma = {:.2} kPa, ramp step = {:.4} mm",
             stats.traction_pa * 1e-3,
-            stats.rho_gap(),
             ramp_step_m * 1e3,
-            ramp_step_m * stats.rho_gap() * 1e3,
         );
         if !stats.min_sd_m.is_finite() || stats.min_sd_m <= 0.0 {
             eprintln!(
                 "  ⛔ min_sd = {:.4} mm is not positive — the penalty solve is \
-                 interpenetrating here, so rho is not a gap ratio and the floor below \
+                 interpenetrating here, so rho is not a gap ratio and everything below \
                  is arithmetic on a meaningless number.",
                 stats.min_sd_m * 1e3,
             );
         }
-        eprintln!(
-            "  {:>9} {:>14} {:>14} {:>10} {:>14}",
-            "d_hat/mm", "floor", "ceiling", "decades", "1e7 inside?",
-        );
-        let standoff = ramp_step_m * stats.rho_gap();
-        for d_hat in BRIDGE_DHAT_CANDIDATES_M {
-            let floor = face_barrier_kappa(d_hat, standoff, stats.traction_pa);
-            let ceiling = face_barrier_kappa(d_hat, 0.5 * d_hat, stats.traction_pa);
-            match (floor, ceiling) {
-                (Some(f), Some(c)) => {
-                    let decades = if f > 0.0 && c > f {
-                        format!("{:.2}", (c / f).log10())
-                    } else {
-                        "EMPTY".to_owned()
-                    };
-                    eprintln!(
-                        "  {:>9.3} {:>14.4e} {:>14.4e} {:>10} {:>14}",
-                        d_hat * 1e3,
-                        f,
-                        c,
-                        decades,
-                        if (f..=c).contains(&1.0e7) {
+        // BOTH definitions, because they are not close on a patch with
+        // a tight outlier and the floor is derived from whichever one
+        // is used. Reporting one would be choosing silently.
+        for (rho_name, rho) in [
+            ("rho(min) ", stats.rho_gap()),
+            ("rho(tail)", stats.rho_tail()),
+        ] {
+            let standoff = ramp_step_m * rho;
+            eprintln!(
+                "  {label} at {rho_name} = {rho:.3} ⇒ required standoff {:.4} mm",
+                standoff * 1e3,
+            );
+            eprintln!(
+                "  {:>9} {:>14} {:>14} {:>10} {:>14}",
+                "d_hat/mm", "floor", "ceiling", "decades", "1e7 inside?",
+            );
+            for d_hat in BRIDGE_DHAT_CANDIDATES_M {
+                let floor = face_barrier_kappa(d_hat, standoff, stats.traction_pa);
+                let ceiling = face_barrier_kappa(d_hat, 0.5 * d_hat, stats.traction_pa);
+                match (floor, ceiling) {
+                    (Some(f), Some(c)) => {
+                        let decades = if f > 0.0 && c > f {
+                            format!("{:.2}", (c / f).log10())
+                        } else {
+                            "EMPTY".to_owned()
+                        };
+                        let holds_1e7 = if (f..=c).contains(&1.0e7) {
                             "yes"
                         } else {
                             "no"
-                        },
-                    );
+                        };
+                        eprintln!(
+                            "  {:>9.3} {:>14.4e} {:>14.4e} {:>10} {:>14}",
+                            d_hat * 1e3,
+                            f,
+                            c,
+                            decades,
+                            holds_1e7,
+                        );
+                    }
+                    _ => eprintln!(
+                        "  {:>9.3} {:>14} {:>14} {:>10} {:>14}",
+                        d_hat * 1e3,
+                        if floor.is_none() { "undefined" } else { "-" },
+                        if ceiling.is_none() { "undefined" } else { "-" },
+                        "-",
+                        "-",
+                    ),
                 }
-                _ => eprintln!(
-                    "  {:>9.3} {:>14} {:>14} {:>10} {:>14}",
-                    d_hat * 1e3,
-                    if floor.is_none() { "undefined" } else { "-" },
-                    if ceiling.is_none() { "undefined" } else { "-" },
-                    "-",
-                    "-",
-                ),
             }
         }
     }
@@ -7266,23 +7355,6 @@ mod tests {
     /// high while every other field still looked plausible.
     #[test]
     fn the_patch_summary_is_area_weighted_and_drops_undefined_pressures() {
-        let pair = |vertex_id: VertexId| ContactPair::Vertex {
-            vertex_id,
-            primitive_id: 0,
-        };
-        let readout = |vertex_id: VertexId, sd: f64, area: f64, f: Vec3| ContactPairReadout {
-            pair: pair(vertex_id),
-            position: Vec3::zeros(),
-            sd,
-            normal: if f.norm() > 0.0 { f.normalize() } else { f },
-            force_on_soft: f,
-            tributary_area: area,
-            pressure: if area > 0.0 {
-                f.norm() / area
-            } else {
-                f64::NAN
-            },
-        };
         let readouts = vec![
             readout(0, 0.2e-3, 2.0e-6, Vec3::new(0.0, 0.0, -4.0)),
             readout(1, 0.6e-3, 6.0e-6, Vec3::new(0.0, 0.0, -6.0)),
@@ -7337,6 +7409,19 @@ mod tests {
         // mean of 0.4 mm, which is what makes this an area weighting.
         close(stats.mean_sd_m, 0.48e-3, "the mean gap is area-weighted");
         close(stats.rho_gap(), 2.4, "ρ is mean_sd / min_sd");
+        // The tightest pair carries 2 of 10 mm² — 20 % of the area, so
+        // the 5 % tail lands inside it and the two ρ agree here. The
+        // fixture below is the one where they do not.
+        close(
+            stats.p05_sd_m,
+            0.2e-3,
+            "the 5 % tail of this patch is its tightest pair",
+        );
+        close(
+            stats.rho_tail(),
+            2.4,
+            "ρ_tail matches ρ when the tight end is not an outlier",
+        );
 
         // A patch of nothing but undefined pressures is a scene defect,
         // and must not summarize as a zero-traction patch.
@@ -7609,9 +7694,10 @@ mod tests {
     /// comparing σ at two different depths would be reading the ramp's
     /// depth dependence as a stiffness dependence.
     ///
-    /// Asserts nothing — it is the size of the span that is the finding,
-    /// and it is platform-dependent in the same way the stall boundary
-    /// is.
+    /// Asserts nothing about the *outcome* — it is the size of the span
+    /// that is the finding, and it is platform-dependent in the same way
+    /// the stall boundary is. The one assert it carries protects the
+    /// comparison: that the arms are read at the same depth.
     ///
     /// ```text
     /// cargo test -p cf-sim-research --release --bin cf-sim-research \
@@ -7634,32 +7720,73 @@ mod tests {
             INSERTION_CONTACT_KAPPA,
         );
 
-        let mut arms: Vec<(f64, Vec<(f64, PatchStats)>)> = Vec::new();
-        for contact_kappa in [1.0e2_f64, 1.0e3, 1.0e4, 1.0e5] {
+        report_sigma_vs_stiffness("sphere", n_steps, || {
             let scan = icosphere(0.040, 3);
-            let geometry = build_insertion_geometry(&scan, &design, &[], 2_000, 0.004)
-                .expect("synthetic-sphere geometry should build");
-            eprintln!("\n--- penalty kappa = {contact_kappa:.1e} ---");
+            build_insertion_geometry(&scan, &design, &[], 2_000, 0.004)
+                .expect("synthetic-sphere geometry should build")
+        });
+
+        // The scan arm, when the fixture is here. The sphere arm runs
+        // without it, so a missing fixture is not a failure — but it is
+        // said out loud, because the scene that matters is this one.
+        let scan_path = std::env::var("CF_SIM_RESEARCH_SPIKE_SCAN").map_or_else(
+            |_| PathBuf::from("/Users/jonhillesheim/scans/sock_over_capsule.cleaned.stl"),
+            PathBuf::from,
+        );
+        if scan_path.exists() {
+            let scan = load_stl(&scan_path).expect("load the iter-1 cleaned scan");
+            let scan_design = SimDesign {
+                cavity_inset_m,
+                layers: vec![layer(0.010, "ECOFLEX_00_30")],
+            };
+            report_sigma_vs_stiffness("1layer", n_steps, || {
+                build_insertion_geometry(&scan, &scan_design, &[], 2_500, 0.004)
+                    .expect("iter-1 single-layer geometry should build")
+            });
+        } else {
+            eprintln!(
+                "\n⛔ NOT MEASURED — the scan arm did not run: no fixture at {}. \
+                 The sphere result below is an idealised geometry, and the scene the \
+                 bridge runs is the one that is missing. Set CF_SIM_RESEARCH_SPIKE_SCAN.",
+                scan_path.display(),
+            );
+        }
+    }
+
+    /// Sweep the penalty stiffness on one scene and report σ, the gap
+    /// distribution and ρ at the deepest depth every arm reached.
+    ///
+    /// Rebuilds the geometry per arm because the ramp consumes it.
+    fn report_sigma_vs_stiffness(
+        scene: &str,
+        n_steps: usize,
+        build: impl Fn() -> InsertionGeometry,
+    ) {
+        const KAPPAS: [f64; 5] = [1.0e2, 1.0e3, 1.0e4, 1.0e5, 1.0e6];
+        eprintln!("\n═══ {scene} ═══");
+        let mut arms: Vec<(f64, Vec<(f64, PatchStats)>)> = Vec::new();
+        for contact_kappa in KAPPAS {
+            eprintln!("\n--- {scene}, penalty kappa = {contact_kappa:.1e} ---");
             let label = format!("k={contact_kappa:.0e}");
-            let steps = patch_over_ramp(&label, geometry, n_steps, contact_kappa, false);
+            let steps = patch_over_ramp(&label, build(), n_steps, contact_kappa, false);
             arms.push((contact_kappa, steps));
         }
 
         let Some(common) = arms.iter().map(|(_, s)| s.len()).min().filter(|&n| n > 0) else {
             eprintln!(
-                "  at least one stiffness produced no converged step with a well-defined \
-                 patch — there is no common depth to compare at",
+                "  {scene}: at least one stiffness produced no converged step with a \
+                 well-defined patch — there is no common depth to compare at",
             );
             return;
         };
         let depth_m = arms[0].1[common - 1].0;
         eprintln!(
-            "\n  deepest depth every arm reached: step {common}/{n_steps} = {:.4} mm",
+            "\n  {scene}: deepest depth every arm reached: step {common}/{n_steps} = {:.4} mm",
             depth_m * 1e3,
         );
         eprintln!(
-            "  {:>10} {:>8} {:>11} {:>11} {:>9} {:>11}",
-            "kappa", "steps", "sigma/kPa", "min_sd/mm", "rho", "cancel",
+            "  {:>10} {:>8} {:>11} {:>11} {:>11} {:>9} {:>9} {:>11}",
+            "kappa", "steps", "sigma/kPa", "min_sd/mm", "p05_sd/mm", "rho", "rho_tail", "cancel",
         );
         let mut sigmas = Vec::new();
         for (contact_kappa, steps) in &arms {
@@ -7669,30 +7796,44 @@ mod tests {
                 "the arms must be compared at the same depth; got {d:e} vs {depth_m:e}",
             );
             eprintln!(
-                "  {:>10.1e} {:>8} {:>11.2} {:>11.4} {:>9.3} {:>11.1}",
+                "  {:>10.1e} {:>8} {:>11.2} {:>11.4} {:>11.4} {:>9.3} {:>9.3} {:>11.1}",
                 contact_kappa,
                 steps.len(),
                 stats.traction_pa * 1e-3,
                 stats.min_sd_m * 1e3,
+                stats.p05_sd_m * 1e3,
                 stats.rho_gap(),
+                stats.rho_tail(),
                 stats.cancellation(),
             );
-            sigmas.push(stats.traction_pa);
+            sigmas.push((*contact_kappa, stats.traction_pa));
         }
         let (lo, hi) = sigmas
             .iter()
-            .fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), &s| {
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), &(_, s)| {
                 (l.min(s), h.max(s))
             });
         eprintln!(
-            "\n  sigma spans {:.4}x while kappa spans {:.0}x.",
+            "  {scene}: sigma spans {:.4}x while kappa spans {:.0}x. \
+             `tet10_yeoh_ipc_convergence` measures 1.003x on its fixture, which is what \
+             licenses calling its kappa DERIVED rather than swept.",
             hi / lo,
-            1.0e5 / 1.0e2,
+            KAPPAS[KAPPAS.len() - 1] / KAPPAS[0],
         );
-        eprintln!(
-            "  For reference `tet10_yeoh_ipc_convergence` measures 1.003x on its fixture, \
-             which is what licenses calling its kappa DERIVED rather than swept.",
-        );
+        // The stiff end is the part that transfers: as the contact
+        // approaches rigid the gap stops absorbing the load and sigma
+        // stops moving. Two adjacent arms that agree are the evidence
+        // that a limit was reached; two that do not mean the sweep
+        // stopped early and the limit is not in hand.
+        if let [.., (k_a, s_a), (k_b, s_b)] = sigmas.as_slice() {
+            eprintln!(
+                "  {scene}: at the stiff end sigma reads {:.2} kPa at {k_a:.0e} and \
+                 {:.2} kPa at {k_b:.0e} — {:.4}x apart.",
+                s_a * 1e-3,
+                s_b * 1e-3,
+                s_b / s_a,
+            );
+        }
     }
 
     /// The shipped ramp is the delegated one at the shipped stiffness —
@@ -7826,6 +7967,61 @@ mod tests {
             shipped.steps[0].x_final, stiffer.steps[0].x_final,
             "a tenfold stiffer contact must converge somewhere else; identical positions \
              mean the stiffness never reached the solve",
+        );
+    }
+
+    /// **One tight vertex must not set ρ.**
+    ///
+    /// The κ floor divides `|b'|` at `ρ · step`, so ρ's denominator is
+    /// a number that moves a shipped constant. Built on `min_sd` that
+    /// denominator is a single pair, and on a scan-derived patch a
+    /// single bad tet is the expected case, not the pathological one.
+    ///
+    /// 40 equal-area pairs: 39 sitting at 0.5 mm and one at 0.01 mm.
+    /// The outlier is 2.5 % of the patch area, under the 5 % tail, so
+    /// it sets `min_sd` and does not set `p05_sd` — and the two ρ come
+    /// out **50× apart**. Whichever a derivation uses, it must be the
+    /// one it says it uses.
+    #[test]
+    fn the_patch_nonuniformity_on_the_tail_is_not_moved_by_a_single_tight_pair() {
+        let area = 1.0e-6;
+        let force = Vec3::new(0.0, 0.0, -1.0);
+        let mut readouts: Vec<ContactPairReadout> =
+            (0..39).map(|i| readout(i, 0.5e-3, area, force)).collect();
+        readouts.push(readout(39, 0.01e-3, area, force));
+
+        let stats = patch_stats(&readouts).expect("40 well-defined pairs");
+        let close = |got: f64, want: f64, what: &str| {
+            assert!(
+                (got - want).abs() <= 1e-9 * want.abs().max(1.0),
+                "{what}: got {got:e}, want {want:e}",
+            );
+        };
+        assert_eq!(stats.n_pairs, 40, "every pair here has a surface patch");
+        close(stats.min_sd_m, 0.01e-3, "the outlier is the tightest pair");
+        // 5 % of 40 µm² is 2 µm², which the outlier's 1 µm² does not
+        // reach — so the tail walks on to the next gap.
+        close(
+            stats.p05_sd_m,
+            0.5e-3,
+            "the 5 % tail steps past a 2.5 %-area outlier",
+        );
+        close(
+            stats.mean_sd_m,
+            0.487_75e-3,
+            "the mean gap is (39·0.5 + 0.01) / 40",
+        );
+        close(
+            stats.rho_gap(),
+            48.775,
+            "ρ on the minimum is set by the one outlier",
+        );
+        close(stats.rho_tail(), 0.975_5, "ρ on the tail is not");
+        assert!(
+            stats.rho_gap() / stats.rho_tail() > 40.0,
+            "the point of this fixture is that the two definitions disagree by a \
+             factor, not a percent; got {:.2}x",
+            stats.rho_gap() / stats.rho_tail(),
         );
     }
 }
