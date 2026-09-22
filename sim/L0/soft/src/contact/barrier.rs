@@ -31,10 +31,35 @@
 //! ```
 //!
 //! so on the face path `κ` carries units of `J/m⁴ = Pa/m`, and the quantity
-//! `κ·|b'(d)|` is a **traction in pascals**. ⚠ The two κ are therefore *not
-//! interchangeable numbers*: they are dimensionally different by an area, and a
-//! value carried from a per-vertex fixture to a face fixture is not merely
-//! re-tuned, it is re-interpreted.
+//! `κ·|b'(d)|` is a **traction in pascals**.
+//!
+//! # ⛔ There are THREE κ in this crate and they are not comparable numbers
+//!
+//! ```text
+//!   contact model            energy per pair              units of κ
+//!   ──────────────────────────────────────────────────────────────────
+//!   IPC, per-vertex          κ · b(sd)                    J/m² = N/m
+//!   IPC, per-FACE (here)     A_rest · Σ_q ŵ_q · κ · b(sd) J/m⁴ = Pa/m
+//!   Penalty, per-vertex      ½ · κ · gap²                 J/m² = N/m
+//! ```
+//!
+//! ⚠⚠ **The face κ differs from the other two by an AREA.** A value carried
+//! between paths is not merely re-tuned, it is *re-interpreted* — comparing
+//! their magnitudes is a category error, not a calibration observation.
+//!
+//! ⭐ **This matters concretely for the `insertion_sim` renovation.** That tool
+//! runs [`PenaltyRigidContact`](super::PenaltyRigidContact) today at
+//! `INSERTION_CONTACT_KAPPA = 1e3` (`tools/cf-sim-research/src/insertion_sim.rs`),
+//! and the queued bridge moves it onto this face path, where the derived value
+//! is `1e7`. That is **four orders of a different quantity**, not a 10 000×
+//! stiffening, and nothing in either number says so.
+//!
+//! ⚠ **A κ carried between fixtures on the SAME path is a different mistake,
+//! and it has also already happened here.** Rung 8b's face κ of `1e4` moved
+//! into a 1.2 mm-band fixture is dimensionally fine and simply wrong by scale
+//! — it made the Tet10 × Yeoh ramp look like it walled at 1 % strain when it
+//! reaches 44 %. Units and scale fail independently; neither implies the
+//! other.
 //!
 //! [`face_barrier_standoff`] and [`face_barrier_kappa`] are the two directions
 //! of that traction relation, and are the arithmetic behind a κ chosen by
@@ -55,9 +80,14 @@ pub const BARRIER_GAP_FLOOR_FRACTION: f64 = 1.0e-6;
 
 /// The gap the barrier is evaluated at: `sd` floored at `d̂` times
 /// [`BARRIER_GAP_FLOOR_FRACTION`].
+///
+/// `pub(crate)`: an internal detail of how the three barrier functions clamp,
+/// with no caller outside this crate. [`BARRIER_GAP_FLOOR_FRACTION`] *is*
+/// public, because it explains an observable — a converged solve reporting
+/// `min_sd ≤ 0` — which a consumer reading a contact readout needs.
 #[must_use]
 #[inline]
-pub fn barrier_gap(sd: f64, d_hat: f64) -> f64 {
+pub(crate) fn barrier_gap(sd: f64, d_hat: f64) -> f64 {
     sd.max(d_hat * BARRIER_GAP_FLOOR_FRACTION)
 }
 
@@ -350,13 +380,13 @@ mod tests {
                     "kappa {kappa:e} derived to hold {standoff:e} m against \
                      {traction:e} Pa holds {back:e} m instead (rel {rel:e})",
                 );
-                let got = face_barrier_traction(kappa, standoff, D_HAT);
-                let rel_t = (got - traction).abs() / traction;
-                assert!(
-                    rel_t < 1e-12,
-                    "the derived kappa produces {got:e} Pa at the standoff it was \
-                     derived for, not the {traction:e} Pa it was derived from",
-                );
+                // ⛔ An arm asserting `face_barrier_traction(kappa, standoff)
+                // == traction` was removed here: it evaluates
+                // `(sigma / |b'|) * |b'|`, so `barrier_derivative` cancels and
+                // it cannot detect an error in it. The arm above is the real
+                // content — it exercises the BISECTION, which has to recover
+                // the root from a stiffness, and would fail if `|b'|` were not
+                // monotone on the band.
             }
         }
     }

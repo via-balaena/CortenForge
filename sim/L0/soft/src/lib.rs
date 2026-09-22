@@ -50,9 +50,9 @@ pub use autograd_ops::{DivOp, IndexOp};
 pub use contact::{
     ActivePairsFor, BARRIER_GAP_FLOOR_FRACTION, ContactGradient, ContactHessian, ContactModel,
     ContactPair, ContactPairReadout, IpcRigidContact, NullContact, PenaltyRigidContact, RigidPlane,
-    RigidTwist, barrier_derivative, barrier_gap, barrier_second_derivative, barrier_value,
-    face_barrier_kappa, face_barrier_standoff, face_barrier_traction,
-    filter_pair_readouts_to_referenced, peak_contact_pressure,
+    RigidTwist, barrier_derivative, barrier_second_derivative, barrier_value, face_barrier_kappa,
+    face_barrier_standoff, face_barrier_traction, filter_pair_readouts_to_referenced,
+    peak_contact_pressure,
 };
 pub use differentiable::{
     CpuDifferentiable, Differentiable, MaterialStepVjp, NewtonStepVjp, StateStepVjp, TapeNodeKey,

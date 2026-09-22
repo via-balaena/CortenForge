@@ -84,9 +84,12 @@
 //!   measured against the solver to floating point by
 //!   `the_face_barrier_traction_law_holds_against_the_solver`. Requiring the
 //!   barrier to hold one ramp increment open under the measured design
-//!   traction gives a floor of **1.730e6**; requiring the standoff to stay
-//!   inside half the band gives a ceiling of **2.123e7**; **1e7 is the only
-//!   decade between them.** The sweep's bracket and the derivation were
+//!   traction — at the patch's TIGHTEST point, not its mean gap — gives a
+//!   floor of **2.241e6**. Requiring the standoff to stay inside half the band
+//!   gives a ceiling of **2.123e7** — that one is a *stated requirement*, not
+//!   a derivation, and its sensitivity is measured by
+//!   `the_ceiling_is_a_stated_requirement`. **1e7 is the only decade between
+//!   them.** The sweep's bracket and the derivation were
 //!   computed from nothing in common, and they agree: at the design traction
 //!   1e6 holds 0.056 mm against a 0.1 mm increment (infeasible, and it stalls)
 //!   while 1e7 holds 0.424 mm (feasible, and it runs clean).
@@ -154,9 +157,9 @@
 //! - ~~**A derived `κ`.**~~ **No longer true — see the `κ` bullet above.** `κ`
 //!   is now computed from the face barrier's own traction relation, and
 //!   `kappa_is_derived_and_not_swept` re-derives it on every build. What
-//!   remains unseen is narrower and stated there: the derived interval is
-//!   12.3× wide, so it selects a decade only while the design traction is
-//!   known to better than roughly 0.5–6×.
+//!   remains unseen is narrower and stated there: the interval is
+//!   9.5× wide, so it selects a decade only while the design traction is
+//!   known to better than roughly [0.47×, 4.5×].
 //! - **`d̂`.** Held fixed throughout. Sweeping it moves `STANDOFF` and so the
 //!   initial condition, which is a different experiment.
 //! - **Friction.** `SolverConfig::friction_mu` defaults to `0.0` and this
@@ -265,7 +268,60 @@ const DESIGN_CONTACT_FACES: usize = 520;
 /// the physics. The physics sets [`DESIGN_TRACTION_PA`]; the scheme sets how
 /// much clearance must survive under it. Halve [`RAMP_STEP`] and the floor
 /// falls with `|b'|` at the smaller gap.
-const REQUIRED_STANDOFF: f64 = RAMP_STEP;
+///
+/// ⚠⚠ **The condition is on the MINIMUM gap, and the traction is a MEAN** —
+/// see [`PATCH_NONUNIFORMITY`], which is what reconciles them. A first version
+/// of this derivation compared the two directly and produced a floor that was
+/// optimistic by that factor; it is the same mean-against-order-statistic
+/// mistake [`Press::mean_sd`] documents twenty lines away, made again in the
+/// arithmetic after being fixed in the gate.
+const REQUIRED_STANDOFF: f64 = RAMP_STEP * PATCH_NONUNIFORMITY;
+
+/// How much tighter the tightest gap in the contact patch is than the gap that
+/// carries the patch's *mean* traction: `ρ = d_eff / min_sd ≥ 1`.
+///
+/// **Why the derivation cannot do without it.** The stall condition is on
+/// `min_sd` — the single closest point — but the only gap available
+/// analytically is `d_eff`, the gap at which a *uniform* patch would carry the
+/// measured mean traction. Convexity of `κ·|b'|` puts `d_eff` above `min_sd`
+/// (held by the bracket arm in
+/// [`is_the_contact_traction_a_property_of_the_scene_or_of_kappa`]), so asking
+/// `d_eff > RAMP_STEP` is strictly weaker than asking `min_sd > RAMP_STEP`.
+/// Requiring `d_eff > ρ · RAMP_STEP` restores it.
+///
+/// **Measured, and deliberately the conservative end.** `d_eff / min_sd` reads
+/// 1.264 (κ=1e6), 1.111 (κ=1e7), 1.038 (κ=1e8) at the common plane height and
+/// 1.186 at the design point. It shrinks monotonically as the barrier
+/// stiffens across those three; what drives that has not been isolated here.
+/// `1.30` rounds the worst of them up.
+/// The probe re-measures it and fails if any pose exceeds this value.
+///
+/// ★ **Rank this caveat by its measured effect: it moves the NUMBER, not the
+/// conclusion.** Omitting the correction entirely (`ρ = 1`) drops the floor
+/// from 2.241e6 to 1.730e6, and `ρ` would have to reach **4.236** — 3.35× the
+/// worst pose measured here — before the floor rose past `1e7` and excluded
+/// it. So this is a correctness fix to a load-bearing quantity with a wide
+/// margin behind it, not a near-miss.
+///
+/// ⚠ A number from ONE fixture's patch. A cavity closing around a probe
+/// (renovation item 3) has no reason to share it, and the bridge must
+/// re-measure rather than inherit.
+const PATCH_NONUNIFORMITY: f64 = 1.30;
+
+/// Removing the min-vs-mean correction must not compile.
+///
+/// The probe checks that [`PATCH_NONUNIFORMITY`] really bounds the measured
+/// `d_eff / min_sd`, but the probe is `#[ignore]`d and runs in no CI job. At
+/// `1.0` the correction is gone and the floor silently reverts to bounding the
+/// MEAN-equivalent gap while the stall condition is on the MINIMUM one — a
+/// load-bearing number changed with nothing failing. A `const` assertion fails
+/// the BUILD rather than a test, which is the right severity for deleting a
+/// correction by editing one digit.
+const _: () = assert!(
+    PATCH_NONUNIFORMITY > 1.0,
+    "PATCH_NONUNIFORMITY <= 1 removes the min-vs-mean correction the derived \
+     floor depends on",
+);
 
 /// Barrier stiffness every gate here runs at — **derived, not swept**.
 ///
@@ -277,17 +333,27 @@ const REQUIRED_STANDOFF: f64 = RAMP_STEP;
 /// than found by sweeping decades:
 ///
 /// ```text
-///   floor    the barrier must hold REQUIRED_STANDOFF open under the design
-///            traction, or the next ramp increment starts infeasible
-///              kappa >= sigma / |b'(REQUIRED_STANDOFF)|   = 1.730e6
+///   floor    DERIVED from a measured failure mechanism. The barrier must
+///            hold one ramp increment open at the TIGHTEST point of the
+///            patch, or the next increment starts infeasible
+///              kappa >= sigma / |b'(rho * RAMP_STEP)|     = 2.241e6
 ///
-///   ceiling  the standoff is a BIAS in the reported contact position, and
-///            must stay in the lower half of the tolerance band -- above that
-///            the barrier cushions rather than enforces
+///   ceiling  a STATED REQUIREMENT, not a derivation. The standoff is a BIAS
+///            in the reported contact position; this asks it to stay in the
+///            lower half of the tolerance band, above which the barrier
+///            cushions rather than enforces
 ///              kappa <= sigma / |b'(d_hat / 2)|           = 2.123e7
 /// ```
 ///
-/// **`1e7` is the only decade in `[1.730e6, 2.123e7]`.** It is not the
+/// ⚠ **The two bounds do not have the same standing, and the headline above
+/// is about the floor.** `|b'(RAMP_STEP · ρ)|` follows from a stall mechanism
+/// that was measured; `d̂/2` is a round number chosen for a real reason with no
+/// measurement behind the *fraction*. [`the_ceiling_is_a_stated_requirement`]
+/// measures how much that choice is load-bearing: the selection survives
+/// anywhere in roughly `[d̂/2.8, d̂/1.4]` and breaks at `d̂/3`, where the ceiling
+/// falls to 9.05e6 and excludes 1e7.
+///
+/// **`1e7` is the only decade in `[2.241e6, 2.123e7]`.** It is not the
 /// smallest decade that happened to converge; it is the one the two bounds
 /// leave. [`kappa_is_derived_and_not_swept`] evaluates both bounds from the
 /// shipped barrier and fails if this constant leaves the interval — including
@@ -2075,11 +2141,12 @@ fn assert_the_derivation_holds_on(arms: &[(f64, Vec<(f64, Press)>)], area: f64, 
     // ── the two things this probe pins for the always-on derivation ──
     //
     // 1. DESIGN_TRACTION_PA itself. `kappa_is_derived_and_not_swept` evaluates
-    //    the floor and ceiling from that constant, and its interval is 12.27x
-    //    wide (the ratio |b'(step)| / |b'(d_hat/2)|, independent of traction),
-    //    so it tolerates the traction being wrong by roughly 0.47x-5.8x before
-    //    a different decade is selected. That slack is real and this is where
-    //    it is closed: the constant is checked against a fresh measurement.
+    //    the floor and ceiling from that constant, and its interval is 9.47x
+    //    wide (the ratio |b'(rho * step)| / |b'(d_hat/2)|, independent of
+    //    traction), so it tolerates the traction being wrong by roughly
+    //    0.47x-4.46x before a different decade is selected. That slack is real
+    //    and this is where it is closed: the constant is checked against a
+    //    fresh measurement.
     let baseline = arms
         .iter()
         .find(|(k, _)| (*k - KAPPA).abs() < 1.0)
@@ -2099,12 +2166,19 @@ fn assert_the_derivation_holds_on(arms: &[(f64, Vec<(f64, Press)>)], area: f64, 
         100.0 * drift,
     );
 
-    // 2. The wall each kappa hits. The derivation says a barrier stalls once
-    //    the traction exceeds `kappa * |b'(REQUIRED_STANDOFF)|`, because past
-    //    that it can no longer hold one increment of clearance. An arm that
-    //    stalled must therefore have stalled BELOW its threshold, and an arm
-    //    that ran clean must have stayed below it the whole way. This is the
-    //    prediction checked against ramps that know nothing about it.
+    // 2. The wall each kappa hits. Past `sigma = kappa * |b'(REQUIRED_STANDOFF)|`
+    //    the barrier can no longer hold the clearance the next increment
+    //    needs, so the march goes infeasible.
+    //
+    //    ⚠ THE SENSE MATTERS, and an earlier version of this arm had it
+    //    backwards. By monotonicity of `|b'|`, `sigma > threshold` is the same
+    //    statement as `d_eff < REQUIRED_STANDOFF` — so CROSSING the threshold
+    //    is what a stall looks like, and staying under it is what running
+    //    clean looks like. Asserting `reached < threshold` for every arm asked
+    //    the stalled arm to behave like the clean ones. It passed only because
+    //    the uncorrected threshold (rho = 1, 17.6 kPa) sat high enough to
+    //    cover both; correcting the floor for patch non-uniformity dropped it
+    //    to 13.6 kPa and the stalled arm's 14.3 kPa finally showed it.
     for (kappa, series) in arms {
         let threshold = kappa * barrier_derivative(REQUIRED_STANDOFF, D_HAT).abs();
         let reached = series.last().map_or(0.0, |(_, p)| p.net_force_z / area);
@@ -2112,14 +2186,50 @@ fn assert_the_derivation_holds_on(arms: &[(f64, Vec<(f64, Press)>)], area: f64, 
             .last()
             .is_some_and(|(h, _)| *h >= RAMP_MAX_PLANE_H - RAMP_STEP);
         eprintln!(
-            "  kappa {kappa:8.0e}: predicted stall above {:7.3} kPa, reached              {:7.3} kPa, {}",
+            "  kappa {kappa:8.0e}: threshold {:9.3} kPa, reached {:8.3} kPa, {}",
             threshold * 1e-3,
             reached * 1e-3,
             if ran_clean { "ran clean" } else { "STALLED" },
         );
+        if ran_clean {
+            assert!(
+                reached < threshold,
+                "kappa {kappa:e} ran the ramp clean while carrying {reached:e} Pa, \
+                 ABOVE the {threshold:e} Pa at which the derivation says it runs \
+                 out of clearance. The feasibility argument that sets the kappa \
+                 floor predicts a stall here and there was none.",
+            );
+        } else {
+            assert!(
+                reached >= threshold,
+                "kappa {kappa:e} STALLED while still carrying only {reached:e} Pa, \
+                 BELOW the {threshold:e} Pa at which the derivation says it runs \
+                 out of clearance. Something other than barrier feasibility \
+                 stopped this ramp, so the kappa floor does not explain it.",
+            );
+        }
+    }
+
+    // 3. PATCH_NONUNIFORMITY. The derived floor divides by |b'| at
+    //    `rho * RAMP_STEP` rather than at RAMP_STEP, because the stall
+    //    condition is on the tightest gap and the traction is a mean. That
+    //    correction is only sound if `rho` really does bound `d_eff / min_sd`
+    //    on every pose, so every pose is checked against it.
+    for (kappa, min_sd, _, _, d_eff) in rows {
+        let rho = d_eff / min_sd;
+        eprintln!("  kappa {kappa:8.0e}: d_eff / min_sd = {rho:.4}");
         assert!(
-            reached < threshold,
-            "kappa {kappa:e} carried {reached:e} Pa, ABOVE the {threshold:e} Pa              at which the derivation says it can no longer hold one ramp              increment open — so the feasibility argument that sets the kappa              floor does not describe this ramp",
+            rho <= PATCH_NONUNIFORMITY,
+            "kappa {kappa:e}: the patch is {rho:.4}x less uniform than \
+             PATCH_NONUNIFORMITY ({PATCH_NONUNIFORMITY}) allows for, so the \
+             derived floor is optimistic on this pose and KAPPA may not in \
+             fact hold one increment open at the tightest point",
+        );
+        assert!(
+            rho >= 1.0,
+            "kappa {kappa:e}: d_eff ({d_eff:e}) is BELOW min_sd ({min_sd:e}), \
+             which convexity forbids — the bracket arm below should have \
+             caught this first",
         );
     }
 
@@ -2189,7 +2299,7 @@ fn kappa_is_derived_and_not_swept() {
     // `#[ignore]`d probe re-measures it. The always-on half of that guard is
     // here: if the geometry it was measured on has moved, the constant is
     // stale even though the arithmetic below still evaluates cleanly. The
-    // interval is wide enough (12.27x) to absorb a real traction shift without
+    // interval is wide enough (9.47x) to absorb a real traction shift without
     // complaining, so this is the arm that would notice.
     let patch = design_contact_patch();
     let stale = |what: &str| -> String {
@@ -2278,5 +2388,70 @@ fn kappa_is_derived_and_not_swept() {
         "the derivation says the shipped kappa holds {standoff:e} m, under the \
          {REQUIRED_STANDOFF:e} m increment — but the sweep measured it running \
          clean to the ramp ceiling",
+    );
+}
+
+/// **How load-bearing is `d̂/2`?**
+///
+/// The ceiling's *form* — `σ / |b'(x)|` — is the same traction relation the
+/// floor uses. Its *argument* is a judgement: keep the standoff in the lower
+/// half of the tolerance band. "Half" is a round number, and a derivation that
+/// silently depends on a round number is a preference wearing a formula.
+///
+/// So this measures the dependence instead of asserting there is none. It
+/// sweeps the bound across `d̂/1.5 … d̂/4` and records where the decade
+/// selection survives, which turns "we chose a half" into a stated width.
+///
+/// ⛔ It is **not** a gate on the shipped value — [`kappa_is_derived_and_not_swept`]
+/// is. This one fails only if the *shape* of the dependence changes: if the
+/// choice stopped mattering at all (nothing to state) or if `d̂/2` stopped
+/// sitting inside the surviving band with room on both sides.
+#[test]
+fn the_ceiling_is_a_stated_requirement() {
+    /// Bounds swept, in order; the assertions below index this.
+    const DENOMS: [f64; 6] = [1.5, 2.0, 2.5, 2.8, 3.0, 4.0];
+
+    let floor = face_barrier_kappa(D_HAT, REQUIRED_STANDOFF, DESIGN_TRACTION_PA)
+        .expect("the required standoff must lie inside the barrier band");
+    eprintln!("ceiling sensitivity  [floor {floor:.4e}, KAPPA {KAPPA:.4e}]");
+    let mut admits = Vec::new();
+    for denom in DENOMS {
+        let bound = D_HAT / denom;
+        let ceiling = face_barrier_kappa(D_HAT, bound, DESIGN_TRACTION_PA)
+            .expect("a fraction of the band is inside the band");
+        let ok = floor <= KAPPA && KAPPA <= ceiling;
+        eprintln!(
+            "  d_hat/{denom:<4} bound {:.4} mm  ceiling {ceiling:.4e}  KAPPA {}",
+            bound * 1e3,
+            if ok { "admitted" } else { "EXCLUDED" },
+        );
+        admits.push((denom, ok));
+    }
+
+    // The choice must matter — otherwise there is nothing to state and the
+    // caveat in KAPPA's docs is noise.
+    assert!(
+        admits.iter().any(|(_, ok)| !ok),
+        "no bound in the sweep excludes KAPPA, so the ceiling choice is not \
+         load-bearing at all and the sensitivity note above should be deleted \
+         rather than maintained",
+    );
+    // And it must not matter so much that the shipped choice is marginal: the
+    // bound either side of d_hat/2 must agree with it.
+    // Indexed, not looked up by float value: DENOMS is the sweep's own order.
+    let admitted: Vec<bool> = admits.iter().map(|(_, ok)| *ok).collect();
+    assert_eq!(
+        &admitted[0..3],
+        &[true, true, true],
+        "d_hat/2 no longer sits inside a band of choices ({:?}) that all admit \
+         KAPPA — the shipped ceiling is marginal, and a derivation resting on \
+         a marginal round number is a preference",
+        &DENOMS[0..3],
+    );
+    assert!(
+        !admitted[4],
+        "d_hat/{} now admits KAPPA too, so the sweep no longer brackets where \
+         the choice starts to bite and the stated width is stale",
+        DENOMS[4],
     );
 }

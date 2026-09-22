@@ -303,6 +303,41 @@ mod tests {
 
     /// Area-fraction weights sum to 1 (the physical rest area is applied
     /// separately).
+    /// Partition of unity **where it is used** — at the Gauss points and
+    /// across the interior, not only at the nodes.
+    ///
+    /// ⚠ [`shape_partition_and_kronecker`] checks `Σ N_i = 1` at the six
+    /// nodes, where `N` is a Kronecker delta and the sum is 1 for *any* nodal
+    /// basis — so at those points the partition assertion is entailed by the
+    /// delta assertion beside it and carries no information of its own. The
+    /// property is load-bearing away from the nodes: the barrier samples at
+    /// [`FACE_GP`], which is strictly interior by construction, and the total
+    /// contact force `F = A_rest · Σ_q ŵ_q κ b'` collapses out of the six
+    /// per-node gradients only because `Σ_i N_i ≡ 1` *there*. That identity is
+    /// what makes `κ·|b'|` readable as a traction at all.
+    #[test]
+    fn shape_partition_holds_at_the_gauss_points_and_across_the_interior() {
+        for &(u, v, _) in &FACE_GP {
+            let sum: f64 = face_shape(u, v).iter().sum();
+            assert!(
+                (sum - 1.0).abs() < 1e-14,
+                "partition of unity at Gauss point ({u}, {v}): sum = {sum}",
+            );
+        }
+        // A lattice over the reference triangle, so this is not three points.
+        let n = 40;
+        for i in 0..=n {
+            for j in 0..=(n - i) {
+                let (u, v) = (f64::from(i) / f64::from(n), f64::from(j) / f64::from(n));
+                let sum: f64 = face_shape(u, v).iter().sum();
+                assert!(
+                    (sum - 1.0).abs() < 1e-14,
+                    "partition of unity at ({u}, {v}): sum = {sum}",
+                );
+            }
+        }
+    }
+
     #[test]
     fn quadrature_weights_sum_to_one() {
         let sum: f64 = FACE_GP.iter().map(|&(_, _, w)| w).sum();

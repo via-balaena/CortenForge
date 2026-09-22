@@ -23,8 +23,8 @@ pub mod penalty;
 pub mod rigid;
 
 pub use barrier::{
-    BARRIER_GAP_FLOOR_FRACTION, barrier_derivative, barrier_gap, barrier_second_derivative,
-    barrier_value, face_barrier_kappa, face_barrier_standoff, face_barrier_traction,
+    BARRIER_GAP_FLOOR_FRACTION, barrier_derivative, barrier_second_derivative, barrier_value,
+    face_barrier_kappa, face_barrier_standoff, face_barrier_traction,
 };
 pub use ipc::IpcRigidContact;
 pub use null::NullContact;

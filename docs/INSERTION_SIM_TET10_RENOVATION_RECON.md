@@ -346,17 +346,23 @@ Listed because the confidence of §4 rests on these being open, not closed.
    integrates `κ·b` over the rest area with weights summing to 1, **`κ·|b'(d)|`
    is a traction in pascals** — so `κ` is fixed by the traction the scene
    carries and the standoff the march needs, between a floor
-   (`σ/|b'(ramp step)|`) and a ceiling (`σ/|b'(d̂/2)|`).
+   (`σ/|b'(ρ · ramp step)|`, ρ below) and a ceiling (`σ/|b'(d̂/2)|`).
+   ⚠ The floor is **derived** from a measured stall mechanism; the ceiling is a
+   **stated requirement** — `d̂/2` is a round number, and the decade selection
+   survives anywhere in roughly `[d̂/2.8, d̂/1.4]`.
    `kappa_is_derived_and_not_swept` in
    `sim/L0/soft/tests/tet10_yeoh_ipc_convergence.rs` evaluates both on every
    build.
 
-   ⚠ **Two things that do not carry to the bridge unexamined.** The floor is
+   ⚠ **Three things that do not carry to the bridge unexamined.** The floor is
    set by the *marching increment*, not the physics, so a different ramp
-   schedule moves it. And the interval is `|b'(step)| / |b'(d̂/2)|` = **12.3×**
-   wide regardless of `σ`, so it selects a decade only while the design
-   traction is known to better than roughly 0.5–6×; `insertion_sim`'s traction
-   is its own measurement, not this fixture's **30.4 kPa**.
+   schedule moves it. It also divides by `|b'|` at `ρ · step`, where `ρ` is the
+   contact patch's **non-uniformity** (`d_eff / min_sd`, measured 1.04–1.26
+   here) — a closing cavity has no reason to share that number. And the
+   interval is `|b'(ρ·step)| / |b'(d̂/2)|` = **9.5×** wide regardless of `σ`, so
+   it selects a decade only while the design traction is known to within
+   roughly `[0.47×, 4.5×]`; `insertion_sim`'s traction is its own measurement,
+   not this fixture's **30.4 kPa**.
 
 4. **Per-Gauss-point material sampling** (§7.6). The expensive one: a
    return-shape change to `Mesh::materials()` reaching 119 call sites.
