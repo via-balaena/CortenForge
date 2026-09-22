@@ -575,7 +575,8 @@ Listed because the confidence of §4 rests on these being open, not closed.
 
    ⇒ **`σ` spans 3.77×** where the fixture's spans 1.003×. The independence is a
    property of a **stiff** contact — the gap adjusts and the load does not — and
-   at the shipped `κ = 1e3` the gaps sit a fifth of the way into a 1 mm band, so
+   at the shipped `κ = 1e3` the area-weighted mean gap runs from a sixth to three
+   quarters of the way into a 1 mm band as the ramp deepens, so
    the equilibrium moves with the stiffness. **A `σ` read at the shipped
    stiffness is not the design traction.**
 
@@ -693,9 +694,10 @@ Listed because the confidence of §4 rests on these being open, not closed.
    derivation on a real scan — a narrow interval that closes only at a small `d̂`.
 
    ✅ **The enveloping-patch cancellation, quantified inside this pipeline.**
-   `Σ‖f‖/‖Σf‖` measures **1627→2123×** on the synthetic sphere, **331→214×** on
+   `Σ‖f‖/‖Σf‖` measures **1588–3095×** on the synthetic sphere, **214–455×** on
    the single-layer scan and **9.2→7.9×** on the GUI default, against the
-   idealised cell's 900–6900×. The effect's SIZE is a property of how enclosing
+   idealised cell's 900–6900×. ⚠ Only the last is monotone in depth; the other
+   two are quoted as ranges because they are not. The effect's SIZE is a property of how enclosing
    the patch is, and the product scan is the least enclosing of the three. The
    F-d curve remains a correct *net seating resistance*; what it cannot be is
    divided by an area.

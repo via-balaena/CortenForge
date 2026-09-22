@@ -7685,9 +7685,17 @@ mod tests {
     ///
     /// ⚠ **It has no right to hold here, and that is why it is
     /// measured.** On a stiff contact the gap adjusts and the load does
-    /// not; this scene's gaps sit a large fraction of the way into a
-    /// 1 mm band on a contact 4 orders softer, which is the regime where
-    /// the equilibrium position *is* set by the stiffness.
+    /// not. The test of "stiff enough" is within one model and is the
+    /// gap itself: this scene's area-weighted mean gap runs from a sixth
+    /// to three quarters of the way into its 1 mm band as the ramp
+    /// deepens, which is the regime where the equilibrium position *is*
+    /// set by the stiffness.
+    ///
+    /// ⛔ It is **not** a comparison of the two `κ`. The penalty `κ`
+    /// is `N/m` and the face `κ` is `Pa/m` — they differ by an area, and
+    /// [`sim_soft::contact::barrier`]'s module docs call comparing their
+    /// magnitudes a category error rather than a calibration
+    /// observation.
     ///
     /// ⭐ Compares at the deepest depth **every** arm reached, not at
     /// each arm's own deepest. A stiffer contact may stall earlier, and
