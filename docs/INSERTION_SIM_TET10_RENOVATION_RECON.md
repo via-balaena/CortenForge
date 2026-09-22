@@ -449,8 +449,11 @@ Listed because the confidence of §4 rests on these being open, not closed.
 
    ⛔⛔ **MEASURED during item 3b, and it conditions the sentence above: at
    `CELL` = 4 mm the straddle flag is SATURATED and cannot isolate a layer
-   boundary.** `L_e` is the tet's six-edge mean, ≈3.4 mm here, against 4 mm
-   layers — so the band is nearly as thick as the layer it delimits. On the
+   boundary.** `L_e` is the tet's six-edge mean, **measured 3.495 mm** here, so
+   the straddle band `2·L_e` = **6.990 mm is 1.75× the 4 mm layer** it
+   delimits. (The gate measures `L_e` itself; an earlier revision quoted
+   "≈3.4 mm" from a sizing probe that had since been deleted, and it was 2.7 %
+   off as well as unsourced.) On the
    graded shell (8 736 tets) it flags **3 504 (40.1 %)** at the r = 14 mm
    boundary and **5 484 (62.8 %)** at r = 18 mm; in its sharpest form,
    **boundary 0 flags more tets (3 504) than the entire layer it bounds

@@ -3771,6 +3771,20 @@ fn ramp_graded(max_w: f64) -> Vec<Rung> {
     graded_cell().ramp(CAVITY, RAMP_STEP, max_w)
 }
 
+/// Mean of `tet`'s six edge lengths (m) — the `L_e` the straddle rule compares
+/// against.
+///
+/// Mirrors `interface_flags_from_field`'s own six-edge mean
+/// (`sim/L0/soft/src/mesh/mod.rs`), recomputed here so the saturation claim
+/// rests on a number this fixture measures rather than one quoted from a
+/// sizing probe that no longer exists.
+fn mean_edge_length<M: sim_soft::Material>(mesh: &dyn Mesh<M>, tet: TetId) -> f64 {
+    let positions = mesh.positions();
+    let v = mesh.tet_vertices(tet);
+    let edge = |a: usize, b: usize| (positions[v[a] as usize] - positions[v[b] as usize]).norm();
+    (edge(0, 1) + edge(0, 2) + edge(0, 3) + edge(1, 2) + edge(1, 3) + edge(2, 3)) / 6.0
+}
+
 /// Rest-configuration centroid radius of `tet` (m) — the coordinate the layer
 /// stack is keyed on, so it is what says which layer a tet belongs to.
 fn centroid_radius<M: sim_soft::Material>(mesh: &dyn Mesh<M>, tet: TetId) -> f64 {
@@ -4108,8 +4122,8 @@ fn the_graded_walls_stiffness_is_set_by_the_layer_the_load_enters() {
 /// decision from one applied to a seam.
 ///
 /// ⛔⛔ **The flag is SATURATED at `CELL` = 4 mm and cannot isolate these
-/// boundaries.** `L_e` is ≈3.4 mm against 4 mm layers, so the band is nearly as
-/// thick as the layer: **3 504 of 8 736 tets (40.1 %)** straddle the r = 14 mm
+/// boundaries.** The straddle band `2·L_e` is WIDER than the layer it
+/// delimits — measured in the gate itself, not quoted — so: **3 504 of 8 736 tets (40.1 %)** straddle the r = 14 mm
 /// boundary and **5 484 (62.8 %)** straddle r = 18 mm. The sharpest form of it
 /// — **boundary 0 flags more tets (3 504) than the entire layer it bounds
 /// contains (2 304)**.
@@ -4141,6 +4155,32 @@ fn the_interface_flag_cannot_isolate_a_layer_boundary_at_this_cell_size() {
         );
         flagged.push(hits);
     }
+
+    // ⚠ The MECHANISM, measured here rather than quoted. An earlier revision
+    // cited "L_e ~ 3.4 mm" from a sizing probe that was later deleted — a
+    // number whose referent no longer existed anywhere in the tree.
+    let mesh = graded_tet4();
+    let n_tets = Mesh::<Yeoh>::n_tets(mesh);
+    let l_e = (0..n_tets)
+        .map(|t| mean_edge_length(mesh, t as TetId))
+        .sum::<f64>()
+        / (n_tets as f64);
+    eprintln!(
+        "  mean L_e {:.3} mm; straddle band 2*L_e = {:.3} mm against {:.3} mm layers",
+        l_e * 1e3,
+        2.0 * l_e * 1e3,
+        LAYER_BOUNDARIES[0] * 1e3,
+    );
+    assert!(
+        2.0 * l_e > LAYER_BOUNDARIES[0],
+        "the straddle band is 2*L_e = {:.3} mm against a {:.3} mm layer, so it \
+         is NARROWER than the layer it delimits and the flag could isolate an \
+         interface after all. That is the mechanism this gate's counts are \
+         explained by — if it no longer holds, the explanation is stale even \
+         if the counts happen to be unchanged",
+        2.0 * l_e * 1e3,
+        LAYER_BOUNDARIES[0] * 1e3,
+    );
 
     assert_eq!(
         flagged,
