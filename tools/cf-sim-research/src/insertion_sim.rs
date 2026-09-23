@@ -2274,8 +2274,15 @@ impl ReadoutMesh {
     /// builds a ramp by hand and never reads its per-tet detail.
     #[cfg(test)]
     pub(crate) fn empty() -> Self {
+        Self::at_rest(Vec::new())
+    }
+
+    /// Rest positions and no elements — for a test fixture that reads only
+    /// where the solved mesh's vertices sat at rest.
+    #[cfg(test)]
+    pub(crate) fn at_rest(rest_positions: Vec<Vec3>) -> Self {
         Self {
-            rest_positions: Vec::new(),
+            rest_positions,
             elements: ReadoutElements::Tet4(Vec::new()),
             materials: Vec::new(),
         }
@@ -10616,6 +10623,11 @@ mod tests {
     /// same corner mesh and the same outer-skin rule, so read the outer-face and
     /// cavity-face counts of one against the other.
     ///
+    /// Per layer it also reports what the heat-map frame fix changed: at the
+    /// last step, how many of the deformed view's drawn vertices take a
+    /// different colour read at their rest positions than at their moved ones
+    /// (the lookup before the fix), and the largest move among them.
+    ///
     /// ⛔ Asserts nothing; the scan is repo-excluded.
     #[test]
     #[ignore = "needs the product scan + two release pipeline runs; run with --ignored --nocapture"]
@@ -10661,6 +10673,43 @@ mod tests {
                         o.tet_centroids.len(),
                         started.elapsed().as_secs_f64(),
                     );
+                    let last = o.step_count().saturating_sub(1);
+                    let rest = o.readout_mesh().rest_positions();
+                    for layer in 0..o.per_layer_outer_faces.len() {
+                        let Some(mesh) = o.deformed_layer_slab_mesh_at(layer, last) else {
+                            continue;
+                        };
+                        let colour = |vertices| {
+                            crate::insertion_sim_ui::project_layer_heat_map(
+                                &o,
+                                layer,
+                                cf_device_types::ScalarMode::EnergyDensity,
+                                last,
+                                vertices,
+                            )
+                        };
+                        let (Some(at_rest), Some(at_moved)) = (
+                            colour(crate::insertion_sim_ui::LayerVertices::SimMesh),
+                            colour(crate::insertion_sim_ui::LayerVertices::Rest(&mesh.vertices)),
+                        ) else {
+                            continue;
+                        };
+                        let mut drawn: Vec<usize> =
+                            mesh.faces.iter().flatten().map(|&v| v as usize).collect();
+                        drawn.sort_unstable();
+                        drawn.dedup();
+                        let changed = drawn.iter().filter(|&&v| at_rest[v] != at_moved[v]).count();
+                        let max_move_m = drawn
+                            .iter()
+                            .map(|&v| (mesh.vertices[v].coords - rest[v]).norm())
+                            .fold(0.0_f64, f64::max);
+                        println!(
+                            "    layer {layer}: the frame fix changes the colour of {changed} of \
+                             {} drawn vertices · largest move {:.3} mm",
+                            drawn.len(),
+                            max_move_m * 1e3,
+                        );
+                    }
                 }
             }
         }
@@ -11195,6 +11244,325 @@ mod tests {
                     .map_or(why, |(head, _)| head);
                 println!("    stopped at recorded step {k}: {why}");
             }
+        }
+    }
+
+    /// The product scene as the sliding probes read it: the geometry, its
+    /// centerline, and the nodes of the enriched mesh's boundary faces —
+    /// collected exactly as [`run_sliding_insertion_ramp_tet10_ipc`] collects
+    /// its wall points. `boundary_faces` are corner triangles, so these are
+    /// corner nodes only; the midsides the face barrier loads are not in it.
+    fn sliding_product_scene() -> Option<(
+        InsertionGeometry,
+        Vec<Point3<f64>>,
+        Vec<VertexId>,
+        Vec<Vec3>,
+    )> {
+        let (scan, centerline, caps, design) = product_scene()?;
+        let g = build_insertion_geometry(&scan, &design, &caps, 2_500, 0.004)
+            .expect("the product geometry must build");
+        let mesh10 = Tet10Mesh::<Yeoh>::from_tet4(&g.mesh);
+        let rest = Mesh::<Yeoh>::positions(&mesh10);
+        let mut ids: Vec<VertexId> = Mesh::<Yeoh>::boundary_faces(&mesh10)
+            .iter()
+            .flatten()
+            .copied()
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        let boundary = ids.iter().map(|&v| rest[v as usize]).collect();
+        Some((g, centerline, ids, boundary))
+    }
+
+    /// What the SLIDING bridge's contact reaches on the product scan — no solve.
+    ///
+    /// [`run_sliding_insertion_ramp_tet10_ipc`] had no caller, so it had never
+    /// run. Its contact is the moving scan offset by `cavity_offset_m` alone
+    /// ([`intruder_ipc_contact_sliding_at`]), and at `t = 1` the pose is the
+    /// identity ([`slide_pose_at`]) — so at full seat the contact is the
+    /// cavity's own surface. The growing bridge instead ends at an offset of
+    /// `interference + cavity_offset = 0`, the bare scan. This measures what
+    /// that difference does on this scene, for both offsets, over `N_POSES`
+    /// poses:
+    /// - **overlap** — the signed distance from the contact to the rest
+    ///   cavity-wall nodes: the most negative over the whole travel, and the
+    ///   minimum and median at `t = 1`. Negative is into the wall. For the
+    ///   deepest one it reports the pose and where the node sits: its arc
+    ///   distance from the tip along the centerline, and its distance off it.
+    /// - **closing** — the ramp's own schedule measure,
+    ///   [`sliding_normal_increment_m`], which skips every node already
+    ///   through the rest wall; beside it, the same drop read at those skipped
+    ///   nodes after moving each onto the contact surface, which is roughly
+    ///   where a solve would hold it. The second is an estimate, not a solve.
+    ///
+    /// ⛔ The scan is repo-excluded, so nothing here can gate; it asserts
+    /// nothing.
+    #[test]
+    #[ignore = "needs the product scan; run with --ignored --nocapture"]
+    fn what_the_sliding_contact_reaches_on_the_product_scan() {
+        const N_POSES: usize = 64;
+        let Some((g, centerline, _, boundary)) = sliding_product_scene() else {
+            return;
+        };
+        // The cavity wall — not the outer skin 17 mm out: boundary nodes within
+        // one cell of the rest cavity surface.
+        let cavity = Solid::from_sdf(g.intruder.clone(), g.bounds).offset(g.cavity_offset_m);
+        let wall: Vec<Vec3> = boundary
+            .iter()
+            .copied()
+            .filter(|p| cavity.eval(Point3::from(*p)).abs() < g.cell_size_m)
+            .collect();
+        let arc_m = polyline_arc_length_m(&centerline);
+        println!(
+            "\n══ base_mold · inset {:.1} mm · arc {:.2} mm · {} boundary corner nodes, {} on \
+             the cavity wall · d_hat {:.2} mm ══",
+            -g.cavity_offset_m * 1e3,
+            arc_m * 1e3,
+            boundary.len(),
+            wall.len(),
+            BRIDGE_CONTACT_DHAT_M * 1e3,
+        );
+        // Arc distance from the tip of the closest centerline point, and the
+        // distance to it.
+        let along_centerline = |p: Vec3| {
+            let (mut best_arc, mut best_d, mut walked) = (0.0, f64::INFINITY, 0.0);
+            for seg in centerline.windows(2) {
+                let (a, b) = (seg[0].coords, seg[1].coords);
+                let len = (b - a).norm();
+                let s = if len > 0.0 {
+                    ((p - a).dot(&(b - a)) / (len * len)).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                let d = (p - (a + (b - a) * s)).norm();
+                if d < best_d {
+                    (best_arc, best_d) = (walked + s * len, d);
+                }
+                walked += len;
+            }
+            (best_arc, best_d)
+        };
+
+        let contact_at = |t: f64, offset_m: f64| {
+            Solid::from_sdf(
+                TransformedSdf::new(g.intruder.clone(), slide_pose_at(&centerline, t)),
+                g.bounds,
+            )
+            .offset(offset_m)
+        };
+        let offsets = [
+            ("as written (cavity_offset)", g.cavity_offset_m),
+            ("bare scan (offset 0)", 0.0),
+        ];
+
+        println!("\n── overlap into the rest cavity wall (mm; negative = into it) ──");
+        println!(
+            "{:<28} {:>14} {:>10} {:>11} {:>12} {:>14}",
+            "contact",
+            "min over travel",
+            "min at t=1",
+            "median t=1",
+            "nodes <0 t=1",
+            "ever < -d_hat",
+        );
+        for &(label, offset_m) in &offsets {
+            let mut deepest = (f64::INFINITY, 0.0, Vec3::zeros());
+            let mut ever = vec![f64::INFINITY; wall.len()];
+            for k in 1..=N_POSES {
+                // `k` and `N_POSES` are tiny; the casts are exact.
+                #[allow(clippy::cast_precision_loss)]
+                let t = k as f64 / N_POSES as f64;
+                let solid = contact_at(t, offset_m);
+                for (p, lowest) in wall.iter().zip(ever.iter_mut()) {
+                    let sd = solid.eval(Point3::from(*p));
+                    *lowest = lowest.min(sd);
+                    if sd < deepest.0 {
+                        deepest = (sd, t, *p);
+                    }
+                }
+            }
+            let seat = contact_at(1.0, offset_m);
+            let mut at_seat: Vec<f64> = wall.iter().map(|p| seat.eval(Point3::from(*p))).collect();
+            at_seat.sort_by(f64::total_cmp);
+            let n_inside = at_seat.iter().filter(|&&sd| sd < 0.0).count();
+            let n_ever = ever
+                .iter()
+                .filter(|&&sd| sd < -BRIDGE_CONTACT_DHAT_M)
+                .count();
+            println!(
+                "{label:<28} {:>14.4} {:>10.4} {:>11.4} {:>7}/{:<5} {:>9}/{:<5}",
+                deepest.0 * 1e3,
+                at_seat.first().copied().unwrap_or(f64::NAN) * 1e3,
+                at_seat[at_seat.len() / 2] * 1e3,
+                n_inside,
+                wall.len(),
+                n_ever,
+                wall.len(),
+            );
+            let (arc_from_tip, off_axis) = along_centerline(deepest.2);
+            println!(
+                "{:<28} deepest at t = {:.4} (tip {:.2} mm in) · node {:.2} mm from the \
+                 tip along the centerline, {:.2} mm off it",
+                "",
+                deepest.1,
+                deepest.1 * arc_m * 1e3,
+                arc_from_tip * 1e3,
+                off_axis * 1e3,
+            );
+        }
+
+        println!("\n── worst normal closing per step (mm) · bracket = can κ be derived ──");
+        println!(
+            "{:<28} {:>5} {:>9} {:>14} {:>9} {:>14}",
+            "contact", "steps", "arc step", "ramp's measure", "bracket", "through-wall est",
+        );
+        for &(label, offset_m) in &offsets {
+            for n in [16, 32, 64, 128, 256] {
+                let ramps = sliding_normal_increment_m(
+                    &g.intruder,
+                    g.bounds,
+                    &centerline,
+                    n,
+                    offset_m,
+                    BRIDGE_CONTACT_DHAT_M,
+                    &boundary,
+                );
+                let mut through = 0.0_f64;
+                for k in 0..n {
+                    // Step indices are tiny; the casts are exact.
+                    #[allow(clippy::cast_precision_loss)]
+                    let (t0, t1) = (k as f64 / n as f64, (k + 1) as f64 / n as f64);
+                    let (a, b) = (contact_at(t0, offset_m), contact_at(t1, offset_m));
+                    for p in &boundary {
+                        let pt = Point3::from(*p);
+                        let sd_before = a.eval(pt);
+                        // Only the nodes the ramp's measure skips: through the
+                        // rest wall. Held on the contact surface at step start.
+                        if !sd_before.is_finite() || sd_before >= 0.0 {
+                            continue;
+                        }
+                        let normal = a.grad(pt);
+                        let norm = normal.norm();
+                        if !norm.is_finite() || norm < f64::EPSILON {
+                            continue;
+                        }
+                        let held = pt - normal * (sd_before / norm);
+                        let (sd_held, sd_after) = (a.eval(held), b.eval(held));
+                        if sd_held.is_finite()
+                            && sd_after.is_finite()
+                            && sd_after <= BRIDGE_CONTACT_DHAT_M
+                        {
+                            through = through.max(sd_held - sd_after);
+                        }
+                    }
+                }
+                // `n` is tiny; the cast is exact.
+                #[allow(clippy::cast_precision_loss)]
+                let arc_step = arc_m / n as f64;
+                let bracket = if bridge_face_barrier_kappa(BRIDGE_CONTACT_DHAT_M, ramps).is_ok() {
+                    "yes"
+                } else {
+                    "no"
+                };
+                println!(
+                    "{label:<28} {n:>5} {:>9.4} {:>14.4} {bracket:>9} {:>14.4}",
+                    arc_step * 1e3,
+                    ramps * 1e3,
+                    through * 1e3,
+                );
+            }
+        }
+    }
+
+    /// The SLIDING bridge as written, run on the product scan.
+    ///
+    /// Companion to `what_the_sliding_contact_reaches_on_the_product_scan`,
+    /// which is why this is not the product answer: as written the contact ends
+    /// at the cavity surface, with none of the inset's interference. What this
+    /// does answer is whether the travelling face-barrier solve runs on this
+    /// scene at all. It tries 16, 32, 64, 128 and 256 steps and runs the first
+    /// schedule the ramp's own derivation brackets, then reports every
+    /// converged step and, at the last, the smallest gap from the deformed
+    /// boundary to the contact.
+    ///
+    /// ⛔ The scan is repo-excluded, so nothing here can gate; it asserts
+    /// nothing.
+    #[test]
+    #[ignore = "needs the product scan + one long sliding ramp; run with --ignored --nocapture"]
+    fn the_sliding_bridge_as_written_on_the_product_scan() {
+        let Some((g, centerline, boundary_ids, _)) = sliding_product_scene() else {
+            return;
+        };
+        let (intruder, bounds, cavity_offset_m) = (g.intruder.clone(), g.bounds, g.cavity_offset_m);
+        let mut geometry = Some(g);
+        for n in [16, 32, 64, 128, 256] {
+            // A refusal hands the geometry back only by rebuilding it.
+            let g = geometry
+                .take()
+                .or_else(|| sliding_product_scene().map(|s| s.0));
+            let Some(g) = g else {
+                return;
+            };
+            let started = Instant::now();
+            let ramp = match run_sliding_insertion_ramp_tet10_ipc(
+                g,
+                &centerline,
+                n,
+                INSERTION_SOLVE_TOL,
+            ) {
+                Ok(ramp) => ramp,
+                Err(e) => {
+                    println!("{n:>4} steps: refused — {e:#}");
+                    continue;
+                }
+            };
+            println!(
+                "{n:>4} steps: {}/{n} converged in {:.0} s · {} pinned",
+                ramp.steps.len(),
+                started.elapsed().as_secs_f64(),
+                ramp.n_pinned,
+            );
+            println!(
+                "     {:>6} {:>8} {:>5} {:>9} {:>9} {:>8} {:>8} {:>9}",
+                "t", "arc_mm", "iters", "resid", "force_N", "min_str", "max_str", "pairs",
+            );
+            for s in &ramp.steps {
+                println!(
+                    "     {:>6.4} {:>8.2} {:>5} {:>9.2e} {:>9.3} {:>8.4} {:>8.4} {:>9}",
+                    s.slide_fraction_t,
+                    s.arc_length_s_m * 1e3,
+                    s.iter_count,
+                    s.final_residual_norm,
+                    s.readout.contact_force_magnitude_n,
+                    s.readout.min_principal_stretch,
+                    s.readout.max_principal_stretch,
+                    s.readout.n_active_contact_pairs,
+                );
+            }
+            if let (Some(last), Some(&pose)) = (ramp.steps.last(), ramp.intruder_poses.last()) {
+                let solid = Solid::from_sdf(TransformedSdf::new(intruder, pose), bounds)
+                    .offset(cavity_offset_m);
+                let deformed = positions_from_flat(&last.x_final);
+                let sds: Vec<f64> = boundary_ids
+                    .iter()
+                    .map(|&v| solid.eval(Point3::from(deformed[v as usize])))
+                    .collect();
+                let min_sd = sds.iter().copied().fold(f64::INFINITY, f64::min);
+                let n_through = sds.iter().filter(|&&sd| sd < 0.0).count();
+                println!(
+                    "     last converged step: min gap to the contact {:.4} mm · {n_through} \
+                     boundary nodes through it",
+                    min_sd * 1e3,
+                );
+            }
+            if let Some(k) = ramp.failed_at_step {
+                let why = ramp.failure_reason.as_deref().unwrap_or("?");
+                let why = why
+                    .split_once(" Likely causes")
+                    .map_or(why, |(head, _)| head);
+                println!("     stopped at recorded step {k}: {why}");
+            }
+            return;
         }
     }
 

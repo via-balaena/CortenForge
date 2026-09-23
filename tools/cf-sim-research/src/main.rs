@@ -880,27 +880,32 @@ fn update_layer_meshes(
         // the slab build is unavailable (e.g., sim ran with fewer
         // layers than the GUI now shows), then to the rest-frame
         // SDF iso when the deformed view is off altogether.
-        let layer_indexed = deformed_layers_run
-            .and_then(|run| run.deformed_layer_slab_mesh_at(i, sim_state.displayed_step))
-            .or_else(|| {
-                deformed_layers_run
-                    .and_then(|run| run.deformed_layer_mesh_at(i, sim_state.displayed_step))
-            })
-            .unwrap_or_else(|| {
-                sdf_layers::extract_layer_surface(&cached_sdf, &cap_planes.planes, safe_offset_m)
-            });
-        // Heat-map: project per-tet scalars onto this layer's MC
-        // vertices (sub-leaf 7). `project_layer_heat_map` returns
-        // `None` if the sim ran with fewer layers than the current
-        // GUI shows, or the layer has no tets in its partition —
-        // in either case the layer falls back to the palette tint.
+        let deformed_indexed = deformed_layers_run.and_then(|run| {
+            run.deformed_layer_slab_mesh_at(i, sim_state.displayed_step)
+                .or_else(|| run.deformed_layer_mesh_at(i, sim_state.displayed_step))
+        });
+        let is_deformed = deformed_indexed.is_some();
+        let layer_indexed = deformed_indexed.unwrap_or_else(|| {
+            sdf_layers::extract_layer_surface(&cached_sdf, &cap_planes.planes, safe_offset_m)
+        });
+        // Heat-map: project per-tet scalars onto this layer's vertices
+        // (sub-leaf 7), read at their REST positions — the deformed mesh's
+        // vertices have moved off the rest centroids the lookup uses.
+        // `project_layer_heat_map` returns `None` if the sim ran with fewer
+        // layers than the current GUI shows, or the layer has no tets in its
+        // partition — in either case the layer falls back to the palette tint.
         let colors_vec = heat_map_run.and_then(|run| {
+            let vertices = if is_deformed {
+                insertion_sim_ui::LayerVertices::SimMesh
+            } else {
+                insertion_sim_ui::LayerVertices::Rest(&layer_indexed.vertices)
+            };
             insertion_sim_ui::project_layer_heat_map(
                 run,
                 i,
                 sim_state.scalar_mode,
                 sim_state.displayed_step,
-                &layer_indexed.vertices,
+                vertices,
             )
         });
         let colors_slice = colors_vec.as_deref();
