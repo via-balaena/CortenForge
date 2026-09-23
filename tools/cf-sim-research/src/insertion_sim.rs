@@ -1926,6 +1926,19 @@ pub struct RampStep {
     /// mean strain-energy density). Derived once when the step
     /// converges.
     pub readout: StepReadout,
+    /// Wall-clock seconds this step's Newton solve took, measured around
+    /// `replay_step` alone — not the readouts built afterwards.
+    ///
+    /// ⚠ **A diagnostic, never an assertion.** Wall clock is contended: the
+    /// one release-only timing assertion in this workspace
+    /// (`adjoint_gap_across_basis_sizes`) inflates **80×** under `xtask
+    /// grade`'s coverage pass. Report it, print it, size a fixture with it —
+    /// do not gate on it.
+    ///
+    /// It exists because the cost question the bridge raises is per-STEP, not
+    /// per-ramp: a ramp's total folds in the geometry build and answers
+    /// nothing about the solve.
+    pub wall_time_s: f64,
 }
 
 /// Scalar per-step engineering aggregates — slice 7.3b.2's per-step
@@ -2640,9 +2653,11 @@ pub fn run_insertion_ramp_at_kappa_and_tol(
         // `replay_step` panics on non-convergence — catch it so the
         // ramp records `failed_at_step` + the panic's reason instead
         // of aborting.
+        let solve_started = std::time::Instant::now();
         let outcome = catch_unwind(AssertUnwindSafe(|| {
             solver.replay_step(&x_prev, &v_prev, &theta, config.dt)
         }));
+        let wall_time_s = solve_started.elapsed().as_secs_f64();
         match outcome {
             Ok(step) => {
                 // Per-step readout (slice 7.3b.2). The solver consumed
@@ -2680,6 +2695,7 @@ pub fn run_insertion_ramp_at_kappa_and_tol(
                     final_residual_norm: step.final_residual_norm,
                     x_final: step.x_final.clone(),
                     readout: step_readout,
+                    wall_time_s,
                 });
                 x_prev_flat = step.x_final; // chain the warm start
             }
@@ -2955,9 +2971,11 @@ pub fn run_insertion_ramp_tet10_ipc_at(
         let solver: CpuNewtonSolver<Tet10, Tet10Mesh<Yeoh>, IpcRigidContact, Yeoh, 10, 4> =
             CpuNewtonSolver::new(Tet10, mesh.clone(), contact, config, bc.clone());
         let x_prev = Tensor::from_slice(&x_prev_flat, &[n_dof]);
+        let solve_started = std::time::Instant::now();
         let outcome = catch_unwind(AssertUnwindSafe(|| {
             solver.replay_step(&x_prev, &v_prev, &theta, config.dt)
         }));
+        let wall_time_s = solve_started.elapsed().as_secs_f64();
         match outcome {
             Ok(step) => {
                 if record {
@@ -2997,6 +3015,7 @@ pub fn run_insertion_ramp_tet10_ipc_at(
                         final_residual_norm: step.final_residual_norm,
                         x_final: step.x_final.clone(),
                         readout: step_readout,
+                        wall_time_s,
                     });
                 }
                 x_prev_flat = step.x_final; // chain the warm start
@@ -10052,6 +10071,135 @@ mod tests {
                     println!("            (bridge: {reason})");
                 }
             }
+        }
+    }
+
+    /// What a bridge step COSTS — per-step wall clock, both arms.
+    ///
+    /// The question the bridge raises is per-STEP, not per-ramp: a ramp's
+    /// total folds in a geometry build that can dominate it on a 70 k-tet
+    /// scan and answers nothing about the solve. `RampStep::wall_time_s` is
+    /// measured around `replay_step` alone.
+    ///
+    /// ⛔ **Asserts nothing** — wall clock is contended, and the one
+    /// release-only timing assertion in this workspace inflates 80× under
+    /// `xtask grade`'s coverage pass. Run it on an idle machine and read it as
+    /// an order of magnitude, not a number.
+    ///
+    /// ⚠ The bridge's figure EXCLUDES its approach steps, which are solved and
+    /// not recorded. Those are real cost the baseline does not pay, so the
+    /// approach count is reported beside the per-step time.
+    #[test]
+    #[ignore = "release-mode ramps for timing; run with --ignored --nocapture on an idle machine"]
+    fn what_a_bridge_step_costs() {
+        const N_STEPS: usize = 16;
+
+        fn sphere_scene() -> InsertionGeometry {
+            let design = SimDesign {
+                cavity_inset_m: 0.003,
+                layers: vec![layer(0.010, "ECOFLEX_00_30")],
+            };
+            build_insertion_geometry(&icosphere(0.040, 3), &design, &[], 2_000, 0.004)
+                .expect("the synthetic-sphere geometry must build")
+        }
+
+        let mut scenes: Vec<(String, Box<dyn Fn() -> InsertionGeometry>)> = vec![
+            (
+                "tol-fixture".into(),
+                Box::new(tolerance_fixture) as Box<dyn Fn() -> InsertionGeometry>,
+            ),
+            ("sphere-40mm".into(), Box::new(sphere_scene)),
+        ];
+
+        // The product mesh, when the repo-excluded scan is on this machine.
+        let scan_path = std::env::var("CF_SIM_RESEARCH_SPIKE_SCAN").map_or_else(
+            |_| PathBuf::from("/Users/jonhillesheim/scans/sock_over_capsule.cleaned.stl"),
+            PathBuf::from,
+        );
+        if scan_path.exists() {
+            let prep = scan_path.with_extension("").with_extension("prep.toml");
+            if let Ok(text) = std::fs::read_to_string(&prep)
+                && let Ok(caps) = cf_cap_planes::parse_cap_planes(&text)
+                && let Ok(scan) = load_stl(&scan_path)
+            {
+                scenes.push((
+                    "gui-dflt (real scan)".into(),
+                    Box::new(move || {
+                        let design = SimDesign {
+                            layers: vec![
+                                layer_with_slacker(0.010, "ECOFLEX_00_30", 0.5),
+                                layer(0.003, "DRAGON_SKIN_20A"),
+                            ],
+                            cavity_inset_m: 0.003,
+                        };
+                        build_insertion_geometry(&scan, &design, &caps, 2_500, 0.004)
+                            .expect("the gui-dflt geometry must build")
+                    }),
+                ));
+            }
+        } else {
+            println!(
+                "(real scan absent at {} — synthetic scenes only)",
+                scan_path.display()
+            );
+        }
+
+        for (label, build) in scenes {
+            println!("\n══ {label} ══");
+
+            // Counts are far below f64's exact-integer ceiling.
+            #[allow(clippy::cast_precision_loss)]
+            let ratio = |a: usize, b: usize| a as f64 / b as f64;
+            let built = std::time::Instant::now();
+            let g = build();
+            let build_s = built.elapsed().as_secs_f64();
+            let tet4_verts = Mesh::<Yeoh>::n_vertices(&g.mesh);
+            let tet10 = Tet10Mesh::<Yeoh>::from_tet4(&g.mesh);
+            let tet10_verts = Mesh::<Yeoh>::n_vertices(&tet10);
+            println!(
+                "geometry build {build_s:>7.2} s · {} tets · vertices {tet4_verts} (Tet4) \
+                 → {tet10_verts} (Tet10, ×{:.2}) · DOF {} → {}",
+                g.n_tets,
+                ratio(tet10_verts, tet4_verts),
+                3 * tet4_verts,
+                3 * tet10_verts,
+            );
+
+            let report = |arm: &str, ramp: &InsertionRamp, extra: String| {
+                let mut t: Vec<f64> = ramp.steps.iter().map(|s| s.wall_time_s).collect();
+                if t.is_empty() {
+                    println!("{arm:<14} no converged step{extra}");
+                    return;
+                }
+                let total: f64 = t.iter().sum();
+                // Step count is tiny; the cast is exact.
+                #[allow(clippy::cast_precision_loss)]
+                let mean = total / t.len() as f64;
+                t.sort_unstable_by(f64::total_cmp);
+                println!(
+                    "{arm:<14} {:>2} steps · per step min {:>6.2} s · median {:>6.2} s · \
+                     max {:>6.2} s · mean {:>6.2} s · ramp {:>7.1} s{extra}",
+                    t.len(),
+                    t[0],
+                    t[t.len() / 2],
+                    t[t.len() - 1],
+                    mean,
+                    total,
+                );
+            };
+
+            let base = run_insertion_ramp_at_kappa_and_tol(
+                build(),
+                N_STEPS,
+                INSERTION_CONTACT_KAPPA,
+                INSERTION_SOLVE_TOL,
+            )
+            .expect("baseline ramp builds");
+            report("tet4+penalty", &base, String::new());
+
+            let bridge = run_insertion_ramp_tet10_ipc(build(), N_STEPS, INSERTION_SOLVE_TOL)
+                .expect("bridge ramp builds");
+            report("tet10+ipc", &bridge, String::new());
         }
     }
 }

@@ -935,6 +935,37 @@ Listed because the confidence of §4 rests on these being open, not closed.
    `gui-dflt` the BASELINE's cliff comes first — it is already at zero by 1e-2,
    a decade before the bridge is.
 
+   ### ⭐⭐ WHAT A STEP COSTS — and it inverts too
+
+   `RampStep::wall_time_s`, measured around `replay_step` alone. Idle machine,
+   macOS/ARM, shipped `tol`. ⛔ A diagnostic; wall clock is contended and this
+   never gates.
+
+   | scene | tets | DOF (Tet4 → Tet10) | penalty s/step | **bridge s/step** |
+   |---|---|---|---|---|
+   | tol-fixture | 9 258 | 31 143 → 69 954 (×2.25) | 0.03 | **0.78** |
+   | sphere-40mm | 45 654 | 124 086 → 309 024 (×2.49) | 0.21 | **5.92** |
+   | **gui-dflt (real scan)** | **72 935** | **189 456 → 482 124 (×2.54)** | **48.87** | **7.82** |
+
+   (medians; geometry build is 0.02 / 0.08 / 0.69 s and never dominates)
+
+   ⭐⭐⭐ **On the product mesh the bridge is ~6× FASTER PER STEP than the
+   penalty path** — 7.82 s against 48.87 s — while carrying 2.54× the DOF. On
+   both synthetic scenes it is **25–28× SLOWER**. ⇒ **per-step cost is not a
+   property of element order; it is a property of how hard the solve is.** The
+   penalty path's per-step time explodes on the real scan because it is
+   thrashing — the Armijo stall at Newton iteration 136 and the repeated
+   `Llt non-PD` fallbacks are the same phenomenon seen from the clock.
+
+   ⇒ practically: on the GUI's own scene the bridge delivers **16/16 steps in
+   146 s of solve** where the penalty path spends **124 s to deliver 4**.
+   Roughly the same wall clock, four times the depth.
+
+   ⚠ **The bridge's total excludes its approach**, which is solved and not
+   recorded. At `d̂` = 1.2 mm and a 0.1875 mm increment that is **at least
+   `ceil(d̂/step)` = 7 extra solves**, so ≥ ~55 s more on the real scan. Its
+   honest end-to-end figure is ~200 s, not 146 s.
+
    ✅ **VERDICT, REVISED.** The solver-side case for the bridge is made on the
    geometry that matters. ⛔ The remaining blocker to making it the default is
    **not** the solver — it is that `compute_tet_readouts` is corner-linear, so

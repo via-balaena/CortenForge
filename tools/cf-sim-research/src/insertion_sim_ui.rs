@@ -2017,6 +2017,7 @@ mod tests {
             ramp_kind: RampKind::Growing(InsertionRamp {
                 steps: vec![
                     RampStep {
+                        wall_time_s: 0.0,
                         interference_m: 0.001,
                         iter_count: 1,
                         final_residual_norm: 0.0,
@@ -2033,6 +2034,7 @@ mod tests {
                         },
                     },
                     RampStep {
+                        wall_time_s: 0.0,
                         interference_m: 0.002,
                         iter_count: 1,
                         final_residual_norm: 0.0,
@@ -2194,6 +2196,7 @@ mod tests {
             ramp_kind: RampKind::Growing(InsertionRamp {
                 steps: (0..n_steps)
                     .map(|_| RampStep {
+                        wall_time_s: 0.0,
                         interference_m: 0.001,
                         iter_count: 1,
                         final_residual_norm: 0.0,
