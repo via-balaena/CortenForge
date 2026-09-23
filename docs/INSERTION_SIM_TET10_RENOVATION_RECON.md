@@ -865,10 +865,9 @@ Listed because the confidence of §4 rests on these being open, not closed.
    stalls inside its own approach at `r ≈ 1e-4`, "non-SPD tangent near
    solution". It either seats fully or not at all.
 
-   ⇒ ⭐⭐⭐ **The bridge buys CONTACT STATE and costs TOLERANCE HEADROOM.** It
-   does not remove the ceiling #958 found; it trades one side of it for the
-   other. On the evidence here that is worth landing as a measured capability
-   and **not** worth making the default.
+   ⇒ on the SYNTHETIC scenes the bridge buys CONTACT STATE and costs TOLERANCE
+   HEADROOM. ⛔⛔ **That verdict does not survive the product geometry — see
+   the next block, and read it before quoting the sentence above.**
 
    ⛔⛔ **TWO CANDIDATE CAUSES ARE MEASURED FALSE.** The cliff is not `κ` — see
    the sweep below — and it is not where the approach starts: moving the
@@ -886,6 +885,62 @@ Listed because the confidence of §4 rests on these being open, not closed.
    sit under the curved cavity surface by a measured sagitta, and
    `Tet10Mesh::with_curved_midsides` exists precisely to fix that. It is not
    applied here.
+
+   ---
+
+   ### ⭐⭐⭐ THE PRODUCT GEOMETRY — and it overturns the verdict above
+
+   Measured 2026-09-22, macOS/ARM, 1775 s, on the real iter-1 scan in **both**
+   topologies. ⛔ The scan is repo-excluded, so nothing here can ever gate; this
+   reports on a named platform.
+
+   | scene | tol | arm | steps | depth | `min_sd` | 5 % tail | σ |
+   |---|---|---|---|---|---|---|---|
+   | 1layer (68 087 tets) | 1e-1 | tet4+penalty | 16/16 | 3.000 mm | **−0.373 mm** | **−0.042 mm** | 70.4 kPa |
+   | 1layer | 1e-1 | **tet10+ipc** | 16/16 | 3.000 mm | **+0.094 mm** | **+0.347 mm** | 90.0 kPa |
+   | 1layer | 1e-2 | tet4+penalty | 6/16 | 1.125 mm | +0.345 mm | +0.554 mm | 32.5 kPa |
+   | 1layer | 1e-2 | **tet10+ipc** | **14/16** | **2.625 mm** | +0.130 mm | +0.390 mm | 76.3 kPa |
+   | **gui-dflt** (72 935 tets) | **1e-1** | tet4+penalty | **4/16** | **0.750 mm** | +0.763 mm | +0.859 mm | 6.8 kPa |
+   | **gui-dflt** | **1e-1** | **tet10+ipc** | **16/16** | **3.000 mm** | +0.358 mm | +0.535 mm | 36.3 kPa |
+   | gui-dflt | 1e-2 | tet4+penalty | **0/16** | — | — | — | — |
+   | gui-dflt | 1e-2 | **tet10+ipc** | 3/16 | 0.563 mm | +0.674 mm | +0.849 mm | 3.9 kPa |
+
+   ⭐⭐⭐ **THE HEADLINE: on the scene the GUI actually runs, at the tolerance
+   that already ships, the bridge takes the seatable depth from a QUARTER of
+   the slider range to ALL of it — 0.750 mm → 3.000 mm, 4×** — non-penetrating,
+   with +0.535 mm of clearance across the 5 % area tail. σ rises 6.8 → 36.3 kPa
+   because the wall is genuinely engaged rather than barely touching.
+
+   **The bridge wins all four comparisons**, and each is a different kind of win:
+   - `1layer` @ 1e-1 — **same depth, penetrating → seated.** A negative 5 % area
+     tail means a *region* through the wall, not one bad vertex; +0.347 mm
+     replaces −0.042 mm on 11 037 pairs against 3 181.
+   - `1layer` @ 1e-2 — **1.125 → 2.625 mm (2.33×)**, both clean.
+   - `gui-dflt` @ 1e-1 — **0.750 → 3.000 mm (4×)**, the product result.
+   - `gui-dflt` @ 1e-2 — **nothing → 0.563 mm.** The baseline fails to converge
+     step 0 at all ("Newton failed to converge within 150 iterations").
+
+   ⛔⛔ **THE SYNTHETIC SCENES MISLED, AND THAT IS THE TRANSFERABLE PART.** The
+   sphere said there was *no* depth win; the tolerance fixture said the win
+   needed a tolerance tighter than ships. The product geometry says there is a
+   4× win **at the shipped tolerance**. ⇒ this is #958's lesson arriving from
+   the other side — there it was the analytical shell being too well-conditioned
+   to see a failure; here it is two synthetic scenes being too well-conditioned
+   to see a *benefit*. **Re-qualify a fixture for each question; a verdict read
+   off the easy scenes is not a verdict.**
+
+   ⚠ **What is NOT measured here**: the real scan was run at 1e-1 and 1e-2 only,
+   so the bridge's tolerance cliff (0/16 at 1e-3 on the synthetic scenes) is
+   **unprobed on the product geometry**. ⭐ What can be said is that on
+   `gui-dflt` the BASELINE's cliff comes first — it is already at zero by 1e-2,
+   a decade before the bridge is.
+
+   ✅ **VERDICT, REVISED.** The solver-side case for the bridge is made on the
+   geometry that matters. ⛔ The remaining blocker to making it the default is
+   **not** the solver — it is that `compute_tet_readouts` is corner-linear, so
+   the UI's per-tet heat map would report Tet4-quality stress off a Tet10 solve
+   (see the corner-readout note above). That is a readout fix, and it is the
+   next piece of work, not a reason to doubt the result.
 
    ⛔⛔ **`κ` IS NOT THE BINDING CONSTRAINT — measured, not assumed.**
    `the_bridge_ramp_over_a_stiffness_sweep` runs the ramp at 1e6, the derived
