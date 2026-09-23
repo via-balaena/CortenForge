@@ -11162,4 +11162,133 @@ mod tests {
             );
         }
     }
+
+    /// Which `ρ` makes the floor's PROMISE actually hold?
+    ///
+    /// ⭐⭐⭐ **The floor promises a standoff and does not deliver it.**
+    /// Measured on the product scan, the barrier holds ~0.8× of the `ρ · step`
+    /// the derivation asked for, at every schedule tried:
+    ///
+    /// ```text
+    /// steps  required ρ·step   held     ratio   depth
+    ///    16       0.3500 mm  0.2936 mm  0.84    37.5 %
+    ///    32       0.1750 mm  0.1347 mm  0.77    46.9 %
+    ///    64       0.0875 mm  0.0635 mm  0.73    60.9 %
+    /// ```
+    ///
+    /// The shortfall does not shrink with the step, because it comes from the
+    /// traction at the TIGHTEST node exceeding the area-weighted mean `σ` the
+    /// floor is derived at — a property of the patch, not of the schedule. So
+    /// refining the march cannot fix it: a finer step lowers the floor, which
+    /// lowers `κ`, which holds proportionally less.
+    ///
+    /// ⇒ `ρ` is the lever, and this measures which value keeps the promise.
+    /// ⚠ **This is calibrating an approximation against its own definition,
+    /// not tuning.** `ρ` means the barrier-inverted ratio
+    /// `face_barrier_standoff(κ, d̂, σ)/min_sd`; what #959 substituted was a
+    /// GAP ratio (`mean_sd/min_sd`), and that report said in its own output
+    /// that the two "coincide only where the traction-gap map is near-linear —
+    /// the substitution is not an identity". sim-soft's fixture used **1.30**
+    /// from the barrier-inverted form; the gap ratio gave 1.11–1.18.
+    ///
+    /// The number to read off is the smallest `ρ` whose held standoff EXCEEDS
+    /// one increment, since that is the feasibility condition the ramp
+    /// actually needs.
+    ///
+    /// ⛔ Asserts nothing; stall points are platform-dependent.
+    #[test]
+    #[ignore = "needs the product scan + release ramps per ρ; run with --ignored --nocapture"]
+    fn which_patch_nonuniformity_keeps_the_floors_promise() {
+        let Some((scan, _centerline, caps, design)) = product_scene() else {
+            return;
+        };
+        const N_STEPS: usize = 16;
+        let inset_m = design.cavity_inset_m;
+        let step_m = inset_m / f64::from(u32::try_from(N_STEPS).expect("fits"));
+        println!(
+            "\nbase_mold · inset {:.1} mm · {N_STEPS} steps · increment {:.4} mm",
+            inset_m * 1e3,
+            step_m * 1e3,
+        );
+        println!("\n   rho   required_mm   kappa        held_mm   held/step   depth_mm   outcome");
+        for rho in [1.12_f64, 1.30, 1.50, 1.75] {
+            let required_m = rho * step_m;
+            let Some(floor) =
+                face_barrier_kappa(BRIDGE_CONTACT_DHAT_M, required_m, BRIDGE_DESIGN_TRACTION_PA)
+            else {
+                println!("{rho:>6.2}   (required standoff is outside the band)");
+                continue;
+            };
+            let Some(ceiling) = face_barrier_kappa(
+                BRIDGE_CONTACT_DHAT_M,
+                0.5 * BRIDGE_CONTACT_DHAT_M,
+                BRIDGE_DESIGN_TRACTION_PA,
+            ) else {
+                continue;
+            };
+            if floor >= ceiling {
+                println!("{rho:>6.2}   {:>9.4}   (bracket EMPTY)", required_m * 1e3);
+                continue;
+            }
+            let kappa = (floor * ceiling).sqrt();
+
+            let Ok(g) = build_insertion_geometry(&scan, &design, &caps, 2_500, 0.004) else {
+                println!("geometry FAILED to build");
+                return;
+            };
+            let mesh10 = Tet10Mesh::<Yeoh>::from_tet4(&g.mesh);
+            let referenced: Vec<VertexId> = referenced_vertices(&mesh10);
+            let rest10 = boundary_vertex_areas(
+                Mesh::<Yeoh>::positions(&mesh10),
+                Mesh::<Yeoh>::boundary_faces(&mesh10),
+            );
+            let intruder = g.intruder.clone();
+            let bounds = g.bounds;
+            let cavity_offset_m = g.cavity_offset_m;
+
+            let ramp = run_insertion_ramp_tet10_ipc_at(
+                g,
+                N_STEPS,
+                INSERTION_SOLVE_TOL,
+                kappa,
+                BRIDGE_CONTACT_DHAT_M,
+            )
+            .expect("the bridge ramp must build");
+            let (depth_m, held_mm) = ramp.steps.last().map_or((0.0, f64::NAN), |last| {
+                let pos = positions_from_flat(&last.x_final);
+                let c = intruder_ipc_contact_at(
+                    &intruder,
+                    bounds,
+                    last.interference_m,
+                    cavity_offset_m,
+                    kappa,
+                    BRIDGE_CONTACT_DHAT_M,
+                );
+                let raw = c.per_pair_readout(&mesh10, &pos);
+                let stats = patch_stats(
+                    &filter_pair_readouts_to_referenced(raw, &referenced),
+                    &rest10,
+                );
+                (
+                    last.interference_m,
+                    stats.map_or(f64::NAN, |s| s.min_sd_m * 1e3),
+                )
+            });
+            let outcome = if ramp.steps.len() == N_STEPS {
+                "COMPLETE".to_string()
+            } else {
+                format!("stalled {}/{N_STEPS}", ramp.steps.len())
+            };
+            println!(
+                "{rho:>6.2}   {:>9.4}   {kappa:.4e}   {held_mm:>7.4}   {:>9.3}   {:>7.3}   {outcome}",
+                required_m * 1e3,
+                held_mm / (step_m * 1e3),
+                depth_m * 1e3,
+            );
+        }
+        println!(
+            "\n⚠ feasibility needs held/step > 1. The gap-ratio ρ in use is {:.2}.",
+            BRIDGE_PATCH_NONUNIFORMITY,
+        );
+    }
 }
