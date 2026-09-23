@@ -1268,7 +1268,8 @@ const BRIDGE_CONTACT_DHAT_M: f64 = 1.2e-3;
 /// WAS MEASURED WRONG ON THE PRODUCT SCENE.** The floor — *"κ such that the
 /// barrier holds `ρ · step` open at traction σ"* — assumes κ *sets* the
 /// standoff. In the window it was tested in (16 steps, κ 2.4e7–3.7e7) the
-/// held standoff did not follow κ: 0.2936 → 0.2766 mm across a 1.5× range.
+/// held standoff did not rise with κ: 0.2936, 0.2947, 0.2944 and 0.2766 mm
+/// across a 1.5× range, at depths of 1.875–2.812 mm.
 ///
 /// ⚠ **That is a result about that window, not about the wall.** On the same
 /// scene at 32 steps the held standoff DOES follow κ at matched depth —
@@ -1279,11 +1280,11 @@ const BRIDGE_CONTACT_DHAT_M: f64 = 1.2e-3;
 /// explained the flat window by the wall's stiffness; the same wall moves in
 /// the other window, so that explanation is withdrawn.
 ///
-/// ⭐⭐⭐ **And deriving κ FROM the increment was actively harmful.** A finer
-/// march lowers the floor, which lowered κ, which held proportionally less —
-/// the feasibility threshold chased the step downward and could never be
-/// caught (held/step DEGRADED 0.94 → 0.86 → 0.81 across 16/32/64 steps).
-/// Holding κ at the ceiling and refining the schedule instead:
+/// ⭐⭐⭐ **And deriving κ FROM the increment measured worse the finer the
+/// march**: with κ at the floor, held/step fell 0.94 → 0.86 → 0.81 across
+/// 16/32/64 steps. κ, the step and the depth all changed together, so which
+/// of them moved it is not isolated. Holding κ at the ceiling and refining the
+/// schedule instead:
 ///
 /// ```text
 /// steps  step_mm  held_mm   depth     was (centre κ)
@@ -1294,16 +1295,17 @@ const BRIDGE_CONTACT_DHAT_M: f64 = 1.2e-3;
 ///
 /// ⇒ the contact-feasibility wall is GONE: 32 and 64 steps stop at the same
 /// depth and on a DIFFERENT failure — an element inversion (`det F` < 0), not
-/// a barrier stall. What limits the ramp now is material, not contact.
+/// a barrier stall.
 ///
 /// ⇒ The floor is kept as a REPORTED diagnostic —
 /// `the_bridges_barrier_band_reports_a_floor_and_ships_a_ceiling` still
-/// prints it — but it no longer selects. The ceiling does, and the product
-/// sweep is its evidence: across 12 arms from 4.0e6 to 4.0e8 at 32 steps and
-/// the shipped tolerance, the best depth reached — 4.531 mm, stopping on
-/// element inversion — is reached only at 4.0e7 and at the shipped 4.11e7.
-/// Below them the line search stalls sooner (Armijo, at Newton iteration 0);
-/// above them inversion comes one or two steps sooner. No arm penetrates.
+/// prints it — but it no longer selects. The ceiling does, because it is the
+/// stated requirement (stay out of the cushion) and by construction does not
+/// depend on the increment. The product sweep CHECKS it rather than selecting
+/// it: across 12 arms from 4.0e6 to 4.0e8 at 32 steps and the shipped
+/// tolerance, the best depth, 4.531 mm, is reached at 4.0e7 and at the
+/// shipped 4.11e7, and the next grid points either side reach less. Choosing
+/// κ by the depth it buys would be a sweep wearing a derivation's clothes.
 ///
 /// ⚠ The floor DID predict the stall on sim-soft's SEALED fixture (1e6 stalls
 /// above 17.567 kPa, measured 14.255). It failed to transfer from there to
@@ -1313,8 +1315,7 @@ const BRIDGE_CONTACT_DHAT_M: f64 = 1.2e-3;
 /// ⚠ `ramp_step_m` is still taken and still checked: an increment wider than
 /// the band is a mis-specified schedule and is surfaced rather than clamped.
 /// The schedule requirement is now `step < held standoff`, and the held
-/// standoff must be **MEASURED** — it depends on wall compliance, which no
-/// closed form here knows.
+/// standoff must be **MEASURED** — no closed form here predicts it.
 ///
 /// # Errors
 ///
@@ -3006,11 +3007,12 @@ const CAVITY_MIDSIDE_BAND_CELLS: f64 = 0.5;
 
 /// Put the enriched boundary midsides back ON the curved cavity surface.
 ///
-/// ⭐⭐⭐ **This is the fix for the bridge's feasibility stall, and it is a
-/// GEOMETRY fix, not a stiffness one.** `Tet10Mesh::from_tet4` places every
-/// midside at the straight-edge MIDPOINT, so on a curved cavity each boundary
-/// midside sits under the true surface by the sagitta. The barrier then fights
-/// a node that was never on the wall.
+/// ⚠ **Written as the fix for the bridge's feasibility stall; it was not.**
+/// Wiring it in left the stall where it was (same 6/16 — see the ramp's
+/// `THE MESH SWAP` note), and it is not wired. `Tet10Mesh::from_tet4` places
+/// every midside at the straight-edge MIDPOINT, so on a curved cavity each
+/// boundary midside sits under the true surface by the sagitta; this moves
+/// them back onto it.
 ///
 /// Measured on the product scan before this existed:
 ///
@@ -10130,9 +10132,9 @@ mod tests {
     /// ⛔ An earlier revision asserted κ was the geometric centre of
     /// `[floor, ceiling]`. That selector was measured wrong on the product scene —
     /// see `bridge_face_barrier_kappa`. The floor derives κ from the
-    /// increment, and on the product scene that made a finer march hold LESS
-    /// (held/step 0.94 → 0.86 → 0.81 across 16/32/64 steps), so the
-    /// feasibility threshold could never be caught.
+    /// increment, and on the product scene held/step fell 0.94 → 0.86 → 0.81
+    /// across 16/32/64 steps with κ at the floor (κ, step and depth changed
+    /// together).
     ///
     /// What this pins now is the requirement that survived: the ceiling, which
     /// describes something κ genuinely controls — how far into the cushioning
@@ -12006,13 +12008,11 @@ mod tests {
     ///    64       0.0875 mm  0.0635 mm  0.73    60.9 %
     /// ```
     ///
-    /// The shortfall does not shrink with the step, because it comes from the
-    /// traction at the TIGHTEST node exceeding the area-weighted mean `σ` the
-    /// floor is derived at — a property of the patch, not of the schedule. So
-    /// refining the march cannot fix it: a finer step lowers the floor, which
-    /// lowers `κ`, which holds proportionally less.
+    /// The shortfall did not shrink with the step (above). Why is not isolated —
+    /// κ, the step and the depth all changed together.
     ///
-    /// ⇒ `ρ` is the lever, and this measures which value keeps the promise.
+    /// ⇒ The hypothesis this tests: `ρ` is the lever, and this measures which
+    /// value keeps the promise.
     /// ⚠ **This is calibrating an approximation against its own definition,
     /// not tuning.** `ρ` means the barrier-inverted ratio
     /// `face_barrier_standoff(κ, d̂, σ)/min_sd`; what #959 substituted was a
@@ -12133,8 +12133,9 @@ mod tests {
     /// the straight-edge MIDPOINT, so on a curved cavity a boundary midside
     /// sits under the true surface by the sagitta — measured at **0.117 mm**
     /// on the tolerance fixture (tightest corner −0.1354 mm, tightest midside
-    /// −0.2522 mm). If the limiting node is a midside, the barrier is fighting
-    /// a node that was never on the surface, and no κ can move it.
+    /// −0.2522 mm). The hypothesis this probe tested: the limiting node is a
+    /// midside that was never on the surface. Conforming the midsides later
+    /// left the stall where it was (see `conform_cavity_midsides`).
     ///
     /// Reports the gap distribution split by node kind, at REST (free) and at
     /// the last converged step of a real ramp (the state that actually
@@ -12333,23 +12334,24 @@ mod tests {
     /// ⭐⭐⭐ Does DECOUPLING `κ` from the schedule fix the stall?
     ///
     /// The floor derives `κ` from the increment, so refining the march LOWERS
-    /// `κ`, which holds proportionally less — measured, held/step degraded
-    /// 0.94 → 0.86 → 0.81 across 16/32/64 steps even as depth improved. The
-    /// threshold chases the step down and the march can never catch it.
+    /// `κ` — and measured, held/step fell 0.94 → 0.86 → 0.81 across 16/32/64
+    /// steps even as depth improved (κ, step and depth changed together).
     ///
     /// But in that window the held standoff did not follow `κ` (0.294 mm
     /// across a 1.5× range) — a result about that window, not about the wall;
     /// see `bridge_face_barrier_kappa`.
     ///
-    /// ⇒ **Both facts together give the fix: hold `κ` at the CEILING and
-    /// refine the schedule.** The ceiling is the stated requirement (stay out
-    /// of the cushion) and does not move with the increment, so the held
-    /// standoff stays put while the step shrinks under it. Feasibility is
-    /// `step < held`, so it is reachable — the old derivation made it
-    /// unreachable by construction.
+    /// ⇒ **The hypothesis: hold `κ` at the CEILING and refine the
+    /// schedule.** The ceiling is the stated requirement (stay out of the
+    /// cushion) and does not move with the increment, on the expectation that
+    /// the held standoff then stays put while the step shrinks under it.
     ///
     /// Prediction: at `κ` = ceiling, 32 steps (0.156 mm) should clear a held
     /// standoff of ~0.29 mm and march past the 6/16 wall.
+    ///
+    /// Outcome (recorded in `bridge_face_barrier_kappa`): depth rose to 90.6 %
+    /// at 32 steps — but the held standoff did NOT stay put (0.3062 → 0.2163 mm
+    /// from 16 to 32 steps).
     ///
     /// ⛔ Asserts nothing; stall points are platform-dependent.
     #[test]

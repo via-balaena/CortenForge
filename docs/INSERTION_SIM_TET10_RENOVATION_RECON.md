@@ -1011,8 +1011,8 @@ Listed because the confidence of §4 rests on these being open, not closed.
    ### ✅ THE κ DERIVATION, FIXED — ship the ceiling, refine the schedule
 
    The floor was selecting κ **from the increment**, so a finer march lowered
-   κ and the barrier held proportionally less: the feasibility threshold chased
-   the step downward and could never be caught. Holding κ at the **ceiling**
+   κ — and measured, held/step fell as the march got finer (0.94 → 0.86 →
+   0.81; κ, step and depth changed together). Holding κ at the **ceiling**
    (the stated cushioning requirement, which does not depend on the increment)
    and refining the schedule underneath it:
 
@@ -1031,8 +1031,7 @@ Listed because the confidence of §4 rests on these being open, not closed.
    with the schedule. The floor is still computed and printed
    (`the_bridges_barrier_band_reports_a_floor_and_ships_a_ceiling`) but does
    not select. The schedule requirement becomes **`step < held standoff`**, and
-   the held standoff must be MEASURED — it depends on wall compliance, which no
-   closed form here knows.
+   the held standoff must be MEASURED — no closed form here predicts it.
 
    ⚠ **What still limits the ramp**: element inversion at 4.531 mm of a 5 mm
    inset, schedule-independent. ⛔ **F-bar is NOT a candidate**: it is hard-gated off for Tet10 by an assert
@@ -1067,9 +1066,9 @@ Listed because the confidence of §4 rests on these being open, not closed.
    | 32 | 0.1562 mm | 1.5605e7 | 0.1347 mm | **0.86** | 46.9 % |
    | 64 | 0.0781 mm | 1.1015e7 | 0.0635 mm | **0.81** | 60.9 % |
 
-   Depth improves, but the feasibility ratio **degrades**. Refining lowers the
-   floor, which lowers κ, which holds proportionally less — the threshold
-   shrinks with the step, so the march can never catch it.
+   Depth improves, but the feasibility ratio **degrades**. κ, the step and the
+   depth all changed together, so which of them moved the ratio is not
+   isolated.
 
    **2. Raise ρ** — on the theory that the gap-ratio substitution under-predicts
    the barrier-inverted ρ (the sweep's own output warns the two "coincide only
@@ -1093,27 +1092,26 @@ Listed because the confidence of §4 rests on these being open, not closed.
    matched depth. So the explanation in the sentence above — geometry sets the
    gap, κ only the traction — does not hold across the scene, and what makes
    this window flat has not been isolated. The decision it supported, κ = the
-   ceiling, now rests on that sweep's depths instead.
+   ceiling, stands on the stated cushioning requirement; the product sweep
+   checks it — the ceiling ties for the best depth on that grid — and does not
+   select it (the rule two paragraphs down).
 
-   ⭐ That is consistent with a number measured earlier and not connected until
-   now: **σ moves only 1.0183× per decade of κ** on this scene. It was read
-   then as a geometry-determined standoff; the scoping note above withdraws
-   that reading. The two measurements agree, and in this window the
-   derivation contradicts both.
+   ⚠ An earlier revision linked this to **σ moving only 1.0183× per decade of
+   κ**. That was read on the PENALTY path at κ 1e4–1e5, not in this window, and
+   the link is withdrawn with the reading.
 
    ⚠ **Depth DOES improve with κ** (1.875 → 2.812 mm from 2.4e7 → 3.7e7), so a
-   stiffer barrier helps — just not through the mechanism the floor claims.
-   ⛔ **Do not "fix" this by sweeping κ for depth.** What is owed is a
-   re-derivation against a correct model of what sets the standoff. The
-   interval `[floor, ceiling]` currently selects a stiffness on a premise the
-   scene does not honour, and a number that happens to work would be a sweep
-   wearing a derivation's clothes.
+   stiffer barrier helps. ⛔ **Do not "fix" this by sweeping κ for depth.**
+   What is owed is a re-derivation against a correct model of what sets the
+   standoff. The interval `[floor, ceiling]` selected a stiffness on a premise
+   this window did not honour, and a number that happens to work would be a
+   sweep wearing a derivation's clothes.
 
    ⚠ **What still stands**: the ceiling (stay out of the cushion) is a stated
    requirement and is untouched by this; and on the sim-soft fixture the floor
    DID predict its stall (1e6 stalls above 17.567 kPa, measured 14.255). So
-   this is a transfer failure to a compliant open-mouth wall, not proof the
-   derivation was always wrong.
+   this is a failure to transfer from that fixture to the product scene, not
+   proof the derivation was always wrong.
 
    ### ⛔⛔ σ RE-MEASURED ON THE PRODUCT SCAN — and it is HALF
 
@@ -1246,8 +1244,8 @@ Listed because the confidence of §4 rests on these being open, not closed.
    1e6 and 1e9 arms, whose κ never changed. What moved it was not isolated. The
    headline holds at `1e-6` only.
 
-   ⛔⛔ **`κ` ON THE PRODUCT SCAN — the shipped ceiling sits at the best depth,
-   and nothing seats fully.** `the_bridge_ramp_over_a_stiffness_sweep_on_the_product_scan`:
+   ⛔⛔ **`κ` ON THE PRODUCT SCAN — the shipped ceiling ties for the best depth,
+   and no κ reaches the full inset.** `the_bridge_ramp_over_a_stiffness_sweep_on_the_product_scan`:
    `base_mold`, 32 steps of 0.1562 mm, the shipped `1e-1`, the fixture sweep's
    own grid points from 4.0e6 to 4.0e8 plus the shipped 4.11e7. Measured
    2026-09-23, macOS arm64, release, 6 934 s:
@@ -1268,14 +1266,15 @@ Listed because the confidence of §4 rests on these being open, not closed.
    4.0e8        27/32   4.219 mm   inversion at tet 516             +0.706    +0.853
    ```
 
-   ⇒ **No arm penetrates, and no arm reaches 5 mm.** The best depth, 4.531 mm,
-   is reached only at 4.0e7 and the shipped 4.11e7. One grid step down costs
-   0.625 mm and ends on the line search; one step up costs one ramp step and
-   ends on the same element inverting. ⇒ the shipped ceiling is the best
-   operating point on this grid, and the margin either side is a single grid
-   step — what the depth does between grid points was not measured. Unlike
-   `tolerance_fixture`, where a decade of `κ` seats fully, here `κ` trades
-   contact against inversion and the product never seats.
+   ⇒ **No arm penetrates at its last converged step, and no arm reaches
+   5 mm.** The best depth, 4.531 mm, is reached only at 4.0e7 and the shipped
+   4.11e7. The next grid point down (2.5e7) reaches 0.625 mm less and ends on
+   the line search; the next up (6.3e7) reaches one ramp step less and ends on
+   the same element inverting. ⇒ the shipped ceiling ties for the best depth on
+   this grid, with no measured margin above it; the depth between grid points
+   was not measured. Unlike `tolerance_fixture`, where a decade of `κ` reaches
+   the full inset, here the line search stops the soft arms and an element
+   inverts on the stiff ones, and no κ on this grid reaches the full inset.
 
    ⚠ **`min_sd` FOLLOWS `κ` HERE at matched depth** — 0.317 → 0.415 mm across
    6.3e7 → 1e8 (both 4.375 mm); 0.528 → 0.622 → 0.706 mm across 1.6e8 → 4.0e8
@@ -1291,10 +1290,10 @@ Listed because the confidence of §4 rests on these being open, not closed.
    below are at #959's σ = 117 kPa and ship nowhere.
 
    ⚠ Its stated rationale — the floor belongs to the MARCHING SCHEME, so a
-   stored constant goes wrong when `n_steps` changes — was *sound reasoning from
-   a false premise*: the floor only belongs to the marching scheme if κ sets the
-   standoff, and in the window measured it did not (a window-specific result —
-   see `THE HELD STANDOFF IS FLAT`). At `d̂` = 1.2 mm over a 16-step
+   stored constant goes wrong when `n_steps` changes — rested on a premise that
+   did not hold in the window measured: the floor only belongs to the marching
+   scheme if κ sets the standoff, and there it did not (see `THE HELD STANDOFF
+   IS FLAT`, and its scoping note). At `d̂` = 1.2 mm over a 16-step
    3 mm ramp it gave:
 
    ```text
@@ -1333,9 +1332,9 @@ Listed because the confidence of §4 rests on these being open, not closed.
       the tolerance fixture: tightest corner −0.1354 mm, tightest midside
       −0.2522 mm, an excess of **0.117 mm** against a predicted `h²/8R` of
       **0.118 mm** at `h` = 4 mm, `R` = 17 mm. `Tet10Mesh::with_curved_midsides`
-      is the cure and is **not** applied here — the approach clearance absorbs
-      it instead, so the reported `min_sd` carries that bias and is
-      conservative by roughly one sagitta.
+      would move them and is **not** applied here — the approach clearance
+      absorbs the offset instead. Whether it biases the reported `min_sd` has
+      not been measured.
 
    ⛔⛔ **THE READOUT'S PAIR KIND IS NOT THE SOLVER'S, and a gate written the
    obvious way fails on a correct bridge.** `IpcRigidContact::active_pairs`
@@ -1370,21 +1369,31 @@ Listed because the confidence of §4 rests on these being open, not closed.
    the analytic gradient of a quadratic field) and
    `the_tet10_readout_mesh_places_every_elements_midsides` (midside order, on
    every element of the enriched tolerance fixture); each fails under an
-   injected bug. Tet4 readouts are bit-identical to the corner construction —
-   all 16 step aggregates and every field of all 9 258 tets on
-   `tolerance_fixture`.
+   injected bug, and the first also reads a CURVED element (two midsides off
+   their chords): `F = A` under an affine field, each point weighted by its own
+   `|det J_rest|`. `ReadoutMesh` refuses positions of the wrong length
+   (`a_readout_mesh_refuses_positions_from_another_mesh`).
+
+   Tet4 readouts are bit-identical to the corner construction: at the final
+   step of a 16-step `run_insertion_ramp` on `tolerance_fixture`, the 16 step
+   aggregates and each of the 9 258 tets' energy, peak ‖P‖, stretch range and
+   all 18 entries of `F` and `P`, dumped as raw bits at `ccb94a16` and again at
+   `0fc7774d` (each through an uncommitted scratch test).
 
    ⭐ **What the corner readout was getting wrong** —
    `what_the_corner_readout_missed_on_the_bridge` reads both off the SAME
    converged state, the last step each ramp reaches, so only the readout
-   differs. macOS arm64, release, 2026-09-23:
+   differs. Shipped tolerance `1e-1`; macOS arm64, release, at `85a648b6`
+   (2026-09-23):
 
-   | scene | reached | peak ‖P‖ | max stretch | min stretch | mean Ψ | hotspot element | elements off by > 10 % in ‖P‖ | median per-element Δ‖P‖ |
-   |---|---|---|---|---|---|---|---|---|
-   | `tolerance_fixture` | 16/16, 3.000 mm | 564 → 313 kPa | 1.366 → 1.474 | 0.260 → 0.319 | 16.5 → 15.2 kJ/m³ | #1118 → #3617 | 84.7 % | 33 % |
-   | `base_mold` (product) | 29/32, 4.531 mm | 912 → 245 kPa | 1.841 → 1.947 | 0.160 → 0.237 | 5.34 → 5.09 kJ/m³ | #3652 → #60516 | 66.4 % | 17 % |
+   | scene | reached | peak ‖P‖ | max stretch | min stretch | mean Ψ | hotspot element | elements at ≥ 1 % of peak ‖P‖ | of those, off by > 10 % | median |
+   |---|---|---|---|---|---|---|---|---|---|
+   | `tolerance_fixture` | 16/16, 3.000 mm | 564 → 313 kPa | 1.366 → 1.474 | 0.260 → 0.319 | 16.5 → 15.2 kJ/m³ | #1118 → #3617 | 7 554 of 9 258 | 83.9 % | 28 % |
+   | `base_mold` (product) | 29/32, 4.531 mm | 912 → 245 kPa | 1.841 → 1.947 | 0.160 → 0.237 | 5.34 → 5.09 kJ/m³ | #3652 → #60516 | 59 909 of 65 293 | 64.5 % | 16 % |
 
-   (each cell is corner → per-GP.) The product ramp reproduced its recorded
+   (each cell is corner → per-GP. The last three columns skip elements below
+   1 % of the scene's per-GP peak stress, so rounding-level stress does not
+   count as "off"; without that floor an earlier run read 84.7 % and 66.4 %.) The product ramp reproduced its recorded
    operating point — 29/32, 4.531 mm, stopping on the same inversion at tet 516
    (`det F = -0.030`) — as it must: the readout runs after the solve.
 
@@ -1395,25 +1404,44 @@ Listed because the confidence of §4 rests on these being open, not closed.
    ⛔ **A second silent bridge defect, same root cause.** The UI found the
    outer skin by comparing `x_final` against its own Tet4 snapshot. On the
    bridge `x_final` carries the midsides, the lengths differ, and the function
-   returned an EMPTY set rather than an error — **0 outer-skin vertices**,
-   against 15 481 from the solved mesh on `tolerance_fixture` and 53 789 on
-   `base_mold`. Nothing read as outer skin, so the outer layer's deformed shell
-   and the cavity-face filter both degraded without a word. It now takes the
-   solved mesh's rest positions and refuses a mismatch
-   (`detect_outer_skin_vertices_refuses_a_mismatched_mesh`).
+   returned an EMPTY set rather than an error — **0 vertices** (measured at
+   `21de1b85`, before the fix; the probe now prints the refusal). Against the
+   solved mesh the same rule finds 15 481 on `tolerance_fixture` (7 401
+   Dirichlet-pinned + 8 080 vertices no element names, which never move) and
+   53 789 on `base_mold` (26 361 + 27 428). Nothing read as outer skin, so the
+   outer layer's deformed shell and the cavity-face filter both degraded
+   without a word. It now takes the solved mesh's rest positions and refuses a
+   mismatch (`detect_outer_skin_vertices_refuses_a_mismatched_mesh`). Through
+   the UI's own pipeline on the product at 16 steps
+   (`the_ui_pipeline_runs_the_bridge_end_to_end_on_the_product_scan`), the
+   bridge now yields 7 080 outer faces and 3 295 cavity faces — the same as the
+   Tet4 penalty path's.
    ⇒ **the readouts were not the only blocker to defaulting the bridge**, as
    the verdict above had it — they were the one that had been found.
+
+   ⚠ **Still owed before the bridge can be the UI default** (found by reading
+   code; no search for others done): the panel's `DEFAULT_N_STEPS` is 16, where
+   the product reaches 3.438 mm (11/16, re-measured through the UI pipeline)
+   against 4.531 mm at 32; and the default model is SLIDING
+   (`SimMode::default()`) while the bridge runs growing only —
+   `run_sliding_insertion_ramp_tet10_ipc` exists but nothing calls it. At 16
+   steps the bridge's pipeline run took 364 s against the penalty path's 54 s.
 
    ⚠ **The search for more of this class**, and its boundary: every UI site
    that pairs data taken from the Tet4 snapshot with a ramp's state. Faces
    (cavity boundary, per-layer outer, slab) index `x_final` by corner id, which
    enrichment preserves — sound, though they draw the corner triangles and not
    the midside curvature. The heat map's centroid lookup and layer map index
-   the readouts by Tet4 tet id — sound only because enrichment keeps element
-   order, which `the_tet10_readout_mesh_places_every_elements_midsides` now
-   pins. The readouts and the outer skin were the two that were not sound.
-   `main.rs` reads no ramp state at all (`x_final`, `final_x`,
-   `final_per_tet`, `tet_vertices`, `readout`: zero code hits). Not searched:
+   the readouts by Tet4 tet id — sound in element identity, because enrichment
+   keeps element order, which `the_tet10_readout_mesh_places_every_elements_midsides`
+   now pins. ⛔ **But not in frame (pre-existing, both paths, NOT fixed
+   here):** the heat map colours the DEFORMED vertices of a layer shell by the
+   nearest REST-frame centroid, and the deformed view switches on after every
+   run — on the product, cavity vertices move up to 5 mm against 4 mm cells.
+   The first search judged pairings by element id only and missed it; a cold
+   review found it. `main.rs` reaches ramp state only through the UI's methods;
+   its comment calling the deformed boundary "the same BCC vertex layout the
+   ramp solves on" was wrong on the bridge and is corrected. Not searched:
    anything outside `tools/cf-sim-research`.
 
 4. **Per-Gauss-point material sampling** (§7.6). The expensive one: a
