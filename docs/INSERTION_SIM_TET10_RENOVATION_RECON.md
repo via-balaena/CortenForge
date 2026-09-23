@@ -888,7 +888,13 @@ Listed because the confidence of §4 rests on these being open, not closed.
 
    ---
 
-   ### ⭐⭐⭐ THE PRODUCT GEOMETRY — and it overturns the verdict above
+   ### ⚠ SOCK_OVER_CAPSULE — kept for the method, SUPERSEDED as "the product"
+
+   ⛔⛔ **Read the σ block below before quoting any number here.** This whole
+   section calls `sock_over_capsule` "the product geometry". It is not — the
+   product scene is `base_mold`, and everything below was additionally
+   measured at `κ` derived from a σ that was **2× too large**. The comparison
+   METHOD stands; the scene attribution and the stiffness do not.
 
    Measured 2026-09-22, macOS/ARM, 1775 s, on the real iter-1 scan in **both**
    topologies. ⛔ The scan is repo-excluded, so nothing here can ever gate; this
