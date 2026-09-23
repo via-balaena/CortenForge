@@ -941,6 +941,49 @@ Listed because the confidence of §4 rests on these being open, not closed.
    `gui-dflt` the BASELINE's cliff comes first — it is already at zero by 1e-2,
    a decade before the bridge is.
 
+   ### ✅✅✅ THE HEAD-TO-HEAD, ON THE PRODUCT SCAN AT THE FIXED κ
+
+   `base_mold`, 5 mm inset, 17 mm DRAGON_SKIN_10A @ 25 % Slacker. Both arms,
+   both schedules, both tolerances — schedule controlled, because at 16 steps
+   the bridge has not yet cleared its own contact stall.
+
+   | steps | tol | arm | depth | `min_sd` | 5 % tail | seated? |
+   |---|---|---|---|---|---|---|
+   | 16 | 1e-1 | penalty | 4.062 mm | −0.186 | +0.200 | ⛔ |
+   | 16 | 1e-1 | **bridge** | 3.438 mm | **+0.306** | **+0.502** | ✅ |
+   | 16 | 1e-2 | penalty | 4.375 mm | −0.262 | +0.137 | ⛔ |
+   | 16 | 1e-2 | **bridge** | 1.562 mm | **+0.454** | **+0.661** | ✅ |
+   | **32** | **1e-1** | penalty | **5.000 mm** | **−0.444** | **−0.005** | ⛔⛔ |
+   | **32** | **1e-1** | **bridge** | **4.531 mm** | **+0.216** | **+0.414** | ✅ |
+   | 32 | 1e-2 | penalty | 1.875 mm | +0.395 | +0.607 | ✅ |
+   | 32 | 1e-2 | **bridge** | **3.438 mm** | **+0.306** | **+0.502** | ✅ |
+
+   ⇒ ⭐⭐⭐ **THE PENALTY PATH NEVER PRODUCES A DEEPER VALID SEAT THAN THE
+   BRIDGE, IN ANY CELL.** Where it goes deeper it is through the wall; where it
+   stays out of the wall it is shallower. The one cell where both are valid —
+   32 steps at 1e-2 — the bridge is **1.83× deeper** (3.438 vs 1.875 mm).
+
+   ⛔⛔ **And at 32 steps / shipped tol the penalty path's 5 mm is a REGION
+   through the wall**, not an outlier: the 5 % area tail is **−0.005 mm**. A
+   finer schedule let it reach 100 % by penetrating harder (`min_sd` −0.186 →
+   −0.444 mm). ⇒ *depth reached* and *wall seated* are now visibly different
+   quantities on the product geometry, and only the second is a fit.
+
+   ⭐⭐ **The bridge's answer is PATH-INDEPENDENT; the baseline's is not.** The
+   bridge reaches 3.4375 mm twice by different routes — 11/16 at tol 1e-1 and
+   22/32 at tol 1e-2 — and reports `min_sd` 0.3062 vs 0.3063 mm and σ 39.33 vs
+   39.33 kPa. Four significant figures, from a different schedule AND a
+   different tolerance. That is what a converged contact solution looks like.
+
+   ⚠ **Best operating point: the bridge at 32 steps, shipped tol — 4.531 mm
+   (90.6 %) seated.** Its limit there is the element inversion, not contact.
+
+   ⚠ **The bridge IS more tolerance-sensitive, and that is unfixed** — at 16
+   steps it drops 11/16 → 5/16 going from 1e-1 to 1e-2 (a *convergence* stall
+   at Newton iter 6, not a feasibility one) while the baseline improves. A
+   finer schedule masks it (at 32 steps the bridge wins at both tolerances),
+   but it was not addressed by the κ fix and should not be assumed gone.
+
    ### ✅ THE κ DERIVATION, FIXED — ship the ceiling, refine the schedule
 
    The floor was selecting κ **from the increment**, so a finer march lowered
