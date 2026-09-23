@@ -688,8 +688,9 @@ struct CavityMeshKey {
 ///   to its source (no apex-nipple artifacts).
 /// - **Deformed** (slice S2; only when `sim_state.show_deformed && last_run.is_some()`):
 ///   cavity entity gets the FEM analysis mesh's deformed boundary at
-///   `sim_state.displayed_step` — the same BCC vertex layout the ramp
-///   solves on, with each step's `x_final` displaced coordinates.
+///   `sim_state.displayed_step` — the scene's BCC corner triangles, drawn
+///   at each step's `x_final` (on the bridge that state also carries Tet10
+///   midsides, which these triangles do not use).
 ///   Coarser than the SDF iso (4 mm BCC vs ~1 mm MC) but it's the
 ///   "see the squish" view the workshop user reaches for after a sim
 ///   completes. Falls back to rest if `displayed_step` is out of the

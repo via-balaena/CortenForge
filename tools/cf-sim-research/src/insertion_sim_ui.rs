@@ -64,7 +64,7 @@ const SIM_CELL_SIZE_M: f64 = 0.004;
 /// 3 mm seating (`0.1875` mm per step). Halving to 8 risks regressing
 /// the iter-1 envelope; the panel does not expose `n_steps` as a
 /// knob to keep the validated configuration the only-served default.
-const DEFAULT_N_STEPS: usize = 16;
+pub(crate) const DEFAULT_N_STEPS: usize = 16;
 
 // ── public types ────────────────────────────────────────────────────
 
@@ -830,7 +830,7 @@ fn build_sim_design(cavity: &CavityState, layers: &LayersState) -> SimDesign {
 /// longer extracts per-step intruder iso meshes from it — future
 /// pass-B (SL.7) render paths for growing mode may reach for it.
 #[allow(clippy::too_many_arguments)]
-fn run_sim_pipeline(
+pub(crate) fn run_sim_pipeline(
     scan: IndexedMesh,
     design: SimDesign,
     cap_planes: Vec<CapPlane>,
@@ -1020,6 +1020,9 @@ fn run_sim_pipeline(
 /// indexed by user layer order (innermost-first, length `n_layers`).
 /// A layer with no tets (degenerate partition — should not happen in
 /// production) gets `n_tets = 0` and zeros for the metrics.
+///
+/// ⚠ Skips a NaN reading the way `aggregate_step_readout` does: an element
+/// whose stretch range is NaN drops out of its layer's λ range whole.
 pub fn aggregate_per_layer(
     per_tet: &[TetReadout],
     per_tet_layer: &[usize],
@@ -1202,10 +1205,11 @@ fn build_per_layer_outer_faces(
 ///
 /// When `final_x` is not `3 × rest_positions.len()` long. An earlier
 /// revision returned an EMPTY set here instead, and the bridge reached
-/// that branch: measured on `tolerance_fixture` and on the product scan,
-/// no vertex read as outer skin
-/// (`what_the_corner_readout_missed_on_the_bridge`), so the outer layer's
-/// shell and the cavity-face filter both degraded without a word.
+/// that branch: measured on `tolerance_fixture` and on the product scan
+/// at `21de1b85`, before this fix, no vertex read as outer skin
+/// (`what_the_corner_readout_missed_on_the_bridge`, which now prints the
+/// refusal instead), so the outer layer's shell and the cavity-face filter
+/// both degraded without a word.
 pub(crate) fn detect_outer_skin_vertices(
     rest_positions: &[Vector3<f64>],
     final_x: &[f64],

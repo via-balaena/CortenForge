@@ -2034,7 +2034,7 @@ pub struct StepReadout {
 ///
 /// ⭐ **Read where the solver evaluates the material.** Tet4 has one Gauss
 /// point, so each field is that point's value. Tet10 has four, and its
-/// deformation gradient varies linearly between them, so no single `F`
+/// deformation gradient varies across the element, so no single `F`
 /// describes the element — each field therefore names its reduction.
 ///
 /// Built by [`ReadoutMesh::readouts`]; per-point detail, `F` and `P`
@@ -2060,7 +2060,7 @@ pub struct TetReadout {
 impl TetReadout {
     /// Reduce one element's Gauss points.
     ///
-    /// ⚠ A non-finite reading PROPAGATES. `f64::max` returns the non-NaN
+    /// ⚠ A NaN reading PROPAGATES. `f64::max` returns the non-NaN
     /// operand, so reducing with it would report a NaN stress as the other
     /// points' peak — and a readout exists to show that state, not hide it.
     fn over(points: &[GaussPointReadout]) -> Self {
@@ -2302,10 +2302,12 @@ impl ReadoutMesh {
     ///
     /// # Panics
     ///
-    /// On a `curr` shorter than the mesh's vertex count, or a degenerate rest
-    /// element (a `J_rest` with no inverse).
+    /// When `curr` is not the rest positions' length (positions from another
+    /// mesh), when the element and material counts differ, or on a degenerate
+    /// rest element (a `J_rest` with no inverse).
     #[must_use]
     pub fn readouts(&self, curr: &[Vec3]) -> Vec<TetReadout> {
+        self.check(curr);
         let rest = &self.rest_positions;
         match &self.elements {
             ReadoutElements::Tet4(elements) => elements
@@ -2333,6 +2335,7 @@ impl ReadoutMesh {
     /// As [`readouts`](Self::readouts), and on an out-of-range `element`.
     #[must_use]
     pub fn gauss_point_readouts(&self, element: usize, curr: &[Vec3]) -> Vec<GaussPointReadout> {
+        self.check(curr);
         let (rest, m) = (&self.rest_positions, &self.materials[element]);
         match &self.elements {
             ReadoutElements::Tet4(e) => {
@@ -2343,13 +2346,37 @@ impl ReadoutMesh {
             }
         }
     }
+
+    /// ⛔ Refuse positions from another mesh. A Tet4 view of an enriched mesh
+    /// indexes the enriched positions without complaint — its corner ids are a
+    /// prefix of them — and reads the linear part of the field, the readout
+    /// this type replaced. So a length mismatch is an error, not a partial read.
+    fn check(&self, curr: &[Vec3]) {
+        assert_eq!(
+            curr.len(),
+            self.rest_positions.len(),
+            "ReadoutMesh: {} positions against a mesh of {} vertices — they come from \
+             different meshes",
+            curr.len(),
+            self.rest_positions.len(),
+        );
+        assert_eq!(
+            self.n_elements(),
+            self.materials.len(),
+            "ReadoutMesh: {} elements but {} materials (one per element, per Mesh::materials)",
+            self.n_elements(),
+            self.materials.len(),
+        );
+    }
 }
 
 /// The material state at each of one element's Gauss points.
 ///
 /// `F` at each point is `J_curr(ξ_q) · J_rest(ξ_q)⁻¹`, from the isoparametric
 /// Jacobians of the element's map off the reference tet — which holds for a
-/// curved element as well as a straight one. On Tet4 both Jacobians are the
+/// curved element as well as a straight one (gated on a bowed element in
+/// `the_readout_resolves_the_tet10_strain_at_every_gauss_point`). On Tet4 both
+/// Jacobians are the
 /// edge-vector matrices, so this reproduces the edge-vector
 /// `D_curr · D_rest⁻¹` readout it replaced.
 ///
@@ -2593,6 +2620,12 @@ impl GammaMask {
 
 /// Reduce per-tet readouts + orphan-filtered contact-pair readouts to
 /// the scalar [`StepReadout`] aggregates a single ramp step records.
+///
+/// ⚠ The `>`/`<` comparisons skip a NaN, as they always have. Because an
+/// element's stretch range is NaN when any of its Gauss points reads a NaN
+/// stretch ([`TetReadout`] propagates it), such an element drops out of the
+/// step's stretch extrema whole — the corner readout dropped only the NaN
+/// value itself.
 fn aggregate_step_readout(
     per_tet: &[TetReadout],
     contact_readouts: &[ContactPairReadout],
@@ -10162,6 +10195,20 @@ mod tests {
         );
     }
 
+    /// ⛔ Positions from another mesh are refused, not read — the length check
+    /// `ReadoutMesh` makes because a Tet4 view of an enriched mesh would
+    /// otherwise index its positions without complaint.
+    #[test]
+    #[should_panic(expected = "they come from different meshes")]
+    fn a_readout_mesh_refuses_positions_from_another_mesh() {
+        let rest = unit_tet_rest();
+        // One node more than the mesh has: the shape of a Tet10 state read
+        // through a Tet4 mesh.
+        let mut curr = rest.clone();
+        curr.push(Vec3::new(0.5, 0.0, 0.0));
+        let _ = unit_tet_readout_mesh(rest).readouts(&curr);
+    }
+
     /// ⭐ The readout IS the Tet10 strain, at every Gauss point — and the
     /// corner readout it replaced is not.
     ///
@@ -10172,6 +10219,11 @@ mod tests {
     /// test. The four corners alone see only the linear part and must miss it;
     /// the affine control shows that the gap measures element order, not a bug
     /// in this test.
+    ///
+    /// It also reads a CURVED element (two midsides moved off their chords)
+    /// under an affine field: `F` must still be `A` at every point, and each
+    /// point must be weighted by its own `|det J_rest|`, as the solver weights a
+    /// curved element.
     #[test]
     fn the_readout_resolves_the_tet10_strain_at_every_gauss_point() {
         use sim_soft::element::TET10_EDGE_NODES;
@@ -10270,6 +10322,42 @@ mod tests {
             (corner_affine - a).norm() < 1e-12,
             "the corners read it too"
         );
+
+        // A CURVED element under the same affine field.
+        let mut bowed = rest.clone();
+        bowed[4] += Vec3::new(0.0, -0.06, -0.04);
+        bowed[9] += Vec3::new(0.05, 0.03, 0.03);
+        let curved = ReadoutMesh {
+            rest_positions: bowed.clone(),
+            elements: ReadoutElements::Tet10(vec![[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]]),
+            materials: vec![unit_tet_material()],
+        };
+        let curr_curved: Vec<Vec3> = bowed.iter().map(|p| a * p).collect();
+        let dets = Tet10.rest_jacobian_dets(&SMatrix::<f64, 10, 3>::from_fn(|i, k| bowed[i][k]));
+        let total: f64 = dets.iter().map(|d| d.abs()).sum();
+        assert!(
+            dets.iter()
+                .any(|d| (d.abs() - 0.25 * total).abs() > 1e-3 * total),
+            "the bowed element must weigh its points unequally, or the weight check is vacuous",
+        );
+        for (q, (point, det)) in curved
+            .gauss_point_readouts(0, &curr_curved)
+            .iter()
+            .zip(dets)
+            .enumerate()
+        {
+            assert!(
+                (point.f - a).norm() < 1e-12,
+                "curved element, point {q}: an affine field must read A, got {}",
+                point.f,
+            );
+            assert!(
+                (point.volume_fraction - det.abs() / total).abs() < 1e-15,
+                "curved element, point {q}: weight {} is not |det J| / Σ = {}",
+                point.volume_fraction,
+                det.abs() / total,
+            );
+        }
     }
 
     /// ⭐ `ReadoutMesh::tet10` takes each element's midsides from the mesh, in
@@ -10359,8 +10447,10 @@ mod tests {
     /// snapshot of the scene, which is what the UI read before. Only the
     /// readout differs, never the solve.
     ///
-    /// It also runs the UI's outer-skin detection with both rest-position
-    /// sources, since the UI handed it the Tet4 snapshot too.
+    /// It also runs the UI's outer-skin detection against both rest-position
+    /// sources — the Tet4 snapshot the UI used to pass, which it now refuses,
+    /// and the solved mesh — and counts the vertices no element names, which
+    /// never move and so read as outer skin too.
     ///
     /// ⛔ Asserts nothing. It reports on whatever scenes are present, and the
     /// product scan is repo-excluded.
@@ -10385,9 +10475,12 @@ mod tests {
             };
             let pos = positions_from_flat(&last.x_final);
             let gp = ramp.readout_mesh.readouts(&pos);
-            let cr = corners.readouts(&pos);
+            // The corner view reads the corner PREFIX of the enriched positions —
+            // exactly what the UI's Tet4 snapshot used to read.
+            let cr = corners.readouts(&pos[..corners.rest_positions.len()]);
             println!(
-                "\n══ {name} · {}/{n_steps} steps · depth {:.3} mm · {} elements ══",
+                "\n══ {name} · {}/{n_steps} steps · tol {INSERTION_SOLVE_TOL:e} · depth {:.3} mm \
+                 · {} elements ══",
                 ramp.steps.len(),
                 last.interference_m * 1e3,
                 gp.len(),
@@ -10431,11 +10524,14 @@ mod tests {
             }
 
             // Per element: how far the corner stress sits from the per-GP
-            // peak, as a fraction of it.
+            // peak, as a fraction of it — over the elements carrying at least
+            // 1 % of the scene's per-GP peak, so an element at rounding-level
+            // stress does not count as "off".
+            let floor_pa = 0.01 * peak(&gp, |t| t.first_piola_frobenius_pa);
             let mut rel: Vec<f64> = cr
                 .iter()
                 .zip(&gp)
-                .filter(|(_, g)| g.first_piola_frobenius_pa > 0.0)
+                .filter(|(_, g)| g.first_piola_frobenius_pa >= floor_pa)
                 .map(|(c, g)| {
                     (c.first_piola_frobenius_pa - g.first_piola_frobenius_pa).abs()
                         / g.first_piola_frobenius_pa
@@ -10456,8 +10552,14 @@ mod tests {
             #[allow(clippy::cast_precision_loss)]
             let over_10pct = rel.iter().filter(|&&r| r > 0.10).count() as f64 / rel.len() as f64;
             println!(
-                "per-element |Δ‖P‖| / per-GP ‖P‖: median {:.4}  p90 {:.4}  p99 {:.4}  max {:.4}  \
-                 · {:.2} % of elements off by > 10 %",
+                "per-element |Δ‖P‖| / per-GP ‖P‖, over the {} of {} elements at ≥ 1 % of the \
+                 per-GP peak ({:.2} kPa):",
+                rel.len(),
+                gp.len(),
+                floor_pa * 1e-3,
+            );
+            println!(
+                "  median {:.4}  p90 {:.4}  p99 {:.4}  max {:.4}  · {:.2} % of them off by > 10 %",
                 q(0.5),
                 q(0.9),
                 q(0.99),
@@ -10484,13 +10586,81 @@ mod tests {
                 crate::insertion_sim_ui::detect_outer_skin_vertices(rest, &last.x_final)
                     .map_or_else(|e| format!("refused ({e})"), |s| s.len().to_string())
             };
+            let mut named = vec![false; ramp.readout_mesh.rest_positions().len()];
+            if let ReadoutElements::Tet10(elements) = &ramp.readout_mesh.elements {
+                for e in elements {
+                    for &v in e {
+                        named[v as usize] = true;
+                    }
+                }
+            }
             println!(
                 "outer skin detected: from the Tet4 snapshot {} · from the solved mesh {} \
-                 (Dirichlet-pinned: {})",
+                 (Dirichlet-pinned {}; vertices no element names {})",
                 detected(&corners.rest_positions),
                 detected(ramp.readout_mesh.rest_positions()),
                 ramp.n_pinned,
+                named.iter().filter(|&&n| !n).count(),
             );
+        }
+    }
+
+    /// The UI's own pipeline, end to end, with the bridge ticked and unticked —
+    /// on the product scan at the panel's defaults.
+    ///
+    /// Everything else here calls the ramps and the readout functions
+    /// directly. This drives `run_sim_pipeline`, the path the Simulate button
+    /// runs. Both runs use the growing model (ticking the bridge forces it), the
+    /// same corner mesh and the same outer-skin rule, so read the outer-face and
+    /// cavity-face counts of one against the other.
+    ///
+    /// ⛔ Asserts nothing; the scan is repo-excluded.
+    #[test]
+    #[ignore = "needs the product scan + two release pipeline runs; run with --ignored --nocapture"]
+    fn the_ui_pipeline_runs_the_bridge_end_to_end_on_the_product_scan() {
+        use cf_device_types::SimMode;
+        let Some((scan, centerline, caps, design)) = product_scene() else {
+            return;
+        };
+        let cached =
+            cf_device_geometry::sdf_layers::build_cached_scan_sdf(&scan, &caps, 0.005, 0.043)
+                .expect("the product's cached SDF must build");
+        for use_bridge in [true, false] {
+            let started = std::time::Instant::now();
+            let run = crate::insertion_sim_ui::run_sim_pipeline(
+                scan.clone(),
+                design.clone(),
+                caps.clone(),
+                cached.clone(),
+                centerline.clone(),
+                SimMode::GrowingIntruder,
+                crate::insertion_sim_ui::DEFAULT_N_STEPS,
+                use_bridge,
+            );
+            match run {
+                Err(e) => println!("bridge {use_bridge}: ERROR {e:?}"),
+                Ok(o) => {
+                    let non_finite = o.per_step_scalar_fields.last().map_or(0, |last| {
+                        last[0]
+                            .iter()
+                            .chain(&last[1])
+                            .filter(|v| !v.is_finite())
+                            .count()
+                    });
+                    println!(
+                        "bridge {use_bridge}: {} steps · outer faces per layer {:?} · cavity faces {} \
+                         · {} elements · non-finite last-step scalars {non_finite} · {:.0} s",
+                        o.per_step_scalar_fields.len(),
+                        o.per_layer_outer_faces
+                            .iter()
+                            .map(Vec::len)
+                            .collect::<Vec<_>>(),
+                        o.cavity_boundary_faces.len(),
+                        o.tet_centroids.len(),
+                        started.elapsed().as_secs_f64(),
+                    );
+                }
+            }
         }
     }
 
@@ -10913,7 +11083,7 @@ mod tests {
     /// [`the_bridge_ramp_over_a_stiffness_sweep`] measured the band that seats
     /// at the shipped tolerance on [`tolerance_fixture`], a 3 mm Ecoflex inset,
     /// with the shipped value inside it. That band belongs to that fixture.
-    /// This runs the same grid points on `base_mold` at its best recorded
+    /// This runs a subset of the same grid points on `base_mold` at its best recorded
     /// operating point — 32 steps, [`INSERTION_SOLVE_TOL`] — so the product's
     /// margin is measured rather than inherited.
     ///
@@ -10944,9 +11114,8 @@ mod tests {
         let shipped = bridge_face_barrier_kappa(BRIDGE_CONTACT_DHAT_M, step)
             .expect("the bracket must be non-empty");
 
-        // The fixture sweep's own grid points (five per decade), one decade
-        // either side of the band it found, so the two tables line up row for
-        // row.
+        // Five per decade from 10^6.6 to 10^8.6 — a subset of the fixture
+        // sweep's grid, so the κ values the two share compare directly.
         let mut arms: Vec<(f64, &str)> = (3..=13)
             .map(|i| (10f64.powf(6.0 + f64::from(i) / 5.0), ""))
             .collect();
