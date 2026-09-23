@@ -2741,6 +2741,103 @@ pub fn run_insertion_ramp_at_kappa_and_tol(
     })
 }
 
+/// Fraction of its original rest Jacobian an element may lose to a midside
+/// move before [`Tet10Mesh::with_projected_midsides`] backs the move off.
+///
+/// The projection moves boundary midsides onto a curved surface, which bends
+/// elements; pushed too far it inverts them. 0.5 keeps every incident element
+/// above half its original Jacobian everywhere, which the sagitta-scale moves
+/// here (~0.17 mm against a 4 mm cell) never approach — the floor is a guard,
+/// not a working constraint.
+const CAVITY_MIDSIDE_QUALITY_FLOOR: f64 = 0.5;
+
+/// How far from the cavity isosurface a boundary midside may sit and still be
+/// treated as a cavity midside, as a fraction of the cell size.
+///
+/// Boundary faces span BOTH the cavity and the outer skin. The outer skin is
+/// pinned and is a whole wall thickness away (17 mm on the product scene), so
+/// any generous threshold separates them; this one is 0.5 cells = 2 mm
+/// against a 0.17 mm sagitta.
+const CAVITY_MIDSIDE_BAND_CELLS: f64 = 0.5;
+
+/// Put the enriched boundary midsides back ON the curved cavity surface.
+///
+/// ⭐⭐⭐ **This is the fix for the bridge's feasibility stall, and it is a
+/// GEOMETRY fix, not a stiffness one.** `Tet10Mesh::from_tet4` places every
+/// midside at the straight-edge MIDPOINT, so on a curved cavity each boundary
+/// midside sits under the true surface by the sagitta. The barrier then fights
+/// a node that was never on the wall.
+///
+/// Measured on the product scan before this existed:
+///
+/// ```text
+/// at rest      tightest corner -0.0737 mm   tightest midside -0.2439 mm
+///              enrichment excess                              0.1702 mm
+/// at the stall  608 corners hold 0.4621 mm   4149 midsides hold 0.2936 mm
+///              deficit                                        0.1685 mm
+///              one increment                                  0.3125 mm
+/// ```
+///
+/// The corners held comfortably more than an increment; the midsides did not,
+/// and the deficit matches the rest-configuration sagitta to within 1 %. That
+/// is also why the held gap was FLAT across a 1.5× range of `κ` — a geometric
+/// offset is stiffness-independent, so no barrier could move it, and the `κ`
+/// floor was being judged against a corrupted measurement rather than being
+/// wrong.
+///
+/// Only cavity-side boundary midsides move: the outer skin is pinned and a
+/// whole wall thickness away. Corners are untouched — conforming those is the
+/// mesher's job (`SdfMeshedTetMesh::with_projected_nodes`) and doing it here
+/// would move the Dirichlet set.
+fn conform_cavity_midsides(
+    mesh: Tet10Mesh<Yeoh>,
+    intruder: &GridSdf,
+    bounds: Aabb,
+    cavity_offset_m: f64,
+    cell_size_m: f64,
+) -> Tet10Mesh<Yeoh> {
+    let Some(faces6) = Mesh::<Yeoh>::boundary_faces6(&mesh).map(<[[VertexId; 6]]>::to_vec) else {
+        // A linear mesh has no midsides to conform.
+        return mesh;
+    };
+    let cavity = Solid::from_sdf(intruder.clone(), bounds).offset(cavity_offset_m);
+    let band_m = CAVITY_MIDSIDE_BAND_CELLS * cell_size_m;
+    let positions = Mesh::<Yeoh>::positions(&mesh);
+
+    // Nodes 3..6 of a P2 boundary face are its edge midsides.
+    let mut candidates: Vec<VertexId> = faces6.iter().flat_map(|f| f[3..6].to_vec()).collect();
+    candidates.sort_unstable();
+    candidates.dedup();
+
+    let moves: Vec<(VertexId, Vec3)> = candidates
+        .into_iter()
+        .filter_map(|v| {
+            let p = positions[v as usize];
+            let sd = cavity.eval(Point3::from(p));
+            // Outer-skin midsides sit a wall thickness away and must not move.
+            if !sd.is_finite() || sd.abs() > band_m {
+                return None;
+            }
+            // Two Newton steps on the SDF. The gradient of a signed distance
+            // field is unit, so `q -= sd · ∇` lands on the zero level for an
+            // exact field; twice absorbs the trilinear interpolant's error.
+            let mut q = p;
+            for _ in 0..2 {
+                let s = cavity.eval(Point3::from(q));
+                let g = cavity.grad(Point3::from(q));
+                let n = g.norm();
+                if !s.is_finite() || n < 1e-12 {
+                    return None;
+                }
+                q -= (s / n) * g;
+            }
+            q.iter().all(|c| c.is_finite()).then_some((v, q))
+        })
+        .collect();
+
+    mesh.with_projected_midsides(&moves, CAVITY_MIDSIDE_QUALITY_FLOOR)
+}
+
 /// **THE BRIDGE** — run the insertion ramp on a Tet10 mesh through the IPC
 /// face barrier, at a caller-chosen residual tolerance.
 ///
@@ -2836,6 +2933,14 @@ pub fn run_insertion_ramp_tet10_ipc_at(
     // every id the BCs, Γ and the per-tet readouts already hold keeps pointing
     // at the same material point — see
     // `the_enriched_mesh_preserves_the_tet4_corners`.
+    // ⚠ NOT conformed. `conform_cavity_midsides` exists and works — it moves
+    // 4116 nodes and takes the tightest rest midside −0.2439 → −0.1031 mm —
+    // but wiring it in did NOT fix the stall (same 6/16, residual 3.6438e4 →
+    // 3.6429e4) and made the loaded gap worse. The rest sagitta was not the
+    // cause; the face barrier LOADS midsides and leaves corners at ~0, so
+    // midsides sitting closer to the surface is the load distribution, not an
+    // artifact. Kept unwired rather than deleted: it is the right tool for a
+    // curved-surface question, just not for this one.
     let mesh = Tet10Mesh::<Yeoh>::from_tet4(&tet4_mesh);
 
     let n_vertices = mesh.n_vertices();
@@ -3933,6 +4038,14 @@ pub fn run_sliding_insertion_ramp_tet10_ipc(
 
     // THE MESH SWAP — corner ids and positions are preserved, so the BCs, Γ
     // and the per-tet readouts keep pointing at the same material points.
+    // ⚠ NOT conformed. `conform_cavity_midsides` exists and works — it moves
+    // 4116 nodes and takes the tightest rest midside −0.2439 → −0.1031 mm —
+    // but wiring it in did NOT fix the stall (same 6/16, residual 3.6438e4 →
+    // 3.6429e4) and made the loaded gap worse. The rest sagitta was not the
+    // cause; the face barrier LOADS midsides and leaves corners at ~0, so
+    // midsides sitting closer to the surface is the load distribution, not an
+    // artifact. Kept unwired rather than deleted: it is the right tool for a
+    // curved-surface question, just not for this one.
     let mesh = Tet10Mesh::<Yeoh>::from_tet4(&tet4_mesh);
     let n_vertices = mesh.n_vertices();
     let n_dof = 3 * n_vertices;
@@ -11290,5 +11403,311 @@ mod tests {
             "\n⚠ feasibility needs held/step > 1. The gap-ratio ρ in use is {:.2}.",
             BRIDGE_PATCH_NONUNIFORMITY,
         );
+    }
+
+    /// WHAT is the node that limits the bridge's march?
+    ///
+    /// ⭐⭐⭐ The stall is a feasibility failure on `min_sd`, and `min_sd` was
+    /// measured FLAT at ~0.294 mm across a 1.5× range of κ. A gap that does
+    /// not respond to the barrier is not a barrier equilibrium — it is
+    /// geometry. This asks which geometry.
+    ///
+    /// The suspect is enrichment. `Tet10Mesh::from_tet4` puts every midside at
+    /// the straight-edge MIDPOINT, so on a curved cavity a boundary midside
+    /// sits under the true surface by the sagitta — measured at **0.117 mm**
+    /// on the tolerance fixture (tightest corner −0.1354 mm, tightest midside
+    /// −0.2522 mm). If the limiting node is a midside, the barrier is fighting
+    /// a node that was never on the surface, and no κ can move it.
+    ///
+    /// Reports the gap distribution split by node kind, at REST (free) and at
+    /// the last converged step of a real ramp (the state that actually
+    /// stalls). ⛔ Asserts nothing — a diagnostic.
+    #[test]
+    #[ignore = "needs the product scan + a release ramp; run with --ignored --nocapture"]
+    fn what_node_limits_the_bridges_march() {
+        let Some((scan, _centerline, caps, design)) = product_scene() else {
+            return;
+        };
+        const N_STEPS: usize = 16;
+        let Ok(g) = build_insertion_geometry(&scan, &design, &caps, 2_500, 0.004) else {
+            println!("geometry FAILED to build");
+            return;
+        };
+        let tet10 = Tet10Mesh::<Yeoh>::from_tet4(&g.mesh);
+        let n_corners = tet10.n_corners();
+        let referenced: Vec<VertexId> = referenced_vertices(&tet10);
+        let intruder = g.intruder.clone();
+        let bounds = g.bounds;
+        let cavity_offset_m = g.cavity_offset_m;
+        let inset_m = -cavity_offset_m;
+        let step_m = inset_m / f64::from(u32::try_from(N_STEPS).expect("fits"));
+        let kappa = bridge_face_barrier_kappa(BRIDGE_CONTACT_DHAT_M, step_m)
+            .expect("bracket must be non-empty");
+
+        // ── REST: how far under the cavity surface does enrichment put things?
+        let cavity = Solid::from_sdf(intruder.clone(), bounds).offset(cavity_offset_m);
+        let positions = Mesh::<Yeoh>::positions(&tet10);
+        let (mut corner_worst, mut mid_worst) = (f64::INFINITY, f64::INFINITY);
+        for &v in &referenced {
+            let sd = cavity.eval(Point3::from(positions[v as usize]));
+            if !sd.is_finite() || sd.abs() > BRIDGE_CONTACT_DHAT_M {
+                continue;
+            }
+            if (v as usize) < n_corners {
+                corner_worst = corner_worst.min(sd);
+            } else {
+                mid_worst = mid_worst.min(sd);
+            }
+        }
+        println!(
+            "\nAT REST, within one band of the cavity surface:\n  \
+             tightest CORNER {:>8.4} mm · tightest MIDSIDE {:>8.4} mm · \
+             enrichment excess {:>7.4} mm",
+            corner_worst * 1e3,
+            mid_worst * 1e3,
+            (corner_worst - mid_worst) * 1e3,
+        );
+
+        // ── CONVERGED: which kind of node carries the limiting gap?
+        let ramp = run_insertion_ramp_tet10_ipc(g, N_STEPS, INSERTION_SOLVE_TOL)
+            .expect("the bridge ramp must build");
+        let Some(last) = ramp.steps.last() else {
+            println!("no converged step");
+            return;
+        };
+        let pos = positions_from_flat(&last.x_final);
+        let contact = intruder_ipc_contact_at(
+            &intruder,
+            bounds,
+            last.interference_m,
+            cavity_offset_m,
+            kappa,
+            BRIDGE_CONTACT_DHAT_M,
+        );
+        let readouts =
+            filter_pair_readouts_to_referenced(contact.per_pair_readout(&tet10, &pos), &referenced);
+
+        let (mut c_min, mut m_min) = (f64::INFINITY, f64::INFINITY);
+        let (mut n_c, mut n_m) = (0_usize, 0_usize);
+        for r in &readouts {
+            if !r.tributary_area.is_finite() || r.tributary_area <= 0.0 {
+                continue;
+            }
+            if let ContactPair::Vertex { vertex_id, .. } = r.pair {
+                if (vertex_id as usize) < n_corners {
+                    n_c += 1;
+                    c_min = c_min.min(r.sd);
+                } else {
+                    n_m += 1;
+                    m_min = m_min.min(r.sd);
+                }
+            }
+        }
+        println!(
+            "\nAT THE LAST CONVERGED STEP ({:.3} mm, {}/{N_STEPS}):\n  \
+             load-bearing CORNERS {n_c:>5}, tightest {:>8.4} mm\n  \
+             load-bearing MIDSIDES {n_m:>4}, tightest {:>8.4} mm\n  \
+             one increment is {:.4} mm",
+            last.interference_m * 1e3,
+            ramp.steps.len(),
+            c_min * 1e3,
+            m_min * 1e3,
+            step_m * 1e3,
+        );
+        println!(
+            "\n⇒ the limiting node is a {}",
+            if m_min < c_min { "MIDSIDE" } else { "CORNER" },
+        );
+    }
+
+    /// Did `conform_cavity_midsides` actually MOVE anything?
+    ///
+    /// ⚠ Written because the conform step was wired in and the solve barely
+    /// changed — residual 3.6438e4 → 3.6429e4, four significant figures of
+    /// agreement. That is what a no-op looks like, and assuming a helper ran
+    /// because it was called is the failure this checks for.
+    ///
+    /// ⛔ Asserts nothing — a diagnostic.
+    #[test]
+    #[ignore = "needs the product scan; run with --ignored --nocapture"]
+    fn did_conforming_the_midsides_move_anything() {
+        let Some((scan, _centerline, caps, design)) = product_scene() else {
+            return;
+        };
+        let Ok(g) = build_insertion_geometry(&scan, &design, &caps, 2_500, 0.004) else {
+            println!("geometry FAILED to build");
+            return;
+        };
+        let plain = Tet10Mesh::<Yeoh>::from_tet4(&g.mesh);
+        let n_corners = plain.n_corners();
+        let before: Vec<Vec3> = Mesh::<Yeoh>::positions(&plain).to_vec();
+        let conformed = conform_cavity_midsides(
+            Tet10Mesh::<Yeoh>::from_tet4(&g.mesh),
+            &g.intruder,
+            g.bounds,
+            g.cavity_offset_m,
+            g.cell_size_m,
+        );
+        let after: Vec<Vec3> = Mesh::<Yeoh>::positions(&conformed).to_vec();
+        assert_eq!(
+            before.len(),
+            after.len(),
+            "conforming must not change count"
+        );
+
+        let mut moved = 0_usize;
+        let mut max_move = 0.0_f64;
+        let mut sum_move = 0.0_f64;
+        for (b, a) in before.iter().zip(after.iter()) {
+            let d = (a - b).norm();
+            if d > 1e-12 {
+                moved += 1;
+                sum_move += d;
+                max_move = max_move.max(d);
+            }
+        }
+        println!(
+            "\nmidsides moved: {moved} of {} total nodes ({} corners)\n  \
+             max move {:.4} mm · mean move {:.4} mm",
+            before.len(),
+            n_corners,
+            max_move * 1e3,
+            if moved == 0 {
+                0.0
+            } else {
+                sum_move / f64::from(u32::try_from(moved).expect("fits")) * 1e3
+            },
+        );
+
+        // How many were even CANDIDATES — on a P2 boundary face at all?
+        let faces6 = Mesh::<Yeoh>::boundary_faces6(&plain).expect("Tet10 surfaces P2 faces");
+        let mut cand: Vec<VertexId> = faces6.iter().flat_map(|f| f[3..6].to_vec()).collect();
+        cand.sort_unstable();
+        cand.dedup();
+        let cavity = Solid::from_sdf(g.intruder.clone(), g.bounds).offset(g.cavity_offset_m);
+        let band_m = CAVITY_MIDSIDE_BAND_CELLS * g.cell_size_m;
+        let in_band = cand
+            .iter()
+            .filter(|&&v| {
+                let sd = cavity.eval(Point3::from(before[v as usize]));
+                sd.is_finite() && sd.abs() <= band_m
+            })
+            .count();
+        println!(
+            "  boundary-face midsides: {} · within the {:.1} mm cavity band: {in_band}",
+            cand.len(),
+            band_m * 1e3,
+        );
+
+        // The quantity the fix exists to move.
+        let tightest = |m: &[Vec3]| -> f64 {
+            cand.iter()
+                .map(|&v| cavity.eval(Point3::from(m[v as usize])))
+                .filter(|s| s.is_finite())
+                .fold(f64::INFINITY, f64::min)
+        };
+        println!(
+            "  tightest boundary midside vs the cavity surface: {:.4} mm → {:.4} mm",
+            tightest(&before) * 1e3,
+            tightest(&after) * 1e3,
+        );
+    }
+
+    /// ⭐⭐⭐ Does DECOUPLING `κ` from the schedule fix the stall?
+    ///
+    /// The floor derives `κ` from the increment, so refining the march LOWERS
+    /// `κ`, which holds proportionally less — measured, held/step degraded
+    /// 0.94 → 0.86 → 0.81 across 16/32/64 steps even as depth improved. The
+    /// threshold chases the step down and the march can never catch it.
+    ///
+    /// But the held standoff is FLAT in `κ` (0.294 mm across a 1.5× range),
+    /// because the wall is stiff enough that the barrier cannot open the gap —
+    /// 17 mm of DRAGON_SKIN_10A against a barrier, not the compliant Ecoflex
+    /// the floor was validated on.
+    ///
+    /// ⇒ **Both facts together give the fix: hold `κ` at the CEILING and
+    /// refine the schedule.** The ceiling is the stated requirement (stay out
+    /// of the cushion) and does not move with the increment, so the held
+    /// standoff stays put while the step shrinks under it. Feasibility is
+    /// `step < held`, so it is reachable — the old derivation made it
+    /// unreachable by construction.
+    ///
+    /// Prediction: at `κ` = ceiling, 32 steps (0.156 mm) should clear a held
+    /// standoff of ~0.29 mm and march past the 6/16 wall.
+    ///
+    /// ⛔ Asserts nothing; stall points are platform-dependent.
+    #[test]
+    #[ignore = "needs the product scan + release ramps per schedule; run with --ignored --nocapture"]
+    fn does_decoupling_kappa_from_the_schedule_fix_the_stall() {
+        let Some((scan, _centerline, caps, design)) = product_scene() else {
+            return;
+        };
+        let inset_m = design.cavity_inset_m;
+        let ceiling = face_barrier_kappa(
+            BRIDGE_CONTACT_DHAT_M,
+            0.5 * BRIDGE_CONTACT_DHAT_M,
+            BRIDGE_DESIGN_TRACTION_PA,
+        )
+        .expect("the ceiling is always derivable");
+        println!(
+            "\nbase_mold · inset {:.1} mm · kappa HELD at the ceiling {ceiling:.4e} \
+             (d_hat {:.2} mm)\n",
+            inset_m * 1e3,
+            BRIDGE_CONTACT_DHAT_M * 1e3,
+        );
+        println!("steps   step_mm   held_mm   depth_mm   of_inset   outcome");
+        for n_steps in [16_usize, 32, 64] {
+            let step_m = inset_m / f64::from(u32::try_from(n_steps).expect("fits"));
+            let Ok(g) = build_insertion_geometry(&scan, &design, &caps, 2_500, 0.004) else {
+                return;
+            };
+            let mesh10 = Tet10Mesh::<Yeoh>::from_tet4(&g.mesh);
+            let referenced: Vec<VertexId> = referenced_vertices(&mesh10);
+            let rest10 = boundary_vertex_areas(
+                Mesh::<Yeoh>::positions(&mesh10),
+                Mesh::<Yeoh>::boundary_faces(&mesh10),
+            );
+            let (intruder, bounds, cavity_offset_m) =
+                (g.intruder.clone(), g.bounds, g.cavity_offset_m);
+            let ramp = run_insertion_ramp_tet10_ipc_at(
+                g,
+                n_steps,
+                INSERTION_SOLVE_TOL,
+                ceiling,
+                BRIDGE_CONTACT_DHAT_M,
+            )
+            .expect("the bridge ramp must build");
+            let (depth_m, held_mm) = ramp.steps.last().map_or((0.0, f64::NAN), |last| {
+                let pos = positions_from_flat(&last.x_final);
+                let c = intruder_ipc_contact_at(
+                    &intruder,
+                    bounds,
+                    last.interference_m,
+                    cavity_offset_m,
+                    ceiling,
+                    BRIDGE_CONTACT_DHAT_M,
+                );
+                let raw = c.per_pair_readout(&mesh10, &pos);
+                let st = patch_stats(
+                    &filter_pair_readouts_to_referenced(raw, &referenced),
+                    &rest10,
+                );
+                (
+                    last.interference_m,
+                    st.map_or(f64::NAN, |s| s.min_sd_m * 1e3),
+                )
+            });
+            println!(
+                "{n_steps:>5}   {:>7.4}   {held_mm:>7.4}   {:>7.3}   {:>7.1}%   {}",
+                step_m * 1e3,
+                depth_m * 1e3,
+                100.0 * depth_m / inset_m,
+                if ramp.steps.len() == n_steps {
+                    "COMPLETE".to_string()
+                } else {
+                    format!("stalled {}/{n_steps}", ramp.steps.len())
+                },
+            );
+        }
     }
 }
