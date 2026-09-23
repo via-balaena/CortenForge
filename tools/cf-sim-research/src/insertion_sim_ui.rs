@@ -1202,10 +1202,10 @@ fn build_per_layer_outer_faces(
 ///
 /// When `final_x` is not `3 × rest_positions.len()` long. An earlier
 /// revision returned an EMPTY set here instead, and the bridge reached
-/// that branch: measured on `tolerance_fixture`, no vertex read as
-/// outer skin (`what_the_corner_readout_missed_on_the_bridge`), so the
-/// outer layer's shell and the cavity-face filter both degraded without
-/// a word.
+/// that branch: measured on `tolerance_fixture` and on the product scan,
+/// no vertex read as outer skin
+/// (`what_the_corner_readout_missed_on_the_bridge`), so the outer layer's
+/// shell and the cavity-face filter both degraded without a word.
 pub(crate) fn detect_outer_skin_vertices(
     rest_positions: &[Vector3<f64>],
     final_x: &[f64],
@@ -1413,7 +1413,7 @@ pub fn render_insertion_sim_section(
                     "{} steps · 4 mm cell · Yeoh · tol=1e-1 · κ derived, d̂=1.2 mm",
                     state.n_steps
                 ));
-                ui.label("⚠ heat map is still corner-linear (Tet4-quality)");
+                ui.label("heat map read at the Tet10 Gauss points");
             } else {
                 ui.label(format!(
                     "{} steps · 4 mm cell · Yeoh material · tol=1e-1 · κ=1e3",

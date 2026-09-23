@@ -1189,8 +1189,10 @@ Listed because the confidence of §4 rests on these being open, not closed.
    the geometry that matters. ⛔ The remaining blocker to making it the default is
    **not** the solver — it is that `compute_tet_readouts` is corner-linear, so
    the UI's per-tet heat map would report Tet4-quality stress off a Tet10 solve
-   (see the corner-readout note above). That is a readout fix, and it is the
-   next piece of work, not a reason to doubt the result.
+   (the corner-readout note, now `✅ PER-GAUSS-POINT READOUTS` below). That is
+   a readout fix, and it is the next piece of work, not a reason to doubt the
+   result. ✅ **That fix has landed — and it found a second blocker this verdict
+   did not know about**, in the same section.
 
    ⛔⛔ **`κ` AT TWO TOLERANCES — at `1e-6` no `κ` converges; at the shipped
    `1e-1`, `κ` decides the seat.** `the_bridge_ramp_over_a_stiffness_sweep` on
@@ -1306,16 +1308,66 @@ Listed because the confidence of §4 rests on these being open, not closed.
    design. `the_bridges_midside_readouts_survive_the_orphan_filter` runs that
    counterfactual rather than trusting the property.
 
-   ⚠ **The per-tet readouts are CORNER-LINEAR, and this is a known limitation
-   rather than an oversight.** `compute_tet_readouts` builds `F` from the four
-   corner displacements; on a quadratic element that is the linear part of a
-   field that is no longer linear. It compiles, it does not panic, and it
-   returns a plausible number that ignores the midside motion the solve just
-   computed — so the UI heat map would look right and be wrong.
-   `the_corner_readout_is_not_the_tet10_strain` makes that executable: it
-   measures the gap on a quadratic field and pins exact agreement on an affine
-   one. ⇒ **the bridge's contact and convergence results stand; its per-tet
-   stress field is still Tet4-quality and owes a per-Gauss-point readout.**
+   ### ✅ PER-GAUSS-POINT READOUTS — the bridge's heat map, and a second silent defect
+
+   ✅ **The per-tet readouts are read at the Gauss points.** They were
+   corner-linear: `F` from four corner displacements, which on a quadratic
+   element is the linear part of a field that is no longer linear. Now
+   `ReadoutMesh` snapshots the mesh the ramp SOLVED — corners and midsides —
+   and reads `F` at each of Tet10's four Gauss points through the isoparametric
+   Jacobians, and `TetReadout` reduces those points to the element-mean energy,
+   the peak stress and the stretch range. Every ramp returns its
+   `ReadoutMesh`; the UI re-derives per-step readouts through it rather than
+   through its own Tet4 snapshot. Gated by
+   `the_readout_resolves_the_tet10_strain_at_every_gauss_point` (`F` against
+   the analytic gradient of a quadratic field) and
+   `the_tet10_readout_mesh_places_every_elements_midsides` (midside order, on
+   every element of the enriched tolerance fixture); each fails under an
+   injected bug. Tet4 readouts are bit-identical to the corner construction —
+   all 16 step aggregates and every field of all 9 258 tets on
+   `tolerance_fixture`.
+
+   ⭐ **What the corner readout was getting wrong** —
+   `what_the_corner_readout_missed_on_the_bridge` reads both off the SAME
+   converged state, the last step each ramp reaches, so only the readout
+   differs. macOS arm64, release, 2026-09-23:
+
+   | scene | reached | peak ‖P‖ | max stretch | min stretch | mean Ψ | hotspot element | elements off by > 10 % in ‖P‖ | median per-element Δ‖P‖ |
+   |---|---|---|---|---|---|---|---|---|
+   | `tolerance_fixture` | 16/16, 3.000 mm | 564 → 313 kPa | 1.366 → 1.474 | 0.260 → 0.319 | 16.5 → 15.2 kJ/m³ | #1118 → #3617 | 84.7 % | 33 % |
+   | `base_mold` (product) | 29/32, 4.531 mm | 912 → 245 kPa | 1.841 → 1.947 | 0.160 → 0.237 | 5.34 → 5.09 kJ/m³ | #3652 → #60516 | 66.4 % | 17 % |
+
+   (each cell is corner → per-GP.) The product ramp reproduced its recorded
+   operating point — 29/32, 4.531 mm, stopping on the same inversion at tet 516
+   (`det F = -0.030`) — as it must: the readout runs after the solve.
+
+   On both scenes the corner readout reads peak stress and mean energy HIGH
+   and both stretch extremes LOW. Why it errs in those directions has not been
+   isolated — the table is what to carry.
+
+   ⛔ **A second silent bridge defect, same root cause.** The UI found the
+   outer skin by comparing `x_final` against its own Tet4 snapshot. On the
+   bridge `x_final` carries the midsides, the lengths differ, and the function
+   returned an EMPTY set rather than an error — **0 outer-skin vertices**,
+   against 15 481 from the solved mesh on `tolerance_fixture` and 53 789 on
+   `base_mold`. Nothing read as outer skin, so the outer layer's deformed shell
+   and the cavity-face filter both degraded without a word. It now takes the
+   solved mesh's rest positions and refuses a mismatch
+   (`detect_outer_skin_vertices_refuses_a_mismatched_mesh`).
+   ⇒ **the readouts were not the only blocker to defaulting the bridge**, as
+   the verdict above had it — they were the one that had been found.
+
+   ⚠ **The search for more of this class**, and its boundary: every UI site
+   that pairs data taken from the Tet4 snapshot with a ramp's state. Faces
+   (cavity boundary, per-layer outer, slab) index `x_final` by corner id, which
+   enrichment preserves — sound, though they draw the corner triangles and not
+   the midside curvature. The heat map's centroid lookup and layer map index
+   the readouts by Tet4 tet id — sound only because enrichment keeps element
+   order, which `the_tet10_readout_mesh_places_every_elements_midsides` now
+   pins. The readouts and the outer skin were the two that were not sound.
+   `main.rs` reads no ramp state at all (`x_final`, `final_x`,
+   `final_per_tet`, `tet_vertices`, `readout`: zero code hits). Not searched:
+   anything outside `tools/cf-sim-research`.
 
 4. **Per-Gauss-point material sampling** (§7.6). The expensive one: a
    return-shape change to `Mesh::materials()` reaching 119 call sites.
