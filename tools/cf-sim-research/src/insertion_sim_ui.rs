@@ -27,7 +27,7 @@ use bevy::tasks::{AsyncComputeTaskPool, Task, futures_lite::future};
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 use mesh_types::IndexedMesh;
 use nalgebra::{Isometry3, Point3, Vector3};
-use sim_soft::{Mesh as SimMesh, TetId, VertexId, Yeoh};
+use sim_soft::{Mesh as SimMesh, TetId, VertexId};
 
 use cf_cap_planes::CapPlane;
 use cf_device_types::{
@@ -35,13 +35,13 @@ use cf_device_types::{
     SimLayer, SimMode,
 };
 
-#[cfg(test)]
-use crate::insertion_sim::RampStep;
 use crate::insertion_sim::{
     INSERTION_SOLVE_TOL, InsertionRamp, SlideRamp, StepReadout, TetReadout,
-    build_insertion_geometry, compute_tet_readouts, run_insertion_ramp,
-    run_insertion_ramp_tet10_ipc, run_sliding_insertion_ramp,
+    build_insertion_geometry, run_insertion_ramp, run_insertion_ramp_tet10_ipc,
+    run_sliding_insertion_ramp,
 };
+#[cfg(test)]
+use crate::insertion_sim::{RampStep, ReadoutMesh};
 use cf_device_geometry::sdf_layers::{CachedScanSdf, CapPlanes};
 
 // ── tuned defaults ──────────────────────────────────────────────────
@@ -535,11 +535,9 @@ pub struct InsertionSimState {
     /// this forces [`SimMode::GrowingIntruder`] for that run — the sliding
     /// ramp has no Tet10 path.
     ///
-    /// ⚠ **The per-tet heat map stays Tet4-quality either way.**
-    /// `compute_tet_readouts` builds `F` from the four CORNER
-    /// displacements, which on a quadratic element is the linear part of a
-    /// field that is no longer linear. Contact, depth and convergence are
-    /// the bridge's; the stress colouring is not yet.
+    /// The per-tet heat map follows the ramp: on the bridge it is the Tet10
+    /// strain at each element's Gauss points, read through the mesh the
+    /// ramp solved (`InsertionRamp::readout_mesh`).
     pub use_bridge: bool,
 }
 
@@ -854,17 +852,17 @@ fn run_sim_pipeline(
     let n_layers = design.layers.len();
     let per_tet_layer = geometry.per_tet_layer.clone();
     let rest_positions: Vec<Vector3<f64>> = geometry.mesh.positions().to_vec();
-    // Slice S1 — snapshot the tet connectivity + per-tet materials
-    // BEFORE the ramp consumes `geometry`, so we can recompute
-    // per-tet readouts at every converged step's `x_final` for the
-    // playback slider. Same construction the ramp uses internally;
-    // doing it twice is cheap (≤ a few MB of clones).
+    // Slice S1 — snapshot the corner connectivity BEFORE the ramp
+    // consumes `geometry`, for the geometric passes below (tet
+    // centroids, per-layer outer faces). ⛔ NOT for the per-tet
+    // readouts: those come from the ramp's own `readout_mesh`, the mesh
+    // it SOLVED — on the bridge that carries the Tet10 midsides this
+    // Tet4 snapshot does not.
     // `t as TetId` (u32) — Phase 4 BCC meshes stay under `u32::MAX`.
     #[allow(clippy::cast_possible_truncation)]
     let tets: Vec<[VertexId; 4]> = (0..n_tets as TetId)
         .map(|t| geometry.mesh.tet_vertices(t))
         .collect();
-    let materials: Vec<Yeoh> = geometry.mesh.materials().to_vec();
     // Slice S2 — snapshot the BCC analysis-mesh boundary triangles
     // BEFORE the ramp consumes `geometry`. The FULL-boundary
     // snapshot is filtered to cavity-side only AFTER the ramp
@@ -952,9 +950,12 @@ fn run_sim_pipeline(
 
     // Slice S1 — per-step scalar fields drive the playback slider.
     // The final step reuses `final_per_tet` (already computed by
-    // the ramp); intermediate steps rerun `compute_tet_readouts`
-    // from their own `x_final` against the snapshotted rest geometry
-    // + tets + materials.
+    // the ramp); intermediate steps rerun the readouts from their own
+    // `x_final` through the ramp's `readout_mesh`.
+    let readout_mesh = match &ramp_kind {
+        RampKind::Sliding(r) => &r.readout_mesh,
+        RampKind::Growing(r) => &r.readout_mesh,
+    };
     let last_step_idx = ramp_steps_len.saturating_sub(1);
     let per_step_scalar_fields: Vec<[Vec<f64>; 2]> = (0..ramp_steps_len)
         .map(|k| {
@@ -970,8 +971,7 @@ fn run_sim_pipeline(
                     .chunks_exact(3)
                     .map(|c| Vector3::new(c[0], c[1], c[2]))
                     .collect();
-                per_tet_owned =
-                    compute_tet_readouts(&rest_positions, &positions_k, &tets, &materials);
+                per_tet_owned = readout_mesh.readouts(&positions_k);
                 &per_tet_owned
             };
             let energy: Vec<f64> = per_tet.iter().map(|t| t.energy_density_j_per_m3).collect();
@@ -1053,13 +1053,11 @@ pub fn aggregate_per_layer(
         if readout.first_piola_frobenius_pa > b.max_first_piola_frobenius_pa {
             b.max_first_piola_frobenius_pa = readout.first_piola_frobenius_pa;
         }
-        for &s in readout.principal_stretches.iter() {
-            if s > b.max_principal_stretch {
-                b.max_principal_stretch = s;
-            }
-            if s < b.min_principal_stretch {
-                b.min_principal_stretch = s;
-            }
+        if readout.max_principal_stretch > b.max_principal_stretch {
+            b.max_principal_stretch = readout.max_principal_stretch;
+        }
+        if readout.min_principal_stretch < b.min_principal_stretch {
+            b.min_principal_stretch = readout.min_principal_stretch;
         }
     }
     for (b, sum) in buckets.iter_mut().zip(energy_sums.iter()) {
@@ -1200,7 +1198,7 @@ fn build_per_layer_outer_faces(
 /// layer N-1 ends up with an empty outer face list, which
 /// `deformed_layer_mesh_at` reports as `None` → falls through to the
 /// rest-frame SDF iso).
-fn detect_outer_skin_vertices(
+pub(crate) fn detect_outer_skin_vertices(
     rest_positions: &[Vector3<f64>],
     final_x: &[f64],
 ) -> std::collections::BTreeSet<VertexId> {
@@ -1792,18 +1790,17 @@ fn render_layer_table(ui: &mut egui::Ui, per_layer: &[LayerAggregate]) {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use nalgebra::{Matrix3, Vector3};
+    use nalgebra::Vector3;
 
     use super::*;
     use crate::insertion_sim::TetReadout;
 
     fn mk_readout(stretches: [f64; 3], frob: f64, psi: f64) -> TetReadout {
         TetReadout {
-            f: Matrix3::<f64>::identity(),
-            first_piola: Matrix3::<f64>::identity(),
             first_piola_frobenius_pa: frob,
             energy_density_j_per_m3: psi,
-            principal_stretches: Vector3::new(stretches[0], stretches[1], stretches[2]),
+            min_principal_stretch: stretches.into_iter().fold(f64::INFINITY, f64::min),
+            max_principal_stretch: stretches.into_iter().fold(f64::NEG_INFINITY, f64::max),
         }
     }
 
@@ -2059,6 +2056,7 @@ mod tests {
                 final_x: vec![0.0, 0.0, 0.0, 1.5, 0.0, 0.0, 0.0, 1.0, 0.0],
                 n_pinned: 0,
                 result: None,
+                readout_mesh: ReadoutMesh::empty(),
             }),
             per_layer: Vec::new(),
             tet_centroids: Vec::new(),
@@ -2093,6 +2091,7 @@ mod tests {
                 final_x: Vec::new(),
                 n_pinned: 0,
                 result: None,
+                readout_mesh: ReadoutMesh::empty(),
             }),
             per_layer: Vec::new(),
             tet_centroids: Vec::new(),
@@ -2218,6 +2217,7 @@ mod tests {
                 final_x: Vec::new(),
                 n_pinned: 0,
                 result: None,
+                readout_mesh: ReadoutMesh::empty(),
             }),
             per_layer: Vec::new(),
             tet_centroids: Vec::new(),

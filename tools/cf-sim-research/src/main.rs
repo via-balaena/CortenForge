@@ -63,7 +63,7 @@ use serde::Deserialize;
 /// `main.rs`'s panel + async-task glue consumes its public surface
 /// (`build_insertion_geometry`, `run_insertion_ramp`, `InsertionRamp`,
 /// `RampStep`, `StepReadout`, `TetReadout`, `InsertionResult`,
-/// `compute_tet_readouts`); the items themselves remain
+/// `ReadoutMesh`); the items themselves remain
 /// `pub` per their module-level docstrings — `pub(crate)` on the
 /// module declaration just keeps the binary's surface scoped (the
 /// crate doesn't export a library API). See the module docs for the
@@ -73,7 +73,7 @@ pub(crate) mod insertion_sim;
 /// Slice 7.4 — Insertion Sim panel + ECS glue. Wraps the `insertion_sim`
 /// module's public surface (`build_insertion_geometry`,
 /// `run_insertion_ramp`, `InsertionRamp`, `RampStep`, `StepReadout`,
-/// `TetReadout`, `compute_tet_readouts`) into an `AsyncComputeTaskPool`-
+/// `TetReadout`, `ReadoutMesh`) into an `AsyncComputeTaskPool`-
 /// driven sim run + egui panel + per-vertex heat-map projection on the
 /// existing per-layer surface shells.
 pub(crate) mod insertion_sim_ui;

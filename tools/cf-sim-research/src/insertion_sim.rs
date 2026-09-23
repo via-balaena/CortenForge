@@ -71,7 +71,9 @@ use cf_device_types::{SimDesign, SimLayer, SlackerResolution, slacker};
 use mesh_repair::{remove_unreferenced_vertices, weld_vertices};
 use mesh_sdf::{CachedGridSdf, PseudoNormalSign, Signed, TriMeshDistance};
 use mesh_types::IndexedMesh;
-use nalgebra::{Isometry3, Matrix3, Point3, Rotation3, Translation3, UnitQuaternion, Vector3};
+use nalgebra::{
+    Isometry3, Matrix3, Point3, Rotation3, SMatrix, Translation3, UnitQuaternion, Vector3,
+};
 use sim_ml_chassis::Tensor;
 use sim_soft::element::Tet10;
 use sim_soft::material::silicone_table::{
@@ -81,7 +83,7 @@ use sim_soft::material::silicone_table::{
 use sim_soft::readout::{ConformityParams, ConformityReadout, conformity_breakdown};
 use sim_soft::{
     Aabb3, BoundaryConditions, ConstantField, ContactPair, ContactPairReadout, CpuNewtonSolver,
-    Field, IpcRigidContact, LayeredScalarField, LmConfig, Material, MaterialField, Mesh,
+    Element, Field, IpcRigidContact, LayeredScalarField, LmConfig, Material, MaterialField, Mesh,
     MeshingHints, PenaltyRigidContact, Sdf, SdfMeshedTetMesh, ShoreReading, SiliconeMaterial,
     Solver, SolverConfig, SolverFailure, Tet4, Tet10Mesh, TetId, Vec3, VertexId, Yeoh,
     boundary_faces_on_isosurface, face_barrier_kappa, filter_pair_readouts_to_referenced,
@@ -1925,7 +1927,7 @@ pub fn build_grid_sdf(
 /// [`readout`](Self::readout) so each step carries the engineering data
 /// the layer-engineering tool will consume: the converged positions
 /// (so per-tet detail is derivable on demand via
-/// [`compute_tet_readouts`]) and pre-aggregated scalar metrics (contact
+/// [`ReadoutMesh::readouts`]) and pre-aggregated scalar metrics (contact
 /// force, principal-stretch extrema, peak stress, mean strain energy).
 /// Intentionally no `Debug` derive — `x_final` is a flat `Vec<f64>` of
 /// `3 * n_vertices`, same `dbg!`-footgun rationale as [`InsertionRamp`].
@@ -1940,8 +1942,8 @@ pub struct RampStep {
     pub final_residual_norm: f64,
     /// Slice 7.3b.2 — converged vertex positions at this step,
     /// vertex-major xyz (length `3 * n_vertices`). Lets a caller
-    /// reconstruct per-tet F at *any* step on demand via
-    /// [`compute_tet_readouts`].
+    /// reconstruct the per-tet readouts at *any* step on demand via
+    /// [`InsertionRamp::readout_mesh`].
     pub x_final: Vec<f64>,
     /// Slice 7.3b.2 — pre-aggregated engineering scalars for this step
     /// (F-d curve ordinate, principal-stretch extrema, peak stress,
@@ -1970,7 +1972,7 @@ pub struct RampStep {
 /// on [`InsertionResult`].
 ///
 /// Per-tet detail at a specific step is derivable from
-/// [`RampStep::x_final`] via [`compute_tet_readouts`]; pre-aggregating
+/// [`RampStep::x_final`] via [`ReadoutMesh::readouts`]; pre-aggregating
 /// the scalar headlines keeps the F-d curve + Yeoh-validity sentinels
 /// cheap to inspect without re-walking every tet.
 #[derive(Debug, Clone)]
@@ -2017,35 +2019,104 @@ pub struct StepReadout {
     pub mean_strain_energy_density_j_per_m3: f64,
 }
 
-/// Per-tet engineering readout at a single step — slice 7.3b.2's
-/// per-tet detail surface.
+/// Per-element engineering readout at a single step — the scalars the UI heat
+/// map and the per-step aggregates consume, reduced from the material state at
+/// the element's Gauss points ([`GaussPointReadout`]).
 ///
-/// Reconstructed by [`compute_tet_readouts`] from rest positions,
-/// current positions, tet connectivity, and per-tet [`Yeoh`] materials
-/// (the four pieces stored in the mesh that `run_insertion_ramp`
-/// snapshots before consuming `geometry`). The UI layer-heat-map
-/// (slice 7.4) consumes this directly; the per-step aggregates in
-/// [`StepReadout`] are reductions over these.
+/// ⭐ **Read where the solver evaluates the material.** Tet4 has one Gauss
+/// point, so each field is that point's value. Tet10 has four, and its
+/// deformation gradient varies linearly between them, so no single `F`
+/// describes the element — each field therefore names its reduction.
+///
+/// Built by [`ReadoutMesh::readouts`]; per-point detail, `F` and `P`
+/// included, is [`ReadoutMesh::gauss_point_readouts`]. The per-step
+/// aggregates in [`StepReadout`] are reductions over these.
 #[derive(Debug, Clone)]
 pub struct TetReadout {
-    /// Deformation gradient `F = D_curr · D_rest⁻¹`, where each `D` is
-    /// the 3×3 column matrix `[v1−v0, v2−v0, v3−v0]` for the tet's
-    /// four vertices. The Yeoh element evaluates energy + stress at
-    /// `F`; SVD of `F` gives the principal stretches.
+    /// Element-mean strain-energy density (J/m³): `Σ_q v_q Ψ(F_q)`, with
+    /// `v_q` each point's [`volume_fraction`](GaussPointReadout::volume_fraction)
+    /// — the element's stored energy per unit rest volume.
+    pub energy_density_j_per_m3: f64,
+    /// Peak Frobenius norm of the first-Piola stress over the Gauss points
+    /// (Pa) — the scalar hotspot intensity.
+    pub first_piola_frobenius_pa: f64,
+    /// Smallest principal stretch at any Gauss point — the reading to hold
+    /// against the Yeoh `validity.min_principal_stretch` cap.
+    pub min_principal_stretch: f64,
+    /// Largest principal stretch at any Gauss point — the reading to hold
+    /// against the Yeoh `validity.max_principal_stretch` cap.
+    pub max_principal_stretch: f64,
+}
+
+impl TetReadout {
+    /// Reduce one element's Gauss points.
+    ///
+    /// ⚠ A non-finite reading PROPAGATES. `f64::max` returns the non-NaN
+    /// operand, so reducing with it would report a NaN stress as the other
+    /// points' peak — and a readout exists to show that state, not hide it.
+    fn over(points: &[GaussPointReadout]) -> Self {
+        let peak = |a: f64, b: f64| {
+            if a.is_nan() || b.is_nan() {
+                f64::NAN
+            } else {
+                a.max(b)
+            }
+        };
+        let least = |a: f64, b: f64| {
+            if a.is_nan() || b.is_nan() {
+                f64::NAN
+            } else {
+                a.min(b)
+            }
+        };
+        let stretches = || {
+            points
+                .iter()
+                .flat_map(|p| p.principal_stretches.iter().copied())
+        };
+        // `reduce`, not `sum`/`fold` from a seed: a single-point element then
+        // reports its one point's value bit for bit.
+        Self {
+            energy_density_j_per_m3: points
+                .iter()
+                .map(|p| p.volume_fraction * p.energy_density_j_per_m3)
+                .reduce(|a, b| a + b)
+                .unwrap_or(f64::NAN),
+            first_piola_frobenius_pa: points
+                .iter()
+                .map(|p| p.first_piola_frobenius_pa)
+                .reduce(peak)
+                .unwrap_or(f64::NAN),
+            min_principal_stretch: stretches().reduce(least).unwrap_or(f64::NAN),
+            max_principal_stretch: stretches().reduce(peak).unwrap_or(f64::NAN),
+        }
+    }
+}
+
+/// The material state at one Gauss point of one element.
+#[derive(Debug, Clone)]
+pub struct GaussPointReadout {
+    /// The share of the element's rest volume this point integrates:
+    /// `w_q |det J(ξ_q)| / Σ_p w_p |det J(ξ_p)|`. Equal across the points of
+    /// a straight-edged element, and `1` on Tet4.
+    pub volume_fraction: f64,
+    /// Deformation gradient `F = J_curr(ξ_q) · J_rest(ξ_q)⁻¹`, where `J` is
+    /// the isoparametric Jacobian `Σ_a x_a ⊗ ∇_ξN_a(ξ_q)`. On Tet4 this is
+    /// the edge-vector `D_curr · D_rest⁻¹`.
     pub f: Matrix3<f64>,
-    /// First Piola stress `P = Yeoh::first_piola(F)` (Pa) — the
-    /// material-frame stress conjugate to `F`.
+    /// First Piola stress `P = Yeoh::first_piola(F)` (Pa).
     pub first_piola: Matrix3<f64>,
-    /// Frobenius norm of [`first_piola`](Self::first_piola) (Pa) —
-    /// the scalar hotspot intensity.
+    /// Frobenius norm of [`first_piola`](Self::first_piola) (Pa).
     pub first_piola_frobenius_pa: f64,
     /// Strain-energy density `Ψ = Yeoh::energy(F)` (J/m³).
     pub energy_density_j_per_m3: f64,
-    /// Principal stretches — the three singular values of `F` from
-    /// `f.svd_unordered(false, false).singular_values`. Order is the
-    /// unordered SVD's (NOT sorted); see
-    /// `sim/L0/soft/src/solver/backward_euler.rs:613` for the
-    /// algorithm-shared canonical call.
+    /// Principal stretches — the singular values of `F` from
+    /// `f.svd_unordered(false, false)`, the same call the solver's
+    /// principal-stretch gate makes (`check_element_validity`). NOT sorted.
+    ///
+    /// ⚠ On Tet10 that gate reads the element's affine corner block, not
+    /// these points, so a Gauss point can sit outside a stretch cap the
+    /// solver accepted.
     pub principal_stretches: Vector3<f64>,
 }
 
@@ -2057,10 +2128,9 @@ pub struct TetReadout {
 /// `final_per_tet` is the heat-map data for the deepest seating the
 /// ramp reached (the most interesting state for a layer-engineering
 /// review). Per-step per-tet detail is derivable on demand via
-/// [`compute_tet_readouts`] using [`RampStep::x_final`]; pre-computing
-/// it for every step would blow up memory (≈ 184 bytes × n_tets ×
-/// n_steps, well into hundreds of MB at production cell sizes), and
-/// the UI consumes one step's detail at a time anyway.
+/// [`ReadoutMesh::readouts`] using [`RampStep::x_final`]; pre-computing
+/// it for every step would hold `n_tets × n_steps` readouts, and the UI
+/// consumes one step's detail at a time anyway.
 ///
 /// Intentionally no `Debug` derive: `final_per_tet` is a `Vec<TetReadout>`
 /// at `O(n_tets)` — printing it in test failures or via `dbg!` is the
@@ -2115,114 +2185,238 @@ pub struct InsertionRamp {
     /// `None` if no step converged (the ramp panicked at step 0 and
     /// there is no deformed state to report).
     pub result: Option<InsertionResult>,
+    /// What the per-tet readouts are evaluated over — the mesh this ramp
+    /// SOLVED. Any step's readouts are
+    /// `readout_mesh.readouts(&positions)` of that step's `x_final`; never
+    /// rebuild them from a snapshot of the scene's Tet4 mesh (see
+    /// [`ReadoutMesh`]).
+    pub readout_mesh: ReadoutMesh,
 }
 
-/// Reconstruct the per-tet deformation gradient `F = D_curr · D_rest⁻¹`
-/// from one tet's vertex indices, the rest positions, and the current
-/// positions. The same construction
-/// `sim/L0/soft/src/solver/backward_euler.rs::solve_impl` and the row
-/// 22 / 23 layered-sleeve examples use: each `D` is the 3×3 matrix
-/// whose columns are the three edge vectors from vertex 0 to vertices
-/// 1, 2, 3.
+/// The rest configuration, element connectivity and per-element materials a
+/// readout is evaluated over — snapshotted by a ramp from the mesh it SOLVED.
 ///
-/// # Panics
-///
-/// `D_rest.try_inverse()` returns `None` for a degenerate (zero-volume)
-/// rest tet. Production meshers (BCC + Isosurface Stuffing) reject
-/// degenerate tets before assembly via the signed-volume gate; a
-/// `None` here would mean the mesh was constructed inconsistent with
-/// its `QualityMetrics::signed_volume`, a construction-side contract
-/// violation worth surfacing fail-closed (same posture as the row 23
-/// fixture's `.expect`, mirroring the solver's validity gate at
-/// `sim/L0/soft/src/solver/backward_euler.rs:585`).
-//
-// `clippy::panic` is denied crate-wide, but a degenerate `D_rest`
-// indicates the mesh constructor skipped its signed-volume gate — a
-// construction-side bug, not a runtime data dependence. The local
-// `#[allow]` is the documented "this is an upstream-invariant
-// violation, surface it loudly" carve-out (matches sim-soft's
-// internal pattern for invariant-violation assertions).
-#[allow(clippy::panic)]
-fn deformation_gradient(verts: [VertexId; 4], rest: &[Vec3], curr: &[Vec3]) -> Matrix3<f64> {
-    let r0 = rest[verts[0] as usize];
-    let r1 = rest[verts[1] as usize];
-    let r2 = rest[verts[2] as usize];
-    let r3 = rest[verts[3] as usize];
-    let c0 = curr[verts[0] as usize];
-    let c1 = curr[verts[1] as usize];
-    let c2 = curr[verts[2] as usize];
-    let c3 = curr[verts[3] as usize];
-    let d_rest = Matrix3::from_columns(&[r1 - r0, r2 - r0, r3 - r0]);
-    let d_curr = Matrix3::from_columns(&[c1 - c0, c2 - c0, c3 - c0]);
-    let d_rest_inv = d_rest.try_inverse().unwrap_or_else(|| {
-        panic!(
-            "tet rest configuration is degenerate (D_rest non-invertible) — \
-             the mesh constructor's signed-volume gate should have rejected it"
-        )
-    });
-    d_curr * d_rest_inv
+/// ⛔ **Take it from the ramp; never rebuild it.** The bridge solves on a Tet10
+/// enrichment of the scene's Tet4 mesh, which keeps the corner ids and appends
+/// the midsides. A consumer that snapshots the Tet4 mesh instead gets
+/// corner-only connectivity that indexes the Tet10 positions without
+/// complaint, and reads the linear part of a quadratic field —
+/// `the_readout_resolves_the_tet10_strain_at_every_gauss_point` measures that
+/// gap.
+#[derive(Clone)]
+pub struct ReadoutMesh {
+    rest_positions: Vec<Vec3>,
+    elements: ReadoutElements,
+    /// One per element, per [`Mesh::materials`].
+    materials: Vec<Yeoh>,
 }
 
-/// Compute one tet's [`TetReadout`] from its vertex indices, the rest
-/// and current positions, and its [`Yeoh`] material.
-///
-/// Pure: no IO, no allocation beyond the `Matrix3` SVD's internal
-/// buffer. Three calls into the Yeoh material's [`Material`] surface
-/// (`first_piola`, `energy`) plus one SVD of `F` (`O(27)` FLOPs, cheap).
-fn tet_readout(verts: [VertexId; 4], rest: &[Vec3], curr: &[Vec3], material: &Yeoh) -> TetReadout {
-    let f = deformation_gradient(verts, rest, curr);
-    let first_piola = material.first_piola(&f);
-    let first_piola_frobenius_pa = first_piola.norm();
-    let energy_density_j_per_m3 = material.energy(&f);
-    // Canonical sim-soft SVD-for-principal-stretches call, mirroring
-    // `sim/L0/soft/src/solver/backward_euler.rs:613` so a future
-    // re-validation of stretches against the solver's validity gate
-    // is bit-for-bit comparable.
-    let principal_stretches = f.svd_unordered(false, false).singular_values;
-    TetReadout {
-        f,
-        first_piola,
-        first_piola_frobenius_pa,
-        energy_density_j_per_m3,
-        principal_stretches,
+/// Element connectivity, each element in its local node order.
+#[derive(Clone)]
+enum ReadoutElements {
+    /// The four corners.
+    Tet4(Vec<[VertexId; 4]>),
+    /// The four corners, then the six midsides in
+    /// [`TET10_EDGE_NODES`](sim_soft::element::TET10_EDGE_NODES) order — the
+    /// order [`Tet10`]'s shape functions are written in.
+    Tet10(Vec<[VertexId; 10]>),
+}
+
+impl ReadoutMesh {
+    /// Snapshot a Tet4 mesh.
+    fn tet4(mesh: &SdfMeshedTetMesh<Yeoh>) -> Self {
+        // `TetId` is a `u32`; Phase 4 meshes stay well under `u32::MAX` per
+        // the `Mesh` trait docs.
+        #[allow(clippy::cast_possible_truncation)]
+        let elements = (0..mesh.n_tets() as TetId)
+            .map(|t| mesh.tet_vertices(t))
+            .collect();
+        Self {
+            rest_positions: mesh.positions().to_vec(),
+            elements: ReadoutElements::Tet4(elements),
+            materials: mesh.materials().to_vec(),
+        }
+    }
+
+    /// Snapshot a Tet10 mesh — corners AND midsides.
+    ///
+    /// `None` if any element does not name its midsides, which `Tet10Mesh`
+    /// always does; the `Option` keeps the case a caller's error rather than
+    /// a panic.
+    fn tet10(mesh: &Tet10Mesh<Yeoh>) -> Option<Self> {
+        // `TetId` is a `u32`; Phase 4 meshes stay well under `u32::MAX`.
+        #[allow(clippy::cast_possible_truncation)]
+        let elements = (0..mesh.n_tets() as TetId)
+            .map(|t| {
+                let c = mesh.tet_vertices(t);
+                let m = mesh.tet_midside_nodes(t)?;
+                Some([c[0], c[1], c[2], c[3], m[0], m[1], m[2], m[3], m[4], m[5]])
+            })
+            .collect::<Option<Vec<_>>>()?;
+        Some(Self {
+            rest_positions: mesh.positions().to_vec(),
+            elements: ReadoutElements::Tet10(elements),
+            materials: mesh.materials().to_vec(),
+        })
+    }
+
+    /// An empty mesh — no vertices, no elements — for a test fixture that
+    /// builds a ramp by hand and never reads its per-tet detail.
+    #[cfg(test)]
+    pub(crate) fn empty() -> Self {
+        Self {
+            rest_positions: Vec::new(),
+            elements: ReadoutElements::Tet4(Vec::new()),
+            materials: Vec::new(),
+        }
+    }
+
+    /// The rest positions the readouts are evaluated against — every vertex of
+    /// the solved mesh, midsides included on Tet10, so indexed exactly like a
+    /// step's `x_final`.
+    #[must_use]
+    pub fn rest_positions(&self) -> &[Vec3] {
+        &self.rest_positions
+    }
+
+    /// Number of elements — one [`TetReadout`] each.
+    #[must_use]
+    pub fn n_elements(&self) -> usize {
+        match &self.elements {
+            ReadoutElements::Tet4(e) => e.len(),
+            ReadoutElements::Tet10(e) => e.len(),
+        }
+    }
+
+    /// Per-element readouts at the deformed positions `curr`, indexed like
+    /// the rest positions (a ramp step's `x_final`, unflattened).
+    ///
+    /// # Panics
+    ///
+    /// On a `curr` shorter than the mesh's vertex count, or a degenerate rest
+    /// element (a `J_rest` with no inverse).
+    #[must_use]
+    pub fn readouts(&self, curr: &[Vec3]) -> Vec<TetReadout> {
+        let rest = &self.rest_positions;
+        match &self.elements {
+            ReadoutElements::Tet4(elements) => elements
+                .iter()
+                .zip(&self.materials)
+                .map(|(nodes, m)| {
+                    TetReadout::over(&gauss_point_readouts(&Tet4, nodes, rest, curr, m))
+                })
+                .collect(),
+            ReadoutElements::Tet10(elements) => elements
+                .iter()
+                .zip(&self.materials)
+                .map(|(nodes, m)| {
+                    TetReadout::over(&gauss_point_readouts(&Tet10, nodes, rest, curr, m))
+                })
+                .collect(),
+        }
+    }
+
+    /// The material state at each Gauss point of one element, in
+    /// [`Element::gauss_points`] order — the detail [`TetReadout`] reduces.
+    ///
+    /// # Panics
+    ///
+    /// As [`readouts`](Self::readouts), and on an out-of-range `element`.
+    #[must_use]
+    pub fn gauss_point_readouts(&self, element: usize, curr: &[Vec3]) -> Vec<GaussPointReadout> {
+        let (rest, m) = (&self.rest_positions, &self.materials[element]);
+        match &self.elements {
+            ReadoutElements::Tet4(e) => {
+                gauss_point_readouts(&Tet4, &e[element], rest, curr, m).to_vec()
+            }
+            ReadoutElements::Tet10(e) => {
+                gauss_point_readouts(&Tet10, &e[element], rest, curr, m).to_vec()
+            }
+        }
     }
 }
 
-/// Compute per-tet readouts ([`TetReadout`]) for every tet given the
-/// rest positions, current positions, tet connectivity, and per-tet
-/// [`Yeoh`] materials.
+/// The material state at each of one element's Gauss points.
 ///
-/// The public free helper: callers re-derive per-step per-tet detail
-/// from [`RampStep::x_final`] without going back through the ramp's
-/// consumed `geometry`. The four input slices are exactly the data
-/// the ramp snapshots before consuming `InsertionGeometry`.
+/// `F` at each point is `J_curr(ξ_q) · J_rest(ξ_q)⁻¹`, from the isoparametric
+/// Jacobians of the element's map off the reference tet — which holds for a
+/// curved element as well as a straight one. On Tet4 both Jacobians are the
+/// edge-vector matrices, so this reproduces the edge-vector
+/// `D_curr · D_rest⁻¹` readout it replaced.
 ///
 /// # Panics
 ///
-/// `materials.len()` must equal `tets.len()` (each tet has its own
-/// Yeoh material per
-/// [`Mesh::materials`]); mismatched lengths panic via slice indexing.
-/// `tets[t][i] as usize` must be in bounds for both `rest` and `curr`;
-/// out-of-range vertex IDs panic via slice indexing.
-#[must_use]
-pub fn compute_tet_readouts(
+/// On a degenerate rest element (`J_rest` non-invertible at a Gauss point).
+/// Production meshers reject those with a signed-volume gate before assembly,
+/// so reaching one here is a construction-side contract violation, and it is
+/// surfaced loudly rather than read as a number.
+//
+// `clippy::panic` is denied crate-wide; this is the upstream-invariant
+// carve-out, the same one sim-soft makes for invariant-violation assertions.
+#[allow(clippy::panic)]
+fn gauss_point_readouts<E: Element<N, G>, const N: usize, const G: usize>(
+    element: &E,
+    nodes: &[VertexId; N],
     rest: &[Vec3],
     curr: &[Vec3],
-    tets: &[[VertexId; 4]],
-    materials: &[Yeoh],
-) -> Vec<TetReadout> {
-    assert_eq!(
-        tets.len(),
-        materials.len(),
-        "compute_tet_readouts: tets.len() = {} must match materials.len() = {} \
-         (one Yeoh material per tet per Mesh::materials)",
-        tets.len(),
-        materials.len(),
-    );
-    tets.iter()
-        .zip(materials.iter())
-        .map(|(&verts, mat)| tet_readout(verts, rest, curr, mat))
-        .collect()
+    material: &Yeoh,
+) -> [GaussPointReadout; G] {
+    let points = element.gauss_points();
+    let mut volumes = [0.0; G];
+    let mut readouts: [GaussPointReadout; G] = std::array::from_fn(|q| {
+        let (xi, weight) = points[q];
+        let grad_xi = element.shape_gradients(xi);
+        let j_rest = isoparametric_jacobian(nodes, rest, &grad_xi);
+        let j_rest_inv = j_rest.try_inverse().unwrap_or_else(|| {
+            panic!(
+                "element rest configuration is degenerate (J_rest non-invertible) — \
+                 the mesh constructor's signed-volume gate should have rejected it"
+            )
+        });
+        volumes[q] = weight * j_rest.determinant().abs();
+        gauss_point_readout(
+            isoparametric_jacobian(nodes, curr, &grad_xi) * j_rest_inv,
+            material,
+        )
+    });
+    let total: f64 = volumes.iter().sum();
+    for (r, v) in readouts.iter_mut().zip(volumes) {
+        r.volume_fraction = v / total;
+    }
+    readouts
+}
+
+/// `J(ξ) = Σ_a x_a ⊗ ∇_ξN_a(ξ)` — the Jacobian of the isoparametric map from
+/// the reference tet to the element's nodes at `positions`.
+fn isoparametric_jacobian<const N: usize>(
+    nodes: &[VertexId; N],
+    positions: &[Vec3],
+    grad_xi: &SMatrix<f64, N, 3>,
+) -> Matrix3<f64> {
+    let mut j = Matrix3::zeros();
+    for (a, &v) in nodes.iter().enumerate() {
+        let x = positions[v as usize];
+        for d in 0..3 {
+            for k in 0..3 {
+                j[(d, k)] += x[d] * grad_xi[(a, k)];
+            }
+        }
+    }
+    j
+}
+
+/// The material state at one deformation gradient. `volume_fraction` is left
+/// at `1` for the caller to normalise.
+fn gauss_point_readout(f: Matrix3<f64>, material: &Yeoh) -> GaussPointReadout {
+    let first_piola = material.first_piola(&f);
+    GaussPointReadout {
+        volume_fraction: 1.0,
+        f,
+        first_piola,
+        first_piola_frobenius_pa: first_piola.norm(),
+        energy_density_j_per_m3: material.energy(&f),
+        principal_stretches: f.svd_unordered(false, false).singular_values,
+    }
 }
 
 /// Γ — the **intended contact surface** for an insertion scene.
@@ -2407,13 +2601,11 @@ fn aggregate_step_readout(
     let mut max_first_piola_frobenius_pa = 0.0_f64;
     let mut sum_energy = 0.0_f64;
     for t in per_tet {
-        for &s in t.principal_stretches.iter() {
-            if s > max_principal_stretch {
-                max_principal_stretch = s;
-            }
-            if s < min_principal_stretch {
-                min_principal_stretch = s;
-            }
+        if t.max_principal_stretch > max_principal_stretch {
+            max_principal_stretch = t.max_principal_stretch;
+        }
+        if t.min_principal_stretch < min_principal_stretch {
+            min_principal_stretch = t.min_principal_stretch;
         }
         if t.first_piola_frobenius_pa > max_first_piola_frobenius_pa {
             max_first_piola_frobenius_pa = t.first_piola_frobenius_pa;
@@ -2451,7 +2643,7 @@ fn aggregate_step_readout(
 }
 
 /// Convert a flat `Vec<f64>` vertex-major xyz into the `Vec<Vec3>` slice
-/// view of vertex positions that `compute_tet_readouts` and
+/// view of vertex positions that [`ReadoutMesh::readouts`] and
 /// `PenaltyRigidContact::per_pair_readout` take. The
 /// `solver.replay_step` API hands back the flat form; the readout
 /// helpers prefer the `Vec3` form.
@@ -2602,7 +2794,7 @@ pub fn run_insertion_ramp_at_kappa_and_tol(
         outer_offset_m,
         bounds,
         cell_size_m,
-        n_tets,
+        n_tets: _,
         per_tet_layer: _,
     } = geometry;
 
@@ -2615,18 +2807,14 @@ pub fn run_insertion_ramp_at_kappa_and_tol(
     let n_pinned = bc.pinned_vertices.len();
 
     // Snapshot per-tet immutables before consuming the mesh into the
-    // per-step solver clones: rest positions, tet connectivity, per-tet
-    // Yeoh materials, and the referenced-vertex set for orphan
-    // filtering (`SdfMeshedTetMesh` retains BCC lattice corners not
-    // referenced by any tet — see `referenced_vertices` docs). The
-    // ramp builds per-step readouts from these without needing the
-    // mesh after the loop ends. Materials are `Yeoh: Clone`.
+    // per-step solver clones: rest positions, the readout mesh (tet
+    // connectivity + per-tet Yeoh materials), and the referenced-vertex
+    // set for orphan filtering (`SdfMeshedTetMesh` retains BCC lattice
+    // corners not referenced by any tet — see `referenced_vertices`
+    // docs). The ramp builds per-step readouts from these without
+    // needing the mesh after the loop ends.
     let rest_positions: Vec<Vec3> = mesh.positions().to_vec();
-    // `tet_id as TetId` is a `u32` cap; Phase 4 meshes stay well under
-    // `u32::MAX` per `Mesh` trait docs.
-    #[allow(clippy::cast_possible_truncation)]
-    let tets: Vec<[VertexId; 4]> = (0..n_tets as TetId).map(|t| mesh.tet_vertices(t)).collect();
-    let materials: Vec<Yeoh> = mesh.materials().to_vec();
+    let readout_mesh = ReadoutMesh::tet4(&mesh);
     let referenced: Vec<VertexId> = referenced_vertices(&mesh);
 
     // Γ is a property of the REST configuration — which surface was meant to
@@ -2701,8 +2889,7 @@ pub fn run_insertion_ramp_at_kappa_and_tol(
                 let raw_readouts = readout_contact.per_pair_readout(&mesh, &positions_k);
                 let contact_readouts =
                     filter_pair_readouts_to_referenced(raw_readouts, &referenced);
-                let per_tet =
-                    compute_tet_readouts(&rest_positions, &positions_k, &tets, &materials);
+                let per_tet = readout_mesh.readouts(&positions_k);
                 let conformity = gamma.conformity(
                     &positions_k,
                     &gamma_faces,
@@ -2734,8 +2921,7 @@ pub fn run_insertion_ramp_at_kappa_and_tol(
     // final converged step's positions drive the per-tet readout.
     let result = steps.last().map(|last| {
         let final_positions = positions_from_flat(&last.x_final);
-        let final_per_tet =
-            compute_tet_readouts(&rest_positions, &final_positions, &tets, &materials);
+        let final_per_tet = readout_mesh.readouts(&final_positions);
         let force_displacement_curve = steps
             .iter()
             .map(|s| (s.interference_m, s.readout.contact_force_magnitude_n))
@@ -2753,6 +2939,7 @@ pub fn run_insertion_ramp_at_kappa_and_tol(
         final_x: x_prev_flat,
         n_pinned,
         result,
+        readout_mesh,
     })
 }
 
@@ -2875,13 +3062,12 @@ fn conform_cavity_midsides(
 /// geometry pipeline. The Tet4 mesh is enriched here, per call — the scene is
 /// meshed exactly as it always was.
 ///
-/// ⚠ **The per-tet readouts are CORNER-LINEAR and that is a known limitation,
-/// not an oversight.** [`compute_tet_readouts`] builds `F` from the four
-/// corner displacements, which on a quadratic element is the linear part of a
-/// field that is no longer linear. It does not fail to compile and it does not
-/// panic — it returns a plausible number that ignores the midside motion the
-/// solve just computed. `the_corner_readout_is_not_the_tet10_strain` measures
-/// the size of that gap so nobody reads the heat map as the solved field.
+/// ⭐ **The per-tet readouts are the Tet10 strain**, read at the four Gauss
+/// points the solver evaluates the material at, through the enriched mesh's
+/// own connectivity ([`InsertionRamp::readout_mesh`]). The four corners alone
+/// would give the linear part of a quadratic field —
+/// `the_readout_resolves_the_tet10_strain_at_every_gauss_point` measures that
+/// gap.
 ///
 /// # Errors
 ///
@@ -2939,14 +3125,14 @@ pub fn run_insertion_ramp_tet10_ipc_at(
         outer_offset_m,
         bounds,
         cell_size_m,
-        n_tets,
+        n_tets: _,
         per_tet_layer: _,
     } = geometry;
 
     // THE MESH SWAP. Corner ids and corner positions are preserved by
     // construction (`from_tet4` appends midsides at indices >= n_corners), so
-    // every id the BCs, Γ and the per-tet readouts already hold keeps pointing
-    // at the same material point — see
+    // every id the BCs and Γ already hold keeps pointing at the same material
+    // point — see
     // `the_enriched_mesh_preserves_the_tet4_corners`.
     // ⚠ NOT conformed. `conform_cavity_midsides` exists and works — it moves
     // 4116 nodes and takes the tightest rest midside −0.2439 → −0.1031 mm —
@@ -2973,15 +3159,14 @@ pub fn run_insertion_ramp_tet10_ipc_at(
     let n_pinned = bc.pinned_vertices.len();
 
     // Snapshot per-tet immutables before the mesh is consumed into per-step
-    // solver clones — same dance as the Tet4 ramp. `referenced` includes
-    // midsides (`referenced_vertex_mask` walks `tet_midside_nodes` too), which
-    // is what makes it usable as the face-pair filter's set.
+    // solver clones — same dance as the Tet4 ramp. The readout mesh carries
+    // the MIDSIDES, so the per-tet readouts are the Tet10 strain at the Gauss
+    // points rather than the linear part of it. `referenced` includes midsides
+    // (`referenced_vertex_mask` walks `tet_midside_nodes` too), which is what
+    // makes it usable as the face-pair filter's set.
     let rest_positions: Vec<Vec3> = mesh.positions().to_vec();
-    // `tet_id as TetId` is a `u32` cap; Phase 4 meshes stay well under
-    // `u32::MAX` per `Mesh` trait docs.
-    #[allow(clippy::cast_possible_truncation)]
-    let tets: Vec<[VertexId; 4]> = (0..n_tets as TetId).map(|t| mesh.tet_vertices(t)).collect();
-    let materials: Vec<Yeoh> = mesh.materials().to_vec();
+    let readout_mesh = ReadoutMesh::tet10(&mesh)
+        .context("the enriched mesh must name every element's midsides")?;
     // ⚠ `referenced_vertex_mask` walks `tet_midside_nodes` as well as
     // corners, so this set CONTAINS the midsides. That is load-bearing here:
     // on the face path every loaded node IS a midside, so a set of corners
@@ -3125,8 +3310,7 @@ pub fn run_insertion_ramp_tet10_ipc_at(
                     // genuinely unreachable.
                     let contact_readouts =
                         filter_pair_readouts_to_referenced(raw_readouts, &referenced);
-                    let per_tet =
-                        compute_tet_readouts(&rest_positions, &positions_k, &tets, &materials);
+                    let per_tet = readout_mesh.readouts(&positions_k);
                     let conformity = gamma.conformity(
                         &positions_k,
                         &gamma_faces,
@@ -3167,8 +3351,7 @@ pub fn run_insertion_ramp_tet10_ipc_at(
 
     let result = steps.last().map(|last| {
         let final_positions = positions_from_flat(&last.x_final);
-        let final_per_tet =
-            compute_tet_readouts(&rest_positions, &final_positions, &tets, &materials);
+        let final_per_tet = readout_mesh.readouts(&final_positions);
         let force_displacement_curve = steps
             .iter()
             .map(|s| (s.interference_m, s.readout.contact_force_magnitude_n))
@@ -3186,6 +3369,7 @@ pub fn run_insertion_ramp_tet10_ipc_at(
         final_x: x_prev_flat,
         n_pinned,
         result,
+        readout_mesh,
     })
 }
 // ───────────────────────────────────────────────────────────────────────
@@ -3603,7 +3787,7 @@ pub struct SlideRampStep {
     pub final_residual_norm: f64,
     /// Converged vertex positions at this step, vertex-major xyz.
     /// Same shape as [`RampStep::x_final`]; per-tet detail derivable
-    /// via [`compute_tet_readouts`].
+    /// via [`SlideRamp::readout_mesh`].
     pub x_final: Vec<f64>,
     /// Pre-aggregated engineering scalars. Same shape + semantics as
     /// the growing ramp's [`StepReadout`] (contact force,
@@ -3664,6 +3848,9 @@ pub struct SlideRamp {
     /// Per-tet detail at the final converged step + the ramp-wide
     /// force–arc-length curve. `None` if no step converged.
     pub result: Option<SlideResult>,
+    /// What the per-tet readouts are evaluated over — the mesh this ramp
+    /// SOLVED. Same contract as [`InsertionRamp::readout_mesh`].
+    pub readout_mesh: ReadoutMesh,
     /// One `Isometry3` per converged step recording the intruder's
     /// pose at that step's solve — the per-step source-of-truth for
     /// the SL.4 viewport render (`intruder_pose_at(displayed_step)`).
@@ -3728,7 +3915,7 @@ pub fn run_sliding_insertion_ramp(
         outer_offset_m,
         bounds,
         cell_size_m,
-        n_tets,
+        n_tets: _,
         per_tet_layer: _,
     } = geometry;
 
@@ -3744,9 +3931,7 @@ pub fn run_sliding_insertion_ramp(
     // Snapshot per-tet immutables before consuming the mesh into the
     // per-step solver clones — same dance as the growing ramp.
     let rest_positions: Vec<Vec3> = mesh.positions().to_vec();
-    #[allow(clippy::cast_possible_truncation)]
-    let tets: Vec<[VertexId; 4]> = (0..n_tets as TetId).map(|t| mesh.tet_vertices(t)).collect();
-    let materials: Vec<Yeoh> = mesh.materials().to_vec();
+    let readout_mesh = ReadoutMesh::tet4(&mesh);
     let referenced: Vec<VertexId> = referenced_vertices(&mesh);
 
     // Γ is a property of the REST configuration — which surface was meant to
@@ -3823,8 +4008,7 @@ pub fn run_sliding_insertion_ramp(
                 let raw_readouts = readout_contact.per_pair_readout(&mesh, &positions_k);
                 let contact_readouts =
                     filter_pair_readouts_to_referenced(raw_readouts, &referenced);
-                let per_tet =
-                    compute_tet_readouts(&rest_positions, &positions_k, &tets, &materials);
+                let per_tet = readout_mesh.readouts(&positions_k);
                 let conformity = gamma.conformity(
                     &positions_k,
                     &gamma_faces,
@@ -3868,8 +4052,7 @@ pub fn run_sliding_insertion_ramp(
     // curve. `result = None` only when no step converged.
     let result = steps.last().map(|last| {
         let final_positions = positions_from_flat(&last.x_final);
-        let final_per_tet =
-            compute_tet_readouts(&rest_positions, &final_positions, &tets, &materials);
+        let final_per_tet = readout_mesh.readouts(&final_positions);
         let force_arc_length_curve = steps
             .iter()
             .map(|s| (s.arc_length_s_m, s.readout.contact_force_magnitude_n))
@@ -3887,6 +4070,7 @@ pub fn run_sliding_insertion_ramp(
         final_x: x_prev_flat,
         n_pinned,
         result,
+        readout_mesh,
         intruder_poses,
     })
 }
@@ -4047,12 +4231,12 @@ pub fn run_sliding_insertion_ramp_tet10_ipc(
         outer_offset_m,
         bounds,
         cell_size_m,
-        n_tets,
+        n_tets: _,
         per_tet_layer: _,
     } = geometry;
 
-    // THE MESH SWAP — corner ids and positions are preserved, so the BCs, Γ
-    // and the per-tet readouts keep pointing at the same material points.
+    // THE MESH SWAP — corner ids and positions are preserved, so the BCs and
+    // Γ keep pointing at the same material points.
     // ⚠ NOT conformed. `conform_cavity_midsides` exists and works — it moves
     // 4116 nodes and takes the tightest rest midside −0.2439 → −0.1031 mm —
     // but wiring it in did NOT fix the stall (same 6/16, residual 3.6438e4 →
@@ -4069,11 +4253,9 @@ pub fn run_sliding_insertion_ramp_tet10_ipc(
     let n_pinned = bc.pinned_vertices.len();
 
     let rest_positions: Vec<Vec3> = mesh.positions().to_vec();
-    // `tet_id as TetId` is a `u32` cap; Phase 4 meshes stay well under
-    // `u32::MAX` per `Mesh` trait docs.
-    #[allow(clippy::cast_possible_truncation)]
-    let tets: Vec<[VertexId; 4]> = (0..n_tets as TetId).map(|t| mesh.tet_vertices(t)).collect();
-    let materials: Vec<Yeoh> = mesh.materials().to_vec();
+    // Corners AND midsides — the per-tet readouts are the Tet10 strain.
+    let readout_mesh = ReadoutMesh::tet10(&mesh)
+        .context("the enriched mesh must name every element's midsides")?;
     // ⚠ Includes midsides — every loaded node on the face path IS a midside.
     let referenced: Vec<VertexId> = referenced_vertices(&mesh);
 
@@ -4161,8 +4343,7 @@ pub fn run_sliding_insertion_ramp_tet10_ipc(
                 let raw_readouts = readout_contact.per_pair_readout(&mesh, &positions_k);
                 let contact_readouts =
                     filter_pair_readouts_to_referenced(raw_readouts, &referenced);
-                let per_tet =
-                    compute_tet_readouts(&rest_positions, &positions_k, &tets, &materials);
+                let per_tet = readout_mesh.readouts(&positions_k);
                 let conformity = gamma.conformity(
                     &positions_k,
                     &gamma_faces,
@@ -4197,8 +4378,7 @@ pub fn run_sliding_insertion_ramp_tet10_ipc(
 
     let result = steps.last().map(|last| {
         let final_positions = positions_from_flat(&last.x_final);
-        let final_per_tet =
-            compute_tet_readouts(&rest_positions, &final_positions, &tets, &materials);
+        let final_per_tet = readout_mesh.readouts(&final_positions);
         let force_arc_length_curve = steps
             .iter()
             .map(|s| (s.arc_length_s_m, s.readout.contact_force_magnitude_n))
@@ -4216,6 +4396,7 @@ pub fn run_sliding_insertion_ramp_tet10_ipc(
         final_x: x_prev_flat,
         n_pinned,
         result,
+        readout_mesh,
         intruder_poses,
     })
 }
@@ -5422,6 +5603,15 @@ mod tests {
             .to_yeoh()
     }
 
+    /// One Tet4 element over the first four of `rest`, for the readout tests.
+    fn unit_tet_readout_mesh(rest: Vec<Vec3>) -> ReadoutMesh {
+        ReadoutMesh {
+            rest_positions: rest,
+            elements: ReadoutElements::Tet4(vec![[0, 1, 2, 3]]),
+            materials: vec![unit_tet_material()],
+        }
+    }
+
     /// Undeformed tet ⇒ `F = I`. `Yeoh::first_piola(I)` ⇒ zero stress.
     /// `Yeoh::energy(I)` ⇒ zero strain energy. Principal stretches
     /// ⇒ `[1, 1, 1]`. The bedrock of every other F-reconstruction
@@ -5430,9 +5620,7 @@ mod tests {
     fn tet_readout_undeformed_is_identity() {
         let rest = unit_tet_rest();
         let curr = rest.clone();
-        let verts: [VertexId; 4] = [0, 1, 2, 3];
-        let material = unit_tet_material();
-        let readout = tet_readout(verts, &rest, &curr, &material);
+        let readout = unit_tet_readout_mesh(rest).gauss_point_readouts(0, &curr)[0].clone();
 
         let identity = Matrix3::<f64>::identity();
         let diff = (readout.f - identity).norm();
@@ -5458,17 +5646,15 @@ mod tests {
         }
     }
 
-    /// Pure rigid translation ⇒ `F = I`. Tests that the
-    /// edge-vector construction in [`deformation_gradient`] is
-    /// translation-invariant (sanity check on the `D_curr · D_rest⁻¹`
-    /// formula).
+    /// Pure rigid translation ⇒ `F = I`. Tests that the Jacobian
+    /// construction in the readout is translation-invariant (sanity check
+    /// on the `J_curr · J_rest⁻¹` formula).
     #[test]
     fn tet_readout_pure_translation_is_identity() {
         let rest = unit_tet_rest();
         let t = Vec3::new(0.5, -0.3, 1.7);
         let curr: Vec<Vec3> = rest.iter().map(|p| p + t).collect();
-        let verts: [VertexId; 4] = [0, 1, 2, 3];
-        let f = deformation_gradient(verts, &rest, &curr);
+        let f = unit_tet_readout_mesh(rest).gauss_point_readouts(0, &curr)[0].f;
         let diff = (f - Matrix3::<f64>::identity()).norm();
         assert!(
             diff < 1e-12,
@@ -5489,9 +5675,7 @@ mod tests {
         let a = Matrix3::from_diagonal(&Vec3::new(lambda, trans, trans));
         let rest = unit_tet_rest();
         let curr: Vec<Vec3> = rest.iter().map(|p| a * p).collect();
-        let verts: [VertexId; 4] = [0, 1, 2, 3];
-        let material = unit_tet_material();
-        let readout = tet_readout(verts, &rest, &curr, &material);
+        let readout = unit_tet_readout_mesh(rest).gauss_point_readouts(0, &curr)[0].clone();
 
         let diff = (readout.f - a).norm();
         assert!(
@@ -5920,11 +6104,10 @@ mod tests {
     #[test]
     fn aggregate_step_readout_aggregates_correctly() {
         let mk = |stretches: [f64; 3], frob: f64, psi: f64| TetReadout {
-            f: Matrix3::<f64>::identity(),
-            first_piola: Matrix3::<f64>::identity(),
             first_piola_frobenius_pa: frob,
             energy_density_j_per_m3: psi,
-            principal_stretches: Vec3::new(stretches[0], stretches[1], stretches[2]),
+            min_principal_stretch: stretches.into_iter().fold(f64::INFINITY, f64::min),
+            max_principal_stretch: stretches.into_iter().fold(f64::NEG_INFINITY, f64::max),
         };
         let per_tet = vec![
             mk([1.2, 0.9, 0.95], 1.0e5, 1.0),
@@ -5965,19 +6148,6 @@ mod tests {
         assert!((r.min_principal_stretch - 0.8).abs() < 1e-12);
         assert!((r.max_first_piola_frobenius_pa - 2.0e5).abs() < 1e-9);
         assert!((r.mean_strain_energy_density_j_per_m3 - 2.0).abs() < 1e-12);
-    }
-
-    /// `compute_tet_readouts` panics on a mismatched `tets` /
-    /// `materials` slice length — guards the slice-indexed Yeoh
-    /// lookup against silently picking a wrong material.
-    #[test]
-    #[should_panic(expected = "compute_tet_readouts: tets.len()")]
-    fn compute_tet_readouts_mismatched_lengths_panic() {
-        let rest = unit_tet_rest();
-        let tets = vec![[0_u32, 1, 2, 3]];
-        // 0 materials vs 1 tet.
-        let materials: Vec<Yeoh> = vec![];
-        let _ = compute_tet_readouts(&rest, &rest, &tets, &materials);
     }
 
     /// Build an icosphere `IndexedMesh` of `radius` (meters), centered
@@ -6791,7 +6961,7 @@ mod tests {
                 "tet {t} Ψ at final step must be finite + ≥ {psi_floor} J/m³ (got {})",
                 tr.energy_density_j_per_m3,
             );
-            for &s in tr.principal_stretches.iter() {
+            for s in [tr.min_principal_stretch, tr.max_principal_stretch] {
                 assert!(
                     s.is_finite() && s > 0.0,
                     "tet {t} stretch must be finite + positive (got {s})"
@@ -9987,96 +10157,321 @@ mod tests {
         );
     }
 
-    /// The corner readout is NOT the Tet10 strain — the size of the gap.
+    /// ⭐ The readout IS the Tet10 strain, at every Gauss point — and the
+    /// corner readout it replaced is not.
     ///
-    /// ⛔ **The bridge's quietest hazard.** `compute_tet_readouts` builds `F`
-    /// from four CORNER displacements. On a Tet10 element that is the linear
-    /// part of a field that is no longer linear: it compiles, it does not
-    /// panic, and it returns a plausible number that ignores the midside
-    /// motion the solve just computed. The heat map would look fine and be
-    /// wrong.
-    ///
-    /// This measures the gap rather than describing it. A quadratic
-    /// displacement field is applied to one element; the corner-linear `F` is
-    /// compared with the true Tet10 `F` evaluated through the element's own
-    /// shape gradients. They must DIFFER — if they ever stop differing, the
-    /// readout has been fixed and this gate should be replaced by one
-    /// asserting agreement.
+    /// A quadratic displacement, `x ↦ x + (x², 0, 0) / 4`, is applied to one
+    /// reference element. Tet10 reproduces a quadratic field exactly, so `F` at
+    /// each Gauss point must be the analytic gradient there,
+    /// `diag(1 + x/2, 1, 1)` — a referent that owes nothing to the code under
+    /// test. The four corners alone see only the linear part and must miss it;
+    /// the affine control shows that the gap measures element order, not a bug
+    /// in this test.
     #[test]
-    fn the_corner_readout_is_not_the_tet10_strain() {
-        use sim_soft::Element;
-        // Reference tet, corners then the six midsides in TET10_EDGE_NODES
-        // order: (0,1) (1,2) (0,2) (0,3) (1,3) (2,3).
+    fn the_readout_resolves_the_tet10_strain_at_every_gauss_point() {
+        use sim_soft::element::TET10_EDGE_NODES;
         let corners = [
             Vec3::new(0.0, 0.0, 0.0),
             Vec3::new(1.0, 0.0, 0.0),
             Vec3::new(0.0, 1.0, 0.0),
             Vec3::new(0.0, 0.0, 1.0),
         ];
-        let edges = [(0, 1), (1, 2), (0, 2), (0, 3), (1, 3), (2, 3)];
         let mut rest: Vec<Vec3> = corners.to_vec();
-        for (a, b) in edges {
+        for (a, b) in TET10_EDGE_NODES {
             rest.push(0.5 * (corners[a] + corners[b]));
         }
+        let tet10 = ReadoutMesh {
+            rest_positions: rest.clone(),
+            elements: ReadoutElements::Tet10(vec![[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]]),
+            materials: vec![unit_tet_material()],
+        };
+        let corners_only = ReadoutMesh {
+            rest_positions: rest.clone(),
+            elements: ReadoutElements::Tet4(vec![[0, 1, 2, 3]]),
+            materials: vec![unit_tet_material()],
+        };
 
-        // A genuinely quadratic map: x ↦ x + (x², 0, 0) / 4. Its gradient
-        // varies across the element, so no single constant F can represent it.
         let warp = |p: &Vec3| Vec3::new(p.x + 0.25 * p.x * p.x, p.y, p.z);
         let curr: Vec<Vec3> = rest.iter().map(warp).collect();
+        let points = tet10.gauss_point_readouts(0, &curr);
+        assert_eq!(points.len(), 4, "Tet10 is read at its four Gauss points");
+        let corner_f = corners_only.gauss_point_readouts(0, &curr)[0].f;
 
-        // Corner-linear F — exactly what `tet_readout` would compute.
-        let corner_f = deformation_gradient([0, 1, 2, 3], &rest, &curr);
-
-        // True Tet10 F at the element centroid, through the element's own
-        // shape gradients: F = (Σ x_i ⊗ ∇N_i) with ∇N in rest coordinates.
-        let xi = Vec3::new(0.25, 0.25, 0.25);
-        let grad_xi = Tet10.shape_gradients(xi);
-        let mut j_rest: Matrix3<f64> = Matrix3::zeros();
-        let mut j_curr: Matrix3<f64> = Matrix3::zeros();
-        for (i, (r, c)) in rest.iter().zip(curr.iter()).enumerate() {
-            for d in 0..3 {
-                for k in 0..3 {
-                    j_rest[(d, k)] += r[d] * grad_xi[(i, k)];
-                    j_curr[(d, k)] += c[d] * grad_xi[(i, k)];
-                }
-            }
+        let mut worst_corner_gap = 0.0_f64;
+        for (q, (point, (xi, _))) in points.iter().zip(Tet10.gauss_points()).enumerate() {
+            // The rest map of the reference tet is the identity, so a Gauss
+            // point's physical x IS its ξ.
+            let analytic = Matrix3::from_diagonal(&Vec3::new(1.0 + 0.5 * xi.x, 1.0, 1.0));
+            let err = (point.f - analytic).norm();
+            assert!(
+                err < 1e-12,
+                "Gauss point {q}: F must be the analytic gradient (off by {err:.3e})",
+            );
+            assert!(
+                (point.volume_fraction - 0.25).abs() < 1e-15,
+                "a straight element splits its volume evenly (point {q}: {})",
+                point.volume_fraction,
+            );
+            worst_corner_gap = worst_corner_gap.max((corner_f - analytic).norm() / analytic.norm());
         }
-        let tet10_f = j_curr
-            * j_rest
-                .try_inverse()
-                .expect("the reference tet's rest Jacobian is invertible");
-
-        let gap = (tet10_f - corner_f).norm() / tet10_f.norm();
         assert!(
-            gap > 1e-3,
-            "the corner-linear F and the Tet10 F must differ on a quadratic \
-             field — they agreed to {gap:.3e}, which would mean the readout \
-             already resolves the midsides and this gate is stale",
+            worst_corner_gap > 1e-2,
+            "the corners must miss the quadratic part — they matched to \
+             {worst_corner_gap:.3e}, so this field no longer discriminates",
         );
 
-        // And the control: on an AFFINE field the two must agree, or the
-        // comparison above is measuring a bug in this test rather than the
-        // element order.
-        let affine = |p: &Vec3| Vec3::new(1.3 * p.x + 0.2 * p.y, 0.9 * p.y, 1.1 * p.z);
-        let curr_affine: Vec<Vec3> = rest.iter().map(affine).collect();
-        let corner_affine = deformation_gradient([0, 1, 2, 3], &rest, &curr_affine);
-        let mut j_curr_a: Matrix3<f64> = Matrix3::zeros();
-        for (i, c) in curr_affine.iter().enumerate() {
-            for d in 0..3 {
-                for k in 0..3 {
-                    j_curr_a[(d, k)] += c[d] * grad_xi[(i, k)];
-                }
+        // The summary is a reduction of exactly those points.
+        let summary = &tet10.readouts(&curr)[0];
+        let mean: f64 = points
+            .iter()
+            .map(|p| 0.25 * p.energy_density_j_per_m3)
+            .sum();
+        assert!(
+            (summary.energy_density_j_per_m3 - mean).abs() <= 1e-12 * mean.abs(),
+            "element energy must be the volume-weighted mean ({} vs {mean})",
+            summary.energy_density_j_per_m3,
+        );
+        let peak = points
+            .iter()
+            .map(|p| p.first_piola_frobenius_pa)
+            .fold(0.0, f64::max);
+        assert_eq!(summary.first_piola_frobenius_pa, peak, "peak stress");
+        let stretches = || {
+            points
+                .iter()
+                .flat_map(|p| p.principal_stretches.iter().copied())
+        };
+        assert_eq!(
+            summary.max_principal_stretch,
+            stretches().fold(f64::NEG_INFINITY, f64::max)
+        );
+        assert_eq!(
+            summary.min_principal_stretch,
+            stretches().fold(f64::INFINITY, f64::min)
+        );
+
+        // Control: on an AFFINE field every point and the corners agree.
+        let a = Matrix3::new(1.3, 0.2, 0.0, 0.0, 0.9, 0.0, 0.0, 0.0, 1.1);
+        let curr_affine: Vec<Vec3> = rest.iter().map(|p| a * p).collect();
+        for point in tet10.gauss_point_readouts(0, &curr_affine) {
+            assert!(
+                (point.f - a).norm() < 1e-12,
+                "an affine field has one F everywhere; a Gauss point read {}",
+                point.f,
+            );
+        }
+        let corner_affine = corners_only.gauss_point_readouts(0, &curr_affine)[0].f;
+        assert!(
+            (corner_affine - a).norm() < 1e-12,
+            "the corners read it too"
+        );
+    }
+
+    /// ⭐ `ReadoutMesh::tet10` takes each element's midsides from the mesh, in
+    /// the order `Tet10`'s shape functions expect — checked on every element
+    /// of a real enriched mesh.
+    ///
+    /// The single-element gate above builds its connectivity by hand, so it
+    /// cannot see the constructor get a midside's slot wrong. Here the
+    /// tolerance fixture is enriched exactly as the bridge enriches it, a
+    /// quadratic field is laid over every node, and `F` at every Gauss point
+    /// of every element must be that field's analytic gradient at the point's
+    /// physical location. A misplaced midside reads the wrong node's
+    /// displacement and fails at once.
+    #[test]
+    fn the_tet10_readout_mesh_places_every_elements_midsides() {
+        let mesh10 = Tet10Mesh::<Yeoh>::from_tet4(&tolerance_fixture().mesh);
+        let readout_mesh =
+            ReadoutMesh::tet10(&mesh10).expect("an enriched mesh names its midsides");
+        assert_eq!(readout_mesh.n_elements(), mesh10.n_tets());
+
+        // A quadratic in x sized to the mesh so F stays in [0.5, 1.5]:
+        // u_x = k (x − x0)², F_xx = 1 + 2k (x − x0).
+        let rest = mesh10.positions();
+        let (lo, hi) = rest
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| {
+                (lo.min(p.x), hi.max(p.x))
+            });
+        let x0 = 0.5 * (lo + hi);
+        let k = 0.25 / (0.5 * (hi - lo));
+        let curr: Vec<Vec3> = rest
+            .iter()
+            .map(|p| Vec3::new(p.x + k * (p.x - x0) * (p.x - x0), p.y, p.z))
+            .collect();
+
+        let mut worst = 0.0_f64;
+        for (e, t) in (0..readout_mesh.n_elements()).zip(0_u32..) {
+            // The point's physical x from the CORNERS alone — `from_tet4`
+            // leaves every element straight, so the map is affine, and this
+            // referent cannot share a midside-ordering bug with the readout.
+            let [c0, c1, c2, c3] = mesh10.tet_vertices(t).map(|v| rest[v as usize].x);
+            for (point, (xi, _)) in readout_mesh
+                .gauss_point_readouts(e, &curr)
+                .iter()
+                .zip(Tet10.gauss_points())
+            {
+                let x = c0 * (1.0 - xi.x - xi.y - xi.z) + c1 * xi.x + c2 * xi.y + c3 * xi.z;
+                let analytic =
+                    Matrix3::from_diagonal(&Vec3::new(1.0 + 2.0 * k * (x - x0), 1.0, 1.0));
+                worst = worst.max((point.f - analytic).norm());
             }
         }
-        let tet10_affine = j_curr_a
-            * j_rest
-                .try_inverse()
-                .expect("the reference tet's rest Jacobian is invertible");
         assert!(
-            (tet10_affine - corner_affine).norm() < 1e-12,
-            "on an affine field the two must agree exactly; they differed by {}",
-            (tet10_affine - corner_affine).norm(),
+            worst < 1e-9,
+            "every Gauss point of every element must read the analytic gradient; \
+             the worst was off by {worst:.3e}",
         );
+    }
+
+    /// What the corner readout got wrong on real bridge ramps — the size of
+    /// the change the per-Gauss-point readout makes to the heat map.
+    ///
+    /// Both readouts are taken from the SAME converged state, the last step
+    /// each ramp reaches: the per-Gauss-point one through the ramp's own
+    /// [`InsertionRamp::readout_mesh`], and the corner one through a Tet4
+    /// snapshot of the scene, which is what the UI read before. Only the
+    /// readout differs, never the solve.
+    ///
+    /// It also runs the UI's outer-skin detection with both rest-position
+    /// sources, since the UI handed it the Tet4 snapshot too.
+    ///
+    /// ⛔ Asserts nothing. It reports on whatever scenes are present, and the
+    /// product scan is repo-excluded.
+    #[test]
+    #[ignore = "release-mode bridge ramps on two scenes; run with --ignored --nocapture"]
+    fn what_the_corner_readout_missed_on_the_bridge() {
+        let mut scenes: Vec<(&str, InsertionGeometry, usize)> =
+            vec![("tolerance_fixture", tolerance_fixture(), 16)];
+        if let Some((scan, _centerline, caps, design)) = product_scene() {
+            let g = build_insertion_geometry(&scan, &design, &caps, 2_500, 0.004)
+                .expect("the product geometry must build");
+            // The product's best recorded operating point is 32 steps.
+            scenes.push(("base_mold (product)", g, 32));
+        }
+        for (name, g, n_steps) in scenes {
+            let corners = ReadoutMesh::tet4(&g.mesh);
+            let ramp = run_insertion_ramp_tet10_ipc(g, n_steps, INSERTION_SOLVE_TOL)
+                .expect("the bridge ramp must build");
+            let Some(last) = ramp.steps.last() else {
+                println!("\n══ {name}: no step converged ══");
+                continue;
+            };
+            let pos = positions_from_flat(&last.x_final);
+            let gp = ramp.readout_mesh.readouts(&pos);
+            let cr = corners.readouts(&pos);
+            println!(
+                "\n══ {name} · {}/{n_steps} steps · depth {:.3} mm · {} elements ══",
+                ramp.steps.len(),
+                last.interference_m * 1e3,
+                gp.len(),
+            );
+
+            let peak = |r: &[TetReadout], f: fn(&TetReadout) -> f64| {
+                r.iter().map(f).fold(f64::NEG_INFINITY, f64::max)
+            };
+            let least = |r: &[TetReadout], f: fn(&TetReadout) -> f64| {
+                r.iter().map(f).fold(f64::INFINITY, f64::min)
+            };
+            // `len()` is an element count, far under f64's exact-integer
+            // ceiling.
+            #[allow(clippy::cast_precision_loss)]
+            let mean = |r: &[TetReadout]| {
+                r.iter().map(|t| t.energy_density_j_per_m3).sum::<f64>() / r.len() as f64
+            };
+            println!(
+                "{:<26} {:>14} {:>14} {:>9}",
+                "", "corner", "per-GP", "ratio"
+            );
+            for (label, c, g) in [
+                (
+                    "peak ‖P‖ (kPa)",
+                    peak(&cr, |t| t.first_piola_frobenius_pa) * 1e-3,
+                    peak(&gp, |t| t.first_piola_frobenius_pa) * 1e-3,
+                ),
+                (
+                    "max stretch",
+                    peak(&cr, |t| t.max_principal_stretch),
+                    peak(&gp, |t| t.max_principal_stretch),
+                ),
+                (
+                    "min stretch",
+                    least(&cr, |t| t.min_principal_stretch),
+                    least(&gp, |t| t.min_principal_stretch),
+                ),
+                ("mean Ψ (J/m³)", mean(&cr), mean(&gp)),
+            ] {
+                println!("{label:<26} {c:>14.5} {g:>14.5} {:>9.4}", g / c);
+            }
+
+            // Per element: how far the corner stress sits from the per-GP
+            // peak, as a fraction of it.
+            let mut rel: Vec<f64> = cr
+                .iter()
+                .zip(&gp)
+                .filter(|(_, g)| g.first_piola_frobenius_pa > 0.0)
+                .map(|(c, g)| {
+                    (c.first_piola_frobenius_pa - g.first_piola_frobenius_pa).abs()
+                        / g.first_piola_frobenius_pa
+                })
+                .collect();
+            rel.sort_by(f64::total_cmp);
+            let q = |f: f64| {
+                // A quantile index into a non-empty sorted vector.
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    clippy::cast_precision_loss
+                )]
+                let i = ((rel.len() - 1) as f64 * f).round() as usize;
+                rel[i]
+            };
+            // Counts are far under f64's exact-integer ceiling.
+            #[allow(clippy::cast_precision_loss)]
+            let over_10pct = rel.iter().filter(|&&r| r > 0.10).count() as f64 / rel.len() as f64;
+            println!(
+                "per-element |Δ‖P‖| / per-GP ‖P‖: median {:.4}  p90 {:.4}  p99 {:.4}  max {:.4}  \
+                 · {:.2} % of elements off by > 10 %",
+                q(0.5),
+                q(0.9),
+                q(0.99),
+                q(1.0),
+                over_10pct * 100.0,
+            );
+            let argmax = |r: &[TetReadout]| {
+                r.iter()
+                    .enumerate()
+                    .max_by(|a, b| {
+                        a.1.first_piola_frobenius_pa
+                            .total_cmp(&b.1.first_piola_frobenius_pa)
+                    })
+                    .map(|(i, _)| i)
+            };
+            println!(
+                "hotspot element: corner {:?} · per-GP {:?}",
+                argmax(&cr),
+                argmax(&gp),
+            );
+
+            // The UI's outer-skin detection, from each rest-position source.
+            let from_snapshot = crate::insertion_sim_ui::detect_outer_skin_vertices(
+                &corners.rest_positions,
+                &last.x_final,
+            );
+            let from_solved = crate::insertion_sim_ui::detect_outer_skin_vertices(
+                ramp.readout_mesh.rest_positions(),
+                &last.x_final,
+            );
+            println!(
+                "outer skin detected: from the Tet4 snapshot {} · from the solved mesh {} \
+                 (Dirichlet-pinned: {}; x_final {} dofs, snapshot {} vertices)",
+                from_snapshot.len(),
+                from_solved.len(),
+                ramp.n_pinned,
+                last.x_final.len(),
+                corners.rest_positions.len(),
+            );
+        }
     }
 
     /// ⭐⭐⭐ **THE DISCRIMINATING EXPERIMENT** — the bridge against the penalty
