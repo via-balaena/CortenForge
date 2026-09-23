@@ -823,6 +823,10 @@ Listed because the confidence of §4 rests on these being open, not closed.
    | sphere-40mm | 1e-1 | **tet10+ipc** | 16/16 | 3.000 mm | **+0.360 mm** | **+0.402 mm** | 88.6 kPa |
    | sphere-40mm | 1e-2 | tet4+penalty | 16/16 | 3.000 mm | +0.058 mm | +0.114 mm | 68.3 kPa |
    | sphere-40mm | 1e-2 | **tet10+ipc** | 16/16 | 3.000 mm | **+0.360 mm** | **+0.403 mm** | 88.6 kPa |
+   | sphere-40mm | 1e-3 | tet4+penalty | 16/16 | 3.000 mm | +0.058 mm | +0.114 mm | 68.3 kPa |
+   | sphere-40mm | 1e-3 | tet10+ipc | **5/16** | 0.938 mm | +0.619 mm | +0.655 mm | 32.0 kPa |
+   | sphere-40mm | 1e-4 | tet4+penalty | 16/16 | 3.000 mm | +0.058 mm | +0.114 mm | 68.3 kPa |
+   | sphere-40mm | 1e-4 | tet10+ipc | **0/16** | — | — | — | — |
 
    Two things fall out. ⚠ **They do not have the same reach, and saying so is
    the point** — one holds on both scenes, the other on one:
@@ -853,12 +857,35 @@ Listed because the confidence of §4 rests on these being open, not closed.
       scene that discriminates is the ill-conditioned one, and which scenes
       those are is not predictable from their geometry.
 
-   ⛔ **AND THE HONEST HALF: the bridge has its own conditioning floor, and it
-   is a cliff rather than a slope.** At `tol` = 1e-3 it reaches **0/16** —
-   worse than the baseline's 3/16 — stalling during its approach at
-   `r ≈ 1e-4` with "non-SPD tangent near solution". It either seats fully or
-   not at all. ⇒ the bridge does not remove the tolerance ceiling #958 found;
-   it moves the depth available *below* that ceiling.
+   ⛔⛔ **AND THE HONEST HALF, which decides that the default must NOT flip
+   yet: the bridge COSTS tolerance headroom, and it is a cliff not a slope.**
+   At `tol` = 1e-3 it reaches **0/16** on the tolerance fixture and **5/16** on
+   the sphere, where the penalty path reaches 3/16 and **16/16**; at 1e-4 the
+   penalty path still reaches 16/16 on the sphere at `r` = 9.45e-5. The bridge
+   stalls inside its own approach at `r ≈ 1e-4`, "non-SPD tangent near
+   solution". It either seats fully or not at all.
+
+   ⇒ ⭐⭐⭐ **The bridge buys CONTACT STATE and costs TOLERANCE HEADROOM.** It
+   does not remove the ceiling #958 found; it trades one side of it for the
+   other. On the evidence here that is worth landing as a measured capability
+   and **not** worth making the default.
+
+   ⛔⛔ **TWO CANDIDATE CAUSES ARE MEASURED FALSE.** The cliff is not `κ` — see
+   the sweep below — and it is not where the approach starts: moving the
+   approach margin from `d̂/2` to a full `d̂`, so the first solve is genuinely
+   unloaded (the barrier is inactive at `sd ≥ d̂`) rather than mid-band, leaves
+   every converging row **identical to four significant figures** (`min_sd`
+   +0.1841 / +0.1844, σ 124.39 / 124.37 kPa) and does not move the cliff at
+   all. ⭐ That inertness is worth having on its own: it says the converged
+   answer does not depend on where the march began, in the regime where the
+   march works. The margin is kept at `d̂` because it is the derived choice —
+   feasible by definition rather than by a chosen fraction — not because it
+   bought anything.
+
+   ▶ **The untried lead is the geometry, not the solver**: boundary midsides
+   sit under the curved cavity surface by a measured sagitta, and
+   `Tet10Mesh::with_curved_midsides` exists precisely to fix that. It is not
+   applied here.
 
    ⛔⛔ **`κ` IS NOT THE BINDING CONSTRAINT — measured, not assumed.**
    `the_bridge_ramp_over_a_stiffness_sweep` runs the ramp at 1e6, the derived

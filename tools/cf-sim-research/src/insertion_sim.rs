@@ -2915,7 +2915,13 @@ pub fn run_insertion_ramp_tet10_ipc_at(
         .map(|&v| cavity_isosurface.eval(Point3::from(rest_positions[v as usize])))
         .filter(|sd| sd.is_finite())
         .fold(0.0_f64, |acc, sd| acc.max(-sd));
-    let approach_clearance_m = worst_rest_penetration_m + 0.5 * d_hat;
+    // ⭐ The margin is `d̂`, not `d̂/2`: the barrier is INACTIVE only where
+    // `sd ≥ d̂`, so that is what makes the first solve a genuinely unloaded
+    // one — a rest state in equilibrium with no contact at all, which is
+    // feasible by definition rather than by a margin someone chose. At `d̂/2`
+    // the first solve already sits mid-band and must balance a barrier sized
+    // for the FULL-seat traction against an unloaded wall.
+    let approach_clearance_m = worst_rest_penetration_m + d_hat;
     // The increment count is small, so the cast is exact. `ceil` is deliberate:
     // rounding up can only make the first approach gap larger than the
     // clearance asked for, never smaller.
