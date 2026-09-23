@@ -1265,13 +1265,19 @@ const BRIDGE_CONTACT_DHAT_M: f64 = 1.2e-3;
 /// stays out of the cushioning regime.
 ///
 /// ⛔⛔ **THIS RETURNED THE GEOMETRIC CENTRE OF `[floor, ceiling]`, AND THAT
-/// WAS MEASURED WRONG ON A STIFF WALL.** The floor — *"κ such that the barrier
-/// holds `ρ · step` open at traction σ"* — assumes κ *sets* the standoff. On
-/// the product scene it does not: the held standoff measured FLAT
-/// (0.2936 → 0.2766 mm) across a 1.5× range of κ, because 17 mm of
-/// DRAGON_SKIN_10A is stiff enough that the WALL sets the gap. κ only changes
-/// the traction needed to reach it — the same fact as σ moving a mere 1.0183×
-/// per decade of κ on this scene.
+/// WAS MEASURED WRONG ON THE PRODUCT SCENE.** The floor — *"κ such that the
+/// barrier holds `ρ · step` open at traction σ"* — assumes κ *sets* the
+/// standoff. In the window it was tested in (16 steps, κ 2.4e7–3.7e7) the
+/// held standoff did not follow κ: 0.2936 → 0.2766 mm across a 1.5× range.
+///
+/// ⚠ **That is a result about that window, not about the wall.** On the same
+/// scene at 32 steps the held standoff DOES follow κ at matched depth —
+/// 0.317 → 0.415 mm from 6.3e7 to 1e8 at 4.375 mm, and 0.528 → 0.706 mm from
+/// 1.6e8 to 4.0e8 at 4.219 mm
+/// (`the_bridge_ramp_over_a_stiffness_sweep_on_the_product_scan`). What
+/// differs between the two windows has not been isolated. An earlier revision
+/// explained the flat window by the wall's stiffness; the same wall moves in
+/// the other window, so that explanation is withdrawn.
 ///
 /// ⭐⭐⭐ **And deriving κ FROM the increment was actively harmful.** A finer
 /// march lowers the floor, which lowered κ, which held proportionally less —
@@ -1290,15 +1296,18 @@ const BRIDGE_CONTACT_DHAT_M: f64 = 1.2e-3;
 /// depth and on a DIFFERENT failure — an element inversion (`det F` < 0), not
 /// a barrier stall. What limits the ramp now is material, not contact.
 ///
-/// ⇒ **The ceiling is the only requirement describing something κ actually
-/// controls** (how much the barrier cushions). The floor is kept as a REPORTED
-/// diagnostic — `the_bridges_barrier_band_reports_a_floor_and_ships_a_ceiling` still prints
-/// it — but it no longer selects, because a selector resting on a premise the
-/// scene does not honour is a sweep wearing a derivation's clothes.
+/// ⇒ The floor is kept as a REPORTED diagnostic —
+/// `the_bridges_barrier_band_reports_a_floor_and_ships_a_ceiling` still
+/// prints it — but it no longer selects. The ceiling does, and the product
+/// sweep is its evidence: across 12 arms from 4.0e6 to 4.0e8 at 32 steps and
+/// the shipped tolerance, the best depth reached — 4.531 mm, stopping on
+/// element inversion — is reached only at 4.0e7 and at the shipped 4.11e7.
+/// Below them the line search stalls sooner (Armijo, at Newton iteration 0);
+/// above them inversion comes one or two steps sooner. No arm penetrates.
 ///
 /// ⚠ The floor DID predict the stall on sim-soft's SEALED fixture (1e6 stalls
-/// above 17.567 kPa, measured 14.255). This is a transfer failure to a
-/// compliant open-mouth wall, not a refutation — record the regime a
+/// above 17.567 kPa, measured 14.255). It failed to transfer from there to
+/// the product scene, which is not a refutation — record the regime a
 /// derivation was validated in.
 ///
 /// ⚠ `ramp_step_m` is still taken and still checked: an increment wider than
@@ -2981,11 +2990,7 @@ const CAVITY_MIDSIDE_BAND_CELLS: f64 = 0.5;
 /// ```
 ///
 /// The corners held comfortably more than an increment; the midsides did not,
-/// and the deficit matches the rest-configuration sagitta to within 1 %. That
-/// is also why the held gap was FLAT across a 1.5× range of `κ` — a geometric
-/// offset is stiffness-independent, so no barrier could move it, and the `κ`
-/// floor was being judged against a corrupted measurement rather than being
-/// wrong.
+/// and the deficit matches the rest-configuration sagitta to within 1 %.
 ///
 /// Only cavity-side boundary midsides move: the outer skin is pinned and a
 /// whole wall thickness away. Corners are untouched — conforming those is the
@@ -10090,11 +10095,11 @@ mod tests {
     /// `κ` is the CEILING, and the floor is only reported.
     ///
     /// ⛔ An earlier revision asserted κ was the geometric centre of
-    /// `[floor, ceiling]`. That selector was measured wrong on a stiff wall —
-    /// see `bridge_face_barrier_kappa`. The floor assumes κ sets the standoff,
-    /// and on the product scene the standoff is flat in κ, so deriving κ from
-    /// the increment made a finer march hold LESS and the feasibility
-    /// threshold unreachable by construction.
+    /// `[floor, ceiling]`. That selector was measured wrong on the product scene —
+    /// see `bridge_face_barrier_kappa`. The floor derives κ from the
+    /// increment, and on the product scene that made a finer march hold LESS
+    /// (held/step 0.94 → 0.86 → 0.81 across 16/32/64 steps), so the
+    /// feasibility threshold could never be caught.
     ///
     /// What this pins now is the requirement that survived: the ceiling, which
     /// describes something κ genuinely controls — how far into the cushioning
@@ -11951,9 +11956,9 @@ mod tests {
     /// WHAT is the node that limits the bridge's march?
     ///
     /// ⭐⭐⭐ The stall is a feasibility failure on `min_sd`, and `min_sd` was
-    /// measured FLAT at ~0.294 mm across a 1.5× range of κ. A gap that does
-    /// not respond to the barrier is not a barrier equilibrium — it is
-    /// geometry. This asks which geometry.
+    /// measured flat at ~0.294 mm across a 1.5× range of κ at 16 steps — a
+    /// result about that window (see `bridge_face_barrier_kappa`). This asks
+    /// whether a geometric offset accounts for it.
     ///
     /// The suspect is enrichment. `Tet10Mesh::from_tet4` puts every midside at
     /// the straight-edge MIDPOINT, so on a curved cavity a boundary midside
@@ -12163,10 +12168,9 @@ mod tests {
     /// 0.94 → 0.86 → 0.81 across 16/32/64 steps even as depth improved. The
     /// threshold chases the step down and the march can never catch it.
     ///
-    /// But the held standoff is FLAT in `κ` (0.294 mm across a 1.5× range),
-    /// because the wall is stiff enough that the barrier cannot open the gap —
-    /// 17 mm of DRAGON_SKIN_10A against a barrier, not the compliant Ecoflex
-    /// the floor was validated on.
+    /// But in that window the held standoff did not follow `κ` (0.294 mm
+    /// across a 1.5× range) — a result about that window, not about the wall;
+    /// see `bridge_face_barrier_kappa`.
     ///
     /// ⇒ **Both facts together give the fix: hold `κ` at the CEILING and
     /// refine the schedule.** The ceiling is the stated requirement (stay out

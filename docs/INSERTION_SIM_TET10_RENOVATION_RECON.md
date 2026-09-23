@@ -1087,10 +1087,19 @@ Listed because the confidence of §4 rests on these being open, not closed.
    standoff — is false in this regime.** The standoff is set by geometry and
    elastic equilibrium; κ only changes the traction required to reach it.
 
+   ⚠ **SCOPED 2026-09-23 — "this regime" is this window, not this wall.** The
+   product κ sweep (`κ ON THE PRODUCT SCAN`, below) finds `min_sd` following κ
+   on the same scene at 32 steps: 0.317 → 0.415 mm across 6.3e7 → 1e8 at
+   matched depth. So the explanation in the sentence above — geometry sets the
+   gap, κ only the traction — does not hold across the scene, and what makes
+   this window flat has not been isolated. The decision it supported, κ = the
+   ceiling, now rests on that sweep's depths instead.
+
    ⭐ That is consistent with a number measured earlier and not connected until
-   now: **σ moves only 1.0183× per decade of κ** on this scene. A gap that
-   barely moves while the load adjusts is exactly a geometry-determined
-   standoff. The two measurements agree, and the derivation contradicts both.
+   now: **σ moves only 1.0183× per decade of κ** on this scene. It was read
+   then as a geometry-determined standoff; the scoping note above withdraws
+   that reading. The two measurements agree, and in this window the
+   derivation contradicts both.
 
    ⚠ **Depth DOES improve with κ** (1.875 → 2.812 mm from 2.4e7 → 3.7e7), so a
    stiffer barrier helps — just not through the mechanism the floor claims.
@@ -1237,6 +1246,43 @@ Listed because the confidence of §4 rests on these being open, not closed.
    1e6 and 1e9 arms, whose κ never changed. What moved it was not isolated. The
    headline holds at `1e-6` only.
 
+   ⛔⛔ **`κ` ON THE PRODUCT SCAN — the shipped ceiling sits at the best depth,
+   and nothing seats fully.** `the_bridge_ramp_over_a_stiffness_sweep_on_the_product_scan`:
+   `base_mold`, 32 steps of 0.1562 mm, the shipped `1e-1`, the fixture sweep's
+   own grid points from 4.0e6 to 4.0e8 plus the shipped 4.11e7. Measured
+   2026-09-23, macOS arm64, release, 6 934 s:
+
+   ```text
+   κ            steps   depth      stopped on                       min_sd    5 % tail
+   4.0e6         1/32   0.156 mm   Armijo stall, Newton iter 0      +0.162    +0.443
+   6.3e6         6/32   0.938 mm   Armijo stall, Newton iter 0      +0.156    +0.366
+   1.0e7        10/32   1.562 mm   Armijo stall, Newton iter 0      +0.137    +0.378
+   1.6e7        15/32   2.344 mm   Armijo stall, Newton iter 0      +0.146    +0.395
+   2.5e7        25/32   3.906 mm   Armijo stall, Newton iter 0      +0.171    +0.358
+   4.0e7        29/32   4.531 mm   inversion at tet 516             +0.210    +0.406
+   4.11e7 SHIP  29/32   4.531 mm   inversion at tet 516             +0.216    +0.414
+   6.3e7        28/32   4.375 mm   inversion at tet 516             +0.317    +0.519
+   1.0e8        28/32   4.375 mm   inversion at tet 516             +0.415    +0.614
+   1.6e8        27/32   4.219 mm   inversion at tet 516             +0.528    +0.711
+   2.5e8        27/32   4.219 mm   inversion at tet 516             +0.622    +0.787
+   4.0e8        27/32   4.219 mm   inversion at tet 516             +0.706    +0.853
+   ```
+
+   ⇒ **No arm penetrates, and no arm reaches 5 mm.** The best depth, 4.531 mm,
+   is reached only at 4.0e7 and the shipped 4.11e7. One grid step down costs
+   0.625 mm and ends on the line search; one step up costs one ramp step and
+   ends on the same element inverting. ⇒ the shipped ceiling is the best
+   operating point on this grid, and the margin either side is a single grid
+   step — what the depth does between grid points was not measured. Unlike
+   `tolerance_fixture`, where a decade of `κ` seats fully, here `κ` trades
+   contact against inversion and the product never seats.
+
+   ⚠ **`min_sd` FOLLOWS `κ` HERE at matched depth** — 0.317 → 0.415 mm across
+   6.3e7 → 1e8 (both 4.375 mm); 0.528 → 0.622 → 0.706 mm across 1.6e8 → 4.0e8
+   (all 4.219 mm). That scopes `THE HELD STANDOFF IS FLAT` above to its own
+   window (16 steps, 2.4e7–3.7e7); what differs between the windows has not
+   been isolated.
+
    ⛔⛔ **RETRACTED — the derivation below is the one that was replaced.** It
    selected the geometric centre of `[floor, ceiling]` and made κ depend on the
    increment. Measured on the product scan, that is exactly what made refining
@@ -1247,7 +1293,8 @@ Listed because the confidence of §4 rests on these being open, not closed.
    ⚠ Its stated rationale — the floor belongs to the MARCHING SCHEME, so a
    stored constant goes wrong when `n_steps` changes — was *sound reasoning from
    a false premise*: the floor only belongs to the marching scheme if κ sets the
-   standoff, and on a stiff wall it does not. At `d̂` = 1.2 mm over a 16-step
+   standoff, and in the window measured it did not (a window-specific result —
+   see `THE HELD STANDOFF IS FLAT`). At `d̂` = 1.2 mm over a 16-step
    3 mm ramp it gave:
 
    ```text
