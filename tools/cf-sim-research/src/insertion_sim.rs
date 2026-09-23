@@ -3194,6 +3194,90 @@ pub(crate) fn polyline_arc_length_m(polyline: &[Point3<f64>]) -> f64 {
         .sum()
 }
 
+/// A CONTINUOUS tangent along a polyline, for orienting a rigid body carried
+/// along it.
+///
+/// ⛔ **Why [`point_along_polyline_at_arc_distance`]'s tangent cannot be used
+/// for this.** That one returns the tangent of the *segment* the point falls
+/// in — piecewise-constant, jumping by the full turn angle at every vertex.
+/// For finding a POSITION that is fine. For orienting a rigid body it is not:
+/// the body snaps through the whole turn the instant the walk crosses a
+/// vertex, and a point far from the tip moves a long way for it.
+///
+/// Measured on `base_mold` (28 points, 2.40° worst turn, 121 mm long): with
+/// segment tangents the per-step normal closing **saturated at ~4.1 mm no
+/// matter how fine the schedule** — 4.18 mm at 256 steps, 4.13 mm at 512 —
+/// because the snap is set by vertex spacing, not by step size. Ratios of
+/// closing-to-arc-step reached **17.5**, which is not a thing a rigid
+/// translation can do. With a continuous tangent the same measurement scales
+/// with step size as it must.
+///
+/// Vertex tangents are the normalised sum of the two incident segment
+/// tangents (the ends take their single neighbour), and within a segment the
+/// two vertex tangents are blended by arc fraction. That is continuous across
+/// vertices by construction — at a vertex both sides evaluate to the same
+/// vertex tangent — and centres each turn on the vertex it belongs to.
+///
+/// Returns `None` for a degenerate polyline, matching its sibling.
+fn smoothed_tangent_along_polyline(
+    polyline: &[Point3<f64>],
+    distance_m: f64,
+) -> Option<Vector3<f64>> {
+    if polyline.len() < 2 {
+        return None;
+    }
+    // Segment tangents, skipping zero-length segments.
+    let seg: Vec<(f64, Vector3<f64>)> = polyline
+        .windows(2)
+        .filter_map(|w| {
+            let v = w[1].coords - w[0].coords;
+            let n = v.norm();
+            (n >= f64::EPSILON).then(|| (n, v / n))
+        })
+        .collect();
+    if seg.is_empty() {
+        return None;
+    }
+    // Vertex tangents: the normalised sum of incident segment tangents.
+    let vertex_tangent = |i: usize| -> Vector3<f64> {
+        let before = seg.get(i.wrapping_sub(1)).map(|s| s.1);
+        let after = seg.get(i).map(|s| s.1);
+        match (before, after) {
+            (Some(a), Some(b)) => {
+                let sum = a + b;
+                // Exactly-antiparallel neighbours cancel; fall back to the
+                // outgoing segment rather than normalising a zero vector.
+                if sum.norm() < 1e-12 {
+                    b
+                } else {
+                    sum.normalize()
+                }
+            }
+            (Some(a), None) => a,
+            (None, Some(b)) => b,
+            (None, None) => Vector3::z(),
+        }
+    };
+
+    let target_m = distance_m.max(0.0);
+    let mut walked_m = 0.0_f64;
+    for (i, &(len, _)) in seg.iter().enumerate() {
+        if walked_m + len >= target_m {
+            let f = ((target_m - walked_m) / len).clamp(0.0, 1.0);
+            let (a, b) = (vertex_tangent(i), vertex_tangent(i + 1));
+            let blended = a * (1.0 - f) + b * f;
+            return Some(if blended.norm() < 1e-12 {
+                seg[i].1
+            } else {
+                blended.normalize()
+            });
+        }
+        walked_m += len;
+    }
+    // Past the end: hold the final tangent, as the sibling does.
+    Some(seg[seg.len() - 1].1)
+}
+
 /// Compute the rigid transform for the intruder at slide fraction
 /// `t ∈ [0, 1]` along the cleaned-scan centerline polyline.
 ///
@@ -3237,10 +3321,13 @@ pub(crate) fn slide_pose_at(centerline: &[Point3<f64>], t: f64) -> Isometry3<f64
     let l_m = polyline_arc_length_m(centerline);
     let tip_rest = centerline[0];
     let walk_from_tip = (l_m * (1.0 - t.clamp(0.0, 1.0))).max(0.0);
-    let (tip_world, tangent) = point_along_polyline_at_arc_distance(centerline, walk_from_tip)
+    let (tip_world, _) = point_along_polyline_at_arc_distance(centerline, walk_from_tip)
         .unwrap_or((tip_rest, Vector3::z()));
-    let (_, rest_tangent) =
-        point_along_polyline_at_arc_distance(centerline, 0.0).unwrap_or((tip_rest, Vector3::z()));
+    // ⛔ The CONTINUOUS tangent, not the segment one — see
+    // `smoothed_tangent_along_polyline` for the measurement that forced this.
+    let tangent =
+        smoothed_tangent_along_polyline(centerline, walk_from_tip).unwrap_or_else(Vector3::z);
+    let rest_tangent = smoothed_tangent_along_polyline(centerline, 0.0).unwrap_or_else(Vector3::z);
     let rotation = Rotation3::rotation_between(&rest_tangent, &tangent)
         .map_or_else(UnitQuaternion::identity, UnitQuaternion::from);
     let translation = tip_world.coords - rotation * tip_rest.coords;
@@ -4237,6 +4324,61 @@ mod tests {
         );
     }
 
+    /// The pose's rotation is CONTINUOUS along the path — refining the
+    /// schedule must refine the per-step turn.
+    ///
+    /// ⛔ **This is the gate for a defect that shipped in the first revision
+    /// of the rotation and was caught only by a geometric measurement.**
+    /// `point_along_polyline_at_arc_distance` returns the tangent of the
+    /// SEGMENT a point falls in, which is piecewise-constant. Orienting a
+    /// rigid body by it makes the body snap through a vertex's entire turn the
+    /// instant the walk crosses that vertex — and a point far from the tip
+    /// travels a long way for it.
+    ///
+    /// The symptom was that the measured per-step normal closing on the
+    /// product scan **stopped shrinking when the schedule was refined**,
+    /// saturating near 4.1 mm from 256 steps to 512, with closing-to-arc-step
+    /// ratios reaching 17.5 — which a rigid translation cannot produce.
+    ///
+    /// So the property asserted here is the one that failed: halving the step
+    /// must roughly halve the largest consecutive rotation delta. Under
+    /// segment tangents that delta is pinned to the vertex turn angle and does
+    /// not move, whatever the schedule.
+    #[test]
+    fn the_slide_pose_rotation_refines_with_the_schedule() {
+        let centerline = bent_centerline();
+        let worst_turn = |n_steps: usize| -> f64 {
+            let mut worst = 0.0_f64;
+            for k in 0..n_steps {
+                // Step indices are tiny; the casts are exact.
+                #[allow(clippy::cast_precision_loss)]
+                let (t0, t1) = (k as f64 / n_steps as f64, (k + 1) as f64 / n_steps as f64);
+                let a = slide_pose_at(&centerline, t0).rotation;
+                let b = slide_pose_at(&centerline, t1).rotation;
+                worst = worst.max(a.rotation_to(&b).angle());
+            }
+            worst
+        };
+
+        let coarse = worst_turn(32);
+        let fine = worst_turn(128);
+        assert!(
+            coarse > 1e-6,
+            "the bent fixture must turn at all, or this gate is vacuous",
+        );
+        // Four times the steps must give materially less turn per step. The
+        // bound is loose (a factor of 2, not 4) because the blend spreads each
+        // turn over its two incident segments rather than exactly linearly —
+        // what is being excluded is a delta that does not move at all.
+        assert!(
+            fine < coarse / 2.0,
+            "refining 32 → 128 steps must refine the per-step turn: worst turn \
+             went {coarse:.6} → {fine:.6} rad. A delta that does not shrink means \
+             the tangent is piecewise-constant and the body is snapping at \
+             polyline vertices",
+        );
+    }
+
     /// A straight path produces NO rotation — the control for the test above.
     ///
     /// Without this, "follows the tangent" could be implemented by rotating
@@ -4417,6 +4559,62 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The PRODUCT scene — `base_mold`, configured as the CF Studio project
+    /// on disk actually configured it.
+    ///
+    /// ⛔ **Not `sock_over_capsule`.** Every scan measurement in this module
+    /// before 2026-09-22 used that one, and it is the wrong scene in three
+    /// ways that each move the answer:
+    ///
+    /// | | sock_over_capsule | **base_mold** |
+    /// |---|---|---|
+    /// | cavity inset | 3 mm | **5 mm** |
+    /// | layers | 10 mm Ecoflex+50 % Slacker + 3 mm DS20A | **17 mm DRAGON_SKIN_10A @ 25 % Slacker** |
+    /// | centerline | 83 mm, **straightness 1.0000** | 121 mm, **4.77 mm of bow, 8.72° of turn** |
+    ///
+    /// The last one is why it matters most here: a dead-straight centerline
+    /// makes `slide_pose_at`'s rotation an identity by construction, so the
+    /// travelling model could not be told from a translation-only one. On
+    /// `base_mold` it can.
+    ///
+    /// Values come from `base_mold.design.toml` / `.cfproject.json`, which is
+    /// a project that ran all the way to `Print` with a 334.6 g pour plan.
+    ///
+    /// ⚠ **The project's plug carries RIDGES** (three rings, 1.8–2.0 mm deep,
+    /// plus texture, side pinch and tip relief) and `SimDesign` has no notion
+    /// of them — the sim's cavity is a smooth offset. So this is the right
+    /// scan, the right inset and the right stack, on a SMOOTHER cavity than
+    /// the one that gets poured.
+    ///
+    /// Returns `None` when the scan is absent, so probes can skip cleanly.
+    /// `CF_SIM_RESEARCH_PRODUCT_SCAN` overrides the path.
+    fn product_scene() -> Option<(IndexedMesh, Vec<Point3<f64>>, Vec<CapPlane>, SimDesign)> {
+        let scan_path = std::env::var("CF_SIM_RESEARCH_PRODUCT_SCAN").map_or_else(
+            |_| PathBuf::from("/Users/jonhillesheim/scans/base_mold.cleaned.stl"),
+            PathBuf::from,
+        );
+        if !scan_path.exists() {
+            eprintln!("product scan absent at {}", scan_path.display());
+            return None;
+        }
+        // `base_mold.cleaned.stl` → `base_mold.prep.toml`.
+        let prep_path = scan_path.with_extension("").with_extension("prep.toml");
+        let prep_text = std::fs::read_to_string(&prep_path)
+            .map_err(|e| format!("{}: {e}", prep_path.display()))
+            .expect("the prep.toml beside the product scan must load");
+        let centerline =
+            crate::parse_centerline(&prep_text).expect("parse centerline from the prep.toml");
+        let caps =
+            cf_cap_planes::parse_cap_planes(&prep_text).expect("parse caps from the prep.toml");
+        let scan = load_stl(&scan_path).expect("load the product scan");
+        // From `base_mold.design.toml` + `.cfproject.json`.
+        let design = SimDesign {
+            cavity_inset_m: 0.005,
+            layers: vec![layer_with_slacker(0.017, "DRAGON_SKIN_10A", 0.25)],
+        };
+        Some((scan, centerline, caps, design))
     }
 
     /// One [`SimLayer`] — test sugar. `slacker_fraction` defaults to
@@ -10324,184 +10522,135 @@ mod tests {
         );
     }
 
-    /// ⭐⭐⭐ The bridge against the penalty baseline **on the product geometry**.
+    /// ⭐⭐⭐ The bridge against the penalty baseline **on the product scan**.
     ///
-    /// The sibling ladder runs synthetic scenes; this one runs the scan the
-    /// product actually ships, in both of its topologies — and they are not the
-    /// same problem:
-    /// - **`1layer`** — a single ECOFLEX_00_30 wall with NO cap planes, which
-    ///   routes `pinned_floor_shell` through the CLOSED-cavity short-circuit.
-    ///   This is the scene recon §8's `16/16 @ 3.00 mm` row was read off, and
-    ///   #959 measured that 16/16 to be a PENETRATING state (`min_sd`
-    ///   −0.373 mm, 5 % area tail −0.042 mm).
-    /// - **`gui-dflt`** — the dual-layer stack with the prep.toml cap plane, an
-    ///   OPEN mouth with a pinned floor. This is what the GUI runs, and at the
-    ///   shipped tolerance it reaches **4/16 = 25 %**.
+    /// `base_mold` as the CF Studio project configures it — 5 mm cavity inset,
+    /// one 17 mm DRAGON_SKIN_10A layer at 25 % Slacker. See [`product_scene`]
+    /// for why this and not `sock_over_capsule`.
     ///
     /// ⛔ The scan is repo-excluded, so nothing here can ever gate. It reports
     /// on a named platform.
     #[test]
-    #[ignore = "needs the repo-excluded iter-1 scan + release ramps on both arms; run with --ignored --nocapture"]
-    fn the_bridge_against_the_penalty_baseline_on_the_real_scan() {
+    #[ignore = "needs the product scan + release ramps on both arms; run with --ignored --nocapture"]
+    fn the_bridge_against_the_penalty_baseline_on_the_product_scan() {
         const N_STEPS: usize = 16;
         const TOLERANCES: [f64; 2] = [1e-1, 1e-2];
 
-        let scan_path = std::env::var("CF_SIM_RESEARCH_SPIKE_SCAN").map_or_else(
-            |_| PathBuf::from("/Users/jonhillesheim/scans/sock_over_capsule.cleaned.stl"),
-            PathBuf::from,
+        let Some((scan, _centerline, caps, design)) = product_scene() else {
+            return;
+        };
+        println!(
+            "\n══ base_mold · inset {:.1} mm · {} layer(s) ══",
+            design.cavity_inset_m * 1e3,
+            design.layers.len(),
         );
-        assert!(
-            scan_path.exists(),
-            "the iter-1 scan fixture is not at {} — this probe measures the REAL \
-             geometry and has nothing to report without it; set \
-             CF_SIM_RESEARCH_SPIKE_SCAN to point it elsewhere",
-            scan_path.display(),
+        println!(
+            "tol        arm                 steps  depth_mm  resid      pairs  \
+             min_sd_mm  tail5_mm  sigma_kPa"
         );
-        let prep_path = scan_path.with_extension("").with_extension("prep.toml");
-        let prep_text = std::fs::read_to_string(&prep_path)
-            .map_err(|e| format!("{}: {e}", prep_path.display()))
-            .expect("the prep.toml beside the scan must load — it carries the cap planes");
-        let cap_planes =
-            cf_cap_planes::parse_cap_planes(&prep_text).expect("parse cap planes from prep.toml");
-        assert!(
-            !cap_planes.is_empty(),
-            "iter-1's prep.toml carries one cap-plane loop; an empty list would \
-             measure a structurally different problem",
-        );
-        let scan = load_stl(&scan_path).expect("load the iter-1 cleaned scan");
+        let build = || build_insertion_geometry(&scan, &design, &caps, 2_500, 0.004);
 
-        let scenes: [(&str, Vec<SimLayer>, bool); 2] = [
-            ("1layer", vec![layer(0.010, "ECOFLEX_00_30")], false),
-            (
-                "gui-dflt",
-                vec![
-                    layer_with_slacker(0.010, "ECOFLEX_00_30", 0.5),
-                    layer(0.003, "DRAGON_SKIN_20A"),
-                ],
-                true,
-            ),
-        ];
-
-        for (label, layers, with_caps) in scenes {
-            let caps: &[CapPlane] = if with_caps { &cap_planes } else { &[] };
-            println!(
-                "\n══ {label} ({} layers, {} caps) ══",
-                layers.len(),
-                caps.len()
-            );
-            println!(
-                "tol        arm                 steps  depth_mm  resid      pairs  \
-                 min_sd_mm  tail5_mm  sigma_kPa"
-            );
-            let build = || {
-                let design = SimDesign {
-                    layers: layers.clone(),
-                    cavity_inset_m: 0.003,
-                };
-                build_insertion_geometry(&scan, &design, caps, 2_500, 0.004)
+        for tol in TOLERANCES {
+            let Ok(g) = build() else {
+                println!("  geometry FAILED to build");
+                break;
             };
-            for tol in TOLERANCES {
-                let Ok(g) = build() else {
-                    println!("  {label}: geometry FAILED to build");
-                    break;
-                };
-                let mesh4 = g.mesh.clone();
-                let intruder = g.intruder.clone();
-                let bounds = g.bounds;
-                let cavity_offset_m = g.cavity_offset_m;
-                let referenced4: Vec<VertexId> = referenced_vertices(&mesh4);
-                let rest4 = boundary_vertex_areas(
-                    Mesh::<Yeoh>::positions(&mesh4),
-                    Mesh::<Yeoh>::boundary_faces(&mesh4),
-                );
-                let base =
-                    run_insertion_ramp_at_kappa_and_tol(g, N_STEPS, INSERTION_CONTACT_KAPPA, tol)
-                        .expect("the penalty baseline ramp must build");
-                let (d, r, st) = base
-                    .steps
-                    .last()
-                    .map(|last| {
-                        let pos = positions_from_flat(&last.x_final);
-                        let c = intruder_contact_at_kappa(
-                            &intruder,
-                            bounds,
-                            last.interference_m,
-                            cavity_offset_m,
-                            INSERTION_CONTACT_KAPPA,
-                        );
-                        let raw = c.per_pair_readout(&mesh4, &pos);
-                        (
-                            last.interference_m,
-                            last.final_residual_norm,
-                            patch_stats(
-                                &filter_pair_readouts_to_referenced(raw, &referenced4),
-                                &rest4,
-                            ),
-                        )
-                    })
-                    .unwrap_or((0.0, f64::NAN, None));
-                print_arm_row(
-                    &format!("{tol:.0e}"),
-                    "tet4+penalty",
-                    base.steps.len(),
-                    N_STEPS,
-                    d,
-                    r,
-                    st,
-                );
+            let mesh4 = g.mesh.clone();
+            let intruder = g.intruder.clone();
+            let bounds = g.bounds;
+            let cavity_offset_m = g.cavity_offset_m;
+            let referenced4: Vec<VertexId> = referenced_vertices(&mesh4);
+            let rest4 = boundary_vertex_areas(
+                Mesh::<Yeoh>::positions(&mesh4),
+                Mesh::<Yeoh>::boundary_faces(&mesh4),
+            );
+            let base =
+                run_insertion_ramp_at_kappa_and_tol(g, N_STEPS, INSERTION_CONTACT_KAPPA, tol)
+                    .expect("the penalty baseline ramp must build");
+            let (d, r, st) = base
+                .steps
+                .last()
+                .map(|last| {
+                    let pos = positions_from_flat(&last.x_final);
+                    let c = intruder_contact_at_kappa(
+                        &intruder,
+                        bounds,
+                        last.interference_m,
+                        cavity_offset_m,
+                        INSERTION_CONTACT_KAPPA,
+                    );
+                    let raw = c.per_pair_readout(&mesh4, &pos);
+                    (
+                        last.interference_m,
+                        last.final_residual_norm,
+                        patch_stats(
+                            &filter_pair_readouts_to_referenced(raw, &referenced4),
+                            &rest4,
+                        ),
+                    )
+                })
+                .unwrap_or((0.0, f64::NAN, None));
+            print_arm_row(
+                &format!("{tol:.0e}"),
+                "tet4+penalty",
+                base.steps.len(),
+                N_STEPS,
+                d,
+                r,
+                st,
+            );
 
-                let Ok(g) = build() else { break };
-                let mesh10 = Tet10Mesh::<Yeoh>::from_tet4(&g.mesh);
-                let referenced10: Vec<VertexId> = referenced_vertices(&mesh10);
-                let rest10 = boundary_vertex_areas(
-                    Mesh::<Yeoh>::positions(&mesh10),
-                    Mesh::<Yeoh>::boundary_faces(&mesh10),
-                );
-                // `N_STEPS` is small; the cast is exact.
-                #[allow(clippy::cast_precision_loss)]
-                let kappa = bridge_face_barrier_kappa(
-                    BRIDGE_CONTACT_DHAT_M,
-                    -g.cavity_offset_m / N_STEPS as f64,
-                )
-                .expect("the bridge's stiffness bracket must be non-empty");
-                let bridge = run_insertion_ramp_tet10_ipc(g, N_STEPS, tol)
-                    .expect("the bridge ramp must build");
-                let (d, r, st) = bridge
-                    .steps
-                    .last()
-                    .map(|last| {
-                        let pos = positions_from_flat(&last.x_final);
-                        let c = intruder_ipc_contact_at(
-                            &intruder,
-                            bounds,
-                            last.interference_m,
-                            cavity_offset_m,
-                            kappa,
-                            BRIDGE_CONTACT_DHAT_M,
-                        );
-                        let raw = c.per_pair_readout(&mesh10, &pos);
-                        (
-                            last.interference_m,
-                            last.final_residual_norm,
-                            patch_stats(
-                                &filter_pair_readouts_to_referenced(raw, &referenced10),
-                                &rest10,
-                            ),
-                        )
-                    })
-                    .unwrap_or((0.0, f64::NAN, None));
-                print_arm_row(
-                    &format!("{tol:.0e}"),
-                    "tet10+ipc",
-                    bridge.steps.len(),
-                    N_STEPS,
-                    d,
-                    r,
-                    st,
-                );
-                if let Some(reason) = bridge.failure_reason.as_deref() {
-                    println!("            (bridge: {reason})");
-                }
+            let Ok(g) = build() else { break };
+            let mesh10 = Tet10Mesh::<Yeoh>::from_tet4(&g.mesh);
+            let referenced10: Vec<VertexId> = referenced_vertices(&mesh10);
+            let rest10 = boundary_vertex_areas(
+                Mesh::<Yeoh>::positions(&mesh10),
+                Mesh::<Yeoh>::boundary_faces(&mesh10),
+            );
+            // `N_STEPS` is small; the cast is exact.
+            #[allow(clippy::cast_precision_loss)]
+            let kappa = bridge_face_barrier_kappa(
+                BRIDGE_CONTACT_DHAT_M,
+                -g.cavity_offset_m / N_STEPS as f64,
+            )
+            .expect("the bridge's stiffness bracket must be non-empty");
+            let bridge =
+                run_insertion_ramp_tet10_ipc(g, N_STEPS, tol).expect("the bridge ramp must build");
+            let (d, r, st) = bridge
+                .steps
+                .last()
+                .map(|last| {
+                    let pos = positions_from_flat(&last.x_final);
+                    let c = intruder_ipc_contact_at(
+                        &intruder,
+                        bounds,
+                        last.interference_m,
+                        cavity_offset_m,
+                        kappa,
+                        BRIDGE_CONTACT_DHAT_M,
+                    );
+                    let raw = c.per_pair_readout(&mesh10, &pos);
+                    (
+                        last.interference_m,
+                        last.final_residual_norm,
+                        patch_stats(
+                            &filter_pair_readouts_to_referenced(raw, &referenced10),
+                            &rest10,
+                        ),
+                    )
+                })
+                .unwrap_or((0.0, f64::NAN, None));
+            print_arm_row(
+                &format!("{tol:.0e}"),
+                "tet10+ipc",
+                bridge.steps.len(),
+                N_STEPS,
+                d,
+                r,
+                st,
+            );
+            if let Some(reason) = bridge.failure_reason.as_deref() {
+                println!("            (bridge: {reason})");
             }
         }
     }
@@ -10544,36 +10693,14 @@ mod tests {
         ];
 
         // The product mesh, when the repo-excluded scan is on this machine.
-        let scan_path = std::env::var("CF_SIM_RESEARCH_SPIKE_SCAN").map_or_else(
-            |_| PathBuf::from("/Users/jonhillesheim/scans/sock_over_capsule.cleaned.stl"),
-            PathBuf::from,
-        );
-        if scan_path.exists() {
-            let prep = scan_path.with_extension("").with_extension("prep.toml");
-            if let Ok(text) = std::fs::read_to_string(&prep)
-                && let Ok(caps) = cf_cap_planes::parse_cap_planes(&text)
-                && let Ok(scan) = load_stl(&scan_path)
-            {
-                scenes.push((
-                    "gui-dflt (real scan)".into(),
-                    Box::new(move || {
-                        let design = SimDesign {
-                            layers: vec![
-                                layer_with_slacker(0.010, "ECOFLEX_00_30", 0.5),
-                                layer(0.003, "DRAGON_SKIN_20A"),
-                            ],
-                            cavity_inset_m: 0.003,
-                        };
-                        build_insertion_geometry(&scan, &design, &caps, 2_500, 0.004)
-                            .expect("the gui-dflt geometry must build")
-                    }),
-                ));
-            }
-        } else {
-            println!(
-                "(real scan absent at {} — synthetic scenes only)",
-                scan_path.display()
-            );
+        if let Some((scan, _centerline, caps, design)) = product_scene() {
+            scenes.push((
+                "base_mold (product)".into(),
+                Box::new(move || {
+                    build_insertion_geometry(&scan, &design, &caps, 2_500, 0.004)
+                        .expect("the product geometry must build")
+                }),
+            ));
         }
 
         for (label, build) in scenes {
@@ -10789,7 +10916,7 @@ mod tests {
         );
     }
 
-    /// What slide schedule the REAL scan needs — measured without solving.
+    /// What slide schedule the PRODUCT scan needs — measured without solving.
     ///
     /// The sliding bridge's `κ` is derived from the normal closing, and a
     /// bracket exists only while `ρ · closing < d̂/2`. That makes the step
@@ -10801,114 +10928,88 @@ mod tests {
     ///
     /// ⛔ Asserts nothing — it reports a schedule.
     #[test]
-    #[ignore = "needs the repo-excluded iter-1 scan; run with --ignored --nocapture"]
-    fn what_slide_schedule_the_real_scan_needs() {
-        let scan_path = std::env::var("CF_SIM_RESEARCH_SPIKE_SCAN").map_or_else(
-            |_| PathBuf::from("/Users/jonhillesheim/scans/sock_over_capsule.cleaned.stl"),
-            PathBuf::from,
-        );
-        assert!(
-            scan_path.exists(),
-            "the iter-1 scan fixture is not at {}",
-            scan_path.display(),
-        );
-        let prep_path = scan_path.with_extension("").with_extension("prep.toml");
-        let prep_text =
-            std::fs::read_to_string(&prep_path).expect("the prep.toml beside the scan must load");
-        let centerline =
-            crate::parse_centerline(&prep_text).expect("parse centerline from prep.toml");
-        let cap_planes =
-            cf_cap_planes::parse_cap_planes(&prep_text).expect("parse cap planes from prep.toml");
+    #[ignore = "needs the product scan; run with --ignored --nocapture"]
+    fn what_slide_schedule_the_product_scan_needs() {
+        let Some((scan, centerline, caps, design)) = product_scene() else {
+            return;
+        };
         assert!(
             centerline.len() >= 2,
-            "the scan's prep.toml must carry a centerline of >= 2 points, got {}",
+            "the product prep.toml must carry a centerline of >= 2 points, got {}",
             centerline.len(),
         );
-        let scan = load_stl(&scan_path).expect("load the iter-1 cleaned scan");
         let arc_m = polyline_arc_length_m(&centerline);
-
-        // Straightness: how much the path actually bends. A ratio of 1 is a
-        // straight line; the further below 1, the more the banked rotation
-        // matters.
         let chord_m = (centerline[centerline.len() - 1] - centerline[0]).norm();
+
+        // How much the path actually bends — the quantity that decides whether
+        // the travelling model differs from a translation-only one at all.
+        let axis = (centerline[centerline.len() - 1] - centerline[0]).normalize();
+        let max_bow_m = centerline
+            .iter()
+            .map(|p| {
+                let d = p - centerline[0];
+                (d - axis * d.dot(&axis)).norm()
+            })
+            .fold(0.0_f64, f64::max);
         println!(
-            "\ncenterline: {} points · arc {:.2} mm · chord {:.2} mm · straightness {:.4}",
+            "\ncenterline: {} points · arc {:.2} mm · chord {:.2} mm · straightness {:.4} \
+             · max bow {:.3} mm",
             centerline.len(),
             arc_m * 1e3,
             chord_m * 1e3,
             chord_m / arc_m,
+            max_bow_m * 1e3,
         );
 
         let allowance_m = 0.5 * BRIDGE_CONTACT_DHAT_M / BRIDGE_PATCH_NONUNIFORMITY;
         println!(
-            "a bracket needs closing < {:.4} mm (d_hat/2 / rho, at d_hat = {:.2} mm)\n",
+            "cavity inset {:.1} mm · {} layer(s) · a bracket needs closing < {:.4} mm \
+             (d_hat/2 / rho at d_hat = {:.2} mm)\n",
+            design.cavity_inset_m * 1e3,
+            design.layers.len(),
             allowance_m * 1e3,
             BRIDGE_CONTACT_DHAT_M * 1e3,
         );
 
-        let scenes: [(&str, Vec<SimLayer>, bool); 2] = [
-            ("1layer", vec![layer(0.010, "ECOFLEX_00_30")], false),
-            (
-                "gui-dflt",
-                vec![
-                    layer_with_slacker(0.010, "ECOFLEX_00_30", 0.5),
-                    layer(0.003, "DRAGON_SKIN_20A"),
-                ],
-                true,
-            ),
-        ];
-        for (label, layers, with_caps) in scenes {
-            let caps: &[CapPlane] = if with_caps { &cap_planes } else { &[] };
-            let design = SimDesign {
-                layers,
-                cavity_inset_m: 0.003,
-            };
-            let Ok(g) = build_insertion_geometry(&scan, &design, caps, 2_500, 0.004) else {
-                println!("{label}: geometry FAILED to build");
-                continue;
-            };
-            let faces: Vec<[VertexId; 3]> = Mesh::<Yeoh>::boundary_faces(&g.mesh).to_vec();
-            let rest = Mesh::<Yeoh>::positions(&g.mesh);
-            let mut ids: Vec<VertexId> = faces.iter().flatten().copied().collect();
-            ids.sort_unstable();
-            ids.dedup();
-            let wall: Vec<Vec3> = ids.into_iter().map(|v| rest[v as usize]).collect();
+        let Ok(g) = build_insertion_geometry(&scan, &design, &caps, 2_500, 0.004) else {
+            println!("product geometry FAILED to build");
+            return;
+        };
+        let faces: Vec<[VertexId; 3]> = Mesh::<Yeoh>::boundary_faces(&g.mesh).to_vec();
+        let rest = Mesh::<Yeoh>::positions(&g.mesh);
+        let mut ids: Vec<VertexId> = faces.iter().flatten().copied().collect();
+        ids.sort_unstable();
+        ids.dedup();
+        let wall: Vec<Vec3> = ids.into_iter().map(|v| rest[v as usize]).collect();
 
-            println!(
-                "══ {label} ({} tets, {} wall nodes) ══",
-                g.n_tets,
-                wall.len()
+        println!("base_mold ({} tets, {} wall nodes)", g.n_tets, wall.len());
+        println!("steps   arc/step    closing   ratio   brackets?");
+        for n_steps in [16_usize, 32, 64, 128, 256, 512] {
+            let per_step_m =
+                arc_m / f64::from(u32::try_from(n_steps).expect("step count fits u32"));
+            let closing_m = sliding_normal_increment_m(
+                &g.intruder,
+                g.bounds,
+                &centerline,
+                n_steps,
+                g.cavity_offset_m,
+                BRIDGE_CONTACT_DHAT_M,
+                &wall,
             );
-            println!("steps   arc/step    closing   ratio   brackets?");
-            for n_steps in [16_usize, 32, 64, 128, 256] {
-                // Step counts are tiny; the cast is exact.
-                let per_step_m =
-                    arc_m / f64::from(u32::try_from(n_steps).expect("step count fits u32"));
-                let closing_m = sliding_normal_increment_m(
-                    &g.intruder,
-                    g.bounds,
-                    &centerline,
-                    n_steps,
-                    g.cavity_offset_m,
-                    BRIDGE_CONTACT_DHAT_M,
-                    &wall,
-                );
-                let ok = bridge_face_barrier_kappa(BRIDGE_CONTACT_DHAT_M, closing_m).is_ok();
+            let ok = bridge_face_barrier_kappa(BRIDGE_CONTACT_DHAT_M, closing_m).is_ok();
+            println!(
+                "{n_steps:>5}   {:>7.4} mm  {:>7.4} mm  {:>5.3}   {}",
+                per_step_m * 1e3,
+                closing_m * 1e3,
+                closing_m / per_step_m,
+                if ok { "YES" } else { "no" },
+            );
+            if ok {
                 println!(
-                    "{n_steps:>5}   {:>7.4} mm  {:>7.4} mm  {:>5.3}   {}",
-                    per_step_m * 1e3,
-                    closing_m * 1e3,
-                    closing_m / per_step_m,
-                    if ok { "YES" } else { "no" },
+                    "      ⇒ at ~8 s/step that is ~{:.0} min of solve",
+                    f64::from(u32::try_from(n_steps).expect("fits")) * 8.0 / 60.0,
                 );
-                if ok {
-                    println!(
-                        "      ⇒ at ~8 s/step that is ~{:.0} min of solve",
-                        // Step counts are tiny; the cast is exact.
-                        f64::from(u32::try_from(n_steps).expect("fits")) * 8.0 / 60.0,
-                    );
-                    break;
-                }
+                break;
             }
         }
     }
