@@ -1200,8 +1200,9 @@ fn intruder_contact_at_kappa(
 /// decade** across the seated arms: the flattest coupling of any scene tried,
 /// which is what makes this close to converged rather than a loose bound.
 ///
-/// ⛔⛔ **SUPERSEDES 117 kPa, which was `sock_over_capsule`** — a 3 mm inset
-/// through Ecoflex 00-30. `base_mold` is a 5 mm inset through 17 mm of
+/// ⛔⛔ **SUPERSEDES 117 kPa, read on #959's 3 mm Ecoflex 00-30 scenes** — the
+/// synthetic sphere (117.01), with `sock_over_capsule` agreeing (119.84).
+/// `base_mold` is a 5 mm inset through 17 mm of
 /// DRAGON_SKIN_10A at 25 % Slacker. σ is roughly HALF, and `κ` scales with it
 /// linearly, so every derived stiffness taken before this re-measurement was
 /// about 2× too large → see `product_scene`.
@@ -10081,25 +10082,21 @@ mod tests {
     /// ⭐⭐⭐ **THE DISCRIMINATING EXPERIMENT** — the bridge against the penalty
     /// baseline, across a ladder of residual tolerances.
     ///
-    /// #958 measured that on the product geometry the full-depth result is
-    /// bought with the tolerance: at the shipped `1e-1` the real scan reaches
+    /// #958 measured that on `sock_over_capsule` (the scan every measurement
+    /// before 2026-09-22 used) the full-depth result is bought with the
+    /// tolerance: at the shipped `1e-1` that scan reaches
     /// 16/16, and at `1e-6` it stalls at step 4 — usable depth falls 4×. That,
     /// not depth and not friction, is what the bridge exists to fix, so this is
     /// the measurement that decides whether it did.
     ///
     /// ⚠ **A ladder, not a single tight run, because BOTH paths have a
-    /// conditioning floor.** Asked for `1e-6`, neither arm converges here: the
-    /// penalty arm stalls at `r ≈ 1.6e-2`, the bridge during its approach at
-    /// `r ≈ 1e-4` — and no `κ` across three decades buys the bridge a feasible
-    /// start (`the_bridge_ramp_over_a_stiffness_sweep`: 1e6 → 1e9, every arm
-    /// 0/16, every stall inside the approach). ⚠ That is a claim about the
-    /// OUTCOME, not the mechanism: `κ` does move how far the approach gets —
-    /// at 1e6 it stalls on the LAST approach solve (−0.1875 mm), at the shipped
-    /// value four increments earlier (−0.9375 mm), and at both the bracket
-    /// floor and 1e9 six earlier (−1.3125 mm) — and not monotonically. A
-    /// single tight run reports "both fail" and hides
-    /// the only quantity that separates them, which is how much residual each
-    /// path can be asked for before depth collapses.
+    /// conditioning floor.** The penalty path's is #958's, above. The bridge's
+    /// is `the_bridge_ramp_over_a_stiffness_sweep`: on `tolerance_fixture`,
+    /// asked for `1e-6`, no `κ` from 1e6 to 1e9 completes the feasible-start
+    /// approach — while asked for the shipped `1e-1`, every grid `κ` from
+    /// 2.5e7 to 2.5e8 seats fully. A single tight run reports "both fail" and
+    /// hides the only quantity that separates them, which is how much residual
+    /// each path can be asked for before depth collapses.
     ///
     /// ⭐ **The payoff quantity is not depth alone** (#959): a ramp can reach
     /// full depth BY PENETRATING — the single-layer scan reaches 16/16 with
@@ -10118,9 +10115,9 @@ mod tests {
         /// Residual tolerances asked for, loosest first. `1e-1` is what ships.
         const TOLERANCES: [f64; 4] = [1e-1, 1e-2, 1e-3, 1e-4];
 
-        // ⭐ The sphere is the scene `BRIDGE_DESIGN_TRACTION_PA` was measured on
-        // (#959), so the bridge is judged where its own `σ` came from — not
-        // only on the small conditioning stand-in.
+        // The sphere is where #959 read σ before it was re-measured on
+        // `base_mold`. It stays as a larger synthetic scene beside the small
+        // conditioning stand-in — not as the source of the shipped σ.
         fn sphere_scene() -> InsertionGeometry {
             let design = SimDesign {
                 cavity_inset_m: 0.003,
@@ -10378,32 +10375,37 @@ mod tests {
         );
     }
 
-    /// The bridge ramp across a stiffness sweep — is `κ` the binding constraint?
+    /// The bridge ramp across a stiffness sweep, at the tight AND the shipped
+    /// tolerance.
     ///
     /// The derivation claims `κ` is determined rather than swept. That claim is
     /// only worth something if the neighbouring stiffnesses can be run, so this
-    /// runs them: the bracket's floor, the shipped value, and a decade beyond
-    /// each end.
+    /// runs them: a log grid over 1e6–1e9, five per decade, plus the bracket's
+    /// floor and the shipped value.
     ///
-    /// ⭐ **The shipped value IS the ceiling** since the κ fix, so there is no
-    /// separate CEILING arm — running one would run the same κ twice. That the
-    /// two coincide is gated in
-    /// `the_bridges_barrier_band_reports_a_floor_and_ships_a_ceiling`, not
-    /// re-checked here.
+    /// ⚠ **Both tolerances, because they ask different questions.** At
+    /// [`TIGHT_TOL`] the question is whether any `κ` gets past the conditioning
+    /// floor; at [`INSERTION_SOLVE_TOL`] — what ships — it is which `κ` seats.
+    /// A sweep at one tolerance answers only its own. A seat is depth with
+    /// `min_sd` AND the 5 % tail above zero, never depth alone (#959).
+    ///
+    /// The shipped value IS the ceiling since the κ fix, so there is no
+    /// separate CEILING arm. That the two coincide is gated in
+    /// `the_bridges_barrier_band_reports_a_floor_and_ships_a_ceiling`.
     ///
     /// ⛔ Asserts nothing — where a ramp stalls is platform-dependent.
     #[test]
-    #[ignore = "release-mode ramps across a stiffness sweep; run with --ignored --nocapture"]
+    #[ignore = "release-mode ramps across a stiffness sweep at two tolerances; run with --ignored --nocapture"]
     fn the_bridge_ramp_over_a_stiffness_sweep() {
         const N_STEPS: usize = 16;
         // ⛔ The schedule must come from the fixture this sweep actually runs.
         // A hardcoded product inset derives a FLOOR for a march that never
-        // happens here — the approach steps at `cavity_offset_m / N_STEPS`, and
-        // [`tolerance_fixture`] is a 3 mm inset, not the product's 5 mm.
+        // happens here — the approach steps at `-cavity_offset_m / N_STEPS`,
+        // and [`tolerance_fixture`] is a 3 mm inset, not the product's 5 mm.
         // `N_STEPS` is small; the cast is exact.
         #[allow(clippy::cast_precision_loss)]
         let step = -tolerance_fixture().cavity_offset_m / N_STEPS as f64;
-        let derived = bridge_face_barrier_kappa(BRIDGE_CONTACT_DHAT_M, step)
+        let shipped = bridge_face_barrier_kappa(BRIDGE_CONTACT_DHAT_M, step)
             .expect("the bracket must be non-empty");
         let floor = face_barrier_kappa(
             BRIDGE_CONTACT_DHAT_M,
@@ -10411,78 +10413,81 @@ mod tests {
             BRIDGE_DESIGN_TRACTION_PA,
         )
         .expect("floor");
-        let ceiling = face_barrier_kappa(
-            BRIDGE_CONTACT_DHAT_M,
-            0.5 * BRIDGE_CONTACT_DHAT_M,
-            BRIDGE_DESIGN_TRACTION_PA,
-        )
-        .expect("ceiling");
+
+        // Five per decade over 1e6..=1e9, then the two named values, in order.
+        let mut arms: Vec<(f64, &str)> = (0..=15)
+            .map(|i| (10f64.powf(6.0 + f64::from(i) / 5.0), ""))
+            .collect();
+        arms.extend([(floor, "FLOOR"), (shipped, "SHIPPED = CEILING")]);
+        arms.sort_by(|a, b| a.0.total_cmp(&b.0));
 
         println!(
-            "\nbracket [{floor:.4e}, {ceiling:.4e}], derived {derived:.4e}, \
-             d_hat {BRIDGE_CONTACT_DHAT_M:.2e} m, step {:.4} mm\n",
+            "\nfloor {floor:.4e}, shipped {shipped:.4e}, d_hat {BRIDGE_CONTACT_DHAT_M:.2e} m, \
+             step {:.4} mm",
             step * 1e3,
         );
-        println!(
-            "kappa        label            steps  depth_mm  resid      pairs  min_sd_mm  \
-             tail5_mm  sigma_kPa"
-        );
-
-        // ⚠ The multiples are COMPUTED, so re-measuring σ cannot leave a stale
-        // "0.06x" in the output claiming a ratio the run no longer has.
-        for (kappa, label) in [
-            (1.0e6, format!("{:.2}x floor", 1.0e6 / floor)),
-            (floor, "FLOOR".to_owned()),
-            (derived, "DERIVED = CEILING".to_owned()),
-            (1.0e9, format!("{:.1}x ceiling", 1.0e9 / ceiling)),
-        ] {
-            let g = tolerance_fixture();
-            let mesh10 = Tet10Mesh::<Yeoh>::from_tet4(&g.mesh);
-            let referenced: Vec<VertexId> = referenced_vertices(&mesh10);
-            let rest_areas = boundary_vertex_areas(
-                Mesh::<Yeoh>::positions(&mesh10),
-                Mesh::<Yeoh>::boundary_faces(&mesh10),
+        for tol in [TIGHT_TOL, INSERTION_SOLVE_TOL] {
+            println!("\n══ asked for {tol:e} ══");
+            println!(
+                "{:<20} {:<18} {:>6}  {:>8}  {:>9}  {:>5}  {:>9}  {:>8}  {:>9}",
+                "kappa",
+                "label",
+                "steps",
+                "depth_mm",
+                "resid",
+                "pairs",
+                "min_sd_mm",
+                "tail5_mm",
+                "sigma_kPa",
             );
-            let intruder = g.intruder.clone();
-            let bounds = g.bounds;
-            let cavity_offset_m = g.cavity_offset_m;
-            let ramp = run_insertion_ramp_tet10_ipc_at(
-                g,
-                N_STEPS,
-                TIGHT_TOL,
-                kappa,
-                BRIDGE_CONTACT_DHAT_M,
-            )
-            .expect("the bridge ramp must build");
-            if let Some(last) = ramp.steps.last() {
-                let pos = positions_from_flat(&last.x_final);
-                let contact = intruder_ipc_contact_at(
-                    &intruder,
-                    bounds,
-                    last.interference_m,
-                    cavity_offset_m,
-                    kappa,
-                    BRIDGE_CONTACT_DHAT_M,
+            for &(kappa, label) in &arms {
+                let kappa_label = format!("{kappa:.3e}");
+                let g = tolerance_fixture();
+                let mesh10 = Tet10Mesh::<Yeoh>::from_tet4(&g.mesh);
+                let referenced: Vec<VertexId> = referenced_vertices(&mesh10);
+                let rest_areas = boundary_vertex_areas(
+                    Mesh::<Yeoh>::positions(&mesh10),
+                    Mesh::<Yeoh>::boundary_faces(&mesh10),
                 );
-                let raw = contact.per_pair_readout(&mesh10, &pos);
-                let readouts = filter_pair_readouts_to_referenced(raw, &referenced);
-                print_arm_row(
-                    &format!("{kappa:.3e}"),
-                    &label,
-                    ramp.steps.len(),
-                    N_STEPS,
-                    last.interference_m,
-                    last.final_residual_norm,
-                    patch_stats(&readouts, &rest_areas),
-                );
-            } else {
-                println!("{kappa:.3e}    {label:<17}   0/{N_STEPS}  (no step converged)");
-            }
-            if let Some(k) = ramp.failed_at_step {
-                println!(
-                    "    stalled at recorded step {k}: {}",
-                    ramp.failure_reason.as_deref().unwrap_or("?"),
-                );
+                let intruder = g.intruder.clone();
+                let bounds = g.bounds;
+                let cavity_offset_m = g.cavity_offset_m;
+                let ramp =
+                    run_insertion_ramp_tet10_ipc_at(g, N_STEPS, tol, kappa, BRIDGE_CONTACT_DHAT_M)
+                        .expect("the bridge ramp must build");
+                if let Some(last) = ramp.steps.last() {
+                    let pos = positions_from_flat(&last.x_final);
+                    let contact = intruder_ipc_contact_at(
+                        &intruder,
+                        bounds,
+                        last.interference_m,
+                        cavity_offset_m,
+                        kappa,
+                        BRIDGE_CONTACT_DHAT_M,
+                    );
+                    let raw = contact.per_pair_readout(&mesh10, &pos);
+                    let readouts = filter_pair_readouts_to_referenced(raw, &referenced);
+                    print_arm_row(
+                        &kappa_label,
+                        label,
+                        ramp.steps.len(),
+                        N_STEPS,
+                        last.interference_m,
+                        last.final_residual_norm,
+                        patch_stats(&readouts, &rest_areas),
+                    );
+                } else {
+                    let steps = format!("0/{N_STEPS}");
+                    println!("{kappa_label:<20} {label:<18} {steps:>6}  (no step converged)");
+                }
+                if let Some(k) = ramp.failed_at_step {
+                    // The solver's closing hint is the same on every row; drop it.
+                    let why = ramp.failure_reason.as_deref().unwrap_or("?");
+                    let why = why
+                        .split_once(" Likely causes")
+                        .map_or(why, |(head, _)| head);
+                    println!("    stalled at recorded step {k}: {why}");
+                }
             }
         }
     }
@@ -11152,13 +11157,13 @@ mod tests {
     /// ⭐⭐⭐ **σ and ρ on the PRODUCT scan** — the numbers the bridge's `κ`
     /// is actually derived from.
     ///
-    /// ⛔ **The 117 kPa this constant USED to hold was measured on
-    /// `sock_over_capsule`**: a 3 mm inset through Ecoflex 00-30. `base_mold`
+    /// ⛔ **The 117 kPa [`BRIDGE_DESIGN_TRACTION_PA`] used to hold was read on
+    /// #959's 3 mm Ecoflex 00-30 scenes** (the synthetic sphere, with
+    /// `sock_over_capsule` agreeing). `base_mold`
     /// is a **5 mm** inset through **17 mm of DRAGON_SKIN_10A at 25 %
     /// Slacker** — a substantially stiffer wall pressed further — so there is
     /// no reason for σ to carry across, and κ scales with it linearly. This is
-    /// the re-measurement, and [`BRIDGE_DESIGN_TRACTION_PA`] now carries what
-    /// it returned.
+    /// the re-measurement, and the constant now carries what it returned.
     ///
     /// Same method as #959, so the two are comparable: sweep the penalty
     /// stiffness, read the area-weighted mean traction on the REST area basis
