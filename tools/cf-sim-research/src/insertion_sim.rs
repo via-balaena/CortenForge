@@ -11076,4 +11076,90 @@ mod tests {
                 .expect("the product geometry must build")
         });
     }
+
+    /// Does marching FINER fix the bridge's feasibility stall, as the
+    /// derivation predicts?
+    ///
+    /// ⭐⭐ **This tests a prediction rather than tuning a constant.** On the
+    /// product scan at 16 steps the bridge stalls at 6/16 with an
+    /// infeasible-start signature (Armijo at Newton iteration 0, `r_norm`
+    /// 3.6e4): the last converged step held `min_sd` 0.2936 mm and the next
+    /// increment was 0.3125 mm. The increment outran the standoff.
+    ///
+    /// The κ floor is a MARCHING-SCHEME number — "hold `ρ · step` open" — so
+    /// the derivation's own answer to that is a finer march, not a stiffer
+    /// barrier. Halving the step halves what must be held AND widens the
+    /// bracket (the floor falls; the ceiling does not move). If depth does not
+    /// improve with step count, the floor is not the binding constraint and
+    /// the ρ substitution is wrong in a way finer marching cannot fix.
+    ///
+    /// ⛔ Reaching for a stiffer κ first would be sweeping wearing a
+    /// derivation's clothes — the exact thing this approach exists to avoid.
+    ///
+    /// ⛔ Asserts nothing; stall points are platform-dependent.
+    #[test]
+    #[ignore = "needs the product scan + release ramps at several schedules; run with --ignored --nocapture"]
+    fn does_marching_finer_fix_the_bridges_feasibility_stall() {
+        let Some((scan, _centerline, caps, design)) = product_scene() else {
+            return;
+        };
+        let inset_m = design.cavity_inset_m;
+        println!(
+            "\nbase_mold · inset {:.1} mm · the floor must hold rho*step open\n",
+            inset_m * 1e3,
+        );
+        println!("steps   step_mm   kappa        held_min_sd  depth_mm   of_inset  outcome");
+        for n_steps in [16_usize, 32, 64] {
+            let step_m = inset_m / f64::from(u32::try_from(n_steps).expect("fits"));
+            let kappa = bridge_face_barrier_kappa(BRIDGE_CONTACT_DHAT_M, step_m)
+                .expect("the bracket must be non-empty at these schedules");
+            let Ok(g) = build_insertion_geometry(&scan, &design, &caps, 2_500, 0.004) else {
+                println!("geometry FAILED to build");
+                return;
+            };
+            let mesh10 = Tet10Mesh::<Yeoh>::from_tet4(&g.mesh);
+            let referenced: Vec<VertexId> = referenced_vertices(&mesh10);
+            let rest10 = boundary_vertex_areas(
+                Mesh::<Yeoh>::positions(&mesh10),
+                Mesh::<Yeoh>::boundary_faces(&mesh10),
+            );
+            let intruder = g.intruder.clone();
+            let bounds = g.bounds;
+            let cavity_offset_m = g.cavity_offset_m;
+
+            let ramp = run_insertion_ramp_tet10_ipc(g, n_steps, INSERTION_SOLVE_TOL)
+                .expect("the bridge ramp must build");
+            let (depth_m, min_sd_mm) = ramp.steps.last().map_or((0.0, f64::NAN), |last| {
+                let pos = positions_from_flat(&last.x_final);
+                let c = intruder_ipc_contact_at(
+                    &intruder,
+                    bounds,
+                    last.interference_m,
+                    cavity_offset_m,
+                    kappa,
+                    BRIDGE_CONTACT_DHAT_M,
+                );
+                let raw = c.per_pair_readout(&mesh10, &pos);
+                let stats = patch_stats(
+                    &filter_pair_readouts_to_referenced(raw, &referenced),
+                    &rest10,
+                );
+                (
+                    last.interference_m,
+                    stats.map_or(f64::NAN, |s| s.min_sd_m * 1e3),
+                )
+            });
+            let outcome = if ramp.steps.len() == n_steps {
+                "COMPLETE".to_string()
+            } else {
+                format!("stalled {}/{n_steps}", ramp.steps.len())
+            };
+            println!(
+                "{n_steps:>5}   {:>7.4}   {kappa:.4e}   {min_sd_mm:>10.4}   {:>7.3}   {:>6.1}%  {outcome}",
+                step_m * 1e3,
+                depth_m * 1e3,
+                100.0 * depth_m / inset_m,
+            );
+        }
+    }
 }
