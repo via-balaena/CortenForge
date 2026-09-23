@@ -10090,9 +10090,14 @@ mod tests {
     /// ⚠ **A ladder, not a single tight run, because BOTH paths have a
     /// conditioning floor.** Asked for `1e-6`, neither arm converges here: the
     /// penalty arm stalls at `r ≈ 1.6e-2`, the bridge during its approach at
-    /// `r ≈ 1e-4` — and the bridge's floor is insensitive to `κ` across three
-    /// decades (`the_bridge_ramp_over_a_stiffness_sweep`: 1e6 → 1e9, all
-    /// stalling the same way). A single tight run reports "both fail" and hides
+    /// `r ≈ 1e-4` — and no `κ` across three decades buys the bridge a feasible
+    /// start (`the_bridge_ramp_over_a_stiffness_sweep`: 1e6 → 1e9, every arm
+    /// 0/16, every stall inside the approach). ⚠ That is a claim about the
+    /// OUTCOME, not the mechanism: `κ` does move how far the approach gets —
+    /// at 1e6 it stalls on the LAST approach solve (−0.1875 mm), at the shipped
+    /// value four increments earlier (−0.9375 mm), and at both the bracket
+    /// floor and 1e9 six earlier (−1.3125 mm) — and not monotonically. A
+    /// single tight run reports "both fail" and hides
     /// the only quantity that separates them, which is how much residual each
     /// path can be asked for before depth collapses.
     ///
@@ -10377,19 +10382,27 @@ mod tests {
     ///
     /// The derivation claims `κ` is determined rather than swept. That claim is
     /// only worth something if the neighbouring stiffnesses can be run, so this
-    /// runs them: the derived value, a decade either side, and the bracket's own
-    /// floor and ceiling.
+    /// runs them: the bracket's floor, the shipped value, and a decade beyond
+    /// each end.
+    ///
+    /// ⭐ **The shipped value IS the ceiling** since the κ fix, so there is no
+    /// separate CEILING arm — running one would run the same κ twice. That the
+    /// two coincide is gated in
+    /// `the_bridges_barrier_band_reports_a_floor_and_ships_a_ceiling`, not
+    /// re-checked here.
     ///
     /// ⛔ Asserts nothing — where a ramp stalls is platform-dependent.
     #[test]
     #[ignore = "release-mode ramps across a stiffness sweep; run with --ignored --nocapture"]
     fn the_bridge_ramp_over_a_stiffness_sweep() {
         const N_STEPS: usize = 16;
-        // The product inset (`base_mold`), not sock's 3 mm.
-        let inset_m = 0.005;
+        // ⛔ The schedule must come from the fixture this sweep actually runs.
+        // A hardcoded product inset derives a FLOOR for a march that never
+        // happens here — the approach steps at `cavity_offset_m / N_STEPS`, and
+        // [`tolerance_fixture`] is a 3 mm inset, not the product's 5 mm.
         // `N_STEPS` is small; the cast is exact.
         #[allow(clippy::cast_precision_loss)]
-        let step = inset_m / N_STEPS as f64;
+        let step = -tolerance_fixture().cavity_offset_m / N_STEPS as f64;
         let derived = bridge_face_barrier_kappa(BRIDGE_CONTACT_DHAT_M, step)
             .expect("the bracket must be non-empty");
         let floor = face_barrier_kappa(
@@ -10411,16 +10424,17 @@ mod tests {
             step * 1e3,
         );
         println!(
-            "kappa        label       steps  depth_mm  resid      pairs  min_sd_mm  \
+            "kappa        label            steps  depth_mm  resid      pairs  min_sd_mm  \
              tail5_mm  sigma_kPa"
         );
 
+        // ⚠ The multiples are COMPUTED, so re-measuring σ cannot leave a stale
+        // "0.06x" in the output claiming a ratio the run no longer has.
         for (kappa, label) in [
-            (1.0e6, "0.06x floor"),
-            (floor, "FLOOR"),
-            (derived, "DERIVED"),
-            (ceiling, "CEILING"),
-            (1.0e9, "12x ceiling"),
+            (1.0e6, format!("{:.2}x floor", 1.0e6 / floor)),
+            (floor, "FLOOR".to_owned()),
+            (derived, "DERIVED = CEILING".to_owned()),
+            (1.0e9, format!("{:.1}x ceiling", 1.0e9 / ceiling)),
         ] {
             let g = tolerance_fixture();
             let mesh10 = Tet10Mesh::<Yeoh>::from_tet4(&g.mesh);
@@ -10454,7 +10468,7 @@ mod tests {
                 let readouts = filter_pair_readouts_to_referenced(raw, &referenced);
                 print_arm_row(
                     &format!("{kappa:.3e}"),
-                    label,
+                    &label,
                     ramp.steps.len(),
                     N_STEPS,
                     last.interference_m,
@@ -10462,7 +10476,7 @@ mod tests {
                     patch_stats(&readouts, &rest_areas),
                 );
             } else {
-                println!("{kappa:.3e}    {label:<11}   0/{N_STEPS}  (no step converged)");
+                println!("{kappa:.3e}    {label:<17}   0/{N_STEPS}  (no step converged)");
             }
             if let Some(k) = ramp.failed_at_step {
                 println!(
@@ -11138,12 +11152,13 @@ mod tests {
     /// ⭐⭐⭐ **σ and ρ on the PRODUCT scan** — the numbers the bridge's `κ`
     /// is actually derived from.
     ///
-    /// ⛔ **[`BRIDGE_DESIGN_TRACTION_PA`] (117 kPa) was measured on
+    /// ⛔ **The 117 kPa this constant USED to hold was measured on
     /// `sock_over_capsule`**: a 3 mm inset through Ecoflex 00-30. `base_mold`
     /// is a **5 mm** inset through **17 mm of DRAGON_SKIN_10A at 25 %
     /// Slacker** — a substantially stiffer wall pressed further — so there is
     /// no reason for σ to carry across, and κ scales with it linearly. This is
-    /// the re-measurement.
+    /// the re-measurement, and [`BRIDGE_DESIGN_TRACTION_PA`] now carries what
+    /// it returned.
     ///
     /// Same method as #959, so the two are comparable: sweep the penalty
     /// stiffness, read the area-weighted mean traction on the REST area basis

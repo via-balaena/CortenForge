@@ -686,8 +686,11 @@ Listed because the confidence of §4 rests on these being open, not closed.
    REST basis at `κ` = 1e4–1e5 on a non-penetrating full-depth seat — not the
    6.85 kPa / 1.22 the shipped stiffness reports off a 25 % seat.
 
-   ⭐⭐⭐ **THE DERIVATION AT THOSE NUMBERS** — evaluated at the stiffest arm
-   that solved on each scene, `ramp step` = 0.1875 mm:
+   ⭐⭐⭐ **THE DERIVATION AT THOSE NUMBERS** — ⛔⛔ **"those numbers" are the
+   SUPERSEDED `sock_over_capsule` ones (σ = 117 kPa); every bracket in the
+   table below is therefore ~2× the shipped one.** Kept for its *shape*, not
+   its values. Evaluated at the stiffest arm that solved on each scene,
+   `ramp step` = 0.1875 mm:
 
    | scene | `σ` | `ρ(tail)` | `d̂` = 1.0 mm | `d̂` = 1.2 mm | `d̂` = 2.0 mm |
    |---|---|---|---|---|---|
@@ -1191,11 +1194,36 @@ Listed because the confidence of §4 rests on these being open, not closed.
    next piece of work, not a reason to doubt the result.
 
    ⛔⛔ **`κ` IS NOT THE BINDING CONSTRAINT — measured, not assumed.**
-   `the_bridge_ramp_over_a_stiffness_sweep` runs the ramp at 1e6, the derived
-   floor (1.53e7), the derived value (3.54e7), the derived ceiling (8.17e7) and
-   1e9. **All five stall the same way**, at Newton iteration 4–5, at residuals
-   between 1e-4 and 7e-3. Three decades of stiffness move the stall neither
-   earlier nor later. Whatever the floor is, it is not the barrier's stiffness.
+   `the_bridge_ramp_over_a_stiffness_sweep` runs the ramp at 1e6, the bracket
+   floor (7.26e6), the shipped value (4.11e7 — the ceiling) and 1e9, on
+   `tolerance_fixture` at its own 0.1875 mm schedule. **Every arm reports 0/16,
+   and every stall is inside the feasible-start approach, before recorded step
+   0.** Three decades of stiffness do not buy a converged ramp. Whatever the
+   floor is, it is not the barrier's stiffness.
+
+   ⚠ **WHAT THIS BLOCK GOT WRONG UNTIL 2026-09-23.** It read *"all five stall
+   the same way, at Newton iteration 4–5, at residuals between 1e-4 and 7e-3"*,
+   citing a bracket (1.53e7 / 3.54e7 / 8.17e7) derived from the **superseded
+   σ = 117 kPa** — and it ran a FIFTH arm, because before the κ fix the derived
+   value and the ceiling were different numbers. Re-run at the fixed κ, every
+   part but the headline is false:
+
+   ```text
+   κ            label                approach stalls at   Newton iter   r_norm
+   1.000e6      0.14x floor               -0.1875 mm            3       1.89e-4
+   7.255e6      FLOOR                     -1.3125 mm           11       2.05e-5
+   4.114e7      DERIVED = CEILING         -0.9375 mm            4       6.09e-5
+   1.000e9      24.3x ceiling             -1.3125 mm           15       1.31e-2
+   ```
+
+   ⭐ The approach marches from the most-retracted interference **UP toward 0**,
+   so `-0.1875 mm` is the LAST approach solve and `-1.3125 mm` an early one:
+   the **SOFTEST** barrier gets furthest, the stall iteration spans 3–15 rather
+   than 4–5, and the residual floor spans nearly three decades rather than one.
+   ⛔ It is also **NOT MONOTONE** in `κ` — the floor and 1e9 stall in the same
+   place with the shipped value doing better *between* them — which is why
+   "insensitive" survived a coarse reading. **The headline stands because every
+   arm reports 0/16, not because the arms agree.**
 
    ⛔⛔ **RETRACTED — the derivation below is the one that was replaced.** It
    selected the geometric centre of `[floor, ceiling]` and made κ depend on the
