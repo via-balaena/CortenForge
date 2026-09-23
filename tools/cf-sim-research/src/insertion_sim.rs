@@ -2762,11 +2762,12 @@ pub fn run_insertion_ramp_tet10_ipc(
     // `bridge_face_barrier_kappa`. The inset is the ramp's full travel.
     // `n_steps` is small and non-zero; the cast is exact.
     #[allow(clippy::cast_precision_loss)]
-    let ramp_step_m = if n_steps == 0 {
-        f64::NAN
-    } else {
-        -geometry.cavity_offset_m / n_steps as f64
-    };
+    if n_steps == 0 {
+        // Checked before deriving κ: a zero schedule would otherwise surface as
+        // "the barrier floor is not derivable", which names the wrong problem.
+        return Err(anyhow!("insertion ramp needs at least one step"));
+    }
+    let ramp_step_m = -geometry.cavity_offset_m / n_steps as f64;
     let kappa = bridge_face_barrier_kappa(BRIDGE_CONTACT_DHAT_M, ramp_step_m)?;
     run_insertion_ramp_tet10_ipc_at(geometry, n_steps, tol, kappa, BRIDGE_CONTACT_DHAT_M)
 }
@@ -9864,5 +9865,187 @@ mod tests {
             bridge_face_barrier_kappa(BRIDGE_CONTACT_DHAT_M, inset_m / 16.0).is_ok(),
             "the shipped band must bracket a stiffness at the shipped schedule",
         );
+    }
+
+    /// ⭐⭐⭐ The bridge against the penalty baseline **on the product geometry**.
+    ///
+    /// The sibling ladder runs synthetic scenes; this one runs the scan the
+    /// product actually ships, in both of its topologies — and they are not the
+    /// same problem:
+    /// - **`1layer`** — a single ECOFLEX_00_30 wall with NO cap planes, which
+    ///   routes `pinned_floor_shell` through the CLOSED-cavity short-circuit.
+    ///   This is the scene recon §8's `16/16 @ 3.00 mm` row was read off, and
+    ///   #959 measured that 16/16 to be a PENETRATING state (`min_sd`
+    ///   −0.373 mm, 5 % area tail −0.042 mm).
+    /// - **`gui-dflt`** — the dual-layer stack with the prep.toml cap plane, an
+    ///   OPEN mouth with a pinned floor. This is what the GUI runs, and at the
+    ///   shipped tolerance it reaches **4/16 = 25 %**.
+    ///
+    /// ⛔ The scan is repo-excluded, so nothing here can ever gate. It reports
+    /// on a named platform.
+    #[test]
+    #[ignore = "needs the repo-excluded iter-1 scan + release ramps on both arms; run with --ignored --nocapture"]
+    fn the_bridge_against_the_penalty_baseline_on_the_real_scan() {
+        const N_STEPS: usize = 16;
+        const TOLERANCES: [f64; 2] = [1e-1, 1e-2];
+
+        let scan_path = std::env::var("CF_SIM_RESEARCH_SPIKE_SCAN").map_or_else(
+            |_| PathBuf::from("/Users/jonhillesheim/scans/sock_over_capsule.cleaned.stl"),
+            PathBuf::from,
+        );
+        assert!(
+            scan_path.exists(),
+            "the iter-1 scan fixture is not at {} — this probe measures the REAL \
+             geometry and has nothing to report without it; set \
+             CF_SIM_RESEARCH_SPIKE_SCAN to point it elsewhere",
+            scan_path.display(),
+        );
+        let prep_path = scan_path.with_extension("").with_extension("prep.toml");
+        let prep_text = std::fs::read_to_string(&prep_path)
+            .map_err(|e| format!("{}: {e}", prep_path.display()))
+            .expect("the prep.toml beside the scan must load — it carries the cap planes");
+        let cap_planes =
+            cf_cap_planes::parse_cap_planes(&prep_text).expect("parse cap planes from prep.toml");
+        assert!(
+            !cap_planes.is_empty(),
+            "iter-1's prep.toml carries one cap-plane loop; an empty list would \
+             measure a structurally different problem",
+        );
+        let scan = load_stl(&scan_path).expect("load the iter-1 cleaned scan");
+
+        let scenes: [(&str, Vec<SimLayer>, bool); 2] = [
+            ("1layer", vec![layer(0.010, "ECOFLEX_00_30")], false),
+            (
+                "gui-dflt",
+                vec![
+                    layer_with_slacker(0.010, "ECOFLEX_00_30", 0.5),
+                    layer(0.003, "DRAGON_SKIN_20A"),
+                ],
+                true,
+            ),
+        ];
+
+        for (label, layers, with_caps) in scenes {
+            let caps: &[CapPlane] = if with_caps { &cap_planes } else { &[] };
+            println!(
+                "\n══ {label} ({} layers, {} caps) ══",
+                layers.len(),
+                caps.len()
+            );
+            println!(
+                "tol        arm                 steps  depth_mm  resid      pairs  \
+                 min_sd_mm  tail5_mm  sigma_kPa"
+            );
+            let build = || {
+                let design = SimDesign {
+                    layers: layers.clone(),
+                    cavity_inset_m: 0.003,
+                };
+                build_insertion_geometry(&scan, &design, caps, 2_500, 0.004)
+            };
+            for tol in TOLERANCES {
+                let Ok(g) = build() else {
+                    println!("  {label}: geometry FAILED to build");
+                    break;
+                };
+                let mesh4 = g.mesh.clone();
+                let intruder = g.intruder.clone();
+                let bounds = g.bounds;
+                let cavity_offset_m = g.cavity_offset_m;
+                let referenced4: Vec<VertexId> = referenced_vertices(&mesh4);
+                let rest4 = boundary_vertex_areas(
+                    Mesh::<Yeoh>::positions(&mesh4),
+                    Mesh::<Yeoh>::boundary_faces(&mesh4),
+                );
+                let base =
+                    run_insertion_ramp_at_kappa_and_tol(g, N_STEPS, INSERTION_CONTACT_KAPPA, tol)
+                        .expect("the penalty baseline ramp must build");
+                let (d, r, st) = base
+                    .steps
+                    .last()
+                    .map(|last| {
+                        let pos = positions_from_flat(&last.x_final);
+                        let c = intruder_contact_at_kappa(
+                            &intruder,
+                            bounds,
+                            last.interference_m,
+                            cavity_offset_m,
+                            INSERTION_CONTACT_KAPPA,
+                        );
+                        let raw = c.per_pair_readout(&mesh4, &pos);
+                        (
+                            last.interference_m,
+                            last.final_residual_norm,
+                            patch_stats(
+                                &filter_pair_readouts_to_referenced(raw, &referenced4),
+                                &rest4,
+                            ),
+                        )
+                    })
+                    .unwrap_or((0.0, f64::NAN, None));
+                print_arm_row(
+                    &format!("{tol:.0e}"),
+                    "tet4+penalty",
+                    base.steps.len(),
+                    N_STEPS,
+                    d,
+                    r,
+                    st,
+                );
+
+                let Ok(g) = build() else { break };
+                let mesh10 = Tet10Mesh::<Yeoh>::from_tet4(&g.mesh);
+                let referenced10: Vec<VertexId> = referenced_vertices(&mesh10);
+                let rest10 = boundary_vertex_areas(
+                    Mesh::<Yeoh>::positions(&mesh10),
+                    Mesh::<Yeoh>::boundary_faces(&mesh10),
+                );
+                // `N_STEPS` is small; the cast is exact.
+                #[allow(clippy::cast_precision_loss)]
+                let kappa = bridge_face_barrier_kappa(
+                    BRIDGE_CONTACT_DHAT_M,
+                    -g.cavity_offset_m / N_STEPS as f64,
+                )
+                .expect("the bridge's stiffness bracket must be non-empty");
+                let bridge = run_insertion_ramp_tet10_ipc(g, N_STEPS, tol)
+                    .expect("the bridge ramp must build");
+                let (d, r, st) = bridge
+                    .steps
+                    .last()
+                    .map(|last| {
+                        let pos = positions_from_flat(&last.x_final);
+                        let c = intruder_ipc_contact_at(
+                            &intruder,
+                            bounds,
+                            last.interference_m,
+                            cavity_offset_m,
+                            kappa,
+                            BRIDGE_CONTACT_DHAT_M,
+                        );
+                        let raw = c.per_pair_readout(&mesh10, &pos);
+                        (
+                            last.interference_m,
+                            last.final_residual_norm,
+                            patch_stats(
+                                &filter_pair_readouts_to_referenced(raw, &referenced10),
+                                &rest10,
+                            ),
+                        )
+                    })
+                    .unwrap_or((0.0, f64::NAN, None));
+                print_arm_row(
+                    &format!("{tol:.0e}"),
+                    "tet10+ipc",
+                    bridge.steps.len(),
+                    N_STEPS,
+                    d,
+                    r,
+                    st,
+                );
+                if let Some(reason) = bridge.failure_reason.as_deref() {
+                    println!("            (bridge: {reason})");
+                }
+            }
+        }
     }
 }
