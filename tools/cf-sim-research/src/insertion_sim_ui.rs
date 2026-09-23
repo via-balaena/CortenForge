@@ -27,7 +27,7 @@ use bevy::tasks::{AsyncComputeTaskPool, Task, futures_lite::future};
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 use mesh_types::IndexedMesh;
 use nalgebra::{Isometry3, Point3, Vector3};
-use sim_soft::{Mesh as SimMesh, TetId, VertexId, Yeoh};
+use sim_soft::{Mesh as SimMesh, TetId, VertexId};
 
 use cf_cap_planes::CapPlane;
 use cf_device_types::{
@@ -35,13 +35,13 @@ use cf_device_types::{
     SimLayer, SimMode,
 };
 
-#[cfg(test)]
-use crate::insertion_sim::RampStep;
 use crate::insertion_sim::{
     INSERTION_SOLVE_TOL, InsertionRamp, SlideRamp, StepReadout, TetReadout,
-    build_insertion_geometry, compute_tet_readouts, run_insertion_ramp,
-    run_insertion_ramp_tet10_ipc, run_sliding_insertion_ramp,
+    build_insertion_geometry, run_insertion_ramp, run_insertion_ramp_tet10_ipc,
+    run_sliding_insertion_ramp,
 };
+#[cfg(test)]
+use crate::insertion_sim::{RampStep, ReadoutMesh};
 use cf_device_geometry::sdf_layers::{CachedScanSdf, CapPlanes};
 
 // ── tuned defaults ──────────────────────────────────────────────────
@@ -64,7 +64,7 @@ const SIM_CELL_SIZE_M: f64 = 0.004;
 /// 3 mm seating (`0.1875` mm per step). Halving to 8 risks regressing
 /// the iter-1 envelope; the panel does not expose `n_steps` as a
 /// knob to keep the validated configuration the only-served default.
-const DEFAULT_N_STEPS: usize = 16;
+pub(crate) const DEFAULT_N_STEPS: usize = 16;
 
 // ── public types ────────────────────────────────────────────────────
 
@@ -535,11 +535,9 @@ pub struct InsertionSimState {
     /// this forces [`SimMode::GrowingIntruder`] for that run — the sliding
     /// ramp has no Tet10 path.
     ///
-    /// ⚠ **The per-tet heat map stays Tet4-quality either way.**
-    /// `compute_tet_readouts` builds `F` from the four CORNER
-    /// displacements, which on a quadratic element is the linear part of a
-    /// field that is no longer linear. Contact, depth and convergence are
-    /// the bridge's; the stress colouring is not yet.
+    /// The per-tet heat map follows the ramp: on the bridge it is the Tet10
+    /// strain at each element's Gauss points, read through the mesh the
+    /// ramp solved (`InsertionRamp::readout_mesh`).
     pub use_bridge: bool,
 }
 
@@ -832,7 +830,7 @@ fn build_sim_design(cavity: &CavityState, layers: &LayersState) -> SimDesign {
 /// longer extracts per-step intruder iso meshes from it — future
 /// pass-B (SL.7) render paths for growing mode may reach for it.
 #[allow(clippy::too_many_arguments)]
-fn run_sim_pipeline(
+pub(crate) fn run_sim_pipeline(
     scan: IndexedMesh,
     design: SimDesign,
     cap_planes: Vec<CapPlane>,
@@ -854,17 +852,17 @@ fn run_sim_pipeline(
     let n_layers = design.layers.len();
     let per_tet_layer = geometry.per_tet_layer.clone();
     let rest_positions: Vec<Vector3<f64>> = geometry.mesh.positions().to_vec();
-    // Slice S1 — snapshot the tet connectivity + per-tet materials
-    // BEFORE the ramp consumes `geometry`, so we can recompute
-    // per-tet readouts at every converged step's `x_final` for the
-    // playback slider. Same construction the ramp uses internally;
-    // doing it twice is cheap (≤ a few MB of clones).
+    // Slice S1 — snapshot the corner connectivity BEFORE the ramp
+    // consumes `geometry`, for the geometric passes below (tet
+    // centroids, per-layer outer faces). ⛔ NOT for the per-tet
+    // readouts: those come from the ramp's own `readout_mesh`, the mesh
+    // it SOLVED — on the bridge that carries the Tet10 midsides this
+    // Tet4 snapshot does not.
     // `t as TetId` (u32) — Phase 4 BCC meshes stay under `u32::MAX`.
     #[allow(clippy::cast_possible_truncation)]
     let tets: Vec<[VertexId; 4]> = (0..n_tets as TetId)
         .map(|t| geometry.mesh.tet_vertices(t))
         .collect();
-    let materials: Vec<Yeoh> = geometry.mesh.materials().to_vec();
     // Slice S2 — snapshot the BCC analysis-mesh boundary triangles
     // BEFORE the ramp consumes `geometry`. The FULL-boundary
     // snapshot is filtered to cavity-side only AFTER the ramp
@@ -952,9 +950,12 @@ fn run_sim_pipeline(
 
     // Slice S1 — per-step scalar fields drive the playback slider.
     // The final step reuses `final_per_tet` (already computed by
-    // the ramp); intermediate steps rerun `compute_tet_readouts`
-    // from their own `x_final` against the snapshotted rest geometry
-    // + tets + materials.
+    // the ramp); intermediate steps rerun the readouts from their own
+    // `x_final` through the ramp's `readout_mesh`.
+    let readout_mesh = match &ramp_kind {
+        RampKind::Sliding(r) => &r.readout_mesh,
+        RampKind::Growing(r) => &r.readout_mesh,
+    };
     let last_step_idx = ramp_steps_len.saturating_sub(1);
     let per_step_scalar_fields: Vec<[Vec<f64>; 2]> = (0..ramp_steps_len)
         .map(|k| {
@@ -970,8 +971,7 @@ fn run_sim_pipeline(
                     .chunks_exact(3)
                     .map(|c| Vector3::new(c[0], c[1], c[2]))
                     .collect();
-                per_tet_owned =
-                    compute_tet_readouts(&rest_positions, &positions_k, &tets, &materials);
+                per_tet_owned = readout_mesh.readouts(&positions_k);
                 &per_tet_owned
             };
             let energy: Vec<f64> = per_tet.iter().map(|t| t.energy_density_j_per_m3).collect();
@@ -987,8 +987,9 @@ fn run_sim_pipeline(
 
     // Slice S3 — build per-layer outer-face triangle lists. Requires
     // the outer-skin pinned vertex set; detected from the final
-    // converged step's `x_final` (zero displacement = Dirichlet-pinned).
-    let outer_skin_vertices = detect_outer_skin_vertices(&rest_positions, &final_x);
+    // converged step's `x_final` (zero displacement = Dirichlet-pinned),
+    // against the SOLVED mesh's rest positions — see the function.
+    let outer_skin_vertices = detect_outer_skin_vertices(readout_mesh.rest_positions(), &final_x)?;
     let per_layer_outer_faces =
         build_per_layer_outer_faces(&tets, &per_tet_layer, &outer_skin_vertices, n_layers);
 
@@ -1019,6 +1020,9 @@ fn run_sim_pipeline(
 /// indexed by user layer order (innermost-first, length `n_layers`).
 /// A layer with no tets (degenerate partition — should not happen in
 /// production) gets `n_tets = 0` and zeros for the metrics.
+///
+/// ⚠ Skips a NaN reading the way `aggregate_step_readout` does: an element
+/// whose stretch range is NaN drops out of its layer's λ range whole.
 pub fn aggregate_per_layer(
     per_tet: &[TetReadout],
     per_tet_layer: &[usize],
@@ -1053,13 +1057,11 @@ pub fn aggregate_per_layer(
         if readout.first_piola_frobenius_pa > b.max_first_piola_frobenius_pa {
             b.max_first_piola_frobenius_pa = readout.first_piola_frobenius_pa;
         }
-        for &s in readout.principal_stretches.iter() {
-            if s > b.max_principal_stretch {
-                b.max_principal_stretch = s;
-            }
-            if s < b.min_principal_stretch {
-                b.min_principal_stretch = s;
-            }
+        if readout.max_principal_stretch > b.max_principal_stretch {
+            b.max_principal_stretch = readout.max_principal_stretch;
+        }
+        if readout.min_principal_stretch < b.min_principal_stretch {
+            b.min_principal_stretch = readout.min_principal_stretch;
         }
     }
     for (b, sum) in buckets.iter_mut().zip(energy_sums.iter()) {
@@ -1194,18 +1196,32 @@ fn build_per_layer_outer_faces(
 /// arithmetic applied), so even a sub-µm cavity displacement
 /// distinguishes them from outer-skin verts.
 ///
-/// Falls back to an empty set when no step converged or
-/// `result.final_per_tet` is absent — callers must tolerate an empty
-/// pinned set (no outer-skin face passes the membership check, so
-/// layer N-1 ends up with an empty outer face list, which
-/// `deformed_layer_mesh_at` reports as `None` → falls through to the
-/// rest-frame SDF iso).
-fn detect_outer_skin_vertices(
+/// ⛔ `rest_positions` must be the SOLVED mesh's
+/// ([`ReadoutMesh::rest_positions`](crate::insertion_sim::ReadoutMesh::rest_positions)),
+/// indexed like `x_final`. On the bridge `x_final` carries the Tet10
+/// midsides, so the scene's Tet4 snapshot is the wrong length.
+///
+/// # Errors
+///
+/// When `final_x` is not `3 × rest_positions.len()` long. An earlier
+/// revision returned an EMPTY set here instead, and the bridge reached
+/// that branch: measured on `tolerance_fixture` and on the product scan
+/// at `21de1b85`, before this fix, no vertex read as outer skin
+/// (`what_the_corner_readout_missed_on_the_bridge`, which now prints the
+/// refusal instead), so the outer layer's shell and the cavity-face filter
+/// both degraded without a word.
+pub(crate) fn detect_outer_skin_vertices(
     rest_positions: &[Vector3<f64>],
     final_x: &[f64],
-) -> std::collections::BTreeSet<VertexId> {
+) -> anyhow::Result<std::collections::BTreeSet<VertexId>> {
     if final_x.len() != 3 * rest_positions.len() {
-        return std::collections::BTreeSet::new();
+        return Err(anyhow::anyhow!(
+            "outer-skin detection: x_final has {} dofs but the rest positions \
+             give {} vertices (×3 = {}) — they come from different meshes",
+            final_x.len(),
+            rest_positions.len(),
+            3 * rest_positions.len(),
+        ));
     }
     let mut pinned = std::collections::BTreeSet::new();
     for (v_idx, rest) in rest_positions.iter().enumerate() {
@@ -1219,7 +1235,7 @@ fn detect_outer_skin_vertices(
             pinned.insert(v_idx as VertexId);
         }
     }
-    pinned
+    Ok(pinned)
 }
 
 /// Slice S1 — `(min, max)` across every step's slot-`slot_idx` per-tet
@@ -1401,7 +1417,7 @@ pub fn render_insertion_sim_section(
                     "{} steps · 4 mm cell · Yeoh · tol=1e-1 · κ derived, d̂=1.2 mm",
                     state.n_steps
                 ));
-                ui.label("⚠ heat map is still corner-linear (Tet4-quality)");
+                ui.label("heat map read at the Tet10 Gauss points");
             } else {
                 ui.label(format!(
                     "{} steps · 4 mm cell · Yeoh material · tol=1e-1 · κ=1e3",
@@ -1792,18 +1808,17 @@ fn render_layer_table(ui: &mut egui::Ui, per_layer: &[LayerAggregate]) {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use nalgebra::{Matrix3, Vector3};
+    use nalgebra::Vector3;
 
     use super::*;
     use crate::insertion_sim::TetReadout;
 
     fn mk_readout(stretches: [f64; 3], frob: f64, psi: f64) -> TetReadout {
         TetReadout {
-            f: Matrix3::<f64>::identity(),
-            first_piola: Matrix3::<f64>::identity(),
             first_piola_frobenius_pa: frob,
             energy_density_j_per_m3: psi,
-            principal_stretches: Vector3::new(stretches[0], stretches[1], stretches[2]),
+            min_principal_stretch: stretches.into_iter().fold(f64::INFINITY, f64::min),
+            max_principal_stretch: stretches.into_iter().fold(f64::NEG_INFINITY, f64::max),
         }
     }
 
@@ -1999,10 +2014,29 @@ mod tests {
             1.001, 0.0, 0.0, // v1 displaced
             0.0, 1.0, 0.0, // v2 pinned
         ];
-        let pinned = detect_outer_skin_vertices(&rest, &final_x);
+        let pinned = detect_outer_skin_vertices(&rest, &final_x).expect("same mesh");
         assert!(pinned.contains(&0));
         assert!(!pinned.contains(&1));
         assert!(pinned.contains(&2));
+    }
+
+    /// ⛔ A rest set from a different mesh than `x_final` is an ERROR, not an
+    /// empty outer skin — the bridge's Tet10 `x_final` against the scene's
+    /// Tet4 snapshot used to read as "nothing is pinned".
+    #[test]
+    fn detect_outer_skin_vertices_refuses_a_mismatched_mesh() {
+        // Three corners, and an `x_final` that also carries a fourth node —
+        // the shape of a Tet10 state against a Tet4 snapshot.
+        let rest = vec![
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(1.0, 0.0, 0.0),
+            Vector3::new(0.0, 1.0, 0.0),
+        ];
+        let final_x = vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.5, 0.0, 0.0];
+        assert!(
+            detect_outer_skin_vertices(&rest, &final_x).is_err(),
+            "a mismatched mesh must not read as an empty outer skin",
+        );
     }
 
     /// Slice S2 — `deformed_boundary_mesh_at` pairs the snapshotted
@@ -2059,6 +2093,7 @@ mod tests {
                 final_x: vec![0.0, 0.0, 0.0, 1.5, 0.0, 0.0, 0.0, 1.0, 0.0],
                 n_pinned: 0,
                 result: None,
+                readout_mesh: ReadoutMesh::empty(),
             }),
             per_layer: Vec::new(),
             tet_centroids: Vec::new(),
@@ -2093,6 +2128,7 @@ mod tests {
                 final_x: Vec::new(),
                 n_pinned: 0,
                 result: None,
+                readout_mesh: ReadoutMesh::empty(),
             }),
             per_layer: Vec::new(),
             tet_centroids: Vec::new(),
@@ -2218,6 +2254,7 @@ mod tests {
                 final_x: Vec::new(),
                 n_pinned: 0,
                 result: None,
+                readout_mesh: ReadoutMesh::empty(),
             }),
             per_layer: Vec::new(),
             tet_centroids: Vec::new(),

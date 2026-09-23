@@ -63,7 +63,7 @@ use serde::Deserialize;
 /// `main.rs`'s panel + async-task glue consumes its public surface
 /// (`build_insertion_geometry`, `run_insertion_ramp`, `InsertionRamp`,
 /// `RampStep`, `StepReadout`, `TetReadout`, `InsertionResult`,
-/// `compute_tet_readouts`); the items themselves remain
+/// `ReadoutMesh`); the items themselves remain
 /// `pub` per their module-level docstrings — `pub(crate)` on the
 /// module declaration just keeps the binary's surface scoped (the
 /// crate doesn't export a library API). See the module docs for the
@@ -73,7 +73,7 @@ pub(crate) mod insertion_sim;
 /// Slice 7.4 — Insertion Sim panel + ECS glue. Wraps the `insertion_sim`
 /// module's public surface (`build_insertion_geometry`,
 /// `run_insertion_ramp`, `InsertionRamp`, `RampStep`, `StepReadout`,
-/// `TetReadout`, `compute_tet_readouts`) into an `AsyncComputeTaskPool`-
+/// `TetReadout`, `ReadoutMesh`) into an `AsyncComputeTaskPool`-
 /// driven sim run + egui panel + per-vertex heat-map projection on the
 /// existing per-layer surface shells.
 pub(crate) mod insertion_sim_ui;
@@ -688,8 +688,9 @@ struct CavityMeshKey {
 ///   to its source (no apex-nipple artifacts).
 /// - **Deformed** (slice S2; only when `sim_state.show_deformed && last_run.is_some()`):
 ///   cavity entity gets the FEM analysis mesh's deformed boundary at
-///   `sim_state.displayed_step` — the same BCC vertex layout the ramp
-///   solves on, with each step's `x_final` displaced coordinates.
+///   `sim_state.displayed_step` — the scene's BCC corner triangles, drawn
+///   at each step's `x_final` (on the bridge that state also carries Tet10
+///   midsides, which these triangles do not use).
 ///   Coarser than the SDF iso (4 mm BCC vs ~1 mm MC) but it's the
 ///   "see the squish" view the workshop user reaches for after a sim
 ///   completes. Falls back to rest if `displayed_step` is out of the
