@@ -941,6 +941,69 @@ Listed because the confidence of §4 rests on these being open, not closed.
    `gui-dflt` the BASELINE's cliff comes first — it is already at zero by 1e-2,
    a decade before the bridge is.
 
+   ### ⛔⛔⛔ THE κ FLOOR'S MECHANISM IS FALSIFIED ON THE PRODUCT SCAN
+
+   The floor is derived as *"κ such that the barrier holds `ρ · step` open at
+   traction σ"*, and PR #954 pinned it as a derivation rather than a sweep.
+   On `base_mold` it does not describe what happens.
+
+   **The bridge stalls at 6/16 (1.875 mm of a 5 mm inset)** with an
+   infeasible-start signature — Armijo at Newton iteration **0**, `r_norm`
+   3.6e4. The last converged step held `min_sd` 0.2936 mm against a 0.3125 mm
+   increment: the increment outran the standoff, which is precisely what the
+   floor exists to prevent.
+
+   Two candidate fixes were tested, and **both failed in ways that identify
+   the real defect**:
+
+   **1. March finer** — the derivation's own prescription, since the floor is a
+   marching-scheme number.
+
+   | steps | step | κ | held | held/step | depth |
+   |---|---|---|---|---|---|
+   | 16 | 0.3125 mm | 2.4137e7 | 0.2936 mm | **0.94** | 37.5 % |
+   | 32 | 0.1562 mm | 1.5605e7 | 0.1347 mm | **0.86** | 46.9 % |
+   | 64 | 0.0781 mm | 1.1015e7 | 0.0635 mm | **0.81** | 60.9 % |
+
+   Depth improves, but the feasibility ratio **degrades**. Refining lowers the
+   floor, which lowers κ, which holds proportionally less — the threshold
+   shrinks with the step, so the march can never catch it.
+
+   **2. Raise ρ** — on the theory that the gap-ratio substitution under-predicts
+   the barrier-inverted ρ (the sweep's own output warns the two "coincide only
+   where the traction-gap map is near-linear").
+
+   | ρ | required | κ | held | depth |
+   |---|---|---|---|---|
+   | 1.12 | 0.350 mm | 2.4137e7 | **0.2936 mm** | 1.875 mm |
+   | 1.30 | 0.406 mm | 2.7220e7 | **0.2947 mm** | 1.875 mm |
+   | 1.50 | 0.469 mm | 3.1036e7 | **0.2944 mm** | 2.188 mm |
+   | 1.75 | 0.547 mm | 3.6623e7 | **0.2766 mm** | 2.812 mm |
+
+   ⇒ ⭐⭐⭐ **THE HELD STANDOFF IS FLAT AT ~0.294 mm ACROSS A 1.5× RANGE OF κ.**
+   It does not respond to the barrier. **The floor's premise — that κ sets the
+   standoff — is false in this regime.** The standoff is set by geometry and
+   elastic equilibrium; κ only changes the traction required to reach it.
+
+   ⭐ That is consistent with a number measured earlier and not connected until
+   now: **σ moves only 1.0183× per decade of κ** on this scene. A gap that
+   barely moves while the load adjusts is exactly a geometry-determined
+   standoff. The two measurements agree, and the derivation contradicts both.
+
+   ⚠ **Depth DOES improve with κ** (1.875 → 2.812 mm from 2.4e7 → 3.7e7), so a
+   stiffer barrier helps — just not through the mechanism the floor claims.
+   ⛔ **Do not "fix" this by sweeping κ for depth.** What is owed is a
+   re-derivation against a correct model of what sets the standoff. The
+   interval `[floor, ceiling]` currently selects a stiffness on a premise the
+   scene does not honour, and a number that happens to work would be a sweep
+   wearing a derivation's clothes.
+
+   ⚠ **What still stands**: the ceiling (stay out of the cushion) is a stated
+   requirement and is untouched by this; and on the sim-soft fixture the floor
+   DID predict its stall (1e6 stalls above 17.567 kPa, measured 14.255). So
+   this is a transfer failure to a compliant open-mouth wall, not proof the
+   derivation was always wrong.
+
    ### ⛔⛔ σ RE-MEASURED ON THE PRODUCT SCAN — and it is HALF
 
    Every scan number above is `sock_over_capsule`. The product scene is
