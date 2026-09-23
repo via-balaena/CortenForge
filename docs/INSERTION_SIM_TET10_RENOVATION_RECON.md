@@ -928,9 +928,13 @@ Listed because the confidence of §4 rests on these being open, not closed.
    | gui-dflt | 1e-2 | tet4+penalty | **0/16** | — | — | — | — |
    | gui-dflt | 1e-2 | **tet10+ipc** | 3/16 | 0.563 mm | +0.674 mm | +0.849 mm | 3.9 kPa |
 
-   ⭐⭐⭐ **THE HEADLINE: on the scene the GUI actually runs, at the tolerance
-   that already ships, the bridge takes the seatable depth from a QUARTER of
-   the slider range to ALL of it — 0.750 mm → 3.000 mm, 4×** — non-penetrating,
+   ⚠ **[SOCK-ERA HEADLINE — SUPERSEDED.** The scene called "the one the GUI
+   actually runs" here is `sock_over_capsule`'s dual-layer stack, not the
+   product's `base_mold`, and the κ behind it was ~2× too large. The current
+   headline is in `THE HEAD-TO-HEAD, ON THE PRODUCT SCAN AT THE FIXED κ`.**]**
+   As measured then: at the tolerance that already ships, the bridge took the
+   seatable depth from a QUARTER of the slider range to ALL of it — 0.750 mm →
+   3.000 mm, 4× — non-penetrating,
    with +0.535 mm of clearance across the 5 % area tail. σ rises 6.8 → 36.3 kPa
    because the wall is genuinely engaged rather than barely touching.
 
@@ -945,8 +949,9 @@ Listed because the confidence of §4 rests on these being open, not closed.
 
    ⛔⛔ **THE SYNTHETIC SCENES MISLED, AND THAT IS THE TRANSFERABLE PART.** The
    sphere said there was *no* depth win; the tolerance fixture said the win
-   needed a tolerance tighter than ships. The product geometry says there is a
-   4× win **at the shipped tolerance**. ⇒ this is #958's lesson arriving from
+   needed a tolerance tighter than ships. THIS scan said there was a
+   4× win at the shipped tolerance — ⚠ and it is `sock_over_capsule`, so the
+   lesson below transfers while the number does not. ⇒ this is #958's lesson arriving from
    the other side — there it was the analytical shell being too well-conditioned
    to see a failure; here it is two synthetic scenes being too well-conditioned
    to see a *benefit*. **Re-qualify a fixture for each question; a verdict read
@@ -1134,7 +1139,15 @@ Listed because the confidence of §4 rests on these being open, not closed.
    at 1e5 and stalled at 1e6. And `κ = 1e4` is the only arm that reaches FULL
    depth — the shipped 1e3 stalls at 13/16.
 
-   ### ⭐⭐ WHAT A STEP COSTS — and it inverts too
+   ### ⭐⭐ WHAT A STEP COSTS — and it inverts too  ⚠ SOCK-ERA NUMBERS
+
+   > ⚠ **Measured on `sock_over_capsule` at the pre-fix κ.** The "real scan" row
+   > below is sock's `gui-dflt` (72 935 tets); the product scan `base_mold` is
+   > 65 293. `what_a_bridge_step_costs` now points at `base_mold`, and these
+   > timings have NOT been re-taken there. The MECHANISM — per-step cost tracks
+   > how hard the solve is, not element order — is what to carry; the seconds
+   > are not current.
+
 
    `RampStep::wall_time_s`, measured around `replay_step` alone. Idle machine,
    macOS/ARM, shipped `tol`. ⛔ A diagnostic; wall clock is contended and this
@@ -1165,8 +1178,10 @@ Listed because the confidence of §4 rests on these being open, not closed.
    `ceil(d̂/step)` = 7 extra solves**, so ≥ ~55 s more on the real scan. Its
    honest end-to-end figure is ~200 s, not 146 s.
 
-   ✅ **VERDICT, REVISED.** The solver-side case for the bridge is made on the
-   geometry that matters. ⛔ The remaining blocker to making it the default is
+   ⚠ **VERDICT AS OF THAT PASS — since superseded twice** (σ re-measured, κ
+   re-derived); the standing verdict is in `THE HEAD-TO-HEAD, ON THE PRODUCT
+   SCAN AT THE FIXED κ`. It read: the solver-side case for the bridge is made on
+   the geometry that matters. ⛔ The remaining blocker to making it the default is
    **not** the solver — it is that `compute_tet_readouts` is corner-linear, so
    the UI's per-tet heat map would report Tet4-quality stress off a Tet10 solve
    (see the corner-readout note above). That is a readout fix, and it is the
