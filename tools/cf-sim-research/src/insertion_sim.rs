@@ -71,7 +71,7 @@ use cf_device_types::{SimDesign, SimLayer, SlackerResolution, slacker};
 use mesh_repair::{remove_unreferenced_vertices, weld_vertices};
 use mesh_sdf::{CachedGridSdf, PseudoNormalSign, Signed, TriMeshDistance};
 use mesh_types::IndexedMesh;
-use nalgebra::{Isometry3, Matrix3, Point3, Vector3};
+use nalgebra::{Isometry3, Matrix3, Point3, Rotation3, Translation3, UnitQuaternion, Vector3};
 use sim_ml_chassis::Tensor;
 use sim_soft::element::Tet10;
 use sim_soft::material::silicone_table::{
@@ -3208,11 +3208,28 @@ pub(crate) fn polyline_arc_length_m(polyline: &[Point3<f64>]) -> f64 {
 /// - `t ∈ (0, 1)`: tip walks backward from rest by arc-length
 ///   `L · (1 − t)`.
 ///
-/// Translation-only iter-1 (D-Slide2). The `Isometry3<f64>` return
-/// type absorbs the banked iter-2 rotation followup without API
-/// churn. For a degenerate polyline (< 2 points or zero arc length),
-/// returns identity — defensive; sliding-ramp drivers validate
-/// polyline shape up front and surface their own error.
+/// ⭐ **Rotation included (the banked D-Slide2 iter-2 followup).** The pose
+/// carries the rotation that takes the REST tangent (at arc distance 0) to
+/// the tangent where the tip currently sits, applied about the tip. On a
+/// curving path — which an anatomical scan always is — a translation-only
+/// pose slides the insertable *along* the curve without ever turning to face
+/// it, so the contact it computes is not the contact the geometry implies.
+/// The tangent was already being computed here and discarded.
+///
+/// `R` is taken between the two tangents and the translation is
+/// `tip_world − R · tip_rest`, so the tip lands on the centerline and the
+/// body swings with it. At `t = 1` the walk is zero, the two tangents are the
+/// same vector, `R` is the identity and the whole pose collapses to the
+/// identity — the seated rest pose, unchanged from iter-1.
+///
+/// ⚠ `rotation_between` returns `None` for exactly-antiparallel tangents (a
+/// 180° doubling-back in the polyline). That is a degenerate centerline
+/// rather than a pose to guess at, so it falls back to the identity rotation
+/// — the iter-1 behaviour — rather than picking an arbitrary axis.
+///
+/// For a degenerate polyline (< 2 points or zero arc length), returns
+/// identity — defensive; sliding-ramp drivers validate polyline shape up
+/// front and surface their own error.
 pub(crate) fn slide_pose_at(centerline: &[Point3<f64>], t: f64) -> Isometry3<f64> {
     if centerline.len() < 2 {
         return Isometry3::identity();
@@ -3220,10 +3237,14 @@ pub(crate) fn slide_pose_at(centerline: &[Point3<f64>], t: f64) -> Isometry3<f64
     let l_m = polyline_arc_length_m(centerline);
     let tip_rest = centerline[0];
     let walk_from_tip = (l_m * (1.0 - t.clamp(0.0, 1.0))).max(0.0);
-    let (tip_world, _tangent) = point_along_polyline_at_arc_distance(centerline, walk_from_tip)
+    let (tip_world, tangent) = point_along_polyline_at_arc_distance(centerline, walk_from_tip)
         .unwrap_or((tip_rest, Vector3::z()));
-    let translation = tip_world.coords - tip_rest.coords;
-    Isometry3::translation(translation.x, translation.y, translation.z)
+    let (_, rest_tangent) =
+        point_along_polyline_at_arc_distance(centerline, 0.0).unwrap_or((tip_rest, Vector3::z()));
+    let rotation = Rotation3::rotation_between(&rest_tangent, &tangent)
+        .map_or_else(UnitQuaternion::identity, UnitQuaternion::from);
+    let translation = tip_world.coords - rotation * tip_rest.coords;
+    Isometry3::from_parts(Translation3::from(translation), rotation)
 }
 
 // ───────────────────────────────────────────────────────────────────────
@@ -3820,6 +3841,96 @@ mod tests {
             (g - Vec3::new(1.0, 0.0, 0.0)).norm() < 1e-12,
             "combined grad should be +X, got {g:?}",
         );
+    }
+
+    /// An L-bent centerline: straight up `z`, then a right-angle turn into `x`.
+    ///
+    /// The bend is what makes rotation observable — on
+    /// [`straight_z_centerline`] the tangent never changes, so every rotation
+    /// test passes vacuously there.
+    fn bent_centerline() -> Vec<Point3<f64>> {
+        vec![
+            Point3::new(0.0, 0.0, 0.0), // tip (rest pose)
+            Point3::new(0.0, 0.0, 1.0),
+            Point3::new(0.0, 0.0, 2.0), // the corner
+            Point3::new(1.0, 0.0, 2.0),
+            Point3::new(2.0, 0.0, 2.0), // floor / cap mouth
+        ]
+    }
+
+    /// The pose TURNS to follow a curved path, and still lands the tip on it.
+    ///
+    /// ⭐ The property that matters for an anatomical scan: a translation-only
+    /// pose slides the insertable *along* the curve without turning to face
+    /// it, so the contact it computes is not the contact the geometry implies.
+    ///
+    /// Three things are asserted together because any one alone can pass on a
+    /// broken pose: the rotation maps the REST tangent onto the LOCAL tangent,
+    /// the tip still lands on the centerline (a rotation applied about the
+    /// wrong origin would move it off), and the rotation is genuinely
+    /// non-identity — without that last one this test passes on the iter-1
+    /// translation-only code.
+    #[test]
+    fn slide_pose_at_turns_to_follow_a_curved_path() {
+        let centerline = bent_centerline();
+        let l_m = polyline_arc_length_m(&centerline);
+        let (_, rest_tangent) = point_along_polyline_at_arc_distance(&centerline, 0.0)
+            .expect("the bent centerline has a rest tangent");
+
+        // t = 0.25 walks 0.75 · L = 3.0 m from the tip — past the corner at
+        // 2.0 m, so the local tangent is +x while the rest tangent is +z.
+        let t = 0.25;
+        let walk = l_m * (1.0 - t);
+        let (tip_world, local_tangent) = point_along_polyline_at_arc_distance(&centerline, walk)
+            .expect("the walked point exists");
+        assert!(
+            (local_tangent - Vector3::x()).norm() < 1e-12,
+            "fixture check: past the corner the tangent must be +x, got {local_tangent:?}",
+        );
+
+        let pose = slide_pose_at(&centerline, t);
+
+        // 1. The rotation carries the rest tangent onto the local tangent.
+        let turned = pose.rotation * rest_tangent;
+        assert!(
+            (turned - local_tangent).norm() < 1e-12,
+            "the pose must turn the rest tangent {rest_tangent:?} onto the local \
+             tangent {local_tangent:?}, got {turned:?}",
+        );
+
+        // 2. It is genuinely a turn — without this the iter-1 translation-only
+        //    implementation passes everything above.
+        let angle = pose.rotation.angle();
+        assert!(
+            angle > 1.0,
+            "a right-angle bend must produce a large rotation; got {angle:.6} rad",
+        );
+
+        // 3. The tip still lands on the centerline.
+        let tip_rest = centerline[0];
+        let tip_mapped = pose * tip_rest;
+        assert!(
+            (tip_mapped - tip_world).norm() < 1e-12,
+            "the tip must land at {tip_world:?}, got {tip_mapped:?} — a rotation \
+             applied about the wrong origin moves the tip off the path",
+        );
+    }
+
+    /// A straight path produces NO rotation — the control for the test above.
+    ///
+    /// Without this, "follows the tangent" could be implemented by rotating
+    /// something arbitrary, and the seated pose would stop being the identity.
+    #[test]
+    fn slide_pose_at_does_not_turn_on_a_straight_path() {
+        let centerline = straight_z_centerline();
+        for t in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            let pose = slide_pose_at(&centerline, t);
+            assert!(
+                pose.rotation.angle().abs() < 1e-12,
+                "a straight centerline must produce no rotation at t = {t}, got {:.3e} rad",
+                pose.rotation.angle(),
+            );
+        }
     }
 
     /// Helper: straight 4-segment polyline along +Z spanning
