@@ -11013,4 +11013,52 @@ mod tests {
             }
         }
     }
+
+    /// ⭐⭐⭐ **σ and ρ on the PRODUCT scan** — the numbers the bridge's `κ`
+    /// is actually derived from.
+    ///
+    /// ⛔ **[`BRIDGE_DESIGN_TRACTION_PA`] (117 kPa) was measured on
+    /// `sock_over_capsule`**: a 3 mm inset through Ecoflex 00-30. `base_mold`
+    /// is a **5 mm** inset through **17 mm of DRAGON_SKIN_10A at 25 %
+    /// Slacker** — a substantially stiffer wall pressed further — so there is
+    /// no reason for σ to carry across, and κ scales with it linearly. This is
+    /// the re-measurement.
+    ///
+    /// Same method as #959, so the two are comparable: sweep the penalty
+    /// stiffness, read the area-weighted mean traction on the REST area basis
+    /// at the deepest depth every arm reached, and report the gap
+    /// distribution beside it so a reading taken off a penetrating state is
+    /// visible as such.
+    ///
+    /// ⚠ **Read σ only off a NON-penetrating arm.** The shipped κ = 1e3 reads
+    /// it off a state through the wall on every scene tried so far.
+    ///
+    /// ⛔ Asserts nothing — it is a measurement, and the scan is repo-excluded
+    /// so it could never gate.
+    #[test]
+    #[ignore = "needs the product scan + 5 release ramps; run with --ignored --nocapture"]
+    fn the_design_traction_and_patch_nonuniformity_on_the_product_scan() {
+        let Some((scan, _centerline, caps, design)) = product_scene() else {
+            return;
+        };
+        let cavity_inset_m = design.cavity_inset_m;
+        let n_steps = 16_usize;
+        eprintln!(
+            "PRODUCT SCAN base_mold — cavity {:.1} mm, {} layer(s), cell 4 mm, {n_steps} steps",
+            cavity_inset_m * 1e3,
+            design.layers.len(),
+        );
+        for l in &design.layers {
+            eprintln!(
+                "  layer: {:.1} mm {} @ slacker {:.2}",
+                l.thickness_m * 1e3,
+                l.anchor_key,
+                l.slacker_fraction,
+            );
+        }
+        report_sigma_vs_stiffness("base_mold", cavity_inset_m, n_steps, || {
+            build_insertion_geometry(&scan, &design, &caps, 2_500, 0.004)
+                .expect("the product geometry must build")
+        });
+    }
 }
