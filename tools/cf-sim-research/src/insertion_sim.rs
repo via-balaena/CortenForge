@@ -3677,6 +3677,320 @@ pub fn run_sliding_insertion_ramp(
     })
 }
 
+/// The intruder as an IPC face-barrier contact at a slide pose.
+///
+/// Sliding sibling of [`intruder_ipc_contact_at`]. The rigid primitive is
+/// built exactly as the penalty path builds it — the same `TransformedSdf`
+/// at the same pose, offset by `cavity_offset_m` — so nothing about the
+/// scene's geometry moves across the bridge; only the contact law does.
+///
+/// ⭐ **No interior cutoff, and none is needed.** The penalty sibling passes
+/// `2 · cavity_inset_m` to keep deep-interior lattice nodes out of the active
+/// set. The face barrier is built from `boundary_faces6()`, which comes from
+/// tet connectivity and names only surface nodes, so the interior is excluded
+/// by construction rather than by a depth heuristic.
+fn intruder_ipc_contact_sliding_at(
+    intruder: &GridSdf,
+    bounds: Aabb,
+    slide_pose: Isometry3<f64>,
+    cavity_offset_m: f64,
+    kappa: f64,
+    d_hat: f64,
+) -> IpcRigidContact {
+    let transformed = TransformedSdf::new(intruder.clone(), slide_pose);
+    let intruder_solid = Solid::from_sdf(transformed, bounds).offset(cavity_offset_m);
+    IpcRigidContact::with_params(vec![intruder_solid], kappa, d_hat)
+}
+
+/// The worst NORMAL closing one slide increment produces, measured on the
+/// rest wall without solving anything.
+///
+/// ⭐⭐ **This is the number the sliding bridge's `κ` has to be derived from,
+/// and it is NOT the arc increment.** The growing ramp advances along the
+/// contact normal, so its increment and its closing are the same quantity. A
+/// sliding ramp's are different quantities — but ⛔ **how different is a
+/// property of the GEOMETRY and must be measured per scene, not assumed.**
+///
+/// An earlier revision of this comment asserted that "most of an arc step is
+/// tangential once the insertable is inside". Measured on the tolerance
+/// fixture that is **false**: closing 2.4069 mm against a 2.5 mm arc
+/// increment, a ratio of **0.963**. That fixture's intruder is a sphere
+/// entering a hole, so its surface is near-perpendicular to the motion and
+/// almost the whole step closes. An elongated insertable sliding along its
+/// own axis into a matching channel is the case where the ratio is small —
+/// but that is a claim about a scene, and
+/// `the_sliding_closing_decides_the_schedule` reports it per scene rather
+/// than this comment predicting it.
+///
+/// ⇒ the consequence is a SCHEDULE requirement: a bracket needs
+/// `ρ · closing < d̂/2`, so a scene whose closing tracks its arc increment
+/// needs roughly `L · ρ / (d̂/2)` steps. The derivation refuses rather than
+/// guesses when the schedule is too coarse.
+///
+/// Measured as `max(sd_k − sd_{k+1})` over the rest wall nodes, restricted to
+/// nodes that END the step within `d_hat` of the intruder — a node still far
+/// outside the band closes fast and costs nothing, because the barrier cannot
+/// see it yet. The restriction is what makes this the *relevant* closing
+/// rather than the largest one.
+///
+/// ⚠ **Measured on REST positions, which makes it an UPPER bound**: in the
+/// real solve the wall is pushed away as the intruder arrives, so the gap
+/// closes by less than this. A floor derived from it is therefore
+/// conservative, which is the direction a floor should err.
+fn sliding_normal_increment_m(
+    intruder: &GridSdf,
+    bounds: Aabb,
+    centerline: &[Point3<f64>],
+    n_steps: usize,
+    cavity_offset_m: f64,
+    d_hat: f64,
+    wall_points: &[Vec3],
+) -> f64 {
+    let solid_at = |t: f64| {
+        Solid::from_sdf(
+            TransformedSdf::new(intruder.clone(), slide_pose_at(centerline, t)),
+            bounds,
+        )
+        .offset(cavity_offset_m)
+    };
+    let mut worst = 0.0_f64;
+    for k in 0..n_steps {
+        // Step indices are tiny; the casts are exact.
+        #[allow(clippy::cast_precision_loss)]
+        let (t0, t1) = (k as f64 / n_steps as f64, (k + 1) as f64 / n_steps as f64);
+        let (a, b) = (solid_at(t0), solid_at(t1));
+        for p in wall_points {
+            let pt = Point3::from(*p);
+            let sd_after = b.eval(pt);
+            // Only nodes the barrier can actually see at the END of the step.
+            if !sd_after.is_finite() || sd_after > d_hat {
+                continue;
+            }
+            let sd_before = a.eval(pt);
+            if sd_before.is_finite() {
+                worst = worst.max(sd_before - sd_after);
+            }
+        }
+    }
+    worst
+}
+
+/// **THE SLIDING BRIDGE** — seat the intruder along its own centerline on a
+/// Tet10 mesh through the IPC face barrier, at a caller-chosen tolerance.
+///
+/// The travelling model, which is the one an anatomical fit actually is: the
+/// insertable starts clear of the cavity and is carried in along the
+/// centerline, turning to follow it ([`slide_pose_at`]), while the wall flexes
+/// around it. [`run_insertion_ramp_tet10_ipc`] is the other model — a
+/// coincident intruder inflated in place — and it answers a different
+/// question.
+///
+/// ⭐⭐ **The sliding model suits IPC better than the growing one does.** IPC
+/// is an interior-point method and needs a strictly feasible start; the
+/// growing ramp has none by construction (at interference 0 the cavity
+/// surface and the intruder coincide) and has to be given an approach march.
+/// Here the intruder genuinely begins clear of the wall, so step 0 is feasible
+/// with nothing added.
+///
+/// `κ` is derived per ramp from the measured normal closing
+/// ([`sliding_normal_increment_m`]), not from the arc increment — see that
+/// function for why the two are different quantities.
+///
+/// # Errors
+///
+/// - `n_steps` is zero, or the centerline has fewer than 2 points;
+/// - the derived stiffness bracket is empty — the normal closing outruns half
+///   the band, which means the slide schedule is too coarse for `d̂`;
+/// - [`outer_skin_bc`] finds no outer-skin vertex in the pin-band.
+pub fn run_sliding_insertion_ramp_tet10_ipc(
+    geometry: InsertionGeometry,
+    centerline_polyline_m: &[Point3<f64>],
+    n_steps: usize,
+    tol: f64,
+) -> Result<SlideRamp> {
+    if n_steps == 0 {
+        return Err(anyhow!("sliding insertion ramp needs at least one step"));
+    }
+    if centerline_polyline_m.len() < 2 {
+        return Err(anyhow!(
+            "sliding insertion ramp needs a centerline polyline of ≥ 2 points (got {})",
+            centerline_polyline_m.len(),
+        ));
+    }
+
+    let InsertionGeometry {
+        cavity_tensile_strength_pa,
+        mesh: tet4_mesh,
+        intruder,
+        cavity_offset_m,
+        outer_offset_m,
+        bounds,
+        cell_size_m,
+        n_tets,
+        per_tet_layer: _,
+    } = geometry;
+
+    // THE MESH SWAP — corner ids and positions are preserved, so the BCs, Γ
+    // and the per-tet readouts keep pointing at the same material points.
+    let mesh = Tet10Mesh::<Yeoh>::from_tet4(&tet4_mesh);
+    let n_vertices = mesh.n_vertices();
+    let n_dof = 3 * n_vertices;
+
+    let bc = outer_skin_bc(&mesh, &intruder, bounds, outer_offset_m, cell_size_m)?;
+    let n_pinned = bc.pinned_vertices.len();
+
+    let rest_positions: Vec<Vec3> = mesh.positions().to_vec();
+    // `tet_id as TetId` is a `u32` cap; Phase 4 meshes stay well under
+    // `u32::MAX` per `Mesh` trait docs.
+    #[allow(clippy::cast_possible_truncation)]
+    let tets: Vec<[VertexId; 4]> = (0..n_tets as TetId).map(|t| mesh.tet_vertices(t)).collect();
+    let materials: Vec<Yeoh> = mesh.materials().to_vec();
+    // ⚠ Includes midsides — every loaded node on the face path IS a midside.
+    let referenced: Vec<VertexId> = referenced_vertices(&mesh);
+
+    let gamma_faces: Vec<[VertexId; 3]> = Mesh::<Yeoh>::boundary_faces(&mesh).to_vec();
+    let gamma = GammaMask::build(
+        &rest_positions,
+        &gamma_faces,
+        n_vertices,
+        &intruder,
+        cavity_offset_m,
+    );
+
+    // The wall nodes the closing is measured on: boundary nodes only, which is
+    // where contact can happen at all.
+    let wall_points: Vec<Vec3> = {
+        let mut ids: Vec<VertexId> = gamma_faces.iter().flatten().copied().collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids.into_iter()
+            .map(|v| rest_positions[v as usize])
+            .collect()
+    };
+    let normal_increment_m = sliding_normal_increment_m(
+        &intruder,
+        bounds,
+        centerline_polyline_m,
+        n_steps,
+        cavity_offset_m,
+        BRIDGE_CONTACT_DHAT_M,
+        &wall_points,
+    );
+    let contact_kappa = bridge_face_barrier_kappa(BRIDGE_CONTACT_DHAT_M, normal_increment_m)
+        .map_err(|e| {
+            anyhow!(
+                "the sliding bridge's stiffness is not derivable at a normal closing of \
+                 {normal_increment_m:.6e} m over {n_steps} steps: {e}"
+            )
+        })?;
+
+    let l_m = polyline_arc_length_m(centerline_polyline_m);
+    let config = insertion_solver_config_at_tol(tol);
+
+    let mut x_prev_flat: Vec<f64> = rest_positions
+        .iter()
+        .flat_map(|p| [p.x, p.y, p.z])
+        .collect();
+    let v_prev = Tensor::zeros(&[n_dof]);
+    let empty_theta: [f64; 0] = [];
+    let theta = Tensor::from_slice(&empty_theta, &[0]);
+
+    let mut steps: Vec<SlideRampStep> = Vec::with_capacity(n_steps);
+    let mut intruder_poses: Vec<Isometry3<f64>> = Vec::with_capacity(n_steps);
+    let mut failed_at_step = None;
+    let mut failure_reason = None;
+    for k in 0..n_steps {
+        // `(k + 1) as f64 / n_steps as f64`: tiny integers.
+        #[allow(clippy::cast_precision_loss)]
+        let t = (k + 1) as f64 / n_steps as f64;
+        let pose = slide_pose_at(centerline_polyline_m, t);
+        let contact = intruder_ipc_contact_sliding_at(
+            &intruder,
+            bounds,
+            pose,
+            cavity_offset_m,
+            contact_kappa,
+            BRIDGE_CONTACT_DHAT_M,
+        );
+        let solver: CpuNewtonSolver<Tet10, Tet10Mesh<Yeoh>, IpcRigidContact, Yeoh, 10, 4> =
+            CpuNewtonSolver::new(Tet10, mesh.clone(), contact, config, bc.clone());
+        let x_prev = Tensor::from_slice(&x_prev_flat, &[n_dof]);
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            solver.try_replay_step(&x_prev, &v_prev, &theta, config.dt)
+        }));
+        match outcome {
+            Ok(Ok(step)) => {
+                let positions_k: Vec<Vec3> = positions_from_flat(&step.x_final);
+                let readout_contact = intruder_ipc_contact_sliding_at(
+                    &intruder,
+                    bounds,
+                    pose,
+                    cavity_offset_m,
+                    contact_kappa,
+                    BRIDGE_CONTACT_DHAT_M,
+                );
+                let raw_readouts = readout_contact.per_pair_readout(&mesh, &positions_k);
+                let contact_readouts =
+                    filter_pair_readouts_to_referenced(raw_readouts, &referenced);
+                let per_tet =
+                    compute_tet_readouts(&rest_positions, &positions_k, &tets, &materials);
+                let conformity = gamma.conformity(
+                    &positions_k,
+                    &gamma_faces,
+                    &contact_readouts,
+                    cavity_tensile_strength_pa,
+                );
+                let step_readout = aggregate_step_readout(&per_tet, &contact_readouts, conformity);
+
+                steps.push(SlideRampStep {
+                    slide_fraction_t: t,
+                    arc_length_s_m: t * l_m,
+                    iter_count: step.iter_count,
+                    final_residual_norm: step.final_residual_norm,
+                    x_final: step.x_final.clone(),
+                    readout: step_readout,
+                });
+                intruder_poses.push(pose);
+                x_prev_flat = step.x_final;
+            }
+            Ok(Err(failure)) => {
+                failed_at_step = Some(k);
+                failure_reason = Some(solver_failure_message(&failure));
+                break;
+            }
+            Err(payload) => {
+                failed_at_step = Some(k);
+                failure_reason = Some(panic_message(&*payload));
+                break;
+            }
+        }
+    }
+
+    let result = steps.last().map(|last| {
+        let final_positions = positions_from_flat(&last.x_final);
+        let final_per_tet =
+            compute_tet_readouts(&rest_positions, &final_positions, &tets, &materials);
+        let force_arc_length_curve = steps
+            .iter()
+            .map(|s| (s.arc_length_s_m, s.readout.contact_force_magnitude_n))
+            .collect();
+        SlideResult {
+            final_per_tet,
+            force_arc_length_curve,
+        }
+    });
+
+    Ok(SlideRamp {
+        steps,
+        failed_at_step,
+        failure_reason,
+        final_x: x_prev_flat,
+        n_pinned,
+        result,
+        intruder_poses,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     // `unwrap()` + `expect()` are denied at the crate level; the test
@@ -10312,5 +10626,159 @@ mod tests {
                 .expect("bridge ramp builds");
             report("tet10+ipc", &bridge, String::new());
         }
+    }
+
+    // ─── THE SLIDING BRIDGE ─────────────────────────────────────────
+
+    /// A straight centerline through the tolerance fixture, tip-first.
+    ///
+    /// `centerline[0]` is the TIP and `.last()` the FLOOR, per
+    /// `slide_pose_at`'s ordering convention.
+    fn fixture_centerline() -> Vec<Point3<f64>> {
+        (0..=8)
+            .map(|i| {
+                // Loop index is tiny; the cast is exact.
+                #[allow(clippy::cast_precision_loss)]
+                Point3::new(0.0, 0.0, f64::from(i) * 0.005)
+            })
+            .collect()
+    }
+
+    /// The measured CLOSING is what decides the slide schedule.
+    ///
+    /// ⛔ **An earlier revision of this gate asserted the normal closing is
+    /// much smaller than the arc increment. Measured, that is FALSE here** —
+    /// 2.4069 mm against 2.5 mm, a ratio of 0.963 — because this fixture's
+    /// intruder is a sphere entering a hole, so its surface is
+    /// near-perpendicular to the motion and nearly the whole step closes. The
+    /// ratio is a property of the scene's geometry, so this gate asserts only
+    /// what is invariant and REPORTS the rest.
+    ///
+    /// Invariant: the closing is positive (something entered the band) and
+    /// cannot exceed the total motion. Consequence, which is the useful part:
+    /// on this scene the schedule is far too coarse to bracket a stiffness, so
+    /// the derivation must REFUSE — and that refusal is asserted, because a
+    /// derivation that silently returned a number for an impossible
+    /// requirement is the failure this whole approach exists to avoid.
+    #[test]
+    fn the_sliding_closing_decides_the_schedule() {
+        let g = tolerance_fixture();
+        let centerline = fixture_centerline();
+        let n_steps = 16;
+        let arc_m = polyline_arc_length_m(&centerline);
+        // `n_steps` is tiny; the cast is exact.
+        let arc_increment_m = arc_m / f64::from(u32::try_from(n_steps).expect("tiny"));
+
+        let faces: Vec<[VertexId; 3]> = Mesh::<Yeoh>::boundary_faces(&g.mesh).to_vec();
+        let rest = Mesh::<Yeoh>::positions(&g.mesh);
+        let mut ids: Vec<VertexId> = faces.iter().flatten().copied().collect();
+        ids.sort_unstable();
+        ids.dedup();
+        let wall: Vec<Vec3> = ids.into_iter().map(|v| rest[v as usize]).collect();
+        assert!(!wall.is_empty(), "the fixture must have boundary nodes");
+
+        let normal_m = sliding_normal_increment_m(
+            &g.intruder,
+            g.bounds,
+            &centerline,
+            n_steps,
+            g.cavity_offset_m,
+            BRIDGE_CONTACT_DHAT_M,
+            &wall,
+        );
+        println!(
+            "arc L {:.4} mm · arc increment {:.4} mm · normal closing {:.4} mm · \
+             ratio {:.3} · needs ~{:.0} steps to bracket",
+            arc_m * 1e3,
+            arc_increment_m * 1e3,
+            normal_m * 1e3,
+            normal_m / arc_increment_m,
+            (arc_m * BRIDGE_PATCH_NONUNIFORMITY / (0.5 * BRIDGE_CONTACT_DHAT_M)).ceil(),
+        );
+
+        assert!(
+            normal_m > 0.0,
+            "the closing must be positive — a zero would mean no node ever \
+             entered the band and every number below would be vacuous",
+        );
+        assert!(
+            normal_m <= arc_increment_m * (1.0 + 1e-9),
+            "the normal closing {normal_m:.6e} m cannot exceed the total motion \
+             {arc_increment_m:.6e} m",
+        );
+        // The consequence, and the half that can fail: this schedule cannot
+        // bracket a stiffness, and the derivation must say so rather than
+        // return a number.
+        assert!(
+            bridge_face_barrier_kappa(BRIDGE_CONTACT_DHAT_M, normal_m).is_err(),
+            "a closing of {normal_m:.6e} m against a {:.6e} m band must leave NO \
+             bracket — if this starts passing, the fixture or the band changed \
+             and the schedule guidance below is stale",
+            BRIDGE_CONTACT_DHAT_M,
+        );
+        // And a schedule fine enough DOES bracket — without this the gate only
+        // ever sees the refusal and could not tell a broken derivation from a
+        // correctly-refusing one.
+        let fine_closing_m = 0.5 * (0.5 * BRIDGE_CONTACT_DHAT_M) / BRIDGE_PATCH_NONUNIFORMITY;
+        assert!(
+            bridge_face_barrier_kappa(BRIDGE_CONTACT_DHAT_M, fine_closing_m).is_ok(),
+            "a closing of half the allowance must bracket a stiffness",
+        );
+    }
+
+    /// The sliding bridge takes the FACE barrier, not the per-vertex path.
+    ///
+    /// Sibling of `the_bridge_selects_the_face_barrier_not_the_vertex_path`,
+    /// and it exists for the same reason: the capability is chosen by a
+    /// runtime `Option`, so a mesh that merely *compiles* against the Tet10
+    /// types silently takes the per-vertex path. Probes `active_pairs` — what
+    /// the solver scatters — with the Tet4 mesh as negative control.
+    #[test]
+    fn the_sliding_bridge_selects_the_face_barrier_not_the_vertex_path() {
+        use sim_soft::ActivePairsFor;
+
+        let g = tolerance_fixture();
+        let centerline = fixture_centerline();
+        let tet10 = Tet10Mesh::<Yeoh>::from_tet4(&g.mesh);
+        // t = 1 is the seated pose, where contact certainly exists.
+        let contact = intruder_ipc_contact_sliding_at(
+            &g.intruder,
+            g.bounds,
+            slide_pose_at(&centerline, 1.0),
+            g.cavity_offset_m,
+            1.0e7,
+            BRIDGE_CONTACT_DHAT_M,
+        );
+
+        let positions = tet10.positions().to_vec();
+        let pairs = ActivePairsFor::<Yeoh>::active_pairs(&contact, &tet10, &positions);
+        assert!(
+            !pairs.is_empty(),
+            "the seated pose must produce active pairs, or the face-kind check \
+             below passes vacuously",
+        );
+        let n_vertex = pairs
+            .iter()
+            .filter(|p| matches!(p, ContactPair::Vertex { .. }))
+            .count();
+        assert_eq!(
+            n_vertex,
+            0,
+            "every solver pair on the sliding bridge must be a Face pair; {} of \
+             {} were Vertex pairs",
+            n_vertex,
+            pairs.len(),
+        );
+
+        let tet4_positions = Mesh::<Yeoh>::positions(&g.mesh).to_vec();
+        let tet4_pairs = ActivePairsFor::<Yeoh>::active_pairs(&contact, &g.mesh, &tet4_positions);
+        assert!(
+            !tet4_pairs.is_empty()
+                && tet4_pairs
+                    .iter()
+                    .all(|p| matches!(p, ContactPair::Vertex { .. })),
+            "the Tet4 mesh must still take the per-vertex path ({} pairs)",
+            tet4_pairs.len(),
+        );
     }
 }
