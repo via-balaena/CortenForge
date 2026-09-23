@@ -937,7 +937,7 @@ const MAX_NEWTON_ITER: usize = 150;
 /// ▶ It is left at `1e-1` deliberately: changing it is a behaviour
 /// change to every consumer of this tool and belongs to the bridge, not
 /// to the measurement that found the problem.
-const INSERTION_SOLVE_TOL: f64 = 1e-1;
+pub(crate) const INSERTION_SOLVE_TOL: f64 = 1e-1;
 
 /// Shared solver config for the insertion solve — the walking-
 /// skeleton defaults with `dt` (static), `max_newton_iter`, and `tol`

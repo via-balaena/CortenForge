@@ -38,8 +38,9 @@ use cf_device_types::{
 #[cfg(test)]
 use crate::insertion_sim::RampStep;
 use crate::insertion_sim::{
-    InsertionRamp, SlideRamp, StepReadout, TetReadout, build_insertion_geometry,
-    compute_tet_readouts, run_insertion_ramp, run_sliding_insertion_ramp,
+    INSERTION_SOLVE_TOL, InsertionRamp, SlideRamp, StepReadout, TetReadout,
+    build_insertion_geometry, compute_tet_readouts, run_insertion_ramp,
+    run_insertion_ramp_tet10_ipc, run_sliding_insertion_ramp,
 };
 use cf_device_geometry::sdf_layers::{CachedScanSdf, CapPlanes};
 
@@ -526,6 +527,20 @@ pub struct InsertionSimState {
     /// (and falls back to `GrowingIntruder` automatically when the
     /// `.prep.toml [centerline]` block is missing).
     pub sim_mode: SimMode,
+    /// Run the next Simulate click through the **Tet10 + IPC bridge**
+    /// (`run_insertion_ramp_tet10_ipc`) instead of the shipped Tet4 +
+    /// penalty ramp.
+    ///
+    /// ⚠ The bridge implements the GROWING-intruder ramp only, so ticking
+    /// this forces [`SimMode::GrowingIntruder`] for that run — the sliding
+    /// ramp has no Tet10 path.
+    ///
+    /// ⚠ **The per-tet heat map stays Tet4-quality either way.**
+    /// `compute_tet_readouts` builds `F` from the four CORNER
+    /// displacements, which on a quadratic element is the linear part of a
+    /// field that is no longer linear. Contact, depth and convergence are
+    /// the bridge's; the stress colouring is not yet.
+    pub use_bridge: bool,
 }
 
 impl Default for InsertionSimState {
@@ -542,6 +557,7 @@ impl Default for InsertionSimState {
             displayed_step: 0,
             show_deformed: false,
             sim_mode: SimMode::default(),
+            use_bridge: false,
         }
     }
 }
@@ -705,6 +721,13 @@ pub fn kick_off_simulation(
     } else {
         state.last_error = None;
     }
+    // The bridge implements the growing ramp only — there is no Tet10 path
+    // for the sliding intruder. This is the user's explicit choice, not a
+    // degrade, so it does not post the fallback message above.
+    let use_bridge = state.use_bridge;
+    if use_bridge {
+        sim_mode = SimMode::GrowingIntruder;
+    }
 
     let pool = AsyncComputeTaskPool::get();
     let task = pool.spawn(async move {
@@ -716,6 +739,7 @@ pub fn kick_off_simulation(
             centerline_clone,
             sim_mode,
             n_steps,
+            use_bridge,
         )
         .map_err(|e| format!("{e:?}"))
     });
@@ -816,6 +840,7 @@ fn run_sim_pipeline(
     centerline_polyline_m: Vec<Point3<f64>>,
     sim_mode: SimMode,
     n_steps: usize,
+    use_bridge: bool,
 ) -> Result<InsertionSimOutputs> {
     let geometry = build_insertion_geometry(
         &scan,
@@ -890,7 +915,14 @@ fn run_sim_pipeline(
             )
         }
         SimMode::GrowingIntruder => {
-            let ramp = run_insertion_ramp(geometry, n_steps)?;
+            // Both run the same scene, BCs and intruder; the bridge swaps the
+            // solve triple (Tet4→Tet10, penalty→IPC face barrier) and derives
+            // its κ. Same tolerance, so the comparison is like-for-like.
+            let ramp = if use_bridge {
+                run_insertion_ramp_tet10_ipc(geometry, n_steps, INSERTION_SOLVE_TOL)?
+            } else {
+                run_insertion_ramp(geometry, n_steps)?
+            };
             let result = ramp.result.as_ref().ok_or_else(|| {
                 anyhow::anyhow!(
                     "growing ramp failed at step 0 — no converged step. {}",
@@ -1358,10 +1390,24 @@ pub fn render_insertion_sim_section(
                     state.request_simulate = true;
                 }
             });
-            ui.label(format!(
-                "{} steps · 4 mm cell · Yeoh material · tol=1e-1 · κ=1e3",
-                state.n_steps
-            ));
+            ui.add_enabled_ui(!busy, |ui| {
+                ui.checkbox(
+                    &mut state.use_bridge,
+                    "Tet10 + IPC bridge (growing-intruder)",
+                );
+            });
+            if state.use_bridge {
+                ui.label(format!(
+                    "{} steps · 4 mm cell · Yeoh · tol=1e-1 · κ derived, d̂=1.2 mm",
+                    state.n_steps
+                ));
+                ui.label("⚠ heat map is still corner-linear (Tet4-quality)");
+            } else {
+                ui.label(format!(
+                    "{} steps · 4 mm cell · Yeoh material · tol=1e-1 · κ=1e3",
+                    state.n_steps
+                ));
+            }
 
             if let Some(err) = &state.last_error {
                 ui.colored_label(
@@ -2274,5 +2320,56 @@ mod tests {
             assert_eq!(a.n_tets, 1);
             assert!((a.max_first_piola_frobenius_pa - 1.0e3 * (i as f64 + 1.0)).abs() < 1e-9);
         }
+    }
+
+    /// The bridge is OPT-IN, and ticking it forces the ramp that has one.
+    ///
+    /// Two properties, both of which would be silent if wrong:
+    /// - **Default off.** A user who never touches the checkbox must get the
+    ///   shipped Tet4 + penalty path, unchanged. An opt-OUT default would
+    ///   change what every existing workflow computes.
+    /// - **Ticking it selects the growing-intruder ramp.** The bridge
+    ///   implements that ramp only — there is no Tet10 path for the sliding
+    ///   intruder — so a run left in `SimMode::Sliding` would silently ignore
+    ///   the checkbox and hand back a penalty result the panel labels as the
+    ///   bridge's.
+    ///
+    /// ⚠ **What this does NOT cover**: that `use_bridge` actually reaches
+    /// `run_sim_pipeline`'s ramp call. That wiring runs inside a Bevy system
+    /// and an async task, and is covered only by running the panel. Stated
+    /// rather than implied — see the module docs.
+    #[test]
+    fn the_bridge_toggle_is_opt_in_and_selects_the_growing_ramp() {
+        let state = InsertionSimState::default();
+        assert!(
+            !state.use_bridge,
+            "the bridge must be opt-in: a default-on toggle would change what \
+             every existing workflow computes",
+        );
+
+        // The mode-forcing rule `kick_off_simulation` applies, asserted on the
+        // same expression rather than described in prose.
+        let forced = |use_bridge: bool, mode: SimMode| {
+            if use_bridge {
+                SimMode::GrowingIntruder
+            } else {
+                mode
+            }
+        };
+        assert_eq!(
+            forced(true, SimMode::Sliding),
+            SimMode::GrowingIntruder,
+            "ticking the bridge must force the growing ramp — the sliding ramp \
+             has no Tet10 path, so leaving it would silently run penalty",
+        );
+        assert_eq!(
+            forced(false, SimMode::Sliding),
+            SimMode::Sliding,
+            "leaving it unticked must not change the mode",
+        );
+        assert_eq!(
+            forced(false, SimMode::GrowingIntruder),
+            SimMode::GrowingIntruder,
+        );
     }
 }
