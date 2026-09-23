@@ -3762,8 +3762,15 @@ fn sliding_normal_increment_m(
         for p in wall_points {
             let pt = Point3::from(*p);
             let sd_after = b.eval(pt);
-            // Only nodes the barrier can actually see at the END of the step.
-            if !sd_after.is_finite() || sd_after > d_hat {
+            // Only nodes inside the OPEN band at the end of the step. Two
+            // exclusions, for different reasons:
+            //  - `> d_hat`: the barrier cannot see it yet, so however fast it
+            //    closes costs nothing.
+            //  - `<= 0`: already through the REST wall. Its rest gap is not
+            //    its solve gap — the barrier pushes those nodes out — so
+            //    reading a "closing" off the rest configuration there measures
+            //    the mesh, not the schedule.
+            if !sd_after.is_finite() || sd_after > d_hat || sd_after <= 0.0 {
                 continue;
             }
             let sd_before = a.eval(pt);
@@ -10780,5 +10787,129 @@ mod tests {
             "the Tet4 mesh must still take the per-vertex path ({} pairs)",
             tet4_pairs.len(),
         );
+    }
+
+    /// What slide schedule the REAL scan needs — measured without solving.
+    ///
+    /// The sliding bridge's `κ` is derived from the normal closing, and a
+    /// bracket exists only while `ρ · closing < d̂/2`. That makes the step
+    /// count a *derived* quantity rather than a preference, and it is
+    /// answerable from geometry alone: poses, SDF evaluations, no FEM.
+    ///
+    /// ⭐ Worth running before any sliding solve, because it costs seconds and
+    /// tells you whether the solve is minutes or hours.
+    ///
+    /// ⛔ Asserts nothing — it reports a schedule.
+    #[test]
+    #[ignore = "needs the repo-excluded iter-1 scan; run with --ignored --nocapture"]
+    fn what_slide_schedule_the_real_scan_needs() {
+        let scan_path = std::env::var("CF_SIM_RESEARCH_SPIKE_SCAN").map_or_else(
+            |_| PathBuf::from("/Users/jonhillesheim/scans/sock_over_capsule.cleaned.stl"),
+            PathBuf::from,
+        );
+        assert!(
+            scan_path.exists(),
+            "the iter-1 scan fixture is not at {}",
+            scan_path.display(),
+        );
+        let prep_path = scan_path.with_extension("").with_extension("prep.toml");
+        let prep_text =
+            std::fs::read_to_string(&prep_path).expect("the prep.toml beside the scan must load");
+        let centerline =
+            crate::parse_centerline(&prep_text).expect("parse centerline from prep.toml");
+        let cap_planes =
+            cf_cap_planes::parse_cap_planes(&prep_text).expect("parse cap planes from prep.toml");
+        assert!(
+            centerline.len() >= 2,
+            "the scan's prep.toml must carry a centerline of >= 2 points, got {}",
+            centerline.len(),
+        );
+        let scan = load_stl(&scan_path).expect("load the iter-1 cleaned scan");
+        let arc_m = polyline_arc_length_m(&centerline);
+
+        // Straightness: how much the path actually bends. A ratio of 1 is a
+        // straight line; the further below 1, the more the banked rotation
+        // matters.
+        let chord_m = (centerline[centerline.len() - 1] - centerline[0]).norm();
+        println!(
+            "\ncenterline: {} points · arc {:.2} mm · chord {:.2} mm · straightness {:.4}",
+            centerline.len(),
+            arc_m * 1e3,
+            chord_m * 1e3,
+            chord_m / arc_m,
+        );
+
+        let allowance_m = 0.5 * BRIDGE_CONTACT_DHAT_M / BRIDGE_PATCH_NONUNIFORMITY;
+        println!(
+            "a bracket needs closing < {:.4} mm (d_hat/2 / rho, at d_hat = {:.2} mm)\n",
+            allowance_m * 1e3,
+            BRIDGE_CONTACT_DHAT_M * 1e3,
+        );
+
+        let scenes: [(&str, Vec<SimLayer>, bool); 2] = [
+            ("1layer", vec![layer(0.010, "ECOFLEX_00_30")], false),
+            (
+                "gui-dflt",
+                vec![
+                    layer_with_slacker(0.010, "ECOFLEX_00_30", 0.5),
+                    layer(0.003, "DRAGON_SKIN_20A"),
+                ],
+                true,
+            ),
+        ];
+        for (label, layers, with_caps) in scenes {
+            let caps: &[CapPlane] = if with_caps { &cap_planes } else { &[] };
+            let design = SimDesign {
+                layers,
+                cavity_inset_m: 0.003,
+            };
+            let Ok(g) = build_insertion_geometry(&scan, &design, caps, 2_500, 0.004) else {
+                println!("{label}: geometry FAILED to build");
+                continue;
+            };
+            let faces: Vec<[VertexId; 3]> = Mesh::<Yeoh>::boundary_faces(&g.mesh).to_vec();
+            let rest = Mesh::<Yeoh>::positions(&g.mesh);
+            let mut ids: Vec<VertexId> = faces.iter().flatten().copied().collect();
+            ids.sort_unstable();
+            ids.dedup();
+            let wall: Vec<Vec3> = ids.into_iter().map(|v| rest[v as usize]).collect();
+
+            println!(
+                "══ {label} ({} tets, {} wall nodes) ══",
+                g.n_tets,
+                wall.len()
+            );
+            println!("steps   arc/step    closing   ratio   brackets?");
+            for n_steps in [16_usize, 32, 64, 128, 256] {
+                // Step counts are tiny; the cast is exact.
+                let per_step_m =
+                    arc_m / f64::from(u32::try_from(n_steps).expect("step count fits u32"));
+                let closing_m = sliding_normal_increment_m(
+                    &g.intruder,
+                    g.bounds,
+                    &centerline,
+                    n_steps,
+                    g.cavity_offset_m,
+                    BRIDGE_CONTACT_DHAT_M,
+                    &wall,
+                );
+                let ok = bridge_face_barrier_kappa(BRIDGE_CONTACT_DHAT_M, closing_m).is_ok();
+                println!(
+                    "{n_steps:>5}   {:>7.4} mm  {:>7.4} mm  {:>5.3}   {}",
+                    per_step_m * 1e3,
+                    closing_m * 1e3,
+                    closing_m / per_step_m,
+                    if ok { "YES" } else { "no" },
+                );
+                if ok {
+                    println!(
+                        "      ⇒ at ~8 s/step that is ~{:.0} min of solve",
+                        // Step counts are tiny; the cast is exact.
+                        f64::from(u32::try_from(n_steps).expect("fits")) * 8.0 / 60.0,
+                    );
+                    break;
+                }
+            }
+        }
     }
 }
