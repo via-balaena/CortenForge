@@ -1424,10 +1424,9 @@ Listed because the confidence of §4 rests on these being open, not closed.
    the product reaches 3.438 mm (11/16, re-measured through the UI pipeline)
    against 4.531 mm at 32; and the default model is SLIDING
    (`SimMode::default()`) while the bridge runs growing only —
-   `run_sliding_insertion_ramp_tet10_ipc` exists but nothing calls it (measured
-   below: as written it seats with no engineered interference, needs ≥ 128
-   steps, and stops at 52 % of the travel). At 16 steps the bridge's pipeline
-   run took 364 s against the penalty path's 54 s.
+   `run_sliding_insertion_ramp_tet10_ipc` exists but nothing in the panel calls
+   it (measured below). At 16 steps the bridge's pipeline run took 364 s against
+   the penalty path's 54 s.
 
    ⚠ **The search for more of this class**, and its boundary: every UI site
    that pairs data taken from the Tet4 snapshot with a ramp's state. Faces
@@ -1438,55 +1437,70 @@ Listed because the confidence of §4 rests on these being open, not closed.
    keeps element order, which `the_tet10_readout_mesh_places_every_elements_midsides`
    now pins. ⛔ **But not in frame (pre-existing, both paths):** the heat map
    coloured the DEFORMED vertices of a layer shell by the nearest REST-frame
-   centroid, and the deformed view switches on after every run — on the
-   product, cavity vertices move up to 5 mm against 4 mm cells. The first
+   centroid, and the deformed view switches on after every run. The first
    search judged pairings by element id only and missed it; a cold review
    found it. ✅ **FIXED after #962:** the deformed view's vertices are looked up
    by id at their rest positions (`LayerVertices::SimMesh`), pinned by
    `the_heat_map_reads_the_deformed_view_at_rest_positions`, which fails when
-   the lookup is pointed back at the moved positions. Through the UI pipeline
-   on the product at the panel's 16 steps
-   (`the_ui_pipeline_runs_the_bridge_end_to_end_on_the_product_scan`), the fix
-   changes the colour of **1 622 of 5 261** drawn vertices on the bridge
-   (largest move 5.225 mm) and **1 625 of 5 261** on the penalty path
-   (5.907 mm): about 31 % of the shell took its colour from an element other
-   than its nearest one at rest. `main.rs` reaches ramp state only through the UI's methods;
+   the lookup is pointed back at the moved positions, or at another vertex's
+   rest position. Through the UI pipeline on the product, growing model, at the
+   panel's 16 steps (`the_ui_pipeline_runs_the_bridge_end_to_end_on_the_product_scan`,
+   re-run identical at a clean `1f23d4d6`), at the last converged step (11/16
+   on the bridge, 13/16 on the penalty path) the fix changes the colour of
+   **1 622 of 5 261** drawn vertices on the bridge and **1 625** on the penalty
+   path; the largest move among the drawn vertices is 5.225 / 5.907 mm. The
+   drawn count includes the pinned outer skin, which does not move.
+   ⚠ **Pre-existing, unchanged by the fix:** the heat map colours every node of
+   the solved mesh — 125 575 on the bridge, 5 261 of them drawn — against
+   65 293 tets, which took **4.08 s per call** (a temporary probe during #963's
+   review, reverted). `main.rs` reaches ramp state only through the UI's methods;
    its comment calling the deformed boundary "the same BCC vertex layout the
    ramp solves on" was wrong on the bridge and is corrected. Not searched:
    anything outside `tools/cf-sim-research`.
 
-   ### THE SLIDING BRIDGE ON THE PRODUCT SCAN — measured before the default model is chosen
+   ### THE SLIDING MODEL ON THE PRODUCT SCAN — what the default needs
 
-   The default-model question needed `run_sliding_insertion_ramp_tet10_ipc`,
-   which had never run. Read first: its contact is the moving scan offset by
-   `cavity_offset_m` alone, and at `t = 1` the pose is the identity — so fully
-   seated, the contact IS the cavity surface. The growing bridge ends at the
-   bare scan, `interference + cavity_offset = 0`.
+   ✅ **Decided by Jon, 2026-09-23: the default is the SLIDING model, carrying
+   the inset.** The product question is whether the scan slides in comfortably
+   at the user's inset and silicone, and that is decided along the path, not at
+   the seat.
+
+   ⛔ **Neither sliding ramp carries the inset today.** The panel's shipped
+   default, `run_sliding_insertion_ramp`, passes `interference_m = 0` at every
+   step — F4's warm-up, which ramped the inset in, was reverted
+   (`docs/archive/F4_FALSIFICATION_POSTMORTEM.md`). The Tet10 bridge's
+   `run_sliding_insertion_ramp_tet10_ipc`, which had never run, offsets the
+   moving scan by `cavity_offset_m` alone. At `t = 1` the pose is the identity,
+   so fully seated both contacts ARE the cavity surface, whatever the inset.
+   And the panel draws the FULL-SIZE scan (`spawn_intruder_mesh`), so the wall
+   is never pushed out to the surface it draws. The growing ramp's schedule
+   instead ends at the bare scan, `interference + cavity_offset = 0`.
 
    **Without a solve** (`what_the_sliding_contact_reaches_on_the_product_scan`:
    64 poses; the 1 409 boundary-face corner nodes within one cell of the rest
-   cavity surface):
+   cavity surface). Distances are to the UNDEFORMED wall, so a negative value is
+   room the silicone must make by stretching:
 
-   | contact | deepest into the rest wall, whole travel | t = 1: min · median | nodes ever deeper than d̂ |
+   | contact | most room over the travel | t = 1: min · median | nodes ever past d̂ |
    |---|---|---|---|
    | as written (`cavity_offset`) | −8.285 mm | −0.074 · **+0.203** mm | 422 / 1 409 |
    | bare scan (offset 0) | −13.285 mm | −5.074 · −4.797 mm | 1 409 / 1 409 |
 
-   ⇒ ⛔ **As written, the sliding bridge seats with NO engineered
-   interference.** Fully seated, the median wall node sits 0.20 mm outside the
-   contact, where the bare scan puts it 4.80 mm in. The seated contact does not
-   depend on the inset at all — cavity and contact are the same offset of the
-   same scan. The bare row's three distance columns are the as-written ones
-   minus exactly 5 mm.
+   Fully seated, the as-written contact leaves the median wall node 0.20 mm
+   clear; the bare scan would ask it to make 4.80 mm of room. The bare row's
+   three distance columns are the as-written ones minus exactly 5 mm.
 
-   The deepest overlap is at t = 0.6875 (tip 83 mm in), on a node 107 mm from
-   the tip along the 120.9 mm centerline and 12 mm off it. The pose is RIGID —
-   the scan turns about its tip to follow the centerline. What makes it overlap
-   its own cavity by 8 mm there has not been isolated.
+   The most room is asked at t = 0.6875 (the moving tip 83 mm in), of a node
+   107 mm from the SEATED tip along the 120.9 mm centerline — about 14 mm inside
+   the entrance — and 12 mm off it. 8.3 mm of it is asked with no inset at all.
+   The pose is RIGID: the scan turns about its tip to follow the centerline. Why
+   it asks that much there has not been isolated; F4's postmortem had called
+   this pose mismatch "small".
 
-   **Schedule.** The worst per-step normal closing runs 0.91–1.16× the arc step
-   (the ramp's own measure, which reads corner nodes only; an estimate at the
-   nodes it skips agrees within 5 % wherever a bracket exists):
+   **Schedule.** The ramp can derive κ only while the worst per-step normal
+   closing stays under the band, `closing < d̂ = 1.2 mm`
+   (`bridge_face_barrier_kappa`). That closing (`sliding_normal_increment_m`,
+   corner nodes only) runs 0.91–1.16× the arc step on five schedules:
 
    | steps | arc step (mm) | closing, as written | closing, bare | κ derivable |
    |---|---|---|---|---|
@@ -1496,24 +1510,30 @@ Listed because the confidence of §4 rests on these being open, not closed.
    | 128 | 0.945 | 1.042 | 1.088 | yes |
    | 256 | 0.472 | 0.525 | 0.550 | yes |
 
-   ⇒ the sliding bridge needs **≥ 128 steps** here, 4× the growing bridge's 32.
+   One step count at a time from 65, the first the ramp accepts is **110** as
+   written (closing 1.180 mm) and **117** bare (1.189 mm); the closing is not
+   monotone in the step count. Necessary, not sufficient: the step must also
+   stay under the held standoff, which is unchecked. The closing measure skips
+   nodes that cross the rest wall within one step. At 110 and 117 steps every
+   such node starts the step inside the band, where the barrier can see it
+   (worst starting gap 1.159 / 1.061 mm); at 64 steps, 8 as written and 43 bare
+   start beyond it.
 
    **Run as written at 128 steps**
-   (`the_sliding_bridge_as_written_on_the_product_scan`): **67/128 converged**,
-   reaching t = 0.523 (63.3 of 120.9 mm), then stopped on a validity-domain
-   violation (over-stretched or inverted) at **tet 516** — the same element id
-   the growing bridge stops on. At the last converged step no boundary node is
-   through the contact (min gap 0.423 mm), the contact force is 60.7 N and the
-   principal stretches span 0.338–1.632. Steps took 0–4 Newton iterations.
-   Wall clock 1 138 s is an upper bound: clippy, the test suite, `grade` and
-   two other probes ran beside it.
+   (`the_sliding_bridge_as_written_on_the_product_scan`, tolerance 1e-1, re-run
+   bit-identical at a clean `1f23d4d6`): **67/128 converged**, reaching
+   t = 0.523 (63.3 of 120.9 mm), then stopped on a validity-domain violation
+   (over-stretched or inverted) at **tet 516** — the element id the growing
+   bridge stops on at 32 steps. At the last converged step no boundary CORNER
+   node is through the contact (min gap 0.423 mm; midsides not checked), the
+   contact force is 60.7 N and the principal stretches span 0.338–1.632. Steps
+   took 0–4 Newton iterations; 1 078 s run alone.
 
-   ⇒ **For the default decision:** the travelling face barrier converges step
-   by step without penetrating on this scene. But as written it models a
-   zero-interference plug and stops halfway on the same element. Making it the
-   product's model means carrying the inset into its contact (the bare scan,
-   whose overlap reaches 13.3 mm during the travel), at ≥ 128 steps, and
-   getting past tet 516 — none of which has been tried.
+   ⇒ **What the default needs:** carry the inset into the sliding contact — the
+   bare scan — at a step count the ramp accepts (117 at the earliest), and get
+   past tet 516. Carrying it also makes the contact the surface the panel
+   draws. On the bridge none of that has been tried; on the penalty path F4
+   tried the inset and stalled at its first 1.5 mm substep.
 
 4. **Per-Gauss-point material sampling** (§7.6). The expensive one: a
    return-shape change to `Mesh::materials()` reaching 119 call sites.

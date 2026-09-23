@@ -113,8 +113,8 @@ pub struct LayerAggregate {
 
 /// Async-task outputs: the raw ramp + the panel's derived readouts +
 /// the per-tet substrate that [`project_layer_heat_map`] needs to
-/// re-project scalar fields onto each layer's SDF-extracted MC mesh
-/// at render time (slice 9 sub-leaf 7).
+/// re-project scalar fields onto each layer's drawn mesh at render
+/// time (slice 9 sub-leaf 7).
 pub struct InsertionSimOutputs {
     /// The raw ramp output — sliding or growing, dispatched on
     /// [`SimMode`]. Per spec §3e, both kinds expose the same
@@ -359,40 +359,6 @@ impl InsertionSimOutputs {
         Some(mesh)
     }
 
-    /// Slice S3 — build a deformed layer-shell `IndexedMesh` at the
-    /// requested step for layer `layer_idx`. Pairs the layer's
-    /// outer-face triangles with the step's `x_final`. Returns `None`
-    /// if `layer_idx` exceeds the sim's layer count, the layer has no
-    /// outer faces (e.g., degenerate single-cell layer), or `step` is
-    /// out of the converged range.
-    ///
-    /// The mesh still carries every BCC vertex in its `.vertices`
-    /// slot (only the layer's outer-face triangles reference a subset)
-    /// — the unreferenced vertices are silently ignored by the bevy
-    /// mesh build's `Mesh::compute_smooth_normals` consumer and the
-    /// per-GPU-asset waste is small at iter-1 (≤ a few hundred KB).
-    ///
-    /// Slice S11.2 — kept as the LEGACY outer-only helper for the
-    /// SDF-iso fallback path in `update_layer_meshes` (when the sim's
-    /// layer count doesn't cover this UI layer); the slab helper
-    /// below is the deformed render's primary path.
-    #[must_use]
-    pub fn deformed_layer_mesh_at(&self, layer_idx: usize, step: usize) -> Option<IndexedMesh> {
-        let faces = self.per_layer_outer_faces.get(layer_idx)?;
-        if faces.is_empty() {
-            return None;
-        }
-        let x_final = self.step_x_final_at(step)?;
-        let positions: Vec<Point3<f64>> = x_final
-            .chunks_exact(3)
-            .map(|c| Point3::new(c[0], c[1], c[2]))
-            .collect();
-        let mut mesh = IndexedMesh::new();
-        mesh.vertices = positions;
-        mesh.faces = faces.clone();
-        Some(mesh)
-    }
-
     /// Slice S11.2 — build a deformed layer-SLAB `IndexedMesh` at the
     /// requested step for layer `layer_idx`. Concatenates the layer's
     /// INNER face triangles + OUTER face triangles into one mesh so
@@ -544,9 +510,10 @@ pub struct InsertionSimState {
     ///
     /// ⚠ The panel wires the bridge into the GROWING-intruder ramp only, so
     /// ticking this forces [`SimMode::GrowingIntruder`] for that run. The
-    /// sliding bridge (`run_sliding_insertion_ramp_tet10_ipc`) is not wired:
-    /// as written its contact ends at the cavity surface itself, with none of
-    /// the inset's interference.
+    /// sliding bridge (`run_sliding_insertion_ramp_tet10_ipc`) is not wired.
+    /// As written its contact ends at the cavity surface, with none of the
+    /// inset's interference — and so does the wired penalty sliding ramp's
+    /// (`run_sliding_insertion_ramp` passes `interference_m = 0`).
     ///
     /// The per-tet heat map follows the ramp: on the bridge it is the Tet10
     /// strain at each element's Gauss points, read through the mesh the
@@ -1283,7 +1250,7 @@ fn global_min_max_across(per_step_fields: &[[Vec<f64>; 2]], slot_idx: usize) -> 
 /// sat at rest instead.
 pub(crate) enum LayerVertices<'a> {
     /// Rest-frame positions in physics-frame meters — the SDF-iso layer
-    /// surface drawn when the deformed view is off.
+    /// surface, drawn whenever no deformed mesh is.
     Rest(&'a [Point3<f64>]),
     /// Every vertex of the solved mesh, in `x_final` order — the mesh
     /// [`InsertionSimOutputs::deformed_layer_slab_mesh_at`] draws.
@@ -1308,15 +1275,12 @@ pub(crate) enum LayerVertices<'a> {
 ///
 /// Otherwise returns one RGBA per vertex, in the same order.
 ///
-/// Cost: O(`n_vertices` × `n_tets_in_layer`). On iter-1 with
-/// ~3 k MC verts per layer × ~5 k tets per layer ≈ 15 M ops per
-/// rebuild; release-mode cost ~10 ms per layer. Re-walks per
-/// `update_layer_meshes` rebuild (which fires on slider change OR
-/// sim completion). The per-layer-vertex → nearest-tet cache the
-/// spec calls out is a future optimization if scalar-mode toggle
-/// ever feels laggy — drop in a `HashMap<(layer_idx, vertex_idx),
-/// tet_idx>` keyed on the same `LayerMeshKey` that gates the
-/// rebuild.
+/// Cost: O(`n_vertices` × `n_tets_in_layer`), re-walked on every
+/// `update_layer_meshes` rebuild (slider change OR sim completion).
+/// ⚠ [`LayerVertices::SimMesh`] colours every node of the solved mesh,
+/// drawn or not — on the product's Tet10 mesh that is seconds per call
+/// (recon, `PER-GAUSS-POINT READOUTS`). Rest positions do not change
+/// between steps, so the nearest tet per vertex could be cached per run.
 #[must_use]
 pub(crate) fn project_layer_heat_map(
     outputs: &InsertionSimOutputs,
@@ -2083,10 +2047,12 @@ mod tests {
     ///
     /// The deformed layer shell is the solved mesh's own vertices at a step's
     /// moved positions, while the per-tet scalars are found by the nearest
-    /// rest centroid. Vertex 1 sits at rest beside tet 0 and has moved beside
-    /// tet 1, so it must take tet 0's colour. The control reads the same
-    /// vertices where they MOVED to — what the panel did before — and must get
-    /// tet 1's, or this fixture cannot tell the two frames apart.
+    /// rest centroid. Vertex 0 sits beside tet 1 and stays there; vertex 1
+    /// sits at rest beside tet 0 and has moved beside tet 1. So the two must
+    /// take DIFFERENT colours, in order — which a lookup that reads the wrong
+    /// vertex's rest position cannot produce. The control reads the vertices
+    /// where they MOVED to — what the panel did before — and must get tet 1's
+    /// for both, or this fixture cannot tell the two frames apart.
     #[test]
     fn the_heat_map_reads_the_deformed_view_at_rest_positions() {
         let outputs = InsertionSimOutputs {
@@ -2097,7 +2063,7 @@ mod tests {
                     iter_count: 1,
                     final_residual_norm: 0.0,
                     // Vertex 1 has moved from (1, 0, 0) to (9, 0, 0).
-                    x_final: vec![0.0, 0.0, 0.0, 9.0, 0.0, 0.0],
+                    x_final: vec![10.0, 0.0, 0.0, 9.0, 0.0, 0.0],
                     readout: StepReadout {
                         n_active_contact_pairs: 0,
                         contact_force_total_n: Vector3::zeros(),
@@ -2111,17 +2077,17 @@ mod tests {
                 }],
                 failed_at_step: None,
                 failure_reason: None,
-                final_x: vec![0.0, 0.0, 0.0, 9.0, 0.0, 0.0],
+                final_x: vec![10.0, 0.0, 0.0, 9.0, 0.0, 0.0],
                 n_pinned: 0,
                 result: None,
                 readout_mesh: ReadoutMesh::at_rest(vec![
-                    Vector3::new(0.0, 0.0, 0.0),
+                    Vector3::new(10.0, 0.0, 0.0),
                     Vector3::new(1.0, 0.0, 0.0),
                 ]),
             }),
             per_layer: Vec::new(),
-            // Both tets in layer 0: tet 0 beside the rest positions, tet 1
-            // beside where vertex 1 moved to.
+            // Both tets in layer 0: tet 0 beside vertex 1's rest position,
+            // tet 1 beside vertex 0 and where vertex 1 moved to.
             tet_centroids: vec![Vector3::new(1.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)],
             per_tet_layer: vec![0, 0],
             per_step_scalar_fields: vec![[vec![0.0, 1.0], vec![0.0, 1.0]]],
@@ -2144,8 +2110,8 @@ mod tests {
         .expect("layer 0 has tets");
         assert_eq!(
             colours,
-            vec![tet_0, tet_0],
-            "a moved vertex must be coloured by the tet it sits in at rest",
+            vec![tet_1, tet_0],
+            "each vertex must be coloured by the tet beside its own rest position",
         );
 
         let moved: Vec<Point3<f64>> = outputs
@@ -2164,7 +2130,7 @@ mod tests {
         .expect("layer 0 has tets");
         assert_eq!(
             at_moved,
-            vec![tet_0, tet_1],
+            vec![tet_1, tet_1],
             "read where it moved to, vertex 1 lands beside tet 1",
         );
     }
@@ -2447,7 +2413,7 @@ mod tests {
     }
 
     /// Slice S11.2 — `layer_idx` past the layer count returns None
-    /// (fail-closed, same posture as `deformed_layer_mesh_at`).
+    /// (fail-closed).
     #[test]
     fn deformed_layer_slab_mesh_at_returns_none_for_out_of_range_layer() {
         let outputs = synthetic_outputs_for_slab_tests(
