@@ -941,7 +941,39 @@ Listed because the confidence of §4 rests on these being open, not closed.
    `gui-dflt` the BASELINE's cliff comes first — it is already at zero by 1e-2,
    a decade before the bridge is.
 
-   ### ⛔⛔⛔ THE κ FLOOR'S MECHANISM IS FALSIFIED ON THE PRODUCT SCAN
+   ### ✅ THE κ DERIVATION, FIXED — ship the ceiling, refine the schedule
+
+   The floor was selecting κ **from the increment**, so a finer march lowered
+   κ and the barrier held proportionally less: the feasibility threshold chased
+   the step downward and could never be caught. Holding κ at the **ceiling**
+   (the stated cushioning requirement, which does not depend on the increment)
+   and refining the schedule underneath it:
+
+   | steps | step | held | depth | was (centre κ) |
+   |---|---|---|---|---|
+   | 16 | 0.3125 mm | 0.3062 mm | **3.438 mm (68.8 %)** | 1.875 mm (37.5 %) |
+   | 32 | 0.1562 mm | 0.2163 mm | **4.531 mm (90.6 %)** | 2.344 mm (46.9 %) |
+   | 64 | 0.0781 mm | 0.2146 mm | **4.531 mm (90.6 %)** | 3.047 mm (60.9 %) |
+
+   ⇒ ⭐⭐⭐ **The contact-feasibility wall is gone.** 32 and 64 steps stop at
+   the SAME depth and on a DIFFERENT failure — `validity violation at tet 516:
+   det F = -0.030`, an element turning inside out. That is a material and mesh
+   limit, not a barrier one. **1.8–1.9× more depth at both schedules.**
+
+   ⇒ `bridge_face_barrier_kappa` now returns the ceiling and no longer varies
+   with the schedule. The floor is still computed and printed
+   (`the_bridges_barrier_band_reports_a_floor_and_ships_a_ceiling`) but does
+   not select. The schedule requirement becomes **`step < held standoff`**, and
+   the held standoff must be MEASURED — it depends on wall compliance, which no
+   closed form here knows.
+
+   ⚠ **What still limits the ramp**: element inversion at 4.531 mm of a 5 mm
+   inset, schedule-independent. Candidate fixes are mesh-side (finer cell where
+   the strain concentrates) or F-bar, which EXISTS in sim-soft and is UNUSED.
+
+   ---
+
+   ### ⛔⛔⛔ HOW THE FLOOR WAS FALSIFIED (kept — the method is the point)
 
    The floor is derived as *"κ such that the barrier holds `ρ · step` open at
    traction σ"*, and PR #954 pinned it as a derivation rather than a sweep.

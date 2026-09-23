@@ -1258,57 +1258,71 @@ const BRIDGE_PATCH_NONUNIFORMITY: f64 = 1.12;
 /// every candidate rather than asserting this one is optimal.
 const BRIDGE_CONTACT_DHAT_M: f64 = 1.2e-3;
 
-/// The face-barrier stiffness for a ramp of `n_steps` over `inset_m`, derived
-/// from [`BRIDGE_DESIGN_TRACTION_PA`] and [`BRIDGE_PATCH_NONUNIFORMITY`].
+/// The face-barrier stiffness: **the ceiling**, the stiffest value that still
+/// stays out of the cushioning regime.
 ///
-/// ⭐ **Derived per ramp, not stored as a constant** — and that is the point.
-/// The floor belongs to the MARCHING SCHEME, not to the physics: the material
-/// and the compression set `σ`, while the increment sets the clearance that
-/// must survive one step. A constant would silently become wrong the moment a
-/// caller changed `n_steps`, which is exactly the shape of error the fixture's
-/// `κ = 1e7` would have carried into this scene.
+/// ⛔⛔ **THIS RETURNED THE GEOMETRIC CENTRE OF `[floor, ceiling]`, AND THAT
+/// WAS MEASURED WRONG ON A STIFF WALL.** The floor — *"κ such that the barrier
+/// holds `ρ · step` open at traction σ"* — assumes κ *sets* the standoff. On
+/// the product scene it does not: the held standoff measured FLAT
+/// (0.2936 → 0.2766 mm) across a 1.5× range of κ, because 17 mm of
+/// DRAGON_SKIN_10A is stiff enough that the WALL sets the gap. κ only changes
+/// the traction needed to reach it — the same fact as σ moving a mere 1.0183×
+/// per decade of κ on this scene.
 ///
-/// Two requirements bracket it, and they do **not** have the same standing:
+/// ⭐⭐⭐ **And deriving κ FROM the increment was actively harmful.** A finer
+/// march lowers the floor, which lowered κ, which held proportionally less —
+/// the feasibility threshold chased the step downward and could never be
+/// caught (held/step DEGRADED 0.94 → 0.86 → 0.81 across 16/32/64 steps).
+/// Holding κ at the ceiling and refining the schedule instead:
 ///
 /// ```text
-/// floor    σ / |b′(ρ · step)|   hold one increment open   (DERIVED from a
-///                                                          measured stall)
-/// ceiling  σ / |b′(d̂ / 2)|      stay out of the cushion    (a STATED
-///                                                          requirement)
+/// steps  step_mm  held_mm   depth     was (centre κ)
+///    16   0.3125   0.3062   68.8 %    37.5 %
+///    32   0.1562   0.2163   90.6 %    46.9 %
+///    64   0.0781   0.2146   90.6 %    60.9 %
 /// ```
 ///
-/// The return is their **geometric centre** — the log-midpoint, which is the
-/// value maximally far from both requirements on the scale the bracket is
-/// actually wide in (it spans a factor, not a difference).
+/// ⇒ the contact-feasibility wall is GONE: 32 and 64 steps stop at the same
+/// depth and on a DIFFERENT failure — an element inversion (`det F` < 0), not
+/// a barrier stall. What limits the ramp now is material, not contact.
+///
+/// ⇒ **The ceiling is the only requirement describing something κ actually
+/// controls** (how much the barrier cushions). The floor is kept as a REPORTED
+/// diagnostic — `the_bridges_barrier_band_brackets_a_stiffness` still prints
+/// it — but it no longer selects, because a selector resting on a premise the
+/// scene does not honour is a sweep wearing a derivation's clothes.
+///
+/// ⚠ The floor DID predict the stall on sim-soft's SEALED fixture (1e6 stalls
+/// above 17.567 kPa, measured 14.255). This is a transfer failure to a
+/// compliant open-mouth wall, not a refutation — record the regime a
+/// derivation was validated in.
+///
+/// ⚠ `ramp_step_m` is still taken and still checked: an increment wider than
+/// the band is a mis-specified schedule and is surfaced rather than clamped.
+/// The schedule requirement is now `step < held standoff`, and the held
+/// standoff must be **MEASURED** — it depends on wall compliance, which no
+/// closed form here knows.
 ///
 /// # Errors
 ///
-/// Either requirement falls outside the open band `(0, d̂)`, or they cross
-/// (`floor >= ceiling`) — an empty bracket, meaning no stiffness both holds an
-/// increment open and stays out of the cushion. Both are mis-specified
-/// requirements and are surfaced rather than clamped.
+/// `ramp_step_m` is not a positive finite length, is at least the whole band,
+/// or the ceiling is not derivable at this `d̂`.
 fn bridge_face_barrier_kappa(d_hat: f64, ramp_step_m: f64) -> Result<f64> {
-    let standoff = BRIDGE_PATCH_NONUNIFORMITY * ramp_step_m;
-    let floor = face_barrier_kappa(d_hat, standoff, BRIDGE_DESIGN_TRACTION_PA).ok_or_else(|| {
-        anyhow!(
-            "the barrier floor is not derivable: the required standoff ρ·step = {standoff:.6e} m \
-             is not strictly inside the band (0, d̂ = {d_hat:.6e} m), so no finite stiffness \
-             holds a gap the barrier cannot see"
-        )
-    })?;
-    let ceiling = face_barrier_kappa(d_hat, 0.5 * d_hat, BRIDGE_DESIGN_TRACTION_PA)
-        .ok_or_else(|| anyhow!("the barrier ceiling is not derivable at d̂ = {d_hat:.6e} m"))?;
-    if floor >= ceiling {
+    if !ramp_step_m.is_finite() || ramp_step_m <= 0.0 {
         return Err(anyhow!(
-            "the derived stiffness bracket is EMPTY: floor {floor:.4e} >= ceiling {ceiling:.4e} \
-             (d̂ = {d_hat:.6e} m, ramp step = {ramp_step_m:.6e} m, ρ = {rho}). The increment \
-             outruns half the band — ρ·step = {standoff:.6e} m must stay under d̂/2 = {half:.6e} m, \
-             so march in smaller steps or widen d̂",
-            rho = BRIDGE_PATCH_NONUNIFORMITY,
-            half = 0.5 * d_hat,
+            "the ramp increment must be a positive finite length, got {ramp_step_m:?}"
         ));
     }
-    Ok((floor * ceiling).sqrt())
+    if ramp_step_m >= d_hat {
+        return Err(anyhow!(
+            "one increment ({ramp_step_m:.6e} m) is at least the whole barrier band \
+             (d̂ = {d_hat:.6e} m) — the barrier cannot see a node before it has already \
+             passed through, so march in smaller steps or widen d̂"
+        ));
+    }
+    face_barrier_kappa(d_hat, 0.5 * d_hat, BRIDGE_DESIGN_TRACTION_PA)
+        .ok_or_else(|| anyhow!("the barrier ceiling is not derivable at d̂ = {d_hat:.6e} m"))
 }
 
 /// The intruder as an IPC face-barrier contact — the bridge's replacement for
@@ -9902,65 +9916,73 @@ mod tests {
         );
     }
 
-    /// `κ` is derived from a measured traction and lands inside its bracket.
+    /// `κ` is the CEILING, and the floor is only reported.
     ///
-    /// Mirrors `kappa_is_derived_and_not_swept` in sim-soft's fixture: the two
-    /// requirements are re-derived on every build, so a change to `σ`, `ρ`, `d̂`
-    /// or the marching schedule that empties or re-orders the bracket fails
-    /// here rather than in a ramp nobody runs.
+    /// ⛔ An earlier revision asserted κ was the geometric centre of
+    /// `[floor, ceiling]`. That selector was measured wrong on a stiff wall —
+    /// see `bridge_face_barrier_kappa`. The floor assumes κ sets the standoff,
+    /// and on the product scene the standoff is flat in κ, so deriving κ from
+    /// the increment made a finer march hold LESS and the feasibility
+    /// threshold unreachable by construction.
+    ///
+    /// What this pins now is the requirement that survived: the ceiling, which
+    /// describes something κ genuinely controls — how far into the cushioning
+    /// regime the barrier sits.
     #[test]
-    fn the_bridges_stiffness_is_derived_and_bracketed() {
+    fn the_bridges_stiffness_is_the_ceiling_and_the_floor_is_only_reported() {
         // The product inset (`base_mold`), not sock's 3 mm.
         let inset_m = 0.005;
         let n_steps = 16.0;
         let step = inset_m / n_steps;
 
-        let floor = face_barrier_kappa(
-            BRIDGE_CONTACT_DHAT_M,
-            BRIDGE_PATCH_NONUNIFORMITY * step,
-            BRIDGE_DESIGN_TRACTION_PA,
-        )
-        .expect("the floor requirement must be inside the band");
         let ceiling = face_barrier_kappa(
             BRIDGE_CONTACT_DHAT_M,
             0.5 * BRIDGE_CONTACT_DHAT_M,
             BRIDGE_DESIGN_TRACTION_PA,
         )
-        .expect("the ceiling requirement must be inside the band");
-
-        assert!(
-            floor < ceiling,
-            "the bracket must be non-empty: floor {floor:.4e} < ceiling {ceiling:.4e}",
-        );
-
+        .expect("the ceiling must be derivable");
         let kappa = bridge_face_barrier_kappa(BRIDGE_CONTACT_DHAT_M, step)
             .expect("κ must derive on the shipped ramp schedule");
         assert!(
-            kappa > floor && kappa < ceiling,
-            "derived κ {kappa:.4e} must sit strictly inside [{floor:.4e}, {ceiling:.4e}]",
-        );
-        // The log-midpoint, not an arbitrary interior point.
-        let centre = (floor * ceiling).sqrt();
-        assert!(
-            (kappa - centre).abs() <= 1e-9 * centre,
-            "κ must be the geometric centre {centre:.6e}, got {kappa:.6e}",
+            (kappa - ceiling).abs() <= 1e-9 * ceiling,
+            "κ must BE the ceiling {ceiling:.6e}, got {kappa:.6e}",
         );
 
-        // ⚠ The bracket is a RATIO, and its width is what decides whether the
-        // derivation selects anything. Report it; do not pin a decade that the
-        // marching schedule can move.
-        let width_decades = (ceiling / floor).log10();
-        assert!(
-            width_decades > 0.0,
-            "the bracket must have positive width, got {width_decades:.4} decades",
+        // The floor is still computable and still worth printing — it is just
+        // no longer a selector.
+        let floor = face_barrier_kappa(
+            BRIDGE_CONTACT_DHAT_M,
+            BRIDGE_PATCH_NONUNIFORMITY * step,
+            BRIDGE_DESIGN_TRACTION_PA,
+        );
+        println!(
+            "d_hat {:.2} mm · step {:.4} mm · floor {} · ceiling {ceiling:.4e} · shipped {kappa:.4e}",
+            BRIDGE_CONTACT_DHAT_M * 1e3,
+            step * 1e3,
+            floor.map_or_else(|| "(none)".to_string(), |f| format!("{f:.4e}")),
         );
 
-        // And it must be able to EMPTY: march coarsely enough that one
-        // increment outruns half the band and no stiffness satisfies both.
-        let coarse_step = BRIDGE_CONTACT_DHAT_M; // ρ·step > d̂ ⇒ outside the band
+        // ⚠ κ must NOT depend on the schedule any more. That independence is
+        // the whole fix: it is what lets a finer march shrink the step under a
+        // standoff that stays put.
+        for finer in [32.0_f64, 64.0, 128.0] {
+            let k = bridge_face_barrier_kappa(BRIDGE_CONTACT_DHAT_M, inset_m / finer)
+                .expect("κ must derive at finer schedules too");
+            assert!(
+                (k - kappa).abs() <= 1e-9 * kappa,
+                "κ must not move with the schedule: {finer} steps gave {k:.6e}, \
+                 16 steps gave {kappa:.6e}",
+            );
+        }
+
+        // A mis-specified schedule must still be REFUSED, not clamped.
         assert!(
-            bridge_face_barrier_kappa(BRIDGE_CONTACT_DHAT_M, coarse_step).is_err(),
-            "an increment wider than the band must surface an error, not a number",
+            bridge_face_barrier_kappa(BRIDGE_CONTACT_DHAT_M, BRIDGE_CONTACT_DHAT_M).is_err(),
+            "an increment as wide as the band must surface an error",
+        );
+        assert!(
+            bridge_face_barrier_kappa(BRIDGE_CONTACT_DHAT_M, 0.0).is_err(),
+            "a zero increment must surface an error",
         );
     }
 
@@ -10553,100 +10575,59 @@ mod tests {
         );
     }
 
-    /// The barrier band brackets a stiffness — and stops, where it must.
+    /// What each candidate band yields — ceiling (shipped) and floor (reported).
     ///
-    /// `d̂` is a free choice on the bridge, and the floor `σ / |b′(ρ·step)|` is
-    /// undefined once `ρ·step ≥ d̂`: the barrier cannot hold open a gap wider
-    /// than the band it acts over. Reporting the derivation across the whole
-    /// candidate set is what makes that boundary visible instead of a single
-    /// number that happens to exist.
-    ///
-    /// ⚠ **At the shipped 16-step schedule every candidate brackets** — the
-    /// tightest, `d̂ = 0.5 mm`, clears it only just (`ρ·step = 0.221 mm`
-    /// against `d̂/2 = 0.25 mm`). An earlier revision of this gate asserted
-    /// that some candidate must fail, which was an expectation invented rather
-    /// than measured. The boundary is real but it lives in the MARCHING
-    /// SCHEDULE, not in the candidate set, so that is where it is shown.
+    /// `d̂` is a free choice on the bridge. The ceiling `σ / |b′(d̂/2)|` always
+    /// exists; the floor `σ / |b′(ρ·step)|` does not, and where it fails to is
+    /// worth seeing, because it is the boundary an earlier revision of this
+    /// derivation ran into and mistook for a physical limit.
     #[test]
-    fn the_bridges_barrier_band_brackets_a_stiffness() {
-        // The product inset (`base_mold`), not sock's 3 mm.
+    fn the_bridges_barrier_band_reports_a_floor_and_ships_a_ceiling() {
         let inset_m = 0.005;
-        let report = |n_steps: f64| -> usize {
-            let step = inset_m / n_steps;
-            let mut n_bracketed = 0;
-            println!(
-                "\n{n_steps:.0} steps — \u{3c1}\u{b7}step = {:.4} mm",
-                BRIDGE_PATCH_NONUNIFORMITY * step * 1e3
+        let step = inset_m / 16.0;
+        let mut n_with_floor = 0;
+
+        println!("\nd_hat_mm   floor          ceiling (SHIPPED)   floor vs ceiling");
+        for d_hat in BRIDGE_DHAT_CANDIDATES_M {
+            let ceiling = face_barrier_kappa(d_hat, 0.5 * d_hat, BRIDGE_DESIGN_TRACTION_PA)
+                .expect("the ceiling is derivable at every candidate band");
+            let floor = face_barrier_kappa(
+                d_hat,
+                BRIDGE_PATCH_NONUNIFORMITY * step,
+                BRIDGE_DESIGN_TRACTION_PA,
             );
-            println!("d_hat_mm   floor        ceiling      derived      decades");
-            for d_hat in BRIDGE_DHAT_CANDIDATES_M {
-                let floor = face_barrier_kappa(
-                    d_hat,
-                    BRIDGE_PATCH_NONUNIFORMITY * step,
-                    BRIDGE_DESIGN_TRACTION_PA,
-                );
-                let ceiling = face_barrier_kappa(d_hat, 0.5 * d_hat, BRIDGE_DESIGN_TRACTION_PA);
-                let derived = bridge_face_barrier_kappa(d_hat, step);
-                match (floor, ceiling, &derived) {
-                    (Some(f), Some(c), Ok(k)) if f < c => {
-                        n_bracketed += 1;
-                        println!(
-                            "{:>8.2}   {f:.4e}   {c:.4e}   {k:.4e}   {:.3}",
-                            d_hat * 1e3,
-                            (c / f).log10(),
-                        );
-                        assert!(
-                            f < *k && *k < c,
-                            "the derived \u{3ba} must sit inside its own bracket",
-                        );
-                    }
-                    _ => {
-                        println!(
-                            "{:>8.2}   (no bracket: d_hat/2 = {:.4} mm)",
-                            d_hat * 1e3,
-                            0.5 * d_hat * 1e3,
-                        );
-                        assert!(
-                            derived.is_err(),
-                            "a band with no bracket must surface an error, not a number",
-                        );
-                    }
-                }
+            // ⚠ The interesting boundary is NOT whether the floor exists — at
+            // the shipped schedule all four bands have one. It is whether the
+            // floor sits BELOW the ceiling. At d̂ = 0.5 mm it does not
+            // (3.4386e8 against 9.8730e7): an INVERTED bracket, which the old
+            // selector reported as "empty" and treated as a physical limit.
+            let sane = floor.is_some_and(|f| f < ceiling);
+            if sane {
+                n_with_floor += 1;
             }
-            n_bracketed
-        };
+            println!(
+                "{:>8.2}   {:<14}   {ceiling:.4e}          {}",
+                d_hat * 1e3,
+                floor.map_or_else(|| "(none)".to_string(), |f| format!("{f:.4e}")),
+                if sane { "below" } else { "INVERTED" },
+            );
+            // Whatever the floor does, the shipped value is the ceiling.
+            let shipped = bridge_face_barrier_kappa(d_hat, step)
+                .expect("κ derives wherever the increment fits the band");
+            assert!(
+                (shipped - ceiling).abs() <= 1e-9 * ceiling,
+                "band {d_hat}: shipped κ must be the ceiling",
+            );
+        }
 
-        // ⚠ Counts are DERIVED here, not transcribed. An earlier revision
-        // asserted "every candidate brackets at the shipped schedule", which
-        // was true of `sock_over_capsule`'s σ and ρ and became false the
-        // moment they were re-measured on the product scan — a gate number
-        // calibrated against a baseline that moved.
-        let n_shipped = report(16.0);
+        // The boundary must be VISIBLE in this candidate set — some band has
+        // no floor at the shipped schedule, some has one. Without both, the
+        // table shows nothing about where the old selector broke down.
         assert!(
-            n_shipped > 0,
-            "the shipped schedule must bracket at SOME band, or the derivation \
-             selects nothing anywhere",
-        );
-        assert!(
-            n_shipped < BRIDGE_DHAT_CANDIDATES_M.len(),
-            "the shipped schedule must leave at least one band with no bracket, \
-             or this gate never sees the boundary it exists to show",
-        );
-
-        // Coarsening must cost bands: the floor is the only bound the schedule
-        // moves, so a wider increment can only ever bracket fewer of them.
-        let n_coarse = report(4.0);
-        assert!(
-            n_coarse < n_shipped,
-            "a 4x coarser schedule must bracket FEWER bands than the shipped \
-             one ({n_coarse} vs {n_shipped}) — the floor is the bound the \
-             schedule moves",
-        );
-
-        // The shipped band must be one that works at the shipped schedule.
-        assert!(
-            bridge_face_barrier_kappa(BRIDGE_CONTACT_DHAT_M, inset_m / 16.0).is_ok(),
-            "the shipped band must bracket a stiffness at the shipped schedule",
+            n_with_floor > 0 && n_with_floor < BRIDGE_DHAT_CANDIDATES_M.len(),
+            "the candidate set must straddle the inversion boundary \
+             ({n_with_floor} of {} have a floor BELOW the ceiling)",
+            BRIDGE_DHAT_CANDIDATES_M.len(),
         );
     }
 
