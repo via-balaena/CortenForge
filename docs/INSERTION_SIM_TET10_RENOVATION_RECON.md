@@ -1033,8 +1033,11 @@ Listed because the confidence of §4 rests on these being open, not closed.
    closed form here knows.
 
    ⚠ **What still limits the ramp**: element inversion at 4.531 mm of a 5 mm
-   inset, schedule-independent. Candidate fixes are mesh-side (finer cell where
-   the strain concentrates) or F-bar, which EXISTS in sim-soft and is UNUSED.
+   inset, schedule-independent. ⛔ **F-bar is NOT a candidate**: it is hard-gated off for Tet10 by an assert
+   in `newton.rs` — *"F-bar's single-Gauss-point volumetric constraint has no
+   multi-Gauss-point Tet10 analog"*. Using it would mean deriving that analog
+   first. The realistic candidate is mesh-side: a finer cell where the strain
+   concentrates.
 
    ---
 
