@@ -682,7 +682,7 @@ Listed because the confidence of §4 rests on these being open, not closed.
    **1.048× per decade** (scan) against **1.047×** (sphere) over the SAME arms
    (`κ` = 1e4→1e5, the only ones seated on both), agreeing to 0.12 % and both
    well under the fixture's 1.238×; `κ` = 1e6 stalls on both. ⇒ **for the
-   bridge, `σ` ≈ 117 kPa as a lower bound and `ρ` ∈ [1.00, 1.18]**, read on the
+   bridge, `σ` ≈ 117 kPa as a lower bound and `ρ` ∈ [1.00, 1.18]** — ⛔⛔ **SUPERSEDED: that is `sock_over_capsule`. On the PRODUCT scan (`base_mold`) it is σ = 58.9 kPa and ρ ∈ [1.00, 1.11]; see `σ RE-MEASURED ON THE PRODUCT SCAN`** — read on the
    REST basis at `κ` = 1e4–1e5 on a non-penetrating full-depth seat — not the
    6.85 kPa / 1.22 the shipped stiffness reports off a 25 % seat.
 
@@ -767,7 +767,7 @@ Listed because the confidence of §4 rests on these being open, not closed.
    ⚠⚠ **But do not carry these two numbers to the bridge.** They are read at the
    shipped stiffness — the reading the sweep above disqualifies — off a seat that
    reached 25 % of its inset. The ones to carry are the stiff-arm numbers: `σ`
-   ≈ 117 kPa, `ρ` ∈ [1.00, 1.18]. What this table shows is the *shape* of the
+   ≈ 117 kPa, `ρ` ∈ [1.00, 1.18] — ⛔ both SUPERSEDED by the product scan (58.9 kPa, [1.00, 1.11]). What this table shows is the *shape* of the
    derivation on a real scan — a narrow interval that closes only at a small `d̂`.
 
    ✅ **The enveloping-patch cancellation, quantified inside this pipeline.**
@@ -792,6 +792,492 @@ Listed because the confidence of §4 rests on these being open, not closed.
    2.09. It never brings `1e7` inside at that band, because the *ceiling* is
    fixed by `σ` and `d̂`. ⇒ **the band is the lever on the ceiling; the schedule
    is the lever on the floor.**
+
+
+   ---
+
+   ### ⛔ THE BRIDGE, FIRST PASS — SUPERSEDED. Read the product-scan sections.
+
+   > ⛔⛔ **EVERYTHING IN THIS SECTION IS SYNTHETIC SCENES AT A κ THAT NO LONGER
+   > SHIPS.** Its tables are `tol-fixture` and `sphere-40mm`, and its κ was
+   > derived from **σ = 117 kPa** (`sock_over_capsule`) by a **geometric-centre**
+   > selector. Both were later replaced: σ is **58.9 kPa** on the product scan,
+   > and κ is now the **ceiling**. Depth numbers here are not comparable to
+   > anything current.
+   >
+   > ▶ **The current result is `THE HEAD-TO-HEAD, ON THE PRODUCT SCAN AT THE
+   > FIXED κ`**, below. The reading order that matches how this was learned:
+   > σ re-measured → floor falsified → κ fixed → head-to-head.
+   >
+   > ★ Kept rather than deleted because the synthetic scenes are what MISLED,
+   > and that is the transferable part: they were too well-conditioned to show
+   > either the failure or the benefit.
+
+   ### ▶ THE BRIDGE ITSELF — first pass, synthetic scenes, 2026-09-22
+
+   `run_insertion_ramp_tet10_ipc` runs the same scene, the same boundary
+   conditions and the same rigid intruder through a swapped solve triple —
+   `Tet4` → `Tet10`, `SdfMeshedTetMesh` → `Tet10Mesh`, `PenaltyRigidContact`
+   → `IpcRigidContact` — with `κ` derived from the `σ` above rather than swept.
+   The shipped `run_insertion_ramp` is untouched.
+
+   ⭐⭐⭐ **THE RESULT, and it is what the bridge was justified on.** Both arms
+   run the same 16-step ramp to a 3 mm inset at a ladder of residual
+   tolerances. Depth alone is not the payoff quantity — #959 showed a ramp can
+   reach full depth *by penetrating* — so `min_sd` and the area-weighted 5 %
+   tail are reported beside it. **A depth reached through the wall is not a
+   seat.**
+
+   | scene | tol | arm | steps | depth | `min_sd` | 5 % tail | σ |
+   |---|---|---|---|---|---|---|---|
+   | tol-fixture | **1e-1** (ships) | tet4+penalty | 16/16 | 3.000 mm | **−0.306 mm** | **−0.213 mm** | 76.6 kPa |
+   | tol-fixture | 1e-1 | **tet10+ipc** | 16/16 | 3.000 mm | **+0.184 mm** | **+0.235 mm** | 124.4 kPa |
+   | tol-fixture | **1e-2** | tet4+penalty | **3/16** | 0.563 mm | +0.635 mm | +0.656 mm | 26.4 kPa |
+   | tol-fixture | 1e-2 | **tet10+ipc** | **16/16** | 3.000 mm | +0.184 mm | +0.236 mm | 124.4 kPa |
+   | tol-fixture | 1e-3 | tet4+penalty | 3/16 | 0.563 mm | +0.635 mm | +0.655 mm | 26.4 kPa |
+   | tol-fixture | 1e-3 | tet10+ipc | **0/16** | — | — | — | — |
+   | sphere-40mm | 1e-1 | tet4+penalty | 16/16 | 3.000 mm | +0.054 mm | +0.114 mm | 68.3 kPa |
+   | sphere-40mm | 1e-1 | **tet10+ipc** | 16/16 | 3.000 mm | **+0.360 mm** | **+0.402 mm** | 88.6 kPa |
+   | sphere-40mm | 1e-2 | tet4+penalty | 16/16 | 3.000 mm | +0.058 mm | +0.114 mm | 68.3 kPa |
+   | sphere-40mm | 1e-2 | **tet10+ipc** | 16/16 | 3.000 mm | **+0.360 mm** | **+0.403 mm** | 88.6 kPa |
+   | sphere-40mm | 1e-3 | tet4+penalty | 16/16 | 3.000 mm | +0.058 mm | +0.114 mm | 68.3 kPa |
+   | sphere-40mm | 1e-3 | tet10+ipc | **5/16** | 0.938 mm | +0.619 mm | +0.655 mm | 32.0 kPa |
+   | sphere-40mm | 1e-4 | tet4+penalty | 16/16 | 3.000 mm | +0.058 mm | +0.114 mm | 68.3 kPa |
+   | sphere-40mm | 1e-4 | tet10+ipc | **0/16** | — | — | — | — |
+
+   Two things fall out. ⚠ **They do not have the same reach, and saying so is
+   the point** — one holds on both scenes, the other on one:
+
+   1. ⭐⭐⭐ **The bridge holds a standoff the penalty path does not — on BOTH
+      scenes.** At the shipped tolerance the baseline's `min_sd` is −0.306 mm
+      on the tolerance fixture, with its 5 % area tail at −0.213 mm: a *region*
+      through the wall, not an outlier. On the sphere it stays out, but by
+      0.054 mm. The bridge holds **+0.184 mm** and **+0.360 mm** — **3.4× and
+      6.6×** the baseline's clearance. ⇒ same depth, different contact state,
+      and the difference is largest exactly where the baseline is worst.
+   2. ⭐⭐ **On the tolerance fixture, one more decade of residual collapses the
+      baseline's usable depth 5.3× and does not move the bridge's.** The
+      penalty arm reaches 0.563 mm of the 3 mm inset at `tol` = 1e-2; the
+      bridge still reaches 3.000 mm, and gives the *same answer* — `min_sd`
+      +0.184 mm, σ 124.4 kPa at both 1e-1 and 1e-2, agreeing to four
+      significant figures. ⇒ on that scene the payoff quantity — deepest
+      interference solvable at a tight tolerance with `min_sd > 0` and the 5 %
+      tail > 0 — goes **0.563 mm → 3.000 mm**.
+
+      ⛔⛔ **AND THE SPHERE DOES NOT SHOW IT.** At `tol` = 1e-2 the penalty arm
+      reaches 16/16 there too, with its answer unchanged to three significant
+      figures. So claim 2 is a statement about the tolerance fixture, not about
+      the two solve paths. ⇒ **do not state it more broadly than the scene it
+      was measured on** — this is the same trap #958 recorded, where the
+      analytical shell was *too well-conditioned to see the failure* and
+      inheriting it as "the" baseline hid the only result that mattered. The
+      scene that discriminates is the ill-conditioned one, and which scenes
+      those are is not predictable from their geometry.
+
+   ⛔⛔ **AND THE HONEST HALF, which decides that the default must NOT flip
+   yet: the bridge COSTS tolerance headroom, and it is a cliff not a slope.**
+   At `tol` = 1e-3 it reaches **0/16** on the tolerance fixture and **5/16** on
+   the sphere, where the penalty path reaches 3/16 and **16/16**; at 1e-4 the
+   penalty path still reaches 16/16 on the sphere at `r` = 9.45e-5. The bridge
+   stalls inside its own approach at `r ≈ 1e-4`, "non-SPD tangent near
+   solution". It either seats fully or not at all.
+
+   ⇒ on the SYNTHETIC scenes the bridge buys CONTACT STATE and costs TOLERANCE
+   HEADROOM. ⛔⛔ **That verdict does not survive the product geometry — see
+   the next block, and read it before quoting the sentence above.**
+
+   ⛔⛔ **TWO CANDIDATE CAUSES ARE MEASURED FALSE.** The cliff is not `κ` — see
+   the sweep below — and it is not where the approach starts: moving the
+   approach margin from `d̂/2` to a full `d̂`, so the first solve is genuinely
+   unloaded (the barrier is inactive at `sd ≥ d̂`) rather than mid-band, leaves
+   every converging row **identical to four significant figures** (`min_sd`
+   +0.1841 / +0.1844, σ 124.39 / 124.37 kPa) and does not move the cliff at
+   all. ⭐ That inertness is worth having on its own: it says the converged
+   answer does not depend on where the march began, in the regime where the
+   march works. The margin is kept at `d̂` because it is the derived choice —
+   feasible by definition rather than by a chosen fraction — not because it
+   bought anything.
+
+   ▶ **The untried lead is the geometry, not the solver**: boundary midsides
+   sit under the curved cavity surface by a measured sagitta, and
+   `Tet10Mesh::with_curved_midsides` exists precisely to fix that. It is not
+   applied here.
+
+   ---
+
+   ### ⚠ SOCK_OVER_CAPSULE — kept for the method, SUPERSEDED as "the product"
+
+   ⛔⛔ **Read the σ block below before quoting any number here.** This whole
+   section calls `sock_over_capsule` "the product geometry". It is not — the
+   product scene is `base_mold`, and everything below was additionally
+   measured at `κ` derived from a σ that was **2× too large**. The comparison
+   METHOD stands; the scene attribution and the stiffness do not.
+
+   Measured 2026-09-22, macOS/ARM, 1775 s, on the real iter-1 scan in **both**
+   topologies. ⛔ The scan is repo-excluded, so nothing here can ever gate; this
+   reports on a named platform.
+
+   | scene | tol | arm | steps | depth | `min_sd` | 5 % tail | σ |
+   |---|---|---|---|---|---|---|---|
+   | 1layer (68 087 tets) | 1e-1 | tet4+penalty | 16/16 | 3.000 mm | **−0.373 mm** | **−0.042 mm** | 70.4 kPa |
+   | 1layer | 1e-1 | **tet10+ipc** | 16/16 | 3.000 mm | **+0.094 mm** | **+0.347 mm** | 90.0 kPa |
+   | 1layer | 1e-2 | tet4+penalty | 6/16 | 1.125 mm | +0.345 mm | +0.554 mm | 32.5 kPa |
+   | 1layer | 1e-2 | **tet10+ipc** | **14/16** | **2.625 mm** | +0.130 mm | +0.390 mm | 76.3 kPa |
+   | **gui-dflt** (72 935 tets) | **1e-1** | tet4+penalty | **4/16** | **0.750 mm** | +0.763 mm | +0.859 mm | 6.8 kPa |
+   | **gui-dflt** | **1e-1** | **tet10+ipc** | **16/16** | **3.000 mm** | +0.358 mm | +0.535 mm | 36.3 kPa |
+   | gui-dflt | 1e-2 | tet4+penalty | **0/16** | — | — | — | — |
+   | gui-dflt | 1e-2 | **tet10+ipc** | 3/16 | 0.563 mm | +0.674 mm | +0.849 mm | 3.9 kPa |
+
+   ⚠ **[SOCK-ERA HEADLINE — SUPERSEDED.** The scene called "the one the GUI
+   actually runs" here is `sock_over_capsule`'s dual-layer stack, not the
+   product's `base_mold`, and the κ behind it was ~2× too large. The current
+   headline is in `THE HEAD-TO-HEAD, ON THE PRODUCT SCAN AT THE FIXED κ`.**]**
+   As measured then: at the tolerance that already ships, the bridge took the
+   seatable depth from a QUARTER of the slider range to ALL of it — 0.750 mm →
+   3.000 mm, 4× — non-penetrating,
+   with +0.535 mm of clearance across the 5 % area tail. σ rises 6.8 → 36.3 kPa
+   because the wall is genuinely engaged rather than barely touching.
+
+   **The bridge wins all four comparisons**, and each is a different kind of win:
+   - `1layer` @ 1e-1 — **same depth, penetrating → seated.** A negative 5 % area
+     tail means a *region* through the wall, not one bad vertex; +0.347 mm
+     replaces −0.042 mm on 11 037 pairs against 3 181.
+   - `1layer` @ 1e-2 — **1.125 → 2.625 mm (2.33×)**, both clean.
+   - `gui-dflt` @ 1e-1 — **0.750 → 3.000 mm (4×)**, the product result.
+   - `gui-dflt` @ 1e-2 — **nothing → 0.563 mm.** The baseline fails to converge
+     step 0 at all ("Newton failed to converge within 150 iterations").
+
+   ⛔⛔ **THE SYNTHETIC SCENES MISLED, AND THAT IS THE TRANSFERABLE PART.** The
+   sphere said there was *no* depth win; the tolerance fixture said the win
+   needed a tolerance tighter than ships. THIS scan said there was a
+   4× win at the shipped tolerance — ⚠ and it is `sock_over_capsule`, so the
+   lesson below transfers while the number does not. ⇒ this is #958's lesson arriving from
+   the other side — there it was the analytical shell being too well-conditioned
+   to see a failure; here it is two synthetic scenes being too well-conditioned
+   to see a *benefit*. **Re-qualify a fixture for each question; a verdict read
+   off the easy scenes is not a verdict.**
+
+   ⚠ **What is NOT measured here**: the real scan was run at 1e-1 and 1e-2 only,
+   so the bridge's tolerance cliff (0/16 at 1e-3 on the synthetic scenes) is
+   **unprobed on the product geometry**. ⭐ What can be said is that on
+   `gui-dflt` the BASELINE's cliff comes first — it is already at zero by 1e-2,
+   a decade before the bridge is.
+
+   ### ✅✅✅ THE HEAD-TO-HEAD, ON THE PRODUCT SCAN AT THE FIXED κ
+
+   `base_mold`, 5 mm inset, 17 mm DRAGON_SKIN_10A @ 25 % Slacker. Both arms,
+   both schedules, both tolerances — schedule controlled, because at 16 steps
+   the bridge has not yet cleared its own contact stall.
+
+   | steps | tol | arm | depth | `min_sd` | 5 % tail | seated? |
+   |---|---|---|---|---|---|---|
+   | 16 | 1e-1 | penalty | 4.062 mm | −0.186 | +0.200 | ⛔ |
+   | 16 | 1e-1 | **bridge** | 3.438 mm | **+0.306** | **+0.502** | ✅ |
+   | 16 | 1e-2 | penalty | 4.375 mm | −0.262 | +0.137 | ⛔ |
+   | 16 | 1e-2 | **bridge** | 1.562 mm | **+0.454** | **+0.661** | ✅ |
+   | **32** | **1e-1** | penalty | **5.000 mm** | **−0.444** | **−0.005** | ⛔⛔ |
+   | **32** | **1e-1** | **bridge** | **4.531 mm** | **+0.216** | **+0.414** | ✅ |
+   | 32 | 1e-2 | penalty | 1.875 mm | +0.395 | +0.607 | ✅ |
+   | 32 | 1e-2 | **bridge** | **3.438 mm** | **+0.306** | **+0.502** | ✅ |
+
+   ⇒ ⭐⭐⭐ **THE PENALTY PATH NEVER PRODUCES A DEEPER VALID SEAT THAN THE
+   BRIDGE, IN ANY CELL.** Where it goes deeper it is through the wall; where it
+   stays out of the wall it is shallower. The one cell where both are valid —
+   32 steps at 1e-2 — the bridge is **1.83× deeper** (3.438 vs 1.875 mm).
+
+   ⛔⛔ **And at 32 steps / shipped tol the penalty path's 5 mm is a REGION
+   through the wall**, not an outlier: the 5 % area tail is **−0.005 mm**. A
+   finer schedule let it reach 100 % by penetrating harder (`min_sd` −0.186 →
+   −0.444 mm). ⇒ *depth reached* and *wall seated* are now visibly different
+   quantities on the product geometry, and only the second is a fit.
+
+   ⭐⭐ **The bridge's answer is PATH-INDEPENDENT; the baseline's is not.** The
+   bridge reaches 3.4375 mm twice by different routes — 11/16 at tol 1e-1 and
+   22/32 at tol 1e-2 — and reports `min_sd` 0.3062 vs 0.3063 mm and σ 39.33 vs
+   39.33 kPa. Four significant figures, from a different schedule AND a
+   different tolerance. That is what a converged contact solution looks like.
+
+   ⚠ **Best operating point: the bridge at 32 steps, shipped tol — 4.531 mm
+   (90.6 %) seated.** Its limit there is the element inversion, not contact.
+
+   ⚠ **The bridge IS more tolerance-sensitive, and that is unfixed** — at 16
+   steps it drops 11/16 → 5/16 going from 1e-1 to 1e-2 (a *convergence* stall
+   at Newton iter 6, not a feasibility one) while the baseline improves. A
+   finer schedule masks it (at 32 steps the bridge wins at both tolerances),
+   but it was not addressed by the κ fix and should not be assumed gone.
+
+   ### ✅ THE κ DERIVATION, FIXED — ship the ceiling, refine the schedule
+
+   The floor was selecting κ **from the increment**, so a finer march lowered
+   κ and the barrier held proportionally less: the feasibility threshold chased
+   the step downward and could never be caught. Holding κ at the **ceiling**
+   (the stated cushioning requirement, which does not depend on the increment)
+   and refining the schedule underneath it:
+
+   | steps | step | held | depth | was (centre κ) |
+   |---|---|---|---|---|
+   | 16 | 0.3125 mm | 0.3062 mm | **3.438 mm (68.8 %)** | 1.875 mm (37.5 %) |
+   | 32 | 0.1562 mm | 0.2163 mm | **4.531 mm (90.6 %)** | 2.344 mm (46.9 %) |
+   | 64 | 0.0781 mm | 0.2146 mm | **4.531 mm (90.6 %)** | 3.047 mm (60.9 %) |
+
+   ⇒ ⭐⭐⭐ **The contact-feasibility wall is gone.** 32 and 64 steps stop at
+   the SAME depth and on a DIFFERENT failure — `validity violation at tet 516:
+   det F = -0.030`, an element turning inside out. That is a material and mesh
+   limit, not a barrier one. **1.8–1.9× more depth at both schedules.**
+
+   ⇒ `bridge_face_barrier_kappa` now returns the ceiling and no longer varies
+   with the schedule. The floor is still computed and printed
+   (`the_bridges_barrier_band_reports_a_floor_and_ships_a_ceiling`) but does
+   not select. The schedule requirement becomes **`step < held standoff`**, and
+   the held standoff must be MEASURED — it depends on wall compliance, which no
+   closed form here knows.
+
+   ⚠ **What still limits the ramp**: element inversion at 4.531 mm of a 5 mm
+   inset, schedule-independent. ⛔ **F-bar is NOT a candidate**: it is hard-gated off for Tet10 by an assert
+   in `newton.rs` — *"F-bar's single-Gauss-point volumetric constraint has no
+   multi-Gauss-point Tet10 analog"*. Using it would mean deriving that analog
+   first. The realistic candidate is mesh-side: a finer cell where the strain
+   concentrates.
+
+   ---
+
+   ### ⛔⛔⛔ HOW THE FLOOR WAS FALSIFIED (kept — the method is the point)
+
+   The floor is derived as *"κ such that the barrier holds `ρ · step` open at
+   traction σ"*, and PR #954 pinned it as a derivation rather than a sweep.
+   On `base_mold` it does not describe what happens.
+
+   **The bridge stalls at 6/16 (1.875 mm of a 5 mm inset)** with an
+   infeasible-start signature — Armijo at Newton iteration **0**, `r_norm`
+   3.6e4. The last converged step held `min_sd` 0.2936 mm against a 0.3125 mm
+   increment: the increment outran the standoff, which is precisely what the
+   floor exists to prevent.
+
+   Two candidate fixes were tested, and **both failed in ways that identify
+   the real defect**:
+
+   **1. March finer** — the derivation's own prescription, since the floor is a
+   marching-scheme number.
+
+   | steps | step | κ | held | held/step | depth |
+   |---|---|---|---|---|---|
+   | 16 | 0.3125 mm | 2.4137e7 | 0.2936 mm | **0.94** | 37.5 % |
+   | 32 | 0.1562 mm | 1.5605e7 | 0.1347 mm | **0.86** | 46.9 % |
+   | 64 | 0.0781 mm | 1.1015e7 | 0.0635 mm | **0.81** | 60.9 % |
+
+   Depth improves, but the feasibility ratio **degrades**. Refining lowers the
+   floor, which lowers κ, which holds proportionally less — the threshold
+   shrinks with the step, so the march can never catch it.
+
+   **2. Raise ρ** — on the theory that the gap-ratio substitution under-predicts
+   the barrier-inverted ρ (the sweep's own output warns the two "coincide only
+   where the traction-gap map is near-linear").
+
+   | ρ | required | κ | held | depth |
+   |---|---|---|---|---|
+   | 1.12 | 0.350 mm | 2.4137e7 | **0.2936 mm** | 1.875 mm |
+   | 1.30 | 0.406 mm | 2.7220e7 | **0.2947 mm** | 1.875 mm |
+   | 1.50 | 0.469 mm | 3.1036e7 | **0.2944 mm** | 2.188 mm |
+   | 1.75 | 0.547 mm | 3.6623e7 | **0.2766 mm** | 2.812 mm |
+
+   ⇒ ⭐⭐⭐ **THE HELD STANDOFF IS FLAT AT ~0.294 mm ACROSS A 1.5× RANGE OF κ.**
+   It does not respond to the barrier. **The floor's premise — that κ sets the
+   standoff — is false in this regime.** The standoff is set by geometry and
+   elastic equilibrium; κ only changes the traction required to reach it.
+
+   ⭐ That is consistent with a number measured earlier and not connected until
+   now: **σ moves only 1.0183× per decade of κ** on this scene. A gap that
+   barely moves while the load adjusts is exactly a geometry-determined
+   standoff. The two measurements agree, and the derivation contradicts both.
+
+   ⚠ **Depth DOES improve with κ** (1.875 → 2.812 mm from 2.4e7 → 3.7e7), so a
+   stiffer barrier helps — just not through the mechanism the floor claims.
+   ⛔ **Do not "fix" this by sweeping κ for depth.** What is owed is a
+   re-derivation against a correct model of what sets the standoff. The
+   interval `[floor, ceiling]` currently selects a stiffness on a premise the
+   scene does not honour, and a number that happens to work would be a sweep
+   wearing a derivation's clothes.
+
+   ⚠ **What still stands**: the ceiling (stay out of the cushion) is a stated
+   requirement and is untouched by this; and on the sim-soft fixture the floor
+   DID predict its stall (1e6 stalls above 17.567 kPa, measured 14.255). So
+   this is a transfer failure to a compliant open-mouth wall, not proof the
+   derivation was always wrong.
+
+   ### ⛔⛔ σ RE-MEASURED ON THE PRODUCT SCAN — and it is HALF
+
+   Every scan number above is `sock_over_capsule`. The product scene is
+   **`base_mold`** as the CF Studio project configures it: a **5 mm** inset
+   through **17 mm of DRAGON_SKIN_10A at 25 % Slacker**, against sock's 3 mm
+   through Ecoflex 00-30. Re-measured 2026-09-22 by the same method as #959,
+   at a common depth of 3.4375 mm:
+
+   | κ | steps | σ (rest) | `min_sd` | 5 % tail | ρ | ρ tail | |
+   |---|---|---|---|---|---|---|---|
+   | 1e2 | 16/16 | 23.40 kPa | −1.920 mm | −1.415 mm | — | — | ⛔ through |
+   | **1e3 (ships)** | 13/16 | 50.05 kPa | **−0.041 mm** | +0.342 mm | — | 1.641 | ⛔ through |
+   | **1e4** | **16/16** | 57.83 kPa | +0.851 mm | +0.914 mm | 1.113 | 1.036 | seated |
+   | **1e5** | 11/16 | **58.89 kPa** | +0.985 mm | +0.991 mm | 1.010 | 1.004 | seated |
+   | 1e6 | 0/16 | — | — | — | — | — | stalled |
+
+   ⇒ **σ ≈ 58.9 kPa, not 117 kPa**, and **ρ ∈ [1.00, 1.11]**, not [1.00, 1.18].
+   `κ` scales linearly with σ, so every derived stiffness taken before this was
+   about **2× too large**. At `d̂` = 1.2 mm on the product schedule the bracket
+   is now `[1.4162e7, 4.1138e7]` with a derived **2.4137e7**, against the
+   3.5377e7 that had been shipping.
+
+   ⭐ **It is close to converged, not a loose bound.** σ moves **1.0183× per
+   decade** across the seated arms — the flattest coupling of any scene tried
+   (sphere 1.047×, sock scan 1.048×, sim-soft fixture 1.238×).
+
+   ⛔ **The shipped κ = 1e3 is through the wall here too** (`min_sd`
+   −0.041 mm), which is now three scenes out of three.
+
+   ⛔⛔ **And the area basis matters MORE on this scene**: σ(rest) 58.89 kPa
+   against σ(deformed) **41.52 kPa** — a **41.8 %** gap, nearly double sock's
+   22–23 %. Reading σ on the deformed basis would be a much worse error here.
+
+   ⚠ **The stiff end arrives a decade earlier than on sock**: `κ = 1e5` already
+   degrades to 11/16 and `1e6` converges nothing, where the sock scenes solved
+   at 1e5 and stalled at 1e6. And `κ = 1e4` is the only arm that reaches FULL
+   depth — the shipped 1e3 stalls at 13/16.
+
+   ### ⭐⭐ WHAT A STEP COSTS — and it inverts too  ⚠ SOCK-ERA NUMBERS
+
+   > ⚠ **Measured on `sock_over_capsule` at the pre-fix κ.** The "real scan" row
+   > below is sock's `gui-dflt` (72 935 tets); the product scan `base_mold` is
+   > 65 293. `what_a_bridge_step_costs` now points at `base_mold`, and these
+   > timings have NOT been re-taken there. The MECHANISM — per-step cost tracks
+   > how hard the solve is, not element order — is what to carry; the seconds
+   > are not current.
+
+
+   `RampStep::wall_time_s`, measured around `replay_step` alone. Idle machine,
+   macOS/ARM, shipped `tol`. ⛔ A diagnostic; wall clock is contended and this
+   never gates.
+
+   | scene | tets | DOF (Tet4 → Tet10) | penalty s/step | **bridge s/step** |
+   |---|---|---|---|---|
+   | tol-fixture | 9 258 | 31 143 → 69 954 (×2.25) | 0.03 | **0.78** |
+   | sphere-40mm | 45 654 | 124 086 → 309 024 (×2.49) | 0.21 | **5.92** |
+   | **gui-dflt (real scan)** | **72 935** | **189 456 → 482 124 (×2.54)** | **48.87** | **7.82** |
+
+   (medians; geometry build is 0.02 / 0.08 / 0.69 s and never dominates)
+
+   ⭐⭐⭐ **On the product mesh the bridge is ~6× FASTER PER STEP than the
+   penalty path** — 7.82 s against 48.87 s — while carrying 2.54× the DOF. On
+   both synthetic scenes it is **25–28× SLOWER**. ⇒ **per-step cost is not a
+   property of element order; it is a property of how hard the solve is.** The
+   penalty path's per-step time explodes on the real scan because it is
+   thrashing — the Armijo stall at Newton iteration 136 and the repeated
+   `Llt non-PD` fallbacks are the same phenomenon seen from the clock.
+
+   ⇒ practically: on the GUI's own scene the bridge delivers **16/16 steps in
+   146 s of solve** where the penalty path spends **124 s to deliver 4**.
+   Roughly the same wall clock, four times the depth.
+
+   ⚠ **The bridge's total excludes its approach**, which is solved and not
+   recorded. At `d̂` = 1.2 mm and a 0.1875 mm increment that is **at least
+   `ceil(d̂/step)` = 7 extra solves**, so ≥ ~55 s more on the real scan. Its
+   honest end-to-end figure is ~200 s, not 146 s.
+
+   ⚠ **VERDICT AS OF THAT PASS — since superseded twice** (σ re-measured, κ
+   re-derived); the standing verdict is in `THE HEAD-TO-HEAD, ON THE PRODUCT
+   SCAN AT THE FIXED κ`. It read: the solver-side case for the bridge is made on
+   the geometry that matters. ⛔ The remaining blocker to making it the default is
+   **not** the solver — it is that `compute_tet_readouts` is corner-linear, so
+   the UI's per-tet heat map would report Tet4-quality stress off a Tet10 solve
+   (see the corner-readout note above). That is a readout fix, and it is the
+   next piece of work, not a reason to doubt the result.
+
+   ⛔⛔ **`κ` IS NOT THE BINDING CONSTRAINT — measured, not assumed.**
+   `the_bridge_ramp_over_a_stiffness_sweep` runs the ramp at 1e6, the derived
+   floor (1.53e7), the derived value (3.54e7), the derived ceiling (8.17e7) and
+   1e9. **All five stall the same way**, at Newton iteration 4–5, at residuals
+   between 1e-4 and 7e-3. Three decades of stiffness move the stall neither
+   earlier nor later. Whatever the floor is, it is not the barrier's stiffness.
+
+   ⛔⛔ **RETRACTED — the derivation below is the one that was replaced.** It
+   selected the geometric centre of `[floor, ceiling]` and made κ depend on the
+   increment. Measured on the product scan, that is exactly what made refining
+   the march self-defeating; κ is now the **ceiling** and does not move with the
+   schedule (see `THE κ DERIVATION, FIXED`). Kept for the record — the numbers
+   below are `sock_over_capsule` at σ = 117 kPa and ship nowhere.
+
+   ⚠ Its stated rationale — the floor belongs to the MARCHING SCHEME, so a
+   stored constant goes wrong when `n_steps` changes — was *sound reasoning from
+   a false premise*: the floor only belongs to the marching scheme if κ sets the
+   standoff, and on a stiff wall it does not. At `d̂` = 1.2 mm over a 16-step
+   3 mm ramp it gave:
+
+   ```text
+   floor    σ / |b'(ρ · step)| = 1.5315e7   hold one increment open
+   ceiling  σ / |b'(d̂ / 2)|    = 8.1717e7   stay out of the cushion
+   derived  geometric centre   = 3.5377e7   0.727 decades wide
+   ```
+
+   ⚠ No round decade sits inside — which is why THAT revision shipped a
+   log-midpoint. `the_bridges_barrier_band_reports_a_floor_and_ships_a_ceiling`
+   re-derives the bands on every build, and shows
+   the boundary where the derivation must refuse: at a 4-step schedule
+   `ρ·step` = 0.885 mm and three of the four bands have no bracket at all.
+
+   ▶▶ **THREE THINGS THE SWAP BROKE THAT A COMPILE COULD NOT SEE.** All three
+   compiled, none panicked, and each would have shipped a wrong answer quietly:
+
+   1. ⛔⛔ **IPC is an INTERIOR-POINT method and the ramp had no feasible
+      start.** At interference 0 the cavity surface and the intruder coincide,
+      so the first increment hands Newton a state already through the wall:
+      residual at iteration 0 was **4.08e6 N**. The penalty path tolerates that
+      start; a barrier cannot. The ramp now marches in from a clearance in
+      increments of the same size, solving but not recording the approach —
+      which is exactly what the `κ` floor is *for*, since "hold `ρ·step` open"
+      is the condition that makes every later start feasible. Residual at the
+      first increment fell to **1.21e-3**.
+   2. ⛔ **The clearance must be measured over the REFERENCED vertices, not
+      over `positions()`.** `positions()` is the lattice, not the body: the
+      worst rest "penetration" over all vertices is **11.5427 mm** — an orphan
+      BCC lattice point near the cavity centre — against **0.2522 mm** over the
+      vertices the solver sees. Taking the former inflated the approach from 5
+      increments to 65, and the ramp never reached its recorded steps.
+   3. ⚠ **Enrichment puts boundary midsides UNDER the curved cavity surface.**
+      `from_tet4` places every midside at the straight-edge midpoint, so a
+      boundary midside sits under the true surface by the sagitta. Measured on
+      the tolerance fixture: tightest corner −0.1354 mm, tightest midside
+      −0.2522 mm, an excess of **0.117 mm** against a predicted `h²/8R` of
+      **0.118 mm** at `h` = 4 mm, `R` = 17 mm. `Tet10Mesh::with_curved_midsides`
+      is the cure and is **not** applied here — the approach clearance absorbs
+      it instead, so the reported `min_sd` carries that bias and is
+      conservative by roughly one sagitta.
+
+   ⛔⛔ **THE READOUT'S PAIR KIND IS NOT THE SOLVER'S, and a gate written the
+   obvious way fails on a correct bridge.** `IpcRigidContact::active_pairs`
+   emits `ContactPair::Face` — that is what the solver scatters. But
+   `per_pair_readout` on the same mesh emits per-NODE `ContactPair::Vertex`
+   naming the six face nodes, because the face-integrated barrier loads the
+   MIDSIDES and puts ~0 on the corners. Measured: **1442 of 1442 readouts were
+   `Vertex`** on a mesh whose solver contact was entirely face-integrated. ⇒
+   the selector probe must read `active_pairs`; and
+   `filter_pair_readouts_to_referenced`'s `unreachable!()` on `Face` is
+   therefore never reached from this path, so the shipped filter is kept.
+
+   ⚠ **But it survives only because `referenced_vertex_mask` walks
+   `tet_midside_nodes`.** Every loaded node on the face path IS a midside, so a
+   corners-only "referenced" set would delete the entire contact patch and
+   return a clean, empty, non-panicking readout — conformity 0 on a good
+   design. `the_bridges_midside_readouts_survive_the_orphan_filter` runs that
+   counterfactual rather than trusting the property.
+
+   ⚠ **The per-tet readouts are CORNER-LINEAR, and this is a known limitation
+   rather than an oversight.** `compute_tet_readouts` builds `F` from the four
+   corner displacements; on a quadratic element that is the linear part of a
+   field that is no longer linear. It compiles, it does not panic, and it
+   returns a plausible number that ignores the midside motion the solve just
+   computed — so the UI heat map would look right and be wrong.
+   `the_corner_readout_is_not_the_tet10_strain` makes that executable: it
+   measures the gap on a quadratic field and pins exact agreement on an affine
+   one. ⇒ **the bridge's contact and convergence results stand; its per-tet
+   stress field is still Tet4-quality and owes a per-Gauss-point readout.**
 
 4. **Per-Gauss-point material sampling** (§7.6). The expensive one: a
    return-shape change to `Mesh::materials()` reaching 119 call sites.

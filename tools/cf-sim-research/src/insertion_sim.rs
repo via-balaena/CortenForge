@@ -71,8 +71,9 @@ use cf_device_types::{SimDesign, SimLayer, SlackerResolution, slacker};
 use mesh_repair::{remove_unreferenced_vertices, weld_vertices};
 use mesh_sdf::{CachedGridSdf, PseudoNormalSign, Signed, TriMeshDistance};
 use mesh_types::IndexedMesh;
-use nalgebra::{Isometry3, Matrix3, Point3, Vector3};
+use nalgebra::{Isometry3, Matrix3, Point3, Rotation3, Translation3, UnitQuaternion, Vector3};
 use sim_ml_chassis::Tensor;
+use sim_soft::element::Tet10;
 use sim_soft::material::silicone_table::{
     DRAGON_SKIN_10A, DRAGON_SKIN_15, DRAGON_SKIN_20A, DRAGON_SKIN_30A, ECOFLEX_00_10,
     ECOFLEX_00_20, ECOFLEX_00_30, ECOFLEX_00_50,
@@ -80,10 +81,11 @@ use sim_soft::material::silicone_table::{
 use sim_soft::readout::{ConformityParams, ConformityReadout, conformity_breakdown};
 use sim_soft::{
     Aabb3, BoundaryConditions, ConstantField, ContactPair, ContactPairReadout, CpuNewtonSolver,
-    Field, LayeredScalarField, LmConfig, Material, MaterialField, Mesh, MeshingHints,
-    PenaltyRigidContact, Sdf, SdfMeshedTetMesh, ShoreReading, SiliconeMaterial, Solver,
-    SolverConfig, SolverFailure, Tet4, TetId, Vec3, VertexId, Yeoh, boundary_faces_on_isosurface,
-    filter_pair_readouts_to_referenced, pick_vertices_by_predicate, referenced_vertices,
+    Field, IpcRigidContact, LayeredScalarField, LmConfig, Material, MaterialField, Mesh,
+    MeshingHints, PenaltyRigidContact, Sdf, SdfMeshedTetMesh, ShoreReading, SiliconeMaterial,
+    Solver, SolverConfig, SolverFailure, Tet4, Tet10Mesh, TetId, Vec3, VertexId, Yeoh,
+    boundary_faces_on_isosurface, face_barrier_kappa, filter_pair_readouts_to_referenced,
+    pick_vertices_by_predicate, referenced_vertices,
 };
 
 /// Weld epsilon (meters) for the pre-decimation vertex weld — matches
@@ -935,7 +937,7 @@ const MAX_NEWTON_ITER: usize = 150;
 /// ▶ It is left at `1e-1` deliberately: changing it is a behaviour
 /// change to every consumer of this tool and belongs to the bridge, not
 /// to the measurement that found the problem.
-const INSERTION_SOLVE_TOL: f64 = 1e-1;
+pub(crate) const INSERTION_SOLVE_TOL: f64 = 1e-1;
 
 /// Shared solver config for the insertion solve — the walking-
 /// skeleton defaults with `dt` (static), `max_newton_iter`, and `tol`
@@ -1189,6 +1191,168 @@ fn intruder_contact_at_kappa(
     )
 }
 
+/// The design traction the bridge's face barrier is sized against.
+///
+/// **Measured on the PRODUCT scan** (`base_mold`, 2026-09-22): 58.9 kPa on
+/// the REST-area basis, read at penalty `κ = 1e5` — the stiffest arm that
+/// stayed seated — at a common depth of 3.4375 mm through a 5 mm inset.
+/// `κ = 1e4` reads 57.83 kPa at the same depth, so σ moves **1.0183× per
+/// decade** across the seated arms: the flattest coupling of any scene tried,
+/// which is what makes this close to converged rather than a loose bound.
+///
+/// ⛔⛔ **SUPERSEDES 117 kPa, which was `sock_over_capsule`** — a 3 mm inset
+/// through Ecoflex 00-30. `base_mold` is a 5 mm inset through 17 mm of
+/// DRAGON_SKIN_10A at 25 % Slacker. σ is roughly HALF, and `κ` scales with it
+/// linearly, so every derived stiffness taken before this re-measurement was
+/// about 2× too large → see `product_scene`.
+///
+/// ⚠ It is a **LOWER BOUND**, not a converged rigid traction: `κ = 1e6`
+/// stalls at step 0 on both scenes, so `1e5` is the stiffest arm that solves
+/// and `σ` is still moving 4.7 % across that last decade. For a *floor*
+/// requirement a lower bound under-states the stiffness needed, so the
+/// bracket derived below is read knowing its floor is the soft end.
+///
+/// ⛔ Do NOT re-read this at the shipped penalty stiffness (`κ = 1e3`): on
+/// the real scan that state is THROUGH THE WALL (`min_sd` −0.373 mm with the
+/// 5 % area tail at −0.042 mm), and its 6.85 kPa is not a traction on
+/// anything. ⛔ And do NOT read it on the DEFORMED area basis —
+/// `ContactPairReadout::tributary_area` is a deformed tributary while the
+/// face barrier integrates over REST area; the two differ by 22–23 %.
+const BRIDGE_DESIGN_TRACTION_PA: f64 = 58.9e3;
+
+/// Patch non-uniformity `ρ` — the effective gap the barrier must hold, as a
+/// multiple of the MINIMUM gap anywhere on the patch.
+///
+/// The stall condition is on the *minimum* gap while the traction is a
+/// *mean*, and convexity puts the effective gap above the minimum. So the
+/// floor requirement is evaluated at `ρ · step`, never at `step`: omitting
+/// `ρ` makes the floor optimistic.
+///
+/// **Measured on the PRODUCT scan** in `[1.00, 1.11]` at `κ = 1e4…1e5` on a
+/// non-penetrating seat — 1.113 (min-gap) and 1.036 (5 % tail) at `κ = 1e4`,
+/// 1.010 and 1.004 at `κ = 1e5`. The upper end is taken: for a floor, the
+/// larger `ρ` is the conservative one. ⛔ Supersedes 1.18, which was
+/// `sock_over_capsule`.
+///
+/// ⛔ Read `ρ` against the area-weighted 5 % tail, never `min_sd` alone:
+/// `min_sd` is ONE VERTEX, and the floor divides `|b′|` at `ρ · step`, so a
+/// single bad tet would move a shipped constant. At the shipped stiffness the
+/// synthetic sphere's `min_sd` ratio reads 4.92 — on a geometry with no shape
+/// irregularity whatsoever — while the same pose at `κ = 1e5` reads 1.005.
+const BRIDGE_PATCH_NONUNIFORMITY: f64 = 1.12;
+
+/// Barrier band `d̂` for the bridge's face contact.
+///
+/// ⛔ **Not inherited from the penalty path.** `INSERTION_CONTACT_DHAT` is a
+/// penalty band co-tuned with a smoothing `ε` and normal averaging, neither
+/// of which the IPC face barrier has; carrying it across would be a
+/// transcription, not a derivation.
+///
+/// From #959's candidate set (0.5 / 1.0 / 1.2 / 2.0 mm), 1.2 mm is the value
+/// satisfying both standing constraints with margin:
+/// - the bracket is non-empty, which needs `d̂/2 > ρ · step` — at 16 steps
+///   over a 3 mm inset that is `d̂ > 0.44 mm`;
+/// - the band stays well inside one element, `d̂ < SIM_CELL_SIZE_M / 3`.
+///
+/// `the_bridges_barrier_band_reports_a_floor_and_ships_a_ceiling` reports the bracket at
+/// every candidate rather than asserting this one is optimal.
+const BRIDGE_CONTACT_DHAT_M: f64 = 1.2e-3;
+
+/// The face-barrier stiffness: **the ceiling**, the stiffest value that still
+/// stays out of the cushioning regime.
+///
+/// ⛔⛔ **THIS RETURNED THE GEOMETRIC CENTRE OF `[floor, ceiling]`, AND THAT
+/// WAS MEASURED WRONG ON A STIFF WALL.** The floor — *"κ such that the barrier
+/// holds `ρ · step` open at traction σ"* — assumes κ *sets* the standoff. On
+/// the product scene it does not: the held standoff measured FLAT
+/// (0.2936 → 0.2766 mm) across a 1.5× range of κ, because 17 mm of
+/// DRAGON_SKIN_10A is stiff enough that the WALL sets the gap. κ only changes
+/// the traction needed to reach it — the same fact as σ moving a mere 1.0183×
+/// per decade of κ on this scene.
+///
+/// ⭐⭐⭐ **And deriving κ FROM the increment was actively harmful.** A finer
+/// march lowers the floor, which lowered κ, which held proportionally less —
+/// the feasibility threshold chased the step downward and could never be
+/// caught (held/step DEGRADED 0.94 → 0.86 → 0.81 across 16/32/64 steps).
+/// Holding κ at the ceiling and refining the schedule instead:
+///
+/// ```text
+/// steps  step_mm  held_mm   depth     was (centre κ)
+///    16   0.3125   0.3062   68.8 %    37.5 %
+///    32   0.1562   0.2163   90.6 %    46.9 %
+///    64   0.0781   0.2146   90.6 %    60.9 %
+/// ```
+///
+/// ⇒ the contact-feasibility wall is GONE: 32 and 64 steps stop at the same
+/// depth and on a DIFFERENT failure — an element inversion (`det F` < 0), not
+/// a barrier stall. What limits the ramp now is material, not contact.
+///
+/// ⇒ **The ceiling is the only requirement describing something κ actually
+/// controls** (how much the barrier cushions). The floor is kept as a REPORTED
+/// diagnostic — `the_bridges_barrier_band_reports_a_floor_and_ships_a_ceiling` still prints
+/// it — but it no longer selects, because a selector resting on a premise the
+/// scene does not honour is a sweep wearing a derivation's clothes.
+///
+/// ⚠ The floor DID predict the stall on sim-soft's SEALED fixture (1e6 stalls
+/// above 17.567 kPa, measured 14.255). This is a transfer failure to a
+/// compliant open-mouth wall, not a refutation — record the regime a
+/// derivation was validated in.
+///
+/// ⚠ `ramp_step_m` is still taken and still checked: an increment wider than
+/// the band is a mis-specified schedule and is surfaced rather than clamped.
+/// The schedule requirement is now `step < held standoff`, and the held
+/// standoff must be **MEASURED** — it depends on wall compliance, which no
+/// closed form here knows.
+///
+/// # Errors
+///
+/// `ramp_step_m` is not a positive finite length, is at least the whole band,
+/// or the ceiling is not derivable at this `d̂`.
+fn bridge_face_barrier_kappa(d_hat: f64, ramp_step_m: f64) -> Result<f64> {
+    if !ramp_step_m.is_finite() || ramp_step_m <= 0.0 {
+        return Err(anyhow!(
+            "the ramp increment must be a positive finite length, got {ramp_step_m:?}"
+        ));
+    }
+    if ramp_step_m >= d_hat {
+        return Err(anyhow!(
+            "one increment ({ramp_step_m:.6e} m) is at least the whole barrier band \
+             (d̂ = {d_hat:.6e} m) — the barrier cannot see a node before it has already \
+             passed through, so march in smaller steps or widen d̂"
+        ));
+    }
+    face_barrier_kappa(d_hat, 0.5 * d_hat, BRIDGE_DESIGN_TRACTION_PA)
+        .ok_or_else(|| anyhow!("the barrier ceiling is not derivable at d̂ = {d_hat:.6e} m"))
+}
+
+/// The intruder as an IPC face-barrier contact — the bridge's replacement for
+/// [`intruder_contact_at_kappa`].
+///
+/// The rigid primitive is **unchanged**: both paths hand the contact model the
+/// same `Solid::from_sdf(intruder).offset(interference + cavity_offset)`, so
+/// nothing about the scene's geometry moves across the bridge. Only the
+/// contact law does — and with it the two parameters, which are derived
+/// ([`bridge_face_barrier_kappa`]) rather than swept.
+///
+/// ⚠ What is *dropped* is the penalty path's smoothing `ε` and normal
+/// averaging. Those exist to make a per-vertex penalty force behave on a
+/// faceted SDF; the face barrier integrates over a quadratic face with
+/// quadrature weights and needs neither. `INSERTION_CONTACT_SMOOTHING_EPS_M`
+/// in particular is a swept, CAVITY-SPECIFIC sweet spot — losing it is the
+/// point of the exercise, not a regression.
+fn intruder_ipc_contact_at(
+    intruder: &GridSdf,
+    bounds: Aabb,
+    interference_m: f64,
+    cavity_offset_m: f64,
+    kappa: f64,
+    d_hat: f64,
+) -> IpcRigidContact {
+    let intruder_solid =
+        Solid::from_sdf(intruder.clone(), bounds).offset(interference_m + cavity_offset_m);
+    IpcRigidContact::with_params(vec![intruder_solid], kappa, d_hat)
+}
+
 /// Build the Dirichlet boundary conditions: pin the outer-skin
 /// vertices — those within `0.5 * cell_size_m` of the outer envelope
 /// `scan.offset(outer_offset_m)`, filtered to solver-referenced
@@ -1202,7 +1366,7 @@ fn intruder_contact_at_kappa(
 /// to react against (`cell_size_m` too coarse for the wall, or a
 /// degenerate geometry).
 fn outer_skin_bc(
-    mesh: &SdfMeshedTetMesh<Yeoh>,
+    mesh: &dyn Mesh<Yeoh>,
     intruder: &GridSdf,
     bounds: Aabb,
     outer_offset_m: f64,
@@ -1783,6 +1947,19 @@ pub struct RampStep {
     /// mean strain-energy density). Derived once when the step
     /// converges.
     pub readout: StepReadout,
+    /// Wall-clock seconds this step's Newton solve took, measured around
+    /// `replay_step` alone — not the readouts built afterwards.
+    ///
+    /// ⚠ **A diagnostic, never an assertion.** Wall clock is contended: the
+    /// one release-only timing assertion in this workspace
+    /// (`adjoint_gap_across_basis_sizes`) inflates **80×** under `xtask
+    /// grade`'s coverage pass. Report it, print it, size a fixture with it —
+    /// do not gate on it.
+    ///
+    /// It exists because the cost question the bridge raises is per-STEP, not
+    /// per-ramp: a ramp's total folds in the geometry build and answers
+    /// nothing about the solve.
+    pub wall_time_s: f64,
 }
 
 /// Scalar per-step engineering aggregates — slice 7.3b.2's per-step
@@ -2386,6 +2563,32 @@ pub fn run_insertion_ramp_at_kappa(
     n_steps: usize,
     contact_kappa: f64,
 ) -> Result<InsertionRamp> {
+    run_insertion_ramp_at_kappa_and_tol(geometry, n_steps, contact_kappa, INSERTION_SOLVE_TOL)
+}
+
+/// [`run_insertion_ramp_at_kappa`] with the residual tolerance supplied too.
+///
+/// Exists so the Tet4 + penalty baseline can be run at the SAME tolerance as
+/// the bridge ([`run_insertion_ramp_tet10_ipc`]) without editing a shipped
+/// constant. #958 measured this comparison by flipping `INSERTION_SOLVE_TOL`
+/// in the source and reverting afterwards; a knob makes the same measurement
+/// reproducible by anyone, and — unlike a const flip — cannot be left behind.
+///
+/// ⛔ This does NOT change what ships. [`run_insertion_ramp`] and
+/// [`run_insertion_ramp_at_kappa`] both delegate here at
+/// [`INSERTION_SOLVE_TOL`], and `the_shipped_ramp_solves_at_the_shipped_tolerance`
+/// pins that.
+///
+/// # Errors
+///
+/// Identical to [`run_insertion_ramp`]: `n_steps` is zero, or
+/// [`outer_skin_bc`] finds no outer-skin vertex in the pin-band.
+pub fn run_insertion_ramp_at_kappa_and_tol(
+    geometry: InsertionGeometry,
+    n_steps: usize,
+    contact_kappa: f64,
+    tol: f64,
+) -> Result<InsertionRamp> {
     if n_steps == 0 {
         return Err(anyhow!("insertion ramp needs at least one step"));
     }
@@ -2441,7 +2644,7 @@ pub fn run_insertion_ramp_at_kappa(
     // the intruder there in `n_steps` equal increments.
     let inset_m = -cavity_offset_m;
 
-    let config = insertion_solver_config();
+    let config = insertion_solver_config_at_tol(tol);
 
     // x_prev starts at rest; each converged step chains its x_final in.
     let mut x_prev_flat: Vec<f64> = rest_positions
@@ -2471,9 +2674,11 @@ pub fn run_insertion_ramp_at_kappa(
         // `replay_step` panics on non-convergence — catch it so the
         // ramp records `failed_at_step` + the panic's reason instead
         // of aborting.
+        let solve_started = std::time::Instant::now();
         let outcome = catch_unwind(AssertUnwindSafe(|| {
             solver.replay_step(&x_prev, &v_prev, &theta, config.dt)
         }));
+        let wall_time_s = solve_started.elapsed().as_secs_f64();
         match outcome {
             Ok(step) => {
                 // Per-step readout (slice 7.3b.2). The solver consumed
@@ -2511,6 +2716,7 @@ pub fn run_insertion_ramp_at_kappa(
                     final_residual_norm: step.final_residual_norm,
                     x_final: step.x_final.clone(),
                     readout: step_readout,
+                    wall_time_s,
                 });
                 x_prev_flat = step.x_final; // chain the warm start
             }
@@ -2549,6 +2755,438 @@ pub fn run_insertion_ramp_at_kappa(
     })
 }
 
+/// Fraction of its original rest Jacobian an element may lose to a midside
+/// move before [`Tet10Mesh::with_projected_midsides`] backs the move off.
+///
+/// The projection moves boundary midsides onto a curved surface, which bends
+/// elements; pushed too far it inverts them. 0.5 keeps every incident element
+/// above half its original Jacobian everywhere, which the sagitta-scale moves
+/// here (~0.17 mm against a 4 mm cell) never approach — the floor is a guard,
+/// not a working constraint.
+const CAVITY_MIDSIDE_QUALITY_FLOOR: f64 = 0.5;
+
+/// How far from the cavity isosurface a boundary midside may sit and still be
+/// treated as a cavity midside, as a fraction of the cell size.
+///
+/// Boundary faces span BOTH the cavity and the outer skin. The outer skin is
+/// pinned and is a whole wall thickness away (17 mm on the product scene), so
+/// any generous threshold separates them; this one is 0.5 cells = 2 mm
+/// against a 0.17 mm sagitta.
+const CAVITY_MIDSIDE_BAND_CELLS: f64 = 0.5;
+
+/// Put the enriched boundary midsides back ON the curved cavity surface.
+///
+/// ⭐⭐⭐ **This is the fix for the bridge's feasibility stall, and it is a
+/// GEOMETRY fix, not a stiffness one.** `Tet10Mesh::from_tet4` places every
+/// midside at the straight-edge MIDPOINT, so on a curved cavity each boundary
+/// midside sits under the true surface by the sagitta. The barrier then fights
+/// a node that was never on the wall.
+///
+/// Measured on the product scan before this existed:
+///
+/// ```text
+/// at rest      tightest corner -0.0737 mm   tightest midside -0.2439 mm
+///              enrichment excess                              0.1702 mm
+/// at the stall  608 corners hold 0.4621 mm   4149 midsides hold 0.2936 mm
+///              deficit                                        0.1685 mm
+///              one increment                                  0.3125 mm
+/// ```
+///
+/// The corners held comfortably more than an increment; the midsides did not,
+/// and the deficit matches the rest-configuration sagitta to within 1 %. That
+/// is also why the held gap was FLAT across a 1.5× range of `κ` — a geometric
+/// offset is stiffness-independent, so no barrier could move it, and the `κ`
+/// floor was being judged against a corrupted measurement rather than being
+/// wrong.
+///
+/// Only cavity-side boundary midsides move: the outer skin is pinned and a
+/// whole wall thickness away. Corners are untouched — conforming those is the
+/// mesher's job (`SdfMeshedTetMesh::with_projected_nodes`) and doing it here
+/// would move the Dirichlet set.
+fn conform_cavity_midsides(
+    mesh: Tet10Mesh<Yeoh>,
+    intruder: &GridSdf,
+    bounds: Aabb,
+    cavity_offset_m: f64,
+    cell_size_m: f64,
+) -> Tet10Mesh<Yeoh> {
+    let Some(faces6) = Mesh::<Yeoh>::boundary_faces6(&mesh).map(<[[VertexId; 6]]>::to_vec) else {
+        // A linear mesh has no midsides to conform.
+        return mesh;
+    };
+    let cavity = Solid::from_sdf(intruder.clone(), bounds).offset(cavity_offset_m);
+    let band_m = CAVITY_MIDSIDE_BAND_CELLS * cell_size_m;
+    let positions = Mesh::<Yeoh>::positions(&mesh);
+
+    // Nodes 3..6 of a P2 boundary face are its edge midsides.
+    let mut candidates: Vec<VertexId> = faces6.iter().flat_map(|f| f[3..6].to_vec()).collect();
+    candidates.sort_unstable();
+    candidates.dedup();
+
+    let moves: Vec<(VertexId, Vec3)> = candidates
+        .into_iter()
+        .filter_map(|v| {
+            let p = positions[v as usize];
+            let sd = cavity.eval(Point3::from(p));
+            // Outer-skin midsides sit a wall thickness away and must not move.
+            if !sd.is_finite() || sd.abs() > band_m {
+                return None;
+            }
+            // Two Newton steps on the SDF. The gradient of a signed distance
+            // field is unit, so `q -= sd · ∇` lands on the zero level for an
+            // exact field; twice absorbs the trilinear interpolant's error.
+            let mut q = p;
+            for _ in 0..2 {
+                let s = cavity.eval(Point3::from(q));
+                let g = cavity.grad(Point3::from(q));
+                let n = g.norm();
+                if !s.is_finite() || n < 1e-12 {
+                    return None;
+                }
+                q -= (s / n) * g;
+            }
+            q.iter().all(|c| c.is_finite()).then_some((v, q))
+        })
+        .collect();
+
+    mesh.with_projected_midsides(&moves, CAVITY_MIDSIDE_QUALITY_FLOOR)
+}
+
+/// **THE BRIDGE** — run the insertion ramp on a Tet10 mesh through the IPC
+/// face barrier, at a caller-chosen residual tolerance.
+///
+/// The same scene, the same boundary conditions and the same rigid intruder as
+/// [`run_insertion_ramp_at_kappa`]; what changes is the triple the solve is
+/// built from — `Tet4` → [`Tet10`], `SdfMeshedTetMesh` → [`Tet10Mesh`],
+/// `PenaltyRigidContact` → [`IpcRigidContact`] — plus a `κ` derived from a
+/// measured traction instead of a swept one.
+///
+/// ⭐ **`tol` is a parameter because the claim lives there.** At the shipped
+/// `INSERTION_SOLVE_TOL` (1e-1 N) "converged" can mean "the first residual was
+/// already under 0.1 N", and #958 measured the real scan reaching full depth
+/// that way while stalling at 25 % once a converged solution is actually
+/// demanded. So the bridge is not asked whether it reaches depth — it is asked
+/// whether it reaches depth *with the residual driven down*.
+///
+/// ▶ **What this does NOT change**, deliberately: `INSERTION_SOLVE_TOL`
+/// itself (a behaviour change for every consumer, and its docstring says why
+/// it is 1e-1), the shipped [`run_insertion_ramp`] entry point, and the
+/// geometry pipeline. The Tet4 mesh is enriched here, per call — the scene is
+/// meshed exactly as it always was.
+///
+/// ⚠ **The per-tet readouts are CORNER-LINEAR and that is a known limitation,
+/// not an oversight.** [`compute_tet_readouts`] builds `F` from the four
+/// corner displacements, which on a quadratic element is the linear part of a
+/// field that is no longer linear. It does not fail to compile and it does not
+/// panic — it returns a plausible number that ignores the midside motion the
+/// solve just computed. `the_corner_readout_is_not_the_tet10_strain` measures
+/// the size of that gap so nobody reads the heat map as the solved field.
+///
+/// # Errors
+///
+/// - `n_steps` is zero;
+/// - the derived stiffness bracket is empty ([`bridge_face_barrier_kappa`]);
+/// - [`outer_skin_bc`] finds no outer-skin vertex in the pin-band.
+pub fn run_insertion_ramp_tet10_ipc(
+    geometry: InsertionGeometry,
+    n_steps: usize,
+    tol: f64,
+) -> Result<InsertionRamp> {
+    // `κ` depends on the increment, so it cannot be a constant here — see
+    // `bridge_face_barrier_kappa`. The inset is the ramp's full travel.
+    // `n_steps` is small and non-zero; the cast is exact.
+    #[allow(clippy::cast_precision_loss)]
+    if n_steps == 0 {
+        // Checked before deriving κ: a zero schedule would otherwise surface as
+        // "the barrier floor is not derivable", which names the wrong problem.
+        return Err(anyhow!("insertion ramp needs at least one step"));
+    }
+    let ramp_step_m = -geometry.cavity_offset_m / n_steps as f64;
+    let kappa = bridge_face_barrier_kappa(BRIDGE_CONTACT_DHAT_M, ramp_step_m)?;
+    run_insertion_ramp_tet10_ipc_at(geometry, n_steps, tol, kappa, BRIDGE_CONTACT_DHAT_M)
+}
+
+/// [`run_insertion_ramp_tet10_ipc`] with the barrier parameters supplied
+/// rather than derived.
+///
+/// ⭐ **This is what makes the derivation falsifiable.** `κ` is claimed to be
+/// determined by a measured traction rather than swept; the only way to hold
+/// that claim to account is to be able to run the neighbouring stiffnesses and
+/// see what they do. The derivation's own gate re-derives the bracket, and
+/// `the_bridge_ramp_over_a_stiffness_sweep` reports the ramp across it.
+///
+/// # Errors
+///
+/// - `n_steps` is zero;
+/// - [`outer_skin_bc`] finds no outer-skin vertex in the pin-band.
+pub fn run_insertion_ramp_tet10_ipc_at(
+    geometry: InsertionGeometry,
+    n_steps: usize,
+    tol: f64,
+    contact_kappa: f64,
+    d_hat: f64,
+) -> Result<InsertionRamp> {
+    if n_steps == 0 {
+        return Err(anyhow!("insertion ramp needs at least one step"));
+    }
+
+    let InsertionGeometry {
+        cavity_tensile_strength_pa,
+        mesh: tet4_mesh,
+        intruder,
+        cavity_offset_m,
+        outer_offset_m,
+        bounds,
+        cell_size_m,
+        n_tets,
+        per_tet_layer: _,
+    } = geometry;
+
+    // THE MESH SWAP. Corner ids and corner positions are preserved by
+    // construction (`from_tet4` appends midsides at indices >= n_corners), so
+    // every id the BCs, Γ and the per-tet readouts already hold keeps pointing
+    // at the same material point — see
+    // `the_enriched_mesh_preserves_the_tet4_corners`.
+    // ⚠ NOT conformed. `conform_cavity_midsides` exists and works — it moves
+    // 4116 nodes and takes the tightest rest midside −0.2439 → −0.1031 mm —
+    // but wiring it in did NOT fix the stall (same 6/16, residual 3.6438e4 →
+    // 3.6429e4) and made the loaded gap worse. The rest sagitta was not the
+    // cause; the face barrier LOADS midsides and leaves corners at ~0, so
+    // midsides sitting closer to the surface is the load distribution, not an
+    // artifact. Kept unwired rather than deleted: it is the right tool for a
+    // curved-surface question, just not for this one.
+    let mesh = Tet10Mesh::<Yeoh>::from_tet4(&tet4_mesh);
+
+    let n_vertices = mesh.n_vertices();
+    let n_dof = 3 * n_vertices;
+
+    // Full press-fit interference = the cavity inset, seated in `n_steps`
+    // equal increments — and the increment is what sets the barrier floor, so
+    // `κ` is derived here rather than read from a constant.
+    let inset_m = -cavity_offset_m;
+    // `n_steps` is small and non-zero; the cast is exact.
+    #[allow(clippy::cast_precision_loss)]
+    let ramp_step_m = inset_m / n_steps as f64;
+
+    let bc = outer_skin_bc(&mesh, &intruder, bounds, outer_offset_m, cell_size_m)?;
+    let n_pinned = bc.pinned_vertices.len();
+
+    // Snapshot per-tet immutables before the mesh is consumed into per-step
+    // solver clones — same dance as the Tet4 ramp. `referenced` includes
+    // midsides (`referenced_vertex_mask` walks `tet_midside_nodes` too), which
+    // is what makes it usable as the face-pair filter's set.
+    let rest_positions: Vec<Vec3> = mesh.positions().to_vec();
+    // `tet_id as TetId` is a `u32` cap; Phase 4 meshes stay well under
+    // `u32::MAX` per `Mesh` trait docs.
+    #[allow(clippy::cast_possible_truncation)]
+    let tets: Vec<[VertexId; 4]> = (0..n_tets as TetId).map(|t| mesh.tet_vertices(t)).collect();
+    let materials: Vec<Yeoh> = mesh.materials().to_vec();
+    // ⚠ `referenced_vertex_mask` walks `tet_midside_nodes` as well as
+    // corners, so this set CONTAINS the midsides. That is load-bearing here:
+    // on the face path every loaded node IS a midside, so a set of corners
+    // alone would make the filter below delete the entire contact patch —
+    // silently, as a clean empty readout.
+    let referenced: Vec<VertexId> = referenced_vertices(&mesh);
+
+    // Γ is a property of the REST configuration, built once. Its faces are the
+    // corner (3-node) boundary triangles, which `from_tet4` copies verbatim.
+    let gamma_faces: Vec<[VertexId; 3]> = Mesh::<Yeoh>::boundary_faces(&mesh).to_vec();
+    let gamma = GammaMask::build(
+        &rest_positions,
+        &gamma_faces,
+        n_vertices,
+        &intruder,
+        cavity_offset_m,
+    );
+
+    let config = insertion_solver_config_at_tol(tol);
+
+    let mut x_prev_flat: Vec<f64> = rest_positions
+        .iter()
+        .flat_map(|p| [p.x, p.y, p.z])
+        .collect();
+    let v_prev = Tensor::zeros(&[n_dof]);
+    let empty_theta: [f64; 0] = [];
+    let theta = Tensor::from_slice(&empty_theta, &[0]);
+
+    let mut steps: Vec<RampStep> = Vec::with_capacity(n_steps);
+    let mut failed_at_step = None;
+    let mut failure_reason = None;
+    // ⚠⚠ **IPC IS AN INTERIOR-POINT METHOD** — it needs a strictly feasible
+    // start (`sd > 0`), and this ramp does not have one. At interference 0 the
+    // cavity surface and the intruder coincide, so the very first increment
+    // hands Newton a state already through the wall. Measured on the tolerance
+    // fixture: the barrier's residual at Newton iteration 0 is **4.08e6 N**
+    // and the line search stalls immediately. The penalty path tolerates that
+    // start; a barrier cannot.
+    //
+    // So the intruder is marched in from a CLEARANCE, in increments of the
+    // same size, and the approach steps are solved but not recorded. From
+    // there the κ FLOOR carries it: that requirement is exactly "hold
+    // `ρ · step` open", so each converged step leaves more standoff than the
+    // next increment consumes and every later start is feasible by
+    // construction. ⭐ The floor is not decoration here — it is what makes the
+    // march legal.
+    //
+    // ⚠ The clearance is MEASURED off this mesh, not chosen. Two independent
+    // effects put rest nodes on the wrong side of the cavity isosurface before
+    // anything has moved:
+    //   - the MESHER's own discretisation — measured on the tolerance fixture,
+    //     corner nodes reach 0.1354 mm inside;
+    //   - ENRICHMENT — `from_tet4` puts midsides on straight edge CHORDS, so a
+    //     boundary midside sits under the true curved surface by the sagitta
+    //     (`~h²/8R`). Measured: the tightest midside is 0.2522 mm inside, an
+    //     excess of 0.117 mm over the tightest corner, against a predicted
+    //     sagitta of 0.118 mm at h = 4 mm, R = 17 mm.
+    // Marching from a round `d̂/2` walked straight back into an infeasible
+    // start (the last approach step stalled at Newton iter 4). So the worst
+    // rest penetration is measured and the approach begins outside it.
+    // ⛔ `fold` from 0.0 floors the result: a mesh with no node inside the
+    // surface asks for no penetration allowance, only the `d̂/2` margin.
+    // ⛔⛔ **OVER `referenced`, NOT over `positions()`.** `positions()` is the
+    // LATTICE, not the body: `SdfMeshedTetMesh` retains BCC lattice points that
+    // no tet names, and plenty of them sit deep INSIDE the cavity. Measured on
+    // the tolerance fixture, the worst "penetration" over all vertices is
+    // 11.5427 mm — a lattice point near the cavity centre — against 0.2522 mm
+    // over the vertices the solver actually sees. Taking the former inflates
+    // the approach from 5 increments to 65 and the ramp never reaches its
+    // recorded steps → [[feedback_positions_is_not_the_body]].
+    let cavity_isosurface = Solid::from_sdf(intruder.clone(), bounds).offset(cavity_offset_m);
+    let worst_rest_penetration_m = referenced
+        .iter()
+        .map(|&v| cavity_isosurface.eval(Point3::from(rest_positions[v as usize])))
+        .filter(|sd| sd.is_finite())
+        .fold(0.0_f64, |acc, sd| acc.max(-sd));
+    // ⭐ The margin is `d̂`, not `d̂/2`: the barrier is INACTIVE only where
+    // `sd ≥ d̂`, so that is what makes the first solve a genuinely unloaded
+    // one — a rest state in equilibrium with no contact at all, which is
+    // feasible by definition rather than by a margin someone chose. At `d̂/2`
+    // the first solve already sits mid-band and must balance a barrier sized
+    // for the FULL-seat traction against an unloaded wall.
+    let approach_clearance_m = worst_rest_penetration_m + d_hat;
+    // The increment count is small, so the cast is exact. `ceil` is deliberate:
+    // rounding up can only make the first approach gap larger than the
+    // clearance asked for, never smaller.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let n_approach = (approach_clearance_m / ramp_step_m).ceil() as usize;
+
+    // `(interference, record)` — the approach is solved, never reported, so
+    // `InsertionRamp`'s steps stay the same 0 → inset grid the Tet4 ramp
+    // reports and the two are directly comparable.
+    let mut schedule: Vec<(f64, bool)> = Vec::with_capacity(n_approach + n_steps);
+    for i in (1..=n_approach).rev() {
+        // `i` is bounded by `n_approach`; the cast is exact.
+        #[allow(clippy::cast_precision_loss)]
+        schedule.push((-(i as f64) * ramp_step_m, false));
+    }
+    for k in 0..n_steps {
+        // k + 1 and n_steps are tiny — well under f64's exact-integer ceiling.
+        #[allow(clippy::cast_precision_loss)]
+        schedule.push(((k + 1) as f64 / n_steps as f64 * inset_m, true));
+    }
+
+    for &(interference_m, record) in &schedule {
+        let contact = intruder_ipc_contact_at(
+            &intruder,
+            bounds,
+            interference_m,
+            cavity_offset_m,
+            contact_kappa,
+            d_hat,
+        );
+        let solver: CpuNewtonSolver<Tet10, Tet10Mesh<Yeoh>, IpcRigidContact, Yeoh, 10, 4> =
+            CpuNewtonSolver::new(Tet10, mesh.clone(), contact, config, bc.clone());
+        let x_prev = Tensor::from_slice(&x_prev_flat, &[n_dof]);
+        let solve_started = std::time::Instant::now();
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            solver.replay_step(&x_prev, &v_prev, &theta, config.dt)
+        }));
+        let wall_time_s = solve_started.elapsed().as_secs_f64();
+        match outcome {
+            Ok(step) => {
+                if record {
+                    let positions_k: Vec<Vec3> = positions_from_flat(&step.x_final);
+                    // The solver consumed the step's `contact`; rebuild at the
+                    // SAME parameters so the reported patch is the solved one.
+                    let readout_contact = intruder_ipc_contact_at(
+                        &intruder,
+                        bounds,
+                        interference_m,
+                        cavity_offset_m,
+                        contact_kappa,
+                        d_hat,
+                    );
+                    let raw_readouts = readout_contact.per_pair_readout(&mesh, &positions_k);
+                    // ⚠ The face path's READOUT is per-NODE
+                    // (`ContactPair::Vertex` naming midsides), not per-face —
+                    // `ContactPair::Face` is what the SOLVER consumes. So the
+                    // shipped filter applies unchanged and its `Face` arm stays
+                    // genuinely unreachable.
+                    let contact_readouts =
+                        filter_pair_readouts_to_referenced(raw_readouts, &referenced);
+                    let per_tet =
+                        compute_tet_readouts(&rest_positions, &positions_k, &tets, &materials);
+                    let conformity = gamma.conformity(
+                        &positions_k,
+                        &gamma_faces,
+                        &contact_readouts,
+                        cavity_tensile_strength_pa,
+                    );
+                    let step_readout =
+                        aggregate_step_readout(&per_tet, &contact_readouts, conformity);
+
+                    steps.push(RampStep {
+                        interference_m,
+                        iter_count: step.iter_count,
+                        final_residual_norm: step.final_residual_norm,
+                        x_final: step.x_final.clone(),
+                        readout: step_readout,
+                        wall_time_s,
+                    });
+                }
+                x_prev_flat = step.x_final; // chain the warm start
+            }
+            Err(payload) => {
+                failed_at_step = Some(steps.len());
+                let why = panic_message(&*payload);
+                failure_reason = Some(if record {
+                    why
+                } else {
+                    format!(
+                        "during the feasible-start approach, at interference \
+                         {:.4} mm (the barrier could not be established before \
+                         the ramp began): {why}",
+                        interference_m * 1e3,
+                    )
+                });
+                break;
+            }
+        }
+    }
+
+    let result = steps.last().map(|last| {
+        let final_positions = positions_from_flat(&last.x_final);
+        let final_per_tet =
+            compute_tet_readouts(&rest_positions, &final_positions, &tets, &materials);
+        let force_displacement_curve = steps
+            .iter()
+            .map(|s| (s.interference_m, s.readout.contact_force_magnitude_n))
+            .collect();
+        InsertionResult {
+            final_per_tet,
+            force_displacement_curve,
+        }
+    });
+
+    Ok(InsertionRamp {
+        steps,
+        failed_at_step,
+        failure_reason,
+        final_x: x_prev_flat,
+        n_pinned,
+        result,
+    })
+}
 // ───────────────────────────────────────────────────────────────────────
 // SL.1 — sliding-intruder scaffolding
 // ───────────────────────────────────────────────────────────────────────
@@ -2682,6 +3320,90 @@ pub(crate) fn polyline_arc_length_m(polyline: &[Point3<f64>]) -> f64 {
         .sum()
 }
 
+/// A CONTINUOUS tangent along a polyline, for orienting a rigid body carried
+/// along it.
+///
+/// ⛔ **Why [`point_along_polyline_at_arc_distance`]'s tangent cannot be used
+/// for this.** That one returns the tangent of the *segment* the point falls
+/// in — piecewise-constant, jumping by the full turn angle at every vertex.
+/// For finding a POSITION that is fine. For orienting a rigid body it is not:
+/// the body snaps through the whole turn the instant the walk crosses a
+/// vertex, and a point far from the tip moves a long way for it.
+///
+/// Measured on `base_mold` (28 points, 2.40° worst turn, 121 mm long): with
+/// segment tangents the per-step normal closing **saturated at ~4.1 mm no
+/// matter how fine the schedule** — 4.18 mm at 256 steps, 4.13 mm at 512 —
+/// because the snap is set by vertex spacing, not by step size. Ratios of
+/// closing-to-arc-step reached **17.5**, which is not a thing a rigid
+/// translation can do. With a continuous tangent the same measurement scales
+/// with step size as it must.
+///
+/// Vertex tangents are the normalised sum of the two incident segment
+/// tangents (the ends take their single neighbour), and within a segment the
+/// two vertex tangents are blended by arc fraction. That is continuous across
+/// vertices by construction — at a vertex both sides evaluate to the same
+/// vertex tangent — and centres each turn on the vertex it belongs to.
+///
+/// Returns `None` for a degenerate polyline, matching its sibling.
+fn smoothed_tangent_along_polyline(
+    polyline: &[Point3<f64>],
+    distance_m: f64,
+) -> Option<Vector3<f64>> {
+    if polyline.len() < 2 {
+        return None;
+    }
+    // Segment tangents, skipping zero-length segments.
+    let seg: Vec<(f64, Vector3<f64>)> = polyline
+        .windows(2)
+        .filter_map(|w| {
+            let v = w[1].coords - w[0].coords;
+            let n = v.norm();
+            (n >= f64::EPSILON).then(|| (n, v / n))
+        })
+        .collect();
+    if seg.is_empty() {
+        return None;
+    }
+    // Vertex tangents: the normalised sum of incident segment tangents.
+    let vertex_tangent = |i: usize| -> Vector3<f64> {
+        let before = seg.get(i.wrapping_sub(1)).map(|s| s.1);
+        let after = seg.get(i).map(|s| s.1);
+        match (before, after) {
+            (Some(a), Some(b)) => {
+                let sum = a + b;
+                // Exactly-antiparallel neighbours cancel; fall back to the
+                // outgoing segment rather than normalising a zero vector.
+                if sum.norm() < 1e-12 {
+                    b
+                } else {
+                    sum.normalize()
+                }
+            }
+            (Some(a), None) => a,
+            (None, Some(b)) => b,
+            (None, None) => Vector3::z(),
+        }
+    };
+
+    let target_m = distance_m.max(0.0);
+    let mut walked_m = 0.0_f64;
+    for (i, &(len, _)) in seg.iter().enumerate() {
+        if walked_m + len >= target_m {
+            let f = ((target_m - walked_m) / len).clamp(0.0, 1.0);
+            let (a, b) = (vertex_tangent(i), vertex_tangent(i + 1));
+            let blended = a * (1.0 - f) + b * f;
+            return Some(if blended.norm() < 1e-12 {
+                seg[i].1
+            } else {
+                blended.normalize()
+            });
+        }
+        walked_m += len;
+    }
+    // Past the end: hold the final tangent, as the sibling does.
+    Some(seg[seg.len() - 1].1)
+}
+
 /// Compute the rigid transform for the intruder at slide fraction
 /// `t ∈ [0, 1]` along the cleaned-scan centerline polyline.
 ///
@@ -2696,11 +3418,28 @@ pub(crate) fn polyline_arc_length_m(polyline: &[Point3<f64>]) -> f64 {
 /// - `t ∈ (0, 1)`: tip walks backward from rest by arc-length
 ///   `L · (1 − t)`.
 ///
-/// Translation-only iter-1 (D-Slide2). The `Isometry3<f64>` return
-/// type absorbs the banked iter-2 rotation followup without API
-/// churn. For a degenerate polyline (< 2 points or zero arc length),
-/// returns identity — defensive; sliding-ramp drivers validate
-/// polyline shape up front and surface their own error.
+/// ⭐ **Rotation included (the banked D-Slide2 iter-2 followup).** The pose
+/// carries the rotation that takes the REST tangent (at arc distance 0) to
+/// the tangent where the tip currently sits, applied about the tip. On a
+/// curving path — which an anatomical scan always is — a translation-only
+/// pose slides the insertable *along* the curve without ever turning to face
+/// it, so the contact it computes is not the contact the geometry implies.
+/// The tangent was already being computed here and discarded.
+///
+/// `R` is taken between the two tangents and the translation is
+/// `tip_world − R · tip_rest`, so the tip lands on the centerline and the
+/// body swings with it. At `t = 1` the walk is zero, the two tangents are the
+/// same vector, `R` is the identity and the whole pose collapses to the
+/// identity — the seated rest pose, unchanged from iter-1.
+///
+/// ⚠ `rotation_between` returns `None` for exactly-antiparallel tangents (a
+/// 180° doubling-back in the polyline). That is a degenerate centerline
+/// rather than a pose to guess at, so it falls back to the identity rotation
+/// — the iter-1 behaviour — rather than picking an arbitrary axis.
+///
+/// For a degenerate polyline (< 2 points or zero arc length), returns
+/// identity — defensive; sliding-ramp drivers validate polyline shape up
+/// front and surface their own error.
 pub(crate) fn slide_pose_at(centerline: &[Point3<f64>], t: f64) -> Isometry3<f64> {
     if centerline.len() < 2 {
         return Isometry3::identity();
@@ -2708,10 +3447,17 @@ pub(crate) fn slide_pose_at(centerline: &[Point3<f64>], t: f64) -> Isometry3<f64
     let l_m = polyline_arc_length_m(centerline);
     let tip_rest = centerline[0];
     let walk_from_tip = (l_m * (1.0 - t.clamp(0.0, 1.0))).max(0.0);
-    let (tip_world, _tangent) = point_along_polyline_at_arc_distance(centerline, walk_from_tip)
+    let (tip_world, _) = point_along_polyline_at_arc_distance(centerline, walk_from_tip)
         .unwrap_or((tip_rest, Vector3::z()));
-    let translation = tip_world.coords - tip_rest.coords;
-    Isometry3::translation(translation.x, translation.y, translation.z)
+    // ⛔ The CONTINUOUS tangent, not the segment one — see
+    // `smoothed_tangent_along_polyline` for the measurement that forced this.
+    let tangent =
+        smoothed_tangent_along_polyline(centerline, walk_from_tip).unwrap_or_else(Vector3::z);
+    let rest_tangent = smoothed_tangent_along_polyline(centerline, 0.0).unwrap_or_else(Vector3::z);
+    let rotation = Rotation3::rotation_between(&rest_tangent, &tangent)
+        .map_or_else(UnitQuaternion::identity, UnitQuaternion::from);
+    let translation = tip_world.coords - rotation * tip_rest.coords;
+    Isometry3::from_parts(Translation3::from(translation), rotation)
 }
 
 // ───────────────────────────────────────────────────────────────────────
@@ -3144,6 +3890,335 @@ pub fn run_sliding_insertion_ramp(
     })
 }
 
+/// The intruder as an IPC face-barrier contact at a slide pose.
+///
+/// Sliding sibling of [`intruder_ipc_contact_at`]. The rigid primitive is
+/// built exactly as the penalty path builds it — the same `TransformedSdf`
+/// at the same pose, offset by `cavity_offset_m` — so nothing about the
+/// scene's geometry moves across the bridge; only the contact law does.
+///
+/// ⭐ **No interior cutoff, and none is needed.** The penalty sibling passes
+/// `2 · cavity_inset_m` to keep deep-interior lattice nodes out of the active
+/// set. The face barrier is built from `boundary_faces6()`, which comes from
+/// tet connectivity and names only surface nodes, so the interior is excluded
+/// by construction rather than by a depth heuristic.
+fn intruder_ipc_contact_sliding_at(
+    intruder: &GridSdf,
+    bounds: Aabb,
+    slide_pose: Isometry3<f64>,
+    cavity_offset_m: f64,
+    kappa: f64,
+    d_hat: f64,
+) -> IpcRigidContact {
+    let transformed = TransformedSdf::new(intruder.clone(), slide_pose);
+    let intruder_solid = Solid::from_sdf(transformed, bounds).offset(cavity_offset_m);
+    IpcRigidContact::with_params(vec![intruder_solid], kappa, d_hat)
+}
+
+/// The worst NORMAL closing one slide increment produces, measured on the
+/// rest wall without solving anything.
+///
+/// ⭐⭐ **This is the number the sliding bridge's `κ` has to be derived from,
+/// and it is NOT the arc increment.** The growing ramp advances along the
+/// contact normal, so its increment and its closing are the same quantity. A
+/// sliding ramp's are different quantities — but ⛔ **how different is a
+/// property of the GEOMETRY and must be measured per scene, not assumed.**
+///
+/// An earlier revision of this comment asserted that "most of an arc step is
+/// tangential once the insertable is inside". Measured on the tolerance
+/// fixture that is **false**: closing 2.4069 mm against a 2.5 mm arc
+/// increment, a ratio of **0.963**. That fixture's intruder is a sphere
+/// entering a hole, so its surface is near-perpendicular to the motion and
+/// almost the whole step closes. An elongated insertable sliding along its
+/// own axis into a matching channel is the case where the ratio is small —
+/// but that is a claim about a scene, and
+/// `the_sliding_closing_decides_the_schedule` reports it per scene rather
+/// than this comment predicting it.
+///
+/// ⇒ the consequence is a SCHEDULE requirement: a bracket needs
+/// `ρ · closing < d̂/2`, so a scene whose closing tracks its arc increment
+/// needs roughly `L · ρ / (d̂/2)` steps. The derivation refuses rather than
+/// guesses when the schedule is too coarse.
+///
+/// Measured as `max(sd_k − sd_{k+1})` over the rest wall nodes, restricted to
+/// nodes that END the step within `d_hat` of the intruder — a node still far
+/// outside the band closes fast and costs nothing, because the barrier cannot
+/// see it yet. The restriction is what makes this the *relevant* closing
+/// rather than the largest one.
+///
+/// ⚠ **Measured on REST positions, which makes it an UPPER bound**: in the
+/// real solve the wall is pushed away as the intruder arrives, so the gap
+/// closes by less than this. A floor derived from it is therefore
+/// conservative, which is the direction a floor should err.
+fn sliding_normal_increment_m(
+    intruder: &GridSdf,
+    bounds: Aabb,
+    centerline: &[Point3<f64>],
+    n_steps: usize,
+    cavity_offset_m: f64,
+    d_hat: f64,
+    wall_points: &[Vec3],
+) -> f64 {
+    let solid_at = |t: f64| {
+        Solid::from_sdf(
+            TransformedSdf::new(intruder.clone(), slide_pose_at(centerline, t)),
+            bounds,
+        )
+        .offset(cavity_offset_m)
+    };
+    let mut worst = 0.0_f64;
+    for k in 0..n_steps {
+        // Step indices are tiny; the casts are exact.
+        #[allow(clippy::cast_precision_loss)]
+        let (t0, t1) = (k as f64 / n_steps as f64, (k + 1) as f64 / n_steps as f64);
+        let (a, b) = (solid_at(t0), solid_at(t1));
+        for p in wall_points {
+            let pt = Point3::from(*p);
+            let sd_after = b.eval(pt);
+            // Only nodes inside the OPEN band at the end of the step. Two
+            // exclusions, for different reasons:
+            //  - `> d_hat`: the barrier cannot see it yet, so however fast it
+            //    closes costs nothing.
+            //  - `<= 0`: already through the REST wall. Its rest gap is not
+            //    its solve gap — the barrier pushes those nodes out — so
+            //    reading a "closing" off the rest configuration there measures
+            //    the mesh, not the schedule.
+            if !sd_after.is_finite() || sd_after > d_hat || sd_after <= 0.0 {
+                continue;
+            }
+            let sd_before = a.eval(pt);
+            if sd_before.is_finite() {
+                worst = worst.max(sd_before - sd_after);
+            }
+        }
+    }
+    worst
+}
+
+/// **THE SLIDING BRIDGE** — seat the intruder along its own centerline on a
+/// Tet10 mesh through the IPC face barrier, at a caller-chosen tolerance.
+///
+/// The travelling model, which is the one an anatomical fit actually is: the
+/// insertable starts clear of the cavity and is carried in along the
+/// centerline, turning to follow it ([`slide_pose_at`]), while the wall flexes
+/// around it. [`run_insertion_ramp_tet10_ipc`] is the other model — a
+/// coincident intruder inflated in place — and it answers a different
+/// question.
+///
+/// ⭐⭐ **The sliding model suits IPC better than the growing one does.** IPC
+/// is an interior-point method and needs a strictly feasible start; the
+/// growing ramp has none by construction (at interference 0 the cavity
+/// surface and the intruder coincide) and has to be given an approach march.
+/// Here the intruder genuinely begins clear of the wall, so step 0 is feasible
+/// with nothing added.
+///
+/// `κ` is derived per ramp from the measured normal closing
+/// ([`sliding_normal_increment_m`]), not from the arc increment — see that
+/// function for why the two are different quantities.
+///
+/// # Errors
+///
+/// - `n_steps` is zero, or the centerline has fewer than 2 points;
+/// - the derived stiffness bracket is empty — the normal closing outruns half
+///   the band, which means the slide schedule is too coarse for `d̂`;
+/// - [`outer_skin_bc`] finds no outer-skin vertex in the pin-band.
+pub fn run_sliding_insertion_ramp_tet10_ipc(
+    geometry: InsertionGeometry,
+    centerline_polyline_m: &[Point3<f64>],
+    n_steps: usize,
+    tol: f64,
+) -> Result<SlideRamp> {
+    if n_steps == 0 {
+        return Err(anyhow!("sliding insertion ramp needs at least one step"));
+    }
+    if centerline_polyline_m.len() < 2 {
+        return Err(anyhow!(
+            "sliding insertion ramp needs a centerline polyline of ≥ 2 points (got {})",
+            centerline_polyline_m.len(),
+        ));
+    }
+
+    let InsertionGeometry {
+        cavity_tensile_strength_pa,
+        mesh: tet4_mesh,
+        intruder,
+        cavity_offset_m,
+        outer_offset_m,
+        bounds,
+        cell_size_m,
+        n_tets,
+        per_tet_layer: _,
+    } = geometry;
+
+    // THE MESH SWAP — corner ids and positions are preserved, so the BCs, Γ
+    // and the per-tet readouts keep pointing at the same material points.
+    // ⚠ NOT conformed. `conform_cavity_midsides` exists and works — it moves
+    // 4116 nodes and takes the tightest rest midside −0.2439 → −0.1031 mm —
+    // but wiring it in did NOT fix the stall (same 6/16, residual 3.6438e4 →
+    // 3.6429e4) and made the loaded gap worse. The rest sagitta was not the
+    // cause; the face barrier LOADS midsides and leaves corners at ~0, so
+    // midsides sitting closer to the surface is the load distribution, not an
+    // artifact. Kept unwired rather than deleted: it is the right tool for a
+    // curved-surface question, just not for this one.
+    let mesh = Tet10Mesh::<Yeoh>::from_tet4(&tet4_mesh);
+    let n_vertices = mesh.n_vertices();
+    let n_dof = 3 * n_vertices;
+
+    let bc = outer_skin_bc(&mesh, &intruder, bounds, outer_offset_m, cell_size_m)?;
+    let n_pinned = bc.pinned_vertices.len();
+
+    let rest_positions: Vec<Vec3> = mesh.positions().to_vec();
+    // `tet_id as TetId` is a `u32` cap; Phase 4 meshes stay well under
+    // `u32::MAX` per `Mesh` trait docs.
+    #[allow(clippy::cast_possible_truncation)]
+    let tets: Vec<[VertexId; 4]> = (0..n_tets as TetId).map(|t| mesh.tet_vertices(t)).collect();
+    let materials: Vec<Yeoh> = mesh.materials().to_vec();
+    // ⚠ Includes midsides — every loaded node on the face path IS a midside.
+    let referenced: Vec<VertexId> = referenced_vertices(&mesh);
+
+    let gamma_faces: Vec<[VertexId; 3]> = Mesh::<Yeoh>::boundary_faces(&mesh).to_vec();
+    let gamma = GammaMask::build(
+        &rest_positions,
+        &gamma_faces,
+        n_vertices,
+        &intruder,
+        cavity_offset_m,
+    );
+
+    // The wall nodes the closing is measured on: boundary nodes only, which is
+    // where contact can happen at all.
+    let wall_points: Vec<Vec3> = {
+        let mut ids: Vec<VertexId> = gamma_faces.iter().flatten().copied().collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids.into_iter()
+            .map(|v| rest_positions[v as usize])
+            .collect()
+    };
+    let normal_increment_m = sliding_normal_increment_m(
+        &intruder,
+        bounds,
+        centerline_polyline_m,
+        n_steps,
+        cavity_offset_m,
+        BRIDGE_CONTACT_DHAT_M,
+        &wall_points,
+    );
+    let contact_kappa = bridge_face_barrier_kappa(BRIDGE_CONTACT_DHAT_M, normal_increment_m)
+        .map_err(|e| {
+            anyhow!(
+                "the sliding bridge's stiffness is not derivable at a normal closing of \
+                 {normal_increment_m:.6e} m over {n_steps} steps: {e}"
+            )
+        })?;
+
+    let l_m = polyline_arc_length_m(centerline_polyline_m);
+    let config = insertion_solver_config_at_tol(tol);
+
+    let mut x_prev_flat: Vec<f64> = rest_positions
+        .iter()
+        .flat_map(|p| [p.x, p.y, p.z])
+        .collect();
+    let v_prev = Tensor::zeros(&[n_dof]);
+    let empty_theta: [f64; 0] = [];
+    let theta = Tensor::from_slice(&empty_theta, &[0]);
+
+    let mut steps: Vec<SlideRampStep> = Vec::with_capacity(n_steps);
+    let mut intruder_poses: Vec<Isometry3<f64>> = Vec::with_capacity(n_steps);
+    let mut failed_at_step = None;
+    let mut failure_reason = None;
+    for k in 0..n_steps {
+        // `(k + 1) as f64 / n_steps as f64`: tiny integers.
+        #[allow(clippy::cast_precision_loss)]
+        let t = (k + 1) as f64 / n_steps as f64;
+        let pose = slide_pose_at(centerline_polyline_m, t);
+        let contact = intruder_ipc_contact_sliding_at(
+            &intruder,
+            bounds,
+            pose,
+            cavity_offset_m,
+            contact_kappa,
+            BRIDGE_CONTACT_DHAT_M,
+        );
+        let solver: CpuNewtonSolver<Tet10, Tet10Mesh<Yeoh>, IpcRigidContact, Yeoh, 10, 4> =
+            CpuNewtonSolver::new(Tet10, mesh.clone(), contact, config, bc.clone());
+        let x_prev = Tensor::from_slice(&x_prev_flat, &[n_dof]);
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            solver.try_replay_step(&x_prev, &v_prev, &theta, config.dt)
+        }));
+        match outcome {
+            Ok(Ok(step)) => {
+                let positions_k: Vec<Vec3> = positions_from_flat(&step.x_final);
+                let readout_contact = intruder_ipc_contact_sliding_at(
+                    &intruder,
+                    bounds,
+                    pose,
+                    cavity_offset_m,
+                    contact_kappa,
+                    BRIDGE_CONTACT_DHAT_M,
+                );
+                let raw_readouts = readout_contact.per_pair_readout(&mesh, &positions_k);
+                let contact_readouts =
+                    filter_pair_readouts_to_referenced(raw_readouts, &referenced);
+                let per_tet =
+                    compute_tet_readouts(&rest_positions, &positions_k, &tets, &materials);
+                let conformity = gamma.conformity(
+                    &positions_k,
+                    &gamma_faces,
+                    &contact_readouts,
+                    cavity_tensile_strength_pa,
+                );
+                let step_readout = aggregate_step_readout(&per_tet, &contact_readouts, conformity);
+
+                steps.push(SlideRampStep {
+                    slide_fraction_t: t,
+                    arc_length_s_m: t * l_m,
+                    iter_count: step.iter_count,
+                    final_residual_norm: step.final_residual_norm,
+                    x_final: step.x_final.clone(),
+                    readout: step_readout,
+                });
+                intruder_poses.push(pose);
+                x_prev_flat = step.x_final;
+            }
+            Ok(Err(failure)) => {
+                failed_at_step = Some(k);
+                failure_reason = Some(solver_failure_message(&failure));
+                break;
+            }
+            Err(payload) => {
+                failed_at_step = Some(k);
+                failure_reason = Some(panic_message(&*payload));
+                break;
+            }
+        }
+    }
+
+    let result = steps.last().map(|last| {
+        let final_positions = positions_from_flat(&last.x_final);
+        let final_per_tet =
+            compute_tet_readouts(&rest_positions, &final_positions, &tets, &materials);
+        let force_arc_length_curve = steps
+            .iter()
+            .map(|s| (s.arc_length_s_m, s.readout.contact_force_magnitude_n))
+            .collect();
+        SlideResult {
+            final_per_tet,
+            force_arc_length_curve,
+        }
+    });
+
+    Ok(SlideRamp {
+        steps,
+        failed_at_step,
+        failure_reason,
+        final_x: x_prev_flat,
+        n_pinned,
+        result,
+        intruder_poses,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     // `unwrap()` + `expect()` are denied at the crate level; the test
@@ -3310,6 +4385,151 @@ mod tests {
         );
     }
 
+    /// An L-bent centerline: straight up `z`, then a right-angle turn into `x`.
+    ///
+    /// The bend is what makes rotation observable — on
+    /// [`straight_z_centerline`] the tangent never changes, so every rotation
+    /// test passes vacuously there.
+    fn bent_centerline() -> Vec<Point3<f64>> {
+        vec![
+            Point3::new(0.0, 0.0, 0.0), // tip (rest pose)
+            Point3::new(0.0, 0.0, 1.0),
+            Point3::new(0.0, 0.0, 2.0), // the corner
+            Point3::new(1.0, 0.0, 2.0),
+            Point3::new(2.0, 0.0, 2.0), // floor / cap mouth
+        ]
+    }
+
+    /// The pose TURNS to follow a curved path, and still lands the tip on it.
+    ///
+    /// ⭐ The property that matters for an anatomical scan: a translation-only
+    /// pose slides the insertable *along* the curve without turning to face
+    /// it, so the contact it computes is not the contact the geometry implies.
+    ///
+    /// Three things are asserted together because any one alone can pass on a
+    /// broken pose: the rotation maps the REST tangent onto the LOCAL tangent,
+    /// the tip still lands on the centerline (a rotation applied about the
+    /// wrong origin would move it off), and the rotation is genuinely
+    /// non-identity — without that last one this test passes on the iter-1
+    /// translation-only code.
+    #[test]
+    fn slide_pose_at_turns_to_follow_a_curved_path() {
+        let centerline = bent_centerline();
+        let l_m = polyline_arc_length_m(&centerline);
+        let (_, rest_tangent) = point_along_polyline_at_arc_distance(&centerline, 0.0)
+            .expect("the bent centerline has a rest tangent");
+
+        // t = 0.25 walks 0.75 · L = 3.0 m from the tip — past the corner at
+        // 2.0 m, so the local tangent is +x while the rest tangent is +z.
+        let t = 0.25;
+        let walk = l_m * (1.0 - t);
+        let (tip_world, local_tangent) = point_along_polyline_at_arc_distance(&centerline, walk)
+            .expect("the walked point exists");
+        assert!(
+            (local_tangent - Vector3::x()).norm() < 1e-12,
+            "fixture check: past the corner the tangent must be +x, got {local_tangent:?}",
+        );
+
+        let pose = slide_pose_at(&centerline, t);
+
+        // 1. The rotation carries the rest tangent onto the local tangent.
+        let turned = pose.rotation * rest_tangent;
+        assert!(
+            (turned - local_tangent).norm() < 1e-12,
+            "the pose must turn the rest tangent {rest_tangent:?} onto the local \
+             tangent {local_tangent:?}, got {turned:?}",
+        );
+
+        // 2. It is genuinely a turn — without this the iter-1 translation-only
+        //    implementation passes everything above.
+        let angle = pose.rotation.angle();
+        assert!(
+            angle > 1.0,
+            "a right-angle bend must produce a large rotation; got {angle:.6} rad",
+        );
+
+        // 3. The tip still lands on the centerline.
+        let tip_rest = centerline[0];
+        let tip_mapped = pose * tip_rest;
+        assert!(
+            (tip_mapped - tip_world).norm() < 1e-12,
+            "the tip must land at {tip_world:?}, got {tip_mapped:?} — a rotation \
+             applied about the wrong origin moves the tip off the path",
+        );
+    }
+
+    /// The pose's rotation is CONTINUOUS along the path — refining the
+    /// schedule must refine the per-step turn.
+    ///
+    /// ⛔ **This is the gate for a defect that shipped in the first revision
+    /// of the rotation and was caught only by a geometric measurement.**
+    /// `point_along_polyline_at_arc_distance` returns the tangent of the
+    /// SEGMENT a point falls in, which is piecewise-constant. Orienting a
+    /// rigid body by it makes the body snap through a vertex's entire turn the
+    /// instant the walk crosses that vertex — and a point far from the tip
+    /// travels a long way for it.
+    ///
+    /// The symptom was that the measured per-step normal closing on the
+    /// product scan **stopped shrinking when the schedule was refined**,
+    /// saturating near 4.1 mm from 256 steps to 512, with closing-to-arc-step
+    /// ratios reaching 17.5 — which a rigid translation cannot produce.
+    ///
+    /// So the property asserted here is the one that failed: halving the step
+    /// must roughly halve the largest consecutive rotation delta. Under
+    /// segment tangents that delta is pinned to the vertex turn angle and does
+    /// not move, whatever the schedule.
+    #[test]
+    fn the_slide_pose_rotation_refines_with_the_schedule() {
+        let centerline = bent_centerline();
+        let worst_turn = |n_steps: usize| -> f64 {
+            let mut worst = 0.0_f64;
+            for k in 0..n_steps {
+                // Step indices are tiny; the casts are exact.
+                #[allow(clippy::cast_precision_loss)]
+                let (t0, t1) = (k as f64 / n_steps as f64, (k + 1) as f64 / n_steps as f64);
+                let a = slide_pose_at(&centerline, t0).rotation;
+                let b = slide_pose_at(&centerline, t1).rotation;
+                worst = worst.max(a.rotation_to(&b).angle());
+            }
+            worst
+        };
+
+        let coarse = worst_turn(32);
+        let fine = worst_turn(128);
+        assert!(
+            coarse > 1e-6,
+            "the bent fixture must turn at all, or this gate is vacuous",
+        );
+        // Four times the steps must give materially less turn per step. The
+        // bound is loose (a factor of 2, not 4) because the blend spreads each
+        // turn over its two incident segments rather than exactly linearly —
+        // what is being excluded is a delta that does not move at all.
+        assert!(
+            fine < coarse / 2.0,
+            "refining 32 → 128 steps must refine the per-step turn: worst turn \
+             went {coarse:.6} → {fine:.6} rad. A delta that does not shrink means \
+             the tangent is piecewise-constant and the body is snapping at \
+             polyline vertices",
+        );
+    }
+
+    /// A straight path produces NO rotation — the control for the test above.
+    ///
+    /// Without this, "follows the tangent" could be implemented by rotating
+    /// something arbitrary, and the seated pose would stop being the identity.
+    #[test]
+    fn slide_pose_at_does_not_turn_on_a_straight_path() {
+        let centerline = straight_z_centerline();
+        for t in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            let pose = slide_pose_at(&centerline, t);
+            assert!(
+                pose.rotation.angle().abs() < 1e-12,
+                "a straight centerline must produce no rotation at t = {t}, got {:.3e} rad",
+                pose.rotation.angle(),
+            );
+        }
+    }
+
     /// Helper: straight 4-segment polyline along +Z spanning
     /// `z ∈ [0, 4]`. `centerline[0]` = TIP (closed end), index 4 =
     /// FLOOR (open end / cap rim).
@@ -3473,6 +4693,62 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The PRODUCT scene — `base_mold`, configured as the CF Studio project
+    /// on disk actually configured it.
+    ///
+    /// ⛔ **Not `sock_over_capsule`.** Every scan measurement in this module
+    /// before 2026-09-22 used that one, and it is the wrong scene in three
+    /// ways that each move the answer:
+    ///
+    /// | | sock_over_capsule | **base_mold** |
+    /// |---|---|---|
+    /// | cavity inset | 3 mm | **5 mm** |
+    /// | layers | 10 mm Ecoflex+50 % Slacker + 3 mm DS20A | **17 mm DRAGON_SKIN_10A @ 25 % Slacker** |
+    /// | centerline | 83 mm, **straightness 1.0000** | 121 mm, **4.77 mm of bow, 8.72° of turn** |
+    ///
+    /// The last one is why it matters most here: a dead-straight centerline
+    /// makes `slide_pose_at`'s rotation an identity by construction, so the
+    /// travelling model could not be told from a translation-only one. On
+    /// `base_mold` it can.
+    ///
+    /// Values come from `base_mold.design.toml` / `.cfproject.json`, which is
+    /// a project that ran all the way to `Print` with a 334.6 g pour plan.
+    ///
+    /// ⚠ **The project's plug carries RIDGES** (three rings, 1.8–2.0 mm deep,
+    /// plus texture, side pinch and tip relief) and `SimDesign` has no notion
+    /// of them — the sim's cavity is a smooth offset. So this is the right
+    /// scan, the right inset and the right stack, on a SMOOTHER cavity than
+    /// the one that gets poured.
+    ///
+    /// Returns `None` when the scan is absent, so probes can skip cleanly.
+    /// `CF_SIM_RESEARCH_PRODUCT_SCAN` overrides the path.
+    fn product_scene() -> Option<(IndexedMesh, Vec<Point3<f64>>, Vec<CapPlane>, SimDesign)> {
+        let scan_path = std::env::var("CF_SIM_RESEARCH_PRODUCT_SCAN").map_or_else(
+            |_| PathBuf::from("/Users/jonhillesheim/scans/base_mold.cleaned.stl"),
+            PathBuf::from,
+        );
+        if !scan_path.exists() {
+            eprintln!("product scan absent at {}", scan_path.display());
+            return None;
+        }
+        // `base_mold.cleaned.stl` → `base_mold.prep.toml`.
+        let prep_path = scan_path.with_extension("").with_extension("prep.toml");
+        let prep_text = std::fs::read_to_string(&prep_path)
+            .map_err(|e| format!("{}: {e}", prep_path.display()))
+            .expect("the prep.toml beside the product scan must load");
+        let centerline =
+            crate::parse_centerline(&prep_text).expect("parse centerline from the prep.toml");
+        let caps =
+            cf_cap_planes::parse_cap_planes(&prep_text).expect("parse caps from the prep.toml");
+        let scan = load_stl(&scan_path).expect("load the product scan");
+        // From `base_mold.design.toml` + `.cfproject.json`.
+        let design = SimDesign {
+            cavity_inset_m: 0.005,
+            layers: vec![layer_with_slacker(0.017, "DRAGON_SKIN_10A", 0.25)],
+        };
+        Some((scan, centerline, caps, design))
     }
 
     /// One [`SimLayer`] — test sugar. `slacker_fraction` defaults to
@@ -8410,5 +9686,2021 @@ mod tests {
             stats.traction_pa,
             "an unstretched patch reads the same σ on both area bases",
         );
+    }
+
+    // ─── THE BRIDGE — Tet10 + the IPC face barrier ──────────────────
+
+    /// The bridge takes the FACE barrier, not the per-vertex path.
+    ///
+    /// ⭐ **This is the gate the recon doc's §9 retraction exists for.** A
+    /// compile probe on this exact swap once went green for the wrong reason:
+    /// `SdfMeshedTetMesh<Yeoh>` *compiles* against the Tet10 types but returns
+    /// `None` from `boundary_faces6()`, so contact silently takes the
+    /// per-vertex path. The capability is chosen by a runtime `Option`, so the
+    /// only honest probe is of the SELECTOR and of what it produces.
+    ///
+    /// ⚠ **Probe `active_pairs`, not `per_pair_readout`.** The first thing this
+    /// gate found is that the two do not agree on pair kind *by design*: the
+    /// solver consumes `ContactPair::Face`, while the face path's READOUT is
+    /// per-NODE and reports `ContactPair::Vertex` naming the six face nodes
+    /// (midsides carry the load, corners ~0). Asserting "the readout is all
+    /// Face pairs" fails on a perfectly correct bridge — measured here, 1442 of
+    /// 1442 readouts were `Vertex` on a mesh whose solver contact was entirely
+    /// face-integrated.
+    ///
+    /// Without this, the whole bridge could land, pass, and be a no-op wearing
+    /// Tet10's type parameters.
+    #[test]
+    fn the_bridge_selects_the_face_barrier_not_the_vertex_path() {
+        use sim_soft::ActivePairsFor;
+
+        let g = tolerance_fixture();
+        let tet10 = Tet10Mesh::<Yeoh>::from_tet4(&g.mesh);
+
+        // Negative control: without it, an unconditional `is_some()` would pass
+        // on any mesh and this gate would be measuring nothing.
+        assert!(
+            Mesh::<Yeoh>::boundary_faces6(&g.mesh).is_none(),
+            "the shipped Tet4 mesh must NOT surface P2 faces — if it did, this \
+             gate could not tell the two contact paths apart",
+        );
+        assert!(
+            Mesh::<Yeoh>::boundary_faces6(&tet10).is_some(),
+            "the enriched mesh must surface P2 faces, or IPC falls back to the \
+             per-vertex path and the bridge is a no-op",
+        );
+
+        let contact = intruder_ipc_contact_at(
+            &g.intruder,
+            g.bounds,
+            -g.cavity_offset_m,
+            g.cavity_offset_m,
+            1.0e7,
+            BRIDGE_CONTACT_DHAT_M,
+        );
+
+        // THE SOLVER'S pairs — what actually gets scattered into the residual.
+        let positions = tet10.positions().to_vec();
+        let pairs = ActivePairsFor::<Yeoh>::active_pairs(&contact, &tet10, &positions);
+        // EMPTY ≠ evidence: an empty set satisfies "all are faces" vacuously.
+        assert!(
+            !pairs.is_empty(),
+            "the seated intruder must produce active pairs; an empty set would \
+             satisfy the face-kind check below vacuously",
+        );
+        let n_vertex = pairs
+            .iter()
+            .filter(|p| matches!(p, ContactPair::Vertex { .. }))
+            .count();
+        assert_eq!(
+            n_vertex,
+            0,
+            "every SOLVER pair on the bridge's path must be a Face pair; {} of \
+             {} were Vertex pairs, which means the face barrier was not selected",
+            n_vertex,
+            pairs.len(),
+        );
+
+        // And the same scene on the un-enriched mesh must take the other path,
+        // or "Face pairs appear" is a property of the contact model rather than
+        // of the mesh swap this bridge performs.
+        let tet4_positions = Mesh::<Yeoh>::positions(&g.mesh).to_vec();
+        let tet4_pairs = ActivePairsFor::<Yeoh>::active_pairs(&contact, &g.mesh, &tet4_positions);
+        assert!(
+            !tet4_pairs.is_empty()
+                && tet4_pairs
+                    .iter()
+                    .all(|p| matches!(p, ContactPair::Vertex { .. })),
+            "the Tet4 mesh must still take the per-vertex path ({} pairs)",
+            tet4_pairs.len(),
+        );
+    }
+
+    /// Enrichment preserves the corner ids the rest of the pipeline holds.
+    ///
+    /// The BCs, Γ and the per-tet readouts are all built from `[VertexId; 4]`
+    /// corner indices. If `from_tet4` renumbered corners, every one of them
+    /// would keep working and silently point at a different material point —
+    /// no panic, no type error, a wrong answer. So the invariant is asserted
+    /// where the bridge relies on it, not only where it is implemented.
+    #[test]
+    fn the_enriched_mesh_preserves_the_tet4_corners() {
+        let g = tolerance_fixture();
+        let tet4 = &g.mesh;
+        let tet10 = Tet10Mesh::<Yeoh>::from_tet4(tet4);
+
+        assert_eq!(
+            Mesh::<Yeoh>::n_tets(&tet10),
+            Mesh::<Yeoh>::n_tets(tet4),
+            "enrichment must not change the tet count",
+        );
+        assert!(
+            Mesh::<Yeoh>::n_vertices(&tet10) > Mesh::<Yeoh>::n_vertices(tet4),
+            "enrichment must ADD midside nodes",
+        );
+        assert_eq!(
+            tet10.n_corners(),
+            Mesh::<Yeoh>::n_vertices(tet4),
+            "every Tet4 vertex must remain a corner, including BCC orphans",
+        );
+
+        // Corner connectivity, index for index.
+        #[allow(clippy::cast_possible_truncation)]
+        for t in 0..Mesh::<Yeoh>::n_tets(tet4) as TetId {
+            assert_eq!(
+                Mesh::<Yeoh>::tet_vertices(&tet10, t),
+                Mesh::<Yeoh>::tet_vertices(tet4, t),
+                "tet {t}'s corner ids moved under enrichment",
+            );
+        }
+        // Corner positions, bit for bit — the BCs pick vertices by POSITION.
+        let (p4, p10) = (
+            Mesh::<Yeoh>::positions(tet4),
+            Mesh::<Yeoh>::positions(&tet10),
+        );
+        assert_eq!(
+            &p10[..p4.len()],
+            p4,
+            "corner rest positions must be bit-identical, or the outer-skin \
+             pin-band selects a different vertex set",
+        );
+        assert_eq!(
+            Mesh::<Yeoh>::boundary_faces(&tet10),
+            Mesh::<Yeoh>::boundary_faces(tet4),
+            "Γ is built from the corner boundary faces; they must be copied \
+             verbatim",
+        );
+    }
+
+    /// The midside readouts survive the orphan filter — and would not, on a
+    /// corner-only set.
+    ///
+    /// ⛔ **The failure this pins is total and silent.** On the face path every
+    /// loaded node is a MIDSIDE: the face-integrated barrier puts ~0 on the
+    /// corners. The ramp passes its readouts through
+    /// [`filter_pair_readouts_to_referenced`], so if the "referenced" set were
+    /// ever corners-only, that call would delete the entire contact patch and
+    /// return a clean, empty, non-panicking readout — conformity 0 on a
+    /// perfectly good design.
+    ///
+    /// It holds today because `referenced_vertex_mask` walks
+    /// `tet_midside_nodes` as well as `tet_vertices`. That is a property of
+    /// sim-soft, relied on here, so it is measured rather than trusted — and
+    /// the corner-only counterfactual is run to show the gate can see the
+    /// difference.
+    #[test]
+    fn the_bridges_midside_readouts_survive_the_orphan_filter() {
+        let g = tolerance_fixture();
+        let tet10 = Tet10Mesh::<Yeoh>::from_tet4(&g.mesh);
+        let referenced: Vec<VertexId> = referenced_vertices(&tet10);
+        let n_corners = tet10.n_corners();
+
+        // The set must actually reach past the corners, or the counterfactual
+        // below is not a counterfactual.
+        assert!(
+            referenced.iter().any(|&v| v as usize >= n_corners),
+            "the referenced set must include midside nodes",
+        );
+        // And the fixture must carry orphans, or "drops zero" is vacuous.
+        let n_orphans = Mesh::<Yeoh>::n_vertices(&tet10) - referenced.len();
+        assert!(
+            n_orphans > 0,
+            "this fixture must carry orphan lattice points, or the filter is \
+             measuring nothing",
+        );
+
+        let contact = intruder_ipc_contact_at(
+            &g.intruder,
+            g.bounds,
+            -g.cavity_offset_m,
+            g.cavity_offset_m,
+            1.0e7,
+            BRIDGE_CONTACT_DHAT_M,
+        );
+        let positions = tet10.positions().to_vec();
+        let raw = contact.per_pair_readout(&tet10, &positions);
+        assert!(!raw.is_empty(), "the seated intruder must produce pairs");
+        let n_raw = raw.len();
+        let n_midside = raw
+            .iter()
+            .filter(|r| match r.pair {
+                ContactPair::Vertex { vertex_id, .. } => vertex_id as usize >= n_corners,
+                _ => false,
+            })
+            .count();
+        assert!(
+            n_midside > 0,
+            "the face-consistent readout must name midside nodes — they are the \
+             ones carrying the load",
+        );
+
+        let kept = filter_pair_readouts_to_referenced(raw.clone(), &referenced);
+        assert_eq!(
+            kept.len(),
+            n_raw,
+            "the orphan filter must drop ZERO of {n_raw} readouts; it dropped {}",
+            n_raw - kept.len(),
+        );
+
+        // The counterfactual: a corners-only set silently deletes the patch.
+        let corners_only: Vec<VertexId> = referenced
+            .iter()
+            .copied()
+            .filter(|&v| (v as usize) < n_corners)
+            .collect();
+        let starved = filter_pair_readouts_to_referenced(raw, &corners_only);
+        assert!(
+            starved.len() < n_raw,
+            "a corners-only set must visibly starve the readout, or this gate \
+             cannot tell a correct filter from a destructive one",
+        );
+    }
+
+    /// `κ` is the CEILING, and the floor is only reported.
+    ///
+    /// ⛔ An earlier revision asserted κ was the geometric centre of
+    /// `[floor, ceiling]`. That selector was measured wrong on a stiff wall —
+    /// see `bridge_face_barrier_kappa`. The floor assumes κ sets the standoff,
+    /// and on the product scene the standoff is flat in κ, so deriving κ from
+    /// the increment made a finer march hold LESS and the feasibility
+    /// threshold unreachable by construction.
+    ///
+    /// What this pins now is the requirement that survived: the ceiling, which
+    /// describes something κ genuinely controls — how far into the cushioning
+    /// regime the barrier sits.
+    #[test]
+    fn the_bridges_stiffness_is_the_ceiling_and_the_floor_is_only_reported() {
+        // The product inset (`base_mold`), not sock's 3 mm.
+        let inset_m = 0.005;
+        let n_steps = 16.0;
+        let step = inset_m / n_steps;
+
+        let ceiling = face_barrier_kappa(
+            BRIDGE_CONTACT_DHAT_M,
+            0.5 * BRIDGE_CONTACT_DHAT_M,
+            BRIDGE_DESIGN_TRACTION_PA,
+        )
+        .expect("the ceiling must be derivable");
+        let kappa = bridge_face_barrier_kappa(BRIDGE_CONTACT_DHAT_M, step)
+            .expect("κ must derive on the shipped ramp schedule");
+        assert!(
+            (kappa - ceiling).abs() <= 1e-9 * ceiling,
+            "κ must BE the ceiling {ceiling:.6e}, got {kappa:.6e}",
+        );
+
+        // The floor is still computable and still worth printing — it is just
+        // no longer a selector.
+        let floor = face_barrier_kappa(
+            BRIDGE_CONTACT_DHAT_M,
+            BRIDGE_PATCH_NONUNIFORMITY * step,
+            BRIDGE_DESIGN_TRACTION_PA,
+        );
+        println!(
+            "d_hat {:.2} mm · step {:.4} mm · floor {} · ceiling {ceiling:.4e} · shipped {kappa:.4e}",
+            BRIDGE_CONTACT_DHAT_M * 1e3,
+            step * 1e3,
+            floor.map_or_else(|| "(none)".to_string(), |f| format!("{f:.4e}")),
+        );
+
+        // ⚠ κ must NOT depend on the schedule any more. That independence is
+        // the whole fix: it is what lets a finer march shrink the step under a
+        // standoff that stays put.
+        for finer in [32.0_f64, 64.0, 128.0] {
+            let k = bridge_face_barrier_kappa(BRIDGE_CONTACT_DHAT_M, inset_m / finer)
+                .expect("κ must derive at finer schedules too");
+            assert!(
+                (k - kappa).abs() <= 1e-9 * kappa,
+                "κ must not move with the schedule: {finer} steps gave {k:.6e}, \
+                 16 steps gave {kappa:.6e}",
+            );
+        }
+
+        // A mis-specified schedule must still be REFUSED, not clamped.
+        assert!(
+            bridge_face_barrier_kappa(BRIDGE_CONTACT_DHAT_M, BRIDGE_CONTACT_DHAT_M).is_err(),
+            "an increment as wide as the band must surface an error",
+        );
+        assert!(
+            bridge_face_barrier_kappa(BRIDGE_CONTACT_DHAT_M, 0.0).is_err(),
+            "a zero increment must surface an error",
+        );
+    }
+
+    /// The corner readout is NOT the Tet10 strain — the size of the gap.
+    ///
+    /// ⛔ **The bridge's quietest hazard.** `compute_tet_readouts` builds `F`
+    /// from four CORNER displacements. On a Tet10 element that is the linear
+    /// part of a field that is no longer linear: it compiles, it does not
+    /// panic, and it returns a plausible number that ignores the midside
+    /// motion the solve just computed. The heat map would look fine and be
+    /// wrong.
+    ///
+    /// This measures the gap rather than describing it. A quadratic
+    /// displacement field is applied to one element; the corner-linear `F` is
+    /// compared with the true Tet10 `F` evaluated through the element's own
+    /// shape gradients. They must DIFFER — if they ever stop differing, the
+    /// readout has been fixed and this gate should be replaced by one
+    /// asserting agreement.
+    #[test]
+    fn the_corner_readout_is_not_the_tet10_strain() {
+        use sim_soft::Element;
+        // Reference tet, corners then the six midsides in TET10_EDGE_NODES
+        // order: (0,1) (1,2) (0,2) (0,3) (1,3) (2,3).
+        let corners = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+        ];
+        let edges = [(0, 1), (1, 2), (0, 2), (0, 3), (1, 3), (2, 3)];
+        let mut rest: Vec<Vec3> = corners.to_vec();
+        for (a, b) in edges {
+            rest.push(0.5 * (corners[a] + corners[b]));
+        }
+
+        // A genuinely quadratic map: x ↦ x + (x², 0, 0) / 4. Its gradient
+        // varies across the element, so no single constant F can represent it.
+        let warp = |p: &Vec3| Vec3::new(p.x + 0.25 * p.x * p.x, p.y, p.z);
+        let curr: Vec<Vec3> = rest.iter().map(warp).collect();
+
+        // Corner-linear F — exactly what `tet_readout` would compute.
+        let corner_f = deformation_gradient([0, 1, 2, 3], &rest, &curr);
+
+        // True Tet10 F at the element centroid, through the element's own
+        // shape gradients: F = (Σ x_i ⊗ ∇N_i) with ∇N in rest coordinates.
+        let xi = Vec3::new(0.25, 0.25, 0.25);
+        let grad_xi = Tet10.shape_gradients(xi);
+        let mut j_rest: Matrix3<f64> = Matrix3::zeros();
+        let mut j_curr: Matrix3<f64> = Matrix3::zeros();
+        for (i, (r, c)) in rest.iter().zip(curr.iter()).enumerate() {
+            for d in 0..3 {
+                for k in 0..3 {
+                    j_rest[(d, k)] += r[d] * grad_xi[(i, k)];
+                    j_curr[(d, k)] += c[d] * grad_xi[(i, k)];
+                }
+            }
+        }
+        let tet10_f = j_curr
+            * j_rest
+                .try_inverse()
+                .expect("the reference tet's rest Jacobian is invertible");
+
+        let gap = (tet10_f - corner_f).norm() / tet10_f.norm();
+        assert!(
+            gap > 1e-3,
+            "the corner-linear F and the Tet10 F must differ on a quadratic \
+             field — they agreed to {gap:.3e}, which would mean the readout \
+             already resolves the midsides and this gate is stale",
+        );
+
+        // And the control: on an AFFINE field the two must agree, or the
+        // comparison above is measuring a bug in this test rather than the
+        // element order.
+        let affine = |p: &Vec3| Vec3::new(1.3 * p.x + 0.2 * p.y, 0.9 * p.y, 1.1 * p.z);
+        let curr_affine: Vec<Vec3> = rest.iter().map(affine).collect();
+        let corner_affine = deformation_gradient([0, 1, 2, 3], &rest, &curr_affine);
+        let mut j_curr_a: Matrix3<f64> = Matrix3::zeros();
+        for (i, c) in curr_affine.iter().enumerate() {
+            for d in 0..3 {
+                for k in 0..3 {
+                    j_curr_a[(d, k)] += c[d] * grad_xi[(i, k)];
+                }
+            }
+        }
+        let tet10_affine = j_curr_a
+            * j_rest
+                .try_inverse()
+                .expect("the reference tet's rest Jacobian is invertible");
+        assert!(
+            (tet10_affine - corner_affine).norm() < 1e-12,
+            "on an affine field the two must agree exactly; they differed by {}",
+            (tet10_affine - corner_affine).norm(),
+        );
+    }
+
+    /// ⭐⭐⭐ **THE DISCRIMINATING EXPERIMENT** — the bridge against the penalty
+    /// baseline, across a ladder of residual tolerances.
+    ///
+    /// #958 measured that on the product geometry the full-depth result is
+    /// bought with the tolerance: at the shipped `1e-1` the real scan reaches
+    /// 16/16, and at `1e-6` it stalls at step 4 — usable depth falls 4×. That,
+    /// not depth and not friction, is what the bridge exists to fix, so this is
+    /// the measurement that decides whether it did.
+    ///
+    /// ⚠ **A ladder, not a single tight run, because BOTH paths have a
+    /// conditioning floor.** Asked for `1e-6`, neither arm converges here: the
+    /// penalty arm stalls at `r ≈ 1.6e-2`, the bridge during its approach at
+    /// `r ≈ 1e-4` — and the bridge's floor is insensitive to `κ` across three
+    /// decades (`the_bridge_ramp_over_a_stiffness_sweep`: 1e6 → 1e9, all
+    /// stalling the same way). A single tight run reports "both fail" and hides
+    /// the only quantity that separates them, which is how much residual each
+    /// path can be asked for before depth collapses.
+    ///
+    /// ⭐ **The payoff quantity is not depth alone** (#959): a ramp can reach
+    /// full depth BY PENETRATING — the single-layer scan reaches 16/16 with
+    /// `min_sd` −0.373 mm and its 5 % area tail at −0.042 mm, a region through
+    /// the wall rather than an outlier. So all three are reported together:
+    /// **depth, with `min_sd > 0` AND the 5 % area tail > 0**, at each
+    /// tolerance. A depth reached through the wall is not a seat.
+    ///
+    /// ⛔ **Asserts nothing.** Where a ramp stalls is platform-dependent
+    /// (#958's first push went red on exactly that), so this reports on a named
+    /// platform and never gates.
+    #[test]
+    #[ignore = "release-mode ramps on both arms across a tolerance ladder; run with --ignored --nocapture"]
+    fn the_bridge_against_the_penalty_baseline_across_a_tolerance_ladder() {
+        const N_STEPS: usize = 16;
+        /// Residual tolerances asked for, loosest first. `1e-1` is what ships.
+        const TOLERANCES: [f64; 4] = [1e-1, 1e-2, 1e-3, 1e-4];
+
+        // ⭐ The sphere is the scene `BRIDGE_DESIGN_TRACTION_PA` was measured on
+        // (#959), so the bridge is judged where its own `σ` came from — not
+        // only on the small conditioning stand-in.
+        fn sphere_scene() -> InsertionGeometry {
+            let design = SimDesign {
+                cavity_inset_m: 0.003,
+                layers: vec![layer(0.010, "ECOFLEX_00_30")],
+            };
+            build_insertion_geometry(&icosphere(0.040, 3), &design, &[], 2_000, 0.004)
+                .expect("the synthetic-sphere geometry must build")
+        }
+
+        for (scene, build) in [
+            (
+                "tol-fixture",
+                tolerance_fixture as fn() -> InsertionGeometry,
+            ),
+            ("sphere-40mm", sphere_scene as fn() -> InsertionGeometry),
+        ] {
+            println!("\n══ {scene} ══");
+            println!(
+                "tol        arm                 steps  depth_mm  resid      pairs  \
+                 min_sd_mm  tail5_mm  sigma_kPa"
+            );
+            for tol in TOLERANCES {
+                // ── Tet4 + penalty, the baseline, at this tolerance.
+                let g = build();
+                let mesh4 = g.mesh.clone();
+                let intruder = g.intruder.clone();
+                let bounds = g.bounds;
+                let cavity_offset_m = g.cavity_offset_m;
+                let referenced4: Vec<VertexId> = referenced_vertices(&mesh4);
+                let rest_areas4 = boundary_vertex_areas(
+                    Mesh::<Yeoh>::positions(&mesh4),
+                    Mesh::<Yeoh>::boundary_faces(&mesh4),
+                );
+                let base =
+                    run_insertion_ramp_at_kappa_and_tol(g, N_STEPS, INSERTION_CONTACT_KAPPA, tol)
+                        .expect("the penalty baseline ramp must build");
+                let base_stats = base.steps.last().map(|last| {
+                    let pos = positions_from_flat(&last.x_final);
+                    let contact = intruder_contact_at_kappa(
+                        &intruder,
+                        bounds,
+                        last.interference_m,
+                        cavity_offset_m,
+                        INSERTION_CONTACT_KAPPA,
+                    );
+                    let raw = contact.per_pair_readout(&mesh4, &pos);
+                    let readouts = filter_pair_readouts_to_referenced(raw, &referenced4);
+                    (
+                        last.interference_m,
+                        last.final_residual_norm,
+                        patch_stats(&readouts, &rest_areas4),
+                    )
+                });
+                let (d, r, st) = base_stats.unwrap_or((0.0, f64::NAN, None));
+                print_arm_row(
+                    &format!("{tol:.0e}"),
+                    "tet4+penalty",
+                    base.steps.len(),
+                    N_STEPS,
+                    d,
+                    r,
+                    st,
+                );
+
+                // ── Tet10 + IPC, the bridge, at the same tolerance.
+                let g = build();
+                let mesh10 = Tet10Mesh::<Yeoh>::from_tet4(&g.mesh);
+                let referenced10: Vec<VertexId> = referenced_vertices(&mesh10);
+                let rest_areas10 = boundary_vertex_areas(
+                    Mesh::<Yeoh>::positions(&mesh10),
+                    Mesh::<Yeoh>::boundary_faces(&mesh10),
+                );
+                let inset_m = -g.cavity_offset_m;
+                // `N_STEPS` is small; the cast is exact.
+                #[allow(clippy::cast_precision_loss)]
+                let kappa =
+                    bridge_face_barrier_kappa(BRIDGE_CONTACT_DHAT_M, inset_m / N_STEPS as f64)
+                        .expect("the bridge's stiffness bracket must be non-empty");
+                let bridge = run_insertion_ramp_tet10_ipc(g, N_STEPS, tol)
+                    .expect("the bridge ramp must build");
+                let bridge_stats = bridge.steps.last().map(|last| {
+                    let pos = positions_from_flat(&last.x_final);
+                    let contact = intruder_ipc_contact_at(
+                        &intruder,
+                        bounds,
+                        last.interference_m,
+                        cavity_offset_m,
+                        kappa,
+                        BRIDGE_CONTACT_DHAT_M,
+                    );
+                    let raw = contact.per_pair_readout(&mesh10, &pos);
+                    let readouts = filter_pair_readouts_to_referenced(raw, &referenced10);
+                    (
+                        last.interference_m,
+                        last.final_residual_norm,
+                        patch_stats(&readouts, &rest_areas10),
+                    )
+                });
+                let (d, r, st) = bridge_stats.unwrap_or((0.0, f64::NAN, None));
+                print_arm_row(
+                    &format!("{tol:.0e}"),
+                    "tet10+ipc",
+                    bridge.steps.len(),
+                    N_STEPS,
+                    d,
+                    r,
+                    st,
+                );
+                if let Some(reason) = bridge
+                    .failure_reason
+                    .as_deref()
+                    .filter(|r| r.contains("approach"))
+                {
+                    println!("            (bridge never began: {reason})");
+                }
+            }
+        }
+
+        println!(
+            "\n\u{26a0} \u{3c3} is on the DEFORMED area basis. The REST basis is not \
+             comparable across these arms: on the face path the loaded nodes are \
+             MIDSIDES, which lie on no 3-node boundary face and so carry no \
+             `boundary_vertex_areas` rest tributary."
+        );
+    }
+
+    /// One row of
+    /// [`the_bridge_against_the_penalty_baseline_across_a_tolerance_ladder`].
+    fn print_arm_row(
+        scene: &str,
+        arm: &str,
+        converged: usize,
+        n_steps: usize,
+        interference_m: f64,
+        residual: f64,
+        stats: Option<PatchStats>,
+    ) {
+        let steps = format!("{converged}/{n_steps}");
+        stats.map_or_else(
+            || {
+                println!(
+                    "{scene:<20} {arm:<18} {steps:>6}  {:>8.3}  {residual:>9.2e}  \
+                     (no contact patch)",
+                    interference_m * 1e3,
+                );
+            },
+            |s| {
+                println!(
+                    "{scene:<20} {arm:<18} {steps:>6}  {:>8.3}  {residual:>9.2e}  \
+                     {:>5}  {:>9.4}  {:>8.4}  {:>9.2}",
+                    interference_m * 1e3,
+                    s.n_pairs,
+                    s.min_sd_m * 1e3,
+                    s.p05_sd_m * 1e3,
+                    s.traction_pa * 1e-3,
+                );
+            },
+        );
+    }
+
+    /// How far the enriched midsides sit under the curved cavity surface.
+    ///
+    /// `Tet10Mesh::from_tet4` places every midside at the straight-edge
+    /// MIDPOINT. On a curved cavity that puts each boundary midside under the
+    /// true surface by the sagitta (~`h²/8R`), so the barrier sees a gap that
+    /// is not the geometry's gap — and the tightest node on the patch is an
+    /// artifact of enrichment rather than of the scene.
+    ///
+    /// This measures the offset for corners and midsides separately, against
+    /// the same cavity isosurface the intruder is built from. Corners are the
+    /// control: they come straight from the Tet4 mesh, so whatever bias they
+    /// show is the mesher's, and only the EXCESS on midsides is enrichment's.
+    ///
+    /// ⛔ Asserts nothing — it is a diagnostic.
+    #[test]
+    #[ignore = "diagnostic; run with --ignored --nocapture"]
+    fn the_enriched_midsides_sit_under_the_curved_cavity_surface() {
+        let g = tolerance_fixture();
+        let tet10 = Tet10Mesh::<Yeoh>::from_tet4(&g.mesh);
+        let n_corners = tet10.n_corners();
+        let cavity = Solid::from_sdf(g.intruder.clone(), g.bounds).offset(g.cavity_offset_m);
+        let positions = Mesh::<Yeoh>::positions(&tet10);
+
+        // Only nodes ON the cavity surface matter; take everything within one
+        // barrier band of it so the sample is the patch the contact will see.
+        let mut corner_sd: Vec<f64> = Vec::new();
+        let mut midside_sd: Vec<f64> = Vec::new();
+        for (vid, p) in positions.iter().enumerate() {
+            let sd = cavity.eval(Point3::from(*p));
+            if sd.abs() > BRIDGE_CONTACT_DHAT_M {
+                continue;
+            }
+            if vid < n_corners {
+                corner_sd.push(sd);
+            } else {
+                midside_sd.push(sd);
+            }
+        }
+
+        let summarise = |label: &str, v: &mut Vec<f64>| {
+            if v.is_empty() {
+                println!("{label:<10} (none within one band)");
+                return f64::NAN;
+            }
+            v.sort_unstable_by(f64::total_cmp);
+            let mean = v.iter().sum::<f64>() / v.len() as f64;
+            println!(
+                "{label:<10} n {:>5}   min {:>9.4} mm   mean {:>9.4} mm   max {:>9.4} mm",
+                v.len(),
+                v[0] * 1e3,
+                mean * 1e3,
+                v[v.len() - 1] * 1e3,
+            );
+            mean
+        };
+
+        println!("\nsigned distance to the cavity isosurface, at REST:");
+        let c_mean = summarise("corners", &mut corner_sd);
+        let m_mean = summarise("midsides", &mut midside_sd);
+        println!(
+            "\nenrichment's excess (midside mean - corner mean): {:.4} mm",
+            (m_mean - c_mean) * 1e3,
+        );
+        println!(
+            "for scale: one ramp increment at 16 steps is {:.4} mm, and d_hat/2 is {:.4} mm",
+            -g.cavity_offset_m / 16.0 * 1e3,
+            0.5 * BRIDGE_CONTACT_DHAT_M * 1e3,
+        );
+
+        // ⛔ What the ramp's approach schedule is actually derived from — over
+        // EVERY vertex, which is the population the ramp itself scans.
+        let worst_all = positions
+            .iter()
+            .map(|p| cavity.eval(Point3::from(*p)))
+            .filter(|sd| sd.is_finite())
+            .fold(0.0_f64, |acc, sd| acc.max(-sd));
+        let referenced: BTreeSet<VertexId> = referenced_vertices(&tet10).into_iter().collect();
+        let worst_referenced = positions
+            .iter()
+            .enumerate()
+            .filter(|(vid, _)| u32::try_from(*vid).is_ok_and(|v| referenced.contains(&v)))
+            .map(|(_, p)| cavity.eval(Point3::from(*p)))
+            .filter(|sd| sd.is_finite())
+            .fold(0.0_f64, |acc, sd| acc.max(-sd));
+        let step = -g.cavity_offset_m / 16.0;
+        println!(
+            "\nworst rest penetration over ALL vertices        {:>9.4} mm               => {:>5} approach steps",
+            worst_all * 1e3,
+            ((worst_all + 0.5 * BRIDGE_CONTACT_DHAT_M) / step).ceil(),
+        );
+        println!(
+            "worst rest penetration over REFERENCED vertices {:>9.4} mm               => {:>5} approach steps",
+            worst_referenced * 1e3,
+            ((worst_referenced + 0.5 * BRIDGE_CONTACT_DHAT_M) / step).ceil(),
+        );
+    }
+
+    /// The bridge ramp across a stiffness sweep — is `κ` the binding constraint?
+    ///
+    /// The derivation claims `κ` is determined rather than swept. That claim is
+    /// only worth something if the neighbouring stiffnesses can be run, so this
+    /// runs them: the derived value, a decade either side, and the bracket's own
+    /// floor and ceiling.
+    ///
+    /// ⛔ Asserts nothing — where a ramp stalls is platform-dependent.
+    #[test]
+    #[ignore = "release-mode ramps across a stiffness sweep; run with --ignored --nocapture"]
+    fn the_bridge_ramp_over_a_stiffness_sweep() {
+        const N_STEPS: usize = 16;
+        // The product inset (`base_mold`), not sock's 3 mm.
+        let inset_m = 0.005;
+        // `N_STEPS` is small; the cast is exact.
+        #[allow(clippy::cast_precision_loss)]
+        let step = inset_m / N_STEPS as f64;
+        let derived = bridge_face_barrier_kappa(BRIDGE_CONTACT_DHAT_M, step)
+            .expect("the bracket must be non-empty");
+        let floor = face_barrier_kappa(
+            BRIDGE_CONTACT_DHAT_M,
+            BRIDGE_PATCH_NONUNIFORMITY * step,
+            BRIDGE_DESIGN_TRACTION_PA,
+        )
+        .expect("floor");
+        let ceiling = face_barrier_kappa(
+            BRIDGE_CONTACT_DHAT_M,
+            0.5 * BRIDGE_CONTACT_DHAT_M,
+            BRIDGE_DESIGN_TRACTION_PA,
+        )
+        .expect("ceiling");
+
+        println!(
+            "\nbracket [{floor:.4e}, {ceiling:.4e}], derived {derived:.4e}, \
+             d_hat {BRIDGE_CONTACT_DHAT_M:.2e} m, step {:.4} mm\n",
+            step * 1e3,
+        );
+        println!(
+            "kappa        label       steps  depth_mm  resid      pairs  min_sd_mm  \
+             tail5_mm  sigma_kPa"
+        );
+
+        for (kappa, label) in [
+            (1.0e6, "0.06x floor"),
+            (floor, "FLOOR"),
+            (derived, "DERIVED"),
+            (ceiling, "CEILING"),
+            (1.0e9, "12x ceiling"),
+        ] {
+            let g = tolerance_fixture();
+            let mesh10 = Tet10Mesh::<Yeoh>::from_tet4(&g.mesh);
+            let referenced: Vec<VertexId> = referenced_vertices(&mesh10);
+            let rest_areas = boundary_vertex_areas(
+                Mesh::<Yeoh>::positions(&mesh10),
+                Mesh::<Yeoh>::boundary_faces(&mesh10),
+            );
+            let intruder = g.intruder.clone();
+            let bounds = g.bounds;
+            let cavity_offset_m = g.cavity_offset_m;
+            let ramp = run_insertion_ramp_tet10_ipc_at(
+                g,
+                N_STEPS,
+                TIGHT_TOL,
+                kappa,
+                BRIDGE_CONTACT_DHAT_M,
+            )
+            .expect("the bridge ramp must build");
+            if let Some(last) = ramp.steps.last() {
+                let pos = positions_from_flat(&last.x_final);
+                let contact = intruder_ipc_contact_at(
+                    &intruder,
+                    bounds,
+                    last.interference_m,
+                    cavity_offset_m,
+                    kappa,
+                    BRIDGE_CONTACT_DHAT_M,
+                );
+                let raw = contact.per_pair_readout(&mesh10, &pos);
+                let readouts = filter_pair_readouts_to_referenced(raw, &referenced);
+                print_arm_row(
+                    &format!("{kappa:.3e}"),
+                    label,
+                    ramp.steps.len(),
+                    N_STEPS,
+                    last.interference_m,
+                    last.final_residual_norm,
+                    patch_stats(&readouts, &rest_areas),
+                );
+            } else {
+                println!("{kappa:.3e}    {label:<11}   0/{N_STEPS}  (no step converged)");
+            }
+            if let Some(k) = ramp.failed_at_step {
+                println!(
+                    "    stalled at recorded step {k}: {}",
+                    ramp.failure_reason.as_deref().unwrap_or("?"),
+                );
+            }
+        }
+    }
+
+    /// The shipped ramp entry points solve at the shipped tolerance.
+    ///
+    /// The inertness half of the two-gate rule for
+    /// [`run_insertion_ramp_at_kappa_and_tol`]: adding a knob must not move
+    /// what ships. Every reported column of every step is compared, not just
+    /// the step count — a delegation that changed the answer while keeping the
+    /// shape would pass a count check.
+    #[test]
+    fn the_shipped_ramp_solves_at_the_shipped_tolerance() {
+        let n_steps = 2;
+        let shipped =
+            run_insertion_ramp_at_kappa(tolerance_fixture(), n_steps, INSERTION_CONTACT_KAPPA)
+                .expect("the shipped ramp must run on the tolerance fixture");
+        let delegated = run_insertion_ramp_at_kappa_and_tol(
+            tolerance_fixture(),
+            n_steps,
+            INSERTION_CONTACT_KAPPA,
+            INSERTION_SOLVE_TOL,
+        )
+        .expect("the delegated ramp must run on the tolerance fixture");
+
+        assert!(
+            !shipped.steps.is_empty(),
+            "the fixture must converge at least one step, or this gate compares \
+             two empty ramps",
+        );
+        assert_eq!(
+            shipped.steps.len(),
+            delegated.steps.len(),
+            "the shipped tolerance must produce the same number of steps",
+        );
+        for (a, b) in shipped.steps.iter().zip(delegated.steps.iter()) {
+            assert!(
+                (a.interference_m - b.interference_m).abs() < f64::EPSILON,
+                "interference moved: {} vs {}",
+                a.interference_m,
+                b.interference_m,
+            );
+            assert_eq!(a.iter_count, b.iter_count, "iteration count moved");
+            assert!(
+                (a.final_residual_norm - b.final_residual_norm).abs() < f64::EPSILON,
+                "residual moved: {:e} vs {:e}",
+                a.final_residual_norm,
+                b.final_residual_norm,
+            );
+            assert_eq!(a.x_final, b.x_final, "the converged pose moved");
+        }
+        assert_eq!(
+            shipped.failed_at_step, delegated.failed_at_step,
+            "the stall point moved",
+        );
+    }
+
+    /// The ramp's tolerance argument reaches the solve.
+    ///
+    /// The other half of the two-gate rule, and the half a delegation test
+    /// cannot see: `the_shipped_ramp_solves_at_the_shipped_tolerance` would
+    /// pass just as happily if `tol` were accepted and dropped on the floor
+    /// → [[feedback_a_knob_needs_two_gates]].
+    ///
+    /// ⚠ Asserts that asking for a much tighter residual CHANGES the ramp, not
+    /// where it changes it. Which step a tight request stalls on is
+    /// platform-dependent and must never be pinned.
+    #[test]
+    fn the_ramp_tolerance_knob_reaches_the_solve() {
+        let n_steps = 2;
+        let loose = run_insertion_ramp_at_kappa_and_tol(
+            tolerance_fixture(),
+            n_steps,
+            INSERTION_CONTACT_KAPPA,
+            INSERTION_SOLVE_TOL,
+        )
+        .expect("the loose ramp must run");
+        let tight = run_insertion_ramp_at_kappa_and_tol(
+            tolerance_fixture(),
+            n_steps,
+            INSERTION_CONTACT_KAPPA,
+            TIGHT_TOL,
+        )
+        .expect("the tight ramp must run");
+
+        assert!(
+            !loose.steps.is_empty(),
+            "the loose ramp must converge something to compare against",
+        );
+        // Five decades of tolerance must show up somewhere: either the tight
+        // request costs iterations / reaches a smaller residual, or it stalls
+        // earlier. Any of those proves the argument reached the solver; none of
+        // them pins WHERE.
+        let moved = tight.steps.len() != loose.steps.len()
+            || loose.steps.iter().zip(tight.steps.iter()).any(|(l, t)| {
+                t.iter_count != l.iter_count
+                    || (t.final_residual_norm - l.final_residual_norm).abs() > f64::EPSILON
+            });
+        assert!(
+            moved,
+            "asking for {TIGHT_TOL:e} instead of {INSERTION_SOLVE_TOL:e} changed \
+             nothing about the ramp — the tolerance argument is not reaching the \
+             solve",
+        );
+    }
+
+    /// What each candidate band yields — ceiling (shipped) and floor (reported).
+    ///
+    /// `d̂` is a free choice on the bridge. The ceiling `σ / |b′(d̂/2)|` always
+    /// exists; the floor `σ / |b′(ρ·step)|` does not, and where it fails to is
+    /// worth seeing, because it is the boundary an earlier revision of this
+    /// derivation ran into and mistook for a physical limit.
+    #[test]
+    fn the_bridges_barrier_band_reports_a_floor_and_ships_a_ceiling() {
+        let inset_m = 0.005;
+        let step = inset_m / 16.0;
+        let mut n_with_floor = 0;
+
+        println!("\nd_hat_mm   floor          ceiling (SHIPPED)   floor vs ceiling");
+        for d_hat in BRIDGE_DHAT_CANDIDATES_M {
+            let ceiling = face_barrier_kappa(d_hat, 0.5 * d_hat, BRIDGE_DESIGN_TRACTION_PA)
+                .expect("the ceiling is derivable at every candidate band");
+            let floor = face_barrier_kappa(
+                d_hat,
+                BRIDGE_PATCH_NONUNIFORMITY * step,
+                BRIDGE_DESIGN_TRACTION_PA,
+            );
+            // ⚠ The interesting boundary is NOT whether the floor exists — at
+            // the shipped schedule all four bands have one. It is whether the
+            // floor sits BELOW the ceiling. At d̂ = 0.5 mm it does not
+            // (3.4386e8 against 9.8730e7): an INVERTED bracket, which the old
+            // selector reported as "empty" and treated as a physical limit.
+            let sane = floor.is_some_and(|f| f < ceiling);
+            if sane {
+                n_with_floor += 1;
+            }
+            println!(
+                "{:>8.2}   {:<14}   {ceiling:.4e}          {}",
+                d_hat * 1e3,
+                floor.map_or_else(|| "(none)".to_string(), |f| format!("{f:.4e}")),
+                if sane { "below" } else { "INVERTED" },
+            );
+            // Whatever the floor does, the shipped value is the ceiling.
+            let shipped = bridge_face_barrier_kappa(d_hat, step)
+                .expect("κ derives wherever the increment fits the band");
+            assert!(
+                (shipped - ceiling).abs() <= 1e-9 * ceiling,
+                "band {d_hat}: shipped κ must be the ceiling",
+            );
+        }
+
+        // The boundary must be VISIBLE in this candidate set — some band has
+        // no floor at the shipped schedule, some has one. Without both, the
+        // table shows nothing about where the old selector broke down.
+        assert!(
+            n_with_floor > 0 && n_with_floor < BRIDGE_DHAT_CANDIDATES_M.len(),
+            "the candidate set must straddle the inversion boundary \
+             ({n_with_floor} of {} have a floor BELOW the ceiling)",
+            BRIDGE_DHAT_CANDIDATES_M.len(),
+        );
+    }
+
+    /// ⭐⭐⭐ The bridge against the penalty baseline **on the product scan**.
+    ///
+    /// `base_mold` as the CF Studio project configures it — 5 mm cavity inset,
+    /// one 17 mm DRAGON_SKIN_10A layer at 25 % Slacker. See [`product_scene`]
+    /// for why this and not `sock_over_capsule`.
+    ///
+    /// ⛔ The scan is repo-excluded, so nothing here can ever gate. It reports
+    /// on a named platform.
+    #[test]
+    #[ignore = "needs the product scan + release ramps on both arms; run with --ignored --nocapture"]
+    fn the_bridge_against_the_penalty_baseline_on_the_product_scan() {
+        const TOLERANCES: [f64; 2] = [1e-1, 1e-2];
+        // ⚠ BOTH schedules for BOTH arms. At 16 steps the bridge still hits
+        // its contact stall (68.8 %) and needs 32 to clear it — comparing the
+        // bridge at 32 against penalty at 16 would vary the method and the
+        // schedule at once.
+        const SCHEDULES: [usize; 2] = [16, 32];
+
+        let Some((scan, _centerline, caps, design)) = product_scene() else {
+            return;
+        };
+        println!(
+            "\n══ base_mold · inset {:.1} mm · {} layer(s) ══",
+            design.cavity_inset_m * 1e3,
+            design.layers.len(),
+        );
+        println!(
+            "tol        arm                 steps  depth_mm  resid      pairs  \
+             min_sd_mm  tail5_mm  sigma_kPa"
+        );
+        let build = || build_insertion_geometry(&scan, &design, &caps, 2_500, 0.004);
+
+        for n_steps in SCHEDULES {
+            let n_steps_local = n_steps;
+            println!("\n── {n_steps_local} steps ──");
+            for tol in TOLERANCES {
+                let Ok(g) = build() else {
+                    println!("  geometry FAILED to build");
+                    break;
+                };
+                let mesh4 = g.mesh.clone();
+                let intruder = g.intruder.clone();
+                let bounds = g.bounds;
+                let cavity_offset_m = g.cavity_offset_m;
+                let referenced4: Vec<VertexId> = referenced_vertices(&mesh4);
+                let rest4 = boundary_vertex_areas(
+                    Mesh::<Yeoh>::positions(&mesh4),
+                    Mesh::<Yeoh>::boundary_faces(&mesh4),
+                );
+                let base = run_insertion_ramp_at_kappa_and_tol(
+                    g,
+                    n_steps_local,
+                    INSERTION_CONTACT_KAPPA,
+                    tol,
+                )
+                .expect("the penalty baseline ramp must build");
+                let (d, r, st) = base
+                    .steps
+                    .last()
+                    .map(|last| {
+                        let pos = positions_from_flat(&last.x_final);
+                        let c = intruder_contact_at_kappa(
+                            &intruder,
+                            bounds,
+                            last.interference_m,
+                            cavity_offset_m,
+                            INSERTION_CONTACT_KAPPA,
+                        );
+                        let raw = c.per_pair_readout(&mesh4, &pos);
+                        (
+                            last.interference_m,
+                            last.final_residual_norm,
+                            patch_stats(
+                                &filter_pair_readouts_to_referenced(raw, &referenced4),
+                                &rest4,
+                            ),
+                        )
+                    })
+                    .unwrap_or((0.0, f64::NAN, None));
+                print_arm_row(
+                    &format!("{tol:.0e}"),
+                    "tet4+penalty",
+                    base.steps.len(),
+                    n_steps_local,
+                    d,
+                    r,
+                    st,
+                );
+
+                let Ok(g) = build() else { break };
+                let mesh10 = Tet10Mesh::<Yeoh>::from_tet4(&g.mesh);
+                let referenced10: Vec<VertexId> = referenced_vertices(&mesh10);
+                let rest10 = boundary_vertex_areas(
+                    Mesh::<Yeoh>::positions(&mesh10),
+                    Mesh::<Yeoh>::boundary_faces(&mesh10),
+                );
+                // `n_steps_local` is small; the cast is exact.
+                #[allow(clippy::cast_precision_loss)]
+                let kappa = bridge_face_barrier_kappa(
+                    BRIDGE_CONTACT_DHAT_M,
+                    -g.cavity_offset_m / n_steps_local as f64,
+                )
+                .expect("the bridge's stiffness bracket must be non-empty");
+                let bridge = run_insertion_ramp_tet10_ipc(g, n_steps_local, tol)
+                    .expect("the bridge ramp must build");
+                let (d, r, st) = bridge
+                    .steps
+                    .last()
+                    .map(|last| {
+                        let pos = positions_from_flat(&last.x_final);
+                        let c = intruder_ipc_contact_at(
+                            &intruder,
+                            bounds,
+                            last.interference_m,
+                            cavity_offset_m,
+                            kappa,
+                            BRIDGE_CONTACT_DHAT_M,
+                        );
+                        let raw = c.per_pair_readout(&mesh10, &pos);
+                        (
+                            last.interference_m,
+                            last.final_residual_norm,
+                            patch_stats(
+                                &filter_pair_readouts_to_referenced(raw, &referenced10),
+                                &rest10,
+                            ),
+                        )
+                    })
+                    .unwrap_or((0.0, f64::NAN, None));
+                print_arm_row(
+                    &format!("{tol:.0e}"),
+                    "tet10+ipc",
+                    bridge.steps.len(),
+                    n_steps_local,
+                    d,
+                    r,
+                    st,
+                );
+                if let Some(reason) = bridge.failure_reason.as_deref() {
+                    println!("            (bridge: {reason})");
+                }
+            }
+        }
+    }
+
+    /// What a bridge step COSTS — per-step wall clock, both arms.
+    ///
+    /// The question the bridge raises is per-STEP, not per-ramp: a ramp's
+    /// total folds in a geometry build that can dominate it on a 70 k-tet
+    /// scan and answers nothing about the solve. `RampStep::wall_time_s` is
+    /// measured around `replay_step` alone.
+    ///
+    /// ⛔ **Asserts nothing** — wall clock is contended, and the one
+    /// release-only timing assertion in this workspace inflates 80× under
+    /// `xtask grade`'s coverage pass. Run it on an idle machine and read it as
+    /// an order of magnitude, not a number.
+    ///
+    /// ⚠ The bridge's figure EXCLUDES its approach steps, which are solved and
+    /// not recorded. Those are real cost the baseline does not pay, so the
+    /// approach count is reported beside the per-step time.
+    #[test]
+    #[ignore = "release-mode ramps for timing; run with --ignored --nocapture on an idle machine"]
+    fn what_a_bridge_step_costs() {
+        const N_STEPS: usize = 16;
+
+        fn sphere_scene() -> InsertionGeometry {
+            let design = SimDesign {
+                cavity_inset_m: 0.003,
+                layers: vec![layer(0.010, "ECOFLEX_00_30")],
+            };
+            build_insertion_geometry(&icosphere(0.040, 3), &design, &[], 2_000, 0.004)
+                .expect("the synthetic-sphere geometry must build")
+        }
+
+        let mut scenes: Vec<(String, Box<dyn Fn() -> InsertionGeometry>)> = vec![
+            (
+                "tol-fixture".into(),
+                Box::new(tolerance_fixture) as Box<dyn Fn() -> InsertionGeometry>,
+            ),
+            ("sphere-40mm".into(), Box::new(sphere_scene)),
+        ];
+
+        // The product mesh, when the repo-excluded scan is on this machine.
+        if let Some((scan, _centerline, caps, design)) = product_scene() {
+            scenes.push((
+                "base_mold (product)".into(),
+                Box::new(move || {
+                    build_insertion_geometry(&scan, &design, &caps, 2_500, 0.004)
+                        .expect("the product geometry must build")
+                }),
+            ));
+        }
+
+        for (label, build) in scenes {
+            println!("\n══ {label} ══");
+
+            // Counts are far below f64's exact-integer ceiling.
+            #[allow(clippy::cast_precision_loss)]
+            let ratio = |a: usize, b: usize| a as f64 / b as f64;
+            let built = std::time::Instant::now();
+            let g = build();
+            let build_s = built.elapsed().as_secs_f64();
+            let tet4_verts = Mesh::<Yeoh>::n_vertices(&g.mesh);
+            let tet10 = Tet10Mesh::<Yeoh>::from_tet4(&g.mesh);
+            let tet10_verts = Mesh::<Yeoh>::n_vertices(&tet10);
+            println!(
+                "geometry build {build_s:>7.2} s · {} tets · vertices {tet4_verts} (Tet4) \
+                 → {tet10_verts} (Tet10, ×{:.2}) · DOF {} → {}",
+                g.n_tets,
+                ratio(tet10_verts, tet4_verts),
+                3 * tet4_verts,
+                3 * tet10_verts,
+            );
+
+            let report = |arm: &str, ramp: &InsertionRamp, extra: String| {
+                let mut t: Vec<f64> = ramp.steps.iter().map(|s| s.wall_time_s).collect();
+                if t.is_empty() {
+                    println!("{arm:<14} no converged step{extra}");
+                    return;
+                }
+                let total: f64 = t.iter().sum();
+                // Step count is tiny; the cast is exact.
+                #[allow(clippy::cast_precision_loss)]
+                let mean = total / t.len() as f64;
+                t.sort_unstable_by(f64::total_cmp);
+                println!(
+                    "{arm:<14} {:>2} steps · per step min {:>6.2} s · median {:>6.2} s · \
+                     max {:>6.2} s · mean {:>6.2} s · ramp {:>7.1} s{extra}",
+                    t.len(),
+                    t[0],
+                    t[t.len() / 2],
+                    t[t.len() - 1],
+                    mean,
+                    total,
+                );
+            };
+
+            let base = run_insertion_ramp_at_kappa_and_tol(
+                build(),
+                N_STEPS,
+                INSERTION_CONTACT_KAPPA,
+                INSERTION_SOLVE_TOL,
+            )
+            .expect("baseline ramp builds");
+            report("tet4+penalty", &base, String::new());
+
+            let bridge = run_insertion_ramp_tet10_ipc(build(), N_STEPS, INSERTION_SOLVE_TOL)
+                .expect("bridge ramp builds");
+            report("tet10+ipc", &bridge, String::new());
+        }
+    }
+
+    // ─── THE SLIDING BRIDGE ─────────────────────────────────────────
+
+    /// A straight centerline through the tolerance fixture, tip-first.
+    ///
+    /// `centerline[0]` is the TIP and `.last()` the FLOOR, per
+    /// `slide_pose_at`'s ordering convention.
+    fn fixture_centerline() -> Vec<Point3<f64>> {
+        (0..=8)
+            .map(|i| {
+                // Loop index is tiny; the cast is exact.
+                #[allow(clippy::cast_precision_loss)]
+                Point3::new(0.0, 0.0, f64::from(i) * 0.005)
+            })
+            .collect()
+    }
+
+    /// The measured CLOSING is what decides the slide schedule.
+    ///
+    /// ⛔ **An earlier revision of this gate asserted the normal closing is
+    /// much smaller than the arc increment. Measured, that is FALSE here** —
+    /// 2.4069 mm against 2.5 mm, a ratio of 0.963 — because this fixture's
+    /// intruder is a sphere entering a hole, so its surface is
+    /// near-perpendicular to the motion and nearly the whole step closes. The
+    /// ratio is a property of the scene's geometry, so this gate asserts only
+    /// what is invariant and REPORTS the rest.
+    ///
+    /// Invariant: the closing is positive (something entered the band) and
+    /// cannot exceed the total motion. Consequence, which is the useful part:
+    /// on this scene the schedule is far too coarse to bracket a stiffness, so
+    /// the derivation must REFUSE — and that refusal is asserted, because a
+    /// derivation that silently returned a number for an impossible
+    /// requirement is the failure this whole approach exists to avoid.
+    #[test]
+    fn the_sliding_closing_decides_the_schedule() {
+        let g = tolerance_fixture();
+        let centerline = fixture_centerline();
+        let n_steps = 16;
+        let arc_m = polyline_arc_length_m(&centerline);
+        // `n_steps` is tiny; the cast is exact.
+        let arc_increment_m = arc_m / f64::from(u32::try_from(n_steps).expect("tiny"));
+
+        let faces: Vec<[VertexId; 3]> = Mesh::<Yeoh>::boundary_faces(&g.mesh).to_vec();
+        let rest = Mesh::<Yeoh>::positions(&g.mesh);
+        let mut ids: Vec<VertexId> = faces.iter().flatten().copied().collect();
+        ids.sort_unstable();
+        ids.dedup();
+        let wall: Vec<Vec3> = ids.into_iter().map(|v| rest[v as usize]).collect();
+        assert!(!wall.is_empty(), "the fixture must have boundary nodes");
+
+        let normal_m = sliding_normal_increment_m(
+            &g.intruder,
+            g.bounds,
+            &centerline,
+            n_steps,
+            g.cavity_offset_m,
+            BRIDGE_CONTACT_DHAT_M,
+            &wall,
+        );
+        println!(
+            "arc L {:.4} mm · arc increment {:.4} mm · normal closing {:.4} mm · \
+             ratio {:.3} · needs ~{:.0} steps to bracket",
+            arc_m * 1e3,
+            arc_increment_m * 1e3,
+            normal_m * 1e3,
+            normal_m / arc_increment_m,
+            (arc_m * BRIDGE_PATCH_NONUNIFORMITY / (0.5 * BRIDGE_CONTACT_DHAT_M)).ceil(),
+        );
+
+        assert!(
+            normal_m > 0.0,
+            "the closing must be positive — a zero would mean no node ever \
+             entered the band and every number below would be vacuous",
+        );
+        assert!(
+            normal_m <= arc_increment_m * (1.0 + 1e-9),
+            "the normal closing {normal_m:.6e} m cannot exceed the total motion \
+             {arc_increment_m:.6e} m",
+        );
+        // The consequence, and the half that can fail: this schedule cannot
+        // bracket a stiffness, and the derivation must say so rather than
+        // return a number.
+        assert!(
+            bridge_face_barrier_kappa(BRIDGE_CONTACT_DHAT_M, normal_m).is_err(),
+            "a closing of {normal_m:.6e} m against a {:.6e} m band must leave NO \
+             bracket — if this starts passing, the fixture or the band changed \
+             and the schedule guidance below is stale",
+            BRIDGE_CONTACT_DHAT_M,
+        );
+        // And a schedule fine enough DOES bracket — without this the gate only
+        // ever sees the refusal and could not tell a broken derivation from a
+        // correctly-refusing one.
+        let fine_closing_m = 0.5 * (0.5 * BRIDGE_CONTACT_DHAT_M) / BRIDGE_PATCH_NONUNIFORMITY;
+        assert!(
+            bridge_face_barrier_kappa(BRIDGE_CONTACT_DHAT_M, fine_closing_m).is_ok(),
+            "a closing of half the allowance must bracket a stiffness",
+        );
+    }
+
+    /// The sliding bridge takes the FACE barrier, not the per-vertex path.
+    ///
+    /// Sibling of `the_bridge_selects_the_face_barrier_not_the_vertex_path`,
+    /// and it exists for the same reason: the capability is chosen by a
+    /// runtime `Option`, so a mesh that merely *compiles* against the Tet10
+    /// types silently takes the per-vertex path. Probes `active_pairs` — what
+    /// the solver scatters — with the Tet4 mesh as negative control.
+    #[test]
+    fn the_sliding_bridge_selects_the_face_barrier_not_the_vertex_path() {
+        use sim_soft::ActivePairsFor;
+
+        let g = tolerance_fixture();
+        let centerline = fixture_centerline();
+        let tet10 = Tet10Mesh::<Yeoh>::from_tet4(&g.mesh);
+        // t = 1 is the seated pose, where contact certainly exists.
+        let contact = intruder_ipc_contact_sliding_at(
+            &g.intruder,
+            g.bounds,
+            slide_pose_at(&centerline, 1.0),
+            g.cavity_offset_m,
+            1.0e7,
+            BRIDGE_CONTACT_DHAT_M,
+        );
+
+        let positions = tet10.positions().to_vec();
+        let pairs = ActivePairsFor::<Yeoh>::active_pairs(&contact, &tet10, &positions);
+        assert!(
+            !pairs.is_empty(),
+            "the seated pose must produce active pairs, or the face-kind check \
+             below passes vacuously",
+        );
+        let n_vertex = pairs
+            .iter()
+            .filter(|p| matches!(p, ContactPair::Vertex { .. }))
+            .count();
+        assert_eq!(
+            n_vertex,
+            0,
+            "every solver pair on the sliding bridge must be a Face pair; {} of \
+             {} were Vertex pairs",
+            n_vertex,
+            pairs.len(),
+        );
+
+        let tet4_positions = Mesh::<Yeoh>::positions(&g.mesh).to_vec();
+        let tet4_pairs = ActivePairsFor::<Yeoh>::active_pairs(&contact, &g.mesh, &tet4_positions);
+        assert!(
+            !tet4_pairs.is_empty()
+                && tet4_pairs
+                    .iter()
+                    .all(|p| matches!(p, ContactPair::Vertex { .. })),
+            "the Tet4 mesh must still take the per-vertex path ({} pairs)",
+            tet4_pairs.len(),
+        );
+    }
+
+    /// What slide schedule the PRODUCT scan needs — measured without solving.
+    ///
+    /// The sliding bridge's `κ` is derived from the normal closing, and a
+    /// bracket exists only while `ρ · closing < d̂/2`. That makes the step
+    /// count a *derived* quantity rather than a preference, and it is
+    /// answerable from geometry alone: poses, SDF evaluations, no FEM.
+    ///
+    /// ⭐ Worth running before any sliding solve, because it costs seconds and
+    /// tells you whether the solve is minutes or hours.
+    ///
+    /// ⛔ Asserts nothing — it reports a schedule.
+    #[test]
+    #[ignore = "needs the product scan; run with --ignored --nocapture"]
+    fn what_slide_schedule_the_product_scan_needs() {
+        let Some((scan, centerline, caps, design)) = product_scene() else {
+            return;
+        };
+        assert!(
+            centerline.len() >= 2,
+            "the product prep.toml must carry a centerline of >= 2 points, got {}",
+            centerline.len(),
+        );
+        let arc_m = polyline_arc_length_m(&centerline);
+        let chord_m = (centerline[centerline.len() - 1] - centerline[0]).norm();
+
+        // How much the path actually bends — the quantity that decides whether
+        // the travelling model differs from a translation-only one at all.
+        let axis = (centerline[centerline.len() - 1] - centerline[0]).normalize();
+        let max_bow_m = centerline
+            .iter()
+            .map(|p| {
+                let d = p - centerline[0];
+                (d - axis * d.dot(&axis)).norm()
+            })
+            .fold(0.0_f64, f64::max);
+        println!(
+            "\ncenterline: {} points · arc {:.2} mm · chord {:.2} mm · straightness {:.4} \
+             · max bow {:.3} mm",
+            centerline.len(),
+            arc_m * 1e3,
+            chord_m * 1e3,
+            chord_m / arc_m,
+            max_bow_m * 1e3,
+        );
+
+        let allowance_m = 0.5 * BRIDGE_CONTACT_DHAT_M / BRIDGE_PATCH_NONUNIFORMITY;
+        println!(
+            "cavity inset {:.1} mm · {} layer(s) · a bracket needs closing < {:.4} mm \
+             (d_hat/2 / rho at d_hat = {:.2} mm)\n",
+            design.cavity_inset_m * 1e3,
+            design.layers.len(),
+            allowance_m * 1e3,
+            BRIDGE_CONTACT_DHAT_M * 1e3,
+        );
+
+        let Ok(g) = build_insertion_geometry(&scan, &design, &caps, 2_500, 0.004) else {
+            println!("product geometry FAILED to build");
+            return;
+        };
+        let faces: Vec<[VertexId; 3]> = Mesh::<Yeoh>::boundary_faces(&g.mesh).to_vec();
+        let rest = Mesh::<Yeoh>::positions(&g.mesh);
+        let mut ids: Vec<VertexId> = faces.iter().flatten().copied().collect();
+        ids.sort_unstable();
+        ids.dedup();
+        let wall: Vec<Vec3> = ids.into_iter().map(|v| rest[v as usize]).collect();
+
+        println!("base_mold ({} tets, {} wall nodes)", g.n_tets, wall.len());
+        println!("steps   arc/step    closing   ratio   brackets?");
+        for n_steps in [16_usize, 32, 64, 128, 256, 512] {
+            let per_step_m =
+                arc_m / f64::from(u32::try_from(n_steps).expect("step count fits u32"));
+            let closing_m = sliding_normal_increment_m(
+                &g.intruder,
+                g.bounds,
+                &centerline,
+                n_steps,
+                g.cavity_offset_m,
+                BRIDGE_CONTACT_DHAT_M,
+                &wall,
+            );
+            let ok = bridge_face_barrier_kappa(BRIDGE_CONTACT_DHAT_M, closing_m).is_ok();
+            println!(
+                "{n_steps:>5}   {:>7.4} mm  {:>7.4} mm  {:>5.3}   {}",
+                per_step_m * 1e3,
+                closing_m * 1e3,
+                closing_m / per_step_m,
+                if ok { "YES" } else { "no" },
+            );
+            if ok {
+                println!(
+                    "      ⇒ at ~8 s/step that is ~{:.0} min of solve",
+                    f64::from(u32::try_from(n_steps).expect("fits")) * 8.0 / 60.0,
+                );
+                break;
+            }
+        }
+    }
+
+    /// ⭐⭐⭐ **σ and ρ on the PRODUCT scan** — the numbers the bridge's `κ`
+    /// is actually derived from.
+    ///
+    /// ⛔ **[`BRIDGE_DESIGN_TRACTION_PA`] (117 kPa) was measured on
+    /// `sock_over_capsule`**: a 3 mm inset through Ecoflex 00-30. `base_mold`
+    /// is a **5 mm** inset through **17 mm of DRAGON_SKIN_10A at 25 %
+    /// Slacker** — a substantially stiffer wall pressed further — so there is
+    /// no reason for σ to carry across, and κ scales with it linearly. This is
+    /// the re-measurement.
+    ///
+    /// Same method as #959, so the two are comparable: sweep the penalty
+    /// stiffness, read the area-weighted mean traction on the REST area basis
+    /// at the deepest depth every arm reached, and report the gap
+    /// distribution beside it so a reading taken off a penetrating state is
+    /// visible as such.
+    ///
+    /// ⚠ **Read σ only off a NON-penetrating arm.** The shipped κ = 1e3 reads
+    /// it off a state through the wall on every scene tried so far.
+    ///
+    /// ⛔ Asserts nothing — it is a measurement, and the scan is repo-excluded
+    /// so it could never gate.
+    #[test]
+    #[ignore = "needs the product scan + 5 release ramps; run with --ignored --nocapture"]
+    fn the_design_traction_and_patch_nonuniformity_on_the_product_scan() {
+        let Some((scan, _centerline, caps, design)) = product_scene() else {
+            return;
+        };
+        let cavity_inset_m = design.cavity_inset_m;
+        let n_steps = 16_usize;
+        eprintln!(
+            "PRODUCT SCAN base_mold — cavity {:.1} mm, {} layer(s), cell 4 mm, {n_steps} steps",
+            cavity_inset_m * 1e3,
+            design.layers.len(),
+        );
+        for l in &design.layers {
+            eprintln!(
+                "  layer: {:.1} mm {} @ slacker {:.2}",
+                l.thickness_m * 1e3,
+                l.anchor_key,
+                l.slacker_fraction,
+            );
+        }
+        report_sigma_vs_stiffness("base_mold", cavity_inset_m, n_steps, || {
+            build_insertion_geometry(&scan, &design, &caps, 2_500, 0.004)
+                .expect("the product geometry must build")
+        });
+    }
+
+    /// Does marching FINER fix the bridge's feasibility stall, as the
+    /// derivation predicts?
+    ///
+    /// ⭐⭐ **This tests a prediction rather than tuning a constant.** On the
+    /// product scan at 16 steps the bridge stalls at 6/16 with an
+    /// infeasible-start signature (Armijo at Newton iteration 0, `r_norm`
+    /// 3.6e4): the last converged step held `min_sd` 0.2936 mm and the next
+    /// increment was 0.3125 mm. The increment outran the standoff.
+    ///
+    /// The κ floor is a MARCHING-SCHEME number — "hold `ρ · step` open" — so
+    /// the derivation's own answer to that is a finer march, not a stiffer
+    /// barrier. Halving the step halves what must be held AND widens the
+    /// bracket (the floor falls; the ceiling does not move). If depth does not
+    /// improve with step count, the floor is not the binding constraint and
+    /// the ρ substitution is wrong in a way finer marching cannot fix.
+    ///
+    /// ⛔ Reaching for a stiffer κ first would be sweeping wearing a
+    /// derivation's clothes — the exact thing this approach exists to avoid.
+    ///
+    /// ⛔ Asserts nothing; stall points are platform-dependent.
+    #[test]
+    #[ignore = "needs the product scan + release ramps at several schedules; run with --ignored --nocapture"]
+    fn does_marching_finer_fix_the_bridges_feasibility_stall() {
+        let Some((scan, _centerline, caps, design)) = product_scene() else {
+            return;
+        };
+        let inset_m = design.cavity_inset_m;
+        println!(
+            "\nbase_mold · inset {:.1} mm · the floor must hold rho*step open\n",
+            inset_m * 1e3,
+        );
+        println!("steps   step_mm   kappa        held_min_sd  depth_mm   of_inset  outcome");
+        for n_steps in [16_usize, 32, 64] {
+            let step_m = inset_m / f64::from(u32::try_from(n_steps).expect("fits"));
+            let kappa = bridge_face_barrier_kappa(BRIDGE_CONTACT_DHAT_M, step_m)
+                .expect("the bracket must be non-empty at these schedules");
+            let Ok(g) = build_insertion_geometry(&scan, &design, &caps, 2_500, 0.004) else {
+                println!("geometry FAILED to build");
+                return;
+            };
+            let mesh10 = Tet10Mesh::<Yeoh>::from_tet4(&g.mesh);
+            let referenced: Vec<VertexId> = referenced_vertices(&mesh10);
+            let rest10 = boundary_vertex_areas(
+                Mesh::<Yeoh>::positions(&mesh10),
+                Mesh::<Yeoh>::boundary_faces(&mesh10),
+            );
+            let intruder = g.intruder.clone();
+            let bounds = g.bounds;
+            let cavity_offset_m = g.cavity_offset_m;
+
+            let ramp = run_insertion_ramp_tet10_ipc(g, n_steps, INSERTION_SOLVE_TOL)
+                .expect("the bridge ramp must build");
+            let (depth_m, min_sd_mm) = ramp.steps.last().map_or((0.0, f64::NAN), |last| {
+                let pos = positions_from_flat(&last.x_final);
+                let c = intruder_ipc_contact_at(
+                    &intruder,
+                    bounds,
+                    last.interference_m,
+                    cavity_offset_m,
+                    kappa,
+                    BRIDGE_CONTACT_DHAT_M,
+                );
+                let raw = c.per_pair_readout(&mesh10, &pos);
+                let stats = patch_stats(
+                    &filter_pair_readouts_to_referenced(raw, &referenced),
+                    &rest10,
+                );
+                (
+                    last.interference_m,
+                    stats.map_or(f64::NAN, |s| s.min_sd_m * 1e3),
+                )
+            });
+            let outcome = if ramp.steps.len() == n_steps {
+                "COMPLETE".to_string()
+            } else {
+                format!("stalled {}/{n_steps}", ramp.steps.len())
+            };
+            println!(
+                "{n_steps:>5}   {:>7.4}   {kappa:.4e}   {min_sd_mm:>10.4}   {:>7.3}   {:>6.1}%  {outcome}",
+                step_m * 1e3,
+                depth_m * 1e3,
+                100.0 * depth_m / inset_m,
+            );
+        }
+    }
+
+    /// Which `ρ` makes the floor's PROMISE actually hold?
+    ///
+    /// ⭐⭐⭐ **The floor promises a standoff and does not deliver it.**
+    /// Measured on the product scan, the barrier holds ~0.8× of the `ρ · step`
+    /// the derivation asked for, at every schedule tried:
+    ///
+    /// ```text
+    /// steps  required ρ·step   held     ratio   depth
+    ///    16       0.3500 mm  0.2936 mm  0.84    37.5 %
+    ///    32       0.1750 mm  0.1347 mm  0.77    46.9 %
+    ///    64       0.0875 mm  0.0635 mm  0.73    60.9 %
+    /// ```
+    ///
+    /// The shortfall does not shrink with the step, because it comes from the
+    /// traction at the TIGHTEST node exceeding the area-weighted mean `σ` the
+    /// floor is derived at — a property of the patch, not of the schedule. So
+    /// refining the march cannot fix it: a finer step lowers the floor, which
+    /// lowers `κ`, which holds proportionally less.
+    ///
+    /// ⇒ `ρ` is the lever, and this measures which value keeps the promise.
+    /// ⚠ **This is calibrating an approximation against its own definition,
+    /// not tuning.** `ρ` means the barrier-inverted ratio
+    /// `face_barrier_standoff(κ, d̂, σ)/min_sd`; what #959 substituted was a
+    /// GAP ratio (`mean_sd/min_sd`), and that report said in its own output
+    /// that the two "coincide only where the traction-gap map is near-linear —
+    /// the substitution is not an identity". sim-soft's fixture used **1.30**
+    /// from the barrier-inverted form; the gap ratio gave 1.11–1.18.
+    ///
+    /// The number to read off is the smallest `ρ` whose held standoff EXCEEDS
+    /// one increment, since that is the feasibility condition the ramp
+    /// actually needs.
+    ///
+    /// ⛔ Asserts nothing; stall points are platform-dependent.
+    #[test]
+    #[ignore = "needs the product scan + release ramps per ρ; run with --ignored --nocapture"]
+    fn which_patch_nonuniformity_keeps_the_floors_promise() {
+        let Some((scan, _centerline, caps, design)) = product_scene() else {
+            return;
+        };
+        const N_STEPS: usize = 16;
+        let inset_m = design.cavity_inset_m;
+        let step_m = inset_m / f64::from(u32::try_from(N_STEPS).expect("fits"));
+        println!(
+            "\nbase_mold · inset {:.1} mm · {N_STEPS} steps · increment {:.4} mm",
+            inset_m * 1e3,
+            step_m * 1e3,
+        );
+        println!("\n   rho   required_mm   kappa        held_mm   held/step   depth_mm   outcome");
+        for rho in [1.12_f64, 1.30, 1.50, 1.75] {
+            let required_m = rho * step_m;
+            let Some(floor) =
+                face_barrier_kappa(BRIDGE_CONTACT_DHAT_M, required_m, BRIDGE_DESIGN_TRACTION_PA)
+            else {
+                println!("{rho:>6.2}   (required standoff is outside the band)");
+                continue;
+            };
+            let Some(ceiling) = face_barrier_kappa(
+                BRIDGE_CONTACT_DHAT_M,
+                0.5 * BRIDGE_CONTACT_DHAT_M,
+                BRIDGE_DESIGN_TRACTION_PA,
+            ) else {
+                continue;
+            };
+            if floor >= ceiling {
+                println!("{rho:>6.2}   {:>9.4}   (bracket EMPTY)", required_m * 1e3);
+                continue;
+            }
+            let kappa = (floor * ceiling).sqrt();
+
+            let Ok(g) = build_insertion_geometry(&scan, &design, &caps, 2_500, 0.004) else {
+                println!("geometry FAILED to build");
+                return;
+            };
+            let mesh10 = Tet10Mesh::<Yeoh>::from_tet4(&g.mesh);
+            let referenced: Vec<VertexId> = referenced_vertices(&mesh10);
+            let rest10 = boundary_vertex_areas(
+                Mesh::<Yeoh>::positions(&mesh10),
+                Mesh::<Yeoh>::boundary_faces(&mesh10),
+            );
+            let intruder = g.intruder.clone();
+            let bounds = g.bounds;
+            let cavity_offset_m = g.cavity_offset_m;
+
+            let ramp = run_insertion_ramp_tet10_ipc_at(
+                g,
+                N_STEPS,
+                INSERTION_SOLVE_TOL,
+                kappa,
+                BRIDGE_CONTACT_DHAT_M,
+            )
+            .expect("the bridge ramp must build");
+            let (depth_m, held_mm) = ramp.steps.last().map_or((0.0, f64::NAN), |last| {
+                let pos = positions_from_flat(&last.x_final);
+                let c = intruder_ipc_contact_at(
+                    &intruder,
+                    bounds,
+                    last.interference_m,
+                    cavity_offset_m,
+                    kappa,
+                    BRIDGE_CONTACT_DHAT_M,
+                );
+                let raw = c.per_pair_readout(&mesh10, &pos);
+                let stats = patch_stats(
+                    &filter_pair_readouts_to_referenced(raw, &referenced),
+                    &rest10,
+                );
+                (
+                    last.interference_m,
+                    stats.map_or(f64::NAN, |s| s.min_sd_m * 1e3),
+                )
+            });
+            let outcome = if ramp.steps.len() == N_STEPS {
+                "COMPLETE".to_string()
+            } else {
+                format!("stalled {}/{N_STEPS}", ramp.steps.len())
+            };
+            println!(
+                "{rho:>6.2}   {:>9.4}   {kappa:.4e}   {held_mm:>7.4}   {:>9.3}   {:>7.3}   {outcome}",
+                required_m * 1e3,
+                held_mm / (step_m * 1e3),
+                depth_m * 1e3,
+            );
+        }
+        println!(
+            "\n⚠ feasibility needs held/step > 1. The gap-ratio ρ in use is {:.2}.",
+            BRIDGE_PATCH_NONUNIFORMITY,
+        );
+    }
+
+    /// WHAT is the node that limits the bridge's march?
+    ///
+    /// ⭐⭐⭐ The stall is a feasibility failure on `min_sd`, and `min_sd` was
+    /// measured FLAT at ~0.294 mm across a 1.5× range of κ. A gap that does
+    /// not respond to the barrier is not a barrier equilibrium — it is
+    /// geometry. This asks which geometry.
+    ///
+    /// The suspect is enrichment. `Tet10Mesh::from_tet4` puts every midside at
+    /// the straight-edge MIDPOINT, so on a curved cavity a boundary midside
+    /// sits under the true surface by the sagitta — measured at **0.117 mm**
+    /// on the tolerance fixture (tightest corner −0.1354 mm, tightest midside
+    /// −0.2522 mm). If the limiting node is a midside, the barrier is fighting
+    /// a node that was never on the surface, and no κ can move it.
+    ///
+    /// Reports the gap distribution split by node kind, at REST (free) and at
+    /// the last converged step of a real ramp (the state that actually
+    /// stalls). ⛔ Asserts nothing — a diagnostic.
+    #[test]
+    #[ignore = "needs the product scan + a release ramp; run with --ignored --nocapture"]
+    fn what_node_limits_the_bridges_march() {
+        let Some((scan, _centerline, caps, design)) = product_scene() else {
+            return;
+        };
+        const N_STEPS: usize = 16;
+        let Ok(g) = build_insertion_geometry(&scan, &design, &caps, 2_500, 0.004) else {
+            println!("geometry FAILED to build");
+            return;
+        };
+        let tet10 = Tet10Mesh::<Yeoh>::from_tet4(&g.mesh);
+        let n_corners = tet10.n_corners();
+        let referenced: Vec<VertexId> = referenced_vertices(&tet10);
+        let intruder = g.intruder.clone();
+        let bounds = g.bounds;
+        let cavity_offset_m = g.cavity_offset_m;
+        let inset_m = -cavity_offset_m;
+        let step_m = inset_m / f64::from(u32::try_from(N_STEPS).expect("fits"));
+        let kappa = bridge_face_barrier_kappa(BRIDGE_CONTACT_DHAT_M, step_m)
+            .expect("bracket must be non-empty");
+
+        // ── REST: how far under the cavity surface does enrichment put things?
+        let cavity = Solid::from_sdf(intruder.clone(), bounds).offset(cavity_offset_m);
+        let positions = Mesh::<Yeoh>::positions(&tet10);
+        let (mut corner_worst, mut mid_worst) = (f64::INFINITY, f64::INFINITY);
+        for &v in &referenced {
+            let sd = cavity.eval(Point3::from(positions[v as usize]));
+            if !sd.is_finite() || sd.abs() > BRIDGE_CONTACT_DHAT_M {
+                continue;
+            }
+            if (v as usize) < n_corners {
+                corner_worst = corner_worst.min(sd);
+            } else {
+                mid_worst = mid_worst.min(sd);
+            }
+        }
+        println!(
+            "\nAT REST, within one band of the cavity surface:\n  \
+             tightest CORNER {:>8.4} mm · tightest MIDSIDE {:>8.4} mm · \
+             enrichment excess {:>7.4} mm",
+            corner_worst * 1e3,
+            mid_worst * 1e3,
+            (corner_worst - mid_worst) * 1e3,
+        );
+
+        // ── CONVERGED: which kind of node carries the limiting gap?
+        let ramp = run_insertion_ramp_tet10_ipc(g, N_STEPS, INSERTION_SOLVE_TOL)
+            .expect("the bridge ramp must build");
+        let Some(last) = ramp.steps.last() else {
+            println!("no converged step");
+            return;
+        };
+        let pos = positions_from_flat(&last.x_final);
+        let contact = intruder_ipc_contact_at(
+            &intruder,
+            bounds,
+            last.interference_m,
+            cavity_offset_m,
+            kappa,
+            BRIDGE_CONTACT_DHAT_M,
+        );
+        let readouts =
+            filter_pair_readouts_to_referenced(contact.per_pair_readout(&tet10, &pos), &referenced);
+
+        let (mut c_min, mut m_min) = (f64::INFINITY, f64::INFINITY);
+        let (mut n_c, mut n_m) = (0_usize, 0_usize);
+        for r in &readouts {
+            if !r.tributary_area.is_finite() || r.tributary_area <= 0.0 {
+                continue;
+            }
+            if let ContactPair::Vertex { vertex_id, .. } = r.pair {
+                if (vertex_id as usize) < n_corners {
+                    n_c += 1;
+                    c_min = c_min.min(r.sd);
+                } else {
+                    n_m += 1;
+                    m_min = m_min.min(r.sd);
+                }
+            }
+        }
+        println!(
+            "\nAT THE LAST CONVERGED STEP ({:.3} mm, {}/{N_STEPS}):\n  \
+             load-bearing CORNERS {n_c:>5}, tightest {:>8.4} mm\n  \
+             load-bearing MIDSIDES {n_m:>4}, tightest {:>8.4} mm\n  \
+             one increment is {:.4} mm",
+            last.interference_m * 1e3,
+            ramp.steps.len(),
+            c_min * 1e3,
+            m_min * 1e3,
+            step_m * 1e3,
+        );
+        println!(
+            "\n⇒ the limiting node is a {}",
+            if m_min < c_min { "MIDSIDE" } else { "CORNER" },
+        );
+    }
+
+    /// Did `conform_cavity_midsides` actually MOVE anything?
+    ///
+    /// ⚠ Written because the conform step was wired in and the solve barely
+    /// changed — residual 3.6438e4 → 3.6429e4, four significant figures of
+    /// agreement. That is what a no-op looks like, and assuming a helper ran
+    /// because it was called is the failure this checks for.
+    ///
+    /// ⛔ Asserts nothing — a diagnostic.
+    #[test]
+    #[ignore = "needs the product scan; run with --ignored --nocapture"]
+    fn did_conforming_the_midsides_move_anything() {
+        let Some((scan, _centerline, caps, design)) = product_scene() else {
+            return;
+        };
+        let Ok(g) = build_insertion_geometry(&scan, &design, &caps, 2_500, 0.004) else {
+            println!("geometry FAILED to build");
+            return;
+        };
+        let plain = Tet10Mesh::<Yeoh>::from_tet4(&g.mesh);
+        let n_corners = plain.n_corners();
+        let before: Vec<Vec3> = Mesh::<Yeoh>::positions(&plain).to_vec();
+        let conformed = conform_cavity_midsides(
+            Tet10Mesh::<Yeoh>::from_tet4(&g.mesh),
+            &g.intruder,
+            g.bounds,
+            g.cavity_offset_m,
+            g.cell_size_m,
+        );
+        let after: Vec<Vec3> = Mesh::<Yeoh>::positions(&conformed).to_vec();
+        assert_eq!(
+            before.len(),
+            after.len(),
+            "conforming must not change count"
+        );
+
+        let mut moved = 0_usize;
+        let mut max_move = 0.0_f64;
+        let mut sum_move = 0.0_f64;
+        for (b, a) in before.iter().zip(after.iter()) {
+            let d = (a - b).norm();
+            if d > 1e-12 {
+                moved += 1;
+                sum_move += d;
+                max_move = max_move.max(d);
+            }
+        }
+        println!(
+            "\nmidsides moved: {moved} of {} total nodes ({} corners)\n  \
+             max move {:.4} mm · mean move {:.4} mm",
+            before.len(),
+            n_corners,
+            max_move * 1e3,
+            if moved == 0 {
+                0.0
+            } else {
+                sum_move / f64::from(u32::try_from(moved).expect("fits")) * 1e3
+            },
+        );
+
+        // How many were even CANDIDATES — on a P2 boundary face at all?
+        let faces6 = Mesh::<Yeoh>::boundary_faces6(&plain).expect("Tet10 surfaces P2 faces");
+        let mut cand: Vec<VertexId> = faces6.iter().flat_map(|f| f[3..6].to_vec()).collect();
+        cand.sort_unstable();
+        cand.dedup();
+        let cavity = Solid::from_sdf(g.intruder.clone(), g.bounds).offset(g.cavity_offset_m);
+        let band_m = CAVITY_MIDSIDE_BAND_CELLS * g.cell_size_m;
+        let in_band = cand
+            .iter()
+            .filter(|&&v| {
+                let sd = cavity.eval(Point3::from(before[v as usize]));
+                sd.is_finite() && sd.abs() <= band_m
+            })
+            .count();
+        println!(
+            "  boundary-face midsides: {} · within the {:.1} mm cavity band: {in_band}",
+            cand.len(),
+            band_m * 1e3,
+        );
+
+        // The quantity the fix exists to move.
+        let tightest = |m: &[Vec3]| -> f64 {
+            cand.iter()
+                .map(|&v| cavity.eval(Point3::from(m[v as usize])))
+                .filter(|s| s.is_finite())
+                .fold(f64::INFINITY, f64::min)
+        };
+        println!(
+            "  tightest boundary midside vs the cavity surface: {:.4} mm → {:.4} mm",
+            tightest(&before) * 1e3,
+            tightest(&after) * 1e3,
+        );
+    }
+
+    /// ⭐⭐⭐ Does DECOUPLING `κ` from the schedule fix the stall?
+    ///
+    /// The floor derives `κ` from the increment, so refining the march LOWERS
+    /// `κ`, which holds proportionally less — measured, held/step degraded
+    /// 0.94 → 0.86 → 0.81 across 16/32/64 steps even as depth improved. The
+    /// threshold chases the step down and the march can never catch it.
+    ///
+    /// But the held standoff is FLAT in `κ` (0.294 mm across a 1.5× range),
+    /// because the wall is stiff enough that the barrier cannot open the gap —
+    /// 17 mm of DRAGON_SKIN_10A against a barrier, not the compliant Ecoflex
+    /// the floor was validated on.
+    ///
+    /// ⇒ **Both facts together give the fix: hold `κ` at the CEILING and
+    /// refine the schedule.** The ceiling is the stated requirement (stay out
+    /// of the cushion) and does not move with the increment, so the held
+    /// standoff stays put while the step shrinks under it. Feasibility is
+    /// `step < held`, so it is reachable — the old derivation made it
+    /// unreachable by construction.
+    ///
+    /// Prediction: at `κ` = ceiling, 32 steps (0.156 mm) should clear a held
+    /// standoff of ~0.29 mm and march past the 6/16 wall.
+    ///
+    /// ⛔ Asserts nothing; stall points are platform-dependent.
+    #[test]
+    #[ignore = "needs the product scan + release ramps per schedule; run with --ignored --nocapture"]
+    fn does_decoupling_kappa_from_the_schedule_fix_the_stall() {
+        let Some((scan, _centerline, caps, design)) = product_scene() else {
+            return;
+        };
+        let inset_m = design.cavity_inset_m;
+        let ceiling = face_barrier_kappa(
+            BRIDGE_CONTACT_DHAT_M,
+            0.5 * BRIDGE_CONTACT_DHAT_M,
+            BRIDGE_DESIGN_TRACTION_PA,
+        )
+        .expect("the ceiling is always derivable");
+        println!(
+            "\nbase_mold · inset {:.1} mm · kappa HELD at the ceiling {ceiling:.4e} \
+             (d_hat {:.2} mm)\n",
+            inset_m * 1e3,
+            BRIDGE_CONTACT_DHAT_M * 1e3,
+        );
+        println!("steps   step_mm   held_mm   depth_mm   of_inset   outcome");
+        for n_steps in [16_usize, 32, 64] {
+            let step_m = inset_m / f64::from(u32::try_from(n_steps).expect("fits"));
+            let Ok(g) = build_insertion_geometry(&scan, &design, &caps, 2_500, 0.004) else {
+                return;
+            };
+            let mesh10 = Tet10Mesh::<Yeoh>::from_tet4(&g.mesh);
+            let referenced: Vec<VertexId> = referenced_vertices(&mesh10);
+            let rest10 = boundary_vertex_areas(
+                Mesh::<Yeoh>::positions(&mesh10),
+                Mesh::<Yeoh>::boundary_faces(&mesh10),
+            );
+            let (intruder, bounds, cavity_offset_m) =
+                (g.intruder.clone(), g.bounds, g.cavity_offset_m);
+            let ramp = run_insertion_ramp_tet10_ipc_at(
+                g,
+                n_steps,
+                INSERTION_SOLVE_TOL,
+                ceiling,
+                BRIDGE_CONTACT_DHAT_M,
+            )
+            .expect("the bridge ramp must build");
+            let (depth_m, held_mm) = ramp.steps.last().map_or((0.0, f64::NAN), |last| {
+                let pos = positions_from_flat(&last.x_final);
+                let c = intruder_ipc_contact_at(
+                    &intruder,
+                    bounds,
+                    last.interference_m,
+                    cavity_offset_m,
+                    ceiling,
+                    BRIDGE_CONTACT_DHAT_M,
+                );
+                let raw = c.per_pair_readout(&mesh10, &pos);
+                let st = patch_stats(
+                    &filter_pair_readouts_to_referenced(raw, &referenced),
+                    &rest10,
+                );
+                (
+                    last.interference_m,
+                    st.map_or(f64::NAN, |s| s.min_sd_m * 1e3),
+                )
+            });
+            println!(
+                "{n_steps:>5}   {:>7.4}   {held_mm:>7.4}   {:>7.3}   {:>7.1}%   {}",
+                step_m * 1e3,
+                depth_m * 1e3,
+                100.0 * depth_m / inset_m,
+                if ramp.steps.len() == n_steps {
+                    "COMPLETE".to_string()
+                } else {
+                    format!("stalled {}/{n_steps}", ramp.steps.len())
+                },
+            );
+        }
     }
 }
