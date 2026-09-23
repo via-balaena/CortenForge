@@ -793,6 +793,141 @@ Listed because the confidence of §4 rests on these being open, not closed.
    fixed by `σ` and `d̂`. ⇒ **the band is the lever on the ceiling; the schedule
    is the lever on the floor.**
 
+
+   ---
+
+   ### ▶▶▶ THE BRIDGE ITSELF — measured 2026-09-22, macOS/ARM
+
+   `run_insertion_ramp_tet10_ipc` runs the same scene, the same boundary
+   conditions and the same rigid intruder through a swapped solve triple —
+   `Tet4` → `Tet10`, `SdfMeshedTetMesh` → `Tet10Mesh`, `PenaltyRigidContact`
+   → `IpcRigidContact` — with `κ` derived from the `σ` above rather than swept.
+   The shipped `run_insertion_ramp` is untouched.
+
+   ⭐⭐⭐ **THE RESULT, and it is what the bridge was justified on.** Both arms
+   run the same 16-step ramp to a 3 mm inset at a ladder of residual
+   tolerances. Depth alone is not the payoff quantity — #959 showed a ramp can
+   reach full depth *by penetrating* — so `min_sd` and the area-weighted 5 %
+   tail are reported beside it. **A depth reached through the wall is not a
+   seat.**
+
+   | scene | tol | arm | steps | depth | `min_sd` | 5 % tail | σ |
+   |---|---|---|---|---|---|---|---|
+   | tol-fixture | **1e-1** (ships) | tet4+penalty | 16/16 | 3.000 mm | **−0.306 mm** | **−0.213 mm** | 76.6 kPa |
+   | tol-fixture | 1e-1 | **tet10+ipc** | 16/16 | 3.000 mm | **+0.184 mm** | **+0.235 mm** | 124.4 kPa |
+   | tol-fixture | **1e-2** | tet4+penalty | **3/16** | 0.563 mm | +0.635 mm | +0.656 mm | 26.4 kPa |
+   | tol-fixture | 1e-2 | **tet10+ipc** | **16/16** | 3.000 mm | +0.184 mm | +0.236 mm | 124.4 kPa |
+   | tol-fixture | 1e-3 | tet4+penalty | 3/16 | 0.563 mm | +0.635 mm | +0.655 mm | 26.4 kPa |
+   | tol-fixture | 1e-3 | tet10+ipc | **0/16** | — | — | — | — |
+   | sphere-40mm | 1e-1 | tet4+penalty | 16/16 | 3.000 mm | +0.054 mm | +0.114 mm | 68.3 kPa |
+   | sphere-40mm | 1e-1 | **tet10+ipc** | 16/16 | 3.000 mm | **+0.360 mm** | **+0.402 mm** | 88.6 kPa |
+
+   Two things fall out, and they are different claims:
+
+   1. ⭐⭐⭐ **At the tolerance that ships, the penalty path reaches full depth
+      THROUGH THE WALL and the bridge seats it.** On the tolerance fixture the
+      baseline's `min_sd` is −0.306 mm with its 5 % area tail at −0.213 mm — a
+      *region* through the wall, not an outlier — while the bridge holds
+      +0.184 mm at the same depth. On the sphere the baseline seats, but only
+      just (+0.054 mm) against the bridge's +0.360 mm, **6.6× the standoff**.
+   2. ⭐⭐ **Asked for one more decade of residual, the baseline's usable depth
+      collapses 5.3× and the bridge's does not move.** At `tol` = 1e-2 the
+      penalty arm reaches 0.563 mm of the 3 mm inset; the bridge still reaches
+      3.000 mm, and its answer is the *same* answer — `min_sd` +0.184 mm and σ
+      124.4 kPa at both 1e-1 and 1e-2, agreeing to four significant figures.
+      ⇒ **the payoff quantity — deepest interference solvable at a tight
+      tolerance with `min_sd > 0` and the 5 % tail > 0 — goes 0.563 mm →
+      3.000 mm.**
+
+   ⛔ **AND THE HONEST HALF: the bridge has its own conditioning floor, and it
+   is a cliff rather than a slope.** At `tol` = 1e-3 it reaches **0/16** —
+   worse than the baseline's 3/16 — stalling during its approach at
+   `r ≈ 1e-4` with "non-SPD tangent near solution". It either seats fully or
+   not at all. ⇒ the bridge does not remove the tolerance ceiling #958 found;
+   it moves the depth available *below* that ceiling.
+
+   ⛔⛔ **`κ` IS NOT THE BINDING CONSTRAINT — measured, not assumed.**
+   `the_bridge_ramp_over_a_stiffness_sweep` runs the ramp at 1e6, the derived
+   floor (1.53e7), the derived value (3.54e7), the derived ceiling (8.17e7) and
+   1e9. **All five stall the same way**, at Newton iteration 4–5, at residuals
+   between 1e-4 and 7e-3. Three decades of stiffness move the stall neither
+   earlier nor later. Whatever the floor is, it is not the barrier's stiffness.
+
+   ⭐ **The derivation, and why it is per-ramp rather than a constant.** The
+   floor belongs to the MARCHING SCHEME — the material and the compression set
+   `σ`, the increment sets the clearance one step must survive — so a stored
+   constant would go silently wrong the moment a caller changed `n_steps`. At
+   `d̂` = 1.2 mm over a 16-step 3 mm ramp:
+
+   ```text
+   floor    σ / |b'(ρ · step)| = 1.5315e7   hold one increment open
+   ceiling  σ / |b'(d̂ / 2)|    = 8.1717e7   stay out of the cushion
+   derived  geometric centre   = 3.5377e7   0.727 decades wide
+   ```
+
+   ⚠ **No round decade sits inside**, which is why the shipped value is the
+   log-midpoint rather than a power of ten. `the_bridges_barrier_band_brackets_a_stiffness`
+   re-derives this on every build across all four candidate bands, and shows
+   the boundary where the derivation must refuse: at a 4-step schedule
+   `ρ·step` = 0.885 mm and three of the four bands have no bracket at all.
+
+   ▶▶ **THREE THINGS THE SWAP BROKE THAT A COMPILE COULD NOT SEE.** All three
+   compiled, none panicked, and each would have shipped a wrong answer quietly:
+
+   1. ⛔⛔ **IPC is an INTERIOR-POINT method and the ramp had no feasible
+      start.** At interference 0 the cavity surface and the intruder coincide,
+      so the first increment hands Newton a state already through the wall:
+      residual at iteration 0 was **4.08e6 N**. The penalty path tolerates that
+      start; a barrier cannot. The ramp now marches in from a clearance in
+      increments of the same size, solving but not recording the approach —
+      which is exactly what the `κ` floor is *for*, since "hold `ρ·step` open"
+      is the condition that makes every later start feasible. Residual at the
+      first increment fell to **1.21e-3**.
+   2. ⛔ **The clearance must be measured over the REFERENCED vertices, not
+      over `positions()`.** `positions()` is the lattice, not the body: the
+      worst rest "penetration" over all vertices is **11.5427 mm** — an orphan
+      BCC lattice point near the cavity centre — against **0.2522 mm** over the
+      vertices the solver sees. Taking the former inflated the approach from 5
+      increments to 65, and the ramp never reached its recorded steps.
+   3. ⚠ **Enrichment puts boundary midsides UNDER the curved cavity surface.**
+      `from_tet4` places every midside at the straight-edge midpoint, so a
+      boundary midside sits under the true surface by the sagitta. Measured on
+      the tolerance fixture: tightest corner −0.1354 mm, tightest midside
+      −0.2522 mm, an excess of **0.117 mm** against a predicted `h²/8R` of
+      **0.118 mm** at `h` = 4 mm, `R` = 17 mm. `Tet10Mesh::with_curved_midsides`
+      is the cure and is **not** applied here — the approach clearance absorbs
+      it instead, so the reported `min_sd` carries that bias and is
+      conservative by roughly one sagitta.
+
+   ⛔⛔ **THE READOUT'S PAIR KIND IS NOT THE SOLVER'S, and a gate written the
+   obvious way fails on a correct bridge.** `IpcRigidContact::active_pairs`
+   emits `ContactPair::Face` — that is what the solver scatters. But
+   `per_pair_readout` on the same mesh emits per-NODE `ContactPair::Vertex`
+   naming the six face nodes, because the face-integrated barrier loads the
+   MIDSIDES and puts ~0 on the corners. Measured: **1442 of 1442 readouts were
+   `Vertex`** on a mesh whose solver contact was entirely face-integrated. ⇒
+   the selector probe must read `active_pairs`; and
+   `filter_pair_readouts_to_referenced`'s `unreachable!()` on `Face` is
+   therefore never reached from this path, so the shipped filter is kept.
+
+   ⚠ **But it survives only because `referenced_vertex_mask` walks
+   `tet_midside_nodes`.** Every loaded node on the face path IS a midside, so a
+   corners-only "referenced" set would delete the entire contact patch and
+   return a clean, empty, non-panicking readout — conformity 0 on a good
+   design. `the_bridges_midside_readouts_survive_the_orphan_filter` runs that
+   counterfactual rather than trusting the property.
+
+   ⚠ **The per-tet readouts are CORNER-LINEAR, and this is a known limitation
+   rather than an oversight.** `compute_tet_readouts` builds `F` from the four
+   corner displacements; on a quadratic element that is the linear part of a
+   field that is no longer linear. It compiles, it does not panic, and it
+   returns a plausible number that ignores the midside motion the solve just
+   computed — so the UI heat map would look right and be wrong.
+   `the_corner_readout_is_not_the_tet10_strain` makes that executable: it
+   measures the gap on a quadratic field and pins exact agreement on an affine
+   one. ⇒ **the bridge's contact and convergence results stand; its per-tet
+   stress field is still Tet4-quality and owes a per-Gauss-point readout.**
+
 4. **Per-Gauss-point material sampling** (§7.6). The expensive one: a
    return-shape change to `Mesh::materials()` reaching 119 call sites.
    Deferred to here so its benefit arrives as a number rather than a belief.
