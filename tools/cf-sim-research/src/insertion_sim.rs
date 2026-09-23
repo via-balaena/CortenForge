@@ -10492,6 +10492,126 @@ mod tests {
         }
     }
 
+    /// The bridge across a stiffness sweep **on the product scan** — the
+    /// margin the shipped `κ` has where it actually runs.
+    ///
+    /// [`the_bridge_ramp_over_a_stiffness_sweep`] measured the band that seats
+    /// at the shipped tolerance on [`tolerance_fixture`], a 3 mm Ecoflex inset,
+    /// with the shipped value inside it. That band belongs to that fixture.
+    /// This runs the same grid points on `base_mold` at its best recorded
+    /// operating point — 32 steps, [`INSERTION_SOLVE_TOL`] — so the product's
+    /// margin is measured rather than inherited.
+    ///
+    /// ⚠ **Read the stop, not just the depth.** The recon records the shipped
+    /// `κ` stopping at 4.531 mm of the 5 mm inset on element inversion, so no
+    /// arm is expected to reach full depth. An arm that stops on a contact
+    /// stall and one that stops on inversion are different answers, and a
+    /// seat still needs `min_sd` AND the 5 % tail above zero (#959).
+    ///
+    /// ⛔ The scan is repo-excluded, so nothing here can gate; it asserts
+    /// nothing.
+    #[test]
+    #[ignore = "needs the product scan + ~12 release ramps; run with --ignored --nocapture"]
+    fn the_bridge_ramp_over_a_stiffness_sweep_on_the_product_scan() {
+        const N_STEPS: usize = 32;
+        let Some((scan, _centerline, caps, design)) = product_scene() else {
+            return;
+        };
+        let build = || {
+            build_insertion_geometry(&scan, &design, &caps, 2_500, 0.004)
+                .expect("the product geometry must build")
+        };
+        // The schedule comes from the geometry the ramp runs, exactly as the
+        // ramp derives it — not from the design's nominal inset.
+        // `N_STEPS` is small; the cast is exact.
+        #[allow(clippy::cast_precision_loss)]
+        let step = -build().cavity_offset_m / N_STEPS as f64;
+        let shipped = bridge_face_barrier_kappa(BRIDGE_CONTACT_DHAT_M, step)
+            .expect("the bracket must be non-empty");
+
+        // The fixture sweep's own grid points (five per decade), one decade
+        // either side of the band it found, so the two tables line up row for
+        // row.
+        let mut arms: Vec<(f64, &str)> = (3..=13)
+            .map(|i| (10f64.powf(6.0 + f64::from(i) / 5.0), ""))
+            .collect();
+        arms.push((shipped, "SHIPPED"));
+        arms.sort_by(|a, b| a.0.total_cmp(&b.0));
+
+        println!(
+            "\n══ base_mold · inset {:.1} mm · {N_STEPS} steps of {:.4} mm · asked for \
+             {INSERTION_SOLVE_TOL:e} · shipped {shipped:.4e} ══",
+            design.cavity_inset_m * 1e3,
+            step * 1e3,
+        );
+        println!(
+            "{:<20} {:<18} {:>6}  {:>8}  {:>9}  {:>5}  {:>9}  {:>8}  {:>9}",
+            "kappa",
+            "label",
+            "steps",
+            "depth_mm",
+            "resid",
+            "pairs",
+            "min_sd_mm",
+            "tail5_mm",
+            "sigma_kPa",
+        );
+        for &(kappa, label) in &arms {
+            let kappa_label = format!("{kappa:.3e}");
+            let g = build();
+            let mesh10 = Tet10Mesh::<Yeoh>::from_tet4(&g.mesh);
+            let referenced: Vec<VertexId> = referenced_vertices(&mesh10);
+            let rest_areas = boundary_vertex_areas(
+                Mesh::<Yeoh>::positions(&mesh10),
+                Mesh::<Yeoh>::boundary_faces(&mesh10),
+            );
+            let intruder = g.intruder.clone();
+            let bounds = g.bounds;
+            let cavity_offset_m = g.cavity_offset_m;
+            let ramp = run_insertion_ramp_tet10_ipc_at(
+                g,
+                N_STEPS,
+                INSERTION_SOLVE_TOL,
+                kappa,
+                BRIDGE_CONTACT_DHAT_M,
+            )
+            .expect("the bridge ramp must build");
+            if let Some(last) = ramp.steps.last() {
+                let pos = positions_from_flat(&last.x_final);
+                let contact = intruder_ipc_contact_at(
+                    &intruder,
+                    bounds,
+                    last.interference_m,
+                    cavity_offset_m,
+                    kappa,
+                    BRIDGE_CONTACT_DHAT_M,
+                );
+                let raw = contact.per_pair_readout(&mesh10, &pos);
+                let readouts = filter_pair_readouts_to_referenced(raw, &referenced);
+                print_arm_row(
+                    &kappa_label,
+                    label,
+                    ramp.steps.len(),
+                    N_STEPS,
+                    last.interference_m,
+                    last.final_residual_norm,
+                    patch_stats(&readouts, &rest_areas),
+                );
+            } else {
+                let steps = format!("0/{N_STEPS}");
+                println!("{kappa_label:<20} {label:<18} {steps:>6}  (no step converged)");
+            }
+            if let Some(k) = ramp.failed_at_step {
+                // The solver's closing hint is the same on every row; drop it.
+                let why = ramp.failure_reason.as_deref().unwrap_or("?");
+                let why = why
+                    .split_once(" Likely causes")
+                    .map_or(why, |(head, _)| head);
+                println!("    stopped at recorded step {k}: {why}");
+            }
+        }
+    }
+
     /// The shipped ramp entry points solve at the shipped tolerance.
     ///
     /// The inertness half of the two-gate rule for
