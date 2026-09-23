@@ -840,7 +840,7 @@ fn update_layer_meshes(
     }
     // Pre-fetch the heat-map run reference for the per-layer
     // projection (sub-leaf 7). When `heat_map_on && last_run` →
-    // each layer gets a per-MC-vertex projection from the sim's
+    // each layer gets a per-vertex projection from the sim's
     // per-tet scalar field; otherwise palette tint.
     let heat_map_run = if sim_state.heat_map_on {
         sim_state.last_run.as_ref()
@@ -876,31 +876,33 @@ fn update_layer_meshes(
         // Slice S11.2 — deformed-shells path picks the SLAB mesh
         // (inner + outer faces) so the user reads each layer as a
         // translucent band of silicone instead of an opaque outer
-        // skin. Falls through to the legacy outer-only helper when
-        // the slab build is unavailable (e.g., sim ran with fewer
-        // layers than the GUI now shows), then to the rest-frame
-        // SDF iso when the deformed view is off altogether.
-        let layer_indexed = deformed_layers_run
-            .and_then(|run| run.deformed_layer_slab_mesh_at(i, sim_state.displayed_step))
-            .or_else(|| {
-                deformed_layers_run
-                    .and_then(|run| run.deformed_layer_mesh_at(i, sim_state.displayed_step))
-            })
-            .unwrap_or_else(|| {
-                sdf_layers::extract_layer_surface(&cached_sdf, &cap_planes.planes, safe_offset_m)
-            });
-        // Heat-map: project per-tet scalars onto this layer's MC
-        // vertices (sub-leaf 7). `project_layer_heat_map` returns
-        // `None` if the sim ran with fewer layers than the current
-        // GUI shows, or the layer has no tets in its partition —
-        // in either case the layer falls back to the palette tint.
+        // skin. Falls through to the rest-frame SDF iso when there is
+        // no deformed mesh for this layer and step, or the deformed
+        // view is off.
+        let deformed_indexed = deformed_layers_run
+            .and_then(|run| run.deformed_layer_slab_mesh_at(i, sim_state.displayed_step));
+        let is_deformed = deformed_indexed.is_some();
+        let layer_indexed = deformed_indexed.unwrap_or_else(|| {
+            sdf_layers::extract_layer_surface(&cached_sdf, &cap_planes.planes, safe_offset_m)
+        });
+        // Heat-map: project per-tet scalars onto this layer's vertices
+        // (sub-leaf 7), read at their REST positions — the deformed mesh's
+        // vertices have moved off the rest centroids the lookup uses.
+        // `project_layer_heat_map` returns `None` if the sim ran with fewer
+        // layers than the current GUI shows, or the layer has no tets in its
+        // partition — in either case the layer falls back to the palette tint.
         let colors_vec = heat_map_run.and_then(|run| {
+            let vertices = if is_deformed {
+                insertion_sim_ui::LayerVertices::SimMesh
+            } else {
+                insertion_sim_ui::LayerVertices::Rest(&layer_indexed.vertices)
+            };
             insertion_sim_ui::project_layer_heat_map(
                 run,
                 i,
                 sim_state.scalar_mode,
                 sim_state.displayed_step,
-                &layer_indexed.vertices,
+                vertices,
             )
         });
         let colors_slice = colors_vec.as_deref();
@@ -967,8 +969,13 @@ fn apply_scan_mesh_visibility(
 
 /// SL.4 — spawn the intruder render entity at startup with the cleaned
 /// scan mesh as its constant `Mesh3d`. The sliding intruder is a rigid
-/// body of constant geometry translated along the centerline arc, so
-/// the mesh asset never changes after spawn; per-step pose lives in the
+/// body of constant geometry, moved along the centerline arc and turned
+/// to follow it, so the mesh asset never changes after spawn.
+///
+/// ⚠ The mesh is the FULL-SIZE scan, but the ramp's contact is the scan
+/// shrunk by the inset (`run_sliding_insertion_ramp` passes
+/// `interference_m = 0`), so the wall is never pushed out to the surface
+/// drawn here. Per-step pose lives in the
 /// entity's `Transform`, written by [`update_intruder_mesh`] from
 /// `InsertionSimOutputs::intruder_pose_at(displayed_step)`.
 ///
@@ -1054,9 +1061,8 @@ struct IntruderMeshKey {
 ///   [`Transform::from_scale`] applied to [`ScanMeshEntity`] at
 ///   [`setup_render_scene`].
 ///
-/// For iter-1 the [`run_sliding_insertion_ramp`] pose is translation-
-/// only (per `slide_pose_at`), but the rotation branch is kept active
-/// so the banked iter-2 rotation enable lands without rework.
+/// The [`run_sliding_insertion_ramp`] pose carries a rotation as well as
+/// a translation (`slide_pose_at`); both are applied.
 ///
 /// [`run_sliding_insertion_ramp`]: insertion_sim::run_sliding_insertion_ramp
 #[inline]
