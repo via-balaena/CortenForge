@@ -2900,10 +2900,18 @@ pub fn run_insertion_ramp_tet10_ipc_at(
     // rest penetration is measured and the approach begins outside it.
     // ⛔ `fold` from 0.0 floors the result: a mesh with no node inside the
     // surface asks for no penetration allowance, only the `d̂/2` margin.
+    // ⛔⛔ **OVER `referenced`, NOT over `positions()`.** `positions()` is the
+    // LATTICE, not the body: `SdfMeshedTetMesh` retains BCC lattice points that
+    // no tet names, and plenty of them sit deep INSIDE the cavity. Measured on
+    // the tolerance fixture, the worst "penetration" over all vertices is
+    // 11.5427 mm — a lattice point near the cavity centre — against 0.2522 mm
+    // over the vertices the solver actually sees. Taking the former inflates
+    // the approach from 5 increments to 65 and the ramp never reaches its
+    // recorded steps → [[feedback_positions_is_not_the_body]].
     let cavity_isosurface = Solid::from_sdf(intruder.clone(), bounds).offset(cavity_offset_m);
-    let worst_rest_penetration_m = rest_positions
+    let worst_rest_penetration_m = referenced
         .iter()
-        .map(|p| cavity_isosurface.eval(Point3::from(*p)))
+        .map(|&v| cavity_isosurface.eval(Point3::from(rest_positions[v as usize])))
         .filter(|sd| sd.is_finite())
         .fold(0.0_f64, |acc, sd| acc.max(-sd));
     let approach_clearance_m = worst_rest_penetration_m + 0.5 * d_hat;
@@ -9271,8 +9279,8 @@ mod tests {
         );
     }
 
-    /// ⭐⭐⭐ **THE DISCRIMINATING EXPERIMENT** — the bridge against the
-    /// penalty baseline, both asked for a converged solution.
+    /// ⭐⭐⭐ **THE DISCRIMINATING EXPERIMENT** — the bridge against the penalty
+    /// baseline, across a ladder of residual tolerances.
     ///
     /// #958 measured that on the product geometry the full-depth result is
     /// bought with the tolerance: at the shipped `1e-1` the real scan reaches
@@ -9280,29 +9288,35 @@ mod tests {
     /// not depth and not friction, is what the bridge exists to fix, so this is
     /// the measurement that decides whether it did.
     ///
+    /// ⚠ **A ladder, not a single tight run, because BOTH paths have a
+    /// conditioning floor.** Asked for `1e-6`, neither arm converges here: the
+    /// penalty arm stalls at `r ≈ 1.6e-2`, the bridge during its approach at
+    /// `r ≈ 1e-4` — and the bridge's floor is insensitive to `κ` across three
+    /// decades (`the_bridge_ramp_over_a_stiffness_sweep`: 1e6 → 1e9, all
+    /// stalling the same way). A single tight run reports "both fail" and hides
+    /// the only quantity that separates them, which is how much residual each
+    /// path can be asked for before depth collapses.
+    ///
     /// ⭐ **The payoff quantity is not depth alone** (#959): a ramp can reach
     /// full depth BY PENETRATING — the single-layer scan reaches 16/16 with
     /// `min_sd` −0.373 mm and its 5 % area tail at −0.042 mm, a region through
     /// the wall rather than an outlier. So all three are reported together:
-    /// **depth at a tight tolerance, with `min_sd > 0` AND the 5 % area tail
-    /// > 0**. A depth reached through the wall is not a seat.
+    /// **depth, with `min_sd > 0` AND the 5 % area tail > 0**, at each
+    /// tolerance. A depth reached through the wall is not a seat.
     ///
     /// ⛔ **Asserts nothing.** Where a ramp stalls is platform-dependent
-    /// (#958's first push went red on exactly that), so this reports on a
-    /// named platform and never gates.
+    /// (#958's first push went red on exactly that), so this reports on a named
+    /// platform and never gates.
     #[test]
-    #[ignore = "release-mode ramps on both arms — measurement, asserts nothing; run with --ignored --nocapture"]
-    fn the_bridge_against_the_penalty_baseline_at_a_tight_tolerance() {
+    #[ignore = "release-mode ramps on both arms across a tolerance ladder; run with --ignored --nocapture"]
+    fn the_bridge_against_the_penalty_baseline_across_a_tolerance_ladder() {
         const N_STEPS: usize = 16;
+        /// Residual tolerances asked for, loosest first. `1e-1` is what ships.
+        const TOLERANCES: [f64; 4] = [1e-1, 1e-2, 1e-3, 1e-4];
 
-        println!(
-            "\nscene                arm                 steps  depth_mm  resid      \
-             pairs  min_sd_mm  tail5_mm  sigma_kPa"
-        );
-
-        // ⭐ The sphere is the scene `BRIDGE_DESIGN_TRACTION_PA` was measured
-        // on (#959), so the bridge is judged where its own `σ` came from —
-        // not only on the small conditioning stand-in.
+        // ⭐ The sphere is the scene `BRIDGE_DESIGN_TRACTION_PA` was measured on
+        // (#959), so the bridge is judged where its own `σ` came from — not
+        // only on the small conditioning stand-in.
         fn sphere_scene() -> InsertionGeometry {
             let design = SimDesign {
                 cavity_inset_m: 0.003,
@@ -9319,92 +9333,106 @@ mod tests {
             ),
             ("sphere-40mm", sphere_scene as fn() -> InsertionGeometry),
         ] {
-            // ── Tet4 + penalty, at the SAME tolerance the bridge is asked for.
-            let g = build();
-            let mesh4 = g.mesh.clone();
-            let intruder = g.intruder.clone();
-            let bounds = g.bounds;
-            let cavity_offset_m = g.cavity_offset_m;
-            let referenced4: Vec<VertexId> = referenced_vertices(&mesh4);
-            let rest_areas4 = boundary_vertex_areas(
-                Mesh::<Yeoh>::positions(&mesh4),
-                Mesh::<Yeoh>::boundary_faces(&mesh4),
+            println!("\n══ {scene} ══");
+            println!(
+                "tol        arm                 steps  depth_mm  resid      pairs  \
+                 min_sd_mm  tail5_mm  sigma_kPa"
             );
-            let base =
-                run_insertion_ramp_at_kappa_and_tol(g, N_STEPS, INSERTION_CONTACT_KAPPA, TIGHT_TOL)
-                    .expect("the penalty baseline ramp must build");
-            if let Some(last) = base.steps.last() {
-                let pos = positions_from_flat(&last.x_final);
-                let contact = intruder_contact_at_kappa(
-                    &intruder,
-                    bounds,
-                    last.interference_m,
-                    cavity_offset_m,
-                    INSERTION_CONTACT_KAPPA,
+            for tol in TOLERANCES {
+                // ── Tet4 + penalty, the baseline, at this tolerance.
+                let g = build();
+                let mesh4 = g.mesh.clone();
+                let intruder = g.intruder.clone();
+                let bounds = g.bounds;
+                let cavity_offset_m = g.cavity_offset_m;
+                let referenced4: Vec<VertexId> = referenced_vertices(&mesh4);
+                let rest_areas4 = boundary_vertex_areas(
+                    Mesh::<Yeoh>::positions(&mesh4),
+                    Mesh::<Yeoh>::boundary_faces(&mesh4),
                 );
-                let raw = contact.per_pair_readout(&mesh4, &pos);
-                let readouts = filter_pair_readouts_to_referenced(raw, &referenced4);
+                let base =
+                    run_insertion_ramp_at_kappa_and_tol(g, N_STEPS, INSERTION_CONTACT_KAPPA, tol)
+                        .expect("the penalty baseline ramp must build");
+                let base_stats = base.steps.last().map(|last| {
+                    let pos = positions_from_flat(&last.x_final);
+                    let contact = intruder_contact_at_kappa(
+                        &intruder,
+                        bounds,
+                        last.interference_m,
+                        cavity_offset_m,
+                        INSERTION_CONTACT_KAPPA,
+                    );
+                    let raw = contact.per_pair_readout(&mesh4, &pos);
+                    let readouts = filter_pair_readouts_to_referenced(raw, &referenced4);
+                    (
+                        last.interference_m,
+                        last.final_residual_norm,
+                        patch_stats(&readouts, &rest_areas4),
+                    )
+                });
+                let (d, r, st) = base_stats.unwrap_or((0.0, f64::NAN, None));
                 print_arm_row(
-                    scene,
+                    &format!("{tol:.0e}"),
                     "tet4+penalty",
                     base.steps.len(),
                     N_STEPS,
-                    last.interference_m,
-                    last.final_residual_norm,
-                    patch_stats(&readouts, &rest_areas4),
+                    d,
+                    r,
+                    st,
                 );
-            }
-            if let Some(k) = base.failed_at_step {
-                println!(
-                    "  {scene} tet4+penalty stalled at step {k}: {}",
-                    base.failure_reason.as_deref().unwrap_or("?"),
-                );
-            }
 
-            // ── Tet10 + IPC, the bridge.
-            let g = build();
-            let mesh10 = Tet10Mesh::<Yeoh>::from_tet4(&g.mesh);
-            let referenced10: Vec<VertexId> = referenced_vertices(&mesh10);
-            let rest_areas10 = boundary_vertex_areas(
-                Mesh::<Yeoh>::positions(&mesh10),
-                Mesh::<Yeoh>::boundary_faces(&mesh10),
-            );
-            let inset_m = -g.cavity_offset_m;
-            // `N_STEPS` is small; the cast is exact.
-            #[allow(clippy::cast_precision_loss)]
-            let kappa = bridge_face_barrier_kappa(BRIDGE_CONTACT_DHAT_M, inset_m / N_STEPS as f64)
-                .expect("the bridge's stiffness bracket must be non-empty");
-            let bridge = run_insertion_ramp_tet10_ipc(g, N_STEPS, TIGHT_TOL)
-                .expect("the bridge ramp must build");
-            if let Some(last) = bridge.steps.last() {
-                let pos = positions_from_flat(&last.x_final);
-                let contact = intruder_ipc_contact_at(
-                    &intruder,
-                    bounds,
-                    last.interference_m,
-                    cavity_offset_m,
-                    kappa,
-                    BRIDGE_CONTACT_DHAT_M,
+                // ── Tet10 + IPC, the bridge, at the same tolerance.
+                let g = build();
+                let mesh10 = Tet10Mesh::<Yeoh>::from_tet4(&g.mesh);
+                let referenced10: Vec<VertexId> = referenced_vertices(&mesh10);
+                let rest_areas10 = boundary_vertex_areas(
+                    Mesh::<Yeoh>::positions(&mesh10),
+                    Mesh::<Yeoh>::boundary_faces(&mesh10),
                 );
-                let raw = contact.per_pair_readout(&mesh10, &pos);
-                let readouts = filter_pair_readouts_to_referenced(raw, &referenced10);
+                let inset_m = -g.cavity_offset_m;
+                // `N_STEPS` is small; the cast is exact.
+                #[allow(clippy::cast_precision_loss)]
+                let kappa =
+                    bridge_face_barrier_kappa(BRIDGE_CONTACT_DHAT_M, inset_m / N_STEPS as f64)
+                        .expect("the bridge's stiffness bracket must be non-empty");
+                let bridge = run_insertion_ramp_tet10_ipc(g, N_STEPS, tol)
+                    .expect("the bridge ramp must build");
+                let bridge_stats = bridge.steps.last().map(|last| {
+                    let pos = positions_from_flat(&last.x_final);
+                    let contact = intruder_ipc_contact_at(
+                        &intruder,
+                        bounds,
+                        last.interference_m,
+                        cavity_offset_m,
+                        kappa,
+                        BRIDGE_CONTACT_DHAT_M,
+                    );
+                    let raw = contact.per_pair_readout(&mesh10, &pos);
+                    let readouts = filter_pair_readouts_to_referenced(raw, &referenced10);
+                    (
+                        last.interference_m,
+                        last.final_residual_norm,
+                        patch_stats(&readouts, &rest_areas10),
+                    )
+                });
+                let (d, r, st) = bridge_stats.unwrap_or((0.0, f64::NAN, None));
                 print_arm_row(
-                    scene,
+                    &format!("{tol:.0e}"),
                     "tet10+ipc",
                     bridge.steps.len(),
                     N_STEPS,
-                    last.interference_m,
-                    last.final_residual_norm,
-                    patch_stats(&readouts, &rest_areas10),
+                    d,
+                    r,
+                    st,
                 );
+                if let Some(reason) = bridge
+                    .failure_reason
+                    .as_deref()
+                    .filter(|r| r.contains("approach"))
+                {
+                    println!("            (bridge never began: {reason})");
+                }
             }
-            if let Some(k) = bridge.failed_at_step {
-                println!(
-                    "  {scene} tet10+ipc stalled at step {k}: {}",
-                    bridge.failure_reason.as_deref().unwrap_or("?"),
-                );
-            }
-            println!("  (bridge kappa = {kappa:.4e}, d_hat = {BRIDGE_CONTACT_DHAT_M:.2e} m)");
         }
 
         println!(
@@ -9415,7 +9443,8 @@ mod tests {
         );
     }
 
-    /// One row of [`the_bridge_against_the_penalty_baseline_at_a_tight_tolerance`].
+    /// One row of
+    /// [`the_bridge_against_the_penalty_baseline_across_a_tolerance_ladder`].
     fn print_arm_row(
         scene: &str,
         arm: &str,
@@ -9516,6 +9545,33 @@ mod tests {
             -g.cavity_offset_m / 16.0 * 1e3,
             0.5 * BRIDGE_CONTACT_DHAT_M * 1e3,
         );
+
+        // ⛔ What the ramp's approach schedule is actually derived from — over
+        // EVERY vertex, which is the population the ramp itself scans.
+        let worst_all = positions
+            .iter()
+            .map(|p| cavity.eval(Point3::from(*p)))
+            .filter(|sd| sd.is_finite())
+            .fold(0.0_f64, |acc, sd| acc.max(-sd));
+        let referenced: BTreeSet<VertexId> = referenced_vertices(&tet10).into_iter().collect();
+        let worst_referenced = positions
+            .iter()
+            .enumerate()
+            .filter(|(vid, _)| u32::try_from(*vid).is_ok_and(|v| referenced.contains(&v)))
+            .map(|(_, p)| cavity.eval(Point3::from(*p)))
+            .filter(|sd| sd.is_finite())
+            .fold(0.0_f64, |acc, sd| acc.max(-sd));
+        let step = -g.cavity_offset_m / 16.0;
+        println!(
+            "\nworst rest penetration over ALL vertices        {:>9.4} mm               => {:>5} approach steps",
+            worst_all * 1e3,
+            ((worst_all + 0.5 * BRIDGE_CONTACT_DHAT_M) / step).ceil(),
+        );
+        println!(
+            "worst rest penetration over REFERENCED vertices {:>9.4} mm               => {:>5} approach steps",
+            worst_referenced * 1e3,
+            ((worst_referenced + 0.5 * BRIDGE_CONTACT_DHAT_M) / step).ceil(),
+        );
     }
 
     /// The bridge ramp across a stiffness sweep — is `κ` the binding constraint?
@@ -9615,5 +9671,198 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The shipped ramp entry points solve at the shipped tolerance.
+    ///
+    /// The inertness half of the two-gate rule for
+    /// [`run_insertion_ramp_at_kappa_and_tol`]: adding a knob must not move
+    /// what ships. Every reported column of every step is compared, not just
+    /// the step count — a delegation that changed the answer while keeping the
+    /// shape would pass a count check.
+    #[test]
+    fn the_shipped_ramp_solves_at_the_shipped_tolerance() {
+        let n_steps = 2;
+        let shipped =
+            run_insertion_ramp_at_kappa(tolerance_fixture(), n_steps, INSERTION_CONTACT_KAPPA)
+                .expect("the shipped ramp must run on the tolerance fixture");
+        let delegated = run_insertion_ramp_at_kappa_and_tol(
+            tolerance_fixture(),
+            n_steps,
+            INSERTION_CONTACT_KAPPA,
+            INSERTION_SOLVE_TOL,
+        )
+        .expect("the delegated ramp must run on the tolerance fixture");
+
+        assert!(
+            !shipped.steps.is_empty(),
+            "the fixture must converge at least one step, or this gate compares \
+             two empty ramps",
+        );
+        assert_eq!(
+            shipped.steps.len(),
+            delegated.steps.len(),
+            "the shipped tolerance must produce the same number of steps",
+        );
+        for (a, b) in shipped.steps.iter().zip(delegated.steps.iter()) {
+            assert!(
+                (a.interference_m - b.interference_m).abs() < f64::EPSILON,
+                "interference moved: {} vs {}",
+                a.interference_m,
+                b.interference_m,
+            );
+            assert_eq!(a.iter_count, b.iter_count, "iteration count moved");
+            assert!(
+                (a.final_residual_norm - b.final_residual_norm).abs() < f64::EPSILON,
+                "residual moved: {:e} vs {:e}",
+                a.final_residual_norm,
+                b.final_residual_norm,
+            );
+            assert_eq!(a.x_final, b.x_final, "the converged pose moved");
+        }
+        assert_eq!(
+            shipped.failed_at_step, delegated.failed_at_step,
+            "the stall point moved",
+        );
+    }
+
+    /// The ramp's tolerance argument reaches the solve.
+    ///
+    /// The other half of the two-gate rule, and the half a delegation test
+    /// cannot see: `the_shipped_ramp_solves_at_the_shipped_tolerance` would
+    /// pass just as happily if `tol` were accepted and dropped on the floor
+    /// → [[feedback_a_knob_needs_two_gates]].
+    ///
+    /// ⚠ Asserts that asking for a much tighter residual CHANGES the ramp, not
+    /// where it changes it. Which step a tight request stalls on is
+    /// platform-dependent and must never be pinned.
+    #[test]
+    fn the_ramp_tolerance_knob_reaches_the_solve() {
+        let n_steps = 2;
+        let loose = run_insertion_ramp_at_kappa_and_tol(
+            tolerance_fixture(),
+            n_steps,
+            INSERTION_CONTACT_KAPPA,
+            INSERTION_SOLVE_TOL,
+        )
+        .expect("the loose ramp must run");
+        let tight = run_insertion_ramp_at_kappa_and_tol(
+            tolerance_fixture(),
+            n_steps,
+            INSERTION_CONTACT_KAPPA,
+            TIGHT_TOL,
+        )
+        .expect("the tight ramp must run");
+
+        assert!(
+            !loose.steps.is_empty(),
+            "the loose ramp must converge something to compare against",
+        );
+        // Five decades of tolerance must show up somewhere: either the tight
+        // request costs iterations / reaches a smaller residual, or it stalls
+        // earlier. Any of those proves the argument reached the solver; none of
+        // them pins WHERE.
+        let moved = tight.steps.len() != loose.steps.len()
+            || loose.steps.iter().zip(tight.steps.iter()).any(|(l, t)| {
+                t.iter_count != l.iter_count
+                    || (t.final_residual_norm - l.final_residual_norm).abs() > f64::EPSILON
+            });
+        assert!(
+            moved,
+            "asking for {TIGHT_TOL:e} instead of {INSERTION_SOLVE_TOL:e} changed \
+             nothing about the ramp — the tolerance argument is not reaching the \
+             solve",
+        );
+    }
+
+    /// The barrier band brackets a stiffness — and stops, where it must.
+    ///
+    /// `d̂` is a free choice on the bridge, and the floor `σ / |b′(ρ·step)|` is
+    /// undefined once `ρ·step ≥ d̂`: the barrier cannot hold open a gap wider
+    /// than the band it acts over. Reporting the derivation across the whole
+    /// candidate set is what makes that boundary visible instead of a single
+    /// number that happens to exist.
+    ///
+    /// ⚠ **At the shipped 16-step schedule every candidate brackets** — the
+    /// tightest, `d̂ = 0.5 mm`, clears it only just (`ρ·step = 0.221 mm`
+    /// against `d̂/2 = 0.25 mm`). An earlier revision of this gate asserted
+    /// that some candidate must fail, which was an expectation invented rather
+    /// than measured. The boundary is real but it lives in the MARCHING
+    /// SCHEDULE, not in the candidate set, so that is where it is shown.
+    #[test]
+    fn the_bridges_barrier_band_brackets_a_stiffness() {
+        let inset_m = 0.003;
+        let report = |n_steps: f64| -> usize {
+            let step = inset_m / n_steps;
+            let mut n_bracketed = 0;
+            println!(
+                "\n{n_steps:.0} steps — \u{3c1}\u{b7}step = {:.4} mm",
+                BRIDGE_PATCH_NONUNIFORMITY * step * 1e3
+            );
+            println!("d_hat_mm   floor        ceiling      derived      decades");
+            for d_hat in BRIDGE_DHAT_CANDIDATES_M {
+                let floor = face_barrier_kappa(
+                    d_hat,
+                    BRIDGE_PATCH_NONUNIFORMITY * step,
+                    BRIDGE_DESIGN_TRACTION_PA,
+                );
+                let ceiling = face_barrier_kappa(d_hat, 0.5 * d_hat, BRIDGE_DESIGN_TRACTION_PA);
+                let derived = bridge_face_barrier_kappa(d_hat, step);
+                match (floor, ceiling, &derived) {
+                    (Some(f), Some(c), Ok(k)) if f < c => {
+                        n_bracketed += 1;
+                        println!(
+                            "{:>8.2}   {f:.4e}   {c:.4e}   {k:.4e}   {:.3}",
+                            d_hat * 1e3,
+                            (c / f).log10(),
+                        );
+                        assert!(
+                            f < *k && *k < c,
+                            "the derived \u{3ba} must sit inside its own bracket",
+                        );
+                    }
+                    _ => {
+                        println!(
+                            "{:>8.2}   (no bracket: d_hat/2 = {:.4} mm)",
+                            d_hat * 1e3,
+                            0.5 * d_hat * 1e3,
+                        );
+                        assert!(
+                            derived.is_err(),
+                            "a band with no bracket must surface an error, not a number",
+                        );
+                    }
+                }
+            }
+            n_bracketed
+        };
+
+        // The shipped schedule: every candidate brackets.
+        let n_shipped = report(16.0);
+        assert_eq!(
+            n_shipped,
+            BRIDGE_DHAT_CANDIDATES_M.len(),
+            "at the shipped 16-step schedule every candidate band must bracket",
+        );
+
+        // A coarse schedule: the increment outruns the narrow bands, and the
+        // derivation must REFUSE rather than return a number. This is the half
+        // that can fail — without it the gate only ever sees the happy path.
+        let n_coarse = report(4.0);
+        assert!(
+            n_coarse > 0,
+            "a 4-step schedule must still bracket at the wider bands",
+        );
+        assert!(
+            n_coarse < BRIDGE_DHAT_CANDIDATES_M.len(),
+            "a 4-step schedule must break the narrow bands, or this gate never \
+             sees the boundary it exists to show",
+        );
+
+        // The shipped band must be one that works at the shipped schedule.
+        assert!(
+            bridge_face_barrier_kappa(BRIDGE_CONTACT_DHAT_M, inset_m / 16.0).is_ok(),
+            "the shipped band must bracket a stiffness at the shipped schedule",
+        );
     }
 }
