@@ -73,6 +73,7 @@ use mesh_sdf::{CachedGridSdf, PseudoNormalSign, Signed, TriMeshDistance};
 use mesh_types::IndexedMesh;
 use nalgebra::{Isometry3, Matrix3, Point3, Vector3};
 use sim_ml_chassis::Tensor;
+use sim_soft::element::Tet10;
 use sim_soft::material::silicone_table::{
     DRAGON_SKIN_10A, DRAGON_SKIN_15, DRAGON_SKIN_20A, DRAGON_SKIN_30A, ECOFLEX_00_10,
     ECOFLEX_00_20, ECOFLEX_00_30, ECOFLEX_00_50,
@@ -80,10 +81,11 @@ use sim_soft::material::silicone_table::{
 use sim_soft::readout::{ConformityParams, ConformityReadout, conformity_breakdown};
 use sim_soft::{
     Aabb3, BoundaryConditions, ConstantField, ContactPair, ContactPairReadout, CpuNewtonSolver,
-    Field, LayeredScalarField, LmConfig, Material, MaterialField, Mesh, MeshingHints,
-    PenaltyRigidContact, Sdf, SdfMeshedTetMesh, ShoreReading, SiliconeMaterial, Solver,
-    SolverConfig, SolverFailure, Tet4, TetId, Vec3, VertexId, Yeoh, boundary_faces_on_isosurface,
-    filter_pair_readouts_to_referenced, pick_vertices_by_predicate, referenced_vertices,
+    Field, IpcRigidContact, LayeredScalarField, LmConfig, Material, MaterialField, Mesh,
+    MeshingHints, PenaltyRigidContact, Sdf, SdfMeshedTetMesh, ShoreReading, SiliconeMaterial,
+    Solver, SolverConfig, SolverFailure, Tet4, Tet10Mesh, TetId, Vec3, VertexId, Yeoh,
+    boundary_faces_on_isosurface, face_barrier_kappa, filter_pair_readouts_to_referenced,
+    pick_vertices_by_predicate, referenced_vertices,
 };
 
 /// Weld epsilon (meters) for the pre-decimation vertex weld — matches
@@ -1189,6 +1191,147 @@ fn intruder_contact_at_kappa(
     )
 }
 
+/// The design traction the bridge's face barrier is sized against.
+///
+/// **Measured, not assumed** (#959, `a61d7c18`): the area-weighted mean
+/// contact traction this scene carries at a full seat is ~117 kPa on the
+/// REST-area basis, read at penalty `κ = 1e4…1e5` on a NON-penetrating
+/// full-depth pose, and reproduced on two scenes — the synthetic sphere and
+/// the real iter-1 scan — which agree to 0.12 % on how `σ` couples to
+/// stiffness. That agreement is what makes it a property of the *path*
+/// rather than of one fixture.
+///
+/// ⚠ It is a **LOWER BOUND**, not a converged rigid traction: `κ = 1e6`
+/// stalls at step 0 on both scenes, so `1e5` is the stiffest arm that solves
+/// and `σ` is still moving 4.7 % across that last decade. For a *floor*
+/// requirement a lower bound under-states the stiffness needed, so the
+/// bracket derived below is read knowing its floor is the soft end.
+///
+/// ⛔ Do NOT re-read this at the shipped penalty stiffness (`κ = 1e3`): on
+/// the real scan that state is THROUGH THE WALL (`min_sd` −0.373 mm with the
+/// 5 % area tail at −0.042 mm), and its 6.85 kPa is not a traction on
+/// anything. ⛔ And do NOT read it on the DEFORMED area basis —
+/// `ContactPairReadout::tributary_area` is a deformed tributary while the
+/// face barrier integrates over REST area; the two differ by 22–23 %.
+const BRIDGE_DESIGN_TRACTION_PA: f64 = 117.0e3;
+
+/// Patch non-uniformity `ρ` — the effective gap the barrier must hold, as a
+/// multiple of the MINIMUM gap anywhere on the patch.
+///
+/// The stall condition is on the *minimum* gap while the traction is a
+/// *mean*, and convexity puts the effective gap above the minimum. So the
+/// floor requirement is evaluated at `ρ · step`, never at `step`: omitting
+/// `ρ` makes the floor optimistic.
+///
+/// **Measured** (#959) in `[1.00, 1.18]` at `κ = 1e4…1e5` on a
+/// non-penetrating seat. The upper end is taken — for a floor, the larger
+/// `ρ` is the conservative one.
+///
+/// ⛔ Read `ρ` against the area-weighted 5 % tail, never `min_sd` alone:
+/// `min_sd` is ONE VERTEX, and the floor divides `|b′|` at `ρ · step`, so a
+/// single bad tet would move a shipped constant. At the shipped stiffness the
+/// synthetic sphere's `min_sd` ratio reads 4.92 — on a geometry with no shape
+/// irregularity whatsoever — while the same pose at `κ = 1e5` reads 1.005.
+const BRIDGE_PATCH_NONUNIFORMITY: f64 = 1.18;
+
+/// Barrier band `d̂` for the bridge's face contact.
+///
+/// ⛔ **Not inherited from the penalty path.** `INSERTION_CONTACT_DHAT` is a
+/// penalty band co-tuned with a smoothing `ε` and normal averaging, neither
+/// of which the IPC face barrier has; carrying it across would be a
+/// transcription, not a derivation.
+///
+/// From #959's candidate set (0.5 / 1.0 / 1.2 / 2.0 mm), 1.2 mm is the value
+/// satisfying both standing constraints with margin:
+/// - the bracket is non-empty, which needs `d̂/2 > ρ · step` — at 16 steps
+///   over a 3 mm inset that is `d̂ > 0.44 mm`;
+/// - the band stays well inside one element, `d̂ < SIM_CELL_SIZE_M / 3`.
+///
+/// `the_bridges_barrier_band_brackets_a_stiffness` reports the bracket at
+/// every candidate rather than asserting this one is optimal.
+const BRIDGE_CONTACT_DHAT_M: f64 = 1.2e-3;
+
+/// The face-barrier stiffness for a ramp of `n_steps` over `inset_m`, derived
+/// from [`BRIDGE_DESIGN_TRACTION_PA`] and [`BRIDGE_PATCH_NONUNIFORMITY`].
+///
+/// ⭐ **Derived per ramp, not stored as a constant** — and that is the point.
+/// The floor belongs to the MARCHING SCHEME, not to the physics: the material
+/// and the compression set `σ`, while the increment sets the clearance that
+/// must survive one step. A constant would silently become wrong the moment a
+/// caller changed `n_steps`, which is exactly the shape of error the fixture's
+/// `κ = 1e7` would have carried into this scene.
+///
+/// Two requirements bracket it, and they do **not** have the same standing:
+///
+/// ```text
+/// floor    σ / |b′(ρ · step)|   hold one increment open   (DERIVED from a
+///                                                          measured stall)
+/// ceiling  σ / |b′(d̂ / 2)|      stay out of the cushion    (a STATED
+///                                                          requirement)
+/// ```
+///
+/// The return is their **geometric centre** — the log-midpoint, which is the
+/// value maximally far from both requirements on the scale the bracket is
+/// actually wide in (it spans a factor, not a difference).
+///
+/// # Errors
+///
+/// Either requirement falls outside the open band `(0, d̂)`, or they cross
+/// (`floor >= ceiling`) — an empty bracket, meaning no stiffness both holds an
+/// increment open and stays out of the cushion. Both are mis-specified
+/// requirements and are surfaced rather than clamped.
+fn bridge_face_barrier_kappa(d_hat: f64, ramp_step_m: f64) -> Result<f64> {
+    let standoff = BRIDGE_PATCH_NONUNIFORMITY * ramp_step_m;
+    let floor = face_barrier_kappa(d_hat, standoff, BRIDGE_DESIGN_TRACTION_PA).ok_or_else(|| {
+        anyhow!(
+            "the barrier floor is not derivable: the required standoff ρ·step = {standoff:.6e} m \
+             is not strictly inside the band (0, d̂ = {d_hat:.6e} m), so no finite stiffness \
+             holds a gap the barrier cannot see"
+        )
+    })?;
+    let ceiling = face_barrier_kappa(d_hat, 0.5 * d_hat, BRIDGE_DESIGN_TRACTION_PA)
+        .ok_or_else(|| anyhow!("the barrier ceiling is not derivable at d̂ = {d_hat:.6e} m"))?;
+    if floor >= ceiling {
+        return Err(anyhow!(
+            "the derived stiffness bracket is EMPTY: floor {floor:.4e} >= ceiling {ceiling:.4e} \
+             (d̂ = {d_hat:.6e} m, ramp step = {ramp_step_m:.6e} m, ρ = {rho}). The increment \
+             outruns half the band — ρ·step = {standoff:.6e} m must stay under d̂/2 = {half:.6e} m, \
+             so march in smaller steps or widen d̂",
+            rho = BRIDGE_PATCH_NONUNIFORMITY,
+            half = 0.5 * d_hat,
+        ));
+    }
+    Ok((floor * ceiling).sqrt())
+}
+
+/// The intruder as an IPC face-barrier contact — the bridge's replacement for
+/// [`intruder_contact_at_kappa`].
+///
+/// The rigid primitive is **unchanged**: both paths hand the contact model the
+/// same `Solid::from_sdf(intruder).offset(interference + cavity_offset)`, so
+/// nothing about the scene's geometry moves across the bridge. Only the
+/// contact law does — and with it the two parameters, which are derived
+/// ([`bridge_face_barrier_kappa`]) rather than swept.
+///
+/// ⚠ What is *dropped* is the penalty path's smoothing `ε` and normal
+/// averaging. Those exist to make a per-vertex penalty force behave on a
+/// faceted SDF; the face barrier integrates over a quadratic face with
+/// quadrature weights and needs neither. `INSERTION_CONTACT_SMOOTHING_EPS_M`
+/// in particular is a swept, CAVITY-SPECIFIC sweet spot — losing it is the
+/// point of the exercise, not a regression.
+fn intruder_ipc_contact_at(
+    intruder: &GridSdf,
+    bounds: Aabb,
+    interference_m: f64,
+    cavity_offset_m: f64,
+    kappa: f64,
+    d_hat: f64,
+) -> IpcRigidContact {
+    let intruder_solid =
+        Solid::from_sdf(intruder.clone(), bounds).offset(interference_m + cavity_offset_m);
+    IpcRigidContact::with_params(vec![intruder_solid], kappa, d_hat)
+}
+
 /// Build the Dirichlet boundary conditions: pin the outer-skin
 /// vertices — those within `0.5 * cell_size_m` of the outer envelope
 /// `scan.offset(outer_offset_m)`, filtered to solver-referenced
@@ -1202,7 +1345,7 @@ fn intruder_contact_at_kappa(
 /// to react against (`cell_size_m` too coarse for the wall, or a
 /// degenerate geometry).
 fn outer_skin_bc(
-    mesh: &SdfMeshedTetMesh<Yeoh>,
+    mesh: &dyn Mesh<Yeoh>,
     intruder: &GridSdf,
     bounds: Aabb,
     outer_offset_m: f64,
@@ -2549,6 +2692,214 @@ pub fn run_insertion_ramp_at_kappa(
     })
 }
 
+/// **THE BRIDGE** — run the insertion ramp on a Tet10 mesh through the IPC
+/// face barrier, at a caller-chosen residual tolerance.
+///
+/// The same scene, the same boundary conditions and the same rigid intruder as
+/// [`run_insertion_ramp_at_kappa`]; what changes is the triple the solve is
+/// built from — `Tet4` → [`Tet10`], `SdfMeshedTetMesh` → [`Tet10Mesh`],
+/// `PenaltyRigidContact` → [`IpcRigidContact`] — plus a `κ` derived from a
+/// measured traction instead of a swept one.
+///
+/// ⭐ **`tol` is a parameter because the claim lives there.** At the shipped
+/// `INSERTION_SOLVE_TOL` (1e-1 N) "converged" can mean "the first residual was
+/// already under 0.1 N", and #958 measured the real scan reaching full depth
+/// that way while stalling at 25 % once a converged solution is actually
+/// demanded. So the bridge is not asked whether it reaches depth — it is asked
+/// whether it reaches depth *with the residual driven down*.
+///
+/// ▶ **What this does NOT change**, deliberately: `INSERTION_SOLVE_TOL`
+/// itself (a behaviour change for every consumer, and its docstring says why
+/// it is 1e-1), the shipped [`run_insertion_ramp`] entry point, and the
+/// geometry pipeline. The Tet4 mesh is enriched here, per call — the scene is
+/// meshed exactly as it always was.
+///
+/// ⚠ **The per-tet readouts are CORNER-LINEAR and that is a known limitation,
+/// not an oversight.** [`compute_tet_readouts`] builds `F` from the four
+/// corner displacements, which on a quadratic element is the linear part of a
+/// field that is no longer linear. It does not fail to compile and it does not
+/// panic — it returns a plausible number that ignores the midside motion the
+/// solve just computed. `the_corner_readout_is_not_the_tet10_strain` measures
+/// the size of that gap so nobody reads the heat map as the solved field.
+///
+/// # Errors
+///
+/// - `n_steps` is zero;
+/// - the derived stiffness bracket is empty ([`bridge_face_barrier_kappa`]);
+/// - [`outer_skin_bc`] finds no outer-skin vertex in the pin-band.
+pub fn run_insertion_ramp_tet10_ipc(
+    geometry: InsertionGeometry,
+    n_steps: usize,
+    tol: f64,
+) -> Result<InsertionRamp> {
+    if n_steps == 0 {
+        return Err(anyhow!("insertion ramp needs at least one step"));
+    }
+
+    let InsertionGeometry {
+        cavity_tensile_strength_pa,
+        mesh: tet4_mesh,
+        intruder,
+        cavity_offset_m,
+        outer_offset_m,
+        bounds,
+        cell_size_m,
+        n_tets,
+        per_tet_layer: _,
+    } = geometry;
+
+    // THE MESH SWAP. Corner ids and corner positions are preserved by
+    // construction (`from_tet4` appends midsides at indices >= n_corners), so
+    // every id the BCs, Γ and the per-tet readouts already hold keeps pointing
+    // at the same material point — see
+    // `the_enriched_mesh_preserves_the_tet4_corners`.
+    let mesh = Tet10Mesh::<Yeoh>::from_tet4(&tet4_mesh);
+
+    let n_vertices = mesh.n_vertices();
+    let n_dof = 3 * n_vertices;
+
+    // Full press-fit interference = the cavity inset, seated in `n_steps`
+    // equal increments — and the increment is what sets the barrier floor, so
+    // `κ` is derived here rather than read from a constant.
+    let inset_m = -cavity_offset_m;
+    // `n_steps` is small and non-zero; the cast is exact.
+    #[allow(clippy::cast_precision_loss)]
+    let ramp_step_m = inset_m / n_steps as f64;
+    let contact_kappa = bridge_face_barrier_kappa(BRIDGE_CONTACT_DHAT_M, ramp_step_m)?;
+
+    let bc = outer_skin_bc(&mesh, &intruder, bounds, outer_offset_m, cell_size_m)?;
+    let n_pinned = bc.pinned_vertices.len();
+
+    // Snapshot per-tet immutables before the mesh is consumed into per-step
+    // solver clones — same dance as the Tet4 ramp. `referenced` includes
+    // midsides (`referenced_vertex_mask` walks `tet_midside_nodes` too), which
+    // is what makes it usable as the face-pair filter's set.
+    let rest_positions: Vec<Vec3> = mesh.positions().to_vec();
+    // `tet_id as TetId` is a `u32` cap; Phase 4 meshes stay well under
+    // `u32::MAX` per `Mesh` trait docs.
+    #[allow(clippy::cast_possible_truncation)]
+    let tets: Vec<[VertexId; 4]> = (0..n_tets as TetId).map(|t| mesh.tet_vertices(t)).collect();
+    let materials: Vec<Yeoh> = mesh.materials().to_vec();
+    // ⚠ `referenced_vertex_mask` walks `tet_midside_nodes` as well as
+    // corners, so this set CONTAINS the midsides. That is load-bearing here:
+    // on the face path every loaded node IS a midside, so a set of corners
+    // alone would make the filter below delete the entire contact patch —
+    // silently, as a clean empty readout.
+    let referenced: Vec<VertexId> = referenced_vertices(&mesh);
+
+    // Γ is a property of the REST configuration, built once. Its faces are the
+    // corner (3-node) boundary triangles, which `from_tet4` copies verbatim.
+    let gamma_faces: Vec<[VertexId; 3]> = Mesh::<Yeoh>::boundary_faces(&mesh).to_vec();
+    let gamma = GammaMask::build(
+        &rest_positions,
+        &gamma_faces,
+        n_vertices,
+        &intruder,
+        cavity_offset_m,
+    );
+
+    let config = insertion_solver_config_at_tol(tol);
+
+    let mut x_prev_flat: Vec<f64> = rest_positions
+        .iter()
+        .flat_map(|p| [p.x, p.y, p.z])
+        .collect();
+    let v_prev = Tensor::zeros(&[n_dof]);
+    let empty_theta: [f64; 0] = [];
+    let theta = Tensor::from_slice(&empty_theta, &[0]);
+
+    let mut steps: Vec<RampStep> = Vec::with_capacity(n_steps);
+    let mut failed_at_step = None;
+    let mut failure_reason = None;
+    for k in 0..n_steps {
+        // k + 1 and n_steps are tiny — well under f64's exact-integer ceiling.
+        #[allow(clippy::cast_precision_loss)]
+        let interference_m = (k + 1) as f64 / n_steps as f64 * inset_m;
+        let contact = intruder_ipc_contact_at(
+            &intruder,
+            bounds,
+            interference_m,
+            cavity_offset_m,
+            contact_kappa,
+            BRIDGE_CONTACT_DHAT_M,
+        );
+        let solver: CpuNewtonSolver<Tet10, Tet10Mesh<Yeoh>, IpcRigidContact, Yeoh, 10, 4> =
+            CpuNewtonSolver::new(Tet10, mesh.clone(), contact, config, bc.clone());
+        let x_prev = Tensor::from_slice(&x_prev_flat, &[n_dof]);
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            solver.replay_step(&x_prev, &v_prev, &theta, config.dt)
+        }));
+        match outcome {
+            Ok(step) => {
+                let positions_k: Vec<Vec3> = positions_from_flat(&step.x_final);
+                // The solver consumed the step's `contact`; rebuild at the
+                // SAME parameters so the reported patch is the solved one.
+                let readout_contact = intruder_ipc_contact_at(
+                    &intruder,
+                    bounds,
+                    interference_m,
+                    cavity_offset_m,
+                    contact_kappa,
+                    BRIDGE_CONTACT_DHAT_M,
+                );
+                let raw_readouts = readout_contact.per_pair_readout(&mesh, &positions_k);
+                // ⚠ The face path's READOUT is per-NODE
+                // (`ContactPair::Vertex` naming midsides), not per-face —
+                // `ContactPair::Face` is what the SOLVER consumes. So the
+                // shipped filter applies unchanged and its `Face` arm stays
+                // genuinely unreachable.
+                let contact_readouts =
+                    filter_pair_readouts_to_referenced(raw_readouts, &referenced);
+                let per_tet =
+                    compute_tet_readouts(&rest_positions, &positions_k, &tets, &materials);
+                let conformity = gamma.conformity(
+                    &positions_k,
+                    &gamma_faces,
+                    &contact_readouts,
+                    cavity_tensile_strength_pa,
+                );
+                let step_readout = aggregate_step_readout(&per_tet, &contact_readouts, conformity);
+
+                steps.push(RampStep {
+                    interference_m,
+                    iter_count: step.iter_count,
+                    final_residual_norm: step.final_residual_norm,
+                    x_final: step.x_final.clone(),
+                    readout: step_readout,
+                });
+                x_prev_flat = step.x_final; // chain the warm start
+            }
+            Err(payload) => {
+                failed_at_step = Some(k);
+                failure_reason = Some(panic_message(&*payload));
+                break;
+            }
+        }
+    }
+
+    let result = steps.last().map(|last| {
+        let final_positions = positions_from_flat(&last.x_final);
+        let final_per_tet =
+            compute_tet_readouts(&rest_positions, &final_positions, &tets, &materials);
+        let force_displacement_curve = steps
+            .iter()
+            .map(|s| (s.interference_m, s.readout.contact_force_magnitude_n))
+            .collect();
+        InsertionResult {
+            final_per_tet,
+            force_displacement_curve,
+        }
+    });
+
+    Ok(InsertionRamp {
+        steps,
+        failed_at_step,
+        failure_reason,
+        final_x: x_prev_flat,
+        n_pinned,
+        result,
+    })
+}
 // ───────────────────────────────────────────────────────────────────────
 // SL.1 — sliding-intruder scaffolding
 // ───────────────────────────────────────────────────────────────────────
@@ -8409,6 +8760,387 @@ mod tests {
             stats.traction_rest_pa,
             stats.traction_pa,
             "an unstretched patch reads the same σ on both area bases",
+        );
+    }
+
+    // ─── THE BRIDGE — Tet10 + the IPC face barrier ──────────────────
+
+    /// The bridge takes the FACE barrier, not the per-vertex path.
+    ///
+    /// ⭐ **This is the gate the recon doc's §9 retraction exists for.** A
+    /// compile probe on this exact swap once went green for the wrong reason:
+    /// `SdfMeshedTetMesh<Yeoh>` *compiles* against the Tet10 types but returns
+    /// `None` from `boundary_faces6()`, so contact silently takes the
+    /// per-vertex path. The capability is chosen by a runtime `Option`, so the
+    /// only honest probe is of the SELECTOR and of what it produces.
+    ///
+    /// ⚠ **Probe `active_pairs`, not `per_pair_readout`.** The first thing this
+    /// gate found is that the two do not agree on pair kind *by design*: the
+    /// solver consumes `ContactPair::Face`, while the face path's READOUT is
+    /// per-NODE and reports `ContactPair::Vertex` naming the six face nodes
+    /// (midsides carry the load, corners ~0). Asserting "the readout is all
+    /// Face pairs" fails on a perfectly correct bridge — measured here, 1442 of
+    /// 1442 readouts were `Vertex` on a mesh whose solver contact was entirely
+    /// face-integrated.
+    ///
+    /// Without this, the whole bridge could land, pass, and be a no-op wearing
+    /// Tet10's type parameters.
+    #[test]
+    fn the_bridge_selects_the_face_barrier_not_the_vertex_path() {
+        use sim_soft::ActivePairsFor;
+
+        let g = tolerance_fixture();
+        let tet10 = Tet10Mesh::<Yeoh>::from_tet4(&g.mesh);
+
+        // Negative control: without it, an unconditional `is_some()` would pass
+        // on any mesh and this gate would be measuring nothing.
+        assert!(
+            Mesh::<Yeoh>::boundary_faces6(&g.mesh).is_none(),
+            "the shipped Tet4 mesh must NOT surface P2 faces — if it did, this \
+             gate could not tell the two contact paths apart",
+        );
+        assert!(
+            Mesh::<Yeoh>::boundary_faces6(&tet10).is_some(),
+            "the enriched mesh must surface P2 faces, or IPC falls back to the \
+             per-vertex path and the bridge is a no-op",
+        );
+
+        let contact = intruder_ipc_contact_at(
+            &g.intruder,
+            g.bounds,
+            -g.cavity_offset_m,
+            g.cavity_offset_m,
+            1.0e7,
+            BRIDGE_CONTACT_DHAT_M,
+        );
+
+        // THE SOLVER'S pairs — what actually gets scattered into the residual.
+        let positions = tet10.positions().to_vec();
+        let pairs = ActivePairsFor::<Yeoh>::active_pairs(&contact, &tet10, &positions);
+        // EMPTY ≠ evidence: an empty set satisfies "all are faces" vacuously.
+        assert!(
+            !pairs.is_empty(),
+            "the seated intruder must produce active pairs; an empty set would \
+             satisfy the face-kind check below vacuously",
+        );
+        let n_vertex = pairs
+            .iter()
+            .filter(|p| matches!(p, ContactPair::Vertex { .. }))
+            .count();
+        assert_eq!(
+            n_vertex,
+            0,
+            "every SOLVER pair on the bridge's path must be a Face pair; {} of \
+             {} were Vertex pairs, which means the face barrier was not selected",
+            n_vertex,
+            pairs.len(),
+        );
+
+        // And the same scene on the un-enriched mesh must take the other path,
+        // or "Face pairs appear" is a property of the contact model rather than
+        // of the mesh swap this bridge performs.
+        let tet4_positions = Mesh::<Yeoh>::positions(&g.mesh).to_vec();
+        let tet4_pairs = ActivePairsFor::<Yeoh>::active_pairs(&contact, &g.mesh, &tet4_positions);
+        assert!(
+            !tet4_pairs.is_empty()
+                && tet4_pairs
+                    .iter()
+                    .all(|p| matches!(p, ContactPair::Vertex { .. })),
+            "the Tet4 mesh must still take the per-vertex path ({} pairs)",
+            tet4_pairs.len(),
+        );
+    }
+
+    /// Enrichment preserves the corner ids the rest of the pipeline holds.
+    ///
+    /// The BCs, Γ and the per-tet readouts are all built from `[VertexId; 4]`
+    /// corner indices. If `from_tet4` renumbered corners, every one of them
+    /// would keep working and silently point at a different material point —
+    /// no panic, no type error, a wrong answer. So the invariant is asserted
+    /// where the bridge relies on it, not only where it is implemented.
+    #[test]
+    fn the_enriched_mesh_preserves_the_tet4_corners() {
+        let g = tolerance_fixture();
+        let tet4 = &g.mesh;
+        let tet10 = Tet10Mesh::<Yeoh>::from_tet4(tet4);
+
+        assert_eq!(
+            Mesh::<Yeoh>::n_tets(&tet10),
+            Mesh::<Yeoh>::n_tets(tet4),
+            "enrichment must not change the tet count",
+        );
+        assert!(
+            Mesh::<Yeoh>::n_vertices(&tet10) > Mesh::<Yeoh>::n_vertices(tet4),
+            "enrichment must ADD midside nodes",
+        );
+        assert_eq!(
+            tet10.n_corners(),
+            Mesh::<Yeoh>::n_vertices(tet4),
+            "every Tet4 vertex must remain a corner, including BCC orphans",
+        );
+
+        // Corner connectivity, index for index.
+        #[allow(clippy::cast_possible_truncation)]
+        for t in 0..Mesh::<Yeoh>::n_tets(tet4) as TetId {
+            assert_eq!(
+                Mesh::<Yeoh>::tet_vertices(&tet10, t),
+                Mesh::<Yeoh>::tet_vertices(tet4, t),
+                "tet {t}'s corner ids moved under enrichment",
+            );
+        }
+        // Corner positions, bit for bit — the BCs pick vertices by POSITION.
+        let (p4, p10) = (
+            Mesh::<Yeoh>::positions(tet4),
+            Mesh::<Yeoh>::positions(&tet10),
+        );
+        assert_eq!(
+            &p10[..p4.len()],
+            p4,
+            "corner rest positions must be bit-identical, or the outer-skin \
+             pin-band selects a different vertex set",
+        );
+        assert_eq!(
+            Mesh::<Yeoh>::boundary_faces(&tet10),
+            Mesh::<Yeoh>::boundary_faces(tet4),
+            "Γ is built from the corner boundary faces; they must be copied \
+             verbatim",
+        );
+    }
+
+    /// The midside readouts survive the orphan filter — and would not, on a
+    /// corner-only set.
+    ///
+    /// ⛔ **The failure this pins is total and silent.** On the face path every
+    /// loaded node is a MIDSIDE: the face-integrated barrier puts ~0 on the
+    /// corners. The ramp passes its readouts through
+    /// [`filter_pair_readouts_to_referenced`], so if the "referenced" set were
+    /// ever corners-only, that call would delete the entire contact patch and
+    /// return a clean, empty, non-panicking readout — conformity 0 on a
+    /// perfectly good design.
+    ///
+    /// It holds today because `referenced_vertex_mask` walks
+    /// `tet_midside_nodes` as well as `tet_vertices`. That is a property of
+    /// sim-soft, relied on here, so it is measured rather than trusted — and
+    /// the corner-only counterfactual is run to show the gate can see the
+    /// difference.
+    #[test]
+    fn the_bridges_midside_readouts_survive_the_orphan_filter() {
+        let g = tolerance_fixture();
+        let tet10 = Tet10Mesh::<Yeoh>::from_tet4(&g.mesh);
+        let referenced: Vec<VertexId> = referenced_vertices(&tet10);
+        let n_corners = tet10.n_corners();
+
+        // The set must actually reach past the corners, or the counterfactual
+        // below is not a counterfactual.
+        assert!(
+            referenced.iter().any(|&v| v as usize >= n_corners),
+            "the referenced set must include midside nodes",
+        );
+        // And the fixture must carry orphans, or "drops zero" is vacuous.
+        let n_orphans = Mesh::<Yeoh>::n_vertices(&tet10) - referenced.len();
+        assert!(
+            n_orphans > 0,
+            "this fixture must carry orphan lattice points, or the filter is \
+             measuring nothing",
+        );
+
+        let contact = intruder_ipc_contact_at(
+            &g.intruder,
+            g.bounds,
+            -g.cavity_offset_m,
+            g.cavity_offset_m,
+            1.0e7,
+            BRIDGE_CONTACT_DHAT_M,
+        );
+        let positions = tet10.positions().to_vec();
+        let raw = contact.per_pair_readout(&tet10, &positions);
+        assert!(!raw.is_empty(), "the seated intruder must produce pairs");
+        let n_raw = raw.len();
+        let n_midside = raw
+            .iter()
+            .filter(|r| match r.pair {
+                ContactPair::Vertex { vertex_id, .. } => vertex_id as usize >= n_corners,
+                _ => false,
+            })
+            .count();
+        assert!(
+            n_midside > 0,
+            "the face-consistent readout must name midside nodes — they are the \
+             ones carrying the load",
+        );
+
+        let kept = filter_pair_readouts_to_referenced(raw.clone(), &referenced);
+        assert_eq!(
+            kept.len(),
+            n_raw,
+            "the orphan filter must drop ZERO of {n_raw} readouts; it dropped {}",
+            n_raw - kept.len(),
+        );
+
+        // The counterfactual: a corners-only set silently deletes the patch.
+        let corners_only: Vec<VertexId> = referenced
+            .iter()
+            .copied()
+            .filter(|&v| (v as usize) < n_corners)
+            .collect();
+        let starved = filter_pair_readouts_to_referenced(raw, &corners_only);
+        assert!(
+            starved.len() < n_raw,
+            "a corners-only set must visibly starve the readout, or this gate \
+             cannot tell a correct filter from a destructive one",
+        );
+    }
+
+    /// `κ` is derived from a measured traction and lands inside its bracket.
+    ///
+    /// Mirrors `kappa_is_derived_and_not_swept` in sim-soft's fixture: the two
+    /// requirements are re-derived on every build, so a change to `σ`, `ρ`, `d̂`
+    /// or the marching schedule that empties or re-orders the bracket fails
+    /// here rather than in a ramp nobody runs.
+    #[test]
+    fn the_bridges_stiffness_is_derived_and_bracketed() {
+        let inset_m = 0.003;
+        let n_steps = 16.0;
+        let step = inset_m / n_steps;
+
+        let floor = face_barrier_kappa(
+            BRIDGE_CONTACT_DHAT_M,
+            BRIDGE_PATCH_NONUNIFORMITY * step,
+            BRIDGE_DESIGN_TRACTION_PA,
+        )
+        .expect("the floor requirement must be inside the band");
+        let ceiling = face_barrier_kappa(
+            BRIDGE_CONTACT_DHAT_M,
+            0.5 * BRIDGE_CONTACT_DHAT_M,
+            BRIDGE_DESIGN_TRACTION_PA,
+        )
+        .expect("the ceiling requirement must be inside the band");
+
+        assert!(
+            floor < ceiling,
+            "the bracket must be non-empty: floor {floor:.4e} < ceiling {ceiling:.4e}",
+        );
+
+        let kappa = bridge_face_barrier_kappa(BRIDGE_CONTACT_DHAT_M, step)
+            .expect("κ must derive on the shipped ramp schedule");
+        assert!(
+            kappa > floor && kappa < ceiling,
+            "derived κ {kappa:.4e} must sit strictly inside [{floor:.4e}, {ceiling:.4e}]",
+        );
+        // The log-midpoint, not an arbitrary interior point.
+        let centre = (floor * ceiling).sqrt();
+        assert!(
+            (kappa - centre).abs() <= 1e-9 * centre,
+            "κ must be the geometric centre {centre:.6e}, got {kappa:.6e}",
+        );
+
+        // ⚠ The bracket is a RATIO, and its width is what decides whether the
+        // derivation selects anything. Report it; do not pin a decade that the
+        // marching schedule can move.
+        let width_decades = (ceiling / floor).log10();
+        assert!(
+            width_decades > 0.0,
+            "the bracket must have positive width, got {width_decades:.4} decades",
+        );
+
+        // And it must be able to EMPTY: march coarsely enough that one
+        // increment outruns half the band and no stiffness satisfies both.
+        let coarse_step = BRIDGE_CONTACT_DHAT_M; // ρ·step > d̂ ⇒ outside the band
+        assert!(
+            bridge_face_barrier_kappa(BRIDGE_CONTACT_DHAT_M, coarse_step).is_err(),
+            "an increment wider than the band must surface an error, not a number",
+        );
+    }
+
+    /// The corner readout is NOT the Tet10 strain — the size of the gap.
+    ///
+    /// ⛔ **The bridge's quietest hazard.** `compute_tet_readouts` builds `F`
+    /// from four CORNER displacements. On a Tet10 element that is the linear
+    /// part of a field that is no longer linear: it compiles, it does not
+    /// panic, and it returns a plausible number that ignores the midside
+    /// motion the solve just computed. The heat map would look fine and be
+    /// wrong.
+    ///
+    /// This measures the gap rather than describing it. A quadratic
+    /// displacement field is applied to one element; the corner-linear `F` is
+    /// compared with the true Tet10 `F` evaluated through the element's own
+    /// shape gradients. They must DIFFER — if they ever stop differing, the
+    /// readout has been fixed and this gate should be replaced by one
+    /// asserting agreement.
+    #[test]
+    fn the_corner_readout_is_not_the_tet10_strain() {
+        use sim_soft::Element;
+        // Reference tet, corners then the six midsides in TET10_EDGE_NODES
+        // order: (0,1) (1,2) (0,2) (0,3) (1,3) (2,3).
+        let corners = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+        ];
+        let edges = [(0, 1), (1, 2), (0, 2), (0, 3), (1, 3), (2, 3)];
+        let mut rest: Vec<Vec3> = corners.to_vec();
+        for (a, b) in edges {
+            rest.push(0.5 * (corners[a] + corners[b]));
+        }
+
+        // A genuinely quadratic map: x ↦ x + (x², 0, 0) / 4. Its gradient
+        // varies across the element, so no single constant F can represent it.
+        let warp = |p: &Vec3| Vec3::new(p.x + 0.25 * p.x * p.x, p.y, p.z);
+        let curr: Vec<Vec3> = rest.iter().map(warp).collect();
+
+        // Corner-linear F — exactly what `tet_readout` would compute.
+        let corner_f = deformation_gradient([0, 1, 2, 3], &rest, &curr);
+
+        // True Tet10 F at the element centroid, through the element's own
+        // shape gradients: F = (Σ x_i ⊗ ∇N_i) with ∇N in rest coordinates.
+        let xi = Vec3::new(0.25, 0.25, 0.25);
+        let grad_xi = Tet10.shape_gradients(xi);
+        let mut j_rest: Matrix3<f64> = Matrix3::zeros();
+        let mut j_curr: Matrix3<f64> = Matrix3::zeros();
+        for (i, (r, c)) in rest.iter().zip(curr.iter()).enumerate() {
+            for d in 0..3 {
+                for k in 0..3 {
+                    j_rest[(d, k)] += r[d] * grad_xi[(i, k)];
+                    j_curr[(d, k)] += c[d] * grad_xi[(i, k)];
+                }
+            }
+        }
+        let tet10_f = j_curr
+            * j_rest
+                .try_inverse()
+                .expect("the reference tet's rest Jacobian is invertible");
+
+        let gap = (tet10_f - corner_f).norm() / tet10_f.norm();
+        assert!(
+            gap > 1e-3,
+            "the corner-linear F and the Tet10 F must differ on a quadratic \
+             field — they agreed to {gap:.3e}, which would mean the readout \
+             already resolves the midsides and this gate is stale",
+        );
+
+        // And the control: on an AFFINE field the two must agree, or the
+        // comparison above is measuring a bug in this test rather than the
+        // element order.
+        let affine = |p: &Vec3| Vec3::new(1.3 * p.x + 0.2 * p.y, 0.9 * p.y, 1.1 * p.z);
+        let curr_affine: Vec<Vec3> = rest.iter().map(affine).collect();
+        let corner_affine = deformation_gradient([0, 1, 2, 3], &rest, &curr_affine);
+        let mut j_curr_a: Matrix3<f64> = Matrix3::zeros();
+        for (i, c) in curr_affine.iter().enumerate() {
+            for d in 0..3 {
+                for k in 0..3 {
+                    j_curr_a[(d, k)] += c[d] * grad_xi[(i, k)];
+                }
+            }
+        }
+        let tet10_affine = j_curr_a
+            * j_rest
+                .try_inverse()
+                .expect("the reference tet's rest Jacobian is invertible");
+        assert!(
+            (tet10_affine - corner_affine).norm() < 1e-12,
+            "on an affine field the two must agree exactly; they differed by {}",
+            (tet10_affine - corner_affine).norm(),
         );
     }
 }
