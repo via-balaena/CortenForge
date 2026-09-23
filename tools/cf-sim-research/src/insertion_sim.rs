@@ -1254,7 +1254,7 @@ const BRIDGE_PATCH_NONUNIFORMITY: f64 = 1.12;
 ///   over a 3 mm inset that is `d̂ > 0.44 mm`;
 /// - the band stays well inside one element, `d̂ < SIM_CELL_SIZE_M / 3`.
 ///
-/// `the_bridges_barrier_band_brackets_a_stiffness` reports the bracket at
+/// `the_bridges_barrier_band_reports_a_floor_and_ships_a_ceiling` reports the bracket at
 /// every candidate rather than asserting this one is optimal.
 const BRIDGE_CONTACT_DHAT_M: f64 = 1.2e-3;
 
@@ -1289,7 +1289,7 @@ const BRIDGE_CONTACT_DHAT_M: f64 = 1.2e-3;
 ///
 /// ⇒ **The ceiling is the only requirement describing something κ actually
 /// controls** (how much the barrier cushions). The floor is kept as a REPORTED
-/// diagnostic — `the_bridges_barrier_band_brackets_a_stiffness` still prints
+/// diagnostic — `the_bridges_barrier_band_reports_a_floor_and_ships_a_ceiling` still prints
 /// it — but it no longer selects, because a selector resting on a premise the
 /// scene does not honour is a sweep wearing a derivation's clothes.
 ///

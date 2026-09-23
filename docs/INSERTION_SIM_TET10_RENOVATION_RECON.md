@@ -682,7 +682,7 @@ Listed because the confidence of §4 rests on these being open, not closed.
    **1.048× per decade** (scan) against **1.047×** (sphere) over the SAME arms
    (`κ` = 1e4→1e5, the only ones seated on both), agreeing to 0.12 % and both
    well under the fixture's 1.238×; `κ` = 1e6 stalls on both. ⇒ **for the
-   bridge, `σ` ≈ 117 kPa as a lower bound and `ρ` ∈ [1.00, 1.18]**, read on the
+   bridge, `σ` ≈ 117 kPa as a lower bound and `ρ` ∈ [1.00, 1.18]** — ⛔⛔ **SUPERSEDED: that is `sock_over_capsule`. On the PRODUCT scan (`base_mold`) it is σ = 58.9 kPa and ρ ∈ [1.00, 1.11]; see `σ RE-MEASURED ON THE PRODUCT SCAN`** — read on the
    REST basis at `κ` = 1e4–1e5 on a non-penetrating full-depth seat — not the
    6.85 kPa / 1.22 the shipped stiffness reports off a 25 % seat.
 
@@ -767,7 +767,7 @@ Listed because the confidence of §4 rests on these being open, not closed.
    ⚠⚠ **But do not carry these two numbers to the bridge.** They are read at the
    shipped stiffness — the reading the sweep above disqualifies — off a seat that
    reached 25 % of its inset. The ones to carry are the stiff-arm numbers: `σ`
-   ≈ 117 kPa, `ρ` ∈ [1.00, 1.18]. What this table shows is the *shape* of the
+   ≈ 117 kPa, `ρ` ∈ [1.00, 1.18] — ⛔ both SUPERSEDED by the product scan (58.9 kPa, [1.00, 1.11]). What this table shows is the *shape* of the
    derivation on a real scan — a narrow interval that closes only at a small `d̂`.
 
    ✅ **The enveloping-patch cancellation, quantified inside this pipeline.**
@@ -796,7 +796,24 @@ Listed because the confidence of §4 rests on these being open, not closed.
 
    ---
 
-   ### ▶▶▶ THE BRIDGE ITSELF — measured 2026-09-22, macOS/ARM
+   ### ⛔ THE BRIDGE, FIRST PASS — SUPERSEDED. Read the product-scan sections.
+
+   > ⛔⛔ **EVERYTHING IN THIS SECTION IS SYNTHETIC SCENES AT A κ THAT NO LONGER
+   > SHIPS.** Its tables are `tol-fixture` and `sphere-40mm`, and its κ was
+   > derived from **σ = 117 kPa** (`sock_over_capsule`) by a **geometric-centre**
+   > selector. Both were later replaced: σ is **58.9 kPa** on the product scan,
+   > and κ is now the **ceiling**. Depth numbers here are not comparable to
+   > anything current.
+   >
+   > ▶ **The current result is `THE HEAD-TO-HEAD, ON THE PRODUCT SCAN AT THE
+   > FIXED κ`**, below. The reading order that matches how this was learned:
+   > σ re-measured → floor falsified → κ fixed → head-to-head.
+   >
+   > ★ Kept rather than deleted because the synthetic scenes are what MISLED,
+   > and that is the transferable part: they were too well-conditioned to show
+   > either the failure or the benefit.
+
+   ### ▶ THE BRIDGE ITSELF — first pass, synthetic scenes, 2026-09-22
 
    `run_insertion_ramp_tet10_ipc` runs the same scene, the same boundary
    conditions and the same rigid intruder through a swapped solve triple —
@@ -1162,11 +1179,18 @@ Listed because the confidence of §4 rests on these being open, not closed.
    between 1e-4 and 7e-3. Three decades of stiffness move the stall neither
    earlier nor later. Whatever the floor is, it is not the barrier's stiffness.
 
-   ⭐ **The derivation, and why it is per-ramp rather than a constant.** The
-   floor belongs to the MARCHING SCHEME — the material and the compression set
-   `σ`, the increment sets the clearance one step must survive — so a stored
-   constant would go silently wrong the moment a caller changed `n_steps`. At
-   `d̂` = 1.2 mm over a 16-step 3 mm ramp:
+   ⛔⛔ **RETRACTED — the derivation below is the one that was replaced.** It
+   selected the geometric centre of `[floor, ceiling]` and made κ depend on the
+   increment. Measured on the product scan, that is exactly what made refining
+   the march self-defeating; κ is now the **ceiling** and does not move with the
+   schedule (see `THE κ DERIVATION, FIXED`). Kept for the record — the numbers
+   below are `sock_over_capsule` at σ = 117 kPa and ship nowhere.
+
+   ⚠ Its stated rationale — the floor belongs to the MARCHING SCHEME, so a
+   stored constant goes wrong when `n_steps` changes — was *sound reasoning from
+   a false premise*: the floor only belongs to the marching scheme if κ sets the
+   standoff, and on a stiff wall it does not. At `d̂` = 1.2 mm over a 16-step
+   3 mm ramp it gave:
 
    ```text
    floor    σ / |b'(ρ · step)| = 1.5315e7   hold one increment open
@@ -1174,9 +1198,9 @@ Listed because the confidence of §4 rests on these being open, not closed.
    derived  geometric centre   = 3.5377e7   0.727 decades wide
    ```
 
-   ⚠ **No round decade sits inside**, which is why the shipped value is the
-   log-midpoint rather than a power of ten. `the_bridges_barrier_band_brackets_a_stiffness`
-   re-derives this on every build across all four candidate bands, and shows
+   ⚠ No round decade sits inside — which is why THAT revision shipped a
+   log-midpoint. `the_bridges_barrier_band_reports_a_floor_and_ships_a_ceiling`
+   re-derives the bands on every build, and shows
    the boundary where the derivation must refuse: at a 4-step schedule
    `ρ·step` = 0.885 mm and three of the four bands have no bracket at all.
 
