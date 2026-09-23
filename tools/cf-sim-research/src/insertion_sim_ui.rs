@@ -987,8 +987,9 @@ fn run_sim_pipeline(
 
     // Slice S3 — build per-layer outer-face triangle lists. Requires
     // the outer-skin pinned vertex set; detected from the final
-    // converged step's `x_final` (zero displacement = Dirichlet-pinned).
-    let outer_skin_vertices = detect_outer_skin_vertices(&rest_positions, &final_x);
+    // converged step's `x_final` (zero displacement = Dirichlet-pinned),
+    // against the SOLVED mesh's rest positions — see the function.
+    let outer_skin_vertices = detect_outer_skin_vertices(readout_mesh.rest_positions(), &final_x)?;
     let per_layer_outer_faces =
         build_per_layer_outer_faces(&tets, &per_tet_layer, &outer_skin_vertices, n_layers);
 
@@ -1192,18 +1193,31 @@ fn build_per_layer_outer_faces(
 /// arithmetic applied), so even a sub-µm cavity displacement
 /// distinguishes them from outer-skin verts.
 ///
-/// Falls back to an empty set when no step converged or
-/// `result.final_per_tet` is absent — callers must tolerate an empty
-/// pinned set (no outer-skin face passes the membership check, so
-/// layer N-1 ends up with an empty outer face list, which
-/// `deformed_layer_mesh_at` reports as `None` → falls through to the
-/// rest-frame SDF iso).
+/// ⛔ `rest_positions` must be the SOLVED mesh's
+/// ([`ReadoutMesh::rest_positions`](crate::insertion_sim::ReadoutMesh::rest_positions)),
+/// indexed like `x_final`. On the bridge `x_final` carries the Tet10
+/// midsides, so the scene's Tet4 snapshot is the wrong length.
+///
+/// # Errors
+///
+/// When `final_x` is not `3 × rest_positions.len()` long. An earlier
+/// revision returned an EMPTY set here instead, and the bridge reached
+/// that branch: measured on `tolerance_fixture`, no vertex read as
+/// outer skin (`what_the_corner_readout_missed_on_the_bridge`), so the
+/// outer layer's shell and the cavity-face filter both degraded without
+/// a word.
 pub(crate) fn detect_outer_skin_vertices(
     rest_positions: &[Vector3<f64>],
     final_x: &[f64],
-) -> std::collections::BTreeSet<VertexId> {
+) -> anyhow::Result<std::collections::BTreeSet<VertexId>> {
     if final_x.len() != 3 * rest_positions.len() {
-        return std::collections::BTreeSet::new();
+        return Err(anyhow::anyhow!(
+            "outer-skin detection: x_final has {} dofs but the rest positions \
+             give {} vertices (×3 = {}) — they come from different meshes",
+            final_x.len(),
+            rest_positions.len(),
+            3 * rest_positions.len(),
+        ));
     }
     let mut pinned = std::collections::BTreeSet::new();
     for (v_idx, rest) in rest_positions.iter().enumerate() {
@@ -1217,7 +1231,7 @@ pub(crate) fn detect_outer_skin_vertices(
             pinned.insert(v_idx as VertexId);
         }
     }
-    pinned
+    Ok(pinned)
 }
 
 /// Slice S1 — `(min, max)` across every step's slot-`slot_idx` per-tet
@@ -1996,10 +2010,29 @@ mod tests {
             1.001, 0.0, 0.0, // v1 displaced
             0.0, 1.0, 0.0, // v2 pinned
         ];
-        let pinned = detect_outer_skin_vertices(&rest, &final_x);
+        let pinned = detect_outer_skin_vertices(&rest, &final_x).expect("same mesh");
         assert!(pinned.contains(&0));
         assert!(!pinned.contains(&1));
         assert!(pinned.contains(&2));
+    }
+
+    /// ⛔ A rest set from a different mesh than `x_final` is an ERROR, not an
+    /// empty outer skin — the bridge's Tet10 `x_final` against the scene's
+    /// Tet4 snapshot used to read as "nothing is pinned".
+    #[test]
+    fn detect_outer_skin_vertices_refuses_a_mismatched_mesh() {
+        // Three corners, and an `x_final` that also carries a fourth node —
+        // the shape of a Tet10 state against a Tet4 snapshot.
+        let rest = vec![
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(1.0, 0.0, 0.0),
+            Vector3::new(0.0, 1.0, 0.0),
+        ];
+        let final_x = vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.5, 0.0, 0.0];
+        assert!(
+            detect_outer_skin_vertices(&rest, &final_x).is_err(),
+            "a mismatched mesh must not read as an empty outer skin",
+        );
     }
 
     /// Slice S2 — `deformed_boundary_mesh_at` pairs the snapshotted

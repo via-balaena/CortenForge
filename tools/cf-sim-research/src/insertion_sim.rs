@@ -10278,12 +10278,33 @@ mod tests {
     /// of every element must be that field's analytic gradient at the point's
     /// physical location. A misplaced midside reads the wrong node's
     /// displacement and fails at once.
+    ///
+    /// It also pins that enrichment keeps every element's id, which the UI's
+    /// Tet4-indexed heat-map lookup depends on.
     #[test]
     fn the_tet10_readout_mesh_places_every_elements_midsides() {
-        let mesh10 = Tet10Mesh::<Yeoh>::from_tet4(&tolerance_fixture().mesh);
+        let mesh4 = tolerance_fixture().mesh;
+        let mesh10 = Tet10Mesh::<Yeoh>::from_tet4(&mesh4);
         let readout_mesh =
             ReadoutMesh::tet10(&mesh10).expect("an enriched mesh names its midsides");
         assert_eq!(readout_mesh.n_elements(), mesh10.n_tets());
+        assert!(
+            mesh10.n_tets() > 0,
+            "an empty mesh would pass everything below"
+        );
+
+        // ⛔ Element `t` of the enriched mesh IS element `t` of the Tet4 mesh.
+        // The UI indexes its heat-map centroids and its layer map by the Tet4
+        // id and reads them against these readouts, so a reordering would
+        // colour every element with another one's stress.
+        let reordered = (0_u32..)
+            .take(mesh4.n_tets())
+            .filter(|&t| mesh10.tet_vertices(t) != mesh4.tet_vertices(t))
+            .count();
+        assert_eq!(
+            reordered, 0,
+            "enrichment must keep every element's id and corners"
+        );
 
         // A quadratic in x sized to the mesh so F stays in [0.5, 1.5]:
         // u_x = k (x − x0)², F_xx = 1 + 2k (x − x0).
@@ -10454,22 +10475,16 @@ mod tests {
             );
 
             // The UI's outer-skin detection, from each rest-position source.
-            let from_snapshot = crate::insertion_sim_ui::detect_outer_skin_vertices(
-                &corners.rest_positions,
-                &last.x_final,
-            );
-            let from_solved = crate::insertion_sim_ui::detect_outer_skin_vertices(
-                ramp.readout_mesh.rest_positions(),
-                &last.x_final,
-            );
+            let detected = |rest: &[Vec3]| {
+                crate::insertion_sim_ui::detect_outer_skin_vertices(rest, &last.x_final)
+                    .map_or_else(|e| format!("refused ({e})"), |s| s.len().to_string())
+            };
             println!(
                 "outer skin detected: from the Tet4 snapshot {} · from the solved mesh {} \
-                 (Dirichlet-pinned: {}; x_final {} dofs, snapshot {} vertices)",
-                from_snapshot.len(),
-                from_solved.len(),
+                 (Dirichlet-pinned: {})",
+                detected(&corners.rest_positions),
+                detected(ramp.readout_mesh.rest_positions()),
                 ramp.n_pinned,
-                last.x_final.len(),
-                corners.rest_positions.len(),
             );
         }
     }
