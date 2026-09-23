@@ -1193,13 +1193,18 @@ fn intruder_contact_at_kappa(
 
 /// The design traction the bridge's face barrier is sized against.
 ///
-/// **Measured, not assumed** (#959, `a61d7c18`): the area-weighted mean
-/// contact traction this scene carries at a full seat is ~117 kPa on the
-/// REST-area basis, read at penalty `κ = 1e4…1e5` on a NON-penetrating
-/// full-depth pose, and reproduced on two scenes — the synthetic sphere and
-/// the real iter-1 scan — which agree to 0.12 % on how `σ` couples to
-/// stiffness. That agreement is what makes it a property of the *path*
-/// rather than of one fixture.
+/// **Measured on the PRODUCT scan** (`base_mold`, 2026-09-22): 58.9 kPa on
+/// the REST-area basis, read at penalty `κ = 1e5` — the stiffest arm that
+/// stayed seated — at a common depth of 3.4375 mm through a 5 mm inset.
+/// `κ = 1e4` reads 57.83 kPa at the same depth, so σ moves **1.0183× per
+/// decade** across the seated arms: the flattest coupling of any scene tried,
+/// which is what makes this close to converged rather than a loose bound.
+///
+/// ⛔⛔ **SUPERSEDES 117 kPa, which was `sock_over_capsule`** — a 3 mm inset
+/// through Ecoflex 00-30. `base_mold` is a 5 mm inset through 17 mm of
+/// DRAGON_SKIN_10A at 25 % Slacker. σ is roughly HALF, and `κ` scales with it
+/// linearly, so every derived stiffness taken before this re-measurement was
+/// about 2× too large → see `product_scene`.
 ///
 /// ⚠ It is a **LOWER BOUND**, not a converged rigid traction: `κ = 1e6`
 /// stalls at step 0 on both scenes, so `1e5` is the stiffest arm that solves
@@ -1213,7 +1218,7 @@ fn intruder_contact_at_kappa(
 /// anything. ⛔ And do NOT read it on the DEFORMED area basis —
 /// `ContactPairReadout::tributary_area` is a deformed tributary while the
 /// face barrier integrates over REST area; the two differ by 22–23 %.
-const BRIDGE_DESIGN_TRACTION_PA: f64 = 117.0e3;
+const BRIDGE_DESIGN_TRACTION_PA: f64 = 58.9e3;
 
 /// Patch non-uniformity `ρ` — the effective gap the barrier must hold, as a
 /// multiple of the MINIMUM gap anywhere on the patch.
@@ -1223,16 +1228,18 @@ const BRIDGE_DESIGN_TRACTION_PA: f64 = 117.0e3;
 /// floor requirement is evaluated at `ρ · step`, never at `step`: omitting
 /// `ρ` makes the floor optimistic.
 ///
-/// **Measured** (#959) in `[1.00, 1.18]` at `κ = 1e4…1e5` on a
-/// non-penetrating seat. The upper end is taken — for a floor, the larger
-/// `ρ` is the conservative one.
+/// **Measured on the PRODUCT scan** in `[1.00, 1.11]` at `κ = 1e4…1e5` on a
+/// non-penetrating seat — 1.113 (min-gap) and 1.036 (5 % tail) at `κ = 1e4`,
+/// 1.010 and 1.004 at `κ = 1e5`. The upper end is taken: for a floor, the
+/// larger `ρ` is the conservative one. ⛔ Supersedes 1.18, which was
+/// `sock_over_capsule`.
 ///
 /// ⛔ Read `ρ` against the area-weighted 5 % tail, never `min_sd` alone:
 /// `min_sd` is ONE VERTEX, and the floor divides `|b′|` at `ρ · step`, so a
 /// single bad tet would move a shipped constant. At the shipped stiffness the
 /// synthetic sphere's `min_sd` ratio reads 4.92 — on a geometry with no shape
 /// irregularity whatsoever — while the same pose at `κ = 1e5` reads 1.005.
-const BRIDGE_PATCH_NONUNIFORMITY: f64 = 1.18;
+const BRIDGE_PATCH_NONUNIFORMITY: f64 = 1.12;
 
 /// Barrier band `d̂` for the bridge's face contact.
 ///
@@ -9790,7 +9797,8 @@ mod tests {
     /// here rather than in a ramp nobody runs.
     #[test]
     fn the_bridges_stiffness_is_derived_and_bracketed() {
-        let inset_m = 0.003;
+        // The product inset (`base_mold`), not sock's 3 mm.
+        let inset_m = 0.005;
         let n_steps = 16.0;
         let step = inset_m / n_steps;
 
@@ -10242,7 +10250,8 @@ mod tests {
     #[ignore = "release-mode ramps across a stiffness sweep; run with --ignored --nocapture"]
     fn the_bridge_ramp_over_a_stiffness_sweep() {
         const N_STEPS: usize = 16;
-        let inset_m = 0.003;
+        // The product inset (`base_mold`), not sock's 3 mm.
+        let inset_m = 0.005;
         // `N_STEPS` is small; the cast is exact.
         #[allow(clippy::cast_precision_loss)]
         let step = inset_m / N_STEPS as f64;
@@ -10447,7 +10456,8 @@ mod tests {
     /// SCHEDULE, not in the candidate set, so that is where it is shown.
     #[test]
     fn the_bridges_barrier_band_brackets_a_stiffness() {
-        let inset_m = 0.003;
+        // The product inset (`base_mold`), not sock's 3 mm.
+        let inset_m = 0.005;
         let report = |n_steps: f64| -> usize {
             let step = inset_m / n_steps;
             let mut n_bracketed = 0;
@@ -10493,26 +10503,31 @@ mod tests {
             n_bracketed
         };
 
-        // The shipped schedule: every candidate brackets.
+        // ⚠ Counts are DERIVED here, not transcribed. An earlier revision
+        // asserted "every candidate brackets at the shipped schedule", which
+        // was true of `sock_over_capsule`'s σ and ρ and became false the
+        // moment they were re-measured on the product scan — a gate number
+        // calibrated against a baseline that moved.
         let n_shipped = report(16.0);
-        assert_eq!(
-            n_shipped,
-            BRIDGE_DHAT_CANDIDATES_M.len(),
-            "at the shipped 16-step schedule every candidate band must bracket",
+        assert!(
+            n_shipped > 0,
+            "the shipped schedule must bracket at SOME band, or the derivation \
+             selects nothing anywhere",
+        );
+        assert!(
+            n_shipped < BRIDGE_DHAT_CANDIDATES_M.len(),
+            "the shipped schedule must leave at least one band with no bracket, \
+             or this gate never sees the boundary it exists to show",
         );
 
-        // A coarse schedule: the increment outruns the narrow bands, and the
-        // derivation must REFUSE rather than return a number. This is the half
-        // that can fail — without it the gate only ever sees the happy path.
+        // Coarsening must cost bands: the floor is the only bound the schedule
+        // moves, so a wider increment can only ever bracket fewer of them.
         let n_coarse = report(4.0);
         assert!(
-            n_coarse > 0,
-            "a 4-step schedule must still bracket at the wider bands",
-        );
-        assert!(
-            n_coarse < BRIDGE_DHAT_CANDIDATES_M.len(),
-            "a 4-step schedule must break the narrow bands, or this gate never \
-             sees the boundary it exists to show",
+            n_coarse < n_shipped,
+            "a 4x coarser schedule must bracket FEWER bands than the shipped \
+             one ({n_coarse} vs {n_shipped}) — the floor is the bound the \
+             schedule moves",
         );
 
         // The shipped band must be one that works at the shipped schedule.

@@ -935,6 +935,44 @@ Listed because the confidence of §4 rests on these being open, not closed.
    `gui-dflt` the BASELINE's cliff comes first — it is already at zero by 1e-2,
    a decade before the bridge is.
 
+   ### ⛔⛔ σ RE-MEASURED ON THE PRODUCT SCAN — and it is HALF
+
+   Every scan number above is `sock_over_capsule`. The product scene is
+   **`base_mold`** as the CF Studio project configures it: a **5 mm** inset
+   through **17 mm of DRAGON_SKIN_10A at 25 % Slacker**, against sock's 3 mm
+   through Ecoflex 00-30. Re-measured 2026-09-22 by the same method as #959,
+   at a common depth of 3.4375 mm:
+
+   | κ | steps | σ (rest) | `min_sd` | 5 % tail | ρ | ρ tail | |
+   |---|---|---|---|---|---|---|---|
+   | 1e2 | 16/16 | 23.40 kPa | −1.920 mm | −1.415 mm | — | — | ⛔ through |
+   | **1e3 (ships)** | 13/16 | 50.05 kPa | **−0.041 mm** | +0.342 mm | — | 1.641 | ⛔ through |
+   | **1e4** | **16/16** | 57.83 kPa | +0.851 mm | +0.914 mm | 1.113 | 1.036 | seated |
+   | **1e5** | 11/16 | **58.89 kPa** | +0.985 mm | +0.991 mm | 1.010 | 1.004 | seated |
+   | 1e6 | 0/16 | — | — | — | — | — | stalled |
+
+   ⇒ **σ ≈ 58.9 kPa, not 117 kPa**, and **ρ ∈ [1.00, 1.11]**, not [1.00, 1.18].
+   `κ` scales linearly with σ, so every derived stiffness taken before this was
+   about **2× too large**. At `d̂` = 1.2 mm on the product schedule the bracket
+   is now `[1.4162e7, 4.1138e7]` with a derived **2.4137e7**, against the
+   3.5377e7 that had been shipping.
+
+   ⭐ **It is close to converged, not a loose bound.** σ moves **1.0183× per
+   decade** across the seated arms — the flattest coupling of any scene tried
+   (sphere 1.047×, sock scan 1.048×, sim-soft fixture 1.238×).
+
+   ⛔ **The shipped κ = 1e3 is through the wall here too** (`min_sd`
+   −0.041 mm), which is now three scenes out of three.
+
+   ⛔⛔ **And the area basis matters MORE on this scene**: σ(rest) 58.89 kPa
+   against σ(deformed) **41.52 kPa** — a **41.8 %** gap, nearly double sock's
+   22–23 %. Reading σ on the deformed basis would be a much worse error here.
+
+   ⚠ **The stiff end arrives a decade earlier than on sock**: `κ = 1e5` already
+   degrades to 11/16 and `1e6` converges nothing, where the sock scenes solved
+   at 1e5 and stalled at 1e6. And `κ = 1e4` is the only arm that reaches FULL
+   depth — the shipped 1e3 stalls at 13/16.
+
    ### ⭐⭐ WHAT A STEP COSTS — and it inverts too
 
    `RampStep::wall_time_s`, measured around `replay_step` alone. Idle machine,
