@@ -2529,6 +2529,32 @@ pub fn run_insertion_ramp_at_kappa(
     n_steps: usize,
     contact_kappa: f64,
 ) -> Result<InsertionRamp> {
+    run_insertion_ramp_at_kappa_and_tol(geometry, n_steps, contact_kappa, INSERTION_SOLVE_TOL)
+}
+
+/// [`run_insertion_ramp_at_kappa`] with the residual tolerance supplied too.
+///
+/// Exists so the Tet4 + penalty baseline can be run at the SAME tolerance as
+/// the bridge ([`run_insertion_ramp_tet10_ipc`]) without editing a shipped
+/// constant. #958 measured this comparison by flipping `INSERTION_SOLVE_TOL`
+/// in the source and reverting afterwards; a knob makes the same measurement
+/// reproducible by anyone, and — unlike a const flip — cannot be left behind.
+///
+/// ⛔ This does NOT change what ships. [`run_insertion_ramp`] and
+/// [`run_insertion_ramp_at_kappa`] both delegate here at
+/// [`INSERTION_SOLVE_TOL`], and `the_shipped_ramp_solves_at_the_shipped_tolerance`
+/// pins that.
+///
+/// # Errors
+///
+/// Identical to [`run_insertion_ramp`]: `n_steps` is zero, or
+/// [`outer_skin_bc`] finds no outer-skin vertex in the pin-band.
+pub fn run_insertion_ramp_at_kappa_and_tol(
+    geometry: InsertionGeometry,
+    n_steps: usize,
+    contact_kappa: f64,
+    tol: f64,
+) -> Result<InsertionRamp> {
     if n_steps == 0 {
         return Err(anyhow!("insertion ramp needs at least one step"));
     }
@@ -2584,7 +2610,7 @@ pub fn run_insertion_ramp_at_kappa(
     // the intruder there in `n_steps` equal increments.
     let inset_m = -cavity_offset_m;
 
-    let config = insertion_solver_config();
+    let config = insertion_solver_config_at_tol(tol);
 
     // x_prev starts at rest; each converged step chains its x_final in.
     let mut x_prev_flat: Vec<f64> = rest_positions
@@ -2732,6 +2758,39 @@ pub fn run_insertion_ramp_tet10_ipc(
     n_steps: usize,
     tol: f64,
 ) -> Result<InsertionRamp> {
+    // `κ` depends on the increment, so it cannot be a constant here — see
+    // `bridge_face_barrier_kappa`. The inset is the ramp's full travel.
+    // `n_steps` is small and non-zero; the cast is exact.
+    #[allow(clippy::cast_precision_loss)]
+    let ramp_step_m = if n_steps == 0 {
+        f64::NAN
+    } else {
+        -geometry.cavity_offset_m / n_steps as f64
+    };
+    let kappa = bridge_face_barrier_kappa(BRIDGE_CONTACT_DHAT_M, ramp_step_m)?;
+    run_insertion_ramp_tet10_ipc_at(geometry, n_steps, tol, kappa, BRIDGE_CONTACT_DHAT_M)
+}
+
+/// [`run_insertion_ramp_tet10_ipc`] with the barrier parameters supplied
+/// rather than derived.
+///
+/// ⭐ **This is what makes the derivation falsifiable.** `κ` is claimed to be
+/// determined by a measured traction rather than swept; the only way to hold
+/// that claim to account is to be able to run the neighbouring stiffnesses and
+/// see what they do. The derivation's own gate re-derives the bracket, and
+/// `the_bridge_ramp_over_a_stiffness_sweep` reports the ramp across it.
+///
+/// # Errors
+///
+/// - `n_steps` is zero;
+/// - [`outer_skin_bc`] finds no outer-skin vertex in the pin-band.
+pub fn run_insertion_ramp_tet10_ipc_at(
+    geometry: InsertionGeometry,
+    n_steps: usize,
+    tol: f64,
+    contact_kappa: f64,
+    d_hat: f64,
+) -> Result<InsertionRamp> {
     if n_steps == 0 {
         return Err(anyhow!("insertion ramp needs at least one step"));
     }
@@ -2765,7 +2824,6 @@ pub fn run_insertion_ramp_tet10_ipc(
     // `n_steps` is small and non-zero; the cast is exact.
     #[allow(clippy::cast_precision_loss)]
     let ramp_step_m = inset_m / n_steps as f64;
-    let contact_kappa = bridge_face_barrier_kappa(BRIDGE_CONTACT_DHAT_M, ramp_step_m)?;
 
     let bc = outer_skin_bc(&mesh, &intruder, bounds, outer_offset_m, cell_size_m)?;
     let n_pinned = bc.pinned_vertices.len();
@@ -2811,17 +2869,73 @@ pub fn run_insertion_ramp_tet10_ipc(
     let mut steps: Vec<RampStep> = Vec::with_capacity(n_steps);
     let mut failed_at_step = None;
     let mut failure_reason = None;
+    // ⚠⚠ **IPC IS AN INTERIOR-POINT METHOD** — it needs a strictly feasible
+    // start (`sd > 0`), and this ramp does not have one. At interference 0 the
+    // cavity surface and the intruder coincide, so the very first increment
+    // hands Newton a state already through the wall. Measured on the tolerance
+    // fixture: the barrier's residual at Newton iteration 0 is **4.08e6 N**
+    // and the line search stalls immediately. The penalty path tolerates that
+    // start; a barrier cannot.
+    //
+    // So the intruder is marched in from a CLEARANCE, in increments of the
+    // same size, and the approach steps are solved but not recorded. From
+    // there the κ FLOOR carries it: that requirement is exactly "hold
+    // `ρ · step` open", so each converged step leaves more standoff than the
+    // next increment consumes and every later start is feasible by
+    // construction. ⭐ The floor is not decoration here — it is what makes the
+    // march legal.
+    //
+    // ⚠ The clearance is MEASURED off this mesh, not chosen. Two independent
+    // effects put rest nodes on the wrong side of the cavity isosurface before
+    // anything has moved:
+    //   - the MESHER's own discretisation — measured on the tolerance fixture,
+    //     corner nodes reach 0.1354 mm inside;
+    //   - ENRICHMENT — `from_tet4` puts midsides on straight edge CHORDS, so a
+    //     boundary midside sits under the true curved surface by the sagitta
+    //     (`~h²/8R`). Measured: the tightest midside is 0.2522 mm inside, an
+    //     excess of 0.117 mm over the tightest corner, against a predicted
+    //     sagitta of 0.118 mm at h = 4 mm, R = 17 mm.
+    // Marching from a round `d̂/2` walked straight back into an infeasible
+    // start (the last approach step stalled at Newton iter 4). So the worst
+    // rest penetration is measured and the approach begins outside it.
+    // ⛔ `fold` from 0.0 floors the result: a mesh with no node inside the
+    // surface asks for no penetration allowance, only the `d̂/2` margin.
+    let cavity_isosurface = Solid::from_sdf(intruder.clone(), bounds).offset(cavity_offset_m);
+    let worst_rest_penetration_m = rest_positions
+        .iter()
+        .map(|p| cavity_isosurface.eval(Point3::from(*p)))
+        .filter(|sd| sd.is_finite())
+        .fold(0.0_f64, |acc, sd| acc.max(-sd));
+    let approach_clearance_m = worst_rest_penetration_m + 0.5 * d_hat;
+    // The increment count is small, so the cast is exact. `ceil` is deliberate:
+    // rounding up can only make the first approach gap larger than the
+    // clearance asked for, never smaller.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let n_approach = (approach_clearance_m / ramp_step_m).ceil() as usize;
+
+    // `(interference, record)` — the approach is solved, never reported, so
+    // `InsertionRamp`'s steps stay the same 0 → inset grid the Tet4 ramp
+    // reports and the two are directly comparable.
+    let mut schedule: Vec<(f64, bool)> = Vec::with_capacity(n_approach + n_steps);
+    for i in (1..=n_approach).rev() {
+        // `i` is bounded by `n_approach`; the cast is exact.
+        #[allow(clippy::cast_precision_loss)]
+        schedule.push((-(i as f64) * ramp_step_m, false));
+    }
     for k in 0..n_steps {
         // k + 1 and n_steps are tiny — well under f64's exact-integer ceiling.
         #[allow(clippy::cast_precision_loss)]
-        let interference_m = (k + 1) as f64 / n_steps as f64 * inset_m;
+        schedule.push(((k + 1) as f64 / n_steps as f64 * inset_m, true));
+    }
+
+    for &(interference_m, record) in &schedule {
         let contact = intruder_ipc_contact_at(
             &intruder,
             bounds,
             interference_m,
             cavity_offset_m,
             contact_kappa,
-            BRIDGE_CONTACT_DHAT_M,
+            d_hat,
         );
         let solver: CpuNewtonSolver<Tet10, Tet10Mesh<Yeoh>, IpcRigidContact, Yeoh, 10, 4> =
             CpuNewtonSolver::new(Tet10, mesh.clone(), contact, config, bc.clone());
@@ -2831,47 +2945,60 @@ pub fn run_insertion_ramp_tet10_ipc(
         }));
         match outcome {
             Ok(step) => {
-                let positions_k: Vec<Vec3> = positions_from_flat(&step.x_final);
-                // The solver consumed the step's `contact`; rebuild at the
-                // SAME parameters so the reported patch is the solved one.
-                let readout_contact = intruder_ipc_contact_at(
-                    &intruder,
-                    bounds,
-                    interference_m,
-                    cavity_offset_m,
-                    contact_kappa,
-                    BRIDGE_CONTACT_DHAT_M,
-                );
-                let raw_readouts = readout_contact.per_pair_readout(&mesh, &positions_k);
-                // ⚠ The face path's READOUT is per-NODE
-                // (`ContactPair::Vertex` naming midsides), not per-face —
-                // `ContactPair::Face` is what the SOLVER consumes. So the
-                // shipped filter applies unchanged and its `Face` arm stays
-                // genuinely unreachable.
-                let contact_readouts =
-                    filter_pair_readouts_to_referenced(raw_readouts, &referenced);
-                let per_tet =
-                    compute_tet_readouts(&rest_positions, &positions_k, &tets, &materials);
-                let conformity = gamma.conformity(
-                    &positions_k,
-                    &gamma_faces,
-                    &contact_readouts,
-                    cavity_tensile_strength_pa,
-                );
-                let step_readout = aggregate_step_readout(&per_tet, &contact_readouts, conformity);
+                if record {
+                    let positions_k: Vec<Vec3> = positions_from_flat(&step.x_final);
+                    // The solver consumed the step's `contact`; rebuild at the
+                    // SAME parameters so the reported patch is the solved one.
+                    let readout_contact = intruder_ipc_contact_at(
+                        &intruder,
+                        bounds,
+                        interference_m,
+                        cavity_offset_m,
+                        contact_kappa,
+                        d_hat,
+                    );
+                    let raw_readouts = readout_contact.per_pair_readout(&mesh, &positions_k);
+                    // ⚠ The face path's READOUT is per-NODE
+                    // (`ContactPair::Vertex` naming midsides), not per-face —
+                    // `ContactPair::Face` is what the SOLVER consumes. So the
+                    // shipped filter applies unchanged and its `Face` arm stays
+                    // genuinely unreachable.
+                    let contact_readouts =
+                        filter_pair_readouts_to_referenced(raw_readouts, &referenced);
+                    let per_tet =
+                        compute_tet_readouts(&rest_positions, &positions_k, &tets, &materials);
+                    let conformity = gamma.conformity(
+                        &positions_k,
+                        &gamma_faces,
+                        &contact_readouts,
+                        cavity_tensile_strength_pa,
+                    );
+                    let step_readout =
+                        aggregate_step_readout(&per_tet, &contact_readouts, conformity);
 
-                steps.push(RampStep {
-                    interference_m,
-                    iter_count: step.iter_count,
-                    final_residual_norm: step.final_residual_norm,
-                    x_final: step.x_final.clone(),
-                    readout: step_readout,
-                });
+                    steps.push(RampStep {
+                        interference_m,
+                        iter_count: step.iter_count,
+                        final_residual_norm: step.final_residual_norm,
+                        x_final: step.x_final.clone(),
+                        readout: step_readout,
+                    });
+                }
                 x_prev_flat = step.x_final; // chain the warm start
             }
             Err(payload) => {
-                failed_at_step = Some(k);
-                failure_reason = Some(panic_message(&*payload));
+                failed_at_step = Some(steps.len());
+                let why = panic_message(&*payload);
+                failure_reason = Some(if record {
+                    why
+                } else {
+                    format!(
+                        "during the feasible-start approach, at interference \
+                         {:.4} mm (the barrier could not be established before \
+                         the ramp began): {why}",
+                        interference_m * 1e3,
+                    )
+                });
                 break;
             }
         }
@@ -9142,5 +9269,351 @@ mod tests {
             "on an affine field the two must agree exactly; they differed by {}",
             (tet10_affine - corner_affine).norm(),
         );
+    }
+
+    /// ⭐⭐⭐ **THE DISCRIMINATING EXPERIMENT** — the bridge against the
+    /// penalty baseline, both asked for a converged solution.
+    ///
+    /// #958 measured that on the product geometry the full-depth result is
+    /// bought with the tolerance: at the shipped `1e-1` the real scan reaches
+    /// 16/16, and at `1e-6` it stalls at step 4 — usable depth falls 4×. That,
+    /// not depth and not friction, is what the bridge exists to fix, so this is
+    /// the measurement that decides whether it did.
+    ///
+    /// ⭐ **The payoff quantity is not depth alone** (#959): a ramp can reach
+    /// full depth BY PENETRATING — the single-layer scan reaches 16/16 with
+    /// `min_sd` −0.373 mm and its 5 % area tail at −0.042 mm, a region through
+    /// the wall rather than an outlier. So all three are reported together:
+    /// **depth at a tight tolerance, with `min_sd > 0` AND the 5 % area tail
+    /// > 0**. A depth reached through the wall is not a seat.
+    ///
+    /// ⛔ **Asserts nothing.** Where a ramp stalls is platform-dependent
+    /// (#958's first push went red on exactly that), so this reports on a
+    /// named platform and never gates.
+    #[test]
+    #[ignore = "release-mode ramps on both arms — measurement, asserts nothing; run with --ignored --nocapture"]
+    fn the_bridge_against_the_penalty_baseline_at_a_tight_tolerance() {
+        const N_STEPS: usize = 16;
+
+        println!(
+            "\nscene                arm                 steps  depth_mm  resid      \
+             pairs  min_sd_mm  tail5_mm  sigma_kPa"
+        );
+
+        // ⭐ The sphere is the scene `BRIDGE_DESIGN_TRACTION_PA` was measured
+        // on (#959), so the bridge is judged where its own `σ` came from —
+        // not only on the small conditioning stand-in.
+        fn sphere_scene() -> InsertionGeometry {
+            let design = SimDesign {
+                cavity_inset_m: 0.003,
+                layers: vec![layer(0.010, "ECOFLEX_00_30")],
+            };
+            build_insertion_geometry(&icosphere(0.040, 3), &design, &[], 2_000, 0.004)
+                .expect("the synthetic-sphere geometry must build")
+        }
+
+        for (scene, build) in [
+            (
+                "tol-fixture",
+                tolerance_fixture as fn() -> InsertionGeometry,
+            ),
+            ("sphere-40mm", sphere_scene as fn() -> InsertionGeometry),
+        ] {
+            // ── Tet4 + penalty, at the SAME tolerance the bridge is asked for.
+            let g = build();
+            let mesh4 = g.mesh.clone();
+            let intruder = g.intruder.clone();
+            let bounds = g.bounds;
+            let cavity_offset_m = g.cavity_offset_m;
+            let referenced4: Vec<VertexId> = referenced_vertices(&mesh4);
+            let rest_areas4 = boundary_vertex_areas(
+                Mesh::<Yeoh>::positions(&mesh4),
+                Mesh::<Yeoh>::boundary_faces(&mesh4),
+            );
+            let base =
+                run_insertion_ramp_at_kappa_and_tol(g, N_STEPS, INSERTION_CONTACT_KAPPA, TIGHT_TOL)
+                    .expect("the penalty baseline ramp must build");
+            if let Some(last) = base.steps.last() {
+                let pos = positions_from_flat(&last.x_final);
+                let contact = intruder_contact_at_kappa(
+                    &intruder,
+                    bounds,
+                    last.interference_m,
+                    cavity_offset_m,
+                    INSERTION_CONTACT_KAPPA,
+                );
+                let raw = contact.per_pair_readout(&mesh4, &pos);
+                let readouts = filter_pair_readouts_to_referenced(raw, &referenced4);
+                print_arm_row(
+                    scene,
+                    "tet4+penalty",
+                    base.steps.len(),
+                    N_STEPS,
+                    last.interference_m,
+                    last.final_residual_norm,
+                    patch_stats(&readouts, &rest_areas4),
+                );
+            }
+            if let Some(k) = base.failed_at_step {
+                println!(
+                    "  {scene} tet4+penalty stalled at step {k}: {}",
+                    base.failure_reason.as_deref().unwrap_or("?"),
+                );
+            }
+
+            // ── Tet10 + IPC, the bridge.
+            let g = build();
+            let mesh10 = Tet10Mesh::<Yeoh>::from_tet4(&g.mesh);
+            let referenced10: Vec<VertexId> = referenced_vertices(&mesh10);
+            let rest_areas10 = boundary_vertex_areas(
+                Mesh::<Yeoh>::positions(&mesh10),
+                Mesh::<Yeoh>::boundary_faces(&mesh10),
+            );
+            let inset_m = -g.cavity_offset_m;
+            // `N_STEPS` is small; the cast is exact.
+            #[allow(clippy::cast_precision_loss)]
+            let kappa = bridge_face_barrier_kappa(BRIDGE_CONTACT_DHAT_M, inset_m / N_STEPS as f64)
+                .expect("the bridge's stiffness bracket must be non-empty");
+            let bridge = run_insertion_ramp_tet10_ipc(g, N_STEPS, TIGHT_TOL)
+                .expect("the bridge ramp must build");
+            if let Some(last) = bridge.steps.last() {
+                let pos = positions_from_flat(&last.x_final);
+                let contact = intruder_ipc_contact_at(
+                    &intruder,
+                    bounds,
+                    last.interference_m,
+                    cavity_offset_m,
+                    kappa,
+                    BRIDGE_CONTACT_DHAT_M,
+                );
+                let raw = contact.per_pair_readout(&mesh10, &pos);
+                let readouts = filter_pair_readouts_to_referenced(raw, &referenced10);
+                print_arm_row(
+                    scene,
+                    "tet10+ipc",
+                    bridge.steps.len(),
+                    N_STEPS,
+                    last.interference_m,
+                    last.final_residual_norm,
+                    patch_stats(&readouts, &rest_areas10),
+                );
+            }
+            if let Some(k) = bridge.failed_at_step {
+                println!(
+                    "  {scene} tet10+ipc stalled at step {k}: {}",
+                    bridge.failure_reason.as_deref().unwrap_or("?"),
+                );
+            }
+            println!("  (bridge kappa = {kappa:.4e}, d_hat = {BRIDGE_CONTACT_DHAT_M:.2e} m)");
+        }
+
+        println!(
+            "\n\u{26a0} \u{3c3} is on the DEFORMED area basis. The REST basis is not \
+             comparable across these arms: on the face path the loaded nodes are \
+             MIDSIDES, which lie on no 3-node boundary face and so carry no \
+             `boundary_vertex_areas` rest tributary."
+        );
+    }
+
+    /// One row of [`the_bridge_against_the_penalty_baseline_at_a_tight_tolerance`].
+    fn print_arm_row(
+        scene: &str,
+        arm: &str,
+        converged: usize,
+        n_steps: usize,
+        interference_m: f64,
+        residual: f64,
+        stats: Option<PatchStats>,
+    ) {
+        let steps = format!("{converged}/{n_steps}");
+        stats.map_or_else(
+            || {
+                println!(
+                    "{scene:<20} {arm:<18} {steps:>6}  {:>8.3}  {residual:>9.2e}  \
+                     (no contact patch)",
+                    interference_m * 1e3,
+                );
+            },
+            |s| {
+                println!(
+                    "{scene:<20} {arm:<18} {steps:>6}  {:>8.3}  {residual:>9.2e}  \
+                     {:>5}  {:>9.4}  {:>8.4}  {:>9.2}",
+                    interference_m * 1e3,
+                    s.n_pairs,
+                    s.min_sd_m * 1e3,
+                    s.p05_sd_m * 1e3,
+                    s.traction_pa * 1e-3,
+                );
+            },
+        );
+    }
+
+    /// How far the enriched midsides sit under the curved cavity surface.
+    ///
+    /// `Tet10Mesh::from_tet4` places every midside at the straight-edge
+    /// MIDPOINT. On a curved cavity that puts each boundary midside under the
+    /// true surface by the sagitta (~`h²/8R`), so the barrier sees a gap that
+    /// is not the geometry's gap — and the tightest node on the patch is an
+    /// artifact of enrichment rather than of the scene.
+    ///
+    /// This measures the offset for corners and midsides separately, against
+    /// the same cavity isosurface the intruder is built from. Corners are the
+    /// control: they come straight from the Tet4 mesh, so whatever bias they
+    /// show is the mesher's, and only the EXCESS on midsides is enrichment's.
+    ///
+    /// ⛔ Asserts nothing — it is a diagnostic.
+    #[test]
+    #[ignore = "diagnostic; run with --ignored --nocapture"]
+    fn the_enriched_midsides_sit_under_the_curved_cavity_surface() {
+        let g = tolerance_fixture();
+        let tet10 = Tet10Mesh::<Yeoh>::from_tet4(&g.mesh);
+        let n_corners = tet10.n_corners();
+        let cavity = Solid::from_sdf(g.intruder.clone(), g.bounds).offset(g.cavity_offset_m);
+        let positions = Mesh::<Yeoh>::positions(&tet10);
+
+        // Only nodes ON the cavity surface matter; take everything within one
+        // barrier band of it so the sample is the patch the contact will see.
+        let mut corner_sd: Vec<f64> = Vec::new();
+        let mut midside_sd: Vec<f64> = Vec::new();
+        for (vid, p) in positions.iter().enumerate() {
+            let sd = cavity.eval(Point3::from(*p));
+            if sd.abs() > BRIDGE_CONTACT_DHAT_M {
+                continue;
+            }
+            if vid < n_corners {
+                corner_sd.push(sd);
+            } else {
+                midside_sd.push(sd);
+            }
+        }
+
+        let summarise = |label: &str, v: &mut Vec<f64>| {
+            if v.is_empty() {
+                println!("{label:<10} (none within one band)");
+                return f64::NAN;
+            }
+            v.sort_unstable_by(f64::total_cmp);
+            let mean = v.iter().sum::<f64>() / v.len() as f64;
+            println!(
+                "{label:<10} n {:>5}   min {:>9.4} mm   mean {:>9.4} mm   max {:>9.4} mm",
+                v.len(),
+                v[0] * 1e3,
+                mean * 1e3,
+                v[v.len() - 1] * 1e3,
+            );
+            mean
+        };
+
+        println!("\nsigned distance to the cavity isosurface, at REST:");
+        let c_mean = summarise("corners", &mut corner_sd);
+        let m_mean = summarise("midsides", &mut midside_sd);
+        println!(
+            "\nenrichment's excess (midside mean - corner mean): {:.4} mm",
+            (m_mean - c_mean) * 1e3,
+        );
+        println!(
+            "for scale: one ramp increment at 16 steps is {:.4} mm, and d_hat/2 is {:.4} mm",
+            -g.cavity_offset_m / 16.0 * 1e3,
+            0.5 * BRIDGE_CONTACT_DHAT_M * 1e3,
+        );
+    }
+
+    /// The bridge ramp across a stiffness sweep — is `κ` the binding constraint?
+    ///
+    /// The derivation claims `κ` is determined rather than swept. That claim is
+    /// only worth something if the neighbouring stiffnesses can be run, so this
+    /// runs them: the derived value, a decade either side, and the bracket's own
+    /// floor and ceiling.
+    ///
+    /// ⛔ Asserts nothing — where a ramp stalls is platform-dependent.
+    #[test]
+    #[ignore = "release-mode ramps across a stiffness sweep; run with --ignored --nocapture"]
+    fn the_bridge_ramp_over_a_stiffness_sweep() {
+        const N_STEPS: usize = 16;
+        let inset_m = 0.003;
+        // `N_STEPS` is small; the cast is exact.
+        #[allow(clippy::cast_precision_loss)]
+        let step = inset_m / N_STEPS as f64;
+        let derived = bridge_face_barrier_kappa(BRIDGE_CONTACT_DHAT_M, step)
+            .expect("the bracket must be non-empty");
+        let floor = face_barrier_kappa(
+            BRIDGE_CONTACT_DHAT_M,
+            BRIDGE_PATCH_NONUNIFORMITY * step,
+            BRIDGE_DESIGN_TRACTION_PA,
+        )
+        .expect("floor");
+        let ceiling = face_barrier_kappa(
+            BRIDGE_CONTACT_DHAT_M,
+            0.5 * BRIDGE_CONTACT_DHAT_M,
+            BRIDGE_DESIGN_TRACTION_PA,
+        )
+        .expect("ceiling");
+
+        println!(
+            "\nbracket [{floor:.4e}, {ceiling:.4e}], derived {derived:.4e}, \
+             d_hat {BRIDGE_CONTACT_DHAT_M:.2e} m, step {:.4} mm\n",
+            step * 1e3,
+        );
+        println!(
+            "kappa        label       steps  depth_mm  resid      pairs  min_sd_mm  \
+             tail5_mm  sigma_kPa"
+        );
+
+        for (kappa, label) in [
+            (1.0e6, "0.06x floor"),
+            (floor, "FLOOR"),
+            (derived, "DERIVED"),
+            (ceiling, "CEILING"),
+            (1.0e9, "12x ceiling"),
+        ] {
+            let g = tolerance_fixture();
+            let mesh10 = Tet10Mesh::<Yeoh>::from_tet4(&g.mesh);
+            let referenced: Vec<VertexId> = referenced_vertices(&mesh10);
+            let rest_areas = boundary_vertex_areas(
+                Mesh::<Yeoh>::positions(&mesh10),
+                Mesh::<Yeoh>::boundary_faces(&mesh10),
+            );
+            let intruder = g.intruder.clone();
+            let bounds = g.bounds;
+            let cavity_offset_m = g.cavity_offset_m;
+            let ramp = run_insertion_ramp_tet10_ipc_at(
+                g,
+                N_STEPS,
+                TIGHT_TOL,
+                kappa,
+                BRIDGE_CONTACT_DHAT_M,
+            )
+            .expect("the bridge ramp must build");
+            if let Some(last) = ramp.steps.last() {
+                let pos = positions_from_flat(&last.x_final);
+                let contact = intruder_ipc_contact_at(
+                    &intruder,
+                    bounds,
+                    last.interference_m,
+                    cavity_offset_m,
+                    kappa,
+                    BRIDGE_CONTACT_DHAT_M,
+                );
+                let raw = contact.per_pair_readout(&mesh10, &pos);
+                let readouts = filter_pair_readouts_to_referenced(raw, &referenced);
+                print_arm_row(
+                    &format!("{kappa:.3e}"),
+                    label,
+                    ramp.steps.len(),
+                    N_STEPS,
+                    last.interference_m,
+                    last.final_residual_norm,
+                    patch_stats(&readouts, &rest_areas),
+                );
+            } else {
+                println!("{kappa:.3e}    {label:<11}   0/{N_STEPS}  (no step converged)");
+            }
+            if let Some(k) = ramp.failed_at_step {
+                println!(
+                    "    stalled at recorded step {k}: {}",
+                    ramp.failure_reason.as_deref().unwrap_or("?"),
+                );
+            }
+        }
     }
 }
