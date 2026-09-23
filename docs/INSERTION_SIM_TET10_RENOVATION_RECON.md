@@ -821,23 +821,37 @@ Listed because the confidence of §4 rests on these being open, not closed.
    | tol-fixture | 1e-3 | tet10+ipc | **0/16** | — | — | — | — |
    | sphere-40mm | 1e-1 | tet4+penalty | 16/16 | 3.000 mm | +0.054 mm | +0.114 mm | 68.3 kPa |
    | sphere-40mm | 1e-1 | **tet10+ipc** | 16/16 | 3.000 mm | **+0.360 mm** | **+0.402 mm** | 88.6 kPa |
+   | sphere-40mm | 1e-2 | tet4+penalty | 16/16 | 3.000 mm | +0.058 mm | +0.114 mm | 68.3 kPa |
+   | sphere-40mm | 1e-2 | **tet10+ipc** | 16/16 | 3.000 mm | **+0.360 mm** | **+0.403 mm** | 88.6 kPa |
 
-   Two things fall out, and they are different claims:
+   Two things fall out. ⚠ **They do not have the same reach, and saying so is
+   the point** — one holds on both scenes, the other on one:
 
-   1. ⭐⭐⭐ **At the tolerance that ships, the penalty path reaches full depth
-      THROUGH THE WALL and the bridge seats it.** On the tolerance fixture the
-      baseline's `min_sd` is −0.306 mm with its 5 % area tail at −0.213 mm — a
-      *region* through the wall, not an outlier — while the bridge holds
-      +0.184 mm at the same depth. On the sphere the baseline seats, but only
-      just (+0.054 mm) against the bridge's +0.360 mm, **6.6× the standoff**.
-   2. ⭐⭐ **Asked for one more decade of residual, the baseline's usable depth
-      collapses 5.3× and the bridge's does not move.** At `tol` = 1e-2 the
-      penalty arm reaches 0.563 mm of the 3 mm inset; the bridge still reaches
-      3.000 mm, and its answer is the *same* answer — `min_sd` +0.184 mm and σ
-      124.4 kPa at both 1e-1 and 1e-2, agreeing to four significant figures.
-      ⇒ **the payoff quantity — deepest interference solvable at a tight
-      tolerance with `min_sd > 0` and the 5 % tail > 0 — goes 0.563 mm →
-      3.000 mm.**
+   1. ⭐⭐⭐ **The bridge holds a standoff the penalty path does not — on BOTH
+      scenes.** At the shipped tolerance the baseline's `min_sd` is −0.306 mm
+      on the tolerance fixture, with its 5 % area tail at −0.213 mm: a *region*
+      through the wall, not an outlier. On the sphere it stays out, but by
+      0.054 mm. The bridge holds **+0.184 mm** and **+0.360 mm** — **3.4× and
+      6.6×** the baseline's clearance. ⇒ same depth, different contact state,
+      and the difference is largest exactly where the baseline is worst.
+   2. ⭐⭐ **On the tolerance fixture, one more decade of residual collapses the
+      baseline's usable depth 5.3× and does not move the bridge's.** The
+      penalty arm reaches 0.563 mm of the 3 mm inset at `tol` = 1e-2; the
+      bridge still reaches 3.000 mm, and gives the *same answer* — `min_sd`
+      +0.184 mm, σ 124.4 kPa at both 1e-1 and 1e-2, agreeing to four
+      significant figures. ⇒ on that scene the payoff quantity — deepest
+      interference solvable at a tight tolerance with `min_sd > 0` and the 5 %
+      tail > 0 — goes **0.563 mm → 3.000 mm**.
+
+      ⛔⛔ **AND THE SPHERE DOES NOT SHOW IT.** At `tol` = 1e-2 the penalty arm
+      reaches 16/16 there too, with its answer unchanged to three significant
+      figures. So claim 2 is a statement about the tolerance fixture, not about
+      the two solve paths. ⇒ **do not state it more broadly than the scene it
+      was measured on** — this is the same trap #958 recorded, where the
+      analytical shell was *too well-conditioned to see the failure* and
+      inheriting it as "the" baseline hid the only result that mattered. The
+      scene that discriminates is the ill-conditioned one, and which scenes
+      those are is not predictable from their geometry.
 
    ⛔ **AND THE HONEST HALF: the bridge has its own conditioning floor, and it
    is a cliff rather than a slope.** At `tol` = 1e-3 it reaches **0/16** —
