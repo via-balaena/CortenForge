@@ -181,7 +181,7 @@ Stress at 100 % strain across sources, from raw data (round 1:
 ### 5c. Friction probably dominates push force, and it is the least known input
 
 Round-2 scenario ranges, silicone sleeve on skin, from the surveys. The water-based-lubricant row rests on
-[a condom-coating study](https://pmc.ncbi.nlm.nih.gov/articles/PMC6227966/): COF 0.159 fresh, above 0.30 at
+[a latex-coating study](https://pmc.ncbi.nlm.nih.gov/articles/PMC6227966/): COF 0.159 fresh, above 0.30 at
 600–900 s.
 
 | Scenario | Range | Nominal |
@@ -199,7 +199,7 @@ Round-2 scenario ranges, silicone sleeve on skin, from the surveys. The water-ba
 - **Friction roughly doubles within 2–15 minutes** as a water-based lubricant is rubbed away.
 - **Silicone oil swells silicone**, so silicone lubricant may not suit a silicone sleeve. This was not
   researched further.
-- **No measurement exists for silicone on skin with a personal lubricant.**
+- **No measurement exists for silicone on skin with a lubricant.**
 - **Where the force comes from, in catheter insertion:** the leading edge dominates the first ~30 mm,
   then friction takes over ([PMC10809236](https://pmc.ncbi.nlm.nih.gov/articles/PMC10809236/)).
 - **For a straight section, arithmetic:** contact normals point sideways, so push force there is
@@ -320,16 +320,15 @@ measuring."*
 |---|---|---|
 | **Silicone stress–strain** | raw curves from Marechal 2021 ([repo](https://github.com/LucMarechal/Soft-Robotics-Materials-Database)) and Roels ([Zenodo](https://zenodo.org/records/14983287)), plus Smooth-On datasheets | **The Slacker blends are unmeasured.** Use the nearest measured grade by Shore, with a **wider** range, and flag it |
 | **Bulk modulus / ν** | Sylgard 184, ν = 0.4950 ± 0.0010 ([Müller 2019](https://www.ebi.ac.uk/europepmc/webservices/rest/search?query=DOI:10.1039/c8sm02105h&format=json&resultType=core)) | Ecoflex and Dragon Skin are unmeasured. Sweep ν over 0.475–0.4995 |
-| **Friction pairings** | the round-2 survey table (§5c) and its sources | silicone on skin with a personal lubricant is unmeasured. Use the nearest analog and a wide range |
-| **Comfort and pain limits** | the axial-rigidity convention (below); for stockings, *"Self-prescription is reasonably safe assuming that the compression gradient is 15–20 mmHg"* (≈ 2.0–2.7 kPa, [Wikipedia](https://en.wikipedia.org/wiki/Compression_stockings)) | **Penile pressure-pain thresholds were not found** (search cut short). Needs another research round |
+| **Friction pairings** | the round-2 survey table (§5c) and its sources | silicone on skin with a lubricant is unmeasured. Use the nearest analog and a wide range |
+| **Comfort and pain limits** | the axial-rigidity convention (below); for stockings, *"Self-prescription is reasonably safe assuming that the compression gradient is 15–20 mmHg"* (≈ 2.0–2.7 kPa, [Wikipedia](https://en.wikipedia.org/wiki/Compression_stockings)) | **Pressure-pain thresholds for the relevant tissue were not found** (search cut short). Needs another research round |
 | **Validation experiments** | §7, rung 5 | each case needs its geometry recovered from the paper |
 
 **Where no measurement exists, the answer is a wider range, labelled as such.** Nothing gets invented to
 fill a gap.
 
-**A physiological push-force ceiling.** Clinical urology treats an axial rigidity of about **550 g
-(≈5.4 N)** as *"generally considered adequate for vaginal penetration"*
-([Allen 1993](https://doi.org/10.1016/s0022-5347(17)36363-2)).
+**A physiological push-force ceiling.** A clinical convention treats an axial rigidity of about **550 g
+(≈5.4 N)** as adequate for insertion ([Allen 1993](https://doi.org/10.1016/s0022-5347(17)36363-2)).
 - It is a clinic convention, not a measured tolerance.
 - It gives fit plan D1's push-force limit a real-world anchor: a sleeve that needs more push than the
   user's buckling force will not go in.
@@ -369,29 +368,36 @@ fill a gap.
    - When it is built, it gets its own research round (how practitioners do explicit soft self-contact
      on the GPU) and its own validation case, as §4 and §7 did for the base solver.
 
+10. **The product's outer boundary** (Jon, 2026-09-24): *"right now it has no shell, its outside is free.
+    but in the future i might add a shell/bond it to a shell. also sometimes there are multiple silicone
+    shells layered."* So today's regime is the free wall (§15h). The confined case becomes a gate
+    before any shell or bond design is simulated (15g step 2).
+
 **Engineering decisions** (Jon delegated them):
 - the three-tier architecture, and AVBD as Tier 2's fallback (§6);
 - the single-source translator (§13);
 - the physics' wgpu, decoupled from Bevy's (§13e);
 - the explicit solver runs forward only, and gradients stay with the implicit solver (§6, §11);
 - the crate layout (§14);
-- the first experiment's detailed design (§15).
+- the first experiment's detailed design (§15);
+- how a range becomes a verdict, and the Mullins state (fit plan U11);
+- the penetration bound, G2 (fit plan §5).
 
 ## 10. What the research could not see
 
 - **Cut short by the search limit:**
-  - glove, sock, finger-ring and sex-tech insertion force;
+  - glove, sock, finger-ring and consumer-device insertion force;
   - catheter and endoscope insertion *simulation* models;
-  - Stribeck curves for personal lubricants;
+  - Stribeck curves for skin lubricants;
   - measured ν or K for Ecoflex and Dragon Skin;
   - O-ring and seal ν-sensitivity studies;
   - LS-DYNA and Radioss GPU efforts;
   - any WebGPU explicit FEM;
-  - penile pressure-pain thresholds.
+  - pressure-pain thresholds for the relevant tissue.
 - **Paywalled:** Taylor 2008 (TMI) and Strbac 2015 (single against double precision), Nedoluha 2025 (ν
   measurement methods), and the NAFEMS R0081 references.
 - **Unmeasured anywhere we looked:**
-  - silicone on skin with a personal lubricant;
+  - silicone on skin with a lubricant;
   - Prescale on sliding silicone;
   - DIC at large stretch on silicone;
   - a validated fast GPU contact force.
@@ -970,8 +976,9 @@ contact pressure within 5 % at ν ≥ 0.49? And can it run a 100k-tet insertion 
    - The subtraction removes the nose's geometric push. A reviewer's estimate puts it at about 2 % and 6 % of
      the friction force at λ_a 1.1 and 1.3, which is enough to break 5 % unaided.
 8. **The confined stress case:** cased outer wall, all axial motion held, λ_a 1.1, B/A 2, ν 0.49. The
-   oracle gives p/μ = 4.1417. This is the regime TLED never validated. It is judged in step 2 against
-   G2 and 5 % if the product is cased or bonded (fit plan U12); otherwise it is reported.
+   oracle gives p/μ = 4.1417. This is the regime TLED never validated. The product is free today (§9
+   decision 10), so in step 2 it is reported. It becomes a gate, against G2 and 5 %, before any shell or
+   bond design is simulated.
 9. **The SDF comparison:** the analytic mandrel, against grids at A/10 and A/20, with the
    finite-difference and the analytic trilinear gradients. Record band error and scatter.
 10. **Stiffness scaling** (§5d's shortcut): the same run at μ and 2μ, frictionless and at μ_f 0.3.
@@ -1040,8 +1047,8 @@ Each item is one PR with its own tests and a done-when.
    - **One Yeoh case** runs, with the oracle extended by the C₂ term.
    - **The confined case (15d.8) and a product-level contact pressure** run on the CPU, and record the
      raw error and the largest gap.
-     - If the product is cased or bonded (fit plan U12), the contact law must pass G2 and 5 % there
-       before step 7.
+     - The product is free today (§9 decision 10). Before any shell or bond design is simulated, the
+       contact law must pass G2 and 5 % there.
      - The fallbacks: a gap-offset penalty, an augmented-Lagrangian update, or a larger s at a smaller
        Δt.
    - **The product's budget:**
@@ -1124,14 +1131,12 @@ Each item is one PR with its own tests and a done-when.
 
 - **Runs per verdict.** A run is one simulation. §2 and §5d want an interval across friction,
   stiffness and Mullins corners.
+  - **Decided (fit plan U11):** verdicts use the virgin state, the stiffest and so the conservative one.
+    The Mullins-conditioned state is reported once per design, not run for every verdict.
   - **If stiffness scaling holds** (15d.10), a verdict is **3 runs**: the pairing's low and high μ, plus
     μ = 0 for the geometric share of push force (§2). That is about 6 minutes at K1's rate.
-  - **If the Mullins state stays a corner,** it is 5 runs, about 10 minutes.
-  - **A D3 search** of 3–4 full verdicts would take 18–24 or 30–40 minutes, against D4's 15
-    (arithmetic). Tier 1 therefore pre-filters the search (step 7), so full verdicts run at 1–2 insets.
-  - **If stiffness scaling fails,** each stiffness corner doubles the friction runs: 5 runs, or 9 with
-    Mullins.
-  - Whether Mullins is a verdict corner is Jon's call (fit plan U11).
+  - **A D3 search** of 3–4 full verdicts would take 18–24 minutes, against D4's 15 (arithmetic). Tier 1 therefore pre-filters the search (step 7), so full verdicts run at 1–2 insets.
+  - **If stiffness scaling fails,** each stiffness corner doubles the friction runs: 5 runs.
 - **The regime per application** (from the oracle's confinement table, §5b amended):
 
   | Application | Outer wall / axial escape | Regime |
@@ -1142,7 +1147,7 @@ Each item is one PR with its own tests and a done-when.
   | An O-ring in its gland | fully confined | pressure ∝ K. ν must come from the measured K; Abaqus's K/μ 1 000–10 000 is ν 0.4995–0.49995 |
   | Garment, footwear, grasping | free, or thin | ν barely matters |
   | Surgical insertion (needle, catheter) | tissue around it | not assessed |
-  | `base_mold`, the product | **open** (fit plan U12) | decides whether the confined case must pass (step 2) |
+  | `base_mold`, the product, today | free: no shell (§9 decision 10) | ν barely matters. Layered and bonded designs later move toward the cased rows |
 
   At ν 0.4995 an explicit run needs about 4.4× K1's steps (√(1001/51), arithmetic), roughly 9 minutes
   at K1's rate. **The O-ring class is outside K1's sizing**, and needs its own budget or a mixed

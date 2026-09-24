@@ -231,7 +231,7 @@ which inset would pass.
     - The stretch margin is a separate durability warning, not part of comfort.
     - *Calibration:* ~~on Jon's casts~~ **from published measurements** (Jon, 2026-09-24: no home-lab
       calibration). The push-force anchor is the clinical axial-rigidity convention (~5.4 N). Pressure
-      limits come from published comfort and pain-threshold data. Penile pressure-pain thresholds are
+      limits come from published comfort and pain-threshold data. Pressure-pain thresholds for the relevant tissue are
       not yet found (soft-contact recon §8).
   - **D2 — Gate or advise.** *Decided:* advise.
     - Continue stays open, as it does for the plug-cast check (`panel.rs:1162–1164`). The verdict, or
@@ -265,8 +265,8 @@ which inset would pass.
     - **A run is one simulation.** A verdict is the runs across its corners (soft-contact recon §15h).
     - The new solver's K1 sizes a run at ≤ 2 minutes (soft-contact recon §15a).
     - A verdict is 3 runs if stiffness scaling holds (the pairing's low and high μ, plus μ = 0), about
-      6 minutes. It is 5 runs, about 10 minutes, if the Mullins state stays a corner (U11).
-    - Full verdicts across a D3 search of 3–4 insets would take 18–24 or 30–40 minutes, over this
+      6 minutes. The Mullins state is not a verdict corner (U11).
+    - Full verdicts across a D3 search of 3–4 insets would take 18–24 minutes, over this
       15-minute limit (arithmetic). So the search uses the instant per-slice estimate to pick its
       candidates, and runs full verdicts at 1–2 insets (soft-contact recon §15g step 7).
     - If the new solver takes far longer on the same scene, revisit the budget rather than cut the
@@ -372,7 +372,7 @@ This is why the architecture changed (soft-contact recon §3).
 | Gate | What must hold | Baseline today |
 |---|---|---|
 | **G1 — Drawn wall outside drawn scan** | No drawn wall vertex inside the drawn scan (beyond a stated tolerance) | Shipped default: 720 of 1 684 more than 1 mm inside, deepest 6.06 mm |
-| **G2 — Bounded penetration** | No node deeper than **1 % of the inset** (0.05 mm on `base_mold`) at any step: **provisional** until the first experiment measures the gap (soft-contact recon 15d.1). An engineering call (2026-09-24): penalty contact always penetrates slightly, so this bounds it as a numerical tolerance (soft-contact recon §15c); kinematic projection has none. For the old Tet10 solver the gate was no node through, corners and midsides | Not yet run on the explicit solver |
+| **G2 — Bounded penetration** | No node deeper than **1 % of the inset** (0.05 mm on `base_mold`) at any step. An engineering call (Jon, 2026-09-24: *"your call, just need that balance of real life/visual tranferable realism for viusals and legit engineering work"*): penalty contact always penetrates slightly, so this bounds it as a numerical tolerance (soft-contact recon §15c). **The gate stands; if the contact law cannot meet it, the law changes** (recon 15g step 2). Kinematic projection has none. For the old Tet10 solver the gate was no node through, corners and midsides | Not yet run on the explicit solver |
 | **G3 — Full seat** | The full inset is reached along the sliding path | Growing: 4.531 of 5 mm. Sliding with the inset: not run |
 | **G4 — κ independent of the schedule** (implicit solver only) | The derived κ does not change with the step count | Holds (the ceiling rule) |
 | **G5 — Heat map in the rest frame** | `the_heat_map_reads_the_deformed_view_at_rest_positions` passes | Passes; fails under four mutations |
@@ -413,8 +413,9 @@ in CI); G5 already gates in CI.
 
 - **U1 — "Comfortably."** The quantities and the method are decided (D1). The limits are not: they come
   from published measurements (D1, 2026-09-24), which still have to be gathered (soft-contact recon §8).
-  Penile pressure-pain thresholds may not be published at all. **If so, the fallback for the seated limit
-  is Jon's call.**
+  Pressure-pain thresholds for the relevant tissue may not be published at all. Jon, 2026-09-24: *"this
+  we will have to dive into science to see whats out there"*. So the research comes first (soft-contact
+  recon §15g step 9), and any fallback is decided after it.
 - **U2 — μ.** No friction data for silicone × lubricant × skin has been found in the repo.
 - **U3 — Why the rigid path asks 8.3 mm of room** with no inset, near the entrance. It is settled before the
   new solver runs `base_mold` (soft-contact recon §15g step 6).
@@ -426,19 +427,18 @@ in CI); G5 already gates in CI.
   how far that is from soft tissue is unmeasured.
 - **U10 — The mouth rim. Answered (Jon, 2026-09-24):** the poured device has the same sharp edge.
   It is fine in Ecoflex 00-30, and a comfort issue in Dragon Skin 10A and firmer.
-- **U11 — How a range becomes a verdict. Jon's call.**
-  - The soft-contact recon reports an interval across corners (its §5d); the flow above gives one
-    verdict.
-  - Recommendation:
-    - *Fits* if the whole interval is under the limit;
-    - *Too tight* if all of it is over;
-    - otherwise the verdict names the corner that crosses the limit.
-  - Friction spans up to 10× within one pairing (soft-contact recon §5c). So the interval will often
-    straddle a limit, and then D3's bisection has no binary answer.
-  - Also open: whether the Mullins state is a verdict corner. It adds 2 runs per verdict (D4).
-- **U12 — The product's outer boundary. Jon's call.** Is the poured device's outer wall free, held in a
-  case, or bonded to a stiffer layer? That decides the regime, and whether ν and the confined case must
-  be solved accurately (soft-contact recon §15h, step 2).
+- **U11 — How a range becomes a verdict. Decided:** an engineering call (Jon, 2026-09-24: *"completely
+  your call"*).
+  - *Fits* if the whole interval across the corners is under the limit, and *Too tight* if all of it is
+    over.
+  - Otherwise the verdict names the corner that crosses the limit.
+  - D3's search judges each inset at the pairing's nominal corner, so its bisection stays binary. The
+    interval is shown alongside.
+  - Verdicts use the virgin state, the stiffest and so the conservative one. The Mullins-conditioned
+    state is reported once per design, not run for every verdict.
+- **U12 — The product's outer boundary. Answered** (Jon, 2026-09-24): no shell today, so the outside is
+  free. A shell, bonding to one, and several layered silicone shells may come later (soft-contact recon
+  §9 decision 10).
 
 ---
 
