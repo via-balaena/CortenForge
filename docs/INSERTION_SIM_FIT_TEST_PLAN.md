@@ -123,7 +123,7 @@ This section describes the replaced Tet10 solver. "Recon" in its tables means th
 **No, not at this speed target.** In a validated library, an implicit, IPC-style solve of `base_mold`
 took about 7 minutes per step (Phase 1, Speed), roughly 200× over D4's budget. Explicit dynamics is what
 seal mounting and compression-stocking studies use, and the GPU precedent is TLED. The replacement is an
-explicit, TLED-style solver on wgpu (recon §4–§6), and its first experiment is recon §15.
+explicit, TLED-style solver on wgpu (soft-contact recon §4–§6), and its first experiment is its §15.
 
 ---
 
@@ -213,9 +213,7 @@ which inset would pass.
   | Status | — | Converged, or stopped and why | `SolverFailure` |
 
 - [x] **"Too tight" is computed from U1 (§7).** Decided in D1 below.
-- [x] **Runtime budget.** On the replaced solver, the growing bridge took 364 s at 16 steps, and the
-  sliding bridge about 1 078 s at 128 steps (Tet10 recon :1428, :1530). Suggesting a different inset
-  takes at least one more run. For
+- [x] **Runtime budget.** Suggesting a different inset takes at least one more verdict. For
   comparison, the plug-cast check with ridges on is budgeted at "~4 minutes"
   (`tools/cf-studio-engine/src/preflight.rs:75`). The budget is D4.
 - [x] **Inputs it must refuse or snap.** The studio accepts any whole-number Slacker % (`LAYER_SLACKER_RANGE`,
@@ -242,9 +240,9 @@ which inset would pass.
       completed-steps-in-order rule without forcing a run. The CLI's `cmd_molds` must then record "not
       run" rather than fail.
     - *Could not finish* never blocks anything: it is the simulation failing, not the fit.
-    - Revisit only once the new solver passes the soft-contact recon's K2. Even then, ask ("make molds
-      anyway?") rather than block. (This condition was updated when Phase 1 was abandoned: an
-      engineering call, 2026-09-24.)
+    - Revisit only once the verdict's limits are validated (U1). Even then, ask ("make molds anyway?")
+      rather than block. (Updated 2026-09-24: the original condition was a check against Jon's casts,
+      which went with cast calibration.)
   - **D3 — The suggested inset.** *Decided:* on request, as one button: **Find the tightest inset
     that fits**. "Tightest" is Jon's rule for the boot (§1).
     - It searches down after *Too tight* and up after *Fits*.
@@ -265,8 +263,7 @@ which inset would pass.
     - Five minutes is about what the app already asks for the plug-cast check with ridges on ("~4
       minutes", `preflight.rs:75`).
     - **A run is one simulation.** A verdict is the runs across its corners (soft-contact recon §15h).
-    - The replaced solver's sliding bridge took about 1 078 s. The new solver's K1 sizes a run at
-      ≤ 2 minutes (soft-contact recon §15a).
+    - The new solver's K1 sizes a run at ≤ 2 minutes (soft-contact recon §15a).
     - A verdict is 2 runs if stiffness scaling holds, about 4 minutes. It is 4 runs, about 8 minutes, if
       the Mullins state stays a corner (U11). So a D3 search of 3–4 verdicts takes about 12–16 or
       24–32 minutes, against this 15-minute limit (arithmetic).
@@ -302,12 +299,13 @@ Measured in PolyFEM on `base_mold`, 2026-09-23/24:
   - Step 3 converged only once the barrier stiffness was fixed at 464. With the defaults it had not
     finished after 40 minutes.
   - CHOLMOD took 15 s per iteration, against Apple Accelerate's 37 s.
-- **Every lever tried below made it worse.** A warm start and reusing the symbolic factorization were
-  not tried:
+- **Every lever tried below made it worse:**
   - two large steps: 205 iterations, still unconverged after an hour;
   - half steps: 47 iterations, 690 s;
   - a coarser 6 mm wall: its second contact step hit the 500-iteration limit. It is also a different
     shape, with 4.2 % less volume.
+
+  A warm start and reusing the symbolic factorization were not tried.
 - **The mouth rim is where one node jams** (42× the next node's force). **Whether it is the cause was not
   isolated.** A rounded-lip variant took 59 iterations and about 930 s. But first contact falls on a
   different part of the scan in the two runs, so they are not a like-for-like pair.
@@ -362,8 +360,8 @@ This is why the architecture changed (soft-contact recon §3).
     - The studio preview and `cf-device-geometry`'s layer surfaces build their own geometry and would
       drift.
   - **Simulated side.** A comparison-only rounded-lip option (`smooth_subtract`, whose `k` is a blend
-    width, not a radius) was built for the oracle and removed with it. It is in git history at
-    `371f4a54`. The lip belongs in the shared `cf-design` definition.
+    width, not a radius) was built for the oracle and removed with it. It is in the local tag's history
+    at `371f4a54`. The lip belongs in the shared `cf-design` definition.
 
 ---
 
@@ -372,7 +370,7 @@ This is why the architecture changed (soft-contact recon §3).
 | Gate | What must hold | Baseline today |
 |---|---|---|
 | **G1 — Drawn wall outside drawn scan** | No drawn wall vertex inside the drawn scan (beyond a stated tolerance) | Shipped default: 720 of 1 684 more than 1 mm inside, deepest 6.06 mm |
-| **G2 — Bounded penetration** | No node deeper than **1 % of the inset** (0.05 mm on `base_mold`) at any step. An engineering call (2026-09-24): penalty contact always penetrates slightly, so this bounds it as a numerical tolerance (soft-contact recon §15c); kinematic projection has none. For the old Tet10 solver the gate was no node through, corners and midsides | Not yet run on the explicit solver |
+| **G2 — Bounded penetration** | No node deeper than **1 % of the inset** (0.05 mm on `base_mold`) at any step: **provisional** until the first experiment measures the gap (soft-contact recon 15d.1). An engineering call (2026-09-24): penalty contact always penetrates slightly, so this bounds it as a numerical tolerance (soft-contact recon §15c); kinematic projection has none. For the old Tet10 solver the gate was no node through, corners and midsides | Not yet run on the explicit solver |
 | **G3 — Full seat** | The full inset is reached along the sliding path | Growing: 4.531 of 5 mm. Sliding with the inset: not run |
 | **G4 — κ independent of the schedule** (implicit solver only) | The derived κ does not change with the step count | Holds (the ceiling rule) |
 | **G5 — Heat map in the rest frame** | `the_heat_map_reads_the_deformed_view_at_rest_positions` passes | Passes; fails under four mutations |

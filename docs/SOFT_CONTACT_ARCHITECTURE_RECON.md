@@ -73,11 +73,9 @@ written beforehand (§14e, §15i). The research sections were not. Jon's directi
 - **A mature library of exactly that kind** (PolyFEM, built and validated here, since deleted) took about
   **7 minutes per load step** on `base_mold`, one step measured, at first contact ✓
   (`docs/INSERTION_SIM_FIT_TEST_PLAN.md`, Speed):
-  - ~30 Newton iterations at first contact. Rounding the lip or changing the step size took 47–205; the
-    205-iteration run never converged ✓;
+  - ~30 Newton iterations at first contact ✓;
   - ~15 s per iteration, for one sparse factorization ✓;
-  - the path levers tried (bigger or smaller steps, a coarser mesh, a rounded lip) all made it worse ✓. A
-    warm start and factorization reuse were not tried.
+  - changing the step size or the mesh made it worse ✓ (fit plan, Speed).
 - **So it is about 200× over budget** (arithmetic: 5 min / (~130 steps × ~30 iterations) ≈ 77 ms per
   iteration, against 15 s).
 - **The "real-time" squishy-cube demos are replays.** `example-integration-two-way-striker-viewer`
@@ -267,7 +265,7 @@ built TLED-style.**
   - pressure maps as area-weighted percentiles;
   - stretch.
 - **Size of it (arithmetic):**
-  - about 30–32k steps for the 100k-tet benchmark at ν 0.49, which leaves 3.7–4.0 ms per step within
+  - about 29–32k steps for the 100k-tet benchmark at ν 0.49, which leaves 3.7–4.1 ms per step within
     the 2-minute budget (§15c);
   - our rigid-body GPU pipeline's whole step at n_env 1 is about 0.74 ms ✓ (1/1.35k steps per second,
     `sim/L0/gpu-benches/PERF_BASELINE.md`).
@@ -422,11 +420,10 @@ has both, each over one model definition.
 | **Integrators** | **implicit Newton** (existing, CPU) and **explicit** (new) | implicit **stays**: it is the f64 reference, it handles small precise problems, and it gives differentiable co-design its gradients by the implicit function theorem (`docs/studies/soft_body_architecture/src/60-differentiability/`) |
 | **Executors** (explicit only) | **CPU** (rayon; f32, and f64 as the precision check) and **GPU** (wgpu, f32) | the Burn-style switch: the same algorithm on both |
 
-**Why there is no performance hit.**
+**The layout.**
 - The explicit solver uses one flat, data-parallel layout: arrays per field, one force slot per element,
   and a gather at the nodes.
-- It is TLED's GPU layout (§4). The shared math on it ran at 1.00× hand-written WGSL (13a).
-- The CPU side's cost against a hand-tuned CPU layout is not measured.
+- It is TLED's GPU layout (§4). Its cost against hand-tuned layouts is not measured on either side.
 - The implicit solver keeps its own sparse layout.
 
 **Rigid and soft together on the GPU.**
@@ -452,8 +449,7 @@ has both, each over one model definition.
 **The key design choice is to write the physics math once.** The repo has measured what writing it twice
 costs.
 - `sim-gpu`'s shaders are a hand-written WGSL copy of `sim-core`, validated only GPU-vs-CPU. They **silently
-  lagged CPU fixes**: two at once in one case. The lag was caught by a completeness review, not by the
-  tests (`sim/L0/gpu/src/pipeline/conformance_tests.rs:7-10`).
+  lagged CPU fixes** (`sim/L0/gpu/src/pipeline/conformance_tests.rs:7-10`).
 - **Decided (§13): a translator from a loop-free subset of plain Rust to WGSL.** It beat:
   - hand-written copies, whose drift has been measured;
   - CubeCL, whose CPU backend needs LLVM;
@@ -535,7 +531,7 @@ Two interleaved runs, each against its own hand-WGSL baseline. Ratios are to han
 - **Entry points stay hand-written per backend.** They cover storage indexing, gathers and dispatch
   shape, and they call the generated functions.
 - **Size:** 148 lines on stable Rust (130 excluding blanks and comments), in the spike (deleted). Its
-  dependencies: 28 crates including itself (`syn`, `quote`, `naga`; 14c); no build dependency compiles C.
+  dependencies are `syn`, `quote` and `naga`; no build dependency compiles C.
 - **Struct layouts (F6).** An array in a uniform buffer needs a 16-byte stride, and naga's validator
   **rejects** a violation rather than laying it out wrongly. `array<f32, 3>` in a uniform failed with
   `ArrayStride { stride: 4, alignment: 16 }`; in a storage buffer it validated. `vec3` stays out of the
@@ -599,7 +595,6 @@ these facts:
 Jon handed the sign-off to me (2026-09-24: *"you may be in charge of the design/deciding is 14 v2 is
 solid"*).
 - **The crate boundaries, dependency edges and tiers** were signed off after two cold reviews (14e).
-- **The ownership details inside them** were fixed after the second review (14e).
 
 ### 14a. The layout
 
@@ -700,7 +695,7 @@ The boundary is guarded in both directions:
     executor, so it can also run at f64 as a check that f32 is adequate.
 - **The translator builds for wasm32 with naga.** A scratch crate (deleted) with `syn`, `quote` and `naga`
   (`wgsl-in`) passed grade's wasm command (`cargo check --target wasm32-unknown-unknown
-  --no-default-features`), at 28 crates including itself.
+  --no-default-features`).
 - **CI runs a crate's tests only if a list names it.**
   - `grade` runs in CI with `--skip-coverage`, which runs no tests. *"a crate absent from these lists
     and from `tests-release` has its unit tests run in NO CI context at all"*
@@ -901,8 +896,9 @@ contact pressure within 5 % at ν ≥ 0.49? And can it run a 100k-tet insertion 
   - **Arithmetic** (100k, ν 0.49):
     - Δt at 0.9 of the rest limit is 42.2 µs on the pre-registered 6 × 64 × 43 mesh. That comes from a
       reviewer's model (not kept).
-    - Loaded, it is 0.91–0.975× that.
-    - T is 1.04 s plus the 0.2 s hold, so about 30–32k steps, and **3.7–4.0 ms per step within K1**.
+    - T is 1.04 s plus the 0.2 s hold: about 29k steps at that Δt. It rises to about 32k if loading cuts
+      Δt to 0.912×, as on the other mesh.
+    - That leaves **3.7–4.1 ms per step within K1**.
     - The rigid pipeline's whole step is about 0.74 ms at n_env 1 (§6).
 - **Damping:** mass-proportional damping α_D·M while loading (NiftySim, Johnsen et al. 2015), with
   α_D = 2·ξ·ω₀, where ξ = 0.05 and ω₀ = 2π/T_s.
@@ -1020,7 +1016,8 @@ Each item is one PR with its own tests and a done-when.
      (`base_mold` is Yeoh).
    - Compiled at f32 and f64. The freshness test, made to fail once.
    - A conformance test of the shared SDF lookup against `cf-geometry`'s `distance_clamped` and
-     `gradient_clamped`, to 1e-9 relative in f64. The degenerate-gradient threshold it adopts is
+     `gradient_clamped` in f64. The largest difference over the test points must be ≤ 1e-9 × the largest
+     value. The degenerate-gradient threshold it adopts is
      recorded here.
    - Both crates added to tests-debug shard 3.
    - *Done when:* CI runs the new tests, and the freshness test has failed once on a deliberate edit.
@@ -1041,7 +1038,8 @@ Each item is one PR with its own tests and a done-when.
    - A binary holding a wgpu 27 device and a wgpu 30 device runs on lavapipe (Vulkan) in CI.
    - *Done when:* `sim-gpu`'s suite passes on Metal and in CI.
 4. **`sim-gpu`'s soft executor,** with per-phase conformance against the CPU executor, on lavapipe in CI.
-   - *Done when:* every phase's outputs agree, GPU f32 against CPU f32, within 1e-5 relative.
+   - *Done when:* every phase's outputs agree, GPU f32 against CPU f32. Per output, the largest
+     difference must be ≤ 1e-5 × the largest magnitude.
 5. **The experiment on the GPU:** K1, K2 at 100k, the ν sweep, the ladder, the Coulomb push, the stress
    case, the SDF comparison and stiffness scaling.
    - *Done when:* K1–K4 are decided and the results are in this document with their commands.
@@ -1084,17 +1082,15 @@ Each item is one PR with its own tests and a done-when.
   stiffness and Mullins corners.
   - **If stiffness scaling holds** (15d.10), a verdict is **2 runs** (the pairing's low and high μ):
     about 4 minutes at K1's rate.
-  - **If the Mullins state stays a corner,** it is 4 runs, about 8 minutes. Its curve shape differs, so
-    scaling does not cover it (§5d).
+  - **If the Mullins state stays a corner,** it is 4 runs, about 8 minutes.
   - **A D3 search** of 3–4 verdicts then takes about 12–16 or 24–32 minutes, against D4's 15
     (arithmetic).
-  - **If stiffness scaling fails,** a verdict is 8 runs.
+  - **If stiffness scaling fails,** a verdict is 4 runs, or 8 with Mullins.
   - Whether Mullins is a verdict corner is Jon's call (fit plan U11).
 - **The regime per application** (from the oracle's confinement table, §5b amended):
 
   | Application | Outer wall / axial escape | Regime |
   |---|---|---|
-  | The sleeve as simulated today | the outer skin pinned: no escape | pressure ∝ K |
   | The sleeve, free wall | free | ν barely matters |
   | The sleeve, cased with an open entry | the material escapes axially | ν matters mildly |
   | Near a closed, cased base | no escape | pressure ∝ K |
