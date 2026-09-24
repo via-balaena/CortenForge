@@ -372,6 +372,16 @@ fill a gap.
     but in the future i might add a shell/bond it to a shell. also sometimes there are multiple silicone
     shells layered."* So today's regime is the free wall (§15h). The confined case becomes a gate
     before any shell or bond design is simulated (15g step 2).
+11. **How the device is held** (Jon, 2026-09-24): *"it really depends, it could be in a shell, connected
+    to something like a robotic arm, or just held in the hand."*
+    - How it is held is a design option, like the outer boundary: in a shell, mounted to an arm, or held
+      in the hand.
+    - A shell, or a mount at the closed end, confines the material near it. So the confined case gates
+      those designs too.
+12. **Speed against quality** (Jon, 2026-09-24): *"i just mean i want a fast simulation. but i dont want
+    to sacrifice quality."*
+    - D4's 5 minutes is a target, measured per press (one verdict), and driven down.
+    - The quality gates (K2–K6) are never loosened to meet it.
 
 **Engineering decisions** (Jon delegated them):
 - the three-tier architecture, and AVBD as Tier 2's fallback (§6);
@@ -1059,8 +1069,9 @@ Each item is one PR with its own tests and a done-when.
        without projection, and its element count at that resolution.
      - An explicit step is set by the worst element, so the product mesh's quality sets this number,
        not the tube's.
-     - If it cannot meet D4 (its unit of time is fit plan U13), the plan is revised before any GPU
-       work.
+     - Report the per-press time against D4's 5-minute target (§9 decision 12).
+     - If it misses, the speed plan is revised before any GPU work. The quality gates are not
+       loosened.
    - **The stop rule (pre-registered):**
      - Proceed if the 50k gap-corrected error is ≤ 5 % at every corner.
      - Proceed with a flag if it is 5–7 %, and the extrapolation reaches ≤ 5 % at 100k at every corner.
@@ -1086,12 +1097,12 @@ Each item is one PR with its own tests and a done-when.
    - *Done when:* K1–K6 are decided and the results are in this document with their commands.
 **Steps 6–9 are an outline.** They are designed in detail after step 2's results, which set the
 product's mesh, budget and contact law. Three macro reviews found what that design must settle:
-- D4's unit of time, per simulation or per press (fit plan U13), and so the runs per verdict;
+- the per-press time against D4's target (§9 decision 12), which follows from the runs per verdict;
 - the pairing's nominal corner, which D3 judges at: add it as a run, or show push force is linear in
   μ_f;
 - Tier 1's accuracy against the solver, and what D3 does if it is poor;
-- how the device is held once its outer wall is free (fit plan U14). A held closed end is the "no
-  escape" row of §15h;
+- modelling each way of holding the device (§9 decision 11): a shell, a mount, or a hand as a soft,
+  distributed support. A held closed end is the "no escape" row of §15h;
 - the product mesher's surface bias and element count (measured in step 2);
 - U3's outcome, and the fact that a contact-guided intruder would need rigid–soft coupling.
 
@@ -1103,8 +1114,12 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
 6. **`sim-soft`: lowering, obstacle baking, and the pairing library.**
    - Lowering and obstacle baking come from `cf-sim-research`.
    - The pairing library covers surface × surface × lubricant, with fresh and depleted ranges (§5c).
-   - The boundary options: free; cased, as a radial kinematic constraint; bonded, through per-element
-     materials.
+   - The boundary options (§9 decisions 10–11):
+     - free;
+     - cased, as a radial kinematic constraint;
+     - bonded, through per-element materials;
+     - mounted at the closed end;
+     - hand-held, as a soft, distributed support.
    - The F3 conformance test of `Material` against the shared math lands here, since `sim-soft` takes
      the dependency.
    - **U3** (fit plan) is settled geometrically before step 7: with no inset, the rigid path already
@@ -1163,7 +1178,7 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
   | An O-ring in its gland | fully confined | pressure ∝ K. ν must come from the measured K; Abaqus's K/μ 1 000–10 000 is ν 0.4995–0.49995 |
   | Garment, footwear, grasping | free, or thin | ν barely matters |
   | Surgical insertion (needle, catheter) | tissue around it | not assessed |
-  | `base_mold`, the product, today | free: no shell (§9 decision 10) | ν barely matters. Layered and bonded designs later move toward the cased rows |
+  | `base_mold`, the product, today | free outer wall (§9 decision 10); held in a shell, on an arm mount or in the hand, by design (decision 11) | free or hand-held: ν barely matters. A shell or a mount at the closed end moves toward the cased rows |
 
   At ν 0.4995 an explicit run needs about 4.4× K1's steps (√(1001/51), arithmetic), roughly 9 minutes
   at K1's rate. **The O-ring class is outside K1's sizing**, and needs its own budget or a mixed

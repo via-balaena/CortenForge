@@ -258,6 +258,8 @@ which inset would pass.
     - Make it automatic once runs meet D4.
   - **D4 — The runtime budget.** *Decided:* at most 5 minutes per run on this machine (Apple M4
     Pro) and 15 minutes per search, measured on `base_mold` as G6.
+    - Jon, 2026-09-24: *"i just mean i want a fast simulation. but i dont want to sacrifice quality."*
+      So it is a target, measured per press (U13), and quality is never traded for it.
     - Each step is shown as it is solved, so the user watches the scan go in during the run, not after
       it.
     - Five minutes is about what the app already asks for the plug-cast check with ridges on ("~4
@@ -439,13 +441,16 @@ in CI); G5 already gates in CI.
 - **U12 — The product's outer boundary. Answered** (Jon, 2026-09-24): no shell today, so the outside is
   free. A shell, bonding to one, and several layered silicone shells may come later (soft-contact recon
   §9 decision 10).
-- **U13 — D4's unit of time. Jon's call.** When D4 was agreed, one run gave one verdict. A verdict now
-  takes 3 simulations (U11). Is the 5-minute budget per simulation, or per press of the button (one
-  verdict, about 3 simulations)? The per-simulation bar in the soft-contact recon's K1 and step 2
-  follows from the answer.
-- **U14 — How the device is held in use. Jon's call.** With the outer wall free, which surface is held?
-  For example, the closed end, a flange, or the whole outside in a hand. A held closed end confines the
-  material there (soft-contact recon §15h).
+- **U13 — D4's unit of time. Answered** (Jon, 2026-09-24): *"i just mean i want a fast simulation. but i
+  dont want to sacrifice quality."*
+  - The 5 minutes is a target, measured per press (one verdict, about 3 simulations).
+  - It is driven down, and the quality gates are never loosened for it (soft-contact recon §9 decision
+    12).
+- **U14 — How the device is held in use. Answered** (Jon, 2026-09-24): *"it really depends, it could be in a
+  shell, connected to something like a robotic arm, or just held in the hand."*
+  - Holding is a design option: a shell, a mount, or a hand as a soft, distributed support
+    (soft-contact recon §9 decision 11).
+  - A shell or a mount at the closed end confines the material there.
 
 ---
 
