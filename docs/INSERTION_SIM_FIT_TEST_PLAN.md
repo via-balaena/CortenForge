@@ -264,9 +264,11 @@ which inset would pass.
       minutes", `preflight.rs:75`).
     - **A run is one simulation.** A verdict is the runs across its corners (soft-contact recon §15h).
     - The new solver's K1 sizes a run at ≤ 2 minutes (soft-contact recon §15a).
-    - A verdict is 2 runs if stiffness scaling holds, about 4 minutes. It is 4 runs, about 8 minutes, if
-      the Mullins state stays a corner (U11). So a D3 search of 3–4 verdicts takes about 12–16 or
-      24–32 minutes, against this 15-minute limit (arithmetic).
+    - A verdict is 3 runs if stiffness scaling holds (the pairing's low and high μ, plus μ = 0), about
+      6 minutes. It is 5 runs, about 10 minutes, if the Mullins state stays a corner (U11).
+    - Full verdicts across a D3 search of 3–4 insets would take 18–24 or 30–40 minutes, over this
+      15-minute limit (arithmetic). So the search uses the instant per-slice estimate to pick its
+      candidates, and runs full verdicts at 1–2 insets (soft-contact recon §15g step 7).
     - If the new solver takes far longer on the same scene, revisit the budget rather than cut the
       physics.
   - **D5 — Where the inset changes.** *Decided:* on the fit screen, as **Try at *n* mm**, with D3's
@@ -411,6 +413,8 @@ in CI); G5 already gates in CI.
 
 - **U1 — "Comfortably."** The quantities and the method are decided (D1). The limits are not: they come
   from published measurements (D1, 2026-09-24), which still have to be gathered (soft-contact recon §8).
+  Penile pressure-pain thresholds may not be published at all. **If so, the fallback for the seated limit
+  is Jon's call.**
 - **U2 — μ.** No friction data for silicone × lubricant × skin has been found in the repo.
 - **U3 — Why the rigid path asks 8.3 mm of room** with no inset, near the entrance. It is settled before the
   new solver runs `base_mold` (soft-contact recon §15g step 6).
@@ -429,7 +433,12 @@ in CI); G5 already gates in CI.
     - *Fits* if the whole interval is under the limit;
     - *Too tight* if all of it is over;
     - otherwise the verdict names the corner that crosses the limit.
-  - Also open: whether the Mullins state is a verdict corner. It doubles the runs per verdict (D4).
+  - Friction spans up to 10× within one pairing (soft-contact recon §5c). So the interval will often
+    straddle a limit, and then D3's bisection has no binary answer.
+  - Also open: whether the Mullins state is a verdict corner. It adds 2 runs per verdict (D4).
+- **U12 — The product's outer boundary. Jon's call.** Is the poured device's outer wall free, held in a
+  case, or bonded to a stiffer layer? That decides the regime, and whether ν and the confined case must
+  be solved accurately (soft-contact recon §15h, step 2).
 
 ---
 

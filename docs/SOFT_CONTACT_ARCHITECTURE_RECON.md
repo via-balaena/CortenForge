@@ -278,8 +278,8 @@ socket-donning study did. Reduced-order bases do not survive a sliding contact �
 **Fallback for Tier 2:** AVBD (vertex Gauss–Seidel with an augmented Lagrangian). It shares the element
 and contact kernels.
 
-**The mission tension.** CortenForge's flagship is *differentiable* co-design. The explicit solver runs
-forward only, and gradients stay with the implicit solver (§11). The fit test runs forward only. For design sweeps, a few parameters by finite
+**Forward only.** The explicit solver runs forward only, and gradients stay with the implicit solver
+(§11). For design sweeps, a few parameters by finite
 differences, or Tier 3, are cheap once Tier 2 takes seconds.
 
 ## 7. Validation ladder
@@ -373,6 +373,7 @@ fill a gap.
 - the three-tier architecture, and AVBD as Tier 2's fallback (§6);
 - the single-source translator (§13);
 - the physics' wgpu, decoupled from Bevy's (§13e);
+- the explicit solver runs forward only, and gradients stay with the implicit solver (§6, §11);
 - the crate layout (§14);
 - the first experiment's detailed design (§15).
 
@@ -779,6 +780,7 @@ contact pressure within 5 % at ν ≥ 0.49? And can it run a 100k-tet insertion 
 | **K3 precision** | CPU f32 against CPU f64, same executor: band pressure within **0.5 %** (frictionless, 50k), and the Coulomb push's reaction within **0.5 %** (μ_f 0.3, 10k) | step 2 of the build (15g), before any GPU code. This is the fit plan's *"precision spike on contact before any GPU contact code"* |
 | **K4 robustness** | J > 0 in every element at every step of every valid run | explicit check (§13d rule 2). Any J ≤ 0 in a valid run is a failure. A run that breaks a validity gate is invalid, and K4 does not judge it |
 | **K5 product readings** | the peak push force during entry and the seated 95th-percentile pressure (fit plan D1's readings) change ≤ 5 % from 50k to 100k | the tube's entry is a sharp edge, like the product's mouth. **A gate on the verdict's design, not on the solver:** if it fails, D1's readings or the lip radius are revisited before step 7 |
+| **K6 friction** | frictional ironing at μ 0.2 (§7 rung 2): the reaction-force histories within 5 % of the published curves ([arXiv 1903.05859](https://arxiv.org/pdf/1903.05859)) | CPU, build step 2. Friction's only external reference: the Coulomb push (15d.7) checks consistency only |
 
 **Why two corrections to K2:**
 - **Requiring both raw and gap-corrected results:** the penalty's gap biases pressure low by about 1 %
@@ -797,6 +799,7 @@ contact pressure within 5 % at ν ≥ 0.49? And can it run a 100k-tet insertion 
 - K2 → the element (15e), the contact variant, or the SDF (compare with the analytic SDF, 15d.9).
 - K3 → f32 storage or accumulation (§6's displacement storage).
 - K4 → the element or the loading time.
+- K6 → the friction law or its stick state.
 
 ### 15b. The case
 
@@ -912,6 +915,9 @@ contact pressure within 5 % at ν ≥ 0.49? And can it run a 100k-tet insertion 
   - **The gap biases pressure low by about 1 %** (arithmetic, from a reviewer's inner-node
     V_a/A_a ≈ 0.88 mm). Its actual size is measured (15d.1).
   - The gap scales with Δt², so it roughly halves at ν 0.495 and changes along the mesh ladder.
+  - **It also grows with contact pressure.** The plan's own inputs give a stiffness of about 264 kPa/mm
+    per unit area (arithmetic). That means a gap of about 0.03 mm on the free tube, but about 0.36 mm in
+    the confined case (against 1 mm of interference). The confined case is therefore judged in step 2.
   - LS-DYNA's SOFT=1 belongs to the same family; its exact formula is UNSOURCED.
 - **Contact variant (b): kinematic projection,** frictionless K2 runs only.
   - A penetrating node is moved to the surface, Δu = −g·n (NiftySim for analytic surfaces; Joldes). Its
@@ -964,7 +970,8 @@ contact pressure within 5 % at ν ≥ 0.49? And can it run a 100k-tet insertion 
    - The subtraction removes the nose's geometric push. A reviewer's estimate puts it at about 2 % and 6 % of
      the friction force at λ_a 1.1 and 1.3, which is enough to break 5 % unaided.
 8. **The confined stress case:** cased outer wall, all axial motion held, λ_a 1.1, B/A 2, ν 0.49. The
-   oracle gives p/μ = 4.1417. This is the regime TLED never validated; the result is reported.
+   oracle gives p/μ = 4.1417. This is the regime TLED never validated. It is judged in step 2 against
+   G2 and 5 % if the product is cased or bonded (fit plan U12); otherwise it is reported.
 9. **The SDF comparison:** the analytic mandrel, against grids at A/10 and A/20, with the
    finite-difference and the analytic trilinear gradients. Record band error and scatter.
 10. **Stiffness scaling** (§5d's shortcut): the same run at μ and 2μ, frictionless and at μ_f 0.3.
@@ -983,8 +990,8 @@ contact pressure within 5 % at ν ≥ 0.49? And can it run a 100k-tet insertion 
      (de Souza Neto, Pires & Owen 2005).
   2. Cyclic J smoothing, which *"suppresses the pressure oscillation"* (Onishi et al. 2017).
   3. Split-energy ANP. This would need the oracle rerun with the split W.
-- **IANP is not a fallback.** It differs from ANP only at material interfaces (PMC4477870 §2, §4). The
-  2.3 → 1.5 mm improvement often quoted comes from a two-material cylinder.
+- **IANP is not a fallback for the one-material tube.** It differs from ANP only at material interfaces
+  (PMC4477870 §2, §4), so it is the interface rule for layered products (15g step 1).
 
 ### 15f. The executor trait's phases
 
@@ -1016,6 +1023,8 @@ Each item is one PR with its own tests and a done-when.
    - The shared math of §14b: the selective-ANP pieces, Ψ, the J check, the Tet4 force, the per-node
      update, the SDF query, the contact law and pose interpolation. **Both neo-Hookean and Yeoh**
      (`base_mold` is Yeoh).
+   - Where materials meet, the nodal pressure is averaged per element (IANP, Joldes 2009). Inside one
+     material it equals selective ANP.
    - Compiled at f32 and f64. The freshness test, made to fail once.
    - A conformance test of the shared SDF lookup against `cf-geometry`'s `distance_clamped` and
      `gradient_clamped` in f64. The largest difference over the test points must be ≤ 1e-9 × the largest
@@ -1027,8 +1036,14 @@ Each item is one PR with its own tests and a done-when.
    - The oracle becomes a golden generator (the `sim/L0/mjcf/tests/conformance/gen_golden.py` pattern).
    - **K3 runs here**, including a CPU Coulomb push at 10k. K2 runs on the CPU at 10k and 50k, and so
      does K5's convergence (10k to 50k).
-   - **Frictional ironing** (§7 rung 2) runs on the CPU, as the friction law's external reference. The
-     Coulomb push (15d.7) checks consistency only.
+   - **K6, frictional ironing** (§7 rung 2), runs on the CPU.
+   - **One Yeoh case** runs, with the oracle extended by the C₂ term.
+   - **The confined case (15d.8) and a product-level contact pressure** run on the CPU, and record the
+     raw error and the largest gap.
+     - If the product is cased or bonded (fit plan U12), the contact law must pass G2 and 5 % there
+       before step 7.
+     - The fallbacks: a gap-offset penalty, an augmented-Lagrangian update, or a larger s at a smaller
+       Δt.
    - **The product's budget:**
      - mesh `base_mold` locally (the scan stays outside the repo) at the resolution K2 needs;
      - compute its stable Δt with the CPU executor's power iteration;
@@ -1042,7 +1057,7 @@ Each item is one PR with its own tests and a done-when.
      - Proceed with a flag if it is 5–7 %, and the extrapolation reaches ≤ 5 % at 100k at every corner.
        The model: h = (mean tet volume)^(1/3), and e = C·h^p, with C and p fitted per corner from 10k
        and 50k.
-     - ⛔ **Stop before any GPU work** otherwise, or if K3 or K4 fails.
+     - ⛔ **Stop before any GPU work** otherwise, or if K3, K4 or K6 fails.
    - A reviewer's model (not kept) put the element alone at +1.2–1.65 % at 50k.
    - *Done when:* the stop rule has been applied, with its numbers written here.
 3. **`sim-gpu`: the shared GPU infrastructure is extracted:** the context, chunked submission and the
@@ -1059,7 +1074,7 @@ Each item is one PR with its own tests and a done-when.
      difference must be ≤ 1e-5 × the largest magnitude.
 5. **The experiment on the GPU:** K1, K2 at 100k, the ν sweep, the ladder, the Coulomb push, the stress
    case, the SDF comparison and stiffness scaling.
-   - *Done when:* K1–K5 are decided and the results are in this document with their commands.
+   - *Done when:* K1–K6 are decided and the results are in this document with their commands.
 6. **`sim-soft`: lowering, obstacle baking, and the pairing library.**
    - Lowering and obstacle baking come from `cf-sim-research`.
    - The pairing library covers surface × surface × lubricant, with fresh and depleted ranges (§5c).
@@ -1069,7 +1084,8 @@ Each item is one PR with its own tests and a done-when.
      the dependency.
    - **U3** (fit plan) is settled geometrically before step 7: with no inset, the rigid path already
      asks 8.3 mm of room. Its swept volume is checked against the cavity. If the path is at fault, step
-     7's verdicts would measure that and not the fit.
+     7's verdicts would measure that and not the fit. The prescribed path is then replaced by an intruder
+     that is force- or velocity-driven and guided by contact (the replaced plan's Phase 4 item).
    - Also carried from the fit plan's Phase 1:
      - the t = 0 intrusion and its pre-roll;
      - the outer-skin pin's 646 interior vertices;
@@ -1083,12 +1099,18 @@ Each item is one PR with its own tests and a done-when.
      surface, with and without projection.
    - The **lip radius** (fit plan "Later"): the lipped cavity built in `cf-design`, then sharp against
      rounded on the same scan.
+   - **Tier 1** (the per-slice estimate, §6) is built and checked against the solver on `base_mold`. D3's
+     search uses it to pick candidate insets, so full verdicts run at only 1–2 insets.
    - *Done when:* the fit plan's G1–G3 and G6 have numbers on `base_mold`.
 8. **The soft-on-soft contact design** (§9 decision 9): a design step with its own research round, not
    code.
 9. **Validation and limits:** §7's rungs 2 and 5, and the comfort limits (fit plan U1, §8). The limits
    research does not depend on the solver, so **it starts now**, in parallel with steps 1–2. The 5.4 N
    anchor limits getting in at all; it is not a comfort limit.
+   - *Done when:* rung 2's benchmarks are within their published tolerances, at least one rung-5
+     experiment is reproduced within its measured scatter, and each comfort limit is either sourced or
+     has a fallback Jon has decided (fit plan U1).
+   - Until then, the fit test's verdict is labelled unvalidated. D2 already makes it advisory.
 
 **Where the runs live in CI:**
 - tests-debug runs a short sanity run on the 10k mesh (a few hundred steps: finite energies, J > 0). It
@@ -1102,12 +1124,13 @@ Each item is one PR with its own tests and a done-when.
 
 - **Runs per verdict.** A run is one simulation. §2 and §5d want an interval across friction,
   stiffness and Mullins corners.
-  - **If stiffness scaling holds** (15d.10), a verdict is **2 runs** (the pairing's low and high μ):
-    about 4 minutes at K1's rate.
-  - **If the Mullins state stays a corner,** it is 4 runs, about 8 minutes.
-  - **A D3 search** of 3–4 verdicts then takes about 12–16 or 24–32 minutes, against D4's 15
-    (arithmetic).
-  - **If stiffness scaling fails,** a verdict is 4 runs, or 8 with Mullins.
+  - **If stiffness scaling holds** (15d.10), a verdict is **3 runs**: the pairing's low and high μ, plus
+    μ = 0 for the geometric share of push force (§2). That is about 6 minutes at K1's rate.
+  - **If the Mullins state stays a corner,** it is 5 runs, about 10 minutes.
+  - **A D3 search** of 3–4 full verdicts would take 18–24 or 30–40 minutes, against D4's 15
+    (arithmetic). Tier 1 therefore pre-filters the search (step 7), so full verdicts run at 1–2 insets.
+  - **If stiffness scaling fails,** each stiffness corner doubles the friction runs: 5 runs, or 9 with
+    Mullins.
   - Whether Mullins is a verdict corner is Jon's call (fit plan U11).
 - **The regime per application** (from the oracle's confinement table, §5b amended):
 
@@ -1119,6 +1142,7 @@ Each item is one PR with its own tests and a done-when.
   | An O-ring in its gland | fully confined | pressure ∝ K. ν must come from the measured K; Abaqus's K/μ 1 000–10 000 is ν 0.4995–0.49995 |
   | Garment, footwear, grasping | free, or thin | ν barely matters |
   | Surgical insertion (needle, catheter) | tissue around it | not assessed |
+  | `base_mold`, the product | **open** (fit plan U12) | decides whether the confined case must pass (step 2) |
 
   At ν 0.4995 an explicit run needs about 4.4× K1's steps (√(1001/51), arithmetic), roughly 9 minutes
   at K1's rate. **The O-ring class is outside K1's sizing**, and needs its own budget or a mixed
