@@ -13,6 +13,12 @@ repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 
+# The binary is not named after the package, so its docs do not collide with
+# the library's (the cf-viewer / cf-view precedent).
+[[bin]]
+name = "wgsl-gen"
+path = "src/main.rs"
+
 [package.metadata.cortenforge]
 tier = "L0"
 

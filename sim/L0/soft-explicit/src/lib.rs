@@ -11,8 +11,8 @@
 //! loop-free Rust subset that `sim-wgsl-gen` translates, against a scalar
 //! alias `R`. Each file is compiled twice here:
 //!
-//! - [`f32`], what the GPU runs and the CPU executor's working precision;
-//! - [`f64`], the reference that says whether `f32` is enough (plan §15a K3);
+//! - [`f32`](mod@f32), what the GPU runs and the CPU executor's working precision;
+//! - [`f64`](mod@f64), the reference that says whether `f32` is enough (plan §15a K3);
 //!
 //! and translated once into [`SHARED_WGSL`] for the GPU executor. A freshness
 //! test regenerates that WGSL and fails, naming the command, if the committed
@@ -49,7 +49,6 @@ pub use model::{ExplicitModel, ModelError};
 
 /// The shared math at `f32`: what the GPU runs, and the CPU executor's
 /// working precision.
-#[allow(clippy::many_single_char_names, clippy::similar_names)]
 pub mod f32 {
     /// This module's scalar.
     pub type R = f32;
@@ -66,7 +65,6 @@ pub mod f32 {
 
 /// The shared math at `f64`: the reference the `f32` results are checked
 /// against.
-#[allow(clippy::many_single_char_names, clippy::similar_names)]
 pub mod f64 {
     /// This module's scalar.
     pub type R = f64;

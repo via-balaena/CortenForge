@@ -1047,6 +1047,10 @@ Each item is one PR with its own tests and a done-when.
      `gradient_clamped` in f64. The largest difference over the test points must be ≤ 1e-9 × the largest
      value. The degenerate-gradient threshold it adopts is
      recorded here.
+     - **Adopted: 1e-10**, the CPU path's (`sdf.rs:524`), at both precisions.
+     - Measured over 4,567 points, inside the grid and on and past every face: the largest distance
+       difference is 1.7e-18 against a bar of 1.3e-11, and the largest normal difference 3.6e-15
+       (`sim/L0/soft-explicit/tests/sdf_conformance.rs`).
    - Both crates added to tests-debug shard 3.
    - *Done when:* CI runs the new tests, and the freshness test has failed once on a deliberate edit.
 2. **The oracle as golden values, the tube fixture, the CPU executor and the stepping loop.**

@@ -72,7 +72,7 @@ fn the_regenerate_command_runs_from_the_workspace_root() {
 
 #[test]
 fn the_binary_writes_checks_and_rejects_bad_usage() {
-    let binary = env!("CARGO_BIN_EXE_sim-wgsl-gen");
+    let binary = env!("CARGO_BIN_EXE_wgsl-gen");
     let (_dir, input, output) = scratch();
     let run = |args: &[&str]| Command::new(binary).args(args).output().unwrap();
 

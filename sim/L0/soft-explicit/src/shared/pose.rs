@@ -74,6 +74,8 @@ pub const fn pose_to_body(pose: Pose, point: [R; 3]) -> [R; 3] {
 
 /// The samples around `time`, for `count` samples taken every `interval`
 /// from `start`. Times outside the samples clamp to the first or last.
+// The coordinate is clamped to [0, count − 1] before its floor becomes a
+// `u32`, and `count as R` is exact below 2^24 samples at f32.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,

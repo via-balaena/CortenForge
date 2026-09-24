@@ -62,6 +62,8 @@ pub const SDF_PROBE_COUNT: u32 = 7;
 pub const SDF_DEGENERATE_GRADIENT: R = 1e-10;
 
 /// A point's grid coordinates, `(p − origin) / cell`, clamped onto the grid.
+// `u32 as R`: exact for any grid under 2^24 samples a side at f32, and
+// lossless at f64, where clippy prefers `R::from`, which the subset lacks.
 #[allow(clippy::cast_precision_loss, clippy::cast_lossless)]
 #[must_use]
 pub fn sdf_grid_coordinate(point: [R; 3], grid: SdfGridLayout) -> [R; 3] {
@@ -75,6 +77,7 @@ pub fn sdf_grid_coordinate(point: [R; 3], grid: SdfGridLayout) -> [R; 3] {
 /// The grid coordinates of one probe: probe 0 is the point itself, clamped;
 /// probes 1–6 step ½ cell from it along +x, −x, +y, −y, +z, −z, and are
 /// clamped again.
+// `u32 as R`: as in `sdf_grid_coordinate`.
 #[allow(clippy::cast_precision_loss, clippy::cast_lossless)]
 #[must_use]
 pub fn sdf_probe_coordinate(point: [R; 3], grid: SdfGridLayout, probe: u32) -> [R; 3] {
@@ -110,6 +113,8 @@ pub fn sdf_probe_coordinate(point: [R; 3], grid: SdfGridLayout, probe: u32) -> [
 /// The storage indices of the eight grid values around a clamped grid
 /// coordinate, in the order 000, 100, 010, 110, 001, 101, 011, 111 (x
 /// fastest). On the far face the upper corner repeats the lower one.
+// `R as u32` on a coordinate clamped to [0, size − 1]: its floor is a
+// non-negative whole number that fits.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 #[must_use]
 pub fn sdf_cell_corners(coordinate: [R; 3], grid: SdfGridLayout) -> [u32; 8] {

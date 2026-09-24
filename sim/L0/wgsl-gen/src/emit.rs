@@ -20,8 +20,8 @@ use crate::{Error, Source};
 ///
 /// Left out on purpose: `round` and `signum`, whose Rust and WGSL results
 /// differ (Rust rounds half away from zero, WGSL to even; `signum(0.0)` is 1
-/// in Rust and `sign(0.0)` is 0 in WGSL), and `mul_add`, which WGSL's `fma`
-/// does not promise to fuse.
+/// in Rust and `sign(0.0)` is 0 in WGSL), and `mul_add`, which Rust always
+/// fuses while WGSL gives `fma` only the accuracy of `e1 * e2 + e3`.
 pub const METHODS: &[(&str, &str, usize)] = &[
     ("abs", "abs", 0),
     ("sqrt", "sqrt", 0),

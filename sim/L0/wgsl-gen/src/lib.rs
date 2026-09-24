@@ -41,14 +41,14 @@
 //! the WGSL differ (`cfg`, for one). A runtime index is storage access, and
 //! storage access belongs to the executor, not the shared math.
 //!
-//! Loops are refused because a loop over a private array cost 1.07–1.81× the
-//! loop-free version on the GPU in the spike that chose this design (plan
-//! §13a); written loop-free, the translated kernel ran at 1.00× hand WGSL.
+//! Loops are refused because of the spike that chose this design (plan §13a):
+//! one kernel written with loops ran at 1.07–1.81× hand-written WGSL, and
+//! written loop-free at 1.00×, as this translator's output did.
 //!
 //! ## Using it
 //!
-//! [`translate`] turns sources into validated WGSL. The `sim-wgsl-gen` binary
-//! regenerates a committed file (`write`) or reports whether it is stale
+//! [`translate`] turns sources into validated WGSL. The package's `wgsl-gen`
+//! binary regenerates a committed file (`write`) or reports whether it is stale
 //! (`check`); run it from the workspace root, so the source paths recorded in
 //! the file's header match. A consumer's freshness test calls [`translate`]
 //! on the same sources and compares the result with the committed file
@@ -56,11 +56,11 @@
 
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
-mod translate;
+mod emit;
 
 use std::path::Path;
 
-pub use translate::METHODS;
+pub use emit::METHODS;
 
 /// One Rust source file of shared math.
 #[derive(Clone, Copy, Debug)]
@@ -125,7 +125,7 @@ pub enum Error {
 /// [`Error::Refused`] if a source leaves the subset, and [`Error::Invalid`] if
 /// naga rejects the result.
 pub fn translate(sources: &[Source<'_>]) -> Result<String, Error> {
-    let wgsl = translate::module(sources)?;
+    let wgsl = emit::module(sources)?;
     validate(&wgsl)?;
     Ok(wgsl)
 }

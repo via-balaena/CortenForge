@@ -1,11 +1,12 @@
-//! `sim-wgsl-gen write|check <output.wgsl> <input.rs>...`
+//! `wgsl-gen write|check <output.wgsl> <input.rs>...`, the `sim-wgsl-gen`
+//! package's command line: `cargo run -p sim-wgsl-gen -- write …`.
 //!
 //! Run from the workspace root, so the source paths recorded in the output's
 //! header are the ones a freshness test compares against.
 
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: sim-wgsl-gen write|check <output.wgsl> <input.rs>...";
+const USAGE: &str = "usage: wgsl-gen write|check <output.wgsl> <input.rs>...";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
