@@ -1,0 +1,36 @@
+# sim-wgsl-gen — Layer-0 translator from a loop-free Rust subset to WGSL.
+# Full story in src/lib.rs.
+
+[package]
+name = "sim-wgsl-gen"
+description = "Translate a loop-free subset of plain Rust into WGSL, validated by naga, so CPU and GPU share one physics source"
+keywords = ["wgsl", "shader", "codegen", "physics", "simulation"]
+categories = ["development-tools", "science", "simulation"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[package.metadata.cortenforge]
+tier = "L0"
+
+[dependencies]
+# Parses the shared Rust source into a syntax tree; `full` for items,
+# statements and expressions.
+syn = { version = "2", features = ["full"] }
+# Line and column numbers for refusals, outside a proc macro.
+proc-macro2 = { version = "1", features = ["span-locations"] }
+# Parses and validates the generated WGSL before it is written, on the
+# physics side's naga version (the major that matches its wgpu).
+naga = { workspace = true, features = ["wgsl-in"] }
+# Derive macro for the error type.
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# Scratch directories for the write and check commands' tests.
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

@@ -512,6 +512,8 @@ members = [
     "sim/L0/opt",
     "sim/L0/therm-env",
     "sim/L0/soft",
+    "sim/L0/soft-explicit",
+    "sim/L0/wgsl-gen",
     "sim/L0/truss",
 
     # Simulation domain - Layer 1 (Bevy integration)
@@ -696,6 +698,10 @@ truck-meshalgo = { version = "0.4", default-features = false, features = [
 # GPU Compute
 # ---------------------------------------------------------------------------
 wgpu = "27"
+# naga validates the WGSL that `sim-wgsl-gen` generates. Keep it on the major
+# that the physics side's wgpu uses, so a shader that validates here also
+# validates when that wgpu builds its pipeline.
+naga = "27"
 bytemuck = { version = "1", features = ["derive"] }
 pollster = "0.4"
 
@@ -826,6 +832,8 @@ sim-thermostat = { path = "sim/L0/thermostat" }
 sim-opt = { path = "sim/L0/opt" }
 sim-therm-env = { path = "sim/L0/therm-env" }
 sim-soft = { path = "sim/L0/soft" }
+sim-soft-explicit = { path = "sim/L0/soft-explicit" }
+sim-wgsl-gen = { path = "sim/L0/wgsl-gen" }
 sim-truss = { path = "sim/L0/truss" }
 # Sim domain - Layer 1 (Bevy integration)
 sim-coupling = { path = "sim/L1/coupling" }
