@@ -1,6 +1,6 @@
 # Soft-contact architecture
 
-**Status:** the plan, 2026-09-24. No code is written yet.
+**Status:** the plan, 2026-09-24. No solver code is written yet.
 - **Research:** §1–§10.
 - **Code architecture and the crate layout:** §11–§14.
 - **The first experiment and its kill criteria:** §15.
@@ -13,7 +13,10 @@ written beforehand (§14e, §15i). The research sections were not. Jon's directi
 
 **How the numbers are sourced.**
 - **✓** marks a number I re-read at its source, derived myself, or the repo measured (with its referent).
-- Everything else comes from ten research surveys and carries their link. It was not re-checked.
+- Unmarked claims come from ten research surveys, which are not in the repo. Their links are given where
+  they were kept. They were not re-checked.
+- The PolyFEM numbers were measured on a build that has since been deleted. Their record is the fit
+  plan's Speed section.
 - A number with neither is arithmetic, and is labelled as such.
 - ⚠ **The session's web-search allowance (200) ran out.** Several surveys were cut short, and their gaps
   are listed in §10.
@@ -28,17 +31,17 @@ written beforehand (§14e, §15i). The research sections were not. Jon's directi
   - contact pressure;
   - stretch.
 
-  Target: about **5 minutes on the user's Mac** (Phase 2, D4). Both the visuals and the numbers must be
+  Target: at most **5 minutes per run on an Apple M4 Pro** (fit plan D4). Both the visuals and the numbers must be
   realistic.
 - **The class, at CortenForge's peak** (Jon, 2026-09-24):
   - surgical insertion (needle, catheter, endoscope);
   - footwear and garment fit;
   - seal and O-ring fitting;
   - soft-robot grasping.
-- **The platform.** wgpu on Metal and Vulkan (D6), which means **f32 on the GPU**: Metal has no f64. An
-  outside physics engine comes inside only if it is Rust (D7).
+- **The platform.** wgpu on Metal and Vulkan (fit plan D6), which means **f32 on the GPU**: Metal has no
+  f64. An outside physics engine comes inside only if it is Rust (fit plan D7).
 - **The material is uncertain, and that uncertainty is the input** (Jon: *"figure out how to properly
-  model that variety / operate within the ends of the variety spectrums"*).
+  model that variety/operate within the ends of the variety spectrums"*).
 
 ## 2. What the fit test really is
 
@@ -65,17 +68,18 @@ written beforehand (§14e, §15i). The research sections were not. Jon's directi
   - quasi-static equilibrium at every step;
   - guaranteed non-penetration (IPC);
   - tight tolerances;
-  - a fine quadratic mesh (65 293 Tet10, 98 145 nodes);
+  - a fine quadratic mesh (65 293 Tet10);
   - a CPU direct solver.
-- **A mature library of exactly that kind** (PolyFEM, built and validated here) took about **7 minutes per
-  load step** on `base_mold` ✓ (`docs/INSERTION_SIM_FIT_TEST_PLAN.md`, Speed):
-  - ~30 Newton iterations at first contact. Rounding the lip or changing the step size took 47–205 ✓;
+- **A mature library of exactly that kind** (PolyFEM, built and validated here, since deleted) took about
+  **7 minutes per load step** on `base_mold`, one step measured, at first contact ✓
+  (`docs/INSERTION_SIM_FIT_TEST_PLAN.md`, Speed):
+  - ~30 Newton iterations at first contact. Rounding the lip or changing the step size took 47–205; the
+    205-iteration run never converged ✓;
   - ~15 s per iteration, for one sparse factorization ✓;
-  - every lever tried made it worse ✓. A warm start and factorization reuse were not tried.
+  - the path levers tried (bigger or smaller steps, a coarser mesh, a rounded lip) all made it worse ✓. A
+    warm start and factorization reuse were not tried.
 - **So it is about 200× over budget** (arithmetic: 5 min / (~130 steps × ~30 iterations) ≈ 77 ms per
   iteration, against 15 s).
-- **The process added to it.** We made each piece more correct, one rung at a time, without first
-  checking that the architecture could ever reach the speed target.
 - **The "real-time" squishy-cube demos are replays.** `example-integration-two-way-striker-viewer`
   computes 220 steps in **21.9 s** ✓, then plays them back.
 
@@ -86,19 +90,20 @@ written beforehand (§14e, §15i). The research sections were not. Jon's directi
 | **Seal mounting** | LS-DYNA **explicit**, mass scaling, penalty contact. *"the implicit solver is generally very difficult to successfully handle the analysis. However, for explicit solver like LS-DYNA, this problem can be trivial."* ✓ | not reported | *"… very well"* against tests ✓ ([Shi](https://lsdyna.ansys.com/wp-content/uploads/attachments/Session_4-4.pdf)) |
 | **Compression stockings** | Abaqus/**Explicit**, S4 **shells** on a rigid leg | not reported | within 20 % of measured pressure ([PMC12920784](https://pmc.ncbi.nlm.nih.gov/articles/PMC12920784/)) |
 | **Prosthetic socket donning** (closest analogue) | Abaqus **implicit, static**, 40 272 quadratic tets, displacement-driven from 20 mm ✓ | **~30 min per run** on a CPU ✓ | a Kriging surrogate trained on 150 runs answers in **1.6 ms** (NRMSE 4 %), checked against the FE runs, not experiment ✓ ([Steer 2019](https://pmc.ncbi.nlm.nih.gov/articles/PMC7423807/)) |
-| **Surgical, GPU** (TLED: Taylor; Miller, Joldes, Wittek) | **explicit total-Lagrangian, f32 GPU**; dynamic relaxation (DR) for quasi-static | a 125 292-element brain in **19.95 s** on a 2007 Tesla C870 (543 s on CPU) ✓; 1 250–3 300 DR steps per equilibrium ✓ | 2.5 % reaction-force error against Abaqus **without contact**; displacement-only against experiment ([PMC2783832](https://pmc.ncbi.nlm.nih.gov/articles/PMC2783832/)) |
-| **Surgical, real-time** (SOFA) | corotational **linear** tets, one linearization per step, LCP contact | 18–45 FPS at 7–9k tets | 1.7 % mean stress error against Abaqus ([PMC6485523](https://pmc.ncbi.nlm.nih.gov/articles/PMC6485523/)) |
+| **Surgical, GPU** (TLED: Taylor; Miller, Joldes, Wittek) | **explicit total-Lagrangian, f32 GPU**; dynamic relaxation (DR) for quasi-static | a 125 292-element brain in **19.95 s** on a 2007 Tesla C870 (543 s on CPU) ✓; 1 250–3 300 DR steps per equilibrium ✓ ([PMC3003932](https://pmc.ncbi.nlm.nih.gov/articles/PMC3003932/)) | 2.5 % reaction-force error against Abaqus **without contact**; displacement-only against experiment ([PMC2783832](https://pmc.ncbi.nlm.nih.gov/articles/PMC2783832/)) |
+| **Surgical, real-time** (SOFA) | corotational **linear** tets, one linearization per step, LCP contact | 18–40 FPS on the surgical cases (7 680 and 8 596 tets) | 1.7 % mean stress error against Abaqus ([PMC6485523](https://pmc.ncbi.nlm.nih.gov/articles/PMC6485523/)) |
 | **Fast GPU research** (VBD, AVBD, GPU IPC, ppf) | vertex Gauss–Seidel, or Newton–PCG with a barrier | seconds per dynamic frame at 10⁵ tets | the survey found **none** that validated contact force or pressure against engineering FEM or experiment |
 
 **What it adds up to.**
 - **TLED is the precedent for the architecture recommended here.**
   - It runs explicit in f32 on the GPU. Joldes 2010: *"performing the operations in single precision does
-    not have a high impact on convergence for the accuracy usually required in our simulations"* ✓.
+    not have a high impact on convergence for the accuracy usually required in our simulations"* ✓
+    ([PMC3003932](https://pmc.ncbi.nlm.nih.gov/articles/PMC3003932/)).
   - Per-element force buffers gathered at the nodes need **no atomics** ([NiftySim](https://pmc.ncbi.nlm.nih.gov/articles/PMC4488488/)).
   - The average-nodal-pressure (ANP) tetrahedron handles near-incompressibility.
 - **What TLED does not cover, which is therefore what we add** (Jon, 2026-09-24, *"these would be what
   we would need to add to it"*):
-  - **friction**, since every dynamic-relaxation contact in the literature is frictionless;
+  - **friction**, since every dynamic-relaxation contact the surveys found is frictionless;
   - **silicone-level incompressibility**, since nothing was validated above ν = 0.49;
   - **force validated with contact.**
 
@@ -120,8 +125,8 @@ Stress at 100 % strain across sources, from raw data (round 1:
 | Dragon Skin 20 / 30 | 318–593 / 437–833 kPa | 1.9× |
 | Within one lab (Ecoflex 00-20, n = 10) | 74–100 kPa | ±15 % |
 
-- **Our datasheet anchor sits at the stiff end.** The datasheet σ₁₀₀ is ~2.3× Marechal's measured value ✓
-  (`sim/L0/soft/src/material/silicone_table.rs`).
+- **For Ecoflex 00-30, the datasheet σ₁₀₀ is ~2.3× Marechal's measured value** ✓
+  (`sim/L0/soft/src/material/silicone_table.rs:103-107`).
 - **The product blend (Dragon Skin 10 + Slacker) has no published modulus.** It is rated only by Shore
   hardness. Shore-to-modulus conversions are unvalidated this soft
   ([Gent](https://en.wikipedia.org/wiki/Shore_durometer)). **It must be measured** (§8).
@@ -135,7 +140,7 @@ Stress at 100 % strain across sources, from raw data (round 1:
   K/μ = 4.7.
 - **What silicone actually is:**
   - Measured Sylgard 184: **ν = 0.4950 ± 0.0010** ([Müller 2019](https://www.ebi.ac.uk/europepmc/webservices/rest/search?query=DOI:10.1039/c8sm02105h&format=json&resultType=core)).
-  - Abaqus puts unfilled elastomers at K/μ 1 000–10 000.
+  - Abaqus puts unfilled elastomers at K/μ 1 000–10 000 ([Abaqus](https://abaqus-docs.mit.edu/2017/English/SIMACAEMATRefMap/simamat-c-hyperelastic.htm)).
   - Every explicit code's default is far above ours: Abaqus/Explicit K/μ = 20 (ν 0.475); LS-DYNA
     recommends ν 0.49–0.5; Radioss defaults to 0.495.
 - **What it costs.** Arithmetic ✓: explicit steps scale with √(λ+2μ). Against ν = 0.4:
@@ -176,8 +181,9 @@ Stress at 100 % strain across sources, from raw data (round 1:
 
 ### 5c. Friction probably dominates push force, and it is the least known input
 
-Round-2 scenario ranges, silicone sleeve on skin ([survey](https://pmc.ncbi.nlm.nih.gov/articles/PMC6227966/)
-and cited):
+Round-2 scenario ranges, silicone sleeve on skin, from the surveys. The water-based-lubricant row rests on
+[a condom-coating study](https://pmc.ncbi.nlm.nih.gov/articles/PMC6227966/): COF 0.159 fresh, above 0.30 at
+600–900 s.
 
 | Scenario | Range | Nominal |
 |---|---|---|
@@ -202,7 +208,7 @@ and cited):
 
 ### 5d. Consequence
 
-- **The inputs are uncertain by** 1.3–3.7× in stiffness, **>10× in friction**, and an unknown factor in
+- **The inputs are uncertain by** 1.3–3.4× in stiffness (at 100 % strain), **>10× in friction**, and an unknown factor in
   bulk stiffness and boundary condition.
 - **A solver error of a few percent is plenty.** The answer is an **interval across corners**:
   - {soft, stiff};
@@ -225,8 +231,9 @@ and cited):
 
   ✓ derived and checked by hand: 0.313 at λ_a = 1.3, B/A = 2, plane strain.
 - **Push force** is μ_f·Σ P·perimeter·Δz, plus a geometric term.
-- **Simpler formulas are badly wrong here** ✓ (arithmetic): at 30 % stretch the small-strain Lamé formula
-  overshoots by 36–80 %, and the thin-wall garment formula (Laplace) by about 2×.
+- **Simpler formulas are badly wrong here** (arithmetic): at 30 % stretch and B/A 2, the small-strain
+  Lamé formula overshoots by 44 % ✓ (36–80 % across B/A 2.8–1.05), and the thin-wall garment formula
+  (Laplace) by roughly 2×.
 - **Error against the full simulation on a real scan: unknown.** Measure it before trusting it.
 
 **Tier 2: the full simulation (seconds to minutes, target ≤ 5 min): explicit dynamics on wgpu, in f32,
@@ -234,7 +241,7 @@ built TLED-style.**
 - **Formulation:** total Lagrangian with precomputed shape-function derivatives, central differences, and
   lumped mass.
 - **Element:** the linear tetrahedron with *selective* average-nodal-pressure (ANP): only the stiff
-  volumetric term is node-averaged (§15c). ν 0.49–0.495, swept, plus 0.4995 once as a check (15d.5).
+  volumetric term is node-averaged (§15c). ν 0.475–0.495, swept, plus 0.4995 once as a check (15d.5).
   Hexahedra with hourglass control
   remain the alternative if the sleeve meshes that way.
 - **GPU layout:**
@@ -249,7 +256,8 @@ built TLED-style.**
 - **Contact:**
   - The scan is an SDF.
   - Penalty contact with Coulomb friction (the LS-DYNA pattern), or kinematic projection (the TLED
-    pattern). The experiment decides.
+    pattern). The experiment decides between them for frictionless runs. Projection has no friction
+    (§15c).
   - The penalty's gap biases pressure about 1 % low on the benchmark tube (§15c). It is measured and
     corrected for.
 - **Boundary options:** a free outer wall, a rigid case, or bonding to a stiffer outer layer (§5b).
@@ -259,10 +267,10 @@ built TLED-style.**
   - pressure maps as area-weighted percentiles;
   - stretch.
 - **Size of it (arithmetic):**
-  - about 31k steps for the 100k-tet benchmark at ν 0.49, which leaves about 3.9 ms per step within
+  - about 30–32k steps for the 100k-tet benchmark at ν 0.49, which leaves 3.7–4.0 ms per step within
     the 2-minute budget (§15c);
-  - our rigid-body GPU pipeline measured about 0.74 ms of mostly fixed overhead per step ✓
-    (`sim/L0/gpu-benches/PERF_BASELINE.md`).
+  - our rigid-body GPU pipeline's whole step at n_env 1 is about 0.74 ms ✓ (1/1.35k steps per second,
+    `sim/L0/gpu-benches/PERF_BASELINE.md`).
 
 **Tier 3: a surrogate for sweeps (later).** Trained on Tier 2 runs across insets and materials, as the
 socket-donning study did. Reduced-order bases do not survive a sliding contact ✓
@@ -271,8 +279,8 @@ socket-donning study did. Reduced-order bases do not survive a sliding contact �
 **Fallback for Tier 2:** AVBD (vertex Gauss–Seidel with an augmented Lagrangian). It shares the element
 and contact kernels.
 
-**The mission tension.** CortenForge's flagship is *differentiable* co-design, and explicit dynamics makes
-gradients costly. The fit test runs forward only. For design sweeps, a few parameters by finite
+**The mission tension.** CortenForge's flagship is *differentiable* co-design. The explicit solver runs
+forward only, and gradients stay with the implicit solver (§11). The fit test runs forward only. For design sweeps, a few parameters by finite
 differences, or Tier 3, are cheap once Tier 2 takes seconds.
 
 ## 7. Validation ladder
@@ -312,9 +320,9 @@ measuring."*
 | Input | Published source | Gap |
 |---|---|---|
 | **Silicone stress–strain** | raw curves from Marechal 2021 ([repo](https://github.com/LucMarechal/Soft-Robotics-Materials-Database)) and Roels ([Zenodo](https://zenodo.org/records/14983287)), plus Smooth-On datasheets | **The Slacker blends are unmeasured.** Use the nearest measured grade by Shore, with a **wider** range, and flag it |
-| **Bulk modulus / ν** | Sylgard 184, ν = 0.4950 ± 0.0010 ([Müller 2019](https://www.ebi.ac.uk/europepmc/webservices/rest/search?query=DOI:10.1039/c8sm02105h&format=json&resultType=core)) | Ecoflex and Dragon Skin are unmeasured. Sweep ν over 0.49–0.4995 |
+| **Bulk modulus / ν** | Sylgard 184, ν = 0.4950 ± 0.0010 ([Müller 2019](https://www.ebi.ac.uk/europepmc/webservices/rest/search?query=DOI:10.1039/c8sm02105h&format=json&resultType=core)) | Ecoflex and Dragon Skin are unmeasured. Sweep ν over 0.475–0.4995 |
 | **Friction pairings** | the round-2 survey table (§5c) and its sources | silicone on skin with a personal lubricant is unmeasured. Use the nearest analog and a wide range |
-| **Comfort and pain limits** | the axial-rigidity convention (below); garment comfort pressures (15–20 mmHg ≈ 2.0–2.7 kPa safe for sustained wear, [Wikipedia](https://en.wikipedia.org/wiki/Compression_stockings)) | **Penile pressure-pain thresholds were not found** (search cut short). Needs another research round |
+| **Comfort and pain limits** | the axial-rigidity convention (below); for stockings, *"Self-prescription is reasonably safe assuming that the compression gradient is 15–20 mmHg"* (≈ 2.0–2.7 kPa, [Wikipedia](https://en.wikipedia.org/wiki/Compression_stockings)) | **Penile pressure-pain thresholds were not found** (search cut short). Needs another research round |
 | **Validation experiments** | §7, rung 5 | each case needs its geometry recovered from the paper |
 
 **Where no measurement exists, the answer is a wider range, labelled as such.** Nothing gets invented to
@@ -324,15 +332,14 @@ fill a gap.
 (≈5.4 N)** as *"generally considered adequate for vaginal penetration"*
 ([Allen 1993](https://doi.org/10.1016/s0022-5347(17)36363-2)).
 - It is a clinic convention, not a measured tolerance.
-- It gives D1's push-force limit a real-world anchor: a sleeve that needs more push than the user's
-  buckling force will not go in.
-- It is also the strongest argument that the scan must eventually be **soft** (R7).
+- It gives fit plan D1's push-force limit a real-world anchor: a sleeve that needs more push than the
+  user's buckling force will not go in.
 
 ## 9. Decisions (Jon, 2026-09-24)
 
 1. **The outer boundary:** *"probably an option for either"*. Free, cased and bonded are all design options
    (§5b).
-2. **The first experiment: approved** as sketched here. §15 refines it.
+2. **The first experiment: approved**: the tube on a mandrel. §15 details it.
 3. **Lubricants:** *"different things can have different lubricants, so plan for that"*. A pairing library
    (§5c).
 4. **Calibration:** no manual calibration. Limits and validation come from published measurements (§2, §7,
@@ -346,8 +353,10 @@ fill a gap.
    - Revisit only if a specific validation gap appears that an f32 barrier oracle alone closes.
 7. **Leaving Tet10** for the explicit solver: ok.
 8. **PolyFEM: cut** (*"I was pretty underwhelmed"*). The repo, cache and outputs were deleted from the
-   machine. The exporter and the oracle-only lip option were removed from `insertion_sim.rs`; they
-   survive in git history (`9f448e72`, `371f4a54`, reachable from tag `fit-test-oracle-and-flow-pre-squash`).
+   machine.
+   - The exporter and the oracle-only lip option were removed before landing.
+   - They survive as `9f448e72` and `371f4a54` in a local tag, `fit-test-oracle-and-flow-pre-squash`.
+   - The tag is not pushed, because that history carries scan-derived geometry.
 9. **Soft-on-soft contact.** Jon, 2026-09-24: *"right now the hole is an offset of the scan, so nothing
    touches"*, but *"with a soft enough material they can"*, and *"soft on soft contact is definetely
    something i want in the future though, if not from the start"*.
@@ -362,6 +371,7 @@ fill a gap.
      on the GPU) and its own validation case, as §4 and §7 did for the base solver.
 
 **Engineering decisions** (Jon delegated them):
+- the three-tier architecture, and AVBD as Tier 2's fallback (§6);
 - the single-source translator (§13);
 - the physics' wgpu, decoupled from Bevy's (§13e);
 - the crate layout (§14);
@@ -391,7 +401,7 @@ fill a gap.
 Jon asked:
 - *"is it going to pretty much have to be like a rewrite? or can we do something like burn where we just
   specify if the backend is cpu/gpu?"*
-- *"i want the gpu jump to use as much of the cpu groundwork as possible without taking any sort of
+- *"i want the gpu jump to use as much of the cpu groundwork as possible without taking an[y] sort of
   performance hit, and … the code itself to be as efficient/non redundant as possible while still having
   pretty intuitive architecture."*
 
@@ -415,15 +425,15 @@ has both, each over one model definition.
 **Why there is no performance hit.**
 - The explicit solver uses one flat, data-parallel layout: arrays per field, one force slot per element,
   and a gather at the nodes.
-- That is the GPU's best layout (TLED, §4), and close to the CPU's best for SIMD and rayon.
-- The implicit solver keeps its own sparse layout. Forcing both integrators through one abstraction beyond
-  a thin interface would cost one of them.
+- It is TLED's GPU layout (§4). The shared math on it ran at 1.00× hand-written WGSL (13a).
+- The CPU side's cost against a hand-tuned CPU layout is not measured.
+- The implicit solver keeps its own sparse layout.
 
 **Rigid and soft together on the GPU.**
 - Explicit rigid and explicit soft dynamics step with the same small Δt. Coupling is a per-step contact
   exchange that can stay on the GPU.
-- Keeping it there matters: reading back every step made our rigid pipeline 3–5× slower
-  (`sim/L0/gpu-benches/PERF_BASELINE.md`).
+- Keeping it there matters: reading back every step made our rigid pipeline 3–5× slower at n_env 256
+  (`sim/L0/gpu-benches/PERF_BASELINE.md:89-90`).
 - **Fit test:** the scan is a kinematic pose per step, which is trivial.
 - **The class** (grasping, an exo on tissue) needs articulated rigid bodies on the GPU.
 - The soft mesh is what earns the GPU. A small rigid system rides along so the data never leaves it.
@@ -443,7 +453,7 @@ has both, each over one model definition.
 costs.
 - `sim-gpu`'s shaders are a hand-written WGSL copy of `sim-core`, validated only GPU-vs-CPU. They **silently
   lagged CPU fixes**: two at once in one case. The lag was caught by a completeness review, not by the
-  tests (memory `project_gpu_shader_conformance_gap`; `contact_conformance_tests.rs`).
+  tests (`sim/L0/gpu/src/pipeline/conformance_tests.rs:7-10`).
 - **Decided (§13): a translator from a loop-free subset of plain Rust to WGSL.** It beat:
   - hand-written copies, whose drift has been measured;
   - CubeCL, whose CPU backend needs LLVM;
@@ -451,38 +461,31 @@ costs.
 
   Orchestration stays per backend, because rayon loops and GPU dispatches differ.
 
-**Constraints the design must meet** (`SIM_SOFT_REALTIME_RECON.md:3007-3012`, ✓):
-- wgpu is banned in L0, so **the GPU executor is its own L0-io crate** (F1), not a feature behind
-  `sim-soft`'s `gpu-probe` door. That door is what `SIM_SOFT_REALTIME_RECON.md:3007-3012` prescribed.
+**Constraints the design must meet** (`SIM_SOFT_REALTIME_RECON.md:3006-3011`, ✓):
+- **The GPU executor is its own L0-io crate**, for F1's grading reasons, not a feature behind
+  `sim-soft`'s `gpu-probe` door. That door is what `SIM_SOFT_REALTIME_RECON.md:3006-3011` prescribed.
 - no C toolchain;
 - wasm32 must build;
 - `grade` stays A.
 
-**How it was planned** (Jon, 2026-09-24: *"I want the highest ceiling possible performance wise, and I
+**Jon's standard for it** (2026-09-24): *"I want the highest ceiling possible performance wise, and I
 love good, effcient architecture. I value sharpening the sword and checking the whole blade carefully
-before swinging the axe."*):
-1. the repo's constraints (§12);
-2. a single-source spike (§13);
-3. the crate layout (§14);
-4. the first experiment (§15);
-5. a cold review of the whole plan (§15i).
-
-All of it was done before any code.
+before swinging the axe."*
 
 ## 12. Repo facts that force decisions
 
-From a read-only survey of the repo. The load-bearing items were re-checked (✓).
+From a read-only survey of the repo. The referents were re-checked in the PR #964 review.
 
 | # | Fact | Referent | Forces |
 |---|---|---|---|
-| F1 | **L0 bans wgpu; L0-io allows it** (bans only `bevy*`, `winit`) ✓. A `tier_up_feature` applies **only under `--all-features`** ✓. Coverage runs **default features only** ✓, and so does the doc check. The wasm check runs `--no-default-features`. | `xtask/src/grade.rs:4323`, `:4370-4379`, `:4709-4730`; `xtask/src/coverage_run.rs:609` | **The GPU executor is its own L0-io crate, not a `sim-soft` feature.** Code behind a feature is not coverage-measured, doc-checked or wasm-checked, so it would be the least-graded code in the solver |
-| F2 | **`[build-dependencies]` are invisible to the L0 dependency count and ban checks**, but still need a justification comment. Code included from `OUT_DIR` has spans outside the crate, so clippy and coverage probably miss it (inference). | `grade.rs:4786-4825`, `:3992-4119` | **If we generate code, generate it into `src/` and commit it**, with a freshness test that regenerates and diffs. Generated code is then graded like hand-written code |
+| F1 | **L0 bans wgpu; L0-io allows it** (bans only `bevy*`, `winit`) ✓. A `tier_up_feature` applies **only under `--all-features`** ✓. Coverage runs **default features only** ✓, and so does the doc check. | `xtask/src/grade.rs:4323`, `:4370-4379`, `:4709-4730`; `xtask/src/coverage_run.rs:609` | **The GPU executor is its own L0-io crate, not a `sim-soft` feature.** Code behind a feature is not coverage-measured or doc-checked, so it would be the least-graded code in the solver |
+| F2 | **`[build-dependencies]` are invisible to the L0 dependency count and ban checks**, but still need a justification comment. | `grade.rs:4786-4825`, `:3992-4119` | **If we generate code, generate it into `src/` and commit it**, with a freshness test that regenerates and diffs |
 | F3 | **`sim-soft`'s surfaces are all f64/nalgebra.** `Material` is per-point (`energy`, `first_piola`, `tangent`, `validity`). **`Solver` and `ContactModel` are Newton-shaped** (`Tape`, `NewtonStep`, `energy/gradient/hessian/ccd_toi`). | `sim/L0/soft/src/material/mod.rs:35-71`, `solver/mod.rs:202-298`, `contact/mod.rs:367-442` | **The explicit solver does not implement `Solver`**; it needs its own integrator interface. It needs only P(F) and validity, which makes a smaller **constitutive-kernel layer** (float-generic, no dynamic dispatch) the physics-math layer. The existing `Material` impls are conformance-tested against it |
 | F4 | **Contact primitives are `dyn Sdf`, so they cannot be uploaded.** `cf_geometry::SdfGrid` is dense (values, w/h/d, cell, origin; z slowest) and **`sim-gpu` already uploads exactly this layout, with a WGSL trilinear lookup**. `Solid::sdf_grid_at` takes its cell size **in mm**; `sim-soft` works in metres. | `design/cf-geometry/src/sdf.rs:147-171`; `sim/L0/gpu/src/pipeline/model_buffers.rs:198-219`; `sdf_sdf_narrow.wgsl:97-136`; `design/cf-design/src/solid/query.rs:378` | **GPU contact geometry is a baked `SdfGrid`.** Reuse the layout and lookup. Guard the mm/m unit seam with a test |
-| F5 | **`StaggeredCoupling` builds a fresh `CpuNewtonSolver` every step and assumes implicit steps.** The rigid side steps at `model.timestep`, and nothing ties it to the soft `dt`. Its gradients use `sim-soft`'s implicit-function-theorem adjoints. | `sim/L1/coupling/src/step.rs:52-118`, `lib.rs:8-32`, `construct.rs:16-17` | **Explicit coupling needs subcycling**: many soft steps per rigid step. That makes it a new coupling path. The gradient paths stay with the implicit solver |
+| F5 | **`StaggeredCoupling` builds a fresh `CpuNewtonSolver` every step and assumes implicit steps.** The rigid side steps at `model.timestep`, and nothing ties it to the soft `dt`. Its gradients use `sim-soft`'s implicit-function-theorem adjoints. | `sim/L1/coupling/src/step.rs:52-118`, `:106-108`, `lib.rs:8-32`, `construct.rs:55-56` | **Explicit coupling needs subcycling**: many soft steps per rigid step. That makes it a new coupling path. The gradient paths stay with the implicit solver |
 | F6 | **`sim-gpu` is rigid-only** (free joints, nv ≤ 60), with 13 hand-written WGSL shaders **and GPU structs hand-mirrored in WGSL** (`pipeline/types.rs`). The CPU-conformance harnesses and `CF_REQUIRE_GPU` + lavapipe CI are worth keeping. | `sim/L0/gpu/src/pipeline/orchestrator.rs:141-148`; `pipeline/types.rs:95-248`; `test_support.rs:1-60`; `.github/workflows/quality-gate.yml:589-623` | **Single-sourcing must cover struct layouts, not only functions.** Keep the conformance and CI patterns |
-| F7 | **The repo has no code generation, proc-macro crate or direct naga use.** Only `xtask/build.rs` does anything at build time. | survey §6 | **Any single-source approach is new infrastructure.** Its cost counts in the spike |
-| F8 | **Docs disagree on the L0 dependency cap** (80/100 in STANDARDS, 60 in the plan, 100/120 in code; the code is enforced). "sim-soft is the only tier-up declarer" is stale (`cf-device-types` has `{ bevy = "L1" }`). | STANDARDS.md:730; `design/cf-device-types/Cargo.toml:18` | Cleanup for later; out of scope |
+| F7 | **The repo has no code generation, proc-macro crate or direct naga use.** Only `xtask/build.rs` does anything at build time. | `xtask/build.rs` is the only build script; no crate is a proc-macro or depends on `naga` directly (greps) | **Any single-source approach is new infrastructure.** Its cost counts in the spike |
+| F8 | **Docs disagree on the L0 dependency cap** (80/100 in STANDARDS, 60 in the plan, 100/120 in code; the code is enforced). "sim-soft is the only tier-up declarer" is stale (`cf-device-types` has `{ bevy = "L1" }`). | STANDARDS.md:731, `:981`; `design/cf-device-types/Cargo.toml:18` | Cleanup for later; out of scope |
 
 ## 13. Writing the physics once: the single-source spike
 
@@ -515,8 +518,8 @@ Two interleaved runs, each against its own hand-WGSL baseline. Ratios are to han
 | rust-gpu, loop-free, no bounds checks (run 1) | 0.99× | 1.00× | 1.00× | 7.2e-6 |
 | **The translator's WGSL** (run 2) | 1.003× | 1.000× | 1.000× | 7.2e-6 |
 
-- **Loops are the whole gap.** naga keeps them as loops that index private arrays dynamically. Both loops
-  were removed together, so which one costs more has not been isolated.
+- **Loops are the whole gap.** Both loops were removed together, so which one costs more has not been
+  isolated.
 - **Bounds checks cost nothing measurable.**
 
 ### 13b. The translator
@@ -531,8 +534,8 @@ Two interleaved runs, each against its own hand-WGSL baseline. Ratios are to han
     looped Yeoh, and on a function whose only violation is a `for`.
 - **Entry points stay hand-written per backend.** They cover storage indexing, gathers and dispatch
   shape, and they call the generated functions.
-- **Size:** 148 lines on stable Rust (130 excluding blanks and comments). 29 dependency crates (`syn`,
-  `quote`, `naga`); no build dependency compiles C.
+- **Size:** 148 lines on stable Rust (130 excluding blanks and comments), in the spike (deleted). Its
+  dependencies: 28 crates including itself (`syn`, `quote`, `naga`; 14c); no build dependency compiles C.
 - **Struct layouts (F6).** An array in a uniform buffer needs a 16-byte stride, and naga's validator
   **rejects** a violation rather than laying it out wrongly. `array<f32, 3>` in a uniform failed with
   `ArrayStride { stride: 4, alignment: 16 }`; in a storage buffer it validated. `vec3` stays out of the
@@ -542,16 +545,15 @@ Two interleaved runs, each against its own hand-WGSL baseline. Ratios are to han
 
 | Pre-registered bar | Translator | rust-gpu |
 |---|---|---|
-| GPU within 10 % of hand WGSL | ✓ 1.00× | ✓ 1.00×, only if loop-free, which nothing enforces |
-| f32 agreement with the f64 reference | ✓ | ✓ |
-| No C toolchain | ✓ | ✗ regenerating shaders needs `spirv-tools-sys` (C++, through `cc`) and a pinned nightly with `rustc-dev` |
-| Readable definition | ✓ plain Rust | ✓ plain Rust, and a much larger subset |
+| GPU within 10 % of hand WGSL | pass: 1.00× | pass: 1.00×, only if loop-free, which nothing enforces |
+| f32 agreement with the f64 reference (no threshold was pre-registered) | max rel err 7.2e-6 | max rel err 7.2e-6 |
+| No C toolchain | pass | fail: regenerating shaders needs `spirv-tools-sys` (C++, through `cc`) and a pinned nightly with `rustc-dev` |
+| Readable definition | pass: plain Rust | pass: plain Rust, and a much larger subset |
 
-- **rust-gpu also broke twice on first contact.**
-  - Its backend library would not load on macOS 27 until rebuilt unstripped; the cause was not
-    isolated.
-  - An unbounded `glam` requirement broke with glam 0.33.
-- **Neither choice lowers the performance ceiling.** The shared math ran at 1.00× hand WGSL both ways.
+- **rust-gpu also broke twice on first contact:** a backend library that would not load on macOS 27,
+  and an unbounded `glam` requirement.
+- **On the one kernel measured (M4 Pro, Metal), neither choice cost speed.** The shared math ran at
+  1.00× hand WGSL both ways.
   Orchestration, where GPU performance work happens, stays in hand-written WGSL with the whole language
   available.
 - **What the translator gives up:** writing orchestration in Rust, and generics or traits in the shared
@@ -579,7 +581,7 @@ these facts:
   `bevy_render` declares its own `wgpu ^27` (`cargo tree -i wgpu`).
   - Bevy 0.18 (ours) pins wgpu 27, 0.19.1 pins 29, and 0.20.0-rc.1 pins 30.
   - wgpu 30.0.0 shipped 2026-07-01 (crates.io).
-- **Two wgpu majors in one binary work on Metal.** A spike binary built with wgpu 27 and 30 held a live
+- **Two wgpu majors in one binary work on Metal.** A spike binary (deleted) built with wgpu 27 and 30 held a live
   device from each at once on the M4 Pro. The second copy added 14.7 s wall (121 s CPU) to a release
   build. The all-platform graph has no `links` conflict: only `rayon-core` and `wasm-bindgen-shared`
   declare one. **Not tested: both at once on Vulkan.**
@@ -597,7 +599,7 @@ these facts:
 Jon handed the sign-off to me (2026-09-24: *"you may be in charge of the design/deciding is 14 v2 is
 solid"*).
 - **The crate boundaries, dependency edges and tiers** were signed off after two cold reviews (14e).
-- **The ownership details inside them** were re-checked in the whole-plan review (§15i).
+- **The ownership details inside them** were fixed after the second review (14e).
 
 ### 14a. The layout
 
@@ -606,7 +608,7 @@ solid"*).
 | **`sim-soft-explicit`** | L0 | new | **The explicit solver, minus the GPU.** The executor trait. The explicit model and state data layout (flat arrays; `#[repr(C)]` parameter blocks with no `vec3`). The shared math (14b), written once in the loop-free subset and compiled at f32 and f64, with its committed generated WGSL and a freshness test. The **CPU executor** (rayon on native, sequential on wasm32, as `newton.rs` does). The **stepping loop**, which owns the order of phases within a step, batching, the stable time step and mass scaling, and the energy monitors and stop rule, over any executor. A `test-fixtures` feature with small lowered meshes, as `sim-core` has. |
 | **`sim-wgsl-gen`** | L0 | new | The §13 translator: `syn` and `quote`, plus `naga` to validate its output, on the physics side's naga version. A `write` command regenerates the committed WGSL, and the freshness test names that command when it fails. A dev-dependency of `sim-soft-explicit`. |
 | **`sim-soft`** | L0 | grows | The model as today, plus **lowering** it to `sim-soft-explicit`'s data, including resampling the insertion path evenly in time. **Baking the obstacle SDF from its triangle mesh** (flood-fill sign and the Gaussian pre-smooth, moved from `tools/cf-sim-research`). The **scenarios and readouts in model terms** (contact pressure by region). The test of its `Material` impls against the shared math (F3). The implicit Newton solver stays as it is. |
-| **`sim-gpu`** | L0-io | rebuilt | **The GPU executors.** It *extracts* shared infrastructure from today's rigid code: the device context (`context.rs`), and chunked submission, which today sits inside the rigid `step()` (`pipeline/orchestrator.rs:28-37`). It adds `soft`, the explicit executor, whose hand-written entry points fetch, gather and scatter around the generated WGSL. It holds the **GPU-vs-CPU conformance tests** against `sim-soft-explicit`'s CPU executor. The rigid pipeline stays as it is until its own redesign, keeping the parts only it uses. It depends on `sim-soft-explicit` and `sim-core`, not on `sim-soft`, and has its own wgpu version (13e). |
+| **`sim-gpu`** | L0-io | rebuilt | **The GPU executors.** It *extracts* shared infrastructure from today's rigid code: the device context (`context.rs`), and chunked submission, which today sits inside the rigid `step()` (`pipeline/orchestrator.rs:28-37`), and the contact-list tools (the atomic append; the CAS float-add if scatter is chosen). It adds `soft`, the explicit executor, whose hand-written entry points fetch, gather and scatter around the generated WGSL. It holds the **GPU-vs-CPU conformance tests** against `sim-soft-explicit`'s CPU executor. The rigid pipeline stays as it is until its own redesign, keeping the parts only it uses. It depends on `sim-soft-explicit` and `sim-core`, not on `sim-soft`, and has its own wgpu version (13e). |
 | `sim-coupling` | L1 | later | Two-way explicit rigid–soft coupling on the CPU (subcycling, F5). **The fit test does not need it**: the scan is a kinematic pose, applied in the contact law. GPU rigid–soft exchange lives in `sim-gpu`, on one device. |
 | `sim-bevy-soft`, the studio, `tools/cf-sim-research` | L1 / App / tool | consumers | Pick the executor (CPU or GPU), and show results from CPU snapshots (13e). |
 | `sim-gpu-benches` | L1 | grows | Benchmarks for both executors. L0 bans `criterion`, even as a dev-dependency. |
@@ -658,7 +660,7 @@ The boundary is guarded in both directions:
   wgpu 27).
   - `sim-soft` 110 (145 with all features), `sim-gpu` 73, `sim-core` 25.
   - A `sim-gpu` that depended on `sim-soft` would reach 146. It would pull in 73 crates it lacks today
-    (`sim-soft` itself, faer, gemm, parry3d, rand, serde, …), none of which a GPU executor needs.
+    (`sim-soft` itself, faer, gemm, parry3d, rand, serde, …), most of which a GPU executor does not use.
 - **Baking the obstacle SDF in `sim-soft` costs no new crate.**
   - `mesh-sdf` is already in its graph, via `mesh-offset` (`cargo tree -p sim-soft -i mesh-sdf`).
   - `cf-design` would cost one (110 → 111, measured by the second reviewer), and it is not on the
@@ -671,7 +673,7 @@ The boundary is guarded in both directions:
 - **The SDF lookup is written twice today, and the two copies disagree,** so it must be single-sourced.
   Both use the finite-difference gradient at ±cell/2 (`sdf.rs:507-508`, `wgsl:147-153`).
 
-  | Behaviour | CPU: `cf_geometry::SdfGrid` (`design/cf-geometry/src/sdf.rs:421-545`) | GPU (`sim/L0/gpu/src/shaders/sdf_sdf_narrow.wgsl:103-170`) |
+  | Behaviour | CPU: `cf_geometry::SdfGrid` (`design/cf-geometry/src/sdf.rs:421-557`) | GPU (`sim/L0/gpu/src/shaders/sdf_sdf_narrow.wgsl:103-170`) |
   |---|---|---|
   | Unclamped, outside the grid | `distance` returns `None` | `src_trilinear` returns `1e6` |
   | **Clamped** (the product's path), at or beyond the far face | `distance_clamped` returns the face value (`:480-494`) | `src_trilinear_clamped` clamps onto the face, but `src_trilinear` rejects the face's index, so it returns `1e6` whenever the clamped point rounds to that index |
@@ -686,16 +688,17 @@ The boundary is guarded in both directions:
     value (2), and `RequestAdapterOptions` gained a field (1).
   - The same bump breaks `sim-soft`'s `gpu-probe` test on the same APIs
     (`sim/L0/soft/tests/invariant_6_gpu_probe.rs:57, 62, 122-125, 170`). It migrates in the same PR.
-  - **Not measured:** whether the 13 existing shaders validate under naga 30.
+  - All 13 existing shaders parse and validate under naga 30.0.1, measured in the PR #964 review.
+    Backend translation and pipeline creation are not tested.
 - **One source serves both precisions.** Each shared-math file is written against a type alias `R` and
   included twice: `mod f32 { type R = f32; include!(…) }`, and the same with f64.
-  - Verified in a scratch crate under the workspace lint levels (clippy all, pedantic and nursery,
+  - Verified in a scratch crate (deleted) under the workspace lint levels (clippy all, pedantic and nursery,
     `missing_docs`, `-D warnings`): clean. An f32-vs-f64 agreement test passed, and failed when
     tightened past f32.
   - One precedent in the repo: `xtask/build.rs:13`.
   - **Not built yet:** the translator's mapping of `R` to `f32`, and the same trick applied to the CPU
     executor, so it can also run at f64 as a check that f32 is adequate.
-- **The translator builds for wasm32 with naga.** A scratch crate with `syn`, `quote` and `naga`
+- **The translator builds for wasm32 with naga.** A scratch crate (deleted) with `syn`, `quote` and `naga`
   (`wgsl-in`) passed grade's wasm command (`cargo check --target wasm32-unknown-unknown
   --no-default-features`), at 28 crates including itself.
 - **CI runs a crate's tests only if a list names it.**
@@ -712,22 +715,20 @@ The boundary is guarded in both directions:
 ### 14d. The executor trait's shape (decided), and what is not decided
 
 **The trait is phase-level.**
-- The stepping loop calls one method per phase in a fixed order: element pass, ANP gather, element
-  pass, force gather, contact, integrate, boundary conditions. **The order is written once**, in the
-  loop. Soft-on-soft contact adds a broad-phase and a soft-contact phase to that list. It does not change
+- The stepping loop calls one method per phase, in the fixed order of 15f. **The order is written
+  once**, in the loop. Soft-on-soft contact adds a broad-phase and a soft-contact phase to that list. It does not change
   any crate boundary. The lowered data carries the surface triangles from the start.
 - The GPU executor records each phase as compute passes, submits in chunks, and **never reads back**
   except on an explicit read call. The pose samples stream to the device a batch at a time.
 - The monitors (kinetic and internal energy, contact force) are reduced on the executor, and read
   every k steps.
-- **Why phase-level costs nothing:**
-  - the loop is generic over the trait, so calls are statically dispatched;
-  - the GPU executor encodes the same passes whether one call covers a phase or a batch.
+- **What phase-level costs:**
+  - the loop is generic over the trait, so calls are statically dispatched, which adds nothing;
+  - per-phase kernel launches are a cost that fusing phases would remove. It is not measured.
 - **Conformance is per phase,** as `sim-gpu`'s harness already works stage by stage
   (`sim/L0/gpu/src/pipeline/conformance_tests.rs:12-16`). That is also the guard against physics creeping into the
   orchestration.
-- Reading back every step made the rigid pipeline 3–5× slower (§11,
-  `sim/L0/gpu-benches/PERF_BASELINE.md`).
+- Reading back every step made the rigid pipeline 3–5× slower at n_env 256 (§11).
 
 **Not decided here:**
 - The exact method signatures, which are settled in the build.
@@ -744,15 +745,10 @@ The boundary is guarded in both directions:
 ### 14e. How the layout was checked
 
 Two cold reviews, each against criteria written beforehand.
-- **The first review** returned 12 findings. Two changed the layout:
-  - a home for the GPU-vs-CPU conformance tests;
-  - the translator's naga validation.
-- **The second review** was limited to structure.
-  - It found no problem with any crate boundary, dependency edge or tier, and it reproduced the
-    dependency counts.
-  - Its 6 ownership findings are folded in above.
+- The first review moved the CPU executor beside the contract, and restored the translator's naga
+  validation.
+- The second, limited to structure, found no problem with any crate boundary, dependency edge or tier.
 - **Checked by no one:**
-  - naga 30 on the existing shaders;
   - two wgpu versions at once on Vulkan;
   - how coverage scores code that is included twice;
   - whether `sim-gpu` grades A today;
@@ -769,6 +765,7 @@ Two cold reviews, each against criteria written beforehand.
 - **the oracle,** `docs/soft_contact/thick_tube_reference.py`. Run it with `uv run`; it asserts its own
   checks.
 - **the whole-plan review** (15i): two cold reviewers, one of whom built the element in a scratch model
+  that was not kept
   and measured it.
 
 Arithmetic is labelled as such.
@@ -783,19 +780,20 @@ contact pressure within 5 % at ν ≥ 0.49? And can it run a 100k-tet insertion 
 |---|---|---|
 | **K1 speed** | a 100k-tet insertion at ν = 0.49, GPU executor, **≤ 2 min** | wall-clock from setup to the last readback, including loading, hold and the measurement window |
 | **K2 accuracy** | band pressure within **5 %** of the oracle, **both raw and gap-corrected** (15d.1) | same material, free ends, frictionless, the pinned SDF (15c). At ν 0.49 and 0.495, for (λ_a, B/A) = (1.1, 2) and (1.3, 2), on the 100k mesh |
-| **K3 precision** | CPU f32 against CPU f64, same executor, band pressure within **0.5 %**. The elastic-slip anchor drifts ≤ 1 % of its slip over the run | step 2 of the build (15g), before any GPU code. This is the fit plan's *"precision spike on contact before any GPU contact code"* |
-| **K4 robustness** | J > 0 in every element at every step, on every rung of the T ladder and the mesh ladder | explicit check (§13d rule 2). Persistent J ≤ 0 is a failure, not an invalid run |
+| **K3 precision** | CPU f32 against CPU f64, same executor: band pressure within **0.5 %** (frictionless, 50k), and the Coulomb push's reaction within **0.5 %** (μ_f 0.3, 10k) | step 2 of the build (15g), before any GPU code. This is the fit plan's *"precision spike on contact before any GPU contact code"* |
+| **K4 robustness** | J > 0 in every element at every step of every valid run | explicit check (§13d rule 2). Any J ≤ 0 in a valid run is a failure. A run that breaks a validity gate is invalid, and K4 does not judge it |
 
 **Why two corrections to K2:**
 - **Requiring both raw and gap-corrected results:** the penalty's gap biases pressure low by about 1 %
-  (15c), and the element biases it high by 0.7–1.65 % at 50k–100k (15i). A raw pass could come from
+  (15c), and the element biases it high by 0.7–1.65 % at 50k–100k (15c). A raw pass could come from
   the two cancelling. The gap-corrected number isolates the element.
 - **Judging at 100k:** 10k fails on the element alone at one corner (+5.4 %).
 
 **Validity gates.** A run that breaks one is invalid, not failed:
 - kinetic energy stays ≤ 5 % of internal energy over the measurement window (the strict end of Abaqus's
   5–10 %);
-- the band's axial stretch is within 0.5 % of the oracle's λ_z, so the axial condition is the oracle's.
+- the band's axial stretch is within 0.5 % of the oracle's λ_z. K2 then compares against the oracle at
+  the band's measured λ_z (15d.1), since 0.5 % of λ_z moves pressure by up to 2.1 %.
 
 **What a failure points at:**
 - K1 → dispatch overhead first (per-phase GPU time against fixed cost), then AVBD (§6).
@@ -814,18 +812,19 @@ contact pressure within 5 % at ν ≥ 0.49? And can it run a 100k-tet insertion 
     about 27 mm clear of the nose's contact region (z ≈ 87–100 mm), with 20 mm of tube ahead of the
     nose. Its flatness is reported (15d.1), not used to find it.
 - **Material:** `sim-soft`'s compressible neo-Hookean, Ψ = μ/2(I₁−3) − μ ln J + λ/2(ln J)²
-  (`sim/L0/soft/src/material/neo_hookean.rs:5-7`). That is **exactly the oracle's W**, which matters:
-  compressible variants approach incompressibility differently (Pence & Gou 2015).
+  (`sim/L0/soft/src/material/neo_hookean.rs:5-7`). That is **exactly the oracle's W**.
   - μ = 23 kPa and ρ = 1070 kg/m³ (`ECOFLEX_00_30`).
   - λ comes from ν through `from_lame`. `from_young_poisson` asserts ν < 0.45 (`neo_hookean.rs:70-78`).
+  - `NeoHookean::validity()` declares ν ≤ 0.45 (`neo_hookean.rs:110`). The shared math's validity is the
+    J > 0 check alone, with no Poisson bound.
   - The density comes from the material, not the implicit solver's global `SolverConfig.density`
     (`solver/backward_euler/config.rs:253-255`).
 - **Boundary conditions:** the far end is held, the entry end is free, and the outer wall is free.
   - A free body from the entry to any section in the band carries only radial contact traction. So the
     axial force is zero, and **the free-ends oracle applies**. This is a statics argument; the decay
     lengths are measured, not assumed.
-  - It matters. Free ends against plane strain moves pressure by 2.3 % and 5.7 % in K2's two geometries
-    (9.5 % at B/A 1.5). ν 0.49 against 0.495 moves the free-ends pressure only 0.10–0.18 %.
+  - It matters. At ν 0.49, free ends against plane strain moves pressure by 2.3 % and 5.7 % in K2's two
+    geometries (9.3 % at B/A 1.5). ν 0.49 against 0.495 moves K2's free-ends pressure only 0.11–0.12 %.
 - **Oracle values** (p/μ, free wall, free ends):
 
   | | ν 0.49 | ν 0.495 |
@@ -833,12 +832,15 @@ contact pressure within 5 % at ν ≥ 0.49? And can it run a 100k-tet insertion 
   | λ_a 1.1, B/A 2 | 0.12352 (λ_z 0.98523) | 0.12365 (λ_z 0.98511) |
   | λ_a 1.3, B/A 2 | 0.30507 (λ_z 0.95779) | 0.30544 (λ_z 0.95747) |
 
-  The incompressible Haughton–Ogden formula is off by −0.40 % at ν 0.49 and −0.20 % at 0.495 (plane
-  strain, λ_a 1.3). K2 is judged against the oracle, not the formula.
+  The compressible answer sits 0.40 % below the incompressible Haughton–Ogden formula at ν 0.49, and
+  0.20 % below at 0.495 (plane strain, λ_a 1.3). K2 is judged against the oracle, not the formula.
 - **Friction:** μ_f = 0 for K2, and μ_f = 0.3 for the Coulomb push.
-- **Loading.** A smooth-step displacement of the mandrel over the loading time T, then a hold of 0.2 s
-  (about two axial-shear periods, arithmetic). The measurement window is the hold's last 0.1 s,
-  time-averaged.
+- **Loading.** The mandrel's nose starts 5 mm before the entry.
+  - Its speed ramps up over the first 10 % of the loading time T, holds constant for 80 %, and ramps
+    down over the last 10 %.
+  - Then comes a hold of 0.2 s, about two axial-shear periods, where T_s = 4L/c_s and c_s = √(μ/ρ).
+    Arithmetic: T_s = 0.1035 s.
+  - The measurement window is the hold's last 0.1 s, time-averaged.
 
 ### 15c. Discretization and solver
 
@@ -859,8 +861,8 @@ contact pressure within 5 % at ν ≥ 0.49? And can it run a 100k-tet insertion 
     | 5 × 48 × 35 | 50,400 |
     | 6 × 64 × 43 | 99,072 |
 
-    The 6 × 64 × 43 mesh was measured stable in the deformed band state (ωΔt 1.846). 6 × 47 × 59 was
-    not.
+    A reviewer's model (not kept) found 6 × 64 × 43 stable in the deformed band state (ωΔt 1.846), and
+    6 × 47 × 59 not.
 - **Element: Tet4 with *selective* ANP.**
   - Only the stiff term λ/2(ln J)² is node-averaged:
     - nodal volume ratio J_a = v_a/V_a, with V_a = Σ V_e/4 and v_a = Σ v_e/4;
@@ -871,8 +873,8 @@ contact pressure within 5 % at ν ≥ 0.49? And can it run a 100k-tet insertion 
   - **Why selective:** Bonet–Burton ANP assumes a split energy Ψ̂(F̂) + U(J) (Joldes, Wittek & Miller
     2009, eqs. 9–13, PMC4477870). Ours is not split. Selective averaging leaves the material exactly
     `sim-soft`'s and the oracle's.
-  - **Measured in the review, on a static periodic slab** (the element alone; dynamics, the nose and
-    the contact law not included):
+  - **Measured by a reviewer's static periodic-slab model, which was not kept,** so these numbers cannot
+    be re-run from the repo (the element alone; dynamics, the nose and the contact law not included):
     - the force is the exact gradient of the energy (6e-16 against autodiff);
     - the stiffness at rest has 6 zero modes;
     - the error against the oracle is **+3.6–5.4 % at 10k, +1.2–1.65 % at 50k, +0.72–1.07 % at 100k**,
@@ -888,26 +890,29 @@ contact pressure within 5 % at ν ≥ 0.49? And can it run a 100k-tet insertion 
   own force phases, **penalty stiffness included**.
   - **The iteration is re-run during loading**, warm-started every 500 steps. The step never grows by
     more than 5 % at a time.
-  - Measured in the review: deformation cuts the limit to 0.912× its rest value in the band state. On
-    6 × 47 × 59, a Δt fixed at rest with the penalty gave ωΔt = 2.041, which is unstable.
-  - The altitude estimate is a cross-check only: loose by 4.4× on a jittered mesh (research).
-- **Loading time T:** set by a convergence ladder. Halve T from about 10 axial-shear periods until the
+  - A reviewer's model (not kept) measured, on 6 × 47 × 59: deformation cut the limit to 0.912× its
+    rest value, and a Δt fixed at rest with the penalty gave ωΔt = 2.041, which is unstable.
+  - The altitude estimate is a cross-check only. The method research measured it 4.4× loose on a
+    jittered mesh (not kept).
+- **Loading time T:** set by a convergence ladder. Halve T from about 10 axial-shear periods (10·T_s) until the
   band pressure moves by more than 0.5 %, or KE/IE exceeds 5 %.
   - Time scaling stands in for mass scaling. They are equivalent for rate-independent material and
     friction (Abaqus *Getting Started* §13; DERIVED), so the physical density is kept.
-  - **Arithmetic** (100k, ν 0.49): Δt at 0.9 of the rest limit is 44.2 µs (review-measured). The
-    loaded state is about 0.91× that. T is 1.04 s plus the 0.2 s hold, so about 31k steps, and
-    **about 3.9 ms per step within K1**. The rigid pipeline's measured fixed overhead is 0.74 ms per
-    step (`sim/L0/gpu-benches/PERF_BASELINE.md`).
-- **Damping:** small mass-proportional damping α_D·M while loading (NiftySim, Johnsen et al. 2015).
+  - **Arithmetic** (100k, ν 0.49):
+    - Δt at 0.9 of the rest limit is 42.2 µs on the pre-registered 6 × 64 × 43 mesh. That comes from a
+      reviewer's model (not kept).
+    - Loaded, it is 0.91–0.975× that.
+    - T is 1.04 s plus the 0.2 s hold, so about 30–32k steps, and **3.7–4.0 ms per step within K1**.
+    - The rigid pipeline's whole step is about 0.74 ms at n_env 1 (§6).
+- **Damping:** mass-proportional damping α_D·M while loading (NiftySim, Johnsen et al. 2015), with
+  α_D = 2·ξ·ω₀, where ξ = 0.05 and ω₀ = 2π/T_s.
   - It drags a translating body with force c·m·v (DERIVED). Holding the tube and driving the mandrel
     keeps that small.
   - No dynamic relaxation in any run that K1 or K2 judges.
 - **Contact variant (a): nodal-mass penalty** k = s·m_a/Δt², s = 0.5, **primary**.
   - Stable only together with the in-loop Δt above.
-  - **The gap:** inner nodes carry V_a/A_a ≈ 0.88 mm (review), so at 44 µs the gap is about 40 µm
-    (1.35 % of the expansion) at λ_a 1.3, and 14 µm (1.42 %) at 1.1. Through the oracle, that is a
-    **−1.0 % and −1.3 % pressure bias**.
+  - **The gap biases pressure low by about 1 %** (arithmetic, from a reviewer's inner-node
+    V_a/A_a ≈ 0.88 mm). Its actual size is measured (15d.1).
   - The gap scales with Δt², so it roughly halves at ν 0.495 and changes along the mesh ladder.
   - LS-DYNA's SOFT=1 belongs to the same family; its exact formula is UNSOURCED.
 - **Contact variant (b): kinematic projection,** frictionless K2 runs only.
@@ -920,15 +925,14 @@ contact pressure within 5 % at ν ≥ 0.49? And can it run a 100k-tet insertion 
   - The rule: (b) replaces (a) only if it meets K2 with less scatter at equal cost.
 - **Pressure readout:** force per node over its tributary area, a third of each incident deformed
   boundary triangle (`sim-soft`'s convention, `mesh/mod.rs:433`), area-weighted over the band as
-  ΣF_n/ΣA. Unlike `sim-soft`'s global per-vertex κ (`contact/penalty.rs:78`), neither variant ties
-  contact stiffness to mesh density.
+  ΣF_n/ΣA.
 - **Friction (Coulomb push only):** Coulomb, with an elastic-slip stick state: a tangential penalty with
   the same k, and a return map on a per-node anchor, as in Abaqus's penalty friction.
   - It is rate-independent, so time scaling stays valid.
   - The fallback is viscous regularization, with v_ε ≥ μ_f·f_n·Δt/m to avoid chatter (DERIVED).
 - **The SDF for K2 is pinned:** the mandrel baked into a grid at cell A/20, clamped, with the
   finite-difference gradient (the product's path, §14b).
-  - Measured in the review: a grid at A/10 reads the true surface +7.6 µm off, 0.76 % of the
+  - A reviewer's model (not kept) found a grid at A/10 reads the true surface +7.6 µm off, 0.76 % of the
     interference. Trilinear error goes as h², so A/20 should give about a quarter of that (arithmetic).
   - The analytic SDF is the diagnostic (15d.9).
 
@@ -938,6 +942,8 @@ contact pressure within 5 % at ν ≥ 0.49? And can it run a 100k-tet insertion 
    - **Raw:** against the oracle at radius a.
    - **Gap-corrected:** against the oracle at a − ḡ, where ḡ is the band's mean gap to the *true*
      mandrel surface. That covers the penalty gap and the SDF bias together.
+   - Both use the oracle at the band's measured λ_z. The golden values carry p, ∂p/∂a and ∂p/∂λ_z at
+     each case, and the corrected reference is their linearization at the measured point.
    - Also reported:
      - flatness, as ring means averaged over pairs of adjacent levels, since single levels alternate
        (15c);
@@ -947,7 +953,8 @@ contact pressure within 5 % at ν ≥ 0.49? And can it run a 100k-tet insertion 
    interleaved configurations).
 3. **Energies:** kinetic; internal, ΣΨV from the shared math; external and contact work. KE/IE ≤ 5 %.
 4. **Precision (K3):**
-   - CPU f32 against CPU f64 on the 50k mesh, in build step 2;
+   - CPU f32 against CPU f64, in build step 2: band pressure on the 50k mesh, and the Coulomb push on
+     the 10k mesh;
    - later, the GPU f32 against the CPU f64, as a conformance check;
    - TLED's experience: single precision did not hurt convergence, *"no accumulation of errors"* in
      total Lagrangian form (Joldes et al., PMC3003932).
@@ -955,8 +962,8 @@ contact pressure within 5 % at ν ≥ 0.49? And can it run a 100k-tet insertion 
    Record the steps and the error against the oracle.
 6. **Mesh ladder:** the three pre-registered meshes. Record error against element size, and its trend.
 7. **Coulomb push (μ_f = 0.3):** the mandrel's axial reaction **minus the same run's frictionless
-   reaction**, against μ_f·Σp·A over the contact, within 5 %.
-   - The subtraction removes the nose's geometric push. The review estimates it at about 2 % and 6 % of
+   reaction**, against μ_f·Σp·A over the contact, within 5 %, averaged over the constant-speed phase.
+   - The subtraction removes the nose's geometric push. A reviewer's estimate puts it at about 2 % and 6 % of
      the friction force at λ_a 1.1 and 1.3, which is enough to break 5 % unaided.
 8. **The confined stress case:** cased outer wall, all axial motion held, λ_a 1.1, B/A 2, ν 0.49. The
    oracle gives p/μ = 4.1417. This is the regime TLED never validated; the result is reported.
@@ -1012,17 +1019,21 @@ Each item is one PR with its own tests and a done-when.
      update, the SDF query, the contact law and pose interpolation. **Both neo-Hookean and Yeoh**
      (`base_mold` is Yeoh).
    - Compiled at f32 and f64. The freshness test, made to fail once.
-   - A conformance test of `cf-geometry`'s CPU SDF lookup against the shared one.
+   - A conformance test of the shared SDF lookup against `cf-geometry`'s `distance_clamped` and
+     `gradient_clamped`, to 1e-9 relative in f64. The degenerate-gradient threshold it adopts is
+     recorded here.
    - Both crates added to tests-debug shard 3.
    - *Done when:* CI runs the new tests, and the freshness test has failed once on a deliberate edit.
 2. **The oracle as golden values, the tube fixture, the CPU executor and the stepping loop.**
    - The oracle becomes a golden generator (the `sim/L0/mjcf/tests/conformance/gen_golden.py` pattern).
-   - **K3 runs here.** K2 runs on the CPU at 10k and 50k.
+   - **K3 runs here**, including a CPU Coulomb push at 10k. K2 runs on the CPU at 10k and 50k.
    - **The stop rule (pre-registered):**
-     - Proceed if the 50k gap-corrected error is ≤ 5 %.
-     - Proceed with a flag if it is 5–7 % and the 10k → 50k trend extrapolates to ≤ 5 % at 100k.
+     - Proceed if the 50k gap-corrected error is ≤ 5 % at every corner.
+     - Proceed with a flag if it is 5–7 %, and the extrapolation reaches ≤ 5 % at 100k at every corner.
+       The model: h = (mean tet volume)^(1/3), and e = C·h^p, with C and p fitted per corner from 10k
+       and 50k.
      - ⛔ **Stop before any GPU work** otherwise, or if K3 or K4 fails.
-   - The review measured the element alone at +1.2–1.65 % at 50k.
+   - A reviewer's model (not kept) put the element alone at +1.2–1.65 % at 50k.
    - *Done when:* the stop rule has been applied, with its numbers written here.
 3. **`sim-gpu` moves to wgpu 30,** with `gpu-probe` migrated.
    - The context, chunked submission and contact-list tools are extracted.
@@ -1030,7 +1041,7 @@ Each item is one PR with its own tests and a done-when.
    - A binary holding a wgpu 27 device and a wgpu 30 device runs on lavapipe (Vulkan) in CI.
    - *Done when:* `sim-gpu`'s suite passes on Metal and in CI.
 4. **`sim-gpu`'s soft executor,** with per-phase conformance against the CPU executor, on lavapipe in CI.
-   - *Done when:* every phase conforms within the pre-set tolerances.
+   - *Done when:* every phase's outputs agree, GPU f32 against CPU f32, within 1e-5 relative.
 5. **The experiment on the GPU:** K1, K2 at 100k, the ν sweep, the ladder, the Coulomb push, the stress
    case, the SDF comparison and stiffness scaling.
    - *Done when:* K1–K4 are decided and the results are in this document with their commands.
@@ -1041,41 +1052,55 @@ Each item is one PR with its own tests and a done-when.
      materials.
    - The F3 conformance test of `Material` against the shared math lands here, since `sim-soft` takes
      the dependency.
-   - *Done when:* the bake matches `cf-sim-research`'s within a stated tolerance, and each boundary
-     option has a test.
+   - Also carried from the fit plan's Phase 1:
+     - the t = 0 intrusion and its pre-roll;
+     - the outer-skin pin's 646 interior vertices;
+     - the path's time sampling.
+   - *Done when:* the bake matches `cf-sim-research`'s within 1 % of a grid cell at every grid point, and
+     each boundary option has a test.
 7. **`base_mold` on the new solver.**
-   - G6 is 5 minutes per run (D4).
+   - G6 is 5 minutes per run, where a run is one simulation (fit plan D4). `base_mold` stays outside
+     the repo.
    - The product mesh's surface bias is measured, as the fraction of canal nodes inside the true
      surface, with and without projection.
-   - The **lip radius** (fit plan "Later"): sharp against rounded on the same scan.
+   - The **lip radius** (fit plan "Later"): the lipped cavity built in `cf-design`, then sharp against
+     rounded on the same scan.
    - *Done when:* the fit plan's G1–G3 and G6 have numbers on `base_mold`.
 8. **The soft-on-soft contact design** (§9 decision 9): a design step with its own research round, not
    code.
+9. **Validation and limits:** §7's rungs 2 and 5, and the comfort limits (fit plan U1, §8).
 
 **Where the runs live in CI:**
-- A coarse K2 smoke (about 2k tets, a 10 % tolerance) goes in tests-debug.
+- tests-debug runs a short sanity run on the 10k mesh (a few hundred steps: finite energies, J > 0). It
+  makes no accuracy claim.
 - K2 at 10k goes in tests-release, **named in its explicit list**, because a release-only test runs in
-  no CI job otherwise.
+  no CI job otherwise. It asserts an error ≤ 7 %; the element alone measured up to 5.4 % there.
 - K1 and the 50k/100k runs are recorded experiment commands, not CI. `#[ignore]`d runs have skipped
   silently here before, so their results are kept with their commands.
 
 ### 15h. Consequences for the product, and what is not known yet
 
-- **Runs per verdict.** §2 and §5d want an interval across friction, stiffness and Mullins corners.
-  - If stiffness scaling holds (15d.10), a verdict is **2 runs** (the pairing's low and high μ): about
-    4 minutes at K1's rate. That fits D4's 5 minutes per run. A D3 search of 3–4 verdicts, though,
-    takes about 12–16 minutes, **at D4's 15-minute search limit** (arithmetic).
-  - If it fails, a verdict is 8 runs, about 16 minutes, over D4. The answer then is fewer corners or a
-    faster solver.
+- **Runs per verdict.** A run is one simulation. §2 and §5d want an interval across friction,
+  stiffness and Mullins corners.
+  - **If stiffness scaling holds** (15d.10), a verdict is **2 runs** (the pairing's low and high μ):
+    about 4 minutes at K1's rate.
+  - **If the Mullins state stays a corner,** it is 4 runs, about 8 minutes. Its curve shape differs, so
+    scaling does not cover it (§5d).
+  - **A D3 search** of 3–4 verdicts then takes about 12–16 or 24–32 minutes, against D4's 15
+    (arithmetic).
+  - **If stiffness scaling fails,** a verdict is 8 runs.
+  - Whether Mullins is a verdict corner is Jon's call (fit plan U11).
 - **The regime per application** (from the oracle's confinement table, §5b amended):
 
   | Application | Outer wall / axial escape | Regime |
   |---|---|---|
-  | The sleeve, free wall (today) | free | ν barely matters |
+  | The sleeve as simulated today | the outer skin pinned: no escape | pressure ∝ K |
+  | The sleeve, free wall | free | ν barely matters |
   | The sleeve, cased with an open entry | the material escapes axially | ν matters mildly |
   | Near a closed, cased base | no escape | pressure ∝ K |
-  | An O-ring in its gland | fully confined | pressure ∝ K; ν must be ≥ 0.499 |
+  | An O-ring in its gland | fully confined | pressure ∝ K. ν must come from the measured K; Abaqus's K/μ 1 000–10 000 is ν 0.4995–0.49995 |
   | Garment, footwear, grasping | free, or thin | ν barely matters |
+  | Surgical insertion (needle, catheter) | tissue around it | not assessed |
 
   At ν 0.4995 an explicit run needs about 4.4× K1's steps (√(1001/51), arithmetic), roughly 9 minutes
   at K1's rate. **The O-ring class is outside K1's sizing**, and needs its own budget or a mixed
@@ -1084,7 +1109,7 @@ Each item is one PR with its own tests and a done-when.
   - whether the alternating pressure pattern persists in a damped explicit run;
   - the GPU's per-step cost at 100k;
   - the in-loop Δt's cost in steps;
-  - the LS-DYNA formulas marked UNSOURCED. No choice here depends on them.
+  - the LS-DYNA formula marked UNSOURCED. No choice here depends on it.
 
 
 
@@ -1095,8 +1120,8 @@ Two cold reviewers worked against criteria written beforehand.
   Lanczos eigenvalues, a static periodic slab.
 - **One reviewed the plan and its fit to Jon's requirements.**
 
-They returned 20 findings. All were checked and folded in above. Numbers the reviewer measured are
-labelled as its own.
+Their findings were checked and folded in above. The physics reviewer's model was not kept, so its
+numbers are labelled and cannot be re-run from the repo.
 
 **The D7 search** looked for a Rust engine that could come inside. The web was not searched, because the
 session's search budget was spent. A keyword search of crates.io found nothing that is a validated GPU

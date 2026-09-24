@@ -1,15 +1,20 @@
 # The fit test — plan to work against
 
-**Status:** open. Written 2026-09-23 at `6ebb5a3e` (PR #963, merged as `b7f98831`). Phase 1's first item
-and the Phase 2 flow were added the same day, and Jon agreed the flow with D1–D5 as recommended.
+**Status:** open. Written 2026-09-23 at `6ebb5a3e` (PR #963, merged as `b7f98831`). Jon agreed the
+Phase 2 flow with D1–D5 as recommended.
 > ⛔ **2026-09-24: the physics is replaced.** The simulation this plan measured (Tet10, implicit,
 > IPC-style contact) gives way to an explicit solver on wgpu, planned in
 > [`SOFT_CONTACT_ARCHITECTURE_RECON.md`](SOFT_CONTACT_ARCHITECTURE_RECON.md). Its §15 is the first build.
 > - **Phase 2's flow stands** (D1–D5), and so do D6–D7 (under Speed). D1's comfort limits now come from
 >   published measurements.
 > - **Phase 1** (the PolyFEM oracle) **is abandoned**, and **Phase 4 is superseded.** What they measured is
->   kept below, in short; the full record is at tag `fit-test-oracle-and-flow-pre-squash`.
-> - The gates (§5) and unknowns (§7) are updated for the new solver.
+>   kept below, in short.
+>   - The full record is in the history of a local tag, `fit-test-oracle-and-flow-pre-squash`.
+>   - That tag is deliberately not pushed, because its history carries scan-derived geometry.
+> - **§2 describes the replaced solver.**
+> - **G2 and G4 are updated for the new solver.** G1, G3 and G5 keep the old solver's baselines, and the
+>   unknowns (§7) are updated.
+
 **Scene:** the product scan `base_mold` — 5 mm inset, 17 mm Dragon Skin 10A at 25 % Slacker, curved
 centerline 120.9 mm long. ⛔ It is a sensitive anatomical scan: probes load it from outside the repo,
 and it must never be committed.
@@ -20,8 +25,11 @@ Section 6 lists decisions not to relitigate. Section 7 lists what nobody knows y
 close, and update the numbers in place with their referent. **Every claim here names a file, a probe or a
 document. Leave anything else out.**
 
-Companion: [`INSERTION_SIM_TET10_RENOVATION_RECON.md`](INSERTION_SIM_TET10_RENOVATION_RECON.md) — the
-measurement history behind every number below.
+Companions:
+- [`INSERTION_SIM_TET10_RENOVATION_RECON.md`](INSERTION_SIM_TET10_RENOVATION_RECON.md), the **Tet10 recon**:
+  the measurement history behind §2's numbers, on the replaced solver.
+- [`SOFT_CONTACT_ARCHITECTURE_RECON.md`](SOFT_CONTACT_ARCHITECTURE_RECON.md), the **soft-contact recon**:
+  the new solver's plan.
 
 ---
 
@@ -54,7 +62,8 @@ In Jon's words (2026-09-23):
   moves out of its way. Visuals and numbers must both be realistic.
 - [ ] **R4 — Materials and insets are the user's knobs.** Different silicones (Ecoflex 00-30, Dragon Skin
   10A, …) and different insets must give different, trustworthy answers.
-- [ ] **R5 — "Comfortably" is a threshold Jon will define.** Section 7, U1.
+- [ ] **R5 — "Comfortably" is a threshold Jon will define.** Section 7, U1. Its limits now come from
+  published measurements (D1).
 - [ ] **R6 — It lives in the main app.** `tools/cf-studio-gui` (Cendrillon: Bevy + egui, Slint retired).
   The wizard is `cf_studio_core::Step` (`tools/cf-studio-core/src/step.rs:12`): `AddScan`, `CleanScan`,
   `ShapePiece`, `DesignLayers`, `MakeMolds`, `Print`, `Pour`. The fit test belongs between
@@ -69,6 +78,8 @@ inflates the scan in place and never sees the path.
 ---
 
 ## 2. Where it stands (verified at `6ebb5a3e`)
+
+This section describes the replaced Tet10 solver. "Recon" in its tables means the Tet10 recon.
 
 ### 2a. What the user sees today (`tools/cf-sim-research`, the research viewer)
 
@@ -124,7 +135,7 @@ Each phase has a *done when*. Phase 1 is abandoned and Phase 4 superseded (see t
 - [x] Merge #963 (green, 25/25 at `6ebb5a3e`), with `--body-file`. Merged as `b7f98831`.
 
 ### Phase 1 — The reference oracle (outside the repo). ⛔ ABANDONED 2026-09-24
-PolyFEM, the IPC authors' library, was built outside the repo (commit `591b08bd`). It passed its own 49
+PolyFEM, the IPC authors' library, was built outside the repo (PolyFEM commit `591b08bd`). It passed its own 49
 contact scenes, then ran the product scene. Jon cut it on 2026-09-24 (*"I was pretty underwhelmed"*), and
 its build and caches are deleted.
 
@@ -142,13 +153,12 @@ What it established about the product scene, which still holds:
   0.80, 0.34 and 0.12 mm at 32, 64 and 128 frames.
 - **The wall's surface touches itself at two points:** a non-manifold edge, with gaps of 10⁻¹⁹ m.
   - Our solver has never noticed, because it does not check a surface against itself. A solver with
-    soft-on-soft contact will (recon §9 decision 9).
+    soft-on-soft contact will (soft-contact recon §9 decision 9).
   - Removing 4 tets (2.55 mm³) repaired it. The obvious fix, dropping the tets on the pinch edge, does
     not.
 - **It was far too slow** (Speed, below).
 
-The exporter, `export_the_product_scene_for_the_ipc_oracle`, is in git history as `9f448e72`, reachable
-from the tag above.
+The exporter, `export_the_product_scene_for_the_ipc_oracle`, is `9f448e72` in the local tag's history.
 
 ### Phase 2 — The fit-test flow, written before more physics
 The asks: pick the inset and silicone; watch the scan go in **from outside**; see a push-force-versus-depth
@@ -178,8 +188,9 @@ which inset would pass.
      away so the cavity shows, the wall stretches, and the cavity wall is coloured by contact pressure. A
      scrubber replays the steps. The scan drawn is the one the physics moved (R3). G1 and G2 (§5) are
      checked on every run, and a failure is reported, not drawn.
-  4. Reads the push-force-versus-depth curve. No plotting crate (`egui_plot`, `plotters`) is a
-     dependency anywhere in the workspace; the research viewer draws its curve with egui's painter
+  4. Reads the push-force-versus-depth curve. No crate depends directly on a plotting crate (`egui_plot`,
+     `plotters`); `plotters` arrives only through `criterion`. The research viewer draws its curve with
+     egui's painter
      (`render_force_displacement_plot`, `tools/cf-sim-research/src/insertion_sim_ui.rs:1615`).
   5. Gets one of three verdicts, kept apart:
      - **Fits.** It slid in and seated. Shows the peak push force and where it came, and the seated
@@ -197,13 +208,14 @@ which inset would pass.
   |---|---|---|---|
   | Depth | mm | Arc length the scan has slid in from the cap mouth, along the centerline | `SlideRampStep.arc_length_s_m` |
   | **Push force** | N | The work to advance the scan one more millimetre along its path, per millimetre: −Σ fᵢ · (dxᵢ/ds), where fᵢ are the contact forces on the scan and dxᵢ/ds is how far scan point *i* moves per unit of path | **Not computed.** The only force readout is \|Σ f\|, the size of the total force (`contact_force_magnitude_n`, `insertion_sim.rs:2647`). On a curved path that includes the sideways push. The research viewer plots it (`insertion_sim_ui.rs:1623`) |
-  | Contact pressure | kPa | Normal traction on each cavity-wall face: its map, its peak and its area-weighted mean | The κ probes read the area-weighted mean (recon). The heat map colours Ψ or ‖P‖ (`ScalarMode`, `design/cf-device-types/src/sim.rs:88`), not contact pressure |
+  | Contact pressure | kPa | Normal traction on each cavity-wall face: its map, its peak and its area-weighted mean | The κ probes read the area-weighted mean (Tet10 recon). The heat map colours Ψ or ‖P‖ (`ScalarMode`, `design/cf-device-types/src/sim.rs:88`), not contact pressure |
   | Silicone stretch | — | Peak principal stretch, and its margin to the calibrated cap | `StepReadout.max_principal_stretch` (`insertion_sim.rs:2006`) |
   | Status | — | Converged, or stopped and why | `SolverFailure` |
 
 - [x] **"Too tight" is computed from U1 (§7).** Decided in D1 below.
-- [x] **Runtime budget.** Today: the growing bridge takes 364 s at 16 steps, and the sliding bridge as
-  written about 1 070 s at 128 steps (§2b). Suggesting a different inset takes at least one more run. For
+- [x] **Runtime budget.** On the replaced solver, the growing bridge took 364 s at 16 steps, and the
+  sliding bridge about 1 078 s at 128 steps (Tet10 recon :1428, :1530). Suggesting a different inset
+  takes at least one more run. For
   comparison, the plug-cast check with ridges on is budgeted at "~4 minutes"
   (`tools/cf-studio-engine/src/preflight.rs:75`). The budget is D4.
 - [x] **Inputs it must refuse or snap.** The studio accepts any whole-number Slacker % (`LAYER_SLACKER_RANGE`,
@@ -213,8 +225,7 @@ which inset would pass.
   `insertion_sim.rs:407–417`). The fit test must not report on a material it did not simulate. Either snap the value in `DesignLayers` and
   say so, or refuse with the reason.
 - [x] **Decisions.** Jon agreed all five recommendations on 2026-09-23.
-  - **D1 — U1, "comfortably".** *Decided:* two readings, each with a limit calibrated on Jon's
-    casts.
+  - **D1 — U1, "comfortably".** *Decided:* two readings, each with a limit (see *Calibration* below).
     - *Getting it in:* the peak push force over the whole path (R2).
     - *Seated:* the contact pressure at the seat, read as its area-weighted 95th percentile: the pressure
       the most-squeezed 5 % of the contact area is at or above. The peak is shown beside it but does not
@@ -222,7 +233,8 @@ which inset would pass.
     - The stretch margin is a separate durability warning, not part of comfort.
     - *Calibration:* ~~on Jon's casts~~ **from published measurements** (Jon, 2026-09-24: no home-lab
       calibration). The push-force anchor is the clinical axial-rigidity convention (~5.4 N). Pressure
-      limits come from published comfort and pain-threshold data. See the recon, §7–§8.
+      limits come from published comfort and pain-threshold data. Penile pressure-pain thresholds are
+      not yet found (soft-contact recon §8).
   - **D2 — Gate or advise.** *Decided:* advise.
     - Continue stays open, as it does for the plug-cast check (`panel.rs:1162–1164`). The verdict, or
       "not run", is saved with the project and repeated on `MakeMolds`.
@@ -230,15 +242,16 @@ which inset would pass.
       completed-steps-in-order rule without forcing a run. The CLI's `cmd_molds` must then record "not
       run" rather than fail.
     - *Could not finish* never blocks anything: it is the simulation failing, not the fit.
-    - Revisit only once the D1 ranking check passes and the new solver passes the recon's K2 (Phase 1's
-      oracle is abandoned). Even then, ask ("make molds anyway?") rather than block.
+    - Revisit only once the new solver passes the soft-contact recon's K2. Even then, ask ("make molds
+      anyway?") rather than block. (This condition was updated when Phase 1 was abandoned: an
+      engineering call, 2026-09-24.)
   - **D3 — The suggested inset.** *Decided:* on request, as one button: **Find the tightest inset
     that fits**. "Tightest" is Jon's rule for the boot (§1).
     - It searches down after *Too tight* and up after *Fits*.
-    - Not automatic, because a run takes 364–1 070 s today (§2b) and a search needs several.
+    - Not automatic, because a search needs several verdicts (D4).
     - The studio's inset is whole millimetres (`ShapeControls.cavity_mm`,
       `tools/cf-studio-gui/src/shape.rs`). Down from 5 mm, a bisection over 4, 3, 2, 1 and 0 needs at
-      most 3 runs. Up, it steps one millimetre at a time until a run fails.
+      most 3 verdicts. Up, it steps one millimetre at a time until a verdict fails.
     - Each candidate must pass the plug-cast check first (smooth: 6.9 s at 5 mm,
       `tools/cf-studio-engine/src/preflight.rs:74`). An inset that will not cast is never suggested.
     - Every run's result is kept, so a cancelled search still shows what it found.
@@ -251,10 +264,12 @@ which inset would pass.
       it.
     - Five minutes is about what the app already asks for the plug-cast check with ridges on ("~4
       minutes", `preflight.rs:75`).
-    - Today's sliding bridge (about 1 070 s) is over that. The new solver's K1 sizes a run at
-      ≤ 2 minutes (recon §15a).
-    - A verdict is 2 runs if stiffness scaling holds (recon §15h), about 4 minutes. So a D3 search of 3–4
-      verdicts takes about 12–16 minutes, **at this 15-minute limit** (arithmetic).
+    - **A run is one simulation.** A verdict is the runs across its corners (soft-contact recon §15h).
+    - The replaced solver's sliding bridge took about 1 078 s. The new solver's K1 sizes a run at
+      ≤ 2 minutes (soft-contact recon §15a).
+    - A verdict is 2 runs if stiffness scaling holds, about 4 minutes. It is 4 runs, about 8 minutes, if
+      the Mullins state stays a corner (U11). So a D3 search of 3–4 verdicts takes about 12–16 or
+      24–32 minutes, against this 15-minute limit (arithmetic).
     - If the new solver takes far longer on the same scene, revisit the budget rather than cut the
       physics.
   - **D5 — Where the inset changes.** *Decided:* on the fit screen, as **Try at *n* mm**, with D3's
@@ -276,31 +291,31 @@ which inset would pass.
 - **Done when:** playback on `base_mold` starts outside and never shows a scan the physics did not move.
 
 ### Phase 4 — Close the physics gaps. ⛔ SUPERSEDED 2026-09-24 by `SOFT_CONTACT_ARCHITECTURE_RECON.md`
-The implicit solver's gaps listed here are not pursued, because the explicit solver replaces it (recon
-§15). They were: the inset in the sliding contact, CCD, adaptive κ, friction, driving the intruder,
+The implicit solver's gaps listed here are not pursued, because the explicit solver replaces it
+(soft-contact recon §15). They were: the inset in the sliding contact, CCD, adaptive κ, friction, driving the intruder,
 element 516, and midside non-penetration.
 
-### Speed — reaching the 5-minute budget (D4). Superseded by the recon
+### Speed — reaching the 5-minute budget (D4). Superseded by the soft-contact recon
 Measured in PolyFEM on `base_mold`, 2026-09-23/24:
 - **About 7 minutes per step at first contact:** three Newton solves, 30 iterations, 438 s. Only step 3
-  was measured. At that rate, 133 steps would take about 16 hours (arithmetic).
+  was measured. At that rate, the path's 133 steps would take about 16 hours (arithmetic).
   - Step 3 converged only once the barrier stiffness was fixed at 464. With the defaults it had not
     finished after 40 minutes.
   - CHOLMOD took 15 s per iteration, against Apple Accelerate's 37 s.
-- **Every lever tried made it worse** (a warm start and reusing the symbolic factorization were not
-  tried):
+- **Every lever tried below made it worse.** A warm start and reusing the symbolic factorization were
+  not tried:
   - two large steps: 205 iterations, still unconverged after an hour;
   - half steps: 47 iterations, 690 s;
   - a coarser 6 mm wall: its second contact step hit the 500-iteration limit. It is also a different
     shape, with 4.2 % less volume.
-- **The mouth rim is where one node jams** (42× the next node's force), **but it is not the cause.** A
-  rounded-lip variant took 59 iterations and about 930 s. First contact falls on a different part of the
-  scan in the two runs, so they are not a like-for-like pair.
+- **The mouth rim is where one node jams** (42× the next node's force). **Whether it is the cause was not
+  isolated.** A rounded-lip variant took 59 iterations and about 930 s. But first contact falls on a
+  different part of the scan in the two runs, so they are not a like-for-like pair.
 
-This is why the architecture changed (recon §3).
-- The recon's K1 asks for a 100k-tet insertion in ≤ 2 minutes (recon §15a).
+This is why the architecture changed (soft-contact recon §3).
+- The soft-contact recon's K1 asks for a 100k-tet insertion in ≤ 2 minutes (its §15a).
 - The precision gate this section once set, *"a precision spike on contact before any GPU contact
-  code"*, is now the recon's K3.
+  code"*, is now the soft-contact recon's K3.
 
 **Decided (Jon, 2026-09-24):**
 - **D6 — The GPU target is wgpu, on Metal and Vulkan.** That rules out CUDA-only engines as product
@@ -312,18 +327,20 @@ This is why the architecture changed (recon §3).
 - [ ] Extract the simulation from `cf-sim-research` into a library crate on the SDK side.
 - [ ] Build the fit-test step in `cf-studio-gui` to the Phase 2 flow.
 - **Done when:** the wizard runs the fit test on a user's scan end to end, and its numbers on `base_mold`
-  match the new solver's standalone run (recon §15g step 7).
+  match the new solver's standalone run (soft-contact recon §15g step 7).
 
 ### Later
 - [ ] Soft (rigid-ish) intruders: body-to-body contact (R7). ⚠ The wall mesh touches itself at two points
-  (Phase 1, export), which any solver with self-contact rejects; fix it at the mesher before then. This is
-  now recon §9 decision 9: soft-on-soft contact is designed in from the start, and built second.
+  (Phase 1). PolyFEM rejected it, and a solver with self-contact will need it fixed, at the mesher. This is
+  now soft-contact recon §9 decision 9: soft-on-soft contact is designed in from the start, and built
+  second.
 - [ ] Foot into boot (R8).
 - [ ] Ridges and texture in the simulated cavity (§2a, last row).
 - [ ] **A lip radius for every silicone, the product's next evolution.** Jon, 2026-09-24: *"we can
   add a lip radius for all silicone, including the 00-30. its an upgrade and the next evolution of
   the product anyways. the geometry was just easier for casting with the sharp edge at the lip."*
-  The fit test should show sharp against rounded; that comparison runs in recon §15g step 7. The scope
+  The fit test should show sharp against rounded; that comparison runs in soft-contact recon §15g step
+  7. The scope
   below is from a code survey on
   2026-09-24; the first three items were checked by hand.
   - **One source of the edge.** `cf_design::pinned_floor_shell` cuts each shell flat with
@@ -355,7 +372,7 @@ This is why the architecture changed (recon §3).
 | Gate | What must hold | Baseline today |
 |---|---|---|
 | **G1 — Drawn wall outside drawn scan** | No drawn wall vertex inside the drawn scan (beyond a stated tolerance) | Shipped default: 720 of 1 684 more than 1 mm inside, deepest 6.06 mm |
-| **G2 — Bounded penetration** | No node deeper than **1 % of the inset** (0.05 mm on `base_mold`) at any step. For the old Tet10 solver it was no node through, corners and midsides | Not yet run on the explicit solver |
+| **G2 — Bounded penetration** | No node deeper than **1 % of the inset** (0.05 mm on `base_mold`) at any step. An engineering call (2026-09-24): penalty contact always penetrates slightly, so this bounds it as a numerical tolerance (soft-contact recon §15c); kinematic projection has none. For the old Tet10 solver the gate was no node through, corners and midsides | Not yet run on the explicit solver |
 | **G3 — Full seat** | The full inset is reached along the sliding path | Growing: 4.531 of 5 mm. Sliding with the inset: not run |
 | **G4 — κ independent of the schedule** (implicit solver only) | The derived κ does not change with the step count | Holds (the ceiling rule) |
 | **G5 — Heat map in the rest frame** | `the_heat_map_reads_the_deformed_view_at_rest_positions` passes | Passes; fails under four mutations |
@@ -371,8 +388,8 @@ in CI); G5 already gates in CI.
 - **Sliding, carrying the inset, is the default** (Jon, 2026-09-23).
 - **The product scene is `base_mold`**, not `sock_over_capsule` (memory `feedback_confirm_the_fixture_is_the_subject`).
 - **κ = the ceiling**, justified by the cushioning requirement and independent of the step schedule; never
-  chosen by depth (recon). That holds for the implicit solver. The explicit solver's contact stiffness
-  is k = s·m/Δt² (recon §15c).
+  chosen by depth (Tet10 recon). That holds for the implicit solver. The explicit solver's contact
+  stiffness is k = s·m/Δt² (soft-contact recon §15c).
 - **F-bar is not the fix** for element inversion on Tet10 (hard-gated off; no multi-Gauss-point analog).
 - **External libraries are oracles only**, never shipped (memory `feedback_julia_above_the_line_rust_below`).
   Refined for physics engines (Jon, 2026-09-24): outside only if **not Rust**; a Rust engine may come
@@ -395,17 +412,25 @@ in CI); G5 already gates in CI.
 ## 7. What nobody knows yet
 
 - **U1 — "Comfortably."** The quantities and the method are decided (D1). The limits are not: they come
-  from published measurements (D1, 2026-09-24), which still have to be gathered (recon §8).
+  from published measurements (D1, 2026-09-24), which still have to be gathered (soft-contact recon §8).
 - **U2 — μ.** No friction data for silicone × lubricant × skin has been found in the repo.
 - **U3 — Why the rigid path asks 8.3 mm of room** with no inset, near the entrance.
 - **U4 — Drake.** Whether its deformable material models fit this silicone.
 - **U5–U8** (what the oracle supports, why element 516 inverts, midsides, the step size once CCD exists)
-  belonged to the replaced solver, and do not carry over. Element inversion on the new solver is recon
-  K4.
-- **U10 — The mouth rim. Answered (Jon, 2026-09-24):** the poured device has the same sharp edge.
-  It is fine in Ecoflex 00-30, and a comfort issue in Dragon Skin 10A and firmer.
+  belonged to the replaced solver, and do not carry over. Element inversion on the new solver is the
+  soft-contact recon's K4.
 - **U9 — The comfort readouts on a rigid scan.** A rigid intruder puts all the squeeze into the silicone;
   how far that is from soft tissue is unmeasured.
+- **U10 — The mouth rim. Answered (Jon, 2026-09-24):** the poured device has the same sharp edge.
+  It is fine in Ecoflex 00-30, and a comfort issue in Dragon Skin 10A and firmer.
+- **U11 — How a range becomes a verdict. Jon's call.**
+  - The soft-contact recon reports an interval across corners (its §5d); the flow above gives one
+    verdict.
+  - Recommendation:
+    - *Fits* if the whole interval is under the limit;
+    - *Too tight* if all of it is over;
+    - otherwise the verdict names the corner that crosses the limit.
+  - Also open: whether the Mullins state is a verdict corner. It doubles the runs per verdict (D4).
 
 ---
 
