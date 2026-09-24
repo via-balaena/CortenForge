@@ -127,7 +127,8 @@ Stress at 100 % strain across sources, from raw data (round 1:
   (`sim/L0/soft/src/material/silicone_table.rs:103-107`).
 - **The product blend (Dragon Skin 10 + Slacker) has no published modulus.** It is rated only by Shore
   hardness. Shore-to-modulus conversions are unvalidated this soft
-  ([Gent](https://en.wikipedia.org/wiki/Shore_durometer)). **It must be measured** (§8).
+  ([Gent](https://en.wikipedia.org/wiki/Shore_durometer)). No home lab will measure it (§9 decision 5), so
+  the nearest measured grade is used, with a wider range, and flagged (§8).
 - **Silicone softens after its first stretch** (the Mullins effect), and about 60 % of that recovers within
   a month ([Liao 2020](https://cronfa.swan.ac.uk/Record/cronfa53571)). A tested cast carries its own
   history.
@@ -773,10 +774,11 @@ contact pressure within 5 % at ν ≥ 0.49? And can it run a 100k-tet insertion 
 
 | | Criterion | Measured as |
 |---|---|---|
-| **K1 speed** | a 100k-tet insertion at ν = 0.49, GPU executor, **≤ 2 min** | wall-clock from setup to the last readback, including loading, hold and the measurement window |
+| **K1 speed** | a 100k-tet insertion at ν = 0.49, GPU executor, **≤ 2 min** | wall-clock from setup to the last readback, including loading, hold and the measurement window. A first bar on the tube, not derived from D4; build step 2 derives the product's budget |
 | **K2 accuracy** | band pressure within **5 %** of the oracle, **both raw and gap-corrected** (15d.1) | same material, free ends, frictionless, the pinned SDF (15c). At ν 0.49 and 0.495, for (λ_a, B/A) = (1.1, 2) and (1.3, 2), on the 100k mesh |
 | **K3 precision** | CPU f32 against CPU f64, same executor: band pressure within **0.5 %** (frictionless, 50k), and the Coulomb push's reaction within **0.5 %** (μ_f 0.3, 10k) | step 2 of the build (15g), before any GPU code. This is the fit plan's *"precision spike on contact before any GPU contact code"* |
 | **K4 robustness** | J > 0 in every element at every step of every valid run | explicit check (§13d rule 2). Any J ≤ 0 in a valid run is a failure. A run that breaks a validity gate is invalid, and K4 does not judge it |
+| **K5 product readings** | the peak push force during entry and the seated 95th-percentile pressure (fit plan D1's readings) change ≤ 5 % from 50k to 100k | the tube's entry is a sharp edge, like the product's mouth. **A gate on the verdict's design, not on the solver:** if it fails, D1's readings or the lip radius are revisited before step 7 |
 
 **Why two corrections to K2:**
 - **Requiring both raw and gap-corrected results:** the penalty's gap biases pressure low by about 1 %
@@ -1023,7 +1025,18 @@ Each item is one PR with its own tests and a done-when.
    - *Done when:* CI runs the new tests, and the freshness test has failed once on a deliberate edit.
 2. **The oracle as golden values, the tube fixture, the CPU executor and the stepping loop.**
    - The oracle becomes a golden generator (the `sim/L0/mjcf/tests/conformance/gen_golden.py` pattern).
-   - **K3 runs here**, including a CPU Coulomb push at 10k. K2 runs on the CPU at 10k and 50k.
+   - **K3 runs here**, including a CPU Coulomb push at 10k. K2 runs on the CPU at 10k and 50k, and so
+     does K5's convergence (10k to 50k).
+   - **Frictional ironing** (§7 rung 2) runs on the CPU, as the friction law's external reference. The
+     Coulomb push (15d.7) checks consistency only.
+   - **The product's budget:**
+     - mesh `base_mold` locally (the scan stays outside the repo) at the resolution K2 needs;
+     - compute its stable Δt with the CPU executor's power iteration;
+     - derive its per-run time at K1's per-step cost.
+     - An explicit step is set by the worst element, so the product mesh's quality sets this number,
+       not the tube's.
+     - If it cannot meet D4 (5 minutes per run, 15 per search), the plan is revised before any GPU
+       work.
    - **The stop rule (pre-registered):**
      - Proceed if the 50k gap-corrected error is ≤ 5 % at every corner.
      - Proceed with a flag if it is 5–7 %, and the extrapolation reaches ≤ 5 % at 100k at every corner.
@@ -1032,17 +1045,21 @@ Each item is one PR with its own tests and a done-when.
      - ⛔ **Stop before any GPU work** otherwise, or if K3 or K4 fails.
    - A reviewer's model (not kept) put the element alone at +1.2–1.65 % at 50k.
    - *Done when:* the stop rule has been applied, with its numbers written here.
-3. **`sim-gpu` moves to wgpu 30,** with `gpu-probe` migrated.
-   - The context, chunked submission and contact-list tools are extracted.
-   - The 13 existing shaders are validated under naga 30.
-   - A binary holding a wgpu 27 device and a wgpu 30 device runs on lavapipe (Vulkan) in CI.
+3. **`sim-gpu`: the shared GPU infrastructure is extracted:** the context, chunked submission and the
+   contact-list tools.
+   - It stays on the workspace's wgpu (27) until a need for a newer version is named. The physics' own
+     wgpu entry (§13e) lets it move without Bevy.
+   - When it moves:
+     - `gpu-probe` migrates;
+     - the shaders are validated under the new naga;
+     - a binary holding both versions runs on lavapipe (Vulkan) in CI.
    - *Done when:* `sim-gpu`'s suite passes on Metal and in CI.
 4. **`sim-gpu`'s soft executor,** with per-phase conformance against the CPU executor, on lavapipe in CI.
    - *Done when:* every phase's outputs agree, GPU f32 against CPU f32. Per output, the largest
      difference must be ≤ 1e-5 × the largest magnitude.
 5. **The experiment on the GPU:** K1, K2 at 100k, the ν sweep, the ladder, the Coulomb push, the stress
    case, the SDF comparison and stiffness scaling.
-   - *Done when:* K1–K4 are decided and the results are in this document with their commands.
+   - *Done when:* K1–K5 are decided and the results are in this document with their commands.
 6. **`sim-soft`: lowering, obstacle baking, and the pairing library.**
    - Lowering and obstacle baking come from `cf-sim-research`.
    - The pairing library covers surface × surface × lubricant, with fresh and depleted ranges (§5c).
@@ -1050,6 +1067,9 @@ Each item is one PR with its own tests and a done-when.
      materials.
    - The F3 conformance test of `Material` against the shared math lands here, since `sim-soft` takes
      the dependency.
+   - **U3** (fit plan) is settled geometrically before step 7: with no inset, the rigid path already
+     asks 8.3 mm of room. Its swept volume is checked against the cavity. If the path is at fault, step
+     7's verdicts would measure that and not the fit.
    - Also carried from the fit plan's Phase 1:
      - the t = 0 intrusion and its pre-roll;
      - the outer-skin pin's 646 interior vertices;
@@ -1066,7 +1086,9 @@ Each item is one PR with its own tests and a done-when.
    - *Done when:* the fit plan's G1–G3 and G6 have numbers on `base_mold`.
 8. **The soft-on-soft contact design** (§9 decision 9): a design step with its own research round, not
    code.
-9. **Validation and limits:** §7's rungs 2 and 5, and the comfort limits (fit plan U1, §8).
+9. **Validation and limits:** §7's rungs 2 and 5, and the comfort limits (fit plan U1, §8). The limits
+   research does not depend on the solver, so **it starts now**, in parallel with steps 1–2. The 5.4 N
+   anchor limits getting in at all; it is not a comfort limit.
 
 **Where the runs live in CI:**
 - tests-debug runs a short sanity run on the 10k mesh (a few hundred steps: finite energies, J > 0). It

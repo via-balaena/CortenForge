@@ -412,7 +412,8 @@ in CI); G5 already gates in CI.
 - **U1 — "Comfortably."** The quantities and the method are decided (D1). The limits are not: they come
   from published measurements (D1, 2026-09-24), which still have to be gathered (soft-contact recon §8).
 - **U2 — μ.** No friction data for silicone × lubricant × skin has been found in the repo.
-- **U3 — Why the rigid path asks 8.3 mm of room** with no inset, near the entrance.
+- **U3 — Why the rigid path asks 8.3 mm of room** with no inset, near the entrance. It is settled before the
+  new solver runs `base_mold` (soft-contact recon §15g step 6).
 - **U4 — Drake.** Whether its deformable material models fit this silicone.
 - **U5–U8** (what the oracle supports, why element 516 inverts, midsides, the step size once CCD exists)
   belonged to the replaced solver, and do not carry over. Element inversion on the new solver is the
