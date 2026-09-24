@@ -279,8 +279,8 @@ socket-donning study did. Reduced-order bases do not survive a sliding contact �
 and contact kernels.
 
 **Forward only.** The explicit solver runs forward only, and gradients stay with the implicit solver
-(§11). For design sweeps, a few parameters by finite
-differences, or Tier 3, are cheap once Tier 2 takes seconds.
+(§11). The product scene therefore has no gradient path today. Design sweeps use a few parameters by
+finite differences, or Tier 3.
 
 ## 7. Validation ladder
 
@@ -1054,10 +1054,12 @@ Each item is one PR with its own tests and a done-when.
    - **The product's budget:**
      - mesh `base_mold` locally (the scan stays outside the repo) at the resolution K2 needs;
      - compute its stable Δt with the CPU executor's power iteration;
-     - derive its per-run time at K1's per-step cost.
+     - derive its per-run time at K1's per-step cost;
+     - measure its surface bias, as the fraction of canal nodes inside the true surface, with and
+       without projection, and its element count at that resolution.
      - An explicit step is set by the worst element, so the product mesh's quality sets this number,
        not the tube's.
-     - If it cannot meet D4 (5 minutes per run, 15 per search), the plan is revised before any GPU
+     - If it cannot meet D4 (its unit of time is fit plan U13), the plan is revised before any GPU
        work.
    - **The stop rule (pre-registered):**
      - Proceed if the 50k gap-corrected error is ≤ 5 % at every corner.
@@ -1082,6 +1084,22 @@ Each item is one PR with its own tests and a done-when.
 5. **The experiment on the GPU:** K1, K2 at 100k, the ν sweep, the ladder, the Coulomb push, the stress
    case, the SDF comparison and stiffness scaling.
    - *Done when:* K1–K6 are decided and the results are in this document with their commands.
+**Steps 6–9 are an outline.** They are designed in detail after step 2's results, which set the
+product's mesh, budget and contact law. Three macro reviews found what that design must settle:
+- D4's unit of time, per simulation or per press (fit plan U13), and so the runs per verdict;
+- the pairing's nominal corner, which D3 judges at: add it as a run, or show push force is linear in
+  μ_f;
+- Tier 1's accuracy against the solver, and what D3 does if it is poor;
+- how the device is held once its outer wall is free (fit plan U14). A held closed end is the "no
+  escape" row of §15h;
+- the product mesher's surface bias and element count (measured in step 2);
+- U3's outcome, and the fact that a contact-guided intruder would need rigid–soft coupling.
+
+**Starting now, in parallel with steps 1–2, needing no solver:**
+- U3's geometric check;
+- friction sourcing for the product's pairings (§5c: the dominant input, uncertain by more than 10×);
+- the comfort-limit research (step 9).
+
 6. **`sim-soft`: lowering, obstacle baking, and the pairing library.**
    - Lowering and obstacle baking come from `cf-sim-research`.
    - The pairing library covers surface × surface × lubricant, with fresh and depleted ranges (§5c).
@@ -1102,8 +1120,6 @@ Each item is one PR with its own tests and a done-when.
 7. **`base_mold` on the new solver.**
    - G6 is 5 minutes per run, where a run is one simulation (fit plan D4). `base_mold` stays outside
      the repo.
-   - The product mesh's surface bias is measured, as the fraction of canal nodes inside the true
-     surface, with and without projection.
    - The **lip radius** (fit plan "Later"): the lipped cavity built in `cf-design`, then sharp against
      rounded on the same scan.
    - **Tier 1** (the per-slice estimate, §6) is built and checked against the solver on `base_mold`. D3's
