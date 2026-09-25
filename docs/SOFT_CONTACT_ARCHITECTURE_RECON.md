@@ -1678,12 +1678,12 @@ problems, and all 4 sat in text the fixes wrote:
 They were fixed by cutting: the readout rule moved to a 2c unit test with a bar, flutter is reported
 and not gated, and the loading speed is marked as an assumption. The load-bearing design (the four
 PRs, K6's reference, the trait, the stop rule) was not touched by pass 2. What changed was detail the
-build will measure. So no third pass was run on the prose. The readout rule, the energy balance's
-1 %, and the power iteration's bar on meshes other than the 10k tube are settled by 2a's and 2c's
-tests.
+build will measure. So no third pass was run on the prose. The readout rule and the energy balance's
+1 % are settled by 2c's and 2a's tests.
 
 **Checked by no one:** finite strain and the finite domain's effect on K6's stick zone; whether
-flutter occurs; the coverage cost of the new tests; how coverage counts code `include!`d twice.
+flutter occurs; the power iteration's accuracy on meshes other than the 10k tube; the coverage cost of
+the new tests; how coverage counts code `include!`d twice.
 
 ### 16l. Not decided here
 
