@@ -138,3 +138,11 @@ pub fn dilatational_wave_speed(material: Material) -> R {
 pub fn tet4_time_step_estimate(x: [R; 12], material: Material) -> R {
     tet4_shortest_altitude(x) / dilatational_wave_speed(material)
 }
+
+/// The area of the triangle with corners `a`, `b` and `c`. The pressure
+/// readout gives each boundary node a third of each incident deformed
+/// triangle's area (`sim-soft`'s convention, plan §15c).
+#[must_use]
+pub fn triangle_area(a: [R; 3], b: [R; 3], c: [R; 3]) -> R {
+    0.5 * vec3_length(vec3_cross(vec3_sub(b, a), vec3_sub(c, a)))
+}
