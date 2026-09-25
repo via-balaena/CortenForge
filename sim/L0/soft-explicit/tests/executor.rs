@@ -287,6 +287,11 @@ fn the_result_does_not_depend_on_the_thread_count() {
             .build()
             .unwrap();
         pool.install(|| {
+            assert_eq!(
+                rayon::current_num_threads(),
+                threads,
+                "the run must use its pool"
+            );
             let e = cpu::f32::CpuExecutor::new(&model, &rising_floor(0.3)).unwrap();
             let config = StepperConfig::new(0.5, 0.3, 50.0);
             let mut stepper = Stepper::new(e, config, 0.0);
