@@ -15,6 +15,14 @@ rust-version.workspace = true
 
 [package.metadata.cortenforge]
 tier = "L0"
+# `tube_release` holds release-only runs (plan §16i): K2 on the 10k tube, 14k
+# steps, and a converged power iteration. They belong to the tests-release
+# job, which names this crate. The weekly coverage job builds every test
+# binary in release and runs it instrumented (`xtask/src/coverage_run.rs:609`),
+# at 164–1 226x the uninstrumented time on the suites that file measured, so
+# this binary is kept out of it. `tube_sanity` drives the same `TubeRun` path
+# in every coverage pass.
+coverage_skip_binaries = ["tube_release"]
 
 [dependencies]
 # Derive macro for the model's error type.
