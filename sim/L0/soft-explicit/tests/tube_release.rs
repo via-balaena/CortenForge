@@ -15,14 +15,15 @@ use sim_soft_explicit::{ExplicitModel, f64::Material};
 const MU: f64 = 23.0e3;
 const DENSITY: f64 = 1070.0;
 
-/// K2's first corner: `λ_a` 1.1, ν 0.49, frictionless, loaded over 10
-/// axial-shear periods (the loading-time ladder's start, plan §15c).
+/// K2's worst corner on the 10k tube: `λ_a` 1.1, ν 0.495 (+5.29 %; plan
+/// §16i moves this check to the worst 10k corner 2b finds), frictionless,
+/// loaded over 10 axial-shear periods (the loading-time ladder's start, plan
+/// §15c).
 fn k2_run() -> TubeRun {
     TubeRun {
         mesh: Mesh::TenK,
-        case: THICK_TUBE[0],
+        case: THICK_TUBE[1],
         mu: MU,
-        c2: 0.0,
         density: DENSITY,
         insertion: Insertion::plan(10.0 * TubeRun::shear_period(MU, DENSITY)),
         window: 0.1,

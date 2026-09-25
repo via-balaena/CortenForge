@@ -10,7 +10,8 @@ use sim_soft_explicit::executor::Snapshot;
 use sim_soft_explicit::f64::Material;
 use sim_soft_explicit::fixtures::golden::THICK_TUBE;
 use sim_soft_explicit::fixtures::tube::{
-    BakeError, BandReading, Insertion, Mandrel, Mesh, Tube, Walls, node_pressures, read_band,
+    BakeError, BandReading, Insertion, Mandrel, Mesh, Tube, TubeRun, Walls, node_pressures,
+    read_band,
 };
 
 const SILICONE: Material = Material {
@@ -264,6 +265,34 @@ fn the_golden_values_are_the_plans() {
     assert_eq!(cased.walls, Walls::Cased);
     assert!((cased.pressure_over_mu - 4.1417).abs() <= 0.5e-4);
     assert_eq!(cased.axial_stretch, 1.0);
+    assert!(THICK_TUBE[..5].iter().all(|case| case.c2_over_mu == 0.0));
+    // The Yeoh case (plan 16h): ECOFLEX_00_30's C₂/μ on the λ_a 1.3 corner,
+    // 4.22 % above its neo-Hookean pressure.
+    let yeoh = THICK_TUBE[5];
+    assert_eq!(yeoh.walls, Walls::Free);
+    assert_eq!(
+        (yeoh.mandrel_ratio, yeoh.poisson),
+        (THICK_TUBE[2].mandrel_ratio, THICK_TUBE[2].poisson)
+    );
+    assert!((yeoh.c2_over_mu - 2050.0 / 23000.0).abs() <= 1e-15);
+    let rise = yeoh.pressure_over_mu / THICK_TUBE[2].pressure_over_mu - 1.0;
+    assert!((rise - 0.0422).abs() <= 0.5e-4, "{rise}");
+}
+
+#[test]
+fn a_runs_yeoh_term_comes_from_its_case() {
+    let run = |case| TubeRun {
+        mesh: Mesh::TenK,
+        case,
+        mu: 23.0e3,
+        density: 1070.0,
+        insertion: Insertion::plan(1.0),
+        window: 0.1,
+        friction: 0.0,
+        grid_cell: 0.0005,
+    };
+    assert_eq!(run(THICK_TUBE[2]).material().c2, 0.0);
+    assert!((run(THICK_TUBE[5]).material().c2 - 2050.0).abs() <= 1e-9);
 }
 
 #[test]

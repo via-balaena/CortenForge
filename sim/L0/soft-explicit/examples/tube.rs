@@ -1,12 +1,15 @@
 //! One run of the tube on the mandrel (plan §15b, §16i), printed as one line:
 //! G2's penetration against the grid and the true surface, the band's gap,
-//! K2's errors, the validity gates, and the run's cost.
+//! K2's errors and its pair-averaged ring levels, K5's readings, the validity
+//! gates, the loaded step factor, and the run's cost.
 //!
 //! `cargo run --release -p sim-soft-explicit --example tube --
-//! <10k|50k|100k> <case> <friction> <f32|f64> <grid> <hold>`
-//! (defaults: 10k 0 0 f32 20 0.2). `case` indexes
+//! <10k|50k|100k> <case> <friction> <f32|f64> <grid> <hold> <loading> <stiffness>`
+//! (defaults: 10k 0 0 f32 20 0.2 10 1). `case` indexes
 //! `fixtures::golden::THICK_TUBE`; the grid's cell is A/`grid`; `hold` is
-//! the hold after loading, in seconds (plan §15b: 0.2).
+//! the hold after loading, in seconds (plan §15b: 0.2); `loading` is the
+//! loading time in shear periods `T_s` of the unscaled material (plan §15c's
+//! ladder starts at 10); `stiffness` multiplies μ, and so λ (plan 15d.10).
 //! With friction on the free tube, a frictionless companion run gives the
 //! Coulomb push ratio (plan 15d.7). Set `RAYON_NUM_THREADS` so the times are comparable.
 
@@ -19,7 +22,9 @@ use sim_soft_explicit::cpu;
 use sim_soft_explicit::executor::{Executor, Obstacle};
 use sim_soft_explicit::f64 as shared;
 use sim_soft_explicit::fixtures::golden::THICK_TUBE;
-use sim_soft_explicit::fixtures::tube::{Insertion, Mesh, Tube, TubeResult, TubeRun, Walls};
+use sim_soft_explicit::fixtures::tube::{
+    Insertion, Mesh, Tube, TubeResult, TubeRun, Walls, node_pressures, tributary_area,
+};
 use sim_soft_explicit::stepping::StepperConfig;
 
 const MU: f64 = 23.0e3;
@@ -46,14 +51,15 @@ fn request() -> Request {
     };
     let case_index: usize = arg(1, "0").parse().unwrap();
     let divisions: f64 = arg(4, "20").parse().unwrap();
-    let mut insertion = Insertion::plan(10.0 * TubeRun::shear_period(MU, DENSITY));
+    let periods: f64 = arg(6, "10").parse().unwrap();
+    let stiffness: f64 = arg(7, "1").parse().unwrap();
+    let mut insertion = Insertion::plan(periods * TubeRun::shear_period(MU, DENSITY));
     insertion.hold = arg(5, "0.2").parse().unwrap();
     Request {
         run: TubeRun {
             mesh,
             case: THICK_TUBE[case_index],
-            mu: MU,
-            c2: 0.0,
+            mu: stiffness * MU,
             density: DENSITY,
             insertion,
             window: 0.1,
@@ -150,6 +156,79 @@ fn end_penetration(
     end
 }
 
+/// K5's seated reading (fit plan D1): the area-weighted 95th percentile of
+/// the window-mean contact pressure, the pressure the most-squeezed 5 % of
+/// the contact area is at or above.
+fn seated_percentile(model: &ExplicitModel, result: &TubeResult) -> f64 {
+    let snapshot = &result.snapshot;
+    let contact: Vec<u32> = (0_u32..)
+        .zip(&snapshot.normal_force_sums)
+        .filter(|&(_, &sum)| sum > 0.0)
+        .map(|(node, _)| node)
+        .collect();
+    let pressures = node_pressures(model, snapshot, &contact);
+    let mut weighted: Vec<(f64, f64)> = contact
+        .iter()
+        .zip(pressures)
+        .map(|(&node, pressure)| (pressure, tributary_area(model, snapshot, node as usize)))
+        .collect();
+    weighted.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let total: f64 = weighted.iter().map(|&(_, area)| area).sum();
+    let mut covered = 0.0;
+    for &(pressure, area) in &weighted {
+        covered += area;
+        if covered >= 0.05 * total {
+            return pressure;
+        }
+    }
+    f64::NAN
+}
+
+/// K5's readings (plan §15a): the peak push force, the largest of the
+/// monitor's 100-step means of the axial contact force (plan §16i), and the
+/// seated 95th-percentile pressure over μ.
+fn k5_readings(model: &ExplicitModel, result: &TubeResult, mu: f64) -> String {
+    let push_peak = result
+        .samples
+        .iter()
+        .map(|s| s.monitors.contact_force[2])
+        .fold(f64::NEG_INFINITY, f64::max);
+    format!(
+        "K5 push_peak={push_peak:.5}N seated_p95/mu={:.5}",
+        seated_percentile(model, result) / mu
+    )
+}
+
+/// The band's pair-averaged ring levels over μ (plan 15d.1), which K3
+/// compares between precisions.
+fn ring_levels(result: &TubeResult, mu: f64) -> String {
+    result
+        .reading
+        .paired_levels
+        .iter()
+        .map(|p| format!("{:.6}", p / mu))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// The steps, the last step, the rest step, and the loaded step factor: the
+/// smallest step in the run over the rest step (plan §16i).
+fn step_readings(result: &TubeResult) -> String {
+    let rest = result.samples.first().map_or(f64::NAN, |s| s.dt);
+    let smallest = result
+        .samples
+        .iter()
+        .map(|s| s.dt)
+        .fold(f64::INFINITY, f64::min);
+    format!(
+        "steps={} dt={:.3}us rest_dt={:.3}us loaded_factor={:.4}",
+        result.steps,
+        1e6 * result.dt,
+        1e6 * rest,
+        smallest / rest
+    )
+}
+
 fn percent(x: f64) -> String {
     format!("{:+.2}%", 100.0 * x)
 }
@@ -222,16 +301,22 @@ fn main() {
         .find(|s| s.monitors.max_penetration >= result.max_penetration)
         .map_or(f64::NAN, |s| s.time);
     let inset = (case.mandrel_ratio - 1.0) * tube.inner_radius;
-    let stiffness = run.material().lambda + 2.0 * MU;
+    let stiffness = run.material().lambda + 2.0 * run.mu;
+    let (k5, rings, stepping) = (
+        k5_readings(&model, &result, run.mu),
+        ring_levels(&result, run.mu),
+        step_readings(&result),
+    );
     let estimates = result.estimates as f64 * estimate;
     let missing = || "n/a".to_owned();
     println!(
-        "tube {:?} case={case_index} ({}, a/A {}, nu {}) grid=A/{:.0} mu_f={} {} threads={} | \
+        "tube {:?} case={case_index} ({}, a/A {}, nu {}) grid=A/{:.0} mu_f={} {} T={:.3}s mu={:.0}Pa threads={} | \
          h={:.3}mm p/(l+2mu)={:.5} inset={:.1}mm | \
          G2 grid_all_steps={:.1}um ({:.2}% of inset, first at t={reached:.3}s) true_end={:.1}um ({:.2}%) \
          grid_end={:.1}um bias(true-grid)=[{:.2},{:.2}]um deepest_z={:.2}mm | band_gap={:.1}um | \
-         K2 raw={} gc={} scatter={} | lz={} ke/ie={} balance={} inverted={} contact_ke_peak={:.3e}J coulomb={} | \
-         steps={} dt={:.3}us estimates={} wall={wall:.1}s ms/step={:.3} estimate={:.1}ms share={:.1}%",
+         band_p/mu={:.6} K2 raw={} gc={} scatter={} rings/mu=[{rings}] | {k5} | \
+         lz={} ke/ie={} balance={} inverted={} contact_ke_peak={:.3e}J coulomb={} | \
+         {stepping} estimates={} wall={wall:.1}s ms/step={:.3} estimate={:.1}ms share={:.1}%",
         run.mesh,
         if case.walls == Walls::Free {
             "free"
@@ -243,9 +328,11 @@ fn main() {
         tube.inner_radius / run.grid_cell,
         run.friction,
         if wide { "f64" } else { "f32" },
+        run.insertion.loading_time,
+        run.mu,
         std::env::var("RAYON_NUM_THREADS").unwrap_or_else(|_| "unset".to_owned()),
         1e3 * element_size(&model),
-        case.pressure_over_mu * MU / stiffness,
+        case.pressure_over_mu * run.mu / stiffness,
         1e3 * inset,
         1e6 * result.max_penetration,
         100.0 * result.max_penetration / inset,
@@ -256,6 +343,7 @@ fn main() {
         1e6 * end.bias.1,
         1e3 * end.deepest_z,
         1e6 * result.reading.gap,
+        result.reading.pressure / run.mu,
         percent(result.errors.raw),
         result.errors.gap_corrected.map_or_else(missing, percent),
         percent(result.reading.node_scatter),
@@ -265,8 +353,6 @@ fn main() {
         result.inverted,
         flutter,
         coulomb.map_or_else(missing, |c| format!("{c:.4}")),
-        result.steps,
-        1e6 * result.dt,
         result.estimates,
         1e3 * (wall - estimates) / result.steps as f64,
         1e3 * estimate,

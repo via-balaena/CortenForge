@@ -607,6 +607,8 @@ pub struct TubeCase {
     pub thickness_ratio: f64,
     /// Poisson's ratio ν.
     pub poisson: f64,
+    /// Yeoh's C₂ over μ; 0 is neo-Hookean (the Yeoh case, plan 16h).
+    pub c2_over_mu: f64,
     /// How the tube is held.
     pub walls: Walls,
     /// The contact pressure over μ.
@@ -655,10 +657,9 @@ pub struct TubeRun {
     pub mesh: Mesh,
     /// The oracle case the run is judged against.
     pub case: TubeCase,
-    /// The shear modulus μ; λ follows from the case's ν.
+    /// The shear modulus μ; λ follows from the case's ν, and Yeoh's C₂ from
+    /// its C₂/μ.
     pub mu: f64,
-    /// Yeoh's C₂; 0 is neo-Hookean (the Yeoh case, 16h).
-    pub c2: f64,
     /// The density ρ.
     pub density: f64,
     /// The mandrel's motion (plan §15b: [`Insertion::plan`]).
@@ -726,14 +727,14 @@ impl TubeRun {
         4.0 * Tube::plan(Mesh::TenK).length / (mu / density).sqrt()
     }
 
-    /// The run's material: λ from the case's ν.
+    /// The run's material: λ from the case's ν, and C₂ from its C₂/μ.
     #[must_use]
     pub fn material(&self) -> Material {
         let nu = self.case.poisson;
         Material {
             mu: self.mu,
             lambda: self.mu * 2.0 * nu / (1.0 - 2.0 * nu),
-            c2: self.c2,
+            c2: self.case.c2_over_mu * self.mu,
             density: self.density,
         }
     }
