@@ -34,7 +34,8 @@ It checks itself before reporting, and a failed check raises (so the checks surv
 
 The solver was first written by a cold reviewer of the step-2 design (2026-09-24) and reviewed and
 hardened before it was committed. It is small-strain and half-plane: it bounds the coupling only, not the
-explicit solver's finite strain, finite domain or element.
+explicit solver's finite strain, finite domain or element. No check pins the coupled term's magnitude:
+that rests on its transcription from eq. 2.7, which a second reviewer re-checked against the source.
 """
 import numpy as np
 

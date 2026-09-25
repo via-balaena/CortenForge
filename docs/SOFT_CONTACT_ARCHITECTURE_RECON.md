@@ -1333,32 +1333,34 @@ than μ_f·P, in plane strain. Part of the contact sticks and part slips.
 - **The mesh:** element size h = a/50 over |x| ≤ 1.5a and the top 0.5a, graded to about a/2 at the
   far boundaries. Hojjati-Talemi et al. used 51 elements across the half-width (5 µm on a = 254 µm),
   and their a came within 0.39 % ✓.
-- **Precision: f64, with the world and body frames' origins at the first point of contact.** K6's
-  elastic-slip window is μ_f times the penalty gap, about 7e-6·a. A slipping node moves about 1e-8·a
-  to 1e-7·a per step. Both are near or below f32's spacing even for coordinates of order a (1.2e-7·a)
-  (arithmetic). f32 is K3's question, asked at the product's scale. On the tube, the window is μ_f
-  times a gap of about 0.03 mm (§15c), and a slipping node moves about 4 µm per step. Against f32's
-  7.5 nm spacing at 0.12 m, those are 1 200 and 560 spacings (arithmetic). An f32 run of K6 is
-  reported, not judged.
+- **Precision: f64, with the world and body frames' origins at the first point of contact.** A
+  slipping node moves about 1e-8·a to 1e-7·a per step, below f32's spacing even for coordinates of
+  order a (1.2e-7·a) (arithmetic). f32 is K3's question, asked at the product's scale. On the tube a
+  slipping node moves about 4.7 µm per step (0.112 m/s × 42.2 µs), about 630 of f32's 7.5 nm spacings
+  at 0.12 m (arithmetic). An f32 run of K6 is reported, not judged.
 - **Loading:** displacement-driven:
   1. press until the contact half-width is a, and hold;
   2. move the cylinder sideways until Q = 0.8·μ_f·P;
   3. move it back until Q = 0.
 - **The rate is set by its own ladder,** not by KE/IE. The indentation dominates the internal energy,
   and the tangential phases add only about 6 % to it (arithmetic, a reviewer's estimate), so KE/IE ≤ 5 %
-  would allow kinetic energy as large as the whole signal. The rate is halved until c and m move by at
-  most 0.005a, at every sample.
+  would allow kinetic energy as large as the whole signal. The rate is halved until c and m move by no
+  more than the readout's resolution (below), at every sample.
 - **Readouts,** from each node's normal and tangential contact forces averaged over each monitor
   interval (16e's `accumulate`):
   - P and Q, the forces' resultants.
   - a: each edge of the contact is where the averaged normal force squared, extrapolated linearly,
     reaches zero. Hertz pressure goes as the square root of the distance to the edge.
-  - **The stick zone's edges:** where f_t/(μ_f f_n) reaches 1 − ε, with ε = 0.005, interpolated between
-    nodes. f_t is the component along the load's direction, and along its reverse while unloading.
-    Near an edge the ratio approaches 1 as the square root of the distance, so ε moves the edge by
-    about 1e-4·a (arithmetic).
-    - The stick zone is the largest contiguous run of nodes below 1 − ε that holds the node with the
-      lowest ratio.
+  - **The stick zone's edges** are read from the ratio f_t/(μ_f f_n). f_t is the component along the
+    load's direction, and along its reverse while unloading. A slipping node's ratio is exactly 1, and
+    a sticking node's approaches 1 as the square root of its distance to the edge.
+    - **The rule is settled in 2c by a unit test,** not here. The test feeds the closed forms, sampled
+      at the mesh's own nodes over many mesh offsets and load fractions, to the readout. The largest
+      error it reads is the readout's resolution, and it must be ≤ 0.005a.
+    - The candidate is to extrapolate (1 − ratio)² linearly to zero from the last two sticking nodes,
+      as a is found. Interpolating the ratio itself was checked on the closed forms by a reviewer and
+      read up to 0.02a wide.
+    - If no rule reaches 0.005a, the budget below is revised before K6 runs.
     - c (and m) is half the zone's width. The zone may sit off-centre (by up to 0.05a at ν 0.49, as
       above), so a width is read, not a distance from x = 0.
   - Reading the anchors instead, so that a node sticks when its anchor did not move, was rejected. At
@@ -1376,7 +1378,7 @@ than μ_f·P, in plane strain. Part of the contact sticks and part slips.
   |---|---|---|
   | The coupling at ν 0.49 | ≤ 0.005a | the boundary-element referent above ✓ |
   | The penalty's compliance | ≤ 0.002–0.004a | a reviewer's superposition, with k/A from §15c's stiffness (not kept) |
-  | The readout | about 1e-4·a | above (arithmetic) |
+  | The readout | ≤ 0.005a | 2c's unit test (above) |
   | The loading rate | ≤ 0.005a | the rate ladder |
   | Finite strain | measured | the companion run below |
   | The element and the finite domain | not known | 2c also runs a/h = 25 and records the difference |
@@ -1486,8 +1488,8 @@ one thread and on many.
   - The loop uses this form, with the run's largest μ_f.
 - **What no bound covers is flutter.** Coupled with the elastic stiffness, a non-symmetric stiffness
   can have complex eigenvalues. Central differences amplify those at any step, and mass damping removes
-  only α_D/2 of their growth rate. The guards are the energy balance (below) and the monitor of the
-  contact nodes' kinetic energy. Whether flutter occurs here is not known.
+  only α_D/2 of their growth rate. Nothing gates it: the contact nodes' kinetic energy is reported, and
+  whether flutter occurs here is not known.
 - The iteration is re-run every 500 steps, warm-started. The step grows by at most 5 % per re-run
   (§15c) and shrinks at once.
 - **Its accuracy is checked, not its precision.** A Rayleigh quotient never exceeds the largest
@@ -1502,16 +1504,21 @@ one thread and on many.
   0.15 µm at T = 1.04 s, against a penalty gap of about 30 µm (arithmetic: 105 mm of travel, a =
   1.08 m/s², τ = 1.04 ms).
 - The speed profile, the hold and the window are §15b's.
-- Mass damping (§15c) stays on through the hold. KE/IE is judged in the hold's last 0.1 s, and nothing
-  translates then, so the damping's drag on a moving body (§15c) does not arise.
+- Mass damping (§15c) stays on through the hold, where nothing translates, so its drag on a moving
+  body (§15c) does not arise there.
 
 **The loop checks the generic validity gates,** and reports every run with them (§15a, amended
 2026-09-24 in step 2's design, before any data):
-- KE/IE ≤ 5 % over every phase a readout is taken from: the constant-speed phase for the Coulomb push and
-  K5's entry peak, and the measurement window for K2. It was the window only.
+- KE/IE ≤ 5 % over the interval each readout is averaged over, as that interval's mean KE over its mean
+  IE: the constant-speed phase for the Coulomb push and K5's entry peak, and the measurement window for
+  K2. It was the window only. A ratio per sample would be 0/0 before first contact, which comes inside
+  the constant-speed phase.
 - **The energy balance:** the contact forces' work equals internal plus kinetic energy plus what damping
-  removed, within 1 % of the run's peak internal energy. It is the guard against an instability that
-  creates energy. The 1 % is an engineering call, not sourced.
+  removed, within 1 % of the run's peak internal energy. The work is summed as f·(u⁺ − u⁻)/2 per step:
+  undamped, central differences change the half-step kinetic energy by exactly that (derived). It
+  catches energy the
+  integrator creates, such as a step past the stability limit, and not flutter, whose energy comes in
+  as contact work. The 1 % is an engineering call, not sourced.
 - K4's count.
 
 The band's λ_z against the oracle's is the tube's own check, and belongs to its readout.
@@ -1618,9 +1625,8 @@ The gathers, contact and integration are not in that number, and the whole step 
     measured where a run exists at that h, and taken from the stop rule's extrapolation otherwise.
     Whether h_K2 gives the product the tube's accuracy is checked on the product itself in step 7;
   - the stable step from the CPU executor's power iteration, at rest, times 2b's loaded step factor;
-  - the loading time at the tube's converged speed as a fraction of the shear wave speed, v/c_s.
-    Kinetic over internal energy goes as (v/c_s)²/ε² (arithmetic), so that fraction carries the
-    tube's KE/IE result. Step 7 checks it with a ladder on the product;
+  - the loading time at the tube's converged speed as a fraction of the shear wave speed, v/c_s. This
+    is an assumption, not a derived rule: step 7 checks it with a ladder on the product;
   - the per-run time from those steps at K1's per-step budget, scaled by element count;
   - the per-press time, with 3 or 5 runs per verdict, as stiffness scaling says;
   - the surface bias (the fraction of canal nodes inside the true surface), with and without
@@ -1661,6 +1667,20 @@ Two cold reviewers, against ten criteria written beforehand (16a's list among th
 the element. The friction anchors, stored as absolute positions, were never checked against it. That
 is the same class of miss as step 1's, one level down. A constraint list is only as good as the
 places it is checked against.
+
+**A second pass read only the fixes** (`7ea0b73e..821c3323`) with one fresh reviewer. It found 4
+problems, and all 4 sat in text the fixes wrote:
+- interpolating the stick ratio still read 0.02a wide;
+- KE/IE per sample is 0/0 before first contact;
+- v/c_s dropped the strain it scales with;
+- neither flutter guard could see flutter.
+
+They were fixed by cutting: the readout rule moved to a 2c unit test with a bar, flutter is reported
+and not gated, and the loading speed is marked as an assumption. The load-bearing design (the four
+PRs, K6's reference, the trait, the stop rule) was not touched by pass 2. What changed was detail the
+build will measure. So no third pass was run on the prose. The readout rule, the energy balance's
+1 %, and the power iteration's bar on meshes other than the 10k tube are settled by 2a's and 2c's
+tests.
 
 **Checked by no one:** finite strain and the finite domain's effect on K6's stick zone; whether
 flutter occurs; the coverage cost of the new tests; how coverage counts code `include!`d twice.
