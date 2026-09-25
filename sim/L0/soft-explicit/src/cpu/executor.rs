@@ -589,10 +589,17 @@ impl Executor for CpuExecutor {
                 );
                 let displacement = shared::advance_displacement(self.displacements[a], velocity, step);
                 let predicted = shared::vec3_add(self.rest[a], self.free_part(a, displacement));
+                // How deep the predicted position is, and the normal where the
+                // node is now, carried into the step's end frame.
+                let depth = self.sample(shared::pose_to_body(next, predicted)).distance;
+                let normal = shared::pose_unrotate(next, shared::pose_rotate(pose, samples[i].normal));
                 shared::kinematic_contact(
                     next,
                     predicted,
-                    self.sample(shared::pose_to_body(next, predicted)),
+                    shared::SdfSample {
+                        distance: depth,
+                        normal,
+                    },
                     self.anchors[i],
                     stiffnesses[i],
                     self.friction,

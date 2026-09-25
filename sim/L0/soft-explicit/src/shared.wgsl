@@ -794,9 +794,13 @@ fn kinematic_stiffness(mass: f32, inverse_mass: f32, damping: f32, dt: f32) -> f
 //
 // Abaqus/Explicit's contact pairs; plan §16n.
 // `predicted` is where the node lands at the end of the step without
-// contact (world frame), `pose` the obstacle's pose then, `sample` the
-// obstacle's distance and normal at `pose_to_body(pose, predicted)`, and
-// `anchor` the node's friction anchor (body frame). `stiffness` is
+// contact (world frame), `pose` the obstacle's pose then, and `anchor` the
+// node's friction anchor (body frame). `sample` carries the obstacle's
+// distance at `pose_to_body(pose, predicted)`, but the normal where the node
+// is now, in the same frame: taken at the predicted point, which the step's
+// inward push leaves at a smaller radius of a curved obstacle, the
+// correction carried a sliding node further around than it went, and the
+// sliding grew by about `1 + a/R` a step, `a` the push (plan §16o). `stiffness` is
 // [`kinematic_stiffness`]; `constraints` are the node's two constraint
 // directions (`constrain`).
 //
