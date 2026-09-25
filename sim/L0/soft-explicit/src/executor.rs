@@ -78,7 +78,8 @@ pub struct Monitors {
     /// Cumulative: the work the contact forces have done on the soft body's
     /// nodes.
     pub contact_work: f64,
-    /// Cumulative: the energy mass damping has removed.
+    /// Cumulative: the energy mass damping and the material's viscosity have
+    /// removed.
     pub damping_loss: f64,
     /// Cumulative: the deepest penetration any node has reached (G2).
     pub max_penetration: f64,
@@ -134,14 +135,38 @@ pub struct PhaseOutputs {
     pub volume_changes: Vec<f64>,
     /// Phase 3: each node's averaged pressure.
     pub pressures: Vec<f64>,
-    /// Phase 4: each element's twelve nodal force components.
+    /// Phase 4: each element's twelve elastic nodal force components.
     pub element_forces: Vec<[f64; 12]>,
+    /// Phase 4: each element's twelve viscous nodal force components.
+    pub element_viscous_forces: Vec<[f64; 12]>,
     /// Phase 5: each node's elastic force.
     pub elastic_forces: Vec<[f64; 3]>,
+    /// Phase 5: each node's viscous force.
+    pub viscous_forces: Vec<[f64; 3]>,
     /// Phase 6: each node's contact force, world frame; zero off the surface.
     pub contact_forces: Vec<[f64; 3]>,
     /// Phase 6: each node's contact normal-force magnitude.
     pub normal_forces: Vec<f64>,
+}
+
+/// The power iteration's estimate of the mode that sets the stable step
+/// (plan §16e, §16p).
+///
+/// It is the top vector `v` of `M⁻¹(K + βC)`, with `K` the elastic stiffness
+/// at the current state and `C` the viscosity's damping.
+///
+/// Central differences with the damping force at the lagging half-step
+/// velocity are stable while `4M − Δt²K − 2ΔtC` is positive definite, so at
+/// `β = 2/Δt` this is the vector that loses stability first. The step
+/// follows from its two quotients as `2/ω (√(1 + ξ²) − ξ)`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TopMode {
+    /// `vᵀKv / vᵀMv`: at `β = 0`, an estimate of `ω_el²` from below.
+    pub omega_squared: f64,
+    /// `vᵀCv / (2ω vᵀMv)`, with `C v` minus the viscous forces at velocities
+    /// `v` and `ω` the square root of `omega_squared`. Zero for an elastic
+    /// material.
+    pub damping_ratio: f64,
 }
 
 /// An explicit executor: the solver's state, and one method per phase.
@@ -149,7 +174,7 @@ pub struct PhaseOutputs {
 /// A step is the phases in [`crate::stepping`]'s order, and each phase
 /// reads what the one before wrote. Nothing is read back to the host except
 /// by [`Executor::monitors`], [`Executor::snapshot`],
-/// [`Executor::phase_outputs`] and [`Executor::elastic_rayleigh_quotient`].
+/// [`Executor::phase_outputs`] and [`Executor::estimate_top_mode`].
 pub trait Executor {
     /// The number of nodes.
     fn node_count(&self) -> usize;
@@ -200,10 +225,12 @@ pub trait Executor {
     /// Phase 3: each node's averaged pressure.
     fn nodal_pressures(&mut self);
 
-    /// Phase 4: each element's elastic forces, into its own slots.
+    /// Phase 4: each element's elastic forces, and its viscous forces at the
+    /// latest half-step velocities, into its own slots.
     fn element_forces(&mut self);
 
-    /// Phase 5: each node's elastic force, gathered from its elements' slots.
+    /// Phase 5: each node's elastic and viscous forces, gathered from its
+    /// elements' slots.
     fn gather_forces(&mut self);
 
     /// Phase 6: each surface node's contact with the obstacle at `time`, for
@@ -235,18 +262,23 @@ pub trait Executor {
     /// Read what each phase of the last step wrote.
     fn phase_outputs(&mut self) -> PhaseOutputs;
 
-    /// Run `iterations` of the power iteration on `M⁻¹K`, the elastic
-    /// stiffness at the current state, and return the Rayleigh quotient,
-    /// an estimate of `ω_el²` from below.
+    /// Run `iterations` of the power iteration on `M⁻¹(K + βC)`, with
+    /// `β = viscous_weight`, and return the [`TopMode`] of its last vector.
     ///
     /// Each call starts from the same fixed vector. Started from the last
     /// call's vector instead, the iteration stayed on a lower mode once the
     /// tube was loaded, and read up to 3.9 % low (plan §16m).
     ///
-    /// `K v` is the finite difference of phases 1–5 in the direction `v`,
-    /// with the step `perturbation` in the largest nodal component. Held and
-    /// constrained directions are excluded.
-    fn elastic_rayleigh_quotient(&mut self, iterations: usize, perturbation: f64) -> f64;
+    /// `K v` is the finite difference of the elastic force phases in the
+    /// direction `v`, with the step `perturbation` in the largest nodal
+    /// component; `C v` is minus the viscous forces at velocities `v`. Held
+    /// and constrained directions are excluded.
+    fn estimate_top_mode(
+        &mut self,
+        iterations: usize,
+        perturbation: f64,
+        viscous_weight: f64,
+    ) -> TopMode;
 }
 
 /// Why an [`Obstacle`] was rejected.

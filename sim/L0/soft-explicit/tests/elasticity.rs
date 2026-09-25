@@ -368,6 +368,7 @@ fn f32_pipeline(
             mu: narrow(m.mu),
             lambda: narrow(m.lambda),
             c2: narrow(m.c2),
+            viscosity: narrow(m.viscosity),
             density: narrow(m.density),
         };
         let pressure = single::element_pressure(e.map(|n| pressures[n as usize]));

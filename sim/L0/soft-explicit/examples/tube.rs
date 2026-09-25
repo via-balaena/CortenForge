@@ -4,12 +4,13 @@
 //! gates, the loaded step factor, and the run's cost.
 //!
 //! `cargo run --release -p sim-soft-explicit --example tube --
-//! <10k|50k|100k> <case> <friction> <f32|f64> <grid> <hold> <loading> <stiffness>`
-//! (defaults: 10k 0 0 f32 20 0.2 10 1). `case` indexes
+//! <10k|50k|100k> <case> <friction> <f32|f64> <grid> <hold> <loading> <stiffness> <viscous>`
+//! (defaults: 10k 0 0 f32 20 0.2 10 1, and Ecoflex 00-30's `η/μ`). `case` indexes
 //! `fixtures::golden::THICK_TUBE`; the grid's cell is A/`grid`; `hold` is
 //! the hold after loading, in seconds (plan §15b: 0.2); `loading` is the
 //! loading time in shear periods `T_s` of the unscaled material (plan §15c's
-//! ladder starts at 10); `stiffness` multiplies μ, and so λ (plan 15d.10).
+//! ladder starts at 10); `stiffness` multiplies μ, and so λ and the viscosity
+//! (plan 15d.10); `viscous` is the Kelvin–Voigt `η/μ` in seconds (plan §16p).
 //! With friction on the free tube, a frictionless companion run gives the
 //! Coulomb push ratio (plan 15d.7). Set `RAYON_NUM_THREADS` so the times are comparable.
 
@@ -23,7 +24,8 @@ use sim_soft_explicit::executor::{Executor, Obstacle};
 use sim_soft_explicit::f64 as shared;
 use sim_soft_explicit::fixtures::golden::THICK_TUBE;
 use sim_soft_explicit::fixtures::tube::{
-    Insertion, Mesh, Tube, TubeResult, TubeRun, Walls, node_pressures, tributary_area,
+    ECOFLEX_00_30_VISCOUS_TIME, Insertion, Mesh, Tube, TubeResult, TubeRun, Walls, node_pressures,
+    tributary_area,
 };
 use sim_soft_explicit::stepping::StepperConfig;
 
@@ -60,6 +62,9 @@ fn request() -> Request {
             mesh,
             case: THICK_TUBE[case_index],
             mu: stiffness * MU,
+            viscous_time: args
+                .get(8)
+                .map_or(ECOFLEX_00_30_VISCOUS_TIME, |v| v.parse().unwrap()),
             density: DENSITY,
             insertion,
             window: 0.1,
@@ -82,7 +87,8 @@ fn estimate_seconds(model: &ExplicitModel, obstacle: &Obstacle, wide: bool) -> f
     };
     let perturbation = executor.epsilon().sqrt() * executor.shortest_edge();
     let started = Instant::now();
-    executor.elastic_rayleigh_quotient(iterations, perturbation);
+    // Any positive weight costs the viscous evaluations a run's estimates make.
+    executor.estimate_top_mode(iterations, perturbation, 1.0);
     started.elapsed().as_secs_f64()
 }
 

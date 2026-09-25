@@ -10,14 +10,15 @@ use sim_soft_explicit::executor::Snapshot;
 use sim_soft_explicit::f64::Material;
 use sim_soft_explicit::fixtures::golden::THICK_TUBE;
 use sim_soft_explicit::fixtures::tube::{
-    BakeError, BandReading, Insertion, Mandrel, Mesh, Tube, TubeRun, Walls, node_pressures,
-    read_band,
+    BakeError, BandReading, ECOFLEX_00_30_VISCOUS_TIME, Insertion, Mandrel, Mesh, Tube, TubeRun,
+    Walls, node_pressures, read_band,
 };
 
 const SILICONE: Material = Material {
     mu: 23.0e3,
     lambda: 23.0e3 * 2.0 * 0.49 / (1.0 - 2.0 * 0.49),
     c2: 0.0,
+    viscosity: 0.0,
     density: 1070.0,
 };
 
@@ -280,11 +281,12 @@ fn the_golden_values_are_the_plans() {
 }
 
 #[test]
-fn a_runs_yeoh_term_comes_from_its_case() {
+fn a_runs_yeoh_term_comes_from_its_case_and_its_viscosity_from_its_time() {
     let run = |case| TubeRun {
         mesh: Mesh::TenK,
         case,
         mu: 23.0e3,
+        viscous_time: ECOFLEX_00_30_VISCOUS_TIME,
         density: 1070.0,
         insertion: Insertion::plan(1.0),
         window: 0.1,
@@ -293,6 +295,8 @@ fn a_runs_yeoh_term_comes_from_its_case() {
     };
     assert_eq!(run(THICK_TUBE[2]).material().c2, 0.0);
     assert!((run(THICK_TUBE[5]).material().c2 - 2050.0).abs() <= 1e-9);
+    // Ecoflex 00-30's viscosity, 7 Pa·s (plan §16p), scales with μ.
+    assert!((run(THICK_TUBE[2]).material().viscosity - 7.0).abs() <= 1e-12);
 }
 
 #[test]

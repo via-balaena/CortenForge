@@ -8,7 +8,9 @@
 use sim_soft_explicit::cpu;
 use sim_soft_explicit::executor::{Executor, Obstacle, Snapshot};
 use sim_soft_explicit::fixtures::golden::THICK_TUBE;
-use sim_soft_explicit::fixtures::tube::{Insertion, Mandrel, Mesh, Tube, TubeRun, Walls};
+use sim_soft_explicit::fixtures::tube::{
+    ECOFLEX_00_30_VISCOUS_TIME, Insertion, Mandrel, Mesh, Tube, TubeRun, Walls,
+};
 use sim_soft_explicit::stepping::StepperConfig;
 use sim_soft_explicit::{ExplicitModel, f64::Material};
 
@@ -24,6 +26,7 @@ fn k2_run() -> TubeRun {
         mesh: Mesh::TenK,
         case: THICK_TUBE[1],
         mu: MU,
+        viscous_time: ECOFLEX_00_30_VISCOUS_TIME,
         density: DENSITY,
         insertion: Insertion::plan(10.0 * TubeRun::shear_period(MU, DENSITY)),
         window: 0.1,
@@ -54,8 +57,8 @@ fn power_iteration_errors(state: &Snapshot, time: f64, label: &str) -> (f64, f64
     };
     let mut reference = cpu::f64::CpuExecutor::new(&model, &obstacle).unwrap();
     let p = place(&mut reference);
-    let converged = reference.elastic_rayleigh_quotient(4000, p);
-    let further = reference.elastic_rayleigh_quotient(6000, p);
+    let converged = reference.estimate_top_mode(4000, p, 0.0).omega_squared;
+    let further = reference.estimate_top_mode(6000, p, 0.0).omega_squared;
     let drift = further / converged - 1.0;
     assert!(
         drift.abs() <= 1e-4,
@@ -64,10 +67,10 @@ fn power_iteration_errors(state: &Snapshot, time: f64, label: &str) -> (f64, f64
     let iterations = StepperConfig::new(0.0).power_iterations;
     let mut wide = cpu::f64::CpuExecutor::new(&model, &obstacle).unwrap();
     let p = place(&mut wide);
-    let wide_error = wide.elastic_rayleigh_quotient(iterations, p) / further - 1.0;
+    let wide_error = wide.estimate_top_mode(iterations, p, 0.0).omega_squared / further - 1.0;
     let mut narrow = cpu::f32::CpuExecutor::new(&model, &obstacle).unwrap();
     let p = place(&mut narrow);
-    let narrow_error = narrow.elastic_rayleigh_quotient(iterations, p) / further - 1.0;
+    let narrow_error = narrow.estimate_top_mode(iterations, p, 0.0).omega_squared / further - 1.0;
     eprintln!(
         "MARGIN power iteration on the 10k tube, {label} ({iterations} iterations): f64 {wide_error:+e}, f32 {narrow_error:+e} (bar 0.05; reference drift {drift:e})"
     );

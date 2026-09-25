@@ -172,6 +172,20 @@ fn an_out_of_range_material_is_rejected() {
         ),
         (
             shared::Material {
+                viscosity: -1.0,
+                ..SILICONE
+            },
+            "viscosity",
+        ),
+        (
+            shared::Material {
+                viscosity: f64::NAN,
+                ..SILICONE
+            },
+            "not finite",
+        ),
+        (
+            shared::Material {
                 density: 0.0,
                 ..SILICONE
             },

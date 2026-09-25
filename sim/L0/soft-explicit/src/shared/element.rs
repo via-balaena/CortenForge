@@ -93,6 +93,29 @@ pub const fn tet4_elastic_forces(
     tet4_nodal_forces(stress, rest_edge_inverse, rest_volume)
 }
 
+/// The element's viscous forces, from its nodes' displacements `u` and
+/// velocities `v`: the deviatoric Kelvin–Voigt stress
+/// (`first_piola_viscous`) at `Ḟ = D(v) D_rest⁻¹`.
+///
+/// They oppose the element's rate of shape change: their power, `−f · v`, is
+/// the element's viscous dissipation and never negative.
+#[must_use]
+pub const fn tet4_viscous_forces(
+    u: [R; 12],
+    v: [R; 12],
+    rest_edge_inverse: [R; 9],
+    rest_volume: R,
+    material: Material,
+) -> [R; 12] {
+    let h = tet4_displacement_gradient(u, rest_edge_inverse);
+    let rate = tet4_displacement_gradient(v, rest_edge_inverse);
+    tet4_nodal_forces(
+        first_piola_viscous(h, rate, material.viscosity),
+        rest_edge_inverse,
+        rest_volume,
+    )
+}
+
 /// The μ terms' energy in one element, `V Ψ_μ(F)`.
 #[must_use]
 pub fn tet4_energy_mu_terms(
