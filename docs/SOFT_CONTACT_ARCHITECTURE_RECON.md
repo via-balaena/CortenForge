@@ -1979,3 +1979,41 @@ on every case at 10k, 50k and 100k, keeps the validity gates in §15b's run, rea
 within 0.35 %, and costs the same wall time as P. Every A-law fails. Open: the long-hold instability of
 the frictionless confined tube at 50k, and why both laws' Coulomb push reads 11–13 % low. The adoption
 is Jon's call (2026-09-25).
+
+**The long-hold instability, chased (2026-09-25).** The frictionless confined tube at 50k with a 1.0 s
+hold, under K. Each row changed one thing in the executor's obstacle lookup (a diagnostic, not kept):
+
+| What the contact reads | Kinetic energy through the hold | Contact work in the hold |
+|---|---|---|
+| the A/20 grid (trilinear distance, finite-difference normal) | grows ~400×, then levels near KE/IE 0.5 % | rises 9 mJ |
+| the exact mandrel | decays to 4e-9 J | flat |
+| the exact distance, the grid's normal | decays to 4e-9 J | flat |
+| the grid's distance, its exact trilinear gradient | grows from t ≈ 1.4 s | rises |
+| the exact distance plus smooth bumps, 5 µm at the cell spacing | grows | rises 28 mJ |
+| the same, 1 µm and 0.2 µm | decays | flat |
+| a tricubic (Catmull–Rom) interpolant of the same A/20 grid, and its gradient | decays to 9e-9 J | flat |
+
+- **The energy comes from the contact:** the mandrel is stationary and frictionless in the hold, yet the
+  contact does positive work, 9 mJ over the hold (3 % of the stored energy).
+- **The cause is the grid's distance, not its normal and not the law:** the trilinear interpolant of a
+  curved surface is off by up to 5.7 µm here, and bumps that large feed the contact energy; bumps of 1 µm
+  and less do not. The step, the normal, the precision and the contact law are ruled out above.
+- **Not isolated:** how a stationary, bumpy surface feeds energy through the kinematic correction. A
+  one-bead model pressed onto a bumpy floor gains none, so it takes something the one-bead model lacks.
+  Why A/40 (bumps a quarter the size) pumps harder than A/20 is not explained either.
+- **The loop's step estimate reads 1.46 % low** in this confined state at 50k (100 iterations against a
+  converged f64 estimate), so the step is at 0.906 of the limit instead of 0.9. Recorded; it is not this
+  instability's cause.
+
+**A tricubic interpolant of the grid** (Catmull–Rom, 64 grid values per lookup, its exact gradient), on
+the standard runs:
+- G2 against the true surface falls from 3.8–5.6 µm to 0.0–0.9 µm (10k, 50k), since its error on this
+  mandrel is far smaller (about 0.05 µm at A/20, arithmetic).
+- K's extra kinetic energy on the free tube goes: KE/IE and balance 0.16 % and 0.04 % at 10k (P's level).
+- The band's node scatter falls from 1.01 % to 0.15 % (10k) and 2.23 % to 0.05 % (50k): the grid's bumps
+  were most of it.
+- The confined K2 moves closer to the oracle: −0.18 % and −0.12 % at 10k and 50k.
+- Its cost is not measured: the diagnostic read an environment variable at every lookup. Today's lookup
+  fetches 56 grid values (seven trilinear probes); tricubic fetches 64.
+- It departs from step 1's decision that the shared lookup matches `cf-geometry`'s clamped trilinear
+  lookup (§15g step 1, the conformance test). Adopting it is Jon's call (2026-09-25).
