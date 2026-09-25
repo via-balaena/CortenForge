@@ -1,0 +1,32 @@
+# sim-soft-explicit — Layer-0 explicit soft-body solver, minus the GPU.
+# Full story in src/lib.rs.
+
+[package]
+name = "sim-soft-explicit"
+description = "Explicit hyperelastic soft-body solver core: the shared CPU/GPU physics, written once, and the lowered model layout"
+keywords = ["fem", "explicit", "hyperelastic", "soft-body", "simulation"]
+categories = ["simulation", "science", "mathematics"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[package.metadata.cortenforge]
+tier = "L0"
+
+[dependencies]
+# Derive macro for the model's error type.
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# Regenerates the shared math's WGSL in the freshness test.
+sim-wgsl-gen = { workspace = true }
+# The CPU SDF lookup the shared one must agree with (conformance test).
+cf-geometry = { workspace = true }
+# Point types for building the reference SDF grid.
+nalgebra = { workspace = true }
+
+[lints]
+workspace = true

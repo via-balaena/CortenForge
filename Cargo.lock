@@ -10243,6 +10243,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "sim-soft-explicit"
+version = "1.0.0"
+dependencies = [
+ "cf-geometry",
+ "nalgebra 0.34.2",
+ "sim-wgsl-gen",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "sim-therm-env"
 version = "1.0.0"
 dependencies = [
@@ -10296,6 +10306,17 @@ dependencies = [
  "serde",
  "sim-core",
  "sim-mjcf",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "sim-wgsl-gen"
+version = "1.0.0"
+dependencies = [
+ "naga",
+ "proc-macro2",
+ "syn 2.0.117",
+ "tempfile",
  "thiserror 2.0.18",
 ]
 

@@ -619,7 +619,7 @@ solid"*).
 | Crate | Tier | Status | Holds |
 |---|---|---|---|
 | **`sim-soft-explicit`** | L0 | new | **The explicit solver, minus the GPU.** The executor trait. The explicit model and state data layout (flat arrays; `#[repr(C)]` parameter blocks with no `vec3`). The shared math (14b), written once in the loop-free subset and compiled at f32 and f64, with its committed generated WGSL and a freshness test. The **CPU executor** (rayon on native, sequential on wasm32, as `newton.rs` does). The **stepping loop**, which owns the order of phases within a step, batching, the stable time step and mass scaling, and the energy monitors and stop rule, over any executor. A `test-fixtures` feature with small lowered meshes, as `sim-core` has. |
-| **`sim-wgsl-gen`** | L0 | new | The §13 translator: `syn` and `quote`, plus `naga` to validate its output, on the physics side's naga version. A `write` command regenerates the committed WGSL, and the freshness test names that command when it fails. A dev-dependency of `sim-soft-explicit`. |
+| **`sim-wgsl-gen`** | L0 | new | The §13 translator: `syn` (with `proc-macro2` for source positions), plus `naga` to validate its output, on the physics side's naga version. A `write` command regenerates the committed WGSL, and the freshness test names that command when it fails. A dev-dependency of `sim-soft-explicit`. |
 | **`sim-soft`** | L0 | grows | The model as today, plus **lowering** it to `sim-soft-explicit`'s data, including resampling the insertion path evenly in time. **Baking the obstacle SDF from its triangle mesh** (flood-fill sign and the Gaussian pre-smooth, moved from `tools/cf-sim-research`). The **scenarios and readouts in model terms** (contact pressure by region). The test of its `Material` impls against the shared math (F3). The implicit Newton solver stays as it is. |
 | **`sim-gpu`** | L0-io | rebuilt | **The GPU executors.** It *extracts* shared infrastructure from today's rigid code: the device context (`context.rs`), and chunked submission, which today sits inside the rigid `step()` (`pipeline/orchestrator.rs:28-37`), and the contact-list tools (the atomic append; the CAS float-add if scatter is chosen). It adds `soft`, the explicit executor, whose hand-written entry points fetch, gather and scatter around the generated WGSL. It holds the **GPU-vs-CPU conformance tests** against `sim-soft-explicit`'s CPU executor. The rigid pipeline stays as it is until its own redesign, keeping the parts only it uses. It depends on `sim-soft-explicit` and `sim-core`, not on `sim-soft`, and has its own wgpu version (13e). |
 | `sim-coupling` | L1 | later | Two-way explicit rigid–soft coupling on the CPU (subcycling, F5). **The fit test does not need it**: the scan is a kinematic pose, applied in the contact law. GPU rigid–soft exchange lives in `sim-gpu`, on one device. |
@@ -793,7 +793,7 @@ contact pressure within 5 % at ν ≥ 0.49? And can it run a 100k-tet insertion 
 |---|---|---|
 | **K1 speed** | a 100k-tet insertion at ν = 0.49, GPU executor, **≤ 2 min** | wall-clock from setup to the last readback, including loading, hold and the measurement window. A first bar on the tube, not derived from D4; build step 2 derives the product's budget |
 | **K2 accuracy** | band pressure within **5 %** of the oracle, **both raw and gap-corrected** (15d.1) | same material, free ends, frictionless, the pinned SDF (15c). At ν 0.49 and 0.495, for (λ_a, B/A) = (1.1, 2) and (1.3, 2), on the 100k mesh |
-| **K3 precision** | CPU f32 against CPU f64, same executor: band pressure within **0.5 %** (frictionless, 50k), and the Coulomb push's reaction within **0.5 %** (μ_f 0.3, 10k) | step 2 of the build (15g), before any GPU code. This is the fit plan's *"precision spike on contact before any GPU contact code"* |
+| **K3 precision** | CPU f32 against CPU f64, same executor: band pressure within **0.5 %** (frictionless, 50k), and the Coulomb push's reaction within **0.5 %** (μ_f 0.3, 10k). *Amended 2026-09-24 (PR #965 review):* the band pressure also within 0.5 % at every pair-averaged ring level (15d.1), not only in the mean, since D1's 95th-percentile reading depends on the local values | step 2 of the build (15g), before any GPU code. This is the fit plan's *"precision spike on contact before any GPU contact code"* |
 | **K4 robustness** | J > 0 in every element at every step of every valid run | explicit check (§13d rule 2). Any J ≤ 0 in a valid run is a failure. A run that breaks a validity gate is invalid, and K4 does not judge it |
 | **K5 product readings** | the peak push force during entry and the seated 95th-percentile pressure (fit plan D1's readings) change ≤ 5 % from 50k to 100k | the tube's entry is a sharp edge, like the product's mouth. **A gate on the verdict's design, not on the solver:** if it fails, D1's readings or the lip radius are revisited before step 7 |
 | **K6 friction** | frictional ironing at μ 0.2 (§7 rung 2): the reaction-force histories within 5 % of the published curves ([arXiv 1903.05859](https://arxiv.org/pdf/1903.05859)) | CPU, build step 2. Friction's only external reference: the Coulomb push (15d.7) checks consistency only |
@@ -973,8 +973,8 @@ contact pressure within 5 % at ν ≥ 0.49? And can it run a 100k-tet insertion 
    interleaved configurations).
 3. **Energies:** kinetic; internal, ΣΨV from the shared math; external and contact work. KE/IE ≤ 5 %.
 4. **Precision (K3):**
-   - CPU f32 against CPU f64, in build step 2: band pressure on the 50k mesh, and the Coulomb push on
-     the 10k mesh;
+   - CPU f32 against CPU f64, in build step 2: band pressure on the 50k mesh (its mean, and each
+     pair-averaged ring level, as for flatness in 15d.1), and the Coulomb push on the 10k mesh;
    - later, the GPU f32 against the CPU f64, as a conformance check;
    - TLED's experience: single precision did not hurt convergence, *"no accumulation of errors"* in
      total Lagrangian form (Joldes et al., PMC3003932).
@@ -1007,8 +1007,8 @@ contact pressure within 5 % at ν ≥ 0.49? And can it run a 100k-tet insertion 
      (de Souza Neto, Pires & Owen 2005).
   2. Cyclic J smoothing, which *"suppresses the pressure oscillation"* (Onishi et al. 2017).
   3. Split-energy ANP. This would need the oracle rerun with the split W.
-- **IANP is not a fallback for the one-material tube.** It differs from ANP only at material interfaces
-  (PMC4477870 §2, §4), so it is the interface rule for layered products (15g step 1).
+- **IANP is not a fallback for the one-material tube:** it changes the rule only where materials meet.
+  Which interface rule layered products use is decided in step 6 (15g step 1).
 
 ### 15f. The executor trait's phases
 
@@ -1040,13 +1040,42 @@ Each item is one PR with its own tests and a done-when.
    - The shared math of §14b: the selective-ANP pieces, Ψ, the J check, the Tet4 force, the per-node
      update, the SDF query, the contact law and pose interpolation. **Both neo-Hookean and Yeoh**
      (`base_mold` is Yeoh).
-   - Where materials meet, the nodal pressure is averaged per element (IANP, Joldes 2009). Inside one
-     material it equals selective ANP.
+   - Where materials meet: **decided in the build, provisionally.** Each node's pressure uses the
+     rest-volume-weighted λ of the elements around it (`ExplicitModel::node_lambdas`).
+     - Inside one material that is selective ANP exactly. Across materials the forces stay the exact
+       gradient of an energy, to 2e-9 relative on a two-material block (`tests/elasticity.rs`).
+     - It is not Joldes' IANP. IANP (PMC4477870, eq. 18) averages each element's own pressure, at its
+       own J, into one nodal pressure. The paper's volumetric law is linear in J; ours is not, and for
+       ours eq. 18 taken literally would not reduce to selective ANP inside one material.
+     - Choosing between them needs a two-layer reference, so it moves to step 6 (bonded layers).
+   - **Displacements, as §6 requires.** The shared math takes nodal displacements, computes J − 1 by
+     expansion in the displacement gradient, and gathers volume changes, not volumes. It evaluates
+     ln(1 + x) as a series of its own, so both backends compute the same expression.
+     - Measured on a block 0.12 m from the origin at the band's pressure: the largest nodal f32
+       difference is at most 2.0e-5 of that pressure up to ν 0.4995. With f32 positions the same test
+       reads 4.6e-3 at ν 0.49 (`tests/elasticity.rs`,
+       `f32_nodal_pressure_holds_far_from_the_origin_at_high_nu`).
+     - This was caught by the PR #965 review; step 1 had been built on positions.
+   - **Poses are interpolated linearly and renormalized, not spherically.** The gap to spherical
+     interpolation is 4.0e-6 rad at a 0.1 rad step and scales with the step cubed (`tests/motion.rs`).
    - Compiled at f32 and f64. The freshness test, made to fail once.
    - A conformance test of the shared SDF lookup against `cf-geometry`'s `distance_clamped` and
      `gradient_clamped` in f64. The largest difference over the test points must be ≤ 1e-9 × the largest
      value. The degenerate-gradient threshold it adopts is
      recorded here.
+     - **Adopted: 1e-10**, the CPU path's (`sdf.rs:524`), at both precisions.
+     - Measured on two grids. `cargo test -p sim-soft-explicit --test sdf_conformance -- --nocapture`
+       prints the margins.
+       - An offset grid, over 4,567 points inside the grid and on and past every face: the largest
+         distance difference is 1.7e-18 against a bar of 1.3e-11, and the largest normal difference
+         3.6e-15.
+       - A grid where `cf-geometry`'s clamp, done in world units, rounds past its far faces. Of 4,324
+         points, 1,240 get its largest value and +z, and 1,171 more a skewed normal (one gradient probe
+         rounds past). All lie within half a cell of a far face or past one. The shared lookup reads the
+         face there, as `cf-geometry`'s own doc says a clamped point should. Elsewhere: 2.8e-17 for the
+         distance and 1.4e-15 for the normal.
+       - Fixing `cf-geometry`'s rounding is a separate change: it moves the fit test's current CPU path
+         and the spinal-unit model's.
    - Both crates added to tests-debug shard 3.
    - *Done when:* CI runs the new tests, and the freshness test has failed once on a deliberate edit.
 2. **The oracle as golden values, the tube fixture, the CPU executor and the stepping loop.**
@@ -1054,6 +1083,13 @@ Each item is one PR with its own tests and a done-when.
    - **K3 runs here**, including a CPU Coulomb push at 10k. K2 runs on the CPU at 10k and 50k, and so
      does K5's convergence (10k to 50k).
    - **K6, frictional ironing** (§7 rung 2), runs on the CPU.
+     - **Open, to settle in step 2's design:** the reference (arXiv 1903.05859, §5.1.1) is contact
+       between *"two deformable bodies"*, a neo-Hookean die on a neo-Hookean slab, in 2D.
+       The shared contact law is a node against a rigid SDF. The choices are a rigid die with its
+       error bounded, a reference with a rigid indenter, or soft-on-soft contact brought forward.
+   - **Step 2 adds per-direction kinematic constraints to the shared math.** The confined case needs a
+     radial constraint and an axial hold, and reproducing a 2D reference in 3D needs an out-of-plane
+     condition; step 1 holds whole nodes only.
    - **One Yeoh case** runs, with the oracle extended by the C₂ term.
    - **The confined case (15d.8) and a product-level contact pressure** run on the CPU, and record the
      raw error and the largest gap.
@@ -1117,7 +1153,8 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
    - The boundary options (§9 decisions 10–11):
      - free;
      - cased, as a radial kinematic constraint;
-     - bonded, through per-element materials;
+     - bonded, through per-element materials, with the interface rule chosen against a two-layer
+       reference (step 1);
      - mounted at the closed end;
      - hand-held, as a soft, distributed support.
    - The F3 conformance test of `Material` against the shared math lands here, since `sim-soft` takes
