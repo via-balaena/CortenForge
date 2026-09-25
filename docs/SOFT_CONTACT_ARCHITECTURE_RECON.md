@@ -660,9 +660,9 @@ Everything both executors must compute identically, as pure per-element or per-n
   - *Amended 2026-09-25 (§16o): the query is a tricubic (Catmull–Rom) interpolant of 64 grid values
     and its exact gradient, the grid extended linearly past its faces; `sdf_grid_index` keeps the index
     flattening in the shared math. The pre-smooth was tuned for the trilinear lookup. Whether tricubic
-    still needs it, and its surface bias against G2 (the code's own estimate is σ²κ/2, about 0.11 mm on a
-    40 mm radius at a 3 mm grid, `insertion_sim.rs:1686–1690`, against G2's 0.05 mm on `base_mold`), are
-    2d's to measure.*
+    still needs it, and its surface bias against G2 (the code's own estimate is σ²κ/2 at a 3 mm grid:
+    about 0.11 mm on a 40 mm radius and 0.9 mm on 5 mm-radius features, `insertion_sim.rs:1686–1690`,
+    against G2's 0.05 mm on `base_mold`), are 2d's to measure.*
 - **Time integration:** the per-node explicit update (velocity, position, damping, mass scaling,
   kinematic boundary conditions), and the per-element stable time-step estimate.
 - **The obstacle's pose** between two time samples, by interpolation. Lowering resamples the path
@@ -2097,7 +2097,8 @@ On the adopted code (`5e6b7281`; frictionless, A/20, §15b's 0.2 s hold unless n
   100k), and more than the penalty's (above). The penalty took 9 % more steps, so a run takes about as
   long: 53.3 s against 51.9 s at 100k.
 - With friction (μ_f 0.3, 10k, λ_a 1.1), at `77f51dc6`: G2 0.0 µm, balance 0.50 %, and the Coulomb push
-  0.893, still 11 % low (open, 2b). The band reads +3.38 % against the frictionless oracle with λ_z
+  0.893, still 11 % low; on λ_a 1.3 it reads 0.786 (at `dfc759d6`), so the shortfall is 11–21 % and
+  varies with the case (open, 2b). The band reads +3.38 % against the frictionless oracle with λ_z
   −1.75 %: K2's λ_z gate (0.5 %) is for frictionless runs, so this is not a K2 reading. The confined case
   reads −0.18 % with friction too.
 - **A friction run is sensitive to a change far below its readings.** Dividing the Coulomb limit by the
@@ -2113,7 +2114,10 @@ On the adopted code (`5e6b7281`; frictionless, A/20, §15b's 0.2 s hold unless n
 **Open, for later steps:**
 - **The GPU executor (step 4):** the law takes two lookups per surface node per step (the current
   position, for the normal and G2; the predicted one, for the depth), 128 grid values, and
-  `sdf_tricubic` takes its 64 values by value. Its GPU cost is not measured.
+  `sdf_tricubic` takes its 64 values by value. Its GPU cost is not measured. The contact phase also
+  reads the integrator's state (each node's velocity, elastic force, inverse mass, constraints, and α)
+  and keeps a per-surface-node sample buffer, which bears on step 4's bind layout and on whether contact
+  is fused with the integration.
 - **The product (2d):** G2 there is the scan grid's own error, and the pre-smooth is sized against it
   (14b's note). The verdict's frictionless run (§15h) is the configuration in which the long-hold
   pumping appeared on the tube, and bumps in the grid's own samples (the scan's facets) are not removed
