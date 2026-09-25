@@ -48,6 +48,7 @@
 
 pub mod cpu;
 pub mod executor;
+pub mod fixtures;
 mod model;
 pub mod stepping;
 

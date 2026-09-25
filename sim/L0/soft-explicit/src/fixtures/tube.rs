@@ -1,0 +1,545 @@
+//! Plan §15b's tube on a mandrel: the mesh, the mandrel's distance field, the
+//! insertion, and the band readout K2 judges.
+//!
+//! Lengths are in metres, pressures in pascals. The tube's axis is `z`; its
+//! entry is at `z = 0` and its far end at `z = L`. The mandrel enters from
+//! `z < 0`, moving along `+z`.
+
+use std::f64::consts::TAU;
+
+use crate::executor::{Obstacle, Snapshot};
+use crate::f64::{Material, Pose, SdfGridLayout, tet4_volume, triangle_area};
+use crate::{ExplicitModel, ModelError};
+
+/// One of plan §15c's pre-registered meshes (`n_r × n_θ × n_z` cells).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mesh {
+    /// 3 × 32 × 17 cells, 9 792 elements.
+    TenK,
+    /// 5 × 48 × 35 cells, 50 400 elements.
+    FiftyK,
+    /// 6 × 64 × 43 cells, 99 072 elements.
+    HundredK,
+}
+
+/// How the tube is held (plan §15b, 15d.8).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Walls {
+    /// The far end held, the entry and the outer wall free: the free-ends
+    /// oracle applies (plan §15b).
+    Free,
+    /// The outer wall held radially by a rigid case, and all axial motion
+    /// held: the oracle's cased wall in plane strain (plan 15d.8).
+    Cased,
+}
+
+/// A structured annular mesh, with nodes exactly on circles.
+///
+/// Each cell is split into six tetrahedra around the same body diagonal (the
+/// Kuhn split of `hand_built.rs`), so shared faces match, across the wrap in
+/// θ too.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Tube {
+    /// The inner radius `A`.
+    pub inner_radius: f64,
+    /// The outer radius `B`.
+    pub outer_radius: f64,
+    /// The length `L`.
+    pub length: f64,
+    /// Cells through the wall.
+    pub radial: usize,
+    /// Cells around.
+    pub circumferential: usize,
+    /// Cells along.
+    pub axial: usize,
+}
+
+impl Tube {
+    /// Plan §15b's tube (A 10 mm, B 20 mm, L 120 mm) on `mesh`.
+    #[must_use]
+    pub const fn plan(mesh: Mesh) -> Self {
+        let (radial, circumferential, axial) = match mesh {
+            Mesh::TenK => (3, 32, 17),
+            Mesh::FiftyK => (5, 48, 35),
+            Mesh::HundredK => (6, 64, 43),
+        };
+        Self {
+            inner_radius: 0.010,
+            outer_radius: 0.020,
+            length: 0.120,
+            radial,
+            circumferential,
+            axial,
+        }
+    }
+
+    /// The number of nodes.
+    #[must_use]
+    pub const fn node_count(&self) -> usize {
+        (self.radial + 1) * self.circumferential * (self.axial + 1)
+    }
+
+    /// The number of elements.
+    #[must_use]
+    pub const fn element_count(&self) -> usize {
+        6 * self.radial * self.circumferential * self.axial
+    }
+
+    /// The node at radial level `i`, angle index `j` (taken around the
+    /// circle) and axial level `k`.
+    // The largest planned mesh has 19 712 nodes, far inside a u32.
+    #[allow(clippy::cast_possible_truncation)]
+    #[must_use]
+    pub const fn node(&self, i: usize, j: usize, k: usize) -> u32 {
+        let j = j % self.circumferential;
+        ((k * self.circumferential + j) * (self.radial + 1) + i) as u32
+    }
+
+    /// A node's `(i, j, k)` levels.
+    #[must_use]
+    pub const fn levels(&self, node: usize) -> (usize, usize, usize) {
+        let n = node;
+        let i = n % (self.radial + 1);
+        let rest = n / (self.radial + 1);
+        (i, rest % self.circumferential, rest / self.circumferential)
+    }
+
+    /// The radius, angle and height of levels `(i, j, k)`.
+    // Level counts are small; `usize → f64` is exact for them.
+    #[allow(clippy::cast_precision_loss)]
+    #[must_use]
+    pub fn cylindrical(&self, i: usize, j: usize, k: usize) -> (f64, f64, f64) {
+        let wall = self.outer_radius - self.inner_radius;
+        (
+            self.inner_radius + wall * i as f64 / self.radial as f64,
+            TAU * j as f64 / self.circumferential as f64,
+            self.length * k as f64 / self.axial as f64,
+        )
+    }
+
+    /// Every node's rest position.
+    #[must_use]
+    pub fn rest_positions(&self) -> Vec<[f64; 3]> {
+        let mut positions = vec![[0.0; 3]; self.node_count()];
+        for k in 0..=self.axial {
+            for j in 0..self.circumferential {
+                for i in 0..=self.radial {
+                    let (r, theta, z) = self.cylindrical(i, j, k);
+                    positions[self.node(i, j, k) as usize] = [r * theta.cos(), r * theta.sin(), z];
+                }
+            }
+        }
+        positions
+    }
+
+    /// Every element, positively oriented.
+    #[must_use]
+    pub fn elements(&self) -> Vec<[u32; 4]> {
+        let positions = self.rest_positions();
+        let orders = [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ];
+        let mut elements = Vec::with_capacity(self.element_count());
+        for k in 0..self.axial {
+            for j in 0..self.circumferential {
+                for i in 0..self.radial {
+                    for order in orders {
+                        let mut corner = [i, j, k];
+                        let mut tet = [self.node(i, j, k); 4];
+                        for (slot, &axis) in order.iter().enumerate() {
+                            corner[axis] += 1;
+                            tet[slot + 1] = self.node(corner[0], corner[1], corner[2]);
+                        }
+                        let x = tet.map(|n| positions[n as usize]);
+                        let volume = tet4_volume([
+                            x[0][0], x[0][1], x[0][2], x[1][0], x[1][1], x[1][2], x[2][0], x[2][1],
+                            x[2][2], x[3][0], x[3][1], x[3][2],
+                        ]);
+                        if volume < 0.0 {
+                            tet.swap(1, 2);
+                        }
+                        elements.push(tet);
+                    }
+                }
+            }
+        }
+        elements
+    }
+
+    /// The lowered model in one `material`, held as `walls` says.
+    ///
+    /// # Errors
+    /// A [`ModelError`] if the material is out of range.
+    pub fn model(&self, material: Material, walls: Walls) -> Result<ExplicitModel, ModelError> {
+        let positions = self.rest_positions();
+        let elements = self.elements();
+        let count = elements.len();
+        let held: Vec<bool> = (0..self.node_count())
+            .map(|n| walls == Walls::Free && self.levels(n).2 == self.axial)
+            .collect();
+        let model = ExplicitModel::new(positions, elements, vec![material; count], held)?;
+        match walls {
+            Walls::Free => Ok(model),
+            Walls::Cased => {
+                let constraints = (0..self.node_count())
+                    .map(|n| {
+                        let (i, j, _) = self.levels(n);
+                        let (_, theta, _) = self.cylindrical(i, j, 0);
+                        let radial = if i == self.radial {
+                            [theta.cos(), theta.sin(), 0.0]
+                        } else {
+                            [0.0; 3]
+                        };
+                        [[0.0, 0.0, 1.0], radial]
+                    })
+                    .collect();
+                model.with_constraints(constraints)
+            }
+        }
+    }
+
+    /// The inner-surface nodes with rest height in `[from, to]`: plan
+    /// §15b's band is `[20, 60]` mm.
+    #[must_use]
+    pub fn band(&self, from: f64, to: f64) -> Vec<u32> {
+        let mut nodes = Vec::new();
+        for k in 0..=self.axial {
+            let (_, _, z) = self.cylindrical(0, 0, k);
+            if (from..=to).contains(&z) {
+                nodes.extend((0..self.circumferential).map(|j| self.node(0, j, k)));
+            }
+        }
+        nodes
+    }
+}
+
+/// A rigid mandrel: a cylinder with a hemispherical nose of its own radius.
+/// In its body frame the tip is at the origin and the axis runs along `−z`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Mandrel {
+    /// The radius `a`.
+    pub radius: f64,
+}
+
+impl Mandrel {
+    /// The exact signed distance to the surface at a body-frame point;
+    /// negative inside.
+    #[must_use]
+    pub fn distance(&self, p: [f64; 3]) -> f64 {
+        let nose_centre = -self.radius;
+        if p[2] <= nose_centre {
+            p[0].hypot(p[1]) - self.radius
+        } else {
+            p[0].hypot(p[1]).hypot(p[2] - nose_centre) - self.radius
+        }
+    }
+
+    /// The distance baked into a grid of spacing `cell` over the body-frame
+    /// box `[low, high]` (plan §15c pins `cell` at A/20).
+    ///
+    /// # Panics
+    /// If a side needs more samples than a `u32` holds.
+    #[must_use]
+    pub fn baked(&self, low: [f64; 3], high: [f64; 3], cell: f64) -> (SdfGridLayout, Vec<f64>) {
+        // Rounded before the cast; a grid this size is far below u32::MAX.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let samples = |axis: usize| ((high[axis] - low[axis]) / cell).round() as u32 + 1;
+        let grid = SdfGridLayout {
+            origin_x: low[0],
+            origin_y: low[1],
+            origin_z: low[2],
+            cell_size: cell,
+            size_x: samples(0),
+            size_y: samples(1),
+            size_z: samples(2),
+        };
+        let mut values = Vec::with_capacity((grid.size_x * grid.size_y * grid.size_z) as usize);
+        for k in 0..grid.size_z {
+            for j in 0..grid.size_y {
+                for i in 0..grid.size_x {
+                    values.push(self.distance([
+                        low[0] + f64::from(i) * cell,
+                        low[1] + f64::from(j) * cell,
+                        low[2] + f64::from(k) * cell,
+                    ]));
+                }
+            }
+        }
+        (grid, values)
+    }
+}
+
+/// Plan §15b's insertion of the mandrel's tip.
+///
+/// The tip starts `start_gap` before the entry and travels
+/// `start_gap + depth`: its speed ramps up over the first 10 % of the loading
+/// time, holds for 80 %, and ramps down over the last 10 %; then it is held.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Insertion {
+    /// How far before the entry the tip starts (plan: 5 mm).
+    pub start_gap: f64,
+    /// How far past the entry it stops (plan: 100 mm).
+    pub depth: f64,
+    /// The loading time `T`.
+    pub loading_time: f64,
+    /// The hold after loading (plan: 0.2 s).
+    pub hold: f64,
+}
+
+impl Insertion {
+    /// The plan's insertion over loading time `loading_time`.
+    #[must_use]
+    pub const fn plan(loading_time: f64) -> Self {
+        Self {
+            start_gap: 0.005,
+            depth: 0.100,
+            loading_time,
+            hold: 0.2,
+        }
+    }
+
+    /// The end of the run: loading and hold.
+    #[must_use]
+    pub fn end(&self) -> f64 {
+        self.loading_time + self.hold
+    }
+
+    /// The tip's height at time `t`.
+    #[must_use]
+    pub fn tip(&self, t: f64) -> f64 {
+        let travel = self.start_gap + self.depth;
+        let t_total = self.loading_time;
+        let ramp = 0.1 * t_total;
+        let top_speed = travel / (0.9 * t_total);
+        let acceleration = top_speed / ramp;
+        let t = t.clamp(0.0, t_total);
+        let covered = if t <= ramp {
+            0.5 * acceleration * t * t
+        } else if t <= t_total - ramp {
+            0.5 * top_speed * ramp + top_speed * (t - ramp)
+        } else {
+            let remaining = t_total - t;
+            travel - 0.5 * acceleration * remaining * remaining
+        };
+        covered - self.start_gap
+    }
+
+    /// The mandrel as an obstacle: its distance baked at `cell` over the
+    /// region the tube can reach, and its pose sampled every `T/1000`.
+    #[must_use]
+    pub fn obstacle(
+        &self,
+        mandrel: Mandrel,
+        tube: &Tube,
+        cell: f64,
+        friction: f64,
+        penalty_scale: f64,
+    ) -> Obstacle {
+        let reach = 1.25 * tube.outer_radius;
+        let (grid, values) = mandrel.baked(
+            [-reach, -reach, -(self.depth + 0.005)],
+            [reach, reach, 0.005],
+            cell,
+        );
+        let interval = self.loading_time / 1000.0;
+        let samples = 1001;
+        let poses = (0..samples)
+            .map(|s| Pose {
+                qw: 1.0,
+                qx: 0.0,
+                qy: 0.0,
+                qz: 0.0,
+                tx: 0.0,
+                ty: 0.0,
+                tz: self.tip(f64::from(s) * interval),
+            })
+            .collect();
+        Obstacle {
+            grid,
+            values,
+            start: 0.0,
+            interval,
+            poses,
+            friction,
+            penalty_scale,
+        }
+    }
+}
+
+/// What the band reads, from one window's sums (plan 15d.1).
+#[derive(Clone, Debug, PartialEq)]
+pub struct BandReading {
+    /// The band's area-weighted mean contact pressure, `ΣF / ΣA`.
+    pub pressure: f64,
+    /// Ring pressures (`ΣF / ΣA` per axial level), averaged over each pair of
+    /// adjacent levels, since single levels alternate (plan §15c).
+    pub paired_levels: Vec<f64>,
+    /// The standard deviation of the band's node pressures over their mean.
+    pub node_scatter: f64,
+    /// The band's mean gap to the true mandrel surface, deformed radius
+    /// minus `a`: negative when the nodes sit inside it.
+    pub gap: f64,
+    /// The band's axial stretch `λ_z`, from its first and last levels.
+    pub axial_stretch: f64,
+}
+
+/// Read the band `nodes` (from [`Tube::band`]) from a window's `snapshot`.
+///
+/// Each node's pressure is its window-mean normal force over its tributary
+/// area, a third of each incident deformed boundary triangle (plan §15c).
+///
+/// # Panics
+/// If the snapshot holds no accumulated steps, or the band is empty.
+// Counts of nodes and levels are small; `usize → f64` is exact for them.
+#[allow(clippy::cast_precision_loss)]
+#[must_use]
+pub fn read_band(
+    tube: &Tube,
+    model: &ExplicitModel,
+    snapshot: &Snapshot,
+    mandrel: Mandrel,
+    nodes: &[u32],
+) -> BandReading {
+    assert!(snapshot.accumulated_steps > 0, "the window is empty");
+    assert!(!nodes.is_empty(), "the band is empty");
+    let steps = snapshot.accumulated_steps as f64;
+    let deformed = |n: usize| {
+        let (x, u) = (model.rest_positions()[n], snapshot.displacements[n]);
+        [x[0] + u[0], x[1] + u[1], x[2] + u[2]]
+    };
+    let area = |n: usize| {
+        model
+            .surface_incidence()
+            .of(n)
+            .iter()
+            .map(|&slot| {
+                let [a, b, c] = model.surface_triangles()[slot as usize / 3];
+                triangle_area(
+                    deformed(a as usize),
+                    deformed(b as usize),
+                    deformed(c as usize),
+                ) / 3.0
+            })
+            .sum::<f64>()
+    };
+    let readings: Vec<(u32, f64, f64)> = nodes
+        .iter()
+        .map(|&n| {
+            (
+                n,
+                snapshot.normal_force_sums[n as usize] / steps,
+                area(n as usize),
+            )
+        })
+        .collect();
+    let (force, total_area) = readings
+        .iter()
+        .fold((0.0, 0.0), |(f, a), &(_, nf, na)| (f + nf, a + na));
+    let pressure = force / total_area;
+
+    let mut levels: Vec<usize> = readings
+        .iter()
+        .map(|&(n, _, _)| tube.levels(n as usize).2)
+        .collect();
+    levels.sort_unstable();
+    levels.dedup();
+    let level_pressure = |k: usize| {
+        let (f, a) = readings
+            .iter()
+            .filter(|&&(n, _, _)| tube.levels(n as usize).2 == k)
+            .fold((0.0, 0.0), |(f, a), &(_, nf, na)| (f + nf, a + na));
+        f / a
+    };
+    let rings: Vec<f64> = levels.iter().map(|&k| level_pressure(k)).collect();
+    let paired_levels = rings.windows(2).map(|w| 0.5 * (w[0] + w[1])).collect();
+
+    let node_pressures: Vec<f64> = readings.iter().map(|&(_, f, a)| f / a).collect();
+    let mean = node_pressures.iter().sum::<f64>() / node_pressures.len() as f64;
+    let variance = node_pressures
+        .iter()
+        .map(|p| (p - mean).powi(2))
+        .sum::<f64>()
+        / node_pressures.len() as f64;
+
+    let gap = nodes
+        .iter()
+        .map(|&n| {
+            let p = deformed(n as usize);
+            p[0].hypot(p[1]) - mandrel.radius
+        })
+        .sum::<f64>()
+        / nodes.len() as f64;
+
+    let (first, last) = (levels[0], levels[levels.len() - 1]);
+    let mean_height = |k: usize| {
+        let heights: Vec<f64> = (0..=tube.radial)
+            .flat_map(|i| (0..tube.circumferential).map(move |j| (i, j)))
+            .map(|(i, j)| deformed(tube.node(i, j, k) as usize)[2])
+            .collect();
+        heights.iter().sum::<f64>() / heights.len() as f64
+    };
+    let rest_span = tube.cylindrical(0, 0, last).2 - tube.cylindrical(0, 0, first).2;
+    let axial_stretch = (mean_height(last) - mean_height(first)) / rest_span;
+
+    BandReading {
+        pressure,
+        paired_levels,
+        node_scatter: variance.sqrt() / mean,
+        gap,
+        axial_stretch,
+    }
+}
+
+/// An oracle case: plan §15b's free-ends tube, or 15d.8's cased tube in
+/// plane strain, with the oracle's answer and its sensitivities
+/// (`docs/soft_contact/thick_tube_reference.py`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TubeCase {
+    /// `a / A`.
+    pub mandrel_ratio: f64,
+    /// `B / A`.
+    pub thickness_ratio: f64,
+    /// Poisson's ratio ν.
+    pub poisson: f64,
+    /// How the tube is held.
+    pub walls: Walls,
+    /// The contact pressure over μ.
+    pub pressure_over_mu: f64,
+    /// The axial stretch `λ_z` (1 for the cased tube).
+    pub axial_stretch: f64,
+    /// `∂(p/μ)/∂(a/A)` at fixed `λ_z`.
+    pub pressure_per_mandrel_ratio: f64,
+    /// `∂(p/μ)/∂λ_z` at fixed `a`.
+    pub pressure_per_axial_stretch: f64,
+}
+
+/// K2's two errors for a reading against its case (plan 15d.1).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Errors {
+    /// Against the oracle at radius `a`, relative.
+    pub raw: f64,
+    /// Against the oracle at `a` plus the band's mean gap, relative.
+    pub gap_corrected: f64,
+}
+
+impl TubeCase {
+    /// The errors of `reading` for a tube of inner radius `inner_radius` in a
+    /// material of shear modulus `mu`. Both references are the oracle's
+    /// linearization at the band's measured `λ_z`.
+    #[must_use]
+    pub fn errors(&self, reading: &BandReading, inner_radius: f64, mu: f64) -> Errors {
+        let at_stretch = self.pressure_over_mu
+            + self.pressure_per_axial_stretch * (reading.axial_stretch - self.axial_stretch);
+        let at_gap = at_stretch + self.pressure_per_mandrel_ratio * reading.gap / inner_radius;
+        let measured = reading.pressure / mu;
+        Errors {
+            raw: measured / at_stretch - 1.0,
+            gap_corrected: measured / at_gap - 1.0,
+        }
+    }
+}
