@@ -1938,8 +1938,9 @@ everywhere, report and decide nothing.
     energy 35× in 400 steps with the old direction and stays bounded with the new. And the frictionless
     confined tube, with the new direction, runs to the end and reads −0.34 %, −0.31 % and −0.24 % at 10k,
     50k and 100k, G2 2.2–2.6 µm.
-  - **K now takes the depth at the predicted point and the normal where the node is now.** Its free-tube
-    and friction numbers above are the new direction's; they moved by at most 0.1 % of K2.
+  - **K now takes the depth at the predicted point and the normal where the node is now.** The free-tube
+    and friction numbers above were measured with the old direction. Rerun with the new one, K2 moves by
+    at most 0.03 % on the frictionless runs (10k, 50k, 100k) and 0.09 % on the μ_f 0.3 run.
 - **K's extra kinetic energy on the free tube goes with the grid.** At A/20 its KE/IE and balance read
   0.63 % and 0.47 % (10k, λ_a 1.1) against P's 0.16 % and 0.04 %; at A/40 they read 0.16 % and 0.04 %,
   and at 50k 0.03 % and 0.01 %. K follows the baked surface exactly, and the mechanism beyond that
