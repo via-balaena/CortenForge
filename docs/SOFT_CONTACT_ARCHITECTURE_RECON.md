@@ -1792,3 +1792,91 @@ A reviewer's scratch timing (release, f32, M4 Pro, not kept) gives 2b its starti
 - **K2 at 10k** fails with the λ term removed (raw −26.5 %), and the sanity run fails with the elastic
   force reversed.
 - **`release-gates`** failed before `sim-soft-explicit` joined tests-release.
+
+### 16n. 2b, G2 first (2026-09-25)
+
+**The question:** G2 (no node deeper than 1 % of the inset, at any step) failed on the 10k tube in 2a
+(16m). The fit plan's rule is that the gate stands, and if the contact law cannot meet it, the law
+changes. On the tube the inset is the interference: 1 mm at λ_a 1.1 (bar 10 µm), 3 mm at λ_a 1.3
+(bar 30 µm). Stage 1 measured the current law, and the one fallback of §15g step 2 that needs no new
+code (a larger s at a smaller Δt). The predictions were written before any run, and are scored below.
+
+**The instrument:** `cargo run --release -p sim-soft-explicit --example tube -- <10k|50k|100k> <case>
+<s> <μ_f> <f32|f64>`, where `case` indexes `fixtures::golden::THICK_TUBE` (0: λ_a 1.1 free, 2: λ_a 1.3
+free, 4: cased). It prints one line: the deepest penetration over all steps (against the A/20 grid),
+the deepest at the end against the true surface and the grid, the band's gap, K2's errors, the validity
+gates and the run's cost. All runs below are f32 on the CPU, frictionless, `RAYON_NUM_THREADS=4`, M4 Pro.
+The probe reproduces 2a's K2 run exactly (+1.67 %, +4.42 %, 45.3 µm, 13 799 steps).
+
+**The cased tube was not confined.** Its first run read 3 % of the oracle's pressure (K2 raw
+−96.8 %) on every mesh. The outer wall's radial hold was a fixed direction per node, so a node sliding
+around the tube moved along its tangent line, and so outward, and nothing held the tube's rotation. A
+diagnostic (not kept) measured every ring rotated about 10° and the outer ring at 20.51 mm instead of
+20, which leaves the annulus its rest area: π(20.51² − 10.97²) ≈ π·300 mm². The fix holds the outer wall
+whole (`Walls::Cased`), the same problem under axisymmetry. The fixture test fails on the old hold. The
+pre-fix reading reproduces at `c7d67eab`.
+
+**The current law, s = 0.5** (case 4 after the fix):
+
+| Mesh (h) | Case | Deepest, grid, all steps | Of the inset | Band gap | K2 raw / gap-corrected |
+|---|---|---|---|---|---|
+| 10k (2.26 mm) | λ_a 1.1 free | 45.3 µm | 4.5 % | −27.5 µm | +1.67 % / +4.42 % |
+| 10k | λ_a 1.3 free | 116.2 µm | 3.9 % | −69.1 µm | +1.50 % / +3.31 % |
+| 10k | cased | 422.7 µm | 42.3 % | −413.7 µm | −44.9 % |
+| 50k (1.31 mm) | λ_a 1.1 free | 35.1 µm | 3.5 % | −16.9 µm | −0.17 % / +1.47 % |
+| 50k | λ_a 1.3 free | 78.2 µm | 2.6 % | −41.8 µm | +0.06 % / +1.13 % |
+| 50k | cased | 329.0 µm | 32.9 % | −324.4 µm | −35.6 % |
+| 100k (1.05 mm) | λ_a 1.1 free | 28.1 µm | 2.8 % | −13.3 µm | −0.33 % / +0.95 % |
+| 100k | λ_a 1.3 free | 65.2 µm | 2.2 % | −34.4 µm | −0.15 % / +0.73 % |
+
+- Every validity gate holds in these runs (λ_z within 0.1 %, KE/IE ≤ 0.2 %, energy balance ≤ 0.04 %, no
+  inversion). The cased run at 100k was not repeated after the fix.
+- On the free tube the deepest penetration is reached while loading (t = 0.19–0.72 s of 1.24), and is
+  1.6–2.1× the band's seated gap. At the end, the deepest node sits 10–15 mm behind the tip.
+- **The grid reads shallower than the true surface by up to 5.7 µm** at A/20 (every run, at the end
+  state). On the λ_a 1.1 tube that is half of G2's 10 µm before the contact law contributes.
+- **In the cased tube the penalty acts in series with the wall.** The wall's stiffness per area is the
+  oracle's p over the interference, about 95 kPa/mm; the penalty's is p over the free tube's gap, 103
+  kPa/mm at 10k and 168 kPa/mm at 50k (arithmetic). Their ratio predicts −48 % and −36 %; the runs read
+  −44.9 % and −35.6 %.
+
+**A larger s** (at 10k; the cased runs in this sweep came before the fixture fix, so only the free
+cases count): s = 1 cuts the λ_a 1.1 tube's deepest penetration to 20.5 µm (2.1 %) and its
+gap to −12.7 µm. On the λ_a 1.3 tube the gap halves (−28.5 µm), but the deepest penetration does not
+fall (119.4 µm, reached in the hold), and the hold rings (KE/IE 1.45 %, balance 0.86 %). At s = 2 the
+contact chatters (KE/IE 61–62 %, balance 6.7–7.2 %, deepest 128 µm and 359 µm). At s = 3 both stop on a
+non-finite read (steps 24 700 and 17 100), though Weyl's bound for the linear problem is 3.24. Why the
+contact loses stability below that bound has not been isolated.
+
+**So the penalty cannot meet G2 on the tube.** Its gap scales with element size: at λ_a 1.1 the band
+gap falls 10k → 50k → 100k as 1 : 0.61 : 0.48, against h's 1 : 0.58 : 0.46. The deepest penetration
+falls more slowly (1 : 0.77 : 0.62, about h^0.62). Extrapolating that trend, 1 % at λ_a 1.1 needs h
+about 5× smaller than 100k's, about 125× its elements (arithmetic). The confined case misses by 42× at
+10k and 33× at 50k.
+
+**Predictions, scored:**
+
+| | Predicted (before any run) | Measured |
+|---|---|---|
+| P1 | gap λ_a 1.3 / 1.1 ≈ 2.5 (∝ p) | 2.51 at 10k ✓ |
+| P2 | cased: series, 30–50 % low at 10k | −44.9 % at 10k, −35.6 % at 50k ✓ (after the fixture fix) |
+| P3 | gap ∝ h | ✓ for the band gap; the deepest node falls more slowly |
+| P4 | gap ∝ (3.24 − s)/s; steps ×1.10, 1.49, 3.4 at s = 1, 2, 3 | band gap ✓ at s = 1 (0.46× and 0.41× against 0.41×); ✗ at s ≥ 2, which chatters or blows up |
+| P5 | grid bias 2–3 µm | ✗: up to 5.7 µm |
+| P6 | G2 fails at s = 0.5 everywhere | ✓ |
+
+**The cost** (the §16m items): a whole step, estimates excluded, takes 0.29–0.30 ms at 10k, 0.84–0.86
+ms at 50k and 1.48–1.49 ms at 100k. One cold estimate takes 19–27 ms, 68 ms and 126 ms. The estimates
+are 11–16 % of a run's wall time. A K2 run takes about 5 s, 23 s and 52 s. So K2 runs at 100k on the
+CPU (16i's 10-minute test).
+
+**Not decided yet: the law that replaces the penalty.** §15g step 2 listed a gap-offset penalty, an
+augmented-Lagrangian update, or a larger s; the last is ruled out above. G2 holds "at any step", and
+the deepest penetration arrives while the mandrel moves. A multiplier converges over steps; whether it
+keeps up while the mandrel moves has not been measured. Abaqus/Explicit's default for contact pairs is a kinematic predictor/corrector, which "has no
+influence on the stable time increment": each node gets "the force which, had it been applied during
+the increment, would have caused the slave node to exactly contact the master surface" (Abaqus Analysis
+User's Manual 6.11, §36.2.3). Its friction has *"an infinite sticking stiffness, in which case the elastic
+slip is always zero"* (§35.1.5). Its cost is that *"impact is
+plastic"*: a node's normal kinetic energy is lost on contact. That removes §15c's objection to variant
+(b), that friction is not defined for it. The choice is stage 2.
