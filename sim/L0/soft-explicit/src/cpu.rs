@@ -7,15 +7,15 @@
 
 use crate::ExplicitModel;
 use crate::executor::{
-    Executor, Monitors, Obstacle, ObstacleError, PhaseOutputs, Snapshot, check_obstacle,
-    check_poses,
+    ContactLaw, Executor, Monitors, Obstacle, ObstacleError, PhaseOutputs, Snapshot,
+    check_obstacle, check_poses,
 };
 
 /// The CPU executor at `f32`.
 pub mod f32 {
     use super::{
-        Executor, ExplicitModel, Monitors, Obstacle, ObstacleError, PhaseOutputs, Snapshot,
-        check_obstacle, check_poses, fill, update,
+        ContactLaw, Executor, ExplicitModel, Monitors, Obstacle, ObstacleError, PhaseOutputs,
+        Snapshot, check_obstacle, check_poses, fill, update,
     };
     use crate::f32 as shared;
 
@@ -28,8 +28,8 @@ pub mod f32 {
 /// The CPU executor at `f64`.
 pub mod f64 {
     use super::{
-        Executor, ExplicitModel, Monitors, Obstacle, ObstacleError, PhaseOutputs, Snapshot,
-        check_obstacle, check_poses, fill, update,
+        ContactLaw, Executor, ExplicitModel, Monitors, Obstacle, ObstacleError, PhaseOutputs,
+        Snapshot, check_obstacle, check_poses, fill, update,
     };
     use crate::f64 as shared;
 

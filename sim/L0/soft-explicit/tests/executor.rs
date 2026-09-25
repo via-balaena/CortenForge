@@ -19,7 +19,9 @@ use common::{
 use nalgebra::{DMatrix, SymmetricEigen};
 use sim_soft_explicit::ExplicitModel;
 use sim_soft_explicit::cpu;
-use sim_soft_explicit::executor::{Executor, Monitors, Obstacle, ObstacleError, Snapshot};
+use sim_soft_explicit::executor::{
+    ContactLaw, Executor, Monitors, Obstacle, ObstacleError, Snapshot,
+};
 use sim_soft_explicit::f64 as shared;
 use sim_soft_explicit::f64::{Pose, SdfGridLayout};
 use sim_soft_explicit::stepping::{RunError, Sample, Stepper, StepperConfig, gates};
@@ -91,7 +93,7 @@ fn floor(
         interval,
         poses,
         friction,
-        penalty_scale: 0.5,
+        law: ContactLaw::Penalty { scale: 0.5 },
     }
 }
 
@@ -144,7 +146,7 @@ fn run_phases(e: &mut impl Executor, time: f64, dt: f64, damping: f64) {
     e.nodal_pressures();
     e.element_forces();
     e.gather_forces();
-    e.contact(time, dt);
+    e.contact(time, dt, damping);
     e.integrate(dt, damping);
     e.boundary_conditions(dt, damping);
 }
@@ -792,7 +794,7 @@ fn an_obstacle_is_checked_before_upload() {
         ),
         (
             Obstacle {
-                penalty_scale: 0.0,
+                law: ContactLaw::Penalty { scale: 0.0 },
                 ..base.clone()
             },
             |e| matches!(e, ObstacleError::Invalid { reason } if reason.contains("penalty")),

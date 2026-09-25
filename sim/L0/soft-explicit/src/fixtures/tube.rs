@@ -7,7 +7,7 @@
 
 use std::f64::consts::TAU;
 
-use crate::executor::{Obstacle, Snapshot};
+use crate::executor::{ContactLaw, Obstacle, Snapshot};
 use crate::f64::{Material, Pose, SdfGridLayout, tet4_volume, triangle_area};
 use crate::{ExplicitModel, ModelError};
 
@@ -398,7 +398,7 @@ impl Insertion {
         tube: &Tube,
         cell: f64,
         friction: f64,
-        penalty_scale: f64,
+        law: ContactLaw,
     ) -> Result<Obstacle, BakeError> {
         let whole = |length: f64| (length / cell).ceil() * cell;
         let reach = whole(1.25 * tube.outer_radius);
@@ -425,7 +425,7 @@ impl Insertion {
             interval,
             poses,
             friction,
-            penalty_scale,
+            law,
         })
     }
 }
@@ -670,9 +670,10 @@ pub struct TubeRun {
     pub window: f64,
     /// The friction coefficient `μ_f`.
     pub friction: f64,
-    /// The contact penalty's scale `s` in `k = s · m / Δt²` (plan §15c's
-    /// primary is 0.5).
-    pub penalty_scale: f64,
+    /// The contact law (plan §15c's primary: the penalty at s = 0.5).
+    pub law: ContactLaw,
+    /// The mandrel grid's cell size (plan §15c pins A/20).
+    pub grid_cell: f64,
 }
 
 /// What a [`TubeRun`] produced.
@@ -749,8 +750,8 @@ impl TubeRun {
         }
     }
 
-    /// The mandrel as the run's obstacle: baked at A/20 (plan §15c), with
-    /// this run's friction and penalty scale.
+    /// The mandrel as the run's obstacle: baked at the run's cell size, with
+    /// its friction and contact law.
     ///
     /// # Errors
     /// A [`BakeError`] if the grid cannot be baked.
@@ -758,9 +759,9 @@ impl TubeRun {
         self.insertion.obstacle(
             self.mandrel(tube),
             tube,
-            tube.inner_radius / 20.0,
+            self.grid_cell,
             self.friction,
-            self.penalty_scale,
+            self.law,
         )
     }
 

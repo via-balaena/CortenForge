@@ -176,7 +176,7 @@ impl<E: Executor> Stepper<E> {
         e.nodal_pressures();
         e.element_forces();
         e.gather_forces();
-        e.contact(self.time, dt);
+        e.contact(self.time, dt, damping);
         e.integrate(dt, damping);
         e.boundary_conditions(dt, damping);
         if self.window {

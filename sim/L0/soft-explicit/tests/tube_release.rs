@@ -6,7 +6,7 @@
 #![allow(clippy::unwrap_used)]
 
 use sim_soft_explicit::cpu;
-use sim_soft_explicit::executor::{Executor, Obstacle, Snapshot};
+use sim_soft_explicit::executor::{ContactLaw, Executor, Obstacle, Snapshot};
 use sim_soft_explicit::fixtures::golden::THICK_TUBE;
 use sim_soft_explicit::fixtures::tube::{Insertion, Mandrel, Mesh, Tube, TubeRun, Walls};
 use sim_soft_explicit::stepping::StepperConfig;
@@ -27,7 +27,8 @@ fn k2_run() -> TubeRun {
         insertion: Insertion::plan(10.0 * TubeRun::shear_period(MU, DENSITY)),
         window: 0.1,
         friction: 0.0,
-        penalty_scale: 0.5,
+        law: ContactLaw::Penalty { scale: 0.5 },
+        grid_cell: 0.0005,
     }
 }
 
@@ -37,7 +38,13 @@ fn tube_and_mandrel(material: Material) -> (ExplicitModel, Obstacle) {
     let model = tube.model(material, Walls::Free).unwrap();
     let obstacle = k2_run()
         .insertion
-        .obstacle(Mandrel { radius: 0.011 }, &tube, 0.0005, 0.0, 0.5)
+        .obstacle(
+            Mandrel { radius: 0.011 },
+            &tube,
+            0.0005,
+            0.0,
+            ContactLaw::Penalty { scale: 0.5 },
+        )
         .unwrap();
     (model, obstacle)
 }

@@ -8,8 +8,42 @@
 
 use crate::f64::{Pose, SdfGridLayout};
 
+/// How a node and the obstacle push on each other (plan §15c; §16n's A/B).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ContactLaw {
+    /// The nodal-mass penalty `k = s · m / Δt²` (plan §15c's s = 0.5).
+    Penalty {
+        /// The penalty scale `s`.
+        scale: f64,
+    },
+    /// The penalty plus a per-node multiplier, updated every `interval`
+    /// steps from the node's mean penetration over them
+    /// (`shared::multiplier_update`).
+    Augmented {
+        /// The penalty scale `s`.
+        scale: f64,
+        /// Steps between multiplier updates; at least 1.
+        interval: u32,
+    },
+    /// The kinematic predictor/corrector (`shared::kinematic_contact`). It
+    /// adds nothing to the stable step.
+    Kinematic,
+}
+
+impl ContactLaw {
+    /// The penalty scale the stable step must bound: `s`, or 0 for the
+    /// kinematic law.
+    #[must_use]
+    pub const fn penalty_scale(self) -> f64 {
+        match self {
+            Self::Penalty { scale } | Self::Augmented { scale, .. } => scale,
+            Self::Kinematic => 0.0,
+        }
+    }
+}
+
 /// The rigid obstacle an executor contacts: a baked distance grid, its pose
-/// sampled evenly in time, and the contact law's two parameters.
+/// sampled evenly in time, and the contact law.
 #[derive(Clone, Debug)]
 pub struct Obstacle {
     /// The grid's layout, in the obstacle's body frame.
@@ -25,8 +59,8 @@ pub struct Obstacle {
     pub poses: Vec<Pose>,
     /// The friction coefficient `μ_f`; 0 is frictionless.
     pub friction: f64,
-    /// The penalty scale `s` in `k = s · m / Δt²` (plan §15c's 0.5).
-    pub penalty_scale: f64,
+    /// The contact law.
+    pub law: ContactLaw,
 }
 
 /// What the stepping loop reads every monitor interval, reduced on the
@@ -138,7 +172,8 @@ pub trait Executor {
     /// The executor's machine epsilon: `f32::EPSILON` or `f64::EPSILON`.
     fn epsilon(&self) -> f64;
 
-    /// The contact law's penalty scale `s`, from the [`Obstacle`]. The loop
+    /// The contact law's penalty scale `s`, from the [`Obstacle`]
+    /// ([`ContactLaw::penalty_scale`]; 0 for the kinematic law). The loop
     /// reads it here, so the stable step bounds the penalty in use.
     fn penalty_scale(&self) -> f64;
 
@@ -190,9 +225,10 @@ pub trait Executor {
     /// Phase 5: each node's elastic force, gathered from its elements' slots.
     fn gather_forces(&mut self);
 
-    /// Phase 6: each surface node's contact with the obstacle at `time`,
-    /// with the penalty stiffness for step `dt`.
-    fn contact(&mut self, time: f64, dt: f64);
+    /// Phase 6: each surface node's contact with the obstacle at `time`, for
+    /// a step `dt` with mass damping `damping` (the kinematic law predicts
+    /// the step's update, so it needs both).
+    fn contact(&mut self, time: f64, dt: f64, damping: f64);
 
     /// Phase 7: the central-difference update of each node's velocity and
     /// displacement, with mass damping `damping`.
@@ -252,8 +288,8 @@ pub enum ObstacleError {
         /// The values the layout needs.
         expected: usize,
     },
-    /// The grid's layout, a value, a pose, the friction or the penalty scale
-    /// is out of range.
+    /// The grid's layout, a value, a pose, the friction or the contact law's
+    /// parameters are out of range.
     #[error("the obstacle is invalid: {reason}")]
     Invalid {
         /// What is wrong.
@@ -290,8 +326,14 @@ pub fn check_obstacle(obstacle: &Obstacle) -> Result<(), ObstacleError> {
         Some("a grid origin, value or the start time is not finite")
     } else if !(obstacle.friction.is_finite() && obstacle.friction >= 0.0) {
         Some("the friction must be finite and not negative")
-    } else if !(obstacle.penalty_scale.is_finite() && obstacle.penalty_scale > 0.0) {
-        Some("the penalty scale must be positive and finite")
+    } else if !match obstacle.law {
+        ContactLaw::Penalty { scale } => scale.is_finite() && scale > 0.0,
+        ContactLaw::Augmented { scale, interval } => {
+            scale.is_finite() && scale > 0.0 && interval > 0
+        }
+        ContactLaw::Kinematic => true,
+    } {
+        Some("the penalty scale must be positive and finite, and the update interval positive")
     } else {
         None
     };

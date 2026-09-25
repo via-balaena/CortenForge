@@ -3,9 +3,12 @@
 //! K2's errors, the validity gates, and the run's cost.
 //!
 //! `cargo run --release -p sim-soft-explicit --example tube --
-//! <10k|50k|100k> <case> <penalty scale> <friction> <f32|f64>`
-//! (defaults: 10k 0 0.5 0 f32). `case` indexes `fixtures::golden::THICK_TUBE`.
-//! Set `RAYON_NUM_THREADS` so the times are comparable.
+//! <10k|50k|100k> <case> <law> <friction> <f32|f64> <grid>`
+//! (defaults: 10k 0 penalty:0.5 0 f32 20). `case` indexes
+//! `fixtures::golden::THICK_TUBE`; `law` is `penalty:<s>`, `kinematic` or
+//! `augmented:<s>:<steps between updates>`; the grid's cell is A/`grid`.
+//! With friction, a frictionless companion run gives the Coulomb push ratio
+//! (plan 15d.7). Set `RAYON_NUM_THREADS` so the times are comparable.
 
 #![allow(missing_docs, clippy::unwrap_used, clippy::cast_precision_loss)]
 
@@ -13,7 +16,7 @@ use std::time::Instant;
 
 use sim_soft_explicit::ExplicitModel;
 use sim_soft_explicit::cpu;
-use sim_soft_explicit::executor::{Executor, Obstacle};
+use sim_soft_explicit::executor::{ContactLaw, Executor, Obstacle};
 use sim_soft_explicit::f64 as shared;
 use sim_soft_explicit::fixtures::golden::THICK_TUBE;
 use sim_soft_explicit::fixtures::tube::{Insertion, Mesh, Tube, TubeResult, TubeRun, Walls};
@@ -42,6 +45,23 @@ fn request() -> Request {
         }
     };
     let case_index: usize = arg(1, "0").parse().unwrap();
+    let law_text = arg(2, "penalty:0.5");
+    let parts: Vec<&str> = law_text.split(':').collect();
+    let law = match parts.as_slice() {
+        ["penalty", scale] => ContactLaw::Penalty {
+            scale: scale.parse().unwrap(),
+        },
+        ["augmented", scale, interval] => ContactLaw::Augmented {
+            scale: scale.parse().unwrap(),
+            interval: interval.parse().unwrap(),
+        },
+        ["kinematic"] => ContactLaw::Kinematic,
+        _ => {
+            eprintln!("unknown law {law_text}: use penalty:<s>, kinematic or augmented:<s>:<n>");
+            std::process::exit(2);
+        }
+    };
+    let divisions: f64 = arg(5, "20").parse().unwrap();
     Request {
         run: TubeRun {
             mesh,
@@ -52,7 +72,8 @@ fn request() -> Request {
             insertion: Insertion::plan(10.0 * TubeRun::shear_period(MU, DENSITY)),
             window: 0.1,
             friction: arg(3, "0").parse().unwrap(),
-            penalty_scale: arg(2, "0.5").parse().unwrap(),
+            law,
+            grid_cell: Tube::plan(mesh).inner_radius / divisions,
         },
         case_index,
         wide: arg(4, "f32") == "f64",
@@ -158,6 +179,44 @@ fn percent(x: f64) -> String {
     format!("{:+.2}%", 100.0 * x)
 }
 
+fn run_once(run: &TubeRun, wide: bool) -> TubeResult {
+    if wide {
+        run.run(|m, o| cpu::f64::CpuExecutor::new(m, o).unwrap())
+    } else {
+        run.run(|m, o| cpu::f32::CpuExecutor::new(m, o).unwrap())
+    }
+    .unwrap()
+}
+
+/// The Coulomb push ratio (plan 15d.7): the mandrel's axial push with
+/// friction, less the frictionless companion's, over `μ_f Σ f_n`, each
+/// averaged over the constant-speed phase (10–90 % of the loading time).
+fn coulomb_ratio(run: &TubeRun, with_friction: &TubeResult, wide: bool) -> f64 {
+    let frictionless = run_once(
+        &TubeRun {
+            friction: 0.0,
+            ..*run
+        },
+        wide,
+    );
+    let loading = run.insertion.loading_time;
+    let phase = |r: &TubeResult| {
+        let inside: Vec<_> = r
+            .samples
+            .iter()
+            .filter(|s| (0.1 * loading..=0.9 * loading).contains(&s.time))
+            .map(|s| s.monitors)
+            .collect();
+        let count = inside.len() as f64;
+        (
+            inside.iter().map(|m| m.contact_force[2]).sum::<f64>() / count,
+            inside.iter().map(|m| m.normal_force).sum::<f64>() / count,
+        )
+    };
+    let ((push, normal), (geometric, _)) = (phase(with_friction), phase(&frictionless));
+    (push - geometric) / (run.friction * normal)
+}
+
 fn main() {
     let Request {
         run,
@@ -171,13 +230,14 @@ fn main() {
     let estimate = estimate_seconds(&model, &obstacle, wide);
 
     let started = Instant::now();
-    let result = if wide {
-        run.run(|m, o| cpu::f64::CpuExecutor::new(m, o).unwrap())
-    } else {
-        run.run(|m, o| cpu::f32::CpuExecutor::new(m, o).unwrap())
-    }
-    .unwrap();
+    let result = run_once(&run, wide);
     let wall = started.elapsed().as_secs_f64();
+    let coulomb = (run.friction > 0.0).then(|| coulomb_ratio(&run, &result, wide));
+    let flutter = result
+        .samples
+        .iter()
+        .map(|s| s.monitors.contact_kinetic_energy)
+        .fold(0.0, f64::max);
 
     let end = end_penetration(&run, &tube, &model, &obstacle, &result);
     let reached = result
@@ -190,11 +250,11 @@ fn main() {
     let estimates = result.estimates as f64 * estimate;
     let missing = || "n/a".to_owned();
     println!(
-        "tube {:?} case={case_index} ({}, a/A {}, nu {}) s={} mu_f={} {} threads={} | \
+        "tube {:?} case={case_index} ({}, a/A {}, nu {}) law={:?} grid=A/{:.0} mu_f={} {} threads={} | \
          h={:.3}mm p/(l+2mu)={:.5} inset={:.1}mm | \
          G2 grid_all_steps={:.1}um ({:.2}% of inset, first at t={reached:.3}s) true_end={:.1}um ({:.2}%) \
          grid_end={:.1}um bias(true-grid)=[{:.2},{:.2}]um deepest_z={:.2}mm | band_gap={:.1}um | \
-         K2 raw={} gc={} | lz={} ke/ie={} balance={} inverted={} | \
+         K2 raw={} gc={} scatter={} | lz={} ke/ie={} balance={} inverted={} contact_ke_peak={:.3e}J coulomb={} | \
          steps={} dt={:.3}us estimates={} wall={wall:.1}s ms/step={:.3} estimate={:.1}ms share={:.1}%",
         run.mesh,
         if case.walls == Walls::Free {
@@ -204,7 +264,8 @@ fn main() {
         },
         case.mandrel_ratio,
         case.poisson,
-        run.penalty_scale,
+        run.law,
+        tube.inner_radius / run.grid_cell,
         run.friction,
         if wide { "f64" } else { "f32" },
         std::env::var("RAYON_NUM_THREADS").unwrap_or_else(|_| "unset".to_owned()),
@@ -222,10 +283,13 @@ fn main() {
         1e6 * result.reading.gap,
         percent(result.errors.raw),
         result.errors.gap_corrected.map_or_else(missing, percent),
+        percent(result.reading.node_scatter),
         percent(result.axial_stretch_error),
         result.kinetic_over_internal.map_or_else(missing, percent),
         result.energy_balance.map_or_else(missing, percent),
         result.inverted,
+        flutter,
+        coulomb.map_or_else(missing, |c| format!("{c:.4}")),
         result.steps,
         1e6 * result.dt,
         result.estimates,

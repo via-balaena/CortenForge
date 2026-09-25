@@ -8,6 +8,12 @@
 // and the result does not depend on how the work is split. Reductions for
 // the monitors run in node order, in f64.
 
+/// An obstacle sample before the first contact phase.
+const NO_SAMPLE: shared::SdfSample = shared::SdfSample {
+    distance: 0.0,
+    normal: [0.0; 3],
+};
+
 /// A boundary value at this executor's precision.
 // f64 → f32 rounds, which is the point; at f64 it is the identity.
 #[allow(clippy::cast_possible_truncation, clippy::unnecessary_cast)]
@@ -223,7 +229,7 @@ pub struct CpuExecutor {
     pose_interval: R,
     poses: Vec<shared::Pose>,
     friction: R,
-    penalty_scale: R,
+    law: ContactLaw,
 
     displacements: Vec<[R; 3]>,
     velocities: Vec<[R; 3]>,
@@ -236,6 +242,14 @@ pub struct CpuExecutor {
     contacts: Vec<shared::ContactResponse>,
     anchors: Vec<[R; 3]>,
     stiffnesses: Vec<R>,
+    /// Each surface node's obstacle sample where it sits this step: the
+    /// penalty laws' input, and every law's G2 depth.
+    samples: Vec<shared::SdfSample>,
+    /// The augmented law's multipliers, and each node's penetration summed
+    /// since their last update.
+    multipliers: Vec<R>,
+    penetration_sums: Vec<R>,
+    steps_since_update: u32,
 
     max_penetrations: Vec<R>,
     contact_work: Vec<f64>,
@@ -330,7 +344,7 @@ impl CpuExecutor {
             pose_interval: narrow(obstacle.interval),
             poses: obstacle.poses.iter().map(|&p| narrow_pose(p)).collect(),
             friction: narrow(obstacle.friction),
-            penalty_scale: narrow(obstacle.penalty_scale),
+            law: obstacle.law,
             displacements: vec![[0.0; 3]; nodes],
             velocities: vec![[0.0; 3]; nodes],
             previous_velocities: vec![[0.0; 3]; nodes],
@@ -342,6 +356,10 @@ impl CpuExecutor {
             contacts: vec![empty_contact; surface_count],
             anchors,
             stiffnesses: vec![0.0; surface_count],
+            samples: vec![NO_SAMPLE; surface_count],
+            multipliers: vec![0.0; surface_count],
+            penetration_sums: vec![0.0; surface_count],
+            steps_since_update: 0,
             max_penetrations: vec![0.0; surface_count],
             contact_work: vec![0.0; nodes],
             damping_losses: vec![0.0; nodes],
@@ -450,7 +468,7 @@ impl Executor for CpuExecutor {
     }
 
     fn penalty_scale(&self) -> f64 {
-        widen(self.penalty_scale)
+        self.law.penalty_scale()
     }
 
     fn friction(&self) -> f64 {
@@ -489,6 +507,9 @@ impl Executor for CpuExecutor {
                 })
                 .collect()
         };
+        self.multipliers.fill(0.0);
+        self.penetration_sums.fill(0.0);
+        self.steps_since_update = 0;
     }
 
     fn set_poses(
@@ -537,34 +558,84 @@ impl Executor for CpuExecutor {
         self.elastic_forces = forces;
     }
 
-    fn contact(&mut self, time: f64, dt: f64) {
+    fn contact(&mut self, time: f64, dt: f64, damping: f64) {
         let pose = self.pose_at(time);
-        let step = narrow(dt);
+        let (step, alpha) = (narrow(dt), narrow(damping));
+        let body = |a: usize| {
+            shared::pose_to_body(pose, shared::vec3_add(self.rest[a], self.displacements[a]))
+        };
+        let mut samples = std::mem::take(&mut self.samples);
+        fill(&mut samples, |i| self.sample(body(self.surface_nodes[i] as usize)));
         let mut stiffnesses = std::mem::take(&mut self.stiffnesses);
-        fill(&mut stiffnesses, |i| {
-            let a = self.surface_nodes[i] as usize;
-            shared::penalty_stiffness(self.masses[a], step, self.penalty_scale)
-        });
         let mut contacts = std::mem::take(&mut self.contacts);
-        fill(&mut contacts, |i| {
-            let a = self.surface_nodes[i] as usize;
-            let world = shared::vec3_add(self.rest[a], self.displacements[a]);
-            let body = shared::pose_to_body(pose, world);
-            shared::obstacle_contact(
-                pose,
-                body,
-                self.sample(body),
-                self.anchors[i],
-                stiffnesses[i],
-                self.friction,
-            )
-        });
+        if self.law == ContactLaw::Kinematic {
+            fill(&mut stiffnesses, |i| {
+                let a = self.surface_nodes[i] as usize;
+                shared::kinematic_stiffness(self.masses[a], self.inverse_masses[a], alpha, step)
+            });
+            let next = self.pose_at(time + dt);
+            fill(&mut contacts, |i| {
+                let a = self.surface_nodes[i] as usize;
+                // Where the node lands without contact, its constraints applied.
+                let velocity = self.free_part(
+                    a,
+                    shared::advance_velocity(
+                        self.velocities[a],
+                        self.elastic_forces[a],
+                        self.inverse_masses[a],
+                        alpha,
+                        step,
+                    ),
+                );
+                let displacement = shared::advance_displacement(self.displacements[a], velocity, step);
+                let predicted = shared::vec3_add(self.rest[a], self.free_part(a, displacement));
+                shared::kinematic_contact(
+                    next,
+                    predicted,
+                    self.sample(shared::pose_to_body(next, predicted)),
+                    self.anchors[i],
+                    stiffnesses[i],
+                    self.friction,
+                    self.constraints[a],
+                )
+            });
+        } else {
+            let scale = narrow(self.law.penalty_scale());
+            fill(&mut stiffnesses, |i| {
+                let a = self.surface_nodes[i] as usize;
+                shared::penalty_stiffness(self.masses[a], step, scale)
+            });
+            fill(&mut contacts, |i| {
+                shared::obstacle_contact(
+                    pose,
+                    body(self.surface_nodes[i] as usize),
+                    samples[i],
+                    self.anchors[i],
+                    stiffnesses[i],
+                    self.friction,
+                    self.multipliers[i],
+                )
+            });
+        }
+        if let ContactLaw::Augmented { interval, .. } = self.law {
+            for (sum, sample) in self.penetration_sums.iter_mut().zip(&samples) {
+                *sum += -sample.distance;
+            }
+            self.steps_since_update += 1;
+            if self.steps_since_update >= interval {
+                let count = narrow(f64::from(interval));
+                let updates = self.multipliers.iter_mut().zip(&stiffnesses);
+                for ((multiplier, &stiffness), &sum) in updates.zip(&self.penetration_sums) {
+                    *multiplier = shared::multiplier_update(*multiplier, stiffness, sum / count);
+                }
+                self.penetration_sums.fill(0.0);
+                self.steps_since_update = 0;
+            }
+        }
         for (i, contact) in contacts.iter().enumerate() {
             self.anchors[i] = contact.anchor;
-            if stiffnesses[i] > 0.0 {
-                let depth = contact.normal_force / stiffnesses[i];
-                self.max_penetrations[i] = self.max_penetrations[i].max(depth);
-            }
+            let depth = (-samples[i].distance).max(0.0);
+            self.max_penetrations[i] = self.max_penetrations[i].max(depth);
             for d in 0..3 {
                 self.resultant_sum[d] += widen(contact.force[d]);
             }
@@ -573,6 +644,7 @@ impl Executor for CpuExecutor {
         self.steps_since_read += 1;
         self.contacts = contacts;
         self.stiffnesses = stiffnesses;
+        self.samples = samples;
     }
 
     fn integrate(&mut self, dt: f64, damping: f64) {
