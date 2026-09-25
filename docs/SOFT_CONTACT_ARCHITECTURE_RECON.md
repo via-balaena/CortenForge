@@ -1707,37 +1707,74 @@ Not scheduled: how coverage counts code `include!`d twice.
 
 ### 16m. 2a, as built (2026-09-25)
 
-2a holds what 16c gave it. Decided in the build:
-- **The trait gains `set_state`,** for initial conditions and to put two executors in one state (step
-  4's conformance). The snapshot carries velocities.
+2a holds what 16c gave it. Four cold reviewers read it against criteria written beforehand (the
+engine, the loop and fixtures, the tests and this record, and the whole plan). They found 17
+distinct problems, and each was checked before it was fixed.
+
+**Decided in the build or by the review:**
+- **The friction anchors are state.** They start in the obstacle's body frame, as the contact law reads
+  them. `snapshot` carries them, and `set_state` takes them back, or re-anchors each node where it sits.
+  - Started from rest positions in the world frame instead, a floor moved along its own plane gave a
+    different run.
+  - They stay absolute body-frame positions (§16b sends K6 to f64). On the tube, at μ_f 0.3 and a 29 µm
+    gap, the elastic-slip window is about 1 170 f32 spacings at 0.1 m (arithmetic). At μ_f 0.05 and a
+    10 µm gap it would be 67 spacings, each 1.5 % of the Coulomb limit.
+  - Step 4 decides between absolute anchors and a stored elastic slip before it fixes the WGSL layout.
+- **The trait gains:**
+  - `set_poses`, for a new track mid-run (§14d's batches; K6's legs that end on a force);
+  - `phase_outputs`, for step 4's per-phase conformance;
+  - the contact law's s and μ_f. The loop reads them, so the stable step bounds the law in use.
+- **Every stable-step estimate starts cold,** at 100 power iterations.
+  - Warm-started at 20, the estimate stayed on a lower mode once the tube was loaded. It read 3.7–3.9 %
+    low through the hold. A dense eigensolve at step 9 000 confirmed −2.1 % (the review's measurement,
+    not kept).
+- **The band reads λ_z, the gap and its areas at the window's mean state,** as the pressure is a window
+  mean. At the last instant, λ_z swings about 0.4 % across the window, and K2's reference with it.
+- **The loop:**
+  - it takes a final read after the last step, so K4 and G2 see every step;
+  - it stops on a non-finite read;
+  - the gates refuse one.
 - **The golden values are generated Rust constants** in `fixtures::golden`. `thick_tube_reference.py
   --golden` writes them after its checks and a cross-check against §15b's table.
-- **`fixtures::tube::TubeRun`** runs the tube on any executor, so 2b's runs and step 5's GPU runs use one
-  path. The CI sanity run drives it with a short insertion.
-- **The executor's tests do not run on a one-thread pool.** 2a timed the crate's coverage pass warm, on
-  the M4 Pro: 28–30 s at the default 12 threads against 13.7 s on one (`cargo xtask grade
-  sim-soft-explicit`, with and without `RAYON_NUM_THREADS=1`). That is 2.1× slower, and 16 s.
+- **`fixtures::tube::TubeRun` runs the tube on any executor,** so 2b's runs and step 5's use one path.
+  It returns the final snapshot, for K5's per-node pressures. It takes Yeoh's C₂, and the monitors carry
+  Σf_n for the Coulomb push.
+- **The executor's tests do not run on a one-thread pool.** Measured warm with `cargo xtask grade
+  sim-soft-explicit`, the crate's coverage pass takes 18.0 s at CI's 4 threads (`RAYON_NUM_THREADS=4`),
+  22.3 s at 1, and 37.2 s at 12.
 
-Measured (the tests print `MARGIN` lines):
-- **K2 on the 10k tube,** λ_a 1.1, ν 0.49, T = 10 T_s, f32 on the CPU: raw **+0.75 %**, gap-corrected
-  **+3.6 %**.
-  - The validity gates: λ_z +0.12 %, KE/IE 0.13 %, energy balance 0.05 %, and no inverted element.
-  - The run is 13 740 steps, 12 s, 0.89 ms per step.
+**Measured** (the tests print `MARGIN` lines):
+- **K2 on the 10k tube,** λ_a 1.1, ν 0.49, T = 10 T_s, f32 on the CPU: raw **+1.67 %**, gap-corrected
+  **+4.42 %**, over 13 799 steps.
+  - The validity gates: λ_z −0.04 %, KE/IE 0.16 %, energy balance 0.04 %, and no inverted element.
   - `cargo test --release -p sim-soft-explicit --test tube_release -- --nocapture`.
-- **The penalty's gap at this corner is −29 µm,** which biases pressure 2.7 % low (∂p/∂a from the
-  oracle, arithmetic). §15c's "about 1 %" came from a reviewer's inner-node V_a/A_a of 0.88 mm, and
-  the gap scales with element size (16i), so 2b records it on the ladder.
+- **The penalty's gap at this corner is −28 µm,** which biases pressure 2.6 % low (∂p/∂a from the
+  oracle, arithmetic).
+  - §15c's "about 1 %" came from a reviewer's inner-node V_a/A_a of 0.88 mm on the 100k mesh.
+  - The gap scales with element size (16i), so 2b records it on the ladder.
 - **G2 is not met on the tube at 10k.** The deepest penetration is 45 µm, 4.5 % of the 1 mm
   interference, against 1 %. §15g step 2 settles the contact law against G2 in 2b.
-- **The power iteration,** at the loop's 200 iterations:
-  - 7e-5 below a converged f64 run on the 10k tube, at f32 and at f64 (`tube_release`);
-  - 0.15 % below a dense eigensolve on a small block (`tests/executor.rs`).
-- **The energy balance's own error** is 0.41 % undamped on a pressed block (`tests/executor.rs`),
-  against the 1 % gate.
+- **The power iteration at the loop's 100 cold iterations,** against a converged f64 run on the 10k
+  tube: −0.21 % at rest, and −0.35 % loaded at K2's end, at f32 and f64. On a small block it is −1.1 %
+  against a dense eigensolve (`tests/executor.rs`).
+- **The energy balance's own error** is 0.28 % of the peak internal energy, on a pressed block at α 500
+  (`tests/executor.rs`), against the 1 % gate.
 
-**Each new CI check failed once on purpose,** and the one that could not was changed:
-- The damping-balance test passed with the damping loss doubled at α 50, where that loss is the size of
-  the balance's own error. It runs at α 500 now, and fails that mutation (3.8 %).
-- K2 at 10k fails with the λ term removed (raw −26.5 %).
-- The sanity run fails with the elastic force reversed.
-- `release-gates` failed before `sim-soft-explicit` joined tests-release.
+**Each CI check failed once on purpose,** and a check that could not fail was changed:
+- **The damping-balance test** passed with the damping loss doubled at α 50, where that loss is the size
+  of the balance's own error. It now runs at α 500, and fails that mutation (3.8 %).
+- **The band test** checked the area against the readout's own output. It now checks the closed form,
+  and an area halved or read at the last instant fails it.
+- **Every check added in the review** fails its named mutation:
+  - anchors in the world frame;
+  - `set_state` ignoring given anchors;
+  - `set_poses` a no-op;
+  - no stop on a non-finite read;
+  - gates that accept one;
+  - window sums that overwrite;
+  - no re-estimate;
+  - a gap correction on the cased tube;
+  - a halved volume-change gather.
+- **K2 at 10k** fails with the λ term removed (raw −26.5 %), and the sanity run fails with the elastic
+  force reversed.
+- **`release-gates`** failed before `sim-soft-explicit` joined tests-release.
