@@ -1,18 +1,16 @@
-//! The stepping loop: the order of a step's phases, written once for every
-//! executor, the stable time step, the monitors, and the generic validity
-//! gates (plan §15c, §15f, §16e).
+//! The stepping loop, written once for every executor (plan §15c, §15f,
+//! §16e).
+//!
+//! It holds the order of a step's phases, the stable time step, the
+//! monitors, the stop on a non-finite read, and the generic validity gates.
 
 use crate::executor::{Executor, Monitors};
 
-/// How the loop steps. [`StepperConfig::new`] gives the plan's values.
+/// How the loop steps. [`StepperConfig::new`] gives the plan's values. The
+/// contact law's penalty scale and friction come from the executor, so the
+/// stable step always bounds the law in use.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct StepperConfig {
-    /// The penalty scale `s` the obstacle uses (plan §15c: 0.5).
-    pub penalty_scale: f64,
-    /// The largest friction coefficient in the run. Slipping friction's
-    /// stiffness is not symmetric; its symmetric part bounds the step
-    /// (plan §16e).
-    pub friction: f64,
     /// The fraction of the stability limit the step uses (plan §15c: 0.9).
     pub safety: f64,
     /// Mass-proportional damping `α` (plan §15c).
@@ -23,32 +21,29 @@ pub struct StepperConfig {
     pub growth_limit: f64,
     /// Steps between monitor reads (plan §16e: 100).
     pub monitor_every: u64,
-    /// Power iterations for the first estimate, from a cold start.
-    pub first_iterations: usize,
-    /// Power iterations for each warm re-estimate.
-    pub warm_iterations: usize,
+    /// Power iterations per estimate, each from the same fixed start.
+    /// `tube_release` checks this count on the 10k tube, at rest and loaded,
+    /// against a converged estimate (plan §16m).
+    pub power_iterations: usize,
 }
 
 impl StepperConfig {
-    /// The plan's values, for a run with penalty scale `penalty_scale`,
-    /// largest friction `friction` and damping `damping`.
+    /// The plan's values, with mass damping `damping`.
     #[must_use]
-    pub const fn new(penalty_scale: f64, friction: f64, damping: f64) -> Self {
+    pub const fn new(damping: f64) -> Self {
         Self {
-            penalty_scale,
-            friction,
             safety: 0.9,
             damping,
             reestimate_every: 500,
             growth_limit: 1.05,
             monitor_every: 100,
-            first_iterations: 200,
-            warm_iterations: 20,
+            power_iterations: 100,
         }
     }
 
-    /// The stable step for an elastic `ω_el²`: `Δt = 0.9 · 2 / ω_max`, with
-    /// the penalty added to `ω_el²` as a bound (plan §16e):
+    /// The stable step for an elastic `ω_el²`, with a contact law of penalty
+    /// scale `penalty_scale` and friction `friction`: `Δt = 0.9 · 2 / ω_max`,
+    /// with the penalty added to `ω_el²` as a bound (plan §16e):
     ///
     /// `ω_max² ≤ ω_el² + s (1 + √(1 + μ_f²)) / 2 / Δt²`, so
     /// `Δt = √((2 · safety)² − s (1 + √(1 + μ_f²)) / 2) / ω_el`.
@@ -56,30 +51,23 @@ impl StepperConfig {
     /// # Panics
     /// If the penalty alone would use the whole stability budget.
     #[must_use]
-    pub fn stable_step(&self, omega_squared: f64) -> f64 {
-        let penalty = self.penalty_scale * 0.5 * (1.0 + self.friction.hypot(1.0));
+    pub fn stable_step(&self, omega_squared: f64, penalty_scale: f64, friction: f64) -> f64 {
+        let penalty = penalty_scale * 0.5 * (1.0 + friction.hypot(1.0));
         let budget = (2.0 * self.safety).powi(2) - penalty;
         assert!(
             budget > 0.0,
-            "the penalty (s = {}, μ_f = {}) leaves no stability budget",
-            self.penalty_scale,
-            self.friction
+            "the penalty (s = {penalty_scale}, μ_f = {friction}) leaves no stability budget"
         );
         (budget / omega_squared).sqrt()
     }
-}
 
-/// A step size the loop can use. A `NaN` or infinite estimate would stop time
-/// from advancing, so `run_until` would never return; it fails here instead.
-///
-/// # Panics
-/// If `dt` is not positive and finite.
-fn checked_step(dt: f64) -> f64 {
-    assert!(
-        dt.is_finite() && dt > 0.0,
-        "the stable step estimate is {dt}; the power iteration did not converge to a finite ω²"
-    );
-    dt
+    /// The step after a re-estimate: the new limit when it is smaller (the
+    /// step shrinks at once), and at most `growth_limit` times the current
+    /// step when it is larger (plan §15c).
+    #[must_use]
+    pub fn next_step(&self, current: f64, limit: f64) -> f64 {
+        limit.min(current * self.growth_limit)
+    }
 }
 
 /// One monitor read, with when it was taken.
@@ -95,6 +83,20 @@ pub struct Sample {
     pub monitors: Monitors,
 }
 
+/// Why a run stopped early.
+#[derive(Clone, Copy, Debug, PartialEq, thiserror::Error)]
+pub enum RunError {
+    /// A monitor read was not finite: the run blew up. An explicit check on
+    /// the host, since a shader may not propagate `NaN` (plan §13d rule 2).
+    #[error("a monitor read at step {step} (time {time}) is not finite")]
+    NonFinite {
+        /// The step of the read.
+        step: u64,
+        /// Its time.
+        time: f64,
+    },
+}
+
 /// The loop over an executor.
 #[derive(Debug)]
 pub struct Stepper<E> {
@@ -104,12 +106,16 @@ pub struct Stepper<E> {
     time: f64,
     steps: u64,
     omega_squared: f64,
+    estimates: u64,
     window: bool,
     samples: Vec<Sample>,
 }
 
 impl<E: Executor> Stepper<E> {
-    /// Start a run at time `start`: estimate the stable step at rest.
+    /// Start a run at time `start`: estimate the stable step.
+    ///
+    /// # Panics
+    /// If the estimate is not a positive, finite step.
     pub fn new(executor: E, config: StepperConfig, start: f64) -> Self {
         let mut stepper = Self {
             executor,
@@ -118,27 +124,43 @@ impl<E: Executor> Stepper<E> {
             time: start,
             steps: 0,
             omega_squared: 0.0,
+            estimates: 0,
             window: false,
             samples: Vec::new(),
         };
-        stepper.omega_squared = stepper.estimate(config.first_iterations);
-        stepper.dt = checked_step(config.stable_step(stepper.omega_squared));
+        stepper.dt = stepper.estimate();
         stepper
     }
 
-    fn estimate(&mut self, iterations: usize) -> f64 {
+    /// Estimate `ω_el²` from the fixed start and return the stable step.
+    fn estimate(&mut self) -> f64 {
         let perturbation = self.executor.epsilon().sqrt() * self.executor.shortest_edge();
-        self.executor
-            .elastic_rayleigh_quotient(iterations, perturbation)
+        self.omega_squared = self
+            .executor
+            .elastic_rayleigh_quotient(self.config.power_iterations, perturbation);
+        self.estimates += 1;
+        let dt = self.config.stable_step(
+            self.omega_squared,
+            self.executor.penalty_scale(),
+            self.executor.friction(),
+        );
+        assert!(
+            dt.is_finite() && dt > 0.0,
+            "the stable step estimate is {dt}; ω² = {} is not positive and finite",
+            self.omega_squared
+        );
+        dt
     }
 
     /// One step: the phases in plan §15f's order, then the window sums and
     /// the monitors when due.
-    pub fn step(&mut self) {
+    ///
+    /// # Errors
+    /// [`RunError::NonFinite`] if a monitor read is not finite.
+    pub fn step(&mut self) -> Result<(), RunError> {
         if self.steps > 0 && self.steps.is_multiple_of(self.config.reestimate_every) {
-            self.omega_squared = self.estimate(self.config.warm_iterations);
-            let limit = checked_step(self.config.stable_step(self.omega_squared));
-            self.dt = limit.min(self.dt * self.config.growth_limit);
+            let limit = self.estimate();
+            self.dt = self.config.next_step(self.dt, limit);
         }
         let (dt, damping) = (self.dt, self.config.damping);
         let e = &mut self.executor;
@@ -156,27 +178,51 @@ impl<E: Executor> Stepper<E> {
         self.time += dt;
         self.steps += 1;
         if self.steps.is_multiple_of(self.config.monitor_every) {
-            self.samples.push(Sample {
-                time: self.time,
+            self.read()?;
+        }
+        Ok(())
+    }
+
+    /// Read the monitors now, and stop if a value is not finite.
+    fn read(&mut self) -> Result<(), RunError> {
+        let monitors = self.executor.monitors();
+        self.samples.push(Sample {
+            time: self.time,
+            step: self.steps,
+            dt: self.dt,
+            monitors,
+        });
+        if monitors.finite() {
+            Ok(())
+        } else {
+            Err(RunError::NonFinite {
                 step: self.steps,
-                dt,
-                monitors: self.executor.monitors(),
-            });
+                time: self.time,
+            })
         }
     }
 
-    /// Step until the time reaches `end`.
-    pub fn run_until(&mut self, end: f64) {
+    /// Step until the time reaches `end`, then read the monitors once more
+    /// if the last step was not read, so the reads cover every step.
+    ///
+    /// # Errors
+    /// [`RunError::NonFinite`] if a monitor read is not finite.
+    pub fn run_until(&mut self, end: f64) -> Result<(), RunError> {
         loop {
             if self.time >= end {
                 break;
             }
-            self.step();
+            self.step()?;
         }
+        if self.samples.last().is_none_or(|s| s.step != self.steps) {
+            self.read()?;
+        }
+        Ok(())
     }
 
     /// Start a measurement window: empty the sums, then add every step's
-    /// contact forces to them until [`Stepper::close_window`].
+    /// displacements and contact forces to them until
+    /// [`Stepper::close_window`].
     pub fn open_window(&mut self) {
         self.executor.clear_accumulators();
         self.window = true;
@@ -192,7 +238,7 @@ impl<E: Executor> Stepper<E> {
         &self.executor
     }
 
-    /// The executor, to read or snapshot.
+    /// The executor, to snapshot or to change its pose track.
     pub const fn executor_mut(&mut self) -> &mut E {
         &mut self.executor
     }
@@ -221,6 +267,12 @@ impl<E: Executor> Stepper<E> {
         self.omega_squared
     }
 
+    /// How many times the stable step has been estimated.
+    #[must_use]
+    pub const fn estimates(&self) -> u64 {
+        self.estimates
+    }
+
     /// The monitor reads so far.
     #[must_use]
     pub fn samples(&self) -> &[Sample] {
@@ -229,34 +281,43 @@ impl<E: Executor> Stepper<E> {
 }
 
 /// The generic validity gates over a run's monitor reads (plan §15a as
-/// amended, §16e).
+/// amended, §16e). Each refuses to judge (`None`) when a read it covers is
+/// not finite.
 pub mod gates {
     use super::Sample;
 
-    /// Kinetic over internal energy on an interval, as the interval's mean
-    /// kinetic energy over its mean internal energy; `None` if no read falls
-    /// in `[from, to]` or the internal energy there is zero.
+    /// Kinetic over internal energy on an interval: the interval's mean
+    /// kinetic energy over its mean internal energy.
     ///
-    /// A ratio per read would be 0/0 before first contact (plan §16e).
+    /// `None` if no read falls in `[from, to]`, a read there is not finite,
+    /// or the internal energy there is zero. A ratio per read would be 0/0
+    /// before first contact (plan §16e).
     #[must_use]
     pub fn kinetic_over_internal(samples: &[Sample], from: f64, to: f64) -> Option<f64> {
-        let (kinetic, internal) = samples
+        let inside: Vec<&Sample> = samples
             .iter()
             .filter(|s| (from..=to).contains(&s.time))
-            .fold((0.0, 0.0), |(k, i), s| {
-                (
-                    k + s.monitors.kinetic_energy,
-                    i + s.monitors.internal_energy,
-                )
-            });
+            .collect();
+        if inside.iter().any(|s| !s.monitors.finite()) {
+            return None;
+        }
+        let (kinetic, internal) = inside.iter().fold((0.0, 0.0), |(k, i), s| {
+            (
+                k + s.monitors.kinetic_energy,
+                i + s.monitors.internal_energy,
+            )
+        });
         (internal > 0.0).then(|| kinetic / internal)
     }
 
     /// The energy balance's largest error over the run: `|W_contact −
     /// (U + K + D)|` at each read, over the run's peak internal energy `U`.
-    /// `None` before any internal energy.
+    /// `None` if a read is not finite, or before any internal energy.
     #[must_use]
     pub fn energy_balance(samples: &[Sample]) -> Option<f64> {
+        if samples.iter().any(|s| !s.monitors.finite()) {
+            return None;
+        }
         let peak = samples
             .iter()
             .map(|s| s.monitors.internal_energy)
@@ -273,7 +334,8 @@ pub mod gates {
         })
     }
 
-    /// Whether any element reached `J ≤ 0` (K4).
+    /// Whether any element reached `J ≤ 0` (K4), from the last read, which
+    /// [`super::Stepper::run_until`] takes after the last step.
     #[must_use]
     pub fn inverted(samples: &[Sample]) -> bool {
         samples

@@ -15,6 +15,7 @@ fn a_short_insertion_on_the_10k_tube_stays_finite_and_uninverted() {
         mesh: Mesh::TenK,
         case: THICK_TUBE[0],
         mu: 23.0e3,
+        c2: 0.0,
         density: 1070.0,
         insertion: Insertion {
             start_gap: 0.0,

@@ -241,13 +241,13 @@ pub struct CpuExecutor {
     contact_work: Vec<f64>,
     damping_losses: Vec<f64>,
     inverted_element_steps: u64,
+    displacement_sums: Vec<[f64; 3]>,
     normal_force_sums: Vec<f64>,
     friction_sums: Vec<[f64; 3]>,
     accumulated_steps: u64,
     resultant_sum: [f64; 3],
+    normal_sum: f64,
     steps_since_read: u64,
-
-    power_vector: Vec<[R; 3]>,
 }
 
 impl CpuExecutor {
@@ -279,7 +279,14 @@ impl CpuExecutor {
             friction: [0.0; 3],
         };
         let rest: Vec<[R; 3]> = model.rest_positions().iter().map(|&p| narrow3(p)).collect();
-        let anchors = surface_nodes.iter().map(|&a| rest[a as usize]).collect();
+        // Each surface node starts anchored where it sits against the track's
+        // first pose, in the obstacle's body frame, as the contact law reads
+        // anchors: a node that starts in contact starts sticking there.
+        let first = narrow_pose(obstacle.poses[0]);
+        let anchors = surface_nodes
+            .iter()
+            .map(|&a| shared::pose_to_body(first, rest[a as usize]))
+            .collect();
         let surface_count = surface_nodes.len();
         Ok(Self {
             elements: model.elements().to_vec(),
@@ -339,12 +346,13 @@ impl CpuExecutor {
             contact_work: vec![0.0; nodes],
             damping_losses: vec![0.0; nodes],
             inverted_element_steps: 0,
+            displacement_sums: vec![[0.0; 3]; nodes],
             normal_force_sums: vec![0.0; surface_count],
             friction_sums: vec![[0.0; 3]; surface_count],
             accumulated_steps: 0,
             resultant_sum: [0.0; 3],
+            normal_sum: 0.0,
             steps_since_read: 0,
-            power_vector: Vec::new(),
             rest,
         })
     }
@@ -360,6 +368,23 @@ impl CpuExecutor {
             offsets: &self.offsets,
             entries: &self.entries,
         }
+    }
+
+    /// The obstacle's pose at `time`, interpolated between its samples.
+    // `poses.len()` fits a u32: a pose track is a few thousand samples.
+    #[allow(clippy::cast_possible_truncation)]
+    fn pose_at(&self, time: f64) -> shared::Pose {
+        let span = shared::pose_sample_span(
+            narrow(time),
+            self.pose_start,
+            self.pose_interval,
+            self.poses.len() as u32,
+        );
+        shared::pose_interpolate(
+            self.poses[span.lower as usize],
+            self.poses[span.upper as usize],
+            span.fraction,
+        )
     }
 
     /// A node's contact force this step: zero off the surface.
@@ -424,11 +449,59 @@ impl Executor for CpuExecutor {
         widen(R::EPSILON)
     }
 
-    fn set_state(&mut self, displacements: &[[f64; 3]], velocities: &[[f64; 3]]) {
-        assert_eq!(displacements.len(), self.node_count(), "one displacement per node");
-        assert_eq!(velocities.len(), self.node_count(), "one velocity per node");
-        self.displacements = displacements.iter().map(|&u| narrow3(u)).collect();
-        self.velocities = velocities.iter().map(|&v| narrow3(v)).collect();
+    fn penalty_scale(&self) -> f64 {
+        widen(self.penalty_scale)
+    }
+
+    fn friction(&self) -> f64 {
+        widen(self.friction)
+    }
+
+    fn set_state(
+        &mut self,
+        time: f64,
+        displacements: &[[f64; 3]],
+        velocities: &[[f64; 3]],
+        anchors: Option<&[[f64; 3]]>,
+    ) {
+        let nodes = self.node_count();
+        assert_eq!(displacements.len(), nodes, "one displacement per node");
+        assert_eq!(velocities.len(), nodes, "one velocity per node");
+        self.displacements = (0..nodes)
+            .map(|a| self.free_part(a, narrow3(displacements[a])))
+            .collect();
+        self.velocities = (0..nodes)
+            .map(|a| self.free_part(a, narrow3(velocities[a])))
+            .collect();
+        self.anchors = if let Some(given) = anchors {
+            assert_eq!(given.len(), nodes, "one anchor per node");
+            self.surface_nodes
+                .iter()
+                .map(|&a| narrow3(given[a as usize]))
+                .collect()
+        } else {
+            let pose = self.pose_at(time);
+            self.surface_nodes
+                .iter()
+                .map(|&a| {
+                    let a = a as usize;
+                    shared::pose_to_body(pose, shared::vec3_add(self.rest[a], self.displacements[a]))
+                })
+                .collect()
+        };
+    }
+
+    fn set_poses(
+        &mut self,
+        start: f64,
+        interval: f64,
+        poses: &[crate::f64::Pose],
+    ) -> Result<(), ObstacleError> {
+        check_poses(interval, poses)?;
+        self.pose_start = narrow(start);
+        self.pose_interval = narrow(interval);
+        self.poses = poses.iter().map(|&p| narrow_pose(p)).collect();
+        Ok(())
     }
 
     fn element_dilations(&mut self) {
@@ -464,20 +537,8 @@ impl Executor for CpuExecutor {
         self.elastic_forces = forces;
     }
 
-    // `poses.len()` fits a u32: the pose track is a few thousand samples.
-    #[allow(clippy::cast_possible_truncation)]
     fn contact(&mut self, time: f64, dt: f64) {
-        let span = shared::pose_sample_span(
-            narrow(time),
-            self.pose_start,
-            self.pose_interval,
-            self.poses.len() as u32,
-        );
-        let pose = shared::pose_interpolate(
-            self.poses[span.lower as usize],
-            self.poses[span.upper as usize],
-            span.fraction,
-        );
+        let pose = self.pose_at(time);
         let step = narrow(dt);
         let mut stiffnesses = std::mem::take(&mut self.stiffnesses);
         fill(&mut stiffnesses, |i| {
@@ -507,6 +568,7 @@ impl Executor for CpuExecutor {
             for d in 0..3 {
                 self.resultant_sum[d] += widen(contact.force[d]);
             }
+            self.normal_sum += widen(contact.normal_force);
         }
         self.steps_since_read += 1;
         self.contacts = contacts;
@@ -561,6 +623,11 @@ impl Executor for CpuExecutor {
     }
 
     fn accumulate(&mut self) {
+        for (sum, u) in self.displacement_sums.iter_mut().zip(&self.displacements) {
+            for d in 0..3 {
+                sum[d] += widen(u[d]);
+            }
+        }
         for (i, contact) in self.contacts.iter().enumerate() {
             self.normal_force_sums[i] += widen(contact.normal_force);
             for d in 0..3 {
@@ -571,6 +638,7 @@ impl Executor for CpuExecutor {
     }
 
     fn clear_accumulators(&mut self) {
+        self.displacement_sums.fill([0.0; 3]);
         self.normal_force_sums.fill(0.0);
         self.friction_sums.fill([0.0; 3]);
         self.accumulated_steps = 0;
@@ -593,34 +661,61 @@ impl Executor for CpuExecutor {
                 .map(|(&a, _)| kinetic(a as usize))
                 .sum(),
             contact_force: self.resultant_sum.map(|f| f * mean),
+            normal_force: self.normal_sum * mean,
             steps,
             inverted_element_steps: self.inverted_element_steps,
             contact_work: self.contact_work.iter().sum(),
             damping_loss: self.damping_losses.iter().sum(),
-            max_penetration: self
-                .max_penetrations
-                .iter()
-                .fold(0.0, |m: f64, &p| m.max(widen(p))),
+            // `f64::max` would drop a NaN; a NaN here must reach the loop's
+            // check, so it propagates.
+            max_penetration: self.max_penetrations.iter().fold(0.0, |m: f64, &p| {
+                let p = widen(p);
+                if m.is_nan() || p.is_nan() { f64::NAN } else { m.max(p) }
+            }),
         };
         self.resultant_sum = [0.0; 3];
+        self.normal_sum = 0.0;
         self.steps_since_read = 0;
         monitors
     }
 
-    fn snapshot(&self) -> Snapshot {
+    fn snapshot(&mut self) -> Snapshot {
         let nodes = self.node_count();
+        let mut anchors = vec![[0.0; 3]; nodes];
         let mut normal_force_sums = vec![0.0; nodes];
         let mut friction_sums = vec![[0.0; 3]; nodes];
         for (i, &a) in self.surface_nodes.iter().enumerate() {
+            anchors[a as usize] = widen3(self.anchors[i]);
             normal_force_sums[a as usize] = self.normal_force_sums[i];
             friction_sums[a as usize] = self.friction_sums[i];
         }
         Snapshot {
             displacements: self.displacements.iter().map(|&u| widen3(u)).collect(),
             velocities: self.velocities.iter().map(|&v| widen3(v)).collect(),
+            anchors,
+            displacement_sums: self.displacement_sums.clone(),
             normal_force_sums,
             friction_sums,
             accumulated_steps: self.accumulated_steps,
+        }
+    }
+
+    fn phase_outputs(&mut self) -> PhaseOutputs {
+        let nodes = self.node_count();
+        let mut contact_forces = vec![[0.0; 3]; nodes];
+        let mut normal_forces = vec![0.0; nodes];
+        for (i, &a) in self.surface_nodes.iter().enumerate() {
+            contact_forces[a as usize] = widen3(self.contacts[i].force);
+            normal_forces[a as usize] = widen(self.contacts[i].normal_force);
+        }
+        PhaseOutputs {
+            dilations: self.dilations.iter().map(|&d| widen(d)).collect(),
+            volume_changes: self.volume_changes.iter().map(|&v| widen(v)).collect(),
+            pressures: self.pressures.iter().map(|&p| widen(p)).collect(),
+            element_forces: self.element_forces.iter().map(|f| f.map(widen)).collect(),
+            elastic_forces: self.elastic_forces.iter().map(|&f| widen3(f)).collect(),
+            contact_forces,
+            normal_forces,
         }
     }
 
@@ -629,15 +724,12 @@ impl Executor for CpuExecutor {
     #[allow(clippy::cast_precision_loss)]
     fn elastic_rayleigh_quotient(&mut self, iterations: usize, perturbation: f64) -> f64 {
         let nodes = self.node_count();
-        let mut v = std::mem::take(&mut self.power_vector);
-        if v.len() != nodes {
-            v = (0..nodes)
-                .map(|a| {
-                    let x = a as R;
-                    self.free_part(a, [(1.1 * x).sin(), (0.7 * x).cos(), (0.3 * x + 1.0).sin()])
-                })
-                .collect();
-        }
+        let mut v: Vec<[R; 3]> = (0..nodes)
+            .map(|a| {
+                let x = a as R;
+                self.free_part(a, [(1.1 * x).sin(), (0.7 * x).cos(), (0.3 * x + 1.0).sin()])
+            })
+            .collect();
         let elastic = self.elastic();
         let base = elastic.forces(&self.displacements);
         let mut quotient = 0.0;
@@ -685,7 +777,6 @@ impl Executor for CpuExecutor {
             }
             v = next.iter().map(|&x| shared::vec3_scale(x, 1.0 / size)).collect();
         }
-        self.power_vector = v;
         quotient
     }
 }

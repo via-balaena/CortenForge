@@ -41,19 +41,43 @@ pub struct Monitors {
     /// Kinetic energy of the nodes in contact at the last step: a watch for
     /// friction flutter, which nothing gates (plan §16e).
     pub contact_kinetic_energy: f64,
-    /// The contact forces' resultant on the body, world frame, averaged over
-    /// the steps since the last read.
+    /// The resultant of the contact forces on the soft body's nodes, world
+    /// frame, averaged over the steps since the last read. The obstacle's
+    /// reaction is its negative.
     pub contact_force: [f64; 3],
+    /// The sum of the nodes' contact normal-force magnitudes, averaged over
+    /// the steps since the last read: the Coulomb push's `Σ f_n` (15d.7).
+    pub normal_force: f64,
     /// The number of steps since the last read.
     pub steps: u64,
     /// Cumulative: element-steps with `J ≤ 0` (K4).
     pub inverted_element_steps: u64,
-    /// Cumulative: the work the contact forces have done on the body.
+    /// Cumulative: the work the contact forces have done on the soft body's
+    /// nodes.
     pub contact_work: f64,
     /// Cumulative: the energy mass damping has removed.
     pub damping_loss: f64,
     /// Cumulative: the deepest penetration any node has reached (G2).
     pub max_penetration: f64,
+}
+
+impl Monitors {
+    /// Whether every value read is finite.
+    #[must_use]
+    pub fn finite(&self) -> bool {
+        [
+            self.kinetic_energy,
+            self.internal_energy,
+            self.contact_kinetic_energy,
+            self.normal_force,
+            self.contact_work,
+            self.damping_loss,
+            self.max_penetration,
+        ]
+        .iter()
+        .chain(&self.contact_force)
+        .all(|v| v.is_finite())
+    }
 }
 
 /// A read of the executor's per-node state.
@@ -63,6 +87,11 @@ pub struct Snapshot {
     pub displacements: Vec<[f64; 3]>,
     /// Each node's velocity at the latest half step.
     pub velocities: Vec<[f64; 3]>,
+    /// Each node's friction anchor, the obstacle's body frame; zero off the
+    /// surface. Part of the state: [`Executor::set_state`] takes it back.
+    pub anchors: Vec<[f64; 3]>,
+    /// Each node's displacement, summed over the accumulated steps.
+    pub displacement_sums: Vec<[f64; 3]>,
     /// Each node's contact normal force, summed over the accumulated steps.
     pub normal_force_sums: Vec<f64>,
     /// Each node's friction force, world frame, summed over the accumulated
@@ -72,12 +101,32 @@ pub struct Snapshot {
     pub accumulated_steps: u64,
 }
 
+/// What each phase of the last step wrote, for per-phase conformance between
+/// executors (plan §14d, §15g step 4). A debugging read, never per step.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PhaseOutputs {
+    /// Phase 1: each element's dilation `J − 1`.
+    pub dilations: Vec<f64>,
+    /// Phase 2: each node's volume change.
+    pub volume_changes: Vec<f64>,
+    /// Phase 3: each node's averaged pressure.
+    pub pressures: Vec<f64>,
+    /// Phase 4: each element's twelve nodal force components.
+    pub element_forces: Vec<[f64; 12]>,
+    /// Phase 5: each node's elastic force.
+    pub elastic_forces: Vec<[f64; 3]>,
+    /// Phase 6: each node's contact force, world frame; zero off the surface.
+    pub contact_forces: Vec<[f64; 3]>,
+    /// Phase 6: each node's contact normal-force magnitude.
+    pub normal_forces: Vec<f64>,
+}
+
 /// An explicit executor: the solver's state, and one method per phase.
 ///
 /// A step is the phases in [`crate::stepping`]'s order, and each phase
 /// reads what the one before wrote. Nothing is read back to the host except
-/// by [`Executor::monitors`], [`Executor::snapshot`] and
-/// [`Executor::elastic_rayleigh_quotient`].
+/// by [`Executor::monitors`], [`Executor::snapshot`],
+/// [`Executor::phase_outputs`] and [`Executor::elastic_rayleigh_quotient`].
 pub trait Executor {
     /// The number of nodes.
     fn node_count(&self) -> usize;
@@ -89,12 +138,41 @@ pub trait Executor {
     /// The executor's machine epsilon: `f32::EPSILON` or `f64::EPSILON`.
     fn epsilon(&self) -> f64;
 
-    /// Replace every node's displacement and half-step velocity, for an
-    /// initial condition or to put two executors in the same state.
+    /// The contact law's penalty scale `s`, from the [`Obstacle`]. The loop
+    /// reads it here, so the stable step bounds the penalty in use.
+    fn penalty_scale(&self) -> f64;
+
+    /// The contact law's friction coefficient `μ_f`, from the [`Obstacle`].
+    fn friction(&self) -> f64;
+
+    /// Replace the state: every node's displacement and half-step velocity,
+    /// each projected onto the node's free directions, and the friction
+    /// anchors.
+    ///
+    /// `anchors` is one body-frame anchor per node (read by
+    /// [`Executor::snapshot`]), or `None` to anchor each surface node where
+    /// it sits at `time`, so every contact starts sticking there.
     ///
     /// # Panics
-    /// If either slice's length is not the node count.
-    fn set_state(&mut self, displacements: &[[f64; 3]], velocities: &[[f64; 3]]);
+    /// If a slice's length is not the node count.
+    fn set_state(
+        &mut self,
+        time: f64,
+        displacements: &[[f64; 3]],
+        velocities: &[[f64; 3]],
+        anchors: Option<&[[f64; 3]]>,
+    );
+
+    /// Replace the obstacle's pose track: samples every `interval` from
+    /// `start`. A run can change how the obstacle moves without losing its
+    /// state (plan §14d's poses streamed a batch at a time; K6's loading legs
+    /// that end on a force, 16b).
+    ///
+    /// # Errors
+    /// An [`ObstacleError`] if the track is empty, its interval is not
+    /// positive, or a pose is not a unit quaternion with a finite translation.
+    fn set_poses(&mut self, start: f64, interval: f64, poses: &[Pose])
+    -> Result<(), ObstacleError>;
 
     /// Phase 1: each element's dilation `J − 1`, counting inverted elements.
     fn element_dilations(&mut self);
@@ -122,8 +200,8 @@ pub trait Executor {
     /// Phase 8: each node's constraints, and the step's energy terms.
     fn boundary_conditions(&mut self, dt: f64, damping: f64);
 
-    /// Add each node's current contact normal and friction forces to its
-    /// window sums.
+    /// Add each node's current displacement, contact normal force and
+    /// friction force to its window sums.
     fn accumulate(&mut self);
 
     /// Empty the window sums.
@@ -132,17 +210,24 @@ pub trait Executor {
     /// Reduce and read the monitors, and restart the since-last-read ones.
     fn monitors(&mut self) -> Monitors;
 
-    /// Read the per-node state.
-    fn snapshot(&self) -> Snapshot;
+    /// Read the per-node state. `&mut` because a GPU executor must finish
+    /// its queued work before reading back.
+    fn snapshot(&mut self) -> Snapshot;
+
+    /// Read what each phase of the last step wrote.
+    fn phase_outputs(&mut self) -> PhaseOutputs;
 
     /// Run `iterations` of the power iteration on `M⁻¹K`, the elastic
     /// stiffness at the current state, and return the Rayleigh quotient,
     /// an estimate of `ω_el²` from below.
     ///
+    /// Each call starts from the same fixed vector. Started from the last
+    /// call's vector instead, the iteration stayed on a lower mode once the
+    /// tube was loaded, and read up to 3.9 % low (plan §16m).
+    ///
     /// `K v` is the finite difference of phases 1–5 in the direction `v`,
-    /// with the step `perturbation` in the largest nodal component. The
-    /// vector stays on the executor and is warm-started on the next call.
-    /// Held and constrained directions are excluded.
+    /// with the step `perturbation` in the largest nodal component. Held and
+    /// constrained directions are excluded.
     fn elastic_rayleigh_quotient(&mut self, iterations: usize, perturbation: f64) -> f64;
 }
 
@@ -181,14 +266,6 @@ pub enum ObstacleError {
 /// The first problem found.
 pub fn check_obstacle(obstacle: &Obstacle) -> Result<(), ObstacleError> {
     let grid = obstacle.grid;
-    if obstacle.poses.is_empty() {
-        return Err(ObstacleError::NoPoses);
-    }
-    if !(obstacle.interval.is_finite() && obstacle.interval > 0.0) {
-        return Err(ObstacleError::Interval {
-            interval: obstacle.interval,
-        });
-    }
     let expected = [grid.size_x, grid.size_y, grid.size_z]
         .iter()
         .map(|&n| n as usize)
@@ -199,6 +276,7 @@ pub fn check_obstacle(obstacle: &Obstacle) -> Result<(), ObstacleError> {
             expected,
         });
     }
+    check_poses(obstacle.interval, &obstacle.poses)?;
     let reason = if grid.size_x == 0 || grid.size_y == 0 || grid.size_z == 0 {
         Some("the grid has no samples along an axis")
     } else if !(grid.cell_size.is_finite() && grid.cell_size > 0.0) {
@@ -209,11 +287,6 @@ pub fn check_obstacle(obstacle: &Obstacle) -> Result<(), ObstacleError> {
         .all(|v| v.is_finite())
     {
         Some("a grid origin, value or the start time is not finite")
-    } else if !obstacle.poses.iter().all(|p| {
-        let norm = p.qw * p.qw + p.qx * p.qx + p.qy * p.qy + p.qz * p.qz;
-        (norm - 1.0).abs() <= 1e-9 && p.tx.is_finite() && p.ty.is_finite() && p.tz.is_finite()
-    }) {
-        Some("a pose is not a unit quaternion with a finite translation")
     } else if !(obstacle.friction.is_finite() && obstacle.friction >= 0.0) {
         Some("the friction must be finite and not negative")
     } else if !(obstacle.penalty_scale.is_finite() && obstacle.penalty_scale > 0.0) {
@@ -222,4 +295,28 @@ pub fn check_obstacle(obstacle: &Obstacle) -> Result<(), ObstacleError> {
         None
     };
     reason.map_or(Ok(()), |reason| Err(ObstacleError::Invalid { reason }))
+}
+
+/// Check a pose track: samples, a positive interval, and unit quaternions
+/// with finite translations.
+///
+/// # Errors
+/// The first problem found.
+pub fn check_poses(interval: f64, poses: &[Pose]) -> Result<(), ObstacleError> {
+    if poses.is_empty() {
+        return Err(ObstacleError::NoPoses);
+    }
+    if !(interval.is_finite() && interval > 0.0) {
+        return Err(ObstacleError::Interval { interval });
+    }
+    if poses.iter().all(|p| {
+        let norm = p.qw * p.qw + p.qx * p.qx + p.qy * p.qy + p.qz * p.qz;
+        (norm - 1.0).abs() <= 1e-9 && p.tx.is_finite() && p.ty.is_finite() && p.tz.is_finite()
+    }) {
+        Ok(())
+    } else {
+        Err(ObstacleError::Invalid {
+            reason: "a pose is not a unit quaternion with a finite translation",
+        })
+    }
 }

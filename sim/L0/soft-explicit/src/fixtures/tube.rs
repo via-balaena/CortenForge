@@ -86,8 +86,9 @@ impl Tube {
     }
 
     /// The node at radial level `i`, angle index `j` (taken around the
-    /// circle) and axial level `k`.
-    // The largest planned mesh has 19 712 nodes, far inside a u32.
+    /// circle) and axial level `k`. Meaningful only for a tube whose nodes
+    /// fit a `u32` index, which [`Tube::model`] checks.
+    // Truncation needs over 4 billion nodes; `model` refuses such a tube.
     #[allow(clippy::cast_possible_truncation)]
     #[must_use]
     pub const fn node(&self, i: usize, j: usize, k: usize) -> u32 {
@@ -174,8 +175,12 @@ impl Tube {
     /// The lowered model in one `material`, held as `walls` says.
     ///
     /// # Errors
-    /// A [`ModelError`] if the material is out of range.
+    /// [`ModelError::TooLarge`] if the nodes do not fit a `u32` index, and a
+    /// [`ModelError`] if the material is out of range.
     pub fn model(&self, material: Material, walls: Walls) -> Result<ExplicitModel, ModelError> {
+        if u32::try_from(self.node_count()).is_err() {
+            return Err(ModelError::TooLarge);
+        }
         let positions = self.rest_positions();
         let elements = self.elements();
         let count = elements.len();
@@ -242,21 +247,46 @@ impl Mandrel {
     /// The distance baked into a grid of spacing `cell` over the body-frame
     /// box `[low, high]` (plan §15c pins `cell` at A/20).
     ///
-    /// # Panics
-    /// If a side needs more samples than a `u32` holds.
-    #[must_use]
-    pub fn baked(&self, low: [f64; 3], high: [f64; 3], cell: f64) -> (SdfGridLayout, Vec<f64>) {
-        // Rounded before the cast; a grid this size is far below u32::MAX.
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let samples = |axis: usize| ((high[axis] - low[axis]) / cell).round() as u32 + 1;
+    /// # Errors
+    /// A [`BakeError`] unless `cell` is positive, the box is ordered on every
+    /// axis, each side is a whole number of cells, and the grid holds at most
+    /// `u32::MAX` samples.
+    pub fn baked(
+        &self,
+        low: [f64; 3],
+        high: [f64; 3],
+        cell: f64,
+    ) -> Result<(SdfGridLayout, Vec<f64>), BakeError> {
+        if !(cell.is_finite() && cell > 0.0) {
+            return Err(BakeError::Cell);
+        }
+        let mut sizes = [0_u32; 3];
+        for axis in 0..3 {
+            let cells = (high[axis] - low[axis]) / cell;
+            if !(cells.is_finite() && cells >= 0.0) {
+                return Err(BakeError::Box);
+            }
+            if (cells - cells.round()).abs() > 1e-9 * cells.max(1.0) {
+                return Err(BakeError::NotWholeCells { axis });
+            }
+            // A whole, non-negative number of cells; the product check below
+            // bounds it.
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let samples = cells.round().min(f64::from(u32::MAX - 1)) as u32 + 1;
+            sizes[axis] = samples;
+        }
+        let total = sizes.iter().map(|&n| u64::from(n)).product::<u64>();
+        if total > u64::from(u32::MAX) {
+            return Err(BakeError::TooLarge);
+        }
         let grid = SdfGridLayout {
             origin_x: low[0],
             origin_y: low[1],
             origin_z: low[2],
             cell_size: cell,
-            size_x: samples(0),
-            size_y: samples(1),
-            size_z: samples(2),
+            size_x: sizes[0],
+            size_y: sizes[1],
+            size_z: sizes[2],
         };
         let mut values = Vec::with_capacity((grid.size_x * grid.size_y * grid.size_z) as usize);
         for k in 0..grid.size_z {
@@ -270,8 +300,29 @@ impl Mandrel {
                 }
             }
         }
-        (grid, values)
+        Ok((grid, values))
     }
+}
+
+/// Why a mandrel could not be baked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum BakeError {
+    /// The cell size is not positive and finite.
+    #[error("the cell size must be positive and finite")]
+    Cell,
+    /// The box is not ordered (`low ≤ high`) or not finite.
+    #[error("the box must be finite with low <= high on every axis")]
+    Box,
+    /// A side is not a whole number of cells, so the far face would miss
+    /// `high`.
+    #[error("the box's side along axis {axis} is not a whole number of cells")]
+    NotWholeCells {
+        /// The axis, 0 to 2.
+        axis: usize,
+    },
+    /// The grid would hold more than `u32::MAX` samples.
+    #[error("the grid would hold more than u32::MAX samples")]
+    TooLarge,
 }
 
 /// Plan §15b's insertion of the mandrel's tip.
@@ -331,7 +382,13 @@ impl Insertion {
 
     /// The mandrel as an obstacle: its distance baked at `cell` over the
     /// region the tube can reach, and its pose sampled every `T/1000`.
-    #[must_use]
+    ///
+    /// The box is rounded out to whole cells. Beyond it the clamped lookup
+    /// reads the nearest face, which is outside the mandrel wherever a tube
+    /// node can be.
+    ///
+    /// # Errors
+    /// A [`BakeError`] if the grid cannot be baked.
     pub fn obstacle(
         &self,
         mandrel: Mandrel,
@@ -339,13 +396,12 @@ impl Insertion {
         cell: f64,
         friction: f64,
         penalty_scale: f64,
-    ) -> Obstacle {
-        let reach = 1.25 * tube.outer_radius;
-        let (grid, values) = mandrel.baked(
-            [-reach, -reach, -(self.depth + 0.005)],
-            [reach, reach, 0.005],
-            cell,
-        );
+    ) -> Result<Obstacle, BakeError> {
+        let whole = |length: f64| (length / cell).ceil() * cell;
+        let reach = whole(1.25 * tube.outer_radius);
+        let (behind, ahead) = (whole(self.depth + 0.005), whole(0.005));
+        let (grid, values) =
+            mandrel.baked([-reach, -reach, -behind], [reach, reach, ahead], cell)?;
         let interval = self.loading_time / 1000.0;
         let samples = 1001;
         let poses = (0..samples)
@@ -359,7 +415,7 @@ impl Insertion {
                 tz: self.tip(f64::from(s) * interval),
             })
             .collect();
-        Obstacle {
+        Ok(Obstacle {
             grid,
             values,
             start: 0.0,
@@ -367,7 +423,7 @@ impl Insertion {
             poses,
             friction,
             penalty_scale,
-        }
+        })
     }
 }
 
@@ -390,8 +446,11 @@ pub struct BandReading {
 
 /// Read the band `nodes` (from [`Tube::band`]) from a window's `snapshot`.
 ///
-/// Each node's pressure is its window-mean normal force over its tributary
-/// area, a third of each incident deformed boundary triangle (plan §15c).
+/// Everything is a window mean, so the pressure and the reference it is
+/// judged against come from the same interval: each node's pressure is its
+/// mean normal force over its tributary area (a third of each incident
+/// boundary triangle, plan §15c), with the areas, the gap and `λ_z` taken at
+/// the mean displaced position.
 ///
 /// # Panics
 /// If the snapshot holds no accumulated steps, or the band is empty.
@@ -409,8 +468,12 @@ pub fn read_band(
     assert!(!nodes.is_empty(), "the band is empty");
     let steps = snapshot.accumulated_steps as f64;
     let deformed = |n: usize| {
-        let (x, u) = (model.rest_positions()[n], snapshot.displacements[n]);
-        [x[0] + u[0], x[1] + u[1], x[2] + u[2]]
+        let (x, sum) = (model.rest_positions()[n], snapshot.displacement_sums[n]);
+        [
+            x[0] + sum[0] / steps,
+            x[1] + sum[1] / steps,
+            x[2] + sum[2] / steps,
+        ]
     };
     let area = |n: usize| {
         model
@@ -523,8 +586,11 @@ pub struct TubeCase {
 pub struct Errors {
     /// Against the oracle at radius `a`, relative.
     pub raw: f64,
-    /// Against the oracle at `a` plus the band's mean gap, relative.
-    pub gap_corrected: f64,
+    /// Against the oracle at `a` plus the band's mean gap, relative; `None`
+    /// for the cased tube, where the linearization in the gap is off by
+    /// 3.5 % at §15c's predicted 0.36 mm (a review's measurement against
+    /// the exact oracle), and §15g records only the raw error.
+    pub gap_corrected: Option<f64>,
 }
 
 impl TubeCase {
@@ -539,7 +605,7 @@ impl TubeCase {
         let measured = reading.pressure / mu;
         Errors {
             raw: measured / at_stretch - 1.0,
-            gap_corrected: measured / at_gap - 1.0,
+            gap_corrected: (self.walls == Walls::Free).then(|| measured / at_gap - 1.0),
         }
     }
 }
@@ -553,6 +619,8 @@ pub struct TubeRun {
     pub case: TubeCase,
     /// The shear modulus μ; λ follows from the case's ν.
     pub mu: f64,
+    /// Yeoh's C₂; 0 is neo-Hookean (the Yeoh case, 16h).
+    pub c2: f64,
     /// The density ρ.
     pub density: f64,
     /// The mandrel's motion (plan §15b: [`Insertion::plan`]).
@@ -586,8 +654,25 @@ pub struct TubeResult {
     pub steps: u64,
     /// The last step size.
     pub dt: f64,
-    /// Every monitor read.
+    /// Every monitor read; the last follows the last step.
     pub samples: Vec<crate::stepping::Sample>,
+    /// The state at the end, with the window's sums: per-node pressures (K5's
+    /// seated percentile), and a state to restart or compare from.
+    pub snapshot: Snapshot,
+}
+
+/// Why a [`TubeRun`] did not produce a result.
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
+pub enum TubeRunError {
+    /// The model could not be built.
+    #[error(transparent)]
+    Model(#[from] ModelError),
+    /// The mandrel could not be baked.
+    #[error(transparent)]
+    Bake(#[from] BakeError),
+    /// The run blew up.
+    #[error(transparent)]
+    Run(#[from] crate::stepping::RunError),
 }
 
 impl TubeRun {
@@ -605,7 +690,7 @@ impl TubeRun {
         Material {
             mu: self.mu,
             lambda: self.mu * 2.0 * nu / (1.0 - 2.0 * nu),
-            c2: 0.0,
+            c2: self.c2,
             density: self.density,
         }
     }
@@ -617,11 +702,12 @@ impl TubeRun {
     /// (plan §15c), on through the hold (plan §16e).
     ///
     /// # Errors
-    /// A [`ModelError`] if the model cannot be built.
+    /// A [`TubeRunError`] if the model cannot be built, the mandrel cannot
+    /// be baked, or the run blows up.
     pub fn run<E: crate::executor::Executor>(
         &self,
         make: impl FnOnce(&ExplicitModel, &Obstacle) -> E,
-    ) -> Result<TubeResult, ModelError> {
+    ) -> Result<TubeResult, TubeRunError> {
         use crate::stepping::{Stepper, StepperConfig, gates};
 
         let tube = Tube::plan(self.mesh);
@@ -637,17 +723,16 @@ impl TubeRun {
             tube.inner_radius / 20.0,
             self.friction,
             penalty_scale,
-        );
+        )?;
         let damping = 2.0 * 0.05 * (TAU / Self::shear_period(self.mu, self.density));
-        let config = StepperConfig::new(penalty_scale, self.friction, damping);
-        let mut stepper = Stepper::new(make(&model, &obstacle), config, 0.0);
+        let mut stepper = Stepper::new(make(&model, &obstacle), StepperConfig::new(damping), 0.0);
         let window = insertion.end() - self.window;
-        stepper.run_until(window);
+        stepper.run_until(window)?;
         stepper.open_window();
-        stepper.run_until(insertion.end());
+        stepper.run_until(insertion.end())?;
         stepper.close_window();
 
-        let snapshot = stepper.executor().snapshot();
+        let snapshot = stepper.executor_mut().snapshot();
         let band = tube.band(0.020, 0.060);
         let reading = read_band(&tube, &model, &snapshot, mandrel, &band);
         let errors = self.case.errors(&reading, tube.inner_radius, self.mu);
@@ -663,6 +748,7 @@ impl TubeRun {
             reading,
             errors,
             samples,
+            snapshot,
         })
     }
 }

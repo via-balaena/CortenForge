@@ -5,11 +5,12 @@
 
 use std::f64::consts::{PI, TAU};
 
+use sim_soft_explicit::ModelError;
 use sim_soft_explicit::executor::Snapshot;
 use sim_soft_explicit::f64::Material;
 use sim_soft_explicit::fixtures::golden::THICK_TUBE;
 use sim_soft_explicit::fixtures::tube::{
-    BandReading, Insertion, Mandrel, Mesh, Tube, Walls, read_band,
+    BakeError, BandReading, Insertion, Mandrel, Mesh, Tube, Walls, read_band,
 };
 
 const SILICONE: Material = Material {
@@ -97,7 +98,9 @@ fn the_mandrel_is_a_cylinder_with_a_round_nose() {
     let c = [0.0, 0.0, -0.011];
     let s = std::f64::consts::FRAC_1_SQRT_2 * 0.011;
     assert!(m.distance([s, 0.0, c[2] + s]).abs() < 1e-15);
-    let (grid, values) = m.baked([-0.02, -0.02, -0.03], [0.02, 0.02, 0.005], 0.0005);
+    let (grid, values) = m
+        .baked([-0.02, -0.02, -0.03], [0.02, 0.02, 0.005], 0.0005)
+        .unwrap();
     assert_eq!(
         values.len(),
         (grid.size_x * grid.size_y * grid.size_z) as usize
@@ -130,20 +133,31 @@ fn the_insertion_ramps_holds_speed_and_stops_at_depth() {
         assert!((insertion.tip(t + 1e-9) - insertion.tip(t - 1e-9)).abs() < 1e-9);
         assert!((speed(t) / top - 1.0).abs() < 1e-3);
     }
-    let obstacle = insertion.obstacle(
-        Mandrel { radius: 0.011 },
-        &Tube::plan(Mesh::TenK),
-        0.0005,
-        0.0,
-        0.5,
-    );
+    let obstacle = insertion
+        .obstacle(
+            Mandrel { radius: 0.011 },
+            &Tube::plan(Mesh::TenK),
+            0.0005,
+            0.0,
+            0.5,
+        )
+        .unwrap();
     assert_eq!(obstacle.poses.len(), 1001);
     assert!((obstacle.poses[1000].tz - 0.100).abs() < 1e-15);
 }
 
-/// A snapshot where every band node carries `pressure` over its tributary
-/// area, the wall has moved out to radius `radius` and stretched axially by
-/// `stretch`, summed over `steps` steps.
+/// The tributary area of a band node on a wall at radius `radius` stretched
+/// axially by `stretch`, in closed form: one chord `2 r sin(π / n_θ)` times
+/// one stretched level spacing. Each node is a corner of six triangles of
+/// half a quad each, and takes a third of each.
+fn band_area(tube: &Tube, radius: f64, stretch: f64) -> f64 {
+    let chord = 2.0 * radius * (PI / tube.circumferential as f64).sin();
+    chord * stretch * tube.length / tube.axial as f64
+}
+
+/// A window's snapshot, held for `steps` steps: the inner wall moved out to
+/// `radius`, everything stretched axially by `stretch`, and every band node
+/// pressing with `pressure` over its closed-form tributary area.
 fn uniform(
     tube: &Tube,
     pressure: f64,
@@ -165,31 +179,23 @@ fn uniform(
             [scale * p[0], scale * p[1], (stretch - 1.0) * p[2]]
         })
         .collect();
+    let n = steps as f64;
     let band = tube.band(0.020, 0.060);
-    let mut snapshot = Snapshot {
-        displacements,
+    let mut normal_force_sums = vec![0.0; model.node_count()];
+    for &node in &band {
+        normal_force_sums[node as usize] = pressure * band_area(tube, radius, stretch) * n;
+    }
+    // The end state is at rest: the readout must read the window's means,
+    // not the last instant.
+    let snapshot = Snapshot {
+        displacement_sums: displacements.iter().map(|u| u.map(|c| c * n)).collect(),
+        displacements: vec![[0.0; 3]; model.node_count()],
         velocities: vec![[0.0; 3]; model.node_count()],
-        normal_force_sums: vec![0.0; model.node_count()],
+        anchors: vec![[0.0; 3]; model.node_count()],
         friction_sums: vec![[0.0; 3]; model.node_count()],
+        normal_force_sums,
         accumulated_steps: steps,
     };
-    // A first read with unit forces gives each node's tributary area.
-    for &n in &band {
-        snapshot.normal_force_sums[n as usize] = 1.0;
-    }
-    let areas: Vec<f64> = band
-        .iter()
-        .map(|&n| {
-            let mut single = snapshot.clone();
-            single.normal_force_sums.fill(0.0);
-            single.normal_force_sums[n as usize] = steps as f64;
-            let one = read_band(tube, &model, &single, Mandrel { radius }, &[n]);
-            1.0 / one.pressure
-        })
-        .collect();
-    for (&n, area) in band.iter().zip(&areas) {
-        snapshot.normal_force_sums[n as usize] = pressure * area * steps as f64;
-    }
     let reading = read_band(tube, &model, &snapshot, Mandrel { radius }, &band);
     (snapshot, reading)
 }
@@ -223,7 +229,7 @@ fn the_errors_vanish_at_the_oracle_and_the_gap_moves_only_the_corrected_one() {
     let (_, mut reading) = uniform(&tube, p, a, case.axial_stretch, 10);
     let errors = case.errors(&reading, tube.inner_radius, SILICONE.mu);
     assert!(
-        errors.raw.abs() < 1e-10 && errors.gap_corrected.abs() < 1e-10,
+        errors.raw.abs() < 1e-10 && errors.gap_corrected.unwrap().abs() < 1e-10,
         "{errors:?}"
     );
     // Nodes 0.05 mm inside the mandrel: the corrected reference drops by the
@@ -234,7 +240,10 @@ fn the_errors_vanish_at_the_oracle_and_the_gap_moves_only_the_corrected_one() {
     let expected = case.pressure_over_mu
         / (case.pressure_over_mu - case.pressure_per_mandrel_ratio * 0.005)
         - 1.0;
-    assert!((errors.gap_corrected - expected).abs() < 1e-12);
+    assert!((errors.gap_corrected.unwrap() - expected).abs() < 1e-12);
+    // The cased tube reports no gap-corrected error.
+    let cased = THICK_TUBE[4].errors(&reading, tube.inner_radius, SILICONE.mu);
+    assert_eq!(cased.gap_corrected, None);
 }
 
 #[test]
@@ -255,4 +264,32 @@ fn the_golden_values_are_the_plans() {
     assert_eq!(cased.walls, Walls::Cased);
     assert!((cased.pressure_over_mu - 4.1417).abs() <= 0.5e-4);
     assert_eq!(cased.axial_stretch, 1.0);
+}
+
+#[test]
+fn a_bad_bake_or_an_oversized_tube_is_refused() {
+    let m = Mandrel { radius: 0.011 };
+    let (low, high) = ([-0.01, -0.01, -0.01], [0.01, 0.01, 0.01]);
+    assert!(matches!(m.baked(low, high, 0.0), Err(BakeError::Cell)));
+    assert!(matches!(m.baked(high, low, 0.001), Err(BakeError::Box)));
+    assert!(matches!(
+        m.baked(low, [0.0103, 0.01, 0.01], 0.001),
+        Err(BakeError::NotWholeCells { axis: 0 })
+    ));
+    assert!(matches!(
+        m.baked([-1.0; 3], [1.0; 3], 1e-4),
+        Err(BakeError::TooLarge)
+    ));
+    let (grid, _) = m.baked(low, high, 0.001).unwrap();
+    assert_eq!((grid.size_x, grid.size_y, grid.size_z), (21, 21, 21));
+    let huge = Tube {
+        radial: 1 << 20,
+        circumferential: 1 << 12,
+        axial: 1 << 4,
+        ..Tube::plan(Mesh::TenK)
+    };
+    assert!(matches!(
+        huge.model(SILICONE, Walls::Free),
+        Err(ModelError::TooLarge)
+    ));
 }
