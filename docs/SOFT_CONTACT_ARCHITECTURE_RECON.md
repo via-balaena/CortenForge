@@ -1918,11 +1918,11 @@ everywhere, report and decide nothing.
   50k). K2: +4.19 % / +4.41 % (λ_a 1.1) and +3.25 % / +3.29 % (λ_a 1.3) at 10k; +1.28 % / +1.45 % and
   +1.09 % / +1.13 % at 50k; **+0.75 % / +0.94 % and +0.69 % / +0.73 % at 100k.** Raw and gap-corrected
   now agree, as the gap is gone. KE/IE ≤ 0.73 %, balance ≤ 0.46 %.
-- **K takes 0.920× P's steps on every mesh** (1.8/ω_el against 1.652/ω_el). Each step costs 11–15 % more
+- **K takes 0.920× P's steps on every mesh** (1.8/ω_el against 1.652/ω_el). Each step costs 9–15 % more
   (a second grid sample and the prediction): 0.345, 0.965 and 1.665 ms at 10k, 50k and 100k. A run takes
   the same wall time as P's (4.9 s, 23.7 s, 52.5 s).
 - **K, cased, frictionless, diverges** at t = 0.40 s (10k) with the step unchanged; the contact nodes at
-  the tube's entry grow a motion around the tube, about 7× in kinetic energy per 100 steps. Measured, not
+  the tube's entry grow a motion around the tube, its kinetic energy growing 4–17× per 100 steps. Measured, not
   the cause: the step (the loop's ω² at step 3 500 is within 0.05 % of a converged f64 estimate, and
   safety 0.8, 0.7 and 0.5 only delay it, to t = 0.41, 0.43 and 0.51 s); the grid (A/40 and A/80 diverge
   too); the precision (f64 diverges too). **What drives it has not been isolated.**
@@ -1933,7 +1933,7 @@ everywhere, report and decide nothing.
     G2 read 1.4–1.9 %. The step is now kept to the node's free directions and the surface; a test fails
     on the old step.
 - **The Coulomb push** (15d.7) reads 0.87 for P and 0.89 for K at 10k: neither meets 5 %, so it separates
-  nothing here. Why both read about 11 % low has not been isolated; 2b's Coulomb push takes it up.
+  nothing here. Why both read 11–13 % low has not been isolated; 2b's Coulomb push takes it up.
 
 **Predictions, scored:**
 
