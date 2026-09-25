@@ -7,6 +7,7 @@
 use super::tube::{TubeCase, Walls};
 
 /// The cases, in the oracle's units (`A = 1`, `mu = 1`).
+// Full-precision digits, as the oracle printed them.
 #[allow(clippy::unreadable_literal)]
 pub const THICK_TUBE: [TubeCase; 5] = [
     TubeCase {

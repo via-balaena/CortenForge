@@ -16,6 +16,7 @@ const fn narrow(x: f64) -> R {
 }
 
 /// A value at this executor's precision, widened for the boundary.
+// At f64 the conversion is the identity; at f32 it widens.
 #[allow(clippy::useless_conversion)]
 fn widen(x: R) -> f64 {
     f64::from(x)

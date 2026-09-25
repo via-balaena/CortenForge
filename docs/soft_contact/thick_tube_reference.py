@@ -298,6 +298,7 @@ def write_golden(path):
         "use super::tube::{TubeCase, Walls};\n"
         "\n"
         "/// The cases, in the oracle's units (`A = 1`, `mu = 1`).\n"
+        "// Full-precision digits, as the oracle printed them.\n"
         "#[allow(clippy::unreadable_literal)]\n"
         f"pub const THICK_TUBE: [TubeCase; {len(rows)}] = [\n"
         + "".join(rows)
