@@ -2053,8 +2053,8 @@ On the adopted code (`5e6b7281`; frictionless, A/20, §15b's 0.2 s hold unless n
 
 - The 50k confined tube in a 1.0 s hold reads KE/IE 0.00 % and balance 0.00 %.
 - A step costs what the kinematic law cost on the trilinear lookup (1.69 against 1.67 ms at 100k), and
-  12–15 % more than the penalty's; with the penalty's 9 % more steps, a run takes the same wall time
-  (53 s at 100k).
+  12–16 % more than the penalty's at 50k and 100k (10k's timings scatter, 6–19 %). The penalty took 9 %
+  more steps, so a run takes about as long: 53.3 s against 51.9 s at 100k.
 - With friction (μ_f 0.3, 10k, λ_a 1.1): K2 +3.56 %, G2 0.0 µm, balance 0.49 %, and the Coulomb push
   0.893, still 11 % low (open, 2b). The confined case reads −0.18 % with it too.
 - `tube_release` passes: K2 at 10k +4.41 % (bar 7 %), its deepest penetration 13 nm; the power
