@@ -23,6 +23,10 @@ pub struct ContactResponse {
     /// The normal force's magnitude, `k · penetration`; zero out of contact.
     /// Divided by the node's tributary area, it is the contact pressure.
     pub normal_force: R,
+    /// The friction force, world frame: the part of `force` in the contact's
+    /// tangent plane. Its ratio to `μ_f · normal_force` is 1 on a slipping
+    /// node and below 1 on a sticking one, which is what K6 reads (plan §16b).
+    pub friction: [R; 3],
 }
 
 /// The penalty stiffness for a node of mass `mass`: `k = scale · m / Δt²`.
@@ -87,5 +91,6 @@ pub fn obstacle_contact(
         force: pose_rotate(pose, body_force),
         anchor: vec3_select(in_contact, kept, point),
         normal_force,
+        friction: pose_rotate(pose, friction_force),
     }
 }

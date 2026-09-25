@@ -497,3 +497,10 @@ fn the_step_estimate_is_the_shortest_altitude_over_the_wave_speed() {
         (shared::tet4_time_step_estimate(rest, YEOH) - 1.0 / 3.0_f64.sqrt() / speed).abs() < 1e-15
     );
 }
+
+#[test]
+fn a_triangles_area_is_half_its_edges_cross_product() {
+    let (a, b, c) = ([1.0, 1.0, 1.0], [4.0, 1.0, 1.0], [1.0, 1.0, 3.0]);
+    assert_eq!(shared::triangle_area(a, b, c), 3.0);
+    assert_eq!(shared::triangle_area(a, b, [7.0, 1.0, 1.0]), 0.0);
+}

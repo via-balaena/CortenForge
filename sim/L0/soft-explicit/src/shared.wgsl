@@ -398,6 +398,13 @@ fn tet4_time_step_estimate(x: array<f32, 12>, material: Material) -> f32 {
     return tet4_shortest_altitude(x) / dilatational_wave_speed(material);
 }
 
+// The area of the triangle with corners `a`, `b` and `c`. The pressure
+// readout gives each boundary node a third of each incident deformed
+// triangle's area (`sim-soft`'s convention, plan §15c).
+fn triangle_area(a: array<f32, 3>, b: array<f32, 3>, c: array<f32, 3>) -> f32 {
+    return 0.5 * vec3_length(vec3_cross(vec3_sub(b, a), vec3_sub(c, a)));
+}
+
 // ---- sim/L0/soft-explicit/src/shared/anp.rs ----
 
 // A node's dilation, `J_a − 1 = Δv_a / V_a`: the change in its tributary
@@ -448,6 +455,40 @@ fn advance_displacement(displacement: array<f32, 3>, velocity: array<f32, 3>, dt
 // A node's kinetic energy, `½ m |v|²`.
 fn kinetic_energy(mass: f32, velocity: array<f32, 3>) -> f32 {
     return (0.5 * mass) * vec3_dot(velocity, velocity);
+}
+
+// `v` without its components along a node's two constraint directions.
+//
+// `first` and `second` are orthonormal, or zero where unused, so a free
+// node passes through unchanged. They are fixed at rest: a constraint is a
+// plane the node moves in, not a curved surface it slides along (plan
+// §16d). The lumped mass is the same in every direction, so this is the
+// mass-orthogonal projection. Applied to the velocity and the displacement
+// after each update; both start with no component along a constraint, so
+// they never gain one.
+fn constrain(v: array<f32, 3>, first: array<f32, 3>, second: array<f32, 3>) -> array<f32, 3> {
+    let along_first = vec3_scale(first, vec3_dot(v, first));
+    let along_second = vec3_scale(second, vec3_dot(v, second));
+    return vec3_sub(vec3_sub(v, along_first), along_second);
+}
+
+// The work `force` does on a node over one step, `Δt f · (v⁻ + v⁺) / 2`,
+// with `v⁻` and `v⁺` the half-step velocities either side of it.
+//
+// With [`damping_loss`] it balances the update exactly: `advance_velocity`
+// gives `½ m |v⁺|² − ½ m |v⁻|² = step_work(f) − damping_loss`, where `f`
+// is the node's total force, and a constraint's reaction does no work
+// because both velocities lie in the node's free directions.
+fn step_work(force: array<f32, 3>, previous_velocity: array<f32, 3>, velocity: array<f32, 3>, dt: f32) -> f32 {
+    return (0.5 * dt) * vec3_dot(force, vec3_add(previous_velocity, velocity));
+}
+
+// The energy mass damping removes from a node over one step,
+// `Δt α m |(v⁻ + v⁺) / 2|²`: the damping force `α m v` at the mid-step
+// velocity, as `advance_velocity` applies it.
+fn damping_loss(mass: f32, damping: f32, previous_velocity: array<f32, 3>, velocity: array<f32, 3>, dt: f32) -> f32 {
+    let mid_step = vec3_scale(vec3_add(previous_velocity, velocity), 0.5);
+    return ((dt * damping) * mass) * vec3_dot(mid_step, mid_step);
 }
 
 // ---- sim/L0/soft-explicit/src/shared/pose.rs ----
@@ -679,6 +720,10 @@ struct ContactResponse {
     // The normal force's magnitude, `k · penetration`; zero out of contact.
     // Divided by the node's tributary area, it is the contact pressure.
     normal_force: f32,
+    // The friction force, world frame: the part of `force` in the contact's
+    // tangent plane. Its ratio to `μ_f · normal_force` is 1 on a slipping
+    // node and below 1 on a sticking one, which is what K6 reads (plan §16b).
+    friction: array<f32, 3>,
 }
 
 // The penalty stiffness for a node of mass `mass`: `k = scale · m / Δt²`.
@@ -717,5 +762,6 @@ fn obstacle_contact(pose: Pose, point: array<f32, 3>, sample: SdfSample, anchor:
         pose_rotate(pose, body_force),
         vec3_select(in_contact, kept, point),
         normal_force,
+        pose_rotate(pose, friction_force),
     );
 }

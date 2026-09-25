@@ -723,7 +723,7 @@ jobs:
               example-contact-filtering-exclude-pairs
               example-contact-filtering-ghost-layers
           - id: 2
-            crates: sim-thermostat sim-opt mesh-printability
+            crates: sim-thermostat sim-opt mesh-printability sim-soft-explicit
           - id: 3
             crates: sim-ml-chassis sim-rl cf-codesign
     steps:

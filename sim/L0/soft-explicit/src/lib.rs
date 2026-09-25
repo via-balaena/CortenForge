@@ -46,9 +46,13 @@
 
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
+pub mod cpu;
+pub mod executor;
+pub mod fixtures;
 mod model;
+pub mod stepping;
 
-pub use model::{ExplicitModel, ModelError};
+pub use model::{ExplicitModel, Incidence, ModelError};
 
 /// The shared math at `f32`: what the GPU runs, and the CPU executor's
 /// working precision.

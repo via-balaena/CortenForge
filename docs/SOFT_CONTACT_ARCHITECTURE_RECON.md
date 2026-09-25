@@ -908,8 +908,9 @@ contact pressure within 5 % at ν ≥ 0.49? And can it run a 100k-tet insertion 
 - **Mass:** lumped, ρV/4 per node (the implicit solver's rule, `construct.rs:607-619`).
 - **Time step:** Δt = 0.9 · 2/ω_max, with ω_max from power iteration on M⁻¹K through the executor's
   own force phases, **penalty stiffness included**.
-  - **The iteration is re-run during loading**, warm-started every 500 steps. The step never grows by
-    more than 5 % at a time.
+  - **The iteration is re-run during loading**, every 500 steps, each from the same fixed start
+    *(amended in 2a, 16m: warm-started, it stalled on a lower mode once loaded)*. The step never grows
+    by more than 5 % at a time.
   - A reviewer's model (not kept) measured, on 6 × 47 × 59: deformation cut the limit to 0.912× its
     rest value, and a Δt fixed at rest with the penalty gave ωΔt = 2.041, which is unstable.
   - The altitude estimate is a cross-check only. The method research measured it 4.4× loose on a
@@ -1494,8 +1495,8 @@ one thread and on many.
   can have complex eigenvalues. Central differences amplify those at any step, and mass damping removes
   only α_D/2 of their growth rate. Nothing gates it: the contact nodes' kinetic energy is reported, and
   whether flutter occurs here is not known.
-- The iteration is re-run every 500 steps, warm-started. The step grows by at most 5 % per re-run
-  (§15c) and shrinks at once.
+- The iteration is re-run every 500 steps, each from the same fixed start (16m). The step grows by at
+  most 5 % per re-run (§15c) and shrinks at once.
 - **Its accuracy is checked, not its precision.** A Rayleigh quotient never exceeds the largest
   eigenvalue, so agreement between f32 and f64 says nothing about convergence. 2a's done-when: at the
   iteration count the loop uses, the estimate of ω_el² is within 5 % of a converged f64 reference on
@@ -1704,3 +1705,90 @@ Not scheduled: how coverage counts code `include!`d twice.
 - The trait's exact signatures, settled in 2a (§14d).
 - The power iteration's finite-difference size and iteration count, set in 2a against its accuracy bar
   (16e).
+
+### 16m. 2a, as built (2026-09-25)
+
+2a holds what 16c gave it. Four cold reviewers read it against criteria written beforehand (the
+engine, the loop and fixtures, the tests and this record, and the whole plan). They found 17
+distinct problems, and each was checked before it was fixed.
+
+**Decided in the build or by the review:**
+- **The friction anchors are state.** They start in the obstacle's body frame, as the contact law reads
+  them. `snapshot` carries them, and `set_state` takes them back, or re-anchors each node where it sits.
+  - Started from rest positions in the world frame instead, a floor moved along its own plane gave a
+    different run.
+  - They stay absolute body-frame positions (§16b sends K6 to f64). On the tube, at μ_f 0.3 and a 28 µm
+    gap, the elastic-slip window is about 1 100 f32 spacings at 0.1 m (arithmetic). At μ_f 0.05 and a
+    10 µm gap it would be 67 spacings, each 1.5 % of the Coulomb limit.
+  - Step 4 decides between absolute anchors and a stored elastic slip before it fixes the WGSL layout.
+- **The trait gains:**
+  - `set_poses`, for a new track mid-run (§14d's batches; K6's legs that end on a force);
+  - `phase_outputs`, for step 4's per-phase conformance;
+  - the contact law's s and μ_f. The loop reads them, so the stable step bounds the law in use.
+- **Every stable-step estimate starts cold,** at 100 power iterations. Its finite-difference step is
+  √ε of the executor's precision times the shortest rest edge, on the largest nodal component
+  (`Stepper::estimate`).
+  - Warm-started at 20, the estimate stayed on a lower mode once the tube was loaded. It read 3.7–3.9 %
+    low through the hold (the review's measurement, not kept). A test now checks that an estimate
+    depends only on the state.
+- **The band reads λ_z, the gap and its areas at the window's mean state,** as the pressure is a window
+  mean. At the last instant, λ_z swings about 0.4 % across the window, and K2's reference with it.
+- **The loop:**
+  - it takes a final read after the last step, so K4 and G2 see every step;
+  - it stops on a non-finite read;
+  - the gates refuse one.
+- **The golden values are generated Rust constants** in `fixtures::golden`. `thick_tube_reference.py
+  --golden` writes them after its checks and a cross-check against §15b's table.
+- **`fixtures::tube::TubeRun` runs the tube on any executor,** so 2b's runs and step 5's use one path.
+  It returns the final snapshot, for K5's per-node pressures. It takes Yeoh's C₂, and the monitors carry
+  Σf_n for the Coulomb push.
+- **The executor's tests do not run on a one-thread pool.** Measured warm with `cargo xtask grade
+  sim-soft-explicit`, the crate's coverage pass takes 18.0 s at CI's 4 threads (`RAYON_NUM_THREADS=4`),
+  22.3 s at 1, and 37.2 s at 12.
+
+**Measured** (the tests print `MARGIN` lines):
+- **K2 on the 10k tube,** λ_a 1.1, ν 0.49, T = 10 T_s, f32 on the CPU: raw **+1.67 %**, gap-corrected
+  **+4.42 %**, over 13 799 steps.
+  - The validity gates: λ_z −0.04 %, KE/IE 0.16 %, energy balance 0.04 %, and no inverted element.
+  - `cargo test --release -p sim-soft-explicit --test tube_release -- --nocapture`.
+- **The penalty's gap at this corner is −28 µm,** which biases pressure 2.6 % low (∂p/∂a from the
+  oracle, arithmetic).
+  - §15c's "about 1 %" came from a reviewer's inner-node V_a/A_a of 0.88 mm on the 100k mesh.
+  - The gap scales with element size (16i), so 2b records it on the ladder.
+- **G2 is not met on the tube at 10k.** The deepest penetration is 45 µm, 4.5 % of the 1 mm
+  interference, against 1 %. §15g step 2 settles the contact law against G2 in 2b.
+- **The power iteration at the loop's 100 cold iterations,** against a converged f64 run on the 10k
+  tube: −0.21 % at rest, and −0.35 % (f64) and −0.32 % (f32) loaded at K2's end. On a small block it is −1.1 %
+  against a dense eigensolve (`tests/executor.rs`).
+- **The energy balance's own error** is 0.28 % of the peak internal energy, on a pressed block at α 500
+  (`tests/executor.rs`), against the 1 % gate.
+
+**Not recorded in 2a; 2b records both on the ladder, with `RAYON_NUM_THREADS` set:**
+- **The whole step's cost,** which §16i said 2a measures.
+- **The share of it the cold estimates take.** 2d adds that share to its per-run time. The iteration
+  count can come down against the 5 % bar, since the loaded estimate reads −0.35 % at 100.
+
+A reviewer's scratch timing (release, f32, M4 Pro, not kept) gives 2b its starting point:
+- 0.30–0.78 ms per step at 10k (4 and 12 threads);
+- 0.95–1.5 ms at 50k, and 1.5–1.8 ms at 100k, both before contact;
+- 12 threads were slower than 4 at 10k and 50k;
+- the cold estimates added 8.6 % to K2's 10k run.
+
+**Each CI check failed once on purpose,** and a check that could not fail was changed:
+- **The damping-balance test** passed with the damping loss doubled at α 50, where that loss is the size
+  of the balance's own error. It now runs at α 500, and fails that mutation.
+- **The band test** checked the area against the readout's own output. It now checks the closed form,
+  and an area halved or read at the last instant fails it.
+- **Every check added in the review** fails its named mutation:
+  - anchors in the world frame;
+  - `set_state` ignoring given anchors;
+  - `set_poses` a no-op;
+  - no stop on a non-finite read;
+  - gates that accept one;
+  - window sums that overwrite;
+  - no re-estimate;
+  - a gap correction on the cased tube;
+  - a halved volume-change gather.
+- **K2 at 10k** fails with the λ term removed (raw −26.5 %), and the sanity run fails with the elastic
+  force reversed.
+- **`release-gates`** failed before `sim-soft-explicit` joined tests-release.

@@ -11,19 +11,86 @@ use crate::f64::{
 ///
 /// Built by [`ExplicitModel::new`], which validates the input and computes
 /// each element's rest volume and inverse rest edge matrix, each node's
-/// lumped mass, tributary rest volume and λ, and the boundary surface.
+/// lumped mass, tributary rest volume and λ, the boundary surface, and the
+/// incidence lists the executors' gathers walk. Per-direction constraints
+/// are added with [`ExplicitModel::with_constraints`].
 #[derive(Clone, Debug)]
 pub struct ExplicitModel {
     rest_positions: Vec<[f64; 3]>,
     elements: Vec<[u32; 4]>,
     materials: Vec<Material>,
     held: Vec<bool>,
+    constraints: Vec<[[f64; 3]; 2]>,
     rest_edge_inverses: Vec<[f64; 9]>,
     rest_volumes: Vec<f64>,
     node_masses: Vec<f64>,
     node_rest_volumes: Vec<f64>,
     node_lambdas: Vec<f64>,
     surface: Vec<[u32; 3]>,
+    element_incidence: Incidence,
+    surface_incidence: Incidence,
+}
+
+/// For each node, the slots that refer to it: a compressed list, node `n`'s
+/// entries at `entries[offsets[n]..offsets[n + 1]]`, in ascending order.
+///
+/// An executor's gather sums these slots for each node, in this order, so no
+/// two threads add into one place and the sum does not depend on how the
+/// work is split (plan §16e).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Incidence {
+    offsets: Vec<u32>,
+    entries: Vec<u32>,
+}
+
+impl Incidence {
+    /// Build from `items` of `N` node indices each; an entry is
+    /// `item · N + corner`.
+    fn new<const N: usize>(items: &[[u32; N]], nodes: usize) -> Result<Self, ModelError> {
+        u32::try_from(items.len().saturating_mul(N)).map_err(|_| ModelError::TooLarge)?;
+        let mut counts = vec![0_u32; nodes + 1];
+        for item in items {
+            for &node in item {
+                counts[node as usize + 1] += 1;
+            }
+        }
+        for n in 0..nodes {
+            counts[n + 1] += counts[n];
+        }
+        let offsets = counts;
+        let mut next = offsets.clone();
+        let mut entries = vec![0_u32; offsets[nodes] as usize];
+        for (index, item) in items.iter().enumerate() {
+            for (corner, &node) in item.iter().enumerate() {
+                let slot = &mut next[node as usize];
+                entries[*slot as usize] =
+                    u32::try_from(index * N + corner).map_err(|_| ModelError::TooLarge)?;
+                *slot += 1;
+            }
+        }
+        Ok(Self { offsets, entries })
+    }
+
+    /// The offsets, one per node plus one.
+    #[must_use]
+    pub fn offsets(&self) -> &[u32] {
+        &self.offsets
+    }
+
+    /// The entries, `item · N + corner`, grouped by node.
+    #[must_use]
+    pub fn entries(&self) -> &[u32] {
+        &self.entries
+    }
+
+    /// The entries that refer to `node`.
+    ///
+    /// # Panics
+    /// If `node` is out of range.
+    #[must_use]
+    pub fn of(&self, node: usize) -> &[u32] {
+        &self.entries[self.offsets[node] as usize..self.offsets[node + 1] as usize]
+    }
 }
 
 /// Why a model was rejected.
@@ -91,6 +158,18 @@ pub enum ModelError {
         /// The node.
         node: usize,
     },
+    /// A node's constraint directions are not unit, orthogonal, or zero.
+    #[error("node {node}'s constraint is invalid: {reason}")]
+    InvalidConstraint {
+        /// The node.
+        node: usize,
+        /// What is wrong.
+        reason: &'static str,
+    },
+    /// The model has more elements or surface triangles than a `u32` slot
+    /// index can address.
+    #[error("the model is too large for u32 slot indices")]
+    TooLarge,
 }
 
 impl ExplicitModel {
@@ -156,19 +235,60 @@ impl ExplicitModel {
             .map(|(weighted, volume)| weighted / volume)
             .collect();
         let surface = boundary_faces(&elements);
+        let element_incidence = Incidence::new(&elements, nodes)?;
+        let surface_incidence = Incidence::new(&surface, nodes)?;
 
         Ok(Self {
             rest_positions,
             elements,
             materials,
             held,
+            constraints: vec![[[0.0; 3]; 2]; nodes],
             rest_edge_inverses,
             rest_volumes,
             node_masses,
             node_rest_volumes,
             node_lambdas,
             surface,
+            element_incidence,
+            surface_incidence,
         })
+    }
+
+    /// Add per-direction constraints: for each node, two directions its
+    /// displacement and velocity have no component along (plan §16d).
+    ///
+    /// Each direction is a unit vector or zero (unused), and two used ones
+    /// are orthogonal. They are fixed at rest, so a constraint is a plane the
+    /// node moves in. A node held whole stays `held`.
+    ///
+    /// # Errors
+    /// [`ModelError::LengthMismatch`] if there is not one pair per node, and
+    /// [`ModelError::InvalidConstraint`] naming the first bad node.
+    pub fn with_constraints(mut self, constraints: Vec<[[f64; 3]; 2]>) -> Result<Self, ModelError> {
+        check_length("constraints", constraints.len(), self.node_count())?;
+        for (node, [first, second]) in constraints.iter().enumerate() {
+            let reason = if ![first, second]
+                .iter()
+                .all(|d| d.iter().all(|c| c.is_finite()))
+            {
+                Some("a direction is not finite")
+            } else if ![first, second].iter().all(|d| {
+                let squared = dot(**d, **d);
+                squared == 0.0 || (squared - 1.0).abs() <= CONSTRAINT_TOLERANCE
+            }) {
+                Some("a direction is neither zero nor unit length")
+            } else if dot(*first, *second).abs() > CONSTRAINT_TOLERANCE {
+                Some("the two directions are not orthogonal")
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
+                return Err(ModelError::InvalidConstraint { node, reason });
+            }
+        }
+        self.constraints = constraints;
+        Ok(self)
     }
 
     /// The number of nodes.
@@ -205,6 +325,28 @@ impl ExplicitModel {
     #[must_use]
     pub fn held(&self) -> &[bool] {
         &self.held
+    }
+
+    /// Each node's two constraint directions, zero where unused
+    /// ([`ExplicitModel::with_constraints`]).
+    #[must_use]
+    pub fn constraints(&self) -> &[[[f64; 3]; 2]] {
+        &self.constraints
+    }
+
+    /// For each node, the element slots that refer to it: `element · 4 +
+    /// corner`. The element-to-node gathers walk it.
+    #[must_use]
+    pub const fn element_incidence(&self) -> &Incidence {
+        &self.element_incidence
+    }
+
+    /// For each node, the surface-triangle slots that refer to it:
+    /// `triangle · 3 + corner`, into [`ExplicitModel::surface_triangles`].
+    /// The pressure readout's tributary areas are gathered through it.
+    #[must_use]
+    pub const fn surface_incidence(&self) -> &Incidence {
+        &self.surface_incidence
     }
 
     /// Each element's inverse rest edge matrix, row-major
@@ -254,6 +396,14 @@ impl ExplicitModel {
     pub fn surface_triangles(&self) -> &[[u32; 3]] {
         &self.surface
     }
+}
+
+/// How far from unit length, or from orthogonal, a constraint direction may
+/// be: rounding in the caller's normalization, nothing more.
+const CONSTRAINT_TOLERANCE: f64 = 1e-12;
+
+const fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
 const fn check_length(what: &'static str, found: usize, expected: usize) -> Result<(), ModelError> {

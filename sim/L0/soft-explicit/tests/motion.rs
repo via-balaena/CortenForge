@@ -75,6 +75,55 @@ fn a_held_node_does_not_move() {
     assert_eq!(shared::kinetic_energy(2.0, [3.0, 4.0, 0.0]), 25.0);
 }
 
+#[test]
+fn a_constraint_removes_only_its_directions() {
+    let v = [1.0, 2.0, 3.0];
+    let none = [0.0; 3];
+    assert_eq!(shared::constrain(v, none, none), v);
+    assert_eq!(shared::constrain(v, [0.0, 0.0, 1.0], none), [1.0, 2.0, 0.0]);
+    // A radial direction and an axial hold leave only the circumferential part.
+    let radial = [0.6, 0.8, 0.0];
+    let axial = [0.0, 0.0, 1.0];
+    let held = shared::constrain(v, radial, axial);
+    assert!(shared::vec3_dot(held, radial).abs() < 1e-15 && held[2] == 0.0);
+    let circumferential = [-0.8, 0.6, 0.0];
+    assert!(
+        (shared::vec3_dot(held, circumferential) - shared::vec3_dot(v, circumferential)).abs()
+            < 1e-15
+    );
+    assert!(close(shared::constrain(held, radial, axial), held, 1e-15));
+}
+
+#[test]
+fn step_work_and_damping_loss_balance_the_kinetic_energy_exactly() {
+    // Damped and constrained: ½ m |v⁺|² − ½ m |v⁻|² = step_work − damping_loss.
+    let (mass, alpha, dt) = (0.003, 40.0, 1e-4);
+    let (first, second) = ([0.6, 0.8, 0.0], [0.0; 3]);
+    let previous = shared::constrain([0.2, -0.1, 0.3], first, second);
+    let force = [1.5, -0.7, 2.0];
+    let velocity = shared::constrain(
+        shared::advance_velocity(previous, force, 1.0 / mass, alpha, dt),
+        first,
+        second,
+    );
+    let (before, after) = (
+        shared::kinetic_energy(mass, previous),
+        shared::kinetic_energy(mass, velocity),
+    );
+    let balance = shared::step_work(force, previous, velocity, dt)
+        - shared::damping_loss(mass, alpha, previous, velocity, dt);
+    assert!(
+        (after - before - balance).abs() <= 1e-13 * before.max(after),
+        "{} against {balance}",
+        after - before
+    );
+    // Undamped, the work alone.
+    let free = shared::advance_velocity(previous, force, 1.0 / mass, 0.0, dt);
+    let change = shared::kinetic_energy(mass, free) - before;
+    let work = shared::step_work(force, previous, free, dt);
+    assert!((change - work).abs() <= 1e-13 * before.max(change.abs()));
+}
+
 // ---- pose ----
 
 #[test]
@@ -345,6 +394,27 @@ fn a_node_carried_by_the_obstacle_feels_no_friction() {
     let tangential = shared::vec3_sub(dragged.force, normal_world);
     let magnitude = shared::vec3_length(tangential);
     assert!(magnitude > 0.0 && magnitude <= 0.5 * K * 0.001 * (1.0 + 1e-12));
+}
+
+#[test]
+fn the_friction_force_is_the_tangential_part_and_reaches_the_cone_only_when_slipping() {
+    let (friction, depth) = (0.3, 0.002);
+    let limit = friction * K * depth;
+    let p = pose(0.4, [0.0, 1.0, 0.0], [0.01, 0.0, 0.0]);
+    let normal_world = shared::pose_rotate(p, [0.0, 0.0, 1.0]);
+    for (slip, ratio) in [(0.4, 0.4), (3.0, 1.0)] {
+        let point = [slip * limit / K, 0.0, 0.0];
+        let r = shared::obstacle_contact(p, point, surface(-depth), [0.0; 3], K, friction);
+        let normal_part = shared::vec3_scale(normal_world, r.normal_force);
+        assert!(close(
+            shared::vec3_add(normal_part, r.friction),
+            r.force,
+            1e-15
+        ));
+        assert!(shared::vec3_dot(r.friction, normal_world).abs() < 1e-15);
+        let read = shared::vec3_length(r.friction) / (friction * r.normal_force);
+        assert!((read - ratio).abs() < 1e-12, "slip {slip}: ratio {read}");
+    }
 }
 
 #[test]
