@@ -19,9 +19,7 @@ use common::{
 use nalgebra::{DMatrix, SymmetricEigen};
 use sim_soft_explicit::ExplicitModel;
 use sim_soft_explicit::cpu;
-use sim_soft_explicit::executor::{
-    ContactLaw, Executor, Monitors, Obstacle, ObstacleError, Snapshot,
-};
+use sim_soft_explicit::executor::{Executor, Monitors, Obstacle, ObstacleError, Snapshot};
 use sim_soft_explicit::f64 as shared;
 use sim_soft_explicit::f64::{Pose, SdfGridLayout};
 use sim_soft_explicit::fixtures::tube::Mandrel;
@@ -94,7 +92,6 @@ fn floor(
         interval,
         poses,
         friction,
-        law: ContactLaw::Penalty { scale: 0.5 },
     }
 }
 
@@ -575,16 +572,10 @@ fn the_power_iteration_reaches_the_largest_eigenvalue_from_below() {
 }
 
 #[test]
-fn the_stable_step_bounds_the_penalty_and_slipping_friction() {
+fn the_stable_step_is_the_safety_fraction_of_the_elastic_limit() {
     let config = StepperConfig::new(0.0);
     let omega_squared: f64 = 4.0e8;
-    let omega = omega_squared.sqrt();
-    let at = |friction: f64| config.stable_step(omega_squared, 0.5, friction) * omega;
-    assert!((at(0.0) - 2.74_f64.sqrt()).abs() < 1e-12);
-    assert!((at(0.3) - 1.652).abs() < 5e-4, "{}", at(0.3));
-    assert!((at(2.0) - 1.559).abs() < 5e-4, "{}", at(2.0));
-    let no_budget = std::panic::catch_unwind(|| config.stable_step(1.0, 3.3, 0.0));
-    assert!(no_budget.is_err());
+    assert!((config.stable_step(omega_squared) * omega_squared.sqrt() - 1.8).abs() < 1e-12);
     // A smaller limit is taken at once; a larger one only 5 % at a time.
     assert_eq!(config.next_step(1.0, 0.8), 0.8);
     assert_eq!(config.next_step(1.0, 2.0), 1.05);
@@ -795,13 +786,6 @@ fn an_obstacle_is_checked_before_upload() {
         ),
         (
             Obstacle {
-                law: ContactLaw::Penalty { scale: 0.0 },
-                ..base.clone()
-            },
-            |e| matches!(e, ObstacleError::Invalid { reason } if reason.contains("penalty")),
-        ),
-        (
-            Obstacle {
                 poses: vec![Pose {
                     qw: 2.0,
                     ..IDENTITY
@@ -855,7 +839,6 @@ fn kinematic_contact_does_not_feed_sliding_around_a_curved_obstacle() {
         interval: 1.0,
         poses: vec![IDENTITY],
         friction: 0.0,
-        law: ContactLaw::Kinematic,
     };
     let mut executor = cpu::f64::CpuExecutor::new(&model, &obstacle).unwrap();
     // On the surface, sliding around it at 0.1 m/s.

@@ -6,9 +6,7 @@
 
 use crate::executor::{Executor, Monitors};
 
-/// How the loop steps. [`StepperConfig::new`] gives the plan's values. The
-/// contact law's penalty scale and friction come from the executor, so the
-/// stable step always bounds the law in use.
+/// How the loop steps. [`StepperConfig::new`] gives the plan's values.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct StepperConfig {
     /// The fraction of the stability limit the step uses (plan §15c: 0.9).
@@ -41,24 +39,11 @@ impl StepperConfig {
         }
     }
 
-    /// The stable step for an elastic `ω_el²`, with a contact law of penalty
-    /// scale `penalty_scale` and friction `friction`: `Δt = 0.9 · 2 / ω_max`,
-    /// with the penalty added to `ω_el²` as a bound (plan §16e):
-    ///
-    /// `ω_max² ≤ ω_el² + s (1 + √(1 + μ_f²)) / 2 / Δt²`, so
-    /// `Δt = √((2 · safety)² − s (1 + √(1 + μ_f²)) / 2) / ω_el`.
-    ///
-    /// # Panics
-    /// If the penalty alone would use the whole stability budget.
+    /// The stable step for an elastic `ω_el²`: `Δt = safety · 2 / ω_el`. The
+    /// kinematic contact law adds nothing to it (plan §16o).
     #[must_use]
-    pub fn stable_step(&self, omega_squared: f64, penalty_scale: f64, friction: f64) -> f64 {
-        let penalty = penalty_scale * 0.5 * (1.0 + friction.hypot(1.0));
-        let budget = (2.0 * self.safety).powi(2) - penalty;
-        assert!(
-            budget > 0.0,
-            "the penalty (s = {penalty_scale}, μ_f = {friction}) leaves no stability budget"
-        );
-        (budget / omega_squared).sqrt()
+    pub fn stable_step(&self, omega_squared: f64) -> f64 {
+        2.0 * self.safety / omega_squared.sqrt()
     }
 
     /// The step after a re-estimate: the new limit when it is smaller (the
@@ -147,11 +132,7 @@ impl<E: Executor> Stepper<E> {
             .executor
             .elastic_rayleigh_quotient(self.config.power_iterations, perturbation);
         self.estimates += 1;
-        let dt = self.config.stable_step(
-            self.omega_squared,
-            self.executor.penalty_scale(),
-            self.executor.friction(),
-        );
+        let dt = self.config.stable_step(self.omega_squared);
         (dt.is_finite() && dt > 0.0).then_some(dt)
     }
 

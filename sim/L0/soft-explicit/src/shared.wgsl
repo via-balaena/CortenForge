@@ -616,13 +616,11 @@ struct SdfSample {
     normal: array<f32, 3>,
 }
 
-// The number of trilinear lookups per sample: the point, then ±½ cell
-// along x, y and z.
-const SDF_PROBE_COUNT: u32 = 7;
+// The number of grid values one lookup reads: 4 × 4 × 4.
+const SDF_TRICUBIC_COUNT: u32 = 64;
 
 // A gradient shorter than this is degenerate and the normal falls back to
-// +z. The CPU path's threshold (`sdf.rs:524`), adopted at both precisions;
-// the GPU shader it replaces used 1e-5 (plan §14c).
+// +z (`cf-geometry`'s threshold, `sdf.rs:524`, adopted at both precisions).
 const SDF_DEGENERATE_GRADIENT: f32 = 1e-10;
 
 // A point's grid coordinates, `(p − origin) / cell`, clamped onto the grid.
@@ -634,77 +632,115 @@ fn sdf_grid_coordinate(point: array<f32, 3>, grid: SdfGridLayout) -> array<f32, 
     );
 }
 
-// The grid coordinates of one probe: probe 0 is the point itself, clamped;
-// probes 1–6 step ½ cell from it along +x, −x, +y, −y, +z, −z, and are
-// clamped again.
-fn sdf_probe_coordinate(point: array<f32, 3>, grid: SdfGridLayout, probe: u32) -> array<f32, 3> {
-    let center = sdf_grid_coordinate(point, grid);
-    let step_x: f32 = select(select(0.0, -0.5, probe == 2), 0.5, probe == 1);
-    let step_y: f32 = select(select(0.0, -0.5, probe == 4), 0.5, probe == 3);
-    let step_z: f32 = select(select(0.0, -0.5, probe == 6), 0.5, probe == 5);
+// The four sample indices along one axis that a lookup at grid coordinate
+// `coordinate` (clamped, [`sdf_grid_coordinate`]) reads: the cell's two and
+// one either side, each clamped onto the `size` samples.
+fn sdf_tricubic_axis(coordinate: f32, size: u32) -> array<u32, 4> {
+    let base = u32(floor(coordinate));
+    let last = size - 1;
+    let below = select(0, base - 1, base > 0);
+    return array(below, min(base, last), min(base + 1, last), min(base + 2, last));
+}
+
+// Catmull–Rom weights of the four samples at fraction `t` of the cell.
+fn sdf_tricubic_weights(t: f32) -> array<f32, 4> {
+    let t2 = t * t;
+    let t3 = t2 * t;
     return array(
-        clamp(center[0] + step_x, 0.0, f32(grid.size_x - 1)),
-        clamp(center[1] + step_y, 0.0, f32(grid.size_y - 1)),
-        clamp(center[2] + step_z, 0.0, f32(grid.size_z - 1)),
+        0.5 * ((-t3 + (2.0 * t2)) - t),
+        0.5 * (((3.0 * t3) - (5.0 * t2)) + 2.0),
+        0.5 * (((-3.0 * t3) + (4.0 * t2)) + t),
+        0.5 * (t3 - t2),
     );
 }
 
-// The storage indices of the eight grid values around a clamped grid
-// coordinate, in the order 000, 100, 010, 110, 001, 101, 011, 111 (x
-// fastest). On the far face the upper corner repeats the lower one.
-fn sdf_cell_corners(coordinate: array<f32, 3>, grid: SdfGridLayout) -> array<u32, 8> {
-    let x0 = u32(floor(coordinate[0]));
-    let y0 = u32(floor(coordinate[1]));
-    let z0 = u32(floor(coordinate[2]));
-    let x1 = min(x0 + 1, grid.size_x - 1);
-    let y1 = min(y0 + 1, grid.size_y - 1);
-    let z1 = min(z0 + 1, grid.size_z - 1);
-    let plane = grid.size_x * grid.size_y;
-    let row0 = y0 * grid.size_x;
-    let row1 = y1 * grid.size_x;
-    let slab0 = z0 * plane;
-    let slab1 = z1 * plane;
+// The weights' derivatives with respect to `t`: they give the
+// interpolant's slope, per cell.
+fn sdf_tricubic_slopes(t: f32) -> array<f32, 4> {
+    let t2 = t * t;
     return array(
-        (slab0 + row0) + x0,
-        (slab0 + row0) + x1,
-        (slab0 + row1) + x0,
-        (slab0 + row1) + x1,
-        (slab1 + row0) + x0,
-        (slab1 + row0) + x1,
-        (slab1 + row1) + x0,
-        (slab1 + row1) + x1,
+        0.5 * (((-3.0 * t2) + (4.0 * t)) - 1.0),
+        0.5 * ((9.0 * t2) - (10.0 * t)),
+        0.5 * (((-9.0 * t2) + (8.0 * t)) + 1.0),
+        0.5 * ((3.0 * t2) - (2.0 * t)),
     );
 }
 
-// Trilinear interpolation of the eight `corners` (in `sdf_cell_corners`'
-// order) at a clamped grid coordinate, interpolating along x, then y, then
-// z, as the CPU path does.
-fn sdf_trilinear(coordinate: array<f32, 3>, corners: array<f32, 8>) -> f32 {
-    let fx = coordinate[0] - floor(coordinate[0]);
-    let fy = coordinate[1] - floor(coordinate[1]);
-    let fz = coordinate[2] - floor(coordinate[2]);
-    let v00 = corners[0] + (fx * (corners[1] - corners[0]));
-    let v10 = corners[2] + (fx * (corners[3] - corners[2]));
-    let v01 = corners[4] + (fx * (corners[5] - corners[4]));
-    let v11 = corners[6] + (fx * (corners[7] - corners[6]));
-    let v0 = v00 + (fy * (v10 - v00));
-    let v1 = v01 + (fy * (v11 - v01));
-    return v0 + (fz * (v1 - v0));
+// The four samples along one axis, weighted: `Σ weights[i] · sample i`.
+fn sdf_dot4(weights: array<f32, 4>, first: f32, second: f32, third: f32, fourth: f32) -> f32 {
+    return (((weights[0] * first) + (weights[1] * second)) + (weights[2] * third)) + (weights[3] * fourth);
 }
 
-// The distance and normal from the seven probes' values (in probe order).
-fn sdf_combine(values: array<f32, 7>, grid: SdfGridLayout) -> SdfSample {
-    let two_eps = 2.0 * (grid.cell_size * 0.5);
+// The distance and normal at grid coordinate `coordinate`, from the 64
+// grid values [`sdf_tricubic_axis`] names, stored `(k · 4 + j) · 4 + i`.
+//
+// Catmull–Rom in each axis: it passes through the grid's values, and
+// reproduces a field quadratic in each axis exactly away from the faces.
+// The normal is the interpolant's own gradient, so the distance and the
+// normal describe one surface.
+fn sdf_tricubic(coordinate: array<f32, 3>, values: array<f32, 64>, grid: SdfGridLayout) -> SdfSample {
+    let wx = sdf_tricubic_weights(coordinate[0] - floor(coordinate[0]));
+    let sx = sdf_tricubic_slopes(coordinate[0] - floor(coordinate[0]));
+    let wy = sdf_tricubic_weights(coordinate[1] - floor(coordinate[1]));
+    let sy = sdf_tricubic_slopes(coordinate[1] - floor(coordinate[1]));
+    let wz = sdf_tricubic_weights(coordinate[2] - floor(coordinate[2]));
+    let sz = sdf_tricubic_slopes(coordinate[2] - floor(coordinate[2]));
+    let v00 = sdf_dot4(wx, values[0], values[1], values[2], values[3]);
+    let d00 = sdf_dot4(sx, values[0], values[1], values[2], values[3]);
+    let v10 = sdf_dot4(wx, values[4], values[5], values[6], values[7]);
+    let d10 = sdf_dot4(sx, values[4], values[5], values[6], values[7]);
+    let v20 = sdf_dot4(wx, values[8], values[9], values[10], values[11]);
+    let d20 = sdf_dot4(sx, values[8], values[9], values[10], values[11]);
+    let v30 = sdf_dot4(wx, values[12], values[13], values[14], values[15]);
+    let d30 = sdf_dot4(sx, values[12], values[13], values[14], values[15]);
+    let v01 = sdf_dot4(wx, values[16], values[17], values[18], values[19]);
+    let d01 = sdf_dot4(sx, values[16], values[17], values[18], values[19]);
+    let v11 = sdf_dot4(wx, values[20], values[21], values[22], values[23]);
+    let d11 = sdf_dot4(sx, values[20], values[21], values[22], values[23]);
+    let v21 = sdf_dot4(wx, values[24], values[25], values[26], values[27]);
+    let d21 = sdf_dot4(sx, values[24], values[25], values[26], values[27]);
+    let v31 = sdf_dot4(wx, values[28], values[29], values[30], values[31]);
+    let d31 = sdf_dot4(sx, values[28], values[29], values[30], values[31]);
+    let v02 = sdf_dot4(wx, values[32], values[33], values[34], values[35]);
+    let d02 = sdf_dot4(sx, values[32], values[33], values[34], values[35]);
+    let v12 = sdf_dot4(wx, values[36], values[37], values[38], values[39]);
+    let d12 = sdf_dot4(sx, values[36], values[37], values[38], values[39]);
+    let v22 = sdf_dot4(wx, values[40], values[41], values[42], values[43]);
+    let d22 = sdf_dot4(sx, values[40], values[41], values[42], values[43]);
+    let v32 = sdf_dot4(wx, values[44], values[45], values[46], values[47]);
+    let d32 = sdf_dot4(sx, values[44], values[45], values[46], values[47]);
+    let v03 = sdf_dot4(wx, values[48], values[49], values[50], values[51]);
+    let d03 = sdf_dot4(sx, values[48], values[49], values[50], values[51]);
+    let v13 = sdf_dot4(wx, values[52], values[53], values[54], values[55]);
+    let d13 = sdf_dot4(sx, values[52], values[53], values[54], values[55]);
+    let v23 = sdf_dot4(wx, values[56], values[57], values[58], values[59]);
+    let d23 = sdf_dot4(sx, values[56], values[57], values[58], values[59]);
+    let v33 = sdf_dot4(wx, values[60], values[61], values[62], values[63]);
+    let d33 = sdf_dot4(sx, values[60], values[61], values[62], values[63]);
+    let v0 = sdf_dot4(wy, v00, v10, v20, v30);
+    let gx0 = sdf_dot4(wy, d00, d10, d20, d30);
+    let gy0 = sdf_dot4(sy, v00, v10, v20, v30);
+    let v1 = sdf_dot4(wy, v01, v11, v21, v31);
+    let gx1 = sdf_dot4(wy, d01, d11, d21, d31);
+    let gy1 = sdf_dot4(sy, v01, v11, v21, v31);
+    let v2 = sdf_dot4(wy, v02, v12, v22, v32);
+    let gx2 = sdf_dot4(wy, d02, d12, d22, d32);
+    let gy2 = sdf_dot4(sy, v02, v12, v22, v32);
+    let v3 = sdf_dot4(wy, v03, v13, v23, v33);
+    let gx3 = sdf_dot4(wy, d03, d13, d23, d33);
+    let gy3 = sdf_dot4(sy, v03, v13, v23, v33);
+    let distance = sdf_dot4(wz, v0, v1, v2, v3);
+    let per_cell = 1.0 / grid.cell_size;
     let gradient = array(
-        (values[1] - values[2]) / two_eps,
-        (values[3] - values[4]) / two_eps,
-        (values[5] - values[6]) / two_eps,
+        sdf_dot4(wz, gx0, gx1, gx2, gx3) * per_cell,
+        sdf_dot4(wz, gy0, gy1, gy2, gy3) * per_cell,
+        sdf_dot4(sz, v0, v1, v2, v3) * per_cell,
     );
     let norm = vec3_length(gradient);
     let degenerate = norm <= SDF_DEGENERATE_GRADIENT;
     let guarded_norm = select(norm, 1.0, degenerate);
     return SdfSample(
-        values[0],
+        distance,
         vec3_select(degenerate, array(0.0, 0.0, 1.0), array(gradient[0] / guarded_norm, gradient[1] / guarded_norm, gradient[2] / guarded_norm)),
     );
 }
@@ -726,92 +762,40 @@ struct ContactResponse {
     friction: array<f32, 3>,
 }
 
-// The penalty stiffness for a node of mass `mass`: `k = scale · m / Δt²`.
-// The plan's primary scale is 0.5 (§15c).
-fn penalty_stiffness(mass: f32, dt: f32, scale: f32) -> f32 {
-    let dt_squared = dt * dt;
-    return (scale * mass) / dt_squared;
-}
-
-// The penalty contact force on one node.
-//
-// `point` is the node's position (rest position plus displacement) in the
-// obstacle's body frame (`pose_to_body`), `sample` the obstacle's distance
-// and normal there, and
-// `anchor` the node's friction anchor from the previous step (body frame).
-// Out of contact the anchor moves with the node, so a new contact starts
-// sticking where it begins.
-//
-// The normal force is `max(0, λ + k · penetration)`, the penetration
-// signed (negative outside). With `multiplier` λ = 0 it is the plain
-// penalty; an augmented Lagrangian carries λ per node
-// ([`multiplier_update`]).
-fn obstacle_contact(pose: Pose, point: array<f32, 3>, sample: SdfSample, anchor: array<f32, 3>, stiffness: f32, friction: f32, multiplier: f32) -> ContactResponse {
-    let normal_force = max(multiplier + (stiffness * -sample.distance), 0.0);
-    let in_contact = normal_force > 0.0;
-    let normal = sample.normal;
-    let slip = vec3_sub(point, anchor);
-    let tangential = vec3_sub(slip, vec3_scale(normal, vec3_dot(slip, normal)));
-    let tangential_length = vec3_length(tangential);
-    let limit = friction * normal_force;
-    let sticking = (stiffness * tangential_length) <= limit;
-    let guarded_length = select(1.0, tangential_length, tangential_length > 0.0);
-    let pull = select(limit / guarded_length, stiffness, sticking);
-    let friction_force = vec3_scale(tangential, -pull);
-    let guarded_stiffness = select(1.0, stiffness, stiffness > 0.0);
-    let dragged = vec3_sub(point, vec3_scale(tangential, limit / (guarded_stiffness * guarded_length)));
-    let kept = vec3_select(sticking, anchor, dragged);
-    let body_force = vec3_add(vec3_scale(normal, normal_force), friction_force);
-    return ContactResponse(
-        pose_rotate(pose, body_force),
-        vec3_select(in_contact, kept, point),
-        normal_force,
-        pose_rotate(pose, friction_force),
-    );
-}
-
-// The augmented Lagrangian's update of a node's multiplier λ.
-//
-// `max(0, λ + k · p̄)`, with `p̄` the node's signed penetration averaged over
-// the steps since the last update. At a steady contact λ grows until it
-// carries the whole normal force and the penetration is zero.
-fn multiplier_update(multiplier: f32, stiffness: f32, mean_penetration: f32) -> f32 {
-    return max(multiplier + (stiffness * mean_penetration), 0.0);
-}
-
 // Below this, a contact normal lies almost wholly in a node's constrained
-// directions, and the kinematic law leaves the node where it is.
+// directions, and the law leaves the node where it is.
 const KINEMATIC_MIN_REACH: f32 = 1e-3;
 
-// The stiffness that turns a kinematic correction δ into the force that
-// makes it, `f = m (1 + αΔt/2) δ / Δt²`: what `advance_velocity` needs to
-// move the node by δ over one step. Zero for a held node.
+// The stiffness that turns a correction δ into the force that makes it,
+// `f = m (1 + αΔt/2) δ / Δt²`: what `advance_velocity` needs to move the
+// node by δ over one step. Zero for a held node.
 fn kinematic_stiffness(mass: f32, inverse_mass: f32, damping: f32, dt: f32) -> f32 {
     return select(0.0, (mass * (1.0 + ((0.5 * damping) * dt))) / (dt * dt), inverse_mass > 0.0);
 }
 
-// The kinematic predictor/corrector's contact force on one node.
+// The contact force on one node.
 //
-// Abaqus/Explicit's contact pairs; plan §16n.
 // `predicted` is where the node lands at the end of the step without
 // contact (world frame), `pose` the obstacle's pose then, and `anchor` the
-// node's friction anchor (body frame). `sample` carries the obstacle's
-// distance at `pose_to_body(pose, predicted)`, but the normal where the node
-// is now, in the same frame: taken at the predicted point, which the step's
-// inward push leaves at a smaller radius of a curved obstacle, the
-// correction carried a sliding node further around than it went, and the
-// sliding grew by about `1 + a/R` a step, `a` the push (plan §16o). `stiffness` is
-// [`kinematic_stiffness`]; `constraints` are the node's two constraint
+// node's friction anchor (body frame). `stiffness` is
+// [`kinematic_stiffness`], and `constraints` are the node's two constraint
 // directions (`constrain`).
+//
+// `sample` carries the obstacle's distance at `pose_to_body(pose,
+// predicted)`, but the normal where the node is now, in the same frame.
+// Taken at the predicted point, which the step's inward push leaves at a
+// smaller radius of a curved obstacle, the correction carried a sliding node
+// further around than it went, and the sliding grew by about `1 + a/R` a
+// step, `a` the push (plan §16o).
 //
 // A node that would land inside gets the force that puts it on the
 // surface: along the normal, made free of the node's constrained
-// directions and lengthened so it still reaches the surface. Friction is
-// kinematic too: a sticking node is held at its anchor, with no elastic
-// slip; a slipping one moves back by at most `μ_f` times the normal
-// correction, and its anchor goes with it. The friction step is kept to
-// the node's free directions and to the surface. The node's normal velocity into
-// the obstacle is lost on contact.
+// directions and lengthened so it still reaches the surface. A sticking
+// node is held at its anchor; a slipping one moves back by at most `μ_f`
+// times the normal correction, and its anchor goes with it. The friction
+// step is kept to the node's free directions and to the surface. Out of
+// contact the anchor moves with the node, so a new contact starts sticking
+// where it begins.
 fn kinematic_contact(pose: Pose, predicted: array<f32, 3>, sample: SdfSample, anchor: array<f32, 3>, stiffness: f32, friction: f32, constraints: array<array<f32, 3>, 2>) -> ContactResponse {
     let penetration = max(-sample.distance, 0.0);
     let normal = pose_rotate(pose, sample.normal);

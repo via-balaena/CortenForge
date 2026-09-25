@@ -3,11 +3,10 @@
 //! K2's errors, the validity gates, and the run's cost.
 //!
 //! `cargo run --release -p sim-soft-explicit --example tube --
-//! <10k|50k|100k> <case> <law> <friction> <f32|f64> <grid> <hold>`
-//! (defaults: 10k 0 penalty:0.5 0 f32 20 0.2). `case` indexes
-//! `fixtures::golden::THICK_TUBE`; `law` is `penalty:<s>`, `kinematic` or
-//! `augmented:<s>:<steps between updates>`; the grid's cell is A/`grid`;
-//! `hold` is the hold after loading, in seconds (plan §15b: 0.2).
+//! <10k|50k|100k> <case> <friction> <f32|f64> <grid> <hold>`
+//! (defaults: 10k 0 0 f32 20 0.2). `case` indexes
+//! `fixtures::golden::THICK_TUBE`; the grid's cell is A/`grid`; `hold` is
+//! the hold after loading, in seconds (plan §15b: 0.2).
 //! With friction on the free tube, a frictionless companion run gives the
 //! Coulomb push ratio (plan 15d.7). Set `RAYON_NUM_THREADS` so the times are comparable.
 
@@ -17,7 +16,7 @@ use std::time::Instant;
 
 use sim_soft_explicit::ExplicitModel;
 use sim_soft_explicit::cpu;
-use sim_soft_explicit::executor::{ContactLaw, Executor, Obstacle};
+use sim_soft_explicit::executor::{Executor, Obstacle};
 use sim_soft_explicit::f64 as shared;
 use sim_soft_explicit::fixtures::golden::THICK_TUBE;
 use sim_soft_explicit::fixtures::tube::{Insertion, Mesh, Tube, TubeResult, TubeRun, Walls};
@@ -46,25 +45,9 @@ fn request() -> Request {
         }
     };
     let case_index: usize = arg(1, "0").parse().unwrap();
-    let law_text = arg(2, "penalty:0.5");
-    let parts: Vec<&str> = law_text.split(':').collect();
-    let law = match parts.as_slice() {
-        ["penalty", scale] => ContactLaw::Penalty {
-            scale: scale.parse().unwrap(),
-        },
-        ["augmented", scale, interval] => ContactLaw::Augmented {
-            scale: scale.parse().unwrap(),
-            interval: interval.parse().unwrap(),
-        },
-        ["kinematic"] => ContactLaw::Kinematic,
-        _ => {
-            eprintln!("unknown law {law_text}: use penalty:<s>, kinematic or augmented:<s>:<n>");
-            std::process::exit(2);
-        }
-    };
-    let divisions: f64 = arg(5, "20").parse().unwrap();
+    let divisions: f64 = arg(4, "20").parse().unwrap();
     let mut insertion = Insertion::plan(10.0 * TubeRun::shear_period(MU, DENSITY));
-    insertion.hold = arg(6, "0.2").parse().unwrap();
+    insertion.hold = arg(5, "0.2").parse().unwrap();
     Request {
         run: TubeRun {
             mesh,
@@ -74,12 +57,11 @@ fn request() -> Request {
             density: DENSITY,
             insertion,
             window: 0.1,
-            friction: arg(3, "0").parse().unwrap(),
-            law,
+            friction: arg(2, "0").parse().unwrap(),
             grid_cell: Tube::plan(mesh).inner_radius / divisions,
         },
         case_index,
-        wide: arg(4, "f32") == "f64",
+        wide: arg(3, "f32") == "f64",
     }
 }
 
@@ -132,16 +114,6 @@ fn end_penetration(
     obstacle: &Obstacle,
     result: &TubeResult,
 ) -> EndPenetration {
-    let grid_distance = |point: [f64; 3]| {
-        let mut values = [0.0; 7];
-        for (probe, value) in (0_u32..).zip(values.iter_mut()) {
-            let coordinate = shared::sdf_probe_coordinate(point, obstacle.grid, probe);
-            let corners = shared::sdf_cell_corners(coordinate, obstacle.grid)
-                .map(|index| obstacle.values[index as usize]);
-            *value = shared::sdf_trilinear(coordinate, corners);
-        }
-        shared::sdf_combine(values, obstacle.grid).distance
-    };
     let mandrel = run.mandrel(tube);
     let tip = run.insertion.tip(run.insertion.end());
     let rest = model.rest_positions();
@@ -165,7 +137,7 @@ fn end_penetration(
             result.snapshot.displacements[node as usize],
         );
         let body = [world[0], world[1], world[2] - tip];
-        let (truth, grid) = (-mandrel.distance(body), -grid_distance(body));
+        let (truth, grid) = (-mandrel.distance(body), -obstacle.sample(body).distance);
         if truth > end.truth {
             end.truth = truth;
             end.deepest_z = body[2];
@@ -254,7 +226,7 @@ fn main() {
     let estimates = result.estimates as f64 * estimate;
     let missing = || "n/a".to_owned();
     println!(
-        "tube {:?} case={case_index} ({}, a/A {}, nu {}) law={:?} grid=A/{:.0} mu_f={} {} threads={} | \
+        "tube {:?} case={case_index} ({}, a/A {}, nu {}) grid=A/{:.0} mu_f={} {} threads={} | \
          h={:.3}mm p/(l+2mu)={:.5} inset={:.1}mm | \
          G2 grid_all_steps={:.1}um ({:.2}% of inset, first at t={reached:.3}s) true_end={:.1}um ({:.2}%) \
          grid_end={:.1}um bias(true-grid)=[{:.2},{:.2}]um deepest_z={:.2}mm | band_gap={:.1}um | \
@@ -268,7 +240,6 @@ fn main() {
         },
         case.mandrel_ratio,
         case.poisson,
-        run.law,
         tube.inner_radius / run.grid_cell,
         run.friction,
         if wide { "f64" } else { "f32" },

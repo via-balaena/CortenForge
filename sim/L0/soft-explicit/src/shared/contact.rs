@@ -1,18 +1,17 @@
-// Contact between a node and the rigid obstacle, by one of two laws (plan
-// §16n's A/B): the nodal-mass penalty (plan §15c, variant (a)), optionally
-// augmented by a per-node multiplier, with elastic-slip Coulomb friction;
-// or the kinematic predictor/corrector, with kinematic friction.
+// Contact between a node and the rigid obstacle: the kinematic predictor/
+// corrector, with kinematic Coulomb friction (Abaqus/Explicit's contact
+// pairs, Analysis User's Manual 6.11 §36.2.3 and §35.1.5; plan §16o).
 //
-// The penalty stiffness scales with the node's mass, `k = s m / Δt²`, so it
-// stays inside the explicit step's stability limit only if the step comes
-// from a power iteration that includes it (plan §15c).
+// Each step the node's position at the end of the step is predicted without
+// contact. If it lands inside the obstacle, the node gets the force that puts
+// it back on the surface; friction holds a sticking node at its anchor, with
+// no elastic slip, and moves a slipping one back by at most μ_f times the
+// normal correction. The law adds nothing to the stable step, and it is rate
+// independent, so time scaling stays valid. A node's normal velocity into the
+// obstacle is lost on contact.
 //
-// Friction is a tangential penalty with the same `k`, against an anchor
-// point stored per node in the obstacle's body frame: a sticking node is
-// pulled back toward its anchor; when that pull would exceed `μ_f f_n` the
-// node slips, and the anchor is dragged along so the pull is exactly
-// `μ_f f_n` (Coulomb's cone, as in a return map). The law is rate
-// independent, so time scaling stays valid.
+// It replaced the nodal-mass penalty (plan §15c's variant (a)), whose gap
+// could not meet G2, in G2's A/B (plan §16o).
 
 /// One node's contact result.
 #[repr(C)]
@@ -31,94 +30,13 @@ pub struct ContactResponse {
     pub friction: [R; 3],
 }
 
-/// The penalty stiffness for a node of mass `mass`: `k = scale · m / Δt²`.
-/// The plan's primary scale is 0.5 (§15c).
-#[must_use]
-pub const fn penalty_stiffness(mass: R, dt: R, scale: R) -> R {
-    let dt_squared = dt * dt;
-    scale * mass / dt_squared
-}
-
-/// The penalty contact force on one node.
-///
-/// `point` is the node's position (rest position plus displacement) in the
-/// obstacle's body frame (`pose_to_body`), `sample` the obstacle's distance
-/// and normal there, and
-/// `anchor` the node's friction anchor from the previous step (body frame).
-/// Out of contact the anchor moves with the node, so a new contact starts
-/// sticking where it begins.
-///
-/// The normal force is `max(0, λ + k · penetration)`, the penetration
-/// signed (negative outside). With `multiplier` λ = 0 it is the plain
-/// penalty; an augmented Lagrangian carries λ per node
-/// ([`multiplier_update`]).
-#[must_use]
-pub fn obstacle_contact(
-    pose: Pose,
-    point: [R; 3],
-    sample: SdfSample,
-    anchor: [R; 3],
-    stiffness: R,
-    friction: R,
-    multiplier: R,
-) -> ContactResponse {
-    let normal_force = (multiplier + stiffness * -sample.distance).max(0.0);
-    let in_contact = normal_force > 0.0;
-    let normal = sample.normal;
-
-    // Tangential displacement since the anchor, and the force that would
-    // hold it.
-    let slip = vec3_sub(point, anchor);
-    let tangential = vec3_sub(slip, vec3_scale(normal, vec3_dot(slip, normal)));
-    let tangential_length = vec3_length(tangential);
-    let limit = friction * normal_force;
-    let sticking = stiffness * tangential_length <= limit;
-    let guarded_length = if tangential_length > 0.0 {
-        tangential_length
-    } else {
-        1.0
-    };
-    let pull = if sticking {
-        stiffness
-    } else {
-        limit / guarded_length
-    };
-    let friction_force = vec3_scale(tangential, -pull);
-
-    // Slipping drags the anchor to within `limit / k` of the node.
-    let guarded_stiffness = if stiffness > 0.0 { stiffness } else { 1.0 };
-    let dragged = vec3_sub(
-        point,
-        vec3_scale(tangential, limit / (guarded_stiffness * guarded_length)),
-    );
-    let kept = vec3_select(sticking, anchor, dragged);
-
-    let body_force = vec3_add(vec3_scale(normal, normal_force), friction_force);
-    ContactResponse {
-        force: pose_rotate(pose, body_force),
-        anchor: vec3_select(in_contact, kept, point),
-        normal_force,
-        friction: pose_rotate(pose, friction_force),
-    }
-}
-
-/// The augmented Lagrangian's update of a node's multiplier λ.
-///
-/// `max(0, λ + k · p̄)`, with `p̄` the node's signed penetration averaged over
-/// the steps since the last update. At a steady contact λ grows until it
-/// carries the whole normal force and the penetration is zero.
-#[must_use]
-pub fn multiplier_update(multiplier: R, stiffness: R, mean_penetration: R) -> R {
-    (multiplier + stiffness * mean_penetration).max(0.0)
-}
-
 /// Below this, a contact normal lies almost wholly in a node's constrained
-/// directions, and the kinematic law leaves the node where it is.
+/// directions, and the law leaves the node where it is.
 pub const KINEMATIC_MIN_REACH: R = 1e-3;
 
-/// The stiffness that turns a kinematic correction δ into the force that
-/// makes it, `f = m (1 + αΔt/2) δ / Δt²`: what `advance_velocity` needs to
-/// move the node by δ over one step. Zero for a held node.
+/// The stiffness that turns a correction δ into the force that makes it,
+/// `f = m (1 + αΔt/2) δ / Δt²`: what `advance_velocity` needs to move the
+/// node by δ over one step. Zero for a held node.
 #[must_use]
 pub const fn kinematic_stiffness(mass: R, inverse_mass: R, damping: R, dt: R) -> R {
     if inverse_mass > 0.0 {
@@ -128,28 +46,29 @@ pub const fn kinematic_stiffness(mass: R, inverse_mass: R, damping: R, dt: R) ->
     }
 }
 
-/// The kinematic predictor/corrector's contact force on one node.
+/// The contact force on one node.
 ///
-/// Abaqus/Explicit's contact pairs; plan §16n.
 /// `predicted` is where the node lands at the end of the step without
 /// contact (world frame), `pose` the obstacle's pose then, and `anchor` the
-/// node's friction anchor (body frame). `sample` carries the obstacle's
-/// distance at `pose_to_body(pose, predicted)`, but the normal where the node
-/// is now, in the same frame: taken at the predicted point, which the step's
-/// inward push leaves at a smaller radius of a curved obstacle, the
-/// correction carried a sliding node further around than it went, and the
-/// sliding grew by about `1 + a/R` a step, `a` the push (plan §16o). `stiffness` is
-/// [`kinematic_stiffness`]; `constraints` are the node's two constraint
+/// node's friction anchor (body frame). `stiffness` is
+/// [`kinematic_stiffness`], and `constraints` are the node's two constraint
 /// directions (`constrain`).
+///
+/// `sample` carries the obstacle's distance at `pose_to_body(pose,
+/// predicted)`, but the normal where the node is now, in the same frame.
+/// Taken at the predicted point, which the step's inward push leaves at a
+/// smaller radius of a curved obstacle, the correction carried a sliding node
+/// further around than it went, and the sliding grew by about `1 + a/R` a
+/// step, `a` the push (plan §16o).
 ///
 /// A node that would land inside gets the force that puts it on the
 /// surface: along the normal, made free of the node's constrained
-/// directions and lengthened so it still reaches the surface. Friction is
-/// kinematic too: a sticking node is held at its anchor, with no elastic
-/// slip; a slipping one moves back by at most `μ_f` times the normal
-/// correction, and its anchor goes with it. The friction step is kept to
-/// the node's free directions and to the surface. The node's normal velocity into
-/// the obstacle is lost on contact.
+/// directions and lengthened so it still reaches the surface. A sticking
+/// node is held at its anchor; a slipping one moves back by at most `μ_f`
+/// times the normal correction, and its anchor goes with it. The friction
+/// step is kept to the node's free directions and to the surface. Out of
+/// contact the anchor moves with the node, so a new contact starts sticking
+/// where it begins.
 #[must_use]
 pub fn kinematic_contact(
     pose: Pose,

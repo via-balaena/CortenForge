@@ -5,7 +5,6 @@
 #![allow(clippy::unwrap_used)]
 
 use sim_soft_explicit::cpu;
-use sim_soft_explicit::executor::ContactLaw;
 use sim_soft_explicit::fixtures::golden::THICK_TUBE;
 use sim_soft_explicit::fixtures::tube::{Insertion, Mesh, TubeRun};
 
@@ -26,7 +25,6 @@ fn a_short_insertion_on_the_10k_tube_stays_finite_and_uninverted() {
         },
         window: 0.002,
         friction: 0.3,
-        law: ContactLaw::Penalty { scale: 0.5 },
         grid_cell: 0.0005,
     };
     let result = run

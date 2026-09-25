@@ -6,7 +6,7 @@
 use std::f64::consts::{PI, TAU};
 
 use sim_soft_explicit::ModelError;
-use sim_soft_explicit::executor::{ContactLaw, Snapshot};
+use sim_soft_explicit::executor::Snapshot;
 use sim_soft_explicit::f64::Material;
 use sim_soft_explicit::fixtures::golden::THICK_TUBE;
 use sim_soft_explicit::fixtures::tube::{
@@ -133,7 +133,6 @@ fn the_insertion_ramps_holds_speed_and_stops_at_depth() {
             &Tube::plan(Mesh::TenK),
             0.0005,
             0.0,
-            ContactLaw::Penalty { scale: 0.5 },
         )
         .unwrap();
     assert_eq!(obstacle.poses.len(), 1001);
