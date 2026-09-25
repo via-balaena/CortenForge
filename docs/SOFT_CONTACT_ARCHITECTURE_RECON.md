@@ -793,7 +793,7 @@ contact pressure within 5 % at ν ≥ 0.49? And can it run a 100k-tet insertion 
 |---|---|---|
 | **K1 speed** | a 100k-tet insertion at ν = 0.49, GPU executor, **≤ 2 min** | wall-clock from setup to the last readback, including loading, hold and the measurement window. A first bar on the tube, not derived from D4; build step 2 derives the product's budget |
 | **K2 accuracy** | band pressure within **5 %** of the oracle, **both raw and gap-corrected** (15d.1) | same material, free ends, frictionless, the pinned SDF (15c). At ν 0.49 and 0.495, for (λ_a, B/A) = (1.1, 2) and (1.3, 2), on the 100k mesh |
-| **K3 precision** | CPU f32 against CPU f64, same executor: band pressure within **0.5 %** (frictionless, 50k), and the Coulomb push's reaction within **0.5 %** (μ_f 0.3, 10k) | step 2 of the build (15g), before any GPU code. This is the fit plan's *"precision spike on contact before any GPU contact code"* |
+| **K3 precision** | CPU f32 against CPU f64, same executor: band pressure within **0.5 %** (frictionless, 50k), its largest nodal difference as well as its mean, and the Coulomb push's reaction within **0.5 %** (μ_f 0.3, 10k) | step 2 of the build (15g), before any GPU code. This is the fit plan's *"precision spike on contact before any GPU contact code"* |
 | **K4 robustness** | J > 0 in every element at every step of every valid run | explicit check (§13d rule 2). Any J ≤ 0 in a valid run is a failure. A run that breaks a validity gate is invalid, and K4 does not judge it |
 | **K5 product readings** | the peak push force during entry and the seated 95th-percentile pressure (fit plan D1's readings) change ≤ 5 % from 50k to 100k | the tube's entry is a sharp edge, like the product's mouth. **A gate on the verdict's design, not on the solver:** if it fails, D1's readings or the lip radius are revisited before step 7 |
 | **K6 friction** | frictional ironing at μ 0.2 (§7 rung 2): the reaction-force histories within 5 % of the published curves ([arXiv 1903.05859](https://arxiv.org/pdf/1903.05859)) | CPU, build step 2. Friction's only external reference: the Coulomb push (15d.7) checks consistency only |
@@ -1048,6 +1048,16 @@ Each item is one PR with its own tests and a done-when.
        own J, into one nodal pressure. The paper's volumetric law is linear in J; ours is not, and for
        ours eq. 18 taken literally would not reduce to selective ANP inside one material.
      - Choosing between them needs a two-layer reference, so it moves to step 6 (bonded layers).
+   - **Displacements, as §6 requires.** The shared math takes nodal displacements, computes J − 1 by
+     expansion in the displacement gradient, and gathers volume changes, not volumes. It evaluates
+     ln(1 + x) as a series of its own, so both backends compute the same expression.
+     - Measured on a block 0.12 m from the origin at the band's pressure: the largest nodal f32
+       difference is at most 2.0e-5 of that pressure up to ν 0.4995. With f32 positions the same test
+       reads 4.6e-3 at ν 0.49 (`tests/elasticity.rs`,
+       `f32_nodal_pressure_holds_far_from_the_origin_at_high_nu`).
+     - This was caught by the PR #965 review; step 1 had been built on positions.
+   - **Poses are interpolated linearly and renormalized, not spherically.** The gap to spherical
+     interpolation is 4.0e-6 rad at a 0.1 rad step and scales with the step cubed (`tests/motion.rs`).
    - Compiled at f32 and f64. The freshness test, made to fail once.
    - A conformance test of the shared SDF lookup against `cf-geometry`'s `distance_clamped` and
      `gradient_clamped` in f64. The largest difference over the test points must be ≤ 1e-9 × the largest

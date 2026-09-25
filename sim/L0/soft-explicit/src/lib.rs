@@ -21,10 +21,11 @@
 //! What the shared math holds (plan §14b):
 //!
 //! - **the constitutive law**: `sim-soft`'s compressible Yeoh, neo-Hookean at
-//!   `C₂ = 0`, split into the terms evaluated per element and the λ term
-//!   averaged over nodes (selective averaged nodal pressure, §15c);
-//! - **the element**: the four-node tetrahedron's volume, deformation
-//!   gradient, forces, energy and stable-step estimate;
+//!   `C₂ = 0`, written in the displacement gradient and split into the terms
+//!   evaluated per element and the λ term averaged over nodes (selective
+//!   averaged nodal pressure, §15c);
+//! - **the element**: the four-node tetrahedron's displacement gradient,
+//!   dilation, forces, energy and stable-step estimate;
 //! - **pressure averaging** and its rule where materials meet;
 //! - **time integration**: the central-difference update with mass damping;
 //! - **the obstacle's pose** and its interpolation between time samples;
@@ -32,8 +33,10 @@
 //! - **the contact law**: the nodal-mass penalty with elastic-slip Coulomb
 //!   friction.
 //!
-//! Orchestration (gathers, storage indexing, dispatch) belongs to each
-//! executor. Vectors are `[R; 3]` and 3×3 matrices `[R; 9]`, row-major.
+//! Displacements, not positions, are the state (plan §6): a node's position
+//! is its rest position plus its displacement. Orchestration (gathers,
+//! storage indexing, dispatch) belongs to each executor. Vectors are `[R; 3]`
+//! and 3×3 matrices `[R; 9]`, row-major.
 //!
 //! ## The lowered model
 //!

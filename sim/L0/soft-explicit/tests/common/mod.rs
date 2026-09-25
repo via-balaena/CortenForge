@@ -63,7 +63,8 @@ pub fn block(n: (usize, usize, usize), side: f64) -> (Vec<[f64; 3]>, Vec<[u32; 4
     (positions, elements)
 }
 
-/// One element's node positions, as the shared math takes them.
+/// One element's nodal values (positions or displacements), as the shared
+/// math takes them.
 pub fn gather(positions: &[[f64; 3]], element: [u32; 4]) -> [f64; 12] {
     let mut x = [0.0; 12];
     for (slot, &node) in element.iter().enumerate() {
@@ -88,19 +89,29 @@ pub fn deform(positions: &[[f64; 3]], amount: f64) -> Vec<[f64; 3]> {
         .collect()
 }
 
+/// Each node's displacement from its rest position.
+pub fn displacements(model: &ExplicitModel, positions: &[[f64; 3]]) -> Vec<[f64; 3]> {
+    positions
+        .iter()
+        .zip(model.rest_positions())
+        .map(|(x, rest)| [x[0] - rest[0], x[1] - rest[1], x[2] - rest[2]])
+        .collect()
+}
+
 /// The forces of the whole elastic pipeline (plan §15f phases 1–5) at
 /// `positions`, at f64.
 pub fn elastic_forces(model: &ExplicitModel, positions: &[[f64; 3]]) -> Vec<[f64; 3]> {
-    let pressures: Vec<f64> = nodal_volume_ratios(model, positions)
+    let u = displacements(model, positions);
+    let pressures: Vec<f64> = nodal_dilations(model, positions)
         .iter()
         .zip(model.node_lambdas())
-        .map(|(&j, &lambda)| shared::pressure_lambda_term(j, lambda))
+        .map(|(&d, &lambda)| shared::pressure_lambda_term(d, lambda))
         .collect();
     let mut forces = vec![[0.0; 3]; model.node_count()];
     for (e, element) in model.elements().iter().enumerate() {
         let pressure = shared::element_pressure(element.map(|n| pressures[n as usize]));
         let f = shared::tet4_elastic_forces(
-            gather(positions, *element),
+            gather(&u, *element),
             model.rest_edge_inverses()[e],
             model.rest_volumes()[e],
             model.materials()[e],
@@ -115,43 +126,46 @@ pub fn elastic_forces(model: &ExplicitModel, positions: &[[f64; 3]]) -> Vec<[f64
     forces
 }
 
-/// Each node's volume ratio `J_a = v_a / V_a` (phases 1–3).
-pub fn nodal_volume_ratios(model: &ExplicitModel, positions: &[[f64; 3]]) -> Vec<f64> {
-    let mut current = vec![0.0; model.node_count()];
-    for element in model.elements() {
-        let v = shared::tet4_volume(gather(positions, *element));
+/// Each node's dilation `J_a − 1` (phases 1–3): the gathered volume change
+/// over the rest volume.
+pub fn nodal_dilations(model: &ExplicitModel, positions: &[[f64; 3]]) -> Vec<f64> {
+    let u = displacements(model, positions);
+    let mut change = vec![0.0; model.node_count()];
+    for (e, element) in model.elements().iter().enumerate() {
+        let d = shared::tet4_dilation(gather(&u, *element), model.rest_edge_inverses()[e]);
         for &node in element {
-            current[node as usize] += 0.25 * v;
+            change[node as usize] += 0.25 * model.rest_volumes()[e] * d;
         }
     }
-    current
+    change
         .iter()
         .zip(model.node_rest_volumes())
-        .map(|(&v, &rest)| shared::nodal_volume_ratio(v, rest))
+        .map(|(&dv, &rest)| shared::nodal_dilation(dv, rest))
         .collect()
 }
 
 /// The energy whose gradient the pipeline's forces are:
 /// `Σ_e V_e Ψ_μ(F_e) + Σ_a V_a λ_a/2 (ln J_a)²`.
 pub fn elastic_energy(model: &ExplicitModel, positions: &[[f64; 3]]) -> f64 {
+    let u = displacements(model, positions);
     let mu_terms: f64 = model
         .elements()
         .iter()
         .enumerate()
         .map(|(e, element)| {
             shared::tet4_energy_mu_terms(
-                gather(positions, *element),
+                gather(&u, *element),
                 model.rest_edge_inverses()[e],
                 model.rest_volumes()[e],
                 model.materials()[e],
             )
         })
         .sum();
-    let lambda_term: f64 = nodal_volume_ratios(model, positions)
+    let lambda_term: f64 = nodal_dilations(model, positions)
         .iter()
         .zip(model.node_rest_volumes())
         .zip(model.node_lambdas())
-        .map(|((&j, &rest), &lambda)| rest * shared::energy_density_lambda_term(j, lambda))
+        .map(|((&d, &rest), &lambda)| rest * shared::energy_density_lambda_term(d, lambda))
         .sum();
     mu_terms + lambda_term
 }

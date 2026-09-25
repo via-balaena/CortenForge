@@ -40,7 +40,7 @@ fn an_undamped_free_node_keeps_its_velocity() {
     let v = shared::advance_velocity([1.0, -2.0, 0.5], [0.0; 3], 1.0 / 3.0, 0.0, 0.01);
     assert_eq!(v, [1.0, -2.0, 0.5]);
     assert_eq!(
-        shared::advance_position([1.0, 1.0, 1.0], v, 0.1),
+        shared::advance_displacement([1.0, 1.0, 1.0], v, 0.1),
         [1.1, 0.8, 1.05]
     );
 }

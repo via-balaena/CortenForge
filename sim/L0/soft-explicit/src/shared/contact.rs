@@ -35,8 +35,9 @@ pub const fn penalty_stiffness(mass: R, dt: R, scale: R) -> R {
 
 /// The contact force on one node.
 ///
-/// `point` is the node's position in the obstacle's body frame
-/// (`pose_to_body`), `sample` the obstacle's distance and normal there, and
+/// `point` is the node's position (rest position plus displacement) in the
+/// obstacle's body frame (`pose_to_body`), `sample` the obstacle's distance
+/// and normal there, and
 /// `anchor` the node's friction anchor from the previous step (body frame).
 /// Out of contact the anchor moves with the node, so a new contact starts
 /// sticking where it begins.

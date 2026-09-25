@@ -33,10 +33,12 @@ pub const fn advance_velocity(
     ]
 }
 
-/// The position at the next step, `x⁺ = x + Δt v⁺`.
+/// The displacement at the next step, `u⁺ = u + Δt v⁺`. Displacements, not
+/// positions, are the state (plan §6); a position is the rest position plus
+/// the displacement.
 #[must_use]
-pub const fn advance_position(position: [R; 3], velocity: [R; 3], dt: R) -> [R; 3] {
-    vec3_add(position, vec3_scale(velocity, dt))
+pub const fn advance_displacement(displacement: [R; 3], velocity: [R; 3], dt: R) -> [R; 3] {
+    vec3_add(displacement, vec3_scale(velocity, dt))
 }
 
 /// A node's kinetic energy, `½ m |v|²`.

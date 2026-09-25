@@ -1,6 +1,7 @@
-// The four-node tetrahedron (Tet4). Node positions are `[R; 12]`: x, y, z of
-// node 0, then of nodes 1, 2 and 3. Each element's rest data is its rest
-// volume and the inverse of its rest edge matrix, computed once in lowering.
+// The four-node tetrahedron (Tet4). Nodal vectors (displacements, or the
+// positions the geometric functions take) are `[R; 12]`: x, y, z of node 0,
+// then of nodes 1, 2 and 3. Each element's rest data is its rest volume and
+// the inverse of its rest edge matrix, computed once in lowering.
 
 /// The edge matrix `D = [x₁ − x₀, x₂ − x₀, x₃ − x₀]`, the edges as columns.
 #[must_use]
@@ -26,10 +27,18 @@ pub const fn tet4_volume(x: [R; 12]) -> R {
     mat3_det(tet4_edge_matrix(x)) / 6.0
 }
 
-/// The deformation gradient `F = D D_rest⁻¹`.
+/// The displacement gradient `H = F − I = D(u) D_rest⁻¹`, from the nodes'
+/// displacements `u` (plan §6: displacements, not positions, are the state).
 #[must_use]
-pub const fn tet4_deformation_gradient(x: [R; 12], rest_edge_inverse: [R; 9]) -> [R; 9] {
-    mat3_mul(tet4_edge_matrix(x), rest_edge_inverse)
+pub const fn tet4_displacement_gradient(u: [R; 12], rest_edge_inverse: [R; 9]) -> [R; 9] {
+    mat3_mul(tet4_edge_matrix(u), rest_edge_inverse)
+}
+
+/// The element's dilation `J − 1`, its relative volume change, from the
+/// nodes' displacements.
+#[must_use]
+pub const fn tet4_dilation(u: [R; 12], rest_edge_inverse: [R; 9]) -> R {
+    gradient_dilation(tet4_displacement_gradient(u, rest_edge_inverse))
 }
 
 /// The nodal forces of a constant first Piola–Kirchhoff stress `S`.
@@ -64,23 +73,22 @@ pub const fn tet4_nodal_forces(
 
 /// The element's elastic forces under selective averaged nodal pressure.
 ///
-/// The μ terms from this element's own `F`, and the λ term from `pressure`,
-/// the element's averaged pressure `p̄` (see `element_pressure`).
-///
-/// The λ term enters as `p̄ · cof F`: the stress whose forces are
-/// `−p̄ ∂v/∂x`, with `v` the element's current volume.
+/// The μ terms from this element's own displacement gradient, and the λ
+/// term from `pressure`, the element's averaged pressure `p̄` (see
+/// `element_pressure`). The λ term enters as `p̄ · cof F`: the stress whose
+/// forces are `−p̄ ∂v/∂x`, with `v` the element's current volume.
 #[must_use]
 pub const fn tet4_elastic_forces(
-    x: [R; 12],
+    u: [R; 12],
     rest_edge_inverse: [R; 9],
     rest_volume: R,
     material: Material,
     pressure: R,
 ) -> [R; 12] {
-    let f = tet4_deformation_gradient(x, rest_edge_inverse);
+    let h = tet4_displacement_gradient(u, rest_edge_inverse);
     let stress = mat3_add(
-        first_piola_mu_terms(f, material),
-        mat3_scale(mat3_cofactor(f), pressure),
+        first_piola_mu_terms(h, material),
+        mat3_scale(deformation_cofactor(h), pressure),
     );
     tet4_nodal_forces(stress, rest_edge_inverse, rest_volume)
 }
@@ -88,12 +96,13 @@ pub const fn tet4_elastic_forces(
 /// The μ terms' energy in one element, `V Ψ_μ(F)`.
 #[must_use]
 pub fn tet4_energy_mu_terms(
-    x: [R; 12],
+    u: [R; 12],
     rest_edge_inverse: [R; 9],
     rest_volume: R,
     material: Material,
 ) -> R {
-    rest_volume * energy_density_mu_terms(tet4_deformation_gradient(x, rest_edge_inverse), material)
+    rest_volume
+        * energy_density_mu_terms(tet4_displacement_gradient(u, rest_edge_inverse), material)
 }
 
 /// The shortest altitude, `3 |v| / (largest face area)`, for a tetrahedron

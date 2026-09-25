@@ -145,8 +145,22 @@ fn mat3_cofactor(m: array<f32, 9>) -> array<f32, 9> {
     );
 }
 
-// `‖m‖²`, the sum of squared entries. For a deformation gradient it is the
-// first invariant `I₁ = tr(FᵀF)`.
+// `tr m`.
+fn mat3_trace(m: array<f32, 9>) -> f32 {
+    return (m[0] + m[4]) + m[8];
+}
+
+// The sum of `m`'s principal 2×2 minors, its second invariant.
+fn mat3_principal_minors(m: array<f32, 9>) -> f32 {
+    return (((m[0] * m[4]) - (m[1] * m[3])) + ((m[0] * m[8]) - (m[2] * m[6]))) + ((m[4] * m[8]) - (m[5] * m[7]));
+}
+
+// `m + s I`.
+fn mat3_add_scaled_identity(m: array<f32, 9>, s: f32) -> array<f32, 9> {
+    return array(m[0] + s, m[1], m[2], m[3], m[4] + s, m[5], m[6], m[7], m[8] + s);
+}
+
+// `‖m‖²`, the sum of squared entries.
 fn mat3_frobenius_squared(m: array<f32, 9>) -> f32 {
     return ((((((((m[0] * m[0]) + (m[1] * m[1])) + (m[2] * m[2])) + (m[3] * m[3])) + (m[4] * m[4])) + (m[5] * m[5])) + (m[6] * m[6])) + (m[7] * m[7])) + (m[8] * m[8]);
 }
@@ -166,73 +180,116 @@ struct Material {
     density: f32,
 }
 
-// Whether a volume ratio `J` is inverted or degenerate, `J ≤ 0`.
+// Whether a dilation `J − 1` means an inverted or degenerate volume,
+// `J ≤ 0`.
 //
 // An explicit comparison, never a `NaN` test: WGSL lets an implementation
 // assume `NaN` and infinity never occur (plan §13d rule 2), so an inversion
 // must be caught before it reaches `ln J`.
-fn is_inverted(j: f32) -> bool {
-    return j <= 0.0;
+fn is_inverted(dilation: f32) -> bool {
+    return dilation <= -1.0;
 }
 
-// `J`, or 1 where `J ≤ 0`.
+// The dilation `J − 1`, or 0 where `J ≤ 0`.
 //
-// The guard for the operand of `ln J` and `1 / J`: both arms of a WGSL `select` are evaluated, so the operand is guarded,
-// not the result. An inverted element's stress is then finite and
-// meaningless; [`is_inverted`] is what reports it.
-fn guarded_volume_ratio(j: f32) -> f32 {
-    return select(1.0, j, j > 0.0);
+// The guard for the operand of `ln J` and `1 / J`: both arms of a WGSL
+// `select` are evaluated, so the operand is guarded, not the result. An
+// inverted element's stress is then finite and meaningless; [`is_inverted`]
+// is what reports it.
+fn guarded_dilation(dilation: f32) -> f32 {
+    return select(0.0, dilation, dilation > -1.0);
+}
+
+// `ln(1 + x)` for `x > −1`, without forming `1 + x` where `x` is small.
+//
+// For `|x| ≤ 0.25` it sums `2 atanh(y)`, `y = x / (2 + x)`, to `y²¹`;
+// elsewhere it is `ln(1 + x)`. Written here rather than left to each
+// backend's `ln`, so the CPU and the GPU evaluate the same expression.
+fn ln_1p(x: f32) -> f32 {
+    let y = x / (2.0 + x);
+    let y2 = y * y;
+    let tail_19 = (0.047619047619047616 * y2) + 0.05263157894736842;
+    let tail_17 = (tail_19 * y2) + 0.058823529411764705;
+    let tail_15 = (tail_17 * y2) + 0.06666666666666667;
+    let tail_13 = (tail_15 * y2) + 0.07692307692307693;
+    let tail_11 = (tail_13 * y2) + 0.09090909090909091;
+    let tail_9 = (tail_11 * y2) + 0.11111111111111111;
+    let tail_7 = (tail_9 * y2) + 0.14285714285714285;
+    let tail_5 = (tail_7 * y2) + 0.2;
+    let tail_3 = (tail_5 * y2) + 0.3333333333333333;
+    let tail_1 = (tail_3 * y2) + 1.0;
+    let series = (2.0 * y) * tail_1;
+    let direct = log(1.0 + x);
+    return select(direct, series, abs(x) <= 0.25);
+}
+
+// `J − 1 = det(I + H) − 1`, by expansion: `tr H + m₂(H) + det H`, with
+// `m₂` the sum of `H`'s principal 2×2 minors.
+fn gradient_dilation(h: array<f32, 9>) -> f32 {
+    return mat3_trace(h) + (mat3_principal_minors(h) + mat3_det(h));
+}
+
+// `cof F = cof(I + H) = (1 + tr H) I − Hᵀ + cof H`, the cofactor of the
+// deformation gradient, which is `J F⁻ᵀ`.
+fn deformation_cofactor(h: array<f32, 9>) -> array<f32, 9> {
+    return mat3_add_scaled_identity(mat3_sub(mat3_cofactor(h), mat3_transpose(h)), 1.0 + mat3_trace(h));
 }
 
 // The μ terms of the first Piola–Kirchhoff stress:
 // `μ (F − F⁻ᵀ) + 4 C₂ (I₁ − 3) F`.
 //
-// The Yeoh term is added to the neo-Hookean one, not folded into a combined
-// coefficient, so C₂ = 0 reproduces neo-Hookean exactly (the order
-// `sim-soft`'s Yeoh keeps for the same reason).
-fn first_piola_mu_terms(f: array<f32, 9>, material: Material) -> array<f32, 9> {
-    let j = guarded_volume_ratio(mat3_det(f));
-    let f_inverse_transpose = mat3_scale(mat3_cofactor(f), 1.0 / j);
-    let neo_hookean = mat3_scale(mat3_sub(f, f_inverse_transpose), material.mu);
-    let i1_minus_3 = mat3_frobenius_squared(f) - 3.0;
-    let yeoh = mat3_scale(f, (4.0 * material.c2) * i1_minus_3);
+// `F − F⁻ᵀ = (J F − cof F) / J`, and
+// `J F − cof F = H + Hᵀ + (m₂ + det H) I + (J − 1) H − cof H`, every term of
+// which vanishes at rest. `I₁ − 3 = 2 tr H + ‖H‖²`. The Yeoh term is added
+// to the neo-Hookean one, not folded into a combined coefficient, so C₂ = 0
+// adds exactly zero.
+fn first_piola_mu_terms(h: array<f32, 9>, material: Material) -> array<f32, 9> {
+    let beyond_trace = mat3_principal_minors(h) + mat3_det(h);
+    let dilation = guarded_dilation(mat3_trace(h) + beyond_trace);
+    let numerator = mat3_add_scaled_identity(mat3_sub(mat3_add(mat3_add(h, mat3_transpose(h)), mat3_scale(h, dilation)), mat3_cofactor(h)), beyond_trace);
+    let neo_hookean = mat3_scale(numerator, material.mu / (1.0 + dilation));
+    let i1_minus_3 = (2.0 * mat3_trace(h)) + mat3_frobenius_squared(h);
+    let yeoh = mat3_scale(mat3_add_scaled_identity(h, 1.0), (4.0 * material.c2) * i1_minus_3);
     return mat3_add(neo_hookean, yeoh);
 }
 
 // The full first Piola–Kirchhoff stress, `P(F)`.
 //
-// The μ terms plus the λ term `λ ln J F⁻ᵀ`. The explicit solver does not use it (it averages the
-// λ term over nodes); it is the definition the split must add up to.
-fn first_piola(f: array<f32, 9>, material: Material) -> array<f32, 9> {
-    let j = guarded_volume_ratio(mat3_det(f));
-    let f_inverse_transpose = mat3_scale(mat3_cofactor(f), 1.0 / j);
-    let lambda_term = mat3_scale(f_inverse_transpose, material.lambda * log(j));
-    return mat3_add(first_piola_mu_terms(f, material), lambda_term);
+// The μ terms plus the λ term `λ ln J F⁻ᵀ`. The explicit solver does not
+// use it (it averages the λ term over nodes); it is the definition the split
+// must add up to.
+fn first_piola(h: array<f32, 9>, material: Material) -> array<f32, 9> {
+    let dilation = guarded_dilation(gradient_dilation(h));
+    let lambda_term = mat3_scale(deformation_cofactor(h), (material.lambda * ln_1p(dilation)) / (1.0 + dilation));
+    return mat3_add(first_piola_mu_terms(h, material), lambda_term);
 }
 
-// The μ terms' energy density: `μ/2 (I₁ − 3) − μ ln J + C₂ (I₁ − 3)²`.
-fn energy_density_mu_terms(f: array<f32, 9>, material: Material) -> f32 {
-    let ln_j = log(guarded_volume_ratio(mat3_det(f)));
-    let i1_minus_3 = mat3_frobenius_squared(f) - 3.0;
-    return (((0.5 * material.mu) * i1_minus_3) - (material.mu * ln_j)) + ((material.c2 * i1_minus_3) * i1_minus_3);
+// The μ terms' energy density, `μ/2 (I₁ − 3) − μ ln J + C₂ (I₁ − 3)²`,
+// as `μ/2 ‖H‖² − μ (m₂ + det H) + μ ((J − 1) − ln J) + C₂ (I₁ − 3)²`.
+fn energy_density_mu_terms(h: array<f32, 9>, material: Material) -> f32 {
+    let beyond_trace = mat3_principal_minors(h) + mat3_det(h);
+    let dilation = guarded_dilation(mat3_trace(h) + beyond_trace);
+    let squared = mat3_frobenius_squared(h);
+    let i1_minus_3 = (2.0 * mat3_trace(h)) + squared;
+    return ((((0.5 * material.mu) * squared) - (material.mu * beyond_trace)) + (material.mu * (dilation - ln_1p(dilation)))) + ((material.c2 * i1_minus_3) * i1_minus_3);
 }
 
-// The λ term's energy density at volume ratio `j`: `λ/2 (ln J)²`.
-fn energy_density_lambda_term(j: f32, lambda: f32) -> f32 {
-    let ln_j = log(guarded_volume_ratio(j));
+// The λ term's energy density at dilation `J − 1`: `λ/2 (ln J)²`.
+fn energy_density_lambda_term(dilation: f32, lambda: f32) -> f32 {
+    let ln_j = ln_1p(guarded_dilation(dilation));
     return ((0.5 * lambda) * ln_j) * ln_j;
 }
 
 // The full energy density `Ψ(F)`.
-fn energy_density(f: array<f32, 9>, material: Material) -> f32 {
-    return energy_density_mu_terms(f, material) + energy_density_lambda_term(mat3_det(f), material.lambda);
+fn energy_density(h: array<f32, 9>, material: Material) -> f32 {
+    return energy_density_mu_terms(h, material) + energy_density_lambda_term(gradient_dilation(h), material.lambda);
 }
 
-// The λ term's pressure at volume ratio `j`: `U′(J) = λ ln J / J`, where
+// The λ term's pressure at dilation `J − 1`: `U′(J) = λ ln J / J`, where
 // `U = λ/2 (ln J)²`.
-fn pressure_lambda_term(j: f32, lambda: f32) -> f32 {
-    let guarded = guarded_volume_ratio(j);
-    return (lambda * log(guarded)) / guarded;
+fn pressure_lambda_term(dilation: f32, lambda: f32) -> f32 {
+    let guarded = guarded_dilation(dilation);
+    return (lambda * ln_1p(guarded)) / (1.0 + guarded);
 }
 
 // ---- sim/L0/soft-explicit/src/shared/element.rs ----
@@ -259,9 +316,16 @@ fn tet4_volume(x: array<f32, 12>) -> f32 {
     return mat3_det(tet4_edge_matrix(x)) / 6.0;
 }
 
-// The deformation gradient `F = D D_rest⁻¹`.
-fn tet4_deformation_gradient(x: array<f32, 12>, rest_edge_inverse: array<f32, 9>) -> array<f32, 9> {
-    return mat3_mul(tet4_edge_matrix(x), rest_edge_inverse);
+// The displacement gradient `H = F − I = D(u) D_rest⁻¹`, from the nodes'
+// displacements `u` (plan §6: displacements, not positions, are the state).
+fn tet4_displacement_gradient(u: array<f32, 12>, rest_edge_inverse: array<f32, 9>) -> array<f32, 9> {
+    return mat3_mul(tet4_edge_matrix(u), rest_edge_inverse);
+}
+
+// The element's dilation `J − 1`, its relative volume change, from the
+// nodes' displacements.
+fn tet4_dilation(u: array<f32, 12>, rest_edge_inverse: array<f32, 9>) -> f32 {
+    return gradient_dilation(tet4_displacement_gradient(u, rest_edge_inverse));
 }
 
 // The nodal forces of a constant first Piola–Kirchhoff stress `S`.
@@ -288,20 +352,19 @@ fn tet4_nodal_forces(stress: array<f32, 9>, rest_edge_inverse: array<f32, 9>, re
 
 // The element's elastic forces under selective averaged nodal pressure.
 //
-// The μ terms from this element's own `F`, and the λ term from `pressure`,
-// the element's averaged pressure `p̄` (see `element_pressure`).
-//
-// The λ term enters as `p̄ · cof F`: the stress whose forces are
-// `−p̄ ∂v/∂x`, with `v` the element's current volume.
-fn tet4_elastic_forces(x: array<f32, 12>, rest_edge_inverse: array<f32, 9>, rest_volume: f32, material: Material, pressure: f32) -> array<f32, 12> {
-    let f = tet4_deformation_gradient(x, rest_edge_inverse);
-    let stress = mat3_add(first_piola_mu_terms(f, material), mat3_scale(mat3_cofactor(f), pressure));
+// The μ terms from this element's own displacement gradient, and the λ
+// term from `pressure`, the element's averaged pressure `p̄` (see
+// `element_pressure`). The λ term enters as `p̄ · cof F`: the stress whose
+// forces are `−p̄ ∂v/∂x`, with `v` the element's current volume.
+fn tet4_elastic_forces(u: array<f32, 12>, rest_edge_inverse: array<f32, 9>, rest_volume: f32, material: Material, pressure: f32) -> array<f32, 12> {
+    let h = tet4_displacement_gradient(u, rest_edge_inverse);
+    let stress = mat3_add(first_piola_mu_terms(h, material), mat3_scale(deformation_cofactor(h), pressure));
     return tet4_nodal_forces(stress, rest_edge_inverse, rest_volume);
 }
 
 // The μ terms' energy in one element, `V Ψ_μ(F)`.
-fn tet4_energy_mu_terms(x: array<f32, 12>, rest_edge_inverse: array<f32, 9>, rest_volume: f32, material: Material) -> f32 {
-    return rest_volume * energy_density_mu_terms(tet4_deformation_gradient(x, rest_edge_inverse), material);
+fn tet4_energy_mu_terms(u: array<f32, 12>, rest_edge_inverse: array<f32, 9>, rest_volume: f32, material: Material) -> f32 {
+    return rest_volume * energy_density_mu_terms(tet4_displacement_gradient(u, rest_edge_inverse), material);
 }
 
 // The shortest altitude, `3 |v| / (largest face area)`, for a tetrahedron
@@ -337,10 +400,10 @@ fn tet4_time_step_estimate(x: array<f32, 12>, material: Material) -> f32 {
 
 // ---- sim/L0/soft-explicit/src/shared/anp.rs ----
 
-// A node's volume ratio, `J_a = v_a / V_a`: its current tributary volume
-// over its rest one.
-fn nodal_volume_ratio(current_volume: f32, rest_volume: f32) -> f32 {
-    return current_volume / rest_volume;
+// A node's dilation, `J_a − 1 = Δv_a / V_a`: the change in its tributary
+// volume over its rest volume.
+fn nodal_dilation(volume_change: f32, rest_volume: f32) -> f32 {
+    return volume_change / rest_volume;
 }
 
 // The element's averaged pressure, `p̄_e = ¼ Σ p_a`, from its four nodes'
@@ -375,9 +438,11 @@ fn advance_velocity(velocity: array<f32, 3>, force: array<f32, 3>, inverse_mass:
     );
 }
 
-// The position at the next step, `x⁺ = x + Δt v⁺`.
-fn advance_position(position: array<f32, 3>, velocity: array<f32, 3>, dt: f32) -> array<f32, 3> {
-    return vec3_add(position, vec3_scale(velocity, dt));
+// The displacement at the next step, `u⁺ = u + Δt v⁺`. Displacements, not
+// positions, are the state (plan §6); a position is the rest position plus
+// the displacement.
+fn advance_displacement(displacement: array<f32, 3>, velocity: array<f32, 3>, dt: f32) -> array<f32, 3> {
+    return vec3_add(displacement, vec3_scale(velocity, dt));
 }
 
 // A node's kinetic energy, `½ m |v|²`.
@@ -625,8 +690,9 @@ fn penalty_stiffness(mass: f32, dt: f32, scale: f32) -> f32 {
 
 // The contact force on one node.
 //
-// `point` is the node's position in the obstacle's body frame
-// (`pose_to_body`), `sample` the obstacle's distance and normal there, and
+// `point` is the node's position (rest position plus displacement) in the
+// obstacle's body frame (`pose_to_body`), `sample` the obstacle's distance
+// and normal there, and
 // `anchor` the node's friction anchor from the previous step (body frame).
 // Out of contact the anchor moves with the node, so a new contact starts
 // sticking where it begins.

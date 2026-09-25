@@ -52,10 +52,10 @@ fn the_rest_edge_inverse_gives_the_identity_at_rest() {
     let model = block_model((2, 2, 1), 0.01, SILICONE);
     for (e, element) in model.elements().iter().enumerate() {
         let x = common::gather(model.rest_positions(), *element);
-        let f = shared::tet4_deformation_gradient(x, model.rest_edge_inverses()[e]);
+        let product = shared::mat3_mul(shared::tet4_edge_matrix(x), model.rest_edge_inverses()[e]);
         let identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
         assert!(
-            (0..9).all(|i| (f[i] - identity[i]).abs() < 1e-12),
+            (0..9).all(|i| (product[i] - identity[i]).abs() < 1e-12),
             "element {e}"
         );
     }

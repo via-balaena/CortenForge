@@ -148,8 +148,35 @@ pub const fn mat3_cofactor(m: [R; 9]) -> [R; 9] {
     ]
 }
 
-/// `‖m‖²`, the sum of squared entries. For a deformation gradient it is the
-/// first invariant `I₁ = tr(FᵀF)`.
+/// `tr m`.
+#[must_use]
+pub const fn mat3_trace(m: [R; 9]) -> R {
+    m[0] + m[4] + m[8]
+}
+
+/// The sum of `m`'s principal 2×2 minors, its second invariant.
+#[must_use]
+pub const fn mat3_principal_minors(m: [R; 9]) -> R {
+    (m[0] * m[4] - m[1] * m[3]) + (m[0] * m[8] - m[2] * m[6]) + (m[4] * m[8] - m[5] * m[7])
+}
+
+/// `m + s I`.
+#[must_use]
+pub const fn mat3_add_scaled_identity(m: [R; 9], s: R) -> [R; 9] {
+    [
+        m[0] + s,
+        m[1],
+        m[2],
+        m[3],
+        m[4] + s,
+        m[5],
+        m[6],
+        m[7],
+        m[8] + s,
+    ]
+}
+
+/// `‖m‖²`, the sum of squared entries.
 #[must_use]
 pub const fn mat3_frobenius_squared(m: [R; 9]) -> R {
     m[0] * m[0]
