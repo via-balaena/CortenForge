@@ -3,10 +3,11 @@
 //! K2's errors, the validity gates, and the run's cost.
 //!
 //! `cargo run --release -p sim-soft-explicit --example tube --
-//! <10k|50k|100k> <case> <law> <friction> <f32|f64> <grid>`
-//! (defaults: 10k 0 penalty:0.5 0 f32 20). `case` indexes
+//! <10k|50k|100k> <case> <law> <friction> <f32|f64> <grid> <hold>`
+//! (defaults: 10k 0 penalty:0.5 0 f32 20 0.2). `case` indexes
 //! `fixtures::golden::THICK_TUBE`; `law` is `penalty:<s>`, `kinematic` or
-//! `augmented:<s>:<steps between updates>`; the grid's cell is A/`grid`.
+//! `augmented:<s>:<steps between updates>`; the grid's cell is A/`grid`;
+//! `hold` is the hold after loading, in seconds (plan §15b: 0.2).
 //! With friction on the free tube, a frictionless companion run gives the
 //! Coulomb push ratio (plan 15d.7). Set `RAYON_NUM_THREADS` so the times are comparable.
 
@@ -62,6 +63,8 @@ fn request() -> Request {
         }
     };
     let divisions: f64 = arg(5, "20").parse().unwrap();
+    let mut insertion = Insertion::plan(10.0 * TubeRun::shear_period(MU, DENSITY));
+    insertion.hold = arg(6, "0.2").parse().unwrap();
     Request {
         run: TubeRun {
             mesh,
@@ -69,7 +72,7 @@ fn request() -> Request {
             mu: MU,
             c2: 0.0,
             density: DENSITY,
-            insertion: Insertion::plan(10.0 * TubeRun::shear_period(MU, DENSITY)),
+            insertion,
             window: 0.1,
             friction: arg(3, "0").parse().unwrap(),
             law,

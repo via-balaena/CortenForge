@@ -1909,7 +1909,7 @@ everywhere, report and decide nothing.
 | Law | G2, free (10k, 50k) | Cased, frictionless | Validity gates | |
 |---|---|---|---|---|
 | P | 2.6–4.5 % | pressure −45 % / −36 % | hold | fails G2 |
-| K | **0.02–0.04 %** (0.2–0.9 µm) | **diverges** (10k, 50k) | hold on the free cases | fails "every run finishes" |
+| K | **0.02–0.04 %** (0.2–0.9 µm) | diverged (10k, 50k); runs, −0.34 % / −0.31 %, once its direction was fixed (below) | hold | meets the rule |
 | A10 | 26–41 % | diverges | fail: KE/IE 73–80 %, balance 16–26 % | fails |
 | A50 | 2.0–10 % | pressure −0.4 %, G2 11–16 % | fail at 10k: balance 1.1–2.0 % | fails |
 
@@ -1921,11 +1921,36 @@ everywhere, report and decide nothing.
 - **K takes 0.920× P's steps on every mesh** (1.8/ω_el against 1.652/ω_el). Each step costs 9–15 % more
   (a second grid sample and the prediction): 0.345, 0.965 and 1.665 ms at 10k, 50k and 100k. A run takes
   the same wall time as P's (4.9 s, 23.7 s, 52.5 s).
-- **K, cased, frictionless, diverges** at t = 0.40 s (10k) with the step unchanged; the contact nodes at
-  the tube's entry grow a motion around the tube, its kinetic energy growing 4–17× per 100 steps. Measured, not
-  the cause: the step (the loop's ω² at step 3 500 is within 0.05 % of a converged f64 estimate, and
+- **K, cased, frictionless, diverged** at t = 0.40 s (10k) with the step unchanged: the contact nodes at
+  the tube's entry grew a motion around the tube, its kinetic energy growing 4–17× per 100 steps. Not the
+  cause, measured: the step (the loop's ω² at step 3 500 is within 0.05 % of a converged f64 estimate, and
   safety 0.8, 0.7 and 0.5 only delay it, to t = 0.41, 0.43 and 0.51 s); the grid (A/40 and A/80 diverge
-  too); the precision (f64 diverges too). **What drives it has not been isolated.**
+  too); the precision (f64 diverges too).
+  - **The cause: the correction's direction.** K moved the predicted point back out along the normal
+    *at the predicted point*. The step's inward push, a = F·Δt²/m, leaves that point at a smaller radius
+    of the round mandrel, where the node's sideways travel is a larger angle; moving it back out along
+    its own normal keeps that angle, so the node lands further around than it went. The sliding grows by
+    about 1 + a/R a step, and on the confined tube a/R ≈ 0.05 (arithmetic). Friction stopped it by
+    holding the sliding.
+  - Shown three ways. A one-bead model (a circle pushed on by a constant force) grows ×1.04704 a step
+    against 1 + a/R = 1.04666, and ×1.00000 with the normal taken where the node is now. A one-tetrahedron
+    solver test (`kinematic_contact_does_not_feed_sliding_around_a_curved_obstacle`, a/R ≈ 0.05) grows its
+    energy 35× in 400 steps with the old direction and stays bounded with the new. And the frictionless
+    confined tube, with the new direction, runs to the end and reads −0.34 %, −0.31 % and −0.24 % at 10k,
+    50k and 100k, G2 2.2–2.6 µm.
+  - **K now takes the depth at the predicted point and the normal where the node is now.** Its free-tube
+    and friction numbers above are the new direction's; they moved by at most 0.1 % of K2.
+- **K's extra kinetic energy on the free tube goes with the grid.** At A/20 its KE/IE and balance read
+  0.63 % and 0.47 % (10k, λ_a 1.1) against P's 0.16 % and 0.04 %; at A/40 they read 0.16 % and 0.04 %,
+  and at 50k 0.03 % and 0.01 %. K follows the baked surface exactly, and the mechanism beyond that
+  association has not been isolated.
+- **A second, slower instability remains: the frictionless confined tube in a long hold, at 50k.** With a
+  1.0 s hold (§15b's is 0.2 s), K's kinetic energy grows about 400× after the mandrel stops and levels off
+  near KE/IE 0.5 %, and the balance reads 1.11 % (A/20) and 3.42 % (A/40), against the 1 % gate. Not the
+  contact law: A50 diverges in the same run. Not the grid's coarseness: A/40 is worse. Any friction
+  (μ_f 0.05) removes it, and 10k decays. Its fastest nodes include inner-ring nodes beyond the mandrel's
+  tip, out of contact. **What drives it has not been isolated.** In §15b's 0.2 s hold it stays inside the
+  gates (KE/IE 0.03–0.06 %, balance 0.16–0.23 % at 50k and 100k).
 - **K, cased, with friction, runs clean, and reads the confined oracle:** −0.34 %, −0.31 % and −0.24 %
   at 10k, 50k and 100k (μ_f 0.05), against P's −45 %, −36 % and −28 %. μ_f 0.3 reads the same pressure
   (−0.35 %, −0.32 %), so friction carries nothing at the seated equilibrium. G2: 2.2–4.4 µm (0.22–0.44 %).
@@ -1941,13 +1966,15 @@ everywhere, report and decide nothing.
 |---|---|---|
 | Q1 | K's G2 (grid, all steps) < 1 µm everywhere | ✓ free (0.2–0.9 µm); ✗ cased with friction (2.2–4.4 µm, still ≤ 0.44 %) |
 | Q2 | K's steps × 0.918 | 0.920 on every mesh ✓ |
-| Q3 | K's cased K2 single-digit | −0.24 to −0.35 %, with friction ✓; frictionless diverges ✗ |
+| Q3 | K's cased K2 single-digit | −0.24 to −0.35 % ✓ (frictionless, once its direction was fixed) |
 | Q4 | K's true G2 = the grid bias: ≤ 5.7 µm at A/20, ≤ 1.5 µm at A/40 | 3.8–5.6 µm, 0.8–1.4 µm ✓ |
 | Q5 | A: seated gap ~0, the all-steps maximum above 1 % | all-steps ✓; seated ✗ (A10 rings; A50 up to 115 µm) |
 | Q6 | an A may ring or blow up | A10 both ✓ |
 | Q7 | K's scatter and contact-node KE above P's | scatter ✓ (e.g. 2.26 % against 1.67 %); contact KE mostly ✓ |
 | Q8 | Coulomb within 5 % for K and P | ✗ both (0.87, 0.89) |
 
-**By the rule, nothing is decided:** K meets G2 on every run that finishes, and on the cased tube as soon
-as it has any friction; its frictionless cased run diverges. Every A-law fails. The decision, and what
-to do about the divergence, is Jon's (2026-09-25).
+**By the rule, K is the only law that meets it**, once its correction direction was fixed: it meets G2
+on every case at 10k, 50k and 100k, keeps the validity gates in §15b's run, reads the confined oracle
+within 0.35 %, and costs the same wall time as P. Every A-law fails. Open: the long-hold instability of
+the frictionless confined tube at 50k, and why both laws' Coulomb push reads 11–13 % low. The adoption
+is Jon's call (2026-09-25).
