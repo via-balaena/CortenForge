@@ -230,8 +230,8 @@ fn held_and_constrained_directions_never_move() {
     assert!(largest(&s.displacements) > 0.0, "free directions must move");
 }
 
-fn pressed_run<E: Executor>(executor: E, friction: f64) -> Stepper<E> {
-    let config = StepperConfig::new(0.5, friction, 50.0);
+fn pressed_run<E: Executor>(executor: E, friction: f64, damping: f64) -> Stepper<E> {
+    let config = StepperConfig::new(0.5, friction, damping);
     let mut stepper = Stepper::new(executor, config, 0.0);
     stepper.run_until(0.1);
     stepper
@@ -239,16 +239,33 @@ fn pressed_run<E: Executor>(executor: E, friction: f64) -> Stepper<E> {
 
 #[test]
 fn the_energy_balance_holds_with_contact_friction_and_damping() {
+    // Heavily damped, so the damping term is a visible share of the balance:
+    // at α 50 it is 0.4 % of the peak internal energy, the size of the
+    // balance's own error undamped (0.41 %), and doubling it went unseen.
     let model = pressed_block();
     let stepper = pressed_run(
         cpu::f64::CpuExecutor::new(&model, &rising_floor(0.3)).unwrap(),
         0.3,
+        500.0,
     );
     let samples = stepper.samples();
     let last = samples.last().unwrap().monitors;
     assert!(last.contact_work > 0.0 && last.damping_loss > 0.0);
     assert!(last.max_penetration > 0.0);
     assert!(!gates::inverted(samples));
+    let peak = samples
+        .iter()
+        .map(|s| s.monitors.internal_energy)
+        .fold(0.0, f64::max);
+    eprintln!(
+        "MARGIN damping loss {:e} and contact work {:e} of peak internal energy",
+        last.damping_loss / peak,
+        last.contact_work / peak
+    );
+    assert!(
+        last.damping_loss >= 0.02 * peak,
+        "the damping term must be large enough to test"
+    );
     let error = gates::energy_balance(samples).unwrap();
     eprintln!(
         "MARGIN energy balance {error:e} of peak internal energy over {} steps",
@@ -263,10 +280,12 @@ fn f32_follows_f64_over_a_pressed_run() {
     let wide = pressed_run(
         cpu::f64::CpuExecutor::new(&model, &rising_floor(0.3)).unwrap(),
         0.3,
+        50.0,
     );
     let narrow = pressed_run(
         cpu::f32::CpuExecutor::new(&model, &rising_floor(0.3)).unwrap(),
         0.3,
+        50.0,
     );
     assert_eq!(wide.steps(), narrow.steps());
     let (a, b) = (
