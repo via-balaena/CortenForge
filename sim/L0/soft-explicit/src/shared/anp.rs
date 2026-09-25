@@ -16,7 +16,7 @@
 // plan §15g step 1 records why, and what would settle it.
 
 /// A node's volume ratio, `J_a = v_a / V_a`: its current tributary volume
-/// over its rest one.
+/// over its rest one. (Edited without regenerating the WGSL, on purpose.)
 #[must_use]
 pub const fn nodal_volume_ratio(current_volume: R, rest_volume: R) -> R {
     current_volume / rest_volume
