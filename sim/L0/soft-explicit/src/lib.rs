@@ -46,7 +46,10 @@
 
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
+pub mod cpu;
+pub mod executor;
 mod model;
+pub mod stepping;
 
 pub use model::{ExplicitModel, Incidence, ModelError};
 

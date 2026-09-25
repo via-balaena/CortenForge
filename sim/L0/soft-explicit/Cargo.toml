@@ -20,6 +20,12 @@ tier = "L0"
 # Derive macro for the model's error type.
 thiserror = { workspace = true }
 
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The CPU executor's per-element and per-node phases (plan §16e). Native only:
+# wasm32 has no threads, and every L0 crate must build for it, so wasm32 runs
+# the same phases in order.
+rayon = { workspace = true }
+
 [dev-dependencies]
 # Regenerates the shared math's WGSL in the freshness test.
 sim-wgsl-gen = { workspace = true }
