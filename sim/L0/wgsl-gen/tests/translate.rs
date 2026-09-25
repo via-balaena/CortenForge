@@ -47,8 +47,8 @@ pub const fn everything(a: R, b: R, block: Block, flag: bool) -> [R; 4] {
     let chosen = if flag { x } else if a > b { z } else { 2.0 };
     let magnitude = (sum.abs().max(CUTOFF)).sqrt().ln();
     let clamped = a.clamp(0.0, 1.0) - -b;
-    let as_float = n as R + (a as i32) as R;
-    [chosen, magnitude + p * q, clamped, as_float % 2.]
+    let as_float = (n % 2u32) as R + (a as i32) as R;
+    [chosen, magnitude + p * q, clamped, as_float - 2.]
 }
 
 fn pair(a: R) -> [R; 2] {
@@ -79,8 +79,8 @@ fn the_subset_translates_and_validates() {
         "    let chosen = select(select(2.0, z, a > b), x, flag);",
         "    let magnitude = log(sqrt(max(abs(sum), CUTOFF)));",
         "    let clamped = clamp(a, 0.0, 1.0) - -b;",
-        "    let as_float = f32(n) + f32(i32(a));",
-        "    return array(chosen, magnitude + (p * q), clamped, as_float % 2.);",
+        "    let as_float = f32(n % 2u) + f32(i32(a));",
+        "    return array(chosen, magnitude + (p * q), clamped, as_float - 2.);",
         "    return Block(v, 3, array(v, v, v));",
         "    return array(\n        first_long_name * second_long_name,\n        first_long_name + second_long_name,\n        first_long_name,\n        0.0,\n    );",
     ] {
@@ -282,6 +282,8 @@ const REFUSALS: &[(&str, &str, usize)] = &[
         "only on items",
         2,
     ),
+    ("fn f(a: R, b: R) -> R {\n    a % b\n}", "`%` on floats", 2),
+    ("fn f(a: R) -> R {\n    a.sin()\n}", "method table", 2),
     // Literals Rust and WGSL would type or round differently.
     (
         "fn f(c: bool) -> bool {\n    (if c { 0.1 } else { 0.3 }) < 0.1000000001\n}",

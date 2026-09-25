@@ -23,15 +23,13 @@ use crate::{Error, Source};
 /// Left out on purpose: `round` and `signum`, whose Rust and WGSL
 /// definitions differ (Rust rounds half away from zero, WGSL to even;
 /// `signum(0.0)` is 1 in Rust and `sign(0.0)` is 0 in WGSL), and `mul_add`,
-/// which Rust defines with one rounding and WGSL's `fma` does not.
+/// which Rust defines with one rounding and WGSL's `fma` does not. The
+/// trigonometric and exponential functions are left out until the shared
+/// math needs one; WGSL bounds their accuracy loosely.
 pub const METHODS: &[(&str, &str, usize)] = &[
     ("abs", "abs", 0),
     ("sqrt", "sqrt", 0),
     ("ln", "log", 0),
-    ("exp", "exp", 0),
-    ("sin", "sin", 0),
-    ("cos", "cos", 0),
-    ("acos", "acos", 0),
     ("floor", "floor", 0),
     ("min", "min", 1),
     ("max", "max", 1),
@@ -673,6 +671,14 @@ impl Translator<'_> {
         })?;
         let left = self.operand(&binary.left, scope)?;
         let right = self.operand(&binary.right, scope)?;
+        let float = |ty: &Ty| matches!(ty, Ty::Real | Ty::FloatLiteral);
+        if op == "%" && (float(&left.ty) || float(&right.ty)) {
+            return Err(self.refuse(
+                binary.span(),
+                "`%` on floats is not in the subset: Rust computes an exact remainder, WGSL \
+                 `x - y * trunc(x / y)`",
+            ));
+        }
         if left.ty == Ty::FloatLiteral && right.ty == Ty::FloatLiteral {
             return Err(self.refuse(
                 binary.span(),

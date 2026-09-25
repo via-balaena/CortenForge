@@ -793,7 +793,7 @@ contact pressure within 5 % at ν ≥ 0.49? And can it run a 100k-tet insertion 
 |---|---|---|
 | **K1 speed** | a 100k-tet insertion at ν = 0.49, GPU executor, **≤ 2 min** | wall-clock from setup to the last readback, including loading, hold and the measurement window. A first bar on the tube, not derived from D4; build step 2 derives the product's budget |
 | **K2 accuracy** | band pressure within **5 %** of the oracle, **both raw and gap-corrected** (15d.1) | same material, free ends, frictionless, the pinned SDF (15c). At ν 0.49 and 0.495, for (λ_a, B/A) = (1.1, 2) and (1.3, 2), on the 100k mesh |
-| **K3 precision** | CPU f32 against CPU f64, same executor: band pressure within **0.5 %** (frictionless, 50k), its largest nodal difference as well as its mean, and the Coulomb push's reaction within **0.5 %** (μ_f 0.3, 10k) | step 2 of the build (15g), before any GPU code. This is the fit plan's *"precision spike on contact before any GPU contact code"* |
+| **K3 precision** | CPU f32 against CPU f64, same executor: band pressure within **0.5 %** (frictionless, 50k), and the Coulomb push's reaction within **0.5 %** (μ_f 0.3, 10k). *Amended 2026-09-24 (PR #965 review):* the band pressure also within 0.5 % at every pair-averaged ring level (15d.1), not only in the mean, since D1's 95th-percentile reading depends on the local values | step 2 of the build (15g), before any GPU code. This is the fit plan's *"precision spike on contact before any GPU contact code"* |
 | **K4 robustness** | J > 0 in every element at every step of every valid run | explicit check (§13d rule 2). Any J ≤ 0 in a valid run is a failure. A run that breaks a validity gate is invalid, and K4 does not judge it |
 | **K5 product readings** | the peak push force during entry and the seated 95th-percentile pressure (fit plan D1's readings) change ≤ 5 % from 50k to 100k | the tube's entry is a sharp edge, like the product's mouth. **A gate on the verdict's design, not on the solver:** if it fails, D1's readings or the lip radius are revisited before step 7 |
 | **K6 friction** | frictional ironing at μ 0.2 (§7 rung 2): the reaction-force histories within 5 % of the published curves ([arXiv 1903.05859](https://arxiv.org/pdf/1903.05859)) | CPU, build step 2. Friction's only external reference: the Coulomb push (15d.7) checks consistency only |
@@ -973,8 +973,8 @@ contact pressure within 5 % at ν ≥ 0.49? And can it run a 100k-tet insertion 
    interleaved configurations).
 3. **Energies:** kinetic; internal, ΣΨV from the shared math; external and contact work. KE/IE ≤ 5 %.
 4. **Precision (K3):**
-   - CPU f32 against CPU f64, in build step 2: band pressure on the 50k mesh, and the Coulomb push on
-     the 10k mesh;
+   - CPU f32 against CPU f64, in build step 2: band pressure on the 50k mesh (its mean, and each
+     pair-averaged ring level, as for flatness in 15d.1), and the Coulomb push on the 10k mesh;
    - later, the GPU f32 against the CPU f64, as a conformance check;
    - TLED's experience: single precision did not hurt convergence, *"no accumulation of errors"* in
      total Lagrangian form (Joldes et al., PMC3003932).
@@ -1083,6 +1083,12 @@ Each item is one PR with its own tests and a done-when.
    - **K3 runs here**, including a CPU Coulomb push at 10k. K2 runs on the CPU at 10k and 50k, and so
      does K5's convergence (10k to 50k).
    - **K6, frictional ironing** (§7 rung 2), runs on the CPU.
+     - **Open, to settle in step 2's design:** the reference (arXiv 1903.05859, §5.1.1) is contact
+       between *"two deformable bodies"*, a neo-Hookean die on a neo-Hookean slab in plane strain.
+       The shared contact law is a node against a rigid SDF. The choices are a rigid die with its
+       error bounded, a reference with a rigid indenter, or soft-on-soft contact brought forward.
+   - **Step 2 adds per-direction kinematic constraints to the shared math.** The confined case needs a
+     radial constraint and an axial hold, and K6 needs plane strain; step 1 holds whole nodes only.
    - **One Yeoh case** runs, with the oracle extended by the C₂ term.
    - **The confined case (15d.8) and a product-level contact pressure** run on the CPU, and record the
      raw error and the largest gap.
