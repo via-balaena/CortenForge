@@ -24,10 +24,6 @@ use crate::{Error, Source};
 /// definitions differ (Rust rounds half away from zero, WGSL to even;
 /// `signum(0.0)` is 1 in Rust and `sign(0.0)` is 0 in WGSL), and `mul_add`,
 /// which Rust defines with one rounding and WGSL's `fma` does not.
-///
-/// The methods kept are not bit-identical between the two either: WGSL sets
-/// its own accuracy for each builtin, so CPU and GPU results agree to a
-/// tolerance, never exactly.
 pub const METHODS: &[(&str, &str, usize)] = &[
     ("abs", "abs", 0),
     ("sqrt", "sqrt", 0),
@@ -49,6 +45,11 @@ const BUILTINS_USED: &[&str] = &["select", "array", "f32", "u32", "i32", "bool"]
 /// The line length past which a statement's array or struct literal is
 /// broken into one element per line.
 const MAX_LINE: usize = 100;
+
+/// The characters that end a WGSL line comment in naga's lexer.
+const ENDS_A_COMMENT: [char; 7] = [
+    '\n', '\u{b}', '\u{c}', '\r', '\u{85}', '\u{2028}', '\u{2029}',
+];
 
 /// The prefix of the names the translator gives its own temporaries.
 const TEMPORARY: &str = "destructured_";
@@ -128,7 +129,21 @@ pub fn module(sources: &[Source<'_>]) -> Result<String, Error> {
     }
     let files = sources
         .iter()
-        .map(|source| syn::parse_file(source.text).map_err(|e| refusal(source.path, e.span(), &e)))
+        .map(|source| {
+            let file =
+                syn::parse_file(source.text).map_err(|e| refusal(source.path, e.span(), &e))?;
+            // Inner attributes (`#![cfg(…)]`) would apply to the whole file.
+            file.attrs.first().map_or_else(
+                || Ok(file.clone()),
+                |attr| {
+                    Err(refusal(
+                        source.path,
+                        attr.span(),
+                        &"attributes are allowed only on items, struct fields and `let` statements",
+                    ))
+                },
+            )
+        })
         .collect::<Result<Vec<_>, _>>()?;
     let tables = tables(sources, &files)?;
 
@@ -293,10 +308,10 @@ impl Translator<'_> {
                         && let Expr::Lit(lit) = &nv.value
                         && let Lit::Str(text) = &lit.lit
                     {
-                        // Every line, so a doc string holding a newline cannot
-                        // leave the comment.
-                        for line in text.value().split('\n') {
-                            let line = line.trim_end_matches('\r');
+                        // Split at every character that ends a WGSL comment
+                        // (naga's lexer), so no part of a doc string leaves it.
+                        let text = text.value().replace("\r\n", "\n");
+                        for line in text.split(ENDS_A_COMMENT) {
                             docs.push(line.strip_prefix(' ').unwrap_or(line).to_string());
                         }
                     }
@@ -658,12 +673,11 @@ impl Translator<'_> {
         })?;
         let left = self.operand(&binary.left, scope)?;
         let right = self.operand(&binary.right, scope)?;
-        let arithmetic = matches!(op, "+" | "-" | "*" | "/" | "%");
-        if arithmetic && left.ty == Ty::FloatLiteral && right.ty == Ty::FloatLiteral {
+        if left.ty == Ty::FloatLiteral && right.ty == Ty::FloatLiteral {
             return Err(self.refuse(
                 binary.span(),
-                "an operation on literals alone: Rust rounds it at R, WGSL folds it at higher \
-                 precision; write its value as one literal",
+                "an operation on float literals alone: Rust may type it f64, WGSL f32, and \
+                 they fold it differently; write its value as one literal, or name its type",
             ));
         }
         let ty = match op {
@@ -1080,8 +1094,12 @@ impl Translator<'_> {
             Type::Array(array) => {
                 let length = match &array.len {
                     Expr::Lit(syn::ExprLit {
-                        lit: Lit::Int(len), ..
-                    }) => len.base10_parse::<usize>().ok(),
+                        lit: Lit::Int(len),
+                        attrs,
+                    }) => {
+                        self.no_attributes(attrs)?;
+                        len.base10_parse::<usize>().ok()
+                    }
                     _ => None,
                 };
                 let Some(length) = length else {

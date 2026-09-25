@@ -1045,8 +1045,8 @@ Each item is one PR with its own tests and a done-when.
      - Inside one material that is selective ANP exactly. Across materials the forces stay the exact
        gradient of an energy, to 2e-9 relative on a two-material block (`tests/elasticity.rs`).
      - It is not Joldes' IANP. IANP (PMC4477870, eq. 18) averages each element's own pressure, at its
-       own J, into one nodal pressure. The paper's volumetric law is linear in J (its eq. 11); ours is
-       not, and for ours eq. 18 taken literally would not reduce to selective ANP inside one material.
+       own J, into one nodal pressure. The paper's volumetric law is linear in J; ours is not, and for
+       ours eq. 18 taken literally would not reduce to selective ANP inside one material.
      - Choosing between them needs a two-layer reference, so it moves to step 6 (bonded layers).
    - Compiled at f32 and f64. The freshness test, made to fail once.
    - A conformance test of the shared SDF lookup against `cf-geometry`'s `distance_clamped` and
@@ -1059,10 +1059,11 @@ Each item is one PR with its own tests and a done-when.
        - An offset grid, over 4,567 points inside the grid and on and past every face: the largest
          distance difference is 1.7e-18 against a bar of 1.3e-11, and the largest normal difference
          3.6e-15.
-       - A grid where `cf-geometry`'s clamp, done in world units, rounds past its far faces. It then
-         falls back to its largest value and +z: at 2,411 of 4,324 points, all within half a cell of a
-         far face or past one. The shared lookup reads the face there, as `cf-geometry`'s own doc says a
-         clamped point should. At the other points: 2.8e-17 and 1.4e-15.
+       - A grid where `cf-geometry`'s clamp, done in world units, rounds past its far faces. Of 4,324
+         points, 1,240 get its largest value and +z, and 1,171 more a skewed normal (one gradient probe
+         rounds past). All lie within half a cell of a far face or past one. The shared lookup reads the
+         face there, as `cf-geometry`'s own doc says a clamped point should. Elsewhere: 2.8e-17 for the
+         distance and 1.4e-15 for the normal.
        - Fixing `cf-geometry`'s rounding is a separate change: it moves the fit test's current CPU path
          and the spinal-unit model's.
    - Both crates added to tests-debug shard 3.

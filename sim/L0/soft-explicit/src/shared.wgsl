@@ -456,11 +456,8 @@ fn pose_sample_span(time: f32, start: f32, interval: f32, count: u32) -> SampleS
 // interpolated linearly along the shorter arc and renormalized, the
 // translation linearly.
 //
-// Spherical interpolation would need `acos` and `sin`, which WGSL computes
-// only to its own accuracy. For samples close together, as lowering takes
-// them, the renormalized rotation stays close to the spherical one, and
-// the gap shrinks with the cube of the step
-// (`tests/motion.rs`, `interpolation_stays_close_to_spherical`).
+// Its gap to spherical interpolation is measured by
+// `interpolation_stays_close_to_spherical` (`tests/motion.rs`).
 fn pose_interpolate(a: Pose, b: Pose, s: f32) -> Pose {
     let dot = (((a.qw * b.qw) + (a.qx * b.qx)) + (a.qy * b.qy)) + (a.qz * b.qz);
     let sign: f32 = select(1.0, -1.0, dot < 0.0);

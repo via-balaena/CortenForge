@@ -7,8 +7,9 @@
 //! One known difference is kept out of that bar and counted: `cf-geometry`
 //! clamps a point onto the grid in world units and then converts to grid
 //! units, and on some grids the conversion rounds a far-face point past the
-//! last sample. `distance` then finds it outside, and the clamped lookups
-//! fall back to the largest value and +z. The shared lookup clamps in grid
+//! last sample. Where that happens to the point itself, its distance is the
+//! largest value and its normal +z; where it happens only to one of the
+//! gradient's probes, its normal is skewed. The shared lookup clamps in grid
 //! units and reads the face. The margins print with `--nocapture`.
 
 #![allow(
@@ -38,11 +39,11 @@ fn rounding_grid() -> SdfGrid {
     })
 }
 
-/// Whether `cf-geometry` falls back at `p`: whether any of the seven
-/// lookups behind its clamped distance and gradient lands outside after its
-/// own clamp (`design/cf-geometry/src/sdf.rs`, `distance_clamped` and
-/// `gradient_clamped`).
-fn cpu_falls_back(grid: &SdfGrid, p: [f64; 3]) -> bool {
+/// Where `cf-geometry` falls back at `p`: whether the point itself, or any of
+/// the six probes behind its gradient, lands outside after its own clamp
+/// (`design/cf-geometry/src/sdf.rs`, `distance_clamped` and
+/// `gradient_clamped`). Returns `(point, probe)`.
+fn cpu_falls_back(grid: &SdfGrid, p: [f64; 3]) -> (bool, bool) {
     let o = grid.origin();
     let hi = [
         o.x + grid.extent_x(),
@@ -58,7 +59,7 @@ fn cpu_falls_back(grid: &SdfGrid, p: [f64; 3]) -> bool {
     };
     let center = clamp(p);
     let eps = grid.cell_size() * 0.5;
-    let mut probes = vec![center];
+    let mut probes = Vec::new();
     for axis in 0..3 {
         for sign in [1.0, -1.0] {
             let mut q = [center.x, center.y, center.z];
@@ -66,7 +67,10 @@ fn cpu_falls_back(grid: &SdfGrid, p: [f64; 3]) -> bool {
             probes.push(clamp(q));
         }
     }
-    probes.iter().any(|&q| grid.distance(q).is_none())
+    (
+        grid.distance(center).is_none(),
+        probes.iter().any(|&q| grid.distance(q).is_none()),
+    )
 }
 
 /// Whether `p` is within half a cell of a far face, or past one.
@@ -187,23 +191,31 @@ fn the_shared_lookup_matches_the_cpu_path() {
         let (mut worst_distance, mut worst_normal) = (0.0_f64, 0.0_f64);
         let mut worst_point = [0.0; 3];
         let points = test_points(&grid);
-        let mut fallbacks = 0;
+        let (mut point_fallbacks, mut probe_fallbacks) = (0, 0);
         for &p in &points {
-            if cpu_falls_back(&grid, p) {
+            let (point_falls_back, probe_falls_back) = cpu_falls_back(&grid, p);
+            if point_falls_back || probe_falls_back {
                 assert!(
                     near_a_far_face(&grid, p),
                     "{name}: fallback away from a far face at {p:?}"
                 );
-                fallbacks += 1;
+            }
+            if point_falls_back {
+                point_fallbacks += 1;
                 continue;
             }
             let point = Point3::new(p[0], p[1], p[2]);
-            let expected_normal = grid.gradient_clamped(point);
             let got = sample(&grid, p);
             let distance_error = (got.distance - grid.distance_clamped(point)).abs();
-            let normal_error = (0..3)
-                .map(|i| (got.normal[i] - expected_normal[i]).abs())
-                .fold(0.0, f64::max);
+            let normal_error = if probe_falls_back {
+                probe_fallbacks += 1;
+                0.0
+            } else {
+                let expected_normal = grid.gradient_clamped(point);
+                (0..3)
+                    .map(|i| (got.normal[i] - expected_normal[i]).abs())
+                    .fold(0.0, f64::max)
+            };
             assert!(
                 distance_error.is_finite() && normal_error.is_finite(),
                 "non-finite at {p:?}"
@@ -216,7 +228,8 @@ fn the_shared_lookup_matches_the_cpu_path() {
         }
         eprintln!(
             "MARGIN {name}: distance {worst_distance:e} against a bar of {:e}; normal {worst_normal:e}; \
-             {} points, {fallbacks} where cf-geometry falls back",
+             {} points; cf-geometry falls back at {point_fallbacks} for the point, \
+             {probe_fallbacks} more for a gradient probe only",
             1e-9 * largest,
             points.len()
         );
@@ -232,9 +245,11 @@ fn the_shared_lookup_matches_the_cpu_path() {
         assert!(points.len() > 4000);
         if name == "rounding grid" {
             assert!(
-                fallbacks > 0,
+                point_fallbacks > 0 && probe_fallbacks > 0,
                 "the rounding grid no longer rounds; pick another"
             );
+        } else {
+            assert_eq!((point_fallbacks, probe_fallbacks), (0, 0), "{name} rounds");
         }
     }
 }
@@ -290,6 +305,7 @@ fn the_f32_lookup_agrees_with_f64() {
         worst <= 16.0 * f64::from(f32::EPSILON) * largest,
         "f32 distance differs by {worst:e} of {largest:e}"
     );
+    // Measured 1.4e-6.
     assert!(
         worst_normal <= 1e-5,
         "f32 normal differs by {worst_normal:e}"

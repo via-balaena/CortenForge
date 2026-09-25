@@ -346,9 +346,8 @@ fn f32_forces(model: &sim_soft_explicit::ExplicitModel, positions: &[[f64; 3]]) 
 
 #[test]
 fn f32_forces_agree_with_f64_at_large_and_small_strain() {
-    // The f32 error is roughly the same force whatever the strain, so at
-    // small strain it is a larger share of the force. Judged against the
-    // force a unit strain would make, `(λ + 2μ) h²` on a cell of side h.
+    // Judged against the force a unit strain would make, `(λ + 2μ) h²` on a
+    // cell of side h, since at small strain the forces themselves are small.
     // Whether f32 is enough for the product's readings is plan §15a K3,
     // measured in build step 2.
     let side = 0.01;

@@ -42,13 +42,13 @@
 //! WGSL folds at higher precision). So the translator tracks each
 //! expression's type and refuses: a `let` holding only literals without a
 //! type annotation, an operation between two literals, and a cast of a float
-//! literal. A cast to `R` must come from `u32` or `i32`.
+//! literal. Any operation between two float literals is refused too, and a
+//! cast to `R` must come from `u32` or `i32`.
 //!
 //! **Attributes** are accepted only on items, struct fields and `let`
-//! statements, and only those that cannot change what is compiled: `doc`,
-//! `allow`, `expect`, `must_use`, `inline`, `derive` and `repr(C)`. A `cfg`
-//! anywhere is refused, since it would remove code from the Rust and not from
-//! the WGSL.
+//! statements, and only `doc`, `allow`, `expect`, `must_use`, `inline`,
+//! `derive` and `repr(C)`. Any other attribute, anywhere, is refused: a `cfg`
+//! would remove code from the Rust and not from the WGSL.
 //!
 //! **Refused, with the file, line and column:** loops, mutation, `self`,
 //! `match`, `return`, closures, macros, references, paths with `::`, runtime
@@ -61,9 +61,7 @@
 //! when written with loops and at 1.00× when written loop-free; this
 //! translator's loop-free output also ran at 1.00×. Loops in translated WGSL
 //! were not measured.
-//!
-//! **Not bit-identical.** WGSL sets its own accuracy for each builtin
-//! function, so the CPU and GPU agree to a tolerance, not exactly.
+
 //!
 //! ## Using it
 //!

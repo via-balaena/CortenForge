@@ -246,7 +246,22 @@ const REFUSALS: &[(&str, &str, usize)] = &[
         "needs a value",
         2,
     ),
+    (
+        "fn f(a: R) -> R {\n    let b = {\n        a\n    };\n    b\n}",
+        "this expression is not in the subset",
+        2,
+    ),
     // Attributes where a `cfg` would drop code from the Rust only.
+    (
+        "#![cfg(any())]\nfn f(a: R) -> R {\n    a\n}",
+        "only on items",
+        1,
+    ),
+    (
+        "fn f(a: [R; #[cfg(any())] 2]) -> R {\n    a[0]\n}",
+        "only on items",
+        1,
+    ),
     (
         "fn f(x: R, y: R) -> R {\n    let b = [#[cfg(any())] x, y];\n    b[0]\n}",
         "only on items",
@@ -268,6 +283,11 @@ const REFUSALS: &[(&str, &str, usize)] = &[
         2,
     ),
     // Literals Rust and WGSL would type or round differently.
+    (
+        "fn f(c: bool) -> bool {\n    (if c { 0.1 } else { 0.3 }) < 0.1000000001\n}",
+        "literals alone",
+        2,
+    ),
     ("fn f(a: R) -> R {\n    a * 0.1f32\n}", "takes no suffix", 2),
     (
         "fn f(a: R) -> R {\n    let c = 16777217.0;\n    a + c\n}",
@@ -322,6 +342,14 @@ fn a_doc_comment_cannot_inject_wgsl() {
     );
     assert!(!wgsl.lines().any(|l| l.starts_with("fn sneaky")), "{wgsl}");
     assert!(wgsl.contains("//\n// * A block doc.\n//\nfn g("), "{wgsl}");
+
+    // naga also ends a comment at U+2028 and the other Unicode line ends.
+    let wgsl = one("#[doc = \"x\\u{2028}fn sneaky() -> f32 { return 1.0; }\"]\nfn f(a: R) -> R {\n    a\n}\n#[repr(C)]\nstruct S {\n    #[doc = \"y\\u{85}b: f32,\"]\n    a: R,\n}").unwrap();
+    assert!(
+        wgsl.contains("// fn sneaky() -> f32 { return 1.0; }\n"),
+        "{wgsl}"
+    );
+    assert!(wgsl.contains("    // b: f32,\n    a: f32,"), "{wgsl}");
 }
 
 #[test]
