@@ -543,3 +543,126 @@ impl TubeCase {
         }
     }
 }
+
+/// One run of the tube on the mandrel: plan §15b's case, loading and window.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TubeRun {
+    /// Which mesh.
+    pub mesh: Mesh,
+    /// The oracle case the run is judged against.
+    pub case: TubeCase,
+    /// The shear modulus μ; λ follows from the case's ν.
+    pub mu: f64,
+    /// The density ρ.
+    pub density: f64,
+    /// The mandrel's motion (plan §15b: [`Insertion::plan`]).
+    pub insertion: Insertion,
+    /// The measurement window's length, at the end of the hold (plan §15b:
+    /// 0.1 s).
+    pub window: f64,
+    /// The friction coefficient `μ_f`.
+    pub friction: f64,
+}
+
+/// What a [`TubeRun`] produced.
+#[derive(Clone, Debug)]
+pub struct TubeResult {
+    /// The band's reading over the measurement window.
+    pub reading: BandReading,
+    /// K2's errors against the case.
+    pub errors: Errors,
+    /// Mean kinetic over mean internal energy in the window.
+    pub kinetic_over_internal: Option<f64>,
+    /// The energy balance's largest error over the peak internal energy.
+    pub energy_balance: Option<f64>,
+    /// Whether any element reached `J ≤ 0` (K4).
+    pub inverted: bool,
+    /// The deepest penetration any node reached (G2).
+    pub max_penetration: f64,
+    /// The band's `λ_z` against the oracle's, relative (the validity gate
+    /// is 0.5 %).
+    pub axial_stretch_error: f64,
+    /// Steps taken.
+    pub steps: u64,
+    /// The last step size.
+    pub dt: f64,
+    /// Every monitor read.
+    pub samples: Vec<crate::stepping::Sample>,
+}
+
+impl TubeRun {
+    /// The shear wave's axial period `T_s = 4 L / c_s` (plan §15b), for a
+    /// material of shear modulus `mu` and density `density`.
+    #[must_use]
+    pub fn shear_period(mu: f64, density: f64) -> f64 {
+        4.0 * Tube::plan(Mesh::TenK).length / (mu / density).sqrt()
+    }
+
+    /// The run's material: λ from the case's ν.
+    #[must_use]
+    pub fn material(&self) -> Material {
+        let nu = self.case.poisson;
+        Material {
+            mu: self.mu,
+            lambda: self.mu * 2.0 * nu / (1.0 - 2.0 * nu),
+            c2: 0.0,
+            density: self.density,
+        }
+    }
+
+    /// Run it on the executor `make` builds, and read the band over the
+    /// window at the end of the hold (plan §15b).
+    ///
+    /// Mass damping is `2 ξ ω₀` with `ξ = 0.05` and `ω₀ = 2π / T_s`
+    /// (plan §15c), on through the hold (plan §16e).
+    ///
+    /// # Errors
+    /// A [`ModelError`] if the model cannot be built.
+    pub fn run<E: crate::executor::Executor>(
+        &self,
+        make: impl FnOnce(&ExplicitModel, &Obstacle) -> E,
+    ) -> Result<TubeResult, ModelError> {
+        use crate::stepping::{Stepper, StepperConfig, gates};
+
+        let tube = Tube::plan(self.mesh);
+        let model = tube.model(self.material(), self.case.walls)?;
+        let mandrel = Mandrel {
+            radius: self.case.mandrel_ratio * tube.inner_radius,
+        };
+        let insertion = self.insertion;
+        let penalty_scale = 0.5;
+        let obstacle = insertion.obstacle(
+            mandrel,
+            &tube,
+            tube.inner_radius / 20.0,
+            self.friction,
+            penalty_scale,
+        );
+        let damping = 2.0 * 0.05 * (TAU / Self::shear_period(self.mu, self.density));
+        let config = StepperConfig::new(penalty_scale, self.friction, damping);
+        let mut stepper = Stepper::new(make(&model, &obstacle), config, 0.0);
+        let window = insertion.end() - self.window;
+        stepper.run_until(window);
+        stepper.open_window();
+        stepper.run_until(insertion.end());
+        stepper.close_window();
+
+        let snapshot = stepper.executor().snapshot();
+        let band = tube.band(0.020, 0.060);
+        let reading = read_band(&tube, &model, &snapshot, mandrel, &band);
+        let errors = self.case.errors(&reading, tube.inner_radius, self.mu);
+        let samples = stepper.samples().to_vec();
+        Ok(TubeResult {
+            axial_stretch_error: reading.axial_stretch / self.case.axial_stretch - 1.0,
+            kinetic_over_internal: gates::kinetic_over_internal(&samples, window, insertion.end()),
+            energy_balance: gates::energy_balance(&samples),
+            inverted: gates::inverted(&samples),
+            max_penetration: samples.last().map_or(0.0, |s| s.monitors.max_penetration),
+            steps: stepper.steps(),
+            dt: stepper.dt(),
+            reading,
+            errors,
+            samples,
+        })
+    }
+}
