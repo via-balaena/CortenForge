@@ -256,8 +256,8 @@ built TLED-style.**
 - **Contact:**
   - The scan is an SDF.
   - Penalty contact with Coulomb friction (the LS-DYNA pattern), or kinematic projection (the TLED
-    pattern). The experiment decides between them for frictionless runs. Projection has no friction
-    (§15c).
+    pattern). Projection has no friction (§15c), so the product uses the penalty, and projection stays
+    a diagnostic (16d).
   - The penalty's gap biases pressure about 1 % low on the benchmark tube (§15c). It is measured and
     corrected for.
 - **Boundary options:** a free outer wall, a rigid case, or bonding to a stiffer outer layer (§5b).
@@ -809,7 +809,8 @@ contact pressure within 5 % at ν ≥ 0.49? And can it run a 100k-tet insertion 
 
 **Validity gates.** A run that breaks one is invalid, not failed:
 - kinetic energy stays ≤ 5 % of internal energy over the measurement window (the strict end of Abaqus's
-  5–10 %);
+  5–10 %). *Amended 2026-09-24 in step 2's design, before any data (16e):* over every phase a readout
+  is taken from, and with an energy balance added;
 - the band's axial stretch is within 0.5 % of the oracle's λ_z. K2 then compares against the oracle at
   the band's measured λ_z (15d.1), since 0.5 % of λ_z moves pressure by up to 2.1 %.
 
@@ -945,7 +946,9 @@ contact pressure within 5 % at ν ≥ 0.49? And can it run a 100k-tet insertion 
   - Joldes justified it under dynamic relaxation, which damps high frequencies. A lightly damped
     insertion lacks that, so (b) is measured, not assumed stable.
   - **Friction is not defined for (b)**; the Coulomb push uses (a).
-  - The rule: (b) replaces (a) only if it meets K2 with less scatter at equal cost.
+  - The rule: (b) replaces (a) only if it meets K2 with less scatter at equal cost. *Amended
+    2026-09-24 in step 2's design (16d): (b) cannot replace (a) in the product, since a verdict's
+    μ = 0 run must use its frictional runs' law. It stays a K2 diagnostic (15e).*
 - **Pressure readout:** force per node over its tributary area, a third of each incident deformed
   boundary triangle (`sim-soft`'s convention, `mesh/mod.rs:433`), area-weighted over the band as
   ΣF_n/ΣA.
@@ -1114,8 +1117,8 @@ Each item is one PR with its own tests and a done-when.
      - Proceed if the 50k gap-corrected error is ≤ 5 % at every corner.
      - Proceed with a flag if it is 5–7 %, and the extrapolation reaches ≤ 5 % at 100k at every corner.
        The model: h = (mean tet volume)^(1/3), and e = C·h^p, with C and p fitted per corner from 10k
-       and 50k. Where a CPU run at 100k exists (16i), its measured error replaces the extrapolation.
-     - ⛔ **Stop before any GPU work** otherwise, or if K3, K4 or K6 fails.
+       and 50k. Where a CPU run at 100k exists, its measured error decides instead, in every band (16i).
+     - ⛔ **Stop before any GPU work** otherwise, or if K3, K4, K6 or the Yeoh case (16h) fails.
    - A reviewer's model (not kept) put the element alone at +1.2–1.65 % at 50k.
    - *Done when:* the stop rule has been applied, with its numbers written here.
 3. **`sim-gpu`: the shared GPU infrastructure is extracted:** the context, chunked submission and the
@@ -1305,52 +1308,98 @@ than μ_f·P, in plane strain. Part of the contact sticks and part slips.
   eq. 4.3 ✓).
   - At ν 0.49 a rigid body leaves a Dundurs β = (1 − 2ν)/(2(1 − ν)) = 0.0196 (derived), so
     μ_f/β = 15 at μ_f 0.3.
-  - No source found quantifies the error there. The only coupled number found is at μ_f/β = 1: gross
-    slip at 0.9463·μ_f·P instead of μ_f·P (Wang et al., Tribol. Lett. 70:98, 2022, a rigid sphere).
-  - So a companion run measures it (below).
+  - No published source found quantifies the error there. The only coupled number found is at
+    μ_f/β = 1: gross slip at 0.9463·μ_f·P instead of μ_f·P (Wang et al., Tribol. Lett. 70:98, 2022, a
+    rigid sphere).
+  - **Measured instead ✓:** `uv run docs/soft_contact/cattaneo_mindlin_reference.py`, a plane-strain
+    boundary-element solution of this contact with the coupling included. At ν 0.49 the coupling moves
+    the stick zone's half-width by at most 0.005a while loading and 0.0025a while unloading, on two
+    grids (a/200 and a/400). It also shifts the zone off-centre by up to 0.05a. The script checks
+    itself: it reproduces both closed forms at β = 0, and at ν 0.475 the effect grows to 0.020a.
 
 **The case.**
 - **The block:** §15b's neo-Hookean (μ = 23 kPa), ν 0.49, μ_f 0.3.
   - It is 20a wide and 10a deep, with the bottom held and the sides free.
-  - It has one element layer in y, with every node held in y (plane strain, 16d).
+  - It has one element layer in y, with every node held in y (plane strain, 16d). Holding y does not
+    make the front and back rows of nodes agree (the Kuhn split is not symmetric front to back), so
+    both rows are read, and the worse one is judged.
   - A depth of 10a meets the half-space rule in Hojjati-Talemi et al. 2012 ✓ (half-thickness ≥ 10a).
     They cite Fellows et al.: at 3a the edge stress rises by up to 20 %.
-- **The cylinder:** rigid, R = 100a, baked into a grid at cell h/2.
+- **The cylinder:** rigid, R = 100a, baked into a grid at cell h/2. Its pose carries a fixed 30°
+  rotation about its own axis. That changes nothing physical, and it puts the contact law's frame
+  rotations under test, which no other friction gate does.
   - Its peak pressure is p₀/μ = a/(R(1 − ν)) = 0.020 (arithmetic, plane Hertz with E* = 2μ/(1 − ν)), so
     strains are about 2 %. The reference is small-strain.
 - **The mesh:** element size h = a/50 over |x| ≤ 1.5a and the top 0.5a, graded to about a/2 at the
   far boundaries. Hojjati-Talemi et al. used 51 elements across the half-width (5 µm on a = 254 µm),
   and their a came within 0.39 % ✓.
-- **Loading:** displacement-driven, slow enough that KE/IE ≤ 5 %:
+- **Precision: f64, with the world and body frames' origins at the first point of contact.** K6's
+  elastic-slip window is μ_f times the penalty gap, about 7e-6·a. A slipping node moves about 1e-8·a
+  to 1e-7·a per step. Both are near or below f32's spacing even for coordinates of order a (1.2e-7·a)
+  (arithmetic). f32 is K3's question, asked at the product's scale. On the tube, the window is μ_f
+  times a gap of about 0.03 mm (§15c), and a slipping node moves about 4 µm per step. Against f32's
+  7.5 nm spacing at 0.12 m, those are 1 200 and 560 spacings (arithmetic). An f32 run of K6 is
+  reported, not judged.
+- **Loading:** displacement-driven:
   1. press until the contact half-width is a, and hold;
   2. move the cylinder sideways until Q = 0.8·μ_f·P;
   3. move it back until Q = 0.
-- **Readouts,** at every monitor sample: P and Q (the contact forces' resultants), a (the contact's
-  extent), and the stick zone.
-  - A node sticks when its anchor did not move that step. The contact law keeps a sticking anchor
-    bitwise (`vec3_select`).
-  - Each edge of the stick zone sits midway between the last sticking node and the first slipping one.
-    c (and m) is half the zone's width, since with β ≠ 0 the zone may shift off-centre.
+- **The rate is set by its own ladder,** not by KE/IE. The indentation dominates the internal energy,
+  and the tangential phases add only about 6 % to it (arithmetic, a reviewer's estimate), so KE/IE ≤ 5 %
+  would allow kinetic energy as large as the whole signal. The rate is halved until c and m move by at
+  most 0.005a, at every sample.
+- **Readouts,** from each node's normal and tangential contact forces averaged over each monitor
+  interval (16e's `accumulate`):
+  - P and Q, the forces' resultants.
+  - a: each edge of the contact is where the averaged normal force squared, extrapolated linearly,
+    reaches zero. Hertz pressure goes as the square root of the distance to the edge.
+  - **The stick zone's edges:** where f_t/(μ_f f_n) reaches 1 − ε, with ε = 0.005, interpolated between
+    nodes. f_t is the component along the load's direction, and along its reverse while unloading.
+    Near an edge the ratio approaches 1 as the square root of the distance, so ε moves the edge by
+    about 1e-4·a (arithmetic).
+    - The stick zone is the largest contiguous run of nodes below 1 − ε that holds the node with the
+      lowest ratio.
+    - c (and m) is half the zone's width. The zone may sit off-centre (by up to 0.05a at ν 0.49, as
+      above), so a width is read, not a distance from x = 0.
+  - Reading the anchors instead, so that a node sticks when its anchor did not move, was rejected. At
+    f32 a slipping node's drag is below one spacing, so it reads as sticking. At f64 a node one element
+    inside the edge is within about 2.5e-5·h of the cone (a reviewer's estimate), and any vibration
+    flips it. And an anchor
+    that is not dragged reads as sticking everywhere.
 
 **The criterion (pre-registered):**
 - **Loading:** at every sample with 0.2 ≤ Q/(μ_f P) ≤ 0.8, |c/a − (1 − Q/(μ_f P))^½| ≤ 0.03.
 - **Unloading:** at every sample with 0.2 ≤ ΔQ/(μ_f P) ≤ 0.8, |m/a − (1 − ΔQ/(2μ_f P))^½| ≤ 0.03.
-- **Why 0.03:** it is 1.5 elements at a/h = 50. An edge placed between two nodes is uncertain by
-  h/2 = 0.01a.
-- **Two companion runs:** ν 0.4995 (β = 0.0010), for the coupling; R = 200a (strains about 1 %), for
-  the finite strain.
-  - Each must agree with the main run within 0.01 at every sample.
-  - If one does not, that effect is not negligible, and K6 is judged on that companion.
+- **What the 0.03 must cover:**
+
+  | Source | Size | Referent |
+  |---|---|---|
+  | The coupling at ν 0.49 | ≤ 0.005a | the boundary-element referent above ✓ |
+  | The penalty's compliance | ≤ 0.002–0.004a | a reviewer's superposition, with k/A from §15c's stiffness (not kept) |
+  | The readout | about 1e-4·a | above (arithmetic) |
+  | The loading rate | ≤ 0.005a | the rate ladder |
+  | Finite strain | measured | the companion run below |
+  | The element and the finite domain | not known | 2c also runs a/h = 25 and records the difference |
+
+- **One companion run,** R = 200a (strains about 1 %), changes only the strain. It must agree with the
+  main run within 0.01a at every sample. If it does not, finite strain is not negligible, and K6 is
+  judged on the companion.
 - **The gate must fail on purpose first** (2c's done-when). Three mutations of the contact law:
   - an anchor that never releases;
   - an anchor that is not dragged while slipping;
   - a friction limit 10 % high.
 
   Arithmetic for two of them, at Q/(μ_f P) = 0.8: an anchor that never releases gives c/a = 1, not 0.45.
-  A 10 % limit error gives 0.52 against 0.45. The third is measured.
+  A 10 % limit error gives 0.52 against 0.45.
+  - An anchor that is not dragged gives the correct forces while the load rises, by construction, so
+    only unloading can catch it. Its nodes stay at the limit in the old direction and never slip back.
+  - If a mutation does not fail K6, the gate is revised before K6 is judged, and the revision is
+    recorded here.
 
-**In CI:** a coarse version (a/h = 12, tolerance 0.1) joins tests-release, so the executor's handling of
-the anchors stays guarded. The full runs are recorded commands.
+**In CI:** a coarse version (a/h = 12, f64, tolerance 0.1) joins tests-release. It must fail under the
+two anchor mutations. At a/h = 12 it cannot see a friction limit 10 % off (a 0.075 shift). That is
+covered at the law's level by `a_small_slip_sticks_and_a_large_one_slides_at_the_coulomb_limit`. The
+full runs are recorded commands.
 
 **What K6 does not test:**
 - sliding at large deformation: the Coulomb push covers full slip in 3D, against the solver's own
@@ -1360,14 +1409,15 @@ the anchors stays guarded. The full runs are recorded commands.
 
 ### 16c. Four PRs
 
-Step 2 is split into four PRs. The later ones only measure, so the code that steps 3–5 build on gets
-reviewed on its own.
+Step 2 is split into four PRs. 2a holds the solver and its trait, which steps 3–5 build on, so that
+code is reviewed on its own. 2b–2d add fixtures, readouts and runs, and 2d adds a local lowering in
+`cf-sim-research`.
 
 | PR | Holds | Done when |
 |---|---|---|
-| **2a. The CPU solver runs the tube** | Per-direction constraints and the readout pieces in the shared math (16d). The executor trait, the CPU executor and the stepping loop (16e). The fixtures (16f) and the tube's golden values (16g) | CI runs the sanity run and K2 at 10k (16i), and each has failed once on a deliberate mutation |
-| **2b. The tube experiment on the CPU** | The runs of 16i, their results and commands written into this document. Kinematic projection, contact variant (b), so the GPU executor builds only the contact phase that wins | K2, K3 and K5 have numbers at every corner; (a) or (b) is chosen by §15c's rule |
-| **2c. K6** | The Cattaneo–Mindlin fixture, its readouts and its runs (16b) | K6 has failed once under each of 16b's three mutations, and is then decided |
+| **2a. The CPU solver runs the tube** | Per-direction constraints and the readout pieces in the shared math (16d). The executor trait, the CPU executor and the stepping loop (16e). The tube's fixture and its neo-Hookean golden values (16f, 16g) | CI runs the sanity run and K2 at 10k (16i), and each has failed once on a deliberate mutation. The power iteration meets its accuracy bar (16e) |
+| **2b. The tube experiment on the CPU** | The oracle's Yeoh extension (16g). The runs of 16i, their results and commands written into this document | Every 16i run has its numbers: K2, K3, K5, the loading-time ladder, the Coulomb push, the Yeoh and confined cases, stiffness scaling, the gap record, and the loaded step factor. 2d reads the last four |
+| **2c. K6** | The Cattaneo–Mindlin block and its readouts (16b, 16f), and its runs | K6 has failed once under each of 16b's three mutations, and is then decided |
 | **2d. The product's budget, and the stop rule** | The `base_mold` measurements of §15g step 2, run locally (16j) | The stop rule has been applied, with its numbers written here |
 
 ### 16d. What the shared math gains
@@ -1385,17 +1435,29 @@ reviewed on its own.
   convention, §15c). The triangle's area is shared math; summing it at the nodes is orchestration.
 - **The internal-energy density of the averaged λ term** at a node, for the monitor. Step 1 already has
   the per-element μ terms (`tet4_energy_mu_terms`).
-- **Kinematic projection** (§15c variant (b)), in 2b.
+- **Kinematic projection is dropped from step 2** (amended 2026-09-24, before any data). It has no
+  friction (§15c), and a verdict's μ = 0 run gives push force's geometric share only if it uses the
+  same contact law as its frictional runs (§15h). So (b) cannot replace (a) in the product. It stays a
+  diagnostic, built only if K2 fails and 15e's localization needs it.
 
 ### 16e. The executor and the stepping loop
 
 **The trait** has one method per phase of §15f, in that order. It also has:
-- **`accumulate`:** adds each node's contact normal force to a per-node sum, called only inside a
-  measurement window, so a time-averaged readout never reads back each step;
-- **monitors:** kinetic and internal energy, the contact force's resultant, and a sticky count of
-  inverted elements (K4). Each is reduced on the executor and read every 100 steps;
-- **snapshot:** the displacements, read on request;
-- **the power iteration's pieces** (below). Its vector stays on the executor; the host reads one scalar
+- **`accumulate`:** adds each node's contact normal force and tangential force to per-node sums. It is
+  called only inside a window (the tube's measurement window; each of K6's monitor intervals), so a
+  time-averaged readout never reads back each step.
+- **Per-node running values, updated every step inside the phases** and reduced only when read:
+  - the largest penetration so far, since G2 applies at any step (fit plan §5);
+  - the work done by the contact forces, and the energy mass damping removed (15d.3).
+- **Monitors,** reduced on the executor and read every 100 steps:
+  - kinetic and internal energy;
+  - the kinetic energy of the nodes in contact, a watch for friction flutter (below);
+  - the contact force's resultant, as its mean over the steps since the last read, so a peak read from
+    the monitors is not a single step's chatter;
+  - a sticky count of inverted elements (K4);
+  - the reductions of the running values.
+- **Snapshot:** the displacements and the accumulated sums, read on request.
+- **The power iteration's pieces** (below). Its vector stays on the executor; the host reads one scalar
   per iteration.
 
 **The CPU executor is one source file, compiled at f32 and f64** by the same `include!` pattern as the
@@ -1416,11 +1478,23 @@ one thread and on many.
   §15c's Δt = 0.9 · 2/ω_max then gives **Δt = √(3.24 − s)/ω_el = 1.655/ω_el at s = 0.5**.
 - The bound holds whichever nodes are in contact, including nodes that touch between two re-estimates.
   It costs 8 % of the step against 1.8/ω_el, which would ignore the penalty (arithmetic).
-- The friction's slipping state is not symmetric, so the bound does not cover it. The energy monitor
-  (KE/IE) is the guard there.
+- **A slipping node's stiffness is not symmetric.** In the (normal, slip direction) basis it is
+  k·[[1, 0], [−μ_f, 0]]: its eigenvalues are real and lie in [0, k], and its symmetric part's largest
+  eigenvalue is k(1 + √(1 + μ_f²))/2 (derived). Using that in place of k bounds the real parts:
+  - **Δt = √(3.24 − s(1 + √(1 + μ_f²))/2)/ω_el**, which is 1.652/ω_el at μ_f 0.3 and 1.559/ω_el at
+    μ_f 2, the top of §5c's widest range (arithmetic).
+  - The loop uses this form, with the run's largest μ_f.
+- **What no bound covers is flutter.** Coupled with the elastic stiffness, a non-symmetric stiffness
+  can have complex eigenvalues. Central differences amplify those at any step, and mass damping removes
+  only α_D/2 of their growth rate. The guards are the energy balance (below) and the monitor of the
+  contact nodes' kinetic energy. Whether flutter occurs here is not known.
 - The iteration is re-run every 500 steps, warm-started. The step grows by at most 5 % per re-run
-  (§15c) and shrinks at once. Its finite-difference size and tolerance are set in 2a: the f32 estimate
-  must match the f64 one within 1 %.
+  (§15c) and shrinks at once.
+- **Its accuracy is checked, not its precision.** A Rayleigh quotient never exceeds the largest
+  eigenvalue, so agreement between f32 and f64 says nothing about convergence. 2a's done-when: at the
+  iteration count the loop uses, the estimate of ω_el² is within 5 % of a converged f64 reference on
+  the 10k tube. That is a fifth of the 27.7 % margin that 0.9 · 2 leaves below the stability limit in
+  ω_el² (arithmetic: (4 − s)/(3.24 − s) − 1 at s = 0.5).
 
 **Loading.**
 - The mandrel's pose is sampled every T/1000 and interpolated (step 1's `pose_sample_span` and
@@ -1431,13 +1505,21 @@ one thread and on many.
 - Mass damping (§15c) stays on through the hold. KE/IE is judged in the hold's last 0.1 s, and nothing
   translates then, so the damping's drag on a moving body (§15c) does not arise.
 
-**The loop checks the validity gates** (§15a) and reports every run with them: KE/IE over the window,
-the band's λ_z against the oracle's, and the K4 count.
+**The loop checks the generic validity gates,** and reports every run with them (§15a, amended
+2026-09-24 in step 2's design, before any data):
+- KE/IE ≤ 5 % over every phase a readout is taken from: the constant-speed phase for the Coulomb push and
+  K5's entry peak, and the measurement window for K2. It was the window only.
+- **The energy balance:** the contact forces' work equals internal plus kinetic energy plus what damping
+  removed, within 1 % of the run's peak internal energy. It is the guard against an instability that
+  creates energy. The 1 % is an engineering call, not sourced.
+- K4's count.
+
+The band's λ_z against the oracle's is the tube's own check, and belongs to its readout.
 
 ### 16f. The fixtures: a plain public module, not a feature
 
-- The tube (§15c's structured annulus, its three meshes and its Kuhn split), the mandrel's grid, and
-  K6's block live in a public `fixtures` module.
+- The tube (§15c's structured annulus, its three meshes and its Kuhn split), the mandrel's grid and the
+  golden values (16g) live in a public `fixtures` module, from 2a. K6's block joins it in 2c.
 - §14a planned a `test-fixtures` feature. F1 says code behind a feature is neither coverage-measured
   nor doc-checked, and these fixtures define the experiment's geometry. So they are graded like the
   solver.
@@ -1447,20 +1529,22 @@ the band's λ_z against the oracle's, and the K4 count.
 
 ### 16g. Golden values
 
-- `thick_tube_reference.py` gains a golden mode that writes
-  `sim/L0/soft-explicit/tests/golden/thick_tube.json`. The file holds p/μ, λ_z, ∂p/∂a and ∂p/∂λ_z for each K2 case
-  (15d.1), the confined case, and the Yeoh cases (16h). The Rust tests read it with `serde_json` as a
-  dev-dependency.
-- The oracle's existing self-checks run before anything is written. The Yeoh extension adds its own:
-  C₂ = 0 reproduces the neo-Hookean values, and at small interference the pressure is Lamé's with λ + 8C₂
-  in place of λ (the stiffness `dilatational_wave_speed` already uses).
+- `thick_tube_reference.py` gains a golden mode that writes a Rust source file of constants into the
+  `fixtures` module. It holds p/μ, λ_z, ∂p/∂a and ∂p/∂λ_z for each K2 case (15d.1) and the confined
+  case (2a), and the Yeoh cases (16h, 2b).
+  - A source file, not JSON: step 5's GPU runs in `sim-gpu` read the same values through the public
+    module, and no JSON parser is needed.
+- The oracle's existing self-checks run before anything is written. The Yeoh extension (2b) adds its
+  own: C₂ = 0 reproduces the neo-Hookean values, and at small interference the pressure is Lamé's with
+  λ + 8C₂ in place of λ (the stiffness `dilatational_wave_speed` already uses).
 - As with `gen_golden.py`, a regenerated file is a reviewed change.
-- K6's reference is two closed-form expressions, written in its test with their sources (16b).
+- K6's reference is two closed-form expressions, written in its test with their sources (16b). The
+  coupling's size comes from `cattaneo_mindlin_reference.py`, which is a referent, not golden data.
 
 ### 16h. The Yeoh case is judged on its increment ✓
 
-At the C₂/μ of every datasheet anchor in `sim-soft`'s table (0.086–0.094; the measured Ecoflex 00-30 fit
-is 0.014), the Yeoh term moves the band pressure very little. From a scratch run of the oracle extended by
+At the C₂/μ of every datasheet anchor in `sim-soft`'s table (0.086–0.094; the measured Ecoflex fits are
+0.014 and 0.017), the Yeoh term moves the band pressure very little. From a scratch run of the oracle extended by
 the C₂ term, at ν 0.49, B/A 2, free ends:
 
 | Material | C₂/μ | λ_a 1.1 | λ_a 1.3 |
@@ -1477,7 +1561,8 @@ missing. So:
   - A missing or doubled C₂ term is off by about 100 % of the increment (arithmetic).
   - The 25 % allows the element's error to differ between the two runs by up to 1.05 % of p. Whether
     it does is not known before 2b;
-- the absolute K2 criterion applies too.
+- the absolute K2 criterion applies too;
+- **a failure stops before any GPU work,** as K3, K4 and K6 do, since `base_mold` is Yeoh (15g step 1).
 
 ### 16i. The runs, and where they live
 
@@ -1488,13 +1573,18 @@ missing. So:
   error ≤ 7 % (§15g). If 2b finds another corner worse at 10k, the test moves to it.
   `sim-soft-explicit` joins a tests-release shard's explicit list in 2a.
 - tests-release, from 2c: the coarse K6 (16b).
+- **These release-only tests live in their own integration-test binaries,** named in the crate's
+  `coverage_skip_binaries`. The weekly coverage job builds a crate's tests in release and runs every
+  binary instrumented (`xtask/src/coverage_run.rs:609`), at 164–1 226× the uninstrumented time on the
+  suites that file measured (`:690`). The precedent is `sim/L0/soft/Cargo.toml:77`.
 
 **Recorded commands, in 2b** (results and commands written into this document):
 - the loading-time ladder (§15c), at 10k;
-- K2 at 10k and 50k, at every corner, raw and gap-corrected, with contact variants (a) and (b);
+- K2 at 10k and 50k, at every corner, raw and gap-corrected;
 - K3: f32 against f64 at 50k (the band's mean and each pair-averaged ring level), and the Coulomb push at
   10k;
-- K5: the peak entry push and the seated 95th-percentile pressure, 10k against 50k;
+- K5: the peak entry push (the largest of the monitor's 100-step means) and the seated
+  95th-percentile pressure, 10k against 50k;
 - the Coulomb push (15d.7) and the Yeoh case (16h);
 - the confined case (15d.8), and a product-level run: the free tube at λ_a 1.3, ν 0.49, with
   `DRAGON_SKIN_10A`'s μ. Each records its raw error and its largest gap (§15g).
@@ -1502,14 +1592,18 @@ missing. So:
     penalty's gap depends on those and on element shape, not on μ alone (arithmetic: gap = F/k, with
     k = s·m/Δt² and Δt ∝ h/c_d). That record is what carries G2 from the tube to the product's mesh;
 - stiffness scaling (15d.10) at 10k. It moves here from step 5, because 2d's budget depends on it: it
-  decides whether a verdict is 3 runs or 5 (§15h).
+  decides whether a verdict is 3 runs or 5 (§15h);
+- the loaded step factor: the smallest in-run step over the rest step, which 2d applies to the product.
 
 **The CPU may reach 100k.** Measured on the M4 Pro (a scratch benchmark of the shared math, not kept):
 the element phases alone (1 and 4) take 0.29 ms per step at 50k and 0.49 ms at 100k on 12 threads, f32.
 The gathers, contact and integration are not in that number, and the whole step is measured in 2a.
 - If a 100k run fits in 10 minutes on the CPU, K2 runs at 100k there too.
-- **Stop rule, amended 2026-09-24, before any data:** where a measured 100k error exists, it replaces
-  the extrapolation in §15g step 2's 5–7 % band. The 50k rule stands.
+- **Stop rule, amended 2026-09-24, before any data:**
+  - K2 is defined at 100k (§15a). So where a measured 100k error exists, it decides: proceed if it is
+    ≤ 5 % at every corner, and stop otherwise. The 50k rule and its extrapolation apply only where it
+    does not.
+  - The Yeoh case (16h) joins K3, K4 and K6 in stopping GPU work when it fails.
 
 ### 16j. The product's budget (2d)
 
@@ -1519,11 +1613,15 @@ The gathers, contact and integration are not in that number, and the whole step 
   - Lowering moves to `sim-soft` in step 6. This copy measures only.
   - It fails loudly when the scan is missing, instead of skipping.
 - **What it measures** (§15g step 2):
-  - the element count when the wall's elements have the size h of the tube mesh that passes K2, with h
-    as the stop rule defines it, (mean tet volume)^⅓. Whether that h gives the product the tube's
-    accuracy is checked on the product itself in step 7;
-  - the stable step from the CPU executor's power iteration;
-  - the per-run time at K1's per-step budget, scaled by element count;
+  - the element count when the wall's elements have size h_K2: the largest h, as the stop rule defines
+    it ((mean tet volume)^⅓), at which K2's gap-corrected error is ≤ 5 % at every corner. It is
+    measured where a run exists at that h, and taken from the stop rule's extrapolation otherwise.
+    Whether h_K2 gives the product the tube's accuracy is checked on the product itself in step 7;
+  - the stable step from the CPU executor's power iteration, at rest, times 2b's loaded step factor;
+  - the loading time at the tube's converged speed as a fraction of the shear wave speed, v/c_s.
+    Kinetic over internal energy goes as (v/c_s)²/ε² (arithmetic), so that fraction carries the
+    tube's KE/IE result. Step 7 checks it with a ladder on the product;
+  - the per-run time from those steps at K1's per-step budget, scaled by element count;
   - the per-press time, with 3 or 5 runs per verdict, as stiffness scaling says;
   - the surface bias (the fraction of canal nodes inside the true surface), with and without
     projecting the boundary nodes onto it, and what projecting does to the stable step;
@@ -1534,11 +1632,41 @@ The gathers, contact and integration are not in that number, and the whole step 
 
 ### 16k. How the design was checked
 
-Pending: two cold reviews against criteria written beforehand. What they found, and what changed, is
-recorded here when they are done.
+Two cold reviewers, against ten criteria written beforehand (16a's list among them), at `7ea0b73e`:
+- **physics and numerics:** re-derived the bounds, reran the Yeoh oracle and wrote a boundary-element
+  solution of K6's contact;
+- **fit to the whole plan:** read every section, mapped §15g step 2's bullets to the four PRs, and
+  checked the CI, grade and coverage claims at their referents.
+
+**Sixteen findings, all checked before fixing.** The ones that changed the design:
+- **K6's precision and readout.** Both reviewers found it:
+  - the elastic-slip window is a few f32 spacings wide, so K6 runs at f64 with its frames at the
+    contact;
+  - reading edges node by node used 0.02a of the 0.03a tolerance, so the edges are read from
+    window-averaged forces;
+  - an anchor that is not dragged could not be seen while loading.
+- **The coupling was measured,** not companion-run. The boundary-element solution was hardened,
+  made to fail once per check, and committed (16b).
+- **Monitors:** G2's largest penetration at any step, the work and damping sums, an energy balance,
+  and the resultant's mean between reads.
+- **KE/IE** now covers every phase a readout is taken from. K6 has its own rate ladder.
+- **Kinematic projection dropped** from step 2 (16d).
+- **The power iteration's bar** is accuracy against a converged reference, not f32 against f64.
+- **Slipping friction** is bounded in its real part. Flutter is named as unbounded and watched.
+- **2d's inputs pinned:** h_K2, the loading speed, the loaded step factor.
+- **Consequences given:** to the Yeoh case, to a measured 100k error, and to the CI K6.
+- **Coverage:** the release-only tests are kept out of it.
+
+**What the method missed.** 16a named §6's rule, that displacements are the state, and applied it to
+the element. The friction anchors, stored as absolute positions, were never checked against it. That
+is the same class of miss as step 1's, one level down. A constraint list is only as good as the
+places it is checked against.
+
+**Checked by no one:** finite strain and the finite domain's effect on K6's stick zone; whether
+flutter occurs; the coverage cost of the new tests; how coverage counts code `include!`d twice.
 
 ### 16l. Not decided here
 
 - The trait's exact signatures, settled in 2a (§14d).
-- The power iteration's finite-difference size and tolerance, set in 2a against its f64 twin (16e).
-- Whether kinematic projection replaces the penalty, decided in 2b by §15c's rule.
+- The power iteration's finite-difference size and iteration count, set in 2a against its accuracy bar
+  (16e).
