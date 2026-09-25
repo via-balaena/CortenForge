@@ -261,8 +261,8 @@ built TLED-style.**
   - The penalty's gap biases pressure about 1 % low on the benchmark tube (§15c). It is measured and
     corrected for.
   - *Amended 2026-09-25 (§16o): the product uses the kinematic predictor/corrector with kinematic
-    Coulomb friction, and the penalty is deleted. Its penetration against the grid is at rounding, so G2
-    on the product is set by the baked grid's own error.*
+    Coulomb friction, and the penalty is deleted. On the tube its penetration against the grid is at most
+    0.2 µm, so G2 on the product rests mostly on the baked grid's own error (16j).*
 - **Boundary options:** a free outer wall, a rigid case, or bonding to a stiffer outer layer (§5b).
 - **Friction:** from the pairing library (§5c), swept over its range.
 - **Readouts:**
@@ -1461,8 +1461,8 @@ code is reviewed on its own. 2b–2d add fixtures, readouts and runs, and 2d add
 | **2d. The product's budget, and the stop rule** | The `base_mold` measurements of §15g step 2, run locally (16j) | The stop rule has been applied, with its numbers written here |
 
 *Amended 2026-09-25 (§16o): 2b's "gap record" was the penalty's (gap = F/k). Under the kinematic law the
-penetration against the grid is at rounding, so 2b records G2 against the true surface on the ladder,
-which measures the lookup's own error, and 2d measures the product grid's.*
+penetration against the grid is at most 0.2 µm on the tube, so 2b records G2 against the grid and
+against the true surface on the ladder, and 2d measures both on the product.*
 
 ### 16d. What the shared math gains
 
@@ -1770,7 +1770,8 @@ distinct problems, and each was checked before it was fixed.
 - **The trait gains:**
   - `set_poses`, for a new track mid-run (§14d's batches; K6's legs that end on a force);
   - `phase_outputs`, for step 4's per-phase conformance;
-  - the contact law's s and μ_f. The loop reads them, so the stable step bounds the law in use.
+  - the contact law's s and μ_f. The loop reads them, so the stable step bounds the law in use. *(Both
+    removed 2026-09-25: the kinematic law adds nothing to the step, §16o.)*
 - **Every stable-step estimate starts cold,** at 100 power iterations. Its finite-difference step is
   √ε of the executor's precision times the shortest rest edge, on the largest nodal component
   (`Stepper::estimate`).
@@ -2043,9 +2044,9 @@ hold, under K. Each row changed one thing in the executor's obstacle lookup (a d
 
 - **The energy comes from the contact:** the mandrel is stationary and frictionless in the hold, yet the
   contact does positive work, 9 mJ over the hold (3 % of the stored energy). The balance gate cannot see
-  that part, which enters both sides (16e). It read 1.11 % because stored, kinetic and damped energy rose
-  about 2 mJ more than the contact's work by the end (the run's monitors): energy the integrator made.
-  KE/IE stayed near 0.5 %. **No gate is built to catch energy fed in as contact work** (open).
+  that part, which enters both sides (16e); the 1.11 % it read is energy beyond the contact's work, made
+  by the integrator. KE/IE stayed near 0.5 %. **No gate is built to catch energy fed in as contact work**
+  (open).
 - **The cause is the grid's distance, not its normal and not the law:** the trilinear interpolant of a
   curved surface is off by up to 5.7 µm here, and bumps that large feed the contact energy; bumps of 1 µm
   and less do not. The step, the normal, the precision and the contact law are ruled out above. The
@@ -2095,10 +2096,15 @@ On the adopted code (`5e6b7281`; frictionless, A/20, §15b's 0.2 s hold unless n
 - A step costs what the kinematic law cost on the trilinear lookup (1.68–1.70 against 1.66–1.67 ms at
   100k), and more than the penalty's (above). The penalty took 9 % more steps, so a run takes about as
   long: 53.3 s against 51.9 s at 100k.
-- With friction (μ_f 0.3, 10k, λ_a 1.1): G2 0.0 µm, balance 0.49 %, and the Coulomb push 0.893, still 11 %
-  low (open, 2b). The band reads +3.56 % against the frictionless oracle with λ_z −1.80 %: K2's λ_z gate
-  (0.5 %) is for frictionless runs, so this is not a K2 reading. The confined case reads −0.18 % with
-  friction too.
+- With friction (μ_f 0.3, 10k, λ_a 1.1), at `77f51dc6`: G2 0.0 µm, balance 0.50 %, and the Coulomb push
+  0.893, still 11 % low (open, 2b). The band reads +3.38 % against the frictionless oracle with λ_z
+  −1.75 %: K2's λ_z gate (0.5 %) is for frictionless runs, so this is not a K2 reading. The confined case
+  reads −0.18 % with friction too.
+- **A friction run is sensitive to a change far below its readings.** Dividing the Coulomb limit by the
+  reach (`b40eb773`) changes it only by n·n's rounding on a free node, yet the band moved from +3.56 % to
+  +3.38 % and λ_z from −1.80 % to −1.75 %. The frictionless and cased runs did not move. Why the run
+  amplifies it has not been isolated; it bears on comparing friction runs across versions and on step
+  4's CPU–GPU conformance.
 - `tube_release` passes: K2 at 10k +4.41 % (bar 7 %), its deepest penetration 13 nm; the power
   iteration −0.21 % at rest and −0.33 % (f64), −0.30 % (f32) loaded.
 - **By the stop rule** (16i), the two corners run at 100k read +0.95 % and +0.73 %, against 5 %; the ν
@@ -2115,3 +2121,24 @@ On the adopted code (`5e6b7281`; frictionless, A/20, §15b's 0.2 s hold unless n
 - **Other force phases:** the prediction uses the elastic force alone (14d's note).
 - **The frame carry:** the current normal is carried from the pose at t to the pose at t + Δt; no test
   reaches a rotating obstacle closely enough to see an error in it.
+
+**How this was checked (2026-09-25).**
+- **The criteria came first,** with ten priors (the defects I already suspected) kept from the reviewers.
+- **Round 1:** four cold reviewers raised about 20 distinct findings. Five priors hit outright and two in
+  part. The reviewers covered:
+  - the engine;
+  - the tests and fixtures;
+  - this record, reproducing its numbers;
+  - the whole plan.
+- **Round 1's largest findings:**
+  - the lookup's error across the mandrel's nose–shank seam, found by three reviewers;
+  - the lookup wrong in the outermost cell of every face;
+  - the readouts of constrained nodes;
+  - no test on G2;
+  - the passages amended above;
+  - G2 and the pre-smooth on the product.
+- **Round 2:** one fresh reviewer read only round 1's fixes and found 5 problems, 4 created by those
+  fixes. The 4 were two over-claims, stale friction numbers, and a test grid too symmetric to catch a
+  swapped index. The fifth was a fix left incomplete. All five were cut or measured, not rewritten.
+- **Every code fix has a test** that failed on its defect first.
+- **No pass looked at:** the GPU, the product scan, K6's block, or flutter.

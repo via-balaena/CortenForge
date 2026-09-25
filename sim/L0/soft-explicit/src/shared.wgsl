@@ -843,7 +843,9 @@ fn kinematic_stiffness(mass: f32, inverse_mass: f32, damping: f32, dt: f32) -> f
 //
 // A node that would land inside gets the force that puts it on the
 // surface: along the normal, made free of the node's constrained
-// directions and lengthened so it still reaches the surface. A sticking
+// directions and lengthened so it still reaches the surface. That is exact
+// on a plane and first order on a curved surface; the confined tube's nodes
+// read up to 0.2 µm inside its mandrel (plan §16o). A sticking
 // node is held at its anchor; a slipping one moves back by at most `μ_f`
 // times the normal correction, and its anchor goes with it. The friction
 // step is kept to the node's free directions and to the surface. Out of

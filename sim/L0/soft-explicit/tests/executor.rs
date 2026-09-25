@@ -427,7 +427,6 @@ fn the_energy_balance_holds_with_contact_friction_and_damping() {
     let samples = stepper.samples();
     let last = samples.last().unwrap().monitors;
     assert!(last.contact_work > 0.0 && last.damping_loss > 0.0);
-    assert!(last.max_penetration > 0.0);
     assert!(!gates::inverted(samples));
     let peak = samples
         .iter()
@@ -884,7 +883,8 @@ fn the_kinematic_law_leaves_no_node_inside_a_moving_floor() {
 
 #[test]
 fn the_executors_lookup_is_the_obstacles() {
-    // One node 10 µm inside the mandrel, off every symmetry of the grid: the
+    // One node 10 µm inside the mandrel, baked in a box that is off-centre and
+    // longer in y than in x, so no two axes' values mirror each other: the
     // executor's own depth there is exactly `Obstacle::sample`'s.
     let radius = 0.011;
     let (angle, z) = (0.37_f64, -0.0312);
@@ -919,7 +919,7 @@ fn the_executors_lookup_is_the_obstacles() {
     )
     .unwrap();
     let (grid, values) = Mandrel { radius }
-        .baked([-0.025, -0.025, -0.05], [0.025, 0.025, 0.0], 0.0005)
+        .baked([-0.022, -0.027, -0.05], [0.028, 0.028, 0.0], 0.0005)
         .unwrap();
     let obstacle = Obstacle {
         grid,
