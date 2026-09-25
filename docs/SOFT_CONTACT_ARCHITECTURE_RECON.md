@@ -1084,11 +1084,12 @@ Each item is one PR with its own tests and a done-when.
      does K5's convergence (10k to 50k).
    - **K6, frictional ironing** (§7 rung 2), runs on the CPU.
      - **Open, to settle in step 2's design:** the reference (arXiv 1903.05859, §5.1.1) is contact
-       between *"two deformable bodies"*, a neo-Hookean die on a neo-Hookean slab in plane strain.
+       between *"two deformable bodies"*, a neo-Hookean die on a neo-Hookean slab, in 2D.
        The shared contact law is a node against a rigid SDF. The choices are a rigid die with its
        error bounded, a reference with a rigid indenter, or soft-on-soft contact brought forward.
    - **Step 2 adds per-direction kinematic constraints to the shared math.** The confined case needs a
-     radial constraint and an axial hold, and K6 needs plane strain; step 1 holds whole nodes only.
+     radial constraint and an axial hold, and reproducing a 2D reference in 3D needs an out-of-plane
+     condition; step 1 holds whole nodes only.
    - **One Yeoh case** runs, with the oracle extended by the C₂ term.
    - **The confined case (15d.8) and a product-level contact pressure** run on the CPU, and record the
      raw error and the largest gap.
