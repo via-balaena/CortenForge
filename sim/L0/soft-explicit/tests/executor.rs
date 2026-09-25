@@ -22,6 +22,7 @@ use sim_soft_explicit::cpu;
 use sim_soft_explicit::executor::{Executor, Monitors, Obstacle, ObstacleError, Snapshot};
 use sim_soft_explicit::f64 as shared;
 use sim_soft_explicit::f64::{Pose, SdfGridLayout};
+use sim_soft_explicit::fixtures::tube::Mandrel;
 use sim_soft_explicit::stepping::{RunError, Sample, Stepper, StepperConfig, gates};
 
 const IDENTITY: Pose = Pose {
@@ -91,7 +92,6 @@ fn floor(
         interval,
         poses,
         friction,
-        penalty_scale: 0.5,
     }
 }
 
@@ -144,7 +144,7 @@ fn run_phases(e: &mut impl Executor, time: f64, dt: f64, damping: f64) {
     e.nodal_pressures();
     e.element_forces();
     e.gather_forces();
-    e.contact(time, dt);
+    e.contact(time, dt, damping);
     e.integrate(dt, damping);
     e.boundary_conditions(dt, damping);
 }
@@ -427,7 +427,6 @@ fn the_energy_balance_holds_with_contact_friction_and_damping() {
     let samples = stepper.samples();
     let last = samples.last().unwrap().monitors;
     assert!(last.contact_work > 0.0 && last.damping_loss > 0.0);
-    assert!(last.max_penetration > 0.0);
     assert!(!gates::inverted(samples));
     let peak = samples
         .iter()
@@ -572,16 +571,10 @@ fn the_power_iteration_reaches_the_largest_eigenvalue_from_below() {
 }
 
 #[test]
-fn the_stable_step_bounds_the_penalty_and_slipping_friction() {
+fn the_stable_step_is_the_safety_fraction_of_the_elastic_limit() {
     let config = StepperConfig::new(0.0);
     let omega_squared: f64 = 4.0e8;
-    let omega = omega_squared.sqrt();
-    let at = |friction: f64| config.stable_step(omega_squared, 0.5, friction) * omega;
-    assert!((at(0.0) - 2.74_f64.sqrt()).abs() < 1e-12);
-    assert!((at(0.3) - 1.652).abs() < 5e-4, "{}", at(0.3));
-    assert!((at(2.0) - 1.559).abs() < 5e-4, "{}", at(2.0));
-    let no_budget = std::panic::catch_unwind(|| config.stable_step(1.0, 3.3, 0.0));
-    assert!(no_budget.is_err());
+    assert!((config.stable_step(omega_squared) * omega_squared.sqrt() - 1.8).abs() < 1e-12);
     // A smaller limit is taken at once; a larger one only 5 % at a time.
     assert_eq!(config.next_step(1.0, 0.8), 0.8);
     assert_eq!(config.next_step(1.0, 2.0), 1.05);
@@ -792,13 +785,6 @@ fn an_obstacle_is_checked_before_upload() {
         ),
         (
             Obstacle {
-                penalty_scale: 0.0,
-                ..base.clone()
-            },
-            |e| matches!(e, ObstacleError::Invalid { reason } if reason.contains("penalty")),
-        ),
-        (
-            Obstacle {
                 poses: vec![Pose {
                     qw: 2.0,
                     ..IDENTITY
@@ -812,4 +798,140 @@ fn an_obstacle_is_checked_before_upload() {
         let err = cpu::f64::CpuExecutor::new(&model, &obstacle).unwrap_err();
         assert!(expected(&err), "{err:?}");
     }
+}
+
+/// One free node, pressed onto a cylinder by a compressed tetrahedron and
+/// set sliding around it, frictionless and undamped. The kinematic law only
+/// takes energy out, so the energy must not grow. Corrected along the normal
+/// at the node's predicted position, which the inward push puts at a smaller
+/// radius, each step carried the node further around than it went, and the
+/// sliding grew by about 1 + a/R a step, `a` the push per step (plan §16o).
+#[test]
+fn kinematic_contact_does_not_feed_sliding_around_a_curved_obstacle() {
+    let radius = 0.01;
+    let z = -0.03; // on the mandrel's cylinder, behind its nose
+    // The free node's rest position is 0.15 mm inside the cylinder, so held
+    // on it the node is pushed in by about 0.46 mm a step, a/R ≈ 0.05, as on
+    // the confined tube. It is node 1: the power iteration's fixed start has
+    // no x component at node 0.
+    let depth = 1.5e-4;
+    let positions = vec![
+        [radius + 0.004, -0.003, z - 0.002],
+        [radius - depth, 0.0, z],
+        [radius + 0.004, 0.003, z - 0.002],
+        [radius + 0.004, 0.0, z + 0.003],
+    ];
+    let model = ExplicitModel::new(
+        positions,
+        vec![[0, 1, 3, 2]],
+        vec![SILICONE],
+        vec![true, false, true, true],
+    )
+    .unwrap();
+    let (grid, values) = Mandrel { radius }
+        .baked([-0.02, -0.02, -0.05], [0.02, 0.02, 0.0], 0.0005)
+        .unwrap();
+    let obstacle = Obstacle {
+        grid,
+        values,
+        start: 0.0,
+        interval: 1.0,
+        poses: vec![IDENTITY],
+        friction: 0.0,
+    };
+    let mut executor = cpu::f64::CpuExecutor::new(&model, &obstacle).unwrap();
+    // On the surface, sliding around it at 0.1 m/s.
+    let mut u = vec![[0.0; 3]; 4];
+    u[1] = [depth, 0.0, 0.0];
+    let mut v = vec![[0.0; 3]; 4];
+    v[1] = [0.0, 0.1, 0.0];
+    executor.set_state(0.0, &u, &v, None);
+    let energy = |m: Monitors| m.kinetic_energy + m.internal_energy;
+    let start = energy(executor.monitors());
+    let mut stepper = Stepper::new(executor, StepperConfig::new(0.0), 0.0);
+    let mut largest = start;
+    for _ in 0..400 {
+        if stepper.step().is_err() {
+            largest = f64::INFINITY;
+            break;
+        }
+        largest = largest.max(energy(stepper.executor_mut().monitors()));
+    }
+    assert!(largest <= 1.01 * start, "energy {start:e} -> {largest:e}");
+}
+
+#[test]
+fn the_kinematic_law_leaves_no_node_inside_a_moving_floor() {
+    // G2, on the law's own terms: every step ends with each node on or
+    // outside the floor, which rises and slides. Leftover depth would mean
+    // the prediction used the floor where it was, not where it will be, or
+    // missed the damping in the step it undoes.
+    let model = pressed_block();
+    let stepper = pressed_run(
+        cpu::f64::CpuExecutor::new(&model, &rising_floor(0.3)).unwrap(),
+        500.0,
+    );
+    let last = stepper.samples().last().unwrap().monitors;
+    eprintln!(
+        "MARGIN deepest node over the run {:e} m (bar 1e-12 m) after {} steps",
+        last.max_penetration,
+        stepper.steps()
+    );
+    assert!(last.contact_work > 0.0, "the floor must press");
+    assert!(last.max_penetration <= 1e-12);
+}
+
+#[test]
+fn the_executors_lookup_is_the_obstacles() {
+    // One node 10 µm inside the mandrel, baked in a box that is off-centre and
+    // longer in y than in x, so no two axes' values mirror each other: the
+    // executor's own depth there is exactly `Obstacle::sample`'s.
+    let radius = 0.011;
+    let (angle, z) = (0.37_f64, -0.0312);
+    let inside = [
+        (radius - 1e-5) * angle.cos(),
+        (radius - 1e-5) * angle.sin(),
+        z,
+    ];
+    let positions = vec![
+        inside,
+        [0.02, 0.0, z],
+        [0.02, 0.005, z - 0.004],
+        [0.02, -0.005, z - 0.004],
+    ];
+    let positions = if shared::vec3_dot(
+        shared::vec3_sub(positions[1], positions[0]),
+        shared::vec3_cross(
+            shared::vec3_sub(positions[2], positions[0]),
+            shared::vec3_sub(positions[3], positions[0]),
+        ),
+    ) > 0.0
+    {
+        positions
+    } else {
+        vec![positions[0], positions[1], positions[3], positions[2]]
+    };
+    let model = ExplicitModel::new(
+        positions,
+        vec![[0, 1, 2, 3]],
+        vec![SILICONE],
+        vec![false, true, true, true],
+    )
+    .unwrap();
+    let (grid, values) = Mandrel { radius }
+        .baked([-0.022, -0.027, -0.05], [0.028, 0.028, 0.0], 0.0005)
+        .unwrap();
+    let obstacle = Obstacle {
+        grid,
+        values,
+        start: 0.0,
+        interval: 1.0,
+        poses: vec![IDENTITY],
+        friction: 0.0,
+    };
+    let mut executor = cpu::f64::CpuExecutor::new(&model, &obstacle).unwrap();
+    run_phases(&mut executor, 0.0, 1e-6, 0.0);
+    let depth = executor.monitors().max_penetration;
+    assert!(depth > 0.0);
+    assert_eq!(depth, -obstacle.sample(inside).distance);
 }

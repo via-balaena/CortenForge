@@ -10246,7 +10246,6 @@ dependencies = [
 name = "sim-soft-explicit"
 version = "1.0.0"
 dependencies = [
- "cf-geometry",
  "nalgebra 0.34.2",
  "rayon",
  "sim-wgsl-gen",

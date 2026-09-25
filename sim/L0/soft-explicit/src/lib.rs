@@ -29,9 +29,9 @@
 //! - **pressure averaging** and its rule where materials meet;
 //! - **time integration**: the central-difference update with mass damping;
 //! - **the obstacle's pose** and its interpolation between time samples;
-//! - **the obstacle's distance field**, with the product's clamped lookup;
-//! - **the contact law**: the nodal-mass penalty with elastic-slip Coulomb
-//!   friction.
+//! - **the obstacle's distance field**: a tricubic lookup in its baked grid;
+//! - **the contact law**: the kinematic predictor/corrector with kinematic
+//!   Coulomb friction (plan §16o).
 //!
 //! Displacements, not positions, are the state (plan §6): a node's position
 //! is its rest position plus its displacement. Orchestration (gathers,

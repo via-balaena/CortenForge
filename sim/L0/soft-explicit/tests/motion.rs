@@ -255,9 +255,10 @@ fn a_sample_span_clamps_and_splits_time() {
     assert_eq!((none.lower, none.upper), (0, 0));
 }
 
-// ---- contact ----
+// ---- contact: the kinematic law (plan §16o) ----
 
 const K: f64 = 1000.0;
+const FREE: [[f64; 3]; 2] = [[0.0; 3]; 2];
 
 const fn surface(distance: f64) -> SdfSample {
     SdfSample {
@@ -268,47 +269,16 @@ const fn surface(distance: f64) -> SdfSample {
 
 #[test]
 fn out_of_contact_there_is_no_force_and_the_anchor_follows() {
-    let point = [0.1, 0.2, 0.3];
-    let r = shared::obstacle_contact(IDENTITY, point, surface(0.01), [5.0, 5.0, 5.0], K, 0.3);
+    let predicted = [0.1, 0.2, 0.3];
+    let r = shared::kinematic_contact(IDENTITY, predicted, surface(0.01), [5.0; 3], K, 0.3, FREE);
     assert_eq!(r.force, [0.0; 3]);
     assert_eq!(r.normal_force, 0.0);
-    assert_eq!(r.anchor, point);
-}
-
-#[test]
-fn penetration_pushes_out_along_the_normal() {
-    let point = [0.1, 0.2, 0.3];
-    let r = shared::obstacle_contact(IDENTITY, point, surface(-0.002), point, K, 0.3);
+    assert_eq!(r.anchor, predicted);
+    // In contact but frictionless: no tangential force, and the anchor goes
+    // where the node lands.
+    let r = shared::kinematic_contact(IDENTITY, predicted, surface(-0.002), [5.0; 3], K, 0.0, FREE);
     assert!(close(r.force, [0.0, 0.0, K * 0.002], 1e-15));
-    assert_eq!(r.normal_force, K * 0.002);
-    assert_eq!(r.anchor, point);
-}
-
-#[test]
-fn a_small_slip_sticks_and_a_large_one_slides_at_the_coulomb_limit() {
-    let (friction, depth) = (0.3, 0.002);
-    let limit = friction * K * depth;
-    let anchor = [0.0, 0.0, 0.0];
-    // Within the cone: pulled back elastically, anchor kept.
-    let small = [0.4 * limit / K, 0.0, 0.0];
-    let r = shared::obstacle_contact(IDENTITY, small, surface(-depth), anchor, K, friction);
-    assert!(close(r.force, [-K * small[0], 0.0, K * depth], 1e-15));
-    assert_eq!(r.anchor, anchor);
-    // Past it: the pull is exactly μ f_n, opposite the slip, and the anchor is
-    // dragged to within μ f_n / k of the node.
-    let large = [3.0 * limit / K, 4.0 * limit / K, 0.0];
-    let r = shared::obstacle_contact(IDENTITY, large, surface(-depth), anchor, K, friction);
-    assert!(close(
-        r.force,
-        [-0.6 * limit, -0.8 * limit, K * depth],
-        1e-15
-    ));
-    let offset = [large[0] - r.anchor[0], large[1] - r.anchor[1]];
-    assert!((offset[0].hypot(offset[1]) - limit / K).abs() < 1e-15);
-    // Frictionless: no tangential force, and the anchor tracks the node.
-    let r = shared::obstacle_contact(IDENTITY, large, surface(-depth), anchor, K, 0.0);
-    assert!(close(r.force, [0.0, 0.0, K * depth], 1e-15));
-    assert!(close(r.anchor, large, 1e-15));
+    assert!(close(r.anchor, [0.1, 0.2, 0.302], 1e-15));
 }
 
 #[test]
@@ -318,42 +288,11 @@ fn the_force_is_returned_in_the_world_frame() {
         [1.0, 0.0, 0.0],
         [0.0, 0.0, 1.0],
     );
-    let point = [0.0, 0.0, 0.0];
-    let r = shared::obstacle_contact(p, point, surface(-0.001), point, K, 0.3);
+    let body = [0.0, 0.0, -0.001];
+    let predicted = shared::pose_to_world(p, body);
+    let r = shared::kinematic_contact(p, predicted, surface(-0.001), body, K, 0.3, FREE);
     // A quarter turn about x takes the body's +z normal to world −y.
     assert!(close(r.force, [0.0, -K * 0.001, 0.0], 1e-15));
-}
-
-#[test]
-fn only_the_tangential_part_of_a_slip_is_resisted() {
-    // A tilted surface, and a slip with a normal part: the friction force
-    // is along the tangential part alone.
-    let normal = [0.0, 0.6, 0.8];
-    let sample = SdfSample {
-        distance: -0.002,
-        normal,
-    };
-    let slip = [0.0001, 0.0002, 0.0003];
-    let normal_part = shared::vec3_dot(slip, normal);
-    let tangential = shared::vec3_sub(slip, shared::vec3_scale(normal, normal_part));
-    let r = shared::obstacle_contact(IDENTITY, slip, sample, [0.0; 3], K, 1.0);
-    let expected = shared::vec3_add(
-        shared::vec3_scale(normal, K * 0.002),
-        shared::vec3_scale(tangential, -K),
-    );
-    assert!(
-        close(r.force, expected, 1e-15),
-        "{:?} against {expected:?}",
-        r.force
-    );
-    assert!(
-        shared::vec3_dot(
-            shared::vec3_sub(r.force, shared::vec3_scale(normal, K * 0.002)),
-            normal
-        )
-        .abs()
-            < 1e-15
-    );
 }
 
 #[test]
@@ -362,65 +301,256 @@ fn a_node_carried_by_the_obstacle_feels_no_friction() {
     // translating obstacle stays stuck with no tangential force.
     let before = pose(0.3, [0.0, 0.0, 1.0], [0.0, 0.0, 0.0]);
     let after = pose(0.5, [0.0, 0.0, 1.0], [0.01, -0.02, 0.0]);
-    let body_point = [0.1, 0.05, 0.0];
+    let body = [0.1, 0.05, -0.001];
     let sample = surface(-0.001);
-    let first = shared::obstacle_contact(before, body_point, sample, body_point, K, 0.5);
-    let world = shared::pose_to_world(after, body_point);
-    let second = shared::obstacle_contact(
+    let first = shared::kinematic_contact(
+        before,
+        shared::pose_to_world(before, body),
+        sample,
+        [0.1, 0.05, 0.0],
+        K,
+        0.5,
+        FREE,
+    );
+    let carried = shared::kinematic_contact(
         after,
-        shared::pose_to_body(after, world),
+        shared::pose_to_world(after, body),
         sample,
         first.anchor,
         K,
         0.5,
+        FREE,
     );
     let normal_world = shared::pose_rotate(after, [0.0, 0.0, K * 0.001]);
     assert!(
-        close(second.force, normal_world, 1e-12),
+        close(carried.force, normal_world, 1e-12),
         "{:?}",
-        second.force
+        carried.force
     );
     // The same node held still in the world while the obstacle turns under
-    // it is pulled along, at most at the Coulomb limit.
-    let held = shared::pose_to_world(before, body_point);
-    let dragged = shared::obstacle_contact(
+    // it is dragged along, at the Coulomb limit.
+    let dragged = shared::kinematic_contact(
         after,
-        shared::pose_to_body(after, held),
+        shared::pose_to_world(before, body),
         sample,
         first.anchor,
         K,
         0.5,
+        FREE,
     );
-    let tangential = shared::vec3_sub(dragged.force, normal_world);
-    let magnitude = shared::vec3_length(tangential);
-    assert!(magnitude > 0.0 && magnitude <= 0.5 * K * 0.001 * (1.0 + 1e-12));
+    let magnitude = shared::vec3_length(dragged.friction);
+    assert!((magnitude - 0.5 * dragged.normal_force).abs() <= 1e-12 * magnitude);
+    // Slipping, its anchor is where it lands, in the obstacle's frame.
+    let landed = shared::vec3_add(
+        shared::pose_to_world(before, body),
+        shared::vec3_scale(dragged.force, 1.0 / K),
+    );
+    assert!(close(
+        dragged.anchor,
+        shared::pose_to_body(after, landed),
+        1e-15
+    ));
 }
 
 #[test]
 fn the_friction_force_is_the_tangential_part_and_reaches_the_cone_only_when_slipping() {
     let (friction, depth) = (0.3, 0.002);
-    let limit = friction * K * depth;
+    let limit = friction * depth;
     let p = pose(0.4, [0.0, 1.0, 0.0], [0.01, 0.0, 0.0]);
     let normal_world = shared::pose_rotate(p, [0.0, 0.0, 1.0]);
     for (slip, ratio) in [(0.4, 0.4), (3.0, 1.0)] {
-        let point = [slip * limit / K, 0.0, 0.0];
-        let r = shared::obstacle_contact(p, point, surface(-depth), [0.0; 3], K, friction);
+        let predicted = shared::pose_to_world(p, [slip * limit, 0.0, -depth]);
+        let r =
+            shared::kinematic_contact(p, predicted, surface(-depth), [0.0; 3], K, friction, FREE);
         let normal_part = shared::vec3_scale(normal_world, r.normal_force);
         assert!(close(
             shared::vec3_add(normal_part, r.friction),
             r.force,
-            1e-15
+            1e-12
         ));
-        assert!(shared::vec3_dot(r.friction, normal_world).abs() < 1e-15);
+        assert!(shared::vec3_dot(r.friction, normal_world).abs() < 1e-12);
         let read = shared::vec3_length(r.friction) / (friction * r.normal_force);
-        assert!((read - ratio).abs() < 1e-12, "slip {slip}: ratio {read}");
+        assert!((read - ratio).abs() < 1e-9, "slip {slip}: ratio {read}");
     }
 }
 
 #[test]
-fn the_penalty_stiffness_scales_with_mass_over_step_squared() {
-    assert_eq!(
-        shared::penalty_stiffness(2.0, 0.01, 0.5),
-        0.5 * 2.0 / (0.01 * 0.01)
+fn the_kinematic_force_puts_the_node_on_the_surface_in_one_step() {
+    let (mass, damping, dt) = (2.0e-3, 6.0, 8.0e-5);
+    let k = shared::kinematic_stiffness(mass, 1.0 / mass, damping, dt);
+    let depth = 3.0e-5;
+    let predicted = [0.01, 0.02, -depth];
+    let r = shared::kinematic_contact(
+        IDENTITY,
+        predicted,
+        surface(-depth),
+        predicted,
+        k,
+        0.0,
+        FREE,
     );
+    // The force, applied over the step through the damped update, moves the
+    // node by exactly the depth along the normal.
+    let moved = shared::advance_velocity([0.0; 3], r.force, 1.0 / mass, damping, dt);
+    assert!(close(
+        shared::vec3_scale(moved, dt),
+        [0.0, 0.0, depth],
+        1e-18
+    ));
+    assert!((r.normal_force - k * depth).abs() <= 1e-12 * k * depth);
+    // A held node is left alone.
+    let held = shared::kinematic_stiffness(mass, 0.0, damping, dt);
+    let r = shared::kinematic_contact(
+        IDENTITY,
+        predicted,
+        surface(-depth),
+        predicted,
+        held,
+        0.3,
+        FREE,
+    );
+    assert_eq!((r.force, r.normal_force), ([0.0; 3], 0.0));
+}
+
+#[test]
+fn a_constrained_node_is_moved_in_its_free_directions_onto_the_surface() {
+    // A plane tilted 30° about y; the node may not move along x.
+    let (s, c) = (0.5_f64, 0.75_f64.sqrt());
+    let normal = [s, 0.0, c];
+    let depth = 1.0e-4;
+    let predicted = [0.0, 0.0, -depth / c];
+    let sample = SdfSample {
+        distance: -depth,
+        normal,
+    };
+    let only_yz = [[1.0, 0.0, 0.0], [0.0; 3]];
+    let r = shared::kinematic_contact(IDENTITY, predicted, sample, predicted, K, 0.0, only_yz);
+    let step = shared::vec3_scale(r.force, 1.0 / K);
+    assert_eq!(step[0], 0.0);
+    // The plane's distance at the moved point is zero.
+    assert!((shared::vec3_dot(shared::vec3_add(predicted, step), normal)).abs() <= 1e-18);
+}
+
+#[test]
+fn kinematic_friction_holds_a_node_at_its_anchor_until_coulomb_and_then_drags_it() {
+    let depth = 1.0e-4;
+    let anchor = [0.0, 0.0, 0.0];
+    // Slid 2e-5 from its anchor: under μ·depth = 3e-5, so it is held there.
+    let slid = [2.0e-5, 0.0, -depth];
+    let r = shared::kinematic_contact(IDENTITY, slid, surface(-depth), anchor, K, 0.3, FREE);
+    let landed = shared::vec3_add(slid, shared::vec3_scale(r.force, 1.0 / K));
+    assert!(close(landed, anchor, 1e-18));
+    assert_eq!(r.anchor, anchor);
+    // Slid 5e-5: it slips back by μ·depth, and the anchor goes with it.
+    let slid = [5.0e-5, 0.0, -depth];
+    let r = shared::kinematic_contact(IDENTITY, slid, surface(-depth), anchor, K, 0.3, FREE);
+    let landed = shared::vec3_add(slid, shared::vec3_scale(r.force, 1.0 / K));
+    assert!(close(landed, [2.0e-5, 0.0, 0.0], 1e-18));
+    assert!(close(r.anchor, landed, 1e-18));
+    assert!(
+        (shared::vec3_length(r.friction) - 0.3 * r.normal_force).abs() <= 1e-12 * r.normal_force
+    );
+}
+
+#[test]
+fn kinematic_friction_keeps_a_constrained_node_on_the_surface() {
+    // A plane tilted in x–z; the node may not move along z. Its friction step
+    // along the plane would need z, so it can take none of it.
+    let (s, c) = (0.6, 0.8);
+    let normal = [s, 0.0, c];
+    let depth = 1.0e-4;
+    let predicted = [0.0, 0.0, -depth / c];
+    let sample = SdfSample {
+        distance: -depth,
+        normal,
+    };
+    let axial = [[0.0, 0.0, 1.0], [0.0; 3]];
+    let far_along_the_plane = [1.0e-3 * c + depth / s, 0.0, -1.0e-3 * s - depth / c];
+    let r = shared::kinematic_contact(
+        IDENTITY,
+        predicted,
+        sample,
+        far_along_the_plane,
+        K,
+        0.3,
+        axial,
+    );
+    // What the boundary conditions leave of the step.
+    let step = shared::constrain(shared::vec3_scale(r.force, 1.0 / K), axial[0], axial[1]);
+    let landed = shared::vec3_add(predicted, step);
+    assert!(
+        shared::vec3_dot(landed, normal).abs() <= 1e-18,
+        "{landed:?}"
+    );
+    assert_eq!(landed[2], predicted[2]);
+}
+
+#[test]
+fn a_constrained_node_reads_the_normal_force_the_obstacle_carries() {
+    // A plane tilted 30° about y; the node may not move along x. Moved onto
+    // the plane along z only, it needs the normal force k·depth/reach, with
+    // reach = n·(the normal's free part) = c²: the constraint takes the rest.
+    let (s, c) = (0.5_f64, 0.75_f64.sqrt());
+    let normal = [s, 0.0, c];
+    let depth = 1.0e-4;
+    let predicted = [0.0, 0.0, -depth / c];
+    let sample = SdfSample {
+        distance: -depth,
+        normal,
+    };
+    let only_yz = [[1.0, 0.0, 0.0], [0.0; 3]];
+    let r = shared::kinematic_contact(IDENTITY, predicted, sample, predicted, K, 0.0, only_yz);
+    let reach = c * c;
+    assert!((r.normal_force - K * depth / reach).abs() <= 1e-12 * r.normal_force);
+    // Slipping along y, which is free and on the plane: the friction reaches
+    // μ_f times that normal force.
+    let anchor = [0.0, -1.0e-3, 0.0];
+    let r = shared::kinematic_contact(IDENTITY, predicted, sample, anchor, K, 0.3, only_yz);
+    let ratio = shared::vec3_length(r.friction) / (0.3 * r.normal_force);
+    assert!((ratio - 1.0).abs() <= 1e-12, "{ratio}");
+}
+
+#[test]
+fn a_constrained_node_lands_on_a_rotated_obstacle_in_its_free_directions() {
+    // The obstacle turned about a skew axis and moved; the node may not move
+    // along world x. The normal comes in the body frame, the constraint in the
+    // world's, and the node must still land on the surface.
+    let axis = [0.3, 0.5, 0.8_f64];
+    let length = shared::vec3_length(axis);
+    let p = pose(
+        0.7,
+        shared::vec3_scale(axis, 1.0 / length),
+        [0.01, -0.02, 0.005],
+    );
+    let depth = 2.0e-5;
+    let predicted = shared::pose_to_world(p, [0.01, 0.02, -depth]);
+    let held_x = [[1.0, 0.0, 0.0], [0.0; 3]];
+    let r = shared::kinematic_contact(p, predicted, surface(-depth), predicted, K, 0.0, held_x);
+    let step = shared::constrain(shared::vec3_scale(r.force, 1.0 / K), held_x[0], held_x[1]);
+    assert_eq!(
+        step,
+        shared::vec3_scale(r.force, 1.0 / K),
+        "the force is already free"
+    );
+    let landed = shared::pose_to_body(p, shared::vec3_add(predicted, step));
+    assert!(landed[2].abs() <= 1e-15, "{landed:?}");
+}
+
+#[test]
+fn a_node_whose_normal_is_wholly_constrained_is_left_where_it_is() {
+    // The law cannot move it onto the surface; it is left there, with no force,
+    // and only the G2 monitor shows the depth.
+    let predicted = [0.0, 0.0, -1.0e-4];
+    let held_z = [[0.0, 0.0, 1.0], [0.0; 3]];
+    let r = shared::kinematic_contact(
+        IDENTITY,
+        predicted,
+        surface(-1.0e-4),
+        predicted,
+        K,
+        0.3,
+        held_z,
+    );
+    assert_eq!(r.force, [0.0; 3]);
+    assert_eq!(r.normal_force, 0.0);
 }

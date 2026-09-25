@@ -28,8 +28,16 @@ pub enum Walls {
     /// The far end held, the entry and the outer wall free: the free-ends
     /// oracle applies (plan §15b).
     Free,
-    /// The outer wall held radially by a rigid case, and all axial motion
-    /// held: the oracle's cased wall in plane strain (plan 15d.8).
+    /// The outer wall held by a rigid case, and all axial motion held: the
+    /// oracle's cased wall in plane strain (plan 15d.8).
+    ///
+    /// The outer wall is held whole, not only radially. A radial hold is a
+    /// fixed direction per node, so a node sliding around the tube moves
+    /// along its tangent line, and so outward. Nothing else stops the tube
+    /// rotating, and held that way the confined wall rotated and opened its
+    /// case instead of compressing (plan §16n). The axisymmetric problem has
+    /// no motion around the tube, so holding the wall whole poses the same
+    /// problem.
     Cased,
 }
 
@@ -185,25 +193,20 @@ impl Tube {
         let elements = self.elements();
         let count = elements.len();
         let held: Vec<bool> = (0..self.node_count())
-            .map(|n| walls == Walls::Free && self.levels(n).2 == self.axial)
+            .map(|n| {
+                let (i, _, k) = self.levels(n);
+                match walls {
+                    Walls::Free => k == self.axial,
+                    Walls::Cased => i == self.radial,
+                }
+            })
             .collect();
         let model = ExplicitModel::new(positions, elements, vec![material; count], held)?;
         match walls {
             Walls::Free => Ok(model),
             Walls::Cased => {
-                let constraints = (0..self.node_count())
-                    .map(|n| {
-                        let (i, j, _) = self.levels(n);
-                        let (_, theta, _) = self.cylindrical(i, j, 0);
-                        let radial = if i == self.radial {
-                            [theta.cos(), theta.sin(), 0.0]
-                        } else {
-                            [0.0; 3]
-                        };
-                        [[0.0, 0.0, 1.0], radial]
-                    })
-                    .collect();
-                model.with_constraints(constraints)
+                let axial = [[0.0, 0.0, 1.0], [0.0; 3]];
+                model.with_constraints(vec![axial; self.node_count()])
             }
         }
     }
@@ -395,7 +398,6 @@ impl Insertion {
         tube: &Tube,
         cell: f64,
         friction: f64,
-        penalty_scale: f64,
     ) -> Result<Obstacle, BakeError> {
         let whole = |length: f64| (length / cell).ceil() * cell;
         let reach = whole(1.25 * tube.outer_radius);
@@ -422,7 +424,6 @@ impl Insertion {
             interval,
             poses,
             friction,
-            penalty_scale,
         })
     }
 }
@@ -667,6 +668,8 @@ pub struct TubeRun {
     pub window: f64,
     /// The friction coefficient `μ_f`.
     pub friction: f64,
+    /// The mandrel grid's cell size (plan §15c pins A/20).
+    pub grid_cell: f64,
 }
 
 /// What a [`TubeRun`] produced.
@@ -689,6 +692,8 @@ pub struct TubeResult {
     pub axial_stretch_error: f64,
     /// Steps taken.
     pub steps: u64,
+    /// How many times the stable step was estimated.
+    pub estimates: u64,
     /// The last step size.
     pub dt: f64,
     /// Every monitor read; the last follows the last step.
@@ -733,6 +738,24 @@ impl TubeRun {
         }
     }
 
+    /// The mandrel for this run's case, on `tube`.
+    #[must_use]
+    pub fn mandrel(&self, tube: &Tube) -> Mandrel {
+        Mandrel {
+            radius: self.case.mandrel_ratio * tube.inner_radius,
+        }
+    }
+
+    /// The mandrel as the run's obstacle: baked at the run's cell size, with
+    /// its friction.
+    ///
+    /// # Errors
+    /// A [`BakeError`] if the grid cannot be baked.
+    pub fn obstacle(&self, tube: &Tube) -> Result<Obstacle, BakeError> {
+        self.insertion
+            .obstacle(self.mandrel(tube), tube, self.grid_cell, self.friction)
+    }
+
     /// Run it on the executor `make` builds, and read the band over the
     /// window at the end of the hold (plan §15b).
     ///
@@ -750,18 +773,9 @@ impl TubeRun {
 
         let tube = Tube::plan(self.mesh);
         let model = tube.model(self.material(), self.case.walls)?;
-        let mandrel = Mandrel {
-            radius: self.case.mandrel_ratio * tube.inner_radius,
-        };
+        let mandrel = self.mandrel(&tube);
         let insertion = self.insertion;
-        let penalty_scale = 0.5;
-        let obstacle = insertion.obstacle(
-            mandrel,
-            &tube,
-            tube.inner_radius / 20.0,
-            self.friction,
-            penalty_scale,
-        )?;
+        let obstacle = self.obstacle(&tube)?;
         let damping = 2.0 * 0.05 * (TAU / Self::shear_period(self.mu, self.density));
         let mut stepper = Stepper::new(make(&model, &obstacle), StepperConfig::new(damping), 0.0);
         let window = insertion.end() - self.window;
@@ -782,6 +796,7 @@ impl TubeRun {
             inverted: gates::inverted(&samples),
             max_penetration: samples.last().map_or(0.0, |s| s.monitors.max_penetration),
             steps: stepper.steps(),
+            estimates: stepper.estimates(),
             dt: stepper.dt(),
             reading,
             errors,

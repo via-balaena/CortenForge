@@ -260,6 +260,9 @@ built TLED-style.**
     a diagnostic (16d).
   - The penalty's gap biases pressure about 1 % low on the benchmark tube (§15c). It is measured and
     corrected for.
+  - *Amended 2026-09-25 (§16o): the product uses the kinematic predictor/corrector with kinematic
+    Coulomb friction, and the penalty is deleted. On the tube its penetration against the grid is at most
+    0.2 µm, so G2 on the product rests mostly on the baked grid's own error (16j).*
 - **Boundary options:** a free outer wall, a rigid case, or bonding to a stiffer outer layer (§5b).
 - **Friction:** from the pairing library (§5c), swept over its range.
 - **Readouts:**
@@ -654,6 +657,12 @@ Everything both executors must compute identically, as pure per-element or per-n
   - The analytic trilinear gradient (8 values) is an option to *measure* (15d.9), not an assumption.
     It is discontinuous at cell faces, and the product's pre-smooth was tuned against the
     finite-difference gradient.
+  - *Amended 2026-09-25 (§16o): the query is a tricubic (Catmull–Rom) interpolant of 64 grid values
+    and its exact gradient, the grid extended linearly past its faces; `sdf_grid_index` keeps the index
+    flattening in the shared math. The pre-smooth was tuned for the trilinear lookup. Whether tricubic
+    still needs it, and its surface bias against G2 (the code's own estimate is σ²κ/2 at a 3 mm grid:
+    about 0.11 mm on a 40 mm radius and 0.9 mm on 5 mm-radius features, `insertion_sim.rs:1686–1690`,
+    against G2's 0.05 mm on `base_mold`), are 2d's to measure.*
 - **Time integration:** the per-node explicit update (velocity, position, damping, mass scaling,
   kinematic boundary conditions), and the per-element stable time-step estimate.
 - **The obstacle's pose** between two time samples, by interpolation. Lowering resamples the path
@@ -733,7 +742,10 @@ The boundary is guarded in both directions:
 **The trait is phase-level.**
 - The stepping loop calls one method per phase, in the fixed order of 15f. **The order is written
   once**, in the loop. Soft-on-soft contact adds a broad-phase and a soft-contact phase to that list. It does not change
-  any crate boundary. The lowered data carries the surface triangles from the start.
+  any crate boundary. The lowered data carries the surface triangles from the start. *(Amended
+  2026-09-25, §16o: the kinematic law predicts each node's step from the forces before contact, the
+  elastic force alone today. A soft-contact phase, or any other force phase, must feed that
+  prediction, and a node touching two surfaces needs a joint correction: part of step 8's design.)*
 - The GPU executor records each phase as compute passes, submits in chunks, and **never reads back**
   except on an explicit read call. The pose samples stream to the device a batch at a time.
 - The monitors (kinetic and internal energy, contact force) are reduced on the executor, and read
@@ -804,7 +816,8 @@ contact pressure within 5 % at ν ≥ 0.49? And can it run a 100k-tet insertion 
 **Why two corrections to K2:**
 - **Requiring both raw and gap-corrected results:** the penalty's gap biases pressure low by about 1 %
   (15c), and the element biases it high by 0.7–1.65 % at 50k–100k (15c). A raw pass could come from
-  the two cancelling. The gap-corrected number isolates the element.
+  the two cancelling. The gap-corrected number isolates the element. *(Since 2026-09-25 the kinematic
+  law leaves no penalty gap, and raw and gap-corrected agree to the lookup's error, §16o.)*
 - **Judging at 100k:** 10k fails on the element alone at one corner (+5.4 %).
 
 **Validity gates.** A run that breaks one is invalid, not failed:
@@ -907,7 +920,8 @@ contact pressure within 5 % at ν ≥ 0.49? And can it run a 100k-tet insertion 
     hydrostatic pressure fluctuations"*.
 - **Mass:** lumped, ρV/4 per node (the implicit solver's rule, `construct.rs:607-619`).
 - **Time step:** Δt = 0.9 · 2/ω_max, with ω_max from power iteration on M⁻¹K through the executor's
-  own force phases, **penalty stiffness included**.
+  own force phases, **penalty stiffness included**. *(Amended 2026-09-25, §16o: the kinematic law
+  replaced the penalty and adds nothing to the step, so Δt = 0.9 · 2/ω_el.)*
   - **The iteration is re-run during loading**, every 500 steps, each from the same fixed start
     *(amended in 2a, 16m: warm-started, it stalled on a lower mode once loaded)*. The step never grows
     by more than 5 % at a time.
@@ -931,7 +945,9 @@ contact pressure within 5 % at ν ≥ 0.49? And can it run a 100k-tet insertion 
   - It drags a translating body with force c·m·v (DERIVED). Holding the tube and driving the mandrel
     keeps that small.
   - No dynamic relaxation in any run that K1 or K2 judges.
-- **Contact variant (a): nodal-mass penalty** k = s·m_a/Δt², s = 0.5, **primary**.
+- **Contact variant (a): nodal-mass penalty** k = s·m_a/Δt², s = 0.5, **primary**. *Superseded
+  2026-09-25 (§16n, §16o): its gap could not meet G2 on the tube, and the kinematic predictor/corrector
+  replaced it, with friction (Jon's call after the A/B).*
   - Stable only together with the in-loop Δt above.
   - **The gap biases pressure low by about 1 %** (arithmetic, from a reviewer's inner-node
     V_a/A_a ≈ 0.88 mm). Its actual size is measured (15d.1).
@@ -946,7 +962,8 @@ contact pressure within 5 % at ν ≥ 0.49? And can it run a 100k-tet insertion 
   - Its contact force for the readout is the time-averaged projection impulse m_a·Δu/Δt².
   - Joldes justified it under dynamic relaxation, which damps high frequencies. A lightly damped
     insertion lacks that, so (b) is measured, not assumed stable.
-  - **Friction is not defined for (b)**; the Coulomb push uses (a).
+  - **Friction is not defined for (b)**; the Coulomb push uses (a). *(2026-09-25: the kinematic
+    predictor/corrector, (b)'s family, defines it, and is now the law; §16o.)*
   - The rule: (b) replaces (a) only if it meets K2 with less scatter at equal cost. *Amended
     2026-09-24 in step 2's design (16d): (b) cannot replace (a) in the product, since a verdict's
     μ = 0 run must use its frictional runs' law. It stays a K2 diagnostic (15e).*
@@ -954,11 +971,16 @@ contact pressure within 5 % at ν ≥ 0.49? And can it run a 100k-tet insertion 
   boundary triangle (`sim-soft`'s convention, `mesh/mod.rs:433`), area-weighted over the band as
   ΣF_n/ΣA.
 - **Friction (the Coulomb push and K6):** Coulomb, with an elastic-slip stick state: a tangential penalty with
-  the same k, and a return map on a per-node anchor, as in Abaqus's penalty friction.
+  the same k, and a return map on a per-node anchor, as in Abaqus's penalty friction. *Superseded
+  2026-09-25 (§16o): friction is kinematic, a sticking node held at its anchor with no elastic slip.*
   - It is rate-independent, so time scaling stays valid.
   - The fallback is viscous regularization, with v_ε ≥ μ_f·f_n·Δt/m to avoid chatter (DERIVED).
 - **The SDF for K2 is pinned:** the mandrel baked into a grid at cell A/20, clamped, with the
-  finite-difference gradient (the product's path, §14b).
+  finite-difference gradient (the product's path, §14b). *Amended 2026-09-25 (§16o): the lookup is a
+  tricubic interpolant of the grid and its exact gradient. The trilinear lookup's error on the mandrel,
+  up to 5.7 µm at A/20, fed energy into the kinematic contact in a long hold; tricubic reads the
+  mandrel to 0.053 µm, and 0.9 µm across the seam where its nose meets its shank
+  (`tests/sdf_lookup.rs`).*
   - A reviewer's model (not kept) found a grid at A/10 reads the true surface +7.6 µm off, 0.76 % of the
     interference. Trilinear error goes as h², so A/20 should give about a quarter of that (arithmetic).
   - The analytic SDF is the diagnostic (15d.9).
@@ -968,7 +990,8 @@ contact pressure within 5 % at ν ≥ 0.49? And can it run a 100k-tet insertion 
 1. **Band pressure (K2).** The area-weighted mean over the pre-registered band.
    - **Raw:** against the oracle at radius a.
    - **Gap-corrected:** against the oracle at a − ḡ, where ḡ is the band's mean gap to the *true*
-     mandrel surface. That covers the penalty gap and the SDF bias together.
+     mandrel surface. That covers the penalty gap and the SDF bias together. *(Since 2026-09-25 only
+     the SDF's error is left, §16o.)*
    - Both use the oracle at the band's measured λ_z. The golden values carry p, ∂p/∂a and ∂p/∂λ_z at
      each case, and the corrected reference is their linearization at the measured point.
    - Also reported:
@@ -997,7 +1020,9 @@ contact pressure within 5 % at ν ≥ 0.49? And can it run a 100k-tet insertion 
    decision 10), so in step 2 it is reported. It becomes a gate, against G2 and 5 %, before any shell or
    bond design is simulated.
 9. **The SDF comparison:** the analytic mandrel, against grids at A/10 and A/20, with the
-   finite-difference and the analytic trilinear gradients. Record band error and scatter.
+   finite-difference and the analytic trilinear gradients. Record band error and scatter. *(Amended
+   2026-09-25: the lookup is tricubic with its exact gradient, §16o; the comparison is the analytic
+   mandrel against the tricubic grid at A/10 and A/20.)*
 10. **Stiffness scaling** (§5d's shortcut): the same run at μ and 2μ, frictionless and at μ_f 0.3.
     Record whether every force scales by 2 within 2 %. This decides how many runs a verdict needs
     (15h).
@@ -1006,7 +1031,7 @@ contact pressure within 5 % at ν ≥ 0.49? And can it run a 100k-tet insertion 
 
 - **Localize first:**
   - raw against gap-corrected;
-  - penalty against kinematic;
+  - penalty against kinematic *(moot since 2026-09-25: the penalty is deleted, §16o)*;
   - the mesh-ladder trend: slow convergence points at the element, a plateau at contact or the SDF;
   - analytic SDF against the grid.
 - **Element fallbacks, in order.** Each fits the shared math plus a gather phase.
@@ -1069,7 +1094,8 @@ Each item is one PR with its own tests and a done-when.
    - A conformance test of the shared SDF lookup against `cf-geometry`'s `distance_clamped` and
      `gradient_clamped` in f64. The largest difference over the test points must be ≤ 1e-9 × the largest
      value. The degenerate-gradient threshold it adopts is
-     recorded here.
+     recorded here. *Superseded 2026-09-25 (§16o): the shared lookup no longer matches `cf-geometry`'s
+     trilinear one; `tests/sdf_lookup.rs` checks it against the exact mandrel and a quadratic field.*
      - **Adopted: 1e-10**, the CPU path's (`sdf.rs:524`), at both precisions.
      - Measured on two grids. `cargo test -p sim-soft-explicit --test sdf_conformance -- --nocapture`
        prints the margins.
@@ -1102,7 +1128,7 @@ Each item is one PR with its own tests and a done-when.
      - The product is free today (§9 decision 10). Before any shell or bond design is simulated, the
        contact law must pass G2 and 5 % there.
      - The fallbacks: a gap-offset penalty, an augmented-Lagrangian update, or a larger s at a smaller
-       Δt.
+       Δt. *(Settled 2026-09-25, §16n–§16o: none of them; the kinematic predictor/corrector.)*
    - **The product's budget:**
      - mesh `base_mold` locally (the scan stays outside the repo) at the resolution K2 needs;
      - compute its stable Δt with the CPU executor's power iteration;
@@ -1276,6 +1302,12 @@ the sections that bind step 2, and the cold review (16k) checks the design again
 
 ### 16b. K6: Cattaneo–Mindlin partial slip (amended 2026-09-24)
 
+*Amended 2026-09-25 (§16o): the contact law is now kinematic, with no elastic slip, so the penalty's
+compliance drops out of the error budget. The reason for f64 does not: the stick test compares one
+step's tangential drift with μ_f times one step's normal correction, and that correction is
+s·(1.8/1.655)² ≈ 0.59× the penalty's gap (arithmetic), so f32 anchors are coarser against it than
+before (16m). 2c re-derives both.*
+
 **Why ironing was replaced** (Jon approved the swap, 2026-09-24). Read at the source, arXiv 1903.05859
 §5.1:
 - The die is 1000× stiffer than the slab (E 1000 against 1 N/mm², ν 0.3 for both; Fig. 5).
@@ -1405,8 +1437,9 @@ than μ_f·P, in plane strain. Part of the contact sticks and part slips.
 
 **In CI:** a coarse version (a/h = 12, f64, tolerance 0.1) joins tests-release. It must fail under the
 two anchor mutations. At a/h = 12 it cannot see a friction limit 10 % off (a 0.075 shift). That is
-covered at the law's level by `a_small_slip_sticks_and_a_large_one_slides_at_the_coulomb_limit`. The
-full runs are recorded commands.
+covered at the law's level by
+`the_friction_force_is_the_tangential_part_and_reaches_the_cone_only_when_slipping` (the kinematic law's,
+since 2026-09-25). The full runs are recorded commands.
 
 **What K6 does not test:**
 - sliding at large deformation: the Coulomb push covers full slip in 3D, against the solver's own
@@ -1427,6 +1460,10 @@ code is reviewed on its own. 2b–2d add fixtures, readouts and runs, and 2d add
 | **2c. K6** | The Cattaneo–Mindlin block and its readouts (16b, 16f), and its runs | K6 has failed once under each of 16b's three mutations, and is then decided |
 | **2d. The product's budget, and the stop rule** | The `base_mold` measurements of §15g step 2, run locally (16j) | The stop rule has been applied, with its numbers written here |
 
+*Amended 2026-09-25 (§16o): 2b's "gap record" was the penalty's (gap = F/k). Under the kinematic law the
+penetration against the grid is at most 0.2 µm on the tube, so 2b records G2 against the grid and
+against the true surface on the ladder, and 2d measures both on the product.*
+
 ### 16d. What the shared math gains
 
 - **Per-direction constraints.** Each node holds up to two constraint directions, orthonormal, or zero
@@ -1435,7 +1472,9 @@ code is reviewed on its own. 2b–2d add fixtures, readouts and runs, and 2d add
     out-of-plane condition for a 2D reference, and symmetry planes.
   - A fully held node stays `held` (inverse mass 0), as in step 1.
   - The directions are fixed at rest. So a constraint is a plane, not a curved surface a node slides
-    along. That is exact for the axisymmetric tube, where no node moves circumferentially.
+    along. That is exact for the axisymmetric tube, where no node moves circumferentially. *(Amended
+    2026-09-25, §16n: the cased tube did move circumferentially. Nothing held its rotation, and a radial
+    hold's fixed direction let its case open; its outer wall is now held whole.)*
   - The lumped mass is the same in every direction, so removing a component is the mass-orthogonal
     projection. No mass correction is needed.
 - **The readout's tributary area:** a third of each incident deformed boundary triangle (`sim-soft`'s
@@ -1473,7 +1512,9 @@ shared math (§14c). K3 compares the two. It loops with rayon on native, and seq
 so no two threads add into one place. A 2a test checks the consequence: the forces are bitwise equal on
 one thread and on many.
 
-**The stable step.**
+**The stable step.** *(Amended 2026-09-25, §16o: the kinematic law adds nothing to the step, so
+Δt = 0.9 · 2/ω_el; the penalty bound below, and the flutter it names, were the penalty's. Whether the
+kinematic law has a flutter of its own has not been analysed.)*
 - The elastic part comes from a power iteration on M⁻¹K. K·v is the finite difference of the elastic
   force phases (1–5) in the direction v, at the current state.
 - The penalty is added as a bound, not iterated. On a node in contact, the normal penalty and the
@@ -1607,7 +1648,8 @@ missing. So:
   `DRAGON_SKIN_10A`'s μ. Each records its raw error and its largest gap (§15g).
   - Every run also records its largest gap next to p/(λ + 2μ) and its element size. At a fixed s, the
     penalty's gap depends on those and on element shape, not on μ alone (arithmetic: gap = F/k, with
-    k = s·m/Δt² and Δt ∝ h/c_d). That record is what carries G2 from the tube to the product's mesh;
+    k = s·m/Δt² and Δt ∝ h/c_d). That record is what carries G2 from the tube to the product's mesh
+    *(superseded 2026-09-25: 16c's note)*;
 - stiffness scaling (15d.10) at 10k. It moves here from step 5, because 2d's budget depends on it: it
   decides whether a verdict is 3 runs or 5 (§15h);
 - the loaded step factor: the smallest in-run step over the rest step, which 2d applies to the product.
@@ -1641,7 +1683,8 @@ The gathers, contact and integration are not in that number, and the whole step 
   - the per-press time, with 3 or 5 runs per verdict, as stiffness scaling says;
   - the surface bias (the fraction of canal nodes inside the true surface), with and without
     projecting the boundary nodes onto it, and what projecting does to the stable step;
-  - G2's margin at the product's element size, from 2b's gap record.
+  - G2's margin on the product: the baked scan grid's error against the scan, and with it whether the
+    pre-smooth is still needed (14b's note) *(amended 2026-09-25, §16o)*.
 - **The per-press time is reported against D4's 5 minutes** (§9 decision 12). If it misses, the speed
   plan is revised before any GPU work, and the quality gates are not loosened (§15g).
 - Only counts, steps and times are written here. No geometry leaves the machine.
@@ -1721,10 +1764,14 @@ distinct problems, and each was checked before it was fixed.
     gap, the elastic-slip window is about 1 100 f32 spacings at 0.1 m (arithmetic). At μ_f 0.05 and a
     10 µm gap it would be 67 spacings, each 1.5 % of the Coulomb limit.
   - Step 4 decides between absolute anchors and a stored elastic slip before it fixes the WGSL layout.
+    *(Amended 2026-09-25, §16o: the kinematic law has no elastic slip; the windows above become about
+    650 and 40 spacings, each 2.5 % of the limit (arithmetic, ×0.59), and step 4 sets the anchors'
+    precision against that.)*
 - **The trait gains:**
   - `set_poses`, for a new track mid-run (§14d's batches; K6's legs that end on a force);
   - `phase_outputs`, for step 4's per-phase conformance;
-  - the contact law's s and μ_f. The loop reads them, so the stable step bounds the law in use.
+  - the contact law's s and μ_f. The loop reads them, so the stable step bounds the law in use. *(Both
+    removed 2026-09-25: the kinematic law adds nothing to the step, §16o.)*
 - **Every stable-step estimate starts cold,** at 100 power iterations. Its finite-difference step is
   √ε of the executor's precision times the shortest rest edge, on the largest nodal component
   (`Stepper::estimate`).
@@ -1754,7 +1801,8 @@ distinct problems, and each was checked before it was fixed.
 - **The penalty's gap at this corner is −28 µm,** which biases pressure 2.6 % low (∂p/∂a from the
   oracle, arithmetic).
   - §15c's "about 1 %" came from a reviewer's inner-node V_a/A_a of 0.88 mm on the 100k mesh.
-  - The gap scales with element size (16i), so 2b records it on the ladder.
+  - The gap scales with element size (16i), so 2b records it on the ladder. *(The penalty's; moot since
+    §16o.)*
 - **G2 is not met on the tube at 10k.** The deepest penetration is 45 µm, 4.5 % of the 1 mm
   interference, against 1 %. §15g step 2 settles the contact law against G2 in 2b.
 - **The power iteration at the loop's 100 cold iterations,** against a converged f64 run on the 10k
@@ -1792,3 +1840,309 @@ A reviewer's scratch timing (release, f32, M4 Pro, not kept) gives 2b its starti
 - **K2 at 10k** fails with the λ term removed (raw −26.5 %), and the sanity run fails with the elastic
   force reversed.
 - **`release-gates`** failed before `sim-soft-explicit` joined tests-release.
+
+### 16n. 2b, G2 first (2026-09-25)
+
+**The question:** G2 (no node deeper than 1 % of the inset, at any step) failed on the 10k tube in 2a
+(16m). The fit plan's rule is that the gate stands, and if the contact law cannot meet it, the law
+changes. On the tube the inset is the interference: 1 mm at λ_a 1.1 (bar 10 µm), 3 mm at λ_a 1.3
+(bar 30 µm). Stage 1 measured the current law, and the one fallback of §15g step 2 that needs no new
+code (a larger s at a smaller Δt). The predictions were written before any run, and are scored below.
+
+**The instrument,** as these runs used it (`c7d67eab`–`96087aa2`; the command changed later, §16o):
+`cargo run --release -p sim-soft-explicit --example tube -- <10k|50k|100k> <case> <s> <μ_f> <f32|f64>`, where `case` indexes `fixtures::golden::THICK_TUBE` (0: λ_a 1.1 free, 2: λ_a 1.3
+free, 4: cased). It prints one line: the deepest penetration over all steps (against the A/20 grid),
+the deepest at the end against the true surface and the grid, the band's gap, K2's errors, the validity
+gates and the run's cost. All runs below are f32 on the CPU, frictionless, `RAYON_NUM_THREADS=4`, M4 Pro.
+The probe reproduces 2a's K2 run exactly (+1.67 %, +4.42 %, 45.3 µm, 13 799 steps).
+
+**The cased tube was not confined.** Its first run read 3 % of the oracle's pressure (K2 raw
+−96.8 %) on every mesh. The outer wall's radial hold was a fixed direction per node, so a node sliding
+around the tube moved along its tangent line, and so outward, and nothing held the tube's rotation. A
+diagnostic (not kept) measured every ring rotated about 10° and the outer ring at 20.51 mm instead of
+20, which leaves the annulus its rest area: π(20.51² − 10.97²) ≈ π·300 mm². The fix holds the outer wall
+whole (`Walls::Cased`), the same problem under axisymmetry. The fixture test fails on the old hold. The
+pre-fix reading reproduces at `c7d67eab`.
+
+**The current law, s = 0.5** (case 4 after the fix):
+
+| Mesh (h) | Case | Deepest, grid, all steps | Of the inset | Band gap | K2 raw / gap-corrected |
+|---|---|---|---|---|---|
+| 10k (2.26 mm) | λ_a 1.1 free | 45.3 µm | 4.5 % | −27.5 µm | +1.67 % / +4.42 % |
+| 10k | λ_a 1.3 free | 116.2 µm | 3.9 % | −69.1 µm | +1.50 % / +3.31 % |
+| 10k | cased | 422.7 µm | 42.3 % | −413.7 µm | −44.9 % |
+| 50k (1.31 mm) | λ_a 1.1 free | 35.1 µm | 3.5 % | −16.9 µm | −0.17 % / +1.47 % |
+| 50k | λ_a 1.3 free | 78.2 µm | 2.6 % | −41.8 µm | +0.06 % / +1.13 % |
+| 50k | cased | 329.0 µm | 32.9 % | −324.4 µm | −35.6 % |
+| 100k (1.05 mm) | λ_a 1.1 free | 28.1 µm | 2.8 % | −13.3 µm | −0.33 % / +0.95 % |
+| 100k | λ_a 1.3 free | 65.2 µm | 2.2 % | −34.4 µm | −0.15 % / +0.73 % |
+| 100k | cased | 258.8 µm | 25.9 % | −255.9 µm | −28.4 % |
+
+- Every validity gate holds in these runs (λ_z within 0.1 %, KE/IE ≤ 0.2 %, energy balance ≤ 0.04 %, no
+  inversion).
+- On the free tube the deepest penetration is reached while loading (t = 0.19–0.72 s of 1.24), and is
+  1.6–2.1× the band's seated gap. At the end, the deepest node sits 10–15 mm behind the tip.
+- **The grid reads shallower than the true surface by up to 5.7 µm** at A/20 (every run, at the end
+  state). On the λ_a 1.1 tube that is half of G2's 10 µm before the contact law contributes.
+- **In the cased tube the penalty acts in series with the wall.** The wall's stiffness per area is the
+  oracle's p over the interference, about 95 kPa/mm; the penalty's is p over the free tube's gap, 103
+  kPa/mm at 10k, 168 at 50k and 214 at 100k (arithmetic). Their ratio predicts −48 %, −36 % and −31 %;
+  the runs read −44.9 %, −35.6 % and −28.4 %.
+
+**A larger s** (at 10k; the cased runs in this sweep came before the fixture fix, so only the free
+cases count): s = 1 cuts the λ_a 1.1 tube's deepest penetration to 20.5 µm (2.1 %) and its
+gap to −12.7 µm. On the λ_a 1.3 tube the gap halves (−28.5 µm), but the deepest penetration does not
+fall (119.4 µm, reached in the hold), and the hold rings (KE/IE 1.45 %, balance 0.86 %). At s = 2 the
+contact chatters (KE/IE 61–62 %, balance 6.7–7.2 %, deepest 128 µm and 359 µm). At s = 3 both stop on a
+non-finite read (steps 24 700 and 17 100), though Weyl's bound for the linear problem is 3.24. Why the
+contact loses stability below that bound has not been isolated.
+
+**So the penalty cannot meet G2 on the tube.** Its gap scales with element size: at λ_a 1.1 the band
+gap falls 10k → 50k → 100k as 1 : 0.61 : 0.48, against h's 1 : 0.58 : 0.46. The deepest penetration
+falls more slowly (1 : 0.77 : 0.62). The confined case misses by 42× at
+10k, 33× at 50k and 26× at 100k.
+
+**Predictions, scored:**
+
+| | Predicted (before any run) | Measured |
+|---|---|---|
+| P1 | gap λ_a 1.3 / 1.1 ≈ 2.5 (∝ p) | 2.51 at 10k ✓ |
+| P2 | cased: series, 30–50 % low at 10k | −44.9 % at 10k ✓; −35.6 % and −28.4 % at 50k and 100k (after the fixture fix) |
+| P3 | gap ∝ h | ✓ for the band gap; the deepest node falls more slowly |
+| P4 | gap ∝ (3.24 − s)/s; steps ×1.10, 1.49, 3.4 at s = 1, 2, 3 | band gap ✓ at s = 1 (0.46× and 0.41× against 0.41×); ✗ at s ≥ 2, which chatters or blows up |
+| P5 | grid bias 2–3 µm | ✗: up to 5.7 µm |
+| P6 | G2 fails at s = 0.5 everywhere | ✓ |
+
+**The cost** (the §16m items): a whole step, estimates excluded, takes 0.29–0.30 ms at 10k, 0.84–0.86
+ms at 50k and 1.47–1.49 ms at 100k. One cold estimate takes 19–27 ms, 68 ms and 126 ms. The estimates
+are 11–16 % of a run's wall time. A K2 run takes about 5 s, 23 s and 52 s. So K2 runs at 100k on the
+CPU (16i's 10-minute test).
+
+**Not decided yet: the law that replaces the penalty.** §15g step 2 listed a gap-offset penalty, an
+augmented-Lagrangian update, or a larger s; the last is ruled out above. G2 holds "at any step", and
+the deepest penetration arrives while the mandrel moves. A multiplier converges over steps; whether it
+keeps up while the mandrel moves has not been measured. Abaqus/Explicit's default for contact pairs is a kinematic predictor/corrector, which "has no
+influence on the stable time increment": each node gets "the force which, had it been applied during
+the increment, would have caused the slave node to exactly contact the master surface" (Abaqus Analysis
+User's Manual 6.11, §36.2.3). Its friction has *"an infinite sticking stiffness, in which case the elastic
+slip is always zero"* (§35.1.5). Its cost is that *"impact is
+plastic"*: a node's normal kinetic energy is lost on contact. That removes §15c's objection to variant
+(b), that friction is not defined for it. The choice is stage 2.
+
+### 16o. 2b, G2 stage 2: the contact law's A/B (2026-09-25)
+
+**The candidates,** each a function in the shared math (so the test is what the GPU would run),
+chosen in the order the rule below was written, before any run:
+- **P:** the penalty, s = 0.5 (the control; it reproduces §16n exactly).
+- **K:** the kinematic predictor/corrector (`shared::kinematic_contact`). The node's position at the end of
+  the step is predicted without contact; if it lands inside, the node gets the force m(1 + αΔt/2)·g/Δt²
+  that puts it on the surface, along the normal made free of its constraints. Friction is kinematic: a
+  sticking node is held at its anchor; a slipping one moves back by at most μ_f·g along the surface, in
+  its free directions, and its anchor goes with it. It adds no penalty term to the stable step.
+- **A10, A50:** the penalty plus a per-node multiplier λ, the normal force max(0, λ + k·p), with
+  λ ← max(0, λ + k·p̄) every 10 or 50 steps (p̄ the mean penetration since the last update). An update
+  every step was excluded before running: for one node under central differences the characteristic
+  polynomial is z³ + (s − 3)z² + (3 − s + βs)z − 1, whose roots multiply to 1, so two grow by about
+  √(1 + β) per step, and the mass damping (αΔt ≈ 5e-4) cannot hold a useful gain β (arithmetic).
+
+**The rule, written first:** a law is eligible if every run finishes and keeps the validity gates; it
+must meet G2 (grid, all steps) on every case at 10k and 50k; K2 within 7 % at 10k; the Coulomb push
+within 5 % where another law meets it; then fewer steps, less scatter, fewer knobs. If none meets G2
+everywhere, report and decide nothing.
+
+**The runs** (`examples/tube.rs <mesh> <case> <law> <μ_f> f32 <A/n>`, `RAYON_NUM_THREADS=4`;
+`kinematic`, `penalty:0.5`, `augmented:0.5:10`, `augmented:0.5:50`):
+
+| Law | G2, free (10k, 50k) | Cased, frictionless | Validity gates | |
+|---|---|---|---|---|
+| P | 2.6–4.5 % | pressure −45 % / −36 % | hold | fails G2 |
+| K | **0.02–0.04 %** (0.2–0.9 µm) | diverged (10k, 50k); runs, −0.34 % / −0.31 %, once its direction was fixed (below) | hold | meets the rule |
+| A10 | 26–41 % | diverges | fail: KE/IE 73–80 %, balance 16–26 % | fails |
+| A50 | 2.0–10 % | pressure −0.4 %, G2 11–16 % | fail at 10k: balance 1.1–2.0 % | fails |
+
+- **K, free tube:** the deepest penetration against the grid is 0.2–0.9 µm at 10k, 50k and 100k. Against
+  the true surface at the end it is the grid's own bias, 3.8–5.6 µm at A/20 and 0.8–1.4 µm at A/40 (10k,
+  50k). K2: +4.19 % / +4.41 % (λ_a 1.1) and +3.25 % / +3.29 % (λ_a 1.3) at 10k; +1.28 % / +1.45 % and
+  +1.09 % / +1.13 % at 50k; **+0.75 % / +0.94 % and +0.69 % / +0.73 % at 100k.** Raw and gap-corrected
+  now agree, as the gap is gone. KE/IE ≤ 0.73 %, balance ≤ 0.46 %.
+- **K takes 0.920× P's steps on every mesh** (1.8/ω_el against the frictionless penalty's 1.655/ω_el).
+  Each step costs more (a second grid sample and the prediction): 0.345, 0.964–0.967 and 1.661–1.665 ms
+  at 10k, 50k and 100k, against P's 0.300–0.316 and 0.864–0.871 ms in the A/B's control runs and
+  1.489 ms at 100k (§16n). A run takes about P's wall time (4.9 s, 23.7 s, 52.5 s against 4.9 s, 23.5 s,
+  51.9 s).
+- **K, cased, frictionless, diverged** at t = 0.40 s (10k) with the step unchanged: the contact nodes at
+  the tube's entry grew a motion around the tube, its kinetic energy growing 4–17× per 100 steps. Not the
+  cause, measured: the step (the loop's ω² at step 3 500 is within 0.05 % of a converged f64 estimate, and
+  safety 0.8, 0.7 and 0.5 only delay it, to t = 0.41, 0.43 and 0.51 s); the grid (A/40 and A/80 diverge
+  too); the precision (f64 diverges too).
+  - **The cause: the correction's direction.** K moved the predicted point back out along the normal
+    *at the predicted point*. The step's inward push, a = F·Δt²/m, leaves that point at a smaller radius
+    of the round mandrel, where the node's sideways travel is a larger angle; moving it back out along
+    its own normal keeps that angle, so the node lands further around than it went. The sliding grows by
+    about 1 + a/R a step, and on the confined tube a/R ≈ 0.05 (arithmetic). Friction stopped it by
+    holding the sliding.
+  - Shown three ways. A one-bead model (a circle pushed on by a constant force) grows ×1.04704 a step
+    against 1 + a/R = 1.04666, and ×1.00000 with the normal taken where the node is now. A one-tetrahedron
+    solver test (`kinematic_contact_does_not_feed_sliding_around_a_curved_obstacle`, a/R ≈ 0.05) grows its
+    energy 35× in 400 steps with the old direction and stays bounded with the new. And the frictionless
+    confined tube, with the new direction, runs to the end and reads −0.34 %, −0.31 % and −0.24 % at 10k,
+    50k and 100k, G2 2.2–2.6 µm.
+  - **K now takes the depth at the predicted point and the normal where the node is now.** The free-tube
+    and friction numbers above were measured with the old direction. Rerun with the new one, K2 moves by
+    at most 0.03 % on the frictionless runs (10k, 50k, 100k) and 0.09 % on the μ_f 0.3 run.
+- **K's extra kinetic energy on the free tube goes with the grid.** At A/20 its KE/IE and balance read
+  0.63 % and 0.47 % (10k, λ_a 1.1) against P's 0.16 % and 0.04 %; at A/40 they read 0.16 % and 0.04 %,
+  and at 50k 0.03 % and 0.01 %. K follows the baked surface exactly, and the mechanism beyond that
+  association has not been isolated.
+- **A second, slower instability remains: the frictionless confined tube in a long hold, at 50k.** With a
+  1.0 s hold (§15b's is 0.2 s), K's kinetic energy grows about 400× after the mandrel stops and levels off
+  near KE/IE 0.5 %, and the balance reads 1.11 % (A/20) and 3.42 % (A/40), against the 1 % gate. Not the
+  contact law: A50 diverges in the same run. Not the grid's coarseness: A/40 is worse. Any friction
+  (μ_f 0.05) removes it, and 10k decays. Its fastest nodes include inner-ring nodes beyond the mandrel's
+  tip, out of contact. **What drives it has not been isolated.** In §15b's 0.2 s hold it stays inside the
+  gates (KE/IE 0.03–0.06 %, balance 0.16–0.23 % at 50k and 100k).
+- **K, cased, with friction, runs clean, and reads the confined oracle:** −0.34 %, −0.31 % and −0.24 %
+  at 10k, 50k and 100k (μ_f 0.05), against P's −45 %, −36 % and −28 %. μ_f 0.3 reads the same pressure
+  (−0.35 %, −0.32 %), so friction carries nothing at the seated equilibrium. G2: 2.2–4.4 µm (0.22–0.44 %).
+  - An earlier version of K kept the friction step off the node's constraints, and at μ_f 0.3 its cased
+    G2 read 1.4–1.9 %. The step is now kept to the node's free directions and the surface; a test fails
+    on the old step.
+- **The Coulomb push** (15d.7) reads 0.87 for P and 0.89 for K at 10k: neither meets 5 %, so it separates
+  nothing here. Why both read 11–13 % low has not been isolated; 2b's Coulomb push takes it up.
+
+**Predictions, scored:**
+
+| | Predicted | Measured |
+|---|---|---|
+| Q1 | K's G2 (grid, all steps) < 1 µm everywhere | ✓ free (0.2–0.9 µm); ✗ cased with friction (2.2–4.4 µm, still ≤ 0.44 %) |
+| Q2 | K's steps × 0.918 | 0.920 on every mesh ✓ |
+| Q3 | K's cased K2 single-digit | −0.24 to −0.35 % ✓ (frictionless, once its direction was fixed) |
+| Q4 | K's true G2 = the grid bias: ≤ 5.7 µm at A/20, ≤ 1.5 µm at A/40 | 3.8–5.6 µm, 0.8–1.4 µm ✓ |
+| Q5 | A: seated gap ~0, the all-steps maximum above 1 % | all-steps ✓; seated ✗ (A10 rings; A50 up to 115 µm) |
+| Q6 | an A may ring or blow up | A10 both ✓ |
+| Q7 | K's scatter and contact-node KE above P's | scatter ✓ (e.g. 2.26 % against 1.67 %); contact KE mostly ✓ |
+| Q8 | Coulomb within 5 % for K and P | ✗ both (0.87, 0.89) |
+
+**By the rule, K is the only law that meets it**, once its correction direction was fixed: it meets G2
+on every case at 10k, 50k and 100k, keeps the validity gates in §15b's run, reads the confined oracle
+within 0.35 %, and costs the same wall time as P. Every A-law fails. Open: the long-hold instability of
+the frictionless confined tube at 50k, and why both laws' Coulomb push reads 11–13 % low. The adoption
+is Jon's call (2026-09-25).
+
+**The long-hold instability, chased (2026-09-25).** The frictionless confined tube at 50k with a 1.0 s
+hold, under K. Each row changed one thing in the executor's obstacle lookup (a diagnostic, not kept):
+
+| What the contact reads | Kinetic energy through the hold | Contact work in the hold |
+|---|---|---|
+| the A/20 grid (trilinear distance, finite-difference normal) | grows ~400×, then levels near KE/IE 0.5 % | rises 9 mJ |
+| the exact mandrel | decays to 4e-9 J | flat |
+| the exact distance, the grid's normal | decays to 4e-9 J | flat |
+| the grid's distance, its exact trilinear gradient | grows from t ≈ 1.4 s | rises |
+| the exact distance plus smooth bumps, 5 µm at the cell spacing | grows | rises about 30 mJ |
+| the same, 1 µm and 0.2 µm | decays | flat |
+| a tricubic (Catmull–Rom) interpolant of the same A/20 grid, and its gradient | decays to 9e-9 J | flat |
+
+- **The energy comes from the contact:** the mandrel is stationary and frictionless in the hold, yet the
+  contact does positive work, 9 mJ over the hold (3 % of the stored energy). The balance gate cannot see
+  that part, which enters both sides (16e); the 1.11 % it read is energy beyond the contact's work, made
+  by the integrator. KE/IE stayed near 0.5 %. **No gate is built to catch energy fed in as contact work**
+  (open).
+- **The cause is the grid's distance, not its normal and not the law:** the trilinear interpolant of a
+  curved surface is off by up to 5.7 µm here, and bumps that large feed the contact energy; bumps of 1 µm
+  and less do not. The step, the normal, the precision and the contact law are ruled out above. The
+  adopted lookup is off by 0.9 µm across the mandrel's nose–shank seam (below), so the calm runs include
+  an error near 1 µm; where between 1 and 5 µm the pumping starts is not measured.
+- **Not isolated:** how a stationary, bumpy surface feeds energy through the kinematic correction. A
+  one-bead model pressed onto a bumpy floor gains none, so it takes something the one-bead model lacks.
+  Why A/40 (bumps a quarter the size) pumps harder than A/20 is not explained either.
+- **The loop's step estimate reads 1.46 % low** in this confined state at 50k (100 iterations against a
+  converged f64 estimate), so the step is at 0.906 of the limit instead of 0.9. Recorded; it is not this
+  instability's cause.
+
+**A tricubic interpolant of the grid** (Catmull–Rom, 64 grid values per lookup, its exact gradient), on
+the standard runs:
+- G2 against the true surface falls from 3.8–5.6 µm to 0.0–0.9 µm (10k, 50k). The lookup's error on this
+  mandrel at A/20 is 0.053 µm away from the nose–shank seam and 0.9 µm across it
+  (`tests/sdf_lookup.rs`); the probe puts the 50k runs' deepest node 10.9 mm behind the tip, at the seam.
+- K's extra kinetic energy on the free tube goes: KE/IE and balance 0.16 % and 0.04 % at 10k (P's level).
+- The band's node scatter falls from 1.01 % to 0.15 % (10k) and 2.23 % to 0.05 % (50k): the grid's bumps
+  were most of it.
+- The confined K2 moves closer to the oracle: −0.18 % and −0.12 % at 10k and 50k.
+- Its cost was not measured by the diagnostic, which read an environment variable at every lookup; it is
+  measured on the adopted code below. The trilinear lookup fetched 56 grid values (seven probes);
+  tricubic fetches 64.
+- It departs from step 1's decision that the shared lookup matches `cf-geometry`'s clamped trilinear
+  lookup (§15g step 1, the conformance test). Adopting it is Jon's call (2026-09-25).
+
+**Adopted (Jon, 2026-09-25): the kinematic law, with the tricubic lookup.** The penalty and the
+augmented Lagrangian are deleted, with the law's choice (`ContactLaw`) and the penalty's term in the
+stable step (now Δt = 0.9 · 2/ω_el). §15c, §15g step 1, §16b and §16e carry dated notes. The probe's
+command is now `tube <mesh> <case> <μ_f> <f32|f64> <A/n> <hold>`; the runs above that name a law ran at
+`d7f4822b`–`69805cbf`, before the law was fixed.
+
+On the adopted code (`5e6b7281`; frictionless, A/20, §15b's 0.2 s hold unless noted):
+
+| | 10k | 50k | 100k |
+|---|---|---|---|
+| G2, deepest over all steps, against the grid | 0.0–0.2 µm | 0.0–0.1 µm | 0.0–0.1 µm |
+| G2 at the end, against the true surface | 0.0–0.2 µm | 0.0–0.9 µm | 0.0–0.6 µm |
+| K2, λ_a 1.1 and 1.3 (raw = gap-corrected) | +4.41 %, +3.30 % | +1.47 %, +1.13 % | +0.95 %, +0.73 % |
+| The confined case | −0.18 % | −0.12 % | −0.06 % |
+| KE/IE and balance, largest | 0.16 %, 0.04 % | 0.03 %, 0.01 % | 0.01 %, 0.01 % |
+| The band's node scatter | 0.01–0.15 % | 0.00–0.06 % | 0.00–0.05 % |
+| Per step (4 threads), estimates excluded | 0.33–0.36 ms | 0.98–1.00 ms | 1.68–1.70 ms |
+
+- The 50k confined tube in a 1.0 s hold reads KE/IE 0.00 % and balance 0.00 %.
+- A step costs what the kinematic law cost on the trilinear lookup (1.68–1.70 against 1.66–1.67 ms at
+  100k), and more than the penalty's (above). The penalty took 9 % more steps, so a run takes about as
+  long: 53.3 s against 51.9 s at 100k.
+- With friction (μ_f 0.3, 10k, λ_a 1.1), at `77f51dc6`: G2 0.0 µm, balance 0.50 %, and the Coulomb push
+  0.893, still 11 % low; on λ_a 1.3 it reads 0.786 (at `dfc759d6`), so the shortfall is 11–21 % and
+  varies with the case (open, 2b). The band reads +3.38 % against the frictionless oracle with λ_z
+  −1.75 %: K2's λ_z gate (0.5 %) is for frictionless runs, so this is not a K2 reading. The confined case
+  reads −0.18 % with friction too.
+- **A friction run is sensitive to a change far below its readings.** Dividing the Coulomb limit by the
+  reach (`b40eb773`) changes it only by n·n's rounding on a free node, yet the band moved from +3.56 % to
+  +3.38 % and λ_z from −1.80 % to −1.75 %. The frictionless and cased runs did not move. Why the run
+  amplifies it has not been isolated; it bears on comparing friction runs across versions and on step
+  4's CPU–GPU conformance.
+- `tube_release` passes: K2 at 10k +4.41 % (bar 7 %), its deepest penetration 13 nm; the power
+  iteration −0.21 % at rest and −0.33 % (f64), −0.30 % (f32) loaded.
+- **By the stop rule** (16i), the two corners run at 100k read +0.95 % and +0.73 %, against 5 %; the ν
+  0.495 corners are 2b's.
+
+**Open, for later steps:**
+- **The GPU executor (step 4):** the law takes two lookups per surface node per step (the current
+  position, for the normal and G2; the predicted one, for the depth), 128 grid values, and
+  `sdf_tricubic` takes its 64 values by value. Its GPU cost is not measured. The contact phase also
+  reads the integrator's state (each node's velocity, elastic force, inverse mass, constraints, and α)
+  and keeps a per-surface-node sample buffer, which bears on step 4's bind layout and on whether contact
+  is fused with the integration.
+- **The product (2d):** G2 there is the scan grid's own error, and the pre-smooth is sized against it
+  (14b's note). The verdict's frictionless run (§15h) is the configuration in which the long-hold
+  pumping appeared on the tube, and bumps in the grid's own samples (the scan's facets) are not removed
+  by the lookup. Unexamined.
+- **Other force phases:** the prediction uses the elastic force alone (14d's note).
+- **The frame carry:** the current normal is carried from the pose at t to the pose at t + Δt; no test
+  reaches a rotating obstacle closely enough to see an error in it.
+
+**How this was checked (2026-09-25).**
+- **The criteria came first,** with ten priors (the defects I already suspected) kept from the reviewers.
+- **Round 1:** four cold reviewers raised about 20 distinct findings. Five priors hit outright and two in
+  part. The reviewers covered:
+  - the engine;
+  - the tests and fixtures;
+  - this record, reproducing its numbers;
+  - the whole plan.
+- **Round 1's largest findings:**
+  - the lookup's error across the mandrel's nose–shank seam, found by three reviewers;
+  - the lookup wrong in the outermost cell of every face;
+  - the readouts of constrained nodes;
+  - no test on G2;
+  - the passages amended above;
+  - G2 and the pre-smooth on the product.
+- **Round 2:** one fresh reviewer read only round 1's fixes and found 5 problems, 4 created by those
+  fixes. The 4 were two over-claims, stale friction numbers, and a test grid too symmetric to catch a
+  swapped index. The fifth was a fix left incomplete. All five were cut or measured, not rewritten.
+- **Every code fix has a test** that failed on its defect first.
+- **No pass looked at:** the GPU, the product scan, K6's block, or flutter.

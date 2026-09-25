@@ -25,6 +25,7 @@ fn a_short_insertion_on_the_10k_tube_stays_finite_and_uninverted() {
         },
         window: 0.002,
         friction: 0.3,
+        grid_cell: 0.0005,
     };
     let result = run
         .run(|model, obstacle| cpu::f32::CpuExecutor::new(model, obstacle).unwrap())

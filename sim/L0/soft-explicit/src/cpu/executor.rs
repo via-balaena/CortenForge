@@ -8,6 +8,12 @@
 // and the result does not depend on how the work is split. Reductions for
 // the monitors run in node order, in f64.
 
+/// An obstacle sample before the first contact phase.
+const NO_SAMPLE: shared::SdfSample = shared::SdfSample {
+    distance: 0.0,
+    normal: [0.0; 3],
+};
+
 /// A boundary value at this executor's precision.
 // f64 → f32 rounds, which is the point; at f64 it is the identity.
 #[allow(clippy::cast_possible_truncation, clippy::unnecessary_cast)]
@@ -223,7 +229,6 @@ pub struct CpuExecutor {
     pose_interval: R,
     poses: Vec<shared::Pose>,
     friction: R,
-    penalty_scale: R,
 
     displacements: Vec<[R; 3]>,
     velocities: Vec<[R; 3]>,
@@ -236,6 +241,9 @@ pub struct CpuExecutor {
     contacts: Vec<shared::ContactResponse>,
     anchors: Vec<[R; 3]>,
     stiffnesses: Vec<R>,
+    /// Each surface node's obstacle sample where it sits this step: the
+    /// normal its correction follows, and G2's depth.
+    samples: Vec<shared::SdfSample>,
 
     max_penetrations: Vec<R>,
     contact_work: Vec<f64>,
@@ -330,7 +338,6 @@ impl CpuExecutor {
             pose_interval: narrow(obstacle.interval),
             poses: obstacle.poses.iter().map(|&p| narrow_pose(p)).collect(),
             friction: narrow(obstacle.friction),
-            penalty_scale: narrow(obstacle.penalty_scale),
             displacements: vec![[0.0; 3]; nodes],
             velocities: vec![[0.0; 3]; nodes],
             previous_velocities: vec![[0.0; 3]; nodes],
@@ -342,6 +349,7 @@ impl CpuExecutor {
             contacts: vec![empty_contact; surface_count],
             anchors,
             stiffnesses: vec![0.0; surface_count],
+            samples: vec![NO_SAMPLE; surface_count],
             max_penetrations: vec![0.0; surface_count],
             contact_work: vec![0.0; nodes],
             damping_losses: vec![0.0; nodes],
@@ -407,17 +415,20 @@ impl CpuExecutor {
         }
     }
 
-    /// The obstacle's distance and normal at a body-frame point: the seven
-    /// probes of the shared lookup, fetched from the grid.
+    /// The obstacle's distance and normal at a body-frame point: the shared
+    /// tricubic lookup over the 64 grid values it names.
     fn sample(&self, point: [R; 3]) -> shared::SdfSample {
-        let mut values = [0.0; 7];
-        for (probe, value) in (0_u32..).zip(values.iter_mut()) {
-            let coordinate = shared::sdf_probe_coordinate(point, self.grid, probe);
-            let corners = shared::sdf_cell_corners(coordinate, self.grid)
-                .map(|index| self.grid_values[index as usize]);
-            *value = shared::sdf_trilinear(coordinate, corners);
+        let grid = self.grid;
+        let coordinate = shared::sdf_grid_coordinate(point, grid);
+        let columns = shared::sdf_tricubic_axis(coordinate[0], grid.size_x);
+        let rows = shared::sdf_tricubic_axis(coordinate[1], grid.size_y);
+        let layers = shared::sdf_tricubic_axis(coordinate[2], grid.size_z);
+        let mut values = [0.0; 64];
+        for (index, value) in values.iter_mut().enumerate() {
+            let (column, row, layer) = (columns[index % 4], rows[index / 4 % 4], layers[index / 16]);
+            *value = self.grid_values[shared::sdf_grid_index(column, row, layer, grid) as usize];
         }
-        shared::sdf_combine(values, self.grid)
+        shared::sdf_tricubic(coordinate, values, grid)
     }
 }
 
@@ -447,14 +458,6 @@ impl Executor for CpuExecutor {
 
     fn epsilon(&self) -> f64 {
         widen(R::EPSILON)
-    }
-
-    fn penalty_scale(&self) -> f64 {
-        widen(self.penalty_scale)
-    }
-
-    fn friction(&self) -> f64 {
-        widen(self.friction)
     }
 
     fn set_state(
@@ -537,34 +540,57 @@ impl Executor for CpuExecutor {
         self.elastic_forces = forces;
     }
 
-    fn contact(&mut self, time: f64, dt: f64) {
+    fn contact(&mut self, time: f64, dt: f64, damping: f64) {
         let pose = self.pose_at(time);
-        let step = narrow(dt);
+        let (step, alpha) = (narrow(dt), narrow(damping));
+        let body = |a: usize| {
+            shared::pose_to_body(pose, shared::vec3_add(self.rest[a], self.displacements[a]))
+        };
+        let mut samples = std::mem::take(&mut self.samples);
+        fill(&mut samples, |i| self.sample(body(self.surface_nodes[i] as usize)));
         let mut stiffnesses = std::mem::take(&mut self.stiffnesses);
+        let mut contacts = std::mem::take(&mut self.contacts);
         fill(&mut stiffnesses, |i| {
             let a = self.surface_nodes[i] as usize;
-            shared::penalty_stiffness(self.masses[a], step, self.penalty_scale)
+            shared::kinematic_stiffness(self.masses[a], self.inverse_masses[a], alpha, step)
         });
-        let mut contacts = std::mem::take(&mut self.contacts);
+        let next = self.pose_at(time + dt);
         fill(&mut contacts, |i| {
             let a = self.surface_nodes[i] as usize;
-            let world = shared::vec3_add(self.rest[a], self.displacements[a]);
-            let body = shared::pose_to_body(pose, world);
-            shared::obstacle_contact(
-                pose,
-                body,
-                self.sample(body),
+            // Where the node lands without contact, its constraints applied.
+            let velocity = self.free_part(
+                a,
+                shared::advance_velocity(
+                    self.velocities[a],
+                    self.elastic_forces[a],
+                    self.inverse_masses[a],
+                    alpha,
+                    step,
+                ),
+            );
+            let displacement = shared::advance_displacement(self.displacements[a], velocity, step);
+            let predicted = shared::vec3_add(self.rest[a], self.free_part(a, displacement));
+            // How deep the predicted position is, and the normal where the
+            // node is now, carried into the step's end frame.
+            let depth = self.sample(shared::pose_to_body(next, predicted)).distance;
+            let normal = shared::pose_unrotate(next, shared::pose_rotate(pose, samples[i].normal));
+            shared::kinematic_contact(
+                next,
+                predicted,
+                shared::SdfSample {
+                    distance: depth,
+                    normal,
+                },
                 self.anchors[i],
                 stiffnesses[i],
                 self.friction,
+                self.constraints[a],
             )
         });
         for (i, contact) in contacts.iter().enumerate() {
             self.anchors[i] = contact.anchor;
-            if stiffnesses[i] > 0.0 {
-                let depth = contact.normal_force / stiffnesses[i];
-                self.max_penetrations[i] = self.max_penetrations[i].max(depth);
-            }
+            let depth = (-samples[i].distance).max(0.0);
+            self.max_penetrations[i] = self.max_penetrations[i].max(depth);
             for d in 0..3 {
                 self.resultant_sum[d] += widen(contact.force[d]);
             }
@@ -573,6 +599,7 @@ impl Executor for CpuExecutor {
         self.steps_since_read += 1;
         self.contacts = contacts;
         self.stiffnesses = stiffnesses;
+        self.samples = samples;
     }
 
     fn integrate(&mut self, dt: f64, damping: f64) {

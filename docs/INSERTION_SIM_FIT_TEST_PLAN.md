@@ -374,7 +374,7 @@ This is why the architecture changed (soft-contact recon §3).
 | Gate | What must hold | Baseline today |
 |---|---|---|
 | **G1 — Drawn wall outside drawn scan** | No drawn wall vertex inside the drawn scan (beyond a stated tolerance) | Shipped default: 720 of 1 684 more than 1 mm inside, deepest 6.06 mm |
-| **G2 — Bounded penetration** | No node deeper than **1 % of the inset** (0.05 mm on `base_mold`) at any step. An engineering call (Jon, 2026-09-24: *"your call, just need that balance of real life/visual tranferable realism for viusals and legit engineering work"*): penalty contact always penetrates slightly, so this bounds it as a numerical tolerance (soft-contact recon §15c). **The gate stands; if the contact law cannot meet it, the law changes** (recon 15g step 2). Kinematic projection has none. For the old Tet10 solver the gate was no node through, corners and midsides | Not yet run on the explicit solver |
+| **G2 — Bounded penetration** | No node deeper than **1 % of the inset** (0.05 mm on `base_mold`) at any step. An engineering call (Jon, 2026-09-24: *"your call, just need that balance of real life/visual tranferable realism for viusals and legit engineering work"*): penalty contact always penetrates slightly, so this bounds it as a numerical tolerance (soft-contact recon §15c). **The gate stands; if the contact law cannot meet it, the law changes** (recon 15g step 2). Kinematic projection has none. For the old Tet10 solver the gate was no node through, corners and midsides. *(2026-09-25: the explicit solver's contact law is now kinematic. On the benchmark tube the deepest node is at most 0.2 µm inside the grid over a run, and 0.9 µm inside the true surface at its end (soft-contact recon §16o). On `base_mold`, G2 rests mostly on the baked scan grid's own error, not yet measured.)* | Met on the benchmark tube (recon §16o); not yet run on `base_mold` |
 | **G3 — Full seat** | The full inset is reached along the sliding path | Growing: 4.531 of 5 mm. Sliding with the inset: not run |
 | **G4 — κ independent of the schedule** (implicit solver only) | The derived κ does not change with the step count | Holds (the ceiling rule) |
 | **G5 — Heat map in the rest frame** | `the_heat_map_reads_the_deformed_view_at_rest_positions` passes | Passes; fails under four mutations |
@@ -391,7 +391,8 @@ in CI); G5 already gates in CI.
 - **The product scene is `base_mold`**, not `sock_over_capsule` (memory `feedback_confirm_the_fixture_is_the_subject`).
 - **κ = the ceiling**, justified by the cushioning requirement and independent of the step schedule; never
   chosen by depth (Tet10 recon). That holds for the implicit solver. The explicit solver's contact
-  stiffness is k = s·m/Δt² (soft-contact recon §15c).
+  stiffness is k = s·m/Δt² (soft-contact recon §15c). *(Superseded 2026-09-25: its contact is now
+  kinematic, with no stiffness; soft-contact recon §16o.)*
 - **F-bar is not the fix** for element inversion on Tet10 (hard-gated off; no multi-Gauss-point analog).
 - **External libraries are oracles only**, never shipped (memory `feedback_julia_above_the_line_rust_below`).
   Refined for physics engines (Jon, 2026-09-24): outside only if **not Rust**; a Rust engine may come

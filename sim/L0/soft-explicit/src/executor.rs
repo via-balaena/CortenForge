@@ -6,10 +6,14 @@
 //! state at its own precision and converts at the edge, so the loop is the
 //! same for every backend and every precision.
 
-use crate::f64::{Pose, SdfGridLayout};
+use crate::f64 as shared;
+use crate::f64::{Pose, SdfGridLayout, SdfSample};
 
 /// The rigid obstacle an executor contacts: a baked distance grid, its pose
-/// sampled evenly in time, and the contact law's two parameters.
+/// sampled evenly in time, and the friction coefficient.
+///
+/// The contact law is the kinematic predictor/corrector
+/// (`shared::kinematic_contact`).
 #[derive(Clone, Debug)]
 pub struct Obstacle {
     /// The grid's layout, in the obstacle's body frame.
@@ -25,8 +29,27 @@ pub struct Obstacle {
     pub poses: Vec<Pose>,
     /// The friction coefficient `μ_f`; 0 is frictionless.
     pub friction: f64,
-    /// The penalty scale `s` in `k = s · m / Δt²` (plan §15c's 0.5).
-    pub penalty_scale: f64,
+}
+
+impl Obstacle {
+    /// The obstacle's distance and outward normal at a body-frame point: the
+    /// shared lookup over this grid, at f64 (what an executor computes at its
+    /// own precision).
+    #[must_use]
+    pub fn sample(&self, point: [f64; 3]) -> SdfSample {
+        let grid = self.grid;
+        let coordinate = shared::sdf_grid_coordinate(point, grid);
+        let columns = shared::sdf_tricubic_axis(coordinate[0], grid.size_x);
+        let rows = shared::sdf_tricubic_axis(coordinate[1], grid.size_y);
+        let layers = shared::sdf_tricubic_axis(coordinate[2], grid.size_z);
+        let mut values = [0.0; 64];
+        for (index, value) in values.iter_mut().enumerate() {
+            let (column, row, layer) =
+                (columns[index % 4], rows[index / 4 % 4], layers[index / 16]);
+            *value = self.values[shared::sdf_grid_index(column, row, layer, grid) as usize];
+        }
+        shared::sdf_tricubic(coordinate, values, grid)
+    }
 }
 
 /// What the stepping loop reads every monitor interval, reduced on the
@@ -138,13 +161,6 @@ pub trait Executor {
     /// The executor's machine epsilon: `f32::EPSILON` or `f64::EPSILON`.
     fn epsilon(&self) -> f64;
 
-    /// The contact law's penalty scale `s`, from the [`Obstacle`]. The loop
-    /// reads it here, so the stable step bounds the penalty in use.
-    fn penalty_scale(&self) -> f64;
-
-    /// The contact law's friction coefficient `μ_f`, from the [`Obstacle`].
-    fn friction(&self) -> f64;
-
     /// Replace the state: every node's displacement and half-step velocity,
     /// each projected onto the node's free directions, and the friction
     /// anchors.
@@ -190,9 +206,10 @@ pub trait Executor {
     /// Phase 5: each node's elastic force, gathered from its elements' slots.
     fn gather_forces(&mut self);
 
-    /// Phase 6: each surface node's contact with the obstacle at `time`,
-    /// with the penalty stiffness for step `dt`.
-    fn contact(&mut self, time: f64, dt: f64);
+    /// Phase 6: each surface node's contact with the obstacle at `time`, for
+    /// a step `dt` with mass damping `damping`: the kinematic law predicts
+    /// the step's update, so it needs both.
+    fn contact(&mut self, time: f64, dt: f64, damping: f64);
 
     /// Phase 7: the central-difference update of each node's velocity and
     /// displacement, with mass damping `damping`.
@@ -252,8 +269,7 @@ pub enum ObstacleError {
         /// The values the layout needs.
         expected: usize,
     },
-    /// The grid's layout, a value, a pose, the friction or the penalty scale
-    /// is out of range.
+    /// The grid's layout, a value, a pose or the friction is out of range.
     #[error("the obstacle is invalid: {reason}")]
     Invalid {
         /// What is wrong.
@@ -290,8 +306,6 @@ pub fn check_obstacle(obstacle: &Obstacle) -> Result<(), ObstacleError> {
         Some("a grid origin, value or the start time is not finite")
     } else if !(obstacle.friction.is_finite() && obstacle.friction >= 0.0) {
         Some("the friction must be finite and not negative")
-    } else if !(obstacle.penalty_scale.is_finite() && obstacle.penalty_scale > 0.0) {
-        Some("the penalty scale must be positive and finite")
     } else {
         None
     };
