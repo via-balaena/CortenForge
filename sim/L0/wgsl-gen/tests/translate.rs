@@ -89,138 +89,262 @@ fn the_subset_translates_and_validates() {
     assert!(!wgsl.contains(" _ "), "a wildcard was bound:\n{wgsl}");
 }
 
-/// Each source leaves the subset once; the refusal must say so.
-const REFUSALS: &[(&str, &str)] = &[
-    ("fn f(a: R) -> R {\n    let mut b = a;\n    b\n}", "`mut`"),
+/// Each source leaves the subset once, on the given line; the refusal must
+/// say so, there.
+const REFUSALS: &[(&str, &str, usize)] = &[
+    (
+        "fn f(a: R) -> R {\n    let mut b = a;\n    b\n}",
+        "`mut`",
+        2,
+    ),
     (
         "fn f(a: R) -> R {\n    for _ in 0..3 {}\n    a\n}",
         "only `let` bindings",
+        2,
     ),
     (
-        "fn f(a: R) -> R {\n    let b = loop { break a; };\n    b\n}",
+        "fn f(a: R) -> R {\n    let b = loop {\n        break a;\n    };\n    b\n}",
         "loops are not in the subset",
-    ),
-    (
-        "fn f(a: R) -> R {\n    let b = { let mut s = a; for i in 0..3 { s = s + a; } s };\n    b\n}",
-        "this expression is not in the subset",
+        2,
     ),
     (
         "fn f(a: [R; 3]) -> R {\n    let s = a.iter().sum();\n    s\n}",
         "method table",
+        2,
     ),
-    ("fn f(a: R) -> R {\n    match a { _ => a }\n}", "`match`"),
-    ("fn f(a: R) -> R {\n    return a;\n}", "without `;`"),
-    ("fn f(a: R) -> R {\n    (return a)\n}", "`return`"),
+    (
+        "fn f(a: R) -> R {\n    match a {\n        _ => a,\n    }\n}",
+        "`match`",
+        2,
+    ),
+    ("fn f(a: R) -> R {\n    return a;\n}", "without `;`", 2),
+    ("fn f(a: R) -> R {\n    (return a)\n}", "`return`", 2),
     (
         "fn f(a: R) -> R {\n    let b = a;\n    let b = b;\n    b\n}",
         "already bound",
+        3,
     ),
     (
         "fn f(a: [R; 3], i: u32) -> R {\n    a[i]\n}",
         "integer literal",
+        2,
     ),
-    ("fn f(a: R) -> R {\n    R::max(a, a)\n}", "plain name"),
-    ("fn f(a: f64) -> R {\n    a\n}", "write `R`"),
-    ("fn f(a: f32) -> R {\n    a\n}", "write `R`"),
-    ("fn f<T>(a: T) -> T {\n    a\n}", "generics"),
+    ("fn f(a: R) -> R {\n    R::max(a, a)\n}", "plain name", 2),
+    ("fn f(a: f64) -> R {\n    a\n}", "write `R`", 1),
+    ("fn f(\n    a: f32,\n) -> R {\n    a\n}", "write `R`", 2),
+    ("fn f<T>(a: T) -> T {\n    a\n}", "generics", 1),
     (
         "fn f(a: &R) -> R {\n    a\n}",
         "this type is not in the subset",
+        1,
     ),
     (
         "fn f(a: R) -> R {\n    let c = |x: R| x;\n    a\n}",
         "closures",
+        2,
     ),
     (
         "fn f(a: R) -> R {\n    let b = a.round();\n    b\n}",
         "`.round()`",
+        2,
     ),
     (
         "fn f(a: R) -> R {\n    let b = a.max();\n    b\n}",
         "takes 1 argument",
+        2,
     ),
     (
-        "fn f(a: R) -> R {\n    if a > 0.0 { a } else { let b = a; b }\n}",
+        "fn f(a: R) -> R {\n    if a > 0.0 {\n        a\n    } else {\n        let b = a;\n        b\n    }\n}",
         "single expression",
+        4,
     ),
     (
-        "fn f(a: R) -> R {\n    if a > 0.0 { a }\n}",
+        "fn f(a: R) -> R {\n    if a > 0.0 {\n        a\n    }\n}",
         "needs an `else`",
+        2,
     ),
-    ("fn f(a: R) {\n    let b = a;\n}", "must return a value"),
-    ("fn f(a: R) -> R {\n    a;\n}", "without `;`"),
+    ("fn f(a: R) {\n    let b = a;\n}", "must return a value", 1),
+    ("fn f(a: R) -> R {\n    a;\n}", "without `;`", 2),
     (
         "fn f(a: R) -> R {\n    let b = [a; 3];\n    a\n}",
         "this expression is not in the subset",
+        2,
     ),
     (
         "fn f(a: R) -> R {\n    let b = vec![a];\n    a\n}",
         "macros",
+        2,
     ),
-    ("fn f(a: R) -> R {\n    let b = &a;\n    a\n}", "references"),
+    (
+        "fn f(a: R) -> R {\n    let b = &a;\n    a\n}",
+        "references",
+        2,
+    ),
     (
         "#[cfg(test)]\nfn f(a: R) -> R {\n    a\n}",
         "could make the Rust and the WGSL differ",
+        1,
     ),
-    ("struct S {\n    a: R,\n}", "#[repr(C)]"),
+    ("\n\n\n\nstruct S {\n    a: R,\n}", "#[repr(C)]", 5),
     (
         "#[repr(C, align(16))]\nstruct S {\n    a: R,\n}",
         "only `#[repr(C)]`",
+        1,
     ),
-    ("#[repr(C)]\nstruct S(R);", "named fields"),
-    ("use core::f32;", "only `fn`, `struct` and `const`"),
-    ("type R = f32;", "only `fn`, `struct` and `const`"),
-    ("fn min(a: R) -> R {\n    a\n}", "WGSL builtin"),
-    ("fn f(select: R) -> R {\n    select\n}", "WGSL builtin"),
+    ("#[repr(C)]\nstruct S(R);", "named fields", 2),
+    ("use core::f32;", "only `fn`, `struct` and `const`", 1),
+    ("type R = f32;", "only `fn`, `struct` and `const`", 1),
+    ("fn min(a: R) -> R {\n    a\n}", "WGSL builtin", 1),
+    ("fn f(select: R) -> R {\n    select\n}", "WGSL builtin", 1),
     (
         "fn f(a: R) -> R {\n    let b = 1u8;\n    a\n}",
         "untyped, `u32` or `i32`",
+        2,
     ),
     (
         "fn f(a: R) -> R {\n    let b = \"text\";\n    a\n}",
         "only numbers and booleans",
+        2,
     ),
     (
-        "#[repr(C)]\nstruct S {\n    a: R,\n}\nfn f(a: R) -> S {\n    S { a }\n}\n#[repr(C)]\nstruct S {\n    a: R,\n}",
+        "#[repr(C)]\nstruct S {\n    a: R,\n}\n#[repr(C)]\nstruct S {\n    a: R,\n}",
         "declared twice",
+        6,
     ),
     (
         "#[repr(C)]\nstruct S {\n    a: R,\n    b: R,\n}\nfn f(a: R) -> S {\n    S { a }\n}",
         "field `b` of `S` is missing",
+        7,
     ),
     (
         "fn f(a: R) -> R {\n    let b = a as bool;\n    a\n}",
         "a cast must be to",
+        2,
     ),
     (
         "fn f(a: R) -> R {\n    let b = *a;\n    a\n}",
         "dereferencing",
+        2,
     ),
     (
         "fn f(a: R) -> R {\n    let b = R;\n    a\n}",
         "`R` is a type",
+        2,
     ),
     (
         "fn f(a: [R; 2]) -> R {\n    let [b, ..] = a;\n    b\n}",
         "only a plain name",
+        2,
     ),
     (
         "fn f(a: (R, R)) -> R {\n    a.0\n}",
         "this type is not in the subset",
+        1,
     ),
-    ("fn f(a: R) -> R {\n    let b;\n    a\n}", "needs a value"),
+    (
+        "fn f(a: R) -> R {\n    let b;\n    a\n}",
+        "needs a value",
+        2,
+    ),
+    // Attributes where a `cfg` would drop code from the Rust only.
+    (
+        "fn f(x: R, y: R) -> R {\n    let b = [#[cfg(any())] x, y];\n    b[0]\n}",
+        "only on items",
+        2,
+    ),
+    (
+        "#[repr(C)]\nstruct S {\n    a: R,\n}\nfn f(x: R, y: R) -> S {\n    S { #[cfg(any())] a: x, a: y }\n}",
+        "only on items",
+        6,
+    ),
+    (
+        "fn f(#[cfg(any())] a: R, b: R) -> R {\n    b\n}",
+        "only on items",
+        1,
+    ),
+    (
+        "fn f(a: R) -> R {\n    #[allow(unused)] a\n}",
+        "only on items",
+        2,
+    ),
+    // Literals Rust and WGSL would type or round differently.
+    ("fn f(a: R) -> R {\n    a * 0.1f32\n}", "takes no suffix", 2),
+    (
+        "fn f(a: R) -> R {\n    let c = 16777217.0;\n    a + c\n}",
+        "holds only literals",
+        2,
+    ),
+    (
+        "fn f(a: R, flag: bool) -> R {\n    let c = if flag { 1.0 } else { 2.0 };\n    a + c\n}",
+        "holds only literals",
+        2,
+    ),
+    (
+        "fn f(a: R) -> R {\n    let b = [1.0, 2.0];\n    a + b[0]\n}",
+        "holds only literals",
+        2,
+    ),
+    (
+        "fn f(a: R) -> R {\n    let c: R = 16777216.0 + 1.0;\n    a + c\n}",
+        "literals alone",
+        2,
+    ),
+    (
+        "fn f(a: R) -> R {\n    a + 2.5 as R\n}",
+        "never cast a float literal",
+        2,
+    ),
+    (
+        "fn f(a: R) -> R {\n    a as R\n}",
+        "only from `u32` or `i32`",
+        2,
+    ),
 ];
 
 #[test]
-fn every_refusal_fires_with_its_line() {
-    for (source, expected) in REFUSALS {
+fn every_refusal_fires_on_its_line() {
+    for (source, expected, expected_line) in REFUSALS {
         let (line, message) = refusal(source);
         assert!(
             message.contains(expected),
             "for {source:?}: expected {expected:?}, got {message:?}"
         );
-        assert!(line >= 1, "for {source:?}: line {line}");
+        assert_eq!(line, *expected_line, "for {source:?}: {message}");
     }
+}
+
+#[test]
+fn a_doc_comment_cannot_inject_wgsl() {
+    let wgsl = one("#[doc = \"x\\nfn sneaky() -> f32 { return 1.0; }\"]\nfn f(a: R) -> R {\n    a\n}\n/**\n * A block doc.\n */\nfn g(a: R) -> R {\n    a\n}").unwrap();
+    assert!(
+        wgsl.contains("// x\n// fn sneaky() -> f32 { return 1.0; }\nfn f("),
+        "{wgsl}"
+    );
+    assert!(!wgsl.lines().any(|l| l.starts_with("fn sneaky")), "{wgsl}");
+    assert!(wgsl.contains("//\n// * A block doc.\n//\nfn g("), "{wgsl}");
+}
+
+#[test]
+fn a_temporary_avoids_every_name_in_use() {
+    let wgsl = one("const destructured_1: [R; 2] = [0.0, 0.0];\nfn pair(a: R) -> [R; 2] {\n    [a, a]\n}\nfn f(a: R) -> R {\n    let destructured_2 = a;\n    let [x, y] = pair(destructured_2);\n    x + y + destructured_1[0]\n}").unwrap();
+    assert!(
+        wgsl.contains(
+            "    let destructured_3 = pair(destructured_2);\n    let x = destructured_3[0];"
+        ),
+        "{wgsl}"
+    );
+}
+
+#[test]
+fn a_computed_value_is_destructured_once() {
+    let wgsl = one("#[repr(C)]\nstruct S {\n    v: [R; 3],\n}\nfn mk(a: R) -> S {\n    S { v: [a, a, a] }\n}\nfn f(a: R, s: S) -> R {\n    let [x, y, z] = mk(a).v;\n    let [p, q, r] = s.v;\n    x + y + z + p + q + r\n}").unwrap();
+    assert_eq!(wgsl.matches("mk(a)").count(), 1, "{wgsl}");
+    assert!(wgsl.contains("    let p = s.v[0];"), "{wgsl}");
+}
+
+#[test]
+fn nothing_is_translated_from_no_sources() {
+    assert!(matches!(translate(&[]), Err(Error::NoSources)));
 }
 
 #[test]

@@ -148,22 +148,47 @@ fn interpolation_takes_the_shorter_arc_and_handles_equal_rotations() {
         qz: -b.qz,
         ..b
     };
-    let direct = shared::pose_interpolate(a, b, 0.5);
-    let via_negated = shared::pose_interpolate(a, b_negated, 0.5);
     let v = [0.0, 1.0, 0.0];
-    assert!(close(
-        shared::pose_rotate(direct, v),
-        shared::pose_rotate(via_negated, v),
-        1e-14
-    ));
-    assert!(close(
-        shared::pose_rotate(direct, v),
-        shared::pose_rotate(pose(0.4, axis, [0.0; 3]), v),
-        1e-14
-    ));
-    // Equal rotations: no division by sin θ = 0.
+    for s in [0.25, 0.5, 0.8] {
+        let direct = shared::pose_interpolate(a, b, s);
+        let via_negated = shared::pose_interpolate(a, b_negated, s);
+        assert!(close(
+            shared::pose_rotate(direct, v),
+            shared::pose_rotate(via_negated, v),
+            1e-14
+        ));
+    }
     let same = shared::pose_interpolate(a, a, 0.3);
     assert!((same.qw - a.qw).abs() < 1e-15 && (same.qx - a.qx).abs() < 1e-15);
+}
+
+/// The rotation angle the interpolation reaches at `s`, between rotations
+/// `step` apart about one axis, against the angle `s · step` that spherical
+/// interpolation reaches: the largest gap over `s`.
+fn interpolation_gap(step: f64) -> f64 {
+    let axis = [0.0, 0.6, 0.8];
+    let (a, b) = (pose(0.0, axis, [0.0; 3]), pose(step, axis, [0.0; 3]));
+    (1..100)
+        .map(|i| {
+            let s = f64::from(i) / 100.0;
+            let q = shared::pose_interpolate(a, b, s);
+            let angle = 2.0 * q.qx.hypot(q.qy).hypot(q.qz).atan2(q.qw);
+            (angle - s * step).abs()
+        })
+        .fold(0.0, f64::max)
+}
+
+#[test]
+fn interpolation_stays_close_to_spherical() {
+    let (gap_small, gap_large) = (interpolation_gap(0.1), interpolation_gap(0.2));
+    eprintln!(
+        "MARGIN interpolation gap: {gap_small:e} rad at a 0.1 rad step, {gap_large:e} at 0.2"
+    );
+    // Measured 4.0e-6 rad at a 0.1 rad step.
+    assert!(gap_small < 1e-5, "{gap_small:e}");
+    // Doubling the step multiplies the gap by about 2³.
+    let ratio = gap_large / gap_small;
+    assert!((7.5..8.5).contains(&ratio), "ratio {ratio}");
 }
 
 #[test]
@@ -248,6 +273,78 @@ fn the_force_is_returned_in_the_world_frame() {
     let r = shared::obstacle_contact(p, point, surface(-0.001), point, K, 0.3);
     // A quarter turn about x takes the body's +z normal to world −y.
     assert!(close(r.force, [0.0, -K * 0.001, 0.0], 1e-15));
+}
+
+#[test]
+fn only_the_tangential_part_of_a_slip_is_resisted() {
+    // A tilted surface, and a slip with a normal part: the friction force
+    // is along the tangential part alone.
+    let normal = [0.0, 0.6, 0.8];
+    let sample = SdfSample {
+        distance: -0.002,
+        normal,
+    };
+    let slip = [0.0001, 0.0002, 0.0003];
+    let normal_part = shared::vec3_dot(slip, normal);
+    let tangential = shared::vec3_sub(slip, shared::vec3_scale(normal, normal_part));
+    let r = shared::obstacle_contact(IDENTITY, slip, sample, [0.0; 3], K, 1.0);
+    let expected = shared::vec3_add(
+        shared::vec3_scale(normal, K * 0.002),
+        shared::vec3_scale(tangential, -K),
+    );
+    assert!(
+        close(r.force, expected, 1e-15),
+        "{:?} against {expected:?}",
+        r.force
+    );
+    assert!(
+        shared::vec3_dot(
+            shared::vec3_sub(r.force, shared::vec3_scale(normal, K * 0.002)),
+            normal
+        )
+        .abs()
+            < 1e-15
+    );
+}
+
+#[test]
+fn a_node_carried_by_the_obstacle_feels_no_friction() {
+    // The anchor lives in the body frame: a node that moves with a rotating,
+    // translating obstacle stays stuck with no tangential force.
+    let before = pose(0.3, [0.0, 0.0, 1.0], [0.0, 0.0, 0.0]);
+    let after = pose(0.5, [0.0, 0.0, 1.0], [0.01, -0.02, 0.0]);
+    let body_point = [0.1, 0.05, 0.0];
+    let sample = surface(-0.001);
+    let first = shared::obstacle_contact(before, body_point, sample, body_point, K, 0.5);
+    let world = shared::pose_to_world(after, body_point);
+    let second = shared::obstacle_contact(
+        after,
+        shared::pose_to_body(after, world),
+        sample,
+        first.anchor,
+        K,
+        0.5,
+    );
+    let normal_world = shared::pose_rotate(after, [0.0, 0.0, K * 0.001]);
+    assert!(
+        close(second.force, normal_world, 1e-12),
+        "{:?}",
+        second.force
+    );
+    // The same node held still in the world while the obstacle turns under
+    // it is pulled along, at most at the Coulomb limit.
+    let held = shared::pose_to_world(before, body_point);
+    let dragged = shared::obstacle_contact(
+        after,
+        shared::pose_to_body(after, held),
+        sample,
+        first.anchor,
+        K,
+        0.5,
+    );
+    let tangential = shared::vec3_sub(dragged.force, normal_world);
+    let magnitude = shared::vec3_length(tangential);
+    assert!(magnitude > 0.0 && magnitude <= 0.5 * K * 0.001 * (1.0 + 1e-12));
 }
 
 #[test]

@@ -96,7 +96,8 @@ pub fn tet4_energy_mu_terms(
     rest_volume * energy_density_mu_terms(tet4_deformation_gradient(x, rest_edge_inverse), material)
 }
 
-/// The shortest altitude, `3 |v| / (largest face area)`.
+/// The shortest altitude, `3 |v| / (largest face area)`, for a tetrahedron
+/// that is not flat.
 #[must_use]
 pub fn tet4_shortest_altitude(x: [R; 12]) -> R {
     let p0 = [x[0], x[1], x[2]];

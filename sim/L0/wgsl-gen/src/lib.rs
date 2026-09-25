@@ -32,18 +32,38 @@
 //! logarithm by selecting its *operand*, not its result.
 //!
 //! **Types:** `R`, `u32`, `i32`, `bool`, fixed-size arrays `[T; N]`, and the
-//! structs declared in the sources. `f32` and `f64` are refused: every float
-//! is `R`, or the two instantiations would silently differ.
+//! structs declared in the sources. `f32` and `f64` are refused, and so are
+//! float literal suffixes: every float is `R`, or the two instantiations
+//! would silently differ.
+//!
+//! **Literals.** Rust and WGSL type a float literal differently when nothing
+//! fixes its type (Rust falls back to `f64`, WGSL to `f32`), and fold
+//! arithmetic on literals alone differently (Rust rounds each step at `R`,
+//! WGSL folds at higher precision). So the translator tracks each
+//! expression's type and refuses: a `let` holding only literals without a
+//! type annotation, an operation between two literals, and a cast of a float
+//! literal. A cast to `R` must come from `u32` or `i32`.
+//!
+//! **Attributes** are accepted only on items, struct fields and `let`
+//! statements, and only those that cannot change what is compiled: `doc`,
+//! `allow`, `expect`, `must_use`, `inline`, `derive` and `repr(C)`. A `cfg`
+//! anywhere is refused, since it would remove code from the Rust and not from
+//! the WGSL.
 //!
 //! **Refused, with the file, line and column:** loops, mutation, `self`,
 //! `match`, `return`, closures, macros, references, paths with `::`, runtime
-//! indices, redeclared names, and any attribute that could make the Rust and
-//! the WGSL differ (`cfg`, for one). A runtime index is storage access, and
-//! storage access belongs to the executor, not the shared math.
+//! indices, redeclared names, and names that would capture a WGSL builtin the
+//! output calls. A runtime index is storage access, and storage access
+//! belongs to the executor, not the shared math.
 //!
 //! Loops are refused because of the spike that chose this design (plan §13a):
-//! one kernel written with loops ran at 1.07–1.81× hand-written WGSL, and
-//! written loop-free at 1.00×, as this translator's output did.
+//! one kernel, compiled through rust-gpu, ran at 1.07–1.81× hand-written WGSL
+//! when written with loops and at 1.00× when written loop-free; this
+//! translator's loop-free output also ran at 1.00×. Loops in translated WGSL
+//! were not measured.
+//!
+//! **Not bit-identical.** WGSL sets its own accuracy for each builtin
+//! function, so the CPU and GPU agree to a tolerance, not exactly.
 //!
 //! ## Using it
 //!
@@ -107,6 +127,9 @@ pub enum Error {
         #[source]
         source: std::io::Error,
     },
+    /// There was nothing to translate.
+    #[error("no sources were given")]
+    NoSources,
     /// The committed WGSL differs from what the sources generate.
     #[error("{path} is stale ({difference}); regenerate it with `{command}`")]
     Stale {

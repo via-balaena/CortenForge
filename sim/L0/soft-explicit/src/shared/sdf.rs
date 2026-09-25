@@ -31,7 +31,7 @@ pub struct SdfGridLayout {
     pub origin_y: R,
     /// The grid's minimum corner, z.
     pub origin_z: R,
-    /// The spacing between samples, the same along every axis.
+    /// The spacing between samples, the same along every axis; positive.
     pub cell_size: R,
     /// Samples along x (at least 1).
     pub size_x: u32,
@@ -82,21 +82,21 @@ pub fn sdf_grid_coordinate(point: [R; 3], grid: SdfGridLayout) -> [R; 3] {
 #[must_use]
 pub fn sdf_probe_coordinate(point: [R; 3], grid: SdfGridLayout, probe: u32) -> [R; 3] {
     let center = sdf_grid_coordinate(point, grid);
-    let step_x = if probe == 1 {
+    let step_x: R = if probe == 1 {
         0.5
     } else if probe == 2 {
         -0.5
     } else {
         0.0
     };
-    let step_y = if probe == 3 {
+    let step_y: R = if probe == 3 {
         0.5
     } else if probe == 4 {
         -0.5
     } else {
         0.0
     };
-    let step_z = if probe == 5 {
+    let step_z: R = if probe == 5 {
         0.5
     } else if probe == 6 {
         -0.5

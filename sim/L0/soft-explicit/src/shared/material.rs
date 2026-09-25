@@ -93,13 +93,10 @@ pub fn energy_density(f: [R; 9], material: Material) -> R {
     energy_density_mu_terms(f, material) + energy_density_lambda_term(mat3_det(f), material.lambda)
 }
 
-/// The λ term's pressure per unit λ at volume ratio `j`:
-/// `U′(J) / λ = ln J / J`, where `U = λ/2 (ln J)²`.
-///
-/// It depends on no material, so a node can carry it for the elements of
-/// every material around it (see `element_pressure`).
+/// The λ term's pressure at volume ratio `j`: `U′(J) = λ ln J / J`, where
+/// `U = λ/2 (ln J)²`.
 #[must_use]
-pub fn pressure_per_lambda(j: R) -> R {
+pub fn pressure_lambda_term(j: R, lambda: R) -> R {
     let guarded = guarded_volume_ratio(j);
-    guarded.ln() / guarded
+    lambda * guarded.ln() / guarded
 }

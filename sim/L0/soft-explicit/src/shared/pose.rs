@@ -36,13 +36,6 @@ pub struct SampleSpan {
     pub fraction: R,
 }
 
-/// Below this `sin θ`, interpolation is linear rather than spherical.
-///
-/// θ is the angle between two quaternions as 4-vectors, half the rotation
-/// between them. The threshold guards the division by `sin θ` when the rotations are
-/// equal.
-pub const SLERP_THRESHOLD: R = 1e-6;
-
 /// Rotate `v` by the pose's rotation (no translation):
 /// `v + w t + u × t`, with `u` the vector part and `t = 2 u × v`.
 #[must_use]
@@ -73,7 +66,8 @@ pub const fn pose_to_body(pose: Pose, point: [R; 3]) -> [R; 3] {
 }
 
 /// The samples around `time`, for `count` samples taken every `interval`
-/// from `start`. Times outside the samples clamp to the first or last.
+/// (positive) from `start`. Times outside the samples clamp to the first or
+/// last.
 // The coordinate is clamped to [0, count − 1] before its floor becomes a
 // `u32`, and `count as R` is exact below 2^24 samples at f32.
 #[allow(
@@ -95,33 +89,27 @@ pub fn pose_sample_span(time: R, start: R, interval: R, count: u32) -> SampleSpa
     }
 }
 
-/// The pose a fraction `s` of the way from `a` to `b`: spherical linear
-/// interpolation of the rotation along the shorter arc, linear
-/// interpolation of the translation.
+/// The pose a fraction `s` of the way from `a` to `b`: the rotation
+/// interpolated linearly along the shorter arc and renormalized, the
+/// translation linearly.
+///
+/// Spherical interpolation would need `acos` and `sin`, which WGSL computes
+/// only to its own accuracy. For samples close together, as lowering takes
+/// them, the renormalized rotation stays close to the spherical one, and
+/// the gap shrinks with the cube of the step
+/// (`tests/motion.rs`, `interpolation_stays_close_to_spherical`).
 #[must_use]
 pub fn pose_interpolate(a: Pose, b: Pose, s: R) -> Pose {
     let dot = a.qw * b.qw + a.qx * b.qx + a.qy * b.qy + a.qz * b.qz;
-    let sign = if dot < 0.0 { -1.0 } else { 1.0 };
-    let cos_theta = (dot * sign).min(1.0);
-    let theta = cos_theta.acos();
-    let sin_theta = theta.sin();
-    let spherical = sin_theta > SLERP_THRESHOLD;
-    let guarded_sin = if spherical { sin_theta } else { 1.0 };
-    let weight_a = if spherical {
-        ((1.0 - s) * theta).sin() / guarded_sin
-    } else {
-        1.0 - s
-    };
-    let weight_b = sign
-        * if spherical {
-            (s * theta).sin() / guarded_sin
-        } else {
-            s
-        };
+    // `q` and `−q` are the same rotation; take the one nearer `a`.
+    let sign: R = if dot < 0.0 { -1.0 } else { 1.0 };
+    let weight_a = 1.0 - s;
+    let weight_b = sign * s;
     let qw = weight_a * a.qw + weight_b * b.qw;
     let qx = weight_a * a.qx + weight_b * b.qx;
     let qy = weight_a * a.qy + weight_b * b.qy;
     let qz = weight_a * a.qz + weight_b * b.qz;
+    // At least √½ for unit inputs on the shorter arc, so never zero.
     let norm = (qw * qw + qx * qx + qy * qy + qz * qz).sqrt();
     Pose {
         qw: qw / norm,

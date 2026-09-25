@@ -3,6 +3,13 @@
 //!
 //! Plan §15g step 1: the largest difference over the test points must be at
 //! most 1e-9 × the largest value.
+//!
+//! One known difference is kept out of that bar and counted: `cf-geometry`
+//! clamps a point onto the grid in world units and then converts to grid
+//! units, and on some grids the conversion rounds a far-face point past the
+//! last sample. `distance` then finds it outside, and the clamped lookups
+//! fall back to the largest value and +z. The shared lookup clamps in grid
+//! units and reads the face. The margins print with `--nocapture`.
 
 #![allow(
     clippy::unwrap_used,
@@ -19,6 +26,55 @@ use sim_soft_explicit::f64 as shared;
 /// dropped origin shows.
 fn grid(f: impl Fn(Point3<f64>) -> f64) -> SdfGrid {
     SdfGrid::from_fn(13, 9, 11, 0.00173, Point3::new(-0.0137, 0.0211, -0.009), f)
+}
+
+/// A grid on which `cf-geometry`'s world-unit clamp rounds past the far
+/// faces.
+fn rounding_grid() -> SdfGrid {
+    SdfGrid::from_fn(4, 4, 4, 0.1, Point3::new(0.1, 0.1, 0.1), |p| {
+        p.coords
+            .metric_distance(&Point3::new(0.27, 0.23, 0.26).coords)
+            - 0.12
+    })
+}
+
+/// Whether `cf-geometry` falls back at `p`: whether any of the seven
+/// lookups behind its clamped distance and gradient lands outside after its
+/// own clamp (`design/cf-geometry/src/sdf.rs`, `distance_clamped` and
+/// `gradient_clamped`).
+fn cpu_falls_back(grid: &SdfGrid, p: [f64; 3]) -> bool {
+    let o = grid.origin();
+    let hi = [
+        o.x + grid.extent_x(),
+        o.y + grid.extent_y(),
+        o.z + grid.extent_z(),
+    ];
+    let clamp = |q: [f64; 3]| {
+        Point3::new(
+            q[0].clamp(o.x, hi[0]),
+            q[1].clamp(o.y, hi[1]),
+            q[2].clamp(o.z, hi[2]),
+        )
+    };
+    let center = clamp(p);
+    let eps = grid.cell_size() * 0.5;
+    let mut probes = vec![center];
+    for axis in 0..3 {
+        for sign in [1.0, -1.0] {
+            let mut q = [center.x, center.y, center.z];
+            q[axis] += sign * eps;
+            probes.push(clamp(q));
+        }
+    }
+    probes.iter().any(|&q| grid.distance(q).is_none())
+}
+
+/// Whether `p` is within half a cell of a far face, or past one.
+fn near_a_far_face(grid: &SdfGrid, p: [f64; 3]) -> bool {
+    let o = grid.origin();
+    let h = grid.cell_size();
+    let sizes = [grid.width(), grid.height(), grid.depth()];
+    (0..3).any(|axis| (p[axis] - [o.x, o.y, o.z][axis]) / h >= sizes[axis] as f64 - 1.5)
 }
 
 /// An obstacle-like field: a sphere, stretched and rippled so the gradient
@@ -123,37 +179,64 @@ fn test_points(grid: &SdfGrid) -> Vec<[f64; 3]> {
 
 #[test]
 fn the_shared_lookup_matches_the_cpu_path() {
-    let grid = grid(field);
-    let largest = grid.values().iter().fold(0.0_f64, |m, v| m.max(v.abs()));
-    let (mut worst_distance, mut worst_normal) = (0.0_f64, 0.0_f64);
-    let mut worst_point = [0.0; 3];
-    let points = test_points(&grid);
-    for &p in &points {
-        let point = Point3::new(p[0], p[1], p[2]);
-        let expected_distance = grid.distance_clamped(point);
-        let expected_normal = grid.gradient_clamped(point);
-        let got = sample(&grid, p);
-        let distance_error = (got.distance - expected_distance).abs();
-        let normal_error = (0..3)
-            .map(|i| (got.normal[i] - expected_normal[i]).abs())
-            .fold(0.0, f64::max);
-        assert!(
-            distance_error.is_finite() && normal_error.is_finite(),
-            "non-finite at {p:?}"
-        );
-        if distance_error > worst_distance {
-            worst_distance = distance_error;
-            worst_point = p;
+    for (name, grid) in [
+        ("offset grid", grid(field)),
+        ("rounding grid", rounding_grid()),
+    ] {
+        let largest = grid.values().iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+        let (mut worst_distance, mut worst_normal) = (0.0_f64, 0.0_f64);
+        let mut worst_point = [0.0; 3];
+        let points = test_points(&grid);
+        let mut fallbacks = 0;
+        for &p in &points {
+            if cpu_falls_back(&grid, p) {
+                assert!(
+                    near_a_far_face(&grid, p),
+                    "{name}: fallback away from a far face at {p:?}"
+                );
+                fallbacks += 1;
+                continue;
+            }
+            let point = Point3::new(p[0], p[1], p[2]);
+            let expected_normal = grid.gradient_clamped(point);
+            let got = sample(&grid, p);
+            let distance_error = (got.distance - grid.distance_clamped(point)).abs();
+            let normal_error = (0..3)
+                .map(|i| (got.normal[i] - expected_normal[i]).abs())
+                .fold(0.0, f64::max);
+            assert!(
+                distance_error.is_finite() && normal_error.is_finite(),
+                "non-finite at {p:?}"
+            );
+            if distance_error > worst_distance {
+                worst_distance = distance_error;
+                worst_point = p;
+            }
+            worst_normal = worst_normal.max(normal_error);
         }
-        worst_normal = worst_normal.max(normal_error);
+        eprintln!(
+            "MARGIN {name}: distance {worst_distance:e} against a bar of {:e}; normal {worst_normal:e}; \
+             {} points, {fallbacks} where cf-geometry falls back",
+            1e-9 * largest,
+            points.len()
+        );
+        assert!(
+            worst_distance <= 1e-9 * largest,
+            "{name}: distance differs by {worst_distance:e} (largest value {largest:e}) at {worst_point:?}"
+        );
+        // A normal is unit length, so its largest value is 1.
+        assert!(
+            worst_normal <= 1e-9,
+            "{name}: normal differs by {worst_normal:e}"
+        );
+        assert!(points.len() > 4000);
+        if name == "rounding grid" {
+            assert!(
+                fallbacks > 0,
+                "the rounding grid no longer rounds; pick another"
+            );
+        }
     }
-    assert!(
-        worst_distance <= 1e-9 * largest,
-        "distance differs by {worst_distance:e} (largest value {largest:e}) at {worst_point:?}"
-    );
-    // A normal is unit length, so its largest value is 1.
-    assert!(worst_normal <= 1e-9, "normal differs by {worst_normal:e}");
-    assert!(points.len() > 4000);
 }
 
 #[test]
@@ -168,8 +251,7 @@ fn a_flat_field_falls_back_to_plus_z_on_both_paths() {
     }
 }
 
-/// The lookup at `f32`, what the GPU runs, against `f64` on the same grid:
-/// the distance within a few `f32` ulps of the largest value.
+/// The lookup at `f32`, what the GPU runs, against `f64` on the same grid.
 #[test]
 fn the_f32_lookup_agrees_with_f64() {
     use sim_soft_explicit::f32 as single;
@@ -186,7 +268,7 @@ fn the_f32_lookup_agrees_with_f64() {
         size_y: l.size_y,
         size_z: l.size_z,
     };
-    let mut worst = 0.0_f64;
+    let (mut worst, mut worst_normal) = (0.0_f64, 0.0_f64);
     for p in test_points(&grid) {
         let reference = sample(&grid, p);
         let p32 = p.map(|c| c as f32);
@@ -198,9 +280,18 @@ fn the_f32_lookup_agrees_with_f64() {
         }
         let got = single::sdf_combine(values, l32);
         worst = worst.max((f64::from(got.distance) - reference.distance).abs());
+        worst_normal = (0..3).fold(worst_normal, |m, i| {
+            m.max((f64::from(got.normal[i]) - reference.normal[i]).abs())
+        });
     }
+    eprintln!("MARGIN f32: distance {worst:e} of largest {largest:e}; normal {worst_normal:e}");
+    // 16 f32 epsilons of the largest value.
     assert!(
-        worst <= 1e-5 * largest,
+        worst <= 16.0 * f64::from(f32::EPSILON) * largest,
         "f32 distance differs by {worst:e} of {largest:e}"
+    );
+    assert!(
+        worst_normal <= 1e-5,
+        "f32 normal differs by {worst_normal:e}"
     );
 }

@@ -11,7 +11,7 @@ use crate::f64::{
 ///
 /// Built by [`ExplicitModel::new`], which validates the input and computes
 /// each element's rest volume and inverse rest edge matrix, each node's
-/// lumped mass and tributary rest volume, and the boundary surface.
+/// lumped mass, tributary rest volume and λ, and the boundary surface.
 #[derive(Clone, Debug)]
 pub struct ExplicitModel {
     rest_positions: Vec<[f64; 3]>,
@@ -22,6 +22,7 @@ pub struct ExplicitModel {
     rest_volumes: Vec<f64>,
     node_masses: Vec<f64>,
     node_rest_volumes: Vec<f64>,
+    node_lambdas: Vec<f64>,
     surface: Vec<[u32; 3]>,
 }
 
@@ -126,6 +127,7 @@ impl ExplicitModel {
         let mut rest_volumes = Vec::with_capacity(elements.len());
         let mut node_masses = vec![0.0; nodes];
         let mut node_rest_volumes = vec![0.0; nodes];
+        let mut node_lambda_volumes = vec![0.0; nodes];
         for (element, (corners, material)) in elements.iter().zip(&materials).enumerate() {
             let x = gather(&rest_positions, *corners, element)?;
             check_material(element, material)?;
@@ -142,11 +144,17 @@ impl ExplicitModel {
             for &node in corners {
                 node_masses[node as usize] += 0.25 * material.density * volume;
                 node_rest_volumes[node as usize] += 0.25 * volume;
+                node_lambda_volumes[node as usize] += 0.25 * volume * material.lambda;
             }
         }
         if let Some(node) = node_rest_volumes.iter().position(|&v| v == 0.0) {
             return Err(ModelError::UnreferencedNode { node });
         }
+        let node_lambdas = node_lambda_volumes
+            .iter()
+            .zip(&node_rest_volumes)
+            .map(|(weighted, volume)| weighted / volume)
+            .collect();
         let surface = boundary_faces(&elements);
 
         Ok(Self {
@@ -158,6 +166,7 @@ impl ExplicitModel {
             rest_volumes,
             node_masses,
             node_rest_volumes,
+            node_lambdas,
             surface,
         })
     }
@@ -223,6 +232,20 @@ impl ExplicitModel {
     #[must_use]
     pub fn node_rest_volumes(&self) -> &[f64] {
         &self.node_rest_volumes
+    }
+
+    /// Each node's λ for averaged nodal pressure: the λ of the elements around
+    /// it, weighted by rest volume.
+    ///
+    /// Inside one material it is that material's λ, so averaged nodal
+    /// pressure is plain selective ANP there. Where materials meet it blends
+    /// them, and the forces stay the exact gradient of an energy
+    /// (`Σ_a V_a λ_a/2 (ln J_a)²` for the λ term). This interface rule is
+    /// provisional: plan §15g step 1 records the alternative and what would
+    /// decide between them.
+    #[must_use]
+    pub fn node_lambdas(&self) -> &[f64] {
+        &self.node_lambdas
     }
 
     /// The boundary triangles (faces that belong to one element), each wound

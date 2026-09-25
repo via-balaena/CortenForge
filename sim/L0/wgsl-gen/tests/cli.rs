@@ -93,3 +93,30 @@ fn the_binary_writes_checks_and_rejects_bad_usage() {
         );
     }
 }
+
+#[test]
+fn nothing_is_written_when_there_is_nothing_valid_to_write() {
+    let binary = env!("CARGO_BIN_EXE_wgsl-gen");
+    let (dir, input, output) = scratch();
+
+    // No inputs: an empty module would overwrite a real one.
+    let empty = Command::new(binary)
+        .args(["write", &output])
+        .output()
+        .unwrap();
+    assert!(!empty.status.success());
+    assert!(String::from_utf8_lossy(&empty.stderr).contains("no sources"));
+    assert!(!std::path::Path::new(&output).exists());
+
+    // A source inside the subset that naga rejects (`select` over arrays).
+    let rejected = dir.path().join("rejected.rs");
+    std::fs::write(
+        &rejected,
+        "fn f(c: bool, a: [R; 2], b: [R; 2]) -> [R; 2] {\n    if c { a } else { b }\n}\n",
+    )
+    .unwrap();
+    let err = write(&output, &[rejected.to_str().unwrap()]).unwrap_err();
+    assert!(matches!(err, Error::Invalid { .. }), "{err:?}");
+    assert!(!std::path::Path::new(&output).exists());
+    assert!(std::path::Path::new(&input).exists());
+}

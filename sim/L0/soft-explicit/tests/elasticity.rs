@@ -12,7 +12,7 @@
 
 mod common;
 
-use common::{SILICONE, block_model, deform, elastic_energy, elastic_forces};
+use common::{SILICONE, block_model, deform, elastic_forces};
 use sim_soft_explicit::f64 as shared;
 use sim_soft_explicit::f64::Material;
 
@@ -97,7 +97,7 @@ fn the_split_adds_up_to_the_full_law() {
         let derivative = (shared::energy_density_lambda_term(j + h, 1.0)
             - shared::energy_density_lambda_term(j - h, 1.0))
             / (2.0 * h);
-        assert!((derivative - shared::pressure_per_lambda(j)).abs() < 1e-8);
+        assert!((derivative - shared::pressure_lambda_term(j, 1.0)).abs() < 1e-8);
     }
 }
 
@@ -163,7 +163,7 @@ fn inversion_is_reported_and_the_stress_stays_finite() {
             .all(|v| v.is_finite())
     );
     assert!(shared::energy_density(inverted, YEOH).is_finite());
-    assert!(shared::pressure_per_lambda(-0.5).is_finite());
+    assert!(shared::pressure_lambda_term(-0.5, YEOH.lambda).is_finite());
 }
 
 #[test]
@@ -199,33 +199,68 @@ fn one_tets_forces_are_its_energys_gradient_and_balance() {
     }
 }
 
+/// Two materials, split across the block, so some nodes sit where they meet.
+fn two_material_model() -> sim_soft_explicit::ExplicitModel {
+    let stiff = Material {
+        mu: 3.0 * SILICONE.mu,
+        lambda: 10.0 * SILICONE.lambda,
+        ..YEOH
+    };
+    let (positions, elements) = common::block((2, 2, 2), 0.01);
+    let materials: Vec<Material> = elements
+        .iter()
+        .map(|e| {
+            let centroid_x: f64 = e.iter().map(|&n| positions[n as usize][0]).sum::<f64>() / 4.0;
+            if centroid_x < 0.01 { stiff } else { SILICONE }
+        })
+        .collect();
+    let nodes = positions.len();
+    sim_soft_explicit::ExplicitModel::new(positions, elements, materials, vec![false; nodes])
+        .unwrap()
+}
+
 #[test]
 fn the_pipelines_forces_are_the_mesh_energys_gradient() {
     // Plan §15c: with the λ term averaged over nodes, the force is the exact
-    // gradient of Σ_e V_e Ψ_μ(F_e) + Σ_a V_a U(J_a).
-    for material in [SILICONE, YEOH] {
-        let model = block_model((2, 2, 2), 0.01, material);
+    // gradient of Σ_e V_e Ψ_μ(F_e) + Σ_a V_a λ_a/2 (ln J_a)², in one
+    // material or two.
+    let models = [
+        ("neo-Hookean", block_model((2, 2, 2), 0.01, SILICONE)),
+        ("Yeoh", block_model((2, 2, 2), 0.01, YEOH)),
+        ("two materials", two_material_model()),
+    ];
+    for (name, model) in models {
         let deformed = deform(model.rest_positions(), 0.2);
-        let forces = elastic_forces(&model, &deformed);
-        let largest = max_abs(forces.iter().flatten().copied());
-        let mut worst: f64 = 0.0;
-        for node in 0..model.node_count() {
-            for d in 0..3 {
-                let h = 1e-9;
-                let mut plus = deformed.clone();
-                let mut minus = deformed.clone();
-                plus[node][d] += h;
-                minus[node][d] -= h;
-                let gradient =
-                    (elastic_energy(&model, &plus) - elastic_energy(&model, &minus)) / (2.0 * h);
-                worst = worst.max((forces[node][d] + gradient).abs());
+        let (worst, largest) = common::gradient_error(&model, &deformed, 1e-9);
+        eprintln!("MARGIN gradient ({name}): {worst:e} of largest force {largest:e}");
+        assert!(worst <= 1e-7 * largest, "{name}: {worst:e} of {largest:e}");
+    }
+}
+
+#[test]
+fn a_nodes_lambda_blends_only_where_materials_meet() {
+    let model = two_material_model();
+    let (soft, stiff) = (SILICONE.lambda, 10.0 * SILICONE.lambda);
+    let mut blended = 0;
+    for node in 0..model.node_count() {
+        // The rest-volume-weighted λ of the elements around the node.
+        let (mut weighted, mut volume) = (0.0, 0.0);
+        for (e, element) in model.elements().iter().enumerate() {
+            if element.contains(&(node as u32)) {
+                weighted += model.rest_volumes()[e] * model.materials()[e].lambda;
+                volume += model.rest_volumes()[e];
             }
         }
-        assert!(
-            worst <= 1e-6 * largest,
-            "worst {worst:e} of largest force {largest:e}"
-        );
+        let lambda = model.node_lambdas()[node];
+        assert!((lambda - weighted / volume).abs() <= 1e-12 * lambda);
+        let pure = (lambda - soft).abs() <= 1e-9 * soft || (lambda - stiff).abs() <= 1e-9 * stiff;
+        if !pure {
+            assert!(lambda > soft && lambda < stiff);
+            blended += 1;
+        }
     }
+    // The interface plane x = 0.01 holds 3 × 3 nodes.
+    assert_eq!(blended, 9);
 }
 
 #[test]
@@ -253,74 +288,11 @@ fn the_rest_mesh_is_force_free_and_a_rotation_rotates_the_forces() {
     }
 }
 
-#[test]
-fn where_materials_meet_each_element_keeps_its_own_pressure() {
-    // Uniform compression: every node has the same J. Each element's
-    // averaged pressure must be its own material's exact λ ln J / J, not a
-    // blend with its neighbour's (IANP, plan §15g step 1).
-    let stiff = Material {
-        lambda: 10.0 * SILICONE.lambda,
-        ..SILICONE
-    };
-    let (positions, elements) = common::block((2, 2, 2), 0.01);
-    let materials: Vec<Material> = elements
-        .iter()
-        .map(|e| {
-            if positions[e[0] as usize][0] < 0.005 {
-                stiff
-            } else {
-                SILICONE
-            }
-        })
-        .collect();
-    let nodes = positions.len();
-    let model =
-        sim_soft_explicit::ExplicitModel::new(positions, elements, materials, vec![false; nodes])
-            .unwrap();
-    let scale: f64 = 0.97;
-    let compressed: Vec<[f64; 3]> = model
-        .rest_positions()
-        .iter()
-        .map(|p| p.map(|c| c * scale))
-        .collect();
-    let ratios = common::nodal_volume_ratios(&model, &compressed);
-    let j = scale.powi(3);
-    assert!(ratios.iter().all(|r| (r - j).abs() < 1e-12));
-    let per_lambda: Vec<f64> = ratios
-        .iter()
-        .map(|&r| shared::pressure_per_lambda(r))
-        .collect();
-    let mut seen = [false; 2];
-    for (e, element) in model.elements().iter().enumerate() {
-        let lambda = model.materials()[e].lambda;
-        let pressure = shared::element_pressure(lambda, element.map(|n| per_lambda[n as usize]));
-        let exact = lambda * j.ln() / j;
-        assert!(
-            (pressure - exact).abs() <= 1e-12 * exact.abs(),
-            "element {e}"
-        );
-        seen[usize::from(lambda == stiff.lambda)] = true;
-    }
-    assert_eq!(seen, [true, true], "both materials are present");
-}
-
-#[test]
-fn f32_forces_agree_with_f64() {
+/// The f32 pipeline's forces, with every input rounded to f32 once.
+fn f32_forces(model: &sim_soft_explicit::ExplicitModel, positions: &[[f64; 3]]) -> Vec<[f32; 3]> {
     use sim_soft_explicit::f32 as single;
-    let model = block_model((2, 2, 2), 0.01, YEOH);
-    let deformed = deform(model.rest_positions(), 0.2);
-    let reference = elastic_forces(&model, &deformed);
-    let largest = max_abs(reference.iter().flatten().copied());
-
-    // The same pipeline at f32, with every input rounded once.
     let narrow = |v: f64| v as f32;
-    let material = single::Material {
-        mu: narrow(YEOH.mu),
-        lambda: narrow(YEOH.lambda),
-        c2: narrow(YEOH.c2),
-        density: narrow(YEOH.density),
-    };
-    let positions: Vec<[f32; 3]> = deformed.iter().map(|p| p.map(narrow)).collect();
+    let positions: Vec<[f32; 3]> = positions.iter().map(|p| p.map(narrow)).collect();
     let gather = |e: [u32; 4]| {
         let mut x = [0.0_f32; 12];
         for (slot, &n) in e.iter().enumerate() {
@@ -335,14 +307,27 @@ fn f32_forces_agree_with_f64() {
             current[n as usize] += 0.25 * v;
         }
     }
-    let per_lambda: Vec<f32> = current
+    let pressures: Vec<f32> = current
         .iter()
         .zip(model.node_rest_volumes())
-        .map(|(&v, &rest)| single::pressure_per_lambda(single::nodal_volume_ratio(v, narrow(rest))))
+        .zip(model.node_lambdas())
+        .map(|((&v, &rest), &lambda)| {
+            single::pressure_lambda_term(
+                single::nodal_volume_ratio(v, narrow(rest)),
+                narrow(lambda),
+            )
+        })
         .collect();
     let mut forces = vec![[0.0_f32; 3]; model.node_count()];
     for (i, &e) in model.elements().iter().enumerate() {
-        let pressure = single::element_pressure(material.lambda, e.map(|n| per_lambda[n as usize]));
+        let m = model.materials()[i];
+        let material = single::Material {
+            mu: narrow(m.mu),
+            lambda: narrow(m.lambda),
+            c2: narrow(m.c2),
+            density: narrow(m.density),
+        };
+        let pressure = single::element_pressure(e.map(|n| pressures[n as usize]));
         let f = single::tet4_elastic_forces(
             gather(e),
             model.rest_edge_inverses()[i].map(narrow),
@@ -356,16 +341,35 @@ fn f32_forces_agree_with_f64() {
             }
         }
     }
-    let worst = max_abs(
-        forces
-            .iter()
-            .zip(&reference)
-            .flat_map(|(a, b)| (0..3).map(move |d| f64::from(a[d]) - b[d])),
-    );
-    assert!(
-        worst <= 1e-4 * largest,
-        "f32 forces differ by {worst:e} of {largest:e}"
-    );
+    forces
+}
+
+#[test]
+fn f32_forces_agree_with_f64_at_large_and_small_strain() {
+    // The f32 error is roughly the same force whatever the strain, so at
+    // small strain it is a larger share of the force. Judged against the
+    // force a unit strain would make, `(λ + 2μ) h²` on a cell of side h.
+    // Whether f32 is enough for the product's readings is plan §15a K3,
+    // measured in build step 2.
+    let side = 0.01;
+    let model = block_model((2, 2, 2), side, YEOH);
+    let unit_strain_force = (YEOH.lambda + 2.0 * YEOH.mu) * side * side;
+    for amount in [0.2, 1e-3] {
+        let deformed = deform(model.rest_positions(), amount);
+        let reference = elastic_forces(&model, &deformed);
+        let largest = max_abs(reference.iter().flatten().copied());
+        let worst = max_abs(
+            f32_forces(&model, &deformed)
+                .iter()
+                .zip(&reference)
+                .flat_map(|(a, b)| (0..3).map(move |d| f64::from(a[d]) - b[d])),
+        );
+        eprintln!(
+            "MARGIN f32 forces at deformation {amount}: {worst:e}, largest force {largest:e}, \
+             unit-strain force {unit_strain_force:e}"
+        );
+        assert!(worst <= 1e-6 * unit_strain_force, "at {amount}: {worst:e}");
+    }
 }
 
 #[test]

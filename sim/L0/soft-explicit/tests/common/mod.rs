@@ -91,21 +91,19 @@ pub fn deform(positions: &[[f64; 3]], amount: f64) -> Vec<[f64; 3]> {
 /// The forces of the whole elastic pipeline (plan §15f phases 1–5) at
 /// `positions`, at f64.
 pub fn elastic_forces(model: &ExplicitModel, positions: &[[f64; 3]]) -> Vec<[f64; 3]> {
-    let nodal_ratio = nodal_volume_ratios(model, positions);
-    let per_lambda: Vec<f64> = nodal_ratio
+    let pressures: Vec<f64> = nodal_volume_ratios(model, positions)
         .iter()
-        .map(|&j| shared::pressure_per_lambda(j))
+        .zip(model.node_lambdas())
+        .map(|(&j, &lambda)| shared::pressure_lambda_term(j, lambda))
         .collect();
     let mut forces = vec![[0.0; 3]; model.node_count()];
     for (e, element) in model.elements().iter().enumerate() {
-        let material = model.materials()[e];
-        let pressure =
-            shared::element_pressure(material.lambda, element.map(|n| per_lambda[n as usize]));
+        let pressure = shared::element_pressure(element.map(|n| pressures[n as usize]));
         let f = shared::tet4_elastic_forces(
             gather(positions, *element),
             model.rest_edge_inverses()[e],
             model.rest_volumes()[e],
-            material,
+            model.materials()[e],
             pressure,
         );
         for (slot, &node) in element.iter().enumerate() {
@@ -133,8 +131,8 @@ pub fn nodal_volume_ratios(model: &ExplicitModel, positions: &[[f64; 3]]) -> Vec
         .collect()
 }
 
-/// The energy whose gradient the pipeline's forces are, inside one material:
-/// `Σ_e V_e Ψ_μ(F_e) + Σ_a V_a λ/2 (ln J_a)²`.
+/// The energy whose gradient the pipeline's forces are:
+/// `Σ_e V_e Ψ_μ(F_e) + Σ_a V_a λ_a/2 (ln J_a)²`.
 pub fn elastic_energy(model: &ExplicitModel, positions: &[[f64; 3]]) -> f64 {
     let mu_terms: f64 = model
         .elements()
@@ -149,13 +147,33 @@ pub fn elastic_energy(model: &ExplicitModel, positions: &[[f64; 3]]) -> f64 {
             )
         })
         .sum();
-    let lambda = model.materials()[0].lambda;
     let lambda_term: f64 = nodal_volume_ratios(model, positions)
         .iter()
         .zip(model.node_rest_volumes())
-        .map(|(&j, &rest)| rest * shared::energy_density_lambda_term(j, lambda))
+        .zip(model.node_lambdas())
+        .map(|((&j, &rest), &lambda)| rest * shared::energy_density_lambda_term(j, lambda))
         .sum();
     mu_terms + lambda_term
+}
+
+/// The largest deviation of `forces` from `−∂E/∂x` by central differences
+/// with step `h`, and the largest force.
+pub fn gradient_error(model: &ExplicitModel, positions: &[[f64; 3]], h: f64) -> (f64, f64) {
+    let forces = elastic_forces(model, positions);
+    let largest = forces.iter().flatten().fold(0.0_f64, |m, v| m.max(v.abs()));
+    let mut worst: f64 = 0.0;
+    for node in 0..model.node_count() {
+        for d in 0..3 {
+            let mut plus = positions.to_vec();
+            let mut minus = positions.to_vec();
+            plus[node][d] += h;
+            minus[node][d] -= h;
+            let gradient =
+                (elastic_energy(model, &plus) - elastic_energy(model, &minus)) / (2.0 * h);
+            worst = worst.max((forces[node][d] + gradient).abs());
+        }
+    }
+    (worst, largest)
 }
 
 /// A model of `block(n, side)` in one material, nothing held.

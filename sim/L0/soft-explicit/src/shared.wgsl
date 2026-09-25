@@ -228,14 +228,11 @@ fn energy_density(f: array<f32, 9>, material: Material) -> f32 {
     return energy_density_mu_terms(f, material) + energy_density_lambda_term(mat3_det(f), material.lambda);
 }
 
-// The λ term's pressure per unit λ at volume ratio `j`:
-// `U′(J) / λ = ln J / J`, where `U = λ/2 (ln J)²`.
-//
-// It depends on no material, so a node can carry it for the elements of
-// every material around it (see `element_pressure`).
-fn pressure_per_lambda(j: f32) -> f32 {
+// The λ term's pressure at volume ratio `j`: `U′(J) = λ ln J / J`, where
+// `U = λ/2 (ln J)²`.
+fn pressure_lambda_term(j: f32, lambda: f32) -> f32 {
     let guarded = guarded_volume_ratio(j);
-    return log(guarded) / guarded;
+    return (lambda * log(guarded)) / guarded;
 }
 
 // ---- sim/L0/soft-explicit/src/shared/element.rs ----
@@ -307,7 +304,8 @@ fn tet4_energy_mu_terms(x: array<f32, 12>, rest_edge_inverse: array<f32, 9>, res
     return rest_volume * energy_density_mu_terms(tet4_deformation_gradient(x, rest_edge_inverse), material);
 }
 
-// The shortest altitude, `3 |v| / (largest face area)`.
+// The shortest altitude, `3 |v| / (largest face area)`, for a tetrahedron
+// that is not flat.
 fn tet4_shortest_altitude(x: array<f32, 12>) -> f32 {
     let p0 = array(x[0], x[1], x[2]);
     let p1 = array(x[3], x[4], x[5]);
@@ -345,16 +343,10 @@ fn nodal_volume_ratio(current_volume: f32, rest_volume: f32) -> f32 {
     return current_volume / rest_volume;
 }
 
-// The element's averaged pressure, `p̄_e = λ_e · ¼ Σ g_a`, from the
-// pressure per unit λ (`pressure_per_lambda`) at its four nodes.
-//
-// This is the interface rule the plan names (IANP, §15g step 1): each
-// node's pressure is evaluated with *this element's* material, then
-// averaged over the element. The λ term's pressure is λ times a function of
-// `J` alone, so that is `λ_e` times the average of `g_a`. Inside one
-// material it is plain ANP's `¼ Σ p_a`, since every `p_a = λ g_a` there.
-fn element_pressure(lambda: f32, per_lambda: array<f32, 4>) -> f32 {
-    return (lambda * 0.25) * (((per_lambda[0] + per_lambda[1]) + per_lambda[2]) + per_lambda[3]);
+// The element's averaged pressure, `p̄_e = ¼ Σ p_a`, from its four nodes'
+// pressures.
+fn element_pressure(nodal_pressures: array<f32, 4>) -> f32 {
+    return 0.25 * (((nodal_pressures[0] + nodal_pressures[1]) + nodal_pressures[2]) + nodal_pressures[3]);
 }
 
 // ---- sim/L0/soft-explicit/src/shared/integrate.rs ----
@@ -424,13 +416,6 @@ struct SampleSpan {
     fraction: f32,
 }
 
-// Below this `sin θ`, interpolation is linear rather than spherical.
-//
-// θ is the angle between two quaternions as 4-vectors, half the rotation
-// between them. The threshold guards the division by `sin θ` when the rotations are
-// equal.
-const SLERP_THRESHOLD: f32 = 1e-6;
-
 // Rotate `v` by the pose's rotation (no translation):
 // `v + w t + u × t`, with `u` the vector part and `t = 2 u × v`.
 fn pose_rotate(pose: Pose, v: array<f32, 3>) -> array<f32, 3> {
@@ -457,7 +442,8 @@ fn pose_to_body(pose: Pose, point: array<f32, 3>) -> array<f32, 3> {
 }
 
 // The samples around `time`, for `count` samples taken every `interval`
-// from `start`. Times outside the samples clamp to the first or last.
+// (positive) from `start`. Times outside the samples clamp to the first or
+// last.
 fn pose_sample_span(time: f32, start: f32, interval: f32, count: u32) -> SampleSpan {
     let last = select(0, count - 1, count > 0);
     let coordinate = clamp((time - start) / interval, 0.0, f32(last));
@@ -466,19 +452,20 @@ fn pose_sample_span(time: f32, start: f32, interval: f32, count: u32) -> SampleS
     return SampleSpan(lower, upper, coordinate - f32(lower));
 }
 
-// The pose a fraction `s` of the way from `a` to `b`: spherical linear
-// interpolation of the rotation along the shorter arc, linear
-// interpolation of the translation.
+// The pose a fraction `s` of the way from `a` to `b`: the rotation
+// interpolated linearly along the shorter arc and renormalized, the
+// translation linearly.
+//
+// Spherical interpolation would need `acos` and `sin`, which WGSL computes
+// only to its own accuracy. For samples close together, as lowering takes
+// them, the renormalized rotation stays close to the spherical one, and
+// the gap shrinks with the cube of the step
+// (`tests/motion.rs`, `interpolation_stays_close_to_spherical`).
 fn pose_interpolate(a: Pose, b: Pose, s: f32) -> Pose {
     let dot = (((a.qw * b.qw) + (a.qx * b.qx)) + (a.qy * b.qy)) + (a.qz * b.qz);
-    let sign = select(1.0, -1.0, dot < 0.0);
-    let cos_theta = min(dot * sign, 1.0);
-    let theta = acos(cos_theta);
-    let sin_theta = sin(theta);
-    let spherical = sin_theta > SLERP_THRESHOLD;
-    let guarded_sin = select(1.0, sin_theta, spherical);
-    let weight_a = select(1.0 - s, sin((1.0 - s) * theta) / guarded_sin, spherical);
-    let weight_b = sign * select(s, sin(s * theta) / guarded_sin, spherical);
+    let sign: f32 = select(1.0, -1.0, dot < 0.0);
+    let weight_a = 1.0 - s;
+    let weight_b = sign * s;
     let qw = (weight_a * a.qw) + (weight_b * b.qw);
     let qx = (weight_a * a.qx) + (weight_b * b.qx);
     let qy = (weight_a * a.qy) + (weight_b * b.qy);
@@ -507,7 +494,7 @@ struct SdfGridLayout {
     origin_y: f32,
     // The grid's minimum corner, z.
     origin_z: f32,
-    // The spacing between samples, the same along every axis.
+    // The spacing between samples, the same along every axis; positive.
     cell_size: f32,
     // Samples along x (at least 1).
     size_x: u32,
@@ -549,9 +536,9 @@ fn sdf_grid_coordinate(point: array<f32, 3>, grid: SdfGridLayout) -> array<f32, 
 // clamped again.
 fn sdf_probe_coordinate(point: array<f32, 3>, grid: SdfGridLayout, probe: u32) -> array<f32, 3> {
     let center = sdf_grid_coordinate(point, grid);
-    let step_x = select(select(0.0, -0.5, probe == 2), 0.5, probe == 1);
-    let step_y = select(select(0.0, -0.5, probe == 4), 0.5, probe == 3);
-    let step_z = select(select(0.0, -0.5, probe == 6), 0.5, probe == 5);
+    let step_x: f32 = select(select(0.0, -0.5, probe == 2), 0.5, probe == 1);
+    let step_y: f32 = select(select(0.0, -0.5, probe == 4), 0.5, probe == 3);
+    let step_z: f32 = select(select(0.0, -0.5, probe == 6), 0.5, probe == 5);
     return array(
         clamp(center[0] + step_x, 0.0, f32(grid.size_x - 1)),
         clamp(center[1] + step_y, 0.0, f32(grid.size_y - 1)),
