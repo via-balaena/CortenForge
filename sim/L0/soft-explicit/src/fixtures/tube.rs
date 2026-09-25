@@ -28,8 +28,16 @@ pub enum Walls {
     /// The far end held, the entry and the outer wall free: the free-ends
     /// oracle applies (plan §15b).
     Free,
-    /// The outer wall held radially by a rigid case, and all axial motion
-    /// held: the oracle's cased wall in plane strain (plan 15d.8).
+    /// The outer wall held by a rigid case, and all axial motion held: the
+    /// oracle's cased wall in plane strain (plan 15d.8).
+    ///
+    /// The outer wall is held whole, not only radially. A radial hold is a
+    /// fixed direction per node, so a node sliding around the tube moves
+    /// along its tangent line, and so outward. Nothing else stops the tube
+    /// rotating, and held that way the confined wall rotated and opened its
+    /// case instead of compressing (plan §16n). The axisymmetric problem has
+    /// no motion around the tube, so holding the wall whole poses the same
+    /// problem.
     Cased,
 }
 
@@ -185,25 +193,20 @@ impl Tube {
         let elements = self.elements();
         let count = elements.len();
         let held: Vec<bool> = (0..self.node_count())
-            .map(|n| walls == Walls::Free && self.levels(n).2 == self.axial)
+            .map(|n| {
+                let (i, _, k) = self.levels(n);
+                match walls {
+                    Walls::Free => k == self.axial,
+                    Walls::Cased => i == self.radial,
+                }
+            })
             .collect();
         let model = ExplicitModel::new(positions, elements, vec![material; count], held)?;
         match walls {
             Walls::Free => Ok(model),
             Walls::Cased => {
-                let constraints = (0..self.node_count())
-                    .map(|n| {
-                        let (i, j, _) = self.levels(n);
-                        let (_, theta, _) = self.cylindrical(i, j, 0);
-                        let radial = if i == self.radial {
-                            [theta.cos(), theta.sin(), 0.0]
-                        } else {
-                            [0.0; 3]
-                        };
-                        [[0.0, 0.0, 1.0], radial]
-                    })
-                    .collect();
-                model.with_constraints(constraints)
+                let axial = [[0.0, 0.0, 1.0], [0.0; 3]];
+                model.with_constraints(vec![axial; self.node_count()])
             }
         }
     }

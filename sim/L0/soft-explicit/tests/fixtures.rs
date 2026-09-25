@@ -70,20 +70,14 @@ fn the_mesh_fills_the_polygonal_annulus_with_nodes_on_circles() {
 }
 
 #[test]
-fn the_cased_tube_is_held_radially_outside_and_axially_everywhere() {
+fn the_cased_tube_is_held_whole_outside_and_axially_everywhere() {
     let tube = Tube::plan(Mesh::TenK);
     let model = tube.model(SILICONE, Walls::Cased).unwrap();
-    assert!(model.held().iter().all(|&h| !h));
-    for (node, [first, second]) in model.constraints().iter().enumerate() {
-        assert_eq!(*first, [0.0, 0.0, 1.0]);
+    for (node, &[first, second]) in model.constraints().iter().enumerate() {
         let (i, _, _) = tube.levels(node);
-        if i == tube.radial {
-            let p = model.rest_positions()[node];
-            let radial = [p[0] / p[0].hypot(p[1]), p[1] / p[0].hypot(p[1]), 0.0];
-            assert!((0..3).all(|d| (second[d] - radial[d]).abs() < 1e-12));
-        } else {
-            assert_eq!(*second, [0.0; 3]);
-        }
+        assert_eq!(model.held()[node], i == tube.radial);
+        assert_eq!(first, [0.0, 0.0, 1.0]);
+        assert_eq!(second, [0.0; 3]);
     }
 }
 
