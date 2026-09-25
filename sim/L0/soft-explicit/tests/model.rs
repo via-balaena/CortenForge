@@ -215,3 +215,71 @@ fn held_nodes_and_per_element_materials_are_kept() {
     assert_eq!(model.materials(), materials.as_slice());
     assert_eq!(model.held(), held.as_slice());
 }
+
+#[test]
+fn each_node_lists_the_slots_that_refer_to_it_in_order() {
+    let model = block_model((2, 1, 1), 1.0, SILICONE);
+    let incidence = model.element_incidence();
+    assert_eq!(incidence.offsets().len(), model.node_count() + 1);
+    assert_eq!(incidence.entries().len(), 4 * model.element_count());
+    for node in 0..model.node_count() {
+        let slots = incidence.of(node);
+        assert!(
+            slots.windows(2).all(|w| w[0] < w[1]),
+            "node {node}: {slots:?}"
+        );
+        for &slot in slots {
+            let (element, corner) = (slot as usize / 4, slot as usize % 4);
+            assert_eq!(model.elements()[element][corner] as usize, node);
+        }
+    }
+    // Every slot appears exactly once.
+    let mut all: Vec<u32> = incidence.entries().to_vec();
+    all.sort_unstable();
+    assert!(all.iter().enumerate().all(|(i, &s)| s as usize == i));
+    let surface = model.surface_incidence();
+    for node in 0..model.node_count() {
+        for &slot in surface.of(node) {
+            let (triangle, corner) = (slot as usize / 3, slot as usize % 3);
+            assert_eq!(model.surface_triangles()[triangle][corner] as usize, node);
+        }
+    }
+    // A 2 × 1 × 1 block has every node on its surface.
+    assert!((0..model.node_count()).all(|n| !surface.of(n).is_empty()));
+}
+
+#[test]
+fn constraints_must_be_unit_or_zero_and_orthogonal() {
+    let model = block_model((1, 1, 1), 1.0, SILICONE);
+    let nodes = model.node_count();
+    let free = [[0.0; 3]; 2];
+    assert!(model.constraints().iter().all(|c| *c == free));
+    let radial_axial = [[0.6, 0.8, 0.0], [0.0, 0.0, 1.0]];
+    let mut constraints = vec![free; nodes];
+    constraints[3] = radial_axial;
+    let constrained = model.clone().with_constraints(constraints.clone()).unwrap();
+    assert_eq!(constrained.constraints()[3], radial_axial);
+    for (bad, reason) in [
+        ([[0.5, 0.0, 0.0], [0.0; 3]], "neither zero nor unit"),
+        ([[1.0, 0.0, 0.0], [0.6, 0.8, 0.0]], "not orthogonal"),
+        ([[f64::NAN, 0.0, 0.0], [0.0; 3]], "not finite"),
+    ] {
+        constraints[5] = bad;
+        let err = model
+            .clone()
+            .with_constraints(constraints.clone())
+            .unwrap_err();
+        assert!(
+            matches!(&err, ModelError::InvalidConstraint { node: 5, reason: r } if r.contains(reason)),
+            "{err:?}"
+        );
+    }
+    let err = model.with_constraints(vec![free; nodes - 1]).unwrap_err();
+    assert!(matches!(
+        err,
+        ModelError::LengthMismatch {
+            what: "constraints",
+            ..
+        }
+    ));
+}

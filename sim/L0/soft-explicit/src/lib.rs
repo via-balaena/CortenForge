@@ -48,7 +48,7 @@
 
 mod model;
 
-pub use model::{ExplicitModel, ModelError};
+pub use model::{ExplicitModel, Incidence, ModelError};
 
 /// The shared math at `f32`: what the GPU runs, and the CPU executor's
 /// working precision.
