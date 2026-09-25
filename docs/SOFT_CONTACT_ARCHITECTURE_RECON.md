@@ -1725,7 +1725,9 @@ distinct problems, and each was checked before it was fixed.
   - `set_poses`, for a new track mid-run (§14d's batches; K6's legs that end on a force);
   - `phase_outputs`, for step 4's per-phase conformance;
   - the contact law's s and μ_f. The loop reads them, so the stable step bounds the law in use.
-- **Every stable-step estimate starts cold,** at 100 power iterations.
+- **Every stable-step estimate starts cold,** at 100 power iterations. Its finite-difference step is
+  √ε of the executor's precision times the shortest rest edge, on the largest nodal component
+  (`Stepper::estimate`).
   - Warm-started at 20, the estimate stayed on a lower mode once the tube was loaded. It read 3.7–3.9 %
     low through the hold (the review's measurement, not kept). A test now checks that an estimate
     depends only on the state.
@@ -1761,9 +1763,20 @@ distinct problems, and each was checked before it was fixed.
 - **The energy balance's own error** is 0.28 % of the peak internal energy, on a pressed block at α 500
   (`tests/executor.rs`), against the 1 % gate.
 
+**Not recorded in 2a; 2b records both on the ladder, with `RAYON_NUM_THREADS` set:**
+- **The whole step's cost,** which §16i said 2a measures.
+- **The share of it the cold estimates take.** 2d adds that share to its per-run time. The iteration
+  count can come down against the 5 % bar, since the loaded estimate reads −0.35 % at 100.
+
+A reviewer's scratch timing (release, f32, M4 Pro, not kept) gives 2b its starting point:
+- 0.30–0.78 ms per step at 10k (4 and 12 threads);
+- 0.95–1.5 ms at 50k, and 1.5–1.8 ms at 100k, both before contact;
+- 12 threads were slower than 4 at 10k and 50k;
+- the cold estimates added 8.6 % to K2's 10k run.
+
 **Each CI check failed once on purpose,** and a check that could not fail was changed:
 - **The damping-balance test** passed with the damping loss doubled at α 50, where that loss is the size
-  of the balance's own error. It now runs at α 500, and fails that mutation (3.8 %).
+  of the balance's own error. It now runs at α 500, and fails that mutation.
 - **The band test** checked the area against the readout's own output. It now checks the closed form,
   and an area halved or read at the last instant fails it.
 - **Every check added in the review** fails its named mutation:
