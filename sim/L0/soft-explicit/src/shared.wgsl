@@ -632,14 +632,32 @@ fn sdf_grid_coordinate(point: array<f32, 3>, grid: SdfGridLayout) -> array<f32, 
     );
 }
 
-// The four sample indices along one axis that a lookup at grid coordinate
-// `coordinate` (clamped, [`sdf_grid_coordinate`]) reads: the cell's two and
-// one either side, each clamped onto the `size` samples.
+// The first sample of the cell a lookup interpolates in, along one axis.
+//
+// `coordinate` is the clamped grid coordinate ([`sdf_grid_coordinate`]) on
+// an axis of `size` samples. The cell starts at its floor, kept one short of
+// the last sample, so a point on the far face is at the end of the last
+// cell.
+fn sdf_tricubic_base(coordinate: f32, size: u32) -> u32 {
+    return min(u32(floor(coordinate)), max(size, 2) - 2);
+}
+
+// The four sample indices along one axis that a lookup reads.
+//
+// They are the cell's two and one either side, clamped onto the `size`
+// samples. A clamped one is not used: [`sdf_tricubic_ends`] extrapolates the
+// grid past the face instead.
 fn sdf_tricubic_axis(coordinate: f32, size: u32) -> array<u32, 4> {
-    let base = u32(floor(coordinate));
+    let base = sdf_tricubic_base(coordinate, size);
     let last = size - 1;
     let below = select(0, base - 1, base > 0);
-    return array(below, min(base, last), min(base + 1, last), min(base + 2, last));
+    return array(below, base, min(base + 1, last), min(base + 2, last));
+}
+
+// The storage index of sample `(column, row, layer)`: x fastest, then y,
+// then z.
+fn sdf_grid_index(column: u32, row: u32, layer: u32, grid: SdfGridLayout) -> u32 {
+    return (((layer * grid.size_y) + row) * grid.size_x) + column;
 }
 
 // Catmull–Rom weights of the four samples at fraction `t` of the cell.
@@ -666,6 +684,23 @@ fn sdf_tricubic_slopes(t: f32) -> array<f32, 4> {
     );
 }
 
+// `weights` for a cell at a face of the grid.
+//
+// Where the sample below the cell (`low`) or above it (`high`) lies past the
+// face, the grid is extended linearly from the cell's two samples instead
+// (`2 v₀ − v₁` below), which moves that sample's weight onto them. A plane is
+// then exact up to every face.
+fn sdf_tricubic_ends(weights: array<f32, 4>, low: bool, high: bool) -> array<f32, 4> {
+    let below: f32 = select(0.0, 1.0, low);
+    let above: f32 = select(0.0, 1.0, high);
+    return array(
+        weights[0] * (1.0 - below),
+        (weights[1] + ((2.0 * below) * weights[0])) - (above * weights[3]),
+        (weights[2] - (below * weights[0])) + ((2.0 * above) * weights[3]),
+        weights[3] * (1.0 - above),
+    );
+}
+
 // The four samples along one axis, weighted: `Σ weights[i] · sample i`.
 fn sdf_dot4(weights: array<f32, 4>, first: f32, second: f32, third: f32, fourth: f32) -> f32 {
     return (((weights[0] * first) + (weights[1] * second)) + (weights[2] * third)) + (weights[3] * fourth);
@@ -674,17 +709,31 @@ fn sdf_dot4(weights: array<f32, 4>, first: f32, second: f32, third: f32, fourth:
 // The distance and normal at grid coordinate `coordinate`, from the 64
 // grid values [`sdf_tricubic_axis`] names, stored `(k · 4 + j) · 4 + i`.
 //
-// Catmull–Rom in each axis: it passes through the grid's values, and
-// reproduces a field quadratic in each axis exactly away from the faces.
-// The normal is the interpolant's own gradient, so the distance and the
-// normal describe one surface.
+// Catmull–Rom in each axis: it passes through the grid's values; it
+// reproduces a field quadratic in each axis exactly where its four samples
+// lie inside the grid, and a plane exactly everywhere (the grid is extended
+// linearly past its faces, [`sdf_tricubic_ends`]). The normal is the
+// interpolant's own gradient, so the distance and the normal describe one
+// surface.
 fn sdf_tricubic(coordinate: array<f32, 3>, values: array<f32, 64>, grid: SdfGridLayout) -> SdfSample {
-    let wx = sdf_tricubic_weights(coordinate[0] - floor(coordinate[0]));
-    let sx = sdf_tricubic_slopes(coordinate[0] - floor(coordinate[0]));
-    let wy = sdf_tricubic_weights(coordinate[1] - floor(coordinate[1]));
-    let sy = sdf_tricubic_slopes(coordinate[1] - floor(coordinate[1]));
-    let wz = sdf_tricubic_weights(coordinate[2] - floor(coordinate[2]));
-    let sz = sdf_tricubic_slopes(coordinate[2] - floor(coordinate[2]));
+    let bx = sdf_tricubic_base(coordinate[0], grid.size_x);
+    let by = sdf_tricubic_base(coordinate[1], grid.size_y);
+    let bz = sdf_tricubic_base(coordinate[2], grid.size_z);
+    let tx = coordinate[0] - f32(bx);
+    let ty = coordinate[1] - f32(by);
+    let tz = coordinate[2] - f32(bz);
+    let lx = bx == 0;
+    let ly = by == 0;
+    let lz = bz == 0;
+    let hx = (bx + 2) >= grid.size_x;
+    let hy = (by + 2) >= grid.size_y;
+    let hz = (bz + 2) >= grid.size_z;
+    let wx = sdf_tricubic_ends(sdf_tricubic_weights(tx), lx, hx);
+    let sx = sdf_tricubic_ends(sdf_tricubic_slopes(tx), lx, hx);
+    let wy = sdf_tricubic_ends(sdf_tricubic_weights(ty), ly, hy);
+    let sy = sdf_tricubic_ends(sdf_tricubic_slopes(ty), ly, hy);
+    let wz = sdf_tricubic_ends(sdf_tricubic_weights(tz), lz, hz);
+    let sz = sdf_tricubic_ends(sdf_tricubic_slopes(tz), lz, hz);
     let v00 = sdf_dot4(wx, values[0], values[1], values[2], values[3]);
     let d00 = sdf_dot4(sx, values[0], values[1], values[2], values[3]);
     let v10 = sdf_dot4(wx, values[4], values[5], values[6], values[7]);
@@ -749,16 +798,20 @@ fn sdf_tricubic(coordinate: array<f32, 3>, values: array<f32, 64>, grid: SdfGrid
 
 // One node's contact result.
 struct ContactResponse {
-    // The force on the node, world frame.
+    // The force the step applies to the node, world frame: the contact
+    // force's part in the node's free directions. On a constrained node the
+    // constraint carries the rest, so this is not the whole contact force.
     force: array<f32, 3>,
     // The node's friction anchor for the next step, body frame.
     anchor: array<f32, 3>,
-    // The normal force's magnitude; zero out of contact. Divided by the
-    // node's tributary area, it is the contact pressure.
+    // The magnitude of the obstacle's normal force on the node, constraint
+    // included; zero out of contact. Divided by the node's tributary area,
+    // it is the contact pressure.
     normal_force: f32,
-    // The friction force, world frame: the part of `force` in the contact's
-    // tangent plane. Its ratio to `μ_f · normal_force` is 1 on a slipping
-    // node and below 1 on a sticking one, which is what K6 reads (plan §16b).
+    // The friction's part of `force`, world frame, in the contact's tangent
+    // plane. On an unconstrained node its ratio to `μ_f · normal_force` is 1
+    // when slipping and below 1 when sticking, which is what K6 reads (plan
+    // §16b).
     friction: array<f32, 3>,
 }
 
@@ -809,7 +862,7 @@ fn kinematic_contact(pose: Pose, predicted: array<f32, 3>, sample: SdfSample, an
     let slip = vec3_sub(pose_to_body(pose, corrected), anchor);
     let tangential = vec3_sub(slip, vec3_scale(sample.normal, vec3_dot(slip, sample.normal)));
     let tangential_length = vec3_length(tangential);
-    let limit = friction * penetration;
+    let limit = (friction * penetration) / guarded_reach;
     let sticking = tangential_length <= limit;
     let guarded_length = select(1.0, tangential_length, tangential_length > 0.0);
     let pull = select(limit / guarded_length, 1.0, sticking);
@@ -821,7 +874,7 @@ fn kinematic_contact(pose: Pose, predicted: array<f32, 3>, sample: SdfSample, an
     return ContactResponse(
         vec3_scale(vec3_add(normal_step, tangential_step), scale),
         vec3_select(in_contact, kept, pose_to_body(pose, predicted)),
-        scale * penetration,
+        (scale * penetration) / guarded_reach,
         vec3_scale(tangential_step, scale),
     );
 }

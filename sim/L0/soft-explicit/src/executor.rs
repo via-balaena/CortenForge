@@ -46,7 +46,7 @@ impl Obstacle {
         for (index, value) in values.iter_mut().enumerate() {
             let (column, row, layer) =
                 (columns[index % 4], rows[index / 4 % 4], layers[index / 16]);
-            *value = self.values[((layer * grid.size_y + row) * grid.size_x + column) as usize];
+            *value = self.values[shared::sdf_grid_index(column, row, layer, grid) as usize];
         }
         shared::sdf_tricubic(coordinate, values, grid)
     }
@@ -160,9 +160,6 @@ pub trait Executor {
 
     /// The executor's machine epsilon: `f32::EPSILON` or `f64::EPSILON`.
     fn epsilon(&self) -> f64;
-
-    /// The contact law's friction coefficient `μ_f`, from the [`Obstacle`].
-    fn friction(&self) -> f64;
 
     /// Replace the state: every node's displacement and half-step velocity,
     /// each projected onto the node's free directions, and the friction

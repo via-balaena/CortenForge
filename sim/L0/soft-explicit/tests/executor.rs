@@ -860,3 +860,78 @@ fn kinematic_contact_does_not_feed_sliding_around_a_curved_obstacle() {
     }
     assert!(largest <= 1.01 * start, "energy {start:e} -> {largest:e}");
 }
+
+#[test]
+fn the_kinematic_law_leaves_no_node_inside_a_moving_floor() {
+    // G2, on the law's own terms: every step ends with each node on or
+    // outside the floor, which rises and slides. Leftover depth would mean
+    // the prediction used the floor where it was, not where it will be, or
+    // missed the damping in the step it undoes.
+    let model = pressed_block();
+    let stepper = pressed_run(
+        cpu::f64::CpuExecutor::new(&model, &rising_floor(0.3)).unwrap(),
+        500.0,
+    );
+    let last = stepper.samples().last().unwrap().monitors;
+    eprintln!(
+        "MARGIN deepest node over the run {:e} m (bar 1e-12 m) after {} steps",
+        last.max_penetration,
+        stepper.steps()
+    );
+    assert!(last.contact_work > 0.0, "the floor must press");
+    assert!(last.max_penetration <= 1e-12);
+}
+
+#[test]
+fn the_executors_lookup_is_the_obstacles() {
+    // One node 10 µm inside the mandrel, off every symmetry of the grid: the
+    // executor's own depth there is exactly `Obstacle::sample`'s.
+    let radius = 0.011;
+    let (angle, z) = (0.37_f64, -0.0312);
+    let inside = [
+        (radius - 1e-5) * angle.cos(),
+        (radius - 1e-5) * angle.sin(),
+        z,
+    ];
+    let positions = vec![
+        inside,
+        [0.02, 0.0, z],
+        [0.02, 0.005, z - 0.004],
+        [0.02, -0.005, z - 0.004],
+    ];
+    let positions = if shared::vec3_dot(
+        shared::vec3_sub(positions[1], positions[0]),
+        shared::vec3_cross(
+            shared::vec3_sub(positions[2], positions[0]),
+            shared::vec3_sub(positions[3], positions[0]),
+        ),
+    ) > 0.0
+    {
+        positions
+    } else {
+        vec![positions[0], positions[1], positions[3], positions[2]]
+    };
+    let model = ExplicitModel::new(
+        positions,
+        vec![[0, 1, 2, 3]],
+        vec![SILICONE],
+        vec![false, true, true, true],
+    )
+    .unwrap();
+    let (grid, values) = Mandrel { radius }
+        .baked([-0.025, -0.025, -0.05], [0.025, 0.025, 0.0], 0.0005)
+        .unwrap();
+    let obstacle = Obstacle {
+        grid,
+        values,
+        start: 0.0,
+        interval: 1.0,
+        poses: vec![IDENTITY],
+        friction: 0.0,
+    };
+    let mut executor = cpu::f64::CpuExecutor::new(&model, &obstacle).unwrap();
+    run_phases(&mut executor, 0.0, 1e-6, 0.0);
+    let depth = executor.monitors().max_penetration;
+    assert!(depth > 0.0);
+    assert_eq!(depth, -obstacle.sample(inside).distance);
+}

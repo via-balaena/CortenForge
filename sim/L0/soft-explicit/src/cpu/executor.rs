@@ -415,8 +415,8 @@ impl CpuExecutor {
         }
     }
 
-    /// The obstacle's distance and normal at a body-frame point: the seven
-    /// probes of the shared lookup, fetched from the grid.
+    /// The obstacle's distance and normal at a body-frame point: the shared
+    /// tricubic lookup over the 64 grid values it names.
     fn sample(&self, point: [R; 3]) -> shared::SdfSample {
         let grid = self.grid;
         let coordinate = shared::sdf_grid_coordinate(point, grid);
@@ -426,7 +426,7 @@ impl CpuExecutor {
         let mut values = [0.0; 64];
         for (index, value) in values.iter_mut().enumerate() {
             let (column, row, layer) = (columns[index % 4], rows[index / 4 % 4], layers[index / 16]);
-            *value = self.grid_values[((layer * grid.size_y + row) * grid.size_x + column) as usize];
+            *value = self.grid_values[shared::sdf_grid_index(column, row, layer, grid) as usize];
         }
         shared::sdf_tricubic(coordinate, values, grid)
     }
@@ -458,10 +458,6 @@ impl Executor for CpuExecutor {
 
     fn epsilon(&self) -> f64 {
         widen(R::EPSILON)
-    }
-
-    fn friction(&self) -> f64 {
-        widen(self.friction)
     }
 
     fn set_state(

@@ -5,19 +5,23 @@
 // - a point outside the grid is clamped onto it, so it reads the nearest
 //   face;
 // - the distance is the tricubic interpolation of the 4 × 4 × 4 samples
-//   around the point, each index clamped onto the grid;
+//   around the point, a sample past a face extrapolated linearly from the
+//   two inside it;
 // - the normal is that interpolant's gradient, normalized, or +z where it is
 //   degenerate.
 //
-// A trilinear interpolant of a curved surface is off by up to h²/(8R), 5.7
-// µm on the 11 mm mandrel at A/20, and bumps that large fed energy into the
-// kinematic contact in a long frictionless hold; this one's error there is
-// about 0.05 µm (plan §16o). The shared math owns every index, clamp, weight
-// and the combination; the executor only fetches:
+// A trilinear interpolant of the 11 mm mandrel at A/20 is off by up to 5.7
+// µm (its nose; about 3 µm on its shank), and bumps that large fed energy
+// into the kinematic contact in a long frictionless hold (plan §16o). This
+// one is off by 0.053 µm away from the seam where the nose meets the shank,
+// and 0.9 µm across it, where the true surface's curvature jumps
+// (`tests/sdf_lookup.rs`). Past a face the grid is extended linearly, so a
+// plane is exact to every face. The shared math owns every index, clamp,
+// weight and the combination; the executor only fetches:
 //
 //   c = sdf_grid_coordinate(point, grid)
 //   ix, iy, iz = sdf_tricubic_axis(c[0], size_x), (c[1], size_y), (c[2], size_z)
-//   values[(k·4 + j)·4 + i] = <the grid value at (ix[i], iy[j], iz[k])>
+//   values[(k·4 + j)·4 + i] = grid[sdf_grid_index(ix[i], iy[j], iz[k], grid)]
 //   sample = sdf_tricubic(c, values, grid)
 //
 // Points are in the obstacle's body frame and grid values are distances in
@@ -76,18 +80,38 @@ pub fn sdf_grid_coordinate(point: [R; 3], grid: SdfGridLayout) -> [R; 3] {
     ]
 }
 
-/// The four sample indices along one axis that a lookup at grid coordinate
-/// `coordinate` (clamped, [`sdf_grid_coordinate`]) reads: the cell's two and
-/// one either side, each clamped onto the `size` samples.
+/// The first sample of the cell a lookup interpolates in, along one axis.
+///
+/// `coordinate` is the clamped grid coordinate ([`sdf_grid_coordinate`]) on
+/// an axis of `size` samples. The cell starts at its floor, kept one short of
+/// the last sample, so a point on the far face is at the end of the last
+/// cell.
 // `R as u32` on a coordinate clamped to [0, size − 1]: its floor is a
 // non-negative whole number that fits.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 #[must_use]
+pub fn sdf_tricubic_base(coordinate: R, size: u32) -> u32 {
+    (coordinate.floor() as u32).min(size.max(2) - 2)
+}
+
+/// The four sample indices along one axis that a lookup reads.
+///
+/// They are the cell's two and one either side, clamped onto the `size`
+/// samples. A clamped one is not used: [`sdf_tricubic_ends`] extrapolates the
+/// grid past the face instead.
+#[must_use]
 pub fn sdf_tricubic_axis(coordinate: R, size: u32) -> [u32; 4] {
-    let base = coordinate.floor() as u32;
+    let base = sdf_tricubic_base(coordinate, size);
     let last = size - 1;
     let below = if base > 0 { base - 1 } else { 0 };
-    [below, base.min(last), (base + 1).min(last), (base + 2).min(last)]
+    [below, base, (base + 1).min(last), (base + 2).min(last)]
+}
+
+/// The storage index of sample `(column, row, layer)`: x fastest, then y,
+/// then z.
+#[must_use]
+pub const fn sdf_grid_index(column: u32, row: u32, layer: u32, grid: SdfGridLayout) -> u32 {
+    (layer * grid.size_y + row) * grid.size_x + column
 }
 
 /// Catmull–Rom weights of the four samples at fraction `t` of the cell.
@@ -116,6 +140,24 @@ pub const fn sdf_tricubic_slopes(t: R) -> [R; 4] {
     ]
 }
 
+/// `weights` for a cell at a face of the grid.
+///
+/// Where the sample below the cell (`low`) or above it (`high`) lies past the
+/// face, the grid is extended linearly from the cell's two samples instead
+/// (`2 v₀ − v₁` below), which moves that sample's weight onto them. A plane is
+/// then exact up to every face.
+#[must_use]
+pub fn sdf_tricubic_ends(weights: [R; 4], low: bool, high: bool) -> [R; 4] {
+    let below: R = if low { 1.0 } else { 0.0 };
+    let above: R = if high { 1.0 } else { 0.0 };
+    [
+        weights[0] * (1.0 - below),
+        weights[1] + 2.0 * below * weights[0] - above * weights[3],
+        weights[2] - below * weights[0] + 2.0 * above * weights[3],
+        weights[3] * (1.0 - above),
+    ]
+}
+
 /// The four samples along one axis, weighted: `Σ weights[i] · sample i`.
 #[must_use]
 pub const fn sdf_dot4(weights: [R; 4], first: R, second: R, third: R, fourth: R) -> R {
@@ -125,18 +167,34 @@ pub const fn sdf_dot4(weights: [R; 4], first: R, second: R, third: R, fourth: R)
 /// The distance and normal at grid coordinate `coordinate`, from the 64
 /// grid values [`sdf_tricubic_axis`] names, stored `(k · 4 + j) · 4 + i`.
 ///
-/// Catmull–Rom in each axis: it passes through the grid's values, and
-/// reproduces a field quadratic in each axis exactly away from the faces.
-/// The normal is the interpolant's own gradient, so the distance and the
-/// normal describe one surface.
+/// Catmull–Rom in each axis: it passes through the grid's values; it
+/// reproduces a field quadratic in each axis exactly where its four samples
+/// lie inside the grid, and a plane exactly everywhere (the grid is extended
+/// linearly past its faces, [`sdf_tricubic_ends`]). The normal is the
+/// interpolant's own gradient, so the distance and the normal describe one
+/// surface.
+// `u32 as R`: exact for any grid under 2^24 samples a side at f32.
+#[allow(clippy::cast_precision_loss, clippy::cast_lossless)]
 #[must_use]
 pub fn sdf_tricubic(coordinate: [R; 3], values: [R; 64], grid: SdfGridLayout) -> SdfSample {
-    let wx = sdf_tricubic_weights(coordinate[0] - coordinate[0].floor());
-    let sx = sdf_tricubic_slopes(coordinate[0] - coordinate[0].floor());
-    let wy = sdf_tricubic_weights(coordinate[1] - coordinate[1].floor());
-    let sy = sdf_tricubic_slopes(coordinate[1] - coordinate[1].floor());
-    let wz = sdf_tricubic_weights(coordinate[2] - coordinate[2].floor());
-    let sz = sdf_tricubic_slopes(coordinate[2] - coordinate[2].floor());
+    let bx = sdf_tricubic_base(coordinate[0], grid.size_x);
+    let by = sdf_tricubic_base(coordinate[1], grid.size_y);
+    let bz = sdf_tricubic_base(coordinate[2], grid.size_z);
+    let tx = coordinate[0] - bx as R;
+    let ty = coordinate[1] - by as R;
+    let tz = coordinate[2] - bz as R;
+    let lx = bx == 0;
+    let ly = by == 0;
+    let lz = bz == 0;
+    let hx = bx + 2 >= grid.size_x;
+    let hy = by + 2 >= grid.size_y;
+    let hz = bz + 2 >= grid.size_z;
+    let wx = sdf_tricubic_ends(sdf_tricubic_weights(tx), lx, hx);
+    let sx = sdf_tricubic_ends(sdf_tricubic_slopes(tx), lx, hx);
+    let wy = sdf_tricubic_ends(sdf_tricubic_weights(ty), ly, hy);
+    let sy = sdf_tricubic_ends(sdf_tricubic_slopes(ty), ly, hy);
+    let wz = sdf_tricubic_ends(sdf_tricubic_weights(tz), lz, hz);
+    let sz = sdf_tricubic_ends(sdf_tricubic_slopes(tz), lz, hz);
     let v00 = sdf_dot4(wx, values[0], values[1], values[2], values[3]);
     let d00 = sdf_dot4(sx, values[0], values[1], values[2], values[3]);
     let v10 = sdf_dot4(wx, values[4], values[5], values[6], values[7]);

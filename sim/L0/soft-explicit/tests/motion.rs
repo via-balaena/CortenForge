@@ -484,3 +484,73 @@ fn kinematic_friction_keeps_a_constrained_node_on_the_surface() {
     );
     assert_eq!(landed[2], predicted[2]);
 }
+
+#[test]
+fn a_constrained_node_reads_the_normal_force_the_obstacle_carries() {
+    // A plane tilted 30° about y; the node may not move along x. Moved onto
+    // the plane along z only, it needs the normal force k·depth/reach, with
+    // reach = n·(the normal's free part) = c²: the constraint takes the rest.
+    let (s, c) = (0.5_f64, 0.75_f64.sqrt());
+    let normal = [s, 0.0, c];
+    let depth = 1.0e-4;
+    let predicted = [0.0, 0.0, -depth / c];
+    let sample = SdfSample {
+        distance: -depth,
+        normal,
+    };
+    let only_yz = [[1.0, 0.0, 0.0], [0.0; 3]];
+    let r = shared::kinematic_contact(IDENTITY, predicted, sample, predicted, K, 0.0, only_yz);
+    let reach = c * c;
+    assert!((r.normal_force - K * depth / reach).abs() <= 1e-12 * r.normal_force);
+    // Slipping along y, which is free and on the plane: the friction reaches
+    // μ_f times that normal force.
+    let anchor = [0.0, -1.0e-3, 0.0];
+    let r = shared::kinematic_contact(IDENTITY, predicted, sample, anchor, K, 0.3, only_yz);
+    let ratio = shared::vec3_length(r.friction) / (0.3 * r.normal_force);
+    assert!((ratio - 1.0).abs() <= 1e-12, "{ratio}");
+}
+
+#[test]
+fn a_constrained_node_lands_on_a_rotated_obstacle_in_its_free_directions() {
+    // The obstacle turned about a skew axis and moved; the node may not move
+    // along world x. The normal comes in the body frame, the constraint in the
+    // world's, and the node must still land on the surface.
+    let axis = [0.3, 0.5, 0.8_f64];
+    let length = shared::vec3_length(axis);
+    let p = pose(
+        0.7,
+        shared::vec3_scale(axis, 1.0 / length),
+        [0.01, -0.02, 0.005],
+    );
+    let depth = 2.0e-5;
+    let predicted = shared::pose_to_world(p, [0.01, 0.02, -depth]);
+    let held_x = [[1.0, 0.0, 0.0], [0.0; 3]];
+    let r = shared::kinematic_contact(p, predicted, surface(-depth), predicted, K, 0.0, held_x);
+    let step = shared::constrain(shared::vec3_scale(r.force, 1.0 / K), held_x[0], held_x[1]);
+    assert_eq!(
+        step,
+        shared::vec3_scale(r.force, 1.0 / K),
+        "the force is already free"
+    );
+    let landed = shared::pose_to_body(p, shared::vec3_add(predicted, step));
+    assert!(landed[2].abs() <= 1e-15, "{landed:?}");
+}
+
+#[test]
+fn a_node_whose_normal_is_wholly_constrained_is_left_where_it_is() {
+    // The law cannot move it onto the surface; it is left there, with no force,
+    // and only the G2 monitor shows the depth.
+    let predicted = [0.0, 0.0, -1.0e-4];
+    let held_z = [[0.0, 0.0, 1.0], [0.0; 3]];
+    let r = shared::kinematic_contact(
+        IDENTITY,
+        predicted,
+        surface(-1.0e-4),
+        predicted,
+        K,
+        0.3,
+        held_z,
+    );
+    assert_eq!(r.force, [0.0; 3]);
+    assert_eq!(r.normal_force, 0.0);
+}

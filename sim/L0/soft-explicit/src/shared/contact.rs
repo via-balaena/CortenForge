@@ -17,16 +17,20 @@
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ContactResponse {
-    /// The force on the node, world frame.
+    /// The force the step applies to the node, world frame: the contact
+    /// force's part in the node's free directions. On a constrained node the
+    /// constraint carries the rest, so this is not the whole contact force.
     pub force: [R; 3],
     /// The node's friction anchor for the next step, body frame.
     pub anchor: [R; 3],
-    /// The normal force's magnitude; zero out of contact. Divided by the
-    /// node's tributary area, it is the contact pressure.
+    /// The magnitude of the obstacle's normal force on the node, constraint
+    /// included; zero out of contact. Divided by the node's tributary area,
+    /// it is the contact pressure.
     pub normal_force: R,
-    /// The friction force, world frame: the part of `force` in the contact's
-    /// tangent plane. Its ratio to `μ_f · normal_force` is 1 on a slipping
-    /// node and below 1 on a sticking one, which is what K6 reads (plan §16b).
+    /// The friction's part of `force`, world frame, in the contact's tangent
+    /// plane. On an unconstrained node its ratio to `μ_f · normal_force` is 1
+    /// when slipping and below 1 when sticking, which is what K6 reads (plan
+    /// §16b).
     pub friction: [R; 3],
 }
 
@@ -93,7 +97,7 @@ pub fn kinematic_contact(
     let slip = vec3_sub(pose_to_body(pose, corrected), anchor);
     let tangential = vec3_sub(slip, vec3_scale(sample.normal, vec3_dot(slip, sample.normal)));
     let tangential_length = vec3_length(tangential);
-    let limit = friction * penetration;
+    let limit = friction * penetration / guarded_reach;
     let sticking = tangential_length <= limit;
     let guarded_length = if tangential_length > 0.0 {
         tangential_length
@@ -116,7 +120,7 @@ pub fn kinematic_contact(
     ContactResponse {
         force: vec3_scale(vec3_add(normal_step, tangential_step), scale),
         anchor: vec3_select(in_contact, kept, pose_to_body(pose, predicted)),
-        normal_force: scale * penetration,
+        normal_force: scale * penetration / guarded_reach,
         friction: vec3_scale(tangential_step, scale),
     }
 }

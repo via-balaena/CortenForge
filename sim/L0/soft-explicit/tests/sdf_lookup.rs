@@ -173,11 +173,34 @@ fn near_the_surface(m: Mandrel) -> Vec<[f64; 3]> {
     points
 }
 
-#[test]
-fn the_lookup_is_close_to_the_mandrel_at_the_tubes_cell() {
-    let (m, o) = mandrel();
+/// Points within 0.3 mm of the mandrel's surface within 2 mm (4 cells) of
+/// the seam where its nose meets its shank, where the true distance's
+/// curvature jumps by 1/a across the seam.
+fn across_the_seam(m: Mandrel) -> Vec<[f64; 3]> {
+    let mut points = Vec::new();
+    for n in 0..2000_u32 {
+        let t = f64::from(n);
+        let angle = (t * 2.399_963_229_7).rem_euclid(std::f64::consts::TAU);
+        let offset = ((t * 0.618_033_988_75).fract() - 0.5) * 0.0006;
+        let arc = ((t * 0.414_213_562_4).fract() - 0.5) * 0.004;
+        let r = m.radius + offset;
+        // The profile's radius and height, `arc` along it from the seam.
+        let (radial, z) = if arc <= 0.0 {
+            (r, -m.radius + arc)
+        } else {
+            let polar = std::f64::consts::FRAC_PI_2 - arc / m.radius;
+            (r * polar.sin(), -m.radius + r * polar.cos())
+        };
+        points.push([radial * angle.cos(), radial * angle.sin(), z]);
+    }
+    points
+}
+
+/// The lookup's largest distance and normal errors against the mandrel over
+/// `points`.
+fn errors(m: Mandrel, o: &Obstacle, points: &[[f64; 3]]) -> (f64, f64) {
     let (mut worst_value, mut worst_normal) = (0.0_f64, 0.0_f64);
-    for p in near_the_surface(m) {
+    for &p in points {
         let s = o.sample(p);
         worst_value = worst_value.max((s.distance - m.distance(p)).abs());
         let h = 1e-7;
@@ -190,11 +213,21 @@ fn the_lookup_is_close_to_the_mandrel_at_the_tubes_cell() {
         let n = shared::vec3_scale(g, 1.0 / shared::vec3_length(g));
         worst_normal = worst_normal.max(shared::vec3_length(shared::vec3_sub(s.normal, n)));
     }
+    (worst_value, worst_normal)
+}
+
+#[test]
+fn the_lookup_is_close_to_the_mandrel_at_the_tubes_cell() {
+    let (m, o) = mandrel();
+    let (away, away_normal) = errors(m, &o, &near_the_surface(m));
+    let (seam, seam_normal) = errors(m, &o, &across_the_seam(m));
     eprintln!(
-        "MARGIN mandrel at A/20: distance {:.3} um, normal {worst_normal:.2e} (bars 0.2 um, 1e-3)",
-        1e6 * worst_value
+        "MARGIN mandrel at A/20: away from the seam {:.3} um, normal {away_normal:.2e} (bars 0.1 um, 1e-3); across it {:.3} um, normal {seam_normal:.2e} (bars 2 um, 3e-2)",
+        1e6 * away,
+        1e6 * seam
     );
-    assert!(worst_value <= 2e-7 && worst_normal <= 1e-3);
+    assert!(away <= 1e-7 && away_normal <= 1e-3);
+    assert!(seam <= 2e-6 && seam_normal <= 3e-2);
 }
 
 #[test]
@@ -254,7 +287,7 @@ fn the_f32_lookup_agrees_with_f64() {
                 axes[1][index / 4 % 4],
                 axes[2][index / 16],
             );
-            *value = o.values[((k * g.size_y + j) * g.size_x + i) as usize] as f32;
+            *value = o.values[single::sdf_grid_index(i, j, k, layout) as usize] as f32;
         }
         let narrow = single::sdf_tricubic(c, values, layout);
         let wide = o.sample(p);
@@ -267,4 +300,38 @@ fn the_f32_lookup_agrees_with_f64() {
         1e6 * worst_value
     );
     assert!(worst_value <= 1e-7 && worst_normal <= 1e-3);
+}
+
+#[test]
+fn the_lookup_reproduces_a_linear_field_everywhere_including_the_outermost_cells() {
+    // Beyond a face the lookup extrapolates the grid linearly, so a plane is
+    // exact up to and on every face, not only one cell in.
+    let field = |p: [f64; 3]| 0.002 + 0.6 * p[0] - 0.48 * p[1] + 0.64 * p[2];
+    let o = baked(field);
+    let g = o.grid;
+    let extent = |size: u32| f64::from(size - 1) * g.cell_size;
+    let mut worst = (0.0_f64, 0.0_f64);
+    for a in 0..=40_u32 {
+        for b in 0..=40_u32 {
+            for c in [0.0, 0.3, 0.7, 1.0] {
+                let s = |t: u32| f64::from(t) / 40.0;
+                let p = [
+                    g.origin_x + s(a) * extent(g.size_x),
+                    g.origin_y + s(b) * extent(g.size_y),
+                    g.origin_z + c * extent(g.size_z),
+                ];
+                let sample = o.sample(p);
+                let normal = [0.6, -0.48, 0.64];
+                worst.0 = worst.0.max((sample.distance - field(p)).abs());
+                worst.1 = worst
+                    .1
+                    .max(shared::vec3_length(shared::vec3_sub(sample.normal, normal)));
+            }
+        }
+    }
+    eprintln!(
+        "MARGIN linear field, faces included: value {:e}, normal {:e} (bars 1e-15, 1e-12)",
+        worst.0, worst.1
+    );
+    assert!(worst.0 <= 1e-15 && worst.1 <= 1e-12);
 }

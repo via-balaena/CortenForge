@@ -74,7 +74,7 @@ fn power_iteration_errors(state: &Snapshot, time: f64, label: &str) -> (f64, f64
 }
 
 #[test]
-#[cfg_attr(debug_assertions, ignore = "release-only: a 14k-step tube run")]
+#[cfg_attr(debug_assertions, ignore = "release-only: a 13k-step tube run")]
 fn k2_on_the_10k_tube_is_within_seven_percent() {
     let run = k2_run();
     let r = run
@@ -95,6 +95,13 @@ fn k2_on_the_10k_tube_is_within_seven_percent() {
     assert!(r.energy_balance.unwrap() <= 0.01, "invalid: energy balance");
     assert!(r.errors.raw.abs() <= 0.07, "K2 raw: {:+}", r.errors.raw);
     assert!(corrected.abs() <= 0.07, "K2 gap-corrected: {corrected:+}");
+    // G2: no node deeper than 1 % of the inset (the interference) at any step.
+    let inset = (run.case.mandrel_ratio - 1.0) * Tube::plan(Mesh::TenK).inner_radius;
+    assert!(
+        r.max_penetration <= 0.01 * inset,
+        "G2: {:e} m",
+        r.max_penetration
+    );
 
     // Each of the loop's estimates depends only on the state (tests/executor.rs);
     // check the one it would make here, loaded, where a warm-started estimate
