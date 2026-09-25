@@ -1989,7 +1989,7 @@ hold, under K. Each row changed one thing in the executor's obstacle lookup (a d
 | the exact mandrel | decays to 4e-9 J | flat |
 | the exact distance, the grid's normal | decays to 4e-9 J | flat |
 | the grid's distance, its exact trilinear gradient | grows from t ≈ 1.4 s | rises |
-| the exact distance plus smooth bumps, 5 µm at the cell spacing | grows | rises 28 mJ |
+| the exact distance plus smooth bumps, 5 µm at the cell spacing | grows | rises about 30 mJ |
 | the same, 1 µm and 0.2 µm | decays | flat |
 | a tricubic (Catmull–Rom) interpolant of the same A/20 grid, and its gradient | decays to 9e-9 J | flat |
 
