@@ -27,6 +27,7 @@ fn k2_run() -> TubeRun {
         insertion: Insertion::plan(10.0 * TubeRun::shear_period(MU, DENSITY)),
         window: 0.1,
         friction: 0.0,
+        penalty_scale: 0.5,
     }
 }
 

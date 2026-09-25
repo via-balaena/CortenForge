@@ -667,6 +667,9 @@ pub struct TubeRun {
     pub window: f64,
     /// The friction coefficient `μ_f`.
     pub friction: f64,
+    /// The contact penalty's scale `s` in `k = s · m / Δt²` (plan §15c's
+    /// primary is 0.5).
+    pub penalty_scale: f64,
 }
 
 /// What a [`TubeRun`] produced.
@@ -689,6 +692,8 @@ pub struct TubeResult {
     pub axial_stretch_error: f64,
     /// Steps taken.
     pub steps: u64,
+    /// How many times the stable step was estimated.
+    pub estimates: u64,
     /// The last step size.
     pub dt: f64,
     /// Every monitor read; the last follows the last step.
@@ -733,6 +738,29 @@ impl TubeRun {
         }
     }
 
+    /// The mandrel for this run's case, on `tube`.
+    #[must_use]
+    pub fn mandrel(&self, tube: &Tube) -> Mandrel {
+        Mandrel {
+            radius: self.case.mandrel_ratio * tube.inner_radius,
+        }
+    }
+
+    /// The mandrel as the run's obstacle: baked at A/20 (plan §15c), with
+    /// this run's friction and penalty scale.
+    ///
+    /// # Errors
+    /// A [`BakeError`] if the grid cannot be baked.
+    pub fn obstacle(&self, tube: &Tube) -> Result<Obstacle, BakeError> {
+        self.insertion.obstacle(
+            self.mandrel(tube),
+            tube,
+            tube.inner_radius / 20.0,
+            self.friction,
+            self.penalty_scale,
+        )
+    }
+
     /// Run it on the executor `make` builds, and read the band over the
     /// window at the end of the hold (plan §15b).
     ///
@@ -750,18 +778,9 @@ impl TubeRun {
 
         let tube = Tube::plan(self.mesh);
         let model = tube.model(self.material(), self.case.walls)?;
-        let mandrel = Mandrel {
-            radius: self.case.mandrel_ratio * tube.inner_radius,
-        };
+        let mandrel = self.mandrel(&tube);
         let insertion = self.insertion;
-        let penalty_scale = 0.5;
-        let obstacle = insertion.obstacle(
-            mandrel,
-            &tube,
-            tube.inner_radius / 20.0,
-            self.friction,
-            penalty_scale,
-        )?;
+        let obstacle = self.obstacle(&tube)?;
         let damping = 2.0 * 0.05 * (TAU / Self::shear_period(self.mu, self.density));
         let mut stepper = Stepper::new(make(&model, &obstacle), StepperConfig::new(damping), 0.0);
         let window = insertion.end() - self.window;
@@ -782,6 +801,7 @@ impl TubeRun {
             inverted: gates::inverted(&samples),
             max_penetration: samples.last().map_or(0.0, |s| s.monitors.max_penetration),
             steps: stepper.steps(),
+            estimates: stepper.estimates(),
             dt: stepper.dt(),
             reading,
             errors,
