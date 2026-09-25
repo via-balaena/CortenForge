@@ -7,8 +7,8 @@
 //! (defaults: 10k 0 penalty:0.5 0 f32 20). `case` indexes
 //! `fixtures::golden::THICK_TUBE`; `law` is `penalty:<s>`, `kinematic` or
 //! `augmented:<s>:<steps between updates>`; the grid's cell is A/`grid`.
-//! With friction, a frictionless companion run gives the Coulomb push ratio
-//! (plan 15d.7). Set `RAYON_NUM_THREADS` so the times are comparable.
+//! With friction on the free tube, a frictionless companion run gives the
+//! Coulomb push ratio (plan 15d.7). Set `RAYON_NUM_THREADS` so the times are comparable.
 
 #![allow(missing_docs, clippy::unwrap_used, clippy::cast_precision_loss)]
 
@@ -232,7 +232,8 @@ fn main() {
     let started = Instant::now();
     let result = run_once(&run, wide);
     let wall = started.elapsed().as_secs_f64();
-    let coulomb = (run.friction > 0.0).then(|| coulomb_ratio(&run, &result, wide));
+    let coulomb = (run.friction > 0.0 && case.walls == Walls::Free)
+        .then(|| coulomb_ratio(&run, &result, wide));
     let flutter = result
         .samples
         .iter()

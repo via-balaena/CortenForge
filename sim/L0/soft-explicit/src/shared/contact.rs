@@ -143,7 +143,8 @@ pub const fn kinematic_stiffness(mass: R, inverse_mass: R, damping: R, dt: R) ->
 /// directions and lengthened so it still reaches the surface. Friction is
 /// kinematic too: a sticking node is held at its anchor, with no elastic
 /// slip; a slipping one moves back by at most `μ_f` times the normal
-/// correction, and its anchor goes with it. The node's normal velocity into
+/// correction, and its anchor goes with it. The friction step is kept to
+/// the node's free directions and to the surface. The node's normal velocity into
 /// the obstacle is lost on contact.
 #[must_use]
 pub fn kinematic_contact(
@@ -165,8 +166,8 @@ pub fn kinematic_contact(
     let normal_step = vec3_scale(free, penetration / guarded_reach);
 
     // Friction in the body frame, from where the normal step leaves the node.
-    let corrected = pose_to_body(pose, vec3_add(predicted, normal_step));
-    let slip = vec3_sub(corrected, anchor);
+    let corrected = vec3_add(predicted, normal_step);
+    let slip = vec3_sub(pose_to_body(pose, corrected), anchor);
     let tangential = vec3_sub(slip, vec3_scale(sample.normal, vec3_dot(slip, sample.normal)));
     let tangential_length = vec3_length(tangential);
     let limit = friction * penetration;
@@ -177,11 +178,17 @@ pub fn kinematic_contact(
         1.0
     };
     let pull = if sticking { 1.0 } else { limit / guarded_length };
-    let body_tangential_step = vec3_scale(tangential, -pull);
-    let landed = vec3_add(corrected, body_tangential_step);
+    // The part of that step the node can take: in its free directions, and
+    // along the surface (the free normal takes back what leaves it).
+    let wanted = constrain(
+        pose_rotate(pose, vec3_scale(tangential, -pull)),
+        constraints[0],
+        constraints[1],
+    );
+    let tangential_step = vec3_sub(wanted, vec3_scale(free, vec3_dot(wanted, normal) / guarded_reach));
+    let landed = pose_to_body(pose, vec3_add(corrected, tangential_step));
     let kept = vec3_select(sticking, anchor, landed);
 
-    let tangential_step = pose_rotate(pose, body_tangential_step);
     let scale = if in_contact { stiffness } else { 0.0 };
     ContactResponse {
         force: vec3_scale(vec3_add(normal_step, tangential_step), scale),

@@ -508,3 +508,36 @@ fn kinematic_friction_holds_a_node_at_its_anchor_until_coulomb_and_then_drags_it
         (shared::vec3_length(r.friction) - 0.3 * r.normal_force).abs() <= 1e-12 * r.normal_force
     );
 }
+
+#[test]
+fn kinematic_friction_keeps_a_constrained_node_on_the_surface() {
+    // A plane tilted in x–z; the node may not move along z. Its friction step
+    // along the plane would need z, so it can take none of it.
+    let (s, c) = (0.6, 0.8);
+    let normal = [s, 0.0, c];
+    let depth = 1.0e-4;
+    let predicted = [0.0, 0.0, -depth / c];
+    let sample = SdfSample {
+        distance: -depth,
+        normal,
+    };
+    let axial = [[0.0, 0.0, 1.0], [0.0; 3]];
+    let far_along_the_plane = [1.0e-3 * c + depth / s, 0.0, -1.0e-3 * s - depth / c];
+    let r = shared::kinematic_contact(
+        IDENTITY,
+        predicted,
+        sample,
+        far_along_the_plane,
+        K,
+        0.3,
+        axial,
+    );
+    // What the boundary conditions leave of the step.
+    let step = shared::constrain(shared::vec3_scale(r.force, 1.0 / K), axial[0], axial[1]);
+    let landed = shared::vec3_add(predicted, step);
+    assert!(
+        shared::vec3_dot(landed, normal).abs() <= 1e-18,
+        "{landed:?}"
+    );
+    assert_eq!(landed[2], predicted[2]);
+}

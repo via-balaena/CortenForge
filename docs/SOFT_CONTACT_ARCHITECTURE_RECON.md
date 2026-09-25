@@ -1881,3 +1881,73 @@ User's Manual 6.11, §36.2.3). Its friction has *"an infinite sticking stiffness
 slip is always zero"* (§35.1.5). Its cost is that *"impact is
 plastic"*: a node's normal kinetic energy is lost on contact. That removes §15c's objection to variant
 (b), that friction is not defined for it. The choice is stage 2.
+
+### 16o. 2b, G2 stage 2: the contact law's A/B (2026-09-25)
+
+**The candidates,** each a function in the shared math (so the test is what the GPU would run),
+chosen in the order the rule below was written, before any run:
+- **P:** the penalty, s = 0.5 (the control; it reproduces §16n exactly).
+- **K:** the kinematic predictor/corrector (`shared::kinematic_contact`). The node's position at the end of
+  the step is predicted without contact; if it lands inside, the node gets the force m(1 + αΔt/2)·g/Δt²
+  that puts it on the surface, along the normal made free of its constraints. Friction is kinematic: a
+  sticking node is held at its anchor; a slipping one moves back by at most μ_f·g along the surface, in
+  its free directions, and its anchor goes with it. It adds no penalty term to the stable step.
+- **A10, A50:** the penalty plus a per-node multiplier λ, the normal force max(0, λ + k·p), with
+  λ ← max(0, λ + k·p̄) every 10 or 50 steps (p̄ the mean penetration since the last update). An update
+  every step was excluded before running: for one node under central differences the characteristic
+  polynomial is z³ + (s − 3)z² + (3 − s + βs)z − 1, whose roots multiply to 1, so two grow by about
+  √(1 + β) per step, and the mass damping (αΔt ≈ 5e-4) cannot hold a useful gain β (arithmetic).
+
+**The rule, written first:** a law is eligible if every run finishes and keeps the validity gates; it
+must meet G2 (grid, all steps) on every case at 10k and 50k; K2 within 7 % at 10k; the Coulomb push
+within 5 % where another law meets it; then fewer steps, less scatter, fewer knobs. If none meets G2
+everywhere, report and decide nothing.
+
+**The runs** (`examples/tube.rs <mesh> <case> <law> <μ_f> f32 <A/n>`, `RAYON_NUM_THREADS=4`;
+`kinematic`, `penalty:0.5`, `augmented:0.5:10`, `augmented:0.5:50`):
+
+| Law | G2, free (10k, 50k) | Cased, frictionless | Validity gates | |
+|---|---|---|---|---|
+| P | 2.6–4.5 % | pressure −45 % / −36 % | hold | fails G2 |
+| K | **0.02–0.04 %** (0.2–0.9 µm) | **diverges** (10k, 50k) | hold on the free cases | fails "every run finishes" |
+| A10 | 26–41 % | diverges | fail: KE/IE 73–80 %, balance 16–26 % | fails |
+| A50 | 2.0–10 % | pressure −0.4 %, G2 11–16 % | fail at 10k: balance 1.1–2.0 % | fails |
+
+- **K, free tube:** the deepest penetration against the grid is 0.2–0.9 µm at 10k, 50k and 100k. Against
+  the true surface at the end it is the grid's own bias, 3.8–5.6 µm at A/20 and 0.8–1.4 µm at A/40 (10k,
+  50k). K2: +4.19 % / +4.41 % (λ_a 1.1) and +3.25 % / +3.29 % (λ_a 1.3) at 10k; +1.28 % / +1.45 % and
+  +1.09 % / +1.13 % at 50k; **+0.75 % / +0.94 % and +0.69 % / +0.73 % at 100k.** Raw and gap-corrected
+  now agree, as the gap is gone. KE/IE ≤ 0.73 %, balance ≤ 0.46 %.
+- **K takes 0.920× P's steps on every mesh** (1.8/ω_el against 1.652/ω_el). Each step costs 11–15 % more
+  (a second grid sample and the prediction): 0.345, 0.965 and 1.665 ms at 10k, 50k and 100k. A run takes
+  the same wall time as P's (4.9 s, 23.7 s, 52.5 s).
+- **K, cased, frictionless, diverges** at t = 0.40 s (10k) with the step unchanged; the contact nodes at
+  the tube's entry grow a motion around the tube, about 7× in kinetic energy per 100 steps. Measured, not
+  the cause: the step (the loop's ω² at step 3 500 is within 0.05 % of a converged f64 estimate, and
+  safety 0.8, 0.7 and 0.5 only delay it, to t = 0.41, 0.43 and 0.51 s); the grid (A/40 and A/80 diverge
+  too); the precision (f64 diverges too). **What drives it has not been isolated.**
+- **K, cased, with friction, runs clean, and reads the confined oracle:** −0.34 %, −0.31 % and −0.24 %
+  at 10k, 50k and 100k (μ_f 0.05), against P's −45 %, −36 % and −28 %. μ_f 0.3 reads the same pressure
+  (−0.35 %, −0.32 %), so friction carries nothing at the seated equilibrium. G2: 2.2–4.4 µm (0.22–0.44 %).
+  - An earlier version of K kept the friction step off the node's constraints, and at μ_f 0.3 its cased
+    G2 read 1.4–1.9 %. The step is now kept to the node's free directions and the surface; a test fails
+    on the old step.
+- **The Coulomb push** (15d.7) reads 0.87 for P and 0.89 for K at 10k: neither meets 5 %, so it separates
+  nothing here. Why both read about 11 % low has not been isolated; 2b's Coulomb push takes it up.
+
+**Predictions, scored:**
+
+| | Predicted | Measured |
+|---|---|---|
+| Q1 | K's G2 (grid, all steps) < 1 µm everywhere | ✓ free (0.2–0.9 µm); ✗ cased with friction (2.2–4.4 µm, still ≤ 0.44 %) |
+| Q2 | K's steps × 0.918 | 0.920 on every mesh ✓ |
+| Q3 | K's cased K2 single-digit | −0.24 to −0.35 %, with friction ✓; frictionless diverges ✗ |
+| Q4 | K's true G2 = the grid bias: ≤ 5.7 µm at A/20, ≤ 1.5 µm at A/40 | 3.8–5.6 µm, 0.8–1.4 µm ✓ |
+| Q5 | A: seated gap ~0, the all-steps maximum above 1 % | all-steps ✓; seated ✗ (A10 rings; A50 up to 115 µm) |
+| Q6 | an A may ring or blow up | A10 both ✓ |
+| Q7 | K's scatter and contact-node KE above P's | scatter ✓ (e.g. 2.26 % against 1.67 %); contact KE mostly ✓ |
+| Q8 | Coulomb within 5 % for K and P | ✗ both (0.87, 0.89) |
+
+**By the rule, nothing is decided:** K meets G2 on every run that finishes, and on the cased tube as soon
+as it has any friction; its frictionless cased run diverges. Every A-law fails. The decision, and what
+to do about the divergence, is Jon's (2026-09-25).
