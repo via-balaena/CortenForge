@@ -1828,17 +1828,18 @@ pre-fix reading reproduces at `c7d67eab`.
 | 50k | cased | 329.0 µm | 32.9 % | −324.4 µm | −35.6 % |
 | 100k (1.05 mm) | λ_a 1.1 free | 28.1 µm | 2.8 % | −13.3 µm | −0.33 % / +0.95 % |
 | 100k | λ_a 1.3 free | 65.2 µm | 2.2 % | −34.4 µm | −0.15 % / +0.73 % |
+| 100k | cased | 258.8 µm | 25.9 % | −255.9 µm | −28.4 % |
 
 - Every validity gate holds in these runs (λ_z within 0.1 %, KE/IE ≤ 0.2 %, energy balance ≤ 0.04 %, no
-  inversion). The cased run at 100k was not repeated after the fix.
+  inversion).
 - On the free tube the deepest penetration is reached while loading (t = 0.19–0.72 s of 1.24), and is
   1.6–2.1× the band's seated gap. At the end, the deepest node sits 10–15 mm behind the tip.
 - **The grid reads shallower than the true surface by up to 5.7 µm** at A/20 (every run, at the end
   state). On the λ_a 1.1 tube that is half of G2's 10 µm before the contact law contributes.
 - **In the cased tube the penalty acts in series with the wall.** The wall's stiffness per area is the
   oracle's p over the interference, about 95 kPa/mm; the penalty's is p over the free tube's gap, 103
-  kPa/mm at 10k and 168 kPa/mm at 50k (arithmetic). Their ratio predicts −48 % and −36 %; the runs read
-  −44.9 % and −35.6 %.
+  kPa/mm at 10k, 168 at 50k and 214 at 100k (arithmetic). Their ratio predicts −48 %, −36 % and −31 %;
+  the runs read −44.9 %, −35.6 % and −28.4 %.
 
 **A larger s** (at 10k; the cased runs in this sweep came before the fixture fix, so only the free
 cases count): s = 1 cuts the λ_a 1.1 tube's deepest penetration to 20.5 µm (2.1 %) and its
@@ -1852,21 +1853,21 @@ contact loses stability below that bound has not been isolated.
 gap falls 10k → 50k → 100k as 1 : 0.61 : 0.48, against h's 1 : 0.58 : 0.46. The deepest penetration
 falls more slowly (1 : 0.77 : 0.62, about h^0.62). Extrapolating that trend, 1 % at λ_a 1.1 needs h
 about 5× smaller than 100k's, about 125× its elements (arithmetic). The confined case misses by 42× at
-10k and 33× at 50k.
+10k, 33× at 50k and 26× at 100k.
 
 **Predictions, scored:**
 
 | | Predicted (before any run) | Measured |
 |---|---|---|
 | P1 | gap λ_a 1.3 / 1.1 ≈ 2.5 (∝ p) | 2.51 at 10k ✓ |
-| P2 | cased: series, 30–50 % low at 10k | −44.9 % at 10k, −35.6 % at 50k ✓ (after the fixture fix) |
+| P2 | cased: series, 30–50 % low at 10k | −44.9 % at 10k ✓; −35.6 % and −28.4 % at 50k and 100k (after the fixture fix) |
 | P3 | gap ∝ h | ✓ for the band gap; the deepest node falls more slowly |
 | P4 | gap ∝ (3.24 − s)/s; steps ×1.10, 1.49, 3.4 at s = 1, 2, 3 | band gap ✓ at s = 1 (0.46× and 0.41× against 0.41×); ✗ at s ≥ 2, which chatters or blows up |
 | P5 | grid bias 2–3 µm | ✗: up to 5.7 µm |
 | P6 | G2 fails at s = 0.5 everywhere | ✓ |
 
 **The cost** (the §16m items): a whole step, estimates excluded, takes 0.29–0.30 ms at 10k, 0.84–0.86
-ms at 50k and 1.48–1.49 ms at 100k. One cold estimate takes 19–27 ms, 68 ms and 126 ms. The estimates
+ms at 50k and 1.47–1.49 ms at 100k. One cold estimate takes 19–27 ms, 68 ms and 126 ms. The estimates
 are 11–16 % of a run's wall time. A K2 run takes about 5 s, 23 s and 52 s. So K2 runs at 100k on the
 CPU (16i's 10-minute test).
 
