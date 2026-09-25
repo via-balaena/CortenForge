@@ -402,6 +402,10 @@ fn a_new_pose_track_takes_over_mid_run() {
         e.set_poses(0.0, 0.0, &poses),
         Err(ObstacleError::Interval { .. })
     ));
+    assert!(matches!(
+        e.set_poses(f64::NAN, interval, &poses),
+        Err(ObstacleError::Invalid { reason }) if reason.contains("start")
+    ));
 }
 
 fn pressed_run<E: Executor>(executor: E, damping: f64) -> Stepper<E> {
@@ -413,8 +417,8 @@ fn pressed_run<E: Executor>(executor: E, damping: f64) -> Stepper<E> {
 #[test]
 fn the_energy_balance_holds_with_contact_friction_and_damping() {
     // Heavily damped, so the damping term is a visible share of the balance:
-    // at α 50 it is 0.37 % of the peak internal energy, the size of the
-    // balance's own error, and a doubled damping term passed there.
+    // at α 50 it is about the size of the balance's own error, and a doubled
+    // damping term passed there.
     let model = pressed_block();
     let stepper = pressed_run(
         cpu::f64::CpuExecutor::new(&model, &rising_floor(0.3)).unwrap(),
@@ -606,6 +610,44 @@ fn the_loop_re_estimates_its_step_as_it_runs() {
 }
 
 #[test]
+fn an_estimate_depends_only_on_the_state() {
+    // Each estimate starts from the same fixed vector: two at one state agree
+    // bitwise. Warm-started from the last call instead, estimates stayed on a
+    // lower mode once the tube was loaded (plan §16m).
+    let model = pressed_block();
+    let (_, u, v) = deformed_state(&model);
+    let mut e = cpu::f64::CpuExecutor::new(&model, &nowhere()).unwrap();
+    e.set_state(0.0, &u, &v, None);
+    let p = e.epsilon().sqrt() * e.shortest_edge();
+    let first = e.elastic_rayleigh_quotient(40, p);
+    let second = e.elastic_rayleigh_quotient(40, p);
+    assert_eq!(first, second);
+}
+
+#[test]
+fn a_blow_up_at_a_re_estimate_stops_with_an_error() {
+    // Re-estimating more often than reading: the blow-up reaches an estimate
+    // first, which must return the error, not panic.
+    let model = pressed_block();
+    let config = StepperConfig {
+        safety: 1.3,
+        reestimate_every: 7,
+        monitor_every: 100,
+        ..StepperConfig::new(0.0)
+    };
+    let mut stepper = Stepper::new(
+        cpu::f64::CpuExecutor::new(&model, &rising_floor(0.0)).unwrap(),
+        config,
+        0.0,
+    );
+    let result = stepper.run_until(0.1);
+    assert!(
+        matches!(result, Err(RunError::NonFinite { .. })),
+        "{result:?}"
+    );
+}
+
+#[test]
 fn a_run_that_blows_up_stops_with_an_error() {
     // Past the stability limit (ω Δt = 2.6 > 2): the run must stop with an
     // error at the first non-finite read, not run on.
@@ -664,6 +706,15 @@ fn a_window_adds_each_steps_state_to_its_sums() {
         0.0,
     );
     stepper.run_until(0.09).unwrap();
+    // The loop's window holds exactly the steps between opening and closing.
+    stepper.open_window();
+    for _ in 0..10 {
+        stepper.step().unwrap();
+    }
+    stepper.close_window();
+    stepper.step().unwrap();
+    assert_eq!(stepper.executor_mut().snapshot().accumulated_steps, 10);
+    // And the executor's sums add each call's state.
     let e = stepper.executor_mut();
     e.clear_accumulators();
     e.accumulate();

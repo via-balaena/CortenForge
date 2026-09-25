@@ -169,8 +169,9 @@ pub trait Executor {
     /// that end on a force, 16b).
     ///
     /// # Errors
-    /// An [`ObstacleError`] if the track is empty, its interval is not
-    /// positive, or a pose is not a unit quaternion with a finite translation.
+    /// An [`ObstacleError`] if the track is empty, its start is not finite,
+    /// its interval is not positive, or a pose is not a unit quaternion with a
+    /// finite translation.
     fn set_poses(&mut self, start: f64, interval: f64, poses: &[Pose])
     -> Result<(), ObstacleError>;
 
@@ -276,7 +277,7 @@ pub fn check_obstacle(obstacle: &Obstacle) -> Result<(), ObstacleError> {
             expected,
         });
     }
-    check_poses(obstacle.interval, &obstacle.poses)?;
+    check_poses(obstacle.start, obstacle.interval, &obstacle.poses)?;
     let reason = if grid.size_x == 0 || grid.size_y == 0 || grid.size_z == 0 {
         Some("the grid has no samples along an axis")
     } else if !(grid.cell_size.is_finite() && grid.cell_size > 0.0) {
@@ -297,14 +298,19 @@ pub fn check_obstacle(obstacle: &Obstacle) -> Result<(), ObstacleError> {
     reason.map_or(Ok(()), |reason| Err(ObstacleError::Invalid { reason }))
 }
 
-/// Check a pose track: samples, a positive interval, and unit quaternions
-/// with finite translations.
+/// Check a pose track: samples, a finite start, a positive interval, and unit
+/// quaternions with finite translations.
 ///
 /// # Errors
 /// The first problem found.
-pub fn check_poses(interval: f64, poses: &[Pose]) -> Result<(), ObstacleError> {
+pub fn check_poses(start: f64, interval: f64, poses: &[Pose]) -> Result<(), ObstacleError> {
     if poses.is_empty() {
         return Err(ObstacleError::NoPoses);
+    }
+    if !start.is_finite() {
+        return Err(ObstacleError::Invalid {
+            reason: "the pose track's start is not finite",
+        });
     }
     if !(interval.is_finite() && interval > 0.0) {
         return Err(ObstacleError::Interval { interval });

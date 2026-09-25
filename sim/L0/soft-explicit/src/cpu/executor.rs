@@ -497,7 +497,7 @@ impl Executor for CpuExecutor {
         interval: f64,
         poses: &[crate::f64::Pose],
     ) -> Result<(), ObstacleError> {
-        check_poses(interval, poses)?;
+        check_poses(start, interval, poses)?;
         self.pose_start = narrow(start);
         self.pose_interval = narrow(interval);
         self.poses = poses.iter().map(|&p| narrow_pose(p)).collect();
@@ -666,12 +666,10 @@ impl Executor for CpuExecutor {
             inverted_element_steps: self.inverted_element_steps,
             contact_work: self.contact_work.iter().sum(),
             damping_loss: self.damping_losses.iter().sum(),
-            // `f64::max` would drop a NaN; a NaN here must reach the loop's
-            // check, so it propagates.
-            max_penetration: self.max_penetrations.iter().fold(0.0, |m: f64, &p| {
-                let p = widen(p);
-                if m.is_nan() || p.is_nan() { f64::NAN } else { m.max(p) }
-            }),
+            max_penetration: self
+                .max_penetrations
+                .iter()
+                .fold(0.0, |m: f64, &p| m.max(widen(p))),
         };
         self.resultant_sum = [0.0; 3];
         self.normal_sum = 0.0;

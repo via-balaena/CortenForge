@@ -908,8 +908,9 @@ contact pressure within 5 % at ν ≥ 0.49? And can it run a 100k-tet insertion 
 - **Mass:** lumped, ρV/4 per node (the implicit solver's rule, `construct.rs:607-619`).
 - **Time step:** Δt = 0.9 · 2/ω_max, with ω_max from power iteration on M⁻¹K through the executor's
   own force phases, **penalty stiffness included**.
-  - **The iteration is re-run during loading**, warm-started every 500 steps. The step never grows by
-    more than 5 % at a time.
+  - **The iteration is re-run during loading**, every 500 steps, each from the same fixed start
+    *(amended in 2a, 16m: warm-started, it stalled on a lower mode once loaded)*. The step never grows
+    by more than 5 % at a time.
   - A reviewer's model (not kept) measured, on 6 × 47 × 59: deformation cut the limit to 0.912× its
     rest value, and a Δt fixed at rest with the penalty gave ωΔt = 2.041, which is unstable.
   - The altitude estimate is a cross-check only. The method research measured it 4.4× loose on a
@@ -1494,8 +1495,8 @@ one thread and on many.
   can have complex eigenvalues. Central differences amplify those at any step, and mass damping removes
   only α_D/2 of their growth rate. Nothing gates it: the contact nodes' kinetic energy is reported, and
   whether flutter occurs here is not known.
-- The iteration is re-run every 500 steps, warm-started. The step grows by at most 5 % per re-run
-  (§15c) and shrinks at once.
+- The iteration is re-run every 500 steps, each from the same fixed start (16m). The step grows by at
+  most 5 % per re-run (§15c) and shrinks at once.
 - **Its accuracy is checked, not its precision.** A Rayleigh quotient never exceeds the largest
   eigenvalue, so agreement between f32 and f64 says nothing about convergence. 2a's done-when: at the
   iteration count the loop uses, the estimate of ω_el² is within 5 % of a converged f64 reference on
@@ -1716,8 +1717,8 @@ distinct problems, and each was checked before it was fixed.
   them. `snapshot` carries them, and `set_state` takes them back, or re-anchors each node where it sits.
   - Started from rest positions in the world frame instead, a floor moved along its own plane gave a
     different run.
-  - They stay absolute body-frame positions (§16b sends K6 to f64). On the tube, at μ_f 0.3 and a 29 µm
-    gap, the elastic-slip window is about 1 170 f32 spacings at 0.1 m (arithmetic). At μ_f 0.05 and a
+  - They stay absolute body-frame positions (§16b sends K6 to f64). On the tube, at μ_f 0.3 and a 28 µm
+    gap, the elastic-slip window is about 1 100 f32 spacings at 0.1 m (arithmetic). At μ_f 0.05 and a
     10 µm gap it would be 67 spacings, each 1.5 % of the Coulomb limit.
   - Step 4 decides between absolute anchors and a stored elastic slip before it fixes the WGSL layout.
 - **The trait gains:**
@@ -1726,8 +1727,8 @@ distinct problems, and each was checked before it was fixed.
   - the contact law's s and μ_f. The loop reads them, so the stable step bounds the law in use.
 - **Every stable-step estimate starts cold,** at 100 power iterations.
   - Warm-started at 20, the estimate stayed on a lower mode once the tube was loaded. It read 3.7–3.9 %
-    low through the hold. A dense eigensolve at step 9 000 confirmed −2.1 % (the review's measurement,
-    not kept).
+    low through the hold (the review's measurement, not kept). A test now checks that an estimate
+    depends only on the state.
 - **The band reads λ_z, the gap and its areas at the window's mean state,** as the pressure is a window
   mean. At the last instant, λ_z swings about 0.4 % across the window, and K2's reference with it.
 - **The loop:**
@@ -1755,7 +1756,7 @@ distinct problems, and each was checked before it was fixed.
 - **G2 is not met on the tube at 10k.** The deepest penetration is 45 µm, 4.5 % of the 1 mm
   interference, against 1 %. §15g step 2 settles the contact law against G2 in 2b.
 - **The power iteration at the loop's 100 cold iterations,** against a converged f64 run on the 10k
-  tube: −0.21 % at rest, and −0.35 % loaded at K2's end, at f32 and f64. On a small block it is −1.1 %
+  tube: −0.21 % at rest, and −0.35 % (f64) and −0.32 % (f32) loaded at K2's end. On a small block it is −1.1 %
   against a dense eigensolve (`tests/executor.rs`).
 - **The energy balance's own error** is 0.28 % of the peak internal energy, on a pressed block at α 500
   (`tests/executor.rs`), against the 1 % gate.

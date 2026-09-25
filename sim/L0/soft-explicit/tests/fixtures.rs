@@ -10,7 +10,7 @@ use sim_soft_explicit::executor::Snapshot;
 use sim_soft_explicit::f64::Material;
 use sim_soft_explicit::fixtures::golden::THICK_TUBE;
 use sim_soft_explicit::fixtures::tube::{
-    BakeError, BandReading, Insertion, Mandrel, Mesh, Tube, Walls, read_band,
+    BakeError, BandReading, Insertion, Mandrel, Mesh, Tube, Walls, node_pressures, read_band,
 };
 
 const SILICONE: Material = Material {
@@ -203,7 +203,7 @@ fn uniform(
 #[test]
 fn a_uniform_band_reads_its_pressure_gap_and_stretch() {
     let tube = Tube::plan(Mesh::TenK);
-    let (_, reading) = uniform(&tube, 3000.0, 0.011, 0.98, 40);
+    let (snapshot, reading) = uniform(&tube, 3000.0, 0.011, 0.98, 40);
     assert!(
         (reading.pressure / 3000.0 - 1.0).abs() < 1e-12,
         "{}",
@@ -216,6 +216,13 @@ fn a_uniform_band_reads_its_pressure_gap_and_stretch() {
             .all(|p| (p / 3000.0 - 1.0).abs() < 1e-12)
     );
     assert!(reading.node_scatter < 1e-12);
+    let model = tube.model(SILICONE, Walls::Free).unwrap();
+    let band = tube.band(0.020, 0.060);
+    assert!(
+        node_pressures(&model, &snapshot, &band)
+            .iter()
+            .all(|p| (p / 3000.0 - 1.0).abs() < 1e-12)
+    );
     assert!(reading.gap.abs() < 1e-15, "{}", reading.gap);
     assert!((reading.axial_stretch - 0.98).abs() < 1e-12);
 }

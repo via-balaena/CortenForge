@@ -95,8 +95,9 @@ fn k2_on_the_10k_tube_is_within_seven_percent() {
     assert!(r.errors.raw.abs() <= 0.07, "K2 raw: {:+}", r.errors.raw);
     assert!(corrected.abs() <= 0.07, "K2 gap-corrected: {corrected:+}");
 
-    // The step the loop took at the end came from this state's estimate;
-    // check it here, loaded, where a warm-started estimate once read 3.9 % low.
+    // Each of the loop's estimates depends only on the state (tests/executor.rs);
+    // check the one it would make here, loaded, where a warm-started estimate
+    // once read 3.9 % low.
     let end = run.insertion.end();
     let (wide, narrow) = power_iteration_errors(&r.snapshot, end, "loaded, at K2's end");
     assert!(wide.abs() <= 0.05 && narrow.abs() <= 0.05);

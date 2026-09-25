@@ -475,21 +475,7 @@ pub fn read_band(
             x[2] + sum[2] / steps,
         ]
     };
-    let area = |n: usize| {
-        model
-            .surface_incidence()
-            .of(n)
-            .iter()
-            .map(|&slot| {
-                let [a, b, c] = model.surface_triangles()[slot as usize / 3];
-                triangle_area(
-                    deformed(a as usize),
-                    deformed(b as usize),
-                    deformed(c as usize),
-                ) / 3.0
-            })
-            .sum::<f64>()
-    };
+    let area = |n: usize| tributary_area(model, snapshot, n);
     let readings: Vec<(u32, f64, f64)> = nodes
         .iter()
         .map(|&n| {
@@ -556,6 +542,57 @@ pub fn read_band(
         gap,
         axial_stretch,
     }
+}
+
+/// A surface node's tributary area at the window's mean state: a third of
+/// each incident boundary triangle (plan §15c).
+///
+/// # Panics
+/// If the snapshot holds no accumulated steps.
+// Step counts stay far below 2^52, where u64 → f64 starts to round.
+#[allow(clippy::cast_precision_loss)]
+#[must_use]
+pub fn tributary_area(model: &ExplicitModel, snapshot: &Snapshot, node: usize) -> f64 {
+    assert!(snapshot.accumulated_steps > 0, "the window is empty");
+    let steps = snapshot.accumulated_steps as f64;
+    let mean = |n: usize| {
+        let (x, sum) = (model.rest_positions()[n], snapshot.displacement_sums[n]);
+        [
+            x[0] + sum[0] / steps,
+            x[1] + sum[1] / steps,
+            x[2] + sum[2] / steps,
+        ]
+    };
+    model
+        .surface_incidence()
+        .of(node)
+        .iter()
+        .map(|&slot| {
+            let [a, b, c] = model.surface_triangles()[slot as usize / 3];
+            triangle_area(mean(a as usize), mean(b as usize), mean(c as usize)) / 3.0
+        })
+        .sum()
+}
+
+/// Each of `nodes`' window-mean contact pressure: its mean normal force over
+/// its [`tributary_area`].
+///
+/// # Panics
+/// If the snapshot holds no accumulated steps.
+// Step counts stay far below 2^52, where u64 → f64 starts to round.
+#[allow(clippy::cast_precision_loss)]
+#[must_use]
+pub fn node_pressures(model: &ExplicitModel, snapshot: &Snapshot, nodes: &[u32]) -> Vec<f64> {
+    assert!(snapshot.accumulated_steps > 0, "the window is empty");
+    let steps = snapshot.accumulated_steps as f64;
+    nodes
+        .iter()
+        .map(|&n| {
+            snapshot.normal_force_sums[n as usize]
+                / steps
+                / tributary_area(model, snapshot, n as usize)
+        })
+        .collect()
 }
 
 /// An oracle case: plan §15b's free-ends tube, or 15d.8's cased tube in
@@ -656,8 +693,9 @@ pub struct TubeResult {
     pub dt: f64,
     /// Every monitor read; the last follows the last step.
     pub samples: Vec<crate::stepping::Sample>,
-    /// The state at the end, with the window's sums: per-node pressures (K5's
-    /// seated percentile), and a state to restart or compare from.
+    /// The state at the end, with the window's sums, from which
+    /// [`node_pressures`] gives any node's window-mean pressure (K5's seated
+    /// percentile).
     pub snapshot: Snapshot,
 }
 

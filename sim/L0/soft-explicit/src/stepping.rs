@@ -86,9 +86,10 @@ pub struct Sample {
 /// Why a run stopped early.
 #[derive(Clone, Copy, Debug, PartialEq, thiserror::Error)]
 pub enum RunError {
-    /// A monitor read was not finite: the run blew up. An explicit check on
-    /// the host, since a shader may not propagate `NaN` (plan §13d rule 2).
-    #[error("a monitor read at step {step} (time {time}) is not finite")]
+    /// A monitor read, or a re-estimate of the stable step, was not finite:
+    /// the run blew up. An explicit check on the host, since a shader may not
+    /// propagate `NaN` (plan §13d rule 2).
+    #[error("a monitor read or step estimate at step {step} (time {time}) is not finite")]
     NonFinite {
         /// The step of the read.
         step: u64,
@@ -115,7 +116,8 @@ impl<E: Executor> Stepper<E> {
     /// Start a run at time `start`: estimate the stable step.
     ///
     /// # Panics
-    /// If the estimate is not a positive, finite step.
+    /// If the estimate at the start is not a positive, finite step: the
+    /// model itself is broken.
     pub fn new(executor: E, config: StepperConfig, start: f64) -> Self {
         let mut stepper = Self {
             executor,
@@ -128,12 +130,18 @@ impl<E: Executor> Stepper<E> {
             window: false,
             samples: Vec::new(),
         };
-        stepper.dt = stepper.estimate();
+        stepper.dt = stepper.estimate().unwrap_or(f64::NAN);
+        assert!(
+            stepper.dt > 0.0,
+            "the stable step at the start is not positive and finite; ω² = {}",
+            stepper.omega_squared
+        );
         stepper
     }
 
-    /// Estimate `ω_el²` from the fixed start and return the stable step.
-    fn estimate(&mut self) -> f64 {
+    /// Estimate `ω_el²` from the fixed start and return the stable step, or
+    /// `None` if it is not positive and finite.
+    fn estimate(&mut self) -> Option<f64> {
         let perturbation = self.executor.epsilon().sqrt() * self.executor.shortest_edge();
         self.omega_squared = self
             .executor
@@ -144,22 +152,21 @@ impl<E: Executor> Stepper<E> {
             self.executor.penalty_scale(),
             self.executor.friction(),
         );
-        assert!(
-            dt.is_finite() && dt > 0.0,
-            "the stable step estimate is {dt}; ω² = {} is not positive and finite",
-            self.omega_squared
-        );
-        dt
+        (dt.is_finite() && dt > 0.0).then_some(dt)
     }
 
     /// One step: the phases in plan §15f's order, then the window sums and
     /// the monitors when due.
     ///
     /// # Errors
-    /// [`RunError::NonFinite`] if a monitor read is not finite.
+    /// [`RunError::NonFinite`] if a monitor read, or a re-estimate of the
+    /// stable step, is not finite.
     pub fn step(&mut self) -> Result<(), RunError> {
         if self.steps > 0 && self.steps.is_multiple_of(self.config.reestimate_every) {
-            let limit = self.estimate();
+            let limit = self.estimate().ok_or(RunError::NonFinite {
+                step: self.steps,
+                time: self.time,
+            })?;
             self.dt = self.config.next_step(self.dt, limit);
         }
         let (dt, damping) = (self.dt, self.config.damping);
@@ -206,7 +213,8 @@ impl<E: Executor> Stepper<E> {
     /// if the last step was not read, so the reads cover every step.
     ///
     /// # Errors
-    /// [`RunError::NonFinite`] if a monitor read is not finite.
+    /// [`RunError::NonFinite`] if a monitor read, or a re-estimate of the
+    /// stable step, is not finite.
     pub fn run_until(&mut self, end: f64) -> Result<(), RunError> {
         loop {
             if self.time >= end {
