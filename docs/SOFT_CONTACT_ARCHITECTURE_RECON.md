@@ -1381,11 +1381,15 @@ than μ_f·P, in plane strain. Part of the contact sticks and part slips.
   | The readout | ≤ 0.005a | 2c's unit test (above) |
   | The loading rate | ≤ 0.005a | the rate ladder |
   | Finite strain | measured | the companion run below |
-  | The element and the finite domain | not known | 2c also runs a/h = 25 and records the difference |
+  | The finite domain | measured | the companion runs below |
+  | The element | not known | 2c also runs a/h = 25 and records the difference |
 
-- **One companion run,** R = 200a (strains about 1 %), changes only the strain. It must agree with the
-  main run within 0.01a at every sample. If it does not, finite strain is not negligible, and K6 is
-  judged on the companion.
+- **Two companion runs, each changing one thing:**
+  - R = 200a (strains about 1 %), for finite strain;
+  - a block 30a wide and 15a deep, for the finite domain.
+
+  Each must agree with the main run within 0.01a at every sample. If one does not, that effect is not
+  negligible, and K6 is judged on that companion.
 - **The gate must fail on purpose first** (2c's done-when). Three mutations of the contact law:
   - an anchor that never releases;
   - an anchor that is not dragged while slipping;
@@ -1417,7 +1421,7 @@ code is reviewed on its own. 2b–2d add fixtures, readouts and runs, and 2d add
 
 | PR | Holds | Done when |
 |---|---|---|
-| **2a. The CPU solver runs the tube** | Per-direction constraints and the readout pieces in the shared math (16d). The executor trait, the CPU executor and the stepping loop (16e). The tube's fixture and its neo-Hookean golden values (16f, 16g) | CI runs the sanity run and K2 at 10k (16i), and each has failed once on a deliberate mutation. The power iteration meets its accuracy bar (16e) |
+| **2a. The CPU solver runs the tube** | Per-direction constraints and the readout pieces in the shared math (16d). The executor trait, the CPU executor and the stepping loop (16e). The tube's fixture and its neo-Hookean golden values (16f, 16g) | CI runs the sanity run and K2 at 10k (16i), and each has failed once on a deliberate mutation. The power iteration meets its accuracy bar (16e). The crate's coverage run is timed (16i) |
 | **2b. The tube experiment on the CPU** | The oracle's Yeoh extension (16g). The runs of 16i, their results and commands written into this document | Every 16i run has its numbers: K2, K3, K5, the loading-time ladder, the Coulomb push, the Yeoh and confined cases, stiffness scaling, the gap record, and the loaded step factor. 2d reads the last four |
 | **2c. K6** | The Cattaneo–Mindlin block and its readouts (16b, 16f), and its runs | K6 has failed once under each of 16b's three mutations, and is then decided |
 | **2d. The product's budget, and the stop rule** | The `base_mold` measurements of §15g step 2, run locally (16j) | The stop rule has been applied, with its numbers written here |
@@ -1496,7 +1500,8 @@ one thread and on many.
   eigenvalue, so agreement between f32 and f64 says nothing about convergence. 2a's done-when: at the
   iteration count the loop uses, the estimate of ω_el² is within 5 % of a converged f64 reference on
   the 10k tube. That is a fifth of the 27.7 % margin that 0.9 · 2 leaves below the stability limit in
-  ω_el² (arithmetic: (4 − s)/(3.24 − s) − 1 at s = 0.5).
+  ω_el² (arithmetic: (4 − s)/(3.24 − s) − 1 at s = 0.5). 2b repeats the check on the 50k tube, and 2d
+  on the product's mesh, before either relies on the step.
 
 **Loading.**
 - The mandrel's pose is sampled every T/1000 and interpolated (step 1's `pose_sample_span` and
@@ -1584,6 +1589,10 @@ missing. So:
   `coverage_skip_binaries`. The weekly coverage job builds a crate's tests in release and runs every
   binary instrumented (`xtask/src/coverage_run.rs:609`), at 164–1 226× the uninstrumented time on the
   suites that file measured (`:690`). The precedent is `sim/L0/soft/Cargo.toml:77`.
+- **The crate's other tests still run instrumented, on rayon,** and the job does not pin
+  `RAYON_NUM_THREADS` (`.github/workflows/scheduled.yml`). How much the instrumentation slows rayon code
+  here is not known. 2a times the crate's coverage run locally, at the CI runner's thread count and at
+  one thread. If the first is much slower, the executor's tests run on a one-thread pool.
 
 **Recorded commands, in 2b** (results and commands written into this document):
 - the loading-time ladder (§15c), at 10k;
@@ -1681,9 +1690,14 @@ PRs, K6's reference, the trait, the stop rule) was not touched by pass 2. What c
 build will measure. So no third pass was run on the prose. The readout rule and the energy balance's
 1 % are settled by 2c's and 2a's tests.
 
-**Checked by no one:** finite strain and the finite domain's effect on K6's stick zone; whether
-flutter occurs; the power iteration's accuracy on meshes other than the 10k tube; the coverage cost of
-the new tests; how coverage counts code `include!`d twice.
+**Settled only by running,** and where each is measured:
+- finite strain and the finite domain's effect on K6's stick zone: 2c's two companion runs;
+- whether flutter occurs: every 2b and 2c run reports the contact nodes' kinetic energy, and nothing
+  gates it;
+- the power iteration's accuracy beyond the 10k tube: 2b on the 50k tube, 2d on the product's mesh;
+- the coverage cost of the new tests: 2a, timed at two thread counts.
+
+Not scheduled: how coverage counts code `include!`d twice.
 
 ### 16l. Not decided here
 
