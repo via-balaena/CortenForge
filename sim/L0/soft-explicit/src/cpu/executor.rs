@@ -41,6 +41,7 @@ const fn narrow_material(m: crate::f64::Material) -> shared::Material {
         mu: narrow(m.mu),
         lambda: narrow(m.lambda),
         c2: narrow(m.c2),
+        viscosity: narrow(m.viscosity),
         density: narrow(m.density),
     }
 }
@@ -148,6 +149,24 @@ impl Elastic<'_> {
         });
     }
 
+    /// Phase 4's viscous part into `element_viscous_forces`, at `velocities`.
+    fn viscous_forces(
+        &self,
+        displacements: &[[R; 3]],
+        velocities: &[[R; 3]],
+        element_viscous_forces: &mut [[R; 12]],
+    ) {
+        fill(element_viscous_forces, |e| {
+            shared::tet4_viscous_forces(
+                gather12(displacements, self.elements[e]),
+                gather12(velocities, self.elements[e]),
+                self.rest_edge_inverses[e],
+                self.rest_volumes[e],
+                self.materials[e],
+            )
+        });
+    }
+
     /// Phases 1–5 on `displacements`, into fresh arrays.
     fn forces(&self, displacements: &[[R; 3]]) -> Vec<[R; 3]> {
         let nodes = self.node_rest_volumes.len();
@@ -238,6 +257,8 @@ pub struct CpuExecutor {
     pressures: Vec<R>,
     element_forces: Vec<[R; 12]>,
     elastic_forces: Vec<[R; 3]>,
+    element_viscous_forces: Vec<[R; 12]>,
+    viscous_forces: Vec<[R; 3]>,
     contacts: Vec<shared::ContactResponse>,
     anchors: Vec<[R; 3]>,
     stiffnesses: Vec<R>,
@@ -346,6 +367,8 @@ impl CpuExecutor {
             pressures: vec![0.0; nodes],
             element_forces: vec![[0.0; 12]; model.element_count()],
             elastic_forces: vec![[0.0; 3]; nodes],
+            element_viscous_forces: vec![[0.0; 12]; model.element_count()],
+            viscous_forces: vec![[0.0; 3]; nodes],
             contacts: vec![empty_contact; surface_count],
             anchors,
             stiffnesses: vec![0.0; surface_count],
@@ -393,6 +416,11 @@ impl CpuExecutor {
             self.poses[span.upper as usize],
             span.fraction,
         )
+    }
+
+    /// A node's internal force this step: elastic plus viscous.
+    fn internal_force(&self, node: usize) -> [R; 3] {
+        shared::vec3_add(self.elastic_forces[node], self.viscous_forces[node])
     }
 
     /// A node's contact force this step: zero off the surface.
@@ -532,12 +560,20 @@ impl Executor for CpuExecutor {
         self.elastic()
             .element_forces(&self.displacements, &self.pressures, &mut element_forces);
         self.element_forces = element_forces;
+        let mut viscous = std::mem::take(&mut self.element_viscous_forces);
+        self.elastic()
+            .viscous_forces(&self.displacements, &self.velocities, &mut viscous);
+        self.element_viscous_forces = viscous;
     }
 
     fn gather_forces(&mut self) {
         let mut forces = std::mem::take(&mut self.elastic_forces);
         self.elastic().gather_forces(&self.element_forces, &mut forces);
         self.elastic_forces = forces;
+        let mut viscous = std::mem::take(&mut self.viscous_forces);
+        self.elastic()
+            .gather_forces(&self.element_viscous_forces, &mut viscous);
+        self.viscous_forces = viscous;
     }
 
     fn contact(&mut self, time: f64, dt: f64, damping: f64) {
@@ -562,7 +598,7 @@ impl Executor for CpuExecutor {
                 a,
                 shared::advance_velocity(
                     self.velocities[a],
-                    self.elastic_forces[a],
+                    self.internal_force(a),
                     self.inverse_masses[a],
                     alpha,
                     step,
@@ -607,7 +643,7 @@ impl Executor for CpuExecutor {
         self.previous_velocities.copy_from_slice(&self.velocities);
         let mut velocities = std::mem::take(&mut self.velocities);
         update(&mut velocities, |a, v| {
-            let force = shared::vec3_add(self.elastic_forces[a], self.contact_force(a));
+            let force = shared::vec3_add(self.internal_force(a), self.contact_force(a));
             shared::advance_velocity(v, force, self.inverse_masses[a], alpha, step)
         });
         let mut displacements = std::mem::take(&mut self.displacements);
@@ -635,13 +671,19 @@ impl Executor for CpuExecutor {
         });
         let mut losses = std::mem::take(&mut self.damping_losses);
         update(&mut losses, |a, loss| {
+            let viscous = shared::step_work(
+                self.viscous_forces[a],
+                self.previous_velocities[a],
+                velocities[a],
+                step,
+            );
             loss + widen(shared::damping_loss(
                 self.masses[a],
                 alpha,
                 self.previous_velocities[a],
                 velocities[a],
                 step,
-            ))
+            )) - widen(viscous)
         });
         self.velocities = velocities;
         self.displacements = displacements;
@@ -738,7 +780,13 @@ impl Executor for CpuExecutor {
             volume_changes: self.volume_changes.iter().map(|&v| widen(v)).collect(),
             pressures: self.pressures.iter().map(|&p| widen(p)).collect(),
             element_forces: self.element_forces.iter().map(|f| f.map(widen)).collect(),
+            element_viscous_forces: self
+                .element_viscous_forces
+                .iter()
+                .map(|f| f.map(widen))
+                .collect(),
             elastic_forces: self.elastic_forces.iter().map(|&f| widen3(f)).collect(),
+            viscous_forces: self.viscous_forces.iter().map(|&f| widen3(f)).collect(),
             contact_forces,
             normal_forces,
         }
@@ -747,7 +795,12 @@ impl Executor for CpuExecutor {
     // Node indices feed a deterministic starting vector; precision loss in
     // `usize → R` only changes which starting vector it is.
     #[allow(clippy::cast_precision_loss)]
-    fn elastic_rayleigh_quotient(&mut self, iterations: usize, perturbation: f64) -> f64 {
+    fn estimate_top_mode(
+        &mut self,
+        iterations: usize,
+        perturbation: f64,
+        viscous_weight: f64,
+    ) -> TopMode {
         let nodes = self.node_count();
         let mut v: Vec<[R; 3]> = (0..nodes)
             .map(|a| {
@@ -757,7 +810,28 @@ impl Executor for CpuExecutor {
             .collect();
         let elastic = self.elastic();
         let base = elastic.forces(&self.displacements);
-        let mut quotient = 0.0;
+        // C v: minus the viscous forces at velocities v, in the free directions.
+        let damping = |v: &[[R; 3]]| -> Vec<[R; 3]> {
+            let mut element_viscous = vec![[0.0; 12]; self.elements.len()];
+            elastic.viscous_forces(&self.displacements, v, &mut element_viscous);
+            let mut viscous = vec![[0.0; 3]; nodes];
+            elastic.gather_forces(&element_viscous, &mut viscous);
+            (0..nodes)
+                .map(|a| self.free_part(a, shared::vec3_scale(viscous[a], -1.0)))
+                .collect()
+        };
+        let weight = narrow(viscous_weight);
+        let quotient = |v: &[[R; 3]], w: &[[R; 3]]| -> f64 {
+            let (numerator, denominator) = (0..nodes).fold((0.0, 0.0), |(n, d), a| {
+                (
+                    n + widen(shared::vec3_dot(v[a], w[a])),
+                    d + widen(self.masses[a] * shared::vec3_dot(v[a], v[a])),
+                )
+            });
+            numerator / denominator
+        };
+        // The vector the latest quotient was taken of, and that quotient.
+        let (mut measured, mut stiffness_quotient) = (v.clone(), 0.0);
         for _ in 0..iterations {
             let largest = v
                 .iter()
@@ -781,17 +855,21 @@ impl Executor for CpuExecutor {
                     self.free_part(a, shared::vec3_scale(difference, -1.0 / scale))
                 })
                 .collect();
-            let (numerator, denominator) = (0..nodes).fold((0.0, 0.0), |(n, d), a| {
-                (
-                    n + widen(shared::vec3_dot(v[a], stiffness[a])),
-                    d + widen(self.masses[a] * shared::vec3_dot(v[a], v[a])),
-                )
-            });
-            quotient = numerator / denominator;
-            // The next iterate, M⁻¹ K v, scaled back to a largest component of 1:
-            // unscaled it grows by about ω² per iteration and overflows.
+            stiffness_quotient = quotient(&v, &stiffness);
+            let operator: Vec<[R; 3]> = if weight > 0.0 {
+                damping(&v)
+                    .iter()
+                    .zip(&stiffness)
+                    .map(|(&c, &k)| shared::vec3_add(k, shared::vec3_scale(c, weight)))
+                    .collect()
+            } else {
+                stiffness
+            };
+            // The next iterate, M⁻¹ (K + βC) v, scaled back to a largest
+            // component of 1: unscaled it grows by about ω² per iteration and
+            // overflows.
             let next: Vec<[R; 3]> = (0..nodes)
-                .map(|a| shared::vec3_scale(stiffness[a], self.inverse_masses[a]))
+                .map(|a| shared::vec3_scale(operator[a], self.inverse_masses[a]))
                 .collect();
             let size = next
                 .iter()
@@ -800,8 +878,18 @@ impl Executor for CpuExecutor {
             if size == 0.0 {
                 break;
             }
-            v = next.iter().map(|&x| shared::vec3_scale(x, 1.0 / size)).collect();
+            let scaled = next.iter().map(|&x| shared::vec3_scale(x, 1.0 / size)).collect();
+            measured = std::mem::replace(&mut v, scaled);
         }
-        quotient
+        let damping_quotient = quotient(&measured, &damping(&measured));
+        let damping_ratio = if stiffness_quotient > 0.0 {
+            damping_quotient / (2.0 * stiffness_quotient.sqrt())
+        } else {
+            0.0
+        };
+        TopMode {
+            omega_squared: stiffness_quotient,
+            damping_ratio,
+        }
     }
 }

@@ -551,7 +551,9 @@ fn the_power_iteration_reaches_the_largest_eigenvalue_from_below() {
     let check = |e: &mut dyn Executor, label: &str| {
         e.set_state(0.0, &u, &vec![[0.0; 3]; model.node_count()], None);
         let perturbation = e.epsilon().sqrt() * e.shortest_edge();
-        let estimate = e.elastic_rayleigh_quotient(iterations, perturbation);
+        let estimate = e
+            .estimate_top_mode(iterations, perturbation, 0.0)
+            .omega_squared;
         let error = estimate / exact - 1.0;
         eprintln!("MARGIN power iteration ({label}, {iterations} iterations): {error:+e} of ω_el²");
         assert!(error.abs() <= 0.05, "{label}: {error:+e}");
@@ -571,10 +573,13 @@ fn the_power_iteration_reaches_the_largest_eigenvalue_from_below() {
 }
 
 #[test]
-fn the_stable_step_is_the_safety_fraction_of_the_elastic_limit() {
+fn the_stable_step_is_the_safety_fraction_of_the_damped_limit() {
     let config = StepperConfig::new(0.0);
     let omega_squared: f64 = 4.0e8;
-    assert!((config.stable_step(omega_squared) * omega_squared.sqrt() - 1.8).abs() < 1e-12);
+    assert!((config.stable_step(omega_squared, 0.0) * omega_squared.sqrt() - 1.8).abs() < 1e-12);
+    // Central differences' limit with the damping force at the lagging
+    // half-step velocity: 2/ω (√(1 + ξ²) − ξ), here at ξ = 0.75 (plan §16p).
+    assert!((config.stable_step(omega_squared, 0.75) * omega_squared.sqrt() - 0.9).abs() < 1e-12);
     // A smaller limit is taken at once; a larger one only 5 % at a time.
     assert_eq!(config.next_step(1.0, 0.8), 0.8);
     assert_eq!(config.next_step(1.0, 2.0), 1.05);
@@ -612,8 +617,8 @@ fn an_estimate_depends_only_on_the_state() {
     let mut e = cpu::f64::CpuExecutor::new(&model, &nowhere()).unwrap();
     e.set_state(0.0, &u, &v, None);
     let p = e.epsilon().sqrt() * e.shortest_edge();
-    let first = e.elastic_rayleigh_quotient(40, p);
-    let second = e.elastic_rayleigh_quotient(40, p);
+    let first = e.estimate_top_mode(40, p, 0.0);
+    let second = e.estimate_top_mode(40, p, 0.0);
     assert_eq!(first, second);
 }
 

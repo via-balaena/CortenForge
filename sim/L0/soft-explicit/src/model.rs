@@ -442,7 +442,7 @@ fn gather(
 }
 
 fn check_material(element: usize, m: &Material) -> Result<(), ModelError> {
-    let reason = if ![m.mu, m.lambda, m.c2, m.density]
+    let reason = if ![m.mu, m.lambda, m.c2, m.viscosity, m.density]
         .iter()
         .all(|v| v.is_finite())
     {
@@ -453,6 +453,8 @@ fn check_material(element: usize, m: &Material) -> Result<(), ModelError> {
         Some("the bulk modulus, λ + 2μ/3, must be positive")
     } else if m.c2 < 0.0 {
         Some("Yeoh's C₂ must not be negative")
+    } else if m.viscosity < 0.0 {
+        Some("the viscosity must not be negative")
     } else if m.density <= 0.0 {
         Some("the density must be positive")
     } else {

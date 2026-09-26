@@ -7,7 +7,7 @@
 
 use crate::ExplicitModel;
 use crate::executor::{
-    Executor, Monitors, Obstacle, ObstacleError, PhaseOutputs, Snapshot, check_obstacle,
+    Executor, Monitors, Obstacle, ObstacleError, PhaseOutputs, Snapshot, TopMode, check_obstacle,
     check_poses,
 };
 
@@ -15,7 +15,7 @@ use crate::executor::{
 pub mod f32 {
     use super::{
         Executor, ExplicitModel, Monitors, Obstacle, ObstacleError, PhaseOutputs, Snapshot,
-        check_obstacle, check_poses, fill, update,
+        TopMode, check_obstacle, check_poses, fill, update,
     };
     use crate::f32 as shared;
 
@@ -29,7 +29,7 @@ pub mod f32 {
 pub mod f64 {
     use super::{
         Executor, ExplicitModel, Monitors, Obstacle, ObstacleError, PhaseOutputs, Snapshot,
-        check_obstacle, check_poses, fill, update,
+        TopMode, check_obstacle, check_poses, fill, update,
     };
     use crate::f64 as shared;
 

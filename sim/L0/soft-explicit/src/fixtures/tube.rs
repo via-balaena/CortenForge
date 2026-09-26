@@ -607,6 +607,8 @@ pub struct TubeCase {
     pub thickness_ratio: f64,
     /// Poisson's ratio ν.
     pub poisson: f64,
+    /// Yeoh's C₂ over μ; 0 is neo-Hookean (the Yeoh case, plan 16h).
+    pub c2_over_mu: f64,
     /// How the tube is held.
     pub walls: Walls,
     /// The contact pressure over μ.
@@ -648,6 +650,14 @@ impl TubeCase {
     }
 }
 
+/// Ecoflex 00-30's Kelvin–Voigt viscosity over its shear modulus, `η/μ`: 7 Pa·s
+/// over 23 kPa.
+///
+/// The viscosity is the loss modulus at 190 Hz over `ω` from two published
+/// fractional Kelvin–Voigt fits of the material, where the frictional tube's
+/// flutter sits (plan §16p).
+pub const ECOFLEX_00_30_VISCOUS_TIME: f64 = 7.0 / 23.0e3;
+
 /// One run of the tube on the mandrel: plan §15b's case, loading and window.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TubeRun {
@@ -655,10 +665,13 @@ pub struct TubeRun {
     pub mesh: Mesh,
     /// The oracle case the run is judged against.
     pub case: TubeCase,
-    /// The shear modulus μ; λ follows from the case's ν.
+    /// The shear modulus μ; λ follows from the case's ν, and Yeoh's C₂ from
+    /// its C₂/μ.
     pub mu: f64,
-    /// Yeoh's C₂; 0 is neo-Hookean (the Yeoh case, 16h).
-    pub c2: f64,
+    /// The Kelvin–Voigt viscosity over μ, `η/μ` in seconds, so that scaling μ
+    /// scales the viscosity with it; 0 is elastic
+    /// ([`ECOFLEX_00_30_VISCOUS_TIME`] for the tube's material).
+    pub viscous_time: f64,
     /// The density ρ.
     pub density: f64,
     /// The mandrel's motion (plan §15b: [`Insertion::plan`]).
@@ -726,14 +739,16 @@ impl TubeRun {
         4.0 * Tube::plan(Mesh::TenK).length / (mu / density).sqrt()
     }
 
-    /// The run's material: λ from the case's ν.
+    /// The run's material: λ from the case's ν, C₂ from its C₂/μ, and the
+    /// viscosity from the run's `η/μ`.
     #[must_use]
     pub fn material(&self) -> Material {
         let nu = self.case.poisson;
         Material {
             mu: self.mu,
             lambda: self.mu * 2.0 * nu / (1.0 - 2.0 * nu),
-            c2: self.c2,
+            c2: self.case.c2_over_mu * self.mu,
+            viscosity: self.viscous_time * self.mu,
             density: self.density,
         }
     }

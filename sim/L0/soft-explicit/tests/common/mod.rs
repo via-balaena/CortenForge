@@ -14,6 +14,7 @@ pub const SILICONE: Material = Material {
     mu: 23.0e3,
     lambda: 23.0e3 * 2.0 * 0.49 / (1.0 - 2.0 * 0.49),
     c2: 0.0,
+    viscosity: 0.0,
     density: 1070.0,
 };
 

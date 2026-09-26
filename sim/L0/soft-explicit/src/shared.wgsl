@@ -167,7 +167,7 @@ fn mat3_frobenius_squared(m: array<f32, 9>) -> f32 {
 
 // ---- sim/L0/soft-explicit/src/shared/material.rs ----
 
-// One element's material. `#[repr(C)]` with four scalars (16 bytes at
+// One element's material. `#[repr(C)]` with five scalars (20 bytes at
 // `f32`), so it can sit in a GPU buffer as is.
 struct Material {
     // Shear modulus μ (Pa).
@@ -176,6 +176,9 @@ struct Material {
     lambda: f32,
     // Yeoh's C₂ (Pa). Zero gives neo-Hookean.
     c2: f32,
+    // The deviatoric Kelvin–Voigt viscosity η (Pa·s). Zero gives an
+    // elastic material.
+    viscosity: f32,
     // Mass density ρ (kg/m³).
     density: f32,
 }
@@ -251,6 +254,22 @@ fn first_piola_mu_terms(h: array<f32, 9>, material: Material) -> array<f32, 9> {
     let i1_minus_3 = (2.0 * mat3_trace(h)) + mat3_frobenius_squared(h);
     let yeoh = mat3_scale(mat3_add_scaled_identity(h, 1.0), (4.0 * material.c2) * i1_minus_3);
     return mat3_add(neo_hookean, yeoh);
+}
+
+// The viscous first Piola–Kirchhoff stress, `P_v = 2η dev(D) cof F`, from the
+// displacement gradient `h = F − I` and its rate `rate = Ḟ`.
+//
+// `D = sym(L)` with `L = Ḟ F⁻¹ = Ḟ (cof F)ᵀ / J`, and `P_v = J σ_v F⁻ᵀ =
+// σ_v cof F`. Its power, `P_v : Ḟ = 2η J |dev D|²`, is never negative, and it
+// vanishes for a rigid motion (`D = 0`) and for a pure change of volume
+// (`dev D = 0`).
+fn first_piola_viscous(h: array<f32, 9>, rate: array<f32, 9>, viscosity: f32) -> array<f32, 9> {
+    let cofactor = deformation_cofactor(h);
+    let jacobian = 1.0 + guarded_dilation(gradient_dilation(h));
+    let velocity_gradient = mat3_scale(mat3_mul(rate, mat3_transpose(cofactor)), 1.0 / jacobian);
+    let stretching = mat3_scale(mat3_add(velocity_gradient, mat3_transpose(velocity_gradient)), 0.5);
+    let deviator = mat3_add_scaled_identity(stretching, -mat3_trace(stretching) / 3.0);
+    return mat3_mul(mat3_scale(deviator, 2.0 * viscosity), cofactor);
 }
 
 // The full first Piola–Kirchhoff stress, `P(F)`.
@@ -360,6 +379,18 @@ fn tet4_elastic_forces(u: array<f32, 12>, rest_edge_inverse: array<f32, 9>, rest
     let h = tet4_displacement_gradient(u, rest_edge_inverse);
     let stress = mat3_add(first_piola_mu_terms(h, material), mat3_scale(deformation_cofactor(h), pressure));
     return tet4_nodal_forces(stress, rest_edge_inverse, rest_volume);
+}
+
+// The element's viscous forces, from its nodes' displacements `u` and
+// velocities `v`: the deviatoric Kelvin–Voigt stress
+// (`first_piola_viscous`) at `Ḟ = D(v) D_rest⁻¹`.
+//
+// They oppose the element's rate of shape change: their power, `−f · v`, is
+// the element's viscous dissipation and never negative.
+fn tet4_viscous_forces(u: array<f32, 12>, v: array<f32, 12>, rest_edge_inverse: array<f32, 9>, rest_volume: f32, material: Material) -> array<f32, 12> {
+    let h = tet4_displacement_gradient(u, rest_edge_inverse);
+    let rate = tet4_displacement_gradient(v, rest_edge_inverse);
+    return tet4_nodal_forces(first_piola_viscous(h, rate, material.viscosity), rest_edge_inverse, rest_volume);
 }
 
 // The μ terms' energy in one element, `V Ψ_μ(F)`.

@@ -6,7 +6,7 @@
 
 use sim_soft_explicit::cpu;
 use sim_soft_explicit::fixtures::golden::THICK_TUBE;
-use sim_soft_explicit::fixtures::tube::{Insertion, Mesh, TubeRun};
+use sim_soft_explicit::fixtures::tube::{ECOFLEX_00_30_VISCOUS_TIME, Insertion, Mesh, TubeRun};
 
 #[test]
 fn a_short_insertion_on_the_10k_tube_stays_finite_and_uninverted() {
@@ -15,7 +15,7 @@ fn a_short_insertion_on_the_10k_tube_stays_finite_and_uninverted() {
         mesh: Mesh::TenK,
         case: THICK_TUBE[0],
         mu: 23.0e3,
-        c2: 0.0,
+        viscous_time: ECOFLEX_00_30_VISCOUS_TIME,
         density: 1070.0,
         insertion: Insertion {
             start_gap: 0.0,

@@ -39,11 +39,15 @@ impl StepperConfig {
         }
     }
 
-    /// The stable step for an elastic `ω_el²`: `Δt = safety · 2 / ω_el`. The
+    /// The stable step for a vector with stiffness quotient `ω²` and viscous
+    /// damping ratio `ξ` (a [`crate::executor::TopMode`]):
+    /// `Δt = safety · (2 / ω) (√(1 + ξ²) − ξ)`, central differences' limit with
+    /// the damping force at the lagging half-step velocity (plan §16p). The
     /// kinematic contact law adds nothing to it (plan §16o).
     #[must_use]
-    pub fn stable_step(&self, omega_squared: f64) -> f64 {
-        2.0 * self.safety / omega_squared.sqrt()
+    pub fn stable_step(&self, omega_squared: f64, damping_ratio: f64) -> f64 {
+        let damping = damping_ratio.hypot(1.0) - damping_ratio;
+        2.0 * self.safety * damping / omega_squared.sqrt()
     }
 
     /// The step after a re-estimate: the new limit when it is smaller (the
@@ -92,6 +96,7 @@ pub struct Stepper<E> {
     time: f64,
     steps: u64,
     omega_squared: f64,
+    damping_ratio: f64,
     estimates: u64,
     window: bool,
     samples: Vec<Sample>,
@@ -111,6 +116,7 @@ impl<E: Executor> Stepper<E> {
             time: start,
             steps: 0,
             omega_squared: 0.0,
+            damping_ratio: 0.0,
             estimates: 0,
             window: false,
             samples: Vec::new(),
@@ -124,15 +130,37 @@ impl<E: Executor> Stepper<E> {
         stepper
     }
 
-    /// Estimate `ω_el²` from the fixed start and return the stable step, or
-    /// `None` if it is not positive and finite.
+    /// Estimate the mode that sets the stable step, at `β = 2/Δt` for the
+    /// current step (plan §16p), and return the stable step, or `None` if it
+    /// is not positive and finite.
+    ///
+    /// At the start there is no step yet: the elastic top mode gives a first
+    /// one, and a viscous material is estimated again at it.
     fn estimate(&mut self) -> Option<f64> {
+        if self.dt > 0.0 {
+            return self.estimate_at(2.0 / self.dt);
+        }
+        let first = self.estimate_at(0.0)?;
+        if self.damping_ratio > 0.0 {
+            self.estimate_at(2.0 / first)
+        } else {
+            Some(first)
+        }
+    }
+
+    /// One estimate from the fixed start, at viscous weight `β`.
+    fn estimate_at(&mut self, viscous_weight: f64) -> Option<f64> {
         let perturbation = self.executor.epsilon().sqrt() * self.executor.shortest_edge();
-        self.omega_squared = self
-            .executor
-            .elastic_rayleigh_quotient(self.config.power_iterations, perturbation);
+        let top = self.executor.estimate_top_mode(
+            self.config.power_iterations,
+            perturbation,
+            viscous_weight,
+        );
+        (self.omega_squared, self.damping_ratio) = (top.omega_squared, top.damping_ratio);
         self.estimates += 1;
-        let dt = self.config.stable_step(self.omega_squared);
+        let dt = self
+            .config
+            .stable_step(self.omega_squared, self.damping_ratio);
         (dt.is_finite() && dt > 0.0).then_some(dt)
     }
 
@@ -250,10 +278,18 @@ impl<E: Executor> Stepper<E> {
         self.steps
     }
 
-    /// The latest estimate of `ω_el²`.
+    /// The stiffness quotient `vᵀKv / vᵀMv` of the vector that set the latest
+    /// step: `ω_el²` for an elastic material, and for a viscous one the top
+    /// vector of `M⁻¹(K + βC)`, which may sit well below the elastic top mode.
     #[must_use]
     pub const fn omega_squared(&self) -> f64 {
         self.omega_squared
+    }
+
+    /// The viscous damping ratio of the vector that set the latest step.
+    #[must_use]
+    pub const fn damping_ratio(&self) -> f64 {
+        self.damping_ratio
     }
 
     /// How many times the stable step has been estimated.

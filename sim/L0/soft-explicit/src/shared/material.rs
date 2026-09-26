@@ -5,6 +5,14 @@
 //     Ψ(F) = μ/2 (I₁ − 3) − μ ln J + C₂ (I₁ − 3)² + λ/2 (ln J)²
 //     P(F) = μ (F − F⁻ᵀ) + 4 C₂ (I₁ − 3) F + λ ln J F⁻ᵀ
 //
+// plus a deviatoric Kelvin–Voigt viscosity η, the material's own loss:
+//
+//     σ_v = 2η dev D,   D = sym(Ḟ F⁻¹),   P_v = σ_v cof F
+//
+// It is stress from the rate of deformation, so it vanishes at rest. It does
+// not move a frictionless seated reading; a frictional one depends on the path
+// it took, which the viscosity changes (plan §16p).
+//
 // It is written in the displacement gradient `H = F − I` (plan §6): each
 // quantity that is zero at rest (`J − 1`, `I₁ − 3`, `F − F⁻ᵀ`, `ln J`) is built
 // from `H` directly, never as a difference of two numbers near 1.
@@ -13,7 +21,7 @@
 // μ and C₂ per element and averages only the λ term over nodes, so the two
 // parts are written separately: "the μ terms" and "the λ term".
 
-/// One element's material. `#[repr(C)]` with four scalars (16 bytes at
+/// One element's material. `#[repr(C)]` with five scalars (20 bytes at
 /// `f32`), so it can sit in a GPU buffer as is.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -24,6 +32,9 @@ pub struct Material {
     pub lambda: R,
     /// Yeoh's C₂ (Pa). Zero gives neo-Hookean.
     pub c2: R,
+    /// The deviatoric Kelvin–Voigt viscosity η (Pa·s). Zero gives an
+    /// elastic material.
+    pub viscosity: R,
     /// Mass density ρ (kg/m³).
     pub density: R,
 }
@@ -127,6 +138,26 @@ pub const fn first_piola_mu_terms(h: [R; 9], material: Material) -> [R; 9] {
         4.0 * material.c2 * i1_minus_3,
     );
     mat3_add(neo_hookean, yeoh)
+}
+
+/// The viscous first Piola–Kirchhoff stress, `P_v = 2η dev(D) cof F`, from the
+/// displacement gradient `h = F − I` and its rate `rate = Ḟ`.
+///
+/// `D = sym(L)` with `L = Ḟ F⁻¹ = Ḟ (cof F)ᵀ / J`, and `P_v = J σ_v F⁻ᵀ =
+/// σ_v cof F`. Its power, `P_v : Ḟ = 2η J |dev D|²`, is never negative, and it
+/// vanishes for a rigid motion (`D = 0`) and for a pure change of volume
+/// (`dev D = 0`).
+#[must_use]
+pub const fn first_piola_viscous(h: [R; 9], rate: [R; 9], viscosity: R) -> [R; 9] {
+    let cofactor = deformation_cofactor(h);
+    let jacobian = 1.0 + guarded_dilation(gradient_dilation(h));
+    let velocity_gradient = mat3_scale(mat3_mul(rate, mat3_transpose(cofactor)), 1.0 / jacobian);
+    let stretching = mat3_scale(
+        mat3_add(velocity_gradient, mat3_transpose(velocity_gradient)),
+        0.5,
+    );
+    let deviator = mat3_add_scaled_identity(stretching, -mat3_trace(stretching) / 3.0);
+    mat3_mul(mat3_scale(deviator, 2.0 * viscosity), cofactor)
 }
 
 /// The full first Piola–Kirchhoff stress, `P(F)`.
