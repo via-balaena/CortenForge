@@ -25,7 +25,7 @@ tier = "L0"
 [dependencies]
 # Parses the shared Rust source into a syntax tree; `full` for items,
 # statements and expressions.
-syn = { version = "2", features = ["full"] }
+syn = { version = "3", features = ["full"] }
 # Line and column numbers for refusals, outside a proc macro.
 proc-macro2 = { version = "1", features = ["span-locations"] }
 # Parses and validates the generated WGSL before it is written, on the

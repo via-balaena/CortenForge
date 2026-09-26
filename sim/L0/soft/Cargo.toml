@@ -183,7 +183,7 @@ pollster = { workspace = true, optional = true }
 # a symbolic phase CHEAPER than AMD's. Chosen over `metis-sys` to keep the L0
 # solver free of a C dependency. +3 transitive crates, landing the tier at
 # exactly 100/100.
-feral-metis = "0.2.1"
+feral-metis = "0.3.0"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # Native builds add faer's `rayon` feature on top of the base declaration

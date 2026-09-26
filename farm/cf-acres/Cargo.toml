@@ -28,7 +28,7 @@ cf-wind = { path = "../cf-wind" }
 cf-electrolysis = { path = "../cf-electrolysis" }
 cf-storage = { path = "../cf-storage" }
 # So the two committed digests are measurements, not numbers nothing produces.
-sha2 = "0.10"
+sha2 = "0.11"
 
 [lints]
 workspace = true
