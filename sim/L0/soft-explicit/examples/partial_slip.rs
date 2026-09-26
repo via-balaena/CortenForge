@@ -110,7 +110,7 @@ fn report(run: &PartialSlipRun, result: &PartialSlipResult, seconds: f64, table:
         r.tangential_force / (run.friction * r.normal_force)
     });
     println!(
-        "a/h={} block={}a R={}a eta/mu={} K6 loading={} unloading={} worst={} | pressed a={pressed:.4}a \
+        "a/h={} block={}a R={}a eta/mu={} K6 loading={} unloading={} worst={} unfinished={:?} | pressed a={pressed:.4}a \
          press depth={:.4}a pressed Q/(f P)={left:.4} peak Q/(f P)={peak:.4} KE/IE={} balance={} inverted={} penetration={:.2e}a \
          contact_KE={contact_ke:.2e} | steps={} dt={:.3e} readings={} time={seconds:.1}s",
         a / run.block.fine,
@@ -122,6 +122,7 @@ fn report(run: &PartialSlipRun, result: &PartialSlipResult, seconds: f64, table:
         errors
             .worst()
             .map_or_else(|| "none".to_owned(), |w| format!("{w:.4}")),
+        result.unfinished,
         result.press_depth / a,
         optional(result.kinetic_over_internal),
         optional(result.energy_balance),

@@ -568,6 +568,9 @@ impl StickErrors {
 pub struct PartialSlipResult {
     /// Every monitor interval's reading, in order.
     pub readings: Vec<Reading>,
+    /// The leg that did not reach its end within the longest leg allowed, if
+    /// one did not: the run ended with it, and K6 cannot pass.
+    pub unfinished: Option<Leg>,
     /// `Q` when the return began.
     pub peak_tangential_force: f64,
     /// How far the cylinder's lowest point went below the block's top.
@@ -645,14 +648,6 @@ pub enum PartialSlipError {
     /// The run blew up.
     #[error(transparent)]
     Run(#[from] RunError),
-    /// A leg did not reach its end within the longest leg allowed.
-    #[error("the {leg:?} leg did not reach its end by time {time}")]
-    LegDidNotEnd {
-        /// The leg.
-        leg: Leg,
-        /// When it was given up.
-        time: f64,
-    },
 }
 
 /// One run of K6 (plan §16b): press until the contact half-width is `a`,
@@ -684,7 +679,8 @@ pub struct PartialSlipRun {
     pub ramp: f64,
     /// The hold after each leg.
     pub hold: f64,
-    /// A leg that runs longer than this fails the run.
+    /// A leg that runs longer than this without reaching its end is stopped
+    /// where it is, and ends the run ([`PartialSlipResult::unfinished`]).
     pub longest_leg: f64,
     /// The grid's cell (plan §16b: `h/2`).
     pub grid_cell: f64,
@@ -772,8 +768,8 @@ impl PartialSlipRun {
     /// shear frequency, as the tube's is at its own (plan §15c).
     ///
     /// # Errors
-    /// A [`PartialSlipError`] if the model or the obstacle cannot be built,
-    /// the run blows up, or a leg does not end.
+    /// A [`PartialSlipError`] if the model or the obstacle cannot be built, or
+    /// the run blows up.
     pub fn run<E: Executor>(
         &self,
         make: impl FnOnce(&ExplicitModel, &Obstacle) -> E,
@@ -788,6 +784,7 @@ impl PartialSlipRun {
         let mut peak_tangential_force = 0.0;
         let mut press_depth = 0.0;
         let mut judged_from = f64::INFINITY;
+        let mut unfinished = None;
         for leg in [Leg::Press, Leg::Push, Leg::Return] {
             let (heading, speed, direction) = match leg {
                 Leg::Press => ([0.0, -1.0], self.press_speed, 1.0),
@@ -831,10 +828,8 @@ impl PartialSlipRun {
                     behind.push((remaining, reading.time));
                 }
                 if stepper.time() - start > self.longest_leg {
-                    return Err(PartialSlipError::LegDidNotEnd {
-                        leg,
-                        time: stepper.time(),
-                    });
+                    unfinished = Some(leg);
+                    break;
                 }
             }
             // Stop over the ramp, from where it is and as fast as it goes.
@@ -858,10 +853,14 @@ impl PartialSlipRun {
                 let reading = self.interval(&mut stepper, &model, &rows, leg, direction)?;
                 readings.push(reading);
             }
+            if unfinished.is_some() {
+                break;
+            }
         }
         let samples = stepper.samples().to_vec();
         Ok(PartialSlipResult {
             readings,
+            unfinished,
             peak_tangential_force,
             press_depth,
             friction: self.friction,

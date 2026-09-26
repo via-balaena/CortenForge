@@ -374,6 +374,7 @@ fn a_coarse_k6_runs_from_the_press_to_the_return() {
         "MARGIN K6 sanity at a/h 4: {} steps, errors {errors:?}, energy balance {:?}",
         result.steps, result.energy_balance
     );
+    assert_eq!(result.unfinished, None);
     assert!(judged(Leg::Push) > 0 && judged(Leg::Return) > 0);
     assert!(errors.worst().is_some_and(f64::is_finite));
     assert!(result.energy_balance.is_some_and(|e| e <= 0.01));

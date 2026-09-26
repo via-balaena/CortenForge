@@ -1447,6 +1447,11 @@ than μ_f·P, in plane strain. Part of the contact sticks and part slips.
   | The finite domain | measured | the companion runs below |
   | The element | not known | 2c also runs a/h = 25 and records the difference |
 
+  *Amended 2026-09-25 (§16q): the penalty's compliance went with the penalty (§16o). The readout reads the closed
+  forms, sampled at the nodes, to 0.00076a (2c's unit test). A run's nodal forces are not those samples: a review's
+  half-plane model with contact held at the nodes read 0.0056a at a/h 50 through the same readout (not kept), and a
+  run's readout cannot be separated from the element's error. The a/h 25 companion measures the two together.*
+
 - **Two companion runs, each changing one thing:**
   - R = 200a (strains about 1 %), for finite strain;
   - a block 30a wide and 15a deep, for the finite domain.

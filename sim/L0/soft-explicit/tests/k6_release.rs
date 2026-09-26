@@ -43,6 +43,7 @@ fn the_coarse_k6_holds_the_stick_zone_to_the_closed_forms() {
         judged(Leg::Return),
         result.energy_balance,
     );
+    assert_eq!(result.unfinished, None, "a leg did not reach its end");
     assert!(judged(Leg::Push) >= 20 && judged(Leg::Return) >= 20);
     let worst = errors.worst().unwrap();
     assert!(worst <= 0.1, "the stick zone is off by {worst} of a");
