@@ -149,9 +149,15 @@ fn parse(line: &str) -> Option<(Leg, f64, [f64; 2])> {
     Some((leg, fraction, [front.parse().ok()?, back.parse().ok()?]))
 }
 
-/// The largest difference between the second table's stick zones and the
-/// first's, at the second's judged load fractions, the first's interpolated
-/// linearly in the fraction.
+/// How far apart two runs' stick zones are, from their printed tables: the
+/// second's against the first's, per phase (plan §16b's rate ladder and
+/// companions).
+///
+/// While the load moves, each of the second's readings is compared with the
+/// first's at the same load fraction, interpolated linearly. Within 0.02 of a
+/// leg's peak the load holds while the stick zone settles, so readings there
+/// share a fraction and matching by it is ill-defined: those are compared as
+/// each row's mean over them.
 fn compare(first: &str, second: &str) {
     let read = |path: &str| -> Vec<(Leg, f64, [f64; 2])> {
         let text = std::fs::read_to_string(path).unwrap();
@@ -161,15 +167,23 @@ fn compare(first: &str, second: &str) {
             .collect()
     };
     let (theirs, ours) = (read(first), read(second));
-    let mut worst = [0.0_f64; 2];
+    let mut moving = [0.0_f64; 2];
+    let mut holding = [0.0_f64; 2];
     for (slot, leg) in [Leg::Push, Leg::Return].into_iter().enumerate() {
-        let mut other: Vec<(f64, [f64; 2])> = theirs
-            .iter()
-            .filter(|r| r.0 == leg)
-            .map(|r| (r.1, r.2))
-            .collect();
-        other.sort_by(|a, b| a.0.total_cmp(&b.0));
-        for &(_, f, mine) in ours.iter().filter(|r| r.0 == leg) {
+        let of_leg = |rows: &[(Leg, f64, [f64; 2])]| -> (Vec<(f64, [f64; 2])>, Vec<[f64; 2]>) {
+            let leg_rows: Vec<(f64, [f64; 2])> = rows
+                .iter()
+                .filter(|r| r.0 == leg)
+                .map(|r| (r.1, r.2))
+                .collect();
+            let peak = leg_rows.iter().fold(0.0_f64, |m, r| m.max(r.0));
+            let (mut early, late): (Vec<_>, Vec<_>) =
+                leg_rows.into_iter().partition(|r| r.0 <= peak - 0.02);
+            early.sort_by(|a, b| a.0.total_cmp(&b.0));
+            (early, late.into_iter().map(|r| r.1).collect())
+        };
+        let ((other, other_hold), (mine, mine_hold)) = (of_leg(&theirs), of_leg(&ours));
+        for &(f, c) in &mine {
             let Some(i) = other.iter().position(|o| o.0 >= f).filter(|&i| i > 0) else {
                 continue;
             };
@@ -177,12 +191,22 @@ fn compare(first: &str, second: &str) {
             let t = if f1 > f0 { (f - f0) / (f1 - f0) } else { 0.0 };
             for row in 0..2 {
                 let interpolated = c0[row] + t * (c1[row] - c0[row]);
-                worst[slot] = worst[slot].max((mine[row] - interpolated).abs());
+                moving[slot] = moving[slot].max((c[row] - interpolated).abs());
+            }
+        }
+        let mean = |rows: &[[f64; 2]], row: usize| {
+            rows.iter().map(|r| r[row]).sum::<f64>() / rows.len() as f64
+        };
+        if !other_hold.is_empty() && !mine_hold.is_empty() {
+            for row in 0..2 {
+                let difference = (mean(&mine_hold, row) - mean(&other_hold, row)).abs();
+                holding[slot] = holding[slot].max(difference);
             }
         }
     }
     println!(
-        "{second} against {first}: largest difference in c/a, loading {:.4}, unloading {:.4}",
-        worst[0], worst[1]
+        "{second} against {first}: largest difference in c/a while the load moves, loading {:.4}, \
+         unloading {:.4}; over the peaks' holds, loading {:.4}, unloading {:.4}",
+        moving[0], moving[1], holding[0], holding[1]
     );
 }
