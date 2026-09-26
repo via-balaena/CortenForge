@@ -47,6 +47,11 @@ fn the_push_over_travel_is_the_work_over_the_window() {
     // The first interval starts where the travel starts.
     let later = [(15.0 * MM, 1.0), (20.0 * MM, 3.0), (30.0 * MM, 2.0)];
     assert_eq!(travel_peak(10.0 * MM, &later, 10.0 * MM), Some(peak));
+    // Here the best window, 2–12 mm, ends on a sample and starts off one:
+    // (1 × 8 + 5 × 2) / 10.
+    let early = [(10.0 * MM, 1.0), (12.0 * MM, 5.0), (30.0 * MM, 0.0)];
+    let peak = travel_peak(0.0, &early, 10.0 * MM).unwrap();
+    assert!((peak - 1.8).abs() < 1e-12, "{peak}");
 }
 
 #[test]
@@ -69,6 +74,29 @@ fn a_ripple_as_long_as_the_node_spacing_averages_out() {
 }
 
 #[test]
+fn a_window_between_whole_periods_keeps_a_share_of_the_ripple() {
+    // Over w periods a sinusoidal ripple of amplitude 1 leaves |sin πw| / πw in
+    // the windowed mean's peak: 10 mm is 2.92 and 3.58 ring spacings on the
+    // 50k and 100k tubes.
+    let spacing = 2.8 * MM;
+    let samples: Vec<(f64, f64)> = (1..=4000)
+        .map(|i| {
+            let x = f64::from(i) * spacing / 100.0;
+            let mid = x - 0.5 * spacing / 100.0;
+            (x, 1.0 + (TAU * mid / spacing).sin())
+        })
+        .collect();
+    for periods in [0.010 / (0.120 / 35.0), 0.010 / (0.120 / 43.0)] {
+        let peak = travel_peak(0.0, &samples, periods * spacing).unwrap();
+        let kept = (PI * periods).sin().abs() / (PI * periods);
+        assert!(
+            (peak - 1.0 - kept).abs() < 1e-3,
+            "{periods}: {peak} vs {kept}"
+        );
+    }
+}
+
+#[test]
 fn a_hold_adds_no_work_and_a_short_or_backward_path_reads_nothing() {
     let mut samples = vec![(5.0 * MM, 1.0), (10.0 * MM, 3.0), (20.0 * MM, 2.0)];
     let before = travel_peak(0.0, &samples, 10.0 * MM);
@@ -79,6 +107,9 @@ fn a_hold_adds_no_work_and_a_short_or_backward_path_reads_nothing() {
         travel_peak(0.0, &[(20.0 * MM, 1.0), (19.0 * MM, 1.0)], 5.0 * MM),
         None
     );
+    for window in [0.0, -5.0 * MM, f64::NAN, f64::INFINITY] {
+        assert_eq!(travel_peak(0.0, &samples, window), None, "{window}");
+    }
 }
 
 #[test]
@@ -90,6 +121,7 @@ fn the_percentile_is_read_where_the_running_area_reaches_the_fraction() {
     assert_eq!(area_percentile(&readings, 0.11), Some(3.0));
     assert_eq!(area_percentile(&readings, 1.0), Some(1.0));
     assert_eq!(area_percentile(&[], 0.05), None);
+    assert_eq!(area_percentile(&[(1.0, 0.0), (2.0, 0.0)], 0.05), None);
 }
 
 /// A flat slab of `cells × cells` cubes of side `size`, one cube deep, its
@@ -250,12 +282,12 @@ fn the_window_reads_mean_positions_and_forces() {
     snapshot.displacements = vec![[5.0, 5.0, 5.0]; model.node_count()];
     snapshot.displacement_sums = vec![[0.0, 0.0, 4.0 * 0.1 * MM]; model.node_count()];
     let contact = WindowContact::read(&model, &snapshot, &plate(), 0.0);
-    for (v, p) in contact.positions.iter().enumerate() {
+    for (v, p) in contact.positions().iter().enumerate() {
         let rest = model.rest_positions()[v];
         assert_eq!(*p, [rest[0], rest[1], rest[2] + 0.1 * MM]);
     }
     let forces = uniform(&model, &top, 1000.0);
-    for (read, set) in contact.forces.iter().zip(&forces) {
+    for (read, set) in contact.forces().iter().zip(&forces) {
         assert!((read - set).abs() <= 1e-15 * set, "{read} vs {set}");
     }
 }
@@ -269,9 +301,9 @@ fn an_edge_node_takes_only_the_face_the_obstacle_touches() {
     for &v in &top {
         let v = v as usize;
         assert!(
-            (contact.areas[v] - expected[v]).abs() < 1e-18,
+            (contact.areas()[v] - expected[v]).abs() < 1e-18,
             "node {v}: {} vs {}",
-            contact.areas[v],
+            contact.areas()[v],
             expected[v]
         );
     }
@@ -292,17 +324,17 @@ fn an_edge_node_takes_only_the_face_the_obstacle_touches() {
     assert!(sides > 0.0);
     let all = tributary_area(&model, &snapshot, corner);
     assert!(
-        (all - (contact.areas[corner] + sides)).abs() < 1e-18,
+        (all - (contact.areas()[corner] + sides)).abs() < 1e-18,
         "{all} vs {} + {sides}",
-        contact.areas[corner]
+        contact.areas()[corner]
     );
-    let total: f64 = contact.areas.iter().sum();
+    let total: f64 = contact.areas().iter().sum();
     assert!((total / (8.0 * MM).powi(2) - 1.0).abs() < 1e-12, "{total}");
     // Off the contact there is no area.
     assert!(
         (0..model.node_count())
             .filter(|v| !top.contains(&u32::try_from(*v).unwrap()))
-            .all(|v| contact.areas[v] == 0.0)
+            .all(|v| contact.areas()[v] == 0.0)
     );
 }
 
@@ -317,7 +349,7 @@ fn a_uniform_pressure_reads_its_pressure_on_an_irregular_mesh() {
             .iter()
             .all(|&(p, _)| (p / 1000.0 - 1.0).abs() < 1e-12)
     );
-    let patch = contact.patch_peak(&model, PROBE_AREA).unwrap();
+    let patch = contact.patch_peak(PROBE_AREA).unwrap();
     assert!(
         (patch.pressure / 1000.0 - 1.0).abs() < 2e-3,
         "{}",
@@ -327,7 +359,7 @@ fn a_uniform_pressure_reads_its_pressure_on_an_irregular_mesh() {
     let radius = (PROBE_AREA / PI).sqrt();
     assert!(patch.centre[0].abs().max(patch.centre[1].abs()) < 0.03 - radius);
     // A patch at the corner holds a quarter of one.
-    let corner = contact.patch_at(&model, PROBE_AREA, [-0.03, -0.03, 0.0]);
+    let corner = contact.patch_at(PROBE_AREA, [-0.03, -0.03, 0.0]);
     assert!((corner / 250.0 - 1.0).abs() < 1e-3, "{corner}");
 }
 
@@ -339,7 +371,7 @@ fn a_point_force_reads_its_force_over_the_probe_area() {
     forces[middle] = 0.3;
     let snapshot = window(&model, &forces);
     let contact = WindowContact::read(&model, &snapshot, &plate(), 0.0);
-    let patch = contact.patch_peak(&model, PROBE_AREA).unwrap();
+    let patch = contact.patch_peak(PROBE_AREA).unwrap();
     assert!(
         (patch.pressure / (0.3 / PROBE_AREA) - 1.0).abs() < 1e-12,
         "{}",
@@ -347,8 +379,8 @@ fn a_point_force_reads_its_force_over_the_probe_area() {
     );
     // Two patch radii away, nothing.
     let radius = (PROBE_AREA / PI).sqrt();
-    let p = contact.positions[middle];
-    let away = contact.patch_at(&model, PROBE_AREA, [p[0] + 2.0 * radius, p[1], 0.0]);
+    let p = contact.positions()[middle];
+    let away = contact.patch_at(PROBE_AREA, [p[0] + 2.0 * radius, p[1], 0.0]);
     assert_eq!(away, 0.0);
 }
 
@@ -364,8 +396,8 @@ fn a_patch_reads_the_same_wherever_the_mesh_sits_in_the_world() {
         let mut forces = vec![0.0; model.node_count()];
         forces[loaded] = 0.3;
         let contact = WindowContact::read(&model, &window(&model, &forces), &plate(), 0.0);
-        let p = contact.positions[loaded];
-        contact.patch_at(&model, PROBE_AREA, [p[0] + radius, p[1], p[2]])
+        let p = contact.positions()[loaded];
+        contact.patch_at(PROBE_AREA, [p[0] + radius, p[1], p[2]])
     };
     let first = read(0.0);
     assert!(first > 0.0 && first < 0.3 / PROBE_AREA, "{first}");
@@ -394,21 +426,39 @@ fn on_a_coarse_mesh_the_peak_can_centre_on_a_triangle() {
         forces[v as usize] = 0.1;
     }
     let contact = WindowContact::read(&model, &window(&model, &forces), &plate(), 0.0);
-    let peak = contact.patch_peak(&model, PROBE_AREA).unwrap();
+    let peak = contact.patch_peak(PROBE_AREA).unwrap();
     let on_nodes = pressed
         .iter()
-        .map(|&v| contact.patch_at(&model, PROBE_AREA, contact.positions[v as usize]))
+        .map(|&v| contact.patch_at(PROBE_AREA, contact.positions()[v as usize]))
         .fold(0.0, f64::max);
     assert!(
         peak.pressure > 1.01 * on_nodes,
         "{} vs {on_nodes}",
         peak.pressure
     );
-    let [a, b, c] = pressed.map(|v| contact.positions[v as usize]);
+    let [a, b, c] = pressed.map(|v| contact.positions()[v as usize]);
     for axis in 0..3 {
         let centroid = (a[axis] + b[axis] + c[axis]) / 3.0;
         assert!((peak.centre[axis] - centroid).abs() < 1e-15);
     }
+
+    // Two of its nodes pressed, the third not: the patch on the triangle's
+    // centroid still holds more than one on any node.
+    let mut forces = vec![0.0; model.node_count()];
+    for &v in &pressed[..2] {
+        forces[v as usize] = 0.1;
+    }
+    let contact = WindowContact::read(&model, &window(&model, &forces), &plate(), 0.0);
+    let peak = contact.patch_peak(PROBE_AREA).unwrap();
+    let on_nodes = pressed[..2]
+        .iter()
+        .map(|&v| contact.patch_at(PROBE_AREA, contact.positions()[v as usize]))
+        .fold(0.0, f64::max);
+    assert!(
+        peak.pressure > 1.01 * on_nodes,
+        "{} vs {on_nodes}",
+        peak.pressure
+    );
 }
 
 #[test]
@@ -425,13 +475,178 @@ fn half_a_patch_off_the_contact_reads_half() {
     }
     let snapshot = window(&model, &forces);
     let contact = WindowContact::read(&model, &snapshot, &plate(), 0.0);
-    let edge = contact.patch_at(&model, PROBE_AREA, [0.5 * h, 0.0, 0.0]);
+    // The unpressed nodes face the plate too, and have no contact area.
+    assert!(
+        top.iter()
+            .filter(|&&v| forces[v as usize] == 0.0)
+            .all(|&v| contact.areas()[v as usize] == 0.0)
+    );
+    let edge = contact.patch_at(PROBE_AREA, [0.5 * h, 0.0, 0.0]);
     assert!((edge / 500.0 - 1.0).abs() < 2e-3, "{edge}");
-    let peak = contact.patch_peak(&model, PROBE_AREA).unwrap();
+    let peak = contact.patch_peak(PROBE_AREA).unwrap();
     assert!(
         (peak.pressure / 1000.0 - 1.0).abs() < 2e-3,
         "{}",
         peak.pressure
+    );
+}
+
+#[test]
+fn a_stretched_window_reads_its_stretched_area() {
+    // The window's mean state is the rest state stretched 1.3× along x: every
+    // top triangle is 1.3× its rest area, and a node's contact area with it.
+    let (model, top) = slab(30, 2.0 * MM, 0.2);
+    let rest = top_areas(&model, &top);
+    let stretched = |forces: Vec<f64>| {
+        let mut snapshot = window(&model, &forces);
+        snapshot.displacement_sums = model
+            .rest_positions()
+            .iter()
+            .map(|p| [4.0 * 0.3 * p[0], 0.0, 0.0])
+            .collect();
+        WindowContact::read(&model, &snapshot, &plate(), 0.0)
+    };
+    let mut forces = vec![0.0; model.node_count()];
+    for &v in &top {
+        forces[v as usize] = 1000.0 * 1.3 * rest[v as usize];
+    }
+    let contact = stretched(forces);
+    for &v in &top {
+        let (read, expected) = (contact.areas()[v as usize], 1.3 * rest[v as usize]);
+        assert!(
+            (read / expected - 1.0).abs() < 1e-12,
+            "{read} vs {expected}"
+        );
+    }
+    assert!(
+        contact
+            .pressures()
+            .iter()
+            .all(|&(p, _)| (p / 1000.0 - 1.0).abs() < 1e-12)
+    );
+    let patch = contact.patch_peak(PROBE_AREA).unwrap();
+    assert!(
+        (patch.pressure / 1000.0 - 1.0).abs() < 2e-3,
+        "{}",
+        patch.pressure
+    );
+    // A point force in the stretched window is all found by a patch on it.
+    let middle = top[top.len() / 2] as usize;
+    let mut forces = vec![0.0; model.node_count()];
+    forces[middle] = 0.3;
+    let patch = stretched(forces).patch_peak(PROBE_AREA).unwrap();
+    assert!(
+        (patch.pressure / (0.3 / PROBE_AREA) - 1.0).abs() < 1e-12,
+        "{}",
+        patch.pressure
+    );
+}
+
+#[test]
+fn the_contact_area_takes_the_obstacles_normal_as_posed_at_the_window() {
+    // The plate is level at t = 0 and turned 30° about y at t = 1, when the
+    // window is read: an interior top node's area is cos 30° of its share.
+    let (model, top) = slab(4, 2.0 * MM, 0.0);
+    let turn = 30.0_f64.to_radians();
+    let turned = Pose {
+        qw: (turn / 2.0).cos(),
+        qy: (turn / 2.0).sin(),
+        ..IDENTITY
+    };
+    let obstacle = Obstacle {
+        poses: vec![IDENTITY, turned],
+        ..plate()
+    };
+    let snapshot = window(&model, &uniform(&model, &top, 1000.0));
+    let contact = WindowContact::read(&model, &snapshot, &obstacle, 1.0);
+    let shares = top_areas(&model, &top);
+    let interior = top.iter().filter(|&&v| {
+        let p = model.rest_positions()[v as usize];
+        p[0].abs() < 3.0 * MM && p[1].abs() < 3.0 * MM
+    });
+    for &v in interior {
+        let (read, expected) = (contact.areas()[v as usize], turn.cos() * shares[v as usize]);
+        assert!(
+            (read / expected - 1.0).abs() < 1e-12,
+            "{read} vs {expected}"
+        );
+    }
+}
+
+/// A flat obstacle whose outward normal is `normal` everywhere, over the
+/// plate's box.
+fn plane(normal: [f64; 3]) -> Obstacle {
+    let (grid, values) = bake([-0.04, -0.04, -0.004], [0.04, 0.04, 0.004], 0.004, |p| {
+        normal[0] * p[0] + normal[1] * p[1] + normal[2] * p[2]
+    })
+    .unwrap();
+    Obstacle {
+        grid,
+        values,
+        ..plate()
+    }
+}
+
+/// A third of each surface triangle whose rest corners all satisfy `on`,
+/// summed at each node.
+fn face_areas(model: &ExplicitModel, on: impl Fn([f64; 3]) -> bool) -> Vec<f64> {
+    let rest = model.rest_positions();
+    let mut areas = vec![0.0; model.node_count()];
+    for corners in model.surface_triangles() {
+        if corners.iter().all(|&v| on(rest[v as usize])) {
+            let [a, b, c] = corners.map(|v| rest[v as usize]);
+            for &v in corners {
+                areas[v as usize] += triangle_area(a, b, c) / 3.0;
+            }
+        }
+    }
+    areas
+}
+
+#[test]
+fn a_face_turned_away_from_the_obstacle_adds_nothing() {
+    // A plane pressing down and toward −x: its normal is (−0.6, 0, −0.8). The
+    // top faces it at 0.8 and the +x side at 0.6; the −x side is turned away.
+    let (model, top) = slab(4, 2.0 * MM, 0.0);
+    let snapshot = window(&model, &uniform(&model, &top, 1000.0));
+    let contact = WindowContact::read(&model, &snapshot, &plane([-0.6, 0.0, -0.8]), 0.0);
+    let half = 4.0 * MM;
+    let tops = top_areas(&model, &top);
+    let plus_x = face_areas(&model, |p| (p[0] - half).abs() < 1e-12);
+    let rest = model.rest_positions();
+    let corner = |x: f64| {
+        top.iter()
+            .map(|&v| v as usize)
+            .find(|&v| (rest[v][0] - x).abs() < 1e-12 && (rest[v][1] + half).abs() < 1e-12)
+            .unwrap()
+    };
+    let (minus, plus) = (corner(-half), corner(half));
+    assert!((contact.areas()[minus] - 0.8 * tops[minus]).abs() < 1e-18);
+    let expected = 0.8 * tops[plus] + 0.6 * plus_x[plus];
+    assert!((contact.areas()[plus] - expected).abs() < 1e-18);
+}
+
+#[test]
+fn a_node_the_obstacle_meets_side_on_keeps_its_force() {
+    // A wall's normal lies in the top's plane, so no face turns toward it:
+    // the pressed node takes its whole share of the top, and keeps its force.
+    let (model, top) = slab(4, 2.0 * MM, 0.0);
+    let middle = top[top.len() / 2] as usize;
+    let mut forces = vec![0.0; model.node_count()];
+    forces[middle] = 0.3;
+    let contact = WindowContact::read(
+        &model,
+        &window(&model, &forces),
+        &plane([-1.0, 0.0, 0.0]),
+        0.0,
+    );
+    let share = top_areas(&model, &top)[middle];
+    assert_eq!(contact.pressures(), vec![(0.3 / share, share)]);
+    let patch = contact.patch_peak(PROBE_AREA).unwrap();
+    assert!(
+        (patch.pressure / (0.3 / PROBE_AREA) - 1.0).abs() < 1e-12,
+        "{}",
+        patch.pressure
     );
 }
 
@@ -466,12 +681,17 @@ fn on_a_bore_the_ball_holds_a_little_more_than_the_probe_area() {
         p[0].hypot(p[1]) - bore
     })
     .unwrap();
+    // The window finds the tube 2 mm along x, and the mandrel posed there.
+    let shift = 0.002;
     let mandrel = Obstacle {
         grid,
         values,
         start: 0.0,
         interval: 1.0,
-        poses: vec![IDENTITY],
+        poses: vec![Pose {
+            tx: shift,
+            ..IDENTITY
+        }],
         friction: 0.0,
     };
     // Every bore node from 40 to 80 mm pressing 1 kPa over its share of the
@@ -487,10 +707,19 @@ fn on_a_bore_the_ball_holds_a_little_more_than_the_probe_area() {
             forces[v] = pressure * chord * spacing;
         }
     }
-    let snapshot = window(&model, &forces);
+    let mut snapshot = window(&model, &forces);
+    snapshot.displacement_sums = vec![[4.0 * shift, 0.0, 0.0]; model.node_count()];
     let contact = WindowContact::read(&model, &snapshot, &mandrel, 0.0);
-    let centre = [bore, 0.0, 0.060];
-    let read = contact.patch_at(&model, PROBE_AREA, centre) / pressure;
+    // Each facet is half a cell's turn off its nodes' normals.
+    let facet = (PI / tube.circumferential as f64).cos();
+    assert!(
+        contact
+            .pressures()
+            .iter()
+            .all(|&(p, _)| (p * facet / pressure - 1.0).abs() < 1e-4)
+    );
+    let centre = [bore + shift, 0.0, 0.060];
+    let read = contact.patch_at(PROBE_AREA, centre) / pressure;
     let expected = ball_on_cylinder(bore, (PROBE_AREA / PI).sqrt());
     assert!(expected > 1.005 && expected < 1.02, "{expected}");
     assert!((read / expected - 1.0).abs() < 1e-3, "{read} vs {expected}");

@@ -1,16 +1,18 @@
 //! Fit plan D1's readings: what a verdict reads from a run (plan §16s).
 //!
 //! **Getting it in** is the peak push force over the path: the largest of the
-//! stepping loop's monitor means of the push. Its geometric share, the push
-//! of the same run at `μ_f = 0` (plan §15h), rises and falls as the obstacle
-//! crosses each ring of nodes; [`travel_peak`] reads it as the largest mean
-//! push over [`PUSH_TRAVEL`] of travel, which averages the crossings out.
+//! stepping loop's monitor means of the push, the contact force's component
+//! along the path (the tube probe reads the tube's axis). Its geometric share,
+//! the push of the same run at `μ_f = 0` (plan §15h), rises and falls as the
+//! obstacle crosses each ring of nodes; [`travel_peak`] reads it as the
+//! largest mean push over [`PUSH_TRAVEL`] of travel, which averages most of
+//! the crossings out.
 //!
 //! **Seated** is [`WindowContact::patch_peak`]: the contact force on the
 //! most-loaded patch of [`PROBE_AREA`], 1 cm², divided by that area. 1 cm² is
 //! the algometer tip most pressure-pain studies in a 2021 review used (plan
-//! §16s), so the reading and the limit it is judged against are taken over
-//! the same area. The pointwise pressures behind it, their peak and their
+//! §16s), so the reading and the limit it will be judged against can be taken
+//! over the same area. The pointwise pressures behind it, their peak and their
 //! area-weighted 95th percentile are shown beside it
 //! ([`WindowContact::pressures`], [`area_percentile`]).
 //!
@@ -29,8 +31,11 @@ use crate::f64::{triangle_area, vec3_cross, vec3_dot, vec3_length, vec3_scale, v
 /// size follows whichever data calibrates the seated limit.
 pub const PROBE_AREA: f64 = 1.0e-4;
 
-/// The travel the geometric share's push is averaged over: 10 mm, 2.9 and
-/// 3.6 ring spacings on plan §15c's 50k and 100k tubes (plan §16s).
+/// The travel the geometric share's push is averaged over: 10 mm (plan §16s).
+///
+/// That is 2.9 and 3.6 ring spacings on plan §15c's 50k and 100k tubes. Over
+/// `w` spacings a sinusoidal ripple keeps `|sin πw| / πw` of its amplitude:
+/// 3 % and 9 % there (`tests/readings.rs`).
 pub const PUSH_TRAVEL: f64 = 0.010;
 
 /// Sub-triangles per patch radius along a triangle's longest edge, when a
@@ -44,9 +49,13 @@ const SUBDIVISION: f64 = 16.0;
 /// over that interval, taken as constant along it; the first interval starts
 /// at `start`. Intervals without travel, such as a hold, add no work.
 ///
-/// `None` if the samples travel less than `window`, or travel backwards.
+/// `None` if `window` is not positive and finite, or the samples travel less
+/// than it or backwards.
 #[must_use]
 pub fn travel_peak(start: f64, samples: &[(f64, f64)], window: f64) -> Option<f64> {
+    if !(window > 0.0 && window.is_finite()) {
+        return None;
+    }
     let mut travel = Vec::with_capacity(samples.len() + 1);
     let mut work = Vec::with_capacity(samples.len() + 1);
     travel.push(start);
@@ -115,20 +124,17 @@ pub struct Patch {
 }
 
 /// The contact over a measurement window, from which D1's seated readings
-/// are taken.
+/// are taken. It keeps the model's surface, so its readings need nothing
+/// else.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WindowContact {
-    /// Each node's mean position over the window.
-    pub positions: Vec<[f64; 3]>,
-    /// Each node's mean normal force over the window; zero off the contact.
-    pub forces: Vec<f64>,
-    /// Each node's contact area: a third of each incident boundary triangle,
-    /// projected on the obstacle's normal at the node. Zero off the contact.
-    pub areas: Vec<f64>,
-    /// Each surface triangle's three cosines, `|n_triangle · n_obstacle|` at
-    /// each of its nodes, in the model's surface order: the share of the
-    /// triangle's third each node's area takes.
-    pub facing: Vec<[f64; 3]>,
+    surface: Vec<[u32; 3]>,
+    positions: Vec<[f64; 3]>,
+    forces: Vec<f64>,
+    areas: Vec<f64>,
+    /// Each surface triangle's weight at each of its nodes: the share of the
+    /// triangle's third that node's contact area takes.
+    facing: Vec<[f64; 3]>,
 }
 
 impl WindowContact {
@@ -136,9 +142,15 @@ impl WindowContact {
     /// posed at `time`, a time in a window over which it is held.
     ///
     /// A node is in contact if it carried normal force in the window. Its
-    /// area counts a boundary triangle by how squarely the triangle faces the
-    /// obstacle there, so a face the obstacle never touches, such as the end
-    /// of a tube at its entry, adds nothing to the edge node beside it.
+    /// contact area counts each incident boundary triangle by how squarely
+    /// the triangle faces the obstacle: a third of it times the cosine between
+    /// its outward normal and the obstacle's normal turned inward, and nothing
+    /// if it is turned away. So a face at right angles to the obstacle, such
+    /// as the end of a tube at its entry, adds nothing to the edge node beside
+    /// it, and a face tilted toward the obstacle adds its share by the cosine.
+    /// A contact node that no face turns toward the obstacle (its area is zero
+    /// to rounding), as where the obstacle meets an edge side-on, takes a
+    /// third of every incident triangle instead, so its force is never lost.
     ///
     /// # Panics
     /// If the snapshot holds no accumulated steps.
@@ -175,24 +187,51 @@ impl WindowContact {
             .zip(&forces)
             .map(|(&p, &f)| (f > 0.0).then(|| obstacle.world_normal(time, p)))
             .collect();
-        let mut areas = vec![0.0; positions.len()];
-        let facing = model
-            .surface_triangles()
+        let surface = model.surface_triangles().to_vec();
+        let thirds: Vec<f64> = surface
             .iter()
             .map(|&corners| {
                 let [a, b, c] = corners.map(|n| positions[n as usize]);
-                let normal = unit(vec3_cross(vec3_sub(b, a), vec3_sub(c, a)));
-                let third = triangle_area(a, b, c) / 3.0;
+                triangle_area(a, b, c) / 3.0
+            })
+            .collect();
+        let mut areas = vec![0.0; positions.len()];
+        let mut tributary = vec![0.0; positions.len()];
+        let mut facing: Vec<[f64; 3]> = surface
+            .iter()
+            .zip(&thirds)
+            .map(|(&corners, &third)| {
+                let [a, b, c] = corners.map(|n| positions[n as usize]);
+                let outward = unit(vec3_cross(vec3_sub(b, a), vec3_sub(c, a)));
                 corners.map(|n| {
+                    tributary[n as usize] += third;
                     normals[n as usize].map_or(0.0, |obstacle_normal| {
-                        let cosine = vec3_dot(normal, obstacle_normal).abs();
+                        let cosine = (-vec3_dot(outward, obstacle_normal)).max(0.0);
                         areas[n as usize] += third * cosine;
                         cosine
                     })
                 })
             })
             .collect();
+        let sideways: Vec<bool> = (0..positions.len())
+            .map(|n| forces[n] > 0.0 && areas[n] <= f64::EPSILON * tributary[n])
+            .collect();
+        if sideways.contains(&true) {
+            for (corners, weights) in surface.iter().zip(&mut facing) {
+                for (&n, weight) in corners.iter().zip(weights) {
+                    if sideways[n as usize] {
+                        *weight = 1.0;
+                    }
+                }
+            }
+            for (n, area) in areas.iter_mut().enumerate() {
+                if sideways[n] {
+                    *area = tributary[n];
+                }
+            }
+        }
         Self {
+            surface,
             positions,
             forces,
             areas,
@@ -200,8 +239,27 @@ impl WindowContact {
         }
     }
 
+    /// Each node's mean position over the window.
+    #[must_use]
+    pub fn positions(&self) -> &[[f64; 3]] {
+        &self.positions
+    }
+
+    /// Each node's mean normal force over the window; zero off the contact.
+    #[must_use]
+    pub fn forces(&self) -> &[f64] {
+        &self.forces
+    }
+
+    /// Each node's contact area (see [`read`](Self::read)); zero off the
+    /// contact.
+    #[must_use]
+    pub fn areas(&self) -> &[f64] {
+        &self.areas
+    }
+
     /// Each contact node's `(pressure, area)`: its mean normal force over its
-    /// contact area, for nodes with both.
+    /// contact area.
     #[must_use]
     pub fn pressures(&self) -> Vec<(f64, f64)> {
         self.forces
@@ -218,23 +276,24 @@ impl WindowContact {
     ///
     /// Each node's force is spread over its contact area, so a surface
     /// triangle carries a uniform pressure: the mean of its nodes' pressures,
-    /// each weighted by its cosine in [`facing`](Self::facing). The patch is
-    /// the surface inside a ball of radius `√(area/π)`; the triangles are
-    /// integrated over it in congruent sub-triangles, at least
-    /// `SUBDIVISION` per radius along each longest edge, each counted by
-    /// its centroid, faded in across the ball's rim over its own size. It is
-    /// centred on every contact node and on the centroid of every triangle
-    /// that carries force.
+    /// each weighted by its share of the triangle. The patch is the surface
+    /// inside a ball of radius `√(area/π)`; the triangles are integrated over
+    /// it in congruent sub-triangles, at least `SUBDIVISION` per radius along
+    /// each longest edge, each counted by its centroid, faded in across the
+    /// ball's rim over its own size.
     ///
-    /// On a curved surface the ball holds a little more than `area` of it;
-    /// `tests/readings.rs` measures how much on a bore.
+    /// The patch is centred on every contact node and on the centroid of every
+    /// triangle that carries force, so this is the most-loaded of those: a
+    /// lower bound on the most-loaded patch anywhere (plan §16s measures the
+    /// gap on the tube). On a curved surface the ball holds a little more than
+    /// `area` of it; `tests/readings.rs` measures how much on a bore.
     #[must_use]
-    pub fn patch_peak(&self, model: &ExplicitModel, area: f64) -> Option<Patch> {
-        let points = self.force_points(model, area);
+    pub fn patch_peak(&self, area: f64) -> Option<Patch> {
+        let points = self.force_points(area);
         let radius = (area / PI).sqrt();
         let grid = Buckets::new(&points, radius);
-        let centroids = model
-            .surface_triangles()
+        let centroids = self
+            .surface
             .iter()
             .filter(|corners| corners.iter().any(|&n| self.forces[n as usize] > 0.0))
             .map(|&corners| centroid(corners.map(|n| self.positions[n as usize])));
@@ -257,11 +316,11 @@ impl WindowContact {
             })
     }
 
-    /// The contact force at the centre of a patch of `area` at `centre`,
-    /// over `area`: the reading [`patch_peak`](Self::patch_peak) maximizes.
+    /// The contact force on a patch of `area` centred at `centre`, over
+    /// `area`: the reading [`patch_peak`](Self::patch_peak) maximizes.
     #[must_use]
-    pub fn patch_at(&self, model: &ExplicitModel, area: f64, centre: [f64; 3]) -> f64 {
-        let points = self.force_points(model, area);
+    pub fn patch_at(&self, area: f64, centre: [f64; 3]) -> f64 {
+        let points = self.force_points(area);
         let radius = (area / PI).sqrt();
         Buckets::new(&points, radius).within(&points, centre, radius) / area
     }
@@ -276,17 +335,17 @@ impl WindowContact {
         clippy::cast_sign_loss,
         clippy::cast_precision_loss
     )]
-    fn force_points(&self, model: &ExplicitModel, area: f64) -> Vec<ForcePoint> {
+    fn force_points(&self, area: f64) -> Vec<ForcePoint> {
         let spacing = (area / PI).sqrt() / SUBDIVISION;
         let mut points = Vec::new();
-        for (&corners, cosines) in model.surface_triangles().iter().zip(&self.facing) {
+        for (&corners, weights) in self.surface.iter().zip(&self.facing) {
             let pressure: f64 = corners
                 .iter()
-                .zip(cosines)
-                .map(|(&n, &cosine)| {
+                .zip(weights)
+                .map(|(&n, &weight)| {
                     let (force, node_area) = (self.forces[n as usize], self.areas[n as usize]);
                     if force > 0.0 && node_area > 0.0 {
-                        force / node_area * cosine / 3.0
+                        force / node_area * weight / 3.0
                     } else {
                         0.0
                     }

@@ -23,7 +23,8 @@ pub enum Mesh {
     /// 6 × 64 × 43 cells, 99 072 elements.
     HundredK,
     /// Any cell counts: plan §16s refines the planned meshes along the tube
-    /// to see what D1's readings converge to.
+    /// to see what D1's readings converge to. A tube needs at least one cell
+    /// through the wall and along, and three around.
     Cells {
         /// Cells through the wall.
         radial: usize,

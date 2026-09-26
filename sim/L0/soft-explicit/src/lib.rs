@@ -48,7 +48,7 @@
 //! ## What a verdict reads
 //!
 //! [`readings`] holds fit plan D1's readings, taken from a run's monitors and
-//! its measurement window: the push force along the path, and the seated
+//! its measurement window: the push force's peak over travel, and the seated
 //! contact force on the most-loaded square centimetre.
 
 #![deny(clippy::unwrap_used, clippy::expect_used)]

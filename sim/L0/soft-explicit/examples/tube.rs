@@ -51,11 +51,15 @@ fn request() -> Request {
         "50k" => Mesh::FiftyK,
         "100k" => Mesh::HundredK,
         other => {
-            let cells: Vec<usize> = other.split('x').filter_map(|c| c.parse().ok()).collect();
-            let &[radial, circumferential, axial] = cells.as_slice() else {
+            let cells: Option<Vec<usize>> = other.split('x').map(|c| c.parse().ok()).collect();
+            let Some(&[radial, circumferential, axial]) = cells.as_deref() else {
                 eprintln!("unknown mesh {other}: use 10k, 50k, 100k or RxCxA cells");
                 std::process::exit(2);
             };
+            if radial < 1 || circumferential < 3 || axial < 1 {
+                eprintln!("mesh {other}: a tube needs R and A ≥ 1 and C ≥ 3");
+                std::process::exit(2);
+            }
             Mesh::Cells {
                 radial,
                 circumferential,
@@ -209,7 +213,7 @@ fn k5_readings(
     let end = run.insertion.end();
     let contact = WindowContact::read(model, &result.snapshot, obstacle, end);
     let (patch, patch_z) = contact
-        .patch_peak(model, PROBE_AREA)
+        .patch_peak(PROBE_AREA)
         .map_or((f64::NAN, f64::NAN), |p| {
             (p.pressure, p.centre[2] - run.insertion.tip(end))
         });
