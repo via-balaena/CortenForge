@@ -272,7 +272,8 @@ which inset would pass.
       15-minute limit (arithmetic). So the search uses the instant per-slice estimate to pick its
       candidates, and runs full verdicts at 1–2 insets (soft-contact recon §15g step 7). *(2026-09-26,
       recon §16r: on `base_mold` as meshed at the element size K2 needs, a press takes 0.29–0.61 of D4 at
-      K1's rate, so 3–4 verdicts take 4–12 minutes, within 15; arithmetic.)*
+      K1's rate, so 3–4 verdicts take 4–12 minutes, within 15; with the canal nodes projected (U17) at a
+      quality floor of 0.5 and the viscosity, 15–21; arithmetic.)*
     - If the new solver takes far longer on the same scene, revisit the budget rather than cut the
       physics.
   - **D5 — Where the inset changes.** *Decided:* on the fit screen, as **Try at *n* mm**, with D3's
@@ -490,7 +491,9 @@ in CI); G5 already gates in CI.
 - **U18 — G2 on `base_mold` rests on the scan grid** (soft-contact recon §16r, 2026-09-26). The contact law holds a
   node on the baked grid's surface (measured on the tube, §16o; on the product it needs a run, step 7), so G2 there
   is the grid's own error against the scan. No grid measured meets it: the nearest, 0.25 mm without the pre-smooth,
-  lets a node sit 2.3 times the bar deep, and 1.8 % of the scan's points past it. The pre-smooth cuts that share
+  lets a node sit 2.3 times the bar deep, and 1.8 % of the scan's points past it. That worst reading halved with each
+  halving of the grid's spacing; by that trend, not measured, the bar is met near 0.1 mm, about 100× the 0.5 mm
+  grid's samples. The pre-smooth cuts that share
   (to 0.34 % at 0.25 mm) and deepens the worst point (to 3.2 times), which sits beside the cap's rim. Step 6's bake
   sets the grid, and its pre-smooth, against this.
 

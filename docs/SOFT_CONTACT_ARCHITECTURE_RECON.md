@@ -1191,7 +1191,7 @@ Each item is one PR with its own tests and a done-when.
 **Steps 6–9 are an outline.** They are designed in detail after step 2's results, which set the
 product's mesh, budget and contact law. Three macro reviews found what that design must settle:
 - the per-press time against D4's target (§9 decision 12), which follows from the runs per verdict
-  *(2026-09-26, §16r: 0.29–0.61 of D4 at K1's rate as meshed)*;
+  *(2026-09-26, §16r: 0.29–0.61 of D4 at K1's rate with the wall as meshed; projected, more, fit plan U17)*;
 - the pairing's nominal corner, which D3 judges at: add it as a run, or show push force is linear in
   μ_f;
 - Tier 1's accuracy against the solver, and what D3 does if it is poor;
@@ -1273,7 +1273,7 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
   - **If stiffness scaling holds** (15d.10), a verdict is **3 runs**: the pairing's low and high μ, plus
     μ = 0 for the geometric share of push force (§2). That is about 6 minutes at K1's rate. *(2026-09-26, §16r:
     on `base_mold` as meshed at h_K2, a press takes 0.29–0.61 of D4 at K1's rate.)*
-  - **A D3 search** of 3–4 full verdicts would take 18–24 minutes, against D4's 15 (arithmetic). Tier 1 therefore pre-filters the search (step 7), so full verdicts run at 1–2 insets. *(2026-09-26, §16r: on `base_mold` as meshed at h_K2, 3–4 verdicts take 4–12 minutes at K1's rate, within 15; arithmetic.)*
+  - **A D3 search** of 3–4 full verdicts would take 18–24 minutes, against D4's 15 (arithmetic). Tier 1 therefore pre-filters the search (step 7), so full verdicts run at 1–2 insets. *(2026-09-26, §16r: on `base_mold` as meshed at h_K2, 3–4 verdicts take 4–12 minutes at K1's rate, within 15; with the canal nodes projected at a floor of 0.5 and the viscosity, 15–21 minutes (fit plan U17); arithmetic.)*
   - **If stiffness scaling fails,** each stiffness corner doubles the friction runs: 5 runs.
 - **The regime per application** (from the oracle's confinement table, §5b amended):
 
@@ -2791,9 +2791,15 @@ in contact, and one of the loop's re-estimates (a run makes one every 500 steps)
   difference is not isolated.
 - **At the 50k tube's h** (1.31 mm; D1's readings did not converge on the tube, §16p's K5), a press takes 2.3 of D4
   elastic and 4.8 viscous at K1's rate, and 0.26 and 0.84 on the CPU (ν 0.49, Ecoflex's η/μ).
-- **What the D4 verdict rests on:** the GPU meeting K1 exactly (measured in step 5); the tube's v/c_s, loaded step
-  factor, hold and start gap, where the product's own seated window is D1's (step 7); Ecoflex's η/μ; 3 runs a press
-  (a run at the pairing's nominal corner would make 4, §15g's outline); no node held; and h_K2, set by K2 alone.
+- **What the D4 verdict rests on:** the wall as meshed (projected at a floor of 0.5, a viscous press takes 1.03 of D4
+  at K1's rate, below; U17); the GPU meeting K1 exactly (measured in step 5), with its per-step cost scaling with
+  element count, which a GPU's fixed cost a step need not; the tube's v/c_s, loaded step factor, hold and start
+  gap, where the product's own seated window is D1's (step 7); Ecoflex's η/μ; 3 runs a press (a run at the
+  pairing's nominal corner would make 4, §15g's outline); no node held; and h_K2, set by K2 alone.
+- **K1's own tube on the CPU:** the 100k run at the rung above took 65 s of wall-clock (f32, 4 threads, contact and
+  the loop's estimates included, on a machine running other jobs), against K1's 2 minutes. At 10 T_s the same
+  mesh took 124.5 s (§16p), so it depends on the loading time step 5 sets for K1. The product's CPU figures above
+  leave contact out; what contact adds on the product is not measured.
 - The CPU figures bear on whether steps 3–5, the GPU, come before the quality items 2d measured (fit plan U15,
   U17, U18) and K5 (U16). That is Jon's call; the stop rule proceeds to step 3 either way.
 
@@ -2835,7 +2841,10 @@ Read off the cap discs (the faces `dome_wall_only_mesh` strips; in brackets, ove
 | 0.25 mm | 1 cell | 0.34 % (0.66 %) | 0.25 / 0.54 / 3.2 | 0.14 / 1.8 |
 
 - **No grid measured meets G2,** which is judged at the deepest node. The nearest, 0.25 mm without the pre-smooth,
-  lets a node sit 2.3 bars deep. What sets the remaining error is not isolated.
+  lets a node sit 2.3 bars deep. Without the pre-smooth the worst reading halved with each halving of the spacing
+  (9.5, 4.9 and 2.3 bars at 1, 0.5 and 0.25 mm), as did the 99th percentile; by that trend, not measured, it
+  reaches the bar near 0.1 mm, about 100× the 0.5 mm grid's samples (arithmetic). What sets the remaining error is
+  not isolated.
 - **The pre-smooth trades:** at 0.5 and 0.25 mm it cuts the share past the bar by about 3× and 5× and lowers the
   99th percentile, and raises the worst reading, which sits beside the cap's rim at every spacing. Leaving out the
   band within h_K2 of the cap plane as well, the smoothed 0.25 mm grid read 0.01 % past the bar and a worst of 1.24
