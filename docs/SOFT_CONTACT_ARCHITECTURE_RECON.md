@@ -1211,8 +1211,9 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
   the lip radius are revisited before step 7 (§15a; fit plan U16) *(2026-09-26, §16s: diagnosed; Jon replaced
   the seated reading with the most-loaded 1 cm² patch, and K5 passes from 50k to 100k. The lip radius stays with
   the fit plan's Later)*;
-- *(2026-09-26, §16s)* the element size D1's readings need on the product: on the tube they do not converge from
-  10k to 50k, and `base_mold` at h_K2 is about the 10k tube's element size, though not built in rings. Step 7
+- *(2026-09-26, §16s)* the element size D1's readings need on the product: on the tube the frictionless patch and
+  the geometric share do not converge from 10k to 50k, and `base_mold` at h_K2 is about the 10k tube's element
+  size, though not built in rings. Step 7
   measures D1's readings' convergence on `base_mold`; until then D4's figures at h_K2 (§16r) rest on K2 alone;
 - *(2026-09-25, §16p)* friction above μ_f 0.3: the damped tube's Coulomb push fails 15d.7 at μ_f 0.6, and
   §5c's ranges reach 2.0. Before a verdict is trusted at such a corner, its Coulomb push is checked there
@@ -1725,7 +1726,7 @@ missing. So:
   10k;
 - K5: the peak entry push (the largest of the monitor's 100-step means) and the seated
   95th-percentile pressure, 10k against 50k *(2026-09-26, §16s: the seated reading is now the most-loaded
-  1 cm² patch; from 10k to 50k the new readings do not converge)*;
+  1 cm² patch; from 10k to 50k the frictionless patch and the geometric share do not converge)*;
 - the Coulomb push (15d.7) and the Yeoh case (16h);
 - the confined case (15d.8), and a product-level run: the free tube at λ_a 1.3, ν 0.49, with
   `DRAGON_SKIN_10A`'s μ. Each records its raw error and its largest gap (§15g).
@@ -2803,9 +2804,9 @@ in contact, and one of the loop's re-estimates (a run makes one every 500 steps)
   the same material at the same η/μ and about the product's h, reads 0.875 (§16p). What in the meshes makes the
   difference is not isolated.
 - **At the 50k tube's h** (1.31 mm; D1's readings did not converge on the tube, §16p's K5; *§16s: the readings
-  that replaced them move at most 1.3 % from 50k to 100k and up to 38 % from 10k to 50k, so the element size they
-  need on the product is open*), a press takes 2.3 of D4
-  elastic and 4.8 viscous at K1's rate, and 0.26 and 0.84 on the CPU (ν 0.49, Ecoflex's η/μ).
+  as now read move at most 1.3 % from 50k to 100k, and the frictionless patch and geometric share up to 38 % from
+  10k to 50k, so the element size they need on the product is open*), a press takes 2.3 of D4 elastic and 4.8
+  viscous at K1's rate, and 0.26 and 0.84 on the CPU (ν 0.49, Ecoflex's η/μ).
 - **What the D4 verdict rests on:** the wall as meshed (projected at a floor of 0.5, a viscous press takes 1.03 of D4
   at K1's rate, below; U17); the GPU meeting K1 exactly (measured in step 5), with its per-step cost scaling with
   element count, which a GPU's fixed cost a step need not; the tube's v/c_s, loaded step factor, hold and start
@@ -2899,8 +2900,8 @@ itself asserts nothing.
 
 §16p's K5 failed on both of D1's readings. §15a sends that back to D1's readings or the lip radius, and D1 is
 Jon's, so this step diagnosed why each reading moved, measured candidates and recommended; Jon accepted the
-recommendations. It comes first because of an earlier call (Jon, 2026-09-26): the quality items come before steps
-3–5, K5 first of them.
+recommendations. It comes before steps 3–5 on Jon's call (2026-09-26: *"k5 is up next right?"*, on the
+recommendation that the quality items come first, K5 first of them).
 
 **Why the readings moved.** A scratch probe dumped each run's push history and seated window, and the dumps were
 analysed outside the repo (a diagnostic, not kept). It reproduced §16p's K5 table to the printed digit. Beside the
@@ -2937,9 +2938,11 @@ nodes 0.86 and 0.70 mm apart), frictionless and at μ_f 0.3, λ_a 1.1 and 1.3:
 **The readings** (`src/readings.rs`; the tube probe prints them, and takes any cell counts as `RxCxA`):
 - **A node's contact area** counts each incident boundary triangle that turns toward the obstacle: a third of it
   times the cosine between its outward normal and the obstacle's normal turned inward. A face at right angles to
-  the obstacle, or turned away, adds nothing. The tube's end face tilts toward the mandrel under friction and still
-  adds 3.7 % (λ_a 1.1) and 10 % (λ_a 1.3) of an entry node's area at 50k and μ_f 0.3 (the diagnostic's dumps). A
-  contact node that no face turns toward the obstacle keeps its force, over a third of every incident triangle.
+  the obstacle, or turned away, adds nothing. The tube's end face tilts toward the mandrel and still adds 3.7 %
+  (λ_a 1.1) and 10 % (λ_a 1.3) of an entry node's area at 50k and μ_f 0.3 (the diagnostic's dumps). A contact node
+  that no face turns toward the obstacle by more than 1e-9 rad keeps its force, over a third of every incident
+  triangle; nearer a right angle a node's pressure grows as one over the cosine, and the patch keeps the force at
+  any angle.
 - **The patch.** Each node's force is spread over its contact area, so each triangle carries a uniform pressure.
   The surface inside a ball of the patch's radius (5.64 mm for 1 cm²) is integrated in sub-triangles, at least 16
   to a radius along each longest edge, each faded in across the rim over its own size. The patch is centred on
@@ -2950,12 +2953,12 @@ nodes 0.86 and 0.70 mm apart), frictionless and at μ_f 0.3, λ_a 1.1 and 1.3:
 - **The push over travel** is the work over a 10 mm window, over 10 mm, taken exactly at the samples' boundaries;
   a hold adds nothing. 10 mm is 2.9 and 3.6 ring spacings on the 50k and 100k tubes, over which a sinusoidal ripple
   keeps 3 % and 9 % of its amplitude (arithmetic; a unit test checks the formula). At 50k (λ_a 1.1, frictionless)
-  the reading moved ±2.2 % between windows of 9, 10 and 11 mm (a review's measurement), as much as its 50k → 100k
-  change: the ripple the window keeps is part of what K5 reads there.
-- **Pinned by 18 unit tests** (`tests/readings.rs`), each on a case with a known answer, among them a stretched
-  window and an obstacle posed and tilted at the window's time. Of 35 single mutations, all but one made a test
-  fail; the survivor cuts the sub-triangles by `floor` rather than `ceil`, which only coarsens the integration (a
-  mutation run, not kept).
+  the reading moved +2.2 and −2.3 % between windows of 9, 10 and 11 mm (a review's measurement), as much as its
+  50k → 100k change: the ripple the window keeps is part of what K5 reads there.
+- **Pinned by 21 unit tests** (`tests/readings.rs`), each on a case with a known answer, among them a stretched
+  window, a window turned from rest, an obstacle posed and tilted at the window's time, and a side-on plane reached
+  through posed turns. Of 40 single mutations, all but one made a test fail; the survivor cuts the sub-triangles
+  by `floor` rather than `ceil`, which only coarsens the integration (a mutation run, not kept).
 
 **K5 passes on the new readings, from 50k to 100k.** The bar is §15a's, 5 % from 50k to 100k. The readings were
 chosen after the diagnosis had seen every mesh below, so none is held out.
@@ -2976,9 +2979,9 @@ the 100k cross-section refined along the tube is `6x64x86` and `6x64x172`:
 
 - **The frictionless patch is still moving along the tube:** at λ_a 1.3 it rose 2.6 % from 100k to 2× and 1.1 % from
   2× to 4×, and 100k reads 3.6 % below the 4× mesh, more than its 50k → 100k change.
-- **From 10k to 50k** (§16i's reading of K5) the new readings do not converge: the patch moves +14.8 and +9.2 %
-  frictionless and −4.9 and −2.8 % with friction, the geometric share −38 and −14 %, the push peak −0.1 and −3.1 %
-  (arithmetic on the table). At 10k the rings are 7.06 mm apart, more than the patch's radius.
+- **From 10k to 50k** (§16i's reading of K5) the frictionless patch moves +14.8 and +9.2 % and the geometric share
+  −38 and −14 %, past the bar; the patch with friction moves −4.8 and −2.8 % and the push peak −0.1 and −3.1 %
+  (arithmetic on the table).
 - **So the element size D1's readings need on the product is open.** `base_mold` is meshed at h_K2 = 2.20 mm, about
   the 10k tube's element size (2.26 mm, §16r), and D4's figures there rest on K2 alone. Its mesh is not built in
   rings; whether it resolves the readings as the 10k tube does, or as the 50k does, is not measured. Step 7 measures
@@ -3021,11 +3024,11 @@ Dragon Skin 10A, is the one report of seated comfort from use; whether the patch
 D1's limits and a run on the product.
 
 **How this was checked.**
-- **The criteria came first,** with 20 priors kept from the reviewers.
+- **The criteria came first,** with 17 priors kept from the reviewers.
 - **Round 1:** three cold reviewers (the code, mutating it in a worktree of its own; this record, reproducing its
   numbers from the committed probe; the whole plan) raised 30 findings, four of them twice. The largest:
-  - K5 had been read only from 50k to 100k; from 10k to 50k the new readings do not converge, and `base_mold`'s
-    mesh is about the 10k tube's element size (above);
+  - K5 had been read only from 50k to 100k; from 10k to 50k two of the new readings do not converge, and
+    `base_mold`'s mesh is about the 10k tube's element size (above);
   - the tests never read a deformed window or a posed obstacle, so four mutations of which state the geometry is
     read in passed all of them, moving the readings by 1.4–46 %;
   - a face turned away from the obstacle counted, and a node's force could be lost;
@@ -3033,3 +3036,8 @@ D1's limits and a run on the product.
     was cited where it was not written.
 
   Five priors hit, and two in part. The recorded runs, repeated after the fixes, printed the same.
+- **Round 2:** one fresh reviewer read only round 1's fix diff and found 10 problems, 9 of them in code or text the
+  fixes wrote: the side-on threshold sat at rounding, so a side-on plane reached through a posed turn missed it; a
+  face's normal read at rest passed every test; "from 10k to 50k the readings do not converge" held for two of
+  the four; and smaller slips in the prose. The code got tests; the prose was cut. With round 2 finding mostly what
+  round 1's fixes wrote, no third pass was run.

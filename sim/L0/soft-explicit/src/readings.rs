@@ -42,6 +42,12 @@ pub const PUSH_TRAVEL: f64 = 0.010;
 /// patch integrates the surface's force (see [`WindowContact::patch_peak`]).
 const SUBDIVISION: f64 = 16.0;
 
+/// The share of its tributary area below which a contact node's area counts
+/// as met side-on (see [`WindowContact::read`]): the cosine of a face turned
+/// 1e-9 rad toward the obstacle, far above what rounding leaves of a right
+/// angle (a side-on plane reached through posed turns, `tests/readings.rs`).
+const SIDE_ON: f64 = 1e-9;
+
 /// The largest mean push over any `window` of travel: the work done over the
 /// window divided by its length.
 ///
@@ -145,12 +151,13 @@ impl WindowContact {
     /// contact area counts each incident boundary triangle by how squarely
     /// the triangle faces the obstacle: a third of it times the cosine between
     /// its outward normal and the obstacle's normal turned inward, and nothing
-    /// if it is turned away. So a face at right angles to the obstacle, such
-    /// as the end of a tube at its entry, adds nothing to the edge node beside
-    /// it, and a face tilted toward the obstacle adds its share by the cosine.
-    /// A contact node that no face turns toward the obstacle (its area is zero
-    /// to rounding), as where the obstacle meets an edge side-on, takes a
-    /// third of every incident triangle instead, so its force is never lost.
+    /// if it is turned away. So a face at right angles to the obstacle adds
+    /// nothing to the node, and a face tilted toward it adds its share by the
+    /// cosine; near a right angle a node's pressure grows as one over that
+    /// cosine, while the patch keeps its force whatever the angle. A contact
+    /// node whose area is below `SIDE_ON` of a third of every incident
+    /// triangle, as where the obstacle meets an edge side-on, takes that whole
+    /// third instead, so a node with any surface keeps its force.
     ///
     /// # Panics
     /// If the snapshot holds no accumulated steps.
@@ -214,7 +221,7 @@ impl WindowContact {
             })
             .collect();
         let sideways: Vec<bool> = (0..positions.len())
-            .map(|n| forces[n] > 0.0 && areas[n] <= f64::EPSILON * tributary[n])
+            .map(|n| forces[n] > 0.0 && areas[n] <= SIDE_ON * tributary[n])
             .collect();
         if sideways.contains(&true) {
             for (corners, weights) in surface.iter().zip(&mut facing) {
@@ -284,9 +291,9 @@ impl WindowContact {
     ///
     /// The patch is centred on every contact node and on the centroid of every
     /// triangle that carries force, so this is the most-loaded of those: a
-    /// lower bound on the most-loaded patch anywhere (plan §16s measures the
-    /// gap on the tube). On a curved surface the ball holds a little more than
-    /// `area` of it; `tests/readings.rs` measures how much on a bore.
+    /// lower bound on the most-loaded patch anywhere. On a curved surface the
+    /// ball holds a little more than `area` of it; `tests/readings.rs`
+    /// measures how much on a bore.
     #[must_use]
     pub fn patch_peak(&self, area: f64) -> Option<Patch> {
         let points = self.force_points(area);

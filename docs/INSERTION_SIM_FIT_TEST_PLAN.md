@@ -494,8 +494,9 @@ in CI); G5 already gates in CI.
   was one or two rings, at the seam and, with friction, the entry edge, and the frictionless push rippled as the
   nose crossed each ring. Jon replaced the seated reading with the most-loaded 1 cm² patch, and the geometric
   share is read over 10 mm of travel (D1). On them K5 passes from 50k to 100k (at most 1.3 %); 100k reads within
-  3.6 % of a mesh 4× finer along the tube. **Open:** from 10k to 50k they do not converge, and `base_mold` at h_K2
-  is about the 10k tube's element size, so the element size they need on the product is measured in step 7. The
+  3.6 % of a mesh 4× finer along the tube. **Open:** from 10k to 50k the frictionless patch and the geometric share
+  do not converge, and `base_mold` at h_K2 is about the 10k tube's element size, so the element size they need on
+  the product is measured in step 7. The
   lip radius stays under Later.
 - **U17 — The product wall's canal surface** (soft-contact recon §16r, 2026-09-26). At the element size K2 needs,
   the old path's wall puts the canal nodes off the true canal surface: its 5th and 95th percentiles at −0.50 and

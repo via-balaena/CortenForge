@@ -650,6 +650,104 @@ fn a_node_the_obstacle_meets_side_on_keeps_its_force() {
     );
 }
 
+/// The plane of [`plane`] with body normal `normal`, posed turned by `angle`
+/// about y.
+fn turned_plane(normal: [f64; 3], angle: f64) -> Obstacle {
+    Obstacle {
+        poses: vec![Pose {
+            qw: (angle / 2.0).cos(),
+            qy: (angle / 2.0).sin(),
+            ..IDENTITY
+        }],
+        ..plane(normal)
+    }
+}
+
+#[test]
+fn a_side_on_obstacle_is_found_side_on_through_any_pose() {
+    // A plane whose world normal is −x, reached by turning its body normal
+    // through every whole degree from 1° to 89°: rounding leaves the top a
+    // cosine of about 1e-16, and the pressed node still falls back.
+    let (model, top) = slab(4, 2.0 * MM, 0.0);
+    let middle = top[top.len() / 2] as usize;
+    let mut forces = vec![0.0; model.node_count()];
+    forces[middle] = 0.3;
+    let snapshot = window(&model, &forces);
+    let share = top_areas(&model, &top)[middle];
+    for degrees in 1..90 {
+        let angle = f64::from(degrees).to_radians();
+        // Body normal R_y(−angle) · (−1, 0, 0).
+        let body = [-angle.cos(), 0.0, -angle.sin()];
+        let contact = WindowContact::read(&model, &snapshot, &turned_plane(body, angle), 0.0);
+        assert_eq!(
+            contact.pressures(),
+            vec![(0.3 / share, share)],
+            "{degrees}°"
+        );
+    }
+}
+
+#[test]
+fn a_face_turned_barely_toward_the_obstacle_counts_by_its_cosine() {
+    // Turned 1e-4 rad from side-on, the top faces the plane: the node's area
+    // is that cosine of its share, not the side-on fallback's whole share.
+    let (model, top) = slab(4, 2.0 * MM, 0.0);
+    let middle = top[top.len() / 2] as usize;
+    let mut forces = vec![0.0; model.node_count()];
+    forces[middle] = 0.3;
+    let tilt: f64 = 1e-4;
+    let contact = WindowContact::read(
+        &model,
+        &window(&model, &forces),
+        &plane([-tilt.cos(), 0.0, -tilt.sin()]),
+        0.0,
+    );
+    let (read, expected) = (
+        contact.areas()[middle],
+        tilt.sin() * top_areas(&model, &top)[middle],
+    );
+    assert!((read / expected - 1.0).abs() < 1e-9, "{read} vs {expected}");
+}
+
+#[test]
+fn a_window_turned_from_rest_reads_its_turned_faces() {
+    // The window's mean state is the rest state turned 20° about y: the top's
+    // faces turn with it, so against the level plate an interior node's area
+    // is cos 20° of its share.
+    let (model, top) = slab(4, 2.0 * MM, 0.0);
+    let turn = 20.0_f64.to_radians();
+    let mut snapshot = window(&model, &uniform(&model, &top, 1000.0));
+    snapshot.displacement_sums = model
+        .rest_positions()
+        .iter()
+        .map(|p| {
+            let turned = [
+                turn.cos() * p[0] + turn.sin() * p[2],
+                p[1],
+                -turn.sin() * p[0] + turn.cos() * p[2],
+            ];
+            [
+                4.0 * (turned[0] - p[0]),
+                4.0 * (turned[1] - p[1]),
+                4.0 * (turned[2] - p[2]),
+            ]
+        })
+        .collect();
+    let contact = WindowContact::read(&model, &snapshot, &plate(), 0.0);
+    let shares = top_areas(&model, &top);
+    let interior = top.iter().filter(|&&v| {
+        let p = model.rest_positions()[v as usize];
+        p[0].abs() < 3.0 * MM && p[1].abs() < 3.0 * MM
+    });
+    for &v in interior {
+        let (read, expected) = (contact.areas()[v as usize], turn.cos() * shares[v as usize]);
+        assert!(
+            (read / expected - 1.0).abs() < 1e-12,
+            "{read} vs {expected}"
+        );
+    }
+}
+
 /// The area of a cylinder of radius `radius` inside a ball of radius `ball`
 /// centred on it, over the ball's disc `π ball²`: the patch's excess on a
 /// bore. Along the circumference, arc `s` is chord `2 r sin(s / 2r)` away.
