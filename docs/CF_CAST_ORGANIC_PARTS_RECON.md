@@ -165,11 +165,10 @@ The **fit method is OPEN (§8 OQ1)** — candidates:
 > - part is only **2.5° off vertical**; optimal normal
 >   `(0.77, 0.64, 0.02)` — ~1° from horizontal, diagonal in X-Y, and DIFFERENT from
 >   both the lopsided `Y` and the non-manifold `X`.
-> - **apex-anchored plane: symmetric every height band** (e.g. −16.0/+16.8 mm at the
->   apex, −21/+21 mid-body) → no sliver, dome bisected evenly, 50.0% overall.
-> - **shipped `normal=Y`: 2:1 skew at the dome** (−18.3/+9.0 at the apex) collapsing
->   to a **sliver** near the cap (+0.4/+18.9) → reproduces the workshop-observed
->   lopsided dome exactly.
+> - **apex-anchored plane: symmetric every height band** → no sliver, dome bisected
+>   evenly, 50.0% overall.
+> - **shipped `normal=Y`: 2:1 skew at the dome** collapsing to a **sliver** near the
+>   cap → reproduces the workshop-observed lopsided dome exactly.
 >
 > **DECISION: implement the apex-anchored balance-swept fitted plane (C-A2 refined).**
 > Buildability (manifold) still gated on a regen — the diagonal normal cuts an
@@ -323,8 +322,8 @@ Each code phase: cold-read + full gates (`cargo xtask grade-all`), per prior arc
    > **EMPIRICAL (2026-05-29, `base_mold` apex-pour regen):** this is now
    > confirmed real AND shown to be a no-win for a single flat plane on this part.
    > The dome leans ~−Y off the body. Per-Z-band cup-half measurement: the body
-   > bisects evenly (±23 mm both halves) but near the dome one half collapses to a
-   > 4–12 mm sliver while the other wraps the dome (lopsided seam — surfaced by the
+   > bisects evenly but near the dome one half collapses to a sliver while the other
+   > wraps the dome (lopsided seam — surfaced by the
    > apex pour sitting right there). Flipping `split_normal` X→Y to put the seam
    > plane IN the curve plane (even dome bisection in theory) instead made the body
    > run **tangent** to the seam plane along the bend → **non-manifold cup MC**

@@ -71,7 +71,7 @@ written beforehand (§14e, §15i). The research sections were not. Jon's directi
   - quasi-static equilibrium at every step;
   - guaranteed non-penetration (IPC);
   - tight tolerances;
-  - a fine quadratic mesh (65 293 Tet10);
+  - a fine quadratic mesh (Tet10);
   - a CPU direct solver.
 - **A mature library of exactly that kind** (PolyFEM, built and validated here, since deleted) took about
   **7 minutes per load step** on `base_mold`, one step measured, at first contact ✓

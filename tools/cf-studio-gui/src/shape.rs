@@ -15,8 +15,9 @@ use crate::state::Studio;
 /// The cavity inset's stepper range, in whole millimetres.
 ///
 /// ⚠ Deliberately NOT a ceiling on what the loaded scan can take. That number
-/// is scan- AND cell-size-dependent — `base_mold` refuses above 11 mm at Fast
-/// and 12 at Fine — so no constant here could be honest about it, and a clamp
+/// is scan- AND cell-size-dependent — `base_mold` refuses the deeper insets at
+/// a different depth at Fast and at Fine — so no constant here could be honest
+/// about it, and a clamp
 /// would refuse insets that do cast. What the scan can take is answered by the
 /// fit check instead; see `cf_studio_gui::fit_check_is_due`.
 const CAVITY_RANGE: (i32, i32) = (0, 30);

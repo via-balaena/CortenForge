@@ -91,7 +91,7 @@ This section describes the replaced Tet10 solver. "Recon" in its tables means th
 | No frame shows the scan outside | The first recorded step is t = 1/n. At 16 steps the tip is already a sixteenth of the path past the entrance | `slide_pose_at`; `DEFAULT_N_STEPS = 16`, `insertion_sim_ui.rs:67` |
 | **The scan shows through the wall** | The panel draws the FULL-SIZE scan (`spawn_intruder_mesh`, `main.rs:989`), but the physics pushes the wall with the scan SHRUNK by the inset | Measured, next row |
 | ↳ measured | Shipped default (penalty sliding, 16 steps): **12/16** steps converge, reaching t = 0.75. At that step **822 of 1 684** drawn wall vertices sit inside the drawn scan, **720 deeper than 1 mm, deepest 6.06 mm** | A temporary probe through `run_sim_pipeline`, reverted. Recorded in memory `project_insertion_sim_answers_can_it_slide_in` |
-| The heat map is slow on the bridge | It colours every solved-mesh node (125 575), though only 5 261 are drawn: **4.08 s per call** | Recon, `PER-GAUSS-POINT READOUTS` |
+| The heat map is slow on the bridge | It colours every solved-mesh node, though only about 4 % are drawn: **4.08 s per call** | Recon, `PER-GAUSS-POINT READOUTS` |
 | The wall looks faceted | The deformed view draws corner triangles; the Tet10 midside curvature is not drawn | Recon, same section |
 | The drawn wall is smoother than the part that gets poured | The simulated cavity is a smooth offset; the poured plug has three ridge rings (1.8–2.0 mm deep), texture, side pinch and tip relief | `product_scene` doc, `insertion_sim.rs` |
 

@@ -1752,8 +1752,8 @@ pub const FIT_SETTLE: Duration = Duration::from_millis(1500);
 /// ★ This is what makes the inset range honest. Step 3's cavity stepper offers
 /// a fixed 0-30 mm whatever scan is loaded, and what a scan can take is neither
 /// a constant nor predictable from the scan: `~/scans/base_mold`, measured
-/// 2026-09-09, refuses above 11 mm at Fast and 12 at Fine, and past ~20 mm has
-/// no plug left to mesh at all. So the range stays wide — a clamp would refuse
+/// 2026-09-09, refuses the deeper insets at Fast and at Fine, and deeper still
+/// has no plug left to mesh at all. So the range stays wide — a clamp would refuse
 /// insets that do cast — and the cast's own verdict arrives at step 3 instead
 /// of being bought with a full cast at step 5.
 ///

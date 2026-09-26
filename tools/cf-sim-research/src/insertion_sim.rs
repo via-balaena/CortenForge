@@ -4943,7 +4943,7 @@ mod tests {
     /// `base_mold` it can.
     ///
     /// Values come from `base_mold.design.toml` / `.cfproject.json`, which is
-    /// a project that ran all the way to `Print` with a 334.6 g pour plan.
+    /// a project that ran all the way to `Print`.
     ///
     /// ⚠ **The project's plug carries RIDGES** (three rings, 1.8–2.0 mm deep,
     /// plus texture, side pinch and tip relief) and `SimDesign` has no notion
