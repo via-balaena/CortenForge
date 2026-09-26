@@ -453,15 +453,22 @@ in CI); G5 already gates in CI.
     (soft-contact recon §9 decision 11).
   - A shell or a mount at the closed end confines the material there.
 - **U15 — The silicone's damping and its rate dependence** (soft-contact recon §16p, 2026-09-25).
-  - The solver now gives the material a viscosity, fitted to Ecoflex 00-30's published loss near 190 Hz.
-    Without it, the frictional tube fluttered, and its push read 15–29 % below μ_f·Σf_n at 50k and 100k;
-    with it, 1.5–4.3 % below. **No loss data was found for Dragon Skin 10A**, the product's silicone.
-  - With Ecoflex's viscosity, a linearized analysis of the 10k tube finds no flutter at μ_f 0.3, and three
-    growing modes at μ_f 0.6. U2's friction range decides whether the product's high-μ corner is there.
-  - The same published fits stiffen the material by 12–25 % and 43–68 % between 1 and 10 Hz (arithmetic
-    from each fit). The solver keeps the static modulus and adds only a viscosity, so it does not carry
-    that stiffening. How much it raises the push force at the product's own insertion speed is not known.
-
+  - The solver now gives the material a viscosity, set from Ecoflex 00-30's published loss near 190 Hz. Without
+    it the frictional tube fluttered, and its push read 15–18 % below μ_f·Σf_n at λ_a 1.1 (50k, 100k) and 29 %
+    at λ_a 1.3 (50k); with it, 1.4–3.9 % below (50k, 100k). **No loss data was found for Dragon Skin 10A**,
+    the product's silicone, and Ecoflex's own value is uncertain by more than 2× (4.7–11.9 Pa·s).
+  - The frictional seated pressure depends on it: on the tube, the seated 95th percentile read 0.168 μ undamped,
+    0.134 at the adopted η, and 0.152 at an eighth of it. Above the adopted η it barely moved.
+  - With it, the tube still fails the Coulomb push at μ_f 0.6 (0.934 against 5 %). U2's friction range decides
+    whether the product's high-μ corner is there.
+  - The same published fits stiffen the material by 12–25 % and 43–68 % between 1 and 10 Hz (arithmetic from
+    each fit). The solver keeps the static modulus and adds only a viscosity, so it does not carry that
+    stiffening. How much it raises the push force at the product's own insertion speed is not known.
+- **U16 — D1's readings do not converge on the tube** (soft-contact recon §16p, K5, 2026-09-25). The seated 95th
+  percentile moved by 8–12 % from the 50k to the 100k mesh in three of four cases (−2.2 % in the fourth): the
+  most-squeezed 5 % of the contact is one or two rings of nodes where the mandrel's nose meets its shank. The frictionless push peak moved 14 % (λ_a 1.1): it is the
+  nose's geometric push alone, carried by the rings the nose is crossing. The push with friction converged.
+  §15a sends this back to D1's readings, or their resolution, before step 7.
 ---
 
 ## 8. References

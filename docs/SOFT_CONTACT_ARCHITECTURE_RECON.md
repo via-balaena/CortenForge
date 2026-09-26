@@ -273,7 +273,8 @@ built TLED-style.**
   - stretch.
 - **Size of it (arithmetic):**
   - about 29–32k steps for the 100k-tet benchmark at ν 0.49, which leaves 3.7–4.1 ms per step within
-    the 2-minute budget (§15c);
+    the 2-minute budget (§15c) *(2026-09-25: that assumed T = 10 T_s and no material damping; see §15c's
+    note)*;
   - our rigid-body GPU pipeline's whole step at n_env 1 is about 0.74 ms ✓ (1/1.35k steps per second,
     `sim/L0/gpu-benches/PERF_BASELINE.md`).
 
@@ -645,6 +646,7 @@ solid"*).
 
 Everything both executors must compute identically, as pure per-element or per-node functions:
 - **Constitutive:** P(F) per material, and the strain energy Ψ, which the internal-energy monitor needs.
+  *(Amended 2026-09-25, §16p: and the material's viscous stress, from the element's velocities.)*
 - **Validity:** the `J ≤ 0` check, as an explicit comparison (§13d rule 2).
 - **Element force:** internal force from P and the shape gradients.
 - **ANP:** the per-element and per-node pieces of pressure averaging. The gather between them is
@@ -746,7 +748,7 @@ The boundary is guarded in both directions:
   once**, in the loop. Soft-on-soft contact adds a broad-phase and a soft-contact phase to that list. It does not change
   any crate boundary. The lowered data carries the surface triangles from the start. *(Amended
   2026-09-25, §16o: the kinematic law predicts each node's step from the forces before contact, the
-  elastic force alone today. A soft-contact phase, or any other force phase, must feed that
+  elastic and (since §16p) viscous forces today. A soft-contact phase, or any other force phase, must feed that
   prediction, and a node touching two surfaces needs a joint correction: part of step 8's design.)*
 - The GPU executor records each phase as compute passes, submits in chunks, and **never reads back**
   except on an explicit read call. The pose samples stream to the device a batch at a time.
@@ -924,7 +926,8 @@ contact pressure within 5 % at ν ≥ 0.49? And can it run a 100k-tet insertion 
 - **Time step:** Δt = 0.9 · 2/ω_max, with ω_max from power iteration on M⁻¹K through the executor's
   own force phases, **penalty stiffness included**. *(Amended 2026-09-25, §16o: the kinematic law
   replaced the penalty and adds nothing to the step, so Δt = 0.9 · 2/ω_el. Amended again, §16p: with the
-  material's viscosity, Δt = 0.9 · 2/ω (√(1 + ξ²) − ξ), from the top vector of M⁻¹(K + βC).)*
+  material's viscosity, Δt = 0.9 · 2/ω (√(1 + ξ²) − ξ), where ω² and ξ are the stiffness quotient and the
+  viscous damping ratio of the top vector of M⁻¹(K + βC), not the mass damping's ξ below.)*
   - **The iteration is re-run during loading**, every 500 steps, each from the same fixed start
     *(amended in 2a, 16m: warm-started, it stalled on a lower mode once loaded)*. The step never grows
     by more than 5 % at a time.
@@ -944,7 +947,9 @@ contact pressure within 5 % at ν ≥ 0.49? And can it run a 100k-tet insertion 
       reviewer's model (not kept).
     - T is 1.04 s plus the 0.2 s hold: about 29k steps at that Δt. It rises to about 32k if loading cuts
       Δt to 0.912×, as on the other mesh.
-    - That leaves **3.7–4.1 ms per step within K1**.
+    - That leaves **3.7–4.1 ms per step within K1**. *(Amended 2026-09-25, §16p: at 10 T_s the material's
+      damping takes ×1.23–1.39 the steps at 100k; the ladder's rung is now 0.625 T_s. K1's per-step
+      budget is re-derived when step 5 sets K1's loading time.)*
     - The rigid pipeline's whole step is about 0.74 ms at n_env 1 (§6).
 - **Damping:** mass-proportional damping α_D·M while loading (NiftySim, Johnsen et al. 2015), with
   α_D = 2·ξ·ω₀, where ξ = 0.05 and ω₀ = 2π/T_s. *(Amended 2026-09-25, §16p: plus the silicone's own
@@ -1025,7 +1030,8 @@ contact pressure within 5 % at ν ≥ 0.49? And can it run a 100k-tet insertion 
    - The subtraction removes the nose's geometric push. A reviewer's estimate puts it at about 2 % and 6 % of
      the friction force at λ_a 1.1 and 1.3, which is enough to break 5 % unaided.
    - *Amended 2026-09-25 (§16p): the subtraction assumes the geometric push is the same with and without
-     friction. It is not quite: the difference read −1.0 % and −1.6 % of μ_f Σf_n at 10k.*
+     friction. It is not quite: on the undamped solver the difference read −1.0 % and −1.6 % of μ_f Σf_n at
+     10k; on the damped one it has not been split out.*
 8. **The confined stress case:** cased outer wall, all axial motion held, λ_a 1.1, B/A 2, ν 0.49. The
    oracle gives p/μ = 4.1417. This is the regime TLED never validated. The product is free today (§9
    decision 10), so in step 2 it is reported. It becomes a gate, against G2 and 5 %, before any shell or
@@ -1184,7 +1190,13 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
 - modelling each way of holding the device (§9 decision 11): a shell, a mount, or a hand as a soft,
   distributed support. A held closed end is the "no escape" row of §15h;
 - the product mesher's surface bias and element count (measured in step 2);
-- U3's outcome, and the fact that a contact-guided intruder would need rigid–soft coupling.
+- U3's outcome, and the fact that a contact-guided intruder would need rigid–soft coupling;
+- *(2026-09-25, §16p)* K5's failure: both of D1's readings failed to converge on the tube, at the mandrel's
+  nose–shank seam and on the nose's rings, so D1's readings or their resolution are revisited before step 7
+  (fit plan U16);
+- *(2026-09-25, §16p)* friction above μ_f 0.3: the damped tube's Coulomb push fails 15d.7 at μ_f 0.6, and
+  §5c's ranges reach 2.0. Before a verdict is trusted at such a corner, its Coulomb push is checked there
+  (§7 rung 4's self-consistency check), and the material's damping (fit plan U15) is settled.
 
 **Starting now, in parallel with steps 1–2, needing no solver:**
 - U3's geometric check;
@@ -1267,7 +1279,8 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
 - **Not known yet:**
   - whether the alternating pressure pattern persists in a damped explicit run;
   - the GPU's per-step cost at 100k;
-  - the in-loop Δt's cost in steps;
+  - the in-loop Δt's cost in steps *(2026-09-25: measured on the tube, §16p: the loaded step factor 0.977,
+    and the damping's ×1.06–1.39)*;
   - the LS-DYNA formula marked UNSOURCED. No choice here depends on it.
 
 
@@ -1478,6 +1491,8 @@ code is reviewed on its own. 2b–2d add fixtures, readouts and runs, and 2d add
 penetration against the grid is at most 0.2 µm on the tube, so 2b records G2 against the grid and
 against the true surface on the ladder, and 2d measures both on the product.*
 
+*2b's runs are in §16p, 2026-09-25, on the damped solver it led to.*
+
 ### 16d. What the shared math gains
 
 - **Per-direction constraints.** Each node holds up to two constraint directions, orthonormal, or zero
@@ -1682,6 +1697,15 @@ The gathers, contact and integration are not in that number, and the whole step 
 
 ### 16j. The product's budget (2d)
 
+*Amended 2026-09-25 (§16p): the solver now carries the material's viscosity, and 2d's inputs change with it:*
+- *the product's η: none is known for Dragon Skin 10A (fit plan U15), and the step, the loading rung and the
+  frictional seated state depend on it. The tube's runs used Ecoflex 00-30's η/μ throughout;*
+- *the loading speed: the ladder's rung, 0.625 T_s (v/c_s 0.39), holds for Ecoflex's η/μ (undamped it was
+  2.5 T_s), and the frictionless push peak moved up to 12 % across the rungs (the push with friction, 1.5 %);*
+- *the loaded step factor: 0.977, the smallest in-run step over the rest step on the damped tube;*
+- *the per-step cost: ×1.4–1.65 a step, and ×1.06–1.39 the steps, against the undamped solver;*
+- *the damping's form (Kelvin–Voigt, or a Maxwell branch) is not decided, and moves both costs.*
+
 - **Where it runs:** a command in `cf-sim-research`, since the scan never enters the repo. It meshes
   `base_mold`'s wall with the tool's current Tet4 mesher (`SdfMeshedTetMesh`) and lowers the mesh into
   `ExplicitModel` with per-element materials.
@@ -1753,8 +1777,9 @@ build will measure. So no third pass was run on the prose. The readout rule and 
 **Settled only by running,** and where each is measured:
 - finite strain and the finite domain's effect on K6's stick zone: 2c's two companion runs;
 - whether flutter occurs: every 2b and 2c run reports the contact nodes' kinetic energy, and nothing
-  gates it *(2026-09-25, §16p: it occurred at μ_f 0.3; the Coulomb push's shortfall led to it, and a
-  linearized analysis confirmed it)*;
+  gates it *(2026-09-25, §16p: it occurred at μ_f 0.3, found through the Coulomb push's shortfall; a
+  linearized analysis finds growing structural modes there, and growing modes at μ_f 0.1 too, where runs
+  show none)*;
 - the power iteration's accuracy beyond the 10k tube: 2b on the 50k tube, 2d on the product's mesh;
 - the coverage cost of the new tests: 2a, timed at two thread counts.
 
@@ -2132,14 +2157,16 @@ On the adopted code (`5e6b7281`; frictionless, A/20, §15b's 0.2 s hold unless n
 - **The GPU executor (step 4):** the law takes two lookups per surface node per step (the current
   position, for the normal and G2; the predicted one, for the depth), 128 grid values, and
   `sdf_tricubic` takes its 64 values by value. Its GPU cost is not measured. The contact phase also
-  reads the integrator's state (each node's velocity, elastic force, inverse mass, constraints, and α)
+  reads the integrator's state (each node's velocity, elastic and, since §16p, viscous force, inverse
+  mass, constraints, and α)
   and keeps a per-surface-node sample buffer, which bears on step 4's bind layout and on whether contact
   is fused with the integration.
 - **The product (2d):** G2 there is the scan grid's own error, and the pre-smooth is sized against it
   (14b's note). The verdict's frictionless run (§15h) is the configuration in which the long-hold
   pumping appeared on the tube, and bumps in the grid's own samples (the scan's facets) are not removed
   by the lookup. Unexamined.
-- **Other force phases:** the prediction uses the elastic force alone (14d's note).
+- **Other force phases:** the prediction uses the elastic force alone (14d's note). *(Since §16p, the
+  elastic and viscous forces.)*
 - **The frame carry:** the current normal is carried from the pose at t to the pose at t + Δt; no test
   reaches a rotating obstacle closely enough to see an error in it.
 
@@ -2167,81 +2194,122 @@ On the adopted code (`5e6b7281`; frictionless, A/20, §15b's 0.2 s hold unless n
 ### 16p. 2b, the rest: friction's flutter, the silicone's damping, and the runs (2026-09-25)
 
 **The Coulomb push first**, since K3 compares it and §16o left its shortfall open (0.893 at λ_a 1.1 and 0.786 at
-λ_a 1.3, 10k). A diagnostic (not kept) split the ratio into its three possible parts over the constant-speed
-phase: friction below μ_f f_n on a node, friction not along the axis, and the nose's geometric push changing
-between the two runs. At 10k, λ_a 1.1 and 1.3:
+λ_a 1.3, 10k). Several diagnostics (not kept) looked at it on the undamped solver, over the constant-speed phase.
 
-| Part | λ_a 1.1 | λ_a 1.3 |
-|---|---|---|
-| Friction below μ_f f_n (sticking) | −8.2 points | −17.1 |
-| Friction not along the axis | −1.6 | −3.2 |
-| The geometric push, with friction against without | −1.0 | −1.6 |
+- **What it is made of.** The ratio is friction's magnitude over μ_f Σf_n, times its axial share, less the change in
+  the nose's geometric push between the run and its frictionless companion (10k):
 
-- **Sticking was most of it.** 13 % and 29 % of the contact node-steps stuck, at 55–58 % of μ_f f_n. A sticking
-  node was moving with the mandrel (its axial velocity within 4 % of the mandrel's), for a median of 3 steps.
-- **It converged, and it was not precision.** 0.845 and 0.841 at 50k and 100k; 0.845, 0.824 and 0.820 at Δt,
-  Δt/2 and Δt/4 (50k); f64 0.886 at 10k. 10k's 0.893 was the outlier (below).
-- **The inner surface oscillated, and friction drove it.** At μ_f 0.3 the shank's mean axial velocity carried
-  0.28–0.35 V rms (V the mandrel's speed) between 120 and 300 Hz on the 10k and 50k meshes (0.17 V at 100k, with
-  more above 300 Hz), peaking at 189–195 Hz. At μ_f 0.1, and without friction at λ_a 1.1, that band carried
-  0.02–0.03 V (0.10 V on λ_a 1.3's frictionless 10k run).
+  | | λ_a 1.1 | λ_a 1.3 |
+  |---|---|---|
+  | Σ\|f_t\| / μ_f Σf_n | 0.918 | 0.829 |
+  | Σf_t,z / Σ\|f_t\| | 0.984 | 0.968 |
+  | The geometric push's change, over μ_f Σf_n | −0.010 | −0.016 |
+  | The ratio | 0.893 | 0.786 |
+
+- **Sticking made most of the magnitude's loss.** 13 % and 29 % of the contact node-steps stuck, at 55–58 % of
+  μ_f f_n. A sticking node was moving with the mandrel (its axial velocity within 4 % of the mandrel's), for a median
+  of 3 steps.
+- **What moved it, one thing at a time** (λ_a 1.1 unless noted):
+  - the mesh: 0.893, 0.845 and 0.841 at 10k, 50k and 100k; at λ_a 1.3, 0.786 and 0.708 at 10k and 50k (no 100k run);
+  - the step: 0.845, 0.824 and 0.820 at Δt, Δt/2 and Δt/4 (50k);
+  - the precision: f64 read 0.886 (10k);
+  - the loading time: 0.962, 0.893 and 0.840 at 5, 10 and 20 T_s (10k), and 0.915 at 5 T_s (50k);
+  - five times the mass damping: 0.906 (10k);
+  - the friction: 0.942, 0.959, 0.883 and 0.845 at μ_f 0.05, 0.1, 0.2 and 0.3 (50k);
+  - Poisson's ratio (50k, μ_f 0.3): 0.726, 0.779, 0.816, 0.698 and 0.845 at ν 0.3, 0.4, 0.45, 0.475 and 0.49, with
+    more sticking at lower ν (34 % at 0.3, 16 % at 0.49).
+- **Two of those disagree.** Written before running: a limit set by one step's friction impulse (μ_f f_n Δt/m, larger
+  at lower ν, where the step is longer) would stick more at lower ν and less at a smaller step. Lower ν stuck more;
+  a smaller step changed nothing. Which reading is right is not isolated.
+- **The inner surface oscillated with friction.** At μ_f 0.3 the shank's mean axial velocity carried 0.28–0.35 V rms
+  (V the mandrel's speed) between 120 and 300 Hz on the 10k and 50k meshes, peaking at 189–195 Hz, and 0.17 V at
+  100k, with more above 300 Hz. At μ_f 0.1, and without friction at λ_a 1.1, that band carried 0.02–0.03 V (0.10 V
+  on λ_a 1.3's frictionless 10k run).
 - **Friction following the normal force drove it.** A diagnostic took friction's limit from a normal force smoothed
-  over τ steps. At τ = 3 the band barely moved (0.12 and 0.29 V at 10k and 50k); at 10 it fell to 0.03 and 0.08 V;
-  at 30 to 0.03 V on both, and the ratio rose to 0.975 and 0.981. That is 0.5–1 ms on both meshes, the structure's
-  own time scale, not the step's.
-- **A second oscillation is the mesh's, in part.** Without friction, at λ_a 1.1, the shank rings at the rate the
-  nose crosses the mesh's rings (V/Δz: 16.0 Hz at 10k, 32.9 Hz at 50k). At 10k and T = 10 T_s that rate sits on
-  the tube's axial mode (about 16 Hz): 0.60 V rms, and 0.35 V at T = 20 T_s on its second harmonic, against
-  0.06–0.07 V off it. At λ_a 1.3 the 50k tube rang at its axial mode too (0.38 V at 17 Hz), off the ring rate;
-  what excites it there is not isolated.
+  over τ steps. At τ = 3 the band fell from about 0.35 to 0.12 V at 10k and stayed at 0.29 V at 50k; at 10 it read
+  0.03 and 0.08 V; at 30, 0.03 V on both, and the ratio 0.975 and 0.981. Smoothing filters both the structure's
+  modes and the mesh's, so which coupling it broke is not isolated.
+- **The mesh's rings force the tube too.** Without friction, at λ_a 1.1, the shank rings at the rate the nose
+  crosses the mesh's rings (V/Δz: 16.0 Hz at 10k, 32.9 Hz at 50k). At 10k and T = 10 T_s that rate sits on the
+  tube's axial mode (about 16 Hz): 0.60 V rms, and 0.35 V at T = 20 T_s on its second harmonic, against 0.06–0.07 V
+  off it. At λ_a 1.3 the 50k tube rang at its axial mode too (0.38 V at 17 Hz), off the ring rate; what excites it
+  there, and whether the 10k ringing moved the 10k ratios, is not isolated.
 - None of the plan's gates saw any of it: KE/IE over the constant-speed phase read 0.7–4.3 %.
 
 **Is it the model's, or the discretization's?** (Jon asked for the chase before a fix.)
-- **A second discretization agrees.** The deleted penalty law (elastic-slip friction, trilinear lookup; `69805cbf`)
-  read 0.868, 0.817 and 0.799 at 10k, 50k and 100k.
-- **The half-space says the continuum is locally well-posed here.** The linearized sliding of an elastic half-space
-  on a rigid flat, i a z² + f (1 + b² − 2ab) = 0 (z = c/c_s; derived for this record, not kept), has no growing root
-  at ν 0.49 for f ≤ 0.5, and does at f 1.5; it reproduces the published boundaries (Renardy's f < 1; Martins et al.'s
-  flutter region as Yastrebov 2016, arXiv 1507.07334, draws it).
-- **The finite tube flutters.** A complex-eigenvalue analysis of the tube's steady sliding (linearized about the
-  frictionless state at 0.5 T; contact nodes held on the mandrel; friction μ_f λ_n along the slip; a diagnostic,
-  not kept) at μ_f 0.3:
-  - an unstable pair at 135 Hz (growth 11.1–11.3 and 10.4–10.8 /s net of mass damping, on the 10k and a
-    4 × 40 × 23 tube) and a cluster at 177–199 Hz (up to 9.0 and 21.3 /s), with neighbours on a 2 × 24 × 12 tube;
-    at μ_f 0.1, below 500 Hz, the finest tube's grow at most 2.4 /s;
-  - and mesh-scale ones, the fastest at 0.48–0.60 of each mesh's top frequency (990, 1747, 2315 Hz; up to 174 /s),
-    which the half-space rules out for the continuum.
-  - Steady sliding with Coulomb friction is "generically unstable by flutter" in finite bodies (Nguyen 2003), and
-    Yastrebov's finite layer slides by stick-slip pulses at ν 0.49 from f 0.5 (his lowest).
+- **A second discretization reads it too.** The deleted penalty law (elastic-slip friction, trilinear lookup;
+  `69805cbf`) read 0.868, 0.817 and 0.799 at 10k, 50k and 100k.
+- **The half-space puts it outside the continuum's local problem.** The linearized sliding of an elastic half-space
+  on a rigid flat, i a z² + f (1 + b² − 2ab) = 0 (z = c/c_s, a = √(1 − κz²), b = √(1 − z²), κ = c_s²/c_d²; derived for
+  this record, not kept, and re-derived in review), has no growing root at ν 0.49 for f ≤ 1.0, and one above it (to
+  f 3, in review). It
+  reproduces the published boundaries: Renardy's f < 1, and Martins et al.'s flutter region as Yastrebov (2016,
+  arXiv 1507.07334) draws it.
+- **The finite tube's linearized sliding has growing modes.** A complex-eigenvalue analysis (linearized about the
+  frictionless state at 0.5 T; contact nodes held on the mandrel; friction μ_f λ_n along the slip; a diagnostic, not
+  kept):
+  - at μ_f 0.3, an unstable pair at 135 Hz (11.1–11.3 and 10.4–10.8 /s net of mass damping, on the 10k and a
+    4 × 40 × 23 tube), and 233 unstable modes below 500 Hz on the 10k tube, from 68 Hz up (177 Hz at 9.0 /s, and
+    214 Hz at 10.1 /s in review; 21.3 /s at 190 Hz on the finer tube);
+  - mesh-scale modes, the fastest at 0.48–0.60 of each mesh's top frequency (990, 1747 and 2315 Hz; up to 174 /s),
+    which the half-space's result rules out for the continuum;
+  - **and growing modes at μ_f 0.1 as well** (572 on the 10k tube; 42.5 /s at 1745 Hz; below 500 Hz up to 5.9 /s),
+    where a run shows no band (0.02 V) and reads 0.965. So growth in this analysis does not by itself predict what a
+    run does. What limits the growth in a run is not isolated.
+- **Settled, and not.** The shortfall is converged in the step, and in the mesh at λ_a 1.1; a second discretization
+  shares it; and the finite tube's linearized sliding is unstable at structural frequencies, as steady Coulomb sliding
+  of finite bodies "generically" is (Nguyen 2003; Yastrebov's finite layer slides by stick-slip pulses at ν 0.49 from
+  f 0.5, his lowest). No continuum solution of the tube was computed, and the ν sweep's disagreement stands.
 - The model's only damping was mass-proportional: about 0.25 % of critical at 190 Hz.
 
 **Decided (Jon, 2026-09-25): give the silicone its own damping.**
-- **The data** (Ecoflex 00-30, fractional Kelvin–Voigt μ(ω) = μ₀[1 + (iωτ)ⁿ]): Delory et al. (arXiv 2310.11396,
-  plate-plate rheometry: E₀ 69 kPa, τ 330 µs, n 0.32) and Croquette et al. 2026 (arXiv 2604.27722, guided waves
-  2–300 Hz against an Anton Paar MCR501: μ₀ 22.6 kPa, n 0.20 ± 0.04, τ 2.9 ± 1.3 ms; τ differs from rheometry by up
-  to 10×). Their loss moduli at 190 Hz are 0.36 and 0.40 μ₀ (arithmetic). **Dragon Skin 10A: no data found.**
+- **The data** (Ecoflex 00-30, fractional Kelvin–Voigt μ(ω) = μ₀[1 + (iωτ)ⁿ]):
+  - Delory et al. (arXiv 2310.11396, plate-plate rheometry, over a range the text does not state): E₀ 69 kPa,
+    τ 330 µs, n 0.32;
+  - Croquette et al. 2026 (arXiv 2604.27722, guided waves over 2–300 Hz, against an Anton Paar MCR501): μ₀ 22.6 kPa,
+    n 0.20 ± 0.04, τ 2.9 ± 1.3 ms, and a τ that differs from their rheometry's by up to 10×.
+  - Their loss moduli at 190 Hz are 0.36 and 0.40 μ₀ (arithmetic). **Dragon Skin 10A: no data found.**
 - **The model:** a deviatoric Kelvin–Voigt viscosity, σ_v = 2η dev D with D = sym(Ḟ F⁻¹), P_v = σ_v cof F, per
-  element from the half-step velocities (`first_piola_viscous`, `tet4_viscous_forces`). It vanishes at rest, for
-  a rigid spin and for a pure change of volume (`tests/viscosity.rs`), so a seated reading does not see it.
-  η = 7 Pa·s for the tube (`ECOFLEX_00_30_VISCOUS_TIME` = η/μ): the loss modulus at 190 Hz over ω, between the
-  two fits' 6.9 and 7.5 Pa·s (arithmetic).
-  - Its loss grows as ω, the fits' as ω^0.2–0.32: at 68 Hz it has 40–51 % of the fits' loss, and 5–6× at 2 kHz
-    (arithmetic), which damps the mesh-scale modes hardest.
-- **The stable step.** Central differences with the damping force at the lagging half-step velocity are stable
-  while 4M − Δt²K − 2ΔtC is positive definite (derived). So the loop estimates the top vector of M⁻¹(K + βC) at
-  β = 2/Δt, and takes Δt = 0.9 · 2/ω (√(1 + ξ²) − ξ) with ω² = vᵀKv/vᵀMv and ξ = vᵀCv/(2ω vᵀMv).
-  - The elastic top mode was not enough: a block at 150 Pa·s (ξ 0.38 there) blew up on its step; at β = 2/Δt the
-    iteration finds a heavily damped vector (ξ 4.7) that binds first (`tests/viscosity.rs`).
-  - The loop's step reads 0.9036, 0.9031 and 0.9038 of a dense critical step at 0, 20 and 150 Pa·s.
-- **Checked by the analysis** (predicted before it ran): with η = 7 Pa·s the complex-eigenvalue analysis finds no
-  growing mode at μ_f 0.1, 0.3 and 0.6 on the 2 × 24 × 12 tube, and none at 0.3 on the 10k tube. **At μ_f 0.6 the 10k tube
-  has three** (973 Hz at +41 /s, two at 56 Hz at +3–4 /s): the measured damping suppresses the tube's flutter at
-  μ_f 0.3, not at every friction.
+  element from the half-step velocities (`first_piola_viscous`, `tet4_viscous_forces`). It vanishes at rest, for a
+  rigid spin and for a pure change of volume (`tests/viscosity.rs`).
+- **η = 7 Pa·s** for the tube (`ECOFLEX_00_30_VISCOUS_TIME` = η/μ): the loss modulus at 190 Hz over ω, between the
+  two fits' 6.9 and 7.5 Pa·s (arithmetic). What that choice gets wrong, against the fits (arithmetic):
+  - it keeps the static storage modulus, so its loss tangent at 190 Hz is 0.36, against the fits' 0.22 and 0.18;
+  - its loss grows as ω, theirs as ω^0.2–0.32: 41–51 % of theirs at 68 Hz, and 5–6× at 2 kHz, which damps the mesh's
+    top modes hardest;
+  - the fits' spread puts η anywhere from 4.7 to 11.9 Pa·s (Croquette's error bars on n and τ: 5.2–10.3; their
+    rheometry's τ: 4.7–11.9).
+- **The stable step.** Central differences with the damping force at the lagging half-step velocity are stable while
+  4M − Δt²K − 2ΔtC is positive definite (derived; re-derived in review). So the loop estimates the top vector of
+  M⁻¹(K + βC) at β = 2/Δt, and takes Δt = 0.9 · 2/ω (√(1 + ξ²) − ξ) with ω² = vᵀKv/vᵀMv and ξ = vᵀCv/(2ω vᵀMv).
+  - The elastic top mode was not enough: a block at 150 Pa·s (ξ 0.38 there) blew up on the step it gives; at
+    β = 2/Δt the iteration finds a vector (ξ 4.7) that binds first, and the loop's step is 0.535 of the elastic top
+    mode's (`tests/viscosity.rs`).
+  - The loop's step reads 0.9031–0.9038 of a dense critical step on a block at 0, 20 and 150 Pa·s
+    (`tests/viscosity.rs`), and 0.9008–0.9103 over 60 blocks in review.
+  - On the 10k tube (`tests/tube_release.rs`) the loop's step is +0.49 % above 0.9 of its own estimate's converged
+    critical step at rest, and +0.07 % loaded; review measured +0.12 % and +0.36 % at rest on 50k and 100k. With the
+    loop's step taken without ξ, the same check reads +11 % and fails. On this tube the elastic top mode is nearly the
+    binding one (+0.96 % above, with the start's second estimate removed), so the block tests carry that case.
+  - A scratch run on the 10k tube: stable at 0.97 of the loop's estimated limit, marginal at 1.00 (balance 181 %),
+    blown up at 1.03, as undamped.
 
-**The runs, on the damped solver** (`5ca8053d`): `cargo run --release -p sim-soft-explicit --example tube --
+**What the damping does to the Coulomb push** (10k, λ_a 1.1, μ_f 0.3, T = 10 T_s; the probe below, with η/μ):
+
+| η (Pa·s) | 0 | 2 | 3.85 (the fits' tan δ at 190 Hz) | 5 | 7 |
+|---|---|---|---|---|---|
+| The Coulomb push | 0.893 | 0.935 | 0.957 | 0.976 | 0.982 |
+
+At 50k it reads 0.986 at η 3.85, 5 and 7, and at 10k and λ_a 1.3, 0.958 at η 5 and 0.957 at 7 (the review's runs;
+0.893 and 0.957 at 10k reproduced). **With the damping, the linearized analysis** (predicted before it ran) finds no
+growing mode at μ_f 0.1, 0.3 or 0.6 on the 2 × 24 × 12 tube, and none at 0.3 on the 10k tube; on the 10k tube at
+μ_f 0.6 it finds three (973 Hz at +41 /s, two at 56 Hz at +3–4 /s).
+
+**The runs, on the damped solver** (`d2d5de3f`): `cargo run --release -p sim-soft-explicit --example tube --
 <mesh> <case> <μ_f> <f32|f64> 20 0.2 <T/T_s> <stiffness> [η/μ]`, f32 unless noted, A/20, §15b's 0.2 s hold,
 T = 10 T_s unless noted, `RAYON_NUM_THREADS=4`, M4 Pro. η/μ defaults to Ecoflex 00-30's; 0 reproduces the undamped
-solver exactly (K2 +4.41 % in 12 694 steps at 10k, as before).
+solver exactly (K2 +4.41 % in 12 694 steps at 10k, as before). The readings were first measured at `5ca8053d`; the
+later commits change no reading.
 
 | | 10k | 50k | 100k |
 |---|---|---|---|
@@ -2250,50 +2318,68 @@ solver exactly (K2 +4.41 % in 12 694 steps at 10k, as before).
 | The confined case | −0.18 % | −0.12 % | −0.06 % |
 | The Yeoh case: K2; increment over neo-Hookean (oracle +4.22 %) | +4.71 %; +5.60 % | +1.66 %; **+4.75 %** | +1.10 %; +4.59 % |
 | Coulomb push, λ_a 1.1 / 1.3 (μ_f 0.3) | 0.982 / 0.957 | 0.986 / 0.962 | 0.985 / 0.961 |
+| Coulomb push, λ_a 1.1 / 1.3 (μ_f 0.6) | **0.934** / 0.963 | | |
 | G2, deepest over all steps (grid); at the end (true surface) | 0.0–0.1 µm; 0.0–0.1 µm | 0.0–0.1 µm; 0.0–0.9 µm | 0.0 µm; 0.0–0.6 µm |
 
-- **The damping moved no seated reading:** every K2, the confined case and the Yeoh case read as on the undamped
-  solver to the printed 0.01 point; the 10k band's p/μ moved 0.128504 → 0.128529.
-- **By the stop rule's measured 100k errors,** all four corners are within 5 % (+0.95, +1.00, +0.73, +0.75 %).
-  2d applies the rule.
-- **K2's CI check moves to λ_a 1.1 at ν 0.495,** the worst 10k corner (+5.29 %, against 7 %), as 16i directs. At
-  10k, going from ν 0.49 to 0.495 moves K2 +0.88 and +0.48 points; at 50k and 100k, 0.02–0.13.
+- **The validity gates hold in every damped run, and K4 finds no inverted element.** Over the 24 frictionless runs at
+  T = 10 T_s: λ_z within 0.23 %, KE/IE at most 0.05 %, the energy balance at most 0.03 %. Over the 9 friction runs:
+  KE/IE at most 0.005 % and the balance at most 0.04 % (λ_z moves 1.0–8.6 % with friction, so a friction run is not a
+  K2 reading).
+- **The damping moved no frictionless seated reading:** every K2, the confined case and the Yeoh case read as on the
+  undamped solver to the printed 0.01 point; the 10k band's p/μ moved 0.128504 → 0.128529.
+- **It moves the frictional seated state**, which depends on the path the tube took (10k, λ_a 1.1, μ_f 0.3; band
+  p/μ and seated p95/μ):
+
+  | η (Pa·s) | 0 | 0.875 | 1.75 | 3.5 | 3.85 | 7 | 14 | 28 |
+  |---|---|---|---|---|---|---|---|---|
+  | Band p/μ | 0.1184 | 0.1153 | 0.1145 | 0.1126 | 0.1124 | 0.1106 | 0.1106 | 0.1105 |
+  | Seated p95/μ | 0.1679 | 0.1523 | 0.1516 | 0.1359 | 0.1336 | 0.1345 | 0.1345 | 0.1347 |
+
+  Undamped against damped at 50k: band 0.1165 against 0.1080, p95 0.1374 against 0.1435; 3.5 and 7 Pa·s agree to
+  0.05 % there (the review's runs; η 0, 3.85 and 7 at 10k reproduced). What in the path changes it is not isolated.
+- **By the stop rule's measured 100k errors,** all four corners are within 5 % (+0.95, +1.00, +0.73, +0.75 %). 2d
+  applies the rule.
+- **K2's CI check moves to λ_a 1.1 at ν 0.495,** the worst 10k corner (+5.29 %, against 7 %), as 16i directs. At 10k,
+  going from ν 0.49 to 0.495 moves K2 +0.88 and +0.48 points; at 50k and 100k, 0.02–0.13.
 - **The Yeoh case passes 16h's rule:** at 50k the increment is off by 0.53 points of p_NH, 13 % of the increment,
-  against 25 % (1.05 points). It is off by 1.38 points at 10k and 0.37 at 100k. Its absolute K2 is within 5 % at
-  50k and 100k.
-- **The product-level run** (`DRAGON_SKIN_10A`'s μ, 51 kPa, as a stiffness scale of 2.2174; λ_a 1.3, ν 0.49,
-  frictionless) reads +3.30 % and +1.13 % at 10k and 50k, as at 23 kPa.
+  against 25 % (1.05 points). It is off by 1.38 points at 10k and 0.37 at 100k. Its absolute K2 is within 5 % at 50k
+  and 100k.
+- **The product-level run** (`DRAGON_SKIN_10A`'s μ, 51 kPa, as a stiffness scale of 2.2174 with Ecoflex's η/μ;
+  λ_a 1.3, ν 0.49, frictionless) reads +3.30 % and +1.13 % at 10k and 50k, as at 23 kPa.
 
 **K3 passes.** f32 against f64:
 - the band at 50k: the mean and all 11 pair-averaged ring levels agree to the printed 6 digits, both corners;
-- the Coulomb push's reaction at 10k (μ_f 0.3, λ_a 1.1; a diagnostic that prints it, not kept): 2.172312 N against
-  2.172310 N. A step changed by 1e-7 moves neither by a printed digit; undamped, it had moved f32 by 0.25 %, and
-  f32 against f64 differed by 0.65 %.
+- the Coulomb push's reactions at 10k (μ_f 0.3, λ_a 1.1): 2.172312 N against 2.172310 N with friction, and 0.119912 N
+  in both frictionless (the probe prints them). Undamped, f32 and f64 had differed by 0.65 %, and a rounding-level
+  change of step had moved f32 by 0.25 %.
 
-**The Coulomb push passes 15d.7's 5 %** on every mesh and case above; μ_f 0.1 reads 0.985 at 50k. At 10k and
-λ_a 1.1, where the diagnostic looked, no node-step sticks now.
+**The Coulomb push passes 15d.7's 5 % at μ_f 0.3** on every mesh and case above, and at μ_f 0.1 (0.985, 50k). At 10k
+and λ_a 1.1, where the diagnostic looked, no node-step sticks now. **At μ_f 0.6 it fails at λ_a 1.1** (0.934).
 
-**K5 fails on the seated reading.** 50k → 100k:
+**K5 fails on both readings.** §15a defines K5 as 50k → 100k, §16i as 10k → 50k:
 
 | | Push peak, frictionless | Push peak, μ_f 0.3 | Seated p95, frictionless | Seated p95, μ_f 0.3 |
 |---|---|---|---|---|
-| λ_a 1.1 | −14.1 % | −1.3 % | +8.6 % | +7.9 % |
-| λ_a 1.3 | −3.2 % | −1.0 % | +12.4 % | −2.2 % |
+| λ_a 1.1, 10k → 50k | −40 % | −0.1 % | −16.4 % | +6.7 % |
+| λ_a 1.1, 50k → 100k | −14.1 % | −1.3 % | +8.6 % | +7.9 % |
+| λ_a 1.3, 10k → 50k | −25.5 % | −3.1 % | −2.5 % | +11.2 % |
+| λ_a 1.3, 50k → 100k | −3.2 % | −1.0 % | +12.4 % | −2.2 % |
 
-- The push with friction converges. The frictionless push is the nose's geometric push alone (0.15–1.3 N); on the
-  undamped solver it rose and fell as the nose crossed each ring of nodes at 10k and 50k, and at 10k fell to zero
-  between rings (a diagnostic, not kept).
+- The push with friction converges. The frictionless push is the nose's geometric push alone (0.15–1.3 N), the
+  share a verdict's μ = 0 run reads (§15h); on the undamped solver it rose and fell as the nose crossed each ring of
+  nodes at 10k and 50k, and at 10k fell to zero between rings (a diagnostic, not kept).
 - On the undamped solver the most-squeezed 5 % of the contact area was one or two rings at the nose–shank seam,
-  10.7–15 mm behind the tip, so the 95th percentile is whichever ring sits at the 5 % boundary (the same
-  diagnostic).
-- §15a makes K5 a gate on the verdict's design, not the solver: D1's seated reading, or the lip radius, is
-  revisited before step 7.
+  10.7–15 mm behind the tip, so the 95th percentile is whichever ring sits at the 5 % boundary (the same diagnostic).
+- §15a makes K5 a gate on the verdict's design: D1's readings, or the lip radius, are revisited before step 7. The
+  failing spot is the mandrel's seam, not the tube's entry edge the lip radius was named for; §15g's list for steps
+  6–9 and fit plan U16 carry it.
 
 **The loading-time ladder** (§15c; 10k, frictionless, halving from 10 T_s):
 - The band moved at most 0.04 points down to 0.156 T_s, and KE/IE stayed at most 1.9 %.
 - **The energy balance stopped it:** at λ_a 1.1 it read 1.60 % at 0.3125 T_s and 4.71 % at 0.156 T_s, against 1 %.
   The last valid rung is **0.625 T_s** (balance 0.63 %): the mandrel at 1.80 m/s, v/c_s 0.39 (arithmetic).
-- On the undamped solver KE/IE stopped it at 1.25 T_s (5.18 %), so the rung was 2.5 T_s: the damping moved it.
+- On the undamped solver KE/IE stopped it at 1.25 T_s (5.18 %), so the rung was 2.5 T_s: the rung holds for
+  Ecoflex's η/μ.
 - The push is not in the ladder's rule. With friction (μ_f 0.3, λ_a 1.1) the push peak read 4.519–4.601 N from
   10 T_s to 0.625 T_s, and the seated p95 moved at most 0.7 %. Frictionless, the push peak moved up to 12 % over the
   same rungs, then rose to 0.40 N and 1.07 N at 0.3125 and 0.156 T_s (λ_a 1.1).
@@ -2302,34 +2388,48 @@ solver exactly (K2 +4.41 % in 12 694 steps at 10k, as before).
 peak scales by 2 × (1 + 1.64 %) and 2 × (1 + 0.80 %) frictionless, and 2 × (1 + 0.89 %) at μ_f 0.3 (p95 +0.36 %).
 So by §15h a verdict is 3 runs.
 
-**The loaded step factor** (the smallest step in a run over its rest step): 0.977–1.000 on the damped solver
-(0.946 on the undamped). A converged power iteration puts the loaded-over-rest step at 0.955–1.015 undamped (a
-diagnostic, not kept); at 100k the loaded step is the larger.
+**The loaded step factor** (the smallest step in a run over its rest step): **0.977**–1.000 over the damped runs
+(0.946 on the undamped solver). 2d applies 0.977.
 
-**The power iteration's accuracy** (§16e's re-check at 50k, and 100k; elastic, a diagnostic not kept): the loop's
-100 iterations read ω² −0.2 % to −0.8 % against a converged f64 estimate, at rest and loaded, on 10k, 50k and 100k.
-The damped step on the 10k tube: stable at 0.97 of the loop's estimated limit, marginal at 1.00 (balance 181 %),
-and it blows up at 1.03, as the undamped step does (the same scratch run).
+**The power iteration's elastic accuracy** (§16e's re-check at 50k, and 100k; a diagnostic not kept): the loop's 100
+iterations read ω_el² −0.2 % to −0.8 % against a converged f64 estimate, at rest and loaded, on 10k, 50k and 100k. The
+damped step's accuracy is above.
 
 **The cost of the damping** (idle machine, 4 threads):
 - Steps: ×1.06–1.22 at 10k, ×1.09–1.22 at 50k, ×1.23–1.39 at 100k. The rest step shrinks 12.5 %, 19 % and 28 % (λ_a
   1.1): Kelvin–Voigt's damping grows with frequency, and so does the top of a finer mesh.
 - A step costs 0.49, 1.56 and 2.78–2.80 ms at 10k, 50k and 100k, against 0.33–0.36, 0.98–1.00 and 1.68–1.70 ms
-  (§16o). The viscous phase evaluates every element a second time whatever η is: at η = 0 a 10k step costs
-  0.46 ms.
+  (§16o). The viscous phase evaluates every element a second time whatever η is: at η = 0 a 10k step costs 0.46 ms.
 - So a 100k K2 run takes 124.5 s, against 53.3 s (§16o). The estimates take 12.6–15.8 % of a run.
+- §15c's K1 arithmetic (29k steps, 3.7–4.1 ms per step) assumed 10 T_s and no damping; both changed (§15c's note).
 
 **Open, for later steps:**
-- **The damping's form.** Kelvin–Voigt's loss grows as ω; the data's grows as ω^0.2–0.32. So it damps the mesh's
-  top modes far past the data, and that sets the step's cost. A Maxwell branch in parallel (one stored stress per
-  element) would bound the loss above its rate. Not decided; step 4 (the GPU layout) and 2d (the budget) are where
-  its cost matters.
-- **The viscous phase is a second pass** over the elements; fusing it with the elastic forces (they share F, J
-  and cof F) is step 4's.
+- **Friction above μ_f 0.3.** The damped 10k tube fails 15d.7 at μ_f 0.6 (0.934), and §5c's ranges reach 1.0 (dry)
+  and 2.0 (water alone). No gate catches flutter: the Coulomb push's shortfall led to it, and nothing reads the
+  contact nodes' kinetic energy against a bar. §15g's list for steps 6–9 carries it.
+- **The damping's form and value.** Kelvin–Voigt's loss grows as ω; a Maxwell branch in parallel (one stored stress
+  per element) would bound it above its rate, and match the fits' stiffening better. The value is uncertain by 4.7–
+  11.9 Pa·s, and the frictional seated state moves with it below 7 Pa·s. Not decided; step 4 (the GPU layout) and 2d
+  (the budget) are where its cost matters.
+- **The viscous phase is a second pass** over the elements; fusing it with the elastic forces (they share F, J and
+  cof F) is step 4's.
 - **Dragon Skin 10A's loss is not known**, and the product is Dragon Skin (fit plan U15).
-- **At μ_f 0.6 the damped 10k tube flutters** in the linearized analysis; U2 decides whether the product reaches it.
-- **The fits' storage stiffening** at insertion rates (12–25 % and 43–68 % from 1 to 10 Hz) is not in the model
-  (fit plan U15).
-- **2c (K6)** sets its viscous time (§16b's note).
-- **No gate catches flutter.** The Coulomb push's shortfall led to it; a linearized analysis confirmed it. The
-  contact nodes' kinetic energy is reported, and read by no rule.
+- **The fits' storage stiffening** at insertion rates (12–25 % and 43–68 % from 1 to 10 Hz, arithmetic) is not in the
+  model (fit plan U15).
+- **2c (K6)** sets its viscous time (§16b's note); 2d's inputs are in §16j's note.
+
+**How this was checked.**
+- **The criteria came first,** with twelve priors kept from the reviewers.
+- **Round 1:** four cold reviewers (the engine and the step; the tests and the oracle; this record, reproducing its
+  numbers; the whole plan) raised about 30 findings. Five priors hit and three in part.
+- **Round 1's largest findings:**
+  - the frictional seated state moves with the damping (this record had said no seated reading did);
+  - the linearized analysis quoted only where it agreed, and the ν sweep left out;
+  - the damped μ_f 0.6 push (0.934), which this record had inferred from the analysis alone;
+  - the CI check of the power iteration testing an estimate the loop no longer made;
+  - K4 and the validity gates unreported;
+  - K5 read on one reading;
+  - §16j, §14 and §16o passages the damping made stale;
+  - η's uncertainty and its loss tangent.
+- **Every code fix has a test** that failed on its defect first. The review's own runs are cited as the review's;
+  where they were reproduced, the text says so.
