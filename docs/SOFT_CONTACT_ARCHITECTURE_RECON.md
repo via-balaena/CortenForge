@@ -2,11 +2,11 @@
 
 **Status:** the plan, 2026-09-24, amended as the build goes. Build step 1 is merged (#965). Step 2 is designed in
 §16; 2a (#968) and 2b's G2 (#969) are merged, and 2b's remaining runs, with the material damping they led to, are
-§16p.
+§16p (#970). 2c, K6, is §16q.
 - **Research:** §1–§10.
 - **Code architecture and the crate layout:** §11–§14.
 - **The first experiment and its kill criteria:** §15.
-- **Build step 2's design, and what its PRs measured:** §16 (§16m–§16p).
+- **Build step 2's design, and what its PRs measured:** §16 (§16m–§16q).
 
 The code architecture, crate layout and first experiment were checked by cold review, against criteria
 written beforehand (§14e, §15i). The research sections were not. Jon's direction:
@@ -1328,6 +1328,10 @@ the sections that bind step 2, and the cold review (16k) checks the design again
 *Amended 2026-09-25 (§16p): the tube's material now has a viscosity, which the elastic closed forms do
 not; 2c sets K6's viscous time, or shows its loading slow enough for it not to matter.*
 
+*Amended 2026-09-25 (§16q, 2c as built): K6 runs elastic, η = 0; the stick zone is read from the friction
+deficit μ_f f_n − f_t, not the ratio below; the legs start and stop over the block's shear period, with a hold
+after each; and the press ends near a, not at it. K6's runs are §16q's.*
+
 *Amended 2026-09-25 (§16o): the contact law is now kinematic, with no elastic slip, so the penalty's
 compliance drops out of the error budget. The reason for f64 does not: the stick test compares one
 step's tangential drift with μ_f times one step's normal correction, and that correction is
@@ -1413,7 +1417,7 @@ than μ_f·P, in plane strain. Part of the contact sticks and part slips.
   - **The stick zone's edges** are read from the ratio f_t/(μ_f f_n). f_t is the component along the
     load's direction, and along its reverse while unloading. A slipping node's ratio is exactly 1, and
     a sticking node's approaches 1 as the square root of its distance to the edge.
-    - **The rule is settled in 2c by a unit test,** not here. The test feeds the closed forms, sampled
+    - **The rule is settled in 2c by a unit test,** not here. *(Settled, §16q: the friction deficit.)* The test feeds the closed forms, sampled
       at the mesh's own nodes over many mesh offsets and load fractions, to the readout. The largest
       error it reads is the readout's resolution, and it must be ≤ 0.005a.
     - The candidate is to extrapolate (1 − ratio)² linearly to zero from the last two sticking nodes,
@@ -1490,7 +1494,7 @@ code is reviewed on its own. 2b–2d add fixtures, readouts and runs, and 2d add
 penetration against the grid is at most 0.2 µm on the tube, so 2b records G2 against the grid and
 against the true surface on the ladder, and 2d measures both on the product.*
 
-*2b's runs are in §16p, 2026-09-25, on the damped solver it led to.*
+*2b's runs are in §16p, 2026-09-25, on the damped solver it led to. 2c's are in §16q.*
 
 ### 16d. What the shared math gains
 
@@ -1543,7 +1547,9 @@ one thread and on many.
 **The stable step.** *(Amended 2026-09-25, §16o: the kinematic law adds nothing to the step, so
 Δt = 0.9 · 2/ω_el; the penalty bound below, and the flutter it names, were the penalty's. Amended
 again, §16p: the frictional tube did flutter under the kinematic law, the material was given its own
-viscosity, and the step is 0.9 · 2/ω (√(1 + ξ²) − ξ) for the top vector of M⁻¹(K + βC).)*
+viscosity, and the step is 0.9 · 2/ω (√(1 + ξ²) − ξ) for the top vector of M⁻¹(K + βC). In 2c, §16q: it
+is computed as 0.9 · 4/(γ + √(γ² + 4ω²)), γ = vᵀCv/vᵀMv, which holds where ω² ≤ 0 too, and the start
+estimates twice whatever the material.)*
 - The elastic part comes from a power iteration on M⁻¹K. K·v is the finite difference of the elastic
   force phases (1–5) in the direction v, at the current state.
 - The penalty is added as a bound, not iterated. On a node in contact, the normal penalty and the
@@ -1621,7 +1627,8 @@ The band's λ_z against the oracle's is the tube's own check, and belongs to its
   own: C₂ = 0 reproduces the neo-Hookean values, and at small interference the pressure is Lamé's with
   λ + 8C₂ in place of λ (the stiffness `dilatational_wave_speed` already uses).
 - As with `gen_golden.py`, a regenerated file is a reviewed change.
-- K6's reference is two closed-form expressions, written in its test with their sources (16b). The
+- K6's reference is two closed-form expressions, written in its test with their sources (16b) *(2c put them
+  in the fixture, which the probe and the CI check share, §16q)*. The
   coupling's size comes from `cattaneo_mindlin_reference.py`, which is a referent, not golden data.
 
 ### 16h. The Yeoh case is judged on its increment ✓
@@ -1702,7 +1709,8 @@ The gathers, contact and integration are not in that number, and the whole step 
 - *the loading speed: the ladder's rung, 0.625 T_s (v/c_s 0.39), holds for Ecoflex's η/μ (undamped it was
   2.5 T_s), and the frictionless push peak moved up to 12 % across the rungs (the push with friction, 1.5 %);*
 - *the loaded step factor: 0.977, the smallest in-run step over the rest step on the damped tube;*
-- *the per-step cost: ×1.4–1.65 a step, and ×1.06–1.39 the steps, against the undamped solver;*
+- *the per-step cost: ×1.36–1.67 a step (§16p's times; corrected in 2c, §16q), and ×1.06–1.39 the steps, against the
+  undamped solver;*
 - *the damping's form (Kelvin–Voigt, or a Maxwell branch) is not decided, and moves both costs.*
 
 - **Where it runs:** a command in `cf-sim-research`, since the scan never enters the repo. It meshes
@@ -2345,6 +2353,10 @@ later commits change no reading.
 - **The Yeoh case passes 16h's rule:** at 50k the increment is off by 0.53 points of p_NH, 13 % of the increment,
   against 25 % (1.05 points). It is off by 1.38 points at 10k and 0.37 at 100k. Its absolute K2 is within 5 % at 50k
   and 100k.
+  - *Added in 2c (§16q):* the table's increment is the band pressure's, p_Yeoh/p_NH − 1 on the same mesh, not
+    corrected for the two runs' λ_z. Corrected to the oracle's λ_z through the two K2 errors,
+    (1 + K2_Yeoh)/(1 + K2_NH) × 1.0422 − 1, it reads 5.64, 4.77 and 4.60 % (arithmetic on the table), and the verdict
+    is the same: 13 % of the increment at 50k.
 - **The product-level run** (`DRAGON_SKIN_10A`'s μ, 51 kPa, as a stiffness scale of 2.2174 with Ecoflex's η/μ;
   λ_a 1.3, ν 0.49, frictionless) reads +3.30 % and +1.13 % at 10k and 50k, as at 23 kPa.
 
@@ -2401,7 +2413,9 @@ damped step's accuracy is above.
 - Steps: ×1.06–1.22 at 10k, ×1.09–1.22 at 50k, ×1.23–1.39 at 100k. The rest step shrinks 12.5 %, 19 % and 28 % (λ_a
   1.1): Kelvin–Voigt's damping grows with frequency, and so does the top of a finer mesh.
 - A step costs 0.49, 1.56 and 2.78–2.80 ms at 10k, 50k and 100k, against 0.33–0.36, 0.98–1.00 and 1.68–1.70 ms
-  (§16o). The viscous phase evaluates every element a second time whatever η is: at η = 0 a 10k step costs 0.46 ms.
+  (§16o): ×1.36–1.67. The viscous phase evaluates every element a second time whatever η is: at η = 0 a 10k step costs 0.46 ms.
+  *(Amended in 2c, §16q: the CPU executor now skips the viscous phases when no material is viscous. The 0.46 ms was
+  read on an idle machine; a reviewer read 0.49 ms on a loaded one.)*
 - So a 100k K2 run takes 124.5 s, against 53.3 s (§16o). The estimates take 12.6–15.8 % of a run.
 - §15c's K1 arithmetic (29k steps, 3.7–4.1 ms per step) assumed 10 T_s and no damping; both changed (§15c's note).
 
@@ -2418,7 +2432,7 @@ damped step's accuracy is above.
 - **Dragon Skin 10A's loss is not known**, and the product is Dragon Skin (fit plan U15).
 - **The fits' storage stiffening** at insertion rates (12–25 % and 43–68 % from 1 to 10 Hz, arithmetic) is not in the
   model (fit plan U15).
-- **2c (K6)** sets its viscous time (§16b's note); 2d's inputs are in §16j's note.
+- **2c (K6)** sets its viscous time (§16b's note); 2d's inputs are in §16j's note. *(2c: η = 0, §16q.)*
 
 **How this was checked.**
 - **The criteria came first,** with twelve priors kept from the reviewers.

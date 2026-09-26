@@ -464,6 +464,10 @@ in CI); G5 already gates in CI.
   - The same published fits stiffen the material by 12–25 % and 43–68 % between 1 and 10 Hz (arithmetic from
     each fit). The solver keeps the static modulus and adds only a viscosity, so it does not carry that
     stiffening. How much it raises the push force at the product's own insertion speed is not known.
+  - *2026-09-25 (soft-contact recon §16q):* its cost grows on small elements. The viscosity's damping grows as the
+    inverse square of the element size, and on the friction benchmark's block it shrinks the stable step 19× at
+    83 µm elements and 80× at 20 µm, against 12–28 % on the tube's meshes. The product's element size is set in
+    2d.
 - **U16 — D1's readings do not converge on the tube** (soft-contact recon §16p, K5, 2026-09-25). The seated 95th
   percentile moved by 8–12 % from the 50k to the 100k mesh in three of four cases (−2.2 % in the fourth), and the
   frictionless push peak by 14 % (λ_a 1.1). The push with friction converged. §15a sends this back to D1's
