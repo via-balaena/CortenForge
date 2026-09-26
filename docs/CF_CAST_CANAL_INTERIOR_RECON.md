@@ -5,7 +5,7 @@
 > **Trigger:** Design conversation — doubt that the plain scan negative is the
 > best shape for the device interior. Workshop user wants to explore a
 > *designed* interior canal rather than the literal scan negative.
-> **Direction locked (this session):** asymmetric / frenulum-targeted canal;
+> **Direction locked (this session):** asymmetric, one-side-targeted canal;
 > scan = length/girth **budget only** (not the cavity shape).
 > **Sequencing:** this arc composes on top of the shipped §M unified-mating-plane
 > + §B bolt-pattern + iter-1 print-ready state (`main` = `4734ce08`). It does **not**
@@ -36,20 +36,19 @@ degenerates to `Solid::from_sdf(scan).offset(...)` bit-for-bit — i.e. **the pl
 is the scan literal**.
 
 The cavity (`= negative of the plug`) is therefore the scan shape verbatim. That
-is **not** what high-quality strokers use, for physical reasons:
+is **not** what well-made commercial sleeves use, for physical reasons:
 
 1. **Interference fit is the whole point.** A 1:1 negative has zero interference;
    the soft silicone stretches away under insertion and feels loose/numb.
    Functional designs deliberately undersize the canal so the material grips.
-2. **Sensation comes from variation along the length**, not from anatomical
+2. **Sensation comes from variation along the length**, not from a literal
    match — tight rings, open chambers, ribs, asymmetric texture.
-3. **Nerve density is concentrated** at the frenulum (underside of glans), the
-   corona (ridge), and the glans tip. A uniform negative spreads stimulation
+3. **Sensitivity is not uniform.** A uniform negative spreads stimulation
    over mostly-low-sensitivity surface.
 
 **Design target:** replace the layer-0 plug with a **parametric canal** whose
 *negative* is the designed interior, sized to the scan's length + girth so it
-still fits the intended user, with asymmetric (frenulum-biased) texture.
+still fits the intended user, with asymmetric (one-sided) texture.
 
 ---
 
@@ -113,9 +112,9 @@ as fractions of the budgeted length `L`:
 
 | Zone | z range | Role | Geometry |
 |---|---|---|---|
-| 1. Entry ring | 0 – 0.10 L | corona "catch" | tight annular constriction, `r ≈ 0.45·r_p` |
-| 2. Clearance chamber | 0.10 – 0.18 L | let corona clear | opens to `r ≈ 0.95·r_p` |
-| 3. Stimulation zone | 0.18 – 0.60 L | the main event | asymmetric D-section + 2–3 secondary rings + frenulum-biased texture |
+| 1. Entry ring | 0 – 0.10 L | a tight ring that a wider section of the scan must pass | tight annular constriction, `r ≈ 0.45·r_p` |
+| 2. Clearance chamber | 0.10 – 0.18 L | lets that section clear | opens to `r ≈ 0.95·r_p` |
+| 3. Stimulation zone | 0.18 – 0.60 L | the main event | asymmetric D-section + 2–3 secondary rings + one-sided texture |
 | 4. Collapsing taper | 0.60 – 0.92 L | gentle full contact | `r` tapers below `r_p` |
 | 5. Suction chamber | 0.92 – 1.0 L | pneumatic pull | near-closed bulb + tunable vent |
 
@@ -138,7 +137,7 @@ struct CanalPlugSdf {
     length_m: f64,                 // L — budget from scan centerline arc length
     radius_profile: RadiusLut,     // r_p(z) — girth budget from scan (§5)
     zones: ZoneProfile,            // entry ring, chambers, taper, suction (§3)
-    frenulum_dir: UnitVector3<f64>,// +y in canal frame — asymmetry axis (§4.3)
+    asymmetry_dir: UnitVector3<f64>,// +y in canal frame — asymmetry axis (§4.3)
     asymmetry: AsymmetryParams,    // D-section + directional texture (§4.3)
     texture: TextureParams,        // rib/nub amplitude, pitch, kind
 }
@@ -151,7 +150,7 @@ impl Sdf for CanalPlugSdf {
         // 4. additive texture gated by directional weight w(theta) (§4.3)
         // 5. signed distance = r_xy - R(z, theta) - texture(z, theta), capped by ends
     }
-    fn grad(&self, _p) -> Vector3<f64> { self.frenulum_dir.into_inner() } // FD fallback
+    fn grad(&self, _p) -> Vector3<f64> { self.asymmetry_dir.into_inner() } // FD fallback
 }
 ```
 
@@ -175,19 +174,19 @@ scope here, which `derive_spec_and_ribbon` has (`scan_aabb`, `centerline`).
 ### 4.3 The asymmetry (the differentiator)
 
 Two stacked mechanisms in `eval`, both keyed on the azimuth `θ` measured from
-`frenulum_dir`:
+`asymmetry_dir`:
 
-1. **D-shaped cross-section.** Blend the radius between a tight frenulum-side
-   value and a looser dorsal-side value:
-   `R(z, θ) = R(z) · lerp(dorsal_factor, frenulum_factor, ½(1 + cos θ))`
-   with starting `frenulum_factor ≈ 0.50`, `dorsal_factor ≈ 0.80`.
+1. **D-shaped cross-section.** Blend the radius between a tight value on the
+   asymmetry side and a looser value opposite it:
+   `R(z, θ) = R(z) · lerp(far_factor, near_factor, ½(1 + cos θ))`
+   with starting `near_factor ≈ 0.50`, `far_factor ≈ 0.80`.
 2. **Directional texture bias.** Texture amplitude scaled by
-   `w(θ) = max(0, cos θ)` — full amplitude on the frenulum side, fading to smooth
-   dorsally. Saves compression budget + casting complexity on the low-sensitivity
+   `w(θ) = max(0, cos θ)` — full amplitude on the asymmetry side, fading to smooth
+   by `θ = ±90°`. Saves compression budget + casting complexity on the low-sensitivity
    wall.
 
-Asymmetry is free peak-pleasure **because a handheld stroker has controlled
-orientation** — the user aligns `frenulum_dir` to the underside.
+Asymmetry costs nothing **because a handheld device has controlled
+orientation** — the user aligns `asymmetry_dir` with the more sensitive side.
 
 ### 4.4 Texture
 
@@ -205,8 +204,8 @@ girth_scale          = 1.0      # multiply scan-derived r_p(z) before zone facto
 # zones (fractions of budgeted length L)
 entry_ring_frac      = 0.45     # ×r_p at the catch ring
 clearance_open_frac  = 0.95     # ×r_p in the clearance chamber
-frenulum_factor      = 0.50     # ×r_p, frenulum wall, stim zone
-dorsal_factor        = 0.80     # ×r_p, dorsal wall, stim zone
+near_factor          = 0.50     # ×r_p, asymmetry-side wall, stim zone
+far_factor           = 0.80     # ×r_p, opposite wall, stim zone
 secondary_ring_count = 3
 suction_chamber_frac = 0.08     # terminal length fraction
 vent_diameter_m      = 0.002
@@ -215,7 +214,7 @@ texture_amplitude_m  = 0.0015
 texture_pitch_m      = 0.008
 texture_kind         = "annular"   # annular | helical | nubs
 # orientation
-frenulum_dir         = [0.0, 1.0, 0.0]   # in scan frame
+asymmetry_dir        = [0.0, 1.0, 0.0]   # in scan frame
 # meshing override (texture needs finer cells than the 3 mm default)
 plug_mesh_cell_size_m = 0.0005
 ```
@@ -312,7 +311,7 @@ survives.
 | **S0** | Empirical spike (`#[ignore]` test, à la `s0_scan_mesh_direct_probe.rs`): hand-build a `CanalPlugSdf` with a couple of zones + texture, mesh at 0.5 mm, eyeball in cf-view, measure time/faces. Validate the SDF pattern + resolution before committing config surface. | probe test + decision on mesher (MC fine vs adaptive DC) |
 | **S1** | `RadiusLut` primitive (§5.2) + length/girth budget extraction, with unit tests on a synthetic capsule scan. No canal yet — just the budget. (Also unblocks flange-continuity fix.) | `canal::RadiusLut` + tests |
 | **S2** | `CanalPlugSdf` core: zones + circular `R(z)` (entry ring, clearance, taper) — **symmetric first**, no texture, no suction bulb. Wire `[canal]` config + the layer-0 seam. Wall-thickness gate (§6.1). | end-to-end canal cast (smooth, symmetric) |
-| **S3** | Asymmetry: D-section + directional texture (§4.3–4.4) + fine/adaptive meshing (§7). | frenulum-targeted textured canal |
+| **S3** | Asymmetry: D-section + directional texture (§4.3–4.4) + fine/adaptive meshing (§7). | one-side-targeted textured canal |
 | **S4** | Suction chamber + vent + pull-out undercut gate (§6.2), with a chambered test fixture. | full design + demoldability gate |
 | **S5** | Physical print + cast iteration; tune knobs against real material. | empirical convergence |
 
@@ -344,9 +343,9 @@ S0 is the immediate next action. Each code phase: cold-read pass + full gates
 
 ## 11. Open questions for workshop user
 
-- **OQ1 — frenulum orientation marker.** The asymmetry needs the user to orient
-  the toy. Add a physical keying feature (flat / notch on the housing) so
-  `frenulum_dir` is unambiguous in use? Or document orientation only?
+- **OQ1 — orientation marker.** The asymmetry needs the user to orient
+  the device. Add a physical keying feature (flat / notch on the housing) so
+  `asymmetry_dir` is unambiguous in use? Or document orientation only?
 - **OQ2 — suction aggressiveness vs demoldability.** How much suction chamber is
   worth the pull-out risk for iter-1? Start conservative (shallow bulb) and ramp?
 - **OQ3 — girth scaling default.** Should the canal default to `girth_scale = 1.0`
@@ -428,7 +427,7 @@ A minimal hand-written `CanalProbeSdf` (probe-local, *not* the production
 `CanalPlugSdf`) exercising the three things that must work:
 1. **Axial zones** — a circular `R(z)` with one entry-ring constriction + one
    clearance chamber + a taper. Confirms the SDF pattern meshes to a clean plug.
-2. **Asymmetry** — D-section term keyed on azimuth from a `frenulum_dir`. Confirms
+2. **Asymmetry** — D-section term keyed on azimuth from a `asymmetry_dir`. Confirms
    non-circular cross-section meshes without artifacts.
 3. **Texture** — additive `A·sin(2π z/pitch)` gated by `w(θ)=max(0,cosθ)`, `A=1.5mm`.
    Confirms texture *survives* the mesher.

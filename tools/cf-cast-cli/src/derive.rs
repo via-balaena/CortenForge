@@ -375,7 +375,7 @@ pub fn derive_spec_and_ribbon(
     // stimulation features onto the scan-derived layer-0 plug. Baseline
     // girth is unchanged — the layer/inset machinery (`cavity_inset_m`)
     // still owns tightness; the canal only ADDS features (grip rings,
-    // frenulum D-section pinch, frenulum-gated texture, terminal suction
+    // one-sided D-section pinch, one-sided texture, terminal suction
     // bulb). All features pinch the channel INWARD (more wall, safe)
     // except the suction bulb, which bulges OUTWARD into the inner
     // silicone shell — that one is wall-gated below.
@@ -733,8 +733,8 @@ pub fn resolve_canal_spec(config: &crate::config::CanalConfig) -> CanalSpec {
             })
             .collect();
     }
-    if let Some(dir) = config.frenulum_dir {
-        spec.frenulum_dir = Vector3::new(dir[0], dir[1], dir[2]);
+    if let Some(dir) = config.asymmetry_dir {
+        spec.asymmetry_dir = Vector3::new(dir[0], dir[1], dir[2]);
     }
     if let Some(amp) = config.texture_amplitude_m {
         spec.texture_amp_m = amp;

@@ -3,10 +3,10 @@
 //! Item (A) of `docs/CF_CAST_ORGANIC_PARTS_RECON.md` §4.1 (C-A2 refined).
 //!
 //! The mold seam stays a single FLAT plane (so the two cup halves print
-//! mating-face-down and seal), but on a part whose dome LEANS off the shaft
+//! mating-face-down and seal), but on a part whose dome LEANS off the body's
 //! axis the naive flat seam ([`crate::ribbon::Ribbon::with_planar_seam`], which
 //! flattens the ribbon binormal to HORIZONTAL and positions it at the centerline
-//! midpoint) can't follow the lean: it bisects the shaft but skims the dome,
+//! midpoint) can't follow the lean: it bisects the body but skims the dome,
 //! leaving one cup-half a thin sliver over the dome (workshop cf-view 2026-05-29).
 //!
 //! [`best_fit_planar_seam`] instead fits the plane to the actual body:
@@ -15,7 +15,7 @@
 //!    this base→apex line passes through the dome tip by construction and tilts
 //!    with the part's lean — so it bisects every cross-section along the length,
 //!    not just the middle.
-//! 2. **Rotate about that axis to the most-even split.** The dome/glans is
+//! 2. **Rotate about that axis to the most-even split.** The dome is
 //!    asymmetric, so the azimuth matters; the sweep minimises the mean
 //!    per-height-band area imbalance (the direct anti-sliver objective), not
 //!    just the overall split.

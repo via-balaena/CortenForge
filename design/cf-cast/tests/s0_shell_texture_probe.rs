@@ -66,7 +66,7 @@ fn ring_spec() -> CanalSpec {
         dsection_zone: (0.0, 1.0),
         suction_bulge_m: 0.0,
         suction_start_frac: 1.0,
-        frenulum_dir: Vector3::new(0.0, 1.0, 0.0),
+        asymmetry_dir: Vector3::new(0.0, 1.0, 0.0),
         plug_mesh_cell_size_m: 0.0005,
     }
 }

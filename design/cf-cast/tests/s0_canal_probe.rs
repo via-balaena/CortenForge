@@ -9,11 +9,11 @@
 //! `CanalPlugSdf` — that lands in S2) and answers the three questions
 //! the recon front-loads before any infrastructure is built:
 //!
-//! - **Q-resolution** — does the ~1.5 mm frenulum texture survive the
+//! - **Q-resolution** — does the ~1.5 mm one-sided texture survive the
 //!   mesher? Sweep uniform marching cubes at cell sizes
 //!   {0.003 (prod), 0.001, 0.0005} m + one adaptive (DC) pass; report
 //!   wall-clock, face/vertex count, self-intersection count, and the
-//!   recovered texture amplitude (residual of frenulum-side vertices
+//!   recovered texture amplitude (residual of asymmetry-side vertices
 //!   vs the smooth base radius). Decides the production mesher for S3.
 //! - **Q-meshes-clean** — does the D-section + texture SDF mesh without
 //!   self-intersection artifacts? Validates the hand-written SDF pattern
@@ -70,10 +70,10 @@ const PROBE_BASE_RADIUS_M: f64 = 0.018;
 const PROBE_TEXTURE_AMP_M: f64 = 0.0015;
 /// Texture pitch (m) — annular rib spacing.
 const PROBE_TEXTURE_PITCH_M: f64 = 0.008;
-/// Frenulum-side radius factor (tight) for the D-section blend.
-const FRENULUM_FACTOR: f64 = 0.50;
-/// Dorsal-side radius factor (loose) for the D-section blend.
-const DORSAL_FACTOR: f64 = 0.80;
+/// Asymmetry-side radius factor (tight) for the D-section blend.
+const NEAR_FACTOR: f64 = 0.50;
+/// Opposite-side radius factor (loose) for the D-section blend.
+const FAR_FACTOR: f64 = 0.80;
 
 // ────────────────────────────────────────────────────────────────────
 // Probe-local parametric canal SDF
@@ -89,12 +89,12 @@ const DORSAL_FACTOR: f64 = 0.80;
 /// 1. **Axial zones** — piecewise-linear radius profile `R(z)` over
 ///    `(t, radius_fraction)` control stations (entry ring → clearance
 ///    chamber → taper, or a neck/chamber/neck undercut).
-/// 2. **D-section asymmetry** — radius scaled between `frenulum_factor`
-///    (tight) and `dorsal_factor` (loose) by ½(1 + cos θ), where θ is
-///    the azimuth from `frenulum_dir`.
+/// 2. **D-section asymmetry** — radius scaled between `near_factor`
+///    (tight) and `far_factor` (loose) by ½(1 + cos θ), where θ is
+///    the azimuth from `asymmetry_dir`.
 /// 3. **Additive texture** — `A·sin(2π z / pitch)` gated by
-///    `w(θ) = max(0, cos θ)` so ribs live on the frenulum side and fade
-///    smooth dorsally.
+///    `w(θ) = max(0, cos θ)` so ribs live on the asymmetry side and fade
+///    to zero at `θ = ±90°`.
 #[derive(Clone)]
 struct CanalProbeSdf {
     length_m: f64,
@@ -102,14 +102,14 @@ struct CanalProbeSdf {
     /// `(t ∈ [0,1], radius fraction of base_radius_m)` stations, sorted
     /// ascending by `t`. Interpolated linearly; clamped at the ends.
     stations: Vec<(f64, f64)>,
-    /// Frenulum direction (unit vector in the XY plane); the asymmetry
-    /// axis. `θ = 0` points along this.
-    frenulum_dir: Vector3<f64>,
-    frenulum_factor: f64,
-    dorsal_factor: f64,
+    /// The asymmetry direction (unit vector in the XY plane), the
+    /// tight side. `θ = 0` points along this.
+    asymmetry_dir: Vector3<f64>,
+    near_factor: f64,
+    far_factor: f64,
     texture_amp_m: f64,
     texture_pitch_m: f64,
-    /// Apply the additive frenulum-gated texture term.
+    /// Apply the additive one-sided texture term.
     textured: bool,
     /// Apply the D-section angular compression.
     asymmetric: bool,
@@ -149,11 +149,11 @@ impl CanalProbeSdf {
         let t = (z / self.length_m).clamp(0.0, 1.0);
         let base = self.base_radius_m * self.radius_frac(t);
         if self.asymmetric {
-            // R(z,θ) = R(z) · lerp(dorsal, frenulum, ½(1+cosθ)).
-            // cosθ=+1 (frenulum side) → frenulum_factor (tight).
-            // cosθ=-1 (dorsal side)   → dorsal_factor (loose).
+            // R(z,θ) = R(z) · lerp(far, near, ½(1+cosθ)).
+            // cosθ=+1 (asymmetry side) → near_factor (tight).
+            // cosθ=-1 (opposite side)  → far_factor (loose).
             let s = 0.5 * (1.0 + cos_theta);
-            base * (self.frenulum_factor - self.dorsal_factor).mul_add(s, self.dorsal_factor)
+            base * (self.near_factor - self.far_factor).mul_add(s, self.far_factor)
         } else {
             base
         }
@@ -161,7 +161,7 @@ impl CanalProbeSdf {
 
     /// Largest radius the surface reaches (for AABB sizing): max zone
     /// fraction × base + texture amplitude + margin. D-section only
-    /// shrinks and texture only adds on the frenulum side, so this
+    /// shrinks and texture only adds on the asymmetry side, so this
     /// bounds the surface.
     fn max_radius_m(&self) -> f64 {
         let max_frac = self.stations.iter().map(|s| s.1).fold(0.0_f64, f64::max);
@@ -182,7 +182,7 @@ impl Sdf for CanalProbeSdf {
         let z = p.z;
         let r_xy = p.x.hypot(p.y);
         let cos_theta = if r_xy > 1.0e-9 {
-            p.x.mul_add(self.frenulum_dir.x, p.y * self.frenulum_dir.y) / r_xy
+            p.x.mul_add(self.asymmetry_dir.x, p.y * self.asymmetry_dir.y) / r_xy
         } else {
             0.0
         };
@@ -211,7 +211,7 @@ impl Sdf for CanalProbeSdf {
         // Unused: `Solid::from_sdf` bridges via `FieldNode::UserFn`,
         // which takes the gradient by finite differences. Same rationale
         // as `FlangeSdf`/`GasketChannelSdf`. Return the asymmetry axis.
-        self.frenulum_dir
+        self.asymmetry_dir
     }
 }
 
@@ -261,7 +261,7 @@ fn check_intersections(mesh: &IndexedMesh) -> usize {
     detect_self_intersections(mesh, &params).intersection_count
 }
 
-/// Texture-recovery metric (m). Detrends frenulum-side vertices in the
+/// Texture-recovery metric (m). Detrends asymmetry-side vertices in the
 /// stimulation zone (`t ∈ [0.22, 0.58]`, `cos θ ≥ 0.8`) against the
 /// smooth base radius and reports the peak |residual| + RMS + sample
 /// count. A surviving 1.5 mm texture shows peak ≈ 1.5 mm; an obliterated
@@ -278,7 +278,7 @@ fn measure_texture_recovery(mesh_m: &IndexedMesh, sdf: &CanalProbeSdf) -> (f64, 
         if r_xy < 1.0e-9 {
             continue;
         }
-        let cos_theta = v.x.mul_add(sdf.frenulum_dir.x, v.y * sdf.frenulum_dir.y) / r_xy;
+        let cos_theta = v.x.mul_add(sdf.asymmetry_dir.x, v.y * sdf.asymmetry_dir.y) / r_xy;
         if cos_theta < 0.8 {
             continue;
         }
@@ -304,9 +304,9 @@ fn measure_texture_recovery(mesh_m: &IndexedMesh, sdf: &CanalProbeSdf) -> (f64, 
 /// resolution / clean-mesh sweep.
 fn standard_stations() -> Vec<(f64, f64)> {
     vec![
-        (0.00, 0.45), // entry ring — corona catch (tight)
+        (0.00, 0.45), // entry ring — a wider section must pass (tight)
         (0.10, 0.45),
-        (0.14, 0.95), // clearance chamber — let corona clear (open)
+        (0.14, 0.95), // clearance chamber — lets that section clear (open)
         (0.18, 0.95),
         (0.22, 0.85), // stimulation zone (base)
         (0.60, 0.85),
@@ -343,7 +343,7 @@ const UNDERCUT_CHAMBER_FRAC: f64 = 0.78;
 #[ignore = "S0 canal probe — run manually with --ignored"]
 fn s0_canal_probe() {
     let out = out_dir();
-    let frenulum_dir = Vector3::new(0.0, 1.0, 0.0);
+    let asymmetry_dir = Vector3::new(0.0, 1.0, 0.0);
 
     // ── Q-resolution + Q-meshes-clean ─────────────────────────────────
     // Full textured + asymmetric canal across the mesher sweep.
@@ -351,9 +351,9 @@ fn s0_canal_probe() {
         length_m: PROBE_LENGTH_M,
         base_radius_m: PROBE_BASE_RADIUS_M,
         stations: standard_stations(),
-        frenulum_dir,
-        frenulum_factor: FRENULUM_FACTOR,
-        dorsal_factor: DORSAL_FACTOR,
+        asymmetry_dir,
+        near_factor: NEAR_FACTOR,
+        far_factor: FAR_FACTOR,
         texture_amp_m: PROBE_TEXTURE_AMP_M,
         texture_pitch_m: PROBE_TEXTURE_PITCH_M,
         textured: true,
@@ -370,8 +370,8 @@ fn s0_canal_probe() {
         PROBE_TEXTURE_PITCH_M * 1000.0,
     );
     eprintln!(
-        "  D-section: frenulum {:.2}× / dorsal {:.2}× r_p\n",
-        FRENULUM_FACTOR, DORSAL_FACTOR
+        "  D-section: near {:.2}× / far {:.2}× r_p\n",
+        NEAR_FACTOR, FAR_FACTOR
     );
 
     eprintln!(
@@ -448,9 +448,9 @@ fn s0_canal_probe() {
         length_m: PROBE_LENGTH_M,
         base_radius_m: PROBE_BASE_RADIUS_M,
         stations: undercut_stations(),
-        frenulum_dir,
-        frenulum_factor: FRENULUM_FACTOR,
-        dorsal_factor: DORSAL_FACTOR,
+        asymmetry_dir,
+        near_factor: NEAR_FACTOR,
+        far_factor: FAR_FACTOR,
         texture_amp_m: PROBE_TEXTURE_AMP_M,
         texture_pitch_m: PROBE_TEXTURE_PITCH_M,
         textured: false, // axisymmetric — isolate the undercut variable

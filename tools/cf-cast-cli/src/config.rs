@@ -76,8 +76,8 @@ pub struct CastConfig {
     pub bolt_pattern: BoltPatternConfig,
     /// Interior-canal feature override (default = DISABLED). When
     /// `enabled = true`, the layer-0 plug's scan-derived surface gets
-    /// parametric grip rings + a frenulum D-section pinch + frenulum-
-    /// gated texture + a terminal suction bulb composed on top (the
+    /// parametric grip rings + a one-sided D-section pinch + one-sided
+    /// texture + a terminal suction bulb composed on top (the
     /// Canal Interior arc, Candidate A). Baseline girth is unchanged —
     /// tightness stays owned by the layer/inset machinery. Mutually
     /// exclusive with `scan_mesh_direct_plug_layer_0` (both rewrite the
@@ -106,7 +106,7 @@ impl CastConfig {
     /// `canal` is the interior-ridge feature for the layer-0 plug. Pass
     /// [`CanalConfig::default`] (`enabled = false`) for the historical
     /// wizard default — base_mold casts cleanly without it; the
-    /// scan-specific frenulum canal is an opt-in the frontend now exposes.
+    /// scan-specific asymmetric canal is an opt-in the frontend now exposes.
     /// When `canal.enabled` is true the plug grows the configured rings /
     /// texture / pinch / relief features (and meshes at the finer
     /// `plug_mesh_cell_size_m`, default 0.5 mm, so the ribs survive).
@@ -676,22 +676,23 @@ pub struct CanalConfig {
     #[serde(default)]
     pub enabled: bool,
     /// Axisymmetric grip rings. `None` → the iter1 ring set (one
-    /// corona-catch entry ring + two mid-canal rings). `Some(list)`
+    /// tight entry ring + two mid-canal rings). `Some(list)`
     /// replaces it wholesale; `Some(vec![])` drops all rings.
     #[serde(default)]
     pub rings: Option<Vec<RingConfig>>,
-    /// Frenulum direction in the cast world frame (asymmetry axis).
-    /// `None` → [0, 1, 0] (iter1 default).
+    /// Direction of the canal's tight side, in the cast world frame (see
+    /// [`cf_cast::CanalSpec::asymmetry_dir`]). `None` → [0, 1, 0] (iter1
+    /// default).
     #[serde(default)]
-    pub frenulum_dir: Option<[f64; 3]>,
-    /// Frenulum-gated texture rib amplitude (meters). `None` → 1.5 mm.
+    pub asymmetry_dir: Option<[f64; 3]>,
+    /// One-sided texture rib amplitude (meters). `None` → 1.5 mm.
     /// `Some(0.0)` disables texture.
     #[serde(default)]
     pub texture_amplitude_m: Option<f64>,
     /// Texture rib pitch (meters). `None` → 8 mm.
     #[serde(default)]
     pub texture_pitch_m: Option<f64>,
-    /// Frenulum-side D-section pinch depth (meters). `None` → 1.5 mm.
+    /// D-section pinch depth on the asymmetry side (meters). `None` → 1.5 mm.
     /// `Some(0.0)` disables the asymmetry.
     #[serde(default)]
     pub dsection_depth_m: Option<f64>,

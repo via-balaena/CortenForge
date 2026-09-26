@@ -6,7 +6,7 @@
 //! The workshop user owns baseline canal tightness through the existing
 //! layer/inset machinery (`cavity_inset_m`). This module does **not**
 //! set girth. Instead it adds *stimulation + grip features* — annular
-//! grip rings, a frenulum-biased D-section pinch, frenulum-gated texture
+//! grip rings, a one-sided D-section pinch, one-sided texture
 //! ribs, and a terminal suction bulb — as a spatially-varying offset of
 //! the base plug's own signed-distance field:
 //!
@@ -26,7 +26,7 @@
 //! The features are parameterized in a **near-straight frame** built
 //! from the centerline endpoints: `s` is the normalized position along
 //! the demolding axis (0 at the mouth end, 1 at the tip end) and `θ` is
-//! the azimuth measured from `frenulum_dir`. iter-1 assumes a
+//! the azimuth measured from `asymmetry_dir`. iter-1 assumes a
 //! near-straight centerline; a curved-centerline straightened-frame
 //! mapping is a later upgrade.
 //!
@@ -62,15 +62,16 @@ pub struct RingSpec {
 pub struct CanalSpec {
     /// Annular grip rings.
     pub rings: Vec<RingSpec>,
-    /// Frenulum-gated texture rib amplitude (meters). 0 disables texture.
+    /// One-sided texture rib amplitude (meters). 0 disables texture.
     pub texture_amp_m: f64,
     /// Texture rib pitch along the axis (meters).
     pub texture_pitch_m: f64,
     /// Axial fraction range `(start, end)` over which texture applies.
     pub texture_zone: (f64, f64),
-    /// Frenulum-side D-section pinch depth (meters). The frenulum wall is
-    /// pinched inward by this much over `dsection_zone`, fading to the
-    /// dorsal side via `max(0, cos θ)`. 0 disables asymmetry.
+    /// D-section pinch depth (meters). The wall on the asymmetry side is
+    /// pinched inward by this much over `dsection_zone`, weighted by
+    /// `max(0, cos θ)`: zero from `θ = ±90°` round the opposite half. 0
+    /// disables asymmetry.
     pub dsection_depth_m: f64,
     /// Axial fraction range `(start, end)` over which the D-section
     /// pinch applies.
@@ -83,10 +84,12 @@ pub struct CanalSpec {
     pub suction_bulge_m: f64,
     /// Axial fraction at which the suction bulb begins (runs to 1.0).
     pub suction_start_frac: f64,
-    /// Frenulum direction in the cast world frame (the asymmetry axis).
-    /// Projected perpendicular to the canal axis and normalized at frame
-    /// construction. `θ = 0` points along this.
-    pub frenulum_dir: Vector3<f64>,
+    /// Direction of the canal's tight side, in the cast world frame. The
+    /// D-section pinch and the texture ribs are full strength on the wall
+    /// this points at (`θ = 0`), fade to zero at `θ = ±90°`, and are absent
+    /// from the opposite half. Projected perpendicular to the canal axis
+    /// and normalized at frame construction.
+    pub asymmetry_dir: Vector3<f64>,
     /// Marching-cubes cell size for the layer-0 plug only (meters). The
     /// canal features (ribs ~1.5 mm) need finer cells than the 3 mm
     /// default; cups stay coarse. See the S0 probe finding.
@@ -94,8 +97,8 @@ pub struct CanalSpec {
 }
 
 impl CanalSpec {
-    /// iter-1 default canal: a corona-catch entry ring + two stimulation
-    /// rings, a frenulum D-section pinch + frenulum-gated ribs over the
+    /// iter-1 default canal: a tight entry ring + two stimulation
+    /// rings, a one-sided D-section pinch + one-sided ribs over the
     /// mid-canal, and a shallow terminal suction bulb. Conservative
     /// depths — the physical pull-out test on the first real cast bounds
     /// how aggressive these can grow.
@@ -103,7 +106,7 @@ impl CanalSpec {
     pub fn iter1() -> Self {
         Self {
             rings: vec![
-                // Corona-catch entry ring near the mouth.
+                // Tight entry ring near the mouth.
                 RingSpec {
                     center_frac: 0.10,
                     depth_m: 0.003,
@@ -128,14 +131,14 @@ impl CanalSpec {
             dsection_zone: (0.18, 0.70),
             suction_bulge_m: 0.003,
             suction_start_frac: 0.90,
-            frenulum_dir: Vector3::new(0.0, 1.0, 0.0),
+            asymmetry_dir: Vector3::new(0.0, 1.0, 0.0),
             plug_mesh_cell_size_m: 0.0005,
         }
     }
 
     /// Largest inward depth the feature field can reach at any point —
     /// the sum of the deepest ring, the texture amplitude, and the
-    /// D-section pinch (all of which can stack on the frenulum side).
+    /// D-section pinch (all of which can stack on the asymmetry side).
     /// Used to size the MC bounds inward margin.
     #[must_use]
     pub fn max_inward_depth_m(&self) -> f64 {
@@ -151,13 +154,13 @@ impl CanalSpec {
 pub struct CanalFrame {
     origin: Point3<f64>,
     axis: Vector3<f64>,
-    frenulum_u: Vector3<f64>,
+    asymmetry_u: Vector3<f64>,
     s_min: f64,
     s_max: f64,
 }
 
 impl CanalFrame {
-    /// Build the frame from the centerline polyline + frenulum direction
+    /// Build the frame from the centerline polyline + asymmetry direction
     /// + the plug bounds (to fix the axial extent `[s_min, s_max]`).
     ///
     /// `frac = 0` is the **mouth** (insertion opening) and `frac = 1`
@@ -167,16 +170,16 @@ impl CanalFrame {
     /// the frame: the centerline endpoint NEAREST the anchor becomes the
     /// origin (`frac = 0`). Without an anchor the first centerline point
     /// is the mouth. **This matters** — cf-scan-prep's centerline can run
-    /// either direction (on the iter-1 clone it runs glans → floor), so
+    /// either direction (on the iter-1 clone it runs tip → floor), so
     /// keying off the cap is what keeps the suction bulb at the deep
-    /// glans end instead of piling onto the flat floor cap.
+    /// tip end instead of piling onto the flat floor cap.
     ///
-    /// `frenulum_dir` is projected perpendicular to the axis (fallback
+    /// `asymmetry_dir` is projected perpendicular to the axis (fallback
     /// `+X` if parallel).
     #[must_use]
     pub fn new(
         centerline: &[Point3<f64>],
-        frenulum_dir: Vector3<f64>,
+        asymmetry_dir: Vector3<f64>,
         plug_bounds: Aabb,
         mouth_anchor: Option<Point3<f64>>,
     ) -> Self {
@@ -195,12 +198,12 @@ impl CanalFrame {
             Vector3::new(0.0, 0.0, 1.0)
         };
 
-        // Frenulum direction perpendicular to the axis.
-        let projected = frenulum_dir - axis * frenulum_dir.dot(&axis);
-        let frenulum_u = if projected.norm() > 1.0e-9 {
+        // Asymmetry direction perpendicular to the axis.
+        let projected = asymmetry_dir - axis * asymmetry_dir.dot(&axis);
+        let asymmetry_u = if projected.norm() > 1.0e-9 {
             projected.normalize()
         } else {
-            // frenulum_dir parallel to axis — pick any perpendicular.
+            // asymmetry_dir parallel to axis — pick any perpendicular.
             let trial = if axis.x.abs() < 0.9 {
                 Vector3::new(1.0, 0.0, 0.0)
             } else {
@@ -226,14 +229,14 @@ impl CanalFrame {
         Self {
             origin,
             axis,
-            frenulum_u,
+            asymmetry_u,
             s_min,
             s_max,
         }
     }
 
     /// Project `p` to `(axial_fraction ∈ [0,1] (clamped), axial_distance
-    /// (meters), cos θ ∈ [-1, 1])`. `cos θ = +1` on the frenulum side.
+    /// (meters), cos θ ∈ [-1, 1])`. `cos θ = +1` on the asymmetry side.
     #[must_use]
     pub fn project(&self, p: Point3<f64>) -> (f64, f64, f64) {
         let rel = p - self.origin;
@@ -243,7 +246,7 @@ impl CanalFrame {
         let radial = rel - self.axis * s;
         let r = radial.norm();
         let cos_theta = if r > 1.0e-9 {
-            (radial.dot(&self.frenulum_u) / r).clamp(-1.0, 1.0)
+            (radial.dot(&self.asymmetry_u) / r).clamp(-1.0, 1.0)
         } else {
             0.0
         };
@@ -298,10 +301,10 @@ fn inset_field(spec: &CanalSpec, frac: f64, axial_dist: f64, cos_theta: f64) -> 
         d += ring.depth_m * raised_cosine_pulse(frac, ring.center_frac, ring.half_width_frac);
     }
 
-    // Frenulum side weight: full on the frenulum wall, fading dorsally.
+    // Asymmetry-side weight: full on that wall, zero from θ = ±90° round the opposite half.
     let w = cos_theta.max(0.0);
 
-    // Frenulum D-section pinch — constant inward bias on the frenulum
+    // One-sided D-section pinch — constant inward bias on the asymmetry
     // side over the stimulation zone.
     if spec.dsection_depth_m > 0.0 {
         d += spec.dsection_depth_m
@@ -309,7 +312,7 @@ fn inset_field(spec: &CanalSpec, frac: f64, axial_dist: f64, cos_theta: f64) -> 
             * smooth_window(frac, spec.dsection_zone.0, spec.dsection_zone.1);
     }
 
-    // Frenulum-gated texture ribs — additive (≥0) so they only tighten.
+    // One-sided texture ribs — additive (≥0) so they only tighten.
     if spec.texture_amp_m > 0.0 && spec.texture_pitch_m > 1.0e-9 {
         let rib =
             0.5 * (1.0 + (2.0 * std::f64::consts::PI * axial_dist / spec.texture_pitch_m).sin());
@@ -360,7 +363,7 @@ impl Sdf for CanalFeatureSdf {
 /// modified plug [`Solid`].
 ///
 /// `base_plug` is the scan-derived `pinned_floor_shell` plug (unchanged
-/// baseline girth). `centerline` + `frenulum_dir` (via `spec`) build the
+/// baseline girth). `centerline` + `asymmetry_dir` (via `spec`) build the
 /// feature frame. `mouth_anchor` (the cap-plane centroid, when the scan
 /// has a cap) orients the frame so `frac = 0` is the mouth — see
 /// [`CanalFrame::new`]; pass `None` only for a capless scan. `bounds`
@@ -408,7 +411,7 @@ pub fn build_canal_plug_framed(
     spec: &CanalSpec,
     frame_bounds: Aabb,
 ) -> Solid {
-    let frame = CanalFrame::new(centerline, spec.frenulum_dir, frame_bounds, mouth_anchor);
+    let frame = CanalFrame::new(centerline, spec.asymmetry_dir, frame_bounds, mouth_anchor);
 
     // The MC grid still spans THIS body's own bounds (so the whole body is
     // meshed), expanded outward by the suction bulge so MC sees the bulged
@@ -563,7 +566,7 @@ mod tests {
     #[test]
     fn frame_anchors_frac_zero_at_cap_mouth_when_centerline_runs_deep_to_mouth() {
         // Regression for the iter-1 clone bug: cf-scan-prep's centerline
-        // ran glans → floor, so first=deep, last=mouth(cap). With the cap
+        // ran tip → floor, so first=deep, last=mouth(cap). With the cap
         // centroid as the mouth anchor, frac 0 must land at the cap end.
         let cl = vec![Point3::new(0.0, 0.0, 0.12), Point3::new(0.0, 0.0, 0.0)];
         let cap_centroid = Some(Point3::new(0.0, 0.0, 0.0));
@@ -583,19 +586,19 @@ mod tests {
     }
 
     #[test]
-    fn frame_cos_theta_is_plus_one_on_frenulum_side() {
+    fn frame_cos_theta_is_plus_one_on_the_asymmetry_side() {
         let frame = CanalFrame::new(
             &straight_centerline(),
             Vector3::new(0.0, 1.0, 0.0),
             unit_bounds(),
             None,
         );
-        // Point offset in +Y (the frenulum direction) → cos θ ≈ 1.
-        let (_, _, cos_fren) = frame.project(Point3::new(0.0, 0.01, 0.06));
-        assert_relative_eq!(cos_fren, 1.0, epsilon = 1.0e-9);
-        // Point offset in -Y (dorsal) → cos θ ≈ -1.
-        let (_, _, cos_dorsal) = frame.project(Point3::new(0.0, -0.01, 0.06));
-        assert_relative_eq!(cos_dorsal, -1.0, epsilon = 1.0e-9);
+        // Point offset in +Y (the asymmetry direction) → cos θ ≈ 1.
+        let (_, _, cos_near) = frame.project(Point3::new(0.0, 0.01, 0.06));
+        assert_relative_eq!(cos_near, 1.0, epsilon = 1.0e-9);
+        // Point offset in -Y (the opposite side) → cos θ ≈ -1.
+        let (_, _, cos_far) = frame.project(Point3::new(0.0, -0.01, 0.06));
+        assert_relative_eq!(cos_far, -1.0, epsilon = 1.0e-9);
     }
 
     #[test]
@@ -611,19 +614,19 @@ mod tests {
     }
 
     #[test]
-    fn dsection_pinches_frenulum_side_only() {
+    fn dsection_pinches_one_side_only() {
         let mut spec = CanalSpec::iter1();
         // Isolate the D-section: kill rings + texture so only the pinch shows.
         spec.rings.clear();
         spec.texture_amp_m = 0.0;
         let mid = 0.5 * (spec.dsection_zone.0 + spec.dsection_zone.1);
-        let d_fren = inset_field(&spec, mid, 0.0, 1.0);
-        let d_dorsal = inset_field(&spec, mid, 0.0, -1.0);
+        let d_near = inset_field(&spec, mid, 0.0, 1.0);
+        let d_far = inset_field(&spec, mid, 0.0, -1.0);
         assert!(
-            d_fren > 0.0,
-            "frenulum side should pinch inward, got {d_fren}"
+            d_near > 0.0,
+            "the asymmetry side should pinch inward, got {d_near}"
         );
-        assert_relative_eq!(d_dorsal, 0.0, epsilon = 1.0e-12);
+        assert_relative_eq!(d_far, 0.0, epsilon = 1.0e-12);
     }
 
     #[test]
@@ -735,10 +738,10 @@ mod tests {
         let plug = build_canal_plug(&base, &straight_centerline(), None, &spec);
         // Evaluate at a point and confirm it differs from the bare sphere
         // distance by exactly the feature field there.
-        let p = Point3::new(0.0, 0.018, 0.048); // frenulum side, in texture zone
+        let p = Point3::new(0.0, 0.018, 0.048); // asymmetry side, in texture zone
         let frame = CanalFrame::new(
             &straight_centerline(),
-            spec.frenulum_dir,
+            spec.asymmetry_dir,
             base.bounds().unwrap(),
             None,
         );
