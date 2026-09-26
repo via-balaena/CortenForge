@@ -2935,25 +2935,33 @@ nodes 0.86 and 0.70 mm apart), frictionless and at μ_f 0.3, λ_a 1.1 and 1.3:
   (2, 5, 10 and 20 mm) that moved less than 5 % from 50k to 100k at both λ_a.
 
 **The readings** (`src/readings.rs`; the tube probe prints them, and takes any cell counts as `RxCxA`):
-- **A node's contact area** is a third of each incident boundary triangle, projected on the obstacle's normal at
-  the node, so a face at right angles to the obstacle adds nothing. The tube's end face tilts under friction and
-  still adds 3.7 % (λ_a 1.1) and 10 % (λ_a 1.3) of an entry node's area at 50k and μ_f 0.3 (the diagnostic's
-  dumps).
+- **A node's contact area** counts each incident boundary triangle that turns toward the obstacle: a third of it
+  times the cosine between its outward normal and the obstacle's normal turned inward. A face at right angles to
+  the obstacle, or turned away, adds nothing. The tube's end face tilts toward the mandrel under friction and still
+  adds 3.7 % (λ_a 1.1) and 10 % (λ_a 1.3) of an entry node's area at 50k and μ_f 0.3 (the diagnostic's dumps). A
+  contact node that no face turns toward the obstacle keeps its force, over a third of every incident triangle.
 - **The patch.** Each node's force is spread over its contact area, so each triangle carries a uniform pressure.
   The surface inside a ball of the patch's radius (5.64 mm for 1 cm²) is integrated in sub-triangles, at least 16
   to a radius along each longest edge, each faded in across the rim over its own size. The patch is centred on
-  every contact node and on the centroid of every triangle that carries force. On a bore of 10 mm radius the ball
-  holds 1.03 % more than 1 cm² of surface, which the unit test computes and the reading reproduces.
+  every contact node and on the centroid of every triangle that carries force, so it reads the most-loaded of those
+  centres; a search 8× denser found up to 0.6 % more on the 50k runs (a review's measurement, not kept). On a bore
+  of 10 mm radius the ball holds 1.03 % more than 1 cm² of surface, which the unit test computes and the reading
+  reproduces.
 - **The push over travel** is the work over a 10 mm window, over 10 mm, taken exactly at the samples' boundaries;
   a hold adds nothing. 10 mm is 2.9 and 3.6 ring spacings on the 50k and 100k tubes, over which a sinusoidal ripple
-  keeps 3 % and 9 % of its amplitude (arithmetic; a unit test checks the formula).
-- **Pinned by 14 unit tests** (`tests/readings.rs`), each on a case with a known answer. Each of 23 single
-  mutations of the readings made one fail (a mutation run, not kept).
+  keeps 3 % and 9 % of its amplitude (arithmetic; a unit test checks the formula). At 50k (λ_a 1.1, frictionless)
+  the reading moved ±2.2 % between windows of 9, 10 and 11 mm (a review's measurement), as much as its 50k → 100k
+  change: the ripple the window keeps is part of what K5 reads there.
+- **Pinned by 18 unit tests** (`tests/readings.rs`), each on a case with a known answer, among them a stretched
+  window and an obstacle posed and tilted at the window's time. Of 35 single mutations, all but one made a test
+  fail; the survivor cuts the sub-triangles by `floor` rather than `ceil`, which only coarsens the integration (a
+  mutation run, not kept).
 
 **K5 passes on the new readings, from 50k to 100k.** The bar is §15a's, 5 % from 50k to 100k. The readings were
 chosen after the diagnosis had seen every mesh below, so none is held out.
 `cargo run --release -p sim-soft-explicit --example tube -- <mesh> <0|2> <0|0.3> f32 20 0.2 10 1`,
-`RAYON_NUM_THREADS=4`, at `1f84dbb8`; the 100k cross-section refined along the tube is `6x64x86` and `6x64x172`:
+`RAYON_NUM_THREADS=4`, at `393b35ba` (`1f84dbb8`, before review round 1's fixes, printed the same in every field);
+the 100k cross-section refined along the tube is `6x64x86` and `6x64x172`:
 
 | D1's readings | Case | 10k | 50k | 100k | 50k → 100k | 2× / 4× along | 100k against 4× |
 |---|---|---|---|---|---|---|---|
@@ -2979,7 +2987,8 @@ chosen after the diagnosis had seen every mesh below, so none is held out.
   friction it is centred about 5 mm inside the entry ring (whose position the diagnostic read), within its radius
   of the edge.
 - **f32 against f64** (K3's 0.5 %, pre-registered): at 50k and μ_f 0.3 the patch reads the same to five decimals at
-  both λ_a (0.13742 and 0.34610; `… -- 50k <0|2> 0.3 f64 20 0.2 10 1`, `RAYON_NUM_THREADS=6`).
+  both λ_a (0.13742 and 0.34610; `… -- 50k <0|2> 0.3 f64 20 0.2 10 1`, `RAYON_NUM_THREADS=4`; 6 threads printed the
+  same).
 - Every run is valid: λ_z within 0.18 % on the frictionless runs, KE/IE and the balance at most 0.05 %, no inverted
   element; the Coulomb push reads 0.985 and 0.961 at 100k, as in §16p.
 
@@ -3010,3 +3019,17 @@ centimetre is, the element size its readings need (above) and how its mesh reads
 diagnostic). Fit plan U10, Jon's account that the sharp mouth is fine in Ecoflex 00-30 and a comfort issue in
 Dragon Skin 10A, is the one report of seated comfort from use; whether the patch reading agrees with it waits on
 D1's limits and a run on the product.
+
+**How this was checked.**
+- **The criteria came first,** with 20 priors kept from the reviewers.
+- **Round 1:** three cold reviewers (the code, mutating it in a worktree of its own; this record, reproducing its
+  numbers from the committed probe; the whole plan) raised 30 findings, four of them twice. The largest:
+  - K5 had been read only from 50k to 100k; from 10k to 50k the new readings do not converge, and `base_mold`'s
+    mesh is about the 10k tube's element size (above);
+  - the tests never read a deformed window or a posed obstacle, so four mutations of which state the geometry is
+    read in passed all of them, moving the readings by 1.4–46 %;
+  - a face turned away from the obstacle counted, and a node's force could be lost;
+  - the end face's share was stated inverted, the cited review said less than claimed, and Jon's build-order call
+    was cited where it was not written.
+
+  Five priors hit, and two in part. The recorded runs, repeated after the fixes, printed the same.
