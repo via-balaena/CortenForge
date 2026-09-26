@@ -1,6 +1,6 @@
 //! Release-only runs on the 10k tube: K2's CI check (plan §15g, §16i) and the
-//! power iteration's accuracy at the count the loop uses, at rest and loaded
-//! (plan §16e). Named in tests-release's explicit list and in this crate's
+//! accuracy of the stable step the loop takes, at the power iteration's count,
+//! at rest and loaded (plan §16e, §16p). Named in tests-release's explicit list and in this crate's
 //! `coverage_skip_binaries`.
 
 #![allow(clippy::unwrap_used)]
@@ -11,7 +11,7 @@ use sim_soft_explicit::fixtures::golden::THICK_TUBE;
 use sim_soft_explicit::fixtures::tube::{
     ECOFLEX_00_30_VISCOUS_TIME, Insertion, Mandrel, Mesh, Tube, TubeRun, Walls,
 };
-use sim_soft_explicit::stepping::StepperConfig;
+use sim_soft_explicit::stepping::{Stepper, StepperConfig};
 use sim_soft_explicit::{ExplicitModel, f64::Material};
 
 const MU: f64 = 23.0e3;
@@ -46,10 +46,15 @@ fn tube_and_mandrel(material: Material) -> (ExplicitModel, Obstacle) {
     (model, obstacle)
 }
 
-/// The loop's estimate of `ω_el²` at a state, and a converged one: f64 from
-/// the same fixed start, run until another 2000 iterations move it by at most
-/// 1e-4. Returns the f32 and f64 estimates' errors.
-fn power_iteration_errors(state: &Snapshot, time: f64, label: &str) -> (f64, f64) {
+/// The loop's stable step at a state, against the critical step it
+/// estimates, converged: returns the f32 and f64 loops' steps over 0.9 of it,
+/// less 1 (plan §16e's 5 % bar, on the step the loop takes since §16p).
+///
+/// The loop estimates at `β = 2/Δt`: the elastic top mode first, then again at
+/// its step (`Stepper::new`). The reference is the fixed point of the same
+/// estimate at 6000 iterations in f64, `β` updated to `2/Δt_c` until the step
+/// moves by at most 1e-4, with 4000 iterations agreeing to 1e-4.
+fn step_errors(state: &Snapshot, time: f64, label: &str) -> (f64, f64) {
     let (model, obstacle) = tube_and_mandrel(k2_run().material());
     let place = |e: &mut dyn Executor| {
         e.set_state(time, &state.displacements, &state.velocities, None);
@@ -57,22 +62,36 @@ fn power_iteration_errors(state: &Snapshot, time: f64, label: &str) -> (f64, f64
     };
     let mut reference = cpu::f64::CpuExecutor::new(&model, &obstacle).unwrap();
     let p = place(&mut reference);
-    let converged = reference.estimate_top_mode(4000, p, 0.0).omega_squared;
-    let further = reference.estimate_top_mode(6000, p, 0.0).omega_squared;
-    let drift = further / converged - 1.0;
+    // Central differences' limit with the lagging damping force, written here
+    // rather than taken from `StepperConfig::stable_step`, which it checks.
+    let limit = |e: &mut cpu::f64::CpuExecutor, iterations: usize, weight: f64| {
+        let top = e.estimate_top_mode(iterations, p, weight);
+        let xi = top.damping_ratio;
+        2.0 / top.omega_squared.sqrt() * ((1.0 + xi * xi).sqrt() - xi)
+    };
+    let mut step = limit(&mut reference, 6000, 0.0);
+    for _ in 0..8 {
+        let next = limit(&mut reference, 6000, 2.0 / step);
+        let moved = next / step - 1.0;
+        step = next;
+        if moved.abs() <= 1e-4 {
+            break;
+        }
+    }
+    let drift = limit(&mut reference, 4000, 2.0 / step) / step - 1.0;
     assert!(
         drift.abs() <= 1e-4,
         "{label}: the reference has not converged: {drift:e}"
     );
-    let iterations = StepperConfig::new(0.0).power_iterations;
     let mut wide = cpu::f64::CpuExecutor::new(&model, &obstacle).unwrap();
-    let p = place(&mut wide);
-    let wide_error = wide.estimate_top_mode(iterations, p, 0.0).omega_squared / further - 1.0;
+    place(&mut wide);
+    let wide_error = Stepper::new(wide, StepperConfig::new(0.0), time).dt() / (0.9 * step) - 1.0;
     let mut narrow = cpu::f32::CpuExecutor::new(&model, &obstacle).unwrap();
-    let p = place(&mut narrow);
-    let narrow_error = narrow.estimate_top_mode(iterations, p, 0.0).omega_squared / further - 1.0;
+    place(&mut narrow);
+    let narrow_error =
+        Stepper::new(narrow, StepperConfig::new(0.0), time).dt() / (0.9 * step) - 1.0;
     eprintln!(
-        "MARGIN power iteration on the 10k tube, {label} ({iterations} iterations): f64 {wide_error:+e}, f32 {narrow_error:+e} (bar 0.05; reference drift {drift:e})"
+        "MARGIN the loop's step on the 10k tube, {label}, over 0.9 of the converged critical step: f64 {wide_error:+e}, f32 {narrow_error:+e} (bar 0.05; reference drift {drift:e})"
     );
     (wide_error, narrow_error)
 }
@@ -111,19 +130,19 @@ fn k2_on_the_10k_tube_is_within_seven_percent() {
     // check the one it would make here, loaded, where a warm-started estimate
     // once read 3.9 % low.
     let end = run.insertion.end();
-    let (wide, narrow) = power_iteration_errors(&r.snapshot, end, "loaded, at K2's end");
+    let (wide, narrow) = step_errors(&r.snapshot, end, "loaded, at K2's end");
     assert!(wide.abs() <= 0.05 && narrow.abs() <= 0.05);
 }
 
 #[test]
 #[cfg_attr(debug_assertions, ignore = "release-only: a converged power iteration")]
-fn the_power_iteration_is_accurate_on_the_10k_tube_at_rest() {
+fn the_loops_step_is_accurate_on_the_10k_tube_at_rest() {
     let nodes = Tube::plan(Mesh::TenK).node_count();
     let rest = Snapshot {
         displacements: vec![[0.0; 3]; nodes],
         velocities: vec![[0.0; 3]; nodes],
         ..Snapshot::default()
     };
-    let (wide, narrow) = power_iteration_errors(&rest, 0.0, "at rest");
+    let (wide, narrow) = step_errors(&rest, 0.0, "at rest");
     assert!(wide.abs() <= 0.05 && narrow.abs() <= 0.05);
 }

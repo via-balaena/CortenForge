@@ -9,8 +9,9 @@
 //
 //     σ_v = 2η dev D,   D = sym(Ḟ F⁻¹),   P_v = σ_v cof F
 //
-// It is stress from the rate of deformation, so it vanishes at rest and does
-// not move a seated reading (plan §16p).
+// It is stress from the rate of deformation, so it vanishes at rest. It does
+// not move a frictionless seated reading; a frictional one depends on the path
+// it took, which the viscosity changes (plan §16p).
 //
 // It is written in the displacement gradient `H = F − I` (plan §6): each
 // quantity that is zero at rest (`J − 1`, `I₁ − 3`, `F − F⁻ᵀ`, `ln J`) is built

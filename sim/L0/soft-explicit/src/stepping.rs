@@ -39,10 +39,11 @@ impl StepperConfig {
         }
     }
 
-    /// The stable step for the top mode `ω_el²` with viscous damping ratio
-    /// `ξ`: `Δt = safety · (2 / ω_el) (√(1 + ξ²) − ξ)`, central differences'
-    /// limit with the damping force at the lagging half-step velocity
-    /// (plan §16p). The kinematic contact law adds nothing to it (plan §16o).
+    /// The stable step for a vector with stiffness quotient `ω²` and viscous
+    /// damping ratio `ξ` (a [`crate::executor::TopMode`]):
+    /// `Δt = safety · (2 / ω) (√(1 + ξ²) − ξ)`, central differences' limit with
+    /// the damping force at the lagging half-step velocity (plan §16p). The
+    /// kinematic contact law adds nothing to it (plan §16o).
     #[must_use]
     pub fn stable_step(&self, omega_squared: f64, damping_ratio: f64) -> f64 {
         let damping = damping_ratio.hypot(1.0) - damping_ratio;
@@ -277,13 +278,15 @@ impl<E: Executor> Stepper<E> {
         self.steps
     }
 
-    /// The latest estimate of `ω_el²`.
+    /// The stiffness quotient `vᵀKv / vᵀMv` of the vector that set the latest
+    /// step: `ω_el²` for an elastic material, and for a viscous one the top
+    /// vector of `M⁻¹(K + βC)`, which may sit well below the elastic top mode.
     #[must_use]
     pub const fn omega_squared(&self) -> f64 {
         self.omega_squared
     }
 
-    /// The latest estimate of the top mode's viscous damping ratio.
+    /// The viscous damping ratio of the vector that set the latest step.
     #[must_use]
     pub const fn damping_ratio(&self) -> f64 {
         self.damping_ratio

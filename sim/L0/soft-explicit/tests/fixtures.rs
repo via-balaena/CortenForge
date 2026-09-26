@@ -295,8 +295,15 @@ fn a_runs_yeoh_term_comes_from_its_case_and_its_viscosity_from_its_time() {
     };
     assert_eq!(run(THICK_TUBE[2]).material().c2, 0.0);
     assert!((run(THICK_TUBE[5]).material().c2 - 2050.0).abs() <= 1e-9);
-    // Ecoflex 00-30's viscosity, 7 Pa·s (plan §16p), scales with μ.
+    // Ecoflex 00-30's viscosity, 7 Pa·s (plan §16p); C₂ and η both scale with
+    // μ, which stiffness scaling (15d.10) relies on.
     assert!((run(THICK_TUBE[2]).material().viscosity - 7.0).abs() <= 1e-12);
+    let stiffer = TubeRun {
+        mu: 46.0e3,
+        ..run(THICK_TUBE[5])
+    }
+    .material();
+    assert!((stiffer.c2 - 4100.0).abs() <= 1e-9 && (stiffer.viscosity - 14.0).abs() <= 1e-12);
 }
 
 #[test]

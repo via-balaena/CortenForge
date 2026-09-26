@@ -248,10 +248,11 @@ fn run_once(run: &TubeRun, wide: bool) -> TubeResult {
     .unwrap()
 }
 
-/// The Coulomb push ratio (plan 15d.7): the mandrel's axial push with
-/// friction, less the frictionless companion's, over `μ_f Σ f_n`, each
-/// averaged over the constant-speed phase (10–90 % of the loading time).
-fn coulomb_ratio(run: &TubeRun, with_friction: &TubeResult, wide: bool) -> f64 {
+/// The Coulomb push (plan 15d.7), printed as its ratio and its two reactions:
+/// the mandrel's axial push with friction, less the frictionless companion's,
+/// over `μ_f Σ f_n`, each averaged over the constant-speed phase (10–90 % of
+/// the loading time). K3 compares the reactions between precisions.
+fn coulomb_push(run: &TubeRun, with_friction: &TubeResult, wide: bool) -> String {
     let frictionless = run_once(
         &TubeRun {
             friction: 0.0,
@@ -274,7 +275,10 @@ fn coulomb_ratio(run: &TubeRun, with_friction: &TubeResult, wide: bool) -> f64 {
         )
     };
     let ((push, normal), (geometric, _)) = (phase(with_friction), phase(&frictionless));
-    (push - geometric) / (run.friction * normal)
+    format!(
+        "{:.4}(push={push:.6}N,frictionless={geometric:.6}N)",
+        (push - geometric) / (run.friction * normal)
+    )
 }
 
 fn main() {
@@ -293,7 +297,7 @@ fn main() {
     let result = run_once(&run, wide);
     let wall = started.elapsed().as_secs_f64();
     let coulomb = (run.friction > 0.0 && case.walls == Walls::Free)
-        .then(|| coulomb_ratio(&run, &result, wide));
+        .then(|| coulomb_push(&run, &result, wide));
     let flutter = result
         .samples
         .iter()
@@ -358,7 +362,7 @@ fn main() {
         result.energy_balance.map_or_else(missing, percent),
         result.inverted,
         flutter,
-        coulomb.map_or_else(missing, |c| format!("{c:.4}")),
+        coulomb.unwrap_or_else(missing),
         result.estimates,
         1e3 * (wall - estimates) / result.steps as f64,
         1e3 * estimate,

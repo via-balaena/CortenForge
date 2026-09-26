@@ -7,8 +7,8 @@
 // it back on the surface; friction holds a sticking node at its anchor, with
 // no elastic slip, and moves a slipping one back by at most μ_f times the
 // normal correction. The law adds nothing to the stable step, and it is rate
-// independent, so time scaling stays valid. A node's normal velocity into the
-// obstacle is lost on contact.
+// independent (the material's viscosity is not, plan §16p). A node's normal
+// velocity into the obstacle is lost on contact.
 //
 // It replaced the nodal-mass penalty (plan §15c's variant (a)), whose gap
 // could not meet G2, in G2's A/B (plan §16o).
