@@ -452,6 +452,15 @@ in CI); G5 already gates in CI.
   - Holding is a design option: a shell, a mount, or a hand as a soft, distributed support
     (soft-contact recon §9 decision 11).
   - A shell or a mount at the closed end confines the material there.
+- **U15 — The silicone's damping and its rate dependence** (soft-contact recon §16p, 2026-09-25).
+  - The solver now gives the material a viscosity, fitted to Ecoflex 00-30's published loss near 190 Hz.
+    Without it, the frictional tube fluttered, and its push read 15–29 % below μ_f·Σf_n at 50k and 100k;
+    with it, 1.5–4.3 % below. **No loss data was found for Dragon Skin 10A**, the product's silicone.
+  - With Ecoflex's viscosity, a linearized analysis of the 10k tube finds no flutter at μ_f 0.3, and three
+    growing modes at μ_f 0.6. U2's friction range decides whether the product's high-μ corner is there.
+  - The same published fits stiffen the material by 12–25 % and 43–68 % between 1 and 10 Hz (arithmetic
+    from each fit). The solver keeps the static modulus and adds only a viscosity, so it does not carry
+    that stiffening. How much it raises the push force at the product's own insertion speed is not known.
 
 ---
 

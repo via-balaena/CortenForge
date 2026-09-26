@@ -23,9 +23,10 @@
 //! - **the constitutive law**: `sim-soft`'s compressible Yeoh, neo-Hookean at
 //!   `C₂ = 0`, written in the displacement gradient and split into the terms
 //!   evaluated per element and the λ term averaged over nodes (selective
-//!   averaged nodal pressure, §15c);
+//!   averaged nodal pressure, §15c); and the silicone's own damping, a
+//!   deviatoric Kelvin–Voigt viscosity (§16p);
 //! - **the element**: the four-node tetrahedron's displacement gradient,
-//!   dilation, forces, energy and stable-step estimate;
+//!   dilation, elastic and viscous forces, energy and stable-step estimate;
 //! - **pressure averaging** and its rule where materials meet;
 //! - **time integration**: the central-difference update with mass damping;
 //! - **the obstacle's pose** and its interpolation between time samples;
