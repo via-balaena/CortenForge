@@ -3032,7 +3032,7 @@ visible = true
             plug_stls: vec![PathBuf::from("p.stl")],
             accessory_stls: vec![PathBuf::from("platform.stl")],
             procedure_path: PathBuf::from("procedure.md"),
-            total_mass_g: 842.0,
+            total_mass_g: 600.0,
             pour_plan: PourPlan {
                 steps: vec![PourStep {
                     layer_index: 0,
@@ -3048,7 +3048,7 @@ visible = true
         let s = format_molds_summary(&out);
         assert!(s.contains("2 mold piece(s) + 1 plug(s)"), "got: {s}");
         assert!(s.contains("1 accessory part(s)"), "got: {s}");
-        assert!(s.contains("842 g across 1 pour(s)"), "got: {s}");
+        assert!(s.contains("600 g across 1 pour(s)"), "got: {s}");
         // 1-based layer label, display name, grams, pot life.
         assert!(
             s.contains("Layer 1: Ecoflex 00-30 — 500 g (pot life ~25 min)"),

@@ -72,22 +72,22 @@ mod tests {
 
     use super::*;
 
-    /// The base_mold 17.5 / 7.5 / 5 mm stack, with masses from a run.
-    fn base_mold_layers() -> Vec<LayerPour> {
+    /// A three-layer stack with synthetic masses.
+    fn three_layers() -> Vec<LayerPour> {
         vec![
             LayerPour {
                 anchor_key: "ECOFLEX_00_30".to_string(),
-                mass_g: 369.0,
+                mass_g: 300.0,
                 slacker_fraction: Some(0.25),
             },
             LayerPour {
                 anchor_key: "DRAGON_SKIN_10A".to_string(),
-                mass_g: 260.5,
+                mass_g: 200.0,
                 slacker_fraction: None,
             },
             LayerPour {
                 anchor_key: "DRAGON_SKIN_20A".to_string(),
-                mass_g: 213.4,
+                mass_g: 100.0,
                 slacker_fraction: None,
             },
         ]
@@ -95,7 +95,7 @@ mod tests {
 
     #[test]
     fn builds_a_step_per_layer_in_order() {
-        let plan = build_pour_plan(&base_mold_layers()).unwrap();
+        let plan = build_pour_plan(&three_layers()).unwrap();
         assert_eq!(plan.steps.len(), 3);
         for (i, step) in plan.steps.iter().enumerate() {
             assert_eq!(step.layer_index, i, "steps must be in pour order");
@@ -109,10 +109,10 @@ mod tests {
 
     #[test]
     fn passes_through_mass_and_slacker() {
-        let plan = build_pour_plan(&base_mold_layers()).unwrap();
-        assert_eq!(plan.steps[0].mass_g, 369.0);
+        let plan = build_pour_plan(&three_layers()).unwrap();
+        assert_eq!(plan.steps[0].mass_g, 300.0);
         assert_eq!(plan.steps[0].slacker_fraction, Some(0.25));
-        assert_eq!(plan.steps[1].mass_g, 260.5);
+        assert_eq!(plan.steps[1].mass_g, 200.0);
         assert_eq!(plan.steps[1].slacker_fraction, None);
     }
 
