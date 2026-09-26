@@ -181,8 +181,8 @@ fn stick_row(deficits: &[(usize, f64)]) -> Option<Zone> {
 #[test]
 fn an_edge_reaches_no_further_than_the_next_node() {
     // The deficit barely rises inwards from the zone's last nodes, so the
-    // extrapolation reaches almost nine spacings out; runs' edges often do
-    // (plan §16q). It stops at the first slipping node.
+    // extrapolation reaches almost nine spacings out. It stops at the first
+    // slipping node.
     let zone = stick_row(&[(3, 0.9), (4, 0.95), (5, 1.0), (6, 0.95), (7, 0.9)]).unwrap();
     assert_eq!(
         zone,
@@ -195,8 +195,8 @@ fn an_edge_reaches_no_further_than_the_next_node() {
 
 #[test]
 fn a_sticking_node_apart_from_the_stick_zone_is_not_part_of_it() {
-    // A lone node at the contact's edge, two slipping nodes from the zone, as
-    // runs have (plan §16q). The zone is the run around the largest deficit.
+    // A lone node at the contact's edge, two slipping nodes from the zone. The
+    // zone is the run around the largest deficit.
     let zone = stick_row(&[(4, 0.3), (5, 1.0), (6, 0.3), (9, 0.2)]).unwrap();
     let alone = stick_row(&[(4, 0.3), (5, 1.0), (6, 0.3)]).unwrap();
     assert_eq!(zone, alone);

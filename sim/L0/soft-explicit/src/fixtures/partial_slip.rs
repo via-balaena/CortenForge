@@ -569,7 +569,7 @@ pub struct PartialSlipResult {
     /// Every monitor interval's reading, in order.
     pub readings: Vec<Reading>,
     /// The leg that did not reach its end within the longest leg allowed, if
-    /// one did not: the run ended with it, and K6 cannot pass.
+    /// one did not: the run ended with it. The CI check fails such a run.
     pub unfinished: Option<Leg>,
     /// `Q` when the return began.
     pub peak_tangential_force: f64,

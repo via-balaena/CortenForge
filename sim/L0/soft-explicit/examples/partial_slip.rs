@@ -10,15 +10,13 @@
 //! the block's depth, its width twice that (the finite-domain companion: 15);
 //! `viscous` the Kelvin–Voigt `η/μ` in seconds; `slowdown` divides every
 //! speed and multiplies every time of the loading (the rate ladder: 2, 4, …).
-//! With `table`, every sample is printed too; `safety=<fraction>` sets the
+//! With `table`, every reading is printed too; `safety=<fraction>` sets the
 //! step's fraction of the stability limit (0.9). Set `RAYON_NUM_THREADS` so
 //! the times are comparable.
 //!
 //! `… --example partial_slip -- compare <table> <table>` compares two runs'
-//! printed tables: each judged sample's stick zone in the second against the
-//! first's, interpolated to the same load fraction, printed as the largest
-//! difference per phase. It is the rate ladder's measure and the companions'
-//! (plan §16b).
+//! printed tables, as `compare` below says: the rate ladder's measure and the
+//! companions' (plan §16b).
 
 #![allow(missing_docs, clippy::unwrap_used, clippy::cast_precision_loss)]
 
@@ -115,8 +113,7 @@ fn report(run: &PartialSlipRun, result: &PartialSlipResult, seconds: f64, table:
     });
     let peak = result.peak_tangential_force
         / (run.friction * last(Leg::Push).map_or(f64::NAN, |r| r.normal_force));
-    // What the press leaves along x, before any push (by symmetry it would be
-    // none; the Kuhn split is not symmetric in x).
+    // What the press leaves along x, before any push.
     let left = last(Leg::Press).map_or(f64::NAN, |r| {
         r.tangential_force / (run.friction * r.normal_force)
     });

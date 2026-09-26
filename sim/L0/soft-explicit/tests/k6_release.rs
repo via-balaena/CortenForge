@@ -24,8 +24,7 @@ fn the_coarse_k6_holds_the_stick_zone_to_the_closed_forms() {
         .run(|model, obstacle| cpu::f64::CpuExecutor::new(model, obstacle).unwrap())
         .unwrap();
     let errors = result.errors(0.2, 0.8);
-    // Readings in the band's lower half: the leg's end and its hold alone
-    // put about half the readings near 0.8.
+    // Readings in the band's lower half, where the load is still moving.
     let judged = |leg: Leg| {
         result
             .readings
@@ -44,6 +43,19 @@ fn the_coarse_k6_holds_the_stick_zone_to_the_closed_forms() {
         result.energy_balance,
     );
     assert_eq!(result.unfinished, None, "a leg did not reach its end");
+    // The legs end where the plan puts them: the press at a, the push at
+    // 0.8 μ_f P.
+    let last = |leg: Leg| result.readings.iter().rfind(|r| r.leg == leg).unwrap();
+    let pressed = last(Leg::Press)
+        .rows
+        .map(|r| r.contact.unwrap().half_width());
+    let a = run.block.contact_half_width;
+    assert!(
+        pressed.iter().all(|w| (0.99 * a..=1.02 * a).contains(w)),
+        "the press ended at {pressed:?}, not a"
+    );
+    let peak = result.peak_tangential_force / (run.friction * last(Leg::Push).normal_force);
+    assert!(peak >= 0.78, "the push peaked at {peak} of μ_f P");
     assert!(judged(Leg::Push) >= 20 && judged(Leg::Return) >= 20);
     let worst = errors.worst().unwrap();
     assert!(worst <= 0.1, "the stick zone is off by {worst} of a");

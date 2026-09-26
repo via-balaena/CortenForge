@@ -1336,12 +1336,12 @@ not; 2c sets K6's viscous time, or shows its loading slow enough for it not to m
 *Amended 2026-09-25 (§16q, 2c as built): K6 runs elastic, η = 0; the stick zone is read from the friction
 deficit μ_f f_n − f_t, not the ratio below; the legs start and stop over the block's shear period, with a hold
 after each; and the press ends near a, not at it. K6's runs are §16q's. Three of the rules below were applied
-as follows, the last two decided after the data:*
-- *the rate ladder stops when c and m move by at most the budget's 0.005a for the rate, not by the unit
-  test's 0.00076a: that is the readout's resolution on sampled closed forms, not on a run (the budget's note);*
-- *companions and rungs are compared at the same load fraction while the load moves, and over each leg's hold
-  by each row's mean: in a hold the readings share a fraction, and matching them by it read 0.0055 or 0.0080
-  for the same pair, as a tie fell;*
+as follows, the first two written after the data:*
+- *the rate ladder stops when c and m move by at most the budget table's 0.005a for the rate, not by the unit
+  test's 0.00076a, which the ladder's text names;*
+- *companions and rungs are compared at the same load fraction while the load moves, and within 0.02 of each
+  leg's largest judged fraction by each row's mean error: matched by fraction there, the same pair read 0.0055
+  or 0.0080, as a tie fell;*
 - *R = 200a at the plan's speeds differs by 0.0103, so K6 is judged on it too (0.0218). Its legs travel half
   as far, so at those speeds it is also a faster loading; at half its rate it differs by 0.0089.*
 
@@ -2497,7 +2497,8 @@ over 16b's 0.01a, so K6 is judged on them too: 0.0218 at R = 200a, and 0.0122 on
 reading is 0.0218. Every input of the stop rule (§15g step 2, 16i) is now measured and passes: K2 at 100k
 (within 5 % at every corner), K3, K4 and the Yeoh case (§16p), and K6. K4 reads no inverted element in any run §16p
 and this section report, and none on the loading-time ladder's valid rungs either (5, 2.5, 1.25 and 0.625 T_s; 10k,
-λ_a 1.1 and 1.3 frictionless and λ_a 1.1 at μ_f 0.3; the tube probe, rerun in 2c). 2d applies the rule, and reports
+λ_a 1.1 and 1.3 frictionless and λ_a 1.1 at μ_f 0.3; `cargo run --release -p sim-soft-explicit --example tube --
+10k <0|2> <0|0.3> f32 20 0.2 <T/T_s> 1`, rerun in 2c at `d6ad283f`). 2d applies the rule, and reports
 the budget against D4, which revises the speed plan rather than stopping it.
 
 **Decided in the build:**
@@ -2548,8 +2549,7 @@ the budget against D4, which revises the speed plan rather than stopping it.
 <η/μ> <slowdown> table`, f64 and the plan's loading unless noted, `RAYON_NUM_THREADS=6`, M4 Pro, two runs at a time,
 at `df957bec`; the two marked † at `2590634a`, which changes only a leg that does not end. `… -- compare <table>
 <table>` gives the largest difference from the reference run: in c/a while the load moves, at the same load
-fraction; and within 0.02 of each leg's peak, where the load holds and readings share a fraction, in each row's mean
-error from the closed form):
+fraction; and within 0.02 of each leg's largest judged fraction, in each row's mean error from the closed form):
 
 | Run | K6, rows 0/1: loading; unloading | Against | While the load moves | At the peaks |
 |---|---|---|---|---|
@@ -2573,8 +2573,8 @@ prints each row's mean signed difference while the load moves; the bullets below
 - **Every f64 run is valid by the generic gates:** KE/IE at most 1.54e-4 over the push and return, the energy
   balance at most 6.9e-5, no inverted element, the deepest penetration at most 5.2e-12a. The contact nodes' kinetic
   energy, the watch for flutter, peaks at 7.7e-16 J (a/h 12).
-- **The press ends at 1.002–1.004a** (1.021a at R = 200a, 0.990a with the viscosity), 0.0135–0.0139a deep on the
-  plan's block (0.0159a on the larger one), and the push at 0.786–0.805 μ_f P. The return's hold settles just past
+- **The press ends at 1.001–1.004a** (1.021a at R = 200a, 0.990a with the viscosity), 0.0135–0.0139a deep at
+  R = 100a (0.0159a on the larger block), and the push at 0.786–0.805 μ_f P. The return's hold settles just past
   the band (at 0.8035 on the plan's run), so its judged readings are those on the approach.
 - **The rate ladder stops at the plan's rate:** half the rate moves c/a by at most 0.0033, inside the 0.005a the
   budget gives the rate (16b's note says why that bar). Matched by fraction over the holds as well, the difference
@@ -2585,8 +2585,8 @@ prints each row's mean signed difference while the load moves; the bullets below
   - R = 200a at the plan's speeds differs by up to 0.0103, and K6 reads 0.0218 on it. Its legs travel about half as
     far, so it pushes to 0.78 in 3.1T against the plan's 5.3T: a faster loading as well as a smaller strain. At half
     its rate (6.2T) it differs by up to 0.0089.
-  - At R = 200a, halving the rate itself moves c/a by 0.0049, about as much as the difference being bounded: finite
-    strain is not separated from rate there.
+  - At R = 200a, halving the rate moves c/a by 0.0049 while the load moves and 0.0083 at the peaks: finite strain is
+    not separated from rate there.
   - The 30a × 15a block, whose legs take as long as the plan's (5.6T), moves c/a by up to 0.0111, evenly while loading
     (0.0075–0.0111 in every 0.05 band of the load; each row's mean by +0.005) and by up to 0.0040 while unloading. K6
     reads 0.0122 on it. Its mass
@@ -2596,8 +2596,8 @@ prints each row's mean signed difference while the load moves; the bullets below
   unloading, are 0.0322 and 0.0406 at a/h 12, 0.0194 and 0.0185 at a/h 25, and 0.0135 and 0.0076 at a/h 50.
 - **Row 0 (y = 0) reads low throughout** (−0.009 on average while loading at a/h 50, row 1 −0.003). The Kuhn split is
   not symmetric front to back (16b); what makes row 0 lower is not isolated.
-- **The press leaves a tangential load:** Q/(μ_f P) = −0.0052 at a/h 50 and −0.0122 at a/h 12 before any push. By
-  symmetry it would be zero; the split is not symmetric in x either. The push's fraction is measured from zero, as
+- **The press leaves a tangential load:** Q/(μ_f P) = −0.0052 at a/h 50 and −0.0122 at a/h 12 before any push, where
+  symmetry would give none. The push's fraction is measured from zero, as
   16b defines it. Measured from the press's load instead (arithmetic on the tables), the loading errors read
   0.0078/0.0086 at a/h 50 (from 0.0135/0.0079) and 0.0213/0.0413 at a/h 12 (from 0.0322/0.0281): the rows trade
   places, and the verdict is the same.
@@ -2610,7 +2610,7 @@ prints each row's mean signed difference while the load moves; the bullets below
   (the seated readings, fit plan U15).
 - **f32 cannot resolve K6:** 0.56 while loading at a/h 50, with the deepest penetration 5.9e-7a against f64's
   2.6e-13a. §16b predicted it: a slipping node moves 1e-8a to 1e-7a per step, below f32's spacing at coordinates of
-  order a. At a/h 12, with a step four times longer, f32 reads 0.084, twice f64's 0.041. The tube passes K3 (§16p),
+  order a. At a/h 12, f32 reads 0.084, twice f64's 0.041. The tube passes K3 (§16p),
   which compared f32 with f64 only frictionless and in steady sliding; §15g step 5 now compares them on a frictional
   seated state.
 
@@ -2631,8 +2631,10 @@ prints each row's mean signed difference while the load moves; the bullets below
   - the undragged anchor fails while loading too, which 16b thought only unloading could catch. At a/h 50 the push
     never reaches its peak: Q rises to 0.54 μ_f P, falls back and holds near 0.47 while the cylinder moves on, until
     the leg is given up after 20T, and the energy balance reads 1.2 %. Why is not isolated.
-- **The CI check** is `tests/k6_release.rs`, in tests-release and outside coverage. It took 315–343 s here beside two
-  a/h 50 runs. `tests/partial_slip.rs` runs K6's whole path at a/h 4 in the debug and coverage set.
+- **The CI check** is `tests/k6_release.rs`, in tests-release and outside coverage. It also requires the press to end
+  within 0.99–1.02a and the push to reach 0.78 μ_f P: the one-interval stop rule fails the first (0.921a) and the
+  undragged anchor the second (0.475). It took 74 s alone at 6 threads, and 315–343 s beside two a/h 50 runs.
+  `tests/partial_slip.rs` runs K6's whole path at a/h 4 in the debug and coverage set.
 
 **#970's follow-ups:**
 1. The start's second estimate was gated on the elastic top vector's ξ > 0, not on the material; the start now always
@@ -2661,4 +2663,24 @@ prints each row's mean signed difference while the load moves; the bullets below
 - **The readout on a run** is not separated from the element: the a/h 25 companion measures the two together.
 - **Not isolated:** why row 0 reads lower than row 1; why the press leaves a tangential load; why the undragged
   anchor fails while loading.
+
+**How this was checked.**
+- **The criteria came first,** with twelve priors kept from the reviewers.
+- **Round 1:** four cold reviewers (the engine and fixture; the readouts and tests; this record, reproducing its
+  numbers; the whole plan) raised about 34 findings. Five priors hit and three in part.
+- **Round 1's largest findings:**
+  - the probe ran a block twice §16b's width, so every recorded run was redone;
+  - the press's stop fired on a one-interval rate;
+  - the readout's resolution holds on sampled closed forms, not a run;
+  - the edge reader's clamp and its run around the peak were pinned by no test;
+  - R = 200a had to be judged by 16b's rule;
+  - three of 16b's rules were applied differently from their text;
+  - the viscous companion changed the step as well;
+  - f32's friction question had no home in the plan.
+- **Every code fix has a test** that failed on its defect first.
+- **Round 2:** one fresh reviewer read only round 1's fixes and found 13 problems, 12 of them created by those fixes:
+  prose that claimed more than its referent, a column described as what it was not, a rule said to be pre-registered
+  that was written after the data, citations to this section for evidence it did not hold, and one gap in the CI
+  check (the press's end and the push's peak, now asserted). The prose was cut, not rewritten. Every number and
+  verdict it re-derived reproduced; with round 2 finding mostly what round 1's prose wrote, no third pass was run.
 
