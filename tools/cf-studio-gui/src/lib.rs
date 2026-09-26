@@ -1752,8 +1752,8 @@ pub const FIT_SETTLE: Duration = Duration::from_millis(1500);
 /// ★ This is what makes the inset range honest. Step 3's cavity stepper offers
 /// a fixed 0-30 mm whatever scan is loaded, and what a scan can take is neither
 /// a constant nor predictable from the scan: `~/scans/base_mold`, measured
-/// 2026-09-09, refuses above 11 mm at Fast and 12 at Fine, and past ~20 mm has
-/// no plug left to mesh at all. So the range stays wide — a clamp would refuse
+/// 2026-09-09, refuses the deeper insets at Fast and at Fine, and deeper still
+/// has no plug left to mesh at all. So the range stays wide — a clamp would refuse
 /// insets that do cast — and the cast's own verdict arrives at step 3 instead
 /// of being bought with a full cast at step 5.
 ///
@@ -3032,7 +3032,7 @@ visible = true
             plug_stls: vec![PathBuf::from("p.stl")],
             accessory_stls: vec![PathBuf::from("platform.stl")],
             procedure_path: PathBuf::from("procedure.md"),
-            total_mass_g: 842.0,
+            total_mass_g: 600.0,
             pour_plan: PourPlan {
                 steps: vec![PourStep {
                     layer_index: 0,
@@ -3048,7 +3048,7 @@ visible = true
         let s = format_molds_summary(&out);
         assert!(s.contains("2 mold piece(s) + 1 plug(s)"), "got: {s}");
         assert!(s.contains("1 accessory part(s)"), "got: {s}");
-        assert!(s.contains("842 g across 1 pour(s)"), "got: {s}");
+        assert!(s.contains("600 g across 1 pour(s)"), "got: {s}");
         // 1-based layer label, display name, grams, pot life.
         assert!(
             s.contains("Layer 1: Ecoflex 00-30 — 500 g (pot life ~25 min)"),

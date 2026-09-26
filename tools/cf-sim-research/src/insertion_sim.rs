@@ -4444,6 +4444,10 @@ pub fn run_sliding_insertion_ramp_tet10_ipc(
     })
 }
 
+// Build step 2d's measurement of the product's budget on the explicit solver (plan §16j).
+#[cfg(test)]
+mod explicit_budget;
+
 #[cfg(test)]
 mod tests {
     // `unwrap()` + `expect()` are denied at the crate level; the test
@@ -4939,7 +4943,7 @@ mod tests {
     /// `base_mold` it can.
     ///
     /// Values come from `base_mold.design.toml` / `.cfproject.json`, which is
-    /// a project that ran all the way to `Print` with a 334.6 g pour plan.
+    /// a project that ran all the way to `Print`.
     ///
     /// ⚠ **The project's plug carries RIDGES** (three rings, 1.8–2.0 mm deep,
     /// plus texture, side pinch and tip relief) and `SimDesign` has no notion
@@ -4949,7 +4953,8 @@ mod tests {
     ///
     /// Returns `None` when the scan is absent, so probes can skip cleanly.
     /// `CF_SIM_RESEARCH_PRODUCT_SCAN` overrides the path.
-    fn product_scene() -> Option<(IndexedMesh, Vec<Point3<f64>>, Vec<CapPlane>, SimDesign)> {
+    pub(super) fn product_scene()
+    -> Option<(IndexedMesh, Vec<Point3<f64>>, Vec<CapPlane>, SimDesign)> {
         let scan_path = std::env::var("CF_SIM_RESEARCH_PRODUCT_SCAN").map_or_else(
             |_| PathBuf::from("/Users/jonhillesheim/scans/base_mold.cleaned.stl"),
             PathBuf::from,
@@ -6200,7 +6205,7 @@ mod tests {
     /// concentration, so it is the well-conditioned synthetic stand-in
     /// for the 7.2 single-step solve test. Subdivision midpoints are
     /// not deduplicated; `decimate_for_sdf`'s vertex weld handles that.
-    fn icosphere(radius: f64, subdivisions: usize) -> IndexedMesh {
+    pub(super) fn icosphere(radius: f64, subdivisions: usize) -> IndexedMesh {
         let phi = (1.0 + 5.0_f64.sqrt()) / 2.0;
         let corners: [[f64; 3]; 12] = [
             [-1.0, phi, 0.0],

@@ -124,6 +124,11 @@ toml = { workspace = true }
 # xtask precedent).
 clap = { version = "4", features = ["derive"] }
 
+[dev-dependencies]
+# Build step 2d (`src/insertion_sim/explicit_budget.rs`): the product's budget on the explicit solver,
+# measured locally. Test-only: lowering moves to `sim-soft` in step 6.
+sim-soft-explicit = { workspace = true }
+
 [features]
 default = ["x11"]
 # Linux window backends — mirror cf-device-design's feature shape.

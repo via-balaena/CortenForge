@@ -331,7 +331,7 @@ fix for a pinch. S0 makes this call.
 | **S0** measure | Instrument `cast_base_mold_canal_05`: actual bolt centres, washer-vs-pour on *both* apex sides, `flange_room` along the whole seam, which uniform stations land infeasibly. Pin `max_pitch` + corner-curvature threshold. **Decide incremental vs direct (§6).** | Washer-vs-sprue answered numerically; `max_pitch` + threshold pinned; §6 path chosen. |
 | **S1** substrate + feasibility | Build the §3.1 clean analytic flange path; the 2D feasibility predicate (§3.3); per-layer snap (§3.8). Verify the as-found `file:line` (§2). Pure addition, zero behaviour change. | **DONE (§7.2).** Derivatives staircase-stable (normals < 8°, no false corner spike under 0.5 mm noise); feasibility (Lipschitz center test) + non-convex + corner cases unit-tested. |
 | **S2** solver | `place_fasteners` (§3.5/§3.6): subdivision-first, Poisson fallback, deterministic. | Unit tests green on ≥4 synthetic seams incl. a masked/holed one — count, even spacing, seed honouring, exclusion, determinism under perturbation. |
-| **S3** bolts (gated) | Route bolts through the solver behind `[cast].smart_placement` (default off). 2D placement. Regen `base_mold`, A/B vs current. | **DONE (§7.3).** `base_mold`: washer clears the Ø10 bore on **both** apex sides (+0.5/+0.6 mm); 14 bolts (S0 target 12–14; legacy 7–8); left/right apex symmetric. |
+| **S3** bolts (gated) | Route bolts through the solver behind `[cast].smart_placement` (default off). 2D placement. Regen `base_mold`, A/B vs current. | **DONE (§7.3).** `base_mold`: washer clears the Ø10 bore on **both** apex sides (+0.5/+0.6 mm); 14 bolts (legacy 7–8); left/right apex symmetric. |
 | **S4** dowels (gated) | Route dowels through the solver (registration-extreme seeds). | **DONE (§7.4).** `base_mold` A/B: 2 dowels at the long-axis extremes, all 3 layers share 2 dowels + 15 bolts, apex bracketed both sides every layer, no dowel↔bolt overlap (min 8.9 ≥ 8.6 mm), moment arm = the full long-axis span. |
 | **S5** promote + delete | Flip `smart_placement` default **on**; delete the legacy *placement* machinery — uniform bolt/dowel loops, the three pour paths, the `flank_bolts`/`bracket_pour_gate`/`skip_pour_gate_collision` knobs + the bolt↔dowel arc-stagger validator; fold the duplicate per-layer silhouette rebuilds (§MA-7 reuse — the byte-identical SOLVE-dedup half, S5d-(A); the re-baselining COMPOSE-share half S5d-(B) defers to S4.5); re-baseline iter-1 byte-identity tests deliberately. **Keep the uniform `Plate` flange as the default** — the flange redesign is S4.5, so S5 stays a clean "promote the proven solver, delete legacy placement" cut with its own scoped re-baseline. **Full sub-step plan + decisions in §7.5.** | `grade-all` green; byte-identity re-baseline reviewed; no legacy *placement* path remains. |
 | **S4.5** demand flange | §4: add `FlangeKind::Demand` (seal-ring + per-fastener tadpoles); flip the derive order (flange generated *after* placement, clearance-only feasibility). Lands as a sibling of `Plate` (own re-baseline) then **becomes the default for `base_mold`** — this is the print target. *Incremental path only; on the direct path this folds into S3.* **Also fold in S5d-(B)** here (unify the solve-pad and flange-pad so a single silhouette per layer serves both the solver and the flange build — the §MA-7 compose-share that can't be byte-identical standalone; it rides this re-baseline for free). | `base_mold` regen: mass/print-time ↓ vs plate; F4 clean; seal-ring continuity test passes; cf-view scallop + apex boss look right. |
@@ -343,8 +343,8 @@ fix for a pinch. S0 makes this call.
 
 **Method:** env-gated probe in `build_bolt_pattern_transforms` (dumps the silhouette,
 flange spec, bolt + pour cylinders); 3 mm regen of the production `base_mold` config
-(placement is silhouette-driven ≈ cell-independent); analysed the **outermost** layer
-(seam perimeter **394 mm**). Geometry confirmed: flange `[inner 2, width 20]` × 4 mm;
+(placement is silhouette-driven ≈ cell-independent); analysed the **outermost** layer.
+Geometry confirmed: flange `[inner 2, width 20]` × 4 mm;
 bolt r 2.75, offset 13; pour bore Ø10 at the apex, axis ≈ `(0.09, −0.14, 0.99)`,
 **piercing the seam near the apex**.
 
@@ -360,10 +360,9 @@ bolt r 2.75, offset 13; pour bore Ø10 at the apex, axis ≈ `(0.09, −0.14, 0.
    because the `−y` apex bolt (which at offset 13 mm fouled the bore) was
    dropped, not relocated. The apex pierce has **no clamp within 42 mm** → the
    real problem is an **under-clamped, asymmetric apex**, not washer fouling.
-3. **Count/pitch → `max_pitch`.** 7–8 bolts on 394 mm = **49–56 mm mean pitch** — sparse
-   for even-contact PLA-on-PLA sealing. Targets: 25 mm→16, 30 mm→14, 35 mm→12 bolts. So
-   **"just enough" is *more* than today, not fewer** — the seal wants ~30–35 mm pitch
-   (~12–14 bolts), placed well. Provisional `max_pitch = 0.030`; workshop confirms at the
+3. **Count/pitch → `max_pitch`.** The as-built mean pitch is sparse for even-contact
+   PLA-on-PLA sealing. So **"just enough" is *more* than today, not fewer** — the seal
+   wants ~30–35 mm pitch, placed well. Provisional `max_pitch = 0.030`; workshop confirms at the
    physical gate (OQ1).
 4. **Corner threshold.** The raw silhouette carries spurious **90° MC-staircase**
    vertices and the flat cap/floor edge (31–51°); the organic body itself is
@@ -375,10 +374,10 @@ bolt r 2.75, offset 13; pour bore Ø10 at the apex, axis ≈ `(0.09, −0.14, 0.
    offsetting outboard slides the bolt *along* the bore, never clear of it (the bore test
    fails at every `d`). But the design never bolts the pierce — the pour-bracket seed
    steps to each side. **A feasible washer-bolt exists within 5–8 mm arc of the pierce on
-   both sides** (outermost: −side 5.4 mm @ d=14.5, +side 7.7 mm @ d=11.5, each clearing the
-   bore by ~10 mm). So the apex **can** be clamped close on both sides → incremental holds;
+   both sides** (on the outermost layer, at a larger offset `d` on one side than the other, each
+   clearing the bore by ~10 mm). So the apex **can** be clamped close on both sides → incremental holds;
    the **pour-bracket seed (§3.4) + variable-`d` (§3.2)** is the fix (the offset differs
-   per side — 14.5 vs 11.5 mm — so variable-`d` genuinely earns its place). The production
+   per side, so variable-`d` genuinely earns its place). The production
    cast fails only because `flank_bolts=false` *drops* the colliding bolts instead of
    bracketing. **Demand flange (§4) not required for `base_mold`.**
 
@@ -388,7 +387,7 @@ rigorous re-run at the **production 0.5 mm cell**, with apex feasibility compute
 Rust** from the true `signed_distance_to` + offset geometry. (The 3 mm pass used an
 offline test that approximated the outward normal in the world x–z plane — invalid,
 because the fitted seam normal is **[0.838, 0.546, −0.001]**, ~33° off-axis.)
-- **Findings 1–3 confirmed cell-independent.** Outermost perimeter (394.1 mm), bolt count
+- **Findings 1–3 confirmed cell-independent.** The outermost perimeter, the bolt count
   (7), and bolt positions are stable 3 mm→0.5 mm; nearest bolt **42.1 mm** from the bore,
   washer overhang **0** — the **original washer-vs-sprue question: clears comfortably**,
   on the real cell.
@@ -422,7 +421,7 @@ loop) → `point_at` / `tangent_at` / `outward_normal_at` / `curvature_at`,
 **Correction folded in (refines S0-C3).** The silhouette is sampled at a *fixed*
 `SILHOUETTE_GRID_STEP_M = 0.5 mm`, **independent of `mesh_cell_size_m`** — so
 placement was *already* mesh-cell-independent (S0 corroboration: the outer-layer
-seam perimeter is bit-identical 394.141 mm at 3 mm and 0.5 mm). So S0-C3's "shifts
+seam perimeter is bit-identical at 3 mm and 0.5 mm). So S0-C3's "shifts
 with `mesh_cell_size_m`" framing was wrong; the real noise is the fixed 0.5 mm
 marching-squares **staircase**. The substrate's job is therefore (a) uniform
 arc-length stations and (b) **staircase-stable normals + curvature** — done
@@ -456,7 +455,7 @@ antipodal guard). C5 — cleaned up casts. **Noted for S2:** `signed_distance` /
 index (S1-C6).
 
 **Bookmark.** A real-body integration check (build `SeamProfile` from the
-`base_mold` outer silhouette, confirm perimeter ≈ 394 mm + feasibility behaviour)
+`base_mold` outer silhouette, confirm its perimeter + feasibility behaviour)
 is deferred to S3, where the solver is wired and `base_mold` is regenerated anyway.
 
 ---
@@ -472,13 +471,12 @@ gained `smart_bolts: Option<&[Point2]>`. Pour → `Exclusion::Channel` + a `Pour
 seed; dowels → `Disk` exclusions (`SeamPlaneBasis::project` maps the world transforms
 into the seam plane). Feasibility: footprint = washer R (5 mm), band = flange
 `[inner_offset, width]`, `d_floor = wall + washer + 1 mm` (≈ 11 mm — the computed form
-of the legacy 13 mm offset; admits S0's feasible 11.5 mm apex bolt). `max_pitch` =
+of the legacy 13 mm offset; admits S0's feasible apex bolt). `max_pitch` =
 `DEFAULT_MAX_PITCH_M` (30 mm).
 
-- **Bookmark resolved.** Outer `SeamProfile` perimeter on `base_mold` = **393.9 mm**
-  (the expected ≈ 394).
+- **Bookmark resolved.** Outer `SeamProfile` perimeter on `base_mold` matches S0's.
 - **Gate met (coarse-cell probe; placement is silhouette-driven, cell-independent):**
-  14 bolts (S0 target 12–14; legacy 7–8 with a *dropped* apex bolt), apex bracketed on
+  14 bolts (legacy 7–8 with a *dropped* apex bolt), apex bracketed on
   **both** sides clearing the Ø10 bore by **+0.5 / +0.6 mm**, left/right symmetric.
 
 **Bug the real-body A/B caught (fixed here, regression-tested).** `place_fasteners`'
@@ -534,18 +532,18 @@ slices thread through `compose_piece_shared(.., smart_dowels, smart_bolts)`.
   silhouette-driven / cell-independent).** The 3-layer cross-layer snap, never run
   end-to-end before, is now confirmed on the real body:
 
-  | layer | perimeter | dowels | bolts | apex (+/−) | min bolt↔dowel |
-  |-------|-----------|--------|-------|------------|----------------|
-  | 0     | 336.8 mm  | **2**  | **15**| +9.0/−15.1 | 10.5 mm        |
-  | 1     | 368.4 mm  | **2**  | **15**| +6.3/−9.0  | 8.9 mm         |
-  | 2     | 393.9 mm  | **2**  | **15**| +6.7/−10.4 | 9.4 mm         |
+  | layer | dowels | bolts | apex (+/−) | min bolt↔dowel |
+  |-------|--------|-------|------------|----------------|
+  | 0     | **2**  | **15**| +9.0/−15.1 | 10.5 mm        |
+  | 1     | **2**  | **15**| +6.3/−9.0  | 8.9 mm         |
+  | 2     | **2**  | **15**| +6.7/−10.4 | 9.4 mm         |
 
   All 3 layers carry **one shared dowel count (2)** and **one shared bolt count
   (15)**; the apex is bracketed on **both** sides of the pierce on every layer; the
   dowel moment arm is essentially the body's full long-axis span (maximal
   registration leverage); and every bolt washer clears every dowel
   footprint (min 8.9 mm ≥ the 8.6 mm = footprint 3.6 + washer 5.0 requirement) —
-  **no overlap in the shared set.** Outer perimeter 393.9 mm matches the §7.3
+  **no overlap in the shared set.** The outer perimeter matches the §7.3
   bookmark exactly. Bolt count rose 14 → 15 vs S3 because the 2 long-axis dowels
   free the arc space the legacy 4-dowel exclusions occupied.
 
@@ -682,8 +680,8 @@ swap + a flange-SDF swap**, NOT a control-flow rewrite.
   (§3.2). Minimal moment/material, shortest tadpole spokes. The apex is still bracketed by
   stepping ALONG the arc (the pour `Channel` exclusion + `PourPierce` seed), never by
   pushing `d` outboard — the demand flange makes pushing-out unnecessary (material follows
-  the fastener). Supersedes the plate-era variable-`d` (the S0 11.5/14.5 mm apex asymmetry
-  was a *band* artifact).
+  the fastener). Supersedes the plate-era variable-`d` (the S0 apex asymmetry was a *band*
+  artifact).
 - **(E2) Seal land hugs the cavity (gasket-None).** `land_inner_offset_m ≈ 0.5 mm`
   (a tiny start for 0.5 mm-grid MC-quantization safety, not the Plate 2 mm gasket-clearance
   offset, recon §4.1 N2), `land_width_m ≈ 6 mm`. Maximizes PLA-on-PLA seal contact.
@@ -806,15 +804,15 @@ Existing behavior, just more of it — Print 1 evaluates whether that local gap 
 2. **Dragon-Skin resize — deliberate re-baseline.** Set base_mold's Dragon Skin layer to **8 mm
    radius = Ø16 → ~Ø15.5 throat** (vs the 5 mm/Ø10 default). **Sizing math (2026-06-02, real
    numbers):** the DS layer is the worst case on every axis — ~20k cps (6.7× the 00-30 layers),
-   220 g / ~206 mL (the largest pour), 25-min pot life (the shortest). Gravity Poiseuille
-   (`Q = π·r⁴·ΔP/(8·μ·L)`, L≈35 mm throat, ΔP≈470 Pa) gives throat-only fill times: **Ø10 ≈ 21 min
-   (no margin vs the 25-min pot life — risks gelling mid-pour); Ø14 ≈ 5.4 min; Ø16 ≈ 3.2 min.**
-   `r ∝ μ^¼` ⇒ matching the proven 00-30 baseline flow (~1.1 mL/s, fills in ~1-2 min) needs
+   the largest pour, 25-min pot life (the shortest). Gravity Poiseuille
+   (`Q = π·r⁴·ΔP/(8·μ·L)`, L≈35 mm throat, ΔP≈470 Pa) gives throat-only fill times for
+   this layer: **Ø10 risks the layer gelling mid-pour; Ø14 and Ø16 do not.**
+   `r ∝ μ^¼` ⇒ matching the proven 00-30 baseline flow (~1.1 mL/s) needs
    `5·6.67^0.25 = 8 mm → Ø16` — the equal-flow choice (user, 2026-06-02). **Adopted sizing
    criterion (user, 2026-06-02): every layer's gate clears `Q ≥ 1.0 mL/s` at nominal head**
    (≈ the proven-comfortable 00-30 rate). Per-material min radius `r = [Q*·8μL/(π·ΔP)]^¼`: 00-30
    (3 Pa·s) → 4.88 mm (Ø10 default clears it, 1.10 mL/s); 00-30+Slacker (thinner) → smaller (Ø10
-   clears); Dragon Skin (20 Pa·s) → 7.85 mm → **Ø16 (1.08 mL/s, just over the floor)**. So the floor
+   clears); Dragon Skin (20 Pa·s) → 7.85 mm → **Ø16 (just over the floor)**. So the floor
    keeps the 00-30 layers at the default Ø10 and lifts only DS to Ø16 — the same split, principled.
    The mL/s floor is a design *heuristic with margin* (absolute rate depends on head + throat-length
    estimates, both uncalibrated) — not yet an in-tool auto-sizer; per-recipe radii stay hand-set via
@@ -841,7 +839,7 @@ Existing behavior, just more of it — Print 1 evaluates whether that local gap 
    add `pour_viscosity_cps` to the anchors.) Counter-pressure weighed:
    the apex bore breaks the demand seal-ring land wider at Ø16 than Ø10 (recon §4.3), but the apex
    is the pour entry + highest point + bolt-bracketed, so it's the least-bad place to widen; flow
-   safety on a 220 g thick pour wins. Regen → that layer's bore widens + a second
+   safety on the largest, thickest pour wins. Regen → that layer's bore widens + a second
    `funnel_dragon_skin_20a.stl` appears; **verify the seam-placement solver still brackets the Ø16
    bore** (placement uses the max radius across layers; the un-bracketable bound-validator fires if
    not) → reviewed diff + grade-all, on its own commit.

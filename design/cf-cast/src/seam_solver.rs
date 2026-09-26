@@ -32,7 +32,7 @@
 //! inboard washer-vs-cup-wall clearance ([`Feasibility::d_floor`]) and chosen to
 //! maximise the clearance margin — which centres the footprint in a free band but
 //! pushes it outboard next to an exclusion (reproducing the S0 per-side apex
-//! asymmetry, 14.5 vs 11.5 mm).
+//! asymmetry).
 //!
 //! ## Run twice (§3.6)
 //! Dowels first (footprint = hole+wall, seeds = axis extremes, `fill = None`),
@@ -59,8 +59,8 @@ use crate::silhouette_2d::Point2;
 ///
 /// For a hand-tightened silicone-mould flange the governing rule is even contact
 /// pressure (the silicone head ≈ 1 kPa is negligible), so this is a workmanship
-/// constant, not a pressure calculation. S0 (§7.1) measured the as-built 49–56 mm
-/// pitch as too sparse; 30 mm → ~14 bolts on the 394 mm `base_mold` seam.
+/// constant, not a pressure calculation. S0 (§7.1) measured the as-built pitch as
+/// too sparse.
 pub const DEFAULT_MAX_PITCH_M: f64 = 0.030;
 
 /// Floor for the scan resolutions (0.1 mm). Guards the `arc_step` / `d_step` the
@@ -441,8 +441,8 @@ impl Solver<'_> {
     /// behaviours the design wants: in a free band the margin peaks at the band
     /// centre `(inner+width)/2` → symmetric flange walls around the hole (the
     /// §B/§M intent); next to an exclusion it slides outboard to clear it. It
-    /// reproduces S0's measured per-side apex offsets (≈ 11 mm free, ≈ 14 mm
-    /// hugging the bore) from one rule. Ties break to the smallest `d`, so the
+    /// reproduces S0's measured per-side apex offsets (one free, one hugging the
+    /// bore) from one rule. Ties break to the smallest `d`, so the
     /// scan is deterministic.
     fn resolve(&self, s: f64) -> Option<Resolved> {
         let arc = s.rem_euclid(self.perim);

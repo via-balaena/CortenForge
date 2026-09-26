@@ -735,7 +735,7 @@ mod tests {
             plug_stls: vec![PathBuf::from("out/plug_layer_0.stl")],
             accessory_stls: vec![PathBuf::from("out/platform.stl")],
             procedure_path: PathBuf::from("out/procedure.md"),
-            total_mass_g: 842.9,
+            total_mass_g: 600.0,
             pour_plan: PourPlan::default(),
         }
     }

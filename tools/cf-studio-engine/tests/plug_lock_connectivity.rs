@@ -23,8 +23,8 @@
 //! fixed at [-4, 30]). The body only recedes where the scan TAPERS toward the
 //! cap plane, and a real limb scan does. For a cone of half-angle `a` the base
 //! lifts off at `inset > r0 * cos(a)` and then climbs `1 / sin(a)` per mm of
-//! inset — 2.37 here, against 1.78 measured on `~/scans/base_mold`, whose base
-//! flares at ~34 degrees. Same law, different cone.
+//! inset — 2.37 here, against less measured on `~/scans/base_mold`, whose base
+//! flares more steeply. Same law, different cone.
 //!
 //! Measured 2026-09-07 on this fixture, at 0.6 s per cast:
 //!

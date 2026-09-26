@@ -1215,21 +1215,21 @@ OOM premise was an untested extrapolation and is false:**
 | peak RSS | 2.46 GB | **8.32 GB** | 24 GB machine → **no OOM**, ~16 GB headroom |
 | wall | 357 s | **3776 s (≈63 min)** | the real blocker |
 | per cup-piece bake (compose+MC) | ~96 s | **~2725 s (~45 min)** | cubic in 1/cell — dominates |
-| cup grid (each) | 11.4 MB | 280 MB | 6 concurrent = 1.68 GB; small slice of the 8.3 GB |
+| cup grid (each) | | 25× the 1.5 mm grid | 6 concurrent: a small slice of the 8.3 GB |
 | exit | 0 | **0 (clean, F4-passed)** | — |
 
-The grid bakes the **full body** AABB (136.5×135.9×224.5 mm = both halves +
-20 mm flange reach; the per-side halfspace cut is in the SDF, so the grid covers
-~2× the surviving half). At 1.5 mm the mesh has ~34 k surface verts out of
-**1.43 M cells** → **~99 % of `solid.evaluate` calls hit deep-interior /
-far-exterior cells that emit no triangle.** That waste *is* the ~45 min/piece.
+The grid bakes the **full body** AABB (both halves + 20 mm flange reach; the
+per-side halfspace cut is in the SDF, so the grid covers ~2× the surviving half).
+At 1.5 mm the mesh's surface vertices number about 2 % of the grid's cells →
+**~99 % of `solid.evaluate` calls hit deep-interior / far-exterior cells that
+emit no triangle.** That waste *is* the ~45 min/piece.
 
 **Surprise second cubic cost (pure waste): `compute_pour_volumes →
 integrate_negative_sdf_volume`** bakes a dense grid **at `mesh_cell_size_m`**
 just to count negative voxels for the pour *mass* budget. At 0.5 mm it ran
 **17+ min BEFORE meshing even started** (caught via `sample` stack trace; RSS
 flat at 408 MB throughout — it's time, not memory). Mass-budget accuracy below
-~2 mm is sub-0.4 % (measured 441.24 g @ 2 mm vs 442.91 g @ 1.5 mm), and
+~2 mm is sub-0.4 % (measured: `base_mold`'s shells at 2 mm and 1.5 mm), and
 platform/funnel/gasket already cap their cells — so this is an idiomatic
 decouple.
 

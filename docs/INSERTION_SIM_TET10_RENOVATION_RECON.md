@@ -1154,8 +1154,8 @@ Listed because the confidence of §4 rests on these being open, not closed.
    ### ⭐⭐ WHAT A STEP COSTS — and it inverts too  ⚠ SOCK-ERA NUMBERS
 
    > ⚠ **Measured on `sock_over_capsule` at the pre-fix κ.** The "real scan" row
-   > below is sock's `gui-dflt` (72 935 tets); the product scan `base_mold` is
-   > 65 293. `what_a_bridge_step_costs` now points at `base_mold`, and these
+   > below is sock's `gui-dflt` (72 935 tets); the product scan `base_mold` is a
+   > different mesh. `what_a_bridge_step_costs` now points at `base_mold`, and these
    > timings have NOT been re-taken there. The MECHANISM — per-step cost tracks
    > how hard the solve is, not element order — is what to carry; the seconds
    > are not current.
@@ -1389,7 +1389,7 @@ Listed because the confidence of §4 rests on these being open, not closed.
    | scene | reached | peak ‖P‖ | max stretch | min stretch | mean Ψ | hotspot element | elements at ≥ 1 % of peak ‖P‖ | of those, off by > 10 % | median |
    |---|---|---|---|---|---|---|---|---|---|
    | `tolerance_fixture` | 16/16, 3.000 mm | 564 → 313 kPa | 1.366 → 1.474 | 0.260 → 0.319 | 16.5 → 15.2 kJ/m³ | #1118 → #3617 | 7 554 of 9 258 | 83.9 % | 28 % |
-   | `base_mold` (product) | 29/32, 4.531 mm | 912 → 245 kPa | 1.841 → 1.947 | 0.160 → 0.237 | 5.34 → 5.09 kJ/m³ | #3652 → #60516 | 59 909 of 65 293 | 64.5 % | 16 % |
+   | `base_mold` (product) | 29/32, 4.531 mm | 912 → 245 kPa | 1.841 → 1.947 | 0.160 → 0.237 | 5.34 → 5.09 kJ/m³ | — | 91.8 % | 64.5 % | 16 % |
 
    (each cell is corner → per-GP. The last three columns skip elements below
    1 % of the scene's per-GP peak stress, so rounding-level stress does not
@@ -1407,8 +1407,8 @@ Listed because the confidence of §4 rests on these being open, not closed.
    returned an EMPTY set rather than an error — **0 vertices** (measured at
    `21de1b85`, before the fix; the probe now prints the refusal). Against the
    solved mesh the same rule finds 15 481 on `tolerance_fixture` (7 401
-   Dirichlet-pinned + 8 080 vertices no element names, which never move) and
-   53 789 on `base_mold` (26 361 + 27 428). Nothing read as outer skin, so the
+   Dirichlet-pinned + 8 080 vertices no element names, which never move), and
+   the same two kinds on `base_mold`. Nothing read as outer skin, so the
    outer layer's deformed shell and the cavity-face filter both degraded
    without a word. It now takes the solved mesh's rest positions and refuses a
    mismatch (`detect_outer_skin_vertices_refuses_a_mismatched_mesh`). Through
@@ -1447,12 +1447,12 @@ Listed because the confidence of §4 rests on these being open, not closed.
    panel's 16 steps (`the_ui_pipeline_runs_the_bridge_end_to_end_on_the_product_scan`,
    re-run identical at a clean `1f23d4d6`), at the last converged step (11/16
    on the bridge, 13/16 on the penalty path) the fix changes the colour of
-   **1 622 of 5 261** drawn vertices on the bridge and **1 625** on the penalty
-   path; the largest move among the drawn vertices is 5.225 / 5.907 mm. The
+   **31 %** of the drawn vertices on the bridge and about as many on the
+   penalty path; the largest move among the drawn vertices is 5.225 / 5.907 mm. The
    drawn count includes the pinned outer skin, which does not move.
    ⚠ **Pre-existing, unchanged by the fix:** the heat map colours every node of
-   the solved mesh — 125 575 on the bridge, 5 261 of them drawn — against
-   65 293 tets, which took **4.08 s per call** (a temporary probe during #963's
+   the solved mesh on the bridge, of which about 4 % are drawn, and it
+   took **4.08 s per call** (a temporary probe during #963's
    review, reverted). `main.rs` reaches ramp state only through the UI's methods;
    its comment calling the deformed boundary "the same BCC vertex layout the
    ramp solves on" was wrong on the bridge and is corrected. Not searched:
@@ -1491,7 +1491,7 @@ Listed because the confidence of §4 rests on these being open, not closed.
    three distance columns are the as-written ones minus exactly 5 mm.
 
    The most room is asked at t = 0.6875, of a node about 14 mm inside the
-   entrance and 12 mm off the centerline. 8.3 mm of it is asked with no inset at all.
+   entrance. 8.3 mm of it is asked with no inset at all.
    The pose is RIGID: the scan turns about its tip to follow the centerline. Why
    it asks that much there has not been isolated; F4's postmortem had called
    this pose mismatch "small".

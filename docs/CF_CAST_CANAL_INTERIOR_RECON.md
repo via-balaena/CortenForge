@@ -114,7 +114,7 @@ as fractions of the budgeted length `L`:
 |---|---|---|---|
 | 1. Entry ring | 0 – 0.10 L | a tight ring that a wider section of the scan must pass | tight annular constriction, `r ≈ 0.45·r_p` |
 | 2. Clearance chamber | 0.10 – 0.18 L | lets that section clear | opens to `r ≈ 0.95·r_p` |
-| 3. Stimulation zone | 0.18 – 0.60 L | the main event | asymmetric D-section + 2–3 secondary rings + one-sided texture |
+| 3. Stimulation zone | 0.18 – 0.60 L | the design's main zone | asymmetric D-section + 2–3 secondary rings + one-sided texture |
 | 4. Collapsing taper | 0.60 – 0.92 L | gentle full contact | `r` tapers below `r_p` |
 | 5. Suction chamber | 0.92 – 1.0 L | pneumatic pull | near-closed bulb + tunable vent |
 

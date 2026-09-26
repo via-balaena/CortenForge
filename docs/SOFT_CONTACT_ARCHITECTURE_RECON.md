@@ -2,11 +2,11 @@
 
 **Status:** the plan, 2026-09-24, amended as the build goes. Build step 1 is merged (#965). Step 2 is designed in
 §16; 2a (#968) and 2b's G2 (#969) are merged, and 2b's remaining runs, with the material damping they led to, are
-§16p (#970). 2c, K6, is §16q.
+§16p (#970), and 2c, K6, is §16q (#971). 2d, the product's budget and the stop rule, is §16r.
 - **Research:** §1–§10.
 - **Code architecture and the crate layout:** §11–§14.
 - **The first experiment and its kill criteria:** §15.
-- **Build step 2's design, and what its PRs measured:** §16 (§16m–§16q).
+- **Build step 2's design, and what its PRs measured:** §16 (§16m–§16r).
 
 The code architecture, crate layout and first experiment were checked by cold review, against criteria
 written beforehand (§14e, §15i). The research sections were not. Jon's direction:
@@ -71,7 +71,7 @@ written beforehand (§14e, §15i). The research sections were not. Jon's directi
   - quasi-static equilibrium at every step;
   - guaranteed non-penetration (IPC);
   - tight tolerances;
-  - a fine quadratic mesh (65 293 Tet10);
+  - a fine quadratic mesh (Tet10);
   - a CPU direct solver.
 - **A mature library of exactly that kind** (PolyFEM, built and validated here, since deleted) took about
   **7 minutes per load step** on `base_mold`, one step measured, at first contact ✓
@@ -666,7 +666,7 @@ Everything both executors must compute identically, as pure per-element or per-n
     flattening in the shared math. The pre-smooth was tuned for the trilinear lookup. Whether tricubic
     still needs it, and its surface bias against G2 (the code's own estimate is σ²κ/2 at a 3 mm grid:
     about 0.11 mm on a 40 mm radius and 0.9 mm on 5 mm-radius features, `insertion_sim.rs:1686–1690`,
-    against G2's 0.05 mm on `base_mold`), are 2d's to measure.*
+    against G2's 0.05 mm on `base_mold`), are 2d's to measure.* *(Measured, not settled: §16r.)*
 - **Time integration:** the per-node explicit update (velocity, position, damping, mass scaling,
   kinematic boundary conditions), and the per-element stable time-step estimate.
 - **The obstacle's pose** between two time samples, by interpolation. Lowering resamples the path
@@ -949,7 +949,8 @@ contact pressure within 5 % at ν ≥ 0.49? And can it run a 100k-tet insertion 
       Δt to 0.912×, as on the other mesh.
     - That leaves **3.7–4.1 ms per step within K1**. *(Amended 2026-09-25, §16p: at 10 T_s the material's
       damping takes ×1.23–1.39 the steps at 100k; the ladder's rung is now 0.625 T_s. K1's per-step
-      budget is re-derived when step 5 sets K1's loading time.)*
+      budget is re-derived when step 5 sets K1's loading time.)* *(2d, §16r, sets it for now at the rung:
+      2 minutes over the damped 100k tube's steps there.)*
     - The rigid pipeline's whole step is about 0.74 ms at n_env 1 (§6).
 - **Damping:** mass-proportional damping α_D·M while loading (NiftySim, Johnsen et al. 2015), with
   α_D = 2·ξ·ω₀, where ξ = 0.05 and ω₀ = 2π/T_s. *(Amended 2026-09-25, §16p: plus the silicone's own
@@ -1164,7 +1165,8 @@ Each item is one PR with its own tests and a done-when.
        and 50k. Where a CPU run at 100k exists, its measured error decides instead, in every band (16i).
      - ⛔ **Stop before any GPU work** otherwise, or if K3, K4, K6 or the Yeoh case (16h) fails.
    - A reviewer's model (not kept) put the element alone at +1.2–1.65 % at 50k.
-   - *Done when:* the stop rule has been applied, with its numbers written here.
+   - *Done when:* the stop rule has been applied, with its numbers written here. *(Applied 2026-09-26, §16r:
+     proceed.)*
 3. **`sim-gpu`: the shared GPU infrastructure is extracted:** the context, chunked submission and the
    contact-list tools.
    - It stays on the workspace's wgpu (27) until a need for a newer version is named. The physics' own
@@ -1183,17 +1185,23 @@ Each item is one PR with its own tests and a done-when.
    - *Added 2026-09-26 (§16q): f32 does not resolve K6's partial slip (0.56 against 0.03), and K3 has
      compared f32 with f64 only on the frictionless band and on steady sliding. Before a verdict reads a
      frictional seated state in f32, step 5 compares f32 with f64 on the tube's frictional seated p95
-     (50k, μ_f 0.3), and step 7 repeats it on `base_mold`.*
+     (50k, μ_f 0.3), and step 7 repeats it on `base_mold`.* *(Run in 2d on the CPU, §16r: f32 passes K3's
+     0.5 % there; step 7's comparison on `base_mold` stands.)*
    - *Done when:* K1–K6 are decided and the results are in this document with their commands.
 **Steps 6–9 are an outline.** They are designed in detail after step 2's results, which set the
 product's mesh, budget and contact law. Three macro reviews found what that design must settle:
-- the per-press time against D4's target (§9 decision 12), which follows from the runs per verdict;
+- the per-press time against D4's target (§9 decision 12), which follows from the runs per verdict
+  *(2026-09-26, §16r: 0.29–0.61 of D4 at K1's rate with the wall as meshed; projected, more, fit plan U17)*;
 - the pairing's nominal corner, which D3 judges at: add it as a run, or show push force is linear in
   μ_f;
 - Tier 1's accuracy against the solver, and what D3 does if it is poor;
 - modelling each way of holding the device (§9 decision 11): a shell, a mount, or a hand as a soft,
   distributed support. A held closed end is the "no escape" row of §15h;
-- the product mesher's surface bias and element count (measured in step 2);
+- the product mesher's surface bias and element count (measured in step 2) *(2026-09-26, §16r: the canal nodes
+  sit up to 1.25 elements off the true surface, the 5th and 95th percentiles at −0.50 and +0.32; projecting them
+  costs the step; fit plan U17)*;
+- *(2026-09-26, §16r)* G2 on `base_mold`: no scan grid measured meets it, down to 0.25 mm; step 6's bake sets
+  the grid's spacing and pre-smooth against it (fit plan U18);
 - U3's outcome, and the fact that a contact-guided intruder would need rigid–soft coupling;
 - *(2026-09-25, §16p)* K5's failure: both of D1's readings failed to converge on the tube, so D1's readings or
   the lip radius are revisited before step 7 (§15a; fit plan U16);
@@ -1228,10 +1236,11 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
      - the outer-skin pin's 646 interior vertices;
      - the path's time sampling.
    - *Done when:* the bake matches `cf-sim-research`'s within 1 % of a grid cell at every grid point, and
-     each boundary option has a test.
+     each boundary option has a test. *(2026-09-26, §16r: the old bake is coarser than every grid 2d
+     measured, and none of those meets G2 on `base_mold`; fit plan U18.)*
 7. **`base_mold` on the new solver.**
    - G6 is 5 minutes per run, where a run is one simulation (fit plan D4). `base_mold` stays outside
-     the repo.
+     the repo. *(D4 is per press, §9 decision 12 and fit plan U13; §16r reports it so.)*
    - The **lip radius** (fit plan "Later"): the lipped cavity built in `cf-design`, then sharp against
      rounded on the same scan.
    - **Tier 1** (the per-slice estimate, §6) is built and checked against the solver on `base_mold`. D3's
@@ -1262,8 +1271,9 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
   - **Decided (fit plan U11):** verdicts use the virgin state, the stiffest and so the conservative one.
     The Mullins-conditioned state is reported once per design, not run for every verdict.
   - **If stiffness scaling holds** (15d.10), a verdict is **3 runs**: the pairing's low and high μ, plus
-    μ = 0 for the geometric share of push force (§2). That is about 6 minutes at K1's rate.
-  - **A D3 search** of 3–4 full verdicts would take 18–24 minutes, against D4's 15 (arithmetic). Tier 1 therefore pre-filters the search (step 7), so full verdicts run at 1–2 insets.
+    μ = 0 for the geometric share of push force (§2). That is about 6 minutes at K1's rate. *(2026-09-26, §16r:
+    on `base_mold` as meshed at h_K2, a press takes 0.29–0.61 of D4 at K1's rate.)*
+  - **A D3 search** of 3–4 full verdicts would take 18–24 minutes, against D4's 15 (arithmetic). Tier 1 therefore pre-filters the search (step 7), so full verdicts run at 1–2 insets. *(2026-09-26, §16r: on `base_mold` as meshed at h_K2, 3–4 verdicts take 4–12 minutes at K1's rate, within 15; with the canal nodes projected at a floor of 0.5 and the viscosity, 15–21 minutes (fit plan U17); arithmetic.)*
   - **If stiffness scaling fails,** each stiffness corner doubles the friction runs: 5 runs.
 - **The regime per application** (from the oracle's confinement table, §5b amended):
 
@@ -1517,9 +1527,10 @@ code is reviewed on its own. 2b–2d add fixtures, readouts and runs, and 2d add
 
 *Amended 2026-09-25 (§16o): 2b's "gap record" was the penalty's (gap = F/k). Under the kinematic law the
 penetration against the grid is at most 0.2 µm on the tube, so 2b records G2 against the grid and
-against the true surface on the ladder, and 2d measures both on the product.*
+against the true surface on the ladder, and 2d measures both on the product.* *(§16r: 2d measured the grid
+against the scan; G2 against the grid needs a run on the product, step 7.)*
 
-*2b's runs are in §16p, 2026-09-25, on the damped solver it led to. 2c's are in §16q.*
+*2b's runs are in §16p, 2026-09-25, on the damped solver it led to. 2c's are in §16q, and 2d's in §16r.*
 
 ### 16d. What the shared math gains
 
@@ -1728,6 +1739,11 @@ The gathers, contact and integration are not in that number, and the whole step 
 
 ### 16j. The product's budget (2d)
 
+*Amended 2026-09-26 (§16r, 2d as built): 2d writes ratios and verdicts here, not the product's counts, steps or
+times (Jon): an element count at a known element size gives the wall's volume, and a step count at a known step
+and speed the insertion's length. K1's per-step budget is 2 minutes over the damped 100k tube's steps at the
+ladder's rung.*
+
 *Amended 2026-09-25 (§16p): the solver now carries the material's viscosity, and 2d's inputs change with it:*
 - *the product's η: none is known for Dragon Skin 10A (fit plan U15), and the step, the loading rung and the
   frictional seated state depend on it. The tube's runs used Ecoflex 00-30's η/μ throughout;*
@@ -1762,7 +1778,8 @@ The gathers, contact and integration are not in that number, and the whole step 
     pre-smooth is still needed (14b's note) *(amended 2026-09-25, §16o)*.
 - **The per-press time is reported against D4's 5 minutes** (§9 decision 12). If it misses, the speed
   plan is revised before any GPU work, and the quality gates are not loosened (§15g).
-- Only counts, steps and times are written here. No geometry leaves the machine.
+- Only ratios and verdicts are written here *(amended 2026-09-26, §16r; it said counts, steps and times)*.
+  No geometry leaves the machine.
 
 ### 16k. How the design was checked
 
@@ -1816,7 +1833,8 @@ build will measure. So no third pass was run on the prose. The readout rule and 
   gates it *(2026-09-25, §16p: it occurred at μ_f 0.3, found through the Coulomb push's shortfall; a
   linearized analysis finds growing structural modes there, and growing modes at μ_f 0.1 too, where runs
   show none)*;
-- the power iteration's accuracy beyond the 10k tube: 2b on the 50k tube, 2d on the product's mesh;
+- the power iteration's accuracy beyond the 10k tube: 2b on the 50k tube, 2d on the product's mesh *(done,
+  §16r)*;
 - the coverage cost of the new tests: 2a, timed at two thread counts.
 
 Not scheduled: how coverage counts code `include!`d twice.
@@ -1892,7 +1910,8 @@ distinct problems, and each was checked before it was fixed.
 
 **Not recorded in 2a; 2b records both on the ladder, with `RAYON_NUM_THREADS` set:**
 - **The whole step's cost,** which §16i said 2a measures.
-- **The share of it the cold estimates take.** 2d adds that share to its per-run time. The iteration
+- **The share of it the cold estimates take.** 2d adds that share to its per-run time *(§16r: K1's
+  wall-clock carries it; the CPU's timed steps include one re-estimate per 1 000 steps, a run two)*. The iteration
   count can come down against the 5 % bar, since the loaded estimate reads −0.35 % at 100.
 
 A reviewer's scratch timing (release, f32, M4 Pro, not kept) gives 2b its starting point:
@@ -1924,7 +1943,7 @@ A reviewer's scratch timing (release, f32, M4 Pro, not kept) gives 2b its starti
 
 **The question:** G2 (no node deeper than 1 % of the inset, at any step) failed on the 10k tube in 2a
 (16m). The fit plan's rule is that the gate stands, and if the contact law cannot meet it, the law
-changes. On the tube the inset is the interference: 1 mm at λ_a 1.1 (bar 10 µm), 3 mm at λ_a 1.3
+changes. *(2026-09-26, §16r measured the scan grid's own error against the bar on `base_mold`; fit plan U18.)* On the tube the inset is the interference: 1 mm at λ_a 1.1 (bar 10 µm), 3 mm at λ_a 1.3
 (bar 30 µm). Stage 1 measured the current law, and the one fallback of §15g step 2 that needs no new
 code (a larger s at a smaller Δt). The predictions were written before any run, and are scored below.
 
@@ -2201,7 +2220,8 @@ On the adopted code (`5e6b7281`; frictionless, A/20, §15b's 0.2 s hold unless n
 - **The product (2d):** G2 there is the scan grid's own error, and the pre-smooth is sized against it
   (14b's note). The verdict's frictionless run (§15h) is the configuration in which the long-hold
   pumping appeared on the tube, and bumps in the grid's own samples (the scan's facets) are not removed
-  by the lookup. Unexamined.
+  by the lookup. Unexamined. *(2d, §16r, measured the grid's error against the scan and the pre-smooth.
+  G2 against the grid, and the pumping, need a run on the product, so they move to step 7.)*
 - **Other force phases:** the prediction uses the elastic force alone (14d's note). *(Since §16p, the
   elastic and viscous forces.)*
 - **The frame carry:** the current normal is carried from the pose at t to the pose at t + Δt; no test
@@ -2656,7 +2676,7 @@ prints each row's mean signed difference while the load moves; the bullets below
 
 **Open, for later steps:**
 - **f32 and friction.** f32 does not resolve K6's partial slip. Step 4's GPU runs f32; §15g step 5 now compares f32
-  with f64 on a frictional seated state, on the tube and then on `base_mold`.
+  with f64 on a frictional seated state, on the tube and then on `base_mold`. *(On the tube f32 passes, §16r.)*
 - **The viscosity and friction.** At K6's loading, Ecoflex's η moves one row's mean stick zone by about 0.01a at
   a/h 12, and integrated explicitly it shrinks the step as 1/h² (fit plan U15). The damping's form is still §16p's
   open item.
@@ -2684,3 +2704,177 @@ prints each row's mean signed difference while the load moves; the bullets below
   check (the press's end and the push's peak, now asserted). The prose was cut, not rewritten. Every number and
   verdict it re-derived reproduced; with round 2 finding mostly what round 1's prose wrote, no third pass was run.
 
+
+### 16r. 2d: the product's budget, and the stop rule (2026-09-26)
+
+2d holds what 16c gave it: `base_mold`'s measurements of §15g step 2, run locally (16j), and the stop rule
+applied. It also runs the K6 rung that §16b's ladder text left due (§16b's 2c note), and §15g step 5's f32
+comparison on the tube's frictional seated state, on the CPU.
+
+**What is written here** (Jon, 2026-09-26): ratios and verdicts. An element count at a known element size gives
+the wall's volume, and a step count at a known step and speed gives the insertion's length. So the element count,
+the step, the step counts and the loading time stay on the machine that ran them, in place of 16j's "counts,
+steps and times".
+
+**The stop rule: proceed to step 3.**
+- K2 is measured at 100k, so that decides (16i): within 5 % at every corner, +0.95, +1.00, +0.73 and +0.75 %
+  (§16p).
+- K3, K4 and the Yeoh case pass (§16p). K6 passes (§16q), and at a quarter of the plan's rate (below).
+- D4 is met as meshed, below. Had it missed, the speed plan would be revised before any GPU work (§15g step 2,
+  16j); the quality gates are not loosened for it (§9 decision 12).
+
+**The K6 rung.** §16b's ladder text stops the rate when a halving moves c and m by no more than the readout's
+resolution, which 2c's unit test put at 0.00076a; 2c stopped at the budget's 0.005a, a bar chosen after the data
+(§16b's 2c note). Pre-registered before the runs: K6 passes at this rung if its worst reading is within 0.03; a
+quarter against half the rate is read against both bars; no further rung unless that moves more than 0.005a and
+the rung's K6 is within 0.005 of its bar. At a quarter of the plan's rate (`cargo run --release -p
+sim-soft-explicit --example partial_slip -- 50 f64 100 10 0 4 table`, at `edf09a09`, `RAYON_NUM_THREADS=6`,
+beside the half-rate rerun):
+- **K6 passes:** 0.0109/0.0034 while loading and 0.0072/0.0047 while unloading (rows 0/1), within 0.03. KE/IE
+  3.6e-6, the balance 4.1e-6, no inverted element.
+- **Against half the rate** (`… -- compare <half> <quarter>`), c/a moves by at most 0.0022 while loading and
+  0.0027 while unloading as the load moves, and by 0.0011 and 0.0002 at the peaks: inside the budget's 0.005a,
+  not inside 0.00076a. So 16b's rate line holds from half the rate on; the ladder's own text would halve again.
+  By the pre-registration, no further rung.
+- The half-rate run, rerun at `edf09a09`, reproduces 2c's table row for row.
+
+**f32 on the tube's frictional seated state** (§15g step 5's note, run here on the CPU). Pre-registered before the
+runs: K3's 0.5 % on the seated 95th percentile. 50k, μ_f 0.3, Ecoflex 00-30's η/μ, at λ_a 1.1 and 1.3, each at
+10 T_s (K3's loading) and at the ladder's 0.625 T_s (`cargo run --release -p sim-soft-explicit --example tube --
+50k <0|2> 0.3 <f32|f64> 20 0.2 <10|0.625> 1`, `RAYON_NUM_THREADS=4`, at `edf09a09`):
+- f32 and f64 print the same p95 to five decimals in three of the four, and 0.39628 against 0.39629 in the fourth
+  (λ_a 1.3 at 10 T_s). The band pressure
+  agrees to its six printed decimals in all four, and the push with friction to 4e-5 relative. Every run is valid:
+  KE/IE at most 0.00 %, the balance at most 0.10 %, no inverted element.
+- **f32 passes** here, where it failed K6's partial slip (0.56 against 0.03, §16q, where §16b's arithmetic had
+  put a slipping node's step below f32's spacing). It passes with the damping as it stands; undamped, f32 and f64
+  had differed by 0.65 % on the Coulomb push (§16p), so a change of the damping's form or value (fit plan U15)
+  repeats it. Step 7 still repeats the comparison on `base_mold`.
+
+**The product's budget** (`RAYON_NUM_THREADS=4 cargo test --release -p cf-sim-research explicit_budget --
+--ignored --nocapture` on an idle machine, the scan local, at `3af4024c`; later commits change only the module's
+tests and comments;
+`tools/cf-sim-research/src/insertion_sim/explicit_budget.rs`):
+- **h_K2 = 2.20 mm**, set by λ_a 1.1 at ν 0.495 (+5.29 % at 10k and +1.60 % at 50k, §16p's table) by the stop
+  rule's model fitted per corner. It lies between the 10k and 50k meshes (h 2.26 and 1.31 mm).
+- **The wall** is the old path's `build_insertion_geometry`: the scan decimated to 2 500 faces, a flood-filled
+  grid at 0.75 of the lattice pre-smoothed by a cell, and isosurface stuffing, at the lattice that gives h within
+  2 % of h_K2 (0.989 h_K2). Its canal is smooth: the poured plug's ridges and texture are not in `SimDesign`.
+- **The material:** Dragon Skin 10A at 25 % Slacker resolves to Shore 00-30, which the catalog gives Ecoflex
+  00-30's μ and C₂. The catalog's λ is 4μ (ν 0.4, §5b), so the lowering sets λ from μ at ν 0.49 and at 0.495,
+  where K2 was judged. Each element keeps its catalog density; no node is held (the product's boundary options
+  are step 6's).
+- **K1's per-step budget:** 2 minutes over the damped 100k tube's steps at the ladder's rung (0.625 T_s, then §15b's
+  0.2 s hold), from its rest step and the loaded step factor 0.977: 14.4 ms a step. A run at that rung took 2.7 %
+  fewer steps (arithmetic; its smallest step was 0.998 of the rest step; `tube -- 100k 0 0 f32 20 0.2 0.625 1`),
+  so the budget errs short. §15c's 3.7–4.1 ms assumed 10 T_s.
+- **The loading:** the tube's rung speed, v/c_s 0.389, in the product's innermost material, over its insertion path
+  and §15b's 5 mm start gap, then §15b's 0.2 s hold (on the tube at the rung, 76 % of a run; arithmetic).
+- **The step's accuracy** (§16e, in §16p's form): the loop's step within 0.001 of 0.9 of the converged critical
+  step on every model checked (as meshed and projected, elastic and viscous, ν 0.49), against 0.02.
+
+A press is 3 runs (stiffness scaling, §16p). Its time over D4, at K1's per-step budget scaled by element count,
+and on the CPU: the f32 executor on 4 threads, timed over 1 000 steps from rest with the scan 1 m clear, so no node
+in contact, and one of the loop's re-estimates (a run makes one every 500 steps):
+
+| | ν 0.49, at K1 | ν 0.49, on the CPU | ν 0.495, at K1 |
+|---|---|---|---|
+| Elastic | 0.29 | 0.045 | 0.40 |
+| Ecoflex 00-30's η/μ × 0.74 | 0.39 | | 0.49 |
+| Ecoflex 00-30's η/μ | 0.43 | 0.097 | 0.53 |
+| Ecoflex 00-30's η/μ × 1.47 | 0.53 | | 0.61 |
+
+- **As meshed, a press takes 0.29–0.61 of D4 at K1's rate.** The η range is
+  the published fits' 5.2–10.3 Pa·s for Ecoflex (fit plan U15); Dragon Skin 10A's is not known.
+- The viscosity cuts the step to 0.672 of the elastic one at ν 0.49 and 0.759 at 0.495. The tube's 10k mesh, in
+  the same material at the same η/μ and about the product's h, reads 0.875 (§16p). What in the meshes makes the
+  difference is not isolated.
+- **At the 50k tube's h** (1.31 mm; D1's readings did not converge on the tube, §16p's K5), a press takes 2.3 of D4
+  elastic and 4.8 viscous at K1's rate, and 0.26 and 0.84 on the CPU (ν 0.49, Ecoflex's η/μ).
+- **What the D4 verdict rests on:** the wall as meshed (projected at a floor of 0.5, a viscous press takes 1.03 of D4
+  at K1's rate, below; U17); the GPU meeting K1 exactly (measured in step 5), with its per-step cost scaling with
+  element count, which a GPU's fixed cost a step need not; the tube's v/c_s, loaded step factor, hold and start
+  gap, where the product's own seated window is D1's (step 7); Ecoflex's η/μ; 3 runs a press (a run at the
+  pairing's nominal corner would make 4, §15g's outline); no node held; and h_K2, set by K2 alone.
+- **K1's own tube on the CPU:** the 100k run at the rung above took 65 s of wall-clock (f32, 4 threads, contact and
+  the loop's estimates included, on a machine running other jobs), against K1's 2 minutes. At 10 T_s the same
+  mesh took 124.5 s (§16p), so it depends on the loading time step 5 sets for K1. The product's CPU figures above
+  leave contact out; what contact adds on the product is not measured.
+- The CPU figures bear on whether steps 3–5, the GPU, come before the quality items 2d measured (fit plan U15,
+  U17, U18) and K5 (U16). That is Jon's call; the stop rule proceeds to step 3 either way.
+
+**The surface bias.** The canal nodes are the wall's boundary nodes within two element sizes of the true canal
+surface, the cap-stripped scan's exact distance at the inset (the mesher offsets the cap-stripped scan near the
+mouth), and more than one element from a cap plane. No boundary node away from the caps lies two to three
+element sizes off. Offsets are in element sizes, negative into the canal:
+- **As meshed:** 49 % sit inside the true surface by more than 0.01 h and 47 % outside; mean −0.04 h, 5th
+  percentile −0.50 h, 95th +0.32 h, worst 1.25 h. At h_K2, half an element is about a fifth of the inset
+  (arithmetic).
+- **Not the decimation:** meshed at the same lattice from the undecimated scan, the 5th and 95th percentiles are
+  −0.50 h and +0.32 h again, the worst 1.23 h. Between the grid, its pre-smooth and the stuffing, what sets them is
+  not isolated.
+- **Projected** onto the true surface (steps along the distance's gradient until on it), each node only as far as
+  keeps every incident element above the floor's share of its rest volume (`SdfMeshedTetMesh::with_projected_nodes`):
+
+  | Floor | Canal nodes within 0.01 h | Worst left | The step, elastic / viscous | A press over D4 at K1, elastic / viscous | On the CPU, elastic / viscous |
+  |---|---|---|---|---|---|
+  | As meshed | | 1.25 h | 1 / 1 | 0.29 / 0.43 | 0.045 / 0.097 |
+  | 0.5 | 95.0 % | 0.90 h | 0.71 / 0.42 | 0.41 / 1.03 | 0.063 / 0.23 |
+  | 0.1 | 98.7 % | 0.78 h | 0.27 / 0.050 | 1.08 / 8.6 | 0.17 / 1.95 |
+
+  So projecting at a floor of 0.5 misses D4 at K1's rate with the viscosity, and a floor of 0.1 misses it on the
+  CPU too.
+
+**G2's margin on the product.** The obstacle grid's distance at the scan's points (the vertices its faces name and
+its face centroids), which lie on the true surface; the grid is baked from the full-resolution scan and signed by
+a flood fill. Where it reads positive the grid's surface lies inside the scan, and a node the contact law holds on
+the grid's surface sits that deep in it; where it reads negative, a node stops short. G2's bar is 1 % of the inset.
+Read off the cap discs (the faces `dome_wall_only_mesh` strips; in brackets, over every point):
+
+| Grid | Pre-smooth | Points past the bar | Penetration over the bar: p95 / p99 / worst | Shortfall over the bar: p95 / worst |
+|---|---|---|---|---|
+| 1 mm | none | 7.8 % (8.2 %) | 2.0 / 5.2 / 9.5 | 1.6 / 8.7 |
+| 1 mm | 1 cell | 28.0 % (28.6 %) | 2.0 / 4.4 / 13.3 | 0.71 / 7.1 |
+| 0.5 mm | none | 4.9 % (5.5 %) | 0.97 / 2.6 / 4.9 | 0.92 / 4.9 |
+| 0.5 mm | 1 cell | 1.7 % (2.6 %) | 0.64 / 1.3 / 6.9 | 0.34 / 3.5 |
+| 0.25 mm | none | 1.8 % (1.9 %) | 0.47 / 1.3 / 2.3 | 0.42 / 2.4 |
+| 0.25 mm | 1 cell | 0.34 % (0.66 %) | 0.25 / 0.54 / 3.2 | 0.14 / 1.8 |
+
+- **No grid measured meets G2,** which is judged at the deepest node. The nearest, 0.25 mm without the pre-smooth,
+  lets a node sit 2.3 bars deep. Without the pre-smooth the worst reading halved with each halving of the spacing
+  (9.5, 4.9 and 2.3 bars at 1, 0.5 and 0.25 mm), as did the 99th percentile; by that trend, not measured, it
+  reaches the bar near 0.1 mm, about 100× the 0.5 mm grid's samples (arithmetic). What sets the remaining error is
+  not isolated.
+- **The pre-smooth trades:** at 0.5 and 0.25 mm it cuts the share past the bar by about 3× and 5× and lowers the
+  99th percentile, and raises the worst reading, which sits beside the cap's rim at every spacing. Leaving out the
+  band within h_K2 of the cap plane as well, the smoothed 0.25 mm grid read 0.01 % past the bar and a worst of 1.24
+  (an earlier run of the same grids, at `807fc703`). Step 6's bake chooses with this table.
+- The old path baked its grid from the 2 500-face decimation at 0.75 of a 4 mm lattice. A 0.25 mm grid holds 8×
+  the samples of a 0.5 mm one (arithmetic).
+
+**Moved to step 7:** G2 against the grid on the product, and whether the scan's facets pump energy into the
+frictionless run (§16o), both need a run on the product; so does the product's own seated window (D1). The one
+attempt to step the product, with the scan at the path's start, went non-finite by step 100; why is not isolated
+(a run's pre-roll is step 6's).
+
+**What the instrument's unit tests pin:** the lowering (two materials, λ from ν), h_K2 and its corner, the element
+size, the budget arithmetic, the bias statistics, the canal selection on a synthetic wall, the projection onto the
+level, the grid's layout and G2's sign; each failed once under a mutation. Not pinned: the step-accuracy
+reference, the CPU timing, the product's loading, the wall's secant and the per-model cost line. The ignored run
+itself asserts nothing.
+
+**How this was checked.**
+- **The criteria came first,** with twelve priors kept from the reviewers.
+- **Round 1:** four cold reviewers (the instrument, mutating it in a worktree of its own; this record, reproducing its
+  numbers; a hunt for the product's figures, with controls on `main`; the whole plan) raised about 50 findings.
+  Seven priors hit, and two in part.
+- **Round 1's largest findings:** the product had been lowered at the catalog's ν 0.4, not K2's (two reviewers);
+  §16e's step check on the product had been skipped; most of the instrument had no unit test, and nine mutations
+  applied together passed; the canal selection and the G2 exclusion cut in the wrong places; the CPU already
+  meets D4; and more places where the product's figures came back by arithmetic.
+- **Every code fix has a unit test** that failed on a mutation of it.
+- **Round 2:** one fresh reviewer read only round 1's fixes and found 18 problems, 16 of them created by those
+  fixes: prose that claimed more than its referent (the CPU against D4, the pre-smooth, a cross-reference), a
+  wrong comment on the timing, and two leaks the fixes narrowed but did not close. They were cut, not rewritten;
+  every number it re-derived reproduced. With round 2 finding mostly what round 1's prose wrote, no third pass was
+  run.
