@@ -67,7 +67,7 @@ fn step_errors(state: &Snapshot, time: f64, label: &str) -> (f64, f64) {
     // rather than taken from `StepperConfig::stable_step`, which it checks.
     let limit = |e: &mut cpu::f64::CpuExecutor, iterations: usize, weight: f64| {
         let top = e.estimate_top_mode(iterations, p, weight);
-        let xi = top.damping_ratio;
+        let xi = top.damping_ratio();
         2.0 / top.omega_squared.sqrt() * ((1.0 + xi * xi).sqrt() - xi)
     };
     let mut step = limit(&mut reference, 6000, 0.0);

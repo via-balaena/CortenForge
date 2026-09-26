@@ -167,9 +167,9 @@ mod tests {
         assert!((spec.texture_pitch_m - 0.007).abs() < 1e-12);
         assert!((spec.dsection_depth_m - 0.0011).abs() < 1e-12);
         assert!((spec.suction_bulge_m - 0.0025).abs() < 1e-12);
-        // 90° → frenulum_dir = [sin90, cos90, 0] = [1, 0, 0].
-        assert!((spec.frenulum_dir.x - 1.0).abs() < 1e-9);
-        assert!(spec.frenulum_dir.y.abs() < 1e-9);
+        // 90° → asymmetry_dir = [sin90, cos90, 0] = [1, 0, 0].
+        assert!((spec.asymmetry_dir.x - 1.0).abs() < 1e-9);
+        assert!(spec.asymmetry_dir.y.abs() < 1e-9);
     }
 
     #[test]

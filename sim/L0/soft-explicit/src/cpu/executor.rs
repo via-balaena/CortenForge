@@ -235,6 +235,9 @@ pub struct CpuExecutor {
     offsets: Vec<u32>,
     entries: Vec<u32>,
     shortest_edge: f64,
+    /// Whether any material has a viscosity. Without one the viscous forces
+    /// are zero, and the phases and the step's estimate skip them.
+    viscous: bool,
 
     /// The nodes on the boundary surface, the only ones that can touch the
     /// obstacle; the contact arrays are indexed by position in this list.
@@ -343,6 +346,7 @@ impl CpuExecutor {
             offsets: incidence.offsets().to_vec(),
             entries: incidence.entries().to_vec(),
             shortest_edge: shortest_edge(model),
+            viscous: model.materials().iter().any(|m| m.viscosity > 0.0),
             surface_nodes,
             surface_index,
             grid: shared::SdfGridLayout {
@@ -452,9 +456,14 @@ impl CpuExecutor {
         let rows = shared::sdf_tricubic_axis(coordinate[1], grid.size_y);
         let layers = shared::sdf_tricubic_axis(coordinate[2], grid.size_z);
         let mut values = [0.0; 64];
-        for (index, value) in values.iter_mut().enumerate() {
-            let (column, row, layer) = (columns[index % 4], rows[index / 4 % 4], layers[index / 16]);
-            *value = self.grid_values[shared::sdf_grid_index(column, row, layer, grid) as usize];
+        for (k, &layer) in layers.iter().enumerate() {
+            for (j, &row) in rows.iter().enumerate() {
+                let start = shared::sdf_grid_index(columns[0], row, layer, grid) as usize;
+                let line = &self.grid_values[start..];
+                for (i, &column) in columns.iter().enumerate() {
+                    values[(k * 4 + j) * 4 + i] = line[(column - columns[0]) as usize];
+                }
+            }
         }
         shared::sdf_tricubic(coordinate, values, grid)
     }
@@ -560,20 +569,24 @@ impl Executor for CpuExecutor {
         self.elastic()
             .element_forces(&self.displacements, &self.pressures, &mut element_forces);
         self.element_forces = element_forces;
-        let mut viscous = std::mem::take(&mut self.element_viscous_forces);
-        self.elastic()
-            .viscous_forces(&self.displacements, &self.velocities, &mut viscous);
-        self.element_viscous_forces = viscous;
+        if self.viscous {
+            let mut viscous = std::mem::take(&mut self.element_viscous_forces);
+            self.elastic()
+                .viscous_forces(&self.displacements, &self.velocities, &mut viscous);
+            self.element_viscous_forces = viscous;
+        }
     }
 
     fn gather_forces(&mut self) {
         let mut forces = std::mem::take(&mut self.elastic_forces);
         self.elastic().gather_forces(&self.element_forces, &mut forces);
         self.elastic_forces = forces;
-        let mut viscous = std::mem::take(&mut self.viscous_forces);
-        self.elastic()
-            .gather_forces(&self.element_viscous_forces, &mut viscous);
-        self.viscous_forces = viscous;
+        if self.viscous {
+            let mut viscous = std::mem::take(&mut self.viscous_forces);
+            self.elastic()
+                .gather_forces(&self.element_viscous_forces, &mut viscous);
+            self.viscous_forces = viscous;
+        }
     }
 
     fn contact(&mut self, time: f64, dt: f64, damping: f64) {
@@ -820,7 +833,11 @@ impl Executor for CpuExecutor {
                 .map(|a| self.free_part(a, shared::vec3_scale(viscous[a], -1.0)))
                 .collect()
         };
-        let weight = narrow(viscous_weight);
+        let weight = if self.viscous {
+            narrow(viscous_weight)
+        } else {
+            0.0
+        };
         let quotient = |v: &[[R; 3]], w: &[[R; 3]]| -> f64 {
             let (numerator, denominator) = (0..nodes).fold((0.0, 0.0), |(n, d), a| {
                 (
@@ -881,15 +898,13 @@ impl Executor for CpuExecutor {
             let scaled = next.iter().map(|&x| shared::vec3_scale(x, 1.0 / size)).collect();
             measured = std::mem::replace(&mut v, scaled);
         }
-        let damping_quotient = quotient(&measured, &damping(&measured));
-        let damping_ratio = if stiffness_quotient > 0.0 {
-            damping_quotient / (2.0 * stiffness_quotient.sqrt())
-        } else {
-            0.0
-        };
         TopMode {
             omega_squared: stiffness_quotient,
-            damping_ratio,
+            damping_quotient: if self.viscous {
+                quotient(&measured, &damping(&measured))
+            } else {
+                0.0
+            },
         }
     }
 }

@@ -192,7 +192,7 @@ fn generate_selected_molds(
 /// (the no-op the cast pipeline bit-preserves), so the canal-off path stays
 /// byte-identical. When enabled, every field is set explicitly from the
 /// options so the UI is the single source of truth (no reliance on the
-/// `CanalSpec::iter1` fallbacks). `orientation_deg` maps to a frenulum
+/// `CanalSpec::iter1` fallbacks). `orientation_deg` maps to the asymmetry
 /// direction in the channel's cross-section: `θ → [sin θ, cos θ, 0]`, so
 /// `0°` is the validated `[0, 1, 0]` default.
 pub(crate) fn canal_config_from_ridges(ridges: &RidgeOptions) -> CanalConfig {
@@ -213,7 +213,7 @@ pub(crate) fn canal_config_from_ridges(ridges: &RidgeOptions) -> CanalConfig {
                 })
                 .collect(),
         ),
-        frenulum_dir: Some([theta.sin(), theta.cos(), 0.0]),
+        asymmetry_dir: Some([theta.sin(), theta.cos(), 0.0]),
         texture_amplitude_m: Some(ridges.texture_depth_m),
         texture_pitch_m: Some(ridges.texture_spacing_m),
         dsection_depth_m: Some(ridges.side_pinch_depth_m),
@@ -425,7 +425,7 @@ mod tests {
         let canal = canal_config_from_ridges(&RidgeOptions::default());
         assert!(!canal.enabled, "ridges off → canal disabled");
         assert!(canal.rings.is_none(), "no ring overrides → iter1 fallback");
-        assert!(canal.frenulum_dir.is_none());
+        assert!(canal.asymmetry_dir.is_none());
         assert!(canal.texture_amplitude_m.is_none());
     }
 
@@ -462,7 +462,7 @@ mod tests {
         assert_eq!(canal.dsection_depth_m, Some(0.001));
         assert_eq!(canal.suction_bulge_m, Some(0.0025));
         // 0° orientation → the validated [0, 1, 0] default direction.
-        let dir = canal.frenulum_dir.expect("orientation mapped");
+        let dir = canal.asymmetry_dir.expect("orientation mapped");
         assert!(dir[0].abs() < 1e-12, "x ≈ 0");
         assert!((dir[1] - 1.0).abs() < 1e-12, "y ≈ 1");
         assert_eq!(dir[2], 0.0);
@@ -478,7 +478,7 @@ mod tests {
             ..RidgeOptions::default()
         };
         let dir = canal_config_from_ridges(&ridges)
-            .frenulum_dir
+            .asymmetry_dir
             .expect("orientation mapped");
         assert!((dir[0] - 1.0).abs() < 1e-12, "x ≈ 1 at 90°");
         assert!(dir[1].abs() < 1e-12, "y ≈ 0 at 90°");

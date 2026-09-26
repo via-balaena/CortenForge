@@ -158,15 +158,23 @@ pub struct PhaseOutputs {
 /// Central differences with the damping force at the lagging half-step
 /// velocity are stable while `4M − Δt²K − 2ΔtC` is positive definite, so at
 /// `β = 2/Δt` this is the vector that loses stability first. The step
-/// follows from its two quotients as `2/ω (√(1 + ξ²) − ξ)`.
+/// follows from its two quotients (`StepperConfig::stable_step`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TopMode {
     /// `vᵀKv / vᵀMv`: at `β = 0`, an estimate of `ω_el²` from below.
     pub omega_squared: f64,
-    /// `vᵀCv / (2ω vᵀMv)`, with `C v` minus the viscous forces at velocities
-    /// `v` and `ω` the square root of `omega_squared`. Zero for an elastic
-    /// material.
-    pub damping_ratio: f64,
+    /// `vᵀCv / vᵀMv`, with `C v` minus the viscous forces at velocities `v`:
+    /// twice the damping ratio times `ω`. Zero for an elastic material.
+    pub damping_quotient: f64,
+}
+
+impl TopMode {
+    /// The viscous damping ratio `ξ = damping_quotient / (2ω)`; not finite
+    /// where the stiffness quotient is not positive.
+    #[must_use]
+    pub fn damping_ratio(&self) -> f64 {
+        self.damping_quotient / (2.0 * self.omega_squared.sqrt())
+    }
 }
 
 /// An explicit executor: the solver's state, and one method per phase.

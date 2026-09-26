@@ -1,0 +1,246 @@
+//! One run of K6, the cylinder pressed into the block and pushed sideways
+//! (plan §16b), printed as one line: K6's errors per row and phase, the
+//! validity gates, and the run's cost.
+//!
+//! `cargo run --release -p sim-soft-explicit --example partial_slip --
+//! <a/h> <f32|f64> <R/a> <block/a> <viscous> <slowdown> [table]`
+//! (defaults: 50 f64 100 10 0 1, which is `PartialSlipRun::plan`). `a/h` is
+//! the fine region's elements per contact half-width (plan: 50; CI: 12);
+//! `R/a` the cylinder's radius (the finite-strain companion: 200); `block/a`
+//! the block's depth, its width twice that (the finite-domain companion: 15);
+//! `viscous` the Kelvin–Voigt `η/μ` in seconds; `slowdown` divides every
+//! speed and multiplies every time of the loading (the rate ladder: 2, 4, …).
+//! With `table`, every reading is printed too; `safety=<fraction>` sets the
+//! step's fraction of the stability limit (0.9). Set `RAYON_NUM_THREADS` so
+//! the times are comparable.
+//!
+//! `… --example partial_slip -- compare <table> <table>` compares two runs'
+//! printed tables, as `compare` below says: the rate ladder's measure and the
+//! companions' (plan §16b).
+
+#![allow(missing_docs, clippy::unwrap_used, clippy::cast_precision_loss)]
+
+use std::time::Instant;
+
+use sim_soft_explicit::cpu;
+use sim_soft_explicit::fixtures::partial_slip::{
+    Leg, PartialSlipResult, PartialSlipRun, stick_while_loading, stick_while_unloading,
+};
+
+fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|a| a == "compare") {
+        compare(&args[1], &args[2]);
+        return;
+    }
+    let arg = |i: usize, default: &str| args.get(i).cloned().unwrap_or_else(|| default.to_owned());
+    let divisions: f64 = arg(0, "50").parse().unwrap();
+    let wide = arg(1, "f64") == "f64";
+    let radius: f64 = arg(2, "100").parse().unwrap();
+    let size: f64 = arg(3, "10").parse().unwrap();
+    let viscous: f64 = arg(4, "0").parse().unwrap();
+    let slowdown: f64 = arg(5, "1").parse().unwrap();
+    let table = arg(6, "") == "table";
+    // `safety=<fraction>` anywhere: the step's fraction of the stability limit.
+    let safety = args
+        .iter()
+        .find_map(|a| a.strip_prefix("safety="))
+        .map(|v| v.parse::<f64>().unwrap());
+
+    let mut run = PartialSlipRun::plan(divisions).slowed(slowdown);
+    let a = run.block.contact_half_width;
+    run.cylinder.radius = radius * a;
+    run.block.half_width = size * a;
+    run.block.depth = size * a;
+    run.viscous_time = viscous;
+    if let Some(safety) = safety {
+        run.safety = safety;
+    }
+    let started = Instant::now();
+    let result = if wide {
+        run.run(|m, o| cpu::f64::CpuExecutor::new(m, o).unwrap())
+    } else {
+        run.run(|m, o| cpu::f32::CpuExecutor::new(m, o).unwrap())
+    };
+    let seconds = started.elapsed().as_secs_f64();
+    match result {
+        Ok(result) => report(&run, &result, seconds, table),
+        Err(error) => println!("a/h={divisions} failed after {seconds:.1} s: {error}"),
+    }
+}
+
+fn report(run: &PartialSlipRun, result: &PartialSlipResult, seconds: f64, table: bool) {
+    let a = run.block.contact_half_width;
+    if table {
+        for reading in &result.readings {
+            let fraction = result.fraction(reading).unwrap_or(f64::NAN);
+            let rows = reading.rows.map(|r| {
+                (
+                    r.contact.map_or(f64::NAN, |z| z.half_width() / a),
+                    r.stick_over_contact().unwrap_or(f64::NAN),
+                )
+            });
+            println!(
+                "{:?} t={:.5} P={:.5e} Q={:.5e} fraction={fraction:.4} a/A=({:.4},{:.4}) c/a=({:.4},{:.4})",
+                reading.leg,
+                reading.time,
+                reading.normal_force,
+                reading.tangential_force,
+                rows[0].0,
+                rows[1].0,
+                rows[0].1,
+                rows[1].1,
+            );
+        }
+    }
+    let errors = result.errors(0.2, 0.8);
+    let show = |e: [Option<f64>; 2]| {
+        e.map(|v| v.map_or_else(|| "none".to_owned(), |v| format!("{v:.4}")))
+            .join("/")
+    };
+    let optional = |v: Option<f64>| v.map_or_else(|| "none".to_owned(), |v| format!("{v:.2e}"));
+    let contact_ke = result
+        .samples
+        .iter()
+        .map(|s| s.monitors.contact_kinetic_energy)
+        .fold(0.0, f64::max);
+    let last = |leg: Leg| result.readings.iter().rfind(|r| r.leg == leg);
+    let pressed = last(Leg::Press).map_or(f64::NAN, |s| {
+        let [f, b] = s
+            .rows
+            .map(|r| r.contact.map_or(f64::NAN, |z| z.half_width()));
+        0.5 * (f + b) / a
+    });
+    let peak = result.peak_tangential_force
+        / (run.friction * last(Leg::Push).map_or(f64::NAN, |r| r.normal_force));
+    // What the press leaves along x, before any push.
+    let left = last(Leg::Press).map_or(f64::NAN, |r| {
+        r.tangential_force / (run.friction * r.normal_force)
+    });
+    println!(
+        "a/h={} block={}a R={}a eta/mu={} safety={} K6 loading={} unloading={} worst={} unfinished={:?} | pressed a={pressed:.4}a \
+         press depth={:.4}a pressed Q/(f P)={left:.4} peak Q/(f P)={peak:.4} KE/IE={} balance={} inverted={} penetration={:.2e}a \
+         contact_KE={contact_ke:.2e} | steps={} dt={:.3e} readings={} time={seconds:.1}s",
+        a / run.block.fine,
+        run.block.depth / a,
+        run.cylinder.radius / a,
+        run.viscous_time,
+        run.safety,
+        show(errors.loading),
+        show(errors.unloading),
+        errors
+            .worst()
+            .map_or_else(|| "none".to_owned(), |w| format!("{w:.4}")),
+        result.unfinished,
+        result.press_depth / a,
+        optional(result.kinetic_over_internal),
+        optional(result.energy_balance),
+        result.inverted,
+        result.max_penetration / a,
+        result.steps,
+        result.dt,
+        result.readings.len(),
+    );
+}
+
+/// One judged reading from a printed table: its leg, load fraction, and the
+/// rows' stick half-width over the contact's.
+fn parse(line: &str) -> Option<(Leg, f64, [f64; 2])> {
+    let leg = match line.split_whitespace().next()? {
+        "Push" => Leg::Push,
+        "Return" => Leg::Return,
+        _ => return None,
+    };
+    let field = |name: &str| line.split(name).nth(1)?.split_whitespace().next();
+    let fraction: f64 = field("fraction=")?.parse().ok()?;
+    let rows = field("c/a=(")?.trim_end_matches(')');
+    let (front, back) = rows.split_once(',')?;
+    Some((leg, fraction, [front.parse().ok()?, back.parse().ok()?]))
+}
+
+/// How far apart two runs' stick zones are, from their printed tables: the
+/// second's against the first's, per phase (plan §16b's rate ladder and
+/// companions).
+///
+/// While the load moves, each of the second's readings is compared with the
+/// first's at the same load fraction, interpolated linearly. Within 0.02 of a
+/// leg's peak the load holds while the stick zone settles, so readings there
+/// share a fraction and matching by it is ill-defined; and two runs' holds sit
+/// at slightly different loads. Those are compared as each row's mean error
+/// from the closed form. It also prints each row's mean signed difference
+/// while the load moves: a shift, where the largest may be one reading.
+fn compare(first: &str, second: &str) {
+    let read = |path: &str| -> Vec<(Leg, f64, [f64; 2])> {
+        let text = std::fs::read_to_string(path).unwrap();
+        text.lines()
+            .filter_map(parse)
+            .filter(|r| (0.2..=0.8).contains(&r.1))
+            .collect()
+    };
+    let (theirs, ours) = (read(first), read(second));
+    let mut moving = [0.0_f64; 2];
+    let mut holding = [0.0_f64; 2];
+    let mut shift = [[0.0_f64; 2]; 2];
+    for (slot, leg) in [Leg::Push, Leg::Return].into_iter().enumerate() {
+        let of_leg = |rows: &[(Leg, f64, [f64; 2])]| -> (Vec<(f64, [f64; 2])>, Vec<[f64; 2]>) {
+            let leg_rows: Vec<(f64, [f64; 2])> = rows
+                .iter()
+                .filter(|r| r.0 == leg)
+                .map(|r| (r.1, r.2))
+                .collect();
+            let peak = leg_rows.iter().fold(0.0_f64, |m, r| m.max(r.0));
+            let (mut early, late): (Vec<_>, Vec<_>) =
+                leg_rows.into_iter().partition(|r| r.0 <= peak - 0.02);
+            early.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let closed = |f: f64| match leg {
+                Leg::Return => stick_while_unloading(f),
+                _ => stick_while_loading(f),
+            };
+            let errors = late
+                .into_iter()
+                .map(|(f, c)| [c[0] - closed(f), c[1] - closed(f)])
+                .collect();
+            (early, errors)
+        };
+        let ((other, other_hold), (mine, mine_hold)) = (of_leg(&theirs), of_leg(&ours));
+        let mut matched = 0.0;
+        for &(f, c) in &mine {
+            let Some(i) = other.iter().position(|o| o.0 >= f).filter(|&i| i > 0) else {
+                continue;
+            };
+            let ((f0, c0), (f1, c1)) = (other[i - 1], other[i]);
+            let t = if f1 > f0 { (f - f0) / (f1 - f0) } else { 0.0 };
+            for row in 0..2 {
+                let difference = c[row] - (c0[row] + t * (c1[row] - c0[row]));
+                moving[slot] = moving[slot].max(difference.abs());
+                shift[slot][row] += difference;
+            }
+            matched += 1.0;
+        }
+        if matched > 0.0 {
+            shift[slot] = shift[slot].map(|s| s / matched);
+        }
+        let mean = |rows: &[[f64; 2]], row: usize| {
+            rows.iter().map(|r| r[row]).sum::<f64>() / rows.len() as f64
+        };
+        if !other_hold.is_empty() && !mine_hold.is_empty() {
+            for row in 0..2 {
+                let difference = (mean(&mine_hold, row) - mean(&other_hold, row)).abs();
+                holding[slot] = holding[slot].max(difference);
+            }
+        }
+    }
+    println!(
+        "{second} against {first}: largest difference in c/a while the load moves, loading {:.4}, \
+         unloading {:.4}; in the error over the peaks' holds, loading {:.4}, unloading {:.4}; mean \
+         shift while the load moves, rows 0/1, loading {:+.4}/{:+.4}, unloading {:+.4}/{:+.4}",
+        moving[0],
+        moving[1],
+        holding[0],
+        holding[1],
+        shift[0][0],
+        shift[0][1],
+        shift[1][0],
+        shift[1][1]
+    );
+}

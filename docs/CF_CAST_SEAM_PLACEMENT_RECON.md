@@ -332,7 +332,7 @@ fix for a pinch. S0 makes this call.
 | **S1** substrate + feasibility | Build the §3.1 clean analytic flange path; the 2D feasibility predicate (§3.3); per-layer snap (§3.8). Verify the as-found `file:line` (§2). Pure addition, zero behaviour change. | **DONE (§7.2).** Derivatives staircase-stable (normals < 8°, no false corner spike under 0.5 mm noise); feasibility (Lipschitz center test) + non-convex + corner cases unit-tested. |
 | **S2** solver | `place_fasteners` (§3.5/§3.6): subdivision-first, Poisson fallback, deterministic. | Unit tests green on ≥4 synthetic seams incl. a masked/holed one — count, even spacing, seed honouring, exclusion, determinism under perturbation. |
 | **S3** bolts (gated) | Route bolts through the solver behind `[cast].smart_placement` (default off). 2D placement. Regen `base_mold`, A/B vs current. | **DONE (§7.3).** `base_mold`: washer clears the Ø10 bore on **both** apex sides (+0.5/+0.6 mm); 14 bolts (S0 target 12–14; legacy 7–8); left/right apex symmetric. |
-| **S4** dowels (gated) | Route dowels through the solver (registration-extreme seeds). | **DONE (§7.4).** `base_mold` A/B: 2 dowels at the long-axis extremes, all 3 layers share 2 dowels + 15 bolts, apex bracketed both sides every layer, no dowel↔bolt overlap (min 8.9 ≥ 8.6 mm), moment arm 152–177 mm (full long-axis span). |
+| **S4** dowels (gated) | Route dowels through the solver (registration-extreme seeds). | **DONE (§7.4).** `base_mold` A/B: 2 dowels at the long-axis extremes, all 3 layers share 2 dowels + 15 bolts, apex bracketed both sides every layer, no dowel↔bolt overlap (min 8.9 ≥ 8.6 mm), moment arm = the full long-axis span. |
 | **S5** promote + delete | Flip `smart_placement` default **on**; delete the legacy *placement* machinery — uniform bolt/dowel loops, the three pour paths, the `flank_bolts`/`bracket_pour_gate`/`skip_pour_gate_collision` knobs + the bolt↔dowel arc-stagger validator; fold the duplicate per-layer silhouette rebuilds (§MA-7 reuse — the byte-identical SOLVE-dedup half, S5d-(A); the re-baselining COMPOSE-share half S5d-(B) defers to S4.5); re-baseline iter-1 byte-identity tests deliberately. **Keep the uniform `Plate` flange as the default** — the flange redesign is S4.5, so S5 stays a clean "promote the proven solver, delete legacy placement" cut with its own scoped re-baseline. **Full sub-step plan + decisions in §7.5.** | `grade-all` green; byte-identity re-baseline reviewed; no legacy *placement* path remains. |
 | **S4.5** demand flange | §4: add `FlangeKind::Demand` (seal-ring + per-fastener tadpoles); flip the derive order (flange generated *after* placement, clearance-only feasibility). Lands as a sibling of `Plate` (own re-baseline) then **becomes the default for `base_mold`** — this is the print target. *Incremental path only; on the direct path this folds into S3.* **Also fold in S5d-(B)** here (unify the solve-pad and flange-pad so a single silhouette per layer serves both the solver and the flange build — the §MA-7 compose-share that can't be byte-identical standalone; it rides this re-baseline for free). | `base_mold` regen: mass/print-time ↓ vs plate; F4 clean; seal-ring continuity test passes; cf-view scallop + apex boss look right. |
 | **gate** physical (print 1) | **PLAN (2026-06-01, user): print 1 happens only after the software is "basically perfect" — i.e. AFTER S5 *and* S4.5 — not on an intermediate uniform-plate build.** Workshop print + cast the finished `base_mold` (smart placement + demand flange): apex clamp holds? shared bolts/dowels seat? scalloped land seals between bolts? | Empirical — the single gate validates placement **and** seal-geometry together. Tradeoff: a failure needs disambiguating (placement vs seal); accepted because the §7.4 A/B already de-risks placement and the user prefers one print of the best software. Failure → iter-N; success closes the arc. |
@@ -346,7 +346,7 @@ flange spec, bolt + pour cylinders); 3 mm regen of the production `base_mold` co
 (placement is silhouette-driven ≈ cell-independent); analysed the **outermost** layer
 (seam perimeter **394 mm**). Geometry confirmed: flange `[inner 2, width 20]` × 4 mm;
 bolt r 2.75, offset 13; pour bore Ø10 at the apex, axis ≈ `(0.09, −0.14, 0.99)`,
-spanning z ≈ 70→159, **piercing the seam at z ≈ 87 mm, y ≈ −9 mm**.
+**piercing the seam near the apex**.
 
 1. **Washer-vs-sprue (the original question) — RESOLVED, no defect.** Every surviving
    bolt clears the bore hugely: nearest is the `+y` apex bolt at **42 mm** from the bore
@@ -356,9 +356,9 @@ spanning z ≈ 70→159, **piercing the seam at z ≈ 87 mm, y ≈ −9 mm**.
    clearance; my earlier worst-case chat estimate was pessimistic.
 2. **The apex asymmetry — CONFIRMED + explained.** Outer & middle layers carry **7**
    bolts (one collision-skipped), inner carries **8**. On the outermost the `+y` side's
-   topmost bolt reaches **z = 66.8**, the `−y` side only **z = 44.6** — a 22 mm apex
-   asymmetry because the `−y` apex bolt (which at offset 13 mm fouled the bore) was
-   dropped, not relocated. The apex pierce (z ≈ 87) has **no clamp within 42 mm** → the
+   topmost bolt sits **22 mm higher** than the `−y` side's, an apex asymmetry
+   because the `−y` apex bolt (which at offset 13 mm fouled the bore) was
+   dropped, not relocated. The apex pierce has **no clamp within 42 mm** → the
    real problem is an **under-clamped, asymmetric apex**, not washer fouling.
 3. **Count/pitch → `max_pitch`.** 7–8 bolts on 394 mm = **49–56 mm mean pitch** — sparse
    for even-contact PLA-on-PLA sealing. Targets: 25 mm→16, 30 mm→14, 35 mm→12 bolts. So
@@ -366,8 +366,8 @@ spanning z ≈ 70→159, **piercing the seam at z ≈ 87 mm, y ≈ −9 mm**.
    (~12–14 bolts), placed well. Provisional `max_pitch = 0.030`; workshop confirms at the
    physical gate (OQ1).
 4. **Corner threshold.** The raw silhouette carries spurious **90° MC-staircase**
-   vertices and the flat cap/floor edge (z ≈ −60, 31–51°); the organic body itself is
-   **smooth (mean 1.25°/vtx)**. → corner detection **must** run on the smoothed substrate
+   vertices and the flat cap/floor edge (31–51°); the organic body itself is
+   **smooth**. → corner detection **must** run on the smoothed substrate
    (validates §3.1); `base_mold` has essentially **no genuine organic corners** — the
    pour bracket + even-fill dominate, cap-edge seeding is optional.
 5. **§6 decision → INCREMENTAL (corrected — see VERIFICATION).** The apex *pierce station
@@ -534,16 +534,16 @@ slices thread through `compose_piece_shared(.., smart_dowels, smart_bolts)`.
   silhouette-driven / cell-independent).** The 3-layer cross-layer snap, never run
   end-to-end before, is now confirmed on the real body:
 
-  | layer | perimeter | dowels | moment arm | bolts | apex (+/−) | min bolt↔dowel |
-  |-------|-----------|--------|------------|-------|------------|----------------|
-  | 0     | 336.8 mm  | **2**  | 152.2 mm   | **15**| +9.0/−15.1 | 10.5 mm        |
-  | 1     | 368.4 mm  | **2**  | 170.5 mm   | **15**| +6.3/−9.0  | 8.9 mm         |
-  | 2     | 393.9 mm  | **2**  | 177.3 mm   | **15**| +6.7/−10.4 | 9.4 mm         |
+  | layer | perimeter | dowels | bolts | apex (+/−) | min bolt↔dowel |
+  |-------|-----------|--------|-------|------------|----------------|
+  | 0     | 336.8 mm  | **2**  | **15**| +9.0/−15.1 | 10.5 mm        |
+  | 1     | 368.4 mm  | **2**  | **15**| +6.3/−9.0  | 8.9 mm         |
+  | 2     | 393.9 mm  | **2**  | **15**| +6.7/−10.4 | 9.4 mm         |
 
   All 3 layers carry **one shared dowel count (2)** and **one shared bolt count
   (15)**; the apex is bracketed on **both** sides of the pierce on every layer; the
-  dowel moment arm (152–177 mm) is essentially the body's full long-axis span
-  (maximal registration leverage); and every bolt washer clears every dowel
+  dowel moment arm is essentially the body's full long-axis span (maximal
+  registration leverage); and every bolt washer clears every dowel
   footprint (min 8.9 mm ≥ the 8.6 mm = footprint 3.6 + washer 5.0 requirement) —
   **no overlap in the shared set.** Outer perimeter 393.9 mm matches the §7.3
   bookmark exactly. Bolt count rose 14 → 15 vs S3 because the 2 long-axis dowels
@@ -551,7 +551,7 @@ slices thread through `compose_piece_shared(.., smart_dowels, smart_bolts)`.
 
 **Deferred / noted.** (a) Same per-layer silhouette-rebuild duplication as S3 — the
 dowel planner now adds a second set; fold into S5's silhouette reuse. (b) The
-moment-arm gate is qualitative (no hard target in the recon); the 152–177 mm
+moment-arm gate is qualitative (no hard target in the recon); the
 result is the geometric maximum, so it passes trivially — pin a number only if the
 physical gate shows dowels too close to the apex. (c) `DowelHoleSpec.count` is now
 superseded by the solver's 2 (the legacy `(k+0.5)/count` loop only runs when

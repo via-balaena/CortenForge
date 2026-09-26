@@ -3562,13 +3562,13 @@ pub(crate) fn polyline_arc_length_m(polyline: &[Point3<f64>]) -> f64 {
 /// the body snaps through the whole turn the instant the walk crosses a
 /// vertex, and a point far from the tip moves a long way for it.
 ///
-/// Measured on `base_mold` (28 points, 2.40° worst turn, 121 mm long): with
+/// Measured on `base_mold`: with
 /// segment tangents the per-step normal closing **saturated at ~4.1 mm no
 /// matter how fine the schedule** — 4.18 mm at 256 steps, 4.13 mm at 512 —
 /// because the snap is set by vertex spacing, not by step size. Ratios of
-/// closing-to-arc-step reached **17.5**, which is not a thing a rigid
-/// translation can do. With a continuous tangent the same measurement scales
-/// with step size as it must.
+/// closing-to-arc-step reached **an order of magnitude above 1**, which is not
+/// a thing a rigid translation can do. With a continuous tangent the same
+/// measurement scales with step size as it must.
 ///
 /// Vertex tangents are the normalised sum of the two incident segment
 /// tangents (the ends take their single neighbour), and within a segment the
@@ -3653,7 +3653,7 @@ fn smoothed_tangent_along_polyline(
 /// ⭐ **Rotation included (the banked D-Slide2 iter-2 followup).** The pose
 /// carries the rotation that takes the REST tangent (at arc distance 0) to
 /// the tangent where the tip currently sits, applied about the tip. On a
-/// curving path — which an anatomical scan always is — a translation-only
+/// curving path — which a real scan always is — a translation-only
 /// pose slides the insertable *along* the curve without ever turning to face
 /// it, so the contact it computes is not the contact the geometry implies.
 /// The tangent was already being computed here and discarded.
@@ -4161,7 +4161,7 @@ fn intruder_ipc_contact_sliding_at(
 /// increment, a ratio of **0.963**. That fixture's intruder is a sphere
 /// entering a hole, so its surface is near-perpendicular to the motion and
 /// almost the whole step closes. The product scan, an elongated insertable,
-/// runs 0.91–1.16× (`what_the_sliding_contact_reaches_on_the_product_scan`).
+/// closes most of each step too (`what_the_sliding_contact_reaches_on_the_product_scan`).
 ///
 /// ⇒ the consequence is a SCHEDULE requirement: [`bridge_face_barrier_kappa`]
 /// refuses unless `closing < d̂`. The derivation refuses rather than guesses
@@ -4226,7 +4226,7 @@ fn sliding_normal_increment_m(
 /// **THE SLIDING BRIDGE** — seat the intruder along its own centerline on a
 /// Tet10 mesh through the IPC face barrier, at a caller-chosen tolerance.
 ///
-/// The travelling model, which is the one an anatomical fit actually is: the
+/// The travelling model, which is the one a real fit actually is: the
 /// insertable starts clear of the cavity and is carried in along the
 /// centerline, turning to follow it ([`slide_pose_at`]), while the wall flexes
 /// around it. [`run_insertion_ramp_tet10_ipc`] is the other model — a
@@ -4627,7 +4627,7 @@ mod tests {
 
     /// The pose TURNS to follow a curved path, and still lands the tip on it.
     ///
-    /// ⭐ The property that matters for an anatomical scan: a translation-only
+    /// ⭐ The property that matters for a real scan: a translation-only
     /// pose slides the insertable *along* the curve without turning to face
     /// it, so the contact it computes is not the contact the geometry implies.
     ///
@@ -4697,7 +4697,7 @@ mod tests {
     /// The symptom was that the measured per-step normal closing on the
     /// product scan **stopped shrinking when the schedule was refined**,
     /// saturating near 4.1 mm from 256 steps to 512, with closing-to-arc-step
-    /// ratios reaching 17.5 — which a rigid translation cannot produce.
+    /// ratios far above 1 — which a rigid translation cannot produce.
     ///
     /// So the property asserted here is the one that failed: halving the step
     /// must roughly halve the largest consecutive rotation delta. Under
@@ -4931,7 +4931,7 @@ mod tests {
     /// |---|---|---|
     /// | cavity inset | 3 mm | **5 mm** |
     /// | layers | 10 mm Ecoflex+50 % Slacker + 3 mm DS20A | **17 mm DRAGON_SKIN_10A @ 25 % Slacker** |
-    /// | centerline | 83 mm, **straightness 1.0000** | 121 mm, **4.77 mm of bow, 8.72° of turn** |
+    /// | centerline | **straight** | **curved** |
     ///
     /// The last one is why it matters most here: a dead-straight centerline
     /// makes `slide_pose_at`'s rotation an identity by construction, so the

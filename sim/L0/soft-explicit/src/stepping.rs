@@ -40,14 +40,22 @@ impl StepperConfig {
     }
 
     /// The stable step for a vector with stiffness quotient `ω²` and viscous
-    /// damping ratio `ξ` (a [`crate::executor::TopMode`]):
-    /// `Δt = safety · (2 / ω) (√(1 + ξ²) − ξ)`, central differences' limit with
-    /// the damping force at the lagging half-step velocity (plan §16p). The
-    /// kinematic contact law adds nothing to it (plan §16o).
+    /// damping quotient `γ` (a [`crate::executor::TopMode`]): `safety` times
+    /// central differences' limit with the damping force at the lagging
+    /// half-step velocity, the smaller positive root of `ω² Δt² + 2γ Δt = 4`
+    /// (plan §16p), `Δt = 4 / (γ + √(γ² + 4ω²))`.
+    ///
+    /// It is `2/ω (√(1 + ξ²) − ξ)` with `ξ = γ/(2ω)`, written so that it also
+    /// holds where the stiffness quotient is zero (`2/γ`) or negative. Where
+    /// `γ² + 4ω² < 0` the vector sets no limit at all, and this is not finite,
+    /// which stops the loop. The kinematic contact law adds nothing to it
+    /// (plan §16o).
     #[must_use]
-    pub fn stable_step(&self, omega_squared: f64, damping_ratio: f64) -> f64 {
-        let damping = damping_ratio.hypot(1.0) - damping_ratio;
-        2.0 * self.safety * damping / omega_squared.sqrt()
+    pub fn stable_step(&self, omega_squared: f64, damping_quotient: f64) -> f64 {
+        let root = damping_quotient
+            .mul_add(damping_quotient, 4.0 * omega_squared)
+            .sqrt();
+        4.0 * self.safety / (damping_quotient + root)
     }
 
     /// The step after a re-estimate: the new limit when it is smaller (the
@@ -96,7 +104,7 @@ pub struct Stepper<E> {
     time: f64,
     steps: u64,
     omega_squared: f64,
-    damping_ratio: f64,
+    damping_quotient: f64,
     estimates: u64,
     window: bool,
     samples: Vec<Sample>,
@@ -116,7 +124,7 @@ impl<E: Executor> Stepper<E> {
             time: start,
             steps: 0,
             omega_squared: 0.0,
-            damping_ratio: 0.0,
+            damping_quotient: 0.0,
             estimates: 0,
             window: false,
             samples: Vec::new(),
@@ -135,17 +143,15 @@ impl<E: Executor> Stepper<E> {
     /// is not positive and finite.
     ///
     /// At the start there is no step yet: the elastic top mode gives a first
-    /// one, and a viscous material is estimated again at it.
+    /// one, and the mode is estimated again at it. Always, since the elastic
+    /// top mode can have no viscous damping of its own while a vector below
+    /// it has a great deal (for an elastic material the two estimates agree).
     fn estimate(&mut self) -> Option<f64> {
         if self.dt > 0.0 {
             return self.estimate_at(2.0 / self.dt);
         }
         let first = self.estimate_at(0.0)?;
-        if self.damping_ratio > 0.0 {
-            self.estimate_at(2.0 / first)
-        } else {
-            Some(first)
-        }
+        self.estimate_at(2.0 / first)
     }
 
     /// One estimate from the fixed start, at viscous weight `β`.
@@ -156,11 +162,11 @@ impl<E: Executor> Stepper<E> {
             perturbation,
             viscous_weight,
         );
-        (self.omega_squared, self.damping_ratio) = (top.omega_squared, top.damping_ratio);
+        (self.omega_squared, self.damping_quotient) = (top.omega_squared, top.damping_quotient);
         self.estimates += 1;
         let dt = self
             .config
-            .stable_step(self.omega_squared, self.damping_ratio);
+            .stable_step(self.omega_squared, self.damping_quotient);
         (dt.is_finite() && dt > 0.0).then_some(dt)
     }
 
@@ -286,10 +292,11 @@ impl<E: Executor> Stepper<E> {
         self.omega_squared
     }
 
-    /// The viscous damping ratio of the vector that set the latest step.
+    /// The viscous damping quotient `vᵀCv / vᵀMv` of the vector that set the
+    /// latest step.
     #[must_use]
-    pub const fn damping_ratio(&self) -> f64 {
-        self.damping_ratio
+    pub const fn damping_quotient(&self) -> f64 {
+        self.damping_quotient
     }
 
     /// How many times the stable step has been estimated.

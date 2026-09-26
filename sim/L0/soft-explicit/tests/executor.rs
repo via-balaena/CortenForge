@@ -578,8 +578,18 @@ fn the_stable_step_is_the_safety_fraction_of_the_damped_limit() {
     let omega_squared: f64 = 4.0e8;
     assert!((config.stable_step(omega_squared, 0.0) * omega_squared.sqrt() - 1.8).abs() < 1e-12);
     // Central differences' limit with the damping force at the lagging
-    // half-step velocity: 2/ω (√(1 + ξ²) − ξ), here at ξ = 0.75 (plan §16p).
-    assert!((config.stable_step(omega_squared, 0.75) * omega_squared.sqrt() - 0.9).abs() < 1e-12);
+    // half-step velocity: 2/ω (√(1 + ξ²) − ξ), here at ξ = 0.75, a damping
+    // quotient of 2ξω (plan §16p).
+    let omega = omega_squared.sqrt();
+    assert!((config.stable_step(omega_squared, 1.5 * omega) * omega - 0.9).abs() < 1e-12);
+    // Where the stiffness quotient is zero or negative, the damping alone
+    // limits it: 2/γ at zero, and the root of ω²Δt² + 2γΔt = 4 below.
+    assert!((config.stable_step(0.0, 1.0e4) * 1.0e4 - 1.8).abs() < 1e-12);
+    let (negative, damping) = (-1.0e7, 1.0e4);
+    let dt = config.stable_step(negative, damping) / 0.9;
+    assert!((negative * dt * dt + 2.0 * damping * dt - 4.0).abs() < 1e-9);
+    // With γ² + 4ω² < 0 the vector sets no limit, and no step is given.
+    assert!(!config.stable_step(-1.0e9, damping).is_finite());
     // A smaller limit is taken at once; a larger one only 5 % at a time.
     assert_eq!(config.next_step(1.0, 0.8), 0.8);
     assert_eq!(config.next_step(1.0, 2.0), 1.05);
@@ -599,7 +609,8 @@ fn the_loop_re_estimates_its_step_as_it_runs() {
         0.0,
     );
     stepper.run_until(0.1).unwrap();
-    let expected = 1 + (stepper.steps() - 1) / 50;
+    // Two at the start (`Stepper::estimate`), then one every 50 steps.
+    let expected = 2 + (stepper.steps() - 1) / 50;
     assert_eq!(stepper.estimates(), expected);
     // The reads' steps never grow by more than 5 % from one read to the next.
     for pair in stepper.samples().windows(2) {
