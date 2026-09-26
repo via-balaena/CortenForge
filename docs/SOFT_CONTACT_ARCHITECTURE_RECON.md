@@ -1787,7 +1787,8 @@ build will measure. So no third pass was run on the prose. The readout rule and 
 1 % are settled by 2c's and 2a's tests.
 
 **Settled only by running,** and where each is measured:
-- finite strain and the finite domain's effect on K6's stick zone: 2c's two companion runs;
+- finite strain and the finite domain's effect on K6's stick zone: 2c's two companion runs *(§16q: finite strain
+  within 0.01a at a matched rate; the finite domain up to 0.0111, so K6 is also judged on the larger block)*;
 - whether flutter occurs: every 2b and 2c run reports the contact nodes' kinetic energy, and nothing
   gates it *(2026-09-25, §16p: it occurred at μ_f 0.3, found through the Coulomb push's shortfall; a
   linearized analysis finds growing structural modes there, and growing modes at μ_f 0.1 too, where runs
@@ -2459,3 +2460,151 @@ damped step's accuracy is above.
   without re-deriving it, K5's location and remedy restated, η's range stretched past its source, a one-mesh
   sensitivity, and a misread step result). They were cut or re-measured, not rewritten; with round 2 finding
   mostly what round 1's prose wrote, no third pass was run.
+
+### 16q. 2c: K6 (2026-09-25)
+
+2c holds what 16c gave it: the Cattaneo–Mindlin block and its readouts as a fixture (`fixtures::partial_slip`), its
+runs, and a coarse K6 in CI. It also takes #970's six follow-ups.
+
+**K6 passes.** On §16b's block at a/h 50, the worse row's stick zone is within 0.0135a of Cattaneo–Mindlin while the
+load rises and 0.0076a of Mindlin–Deresiewicz while it falls, against 0.03. The larger block, which 16b's rule also
+judges it on, reads 0.0122. With K3, K4 and the Yeoh case passing (§16p), the stop rule's remaining input is 2d's.
+
+**Decided in the build:**
+- **The stick zone is read from the friction deficit,** μ_f f_n − f_t, not the ratio f_t/(μ_f f_n) 16b proposed.
+  Each edge is where the deficit squared, extrapolated linearly from the zone's last two nodes, reaches zero; it
+  moves at most to the next node out.
+  - The unit test 16b asked for feeds the closed forms, sampled at the nodes over 25 mesh offsets and 25 load
+    fractions, to the readout (`tests/partial_slip.rs`). At a/h 50 the deficit reads within 0.00076a loading and
+    0.00046a unloading, against the bar's 0.005a; the ratio reads 0.0049a and 0.014a. At a/h 25 the deficit reads
+    0.0030a and 0.0018a, at a/h 12 0.012a and 0.0079a.
+  - That is the rule's resolution on point samples of the closed forms, not a run's (the budget's note, 16b).
+- **A node counts as sticking when its deficit is above 5 % of its own limit** (`STICKING_DEFICIT`). A node in the
+  slip zone that sticks on some of an interval's steps reads a small deficit, not none: with a floor of 10⁻⁴ of the
+  row's largest limit, the first a/h 12 run read the whole contact as sticking at every load (a scratch run, not
+  kept).
+  - The deficits do not fall into two groups: on a coarse K6 run a review counted node readings in every percent
+    band from 1 % to 10 % of the limit. Moving the floor from 0.01 to 0.10 left that run's largest errors as they
+    were, and moved single unloading readings by up to 0.015 (the review's, not kept).
+- **The loading** (`PartialSlipRun::plan`), in the block's first shear period T = 4·depth/c_s (8.6 ms):
+  - the press at 0.004a/T, the push and the return at 0.0015a/T;
+  - each leg reaches its speed over T and stops over T, then holds for 2T;
+  - a leg ends on a force read every monitor interval. Its stop starts when the travel the stop takes would reach
+    the end, at the rate the reading grew over the last half T (the square of the half-width while pressing). A
+    rate over one interval stopped the press at 0.92a at a/h 12 (a review's run), as the contact's edge moves a node
+    at a time; it now stops at 1.002a there and 1.004a at a/h 50;
+  - mass damping ξ 0.05 at the block's first shear frequency, as the tube's at its own.
+- **K6 runs elastic, η = 0.** The closed forms are elastic. And integrated explicitly, the viscosity's damping grows
+  as 1/h²: with Ecoflex 00-30's η/μ the stable step at the start falls 19.1× at a/h 12 and 80.0× at a/h 50
+  (`k6_release`'s measurement), so a viscous K6 at a/h 50 would take at least 35 hours (arithmetic: 80 times the
+  main run's 26 minutes). A viscous companion at a/h 12 measures what η does to the stick zone at this loading (below).
+- **The closed forms are in the fixture** (`stick_while_loading`, `stick_while_unloading`, with their sources), not
+  only in the test (16g): the probe and the CI check judge by them too.
+- **The cylinder's grid** holds the strip of body-frame points within 0.1a of the plane tangent at its lowest point,
+  and within √(0.1aR) of that point along it. Past a face the lookup reads the face, so the box is widened on the
+  faces where that moves a point towards the cylinder, until every point moved there lies 0.1a below the plane. It
+  holds while the block's top stays within 0.05a of the plane beyond the strip (K6 presses 0.014a), and for turns
+  under 90°. The test checks every node at 30°, ±10° and 60°, and fails with any one of the three widenings removed.
+- `fixtures::grid::bake` bakes any distance function; the mandrel and the cylinder share it.
+- **The CPU executor got faster where K6 needed it,** with identical output over a whole a/h 12 run (measured then,
+  4 threads, not kept):
+  - the grid's 64 values are fetched a row at a time: 205 s → 187 s;
+  - the viscous passes are skipped when no material is viscous: 187 s → 142 s. At η = 0 each re-estimate's 100
+    iterations had also evaluated the viscous forces.
+  - A review's bitwise A/B against `main`'s executor agreed on every state and step size, at f32 and f64, elastic and
+    viscous (not kept).
+
+**The runs** (`cargo run --release -p sim-soft-explicit --example partial_slip -- <a/h> <f32|f64> <R/a> <block/a>
+<η/μ> <slowdown> table`, f64 and the plan's loading unless noted, `RAYON_NUM_THREADS=6`, M4 Pro, two runs at a time,
+at `df957bec`; the two marked † at `2590634a`, which changes only a leg that does not end. `… -- compare <table>
+<table>` (`40aac291`) gives the largest difference in c/a from the reference run: while the load moves, at the same
+load fraction; and over each leg's hold at its peak, as each row's mean, where readings share a fraction):
+
+| Run | K6, rows 0/1: loading; unloading | Against | While the load moves | Over the holds |
+|---|---|---|---|---|
+| **The plan's, a/h 50** (`50 f64 100 10 0 1`) | **0.0135/0.0079; 0.0076/0.0042** | | | |
+| Half the rate (`… 0 2`) | 0.0113/0.0036; 0.0074/0.0044 | the plan's | 0.0033; 0.0024 | 0.0028; 0.0004 |
+| R = 200a (`50 f64 200 10 0 1`) | 0.0218/0.0123; 0.0113/0.0041 | the plan's | 0.0103; 0.0073 | 0.0030; 0.0036 |
+| R = 200a, half the rate† (`50 f64 200 10 0 2`) | 0.0128/0.0070; 0.0115/0.0041 | the plan's | 0.0089; 0.0067 | 0.0079; 0.0022 |
+| A 30a × 15a block (`50 f64 100 15 0 1`) | 0.0122/0.0082; 0.0096/0.0023 | the plan's | 0.0111; 0.0040 | 0.0057; 0.0027 |
+| a/h 25 | 0.0194/0.0088; 0.0185/0.0072 | the plan's | 0.0133; 0.0132 | 0.0030; 0.0091 |
+| a/h 12 (CI's mesh) | 0.0322/0.0281; 0.0406/0.0173 | | | |
+| a/h 12, Ecoflex 00-30's η | 0.0332/0.0357; 0.0483/0.0252 | a/h 12 | 0.0256; 0.0196 | 0.0015; 0.0105 |
+| f32, a/h 50 | 0.5586/0.5620; 0.2376/0.2394 | | | |
+
+- **Every f64 run is valid by the generic gates:** KE/IE at most 1.54e-4 over the push and return, the energy
+  balance at most 6.9e-5, no inverted element, the deepest penetration at most 5.2e-12a. The contact nodes' kinetic
+  energy, the watch for flutter, peaks at 7.7e-16 J (a/h 12).
+- **The press ends at 1.002–1.004a** (1.021a at R = 200a, 0.990a with the viscosity), 0.0137–0.0139a deep at
+  R = 100a, and the push at 0.786–0.805 μ_f P.
+- **The rate ladder stops at the plan's rate:** half the rate moves c/a by at most 0.0033, inside the 0.005a the
+  budget gives the rate (16b). Matched by fraction over the holds as well, the difference read 0.0055 or 0.0080,
+  depending on which reading won a tie at the same fraction; so the holds are compared by their means.
+- **Finite strain is within 16b's 0.01a; the finite domain is not.**
+  - R = 200a at the plan's speeds moves c/a by up to 0.0103. But its legs travel about half as far, so it pushes to
+    0.78 in 3.1T against the plan's 5.3T: a second change, of rate. At half the rate (6.2T) it moves c/a by up to
+    0.0089.
+  - The 30a × 15a block, whose legs take as long as the plan's (5.6T), moves c/a by up to 0.0111, evenly while loading
+    (0.0075–0.0111 in every 0.05 band of the load) and by up to 0.0040 while unloading. By 16b's rule that effect is
+    not negligible, and K6 is judged on this companion too: it passes, at 0.0122.
+- **The element:** a/h 25 reads 0.0133 from a/h 50 while the load moves. The worse row's errors, loading and
+  unloading, are 0.0322 and 0.0406 at a/h 12, 0.0194 and 0.0185 at a/h 25, and 0.0135 and 0.0076 at a/h 50.
+- **Row 0 (y = 0) reads low throughout** (−0.009 on average while loading at a/h 50, row 1 −0.003). The Kuhn split is
+  not symmetric front to back (16b); what makes row 0 lower is not isolated.
+- **The press leaves a tangential load:** Q/(μ_f P) = −0.0052 at a/h 50 and −0.0122 at a/h 12 before any push. By
+  symmetry it would be zero; the split is not symmetric in x either. The push's fraction is measured from zero, as
+  16b defines it. Measured from the press's load instead (arithmetic on the tables), the loading errors read
+  0.0078/0.0086 at a/h 50 (from 0.0135/0.0079) and 0.0213/0.0413 at a/h 12 (from 0.0322/0.0281): the rows trade
+  places, and the verdict is the same.
+- **The viscosity moves the stick zone at this loading** by up to 0.026 at a/h 12, against the elastic closed forms'
+  0.03 budget. So K6's loading is not slow enough for η not to matter, and K6 runs elastic. The product's frictional
+  states are rate dependent through η (§16p's seated readings, fit plan U15).
+- **f32 cannot resolve K6:** 0.56 while loading, with the deepest penetration 5.9e-7a against f64's 2.6e-13a. §16b
+  predicted it: a slipping node moves 1e-8a to 1e-7a per step, below f32's spacing at coordinates of order a. The tube
+  passes K3 (§16p); whether f32 holds a frictional state on the product is K3's question at the product's scale.
+
+**The mutations** (16b's three, one at a time, each an edit of `kinematic_contact` in `src/shared/contact.rs`:
+`sticking` always true; the anchor kept while slipping; the limit times 1.1; then the same commands):
+
+| Mutation | a/h 50: rows 0/1, loading; unloading | CI (a/h 12, bar 0.1): the worse row |
+|---|---|---|
+| An anchor that never releases | 0.2989/0.3208; 0.2135/0.1918 | 0.389 |
+| An anchor not dragged while slipping† | 0.8797/0.8813; none (the push never reached its peak) | 0.797 |
+| A friction limit 10 % high | 0.0649/0.0672; 0.0164/0.0241 | 0.075 (passes) |
+
+- Each fails K6 at a/h 50. The CI check fails under both anchor mutations and cannot see the friction limit, as 16b
+  expected (§16b's arithmetic: a 0.075 shift). That is covered at the law's level.
+- **16b's expectations were partly wrong:**
+  - the anchor that never releases does not read c/a = 1: the readout counts a node held past its limit as
+    slipping (its deficit is negative), and the zone it reads fails by 0.32;
+  - the undragged anchor fails while loading too, which 16b thought only unloading could catch. At a/h 50 the push
+    never reaches its peak: Q rises to 0.53 μ_f P, falls back and holds near 0.47 while the cylinder moves on, until
+    the leg is given up after 20T, and the energy balance reads 1.2 %. Why is not isolated.
+- **The CI check** is `tests/k6_release.rs`, in tests-release and outside coverage. It took 315–343 s here beside two
+  a/h 50 runs. `tests/partial_slip.rs` runs K6's whole path at a/h 4 in the debug and coverage set.
+
+**#970's follow-ups:**
+1. The start's second estimate was gated on the elastic top vector's ξ > 0, not on the material; the start now always
+   estimates twice (`Stepper::estimate`). For an elastic material the two agree, and the executor skips the viscous
+   iteration. No test builds a viscous material whose elastic top vector has no damping; the estimate count
+   catches the old gate.
+2. `TopMode` carries the viscous damping quotient γ = vᵀCv/vᵀMv instead of ξ, and the step is
+   0.9 · 4/(γ + √(γ² + 4ω²)): the same as 0.9 · 2/ω (√(1 + ξ²) − ξ) where ω² > 0; 0.9 · 2/γ at ω² = 0, where the old
+   form gave no step; and none where γ² + 4ω² < 0 (`tests/executor.rs`).
+3. §16p's per-step cost is ×1.36–1.67, from its own times (§16j's note said ×1.4–1.65).
+4. §16p's Yeoh increment is the band pressure's; corrected to the oracle's λ_z it reads 5.64, 4.77 and 4.60 %, and
+   the verdict is the same (§16p's note).
+5. `the_energy_balance_holds_with_viscosity` ran at a viscous loss of 2.1 % of the peak internal energy, so a 40 %
+   error in the viscous work passed. At 300 Pa·s the loss is 30.8 %, and the viscous work 5 % short fails it (1.54 %).
+6. §16p's 0.46 ms at η = 0 is annotated: read idle (a reviewer read 0.49 ms loaded), and the executor now skips the
+   viscous phases there.
+
+**Open, for later steps:**
+- **f32 and friction.** f32 does not resolve K6's partial slip. Step 4's GPU runs f32; whether f32 holds the
+  product's frictional states is K3's question at the product's scale (§15a), asked there.
+- **The viscosity and friction.** At K6's loading, Ecoflex's η moves the stick zone by up to 0.026a, and integrated
+  explicitly it shrinks the step as 1/h² (fit plan U15). The damping's form is still §16p's open item.
+- **The readout on a run** is not separated from the element: the a/h 25 companion measures the two together.
+- **Not isolated:** why row 0 reads lower than row 1; why the press leaves a tangential load; why the undragged
+  anchor fails while loading.
+
