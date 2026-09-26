@@ -44,6 +44,12 @@
 //! [`ExplicitModel`] is the data every executor uploads: flat node and
 //! element arrays, a material per element (bonded layers need it), and the
 //! rest-state quantities computed once, in `f64`.
+//!
+//! ## What a verdict reads
+//!
+//! [`readings`] holds fit plan D1's readings, taken from a run's monitors and
+//! its measurement window: the push force along the path, and the seated
+//! contact force on the most-loaded square centimetre.
 
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
@@ -51,6 +57,7 @@ pub mod cpu;
 pub mod executor;
 pub mod fixtures;
 mod model;
+pub mod readings;
 pub mod stepping;
 
 pub use model::{ExplicitModel, Incidence, ModelError};

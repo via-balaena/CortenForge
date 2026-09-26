@@ -12,7 +12,8 @@ use crate::executor::{Obstacle, Snapshot};
 use crate::f64::{Material, Pose, SdfGridLayout, tet4_volume, triangle_area};
 use crate::{ExplicitModel, ModelError};
 
-/// One of plan §15c's pre-registered meshes (`n_r × n_θ × n_z` cells).
+/// One of plan §15c's pre-registered meshes (`n_r × n_θ × n_z` cells), or
+/// any other cell counts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mesh {
     /// 3 × 32 × 17 cells, 9 792 elements.
@@ -21,6 +22,16 @@ pub enum Mesh {
     FiftyK,
     /// 6 × 64 × 43 cells, 99 072 elements.
     HundredK,
+    /// Any cell counts: plan §16s refines the planned meshes along the tube
+    /// to see what D1's readings converge to.
+    Cells {
+        /// Cells through the wall.
+        radial: usize,
+        /// Cells around.
+        circumferential: usize,
+        /// Cells along.
+        axial: usize,
+    },
 }
 
 /// How the tube is held (plan §15b, 15d.8).
@@ -71,6 +82,11 @@ impl Tube {
             Mesh::TenK => (3, 32, 17),
             Mesh::FiftyK => (5, 48, 35),
             Mesh::HundredK => (6, 64, 43),
+            Mesh::Cells {
+                radial,
+                circumferential,
+                axial,
+            } => (radial, circumferential, axial),
         };
         Self {
             inner_radius: 0.010,
@@ -649,8 +665,8 @@ pub struct TubeResult {
     /// Every monitor read; the last follows the last step.
     pub samples: Vec<crate::stepping::Sample>,
     /// The state at the end, with the window's sums, from which
-    /// [`node_pressures`] gives any node's window-mean pressure (K5's seated
-    /// percentile).
+    /// [`node_pressures`] gives any node's window-mean pressure, and
+    /// [`crate::readings::WindowContact`] D1's seated readings.
     pub snapshot: Snapshot,
 }
 
