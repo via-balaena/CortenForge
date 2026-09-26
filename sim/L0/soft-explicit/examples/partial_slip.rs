@@ -170,7 +170,8 @@ fn parse(line: &str) -> Option<(Leg, f64, [f64; 2])> {
 /// leg's peak the load holds while the stick zone settles, so readings there
 /// share a fraction and matching by it is ill-defined; and two runs' holds sit
 /// at slightly different loads. Those are compared as each row's mean error
-/// from the closed form.
+/// from the closed form. It also prints each row's mean signed difference
+/// while the load moves: a shift, where the largest may be one reading.
 fn compare(first: &str, second: &str) {
     let read = |path: &str| -> Vec<(Leg, f64, [f64; 2])> {
         let text = std::fs::read_to_string(path).unwrap();
@@ -182,6 +183,7 @@ fn compare(first: &str, second: &str) {
     let (theirs, ours) = (read(first), read(second));
     let mut moving = [0.0_f64; 2];
     let mut holding = [0.0_f64; 2];
+    let mut shift = [[0.0_f64; 2]; 2];
     for (slot, leg) in [Leg::Push, Leg::Return].into_iter().enumerate() {
         let of_leg = |rows: &[(Leg, f64, [f64; 2])]| -> (Vec<(f64, [f64; 2])>, Vec<[f64; 2]>) {
             let leg_rows: Vec<(f64, [f64; 2])> = rows
@@ -204,6 +206,7 @@ fn compare(first: &str, second: &str) {
             (early, errors)
         };
         let ((other, other_hold), (mine, mine_hold)) = (of_leg(&theirs), of_leg(&ours));
+        let mut matched = 0.0;
         for &(f, c) in &mine {
             let Some(i) = other.iter().position(|o| o.0 >= f).filter(|&i| i > 0) else {
                 continue;
@@ -211,9 +214,14 @@ fn compare(first: &str, second: &str) {
             let ((f0, c0), (f1, c1)) = (other[i - 1], other[i]);
             let t = if f1 > f0 { (f - f0) / (f1 - f0) } else { 0.0 };
             for row in 0..2 {
-                let interpolated = c0[row] + t * (c1[row] - c0[row]);
-                moving[slot] = moving[slot].max((c[row] - interpolated).abs());
+                let difference = c[row] - (c0[row] + t * (c1[row] - c0[row]));
+                moving[slot] = moving[slot].max(difference.abs());
+                shift[slot][row] += difference;
             }
+            matched += 1.0;
+        }
+        if matched > 0.0 {
+            shift[slot] = shift[slot].map(|s| s / matched);
         }
         let mean = |rows: &[[f64; 2]], row: usize| {
             rows.iter().map(|r| r[row]).sum::<f64>() / rows.len() as f64
@@ -227,7 +235,15 @@ fn compare(first: &str, second: &str) {
     }
     println!(
         "{second} against {first}: largest difference in c/a while the load moves, loading {:.4}, \
-         unloading {:.4}; in the error over the peaks' holds, loading {:.4}, unloading {:.4}",
-        moving[0], moving[1], holding[0], holding[1]
+         unloading {:.4}; in the error over the peaks' holds, loading {:.4}, unloading {:.4}; mean \
+         shift while the load moves, rows 0/1, loading {:+.4}/{:+.4}, unloading {:+.4}/{:+.4}",
+        moving[0],
+        moving[1],
+        holding[0],
+        holding[1],
+        shift[0][0],
+        shift[0][1],
+        shift[1][0],
+        shift[1][1]
     );
 }
