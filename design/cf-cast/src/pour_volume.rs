@@ -32,12 +32,13 @@
 //! The integration cell is floored at [`POUR_VOLUME_MIN_CELL_SIZE_M`]
 //! and is **decoupled from `mesh_cell_size_m`** (§MA-17/S2). The grid
 //! bake is cubic in `1/cell_size`; at the 0.5 mm production cup cell a
-//! pour-volume grid tied to `mesh_cell_size_m` is 35 M cells per layer
-//! and burns 15+ min. So pour-volume never samples finer than 2 mm, while
-//! coarser prototyping meshes still integrate at their own cell.
+//! pour-volume grid tied to `mesh_cell_size_m` is tens of millions of
+//! cells per layer and burns 15+ min. So pour-volume never samples finer
+//! than 2 mm, while coarser prototyping meshes still integrate at their own
+//! cell.
 //!
-//! ⚠ The figure that used to justify that floor — *"441.24 g @ 2 mm vs
-//! 442.91 g @ 1.5 mm on the `base_mold` shells"* — compares two BIASED
+//! ⚠ The figure that used to justify that floor — the `base_mold` shells'
+//! masses at 2 mm and at 1.5 mm, which agreed to 0.4 % — compares two BIASED
 //! estimates and says nothing about either one's accuracy. Two biased
 //! numbers agreeing is not evidence. What the floor actually costs is now
 //! measurable against exact volumes: axis-aligned geometry is exact at any
@@ -71,7 +72,7 @@ pub const DEFAULT_MASS_BUDGET_KG: f64 = 0.907_184_74;
 ///
 /// Flooring the integration cell here keeps it cheap and
 /// **decoupled from `mesh_cell_size_m`**, so a fine production cup cell
-/// (0.5 mm) doesn't pay a 35 M-cell, 15+ min integration per layer for
+/// (0.5 mm) doesn't pay a 15+ min integration per layer for
 /// no budget-relevant accuracy.
 ///
 /// This is a *floor* (`mesh_cell_size_m.max(..)`): a coarse prototyping

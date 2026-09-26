@@ -460,12 +460,12 @@ visible = true
             plug_stls: vec!["out/stls/plug_layer_0.stl".into()],
             accessory_stls: vec!["out/stls/platform.stl".into()],
             procedure_path: "out/procedure.md".into(),
-            total_mass_g: 842.9,
+            total_mass_g: 600.0,
             pour_plan: PourPlan {
                 steps: vec![PourStep {
                     layer_index: 0,
                     material_display_name: "Ecoflex 00-30".to_string(),
-                    mass_g: 369.0,
+                    mass_g: 300.0,
                     mix_ratio_a_to_b: "1:1".to_string(),
                     pot_life_minutes: 45,
                     cure_time_hours: 4.0,
