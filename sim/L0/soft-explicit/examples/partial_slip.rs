@@ -10,8 +10,9 @@
 //! the block's depth, its width twice that (the finite-domain companion: 15);
 //! `viscous` the Kelvin–Voigt `η/μ` in seconds; `slowdown` divides every
 //! speed and multiplies every time of the loading (the rate ladder: 2, 4, …).
-//! With `table`, every sample is printed too. Set `RAYON_NUM_THREADS` so the
-//! times are comparable.
+//! With `table`, every sample is printed too; `safety=<fraction>` sets the
+//! step's fraction of the stability limit (0.9). Set `RAYON_NUM_THREADS` so
+//! the times are comparable.
 //!
 //! `… --example partial_slip -- compare <table> <table>` compares two runs'
 //! printed tables: each judged sample's stick zone in the second against the
@@ -24,7 +25,9 @@
 use std::time::Instant;
 
 use sim_soft_explicit::cpu;
-use sim_soft_explicit::fixtures::partial_slip::{Leg, PartialSlipResult, PartialSlipRun};
+use sim_soft_explicit::fixtures::partial_slip::{
+    Leg, PartialSlipResult, PartialSlipRun, stick_while_loading, stick_while_unloading,
+};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -40,6 +43,11 @@ fn main() {
     let viscous: f64 = arg(4, "0").parse().unwrap();
     let slowdown: f64 = arg(5, "1").parse().unwrap();
     let table = arg(6, "") == "table";
+    // `safety=<fraction>` anywhere: the step's fraction of the stability limit.
+    let safety = args
+        .iter()
+        .find_map(|a| a.strip_prefix("safety="))
+        .map(|v| v.parse::<f64>().unwrap());
 
     let mut run = PartialSlipRun::plan(divisions).slowed(slowdown);
     let a = run.block.contact_half_width;
@@ -47,6 +55,9 @@ fn main() {
     run.block.half_width = size * a;
     run.block.depth = size * a;
     run.viscous_time = viscous;
+    if let Some(safety) = safety {
+        run.safety = safety;
+    }
     let started = Instant::now();
     let result = if wide {
         run.run(|m, o| cpu::f64::CpuExecutor::new(m, o).unwrap())
@@ -110,13 +121,14 @@ fn report(run: &PartialSlipRun, result: &PartialSlipResult, seconds: f64, table:
         r.tangential_force / (run.friction * r.normal_force)
     });
     println!(
-        "a/h={} block={}a R={}a eta/mu={} K6 loading={} unloading={} worst={} unfinished={:?} | pressed a={pressed:.4}a \
+        "a/h={} block={}a R={}a eta/mu={} safety={} K6 loading={} unloading={} worst={} unfinished={:?} | pressed a={pressed:.4}a \
          press depth={:.4}a pressed Q/(f P)={left:.4} peak Q/(f P)={peak:.4} KE/IE={} balance={} inverted={} penetration={:.2e}a \
          contact_KE={contact_ke:.2e} | steps={} dt={:.3e} readings={} time={seconds:.1}s",
         a / run.block.fine,
         run.block.depth / a,
         run.cylinder.radius / a,
         run.viscous_time,
+        run.safety,
         show(errors.loading),
         show(errors.unloading),
         errors
@@ -156,8 +168,9 @@ fn parse(line: &str) -> Option<(Leg, f64, [f64; 2])> {
 /// While the load moves, each of the second's readings is compared with the
 /// first's at the same load fraction, interpolated linearly. Within 0.02 of a
 /// leg's peak the load holds while the stick zone settles, so readings there
-/// share a fraction and matching by it is ill-defined: those are compared as
-/// each row's mean over them.
+/// share a fraction and matching by it is ill-defined; and two runs' holds sit
+/// at slightly different loads. Those are compared as each row's mean error
+/// from the closed form.
 fn compare(first: &str, second: &str) {
     let read = |path: &str| -> Vec<(Leg, f64, [f64; 2])> {
         let text = std::fs::read_to_string(path).unwrap();
@@ -180,7 +193,15 @@ fn compare(first: &str, second: &str) {
             let (mut early, late): (Vec<_>, Vec<_>) =
                 leg_rows.into_iter().partition(|r| r.0 <= peak - 0.02);
             early.sort_by(|a, b| a.0.total_cmp(&b.0));
-            (early, late.into_iter().map(|r| r.1).collect())
+            let closed = |f: f64| match leg {
+                Leg::Return => stick_while_unloading(f),
+                _ => stick_while_loading(f),
+            };
+            let errors = late
+                .into_iter()
+                .map(|(f, c)| [c[0] - closed(f), c[1] - closed(f)])
+                .collect();
+            (early, errors)
         };
         let ((other, other_hold), (mine, mine_hold)) = (of_leg(&theirs), of_leg(&ours));
         for &(f, c) in &mine {
@@ -206,7 +227,7 @@ fn compare(first: &str, second: &str) {
     }
     println!(
         "{second} against {first}: largest difference in c/a while the load moves, loading {:.4}, \
-         unloading {:.4}; over the peaks' holds, loading {:.4}, unloading {:.4}",
+         unloading {:.4}; in the error over the peaks' holds, loading {:.4}, unloading {:.4}",
         moving[0], moving[1], holding[0], holding[1]
     );
 }

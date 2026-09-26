@@ -588,7 +588,7 @@ fn the_stable_step_is_the_safety_fraction_of_the_damped_limit() {
     let (negative, damping) = (-1.0e7, 1.0e4);
     let dt = config.stable_step(negative, damping) / 0.9;
     assert!((negative * dt * dt + 2.0 * damping * dt - 4.0).abs() < 1e-9);
-    // With γ² + 4ω² < 0 no step is stable, and none is given.
+    // With γ² + 4ω² < 0 the vector sets no limit, and no step is given.
     assert!(!config.stable_step(-1.0e9, damping).is_finite());
     // A smaller limit is taken at once; a larger one only 5 % at a time.
     assert_eq!(config.next_step(1.0, 0.8), 0.8);

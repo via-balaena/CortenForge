@@ -47,8 +47,10 @@ impl StepperConfig {
     ///
     /// It is `2/ω (√(1 + ξ²) − ξ)` with `ξ = γ/(2ω)`, written so that it also
     /// holds where the stiffness quotient is zero (`2/γ`) or negative. Where
-    /// `γ² + 4ω² < 0` no step is stable and it is not finite, which stops the
-    /// loop. The kinematic contact law adds nothing to it (plan §16o).
+    /// `γ² + 4ω² < 0` the vector sets no limit at all, and this is not finite,
+    /// which stops the loop: the estimate has not found the vector that
+    /// limits the step. The kinematic contact law adds nothing to it (plan
+    /// §16o).
     #[must_use]
     pub fn stable_step(&self, omega_squared: f64, damping_quotient: f64) -> f64 {
         let root = damping_quotient

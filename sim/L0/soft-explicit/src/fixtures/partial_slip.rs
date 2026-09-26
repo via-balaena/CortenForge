@@ -322,7 +322,7 @@ impl Cylinder {
     /// cylinder (below, and on the side the turn tips the world's up towards)
     /// the box is widened until every point moved there lies `0.1a` below the
     /// plane. So it holds while the block's top stays within `0.05a` of the
-    /// plane beyond the strip: K6 presses about `0.011a` (plan §16q), and
+    /// plane beyond the strip: K6 presses about `0.014a` (plan §16q), and
     /// `tests/partial_slip.rs` checks every node at `0.04a`.
     ///
     /// # Errors
@@ -684,6 +684,8 @@ pub struct PartialSlipRun {
     pub longest_leg: f64,
     /// The grid's cell (plan §16b: `h/2`).
     pub grid_cell: f64,
+    /// The fraction of the stability limit the step uses (plan §15c: 0.9).
+    pub safety: f64,
 }
 
 impl PartialSlipRun {
@@ -717,6 +719,7 @@ impl PartialSlipRun {
             hold: 2.0 * period,
             longest_leg: 20.0 * period,
             grid_cell: block.fine / 2.0,
+            safety: 0.9,
         }
     }
 
@@ -777,7 +780,11 @@ impl PartialSlipRun {
         let model = self.block.model(self.material())?;
         let obstacle = self.obstacle()?;
         let damping = 2.0 * 0.05 * TAU / self.block.shear_period(self.mu, self.density);
-        let mut stepper = Stepper::new(make(&model, &obstacle), StepperConfig::new(damping), 0.0);
+        let config = StepperConfig {
+            safety: self.safety,
+            ..StepperConfig::new(damping)
+        };
+        let mut stepper = Stepper::new(make(&model, &obstacle), config, 0.0);
         let rows = [self.block.top_row(0), self.block.top_row(1)];
         let mut readings = Vec::new();
         let mut at = [0.0, 0.0];
