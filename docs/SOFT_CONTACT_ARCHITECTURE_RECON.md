@@ -2,11 +2,12 @@
 
 **Status:** the plan, 2026-09-24, amended as the build goes. Build step 1 is merged (#965). Step 2 is designed in
 §16; 2a (#968) and 2b's G2 (#969) are merged, and 2b's remaining runs, with the material damping they led to, are
-§16p (#970), and 2c, K6, is §16q (#971). 2d, the product's budget and the stop rule, is §16r.
+§16p (#970), and 2c, K6, is §16q (#971). 2d, the product's budget and the stop rule, is §16r (#972). K5,
+with D1's readings diagnosed and replaced, is §16s.
 - **Research:** §1–§10.
 - **Code architecture and the crate layout:** §11–§14.
 - **The first experiment and its kill criteria:** §15.
-- **Build step 2's design, and what its PRs measured:** §16 (§16m–§16r).
+- **Build step 2's design, and what its PRs measured:** §16 (§16m–§16s).
 
 The code architecture, crate layout and first experiment were checked by cold review, against criteria
 written beforehand (§14e, §15i). The research sections were not. Jon's direction:
@@ -269,7 +270,8 @@ built TLED-style.**
 - **Friction:** from the pairing library (§5c), swept over its range.
 - **Readouts:**
   - push force along the path, with its μ = 0 geometric share;
-  - pressure maps as area-weighted percentiles;
+  - pressure maps as area-weighted percentiles *(2026-09-26, §16s: the seated reading is the most-loaded 1 cm²
+    patch, with the percentile shown beside it)*;
   - stretch.
 - **Size of it (arithmetic):**
   - about 29–32k steps for the 100k-tet benchmark at ν 0.49, which leaves 3.7–4.1 ms per step within
@@ -812,9 +814,9 @@ contact pressure within 5 % at ν ≥ 0.49? And can it run a 100k-tet insertion 
 |---|---|---|
 | **K1 speed** | a 100k-tet insertion at ν = 0.49, GPU executor, **≤ 2 min** | wall-clock from setup to the last readback, including loading, hold and the measurement window. A first bar on the tube, not derived from D4; build step 2 derives the product's budget |
 | **K2 accuracy** | band pressure within **5 %** of the oracle, **both raw and gap-corrected** (15d.1) | same material, free ends, frictionless, the pinned SDF (15c). At ν 0.49 and 0.495, for (λ_a, B/A) = (1.1, 2) and (1.3, 2), on the 100k mesh |
-| **K3 precision** | CPU f32 against CPU f64, same executor: band pressure within **0.5 %** (frictionless, 50k), and the Coulomb push's reaction within **0.5 %** (μ_f 0.3, 10k). *Amended 2026-09-24 (PR #965 review):* the band pressure also within 0.5 % at every pair-averaged ring level (15d.1), not only in the mean, since D1's 95th-percentile reading depends on the local values | step 2 of the build (15g), before any GPU code. This is the fit plan's *"precision spike on contact before any GPU contact code"* |
+| **K3 precision** | CPU f32 against CPU f64, same executor: band pressure within **0.5 %** (frictionless, 50k), and the Coulomb push's reaction within **0.5 %** (μ_f 0.3, 10k). *Amended 2026-09-24 (PR #965 review):* the band pressure also within 0.5 % at every pair-averaged ring level (15d.1), not only in the mean, since D1's 95th-percentile reading depends on the local values. *2026-09-26 (§16s): D1's seated reading is now the 1 cm² patch; f32 and f64 read it the same to five decimals* | step 2 of the build (15g), before any GPU code. This is the fit plan's *"precision spike on contact before any GPU contact code"* |
 | **K4 robustness** | J > 0 in every element at every step of every valid run | explicit check (§13d rule 2). Any J ≤ 0 in a valid run is a failure. A run that breaks a validity gate is invalid, and K4 does not judge it |
-| **K5 product readings** | the peak push force during entry and the seated 95th-percentile pressure (fit plan D1's readings) change ≤ 5 % from 50k to 100k | the tube's entry is a sharp edge, like the product's mouth. **A gate on the verdict's design, not on the solver:** if it fails, D1's readings or the lip radius are revisited before step 7 |
+| **K5 product readings** | the peak push force during entry and the seated 95th-percentile pressure (fit plan D1's readings) change ≤ 5 % from 50k to 100k. *2026-09-26 (§16s): the percentile was decided by one or two rings; D1's seated reading is now the most-loaded 1 cm² patch, and the μ = 0 push is read over 10 mm of travel. K5 passes on them* | the tube's entry is a sharp edge, like the product's mouth. **A gate on the verdict's design, not on the solver:** if it fails, D1's readings or the lip radius are revisited before step 7 |
 | **K6 friction** | *Amended 2026-09-24, in step 2's design and before any data (16b):* Cattaneo–Mindlin partial slip in plane strain, a rigid cylinder on the block. The stick zone's half-width within 0.03a of the closed form while the tangential load rises to 0.8·μ_f·P, and the retained stick zone's within 0.03a while it falls back. It replaced frictional ironing, whose published curves could not carry a 5 % gate (16b) | CPU, build step 2. Friction's only external reference: the Coulomb push (15d.7) checks consistency only |
 
 **Why two corrections to K2:**
@@ -1186,7 +1188,8 @@ Each item is one PR with its own tests and a done-when.
      compared f32 with f64 only on the frictionless band and on steady sliding. Before a verdict reads a
      frictional seated state in f32, step 5 compares f32 with f64 on the tube's frictional seated p95
      (50k, μ_f 0.3), and step 7 repeats it on `base_mold`.* *(Run in 2d on the CPU, §16r: f32 passes K3's
-     0.5 % there; step 7's comparison on `base_mold` stands.)*
+     0.5 % there; step 7's comparison on `base_mold` stands.)* *(2026-09-26, §16s: and on the seated reading
+     that replaced the p95, the 1 cm² patch; step 7 repeats it on that.)*
    - *Done when:* K1–K6 are decided and the results are in this document with their commands.
 **Steps 6–9 are an outline.** They are designed in detail after step 2's results, which set the
 product's mesh, budget and contact law. Three macro reviews found what that design must settle:
@@ -1204,7 +1207,9 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
   the grid's spacing and pre-smooth against it (fit plan U18);
 - U3's outcome, and the fact that a contact-guided intruder would need rigid–soft coupling;
 - *(2026-09-25, §16p)* K5's failure: both of D1's readings failed to converge on the tube, so D1's readings or
-  the lip radius are revisited before step 7 (§15a; fit plan U16);
+  the lip radius are revisited before step 7 (§15a; fit plan U16) *(2026-09-26, §16s: diagnosed; Jon replaced
+  the seated reading with the most-loaded 1 cm² patch, and K5 passes. The lip radius stays with the fit plan's
+  Later)*;
 - *(2026-09-25, §16p)* friction above μ_f 0.3: the damped tube's Coulomb push fails 15d.7 at μ_f 0.6, and
   §5c's ranges reach 2.0. Before a verdict is trusted at such a corner, its Coulomb push is checked there
   (§7 rung 4's self-consistency check), and the material's damping (fit plan U15) is settled. Above f ≈ 1.0 the
@@ -1715,7 +1720,8 @@ missing. So:
 - K3: f32 against f64 at 50k (the band's mean and each pair-averaged ring level), and the Coulomb push at
   10k;
 - K5: the peak entry push (the largest of the monitor's 100-step means) and the seated
-  95th-percentile pressure, 10k against 50k;
+  95th-percentile pressure, 10k against 50k *(2026-09-26, §16s: the seated reading is now the most-loaded
+  1 cm² patch)*;
 - the Coulomb push (15d.7) and the Yeoh case (16h);
 - the confined case (15d.8), and a product-level run: the free tube at λ_a 1.3, ν 0.49, with
   `DRAGON_SKIN_10A`'s μ. Each records its raw error and its largest gap (§15g).
@@ -2437,7 +2443,9 @@ and λ_a 1.1, where the diagnostic looked, no node-step sticks now. **At μ_f 0.
 - §15a makes K5 a gate on the verdict's design: D1's readings, or the lip radius, are revisited before step 7. On
   the undamped solver the frictionless reading's spot was the mandrel's seam, not the tube's entry edge the lip
   radius was named for; where the damped frictional reading fails is not measured. §15g's list for steps 6–9 and fit
-  plan U16 carry it.
+  plan U16 carry it. *(2026-09-26, §16s: on the damped solver, the frictionless percentile sits at the seam and
+  the frictional one at the seam and the entry edge; the frictionless push peak is mostly the nose crossing each
+  ring. K5 passes on the readings that replaced them.)*
 
 **The loading-time ladder** (§15c; 10k, frictionless, halving from 10 T_s):
 - The band moved at most 0.04 points down to 0.156 T_s, and KE/IE stayed at most 1.9 %.
@@ -2789,7 +2797,8 @@ in contact, and one of the loop's re-estimates (a run makes one every 500 steps)
 - The viscosity cuts the step to 0.672 of the elastic one at ν 0.49 and 0.759 at 0.495. The tube's 10k mesh, in
   the same material at the same η/μ and about the product's h, reads 0.875 (§16p). What in the meshes makes the
   difference is not isolated.
-- **At the 50k tube's h** (1.31 mm; D1's readings did not converge on the tube, §16p's K5), a press takes 2.3 of D4
+- **At the 50k tube's h** (1.31 mm; D1's readings did not converge on the tube, §16p's K5; *§16s: the readings
+  that replaced them move at most 1.3 % from 50k to 100k*), a press takes 2.3 of D4
   elastic and 4.8 viscous at K1's rate, and 0.26 and 0.84 on the CPU (ν 0.49, Ecoflex's η/μ).
 - **What the D4 verdict rests on:** the wall as meshed (projected at a floor of 0.5, a viscous press takes 1.03 of D4
   at K1's rate, below; U17); the GPU meeting K1 exactly (measured in step 5), with its per-step cost scaling with
@@ -2801,7 +2810,8 @@ in contact, and one of the loop's re-estimates (a run makes one every 500 steps)
   mesh took 124.5 s (§16p), so it depends on the loading time step 5 sets for K1. The product's CPU figures above
   leave contact out; what contact adds on the product is not measured.
 - The CPU figures bear on whether steps 3–5, the GPU, come before the quality items 2d measured (fit plan U15,
-  U17, U18) and K5 (U16). That is Jon's call; the stop rule proceeds to step 3 either way.
+  U17, U18) and K5 (U16). That is Jon's call; the stop rule proceeds to step 3 either way. *(Jon, 2026-09-26:
+  the quality items first, K5 first of them; §16s.)*
 
 **The surface bias.** The canal nodes are the wall's boundary nodes within two element sizes of the true canal
 surface, the cap-stripped scan's exact distance at the inset (the mesher offsets the cap-stripped scan near the
@@ -2878,3 +2888,101 @@ itself asserts nothing.
   wrong comment on the timing, and two leaks the fixes narrowed but did not close. They were cut, not rewritten;
   every number it re-derived reproduced. With round 2 finding mostly what round 1's prose wrote, no third pass was
   run.
+
+### 16s. K5: D1's readings, diagnosed and replaced (2026-09-26)
+
+§16p's K5 failed on both of D1's readings. §15a sends that back to D1's readings or the lip radius, and D1 is
+Jon's, so this step diagnosed why each reading moved, measured candidates and proposed them; Jon decided.
+
+**Why the readings moved.** A scratch probe dumped each run's push history and seated window, and the dumps were
+analysed outside the repo (a diagnostic, not kept). It reproduced §16p's K5 table to the printed digit. Beside the
+planned meshes, it refined the tube 2× and 4× along its length at the 50k and 100k cross-sections (rings of nodes
+0.86 and 0.70 mm apart), frictionless and at μ_f 0.3, λ_a 1.1 and 1.3:
+- **The push with friction converges** (§16p), and kept converging under refinement.
+- **The frictionless push peak is mostly the mesh.** On every mesh the push ripples with a wavelength equal to the
+  spacing of the rings, from 7.06 mm down to 0.70 mm: the nose crossing each ring. At λ_a 1.1 the ripple's rms is
+  71, 45 and 28 % of the mean push at 10k, 50k and 100k. It fades under refinement.
+- **The seated 95th percentile is decided by one or two rings.** The most-pressed 5 % of the contact is about
+  4.5 mm of the tube's length (arithmetic: 5 % of the contact over the bore's circumference). It lies on the
+  tube's two pressure concentrations: frictionless, the ring where the tube leaves the mandrel at its nose–shank
+  seam; with friction, that ring and the entry edge. The 50k and 100k meshes put one or two rings there, so the
+  percentile is whichever ring straddles the 5 % line.
+- **With friction, the entry edge's pressure does not settle.** Over the entry ring's inner face it rose 25–33 %
+  with each halving of the spacing, at both cross-sections and both λ_a. The product's mouth is the same kind of
+  sharp edge (§15a).
+- **A readout error at the edge.** A node's tributary area, a third of each incident boundary triangle (§15c), gave
+  the entry ring a share of the tube's end face, which the mandrel never touches: 1.5–1.6 times its inner face's
+  share at 50k and 100k, about 3 times at 0.70 mm, so the entry's pressure read low by a third or more. K2's band
+  holds no such node.
+
+**The decision** (Jon, 2026-09-26; fit plan D1):
+- **Seated:** the contact force on the most-loaded 1 cm² patch, over 1 cm². The pressure-pain measurements in a
+  2021 review of 20 studies all used flat algometer tips of 0.5–2 cm², mostly 1 cm², and its threshold ranges hold
+  for a 1 cm² tip ([Trueba-Perdomo 2021](https://www.scielo.org.mx/scielo.php?script=sci_arttext&pid=S0188-95322021000200203)).
+  So the reading and its limit are taken over the same area, and the patch's size follows whichever data
+  calibrates D1 (§8 has not found it). The 95th percentile and the peak are shown beside it.
+- **Getting it in:** the peak push, as before. The geometric share, the μ = 0 run's push (§15h), is read as its
+  largest mean over 10 mm of travel.
+
+**The readings** (`src/readings.rs`; the tube probe prints them, and takes any cell counts as `RxCxA`):
+- **A node's contact area** is a third of each incident boundary triangle, projected on the obstacle's normal at
+  the node, so a face the obstacle never touches adds nothing.
+- **The patch.** Each node's force is spread over its contact area, so each triangle carries a uniform pressure.
+  The surface inside a ball of the patch's radius (5.64 mm for 1 cm²) is integrated in sub-triangles, at least 16
+  to a radius along each longest edge, each faded in across the rim over its own size. The patch is centred on
+  every contact node and on the centroid of every triangle that carries force. On a 10 mm bore the ball holds
+  1.03 % more than 1 cm² of surface, which the unit test computes and the reading reproduces.
+- **The push over travel** is the work over a 10 mm window, over 10 mm, taken exactly at the samples' boundaries;
+  a hold adds nothing.
+- **Pinned by 13 unit tests** (`tests/readings.rs`), each on a case with a known answer; each of 23 single mutations
+  of the readings made one fail.
+
+**K5 passes on the new readings.** The bar is §15a's, 5 % from 50k to 100k, applied to readings chosen after the
+diagnosis had seen these meshes; the refinement along the tube is what says they read the tube and not its mesh.
+`cargo run --release -p sim-soft-explicit --example tube -- <mesh> <0|2> <0|0.3> f32 20 0.2 10 1`,
+`RAYON_NUM_THREADS=4`, at `1f84dbb8`; the 100k cross-section refined along the tube is `6x64x86` and `6x64x172`:
+
+| D1's readings | Case | 10k | 50k | 100k | 50k → 100k | 2× / 4× along | 100k against 4× |
+|---|---|---|---|---|---|---|---|
+| 1 cm² patch / μ | λ_a 1.1, frictionless | 0.1450 | 0.1665 | 0.1681 | **+0.97 %** | 0.1704 / 0.1718 | −2.2 % |
+| | λ_a 1.3, frictionless | 0.3679 | 0.4019 | 0.4054 | **+0.87 %** | 0.4160 / 0.4206 | −3.6 % |
+| | λ_a 1.1, μ_f 0.3 | 0.1444 | 0.1374 | 0.1367 | **−0.55 %** | 0.1358 / 0.1352 | +1.1 % |
+| | λ_a 1.3, μ_f 0.3 | 0.3559 | 0.3461 | 0.3444 | **−0.48 %** | 0.3420 / 0.3410 | +1.0 % |
+| Push peak (N) | λ_a 1.1, μ_f 0.3 | 4.532 | 4.526 | 4.467 | **−1.31 %** | 4.465 / 4.472 | −0.11 % |
+| | λ_a 1.3, μ_f 0.3 | 13.23 | 12.82 | 12.70 | **−0.98 %** | 12.68 / 12.68 | +0.13 % |
+| Geometric share, over 10 mm (N) | λ_a 1.1, frictionless | 0.1841 | 0.1136 | 0.1122 | **−1.24 %** | 0.1102 / 0.1107 | +1.4 % |
+| | λ_a 1.3, frictionless | 1.067 | 0.9191 | 0.9118 | **−0.80 %** | 0.9081 / 0.9089 | +0.31 % |
+
+- From 50k on, the patch sits 12.7–13.5 mm behind the tip frictionless, over the seam (11 and 13 mm behind it).
+  With friction it is centred about 5 mm inside the entry ring (whose position the diagnostic read), within its
+  radius of the edge.
+- **f32 against f64** (K3's 0.5 %, pre-registered): at 50k and μ_f 0.3 the patch reads the same to five decimals at
+  both λ_a (0.13742 and 0.34610).
+- Every run is valid: λ_z within 0.18 % on the frictionless runs, KE/IE and the balance at most 0.05 %, no inverted
+  element; the Coulomb push reads 0.985 and 0.961 at 100k, as in §16p.
+
+**What is shown beside them:**
+
+| | Case | 50k → 100k | 100k's cross-section, 1× / 2× / 4× along |
+|---|---|---|---|
+| 95th percentile / μ | λ_a 1.1, frictionless | +8.5 % | 0.1544 / 0.1500 / 0.1487 |
+| | λ_a 1.3, frictionless | +12.4 % | 0.4786 / 0.4499 / 0.4565 |
+| | λ_a 1.1, μ_f 0.3 | −5.1 % | 0.1365 / 0.1580 / 0.1464 |
+| | λ_a 1.3, μ_f 0.3 | −11.8 % | 0.3515 / 0.3897 / 0.3928 |
+| Peak / μ | λ_a 1.1, μ_f 0.3 | +5.1 % | 0.2367 / 0.2844 / 0.3439 |
+| | λ_a 1.3, μ_f 0.3 | +5.9 % | 0.6005 / 0.7004 / 0.7926 |
+| Push, 100-step peak, μ = 0 (N) | λ_a 1.1 | −14.1 % | 0.1464 / 0.1244 / 0.1200 |
+| | λ_a 1.3 | −3.2 % | 0.9657 / 0.9299 / 0.9311 |
+
+- **The percentile, read on the contact area, still does not settle with friction at 4×.** In the diagnostic, on
+  the old tributary area, it did (the two cross-sections' 4× meshes agreed within 1–4 %). What differs between the
+  two areas is the entry ring's share and pressure; how that moves the percentile is not isolated.
+- **The peak with friction rises 13–21 % with each doubling along the tube**, where the entry edge's pressure does
+  not settle (above).
+- The frictionless 100-step push peak moves 3.5 % (λ_a 1.1) and 0.1 % (λ_a 1.3) from 2× to 4×, and at 4× reads
+  8 % and 2 % above the 10 mm reading, which spreads the peak over its window.
+
+**Not covered:** refinement through the wall or around it alone; loading times other than 10 T_s; viscosities
+other than Ecoflex 00-30's; the product, where its most-loaded square centimetre is and how its unstructured mesh
+reads the percentile beside it (step 7); a lip radius; patch sizes other than 1 cm² (0.5 and 2 cm² moved at most
+2 % from 50k to 100k in the diagnostic).

@@ -7,12 +7,12 @@
 //! push over [`PUSH_TRAVEL`] of travel, which averages the crossings out.
 //!
 //! **Seated** is [`WindowContact::patch_peak`]: the contact force on the
-//! most-loaded patch of [`PROBE_AREA`], divided by that area. That is the
-//! probe area most published pressure-pain measurements use, so the reading
-//! and the limit it is judged against are taken over the same area. The
-//! pointwise pressures behind it, their peak and their area-weighted 95th
-//! percentile are shown beside it ([`WindowContact::pressures`],
-//! [`area_percentile`]).
+//! most-loaded patch of [`PROBE_AREA`], 1 cm², divided by that area. 1 cm² is
+//! the algometer tip most pressure-pain studies in a 2021 review used (plan
+//! §16s), so the reading and the limit it is judged against are taken over
+//! the same area. The pointwise pressures behind it, their peak and their
+//! area-weighted 95th percentile are shown beside it
+//! ([`WindowContact::pressures`], [`area_percentile`]).
 //!
 //! Both are read from window means (plan §15c): a node's mean position, and
 //! its mean normal force over the window.
@@ -24,13 +24,13 @@ use crate::ExplicitModel;
 use crate::executor::{Obstacle, Snapshot};
 use crate::f64::{triangle_area, vec3_cross, vec3_dot, vec3_length, vec3_scale, vec3_sub};
 
-/// The seated reading's patch: 1 cm², the probe area most published
-/// pressure-pain measurements use (fit plan D1, 2026-09-26).
+/// The seated reading's patch: 1 cm², the algometer tip most pressure-pain
+/// studies in a 2021 review used (fit plan D1, 2026-09-26; plan §16s). The
+/// size follows whichever data calibrates the seated limit.
 pub const PROBE_AREA: f64 = 1.0e-4;
 
-/// The travel the geometric share's push is averaged over: 10 mm, at least
-/// three node spacings along the path on plan §15c's 50k and 100k tubes
-/// (plan §16s).
+/// The travel the geometric share's push is averaged over: 10 mm, 2.9 and
+/// 3.6 ring spacings on plan §15c's 50k and 100k tubes (plan §16s).
 pub const PUSH_TRAVEL: f64 = 0.010;
 
 /// Sub-triangles per patch radius along a triangle's longest edge, when a
