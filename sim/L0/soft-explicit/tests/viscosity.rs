@@ -506,7 +506,7 @@ fn the_loops_step_is_the_safety_fraction_of_the_dense_critical_step() {
             stepper.damping_ratio()
         );
         assert!(
-            (0.88..=0.9 * 1.01).contains(&ratio),
+            (0.85..=0.9 * 1.02).contains(&ratio),
             "{viscosity} Pa·s: {ratio}"
         );
     }

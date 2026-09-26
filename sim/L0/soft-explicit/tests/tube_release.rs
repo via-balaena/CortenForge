@@ -48,7 +48,8 @@ fn tube_and_mandrel(material: Material) -> (ExplicitModel, Obstacle) {
 
 /// The loop's stable step at a state, against the critical step it
 /// estimates, converged: returns the f32 and f64 loops' steps over 0.9 of it,
-/// less 1 (plan §16e's 5 % bar, on the step the loop takes since §16p).
+/// less 1. The bar is 2 %: as §16e's 5 % on `ω²` was, about a fifth of the
+/// 11 % margin 0.9 leaves on the step (plan §16p).
 ///
 /// The loop estimates at `β = 2/Δt`: the elastic top mode first, then again at
 /// its step (`Stepper::new`). The reference is the fixed point of the same
@@ -91,7 +92,7 @@ fn step_errors(state: &Snapshot, time: f64, label: &str) -> (f64, f64) {
     let narrow_error =
         Stepper::new(narrow, StepperConfig::new(0.0), time).dt() / (0.9 * step) - 1.0;
     eprintln!(
-        "MARGIN the loop's step on the 10k tube, {label}, over 0.9 of the converged critical step: f64 {wide_error:+e}, f32 {narrow_error:+e} (bar 0.05; reference drift {drift:e})"
+        "MARGIN the loop's step on the 10k tube, {label}, over 0.9 of the converged critical step: f64 {wide_error:+e}, f32 {narrow_error:+e} (bar 0.02; reference drift {drift:e})"
     );
     (wide_error, narrow_error)
 }
@@ -126,12 +127,13 @@ fn k2_on_the_10k_tube_is_within_seven_percent() {
         r.max_penetration
     );
 
-    // Each of the loop's estimates depends only on the state (tests/executor.rs);
-    // check the one it would make here, loaded, where a warm-started estimate
-    // once read 3.9 % low.
+    // Check the step a fresh start makes at the loaded state, where a
+    // warm-started estimate once read 3.9 % low. In the run, the estimate also
+    // depends on the step in use (β = 2/Δt); the review measured the in-run
+    // step at +0.12 % here (plan §16p).
     let end = run.insertion.end();
     let (wide, narrow) = step_errors(&r.snapshot, end, "loaded, at K2's end");
-    assert!(wide.abs() <= 0.05 && narrow.abs() <= 0.05);
+    assert!(wide.abs() <= 0.02 && narrow.abs() <= 0.02);
 }
 
 #[test]
@@ -144,5 +146,5 @@ fn the_loops_step_is_accurate_on_the_10k_tube_at_rest() {
         ..Snapshot::default()
     };
     let (wide, narrow) = step_errors(&rest, 0.0, "at rest");
-    assert!(wide.abs() <= 0.05 && narrow.abs() <= 0.05);
+    assert!(wide.abs() <= 0.02 && narrow.abs() <= 0.02);
 }
