@@ -44,7 +44,7 @@ fn main() {
     let mut run = PartialSlipRun::plan(divisions).slowed(slowdown);
     let a = run.block.contact_half_width;
     run.cylinder.radius = radius * a;
-    run.block.half_width = 2.0 * size * a;
+    run.block.half_width = size * a;
     run.block.depth = size * a;
     run.viscous_time = viscous;
     let started = Instant::now();
@@ -63,9 +63,9 @@ fn main() {
 fn report(run: &PartialSlipRun, result: &PartialSlipResult, seconds: f64, table: bool) {
     let a = run.block.contact_half_width;
     if table {
-        for sample in &result.samples {
-            let fraction = result.fraction(sample).unwrap_or(f64::NAN);
-            let rows = sample.rows.map(|r| {
+        for reading in &result.readings {
+            let fraction = result.fraction(reading).unwrap_or(f64::NAN);
+            let rows = reading.rows.map(|r| {
                 (
                     r.contact.map_or(f64::NAN, |z| z.half_width() / a),
                     r.stick_over_contact().unwrap_or(f64::NAN),
@@ -73,10 +73,10 @@ fn report(run: &PartialSlipRun, result: &PartialSlipResult, seconds: f64, table:
             });
             println!(
                 "{:?} t={:.5} P={:.5e} Q={:.5e} fraction={fraction:.4} a/A=({:.4},{:.4}) c/a=({:.4},{:.4})",
-                sample.leg,
-                sample.time,
-                sample.normal_force,
-                sample.tangential_force,
+                reading.leg,
+                reading.time,
+                reading.normal_force,
+                reading.tangential_force,
                 rows[0].0,
                 rows[1].0,
                 rows[0].1,
@@ -91,11 +91,11 @@ fn report(run: &PartialSlipRun, result: &PartialSlipResult, seconds: f64, table:
     };
     let optional = |v: Option<f64>| v.map_or_else(|| "none".to_owned(), |v| format!("{v:.2e}"));
     let contact_ke = result
-        .monitors
+        .samples
         .iter()
         .map(|s| s.monitors.contact_kinetic_energy)
         .fold(0.0, f64::max);
-    let last = |leg: Leg| result.samples.iter().rfind(|s| s.leg == leg);
+    let last = |leg: Leg| result.readings.iter().rfind(|r| r.leg == leg);
     let pressed = last(Leg::Press).map_or(f64::NAN, |s| {
         let [f, b] = s
             .rows
@@ -103,11 +103,16 @@ fn report(run: &PartialSlipRun, result: &PartialSlipResult, seconds: f64, table:
         0.5 * (f + b) / a
     });
     let peak = result.peak_tangential_force
-        / (run.friction * last(Leg::Push).map_or(f64::NAN, |s| s.normal_force));
+        / (run.friction * last(Leg::Push).map_or(f64::NAN, |r| r.normal_force));
+    // What the press leaves along x, before any push (by symmetry it would be
+    // none; the Kuhn split is not symmetric in x).
+    let left = last(Leg::Press).map_or(f64::NAN, |r| {
+        r.tangential_force / (run.friction * r.normal_force)
+    });
     println!(
         "a/h={} block={}a R={}a eta/mu={} K6 loading={} unloading={} worst={} | pressed a={pressed:.4}a \
-         press depth={:.4}a peak Q/(f P)={peak:.4} KE/IE={} balance={} inverted={} penetration={:.2e}a \
-         contact_KE={contact_ke:.2e} | steps={} dt={:.3e} samples={} time={seconds:.1}s",
+         press depth={:.4}a pressed Q/(f P)={left:.4} peak Q/(f P)={peak:.4} KE/IE={} balance={} inverted={} penetration={:.2e}a \
+         contact_KE={contact_ke:.2e} | steps={} dt={:.3e} readings={} time={seconds:.1}s",
         a / run.block.fine,
         run.block.depth / a,
         run.cylinder.radius / a,
@@ -124,7 +129,7 @@ fn report(run: &PartialSlipRun, result: &PartialSlipResult, seconds: f64, table:
         result.max_penetration / a,
         result.steps,
         result.dt,
-        result.samples.len(),
+        result.readings.len(),
     );
 }
 

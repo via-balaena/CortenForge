@@ -39,18 +39,22 @@ impl StepperConfig {
         }
     }
 
-    /// The stable step for a vector with stiffness quotient `ω²` and damping
-    /// quotient `γ` (a [`crate::executor::TopMode`]): `safety` times central
-    /// differences' limit with the damping force at the lagging half-step
-    /// velocity, the root of `ω² Δt² + 2γ Δt = 4` (plan §16p),
-    /// `Δt = 4 / (γ + √(γ² + 4ω²))`.
+    /// The stable step for a vector with stiffness quotient `ω²` and viscous
+    /// damping quotient `γ` (a [`crate::executor::TopMode`]): `safety` times
+    /// central differences' limit with the damping force at the lagging
+    /// half-step velocity, the smaller positive root of `ω² Δt² + 2γ Δt = 4`
+    /// (plan §16p), `Δt = 4 / (γ + √(γ² + 4ω²))`.
     ///
-    /// It is `2/ω (√(1 + ξ²) − ξ)` with `ξ = γ/(2ω)`, written so that it holds
-    /// where the stiffness quotient is zero or negative (`2/γ` at zero). The
-    /// kinematic contact law adds nothing to it (plan §16o).
+    /// It is `2/ω (√(1 + ξ²) − ξ)` with `ξ = γ/(2ω)`, written so that it also
+    /// holds where the stiffness quotient is zero (`2/γ`) or negative. Where
+    /// `γ² + 4ω² < 0` no step is stable and it is not finite, which stops the
+    /// loop. The kinematic contact law adds nothing to it (plan §16o).
     #[must_use]
-    pub fn stable_step(&self, omega_squared: f64, damping: f64) -> f64 {
-        4.0 * self.safety / (damping + damping.mul_add(damping, 4.0 * omega_squared).sqrt())
+    pub fn stable_step(&self, omega_squared: f64, damping_quotient: f64) -> f64 {
+        let root = damping_quotient
+            .mul_add(damping_quotient, 4.0 * omega_squared)
+            .sqrt();
+        4.0 * self.safety / (damping_quotient + root)
     }
 
     /// The step after a re-estimate: the new limit when it is smaller (the
@@ -99,7 +103,7 @@ pub struct Stepper<E> {
     time: f64,
     steps: u64,
     omega_squared: f64,
-    damping: f64,
+    damping_quotient: f64,
     estimates: u64,
     window: bool,
     samples: Vec<Sample>,
@@ -119,7 +123,7 @@ impl<E: Executor> Stepper<E> {
             time: start,
             steps: 0,
             omega_squared: 0.0,
-            damping: 0.0,
+            damping_quotient: 0.0,
             estimates: 0,
             window: false,
             samples: Vec::new(),
@@ -157,9 +161,11 @@ impl<E: Executor> Stepper<E> {
             perturbation,
             viscous_weight,
         );
-        (self.omega_squared, self.damping) = (top.omega_squared, top.damping);
+        (self.omega_squared, self.damping_quotient) = (top.omega_squared, top.damping_quotient);
         self.estimates += 1;
-        let dt = self.config.stable_step(self.omega_squared, self.damping);
+        let dt = self
+            .config
+            .stable_step(self.omega_squared, self.damping_quotient);
         (dt.is_finite() && dt > 0.0).then_some(dt)
     }
 
@@ -285,11 +291,11 @@ impl<E: Executor> Stepper<E> {
         self.omega_squared
     }
 
-    /// The damping quotient `vᵀCv / vᵀMv` of the vector that set the latest
-    /// step.
+    /// The viscous damping quotient `vᵀCv / vᵀMv` of the vector that set the
+    /// latest step.
     #[must_use]
-    pub const fn damping(&self) -> f64 {
-        self.damping
+    pub const fn damping_quotient(&self) -> f64 {
+        self.damping_quotient
     }
 
     /// How many times the stable step has been estimated.

@@ -321,14 +321,23 @@ impl Cylinder {
     /// the nearest face. So on each face where that moves a point towards the
     /// cylinder (below, and on the side the turn tips the world's up towards)
     /// the box is widened until every point moved there lies `0.1a` below the
-    /// plane. The block lies below it, less the press's depth
-    /// (`tests/partial_slip.rs` checks every node).
+    /// plane. So it holds while the block's top stays within `0.05a` of the
+    /// plane beyond the strip: K6 presses about `0.011a` (plan §16q), and
+    /// `tests/partial_slip.rs` checks every node at `0.04a`.
     ///
     /// # Errors
     /// A [`BakeError`] if the grid cannot be baked.
+    ///
+    /// # Panics
+    /// If the turn is not less than 90° either way: the widening assumes the
+    /// world's up keeps a positive part along the body's `z`.
     pub fn baked(&self, block: &Block, cell: f64) -> Result<(SdfGridLayout, Vec<f64>), BakeError> {
         let a = block.contact_half_width;
         let (up, along) = self.body_axes();
+        assert!(
+            up[2] > 0.0,
+            "the cylinder's turn must be under 90° either way"
+        );
         let (reach, band, margin) = ((0.1 * a * self.radius).sqrt(), 0.1 * a, 0.1 * a);
         let (mut low, mut high) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
         for (s, n) in [
@@ -395,7 +404,7 @@ impl Zone {
 /// `positions` are the nodes' x, ascending. `None` if no node is in contact.
 #[must_use]
 pub fn contact_zone(positions: &[f64], normal: &[f64]) -> Option<Zone> {
-    zone(positions, normal, 0.0)
+    zone(positions, normal)
 }
 
 /// The friction deficit, over its limit `μ_f f_n`, below which a node counts
@@ -443,23 +452,23 @@ pub fn stick_zone(
             }
         })
         .collect();
-    zone(positions, &deficit, 0.0)
+    zone(positions, &deficit)
 }
 
-/// The run of `values` above `floor` around the largest, with each edge
-/// where the value squared, extrapolated linearly from the run's last two
-/// nodes, reaches zero. It moves at most one spacing past the run's last
-/// node, and stays on it where the square does not rise inwards.
-fn zone(positions: &[f64], values: &[f64], floor: f64) -> Option<Zone> {
+/// The run of positive `values` around the largest, with each edge where the
+/// value squared, extrapolated linearly from the run's last two nodes,
+/// reaches zero. An edge moves at most to the next node out, and stays on the
+/// run's last node where the square does not rise inwards.
+fn zone(positions: &[f64], values: &[f64]) -> Option<Zone> {
     let peak = (0..values.len())
-        .filter(|&i| values[i] > floor)
+        .filter(|&i| values[i] > 0.0)
         .max_by(|&i, &j| values[i].total_cmp(&values[j]))?;
     let mut first = peak;
-    while first > 0 && values[first - 1] > floor {
+    while first > 0 && values[first - 1] > 0.0 {
         first -= 1;
     }
     let mut last = peak;
-    while last + 1 < values.len() && values[last + 1] > floor {
+    while last + 1 < values.len() && values[last + 1] > 0.0 {
         last += 1;
     }
     let edge = |outer: usize, inner: usize, beyond: Option<usize>| {
@@ -518,7 +527,7 @@ impl RowReading {
 /// K6's readout over one monitor interval (plan §16b): each node's forces
 /// averaged over the interval, positions at the interval's mean.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Sample {
+pub struct Reading {
     /// The time at the interval's end.
     pub time: f64,
     /// The leg it belongs to.
@@ -533,11 +542,11 @@ pub struct Sample {
 }
 
 /// K6's criterion, per row: the largest `|c/a − closed form|` over the
-/// samples whose load fraction lies in the band (plan §16b: 0.2 to 0.8).
+/// readings whose load fraction lies in the band (plan §16b: 0.2 to 0.8).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct StickErrors {
     /// While the load rises, against [`stick_while_loading`]; `None` if no
-    /// sample fell in the band.
+    /// reading fell in the band.
     pub loading: [Option<f64>; 2],
     /// While it falls, against [`stick_while_unloading`].
     pub unloading: [Option<f64>; 2],
@@ -558,7 +567,7 @@ impl StickErrors {
 #[derive(Clone, Debug)]
 pub struct PartialSlipResult {
     /// Every monitor interval's reading, in order.
-    pub samples: Vec<Sample>,
+    pub readings: Vec<Reading>,
     /// `Q` when the return began.
     pub peak_tangential_force: f64,
     /// How far the cylinder's lowest point went below the block's top.
@@ -578,23 +587,23 @@ pub struct PartialSlipResult {
     /// The last step size.
     pub dt: f64,
     /// Every monitor read.
-    pub monitors: Vec<crate::stepping::Sample>,
+    pub samples: Vec<crate::stepping::Sample>,
 }
 
 impl PartialSlipResult {
-    /// Each sample's load fraction and phase, where K6 judges it: the push's
-    /// `Q/(μ_f P)`, and the return's `(Q_peak − Q)/(μ_f P)`.
+    /// A reading's load fraction, where K6 judges it: the push's `Q/(μ_f P)`,
+    /// and the return's `(Q_peak − Q)/(μ_f P)`.
     #[must_use]
-    pub fn fraction(&self, sample: &Sample) -> Option<f64> {
-        let limit = self.friction * sample.normal_force;
-        match sample.leg {
+    pub fn fraction(&self, reading: &Reading) -> Option<f64> {
+        let limit = self.friction * reading.normal_force;
+        match reading.leg {
             Leg::Press => None,
-            Leg::Push => Some(sample.tangential_force / limit),
-            Leg::Return => Some((self.peak_tangential_force - sample.tangential_force) / limit),
+            Leg::Push => Some(reading.tangential_force / limit),
+            Leg::Return => Some((self.peak_tangential_force - reading.tangential_force) / limit),
         }
     }
 
-    /// K6's errors over the samples whose load fraction lies in
+    /// K6's errors over the readings whose load fraction lies in
     /// `[from, to]`.
     #[must_use]
     pub fn errors(&self, from: f64, to: f64) -> StickErrors {
@@ -602,16 +611,16 @@ impl PartialSlipResult {
             loading: [None; 2],
             unloading: [None; 2],
         };
-        for sample in &self.samples {
-            let Some(fraction) = self.fraction(sample).filter(|f| (from..=to).contains(f)) else {
+        for reading in &self.readings {
+            let Some(fraction) = self.fraction(reading).filter(|f| (from..=to).contains(f)) else {
                 continue;
             };
-            let (expected, slot) = match sample.leg {
+            let (expected, slot) = match reading.leg {
                 Leg::Push => (stick_while_loading(fraction), &mut errors.loading),
                 Leg::Return => (stick_while_unloading(fraction), &mut errors.unloading),
                 Leg::Press => continue,
             };
-            for (row, error) in sample.rows.iter().zip(slot.iter_mut()) {
+            for (row, error) in reading.rows.iter().zip(slot.iter_mut()) {
                 let measured = row.stick_over_contact().unwrap_or(0.0);
                 let e = (measured - expected).abs();
                 *error = Some(error.map_or(e, |m: f64| m.max(e)));
@@ -774,7 +783,7 @@ impl PartialSlipRun {
         let damping = 2.0 * 0.05 * TAU / self.block.shear_period(self.mu, self.density);
         let mut stepper = Stepper::new(make(&model, &obstacle), StepperConfig::new(damping), 0.0);
         let rows = [self.block.top_row(0), self.block.top_row(1)];
-        let mut samples = Vec::new();
+        let mut readings = Vec::new();
         let mut at = [0.0, 0.0];
         let mut peak_tangential_force = 0.0;
         let mut press_depth = 0.0;
@@ -786,7 +795,9 @@ impl PartialSlipRun {
                 Leg::Return => ([-1.0, 0.0], self.push_speed, -1.0),
             };
             if leg == Leg::Return {
-                peak_tangential_force = samples.last().map_or(0.0, |s: &Sample| s.tangential_force);
+                peak_tangential_force = readings
+                    .last()
+                    .map_or(0.0, |r: &Reading| r.tangential_force);
             }
             if leg == Leg::Push {
                 judged_from = stepper.time();
@@ -796,18 +807,28 @@ impl PartialSlipRun {
             stepper
                 .executor_mut()
                 .set_poses(start, track.interval, &track.poses)?;
-            let mut previous: Option<(f64, f64)> = None;
+            // Each reading's distance from the leg's end, and its time.
+            let mut behind: Vec<(f64, f64)> = Vec::new();
             loop {
-                let sample = self.interval(&mut stepper, &model, &rows, leg, direction)?;
-                samples.push(sample);
+                let reading = self.interval(&mut stepper, &model, &rows, leg, direction)?;
+                readings.push(reading);
                 // Stopping takes the ramp, and goes on half as far as the leg
-                // would at its speed: stop when that would reach the end.
-                if let Some(remaining) = self.remaining(leg, &sample) {
-                    let rate = previous.map_or(0.0, |(r, t)| (remaining - r) / (sample.time - t));
+                // would at its speed: stop when that would reach the end. The
+                // rate is taken over the last half ramp, not one interval:
+                // the contact's edge moves a node at a time, so a
+                // one-interval rate spikes (plan §16q).
+                if let Some(remaining) = self.remaining(leg, &reading) {
+                    let since = reading.time - 0.5 * self.ramp;
+                    let baseline = behind
+                        .iter()
+                        .rev()
+                        .find(|&&(_, t)| t <= since)
+                        .or_else(|| behind.first());
+                    let rate = baseline.map_or(0.0, |&(r, t)| (remaining - r) / (reading.time - t));
                     if remaining + 0.5 * rate.max(0.0) * self.ramp >= 0.0 {
                         break;
                     }
-                    previous = Some((remaining, sample.time));
+                    behind.push((remaining, reading.time));
                 }
                 if stepper.time() - start > self.longest_leg {
                     return Err(PartialSlipError::LegDidNotEnd {
@@ -834,40 +855,40 @@ impl PartialSlipRun {
                 if stepper.time() >= until {
                     break;
                 }
-                let sample = self.interval(&mut stepper, &model, &rows, leg, direction)?;
-                samples.push(sample);
+                let reading = self.interval(&mut stepper, &model, &rows, leg, direction)?;
+                readings.push(reading);
             }
         }
-        let monitors = stepper.samples().to_vec();
+        let samples = stepper.samples().to_vec();
         Ok(PartialSlipResult {
-            samples,
+            readings,
             peak_tangential_force,
             press_depth,
             friction: self.friction,
             kinetic_over_internal: gates::kinetic_over_internal(
-                &monitors,
+                &samples,
                 judged_from,
                 stepper.time(),
             ),
-            energy_balance: gates::energy_balance(&monitors),
-            inverted: gates::inverted(&monitors),
-            max_penetration: monitors.last().map_or(0.0, |s| s.monitors.max_penetration),
+            energy_balance: gates::energy_balance(&samples),
+            inverted: gates::inverted(&samples),
+            max_penetration: samples.last().map_or(0.0, |s| s.monitors.max_penetration),
             steps: stepper.steps(),
             dt: stepper.dt(),
-            monitors,
+            samples,
         })
     }
 
-    /// How far `leg` is past its end at `sample`, negative before it, in a
+    /// How far `leg` is past its end at `reading`, negative before it, in a
     /// measure that grows about linearly with the leg's travel: while
     /// pressing, the square of the rows' mean contact half-width over `a²`,
     /// less 1 (Hertz: `a² ∝ P`); while pushing, `Q/(μ_f P)` less the peak;
     /// while returning, `−Q/(μ_f P)`. `None` before both rows touch.
-    fn remaining(&self, leg: Leg, sample: &Sample) -> Option<f64> {
-        let fraction = sample.tangential_force / (self.friction * sample.normal_force);
+    fn remaining(&self, leg: Leg, reading: &Reading) -> Option<f64> {
+        let fraction = reading.tangential_force / (self.friction * reading.normal_force);
         match leg {
             Leg::Press => {
-                let [front, back] = sample.rows.map(|r| r.contact.map(|z| z.half_width()));
+                let [front, back] = reading.rows.map(|r| r.contact.map(|z| z.half_width()));
                 let a = self.block.contact_half_width;
                 front
                     .zip(back)
@@ -936,7 +957,7 @@ impl PartialSlipRun {
         rows: &[Vec<u32>; 2],
         leg: Leg,
         direction: f64,
-    ) -> Result<Sample, RunError> {
+    ) -> Result<Reading, RunError> {
         stepper.open_window();
         let reads = stepper.samples().len();
         while stepper.samples().len() == reads {
@@ -955,7 +976,7 @@ impl PartialSlipRun {
                 stick: stick_zone(&row.positions, &row.normal, &along, self.friction),
             }
         });
-        Ok(Sample {
+        Ok(Reading {
             time: stepper.time(),
             leg,
             normal_force,

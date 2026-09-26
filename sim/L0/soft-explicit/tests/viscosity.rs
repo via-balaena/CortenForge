@@ -392,7 +392,8 @@ fn a_highly_viscous_block_needs_the_damped_step_and_runs_on_it() {
     let mut elastic = cpu::f64::CpuExecutor::new(&model, &rising_floor(0.0)).unwrap();
     let p = elastic.epsilon().sqrt() * elastic.shortest_edge();
     let top = elastic.estimate_top_mode(StepperConfig::new(0.0).power_iterations, p, 0.0);
-    let from_elastic_top = StepperConfig::new(0.0).stable_step(top.omega_squared, top.damping);
+    let from_elastic_top =
+        StepperConfig::new(0.0).stable_step(top.omega_squared, top.damping_quotient);
     eprintln!(
         "MARGIN at 150 Pa·s: the elastic top mode's damping ratio {:.3}; the loop's step {:.3} of the step it gives",
         top.damping_ratio(),
@@ -503,7 +504,7 @@ fn the_loops_step_is_the_safety_fraction_of_the_dense_critical_step() {
         let ratio = stepper.dt() / critical;
         eprintln!(
             "MARGIN loop's step over the dense critical step at {viscosity} Pa·s: {ratio:.4} (ξ {:.3})",
-            stepper.damping() / (2.0 * stepper.omega_squared().sqrt())
+            stepper.damping_quotient() / (2.0 * stepper.omega_squared().sqrt())
         );
         assert!(
             (0.85..=0.9 * 1.02).contains(&ratio),

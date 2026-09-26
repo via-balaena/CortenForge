@@ -4,11 +4,12 @@
 
 #![allow(clippy::unwrap_used, clippy::float_cmp, clippy::cast_precision_loss)]
 
+use sim_soft_explicit::cpu;
 use sim_soft_explicit::executor::Obstacle;
 use sim_soft_explicit::f64::{Material, pose_to_body};
 use sim_soft_explicit::fixtures::partial_slip::{
-    Block, Cylinder, STICKING_DEFICIT, Zone, contact_zone, stick_while_loading,
-    stick_while_unloading, stick_zone,
+    Block, Cylinder, Leg, PartialSlipRun, STICKING_DEFICIT, Zone, contact_zone,
+    stick_while_loading, stick_while_unloading, stick_zone,
 };
 
 const A: f64 = 1.0e-3;
@@ -165,6 +166,55 @@ fn a_slipping_node_that_stuck_on_some_steps_still_reads_as_slipping() {
     assert_eq!(read, exact, "a 1 % deficit moved the stick zone");
 }
 
+/// A row of eleven nodes 1 apart, all in contact at a limit of 1
+/// (`μ_f f_n`), with the deficits given and the rest slipping.
+fn stick_row(deficits: &[(usize, f64)]) -> Option<Zone> {
+    let x: Vec<f64> = (0..11).map(f64::from).collect();
+    let normal = vec![1.0 / FRICTION; 11];
+    let mut tangential = vec![1.0; 11];
+    for &(i, d) in deficits {
+        tangential[i] = 1.0 - d;
+    }
+    stick_zone(&x, &normal, &tangential, FRICTION)
+}
+
+#[test]
+fn an_edge_reaches_no_further_than_the_next_node() {
+    // The deficit barely rises inwards from the zone's last nodes, so the
+    // extrapolation reaches almost nine spacings out; runs' edges often do
+    // (plan §16q). It stops at the first slipping node.
+    let zone = stick_row(&[(3, 0.9), (4, 0.95), (5, 1.0), (6, 0.95), (7, 0.9)]).unwrap();
+    assert_eq!(
+        zone,
+        Zone {
+            left: 2.0,
+            right: 8.0
+        }
+    );
+}
+
+#[test]
+fn a_sticking_node_apart_from_the_stick_zone_is_not_part_of_it() {
+    // A lone node at the contact's edge, two slipping nodes from the zone, as
+    // runs have (plan §16q). The zone is the run around the largest deficit.
+    let zone = stick_row(&[(4, 0.3), (5, 1.0), (6, 0.3), (9, 0.2)]).unwrap();
+    let alone = stick_row(&[(4, 0.3), (5, 1.0), (6, 0.3)]).unwrap();
+    assert_eq!(zone, alone);
+    assert!(zone.right < 7.0);
+}
+
+#[test]
+fn an_edge_whose_square_falls_inwards_stays_on_its_last_node() {
+    let zone = stick_row(&[(2, 0.6), (3, 0.5), (4, 1.0), (5, 0.5), (6, 0.6)]).unwrap();
+    assert_eq!(
+        zone,
+        Zone {
+            left: 2.0,
+            right: 6.0
+        }
+    );
+}
+
 #[test]
 fn the_closed_forms_are_the_published_ones() {
     assert_eq!(stick_while_loading(0.0), 1.0);
@@ -251,13 +301,15 @@ fn reading(obstacle: &Obstacle, cylinder: &Cylinder, x: f64, z: f64, point: [f64
 
 #[test]
 fn the_baked_cylinder_is_exact_at_the_contact_and_outside_everywhere_else() {
-    // The plan's turn, and a smaller one: turned 10°, the box that just holds
-    // the strip has a corner 0.04a inside the cylinder that the top's far
-    // nodes are clamped onto.
+    // The plan's turn, and others: turned ±10°, the box that just holds the
+    // strip has a corner 0.04a inside the cylinder that the top's far nodes
+    // are clamped onto, one side or the other; and 60°.
     for (divisions, radius, turn) in [
         (50.0, 100.0, 30.0),
         (12.0, 200.0, 30.0),
         (12.0, 100.0, 10.0),
+        (12.0, 100.0, -10.0),
+        (12.0, 100.0, 60.0),
     ] {
         let block = Block::plan(A, divisions);
         let cylinder = Cylinder {
@@ -299,4 +351,31 @@ fn the_baked_cylinder_is_exact_at_the_contact_and_outside_everywhere_else() {
         );
         assert!(worst < 1e-6 * A);
     }
+}
+
+#[test]
+fn a_coarse_k6_runs_from_the_press_to_the_return() {
+    // K6's whole path at a/h 4, four times faster than the plan's loading: a
+    // sanity run, as `tube_sanity` is the tube's, with no accuracy claim.
+    let run = PartialSlipRun::plan(4.0).slowed(0.25);
+    let result = run
+        .run(|model, obstacle| cpu::f64::CpuExecutor::new(model, obstacle).unwrap())
+        .unwrap();
+    let judged = |leg: Leg| {
+        result
+            .readings
+            .iter()
+            .filter(|r| r.leg == leg)
+            .filter(|r| result.fraction(r).is_some_and(|f| (0.2..=0.8).contains(&f)))
+            .count()
+    };
+    let errors = result.errors(0.2, 0.8);
+    eprintln!(
+        "MARGIN K6 sanity at a/h 4: {} steps, errors {errors:?}, energy balance {:?}",
+        result.steps, result.energy_balance
+    );
+    assert!(judged(Leg::Push) > 0 && judged(Leg::Return) > 0);
+    assert!(errors.worst().is_some_and(f64::is_finite));
+    assert!(result.energy_balance.is_some_and(|e| e <= 0.01));
+    assert!(!result.inverted);
 }

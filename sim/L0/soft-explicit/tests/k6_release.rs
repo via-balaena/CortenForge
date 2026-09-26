@@ -24,24 +24,26 @@ fn the_coarse_k6_holds_the_stick_zone_to_the_closed_forms() {
         .run(|model, obstacle| cpu::f64::CpuExecutor::new(model, obstacle).unwrap())
         .unwrap();
     let errors = result.errors(0.2, 0.8);
+    // Readings in the band's lower half: the leg's end and its hold alone
+    // put about half the readings near 0.8.
     let judged = |leg: Leg| {
         result
-            .samples
+            .readings
             .iter()
-            .filter(|s| s.leg == leg)
-            .filter(|s| result.fraction(s).is_some_and(|f| (0.2..=0.8).contains(&f)))
+            .filter(|r| r.leg == leg)
+            .filter(|r| result.fraction(r).is_some_and(|f| (0.2..=0.5).contains(&f)))
             .count()
     };
     eprintln!(
-        "MARGIN coarse K6: loading {:?}, unloading {:?} (bar 0.1) over {} and {} samples; \
-         energy balance {:?}",
+        "MARGIN coarse K6: loading {:?}, unloading {:?} (bar 0.1), with {} and {} readings \
+         at fractions 0.2–0.5; energy balance {:?}",
         errors.loading,
         errors.unloading,
         judged(Leg::Push),
         judged(Leg::Return),
         result.energy_balance,
     );
-    assert!(judged(Leg::Push) >= 50 && judged(Leg::Return) >= 50);
+    assert!(judged(Leg::Push) >= 20 && judged(Leg::Return) >= 20);
     let worst = errors.worst().unwrap();
     assert!(worst <= 0.1, "the stick zone is off by {worst} of a");
     assert!(result.energy_balance.unwrap() <= 0.01);

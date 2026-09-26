@@ -900,7 +900,7 @@ impl Executor for CpuExecutor {
         }
         TopMode {
             omega_squared: stiffness_quotient,
-            damping: if self.viscous {
+            damping_quotient: if self.viscous {
                 quotient(&measured, &damping(&measured))
             } else {
                 0.0

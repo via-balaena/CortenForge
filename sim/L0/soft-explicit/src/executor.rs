@@ -165,15 +165,15 @@ pub struct TopMode {
     pub omega_squared: f64,
     /// `vᵀCv / vᵀMv`, with `C v` minus the viscous forces at velocities `v`:
     /// twice the damping ratio times `ω`. Zero for an elastic material.
-    pub damping: f64,
+    pub damping_quotient: f64,
 }
 
 impl TopMode {
-    /// The viscous damping ratio `ξ = damping / (2ω)`; not finite where the
-    /// stiffness quotient is not positive.
+    /// The viscous damping ratio `ξ = damping_quotient / (2ω)`; not finite
+    /// where the stiffness quotient is not positive.
     #[must_use]
     pub fn damping_ratio(&self) -> f64 {
-        self.damping / (2.0 * self.omega_squared.sqrt())
+        self.damping_quotient / (2.0 * self.omega_squared.sqrt())
     }
 }
 
