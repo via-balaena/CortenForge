@@ -270,7 +270,9 @@ which inset would pass.
       6 minutes. The Mullins state is not a verdict corner (U11).
     - Full verdicts across a D3 search of 3–4 insets would take 18–24 minutes, over this
       15-minute limit (arithmetic). So the search uses the instant per-slice estimate to pick its
-      candidates, and runs full verdicts at 1–2 insets (soft-contact recon §15g step 7).
+      candidates, and runs full verdicts at 1–2 insets (soft-contact recon §15g step 7). *(2026-09-26,
+      recon §16r: on `base_mold` as meshed at the element size K2 needs, a press takes 0.29–0.61 of D4 at
+      K1's rate, so 3–4 verdicts take 4–12 minutes, within 15; arithmetic.)*
     - If the new solver takes far longer on the same scene, revisit the budget rather than cut the
       physics.
   - **D5 — Where the inset changes.** *Decided:* on the fit screen, as **Try at *n* mm**, with D3's
@@ -374,7 +376,7 @@ This is why the architecture changed (soft-contact recon §3).
 | Gate | What must hold | Baseline today |
 |---|---|---|
 | **G1 — Drawn wall outside drawn scan** | No drawn wall vertex inside the drawn scan (beyond a stated tolerance) | Shipped default: 720 of 1 684 more than 1 mm inside, deepest 6.06 mm |
-| **G2 — Bounded penetration** | No node deeper than **1 % of the inset** (0.05 mm on `base_mold`) at any step. An engineering call (Jon, 2026-09-24: *"your call, just need that balance of real life/visual tranferable realism for viusals and legit engineering work"*): penalty contact always penetrates slightly, so this bounds it as a numerical tolerance (soft-contact recon §15c). **The gate stands; if the contact law cannot meet it, the law changes** (recon 15g step 2). Kinematic projection has none. For the old Tet10 solver the gate was no node through, corners and midsides. *(2026-09-25: the explicit solver's contact law is now kinematic. On the benchmark tube the deepest node is at most 0.2 µm inside the grid over a run, and 0.9 µm inside the true surface at its end (soft-contact recon §16o). On `base_mold`, G2 rests mostly on the baked scan grid's own error, not yet measured.)* | Met on the benchmark tube (recon §16o); not yet run on `base_mold` |
+| **G2 — Bounded penetration** | No node deeper than **1 % of the inset** (0.05 mm on `base_mold`) at any step. An engineering call (Jon, 2026-09-24: *"your call, just need that balance of real life/visual tranferable realism for viusals and legit engineering work"*): penalty contact always penetrates slightly, so this bounds it as a numerical tolerance (soft-contact recon §15c). **The gate stands; if the contact law cannot meet it, the law changes** (recon 15g step 2). Kinematic projection has none. For the old Tet10 solver the gate was no node through, corners and midsides. *(2026-09-25: the explicit solver's contact law is now kinematic. On the benchmark tube the deepest node is at most 0.2 µm inside the grid over a run, and 0.9 µm inside the true surface at its end (soft-contact recon §16o). On `base_mold`, G2 rests mostly on the baked scan grid's own error, not yet measured.)* *(2026-09-26, recon §16r: measured; no grid tried meets it, U18.)* | Met on the benchmark tube (recon §16o); on `base_mold` the scan grid alone exceeds it (U18) |
 | **G3 — Full seat** | The full inset is reached along the sliding path | Growing: 4.531 of 5 mm. Sliding with the inset: not run |
 | **G4 — κ independent of the schedule** (implicit solver only) | The derived κ does not change with the step count | Holds (the ceiling rule) |
 | **G5 — Heat map in the rest frame** | `the_heat_map_reads_the_deformed_view_at_rest_positions` passes | Passes; fails under four mutations |
@@ -469,10 +471,28 @@ in CI); G5 already gates in CI.
     size, and on the friction benchmark's block it shrinks the stable step 19× at 83 µm elements and 80× at
     20 µm, against 12–28 % on the tube's meshes. The product's element size is set in 2d; an implicit viscous
     step or a Maxwell branch would change this cost.
+  - *2026-09-26 (soft-contact recon §16r):* on `base_mold`'s wall at the element size K2 needs, at ν 0.49 and
+    Ecoflex 00-30's η/μ, the viscosity cuts the stable step to 0.67 of the elastic one, and a press takes 0.43 of
+    D4 with it (0.29 without) if the GPU meets K1, and 0.10 on the CPU. Across the published fits' 5.2–10.3 Pa·s it
+    takes 0.39–0.53.
 - **U16 — D1's readings do not converge on the tube** (soft-contact recon §16p, K5, 2026-09-25). The seated 95th
   percentile moved by 8–12 % from the 50k to the 100k mesh in three of four cases (−2.2 % in the fourth), and the
   frictionless push peak by 14 % (λ_a 1.1). The push with friction converged. §15a sends this back to D1's
   readings, or the lip radius, before step 7.
+- **U17 — The product wall's canal surface** (soft-contact recon §16r, 2026-09-26). At the element size K2 needs,
+  the old path's wall puts the canal nodes off the true canal surface: its 5th and 95th percentiles at −0.50 and
+  +0.32 of an element (into the canal, and into the wall), the worst at 1.25. The scan's decimation is not the
+  cause (the undecimated scan gives the same percentiles); between the wall's grid, its pre-smooth and the mesher,
+  what does has not been isolated. Projecting the nodes onto the surface brings 95–99 % within 1 % of an element and
+  costs the stable step: with the viscosity, a press then takes 1.03 of D4 at K1's rate at a quality floor of 0.5,
+  and 8.6 at 0.1 (0.23 and 1.95 on the CPU). Step 6 chooses: a floor, a finer grid under the mesher, or a mesher
+  that places the surface nodes itself.
+- **U18 — G2 on `base_mold` rests on the scan grid** (soft-contact recon §16r, 2026-09-26). The contact law holds a
+  node on the baked grid's surface (measured on the tube, §16o; on the product it needs a run, step 7), so G2 there
+  is the grid's own error against the scan. No grid measured meets it: the nearest, 0.25 mm without the pre-smooth,
+  lets a node sit 2.3 times the bar deep, and 1.8 % of the scan's points past it. The pre-smooth cuts that share
+  (to 0.34 % at 0.25 mm) and deepens the worst point (to 3.2 times), which sits beside the cap's rim. Step 6's bake
+  sets the grid, and its pre-smooth, against this.
 
 ---
 
