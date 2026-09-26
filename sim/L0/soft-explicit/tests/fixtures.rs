@@ -9,9 +9,10 @@ use sim_soft_explicit::ModelError;
 use sim_soft_explicit::executor::Snapshot;
 use sim_soft_explicit::f64::Material;
 use sim_soft_explicit::fixtures::golden::THICK_TUBE;
+use sim_soft_explicit::fixtures::grid::BakeError;
 use sim_soft_explicit::fixtures::tube::{
-    BakeError, BandReading, ECOFLEX_00_30_VISCOUS_TIME, Insertion, Mandrel, Mesh, Tube, TubeRun,
-    Walls, node_pressures, read_band,
+    BandReading, ECOFLEX_00_30_VISCOUS_TIME, Insertion, Mandrel, Mesh, Tube, TubeRun, Walls,
+    node_pressures, read_band,
 };
 
 const SILICONE: Material = Material {

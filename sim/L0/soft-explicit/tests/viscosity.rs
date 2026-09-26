@@ -229,10 +229,11 @@ fn rising_floor(friction: f64) -> Obstacle {
 
 #[test]
 fn the_energy_balance_holds_with_viscosity() {
-    // No mass damping, so the viscosity is the only loss, and large enough to
-    // be a visible share of the balance.
+    // No mass damping, so the viscosity is the only loss. At about 30 % of
+    // the peak internal energy, the viscous work 5 % short moves the balance
+    // by 1.5 %, past its 1 % (measured by that edit).
     let model = pressed_block(Material {
-        viscosity: 20.0,
+        viscosity: 300.0,
         ..SILICONE
     });
     let mut stepper = Stepper::new(
@@ -252,7 +253,7 @@ fn the_energy_balance_holds_with_viscosity() {
         last.damping_loss / peak
     );
     assert!(
-        last.damping_loss >= 0.02 * peak,
+        last.damping_loss >= 0.25 * peak,
         "the viscous loss must be large enough to test"
     );
     let error = gates::energy_balance(samples).unwrap();
@@ -356,10 +357,10 @@ fn the_top_modes_damping_ratio_is_the_dense_ones() {
     e.set_state(0.0, &u, &vec![[0.0; 3]; model.node_count()], None);
     let p = e.epsilon().sqrt() * e.shortest_edge();
     let top = e.estimate_top_mode(StepperConfig::new(0.0).power_iterations, p, 0.0);
-    let error = top.damping_ratio / expected - 1.0;
+    let error = top.damping_ratio() / expected - 1.0;
     eprintln!(
         "MARGIN top mode's damping ratio: {:.4} against the dense {expected:.4} ({error:+e}); ω² {:+e}",
-        top.damping_ratio,
+        top.damping_ratio(),
         top.omega_squared / omega_squared - 1.0
     );
     assert!(
@@ -391,15 +392,14 @@ fn a_highly_viscous_block_needs_the_damped_step_and_runs_on_it() {
     let mut elastic = cpu::f64::CpuExecutor::new(&model, &rising_floor(0.0)).unwrap();
     let p = elastic.epsilon().sqrt() * elastic.shortest_edge();
     let top = elastic.estimate_top_mode(StepperConfig::new(0.0).power_iterations, p, 0.0);
-    let from_elastic_top =
-        StepperConfig::new(0.0).stable_step(top.omega_squared, top.damping_ratio);
+    let from_elastic_top = StepperConfig::new(0.0).stable_step(top.omega_squared, top.damping);
     eprintln!(
         "MARGIN at 150 Pa·s: the elastic top mode's damping ratio {:.3}; the loop's step {:.3} of the step it gives",
-        top.damping_ratio,
+        top.damping_ratio(),
         stepper.dt() / from_elastic_top
     );
     assert!(
-        top.damping_ratio > 0.3,
+        top.damping_ratio() > 0.3,
         "the viscosity must be large enough to test"
     );
     assert!(stepper.dt() < 0.8 * from_elastic_top);
@@ -503,7 +503,7 @@ fn the_loops_step_is_the_safety_fraction_of_the_dense_critical_step() {
         let ratio = stepper.dt() / critical;
         eprintln!(
             "MARGIN loop's step over the dense critical step at {viscosity} Pa·s: {ratio:.4} (ξ {:.3})",
-            stepper.damping_ratio()
+            stepper.damping() / (2.0 * stepper.omega_squared().sqrt())
         );
         assert!(
             (0.85..=0.9 * 1.02).contains(&ratio),
