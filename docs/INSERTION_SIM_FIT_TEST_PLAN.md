@@ -16,7 +16,7 @@ Phase 2 flow with D1–D5 as recommended.
 >   unknowns (§7) are updated.
 
 **Scene:** the product scan `base_mold` — 5 mm inset, 17 mm Dragon Skin 10A at 25 % Slacker, curved
-centerline 120.9 mm long. ⛔ It is a sensitive anatomical scan: probes load it from outside the repo,
+centerline. ⛔ It is a sensitive scan: probes load it from outside the repo,
 and it must never be committed.
 
 **How to use this document.** Section 1 is what the fit test must do. Sections 2–3 say where it stands and
@@ -41,7 +41,7 @@ In Jon's words (2026-09-23):
 > physics is for simulating how the scanned object […] will do against the silicone (00-30 vs dragonskin
 > 10, etc) and different insets. if the inset is too big/hole is too tight where it cant comfortably (we
 > will have to define this threshold) go in, then the inset should be reduced. this sim is for a user to
-> fine tune their adaptive pleasure device to be perfect for their scanned anatomy so they dont have to
+> fine tune their [device] to be perfect for their [scan] so they dont have to
 > (or reduced amount of) physically iterate with physically casting and testing. This will also in the
 > future be used to simulate other things, like sliding a foot into a boot, for the tightest fit, thats
 > still able to be slid into."
@@ -88,9 +88,9 @@ This section describes the replaced Tet10 solver. "Recon" in its tables means th
 | The scan is always inside the cavity | A still copy of the scan is drawn at the SEATED pose by default | `ScanMeshVisible::default()` is `true`, pinned by a test at `main.rs:2207` |
 | With the bridge ticked, nothing moves; the wall just swells | The bridge forces the GROWING model | `kick_off_simulation`, `insertion_sim_ui.rs:707` |
 | The moving scan appears only sometimes | It is drawn only in sliding mode with Show-deformed on | `visible_pose_for_intruder`, `main.rs:1097` |
-| No frame shows the scan outside | The first recorded step is t = 1/n. At 16 steps the tip is already 7.56 mm (120.94 / 16) past the entrance | `slide_pose_at`; `DEFAULT_N_STEPS = 16`, `insertion_sim_ui.rs:67` |
+| No frame shows the scan outside | The first recorded step is t = 1/n. At 16 steps the tip is already a sixteenth of the path past the entrance | `slide_pose_at`; `DEFAULT_N_STEPS = 16`, `insertion_sim_ui.rs:67` |
 | **The scan shows through the wall** | The panel draws the FULL-SIZE scan (`spawn_intruder_mesh`, `main.rs:989`), but the physics pushes the wall with the scan SHRUNK by the inset | Measured, next row |
-| ↳ measured | Shipped default (penalty sliding, 16 steps): **12/16** steps converge, reaching 90.7 of 120.9 mm. At that step **822 of 1 684** drawn wall vertices sit inside the drawn scan, **720 deeper than 1 mm, deepest 6.06 mm** | A temporary probe through `run_sim_pipeline`, reverted. Recorded in memory `project_insertion_sim_answers_can_it_slide_in` |
+| ↳ measured | Shipped default (penalty sliding, 16 steps): **12/16** steps converge, reaching t = 0.75. At that step **822 of 1 684** drawn wall vertices sit inside the drawn scan, **720 deeper than 1 mm, deepest 6.06 mm** | A temporary probe through `run_sim_pipeline`, reverted. Recorded in memory `project_insertion_sim_answers_can_it_slide_in` |
 | The heat map is slow on the bridge | It colours every solved-mesh node (125 575), though only 5 261 are drawn: **4.08 s per call** | Recon, `PER-GAUSS-POINT READOUTS` |
 | The wall looks faceted | The deformed view draws corner triangles; the Tet10 midside curvature is not drawn | Recon, same section |
 | The drawn wall is smoother than the part that gets poured | The simulated cavity is a smooth offset; the poured plug has three ridge rings (1.8–2.0 mm deep), texture, side pinch and tip relief | `product_scene` doc, `insertion_sim.rs` |
@@ -488,5 +488,5 @@ in CI); G5 already gates in CI.
   THE PRODUCT SCAN`); `docs/archive/F4_FALSIFICATION_POSTMORTEM.md`; `sim/L0/soft/src/contact/ipc.rs`
   module docs.
 - **Memory:** `project_insertion_sim_architecture_gaps`, `project_insertion_sim_answers_can_it_slide_in`,
-  `project_insertion_sim_renovation`, `project_pleasure_robot_arc`, `project_app_sdk_separation`,
+  `project_insertion_sim_renovation`, `project_app_sdk_separation`,
   `project_cendrillon_slint_to_bevy_migration`.

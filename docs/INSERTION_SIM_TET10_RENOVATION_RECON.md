@@ -1490,9 +1490,8 @@ Listed because the confidence of §4 rests on these being open, not closed.
    clear; the bare scan would ask it to make 4.80 mm of room. The bare row's
    three distance columns are the as-written ones minus exactly 5 mm.
 
-   The most room is asked at t = 0.6875 (the moving tip 83 mm in), of a node
-   107 mm from the SEATED tip along the 120.9 mm centerline — about 14 mm inside
-   the entrance — and 12 mm off it. 8.3 mm of it is asked with no inset at all.
+   The most room is asked at t = 0.6875, of a node about 14 mm inside the
+   entrance and 12 mm off the centerline. 8.3 mm of it is asked with no inset at all.
    The pose is RIGID: the scan turns about its tip to follow the centerline. Why
    it asks that much there has not been isolated; F4's postmortem had called
    this pose mismatch "small".
@@ -1500,15 +1499,15 @@ Listed because the confidence of §4 rests on these being open, not closed.
    **Schedule.** The ramp can derive κ only while the worst per-step normal
    closing stays under the band, `closing < d̂ = 1.2 mm`
    (`bridge_face_barrier_kappa`). That closing (`sliding_normal_increment_m`,
-   corner nodes only) runs 0.91–1.16× the arc step on five schedules:
+   corner nodes only) on five schedules:
 
-   | steps | arc step (mm) | closing, as written | closing, bare | κ derivable |
-   |---|---|---|---|---|
-   | 16 | 7.559 | 6.914 | 7.197 | no |
-   | 32 | 3.779 | 3.900 | 4.212 | no |
-   | 64 | 1.890 | 1.994 | 2.155 | no |
-   | 128 | 0.945 | 1.042 | 1.088 | yes |
-   | 256 | 0.472 | 0.525 | 0.550 | yes |
+   | steps | closing, as written (mm) | closing, bare (mm) | κ derivable |
+   |---|---|---|---|
+   | 16 | 6.914 | 7.197 | no |
+   | 32 | 3.900 | 4.212 | no |
+   | 64 | 1.994 | 2.155 | no |
+   | 128 | 1.042 | 1.088 | yes |
+   | 256 | 0.525 | 0.550 | yes |
 
    One step count at a time from 65, the first the ramp accepts is **110** as
    written (closing 1.180 mm) and **117** bare (1.189 mm); the closing is not
@@ -1522,7 +1521,7 @@ Listed because the confidence of §4 rests on these being open, not closed.
    **Run as written at 128 steps**
    (`the_sliding_bridge_as_written_on_the_product_scan`, tolerance 1e-1, re-run
    bit-identical at a clean `1f23d4d6`): **67/128 converged**, reaching
-   t = 0.523 (63.3 of 120.9 mm), then stopped on a validity-domain violation
+   t = 0.523, then stopped on a validity-domain violation
    (over-stretched or inverted) at **tet 516** — the element id the growing
    bridge stops on at 32 steps. At the last converged step no boundary CORNER
    node is through the contact (min gap 0.423 mm; midsides not checked), the

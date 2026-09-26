@@ -109,7 +109,7 @@ planarity RMS on `base_mold` to size the trim.
 
 ### S0 RESULTS (2026-05-28 — Python plane-fits on the `base_mold` cast STLs)
 **(A) cup mating face: NOT flat — H1 + H2 both real.** piece_0's seam face
-deviates **RMS 3.8 mm / peak 8.4 mm** from its best-fit plane AND that plane is
+deviates **several mm** from its best-fit plane AND that plane is
 tilted **~3.5° from vertical**. So the seam is both *tilted* (H1) and *bowed*
 several mm (H2) — not merely a flange-inner-edge illusion (H3). The single
 arc-midpoint seam plane genuinely fails on this curved part. → S1 (explicit
@@ -157,12 +157,12 @@ The **fit method is OPEN (§8 OQ1)** — candidates:
 > midpoint — which misses a leaning apex), the plane is
 > (1) **anchored through the cap-centroid → apex axis** (the base→highest-point line,
 > so it follows the part's tilt and passes through the dome tip by construction), and
-> (2) **rotated about that axis to the closest-to-50/50 body split** (the dome/glans
+> (2) **rotated about that axis to the closest-to-50/50 body split** (the dome
 > is asymmetric, so the azimuth matters — not just the tilt).
 >
 > Probe (191k-tri scan; cap plane from `.prep.toml`; per-height signed extent each
 > side of the seam, area-weighted balance):
-> - part is only **2.5° off vertical** (apex offset 5.7 mm); optimal normal
+> - part is only **2.5° off vertical**; optimal normal
 >   `(0.77, 0.64, 0.02)` — ~1° from horizontal, diagonal in X-Y, and DIFFERENT from
 >   both the lopsided `Y` and the non-manifold `X`.
 > - **apex-anchored plane: symmetric every height band** (e.g. −16.0/+16.8 mm at the
@@ -283,7 +283,7 @@ first. §8 OQ3.
 > ---
 >
 > **SUPERSEDED — original floor-pour decouple (workshop, 2026-05-29, kept for the
-> trail):** pour orientation = dome/glans UP; placement = OPPOSITE ENDS → VENT at the
+> trail):** pour orientation = dome UP; placement = OPPOSITE ENDS → VENT at the
 > dome tip, POUR at the floor/mouth end (bottom-fill). Dropped because the floor pour
 > needs a riser to the apex for complete fill and a downward floor port can't take a
 > gravity funnel — apex-pour is strictly simpler and self-verifying for fill. The
@@ -322,7 +322,7 @@ Each code phase: cold-read + full gates (`cargo xtask grade-all`), per prior arc
    curve-following demold. Need the curvature ceiling (§8 OQ2).
    > **EMPIRICAL (2026-05-29, `base_mold` apex-pour regen):** this is now
    > confirmed real AND shown to be a no-win for a single flat plane on this part.
-   > The glans leans ~−Y off the shaft. Per-Z-band cup-half measurement: the shaft
+   > The dome leans ~−Y off the body. Per-Z-band cup-half measurement: the body
    > bisects evenly (±23 mm both halves) but near the dome one half collapses to a
    > 4–12 mm sliver while the other wraps the dome (lopsided seam — surfaced by the
    > apex pour sitting right there). Flipping `split_normal` X→Y to put the seam

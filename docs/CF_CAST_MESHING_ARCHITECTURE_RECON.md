@@ -1176,11 +1176,11 @@ sidesteps the whole problem for this part.
 After 1.5 mm shipped the slit fix, the workshop saw a new floor defect: an
 **octagonal groove ringing the plug-lock socket** (cf-view + Orca). Long
 mis-chase (recorded so the next session doesn't repeat it): it is NOT a deep
-organic bowl — the cleaned scan is **capped flat at the cap plane** (z = −60,
-scan z-min = −60), so the layer body does not extend below the cap and the
+organic bowl — the cleaned scan is **capped flat at the cap plane** (the
+scan's z-min), so the layer body does not extend below the cap and the
 cavity floor is *naturally flat at z = cap* at a fine cell. ROOT: the
 `flat_cavity_floor` SLAB (S1b) itself. Its fill+cut clamp pulls a **bimodal
-floor** (most faces to z = −61.15, islands left at z = −60); that 1.15 mm step,
+floor** (most faces 1.15 mm below the cap, islands left at it); that 1.15 mm step,
 traced as the ray-sampled footprint polygon, **is the groove**. A/B at 1.5 mm,
 cavity floor around the socket (r 6–26 mm, off-seam): **slab OFF → flat, std
 0.13 mm; slab ON → bimodal, std 0.47 mm + groove.** FIX: set
