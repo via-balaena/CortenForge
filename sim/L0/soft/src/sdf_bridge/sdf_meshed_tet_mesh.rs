@@ -39,7 +39,7 @@
 //! sub-tets), Decision I (`QualityMetrics` four `Vec<f64>`), Decision
 //! J (`MeshAdjacency` unit struct), Decision M (D-8/D-9/D-10/D-11).
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
 use nalgebra::{Point3, SMatrix};
 
@@ -51,10 +51,10 @@ use crate::mesh::{
     interface_flags_from_field, materials_from_field, quality,
 };
 
-use super::MeshingHints;
 use super::lattice::BccLattice;
 use super::sdf::Sdf;
-use super::stuffing::{self, EdgeKey};
+use super::stuffing;
+use super::{CutPoints, MeshingHints};
 
 /// Tet mesh built by sampling an [`Sdf`] over a BCC lattice.
 ///
@@ -108,6 +108,17 @@ pub enum MeshingError {
         /// `Sdf::eval` impl directly.
         value: f64,
     },
+    /// With [`CutPoints::Root`], the SDF returned a non-finite value
+    /// on the lattice edge between the two reported vertices, while
+    /// locating its cut point. The first such edge in `VertexId`
+    /// order is reported.
+    NonFiniteSdfOnEdge {
+        /// The edge's lattice vertices.
+        vertices: [VertexId; 2],
+        /// Raw value returned by the SDF, as for
+        /// [`MeshingError::NonFiniteSdfValue`].
+        value: f64,
+    },
 }
 
 /// Internal generic builder shared by [`SdfMeshedTetMesh<NeoHookean>::from_sdf`]
@@ -118,6 +129,7 @@ fn build<M: BuildableFromField>(
     sdf: &dyn Sdf,
     hints: &MeshingHints,
     material_field: &MaterialField,
+    cut_points: CutPoints,
 ) -> Result<SdfMeshedTetMesh<M>, MeshingError> {
     let lattice = BccLattice::new(hints);
     let n_lattice = lattice.positions.len();
@@ -147,8 +159,26 @@ fn build<M: BuildableFromField>(
     // We work on a clone so the lattice itself stays anchored to its
     // unwarped points (`BccLattice::position_of` etc. would otherwise
     // diverge from `warped_positions`).
+    //
+    // With `CutPoints::Root`, each crossed edge's cut point is located
+    // on the SDF first, from the samples before the warp, and the warp
+    // and the stencils both put it there.
+    let located = match cut_points {
+        CutPoints::Interpolated => None,
+        CutPoints::Root => Some(stuffing::locate_cuts(&lattice, sdf, &sdf_values).map_err(
+            |(from, to, value)| MeshingError::NonFiniteSdfOnEdge {
+                vertices: [from, to],
+                value,
+            },
+        )?),
+    };
     let mut warped_positions: Vec<Vec3> = lattice.positions.clone();
-    stuffing::warp_lattice(&lattice, &mut warped_positions, &mut sdf_values);
+    stuffing::warp_lattice(
+        &lattice,
+        &mut warped_positions,
+        &mut sdf_values,
+        located.as_ref(),
+    );
 
     // Step 5: walk BCC tets and dispatch each through the stuffing
     // case table. `output_positions` starts with the warped-lattice
@@ -157,7 +187,7 @@ fn build<M: BuildableFromField>(
     // get fresh `VertexId`s starting at `output_positions.len()`.
     let mut output_positions: Vec<Vec3> = warped_positions.clone();
     let mut output_tets: Vec<[VertexId; 4]> = Vec::new();
-    let mut cut_cache: BTreeMap<EdgeKey, VertexId> = BTreeMap::new();
+    let mut cut_cache = stuffing::Cuts::new(located.as_ref());
 
     for &tet_vids in &lattice.tets {
         stuffing::dispatch_case(
@@ -497,9 +527,29 @@ impl SdfMeshedTetMesh<NeoHookean> {
     /// Also panics if `hints.material_field` is a Yeoh-variant field —
     /// call [`SdfMeshedTetMesh::<Yeoh>::from_sdf_yeoh`] instead.
     pub fn from_sdf(sdf: &dyn Sdf, hints: &MeshingHints) -> Result<Self, MeshingError> {
+        Self::from_sdf_with(sdf, hints, CutPoints::Interpolated)
+    }
+
+    /// [`SdfMeshedTetMesh::<NeoHookean>::from_sdf`], with each cut
+    /// point where `cut_points` puts it on its edge.
+    ///
+    /// # Errors
+    ///
+    /// Those of [`SdfMeshedTetMesh::<NeoHookean>::from_sdf`]; and,
+    /// with [`CutPoints::Root`],
+    /// [`MeshingError::NonFiniteSdfOnEdge`].
+    ///
+    /// # Panics
+    ///
+    /// As [`SdfMeshedTetMesh::<NeoHookean>::from_sdf`].
+    pub fn from_sdf_with(
+        sdf: &dyn Sdf,
+        hints: &MeshingHints,
+        cut_points: CutPoints,
+    ) -> Result<Self, MeshingError> {
         let fallback = MaterialField::skeleton_default();
         let material_field = hints.material_field.as_ref().unwrap_or(&fallback);
-        build(sdf, hints, material_field)
+        build(sdf, hints, material_field, cut_points)
     }
 }
 
@@ -526,17 +576,36 @@ impl SdfMeshedTetMesh<Yeoh> {
     /// - Panics if `hints.material_field` is `Some` but built via NH
     ///   constructors — call
     ///   [`SdfMeshedTetMesh::<NeoHookean>::from_sdf`] instead.
+    pub fn from_sdf_yeoh(sdf: &dyn Sdf, hints: &MeshingHints) -> Result<Self, MeshingError> {
+        Self::from_sdf_yeoh_with(sdf, hints, CutPoints::Interpolated)
+    }
+
+    /// [`SdfMeshedTetMesh::<Yeoh>::from_sdf_yeoh`], with each cut
+    /// point where `cut_points` puts it on its edge.
+    ///
+    /// # Errors
+    ///
+    /// Those of [`SdfMeshedTetMesh::<Yeoh>::from_sdf_yeoh`]; and, with
+    /// [`CutPoints::Root`], [`MeshingError::NonFiniteSdfOnEdge`].
+    ///
+    /// # Panics
+    ///
+    /// As [`SdfMeshedTetMesh::<Yeoh>::from_sdf_yeoh`].
     // Build-time API contract: Yeoh has no skeleton default, so a
     // missing material_field is a caller error worth panicking on at
     // construction. Documented in the # Panics section above.
     #[allow(clippy::expect_used)]
-    pub fn from_sdf_yeoh(sdf: &dyn Sdf, hints: &MeshingHints) -> Result<Self, MeshingError> {
+    pub fn from_sdf_yeoh_with(
+        sdf: &dyn Sdf,
+        hints: &MeshingHints,
+        cut_points: CutPoints,
+    ) -> Result<Self, MeshingError> {
         let material_field = hints.material_field.as_ref().expect(
             "SdfMeshedTetMesh::<Yeoh>::from_sdf_yeoh requires hints.material_field to be Some \
              — there is no Yeoh skeleton default. Pass MaterialField::from_yeoh_fields(...) \
              via the hints",
         );
-        build(sdf, hints, material_field)
+        build(sdf, hints, material_field, cut_points)
     }
 }
 

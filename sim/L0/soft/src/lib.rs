@@ -81,7 +81,7 @@ pub use readout::{
     pick_vertices_by_predicate,
 };
 pub use sdf_bridge::{
-    Aabb3, DifferenceSdf, MeshingError, MeshingHints, Sdf, SdfMeshedTetMesh, SphereSdf,
+    Aabb3, CutPoints, DifferenceSdf, MeshingError, MeshingHints, Sdf, SdfMeshedTetMesh, SphereSdf,
     TranslatedSdf, project_point_onto_sdf,
 };
 pub use solver::{

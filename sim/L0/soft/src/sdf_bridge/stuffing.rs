@@ -14,8 +14,10 @@
 //!   values throughout.
 //! - **Warp predicate** — paper §3.2: a cut point `c` violates an
 //!   endpoint `v` of edge `e` iff the distance from `c` to `v` is less
-//!   than `α · ‖e‖`. Concretely, with `t = -f(v) / (f(n) - f(v))` the
-//!   linear-interpolation parameter of the cut along `(v, n)`,
+//!   than `α · ‖e‖`. Concretely, with `t` the cut's fraction along
+//!   `(v, n)` — the linear-interpolation parameter
+//!   `t = -f(v) / (f(n) - f(v))`, or the SDF's own zero on the edge
+//!   with [`super::CutPoints::Root`] ([`locate_cuts`]) —
 //!   `|t| < α` is the violation predicate. The memo's prose form
 //!   `|f(v)| < α · ‖e‖` is shorthand that coincides with the paper's
 //!   form whenever the SDF has unit gradient (sphere SDFs in Phase 3
@@ -66,33 +68,27 @@
 //!   ports such as Changxi Zheng's `isostuffer` reference impl
 //!   ([`alecjacobson/isostuffer`](https://github.com/alecjacobson/isostuffer)).
 //!
-//! ## Parity Rule predicate — BCC-integer deviation from paper
+//! ## Parity Rule predicate — in integers
 //!
-//! Paper §3.3 specifies the Parity Rule predicate as
-//! `count(a > c per axis) % 2`, where `a` is a whole-long-edge
-//! lattice endpoint and `c` is a *cut point* (FP position derived by
-//! linear interpolation along a red BCC edge). This implementation
-//! uses a deviated form: `coord_greater_count(bcc(a), bcc(b)) % 2`
-//! where `b` is the *other* whole-long-edge endpoint, comparing
-//! integer BCC indices instead of FP world coordinates. Trade-offs:
+//! Paper §3.3 splits a quadrilateral face with a whole long edge
+//! `(a, b)` by the parity of the number of coordinates in which `a`
+//! exceeds `c`, the cut on `b`'s red edge. The cut lies strictly
+//! between `b` and the face's third lattice vertex, so that count
+//! depends only on the three lattice points, and [`diagonal_from_a`]
+//! computes it from their integer BCC indices: the paper's predicate,
+//! deterministic and free of FP arithmetic. It depends on the whole
+//! face, so the two BCC tets sharing a face split it alike, which
+//! `stuffing_a_random_sign_field_leaves_no_face_unshared_off_the_surface`
+//! checks and `the_parity_rule_is_the_papers` pins to the paper's text.
 //!
-//! - **Conformity preserved.** Adjacent BCC tets sharing a
-//!   whole-long-edge quadrilateral compute the predicate from the
-//!   same `(a, b)` lattice points (the face's two long-edge
-//!   endpoints are shared), so the diagonal choice agrees on both
-//!   sides — the mesh is conformal. This holds for any deterministic
-//!   predicate that depends only on the face's lattice points.
-//! - **Determinism strengthened.** No FP arithmetic in the
-//!   parity predicate; III-1 bit-equality survives across runs.
-//! - **Theorem 1 strict bound may not hold.** The paper's quality
-//!   proof assumes the paper's predicate, so my deviation can in
-//!   principle pick the diagonal that gives a worse (larger) max
-//!   dihedral or smaller min dihedral. Phase 3's sanity floor is
-//!   `≥ 5°` / `≤ 175°` / aspect `≥ 0.05`, with margins 4.32° / 13.36° /
-//!   0.03 from the published bounds. Even a worst-case deviation
-//!   stays comfortably above the floor for sphere SDFs at canonical
-//!   parameters. **If III-2 (`sdf_quality_bounds`) fails at commit 7,
-//!   revisit by switching to the paper's FP-position predicate.**
+//! *(2026-09-27.)* An earlier predicate read only `(a, b)`, so it
+//! could not tell a long edge's two faces apart. The `(2 in, 2 out)`
+//! stencil gave them opposite diagonals by the order of its outside
+//! slots, which the lattice's tet table does not fix, and the other
+//! stencils gave every face on the edge the same one; so two tets
+//! sharing a face could split it two ways, leaving both halves
+//! unmatched and the lattice vertices on them exposed as boundary
+//! vertices off the surface.
 //!
 //! ## Stencil case-table cross-check (S-8 lens vii)
 //!
@@ -115,10 +111,13 @@
 
 use std::collections::BTreeMap;
 
+use nalgebra::Point3;
+
 use crate::Vec3;
 use crate::mesh::VertexId;
 
 use super::lattice::{BccLattice, BccVertexId};
+use super::sdf::Sdf;
 
 /// Warp threshold for axis-aligned ("black", length `a`,
 /// same-sublattice) edges. Paper Table 1 "min dihedral, safe" row.
@@ -148,6 +147,41 @@ pub(super) const EPSILON_VOLUME: f64 = 1e-15;
 /// lattice. `BTreeMap` (not `HashMap`) for sorted-iteration
 /// determinism.
 pub(super) type EdgeKey = ((i32, i32, i32, u8), (i32, i32, i32, u8));
+
+/// Where the SDF crosses each crossed lattice edge ([`locate_cuts`]), as a fraction of the way along it from
+/// the vertex its [`EdgeKey`] names first.
+pub(super) type CutFractions = BTreeMap<EdgeKey, f64>;
+
+/// The cut points made so far, one per crossed edge (Decision M D-9), and where on its edge each goes.
+pub(super) struct Cuts<'a> {
+    /// Each crossed edge's cut vertex, once made.
+    made: BTreeMap<EdgeKey, VertexId>,
+    /// Where each cut goes; `None`: where the line through its edge's two samples crosses zero.
+    located: Option<&'a CutFractions>,
+}
+
+impl<'a> Cuts<'a> {
+    /// No cut made yet. Each goes where `located` puts it, or, with `None`, where the line through its
+    /// edge's two samples crosses zero.
+    pub(super) const fn new(located: Option<&'a CutFractions>) -> Self {
+        Self {
+            made: BTreeMap::new(),
+            located,
+        }
+    }
+}
+
+/// Bracket width, as a fraction of the edge, at which [`locate_cuts`] stops.
+const CUT_TOLERANCE: f64 = 1e-12;
+
+/// At most this many SDF evaluations per edge in [`locate_cuts`]. Every [`CUT_BISECTION`]th evaluation
+/// bisects the bracket, so it at least halves every four and meets [`CUT_TOLERANCE`] within 160; the Illinois
+/// steps between close it far faster on a simple root.
+const CUT_ITERATIONS: usize = 200;
+
+/// [`root_on_edge`] bisects at every evaluation this many apart, whatever the regula falsi would do: its
+/// guarantee that the bracket closes on a root where the Illinois steps close slowly (a repeated root).
+const CUT_BISECTION: usize = 4;
 
 const SIGN_OUTSIDE: u8 = 0;
 const SIGN_BOUNDARY: u8 = 1;
@@ -236,7 +270,12 @@ const NEIGHBOUR_OFFSETS: [[NeighbourOffset; 14]; 2] = [
 /// of Theorem 1 are independent of which violating cut is chosen, so
 /// first-match-wins is theorem-safe and gives the determinism III-1
 /// requires.
-pub(super) fn warp_lattice(lattice: &BccLattice, positions: &mut [Vec3], sdf_values: &mut [f64]) {
+pub(super) fn warp_lattice(
+    lattice: &BccLattice,
+    positions: &mut [Vec3],
+    sdf_values: &mut [f64],
+    located: Option<&CutFractions>,
+) {
     debug_assert_eq!(positions.len(), lattice.positions.len());
     debug_assert_eq!(sdf_values.len(), lattice.positions.len());
 
@@ -284,10 +323,11 @@ pub(super) fn warp_lattice(lattice: &BccLattice, positions: &mut [Vec3], sdf_val
                 continue;
             }
 
-            // Linear-interp cut location from v: cut = v + t·(n − v),
-            // with t = −f_v / (f_n − f_v) ∈ (0, 1) since signs are
-            // strictly opposite. Paper §3.2: violation iff `t < α`.
-            let t = -f_v / (f_n - f_v);
+            // Cut location from v: cut = v + t·(n − v), t ∈ (0, 1)
+            // since signs are strictly opposite; linearly interpolated,
+            // t = −f_v / (f_n − f_v), unless `located`. Paper §3.2:
+            // violation iff `t < α`.
+            let t = cut_fraction(located, bcc_v, neighbour_bcc, f_v, f_n);
             let alpha = if is_long { ALPHA_LONG } else { ALPHA_SHORT };
             if t < alpha {
                 let pos_n = positions[nid as usize];
@@ -297,6 +337,139 @@ pub(super) fn warp_lattice(lattice: &BccLattice, positions: &mut [Vec3], sdf_val
             }
         }
     }
+}
+
+/// Where the SDF crosses zero on every lattice edge whose ends `sdf_values` (paper convention, before the
+/// warp) signs oppositely: the Illinois method's regula falsi on `sdf` along the edge, bracketed by its two
+/// samples, until the bracket is within [`CUT_TOLERANCE`] of the edge. Each is a fraction of the way from
+/// the vertex the edge's [`EdgeKey`] names first ([`CutFractions`]).
+///
+/// # Errors
+///
+/// The first point, in `VertexId` and neighbour order, where `sdf` returns a non-finite value: the edge's
+/// vertices and the value.
+pub(super) fn locate_cuts(
+    lattice: &BccLattice,
+    sdf: &dyn Sdf,
+    sdf_values: &[f64],
+) -> Result<CutFractions, (VertexId, VertexId, f64)> {
+    let mut located = CutFractions::new();
+    // Total vertex count fits in u32 by BccLattice's construction.
+    #[allow(clippy::cast_possible_truncation)]
+    let n_total = lattice.positions.len() as u32;
+    for vid in 0..n_total {
+        let bcc_v = lattice.bcc_id_of(vid);
+        for &(di, dj, dk, target_tag, _) in &NEIGHBOUR_OFFSETS[bcc_v.sublattice_tag as usize] {
+            let bcc_n = BccVertexId {
+                i: bcc_v.i + di,
+                j: bcc_v.j + dj,
+                k: bcc_v.k + dk,
+                sublattice_tag: target_tag,
+            };
+            let Some(nid) = lattice.vertex_id_of(bcc_n) else {
+                continue;
+            };
+            let key = edge_key(bcc_v, bcc_n);
+            let (f_v, f_n) = (sdf_values[vid as usize], sdf_values[nid as usize]);
+            if f_v * f_n >= 0.0 || located.contains_key(&key) {
+                continue;
+            }
+            let (from, to) = if key.0 == quad(bcc_v) {
+                (vid, nid)
+            } else {
+                (nid, vid)
+            };
+            let t = root_on_edge(
+                sdf,
+                lattice.positions[from as usize],
+                lattice.positions[to as usize],
+                sdf_values[from as usize],
+                sdf_values[to as usize],
+            )
+            .map_err(|value| (from, to, value))?;
+            located.insert(key, t);
+        }
+    }
+    Ok(located)
+}
+
+/// Where `sdf` crosses zero between `a` and `b`, as a fraction of the way from `a`: the Illinois method's
+/// regula falsi on `f(t) = −sdf(a + t·(b − a))` (paper convention), bracketed by `f(0) = f_a` and
+/// `f(1) = f_b` of opposite signs, with every [`CUT_BISECTION`]th step a bisection, until the bracket is within
+/// [`CUT_TOLERANCE`]. Stays strictly inside `(0, 1)`.
+///
+/// # Errors
+///
+/// A non-finite value `sdf` returned on the way.
+fn root_on_edge(sdf: &dyn Sdf, a: Vec3, b: Vec3, f_a: f64, f_b: f64) -> Result<f64, f64> {
+    let (mut lo, mut hi, mut f_lo, mut f_hi) = (0.0_f64, 1.0_f64, f_a, f_b);
+    // Which end the last step moved: the Illinois method halves the other end's value when one end moves
+    // twice running, so the bracket closes from both sides.
+    let mut last_moved_lo: Option<bool> = None;
+    for step in 0..CUT_ITERATIONS {
+        if hi - lo <= CUT_TOLERANCE {
+            break;
+        }
+        let secant = (lo * f_hi - hi * f_lo) / (f_hi - f_lo);
+        let t = if step % CUT_BISECTION != CUT_BISECTION - 1 && secant > lo && secant < hi {
+            secant
+        } else {
+            0.5 * (lo + hi)
+        };
+        let f_t = -sdf.eval(Point3::from(a + (b - a) * t));
+        if !f_t.is_finite() {
+            return Err(-f_t);
+        }
+        // f64 zero compares exactly: the root itself.
+        #[allow(clippy::float_cmp)]
+        if f_t == 0.0 {
+            return Ok(t);
+        }
+        if (f_t > 0.0) == (f_lo > 0.0) {
+            lo = t;
+            f_lo = f_t;
+            if last_moved_lo == Some(true) {
+                f_hi *= 0.5;
+            }
+            last_moved_lo = Some(true);
+        } else {
+            hi = t;
+            f_hi = f_t;
+            if last_moved_lo == Some(false) {
+                f_lo *= 0.5;
+            }
+            last_moved_lo = Some(false);
+        }
+    }
+    Ok(0.5 * (lo + hi))
+}
+
+/// Where a cut sits on the edge from `from` to `to`, as a fraction of the way along it: where `located`
+/// puts it, or, with `None`, where the line through the edge's samples `f_from` and `f_to` crosses zero.
+fn cut_fraction(
+    located: Option<&CutFractions>,
+    from: BccVertexId,
+    to: BccVertexId,
+    f_from: f64,
+    f_to: f64,
+) -> f64 {
+    let linear = -f_from / (f_to - f_from);
+    let Some(located) = located else {
+        return linear;
+    };
+    let key = edge_key(from, to);
+    debug_assert!(
+        located.contains_key(&key),
+        "every crossed edge is located before the warp"
+    );
+    located
+        .get(&key)
+        .map_or(linear, |&t| if key.0 == quad(from) { t } else { 1.0 - t })
+}
+
+/// A BCC vertex's `(i, j, k, sublattice_tag)`, as an [`EdgeKey`] names it.
+const fn quad(v: BccVertexId) -> (i32, i32, i32, u8) {
+    (v.i, v.j, v.k, v.sublattice_tag)
 }
 
 /// Sign classifier in paper convention. Strict comparisons ensure
@@ -315,8 +488,8 @@ fn classify_sign(v: f64) -> u8 {
 
 /// Sorted-lex `EdgeKey` for a BCC edge between two lattice vertices.
 fn edge_key(a: BccVertexId, b: BccVertexId) -> EdgeKey {
-    let qa = (a.i, a.j, a.k, a.sublattice_tag);
-    let qb = (b.i, b.j, b.k, b.sublattice_tag);
+    let qa = quad(a);
+    let qb = quad(b);
     if qa <= qb { (qa, qb) } else { (qb, qa) }
 }
 
@@ -349,12 +522,12 @@ fn get_or_insert_cut(
     positions: &[Vec3],
     sdf_values: &[f64],
     output_positions: &mut Vec<Vec3>,
-    cut_cache: &mut BTreeMap<EdgeKey, VertexId>,
+    cut_cache: &mut Cuts<'_>,
 ) -> VertexId {
     let bcc_a = lattice.bcc_id_of(a);
     let bcc_b = lattice.bcc_id_of(b);
     let key = edge_key(bcc_a, bcc_b);
-    if let Some(&vid) = cut_cache.get(&key) {
+    if let Some(&vid) = cut_cache.made.get(&key) {
         return vid;
     }
     let f_a = sdf_values[a as usize];
@@ -363,7 +536,7 @@ fn get_or_insert_cut(
         f_a * f_b < 0.0,
         "get_or_insert_cut requires opposite signs; got {f_a} and {f_b}",
     );
-    let t = -f_a / (f_b - f_a);
+    let t = cut_fraction(cut_cache.located, bcc_a, bcc_b, f_a, f_b);
     let pos_a = positions[a as usize];
     let pos_b = positions[b as usize];
     let cut_pos = pos_a + (pos_b - pos_a) * t;
@@ -371,7 +544,7 @@ fn get_or_insert_cut(
     #[allow(clippy::cast_possible_truncation)]
     let new_vid = output_positions.len() as VertexId;
     output_positions.push(cut_pos);
-    cut_cache.insert(key, new_vid);
+    cut_cache.made.insert(key, new_vid);
     new_vid
 }
 
@@ -444,7 +617,7 @@ pub(super) fn dispatch_case(
     sdf_values: &[f64],
     output_positions: &mut Vec<Vec3>,
     output_tets: &mut Vec<[VertexId; 4]>,
-    cut_cache: &mut BTreeMap<EdgeKey, VertexId>,
+    cut_cache: &mut Cuts<'_>,
 ) {
     let signs: [u8; 4] = [
         classify_sign(sdf_values[tet_vids[0] as usize]),
@@ -506,7 +679,7 @@ fn dispatch_mixed_case(
     sdf_values: &[f64],
     output_positions: &mut Vec<Vec3>,
     output_tets: &mut Vec<[VertexId; 4]>,
-    cut_cache: &mut BTreeMap<EdgeKey, VertexId>,
+    cut_cache: &mut Cuts<'_>,
 ) {
     let (in_slots, out_slots, bd_slots) = collect_slots_by_sign(signs);
 
@@ -641,7 +814,7 @@ fn emit_one_one_two_bd(
     sdf_values: &[f64],
     output_positions: &mut Vec<Vec3>,
     output_tets: &mut Vec<[VertexId; 4]>,
-    cut_cache: &mut BTreeMap<EdgeKey, VertexId>,
+    cut_cache: &mut Cuts<'_>,
 ) {
     let cut = get_or_insert_cut(
         tet_vids[in_slot],
@@ -682,7 +855,7 @@ fn emit_one_two_one_bd(
     sdf_values: &[f64],
     output_positions: &mut Vec<Vec3>,
     output_tets: &mut Vec<[VertexId; 4]>,
-    cut_cache: &mut BTreeMap<EdgeKey, VertexId>,
+    cut_cache: &mut Cuts<'_>,
 ) {
     let cut_a = get_or_insert_cut(
         tet_vids[in_slot],
@@ -725,7 +898,7 @@ fn emit_one_three(
     sdf_values: &[f64],
     output_positions: &mut Vec<Vec3>,
     output_tets: &mut Vec<[VertexId; 4]>,
-    cut_cache: &mut BTreeMap<EdgeKey, VertexId>,
+    cut_cache: &mut Cuts<'_>,
 ) {
     let cuts = out_slots.map(|out_slot| {
         get_or_insert_cut(
@@ -771,7 +944,7 @@ fn emit_two_one_one_bd(
     sdf_values: &[f64],
     output_positions: &mut Vec<Vec3>,
     output_tets: &mut Vec<[VertexId; 4]>,
-    cut_cache: &mut BTreeMap<EdgeKey, VertexId>,
+    cut_cache: &mut Cuts<'_>,
 ) {
     let cut_a = get_or_insert_cut(
         tet_vids[out_slot],
@@ -804,10 +977,12 @@ fn emit_two_one_one_bd(
         // is applied across all whole-long quadrilaterals
         // (including the ones in `emit_two_two` and `emit_three_one`)
         // for conformity at shared faces.
-        let bcc_a = lattice.bcc_id_of(v_in_a);
-        let bcc_b = lattice.bcc_id_of(v_in_b);
-        let agc = coord_greater_count(bcc_a, bcc_b) % 2;
-        if agc == 0 {
+        let from_a = diagonal_from_a(
+            lattice.bcc_id_of(v_in_a),
+            lattice.bcc_id_of(v_in_b),
+            lattice.bcc_id_of(tet_vids[out_slot]),
+        );
+        if from_a {
             // "ac" diagonal — bisect via (in_a, cut_b).
             emit_sub_tet([v_in_a, v_in_b, v_bd, cut_b], output_positions, output_tets);
             emit_sub_tet([v_in_a, cut_b, v_bd, cut_a], output_positions, output_tets);
@@ -856,13 +1031,9 @@ fn emit_two_one_one_bd(
 ///   the 4 cuts sit on long edges; diagonal adjoins those.
 ///
 /// Implementation cross-checked against `isostuffer::create_tet_type2`
-/// (same paper-§3.3 Parity Rule, sign-flipped). The Parity Rule
-/// predicate on `(odd-sublattice, slot 0 / slot 2)` lattice
-/// coordinates picks the diagonal deterministically; the
-/// implementation here uses `coord_greater_count` over the
-/// pre-warp BCC coordinates (matching isostuffer's
-/// `point_greater_number`) so the rule remains deterministic across
-/// runs.
+/// (same paper-§3.3 Parity Rule, sign-flipped). Each whole-long
+/// quadrilateral takes the Parity Rule's diagonal for its own lattice
+/// face ([`diagonal_from_a`]).
 // `clippy::panic` — the truncated-branch `unwrap_or_else(|| panic!(_))`
 // asserts a structural BCC layout invariant (with both `in_slots`
 // short and one short out_slot, exactly two of the four `(in, out)`
@@ -880,14 +1051,14 @@ fn emit_two_two(
     sdf_values: &[f64],
     output_positions: &mut Vec<Vec3>,
     output_tets: &mut Vec<[VertexId; 4]>,
-    cut_cache: &mut BTreeMap<EdgeKey, VertexId>,
+    cut_cache: &mut Cuts<'_>,
 ) {
     // Cuts indexed by (in_slot, out_slot) pair: cut_io[i][o] is the
     // cut on the edge from in_slots[i] to out_slots[o].
     let cut = |i_idx: usize,
                o_idx: usize,
                output_positions: &mut Vec<Vec3>,
-               cut_cache: &mut BTreeMap<EdgeKey, VertexId>|
+               cut_cache: &mut Cuts<'_>|
      -> VertexId {
         get_or_insert_cut(
             tet_vids[in_slots[i_idx]],
@@ -909,54 +1080,41 @@ fn emit_two_two(
     // The triangular prism's two triangular caps are
     // (in_a, c00, c01) and (in_b, c10, c11). Three side
     // quadrilaterals connect them; bisecting these three
-    // quadrilaterals into 6 triangles defines the 3-tet split.
-    // Following isostuffer's `create_tet_type2`, the bisection
-    // diagonal is `(in_a, c11)` if the Parity Rule picks "ac" and
-    // `(in_b, c00)` if it picks "bd". The rule depends on whether
-    // (in_a, in_b) is a long BCC edge (whole-long quadrilateral
-    // case, Parity Rule applies) vs. truncated-long (diagonal
-    // adjoins the cut on the long edge).
-
+    // quadrilaterals into 6 triangles defines the 3-tet split: by
+    // the Parity Rule if (in_a, in_b) is a long BCC edge, else by the
+    // diagonals adjoining the cuts on the long edges.
     if is_long_edge(in_slots[0], in_slots[1]) {
         // Both inside vertices are on the same long edge; the
-        // opposite long edge (out_a, out_b) is wholly outside. Two
-        // of the side quadrilaterals have whole long edges
-        // (in_a, in_b) and (out_a, out_b); the third has a "whole
-        // short" edge structure. Apply the Parity Rule on the long
-        // edge (in_a, in_b).
-        let bcc_a = lattice.bcc_id_of(v_in_a);
-        let bcc_b = lattice.bcc_id_of(v_in_b);
-        // Parity on whether `bcc_a` has more or fewer coordinates
-        // strictly greater than `bcc_b`'s. Paper §3.3 cites this on
-        // the cubical lattice Z³ (rule reverses on Z³ + (½, ½, ½)).
-        // For our BCC layout, slots 0/1 are odd and 2/3 are even, so
-        // (in_slots[0], in_slots[1]) being long means both are on the
-        // same sublattice. The rule below is applied on integer BCC
-        // indices, which captures the parity invariant identically
-        // for both sublattices because the sub-half-cell offset
-        // cancels in the difference.
-        // Parity Rule on the long-edge endpoints (paper §3.3,
-        // mirrored from `isostuffer::create_tet_type2`). The 3-tet
-        // split mirrors isostuffer's mapping:
-        //   v1 = in_a, v3 = in_b
-        //   c0 = cut(out_a, in_a) = c00
-        //   c1 = cut(in_a, out_b) = c01
-        //   c2 = cut(out_b, in_b) = c11
-        //   c3 = cut(in_b, out_a) = c10
-        let agc = coord_greater_count(bcc_a, bcc_b) % 2;
-        let bd_diagonal = agc == 1;
-        if bd_diagonal {
-            // "bd" branch: push (v1, c1, v3, c3), (c1, c2, v3, c3),
-            // (v1, c1, c3, c0).
-            emit_sub_tet([v_in_a, c01, v_in_b, c10], output_positions, output_tets);
-            emit_sub_tet([c01, c11, v_in_b, c10], output_positions, output_tets);
-            emit_sub_tet([v_in_a, c01, c10, c00], output_positions, output_tets);
-        } else {
+        // opposite long edge (out_a, out_b) is wholly outside. The
+        // two side quadrilaterals on the long edge lie on the
+        // lattice faces (in_a, in_b, out_a) and (in_a, in_b, out_b),
+        // and each takes the Parity Rule's diagonal for its own face
+        // ([`diagonal_from_a`]), so a neighbour sharing the face
+        // splits it alike. out_a and out_b differ along one axis, on
+        // either side of in_b, so the two faces' parities differ
+        // (`a_long_edges_two_faces_take_opposite_diagonals`): one
+        // diagonal leaves in_a, the other in_b. The 3-tet split mirrors isostuffer's
+        // `create_tet_type2` (v1 = in_a, v3 = in_b, c0 = c00, c1 = c01,
+        // c2 = c11, c3 = c10). "ac" splits (in_a, in_b, out_b)'s quadrilateral from in_a
+        // (in_a, c11) and (in_a, in_b, out_a)'s from in_b (in_b, c00);
+        // "bd" the other way round.
+        let from_a = diagonal_from_a(
+            lattice.bcc_id_of(v_in_a),
+            lattice.bcc_id_of(v_in_b),
+            lattice.bcc_id_of(tet_vids[out_slots[1]]),
+        );
+        if from_a {
             // "ac" branch: push (v1, c1, c2, c0), (v1, c2, v3, c0),
             // (c0, c2, v3, c3).
             emit_sub_tet([v_in_a, c01, c11, c00], output_positions, output_tets);
             emit_sub_tet([v_in_a, c11, v_in_b, c00], output_positions, output_tets);
             emit_sub_tet([c00, c11, v_in_b, c10], output_positions, output_tets);
+        } else {
+            // "bd" branch: push (v1, c1, v3, c3), (c1, c2, v3, c3),
+            // (v1, c1, c3, c0).
+            emit_sub_tet([v_in_a, c01, v_in_b, c10], output_positions, output_tets);
+            emit_sub_tet([c01, c11, v_in_b, c10], output_positions, output_tets);
+            emit_sub_tet([v_in_a, c01, c10, c00], output_positions, output_tets);
         }
     } else {
         // (in_a, in_b) is short (cross-sublattice). The opposite-edge
@@ -1072,7 +1230,7 @@ fn emit_three_one(
     sdf_values: &[f64],
     output_positions: &mut Vec<Vec3>,
     output_tets: &mut Vec<[VertexId; 4]>,
-    cut_cache: &mut BTreeMap<EdgeKey, VertexId>,
+    cut_cache: &mut Cuts<'_>,
 ) {
     // Identify the inside slot that shares a long edge with the
     // outside slot (the "long-paired inside"). The other two inside
@@ -1134,19 +1292,17 @@ fn emit_three_one(
     // Parity Rule type 1. The diagonal of the quadrilateral
     // (v_a, cut_short_a, cut_short_b, v_b) is chosen by parity. The
     // other two faces are triangles already.
-    let bcc_a = lattice.bcc_id_of(v_a);
-    let bcc_b = lattice.bcc_id_of(v_b);
-    // Same BCC-integer Parity Rule predicate as
-    // `emit_two_one_one_bd` and `emit_two_two` (see module-level
-    // "Parity Rule predicate — BCC-integer deviation from paper").
     // (short_paired[0], short_paired[1]) come from a long BCC edge
-    // — slots `{0, 1}` (both odd) or slots `{2, 3}` (both even);
-    // either way, the predicate is `coord_greater_count(bcc_a,
-    // bcc_b) % 2`. `agc == 0` selects "ac" diagonal (bisect via
-    // `(v_a, cut_short_b)`); `agc == 1` selects "bd" (bisect via
-    // `(v_b, cut_short_a)`).
-    let agc = coord_greater_count(bcc_a, bcc_b) % 2;
-    if agc == 0 {
+    // — slots `{0, 1}` (both odd) or slots `{2, 3}` (both even) — and
+    // the quadrilateral lies on the lattice face (v_a, v_b, out): the
+    // Parity Rule's diagonal for that face ([`diagonal_from_a`]).
+    // "ac" bisects via `(v_a, cut_short_b)`; "bd" via
+    // `(v_b, cut_short_a)`.
+    if diagonal_from_a(
+        lattice.bcc_id_of(v_a),
+        lattice.bcc_id_of(v_b),
+        lattice.bcc_id_of(tet_vids[out_slot]),
+    ) {
         // "ac" diagonal — bisect via (v_a, cut_short_b).
         emit_sub_tet(
             [v_a, cut_short_a, cut_short_b, cut_long],
@@ -1173,14 +1329,40 @@ fn emit_three_one(
     }
 }
 
-/// Number of coordinates of `a` strictly greater than the
-/// corresponding coordinate of `b`. Paper §3.3 Parity Rule predicate
-/// (`point_greater_number` in isostuffer): the parity of this count
-/// drives the diagonal-bisection choice for quadrilateral faces with
-/// whole long edges. Comparing pre-warp integer BCC indices makes the
-/// rule deterministic and FP-independent.
-fn coord_greater_count(a: BccVertexId, b: BccVertexId) -> u32 {
-    u32::from(a.i > b.i) + u32::from(a.j > b.j) + u32::from(a.k > b.k)
+/// The Parity Rule (paper §3.3) on the quadrilateral where the surface
+/// cuts the lattice face `(a, b, o)`, whose long edge `(a, b)` lies
+/// wholly inside: whether its diagonal runs from `a` to the cut on
+/// `(b, o)`, else from `b` to the cut on `(a, o)`.
+///
+/// The paper counts the coordinates in which `a` exceeds that cut
+/// point: on the cubical lattice (the even sublattice) an odd count
+/// picks `a`'s diagonal, and on the lattice half a cell up (the odd
+/// sublattice) an even one. The cut lies strictly between `b` and `o`, which are
+/// half a cell apart along every axis, so the count needs only the
+/// lattice points: along the edge's axis `a` exceeds the cut when it
+/// exceeds `b`, and along each other axis when `o` lies below `b`.
+/// Integer, so deterministic; and it depends only on the face, so the
+/// two tets that share a face split it alike, whichever of its long
+/// edge's ends each calls `a` (swapping them flips the count's parity
+/// and the diagonal's name together).
+fn diagonal_from_a(a: BccVertexId, b: BccVertexId, o: BccVertexId) -> bool {
+    // Positions in half cells: the odd sublattice sits half a cell up
+    // every axis.
+    let half = |v: BccVertexId| {
+        let up = i32::from(v.sublattice_tag);
+        [2 * v.i + up, 2 * v.j + up, 2 * v.k + up]
+    };
+    let (pa, pb, po) = (half(a), half(b), half(o));
+    let count: u32 = (0..3)
+        .map(|axis| {
+            if pa[axis] == pb[axis] {
+                u32::from(po[axis] < pb[axis])
+            } else {
+                u32::from(pa[axis] > pb[axis])
+            }
+        })
+        .sum();
+    (count % 2 == 1) != (a.sublattice_tag == 1)
 }
 
 #[cfg(test)]
@@ -1227,11 +1409,11 @@ mod tests {
         let initial_sdf = linear_x_sdf(&lattice.positions, 0.05);
         let mut positions_a = lattice.positions.clone();
         let mut sdf_a = initial_sdf.clone();
-        warp_lattice(&lattice, &mut positions_a, &mut sdf_a);
+        warp_lattice(&lattice, &mut positions_a, &mut sdf_a, None);
 
         let mut positions_b = lattice.positions.clone();
         let mut sdf_b = initial_sdf;
-        warp_lattice(&lattice, &mut positions_b, &mut sdf_b);
+        warp_lattice(&lattice, &mut positions_b, &mut sdf_b, None);
 
         for (i, (a, b)) in positions_a.iter().zip(positions_b.iter()).enumerate() {
             assert_eq!(a.x.to_bits(), b.x.to_bits(), "position[{i}].x diverged");
@@ -1255,7 +1437,7 @@ mod tests {
         let initial_sdf = linear_x_sdf(&lattice.positions, 0.05);
         let mut positions = lattice.positions.clone();
         let mut sdf = initial_sdf.clone();
-        warp_lattice(&lattice, &mut positions, &mut sdf);
+        warp_lattice(&lattice, &mut positions, &mut sdf, None);
 
         // At least some vertices must have warped (the test scene
         // chosen guarantees it).
@@ -1288,7 +1470,7 @@ mod tests {
         let lattice = small_unit_lattice();
         let mut positions = lattice.positions.clone();
         let mut sdf = linear_x_sdf(&lattice.positions, 0.5);
-        warp_lattice(&lattice, &mut positions, &mut sdf);
+        warp_lattice(&lattice, &mut positions, &mut sdf, None);
 
         // No SDF value should be 0.0 unless it was originally 0.0.
         // x = 0.5 corner vertices include cube centres at x = 0.5,
@@ -1319,7 +1501,7 @@ mod tests {
         }
         let mut output_positions = positions.clone();
         let mut output_tets: Vec<[VertexId; 4]> = Vec::new();
-        let mut cut_cache: BTreeMap<EdgeKey, VertexId> = BTreeMap::new();
+        let mut cut_cache = Cuts::new(None);
         dispatch_case(
             tet_vids,
             lattice,
@@ -1586,11 +1768,11 @@ mod tests {
         // setup. The shared-edge dedup contract holds regardless of
         // which vertices warped.
         let mut sdf_values = linear_x_sdf(&lattice.positions, 0.45);
-        warp_lattice(&lattice, &mut positions, &mut sdf_values);
+        warp_lattice(&lattice, &mut positions, &mut sdf_values, None);
 
         let mut output_positions = positions.clone();
         let mut output_tets: Vec<[VertexId; 4]> = Vec::new();
-        let mut cut_cache: BTreeMap<EdgeKey, VertexId> = BTreeMap::new();
+        let mut cut_cache = Cuts::new(None);
 
         for &tet_vids in &lattice.tets {
             dispatch_case(
@@ -1609,12 +1791,12 @@ mod tests {
         // x = 0.5 in the [0, 2]³ lattice. Empirically this is much
         // smaller than the per-tet dispatch count.
         assert!(
-            !cut_cache.is_empty(),
+            !cut_cache.made.is_empty(),
             "non-trivial SDF should produce cut points",
         );
         // All cached cut-point VertexIds must point at appended
         // positions (≥ lattice.positions.len()).
-        for (&_, &vid) in &cut_cache {
+        for (&_, &vid) in &cut_cache.made {
             assert!(
                 vid as usize >= lattice.positions.len(),
                 "cached vid {vid} must be appended past the lattice prefix",
@@ -1622,7 +1804,7 @@ mod tests {
         }
         // No two distinct keys map to the same vid.
         let mut seen = std::collections::BTreeSet::new();
-        for (&_, &vid) in &cut_cache {
+        for (&_, &vid) in &cut_cache.made {
             assert!(seen.insert(vid), "vid {vid} appears in cache twice");
         }
     }
@@ -1636,9 +1818,9 @@ mod tests {
         let lattice = small_unit_lattice();
         let mut positions = lattice.positions.clone();
         let mut sdf_values = linear_x_sdf(&lattice.positions, 0.5);
-        warp_lattice(&lattice, &mut positions, &mut sdf_values);
+        warp_lattice(&lattice, &mut positions, &mut sdf_values, None);
         let mut output_positions = positions.clone();
-        let mut cut_cache: BTreeMap<EdgeKey, VertexId> = BTreeMap::new();
+        let mut cut_cache = Cuts::new(None);
         // Find an axis-aligned edge from a low-x even corner to a
         // high-x even corner.
         let v0 = lattice
@@ -1704,5 +1886,290 @@ mod tests {
         assert!(!is_long_edge(0, 3));
         assert!(!is_long_edge(1, 2));
         assert!(!is_long_edge(1, 3));
+    }
+
+    /// The Parity Rule as the paper states it (§3.3): with `c` the cut on `b`'s red edge, on the cubical lattice
+    /// choose `ac` when `a` exceeds `c` in an odd number of coordinates, and on the lattice half a cell up when
+    /// in an even number. Each case's count is worked from the cut's position, `c = b + t·(o − b)`, `0 < t < 1`.
+    #[test]
+    fn the_parity_rule_is_the_papers() {
+        let even = |i, j, k| BccVertexId {
+            i,
+            j,
+            k,
+            sublattice_tag: 0,
+        };
+        let odd = |i, j, k| BccVertexId {
+            i,
+            j,
+            k,
+            sublattice_tag: 1,
+        };
+        // a (0, 0, 0), b (1, 0, 0), o (½, ½, ½): c = (1 − t/2, t/2, t/2); a exceeds it nowhere, an even count on
+        // the cubical lattice: bd.
+        assert!(!diagonal_from_a(even(0, 0, 0), even(1, 0, 0), odd(0, 0, 0)));
+        // o (½, −½, ½): c = (1 − t/2, −t/2, t/2); a exceeds it in y alone, an odd count: ac.
+        assert!(diagonal_from_a(even(0, 0, 0), even(1, 0, 0), odd(0, -1, 0)));
+        // Half a cell up: a (½, ½, ½), b (3/2, ½, ½), o (1, 0, 0): c = (3/2 − t/2, ½ − t/2, ½ − t/2); a exceeds
+        // it in y and z, an even count: ac.
+        assert!(diagonal_from_a(odd(0, 0, 0), odd(1, 0, 0), even(1, 0, 0)));
+        // Either end of the long edge may be called a: swapping them names the same diagonal the other way.
+        for (a, b, o) in [
+            (even(0, 0, 0), even(1, 0, 0), odd(0, 0, 0)),
+            (even(0, 0, 0), even(1, 0, 0), odd(0, -1, 0)),
+            (even(2, 3, 1), even(2, 3, 2), odd(1, 3, 1)),
+            (odd(0, 0, 0), odd(1, 0, 0), even(1, 0, 0)),
+            (odd(4, 1, 0), odd(4, 2, 0), even(5, 2, 1)),
+        ] {
+            assert_ne!(diagonal_from_a(a, b, o), diagonal_from_a(b, a, o));
+        }
+    }
+
+    /// The `(2 in, 2 out)` stencil splits the two faces on its inside long edge from opposite ends, which the
+    /// Parity Rule must give them: checked on both long edges of every BCC tet in the lattice, as the inside one.
+    #[test]
+    fn a_long_edges_two_faces_take_opposite_diagonals() {
+        let lattice = small_unit_lattice();
+        let bcc = |v: VertexId| lattice.bcc_id_of(v);
+        for tet in &lattice.tets {
+            for (inside, outside) in [([0, 1], [2, 3]), ([2, 3], [0, 1])] {
+                let (a, b) = (bcc(tet[inside[0]]), bcc(tet[inside[1]]));
+                assert_ne!(
+                    diagonal_from_a(a, b, bcc(tet[outside[0]])),
+                    diagonal_from_a(a, b, bcc(tet[outside[1]])),
+                    "tet {tet:?}"
+                );
+            }
+        }
+    }
+
+    /// Each stencil splits a quadrilateral with a whole long edge along the diagonal [`diagonal_from_a`] names
+    /// for its face, and not the other: on every BCC tet of the lattice, in each sign case that makes such a
+    /// face — `(2 in, 2 out)` with the inside long edge, `(2 in, 1 out, 1 zero)` likewise, and `(3 in, 1 out)`.
+    #[test]
+    fn every_stencil_splits_a_whole_long_face_along_the_parity_rules_diagonal() {
+        let lattice = small_unit_lattice();
+        let bcc = |v: VertexId| lattice.bcc_id_of(v);
+        let long_pairs = [[0, 1], [2, 3]];
+        let mut cases: Vec<([usize; 4], usize)> = Vec::new(); // signs by slot (2 in, 0 out, 1 zero), face count
+        for (inside, other) in [([0, 1], [2, 3]), ([2, 3], [0, 1])] {
+            let mut two_two = [0; 4];
+            let mut two_one_one_a = [0; 4];
+            let mut two_one_one_b = [0; 4];
+            for slot in inside {
+                two_two[slot] = 2;
+                two_one_one_a[slot] = 2;
+                two_one_one_b[slot] = 2;
+            }
+            two_one_one_a[other[0]] = 1;
+            two_one_one_b[other[1]] = 1;
+            cases.extend([(two_two, 2), (two_one_one_a, 1), (two_one_one_b, 1)]);
+        }
+        for out in 0..4 {
+            let mut three_one = [2; 4];
+            three_one[out] = 0;
+            cases.push((three_one, 1));
+        }
+        let mut checked = 0;
+        for &tet in &lattice.tets {
+            for &(signs, faces) in &cases {
+                let mut values = vec![0.0; lattice.positions.len()];
+                for (slot, &sign) in signs.iter().enumerate() {
+                    values[tet[slot] as usize] = match sign {
+                        2 => 1.0,
+                        0 => -1.0,
+                        _ => 0.0,
+                    };
+                }
+                let mut output_positions = lattice.positions.clone();
+                let mut output_tets = Vec::new();
+                let mut cut_cache = Cuts::new(None);
+                dispatch_case(
+                    tet,
+                    &lattice,
+                    &lattice.positions,
+                    &values,
+                    &mut output_positions,
+                    &mut output_tets,
+                    &mut cut_cache,
+                );
+                let has_edge = |p: VertexId, q: VertexId| {
+                    output_tets
+                        .iter()
+                        .any(|t: &[VertexId; 4]| t.contains(&p) && t.contains(&q))
+                };
+                let cut = |p: VertexId, q: VertexId| cut_cache.made[&edge_key(bcc(p), bcc(q))];
+                let mut found = 0;
+                for pair in long_pairs {
+                    if signs[pair[0]] != 2 || signs[pair[1]] != 2 {
+                        continue;
+                    }
+                    let (a, b) = (tet[pair[0]], tet[pair[1]]);
+                    for o in (0..4)
+                        .filter(|&slot| signs[slot] == 0)
+                        .map(|slot| tet[slot])
+                    {
+                        let (named, other) = if diagonal_from_a(bcc(a), bcc(b), bcc(o)) {
+                            ((a, cut(b, o)), (b, cut(a, o)))
+                        } else {
+                            ((b, cut(a, o)), (a, cut(b, o)))
+                        };
+                        assert!(
+                            has_edge(named.0, named.1) && !has_edge(other.0, other.1),
+                            "tet {tet:?}, signs {signs:?}: the face with {o} takes the other diagonal"
+                        );
+                        found += 1;
+                    }
+                }
+                assert_eq!(found, faces, "tet {tet:?}, signs {signs:?}");
+                checked += found;
+            }
+        }
+        assert!(checked > 0);
+    }
+
+    /// Every face the stencils emit off the surface is shared by two sub-tets: on random sign fields over a
+    /// lattice whose rim is held outside, a face with a vertex strictly inside (a lattice vertex the warp left
+    /// positive) must be interior. Two stencils splitting the quadrilateral they share along different
+    /// diagonals leave both halves unshared.
+    #[test]
+    fn stuffing_a_random_sign_field_leaves_no_face_unshared_off_the_surface() {
+        let hints = MeshingHints {
+            bbox: Aabb3::new(Vec3::zeros(), Vec3::new(5.0, 5.0, 5.0)),
+            cell_size: 1.0,
+            material_field: None,
+        };
+        let lattice = BccLattice::new(&hints);
+        let n_lattice = lattice.positions.len();
+        let mut seed: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut uniform = move || {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            #[allow(clippy::cast_precision_loss)] // 53 random bits into [0, 1)
+            let u = (seed >> 11) as f64 / (1_u64 << 53) as f64;
+            u
+        };
+        for trial in 0..400 {
+            let mut values: Vec<f64> = lattice
+                .positions
+                .iter()
+                .map(|p| {
+                    let rim = [p.x, p.y, p.z].iter().any(|&c| !(1.0..=4.0).contains(&c));
+                    let u = uniform();
+                    if rim {
+                        -1.0
+                    } else if u < 0.1 {
+                        0.0
+                    } else {
+                        2.0 * uniform() - 1.0
+                    }
+                })
+                .collect();
+            let mut positions = lattice.positions.clone();
+            warp_lattice(&lattice, &mut positions, &mut values, None);
+            let mut output_positions = positions.clone();
+            let mut output_tets = Vec::new();
+            let mut cut_cache = Cuts::new(None);
+            for &tet in &lattice.tets {
+                dispatch_case(
+                    tet,
+                    &lattice,
+                    &positions,
+                    &values,
+                    &mut output_positions,
+                    &mut output_tets,
+                    &mut cut_cache,
+                );
+            }
+            let mut faces: BTreeMap<[VertexId; 3], usize> = BTreeMap::new();
+            for tet in &output_tets {
+                for skip in 0..4 {
+                    let mut face = [0; 3];
+                    let mut filled = 0;
+                    for (slot, &v) in tet.iter().enumerate() {
+                        if slot != skip {
+                            face[filled] = v;
+                            filled += 1;
+                        }
+                    }
+                    face.sort_unstable();
+                    *faces.entry(face).or_insert(0) += 1;
+                }
+            }
+            for (face, &count) in &faces {
+                let on_the_surface = face
+                    .iter()
+                    .all(|&v| v as usize >= n_lattice || values[v as usize] == 0.0);
+                assert!(
+                    count == 2 || (count == 1 && on_the_surface),
+                    "trial {trial}: face {face:?} is shared by {count} sub-tets"
+                );
+            }
+        }
+    }
+
+    /// `(x − 0.3)⁵`: a root of multiplicity five, where the Illinois steps close the bracket slowly.
+    struct Repeated;
+
+    impl Sdf for Repeated {
+        fn eval(&self, p: Point3<f64>) -> f64 {
+            (p.x - 0.3).powi(5)
+        }
+
+        fn grad(&self, p: Point3<f64>) -> nalgebra::Vector3<f64> {
+            nalgebra::Vector3::new(5.0 * (p.x - 0.3).powi(4), 0.0, 0.0)
+        }
+    }
+
+    #[test]
+    fn a_cut_at_a_repeated_root_is_found() {
+        let (a, b) = (Vec3::zeros(), Vec3::new(1.0, 0.0, 0.0));
+        let f = |p: Vec3| -Repeated.eval(Point3::from(p));
+        let t = root_on_edge(&Repeated, a, b, f(a), f(b)).expect("the SDF is finite");
+        assert!((t - 0.3).abs() <= 1e-12, "the cut lands at {t}, not 0.3");
+    }
+
+    /// `exp(20·x) − exp(20·0.3)`, counting its evaluations: along the x axis from 0 to 1 it crosses zero at
+    /// 0.3 and is so convex that plain regula falsi moves one end only by tiny steps.
+    struct Steep {
+        evaluations: std::sync::atomic::AtomicUsize,
+    }
+
+    impl Sdf for Steep {
+        fn eval(&self, p: Point3<f64>) -> f64 {
+            self.evaluations
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            (20.0 * p.x).exp() - 6.0_f64.exp()
+        }
+
+        fn grad(&self, p: Point3<f64>) -> nalgebra::Vector3<f64> {
+            nalgebra::Vector3::new(20.0 * (20.0 * p.x).exp(), 0.0, 0.0)
+        }
+    }
+
+    #[test]
+    fn a_cut_on_a_steep_sdf_is_found_in_few_evaluations() {
+        let steep = Steep {
+            evaluations: std::sync::atomic::AtomicUsize::new(0),
+        };
+        let (a, b) = (Vec3::zeros(), Vec3::new(1.0, 0.0, 0.0));
+        // Paper convention: the samples negated. Either way along the edge, so either end is the one plain
+        // regula falsi would leave behind.
+        let f = |p: Vec3| -steep.eval(Point3::from(p));
+        for (from, to, root) in [(a, b, 0.3), (b, a, 0.7)] {
+            let (f_from, f_to) = (f(from), f(to));
+            steep
+                .evaluations
+                .store(0, std::sync::atomic::Ordering::Relaxed);
+            let t = root_on_edge(&steep, from, to, f_from, f_to).expect("the SDF is finite");
+            let evaluations = steep.evaluations.load(std::sync::atomic::Ordering::Relaxed);
+            assert!(
+                (t - root).abs() <= 1e-12,
+                "the cut lands at {t}, not {root}"
+            );
+            // 17 here; bisection alone takes about 40 to close the bracket to the tolerance.
+            assert!(evaluations <= 25, "{evaluations} evaluations");
+        }
     }
 }

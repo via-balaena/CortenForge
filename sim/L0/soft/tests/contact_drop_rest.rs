@@ -31,14 +31,15 @@
 //!   is dissipative; the analytic per-step amplitude factor at our
 //!   parameters is `1 / (1 + ω²·dt²) ≈ 7.6e-4` (oscillation amplitude
 //!   shrinks `~1300×` per step at the penalty oscillator frequency),
-//!   so a few hundred post-contact steps drop kinetic energy below
-//!   the `1e-2 m/s`-magnitude rest threshold.
+//!   so the penalty oscillation dies within a few steps. The sphere
+//!   also rocks after landing (below), and the rocking sets how long
+//!   the run must be to reach the `1e-2 m/s`-magnitude rest threshold.
 //! - **Sphere descended** — final mean z-coordinate is below the
 //!   initial release height (gravity acted as expected). Sanity gate
 //!   catching a frozen-x configuration where the solver returned
 //!   `x_prev` unmodified.
 //!
-//! ## Why `dt = 1e-3` s, `n_steps = 1000`
+//! ## Why `dt = 1e-3` s, `n_steps = 2000`
 //!
 //! Time-to-impact in pure freefall from `h = 5 cm`: `t_c = sqrt(2h/g) ≈
 //! 0.10 s = 100 steps at dt = 1e-3 s`. Post-contact decay: at penalty
@@ -48,9 +49,22 @@
 //! n_ref ≈ 7.7e-6 kg`. Penalty-oscillator frequency `ω = sqrt(κ /
 //! m_v) ≈ 3.6e4 rad/s`; backward-Euler per-step amplitude factor `1
 //! / (1 + ω²·dt²) ≈ 7.6e-4` knocks oscillation amplitude down `~1300×`
-//! per step in the post-contact regime, so a few hundred steps brings
-//! the system to rest. `n_steps = 1000` (1 s simulated total) gives
-//! wide headroom.
+//! per step in the post-contact regime.
+//!
+//! The rocking: after landing, the sphere rests on its lowest point,
+//! one mesh vertex, then tips off it and rocks on the frictionless
+//! plane until backward-Euler damps the motion. Measured (2026-09-27,
+//! the largest vertex speed in each 25-step window): with the mesher
+//! before its Parity Rule fix the rocking is under way by 0.25 s,
+//! peaks at 6.1 cm/s near 0.45 s, and last exceeds `1e-2 m/s` by
+//! 0.75 s and `1e-4 m/s` by 1.05 s. With the fix (the same vertex
+//! positions, other diagonals) the sphere is still at `4e-8 m/s` at
+//! 0.3 s; the rocking then peaks at 6.6 cm/s near 0.65 s, and last
+//! exceeds `1e-2 m/s` by 1.075 s and `1e-4 m/s` by 1.325 s. On the
+//! fixed mesh the motion grows exponentially from rounding level; what
+//! makes it start later there is not isolated. `n_steps = 2000` (2 s
+//! simulated) is about 1.9× the measured settling below the rest
+//! threshold.
 //!
 //! Penalty oscillation period at this `(κ, m_v)`: `2π / ω ≈ 1.7e-4 s ≈
 //! 0.17 ms`, i.e., `dt / T ≈ 5.8` oscillation periods per integrator
@@ -128,10 +142,9 @@ const GRAVITY: f64 = -9.81;
 /// Time step (1 ms). See module docstring "Why dt = 1e-3 s" section.
 const DT: f64 = 1.0e-3;
 
-/// Total step count (1000 → 1 s simulated). Time-to-impact ~100 ms;
-/// post-contact decay ~few hundred steps; ~5× headroom on the rest
-/// gate per the docstring sizing.
-const N_STEPS: usize = 1000;
+/// Total step count (2000 → 2 s simulated). Time-to-impact ~100 ms;
+/// the rocking after landing settles by about 1.1 s (module docstring).
+const N_STEPS: usize = 2000;
 
 /// Newton iteration cap — bumped from skeleton's 10 to 50 for transient
 /// integration headroom (penalty oscillation during contact + Newton
@@ -141,8 +154,8 @@ const MAX_NEWTON_ITER: usize = 50;
 
 /// Per-vertex velocity magnitude floor for "rest" (`m/s`). Below this
 /// the system is judged to have reached steady state. `1 cm/s` is
-/// generous — at our `(κ, m_v)` the BE-damped envelope falls below
-/// `1e-4 m/s` long before step 1000.
+/// generous — the rocking falls below `1e-4 m/s` by 1.325 s (module
+/// docstring).
 const KE_REST_THRESHOLD: f64 = 1.0e-2;
 
 /// Multiplier on the freefall velocity bound `sqrt(2 g h)` for the
@@ -199,18 +212,16 @@ fn mean_referenced_z(x_flat: &[f64], referenced: &[VertexId]) -> f64 {
 // ── Tests ────────────────────────────────────────────────────────────────
 
 // Release-mode-only gate per `feedback_release_mode_heavy_tests` and the
-// Mirrors the Hertzian fixture's release-only pattern. Runtime is ~22 s
-// release-mode at the canonical (CELL_SIZE = 3 mm, N_STEPS = 1000)
-// parameters; debug-mode inflation at this resolution would push
+// Mirrors the Hertzian fixture's release-only pattern. Runtime is
+// ~20 s release-mode at the canonical (CELL_SIZE = 3 mm, N_STEPS =
+// 2000) parameters; debug-mode inflation at this resolution would push
 // runtime into the multi-minute range, against the CI 30-min total
 // budget. The `#[cfg_attr(debug_assertions, ignore)]` pattern mirrors
-// `hertz_sphere_plane.rs`. sim-soft is NOT in the CI tests-release
-// matrix today; CI followup to add `cargo test --release -p sim-soft
-// --test contact_drop_rest` to `quality-gate.yml`'s tests-release job
-// is a separate platform-infra deferral.
+// `hertz_sphere_plane.rs`. CI runs it by name in `quality-gate.yml`'s
+// tests-release job (the sim-soft release-only step).
 #[cfg_attr(
     debug_assertions,
-    ignore = "release-only — heavy drop-and-rest at 1000 steps × dynamic Newton (~22 s release, \
+    ignore = "release-only — heavy drop-and-rest at 2000 steps × dynamic Newton (~20 s release, \
               multi-minute debug); rerun with `cargo test --release` to include"
 )]
 #[test]

@@ -4,11 +4,12 @@
 §16; 2a (#968) and 2b's G2 (#969) are merged, and 2b's remaining runs, with the material damping they led to, are
 §16p (#970), and 2c, K6, is §16q (#971). 2d, the product's budget and the stop rule, is §16r (#972). K5,
 with D1's readings diagnosed and replaced, is §16s (#973). Fit plan U3, why the rigid path asks for room and the
-path step 7 runs, is §16t. Step 6's obstacle bake is §16u.
+path step 7 runs, is §16t. Step 6's obstacle bake is §16u, and the wall's canal surface §16v.
 - **Research:** §1–§10.
 - **Code architecture and the crate layout:** §11–§14.
 - **The first experiment and its kill criteria:** §15.
-- **Build step 2's design, and what its PRs measured:** §16 (§16m–§16s); U3, §16t; step 6's bake, §16u.
+- **Build step 2's design, and what its PRs measured:** §16 (§16m–§16s); U3, §16t; step 6's bake, §16u; the wall's
+  canal surface, §16v.
 
 The code architecture, crate layout and first experiment were checked by cold review, against criteria
 written beforehand (§14e, §15i). The research sections were not. Jon's direction:
@@ -436,7 +437,9 @@ fill a gap.
 - the crate layout (§14);
 - the first experiment's detailed design (§15);
 - how a range becomes a verdict, and the Mullins state (fit plan U11);
-- the penetration bound, G2 (fit plan §5).
+- the penetration bound, G2 (fit plan §5);
+- *(2026-09-27)* step 6's done-when re-barred to the bake's exact distance (§15g step 6, §16u), and step 7's wall
+  meshed from the scan's exact distance with its cut points located on it (fit plan U17, §16v).
 
 ## 10. What the research could not see
 
@@ -1234,7 +1237,9 @@ Each item is one PR with its own tests and a done-when.
 **Steps 6–9 are an outline.** They are designed in detail after step 2's results, which set the
 product's mesh, budget and contact law. Three macro reviews found what that design must settle:
 - the per-press time against D4's target (§9 decision 12), which follows from the runs per verdict
-  *(2026-09-26, §16r: 0.29–0.61 of D4 at K1's rate with the wall as meshed; projected, more, fit plan U17)*;
+  *(2026-09-26, §16r: 0.29–0.61 of D4 at K1's rate with the wall as meshed; projected, more, fit plan U17)*
+  *(2026-09-27, §16v: step 7's wall projects nothing; a viscous press at ν 0.49 takes 0.42–0.56 of D4 at K1's rate
+  over the insets measured, and 0.59–0.79 at the budget's worst corner)*;
 - the pairing's nominal corner, which D3 judges at: add it as a run, or show push force is linear in
   μ_f *(2026-09-27: §5c's re-sourcing found no source for a nominal; which value D3 judges at is open)*;
 - Tier 1's accuracy against the solver, and what D3 does if it is poor *(2026-09-27, §16t: Tier 1 reads slice by
@@ -1244,7 +1249,9 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
   distributed support. A held closed end is the "no escape" row of §15h;
 - the product mesher's surface bias and element count (measured in step 2) *(2026-09-26, §16r: the canal nodes
   sit up to 1.25 elements off the true surface, the 5th and 95th percentiles at −0.50 and +0.32; projecting them
-  costs the step; fit plan U17)*;
+  costs the step; fit plan U17)* *(2026-09-27, §16v: meshed from the scan's exact distance with the cut points
+  located on it, every canal node lies on the true surface, the step within 0.86–1.03 of the old wall's at the same
+  inset, the element size 0.99–1.00 of h_K2)*;
 - *(2026-09-26, §16r)* G2 on `base_mold`: no scan grid measured meets it, down to 0.25 mm; step 6's bake sets
   the grid's spacing and pre-smooth against it (fit plan U18) *(2026-09-27, §16u: that was the flood fill's sign;
   signed by parity, with no pre-smooth, the grid's own error meets it at the 5 mm inset at 0.25, 0.125 and
@@ -1302,7 +1309,9 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
      the dependency. *(2026-09-27: step 6 lands as three PRs: the bake and U18's grid (§16u, #975), which took
      the dependency; the wall's canal surface (fit plan U17); and the
      lowering, which carries the boundary options, the pairing library, this test and the items carried from
-     Phase 1.)*
+     Phase 1.)* *(2026-09-27, §16v: the wall's canal surface is settled. Step 7's wall is meshed from the scan's
+     exact distance with its cut points located on that distance, which the lowering builds; and the mesher's
+     Parity Rule is fixed.)*
    - **U3** (fit plan) is settled geometrically before step 7: with no inset, the rigid path already
      asks 8.3 mm of room. Its swept volume is checked against the cavity. If the path is at fault, step
      7's verdicts would measure that and not the fit. The prescribed path is then replaced by an intruder
@@ -1322,7 +1331,8 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
      measured, and none of those meets G2 on `base_mold`; fit plan U18.)* *(2026-09-27, §16u: the old bake's sign
      is wrong near the surface, so the bar is instead that the bake reads each sample's exact signed distance (its
      tests) and, on `base_mold`, its own error at the scan's points is within G2's bar
-     (`the_bake_on_the_product_scan`).)* *(2026-09-27, §16t: and the lowered
+     (`the_bake_on_the_product_scan`); that bar is an engineering call, and Jon delegates these.)*
+     *(2026-09-27, §16t: and the lowered
      fitted pose passes the measuring copy's known-answer tests, and on `base_mold` reproduces the probe's room at
      each pose, checked locally as the 8.285 mm was.)* *(2026-09-27, §16u: the probe's room reads the old path's
      scan grid, so that check reads the probe and the lowering through the same grid; and the lowering sets the
@@ -1375,7 +1385,7 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
   - **If stiffness scaling holds** (15d.10), a verdict is **3 runs**: the pairing's low and high μ, plus
     μ = 0 for the geometric share of push force (§2). That is about 6 minutes at K1's rate. *(2026-09-26, §16r:
     on `base_mold` as meshed at h_K2, a press takes 0.29–0.61 of D4 at K1's rate.)*
-  - **A D3 search** of 3–4 full verdicts would take 18–24 minutes, against D4's 15 (arithmetic). Tier 1 therefore pre-filters the search (step 7), so full verdicts run at 1–2 insets. *(2026-09-26, §16r: on `base_mold` as meshed at h_K2, 3–4 verdicts take 4–12 minutes at K1's rate, within 15; with the canal nodes projected at a floor of 0.5 and the viscosity, 15–21 minutes (fit plan U17); arithmetic.)*
+  - **A D3 search** of 3–4 full verdicts would take 18–24 minutes, against D4's 15 (arithmetic). Tier 1 therefore pre-filters the search (step 7), so full verdicts run at 1–2 insets. *(2026-09-26, §16r: on `base_mold` as meshed at h_K2, 3–4 verdicts take 4–12 minutes at K1's rate, within 15; with the canal nodes projected at a floor of 0.5 and the viscosity, 15–21 minutes (fit plan U17); arithmetic.)* *(2026-09-27, §16v: step 7's wall projects nothing; at ν 0.49 with Ecoflex's viscosity, a press takes 0.42–0.56 of D4 at K1's rate over the insets measured, so 3–4 verdicts take 6–11 minutes, and at the budget's worst corner 9–16; with Tier 1 picking 1–2 insets, 3–8 at the worst corner; arithmetic.)*
   - **If stiffness scaling fails,** each stiffness corner doubles the friction runs: 5 runs.
 - **The regime per application** (from the oracle's confinement table, §5b amended):
 
@@ -2863,8 +2873,9 @@ runs: K3's 0.5 % on the seated 95th percentile. 50k, μ_f 0.3, Ecoflex 00-30's �
 
 **The product's budget** (`RAYON_NUM_THREADS=4 cargo test --release -p cf-sim-research explicit_budget --
 --ignored --nocapture` on an idle machine, the scan local, at `3af4024c`; later commits change only the module's
-tests and comments;
-`tools/cf-sim-research/src/insertion_sim/explicit_budget.rs`):
+tests and comments; `tools/cf-sim-research/src/insertion_sim/explicit_budget.rs`) *(2026-09-27, §16v: since, the
+mesher's Parity Rule fix changes the wall's connectivity, and the canal truth is signed by parity; the old wall's
+ν 0.49 press re-reads 0.28 / 0.42 elastic / viscous)*:
 - **h_K2 = 2.20 mm**, set by λ_a 1.1 at ν 0.495 (+5.29 % at 10k and +1.60 % at 50k, §16p's table) by the stop
   rule's model fitted per corner. It lies between the 10k and 50k meshes (h 2.26 and 1.31 mm).
 - **The wall** is the old path's `build_insertion_geometry`: the scan decimated to 2 500 faces, a flood-filled
@@ -2894,7 +2905,8 @@ in contact, and one of the loop's re-estimates (a run makes one every 500 steps)
 | Ecoflex 00-30's η/μ | 0.43 | 0.097 | 0.53 |
 | Ecoflex 00-30's η/μ × 1.47 | 0.53 | | 0.61 |
 
-- **As meshed, a press takes 0.29–0.61 of D4 at K1's rate.** The η range is
+- **As meshed, a press takes 0.29–0.61 of D4 at K1's rate.** *(2026-09-27, §16v: read before the mesher's Parity Rule
+  fix. Step 7's wall, at the 5 mm inset: 0.420 viscous at ν 0.49, 0.594 at ν 0.495 with the viscosity × 1.47.)* The η range is
   Croquette's error bars' 5.2–10.3 Pa·s for Ecoflex (fit plan U15); Dragon Skin 10A's is not known.
 - The viscosity cuts the step to 0.672 of the elastic one at ν 0.49 and 0.759 at 0.495. The tube's 10k mesh, in
   the same material at the same η/μ and about the product's h, reads 0.875 (§16p). What in the meshes makes the
@@ -2904,7 +2916,7 @@ in contact, and one of the loop's re-estimates (a run makes one every 500 steps)
   10k to 50k, so the element size they need on the product is open*), a press takes 2.3 of D4 elastic and 4.8
   viscous at K1's rate, and 0.26 and 0.84 on the CPU (ν 0.49, Ecoflex's η/μ).
 - **What the D4 verdict rests on:** the wall as meshed (projected at a floor of 0.5, a viscous press takes 1.03 of D4
-  at K1's rate, below; U17); the GPU meeting K1 exactly (measured in step 5), with its per-step cost scaling with
+  at K1's rate, below; U17) *(2026-09-27, §16v: step 7's wall projects nothing)*; the GPU meeting K1 exactly (measured in step 5), with its per-step cost scaling with
   element count, which a GPU's fixed cost a step need not; the tube's v/c_s, loaded step factor, hold and start
   gap, where the product's own seated window is D1's (step 7); Ecoflex's η/μ; 3 runs a press (a run at the
   pairing's nominal corner would make 4, §15g's outline); no node held; and h_K2, set by K2 alone.
@@ -2916,7 +2928,9 @@ in contact, and one of the loop's re-estimates (a run makes one every 500 steps)
   U17, U18) and K5 (U16). That is Jon's call; the stop rule proceeds to step 3 either way. *(Jon, 2026-09-26:
   the quality items first, K5 first of them; §16s.)*
 
-**The surface bias.** The canal nodes are the wall's boundary nodes within two element sizes of the true canal
+**The surface bias.** *(2026-09-27, §16v: re-read against a parity-signed truth, the as-meshed percentiles below
+read the same; what sets them is isolated there, and step 7's wall is meshed so that no node needs projecting, so the
+projections below are not its cost.)* The canal nodes are the wall's boundary nodes within two element sizes of the true canal
 surface, the cap-stripped scan's exact distance at the inset (the mesher offsets the cap-stripped scan near the
 mouth), and more than one element from a cap plane. No boundary node away from the caps lies two to three
 element sizes off. Offsets are in element sizes, negative into the canal:
@@ -3190,7 +3204,9 @@ room is a size of the scan's shape; the figures stay local):
   pose, and 1.55 under the path as written.
 - The most room understates what the fitted pose keeps of the path. From 0.6 to 0.9 of the travel it asks 1.5–2.2
   times the slide's room at each pose. It asks more than the old bridge's d̂ (1.2 mm) of 0.12 of the wall's nodes,
-  against 0.02 under the slide and 0.30 under the path as written.
+  against 0.02 under the slide and 0.30 under the path as written. *(2026-09-27, §16v: those fractions are of the old
+  wall's boundary nodes, read before the mesher's Parity Rule fix, which could expose nodes inside the wall on its
+  boundary; not re-read.)*
 - The fitted pose is the closest rigid motion to the slide, not a close one: over the scan's surface inside the
   device it misses the slide by up to 1.8 times the slide's most room.
 - The headline rests on fitting over the part of the scan the slide puts inside the device. Fitted over the whole
@@ -3311,7 +3327,7 @@ digits: 1.8 % past the bar, penetration p95 / p99 / worst 0.47 / 1.28 / 2.34 bar
 - **U17's canal offsets** were measured against a flood-fill-signed grid (`explicit_budget.rs`, `Truth`), on a
   wall meshed from the old path's grid, flood-filled and pre-smoothed; neither is re-read with parity's sign. D3's
   search goes down to 0 mm, where the canal is the scan's own surface. So the wall's PR (fit plan U17) measures
-  its option at a small inset too, against a reference signed by parity.
+  its option at a small inset too, against a reference signed by parity. *(2026-09-27: done, §16v.)*
 - **U3's room** (§16t) was read through the old path's scan grid (decimated and flood-filled). Step 6's check that
   the lowering reproduces the probe's room reads both through the same grid.
 - The tube's G2 (§16o) is not affected: its mandrel is baked from its exact distance. The old path's contact read
@@ -3356,3 +3372,178 @@ grid (2026-09-27), and `the_bake_on_the_product_scan` asserts it meets the floor
 - **After the push:** a completeness review against the plan and the session's pending list found several items
   carried only in conversation; a macro review found the floor's consequences unrecorded. The
   owners above, and this paragraph, came from them.
+
+### 16v. Step 6: the wall's canal surface (2026-09-27)
+
+Fit plan U17: the old path's wall puts its canal nodes off the true canal surface (§16r: the 5th and 95th percentiles
+at −0.50 and +0.32 of an element, the worst at 1.25), and step 6 chooses among a quality floor, a finer grid under the
+mesher, and a mesher that places the surface nodes itself. Measured here by changing one thing at a time, on
+`base_mold` at h_K2, at the same lattice throughout, at the 5 mm inset and at 1 mm and 0 mm (D3's search reaches
+0 mm, where the canal is the scan's surface): `tools/cf-sim-research/src/insertion_sim/canal_surface.rs`,
+`where_the_canal_nodes_offsets_come_from_on_the_product_scan`.
+
+**How it is measured.**
+- **The wall** is `build_insertion_geometry`'s, built from its parts (`wall_body`, `wall_material_field`,
+  `mesh_wall`), so that one input can change at a time. At the 5 mm inset the probe asserts that it rebuilds the
+  old path's wall: the same vertex positions and tetrahedra.
+- **The chain**, at each inset, each wall changing one input from the one before: the old path (the scan decimated,
+  a flood-filled grid at 0.75 of the lattice, pre-smoothed by a cell); no pre-smooth; the scan as loaded, not
+  decimated; the grid signed by parity, not the flood fill (the same samples with parity's sign); the scan's exact
+  distance, not the grid; and the cut points located on that distance, not interpolated.
+- **The truth** is the cap-stripped scan's exact distance, signed by parity (§16u); the budget probe's `Truth` is now
+  signed so too, where it was signed by a 1 mm flood fill.
+- **Each canal node's offset** splits into how far the node sits off the mesher's own zero set (the wall body's
+  value at the node) and the rest, the field's error at the node. The split holds on the canal side of the scan's
+  surface, where the cavity's distance is `pinned_floor_shell`'s rind; at 1 mm some canal nodes lie outside the scan,
+  where it does not (4 % on the old path, none on the last two walls). At 0 mm there is no rind.
+- **The columns:** offsets in element sizes, negative into the canal; "in / out" are the canal nodes more than
+  0.01 h inside and outside the true surface; the step is the rest step at ν 0.49 over the old path's at the same
+  inset, elastic / viscous; the press is a viscous one at ν 0.49 over D4 at K1's rate (§16r's arithmetic).
+
+**At the 5 mm inset:**
+
+| The wall | In / out | Offset p5 / p95 / worst | Off its own zero set p5 / p95 | Field's error p5 / p95 | Step | Press / D4 |
+|---|---|---|---|---|---|---|
+| Old path | 49.4 % / 46.9 % | −0.504 / +0.322 / 1.252 | −0.009 / +0.160 | −0.532 / +0.271 | 1 / 1 | 0.424 |
+| No pre-smooth | 73.0 % / 16.5 % | −0.213 / +0.048 / 0.537 | −0.058 / +0.048 | −0.181 / +0.041 | 0.97 / 0.98 | 0.444 |
+| The scan as loaded | 69.4 % / 18.4 % | −0.198 / +0.052 / 0.533 | −0.060 / +0.048 | −0.168 / +0.037 | 1.05 / 1.06 | 0.408 |
+| The grid signed by parity | 76.7 % / 12.6 % | −0.207 / +0.036 / 0.533 | −0.063 / +0.022 | −0.170 / +0.037 | 1.05 / 1.06 | 0.408 |
+| The exact distance | 37.5 % / 7.8 % | −0.069 / +0.016 / 0.266 | −0.069 / +0.016 | 0 / 0 | 0.92 / 0.96 | 0.451 |
+| Cut points located on it | 0 / 0 | 0 / 0 / 0.000 | 0 / 0 | 0 / 0 | 0.95 / 1.03 | 0.420 |
+
+- **The pre-smooth carries most of the spread:** without it the 5th percentile goes from −0.50 to −0.21.
+- **The sign does not matter here:** signed by parity, the grid reads about the same, and parity, a 1 mm flood fill
+  and the welded scan's pseudo-normals agree at every canal node of every wall.
+- **The grid's own sampling carries most of the rest:** the exact distance takes the 5th percentile from −0.21 to
+  −0.07. The decimation hardly matters, as §16r found.
+- **What remains is the mesher's:** a cut point placed where the line through its lattice edge's two samples crosses
+  zero sits off a curved zero set. Located on the distance itself (`sim_soft::CutPoints::Root`), every canal node
+  lies on the true surface to the printed digits. Labelle and Shewchuk's own implementation locates cut points by
+  bisection; they note that linear interpolation keeps the angle guarantee and loses the others (their §3.1).
+- With the exact distance the truth is the mesher's own field, so the field's error is zero by construction; what
+  checks that field is §16u's parity against the flood fill, and here parity against the welded pseudo-normals.
+
+**At 1 mm:**
+
+| The wall | In / out | Offset p5 / p95 / worst | Mean | Off its own zero set p5 / p95 | Step | Press / D4 |
+|---|---|---|---|---|---|---|
+| Old path | 15.5 % / 82.1 % | −0.164 / +0.441 / 1.163 | +0.156 | −0.051 / +0.012 | 1 / 1 | 0.460 |
+| No pre-smooth | 3.4 % / 95.0 % | +0.010 / +0.427 / 0.888 | +0.214 | −0.262 / +0.154 | 0.86 / 0.88 | 0.525 |
+| The scan as loaded | 2.6 % / 95.9 % | +0.017 / +0.434 / 0.897 | +0.220 | −0.263 / +0.142 | 0.85 / 0.88 | 0.521 |
+| The grid signed by parity | 20.2 % / 73.2 % | −0.077 / +0.319 / 0.466 | +0.108 | −0.013 / +0.341 | 0.85 / 0.88 | 0.522 |
+| The exact distance | 7.1 % / 79.0 % | −0.015 / +0.346 / 0.416 | +0.146 | −0.015 / +0.346 | 0.86 / 0.88 | 0.523 |
+| Cut points located on it | 0 / 0 | 0 / 0 / 0.000 | 0 | 0 / 0 | 0.86 / 0.88 | 0.530 |
+
+- **Here the sign matters:** signed by parity, the grid's mean offset halves (+0.220 to +0.108) and so does its worst
+  (0.90 to 0.47).
+- Without the pre-smooth the canal moves further into the wall (the mean from +0.156 to +0.214) while its 5th
+  percentile comes up; the two errors are not separated.
+- **Linear cuts on the exact distance sit into the wall** (the mean +0.146). The cavity's distance there is the rind,
+  the scan's unsigned distance less the inset, kinked at the scan's surface one inset from the canal, and linear cuts
+  sit off a kinked distance's zero set (`root_cuts_find_a_kinked_distances_zero_set`); whether that kink is what
+  sets the offset on the product is not isolated. Located cuts remove it.
+
+**At 0 mm:**
+
+| The wall | In / out | Offset p5 / p95 / worst | Mean | Off its own zero set p5 / p95 | Step | Press / D4 |
+|---|---|---|---|---|---|---|
+| Old path | 95.2 % / 3.6 % | −0.614 / −0.016 / 1.723 | −0.296 | −0.051 / +0.011 | 1 / 1 | 0.539 |
+| No pre-smooth | 78.8 % / 12.8 % | −0.176 / +0.060 / 0.697 | −0.059 | −0.070 / +0.038 | 0.98 / 0.98 | 0.549 |
+| The scan as loaded | 76.1 % / 14.5 % | −0.160 / +0.081 / 0.683 | −0.048 | −0.089 / +0.039 | 0.95 / 0.97 | 0.554 |
+| The grid signed by parity | 81.2 % / 8.2 % | −0.137 / +0.023 / 0.443 | −0.048 | −0.051 / +0.017 | 0.95 / 0.97 | 0.553 |
+| The exact distance | 34.3 % / 6.7 % | −0.046 / +0.013 / 0.166 | −0.009 | −0.046 / +0.013 | 0.88 / 0.91 | 0.591 |
+| Cut points located on it | 0 / 0 | 0 / 0 / 0.000 | 0 | 0 / 0 | 0.91 / 0.96 | 0.558 |
+
+- **The pre-smooth carries most of it here too:** the mean goes from −0.30 to −0.06. Parity's sign takes the worst
+  from 0.68 to 0.44, and the exact distance the 5th percentile from −0.14 to −0.05.
+- **The signs at the canal nodes:** parity and the welded pseudo-normals disagree at no more than one canal node on
+  any wall at 1 mm and 0 mm, except the located-cut wall at 0 mm, whose nodes lie on the surface, where the sign is
+  arbitrary and the offset is zero either way (about half disagree). A 1 mm flood fill disagrees with parity at up
+  to about half the canal nodes at 0 mm: they lie within a cell of the surface, where §16u found it wrong.
+
+**The cost of step 7's wall** (the last row at each inset; beside it, the old path's):
+
+| Inset | h / h_K2 | Step accuracy (§16e, ν 0.49), elastic / viscous | Press / D4 at ν 0.49 | At the budget's worst corner (ν 0.495, the viscosity × 1.47) | The old path's, worst corner |
+|---|---|---|---|---|---|
+| 5 mm | 0.992 | +0.0000 / +0.0002 | 0.420 | 0.594 | 0.598 |
+| 1 mm | 0.997 | +0.0000 / +0.0001 | 0.530 | 0.748 | 0.647 |
+| 0 mm | 0.995 | +0.0000 / +0.0002 | 0.558 | 0.787 | 0.759 |
+
+- At ν 0.49 the step accuracy is within §16e's bar of ±0.02 at every inset; at the worst corner it is not read.
+- Each wall is built, its fields and its mesh, once per inset, in about a hundredth of D4.
+- At the worst corner, 3–4 full verdicts would take 9–16 minutes (arithmetic), the upper end past D4's 15; with Tier
+  1 picking 1–2 insets for full verdicts (step 7), 3–8 minutes.
+
+**A mesher defect it found.** Before the fix below, with the exact distance and located cuts, a few canal nodes still
+sat off the surface (0.5 % at 5 mm, the worst 0.72; 0.2 % at 1 mm), and so did boundary nodes on 9 of 600 random
+ellipsoids and shells (a search not kept). Each was a lattice vertex inside the wall, exposed where two BCC tetrahedra
+split the quadrilateral they share along different diagonals, so neither half was matched. The Parity Rule (Labelle
+and Shewchuk §3.3) chooses a diagonal from the face's long edge and its third lattice vertex. The predicate read only
+the long edge, so it could not tell the long edge's two faces apart: the `(2 in, 2 out)` stencil gave them opposite
+diagonals by the order of its outside slots, which the lattice's tetrahedron table does not fix, and the other
+stencils gave both the same one.
+- **Fixed:** `diagonal_from_a` is the paper's predicate computed from integer lattice indices, and every stencil that
+  splits such a face uses it.
+- **It changes the mesher's default output:** the vertex positions are the same and the connectivity changes
+  wherever the two predicates differ. On the old wall at the 5 mm inset a press moves from 0.29 / 0.43 of D4 at K1
+  (elastic / viscous, ν 0.49; §16r's table, read before the fix) to 0.28 / 0.42. `contact_drop_rest` now runs 2 s,
+  not 1 s: its sphere rocks on its lowest vertex after landing, and settles later on the fixed mesh (measured on
+  both; the test's docstring).
+
+**The choice** (an engineering call, 2026-09-27; Jon delegates these, §9): step 7's wall is meshed from the scan's
+exact distance, signed by parity, with its cut points located on that distance. No node is projected, so no quality
+floor is set; §16r's projection cost does not apply. A finer grid under the mesher is not measured: the exact
+distance needs no grid.
+
+**Not measured here:**
+- The canal between its nodes: a face between canal nodes on a curved surface lies off it. The contact law holds
+  nodes; the faces between them are not read.
+- The CPU's time: the probe times the build, not a step.
+- Insets between 1 and 5 mm; the step ratio is not monotone in the inset.
+- The element size the readings need (§16s): the wall stays at h_K2.
+- The caps' floors, the mouth within an element of a cap plane, and the outer skin.
+- Whether the cast's canal matches step 7's at small insets: `cf-cast-cli` signs the scan by a flood fill.
+
+**Carried:**
+- **Where step 7's wall is built:** `wall_body` needs `cf-design`'s `pinned_floor_shell` and the cap planes, which
+  `sim-soft` does not depend on. Step 6's lowering decides where the wall is meshed, and meshes it as the probe does;
+  with more than one layer, the material field and the per-tetrahedron layer (keyed on the old grid in
+  `build_insertion_geometry`) read the exact distance too.
+- **U3's room** (§16t) was read on the old wall's nodes, whose canal offsets are of the same order as the room.
+  Step 6's check that the lowering reproduces the probe's room reads both on one wall, and step 7 reads the room on
+  its own wall.
+- **The mesher before the fix** may have given the old wall boundary faces inside it. Whether that played a part in
+  §16r's non-finite attempt to step the product, or in the old path's surface touching itself (fit plan, Phase 1),
+  is not measured; the pre-roll runs on the fixed mesher.
+- **Figures read before the fix** carry notes where they stand: §16r's budget table and fit plan U15's note (the old
+  wall's ν 0.49 press re-read above), and §16t's node fractions (not re-read).
+
+**How this was checked.**
+- **The probe** runs locally, on the product scan:
+  `cargo test -p cf-sim-research --release --bin cf-sim-research -- insertion_sim::canal_surface --ignored --nocapture`.
+- **Located cuts** (`sim/L0/soft/tests/sdf_cut_points.rs`): every boundary vertex on a sphere's and on a kinked
+  shell's zero set to 1e-12 of the radius, where linear cuts are measurably off; Theorem 1's angle bounds; and a
+  non-finite value met while locating a cut reported as `MeshingError::NonFiniteSdfOnEdge`. In
+  `sim/L0/soft/src/sdf_bridge/stuffing.rs`'s unit tests: a steep and a repeated root, each found to 1e-12, the steep
+  one in fewer evaluations than bisection takes.
+- **The Parity Rule:** `stuffing_a_random_sign_field_leaves_no_face_unshared_off_the_surface` (400 random sign
+  fields; it failed on the previous predicate), `the_parity_rule_is_the_papers` (worked cases from the paper's text),
+  `a_long_edges_two_faces_take_opposite_diagonals`, and
+  `every_stencil_splits_a_whole_long_face_along_the_parity_rules_diagonal`.
+- **Mutations:** each of those checks failed under a mutation of the code it guards, among them the diagonal flipped
+  in every stencil at once, which no angle test sees. The regula falsi's fallback to the midpoint when the secant
+  leaves the bracket runs in no test.
+- **The default path**, before the Parity Rule fix, hashed the same as the previous code's on six meshes (a comparison
+  not kept).
+- **Downstream of the mesher:** the release suites of `sim-soft`, `cf-sim-research`, `cf-fsu-model`, `sim-bevy-soft`,
+  `cf-studio-engine` and `sim-coupling`, and the ten `sim-soft` validators CI runs, pass. Two examples CI does not run,
+  `soft-drop-on-plane` and `hertz-sphere-plane`, pin values the fix moved; each was diagnosed and re-captured, with
+  the diagnosis beside its constants.
+- **Round 1:** three cold reviewers (the mesher with 23 mutations; the measurement and this record; the whole plan)
+  raised 33 findings. One was a code defect: the located-cut search could stop far from a repeated root, and now
+  bisects every fourth step. Most of the rest were settled by measuring (the parity-signed grid, all three insets,
+  the worst corner, the step's accuracy) or by tests (the error path, each stencil's diagonal, a repeated root), and
+  the others by correcting or cutting this record's explanations.
+- **Round 2:** one fresh reviewer on round 1's fixes: 17 findings, 15 of them created by those fixes, most of them
+  prose, several wrong when measured (what moved the Hertz example's values, the drop example's residual motion); and
+  the probe's located-cut rows re-read at the final code. They were corrected or cut, and the rounds stopped there.

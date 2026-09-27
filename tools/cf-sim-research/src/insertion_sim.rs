@@ -83,10 +83,10 @@ use sim_soft::material::silicone_table::{
 use sim_soft::readout::{ConformityParams, ConformityReadout, conformity_breakdown};
 use sim_soft::{
     Aabb3, BoundaryConditions, ConstantField, ContactPair, ContactPairReadout, CpuNewtonSolver,
-    Element, Field, IpcRigidContact, LayeredScalarField, LmConfig, Material, MaterialField, Mesh,
-    MeshingHints, PenaltyRigidContact, Sdf, SdfMeshedTetMesh, ShoreReading, SiliconeMaterial,
-    Solver, SolverConfig, SolverFailure, Tet4, Tet10Mesh, TetId, Vec3, VertexId, Yeoh,
-    boundary_faces_on_isosurface, face_barrier_kappa, filter_pair_readouts_to_referenced,
+    CutPoints, Element, Field, IpcRigidContact, LayeredScalarField, LmConfig, Material,
+    MaterialField, Mesh, MeshingHints, PenaltyRigidContact, Sdf, SdfMeshedTetMesh, ShoreReading,
+    SiliconeMaterial, Solver, SolverConfig, SolverFailure, Tet4, Tet10Mesh, TetId, Vec3, VertexId,
+    Yeoh, boundary_faces_on_isosurface, face_barrier_kappa, filter_pair_readouts_to_referenced,
     pick_vertices_by_predicate, referenced_vertices,
 };
 
@@ -523,7 +523,7 @@ pub fn layer_boundary_thresholds(design: &SimDesign) -> Vec<f64> {
 /// empty thresholds, so that case uses a [`ConstantField`] of the
 /// lone value.
 fn layered_param_field(
-    scan_sdf: &GridSdf,
+    scan_sdf: &Arc<dyn cf_design::Sdf>,
     thresholds: &[f64],
     values: Vec<f64>,
 ) -> Box<dyn Field<f64>> {
@@ -533,7 +533,7 @@ fn layered_param_field(
         Box::new(ConstantField::new(values.first().copied().unwrap_or(0.0)))
     } else {
         Box::new(LayeredScalarField::new(
-            Box::new(scan_sdf.clone()),
+            Box::new(Arc::clone(scan_sdf)),
             thresholds.to_vec(),
             values,
         ))
@@ -737,93 +737,22 @@ pub fn build_insertion_geometry(
     let cap_tuples: Vec<(Point3<f64>, Vector3<f64>)> =
         cap_planes.iter().map(CapPlane::as_tuple).collect();
 
-    // Five `LayeredScalarField`s (or `ConstantField`s) over the same
-    // scan-distance partition — three Yeoh parameters + two
-    // calibrated principal-stretch caps — mirroring the row-23
-    // `build_material_field` precedent.  The 5-arg constructor
-    // `from_yeoh_fields_with_bounds` threads the per-anchor
-    // `0.8 · λ_break` tensile cap + `0.20` compressive cap into
-    // `MaterialFieldInner::Yeoh.bounds`; `MaterialField::sample_yeoh`
-    // routes each per-tet `Yeoh` through
-    // `with_max_principal_stretch_only` per H4-2-C — only the
-    // tensile cap reaches the solver's
-    // `check_validity_at_step_start` gate, the compressive value
-    // is sampled then dropped (preserved in `bounds` for future
-    // Option B / Phase H F-bar re-enable per
-    // `docs/CANDIDATE_H4_FALSIFICATION_BOOKMARK.md` §5).  `det F > 0`
-    // inversion is the only remaining compressive safety net.
-    // Pre-H4 3-arg path used the legacy `max_stretch_deviation`
-    // gate (symmetric σ ∈ [0, 2]) — H4-2-C matches that behavior
-    // on the compressive side while adding the calibrated tensile
-    // cap.
-    let material_field = MaterialField::from_yeoh_fields_with_bounds(
-        layered_param_field(
-            &scan_sdf,
-            &thresholds,
-            materials.iter().map(|m| m.mu).collect(),
-        ),
-        layered_param_field(
-            &scan_sdf,
-            &thresholds,
-            materials.iter().map(|m| m.c2).collect(),
-        ),
-        layered_param_field(
-            &scan_sdf,
-            &thresholds,
-            materials.iter().map(|m| m.lambda).collect(),
-        ),
-        layered_param_field(
-            &scan_sdf,
-            &thresholds,
-            materials
-                .iter()
-                .map(|m| m.validity_max_principal_stretch)
-                .collect(),
-        ),
-        layered_param_field(
-            &scan_sdf,
-            &thresholds,
-            materials
-                .iter()
-                .map(|m| m.validity_min_principal_stretch)
-                .collect(),
-        ),
-    );
-
-    // Route-A device wall: outer skin minus cavity void. Both shells
-    // go through `pinned_floor_shell` (candidate A) — when `cap_planes`
-    // is empty this degenerates to the previous
-    // `Solid::from_sdf(scan_sdf).offset(...)` byte-identically; when
-    // caps are present each shell gains a flat floor pinned at every
-    // cap polygon. `cavity_offset_m` is negative (cavity inset *inside*
-    // the scan); `outer_offset_m` may be positive (outer skin extends
-    // out from the scan) or negative (thin total wall sits inside).
-    let cavity = pinned_floor_shell(
-        closed_sdf_arc.clone(),
-        open_sdf_arc.clone(),
-        bounds,
-        &cap_tuples,
-        cavity_offset_m,
-    );
-    let outer = pinned_floor_shell(
+    let material_field = wall_material_field(&closed_sdf_arc, &thresholds, &materials);
+    let body = wall_body(
         closed_sdf_arc,
         open_sdf_arc,
         bounds,
         &cap_tuples,
+        cavity_offset_m,
         outer_offset_m,
     );
-    let body = outer.subtract(cavity);
-
-    let hints = MeshingHints {
-        bbox: aabb3_for_meshing(&bounds),
-        cell_size: cell_size_m,
-        material_field: Some(material_field),
-    };
-    // `MeshingError` does not implement `std::error::Error` — wrap by
-    // hand via its `Debug`, same as `run_sdf_bridge_spike`.
-    let mesh = SdfMeshedTetMesh::<Yeoh>::from_sdf_yeoh(&body, &hints).map_err(|e| {
-        anyhow!("tet-mesh the device-wall body via SdfMeshedTetMesh::<Yeoh>::from_sdf_yeoh: {e:?}")
-    })?;
+    let mesh = mesh_wall(
+        &body,
+        bounds,
+        cell_size_m,
+        material_field,
+        CutPoints::Interpolated,
+    )?;
     let n_tets = mesh.n_tets();
 
     // Slice 7.4 per-tet layer assignment. Sample the scan SDF at each
@@ -879,6 +808,123 @@ pub fn build_insertion_geometry(
         cell_size_m,
         n_tets,
         per_tet_layer,
+    })
+}
+
+/// The wall's per-tet material field: each layer's Yeoh `(μ, C₂, λ)` and its principal-stretch caps,
+/// partitioned by `scan_sdf` at `thresholds` ([`layered_param_field`]). `materials` are the layers',
+/// innermost first.
+fn wall_material_field(
+    scan_sdf: &Arc<dyn cf_design::Sdf>,
+    thresholds: &[f64],
+    materials: &[SiliconeMaterial],
+) -> MaterialField {
+    // Five `LayeredScalarField`s (or `ConstantField`s) over the same
+    // scan-distance partition — three Yeoh parameters + two
+    // calibrated principal-stretch caps — mirroring the row-23
+    // `build_material_field` precedent.  The 5-arg constructor
+    // `from_yeoh_fields_with_bounds` threads the per-anchor
+    // `0.8 · λ_break` tensile cap + `0.20` compressive cap into
+    // `MaterialFieldInner::Yeoh.bounds`; `MaterialField::sample_yeoh`
+    // routes each per-tet `Yeoh` through
+    // `with_max_principal_stretch_only` per H4-2-C — only the
+    // tensile cap reaches the solver's
+    // `check_validity_at_step_start` gate, the compressive value
+    // is sampled then dropped (preserved in `bounds` for future
+    // Option B / Phase H F-bar re-enable per
+    // `docs/CANDIDATE_H4_FALSIFICATION_BOOKMARK.md` §5).  `det F > 0`
+    // inversion is the only remaining compressive safety net.
+    // Pre-H4 3-arg path used the legacy `max_stretch_deviation`
+    // gate (symmetric σ ∈ [0, 2]) — H4-2-C matches that behavior
+    // on the compressive side while adding the calibrated tensile
+    // cap.
+    MaterialField::from_yeoh_fields_with_bounds(
+        layered_param_field(
+            scan_sdf,
+            thresholds,
+            materials.iter().map(|m| m.mu).collect(),
+        ),
+        layered_param_field(
+            scan_sdf,
+            thresholds,
+            materials.iter().map(|m| m.c2).collect(),
+        ),
+        layered_param_field(
+            scan_sdf,
+            thresholds,
+            materials.iter().map(|m| m.lambda).collect(),
+        ),
+        layered_param_field(
+            scan_sdf,
+            thresholds,
+            materials
+                .iter()
+                .map(|m| m.validity_max_principal_stretch)
+                .collect(),
+        ),
+        layered_param_field(
+            scan_sdf,
+            thresholds,
+            materials
+                .iter()
+                .map(|m| m.validity_min_principal_stretch)
+                .collect(),
+        ),
+    )
+}
+
+/// The device wall: the outer skin less the cavity, each a [`pinned_floor_shell`] of the scan's signed
+/// distances at its offset. `closed` is the closed scan's; `open` the cap-stripped scan's, of which only the
+/// magnitude is read.
+fn wall_body(
+    closed: Arc<dyn cf_design::Sdf>,
+    open: Arc<dyn cf_design::Sdf>,
+    bounds: Aabb,
+    cap_planes: &[(Point3<f64>, Vector3<f64>)],
+    cavity_offset_m: f64,
+    outer_offset_m: f64,
+) -> Solid {
+    // Route-A device wall: outer skin minus cavity void. Both shells
+    // go through `pinned_floor_shell` (candidate A) — when `cap_planes`
+    // is empty this degenerates to the previous
+    // `Solid::from_sdf(scan_sdf).offset(...)` byte-identically; when
+    // caps are present each shell gains a flat floor pinned at every
+    // cap polygon. `cavity_offset_m` is negative (cavity inset *inside*
+    // the scan); `outer_offset_m` may be positive (outer skin extends
+    // out from the scan) or negative (thin total wall sits inside).
+    let cavity = pinned_floor_shell(
+        closed.clone(),
+        open.clone(),
+        bounds,
+        cap_planes,
+        cavity_offset_m,
+    );
+    let outer = pinned_floor_shell(closed, open, bounds, cap_planes, outer_offset_m);
+    outer.subtract(cavity)
+}
+
+/// `body` tet-meshed on a lattice of spacing `cell_size_m` over `bounds`, each tet sampling
+/// `material_field`, each cut point where `cut_points` puts it.
+///
+/// # Errors
+///
+/// The mesher's: no tet emitted, or a non-finite SDF sample.
+fn mesh_wall(
+    body: &Solid,
+    bounds: Aabb,
+    cell_size_m: f64,
+    material_field: MaterialField,
+    cut_points: CutPoints,
+) -> Result<SdfMeshedTetMesh<Yeoh>> {
+    let hints = MeshingHints {
+        bbox: aabb3_for_meshing(&bounds),
+        cell_size: cell_size_m,
+        material_field: Some(material_field),
+    };
+    // `MeshingError` does not implement `std::error::Error` — wrap by
+    // hand via its `Debug`, same as `run_sdf_bridge_spike`.
+    SdfMeshedTetMesh::<Yeoh>::from_sdf_yeoh_with(body, &hints, cut_points).map_err(|e| {
+        anyhow!("tet-mesh the device-wall body via SdfMeshedTetMesh::<Yeoh>::from_sdf_yeoh: {e:?}")
     })
 }
 
@@ -4475,6 +4521,10 @@ mod path_room;
 // Step 6's obstacle bake (plan §15g step 6, fit plan U18): G2 against the grid's spacing.
 #[cfg(test)]
 mod obstacle_grid;
+
+// Fit plan U17 (plan §15g step 6): the product wall's canal surface.
+#[cfg(test)]
+mod canal_surface;
 
 #[cfg(test)]
 mod tests {
