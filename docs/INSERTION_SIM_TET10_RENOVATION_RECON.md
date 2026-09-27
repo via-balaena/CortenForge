@@ -1494,7 +1494,8 @@ Listed because the confidence of §4 rests on these being open, not closed.
    entrance. 8.3 mm of it is asked with no inset at all.
    The pose is RIGID: the scan turns about its tip to follow the centerline. Why
    it asks that much there has not been isolated; F4's postmortem had called
-   this pose mismatch "small".
+   this pose mismatch "small". *(2026-09-27: most of it is the path's own;
+   `SOFT_CONTACT_ARCHITECTURE_RECON.md` §16t.)*
 
    **Schedule.** The ramp can derive κ only while the worst per-step normal
    closing stays under the band, `closing < d̂ = 1.2 mm`

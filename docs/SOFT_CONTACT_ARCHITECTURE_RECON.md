@@ -3,11 +3,12 @@
 **Status:** the plan, 2026-09-24, amended as the build goes. Build step 1 is merged (#965). Step 2 is designed in
 §16; 2a (#968) and 2b's G2 (#969) are merged, and 2b's remaining runs, with the material damping they led to, are
 §16p (#970), and 2c, K6, is §16q (#971). 2d, the product's budget and the stop rule, is §16r (#972). K5,
-with D1's readings diagnosed and replaced, is §16s.
+with D1's readings diagnosed and replaced, is §16s (#973). Fit plan U3, why the rigid path asks for room and the
+path step 7 runs, is §16t.
 - **Research:** §1–§10.
 - **Code architecture and the crate layout:** §11–§14.
 - **The first experiment and its kill criteria:** §15.
-- **Build step 2's design, and what its PRs measured:** §16 (§16m–§16s).
+- **Build step 2's design, and what its PRs measured:** §16 (§16m–§16s); U3, §16t.
 
 The code architecture, crate layout and first experiment were checked by cold review, against criteria
 written beforehand (§14e, §15i). The research sections were not. Jon's direction:
@@ -185,26 +186,57 @@ Stress at 100 % strain across sources, from raw data (round 1:
 
 ### 5c. Friction probably dominates push force, and it is the least known input
 
-Round-2 scenario ranges, silicone sleeve on skin, from the surveys. The water-based-lubricant row rests on
-[a latex-coating study](https://pmc.ncbi.nlm.nih.gov/articles/PMC6227966/): COF 0.159 fresh, above 0.30 at
-600–900 s.
+*Re-sourced 2026-09-27 by a research round that kept each source's text (fit plan U2). What it changed from the
+round-2 table is listed below the new one.*
 
-| Scenario | Range | Nominal |
-|---|---|---|
-| Dry | 0.4–1.0 | 0.6 |
-| Water only | 0.15–2.0 | ~1.0 |
-| Water-based lubricant | 0.05–0.5 | 0.15 fresh, 0.3 depleted |
-| Silicone lubricant | 0.05–0.3 (estimate; no direct measurement) | ~0.15 |
+Silicone on the forearm's skin unless stated. *Onset* is the peak as sliding starts; *sliding* is the value after it.
+
+| State | μ | Source | Conditions |
+|---|---|---|---|
+| Dry, onset | 0.94 and 1.14 | [Masen 2020](https://doi.org/10.1371/journal.pone.0239363) (one subject; read from its Fig. 3), [Yap 2021](https://doi.org/10.1038/s41598-021-91119-0) (7 subjects; printed on its Fig. 2b) | 20 and 14 kPa |
+| Dry, sliding | 0.61 ± 0.21, over six sites and ten subjects | [Zhang & Mak 1999](https://doi.org/10.3109/03093649909071625) | a liner silicone of unstated grade |
+| Dry, held | a tacky silicone pad held a shear of twice its load for 30 min without slipping | [Klaassen 2018](https://doi.org/10.3990/1.9789036546072) | 2.4 kPa; the pad was chosen not to slide |
+| Water only | none on skin found. On analogs: 0.84 (a steel ball on water-wet PDMS); 1.09 onset and 1.47 sliding (a tacky silicone dressing wetted with saline, on a silicone skin simulant) | [Lee 2022](https://doi.org/10.3390/ma15093262), [Gefen 2026](https://doi.org/10.1111/iwj.70860) | |
+| Water-based gel, fresh | 0.18 onset; 0.104–0.145 sliding over seven gels (an endoscope's fluoropolymer tube on skin post mortem) | Masen 2020 (read from its Fig. 3); [Watanabe 2024](https://doi.org/10.1038/s44172-024-00177-5) | thin water-based liquids read 0.40–0.59 sliding in Watanabe 2024 |
+| Water-based gel, later | 0.96 onset at 5 min: back at the dry value | Masen 2020 (one subject; about 2 mg/cm², applied once) | |
+| Silicone lubricant | 0.30 onset on application, 1.21 at 20 min | Masen 2020 (read from its Fig. 3) | |
+
+- **Onset and sliding differ.** In one trace of each, sliding ran at about 0.8 of the onset peak dry; lubricated it
+  fell from about 0.8 to 0.55 of it over the trace (Yap 2021, read from its Fig. 2a). The solver's contact takes one
+  μ_f; whether a pairing gives it the onset or the sliding value is not settled.
+
+**What changed from the round-2 table** (dry 0.4–1.0, nominal 0.6; water 0.15–2.0; water-based 0.05–0.5, 0.15
+fresh and 0.3 depleted; silicone lubricant 0.05–0.3, unmeasured):
+- Dry friction reaches 0.9–1.1 at onset. The old nominal 0.6 matches only the sliding value.
+- In the one time course of silicone on skin, a water-based gel was back at the dry value within 5 min, not at 0.3.
+- Silicone lubricant has that time course too, above. Masen 2020's text gives the two lubricants' late rises the
+  other way round from its figure; either way both are at or above dry within 5–20 min.
+- The old water-based row's source ([Cooper 2018](https://pmc.ncbi.nlm.nih.gov/articles/PMC6227966/)) is latex on a
+  skin-like polyurethane at 78 kPa, and its two numbers come from two tests: 0.159 is one articulation, and "greater
+  than 0.30" is seconds 600–900 of a 1000-articulation run, "a roughly 40% increase".
 
 - **Decided (Jon, 2026-09-24): "different things can have different lubricants, so plan for that".**
   Friction is a **library of contact pairings**, each with a sourced range: surface × surface ×
   lubricant, with fresh and depleted states. It extends beyond the sleeve (for example sock on skin,
   leather on sock, oiled rubber on steel, a hydrophilic catheter on mucosa). The fit test picks the
   pairing, and reports the range.
-- **Friction roughly doubles within 2–15 minutes** as a water-based lubricant is rubbed away.
-- **Silicone oil swells silicone**, so silicone lubricant may not suit a silicone sleeve. This was not
-  researched further.
-- **No measurement exists for silicone on skin with a lubricant.**
+- **Friction's rise as a lubricant goes differs between sources:** ×1.4 over 15 min (Cooper 2018) and ×5 within
+  5 min (Masen 2020). No study on skin that was found varied the dose or reapplied it.
+- **Pressure and speed.** The silicone-on-skin numbers above are at 2.4–20 kPa and up to 18 mm/s (Zhang & Mak 1999
+  states 80 kPa, which its own load and probe put at 8, arithmetic); no sliding measurement was found at 1–5 or
+  30–50 kPa. Pooled over studies of skin against rigid probes, wet friction falls with pressure (as p^b,
+  b = −0.53, standard error 0.37), and the dry trend is uncertain
+  ([Derler & Gerhardt 2012](https://doi.org/10.1007/s11249-011-9854-y)).
+- **No friction measurement on the relevant skin was found.**
+- **Silicone oil swells silicone.** Silicone oils of 50–1000 cP swelled solvent-extracted Sylgard 184 to 1.13–1.41
+  times its mass, less for the more viscous ([Li 2026](https://arxiv.org/abs/2605.12125), a preprint, read from its
+  Fig. 2A). Nothing was measured on Dragon Skin, Ecoflex or a Slacker-softened part.
+- **The consequence (arithmetic on the table):** measured on skin, the pairings span about 0.1 (a fresh gel,
+  sliding) to about 1.2 (a silicone lubricant gone, at onset). That does not bound the top: a tacky silicone held
+  twice its load on skin without slipping, and a tacky dressing read 4.38 at onset and 2.59 sliding dry, 1.09 and
+  1.47 wet, on a skin simulant (Gefen 2026); Smooth-On lists Dragon Skin 10 with the least Slacker it tabulates as
+  not tacky. The list for steps 6–9 holds friction above μ_f 0.3 untrusted until its Coulomb push is checked there
+  and the damping is settled (the damped tube fails it at 0.6, §16p), so most of this range sits there.
 - **Where the force comes from, in catheter insertion:** the leading edge dominates the first ~30 mm,
   then friction takes over ([PMC10809236](https://pmc.ncbi.nlm.nih.gov/articles/PMC10809236/)).
 - **For a straight section, arithmetic:** contact normals point sideways, so push force there is
@@ -332,8 +364,9 @@ measuring."*
 |---|---|---|
 | **Silicone stress–strain** | raw curves from Marechal 2021 ([repo](https://github.com/LucMarechal/Soft-Robotics-Materials-Database)) and Roels ([Zenodo](https://zenodo.org/records/14983287)), plus Smooth-On datasheets | **The Slacker blends are unmeasured.** Use the nearest measured grade by Shore, with a **wider** range, and flag it |
 | **Bulk modulus / ν** | Sylgard 184, ν = 0.4950 ± 0.0010 ([Müller 2019](https://www.ebi.ac.uk/europepmc/webservices/rest/search?query=DOI:10.1039/c8sm02105h&format=json&resultType=core)) | Ecoflex and Dragon Skin are unmeasured. Sweep ν over 0.475–0.4995 |
-| **Friction pairings** | the round-2 survey table (§5c) and its sources | silicone on skin with a lubricant is unmeasured. Use the nearest analog and a wide range |
-| **Comfort and pain limits** | the axial-rigidity convention (below); for stockings, *"Self-prescription is reasonably safe assuming that the compression gradient is 15–20 mmHg"* (≈ 2.0–2.7 kPa, [Wikipedia](https://en.wikipedia.org/wiki/Compression_stockings)) | **Pressure-pain thresholds for the relevant tissue were not found** (search cut short). Needs another research round |
+| **Friction pairings** | §5c, re-sourced 2026-09-27 | silicone on skin with a lubricant: measured on the forearm, over time in one subject; none on the relevant skin, and none wet. Use the nearest analog and a wide range |
+| **Comfort and pain limits** | the axial-rigidity convention (below); for stockings, *"Self-prescription is reasonably safe assuming that the compression gradient is 15–20 mmHg"* (≈ 2.0–2.7 kPa, [Wikipedia](https://en.wikipedia.org/wiki/Compression_stockings)); *(2026-09-27)* the relevant tissue's pressure-pain threshold, measured with a 1 cm² tip (fit plan U1) | No discomfort threshold of the relevant tissue, no pressure held on it for longer than a ramp, and none in its state of use (fit plan U1) |
+| **Damping (loss)** | Ecoflex 00-30: four fractional fits and a DMA (fit plan U15) | *(2026-09-27)* Dragon Skin 10, and any Slacker-softened silicone: none found (fit plan U15) |
 | **Validation experiments** | §7, rung 5 | each case needs its geometry recovered from the paper |
 
 **Where no measurement exists, the answer is a wider range, labelled as such.** Nothing gets invented to
@@ -415,11 +448,11 @@ fill a gap.
   - O-ring and seal ν-sensitivity studies;
   - LS-DYNA and Radioss GPU efforts;
   - any WebGPU explicit FEM;
-  - pressure-pain thresholds for the relevant tissue.
+  - pressure-pain thresholds for the relevant tissue *(2026-09-27: one study found, fit plan U1)*.
 - **Paywalled:** Taylor 2008 (TMI) and Strbac 2015 (single against double precision), Nedoluha 2025 (ν
   measurement methods), and the NAFEMS R0081 references.
 - **Unmeasured anywhere we looked:**
-  - silicone on skin with a lubricant;
+  - silicone on skin with a lubricant *(2026-09-27: measured on the forearm, §5c)*;
   - Prescale on sliding silicone;
   - DIC at large stretch on silicone;
   - a validated fast GPU contact force.
@@ -632,7 +665,7 @@ solid"*).
 |---|---|---|---|
 | **`sim-soft-explicit`** | L0 | new | **The explicit solver, minus the GPU.** The executor trait. The explicit model and state data layout (flat arrays; `#[repr(C)]` parameter blocks with no `vec3`). The shared math (14b), written once in the loop-free subset and compiled at f32 and f64, with its committed generated WGSL and a freshness test. The **CPU executor** (rayon on native, sequential on wasm32, as `newton.rs` does). The **stepping loop**, which owns the order of phases within a step, batching, the stable time step and mass scaling, and the energy monitors and stop rule, over any executor. A `test-fixtures` feature with small lowered meshes, as `sim-core` has *(replaced in step 2's design by a public module, 16f)*. |
 | **`sim-wgsl-gen`** | L0 | new | The §13 translator: `syn` (with `proc-macro2` for source positions), plus `naga` to validate its output, on the physics side's naga version. A `write` command regenerates the committed WGSL, and the freshness test names that command when it fails. A dev-dependency of `sim-soft-explicit`. |
-| **`sim-soft`** | L0 | grows | The model as today, plus **lowering** it to `sim-soft-explicit`'s data, including resampling the insertion path evenly in time. **Baking the obstacle SDF from its triangle mesh** (flood-fill sign and the Gaussian pre-smooth, moved from `tools/cf-sim-research`). The **scenarios and readouts in model terms** (contact pressure by region). The test of its `Material` impls against the shared math (F3). The implicit Newton solver stays as it is. |
+| **`sim-soft`** | L0 | grows | The model as today, plus **lowering** it to `sim-soft-explicit`'s data, including resampling the insertion path evenly in time *(2026-09-27, §16t: the path is the fitted pose)*. **Baking the obstacle SDF from its triangle mesh** (flood-fill sign and the Gaussian pre-smooth, moved from `tools/cf-sim-research`). The **scenarios and readouts in model terms** (contact pressure by region) *(2026-09-26, §16s: D1's readings landed in `sim-soft-explicit`'s `readings`, over the solver's snapshots, so `sim-soft` calls them and does not build a second set)*. The test of its `Material` impls against the shared math (F3). The implicit Newton solver stays as it is. |
 | **`sim-gpu`** | L0-io | rebuilt | **The GPU executors.** It *extracts* shared infrastructure from today's rigid code: the device context (`context.rs`), and chunked submission, which today sits inside the rigid `step()` (`pipeline/orchestrator.rs:28-37`), and the contact-list tools (the atomic append; the CAS float-add if scatter is chosen). It adds `soft`, the explicit executor, whose hand-written entry points fetch, gather and scatter around the generated WGSL. It holds the **GPU-vs-CPU conformance tests** against `sim-soft-explicit`'s CPU executor. The rigid pipeline stays as it is until its own redesign, keeping the parts only it uses. It depends on `sim-soft-explicit` and `sim-core`, not on `sim-soft`, and has its own wgpu version (13e). |
 | `sim-coupling` | L1 | later | Two-way explicit rigid–soft coupling on the CPU (subcycling, F5). **The fit test does not need it**: the scan is a kinematic pose, applied in the contact law. GPU rigid–soft exchange lives in `sim-gpu`, on one device. |
 | `sim-bevy-soft`, the studio, `tools/cf-sim-research` | L1 / App / tool | consumers | Pick the executor (CPU or GPU), and show results from CPU snapshots (13e). |
@@ -1197,8 +1230,10 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
 - the per-press time against D4's target (§9 decision 12), which follows from the runs per verdict
   *(2026-09-26, §16r: 0.29–0.61 of D4 at K1's rate with the wall as meshed; projected, more, fit plan U17)*;
 - the pairing's nominal corner, which D3 judges at: add it as a run, or show push force is linear in
-  μ_f;
-- Tier 1's accuracy against the solver, and what D3 does if it is poor;
+  μ_f *(2026-09-27: §5c's re-sourcing found no source for a nominal; which value D3 judges at is open)*;
+- Tier 1's accuracy against the solver, and what D3 does if it is poor *(2026-09-27, §16t: Tier 1 reads slice by
+  slice, with no rigid path, and the solver runs the fitted pose; step 7 reports the path's own share, the fitted
+  pose against the slide, beside Tier 1's error)*;
 - modelling each way of holding the device (§9 decision 11): a shell, a mount, or a hand as a soft,
   distributed support. A held closed end is the "no escape" row of §15h;
 - the product mesher's surface bias and element count (measured in step 2) *(2026-09-26, §16r: the canal nodes
@@ -1206,7 +1241,9 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
   costs the step; fit plan U17)*;
 - *(2026-09-26, §16r)* G2 on `base_mold`: no scan grid measured meets it, down to 0.25 mm; step 6's bake sets
   the grid's spacing and pre-smooth against it (fit plan U18);
-- U3's outcome, and the fact that a contact-guided intruder would need rigid–soft coupling;
+- U3's outcome, and the fact that a contact-guided intruder would need rigid–soft coupling *(2026-09-27, §16t:
+  a rigid pose fitted to the slide along the canal asks about a quarter of the room the path as written asks; Jon
+  chose the fitted pose, which needs no coupling, and the contact-guided intruder moved to the fit plan's Later)*;
 - *(2026-09-25, §16p)* K5's failure: both of D1's readings failed to converge on the tube, so D1's readings or
   the lip radius are revisited before step 7 (§15a; fit plan U16) *(2026-09-26, §16s: diagnosed; Jon replaced
   the seated reading with the most-loaded 1 cm² patch, and K5 passes from 50k to 100k. The lip radius stays with
@@ -1215,15 +1252,31 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
   the geometric share do not converge from 10k to 50k, and `base_mold` at h_K2 is about the 10k tube's element
   size, though not built in rings. Step 7
   measures D1's readings' convergence on `base_mold`; until then D4's figures at h_K2 (§16r) rest on K2 alone;
-- *(2026-09-25, §16p)* friction above μ_f 0.3: the damped tube's Coulomb push fails 15d.7 at μ_f 0.6, and
-  §5c's ranges reach 2.0. Before a verdict is trusted at such a corner, its Coulomb push is checked there
-  (§7 rung 4's self-consistency check), and the material's damping (fit plan U15) is settled. Above f ≈ 1.0 the
-  half-space's own sliding is unstable at ν 0.49 (§16p), so there a finer mesh need not converge;
+- *(2026-09-27, #973's review)* D1's push at a low friction. K5 judged the push's peak with friction only at μ_f
+  0.3. Without friction the peak moves with the mesh, which ripples it (§16s): at 100k and λ_a 1.1 it reads 30 %
+  above the 10 mm reading, and on the mesh 4× finer along the tube 8 % above that mesh's (arithmetic on §16s's
+  tables). How the peak moves at a low μ_f is not measured. Step
+  7's convergence check of D1's push includes the lowest μ_f of the pairing library, and D1's push is decided with
+  that number (Jon, 2026-09-26);
+- *(2026-09-27, §16t's review)* **D1's push on a turning path.** The fit plan defines the push as −Σ fᵢ · (dxᵢ/ds).
+  On a path that turns the scan, that takes the twist on the scan as well as the force. The monitors reduce the
+  resultant contact force but not its moment, and the tube probe reads the resultant's component along the tube's
+  axis. Whether the push is reduced in the executor (and so on the GPU, steps 3–5) or computed from the snapshots'
+  per-node forces is not decided;
+- *(2026-09-27, §16t)* **What reading of the fitted pose brings the contact-guided scan forward.** Step 7 prints
+  the sideways force and twist the wall puts on the scan; no reading of them is yet set that would. Step 7's design
+  sets one before its runs;
+- *(2026-09-25, §16p)* friction above μ_f 0.3: the damped tube's Coulomb push fails 15d.7 at μ_f 0.6, and §5c's ranges
+  reach 2.0 *(re-sourced 2026-09-27: on skin to about 1.2, tacky analogs above 2; §5c)*. Before a verdict is trusted
+  at such a corner, its Coulomb push is checked there (§7 rung 4's self-consistency check), and the material's damping
+  (fit plan U15) is settled. Above f ≈ 1.0 the half-space's own sliding is unstable at ν 0.49 (§16p), so there a finer
+  mesh need not converge;
 
 **Starting now, in parallel with steps 1–2, needing no solver:**
-- U3's geometric check;
-- friction sourcing for the product's pairings (§5c: the dominant input, uncertain by more than 10×);
-- the comfort-limit research (step 9).
+- U3's geometric check *(done, §16t)*;
+- friction sourcing for the product's pairings (§5c: the dominant input, uncertain by more than 10×) *(a round
+  done 2026-09-27, §5c)*;
+- the comfort-limit research (step 9) *(a round done 2026-09-27, fit plan U1)*.
 
 6. **`sim-soft`: lowering, obstacle baking, and the pairing library.**
    - Lowering and obstacle baking come from `cf-sim-research`.
@@ -1241,21 +1294,36 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
      asks 8.3 mm of room. Its swept volume is checked against the cavity. If the path is at fault, step
      7's verdicts would measure that and not the fit. The prescribed path is then replaced by an intruder
      that is force- or velocity-driven and guided by contact (the replaced plan's Phase 4 item).
+     *(2026-09-27, §16t: checked as the room the path asks at the cavity wall's nodes over 64 poses. The path is
+     at fault, and Jon chose a prescribed pose instead: each pose is the rigid motion closest, in least squares,
+     to sliding along the canal. The contact-guided intruder moved to the fit plan's Later. Step 6's lowering
+     builds the fitted pose, and settles what the measuring copy does not: the pose before any of the scan is
+     inside the device, where the fit has nothing to fit (the probe starts a 64th of the way in); and one fit per
+     scan, since the path does not depend on the inset.)*
    - Also carried from the fit plan's Phase 1:
-     - the t = 0 intrusion and its pre-roll;
+     - the t = 0 intrusion and its pre-roll *(measured on the old path; again on the fitted pose, §16t)*;
      - the outer-skin pin's 646 interior vertices;
-     - the path's time sampling.
+     - the path's time sampling *(of the fitted pose, against a bar, §16t)*.
    - *Done when:* the bake matches `cf-sim-research`'s within 1 % of a grid cell at every grid point, and
      each boundary option has a test. *(2026-09-26, §16r: the old bake is coarser than every grid 2d
-     measured, and none of those meets G2 on `base_mold`; fit plan U18.)*
+     measured, and none of those meets G2 on `base_mold`; fit plan U18.)* *(2026-09-27, §16t: and the lowered
+     fitted pose passes the measuring copy's known-answer tests, and on `base_mold` reproduces the probe's room at
+     each pose, checked locally as the 8.285 mm was.)*
 7. **`base_mold` on the new solver.**
    - G6 is 5 minutes per run, where a run is one simulation (fit plan D4). `base_mold` stays outside
      the repo. *(D4 is per press, §9 decision 12 and fit plan U13; §16r reports it so.)*
    - The **lip radius** (fit plan "Later"): the lipped cavity built in `cf-design`, then sharp against
      rounded on the same scan.
    - **Tier 1** (the per-slice estimate, §6) is built and checked against the solver on `base_mold`. D3's
-     search uses it to pick candidate insets, so full verdicts run at only 1–2 insets.
-   - *Done when:* the fit plan's G1–G3 and G6 have numbers on `base_mold`.
+     search uses it to pick candidate insets, so full verdicts run at only 1–2 insets. *(2026-09-27, §16t: beside
+     Tier 1's error, the path's own share: the fitted pose against the slide.)*
+   - *(Added 2026-09-27.)* Beside D1's readings, each run prints:
+     - the loaded surface area inside the winning 1 cm² patch. The patch is a ball in space, so it also holds any
+       other loaded surface within its radius of its centre (§16s: 1.0103 cm² on a bore of 10 mm radius);
+     - the sideways force and the twist the wall puts on the scan, which show how far the walls would push it off
+       the fitted path (§16t).
+   - *Done when:* the fit plan's G1–G3 and G6 have numbers on `base_mold`. *(2026-09-27: and D1's readings'
+     convergence there, at the product's element size and at the lowest μ_f; the list above.)*
 8. **The soft-on-soft contact design** (§9 decision 9): a design step with its own research round, not
    code.
 9. **Validation and limits:** §7's rungs 2 and 5, and the comfort limits (fit plan U1, §8). The limits
@@ -2334,7 +2402,8 @@ On the adopted code (`5e6b7281`; frictionless, A/20, §15b's 0.2 s hold unless n
 **Decided (Jon, 2026-09-25): give the silicone its own damping.**
 - **The data** (Ecoflex 00-30, fractional Kelvin–Voigt μ(ω) = μ₀[1 + (iωτ)ⁿ]):
   - Delory et al. (arXiv 2310.11396, plate-plate rheometry, over a range the text does not state): E₀ 69 kPa,
-    τ 330 µs, n 0.32;
+    τ 330 µs, n 0.32 *(2026-09-27: its data run from 0.1 to about 100 Hz, read off its Fig. 1B by a research
+    round, so 190 Hz extrapolates the fit)*;
   - Croquette et al. 2026 (arXiv 2604.27722, guided waves over 2–300 Hz, against an Anton Paar MCR501): μ₀ 22.6 kPa,
     n 0.20 ± 0.04, τ 2.9 ± 1.3 ms, and a τ that differs from their rheometry's by up to 10×.
   - Their loss moduli at 190 Hz are 0.36 and 0.40 μ₀ (arithmetic). **Dragon Skin 10A: no data found.**
@@ -2484,9 +2553,10 @@ damped step's accuracy is above.
 - §15c's K1 arithmetic (29k steps, 3.7–4.1 ms per step) assumed 10 T_s and no damping; both changed (§15c's note).
 
 **Open, for later steps:**
-- **Friction above μ_f 0.3.** The damped 10k tube fails 15d.7 at μ_f 0.6 (0.934), and §5c's ranges reach 1.0 (dry)
-  and 2.0 (water alone). No gate catches flutter: the Coulomb push's shortfall led to it, and nothing reads the
-  contact nodes' kinetic energy against a bar. §15g's list for steps 6–9 carries it.
+- **Friction above μ_f 0.3.** The damped 10k tube fails 15d.7 at μ_f 0.6 (0.934), and §5c's ranges reach 1.0 (dry) and
+  2.0 (water alone) *(re-sourced 2026-09-27: on skin to about 1.2, tacky analogs above 2; §5c)*. No gate catches
+  flutter: the Coulomb push's shortfall led to it, and nothing reads the contact nodes' kinetic energy against a bar.
+  §15g's list for steps 6–9 carries it.
 - **The damping's form and value.** Kelvin–Voigt's loss grows as ω; a Maxwell branch in parallel (one stored stress
   per element) would bound it above its rate, and match the fits' stiffening better. One fit's error bars span
   5.2–10.3 Pa·s, and the frictional seated state moves with η below 7 Pa·s. Not decided; step 4 (the GPU layout) and 2d
@@ -2799,7 +2869,7 @@ in contact, and one of the loop's re-estimates (a run makes one every 500 steps)
 | Ecoflex 00-30's η/μ × 1.47 | 0.53 | | 0.61 |
 
 - **As meshed, a press takes 0.29–0.61 of D4 at K1's rate.** The η range is
-  the published fits' 5.2–10.3 Pa·s for Ecoflex (fit plan U15); Dragon Skin 10A's is not known.
+  Croquette's error bars' 5.2–10.3 Pa·s for Ecoflex (fit plan U15); Dragon Skin 10A's is not known.
 - The viscosity cuts the step to 0.672 of the elastic one at ν 0.49 and 0.759 at 0.495. The tube's 10k mesh, in
   the same material at the same η/μ and about the product's h, reads 0.875 (§16p). What in the meshes makes the
   difference is not isolated.
@@ -2930,7 +3000,7 @@ nodes 0.86 and 0.70 mm apart), frictionless and at μ_f 0.3, λ_a 1.1 and 1.3:
   review all used flat algometer tips of 0.5–2 cm², most of them 1 cm² by its tables
   ([Trueba-Perdomo 2021](https://www.scielo.org.mx/scielo.php?script=sci_arttext&pid=S0188-95322021000200203)), so
   the reading and the limit it will be judged against can be taken over the same area. The patch's size follows
-  whichever data calibrates D1 (§8 has not found it). The 95th percentile and the peak are shown beside it.
+  whichever data calibrates D1 (§8 has not found it) *(2026-09-27: one study at 1 cm² was found, fit plan U1)*. The 95th percentile and the peak are shown beside it.
 - **Getting it in:** the peak push, as before. The geometric share, the μ = 0 run's push (§15h), is read as its
   largest mean over 10 mm of travel. 10 mm has no outside source: it is the shortest window the diagnostic tried
   (2, 5, 10 and 20 mm) that moved less than 5 % from 50k to 100k at both λ_a.
@@ -3047,3 +3117,95 @@ D1's limits and a run on the product.
   now takes only a node with no facing area, and the pointwise pressures' growth near side-on is stated, not
   bounded. Every round's findings sat mostly in the previous round's fixes, and the threshold drew one in each;
   the review stopped there.
+
+### 16t. U3: why the rigid path asks for room, and the path step 7 runs (2026-09-27)
+
+Fit plan U3 asked why the old path asks the cavity for 8.3 mm of room with no inset, near the entrance (the Tet10
+recon's `THE SLIDING MODEL ON THE PRODUCT SCAN`). Step 6 settles it before step 7, because step 7's verdicts would
+otherwise measure the path and not the fit (§15g). No solver runs here:
+`tools/cf-sim-research/src/insertion_sim/path_room.rs`.
+
+**The path as written** (`slide_pose_at`) walks the scan's tip back along the centreline, and turns the whole scan
+about the tip by the rotation between the centreline's tangent at the seated tip and its tangent where the tip now
+is.
+- On a circular arc in a plane, that carries the rest of the scan along the curve
+  (`on_a_planar_arc_the_pose_as_written_is_the_slide`). It reads the seated tip's tangent off the first segment
+  alone, half a segment's turn from the curve's, so the two differ by that angle times the reach.
+- Where the curvature changes, it does not: on an S of two opposite arcs, the scan's far end lands where the turn
+  at the tip puts it, off the curve, as the closed form says
+  (`where_the_curvature_changes_the_pose_as_written_turns_the_far_end_off_the_curve`).
+
+**Two other motions, on the same measure.** The measure is the Tet10 recon's "as written" room: the moved contact's
+signed distance at the undeformed cavity wall's nodes, over 64 poses, with a contact that is the cavity itself when
+seated. Room between the wall's corner nodes, or between poses, is not seen.
+- **The slide** carries every point of the scan along the centreline by the tip's walk, at the same place in the
+  centreline's parallel-transported frame. It bends the scan to follow the curve, so it is not rigid. The room it
+  asks is the room the scan's own cross-sections ask of the ones they pass.
+- **The fitted pose** is the rigid motion closest to the slide: least squares over the scan's surface that the slide
+  puts inside the device, each vertex weighted by its area (Kabsch).
+
+On a straight centreline the three are one translation, and a taper asks its own room under all three
+(`on_a_straight_centreline_the_three_motions_agree_and_a_taper_asks_its_own_room`).
+
+**On `base_mold`** (`why_the_rigid_path_asks_room_on_the_product_scan`; the rooms as rough ratios, since the slide's
+room is a size of the scan's shape; the figures stay local):
+
+| Motion | Most room, against the path as written's | Where |
+|---|---|---|
+| Path as written | 1 | Late in the travel, near the entrance: the Tet10 recon's 8.285 mm, reproduced to its printed digit |
+| Fitted pose | About a quarter | About halfway through the travel, deeper in |
+| Slide (not rigid) | About three quarters of the fitted pose's | The same pose and node as the fitted pose |
+
+- The path as written asks room from about an eighth of the travel on, and the other two from about a quarter.
+- Between poses, a vertex of the scan inside the device moves at most 1.08 of the tip's arc step under the fitted
+  pose, and 1.55 under the path as written.
+- The most room understates what the fitted pose keeps of the path. From 0.6 to 0.9 of the travel it asks 1.5–2.2
+  times the slide's room at each pose. It asks more than the old bridge's d̂ (1.2 mm) of 0.12 of the wall's nodes,
+  against 0.02 under the slide and 0.30 under the path as written.
+- The fitted pose is the closest rigid motion to the slide, not a close one: over the scan's surface inside the
+  device it misses the slide by up to 1.8 times the slide's most room.
+- The headline rests on fitting over the part of the scan the slide puts inside the device. Fitted over the whole
+  scan, the fitted pose asks about two fifths of the path's most room (a review's mutation of the probe, not
+  kept).
+- The slide is built from projections onto the centreline, so a node slid there and back misses itself by up to
+  0.04 of the slide's most room. Its room is the seated contact's distance at the point the slide carries to each
+  node, not a distance to the bent scan; the difference was not measured.
+
+**Verdict:** most of the room the path as written asks is the path's own. A rigid pose exists that asks about a
+quarter of it, so step 7 on the path as written would have measured the path.
+
+**Decided (Jon, 2026-09-27, accepting the recommendation):** step 6 builds the fitted pose as the scan's path. It
+stays a prescribed pose, applied in the contact law, so no rigid–soft coupling is needed (§14a). Step 7 prints the
+sideways force and the twist the wall puts on the scan, which show how far the walls would push it off this path;
+what reading of them would bring the contact-guided scan forward is not yet set (the list for steps 6–9). The
+contact-guided scan moves to the fit plan's Later. The fitted pose's code here is a measuring copy; step 6's
+lowering builds it in `sim-soft`, and samples it in time. Jon decided on the most-room ratios; the per-pose and
+extent figures above came from review afterwards, and were reported to him before this PR was pushed.
+
+**Not settled here:**
+- The fitted pose is a least-squares fit to the slide, not the rigid pose that asks the least room. The least room
+  any rigid path asks is not measured.
+- What in the path as written makes its excess was not isolated: the curvature changing, the centreline leaving its
+  plane (the pose as written is tested only on planar curves), or the tip's tangent read off one segment.
+- The slide asks room of its own. That is the scan's shape, carried by a rigid scan (fit plan U9); step 7 measures
+  what the wall does with it.
+
+**Also found.** nalgebra's `Rotation3::rotation_between` takes its angle as the `acos` of the unit vectors' dot
+product, which rounding can push one ulp past 1 while their cross product is above its cut-off. Two directions about
+1e-10 rad apart then give a NaN rotation. `slide_pose_at` called it, and the probe's frame did. Both now call
+`turn_between` (`atan2`), and `turn_between_is_finite_where_rotation_between_is_not` fails on the old call.
+
+**How this was checked.**
+- **The criteria came first,** with eleven priors kept from the reviewers.
+- **Round 1:** three cold reviewers (the code, mutating it in a worktree of its own; this record, rerunning the
+  probe, which printed the same in every field; the whole plan) raised 27 findings, four of them twice. None
+  changed the verdict. The largest:
+  - the tests pinned neither the frame's transport, the fit's reflection fix, its weights and areas, nor which
+    points it fits: eleven mutations of those passed every test. Each now fails one, the transport on a helix;
+  - step 7's print of the sideways force and twist had no reading that would act on it, and D1's push on a turning
+    path needs the twist, which the executor does not reduce (the list for steps 6–9);
+  - the most room understated what the fitted pose keeps of the path (above), and this record's pointer to §16s's
+    patch area was wrong by a factor.
+
+  Seven priors hit, one in part.
+- The probe printed the same after the fixes.
