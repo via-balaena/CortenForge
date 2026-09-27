@@ -2963,8 +2963,8 @@ nodes 0.86 and 0.70 mm apart), frictionless and at μ_f 0.3, λ_a 1.1 and 1.3:
 **K5 passes on the new readings, from 50k to 100k.** The bar is §15a's, 5 % from 50k to 100k. The readings were
 chosen after the diagnosis had seen every mesh below, so none is held out.
 `cargo run --release -p sim-soft-explicit --example tube -- <mesh> <0|2> <0|0.3> f32 20 0.2 10 1`,
-`RAYON_NUM_THREADS=4`, at `393b35ba` (`1f84dbb8`, before review round 1's fixes, printed the same in every field);
-the 100k cross-section refined along the tube is `6x64x86` and `6x64x172`:
+`RAYON_NUM_THREADS=4`, at `9e25fb90` (`1f84dbb8` and `393b35ba`, before the review rounds' fixes, printed the same
+in every field); the 100k cross-section refined along the tube is `6x64x86` and `6x64x172`:
 
 | D1's readings | Case | 10k | 50k | 100k | 50k → 100k | 2× / 4× along | 100k against 4× |
 |---|---|---|---|---|---|---|---|
@@ -3035,7 +3035,7 @@ D1's limits and a run on the product.
   - the end face's share was stated inverted, the cited review said less than claimed, and Jon's build-order call
     was cited where it was not written.
 
-  Five priors hit, and two in part. The recorded runs, repeated after the fixes, printed the same.
+  Five priors hit, and two in part.
 - **Round 2:** one fresh reviewer read only round 1's fix diff and found 10 problems, 9 of them in code or text the
   fixes wrote: the side-on threshold sat at rounding, so a side-on plane reached through a posed turn missed it; a
   face's normal read at rest passed every test; "from 10k to 50k the readings do not converge" held for two of
