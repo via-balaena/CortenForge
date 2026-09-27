@@ -664,25 +664,26 @@ fn turned_plane(normal: [f64; 3], angle: f64) -> Obstacle {
 }
 
 #[test]
-fn a_side_on_obstacle_is_found_side_on_through_any_pose() {
+fn a_side_on_obstacle_keeps_the_force_in_the_patch_through_any_pose() {
     // A plane whose world normal is −x, reached by turning its body normal
     // through every whole degree from 1° to 89°: rounding leaves the top a
-    // cosine of about 1e-16, and the pressed node still falls back.
+    // cosine of either sign, near 1e-16, or none. Whether the pressed node
+    // has a sliver of facing area or none, the patch holds its force.
     let (model, top) = slab(4, 2.0 * MM, 0.0);
     let middle = top[top.len() / 2] as usize;
     let mut forces = vec![0.0; model.node_count()];
     forces[middle] = 0.3;
     let snapshot = window(&model, &forces);
-    let share = top_areas(&model, &top)[middle];
     for degrees in 1..90 {
         let angle = f64::from(degrees).to_radians();
         // Body normal R_y(−angle) · (−1, 0, 0).
         let body = [-angle.cos(), 0.0, -angle.sin()];
         let contact = WindowContact::read(&model, &snapshot, &turned_plane(body, angle), 0.0);
-        assert_eq!(
-            contact.pressures(),
-            vec![(0.3 / share, share)],
-            "{degrees}°"
+        let patch = contact.patch_peak(PROBE_AREA).unwrap();
+        assert!(
+            (patch.pressure / (0.3 / PROBE_AREA) - 1.0).abs() < 1e-12,
+            "{degrees}°: {}",
+            patch.pressure
         );
     }
 }

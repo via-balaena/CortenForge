@@ -42,12 +42,6 @@ pub const PUSH_TRAVEL: f64 = 0.010;
 /// patch integrates the surface's force (see [`WindowContact::patch_peak`]).
 const SUBDIVISION: f64 = 16.0;
 
-/// The share of its tributary area below which a contact node's area counts
-/// as met side-on (see [`WindowContact::read`]): the cosine of a face turned
-/// 1e-9 rad toward the obstacle, far above what rounding leaves of a right
-/// angle (a side-on plane reached through posed turns, `tests/readings.rs`).
-const SIDE_ON: f64 = 1e-9;
-
 /// The largest mean push over any `window` of travel: the work done over the
 /// window divided by its length.
 ///
@@ -153,11 +147,14 @@ impl WindowContact {
     /// its outward normal and the obstacle's normal turned inward, and nothing
     /// if it is turned away. So a face at right angles to the obstacle adds
     /// nothing to the node, and a face tilted toward it adds its share by the
-    /// cosine; near a right angle a node's pressure grows as one over that
-    /// cosine, while the patch keeps its force whatever the angle. A contact
-    /// node whose area is below `SIDE_ON` of a third of every incident
-    /// triangle, as where the obstacle meets an edge side-on, takes that whole
-    /// third instead, so a node with any surface keeps its force.
+    /// cosine. A contact node with no facing area at all, as where the
+    /// obstacle meets an edge exactly side-on, takes a third of every incident
+    /// triangle instead, so a node with any surface keeps its force.
+    ///
+    /// Near side-on a node's pressure grows as one over the cosine, without
+    /// bound, and rounding decides whether a side-on node has any facing area:
+    /// the pointwise pressures are unbounded at a side-on contact. The patch
+    /// keeps the force at any angle.
     ///
     /// # Panics
     /// If the snapshot holds no accumulated steps.
@@ -221,7 +218,7 @@ impl WindowContact {
             })
             .collect();
         let sideways: Vec<bool> = (0..positions.len())
-            .map(|n| forces[n] > 0.0 && areas[n] <= SIDE_ON * tributary[n])
+            .map(|n| forces[n] > 0.0 && areas[n] <= 0.0)
             .collect();
         if sideways.contains(&true) {
             for (corners, weights) in surface.iter().zip(&mut facing) {

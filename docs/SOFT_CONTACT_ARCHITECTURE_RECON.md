@@ -2940,9 +2940,9 @@ nodes 0.86 and 0.70 mm apart), frictionless and at μ_f 0.3, λ_a 1.1 and 1.3:
   times the cosine between its outward normal and the obstacle's normal turned inward. A face at right angles to
   the obstacle, or turned away, adds nothing. The tube's end face tilts toward the mandrel and still adds 3.7 %
   (λ_a 1.1) and 10 % (λ_a 1.3) of an entry node's area at 50k and μ_f 0.3 (the diagnostic's dumps). A contact node
-  that no face turns toward the obstacle by more than 1e-9 rad keeps its force, over a third of every incident
-  triangle; nearer a right angle a node's pressure grows as one over the cosine, and the patch keeps the force at
-  any angle.
+  with no facing area at all keeps its force, over a third of every incident triangle. Near side-on a node's
+  pressure grows as one over the cosine, without bound, so the peak and percentile shown beside the patch are
+  unbounded at a side-on contact; the patch keeps the force at any angle.
 - **The patch.** Each node's force is spread over its contact area, so each triangle carries a uniform pressure.
   The surface inside a ball of the patch's radius (5.64 mm for 1 cm²) is integrated in sub-triangles, at least 16
   to a radius along each longest edge, each faded in across the rim over its own size. The patch is centred on
@@ -2957,14 +2957,15 @@ nodes 0.86 and 0.70 mm apart), frictionless and at μ_f 0.3, λ_a 1.1 and 1.3:
   50k → 100k change: the ripple the window keeps is part of what K5 reads there.
 - **Pinned by 21 unit tests** (`tests/readings.rs`), each on a case with a known answer, among them a stretched
   window, a window turned from rest, an obstacle posed and tilted at the window's time, and a side-on plane reached
-  through posed turns. Of 40 single mutations, all but one made a test fail; the survivor cuts the sub-triangles
+  through posed turns. Of 39 single mutations, all but one made a test fail; the survivor cuts the sub-triangles
   by `floor` rather than `ceil`, which only coarsens the integration (a mutation run, not kept).
 
 **K5 passes on the new readings, from 50k to 100k.** The bar is §15a's, 5 % from 50k to 100k. The readings were
 chosen after the diagnosis had seen every mesh below, so none is held out.
 `cargo run --release -p sim-soft-explicit --example tube -- <mesh> <0|2> <0|0.3> f32 20 0.2 10 1`,
-`RAYON_NUM_THREADS=4`, at `9e25fb90` (`1f84dbb8` and `393b35ba`, before the review rounds' fixes, printed the same
-in every field); the 100k cross-section refined along the tube is `6x64x86` and `6x64x172`:
+`RAYON_NUM_THREADS=4`, at `9e25fb90`; `1f84dbb8` (before round 1's fixes) and `393b35ba` (before round 2's) printed
+the same in every field but the timings. The 100k cross-section refined along the tube is `6x64x86` and
+`6x64x172`:
 
 | D1's readings | Case | 10k | 50k | 100k | 50k → 100k | 2× / 4× along | 100k against 4× |
 |---|---|---|---|---|---|---|---|
@@ -3039,5 +3040,10 @@ D1's limits and a run on the product.
 - **Round 2:** one fresh reviewer read only round 1's fix diff and found 10 problems, 9 of them in code or text the
   fixes wrote: the side-on threshold sat at rounding, so a side-on plane reached through a posed turn missed it; a
   face's normal read at rest passed every test; "from 10k to 50k the readings do not converge" held for two of
-  the four; and smaller slips in the prose. The code got tests; the prose was cut. With round 2 finding mostly what
-  round 1's fixes wrote, no third pass was run.
+  the four; and smaller slips in the prose. The code got tests, and the prose was corrected.
+- **Round 3:** one fresh reviewer read only round 2's fix diff and found 5 problems, all in what round 2 wrote. The
+  largest: the new threshold's "far above rounding" held for f64 windows, not the f32 ones the probe runs, where
+  a constructed side-on window missed the fallback. The threshold was cut rather than moved again: the fallback
+  now takes only a node with no facing area, and the pointwise pressures' growth near side-on is stated, not
+  bounded. Every round's findings sat mostly in the previous round's fixes, and the threshold drew one in each;
+  the review stopped there.
