@@ -22,6 +22,7 @@ use sim_soft_explicit::cpu;
 use sim_soft_explicit::executor::{Executor, Monitors, Obstacle, ObstacleError, Snapshot};
 use sim_soft_explicit::f64 as shared;
 use sim_soft_explicit::f64::{Pose, SdfGridLayout};
+use sim_soft_explicit::fixtures::grid::bricks;
 use sim_soft_explicit::fixtures::tube::Mandrel;
 use sim_soft_explicit::stepping::{RunError, Sample, Stepper, StepperConfig, gates};
 
@@ -88,6 +89,7 @@ fn floor(
     Obstacle {
         grid,
         values,
+        fine: None,
         start: 0.0,
         interval,
         poses,
@@ -801,6 +803,44 @@ fn an_obstacle_is_checked_before_upload() {
         ),
         (
             Obstacle {
+                grid: SdfGridLayout {
+                    size_x: u32::MAX,
+                    size_y: u32::MAX,
+                    size_z: u32::MAX,
+                    ..base.grid
+                },
+                ..base.clone()
+            },
+            |e| matches!(e, ObstacleError::Invalid { reason } if reason.contains("u32 indexes")),
+        ),
+        (
+            // Exactly u32::MAX samples: indexed to u32::MAX - 1, so accepted, and wrong only in its values' count.
+            Obstacle {
+                grid: SdfGridLayout {
+                    size_x: 65_537,
+                    size_y: 257,
+                    size_z: 255,
+                    ..base.grid
+                },
+                ..base.clone()
+            },
+            |e| matches!(e, ObstacleError::GridSize { expected, .. } if *expected == u32::MAX as usize),
+        ),
+        (
+            // Past a u32, within a usize.
+            Obstacle {
+                grid: SdfGridLayout {
+                    size_x: 1 << 16,
+                    size_y: 1 << 16,
+                    size_z: 2,
+                    ..base.grid
+                },
+                ..base.clone()
+            },
+            |e| matches!(e, ObstacleError::Invalid { reason } if reason.contains("u32 indexes")),
+        ),
+        (
+            Obstacle {
                 poses: vec![Pose {
                     qw: 2.0,
                     ..IDENTITY
@@ -850,6 +890,7 @@ fn kinematic_contact_does_not_feed_sliding_around_a_curved_obstacle() {
     let obstacle = Obstacle {
         grid,
         values,
+        fine: None,
         start: 0.0,
         interval: 1.0,
         poses: vec![IDENTITY],
@@ -940,14 +981,130 @@ fn the_executors_lookup_is_the_obstacles() {
     let obstacle = Obstacle {
         grid,
         values,
+        fine: None,
         start: 0.0,
         interval: 1.0,
         poses: vec![IDENTITY],
         friction: 0.0,
     };
-    let mut executor = cpu::f64::CpuExecutor::new(&model, &obstacle).unwrap();
-    run_phases(&mut executor, 0.0, 1e-6, 0.0);
-    let depth = executor.monitors().max_penetration;
+    let depth_in = |obstacle: &Obstacle| {
+        let mut executor = cpu::f64::CpuExecutor::new(&model, obstacle).unwrap();
+        run_phases(&mut executor, 0.0, 1e-6, 0.0);
+        executor.monitors().max_penetration
+    };
+    let depth = depth_in(&obstacle);
     assert!(depth > 0.0);
     assert_eq!(depth, -obstacle.sample(inside).distance);
+
+    // With a fine grid around the node, a quarter of the cell, it reads the fine grid; without the brick its
+    // lookup needs, the coarse one.
+    let (fine_grid, fine_values) = Mandrel { radius }
+        .baked(
+            inside.map(|x| x - 0.001),
+            inside.map(|x| x + 0.001),
+            0.000_25,
+        )
+        .unwrap();
+    let fine = Obstacle {
+        fine: Some(bricks(fine_grid, &fine_values, |_| true)),
+        ..obstacle.clone()
+    };
+    let fine_depth = depth_in(&fine);
+    assert_eq!(fine_depth, -fine.sample(inside).distance);
+    assert_ne!(fine_depth, depth);
+    let holed = Obstacle {
+        fine: Some(bricks(fine_grid, &fine_values, |b| b != [0, 0, 0])),
+        ..obstacle
+    };
+    assert_eq!(depth_in(&holed), depth);
+}
+
+#[test]
+fn the_executors_fine_lookup_is_the_obstacles_on_and_off_its_bricks() {
+    // One node inside the mandrel at each point, and the executor's depth there at both precisions against
+    // `Obstacle::sample`: exactly at f64, within the f32 lookup's bar at f32 (0.1 µm, `sdf_lookup.rs`). The fine
+    // grid, a quarter of the coarse cell, covers a box around the points; the points are inside its lattice, by a
+    // face of it, just off it, and by a brick left out, so both grids answer somewhere.
+    let radius = 0.011;
+    let (grid, values) = Mandrel { radius }
+        .baked([-0.022, -0.027, -0.05], [0.028, 0.028, 0.0], 0.0005)
+        .unwrap();
+    let coarse = Obstacle {
+        grid,
+        values,
+        fine: None,
+        start: 0.0,
+        interval: 1.0,
+        poses: vec![IDENTITY],
+        friction: 0.0,
+    };
+    let (fine_grid, fine_values) = Mandrel { radius }
+        .baked([0.006, 0.0, -0.034], [0.012, 0.006, -0.028], 0.000_25)
+        .unwrap();
+    let full = Obstacle {
+        fine: Some(bricks(fine_grid, &fine_values, |_| true)),
+        ..coarse.clone()
+    };
+    let holed = Obstacle {
+        fine: Some(bricks(fine_grid, &fine_values, |b| b != [1, 1, 1])),
+        ..coarse.clone()
+    };
+    let depth_in = |obstacle: &Obstacle, inside: [f64; 3]| {
+        let z = inside[2];
+        let mut positions = vec![
+            inside,
+            [0.02, 0.0, z],
+            [0.02, 0.005, z - 0.004],
+            [0.02, -0.005, z - 0.004],
+        ];
+        if shared::vec3_dot(
+            shared::vec3_sub(positions[1], positions[0]),
+            shared::vec3_cross(
+                shared::vec3_sub(positions[2], positions[0]),
+                shared::vec3_sub(positions[3], positions[0]),
+            ),
+        ) < 0.0
+        {
+            positions.swap(2, 3);
+        }
+        let model = ExplicitModel::new(
+            positions,
+            vec![[0, 1, 2, 3]],
+            vec![SILICONE],
+            vec![false, true, true, true],
+        )
+        .unwrap();
+        let mut wide = cpu::f64::CpuExecutor::new(&model, obstacle).unwrap();
+        run_phases(&mut wide, 0.0, 1e-6, 0.0);
+        let mut narrow = cpu::f32::CpuExecutor::new(&model, obstacle).unwrap();
+        run_phases(&mut narrow, 0.0, 1e-6, 0.0);
+        (
+            wide.monitors().max_penetration,
+            narrow.monitors().max_penetration,
+        )
+    };
+    // (obstacle, point, whether its fine grid answers there)
+    let cases = [
+        (&full, [0.0100, 0.0040, -0.0312], true),
+        (&full, [0.0100, 0.0001, -0.0312], true),
+        (&full, [0.0100, -0.0005, -0.0312], false),
+        (&holed, [0.0090, 0.0030, -0.0310], false),
+        (&holed, [0.0110 - 2e-4, 0.0010, -0.0330], true),
+    ];
+    for (obstacle, point, fine) in cases {
+        let reads_fine = obstacle.fine.as_ref().unwrap().sample(point).is_some();
+        assert_eq!(reads_fine, fine, "{point:?}");
+        let expected = -obstacle.sample(point).distance;
+        assert!(expected > 0.0, "{point:?} must be inside the mandrel");
+        if fine {
+            // The two grids read differently here, so the executor's answer tells which one it read.
+            assert_ne!(expected, -coarse.sample(point).distance, "{point:?}");
+        }
+        let (wide, narrow) = depth_in(obstacle, point);
+        assert_eq!(wide, expected, "{point:?}");
+        assert!(
+            (narrow - expected).abs() < 1e-7,
+            "{point:?}: {narrow} {expected}"
+        );
+    }
 }

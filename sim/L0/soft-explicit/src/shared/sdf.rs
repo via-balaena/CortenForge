@@ -24,6 +24,17 @@
 //   values[(k·4 + j)·4 + i] = grid[sdf_grid_index(ix[i], iy[j], iz[k], grid)]
 //   sample = sdf_tricubic(c, values, grid)
 //
+// A finer grid near the surface is stored in bricks of SDF_BRICK samples a
+// side (plan §16u). A brick map names each brick's slot, or SDF_NO_BRICK. A
+// lookup's stencil touches at most two bricks along each axis, so at most
+// eight; it reads the fine grid when its point is on the fine lattice and all
+// of those have a slot, and the grid above otherwise:
+//
+//   on = sdf_on_grid(point, fine); c, ix, iy, iz as above, on the fine lattice
+//   slots[n] = map[sdf_stencil_bricks(ix, iy, iz, fine)[n]]
+//   if on && sdf_fine_present(slots):
+//     values[(k·4 + j)·4 + i] = bricks[sdf_fine_index(ix[i], iy[j], iz[k], ix[0], iy[0], iz[0], slots)]
+//
 // Points are in the obstacle's body frame and grid values are distances in
 // the same units; negative is inside the obstacle.
 
@@ -80,6 +91,22 @@ pub fn sdf_grid_coordinate(point: [R; 3], grid: SdfGridLayout) -> [R; 3] {
     ]
 }
 
+/// Whether a point lies on a grid: within its samples' span along every axis.
+// `u32 as R`: exact for any grid under 2^24 samples a side at f32.
+#[allow(clippy::cast_precision_loss, clippy::cast_lossless)]
+#[must_use]
+pub fn sdf_on_grid(point: [R; 3], grid: SdfGridLayout) -> bool {
+    let x = (point[0] - grid.origin_x) / grid.cell_size;
+    let y = (point[1] - grid.origin_y) / grid.cell_size;
+    let z = (point[2] - grid.origin_z) / grid.cell_size;
+    x >= 0.0
+        && y >= 0.0
+        && z >= 0.0
+        && x <= (grid.size_x - 1) as R
+        && y <= (grid.size_y - 1) as R
+        && z <= (grid.size_z - 1) as R
+}
+
 /// The first sample of the cell a lookup interpolates in, along one axis.
 ///
 /// `coordinate` is the clamped grid coordinate ([`sdf_grid_coordinate`]) on
@@ -112,6 +139,110 @@ pub fn sdf_tricubic_axis(coordinate: R, size: u32) -> [u32; 4] {
 #[must_use]
 pub const fn sdf_grid_index(column: u32, row: u32, layer: u32, grid: SdfGridLayout) -> u32 {
     (layer * grid.size_y + row) * grid.size_x + column
+}
+
+/// Samples along each side of a brick of the fine grid.
+pub const SDF_BRICK: u32 = 8;
+
+/// A brick map's entry where the fine grid has no brick.
+pub const SDF_NO_BRICK: u32 = 4_294_967_295;
+
+/// Bricks along an axis of `size` samples.
+// The subset has no `div_ceil`, nor has WGSL; `size` is far below u32::MAX.
+#[allow(clippy::manual_div_ceil)]
+#[must_use]
+pub const fn sdf_bricks(size: u32) -> u32 {
+    (size + SDF_BRICK - 1) / SDF_BRICK
+}
+
+/// The brick map's entry for the brick holding sample `(column, row, layer)`
+/// of the fine grid: bricks x fastest, then y, then z.
+#[must_use]
+pub const fn sdf_brick_index(column: u32, row: u32, layer: u32, fine: SdfGridLayout) -> u32 {
+    let across = sdf_bricks(fine.size_x);
+    let up = sdf_bricks(fine.size_y);
+    ((layer / SDF_BRICK) * up + row / SDF_BRICK) * across + column / SDF_BRICK
+}
+
+/// Where sample `(column, row, layer)` sits among its brick's values: x
+/// fastest, then y, then z.
+#[must_use]
+pub const fn sdf_brick_offset(column: u32, row: u32, layer: u32) -> u32 {
+    ((layer % SDF_BRICK) * SDF_BRICK + row % SDF_BRICK) * SDF_BRICK + column % SDF_BRICK
+}
+
+/// The brick-map entries of the bricks a lookup's stencil touches.
+///
+/// They are the bricks of its first and last sample along each axis,
+/// first-or-last along x fastest, then y, then z. Along an axis the stencil
+/// spans four samples, so at most two bricks; where it spans one, an entry
+/// repeats.
+#[must_use]
+pub const fn sdf_stencil_bricks(
+    columns: [u32; 4],
+    rows: [u32; 4],
+    layers: [u32; 4],
+    fine: SdfGridLayout,
+) -> [u32; 8] {
+    let x0 = columns[0];
+    let x1 = columns[3];
+    let y0 = rows[0];
+    let y1 = rows[3];
+    let z0 = layers[0];
+    let z1 = layers[3];
+    [
+        sdf_brick_index(x0, y0, z0, fine),
+        sdf_brick_index(x1, y0, z0, fine),
+        sdf_brick_index(x0, y1, z0, fine),
+        sdf_brick_index(x1, y1, z0, fine),
+        sdf_brick_index(x0, y0, z1, fine),
+        sdf_brick_index(x1, y0, z1, fine),
+        sdf_brick_index(x0, y1, z1, fine),
+        sdf_brick_index(x1, y1, z1, fine),
+    ]
+}
+
+/// Whether every brick a lookup's stencil touches has a slot: the slots the
+/// brick map gives [`sdf_stencil_bricks`]'s entries.
+#[must_use]
+pub const fn sdf_fine_present(slots: [u32; 8]) -> bool {
+    slots[0] != SDF_NO_BRICK
+        && slots[1] != SDF_NO_BRICK
+        && slots[2] != SDF_NO_BRICK
+        && slots[3] != SDF_NO_BRICK
+        && slots[4] != SDF_NO_BRICK
+        && slots[5] != SDF_NO_BRICK
+        && slots[6] != SDF_NO_BRICK
+        && slots[7] != SDF_NO_BRICK
+}
+
+/// Where sample `(column, row, layer)` of a lookup's stencil is stored among
+/// the bricks' values.
+///
+/// Its brick is the stencil's first or last along each axis (the stencil's
+/// first sample is `(first_column, first_row, first_layer)`), whose slot is
+/// among `slots` ([`sdf_fine_present`]).
+#[must_use]
+pub const fn sdf_fine_index(
+    column: u32,
+    row: u32,
+    layer: u32,
+    first_column: u32,
+    first_row: u32,
+    first_layer: u32,
+    slots: [u32; 8],
+) -> u32 {
+    let last_x = column / SDF_BRICK != first_column / SDF_BRICK;
+    let last_y = row / SDF_BRICK != first_row / SDF_BRICK;
+    let last_z = layer / SDF_BRICK != first_layer / SDF_BRICK;
+    let near_near = if last_x { slots[1] } else { slots[0] };
+    let far_near = if last_x { slots[3] } else { slots[2] };
+    let near_far = if last_x { slots[5] } else { slots[4] };
+    let far_far = if last_x { slots[7] } else { slots[6] };
+    let near = if last_y { far_near } else { near_near };
+    let far = if last_y { far_far } else { near_far };
+    let slot = if last_z { far } else { near };
+    slot * SDF_BRICK * SDF_BRICK * SDF_BRICK + sdf_brick_offset(column, row, layer)
 }
 
 /// Catmull–Rom weights of the four samples at fraction `t` of the cell.

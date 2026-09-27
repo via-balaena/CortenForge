@@ -220,6 +220,7 @@ fn rising_floor(friction: f64) -> Obstacle {
     Obstacle {
         grid,
         values,
+        fine: None,
         start: 0.0,
         interval: 0.001,
         poses,

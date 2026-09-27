@@ -663,6 +663,14 @@ fn sdf_grid_coordinate(point: array<f32, 3>, grid: SdfGridLayout) -> array<f32, 
     );
 }
 
+// Whether a point lies on a grid: within its samples' span along every axis.
+fn sdf_on_grid(point: array<f32, 3>, grid: SdfGridLayout) -> bool {
+    let x = (point[0] - grid.origin_x) / grid.cell_size;
+    let y = (point[1] - grid.origin_y) / grid.cell_size;
+    let z = (point[2] - grid.origin_z) / grid.cell_size;
+    return (((((x >= 0.0) && (y >= 0.0)) && (z >= 0.0)) && (x <= f32(grid.size_x - 1))) && (y <= f32(grid.size_y - 1))) && (z <= f32(grid.size_z - 1));
+}
+
 // The first sample of the cell a lookup interpolates in, along one axis.
 //
 // `coordinate` is the clamped grid coordinate ([`sdf_grid_coordinate`]) on
@@ -689,6 +697,82 @@ fn sdf_tricubic_axis(coordinate: f32, size: u32) -> array<u32, 4> {
 // then z.
 fn sdf_grid_index(column: u32, row: u32, layer: u32, grid: SdfGridLayout) -> u32 {
     return (((layer * grid.size_y) + row) * grid.size_x) + column;
+}
+
+// Samples along each side of a brick of the fine grid.
+const SDF_BRICK: u32 = 8;
+
+// A brick map's entry where the fine grid has no brick.
+const SDF_NO_BRICK: u32 = 4294967295;
+
+// Bricks along an axis of `size` samples.
+fn sdf_bricks(size: u32) -> u32 {
+    return ((size + SDF_BRICK) - 1) / SDF_BRICK;
+}
+
+// The brick map's entry for the brick holding sample `(column, row, layer)`
+// of the fine grid: bricks x fastest, then y, then z.
+fn sdf_brick_index(column: u32, row: u32, layer: u32, fine: SdfGridLayout) -> u32 {
+    let across = sdf_bricks(fine.size_x);
+    let up = sdf_bricks(fine.size_y);
+    return ((((layer / SDF_BRICK) * up) + (row / SDF_BRICK)) * across) + (column / SDF_BRICK);
+}
+
+// Where sample `(column, row, layer)` sits among its brick's values: x
+// fastest, then y, then z.
+fn sdf_brick_offset(column: u32, row: u32, layer: u32) -> u32 {
+    return ((((layer % SDF_BRICK) * SDF_BRICK) + (row % SDF_BRICK)) * SDF_BRICK) + (column % SDF_BRICK);
+}
+
+// The brick-map entries of the bricks a lookup's stencil touches.
+//
+// They are the bricks of its first and last sample along each axis,
+// first-or-last along x fastest, then y, then z. Along an axis the stencil
+// spans four samples, so at most two bricks; where it spans one, an entry
+// repeats.
+fn sdf_stencil_bricks(columns: array<u32, 4>, rows: array<u32, 4>, layers: array<u32, 4>, fine: SdfGridLayout) -> array<u32, 8> {
+    let x0 = columns[0];
+    let x1 = columns[3];
+    let y0 = rows[0];
+    let y1 = rows[3];
+    let z0 = layers[0];
+    let z1 = layers[3];
+    return array(
+        sdf_brick_index(x0, y0, z0, fine),
+        sdf_brick_index(x1, y0, z0, fine),
+        sdf_brick_index(x0, y1, z0, fine),
+        sdf_brick_index(x1, y1, z0, fine),
+        sdf_brick_index(x0, y0, z1, fine),
+        sdf_brick_index(x1, y0, z1, fine),
+        sdf_brick_index(x0, y1, z1, fine),
+        sdf_brick_index(x1, y1, z1, fine),
+    );
+}
+
+// Whether every brick a lookup's stencil touches has a slot: the slots the
+// brick map gives [`sdf_stencil_bricks`]'s entries.
+fn sdf_fine_present(slots: array<u32, 8>) -> bool {
+    return (((((((slots[0] != SDF_NO_BRICK) && (slots[1] != SDF_NO_BRICK)) && (slots[2] != SDF_NO_BRICK)) && (slots[3] != SDF_NO_BRICK)) && (slots[4] != SDF_NO_BRICK)) && (slots[5] != SDF_NO_BRICK)) && (slots[6] != SDF_NO_BRICK)) && (slots[7] != SDF_NO_BRICK);
+}
+
+// Where sample `(column, row, layer)` of a lookup's stencil is stored among
+// the bricks' values.
+//
+// Its brick is the stencil's first or last along each axis (the stencil's
+// first sample is `(first_column, first_row, first_layer)`), whose slot is
+// among `slots` ([`sdf_fine_present`]).
+fn sdf_fine_index(column: u32, row: u32, layer: u32, first_column: u32, first_row: u32, first_layer: u32, slots: array<u32, 8>) -> u32 {
+    let last_x = (column / SDF_BRICK) != (first_column / SDF_BRICK);
+    let last_y = (row / SDF_BRICK) != (first_row / SDF_BRICK);
+    let last_z = (layer / SDF_BRICK) != (first_layer / SDF_BRICK);
+    let near_near = select(slots[0], slots[1], last_x);
+    let far_near = select(slots[2], slots[3], last_x);
+    let near_far = select(slots[4], slots[5], last_x);
+    let far_far = select(slots[6], slots[7], last_x);
+    let near = select(near_near, far_near, last_y);
+    let far = select(near_far, far_far, last_y);
+    let slot = select(near, far, last_z);
+    return (((slot * SDF_BRICK) * SDF_BRICK) * SDF_BRICK) + sdf_brick_offset(column, row, layer);
 }
 
 // Catmull–Rom weights of the four samples at fraction `t` of the cell.

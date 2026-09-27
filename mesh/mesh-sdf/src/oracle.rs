@@ -34,7 +34,8 @@ pub trait UnsignedDistance: Send + Sync {
 /// `is_inside(p)` returns `true` iff `p` is in the closed body's
 /// interior. Implementations differ in (a) what "inside" means for
 /// non-manifold input and (b) cost — see the concrete impls
-/// ([`crate::PseudoNormalSign`], [`crate::FloodFillSign`]) for posture.
+/// ([`crate::PseudoNormalSign`], [`crate::FloodFillSign`],
+/// [`crate::ParitySign`]) for posture.
 ///
 /// Boundary-point behavior is implementation-defined; do not probe
 /// exactly on the surface and expect a particular branch.

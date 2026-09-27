@@ -329,6 +329,11 @@ fn a_bad_bake_or_an_oversized_tube_is_refused() {
         m.baked([-1.0; 3], [1.0; 3], 1e-4),
         Err(BakeError::TooLarge)
     ));
+    // Sides whose product passes a u64.
+    assert!(matches!(
+        m.baked([-1e3; 3], [1e3; 3], 1e-7),
+        Err(BakeError::TooLarge)
+    ));
     let (grid, _) = m.baked(low, high, 0.001).unwrap();
     assert_eq!((grid.size_x, grid.size_y, grid.size_z), (21, 21, 21));
     let huge = Tube {

@@ -15,9 +15,10 @@
     clippy::many_single_char_names
 )]
 
-use sim_soft_explicit::executor::Obstacle;
+use sim_soft_explicit::executor::{Obstacle, ObstacleError, check_obstacle};
 use sim_soft_explicit::f64 as shared;
 use sim_soft_explicit::f64::{Pose, SdfGridLayout};
+use sim_soft_explicit::fixtures::grid::bricks;
 use sim_soft_explicit::fixtures::tube::Mandrel;
 
 const IDENTITY: Pose = Pose {
@@ -57,6 +58,7 @@ fn obstacle(grid: SdfGridLayout, values: Vec<f64>) -> Obstacle {
     Obstacle {
         grid,
         values,
+        fine: None,
         start: 0.0,
         interval: 1.0,
         poses: vec![IDENTITY],
@@ -334,4 +336,227 @@ fn the_lookup_reproduces_a_linear_field_everywhere_including_the_outermost_cells
         worst.0, worst.1
     );
     assert!(worst.0 <= 1e-15 && worst.1 <= 1e-12);
+}
+
+/// A curved field with no symmetry the grid shares: a sphere's distance off the grid's centre.
+fn curved(p: [f64; 3]) -> f64 {
+    ((p[0] + 0.004).powi(2) + (p[1] - 0.028).powi(2) + (p[2] + 0.001).powi(2)).sqrt() - 0.006
+}
+
+#[test]
+fn the_brick_address_of_a_sample() {
+    // A 13 × 25 × 17 lattice has 2 × 4 × 3 bricks, a different count along each axis. Sample (9, 3, 16) is in
+    // brick (1, 0, 2), the map's (2 · 4 + 0) · 2 + 1 = 17th, at (1, 3, 0) inside it: offset (0 · 8 + 3) · 8 + 1 = 25.
+    // Sample (12, 24, 16) is in brick (1, 3, 2), the map's (2 · 4 + 3) · 2 + 1 = 23rd.
+    let fine = SdfGridLayout {
+        size_x: 13,
+        size_y: 25,
+        size_z: 17,
+        ..baked(|_| 0.0).grid
+    };
+    assert_eq!(
+        [
+            shared::sdf_bricks(13),
+            shared::sdf_bricks(25),
+            shared::sdf_bricks(17),
+            shared::sdf_bricks(16)
+        ],
+        [2, 4, 3, 2]
+    );
+    assert_eq!(shared::sdf_brick_index(9, 3, 16, fine), 17);
+    assert_eq!(shared::sdf_brick_offset(9, 3, 16), 25);
+    assert_eq!(shared::sdf_brick_offset(15, 15, 15), 511);
+    assert_eq!(shared::sdf_brick_index(12, 24, 16, fine), 23);
+}
+
+#[test]
+fn a_stencils_bricks_and_where_its_samples_are_stored() {
+    // A stencil over columns 7–10, rows 0–3 and layers 15–18 of the same lattice touches bricks 0 and 1 along x,
+    // 0 along y, 1 and 2 along z: entries (1 · 4 + 0) · 2 + 0 = 8 and 9, repeated for y, then 16 and 17.
+    let fine = SdfGridLayout {
+        size_x: 13,
+        size_y: 25,
+        size_z: 17,
+        ..baked(|_| 0.0).grid
+    };
+    let bricks_touched =
+        shared::sdf_stencil_bricks([7, 8, 9, 10], [0, 1, 2, 3], [15, 16, 17, 18], fine);
+    assert_eq!(bricks_touched, [8, 9, 8, 9, 16, 17, 16, 17]);
+    // Sample (9, 2, 17) is in the last brick along x and z and the first along y: the sixth entry's slot.
+    let slots = [30, 31, 32, 33, 34, 35, 36, 37];
+    assert_eq!(
+        shared::sdf_fine_index(9, 2, 17, 7, 0, 15, slots),
+        35 * 512 + shared::sdf_brick_offset(9, 2, 17)
+    );
+    assert_eq!(
+        shared::sdf_fine_index(7, 3, 15, 7, 0, 15, slots),
+        30 * 512 + shared::sdf_brick_offset(7, 3, 15)
+    );
+    assert!(shared::sdf_fine_present(slots));
+    for missing in 0..8 {
+        let mut some = slots;
+        some[missing] = shared::SDF_NO_BRICK;
+        assert!(!shared::sdf_fine_present(some), "{missing}");
+    }
+}
+
+#[test]
+fn a_fine_grid_with_every_brick_reads_as_its_lattice() {
+    // 13 × 9 × 11 samples: every edge brick is part past the lattice, and padded.
+    let dense = baked(curved);
+    let fine = bricks(dense.grid, &dense.values, |_| true);
+    let mut points = interior_points(dense.grid);
+    // And on the lattice's faces and corners, where the stencil is clamped.
+    let g = dense.grid;
+    let near_the_far_face = |size: u32| (f64::from(size - 1) - 1e-6) * g.cell_size;
+    points.push(sample_point(g, 0, 0, 0));
+    points.push([
+        g.origin_x + near_the_far_face(g.size_x),
+        g.origin_y + near_the_far_face(g.size_y),
+        g.origin_z + near_the_far_face(g.size_z),
+    ]);
+    points.push([
+        g.origin_x + near_the_far_face(g.size_x),
+        g.origin_y + 4.3 * g.cell_size,
+        g.origin_z + 0.2 * g.cell_size,
+    ]);
+    for p in &points {
+        assert_eq!(fine.sample(*p), Some(dense.sample(*p)), "{p:?}");
+    }
+    // Through an obstacle whose own grid reads something else.
+    let coarse = baked(|p| curved(p) + 0.001);
+    let obstacle = Obstacle {
+        fine: Some(fine),
+        ..coarse
+    };
+    for p in &points {
+        assert_eq!(obstacle.sample(*p), dense.sample(*p), "{p:?}");
+    }
+}
+
+#[test]
+fn where_a_brick_is_missing_the_grid_answers() {
+    let dense = baked(curved);
+    let coarse = baked(|p| curved(p) + 0.001);
+    // Without brick (1, 0, 0): columns 8–15, rows 0–7, layers 0–7.
+    let obstacle = Obstacle {
+        fine: Some(bricks(dense.grid, &dense.values, |b| b != [1, 0, 0])),
+        ..coarse.clone()
+    };
+    let g = dense.grid;
+    let (mut fine_reads, mut coarse_reads) = (0, 0);
+    for p in interior_points(g) {
+        let c = shared::sdf_grid_coordinate(p, g);
+        let columns = shared::sdf_tricubic_axis(c[0], g.size_x);
+        let rows = shared::sdf_tricubic_axis(c[1], g.size_y);
+        let layers = shared::sdf_tricubic_axis(c[2], g.size_z);
+        let touches = columns.iter().any(|&i| i >= 8)
+            && rows.iter().any(|&j| j < 8)
+            && layers.iter().any(|&k| k < 8);
+        if touches {
+            assert_eq!(obstacle.sample(p), coarse.sample(p), "{p:?}");
+            coarse_reads += 1;
+        } else {
+            assert_eq!(obstacle.sample(p), dense.sample(p), "{p:?}");
+            fine_reads += 1;
+        }
+    }
+    assert!(
+        fine_reads > 50 && coarse_reads > 50,
+        "{fine_reads} {coarse_reads}"
+    );
+    // Off the fine lattice the grid answers too, even with every brick.
+    let full = Obstacle {
+        fine: Some(bricks(dense.grid, &dense.values, |_| true)),
+        ..coarse.clone()
+    };
+    let outside = [
+        g.origin_x - 0.5 * g.cell_size,
+        g.origin_y + 0.01,
+        g.origin_z + 0.01,
+    ];
+    assert_eq!(full.sample(outside), coarse.sample(outside));
+    // By each of the lattice's six faces: a hair outside, the coarse grid; a hair inside, the fine.
+    let centre = [
+        g.origin_x + 6.3 * g.cell_size,
+        g.origin_y + 4.2 * g.cell_size,
+        g.origin_z + 5.1 * g.cell_size,
+    ];
+    let low = [g.origin_x, g.origin_y, g.origin_z];
+    let sizes = [g.size_x, g.size_y, g.size_z];
+    for axis in 0..3 {
+        let far = low[axis] + f64::from(sizes[axis] - 1) * g.cell_size;
+        for (face, out) in [(low[axis], -1.0), (far, 1.0)] {
+            let mut beyond = centre;
+            beyond[axis] = face + out * 1e-6 * g.cell_size;
+            assert_eq!(
+                full.sample(beyond),
+                coarse.sample(beyond),
+                "axis {axis} {out}"
+            );
+            let mut within = centre;
+            within[axis] = face - out * 1e-6 * g.cell_size;
+            assert_eq!(
+                full.sample(within),
+                dense.sample(within),
+                "axis {axis} {out}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_malformed_fine_grid_is_refused() {
+    let dense = baked(curved);
+    let good = bricks(dense.grid, &dense.values, |b| b != [0, 1, 0]);
+    let with = |fine: sim_soft_explicit::executor::FineGrid| Obstacle {
+        fine: Some(fine),
+        ..dense.clone()
+    };
+    assert_eq!(check_obstacle(&with(good.clone())), Ok(()));
+    let refused = |fine, words: &str| {
+        let result = check_obstacle(&with(fine));
+        assert!(
+            matches!(&result, Err(ObstacleError::Invalid { reason }) if reason.contains(words)),
+            "{result:?}"
+        );
+    };
+    let mut short_map = good.clone();
+    short_map.map.pop();
+    refused(short_map, "one entry per brick");
+    let mut part_brick = good.clone();
+    part_brick.values.pop();
+    refused(part_brick, "whole bricks");
+    let mut stray_slot = good.clone();
+    let slots = u32::try_from(stray_slot.values.len() / 512).unwrap();
+    stray_slot.map[0] = slots;
+    refused(stray_slot, "does not have");
+    let mut adrift = good.clone();
+    adrift.grid.origin_y = f64::INFINITY;
+    refused(adrift, "not finite");
+    let mut not_finite = good.clone();
+    not_finite.values[3] = f64::NAN;
+    refused(not_finite, "not finite");
+    let mut flat = good.clone();
+    flat.grid.cell_size = 0.0;
+    refused(flat, "cell size");
+    let mut empty = good.clone();
+    empty.grid.size_y = 0;
+    refused(empty, "no samples");
+    let mut endless = good.clone();
+    endless.grid.size_x = u32::MAX;
+    refused(endless, "too long");
+    // Bricks past a u32: each side as long as a brick count allows, so they multiply past a usize too; and
+    // within a usize.
+    let mut vast = good.clone();
+    let longest = u32::MAX - shared::SDF_BRICK;
+    (vast.grid.size_x, vast.grid.size_y, vast.grid.size_z) = (longest, longest, longest);
+    refused(vast, "more bricks than a u32");
+    let mut wide = good.clone();
+    (wide.grid.size_x, wide.grid.size_y, wide.grid.size_z) = (1 << 21, 1 << 21, 8);
+    refused(wide, "more bricks than a u32");
+    // Exactly u32::MAX bricks: indexed to u32::MAX - 1, so accepted, and wrong only in its map's length.
+    let mut full = good;
+    (full.grid.size_x, full.grid.size_y, full.grid.size_z) = (65_537 * 8, 257 * 8, 255 * 8);
+    refused(full, "one entry per brick");
 }

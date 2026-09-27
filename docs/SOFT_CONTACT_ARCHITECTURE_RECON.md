@@ -4,11 +4,11 @@
 §16; 2a (#968) and 2b's G2 (#969) are merged, and 2b's remaining runs, with the material damping they led to, are
 §16p (#970), and 2c, K6, is §16q (#971). 2d, the product's budget and the stop rule, is §16r (#972). K5,
 with D1's readings diagnosed and replaced, is §16s (#973). Fit plan U3, why the rigid path asks for room and the
-path step 7 runs, is §16t.
+path step 7 runs, is §16t. Step 6's obstacle bake is §16u.
 - **Research:** §1–§10.
 - **Code architecture and the crate layout:** §11–§14.
 - **The first experiment and its kill criteria:** §15.
-- **Build step 2's design, and what its PRs measured:** §16 (§16m–§16s); U3, §16t.
+- **Build step 2's design, and what its PRs measured:** §16 (§16m–§16s); U3, §16t; step 6's bake, §16u.
 
 The code architecture, crate layout and first experiment were checked by cold review, against criteria
 written beforehand (§14e, §15i). The research sections were not. Jon's direction:
@@ -665,7 +665,7 @@ solid"*).
 |---|---|---|---|
 | **`sim-soft-explicit`** | L0 | new | **The explicit solver, minus the GPU.** The executor trait. The explicit model and state data layout (flat arrays; `#[repr(C)]` parameter blocks with no `vec3`). The shared math (14b), written once in the loop-free subset and compiled at f32 and f64, with its committed generated WGSL and a freshness test. The **CPU executor** (rayon on native, sequential on wasm32, as `newton.rs` does). The **stepping loop**, which owns the order of phases within a step, batching, the stable time step and mass scaling, and the energy monitors and stop rule, over any executor. A `test-fixtures` feature with small lowered meshes, as `sim-core` has *(replaced in step 2's design by a public module, 16f)*. |
 | **`sim-wgsl-gen`** | L0 | new | The §13 translator: `syn` (with `proc-macro2` for source positions), plus `naga` to validate its output, on the physics side's naga version. A `write` command regenerates the committed WGSL, and the freshness test names that command when it fails. A dev-dependency of `sim-soft-explicit`. |
-| **`sim-soft`** | L0 | grows | The model as today, plus **lowering** it to `sim-soft-explicit`'s data, including resampling the insertion path evenly in time *(2026-09-27, §16t: the path is the fitted pose)*. **Baking the obstacle SDF from its triangle mesh** (flood-fill sign and the Gaussian pre-smooth, moved from `tools/cf-sim-research`). The **scenarios and readouts in model terms** (contact pressure by region) *(2026-09-26, §16s: D1's readings landed in `sim-soft-explicit`'s `readings`, over the solver's snapshots, so `sim-soft` calls them and does not build a second set)*. The test of its `Material` impls against the shared math (F3). The implicit Newton solver stays as it is. |
+| **`sim-soft`** | L0 | grows | The model as today, plus **lowering** it to `sim-soft-explicit`'s data, including resampling the insertion path evenly in time *(2026-09-27, §16t: the path is the fitted pose)*. **Baking the obstacle SDF from its triangle mesh** (flood-fill sign and the Gaussian pre-smooth, moved from `tools/cf-sim-research`) *(2026-09-27, §16u: a new bake, not moved: the parity of a ray's crossings for the sign, no pre-smooth, and a fine grid in bricks near the surface)*. The **scenarios and readouts in model terms** (contact pressure by region) *(2026-09-26, §16s: D1's readings landed in `sim-soft-explicit`'s `readings`, over the solver's snapshots, so `sim-soft` calls them and does not build a second set)*. The test of its `Material` impls against the shared math (F3). The implicit Newton solver stays as it is. |
 | **`sim-gpu`** | L0-io | rebuilt | **The GPU executors.** It *extracts* shared infrastructure from today's rigid code: the device context (`context.rs`), and chunked submission, which today sits inside the rigid `step()` (`pipeline/orchestrator.rs:28-37`), and the contact-list tools (the atomic append; the CAS float-add if scatter is chosen). It adds `soft`, the explicit executor, whose hand-written entry points fetch, gather and scatter around the generated WGSL. It holds the **GPU-vs-CPU conformance tests** against `sim-soft-explicit`'s CPU executor. The rigid pipeline stays as it is until its own redesign, keeping the parts only it uses. It depends on `sim-soft-explicit` and `sim-core`, not on `sim-soft`, and has its own wgpu version (13e). |
 | `sim-coupling` | L1 | later | Two-way explicit rigid–soft coupling on the CPU (subcycling, F5). **The fit test does not need it**: the scan is a kinematic pose, applied in the contact law. GPU rigid–soft exchange lives in `sim-gpu`, on one device. |
 | `sim-bevy-soft`, the studio, `tools/cf-sim-research` | L1 / App / tool | consumers | Pick the executor (CPU or GPU), and show results from CPU snapshots (13e). |
@@ -702,7 +702,9 @@ Everything both executors must compute identically, as pure per-element or per-n
     flattening in the shared math. The pre-smooth was tuned for the trilinear lookup. Whether tricubic
     still needs it, and its surface bias against G2 (the code's own estimate is σ²κ/2 at a 3 mm grid:
     about 0.11 mm on a 40 mm radius and 0.9 mm on 5 mm-radius features, `insertion_sim.rs:1686–1690`,
-    against G2's 0.05 mm on `base_mold`), are 2d's to measure.* *(Measured, not settled: §16r.)*
+    against G2's 0.05 mm on `base_mold`), are 2d's to measure.* *(Measured, not settled: §16r.)* *(2026-09-27,
+    §16u: §16r's grids had the flood fill's sign. Signed by parity, without the pre-smooth, a 0.25 mm grid's own
+    error meets G2 at `base_mold`'s 5 mm inset; the bake does not pre-smooth.)*
 - **Time integration:** the per-node explicit update (velocity, position, damping, mass scaling,
   kinematic boundary conditions), and the per-element stable time-step estimate.
 - **The obstacle's pose** between two time samples, by interpolation. Lowering resamples the path
@@ -1215,6 +1217,8 @@ Each item is one PR with its own tests and a done-when.
 4. **`sim-gpu`'s soft executor,** with per-phase conformance against the CPU executor, on lavapipe in CI.
    - *Done when:* every phase's outputs agree, GPU f32 against CPU f32. Per output, the largest
      difference must be ≤ 1e-5 × the largest magnitude.
+   - *(2026-09-27, §16u)* The obstacle's fine grid: two more buffers, a storage binding above wgpu's default at the
+     finest spacing measured, and a step in the distance where its bricks end.
 5. **The experiment on the GPU:** K1, K2 at 100k, the ν sweep, the ladder, the Coulomb push, the stress
    case, the SDF comparison and stiffness scaling. *Stiffness scaling runs first on the CPU, in step 2
    (16i), because the product's budget depends on it.*
@@ -1240,7 +1244,9 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
   sit up to 1.25 elements off the true surface, the 5th and 95th percentiles at −0.50 and +0.32; projecting them
   costs the step; fit plan U17)*;
 - *(2026-09-26, §16r)* G2 on `base_mold`: no scan grid measured meets it, down to 0.25 mm; step 6's bake sets
-  the grid's spacing and pre-smooth against it (fit plan U18);
+  the grid's spacing and pre-smooth against it (fit plan U18) *(2026-09-27, §16u: that was the flood fill's sign;
+  signed by parity, with no pre-smooth, the grid's own error meets it at the 5 mm inset at 0.25, 0.125 and
+  0.0625 mm. Jon set the bar at smaller insets: 1 % of the inset, never below 0.02 mm, fit plan U18)*;
 - U3's outcome, and the fact that a contact-guided intruder would need rigid–soft coupling *(2026-09-27, §16t:
   a rigid pose fitted to the slide along the canal asks about a quarter of the room the path as written asks; Jon
   chose the fitted pose, which needs no coupling, and the contact-guided intruder moved to the fit plan's Later)*;
@@ -1279,7 +1285,8 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
 - the comfort-limit research (step 9) *(a round done 2026-09-27, fit plan U1)*.
 
 6. **`sim-soft`: lowering, obstacle baking, and the pairing library.**
-   - Lowering and obstacle baking come from `cf-sim-research`.
+   - Lowering and obstacle baking come from `cf-sim-research`. *(2026-09-27, §16u: the bake is new, in
+     `sim_soft::obstacle`, and replaces `cf-sim-research`'s rather than moving it.)*
    - The pairing library covers surface × surface × lubricant, with fresh and depleted ranges (§5c).
    - The boundary options (§9 decisions 10–11):
      - free;
@@ -1306,9 +1313,14 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
      - the path's time sampling *(of the fitted pose, against a bar, §16t)*.
    - *Done when:* the bake matches `cf-sim-research`'s within 1 % of a grid cell at every grid point, and
      each boundary option has a test. *(2026-09-26, §16r: the old bake is coarser than every grid 2d
-     measured, and none of those meets G2 on `base_mold`; fit plan U18.)* *(2026-09-27, §16t: and the lowered
+     measured, and none of those meets G2 on `base_mold`; fit plan U18.)* *(2026-09-27, §16u: the old bake's sign
+     is wrong near the surface, so the bar is instead that the bake reads each sample's exact signed distance (its
+     tests) and, on `base_mold`, its own error at the scan's points is within G2's bar
+     (`the_bake_on_the_product_scan`).)* *(2026-09-27, §16t: and the lowered
      fitted pose passes the measuring copy's known-answer tests, and on `base_mold` reproduces the probe's room at
-     each pose, checked locally as the 8.285 mm was.)*
+     each pose, checked locally as the 8.285 mm was.)* *(2026-09-27, §16u: the probe's room reads the old path's
+     scan grid, so that check reads the probe and the lowering through the same grid; and the lowering sets the
+     bake's band.)*
 7. **`base_mold` on the new solver.**
    - G6 is 5 minutes per run, where a run is one simulation (fit plan D4). `base_mold` stays outside
      the repo. *(D4 is per press, §9 decision 12 and fit plan U13; §16r reports it so.)*
@@ -1321,7 +1333,9 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
      - the loaded surface area inside the winning 1 cm² patch. The patch is a ball in space, so it also holds any
        other loaded surface within its radius of its centre (§16s: 1.0103 cm² on a bore of 10 mm radius);
      - the sideways force and the twist the wall puts on the scan, which show how far the walls would push it off
-       the fitted path (§16t).
+       the fitted path (§16t);
+     - which of the obstacle's grids answered each surface node's lookups, and the deepest predicted point; and on
+       the frictionless run, the work the contact does over the hold (§16u). G2 is judged in the run.
    - *Done when:* the fit plan's G1–G3 and G6 have numbers on `base_mold`. *(2026-09-27: and D1's readings'
      convergence there, at the product's element size and at the lowest μ_f; the list above.)*
 8. **The soft-on-soft contact design** (§9 decision 9): a design step with its own research round, not
@@ -2300,7 +2314,9 @@ On the adopted code (`5e6b7281`; frictionless, A/20, §15b's 0.2 s hold unless n
   (14b's note). The verdict's frictionless run (§15h) is the configuration in which the long-hold
   pumping appeared on the tube, and bumps in the grid's own samples (the scan's facets) are not removed
   by the lookup. Unexamined. *(2d, §16r, measured the grid's error against the scan and the pre-smooth.
-  G2 against the grid, and the pumping, need a run on the product, so they move to step 7.)*
+  G2 against the grid, and the pumping, need a run on the product, so they move to step 7.)* *(2026-09-27, §16u:
+  §16r's grids had the flood fill's sign; re-measured with parity's, with no pre-smooth. The pumping check is
+  step 7's, §16u.)*
 - **Other force phases:** the prediction uses the elastic force alone (14d's note). *(Since §16p, the
   elastic and viscous forces.)*
 - **The frame carry:** the current normal is carried from the pose at t to the pose at t + Δt; no test
@@ -2912,7 +2928,10 @@ element sizes off. Offsets are in element sizes, negative into the canal:
   So projecting at a floor of 0.5 misses D4 at K1's rate with the viscosity, and a floor of 0.1 misses it on the
   CPU too.
 
-**G2's margin on the product.** The obstacle grid's distance at the scan's points (the vertices its faces name and
+**G2's margin on the product.** *(Superseded 2026-09-27, §16u: these grids were signed by the flood fill, whose
+sign is wrong within a quarter cell of the surface; signed by parity, the grid's own error meets G2 at the 5 mm
+inset at 0.25, 0.125 and 0.0625 mm.)*
+The obstacle grid's distance at the scan's points (the vertices its faces name and
 its face centroids), which lie on the true surface; the grid is baked from the full-resolution scan and signed by
 a flood fill. Where it reads positive the grid's surface lies inside the scan, and a node the contact law holds on
 the grid's surface sits that deep in it; where it reads negative, a node stops short. G2's bar is 1 % of the inset.
@@ -3209,3 +3228,98 @@ product, which rounding can push one ulp past 1 while their cross product is abo
 
   Seven priors hit, one in part.
 - The probe printed the same after the fixes.
+
+### 16u. Step 6: the obstacle bake (2026-09-27)
+
+Step 6 bakes the obstacle in `sim-soft` and sets its grid against G2 (fit plan U18). Measuring that grid
+below §16r's finest overturned §16r's reading of G2: its grids' sign was wrong at the surface.
+
+**How it is measured.** A probe (`tools/cf-sim-research/src/insertion_sim/obstacle_grid.rs`) reads the scan's
+exact distance only at the samples of the tricubic stencils around G2's points (the vertices the scan's faces name,
+and its face centroids), through the solver's own `sdf_tricubic`, so it reads grids too fine to build whole. At a
+spacing a dense grid can be built, it reads what that grid reads (`the_band_reads_what_the_dense_grid_reads`).
+Signed by the flood fill as §16r's grids were, at 0.25 mm it reads §16r's row off the cap discs to its printed
+digits: 1.8 % past the bar, penetration p95 / p99 / worst 0.47 / 1.28 / 2.34 bars, shortfall 0.42 / 2.41.
+
+**The sign.** Three, compared at the 0.25 mm band's samples
+(`g2_against_the_grids_spacing_on_the_product_scan`, `where_the_pseudo_normal_sign_fails_on_the_product_scan`):
+- **The flood fill's** (§16r's grids, and the old path's) disagrees with both others at 2.5 % of the samples, every
+  one within a quarter cell of the surface. `mesh-sdf` documents it as unreliable within a cell of the surface
+  (`FloodFillSign`).
+- **The pseudo-normals'** (the welded scan's) disagrees with both others at about 3 samples in 100 000 a quarter
+  cell or more from the surface (up to about three cells), all in one region. What makes it wrong there is not
+  isolated.
+- **Parity**, the majority of three rays' crossings (`mesh_sdf::ParitySign`), agrees with the flood fill at every
+  sample a quarter cell or more from the surface, and with the pseudo-normals at all but a handful of samples
+  within it; which is right at those few is not measured. Its tests: a sphere against the analytic answer, a cube's
+  edges and corners either way it is wound, and one miscounting ray outvoted. It needs a closed surface, and it
+  counts even-odd: a region enclosed twice reads outside (`a_region_enclosed_twice_reads_outside`). On `base_mold`
+  the bake's coarse grid agrees in sign with a flood fill of its spacing at every sample a flood cell or more from
+  the surface (`the_bake_on_the_product_scan`); an overlap thinner than that is not compared.
+
+**G2 signed by parity, with no pre-smooth** (off the cap discs; readings over the bar):
+
+| Grid | Points past the bar | Penetration: p95 / p99 / worst | Shortfall: p95 / worst |
+|---|---|---|---|
+| 0.25 mm | none | 0.047 / 0.18 / 0.86 | 0.019 / 0.71 |
+| 0.125 mm | none | 0.024 / 0.065 / 0.53 | 0.008 / 0.24 |
+| 0.0625 mm | none | 0.012 / 0.045 / 0.30 | 0.004 / 0.17 |
+
+- At `base_mold`'s 5 mm inset the grid's own error meets G2 at every spacing measured, 0.25 mm included. Over every
+  point, the discs included, none is past the bar either, and the worst readings are the same.
+- At every spacing the worst point lies beside a cap's rim.
+
+**The bake** (`sim_soft::obstacle`; the fine grid is `sim_soft_explicit::executor::FineGrid`):
+- **The distance** is exact, to the mesh's triangles; **the sign** is parity. The bake welds exactly coincident
+  vertices and refuses a mesh that is not closed once welded (`a_mesh_that_is_not_closed_is_refused`); its winding
+  does not matter (`a_box_wound_inward_bakes_to_the_same_grids`). Nothing is smoothed.
+- **Two grids.** The obstacle's own grid is the coarse one. The fine one is stored in bricks of 8 samples a side,
+  named by a brick map. A lookup reads the fine grid when its point is on the fine lattice and every brick its
+  stencil touches has a slot, and the coarse grid otherwise. The rule is shared math (`sdf_stencil_bricks`,
+  `sdf_fine_present`, `sdf_fine_index`), used by the obstacle's lookup and the CPU executor's alike
+  (`where_a_brick_is_missing_the_grid_answers`, `the_executors_fine_lookup_is_the_obstacles_on_and_off_its_bricks`).
+- **Which bricks.** A lookup reads only samples within 2√3 cells of its point, so a point within the bake's band of
+  the surface reads only samples within the band and 2√3 cells of it. A brick is kept exactly when one of its samples
+  is that near, and every point within the band reads the fine grid; both are tested on a box turned off the grid's
+  axes (`a_brick_is_kept_exactly_when_a_sample_is_near_the_surface`,
+  `every_point_within_the_band_reads_the_fine_grid`).
+- **On `base_mold`** (`the_bake_on_the_product_scan`): a coarse grid at 0.5 mm, a fine one at 0.25 mm and at
+  0.0625 mm, a band of one fine cell. Every point on the scan reads the fine grid, and reads exactly what the band
+  signed by parity reads at the same spacing (asserted). At 0.0625 mm the bake takes about a tenth of D4; at 0.25 mm, under a fiftieth. At
+  0.0625 mm the fine grid's values at f32 are more than twice wgpu's default storage-binding limit (128 MiB); at
+  0.25 mm they are well under it. Its sizes and times stay on the machine that ran it.
+
+**What this corrects.** §16r's claim that no grid meets G2 supported:
+- §16r's G2 bullets (no grid meets it; the trend to 0.1 mm; the pre-smooth's trade) and fit plan U18: read with the
+  flood fill's sign, and superseded;
+- the list for steps 6–9's G2 item, §14a's `sim-soft` row and §14b's pre-smooth note;
+- step 6's done-when, that the bake match the old one within 1 % of a grid cell: the bar is instead that the bake
+  reads each sample's exact signed distance (its tests) and, on `base_mold`, its own error at the scan's points is
+  within G2's bar (above).
+
+**Not re-read here:**
+- **U17's canal offsets** were measured against a flood-fill-signed grid (`explicit_budget.rs`, `Truth`), on a
+  wall meshed from the old path's grid, flood-filled and pre-smoothed; neither is re-read with parity's sign. D3's
+  search goes down to 0 mm, where the canal is the scan's own surface.
+- **U3's room** (§16t) was read through the old path's scan grid (decimated and flood-filled). Step 6's check that
+  the lowering reproduces the probe's room reads both through the same grid.
+- The tube's G2 (§16o) is not affected: its mandrel is baked from its exact distance. The old path's contact read
+  flood-filled grids too; it retires after step 7.
+
+**G2 against the inset (Jon, 2026-09-27).** G2's bar was 1 % of the inset: 0.05 mm at 5 mm, 0.01 mm at 1 mm, and
+none at 0 mm, where no grid meets it; D3's search goes down to 0 mm. Jon set it to 1 % of the inset, but never below
+0.02 mm. The worst readings above are, in millimetres, 0.043, 0.026 and 0.015 at 0.25, 0.125 and 0.0625 mm
+(arithmetic on the table), and the obstacle is the scan whatever the inset: so a 0.0625 mm grid meets the bar at
+every inset, a 0.125 mm grid from 3 mm, and a 0.25 mm grid at 5 mm (fit plan U18).
+
+**Carried to later steps:**
+- **Step 6's lowering** sets the band from how far a node's predicted position can reach past the surface in a step
+  (the contact law reads the grid there, §16o). Where a node sits deeper than the band, as at the t = 0 intrusion,
+  the coarse grid answers, and its error there is not measured.
+- **Step 7** judges G2 in a run: the table reads the grid at the scan's own points, not where the contact law holds
+  the wall's nodes. Each run prints which grid answered each surface node's lookups and the deepest predicted
+  point; and on the frictionless run, the work the contact does over the hold, for the facets' pumping (§16o).
+- **Step 4** (the GPU): the rule is already in the generated WGSL. Where the fine grid's bricks end, the distance
+  steps between the two grids, which the conformance tests must allow. The brick map and the bricks are two more
+  buffers to bind. The fine grid at 0.0625 mm needs a storage binding above wgpu's default (above); what the
+  adapters grant is not checked. An f64 executor holds its own copy of the fine grid beside the obstacle's.

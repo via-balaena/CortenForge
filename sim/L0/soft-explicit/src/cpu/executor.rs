@@ -35,6 +35,18 @@ const fn narrow3(v: [f64; 3]) -> [R; 3] {
 fn widen3(v: [R; 3]) -> [f64; 3] {
     [widen(v[0]), widen(v[1]), widen(v[2])]
 }
+/// A grid layout at this executor's precision.
+const fn narrow_layout(grid: crate::f64::SdfGridLayout) -> shared::SdfGridLayout {
+    shared::SdfGridLayout {
+        origin_x: narrow(grid.origin_x),
+        origin_y: narrow(grid.origin_y),
+        origin_z: narrow(grid.origin_z),
+        cell_size: narrow(grid.cell_size),
+        size_x: grid.size_x,
+        size_y: grid.size_y,
+        size_z: grid.size_z,
+    }
+}
 
 const fn narrow_material(m: crate::f64::Material) -> shared::Material {
     shared::Material {
@@ -247,6 +259,9 @@ pub struct CpuExecutor {
 
     grid: shared::SdfGridLayout,
     grid_values: Vec<R>,
+    /// The obstacle's fine grid near its surface, if it has one: its layout,
+    /// its brick map and its bricks' values.
+    fine: Option<(shared::SdfGridLayout, Vec<u32>, Vec<R>)>,
     pose_start: R,
     pose_interval: R,
     poses: Vec<shared::Pose>,
@@ -349,16 +364,15 @@ impl CpuExecutor {
             viscous: model.materials().iter().any(|m| m.viscosity > 0.0),
             surface_nodes,
             surface_index,
-            grid: shared::SdfGridLayout {
-                origin_x: narrow(grid.origin_x),
-                origin_y: narrow(grid.origin_y),
-                origin_z: narrow(grid.origin_z),
-                cell_size: narrow(grid.cell_size),
-                size_x: grid.size_x,
-                size_y: grid.size_y,
-                size_z: grid.size_z,
-            },
+            grid: narrow_layout(grid),
             grid_values: obstacle.values.iter().map(|&v| narrow(v)).collect(),
+            fine: obstacle.fine.as_ref().map(|fine| {
+                (
+                    narrow_layout(fine.grid),
+                    fine.map.clone(),
+                    fine.values.iter().map(|&v| narrow(v)).collect(),
+                )
+            }),
             pose_start: narrow(obstacle.start),
             pose_interval: narrow(obstacle.interval),
             poses: obstacle.poses.iter().map(|&p| narrow_pose(p)).collect(),
@@ -448,8 +462,12 @@ impl CpuExecutor {
     }
 
     /// The obstacle's distance and normal at a body-frame point: the shared
-    /// tricubic lookup over the 64 grid values it names.
+    /// tricubic lookup over the 64 grid values it names, in the fine grid
+    /// where that has them all.
     fn sample(&self, point: [R; 3]) -> shared::SdfSample {
+        if let Some(sample) = self.fine_sample(point) {
+            return sample;
+        }
         let grid = self.grid;
         let coordinate = shared::sdf_grid_coordinate(point, grid);
         let columns = shared::sdf_tricubic_axis(coordinate[0], grid.size_x);
@@ -466,6 +484,34 @@ impl CpuExecutor {
             }
         }
         shared::sdf_tricubic(coordinate, values, grid)
+    }
+
+    /// The lookup in the fine grid, or `None` where the point is off its
+    /// lattice or one of its 64 samples has no brick (`Obstacle::sample`'s
+    /// rule).
+    fn fine_sample(&self, point: [R; 3]) -> Option<shared::SdfSample> {
+        let (grid, map, bricks) = self.fine.as_ref()?;
+        let grid = *grid;
+        if !shared::sdf_on_grid(point, grid) {
+            return None;
+        }
+        let coordinate = shared::sdf_grid_coordinate(point, grid);
+        let columns = shared::sdf_tricubic_axis(coordinate[0], grid.size_x);
+        let rows = shared::sdf_tricubic_axis(coordinate[1], grid.size_y);
+        let layers = shared::sdf_tricubic_axis(coordinate[2], grid.size_z);
+        let slots =
+            shared::sdf_stencil_bricks(columns, rows, layers, grid).map(|entry| map[entry as usize]);
+        if !shared::sdf_fine_present(slots) {
+            return None;
+        }
+        let mut values = [0.0; 64];
+        for (index, value) in values.iter_mut().enumerate() {
+            let (column, row, layer) = (columns[index % 4], rows[index / 4 % 4], layers[index / 16]);
+            *value = bricks[shared::sdf_fine_index(
+                column, row, layer, columns[0], rows[0], layers[0], slots,
+            ) as usize];
+        }
+        Some(shared::sdf_tricubic(coordinate, values, grid))
     }
 }
 

@@ -115,6 +115,7 @@ mod flood_fill;
 mod health;
 mod metrics;
 mod oracle;
+mod parity;
 mod sdf;
 mod sdf_adapter;
 
@@ -131,4 +132,5 @@ pub use metrics::{
     DeviationReport, SampleOptions, SignedExtremes, hausdorff_distance, surface_deviation_to_sdf,
 };
 pub use oracle::{FloodFillError, FloodFillReport, Region, Sign, Signed, UnsignedDistance};
+pub use parity::ParitySign;
 pub use sdf::{PseudoNormalSign, TriMeshDistance};

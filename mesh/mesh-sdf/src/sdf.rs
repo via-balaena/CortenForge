@@ -25,6 +25,15 @@
 //! flood-fill case — see `docs/MESH_SDF_ORACLE_DECOMPOSITION_SPEC.md` — but
 //! that recommendation is about the *scan*, not about every query on it.
 //!
+//! A third, [`crate::ParitySign`], counts a ray's crossings: the same test
+//! near the surface and away from it, whatever the winding, on a closed
+//! surface; on a hole it has no answer, and a region enclosed twice reads
+//! outside. On the product scan the pseudo-normals' sign disagreed with both
+//! others in one region away from the surface, and parity agreed with the
+//! flood fill away from the surface and with the pseudo-normals at it, but for
+//! a handful of samples (soft-contact recon §16u). `sim_soft::obstacle` bakes
+//! with it.
+//!
 //! [`TriMeshDistance::health`] answers exactly one of those rows: **did the
 //! scale rule leave this surface with features parry cannot sign?** It
 //! censuses the built artifact for *zeroed* pseudo-normals — the area-floor
