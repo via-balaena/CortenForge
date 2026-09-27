@@ -72,7 +72,7 @@ use mesh_repair::{remove_unreferenced_vertices, weld_vertices};
 use mesh_sdf::{CachedGridSdf, PseudoNormalSign, Signed, TriMeshDistance};
 use mesh_types::IndexedMesh;
 use nalgebra::{
-    Isometry3, Matrix3, Point3, Rotation3, SMatrix, Translation3, UnitQuaternion, Vector3,
+    Isometry3, Matrix3, Point3, Rotation3, SMatrix, Translation3, Unit, UnitQuaternion, Vector3,
 };
 use sim_ml_chassis::Tensor;
 use sim_soft::element::Tet10;
@@ -3664,7 +3664,7 @@ fn smoothed_tangent_along_polyline(
 /// same vector, `R` is the identity and the whole pose collapses to the
 /// identity — the seated rest pose, unchanged from iter-1.
 ///
-/// ⚠ `rotation_between` returns `None` for exactly-antiparallel tangents (a
+/// ⚠ [`turn_between`] returns `None` for antiparallel tangents (a
 /// 180° doubling-back in the polyline). That is a degenerate centerline
 /// rather than a pose to guess at, so it falls back to the identity rotation
 /// — the iter-1 behaviour — rather than picking an arbitrary axis.
@@ -3686,10 +3686,30 @@ pub(crate) fn slide_pose_at(centerline: &[Point3<f64>], t: f64) -> Isometry3<f64
     let tangent =
         smoothed_tangent_along_polyline(centerline, walk_from_tip).unwrap_or_else(Vector3::z);
     let rest_tangent = smoothed_tangent_along_polyline(centerline, 0.0).unwrap_or_else(Vector3::z);
-    let rotation = Rotation3::rotation_between(&rest_tangent, &tangent)
+    let rotation = turn_between(&rest_tangent, &tangent)
         .map_or_else(UnitQuaternion::identity, UnitQuaternion::from);
     let translation = tip_world.coords - rotation * tip_rest.coords;
     Isometry3::from_parts(Translation3::from(translation), rotation)
+}
+
+/// The smallest rotation taking the direction `from` onto `to`; `None` when
+/// they are opposite, where no axis is picked out.
+///
+/// `Rotation3::rotation_between` takes the angle as the `acos` of the unit
+/// vectors' dot product, which rounding can push one ulp past 1 while their
+/// cross product is still above its cut-off: two directions about 1e-10 rad
+/// apart then give a NaN rotation
+/// (`turn_between_is_finite_where_rotation_between_is_not`). This takes the
+/// angle as `atan2(|a × b|, a · b)`, with the same cut-off.
+pub(crate) fn turn_between(from: &Vector3<f64>, to: &Vector3<f64>) -> Option<Rotation3<f64>> {
+    let (a, b) = (from.normalize(), to.normalize());
+    let axis = a.cross(&b);
+    let angle = axis.norm().atan2(a.dot(&b));
+    match Unit::try_new(axis, f64::EPSILON) {
+        Some(axis) => Some(Rotation3::from_axis_angle(&axis, angle)),
+        None if a.dot(&b) < 0.0 => None,
+        None => Some(Rotation3::identity()),
+    }
 }
 
 // ───────────────────────────────────────────────────────────────────────
@@ -4448,6 +4468,10 @@ pub fn run_sliding_insertion_ramp_tet10_ipc(
 #[cfg(test)]
 mod explicit_budget;
 
+// U3 (fit plan §7): why the rigid path asks the cavity for room with no inset.
+#[cfg(test)]
+mod path_room;
+
 #[cfg(test)]
 mod tests {
     // `unwrap()` + `expect()` are denied at the crate level; the test
@@ -4627,6 +4651,28 @@ mod tests {
             Point3::new(1.0, 0.0, 2.0),
             Point3::new(2.0, 0.0, 2.0), // floor / cap mouth
         ]
+    }
+
+    /// Two unit directions about 1e-10 rad apart whose dot product rounds one
+    /// ulp past 1 (found by search): `rotation_between` turns them by a NaN
+    /// angle, and so did `slide_pose_at` on a centreline with those two
+    /// segments.
+    #[test]
+    fn turn_between_is_finite_where_rotation_between_is_not() {
+        let a: Vector3<f64> = Vector3::new(0.495_435_087_091_940_95, 0.449_491_064_788_738_1, 0.3);
+        let b: Vector3<f64> = Vector3::new(0.495_435_087_046_991_85, 0.449_491_064_838_281_66, 0.3);
+        let old = Rotation3::rotation_between(&a, &b).unwrap();
+        assert!(
+            old.matrix().iter().any(|x| x.is_nan()),
+            "the pair no longer trips it"
+        );
+        let turn = turn_between(&a, &b).unwrap();
+        assert!((turn * a.normalize() - b.normalize()).norm() < 1e-15);
+        assert!(turn_between(&a, &-a).is_none());
+        assert_eq!(turn_between(&a, &(a * 2.0)), Some(Rotation3::identity()));
+        let centerline = [Point3::origin(), Point3::from(a), Point3::from(a + b)];
+        let pose = slide_pose_at(&centerline, 0.0);
+        assert!(pose.rotation.coords.iter().all(|x| x.is_finite()), "{pose}");
     }
 
     /// The pose TURNS to follow a curved path, and still lands the tip on it.
@@ -11254,7 +11300,7 @@ mod tests {
     /// collected exactly as [`run_sliding_insertion_ramp_tet10_ipc`] collects
     /// its wall points. `boundary_faces` are corner triangles, so these are
     /// corner nodes only; the midsides the face barrier loads are not in it.
-    fn sliding_product_scene() -> Option<(
+    pub(super) fn sliding_product_scene() -> Option<(
         InsertionGeometry,
         Vec<Point3<f64>>,
         Vec<VertexId>,

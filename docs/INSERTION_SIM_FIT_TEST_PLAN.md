@@ -102,8 +102,8 @@ This section describes the replaced Tet10 solver. "Recon" in its tables means th
 | **Neither sliding ramp carries the inset.** The shipped `run_sliding_insertion_ramp` passes `interference_m = 0`. F4's warm-up, which ramped the inset in, was reverted. The Tet10 bridge (`run_sliding_insertion_ramp_tet10_ipc`, never wired) offsets the scan by `cavity_offset_m` alone. Fully seated, both contacts ARE the cavity surface, whatever the inset | `insertion_sim.rs`; `docs/archive/F4_FALSIFICATION_POSTMORTEM.md`; recon, `THE SLIDING MODEL ON THE PRODUCT SCAN` |
 | **Our IPC is v1.** No continuous collision detection (`ccd_toi` returns ∞), fixed κ, one-way rigid kinematic coupling — its doc calls this "adequate for the small-dt keystone scene" | `sim/L0/soft/src/contact/ipc.rs:31–42, 488` |
 | ⇒ **Step-count limits.** Without CCD, each step's closing must stay under the barrier band (d̂ = 1.2 mm). The sliding bridge first accepts **110** steps (as written) and **117** (bare scan); the closing is not monotone in the step count. The growing bridge seats **4.531 of 5 mm** at 32 steps and 3.438 mm at the panel's 16 | `what_the_sliding_contact_reaches_on_the_product_scan`; recon |
-| **No friction** (μ = 0). Tet10 face contact asserts on friction (the face-friction reconciliation is a deferred rung). No μ data for silicone × lubricant × skin has been found in the repo (memory `project_insertion_sim_renovation`) | `sim/L0/soft/src/solver/backward_euler/assembly.rs:358` |
-| **The intruder is rigid and teleported.** Each step places it at the next pose — turned about its tip to follow the centerline — then solves the wall. That motion alone asks the wall for up to **8.3 mm** of room with no inset (at t = 0.6875, ~14 mm inside the entrance); why has not been isolated | `slide_pose_at`; recon |
+| **No friction** (μ = 0). Tet10 face contact asserts on friction (the face-friction reconciliation is a deferred rung). No μ data for silicone × lubricant × skin has been found in the repo (memory `project_insertion_sim_renovation`) *(2026-09-27: some found, U2)* | `sim/L0/soft/src/solver/backward_euler/assembly.rs:358` |
+| **The intruder is rigid and teleported.** Each step places it at the next pose — turned about its tip to follow the centerline — then solves the wall. That motion alone asks the wall for up to **8.3 mm** of room with no inset (at t = 0.6875, ~14 mm inside the entrance). *(2026-09-27: most of it is the motion's own, U3.)* | `slide_pose_at`; recon |
 | **Both models stop on element 516.** The growing bridge at 32 steps; the sliding bridge as written at 67/128. A validity-domain violation (over-stretched or inverted) | `the_bridge_ramp_over_a_stiffness_sweep_on_the_product_scan`; `the_sliding_bridge_as_written_on_the_product_scan` |
 | **Non-penetration is checked on corner nodes only.** The face barrier loads midsides, which no probe checks | `the_sliding_bridge_as_written_on_the_product_scan` post-check |
 | **The penalty paths go through the wall** at their shipped κ = 1e3, on every scene measured | Recon |
@@ -226,7 +226,8 @@ which inset would pass.
   - **D1 — U1, "comfortably".** *Decided:* two readings, each with a limit (see *Calibration* below).
     - *Getting it in:* the peak push force over the whole path (R2). Its geometric share, the push of the
       verdict's μ = 0 run, is read as its largest mean over 10 mm of travel (Jon, 2026-09-26, accepting the
-      recommendation; soft-contact recon §16s).
+      recommendation; soft-contact recon §16s). *Open:* whether the peak is read as it is at a low friction is
+      decided after step 7 measures it there (Jon, 2026-09-26).
     - *Seated:* ~~the contact pressure at the seat, read as its area-weighted 95th percentile~~ **the contact
       force on the most-loaded 1 cm² patch, over 1 cm²** (Jon, 2026-09-26, accepting the recommendation after
       K5; soft-contact recon §16s). The percentile it replaces did not converge on the tube: its most-squeezed
@@ -237,8 +238,8 @@ which inset would pass.
     - The stretch margin is a separate durability warning, not part of comfort.
     - *Calibration:* ~~on Jon's casts~~ **from published measurements** (Jon, 2026-09-24: no home-lab
       calibration). The push-force anchor is the clinical axial-rigidity convention (~5.4 N). Pressure
-      limits come from published comfort and pain-threshold data. Pressure-pain thresholds for the relevant tissue are
-      not yet found (soft-contact recon §8).
+      limits come from published comfort and pain-threshold data. The relevant tissue's pressure-pain threshold,
+      measured with a 1 cm² tip, was found on 2026-09-27 (U1); the limits are not yet set.
   - **D2 — Gate or advise.** *Decided:* advise.
     - Continue stays open, as it does for the plug-cast check (`panel.rs:1162–1164`). The verdict, or
       "not run", is saved with the project and repeated on `MakeMolds`.
@@ -346,6 +347,12 @@ This is why the architecture changed (soft-contact recon §3).
   now soft-contact recon §9 decision 9: soft-on-soft contact is designed in from the start, and built
   second.
 - [ ] Foot into boot (R8).
+- [ ] **A contact-guided scan** (U3; soft-contact recon §16t): the scan pushed along the canal and settling where
+  the wall's forces balance, in place of the fitted pose. It needs two-way rigid–soft coupling (soft-contact recon
+  §14a's `sim-coupling`). Whether it keeps the modulus corners' shortcut, which soft-contact recon §5d states for
+  a prescribed motion, is not known. Step 7 prints the sideways force and twist the wall puts on
+  the scan, which show how far the walls would push it off the fitted pose; what reading brings this forward is not
+  yet set.
 - [ ] Ridges and texture in the simulated cavity (§2a, last row).
 - [ ] **A lip radius for every silicone, the product's next evolution.** Jon, 2026-09-24: *"we can
   add a lip radius for all silicone, including the 00-30. its an upgrade and the next evolution of
@@ -409,6 +416,8 @@ in CI); G5 already gates in CI.
 - **The GPU target is wgpu, on Metal and Vulkan** (Jon, 2026-09-24).
 - **The poured device's opening has a sharp edge today.** The simulated scene keeps it until the
   lip-radius upgrade lands; the upgrade applies to every silicone (Jon, 2026-09-24).
+- **The scan's path is the rigid pose fitted to sliding along the canal** (Jon, 2026-09-27; U3, soft-contact recon
+  §16t). The contact-guided scan is under Later.
 - **Say "room the wall must make", never "overlap".** Distances are to the undeformed wall; Jon read
   "overlap" as the scan passing through the silicone.
 - **The fit-test flow and D1–D5** (Jon, 2026-09-23; §4, Phase 2). In short:
@@ -426,18 +435,53 @@ in CI); G5 already gates in CI.
 
 - **U1 — "Comfortably."** The quantities and the method are decided (D1). The limits are not: they come
   from published measurements (D1, 2026-09-24), which still have to be gathered (soft-contact recon §8).
-  Pressure-pain thresholds for the relevant tissue may not be published at all. Jon, 2026-09-24: *"this
+  Pressure-pain thresholds for the relevant tissue may not be published at all *(2026-09-27: one study was found,
+  below)*. Jon, 2026-09-24: *"this
   we will have to dive into science to see whats out there"*. So the research comes first (soft-contact
   recon §15g step 9), and any fallback is decided after it.
-- **U2 — μ.** No friction data for silicone × lubricant × skin has been found in the repo.
+  *Research round, 2026-09-27* (each source's text is kept outside the repo):
+  - **The relevant tissue's pressure-pain threshold was measured with a 1 cm² tip**, the area D1's patch reads
+    over ([Davis 2011](https://doi.org/10.1111/j.1743-6109.2010.02041.x)). In 46 healthy men it was 2.33 and
+    2.37 kg/cm² at the two sites on the relevant tissue (about 230 kPa, arithmetic), with a standard deviation of
+    about two thirds of the mean; in 55 men with a chronic pain condition, 0.99 and 0.92 kg/cm². It is the onset of
+    pain as the pressure was slowly raised, at rest: not discomfort, not pressure held for minutes, and not the
+    tissue's state in use. It was read in the author's thesis, which reprints the paper; the thesis chapter's own
+    table differs slightly (2.45 and 2.49 at the same two sites), and why is not stated.
+  - **Discomfort comes first:** at 48–62 % of the force that first hurt, on the thigh, chest and hip with a
+    1 cm² tip ([Kozinc 2021](https://doi.org/10.1016/j.apergo.2021.103379)).
+  - **Holding it matters:** held at 90 % of each person's discomfort level, at one site and through pads,
+    discomfort came after 97 ± 91 s, from 10 s to the 5 min cap (Kozinc 2021).
+  - **A larger loaded area lowered the threshold in kPa** on the thigh, chest and hip (20 cm² read 8–13 times lower
+    than 1 cm²; Kozinc 2021, arithmetic on its tables) and on the foot (2 cm²'s medians were 53–63 % of 1 cm²'s in
+    healthy controls; [Chantelau 2016](https://doi.org/10.3402/dfa.v7.31922)). An algometer loads 1 cm² with the
+    skin around it unloaded, while D1's patch sits inside a larger contact. Neither the effect's direction nor its
+    size is measured on the relevant tissue; if it holds there, a threshold taken at 1 cm² is not conservative for
+    the patch on its own.
+  - **Not found:** a discomfort threshold of the relevant tissue, any pressure held on it for longer than a ramp,
+    or any threshold in its state of use.
+  - The limits are Jon's to set (D1).
+- **U2 — μ.** ~~No friction data for silicone × lubricant × skin has been found in the repo.~~
+  *2026-09-27 (soft-contact recon §5c, re-sourced):* silicone on skin with a lubricant has been measured on the
+  forearm, and over time in one subject: a water-based gel and a silicone lubricant started low (0.18 and 0.30 at the
+  onset of sliding) and were at or above the dry value (0.94) within 5–20 min. None was found on the relevant skin,
+  and none wet. The pairings span about 0.1 to 1.2, most of it above μ_f 0.3, where the solver's friction is not yet
+  trusted (soft-contact recon §15g's list for steps 6–9).
 - **U3 — Why the rigid path asks 8.3 mm of room** with no inset, near the entrance. It is settled before the
   new solver runs `base_mold` (soft-contact recon §15g step 6).
+  *Answered 2026-09-27 (soft-contact recon §16t):* most of it is the path's own. The path turns the whole scan
+  about its tip by the centreline's turn there. On a circular arc in a plane that carries the rest of the scan
+  along the canal; where the curvature changes it does not. On `base_mold`, a rigid pose fitted to sliding along
+  the canal asks about a quarter of the most room, and sliding while bending to follow the canal less still. Which
+  part of the path's geometry makes the difference is not isolated. **Decided (Jon, 2026-09-27):** step 6 builds
+  the fitted pose as the scan's path. It stays prescribed, so no rigid–soft coupling is needed; the contact-guided
+  scan moves to Later.
 - **U4 — Drake.** Whether its deformable material models fit this silicone.
 - **U5–U8** (what the oracle supports, why element 516 inverts, midsides, the step size once CCD exists)
   belonged to the replaced solver, and do not carry over. Element inversion on the new solver is the
   soft-contact recon's K4.
 - **U9 — The comfort readouts on a rigid scan.** A rigid intruder puts all the squeeze into the silicone;
-  how far that is from soft tissue is unmeasured.
+  how far that is from soft tissue is unmeasured. *(2026-09-27, soft-contact recon §16t: a rigid scan's path also
+  asks room that a scan bending to follow the canal would not: the fitted pose against the slide.)*
 - **U10 — The mouth rim. Answered (Jon, 2026-09-24):** the poured device has the same sharp edge.
   It is fine in Ecoflex 00-30, and a comfort issue in Dragon Skin 10A and firmer. *(2026-09-26, soft-contact
   recon §16s: the one report of seated comfort from use; whether the 1 cm² patch reading agrees with it waits on
@@ -472,8 +516,18 @@ in CI); G5 already gates in CI.
   - The frictional seated pressure depends on it: between undamped and damped, the tube's seated 95th percentile
     moved −20 % on the 10k mesh and +4 % on the 50k. *(2026-09-26, soft-contact recon §16s: the percentile is no
     longer the deciding reading; how the 1 cm² patch depends on the damping is not measured.)*
-  - With it, the tube still fails the Coulomb push at μ_f 0.6 (0.934 against 5 %). U2's friction range decides
-    whether the product's friction reaches that.
+  - With it, the tube still fails the Coulomb push at μ_f 0.6 (0.934 against 5 %). U2's friction range decides whether
+    the product's friction reaches that *(2026-09-27: U2's range reaches it)*.
+  - *2026-09-27, research round:* **no loss data for any Dragon Skin 10 was found**, nor for any Slacker-softened
+    silicone. Its only dissipation figures found are a rebound resilience of 56 %
+    ([Emminger 2025](https://doi.org/10.1016/j.jmrt.2025.08.181)) and a stress relaxation of about 6 % over
+    30 min ([Porte 2024](https://doi.org/10.1089/soro.2023.0004), read from its Fig. 6b). Ecoflex 00-30's value
+    stands: four fractional fits from one group (one a preprint) give 6.6–7.5 Pa·s at
+    190 Hz, and a DMA about 8.7 at 181 Hz, the top of its sweep ([Zhang 2025](https://doi.org/10.1073/pnas.2520808122),
+    taking G as E/3) (arithmetic from each). A constant viscosity matched
+    at 190 Hz gives an eighth of Ecoflex 00-30's measured loss at 10 Hz and a thirty-eighth at 1 Hz (Croquette's
+    rheometer, read from its Fig. 7; arithmetic). At the rates of an insertion lasting seconds, the model's
+    damping is far below Ecoflex 00-30's measured loss; how that moves the push force is not measured.
   - The same published fits stiffen the material by 12–25 % and 43–68 % between 1 and 10 Hz (arithmetic from
     each fit). The solver keeps the static modulus and adds only a viscosity, so it does not carry that
     stiffening. How much it raises the push force at the product's own insertion speed is not known.
@@ -482,10 +536,10 @@ in CI); G5 already gates in CI.
     size, and on the friction benchmark's block it shrinks the stable step 19× at 83 µm elements and 80× at
     20 µm, against 12–28 % on the tube's meshes. The product's element size is set in 2d; an implicit viscous
     step or a Maxwell branch would change this cost.
-  - *2026-09-26 (soft-contact recon §16r):* on `base_mold`'s wall at the element size K2 needs, at ν 0.49 and
-    Ecoflex 00-30's η/μ, the viscosity cuts the stable step to 0.67 of the elastic one, and a press takes 0.43 of
-    D4 with it (0.29 without) if the GPU meets K1, and 0.10 on the CPU. Across the published fits' 5.2–10.3 Pa·s it
-    takes 0.39–0.53.
+  - *2026-09-26 (soft-contact recon §16r):* on `base_mold`'s wall at the element size K2 needs, at ν 0.49 and Ecoflex
+    00-30's η/μ, the viscosity cuts the stable step to 0.67 of the elastic one, and a press takes 0.43 of D4 with it
+    (0.29 without) if the GPU meets K1, and 0.10 on the CPU. Across Croquette's error bars' 5.2–10.3 Pa·s it takes
+    0.39–0.53.
 - **U16 — D1's readings do not converge on the tube** (soft-contact recon §16p, K5, 2026-09-25). The seated 95th
   percentile moved by 8–12 % from the 50k to the 100k mesh in three of four cases (−2.2 % in the fourth), and the
   frictionless push peak by 14 % (λ_a 1.1). The push with friction converged. §15a sends this back to D1's
@@ -505,7 +559,9 @@ in CI); G5 already gates in CI.
   what does has not been isolated. Projecting the nodes onto the surface brings 95–99 % within 1 % of an element and
   costs the stable step: with the viscosity, a press then takes 1.03 of D4 at K1's rate at a quality floor of 0.5,
   and 8.6 at 0.1 (0.23 and 1.95 on the CPU). Step 6 chooses: a floor, a finer grid under the mesher, or a mesher
-  that places the surface nodes itself.
+  that places the surface nodes itself. *(2026-09-27, soft-contact recon §16t: with the fitted pose, the room the
+  path asks with no inset is of the same order as these offsets, so this choice moves a larger share of what step 7
+  reads.)*
 - **U18 — G2 on `base_mold` rests on the scan grid** (soft-contact recon §16r, 2026-09-26). The contact law holds a
   node on the baked grid's surface (measured on the tube, §16o; on the product it needs a run, step 7), so G2 there
   is the grid's own error against the scan. No grid measured meets it: the nearest, 0.25 mm without the pre-smooth,
