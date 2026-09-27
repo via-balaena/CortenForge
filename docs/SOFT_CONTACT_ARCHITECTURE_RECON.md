@@ -1217,8 +1217,10 @@ Each item is one PR with its own tests and a done-when.
 4. **`sim-gpu`'s soft executor,** with per-phase conformance against the CPU executor, on lavapipe in CI.
    - *Done when:* every phase's outputs agree, GPU f32 against CPU f32. Per output, the largest
      difference must be ≤ 1e-5 × the largest magnitude.
-   - *(2026-09-27, §16u)* The obstacle's fine grid: two more buffers, a storage binding above wgpu's default at the
-     finest spacing measured, and a step in the distance where its bricks end.
+   - *(2026-09-27, §16u)* The obstacle's fine grid, at the product's 0.0625 mm: two more buffers; a storage binding
+     above wgpu's default, so the executor requests the adapter's limit, as `sim-gpu`'s context does (the M4 Pro
+     grants 4 GiB; lavapipe's grant is not checked); and a step in the distance where its bricks end, which the
+     conformance tests must allow. The done-when above does not yet say how.
 5. **The experiment on the GPU:** K1, K2 at 100k, the ν sweep, the ladder, the Coulomb push, the stress
    case, the SDF comparison and stiffness scaling. *Stiffness scaling runs first on the CPU, in step 2
    (16i), because the product's budget depends on it.*
@@ -1246,7 +1248,8 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
 - *(2026-09-26, §16r)* G2 on `base_mold`: no scan grid measured meets it, down to 0.25 mm; step 6's bake sets
   the grid's spacing and pre-smooth against it (fit plan U18) *(2026-09-27, §16u: that was the flood fill's sign;
   signed by parity, with no pre-smooth, the grid's own error meets it at the 5 mm inset at 0.25, 0.125 and
-  0.0625 mm. Jon set the bar at smaller insets: 1 % of the inset, never below 0.02 mm, fit plan U18)*;
+  0.0625 mm. Jon set the bar at smaller insets: 1 % of the inset, never below 0.02 mm, and the product's fine grid
+  at 0.0625 mm, fit plan U18)*;
 - U3's outcome, and the fact that a contact-guided intruder would need rigid–soft coupling *(2026-09-27, §16t:
   a rigid pose fitted to the slide along the canal asks about a quarter of the room the path as written asks; Jon
   chose the fitted pose, which needs no coupling, and the contact-guided intruder moved to the fit plan's Later)*;
@@ -1296,7 +1299,10 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
      - mounted at the closed end;
      - hand-held, as a soft, distributed support.
    - The F3 conformance test of `Material` against the shared math lands here, since `sim-soft` takes
-     the dependency.
+     the dependency. *(2026-09-27: step 6 lands as three PRs: the bake and U18's grid (§16u, #975), which took
+     the dependency; the wall's canal surface (fit plan U17); and the
+     lowering, which carries the boundary options, the pairing library, this test and the items carried from
+     Phase 1.)*
    - **U3** (fit plan) is settled geometrically before step 7: with no inset, the rigid path already
      asks 8.3 mm of room. Its swept volume is checked against the cavity. If the path is at fault, step
      7's verdicts would measure that and not the fit. The prescribed path is then replaced by an intruder
@@ -1320,7 +1326,8 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
      fitted pose passes the measuring copy's known-answer tests, and on `base_mold` reproduces the probe's room at
      each pose, checked locally as the 8.285 mm was.)* *(2026-09-27, §16u: the probe's room reads the old path's
      scan grid, so that check reads the probe and the lowering through the same grid; and the lowering sets the
-     bake's band.)*
+     bake's band and bakes the fine grid at 0.0625 mm (Jon, 2026-09-27). Deeper than the band, as at the t = 0
+     intrusion, the coarse grid answers, and its error there is not measured.)*
 7. **`base_mold` on the new solver.**
    - G6 is 5 minutes per run, where a run is one simulation (fit plan D4). `base_mold` stays outside
      the repo. *(D4 is per press, §9 decision 12 and fit plan U13; §16r reports it so.)*
@@ -1335,7 +1342,10 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
      - the sideways force and the twist the wall puts on the scan, which show how far the walls would push it off
        the fitted path (§16t);
      - which of the obstacle's grids answered each surface node's lookups, and the deepest predicted point; and on
-       the frictionless run, the work the contact does over the hold (§16u). G2 is judged in the run.
+       the frictionless run, the work the contact does over the hold (§16u). G2 is judged in the run, against the
+       scan's exact signed distance (the bake's distance and sign) and G2's floor: the executor's penetration
+       monitor reads the grid, so it cannot see the grid's own error. At which steps the run reads it is step 7's
+       design.
    - *Done when:* the fit plan's G1–G3 and G6 have numbers on `base_mold`. *(2026-09-27: and D1's readings'
      convergence there, at the product's element size and at the lowest μ_f; the list above.)*
 8. **The soft-on-soft contact design** (§9 decision 9): a design step with its own research round, not
@@ -3300,7 +3310,8 @@ digits: 1.8 % past the bar, penetration p95 / p99 / worst 0.47 / 1.28 / 2.34 bar
 **Not re-read here:**
 - **U17's canal offsets** were measured against a flood-fill-signed grid (`explicit_budget.rs`, `Truth`), on a
   wall meshed from the old path's grid, flood-filled and pre-smoothed; neither is re-read with parity's sign. D3's
-  search goes down to 0 mm, where the canal is the scan's own surface.
+  search goes down to 0 mm, where the canal is the scan's own surface. So the wall's PR (fit plan U17) measures
+  its option at a small inset too, against a reference signed by parity.
 - **U3's room** (§16t) was read through the old path's scan grid (decimated and flood-filled). Step 6's check that
   the lowering reproduces the probe's room reads both through the same grid.
 - The tube's G2 (§16o) is not affected: its mandrel is baked from its exact distance. The old path's contact read
@@ -3310,16 +3321,38 @@ digits: 1.8 % past the bar, penetration p95 / p99 / worst 0.47 / 1.28 / 2.34 bar
 none at 0 mm, where no grid meets it; D3's search goes down to 0 mm. Jon set it to 1 % of the inset, but never below
 0.02 mm. The worst readings above are, in millimetres, 0.043, 0.026 and 0.015 at 0.25, 0.125 and 0.0625 mm
 (arithmetic on the table), and the obstacle is the scan whatever the inset: so a 0.0625 mm grid meets the bar at
-every inset, a 0.125 mm grid from 3 mm, and a 0.25 mm grid at 5 mm (fit plan U18).
+every inset, a 0.125 mm grid from 3 mm, and a 0.25 mm grid from 5 mm. Jon chose 0.0625 mm for the product's fine
+grid (2026-09-27), and `the_bake_on_the_product_scan` asserts it meets the floor.
 
 **Carried to later steps:**
-- **Step 6's lowering** sets the band from how far a node's predicted position can reach past the surface in a step
-  (the contact law reads the grid there, §16o). Where a node sits deeper than the band, as at the t = 0 intrusion,
-  the coarse grid answers, and its error there is not measured.
+- **Step 6's lowering** bakes the fine grid at 0.0625 mm and sets the band from how far a node's predicted position
+  can reach past the surface in a step (the contact law reads the grid there, §16o). Where a node sits deeper than
+  the band, as at the t = 0 intrusion, the coarse grid answers, and its error there is not measured.
 - **Step 7** judges G2 in a run: the table reads the grid at the scan's own points, not where the contact law holds
-  the wall's nodes. Each run prints which grid answered each surface node's lookups and the deepest predicted
+  the wall's nodes. It reads each surface node against the scan's exact signed distance and G2's floor: the
+  executor's penetration monitor reads the grid, so it cannot see the grid's own error. At which steps it reads is
+  step 7's design. Each run prints which grid answered each surface node's lookups and the deepest predicted
   point; and on the frictionless run, the work the contact does over the hold, for the facets' pumping (§16o).
 - **Step 4** (the GPU): the rule is already in the generated WGSL. Where the fine grid's bricks end, the distance
   steps between the two grids, which the conformance tests must allow. The brick map and the bricks are two more
-  buffers to bind. The fine grid at 0.0625 mm needs a storage binding above wgpu's default (above); what the
-  adapters grant is not checked. An f64 executor holds its own copy of the fine grid beside the obstacle's.
+  buffers to bind. The fine grid at 0.0625 mm needs a storage binding above wgpu's default (above): `sim-gpu`'s
+  context requests the adapter's limit, and the M4 Pro grants 4 GiB; lavapipe's grant is not checked. An f64
+  executor holds its own copy of the fine grid beside the obstacle's.
+
+**How this was checked.**
+- **The probes** run locally, on the product scan:
+  `cargo test -p cf-sim-research --release --bin cf-sim-research -- insertion_sim::obstacle_grid --ignored --nocapture`.
+- **Mutations:** the new checks the tests reach each failed once under a mutant of the code they guard, and so did
+  the bake probe's G2 and sign asserts. No test reaches the bake's refusals of counts past a u32 (vertices, fine
+  values, brick slots). Two mutants survive: the fine lattice's origin moved by a cell, which is another valid lattice, and `<=` for `<` at the keep threshold, which
+  differs only on a tie. One mutant died of an overflow instead of its check; that found four grid-size products
+  that could overflow, now fixed.
+- **Round 1:** three cold reviewers of the first version, signed by the pseudo-normals. They found that sign wrong
+  away from the surface, and this record claiming more than its probes showed.
+- **Round 2:** a code and a record reviewer on round 1's fixes: 18 findings, 14 of them created by those fixes,
+  among them parity's even-odd limit and its unbounded bins.
+- **Round 3:** one reviewer on round 2's fixes: 6 findings, 5 of them created by those fixes, all prose or test gaps;
+  the bake's grids were bit-identical across round 2's restructure. The rounds stopped there.
+- **After the push:** a completeness review against the plan and the session's pending list found several items
+  carried only in conversation; a macro review found the floor's consequences unrecorded. The
+  owners above, and this paragraph, came from them.

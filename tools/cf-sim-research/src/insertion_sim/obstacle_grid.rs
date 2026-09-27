@@ -32,6 +32,10 @@ use sim_soft_explicit::f64::{SdfGridLayout, sdf_grid_coordinate, sdf_tricubic, s
 use super::explicit_budget::g2_bar;
 use super::{Aabb, scan_aabb};
 
+/// The product's fine grid spacing (Jon, 2026-09-27; plan §16u): the one measured spacing whose error meets G2's
+/// floor, so at every inset.
+const PRODUCT_FINE_CELL: f64 = 0.000_062_5;
+
 /// The layout of a dense grid of spacing `cell` over `bounds`, as §16r's grids were laid out: its last sample can
 /// fall short of `bounds.max` by up to a cell, where the bake's reaches it. The lattices coincide.
 fn layout(bounds: Aabb, cell: f64) -> SdfGridLayout {
@@ -355,7 +359,9 @@ fn g2_against_the_grids_spacing_on_the_product_scan() {
 /// 0.0625 mm within a fine cell of the surface. G2 read through the solver's own lookup (`Obstacle::sample`), which
 /// must read at every point what the band signed by parity reads at the same spacing: the samples are the same
 /// points, with the same distance and sign, so it asserts they agree, and that no point is past G2's bar at the
-/// product's inset. Beside it the bake's size and time.
+/// product's inset. The obstacle is the same at every inset, so it prints the smallest whole-millimetre inset
+/// whose bar each spacing meets, and asserts the product's spacing meets G2's floor. Beside it the bake's size
+/// and time.
 ///
 /// Parity reads a region the scan encloses twice as outside, where a flood fill reads it inside. So it also asserts
 /// that the coarse grid's sign agrees with a flood fill of the same spacing at every sample a flood cell or more
@@ -383,7 +389,7 @@ fn the_bake_on_the_product_scan() {
         "\n══ step 6's bake on base_mold · bar {:.4} mm [LOCAL] ══",
         bar * 1e3
     );
-    for fine_cell in [0.000_25, 0.000_062_5] {
+    for (fine_cell, product) in [(0.000_25, false), (PRODUCT_FINE_CELL, true)] {
         let bake = sim_soft::obstacle::ObstacleBake {
             coarse_cell,
             fine_cell,
@@ -501,11 +507,20 @@ fn the_bake_on_the_product_scan() {
                 "the bake reads what the band reads: {apart:e} m apart"
             );
             assert_eq!(past, 0, "no point on the scan is past G2's bar");
+            let worst = readings.iter().copied().fold(0.0_f64, f64::max);
+            let from = (0..=10_u32).find(|&mm| g2_bar(f64::from(mm) * 1e-3) >= worst);
+            println!("  {label}: meets G2's bar at insets from {from:?} mm");
+            if product {
+                assert!(
+                    worst <= g2_bar(0.0),
+                    "the product's fine grid meets G2's floor: {worst:e} m"
+                );
+            }
         }
     }
 }
 
-/// Where the welded scan's pseudo-normal sign fails away from the surface (§16u's review): its self-intersecting
+/// Where the welded scan's pseudo-normal sign fails away from the surface (§16u): its self-intersecting
 /// triangle pairs, and the band samples at 0.25 mm where the pseudo-normal sign and the flood fill disagree a
 /// quarter cell or more from the surface, each checked by parity and placed against the nearest intersecting
 /// triangle.

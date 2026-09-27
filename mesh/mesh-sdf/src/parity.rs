@@ -128,7 +128,9 @@ impl RayBins {
         // No finer than splits the shadow's box into four bins a face, or its
         // longer side into four: a mesh of small parts far apart would
         // otherwise bin into more cells than memory holds. The bins then number
-        // at most twelve a face, and one.
+        // at most twelve a face, and one. A triangle is listed in every bin its
+        // shadow's box covers, so a few triangles far larger than the rest can
+        // add many more entries than that.
         let cell = cell
             .max((extent[0] * extent[1] / most).sqrt())
             .max(extent[0].max(extent[1]) / most);

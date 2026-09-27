@@ -562,7 +562,10 @@ in CI); G5 already gates in CI.
   and 8.6 at 0.1 (0.23 and 1.95 on the CPU). Step 6 chooses: a floor, a finer grid under the mesher, or a mesher
   that places the surface nodes itself. *(2026-09-27, soft-contact recon §16t: with the fitted pose, the room the
   path asks with no inset is of the same order as these offsets, so this choice moves a larger share of what step 7
-  reads.)*
+  reads.)* *(2026-09-27, soft-contact recon §16u: this instrument's reference (`explicit_budget.rs`, `Truth`) and
+  the wall's grid are signed by a flood fill, which `Truth` documents as reliable only more than a cell (1 mm) from
+  the surface; D3's search reaches 0 mm, where the canal is the scan's surface. The choice is measured at a small
+  inset too, against a reference signed by parity.)*
 - **U18 — G2 on `base_mold` rests on the scan grid** (soft-contact recon §16r, 2026-09-26). The contact law holds a
   node on the baked grid's surface (measured on the tube, §16o; on the product it needs a run, step 7), so G2 there
   is the grid's own error against the scan. No grid measured meets it: the nearest, 0.25 mm without the pre-smooth,
@@ -578,7 +581,7 @@ in CI); G5 already gates in CI.
   *Decided (Jon, 2026-09-27):* G2's bar was 1 % of the inset, so it shrank with the inset to zero at 0 mm, which
   D3's search reaches and no grid meets. It is now 1 % of the inset, but never below 0.02 mm. The obstacle is the
   scan whatever the inset, so a 0.0625 mm grid meets the bar at every inset, a 0.125 mm grid from 3 mm, and a
-  0.25 mm grid at 5 mm.
+  0.25 mm grid from 5 mm. *Decided (Jon, 2026-09-27):* the product's fine grid is 0.0625 mm.
 
 ---
 
