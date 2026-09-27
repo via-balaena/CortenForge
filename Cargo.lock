@@ -10234,12 +10234,14 @@ dependencies = [
  "feral-metis",
  "getrandom 0.3.4",
  "mesh-offset",
+ "mesh-sdf",
  "mesh-types",
  "nalgebra 0.34.2",
  "pollster",
  "rayon",
  "serde_json",
  "sim-ml-chassis",
+ "sim-soft-explicit",
  "wgpu",
 ]
 

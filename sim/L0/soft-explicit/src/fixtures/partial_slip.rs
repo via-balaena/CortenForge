@@ -758,6 +758,7 @@ impl PartialSlipRun {
         Ok(Obstacle {
             grid,
             values,
+            fine: None,
             start: 0.0,
             interval: 1.0,
             poses: vec![self.cylinder.pose(0.0, 0.0)],

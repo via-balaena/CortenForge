@@ -226,6 +226,7 @@ fn plate() -> Obstacle {
     Obstacle {
         grid,
         values,
+        fine: None,
         start: 0.0,
         interval: 1.0,
         poses: vec![IDENTITY],
@@ -785,6 +786,7 @@ fn on_a_bore_the_ball_holds_a_little_more_than_the_probe_area() {
     let mandrel = Obstacle {
         grid,
         values,
+        fine: None,
         start: 0.0,
         interval: 1.0,
         poses: vec![Pose {
@@ -858,6 +860,7 @@ fn the_normal_follows_the_obstacles_pose() {
     let moved = Obstacle {
         grid,
         values,
+        fine: None,
         start: 0.0,
         interval: 1.0,
         poses: vec![Pose {

@@ -4472,6 +4472,10 @@ mod explicit_budget;
 #[cfg(test)]
 mod path_room;
 
+// Step 6's obstacle bake (plan §15g step 6, fit plan U18): G2 against the grid's spacing.
+#[cfg(test)]
+mod obstacle_grid;
+
 #[cfg(test)]
 mod tests {
     // `unwrap()` + `expect()` are denied at the crate level; the test

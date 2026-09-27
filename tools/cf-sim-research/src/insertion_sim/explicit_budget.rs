@@ -71,8 +71,11 @@ const K1_SECONDS: f64 = 120.0;
 /// D4 (§9 decision 12, fit plan U13): 5 minutes per press.
 const D4_SECONDS: f64 = 300.0;
 
-/// G2 (fit plan): no node deeper than 1 % of the inset.
-const G2_FRACTION_OF_INSET: f64 = 0.01;
+/// G2's bar (fit plan): no node deeper than 1 % of the inset, and the bar never below 0.02 mm (Jon, 2026-09-27;
+/// U18).
+pub(super) fn g2_bar(inset: f64) -> f64 {
+    (0.01 * inset).max(0.000_02)
+}
 
 /// How far a projected node may leave an element's rest volume: each incident element keeps at least this
 /// fraction of it (`SdfMeshedTetMesh::with_projected_nodes`).
@@ -481,6 +484,7 @@ fn scan_obstacle(grid: SdfGridLayout, values: Vec<f64>, pose: Pose) -> Obstacle 
     Obstacle {
         grid,
         values,
+        fine: None,
         start: 0.0,
         interval: 1.0,
         poses: vec![pose],
@@ -872,7 +876,7 @@ fn the_products_budget_on_the_explicit_solver() {
     // G2's margin: the obstacle grid's error on the scan, unsmoothed and with the old path's pre-smooth;
     // over every point, and over all but the cap discs, the flat faces the canal never meets (the faces
     // `dome_wall_only_mesh` strips, by their normal and their distance from a cap plane).
-    let bar = G2_FRACTION_OF_INSET * inset;
+    let bar = g2_bar(inset);
     let sides = cf_cap_planes::dome_wall_only_mesh(&scan, &caps);
     println!(
         "G2 points: {} faces of {} are cap faces [LOCAL]",
@@ -908,6 +912,17 @@ fn the_products_budget_on_the_explicit_solver() {
                 );
             }
         }
+    }
+}
+
+#[test]
+fn g2s_bar_is_a_hundredth_of_the_inset_but_never_below_its_floor() {
+    for (inset, bar) in [(0.005, 5e-5), (0.003, 3e-5), (0.001, 2e-5), (0.0, 2e-5)] {
+        assert!(
+            (g2_bar(inset) - bar).abs() < 1e-18,
+            "{inset}: {}",
+            g2_bar(inset)
+        );
     }
 }
 

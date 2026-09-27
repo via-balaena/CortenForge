@@ -1,6 +1,9 @@
 //! Baking an exact distance function into the obstacle's grid, for the
 //! fixtures' rigid bodies: the tube's mandrel and K6's cylinder.
+//!
+//! And a dense grid's values stored in bricks, as an obstacle's fine grid.
 
+use crate::executor::FineGrid;
 use crate::f64::SdfGridLayout;
 
 /// The distance `distance` baked into a grid of spacing `cell` over the
@@ -34,8 +37,9 @@ pub fn bake(
         let samples = cells.round().min(f64::from(u32::MAX - 1)) as u32 + 1;
         sizes[axis] = samples;
     }
-    let total = sizes.iter().map(|&n| u64::from(n)).product::<u64>();
-    if total > u64::from(u32::MAX) {
+    // Three u32s multiply past a u64, not a u128.
+    let total = sizes.iter().map(|&n| u128::from(n)).product::<u128>();
+    if total > u128::from(u32::MAX) {
         return Err(BakeError::TooLarge);
     }
     let grid = SdfGridLayout {
@@ -60,6 +64,53 @@ pub fn bake(
         }
     }
     Ok((grid, values))
+}
+
+/// A dense grid's values stored as a fine grid ([`FineGrid`]), with a brick
+/// wherever `keep` holds for its brick coordinates.
+///
+/// The layout is spelled out here rather than taken from the shared index
+/// functions, so a test of the lookup against it is a test of those: bricks x
+/// fastest, then y, then z; a brick's samples the same. The samples of an
+/// edge brick past the grid are padded with `1e6`, which no lookup may read.
+#[must_use]
+pub fn bricks(grid: SdfGridLayout, values: &[f64], keep: impl Fn([u32; 3]) -> bool) -> FineGrid {
+    let side = crate::f64::SDF_BRICK;
+    let count = |samples: u32| samples.div_ceil(side);
+    let (mut map, mut bricked) = (Vec::new(), Vec::new());
+    let mut slots = 0_u32;
+    for k in 0..count(grid.size_z) {
+        for j in 0..count(grid.size_y) {
+            for i in 0..count(grid.size_x) {
+                if !keep([i, j, k]) {
+                    map.push(crate::f64::SDF_NO_BRICK);
+                    continue;
+                }
+                map.push(slots);
+                slots += 1;
+                for z in 0..side {
+                    for y in 0..side {
+                        for x in 0..side {
+                            let (column, row, layer) = (i * side + x, j * side + y, k * side + z);
+                            let on_grid =
+                                column < grid.size_x && row < grid.size_y && layer < grid.size_z;
+                            bricked.push(if on_grid {
+                                values
+                                    [((layer * grid.size_y + row) * grid.size_x + column) as usize]
+                            } else {
+                                1e6
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    FineGrid {
+        grid,
+        map,
+        values: bricked,
+    }
 }
 
 /// Why a distance function could not be baked.

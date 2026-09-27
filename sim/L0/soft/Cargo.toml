@@ -131,6 +131,14 @@ mesh-types = { workspace = true }
 # uses it geometry-only for contact-primitive overlay
 # (`design_scene`). Same L0 tier as sim-soft.
 mesh-offset = { workspace = true }
+# The explicit solver's obstacle bake (`obstacle`, plan §15g step 6): the
+# exact distance to a scan's triangles (`TriMeshDistance`) and its sign by
+# ray parity (`ParitySign`). Already in the graph through mesh-offset, so declaring it
+# adds no crate.
+mesh-sdf = { workspace = true }
+# The explicit solver's data the bake produces (`FineGrid`, `SdfGridLayout`,
+# the brick layout) and the lowering will: sim-soft lowers into it (plan §14a).
+sim-soft-explicit = { workspace = true }
 # Dense small matrices for per-Gauss-point Material + per-element Tet4 locals
 # (5 existing L0 consumers at 0.34.2 — not greenfield).
 nalgebra = { workspace = true }

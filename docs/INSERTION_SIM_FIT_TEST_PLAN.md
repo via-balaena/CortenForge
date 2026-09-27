@@ -390,7 +390,7 @@ This is why the architecture changed (soft-contact recon §3).
 | Gate | What must hold | Baseline today |
 |---|---|---|
 | **G1 — Drawn wall outside drawn scan** | No drawn wall vertex inside the drawn scan (beyond a stated tolerance) | Shipped default: 720 of 1 684 more than 1 mm inside, deepest 6.06 mm |
-| **G2 — Bounded penetration** | No node deeper than **1 % of the inset** (0.05 mm on `base_mold`) at any step. An engineering call (Jon, 2026-09-24: *"your call, just need that balance of real life/visual tranferable realism for viusals and legit engineering work"*): penalty contact always penetrates slightly, so this bounds it as a numerical tolerance (soft-contact recon §15c). **The gate stands; if the contact law cannot meet it, the law changes** (recon 15g step 2). Kinematic projection has none. For the old Tet10 solver the gate was no node through, corners and midsides. *(2026-09-25: the explicit solver's contact law is now kinematic. On the benchmark tube the deepest node is at most 0.2 µm inside the grid over a run, and 0.9 µm inside the true surface at its end (soft-contact recon §16o). On `base_mold`, G2 rests mostly on the baked scan grid's own error, not yet measured.)* *(2026-09-26, recon §16r: measured; no grid tried meets it, U18.)* | Met on the benchmark tube (recon §16o); on `base_mold` the scan grid alone exceeds it (U18) |
+| **G2 — Bounded penetration** | No node deeper than **1 % of the inset** (0.05 mm on `base_mold`) at any step; *(Jon, 2026-09-27, U18)* the bar is never below **0.02 mm**. An engineering call (Jon, 2026-09-24: *"your call, just need that balance of real life/visual tranferable realism for viusals and legit engineering work"*): penalty contact always penetrates slightly, so this bounds it as a numerical tolerance (soft-contact recon §15c). **The gate stands; if the contact law cannot meet it, the law changes** (recon 15g step 2). Kinematic projection has none. For the old Tet10 solver the gate was no node through, corners and midsides. *(2026-09-25: the explicit solver's contact law is now kinematic. On the benchmark tube the deepest node is at most 0.2 µm inside the grid over a run, and 0.9 µm inside the true surface at its end (soft-contact recon §16o). On `base_mold`, G2 rests mostly on the baked scan grid's own error, not yet measured.)* *(2026-09-26, recon §16r: measured; no grid tried meets it, U18.)* *(2026-09-27, recon §16u: that was the flood fill's sign; signed by parity, the grid's own error meets it at the 5 mm inset. Jon set the bar at smaller insets: 1 % of the inset, never below 0.02 mm, U18.)* | Met on the benchmark tube (recon §16o); on `base_mold` the grid's own error meets it at the 5 mm inset (U18), and a run judges it at step 7 |
 | **G3 — Full seat** | The full inset is reached along the sliding path | Growing: 4.531 of 5 mm. Sliding with the inset: not run |
 | **G4 — κ independent of the schedule** (implicit solver only) | The derived κ does not change with the step count | Holds (the ceiling rule) |
 | **G5 — Heat map in the rest frame** | `the_heat_map_reads_the_deformed_view_at_rest_positions` passes | Passes; fails under four mutations |
@@ -562,7 +562,10 @@ in CI); G5 already gates in CI.
   and 8.6 at 0.1 (0.23 and 1.95 on the CPU). Step 6 chooses: a floor, a finer grid under the mesher, or a mesher
   that places the surface nodes itself. *(2026-09-27, soft-contact recon §16t: with the fitted pose, the room the
   path asks with no inset is of the same order as these offsets, so this choice moves a larger share of what step 7
-  reads.)*
+  reads.)* *(2026-09-27, soft-contact recon §16u: this instrument's reference (`explicit_budget.rs`, `Truth`) and
+  the wall's grid are signed by a flood fill, which `Truth` documents as reliable only more than a cell (1 mm) from
+  the surface; D3's search reaches 0 mm, where the canal is the scan's surface. The choice is measured at a small
+  inset too, against a reference signed by parity.)*
 - **U18 — G2 on `base_mold` rests on the scan grid** (soft-contact recon §16r, 2026-09-26). The contact law holds a
   node on the baked grid's surface (measured on the tube, §16o; on the product it needs a run, step 7), so G2 there
   is the grid's own error against the scan. No grid measured meets it: the nearest, 0.25 mm without the pre-smooth,
@@ -571,6 +574,14 @@ in CI); G5 already gates in CI.
   grid's samples. The pre-smooth cuts that share
   (to 0.34 % at 0.25 mm) and deepens the worst point (to 3.2 times), which sits beside the cap's rim. Step 6's bake
   sets the grid, and its pre-smooth, against this.
+  *Answered 2026-09-27 (soft-contact recon §16u):* those grids were signed by a flood fill, whose sign is wrong
+  within a quarter cell of the surface, and the readings above measured that. Signed by the parity of a ray's
+  crossings, with no pre-smooth, the grid's own error meets G2 at the 5 mm inset at 0.25, 0.125 and 0.0625 mm, its
+  worst point at 0.86, 0.53 and 0.30 of the bar. Step 6's bake adds a fine grid, stored in bricks near the surface.
+  *Decided (Jon, 2026-09-27):* G2's bar was 1 % of the inset, so it shrank with the inset to zero at 0 mm, which
+  D3's search reaches and no grid meets. It is now 1 % of the inset, but never below 0.02 mm. The obstacle is the
+  scan whatever the inset, so a 0.0625 mm grid meets the bar at every inset, a 0.125 mm grid from 3 mm, and a
+  0.25 mm grid from 5 mm. *Decided (Jon, 2026-09-27):* the product's fine grid is 0.0625 mm.
 
 ---
 

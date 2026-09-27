@@ -9,8 +9,9 @@
 use crate::f64 as shared;
 use crate::f64::{Pose, SdfGridLayout, SdfSample};
 
-/// The rigid obstacle an executor contacts: a baked distance grid, its pose
-/// sampled evenly in time, and the friction coefficient.
+/// The rigid obstacle an executor contacts: a baked distance grid, with a finer
+/// one near its surface if it has one, its pose sampled evenly in time, and the
+/// friction coefficient.
 ///
 /// The contact law is the kinematic predictor/corrector
 /// (`shared::kinematic_contact`).
@@ -20,6 +21,9 @@ pub struct Obstacle {
     pub grid: SdfGridLayout,
     /// The grid's values, in [`SdfGridLayout`]'s order; negative inside.
     pub values: Vec<f64>,
+    /// A finer grid near the surface: a lookup reads it wherever it has all
+    /// of that lookup's samples, and [`Obstacle::grid`] elsewhere.
+    pub fine: Option<FineGrid>,
     /// The time of the first pose sample.
     pub start: f64,
     /// The time between pose samples; positive.
@@ -31,12 +35,63 @@ pub struct Obstacle {
     pub friction: f64,
 }
 
+/// A finer distance grid near an obstacle's surface, stored in bricks of
+/// [`shared::SDF_BRICK`] samples a side (plan §16u).
+///
+/// A lookup reads it where every one of its 64 samples has a brick and its
+/// point lies on the lattice; a bake gives bricks to the samples within reach
+/// of the surface, so the points near it read the fine grid.
+#[derive(Clone, Debug)]
+pub struct FineGrid {
+    /// The fine lattice's layout, in the obstacle's body frame.
+    pub grid: SdfGridLayout,
+    /// For each brick of the lattice, in [`shared::sdf_brick_index`]'s order:
+    /// its slot among the bricks in `values`, or [`shared::SDF_NO_BRICK`].
+    pub map: Vec<u32>,
+    /// The bricks' values, [`shared::SDF_BRICK`]³ a brick in slot order, each
+    /// brick's in [`shared::sdf_brick_offset`]'s order; negative inside.
+    pub values: Vec<f64>,
+}
+
+impl FineGrid {
+    /// The shared lookup over this grid at a body-frame point, at f64; `None`
+    /// where the point is off the lattice or one of its samples has no brick.
+    #[must_use]
+    pub fn sample(&self, point: [f64; 3]) -> Option<SdfSample> {
+        let grid = self.grid;
+        if !shared::sdf_on_grid(point, grid) {
+            return None;
+        }
+        let coordinate = shared::sdf_grid_coordinate(point, grid);
+        let columns = shared::sdf_tricubic_axis(coordinate[0], grid.size_x);
+        let rows = shared::sdf_tricubic_axis(coordinate[1], grid.size_y);
+        let layers = shared::sdf_tricubic_axis(coordinate[2], grid.size_z);
+        let slots = shared::sdf_stencil_bricks(columns, rows, layers, grid)
+            .map(|entry| self.map[entry as usize]);
+        if !shared::sdf_fine_present(slots) {
+            return None;
+        }
+        let mut values = [0.0; 64];
+        for (index, value) in values.iter_mut().enumerate() {
+            let (column, row, layer) =
+                (columns[index % 4], rows[index / 4 % 4], layers[index / 16]);
+            *value = self.values[shared::sdf_fine_index(
+                column, row, layer, columns[0], rows[0], layers[0], slots,
+            ) as usize];
+        }
+        Some(shared::sdf_tricubic(coordinate, values, grid))
+    }
+}
+
 impl Obstacle {
     /// The obstacle's distance and outward normal at a body-frame point: the
     /// shared lookup over this grid, at f64 (what an executor computes at its
     /// own precision).
     #[must_use]
     pub fn sample(&self, point: [f64; 3]) -> SdfSample {
+        if let Some(sample) = self.fine.as_ref().and_then(|fine| fine.sample(point)) {
+            return sample;
+        }
         let grid = self.grid;
         let coordinate = shared::sdf_grid_coordinate(point, grid);
         let columns = shared::sdf_tricubic_axis(coordinate[0], grid.size_x);
@@ -346,10 +401,16 @@ pub enum ObstacleError {
 /// The first problem found.
 pub fn check_obstacle(obstacle: &Obstacle) -> Result<(), ObstacleError> {
     let grid = obstacle.grid;
-    let expected = [grid.size_x, grid.size_y, grid.size_z]
+    // Three u32s can multiply past a usize, and the lookup indexes in a u32.
+    let Some(expected) = [grid.size_x, grid.size_y, grid.size_z]
         .iter()
-        .map(|&n| n as usize)
-        .product::<usize>();
+        .try_fold(1_usize, |product, &n| product.checked_mul(n as usize))
+        .filter(|&n| u32::try_from(n).is_ok())
+    else {
+        return Err(ObstacleError::Invalid {
+            reason: "the grid has more samples than a u32 indexes",
+        });
+    };
     if obstacle.values.len() != expected {
         return Err(ObstacleError::GridSize {
             found: obstacle.values.len(),
@@ -357,6 +418,9 @@ pub fn check_obstacle(obstacle: &Obstacle) -> Result<(), ObstacleError> {
         });
     }
     check_poses(obstacle.start, obstacle.interval, &obstacle.poses)?;
+    if let Some(fine) = &obstacle.fine {
+        check_fine(fine)?;
+    }
     let reason = if grid.size_x == 0 || grid.size_y == 0 || grid.size_z == 0 {
         Some("the grid has no samples along an axis")
     } else if !(grid.cell_size.is_finite() && grid.cell_size > 0.0) {
@@ -369,6 +433,54 @@ pub fn check_obstacle(obstacle: &Obstacle) -> Result<(), ObstacleError> {
         Some("a grid origin, value or the start time is not finite")
     } else if !(obstacle.friction.is_finite() && obstacle.friction >= 0.0) {
         Some("the friction must be finite and not negative")
+    } else {
+        None
+    };
+    reason.map_or(Ok(()), |reason| Err(ObstacleError::Invalid { reason }))
+}
+
+/// Check a fine grid: a lattice with samples, a map entry per brick, whole
+/// bricks of finite values, and slots that name them.
+fn check_fine(fine: &FineGrid) -> Result<(), ObstacleError> {
+    let grid = fine.grid;
+    let too_long = |n: u32| n > u32::MAX - shared::SDF_BRICK;
+    if too_long(grid.size_x) || too_long(grid.size_y) || too_long(grid.size_z) {
+        return Err(ObstacleError::Invalid {
+            reason: "the fine grid's lattice is too long to count its bricks in a u32",
+        });
+    }
+    let brick = (shared::SDF_BRICK * shared::SDF_BRICK * shared::SDF_BRICK) as usize;
+    // `None` past a usize.
+    let bricks = [grid.size_x, grid.size_y, grid.size_z]
+        .iter()
+        .try_fold(1_usize, |product, &n| {
+            product.checked_mul(shared::sdf_bricks(n) as usize)
+        });
+    let slots = fine.values.len() / brick;
+    let reason = if grid.size_x == 0 || grid.size_y == 0 || grid.size_z == 0 {
+        Some("the fine grid has no samples along an axis")
+    } else if !(grid.cell_size.is_finite() && grid.cell_size > 0.0) {
+        Some("the fine grid's cell size must be positive and finite")
+    } else if bricks.is_none_or(|n| u32::try_from(n).is_err()) {
+        Some("the fine grid's lattice has more bricks than a u32 indexes")
+    } else if bricks != Some(fine.map.len()) {
+        Some("the fine grid's map needs one entry per brick of its lattice")
+    } else if !fine.values.len().is_multiple_of(brick) {
+        Some("the fine grid's values are not whole bricks")
+    } else if u32::try_from(fine.values.len()).is_err() {
+        Some("the fine grid has more values than a u32 addresses")
+    } else if fine
+        .map
+        .iter()
+        .any(|&slot| slot != shared::SDF_NO_BRICK && slot as usize >= slots)
+    {
+        Some("a fine grid's map entry names a brick it does not have")
+    } else if ![grid.origin_x, grid.origin_y, grid.origin_z]
+        .iter()
+        .chain(&fine.values)
+        .all(|v| v.is_finite())
+    {
+        Some("a fine grid origin or value is not finite")
     } else {
         None
     };

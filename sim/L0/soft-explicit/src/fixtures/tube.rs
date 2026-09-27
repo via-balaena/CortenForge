@@ -374,6 +374,7 @@ impl Insertion {
         Ok(Obstacle {
             grid,
             values,
+            fine: None,
             start: 0.0,
             interval,
             poses,

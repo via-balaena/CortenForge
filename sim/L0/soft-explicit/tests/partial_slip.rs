@@ -320,6 +320,7 @@ fn the_baked_cylinder_is_exact_at_the_contact_and_outside_everywhere_else() {
         let obstacle = Obstacle {
             grid,
             values,
+            fine: None,
             start: 0.0,
             interval: 1.0,
             poses: vec![cylinder.pose(0.0, 0.0)],
