@@ -2963,8 +2963,8 @@ nodes 0.86 and 0.70 mm apart), frictionless and at μ_f 0.3, λ_a 1.1 and 1.3:
 **K5 passes on the new readings, from 50k to 100k.** The bar is §15a's, 5 % from 50k to 100k. The readings were
 chosen after the diagnosis had seen every mesh below, so none is held out.
 `cargo run --release -p sim-soft-explicit --example tube -- <mesh> <0|2> <0|0.3> f32 20 0.2 10 1`,
-`RAYON_NUM_THREADS=4`, at `9e25fb90`; `1f84dbb8` (before round 1's fixes) and `393b35ba` (before round 2's) printed
-the same in every field but the timings. The 100k cross-section refined along the tube is `6x64x86` and
+`RAYON_NUM_THREADS=4`, at `9a802965`; `1f84dbb8`, `393b35ba` and `9e25fb90` (before rounds 1, 2 and 3's fixes)
+printed the same in every field but the timings. The 100k cross-section refined along the tube is `6x64x86` and
 `6x64x172`:
 
 | D1's readings | Case | 10k | 50k | 100k | 50k → 100k | 2× / 4× along | 100k against 4× |
