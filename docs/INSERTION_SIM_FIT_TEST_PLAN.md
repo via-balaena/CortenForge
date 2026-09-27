@@ -464,8 +464,9 @@ in CI); G5 already gates in CI.
   *2026-09-27 (soft-contact recon §5c, re-sourced):* silicone on skin with a lubricant has been measured on the
   forearm, and over time in one subject: a water-based gel and a silicone lubricant started low (0.18 and 0.30 at the
   onset of sliding) and were at or above the dry value (0.94) within 5–20 min. None was found on the relevant skin,
-  and none wet. The pairings span about 0.1 to 1.2, most of it above μ_f 0.3, where the solver's friction is not yet
-  trusted (soft-contact recon §15g's list for steps 6–9).
+  and none wet. Measured on skin, the pairings span about 0.1 to 1.2; tacky analogs read above 2, so the top is not
+  bounded. Most of the range is above μ_f 0.3, where the solver's friction is not yet trusted (soft-contact recon
+  §15g's list for steps 6–9).
 - **U3 — Why the rigid path asks 8.3 mm of room** with no inset, near the entrance. It is settled before the
   new solver runs `base_mold` (soft-contact recon §15g step 6).
   *Answered 2026-09-27 (soft-contact recon §16t):* most of it is the path's own. The path turns the whole scan

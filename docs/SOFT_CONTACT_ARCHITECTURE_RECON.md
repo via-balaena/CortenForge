@@ -231,11 +231,12 @@ fresh and 0.3 depleted; silicone lubricant 0.05–0.3, unmeasured):
 - **Silicone oil swells silicone.** Silicone oils of 50–1000 cP swelled solvent-extracted Sylgard 184 to 1.13–1.41
   times its mass, less for the more viscous ([Li 2026](https://arxiv.org/abs/2605.12125), a preprint, read from its
   Fig. 2A). Nothing was measured on Dragon Skin, Ecoflex or a Slacker-softened part.
-- **The consequence (arithmetic on the table):** the pairings span about 0.1 (a fresh gel, sliding) to about 1.2 (a
-  silicone lubricant gone, at onset), and wet analogs reach 1.5. The list for steps 6–9 holds friction above μ_f 0.3
-  untrusted until its Coulomb push is checked there and the damping is settled (the damped tube fails it at 0.6,
-  §16p), so most of this range
-  sits there.
+- **The consequence (arithmetic on the table):** measured on skin, the pairings span about 0.1 (a fresh gel,
+  sliding) to about 1.2 (a silicone lubricant gone, at onset). That does not bound the top: a tacky silicone held
+  twice its load on skin without slipping, and a tacky dressing read 4.38 at onset and 2.59 sliding dry, 1.09 and
+  1.47 wet, on a skin simulant (Gefen 2026); Smooth-On lists Dragon Skin 10 with the least Slacker it tabulates as
+  not tacky. The list for steps 6–9 holds friction above μ_f 0.3 untrusted until its Coulomb push is checked there
+  and the damping is settled (the damped tube fails it at 0.6, §16p), so most of this range sits there.
 - **Where the force comes from, in catheter insertion:** the leading edge dominates the first ~30 mm,
   then friction takes over ([PMC10809236](https://pmc.ncbi.nlm.nih.gov/articles/PMC10809236/)).
 - **For a straight section, arithmetic:** contact normals point sideways, so push force there is
@@ -1229,7 +1230,7 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
 - the per-press time against D4's target (§9 decision 12), which follows from the runs per verdict
   *(2026-09-26, §16r: 0.29–0.61 of D4 at K1's rate with the wall as meshed; projected, more, fit plan U17)*;
 - the pairing's nominal corner, which D3 judges at: add it as a run, or show push force is linear in
-  μ_f;
+  μ_f *(2026-09-27: §5c's re-sourcing found no source for a nominal; which value D3 judges at is open)*;
 - Tier 1's accuracy against the solver, and what D3 does if it is poor *(2026-09-27, §16t: Tier 1 reads slice by
   slice, with no rigid path, and the solver runs the fitted pose; step 7 reports the path's own share, the fitted
   pose against the slide, beside Tier 1's error)*;
@@ -1266,10 +1267,10 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
   the sideways force and twist the wall puts on the scan; no reading of them is yet set that would. Step 7's design
   sets one before its runs;
 - *(2026-09-25, §16p)* friction above μ_f 0.3: the damped tube's Coulomb push fails 15d.7 at μ_f 0.6, and §5c's ranges
-  reach 2.0 *(re-sourced 2026-09-27: the pairings about 1.2, wet analogs 1.5)*. Before a verdict is trusted at such a
-  corner, its Coulomb push is checked there (§7 rung 4's self-consistency check), and the material's damping (fit plan
-  U15) is settled. Above f ≈ 1.0 the half-space's own sliding is unstable at ν 0.49 (§16p), so there a finer mesh need
-  not converge;
+  reach 2.0 *(re-sourced 2026-09-27: on skin to about 1.2, tacky analogs above 2; §5c)*. Before a verdict is trusted
+  at such a corner, its Coulomb push is checked there (§7 rung 4's self-consistency check), and the material's damping
+  (fit plan U15) is settled. Above f ≈ 1.0 the half-space's own sliding is unstable at ν 0.49 (§16p), so there a finer
+  mesh need not converge;
 
 **Starting now, in parallel with steps 1–2, needing no solver:**
 - U3's geometric check *(done, §16t)*;
@@ -1306,7 +1307,8 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
    - *Done when:* the bake matches `cf-sim-research`'s within 1 % of a grid cell at every grid point, and
      each boundary option has a test. *(2026-09-26, §16r: the old bake is coarser than every grid 2d
      measured, and none of those meets G2 on `base_mold`; fit plan U18.)* *(2026-09-27, §16t: and the lowered
-     fitted pose passes the measuring copy's known-answer tests.)*
+     fitted pose passes the measuring copy's known-answer tests, and on `base_mold` reproduces the probe's room at
+     each pose, checked locally as the 8.285 mm was.)*
 7. **`base_mold` on the new solver.**
    - G6 is 5 minutes per run, where a run is one simulation (fit plan D4). `base_mold` stays outside
      the repo. *(D4 is per press, §9 decision 12 and fit plan U13; §16r reports it so.)*
@@ -2552,9 +2554,9 @@ damped step's accuracy is above.
 
 **Open, for later steps:**
 - **Friction above μ_f 0.3.** The damped 10k tube fails 15d.7 at μ_f 0.6 (0.934), and §5c's ranges reach 1.0 (dry) and
-  2.0 (water alone) *(re-sourced 2026-09-27: the pairings about 1.2, wet analogs 1.5; §5c)*. No gate catches flutter:
-  the Coulomb push's shortfall led to it, and nothing reads the contact nodes' kinetic energy against a bar. §15g's
-  list for steps 6–9 carries it.
+  2.0 (water alone) *(re-sourced 2026-09-27: on skin to about 1.2, tacky analogs above 2; §5c)*. No gate catches
+  flutter: the Coulomb push's shortfall led to it, and nothing reads the contact nodes' kinetic energy against a bar.
+  §15g's list for steps 6–9 carries it.
 - **The damping's form and value.** Kelvin–Voigt's loss grows as ω; a Maxwell branch in parallel (one stored stress
   per element) would bound it above its rate, and match the fits' stiffening better. One fit's error bars span
   5.2–10.3 Pa·s, and the frictional seated state moves with η below 7 Pa·s. Not decided; step 4 (the GPU layout) and 2d
@@ -3177,7 +3179,8 @@ stays a prescribed pose, applied in the contact law, so no rigid–soft coupling
 sideways force and the twist the wall puts on the scan, which show how far the walls would push it off this path;
 what reading of them would bring the contact-guided scan forward is not yet set (the list for steps 6–9). The
 contact-guided scan moves to the fit plan's Later. The fitted pose's code here is a measuring copy; step 6's
-lowering builds it in `sim-soft`, and samples it in time.
+lowering builds it in `sim-soft`, and samples it in time. Jon decided on the most-room ratios; the per-pose and
+extent figures above came from review afterwards, and were reported to him before this PR was pushed.
 
 **Not settled here:**
 - The fitted pose is a least-squares fit to the slide, not the rigid pose that asks the least room. The least room
