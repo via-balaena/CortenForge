@@ -13,12 +13,14 @@
 //! [`PenaltyRigidContact`](sim_soft::PenaltyRigidContact) (κ = 1e4 N/m, d̂ = 1e-3 m, defaults pinned) bounces
 //! it into rest. Gravity (`SolverConfig::gravity_z = -9.81 m/s²`) drives
 //! the dynamics; backward-Euler at `dt = 1 ms` damps penalty oscillation
-//! `1300×` per step at the `(κ, m_v)` parameters, so a few hundred
-//! post-contact steps drop kinetic energy below the `1 cm/s`-magnitude
-//! `KE_REST_THRESHOLD`. `n_steps = 1000` (1 s simulated total) gives
-//! ample headroom over the analytic time-to-impact for the sphere
-//! bottom to enter the contact band: `t_c = sqrt(2 (h-R-d̂) / |g|) ≈
-//! 89 ms ≈ step 89`.
+//! `1300×` per step at the `(κ, m_v)` parameters. The landed sphere then
+//! tips off its lowest vertex and rocks on the frictionless plane until
+//! backward-Euler damps it, below the `1 cm/s`-magnitude
+//! `KE_REST_THRESHOLD` by about 1.1 s (the drop-and-rest fixture's
+//! docstring, `sim/L0/soft/tests/contact_drop_rest.rs`), so
+//! `n_steps = 2000` (2 s simulated total). The analytic time-to-impact
+//! for the sphere bottom to enter the contact band is `t_c = sqrt(2
+//! (h-R-d̂) / |g|) ≈ 89 ms ≈ step 89`.
 //!
 //! The headline new capability vs PR1's user-facing rows is **dynamic
 //! integration with one-way penalty contact + rest-state convergence** —
@@ -38,13 +40,13 @@
 //!
 //! Headless asserts + PLY emit ALWAYS run. Setting `CF_VISUAL=1` (any
 //! non-empty value) additionally spawns a Bevy app that replays the
-//! captured 1000-frame trajectory at `SLOW_MO_FACTOR = 10×` slow-motion
-//! (10 s replay duration); the replay clamps at end (no looping).
+//! captured 2000-frame trajectory at `SLOW_MO_FACTOR = 10×` slow-motion
+//! (20 s replay duration); the replay clamps at end (no looping).
 //! Slow-motion is the default because the analytic 89 ms freefall +
 //! contact onset is blink-and-miss-it at 1× wall-clock — `10×` puts
 //! the freefall arc at `~890 ms` (clearly observable, contact-onset
 //! reads as a distinct beat) while keeping the settle-and-rest phase
-//! under `9 s`. The trajectory's playback clock starts at the first
+//! at about `19 s`. The trajectory's playback clock starts at the first
 //! [`step_replay`](sim_bevy_soft::trajectory::step_replay) tick
 //! (per-entity [`ReplayEpoch`](sim_bevy_soft::trajectory::ReplayEpoch)
 //! capture), NOT at app start, so `DefaultPlugins` startup time does
@@ -133,13 +135,13 @@
 //!   `|v|_max < sqrt(2 g h) × ENERGY_BOUND_SAFETY = 1.5` m/s (no energy
 //!   injection on top of the gravitational-freefall bound + penalty's
 //!   bounded-oscillation overshoot per the drop-and-rest hygiene gate).
-//! - **`contact_engagement`** — at least one step `k ∈ [0, N_STEPS / 4]`
+//! - **`contact_engagement`** — at least one step `k ∈ [0, CONTACT_BY_STEP]`
 //!   has the sphere bottom in the contact band (`min_z(frame[k]) < D_HAT`).
 //!   Catches a sphere-flying-sideways or gravity-magnitude regression that
 //!   wouldn't trip the energy gate. Analytic time-for-sphere-bottom-to-band
 //!   in pure freefall is `t_c = sqrt(2 (h-R-d̂) / |g|) ≈ 89 ms ≈ step 89`
 //!   (the bottom falls `RELEASE_HEIGHT - R - d̂ ≈ 3.9 cm` before crossing
-//!   into d̂); the `N_STEPS / 4 = 250` upper bound gives `~2.8×` headroom.
+//!   into d̂); the `CONTACT_BY_STEP = 250` upper bound gives `~2.8×` headroom.
 //! - **`reaches_rest`** — final `|v|_max < KE_REST_THRESHOLD = 1 cm/s`
 //!   (mirrors the drop-and-rest fixture).
 //! - **`com_descended`** — final referenced-vertex mean-z `<` initial
@@ -228,7 +230,7 @@ use sim_soft::{
 const RADIUS: f64 = 1.0e-2;
 
 /// BCC cell size (3 mm). Mirror the drop-and-rest fixture's `CELL_SIZE` — release-mode-feasible
-/// step latency (~22 s for 1000 steps × dynamic Newton) at the scene's
+/// step latency (~20 s for 2000 steps × dynamic Newton) at the scene's
 /// `(κ, m_v)`. Finer resolution is gratuitous for this row's hygiene scope and
 /// row 12's quiescence-on-plane scope; if visual review surfaces a
 /// "too-chunky-sphere" finding (~hundreds-of-triangles boundary at this
@@ -262,12 +264,16 @@ const GRAVITY: f64 = -9.81;
 /// per step in the post-contact regime.
 const DT: f64 = 1.0e-3;
 
-/// Total step count (1000 → 1 s simulated). Sphere-bottom-to-band
+/// Total step count (2000 → 2 s simulated). Sphere-bottom-to-band
 /// freefall time `t_c = sqrt(2 (h-R-d̂) / |g|) ≈ 89 ms ≈ 89 steps`
 /// (captured `n_step_first_contact = 88`, one step early under
-/// sub-step interpolation). Post-contact decay: `~few hundred steps`.
-/// `1000` gives `~10×` headroom on the rest gate.
-const N_STEPS: usize = 1000;
+/// sub-step interpolation). The rocking after landing settles below
+/// the rest gate by about 1.1 s (module docstring).
+const N_STEPS: usize = 2000;
+
+/// The step by which the sphere bottom must have entered the contact
+/// band (`contact_engagement`): `~2.8×` the analytic 89.
+const CONTACT_BY_STEP: usize = 250;
 
 /// Newton iter cap (mirror the drop-and-rest fixture). Bumped from skeleton's 10 to 50 for
 /// transient-integration headroom (penalty oscillation during contact +
@@ -276,8 +282,8 @@ const N_STEPS: usize = 1000;
 const MAX_NEWTON_ITER: usize = 50;
 
 /// Per-vertex velocity magnitude floor for "rest" (`m/s`). Mirror the drop-and-rest fixture
-/// verbatim. `1 cm/s` is generous — at the scene's `(κ, m_v)` the
-/// BE-damped envelope falls below `1e-4 m/s` long before step 1000.
+/// verbatim. `1 cm/s` is generous — the rocking after landing falls below
+/// `1e-4 m/s` by about 1.3 s (`contact_drop_rest.rs`'s docstring).
 const KE_REST_THRESHOLD: f64 = 1.0e-2;
 
 /// Multiplier on the freefall velocity bound `sqrt(2 g h)` for the
@@ -321,13 +327,13 @@ const SPARSE_REL_TOL: f64 = 1.0e-12;
 const SPARSE_EPS_ABS: f64 = 1.0e-12;
 
 /// Visual-mode replay rate multiplier on `Trajectory.dt`. `10.0×`
-/// stretches the 1-s simulated trajectory to 10 s wall-clock replay
-/// (`SLOW_MO_FACTOR × N_STEPS × DT = 10 × 1000 × 1e-3 = 10 s`). Default
+/// stretches the 2-s simulated trajectory to 20 s wall-clock replay
+/// (`SLOW_MO_FACTOR × N_STEPS × DT = 10 × 2000 × 1e-3 = 20 s`). Default
 /// rationale: the analytic time-to-impact `t_c = sqrt(2 (h-R-d̂) / |g|)
 /// ≈ 89 ms` is blink-and-miss-it at 1× wall-clock; `10×` puts the
 /// freefall + contact-onset arc at `~890 ms` (clearly observable, and
 /// the contact-pair onset reads as a distinct beat) while the
-/// settle-and-rest phase fits under `9 s`. Press `R` mid-replay to
+/// settle-and-rest phase takes about `19 s`. Press `R` mid-replay to
 /// reset and watch again from frame 0 — see
 /// [`reset_replay_on_keypress`](sim_bevy_soft::trajectory::reset_replay_on_keypress).
 /// Pure visualization knob — has no effect on the headless asserts or
@@ -376,30 +382,40 @@ const N_REFERENCED_EXACT: usize = 561;
 //      `SolverConfig::gravity_z` wiring, the `PenaltyRigidContact`
 //      defaults, OR the SDF-meshed FEM assembly path through faer.
 //   3. NEVER re-bake the reference values to make the test green.
+//
+// Re-captured 2026-09-27, diagnosed at step 2: the BCC mesher's Parity
+// Rule fix (soft-contact recon §16v) keeps every vertex position and the
+// mesh counts above, and changes which diagonal splits some faces. On
+// the fixed mesh the landed sphere rocks later and settles by about
+// 1.1 s, so the run is now 2000 steps (the drop-and-rest fixture's
+// docstring). Re-captured: the final `|v|_max`, the residual motion
+// left at step 2000; the settled COM z, moved by +8.8e-9 m, and the
+// COM descent with it; and the most Newton iterations a step took, from
+// 8 to 7. First contact is unchanged.
 
-/// Final-step `|v|_max` (m/s) — peak vertex velocity at step 1000, after
-/// BE-damped post-contact decay.
-/// `f64::from_bits(0x3f1f_2042_c744_8e2d) ≈ 1.187_363_394_064_492_3e-4`.
-/// Below `KE_REST_THRESHOLD = 1 cm/s` by `~84×` headroom — the rest gate
-/// has wide margin; this bit captures the actual residual quiescence
+/// Final-step `|v|_max` (m/s) — peak vertex velocity at step 2000, after
+/// the rocking has settled.
+/// `f64::from_bits(0x3eba_c9ed_5fc6_404f) ≈ 1.596_735_614_037_991_9e-6`.
+/// Below `KE_REST_THRESHOLD = 1 cm/s` by `~6300×` headroom — the rest
+/// gate has wide margin; this bit captures the actual residual quiescence
 /// magnitude for regression detection.
-const FINAL_V_MAX_REF_BITS: u64 = 0x3f1f_2042_c744_8e2d;
+const FINAL_V_MAX_REF_BITS: u64 = 0x3eba_c9ed_5fc6_404f;
 
 /// COM z-coordinate at rest (m) — final referenced-vertex mean-z.
-/// `f64::from_bits(0x3f86_4276_ba7d_682c) ≈ 1.086_895_710_584_564_3e-2`.
+/// `f64::from_bits(0x3f86_4277_e9b7_dee3) ≈ 1.086_896_593_095_282_8e-2`.
 /// Sits `~0.13 mm` below `R + D_HAT = 1.1 cm` (Hertz self-weight
 /// indentation under Ecoflex stiffness — well inside `COM_TOLERANCE = 2
 /// mm`).
-const COM_Z_AT_REST_REF_BITS: u64 = 0x3f86_4276_ba7d_682c;
+const COM_Z_AT_REST_REF_BITS: u64 = 0x3f86_4277_e9b7_dee3;
 
 /// COM descent magnitude (m) — `initial_mean_z - final_mean_z` over the
 /// referenced-vertex set.
-/// `f64::from_bits(0x3fa4_08fb_eafa_3fbc) ≈ 3.913_104_289_415_467e-2`.
+/// `f64::from_bits(0x3fa4_08fb_9f2b_a20e) ≈ 3.913_103_406_904_748_5e-2`.
 /// Approximately `RELEASE_HEIGHT - (R + D_HAT) = 5 cm - 1.1 cm = 3.9 cm`
 /// (initial mean-z sits at the rest-config sphere center, shifted to
 /// `RELEASE_HEIGHT`; final settles `0.13 mm` below the geometric R+d̂
 /// floor under self-weight).
-const COM_DESCENT_REF_BITS: u64 = 0x3fa4_08fb_eafa_3fbc;
+const COM_DESCENT_REF_BITS: u64 = 0x3fa4_08fb_9f2b_a20e;
 
 /// First step where any referenced vertex enters the contact band `d̂`.
 /// Captured at 88. Analytic freefall time for the sphere *bottom* (not
@@ -411,10 +427,10 @@ const COM_DESCENT_REF_BITS: u64 = 0x3fa4_08fb_eafa_3fbc;
 const N_STEP_FIRST_CONTACT_REF: usize = 88;
 
 /// Maximum Newton iter count observed across all `N_STEPS` solver
-/// invocations. Captured at 8 — well below `MAX_NEWTON_ITER = 50`'s wide
+/// invocations. Captured at 7 — well below `MAX_NEWTON_ITER = 50`'s wide
 /// headroom. Captures Newton-convergence regressions distinct from the
 /// per-step `iter ≤ cap` gate.
-const MAX_ITER_OBSERVED_REF: usize = 8;
+const MAX_ITER_OBSERVED_REF: usize = 7;
 
 // =============================================================================
 // Helpers — math
@@ -749,14 +765,14 @@ fn verify_solver_per_step_invariants(snapshot: &DropSnapshot) {
 // =============================================================================
 
 fn verify_contact_engagement(snapshot: &DropSnapshot) {
-    let upper_bound = N_STEPS / 4;
+    let upper_bound = CONTACT_BY_STEP;
     assert!(
         snapshot.n_step_first_contact > 0,
         "n_step_first_contact = 0 — sphere started in contact band (release_height misconfigured)",
     );
     assert!(
         snapshot.n_step_first_contact <= upper_bound,
-        "n_step_first_contact = {} exceeds upper bound {upper_bound} (= N_STEPS / 4) — sphere never reached the plane within ~2.8× the analytic freefall time-to-band (~step 89, sphere-bottom). Likely cause: gravity wiring inactive OR sphere flying sideways through plane.",
+        "n_step_first_contact = {} exceeds upper bound {upper_bound} (= CONTACT_BY_STEP) — sphere never reached the plane within ~2.8× the analytic freefall time-to-band (~step 89, sphere-bottom). Likely cause: gravity wiring inactive OR sphere flying sideways through plane.",
         snapshot.n_step_first_contact,
     );
 }
@@ -1099,8 +1115,7 @@ fn print_summary(snapshot: &DropSnapshot, ply_path: &Path) {
         "  solver_per_step_invariants             : no NaN, iter ≤ {MAX_NEWTON_ITER}, |v|_max < freefall bound × {ENERGY_BOUND_SAFETY}"
     );
     println!(
-        "  contact_engagement                     : sphere enters contact band within N_STEPS / 4 = {} steps",
-        N_STEPS / 4
+        "  contact_engagement                     : sphere enters contact band within CONTACT_BY_STEP = {CONTACT_BY_STEP} steps"
     );
     println!(
         "  reaches_rest                           : final |v|_max < KE_REST_THRESHOLD = {KE_REST_THRESHOLD:.0e} m/s"
