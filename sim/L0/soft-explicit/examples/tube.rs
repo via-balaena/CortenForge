@@ -1,11 +1,13 @@
 //! One run of the tube on the mandrel (plan §15b, §16i), printed as one line:
 //! G2's penetration against the grid and the true surface, the band's gap,
-//! K2's errors and its pair-averaged ring levels, K5's readings, the validity
-//! gates, the loaded step factor, and the run's cost.
+//! K2's errors and its pair-averaged ring levels, K5's readings (fit plan
+//! D1's, plan §16s), the validity gates, the loaded step factor, and the
+//! run's cost.
 //!
 //! `cargo run --release -p sim-soft-explicit --example tube --
-//! <10k|50k|100k> <case> <friction> <f32|f64> <grid> <hold> <loading> <stiffness> <viscous>`
-//! (defaults: 10k 0 0 f32 20 0.2 10 1, and Ecoflex 00-30's `η/μ`). `case` indexes
+//! <mesh> <case> <friction> <f32|f64> <grid> <hold> <loading> <stiffness> <viscous>`
+//! (defaults: 10k 0 0 f32 20 0.2 10 1, and Ecoflex 00-30's `η/μ`). `mesh` is
+//! 10k, 50k, 100k, or `RxCxA` cells (radial, around, along). `case` indexes
 //! `fixtures::golden::THICK_TUBE`; the grid's cell is A/`grid`; `hold` is
 //! the hold after loading, in seconds (plan §15b: 0.2); `loading` is the
 //! loading time in shear periods `T_s` of the unscaled material (plan §15c's
@@ -24,8 +26,10 @@ use sim_soft_explicit::executor::{Executor, Obstacle};
 use sim_soft_explicit::f64 as shared;
 use sim_soft_explicit::fixtures::golden::THICK_TUBE;
 use sim_soft_explicit::fixtures::tube::{
-    ECOFLEX_00_30_VISCOUS_TIME, Insertion, Mesh, Tube, TubeResult, TubeRun, Walls, node_pressures,
-    tributary_area,
+    ECOFLEX_00_30_VISCOUS_TIME, Insertion, Mesh, Tube, TubeResult, TubeRun, Walls,
+};
+use sim_soft_explicit::readings::{
+    PROBE_AREA, PUSH_TRAVEL, WindowContact, area_percentile, travel_peak,
 };
 use sim_soft_explicit::stepping::StepperConfig;
 
@@ -47,8 +51,20 @@ fn request() -> Request {
         "50k" => Mesh::FiftyK,
         "100k" => Mesh::HundredK,
         other => {
-            eprintln!("unknown mesh {other}: use 10k, 50k or 100k");
-            std::process::exit(2);
+            let cells: Option<Vec<usize>> = other.split('x').map(|c| c.parse().ok()).collect();
+            let Some(&[radial, circumferential, axial]) = cells.as_deref() else {
+                eprintln!("unknown mesh {other}: use 10k, 50k, 100k or RxCxA cells");
+                std::process::exit(2);
+            };
+            if radial < 1 || circumferential < 3 || axial < 1 {
+                eprintln!("mesh {other}: a tube needs R and A ≥ 1 and C ≥ 3");
+                std::process::exit(2);
+            }
+            Mesh::Cells {
+                radial,
+                circumferential,
+                axial,
+            }
         }
     };
     let case_index: usize = arg(1, "0").parse().unwrap();
@@ -162,46 +178,56 @@ fn end_penetration(
     end
 }
 
-/// K5's seated reading (fit plan D1): the area-weighted 95th percentile of
-/// the window-mean contact pressure, the pressure the most-squeezed 5 % of
-/// the contact area is at or above.
-fn seated_percentile(model: &ExplicitModel, result: &TubeResult) -> f64 {
-    let snapshot = &result.snapshot;
-    let contact: Vec<u32> = (0_u32..)
-        .zip(&snapshot.normal_force_sums)
-        .filter(|&(_, &sum)| sum > 0.0)
-        .map(|(node, _)| node)
-        .collect();
-    let pressures = node_pressures(model, snapshot, &contact);
-    let mut weighted: Vec<(f64, f64)> = contact
-        .iter()
-        .zip(pressures)
-        .map(|(&node, pressure)| (pressure, tributary_area(model, snapshot, node as usize)))
-        .collect();
-    weighted.sort_by(|a, b| b.0.total_cmp(&a.0));
-    let total: f64 = weighted.iter().map(|&(_, area)| area).sum();
-    let mut covered = 0.0;
-    for &(pressure, area) in &weighted {
-        covered += area;
-        if covered >= 0.05 * total {
-            return pressure;
-        }
-    }
-    f64::NAN
-}
-
-/// K5's readings (plan §15a): the peak push force, the largest of the
-/// monitor's 100-step means of the axial contact force (plan §16i), and the
-/// seated 95th-percentile pressure over μ.
-fn k5_readings(model: &ExplicitModel, result: &TubeResult, mu: f64) -> String {
+/// K5's readings (plan §15a), fit plan D1's (plan §16s):
+///
+/// - the peak push force, the largest of the monitor's 100-step means of the
+///   axial contact force (plan §16i); and the largest mean push over 10 mm of
+///   the tip's travel, which is how the geometric share, the push at
+///   `μ_f = 0`, is read;
+/// - the seated contact force on the most-loaded 1 cm² patch, over 1 cm² and
+///   μ, with its centre's height from the tip; and beside it, the pointwise
+///   pressure's area-weighted 95th percentile and its peak, over μ.
+fn k5_readings(
+    run: &TubeRun,
+    model: &ExplicitModel,
+    obstacle: &Obstacle,
+    result: &TubeResult,
+) -> String {
     let push_peak = result
         .samples
         .iter()
         .map(|s| s.monitors.contact_force[2])
         .fold(f64::NEG_INFINITY, f64::max);
+    let start = run.insertion.tip(0.0);
+    let travel: Vec<(f64, f64)> = result
+        .samples
+        .iter()
+        .map(|s| {
+            (
+                run.insertion.tip(s.time) - start,
+                s.monitors.contact_force[2],
+            )
+        })
+        .collect();
+    let push_travel = travel_peak(0.0, &travel, PUSH_TRAVEL).unwrap_or(f64::NAN);
+    let end = run.insertion.end();
+    let contact = WindowContact::read(model, &result.snapshot, obstacle, end);
+    let (patch, patch_z) = contact
+        .patch_peak(PROBE_AREA)
+        .map_or((f64::NAN, f64::NAN), |p| {
+            (p.pressure, p.centre[2] - run.insertion.tip(end))
+        });
+    let pressures = contact.pressures();
+    let p95 = area_percentile(&pressures, 0.05).unwrap_or(f64::NAN);
+    let peak = pressures.iter().map(|&(p, _)| p).fold(f64::NAN, f64::max);
+    let mu = run.mu;
     format!(
-        "K5 push_peak={push_peak:.5}N seated_p95/mu={:.5}",
-        seated_percentile(model, result) / mu
+        "K5 push_peak={push_peak:.5}N push_10mm={push_travel:.5}N patch_1cm2/mu={:.5} \
+         patch_z={:.2}mm seated_p95/mu={:.5} seated_peak/mu={:.5}",
+        patch / mu,
+        1e3 * patch_z,
+        p95 / mu,
+        peak / mu
     )
 }
 
@@ -313,7 +339,7 @@ fn main() {
     let inset = (case.mandrel_ratio - 1.0) * tube.inner_radius;
     let stiffness = run.material().lambda + 2.0 * run.mu;
     let (k5, rings, stepping) = (
-        k5_readings(&model, &result, run.mu),
+        k5_readings(&run, &model, &obstacle, &result),
         ring_levels(&result, run.mu),
         step_readings(&result),
     );

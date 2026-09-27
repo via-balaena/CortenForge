@@ -50,6 +50,29 @@ impl Obstacle {
         }
         shared::sdf_tricubic(coordinate, values, grid)
     }
+
+    /// The pose at `time`, interpolated between its samples as an executor
+    /// interpolates it.
+    // A track holds far fewer than 2^32 samples.
+    #[allow(clippy::cast_possible_truncation)]
+    #[must_use]
+    pub fn pose_at(&self, time: f64) -> Pose {
+        let span =
+            shared::pose_sample_span(time, self.start, self.interval, self.poses.len() as u32);
+        shared::pose_interpolate(
+            self.poses[span.lower as usize],
+            self.poses[span.upper as usize],
+            span.fraction,
+        )
+    }
+
+    /// The outward normal at a world point, with the obstacle posed as at
+    /// `time`: the lookup's normal, rotated into the world frame.
+    #[must_use]
+    pub fn world_normal(&self, time: f64, point: [f64; 3]) -> [f64; 3] {
+        let pose = self.pose_at(time);
+        shared::pose_rotate(pose, self.sample(shared::pose_to_body(pose, point)).normal)
+    }
 }
 
 /// What the stepping loop reads every monitor interval, reduced on the

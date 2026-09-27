@@ -29,6 +29,14 @@ fn the_planned_meshes_have_the_planned_sizes() {
         (Mesh::TenK, 9_792),
         (Mesh::FiftyK, 50_400),
         (Mesh::HundredK, 99_072),
+        (
+            Mesh::Cells {
+                radial: 2,
+                circumferential: 8,
+                axial: 5,
+            },
+            480,
+        ),
     ] {
         let tube = Tube::plan(mesh);
         assert_eq!(tube.element_count(), elements);

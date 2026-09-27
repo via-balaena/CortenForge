@@ -224,10 +224,16 @@ which inset would pass.
   say so, or refuse with the reason.
 - [x] **Decisions.** Jon agreed all five recommendations on 2026-09-23.
   - **D1 — U1, "comfortably".** *Decided:* two readings, each with a limit (see *Calibration* below).
-    - *Getting it in:* the peak push force over the whole path (R2).
-    - *Seated:* the contact pressure at the seat, read as its area-weighted 95th percentile: the pressure
-      the most-squeezed 5 % of the contact area is at or above. The peak is shown beside it but does not
-      decide, so the verdict never rests on one face of the mesh.
+    - *Getting it in:* the peak push force over the whole path (R2). Its geometric share, the push of the
+      verdict's μ = 0 run, is read as its largest mean over 10 mm of travel (Jon, 2026-09-26, accepting the
+      recommendation; soft-contact recon §16s).
+    - *Seated:* ~~the contact pressure at the seat, read as its area-weighted 95th percentile~~ **the contact
+      force on the most-loaded 1 cm² patch, over 1 cm²** (Jon, 2026-09-26, accepting the recommendation after
+      K5; soft-contact recon §16s). The percentile it replaces did not converge on the tube: its most-squeezed
+      5 % was one or two rings of nodes (a diagnostic). 1 cm² is the algometer tip most pressure-pain studies in
+      a 2021 review used, so the reading and the limit it will be judged against can be taken over the same
+      area; the patch's size follows the data that calibrates it. The percentile and the peak are shown beside
+      it but do not decide, so the verdict never rests on one face of the mesh.
     - The stretch margin is a separate durability warning, not part of comfort.
     - *Calibration:* ~~on Jon's casts~~ **from published measurements** (Jon, 2026-09-24: no home-lab
       calibration). The push-force anchor is the clinical axial-rigidity convention (~5.4 N). Pressure
@@ -406,8 +412,9 @@ in CI); G5 already gates in CI.
 - **Say "room the wall must make", never "overlap".** Distances are to the undeformed wall; Jon read
   "overlap" as the scan passing through the silicone.
 - **The fit-test flow and D1–D5** (Jon, 2026-09-23; §4, Phase 2). In short:
-  - comfort is the peak push force over the path plus the seated 95th-percentile pressure, with limits
-    from published measurements (2026-09-24; originally Jon's casts);
+  - comfort is the peak push force over the path plus the seated pressure on the most-loaded 1 cm²
+    (2026-09-26; first the 95th percentile), with limits from published measurements (2026-09-24; originally
+    Jon's casts);
   - the test advises and never blocks;
   - a search for the tightest inset that fits runs on request;
   - the budget is 5 minutes per run and 15 per search;
@@ -432,7 +439,9 @@ in CI); G5 already gates in CI.
 - **U9 — The comfort readouts on a rigid scan.** A rigid intruder puts all the squeeze into the silicone;
   how far that is from soft tissue is unmeasured.
 - **U10 — The mouth rim. Answered (Jon, 2026-09-24):** the poured device has the same sharp edge.
-  It is fine in Ecoflex 00-30, and a comfort issue in Dragon Skin 10A and firmer.
+  It is fine in Ecoflex 00-30, and a comfort issue in Dragon Skin 10A and firmer. *(2026-09-26, soft-contact
+  recon §16s: the one report of seated comfort from use; whether the 1 cm² patch reading agrees with it waits on
+  D1's limits and a run on the product.)*
 - **U11 — How a range becomes a verdict. Decided:** an engineering call (Jon, 2026-09-24: *"completely
   your call"*).
   - *Fits* if the whole interval across the corners is under the limit, and *Too tight* if all of it is
@@ -461,7 +470,8 @@ in CI); G5 already gates in CI.
     at λ_a 1.3 (50k); with it, 1.4–3.9 % below (50k, 100k). **No loss data was found for Dragon Skin 10A**,
     the product's silicone. One published fit's error bars put Ecoflex's own value at 5.2–10.3 Pa·s.
   - The frictional seated pressure depends on it: between undamped and damped, the tube's seated 95th percentile
-    moved −20 % on the 10k mesh and +4 % on the 50k.
+    moved −20 % on the 10k mesh and +4 % on the 50k. *(2026-09-26, soft-contact recon §16s: the percentile is no
+    longer the deciding reading; how the 1 cm² patch depends on the damping is not measured.)*
   - With it, the tube still fails the Coulomb push at μ_f 0.6 (0.934 against 5 %). U2's friction range decides
     whether the product's friction reaches that.
   - The same published fits stiffen the material by 12–25 % and 43–68 % between 1 and 10 Hz (arithmetic from
@@ -480,6 +490,14 @@ in CI); G5 already gates in CI.
   percentile moved by 8–12 % from the 50k to the 100k mesh in three of four cases (−2.2 % in the fourth), and the
   frictionless push peak by 14 % (λ_a 1.1). The push with friction converged. §15a sends this back to D1's
   readings, or the lip radius, before step 7.
+  *Resolved on the tube 2026-09-26 (soft-contact recon §16s):* by a diagnostic, the percentile's most-squeezed 5 %
+  was one or two rings, at the seam and, with friction, the entry edge, and the frictionless push rippled as the
+  nose crossed each ring. Jon replaced the seated reading with the most-loaded 1 cm² patch, and the geometric
+  share is read over 10 mm of travel (D1). On them K5 passes from 50k to 100k (at most 1.3 %); 100k reads within
+  3.6 % of a mesh 4× finer along the tube. **Open:** from 10k to 50k the frictionless patch and the geometric share
+  do not converge, and `base_mold` at h_K2 is about the 10k tube's element size, so the element size they need on
+  the product is measured in step 7. The
+  lip radius stays under Later.
 - **U17 — The product wall's canal surface** (soft-contact recon §16r, 2026-09-26). At the element size K2 needs,
   the old path's wall puts the canal nodes off the true canal surface: its 5th and 95th percentiles at −0.50 and
   +0.32 of an element (into the canal, and into the wall), the worst at 1.25. The scan's decimation is not the
