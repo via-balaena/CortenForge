@@ -19,7 +19,9 @@ use common::{
 use nalgebra::{DMatrix, SymmetricEigen};
 use sim_soft_explicit::ExplicitModel;
 use sim_soft_explicit::cpu;
-use sim_soft_explicit::executor::{Executor, Monitors, Obstacle, ObstacleError, Snapshot};
+use sim_soft_explicit::executor::{
+    Executor, Monitors, Obstacle, ObstacleError, Snapshot, rigid_motion,
+};
 use sim_soft_explicit::f64 as shared;
 use sim_soft_explicit::f64::{Pose, SdfGridLayout};
 use sim_soft_explicit::fixtures::grid::bricks;
@@ -700,6 +702,16 @@ fn the_gates_refuse_a_non_finite_read() {
         monitors,
     };
     assert!(good.finite() && !bad.finite());
+    // The moment and the obstacle's work are read too.
+    let moment = Monitors {
+        contact_moment: [0.0, f64::NAN, 0.0],
+        ..good
+    };
+    let work = Monitors {
+        obstacle_work: f64::INFINITY,
+        ..good
+    };
+    assert!(!moment.finite() && !work.finite());
     let fine = [sample(good, 1), sample(good, 2)];
     let broken = [sample(good, 1), sample(bad, 2)];
     assert_eq!(gates::energy_balance(&fine), Some(0.0));
@@ -1188,4 +1200,329 @@ fn a_correction_the_coarse_grid_answered_is_counted() {
     assert_eq!(fine.coarse_corrections, 0);
     assert_eq!(fine_count, count);
     assert!((fine.deepest_prediction / deepest - 1.0).abs() < 1e-12);
+}
+
+/// A floor that starts turned 0.1 rad about x, then rises into [`pressed_block`] at 50 mm/s, slides along x at
+/// 5 mm/s and turns about the world's y at `rate` rad/s, with friction 0.3. The turn starts from a turned pose, so its
+/// rotation vector reads differently in the world frame and the body frame.
+fn turning_floor(rate: f64) -> Obstacle {
+    let samples = 101_u32;
+    let duration = 0.1;
+    let interval = duration / f64::from(samples - 1);
+    let (tilt, centre) = (0.1_f64, 0.015);
+    let poses = (0..samples)
+        .map(|i| {
+            let t = f64::from(i) * interval;
+            let (c1, s1) = ((0.5 * rate * t).cos(), (0.5 * rate * t).sin());
+            let (c2, s2) = ((0.5 * tilt).cos(), (0.5 * tilt).sin());
+            // The turn about y after the tilt about x: q_y ⊗ q_x.
+            Pose {
+                qw: c1 * c2,
+                qx: c1 * s2,
+                qy: s1 * c2,
+                qz: -s1 * s2,
+                tx: centre + 0.005 * t,
+                ty: centre,
+                tz: -0.002 + 0.05 * t,
+            }
+        })
+        .collect();
+    Obstacle {
+        start: 0.0,
+        interval,
+        poses,
+        ..floor(
+            [-0.04, -0.04, -0.04],
+            [0.04, 0.04, 0.04],
+            0.002,
+            [0.0; 3],
+            [0.0; 3],
+            duration,
+            0.3,
+        )
+    }
+}
+
+/// `steps` steps of `executor` against [`turning_floor`] at `dt`, after `lead` steps not read: the monitors read
+/// after the lead, and for each read step each loaded node's position at the start of the step and its contact
+/// force, from the state before the step and the phase outputs after it.
+fn turning_steps<E: Executor>(
+    executor: &mut E,
+    model: &ExplicitModel,
+    (lead, steps, dt): (u32, u32, f64),
+) -> (Monitors, Vec<(f64, Vec<([f64; 3], [f64; 3])>)>) {
+    for step in 0..lead {
+        run_phases(executor, f64::from(step) * dt, dt, 0.0);
+    }
+    let after_lead = executor.monitors();
+    let rest = model.rest_positions();
+    let read = (lead..lead + steps)
+        .map(|step| {
+            let time = f64::from(step) * dt;
+            let before = executor.snapshot().displacements;
+            run_phases(executor, time, dt, 0.0);
+            let forces = executor.phase_outputs().contact_forces;
+            let loaded = forces
+                .iter()
+                .enumerate()
+                .filter(|(_, f)| f.iter().any(|&c| c != 0.0))
+                .map(|(a, f)| (shared::vec3_add(rest[a], before[a]), *f))
+                .collect();
+            (time, loaded)
+        })
+        .collect();
+    (after_lead, read)
+}
+
+/// The mean over `steps` of `Σ (xᵢ − p) × fᵢ`, with `p` the obstacle's body origin as posed at `time + shift`.
+fn mean_moment(
+    obstacle: &Obstacle,
+    steps: &[(f64, Vec<([f64; 3], [f64; 3])>)],
+    shift: f64,
+) -> [f64; 3] {
+    let mut sum = [0.0; 3];
+    for (time, loaded) in steps {
+        let pose = obstacle.pose_at(time + shift);
+        for &(at, force) in loaded {
+            let arm = shared::vec3_sub(at, [pose.tx, pose.ty, pose.tz]);
+            sum = shared::vec3_add(sum, shared::vec3_cross(arm, force));
+        }
+    }
+    shared::vec3_scale(sum, 1.0 / steps.len() as f64)
+}
+
+#[test]
+fn the_moment_is_taken_about_the_obstacles_origin_where_each_node_starts_its_step() {
+    let (rate, dt) = (2.0, 2e-5);
+    let obstacle = turning_floor(rate);
+    let model = pressed_block();
+    let schedule = (1_000, 2_000, dt);
+    let check = |monitors: Monitors, steps: &[(f64, Vec<([f64; 3], [f64; 3])>)], bar: f64| {
+        let loaded: usize = steps.iter().map(|(_, l)| l.len()).sum();
+        assert!(loaded > 1_000, "the floor must press: {loaded} node-steps");
+        let expected = mean_moment(&obstacle, steps, 0.0);
+        let size = shared::vec3_length(expected);
+        let error = shared::vec3_length(shared::vec3_sub(monitors.contact_moment, expected));
+        assert!(
+            error <= bar * size,
+            "{:?} against {expected:?}",
+            monitors.contact_moment
+        );
+        error / size
+    };
+
+    let mut wide = cpu::f64::CpuExecutor::new(&model, &obstacle).unwrap();
+    let (_, steps) = turning_steps(&mut wide, &model, schedule);
+    let error = check(wide.monitors(), &steps, 1e-12);
+    // The case tells the reference point apart: the origin posed a step later reads far outside the bar.
+    let later = mean_moment(&obstacle, &steps, dt);
+    let expected = mean_moment(&obstacle, &steps, 0.0);
+    let apart =
+        shared::vec3_length(shared::vec3_sub(later, expected)) / shared::vec3_length(expected);
+    assert!(apart > 1e3 * error.max(1e-15), "{apart}");
+
+    let mut narrow = cpu::f32::CpuExecutor::new(&model, &obstacle).unwrap();
+    let (_, steps) = turning_steps(&mut narrow, &model, schedule);
+    check(narrow.monitors(), &steps, 1e-5);
+}
+
+#[test]
+fn the_obstacles_work_is_its_rigid_motion_against_the_contact_forces() {
+    let (rate, dt) = (2.0, 2e-5);
+    let obstacle = turning_floor(rate);
+    let model = pressed_block();
+    let mut executor = cpu::f64::CpuExecutor::new(&model, &obstacle).unwrap();
+    let (after_lead, steps) = turning_steps(&mut executor, &model, (1_000, 2_000, dt));
+    let before = after_lead.obstacle_work;
+    // The work each node's force does over the exact rigid motion of the obstacle's point there, and the same with
+    // the turn taken in the body frame.
+    let (mut exact, mut body_frame, mut largest_turn) = (0.0, 0.0, 0.0_f64);
+    for (time, loaded) in &steps {
+        let (from, to) = (obstacle.pose_at(*time), obstacle.pose_at(time + dt));
+        let (moved, turn) = rigid_motion(from, to);
+        largest_turn = largest_turn.max(shared::vec3_length(turn));
+        let turned_back = shared::pose_unrotate(from, turn);
+        for &(at, force) in loaded {
+            let carried = shared::pose_to_world(to, shared::pose_to_body(from, at));
+            exact += shared::vec3_dot(force, shared::vec3_sub(carried, at));
+            let arm = shared::vec3_sub(at, [from.tx, from.ty, from.tz]);
+            body_frame += shared::vec3_dot(
+                force,
+                shared::vec3_add(moved, shared::vec3_cross(turned_back, arm)),
+            );
+        }
+    }
+    let read = executor.monitors().obstacle_work - before;
+    assert!(exact.abs() > 0.0, "the obstacle must do work");
+    let bar = largest_turn;
+    assert!(bar > 0.0 && bar < 1e-3, "{bar}");
+    assert!(
+        (read / exact - 1.0).abs() <= bar,
+        "{read} against {exact} (bar {bar})"
+    );
+    // A turn taken in the body frame misses by far more than the bar.
+    assert!(
+        (body_frame / exact - 1.0).abs() > 10.0 * bar,
+        "{body_frame} against {exact}"
+    );
+}
+
+#[test]
+fn a_rigid_motion_is_the_origins_move_and_the_world_frame_turn() {
+    // Turned 0.3 rad about x, then a further 0.2 rad about the world's y, and moved.
+    let about = |axis: [f64; 3], angle: f64| Pose {
+        qw: (0.5 * angle).cos(),
+        qx: axis[0] * (0.5 * angle).sin(),
+        qy: axis[1] * (0.5 * angle).sin(),
+        qz: axis[2] * (0.5 * angle).sin(),
+        ..IDENTITY
+    };
+    let from = Pose {
+        tx: 0.1,
+        ty: -0.2,
+        tz: 0.3,
+        ..about([1.0, 0.0, 0.0], 0.3)
+    };
+    let turn = about([0.0, 1.0, 0.0], 0.2);
+    // q_to = q_turn ⊗ q_from.
+    let q = |p: Pose| (p.qw, [p.qx, p.qy, p.qz]);
+    let ((w1, v1), (w2, v2)) = (q(turn), q(from));
+    let v = shared::vec3_add(
+        shared::vec3_add(shared::vec3_scale(v2, w1), shared::vec3_scale(v1, w2)),
+        shared::vec3_cross(v1, v2),
+    );
+    let to = Pose {
+        qw: w1 * w2 - shared::vec3_dot(v1, v2),
+        qx: v[0],
+        qy: v[1],
+        qz: v[2],
+        tx: 0.15,
+        ty: -0.2,
+        tz: 0.25,
+    };
+    let (moved, rotation) = rigid_motion(from, to);
+    let close = |a: [f64; 3], b: [f64; 3]| (0..3).all(|i| (a[i] - b[i]).abs() < 1e-12);
+    assert!(close(moved, [0.05, 0.0, -0.05]), "{moved:?}");
+    assert!(close(rotation, [0.0, 0.2, 0.0]), "{rotation:?}");
+    // The same turn with the quaternion's sign flipped, and no turn at all.
+    let flipped = Pose {
+        qw: -to.qw,
+        qx: -to.qx,
+        qy: -to.qy,
+        qz: -to.qz,
+        ..to
+    };
+    assert!(close(rigid_motion(from, flipped).1, [0.0, 0.2, 0.0]));
+    assert_eq!(rigid_motion(from, from), ([0.0; 3], [0.0; 3]));
+}
+
+#[test]
+fn a_new_pose_track_moves_the_moments_origin_and_a_still_obstacle_does_no_work() {
+    let dt = 2e-5;
+    let obstacle = turning_floor(2.0);
+    let model = pressed_block();
+    let mut executor = cpu::f64::CpuExecutor::new(&model, &obstacle).unwrap();
+    for step in 0..1_500 {
+        run_phases(&mut executor, f64::from(step) * dt, dt, 0.0);
+    }
+    // Held still from here, 1 mm along x from where the track had it.
+    let time = 1_500.0 * dt;
+    let now = obstacle.pose_at(time);
+    let held = Pose {
+        tx: now.tx + 0.001,
+        ..now
+    };
+    executor.set_poses(time, 1.0, &[held]).unwrap();
+    let before = executor.monitors();
+    let rest = model.rest_positions();
+    let steps: Vec<(f64, Vec<([f64; 3], [f64; 3])>)> = (1_500..2_000)
+        .map(|step| {
+            let displacements = executor.snapshot().displacements;
+            run_phases(&mut executor, f64::from(step) * dt, dt, 0.0);
+            let loaded = executor
+                .phase_outputs()
+                .contact_forces
+                .iter()
+                .enumerate()
+                .filter(|(_, f)| f.iter().any(|&c| c != 0.0))
+                .map(|(a, f)| (shared::vec3_add(rest[a], displacements[a]), *f))
+                .collect();
+            (f64::from(step) * dt, loaded)
+        })
+        .collect();
+    let loaded: usize = steps.iter().map(|(_, l)| l.len()).sum();
+    assert!(loaded > 1_000, "the floor must press: {loaded} node-steps");
+    let still = Obstacle {
+        start: time,
+        interval: 1.0,
+        poses: vec![held],
+        ..obstacle
+    };
+    let read = executor.monitors();
+    let expected = mean_moment(&still, &steps, 0.0);
+    let error = shared::vec3_length(shared::vec3_sub(read.contact_moment, expected));
+    assert!(
+        error <= 1e-12 * shared::vec3_length(expected),
+        "{:?} against {expected:?}",
+        read.contact_moment
+    );
+    assert_eq!(read.obstacle_work, before.obstacle_work);
+}
+
+#[test]
+fn f32_reads_the_obstacles_work_as_f64_far_from_the_origin() {
+    // The block and the floor moved about 0.35 m from the origin, where f32 positions round to about 1e-8 m: the
+    // executor takes the obstacle's move over a step from its pose track at f64, so its work follows f64's.
+    let offset = [0.2, -0.15, 0.25];
+    let block = pressed_block();
+    let model = ExplicitModel::new(
+        block
+            .rest_positions()
+            .iter()
+            .map(|&p| shared::vec3_add(p, offset))
+            .collect(),
+        block.elements().to_vec(),
+        block.materials().to_vec(),
+        block.held().to_vec(),
+    )
+    .unwrap();
+    let turning = turning_floor(2.0);
+    let obstacle = Obstacle {
+        poses: turning
+            .poses
+            .iter()
+            .map(|p| Pose {
+                tx: p.tx + offset[0],
+                ty: p.ty + offset[1],
+                tz: p.tz + offset[2],
+                ..*p
+            })
+            .collect(),
+        ..turning
+    };
+    let dt = 2e-5;
+    let work = |executor: &mut dyn Executor| {
+        for step in 0..4_000 {
+            run_phases_dyn(executor, f64::from(step) * dt, dt);
+        }
+        executor.monitors().obstacle_work
+    };
+    let wide = work(&mut cpu::f64::CpuExecutor::new(&model, &obstacle).unwrap());
+    let narrow = work(&mut cpu::f32::CpuExecutor::new(&model, &obstacle).unwrap());
+    assert!(wide.abs() > 0.0);
+    assert!(
+        (narrow / wide - 1.0).abs() < 1e-4,
+        "{narrow} against {wide}"
+    );
+}
+
+fn run_phases_dyn(e: &mut dyn Executor, time: f64, dt: f64) {
+    e.element_dilations();
+    e.gather_volume_changes();
+    e.nodal_pressures();
+    e.element_forces();
+    e.gather_forces();
+    e.contact(time, dt, 0.0);
+    e.integrate(dt, 0.0);
+    e.boundary_conditions(dt, 0.0);
 }

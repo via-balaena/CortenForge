@@ -13,7 +13,8 @@ Phase 2 flow with D1–D5 as recommended.
 >   - That tag is deliberately not pushed, because its history carries scan-derived geometry.
 > - **§2 describes the replaced solver.**
 > - **G2 and G4 are updated for the new solver.** G1, G3 and G5 keep the old solver's baselines, and the
->   unknowns (§7) are updated.
+>   unknowns (§7) are updated. *(2026-09-28: G1, G3 and G6 now also carry the new solver's first run on `base_mold`,
+>   soft-contact recon §16x.)*
 
 **Scene:** the product scan `base_mold` — 5 mm inset, 17 mm Dragon Skin 10A at 25 % Slacker, curved
 centerline. ⛔ It is a sensitive scan: probes load it from outside the repo,
@@ -233,7 +234,10 @@ which inset would pass.
     - *Getting it in:* the peak push force over the whole path (R2). Its geometric share, the push of the
       verdict's μ = 0 run, is read as its largest mean over 10 mm of travel (Jon, 2026-09-26, accepting the
       recommendation; soft-contact recon §16s). *Open:* whether the peak is read as it is at a low friction is
-      decided after step 7 measures it there (Jon, 2026-09-26).
+      decided after step 7 measures it there (Jon, 2026-09-26). *(2026-09-28, recon §16x: measured on `base_mold`, at
+      the pairing library's lowest μ_f, as the largest mean over 1 mm of travel: from the element size K2 needs it
+      moves 8.4 % over the first doubling of the elements and 2.2 % over the second, within K5's bar from twice. The
+      element size D1's readings need is open, four times or finer, on the seated patch.)*
     - *Seated:* ~~the contact pressure at the seat, read as its area-weighted 95th percentile~~ **the contact
       force on the most-loaded 1 cm² patch, over 1 cm²** (Jon, 2026-09-26, accepting the recommendation after
       K5; soft-contact recon §16s). The percentile it replaces did not converge on the tube: its most-squeezed
@@ -289,7 +293,10 @@ which inset would pass.
       quality floor of 0.5 and the viscosity, 15–21; arithmetic.)* *(2026-09-27, recon §16v: step 7's wall
       projects nothing; at ν 0.49 with the viscosity, 3–4 verdicts take 6–11 minutes over the insets measured,
       and 9–16 at the budget's worst corner (ν 0.495, the viscosity × 1.47); with the per-slice estimate picking
-      1–2 insets, 3–8 at the worst corner; arithmetic.)*
+      1–2 insets, 3–8 at the worst corner; arithmetic.)* *(2026-09-28, recon §16x: those took the budget's loading;
+      at the four times it that D1's readings need, a press takes 0.38 of D4 on the CPU at h_K2 and 3.8 at four
+      times its elements (1.3 and 17 at K1's per-step budget, which the CPU beats), and full verdicts at 1–2 insets
+      take 0.13–0.25 and 1.3–2.6 of the search's 15 minutes.)*
     - If the new solver takes far longer on the same scene, revisit the budget rather than cut the
       physics.
   - **D5 — Where the inset changes.** *Decided:* on the fit screen, as **Try at *n* mm**, with D3's
@@ -362,7 +369,9 @@ This is why the architecture changed (soft-contact recon §3).
   §14a's `sim-coupling`). Whether it keeps the modulus corners' shortcut, which soft-contact recon §5d states for
   a prescribed motion, is not known. Step 7 prints the sideways force and twist the wall puts on
   the scan, which show how far the walls would push it off the fitted pose; what reading brings this forward is not
-  yet set.
+  yet set. *(2026-09-28, soft-contact recon §16x rule 10: set, a scan free to move changing D1's reading by more than
+  5 %; on `base_mold` it changed it by −1.0 % at the seat and −2.8 % mid-path, so no recommendation to bring this
+  forward.)*
 - [ ] Ridges and texture in the simulated cavity (§2a, last row).
 - [ ] **A lip radius for every silicone, the product's next evolution.** Jon, 2026-09-24: *"we can
   add a lip radius for all silicone, including the 00-30. its an upgrade and the next evolution of
@@ -399,12 +408,12 @@ This is why the architecture changed (soft-contact recon §3).
 
 | Gate | What must hold | Baseline today |
 |---|---|---|
-| **G1 — Drawn wall outside drawn scan** | No drawn wall vertex inside the drawn scan (beyond a stated tolerance) | Shipped default: 720 of 1 684 more than 1 mm inside, deepest 6.06 mm |
-| **G2 — Bounded penetration** | No node deeper than **1 % of the inset** (0.05 mm on `base_mold`) at any step; *(Jon, 2026-09-27, U18)* the bar is never below **0.02 mm**. An engineering call (Jon, 2026-09-24: *"your call, just need that balance of real life/visual tranferable realism for viusals and legit engineering work"*): penalty contact always penetrates slightly, so this bounds it as a numerical tolerance (soft-contact recon §15c). **The gate stands; if the contact law cannot meet it, the law changes** (recon 15g step 2). Kinematic projection has none. For the old Tet10 solver the gate was no node through, corners and midsides. *(2026-09-25: the explicit solver's contact law is now kinematic. On the benchmark tube the deepest node is at most 0.2 µm inside the grid over a run, and 0.9 µm inside the true surface at its end (soft-contact recon §16o). On `base_mold`, G2 rests mostly on the baked scan grid's own error, not yet measured.)* *(2026-09-26, recon §16r: measured; no grid tried meets it, U18.)* *(2026-09-27, recon §16u: that was the flood fill's sign; signed by parity, the grid's own error meets it at the 5 mm inset. Jon set the bar at smaller insets: 1 % of the inset, never below 0.02 mm, U18.)* | Met on the benchmark tube (recon §16o); on `base_mold` the grid's own error meets it at the 5 mm inset (U18), and a run judges it at step 7 |
-| **G3 — Full seat** | The full inset is reached along the sliding path | Growing: 4.531 of 5 mm. Sliding with the inset: not run |
+| **G1 — Drawn wall outside drawn scan** | No drawn wall vertex inside the drawn scan (beyond a stated tolerance) | Shipped default: 720 of 1 684 more than 1 mm inside, deepest 6.06 mm. *(2026-09-28, recon §16x: the new solver's first run on `base_mold`, against the scan's exact distance with G2's bar as the tolerance: at most 0.096 of it over the reads, 0.019 at the end over every surface node, in every valid run)* |
+| **G2 — Bounded penetration** | No node deeper than **1 % of the inset** (0.05 mm on `base_mold`) at any step; *(Jon, 2026-09-27, U18)* the bar is never below **0.02 mm**. An engineering call (Jon, 2026-09-24: *"your call, just need that balance of real life/visual tranferable realism for viusals and legit engineering work"*): penalty contact always penetrates slightly, so this bounds it as a numerical tolerance (soft-contact recon §15c). **The gate stands; if the contact law cannot meet it, the law changes** (recon 15g step 2). Kinematic projection has none. For the old Tet10 solver the gate was no node through, corners and midsides. *(2026-09-25: the explicit solver's contact law is now kinematic. On the benchmark tube the deepest node is at most 0.2 µm inside the grid over a run, and 0.9 µm inside the true surface at its end (soft-contact recon §16o). On `base_mold`, G2 rests mostly on the baked scan grid's own error, not yet measured.)* *(2026-09-26, recon §16r: measured; no grid tried meets it, U18.)* *(2026-09-27, recon §16u: that was the flood fill's sign; signed by parity, the grid's own error meets it at the 5 mm inset. Jon set the bar at smaller insets: 1 % of the inset, never below 0.02 mm, U18.)* | Met on the benchmark tube (recon §16o); on `base_mold` the grid's own error meets it at the 5 mm inset (U18), and a run judges it at step 7. *(2026-09-28, recon §16x: step 7's first run, against the scan's exact distance, at most 0.096 of the bar over its reads in every valid run)* |
+| **G3 — Full seat** | The full inset is reached along the sliding path | Growing: 4.531 of 5 mm. Sliding with the inset: met by construction on the prescribed fitted path, in every valid run of step 7's first (recon §16x, 2026-09-28) |
 | **G4 — κ independent of the schedule** (implicit solver only) | The derived κ does not change with the step count | Holds (the ceiling rule) |
 | **G5 — Heat map in the rest frame** | `the_heat_map_reads_the_deformed_view_at_rest_positions` passes | Passes; fails under four mutations |
-| **G6 — Runtime** | Within the Phase 2 budget | See Phase 2 |
+| **G6 — Runtime** | Within the Phase 2 budget | See Phase 2. *(2026-09-28, recon §16x: on `base_mold` a press takes 0.38 of D4 on the CPU at the element size K2 needs, and 3.8 at four times its elements; D1's readings need four times or finer, open)* |
 
 G1 and G2 should become committed probes (the scan is repo-excluded, so they run locally and cannot gate
 in CI); G5 already gates in CI.
@@ -557,6 +566,8 @@ in CI); G5 already gates in CI.
     (0.29 without) if the GPU meets K1, and 0.10 on the CPU. Across Croquette's error bars' 5.2–10.3 Pa·s it takes
     0.39–0.53. *(2026-09-27, recon §16v: read on the old wall before the mesher's Parity Rule fix; on step 7's wall at
     the 5 mm inset a viscous press takes 0.42 of D4 at K1's rate, and 0.59 at ν 0.495 with 1.47 times the viscosity.)*
+    *(2026-09-28, recon §16x: at the loading D1's readings need, four times the budget's, a press takes 0.38 of D4 on
+    the CPU at h_K2 and 3.8 at four times its elements; the viscosity's range moves the steps 0.83–1.39 times.)*
 - **U16 — D1's readings do not converge on the tube** (soft-contact recon §16p, K5, 2026-09-25). The seated 95th
   percentile moved by 8–12 % from the 50k to the 100k mesh in three of four cases (−2.2 % in the fourth), and the
   frictionless push peak by 14 % (λ_a 1.1). The push with friction converged. §15a sends this back to D1's
@@ -567,7 +578,8 @@ in CI); G5 already gates in CI.
   share is read over 10 mm of travel (D1). On them K5 passes from 50k to 100k (at most 1.3 %); 100k reads within
   3.6 % of a mesh 4× finer along the tube. **Open:** from 10k to 50k the frictionless patch and the geometric share
   do not converge, and `base_mold` at h_K2 is about the 10k tube's element size, so the element size they need on
-  the product is measured in step 7. The
+  the product is measured in step 7 *(2026-09-28, recon §16x: measured and open, four times h_K2's elements or
+  finer; an element collapsing at the seated tip under the mount is not yet settled)*. The
   lip radius stays under Later.
 - **U17 — The product wall's canal surface** (soft-contact recon §16r, 2026-09-26). At the element size K2 needs,
   the old path's wall puts the canal nodes off the true canal surface: its 5th and 95th percentiles at −0.50 and
@@ -608,6 +620,11 @@ in CI); G5 already gates in CI.
   D3's search reaches and no grid meets. It is now 1 % of the inset, but never below 0.02 mm. The obstacle is the
   scan whatever the inset, so a 0.0625 mm grid meets the bar at every inset, a 0.125 mm grid from 3 mm, and a
   0.25 mm grid from 5 mm. *Decided (Jon, 2026-09-27):* the product's fine grid is 0.0625 mm.
+- **U19 — The silicone's bulk modulus, under a mount** (soft-contact recon §16x, 2026-09-28). Mounted at its closed
+  end, the product's readings rise 1.4–5.3 % with each doubling of K from ν 0.49 to 0.4975, the second doubling's
+  change more than half the first's. The silicone's own K is not measured, and §5b's sources put rubbers several doublings
+  further on. Which ν a verdict reads at, and whether ν becomes a corner as friction is, trades speed against quality:
+  Jon's call.
 
 ---
 

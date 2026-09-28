@@ -5,7 +5,7 @@
 // panic.
 #![allow(clippy::float_cmp, clippy::expect_used)]
 
-use sim_soft::pairing::{FRICTION_CHECKED_TO, PAIRINGS, Phase, checked};
+use sim_soft::pairing::{FRICTION_CHECKED_TO, PAIRINGS, Phase, Surface, checked};
 
 #[test]
 fn every_measurement_is_a_positive_range_with_a_source() {
@@ -23,6 +23,25 @@ fn every_measurement_is_a_positive_range_with_a_source() {
             assert!(m.source.contains("https://"), "{}", pairing.name);
             assert!(!m.conditions.is_empty(), "{}", pairing.name);
         }
+    }
+}
+
+#[test]
+fn every_pairing_is_silicone_on_skin_as_its_name_says() {
+    // §5c's table measured silicone on skin only (each measurement's conditions say where a source measured something
+    // else); the surfaces are data, and each name states them.
+    for pairing in PAIRINGS {
+        assert_eq!(
+            pairing.surfaces,
+            [Surface::Silicone, Surface::Skin],
+            "{}",
+            pairing.name
+        );
+        assert!(
+            pairing.name.starts_with("silicone on skin"),
+            "{}",
+            pairing.name
+        );
     }
 }
 

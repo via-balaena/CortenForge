@@ -52,6 +52,17 @@ pub enum Walls {
     /// no motion around the tube, so holding the wall whole poses the same
     /// problem.
     Cased,
+    /// The outer wall held whole and both end faces held axially, as by
+    /// frictionless end plates, and every other node free: plan 15d.8's
+    /// confined case posed through the surface alone (plan §16x).
+    ///
+    /// With a mandrel through the whole tube, filling the bore from end to
+    /// end, the cased oracle's state is the exact solution: it has no axial
+    /// motion, which the plates allow, and leaves the outer wall still. The
+    /// outer wall held alone is not enough on this tube: the material
+    /// escapes toward the free entry and the empty bore past the nose, and
+    /// the band read 44 % below the oracle (§16x's review).
+    Shell,
 }
 
 /// A structured annular mesh, with nodes exactly on circles.
@@ -215,16 +226,27 @@ impl Tube {
                 let (i, _, k) = self.levels(n);
                 match walls {
                     Walls::Free => k == self.axial,
-                    Walls::Cased => i == self.radial,
+                    Walls::Cased | Walls::Shell => i == self.radial,
                 }
             })
             .collect();
         let model = ExplicitModel::new(positions, elements, vec![material; count], held)?;
+        let axial = [[0.0, 0.0, 1.0], [0.0; 3]];
         match walls {
             Walls::Free => Ok(model),
-            Walls::Cased => {
-                let axial = [[0.0, 0.0, 1.0], [0.0; 3]];
-                model.with_constraints(vec![axial; self.node_count()])
+            Walls::Cased => model.with_constraints(vec![axial; self.node_count()]),
+            Walls::Shell => {
+                let ends = (0..self.node_count())
+                    .map(|n| {
+                        let (_, _, k) = self.levels(n);
+                        if k == 0 || k == self.axial {
+                            axial
+                        } else {
+                            [[0.0; 3]; 2]
+                        }
+                    })
+                    .collect();
+                model.with_constraints(ends)
             }
         }
     }

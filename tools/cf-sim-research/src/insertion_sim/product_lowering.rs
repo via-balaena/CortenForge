@@ -34,15 +34,15 @@ use super::explicit_budget::{
 };
 
 /// The run's Poisson's ratio: the product's lower one (§16r).
-const POISSON: f64 = 0.49;
+pub(super) const POISSON: f64 = 0.49;
 
 /// §15b's hold after the loading.
-const HOLD: f64 = 0.2;
+pub(super) const HOLD: f64 = 0.2;
 
 /// A field less a constant: the scan's signed distance less the outer offset is the outer surface's own level.
-struct Less {
-    field: Arc<dyn cf_design::Sdf>,
-    by: f64,
+pub(super) struct Less {
+    pub(super) field: Arc<dyn cf_design::Sdf>,
+    pub(super) by: f64,
 }
 
 impl Sdf for Less {
@@ -56,7 +56,7 @@ impl Sdf for Less {
 }
 
 /// Step 7's wall at `cell`: the scan's exact distances, its cut points located on them.
-fn step7_wall(
+pub(super) fn step7_wall(
     scan: &mesh_types::IndexedMesh,
     design: &SimDesign,
     caps: &[cf_cap_planes::CapPlane],
@@ -74,14 +74,14 @@ fn step7_wall(
 }
 
 /// Each element's density: the one layer's.
-fn densities(design: &SimDesign, mesh: &SdfMeshedTetMesh<Yeoh>) -> Vec<f64> {
+pub(super) fn densities(design: &SimDesign, mesh: &SdfMeshedTetMesh<Yeoh>) -> Vec<f64> {
     assert_eq!(design.layers.len(), 1, "the product has one layer");
     vec![cf_device_types::material_density(&design.layers[0].anchor_key); mesh.n_tets()]
 }
 
 /// Step 7's wall near `target` element size: a first mesh at the old path's 4 mm lattice, then secant steps on the
 /// lattice spacing until the element size is within 2 % of the target (at most three).
-fn step7_wall_at_size(
+pub(super) fn step7_wall_at_size(
     scan: &mesh_types::IndexedMesh,
     design: &SimDesign,
     caps: &[cf_cap_planes::CapPlane],
@@ -125,7 +125,7 @@ fn root(parent: &mut [usize], mut a: usize) -> usize {
 }
 
 /// How many pieces a model's elements make, joined through shared nodes.
-fn pieces(model: &ExplicitModel) -> usize {
+pub(super) fn pieces(model: &ExplicitModel) -> usize {
     let mut parent: Vec<usize> = (0..model.node_count()).collect();
     for element in model.elements() {
         let first = root(&mut parent, element[0] as usize);
@@ -184,7 +184,7 @@ fn touches(model: &ExplicitModel) -> (usize, usize) {
 }
 
 /// The model's boundary nodes' rest positions.
-fn boundary_points(model: &ExplicitModel) -> Vec<Point3<f64>> {
+pub(super) fn boundary_points(model: &ExplicitModel) -> Vec<Point3<f64>> {
     let mut nodes: Vec<u32> = model
         .surface_triangles()
         .iter()

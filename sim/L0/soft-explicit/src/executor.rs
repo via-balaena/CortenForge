@@ -146,6 +146,12 @@ pub struct Monitors {
     /// frame, averaged over the steps since the last read. The obstacle's
     /// reaction is its negative.
     pub contact_force: [f64; 3],
+    /// The moment of the contact forces on the soft body's nodes about the
+    /// obstacle's body origin as posed at the start of each step, world
+    /// frame, averaged over the steps since the last read: `Σ (xᵢ − p) × fᵢ`,
+    /// with `xᵢ` the node's position at the start of the step (plan §16x).
+    /// The twist on the obstacle is its negative.
+    pub contact_moment: [f64; 3],
     /// The sum of the nodes' contact normal-force magnitudes, averaged over
     /// the steps since the last read: the Coulomb push's `Σ f_n` (15d.7).
     pub normal_force: f64,
@@ -156,6 +162,15 @@ pub struct Monitors {
     /// Cumulative: the work the contact forces have done on the soft body's
     /// nodes.
     pub contact_work: f64,
+    /// Cumulative: the work the obstacle's motion has done against the
+    /// contact forces on the soft body's nodes. Over each step it is
+    /// `F · Δp + M · φ`, with `F` and `M` that step's resultant and moment
+    /// (as in [`Monitors::contact_moment`]), and `Δp` and `φ` the body
+    /// origin's move and the world-frame rotation vector of the obstacle's
+    /// turn over the step, from its pose track at f64 ([`rigid_motion`]).
+    /// Linear in the turn over one step. D1's push over a stretch of the
+    /// path is its change over the stretch, per unit of travel (plan §16x).
+    pub obstacle_work: f64,
     /// Cumulative: the energy mass damping and the material's viscosity have
     /// removed.
     pub damping_loss: f64,
@@ -181,14 +196,45 @@ impl Monitors {
             self.contact_kinetic_energy,
             self.normal_force,
             self.contact_work,
+            self.obstacle_work,
             self.damping_loss,
             self.max_penetration,
             self.deepest_prediction,
         ]
         .iter()
         .chain(&self.contact_force)
+        .chain(&self.contact_moment)
         .all(|v| v.is_finite())
     }
+}
+
+/// The rigid motion from pose `from` to pose `to`: the body origin's move,
+/// and the turn's rotation vector, both in the world frame.
+///
+/// The turn is `R_to R_fromᵀ`, so a point of the body moves by
+/// `Δp + φ × (x − p_from)` to first order in it.
+#[must_use]
+pub fn rigid_motion(from: Pose, to: Pose) -> ([f64; 3], [f64; 3]) {
+    let moved = [to.tx - from.tx, to.ty - from.ty, to.tz - from.tz];
+    // The turn `q_to q_from*`, on the shorter arc.
+    let (w1, v1) = (to.qw, [to.qx, to.qy, to.qz]);
+    let (w2, v2) = (from.qw, [-from.qx, -from.qy, -from.qz]);
+    let mut w = w1 * w2 - shared::vec3_dot(v1, v2);
+    let mut v = shared::vec3_add(
+        shared::vec3_add(shared::vec3_scale(v2, w1), shared::vec3_scale(v1, w2)),
+        shared::vec3_cross(v1, v2),
+    );
+    if w < 0.0 {
+        w = -w;
+        v = shared::vec3_scale(v, -1.0);
+    }
+    let sine = shared::vec3_length(v);
+    let turn = if sine > 0.0 {
+        shared::vec3_scale(v, 2.0 * sine.atan2(w) / sine)
+    } else {
+        [0.0; 3]
+    };
+    (moved, turn)
 }
 
 /// A read of the executor's per-node state.

@@ -9,9 +9,15 @@ use std::f64::consts::{FRAC_1_SQRT_2, PI, TAU};
 use sim_soft_explicit::ExplicitModel;
 use sim_soft_explicit::executor::{Obstacle, Snapshot};
 use sim_soft_explicit::f64::{Material, Pose, tet4_volume, triangle_area};
+use sim_soft_explicit::f64::{
+    pose_to_body, pose_to_world, vec3_add, vec3_cross, vec3_dot, vec3_sub,
+};
 use sim_soft_explicit::fixtures::grid::bake;
 use sim_soft_explicit::fixtures::tube::{Mesh, Tube, Walls, tributary_area};
-use sim_soft_explicit::readings::{PROBE_AREA, WindowContact, area_percentile, travel_peak};
+use sim_soft_explicit::readings::{
+    PROBE_AREA, WindowContact, along_path, area_percentile, moment_about, sideways, static_push,
+    travel_peak, work_peak,
+};
 
 const SILICONE: Material = Material {
     mu: 23.0e3,
@@ -484,6 +490,15 @@ fn half_a_patch_off_the_contact_reads_half() {
     );
     let edge = contact.patch_at(PROBE_AREA, [0.5 * h, 0.0, 0.0]);
     assert!((edge / 500.0 - 1.0).abs() < 2e-3, "{edge}");
+    // Every triangle with a pressed node carries force, so the loaded surface runs to x = h: the ball's disc on
+    // the near side of the line half a cell past its centre.
+    let loaded = contact.loaded_area_at(PROBE_AREA, [0.5 * h, 0.0, 0.0]);
+    let (r, d) = ((PROBE_AREA / PI).sqrt(), 0.5 * h);
+    let segment = r * r * (PI - (d / r).acos()) + d * (r * r - d * d).sqrt();
+    assert!(
+        (loaded / segment - 1.0).abs() < 2e-3,
+        "{loaded} against {segment}"
+    );
     let peak = contact.patch_peak(PROBE_AREA).unwrap();
     assert!(
         (peak.pressure / 1000.0 - 1.0).abs() < 2e-3,
@@ -824,6 +839,12 @@ fn on_a_bore_the_ball_holds_a_little_more_than_the_probe_area() {
     let expected = ball_on_cylinder(bore, (PROBE_AREA / PI).sqrt());
     assert!(expected > 1.005 && expected < 1.02, "{expected}");
     assert!((read / expected - 1.0).abs() < 1e-3, "{read} vs {expected}");
+    // The loaded surface inside the ball: the same share of the cylinder, here all of it loaded.
+    let loaded = contact.loaded_area_at(PROBE_AREA, centre) / PROBE_AREA;
+    assert!(
+        (loaded / expected - 1.0).abs() < 1e-3,
+        "{loaded} vs {expected}"
+    );
 }
 
 #[test]
@@ -871,4 +892,175 @@ fn the_normal_follows_the_obstacles_pose() {
     };
     let normal = moved.world_normal(0.0, [0.003, 0.010, 0.002]);
     assert!(close(normal, [0.0, 1.0, 0.0]), "{normal:?}");
+}
+
+#[test]
+fn the_push_over_travel_is_the_works_mean_over_the_window() {
+    // 2 N for the first 10 mm of travel, then 5 N, read every quarter millimetre from 3 mm on.
+    let work = |s: f64| 2.0 * s.min(10.0 * MM) + 5.0 * (s - 10.0 * MM).max(0.0);
+    let mut samples: Vec<(f64, f64)> = (12..=80)
+        .map(|k| {
+            let s = f64::from(k) * 0.25 * MM;
+            (s, 7.0 + work(s))
+        })
+        .collect();
+    let peak = |samples: &[(f64, f64)], window: f64| work_peak(samples, window).unwrap();
+    assert!((peak(&samples, 1.0 * MM) / 5.0 - 1.0).abs() < 1e-12);
+    assert!((peak(&samples, 10.0 * MM) / 5.0 - 1.0).abs() < 1e-12);
+    // Over 14 mm the best window holds 4 mm at 2 N and 10 mm at 5 N.
+    assert!((peak(&samples, 14.0 * MM) / (58.0 / 14.0) - 1.0).abs() < 1e-12);
+    // The same as the travel's own reading of the means.
+    let means: Vec<(f64, f64)> = samples
+        .windows(2)
+        .map(|w| (w[1].0, (w[1].1 - w[0].1) / (w[1].0 - w[0].0)))
+        .collect();
+    let direct = travel_peak(samples[0].0, &means, 3.0 * MM).unwrap();
+    assert!((peak(&samples, 3.0 * MM) / direct - 1.0).abs() < 1e-12);
+    // A pause mid-path and a hold at the end add nothing; a window longer than the travel reads nothing, and so
+    // does no read.
+    let pause = samples[10];
+    samples.insert(10, pause);
+    let end = *samples.last().unwrap();
+    samples.extend([end, end]);
+    assert!((peak(&samples, 1.0 * MM) / 5.0 - 1.0).abs() < 1e-12);
+    assert_eq!(work_peak(&samples, 18.0 * MM), None);
+    assert_eq!(work_peak(&[], 1.0 * MM), None);
+}
+
+#[test]
+fn along_the_path_across_it_and_about_a_point() {
+    // A move along z; a turn about z carries a point on x along y; no move at all.
+    let moved = Pose {
+        tz: 0.001,
+        ..IDENTITY
+    };
+    let along = along_path(IDENTITY, moved, [0.3, -0.2, 0.1]).unwrap();
+    assert!(
+        (vec3_sub(along, [0.0, 0.0, 1.0]))
+            .iter()
+            .all(|c| c.abs() < 1e-12),
+        "{along:?}"
+    );
+    let turned = Pose {
+        qw: (0.5e-4_f64).cos(),
+        qz: (0.5e-4_f64).sin(),
+        ..IDENTITY
+    };
+    let across = along_path(IDENTITY, turned, [0.01, 0.0, 0.0]).unwrap();
+    assert!(
+        (across[1] - 1.0).abs() < 1e-8 && across[0].abs() < 1e-4,
+        "{across:?}"
+    );
+    assert_eq!(along_path(moved, moved, [0.01, 0.0, 0.0]), None);
+
+    assert_eq!(sideways([1.0, 2.0, 3.0], [0.0, 0.0, 1.0]), [1.0, 2.0, 0.0]);
+
+    // Two forces, their moment about a turned, moved pose's origin, taken about a point of the body.
+    let pose = Pose {
+        qw: (0.35_f64).cos(),
+        qx: (0.35_f64).sin() * 0.6,
+        qy: (0.35_f64).sin() * 0.8,
+        tx: 0.02,
+        ty: -0.01,
+        tz: 0.05,
+        ..IDENTITY
+    };
+    let loads = [
+        ([0.03, 0.01, 0.04], [1.0, -2.0, 0.5]),
+        ([-0.01, 0.02, 0.07], [-0.3, 0.4, 2.0]),
+    ];
+    let about = |centre: [f64; 3]| {
+        loads.iter().fold([0.0; 3], |m, &(at, f)| {
+            vec3_add(m, vec3_cross(vec3_sub(at, centre), f))
+        })
+    };
+    let force = loads.iter().fold([0.0; 3], |s, &(_, f)| vec3_add(s, f));
+    let point = [0.004, -0.003, 0.012];
+    let read = moment_about(about([pose.tx, pose.ty, pose.tz]), force, pose, point);
+    let expected = about(pose_to_world(pose, point));
+    assert!(
+        (0..3).all(|i| (read[i] - expected[i]).abs() < 1e-15),
+        "{read:?} against {expected:?}"
+    );
+}
+
+#[test]
+fn the_static_push_is_the_work_of_the_paths_move_per_unit_advance() {
+    // The path's interval: a turn of 10 µrad about an oblique axis and a move of 1 mm, from a turned pose; the
+    // obstacle held at a pose a third of the way along it. The turn is small enough that its linearization misses
+    // by far less than leaving the moment about the held pose's origin does.
+    let from = Pose {
+        qw: (0.2_f64).cos(),
+        qx: (0.2_f64).sin(),
+        tx: 0.01,
+        ty: 0.02,
+        tz: -0.03,
+        ..IDENTITY
+    };
+    let turn = [0.6e-5, 0.0, 0.8e-5];
+    let half = vec3_length_of(turn) / 2.0;
+    let axis = turn.map(|c| c / (2.0 * half));
+    let (qw, qv) = (half.cos(), axis.map(|c| c * half.sin()));
+    // q_to = q_turn ⊗ q_from.
+    let fv = [from.qx, from.qy, from.qz];
+    let v = vec3_add(
+        vec3_add(fv.map(|c| c * qw), qv.map(|c| c * from.qw)),
+        vec3_cross(qv, fv),
+    );
+    let to = Pose {
+        qw: qw * from.qw - vec3_dot(qv, fv),
+        qx: v[0],
+        qy: v[1],
+        qz: v[2],
+        tx: from.tx + 0.0002,
+        ty: from.ty + 0.0004,
+        tz: from.tz + 0.0009,
+    };
+    let at = sim_soft_explicit::f64::pose_interpolate(from, to, 1.0 / 3.0);
+    let loads = [
+        ([0.03, 0.01, 0.04], [1.0, -2.0, 0.5]),
+        ([-0.01, 0.02, 0.07], [-0.3, 0.4, 2.0]),
+        ([0.02, -0.02, -0.01], [0.7, 0.1, -1.5]),
+    ];
+    let force = loads.iter().fold([0.0; 3], |s, &(_, f)| vec3_add(s, f));
+    let moment_at = |origin: [f64; 3]| {
+        loads.iter().fold([0.0; 3], |m, &(x, f)| {
+            vec3_add(m, vec3_cross(vec3_sub(x, origin), f))
+        })
+    };
+    let advance = 0.0011;
+    // The work each force resists over the exact rigid motion of the obstacle's point there.
+    let exact: f64 = loads
+        .iter()
+        .map(|&(x, f)| vec3_dot(f, vec3_sub(pose_to_world(to, pose_to_body(from, x)), x)))
+        .sum::<f64>()
+        / advance;
+    let push = static_push(
+        force,
+        moment_at([at.tx, at.ty, at.tz]),
+        at,
+        (from, to),
+        advance,
+    )
+    .unwrap();
+    let error = (push / exact - 1.0).abs();
+    assert!(error < 2.0 * half, "{push} against {exact}");
+    // The moment left about the held pose's origin, not carried to the interval's, misses by more.
+    let uncarried = static_push(
+        force,
+        moment_at([at.tx, at.ty, at.tz]),
+        from,
+        (from, to),
+        advance,
+    )
+    .unwrap();
+    assert!(
+        (uncarried / exact - 1.0).abs() > 5.0 * error,
+        "{uncarried} against {exact}, {error}"
+    );
+    assert_eq!(static_push(force, [0.0; 3], at, (from, to), 0.0), None);
+}
+
+fn vec3_length_of(v: [f64; 3]) -> f64 {
+    vec3_dot(v, v).sqrt()
 }

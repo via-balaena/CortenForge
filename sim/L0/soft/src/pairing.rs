@@ -32,6 +32,15 @@ pub fn checked(mu: f64) -> bool {
     mu <= FRICTION_CHECKED_TO
 }
 
+/// A surface a pairing puts in contact.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Surface {
+    /// The device's cured silicone.
+    Silicone,
+    /// The body's skin.
+    Skin,
+}
+
 /// The lubricant between the two surfaces.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lubricant {
@@ -84,6 +93,8 @@ pub struct Measurement {
 pub struct Pairing {
     /// Its name.
     pub name: &'static str,
+    /// What slides on what: the device's surface, then the one it slides on.
+    pub surfaces: [Surface; 2],
     /// The lubricant.
     pub lubricant: Lubricant,
     /// How long after the lubricant went on.
@@ -125,6 +136,7 @@ const MASEN_2020: &str = "Masen 2020, https://doi.org/10.1371/journal.pone.02393
 pub const PAIRINGS: &[Pairing] = &[
     Pairing {
         name: "silicone on skin, dry",
+        surfaces: [Surface::Silicone, Surface::Skin],
         lubricant: Lubricant::Dry,
         state: State::Fresh,
         measurements: &[
@@ -154,6 +166,7 @@ pub const PAIRINGS: &[Pairing] = &[
     },
     Pairing {
         name: "silicone on skin, water-based gel, fresh",
+        surfaces: [Surface::Silicone, Surface::Skin],
         lubricant: Lubricant::WaterBasedGel,
         state: State::Fresh,
         measurements: &[
@@ -175,6 +188,7 @@ pub const PAIRINGS: &[Pairing] = &[
     },
     Pairing {
         name: "silicone on skin, water-based gel, after 5 min",
+        surfaces: [Surface::Silicone, Surface::Skin],
         lubricant: Lubricant::WaterBasedGel,
         state: State::After { minutes: 5 },
         measurements: &[Measurement {
@@ -187,6 +201,7 @@ pub const PAIRINGS: &[Pairing] = &[
     },
     Pairing {
         name: "silicone on skin, silicone lubricant, fresh",
+        surfaces: [Surface::Silicone, Surface::Skin],
         lubricant: Lubricant::Silicone,
         state: State::Fresh,
         measurements: &[Measurement {
@@ -199,6 +214,7 @@ pub const PAIRINGS: &[Pairing] = &[
     },
     Pairing {
         name: "silicone on skin, silicone lubricant, after 20 min",
+        surfaces: [Surface::Silicone, Surface::Skin],
         lubricant: Lubricant::Silicone,
         state: State::After { minutes: 20 },
         measurements: &[Measurement {

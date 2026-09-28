@@ -446,6 +446,14 @@ fill a gap.
 - *(2026-09-27, §16w)* the case moved to a PR of its own; the run's start clear of the wall by §15b's gap; the
   path's sampling held to G2's floor at the points it reads; the band's rule; and the product's band of eight fine
   cells.
+- *(2026-09-28, §16x, labelling #977's calls)* the mount's plane, through the seated tip and normal to the
+  centreline there; the band rule's factor of two; the dry pairing's mean ± its spread; and the sampling gate
+  loosened after #977's build, to within 1 % of its bar at an interval it never read (mine).
+- *(2026-09-28, §16x)* step 7's first run's rules: the loading ladder, the element size, ν's convergence in K (the
+  choice of ν stays Jon's), the confined case held on the surface, f32 against f64 at K3's bar, the seated window, the
+  band's trigger on a coarse correction, where G1 and G2 are read and G1's tolerance at G2's bar, the contact work over
+  the hold, the free-scan test, stiffness scaling on the product, the push read over 1 mm of travel, the mass damping
+  carried from the tube, and the executor's two new monitors.
 
 ## 10. What the research could not see
 
@@ -1233,7 +1241,9 @@ Each item is one PR with its own tests and a done-when.
      conformance tests must allow. The done-when above does not yet say how. *(2026-09-27, §16w: at the product's
      band of eight fine cells the fine values are more than four times the default at f32; and the executor gains two
      monitors, the deepest predicted point and the corrections the coarse grid answered, which the GPU must reduce
-     too.)*
+     too.)* *(2026-09-28, §16x: two more, the contact forces' moment about the obstacle's posed origin and, each step,
+     the work the obstacle's motion does against them, its move and turn over a step taken from the pose track at f64;
+     the GPU, which runs f32 only, must reduce the one and accumulate the other.)*
 5. **The experiment on the GPU:** K1, K2 at 100k, the ν sweep, the ladder, the Coulomb push, the stress
    case, the SDF comparison and stiffness scaling. *Stiffness scaling runs first on the CPU, in step 2
    (16i), because the product's budget depends on it.*
@@ -1250,9 +1260,14 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
   *(2026-09-26, §16r: 0.29–0.61 of D4 at K1's rate with the wall as meshed; projected, more, fit plan U17)*
   *(2026-09-27, §16v: step 7's wall projects nothing; a viscous press at ν 0.49 takes 0.42–0.56 of D4 at K1's rate
   over the insets measured, and 0.59–0.79 at the budget's worst corner)* *(2026-09-27, §16w: before the first press,
-  a scan's bake takes about three tenths of D4 at the product's band, once per scan and band)*;
+  a scan's bake takes about three tenths of D4 at the product's band, once per scan and band)* *(2026-09-28, §16x:
+  those figures took the budget's loading; step 7's first run set it at four times that. At h_K2 a press then takes
+  0.38 of D4 on the CPU, and 3.8 at four times its elements, which D1's readings may need; a device at K1's per-step
+  budget would be slower than the CPU)*;
 - the pairing's nominal corner, which D3 judges at: add it as a run, or show push force is linear in
-  μ_f *(2026-09-27: §5c's re-sourcing found no source for a nominal; which value D3 judges at is open)*;
+  μ_f *(2026-09-27: §5c's re-sourcing found no source for a nominal; which value D3 judges at is open)*
+  *(2026-09-28, §16x: on `base_mold` the frictional push less the frictionless, at 0.18 over at 0.104, reads 1.686
+  against 1.731: nearly linear)*;
 - Tier 1's accuracy against the solver, and what D3 does if it is poor *(2026-09-27, §16t: Tier 1 reads slice by
   slice, with no rigid path, and the solver runs the fitted pose; step 7 reports the path's own share, the fitted
   pose against the slide, beside Tier 1's error)*;
@@ -1280,26 +1295,45 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
 - *(2026-09-26, §16s)* the element size D1's readings need on the product: on the tube the frictionless patch and
   the geometric share do not converge from 10k to 50k, and `base_mold` at h_K2 is about the 10k tube's element
   size, though not built in rings. Step 7
-  measures D1's readings' convergence on `base_mold`; until then D4's figures at h_K2 (§16r) rest on K2 alone;
+  measures D1's readings' convergence on `base_mold`; until then D4's figures at h_K2 (§16r) rest on K2 alone
+  *(2026-09-28, §16x: measured and open: four times h_K2's elements or finer, with the element as it is)*;
 - *(2026-09-27, #973's review)* D1's push at a low friction. K5 judged the push's peak with friction only at μ_f
   0.3. Without friction the peak moves with the mesh, which ripples it (§16s): at 100k and λ_a 1.1 it reads 30 %
   above the 10 mm reading, and on the mesh 4× finer along the tube 8 % above that mesh's (arithmetic on §16s's
   tables). How the peak moves at a low μ_f is not measured. Step
   7's convergence check of D1's push includes the lowest μ_f of the pairing library, and D1's push is decided with
-  that number (Jon, 2026-09-26);
+  that number (Jon, 2026-09-26) *(2026-09-28, §16x: at μ_f 0.104 the peak moves 8.4 % over the first doubling of
+  h_K2's elements and 2.2 % over the second, read over 1 mm of travel; for Jon)*;
 - *(2026-09-27, §16t's review)* **D1's push on a turning path.** The fit plan defines the push as −Σ fᵢ · (dxᵢ/ds).
   On a path that turns the scan, that takes the twist on the scan as well as the force. The monitors reduce the
   resultant contact force but not its moment, and the tube probe reads the resultant's component along the tube's
   axis. Whether the push is reduced in the executor (and so on the GPU, steps 3–5) or computed from the snapshots'
-  per-node forces is not decided;
+  per-node forces is not decided *(2026-09-28, §16x: the executor, which accumulates the obstacle's work each step)*;
 - *(2026-09-27, §16t)* **What reading of the fitted pose brings the contact-guided scan forward.** Step 7 prints
   the sideways force and twist the wall puts on the scan; no reading of them is yet set that would. Step 7's design
-  sets one before its runs;
+  sets one before its runs *(2026-09-28, §16x rule 10 set it: a scan free to move changing D1's reading by more than
+  5 %. On `base_mold` it changed it by −1.0 and −2.8 %, so no recommendation)*;
 - *(2026-09-25, §16p)* friction above μ_f 0.3: the damped tube's Coulomb push fails 15d.7 at μ_f 0.6, and §5c's ranges
   reach 2.0 *(re-sourced 2026-09-27: on skin to about 1.2, tacky analogs above 2; §5c)*. Before a verdict is trusted
   at such a corner, its Coulomb push is checked there (§7 rung 4's self-consistency check), and the material's damping
   (fit plan U15) is settled. Above f ≈ 1.0 the half-space's own sliding is unstable at ν 0.49 (§16p), so there a finer
   mesh need not converge;
+
+- *(2026-09-28, §16x)* ν under the mount: each of D1's readings' change per doubling of K on the product (ν 0.49,
+  0.495 and 0.4975), the silicone's own K being unknown. Which ν verdicts read at, and whether ν becomes a corner as
+  μ_f is, trades speed against quality, so it is Jon's call;
+- *(2026-09-28, §16x)* the confined case for a hold on the skin alone: the tube with its outer wall held whole and
+  its ends on frictionless plates, the mandrel through it, against the confined oracle. The mount holds less and has
+  no oracle of its own *(§16x: the tube passes, which settles the shell's side; the mount's stays open, since rule 2,
+  the check on the product's own confinement, did not settle, and the element collapsing at the tip appears under
+  the mount)*;
+- *(2026-09-28, §16x)* the element collapsing near the product's seated tip under the mount: the most-compressed
+  element reaches 9–16 % of its volume while its nodes' averaged volume, from which selective ANP takes the pressure,
+  stays within 12 % of its rest, at every size run, and the step falls to 0.06–0.40 of the rest step. With
+  the loop's re-estimate every 500 steps (§15c) one run inverted an element and went non-finite; every 50 it ran
+  through, at a cost not measured. Which element limits the step, whether the collapse moves D1's readings and so the
+  element size they need, and what the re-estimate interval should be are not measured. My recommendation to Jon:
+  settle this before D1's element size is read again;
 
 **Starting now, in parallel with steps 1–2, needing no solver:**
 - U3's geometric check *(done, §16t)*;
@@ -1355,7 +1389,14 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
      each pose, checked locally as the 8.285 mm was.)* *(2026-09-27, §16u: the probe's room reads the old path's
      scan grid, so that check reads the probe and the lowering through the same grid; and the lowering sets the
      bake's band and bakes the fine grid at 0.0625 mm (Jon, 2026-09-27). Deeper than the band, as at the t = 0
-     intrusion, the coarse grid answers, and its error there is not measured.)*
+     intrusion, the coarse grid answers, and its error there is not measured.)* *(2026-09-28, §16x: done, on the bars
+     as re-barred. The bake reads each sample's exact signed distance, and on `base_mold` its own error at the scan's
+     points is within G2's bar (§16u); the lowered fitted pose passes the known-answer tests and reproduced the
+     probe's room at each pose through one grid (§16w); and the options this step kept each have a test, the wall
+     held by nothing, by a mount and by a rigid shell (§16w). The options it moved are step 6b.)*
+   - **6b** *(2026-09-28, §16x)*: the hand as a soft, distributed support, bonded layers' interface rule, and a case
+     the wall slides along, moved out of step 6 (§16w), are a PR of their own. It lands before any verdict on a design
+     that uses one of them; step 7's first run uses none.
 7. **`base_mold` on the new solver.**
    - G6 is 5 minutes per run, where a run is one simulation (fit plan D4). `base_mold` stays outside
      the repo. *(D4 is per press, §9 decision 12 and fit plan U13; §16r reports it so.)*
@@ -1373,23 +1414,32 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
        the frictionless run, the work the contact does over the hold (§16u). G2 is judged in the run, against the
        scan's exact signed distance (the bake's distance and sign) and G2's floor: the executor's penetration
        monitor reads the grid, so it cannot see the grid's own error. At which steps the run reads it is step 7's
-       design.
+       design *(2026-09-28, §16x rule 8: at every monitor read, over every surface node the grid puts inside the scan
+       or less than the band outside it)*.
    - *(2026-09-27, §16w.)* The first run is mounted at the closed end (Jon), which confines the material there and
-     moves it toward §15h's cased rows, where ν matters: step 7 reads its verdict's readings at ν 0.49 and 0.495.
+     moves it toward §15h's cased rows, where ν matters: step 7 reads its verdict's readings at ν 0.49 and 0.495
+     *(2026-09-28, §16x: and 0.4975; which ν verdicts read at is Jon's call)*.
      Step 7 sets the loading time and the mass damping (§16w's run took the tube's rules), and re-reads the travel,
      which the join, past the centreline's end, lengthens. G2 is judged against the pose the executor ran. A run whose
      corrections read the coarse grid says so, and a run whose deepest predicted point passes half the band re-sets
-     it by §16w's rule and bakes again before its readings stand. The fitted pose is the first obstacle that turns, so
+     it by §16w's rule and bakes again before its readings stand *(2026-09-28, §16x: a run whose corrections all read
+     the fine grid stands; past half the band is a warning, and a correction the coarse grid answered re-sets the
+     band)*. The fitted pose is the first obstacle that turns, so
      step 7's G2 also reads §16o's frame carry, which no test isolates. D1's push on the fitted pose, which turns,
      needs the twist on the scan; whether the executor reduces it or the snapshots' forces give it is step 7's to
-     decide (the list for steps 6–9). The confined case that gates a mount (§9 decision 11) passed with the tube's
+     decide (the list for steps 6–9) *(2026-09-28, §16x: the executor)*. The confined case that gates a mount (§9 decision 11) passed with the tube's
      outer wall and every node's axial motion held (§16n); whether that covers a mount holding the skin alone is step
-     7's to settle before its first verdict.
+     7's to settle before its first verdict *(2026-09-28, §16x: a tube held on its surface alone, its outer wall
+     whole and its ends on frictionless plates, meets the confined oracle, which settles a shell. The mount's side stays
+     open: rule 2, its check on the product, did not settle, and the element collapsing at the tip appears under the
+     mount)*.
    - *(Carried here from earlier sections, 2026-09-27.)* Step 7 reads the room on its own wall (§16v); reads the
      product's own seated window (§16r); repeats f32 against f64 on the 1 cm² patch (step 5's note); and the old
      path, `slide_pose_at` with it, retires after it (§16u, §16w).
    - *Done when:* the fit plan's G1–G3 and G6 have numbers on `base_mold`. *(2026-09-27: and D1's readings'
-     convergence there, at the product's element size and at the lowest μ_f; the list above.)*
+     convergence there, at the product's element size and at the lowest μ_f; the list above.)* *(2026-09-28, §16x:
+     G1–G3 and G6 have numbers at the 5 mm inset; D1's readings' convergence is open, four times h_K2's elements or
+     finer, so step 7 is not done.)*
 8. **The soft-on-soft contact design** (§9 decision 9): a design step with its own research round, not
    code.
 9. **Validation and limits:** §7's rungs 2 and 5, and the comfort limits (fit plan U1, §8). The limits
@@ -1416,8 +1466,10 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
     The Mullins-conditioned state is reported once per design, not run for every verdict.
   - **If stiffness scaling holds** (15d.10), a verdict is **3 runs**: the pairing's low and high μ, plus
     μ = 0 for the geometric share of push force (§2). That is about 6 minutes at K1's rate. *(2026-09-26, §16r:
-    on `base_mold` as meshed at h_K2, a press takes 0.29–0.61 of D4 at K1's rate.)*
-  - **A D3 search** of 3–4 full verdicts would take 18–24 minutes, against D4's 15 (arithmetic). Tier 1 therefore pre-filters the search (step 7), so full verdicts run at 1–2 insets. *(2026-09-26, §16r: on `base_mold` as meshed at h_K2, 3–4 verdicts take 4–12 minutes at K1's rate, within 15; with the canal nodes projected at a floor of 0.5 and the viscosity, 15–21 minutes (fit plan U17); arithmetic.)* *(2026-09-27, §16v: step 7's wall projects nothing; at ν 0.49 with Ecoflex's viscosity, a press takes 0.42–0.56 of D4 at K1's rate over the insets measured, so 3–4 verdicts take 6–11 minutes, and at the budget's worst corner 9–16; with Tier 1 picking 1–2 insets, 3–8 at the worst corner; arithmetic.)*
+    on `base_mold` as meshed at h_K2, a press takes 0.29–0.61 of D4 at K1's rate.)* *(2026-09-28, §16x: at the
+    loading D1's readings need, four times the budget's, a press takes 0.38 of D4 on the CPU at h_K2 and 3.8 at four
+    times its elements; stiffness scaling holds on the product, so a verdict stays three runs.)*
+  - **A D3 search** of 3–4 full verdicts would take 18–24 minutes, against D4's 15 (arithmetic). Tier 1 therefore pre-filters the search (step 7), so full verdicts run at 1–2 insets. *(2026-09-26, §16r: on `base_mold` as meshed at h_K2, 3–4 verdicts take 4–12 minutes at K1's rate, within 15; with the canal nodes projected at a floor of 0.5 and the viscosity, 15–21 minutes (fit plan U17); arithmetic.)* *(2026-09-27, §16v: step 7's wall projects nothing; at ν 0.49 with Ecoflex's viscosity, a press takes 0.42–0.56 of D4 at K1's rate over the insets measured, so 3–4 verdicts take 6–11 minutes, and at the budget's worst corner 9–16; with Tier 1 picking 1–2 insets, 3–8 at the worst corner; arithmetic.)* *(2026-09-28, §16x: at four times the budget's loading, full verdicts at 1–2 insets take 0.13–0.25 of the search's 15 minutes on the CPU at h_K2, and 1.3–2.6 at four times its elements.)*
   - **If stiffness scaling fails,** each stiffness corner doubles the friction runs: 5 runs.
 - **The regime per application** (from the oracle's confinement table, §5b amended):
 
@@ -1435,7 +1487,8 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
   at K1's rate. **The O-ring class is outside K1's sizing**, and needs its own budget or a mixed
   treatment when that application is reached.
 - **Not known yet:**
-  - whether the alternating pressure pattern persists in a damped explicit run;
+  - whether the alternating pressure pattern persists in a damped explicit run *(2026-09-28: not measured on the
+    product; §16x records a different, element-level observation there, an element collapsing at the seated tip)*;
   - the GPU's per-step cost at 100k;
   - the in-loop Δt's cost in steps *(2026-09-25: measured on the tube, §16p: the loaded step factor 0.977,
     and the damping's ×1.06–1.39)*;
@@ -3634,7 +3687,8 @@ lies within half a lattice cell of the outer surface's level.
   within a cell of it on the tests' cup. Which faces bring them in, faces bevelling the rim or flat ones beside it, is
   not separated.
 - **Mounted:** the skin beyond a plane. Step 7's mount is the plane through the centreline's first point, normal to
-  it there; that point is the seated tip (`slide_pose_at`'s convention).
+  it there; that point is the seated tip (`slide_pose_at`'s convention). An engineering call (§9, labelled
+  2026-09-28).
 - **Bonded to a rigid shell:** the whole skin.
 - **Nothing held:** for measuring the model alone, as the budget's step does; a scan pressing an unheld wall carries
   it off.
@@ -3688,11 +3742,13 @@ lies within half a lattice cell of the outer surface's level.
   a twentieth of the mandrel's radius (§16o); held at the seat, it is the whole depth.
 - Neither is known on the product before a run. The band starts at four fine cells (0.25 mm), and the product's
   frictionless run on step 7's wall reads the deepest predicted point. If that is past half the band, the band
-  becomes twice the deepest predicted point, rounded up to whole fine cells.
+  becomes twice the deepest predicted point, rounded up to whole fine cells. The factor of two is an engineering call
+  (§9, labelled 2026-09-28).
 - Two monitors make it a reading in every run: the deepest predicted point, and the corrections that took their
   depth from the coarse grid. A run with any says so.
 - The band is the bake's, so one bake serves every corner and inset of a scan, until a run reads past half of it;
-  then the band is re-set by the same rule and the scan baked again (§15g step 7). The grids are §16u's: coarse at
+  then the band is re-set by the same rule and the scan baked again (§15g step 7). *(2026-09-28, §16x: re-set only
+  when a correction reads the coarse grid; past half the band is a warning.)* The grids are §16u's: coarse at
   0.5 mm with a 4 mm margin, and fine at 0.0625 mm (Jon).
 
 **The obstacle on the path:** the bake's grids, the sampled poses from time 0, and the run's μ_f.
@@ -3702,7 +3758,7 @@ lies within half a lattice cell of the outer surface's level.
   after), with each measurement it rests on, its phase (onset or sliding), its source and what the source measured.
 - A lubricant's states are separate pairings, so a verdict picks one; the later ones show where use takes it.
 - Where a source gives a mean and a spread (dry sliding, 0.61 ± 0.21), the pairing keeps the mean ± the spread, not
-  the data's range; the dry pairing's low corner is that lower end.
+  the data's range; the dry pairing's low corner is that lower end. An engineering call (§9, labelled 2026-09-28).
 - §5c's water-alone row has no measurement on skin, and its tacky pad bounds friction from below without a value;
   neither is a pairing.
 - A verdict's friction corners are μ_f 0 and the pairing's lowest and highest values (§15h). They span onset and
@@ -3730,8 +3786,8 @@ with other changes between, and `soft-drop-on-plane`'s protocol naming a toolcha
     through a press on a cup;
   - the fitted path passes the known-answer tests, and the fit uses the points the slide puts inside;
   - on a curved path where 64 intervals are not enough, the sampling meets its bar at the quarters it reads, and
-    lies within 1 % of it at 16 times an interval that it did not read (revised after the build, 2026-09-27: first
-    set as within the bar); and the start is clear by its clearance;
+    lies within 1 % of it at 16 times an interval that it did not read (revised after the build, 2026-09-27, my
+    engineering call: first set as within the bar); and the start is clear by its clearance;
   - the two monitors read the corrections' own depths, and count every coarse correction and no fine one;
   - the pairing library gives its corners and marks the unchecked ones;
   - F3 passes.
@@ -3865,3 +3921,468 @@ tube's rules carried over, and step 7 sets them.
   it is removed (the limit is documented and tested instead). The rest were this record's prose, two ratios that gave
   back local figures (now bounds), and the confined case's gate for a skin-only hold (handed to step 7). The rounds
   stopped there.
+
+### 16x. Step 7's first run (design, 2026-09-28)
+
+The first of step 7's runs on `base_mold` (§15g step 7), the last PR of the arc Jon set on 2026-09-26: step 6 and
+step 7's first run, ending at his call on whether the GPU (steps 3–5) comes next. That call rests on what a press
+costs on the CPU at the element size and loading time D1's readings need on the product, neither of which is measured
+yet (§16s, §16j). This is the design, written before the code and revised after its review (below). The results are
+added below it.
+
+**Scope.**
+- One press on `base_mold` at its 5 mm inset, with the measurements that decide the element size and the loading time
+  its readings need, and so its cost; the prints §15g step 7 asks of every run; and #977's merge-review items.
+- Not here: Tier 1, and the path's own share beside it (the fitted pose against the slide); the lip radius; D1's
+  limits, and so a verdict; other insets and D3's search; the hand, bonded layers and a case the wall slides along
+  (§16w); the pairing's nominal corner (open); friction above μ_f 0.3. The old path and `slide_pose_at` retire after
+  step 7's last PR, not this one.
+
+**The press.**
+- **The wall:** step 7's wall (§16v), lowered and mounted at its closed end (§16w), at ν 0.49 with Ecoflex 00-30's
+  η/μ and the catalog's density, as §16r and §16w lowered it.
+- **The obstacle:** the fitted path from its start (§16w), baked at `PRODUCT_BAKE`.
+- **The pairing:** silicone on skin, water-based gel, fresh, whose corners are μ_f 0, 0.104 and 0.18. It is one of
+  the library's two pairings whose corners are all checked (`FRICTION_CHECKED_TO`), and the one that holds the
+  library's lowest μ_f, at which Jon decides D1's push (§15g's list for steps 6–9).
+- **Mass damping:** ξ 0.05 at `ω₀ = 2π/T_s`, with `T_s = 4ℓ/c_s` and ℓ the centreline's length: §15c's rule, the
+  tube's fixed–free formula applied to the product, as §16w's run applied it. The product's own lowest period is not
+  measured. An engineering call; rule 1 measures the damping's effect on the readings together with the viscosity's.
+- **The hold:** §15b's 0.2 s, read in quarters (rule 6).
+- **The executor:** the CPU at f32, as the budget timed it (§16r); f64 where f32 is compared with it.
+
+**The instruments.**
+- **Two monitors join the executor's**, reduced as the resultant is:
+  - the moment of the contact forces about the obstacle's body origin as posed at the step's time, `Σ (xᵢ − p) × fᵢ`
+    with xᵢ the node's position at the start of the step, averaged over the steps since the last read;
+  - cumulatively, the work the obstacle's motion does against the contact forces: over each step, `F · Δp + M · φ`,
+    with F and M that step's resultant and moment, Δp the body origin's move over the step and φ the world-frame
+    rotation vector of the obstacle's turn over it, both from the pose track at f64.
+
+  An engineering call. The push needs the work integrated every step, which only the executor sees; read from the
+  monitors' means instead, it depended on how far a read reached, and a read at the budget's speed reached 13 mm on
+  the tube (below). Both go to the GPU too (step 4).
+- **D1's push readings** are windowed means over travel of the work's change, per unit of the walk's change (from
+  `travelled`): the peak push is the largest mean over 1 mm, and the geometric share the largest over 10 mm on the
+  μ_f 0 run (§16s). The 1 mm is an engineering call that pins the instrument without changing D1's definition, which
+  is Jon's; the tube's reads at 10 T_s reached about 0.8 mm (arithmetic on the review's 13 mm at a sixteenth of that
+  loading time). Reads come often enough that one reaches at most a quarter of a millimetre at the top speed, and the
+  work is interpolated between them. The peak over 0.5 and 2 mm is printed beside it.
+- **Along the path** is the direction the posed seated tip moves per unit of walk over the sampled path's interval
+  that holds the read's time (the pose the executor ran; in the hold, the last interval). The sideways force is the
+  resultant less its part along the path; the twist is the moment about the posed seated tip.
+- **At a pose held still,** the push is the static one: `F · dp/ds + M · dφ/ds` over the same interval.
+
+**What every run prints** (§15g step 7):
+- D1's readings: the peak push (1 mm) at each friction, the geometric share (10 mm) at μ_f 0, and the seated patch;
+  beside them the pointwise pressure's area-weighted 95th percentile and peak, the loaded surface area inside the
+  winning patch, and where the patch sits, as its centre's arc along the centreline over the centreline's length.
+- The sideways force and the twist at every read, over the push and over the sum of the normal forces.
+- G1 and G2 against the scan's exact signed distance (rule 8), and the grid's own every-step monitor.
+- The deepest predicted point over the band, and the corrections the coarse grid answered (rule 7).
+- The validity gates, over every phase a reading is taken from (§15a as amended): kinetic over internal energy over
+  the loading from the first contact and over the window, and the energy balance; and K4, no element inverted
+  *(corrected 2026-09-28: first listed inversion among the validity gates, which §15a keeps apart)*.
+- On a frictionless run, the contact work over each quarter of the hold (rule 9).
+- Steps, the time of the stepping alone and of the probe's instruments, and the loop's estimates.
+- Once: the travel against the centreline and §15b's 5 mm, as a comparison (§16w); and the push's linearity in μ_f,
+  the frictional push less the frictionless, at 0.18 over at 0.104, against 0.18/0.104 (§15g's list: the
+  alternative to a nominal corner).
+
+**The rules, set before the runs.** Each is an engineering call unless it names Jon. Where a rule borrows K5's 5 % or
+K3's 0.5 %, it says so; the bars do not add up to a verdict's error.
+1. **The loading time: a ladder on the product** (§16j). At h_K2, μ_f 0 and 0.18, at the budget's loading `T_r` (v/c_s
+   0.389, §16r) and at 2, 4, 8 and 16 `T_r`. The readings are the peak push at 0.18, the geometric share at 0, and the
+   patch at both.
+   - The loading time is the first rung T from which both doublings, T/2 → T and T → 2T, move every reading by at
+     most 5 % (K5's bar). One pair is not enough: on the tube, the frictionless 10 mm push is not monotone in the
+     loading time (below).
+   - If no rung up to 8 `T_r` meets it, the loading time is open, and D4 is read at 16 `T_r`, marked as a bound from
+     below.
+   - The chosen rung and the next are run again at the element size rule 2 picks; if a reading moves more than 5 %
+     there, rule 1 is read again at that size.
+2. **The element size.** At that loading, the three corners at h_K2 and at two and four times its element count
+   (each wall meshed as step 7's is, at the lattice the same secant finds; the achieved counts' ratios printed), and
+   a replicate at h_K2 on a lattice shifted by half a cell, whose difference from h_K2 is the meshes' scatter.
+   - **Deciding readings:** the patch at every corner, and the geometric share. The peak push at μ_f 0.104 and 0.18 is
+     reported beside them for Jon, whose decision it is how the peak is read at a low friction (fit plan D1).
+   - D1's readings need the coarsest size from which doubling the element count moves every deciding reading by at
+     most 5 % (K5's bar and its doubling, 50k to 100k). If the scatter is 5 % or more, the rule cannot tell, and says
+     so.
+   - Per reading, `e = C·hᵖ` is fitted over the three sizes (the stop rule's model, §15g step 2), and the remaining
+     error it extrapolates at the chosen size is printed: over a doubling of elements h shrinks only by 2^(−1/3), so a
+     5 % change can leave more than 5 % to go (§16s: 100k read 3.6 % below the 4× mesh after a 0.87 % step).
+   - If neither doubling passes, the size is open: four times or finer, since four times is not judged without eight
+     *(corrected 2026-09-28: first written "finer than four times")*; D4 is read at the size the fit extrapolates to,
+     labelled so.
+   - Under the mount this is also the discretization's check on the product's own confinement.
+3. **ν under the mount** (#977's review). At h_K2 and the loading time, the three corners at ν 0.495 and 0.4975 too;
+   each step doubles K roughly (K/μ about 50, 100 and 200). The silicone's K is not known: §5b's sources put rubbers at
+   K/μ 1 000–10 000, beyond any step here, and on the tube with its outer wall held the band moved +32 % and then +21 %
+   a doubling (below). The printout is each reading's change per doubling. Readings converge in K here if the
+   second change is within 5 % (K5's bar) and at most half the first. Which ν verdicts read at, and whether ν becomes
+   a corner as μ_f is, trades speed against quality, so it goes to Jon with these numbers (§9 decision 12).
+4. **The confined case, held on the surface only** (§9 decision 11; #977's review). 15d.8's case (λ_a 1.1, B/A 2,
+   ν 0.49, frictionless) in a new fixture, `Walls::Shell`: the outer wall held whole, both end faces held axially
+   (frictionless end plates), every other node free, and the mandrel driven through the whole tube, its nose 5 mm
+   past the far end, so it fills the bore end to end. Then the confined oracle's state (p/μ 4.1417) is the exact
+   solution of the whole fixture: no axial motion anywhere, which the end plates allow, the outer wall still, and the
+   bore at a.
+   - The gate is 15d.8's: G2, and the band's raw error within 5 %. The fixture gives no gap-corrected error for a
+     held wall (`TubeCase::errors`).
+   - Validity: the band's axial stretch within 0.15 % of 1. Here `∂(p/μ)/∂λ_z` is −56.8 (`golden.rs`), so 0.15 %
+     moves the reference by 2.1 %, as K2's 0.5 % does on the free tube (§15a).
+   - At 50k and 100k, with the command recorded.
+   - This covers a shell, which holds the whole skin. The mount holds less, and has no oracle of its own: taking it
+     as covered between this case and the free tube that K2 passed is an engineering call. Rule 2's convergence is
+     the check on the product itself.
+5. **f32 against f64** (§15g step 5's note): the patch at μ_f 0.18 and h_K2, within K3's 0.5 %. The GPU runs f32 only
+   (§1), so a failure bears directly on Jon's call, and is reported as such.
+6. **The seated window.** The hold is read in four windows of 0.05 s; D1's seated reading is the last two together,
+   §15b's last 0.1 s. The product's own window starts at the first quarter from which every later quarter's patch
+   lies within 1 % of the last quarter's, a fifth of K5's bar. If the last two quarters differ by more than 1 %, the
+   corner is run again with a 0.4 s hold and its readings come from that run. A shorter hold is a lever on the
+   budget, reported, not taken here.
+7. **The band** (#977's review: §16w's trigger at half the band had about a tenth of the band's headroom on the
+   product). A run's readings stand if no correction read the coarse grid; a deepest predicted point past half the
+   band is printed as a warning. A run with a coarse correction is run again after a re-bake at twice its deepest
+   predicted point, in whole fine cells, and D4's figures then carry the re-bake. This replaces §16w's trigger, which
+   re-baked runs whose corrections had all read the fine grid.
+8. **G1 and G2**, at every monitor read, over every surface node the grid puts inside the scan or less than the band
+   outside it, so that no node inside is missed, against the scan's exact signed distance (`SignedDistance`, the
+   bake's own) at the pose the executor ran then; and at the end over every surface node. G2's bar is 1 % of the
+   inset, 0.05 mm; G1's tolerance is the same. Between reads the grid's every-step monitor stands in. The exact
+   reads are a CPU instrument, timed apart from the run. **G3,** the full seat, is met by construction: the path
+   ends at the seat, so any valid run through the hold reaches it.
+9. **Contact work over the hold** (§16o, §16u), on each frictionless run, per quarter of the hold. A scan held still
+   does no work on a frictionless wall, while the kinematic law's corrections take work out as the wall settles, so
+   the whole hold's net work can hide energy pumped in late (§16o's signature was a late rise). The bar is on the
+   last half of the hold: work gained there at most 1 % of the internal energy at the seat, the energy balance's bar.
+10. **When the contact-guided scan comes forward** (§16t: no reading was set). The question is whether a scan free to
+    move would read a different D1 reading. On the frictionless run at h_K2, at the seat after the window, and on a
+    frictionless run stopped at the centre of its largest 10 mm push window and held until rule 6's 1 % holds:
+    - four degrees of freedom: two translations across the path and two turns about axes across it through the
+      posed seated tip. The turn about the path's own direction is left out, since a nearly round scan resists it
+      barely, and its moment is printed;
+    - a stiffness matrix from central differences, ±δ and ±δθ in each, each probe moved over 0.05 s on §15b's ramp,
+      held 0.1 s and read over a further 0.05 s, with the change of the force between that read's halves printed as
+      its noise *(as built; first written "read over the last 0.05 s" of the hold)*;
+    - up to three steps with that matrix toward zero sideways force and zero twist across the path, stopping when both
+      are within a tenth of the fitted pose's; the residual is printed;
+    - D1's reading there: the patch at the seat, the static push at the peak's pose. **If it differs from the
+      fitted pose's by more than 5 %, the recommendation to Jon is that the contact-guided scan comes forward**; Jon
+      placed it under the fit plan's Later.
+
+    δ is 0.1 mm, 2 % of the inset, and δθ turns the scan's farthest point inside the device by δ. Friction is left
+    out: a scan free to move would stick and slip, which this does not model; with friction the prints stand, with no
+    rule.
+11. **Stiffness scaling on the product** (15d.10; §15h's runs per verdict rest on it, checked only on the 10k tube at
+    10 T_s, §16p). At h_K2 and the loading time, μ_f 0 and 0.18 at μ and 2μ, η/μ held: every force within 2 % of
+    twice, 15d.10's bar. If it holds, a verdict is 3 runs; if not, 5 (§15h).
+
+**The cost (G6).**
+- At the loading time and element size the rules set, each corner is timed on the f32 CPU executor at 4 threads
+  (§16r's), on an idle machine: the executor's setup, the loop's estimates, and every step and read. The probe's own
+  instruments (the exact G1 and G2, the snapshots, the windows' readings) are timed apart and reported beside it. One
+  corner is timed again at 8 threads, the M4 Pro's performance cores.
+- A press is rule 11's 3 or 5 runs, reported over D4; with ν as a corner (rule 3), twice that at ν's own cost, read
+  from its runs. The η range §16r took, Ecoflex's η/μ × 0.74 and × 1.47, is read as the rest step's factor.
+- Beside it: the bake, once per scan and band, and a re-bake if rule 7 triggers one; and D4's search, 15 minutes over
+  the full verdicts at the 1–2 insets Tier 1 would pick (arithmetic; Tier 1 is not built).
+- **K1's per-step budget**, scaled by element count, is the bar the GPU must meet for D4 at K1's rate (§15a, §16r), not
+  a projection of it: no GPU step has been timed, and a GPU's fixed cost a step need not scale with element count.
+
+**The room on step 7's wall** (§16v): §16t's room, the posed scan's exact signed distance at a canal node plus the
+inset, since the canal lies the inset inside the scan (first written "less the inset"; corrected with the results),
+over §16t's 64 fitted poses, read through `SignedDistance` on both step 7's wall's canal nodes and the old wall's
+(`sliding_product_scene`), so the ratio of their most room changes the wall alone. The ratio is public; both rooms stay
+local.
+
+**#977's merge review.**
+1. ν's rule and the confined case for a skin-only hold: rules 3 and 4, which also go into §15g's list for steps 6–9.
+2. The band's headroom: rule 7, with dated notes where §15g step 7 and §9 state the old trigger.
+3. Step 6's done-when is closed in §15g with what met each bar, and the PR that §16w deferred (the hand, bonded
+   layers' interface rule, and a case the wall slides along) gets a place in the build order, before any verdict on a
+   design that uses them.
+4. The mount's plane (through the seated tip, normal to the centreline there) is labelled an engineering call in §9.
+   The probe prints the mount's extent locally; a length ratio would give back the scan's length from the public
+   inset and wall, so the record takes only a rough bound on the share of the skin it holds.
+5. §16w's other calls are labelled in §9: the start gap taken as a clearance, the band rule's factor of two, and the
+   dry pairing's mean ± its spread; the sampling gate loosened after the build is attributed to me.
+6. The pairing library carries its two surfaces as data, not only in a pairing's name.
+7. The count of the old pin's interior vertices, now in `hold.rs` and §16w as in the fit plan: Jon's call. *(Jon,
+   2026-09-28: keep it.)*
+
+Step 4's note gains the two monitors.
+
+**The code.**
+- `sim-soft-explicit`: `Monitors::{contact_moment, obstacle_work}` on the CPU executor; in `readings`, the push over
+  travel from the work, the direction along a sampled path, the sideways force, the twist, the static push, and the
+  loaded area inside a patch; `Walls::Shell` in the tube fixture, and the tube probe takes the walls and the depth.
+- `sim-soft`: the pairing's surfaces.
+- `cf-sim-research`: the probe `insertion_sim::step7_first_run` (ignored; the scan stays local), and a lattice shift
+  for the wall's replicate.
+
+**Done when:**
+- **In CI**, each new check failing once under a mutation of the code it guards:
+  - the moment monitor equals `Σ (xᵢ − p) × fᵢ` from the phase outputs and the state before the step, at f32 and f64,
+    on an obstacle that moves and turns enough in a step that the start and end of the step read differently;
+  - the work monitor equals the work each node's contact force does over the obstacle's exact rigid motion of the
+    point, summed over the steps, relative to within the largest turn in a step (the linearization's order), at f64,
+    on an obstacle that translates and turns from a turned start (so a body-frame φ reads wrong);
+  - the push over travel on a translating obstacle equals the resultant along it; the sideways force, the twist and
+    the static push on known cases;
+  - the loaded area on §16s's bore equals the ball's share of the cylinder;
+  - `Walls::Shell` holds the outer wall whole and the end faces axially, and nothing else;
+  - every pairing's surfaces.
+- **On the tube:** rule 4 at 50k and 100k, run and recorded with its command.
+- **Locally, on `base_mold`** (figures stay local; ratios and verdicts go here): every rule applied, with its numbers;
+  G1, G2 and G6 at the 5 mm inset; D1's readings' convergence, the peak push's at μ_f 0.104 among them; the room on
+  step 7's wall.
+
+**How the design was checked.**
+- **Priors first:** twelve defects I suspected in the design, kept from the reviewers.
+- **Two cold reviewers** read the first version, one against the code and the physics, one against the plan's text.
+  Between them they raised about 30 findings. The code reviewer measured three of its own on the tube, with a
+  harness outside the repo (not kept) that reproduced §16o's confined figure, −0.18 % at 10k:
+  - **The first rule 4 was wrong.** It held the outer wall alone, argued that far from the ends that is the confined
+    state, and took §15b's tube. The band read p/μ 2.338 at both 10k and 50k, 44 % below the oracle, with its axial
+    stretch 3.4–3.5 % above 1: the material escapes toward the free entry and the empty bore past the nose, and the
+    tube is not long enough for the argument. The rule now holds the ends with plates and fills the bore.
+  - **The first rule 1 read the monitors' 100-step means.** At the tube's rung a read reached 13.1 mm, eight reads
+    over the insertion, so each rung changed the push's resolution as well as the speed: at that rung the frictional
+    peak read 4.505 N from 100-step reads, 4.789 N from 10-step reads and 6.21 N from every step. Read every step,
+    the frictionless 10 mm push fell from 0.319 N at the rung to 0.150 N at 8 times the loading time and rose to
+    0.187 N at 16, so a single pair's change is not the error left. Hence the work monitor and two pairs.
+  - **On that outer-wall-held tube, ν moved the band +32 % and then +21 % a doubling of K** (0.49, 0.495, 0.4975): one
+    pair of ν cannot say ν barely matters. A third point was added, and the choice goes to Jon.
+  - The rest: the contact-guided test probed one direction at a time, where a sideways move also turns the scan; the
+    push and the sideways force were undefined at a held pose; rule 2's 5 % over a doubling bounds less than it
+    reads, and required a reading whose definition is Jon's; the exact G2 reads missed nodes deeper than the band and
+    their cost went unstated; K1's rate was put as the GPU's; the press's cost left out ν's branch, stiffness
+    scaling, the viscosity's range and D4's search; a mount extent ratio would have given back the scan's length; and
+    handoffs from the plan (the travel, the patch's place, the dated notes) were missing.
+- About half the priors hit, most in part. None named the first rule 4's failure, which I had argued rather than
+  measured.
+
+**What was built and measured (2026-09-28).**
+
+*In CI*, each new check made to fail under a mutation of the code it guards (each mutant's run printed a failing test
+result, not a compile error):
+- `sim/L0/soft-explicit/tests/executor.rs`, on a floor that starts turned, then rises, slides and turns about another
+  axis:
+  - the moment monitor equals `Σ (xᵢ − p) × fᵢ` from the phase outputs and the state before each step, to 1e-12 at
+    f64 and 1e-5 at f32, and the origin posed a step later reads more than a thousand times the f64 difference away;
+  - the obstacle's work equals the work each node's force does over the exact rigid motion of its point, within the
+    largest turn in a step, and a turn taken in the body frame misses by more than ten times that;
+  - `rigid_motion` on a turned pose, with the quaternion's sign flipped and with no motion; and `Monitors::finite`
+    reads both new monitors.
+
+  Seven mutations of the executor and `rigid_motion`, each failing a test.
+- `sim/L0/soft-explicit/tests/readings.rs`: the push over travel from the work, on a force stepping from 2 to 5 N, with
+  a pause mid-path and a hold; the direction along a path, the force across it and the moment about a point, on known
+  cases; the static push against the exact rigid motion, the moment carried to the interval's origin beating it left
+  where it was; the loaded area on §16s's bore and on a half-pressed plate. Nine mutations, each failing a test; the
+  zero-travel guard survived until the pause mid-path was added.
+- `tests/fixtures.rs`: `Walls::Shell`'s holds (two mutations); `sim/L0/soft/tests/pairing_library.rs`: the surfaces
+  (one).
+- Round 1's code reviewer ran 31 mutations of its own. Two survived these checks: `set_poses` not updating the f64
+  track, and the obstacle's move taken from the narrowed poses at f32. Two tests now fail on them: a new pose track
+  moves the moment's origin and a still obstacle does no work; and f32 reads the obstacle's work within 1e-4 of f64's
+  on a fixture about 0.35 m from the origin. A third survivor, keying `work_peak`'s windows at an interval's start,
+  changed a push read on uneven reads by less than a tenth of a percent, and stands.
+
+*On the tube, rule 4* (`cargo run --release -p sim-soft-explicit --example tube -- <mesh> 4 0 f32 20 0.2 10 1
+0.00030434782608695654 <cased|shell>`, `RAYON_NUM_THREADS=4`, at `3256d838`):
+
+| Walls | Mesh | Band against 4.1417 | Band's axial stretch | G2 on the grid, every step | KE/IE, balance |
+|---|---|---|---|---|---|
+| Cased (the check) | 10k | −0.18 % | +0.00 % | 0.1 µm | 0.00 %, 0.01 % |
+| Shell | 10k | −0.20 % | +0.01 % | 0.8 µm | 0.00 %, 0.02 % |
+| Shell | 50k | −0.11 % | +0.00 % | 0.2 µm | 0.00 %, 0.01 % |
+| Shell | 100k | −0.06 % | +0.00 % | 0.1 µm | 0.00 %, 0.01 % |
+
+The cased 10k run reproduces §16o's −0.18 %, a check on the instrument. **Rule 4 passes** at 50k and 100k: held on
+its surface alone, with its ends on frictionless plates, the confined tube reads the oracle. That settles the shell's
+side of §9 decision 11's gate; the mount's stays open (rule 2, below).
+
+*On `base_mold`* (`insertion_sim::step7_first_run`, the scan local; ratios and verdicts here, the figures on the
+machine that ran them; a ratio over D4 gives a compute time back, which Jon allowed, 2026-09-28). Each stage is `RAYON_NUM_THREADS=4 STEP7_LOADING=<rung> cargo test --release -p
+cf-sim-research --bin cf-sim-research -- insertion_sim::step7_first_run::<stage> --ignored --nocapture`, with
+`STEP7_LOADING=4` for every stage but `step7_ladder` and, for `step7_cost`, `STEP7_SIZE` 0 or 2. Unless a line says
+otherwise: step 7's wall at h_K2 (h/h_K2 0.991), mounted, ν 0.49, Ecoflex 00-30's η/μ with the tube's mass damping
+(§15c's rule, carried; rule 1 measures its effect with the viscosity's), f32, and rule 1's loading. Every run behind
+rules 3, 5 and 11, and the run rule 10 starts from at the seat, passes the validity gates (kinetic over internal energy
+at most 0.60 %, the balance 0.01 %) and K4; rule 10's probe holds and its run to the peak's pose are not gated.
+
+- **Rule 1, the loading time: four times the budget's** (v/c_s about 0.097). Each reading's change from the rung before
+  (`step7_ladder`, at `5ffacb6a`):
+
+  | Rung | Peak push, μ_f 0.18 | Geometric share | Patch, μ_f 0 | Patch, μ_f 0.18 |
+  |---|---|---|---|---|
+  | ×2 | (−1.13 %, from ×1, not valid) | −10.17 % | −0.04 % | (+1.20 %, from ×1, not valid) |
+  | ×4 | +1.71 % | −4.27 % | 0.00 % | +0.66 % |
+  | ×8 | +0.06 % | −1.71 % | +0.05 % | +0.19 % |
+  | ×16 | −0.47 % | −1.79 % | +0.10 % | +0.22 % |
+
+  The budget's own rung fails a validity gate with friction (kinetic over internal energy over the loading, 5.73 %).
+  Only the geometric share moves with the speed past K5's bar; at four times it lies within 3.6 % of sixteen times'.
+  Rule 1's check at the size rule 2 picks did not run, since rule 2 picked none.
+- **Rule 2, the element size: open, four times h_K2's elements or finer** (`step7_sizes`, at `3256d838`). Meshed at
+  0.795 and 0.633 of h_K2, 1.94 and 3.85 times the elements:
+
+  | Reading | ×1 → ×2 | ×2 → ×4 | ×1 → ×4 | Replicate against ×1 |
+  |---|---|---|---|---|
+  | Patch, μ_f 0 | not valid | not valid | +13.66 % | −2.67 % |
+  | Patch, μ_f 0.104 | +14.53 % | −2.35 % | +11.85 % | −3.01 % |
+  | Patch, μ_f 0.18 | +18.84 % | −5.55 % | +12.24 % | −2.73 % |
+  | Geometric share | not valid | not valid | +6.58 % | +0.20 % |
+  | Peak push, μ_f 0.104 (for Jon) | +8.36 % | +2.19 % | +10.73 % | +0.27 % |
+  | Peak push, μ_f 0.18 (for Jon) | +8.41 % | +1.46 % | +10.00 % | +0.28 % |
+
+  - The replicate, h_K2's wall on a lattice shifted half a cell, moves each reading by at most 3.01 %, so the rule can
+    tell 5 %.
+  - h_K2 fails the doubling; the twice-refined wall fails it on the frictional patch (−5.55 %) and has no valid
+    frictionless run (below); the four-times wall is not judged, since that needs a run at eight times. No order can
+    be fitted. All of it is with the element as it is (below).
+  - The peak push, which Jon decides at a low friction, moves 8.4 % over the first doubling and 1.5–2.2 % over the
+    second, within K5's bar from twice h_K2's elements. It is read as its largest mean over 1 mm of travel; its
+    largest means over 0.5 and 2 mm read 1.04–1.07 and 0.89–0.95 times that in every valid run.
+  - The four-times wall's element size is about the 50k tube's (§16r), from which the tube's readings converge (§16s).
+- **At the seated tip, under the mount, an element collapses** (`step7_blow_up` at `aa9681a7`; `step7_stiffening` at
+  `1c271024`, frictionless, the step re-estimated every 50 steps so each runs through the loading):
+
+  | Wall | Smallest step over the rest step | The most-compressed element's J, at the read of about the smallest step | Its nodes' averaged J | Where |
+  |---|---|---|---|---|
+  | h_K2 | 0.398 | 0.098 | 0.934–1.000 | 0.06 of the centreline from the seated tip |
+  | ×2 | 0.060 | 0.163 | 0.888–0.994 | 0.03 |
+  | ×4 | 0.181 | 0.089 | 0.888–0.989 | 0.04 |
+  | ×2, nothing held | 0.925 | 0.705 | 0.980–0.996 | past the centreline's end |
+
+  - At every size the most-compressed element, near the seated tip, is at 9–16 % of its volume while its nodes'
+    averaged volume, from which the pressure is taken (selective ANP, §15g step 1), is within 12 % of its rest. The
+    element is read at a monitor read whose step is within 5 % of the run's smallest; which element limits the step,
+    and how many elements collapse, are not read.
+  - With the loop's re-estimate every 500 steps (§15c), the twice-refined wall's frictionless run went non-finite at
+    0.951 of the loading at f32, and at 0.936 at f64, which first inverted an element at 0.935; re-estimated every 50
+    steps it ran through with no element inverted. The f64 run's first inverted element lay on the canal at the tip, a
+    third of the mean volume. Under
+    §15a an inversion in a valid run fails K4; its validity gates could not be read, since its later reads were not
+    finite, so whether it fails K4 or was invalid first is not read. The probe counted an inversion as a failed gate;
+    it now reports K4 apart (below). h_K2's and the four-times wall's runs stayed finite, with no element inverted, at
+    500.
+  - The seated patch centres at the seated tip in every valid run, near the collapsed elements. Whether the collapse
+    moves the patch, and so rule 2's changes, is not measured; nor whether it relates to §15h's alternating pressure,
+    which is a reading of the tube's rings.
+  - Frictionless runs took more steps than frictional ones at the same loading (on h_K2's wall, 1.19 times the μ_f
+    0.18 run's), and the twice-refined wall's run at μ_f 0.104 took 1.7 times its μ_f 0.18 run's. What sets that is
+    not isolated.
+- **Rule 3, ν under the mount: open; Jon's call** (`step7_at_h_k2`, at `5ffacb6a`). Each reading's change per doubling
+  of K:
+
+  | Reading | ν 0.49 → 0.495 | ν 0.495 → 0.4975 |
+  |---|---|---|
+  | Patch, μ_f 0 / 0.104 / 0.18 | +3.81 / +4.28 / +5.29 % | +2.91 / +3.22 / +3.65 % |
+  | Geometric share | +1.96 % | +1.41 % |
+  | Peak push, μ_f 0.104 / 0.18 | +2.66 / +2.41 % | +1.90 / +2.14 % |
+
+  The second change is more than half the first for every reading, so by the rule the readings do not converge in K
+  here; §5b's sources put rubbers at K/μ 1 000–10 000, several doublings past these.
+- **Rule 5: f32 against f64** on the patch at μ_f 0.18: +0.002 %, within K3's 0.5 %.
+- **Rule 6, the seated window:** in every valid run the patch settled from the hold's first quarter, each quarter
+  within 1 % of the last; a shorter hold is a lever on the budget, not taken.
+- **Rule 7, the band:** no correction read the coarse grid in any valid run, and the deepest predicted point reached
+  at most 0.45 of the band.
+- **Rule 8, G1, G2 and G3:** against the scan's exact signed distance, the deepest node over the reads lay at most
+  0.096 of G2's bar inside the scan, and at the end over every surface node at most 0.019; G1, read the same way with
+  G2's bar as its tolerance, is the same. On the grid, every step, at most 0.045. G3 is met by construction. The
+  twice-refined wall's frictionless run reached 1.9 bars before it stopped.
+- **Rule 9, contact work over the hold:** the work gained over the hold's last half was at most about 5e-6 of the
+  internal energy at the seat.
+- **Rule 10, the free scan: within 5 %; no recommendation.** At the seat the scan free to move would move about a
+  tenth of the inset and turn under two degrees, and the patch changes −1.00 %; held at the centre of the frictionless
+  run's largest 10 mm window, the static push changes −2.79 %. The steps took the sideways force and twist to at most
+  3.1 % of the fitted pose's; the probes' noise, read on the force, was at most 0.16 %.
+- **Rule 11: stiffness scaling holds on the product:** at 2μ each reading is within 0.36 % of twice, so a verdict is
+  three runs. The mass damping was held at μ's; at 2μ the tube's rule would raise it by √2, which was not run.
+- **Beside them, over every valid run:**
+  - the push is nearly linear in μ_f: the frictional push less the frictionless, at 0.18 over at 0.104, reads 1.686
+    against 1.731;
+  - the loaded surface inside the winning patch is 1.01–1.11 cm²; the pointwise pressure's 95th percentile reads
+    0.49–0.69 of the patch and its peak 1.6–3.0 times it;
+  - the sideways force is 0.8–2.3 % of the normal forces' sum at the seat, and 0.2–2.1 % of the push at the read where
+    the push is largest; its largest share of the normal forces over the loading, 0.67–0.94, is not located; the
+    twist about the seated tip is 0.003–0.006 of the normal forces' sum times the centreline's length;
+  - the travel is longer than the centreline and §15b's 5 mm, and the start is the join, on every wall; the mount
+    holds under a tenth of the skin's vertices;
+  - **the room on step 7's wall** (`step7_room`, at `aa9681a7`): through the exact distance, step 7's wall's canal
+    nodes ask 1.17 times the room the old wall's do at §16t's 64 fitted poses; 96 % of its canal nodes lie within
+    1 µm of the inset.
+- **G6, the cost** (`step7_cost`, at `3256d838`, the probe's instruments off, an idle machine; a press is rule 11's
+  three runs at rule 1's loading):
+
+  | Wall | A press over D4, on the CPU | A search of full verdicts at 1 and 2 insets, over its 15 min | A press at K1's per-step budget, over D4 |
+  |---|---|---|---|
+  | h_K2 | 0.38 (4 threads), 0.39 (8 threads) | 0.13 and 0.25 | 1.3 |
+  | Four times h_K2's elements | 3.8 (4 threads) | 1.3 and 2.6 | 17 |
+
+  - Eight threads did not speed the stepping up; the bake went from 0.29 to 0.16 of D4. Why the stepping does not
+    scale past four threads is not isolated. In the stages' runs the probe's instruments took at most 11 % of the
+    stepping's time.
+  - With ν a corner, a press is twice the runs: from the ν runs' steps (1.10 and 1.27 times the ν 0.49 press's at
+    0.495 and 0.4975), 0.80–0.86 of D4 at h_K2, and 1.0–1.1 at the viscosity's high end, taking the time as the steps
+    (arithmetic). Across the viscosity's range (Ecoflex's η/μ × 0.74 to × 1.47) the rest step's factor moves the steps
+    0.87–1.27 times at h_K2 and 0.83–1.39 at four times its elements.
+  - The four-times press cost 10.1 times h_K2's, for 3.85 times the elements; their count and the element size's ratio
+    alone give about 6. The steps were taken with the collapse at the tip present; how much of the gap it accounts for
+    is not measured.
+  - The CPU as timed runs 3.5 and 4.4 times faster than a device at K1's per-step budget, so K1's budget is no longer
+    a bar that a GPU meeting it would clear: meeting D4 at four times h_K2's elements takes a device at least 3.8 times
+    this CPU, about 17 times K1's budget (arithmetic). No GPU step has been timed. Steps 3–5 would run the element as it
+    is (step 4 checks every phase against the CPU executor).
+  - **For Jon's call:** at the element size K2 needs, the CPU meets D4 with room at ν 0.49 (0.38, and the bake once per
+    scan), and about at D4 with ν as a corner at the viscosity's high end. D1's readings need four times that size's
+    elements or finer, with the element as it is; at four times, a press takes 3.8 of D4 on the CPU. Before that size
+    is read again, the element collapsing at the seated tip bears on it, and on the cost. Jon's rule stands that the
+    quality items come before steps 3–5 (§15g step 2's note).
+
+*Since the runs,* the probe's code changed only in which runs it lets feed the rules: K4 apart from the validity
+gates, rules 6 and 7 enforced, the frictionless corner of `step7_at_h_k2` gated as the others are, and a rule whose
+inputs include a run that did not stand printing "not judged". In `step7_cost` a rule-6 re-run would time the re-run.
+No recorded run met any of those cases, so the recorded readings stand.
+
+*Found by the runs, not by the rules:* the probe read an exact depth from a state that had gone non-finite and
+panicked in the distance query; it now leaves such a read out. Rule 2 first computed its changes from the invalid
+run's partial readings; a run whose gates fail now reads nothing for the rules. The room first read nodes at plus the
+inset, off the canal, as the design first worded it; it reads the canal now.
+
+*Not measured:* where the frictionless push peaks; where the sideways force's largest share falls; the order of
+convergence; the eight-times wall; which element limits the step at the tip, and whether the collapse moves D1's
+readings; whether a formulation without the collapsing mode, or with it stabilized, converges; what the step
+re-estimated every 50 steps costs a press; what makes frictionless runs take more steps.
+
+*My priors, scored:* the loading at two or four times the budget's (hit); the frictional patch within 5 % from h_K2
+to twice its elements (miss: +14.5 % and +18.8 %); ν's per-doubling change under 5 % (miss: +5.29 % on the patch at
+0.18); G2 under half its bar (hit); the deepest predicted point shrinking with h, with no coarse correction (hit);
+f32 = f64 (hit); the shell within 1 % (hit); no pumping (hit); the free scan within 5 % (hit, its move about my guess);
+the hold settled by its third quarter (hit, the first); the patch at the mouth (miss: at the tip); a press at the size
+D1 needs within D4 on the CPU (miss as far as measured: 3.8 of D4 at four times h_K2's elements). None named the
+collapsing element.
+
+**How the build was checked.**
+- **Round 1:** three cold reviewers, of the code (31 mutations in a worktree of its own), of this record against the
+  runs' outputs and for the scan's figures, and of the whole plan from its text, raised about 28 findings. The largest:
+  - rule 2's verdict and the call for Jon claimed more than rule 2 found: four times h_K2's elements was never judged,
+    and at the size it picks the cost is not known; the design's own wording ("finer than four times") carried it;
+  - the bar a GPU must meet was put as K1's per-step budget, which the CPU already beats; it is now against the CPU;
+  - explanations with no measurement behind them, of what sets the step and of §15h's pattern, were cut;
+  - the probe gated all but one corner, counted an inversion as a failed validity gate where §15a keeps K4 apart, and
+    printed rules 6 and 7 without enforcing them; two mutations of the executor survived its tests;
+  - two exact node counts from the product mesh had reached this record, and several ranges were read from h_K2 alone.
+
+  None of my twelve design priors named the collapsing element; round 1's findings were mostly about my own
+  statements of the results.
+- **Round 2:** one fresh reviewer read only round 1's fixes and found 12 problems, 10 of them created by those fixes,
+  among them a verdict a rule would print from a run that did not stand, a blow-up point given to the wrong precision,
+  and a figure the fix deleted while the fit plan still cited it. They were cut or corrected, and the rounds stopped
+  there.
