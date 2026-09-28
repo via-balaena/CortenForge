@@ -14,7 +14,7 @@ Phase 2 flow with D1–D5 as recommended.
 > - **§2 describes the replaced solver.**
 > - **G2 and G4 are updated for the new solver.** G1, G3 and G5 keep the old solver's baselines, and the
 >   unknowns (§7) are updated. *(2026-09-28: G1, G3 and G6 now also carry the new solver's first run on `base_mold`,
->   soft-contact recon §16x.)*
+>   soft-contact recon §16x; the element collapsing at its seated tip is recon §16y and U20.)*
 
 **Scene:** the product scan `base_mold` — 5 mm inset, 17 mm Dragon Skin 10A at 25 % Slacker, curved
 centerline. ⛔ It is a sensitive scan: probes load it from outside the repo,
@@ -237,7 +237,9 @@ which inset would pass.
       decided after step 7 measures it there (Jon, 2026-09-26). *(2026-09-28, recon §16x: measured on `base_mold`, at
       the pairing library's lowest μ_f, as the largest mean over 1 mm of travel: from the element size K2 needs it
       moves 8.4 % over the first doubling of the elements and 2.2 % over the second, within K5's bar from twice. The
-      element size D1's readings need is open, four times or finer, on the seated patch.)*
+      element size D1's readings need is open, four times or finer, on the seated patch.)* *(2026-09-28, recon §16y:
+      resisting the elements that collapse at the seated tip moves that peak by at most 0.4 % at four times h_K2's
+      elements; its effect on the seated patch is U20.)*
     - *Seated:* ~~the contact pressure at the seat, read as its area-weighted 95th percentile~~ **the contact
       force on the most-loaded 1 cm² patch, over 1 cm²** (Jon, 2026-09-26, accepting the recommendation after
       K5; soft-contact recon §16s). The percentile it replaces did not converge on the tube: its most-squeezed
@@ -370,8 +372,9 @@ This is why the architecture changed (soft-contact recon §3).
   a prescribed motion, is not known. Step 7 prints the sideways force and twist the wall puts on
   the scan, which show how far the walls would push it off the fitted pose; what reading brings this forward is not
   yet set. *(2026-09-28, soft-contact recon §16x rule 10: set, a scan free to move changing D1's reading by more than
-  5 %; on `base_mold` it changed it by −1.0 % at the seat and −2.8 % mid-path, so no recommendation to bring this
-  forward.)*
+  5 %; on `base_mold` it changed it by −1.0 % at the seat and −2.8 % held at the centre of the frictionless run's
+  largest 10 mm window, so no recommendation to bring this forward; the scan was free in four of the five freedoms the
+  path leaves it, the turn about the path held.)*
 - [ ] Ridges and texture in the simulated cavity (§2a, last row).
 - [ ] **A lip radius for every silicone, the product's next evolution.** Jon, 2026-09-24: *"we can
   add a lip radius for all silicone, including the 00-30. its an upgrade and the next evolution of
@@ -579,7 +582,8 @@ in CI); G5 already gates in CI.
   3.6 % of a mesh 4× finer along the tube. **Open:** from 10k to 50k the frictionless patch and the geometric share
   do not converge, and `base_mold` at h_K2 is about the 10k tube's element size, so the element size they need on
   the product is measured in step 7 *(2026-09-28, recon §16x: measured and open, four times h_K2's elements or
-  finer; an element collapsing at the seated tip under the mount is not yet settled)*. The
+  finer; an element collapsing at the seated tip under the mount is not yet settled)* *(2026-09-28, recon §16y: the
+  collapse's effect is U20, open to Jon)*. The
   lip radius stays under Later.
 - **U17 — The product wall's canal surface** (soft-contact recon §16r, 2026-09-26). At the element size K2 needs,
   the old path's wall puts the canal nodes off the true canal surface: its 5th and 95th percentiles at −0.50 and
@@ -625,7 +629,29 @@ in CI); G5 already gates in CI.
   change more than half the first's. The silicone's own K is not measured, and §5b's sources put rubbers several doublings
   further on. Which ν a verdict reads at, and whether ν becomes a corner as friction is, trades speed against quality:
   Jon's call.
+- **U20 — The element collapsing at the seated tip** (soft-contact recon §16y, 2026-09-28). Under the mount, an
+  element at the product's seated tip shrinks to 9–16 % of its volume while its nodes stay within 12 % of theirs, a
+  motion the element's node-averaged volumetric term does not resist; on the frictionless runs the step is set at or
+  near it. Resisting just those elements (a volumetric stabilization on them alone, whose own change of stiffness is
+  in the readings):
+  - at four times h_K2's elements, the frictional patches move +1.45 and +0.88 %, and the peak push +0.28 and
+    +0.35 %;
+  - the frictionless patch moves −0.26 % at h_K2 and +6.44 % at twice its elements; at four times, +3.4 to +5.1 %,
+    rising with the stabilization, in runs the rule set beforehand does not accept, so it is not judged.
 
+  Which element the product runs is Jon's call, and the next PR, D1's element size, waits on it:
+  - the element as it is;
+  - the stabilized element everywhere, which first needs its own checks, left an element collapsed at 2μ, moved the
+    readings +13 to +22 % at 8μ (at h_K2), and whose cost is not measured;
+  - or first one more run to settle the frictionless comparison at four times, past the sources' range.
+
+  Rule 1's re-runs apply to whichever element runs. At twice h_K2's elements the frictionless run failed at 500 as it
+  is and with its collapsing elements stabilized; the stabilized element everywhere was not run there.
+
+  *Decided (Jon, 2026-09-28): the element as it is.* The frictionless patch's change with the collapse resisted
+  (+6.44 % at twice h_K2's elements, about +5 % at four times, not judged) stands in the record as a known bias; runs
+  that fail with the loop's 500-step re-estimate are made again every 50 steps. The next PR reads D1's element size
+  with it.
 ---
 
 ## 8. References

@@ -5,11 +5,12 @@
 §16p (#970), and 2c, K6, is §16q (#971). 2d, the product's budget and the stop rule, is §16r (#972). K5,
 with D1's readings diagnosed and replaced, is §16s (#973). Fit plan U3, why the rigid path asks for room and the
 path step 7 runs, is §16t. Step 6's obstacle bake is §16u, the wall's canal surface §16v, and the lowering §16w.
+Step 7's first run is §16x (#978), and the element collapsing at its seated tip §16y.
 - **Research:** §1–§10.
 - **Code architecture and the crate layout:** §11–§14.
 - **The first experiment and its kill criteria:** §15.
 - **Build step 2's design, and what its PRs measured:** §16 (§16m–§16s); U3, §16t; step 6's bake, §16u; the wall's
-  canal surface, §16v; the lowering, §16w.
+  canal surface, §16v; the lowering, §16w; step 7's first run, §16x; the element collapsing at the seated tip, §16y.
 
 The code architecture, crate layout and first experiment were checked by cold review, against criteria
 written beforehand (§14e, §15i). The research sections were not. Jon's direction:
@@ -454,6 +455,11 @@ fill a gap.
   band's trigger on a coarse correction, where G1 and G2 are read and G1's tolerance at G2's bar, the contact work over
   the hold, the free-scan test, stiffness scaling on the product, the push read over 1 mm of travel, the mass damping
   carried from the tube, and the executor's two new monitors.
+- *(2026-09-28, §16y)* the collapse's rules: a run that fails with the loop's re-estimate made again every 50 steps;
+  the collapse read by stabilizing the collapsing elements alone, cut at half their nodes' averaged J, 2μ to start,
+  doubled up to λ, at most four masked runs, decided at four times h_K2's elements; energy sampling as the
+  stabilization's form; and tracking the step every step not taken. Which element the product runs was Jon's: the
+  element as it is (fit plan U20).
 
 ## 10. What the research could not see
 
@@ -869,7 +875,7 @@ contact pressure within 5 % at ν ≥ 0.49? And can it run a 100k-tet insertion 
 | **K1 speed** | a 100k-tet insertion at ν = 0.49, GPU executor, **≤ 2 min** | wall-clock from setup to the last readback, including loading, hold and the measurement window. A first bar on the tube, not derived from D4; build step 2 derives the product's budget |
 | **K2 accuracy** | band pressure within **5 %** of the oracle, **both raw and gap-corrected** (15d.1) | same material, free ends, frictionless, the pinned SDF (15c). At ν 0.49 and 0.495, for (λ_a, B/A) = (1.1, 2) and (1.3, 2), on the 100k mesh |
 | **K3 precision** | CPU f32 against CPU f64, same executor: band pressure within **0.5 %** (frictionless, 50k), and the Coulomb push's reaction within **0.5 %** (μ_f 0.3, 10k). *Amended 2026-09-24 (PR #965 review):* the band pressure also within 0.5 % at every pair-averaged ring level (15d.1), not only in the mean, since D1's 95th-percentile reading depends on the local values. *2026-09-26 (§16s): D1's seated reading is now the 1 cm² patch; f32 and f64 read it the same to five decimals at 50k and μ_f 0.3* | step 2 of the build (15g), before any GPU code. This is the fit plan's *"precision spike on contact before any GPU contact code"* |
-| **K4 robustness** | J > 0 in every element at every step of every valid run | explicit check (§13d rule 2). Any J ≤ 0 in a valid run is a failure. A run that breaks a validity gate is invalid, and K4 does not judge it |
+| **K4 robustness** | J > 0 in every element at every step of every valid run | explicit check (§13d rule 2). Any J ≤ 0 in a valid run is a failure. A run that breaks a validity gate is invalid, and K4 does not judge it. *(2026-09-28, §16y rule 1: a run that goes non-finite, fails a gate or inverts an element with the loop's re-estimate every 500 steps is made again every 50 steps, and an inversion in a valid run there is K4 failing. On the product, the frictionless run at twice h_K2's elements went non-finite at 500 with or without the collapse resisted; its gates could not be read, so K4 did not judge it; at 50 it stood)* |
 | **K5 product readings** | the peak push force during entry and the seated 95th-percentile pressure (fit plan D1's readings) change ≤ 5 % from 50k to 100k. *2026-09-26 (§16s): the percentile was decided by one or two rings (a diagnostic); D1's seated reading is now the most-loaded 1 cm² patch, and the μ = 0 push is read over 10 mm of travel. K5 passes on them from 50k to 100k; the element size they need on the product is open (step 7)* | the tube's entry is a sharp edge, like the product's mouth. **A gate on the verdict's design, not on the solver:** if it fails, D1's readings or the lip radius are revisited before step 7 |
 | **K6 friction** | *Amended 2026-09-24, in step 2's design and before any data (16b):* Cattaneo–Mindlin partial slip in plane strain, a rigid cylinder on the block. The stick zone's half-width within 0.03a of the closed form while the tangential load rises to 0.8·μ_f·P, and the retained stick zone's within 0.03a while it falls back. It replaced frictional ironing, whose published curves could not carry a 5 % gate (16b) | CPU, build step 2. Friction's only external reference: the Coulomb push (15d.7) checks consistency only |
 
@@ -978,6 +984,10 @@ contact pressure within 5 % at ν ≥ 0.49? And can it run a 100k-tet insertion 
     ±1.1–1.6 % at 10k, ±0.3–0.7 % at 50k and ±0.07–0.6 % at 100k. The alternating state has lower
     energy than the uniform one. It is the checkerboard that Pires et al. 2004 call *"considerable …
     hydrostatic pressure fluctuations"*.
+  - *(2026-09-28, §16y)* A motion that keeps every node's volume gets no stiffness from the averaged λ term; only the
+    element's μ terms resist it. Under the product's mount an element collapses at the seated tip (§16x). A
+    stabilization taking part of the λ term at each element's own volume is built, off by default
+    (`ExplicitModel::with_volumetric_stabilization`).
 - **Mass:** lumped, ρV/4 per node (the implicit solver's rule, `construct.rs:607-619`).
 - **Time step:** Δt = 0.9 · 2/ω_max, with ω_max from power iteration on M⁻¹K through the executor's
   own force phases, **penalty stiffness included**. *(Amended 2026-09-25, §16o: the kinematic law
@@ -987,7 +997,7 @@ contact pressure within 5 % at ν ≥ 0.49? And can it run a 100k-tet insertion 
   as 0.9 · 4/(γ + √(γ² + 4ω²)), γ = 2ξω, which holds at ω² = 0 and, where it has a root, below (§16q).)*
   - **The iteration is re-run during loading**, every 500 steps, each from the same fixed start
     *(amended in 2a, 16m: warm-started, it stalled on a lower mode once loaded)*. The step never grows
-    by more than 5 % at a time.
+    by more than 5 % at a time. *(2026-09-28, §16y rule 1: a run that fails at 500 is made again every 50 steps.)*
   - A reviewer's model (not kept) measured, on 6 × 47 × 59: deformation cut the limit to 0.912× its
     rest value, and a Δt fixed at rest with the penalty gave ωΔt = 2.041, which is unstable.
   - The altitude estimate is a cross-check only. The method research measured it 4.4× loose on a
@@ -1112,7 +1122,9 @@ contact pressure within 5 % at ν ≥ 0.49? And can it run a 100k-tet insertion 
   1. The averaged nodal deformation gradient (Bonet, Marriott & Hassan 2001), or F-bar-patch
      (de Souza Neto, Pires & Owen 2005).
   2. Cyclic J smoothing, which *"suppresses the pressure oscillation"* (Onishi et al. 2017).
-  3. Split-energy ANP. This would need the oracle rerun with the split W.
+  3. Split-energy ANP. This would need the oracle rerun with the split W. *(2026-09-28, §16y: by a research
+     report's inference it has no element-level barrier to a change of volume, so it is not taken as a fix for the
+     collapse §16x found at the product's seated tip; the stabilization §16y built is energy sampling.)*
 - **IANP is not a fallback for the one-material tube:** it changes the rule only where materials meet.
   Which interface rule layered products use is decided in step 6 (15g step 1).
 
@@ -1243,7 +1255,12 @@ Each item is one PR with its own tests and a done-when.
      monitors, the deepest predicted point and the corrections the coarse grid answered, which the GPU must reduce
      too.)* *(2026-09-28, §16x: two more, the contact forces' moment about the obstacle's posed origin and, each step,
      the work the obstacle's motion does against them, its move and turn over a step taken from the pose track at f64;
-     the GPU, which runs f32 only, must reduce the one and accumulate the other.)*
+     the GPU, which runs f32 only, must reduce the one and accumulate the other. The CPU executor, at f32 too, forms
+     both at f64: each node's arm from its widened position, the step's sums, and the work, with the move and turn
+     from the pose track it keeps at f64 (`contact` in `src/cpu/executor.rs`). Whether sums at f32 would meet the
+     done-when's 1e-5 is not measured.)* *(2026-09-28, §16y: a volumetric stabilization, off by default, adds one
+     per-element value, κ_e; each node's λ_a − κ_a is formed at f64; and phase 4 reads the element's own dilation,
+     which phase 1 writes, so on the GPU it gains a binding or recomputes J.)*
 5. **The experiment on the GPU:** K1, K2 at 100k, the ν sweep, the ladder, the Coulomb push, the stress
    case, the SDF comparison and stiffness scaling. *Stiffness scaling runs first on the CPU, in step 2
    (16i), because the product's budget depends on it.*
@@ -1312,7 +1329,7 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
 - *(2026-09-27, §16t)* **What reading of the fitted pose brings the contact-guided scan forward.** Step 7 prints
   the sideways force and twist the wall puts on the scan; no reading of them is yet set that would. Step 7's design
   sets one before its runs *(2026-09-28, §16x rule 10 set it: a scan free to move changing D1's reading by more than
-  5 %. On `base_mold` it changed it by −1.0 and −2.8 %, so no recommendation)*;
+  5 %. On `base_mold` it changed it by −1.0 and −2.8 %, so no recommendation; the turn about the path was held)*;
 - *(2026-09-25, §16p)* friction above μ_f 0.3: the damped tube's Coulomb push fails 15d.7 at μ_f 0.6, and §5c's ranges
   reach 2.0 *(re-sourced 2026-09-27: on skin to about 1.2, tacky analogs above 2; §5c)*. Before a verdict is trusted
   at such a corner, its Coulomb push is checked there (§7 rung 4's self-consistency check), and the material's damping
@@ -1333,7 +1350,12 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
   the loop's re-estimate every 500 steps (§15c) one run inverted an element and went non-finite; every 50 it ran
   through, at a cost not measured. Which element limits the step, whether the collapse moves D1's readings and so the
   element size they need, and what the re-estimate interval should be are not measured. My recommendation to Jon:
-  settle this before D1's element size is read again;
+  settle this before D1's element size is read again *(2026-09-28, §16y: on the frictionless runs the step is set at
+  the most-compressed element at h_K2 and twice its elements, and at one near it at four times. Resisting the
+  collapsing elements alone moves the frictional readings at four times h_K2's elements by at most 1.5 %; the
+  frictionless patch moved +6.44 % at twice h_K2's elements, and at four times its comparison did not stand, its runs
+  reading +3.4 to +5.1 %. Jon chose the element as it is (fit plan U20); the next PR reads D1's size with it.
+  Where the loop's re-estimate every 500 steps fails, a run is made again every 50 steps, §16y rule 1)*;
 
 **Starting now, in parallel with steps 1–2, needing no solver:**
 - U3's geometric check *(done, §16t)*;
@@ -4062,8 +4084,8 @@ K3's 0.5 %, it says so; the bars do not add up to a verdict's error.
     move would read a different D1 reading. On the frictionless run at h_K2, at the seat after the window, and on a
     frictionless run stopped at the centre of its largest 10 mm push window and held until rule 6's 1 % holds:
     - four degrees of freedom: two translations across the path and two turns about axes across it through the
-      posed seated tip. The turn about the path's own direction is left out, since a nearly round scan resists it
-      barely, and its moment is printed;
+      posed seated tip. The turn about the path's own direction is left out, and its moment is printed *(corrected
+      2026-09-28: first justified as a turn a nearly round scan barely resists, which was not measured)*;
     - a stiffness matrix from central differences, ±δ and ±δθ in each, each probe moved over 0.05 s on §15b's ramp,
       held 0.1 s and read over a further 0.05 s, with the change of the force between that read's halves printed as
       its noise *(as built; first written "read over the last 0.05 s" of the hold)*;
@@ -4185,7 +4207,7 @@ result, not a compile error):
   where it was; the loaded area on §16s's bore and on a half-pressed plate. Nine mutations, each failing a test; the
   zero-travel guard survived until the pause mid-path was added.
 - `tests/fixtures.rs`: `Walls::Shell`'s holds (two mutations); `sim/L0/soft/tests/pairing_library.rs`: the surfaces
-  (one).
+  (one). *(2026-09-28, after the merge: #978's description counted 21 mutations of ours; this list counts 19.)*
 - Round 1's code reviewer ran 31 mutations of its own. Two survived these checks: `set_poses` not updating the f64
   track, and the obstacle's move taken from the narrowed poses at f32. Two tests now fail on them: a new pose track
   moves the moment's origin and a still obstacle does no work; and f32 reads the obstacle's work within 1e-4 of f64's
@@ -4302,7 +4324,10 @@ at most 0.60 %, the balance 0.01 %) and K4; rule 10's probe holds and its run to
 - **Rule 10, the free scan: within 5 %; no recommendation.** At the seat the scan free to move would move about a
   tenth of the inset and turn under two degrees, and the patch changes −1.00 %; held at the centre of the frictionless
   run's largest 10 mm window, the static push changes −2.79 %. The steps took the sideways force and twist to at most
-  3.1 % of the fitted pose's; the probes' noise, read on the force, was at most 0.16 %.
+  3.1 % of the fitted pose's; the probes' noise, read on the force, was at most 0.16 %. The scan was free in four of
+  the five freedoms the path leaves it: at the fitted pose the moment about the path's own direction, which was held,
+  read 0.085 of the twist across it at the seat and 0.22 at the peak's pose; whether freeing that turn moves a reading
+  is not measured.
 - **Rule 11: stiffness scaling holds on the product:** at 2μ each reading is within 0.36 % of twice, so a verdict is
   three runs. The mass damping was held at μ's; at 2μ the tube's rule would raise it by √2, which was not run.
 - **Beside them, over every valid run:**
@@ -4346,10 +4371,11 @@ at most 0.60 %, the balance 0.01 %) and K4; rule 10's probe holds and its run to
     is read again, the element collapsing at the seated tip bears on it, and on the cost. Jon's rule stands that the
     quality items come before steps 3–5 (§15g step 2's note).
 
-*Since the runs,* the probe's code changed only in which runs it lets feed the rules: K4 apart from the validity
-gates, rules 6 and 7 enforced, the frictionless corner of `step7_at_h_k2` gated as the others are, and a rule whose
-inputs include a run that did not stand printing "not judged". In `step7_cost` a rule-6 re-run would time the re-run.
-No recorded run met any of those cases, so the recorded readings stand.
+*The commits the runs name* are pre-squash commits kept only on the machine that ran them; the merged probe is #978's
+(`240844a3`). *Since the runs,* the probe's code changed only in which runs it lets feed the rules: K4 apart from the
+validity gates, rules 6 and 7 enforced, the frictionless corner of `step7_at_h_k2` gated as the others are, and a rule
+whose inputs include a run that did not stand printing "not judged". In `step7_cost` a rule-6 re-run would time the
+re-run. No recorded run met any of those cases, so the recorded readings stand.
 
 *Found by the runs, not by the rules:* the probe read an exact depth from a state that had gone non-finite and
 panicked in the distance query; it now leaves such a read out. Rule 2 first computed its changes from the invalid
@@ -4359,7 +4385,10 @@ inset, off the canal, as the design first worded it; it reads the canal now.
 *Not measured:* where the frictionless push peaks; where the sideways force's largest share falls; the order of
 convergence; the eight-times wall; which element limits the step at the tip, and whether the collapse moves D1's
 readings; whether a formulation without the collapsing mode, or with it stabilized, converges; what the step
-re-estimated every 50 steps costs a press; what makes frictionless runs take more steps.
+re-estimated every 50 steps costs a press; what makes frictionless runs take more steps. *(2026-09-28, §16y: which
+element limits the step is measured; whether the collapse moves D1's readings is open, fit plan U20; re-estimated every
+50 steps a run evaluates the forces about three times per step, not timed; and the frictionless cells of rule 2 at
+twice h_K2's elements are filled, the verdict unchanged.)*
 
 *My priors, scored:* the loading at two or four times the budget's (hit); the frictional patch within 5 % from h_K2
 to twice its elements (miss: +14.5 % and +18.8 %); ν's per-doubling change under 5 % (miss: +5.29 % on the patch at
@@ -4386,3 +4415,295 @@ collapsing element.
   among them a verdict a rule would print from a run that did not stand, a blow-up point given to the wrong precision,
   and a figure the fix deleted while the fit plan still cited it. They were cut or corrected, and the rounds stopped
   there.
+
+### 16y. The element collapsing at the seated tip (design, 2026-09-28)
+
+Jon's call after §16x (2026-09-28): settle the element that collapses at the seated tip, finding which element limits
+the step and whether the collapse moves D1's readings; then read D1's element size again; his GPU call comes after.
+This is the design, written after the exploratory runs below, revised after two rounds of review (below), and set
+before the deciding runs. Their results are added below it. #978's five merge-review items are folded in: §16x's rule 10 and its
+record, the fit plan's note on it, step 4's note, the run commits and the mutation count, and the tube example's walls.
+
+**Scope.**
+- Which element limits the step at the seated tip (measured below).
+- The step control: what a run that fails with the loop's re-estimate does (rule 1).
+- Whether the collapse moves D1's readings (rule 2), with a volumetric stabilization built as the instrument, and as
+  the candidate element if it does.
+- Next, not here: D1's element size read again with the element rule 2 leaves, and G6 there, for Jon's call.
+  - If the stabilized element goes forward, it first needs its own h_K2, K3, the Yeoh case (16h), the confined case,
+    K5, K6, and CI at its weight. §16r's stop rule derives h_K2 for an element, and on the 10k tube at c = 2 K2's first
+    corner reads +7.01 % (below).
+  - ν under the mount (fit plan U19) stays Jon's call; its figures are the element as it is.
+
+**Measured before the rules** (exploratory; the commits named are this PR's pre-squash commits, kept locally).
+
+- **What limits the step** (`step7_stiffening` at `d61412c6`: frictionless, loading four times the budget's, the step
+  re-estimated every 50 steps). At the read of the smallest step, within about 5 % of it, the power iteration's vector
+  (`CpuExecutor::top_mode_and_vector`), by its mass-weighted size at each node:
+
+  | Wall | Smallest step over the rest step | Share on the top node | Share on the most-compressed element's nodes | The vector's damping ratio | The elastic top mode's step over its own at rest |
+  |---|---|---|---|---|---|
+  | h_K2 | 0.398 | 0.93 | 0.998 | 1.17 | 0.68 |
+  | ×2 | 0.060 | 0.96 | 1.000 | 3.90 | 0.28 |
+  | ×4 | 0.181 | 0.83 | 0.000 | 2.15 | 0.41 |
+  | ×2, nothing held | 0.925 | 0.92 | 0.000 | 0.82 | 1.01 |
+
+  - At h_K2 and ×2 the step is set at the most-compressed element. At ×4 it is set at another element near it, at J
+    0.45 against its nodes' averaged 0.84–0.99.
+  - Elements under half their nodes' averaged J: about 1 to 2 in 10⁴ of the wall's elements, all within 0.06 of the
+    centreline's length from the seated tip; none with nothing held.
+- **The research round** (two reports, kept in the local archive with their sources):
+  - With the λ term averaged over nodes, a motion that leaves every node's volume unchanged gets no stiffness from λ.
+    Only the element's μ terms resist it: a bulk of about 2μ/3, plus 8C₂ for Yeoh. On one report's linear model, not in
+    the repo (8³ cubes, bottom held, a point load), the worst element's volume change under selective ANP barely fell
+    as λ rose (as λ^−0.19, against λ^−0.77 for the nodes').
+  - Split-energy ANP (Bonet–Burton, Joldes' IANP, LS-DYNA's formulation 13) has no element-level barrier to a change
+    of volume, by the report's inference. The element as it is keeps the μ terms' −μ ln J, so a split form is not
+    taken as a fix.
+  - The sources' stabilizations give each element back some volumetric stiffness of its own:
+    - Krysl's energy sampling (ESNICE-T4, `FinEtoolsDeforLinear.jl`), the source of this stabilization's form: a
+      material of ν 0.395 at ν 0.49, weighted 0.46 at a regular tet, a bulk of about 2.2μ (arithmetic), of which about
+      1.5μ is beyond the 2μ/3 the μ terms here already keep per element;
+    - Puso 2005: a penalty on the element's strain less its nodes', weighted 0.05, with ν 0.4 in its material;
+    - Puso et al. 2008, as Ortiz-Bernardin et al. quote it: the penalty's λ capped at 25μ;
+    - Sierra/SM's node-based tet: 0.01 of the element's bulk stress, about 0.5μ at ν 0.49 (arithmetic).
+
+    No source was found that measures the locking against the weight at ν 0.49–0.4975.
+  - Production codes track the step every cycle from a cheap estimate, and re-run a global one on a schedule or when
+    the cheap one moves. Sierra/SM's power method does so every 50 steps, or on a 10 % change. The loop here
+    re-estimates every 500 steps and tracks nothing in between.
+- **The stabilization, built** (`ExplicitModel::with_volumetric_stabilization`, and per element
+  `with_element_stabilizations`): energy sampling, in the log form.
+  - Each element's κ_e (from the weight, min(λ_e, c μ_e)) moves from the averaged term to the element's own volume:
+    `E = Σ_e V_e (Ψ_μ(F_e) + κ_e/2 (ln J_e)²) + Σ_a V_a (λ_a − κ_a)/2 (ln J_a)²`, with κ_a weighted at the nodes as
+    λ_a is.
+  - Where every element around a node has one J, the two terms add up to the λ term. With the same κ on every element
+    around each node, while J stays below e, the energy otherwise rises by each patch's gap (`tests/elasticity.rs`).
+    Where κ differs around a node, as on a mask's edge or where materials meet, it can fall: the design review
+    measured a two-material compression with less energy at 4μ than at none (not in the repo).
+  - No pass is added: the node pass uses λ_a − κ_a, and the element pass adds κ_e ln J_e / J_e
+    (`sampled_element_pressure`, in the WGSL).
+  - c = 0 is the element as it was.
+- **On the tube** (the example at `5cfa84b0`: `<mesh> 0 0 f32 20 0.2 10 1 0.00030434782608695654 free <c>`, K2's first
+  corner, the mandrel at 1.1 times the bore and ν 0.49, frictionless, at 10 T_s), K2's raw error:
+
+  | c | 10k | 50k | 100k |
+  |---|---|---|---|
+  | 0 | +4.41 % | +1.47 % | +0.95 % |
+  | 0.5 | | +1.72 % | +1.13 % |
+  | 1 | | +1.98 % | +1.31 % |
+  | 2 | +7.01 % | +2.47 % | +1.67 % |
+  | 4 | +9.44 % | +3.44 % | +2.36 % |
+  | 8 | +13.90 % | | |
+  | 25 | +28.49 % | | |
+
+  - The tube's worst element, over every read, stays above 0.93 of its nodes' averaged J at 10k and 50k (the design
+    review's measurement, not in the repo), so there the tube's change with c is the stabilization's own, with no
+    collapse; at 100k it was not read.
+  - On K2's band it adds about linearly in c up to 4, and less as the mesh refines. At 2μ it adds 2.60, 1.00 and 0.72
+    points: of order 1.7, then 1.5, in the element size (arithmetic, the size taken as the cube root of the element
+    count).
+  - On the tube's D1 readings at c = 2 (the design review's measurement, not in the repo), the patch moves +5.04, +2.51
+    and +1.84 % at 10k, 50k and 100k, shrinking about as K2's change does; the 10 mm push +1.53, +3.76 and +0.68 %, and
+    the 1 mm peak +2.30, +1.31 and +5.99 %, do not shrink in step.
+- **On the product at h_K2** (`step7_stabilized` at `e057dfa0`: loading ×4; its presses at every corner and its
+  collapse diagnostic frictionless, all with the loop's re-estimate every 500 steps), against c = 0:
+
+  | c | The most-compressed J at the smallest step | The step's vector on the most-compressed element's nodes | Smallest step over the model's own rest step | Patch, μ_f 0 / 0.104 / 0.18 | Geometric share | Peak push, 0.104 / 0.18 |
+  |---|---|---|---|---|---|---|
+  | 0 | 0.10 | 0.998 | 0.43 | | | |
+  | 2 | 0.29 | 0.000 | 0.59 | +6.3 / +6.9 / +7.9 % | +4.3 % | +4.5 / +4.6 % |
+  | 4 | 0.36 | 0.000 | 0.59 | +11.4 / +11.7 / +13.1 % | +7.7 % | +7.6 / +7.7 % |
+  | 8 | 0.53 | 0.000 | 0.59 | +18.6 / +19.8 / +21.9 % | +13.8 % | +12.9 / +13.7 % |
+  | 25 | 0.63 | 0.000 | 0.58 | +48.3 / +48.6 / +52.7 % | +34.7 % | +30.6 / +30.7 % |
+
+  - From 2μ on, the most-compressed element no longer sets the step. Each row's step is over its own model's rest step,
+    so the rows are not step gains.
+  - The readings rise with c at every rung, with no plateau.
+- **The design review's public case** (a ball pressed into a block held at its base; `tests/collapse_release.rs`,
+  which the review found):
+  - The element as it is drives two elements under half their nodes' averaged J, the least at 0.386, with the step
+    re-estimated every 50 steps. κ 2μ everywhere lifts the least to 0.551, and on those two elements alone to 0.547.
+  - The seated vertical contact force at the last read moves +10.14 % stabilized everywhere and +1.26 % on the two
+    alone (the test prints both). On the review's finer blocks, with no element under half at c = 0, 2μ everywhere
+    still moved it +4.27 and +2.41 % (not in the repo). So rule 2 stabilizes the collapsing elements alone, and its
+    change includes the mask's own.
+  - With the step re-estimated every 500 steps, the element as it is goes non-finite (the test pins it); every 50
+    steps it stands. On the review's case with a smaller ball, runs at 500 went non-finite at c = 0, 2 and 4, and
+    those it ran again at 50 (c = 0 and 2) stood; at 8μ the run finished at 500 with an element inverted (not in the
+    repo). A failure at 500 that stands at 50 is what rule 1 re-runs; what fails is not isolated.
+  - Stabilized everywhere at 2μ, the collapse cleared in two of the six public cases where the element as it is had
+    one (the review's measurement, not in the repo).
+
+**The rules, set before the deciding runs.** Engineering calls unless one names Jon.
+1. **The step control.** A run that goes non-finite, inverts an element (K4) or fails a validity gate with the loop's
+   re-estimate every 500 steps is run again with the step re-estimated every 50 steps, the interval Sierra/SM's power
+   method uses by default. If it fails again, it does not stand. Each run prints the interval it ran at, and its steps
+   and estimates, for the next PR's G6.
+2. **Whether the collapse moves D1's readings** (`step7_masked`: at ×1, ×2 and ×4 h_K2's elements, every corner,
+   loading ×4, rule 1 applied):
+   - the element as it is; its mask is every element it drives under half its nodes' averaged J at some read;
+   - the same run with κ on the mask alone, 2μ to start. An element under half in a masked run has its κ doubled, up
+     to λ, or joins the mask at 2μ, and the run is made again: at most four masked runs. If an element is still under
+     half after them, or those under half are at λ already, the corner's comparison does not stand;
+   - each deciding reading's masked change, masked over as it is, printed at each size. The deciding readings are
+     §16x rule 2's, the patch at every corner and the geometric share; the peak push is printed beside them for Jon;
+   - the verdict is at ×4 h_K2's elements, the finest size run and the coarsest D1 could need (§16x); ×1 and ×2 show
+     the trend. If every deciding reading's masked change is within 5 % (K5's bar), resisting the collapse does not
+     move D1's readings there by more than that bar; otherwise it moves them by the largest change;
+   - the masked change includes the mask's own change of stiffness, whose sign on the product is not known (κ then
+     differs around the nodes on the mask's edge) and which is not measured apart. The mask is cut at half its nodes'
+     averaged J; how the change depends on that cut is not measured;
+   - 2μ to start, the doubling and the four runs are engineering calls; 2μ is within the sources' span, 0.5μ to 25μ.
+3. **What follows.**
+   - If rule 2 finds every deciding reading's masked change within 5 % at ×4, the element stays as it is, with rule
+     1's step control, and the next PR reads D1's size with it; its ×4 is judged by an ×8 wall.
+   - If a masked change is beyond 5 %, resisting the collapse moves D1's readings by that much at ×4. The stabilized
+     element everywhere is the candidate; at h_K2 its change with 2μ everywhere was +4–8 %, the collapse's part and its
+     own together (above). Which element the product runs is Jon's call, with both elements' readings and costs at the
+     sizes read in the next PR.
+   - If rule 2 is not judged at ×4, the element stays open, and that goes to Jon with the runs' readings.
+
+**Done when:** rule 2's runs are in and read, rule 1 applied to them; the record says which runs were run again by
+rule 1; the public case runs in CI (the tests-release job); and the element's state, and what the next PR must do, are
+written into §15g's list and the fit plan. The next PR waits on Jon's call (fit plan U20) *(made 2026-09-28: the
+element as it is)*.
+
+**The code.**
+- `sim-soft-explicit`:
+  - `ExplicitModel::with_volumetric_stabilization` and `with_element_stabilizations`;
+  - `sampled_element_pressure`, shared and in the WGSL, and the executor's node and element passes and energy;
+  - `CpuExecutor::top_mode_and_vector`, `TubeRun::stabilization` and `TubeRun::model`;
+  - the tube example's eleventh argument;
+  - `tests/collapse_release.rs`, release-only and out of coverage.
+- The probe:
+  - `diagnose` and `locate`, the vector and the collapse;
+  - `step7_stabilized` (exploratory) and `step7_masked` (rule 2);
+  - every run prints its re-estimate interval and its collapse, and `press` re-runs by rule 1.
+
+**Beside the rules.**
+- The step control is not redesigned; rule 1 reads a run's own failure (an engineering call). Tracking the step every
+  step from a cheap estimate, as production codes do, needs a bound for this element; the research round's derivation
+  puts one 2 to 5 times loose on a model it built (not measured here). Where it would run is not decided: step 4's
+  done-when compares every phase with the CPU executor, which has none.
+- The GPU (step 4): κ_e is one more per-element value, and each node's λ_a − κ_a is formed at f64 before it is
+  narrowed. Phase 4 reads the element's own dilation, which phase 1 writes: on the GPU that is a binding more, or J
+  recomputed from the displacements phase 4 already reads.
+
+**Results** (`step7_masked` at `3ee38040`, a pre-squash commit kept locally; loading four times the budget's, every
+corner). Each deciding reading's masked change, masked over as it is:
+
+| Reading | ×1 h_K2's elements | ×2 | ×4 |
+|---|---|---|---|
+| Patch, μ_f 0 | −0.26 % | +6.44 % | not judged |
+| Patch, μ_f 0.104 | +0.03 % | +1.80 % | +1.45 % |
+| Patch, μ_f 0.18 | +2.04 % | +0.28 % | +0.88 % |
+| Geometric share (μ_f 0) | +1.18 % | +0.83 % | not judged |
+| Peak push, μ_f 0.104 / 0.18 (for Jon) | +0.75 / +1.54 % | +0.10 / +0.21 % | +0.28 / +0.35 % |
+
+- **Rule 2 at ×4: not judged.** In the frictionless run some element was under half its nodes' averaged J after
+  each of the four masked runs (one after the last two), κ up to 16μ, so the frictionless patch and the geometric
+  share, both read on that run, have no verdict. The four masked runs, which the rule does not accept, read the
+  frictionless patch +3.38, +4.47, +5.06 and +5.07 % and the share +0.41, +0.58, +0.68 and +0.70 %, rising as κ
+  doubled from 2μ. The two frictional corners stood, every change within 1.5 %.
+- **By rule 3, the element stays open, and goes to Jon** with these readings (below).
+- The masks held under 3 in 10⁴ of the wall's elements. At ×1 and ×2 every corner cleared within the four runs, with
+  κ up to 16μ; at ×4 the frictional corners cleared at 16μ.
+- **Rule 1:** at ×2 the frictionless run went non-finite with the loop's re-estimate every 500 steps, at 0.94–0.95 of
+  the loading, with the element as it is and with each of its three masks. Each ran again every 50 steps and stood.
+  Every other run stood at 500. Why the ×2 frictionless runs fail at 500 is not isolated. Re-estimated every 50 steps,
+  a run evaluates the forces about three times per step, against 1.2 at 500 (arithmetic: 100 iterations per estimate),
+  after the run that failed; not timed.
+- **At 500 on the public cases:** on the test's case the element as it is stops and 2μ everywhere finishes
+  (`tests/collapse_release.rs`); on the design review's case with a smaller ball, 2μ everywhere stopped too (above). On
+  the product, 2μ everywhere at twice h_K2's elements was not run.
+- **Steps,** the element as it is over masked, at μ_f 0 / 0.104 / 0.18: ×1 1.23 / 1.20 / 1.10; ×2 1.90 / 1.34 / 1.00
+  (the frictionless pair both at 50); ×4 1.12 / 1.00 / 1.03 (the frictionless mask not accepted). They include the
+  mask's own change of stiffness.
+- **§16x rule 2's missing cells.** The element as it is, frictionless at ×2 (run again at 50 by rule 1), fills them:
+  its patch moves +16.86 % over the first doubling and −2.74 % over the second, and the geometric share +6.00 % and
+  +0.55 %; §16x's changes from ×1 to ×4, +13.66 and +6.58 %, are reproduced. §16x's rule 2 verdict stands: ×2's
+  doubling moves the patch at μ_f 0.18 by −5.55 %, so D1's size stays open at four times h_K2's elements or finer.
+- **Resisted, the first doubling moves the patch as much:** the masked patch moves +24.7, +16.6 and +16.8 % from ×1
+  to ×2 at μ_f 0, 0.104 and 0.18, against +16.9, +14.5 and +18.8 % as it is; from ×2 to ×4, −2.7 and −5.0 % at the
+  frictional corners, against −2.4 and −5.6 %.
+- *Not measured:* the mask's own change of stiffness on the product, of unknown sign; how the change depends on the
+  cut at half; why the frictionless ×2 runs fail at 500 with the collapse resisted.
+- **For Jon's call.** Resisted at its collapsing elements, the element as it is reads (the masked change):
+  - at ×4, the frictional patches +1.45 and +0.88 %, and the peak push, which Jon decides at a low friction, +0.28
+    and +0.35 %;
+  - on the frictionless patch, −0.26 % at ×1 and +6.44 % at ×2, where the comparison stood; at ×4, +3.4 to +5.1 %,
+    rising with κ, in runs the rule does not accept.
+
+  The options, each with rule 1's re-runs, which the ×2 frictionless runs needed with the collapse resisted too:
+  - keep the element as it is, and read D1's size with it in the next PR;
+  - stabilize every element: it first needs its own h_K2, gates and CI. On the product at h_K2, 2μ everywhere left
+    an element collapsed; at 8μ, where no element was under half at the read of the smallest step (frictionless, the
+    loading only), the readings moved +13 to +22 %. On the tube it moves D1's pushes by amounts that do not all shrink
+    with the mesh. Its cost is not measured;
+  - before choosing, a fifth masked run at ×4's frictionless corner, at 32μ, past the sources' 25μ: if it clears the
+    collapse, it settles whether that corner's change passes 5 %; at 8μ and 16μ the runs the rule did not accept read
+    +5.06 and +5.07 %.
+
+  *Jon's call (2026-09-28): the element as it is* (fit plan U20). The next PR reads D1's size with it.
+
+*Since the runs,* the probe changed only where no recorded run reached it: a masked comparison whose run as it is did
+not stand now masks nothing, and a masked run that does not stand ends its corner's comparison (neither happened);
+G6 counts the attempts rule 1 and rule 6 replace (`step7_cost` was not run); a run with its instruments off prints
+its collapse as not read; and `diagnose` takes the viscosity's share at rest from its own executor.
+
+*My priors, scored* (written before the first run):
+- the vector that sets the step on the most-compressed element at every size: hit at h_K2 and twice its elements,
+  miss at four times;
+- the elastic part setting it: miss, the vector's damping ratio 1.2–3.9;
+- few elements, near the tip: hit;
+- a stabilization of 1–2.5μ everywhere clearing the collapse: miss, 2μ left an element collapsed at h_K2;
+- K2 on the 50k tube moving under 1 %: at the edge, +1.00 at 2μ;
+- the collapse moving the patch more than 5 % at h_K2: miss at ×1, −0.26 to +2.04 % masked, where 2μ everywhere had
+  moved it +6.3 to +7.9 %;
+- resisted, the patch's first doubling under 5 %: miss, +16.6 to +24.7 %;
+- the step at least half the rest step, stabilized, and fewer steps at ×4: hit at h_K2 (0.59); at ×4 the masked runs
+  took 0–11 % fewer;
+- the ×2 failure at 500 gone with the collapse resisted: miss;
+- the peak push within 5 %: hit.
+
+None of my eight design priors (kept locally) named h_K2 belonging to the element, the step control's instrument, or
+the mask's sign.
+
+**How the design was checked.**
+- **Round 1:** two cold reviewers, of the physics and code, and of the whole plan. The first measured on a public case
+  (above).
+  - A stabilization everywhere moved the public case's reaction +10.14 %, against +1.26 % on its two collapsing
+    elements alone, so the first rule 4, comparing the elements through the sizes, could not answer its question. It
+    is now rule 2, the masked comparison.
+  - The first rule 1 judged the element by runs that fail with the loop's step control, whatever the element.
+  - h_K2 belongs to an element, and the stabilized element needs its own (above). That moved the stabilized element's
+    own gates, and D1's size, to the next PR.
+  - The CI check of K2 would fail at c = 2: on the 10k tube its corner reads +7.87 % against the test's 7 % (the
+    review's measurement).
+  - Also: claims with no referent, the plan's own annotations, and #978's follow-ups done by halves.
+- **Round 2:** one fresh reviewer of the revision. It found the step's overshoot, an instrument the revision had
+  added, reading at most 1 on the public runs that failed and above 1 on runs whose readings matched the 50-step run's,
+  so it was cut, and rule 1 reads the run's own failure. It found that the mask's own change of stiffness has no known
+  sign, that no route followed a corner that does not stand, and several claims with no referent. Its findings are
+  kept in the local archive, not in the repo.
+
+**How the build was checked.**
+- **Round 1:** three cold reviewers: of the code (19 mutations, in a worktree of its own), of this record against the
+  runs' outputs and the repo for the scan's figures, and of the whole plan.
+  - The summary sent to Jon left out the one accepted frictionless comparison past the bar (+6.44 % at ×2), and costed
+    the options unequally: rule 1's re-runs apply to either element, 2μ everywhere left the collapse at h_K2, and the
+    fifth run is a measurement, not an element.
+  - Rule 1 read an inversion at 500 as a re-run, which changes how K4 is read; §15a now says so.
+  - An attribution of the failures at 500 to the step control was cut: on the public cases they depend on κ and on
+    the case.
+  - Three mutations survived: the tube's model dropping its stabilization, its run bypassing that model, and the
+    damping quotient taken of the next iterate. Each now fails a test.
+  - The cells §16x rule 2 left open, and the prior on the masked patch's first doubling, were read from the runs.
+  - The privacy sweep, with planted figures as its positive controls, found no product figure in any added line or
+    commit message.
+- **Round 2:** one fresh reviewer of round 1's fixes found eight problems, all eight written by those fixes: the
+  options costed unequally again, K4's note wider than §15a allows, "cleared" read from one read, the fifth run
+  promising more than it can, and an attribution the archive could not back. They were cut, and the rounds stopped
+  there: the results and the verdict did not move in either round.
+

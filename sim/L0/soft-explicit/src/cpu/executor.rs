@@ -51,6 +51,17 @@ const fn narrow3(v: [f64; 3]) -> [R; 3] {
 fn widen3(v: [R; 3]) -> [f64; 3] {
     [widen(v[0]), widen(v[1]), widen(v[2])]
 }
+
+/// Each node's `λ_a − κ_a`, the λ its averaged term uses (plan §16y), formed
+/// at `f64` and then narrowed.
+fn averaged_lambdas(model: &ExplicitModel) -> Vec<R> {
+    model
+        .node_lambdas()
+        .iter()
+        .zip(model.node_stabilizations())
+        .map(|(&lambda, &stabilization)| narrow(lambda - stabilization))
+        .collect()
+}
 /// A grid layout at this executor's precision.
 const fn narrow_layout(grid: crate::f64::SdfGridLayout) -> shared::SdfGridLayout {
     shared::SdfGridLayout {
@@ -107,7 +118,8 @@ struct Elastic<'a> {
     rest_edge_inverses: &'a [[R; 9]],
     rest_volumes: &'a [R],
     node_rest_volumes: &'a [R],
-    node_lambdas: &'a [R],
+    averaged_lambdas: &'a [R],
+    element_stabilizations: &'a [R],
     offsets: &'a [u32],
     entries: &'a [u32],
 }
@@ -140,15 +152,17 @@ impl Elastic<'_> {
         fill(pressures, |a| {
             shared::pressure_lambda_term(
                 shared::nodal_dilation(volume_changes[a], self.node_rest_volumes[a]),
-                self.node_lambdas[a],
+                self.averaged_lambdas[a],
             )
         });
     }
 
-    /// Phase 4 into `element_forces`.
+    /// Phase 4 into `element_forces`, from phase 1's `dilations` and phase
+    /// 3's `pressures`.
     fn element_forces(
         &self,
         displacements: &[[R; 3]],
+        dilations: &[R],
         pressures: &[R],
         element_forces: &mut [[R; 12]],
     ) {
@@ -159,7 +173,11 @@ impl Elastic<'_> {
                 self.rest_edge_inverses[e],
                 self.rest_volumes[e],
                 self.materials[e],
-                shared::element_pressure([a, b, c, d]),
+                shared::sampled_element_pressure(
+                    [a, b, c, d],
+                    dilations[e],
+                    self.element_stabilizations[e],
+                ),
             )
         });
     }
@@ -206,13 +224,15 @@ impl Elastic<'_> {
         self.dilations(displacements, &mut dilations);
         self.volume_changes(&dilations, &mut volume_changes);
         self.pressures(&volume_changes, &mut pressures);
-        self.element_forces(displacements, &pressures, &mut element_forces);
+        self.element_forces(displacements, &dilations, &pressures, &mut element_forces);
         self.gather_forces(&element_forces, &mut forces);
         forces
     }
 
-    /// The internal energy of `displacements`: the μ terms per element and
-    /// the averaged λ term per node, `Σ_e V_e Ψ_μ + Σ_a V_a λ_a/2 (ln J_a)²`.
+    /// The internal energy of `displacements`: the μ terms and the sampled
+    /// part of the λ term per element, and the rest of the λ term averaged
+    /// per node, `Σ_e V_e (Ψ_μ + κ_e/2 (ln J_e)²) + Σ_a V_a (λ_a − κ_a)/2
+    /// (ln J_a)²`.
     fn energy(&self, displacements: &[[R; 3]]) -> f64 {
         let nodes = self.node_rest_volumes.len();
         let mut dilations = vec![0.0; self.elements.len()];
@@ -221,12 +241,18 @@ impl Elastic<'_> {
         self.volume_changes(&dilations, &mut volume_changes);
         let elements: f64 = (0..self.elements.len())
             .map(|e| {
-                widen(shared::tet4_energy_mu_terms(
-                    gather12(displacements, self.elements[e]),
-                    self.rest_edge_inverses[e],
-                    self.rest_volumes[e],
-                    self.materials[e],
-                ))
+                widen(
+                    shared::tet4_energy_mu_terms(
+                        gather12(displacements, self.elements[e]),
+                        self.rest_edge_inverses[e],
+                        self.rest_volumes[e],
+                        self.materials[e],
+                    ) + self.rest_volumes[e]
+                        * shared::energy_density_lambda_term(
+                            dilations[e],
+                            self.element_stabilizations[e],
+                        ),
+                )
             })
             .sum();
         let nodes: f64 = (0..nodes)
@@ -235,7 +261,7 @@ impl Elastic<'_> {
                     self.node_rest_volumes[a]
                         * shared::energy_density_lambda_term(
                             shared::nodal_dilation(volume_changes[a], self.node_rest_volumes[a]),
-                            self.node_lambdas[a],
+                            self.averaged_lambdas[a],
                         ),
                 )
             })
@@ -258,7 +284,9 @@ pub struct CpuExecutor {
     masses: Vec<R>,
     inverse_masses: Vec<R>,
     node_rest_volumes: Vec<R>,
-    node_lambdas: Vec<R>,
+    /// Each node's `λ_a − κ_a` ([`averaged_lambdas`]).
+    averaged_lambdas: Vec<R>,
+    element_stabilizations: Vec<R>,
     constraints: Vec<[[R; 3]; 2]>,
     offsets: Vec<u32>,
     entries: Vec<u32>,
@@ -421,7 +449,8 @@ impl CpuExecutor {
                 .map(|(&m, &held)| shared::inverse_mass(narrow(m), held))
                 .collect(),
             node_rest_volumes: model.node_rest_volumes().iter().map(|&v| narrow(v)).collect(),
-            node_lambdas: model.node_lambdas().iter().map(|&l| narrow(l)).collect(),
+            averaged_lambdas: averaged_lambdas(model),
+            element_stabilizations: model.element_stabilizations().iter().map(|&k| narrow(k)).collect(),
             constraints: model
                 .constraints()
                 .iter()
@@ -485,7 +514,8 @@ impl CpuExecutor {
             rest_edge_inverses: &self.rest_edge_inverses,
             rest_volumes: &self.rest_volumes,
             node_rest_volumes: &self.node_rest_volumes,
-            node_lambdas: &self.node_lambdas,
+            averaged_lambdas: &self.averaged_lambdas,
+            element_stabilizations: &self.element_stabilizations,
             offsets: &self.offsets,
             entries: &self.entries,
         }
@@ -590,6 +620,116 @@ impl CpuExecutor {
         }
         Some(shared::sdf_tricubic(coordinate, values, grid))
     }
+
+    /// The power iteration of [`Executor::estimate_top_mode`], and the
+    /// vector its quotients were taken of: where the mode that sets the step
+    /// sits (plan §16y). A diagnostic; the stepping loop never reads it.
+    // Node indices feed a deterministic starting vector; precision loss in
+    // `usize → R` only changes which starting vector it is.
+    #[allow(clippy::cast_precision_loss)]
+    #[must_use]
+    pub fn top_mode_and_vector(
+        &self,
+        iterations: usize,
+        perturbation: f64,
+        viscous_weight: f64,
+    ) -> (TopMode, Vec<[f64; 3]>) {
+        let nodes = self.node_count();
+        let mut v: Vec<[R; 3]> = (0..nodes)
+            .map(|a| {
+                let x = a as R;
+                self.free_part(a, [(1.1 * x).sin(), (0.7 * x).cos(), (0.3 * x + 1.0).sin()])
+            })
+            .collect();
+        let elastic = self.elastic();
+        let base = elastic.forces(&self.displacements);
+        // C v: minus the viscous forces at velocities v, in the free directions.
+        let damping = |v: &[[R; 3]]| -> Vec<[R; 3]> {
+            let mut element_viscous = vec![[0.0; 12]; self.elements.len()];
+            elastic.viscous_forces(&self.displacements, v, &mut element_viscous);
+            let mut viscous = vec![[0.0; 3]; nodes];
+            elastic.gather_forces(&element_viscous, &mut viscous);
+            (0..nodes)
+                .map(|a| self.free_part(a, shared::vec3_scale(viscous[a], -1.0)))
+                .collect()
+        };
+        let weight = if self.viscous {
+            narrow(viscous_weight)
+        } else {
+            0.0
+        };
+        let quotient = |v: &[[R; 3]], w: &[[R; 3]]| -> f64 {
+            let (numerator, denominator) = (0..nodes).fold((0.0, 0.0), |(n, d), a| {
+                (
+                    n + widen(shared::vec3_dot(v[a], w[a])),
+                    d + widen(self.masses[a] * shared::vec3_dot(v[a], v[a])),
+                )
+            });
+            numerator / denominator
+        };
+        // The vector the latest quotient was taken of, and that quotient.
+        let (mut measured, mut stiffness_quotient) = (v.clone(), 0.0);
+        for _ in 0..iterations {
+            let largest = v
+                .iter()
+                .flat_map(|x| x.iter())
+                .fold(0.0, |m: R, &c| m.max(c.abs()));
+            if largest == 0.0 {
+                break;
+            }
+            let scale = narrow(perturbation) / largest;
+            let shifted: Vec<[R; 3]> = self
+                .displacements
+                .iter()
+                .zip(&v)
+                .map(|(&u, &x)| shared::vec3_add(u, shared::vec3_scale(x, scale)))
+                .collect();
+            let shifted_forces = elastic.forces(&shifted);
+            // K v = −(f(u + s v) − f(u)) / s, restricted to the free directions.
+            let stiffness: Vec<[R; 3]> = (0..nodes)
+                .map(|a| {
+                    let difference = shared::vec3_sub(shifted_forces[a], base[a]);
+                    self.free_part(a, shared::vec3_scale(difference, -1.0 / scale))
+                })
+                .collect();
+            stiffness_quotient = quotient(&v, &stiffness);
+            let operator: Vec<[R; 3]> = if weight > 0.0 {
+                damping(&v)
+                    .iter()
+                    .zip(&stiffness)
+                    .map(|(&c, &k)| shared::vec3_add(k, shared::vec3_scale(c, weight)))
+                    .collect()
+            } else {
+                stiffness
+            };
+            // The next iterate, M⁻¹ (K + βC) v, scaled back to a largest
+            // component of 1: unscaled it grows by about ω² per iteration and
+            // overflows.
+            let next: Vec<[R; 3]> = (0..nodes)
+                .map(|a| shared::vec3_scale(operator[a], self.inverse_masses[a]))
+                .collect();
+            let size = next
+                .iter()
+                .flat_map(|x| x.iter())
+                .fold(0.0, |m: R, &c| m.max(c.abs()));
+            if size == 0.0 {
+                // The quotients were taken of `v`; it is the vector returned.
+                measured = std::mem::take(&mut v);
+                break;
+            }
+            let scaled = next.iter().map(|&x| shared::vec3_scale(x, 1.0 / size)).collect();
+            measured = std::mem::replace(&mut v, scaled);
+        }
+        let mode = TopMode {
+            omega_squared: stiffness_quotient,
+            damping_quotient: if self.viscous {
+                quotient(&measured, &damping(&measured))
+            } else {
+                0.0
+            },
+        };
+        (mode, measured.iter().map(|&x| widen3(x)).collect())
+    }
 }
 
 /// The shortest element edge at rest.
@@ -690,8 +830,12 @@ impl Executor for CpuExecutor {
 
     fn element_forces(&mut self) {
         let mut element_forces = std::mem::take(&mut self.element_forces);
-        self.elastic()
-            .element_forces(&self.displacements, &self.pressures, &mut element_forces);
+        self.elastic().element_forces(
+            &self.displacements,
+            &self.dilations,
+            &self.pressures,
+            &mut element_forces,
+        );
         self.element_forces = element_forces;
         if self.viscous {
             let mut viscous = std::mem::take(&mut self.element_viscous_forces);
@@ -970,106 +1114,13 @@ impl Executor for CpuExecutor {
         }
     }
 
-    // Node indices feed a deterministic starting vector; precision loss in
-    // `usize → R` only changes which starting vector it is.
-    #[allow(clippy::cast_precision_loss)]
     fn estimate_top_mode(
         &mut self,
         iterations: usize,
         perturbation: f64,
         viscous_weight: f64,
     ) -> TopMode {
-        let nodes = self.node_count();
-        let mut v: Vec<[R; 3]> = (0..nodes)
-            .map(|a| {
-                let x = a as R;
-                self.free_part(a, [(1.1 * x).sin(), (0.7 * x).cos(), (0.3 * x + 1.0).sin()])
-            })
-            .collect();
-        let elastic = self.elastic();
-        let base = elastic.forces(&self.displacements);
-        // C v: minus the viscous forces at velocities v, in the free directions.
-        let damping = |v: &[[R; 3]]| -> Vec<[R; 3]> {
-            let mut element_viscous = vec![[0.0; 12]; self.elements.len()];
-            elastic.viscous_forces(&self.displacements, v, &mut element_viscous);
-            let mut viscous = vec![[0.0; 3]; nodes];
-            elastic.gather_forces(&element_viscous, &mut viscous);
-            (0..nodes)
-                .map(|a| self.free_part(a, shared::vec3_scale(viscous[a], -1.0)))
-                .collect()
-        };
-        let weight = if self.viscous {
-            narrow(viscous_weight)
-        } else {
-            0.0
-        };
-        let quotient = |v: &[[R; 3]], w: &[[R; 3]]| -> f64 {
-            let (numerator, denominator) = (0..nodes).fold((0.0, 0.0), |(n, d), a| {
-                (
-                    n + widen(shared::vec3_dot(v[a], w[a])),
-                    d + widen(self.masses[a] * shared::vec3_dot(v[a], v[a])),
-                )
-            });
-            numerator / denominator
-        };
-        // The vector the latest quotient was taken of, and that quotient.
-        let (mut measured, mut stiffness_quotient) = (v.clone(), 0.0);
-        for _ in 0..iterations {
-            let largest = v
-                .iter()
-                .flat_map(|x| x.iter())
-                .fold(0.0, |m: R, &c| m.max(c.abs()));
-            if largest == 0.0 {
-                break;
-            }
-            let scale = narrow(perturbation) / largest;
-            let shifted: Vec<[R; 3]> = self
-                .displacements
-                .iter()
-                .zip(&v)
-                .map(|(&u, &x)| shared::vec3_add(u, shared::vec3_scale(x, scale)))
-                .collect();
-            let shifted_forces = elastic.forces(&shifted);
-            // K v = −(f(u + s v) − f(u)) / s, restricted to the free directions.
-            let stiffness: Vec<[R; 3]> = (0..nodes)
-                .map(|a| {
-                    let difference = shared::vec3_sub(shifted_forces[a], base[a]);
-                    self.free_part(a, shared::vec3_scale(difference, -1.0 / scale))
-                })
-                .collect();
-            stiffness_quotient = quotient(&v, &stiffness);
-            let operator: Vec<[R; 3]> = if weight > 0.0 {
-                damping(&v)
-                    .iter()
-                    .zip(&stiffness)
-                    .map(|(&c, &k)| shared::vec3_add(k, shared::vec3_scale(c, weight)))
-                    .collect()
-            } else {
-                stiffness
-            };
-            // The next iterate, M⁻¹ (K + βC) v, scaled back to a largest
-            // component of 1: unscaled it grows by about ω² per iteration and
-            // overflows.
-            let next: Vec<[R; 3]> = (0..nodes)
-                .map(|a| shared::vec3_scale(operator[a], self.inverse_masses[a]))
-                .collect();
-            let size = next
-                .iter()
-                .flat_map(|x| x.iter())
-                .fold(0.0, |m: R, &c| m.max(c.abs()));
-            if size == 0.0 {
-                break;
-            }
-            let scaled = next.iter().map(|&x| shared::vec3_scale(x, 1.0 / size)).collect();
-            measured = std::mem::replace(&mut v, scaled);
-        }
-        TopMode {
-            omega_squared: stiffness_quotient,
-            damping_quotient: if self.viscous {
-                quotient(&measured, &damping(&measured))
-            } else {
-                0.0
-            },
-        }
+        self.top_mode_and_vector(iterations, perturbation, viscous_weight)
+            .0
     }
 }

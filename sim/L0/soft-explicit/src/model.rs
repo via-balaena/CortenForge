@@ -26,6 +26,8 @@ pub struct ExplicitModel {
     node_masses: Vec<f64>,
     node_rest_volumes: Vec<f64>,
     node_lambdas: Vec<f64>,
+    element_stabilizations: Vec<f64>,
+    node_stabilizations: Vec<f64>,
     surface: Vec<[u32; 3]>,
     element_incidence: Incidence,
     surface_incidence: Incidence,
@@ -170,6 +172,21 @@ pub enum ModelError {
     /// index can address.
     #[error("the model is too large for u32 slot indices")]
     TooLarge,
+    /// A volumetric stabilization's stiffness over μ is negative or not
+    /// finite.
+    #[error("the volumetric stabilization {value} is negative or not finite")]
+    InvalidStabilization {
+        /// The stiffness over μ given.
+        value: f64,
+    },
+    /// An element's stabilization is negative, not finite, or above its λ.
+    #[error("element {element}'s stabilization {value} is negative, not finite, or above its λ")]
+    InvalidElementStabilization {
+        /// The element.
+        element: usize,
+        /// The stabilization given, in pascals.
+        value: f64,
+    },
 }
 
 impl ExplicitModel {
@@ -237,6 +254,7 @@ impl ExplicitModel {
         let surface = boundary_faces(&elements);
         let element_incidence = Incidence::new(&elements, nodes)?;
         let surface_incidence = Incidence::new(&surface, nodes)?;
+        let element_count = elements.len();
 
         Ok(Self {
             rest_positions,
@@ -249,10 +267,83 @@ impl ExplicitModel {
             node_masses,
             node_rest_volumes,
             node_lambdas,
+            element_stabilizations: vec![0.0; element_count],
+            node_stabilizations: vec![0.0; nodes],
             surface,
             element_incidence,
             surface_incidence,
         })
+    }
+
+    /// Sample part of the λ term at each element's own volume (plan §16y):
+    /// each element's `κ_e = min(λ_e, stiffness_over_mu · μ_e)` moves from the
+    /// averaged term, `Σ_a V_a (λ_a − κ_a)/2 (ln J_a)²`, to the element's own,
+    /// `Σ_e V_e κ_e/2 (ln J_e)²`, with `κ_a` the rest-volume-weighted `κ_e`
+    /// around node `a`, as `λ_a` is.
+    ///
+    /// Where every element around a node has the same `J`, the two terms add up
+    /// to the λ term unchanged. An element whose volume changes against its
+    /// nodes' averages is then resisted by `κ_e` as well as by its μ terms.
+    /// Zero, the default, is selective averaged nodal pressure as it was.
+    ///
+    /// # Errors
+    /// [`ModelError::InvalidStabilization`] if `stiffness_over_mu` is negative
+    /// or not finite.
+    pub fn with_volumetric_stabilization(self, stiffness_over_mu: f64) -> Result<Self, ModelError> {
+        if !(stiffness_over_mu.is_finite() && stiffness_over_mu >= 0.0) {
+            return Err(ModelError::InvalidStabilization {
+                value: stiffness_over_mu,
+            });
+        }
+        let stabilizations = self
+            .materials
+            .iter()
+            .map(|m| (stiffness_over_mu * m.mu).min(m.lambda))
+            .collect();
+        self.with_element_stabilizations(stabilizations)
+    }
+
+    /// Each element's `κ_e` given directly, in pascals, as
+    /// [`ExplicitModel::with_volumetric_stabilization`] sets it from μ: for a
+    /// stabilization on some elements only (plan §16y's masked runs).
+    ///
+    /// # Errors
+    /// [`ModelError::LengthMismatch`] if there is not one per element, and
+    /// [`ModelError::InvalidElementStabilization`] naming the first that is
+    /// negative, not finite, or above its element's λ.
+    pub fn with_element_stabilizations(
+        mut self,
+        stabilizations: Vec<f64>,
+    ) -> Result<Self, ModelError> {
+        check_length("stabilizations", stabilizations.len(), self.element_count())?;
+        if let Some(element) = stabilizations
+            .iter()
+            .zip(&self.materials)
+            .position(|(&k, m)| !(k.is_finite() && k >= 0.0 && k <= m.lambda))
+        {
+            return Err(ModelError::InvalidElementStabilization {
+                element,
+                value: stabilizations[element],
+            });
+        }
+        let mut weighted = vec![0.0; self.node_count()];
+        for ((corners, &volume), &stabilization) in self
+            .elements
+            .iter()
+            .zip(&self.rest_volumes)
+            .zip(&stabilizations)
+        {
+            for &node in corners {
+                weighted[node as usize] += 0.25 * volume * stabilization;
+            }
+        }
+        self.node_stabilizations = weighted
+            .iter()
+            .zip(&self.node_rest_volumes)
+            .map(|(weighted, volume)| weighted / volume)
+            .collect();
+        self.element_stabilizations = stabilizations;
+        Ok(self)
     }
 
     /// Add per-direction constraints: for each node, two directions its
@@ -382,12 +473,27 @@ impl ExplicitModel {
     /// Inside one material it is that material's λ, so averaged nodal
     /// pressure is plain selective ANP there. Where materials meet it blends
     /// them, and the forces stay the exact gradient of an energy
-    /// (`Σ_a V_a λ_a/2 (ln J_a)²` for the λ term). This interface rule is
-    /// provisional: plan §15g step 1 records the alternative and what would
-    /// decide between them.
+    /// (`Σ_a V_a λ_a/2 (ln J_a)²` for the λ term, or with a volumetric
+    /// stabilization `Σ_a V_a (λ_a − κ_a)/2 (ln J_a)² + Σ_e V_e κ_e/2
+    /// (ln J_e)²`). This interface rule is provisional: plan §15g step 1
+    /// records the alternative and what would decide between them.
     #[must_use]
     pub fn node_lambdas(&self) -> &[f64] {
         &self.node_lambdas
+    }
+
+    /// Each element's `κ_e`, the part of its λ taken at its own volume
+    /// ([`ExplicitModel::with_volumetric_stabilization`]); zero by default.
+    #[must_use]
+    pub fn element_stabilizations(&self) -> &[f64] {
+        &self.element_stabilizations
+    }
+
+    /// Each node's `κ_a`, the rest-volume-weighted `κ_e` of the elements around
+    /// it; the averaged term at the node uses `λ_a − κ_a`.
+    #[must_use]
+    pub fn node_stabilizations(&self) -> &[f64] {
+        &self.node_stabilizations
     }
 
     /// The boundary triangles (faces that belong to one element), each wound

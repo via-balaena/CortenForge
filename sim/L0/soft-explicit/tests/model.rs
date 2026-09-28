@@ -297,3 +297,121 @@ fn constraints_must_be_unit_or_zero_and_orthogonal() {
         }
     ));
 }
+
+#[test]
+fn a_volumetric_stabilization_is_capped_at_lambda_and_weighted_at_nodes_as_lambda_is() {
+    // Two materials along x: silicone, and one with ten times its μ and the
+    // same λ, whose κ at 40 μ is capped at λ.
+    let base = block_model((2, 1, 1), 0.01, SILICONE);
+    let materials: Vec<shared::Material> = base
+        .elements()
+        .iter()
+        .map(|element| {
+            let x = element
+                .iter()
+                .map(|&n| base.rest_positions()[n as usize][0])
+                .sum::<f64>()
+                / 4.0;
+            if x < 0.01 {
+                SILICONE
+            } else {
+                shared::Material {
+                    mu: 10.0 * SILICONE.mu,
+                    ..SILICONE
+                }
+            }
+        })
+        .collect();
+    let model = ExplicitModel::new(
+        base.rest_positions().to_vec(),
+        base.elements().to_vec(),
+        materials,
+        vec![false; base.node_count()],
+    )
+    .unwrap();
+    assert!(model.element_stabilizations().iter().all(|&k| k == 0.0));
+    assert!(model.node_stabilizations().iter().all(|&k| k == 0.0));
+    let model = model.with_volumetric_stabilization(40.0).unwrap();
+    for (&kappa, material) in model.element_stabilizations().iter().zip(model.materials()) {
+        assert_eq!(kappa, (40.0 * material.mu).min(material.lambda));
+    }
+    assert!(
+        model
+            .element_stabilizations()
+            .iter()
+            .zip(model.materials())
+            .any(|(&k, m)| k == m.lambda && k < 40.0 * m.mu)
+    );
+    for node in 0..model.node_count() {
+        let (mut weighted, mut volume) = (0.0, 0.0);
+        for (e, element) in model.elements().iter().enumerate() {
+            if element.iter().any(|&n| n as usize == node) {
+                weighted += model.rest_volumes()[e] * model.element_stabilizations()[e];
+                volume += model.rest_volumes()[e];
+            }
+        }
+        let kappa = model.node_stabilizations()[node];
+        assert!((kappa - weighted / volume).abs() <= 1e-12 * kappa);
+    }
+    for bad in [-1.0, f64::NAN, f64::INFINITY] {
+        assert!(matches!(
+            block_model((1, 1, 1), 0.01, SILICONE).with_volumetric_stabilization(bad),
+            Err(ModelError::InvalidStabilization { .. })
+        ));
+    }
+}
+
+#[test]
+fn a_stabilization_on_some_elements_only_is_kept_and_weighted_at_their_nodes() {
+    // Plan §16y's masked runs: κ on two elements only, the rest at zero.
+    let block = block_model((2, 1, 1), 0.01, SILICONE);
+    let count = block.element_count();
+    let kappa = 2.0 * SILICONE.mu;
+    let chosen = [3, 7];
+    let given: Vec<f64> = (0..count)
+        .map(|e| if chosen.contains(&e) { kappa } else { 0.0 })
+        .collect();
+    let model = block
+        .clone()
+        .with_element_stabilizations(given.clone())
+        .unwrap();
+    assert_eq!(model.element_stabilizations(), &given[..]);
+    for node in 0..model.node_count() {
+        let (mut weighted, mut volume) = (0.0, 0.0);
+        for (e, element) in model.elements().iter().enumerate() {
+            if element.iter().any(|&n| n as usize == node) {
+                weighted += model.rest_volumes()[e] * given[e];
+                volume += model.rest_volumes()[e];
+            }
+        }
+        assert!((model.node_stabilizations()[node] - weighted / volume).abs() <= 1e-9);
+    }
+    // The same κ everywhere is what the weight over μ gives.
+    let everywhere = block
+        .clone()
+        .with_element_stabilizations(vec![kappa; count])
+        .unwrap();
+    let by_weight = block.clone().with_volumetric_stabilization(2.0).unwrap();
+    assert_eq!(
+        everywhere.element_stabilizations(),
+        by_weight.element_stabilizations()
+    );
+    assert_eq!(
+        everywhere.node_stabilizations(),
+        by_weight.node_stabilizations()
+    );
+    assert!(matches!(
+        block
+            .clone()
+            .with_element_stabilizations(vec![0.0; count - 1]),
+        Err(ModelError::LengthMismatch { .. })
+    ));
+    for bad in [-1.0, f64::NAN, 1.001 * SILICONE.lambda] {
+        let mut values = vec![0.0; count];
+        values[5] = bad;
+        assert!(matches!(
+            block.clone().with_element_stabilizations(values),
+            Err(ModelError::InvalidElementStabilization { element: 5, .. })
+        ));
+    }
+}

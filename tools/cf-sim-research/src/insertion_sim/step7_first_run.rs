@@ -1,12 +1,15 @@
 //! Step 7's first run on the product scan (soft-contact recon §16x): one press at the 5 mm inset, mounted at the
-//! closed end, on the fitted path, with the rules §16x set before its runs. Five stages and two diagnostics, each an
+//! closed end, on the fitted path, with the rules §16x set before its runs. Six stages and three diagnostics, each an
 //! ignored test:
 //! - [`step7_ladder`], rule 1: the loading time, at h_K2;
 //! - [`step7_sizes`], rule 2: the element size, at a loading, and rule 1 again at the size it picks;
 //! - [`step7_at_h_k2`], rules 3, 5, 10 and 11 at h_K2 and a loading, with the push's linearity in friction;
 //! - [`step7_room`], the room on step 7's wall;
 //! - [`step7_cost`], G6: a press timed at a loading and a size, with the probe's own instruments off;
-//! - [`step7_blow_up`] and [`step7_stiffening`], the element collapsing at the seated tip, one change at a time.
+//! - [`step7_blow_up`] and [`step7_stiffening`], the element collapsing at the seated tip, one change at a time;
+//! - [`step7_stabilized`], exploratory: the volumetric stabilization's ladder against the collapse and D1's readings
+//!   (§16y);
+//! - [`step7_masked`], §16y rule 2: the stabilization on the collapsing elements alone, against the element as it is.
 //!
 //! Every run prints D1's readings, the sideways force and twist, G1 and G2 against the scan's exact distance, the band's
 //! monitors, the validity gates and K4, and the seated window and contact work in quarters of the hold (rules 6–9). A
@@ -33,6 +36,7 @@
     clippy::too_many_lines
 )]
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::TAU;
 use std::time::Instant;
 
@@ -49,7 +53,7 @@ use sim_soft::pairing::PAIRINGS;
 use sim_soft::{Mesh, SdfMeshedTetMesh, VertexId, Yeoh};
 use sim_soft_explicit::ExplicitModel;
 use sim_soft_explicit::cpu;
-use sim_soft_explicit::executor::{Executor, Monitors, Obstacle, PhaseOutputs, Snapshot};
+use sim_soft_explicit::executor::{Executor, Monitors, Obstacle, PhaseOutputs, Snapshot, TopMode};
 use sim_soft_explicit::f64::{Material, Pose, pose_to_body};
 use sim_soft_explicit::fixtures::tube::ECOFLEX_00_30_VISCOUS_TIME;
 use sim_soft_explicit::readings::{
@@ -256,8 +260,27 @@ struct Spec {
     loading: f64,
     wide: bool,
     hold: f64,
-    /// Whether the probe's instruments run: the exact G1 and G2 and the windows' snapshots.
+    /// Whether the probe's instruments run: the exact G1 and G2, the windows' snapshots, and the collapse's reads.
     instruments: bool,
+    /// Steps between the loop's re-estimates of the stable step (§15c: 500).
+    reestimate_every: u64,
+}
+
+/// The elements collapsing against their nodes over a run's reads (§16y): the least element `J` over its nodes'
+/// averaged `J`, and every element under half of it at some read.
+#[derive(Clone, Debug)]
+struct Collapse {
+    least: f64,
+    elements: BTreeSet<usize>,
+}
+
+impl Default for Collapse {
+    fn default() -> Self {
+        Self {
+            least: f64::INFINITY,
+            elements: BTreeSet::new(),
+        }
+    }
 }
 
 /// One monitor read, with where the path was and how deep the deepest node near the scan lay against its exact
@@ -360,6 +383,10 @@ struct Run {
     stopped: Option<RunError>,
     /// The deepest any surface node lies inside the scan at the end, by its exact distance.
     end_depth: f64,
+    collapse: Collapse,
+    /// The setup and stepping seconds, and the steps, of the attempts `press` made before this run and did not keep
+    /// (§16y rule 1, §16x rule 6), so G6 counts them.
+    earlier: (f64, u64),
 }
 
 /// Step until `end`, reading every new monitor read's exact depth; then read once more if the last step was not read.
@@ -368,7 +395,7 @@ fn drive<E: Executor>(
     obstacle: &Obstacle,
     stepper: &mut Stepper<E>,
     end: f64,
-    (reads, clock, instruments): (&mut Vec<Read>, &mut Clock, bool),
+    (reads, clock, instruments, collapse): (&mut Vec<Read>, &mut Clock, bool, &mut Collapse),
 ) -> Result<(), RunError> {
     let mut seen = stepper.samples().len();
     let mut record = |stepper: &mut Stepper<E>, reads: &mut Vec<Read>, clock: &mut Clock| {
@@ -381,6 +408,13 @@ fn drive<E: Executor>(
         // A read that is not finite stops the run; its positions are not read.
         let exact_depth = if instruments && sample.monitors.finite() {
             let displacements = stepper.executor_mut().snapshot().displacements;
+            let outputs = stepper.executor_mut().phase_outputs();
+            for (e, ratio) in against_nodes(press.model, &outputs).into_iter().enumerate() {
+                collapse.least = collapse.least.min(ratio);
+                if ratio < 0.5 {
+                    collapse.elements.insert(e);
+                }
+            }
             press.exact_depth(obstacle, &displacements, sample.time, false)
         } else {
             f64::NAN
@@ -420,6 +454,7 @@ fn begin<E: Executor>(
     obstacle: &Obstacle,
     make: impl FnOnce(&ExplicitModel, &Obstacle) -> E,
     damping: f64,
+    reestimate_every: u64,
 ) -> (Stepper<E>, Clock) {
     let rest = rest_step(press.model, obstacle);
     let started = Instant::now();
@@ -428,6 +463,7 @@ fn begin<E: Executor>(
     let monitor_every = ((READ_TRAVEL / (top_speed * rest)).floor() as u64).max(1);
     let config = StepperConfig {
         monitor_every,
+        reestimate_every,
         ..StepperConfig::new(damping)
     };
     let stepper = Stepper::new(executor, config, 0.0);
@@ -446,15 +482,16 @@ fn run<E: Executor>(
     damping: f64,
     spec: Spec,
 ) -> (Run, Stepper<E>) {
-    let (mut stepper, mut clock) = begin(press, obstacle, make, damping);
+    let (mut stepper, mut clock) = begin(press, obstacle, make, damping, spec.reestimate_every);
     let mut reads = Vec::new();
     let mut quarters = Vec::new();
+    let mut collapse = Collapse::default();
     let mut stopped = drive(
         press,
         obstacle,
         &mut stepper,
         spec.loading,
-        (&mut reads, &mut clock, spec.instruments),
+        (&mut reads, &mut clock, spec.instruments, &mut collapse),
     )
     .err();
     for quarter in 1..=4 {
@@ -467,7 +504,7 @@ fn run<E: Executor>(
             obstacle,
             &mut stepper,
             spec.loading + spec.hold * f64::from(quarter) / 4.0,
-            (&mut reads, &mut clock, spec.instruments),
+            (&mut reads, &mut clock, spec.instruments, &mut collapse),
         )
         .err();
         stepper.close_window();
@@ -490,6 +527,8 @@ fn run<E: Executor>(
         estimates: stepper.estimates(),
         stopped,
         end_depth,
+        collapse,
+        earlier: (0.0, 0),
     };
     (run, stepper)
 }
@@ -779,6 +818,20 @@ fn report(label: &str, run: &Run, readings: &Readings, press: &Press, obstacle: 
         run.clock.stepping,
         run.clock.instruments
     );
+    if run.spec.instruments {
+        println!(
+            "    the step re-estimated every {} steps; the least element J over its nodes' averaged J {:.3} [PUBLIC]; \
+             {} elements under half at some read [LOCAL]",
+            run.spec.reestimate_every,
+            run.collapse.least,
+            run.collapse.elements.len()
+        );
+    } else {
+        println!(
+            "    the step re-estimated every {} steps; the collapse not read, the instruments off [PUBLIC]",
+            run.spec.reestimate_every
+        );
+    }
     println!(
         "    D1 [LOCAL]: peak push {:.4} N (0.5 mm {:.4}, 2 mm {:.4}); 10 mm push {:.4} N; patch {:.3} kPa; p95 {:.3} \
          kPa; pointwise peak {:.3} kPa",
@@ -986,22 +1039,54 @@ fn press(
     // not settle is run again with a 0.4 s hold (rule 6).
     match falls_short(&run, &readings) {
         None => (run, readings),
+        // §16y rule 1: a run that went non-finite, failed a validity gate, or inverted an element with the loop's
+        // re-estimate is run again with the step re-estimated every 50 steps.
+        Some(reason)
+            if ["not finite", "validity gate", "K4"]
+                .iter()
+                .any(|r| reason.contains(r))
+                && spec.reestimate_every > 50 =>
+        {
+            println!(
+                "    ⚠ {reason}: run again by §16y rule 1, the step re-estimated every 50 steps [PUBLIC]"
+            );
+            let again = self::press(
+                stage,
+                wall,
+                model,
+                start,
+                Spec {
+                    reestimate_every: 50,
+                    ..spec
+                },
+                &format!("{label}, re-estimated every 50 steps"),
+            );
+            counting(run, again)
+        }
         Some(reason) if reason.contains("rule 6") && spec.hold < 0.4 => {
             println!("    ⚠ {reason}: run again with a 0.4 s hold [PUBLIC]");
-            self::press(
+            let again = self::press(
                 stage,
                 wall,
                 model,
                 start,
                 Spec { hold: 0.4, ..spec },
                 &format!("{label}, 0.4 s hold"),
-            )
+            );
+            counting(run, again)
         }
         Some(reason) => {
             println!("    ⚠ {reason}: its readings take no part in the rules [PUBLIC]");
             (run, Readings::not_read())
         }
     }
+}
+
+/// A re-run's result, carrying the attempt it replaced in its `earlier` cost.
+fn counting(attempt: Run, (mut again, readings): (Run, Readings)) -> (Run, Readings) {
+    again.earlier.0 += attempt.earlier.0 + attempt.clock.setup + attempt.clock.stepping;
+    again.earlier.1 += attempt.earlier.1 + attempt.steps;
+    (again, readings)
 }
 
 /// The model's boundary nodes.
@@ -1156,13 +1241,20 @@ fn probe<E: Executor>(
         obstacle,
         stepper,
         start + MOVE_TIME + PROBE_HOLD,
-        (reads, clock, false),
+        (reads, clock, false, &mut Collapse::default()),
     )
     .unwrap();
     let first = stepper.samples().len();
     stepper.open_window();
     let end = start + MOVE_TIME + PROBE_HOLD + PROBE_READ;
-    drive(press, obstacle, stepper, end, (reads, clock, false)).unwrap();
+    drive(
+        press,
+        obstacle,
+        stepper,
+        end,
+        (reads, clock, false, &mut Collapse::default()),
+    )
+    .unwrap();
     stepper.close_window();
     let window = stepper.executor_mut().snapshot();
     let samples = &stepper.samples()[first..];
@@ -1346,6 +1438,7 @@ fn spec(friction: f64, loading: f64) -> Spec {
         wide: false,
         hold: HOLD,
         instruments: true,
+        reestimate_every: 500,
     }
 }
 
@@ -1720,6 +1813,7 @@ fn step7_at_h_k2() {
             obstacle,
             |m, o| cpu::f32::CpuExecutor::new(m, o).unwrap(),
             damping,
+            spec.reestimate_every,
         );
         let mut reads = Vec::new();
         drive(
@@ -1727,7 +1821,7 @@ fn step7_at_h_k2() {
             obstacle,
             &mut stepper,
             centre,
-            (&mut reads, &mut clock, false),
+            (&mut reads, &mut clock, false, &mut Collapse::default()),
         )
         .unwrap();
         let k = ((centre / obstacle.interval).floor() as usize).min(obstacle.poses.len() - 2);
@@ -2069,9 +2163,131 @@ fn describe(press: &Press, e: usize, outputs: &PhaseOutputs) -> String {
     )
 }
 
+/// The CPU executors' power iteration with its vector (`top_mode_and_vector`), for [`diagnose`].
+trait TopVector {
+    fn top_vector(
+        &self,
+        iterations: usize,
+        perturbation: f64,
+        viscous_weight: f64,
+    ) -> (TopMode, Vec<[f64; 3]>);
+}
+
+impl TopVector for cpu::f32::CpuExecutor {
+    fn top_vector(
+        &self,
+        iterations: usize,
+        perturbation: f64,
+        viscous_weight: f64,
+    ) -> (TopMode, Vec<[f64; 3]>) {
+        self.top_mode_and_vector(iterations, perturbation, viscous_weight)
+    }
+}
+
+impl TopVector for cpu::f64::CpuExecutor {
+    fn top_vector(
+        &self,
+        iterations: usize,
+        perturbation: f64,
+        viscous_weight: f64,
+    ) -> (TopMode, Vec<[f64; 3]>) {
+        self.top_mode_and_vector(iterations, perturbation, viscous_weight)
+    }
+}
+
+/// Each element's `J` over the mean of its nodes' averaged `J`: under 1 where the element has shrunk against the
+/// volume its nodes keep.
+fn against_nodes(model: &ExplicitModel, outputs: &PhaseOutputs) -> Vec<f64> {
+    let nodal: Vec<f64> = outputs
+        .volume_changes
+        .iter()
+        .zip(model.node_rest_volumes())
+        .map(|(&change, &volume)| 1.0 + sim_soft_explicit::f64::nodal_dilation(change, volume))
+        .collect();
+    model
+        .elements()
+        .iter()
+        .zip(&outputs.dilations)
+        .map(|(nodes, &dilation)| {
+            (1.0 + dilation) / (nodes.iter().map(|&n| nodal[n as usize]).sum::<f64>() / 4.0)
+        })
+        .collect()
+}
+
+/// Where the vector that sets the step sits, from its mass-weighted size at each node: the share on the node carrying
+/// the most, the share on the most-compressed element's nodes, the most compressed of the top node's elements, and
+/// the elements shrunk under a half and a quarter of their nodes' averaged `J` and where they lie.
+fn locate(press: &Press, outputs: &PhaseOutputs, mode: TopMode, vector: &[[f64; 3]]) {
+    let model = press.model;
+    let weights: Vec<f64> = vector
+        .iter()
+        .zip(model.node_masses())
+        .map(|(v, m)| m * (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]))
+        .collect();
+    let total: f64 = weights.iter().sum();
+    let mut order: Vec<usize> = (0..weights.len()).collect();
+    order.sort_by(|&a, &b| weights[b].total_cmp(&weights[a]));
+    let top = order[0];
+    let half = order
+        .iter()
+        .scan(0.0, |sum, &a| {
+            *sum += weights[a];
+            Some(*sum)
+        })
+        .position(|sum| sum >= 0.5 * total)
+        .map_or(0, |i| i + 1);
+    let most = (0..model.element_count())
+        .min_by(|&a, &b| outputs.dilations[a].total_cmp(&outputs.dilations[b]))
+        .unwrap();
+    let at_top = (0..model.element_count())
+        .filter(|&e| model.elements()[e].contains(&(top as u32)))
+        .min_by(|&a, &b| outputs.dilations[a].total_cmp(&outputs.dilations[b]))
+        .unwrap();
+    let on_most = model.elements()[most]
+        .iter()
+        .map(|&n| weights[n as usize])
+        .sum::<f64>()
+        / total;
+    println!(
+        "      the vector that sets the step: its damping ratio {:.3}; the top node carries {:.3} of it, the most-compressed \
+         element's nodes {:.3}; the most compressed of the top node's elements is the most compressed overall: {} [PUBLIC]; \
+         {half} nodes carry half of it [LOCAL]",
+        mode.damping_ratio(),
+        weights[top] / total,
+        on_most,
+        at_top == most
+    );
+    println!(
+        "      the most compressed of the top node's elements: {} [PUBLIC]",
+        describe(press, at_top, outputs)
+    );
+    let shrunk = against_nodes(model, outputs);
+    for share in [0.5, 0.25] {
+        let arcs: Vec<f64> = (0..model.element_count())
+            .filter(|&e| shrunk[e] < share)
+            .map(|e| {
+                let corners = model.elements()[e].map(|n| model.rest_positions()[n as usize]);
+                let centre = Point3::from(
+                    (0..4).fold(Vector3::zeros(), |sum, c| sum + Vector3::from(corners[c])) / 4.0,
+                );
+                press.scene.path.centreline().arc_of(centre) / press.scene.length()
+            })
+            .collect();
+        println!(
+            "      elements under {share} of their nodes' averaged J: {:.2e} of the wall's, from {:.3} to {:.3} of the \
+             centreline from the seated tip [PUBLIC]; {} [LOCAL]",
+            arcs.len() as f64 / model.element_count() as f64,
+            arcs.iter().copied().fold(f64::INFINITY, f64::min),
+            arcs.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+            arcs.len()
+        );
+    }
+}
+
 /// One frictionless run to the end of the loading, printing the smallest step over the rest step and the
-/// most-compressed element where it fell, and at the first read with an inverted element, the elements inverted then.
-fn diagnose<E: Executor>(
+/// most-compressed element where it fell, where the vector that sets the step sits then ([`locate`]), and at the first
+/// read with an inverted element, the elements inverted then.
+fn diagnose<E: Executor + TopVector>(
     press: &Press,
     obstacle: &Obstacle,
     make: impl FnOnce(&ExplicitModel, &Obstacle) -> E,
@@ -2088,9 +2304,24 @@ fn diagnose<E: Executor>(
         ..StepperConfig::new(damping)
     };
     let mut stepper = Stepper::new(make(model, obstacle), config, 0.0);
+    // The step the elastic top mode alone would give, without the viscosity: the vector at β = 0.
+    let elastic_step = |executor: &E| {
+        let (mode, _) = executor.top_vector(
+            config.power_iterations,
+            executor.epsilon().sqrt() * executor.shortest_edge(),
+            0.0,
+        );
+        config.stable_step(mode.omega_squared, 0.0)
+    };
+    let elastic_rest = elastic_step(stepper.executor());
+    // The loop's own first step, with the viscosity, on the same executor as `elastic_rest`.
+    let first = stepper.dt();
     let (mut smallest, mut reported, mut seen) = (f64::INFINITY, false, 0);
-    // The smallest step at a read, where it fell, and the most-compressed element then.
-    let mut lowest: Option<(f64, f64, String)> = None;
+    // Over every finite read: the least element J over its nodes' averaged J, and the loading's share then.
+    let mut shrunk = (f64::INFINITY, f64::NAN);
+    // The smallest step at a read, where it fell, the most-compressed element then, the state to locate the vector that
+    // set it in, and the elastic step then over at rest.
+    let mut lowest: Option<(f64, f64, String, PhaseOutputs, TopMode, Vec<[f64; 3]>, f64)> = None;
     let result = loop {
         if stepper.time() >= press.loading {
             break Ok(());
@@ -2101,6 +2332,15 @@ fn diagnose<E: Executor>(
             seen = stepper.samples().len();
             let sample = *stepper.samples().last().unwrap();
             let ratio = sample.dt / rest;
+            if sample.monitors.finite() {
+                let outputs = stepper.executor_mut().phase_outputs();
+                let least = against_nodes(model, &outputs)
+                    .into_iter()
+                    .fold(f64::INFINITY, f64::min);
+                if least < shrunk.0 {
+                    shrunk = (least, sample.time / press.loading);
+                }
+            }
             if sample.monitors.finite() && lowest.as_ref().is_none_or(|l| ratio < 0.95 * l.0) {
                 let outputs = stepper.executor_mut().phase_outputs();
                 let (e, _) = outputs
@@ -2110,10 +2350,22 @@ fn diagnose<E: Executor>(
                     .enumerate()
                     .min_by(|a, b| a.1.total_cmp(&b.1))
                     .unwrap();
+                let executor = stepper.executor();
+                let (mode, vector) = executor.top_vector(
+                    config.power_iterations,
+                    executor.epsilon().sqrt() * executor.shortest_edge(),
+                    2.0 / sample.dt,
+                );
+                let described = describe(press, e, &outputs);
+                let elastic = elastic_step(executor) / elastic_rest;
                 lowest = Some((
                     ratio,
                     sample.time / press.loading,
-                    describe(press, e, &outputs),
+                    described,
+                    outputs,
+                    mode,
+                    vector,
+                    elastic,
                 ));
             }
             if sample.monitors.inverted_element_steps > 0 && !reported {
@@ -2154,11 +2406,21 @@ fn diagnose<E: Executor>(
         smallest,
         stepper.estimates()
     );
-    if let Some((ratio, when, element)) = lowest {
+    println!(
+        "    over every read, the least element J over its nodes' averaged J {:.3}, at {:.3} of the loading [PUBLIC]",
+        shrunk.0, shrunk.1
+    );
+    if let Some((ratio, when, element, outputs, mode, vector, elastic)) = lowest {
         println!(
             "    at the smallest read step, {ratio:.3} of the rest step at {when:.3} of the loading, the most compressed: \
              {element} [PUBLIC]"
         );
+        println!(
+            "      the elastic top mode alone gives a step {elastic:.3} of its own at rest; at rest the viscosity takes the \
+             step to {:.3} of the elastic one [PUBLIC]",
+            first / elastic_rest
+        );
+        locate(press, &outputs, mode, &vector);
     }
 }
 
@@ -2211,6 +2473,242 @@ fn step7_stiffening() {
     }
 }
 
+/// The volumetric stabilization's stiffnesses over μ, the exploratory ladder (§16y), within the sources' span of 0.5 to
+/// 25.
+const LADDER: [f64; 5] = [0.0, 2.0, 4.0, 8.0, 25.0];
+
+/// The volumetric stabilization (§16y), exploratory: at `STEP7_SIZE`'s wall, for each stiffness over μ in [`LADDER`],
+/// the collapse ([`diagnose`], frictionless, the loop's re-estimate every 500 steps) and D1's readings at every
+/// corner, each against the unstabilized wall's and the rung before.
+#[test]
+#[ignore = "needs the repo-excluded product scan; run with --release --ignored --nocapture"]
+fn step7_stabilized() {
+    let factor = env_number("STEP7_LOADING", 1.0);
+    let size = SIZES[env_number("STEP7_SIZE", 0.0) as usize];
+    let mut stage = Stage::new(&format!(
+        "the volumetric stabilization at ×{size} h_K2's elements, loading ×{factor}"
+    ));
+    let corners = corners();
+    let wall = Wall::build(&stage.scene, stage.h_k2 / size.cbrt(), None, [0.0; 3]);
+    let plain = wall.model(POISSON, 1.0, 1.0);
+    let start = stage.wall_line(&format!("×{size}"), &wall, &plain);
+    let loading = factor * Stage::budget_loading(&wall, start);
+    let mut rows: Vec<(f64, [Readings; 3])> = Vec::new();
+    for stiffness in LADDER {
+        let model = plain
+            .clone()
+            .with_volumetric_stabilization(stiffness)
+            .unwrap();
+        let label = format!("×{size}, κ {stiffness} μ");
+        stage.set(&spec(0.0, loading));
+        let damping = stage.damping(&wall);
+        let collapse = Press {
+            scene: &stage.scene,
+            model: &model,
+            surface: surface_nodes(&model),
+            start,
+            loading,
+        };
+        diagnose(
+            &collapse,
+            &stage.obstacle,
+            |m, o| cpu::f32::CpuExecutor::new(m, o).unwrap(),
+            damping,
+            500,
+            &label,
+        );
+        let readings = corners.map(|friction| {
+            press(
+                &mut stage,
+                &wall,
+                &model,
+                start,
+                spec(friction, loading),
+                &format!("{label}, μ_f {friction}"),
+            )
+            .1
+        });
+        rows.push((stiffness, readings));
+    }
+    let deciding = |r: &[Readings; 3]| {
+        [
+            r[0].patch, r[1].patch, r[2].patch, r[0].share, r[1].peak, r[2].peak,
+        ]
+    };
+    let names = [
+        "patch at 0",
+        "patch at the lowest",
+        "patch at the highest",
+        "geometric share",
+        "peak push at the lowest",
+        "peak push at the highest",
+    ];
+    let first = deciding(&rows[0].1);
+    println!(
+        "
+the stabilization's ladder at ×{size} [PUBLIC]:"
+    );
+    for pair in rows.windows(2) {
+        let (before, after) = (deciding(&pair[0].1), deciding(&pair[1].1));
+        let moves: Vec<String> = names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                format!(
+                    "{name} {:+.2} % ({:+.2} % from none)",
+                    100.0 * change(before[i], after[i]),
+                    100.0 * change(first[i], after[i])
+                )
+            })
+            .collect();
+        println!(
+            "  κ {} μ → {} μ: {}",
+            pair[0].0,
+            pair[1].0,
+            moves.join("; ")
+        );
+    }
+}
+
+/// §16y rule 2, whether the collapse moves D1's readings: at `STEP7_SIZE`'s wall (0, 1 or 2 for one, two and four times
+/// h_K2's elements), at each corner, the element as it is; then the same with κ on only the elements that run drove
+/// under half their nodes' averaged J, 2μ to start. An element under half in a masked run has its κ doubled, up to λ,
+/// or joins the mask at 2μ; at most four masked runs, and if one is still under half after them, or those under half
+/// are at λ already, the corner's comparison does not stand.
+#[test]
+#[ignore = "needs the repo-excluded product scan; run with --release --ignored --nocapture"]
+fn step7_masked() {
+    let factor = env_number("STEP7_LOADING", 4.0);
+    let size = SIZES[env_number("STEP7_SIZE", 0.0) as usize];
+    let mut stage = Stage::new(&format!(
+        "§16y rule 2, the collapse against D1's readings at ×{size} h_K2's elements, loading ×{factor}"
+    ));
+    let wall = Wall::build(&stage.scene, stage.h_k2 / size.cbrt(), None, [0.0; 3]);
+    let plain = wall.model(POISSON, 1.0, 1.0);
+    let start = stage.wall_line(&format!("×{size}"), &wall, &plain);
+    let loading = factor * Stage::budget_loading(&wall, start);
+    let corners = corners();
+    let pairs = corners.map(|friction| {
+        let (run, before) = press(
+            &mut stage,
+            &wall,
+            &plain,
+            start,
+            spec(friction, loading),
+            &format!("×{size}, as it is, μ_f {friction}"),
+        );
+        if !before.patch.is_finite() {
+            println!("    ×{size}, μ_f {friction}: the run as it is did not stand; nothing is masked [PUBLIC]");
+            return (before, Readings::not_read());
+        }
+        // Each masked element's κ over its μ: 2 to start; doubled, up to λ, while it stays under half.
+        let mut mask: BTreeMap<usize, f64> = run.collapse.elements.iter().map(|&e| (e, 2.0)).collect();
+        let mut after = Readings::not_read();
+        if mask.is_empty() {
+            println!("    ×{size}, μ_f {friction}: no element under half; nothing to mask [PUBLIC]");
+            return (before, before);
+        }
+        let materials = plain.materials();
+        for round in 0..4 {
+            let stabilizations = (0..plain.element_count())
+                .map(|e| mask.get(&e).map_or(0.0, |k| (k * materials[e].mu).min(materials[e].lambda)))
+                .collect();
+            let model = plain
+                .clone()
+                .with_element_stabilizations(stabilizations)
+                .unwrap();
+            let (run, readings) = press(
+                &mut stage,
+                &wall,
+                &model,
+                start,
+                spec(friction, loading),
+                &format!("×{size}, κ on the collapsing elements, round {round}, μ_f {friction}"),
+            );
+            if !readings.patch.is_finite() {
+                println!("    masked, round {round}: the run did not stand; the comparison does not stand [PUBLIC]");
+                break;
+            }
+            println!(
+                "    masked, round {round}: {:.1e} of the wall's elements, κ up to {:.0} μ; under half after: {} \
+                 [PUBLIC]; {} masked, {} under half [LOCAL]",
+                mask.len() as f64 / plain.element_count() as f64,
+                mask.values().copied().fold(0.0, f64::max),
+                if run.collapse.elements.is_empty() { "none" } else { "some" },
+                mask.len(),
+                run.collapse.elements.len()
+            );
+            if run.collapse.elements.is_empty() {
+                after = readings;
+                break;
+            }
+            let mut changed = false;
+            for &e in &run.collapse.elements {
+                let cap = materials[e].lambda / materials[e].mu;
+                let k = mask.entry(e).or_insert(0.0);
+                let next = if *k == 0.0 { 2.0 } else { (2.0 * *k).min(cap) };
+                changed |= next > *k;
+                *k = next;
+            }
+            if !changed {
+                println!("    the elements under half are masked at λ already: the comparison does not stand [PUBLIC]");
+                break;
+            }
+            if round == 3 {
+                println!("    still under half after four masked runs: the comparison does not stand [PUBLIC]");
+            }
+        }
+        (before, after)
+    });
+    let deciding = |r: &[&Readings; 3]| {
+        [
+            r[0].patch, r[1].patch, r[2].patch, r[0].share, r[1].peak, r[2].peak,
+        ]
+    };
+    let (before, after) = (
+        deciding(&[&pairs[0].0, &pairs[1].0, &pairs[2].0]),
+        deciding(&[&pairs[0].1, &pairs[1].1, &pairs[2].1]),
+    );
+    let names = [
+        "patch at 0",
+        "patch at the lowest",
+        "patch at the highest",
+        "geometric share",
+        "peak push at the lowest (for Jon)",
+        "peak push at the highest (for Jon)",
+    ];
+    println!("\n§16y rule 2 at ×{size} [PUBLIC]: masked over as it is");
+    for (i, name) in names.iter().enumerate() {
+        println!("  {name}: {:+.2} %", 100.0 * change(before[i], after[i]));
+    }
+    let moves: Vec<f64> = (0..4).map(|i| change(before[i], after[i])).collect();
+    // Rule 2 decides at ×4 h_K2's elements; the coarser sizes show the trend.
+    let deciding_size = size >= 4.0;
+    let tag = if deciding_size {
+        ""
+    } else {
+        " (the trend; rule 2 decides at ×4)"
+    };
+    if moves.iter().any(|m| !m.is_finite()) {
+        println!(
+            "§16y rule 2 at ×{size}{tag} ⇒ not judged: a run behind a deciding reading did not stand [PUBLIC]"
+        );
+    } else if moves.iter().all(|m| m.abs() <= K5_BAR) {
+        println!(
+            "§16y rule 2 at ×{size}{tag} ⇒ the masked change in every deciding reading is within 5 % [PUBLIC]"
+        );
+    } else {
+        println!(
+            "§16y rule 2 at ×{size}{tag} ⇒ the masked change in a deciding reading reaches {:+.2} % [PUBLIC]",
+            100.0
+                * moves
+                    .iter()
+                    .copied()
+                    .fold(0.0, |m: f64, x| if x.abs() > m.abs() { x } else { m })
+        );
+    }
+}
+
 /// G6: a press timed at `STEP7_LOADING` and `STEP7_SIZE`, the probe's instruments off; and what the cost rests on.
 #[test]
 #[ignore = "needs the repo-excluded product scan; run with --release --ignored --nocapture"]
@@ -2240,8 +2738,9 @@ fn step7_cost() {
             spec,
             &format!("timed, μ_f {friction}"),
         );
-        seconds += run.clock.setup + run.clock.stepping;
-        steps += run.steps;
+        // Rule 1's and rule 6's re-runs count with the attempts they replaced.
+        seconds += run.earlier.0 + run.clock.setup + run.clock.stepping;
+        steps += run.earlier.1 + run.steps;
     }
     println!(
         "\nG6 [LOCAL]: a press {seconds:.1} s over {steps} steps; [PUBLIC] over D4 {:.3} on the CPU at {threads} threads; \

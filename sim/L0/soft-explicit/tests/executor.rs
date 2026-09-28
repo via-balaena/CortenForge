@@ -14,7 +14,8 @@
 mod common;
 
 use common::{
-    SILICONE, block_model, deform, displacements, elastic_forces, gather, nodal_dilations,
+    SILICONE, block_model, deform, displacements, elastic_energy, elastic_forces, gather,
+    nodal_dilations,
 };
 use nalgebra::{DMatrix, SymmetricEigen};
 use sim_soft_explicit::ExplicitModel;
@@ -203,41 +204,66 @@ fn one_step_is_the_central_difference_update_of_the_reference_forces() {
 
 #[test]
 fn each_phase_matches_the_reference_pipeline() {
-    let model = block_model((3, 2, 2), 0.01, SILICONE);
-    let (positions, u, v) = deformed_state(&model);
-    let mut e = cpu::f64::CpuExecutor::new(&model, &nowhere()).unwrap();
-    e.set_state(0.0, &u, &v, None);
-    run_phases(&mut e, 0.0, 1e-5, 0.0);
-    let out = e.phase_outputs();
-    for (element, (&d, rest_inverse)) in model
-        .elements()
-        .iter()
-        .zip(out.dilations.iter().zip(model.rest_edge_inverses()))
-    {
-        let expected = shared::tet4_dilation(gather(&u, *element), *rest_inverse);
-        assert!((d - expected).abs() <= 1e-15, "dilation {d} vs {expected}");
-    }
-    let nodal = nodal_dilations(&model, &positions);
-    for (a, &dilation) in nodal.iter().enumerate() {
-        let volume = model.node_rest_volumes()[a];
-        assert!((out.volume_changes[a] / volume - dilation).abs() <= 1e-13);
-        let pressure = shared::pressure_lambda_term(dilation, model.node_lambdas()[a]);
-        assert!((out.pressures[a] - pressure).abs() <= 1e-9 * pressure.abs().max(1.0));
-    }
-    let forces = elastic_forces(&model, &positions);
-    let scale = largest(&forces);
-    assert!(largest_difference(&out.elastic_forces, &forces) <= 1e-12 * scale);
-    // The element slots add up to the gathered forces.
-    let mut summed = vec![[0.0; 3]; model.node_count()];
-    for (element, f) in model.elements().iter().zip(&out.element_forces) {
-        for (corner, &node) in element.iter().enumerate() {
-            for d in 0..3 {
-                summed[node as usize][d] += f[3 * corner + d];
+    // Selective ANP, and with part of the λ term sampled at each element's own
+    // volume (plan §16y).
+    let plain = block_model((3, 2, 2), 0.01, SILICONE);
+    let stabilized = plain.clone().with_volumetric_stabilization(4.0).unwrap();
+    for model in [plain, stabilized] {
+        let (positions, u, v) = deformed_state(&model);
+        let mut e = cpu::f64::CpuExecutor::new(&model, &nowhere()).unwrap();
+        e.set_state(0.0, &u, &v, None);
+        run_phases(&mut e, 0.0, 1e-5, 0.0);
+        let out = e.phase_outputs();
+        for (element, (&d, rest_inverse)) in model
+            .elements()
+            .iter()
+            .zip(out.dilations.iter().zip(model.rest_edge_inverses()))
+        {
+            let expected = shared::tet4_dilation(gather(&u, *element), *rest_inverse);
+            assert!((d - expected).abs() <= 1e-15, "dilation {d} vs {expected}");
+        }
+        let nodal = nodal_dilations(&model, &positions);
+        for (a, &dilation) in nodal.iter().enumerate() {
+            let volume = model.node_rest_volumes()[a];
+            assert!((out.volume_changes[a] / volume - dilation).abs() <= 1e-13);
+            let lambda = model.node_lambdas()[a] - model.node_stabilizations()[a];
+            let pressure = shared::pressure_lambda_term(dilation, lambda);
+            assert!((out.pressures[a] - pressure).abs() <= 1e-9 * pressure.abs().max(1.0));
+        }
+        let forces = elastic_forces(&model, &positions);
+        let scale = largest(&forces);
+        assert!(largest_difference(&out.elastic_forces, &forces) <= 1e-12 * scale);
+        // The element slots add up to the gathered forces.
+        let mut summed = vec![[0.0; 3]; model.node_count()];
+        for (element, f) in model.elements().iter().zip(&out.element_forces) {
+            for (corner, &node) in element.iter().enumerate() {
+                for d in 0..3 {
+                    summed[node as usize][d] += f[3 * corner + d];
+                }
             }
         }
+        assert!(largest_difference(&summed, &out.elastic_forces) <= 1e-12 * scale);
+        assert!(out.contact_forces.iter().flatten().all(|&f| f == 0.0));
     }
-    assert!(largest_difference(&summed, &out.elastic_forces) <= 1e-12 * scale);
-    assert!(out.contact_forces.iter().flatten().all(|&f| f == 0.0));
+}
+
+#[test]
+fn the_internal_energy_read_is_the_reference_energy() {
+    // The energy the balance gate reads, with and without the part of the λ
+    // term sampled at each element's own volume (plan §16y).
+    let plain = block_model((3, 2, 2), 0.01, SILICONE);
+    let stabilized = plain.clone().with_volumetric_stabilization(4.0).unwrap();
+    for model in [plain, stabilized] {
+        let (positions, u, v) = deformed_state(&model);
+        let mut e = cpu::f64::CpuExecutor::new(&model, &nowhere()).unwrap();
+        e.set_state(0.0, &u, &v, None);
+        let read = e.monitors().internal_energy;
+        let expected = elastic_energy(&model, &positions);
+        assert!(
+            (read - expected).abs() <= 1e-12 * expected,
+            "{read:e} vs {expected:e}"
+        );
+    }
 }
 
 #[test]
@@ -620,6 +646,116 @@ fn the_loop_re_estimates_its_step_as_it_runs() {
     for pair in stepper.samples().windows(2) {
         assert!(pair[1].dt <= pair[0].dt * 1.05 * (1.0 + 1e-12));
     }
+}
+
+#[test]
+fn the_vector_that_sets_the_step_sits_where_the_stiffness_is() {
+    // One element's μ a thousand times the rest's: the top mode is its own,
+    // so the vector's mass-weighted size gathers on its four nodes.
+    let block = block_model((3, 3, 2), 0.01, SILICONE);
+    let stiff = 20;
+    let mut materials = block.materials().to_vec();
+    materials[stiff].mu *= 1000.0;
+    let model = ExplicitModel::new(
+        block.rest_positions().to_vec(),
+        block.elements().to_vec(),
+        materials,
+        vec![false; block.node_count()],
+    )
+    .unwrap();
+    let on_stiff = |vector: &[[f64; 3]]| {
+        let weights: Vec<f64> = vector
+            .iter()
+            .zip(model.node_masses())
+            .map(|(v, m)| m * (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]))
+            .collect();
+        model.elements()[stiff]
+            .iter()
+            .map(|&n| weights[n as usize])
+            .sum::<f64>()
+            / weights.iter().sum::<f64>()
+    };
+    let mut wide = cpu::f64::CpuExecutor::new(&model, &nowhere()).unwrap();
+    let p_wide = wide.epsilon().sqrt() * wide.shortest_edge();
+    let (mode, vector) = wide.top_mode_and_vector(100, p_wide, 0.0);
+    // The trait's estimate is the same iteration.
+    assert_eq!(wide.estimate_top_mode(100, p_wide, 0.0), mode);
+    let narrow = cpu::f32::CpuExecutor::new(&model, &nowhere()).unwrap();
+    let p = narrow.epsilon().sqrt() * narrow.shortest_edge();
+    let (narrow_mode, narrow_vector) = narrow.top_mode_and_vector(100, p, 0.0);
+    assert!((narrow_mode.omega_squared / mode.omega_squared - 1.0).abs() < 1e-3);
+    for (vector, label) in [(vector, "f64"), (narrow_vector, "f32")] {
+        let share = on_stiff(&vector);
+        eprintln!("MARGIN top vector ({label}): {share:.4} on the stiff element's nodes");
+        assert!(share > 0.99, "{label}: {share}");
+    }
+    // The vector returned is the one the stiffness quotient was taken of, not
+    // the next iterate: before the iteration converges the two differ. Its
+    // quotient `vᵀKv / vᵀMv`, with `K v` from the reference forces, is the
+    // mode's.
+    let (early, v) = wide.top_mode_and_vector(3, p_wide, 0.0);
+    let scale = 1e-7 / largest(&v);
+    let shifted = |sign: f64| -> Vec<[f64; 3]> {
+        model
+            .rest_positions()
+            .iter()
+            .zip(&v)
+            .map(|(x, d)| [0, 1, 2].map(|i| x[i] + sign * scale * d[i]))
+            .collect()
+    };
+    let (ahead, behind) = (
+        elastic_forces(&model, &shifted(1.0)),
+        elastic_forces(&model, &shifted(-1.0)),
+    );
+    let (mut numerator, mut denominator) = (0.0, 0.0);
+    for a in 0..model.node_count() {
+        for d in 0..3 {
+            numerator -= v[a][d] * (ahead[a][d] - behind[a][d]) / (2.0 * scale);
+            denominator += model.node_masses()[a] * v[a][d] * v[a][d];
+        }
+    }
+    let quotient = numerator / denominator;
+    eprintln!(
+        "MARGIN top vector at 3 iterations: its quotient over the mode's {:e}",
+        quotient / early.omega_squared - 1.0
+    );
+    assert!((quotient / early.omega_squared - 1.0).abs() < 1e-4);
+}
+
+#[test]
+fn the_damping_quotient_is_taken_of_the_vector_returned() {
+    // At 3 iterations, before the iteration converges, the damping quotient
+    // `vᵀCv / vᵀMv` is the returned vector's, with `C v` minus phase 4's
+    // viscous forces at velocities `v` (plan §16p).
+    let material = shared::Material {
+        viscosity: 7.0,
+        ..SILICONE
+    };
+    let model = block_model((3, 3, 2), 0.01, material);
+    let mut e = cpu::f64::CpuExecutor::new(&model, &nowhere()).unwrap();
+    let p = e.epsilon().sqrt() * e.shortest_edge();
+    let (mode, v) = e.top_mode_and_vector(3, p, 1000.0);
+    e.set_state(0.0, &vec![[0.0; 3]; model.node_count()], &v, None);
+    e.element_dilations();
+    e.gather_volume_changes();
+    e.nodal_pressures();
+    e.element_forces();
+    e.gather_forces();
+    let viscous = e.phase_outputs().viscous_forces;
+    let (mut numerator, mut denominator) = (0.0, 0.0);
+    for a in 0..model.node_count() {
+        for d in 0..3 {
+            numerator -= v[a][d] * viscous[a][d];
+            denominator += model.node_masses()[a] * v[a][d] * v[a][d];
+        }
+    }
+    let quotient = numerator / denominator;
+    eprintln!(
+        "MARGIN damping quotient at 3 iterations: {:e} off the mode's",
+        quotient / mode.damping_quotient - 1.0
+    );
+    assert!(mode.damping_quotient > 0.0);
+    assert!((quotient / mode.damping_quotient - 1.0).abs() < 1e-12);
 }
 
 #[test]

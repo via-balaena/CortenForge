@@ -6,13 +6,14 @@
 use std::f64::consts::{PI, TAU};
 
 use sim_soft_explicit::ModelError;
+use sim_soft_explicit::cpu;
 use sim_soft_explicit::executor::Snapshot;
 use sim_soft_explicit::f64::Material;
 use sim_soft_explicit::fixtures::golden::THICK_TUBE;
 use sim_soft_explicit::fixtures::grid::BakeError;
 use sim_soft_explicit::fixtures::tube::{
-    BandReading, ECOFLEX_00_30_VISCOUS_TIME, Insertion, Mandrel, Mesh, Tube, TubeRun, Walls,
-    node_pressures, read_band,
+    BandReading, ECOFLEX_00_30_VISCOUS_TIME, Insertion, Mandrel, Mesh, Tube, TubeRun, TubeRunError,
+    Walls, node_pressures, read_band,
 };
 
 const SILICONE: Material = Material {
@@ -319,6 +320,7 @@ fn a_runs_yeoh_term_comes_from_its_case_and_its_viscosity_from_its_time() {
         window: 0.1,
         friction: 0.0,
         grid_cell: 0.0005,
+        stabilization: 0.0,
     };
     assert_eq!(run(THICK_TUBE[2]).material().c2, 0.0);
     assert!((run(THICK_TUBE[5]).material().c2 - 2050.0).abs() <= 1e-9);
@@ -331,6 +333,43 @@ fn a_runs_yeoh_term_comes_from_its_case_and_its_viscosity_from_its_time() {
     }
     .material();
     assert!((stiffer.c2 - 4100.0).abs() <= 1e-9 && (stiffer.viscosity - 14.0).abs() <= 1e-12);
+}
+
+#[test]
+fn a_tubes_model_carries_its_stabilization_and_its_run_is_built_from_it() {
+    // Plan §16y: `TubeRun::model` takes the run's volumetric stabilization,
+    // and `run` builds its model with it: a weight the model refuses stops the
+    // run before it steps.
+    let run = TubeRun {
+        mesh: Mesh::TenK,
+        case: THICK_TUBE[0],
+        mu: 23.0e3,
+        viscous_time: ECOFLEX_00_30_VISCOUS_TIME,
+        density: 1070.0,
+        insertion: Insertion::plan(1.0),
+        window: 0.1,
+        friction: 0.0,
+        grid_cell: 0.0005,
+        stabilization: 2.0,
+    };
+    let model = run.model(&Tube::plan(Mesh::TenK)).unwrap();
+    let material = run.material();
+    let expected = (2.0 * material.mu).min(material.lambda);
+    assert!(
+        model
+            .element_stabilizations()
+            .iter()
+            .all(|&k| k == expected)
+    );
+    let refused = TubeRun {
+        stabilization: -1.0,
+        ..run
+    }
+    .run(|m, o| cpu::f64::CpuExecutor::new(m, o).unwrap());
+    assert!(matches!(
+        refused,
+        Err(TubeRunError::Model(ModelError::InvalidStabilization { .. }))
+    ));
 }
 
 #[test]
