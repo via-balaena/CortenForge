@@ -18,6 +18,7 @@ use mesh_repair::weld_vertices;
 use mesh_sdf::{ParitySign, PseudoNormalSign, Sign, Signed, TriMeshDistance};
 use mesh_types::IndexedMesh;
 use nalgebra::{Point3, Vector3};
+use sim_soft::lowering::{Lowering, lower};
 use sim_soft::{CutPoints, Mesh, Sdf, SdfMeshedTetMesh, TetId, Yeoh};
 use sim_soft_explicit::ExplicitModel;
 use sim_soft_explicit::executor::Obstacle;
@@ -25,8 +26,8 @@ use sim_soft_explicit::fixtures::tube::ECOFLEX_00_30_VISCOUS_TIME;
 
 use super::explicit_budget::{
     Bias, CANAL_WINDOW, D4_SECONDS, PRODUCT_POISSON, STEP_ACCURACY_BAR, Truth, VISCOSITY_SCALES,
-    canal_nodes, canal_truth, cost_line, element_size, h_k2, k1_budget, lower, product_loading,
-    quantile, scan_grid, scan_obstacle, start_pose, step_error, wall_at_size,
+    canal_nodes, canal_truth, cost_line, element_size, h_k2, k1_budget, product_loading, quantile,
+    scan_grid, scan_obstacle, start_pose, step_error, wall_at_size,
 };
 use super::{
     Aabb, GRID_SDF_SMOOTH_SIGMA_CELLS, GridSdf, SdfGrid, decimate_for_sdf,
@@ -35,7 +36,7 @@ use super::{
 };
 
 /// A signed distance the wall is meshed from.
-type Field = Arc<dyn cf_design::Sdf>;
+pub(super) type Field = Arc<dyn cf_design::Sdf>;
 
 /// The old path's SDF source: the scan decimated to this many faces.
 const OLD_SDF_FACES: usize = 2_500;
@@ -78,7 +79,7 @@ fn exact_field(surface: &IndexedMesh, closed: &IndexedMesh) -> Field {
 
 /// The product's wall as `build_insertion_geometry` builds it, meshed from `closed` and `open` on a lattice
 /// of spacing `cell` with its cut points where `cut_points` puts them: its body and its mesh.
-fn wall(
+pub(super) fn wall(
     (closed, open): (Field, Field),
     scan: &IndexedMesh,
     design: &SimDesign,
@@ -133,7 +134,7 @@ fn old_fields(
 
 /// The scan's exact distances: the closed scan's and the cap-stripped scan's, both signed by the closed
 /// scan's parity.
-fn exact_fields(scan: &IndexedMesh, caps: &[CapPlane]) -> (Field, Field) {
+pub(super) fn exact_fields(scan: &IndexedMesh, caps: &[CapPlane]) -> (Field, Field) {
     (
         exact_field(scan, scan),
         exact_field(&dome_wall_only_mesh(scan, caps), scan),
@@ -232,8 +233,18 @@ fn measure(
 ) -> Reading {
     let density = cf_device_types::material_density(&design.layers[0].anchor_key);
     let densities = vec![density; mesh.n_tets()];
-    let lowered =
-        |viscous_time: f64, poisson: f64| lower(mesh, &densities, viscous_time, poisson).unwrap();
+    let lowered = |viscous_time: f64, poisson: f64| {
+        lower(
+            mesh,
+            &densities,
+            Lowering {
+                poisson,
+                viscous_time,
+            },
+            &[],
+        )
+        .unwrap()
+    };
     let (elastic, viscous) = (
         lowered(0.0, 0.49),
         lowered(ECOFLEX_00_30_VISCOUS_TIME, 0.49),

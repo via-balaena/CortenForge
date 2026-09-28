@@ -15,6 +15,9 @@
 //! On a straight centreline the three are one translation, and on a planar circular arc the pose as written is
 //! the slide (the tests below). Where the centreline's curvature changes, they part.
 //!
+//! The slide and the fitted pose are `sim_soft::lowering::path`'s, where the lowering builds step 7's path (plan
+//! §16w); this probe measured them first with a copy of its own, and reads the same room through them.
+//!
 //! ⛔ The scan never enters the repo. [`why_the_rigid_path_asks_room_on_the_product_scan`] prints to the
 //! terminal, and the plan records only its ratios and verdict (Jon, 2026-09-26).
 
@@ -22,195 +25,11 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::cast_precision_loss)]
 
 use cf_design::Sdf as _;
-use mesh_types::IndexedMesh;
-use nalgebra::{Isometry3, Matrix3, Point3, Rotation3, Translation3, UnitQuaternion, Vector3};
+use nalgebra::{Isometry3, Point3, Rotation3, Vector3};
+use sim_soft::lowering::Plane;
+use sim_soft::lowering::path::{Centreline, FittedPath, fitted_motion, vertex_areas};
 
-use super::{
-    Solid, TransformedSdf, point_along_polyline_at_arc_distance, slide_pose_at,
-    smoothed_tangent_along_polyline, turn_between,
-};
-
-/// A centreline by arc length from the seated tip, straight past both ends along its end segments, with the
-/// frame parallel transport carries along its smoothed tangent.
-struct Track {
-    points: Vec<Point3<f64>>,
-    /// The arc length at each point.
-    arcs: Vec<f64>,
-    /// The frame at each point: two normals, then the smoothed tangent.
-    frames: Vec<Matrix3<f64>>,
-}
-
-impl Track {
-    fn new(centerline: &[Point3<f64>]) -> Self {
-        assert!(centerline.len() >= 2, "a centreline needs two points");
-        let mut arcs = vec![0.0];
-        for pair in centerline.windows(2) {
-            arcs.push(arcs[arcs.len() - 1] + (pair[1] - pair[0]).norm());
-        }
-        let first = smoothed_tangent_along_polyline(centerline, 0.0).unwrap();
-        let seed = if first.x.abs() < 0.9 {
-            Vector3::x()
-        } else {
-            Vector3::y()
-        };
-        let normal = (seed - first * seed.dot(&first)).normalize();
-        let mut frames = vec![Matrix3::from_columns(&[
-            normal,
-            first.cross(&normal),
-            first,
-        ])];
-        for &arc in &arcs[1..] {
-            let tangent = smoothed_tangent_along_polyline(centerline, arc).unwrap();
-            frames.push(turned(&frames[frames.len() - 1], &tangent));
-        }
-        Self {
-            points: centerline.to_vec(),
-            arcs,
-            frames,
-        }
-    }
-
-    fn length(&self) -> f64 {
-        self.arcs[self.arcs.len() - 1]
-    }
-
-    /// The point at arc `s`.
-    fn point(&self, s: f64) -> Point3<f64> {
-        if s < 0.0 {
-            let along = (self.points[1] - self.points[0]).normalize();
-            return self.points[0] + along * s;
-        }
-        point_along_polyline_at_arc_distance(&self.points, s)
-            .unwrap()
-            .0
-    }
-
-    /// The frame at arc `s`. Within a segment the smoothed tangent turns on one great circle, so turning the
-    /// frame at the segment's start straight onto it is the parallel transport.
-    fn frame(&self, s: f64) -> Matrix3<f64> {
-        let below = self.arcs.partition_point(|&arc| arc <= s).saturating_sub(1);
-        let tangent = smoothed_tangent_along_polyline(&self.points, s.max(0.0)).unwrap();
-        turned(&self.frames[below], &tangent)
-    }
-
-    /// The arc length of the closest point on the centreline, straight past both ends.
-    fn arc_of(&self, p: Point3<f64>) -> f64 {
-        let last = self.points.len() - 2;
-        let mut best = (f64::INFINITY, 0.0);
-        for (i, pair) in self.points.windows(2).enumerate() {
-            let along = pair[1] - pair[0];
-            let length = along.norm();
-            if length < f64::EPSILON {
-                continue;
-            }
-            let mut u = (p - pair[0]).dot(&along) / (length * length);
-            if i > 0 {
-                u = u.max(0.0);
-            }
-            if i < last {
-                u = u.min(1.0);
-            }
-            let distance = (p - (pair[0] + along * u)).norm();
-            if distance < best.0 {
-                best = (distance, self.arcs[i] + u * length);
-            }
-        }
-        best.1
-    }
-
-    /// Where the slide by `walk` carries `p`: `walk` further from the seated tip, at the same place in the
-    /// frame.
-    fn slid(&self, p: Point3<f64>, walk: f64) -> Point3<f64> {
-        let s = self.arc_of(p);
-        let local = self.frame(s).transpose() * (p - self.point(s));
-        self.point(s + walk) + self.frame(s + walk) * local
-    }
-}
-
-/// `frame` turned by the smallest rotation that takes its tangent onto `tangent`.
-fn turned(frame: &Matrix3<f64>, tangent: &Vector3<f64>) -> Matrix3<f64> {
-    let rotation =
-        turn_between(&frame.column(2).into_owned(), tangent).unwrap_or_else(Rotation3::identity);
-    rotation.matrix() * frame
-}
-
-/// The rigid motion that carries each `from` point closest to its `to` point, in least squares weighted by
-/// `weights` (Kabsch). `None` when the weights sum to zero.
-fn fitted_motion(
-    from: &[Point3<f64>],
-    to: &[Point3<f64>],
-    weights: &[f64],
-) -> Option<Isometry3<f64>> {
-    let total: f64 = weights.iter().sum();
-    if total <= 0.0 {
-        return None;
-    }
-    let mean = |points: &[Point3<f64>]| {
-        points
-            .iter()
-            .zip(weights)
-            .fold(Vector3::zeros(), |sum, (p, w)| sum + p.coords * *w)
-            / total
-    };
-    let (a, b) = (mean(from), mean(to));
-    let mut covariance = Matrix3::zeros();
-    for ((p, q), w) in from.iter().zip(to).zip(weights) {
-        covariance += (p.coords - a) * (q.coords - b).transpose() * *w;
-    }
-    // `svd` iterates until it converges, and never does on a non-finite matrix.
-    if !covariance.iter().all(|x| x.is_finite()) {
-        return None;
-    }
-    let svd = covariance.try_svd(true, true, f64::EPSILON, 1000)?;
-    let (u, v) = (svd.u?, svd.v_t?.transpose());
-    let mut sign = Matrix3::identity();
-    if (v * u.transpose()).determinant() < 0.0 {
-        let smallest = svd.singular_values.imin();
-        sign[(smallest, smallest)] = -1.0;
-    }
-    // U and V are orthogonal and the sign makes the product proper, so it is a rotation as it stands.
-    let rotation = UnitQuaternion::from_rotation_matrix(&Rotation3::from_matrix_unchecked(
-        v * sign * u.transpose(),
-    ));
-    Some(Isometry3::from_parts(
-        Translation3::from(b - rotation * a),
-        rotation,
-    ))
-}
-
-/// Each vertex's share of the surface: a third of each triangle it is a corner of.
-fn vertex_areas(mesh: &IndexedMesh) -> Vec<f64> {
-    let mut areas = vec![0.0; mesh.vertices.len()];
-    for face in &mesh.faces {
-        let [a, b, c] = face.map(|v| mesh.vertices[v as usize]);
-        let third = (b - a).cross(&(c - a)).norm() / 6.0;
-        for v in face {
-            areas[*v as usize] += third;
-        }
-    }
-    areas
-}
-
-/// The fitted pose at walk `walk`: the rigid motion closest to the slide over the vertices the slide puts
-/// where `inside` holds.
-fn fitted_pose(
-    track: &Track,
-    surface: &[Point3<f64>],
-    areas: &[f64],
-    walk: f64,
-    inside: impl Fn(Point3<f64>) -> bool,
-) -> Option<Isometry3<f64>> {
-    let (mut from, mut to, mut weights) = (Vec::new(), Vec::new(), Vec::new());
-    for (&p, &area) in surface.iter().zip(areas) {
-        let q = track.slid(p, walk);
-        if inside(q) {
-            from.push(p);
-            to.push(q);
-            weights.push(area);
-        }
-    }
-    fitted_motion(&from, &to, &weights)
-}
+use super::{Solid, TransformedSdf, slide_pose_at};
 
 /// A planar test curve: from the seated tip along +x, turning at curvature `curvatures[i]` (about +z, positive
 /// to the left) for `lengths[i]`, sampled every `spacing`. Returns the polyline and the exact point and heading
@@ -269,141 +88,6 @@ fn tube_surface(
 }
 
 #[test]
-fn a_fitted_motion_recovers_a_rigid_motion() {
-    let motion = Isometry3::new(Vector3::new(0.3, -1.2, 2.0), Vector3::new(0.4, -0.7, 1.1));
-    let from: Vec<Point3<f64>> = (0..20)
-        .map(|k| {
-            let k = f64::from(k);
-            Point3::new(k.sin() * 3.0, (1.7 * k).cos(), 0.25 * k)
-        })
-        .collect();
-    let to: Vec<Point3<f64>> = from.iter().map(|p| motion * p).collect();
-    let weights: Vec<f64> = (0..20).map(|k| 1.0 + f64::from(k % 3)).collect();
-    let fitted = fitted_motion(&from, &to, &weights).unwrap();
-    for (p, q) in from.iter().zip(&to) {
-        assert!(
-            (fitted * p - q).norm() < 1e-12,
-            "{}",
-            (fitted * p - q).norm()
-        );
-    }
-    assert!(fitted_motion(&from, &to, &[0.0; 20]).is_none());
-}
-
-#[test]
-fn a_mirror_image_is_fitted_by_the_best_rotation() {
-    // Points spread 3, 2 and 1 along x, y and z, mirrored in x. The covariance is diag(−18, 8, 2), whose
-    // nearest rotation turns the smallest spread (z) with x: a half turn about y, carrying (x, y, z) to
-    // (−x, y, −z). Kept as it is, the mirror is no rotation; flipping any other direction gives the identity or
-    // a half turn about z.
-    let from: Vec<Point3<f64>> = [3.0, 2.0, 1.0]
-        .iter()
-        .enumerate()
-        .flat_map(|(axis, &spread)| {
-            [spread, -spread].map(|at| {
-                let mut p = Point3::origin();
-                p[axis] = at;
-                p
-            })
-        })
-        .collect();
-    let to: Vec<Point3<f64>> = from.iter().map(|p| Point3::new(-p.x, p.y, p.z)).collect();
-    let fitted = fitted_motion(&from, &to, &[1.0; 6]).unwrap();
-    for p in &from {
-        let expected = Point3::new(-p.x, p.y, -p.z);
-        assert!(
-            (fitted * p - expected).norm() < 1e-12,
-            "{p} → {}",
-            fitted * p
-        );
-    }
-}
-
-#[test]
-fn a_fitted_motion_follows_the_weight() {
-    // Two halves of a set moved two ways: with the second half weighted zero, the fit is the first half's
-    // motion exactly; weighted evenly, it is neither.
-    let (first, second) = (
-        Isometry3::new(Vector3::new(1.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 0.3)),
-        Isometry3::new(Vector3::new(0.0, 2.0, 0.0), Vector3::new(0.2, 0.0, 0.0)),
-    );
-    let from: Vec<Point3<f64>> = (0..20)
-        .map(|k| {
-            let k = f64::from(k);
-            Point3::new(k.sin() * 3.0, (1.7 * k).cos(), 0.25 * k)
-        })
-        .collect();
-    let to: Vec<Point3<f64>> = from
-        .iter()
-        .enumerate()
-        .map(|(k, p)| if k < 10 { first * p } else { second * p })
-        .collect();
-    let weights: Vec<f64> = (0..20).map(|k| if k < 10 { 2.5 } else { 0.0 }).collect();
-    let fitted = fitted_motion(&from, &to, &weights).unwrap();
-    for p in &from {
-        assert!((fitted * p - first * p).norm() < 1e-12);
-    }
-    let even = fitted_motion(&from, &to, &[1.0; 20]).unwrap();
-    assert!(from.iter().any(|p| (even * p - first * p).norm() > 0.1));
-}
-
-#[test]
-fn a_vertex_takes_a_third_of_each_triangle_it_is_a_corner_of() {
-    // A quadrilateral cut along one diagonal into triangles of area 1.5 and 3: the diagonal's ends are corners
-    // of both.
-    let mut mesh = IndexedMesh::new();
-    for (x, y) in [(0.0, 0.0), (3.0, 0.0), (3.0, 1.0), (0.0, 2.0)] {
-        mesh.vertices.push(Point3::new(x, y, 0.0));
-    }
-    mesh.faces.push([0, 1, 2]);
-    mesh.faces.push([0, 2, 3]);
-    let areas = vertex_areas(&mesh);
-    for (area, expected) in areas.iter().zip([1.5, 0.5, 1.5, 1.0]) {
-        assert!((area - expected).abs() < 1e-15, "{areas:?}");
-    }
-}
-
-#[test]
-fn the_track_follows_its_curve_past_both_ends() {
-    let (lengths, curvatures) = ([30.0, 30.0], [0.02, -0.03]);
-    let track = Track::new(&planar_curve(&lengths, &curvatures, 0.5));
-    // The smoothed tangent's turn from the curve's, with h = 0.5: at an end it is the end segment's, κh/2 off;
-    // at the join, the mean of the two segments' turns, (κ₂ − κ₁)h/4. Within an arc it is the curve's but for the
-    // polyline's arc lagging the curve's (a chord is shorter than its arc), a lag that grows along the curve and
-    // stays under 1e-5 of turn at these points. The segment's own tangent would be off by up to κh/2 (4.5e-3 at
-    // 44.4).
-    let expected_turn = [
-        (0.0, 0.005),
-        (7.3, 0.0),
-        (30.0, -0.00625),
-        (44.4, 0.0),
-        (60.0, 0.0075),
-    ];
-    for (s, turn) in expected_turn {
-        let (exact, heading) = exact_planar(&lengths, &curvatures, s);
-        assert!((track.point(s) - exact).norm() < 1e-3, "{s}");
-        let frame = track.frame(s);
-        let tangent = frame.column(2);
-        let off = tangent.y.atan2(tangent.x) - heading;
-        assert!((off - turn).abs() < 1e-5, "{s}: {off}");
-        assert!((frame.transpose() * frame - Matrix3::identity()).norm() < 1e-12);
-        // Projected onto a chord, a point 4 off the curve lands within 4 × κh/2 of its arc (0.03 here).
-        assert!(
-            (track.arc_of(exact + frame.column(0) * 4.0) - s).abs() < 0.04,
-            "{s}"
-        );
-    }
-    // Straight on past either end, along the end segment: κh/2 off the curve's tangent, so 5 on, the point is
-    // within 5κh/2 of the tangent line (0.025 at the start, 0.0375 at the end).
-    assert!((track.point(-5.0) - Point3::new(-5.0, 0.0, 0.0)).norm() < 0.03);
-    assert!((track.arc_of(Point3::new(-5.0, 2.0, 0.0)) + 5.0).abs() < 0.02);
-    let (end, heading) = exact_planar(&lengths, &curvatures, 60.0);
-    let beyond = end + Vector3::new(heading.cos(), heading.sin(), 0.0) * 5.0;
-    assert!((track.point(65.0) - beyond).norm() < 0.05);
-    assert!((track.arc_of(beyond) - 65.0).abs() < 2e-2);
-}
-
-#[test]
 fn on_a_straight_centreline_the_three_motions_agree_and_a_taper_asks_its_own_room() {
     // A cone around the x axis narrowing away from the tip: radius 10 at the tip, 1 in 20 per unit of arc. Its
     // exact distance is the radial excess times the cosine of its half-angle.
@@ -412,11 +96,15 @@ fn on_a_straight_centreline_the_three_motions_agree_and_a_taper_asks_its_own_roo
     let centerline: Vec<Point3<f64>> = (0..=10)
         .map(|k| Point3::new(10.0 * f64::from(k), 0.0, 0.0))
         .collect();
-    let track = Track::new(&centerline);
+    let track = Centreline::new(&centerline).unwrap();
     let surface = tube_surface(&[100.0], &[0.0], 8.0, 50);
-    let areas = vec![1.0; surface.len()];
     let walk = 30.0;
-    let fitted = fitted_pose(&track, &surface, &areas, walk, |q| q.x <= 100.0).unwrap();
+    let (from, to): (Vec<_>, Vec<_>) = surface
+        .iter()
+        .map(|&p| (p, track.slid(p, walk)))
+        .filter(|&(_, q)| q.x <= 100.0)
+        .unzip();
+    let fitted = fitted_motion(&from, &to, &vec![1.0; from.len()]).unwrap();
     let tip = slide_pose_at(&centerline, 1.0 - walk / 100.0);
     for node in [Point3::new(60.0, 7.0, 0.0), Point3::new(95.0, 0.0, -5.25)] {
         let slide = cone(track.slid(node, -walk));
@@ -434,7 +122,7 @@ fn on_a_planar_arc_the_pose_as_written_is_the_slide() {
     // (κh/2) from the curve's, so the two differ by up to κh/2 times the reach: 0.004 here.
     let (lengths, curvatures) = ([100.0], [0.01]);
     let centerline = planar_curve(&lengths, &curvatures, 0.01);
-    let track = Track::new(&centerline);
+    let track = Centreline::new(&centerline).unwrap();
     let surface = tube_surface(&lengths, &curvatures, 8.0, 40);
     let walk = 35.0;
     let tip = slide_pose_at(&centerline, 1.0 - walk / track.length());
@@ -446,7 +134,10 @@ fn on_a_planar_arc_the_pose_as_written_is_the_slide() {
     assert!(worst < 5e-3, "{worst}");
     // On a coarser sampling the same bound grows with the spacing: 0.09 at h = 0.25.
     let coarse = planar_curve(&lengths, &curvatures, 0.25);
-    let coarse_tip = slide_pose_at(&coarse, 1.0 - walk / Track::new(&coarse).length());
+    let coarse_tip = slide_pose_at(
+        &coarse,
+        1.0 - walk / Centreline::new(&coarse).unwrap().length(),
+    );
     let coarse_worst = surface
         .iter()
         .filter(|p| track.arc_of(**p) + walk <= 100.0)
@@ -462,7 +153,7 @@ fn where_the_curvature_changes_the_pose_as_written_turns_the_far_end_off_the_cur
     // where that rotation puts it; the curve there, at arc 100, has turned back to its start.
     let (lengths, curvatures) = ([50.0, 50.0], [0.01, -0.01]);
     let centerline = planar_curve(&lengths, &curvatures, 0.01);
-    let track = Track::new(&centerline);
+    let track = Centreline::new(&centerline).unwrap();
     let walk = 25.0;
     let tip = slide_pose_at(&centerline, 1.0 - walk / track.length());
     let (seated_tip, _) = exact_planar(&lengths, &curvatures, 0.0);
@@ -478,65 +169,6 @@ fn where_the_curvature_changes_the_pose_as_written_turns_the_far_end_off_the_cur
     let (on_curve, _) = exact_planar(&lengths, &curvatures, 100.0);
     let off = (expected - on_curve).norm();
     assert!(off > 5.0, "{off}");
-    // The fitted pose is fitted over the points the slide carries inside (arc 100 here), not the points that
-    // start inside: it is the least-squares fit over that set, which no other rigid motion beats.
-    let surface = tube_surface(&lengths, &curvatures, 8.0, 40);
-    let areas: Vec<f64> = (0..surface.len()).map(|k| 1.0 + (k % 3) as f64).collect();
-    let inside = |q: Point3<f64>| track.arc_of(q) <= 100.0;
-    let fitted = fitted_pose(&track, &surface, &areas, walk, inside).unwrap();
-    let (mut from, mut to, mut weights) = (Vec::new(), Vec::new(), Vec::new());
-    for (p, area) in surface.iter().zip(&areas) {
-        let q = track.slid(*p, walk);
-        if inside(q) {
-            from.push(*p);
-            to.push(q);
-            weights.push(*area);
-        }
-    }
-    let direct = fitted_motion(&from, &to, &weights).unwrap();
-    assert!(
-        from.iter()
-            .all(|p| (fitted * p - direct * p).norm() < 1e-12)
-    );
-    let every: Vec<_> = surface.iter().map(|p| track.slid(*p, walk)).collect();
-    let over_all = fitted_motion(&surface, &every, &areas).unwrap();
-    assert!(
-        from.iter()
-            .any(|p| (over_all * p - fitted * p).norm() > 0.1)
-    );
-    let misses = |pose: &Isometry3<f64>| -> f64 {
-        from.iter()
-            .zip(&to)
-            .zip(&weights)
-            .map(|((p, q), w)| w * (pose * p - q).norm_squared())
-            .sum()
-    };
-    assert!(misses(&fitted) < misses(&tip) && misses(&fitted) < misses(&over_all));
-}
-
-#[test]
-fn the_track_transports_its_frame_without_spin_along_a_helix() {
-    // A helix of radius 10 rising 3 a radian: curvature 10/109 and torsion 3/109. Parallel transport turns the
-    // frame against the Frenet frame at minus the torsion, so over arc S the normal turns −τS in the
-    // (normal, binormal) plane. On a planar curve the transport cannot be told from any other turn.
-    let (radius, rise) = (10.0_f64, 3.0_f64);
-    let speed = radius.hypot(rise);
-    let torsion = rise / (speed * speed);
-    let at = |angle: f64| Point3::new(radius * angle.cos(), radius * angle.sin(), rise * angle);
-    let centerline: Vec<Point3<f64>> = (0..=2000).map(|k| at(f64::from(k) * 0.005)).collect();
-    let track = Track::new(&centerline);
-    let phase = |s: f64| {
-        let angle = s / speed;
-        let normal = Vector3::new(-angle.cos(), -angle.sin(), 0.0);
-        let binormal = Vector3::new(rise * angle.sin(), -rise * angle.cos(), radius) / speed;
-        let n = track.frame(s).column(0).into_owned();
-        n.dot(&binormal).atan2(n.dot(&normal))
-    };
-    // A frame that is not transported misses by radians; this one by 1.5e-5, which is not isolated.
-    let span = 0.9 * track.length();
-    let turned = (phase(span) - phase(0.0) + torsion * span).rem_euclid(std::f64::consts::TAU);
-    let off = turned.min(std::f64::consts::TAU - turned);
-    assert!(off < 1e-4, "{off} against a twist of {}", torsion * span);
 }
 
 /// The room each motion asks of the product's cavity wall, with no inset, over the pose as written's 64 poses.
@@ -566,13 +198,15 @@ fn why_the_rigid_path_asks_room_on_the_product_scan() {
         Solid::from_sdf(TransformedSdf::new(g.intruder.clone(), pose), g.bounds)
             .offset(g.cavity_offset_m)
     };
-    let track = Track::new(&centerline);
+    let track = Centreline::new(&centerline).unwrap();
     let length = track.length();
     let areas = vertex_areas(&scan);
-    let inside = |q: Point3<f64>| {
-        caps.iter()
-            .all(|cap| (q - cap.centroid).dot(&cap.normal) < 0.0)
-    };
+    let device: Vec<Plane> = caps
+        .iter()
+        .map(|cap| Plane::new(cap.centroid, cap.normal).unwrap())
+        .collect();
+    let path = FittedPath::new(&scan, track.clone(), device).unwrap();
+    let inside = |q: Point3<f64>| path.inside(q);
     let d_hat = super::BRIDGE_CONTACT_DHAT_M;
     println!(
         "\n══ U3 · base_mold · {} cavity-wall nodes · {} scan vertices · no inset ══",
@@ -598,7 +232,7 @@ fn why_the_rigid_path_asks_room_on_the_product_scan() {
         let walk = length * (1.0 - t);
         let tip_pose = slide_pose_at(&centerline, t);
         let tip = moved(tip_pose);
-        let fitted_pose = fitted_pose(&track, &scan.vertices, &areas, walk, inside).unwrap();
+        let fitted_pose = path.fitted(walk).unwrap();
         let fitted = moved(fitted_pose);
         let mut row = [f64::INFINITY; 3];
         for (n, node) in wall.iter().enumerate() {

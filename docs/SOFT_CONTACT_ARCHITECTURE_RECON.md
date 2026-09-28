@@ -4,12 +4,12 @@
 §16; 2a (#968) and 2b's G2 (#969) are merged, and 2b's remaining runs, with the material damping they led to, are
 §16p (#970), and 2c, K6, is §16q (#971). 2d, the product's budget and the stop rule, is §16r (#972). K5,
 with D1's readings diagnosed and replaced, is §16s (#973). Fit plan U3, why the rigid path asks for room and the
-path step 7 runs, is §16t. Step 6's obstacle bake is §16u, and the wall's canal surface §16v.
+path step 7 runs, is §16t. Step 6's obstacle bake is §16u, the wall's canal surface §16v, and the lowering §16w.
 - **Research:** §1–§10.
 - **Code architecture and the crate layout:** §11–§14.
 - **The first experiment and its kill criteria:** §15.
 - **Build step 2's design, and what its PRs measured:** §16 (§16m–§16s); U3, §16t; step 6's bake, §16u; the wall's
-  canal surface, §16v.
+  canal surface, §16v; the lowering, §16w.
 
 The code architecture, crate layout and first experiment were checked by cold review, against criteria
 written beforehand (§14e, §15i). The research sections were not. Jon's direction:
@@ -417,13 +417,16 @@ fill a gap.
 10. **The product's outer boundary** (Jon, 2026-09-24): *"right now it has no shell, its outside is free.
     but in the future i might add a shell/bond it to a shell. also sometimes there are multiple silicone
     shells layered."* So today's regime is the free wall (§15h). The confined case becomes a gate
-    before any shell or bond design is simulated (15g step 2).
+    before any shell or bond design is simulated (15g step 2). *(2026-09-27, §16w: layered shells wait on the
+    interface rule's PR, and the lowering refuses a wall where two materials meet until then.)*
 11. **How the device is held** (Jon, 2026-09-24): *"it really depends, it could be in a shell, connected
     to something like a robotic arm, or just held in the hand."*
     - How it is held is a design option, like the outer boundary: in a shell, mounted to an arm, or held
       in the hand.
     - A shell, or a mount at the closed end, confines the material near it. So the confined case gates
       those designs too.
+    - *(2026-09-27, §16w)* The lowering holds a wall by a mount or a rigid shell bonded to it. A case it slides along
+      and the hand wait on a PR of their own, before any verdict that uses them. Step 7's first run is mounted.
 12. **Speed against quality** (Jon, 2026-09-24): *"i just mean i want a fast simulation. but i dont want
     to sacrifice quality."*
     - D4's 5 minutes is a target, measured per press (one verdict), and driven down.
@@ -440,6 +443,9 @@ fill a gap.
 - the penetration bound, G2 (fit plan §5);
 - *(2026-09-27)* step 6's done-when re-barred to the bake's exact distance (§15g step 6, §16u), and step 7's wall
   meshed from the scan's exact distance with its cut points located on it (fit plan U17, §16v).
+- *(2026-09-27, §16w)* the case moved to a PR of its own; the run's start clear of the wall by §15b's gap; the
+  path's sampling held to G2's floor at the points it reads; the band's rule; and the product's band of eight fine
+  cells.
 
 ## 10. What the research could not see
 
@@ -668,7 +674,7 @@ solid"*).
 |---|---|---|---|
 | **`sim-soft-explicit`** | L0 | new | **The explicit solver, minus the GPU.** The executor trait. The explicit model and state data layout (flat arrays; `#[repr(C)]` parameter blocks with no `vec3`). The shared math (14b), written once in the loop-free subset and compiled at f32 and f64, with its committed generated WGSL and a freshness test. The **CPU executor** (rayon on native, sequential on wasm32, as `newton.rs` does). The **stepping loop**, which owns the order of phases within a step, batching, the stable time step and mass scaling, and the energy monitors and stop rule, over any executor. A `test-fixtures` feature with small lowered meshes, as `sim-core` has *(replaced in step 2's design by a public module, 16f)*. |
 | **`sim-wgsl-gen`** | L0 | new | The §13 translator: `syn` (with `proc-macro2` for source positions), plus `naga` to validate its output, on the physics side's naga version. A `write` command regenerates the committed WGSL, and the freshness test names that command when it fails. A dev-dependency of `sim-soft-explicit`. |
-| **`sim-soft`** | L0 | grows | The model as today, plus **lowering** it to `sim-soft-explicit`'s data, including resampling the insertion path evenly in time *(2026-09-27, §16t: the path is the fitted pose)*. **Baking the obstacle SDF from its triangle mesh** (flood-fill sign and the Gaussian pre-smooth, moved from `tools/cf-sim-research`) *(2026-09-27, §16u: a new bake, not moved: the parity of a ray's crossings for the sign, no pre-smooth, and a fine grid in bricks near the surface)*. The **scenarios and readouts in model terms** (contact pressure by region) *(2026-09-26, §16s: D1's readings landed in `sim-soft-explicit`'s `readings`, over the solver's snapshots, so `sim-soft` calls them and does not build a second set)*. The test of its `Material` impls against the shared math (F3). The implicit Newton solver stays as it is. |
+| **`sim-soft`** | L0 | grows | The model as today, plus **lowering** it to `sim-soft-explicit`'s data, including resampling the insertion path evenly in time *(2026-09-27, §16t: the path is the fitted pose)*. **Baking the obstacle SDF from its triangle mesh** (flood-fill sign and the Gaussian pre-smooth, moved from `tools/cf-sim-research`) *(2026-09-27, §16u: a new bake, not moved: the parity of a ray's crossings for the sign, no pre-smooth, and a fine grid in bricks near the surface)*. The **scenarios and readouts in model terms** (contact pressure by region) *(2026-09-26, §16s: D1's readings landed in `sim-soft-explicit`'s `readings`, over the solver's snapshots, so `sim-soft` calls them and does not build a second set)* *(2026-09-27, §16w: nothing in `sim-soft` calls them yet; step 7's runs read them from the tool)*. The test of its `Material` impls against the shared math (F3). The implicit Newton solver stays as it is. |
 | **`sim-gpu`** | L0-io | rebuilt | **The GPU executors.** It *extracts* shared infrastructure from today's rigid code: the device context (`context.rs`), and chunked submission, which today sits inside the rigid `step()` (`pipeline/orchestrator.rs:28-37`), and the contact-list tools (the atomic append; the CAS float-add if scatter is chosen). It adds `soft`, the explicit executor, whose hand-written entry points fetch, gather and scatter around the generated WGSL. It holds the **GPU-vs-CPU conformance tests** against `sim-soft-explicit`'s CPU executor. The rigid pipeline stays as it is until its own redesign, keeping the parts only it uses. It depends on `sim-soft-explicit` and `sim-core`, not on `sim-soft`, and has its own wgpu version (13e). |
 | `sim-coupling` | L1 | later | Two-way explicit rigid–soft coupling on the CPU (subcycling, F5). **The fit test does not need it**: the scan is a kinematic pose, applied in the contact law. GPU rigid–soft exchange lives in `sim-gpu`, on one device. |
 | `sim-bevy-soft`, the studio, `tools/cf-sim-research` | L1 / App / tool | consumers | Pick the executor (CPU or GPU), and show results from CPU snapshots (13e). |
@@ -734,7 +740,8 @@ The boundary is guarded in both directions:
 - **Baking the obstacle SDF in `sim-soft` costs no new crate.**
   - `mesh-sdf` is already in its graph, via `mesh-offset` (`cargo tree -p sim-soft -i mesh-sdf`).
   - `cf-design` would cost one (110 → 111, measured by the second reviewer), and it is not on the
-    fit-test path.
+    fit-test path. *(2026-09-27, §16v, §16w: the fit test's wall is built with `cf-design`, by the lowering's
+    caller; `sim-soft` still does not depend on it.)*
 - **The CPU executor sits beside the contract, not beside the model,** because it consumes only lowered
   data. That:
   - lets `sim-gpu`'s conformance tests use it as an ordinary dependency;
@@ -1223,7 +1230,10 @@ Each item is one PR with its own tests and a done-when.
    - *(2026-09-27, §16u)* The obstacle's fine grid, at the product's 0.0625 mm: two more buffers; a storage binding
      above wgpu's default, so the executor requests the adapter's limit, as `sim-gpu`'s context does (the M4 Pro
      grants 4 GiB; lavapipe's grant is not checked); and a step in the distance where its bricks end, which the
-     conformance tests must allow. The done-when above does not yet say how.
+     conformance tests must allow. The done-when above does not yet say how. *(2026-09-27, §16w: at the product's
+     band of eight fine cells the fine values are more than four times the default at f32; and the executor gains two
+     monitors, the deepest predicted point and the corrections the coarse grid answered, which the GPU must reduce
+     too.)*
 5. **The experiment on the GPU:** K1, K2 at 100k, the ν sweep, the ladder, the Coulomb push, the stress
    case, the SDF comparison and stiffness scaling. *Stiffness scaling runs first on the CPU, in step 2
    (16i), because the product's budget depends on it.*
@@ -1239,14 +1249,17 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
 - the per-press time against D4's target (§9 decision 12), which follows from the runs per verdict
   *(2026-09-26, §16r: 0.29–0.61 of D4 at K1's rate with the wall as meshed; projected, more, fit plan U17)*
   *(2026-09-27, §16v: step 7's wall projects nothing; a viscous press at ν 0.49 takes 0.42–0.56 of D4 at K1's rate
-  over the insets measured, and 0.59–0.79 at the budget's worst corner)*;
+  over the insets measured, and 0.59–0.79 at the budget's worst corner)* *(2026-09-27, §16w: before the first press,
+  a scan's bake takes about three tenths of D4 at the product's band, once per scan and band)*;
 - the pairing's nominal corner, which D3 judges at: add it as a run, or show push force is linear in
   μ_f *(2026-09-27: §5c's re-sourcing found no source for a nominal; which value D3 judges at is open)*;
 - Tier 1's accuracy against the solver, and what D3 does if it is poor *(2026-09-27, §16t: Tier 1 reads slice by
   slice, with no rigid path, and the solver runs the fitted pose; step 7 reports the path's own share, the fitted
   pose against the slide, beside Tier 1's error)*;
 - modelling each way of holding the device (§9 decision 11): a shell, a mount, or a hand as a soft,
-  distributed support. A held closed end is the "no escape" row of §15h;
+  distributed support. A held closed end is the "no escape" row of §15h *(2026-09-27, §16w: the lowering holds the
+  wall by a mount or by a rigid shell bonded to it; a case it slides along, the hand, and bonded layers' interface
+  rule move to a PR of their own, before any verdict that uses them)*;
 - the product mesher's surface bias and element count (measured in step 2) *(2026-09-26, §16r: the canal nodes
   sit up to 1.25 elements off the true surface, the 5th and 95th percentiles at −0.50 and +0.32; projecting them
   costs the step; fit plan U17)* *(2026-09-27, §16v: meshed from the scan's exact distance with the cut points
@@ -1305,13 +1318,18 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
        reference (step 1);
      - mounted at the closed end;
      - hand-held, as a soft, distributed support.
+
+     *(2026-09-27, §16w: Jon moved the hand-held support and the bonded layers' interface rule to a PR of their
+     own, before any verdict that uses them: the first needs a hand's stiffness, which is not sourced, and the second
+     a two-layer reference. Step 7's first run is mounted at the closed end. The case joins them, an engineering
+     call: as a radial kinematic constraint it let the cased tube turn and its case open (§16n).)*
    - The F3 conformance test of `Material` against the shared math lands here, since `sim-soft` takes
      the dependency. *(2026-09-27: step 6 lands as three PRs: the bake and U18's grid (§16u, #975), which took
      the dependency; the wall's canal surface (fit plan U17); and the
      lowering, which carries the boundary options, the pairing library, this test and the items carried from
      Phase 1.)* *(2026-09-27, §16v: the wall's canal surface is settled. Step 7's wall is meshed from the scan's
      exact distance with its cut points located on that distance, which the lowering builds; and the mesher's
-     Parity Rule is fixed.)*
+     Parity Rule is fixed.)* *(2026-09-27, §16w: the lowering meshes and lowers it; its caller builds its body.)*
    - **U3** (fit plan) is settled geometrically before step 7: with no inset, the rigid path already
      asks 8.3 mm of room. Its swept volume is checked against the cavity. If the path is at fault, step
      7's verdicts would measure that and not the fit. The prescribed path is then replaced by an intruder
@@ -1356,6 +1374,20 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
        scan's exact signed distance (the bake's distance and sign) and G2's floor: the executor's penetration
        monitor reads the grid, so it cannot see the grid's own error. At which steps the run reads it is step 7's
        design.
+   - *(2026-09-27, §16w.)* The first run is mounted at the closed end (Jon), which confines the material there and
+     moves it toward §15h's cased rows, where ν matters: step 7 reads its verdict's readings at ν 0.49 and 0.495.
+     Step 7 sets the loading time and the mass damping (§16w's run took the tube's rules), and re-reads the travel,
+     which the join, past the centreline's end, lengthens. G2 is judged against the pose the executor ran. A run whose
+     corrections read the coarse grid says so, and a run whose deepest predicted point passes half the band re-sets
+     it by §16w's rule and bakes again before its readings stand. The fitted pose is the first obstacle that turns, so
+     step 7's G2 also reads §16o's frame carry, which no test isolates. D1's push on the fitted pose, which turns,
+     needs the twist on the scan; whether the executor reduces it or the snapshots' forces give it is step 7's to
+     decide (the list for steps 6–9). The confined case that gates a mount (§9 decision 11) passed with the tube's
+     outer wall and every node's axial motion held (§16n); whether that covers a mount holding the skin alone is step
+     7's to settle before its first verdict.
+   - *(Carried here from earlier sections, 2026-09-27.)* Step 7 reads the room on its own wall (§16v); reads the
+     product's own seated window (§16r); repeats f32 against f64 on the 1 cm² patch (step 5's note); and the old
+     path, `slide_pose_at` with it, retires after it (§16u, §16w).
    - *Done when:* the fit plan's G1–G3 and G6 have numbers on `base_mold`. *(2026-09-27: and D1's readings'
      convergence there, at the product's element size and at the lowest μ_f; the list above.)*
 8. **The soft-on-soft contact design** (§9 decision 9): a design step with its own research round, not
@@ -1397,7 +1429,7 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
   | An O-ring in its gland | fully confined | pressure ∝ K. ν must come from the measured K; Abaqus's K/μ 1 000–10 000 is ν 0.4995–0.49995 |
   | Garment, footwear, grasping | free, or thin | ν barely matters |
   | Surgical insertion (needle, catheter) | tissue around it | not assessed |
-  | `base_mold`, the product, today | free outer wall (§9 decision 10); held in a shell, on an arm mount or in the hand, by design (decision 11) | free or hand-held: ν barely matters. A shell or a mount at the closed end moves toward the cased rows |
+  | `base_mold`, the product, today | free outer wall (§9 decision 10); held in a shell, on an arm mount or in the hand, by design (decision 11) | free or hand-held: ν barely matters. A shell or a mount at the closed end moves toward the cased rows *(2026-09-27, §16w: step 7's first run is mounted; the hand and a sliding case wait on a PR of their own)* |
 
   At ν 0.4995 an explicit run needs about 4.4× K1's steps (√(1001/51), arithmetic), roughly 9 minutes
   at K1's rate. **The O-ring class is outside K1's sizing**, and needs its own budget or a mixed
@@ -2919,7 +2951,10 @@ in contact, and one of the loop's re-estimates (a run makes one every 500 steps)
   at K1's rate, below; U17) *(2026-09-27, §16v: step 7's wall projects nothing)*; the GPU meeting K1 exactly (measured in step 5), with its per-step cost scaling with
   element count, which a GPU's fixed cost a step need not; the tube's v/c_s, loaded step factor, hold and start
   gap, where the product's own seated window is D1's (step 7); Ecoflex's η/μ; 3 runs a press (a run at the
-  pairing's nominal corner would make 4, §15g's outline); no node held; and h_K2, set by K2 alone.
+  pairing's nominal corner would make 4, §15g's outline); no node held; and h_K2, set by K2 alone. *(2026-09-27,
+  §16w: step 7's first run is mounted. Held nodes cannot shorten the stable step: its condition, `4M − Δt²K − 2ΔtC`
+  positive definite, holds on a principal submatrix whenever it holds on the whole, and on `base_mold` the mounted
+  rest step is the unheld one's. The mount's confinement is step 7's to read.)*
 - **K1's own tube on the CPU:** the 100k run at the rung above took 65 s of wall-clock (f32, 4 threads, contact and
   the loop's estimates included, on a machine running other jobs), against K1's 2 minutes. At 10 T_s the same
   mesh took 124.5 s (§16p), so it depends on the loading time step 5 sets for K1. The product's CPU figures above
@@ -3311,7 +3346,8 @@ digits: 1.8 % past the bar, penetration p95 / p99 / worst 0.47 / 1.28 / 2.34 bar
   `every_point_within_the_band_reads_the_fine_grid`).
 - **On `base_mold`** (`the_bake_on_the_product_scan`): a coarse grid at 0.5 mm, a fine one at 0.25 mm and at
   0.0625 mm, a band of one fine cell. Every point on the scan reads the fine grid, and reads exactly what the band
-  signed by parity reads at the same spacing (asserted). At 0.0625 mm the bake takes about a tenth of D4; at 0.25 mm, under a fiftieth. At
+  signed by parity reads at the same spacing (asserted). At 0.0625 mm the bake takes about a tenth of D4; at 0.25 mm, under a fiftieth *(2026-09-27, §16w: at the
+  product's band of eight fine cells, about three tenths)*. At
   0.0625 mm the fine grid's values at f32 are more than twice wgpu's default storage-binding limit (128 MiB); at
   0.25 mm they are well under it. Its sizes and times stay on the machine that ran it.
 
@@ -3343,7 +3379,9 @@ grid (2026-09-27), and `the_bake_on_the_product_scan` asserts it meets the floor
 **Carried to later steps:**
 - **Step 6's lowering** bakes the fine grid at 0.0625 mm and sets the band from how far a node's predicted position
   can reach past the surface in a step (the contact law reads the grid there, §16o). Where a node sits deeper than
-  the band, as at the t = 0 intrusion, the coarse grid answers, and its error there is not measured.
+  the band, as at the t = 0 intrusion, the coarse grid answers, and its error there is not measured. *(2026-09-27,
+  §16w: the band is eight fine cells, from the product run's deepest predicted point; two monitors read it and the
+  coarse grid's corrections in every run; and the run starts clear of the wall.)*
 - **Step 7** judges G2 in a run: the table reads the grid at the scan's own points, not where the contact law holds
   the wall's nodes. It reads each surface node against the scan's exact signed distance and G2's floor: the
   executor's penetration monitor reads the grid, so it cannot see the grid's own error. At which steps it reads is
@@ -3485,8 +3523,9 @@ stencils gave both the same one.
 - **Fixed:** `diagonal_from_a` is the paper's predicate computed from integer lattice indices, and every stencil that
   splits such a face uses it.
 - **It changes the mesher's default output:** the vertex positions are the same and the connectivity changes
-  wherever the two predicates differ. On the old wall at the 5 mm inset a press moves from 0.29 / 0.43 of D4 at K1
-  (elastic / viscous, ν 0.49; §16r's table, read before the fix) to 0.28 / 0.42. `contact_drop_rest` now runs 2 s,
+  wherever the two predicates differ. On the old wall at the 5 mm inset a press re-reads 0.28 / 0.42 of D4 at K1
+  (elastic / viscous, ν 0.49), where §16r's table read 0.29 / 0.43 before the fix. The solver's crate changed between
+  the two readings too (#973, #975), and which change moved it is not isolated. `contact_drop_rest` now runs 2 s,
   not 1 s: its sphere rocks on its lowest vertex after landing, and settles later on the fixed mesh (measured on
   both; the test's docstring).
 
@@ -3547,3 +3586,282 @@ distance needs no grid.
 - **Round 2:** one fresh reviewer on round 1's fixes: 17 findings, 15 of them created by those fixes, most of them
   prose, several wrong when measured (what moved the Hertz example's values, the drop example's residual motion); and
   the probe's located-cut rows re-read at the final code. They were corrected or cut, and the rounds stopped there.
+
+### 16w. Step 6: the lowering (design, 2026-09-27)
+
+The last of step 6's three PRs (§15g step 6's note): the explicit solver's model, holds, path and obstacle, built in
+`sim-soft` from the copies `cf-sim-research` measured with (§16j, §16t), and the items step 6 carries. This is the
+design, written before the code and revised after its review (below). The results are added below it.
+
+**Scope (Jon, 2026-09-27).**
+- Two of step 6's boundary options move to a PR of their own, which lands before any verdict that uses them. The
+  hand, as a soft distributed support, needs a hand's stiffness, and none is sourced. Bonded layers need a two-layer
+  reference to choose the interface rule (§15g step 1), and `base_mold` has one layer. Step 7's first run needs
+  neither.
+- Step 7's first run holds the wall by a mount at its closed end (fit plan U14).
+- *(An engineering call, after the review.)* The case the wall slides along joins them. A per-node constraint is a
+  fixed direction, so a node slides along its tangent plane and off a curved case: on the cased tube that let the
+  tube turn about 10° and its case open, and the pressure read 3 % of the oracle's (§16n). A case needs the wall's
+  outer skin in contact with a second rigid surface, and the executor takes one obstacle.
+
+**Where it lives.**
+- `sim_soft::lowering` holds the model, the holds and the fitted path with its start and its sampling in time.
+  `sim_soft::pairing` holds the friction library.
+- `sim_soft::obstacle` gains the scan's exact signed distance as a value (`SignedDistance`), so the bake, the path's
+  start and step 7's G2 read one definition.
+- **The wall's body stays with its caller.** `cf-sim-research` builds it with `cf-design`'s `pinned_floor_shell` over
+  the scan's exact distance, as §16v's probe did. `sim-soft` meshes it with its cut points located (`CutPoints::Root`)
+  and lowers it.
+  - `sim-soft` does not depend on `cf-design` (§14c).
+  - Moving the product scene out of the tool, whose crate the app cannot depend on, is the fit plan's Phase 5
+    (its §2c).
+  - The material field and each element's layer read the field the wall is meshed from, as §16v's probe did;
+    `build_insertion_geometry` keys them on the old grid.
+
+**The model.** `explicit_budget.rs`'s measuring copy, moved. It keeps the vertices the elements name and the elements
+as meshed. Per element it takes the mesher's μ and C₂, λ from ν, η = τμ, and the caller's density.
+- It is the model §16r and §16v measured.
+- It refuses a wall where two materials meet: their pressure rule waits on the deferred PR above.
+
+**The holds** are sets of vertices held whole. They read the wall's outer skin: the boundary faces whose centroid
+lies within half a lattice cell of the outer surface's level.
+- Only boundary faces are read, so no vertex inside the wall is taken; the old path's pin took 646 (fit plan,
+  Phase 1).
+- The field is the outer surface's own: the scan's signed distance less the outer offset. The outer shell's field
+  closes the mouth with a floor, and the faces beside the mouth read near zero on it, the canal's included
+  (`the_skin_needs_the_outer_surfaces_own_field`).
+- Where the outer surface ends at the mouth's rim, the skin also takes vertices in the mouth's plane near the rim:
+  within a cell of it on the tests' cup. Which faces bring them in, faces bevelling the rim or flat ones beside it, is
+  not separated.
+- **Mounted:** the skin beyond a plane. Step 7's mount is the plane through the centreline's first point, normal to
+  it there; that point is the seated tip (`slide_pose_at`'s convention).
+- **Bonded to a rigid shell:** the whole skin.
+- **Nothing held:** for measuring the model alone, as the budget's step does; a scan pressing an unheld wall carries
+  it off.
+- The confined tube passed with its outer wall held whole and every node's axial motion held (§16n–§16p). The mount
+  and the shell hold only the skin's vertices, which that case does not test (§9 decision 11's gate).
+
+**The fitted path.** `path_room.rs`'s measuring copy, moved (§16t).
+- **What it holds:**
+  - the centreline's frame, carried by parallel transport;
+  - the slide;
+  - the rigid motion closest to the slide, in least squares over the scan's surface that the slide puts inside the
+    device, each vertex weighted by its area.
+- It computes each vertex's arc and place in the frame once; the copy did so for every pose.
+- The copy's known-answer tests move with it. The three that compare with the pose as written stay with
+  `slide_pose_at`, which retires after step 7, and call the moved code.
+- **The walk** is the tip's arc from its seat. It grows outward.
+- **The device** is the intersection of the cap planes' inner sides; a vertex is inside it when it lies on the inner
+  side of every one.
+- **Where the fit has nothing to fit.**
+  - The fit is used while at least three of the scan's vertices with area lie inside the device and the
+    cross-covariance the fit decomposes has a second singular value above a millionth of its first.
+  - Walks are checked outward from the seat on a 0.5 mm grid. The join is the last one before the first where the
+    fit is not used. Past it, the pose keeps the join's rotation and moves along the centreline's direction there.
+    With no cap planes, the fit is used everywhere and there is no join.
+- **The start.**
+  - The run starts at the first grid walk, from the join outward, at which every boundary node of the wall lies at
+    least 5 mm outside the scan by the scan's exact signed distance: §15b's start gap, taken here as a clearance.
+  - So the scan starts with at most its tip inside the device, where the fit last has anything to fit, and clear of
+    the wall. No node starts inside it, as nodes did at the old path's t = 0 (fit plan, Phase 1), where the contact
+    law reads the coarse grid (§16u).
+  - The search stops at the join plus the diagonal of the scan's box and the clearance, and fails there.
+  - The travel is longer than the centreline and 5 mm, which §16r's budget took; step 7 re-reads it.
+- **One fit per scan:** the fitted pose does not depend on the wall. Its start does, through the clearance.
+- **In time:** the walk goes from the start to 0 over the loading time with §15b's profile, then holds at the seat.
+  The speed ramps up over the first tenth of the loading time and down over the last. Step 7 sets the loading time.
+  The profile's shape does not depend on the loading time, so neither do the sampled poses.
+- **Sampled evenly in time**, as the obstacle takes it; the executor interpolates between samples (§15g step 1).
+  - The count of intervals doubles from 64, to at most 4 096, until the interpolated pose lies within G2's floor
+    (0.02 mm) of the fitted pose at every scan vertex the fitted pose puts inside the device. It is read at a
+    quarter, a half and three quarters of every interval. Past 4 096, the sampling fails with the error it reached.
+  - The fitted pose jumps where a vertex crosses a cap plane, and a jump does not shrink with the interval; the
+    doubling ends only if every jump is below about the bar. The jumps on `base_mold` are measured, as the error at
+    each doubling.
+  - The fitted pose's own distance from the slide is millimetres (§16t), so the sampling stays below both it and
+    what G2 tolerates.
+  - Step 7 judges G2 against the pose the executor ran.
+
+**The band.**
+- A node's predicted position reaches past the surface by how far the node and the scan close in a step, and by
+  the step's inward push, `F Δt²/m`, which the contact takes back each step. On the confined tube the push is about
+  a twentieth of the mandrel's radius (§16o); held at the seat, it is the whole depth.
+- Neither is known on the product before a run. The band starts at four fine cells (0.25 mm), and the product's
+  frictionless run on step 7's wall reads the deepest predicted point. If that is past half the band, the band
+  becomes twice the deepest predicted point, rounded up to whole fine cells.
+- Two monitors make it a reading in every run: the deepest predicted point, and the corrections that took their
+  depth from the coarse grid. A run with any says so.
+- The band is the bake's, so one bake serves every corner and inset of a scan, until a run reads past half of it;
+  then the band is re-set by the same rule and the scan baked again (§15g step 7). The grids are §16u's: coarse at
+  0.5 mm with a 4 mm margin, and fine at 0.0625 mm (Jon).
+
+**The obstacle on the path:** the bake's grids, the sampled poses from time 0, and the run's μ_f.
+
+**The pairing library** (`sim_soft::pairing`).
+- It holds §5c's rows as data: a pairing is what slides on what, in which lubricant and state (fresh, or a time
+  after), with each measurement it rests on, its phase (onset or sliding), its source and what the source measured.
+- A lubricant's states are separate pairings, so a verdict picks one; the later ones show where use takes it.
+- Where a source gives a mean and a spread (dry sliding, 0.61 ± 0.21), the pairing keeps the mean ± the spread, not
+  the data's range; the dry pairing's low corner is that lower end.
+- §5c's water-alone row has no measurement on skin, and its tacky pad bounds friction from below without a value;
+  neither is a pairing.
+- A verdict's friction corners are μ_f 0 and the pairing's lowest and highest values (§15h). They span onset and
+  sliding, so a verdict's interval covers either; which one the solver should take is not settled (§5c).
+- No nominal is sourced, so the library has none; which value D3 judges at stays open (the list for steps 6–9).
+- A corner above μ_f 0.3 is marked unchecked: before a verdict there is trusted, its Coulomb push is checked there
+  and the damping (fit plan U15) is settled, and above about 1.0 a finer mesh need not converge (the list).
+
+**F3** (`sim/L0/soft/tests/material_conformance.rs`).
+- It compares `sim-soft`'s `Yeoh` and `NeoHookean`, energy and first Piola stress, against the shared math's at f64,
+  both the whole stress and the split the executor runs: the μ terms per element and the λ term's pressure.
+- The deformation gradients run from near rest to principal stretches below 0.2 and above 2 (asserted). The bar is
+  1e-12 of the moduli, scaled by
+  `(1 + |F|²)²`: `sim-soft` forms `I₁ − 3` and `ln det F` directly, so near rest its rounding is the moduli's.
+- It also compares the shared validity check, `J ≤ 0`, against the determinant.
+
+**#976's merge review.** Its two low findings: §16v's "moves" for a press read before and after the Parity Rule fix
+with other changes between, and `soft-drop-on-plane`'s protocol naming a toolchain its re-capture note does not.
+
+**Done when** (set before the code; revised with the design):
+- **In CI:**
+  - the lowering keeps every element, names each node's vertex and material, and refuses what it cannot lower;
+  - the skin is the boundary on the outer surface and vertices in the mouth's plane near the rim, and each hold keeps
+    its vertices still
+    through a press on a cup;
+  - the fitted path passes the known-answer tests, and the fit uses the points the slide puts inside;
+  - on a curved path where 64 intervals are not enough, the sampling meets its bar at the quarters it reads, and
+    lies within 1 % of it at 16 times an interval that it did not read (revised after the build, 2026-09-27: first
+    set as within the bar); and the start is clear by its clearance;
+  - the two monitors read the corrections' own depths, and count every coarse correction and no fine one;
+  - the pairing library gives its corners and marks the unchecked ones;
+  - F3 passes.
+
+  Each new check fails once under a mutation of the code it guards.
+- **Locally, on `base_mold`** (figures stay local; ratios and verdicts go here):
+  - `path_room`'s probe reads the same room at each pose through `sim-soft`'s fitted pose as through its copy, to
+    its printed digits, on one wall and through one grid (§16u, §16v);
+  - step 7's wall at h_K2, lowered and mounted: it is one connected piece; how many vertices inside it the old pin's
+    rule would take;
+  - whether its surface touches itself, the fit plan's Phase 1 finding, now on the fixed mesher (§16v): its boundary
+    edges not on exactly two boundary faces, and its boundary vertices whose faces form more than one fan;
+  - the path's join, its rotation about the join, its start's clearance, and the sampling's error at each doubling;
+  - the band and the bake;
+  - a frictionless run from the start through the hold stays finite with no element inverted, and reads the deepest
+    predicted point and the coarse corrections;
+  - a diagnostic: the same wall and obstacle, with the scan held still at the old path's start pose as §16r's timed
+    run held it, for 100 steps. My prior, written first: it goes non-finite. If it does, the start's intrusion is
+    enough to do it on the new wall; §16r's own wall, mesher and grid are not re-run.
+- **The measuring copies are deleted,** and their probes call `sim-soft`.
+
+**Not decided here (step 7):** the loading time; at which steps G2 is read; the reading of the sideways force and
+twist (§16t); D1's push on a turning path.
+
+**How the design was checked.**
+- **Priors first:** twelve defects I suspected, kept from the reviewers.
+- **Two cold reviewers** read the first version, one against the code it moves or reads and one against the plan's
+  text. Between them they raised about 30 distinct findings, the case twice. What changed:
+  - the case repeated §16n's measured defect; none of the priors named it;
+  - the band left out the step's inward push, which sets the depth at the seat, so it now starts from a
+    measurement, with a monitor in every run;
+  - the sampling had no cap, and the fitted pose's jumps could keep it from finishing;
+  - the skin's field was not named, and the outer shell's own would take the canal's rim;
+  - F3 compared a stress the executor does not run;
+  - the mount's consequences, the handoffs to step 7, the friction check's second condition, and three citations
+    were missing or wrong.
+- About half the priors hit, most in part.
+
+**What was built and measured (2026-09-27).**
+
+*In CI*, each check made to fail once under a mutation of the code it guards:
+- `sim/L0/soft/tests/lowering_holds.rs`, the model and the holds, on a cup meshed with its cut points located:
+  - the skin is every boundary vertex on the outer surface, plus vertices in the mouth's plane within a cell of the
+    rim, and no vertex inside the wall;
+  - read against the outer shell's field, which closes the mouth, the skin would take the canal's rim;
+  - the old pin's rule takes vertices inside that cup's wall;
+  - held vertices stay still through a press, while an unheld cup is carried off;
+  - the lowering names every element's vertices and its material, C₂ included, and refuses what it cannot lower,
+    a material that is not finite as such.
+- `sim/L0/soft/tests/lowering_path.rs`, the path:
+  - the copy's known-answer tests, and a planar arc's slide shown to be one rigid motion;
+  - the join and the start where a straight tube's geometry puts them, the join also past the centreline's end;
+  - past the join on an arc, the join's rotation moving along the centreline's direction there;
+  - the start searched from the join, and a clearance that is not finite refused;
+  - the fit over the points the slide puts inside, and none over points on one line;
+  - a short segment along a centreline, as a trim leaves, turns nothing; one repeated a nanometre to the side turns
+    the tangent 45°, as the centreline's doc says;
+  - on an arc, the sampling read at 16 times an interval that it never read, within 1 % of its bar, and its first
+    error recomputed; the cap failing; the time profile equal to the tube's; the obstacle on the path.
+- `sim/L0/soft/tests/material_conformance.rs` (F3): principal stretches from below 0.2 to above 2. The worst difference
+  is about a two-hundredth of the bar (printed with `--nocapture`). A mutation of the executor's pressure term fails
+  it once the split is compared; the whole stress alone did not see it.
+- `sim/L0/soft/tests/pairing_library.rs`: every pairing's corners, and the checked mark.
+- `sim/L0/soft-explicit/tests/executor.rs`: the deepest prediction equals the corrections' own depths, and leaves out
+  a held node the floor passes through; every correction without a fine grid is a coarse one, and none with one.
+
+*The moves were exact* (comparisons not kept):
+- the moved centreline and fit agreed with the copy bit for bit at 7 395 comparisons over three synthetic curves;
+- U3's probe prints the same output through `sim-soft`'s fitted pose as through its copy, timing aside: the
+  done-when's reproduction, on one wall and through one grid;
+- after the lowering moved, the U17 probe reads every measured line of #976's archived run;
+- after the executor kept its predictions in a pass of their own, the frictional tube reads the same line at f32 and
+  f64, wall-clock aside; a review's hash of a tube run's state (a check not kept) agreed with the previous executor's
+  at both precisions, with and without a fine grid;
+- a bake hashed the same before and after `SignedDistance` came out of it.
+
+*On `base_mold`* (`insertion_sim::product_lowering`; ratios and verdicts here, the rest local):
+- **The wall:** step 7's wall at h/h_K2 0.991 is one piece. Its surface does not touch itself on the fixed mesher:
+  no boundary edge lies on other than two triangles, and no node's triangles form more than one fan. The fit plan's
+  Phase 1 finding was on the old wall. The old pin's rule takes vertices inside this wall too; the skin takes none
+  (counted).
+- **The path:**
+  - the join lies at about 1.1 of the centreline's length, past its end;
+  - at 2, 1 and 0.5 mm before the join, the fitted rotation is within 0.0003° of the join's;
+  - the start is the join itself: where the fit last has something to fit, every wall node already lies the
+    clearance outside the scan;
+  - so the travel is the join's walk, longer than the centreline and 5 mm that §16r's budget took.
+- **The sampling:** 128 intervals meet the sampling's bar (G2's floor): 2.43 of it at 64 and 0.89 at 128. The error
+  fell 2.7 times at the doubling, not the 4 of a smooth path, and did not stall; what sets that rate is not isolated.
+- **The run**, frictionless, from the start through §15b's 0.2 s hold:
+  - ν 0.49 with Ecoflex's η/μ, and the tube's mass damping (ξ 0.05 at the shear wave's period along the centreline),
+    at §16r's loading speed;
+  - at a band of four fine cells (the probe's run before the band changed): finite, with no element inverted, no
+    correction taken from the coarse grid, and the deepest predicted point at 0.91 of the band. That is past half, so by the rule the band became eight cells
+    (0.5 mm);
+  - re-run at eight cells: the same run, the deepest predicted point at 0.455 of the band;
+  - at both, the grid's deepest penetration was 0.046 of G2's bar at the 5 mm inset. That is the grid's own reading;
+    G2 against the scan's exact distance is step 7's.
+- **The mount** leaves the rest step as it was: mounted over unheld, 1.0000. The stability condition,
+  `4M − Δt²K − 2ΔtC` positive definite (§16p), holds on the free nodes' principal submatrix whenever it holds on the
+  whole, so holding nodes cannot shorten the stable step.
+- **The bake** at eight cells takes about three tenths of D4, once per scan and band. Its fine values at f32 are more
+  than four times wgpu's default
+  storage binding.
+- **The diagnostic:** the old start pose, held still for 100 steps with no mass damping, puts nodes inside the scan
+  by under a millimetre. As §16r's timed runs held it (unheld, on the f32 executor, elastic and viscous), and mounted
+  at f32 and f64, it stayed finite with nothing inverted. My prior, that it would go non-finite, was wrong. So on the
+  new wall and bake, neither the start's intrusion nor the hold, the precision or the viscosity does it in 100 steps.
+  What made §16r's attempt go non-finite is not isolated; its wall, mesher and grid remain different.
+
+*Not measured here:* where on the wall the deepest predicted point lies; the band's reading at any other corner (step
+7's runs read it at each, and re-bake past half); the fitted pose's jumps apart from the doubling, which showed no
+plateau at 64 and 128; the mount's confinement against ν. The product's mass damping and loading speed are the
+tube's rules carried over, and step 7 sets them.
+
+**How this was checked.**
+- **The design** (above): priors first, then two cold reviewers of its first version.
+- **The build, round 1:** three cold reviewers of the code with 43 mutations, of this record, and of the whole plan
+  from its text raised about 40 findings; ten priors were kept from them, and three hit, in part.
+  - Two survivors mattered: the lowering's C₂ was untested (the cup had none, and every catalog silicone has one), and
+    the join's search past the centreline's end, where the product's lies, was untested. Six more survivors of the
+    review's and one of mine were pinned; each now fails a test.
+  - `start` never returned for a clearance that was not finite; it is refused. A centreline point repeated all but
+    exactly turns the tangent 45°; `base_mold`'s centreline has no such point, and the limit is documented.
+  - Two reviewers found that three of this record's ratios gave back a length of the scan by arithmetic. The record
+    now states the travel against the centreline as a comparison, not a ratio.
+  - The rest: this record's claims against the probe (it now counts what it states), the diagnostic's differences
+    from §16r (now run as §16r ran), and handoffs to step 7 and annotations in the fit plan that were missing.
+- **Round 2,** one reviewer on round 1's fixes: 10 findings, 9 of them created by those fixes. One was a code defect:
+  round 1's refusal of a centreline with a very short segment also refused the short end segments a trim leaves, and
+  it is removed (the limit is documented and tested instead). The rest were this record's prose, two ratios that gave
+  back local figures (now bounds), and the confined case's gate for a skin-only hold (handed to step 7). The rounds
+  stopped there.

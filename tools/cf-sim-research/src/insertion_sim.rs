@@ -4526,6 +4526,10 @@ mod obstacle_grid;
 #[cfg(test)]
 mod canal_surface;
 
+// Step 6's lowering on the product scan (plan §16w): step 7's wall mounted, the path, the bake, and a run.
+#[cfg(test)]
+mod product_lowering;
+
 #[cfg(test)]
 mod tests {
     // `unwrap()` + `expect()` are denied at the crate level; the test
