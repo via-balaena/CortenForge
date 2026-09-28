@@ -281,6 +281,9 @@ pub struct CpuExecutor {
     pose_start: R,
     pose_interval: R,
     poses: Vec<shared::Pose>,
+    /// The pose track as given, at f64: the obstacle's move over a step, for
+    /// its work, is read from it at both precisions.
+    track: Track,
     friction: R,
 
     displacements: Vec<[R; 3]>,
@@ -314,9 +317,53 @@ pub struct CpuExecutor {
     normal_force_sums: Vec<f64>,
     friction_sums: Vec<[f64; 3]>,
     accumulated_steps: u64,
-    resultant_sum: [f64; 3],
-    normal_sum: f64,
-    steps_since_read: u64,
+    since_read: SinceRead,
+    obstacle_work: f64,
+}
+
+/// The monitors' sums over the steps since the last read, in f64.
+#[derive(Clone, Copy, Debug, Default)]
+struct SinceRead {
+    resultant: [f64; 3],
+    moment: [f64; 3],
+    normal: f64,
+    steps: u64,
+}
+
+/// A pose track at f64: samples every `interval` from `start`.
+#[derive(Clone, Debug)]
+struct Track {
+    start: f64,
+    interval: f64,
+    poses: Vec<crate::f64::Pose>,
+}
+
+impl Track {
+    /// The track of `poses`, samples every `interval` from `start`.
+    fn of(start: f64, interval: f64, poses: &[crate::f64::Pose]) -> Self {
+        Self {
+            start,
+            interval,
+            poses: poses.to_vec(),
+        }
+    }
+
+    /// The pose at `time`, interpolated as the executor interpolates it.
+    // `poses.len()` fits a u32: a pose track is a few thousand samples.
+    #[allow(clippy::cast_possible_truncation)]
+    fn at(&self, time: f64) -> crate::f64::Pose {
+        let span = crate::f64::pose_sample_span(
+            time,
+            self.start,
+            self.interval,
+            self.poses.len() as u32,
+        );
+        crate::f64::pose_interpolate(
+            self.poses[span.lower as usize],
+            self.poses[span.upper as usize],
+            span.fraction,
+        )
+    }
 }
 
 impl CpuExecutor {
@@ -398,6 +445,7 @@ impl CpuExecutor {
             pose_start: narrow(obstacle.start),
             pose_interval: narrow(obstacle.interval),
             poses: obstacle.poses.iter().map(|&p| narrow_pose(p)).collect(),
+            track: Track::of(obstacle.start, obstacle.interval, &obstacle.poses),
             friction: narrow(obstacle.friction),
             displacements: vec![[0.0; 3]; nodes],
             velocities: vec![[0.0; 3]; nodes],
@@ -424,9 +472,8 @@ impl CpuExecutor {
             normal_force_sums: vec![0.0; surface_count],
             friction_sums: vec![[0.0; 3]; surface_count],
             accumulated_steps: 0,
-            resultant_sum: [0.0; 3],
-            normal_sum: 0.0,
-            steps_since_read: 0,
+            since_read: SinceRead::default(),
+            obstacle_work: 0.0,
             rest,
         })
     }
@@ -617,6 +664,7 @@ impl Executor for CpuExecutor {
         self.pose_start = narrow(start);
         self.pose_interval = narrow(interval);
         self.poses = poses.iter().map(|&p| narrow_pose(p)).collect();
+        self.track = Track::of(start, interval, poses);
         Ok(())
     }
 
@@ -722,6 +770,23 @@ impl Executor for CpuExecutor {
                 self.constraints[a],
             )
         });
+        // The step's resultant and its moment about the obstacle's body origin, where each node is at the start of
+        // the step, and the work the obstacle's move over the step does against them.
+        let (from, to) = (self.track.at(time), self.track.at(time + dt));
+        let origin = [from.tx, from.ty, from.tz];
+        let (mut resultant, mut moment) = ([0.0; 3], [0.0; 3]);
+        for (i, contact) in contacts.iter().enumerate() {
+            let a = self.surface_nodes[i] as usize;
+            let force = widen3(contact.force);
+            let at = crate::f64::vec3_add(widen3(self.rest[a]), widen3(self.displacements[a]));
+            let arm = crate::f64::vec3_sub(at, origin);
+            resultant = crate::f64::vec3_add(resultant, force);
+            moment = crate::f64::vec3_add(moment, crate::f64::vec3_cross(arm, force));
+        }
+        let (moved, turn) = rigid_motion(from, to);
+        self.obstacle_work +=
+            crate::f64::vec3_dot(resultant, moved) + crate::f64::vec3_dot(moment, turn);
+        self.since_read.moment = crate::f64::vec3_add(self.since_read.moment, moment);
         for (i, contact) in contacts.iter().enumerate() {
             self.anchors[i] = contact.anchor;
             let depth = (-samples[i].distance).max(0.0);
@@ -735,11 +800,11 @@ impl Executor for CpuExecutor {
                 self.coarse_corrections += 1;
             }
             for d in 0..3 {
-                self.resultant_sum[d] += widen(contact.force[d]);
+                self.since_read.resultant[d] += widen(contact.force[d]);
             }
-            self.normal_sum += widen(contact.normal_force);
+            self.since_read.normal += widen(contact.normal_force);
         }
-        self.steps_since_read += 1;
+        self.since_read.steps += 1;
         self.contacts = contacts;
         self.stiffnesses = stiffnesses;
         self.samples = samples;
@@ -825,7 +890,7 @@ impl Executor for CpuExecutor {
     #[allow(clippy::cast_precision_loss)]
     fn monitors(&mut self) -> Monitors {
         let kinetic = |a: usize| widen(shared::kinetic_energy(self.masses[a], self.velocities[a]));
-        let steps = self.steps_since_read;
+        let steps = self.since_read.steps;
         let mean = if steps == 0 { 0.0 } else { 1.0 / steps as f64 };
         let monitors = Monitors {
             kinetic_energy: (0..self.node_count()).map(kinetic).sum(),
@@ -837,11 +902,13 @@ impl Executor for CpuExecutor {
                 .filter(|(_, contact)| contact.normal_force > 0.0)
                 .map(|(&a, _)| kinetic(a as usize))
                 .sum(),
-            contact_force: self.resultant_sum.map(|f| f * mean),
-            normal_force: self.normal_sum * mean,
+            contact_force: self.since_read.resultant.map(|f| f * mean),
+            contact_moment: self.since_read.moment.map(|m| m * mean),
+            normal_force: self.since_read.normal * mean,
             steps,
             inverted_element_steps: self.inverted_element_steps,
             contact_work: self.contact_work.iter().sum(),
+            obstacle_work: self.obstacle_work,
             damping_loss: self.damping_losses.iter().sum(),
             max_penetration: self
                 .max_penetrations
@@ -853,9 +920,7 @@ impl Executor for CpuExecutor {
                 .fold(0.0, |m: f64, &p| m.max(widen(p))),
             coarse_corrections: self.coarse_corrections,
         };
-        self.resultant_sum = [0.0; 3];
-        self.normal_sum = 0.0;
-        self.steps_since_read = 0;
+        self.since_read = SinceRead::default();
         monitors
     }
 

@@ -18,13 +18,26 @@
 //!
 //! Both are read from window means (plan §15c): a node's mean position, and
 //! its mean normal force over the window.
+//!
+//! **On a path that turns the obstacle** the push is `−Σ fᵢ · (dxᵢ/ds)`, which
+//! takes the twist as well as the force (plan §15g's list for steps 6–9). The
+//! executor accumulates the work the obstacle's motion does against the
+//! contact ([`Monitors::obstacle_work`](crate::executor::Monitors)), and
+//! [`work_peak`] reads its largest mean over a window of travel. Beside it:
+//! the direction along the path ([`along_path`]), the force across it
+//! ([`sideways`]), the moment about a point of the obstacle
+//! ([`moment_about`]), and the push at a pose held still ([`static_push`]),
+//! plan §16x.
 
 use std::collections::HashMap;
 use std::f64::consts::PI;
 
 use crate::ExplicitModel;
-use crate::executor::{Obstacle, Snapshot};
-use crate::f64::{triangle_area, vec3_cross, vec3_dot, vec3_length, vec3_scale, vec3_sub};
+use crate::executor::{Obstacle, Snapshot, rigid_motion};
+use crate::f64::{
+    Pose, pose_rotate, pose_to_world, triangle_area, vec3_add, vec3_cross, vec3_dot, vec3_length,
+    vec3_scale, vec3_sub,
+};
 
 /// The seated reading's patch: 1 cm², the algometer tip most pressure-pain
 /// studies in a 2021 review used (fit plan D1, 2026-09-26; plan §16s). The
@@ -92,6 +105,88 @@ pub fn travel_peak(start: f64, samples: &[(f64, f64)], window: f64) -> Option<f6
         .filter(|&x| x >= start + window && x <= last)
         .map(|x| (work_at(x) - work_at(x - window)) / window)
         .reduce(f64::max)
+}
+
+/// The largest mean push over any `window` of travel, from the cumulative
+/// work the obstacle's motion has done against the contact
+/// ([`Monitors::obstacle_work`](crate::executor::Monitors)).
+///
+/// `samples` are `(travel, work)` at each read, the first where the travel
+/// starts; between reads the work is taken as linear in the travel, as
+/// [`travel_peak`] takes it. A read without travel, as in a hold, adds no
+/// work. `None` where [`travel_peak`] is.
+#[must_use]
+pub fn work_peak(samples: &[(f64, f64)], window: f64) -> Option<f64> {
+    let &(start, _) = samples.first()?;
+    let means: Vec<(f64, f64)> = samples
+        .windows(2)
+        .map(|pair| {
+            let ((from, before), (to, after)) = (pair[0], pair[1]);
+            let travel = to - from;
+            (
+                to,
+                if travel > 0.0 {
+                    (after - before) / travel
+                } else {
+                    0.0
+                },
+            )
+        })
+        .collect();
+    travel_peak(start, &means, window)
+}
+
+/// The unit direction a point of the obstacle at `point`, in its body frame,
+/// moves in from pose `from` to pose `to`; `None` if it does not move.
+#[must_use]
+pub fn along_path(from: Pose, to: Pose, point: [f64; 3]) -> Option<[f64; 3]> {
+    let moved = vec3_sub(pose_to_world(to, point), pose_to_world(from, point));
+    let length = vec3_length(moved);
+    (length > 0.0).then(|| vec3_scale(moved, 1.0 / length))
+}
+
+/// `force` less its part along the unit direction `along`.
+#[must_use]
+pub const fn sideways(force: [f64; 3], along: [f64; 3]) -> [f64; 3] {
+    vec3_sub(force, vec3_scale(along, vec3_dot(force, along)))
+}
+
+/// A moment about the body origin of `pose`, of forces whose resultant is
+/// `force`, taken instead about the obstacle's point at `point` in its body
+/// frame: `M − (R · point) × F`.
+#[must_use]
+pub const fn moment_about(
+    moment: [f64; 3],
+    force: [f64; 3],
+    pose: Pose,
+    point: [f64; 3],
+) -> [f64; 3] {
+    vec3_sub(moment, vec3_cross(pose_rotate(pose, point), force))
+}
+
+/// The push at a pose `at` held still, per unit of `advance` over the path's
+/// move from `from` to `to`.
+///
+/// It is the work the contact forces' resultant `force` and their moment
+/// `moment`, about the body origin of `at`, would resist over that move:
+/// `(F · Δp + φ · (M + (p_at − p_from) × F)) / advance`, with `Δp` and `φ`
+/// the move and the turn ([`rigid_motion`]); the moment is carried to
+/// `from`'s origin, where the turn is taken. Linear in the turn. `None`
+/// unless `advance` is positive.
+#[must_use]
+pub fn static_push(
+    force: [f64; 3],
+    moment: [f64; 3],
+    at: Pose,
+    (from, to): (Pose, Pose),
+    advance: f64,
+) -> Option<f64> {
+    (advance > 0.0).then(|| {
+        let (moved, turn) = rigid_motion(from, to);
+        let offset = vec3_sub([at.tx, at.ty, at.tz], [from.tx, from.ty, from.tz]);
+        let carried = vec3_add(moment, vec3_cross(offset, force));
+        (vec3_dot(force, moved) + vec3_dot(turn, carried)) / advance
+    })
 }
 
 /// The pressure that the most-pressed `fraction` of the area is at or above.
@@ -308,7 +403,7 @@ impl WindowContact {
             .map(|(&p, _)| p)
             .chain(centroids)
             .map(|centre| Patch {
-                pressure: grid.within(&points, centre, radius) / area,
+                pressure: grid.within(&points, centre, radius, |p| p.force) / area,
                 centre,
             })
             .reduce(|best, patch| {
@@ -326,13 +421,25 @@ impl WindowContact {
     pub fn patch_at(&self, area: f64, centre: [f64; 3]) -> f64 {
         let points = self.force_points(area);
         let radius = (area / PI).sqrt();
-        Buckets::new(&points, radius).within(&points, centre, radius) / area
+        Buckets::new(&points, radius).within(&points, centre, radius, |p| p.force) / area
+    }
+
+    /// The surface carrying force inside a patch of `area` centred at
+    /// `centre`, integrated as [`patch_peak`](Self::patch_peak) integrates
+    /// the force: on a curved surface a ball holds more than `area` of it,
+    /// and it holds any other loaded surface within its radius too (plan
+    /// §16s, §16x).
+    #[must_use]
+    pub fn loaded_area_at(&self, area: f64, centre: [f64; 3]) -> f64 {
+        let points = self.force_points(area);
+        let radius = (area / PI).sqrt();
+        Buckets::new(&points, radius).within(&points, centre, radius, |p| p.area)
     }
 
     /// The surface's force as points: each force-carrying triangle cut into
     /// congruent sub-triangles, each a point at its centroid with its share
-    /// of the triangle's force and its size, the triangle's longest edge
-    /// over the cuts.
+    /// of the triangle's force and area, and its size, the triangle's longest
+    /// edge over the cuts.
     // Sub-triangle counts are small whole numbers.
     #[allow(
         clippy::cast_possible_truncation,
@@ -369,9 +476,15 @@ impl WindowContact {
             .into_iter()
             .fold(0.0, f64::max);
             let cuts = (longest / spacing).ceil().max(1.0) as usize;
-            let force = pressure * triangle_area(first, second, third) / (cuts * cuts) as f64;
+            let area = triangle_area(first, second, third) / (cuts * cuts) as f64;
+            let force = pressure * area;
             let size = longest / cuts as f64;
-            points.extend(sub_centroids(triangle, cuts).map(|at| ForcePoint { at, force, size }));
+            points.extend(sub_centroids(triangle, cuts).map(|at| ForcePoint {
+                at,
+                force,
+                area,
+                size,
+            }));
         }
         points
     }
@@ -420,11 +533,12 @@ fn centroid([a, b, c]: [[f64; 3]; 3]) -> [f64; 3] {
     ]
 }
 
-/// A share of a triangle's force at a sub-triangle's centroid.
+/// A share of a triangle's force and area at a sub-triangle's centroid.
 #[derive(Clone, Copy)]
 struct ForcePoint {
     at: [f64; 3],
     force: f64,
+    area: f64,
     /// The sub-triangle's size, over which the patch's rim fades it in.
     size: f64,
 }
@@ -448,13 +562,20 @@ impl Buckets {
         Self { size, cubes }
     }
 
-    /// The force of the points within `radius` of `centre`. A point within
-    /// half its size of the rim counts in proportion to how far inside it
-    /// is: counted whole or not at all, the rim's points add noise that the
-    /// peak over many centres turns into a bias.
-    fn within(&self, points: &[ForcePoint], centre: [f64; 3], radius: f64) -> f64 {
+    /// The `weight` of the points within `radius` of `centre`, their force or
+    /// their area. A point within half its size of the rim counts in
+    /// proportion to how far inside it is: counted whole or not at all, the
+    /// rim's points add noise that the peak over many centres turns into a
+    /// bias.
+    fn within(
+        &self,
+        points: &[ForcePoint],
+        centre: [f64; 3],
+        radius: f64,
+        weight: impl Fn(&ForcePoint) -> f64,
+    ) -> f64 {
         let [x, y, z] = cube(centre, self.size);
-        let mut force = 0.0;
+        let mut sum = 0.0;
         for dx in -1..=1 {
             for dy in -1..=1 {
                 for dz in -1..=1 {
@@ -465,12 +586,12 @@ impl Buckets {
                         let point = points[index];
                         let d = vec3_length(vec3_sub(point.at, centre));
                         let inside = ((radius - d) / point.size + 0.5).clamp(0.0, 1.0);
-                        force += inside * point.force;
+                        sum += inside * weight(&point);
                     }
                 }
             }
         }
-        force
+        sum
     }
 }
 

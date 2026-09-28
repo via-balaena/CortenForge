@@ -93,6 +93,24 @@ fn the_cased_tube_is_held_whole_outside_and_axially_everywhere() {
 }
 
 #[test]
+fn the_shelled_tube_is_held_whole_outside_and_axially_at_its_ends() {
+    let tube = Tube::plan(Mesh::TenK);
+    let model = tube.model(SILICONE, Walls::Shell).unwrap();
+    let (mut ends, mut outside) = (0, 0);
+    for (node, &[first, second]) in model.constraints().iter().enumerate() {
+        let (i, _, k) = tube.levels(node);
+        assert_eq!(model.held()[node], i == tube.radial);
+        outside += usize::from(i == tube.radial);
+        let end = k == 0 || k == tube.axial;
+        ends += usize::from(end);
+        assert_eq!(first, if end { [0.0, 0.0, 1.0] } else { [0.0; 3] });
+        assert_eq!(second, [0.0; 3]);
+    }
+    assert_eq!(outside, (tube.axial + 1) * tube.circumferential);
+    assert_eq!(ends, 2 * (tube.radial + 1) * tube.circumferential);
+}
+
+#[test]
 fn the_mandrel_is_a_cylinder_with_a_round_nose() {
     let m = Mandrel { radius: 0.011 };
     assert_eq!(m.distance([0.0, 0.0, 0.0]), 0.0);

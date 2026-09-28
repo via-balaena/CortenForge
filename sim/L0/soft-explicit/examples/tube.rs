@@ -5,8 +5,10 @@
 //! run's cost.
 //!
 //! `cargo run --release -p sim-soft-explicit --example tube --
-//! <mesh> <case> <friction> <f32|f64> <grid> <hold> <loading> <stiffness> <viscous>`
-//! (defaults: 10k 0 0 f32 20 0.2 10 1, and Ecoflex 00-30's `η/μ`). `mesh` is
+//! <mesh> <case> <friction> <f32|f64> <grid> <hold> <loading> <stiffness> <viscous> <walls>`
+//! (defaults: 10k 0 0 f32 20 0.2 10 1, Ecoflex 00-30's `η/μ`, and the case's
+//! walls). `walls` is free, cased or shell; with shell the mandrel goes
+//! through the whole tube, its nose 5 mm past the far end (plan §16x). `mesh` is
 //! 10k, 50k, 100k, or `RxCxA` cells (radial, around, along). `case` indexes
 //! `fixtures::golden::THICK_TUBE`; the grid's cell is A/`grid`; `hold` is
 //! the hold after loading, in seconds (plan §15b: 0.2); `loading` is the
@@ -73,10 +75,27 @@ fn request() -> Request {
     let stiffness: f64 = arg(7, "1").parse().unwrap();
     let mut insertion = Insertion::plan(periods * TubeRun::shear_period(MU, DENSITY));
     insertion.hold = arg(5, "0.2").parse().unwrap();
+    let mut case = THICK_TUBE[case_index];
+    if let Some(walls) = args.get(9) {
+        case.walls = match walls.as_str() {
+            "free" => Walls::Free,
+            "cased" => Walls::Cased,
+            "shell" => Walls::Shell,
+            other => {
+                eprintln!("unknown walls {other}: use free, cased or shell");
+                std::process::exit(2);
+            }
+        };
+    }
+    if case.walls == Walls::Shell {
+        // Through the whole tube: the mandrel's round nose ends 5 mm past the far end.
+        let tube = Tube::plan(mesh);
+        insertion.depth = tube.length + case.mandrel_ratio * tube.inner_radius + 0.005;
+    }
     Request {
         run: TubeRun {
             mesh,
-            case: THICK_TUBE[case_index],
+            case,
             mu: stiffness * MU,
             viscous_time: args
                 .get(8)
@@ -346,7 +365,7 @@ fn main() {
     let estimates = result.estimates as f64 * estimate;
     let missing = || "n/a".to_owned();
     println!(
-        "tube {:?} case={case_index} ({}, a/A {}, nu {}) grid=A/{:.0} mu_f={} {} T={:.3}s mu={:.0}Pa threads={} | \
+        "tube {:?} case={case_index} ({:?}, a/A {}, nu {}) grid=A/{:.0} mu_f={} {} T={:.3}s mu={:.0}Pa threads={} | \
          h={:.3}mm p/(l+2mu)={:.5} inset={:.1}mm | \
          G2 grid_all_steps={:.1}um ({:.2}% of inset, first at t={reached:.3}s) true_end={:.1}um ({:.2}%) \
          grid_end={:.1}um bias(true-grid)=[{:.2},{:.2}]um deepest_z={:.2}mm | band_gap={:.1}um | \
@@ -354,11 +373,7 @@ fn main() {
          lz={} ke/ie={} balance={} inverted={} contact_ke_peak={:.3e}J coulomb={} | \
          {stepping} estimates={} wall={wall:.1}s ms/step={:.3} estimate={:.1}ms share={:.1}%",
         run.mesh,
-        if case.walls == Walls::Free {
-            "free"
-        } else {
-            "cased"
-        },
+        case.walls,
         case.mandrel_ratio,
         case.poisson,
         tube.inner_radius / run.grid_cell,
