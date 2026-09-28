@@ -96,6 +96,74 @@ impl std::fmt::Display for ObstacleBakeError {
 
 impl std::error::Error for ObstacleBakeError {}
 
+/// A closed surface's exact signed distance: the distance to its triangles,
+/// negative inside by the parity of a ray's crossings (plan §16u).
+///
+/// What the bake samples, and what else must read the same surface: the
+/// lowering's start, which keeps a wall clear of the scan (plan §16w).
+pub struct SignedDistance {
+    distance: TriMeshDistance,
+    sign: ParitySign,
+    low: Point3<f64>,
+    high: Point3<f64>,
+}
+
+impl SignedDistance {
+    /// The signed distance of `mesh`, its exactly coincident vertices welded.
+    ///
+    /// # Errors
+    /// [`ObstacleBakeError::Mesh`] when the mesh is empty, broken, not finite
+    /// or without area, and [`ObstacleBakeError::Open`] when it is not closed
+    /// once welded.
+    pub fn new(mesh: &IndexedMesh) -> Result<Self, ObstacleBakeError> {
+        if mesh.faces.is_empty()
+            || u32::try_from(mesh.vertices.len()).is_err()
+            || mesh
+                .faces
+                .iter()
+                .flatten()
+                .any(|&v| v as usize >= mesh.vertices.len())
+            || !mesh
+                .vertices
+                .iter()
+                .all(|v| v.x.is_finite() && v.y.is_finite() && v.z.is_finite())
+        {
+            return Err(ObstacleBakeError::Mesh);
+        }
+        let surface = welded(mesh);
+        let open = open_edges(&surface);
+        if open > 0 {
+            return Err(ObstacleBakeError::Open { edges: open });
+        }
+        let (mut low, mut high) = (surface.vertices[0], surface.vertices[0]);
+        for v in &surface.vertices {
+            low = low.inf(v);
+            high = high.sup(v);
+        }
+        let sign = ParitySign::new(&surface).map_err(|_| ObstacleBakeError::Mesh)?;
+        let distance = TriMeshDistance::new(surface).map_err(|_| ObstacleBakeError::Mesh)?;
+        Ok(Self {
+            distance,
+            sign,
+            low,
+            high,
+        })
+    }
+
+    /// The signed distance at `p`: negative inside.
+    #[must_use]
+    pub fn signed(&self, p: Point3<f64>) -> f64 {
+        let d = self.distance.distance(p);
+        if self.sign.is_inside(p) { -d } else { d }
+    }
+
+    /// The unsigned distance at `p`.
+    #[must_use]
+    pub fn unsigned(&self, p: Point3<f64>) -> f64 {
+        self.distance.distance(p)
+    }
+}
+
 /// Bake `mesh`, a closed surface, into the explicit solver's grids.
 ///
 /// # Errors
@@ -107,57 +175,43 @@ pub fn bake_obstacle(
     mesh: &IndexedMesh,
     bake: ObstacleBake,
 ) -> Result<BakedObstacle, ObstacleBakeError> {
-    let numbers = [bake.coarse_cell, bake.fine_cell, bake.band, bake.margin];
-    if !numbers.iter().all(|x| x.is_finite() && *x > 0.0) || bake.band > bake.margin {
-        return Err(ObstacleBakeError::Bake);
-    }
-    if mesh.faces.is_empty()
-        || u32::try_from(mesh.vertices.len()).is_err()
-        || mesh
-            .faces
-            .iter()
-            .flatten()
-            .any(|&v| v as usize >= mesh.vertices.len())
-        || !mesh
-            .vertices
-            .iter()
-            .all(|v| v.x.is_finite() && v.y.is_finite() && v.z.is_finite())
-    {
-        return Err(ObstacleBakeError::Mesh);
-    }
-    let surface = welded(mesh);
-    let open = open_edges(&surface);
-    if open > 0 {
-        return Err(ObstacleBakeError::Open { edges: open });
-    }
-    let sign = ParitySign::new(&surface).map_err(|_| ObstacleBakeError::Mesh)?;
-    let distance = TriMeshDistance::new(surface).map_err(|_| ObstacleBakeError::Mesh)?;
-    let signed = |p: Point3<f64>| {
-        let d = distance.distance(p);
-        if sign.is_inside(p) { -d } else { d }
-    };
+    check(bake)?;
+    bake_surface(&SignedDistance::new(mesh)?, bake)
+}
 
-    let (mut low, mut high) = (mesh.vertices[0], mesh.vertices[0]);
-    for v in &mesh.vertices {
-        low = low.inf(v);
-        high = high.sup(v);
-    }
+/// Bake a surface's signed distance into the explicit solver's grids.
+///
+/// # Errors
+/// [`ObstacleBakeError`] when the bake's numbers are not positive and finite
+/// or its band is wider than its margin, or a grid would be too large to count.
+pub fn bake_surface(
+    surface: &SignedDistance,
+    bake: ObstacleBake,
+) -> Result<BakedObstacle, ObstacleBakeError> {
+    check(bake)?;
     let margin = nalgebra::Vector3::repeat(bake.margin);
-    let (low, high) = (low - margin, high + margin);
-
+    let (low, high) = (surface.low - margin, surface.high + margin);
     let grid = layout(low, high, bake.coarse_cell, true)?;
     let values = at_each(samples(grid), |n| {
-        signed(position(grid, sample_of(grid, n)))
+        surface.signed(position(grid, sample_of(grid, n)))
     });
-
-    let fine = fine_bricks(&distance, &signed, low, high, bake)?;
+    let fine = fine_bricks(surface, low, high, bake)?;
     Ok(BakedObstacle { grid, values, fine })
+}
+
+/// Whether the bake's numbers are positive and finite, and its band no wider than its margin.
+fn check(bake: ObstacleBake) -> Result<(), ObstacleBakeError> {
+    let numbers = [bake.coarse_cell, bake.fine_cell, bake.band, bake.margin];
+    if numbers.iter().all(|x| x.is_finite() && *x > 0.0) && bake.band <= bake.margin {
+        Ok(())
+    } else {
+        Err(ObstacleBakeError::Bake)
+    }
 }
 
 /// The fine grid over `[low, high]`: the bricks a lookup within the band of the surface reads.
 fn fine_bricks(
-    distance: &TriMeshDistance,
-    signed: &(impl Fn(Point3<f64>) -> f64 + Sync),
+    surface: &SignedDistance,
     low: Point3<f64>,
     high: Point3<f64>,
     bake: ObstacleBake,
@@ -181,7 +235,7 @@ fn fine_bricks(
     let centre_distances = at_each(bricks, |n| {
         let brick = brick_of(brick_counts, n);
         let centre = brick.map(|b| f64::from(b * SDF_BRICK) + half);
-        distance.distance(Point3::new(
+        surface.unsigned(Point3::new(
             fine_grid.origin_x + centre[0] * bake.fine_cell,
             fine_grid.origin_y + centre[1] * bake.fine_cell,
             fine_grid.origin_z + centre[2] * bake.fine_cell,
@@ -204,7 +258,7 @@ fn fine_bricks(
                     brick[1] * SDF_BRICK + within / SDF_BRICK % SDF_BRICK,
                     brick[2] * SDF_BRICK + within / (SDF_BRICK * SDF_BRICK),
                 ];
-                signed(position(fine_grid, sample))
+                surface.signed(position(fine_grid, sample))
             })
             .collect();
         values.iter().any(|v| v.abs() <= near).then_some(values)
@@ -247,7 +301,7 @@ fn welded(mesh: &IndexedMesh) -> IndexedMesh {
         .map(|p| {
             *index.entry(key(p)).or_insert_with(|| {
                 surface.vertices.push(*p);
-                // `bake_obstacle` refuses a mesh with more vertices than a u32 counts.
+                // `SignedDistance::new` refuses a mesh with more vertices than a u32 counts.
                 #[allow(clippy::cast_possible_truncation)]
                 let index = (surface.vertices.len() - 1) as u32;
                 index
@@ -347,7 +401,7 @@ fn position(grid: SdfGridLayout, sample: [u32; 3]) -> Point3<f64> {
 
 /// `f` of `0..count`, on every core where there are threads to give (native);
 /// in order on wasm32, which has none.
-fn at_each<T: Send>(count: usize, f: impl Fn(usize) -> T + Send + Sync) -> Vec<T> {
+pub(crate) fn at_each<T: Send>(count: usize, f: impl Fn(usize) -> T + Send + Sync) -> Vec<T> {
     #[cfg(not(target_arch = "wasm32"))]
     {
         use rayon::prelude::*;

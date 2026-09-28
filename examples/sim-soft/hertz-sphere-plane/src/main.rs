@@ -431,7 +431,8 @@ const N_PINNED_H4: usize = 4;
 // **Failure-mode protocol** (mirrors row 12's): if the rel-tol
 // comparison fails, do NOT re-bake. Diagnose in this order:
 //   1. Rule out toolchain drift (rustc / LLVM / libm minor version
-//      delta vs the rustc 1.95.0 capture).
+//      delta vs the capture's toolchain: rustc 1.95.0, and 1.96.0 for
+//      the bits re-captured below).
 //   2. If same toolchain, real regression — identify which sim-soft
 //      commit altered the `SoftScene::sphere_on_plane` constructor,
 //      the `PenaltyRigidContact::with_params` defaults, the SDF-meshed

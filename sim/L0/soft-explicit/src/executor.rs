@@ -161,6 +161,14 @@ pub struct Monitors {
     pub damping_loss: f64,
     /// Cumulative: the deepest penetration any node has reached (G2).
     pub max_penetration: f64,
+    /// Cumulative: the deepest any node the contact can move has had its
+    /// predicted position inside the obstacle: the depth a contact correction
+    /// reads, which an obstacle's fine grid must cover (plan §16u, §16w).
+    pub deepest_prediction: f64,
+    /// Cumulative: node-steps whose contact correction took its depth from
+    /// the obstacle's coarse grid, where the fine one did not reach; every
+    /// correction, for an obstacle without a fine grid.
+    pub coarse_corrections: u64,
 }
 
 impl Monitors {
@@ -175,6 +183,7 @@ impl Monitors {
             self.contact_work,
             self.damping_loss,
             self.max_penetration,
+            self.deepest_prediction,
         ]
         .iter()
         .chain(&self.contact_force)

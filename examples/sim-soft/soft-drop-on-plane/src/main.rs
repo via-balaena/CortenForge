@@ -376,16 +376,18 @@ const N_REFERENCED_EXACT: usize = 561;
 // **Failure-mode protocol** (mirrors IV-1's): if the rel-tol comparison
 // fails, do NOT re-bake. Diagnose in this order:
 //   1. Rule out toolchain drift (rustc / LLVM / libm minor version delta
-//      vs the rustc 1.95.0 capture).
+//      vs the capture's toolchain: rustc 1.95.0, and 1.96.0 for the values
+//      re-captured below).
 //   2. If same toolchain, real regression — identify which sim-soft
 //      commit altered the `SoftScene::dropping_sphere` constructor, the
 //      `SolverConfig::gravity_z` wiring, the `PenaltyRigidContact`
 //      defaults, OR the SDF-meshed FEM assembly path through faer.
 //   3. NEVER re-bake the reference values to make the test green.
 //
-// Re-captured 2026-09-27, diagnosed at step 2: the BCC mesher's Parity
-// Rule fix (soft-contact recon §16v) keeps every vertex position and the
-// mesh counts above, and changes which diagonal splits some faces. On
+// Re-captured 2026-09-27 on rustc 1.96.0 (the repo's pinned toolchain),
+// diagnosed at step 2: the BCC mesher's Parity Rule fix (soft-contact
+// recon §16v) keeps every vertex position and the mesh counts above, and
+// changes which diagonal splits some faces. On
 // the fixed mesh the landed sphere rocks later and settles by about
 // 1.1 s, so the run is now 2000 steps (the drop-and-rest fixture's
 // docstring). Re-captured: the final `|v|_max`, the residual motion

@@ -1108,3 +1108,84 @@ fn the_executors_fine_lookup_is_the_obstacles_on_and_off_its_bricks() {
         );
     }
 }
+
+/// The floor of [`rising_floor`], frictionless, with its values also in a fine grid of half its cell over the same
+/// box, every brick kept: the fine grid answers every lookup the coarse one would.
+fn rising_floor_with_a_fine_grid() -> Obstacle {
+    let coarse = rising_floor(0.0);
+    let fine = floor(
+        [-0.01, -0.01, -0.005],
+        [0.04, 0.04, 0.005],
+        0.0005,
+        [0.0; 3],
+        [0.0; 3],
+        1.0,
+        0.0,
+    );
+    Obstacle {
+        fine: Some(bricks(fine.grid, &fine.values, |_| true)),
+        ..coarse
+    }
+}
+
+/// `obstacle` pressed into [`pressed_block`], with one of its bottom nodes held too, for `steps` steps of a fixed
+/// `dt` with no mass damping: the monitors at the end, the deepest correction any step made (each node's normal force
+/// times `dt²` over its mass: the depth the kinematic law put it back by), and how many node-steps made one. The held
+/// bottom node lies in the floor's way and takes no correction, so its depth must not be read.
+fn corrections(obstacle: &Obstacle, steps: u32, dt: f64) -> (Monitors, f64, u64) {
+    let block = pressed_block();
+    let mut held = block.held().to_vec();
+    let bottom = block
+        .rest_positions()
+        .iter()
+        .position(|p| p[2] < 1e-9 && p[0] > 0.01 && p[1] > 0.01)
+        .unwrap();
+    held[bottom] = true;
+    let model = ExplicitModel::new(
+        block.rest_positions().to_vec(),
+        block.elements().to_vec(),
+        block.materials().to_vec(),
+        held,
+    )
+    .unwrap();
+    let mut executor = cpu::f64::CpuExecutor::new(&model, obstacle).unwrap();
+    let (mut deepest, mut count) = (0.0_f64, 0_u64);
+    for step in 0..steps {
+        run_phases(&mut executor, f64::from(step) * dt, dt, 0.0);
+        let outputs = executor.phase_outputs();
+        for (force, mass) in outputs.normal_forces.iter().zip(model.node_masses()) {
+            if *force > 0.0 {
+                deepest = deepest.max(force * dt * dt / mass);
+                count += 1;
+            }
+        }
+    }
+    (executor.monitors(), deepest, count)
+}
+
+#[test]
+fn the_deepest_prediction_is_the_deepest_correction() {
+    let (steps, dt) = (4_000, 2e-5);
+    let (monitors, deepest, count) = corrections(&rising_floor(0.0), steps, dt);
+    assert!(count > 1_000, "the floor must press: {count} node-steps");
+    assert!(
+        (monitors.deepest_prediction / deepest - 1.0).abs() < 1e-12,
+        "{} against {deepest}",
+        monitors.deepest_prediction
+    );
+    // The held node, which the floor passes through, is deeper than any prediction read.
+    assert!(monitors.max_penetration > monitors.deepest_prediction);
+}
+
+#[test]
+fn a_correction_the_coarse_grid_answered_is_counted() {
+    let (steps, dt) = (4_000, 2e-5);
+    // No fine grid: every correction read the coarse one.
+    let (coarse, _, count) = corrections(&rising_floor(0.0), steps, dt);
+    assert_eq!(coarse.coarse_corrections, count);
+    // A fine grid over the whole box: none did, and the run is the same, the floor being linear.
+    let (fine, deepest, fine_count) = corrections(&rising_floor_with_a_fine_grid(), steps, dt);
+    assert_eq!(fine.coarse_corrections, 0);
+    assert_eq!(fine_count, count);
+    assert!((fine.deepest_prediction / deepest - 1.0).abs() < 1e-12);
+}

@@ -7,7 +7,7 @@
 //! 5 minutes, the surface bias with and without projecting the canal nodes onto the true surface, and the
 //! baked scan grid's error against the scan (G2).
 //!
-//! The lowering here is a measuring copy; lowering moves to `sim-soft` in step 6 (§16j).
+//! The lowering is `sim_soft::lowering`'s (§16w); this module measured with a copy of it first.
 //!
 //! ⛔ The scan never enters the repo. [`the_products_budget_on_the_explicit_solver`] prints to the terminal,
 //! and the plan records only its ratios and verdict (Jon, 2026-09-26): the element count, the step, the step
@@ -21,16 +21,17 @@ use std::time::Instant;
 use mesh_sdf::{CachedGridSdf, ParitySign, Sign, TriMeshDistance, UnsignedDistance};
 use mesh_types::IndexedMesh;
 use nalgebra::{Point3, Vector3};
-use sim_soft::{Mesh, SdfMeshedTetMesh, TetId, Vec3, VertexId, Yeoh};
+use sim_soft::lowering::{Lowering, lower};
+use sim_soft::{Mesh, Vec3, VertexId};
+use sim_soft_explicit::ExplicitModel;
 use sim_soft_explicit::cpu;
 use sim_soft_explicit::executor::{Executor, Obstacle};
-use sim_soft_explicit::f64::{Material, Pose, SdfGridLayout};
+use sim_soft_explicit::f64::{Pose, SdfGridLayout};
 use sim_soft_explicit::fixtures::golden::THICK_TUBE;
 use sim_soft_explicit::fixtures::tube::{
     ECOFLEX_00_30_VISCOUS_TIME, Insertion, Mesh as TubeMesh, Tube, TubeRun, Walls,
 };
 use sim_soft_explicit::stepping::{Stepper, StepperConfig};
-use sim_soft_explicit::{ExplicitModel, ModelError};
 
 use super::{
     Aabb, GRID_SDF_SMOOTH_SIGMA_CELLS, InsertionGeometry, build_insertion_geometry,
@@ -154,7 +155,7 @@ fn tube_run(mesh: TubeMesh) -> TubeRun {
 
 /// The loading speed over the shear wave speed at the ladder's rung (§16p's v/c_s, 0.39): plan §15b's
 /// travel over the insertion's constant-speed share of the loading time, at `c_s = 1`.
-fn speed_over_shear_wave() -> f64 {
+pub(super) fn speed_over_shear_wave() -> f64 {
     let insertion = Insertion::plan(LOADING_RUNG * TubeRun::shear_period(1.0, 1.0));
     (insertion.start_gap + insertion.depth) / (0.9 * insertion.loading_time)
 }
@@ -167,11 +168,6 @@ fn run_steps(loading_time: f64, hold: f64, rest_step: f64) -> f64 {
 /// A press's time over D4's, for runs of `steps` steps at `seconds_a_step`.
 fn press_over_d4(steps: f64, seconds_a_step: f64) -> f64 {
     RUNS_PER_VERDICT * steps * seconds_a_step / D4_SECONDS
-}
-
-/// Lamé's λ at Poisson's ratio `poisson` for shear modulus `mu`.
-fn lame_lambda(mu: f64, poisson: f64) -> f64 {
-    mu * 2.0 * poisson / (1.0 - 2.0 * poisson)
 }
 
 /// The loop's stable step at the start of a run, at rest (§16e): the elastic top mode's step, re-estimated
@@ -222,74 +218,6 @@ fn cpu_seconds_a_step(model: &ExplicitModel, obstacle: &Obstacle) -> f64 {
         stepper.step().expect("a step at rest stays finite");
     }
     started.elapsed().as_secs_f64() / TIMED_STEPS as f64
-}
-
-/// A product mesh lowered into the explicit solver's model.
-pub(super) struct Lowered {
-    pub(super) model: ExplicitModel,
-    /// Each model node's vertex in the source mesh. The mesher leaves lattice vertices that no element
-    /// names; the model has no massless nodes, so it drops them.
-    pub(super) source: Vec<VertexId>,
-}
-
-/// Lower `mesh` into an [`ExplicitModel`]: its referenced vertices, its elements as the mesher orders them
-/// (positive rest volume by construction; the model rejects any other), and per element its Yeoh `μ` and
-/// `C₂`, λ at Poisson's ratio `poisson`, `densities[element]` and the Kelvin–Voigt viscosity
-/// `viscous_time · μ`. No node is held.
-///
-/// # Errors
-/// A [`ModelError`] if the model is rejected.
-pub(super) fn lower(
-    mesh: &SdfMeshedTetMesh<Yeoh>,
-    densities: &[f64],
-    viscous_time: f64,
-    poisson: f64,
-) -> Result<Lowered, ModelError> {
-    if densities.len() != mesh.n_tets() {
-        return Err(ModelError::LengthMismatch {
-            what: "densities",
-            found: densities.len(),
-            expected: mesh.n_tets(),
-        });
-    }
-    let positions = mesh.positions();
-    let point = |v: VertexId| {
-        let p = positions[v as usize];
-        [p.x, p.y, p.z]
-    };
-    let mut index = vec![None; positions.len()];
-    let mut source = Vec::new();
-    let mut elements = Vec::with_capacity(mesh.n_tets());
-    let mut materials = Vec::with_capacity(mesh.n_tets());
-    for (element, (yeoh, &density)) in mesh.materials().iter().zip(densities).enumerate() {
-        let tet = TetId::try_from(element).map_err(|_| ModelError::TooLarge)?;
-        let mut lowered = [0_u32; 4];
-        for (slot, vertex) in lowered.iter_mut().zip(mesh.tet_vertices(tet)) {
-            *slot = match index[vertex as usize] {
-                Some(node) => node,
-                None => {
-                    let node = u32::try_from(source.len()).map_err(|_| ModelError::TooLarge)?;
-                    index[vertex as usize] = Some(node);
-                    source.push(vertex);
-                    node
-                }
-            };
-        }
-        elements.push(lowered);
-        materials.push(Material {
-            mu: yeoh.mu(),
-            lambda: lame_lambda(yeoh.mu(), poisson),
-            c2: yeoh.c2(),
-            viscosity: viscous_time * yeoh.mu(),
-            density,
-        });
-    }
-    let rest_positions = source.iter().map(|&v| point(v)).collect();
-    let held = vec![false; source.len()];
-    Ok(Lowered {
-        model: ExplicitModel::new(rest_positions, elements, materials, held)?,
-        source,
-    })
 }
 
 /// Each element's density: its layer's catalog density.
@@ -577,8 +505,16 @@ pub(super) fn wall_at_size(
     for attempt in 0..4 {
         let geometry = build_insertion_geometry(scan, design, caps, sdf_faces, cell)
             .expect("the product's wall must mesh");
-        let lowered = lower(&geometry.mesh, &densities(&geometry, design), 0.0, 0.49)
-            .expect("the product's wall must lower");
+        let lowered = lower(
+            &geometry.mesh,
+            &densities(&geometry, design),
+            Lowering {
+                poisson: 0.49,
+                viscous_time: 0.0,
+            },
+            &[],
+        )
+        .expect("the product's wall must lower");
         let size = element_size(&lowered.model);
         println!(
             "  mesh {attempt}: lattice {:.3} mm, h {:.3} mm ({:+.1} % of the target) [LOCAL]",
@@ -726,7 +662,16 @@ fn the_products_budget_on_the_explicit_solver() {
     let densities = densities(&geometry, &design);
     let loading = product_loading(&geometry, &design, &centerline);
     let wall = |poisson: f64, viscous_time: f64| {
-        lower(&geometry.mesh, &densities, viscous_time, poisson).unwrap()
+        lower(
+            &geometry.mesh,
+            &densities,
+            Lowering {
+                poisson,
+                viscous_time,
+            },
+            &[],
+        )
+        .unwrap()
     };
     let elastic = wall(0.49, 0.0);
     let size = element_size(&elastic.model);
@@ -802,8 +747,18 @@ fn the_products_budget_on_the_explicit_solver() {
             })
             .collect();
         let projected = geometry.mesh.clone().with_projected_nodes(&moves, floor);
-        let lowered =
-            |viscous_time: f64| lower(&projected, &densities, viscous_time, 0.49).unwrap();
+        let lowered = |viscous_time: f64| {
+            lower(
+                &projected,
+                &densities,
+                Lowering {
+                    poisson: 0.49,
+                    viscous_time,
+                },
+                &[],
+            )
+            .unwrap()
+        };
         let (projected_elastic, projected_viscous) =
             (lowered(0.0), lowered(ECOFLEX_00_30_VISCOUS_TIME));
         assert_eq!(
@@ -858,9 +813,17 @@ fn the_products_budget_on_the_explicit_solver() {
     // What the surface bias owes to the SDF source: the same lattice from the undecimated scan.
     let full = build_insertion_geometry(&scan, &design, &caps, scan.faces.len(), cell)
         .expect("the wall must mesh from the full scan");
-    let full_model = lower(&full.mesh, &self::densities(&full, &design), 0.0, 0.49)
-        .unwrap()
-        .model;
+    let full_model = lower(
+        &full.mesh,
+        &self::densities(&full, &design),
+        Lowering {
+            poisson: 0.49,
+            viscous_time: 0.0,
+        },
+        &[],
+    )
+    .unwrap()
+    .model;
     let full_size = element_size(&full_model);
     let (full_canal, full_beyond) =
         canal_nodes(&full_model, &canal_truth, &planes, inset, full_size);
@@ -875,9 +838,17 @@ fn the_products_budget_on_the_explicit_solver() {
     let (fine, _) = wall_at_size(&scan, &design, &caps, fine_target, 2_500);
     let fine_densities = self::densities(&fine, &design);
     for (label, viscous_time) in [("η off", 0.0), ("η on", ECOFLEX_00_30_VISCOUS_TIME)] {
-        let model = lower(&fine.mesh, &fine_densities, viscous_time, 0.49)
-            .unwrap()
-            .model;
+        let model = lower(
+            &fine.mesh,
+            &fine_densities,
+            Lowering {
+                poisson: 0.49,
+                viscous_time,
+            },
+            &[],
+        )
+        .unwrap()
+        .model;
         cost_line(
             &format!(
                 "at the 50k tube's h (h/h_50k {:.3}), ν 0.49, {label}",
@@ -987,7 +958,6 @@ fn the_budget_arithmetic() {
     assert!((steps - 0.3 / (1e-4 * 0.977)).abs() < 1e-9);
     // Three runs of 1000 steps at 0.1 s a step: 300 s, one D4.
     assert!((press_over_d4(1000.0, 0.1) - 1.0).abs() < 1e-15);
-    assert!((lame_lambda(1.0, 0.49) - 49.0).abs() < 1e-12);
 }
 
 #[test]
@@ -1016,17 +986,15 @@ fn only_points_on_a_cap_plane_are_on_it() {
     assert!(!off_the_caps(&planes, 0.01, Point3::new(0.0, 0.0, 0.094)));
 }
 
-/// A two-layer wall on the icosphere the old path's gates use (`tolerance_fixture`), at their 4 mm lattice:
-/// two materials, so a lowering that mixes up elements shows.
+/// A one-layer wall on the icosphere the old path's gates use (`tolerance_fixture`), at their 4 mm lattice.
 fn synthetic_wall() -> (InsertionGeometry, cf_device_types::SimDesign) {
-    let layer = |anchor: &str| cf_device_types::SimLayer {
-        thickness_m: 0.004,
-        anchor_key: anchor.to_owned(),
-        slacker_fraction: 0.0,
-    };
     let design = cf_device_types::SimDesign {
         cavity_inset_m: 0.003,
-        layers: vec![layer("ECOFLEX_00_30"), layer("DRAGON_SKIN_20A")],
+        layers: vec![cf_device_types::SimLayer {
+            thickness_m: 0.008,
+            anchor_key: "ECOFLEX_00_30".to_owned(),
+            slacker_fraction: 0.0,
+        }],
     };
     let geometry = build_insertion_geometry(
         &super::tests::icosphere(0.020, 2),
@@ -1037,53 +1005,6 @@ fn synthetic_wall() -> (InsertionGeometry, cf_device_types::SimDesign) {
     )
     .expect("the synthetic wall must mesh");
     (geometry, design)
-}
-
-#[test]
-fn lowering_keeps_every_element_and_drops_only_unreferenced_vertices() {
-    let (geometry, design) = synthetic_wall();
-    let mesh = &geometry.mesh;
-    let densities = densities(&geometry, &design);
-    let lowered = lower(mesh, &densities, ECOFLEX_00_30_VISCOUS_TIME, 0.49).unwrap();
-    let model = &lowered.model;
-
-    let mut referenced: Vec<VertexId> = (0..mesh.n_tets())
-        .flat_map(|t| mesh.tet_vertices(TetId::try_from(t).unwrap()))
-        .collect();
-    referenced.sort_unstable();
-    referenced.dedup();
-    assert!(
-        referenced.len() < mesh.positions().len(),
-        "the fixture must leave unreferenced vertices, or dropping them is not exercised"
-    );
-    assert!(
-        densities.iter().any(|&d| d != densities[0]),
-        "the fixture must carry two materials, or a mixed-up element is not seen"
-    );
-    assert_eq!(model.node_count(), referenced.len());
-    assert_eq!(model.element_count(), mesh.n_tets());
-
-    for (element, corners) in model.elements().iter().enumerate() {
-        let source = mesh.tet_vertices(TetId::try_from(element).unwrap());
-        let mut names: Vec<VertexId> = corners.map(|n| lowered.source[n as usize]).to_vec();
-        let mut expected = source.to_vec();
-        names.sort_unstable();
-        expected.sort_unstable();
-        assert_eq!(names, expected, "element {element} names other vertices");
-        let (material, yeoh) = (model.materials()[element], &mesh.materials()[element]);
-        assert_eq!(
-            [material.mu, material.c2, material.density],
-            [yeoh.mu(), yeoh.c2(), densities[element]]
-        );
-        assert!((material.lambda / yeoh.mu() - 49.0).abs() < 1e-12, "ν 0.49");
-        assert!(
-            (material.viscosity / (ECOFLEX_00_30_VISCOUS_TIME * yeoh.mu()) - 1.0).abs() < 1e-15
-        );
-    }
-    for (node, &vertex) in lowered.source.iter().enumerate() {
-        let p = mesh.positions()[vertex as usize];
-        assert_eq!(model.rest_positions()[node], [p.x, p.y, p.z]);
-    }
 }
 
 /// An axis-aligned box of half-sides `half`, wound outward.
@@ -1152,9 +1073,17 @@ fn a_node_moved_onto_the_level_sits_an_inset_deep() {
 #[test]
 fn the_canal_nodes_are_the_inner_surfaces() {
     let (geometry, design) = synthetic_wall();
-    let model = lower(&geometry.mesh, &densities(&geometry, &design), 0.0, 0.49)
-        .unwrap()
-        .model;
+    let model = lower(
+        &geometry.mesh,
+        &densities(&geometry, &design),
+        Lowering {
+            poisson: 0.49,
+            viscous_time: 0.0,
+        },
+        &[],
+    )
+    .unwrap()
+    .model;
     let truth = truth_of(&super::tests::icosphere(0.020, 2));
     let (canal, _) = canal_nodes(&model, &truth, &[], 0.003, element_size(&model));
     let mut inner: Vec<u32> = model

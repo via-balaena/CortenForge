@@ -144,14 +144,19 @@ What it established about the product scene, which still holds:
   λ = 8·C₂. The lateral stretch agreed to 4.7·10⁻¹¹.
 - **The bare scan does not start clear of the wall.** At t = 0, 5 wall corners sit inside it, up to
   1.33 mm deep. A pre-roll of 4.7 mm back along the centerline's tangent leaves a gap of 1.42 mm. Any run
-  that starts from our t = 0 pose meets this.
+  that starts from our t = 0 pose meets this. *(2026-09-27, soft-contact recon §16w: the new path starts where every
+  boundary node of the wall is 5 mm clear of the scan.)*
 - **Our contact's intruder is not the raw scan.** Its SDF is built from the scan decimated to 2 500 faces
   and smoothed, and the cavity is its −5 mm level.
 - **Our outer-skin pin** (`outer_skin_bc`) takes every vertex within half a cell of the outer envelope.
-  That includes 646 vertices inside the wall.
+  That includes 646 vertices inside the wall. *(2026-09-27, recon §16w: the holds read the outer skin from boundary
+  faces only, so they take none.)*
 - **The path's frame count matters.** Straight-line motion between frames strays from the rigid pose by
-  0.80, 0.34 and 0.12 mm at 32, 64 and 128 frames.
-- **The wall's surface touches itself at two points:** a non-manifold edge, with gaps of 10⁻¹⁹ m.
+  0.80, 0.34 and 0.12 mm at 32, 64 and 128 frames. *(2026-09-27, recon §16w: the fitted path is sampled until it
+  strays at most G2's floor at the times it reads.)*
+- **The wall's surface touches itself at two points:** a non-manifold edge, with gaps of 10⁻¹⁹ m. *(2026-09-27,
+  recon §16w: on step 7's wall, meshed on the fixed mesher at the 5 mm inset and h_K2, it does not; other insets are
+  not checked.)*
   - Our solver has never noticed, because it does not check a surface against itself. A solver with
     soft-on-soft contact will (soft-contact recon §9 decision 9).
   - Removing 4 tets (2.55 mm³) repaired it. The obvious fix, dropping the tets on the pinch edge, does
@@ -221,7 +226,8 @@ which inset would pass.
   errors on a fraction that is off Smooth-On's curve. For a silicone with no Slacker data, or one where
   Slacker is not recommended, it silently uses the unsoftened material (`effective_silicone_for_layer`,
   `insertion_sim.rs:407–417`). The fit test must not report on a material it did not simulate. Either snap the value in `DesignLayers` and
-  say so, or refuse with the reason.
+  say so, or refuse with the reason. *(2026-09-27, recon §16w: the lowering refuses a wall where two materials meet,
+  so a design whose layers differ in material is refused until the interface rule's PR.)*
 - [x] **Decisions.** Jon agreed all five recommendations on 2026-09-23.
   - **D1 — U1, "comfortably".** *Decided:* two readings, each with a limit (see *Calibration* below).
     - *Getting it in:* the peak push force over the whole path (R2). Its geometric share, the push of the
@@ -346,7 +352,8 @@ This is why the architecture changed (soft-contact recon §3).
 
 ### Later
 - [ ] Soft (rigid-ish) intruders: body-to-body contact (R7). ⚠ The wall mesh touches itself at two points
-  (Phase 1). PolyFEM rejected it, and a solver with self-contact will need it fixed, at the mesher. This is
+  (Phase 1; *on step 7's wall at the 5 mm inset it does not, recon §16w*). PolyFEM rejected it, and a solver with
+  self-contact will need it fixed, at the mesher. This is
   now soft-contact recon §9 decision 9: soft-on-soft contact is designed in from the start, and built
   second.
 - [ ] Foot into boot (R8).
@@ -496,12 +503,14 @@ in CI); G5 already gates in CI.
     over.
   - Otherwise the verdict names the corner that crosses the limit.
   - D3's search judges each inset at the pairing's nominal corner, so its bisection stays binary. The
-    interval is shown alongside.
+    interval is shown alongside. *(2026-09-27, recon §5c, §16w: no nominal is sourced, and the pairing library holds
+    none; which value D3 judges at is open.)*
   - Verdicts use the virgin state, the stiffest and so the conservative one. The Mullins-conditioned
     state is reported once per design, not run for every verdict.
 - **U12 — The product's outer boundary. Answered** (Jon, 2026-09-24): no shell today, so the outside is
   free. A shell, bonding to one, and several layered silicone shells may come later (soft-contact recon
-  §9 decision 10).
+  §9 decision 10). *(2026-09-27, recon §16w: a rigid shell bonded to the wall is built; a case it slides along and
+  layered shells wait on a PR of their own, before any verdict that uses them.)*
 - **U13 — D4's unit of time. Answered** (Jon, 2026-09-24): *"i just mean i want a fast simulation. but i
   dont want to sacrifice quality."*
   - The 5 minutes is a target, measured per press (one verdict, about 3 simulations).
@@ -512,6 +521,9 @@ in CI); G5 already gates in CI.
   - Holding is a design option: a shell, a mount, or a hand as a soft, distributed support
     (soft-contact recon §9 decision 11).
   - A shell or a mount at the closed end confines the material there.
+  - *(2026-09-27, soft-contact recon §16w.)* The lowering holds the wall by a mount or a rigid shell bonded to it,
+    and step 7's first run is mounted at the closed end (Jon). A case the wall slides along, the hand, and bonded
+    layers' interface rule wait on a PR of their own, before any verdict that uses them.
 - **U15 — The silicone's damping and its rate dependence** (soft-contact recon §16p, 2026-09-25).
   - The solver now gives the material a viscosity, set from Ecoflex 00-30's published loss near 190 Hz. Without
     it the frictional tube fluttered, and its push read 15–18 % below μ_f·Σf_n at λ_a 1.1 (50k, 100k) and 29 %

@@ -14,6 +14,22 @@ const NO_SAMPLE: shared::SdfSample = shared::SdfSample {
     normal: [0.0; 3],
 };
 
+/// A surface node's position at the end of a step without contact, the
+/// obstacle's distance there, and whether the fine grid answered.
+#[derive(Clone, Copy, Debug)]
+struct Prediction {
+    point: [R; 3],
+    depth: R,
+    fine: bool,
+}
+
+/// A prediction before the first contact phase.
+const NO_PREDICTION: Prediction = Prediction {
+    point: [0.0; 3],
+    depth: 0.0,
+    fine: true,
+};
+
 /// A boundary value at this executor's precision.
 // f64 → f32 rounds, which is the point; at f64 it is the identity.
 #[allow(clippy::cast_possible_truncation, clippy::unnecessary_cast)]
@@ -283,8 +299,14 @@ pub struct CpuExecutor {
     /// Each surface node's obstacle sample where it sits this step: the
     /// normal its correction follows, and G2's depth.
     samples: Vec<shared::SdfSample>,
+    /// Each surface node's position at the end of this step without
+    /// contact, and the obstacle's distance there: the depth its correction
+    /// takes.
+    predictions: Vec<Prediction>,
 
     max_penetrations: Vec<R>,
+    max_predictions: Vec<R>,
+    coarse_corrections: u64,
     contact_work: Vec<f64>,
     damping_losses: Vec<f64>,
     inverted_element_steps: u64,
@@ -391,7 +413,10 @@ impl CpuExecutor {
             anchors,
             stiffnesses: vec![0.0; surface_count],
             samples: vec![NO_SAMPLE; surface_count],
+            predictions: vec![NO_PREDICTION; surface_count],
             max_penetrations: vec![0.0; surface_count],
+            max_predictions: vec![0.0; surface_count],
+            coarse_corrections: 0,
             contact_work: vec![0.0; nodes],
             damping_losses: vec![0.0; nodes],
             inverted_element_steps: 0,
@@ -465,8 +490,13 @@ impl CpuExecutor {
     /// tricubic lookup over the 64 grid values it names, in the fine grid
     /// where that has them all.
     fn sample(&self, point: [R; 3]) -> shared::SdfSample {
+        self.sample_and_grid(point).0
+    }
+
+    /// [`Self::sample`], and whether the fine grid answered it.
+    fn sample_and_grid(&self, point: [R; 3]) -> (shared::SdfSample, bool) {
         if let Some(sample) = self.fine_sample(point) {
-            return sample;
+            return (sample, true);
         }
         let grid = self.grid;
         let coordinate = shared::sdf_grid_coordinate(point, grid);
@@ -483,7 +513,7 @@ impl CpuExecutor {
                 }
             }
         }
-        shared::sdf_tricubic(coordinate, values, grid)
+        (shared::sdf_tricubic(coordinate, values, grid), false)
     }
 
     /// The lookup in the fine grid, or `None` where the point is off its
@@ -650,7 +680,8 @@ impl Executor for CpuExecutor {
             shared::kinematic_stiffness(self.masses[a], self.inverse_masses[a], alpha, step)
         });
         let next = self.pose_at(time + dt);
-        fill(&mut contacts, |i| {
+        let mut predictions = std::mem::take(&mut self.predictions);
+        fill(&mut predictions, |i| {
             let a = self.surface_nodes[i] as usize;
             // Where the node lands without contact, its constraints applied.
             let velocity = self.free_part(
@@ -664,16 +695,25 @@ impl Executor for CpuExecutor {
                 ),
             );
             let displacement = shared::advance_displacement(self.displacements[a], velocity, step);
-            let predicted = shared::vec3_add(self.rest[a], self.free_part(a, displacement));
-            // How deep the predicted position is, and the normal where the
-            // node is now, carried into the step's end frame.
-            let depth = self.sample(shared::pose_to_body(next, predicted)).distance;
+            let point = shared::vec3_add(self.rest[a], self.free_part(a, displacement));
+            // How deep the predicted position is, and which grid said so.
+            let (sample, fine) = self.sample_and_grid(shared::pose_to_body(next, point));
+            Prediction {
+                point,
+                depth: sample.distance,
+                fine,
+            }
+        });
+        fill(&mut contacts, |i| {
+            let a = self.surface_nodes[i] as usize;
+            // The normal where the node is now, carried into the step's end
+            // frame.
             let normal = shared::pose_unrotate(next, shared::pose_rotate(pose, samples[i].normal));
             shared::kinematic_contact(
                 next,
-                predicted,
+                predictions[i].point,
                 shared::SdfSample {
-                    distance: depth,
+                    distance: predictions[i].depth,
                     normal,
                 },
                 self.anchors[i],
@@ -686,6 +726,14 @@ impl Executor for CpuExecutor {
             self.anchors[i] = contact.anchor;
             let depth = (-samples[i].distance).max(0.0);
             self.max_penetrations[i] = self.max_penetrations[i].max(depth);
+            // A node the law cannot move, held whole, takes no correction, so its depth is not read.
+            if stiffnesses[i] > 0.0 {
+                let predicted = (-predictions[i].depth).max(0.0);
+                self.max_predictions[i] = self.max_predictions[i].max(predicted);
+            }
+            if contact.normal_force > 0.0 && !predictions[i].fine {
+                self.coarse_corrections += 1;
+            }
             for d in 0..3 {
                 self.resultant_sum[d] += widen(contact.force[d]);
             }
@@ -695,6 +743,7 @@ impl Executor for CpuExecutor {
         self.contacts = contacts;
         self.stiffnesses = stiffnesses;
         self.samples = samples;
+        self.predictions = predictions;
     }
 
     fn integrate(&mut self, dt: f64, damping: f64) {
@@ -798,6 +847,11 @@ impl Executor for CpuExecutor {
                 .max_penetrations
                 .iter()
                 .fold(0.0, |m: f64, &p| m.max(widen(p))),
+            deepest_prediction: self
+                .max_predictions
+                .iter()
+                .fold(0.0, |m: f64, &p| m.max(widen(p))),
+            coarse_corrections: self.coarse_corrections,
         };
         self.resultant_sum = [0.0; 3];
         self.normal_sum = 0.0;
