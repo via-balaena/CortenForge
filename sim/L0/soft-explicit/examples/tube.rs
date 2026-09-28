@@ -5,16 +5,20 @@
 //! run's cost.
 //!
 //! `cargo run --release -p sim-soft-explicit --example tube --
-//! <mesh> <case> <friction> <f32|f64> <grid> <hold> <loading> <stiffness> <viscous> <walls>`
-//! (defaults: 10k 0 0 f32 20 0.2 10 1, Ecoflex 00-30's `η/μ`, and the case's
-//! walls). `walls` is free, cased or shell; with shell the mandrel goes
-//! through the whole tube, its nose 5 mm past the far end (plan §16x). `mesh` is
+//! <mesh> <case> <friction> <f32|f64> <grid> <hold> <loading> <stiffness> <viscous> <walls>
+//! <stabilization>` (defaults: 10k 0 0 f32 20 0.2 10 1, Ecoflex 00-30's `η/μ`, the
+//! case's walls, and 0). `walls` is free, cased or shell; with shell the mandrel goes
+//! through the whole tube, its nose 5 mm past the far end (plan §16x). A case
+//! keeps its oracle, so free walls go only with a free case, and cased or
+//! shell only with the cased one. `mesh` is
 //! 10k, 50k, 100k, or `RxCxA` cells (radial, around, along). `case` indexes
 //! `fixtures::golden::THICK_TUBE`; the grid's cell is A/`grid`; `hold` is
 //! the hold after loading, in seconds (plan §15b: 0.2); `loading` is the
 //! loading time in shear periods `T_s` of the unscaled material (plan §15c's
 //! ladder starts at 10); `stiffness` multiplies μ, and so λ and the viscosity
-//! (plan 15d.10); `viscous` is the Kelvin–Voigt `η/μ` in seconds (plan §16p).
+//! (plan 15d.10); `viscous` is the Kelvin–Voigt `η/μ` in seconds (plan §16p);
+//! `stabilization` is the volumetric stabilization's stiffness over μ (plan
+//! §16y), 0 for selective ANP.
 //! With friction on the free tube, a frictionless companion run gives the
 //! Coulomb push ratio (plan 15d.7). Set `RAYON_NUM_THREADS` so the times are comparable.
 
@@ -77,7 +81,7 @@ fn request() -> Request {
     insertion.hold = arg(5, "0.2").parse().unwrap();
     let mut case = THICK_TUBE[case_index];
     if let Some(walls) = args.get(9) {
-        case.walls = match walls.as_str() {
+        let walls = match walls.as_str() {
             "free" => Walls::Free,
             "cased" => Walls::Cased,
             "shell" => Walls::Shell,
@@ -86,6 +90,17 @@ fn request() -> Request {
                 std::process::exit(2);
             }
         };
+        // The case's oracle is the free-ends one or the confined one; cased
+        // and shell pose the same confined problem (plan §16x).
+        let confined = |w: Walls| w != Walls::Free;
+        if confined(walls) != confined(case.walls) {
+            eprintln!(
+                "walls {walls:?} on case {case_index}: its oracle is for {:?} walls",
+                case.walls
+            );
+            std::process::exit(2);
+        }
+        case.walls = walls;
     }
     if case.walls == Walls::Shell {
         // Through the whole tube: the mandrel's round nose ends 5 mm past the far end.
@@ -105,6 +120,7 @@ fn request() -> Request {
             window: 0.1,
             friction: arg(2, "0").parse().unwrap(),
             grid_cell: Tube::plan(mesh).inner_radius / divisions,
+            stabilization: arg(10, "0").parse().unwrap(),
         },
         case_index,
         wide: arg(3, "f32") == "f64",
@@ -334,7 +350,7 @@ fn main() {
     } = request();
     let case = run.case;
     let tube = Tube::plan(run.mesh);
-    let model = tube.model(run.material(), case.walls).unwrap();
+    let model = run.model(&tube).unwrap();
     let obstacle = run.obstacle(&tube).unwrap();
     let estimate = estimate_seconds(&model, &obstacle, wide);
 
@@ -365,7 +381,7 @@ fn main() {
     let estimates = result.estimates as f64 * estimate;
     let missing = || "n/a".to_owned();
     println!(
-        "tube {:?} case={case_index} ({:?}, a/A {}, nu {}) grid=A/{:.0} mu_f={} {} T={:.3}s mu={:.0}Pa threads={} | \
+        "tube {:?} case={case_index} ({:?}, a/A {}, nu {}) grid=A/{:.0} mu_f={} {} T={:.3}s mu={:.0}Pa kappa/mu={} threads={} | \
          h={:.3}mm p/(l+2mu)={:.5} inset={:.1}mm | \
          G2 grid_all_steps={:.1}um ({:.2}% of inset, first at t={reached:.3}s) true_end={:.1}um ({:.2}%) \
          grid_end={:.1}um bias(true-grid)=[{:.2},{:.2}]um deepest_z={:.2}mm | band_gap={:.1}um | \
@@ -381,6 +397,7 @@ fn main() {
         if wide { "f64" } else { "f32" },
         run.insertion.loading_time,
         run.mu,
+        run.stabilization,
         std::env::var("RAYON_NUM_THREADS").unwrap_or_else(|_| "unset".to_owned()),
         1e3 * element_size(&model),
         case.pressure_over_mu * run.mu / stiffness,

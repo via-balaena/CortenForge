@@ -14,7 +14,7 @@
 
 mod common;
 
-use common::{SILICONE, block_model, deform, elastic_forces};
+use common::{SILICONE, block_model, deform, elastic_energy, elastic_forces};
 use sim_soft_explicit::f64 as shared;
 use sim_soft_explicit::f64::Material;
 
@@ -261,11 +261,27 @@ fn two_material_model() -> sim_soft_explicit::ExplicitModel {
 fn the_pipelines_forces_are_the_mesh_energys_gradient() {
     // Plan §15c: with the λ term averaged over nodes, the force is the exact
     // gradient of Σ_e V_e Ψ_μ(F_e) + Σ_a V_a λ_a/2 (ln J_a)², in one
-    // material or two.
+    // material or two; and with part of it sampled at each element's own
+    // volume (§16y), of Σ_e V_e (Ψ_μ + κ_e/2 (ln J_e)²) + Σ_a V_a (λ_a −
+    // κ_a)/2 (ln J_a)².
+    let stabilized =
+        |model: sim_soft_explicit::ExplicitModel| model.with_volumetric_stabilization(4.0).unwrap();
     let models = [
         ("neo-Hookean", block_model((2, 2, 2), 0.01, SILICONE)),
         ("Yeoh", block_model((2, 2, 2), 0.01, YEOH)),
         ("two materials", two_material_model()),
+        (
+            "neo-Hookean, stabilized",
+            stabilized(block_model((2, 2, 2), 0.01, SILICONE)),
+        ),
+        (
+            "Yeoh, stabilized",
+            stabilized(block_model((2, 2, 2), 0.01, YEOH)),
+        ),
+        (
+            "two materials, stabilized",
+            stabilized(two_material_model()),
+        ),
     ];
     for (name, model) in models {
         let deformed = deform(model.rest_positions(), 0.2);
@@ -273,6 +289,59 @@ fn the_pipelines_forces_are_the_mesh_energys_gradient() {
         eprintln!("MARGIN gradient ({name}): {worst:e} of largest force {largest:e}");
         assert!(worst <= 1e-7 * largest, "{name}: {worst:e} of {largest:e}");
     }
+}
+
+#[test]
+fn the_sampled_part_of_the_lambda_term_adds_energy_only_where_volumes_differ() {
+    // Plan §16y: moving κ from the averaged term to each element's own volume
+    // changes nothing where every element has the same J. In one material it
+    // otherwise adds `Σ_e V_e κ/2 (ln J_e)² − Σ_a V_a κ/2 (ln J_a)²`, a sum of
+    // each patch's gap, which is not negative while (ln J)² is convex (J
+    // below e).
+    // Where materials meet, κ differs between elements, and this is not
+    // shown.
+    let plain = block_model((3, 2, 2), 0.01, SILICONE);
+    let stabilized = plain.clone().with_volumetric_stabilization(4.0).unwrap();
+    let uniform: Vec<[f64; 3]> = plain
+        .rest_positions()
+        .iter()
+        .map(|p| p.map(|c| 0.97 * c))
+        .collect();
+    let (a, b) = (
+        elastic_forces(&plain, &uniform),
+        elastic_forces(&stabilized, &uniform),
+    );
+    let scale = a.iter().flatten().fold(0.0_f64, |m, f| m.max(f.abs()));
+    let difference = a
+        .iter()
+        .flatten()
+        .zip(b.iter().flatten())
+        .fold(0.0_f64, |m, (x, y)| m.max((x - y).abs()));
+    eprintln!(
+        "MARGIN uniform: forces differ by {:e} of the largest",
+        difference / scale
+    );
+    assert!(difference <= 1e-12 * scale);
+    let (plain_energy, stabilized_energy) = (
+        elastic_energy(&plain, &uniform),
+        elastic_energy(&stabilized, &uniform),
+    );
+    assert!((plain_energy - stabilized_energy).abs() <= 1e-12 * plain_energy);
+    // An interior node moved a fifth of a cell: the elements around it shrink
+    // on one side and swell on the other, while its own volume barely moves.
+    let interior = plain
+        .rest_positions()
+        .iter()
+        .position(|p| {
+            (p[0] - 0.01).abs() < 1e-9 && (p[1] - 0.01).abs() < 1e-9 && (p[2] - 0.01).abs() < 1e-9
+        })
+        .unwrap();
+    let mut moved = plain.rest_positions().to_vec();
+    moved[interior][0] += 0.002;
+    let energy = elastic_energy(&plain, &moved);
+    let gap = elastic_energy(&stabilized, &moved) - energy;
+    eprintln!("MARGIN moved: the gap {:e} of the energy", gap / energy);
+    assert!(gap > 1e-3 * energy, "{gap:e} of {energy:e}");
 }
 
 #[test]

@@ -75,7 +75,8 @@ pub const fn tet4_nodal_forces(
 ///
 /// The μ terms from this element's own displacement gradient, and the λ
 /// term from `pressure`, the element's averaged pressure `p̄` (see
-/// `element_pressure`). The λ term enters as `p̄ · cof F`: the stress whose
+/// `element_pressure`, and `sampled_element_pressure` with a volumetric
+/// stabilization). The λ term enters as `p̄ · cof F`: the stress whose
 /// forces are `−p̄ ∂v/∂x`, with `v` the element's current volume.
 #[must_use]
 pub const fn tet4_elastic_forces(

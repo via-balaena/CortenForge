@@ -32,6 +32,7 @@ fn k2_run() -> TubeRun {
         window: 0.1,
         friction: 0.0,
         grid_cell: 0.0005,
+        stabilization: 0.0,
     }
 }
 

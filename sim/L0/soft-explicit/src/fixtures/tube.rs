@@ -660,6 +660,9 @@ pub struct TubeRun {
     pub friction: f64,
     /// The mandrel grid's cell size (plan §15c pins A/20).
     pub grid_cell: f64,
+    /// The volumetric stabilization's stiffness over μ
+    /// ([`ExplicitModel::with_volumetric_stabilization`]); 0 is selective ANP.
+    pub stabilization: f64,
 }
 
 /// What a [`TubeRun`] produced.
@@ -730,6 +733,16 @@ impl TubeRun {
         }
     }
 
+    /// The run's model on `tube`: the case's walls, the run's material and
+    /// its volumetric stabilization.
+    ///
+    /// # Errors
+    /// A [`ModelError`] if the model cannot be built.
+    pub fn model(&self, tube: &Tube) -> Result<ExplicitModel, ModelError> {
+        tube.model(self.material(), self.case.walls)?
+            .with_volumetric_stabilization(self.stabilization)
+    }
+
     /// The mandrel for this run's case, on `tube`.
     #[must_use]
     pub fn mandrel(&self, tube: &Tube) -> Mandrel {
@@ -764,7 +777,7 @@ impl TubeRun {
         use crate::stepping::{Stepper, StepperConfig, gates};
 
         let tube = Tube::plan(self.mesh);
-        let model = tube.model(self.material(), self.case.walls)?;
+        let model = self.model(&tube)?;
         let mandrel = self.mandrel(&tube);
         let insertion = self.insertion;
         let obstacle = self.obstacle(&tube)?;

@@ -19,7 +19,9 @@
 //
 // Selective averaged nodal pressure (plan §15c) evaluates the terms carrying
 // μ and C₂ per element and averages only the λ term over nodes, so the two
-// parts are written separately: "the μ terms" and "the λ term".
+// parts are written separately: "the μ terms" and "the λ term". A volumetric
+// stabilization takes part of the λ term at each element's own volume instead
+// (plan §16y, `shared/anp.rs`).
 
 /// One element's material. `#[repr(C)]` with five scalars (20 bytes at
 /// `f32`), so it can sit in a GPU buffer as is.

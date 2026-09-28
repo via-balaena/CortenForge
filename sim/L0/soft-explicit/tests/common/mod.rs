@@ -100,17 +100,21 @@ pub fn displacements(model: &ExplicitModel, positions: &[[f64; 3]]) -> Vec<[f64;
 }
 
 /// The forces of the whole elastic pipeline (plan §15f phases 1–5) at
-/// `positions`, at f64.
+/// `positions`, at f64: the averaged term at each node with `λ_a − κ_a`, and
+/// each element's own `κ_e ln J_e / J_e` beside its nodes' mean.
 pub fn elastic_forces(model: &ExplicitModel, positions: &[[f64; 3]]) -> Vec<[f64; 3]> {
     let u = displacements(model, positions);
     let pressures: Vec<f64> = nodal_dilations(model, positions)
         .iter()
         .zip(model.node_lambdas())
-        .map(|(&d, &lambda)| shared::pressure_lambda_term(d, lambda))
+        .zip(model.node_stabilizations())
+        .map(|((&d, &lambda), &kappa)| shared::pressure_lambda_term(d, lambda - kappa))
         .collect();
     let mut forces = vec![[0.0; 3]; model.node_count()];
     for (e, element) in model.elements().iter().enumerate() {
-        let pressure = shared::element_pressure(element.map(|n| pressures[n as usize]));
+        let own = shared::tet4_dilation(gather(&u, *element), model.rest_edge_inverses()[e]);
+        let pressure = shared::element_pressure(element.map(|n| pressures[n as usize]))
+            + shared::pressure_lambda_term(own, model.element_stabilizations()[e]);
         let f = shared::tet4_elastic_forces(
             gather(&u, *element),
             model.rest_edge_inverses()[e],
@@ -146,29 +150,34 @@ pub fn nodal_dilations(model: &ExplicitModel, positions: &[[f64; 3]]) -> Vec<f64
 }
 
 /// The energy whose gradient the pipeline's forces are:
-/// `Σ_e V_e Ψ_μ(F_e) + Σ_a V_a λ_a/2 (ln J_a)²`.
+/// `Σ_e V_e (Ψ_μ(F_e) + κ_e/2 (ln J_e)²) + Σ_a V_a (λ_a − κ_a)/2 (ln J_a)²`.
 pub fn elastic_energy(model: &ExplicitModel, positions: &[[f64; 3]]) -> f64 {
     let u = displacements(model, positions);
-    let mu_terms: f64 = model
+    let element_terms: f64 = model
         .elements()
         .iter()
         .enumerate()
         .map(|(e, element)| {
+            let own = shared::tet4_dilation(gather(&u, *element), model.rest_edge_inverses()[e]);
             shared::tet4_energy_mu_terms(
                 gather(&u, *element),
                 model.rest_edge_inverses()[e],
                 model.rest_volumes()[e],
                 model.materials()[e],
-            )
+            ) + model.rest_volumes()[e]
+                * shared::energy_density_lambda_term(own, model.element_stabilizations()[e])
         })
         .sum();
     let lambda_term: f64 = nodal_dilations(model, positions)
         .iter()
         .zip(model.node_rest_volumes())
         .zip(model.node_lambdas())
-        .map(|((&d, &rest), &lambda)| rest * shared::energy_density_lambda_term(d, lambda))
+        .zip(model.node_stabilizations())
+        .map(|(((&d, &rest), &lambda), &kappa)| {
+            rest * shared::energy_density_lambda_term(d, lambda - kappa)
+        })
         .sum();
-    mu_terms + lambda_term
+    element_terms + lambda_term
 }
 
 /// The largest deviation of `forces` from `−∂E/∂x` by central differences

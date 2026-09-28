@@ -373,7 +373,8 @@ fn tet4_nodal_forces(stress: array<f32, 9>, rest_edge_inverse: array<f32, 9>, re
 //
 // The μ terms from this element's own displacement gradient, and the λ
 // term from `pressure`, the element's averaged pressure `p̄` (see
-// `element_pressure`). The λ term enters as `p̄ · cof F`: the stress whose
+// `element_pressure`, and `sampled_element_pressure` with a volumetric
+// stabilization). The λ term enters as `p̄ · cof F`: the stress whose
 // forces are `−p̄ ∂v/∂x`, with `v` the element's current volume.
 fn tet4_elastic_forces(u: array<f32, 12>, rest_edge_inverse: array<f32, 9>, rest_volume: f32, material: Material, pressure: f32) -> array<f32, 12> {
     let h = tet4_displacement_gradient(u, rest_edge_inverse);
@@ -448,6 +449,16 @@ fn nodal_dilation(volume_change: f32, rest_volume: f32) -> f32 {
 // pressures.
 fn element_pressure(nodal_pressures: array<f32, 4>) -> f32 {
     return 0.25 * (((nodal_pressures[0] + nodal_pressures[1]) + nodal_pressures[2]) + nodal_pressures[3]);
+}
+
+// The element's pressure with part of the λ term taken at its own volume
+// (plan §16y).
+//
+// The averaged pressure of its four nodes, each from `λ_a − κ_a`, plus
+// `κ_e ln J_e / J_e` at the element's own dilation `J_e − 1`. With `κ_e`
+// zero it is [`element_pressure`].
+fn sampled_element_pressure(nodal_pressures: array<f32, 4>, dilation: f32, stabilization: f32) -> f32 {
+    return element_pressure(nodal_pressures) + pressure_lambda_term(dilation, stabilization);
 }
 
 // ---- sim/L0/soft-explicit/src/shared/integrate.rs ----

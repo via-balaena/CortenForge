@@ -137,7 +137,8 @@ pub struct Monitors {
     /// Kinetic energy at the latest half-step velocities.
     pub kinetic_energy: f64,
     /// Internal (strain) energy at the current displacements, with the λ
-    /// term averaged over nodes as the forces are.
+    /// term averaged over nodes, and any part of it taken at each element's
+    /// own volume, as the forces are.
     pub internal_energy: f64,
     /// Kinetic energy of the nodes in contact at the last step: a watch for
     /// friction flutter, which nothing gates (plan §16e).
@@ -367,7 +368,10 @@ pub trait Executor {
     fn nodal_pressures(&mut self);
 
     /// Phase 4: each element's elastic forces, and its viscous forces at the
-    /// latest half-step velocities, into its own slots.
+    /// latest half-step velocities, into its own slots. The λ term's pressure
+    /// is the mean of its nodes' (phase 3) plus the part taken at the element's
+    /// own volume, `κ_e ln J_e / J_e` from phase 1's dilation
+    /// (`sampled_element_pressure`, plan §16y).
     fn element_forces(&mut self);
 
     /// Phase 5: each node's elastic and viscous forces, gathered from its

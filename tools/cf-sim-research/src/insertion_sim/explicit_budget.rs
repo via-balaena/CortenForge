@@ -150,6 +150,7 @@ fn tube_run(mesh: TubeMesh) -> TubeRun {
         window: 0.1,
         friction: 0.0,
         grid_cell: Tube::plan(mesh).inner_radius / 20.0,
+        stabilization: 0.0,
     }
 }
 
