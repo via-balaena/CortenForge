@@ -458,8 +458,8 @@ fill a gap.
 - *(2026-09-28, §16y)* the collapse's rules: a run that fails with the loop's re-estimate made again every 50 steps;
   the collapse read by stabilizing the collapsing elements alone, cut at half their nodes' averaged J, 2μ to start,
   doubled up to λ, at most four masked runs, decided at four times h_K2's elements; energy sampling as the
-  stabilization's form; and tracking the step every step not taken. Which element the product runs was Jon's: the
-  element as it is (fit plan U20).
+  stabilization's form; and tracking the step every step not taken. Which element the product runs: the element as
+  it is, left to me by Jon after the macro review's correction (fit plan U20, §16y).
 
 ## 10. What the research could not see
 
@@ -1260,7 +1260,9 @@ Each item is one PR with its own tests and a done-when.
      from the pose track it keeps at f64 (`contact` in `src/cpu/executor.rs`). Whether sums at f32 would meet the
      done-when's 1e-5 is not measured.)* *(2026-09-28, §16y: a volumetric stabilization, off by default, adds one
      per-element value, κ_e; each node's λ_a − κ_a is formed at f64; and phase 4 reads the element's own dilation,
-     which phase 1 writes, so on the GPU it gains a binding or recomputes J.)*
+     which phase 1 writes, so on the GPU it gains a binding or recomputes J. While the product runs the element as it
+     is (fit plan U20), the GPU needs κ = 0 only, and its per-phase conformance is at κ = 0; the stabilization stays a
+     CPU instrument.)*
 5. **The experiment on the GPU:** K1, K2 at 100k, the ν sweep, the ladder, the Coulomb push, the stress
    case, the SDF comparison and stiffness scaling. *Stiffness scaling runs first on the CPU, in step 2
    (16i), because the product's budget depends on it.*
@@ -1353,9 +1355,13 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
   settle this before D1's element size is read again *(2026-09-28, §16y: on the frictionless runs the step is set at
   the most-compressed element at h_K2 and twice its elements, and at one near it at four times. Resisting the
   collapsing elements alone moves the frictional readings at four times h_K2's elements by at most 1.5 %; the
-  frictionless patch moved +6.44 % at twice h_K2's elements, and at four times its comparison did not stand, its runs
-  reading +3.4 to +5.1 %. Jon chose the element as it is (fit plan U20); the next PR reads D1's size with it.
-  Where the loop's re-estimate every 500 steps fails, a run is made again every 50 steps, §16y rule 1)*;
+  frictionless patch moved +6.44 % at twice h_K2's elements, and at four times its comparison did not stand by the
+  cut, its last two runs reading +5.06 and +5.07 %. The element as it is stays (fit plan U20, §16y's call); the next
+  PR reads D1's size with it and re-reads rule 2 there. Where the loop's re-estimate every 500 steps fails, a run is
+  made again every 50 steps, §16y rule 1)*;
+- *(2026-09-28, §16y)* the product loop's step control: rule 1's re-run every 50 steps lives only in the probe, and
+  the solver's loop re-estimates every 500 steps with no retry. Before step 4, the product loop needs one of a retry,
+  a fixed 50 steps, or tracking the step, costed in G6;
 
 **Starting now, in parallel with steps 1–2, needing no solver:**
 - U3's geometric check *(done, §16t)*;
@@ -4433,7 +4439,8 @@ record, the fit plan's note on it, step 4's note, the run commits and the mutati
   - If the stabilized element goes forward, it first needs its own h_K2, K3, the Yeoh case (16h), the confined case,
     K5, K6, and CI at its weight. §16r's stop rule derives h_K2 for an element, and on the 10k tube at c = 2 K2's first
     corner reads +7.01 % (below).
-  - ν under the mount (fit plan U19) stays Jon's call; its figures are the element as it is.
+  - ν under the mount (fit plan U19) stays Jon's call; its figures are the element as it is, and rule 2 was read at
+    ν 0.49 only.
 
 **Measured before the rules** (exploratory; the commits named are this PR's pre-squash commits, kept locally).
 
@@ -4553,7 +4560,9 @@ record, the fit plan's note on it, step 4's note, the run commits and the mutati
      move D1's readings there by more than that bar; otherwise it moves them by the largest change;
    - the masked change includes the mask's own change of stiffness, whose sign on the product is not known (κ then
      differs around the nodes on the mask's edge) and which is not measured apart. The mask is cut at half its nodes'
-     averaged J; how the change depends on that cut is not measured;
+     averaged J; how the change depends on that cut is not measured on the product. On the public case, masks cut
+     at 0.7 and 0.8 moved the reaction +4.65 and +5.82 %, against +1.25 % at half (the design review's measurement,
+     not in the repo);
    - 2μ to start, the doubling and the four runs are engineering calls; 2μ is within the sources' span, 0.5μ to 25μ.
 3. **What follows.**
    - If rule 2 finds every deciding reading's masked change within 5 % at ×4, the element stays as it is, with rule
@@ -4566,8 +4575,8 @@ record, the fit plan's note on it, step 4's note, the run commits and the mutati
 
 **Done when:** rule 2's runs are in and read, rule 1 applied to them; the record says which runs were run again by
 rule 1; the public case runs in CI (the tests-release job); and the element's state, and what the next PR must do, are
-written into §15g's list and the fit plan. The next PR waits on Jon's call (fit plan U20) *(made 2026-09-28: the
-element as it is)*.
+written into §15g's list and the fit plan. The next PR waits on the call (fit plan U20) *(made 2026-09-28: the element
+as it is, below)*.
 
 **The code.**
 - `sim-soft-explicit`:
@@ -4601,11 +4610,12 @@ corner). Each deciding reading's masked change, masked over as it is:
 | Geometric share (μ_f 0) | +1.18 % | +0.83 % | not judged |
 | Peak push, μ_f 0.104 / 0.18 (for Jon) | +0.75 / +1.54 % | +0.10 / +0.21 % | +0.28 / +0.35 % |
 
-- **Rule 2 at ×4: not judged.** In the frictionless run some element was under half its nodes' averaged J after
-  each of the four masked runs (one after the last two), κ up to 16μ, so the frictionless patch and the geometric
-  share, both read on that run, have no verdict. The four masked runs, which the rule does not accept, read the
-  frictionless patch +3.38, +4.47, +5.06 and +5.07 % and the share +0.41, +0.58, +0.68 and +0.70 %, rising as κ
-  doubled from 2μ. The two frictional corners stood, every change within 1.5 %.
+- **Rule 2 at ×4: not judged, by the cut.** In the frictionless run an element was under half its nodes' averaged J
+  after each of the four masked runs, κ up to 16μ; after the last its least read 0.495 against the cut at 0.5. So the
+  frictionless patch and the geometric share, both read on that run, have no verdict. The masked runs at 8μ and
+  16μ read the frictionless patch +5.06 and +5.07 % and the share +0.68 and +0.70 %, those at 2μ and 4μ +3.38 and
+  +4.47 %; none cleared the collapse. The two frictional corners stood, every change within 1.5 %; the μ_f 0.18
+  corner's least read 0.500.
 - **By rule 3, the element stays open, and goes to Jon** with these readings (below).
 - The masks held under 3 in 10⁴ of the wall's elements. At ×1 and ×2 every corner cleared within the four runs, with
   κ up to 16μ; at ×4 the frictional corners cleared at 16μ.
@@ -4628,12 +4638,13 @@ corner). Each deciding reading's masked change, masked over as it is:
   to ×2 at μ_f 0, 0.104 and 0.18, against +16.9, +14.5 and +18.8 % as it is; from ×2 to ×4, −2.7 and −5.0 % at the
   frictional corners, against −2.4 and −5.6 %.
 - *Not measured:* the mask's own change of stiffness on the product, of unknown sign; how the change depends on the
-  cut at half; why the frictionless ×2 runs fail at 500 with the collapse resisted.
+  cut at half, on the product (on the public case a looser cut moved more, above); why the frictionless ×2 runs fail
+  at 500 with the collapse resisted.
 - **For Jon's call.** Resisted at its collapsing elements, the element as it is reads (the masked change):
   - at ×4, the frictional patches +1.45 and +0.88 %, and the peak push, which Jon decides at a low friction, +0.28
     and +0.35 %;
-  - on the frictionless patch, −0.26 % at ×1 and +6.44 % at ×2, where the comparison stood; at ×4, +3.4 to +5.1 %,
-    rising with κ, in runs the rule does not accept.
+  - on the frictionless patch, −0.26 % at ×1 and +6.44 % at ×2, where the comparison stood; at ×4, +5.06 % at 8μ
+    and +5.07 % at 16μ, in runs that did not clear the cut.
 
   The options, each with rule 1's re-runs, which the ×2 frictionless runs needed with the collapse resisted too:
   - keep the element as it is, and read D1's size with it in the next PR;
@@ -4645,7 +4656,21 @@ corner). Each deciding reading's masked change, masked over as it is:
     collapse, it settles whether that corner's change passes 5 %; at 8μ and 16μ the runs the rule did not accept read
     +5.06 and +5.07 %.
 
-  *Jon's call (2026-09-28): the element as it is* (fit plan U20). The next PR reads D1's size with it.
+  **The call: the element as it is** (fit plan U20). Rule 3's third branch sent it to Jon. He first chose it on a
+  summary that gave ×4's frictionless change as "+3.4 to +5.1 %, rising"; told of the correction, he left the call to
+  me (2026-09-28), and I keep it.
+  - With the collapse resisted (the table above), the μ_f 0.18 patch, the top of U11's interval, moves +2.04, +0.28
+    and +0.88 % at ×1, ×2 and ×4; the frictionless patch, its bottom, −0.26 and +6.44 % at ×1 and ×2, and at ×4 it is
+    not judged. The element as it is reads the top lower at every size and the bottom lower at ×2, so a *fits* within
+    about 2 % of a limit could be a wrong verdict.
+  - The stabilized element everywhere at 8μ moved every reading +13 to +22 % at h_K2, and first needs its own h_K2,
+    gates and CI.
+  - Every masked change includes the mask's own change of stiffness, of unknown sign, and is at the cut at half; on
+    the public case a looser cut moved the reading several times more.
+
+  Carried forward: the next PR re-reads rule 2 at the size it picks, at every corner; a ν above 0.49 re-opens U20
+  (fit plan U19); the product loop's step control (§15g's list); and the GPU carries the element as it is while U20
+  stands (§15g step 4).
 
 *Since the runs,* the probe changed only where no recorded run reached it: a masked comparison whose run as it is did
 not stand now masks nothing, and a masked run that does not stand ends its corner's comparison (neither happened);
@@ -4706,4 +4731,10 @@ the mask's sign.
   options costed unequally again, K4's note wider than §15a allows, "cleared" read from one read, the fifth run
   promising more than it can, and an attribution the archive could not back. They were cut, and the rounds stopped
   there: the results and the verdict did not move in either round.
+- **Macro review** (Jon's request, one fresh reviewer of the whole diff at `b3613c25`): every figure it checked
+  matched the runs' outputs. It found that the summary Jon decided on gave ×4's frictionless change as "+3.4 to
+  +5.1 %, rising", where the rule rejected it by 0.005 on its cut and the last two runs read +5.06 and +5.07 %; that
+  the cut's effect had been measured on the public case; that "known bias" sat inside Jon's decision; and that ν, the
+  product loop's step control and the GPU's κ were not carried forward. Jon left the call to me; the record above now
+  states it, and those items are carried.
 

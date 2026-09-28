@@ -238,8 +238,8 @@ which inset would pass.
       the pairing library's lowest μ_f, as the largest mean over 1 mm of travel: from the element size K2 needs it
       moves 8.4 % over the first doubling of the elements and 2.2 % over the second, within K5's bar from twice. The
       element size D1's readings need is open, four times or finer, on the seated patch.)* *(2026-09-28, recon §16y:
-      resisting the elements that collapse at the seated tip moves that peak by at most 0.4 % at four times h_K2's
-      elements; its effect on the seated patch is U20.)*
+      resisting the elements that collapse at the seated tip, those under half their nodes' volume, moves that peak by
+      at most 0.4 % at four times h_K2's elements; its effect on the seated patch is U20.)*
     - *Seated:* ~~the contact pressure at the seat, read as its area-weighted 95th percentile~~ **the contact
       force on the most-loaded 1 cm² patch, over 1 cm²** (Jon, 2026-09-26, accepting the recommendation after
       K5; soft-contact recon §16s). The percentile it replaces did not converge on the tube: its most-squeezed
@@ -583,7 +583,7 @@ in CI); G5 already gates in CI.
   do not converge, and `base_mold` at h_K2 is about the 10k tube's element size, so the element size they need on
   the product is measured in step 7 *(2026-09-28, recon §16x: measured and open, four times h_K2's elements or
   finer; an element collapsing at the seated tip under the mount is not yet settled)* *(2026-09-28, recon §16y: the
-  collapse's effect is U20, open to Jon)*. The
+  collapse's effect is U20)*. The
   lip radius stays under Later.
 - **U17 — The product wall's canal surface** (soft-contact recon §16r, 2026-09-26). At the element size K2 needs,
   the old path's wall puts the canal nodes off the true canal surface: its 5th and 95th percentiles at −0.50 and
@@ -628,18 +628,20 @@ in CI); G5 already gates in CI.
   end, the product's readings rise 1.4–5.3 % with each doubling of K from ν 0.49 to 0.4975, the second doubling's
   change more than half the first's. The silicone's own K is not measured, and §5b's sources put rubbers several doublings
   further on. Which ν a verdict reads at, and whether ν becomes a corner as friction is, trades speed against quality:
-  Jon's call.
+  Jon's call. *(2026-09-28, recon §16y: U20 was read at ν 0.49 only; a ν above it re-opens U20.)*
 - **U20 — The element collapsing at the seated tip** (soft-contact recon §16y, 2026-09-28). Under the mount, an
   element at the product's seated tip shrinks to 9–16 % of its volume while its nodes stay within 12 % of theirs, a
   motion the element's node-averaged volumetric term does not resist; on the frictionless runs the step is set at or
-  near it. Resisting just those elements (a volumetric stabilization on them alone, whose own change of stiffness is
-  in the readings):
+  near it. Resisting just those elements, the ones under half their nodes' volume (a volumetric stabilization on them
+  alone, whose own change of stiffness, of unknown sign, is in the readings):
   - at four times h_K2's elements, the frictional patches move +1.45 and +0.88 %, and the peak push +0.28 and
     +0.35 %;
-  - the frictionless patch moves −0.26 % at h_K2 and +6.44 % at twice its elements; at four times, +3.4 to +5.1 %,
-    rising with the stabilization, in runs the rule set beforehand does not accept, so it is not judged.
+  - the frictionless patch moves −0.26 % at h_K2 and +6.44 % at twice its elements; at four times, +5.06 % and
+    +5.07 % in the last two runs, which did not clear the rule's cut, set beforehand, so it is not judged.
 
-  Which element the product runs is Jon's call, and the next PR, D1's element size, waits on it:
+  On the public case, a looser cut moved the reading several times more; on the product that is not measured.
+
+  Which element the product runs went to Jon (rule 3), and the next PR, D1's element size, waited on it:
   - the element as it is;
   - the stabilized element everywhere, which first needs its own checks, left an element collapsed at 2μ, moved the
     readings +13 to +22 % at 8μ (at h_K2), and whose cost is not measured;
@@ -648,10 +650,14 @@ in CI); G5 already gates in CI.
   Rule 1's re-runs apply to whichever element runs. At twice h_K2's elements the frictionless run failed at 500 as it
   is and with its collapsing elements stabilized; the stabilized element everywhere was not run there.
 
-  *Decided (Jon, 2026-09-28): the element as it is.* The frictionless patch's change with the collapse resisted
-  (+6.44 % at twice h_K2's elements, about +5 % at four times, not judged) stands in the record as a known bias; runs
-  that fail with the loop's 500-step re-estimate are made again every 50 steps. The next PR reads D1's element size
-  with it.
+  *Decided (2026-09-28): the element as it is.* Jon first chose it on a summary that understated the frictionless
+  change at four times h_K2's elements; told of the correction, he left the call to me, and I keep it (recon §16y).
+  With the collapse resisted, the highest friction's patch, the top of U11's interval, moves at most about 2 %. The
+  element as it is reads the top lower at every size and the bottom lower at twice h_K2's elements, so a *fits* within
+  about 2 % of a limit could be a wrong verdict. Every such change includes the stabilization's own change of stiffness, of unknown sign.
+  Carried forward: the next PR reads D1's element size with this element and reads the collapse's change again there,
+  at every corner; runs that fail with the loop's 500-step re-estimate are made again every 50 steps, and the product
+  loop's step control is an open item before the GPU.
 ---
 
 ## 8. References
