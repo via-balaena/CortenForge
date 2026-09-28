@@ -29,6 +29,25 @@ pub use project::project_point_onto_sdf;
 pub use sdf::{Sdf, SphereSdf, TranslatedSdf};
 pub use sdf_meshed_tet_mesh::{MeshingError, SdfMeshedTetMesh};
 
+/// Where the mesher puts the cut point on a lattice edge whose two
+/// samples the SDF signs oppositely.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CutPoints {
+    /// Where the line through the edge's two samples crosses zero:
+    /// the mesher's default. Labelle and Shewchuk (§3.1) offer it as
+    /// a cheaper estimate that keeps the angle guarantee but not the
+    /// geometric ones: on a curved or kinked SDF the cut sits off the
+    /// SDF's zero set.
+    #[default]
+    Interpolated,
+    /// Where the SDF itself crosses zero on the edge, as the paper's
+    /// own implementation finds it (by bisection there; here by the
+    /// Illinois method, bracketed by the two samples, to within 1e-12
+    /// of the edge). Every boundary vertex then lies on the SDF's zero
+    /// set to that tolerance.
+    Root,
+}
+
 use crate::Vec3;
 use crate::material::MaterialField;
 

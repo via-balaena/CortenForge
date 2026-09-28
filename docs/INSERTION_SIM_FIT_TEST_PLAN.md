@@ -280,7 +280,10 @@ which inset would pass.
       candidates, and runs full verdicts at 1–2 insets (soft-contact recon §15g step 7). *(2026-09-26,
       recon §16r: on `base_mold` as meshed at the element size K2 needs, a press takes 0.29–0.61 of D4 at
       K1's rate, so 3–4 verdicts take 4–12 minutes, within 15; with the canal nodes projected (U17) at a
-      quality floor of 0.5 and the viscosity, 15–21; arithmetic.)*
+      quality floor of 0.5 and the viscosity, 15–21; arithmetic.)* *(2026-09-27, recon §16v: step 7's wall
+      projects nothing; at ν 0.49 with the viscosity, 3–4 verdicts take 6–11 minutes over the insets measured,
+      and 9–16 at the budget's worst corner (ν 0.495, the viscosity × 1.47); with the per-slice estimate picking
+      1–2 insets, 3–8 at the worst corner; arithmetic.)*
     - If the new solver takes far longer on the same scene, revisit the budget rather than cut the
       physics.
   - **D5 — Where the inset changes.** *Decided:* on the fit screen, as **Try at *n* mm**, with D3's
@@ -540,7 +543,8 @@ in CI); G5 already gates in CI.
   - *2026-09-26 (soft-contact recon §16r):* on `base_mold`'s wall at the element size K2 needs, at ν 0.49 and Ecoflex
     00-30's η/μ, the viscosity cuts the stable step to 0.67 of the elastic one, and a press takes 0.43 of D4 with it
     (0.29 without) if the GPU meets K1, and 0.10 on the CPU. Across Croquette's error bars' 5.2–10.3 Pa·s it takes
-    0.39–0.53.
+    0.39–0.53. *(2026-09-27, recon §16v: read on the old wall before the mesher's Parity Rule fix; on step 7's wall at
+    the 5 mm inset a viscous press takes 0.42 of D4 at K1's rate, and 0.59 at ν 0.495 with 1.47 times the viscosity.)*
 - **U16 — D1's readings do not converge on the tube** (soft-contact recon §16p, K5, 2026-09-25). The seated 95th
   percentile moved by 8–12 % from the 50k to the 100k mesh in three of four cases (−2.2 % in the fourth), and the
   frictionless push peak by 14 % (λ_a 1.1). The push with friction converged. §15a sends this back to D1's
@@ -566,6 +570,16 @@ in CI); G5 already gates in CI.
   the wall's grid are signed by a flood fill, which `Truth` documents as reliable only more than a cell (1 mm) from
   the surface; D3's search reaches 0 mm, where the canal is the scan's surface. The choice is measured at a small
   inset too, against a reference signed by parity.)*
+  *Answered 2026-09-27 (soft-contact recon §16v):* against a parity-signed reference the old path's offsets read
+  the same. Changing one thing at a time at 5, 1 and 0 mm: the grid's pre-smooth carries most of the spread at 5 and
+  0 mm, and the flood fill's sign matters at 1 mm; at 5 and 0 mm the grid's own sampling carries most of the rest;
+  and once the wall is meshed from the scan's exact distance, what remains at every inset is the mesher's linear cut
+  points. With the cut points located
+  on that distance, every canal node more than an element from a cap plane lies on the true surface to the printed
+  digits at all three insets, and no node is projected, so there is no quality floor. The stable step stays within
+  0.86–1.03 of the old wall's at the same inset; a viscous press takes 0.42–0.56 of D4 at K1's rate, and 0.59–0.79
+  at the budget's worst corner. That is step 7's wall (an engineering call). The measurement also found and fixed a
+  defect in the mesher's Parity Rule, which could leave lattice vertices inside the wall exposed as boundary nodes.
 - **U18 — G2 on `base_mold` rests on the scan grid** (soft-contact recon §16r, 2026-09-26). The contact law holds a
   node on the baked grid's surface (measured on the tube, §16o; on the product it needs a run, step 7), so G2 there
   is the grid's own error against the scan. No grid measured meets it: the nearest, 0.25 mm without the pre-smooth,

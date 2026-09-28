@@ -438,16 +438,25 @@ const N_PINNED_H4: usize = 4;
 //      FEM assembly path through faer, OR the BCC mesher's tet count
 //      / orphan handling.
 //   3. NEVER re-bake the reference values to make the test green.
+//
+// Re-captured 2026-09-27 (three bits) on rustc 1.96.0, diagnosed at
+// step 2: the BCC mesher's Parity Rule fix (soft-contact recon §16v)
+// keeps every vertex position and the counts above, and changes which
+// diagonal splits some quadrilateral faces. `a_FEM` at h/4 moved by
+// −5.0e-6 of itself and `δ_FEM` at h/4 by +1.3e-5; `a_FEM` at h, the
+// south pole's sideways drift, from 3.0e-9 m to 5.2e-19 m. `a_FEM` at
+// h/2 is kept: it reads 2 ulps off, within the rel-tol, before and
+// after the fix.
 // =============================================================================
 
 /// `a_FEM` at h (m). Refinement-h contact-patch radius = `max sqrt(x² +
 /// y²)` over active vertices at converged `x_final`.
-/// `f64::from_bits(0x3e29_f1ec_0667_6821) ≈ 3.020e-9 m` — at coarse h
+/// `f64::from_bits(0x3c23_51a3_d9de_8417) ≈ 5.236e-19 m` — at coarse h
 /// only the south-pole vertex enters the band (single-vertex penalty
 /// regime per "Material plan change 1"); horizontal radius of that
-/// pole's converged position is 3 nm (essentially 0). 100% rel-err vs
+/// pole's converged position is essentially 0. 100% rel-err vs
 /// `a_Hertz` is expected and is the monotonic-baseline starting point.
-const A_FEM_H_REF_BITS: u64 = 0x3e29_f1ec_0667_6821;
+const A_FEM_H_REF_BITS: u64 = 0x3c23_51a3_d9de_8417;
 
 /// `a_FEM` at h/2 (m).
 /// `f64::from_bits(0x3f51_6ea7_e77f_12ad) ≈ 1.064e-3 m`. Multi-vertex
@@ -456,18 +465,18 @@ const A_FEM_H2_REF_BITS: u64 = 0x3f51_6ea7_e77f_12ad;
 
 /// `a_FEM` at h/4 (m). The headline-anchor scalar — finest-level
 /// rel-err vs `a_Hertz` is the row's REL_ERR_GATE = 20% gate.
-/// `f64::from_bits(0x3f58_861e_638b_8a7a) ≈ 1.497e-3 m`. 45 active
+/// `f64::from_bits(0x3f58_8616_64a9_3678) ≈ 1.497e-3 m`. 45 active
 /// pairs (matches the Hertzian fixture's docstring); rel-err ~16% (under the 20% gate).
-const A_FEM_H4_REF_BITS: u64 = 0x3f58_861e_638b_8a7a;
+const A_FEM_H4_REF_BITS: u64 = 0x3f58_8616_64a9_3678;
 
 /// `δ_FEM` at h/4 (m). **Diagnostic-only** per "Plan change 2" reframe —
 /// penalty compliance dominates indentation, Hertz comparison on δ_FEM
 /// is structurally unreachable in this regime. Pinned for regression
 /// detection only.
-/// `f64::from_bits(0xbf49_989d_b206_e410) ≈ -7.811e-4 m` — sphere is in
+/// `f64::from_bits(0xbf49_98b3_f205_9627) ≈ -7.811e-4 m` — sphere is in
 /// the band but hasn't reached first-contact-equivalent depth `−d̂`,
 /// so δ_FEM is negative (matches the Hertzian fixture's `-781 μm` empirical).
-const DELTA_FEM_H4_REF_BITS: u64 = 0xbf49_989d_b206_e410;
+const DELTA_FEM_H4_REF_BITS: u64 = 0xbf49_98b3_f205_9627;
 
 /// Active-pair count at h. Single-vertex regime — only south pole.
 const N_ACTIVE_H_REF: usize = 1;

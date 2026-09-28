@@ -18,7 +18,7 @@
 
 use std::time::Instant;
 
-use mesh_sdf::{CachedGridSdf, TriMeshDistance, UnsignedDistance};
+use mesh_sdf::{CachedGridSdf, ParitySign, Sign, TriMeshDistance, UnsignedDistance};
 use mesh_types::IndexedMesh;
 use nalgebra::{Point3, Vector3};
 use sim_soft::{Mesh, SdfMeshedTetMesh, TetId, Vec3, VertexId, Yeoh};
@@ -51,10 +51,10 @@ const K2_TUBE: [(&str, f64, f64); 4] = [
 
 /// The product's Poisson's ratios: the two K2 was judged at (§15a). The silicone catalog's own λ is 4μ,
 /// ν 0.4 (§5b), which the explicit solver does not use.
-const PRODUCT_POISSON: [f64; 2] = [0.49, 0.495];
+pub(super) const PRODUCT_POISSON: [f64; 2] = [0.49, 0.495];
 
 /// Ecoflex 00-30's viscosity over its η/μ's 7 Pa·s: the published fits' range, 5.2–10.3 Pa·s (fit plan U15).
-const VISCOSITY_SCALES: [f64; 3] = [5.2 / 7.0, 1.0, 10.3 / 7.0];
+pub(super) const VISCOSITY_SCALES: [f64; 3] = [5.2 / 7.0, 1.0, 10.3 / 7.0];
 
 /// The smallest in-run step over the rest step on the damped tube (§16p).
 const LOADED_STEP_FACTOR: f64 = 0.977;
@@ -69,7 +69,7 @@ const RUNS_PER_VERDICT: f64 = 3.0;
 const K1_SECONDS: f64 = 120.0;
 
 /// D4 (§9 decision 12, fit plan U13): 5 minutes per press.
-const D4_SECONDS: f64 = 300.0;
+pub(super) const D4_SECONDS: f64 = 300.0;
 
 /// G2's bar (fit plan): no node deeper than 1 % of the inset, and the bar never below 0.02 mm (Jon, 2026-09-27;
 /// U18).
@@ -82,26 +82,26 @@ pub(super) fn g2_bar(inset: f64) -> f64 {
 const PROJECTION_FLOORS: [f64; 2] = [0.5, 0.1];
 
 /// A canal node within this many element sizes of the true canal surface counts as on it.
-const ON_THE_SURFACE: f64 = 0.01;
+pub(super) const ON_THE_SURFACE: f64 = 0.01;
 
 /// The canal nodes are the boundary nodes within this many element sizes of the true canal surface.
-const CANAL_WINDOW: f64 = 2.0;
+pub(super) const CANAL_WINDOW: f64 = 2.0;
 
 /// The step's accuracy bar (§16e, in §16p's form): the loop's step within 2 % of 0.9 of the converged
 /// critical step.
-const STEP_ACCURACY_BAR: f64 = 0.02;
+pub(super) const STEP_ACCURACY_BAR: f64 = 0.02;
 
 /// Steps the CPU executor is timed over. From a fresh loop they include one of its re-estimates (at step 500;
 /// the start's estimates precede the timer), where a run makes one every 500 steps.
 const TIMED_STEPS: u64 = 1_000;
 
 /// The value at fraction `q` of `sorted`, nearest rank.
-fn quantile(sorted: &[f64], q: f64) -> f64 {
+pub(super) fn quantile(sorted: &[f64], q: f64) -> f64 {
     sorted[(q * (sorted.len() - 1) as f64).round() as usize]
 }
 
 /// The stop rule's element size, (mean tet volume)^⅓ (§15g step 2).
-fn element_size(model: &ExplicitModel) -> f64 {
+pub(super) fn element_size(model: &ExplicitModel) -> f64 {
     let volume: f64 = model.rest_volumes().iter().sum();
     (volume / model.element_count() as f64).cbrt()
 }
@@ -121,7 +121,7 @@ fn tube_size(mesh: TubeMesh) -> f64 {
 
 /// `h_K2` (§16j): the largest element size at which K2's error is within its bar at every corner, from the
 /// stop rule's model fitted to the 10k and 50k tubes; and the corner that sets it.
-fn h_k2() -> (f64, &'static str) {
+pub(super) fn h_k2() -> (f64, &'static str) {
     let (coarse, fine) = (tube_size(TubeMesh::TenK), tube_size(TubeMesh::FiftyK));
     K2_TUBE
         .iter()
@@ -176,7 +176,7 @@ fn lame_lambda(mu: f64, poisson: f64) -> f64 {
 
 /// The loop's stable step at the start of a run, at rest (§16e): the elastic top mode's step, re-estimated
 /// with the viscosity at that step.
-fn rest_step(model: &ExplicitModel, obstacle: &Obstacle) -> f64 {
+pub(super) fn rest_step(model: &ExplicitModel, obstacle: &Obstacle) -> f64 {
     let executor = cpu::f64::CpuExecutor::new(model, obstacle).expect("the obstacle must be valid");
     Stepper::new(executor, StepperConfig::new(0.0), 0.0).dt()
 }
@@ -186,7 +186,7 @@ fn rest_step(model: &ExplicitModel, obstacle: &Obstacle) -> f64 {
 ///
 /// The reference is the fixed point of the same estimate at 6000 iterations in f64, `β` updated to `2/Δt_c`
 /// until the step moves by at most 1e-4, with 4000 iterations agreeing to 1e-4.
-fn step_error(model: &ExplicitModel, obstacle: &Obstacle) -> (f64, f64) {
+pub(super) fn step_error(model: &ExplicitModel, obstacle: &Obstacle) -> (f64, f64) {
     let mut reference = cpu::f64::CpuExecutor::new(model, obstacle).unwrap();
     let perturbation = reference.epsilon().sqrt() * reference.shortest_edge();
     let mut limit = |iterations: usize, weight: f64| {
@@ -225,11 +225,11 @@ fn cpu_seconds_a_step(model: &ExplicitModel, obstacle: &Obstacle) -> f64 {
 }
 
 /// A product mesh lowered into the explicit solver's model.
-struct Lowered {
-    model: ExplicitModel,
+pub(super) struct Lowered {
+    pub(super) model: ExplicitModel,
     /// Each model node's vertex in the source mesh. The mesher leaves lattice vertices that no element
     /// names; the model has no massless nodes, so it drops them.
-    source: Vec<VertexId>,
+    pub(super) source: Vec<VertexId>,
 }
 
 /// Lower `mesh` into an [`ExplicitModel`]: its referenced vertices, its elements as the mesher orders them
@@ -239,7 +239,7 @@ struct Lowered {
 ///
 /// # Errors
 /// A [`ModelError`] if the model is rejected.
-fn lower(
+pub(super) fn lower(
     mesh: &SdfMeshedTetMesh<Yeoh>,
     densities: &[f64],
     viscous_time: f64,
@@ -293,7 +293,10 @@ fn lower(
 }
 
 /// Each element's density: its layer's catalog density.
-fn densities(geometry: &InsertionGeometry, design: &cf_device_types::SimDesign) -> Vec<f64> {
+pub(super) fn densities(
+    geometry: &InsertionGeometry,
+    design: &cf_device_types::SimDesign,
+) -> Vec<f64> {
     geometry
         .per_tet_layer
         .iter()
@@ -301,27 +304,22 @@ fn densities(geometry: &InsertionGeometry, design: &cf_device_types::SimDesign) 
         .collect()
 }
 
-/// A surface's exact signed distance: a mesh's exact distance, signed by a flood-filled grid, negative
-/// inside. The sign is read by interpolating the grid, so it is reliable only more than a cell from the
-/// surface; the canal nodes sit an inset deep.
-struct Truth {
-    distance: TriMeshDistance,
-    sign: CachedGridSdf,
+/// A surface's exact signed distance: a mesh's exact distance, negative inside the closed mesh `sign` is built
+/// from, by the parity of a ray's crossings (the obstacle bake's sign, `mesh_sdf::ParitySign`, plan §16u).
+pub(super) struct Truth {
+    pub(super) distance: TriMeshDistance,
+    pub(super) sign: ParitySign,
 }
 
 impl Truth {
-    fn signed(&self, p: Point3<f64>) -> f64 {
+    pub(super) fn signed(&self, p: Point3<f64>) -> f64 {
         let d = self.distance.distance(p);
-        if self.sign.signed_distance(p) < 0.0 {
-            -d
-        } else {
-            d
-        }
+        if self.sign.is_inside(p) { -d } else { d }
     }
 
     /// Where `p` lands on the level `-inset`: steps of `p − (d + inset)·∇d` until within 1 nm of it, at most
     /// eight. One step can leave a node off the level where the nearest facet changes along the move.
-    fn onto_level(&self, p: Point3<f64>, inset: f64) -> Point3<f64> {
+    pub(super) fn onto_level(&self, p: Point3<f64>, inset: f64) -> Point3<f64> {
         let mut p = p;
         for _ in 0..8 {
             let d = self.signed(p);
@@ -336,24 +334,40 @@ impl Truth {
     }
 }
 
+/// The true canal surface's [`Truth`]: the distance to `scan` less its caps (the mesher offsets the
+/// cap-stripped scan's distance near the mouth, `pinned_floor_shell`), signed by the closed scan.
+pub(super) fn canal_truth(scan: &IndexedMesh, caps: &[cf_cap_planes::CapPlane]) -> Truth {
+    Truth {
+        distance: TriMeshDistance::new(cf_cap_planes::dome_wall_only_mesh(scan, caps))
+            .expect("the cap-stripped scan's distance must build"),
+        sign: ParitySign::new(scan).expect("the scan must bin"),
+    }
+}
+
 /// The canal nodes' offsets from the true canal surface, in element sizes: positive into the wall,
 /// negative into the canal.
-struct Bias {
-    nodes: usize,
+pub(super) struct Bias {
+    pub(super) nodes: usize,
     /// The share of canal nodes inside the true canal surface by more than [`ON_THE_SURFACE`]: the wall
     /// reaching into the canal.
-    inside: f64,
+    pub(super) inside: f64,
     /// The share outside it by more than [`ON_THE_SURFACE`]: the canal wider than designed.
-    outside: f64,
-    mean: f64,
-    low: f64,
-    high: f64,
-    worst: f64,
+    pub(super) outside: f64,
+    pub(super) mean: f64,
+    pub(super) low: f64,
+    pub(super) high: f64,
+    pub(super) worst: f64,
 }
 
 impl Bias {
     /// Over `nodes` of `model`, against the level `-inset` of `truth`, in units of `size`.
-    fn of(model: &ExplicitModel, nodes: &[u32], truth: &Truth, inset: f64, size: f64) -> Self {
+    pub(super) fn of(
+        model: &ExplicitModel,
+        nodes: &[u32],
+        truth: &Truth,
+        inset: f64,
+        size: f64,
+    ) -> Self {
         Self::from_offsets(
             nodes
                 .iter()
@@ -365,7 +379,7 @@ impl Bias {
         )
     }
 
-    fn from_offsets(mut offsets: Vec<f64>) -> Self {
+    pub(super) fn from_offsets(mut offsets: Vec<f64>) -> Self {
         offsets.sort_by(f64::total_cmp);
         let count = offsets.len() as f64;
         let share =
@@ -381,7 +395,7 @@ impl Bias {
         }
     }
 
-    fn line(&self) -> String {
+    pub(super) fn line(&self) -> String {
         format!(
             "canal nodes {} [LOCAL] | inside the true surface {:.1} %, outside {:.1} % | offset/h mean {:+.3} p5 {:+.3} p95 {:+.3} worst {:.3}",
             self.nodes,
@@ -406,7 +420,7 @@ fn off_the_caps(planes: &[(Point3<f64>, Vector3<f64>)], margin: f64, p: Point3<f
 /// surface, less those within one element size of a cap plane, where the cavity's flat floor meets it.
 /// Also how many boundary nodes away from the caps lie in the next element size out: canal nodes the
 /// selection would miss if the mesher's error reached that far.
-fn canal_nodes(
+pub(super) fn canal_nodes(
     model: &ExplicitModel,
     truth: &Truth,
     caps: &[(Point3<f64>, Vector3<f64>)],
@@ -444,7 +458,7 @@ fn canal_nodes(
 /// A mesh's flood-fill-signed distance on a grid of spacing `cell` over `bounds`, in the explicit solver's
 /// layout, pre-smoothed by `sigma_cells` (0: none; the old path's is [`GRID_SDF_SMOOTH_SIGMA_CELLS`]); and
 /// the flood-filled grid itself.
-fn scan_grid(
+pub(super) fn scan_grid(
     distance: &TriMeshDistance,
     bounds: Aabb,
     cell: f64,
@@ -480,7 +494,7 @@ fn scan_grid(
 }
 
 /// The scan as the solver's obstacle, held at `pose`.
-fn scan_obstacle(grid: SdfGridLayout, values: Vec<f64>, pose: Pose) -> Obstacle {
+pub(super) fn scan_obstacle(grid: SdfGridLayout, values: Vec<f64>, pose: Pose) -> Obstacle {
     Obstacle {
         grid,
         values,
@@ -552,7 +566,7 @@ fn grid_error_on_the_scan(obstacle: &Obstacle, surface: &IndexedMesh, bar: f64) 
 /// The product's wall meshed near `target` element size from an SDF source of `sdf_faces` faces: a first
 /// mesh at the old path's 4 mm lattice, then secant steps on the lattice spacing until the element size is
 /// within 2 % of `target` (at most three).
-fn wall_at_size(
+pub(super) fn wall_at_size(
     scan: &IndexedMesh,
     design: &cf_device_types::SimDesign,
     caps: &[cf_cap_planes::CapPlane],
@@ -582,7 +596,7 @@ fn wall_at_size(
 
 /// The product's loading: at the tube's rung speed in its innermost material, over its insertion path and
 /// plan §15b's start gap, then §15b's hold. Returns the loading time and the hold.
-fn product_loading(
+pub(super) fn product_loading(
     geometry: &InsertionGeometry,
     design: &cf_device_types::SimDesign,
     centerline: &[Point3<f64>],
@@ -613,7 +627,7 @@ fn product_loading(
 
 /// What one model costs: its rest step, a run's steps, and a press over D4 at K1's per-step budget
 /// (`budget` on `k1_elements`) and on the CPU as timed. Prints one line; returns the rest step.
-fn cost_line(
+pub(super) fn cost_line(
     label: &str,
     model: &ExplicitModel,
     obstacle: &Obstacle,
@@ -635,6 +649,40 @@ fn cost_line(
         steps
     );
     step
+}
+
+/// K1's per-step budget: 2 minutes over the damped 100k tube's steps at the ladder's rung; and the tube's
+/// element count. Prints one line.
+pub(super) fn k1_budget() -> (f64, usize) {
+    let k1 = tube_run(TubeMesh::HundredK);
+    let k1_tube = Tube::plan(TubeMesh::HundredK);
+    let k1_model = k1_tube.model(k1.material(), Walls::Free).unwrap();
+    let k1_step = rest_step(&k1_model, &k1.obstacle(&k1_tube).unwrap());
+    let k1_steps = run_steps(k1.insertion.loading_time, k1.insertion.hold, k1_step);
+    let budget = (K1_SECONDS / k1_steps, k1_model.element_count());
+    println!(
+        "K1: 100k tube at {LOADING_RUNG} T_s, rest step {:.3} us, {:.0} steps ⇒ {:.3} ms a step on {} elements [PUBLIC: the tube]",
+        1e6 * k1_step,
+        k1_steps,
+        1e3 * budget.0,
+        budget.1
+    );
+    budget
+}
+
+/// The rigid pose at the start of the product's path, as the solver's [`Pose`].
+pub(super) fn start_pose(centerline: &[Point3<f64>]) -> Pose {
+    let iso = slide_pose_at(centerline, 0.0);
+    let (q, t) = (iso.rotation, iso.translation.vector);
+    Pose {
+        qw: q.w,
+        qx: q.i,
+        qy: q.j,
+        qz: q.k,
+        tx: t.x,
+        ty: t.y,
+        tz: t.z,
+    }
 }
 
 /// §16j's measurement of the product's budget. Prints a report; asserts nothing about the product.
@@ -663,46 +711,16 @@ fn the_products_budget_on_the_explicit_solver() {
         1e3 * target
     );
 
-    // The truths: the closed scan's distance for the obstacle and G2; the scan less its caps for the canal,
-    // which the mesher offsets from the cap-stripped scan's distance near the mouth (`pinned_floor_shell`).
-    // Both signed by the closed scan's 1 mm flood-filled grid, which is also the step estimates' obstacle.
+    // The truths: the closed scan's distance for the obstacle and G2, signed by its 1 mm flood-filled grid,
+    // which is also the step estimates' obstacle; the scan less its caps for the canal, which the mesher
+    // offsets from the cap-stripped scan's distance near the mouth (`pinned_floor_shell`).
     let bounds = scan_aabb(&scan, 0.004);
     let closed = TriMeshDistance::new(scan.clone()).expect("the scan's distance must build");
-    let (grid_1mm, values_1mm, sign) = scan_grid(&closed, bounds, 0.001, 0.0);
-    let canal_truth = Truth {
-        distance: TriMeshDistance::new(cf_cap_planes::dome_wall_only_mesh(&scan, &caps))
-            .expect("the cap-stripped scan's distance must build"),
-        sign,
-    };
-    let start_pose = {
-        let iso = slide_pose_at(&centerline, 0.0);
-        let (q, t) = (iso.rotation, iso.translation.vector);
-        Pose {
-            qw: q.w,
-            qx: q.i,
-            qy: q.j,
-            qz: q.k,
-            tx: t.x,
-            ty: t.y,
-            tz: t.z,
-        }
-    };
-    let obstacle = scan_obstacle(grid_1mm, values_1mm, start_pose);
+    let (grid_1mm, values_1mm, _) = scan_grid(&closed, bounds, 0.001, 0.0);
+    let canal_truth = canal_truth(&scan, &caps);
+    let obstacle = scan_obstacle(grid_1mm, values_1mm, start_pose(&centerline));
 
-    // K1's per-step budget: 2 minutes over the damped 100k tube's steps at the ladder's rung.
-    let k1 = tube_run(TubeMesh::HundredK);
-    let k1_tube = Tube::plan(TubeMesh::HundredK);
-    let k1_model = k1_tube.model(k1.material(), Walls::Free).unwrap();
-    let k1_step = rest_step(&k1_model, &k1.obstacle(&k1_tube).unwrap());
-    let k1_steps = run_steps(k1.insertion.loading_time, k1.insertion.hold, k1_step);
-    let k1 = (K1_SECONDS / k1_steps, k1_model.element_count());
-    println!(
-        "K1: 100k tube at {LOADING_RUNG} T_s, rest step {:.3} us, {:.0} steps ⇒ {:.3} ms a step on {} elements [PUBLIC: the tube]",
-        1e6 * k1_step,
-        k1_steps,
-        1e3 * k1.0,
-        k1.1
-    );
+    let k1 = k1_budget();
 
     let (geometry, cell) = wall_at_size(&scan, &design, &caps, target, 2_500);
     let densities = densities(&geometry, &design);
@@ -886,7 +904,7 @@ fn the_products_budget_on_the_explicit_solver() {
     for cell in [0.001, 0.0005, 0.00025] {
         for sigma in [0.0, GRID_SDF_SMOOTH_SIGMA_CELLS] {
             let (grid, values, _) = scan_grid(&closed, bounds, cell, sigma);
-            let grid_obstacle = scan_obstacle(grid, values, start_pose);
+            let grid_obstacle = scan_obstacle(grid, values, start_pose(&centerline));
             let all = grid_error_on_the_scan(&grid_obstacle, &scan, bar);
             let off_the_discs = grid_error_on_the_scan(&grid_obstacle, &sides, bar);
             for (label, error) in [
@@ -898,16 +916,16 @@ fn the_products_budget_on_the_explicit_solver() {
                     .map(|(c, n)| (error.deepest - c).dot(&n.normalize()).abs())
                     .fold(f64::INFINITY, f64::min);
                 println!(
-                    "G2 grid {:.2} mm, pre-smooth {sigma} cell, {label}: deeper than the bar at {:.2} % | penetration over the bar p95 {:.3} p99 {:.3} p99.9 {:.3} worst {:.3}, {:.2} h_K2 from a cap plane | shortfall p95 {:.3} worst {:.3} [PUBLIC]; {} points [LOCAL]",
+                    "G2 grid {:.2} mm, pre-smooth {sigma} cell, {label}: deeper than the bar at {:.2} % | penetration over the bar p95 {:.3} p99 {:.3} p99.9 {:.3} worst {:.3}, shortfall p95 {:.3} worst {:.3} [PUBLIC]; {:.2} h_K2 from a cap plane, {} points [LOCAL]",
                     1e3 * cell,
                     100.0 * error.over_bar,
                     error.penetration[0],
                     error.penetration[1],
                     error.penetration[2],
                     error.penetration[3],
-                    from_the_caps / target,
                     error.gap[0],
                     error.gap[1],
+                    from_the_caps / target,
                     error.points
                 );
             }
@@ -1096,11 +1114,12 @@ fn a_box(half: [f64; 3]) -> IndexedMesh {
     mesh
 }
 
-/// A mesh's [`Truth`], signed by a 1 mm grid.
+/// A closed mesh's [`Truth`].
 fn truth_of(mesh: &IndexedMesh) -> Truth {
-    let distance = TriMeshDistance::new(mesh.clone()).unwrap();
-    let (_, _, sign) = scan_grid(&distance, scan_aabb(mesh, 0.004), 0.001, 0.0);
-    Truth { distance, sign }
+    Truth {
+        distance: TriMeshDistance::new(mesh.clone()).unwrap(),
+        sign: ParitySign::new(mesh).unwrap(),
+    }
 }
 
 #[test]
