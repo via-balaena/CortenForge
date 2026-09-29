@@ -2,14 +2,19 @@
 //! closed end, on the fitted path, with the rules §16x set before its runs. Six stages and three diagnostics, each an
 //! ignored test:
 //! - [`step7_ladder`], rule 1: the loading time, at h_K2;
-//! - [`step7_sizes`], rule 2: the element size, at a loading, and rule 1 again at the size it picks;
+//! - [`step7_sizes`], rule 2: the element size, at a loading, and rule 1 again at the size it picks (§16z: with an
+//!   eight-times wall, and a replicate at four times);
 //! - [`step7_at_h_k2`], rules 3, 5, 10 and 11 at h_K2 and a loading, with the push's linearity in friction;
 //! - [`step7_room`], the room on step 7's wall;
 //! - [`step7_cost`], G6: a press timed at a loading and a size, with the probe's own instruments off;
 //! - [`step7_blow_up`] and [`step7_stiffening`], the element collapsing at the seated tip, one change at a time;
 //! - [`step7_stabilized`], exploratory: the volumetric stabilization's ladder against the collapse and D1's readings
 //!   (§16y);
-//! - [`step7_masked`], §16y rule 2: the stabilization on the collapsing elements alone, against the element as it is.
+//! - [`step7_masked`], §16y rule 2: the stabilization on the collapsing elements alone, against the element as it is;
+//!   §16z runs it up to 25μ and prints U20's reading and the two sides of U11's verdict it bears on.
+//!
+//! A comparison reads its two runs at one re-estimate interval (§16z): where §16y's rule 1 ran one every 50 steps and
+//! the other stood at the loop's 500, the other is run again every 50 steps ([`at_one_interval`]).
 //!
 //! Every run prints D1's readings, the sideways force and twist, G1 and G2 against the scan's exact distance, the band's
 //! monitors, the validity gates and K4, and the seated window and contact work in quarters of the hold (rules 6–9). A
@@ -17,8 +22,8 @@
 //! rule 10's probe holds are not gated.
 //!
 //! A stage's loading is `STEP7_LOADING`, in multiples of the budget's (default 1; §16x's runs used 4 for every stage but
-//! the ladder); `step7_cost`'s size is `STEP7_SIZE`, 0, 1 or 2 for one, two and four times h_K2's element count
-//! (default 0). Run each with
+//! the ladder); `step7_cost`'s size is `STEP7_SIZE`, 0, 1, 2 or 3 for one, two, four and eight times h_K2's element
+//! count (default 0). Run each with
 //! `RAYON_NUM_THREADS=4 cargo test --release -p cf-sim-research --bin cf-sim-research --
 //! insertion_sim::step7_first_run::<stage> --ignored --nocapture`, the scan at `~/scans/base_mold.cleaned.stl` (or
 //! `CF_SIM_RESEARCH_PRODUCT_SCAN`).
@@ -91,8 +96,20 @@ const PUMPING_BAR: f64 = 0.01;
 /// Rule 11: every force within this of twice, 15d.10's bar.
 const SCALING_BAR: f64 = 0.02;
 
-/// Rule 2's element counts, over h_K2's.
-const SIZES: [f64; 3] = [1.0, 2.0, 4.0];
+/// Rule 2's element counts, over h_K2's; eight times judges four times' doubling (§16z).
+const SIZES: [f64; 4] = [1.0, 2.0, 4.0, 8.0];
+
+/// The sizes rule 2 runs a replicate at, on a lattice shifted half a cell, as indices into [`SIZES`]: h_K2's (§16x),
+/// and four times its elements, whose doubling decides if any does (§16z).
+const REPLICATES: [usize; 2] = [0, 2];
+
+/// Rule 2's deciding readings (§16x): the patch at each corner and the geometric share, with the corner each is read at.
+const DECIDING: [(&str, usize); 4] = [
+    ("patch at 0", 0),
+    ("patch at the lowest", 1),
+    ("patch at the highest", 2),
+    ("geometric share", 0),
+];
 
 /// Rule 3's Poisson's ratios.
 const POISSONS: [f64; 3] = [0.49, 0.495, 0.4975];
@@ -1089,6 +1106,242 @@ fn counting(attempt: Run, (mut again, readings): (Run, Readings)) -> (Run, Readi
     (again, readings)
 }
 
+/// What a run presses: the wall, its model and its start.
+#[derive(Clone, Copy)]
+struct Pressed<'a> {
+    wall: &'a Wall,
+    model: &'a ExplicitModel,
+    start: f64,
+}
+
+/// A wall mounted for a stage's runs: its model as it is, its start and its loading.
+struct Mounted {
+    wall: Wall,
+    model: ExplicitModel,
+    start: f64,
+    loading: f64,
+}
+
+impl Mounted {
+    /// `wall` lowered at ν 0.49 with Ecoflex 00-30's `η/μ`, its line printed, at `factor` times the budget's loading.
+    fn new(stage: &Stage, wall: Wall, label: &str, factor: f64) -> Self {
+        let model = wall.model(POISSON, 1.0, 1.0);
+        let start = stage.wall_line(label, &wall, &model);
+        let loading = factor * Stage::budget_loading(&wall, start);
+        Self {
+            wall,
+            model,
+            start,
+            loading,
+        }
+    }
+
+    fn on(&self) -> Pressed<'_> {
+        Pressed {
+            wall: &self.wall,
+            model: &self.model,
+            start: self.start,
+        }
+    }
+}
+
+/// A run's readings: the settings of the run that was kept, its label, the labels of its kept runs in which K4 failed
+/// (§15a: an element inverted though the validity gates held) and of those that stopped with an element inverted (K4
+/// not read), and its readings every 50 steps once a comparison asked for them (§16z).
+#[derive(Clone)]
+struct Cell {
+    spec: Spec,
+    label: String,
+    k4: Vec<String>,
+    k4_unread: Vec<String>,
+    readings: Readings,
+    fifty: Option<Readings>,
+}
+
+impl Cell {
+    /// Press `on` at `spec`, by [`press`], with §16y rule 1's re-run.
+    fn press(stage: &mut Stage, on: Pressed, spec: Spec, label: String) -> (Self, Run) {
+        let (run, readings) = press(stage, on.wall, on.model, on.start, spec, &label);
+        let (stopped, inverted) = (run.stopped.is_some(), gates::inverted(&run.samples()));
+        let named = |yes: bool| if yes { vec![label.clone()] } else { Vec::new() };
+        let (k4, k4_unread) = (
+            named(k4_fails(stopped, gates_hold(&run), inverted)),
+            named(stopped && inverted),
+        );
+        let cell = Self {
+            spec: run.spec,
+            label,
+            k4,
+            k4_unread,
+            readings,
+            fifty: None,
+        };
+        (cell, run)
+    }
+
+    /// The re-estimate interval its kept run stood at, or ended at.
+    fn every(&self) -> u64 {
+        self.spec.reestimate_every
+    }
+
+    /// Whether its readings stand ([`falls_short`]).
+    fn stood(&self) -> bool {
+        self.readings.patch.is_finite()
+    }
+
+    /// Its readings from its run made again with the step re-estimated every 50 steps, once ([`run_again`] asks only of
+    /// a run kept at another interval). Where both stand, the change is printed: the interval's own effect.
+    fn at_fifty(&mut self, stage: &mut Stage, on: Pressed) -> Readings {
+        if let Some(readings) = self.fifty {
+            return readings;
+        }
+        let spec = Spec {
+            reestimate_every: 50,
+            ..self.spec
+        };
+        let label = format!("{}, every 50 steps to match its comparison", self.label);
+        let (again, _) = Self::press(stage, on, spec, label);
+        let readings = again.readings;
+        let stood = again.stood();
+        self.k4.extend(again.k4);
+        self.k4_unread.extend(again.k4_unread);
+        if stood {
+            println!(
+                "    the interval: every 50 steps over every {}, on a run that stood at both: patch {:+.3} %, 10 mm \
+                 push {:+.3} %, peak push {:+.3} % [PUBLIC]",
+                self.every(),
+                100.0 * change(self.readings.patch, readings.patch),
+                100.0 * change(self.readings.share, readings.share),
+                100.0 * change(self.readings.peak, readings.peak)
+            );
+        } else {
+            println!("    the interval: the run made again every 50 steps did not stand [PUBLIC]");
+        }
+        self.fifty = Some(readings);
+        readings
+    }
+}
+
+/// Whether K4 failed in a kept run: it did not stop, its validity gates held, and an element inverted (§15a).
+fn k4_fails(stopped: bool, gates: bool, inverted: bool) -> bool {
+    !stopped && gates && inverted
+}
+
+/// Whether two runs need one to run again every 50 steps to be read at one interval (§16z): both stood, at different
+/// intervals.
+fn needs_one_interval(a: &Cell, b: &Cell) -> bool {
+    a.every() != b.every() && a.stood() && b.stood()
+}
+
+/// Two runs' readings at one re-estimate interval (§16z): where §16y rule 1 ran one every 50 steps and the other stood at
+/// the loop's interval, the other is run again every 50 steps. A run that did not stand is read as it is, which the
+/// rules read as not judged.
+fn at_one_interval(
+    stage: &mut Stage,
+    (a, on_a): (&mut Cell, Pressed),
+    (b, on_b): (&mut Cell, Pressed),
+) -> (Readings, Readings) {
+    let [again_a, again_b] = run_again(a, b);
+    let read_a = if again_a {
+        a.at_fifty(stage, on_a)
+    } else {
+        a.readings
+    };
+    let read_b = if again_b {
+        b.at_fifty(stage, on_b)
+    } else {
+        b.readings
+    };
+    (read_a, read_b)
+}
+
+/// Which of two runs is run again every 50 steps to read them at one interval: the one kept at another interval, when
+/// both stood at different intervals ([`needs_one_interval`]).
+fn run_again(a: &Cell, b: &Cell) -> [bool; 2] {
+    let needs = needs_one_interval(a, b);
+    [needs && a.every() != 50, needs && b.every() != 50]
+}
+
+/// The K4 line over a stage's cells, the element as it is.
+fn k4_line(cells: &[&Cell]) {
+    println!("{}", k4_text(cells));
+}
+
+/// K4 over a stage's cells: every kept run in which it failed, and every kept run that stopped with an element
+/// inverted, where it is not read (§16x).
+fn k4_text(cells: &[&Cell]) -> String {
+    let named = |f: fn(&Cell) -> &Vec<String>| {
+        cells
+            .iter()
+            .flat_map(|c| f(c))
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join("; ")
+    };
+    let (failed, unread) = (named(|c| &c.k4), named(|c| &c.k4_unread));
+    let mut text = if failed.is_empty() {
+        "K4 [PUBLIC]: holds in every kept run that stood (an inversion §16y rule 1 ran again is not K4's, §15a)"
+            .to_owned()
+    } else {
+        format!(
+            "K4 [PUBLIC]: ⚠ FAILS, an element inverted in a valid run: {failed}; §15a sends K4 to the element or the \
+             loading time, and it is one of §15g step 2's stop criteria"
+        )
+    };
+    if !unread.is_empty() {
+        text.push_str(&format!(
+            "; not read in the kept runs that stopped with an element inverted: {unread}"
+        ));
+    }
+    text
+}
+
+/// The interval rule's reading over a stage's cells.
+fn interval_line(cells: &[&Cell]) {
+    println!("{}", interval_text(cells));
+}
+
+/// The interval rule's reading: of the runs made again every 50 steps that stood at both intervals, the most a
+/// deciding reading moved (the patch, and the geometric share at μ_f 0), against K3's 0.5 %.
+fn interval_text(cells: &[&Cell]) -> String {
+    let moved: Vec<f64> = cells
+        .iter()
+        .filter_map(|cell| {
+            let other = cell.fifty.filter(|r| r.patch.is_finite())?;
+            let share = if cell.spec.friction == 0.0 {
+                change(cell.readings.share, other.share).abs()
+            } else {
+                0.0
+            };
+            Some(change(cell.readings.patch, other.patch).abs().max(share))
+        })
+        .collect();
+    let Some(largest) = moved.iter().copied().reduce(f64::max) else {
+        return "§16z's interval rule [PUBLIC]: no run made again every 50 steps stood at both, so not read"
+            .to_owned();
+    };
+    format!(
+        "§16z's interval rule [PUBLIC]: {} runs made again every 50 steps stood at both; the most a deciding reading \
+         moved {:.3} %{}",
+        moved.len(),
+        100.0 * largest,
+        if largest > K3_BAR {
+            " ⚠ past K3's 0.5 %: D1's readings depend on the step control, which goes to Jon beside D1's size"
+        } else {
+            ""
+        }
+    )
+}
+
+/// The replicate a doubling from `SIZES[k]` is read against, as an index into `replicates` (indices into [`SIZES`]):
+/// the one at its coarser size, or the nearest coarser.
+fn scatter_for(k: usize, replicates: &[usize]) -> usize {
+    replicates
+        .iter()
+        .rposition(|&r| r <= k)
+        .expect("a replicate at or below every size")
+}
+
 /// The model's boundary nodes.
 fn surface_nodes(model: &ExplicitModel) -> Vec<u32> {
     let mut nodes: Vec<u32> = model
@@ -1513,199 +1766,424 @@ fn step7_ladder() {
     }
 }
 
-/// Rule 2: the element size, at `STEP7_LOADING`; and rule 1's check at the size it picks (§16x).
+/// §16z's size rule (§16x rule 2 with an eight-times wall), at `STEP7_LOADING`, over [`SIZES`] with a replicate at each
+/// of [`REPLICATES`]; the interval rule's reading; and the loading check at the size used. Every wall is built and
+/// checked before the first run.
 #[test]
 #[ignore = "needs the repo-excluded product scan; run with --release --ignored --nocapture"]
 fn step7_sizes() {
     let factor = env_number("STEP7_LOADING", 1.0);
-    let mut stage = Stage::new(&format!("rule 2, the element size, loading ×{factor}"));
+    let mut stage = Stage::new(&format!("§16z's size rule, loading ×{factor}"));
     let corners = corners();
-    let deciding = |r: &[Readings; 3]| [r[0].patch, r[1].patch, r[2].patch, r[0].share];
-    let mut sizes: Vec<(f64, usize, [Readings; 3], Wall)> = Vec::new();
-    for size in SIZES {
-        let wall = Wall::build(&stage.scene, stage.h_k2 / size.cbrt(), None, [0.0; 3]);
-        let model = wall.model(POISSON, 1.0, 1.0);
-        let start = stage.wall_line(&format!("×{size}"), &wall, &model);
-        let loading = factor * Stage::budget_loading(&wall, start);
-        let readings = corners.map(|friction| {
-            press(
-                &mut stage,
-                &wall,
-                &model,
-                start,
-                spec(friction, loading),
-                &format!("×{size}, μ_f {friction}"),
-            )
-            .1
-        });
-        sizes.push((element_size(&model), model.element_count(), readings, wall));
-    }
-    let replicate = {
-        let cell = sizes[0].3.cell;
-        let wall = Wall::build(&stage.scene, stage.h_k2, Some(cell), [0.5 * cell; 3]);
-        let model = wall.model(POISSON, 1.0, 1.0);
-        let start = stage.wall_line("h_K2 replicate, lattice shifted half a cell", &wall, &model);
-        let loading = factor * Stage::budget_loading(&wall, start);
-        corners.map(|friction| {
-            press(
-                &mut stage,
-                &wall,
-                &model,
-                start,
-                spec(friction, loading),
-                &format!("replicate, μ_f {friction}"),
-            )
-            .1
+    let walls: Vec<Mounted> = SIZES
+        .iter()
+        .map(|&size| {
+            let wall = Wall::build(&stage.scene, stage.h_k2 / size.cbrt(), None, [0.0; 3]);
+            Mounted::new(&stage, wall, &format!("×{size}"), factor)
         })
+        .collect();
+    let shifted: Vec<Mounted> = REPLICATES
+        .iter()
+        .map(|&k| {
+            let cell = walls[k].wall.cell;
+            let target = stage.h_k2 / SIZES[k].cbrt();
+            let wall = Wall::build(&stage.scene, target, Some(cell), [0.5 * cell; 3]);
+            let label = format!("×{} replicate, lattice shifted half a cell", SIZES[k]);
+            Mounted::new(&stage, wall, &label, factor)
+        })
+        .collect();
+    let mut press_all = |mounted: &Mounted, name: &str| -> Vec<Cell> {
+        corners
+            .iter()
+            .map(|&friction| {
+                let spec = spec(friction, mounted.loading);
+                let label = format!("{name}, μ_f {friction}");
+                Cell::press(&mut stage, mounted.on(), spec, label).0
+            })
+            .collect()
     };
-    let names = [
-        "patch at 0",
-        "patch at the lowest",
-        "patch at the highest",
-        "geometric share",
-    ];
-    let values: Vec<[f64; 4]> = sizes.iter().map(|s| deciding(&s.2)).collect();
-    let scatter = deciding(&replicate);
+    let mut sizes: Vec<(Mounted, Vec<Cell>)> = walls
+        .into_iter()
+        .zip(SIZES)
+        .map(|(mounted, size)| {
+            let cells = press_all(&mounted, &format!("×{size}"));
+            (mounted, cells)
+        })
+        .collect();
+    let mut replicates: Vec<(Mounted, Vec<Cell>)> = shifted
+        .into_iter()
+        .zip(REPLICATES)
+        .map(|(mounted, k)| {
+            let cells = press_all(&mounted, &format!("×{} replicate", SIZES[k]));
+            (mounted, cells)
+        })
+        .collect();
+    // Each doubling's and each replicate's pair of readings per corner, at one interval.
+    let doublings: Vec<Vec<(Readings, Readings)>> = (0..SIZES.len() - 1)
+        .map(|k| {
+            let (coarse, fine) = sizes.split_at_mut(k + 1);
+            let ((a, a_cells), (b, b_cells)) = (&mut coarse[k], &mut fine[0]);
+            (0..corners.len())
+                .map(|c| {
+                    at_one_interval(
+                        &mut stage,
+                        (&mut a_cells[c], a.on()),
+                        (&mut b_cells[c], b.on()),
+                    )
+                })
+                .collect()
+        })
+        .collect();
+    let scatters: Vec<Vec<(Readings, Readings)>> = REPLICATES
+        .iter()
+        .zip(&mut replicates)
+        .map(|(&k, (r, r_cells))| {
+            let (a, a_cells) = &mut sizes[k];
+            (0..corners.len())
+                .map(|c| {
+                    at_one_interval(
+                        &mut stage,
+                        (&mut a_cells[c], a.on()),
+                        (&mut r_cells[c], r.on()),
+                    )
+                })
+                .collect()
+        })
+        .collect();
+    let deciding = |pairs: &[(Readings, Readings)], i: usize| {
+        let (a, b) = pairs[DECIDING[i].1];
+        change(deciding_reading(&a, i), deciding_reading(&b, i))
+    };
+    // A doubling is read against the scatter of the replicate at its coarser size, or the nearest coarser.
+    let scatter_for = |k: usize| scatter_for(k, &REPLICATES);
     println!(
-        "\nrule 2 [PUBLIC]: element counts over h_K2's {:.2} and {:.2}",
-        sizes[1].1 as f64 / sizes[0].1 as f64,
-        sizes[2].1 as f64 / sizes[0].1 as f64
+        "\n§16z's size rule [PUBLIC]: element counts over h_K2's {}",
+        sizes[1..]
+            .iter()
+            .map(|s| format!(
+                "{:.2}",
+                s.0.model.element_count() as f64 / sizes[0].0.model.element_count() as f64
+            ))
+            .collect::<Vec<_>>()
+            .join(", ")
     );
-    for (i, name) in names.iter().enumerate() {
-        println!(
-            "  {name}: ×1 → ×2 {:+.2} %, ×2 → ×4 {:+.2} %, ×1 → ×4 {:+.2} %; the replicate against ×1 {:+.2} %; fit: {}",
-            100.0 * change(values[0][i], values[1][i]),
-            100.0 * change(values[1][i], values[2][i]),
-            100.0 * change(values[0][i], values[2][i]),
-            100.0 * change(values[0][i], scatter[i]),
-            fit(
-                &sizes.iter().map(|s| s.0).collect::<Vec<_>>(),
-                &values.iter().map(|v| v[i]).collect::<Vec<_>>()
-            )
-        );
-    }
-    for (label, k) in [("the lowest", 1), ("the highest", 2)] {
-        println!(
-            "  beside, for Jon: the peak push at {label} μ_f: ×1 → ×2 {:+.2} %, ×2 → ×4 {:+.2} %, ×1 → ×4 {:+.2} %; replicate {:+.2} %",
-            100.0 * change(sizes[0].2[k].peak, sizes[1].2[k].peak),
-            100.0 * change(sizes[1].2[k].peak, sizes[2].2[k].peak),
-            100.0 * change(sizes[0].2[k].peak, sizes[2].2[k].peak),
-            100.0 * change(sizes[0].2[k].peak, replicate[k].peak)
-        );
-    }
-    let noisy = (0..4).any(|i| change(values[0][i], scatter[i]).abs() >= K5_BAR);
-    // A size passes if every deciding reading moves at most 5 % over its doubling, fails if any moves more, and is not
-    // judged otherwise: a run behind a reading did not stand.
-    let doubling = |k: usize| {
-        let moves: Vec<f64> = (0..4)
-            .map(|i| change(values[k][i], values[k + 1][i]))
-            .collect();
-        if moves.iter().any(|m| m.abs() > K5_BAR) {
-            Some(false)
-        } else if moves.iter().all(|m| m.is_finite()) {
-            Some(true)
-        } else {
-            None
+    let h: Vec<f64> = sizes.iter().map(|s| element_size(&s.0.model)).collect();
+    let mut outcomes = vec![Outcome::Pass; doublings.len()];
+    for (i, (name, c)) in DECIDING.iter().enumerate() {
+        let mut moves = Vec::new();
+        for (k, pairs) in doublings.iter().enumerate() {
+            let (m, s) = (deciding(pairs, i), deciding(&scatters[scatter_for(k)], i));
+            moves.push(format!(
+                "×{} → ×{} {:+.2} % against the ×{} replicate's {:.2} % ({:?})",
+                SIZES[k],
+                SIZES[k + 1],
+                100.0 * m,
+                SIZES[REPLICATES[scatter_for(k)]],
+                100.0 * s.abs(),
+                outcome(&[(m, s)])
+            ));
         }
-    };
-    let outcomes = [doubling(0), doubling(1)];
-    let chosen = (0..2).find(|&k| outcomes[k] == Some(true));
-    if noisy {
-        println!("rule 2 ⇒ the replicate's scatter is 5 % or more: the rule cannot tell [PUBLIC]");
-    }
-    match (chosen, outcomes.iter().position(Option::is_none)) {
-        (Some(k), _) => println!(
-            "rule 2 ⇒ D1's readings need ×{} h_K2's element count [PUBLIC]",
-            SIZES[k]
-        ),
-        (None, Some(k)) => println!(
-            "rule 2 ⇒ not judged at ×{}: a run behind a reading did not stand [PUBLIC]",
-            SIZES[k]
-        ),
-        (None, None) => println!(
-            "rule 2 ⇒ open: ×4 or finer (×4 is not judged: that needs a run at ×8); D4 at the fit's size, labelled so \
-             [PUBLIC]"
-        ),
-    }
-    // Rule 1 again at the size rule 2 picks: its loading and twice it.
-    if let Some(k) = chosen.filter(|_| !noisy) {
-        let wall = &sizes[k].3;
-        let model = wall.model(POISSON, 1.0, 1.0);
-        let start = stage.wall_line("rule 1's check", wall, &model);
-        let loading = factor * Stage::budget_loading(wall, start);
-        let [_, _, high] = corners;
-        let free = press(
-            &mut stage,
-            wall,
-            &model,
-            start,
-            spec(0.0, 2.0 * loading),
-            "twice the loading, μ_f 0",
-        )
-        .1;
-        let rough = press(
-            &mut stage,
-            wall,
-            &model,
-            start,
-            spec(high, 2.0 * loading),
-            &format!("twice the loading, μ_f {high}"),
-        )
-        .1;
-        let at = &sizes[k].2;
-        let moves = [
-            change(at[2].peak, rough.peak),
-            change(at[0].share, free.share),
-            change(at[0].patch, free.patch),
-            change(at[2].patch, rough.patch),
-        ];
+        // The finest three sizes' own readings.
+        let finest = SIZES.len() - 3;
+        let read = |k: usize| deciding_reading(&sizes[k].1[*c].readings, i);
+        let mixed =
+            (finest..SIZES.len()).any(|k| sizes[k].1[*c].every() != sizes[finest].1[*c].every());
+        let fit = Fit::through(
+            [h[finest], h[finest + 1], h[finest + 2]],
+            [read(finest), read(finest + 1), read(finest + 2)],
+        );
+        let fit_text = match fit {
+            Err(why) => why.to_owned(),
+            Ok(f) => format!(
+                "order {:.2}; remaining error {}",
+                f.order,
+                (finest + 1..SIZES.len())
+                    .map(|k| format!("×{} {:.2} %", SIZES[k], 100.0 * f.remaining(h[k])))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        };
         println!(
-            "rule 1 at ×{}: twice the loading moves the readings {:+.2} %, {:+.2} %, {:+.2} %, {:+.2} % ⇒ {} [PUBLIC]",
-            SIZES[k],
-            100.0 * moves[0],
-            100.0 * moves[1],
-            100.0 * moves[2],
-            100.0 * moves[3],
-            if moves.iter().all(|m| m.abs() <= K5_BAR) {
-                "the loading holds"
+            "  {name}: {}; fit over the finest three: {fit_text}{}",
+            moves.join("; "),
+            if mixed {
+                " (its sizes stood at different re-estimate intervals)"
             } else {
-                "rule 1 is read again at this size"
+                ""
             }
         );
     }
-}
-
-/// `r(h) = r∞ + C hᵖ` through three sizes' readings: the order, and each size's remaining error `|r − r∞| / |r∞|`.
-fn fit(h: &[f64], r: &[f64]) -> String {
-    if !r.iter().all(|x| x.is_finite()) {
-        return "a size's run is not valid, no fit".to_owned();
+    for (k, pairs) in doublings.iter().enumerate() {
+        let scatter = &scatters[scatter_for(k)];
+        let each: Vec<(f64, f64)> = (0..DECIDING.len())
+            .map(|i| (deciding(pairs, i), deciding(scatter, i)))
+            .collect();
+        outcomes[k] = outcome(&each);
     }
-    let (d01, d12) = (r[0] - r[1], r[1] - r[2]);
-    if d01 == 0.0 || d12 == 0.0 || d01.signum() != d12.signum() {
-        return "not monotone, no fit".to_owned();
+    for (label, c) in [("the lowest", 1), ("the highest", 2)] {
+        println!(
+            "  beside, for Jon: the peak push at {label} μ_f: {}; the replicates {}",
+            doublings
+                .iter()
+                .enumerate()
+                .map(|(k, pairs)| format!(
+                    "×{} → ×{} {:+.2} %",
+                    SIZES[k],
+                    SIZES[k + 1],
+                    100.0 * change(pairs[c].0.peak, pairs[c].1.peak)
+                ))
+                .collect::<Vec<_>>()
+                .join(", "),
+            REPLICATES
+                .iter()
+                .zip(&scatters)
+                .map(|(&k, pairs)| format!(
+                    "at ×{} {:+.2} %",
+                    SIZES[k],
+                    100.0 * change(pairs[c].0.peak, pairs[c].1.peak)
+                ))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
     }
-    let ratio = |p: f64| (h[0].powf(p) - h[1].powf(p)) / (h[1].powf(p) - h[2].powf(p)) - d01 / d12;
-    let (mut low, mut high) = (0.05, 8.0);
-    if ratio(low).signum() == ratio(high).signum() {
-        return "no order in (0.05, 8)".to_owned();
-    }
-    for _ in 0..100 {
-        let mid = 0.5 * (low + high);
-        if ratio(mid).signum() == ratio(low).signum() {
-            low = mid;
-        } else {
-            high = mid;
+    let verdict = size_verdict(&outcomes);
+    println!(
+        "§16z's size rule: the doublings {} [PUBLIC]",
+        outcomes
+            .iter()
+            .enumerate()
+            .map(|(k, o)| format!("×{} → ×{} {o:?}", SIZES[k], SIZES[k + 1]))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    match verdict {
+        SizeVerdict::Needs(k) => println!(
+            "§16z's size rule ⇒ D1's readings need ×{} h_K2's element count{} [PUBLIC]",
+            SIZES[k],
+            if k > 0 && outcomes[k - 1] != Outcome::Fail {
+                " (the doubling before has no verdict, so a coarser size may do)"
+            } else {
+                ""
+            }
+        ),
+        SizeVerdict::NoVerdict(k, why) => println!(
+            "§16z's size rule ⇒ no size: ×{}'s doubling is {why:?} [PUBLIC]",
+            SIZES[k]
+        ),
+        SizeVerdict::Open => {
+            let finest = *SIZES.last().unwrap();
+            println!(
+                "§16z's size rule ⇒ open: ×{finest} or finer (×{finest} is not judged: that needs a run at ×{}) \
+                 [PUBLIC]",
+                2.0 * finest
+            );
         }
     }
-    let p = 0.5 * (low + high);
-    let c = d12 / (h[1].powf(p) - h[2].powf(p));
-    let limit = r[2] - c * h[2].powf(p);
-    format!(
-        "order {p:.2}, remaining error ×1 {:.2} %, ×2 {:.2} %, ×4 {:.2} %",
-        100.0 * ((r[0] - limit) / limit).abs(),
-        100.0 * ((r[1] - limit) / limit).abs(),
-        100.0 * ((r[2] - limit) / limit).abs()
-    )
+    // The size the masked rule, the loading check and G6 use: the size picked, else the finest whose runs all stood.
+    let used = match verdict {
+        SizeVerdict::Needs(k) => Some(k),
+        _ => (0..SIZES.len())
+            .rev()
+            .find(|&k| sizes[k].1.iter().all(Cell::stood)),
+    };
+    let Some(k) = used else {
+        println!(
+            "the size used: none, no size's runs all stood; the loading check is not run [PUBLIC]"
+        );
+        let cells: Vec<&Cell> = sizes.iter().chain(&replicates).flat_map(|s| &s.1).collect();
+        interval_line(&cells);
+        k4_line(&cells);
+        return;
+    };
+    println!(
+        "the size used by the masked rule, the loading check and G6: ×{}{} [PUBLIC]",
+        SIZES[k],
+        if matches!(verdict, SizeVerdict::Needs(_)) {
+            ""
+        } else {
+            ", the finest whose runs all stood, not a size the rule picked"
+        }
+    );
+    // The loading check (§16x rule 1's) at that size: its loading and twice it.
+    let [_, _, high] = corners;
+    let mut twice_cells: Vec<Cell> = Vec::new();
+    let twice: Vec<(Readings, Readings)> = {
+        let (mounted, cells) = &mut sizes[k];
+        [0, 2]
+            .into_iter()
+            .map(|c| {
+                let friction = corners[c];
+                let spec = spec(friction, 2.0 * mounted.loading);
+                let label = format!("×{}, twice the loading, μ_f {friction}", SIZES[k]);
+                let (mut again, _) = Cell::press(&mut stage, mounted.on(), spec, label);
+                let pair = at_one_interval(
+                    &mut stage,
+                    (&mut cells[c], mounted.on()),
+                    (&mut again, mounted.on()),
+                );
+                twice_cells.push(again);
+                pair
+            })
+            .collect()
+    };
+    let moves = [
+        change(twice[1].0.peak, twice[1].1.peak),
+        change(twice[0].0.share, twice[0].1.share),
+        change(twice[0].0.patch, twice[0].1.patch),
+        change(twice[1].0.patch, twice[1].1.patch),
+    ];
+    println!(
+        "the loading check at ×{}: twice the loading moves the peak push at μ_f {high}, the geometric share, and the patch \
+         at 0 and at {high} by {:+.2} %, {:+.2} %, {:+.2} %, {:+.2} % ⇒ {} [PUBLIC]",
+        SIZES[k],
+        100.0 * moves[0],
+        100.0 * moves[1],
+        100.0 * moves[2],
+        100.0 * moves[3],
+        loading_verdict(&moves)
+    );
+    let cells: Vec<&Cell> = sizes
+        .iter()
+        .chain(&replicates)
+        .flat_map(|s| &s.1)
+        .chain(&twice_cells)
+        .collect();
+    interval_line(&cells);
+    k4_line(&cells);
+}
+
+/// The loading check's reading: open if a reading moves more than 5 %, else holding if every reading was read, else
+/// not judged.
+fn loading_verdict(moves: &[f64]) -> &'static str {
+    if moves.iter().any(|m| m.abs() > K5_BAR) {
+        "the loading is open at this size; the size rule and the masked rule hold at this loading only"
+    } else if moves.iter().all(|m| m.is_finite()) {
+        "the loading holds"
+    } else {
+        "not judged: a run did not stand"
+    }
+}
+
+/// A deciding reading of §16x rule 2's: the patch at a corner, or the geometric share.
+fn deciding_reading(readings: &Readings, i: usize) -> f64 {
+    if i < 3 {
+        readings.patch
+    } else {
+        readings.share
+    }
+}
+
+/// A doubling's outcome over its deciding readings (§16z's size rule), each `(m, s)`: its change and the scatter of the
+/// replicate it is read against. A reading fails if it moves past 5 % by more than `s`, passes if within 5 % by `s`,
+/// and cannot tell between; one not read (a run that did not stand) is not judged. The doubling fails if a reading
+/// fails, else is not judged if one is, else cannot tell if one cannot, else passes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Outcome {
+    Pass,
+    Fail,
+    CannotTell,
+    NotJudged,
+}
+
+fn outcome(readings: &[(f64, f64)]) -> Outcome {
+    let each: Vec<Outcome> = readings
+        .iter()
+        .map(|&(m, s)| {
+            if !(m.is_finite() && s.is_finite()) {
+                Outcome::NotJudged
+            } else if m.abs() - s.abs() > K5_BAR {
+                Outcome::Fail
+            } else if m.abs() + s.abs() <= K5_BAR {
+                Outcome::Pass
+            } else {
+                Outcome::CannotTell
+            }
+        })
+        .collect();
+    [Outcome::Fail, Outcome::NotJudged, Outcome::CannotTell]
+        .into_iter()
+        .find(|o| each.contains(o))
+        .unwrap_or(Outcome::Pass)
+}
+
+/// §16z's size rule over its doublings' outcomes, as indices into [`SIZES`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SizeVerdict {
+    /// The coarsest size from which every doubling passes.
+    Needs(usize),
+    /// None does, and the finest doubling after the last that failed has no verdict: why.
+    NoVerdict(usize, Outcome),
+    /// None does, and the finest doubling fails.
+    Open,
+}
+
+fn size_verdict(outcomes: &[Outcome]) -> SizeVerdict {
+    if let Some(k) =
+        (0..outcomes.len()).find(|&k| outcomes[k..].iter().all(|o| *o == Outcome::Pass))
+    {
+        return SizeVerdict::Needs(k);
+    }
+    let after = outcomes
+        .iter()
+        .rposition(|o| *o == Outcome::Fail)
+        .map_or(0, |k| k + 1);
+    outcomes[after..]
+        .iter()
+        .rposition(|o| *o != Outcome::Pass)
+        .map_or(SizeVerdict::Open, |k| {
+            SizeVerdict::NoVerdict(after + k, outcomes[after + k])
+        })
+}
+
+/// `r(h) = r∞ + C hᵖ` through three sizes' readings (the stop rule's model, §15g step 2).
+#[derive(Clone, Copy, Debug)]
+struct Fit {
+    order: f64,
+    scale: f64,
+    limit: f64,
+}
+
+impl Fit {
+    /// The fit through `(h, r)`, or why there is none.
+    fn through(h: [f64; 3], r: [f64; 3]) -> Result<Self, &'static str> {
+        if !r.iter().all(|x| x.is_finite()) {
+            return Err("a size's run did not stand, no fit");
+        }
+        let (d01, d12) = (r[0] - r[1], r[1] - r[2]);
+        if d01 == 0.0 || d12 == 0.0 || d01.signum() != d12.signum() {
+            return Err("not monotone, no fit");
+        }
+        let ratio =
+            |p: f64| (h[0].powf(p) - h[1].powf(p)) / (h[1].powf(p) - h[2].powf(p)) - d01 / d12;
+        let (mut low, mut high) = (0.05, 8.0);
+        if ratio(low).signum() == ratio(high).signum() {
+            return Err("no order in (0.05, 8)");
+        }
+        for _ in 0..100 {
+            let mid = 0.5 * (low + high);
+            if ratio(mid).signum() == ratio(low).signum() {
+                low = mid;
+            } else {
+                high = mid;
+            }
+        }
+        let order = 0.5 * (low + high);
+        let scale = d12 / (h[1].powf(order) - h[2].powf(order));
+        Ok(Self {
+            order,
+            scale,
+            limit: r[2] - scale * h[2].powf(order),
+        })
+    }
+
+    fn at(&self, h: f64) -> f64 {
+        self.limit + self.scale * h.powf(self.order)
+    }
+
+    /// The error left at `h`, `|r(h) − r∞| / |r∞|`.
+    fn remaining(&self, h: f64) -> f64 {
+        ((self.at(h) - self.limit) / self.limit).abs()
+    }
 }
 
 /// Rules 3, 5, 10 and 11 at h_K2 and `STEP7_LOADING`; the room on step 7's wall, the travel and the push's linearity
@@ -2570,104 +3048,129 @@ the stabilization's ladder at ×{size} [PUBLIC]:"
     }
 }
 
-/// §16y rule 2, whether the collapse moves D1's readings: at `STEP7_SIZE`'s wall (0, 1 or 2 for one, two and four times
-/// h_K2's elements), at each corner, the element as it is; then the same with κ on only the elements that run drove
-/// under half their nodes' averaged J, 2μ to start. An element under half in a masked run has its κ doubled, up to λ,
-/// or joins the mask at 2μ; at most four masked runs, and if one is still under half after them, or those under half
-/// are at λ already, the corner's comparison does not stand.
+/// §16z's masked rule (§16y rule 2 read again): at `STEP7_SIZE`'s wall (0 to 3 for one to eight times h_K2's elements),
+/// at each corner, the element as it is; then the same with κ on only the elements that run drove under half their
+/// nodes' averaged J, 2μ to start. An element under half in a masked run has its κ doubled, up to [`SOURCES_SPAN`] μ
+/// or λ, or joins the mask at 2μ, over [`masked_rounds`] runs; the first run with none under half is the corner's
+/// comparison, and if none clears, or those under half are at the cap already, the corner is not judged. Masked runs
+/// start at the kept run's interval as it is, and the pair is read at one interval ([`at_one_interval`]). Then U20's
+/// reading and U11's two sides.
 #[test]
 #[ignore = "needs the repo-excluded product scan; run with --release --ignored --nocapture"]
 fn step7_masked() {
     let factor = env_number("STEP7_LOADING", 4.0);
     let size = SIZES[env_number("STEP7_SIZE", 0.0) as usize];
     let mut stage = Stage::new(&format!(
-        "§16y rule 2, the collapse against D1's readings at ×{size} h_K2's elements, loading ×{factor}"
+        "§16z's masked rule at ×{size} h_K2's elements, loading ×{factor}"
     ));
     let wall = Wall::build(&stage.scene, stage.h_k2 / size.cbrt(), None, [0.0; 3]);
-    let plain = wall.model(POISSON, 1.0, 1.0);
-    let start = stage.wall_line(&format!("×{size}"), &wall, &plain);
-    let loading = factor * Stage::budget_loading(&wall, start);
+    let mounted = Mounted::new(&stage, wall, &format!("×{size}"), factor);
+    let plain = &mounted.model;
+    let materials = plain.materials();
+    let rounds = masked_rounds(
+        materials
+            .iter()
+            .map(|m| m.lambda / m.mu)
+            .fold(f64::INFINITY, f64::min),
+    );
     let corners = corners();
+    // The runs as it is, and the masked runs apart: K4 is read on the element as it is.
+    let (mut cells, mut masked_cells): (Vec<Cell>, Vec<Cell>) = (Vec::new(), Vec::new());
     let pairs = corners.map(|friction| {
-        let (run, before) = press(
+        let (mut before, run) = Cell::press(
             &mut stage,
-            &wall,
-            &plain,
-            start,
-            spec(friction, loading),
-            &format!("×{size}, as it is, μ_f {friction}"),
+            mounted.on(),
+            spec(friction, mounted.loading),
+            format!("×{size}, as it is, μ_f {friction}"),
         );
-        if !before.patch.is_finite() {
+        if !before.stood() {
             println!("    ×{size}, μ_f {friction}: the run as it is did not stand; nothing is masked [PUBLIC]");
-            return (before, Readings::not_read());
+            cells.push(before.clone());
+            return (before.readings, Readings::not_read(), f64::NAN);
         }
-        // Each masked element's κ over its μ: 2 to start; doubled, up to λ, while it stays under half.
+        // Each masked element's κ over its μ: 2 to start; doubled, up to the cap, while it stays under half.
         let mut mask: BTreeMap<usize, f64> = run.collapse.elements.iter().map(|&e| (e, 2.0)).collect();
-        let mut after = Readings::not_read();
         if mask.is_empty() {
             println!("    ×{size}, μ_f {friction}: no element under half; nothing to mask [PUBLIC]");
-            return (before, before);
+            cells.push(before.clone());
+            return (before.readings, before.readings, 0.0);
         }
-        let materials = plain.materials();
-        for round in 0..4 {
+        let mut accepted: Option<(Cell, ExplicitModel, f64)> = None;
+        for round in 0..rounds {
             let stabilizations = (0..plain.element_count())
-                .map(|e| mask.get(&e).map_or(0.0, |k| (k * materials[e].mu).min(materials[e].lambda)))
+                .map(|e| mask.get(&e).map_or(0.0, |k| k * materials[e].mu))
                 .collect();
             let model = plain
                 .clone()
                 .with_element_stabilizations(stabilizations)
                 .unwrap();
-            let (run, readings) = press(
-                &mut stage,
-                &wall,
-                &model,
-                start,
-                spec(friction, loading),
-                &format!("×{size}, κ on the collapsing elements, round {round}, μ_f {friction}"),
-            );
-            if !readings.patch.is_finite() {
-                println!("    masked, round {round}: the run did not stand; the comparison does not stand [PUBLIC]");
+            let on = Pressed {
+                model: &model,
+                ..mounted.on()
+            };
+            let label = format!("×{size}, κ on the collapsing elements, round {round}, μ_f {friction}");
+            let (cell, run) = Cell::press(&mut stage, on, before.spec, label);
+            masked_cells.push(cell.clone());
+            if !cell.stood() {
+                println!("    masked, round {round}: the run did not stand; the corner is not judged [PUBLIC]");
                 break;
             }
+            let kappa = mask.values().copied().fold(0.0, f64::max);
             println!(
-                "    masked, round {round}: {:.1e} of the wall's elements, κ up to {:.0} μ; under half after: {} \
-                 [PUBLIC]; {} masked, {} under half [LOCAL]",
+                "    masked, round {round}: {:.1e} of the wall's elements, κ up to {kappa:.0} μ; the least element J over \
+                 its nodes' {:.3}, under half after: {}; over as it is (every {} and {} steps): patch {:+.2} %, 10 mm \
+                 push {:+.2} %, peak push {:+.2} % [PUBLIC]; {} masked, {} under half [LOCAL]",
                 mask.len() as f64 / plain.element_count() as f64,
-                mask.values().copied().fold(0.0, f64::max),
+                run.collapse.least,
                 if run.collapse.elements.is_empty() { "none" } else { "some" },
+                before.every(),
+                cell.every(),
+                100.0 * change(before.readings.patch, cell.readings.patch),
+                100.0 * change(before.readings.share, cell.readings.share),
+                100.0 * change(before.readings.peak, cell.readings.peak),
                 mask.len(),
                 run.collapse.elements.len()
             );
             if run.collapse.elements.is_empty() {
-                after = readings;
+                accepted = Some((cell, model, kappa));
                 break;
             }
             let mut changed = false;
             for &e in &run.collapse.elements {
-                let cap = materials[e].lambda / materials[e].mu;
                 let k = mask.entry(e).or_insert(0.0);
-                let next = if *k == 0.0 { 2.0 } else { (2.0 * *k).min(cap) };
+                let next = next_stiffening(*k, materials[e].lambda / materials[e].mu);
                 changed |= next > *k;
                 *k = next;
             }
             if !changed {
-                println!("    the elements under half are masked at λ already: the comparison does not stand [PUBLIC]");
+                println!("    the elements under half are at the cap already: the corner is not judged [PUBLIC]");
                 break;
             }
-            if round == 3 {
-                println!("    still under half after four masked runs: the comparison does not stand [PUBLIC]");
+            if round + 1 == rounds {
+                println!("    still under half after {rounds} masked runs: the corner is not judged [PUBLIC]");
             }
         }
-        (before, after)
+        let Some((mut after, model, kappa)) = accepted else {
+            cells.push(before.clone());
+            return (before.readings, Readings::not_read(), f64::NAN);
+        };
+        let on = Pressed {
+            model: &model,
+            ..mounted.on()
+        };
+        let (a, b) = at_one_interval(&mut stage, (&mut before, mounted.on()), (&mut after, on));
+        cells.push(before);
+        masked_cells.push(after);
+        (a, b, kappa)
     });
-    let deciding = |r: &[&Readings; 3]| {
+    let deciding = |r: [&Readings; 3]| {
         [
             r[0].patch, r[1].patch, r[2].patch, r[0].share, r[1].peak, r[2].peak,
         ]
     };
     let (before, after) = (
-        deciding(&[&pairs[0].0, &pairs[1].0, &pairs[2].0]),
-        deciding(&[&pairs[0].1, &pairs[1].1, &pairs[2].1]),
+        deciding([&pairs[0].0, &pairs[1].0, &pairs[2].0]),
+        deciding([&pairs[0].1, &pairs[1].1, &pairs[2].1]),
     );
     let names = [
         "patch at 0",
@@ -2677,29 +3180,36 @@ fn step7_masked() {
         "peak push at the lowest (for Jon)",
         "peak push at the highest (for Jon)",
     ];
-    println!("\n§16y rule 2 at ×{size} [PUBLIC]: masked over as it is");
+    println!(
+        "\n§16z's masked rule at ×{size} [PUBLIC]: masked over as it is, at one interval; the collapse cleared at κ {} μ \
+         (μ_f 0, the lowest, the highest)",
+        pairs
+            .iter()
+            .map(|p| if p.2.is_finite() {
+                format!("{:.0}", p.2)
+            } else {
+                "none".to_owned()
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
     for (i, name) in names.iter().enumerate() {
         println!("  {name}: {:+.2} %", 100.0 * change(before[i], after[i]));
     }
     let moves: Vec<f64> = (0..4).map(|i| change(before[i], after[i])).collect();
-    // Rule 2 decides at ×4 h_K2's elements; the coarser sizes show the trend.
-    let deciding_size = size >= 4.0;
-    let tag = if deciding_size {
-        ""
-    } else {
-        " (the trend; rule 2 decides at ×4)"
-    };
     if moves.iter().any(|m| !m.is_finite()) {
         println!(
-            "§16y rule 2 at ×{size}{tag} ⇒ not judged: a run behind a deciding reading did not stand [PUBLIC]"
+            "§16z's masked rule at ×{size} ⇒ not judged at a corner: U20 goes back to Jon with each round's readings \
+             [PUBLIC]"
         );
     } else if moves.iter().all(|m| m.abs() <= K5_BAR) {
         println!(
-            "§16y rule 2 at ×{size}{tag} ⇒ the masked change in every deciding reading is within 5 % [PUBLIC]"
+            "§16z's masked rule at ×{size} ⇒ every deciding reading's masked change is within 5 %: U20 stands [PUBLIC]"
         );
     } else {
         println!(
-            "§16y rule 2 at ×{size}{tag} ⇒ the masked change in a deciding reading reaches {:+.2} % [PUBLIC]",
+            "§16z's masked rule at ×{size} ⇒ a deciding reading's masked change reaches {:+.2} %: U20 goes back to Jon \
+             [PUBLIC]",
             100.0
                 * moves
                     .iter()
@@ -2707,9 +3217,328 @@ fn step7_masked() {
                     .fold(0.0, |m: f64, x| if x.abs() > m.abs() { x } else { m })
         );
     }
+    sides("the patch", pairs.map(|p| (p.0.patch, p.1.patch)));
+    sides(
+        "the push (the geometric share at μ_f 0, the peak push with friction; for Jon)",
+        [
+            (pairs[0].0.share, pairs[0].1.share),
+            (pairs[1].0.peak, pairs[1].1.peak),
+            (pairs[2].0.peak, pairs[2].1.peak),
+        ],
+    );
+    interval_line(&cells.iter().chain(&masked_cells).collect::<Vec<_>>());
+    k4_line(&cells.iter().collect::<Vec<_>>());
 }
 
-/// G6: a press timed at `STEP7_LOADING` and `STEP7_SIZE`, the probe's instruments off; and what the cost rests on.
+/// The masked rule's cap on κ over μ: the sources' span (§16y), where λ does not bind first.
+const SOURCES_SPAN: f64 = 25.0;
+
+/// A masked element's next κ over μ: 2 to join, else doubled, up to [`SOURCES_SPAN`] or `lambda` over μ.
+fn next_stiffening(kappa: f64, lambda: f64) -> f64 {
+    let cap = SOURCES_SPAN.min(lambda);
+    if kappa == 0.0 {
+        2.0_f64.min(cap)
+    } else {
+        (2.0 * kappa).min(cap)
+    }
+}
+
+/// The masked runs: as many as take κ from 2μ to its cap by doubling, at the wall's least `λ/μ`.
+fn masked_rounds(lambda: f64) -> usize {
+    let cap = SOURCES_SPAN.min(lambda);
+    1 + (cap / 2.0).log2().ceil().max(0.0) as usize
+}
+
+/// U11's two sides (fit plan: *fits* needs the corners' top under the limit, *too tight* their bottom over it): the
+/// top and bottom over the corners, resisted over as it is, and which verdict each could turn (§16z).
+fn sides(reading: &str, corners: [(f64, f64); 3]) {
+    println!("{}", sides_text(reading, corners));
+}
+
+fn sides_text(reading: &str, corners: [(f64, f64); 3]) -> String {
+    let Some((top, bottom)) = sides_of(corners) else {
+        return format!(
+            "U11 on {reading} [PUBLIC]: not judged, a corner's comparison did not stand"
+        );
+    };
+    format!(
+        "U11 on {reading} [PUBLIC]: the corners' top, resisted over as it is, {:+.2} %: {}; their bottom {:+.2} %: {}",
+        100.0 * top,
+        side(top, true),
+        100.0 * bottom,
+        side(bottom, false)
+    )
+}
+
+/// The corners' top and bottom, each resisted over as it is, from `(as it is, resisted)` per corner; none if a corner
+/// is not read.
+fn sides_of(corners: [(f64, f64); 3]) -> Option<(f64, f64)> {
+    if !corners.iter().all(|c| c.0.is_finite() && c.1.is_finite()) {
+        return None;
+    }
+    let over = |pick: fn(f64, f64) -> f64| {
+        let fold = |f: fn(&(f64, f64)) -> f64| corners.iter().map(f).reduce(pick).unwrap();
+        change(fold(|c| c.0), fold(|c| c.1))
+    };
+    Some((over(f64::max), over(f64::min)))
+}
+
+/// What one side of U11's interval read `moved` (resisted over as it is) can do to the verdict that side decides: the
+/// top a *fits*, the bottom a *too tight*. Read lower as it is, a *fits* can be false and a *too tight* missed; read
+/// higher, the reverse.
+fn side(moved: f64, top: bool) -> String {
+    if moved == 0.0 {
+        return "as it is and resisted read it alike".to_owned();
+    }
+    let lower = moved > 0.0;
+    let verdict = if top { "*fits*" } else { "*too tight*" };
+    format!(
+        "as it is reads it {}, so a {verdict} within {:.2} % of a limit could be {}",
+        if lower { "lower" } else { "higher" },
+        100.0 * moved.abs(),
+        if lower == top { "false" } else { "missed" }
+    )
+}
+
+#[test]
+fn a_doubling_is_read_against_its_replicates_scatter() {
+    use Outcome::{CannotTell, Fail, NotJudged, Pass};
+    assert_eq!(outcome(&[(0.02, 0.01)]), Pass);
+    assert_eq!(outcome(&[(-0.02, -0.03)]), Pass);
+    assert_eq!(outcome(&[(0.045, 0.01)]), CannotTell);
+    assert_eq!(outcome(&[(-0.0555, 0.0301)]), CannotTell);
+    assert_eq!(outcome(&[(0.07, 0.01)]), Fail);
+    assert_eq!(outcome(&[(-0.07, 0.01)]), Fail);
+    assert_eq!(outcome(&[(0.02, f64::NAN)]), NotJudged);
+    assert_eq!(outcome(&[(0.02, 0.01), (0.045, 0.01)]), CannotTell);
+    assert_eq!(outcome(&[(f64::NAN, 0.01), (0.045, 0.01)]), NotJudged);
+    assert_eq!(outcome(&[(f64::NAN, 0.01), (0.07, 0.01)]), Fail);
+}
+
+#[test]
+fn the_size_rule_picks_the_coarsest_size_from_which_every_doubling_passes() {
+    use Outcome::{CannotTell as C, Fail as F, NotJudged as N, Pass as P};
+    use SizeVerdict::{Needs, NoVerdict, Open};
+    assert_eq!(size_verdict(&[F, F, P]), Needs(2));
+    assert_eq!(size_verdict(&[P, F, P]), Needs(2));
+    assert_eq!(size_verdict(&[F, P, P]), Needs(1));
+    assert_eq!(size_verdict(&[P, P, P]), Needs(0));
+    assert_eq!(size_verdict(&[C, P, P]), Needs(1));
+    assert_eq!(size_verdict(&[F, F, F]), Open);
+    assert_eq!(size_verdict(&[P, P, F]), Open);
+    assert_eq!(size_verdict(&[F, N, F]), Open);
+    assert_eq!(size_verdict(&[F, F, N]), NoVerdict(2, N));
+    assert_eq!(size_verdict(&[F, F, C]), NoVerdict(2, C));
+    assert_eq!(size_verdict(&[F, C, P]), Needs(2));
+    assert_eq!(size_verdict(&[N, P, C]), NoVerdict(2, C));
+}
+
+#[test]
+fn the_fit_recovers_a_power_law() {
+    let h = [1.0, 0.8, 0.63];
+    let law = |x: f64| 3.0 + 2.0 * x.powf(1.5);
+    let fit = Fit::through(h, h.map(law)).unwrap();
+    assert!((fit.order - 1.5).abs() < 1e-9 && (fit.limit - 3.0).abs() < 1e-9);
+    assert!((fit.remaining(1.0) - 2.0 / 3.0).abs() < 1e-9);
+    assert!((fit.remaining(0.5) - 2.0 * 0.5_f64.powf(1.5) / 3.0).abs() < 1e-9);
+    assert!(Fit::through(h, [1.0, 2.0, 1.5]).is_err());
+    assert!(Fit::through(h, [1.0, f64::NAN, 1.5]).is_err());
+}
+
+#[test]
+fn u11s_sides_are_the_corners_top_and_bottom_resisted_over_as_it_is() {
+    let (top, bottom) = sides_of([(1.0, 1.1), (2.0, 2.1), (3.0, 2.7)]).unwrap();
+    assert!((top - (2.7 / 3.0 - 1.0)).abs() < 1e-12);
+    assert!((bottom - 0.1).abs() < 1e-12);
+    // The top and bottom are over the corners, whichever corner holds them.
+    let (top, bottom) = sides_of([(3.0, 3.3), (1.0, 0.95), (2.0, 2.0)]).unwrap();
+    assert!((top - 0.1).abs() < 1e-12 && (bottom - (-0.05)).abs() < 1e-12);
+    assert!(sides_of([(1.0, f64::NAN), (2.0, 2.0), (3.0, 3.0)]).is_none());
+}
+
+#[test]
+fn a_side_read_lower_as_it_is_can_make_a_fits_false_or_miss_a_too_tight() {
+    assert!(
+        side(0.02, true)
+            .ends_with("reads it lower, so a *fits* within 2.00 % of a limit could be false")
+    );
+    assert!(
+        side(-0.02, true)
+            .ends_with("reads it higher, so a *fits* within 2.00 % of a limit could be missed")
+    );
+    assert!(side(0.02, false).ends_with("a *too tight* within 2.00 % of a limit could be missed"));
+    assert!(side(-0.02, false).ends_with("a *too tight* within 2.00 % of a limit could be false"));
+}
+
+#[test]
+fn the_masked_rule_doubles_kappa_from_2_mu_to_the_sources_span_or_lambda() {
+    let mut kappa = 0.0;
+    let mut schedule = Vec::new();
+    for _ in 0..masked_rounds(49.0) {
+        kappa = next_stiffening(kappa, 49.0);
+        schedule.push(kappa);
+    }
+    assert_eq!(schedule, [2.0, 4.0, 8.0, 16.0, 25.0]);
+    assert_eq!(next_stiffening(25.0, 49.0), 25.0);
+    assert_eq!(masked_rounds(10.0), 4);
+    assert_eq!(next_stiffening(8.0, 10.0), 10.0);
+}
+
+#[test]
+fn a_doubling_is_read_against_the_replicate_at_or_nearest_below_its_coarser_size() {
+    assert_eq!(scatter_for(0, &REPLICATES), 0);
+    assert_eq!(scatter_for(1, &REPLICATES), 0);
+    assert_eq!(scatter_for(2, &REPLICATES), 1);
+    assert_eq!(scatter_for(3, &[0, 2]), 1);
+}
+
+#[test]
+fn k4_fails_only_in_a_run_that_did_not_stop_and_held_its_gates() {
+    assert!(k4_fails(false, true, true));
+    assert!(!k4_fails(true, true, true));
+    assert!(!k4_fails(false, false, true));
+    assert!(!k4_fails(false, true, false));
+}
+
+/// A cell for the tests: its kept interval, whether it stood, and its corner.
+fn test_cell(every: u64, stood: bool, friction: f64) -> Cell {
+    Cell {
+        spec: Spec {
+            reestimate_every: every,
+            ..spec(friction, 1.0)
+        },
+        label: format!("every {every}, μ_f {friction}"),
+        k4: Vec::new(),
+        k4_unread: Vec::new(),
+        readings: if stood {
+            Readings {
+                patch: 100.0,
+                share: 10.0,
+                ..Readings::default()
+            }
+        } else {
+            Readings::not_read()
+        },
+        fifty: None,
+    }
+}
+
+#[test]
+fn only_two_runs_that_stood_at_different_intervals_are_read_again() {
+    let cell = |every: u64, stood: bool| test_cell(every, stood, 0.0);
+    assert!(needs_one_interval(&cell(500, true), &cell(50, true)));
+    assert!(needs_one_interval(&cell(50, true), &cell(500, true)));
+    assert!(!needs_one_interval(&cell(500, true), &cell(500, true)));
+    assert!(!needs_one_interval(&cell(50, true), &cell(50, true)));
+    assert!(!needs_one_interval(&cell(500, false), &cell(50, true)));
+    assert!(!needs_one_interval(&cell(500, true), &cell(50, false)));
+    // The one run again is the one kept at the loop's interval.
+    assert_eq!(run_again(&cell(500, true), &cell(50, true)), [true, false]);
+    assert_eq!(run_again(&cell(50, true), &cell(500, true)), [false, true]);
+    assert_eq!(
+        run_again(&cell(500, true), &cell(500, true)),
+        [false, false]
+    );
+    assert_eq!(
+        run_again(&cell(500, false), &cell(50, true)),
+        [false, false]
+    );
+}
+
+#[test]
+fn the_deciding_readings_are_the_patch_at_each_corner_and_the_share_at_0() {
+    assert_eq!(DECIDING.map(|d| d.1), [0, 1, 2, 0]);
+    let readings = Readings {
+        patch: 1.0,
+        share: 2.0,
+        peak: 3.0,
+        ..Readings::default()
+    };
+    assert_eq!(
+        [0, 1, 2, 3].map(|i| deciding_reading(&readings, i)),
+        [1.0, 1.0, 1.0, 2.0]
+    );
+}
+
+#[test]
+fn the_interval_rule_reads_the_patch_and_the_frictionless_share_against_k3() {
+    let mut frictionless = test_cell(500, true, 0.0);
+    frictionless.fifty = Some(Readings {
+        patch: 100.0,
+        share: 10.06,
+        ..Readings::default()
+    });
+    let mut frictional = test_cell(500, true, 0.18);
+    frictional.fifty = Some(Readings {
+        patch: 100.2,
+        share: 20.0,
+        ..Readings::default()
+    });
+    let text = interval_text(&[&frictionless, &frictional, &test_cell(500, true, 0.0)]);
+    assert!(
+        text.contains("2 runs") && text.contains("0.600 %") && text.contains("past K3's 0.5 %"),
+        "{text}"
+    );
+    // The frictional run's share is not a deciding reading.
+    let text = interval_text(&[&frictional]);
+    assert!(
+        text.contains("0.200 %") && !text.contains("past K3"),
+        "{text}"
+    );
+    // A run made again that did not stand is not counted, and none made again is not read.
+    let mut unread = test_cell(500, true, 0.0);
+    unread.fifty = Some(Readings::not_read());
+    assert!(interval_text(&[&unread]).ends_with("not read"));
+    assert!(interval_text(&[&test_cell(500, true, 0.0)]).ends_with("not read"));
+}
+
+#[test]
+fn k4_names_the_runs_it_failed_in_and_those_it_was_not_read_in() {
+    let clean = test_cell(50, true, 0.0);
+    assert!(k4_text(&[&clean]).contains("holds"));
+    let mut failed = test_cell(50, true, 0.104);
+    failed.k4.push("a".to_owned());
+    let mut stopped = test_cell(50, false, 0.18);
+    stopped.k4_unread.push("b".to_owned());
+    let text = k4_text(&[&clean, &failed, &stopped]);
+    assert!(
+        text.contains("FAILS") && text.contains(": a;") && text.ends_with(": b"),
+        "{text}"
+    );
+    assert!(k4_text(&[&stopped]).contains("holds in every kept run that stood"));
+}
+
+#[test]
+fn u11s_line_reads_the_top_as_a_fits_and_the_bottom_as_a_too_tight() {
+    let text = sides_text("the patch", [(1.0, 1.1), (2.0, 2.1), (3.0, 3.03)]);
+    let (top, bottom) = text.split_once("their bottom").unwrap();
+    assert!(
+        top.contains("*fits*") && !top.contains("*too tight*"),
+        "{text}"
+    );
+    assert!(
+        bottom.contains("*too tight*") && bottom.contains("+10.00 %"),
+        "{text}"
+    );
+    assert!(
+        sides_text("the patch", [(1.0, f64::NAN), (2.0, 2.0), (3.0, 3.0)])
+            .ends_with("did not stand")
+    );
+}
+
+#[test]
+fn a_reading_past_5_percent_opens_the_loading_even_beside_one_not_read() {
+    assert_eq!(
+        loading_verdict(&[0.01, -0.02, 0.0, 0.049]),
+        "the loading holds"
+    );
+    assert!(loading_verdict(&[0.01, -0.06, 0.0, 0.0]).starts_with("the loading is open"));
+    assert!(loading_verdict(&[f64::NAN, 0.06, 0.0, 0.0]).starts_with("the loading is open"));
+    assert!(loading_verdict(&[f64::NAN, 0.01, 0.0, 0.0]).starts_with("not judged"));
+}
+
+/// G6: a press timed at `STEP7_LOADING` and `STEP7_SIZE`, the probe's instruments off, under two step controls; and what
+/// the cost rests on.
 #[test]
 #[ignore = "needs the repo-excluded product scan; run with --release --ignored --nocapture"]
 fn step7_cost() {
@@ -2723,32 +3552,70 @@ fn step7_cost() {
     let model = wall.model(POISSON, 1.0, 1.0);
     let start = stage.wall_line(&format!("×{size}"), &wall, &model);
     let loading = factor * Stage::budget_loading(&wall, start);
-    let mut seconds = 0.0;
-    let mut steps = 0;
-    for friction in corners() {
-        let spec = Spec {
-            instruments: false,
-            ..spec(friction, loading)
-        };
-        let (run, _) = press(
-            &mut stage,
-            &wall,
-            &model,
-            start,
-            spec,
-            &format!("timed, μ_f {friction}"),
+    // Two of the product loop's step controls (§15g's list): the loop's re-estimate every 500 steps with §16y rule 1's
+    // re-run of a run that fails, and a fixed re-estimate every 50 steps.
+    let mut cells: Vec<Cell> = Vec::new();
+    for (control, every) in [
+        ("every 500 steps, with §16y rule 1's re-run", 500),
+        ("every 50 steps", 50),
+    ] {
+        let mut seconds = 0.0;
+        let mut steps = 0;
+        let mut standing = true;
+        for friction in corners() {
+            let spec = Spec {
+                instruments: false,
+                reestimate_every: every,
+                ..spec(friction, loading)
+            };
+            let on = Pressed {
+                wall: &wall,
+                model: &model,
+                start,
+            };
+            let label = format!("timed {control}, μ_f {friction}");
+            let (cell, run) = Cell::press(&mut stage, on, spec, label);
+            // §16y rule 1's and §16x rule 6's re-runs count with the attempts they replaced.
+            let kept = run.clock.setup + run.clock.stepping;
+            if run.earlier.1 > 0 {
+                println!(
+                    "    the attempts replaced: {:.1} s over {} steps [LOCAL]; their share of the corner's time {:.3}; \
+                     the kept run, every {} steps with a {} s hold, over them in seconds per step {:.2} [PUBLIC]",
+                    run.earlier.0,
+                    run.earlier.1,
+                    run.earlier.0 / (run.earlier.0 + kept),
+                    run.spec.reestimate_every,
+                    run.spec.hold,
+                    (kept / run.steps as f64) / (run.earlier.0 / run.earlier.1 as f64)
+                );
+            }
+            seconds += run.earlier.0 + kept;
+            steps += run.earlier.1 + run.steps;
+            standing &= cell.stood();
+            cells.push(cell);
+        }
+        println!(
+            "\nG6, {control} [LOCAL]: a press {seconds:.1} s over {steps} steps; [PUBLIC] over D4 {:.3} on the CPU at \
+             {threads} threads; a search of full verdicts at 1 and 2 insets over D4's 15 min {:.3} and {:.3}{}",
+            seconds / D4_SECONDS,
+            seconds / (3.0 * D4_SECONDS),
+            2.0 * seconds / (3.0 * D4_SECONDS),
+            if standing {
+                ""
+            } else {
+                "; ⚠ a corner's kept run did not stand, so this is not a press's cost"
+            }
         );
-        // Rule 1's and rule 6's re-runs count with the attempts they replaced.
-        seconds += run.earlier.0 + run.clock.setup + run.clock.stepping;
-        steps += run.earlier.1 + run.steps;
+        // K1's per-step budget scaled by element count: the bar the GPU must meet, not a projection of it.
+        let (budget, k1_elements) = k1_budget();
+        let bar = budget * model.element_count() as f64 / k1_elements as f64;
+        println!(
+            "K1 [PUBLIC]: the same steps at K1's per-step budget, scaled by element count, over D4 {:.3}: the bar a GPU \
+             must meet, not its projection",
+            steps as f64 * bar / D4_SECONDS
+        );
     }
-    println!(
-        "\nG6 [LOCAL]: a press {seconds:.1} s over {steps} steps; [PUBLIC] over D4 {:.3} on the CPU at {threads} threads; \
-         a search of full verdicts at 1 and 2 insets over D4's 15 min {:.3} and {:.3}",
-        seconds / D4_SECONDS,
-        seconds / (3.0 * D4_SECONDS),
-        2.0 * seconds / (3.0 * D4_SECONDS)
-    );
+    k4_line(&cells.iter().collect::<Vec<_>>());
     // What the cost rests on: the viscosity's range, and ν 0.495, as the rest step's factor on the steps.
     let rest = |m: &ExplicitModel| rest_step(m, &stage.obstacle);
     let at = rest(&model);
@@ -2759,16 +3626,8 @@ fn step7_cost() {
         ("ν 0.4975", wall.model(0.4975, 1.0, 1.0)),
     ] {
         println!(
-            "  steps at {label} over these: {:.3} [PUBLIC]",
+            "  the rest step's factor on the steps at {label}: {:.3} [PUBLIC]",
             at / rest(&other)
         );
     }
-    // K1's per-step budget scaled by element count: the bar the GPU must meet, not a projection of it.
-    let (budget, k1_elements) = k1_budget();
-    let bar = budget * model.element_count() as f64 / k1_elements as f64;
-    println!(
-        "K1 [PUBLIC]: the same steps at K1's per-step budget, scaled by element count, over D4 {:.3}: the bar a GPU must \
-         meet, not its projection",
-        steps as f64 * bar / D4_SECONDS
-    );
 }
