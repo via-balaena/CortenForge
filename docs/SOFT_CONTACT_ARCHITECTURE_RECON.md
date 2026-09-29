@@ -5,12 +5,15 @@
 §16p (#970), and 2c, K6, is §16q (#971). 2d, the product's budget and the stop rule, is §16r (#972). K5,
 with D1's readings diagnosed and replaced, is §16s (#973). Fit plan U3, why the rigid path asks for room and the
 path step 7 runs, is §16t. Step 6's obstacle bake is §16u, the wall's canal surface §16v, and the lowering §16w.
-Step 7's first run is §16x (#978), and the element collapsing at its seated tip §16y.
+Step 7's first run is §16x (#978), the element collapsing at its seated tip §16y (#979), and D1's element size §16z
+(#980). The GPU steps are §17, step 3 first (§17a).
 - **Research:** §1–§10.
 - **Code architecture and the crate layout:** §11–§14.
 - **The first experiment and its kill criteria:** §15.
 - **Build step 2's design, and what its PRs measured:** §16 (§16m–§16s); U3, §16t; step 6's bake, §16u; the wall's
-  canal surface, §16v; the lowering, §16w; step 7's first run, §16x; the element collapsing at the seated tip, §16y.
+  canal surface, §16v; the lowering, §16w; step 7's first run, §16x; the element collapsing at the seated tip, §16y;
+  D1's element size, §16z.
+- **The GPU steps, 3–5:** §17.
 
 The code architecture, crate layout and first experiment were checked by cold review, against criteria
 written beforehand (§14e, §15i). The research sections were not. Jon's direction:
@@ -534,7 +537,7 @@ has both, each over one model definition.
   - chunked submits (long command buffers hung the readback, `pipeline/orchestrator.rs:28-37`, round 1);
   - the atomic contact append, extracted as shared GPU infrastructure for soft-on-soft contact (§9
     decision 9). The CAS float-add is extracted too, if scatter is chosen over per-pair slots and a
-    gather. The first experiment needs neither;
+    gather. The first experiment needs neither *(2026-09-29, §17a: both move to step 8)*;
   - the CPU-conformance harnesses.
 
 **The key design choice is to write the physics math once.** The repo has measured what writing it twice
@@ -694,7 +697,7 @@ solid"*).
 | **`sim-soft-explicit`** | L0 | new | **The explicit solver, minus the GPU.** The executor trait. The explicit model and state data layout (flat arrays; `#[repr(C)]` parameter blocks with no `vec3`). The shared math (14b), written once in the loop-free subset and compiled at f32 and f64, with its committed generated WGSL and a freshness test. The **CPU executor** (rayon on native, sequential on wasm32, as `newton.rs` does). The **stepping loop**, which owns the order of phases within a step, batching, the stable time step and mass scaling, and the energy monitors and stop rule, over any executor. A `test-fixtures` feature with small lowered meshes, as `sim-core` has *(replaced in step 2's design by a public module, 16f)*. |
 | **`sim-wgsl-gen`** | L0 | new | The §13 translator: `syn` (with `proc-macro2` for source positions), plus `naga` to validate its output, on the physics side's naga version. A `write` command regenerates the committed WGSL, and the freshness test names that command when it fails. A dev-dependency of `sim-soft-explicit`. |
 | **`sim-soft`** | L0 | grows | The model as today, plus **lowering** it to `sim-soft-explicit`'s data, including resampling the insertion path evenly in time *(2026-09-27, §16t: the path is the fitted pose)*. **Baking the obstacle SDF from its triangle mesh** (flood-fill sign and the Gaussian pre-smooth, moved from `tools/cf-sim-research`) *(2026-09-27, §16u: a new bake, not moved: the parity of a ray's crossings for the sign, no pre-smooth, and a fine grid in bricks near the surface)*. The **scenarios and readouts in model terms** (contact pressure by region) *(2026-09-26, §16s: D1's readings landed in `sim-soft-explicit`'s `readings`, over the solver's snapshots, so `sim-soft` calls them and does not build a second set)* *(2026-09-27, §16w: nothing in `sim-soft` calls them yet; step 7's runs read them from the tool)*. The test of its `Material` impls against the shared math (F3). The implicit Newton solver stays as it is. |
-| **`sim-gpu`** | L0-io | rebuilt | **The GPU executors.** It *extracts* shared infrastructure from today's rigid code: the device context (`context.rs`), and chunked submission, which today sits inside the rigid `step()` (`pipeline/orchestrator.rs:28-37`), and the contact-list tools (the atomic append; the CAS float-add if scatter is chosen). It adds `soft`, the explicit executor, whose hand-written entry points fetch, gather and scatter around the generated WGSL. It holds the **GPU-vs-CPU conformance tests** against `sim-soft-explicit`'s CPU executor. The rigid pipeline stays as it is until its own redesign, keeping the parts only it uses. It depends on `sim-soft-explicit` and `sim-core`, not on `sim-soft`, and has its own wgpu version (13e). |
+| **`sim-gpu`** | L0-io | rebuilt | **The GPU executors.** It *extracts* shared infrastructure from today's rigid code: the device context (`context.rs`), and chunked submission, which today sits inside the rigid `step()` (`pipeline/orchestrator.rs:28-37`), and the contact-list tools (the atomic append; the CAS float-add if scatter is chosen) *(2026-09-29, §17a: these move to step 8)*. It adds `soft`, the explicit executor, whose hand-written entry points fetch, gather and scatter around the generated WGSL. It holds the **GPU-vs-CPU conformance tests** against `sim-soft-explicit`'s CPU executor. The rigid pipeline stays as it is until its own redesign, keeping the parts only it uses. It depends on `sim-soft-explicit` and `sim-core`, not on `sim-soft`, and has its own wgpu version (13e). |
 | `sim-coupling` | L1 | later | Two-way explicit rigid–soft coupling on the CPU (subcycling, F5). **The fit test does not need it**: the scan is a kinematic pose, applied in the contact law. GPU rigid–soft exchange lives in `sim-gpu`, on one device. |
 | `sim-bevy-soft`, the studio, `tools/cf-sim-research` | L1 / App / tool | consumers | Pick the executor (CPU or GPU), and show results from CPU snapshots (13e). |
 | `sim-gpu-benches` | L1 | grows | Benchmarks for both executors. L0 bans `criterion`, even as a dev-dependency. |
@@ -1239,7 +1242,8 @@ Each item is one PR with its own tests and a done-when.
      - ⛔ **Stop before any GPU work** otherwise, or if K3, K4, K6 or the Yeoh case (16h) fails.
    - A reviewer's model (not kept) put the element alone at +1.2–1.65 % at 50k.
    - *Done when:* the stop rule has been applied, with its numbers written here. *(Applied 2026-09-26, §16r:
-     proceed.)* *(Jon, 2026-09-26: the quality items come before steps 3–5, K5 first of them; §16s.)*
+     proceed.)* *(Jon, 2026-09-26: the quality items come before steps 3–5, K5 first of them; §16s.)* *(Jon, 2026-09-29: steps 3–5
+     now, the items still open afterwards; §17.)*
 3. **`sim-gpu`: the shared GPU infrastructure is extracted:** the context, chunked submission and the
    contact-list tools.
    - It stays on the workspace's wgpu (27) until a need for a newer version is named. The physics' own
@@ -1249,6 +1253,7 @@ Each item is one PR with its own tests and a done-when.
      - the shaders are validated under the new naga;
      - a binary holding both versions runs on lavapipe (Vulkan) in CI.
    - *Done when:* `sim-gpu`'s suite passes on Metal and in CI.
+   - *(2026-09-29, §17a: designed; the contact-list tools move to step 8, where soft-on-soft contact uses them.)*
 4. **`sim-gpu`'s soft executor,** with per-phase conformance against the CPU executor, on lavapipe in CI.
    - *Done when:* every phase's outputs agree, GPU f32 against CPU f32. Per output, the largest
      difference must be ≤ 1e-5 × the largest magnitude.
@@ -5027,3 +5032,74 @@ Round 2: one fresh reviewer of round 1's fixes found seven problems, five of the
 rule's κ described two ways, a "not read" line saying more than its check, the record crediting the runs with logic
 changed after them, a figure finer than its prints, and a count no test pinned. They were fixed or cut, and the rounds
 stopped there; none moved a verdict.
+
+## 17. The GPU steps
+
+Jon, 2026-09-29, after §16z: build the GPU executor now, §15g steps 3–5, first on Metal, on the M4 Pro this is developed
+on. This reverses his order of 2026-09-26 (§15g step 2's note), which put the quality items first. Those still open stay
+open, to run afterwards or on the GPU: D1's element size, whose judging needs a sixteen-times wall (§16z); ν under the
+mount (fit plan U19); how the peak push is read at a low friction (fit plan D1); and the product loop's step control,
+which §16z sets before step 4. Where the fit test runs, on customers' machines or on Jon's, is open; steps 3–5 do not
+depend on it.
+
+### 17a. Step 3: the shared GPU infrastructure (design, 2026-09-29)
+
+**What step 4 needs from `sim-gpu`,** read from the stepping loop and the CPU executor:
+- **A device with the adapter's buffer limits.** The fine grid needs a storage binding above wgpu's default (§15g step
+  4's note). `GpuContext` already requests the adapter's `max_buffer_size` and `max_storage_buffer_binding_size`
+  (`sim/L0/gpu/src/context.rs:46-65`).
+- **Many steps to a submit, in bounded chunks.** A press is many thousands of steps of eight phases each
+  (`sim/L0/soft-explicit/src/stepping.rs:189-196`). Long command buffers hung the readback, so the rigid pipeline submits
+  at most 32 substeps at a time (`pipeline/orchestrator.rs:28-37`).
+- **Each step's own values.** The loop advances `time` every step and hands it to the contact phase
+  (`stepping.rs:194`, `:200`), whose obstacle pose the host takes from its f64 pose track (§15g step 4's note). The
+  rigid chunking cannot carry that. It writes its uniforms once, before encoding (`orchestrator.rs:243-259`), because
+  they do not change across substeps. And a `queue.write_buffer` is not a command: wgpu runs every write issued before
+  a submit "just before the explicitly submitted commands" (wgpu 27.0.1, `src/api/queue.rs:114-116`), so a write per
+  step between encodes would leave every step of a chunk reading the last.
+
+**Scope.**
+1. **`sim_gpu::submit`**, new.
+   - `chunks(total, per_chunk)`: where a run's chunks fall, as a pure function, tested without a GPU. It keeps the rigid
+     loop's edge case: zero steps is one empty last chunk, which still copies the state back.
+   - `PerStepUniforms<T>`: a uniform buffer with one slot per step of a chunk, each slot at the device's
+     `min_uniform_buffer_offset_alignment`, written once per chunk and bound per step by a dynamic offset. `fk.rs`
+     already binds its per-level parameters this way (`pipeline/fk.rs:74`, `:304`). Not push constants: they are a
+     native-only feature, and the wgpu 30 migration removes `push_constant_ranges` (§14c).
+   - `GpuPhysicsPipeline::step` loops over `chunks`. Its uniforms stay as they are.
+2. **`sim_gpu::readback`**, new: one path that maps a buffer and waits, for f32, `vec4<f32>` and u32. It replaces the
+   helpers in `pipeline/fk.rs:377-442` and the orchestrator's `map_staging_f32` (`orchestrator.rs:367-388`). The
+   contact count, a u32, is read today through f32 bits (`pipeline/tests.rs:1451-1452`).
+3. **The test policy.** Twelve pipeline tests return on `GpuPipelineError::NoGpu` without consulting `test_support`
+   (`pipeline/tests.rs:2030` and eleven more); they now go through it. The context's test,
+   `gpu_context_creates_on_metal`, asserts only that the adapter has a name (`context.rs:103-111`); it now asserts the
+   backend, Metal on macOS and Vulkan elsewhere.
+
+**Not here.**
+- **The contact-list tools** (the atomic append and the CAS float-add; §11, §14a). The first experiment needs neither
+  (§11). Today they are WGSL written out in each rigid shader that uses them (the append in
+  `shaders/sdf_sdf_narrow.wgsl:340-351` and `shaders/sdf_plane_narrow.wgsl:240-251`; the CAS add in `crba.wgsl`,
+  `rne.wgsl` and `newton_solve.wgsl`), and no soft phase uses them before soft-on-soft contact. They move to step 8,
+  where they have a user (Jon agreed, 2026-09-29).
+- **A rigid pipeline built on a caller's device,** for §14a's rigid–soft exchange on one device: no user before that
+  exchange. The pipeline creates its own (`orchestrator.rs:151`).
+- **More storage buffers per stage than the context's 16, and wgpu features:** step 4 names what it needs.
+- **wgpu stays at 27** (§15g step 3).
+
+**The gates, each made to fail once before it counts.**
+- **T38** (`pipeline/tests.rs:2931-3004`): one `step(150)` byte-identical to 150 `step(1)`, and no hang. With the other
+  54 tests it holds the rigid pipeline to what it did before the change. Made to fail by mutating `chunks` to drop the
+  last, partial chunk.
+- **The per-step values:** a kernel writes each step's value into that step's cell, over a run spanning several chunks;
+  every cell must hold its own step's value. Made to fail by writing one slot per step between encodes. That arm is kept
+  as a test of its own, asserting the collapse, so the reason the ring exists is checked rather than stated.
+- **`chunks`:** the sizes, the last chunk and zero steps, without a GPU.
+
+**Done when:** `sim-gpu`'s suite passes on Metal on the M4 Pro with `CF_REQUIRE_GPU=1`, a local run, since no CI job
+runs `sim-gpu` on Metal (the macOS job tests other crates, `.github/workflows/quality-gate.yml:942-982`); it passes on
+lavapipe in `tests-debug` shard 3 (`quality-gate.yml:589-637`); `sim-gpu` grades A; and `sim-gpu-benches`, the one crate
+that imports it, passes.
+
+**Before the change** (`df00dea8`): 55 of 55 tests pass on Metal, the adapter reporting Apple M4 Pro on Metal, in
+4.0 s; `cargo xtask grade sim-gpu` is A on every automated criterion, with coverage 97.9 %. (§14e had left whether
+`sim-gpu` grades A unchecked.)
