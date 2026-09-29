@@ -242,9 +242,10 @@ which inset would pass.
       resisting the elements that collapse at the seated tip, those under half their nodes' volume, moves that peak by
       at most 0.4 % at four times h_K2's elements; its effect on the seated patch is U20.)* *(2026-09-29, recon §16z:
       from four to eight times h_K2's elements the peak moves −1.12 and −0.96 % at μ_f 0.104 and 0.18. D1's size is not
-      picked: twice h_K2's elements or finer by the size rule, which takes h_K2's scatter for twice's, and eight times
-      or finer read at 5 % flat. From four to eight times the frictionless patch moves +5.06 % against its replicate's
-      0.71 %, which the size rule cannot tell from 5 %.)*
+      picked: twice h_K2's elements or finer by the size rule, which takes h_K2's scatter for twice's; four times or
+      finer with a scatter at twice as small as four times'; and eight times or finer read at 5 % flat. From four to
+      eight times the frictionless patch moves +5.06 % against its replicate's 0.71 %, which the size rule cannot tell
+      from 5 %.)*
     - *Seated:* ~~the contact pressure at the seat, read as its area-weighted 95th percentile~~ **the contact
       force on the most-loaded 1 cm² patch, over 1 cm²** (Jon, 2026-09-26, accepting the recommendation after
       K5; soft-contact recon §16s). The percentile it replaces did not converge on the tube: its most-squeezed
@@ -423,7 +424,7 @@ This is why the architecture changed (soft-contact recon §3).
 | **G3 — Full seat** | The full inset is reached along the sliding path | Growing: 4.531 of 5 mm. Sliding with the inset: met by construction on the prescribed fitted path, in every valid run of step 7's first (recon §16x, 2026-09-28) |
 | **G4 — κ independent of the schedule** (implicit solver only) | The derived κ does not change with the step count | Holds (the ceiling rule) |
 | **G5 — Heat map in the rest frame** | `the_heat_map_reads_the_deformed_view_at_rest_positions` passes | Passes; fails under four mutations |
-| **G6 — Runtime** | Within the Phase 2 budget | See Phase 2. *(2026-09-28, recon §16x: on `base_mold` a press takes 0.38 of D4 on the CPU at the element size K2 needs, and 3.8 at four times its elements; D1's readings need four times or finer, open)* *(2026-09-29, recon §16z: 11.8 at eight times, the size used and not picked, 27.5 re-estimating every 50 steps; D1's size is twice h_K2's elements or finer by the size rule, taking h_K2's scatter for twice's, and eight times or finer read at 5 % flat)* |
+| **G6 — Runtime** | Within the Phase 2 budget | See Phase 2. *(2026-09-28, recon §16x: on `base_mold` a press takes 0.38 of D4 on the CPU at the element size K2 needs, and 3.8 at four times its elements; D1's readings need four times or finer, open)* *(2026-09-29, recon §16z: 11.8 at eight times, the size used and not picked, 27.5 re-estimating every 50 steps; D1's size is twice h_K2's elements or finer by the size rule, taking h_K2's scatter for twice's; four times or finer with a scatter at twice as small as four times'; and eight times or finer read at 5 % flat)* |
 
 G1 and G2 should become committed probes (the scan is repo-excluded, so they run locally and cannot gate
 in CI); G5 already gates in CI.
@@ -592,7 +593,8 @@ in CI); G5 already gates in CI.
   the product is measured in step 7 *(2026-09-28, recon §16x: measured and open, four times h_K2's elements or
   finer; an element collapsing at the seated tip under the mount is not yet settled)* *(2026-09-28, recon §16y: the
   collapse's effect is U20)* *(2026-09-29, recon §16z: not picked, twice h_K2's elements or finer by the size rule, taking
-  h_K2's scatter for twice's, and eight times or finer read at 5 % flat)*. The
+  h_K2's scatter for twice's; four times or finer with a scatter at twice as small as four times'; and eight times or
+  finer read at 5 % flat)*. The
   lip radius stays under Later.
 - **U17 — The product wall's canal surface** (soft-contact recon §16r, 2026-09-26). At the element size K2 needs,
   the old path's wall puts the canal nodes off the true canal surface: its 5th and 95th percentiles at −0.50 and

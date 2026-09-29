@@ -1371,7 +1371,7 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
   PR reads D1's size with it and re-reads rule 2 there. Where the loop's re-estimate every 500 steps fails, a run is
   made again every 50 steps, §16y rule 1)* *(2026-09-29, §16z: at eight times h_K2's elements every corner's collapse
   cleared with the masked runs, each deciding reading's masked change within 5 %, at most +4.11 %: U20 stands there,
-  the size used and not picked; at twice h_K2's elements §16y's +6.44 % passed the bar, and at four times it was not
+  the size used and not picked; at twice h_K2's elements §16y's +6.44 % was past the bar, and at four times it was not
   judged)*;
 - *(2026-09-28, §16y)* the product loop's step control: rule 1's re-run every 50 steps lives only in the probe, and
   the solver's loop re-estimates every 500 steps with no retry. Before step 4, the product loop needs one of a retry,
@@ -4826,7 +4826,7 @@ rules carry the same numbers.
   - every round's change over as it is is printed, and the κ at which each corner cleared. On the design review's
     public cases the change kept rising with κ after the collapse had cleared, on one with no plateau up to λ (+5.12 %
     at 2μ, +13.83 % at λ; not in the repo);
-  - U20 stands if every deciding reading's masked change is within 5 % (K5's bar). It goes back to Jon if one passes
+  - U20 stands if every deciding reading's masked change is within 5 % (K5's bar). It goes back to Jon if one exceeds
     5 %, or if a corner is not judged, with the note that the stabilized element's own h_K2, gates and cost are not
     measured here;
   - U11's two sides (fit plan: *fits* needs the corners' top under the limit, *too tight* their bottom over it): the
@@ -5013,7 +5013,7 @@ this record against the runs' outputs and the repo for the scan's figures (about
 runs' local figures, with planted ones as its positive controls, found none in any added line or commit message), and
 of the whole plan. The largest findings:
 - "U20 stands" was written without its condition, eight times being the size used and not picked, while the size rule
-  does not exclude twice h_K2's elements, where §16y's masked change passed the bar;
+  does not exclude twice h_K2's elements, where §16y's masked change was past the bar;
 - "twice h_K2's elements or finer" stood alone, resting on h_K2's scatter in place of twice's, which was not measured;
   the replicate at four times reads its own far smaller;
 - the step control's independence at eight times was credited to the interval rule, which made no runs there (its
