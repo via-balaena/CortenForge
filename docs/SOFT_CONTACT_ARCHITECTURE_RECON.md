@@ -460,6 +460,11 @@ fill a gap.
   doubled up to λ, at most four masked runs, decided at four times h_K2's elements; energy sampling as the
   stabilization's form; and tracking the step every step not taken. Which element the product runs: the element as
   it is, left to me by Jon after the macro review's correction (fit plan U20, §16y).
+- *(2026-09-29, §16z)* D1's element size read again: an eight-times wall and a replicate at four times; each doubling
+  read against its replicate's scatter, and the size the coarsest from which every doubling passes; each comparison
+  read at one re-estimate interval, the step control's own effect barred at K3's 0.5 %; the masked comparison doubled
+  up to 25μ; the loading check, the masked comparison and G6 at the size picked, or else the finest whose runs stood;
+  and G6 under the loop's re-run and a fixed 50 steps.
 
 ## 10. What the research could not see
 
@@ -1282,7 +1287,8 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
   a scan's bake takes about three tenths of D4 at the product's band, once per scan and band)* *(2026-09-28, §16x:
   those figures took the budget's loading; step 7's first run set it at four times that. At h_K2 a press then takes
   0.38 of D4 on the CPU, and 3.8 at four times its elements, which D1's readings may need; a device at K1's per-step
-  budget would be slower than the CPU)*;
+  budget would be slower than the CPU)* *(2026-09-29, §16z: 11.8 at eight times, the size used and not picked, and
+  27.5 re-estimating every 50 steps)*;
 - the pairing's nominal corner, which D3 judges at: add it as a run, or show push force is linear in
   μ_f *(2026-09-27: §5c's re-sourcing found no source for a nominal; which value D3 judges at is open)*
   *(2026-09-28, §16x: on `base_mold` the frictional push less the frictionless, at 0.18 over at 0.104, reads 1.686
@@ -1315,14 +1321,19 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
   the geometric share do not converge from 10k to 50k, and `base_mold` at h_K2 is about the 10k tube's element
   size, though not built in rings. Step 7
   measures D1's readings' convergence on `base_mold`; until then D4's figures at h_K2 (§16r) rest on K2 alone
-  *(2026-09-28, §16x: measured and open: four times h_K2's elements or finer, with the element as it is)*;
+  *(2026-09-28, §16x: measured and open: four times h_K2's elements or finer, with the element as it is)*
+  *(2026-09-29, §16z: with an eight-times wall, each doubling read against its replicate's scatter, not picked: twice
+  h_K2's elements or finer, taking h_K2's scatter for twice's, and four times or finer with one as small as four
+  times'; from four to eight times only the frictionless patch cannot tell, +5.06 % against 0.71 %. Read at 5 % flat,
+  eight times or finer)*;
 - *(2026-09-27, #973's review)* D1's push at a low friction. K5 judged the push's peak with friction only at μ_f
   0.3. Without friction the peak moves with the mesh, which ripples it (§16s): at 100k and λ_a 1.1 it reads 30 %
   above the 10 mm reading, and on the mesh 4× finer along the tube 8 % above that mesh's (arithmetic on §16s's
   tables). How the peak moves at a low μ_f is not measured. Step
   7's convergence check of D1's push includes the lowest μ_f of the pairing library, and D1's push is decided with
   that number (Jon, 2026-09-26) *(2026-09-28, §16x: at μ_f 0.104 the peak moves 8.4 % over the first doubling of
-  h_K2's elements and 2.2 % over the second, read over 1 mm of travel; for Jon)*;
+  h_K2's elements and 2.2 % over the second, read over 1 mm of travel; for Jon)* *(2026-09-29, §16z: −1.12 % over the
+  third)*;
 - *(2026-09-27, §16t's review)* **D1's push on a turning path.** The fit plan defines the push as −Σ fᵢ · (dxᵢ/ds).
   On a path that turns the scan, that takes the twist on the scan as well as the force. The monitors reduce the
   resultant contact force but not its moment, and the tube probe reads the resultant's component along the tube's
@@ -1345,7 +1356,7 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
   its ends on frictionless plates, the mandrel through it, against the confined oracle. The mount holds less and has
   no oracle of its own *(§16x: the tube passes, which settles the shell's side; the mount's stays open, since rule 2,
   the check on the product's own confinement, did not settle, and the element collapsing at the tip appears under
-  the mount)*;
+  the mount)* *(2026-09-29, §16z: still open; the size rule picked no size)*;
 - *(2026-09-28, §16x)* the element collapsing near the product's seated tip under the mount: the most-compressed
   element reaches 9–16 % of its volume while its nodes' averaged volume, from which selective ANP takes the pressure,
   stays within 12 % of its rest, at every size run, and the step falls to 0.06–0.40 of the rest step. With
@@ -1358,10 +1369,14 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
   frictionless patch moved +6.44 % at twice h_K2's elements, and at four times its comparison did not stand by the
   cut, its last two runs reading +5.06 and +5.07 %. The element as it is stays (fit plan U20, §16y's call); the next
   PR reads D1's size with it and re-reads rule 2 there. Where the loop's re-estimate every 500 steps fails, a run is
-  made again every 50 steps, §16y rule 1)*;
+  made again every 50 steps, §16y rule 1)* *(2026-09-29, §16z: at eight times h_K2's elements every corner's collapse
+  cleared with the masked runs, each deciding reading's masked change within 5 %, at most +4.11 %: U20 stands there,
+  the size used and not picked; at twice h_K2's elements §16y's +6.44 % was past the bar, and at four times it was not
+  judged)*;
 - *(2026-09-28, §16y)* the product loop's step control: rule 1's re-run every 50 steps lives only in the probe, and
   the solver's loop re-estimates every 500 steps with no retry. Before step 4, the product loop needs one of a retry,
-  a fixed 50 steps, or tracking the step, costed in G6;
+  a fixed 50 steps, or tracking the step, costed in G6 *(2026-09-29, §16z: at eight times h_K2's elements no run needed
+  the retry, and a fixed 50 steps took 2.34 times the time, 27.5 of D4 against 11.8; tracking not costed)*;
 
 **Starting now, in parallel with steps 1–2, needing no solver:**
 - U3's geometric check *(done, §16t)*;
@@ -1460,14 +1475,17 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
      7's to settle before its first verdict *(2026-09-28, §16x: a tube held on its surface alone, its outer wall
      whole and its ends on frictionless plates, meets the confined oracle, which settles a shell. The mount's side stays
      open: rule 2, its check on the product, did not settle, and the element collapsing at the tip appears under the
-     mount)*.
+     mount)* *(2026-09-29, §16z: still open; read again with an eight-times wall, the size rule picked no size)*.
    - *(Carried here from earlier sections, 2026-09-27.)* Step 7 reads the room on its own wall (§16v); reads the
      product's own seated window (§16r); repeats f32 against f64 on the 1 cm² patch (step 5's note); and the old
      path, `slide_pose_at` with it, retires after it (§16u, §16w).
    - *Done when:* the fit plan's G1–G3 and G6 have numbers on `base_mold`. *(2026-09-27: and D1's readings'
      convergence there, at the product's element size and at the lowest μ_f; the list above.)* *(2026-09-28, §16x:
      G1–G3 and G6 have numbers at the 5 mm inset; D1's readings' convergence is open, four times h_K2's elements or
-     finer, so step 7 is not done.)*
+     finer, so step 7 is not done.)* *(2026-09-29, §16z: read again with an eight-times wall, D1's size is not picked:
+     twice h_K2's elements or finer by the size rule, taking h_K2's scatter for twice's, and eight times or finer read at
+     5 % flat. G6 at eight times is 11.8
+     of D4 on the CPU. Step 7 is not done.)*
 8. **The soft-on-soft contact design** (§9 decision 9): a design step with its own research round, not
    code.
 9. **Validation and limits:** §7's rungs 2 and 5, and the comfort limits (fit plan U1, §8). The limits
@@ -1496,8 +1514,9 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
     μ = 0 for the geometric share of push force (§2). That is about 6 minutes at K1's rate. *(2026-09-26, §16r:
     on `base_mold` as meshed at h_K2, a press takes 0.29–0.61 of D4 at K1's rate.)* *(2026-09-28, §16x: at the
     loading D1's readings need, four times the budget's, a press takes 0.38 of D4 on the CPU at h_K2 and 3.8 at four
-    times its elements; stiffness scaling holds on the product, so a verdict stays three runs.)*
-  - **A D3 search** of 3–4 full verdicts would take 18–24 minutes, against D4's 15 (arithmetic). Tier 1 therefore pre-filters the search (step 7), so full verdicts run at 1–2 insets. *(2026-09-26, §16r: on `base_mold` as meshed at h_K2, 3–4 verdicts take 4–12 minutes at K1's rate, within 15; with the canal nodes projected at a floor of 0.5 and the viscosity, 15–21 minutes (fit plan U17); arithmetic.)* *(2026-09-27, §16v: step 7's wall projects nothing; at ν 0.49 with Ecoflex's viscosity, a press takes 0.42–0.56 of D4 at K1's rate over the insets measured, so 3–4 verdicts take 6–11 minutes, and at the budget's worst corner 9–16; with Tier 1 picking 1–2 insets, 3–8 at the worst corner; arithmetic.)* *(2026-09-28, §16x: at four times the budget's loading, full verdicts at 1–2 insets take 0.13–0.25 of the search's 15 minutes on the CPU at h_K2, and 1.3–2.6 at four times its elements.)*
+    times its elements; stiffness scaling holds on the product, so a verdict stays three runs.)* *(2026-09-29, §16z:
+    11.8 at eight times its elements, the size used and not picked.)*
+  - **A D3 search** of 3–4 full verdicts would take 18–24 minutes, against D4's 15 (arithmetic). Tier 1 therefore pre-filters the search (step 7), so full verdicts run at 1–2 insets. *(2026-09-26, §16r: on `base_mold` as meshed at h_K2, 3–4 verdicts take 4–12 minutes at K1's rate, within 15; with the canal nodes projected at a floor of 0.5 and the viscosity, 15–21 minutes (fit plan U17); arithmetic.)* *(2026-09-27, §16v: step 7's wall projects nothing; at ν 0.49 with Ecoflex's viscosity, a press takes 0.42–0.56 of D4 at K1's rate over the insets measured, so 3–4 verdicts take 6–11 minutes, and at the budget's worst corner 9–16; with Tier 1 picking 1–2 insets, 3–8 at the worst corner; arithmetic.)* *(2026-09-28, §16x: at four times the budget's loading, full verdicts at 1–2 insets take 0.13–0.25 of the search's 15 minutes on the CPU at h_K2, and 1.3–2.6 at four times its elements.)* *(2026-09-29, §16z: 3.9–7.9 at eight times its elements, the size used and not picked.)*
   - **If stiffness scaling fails,** each stiffness corner doubles the friction runs: 5 runs.
 - **The regime per application** (from the oracle's confinement table, §5b amended):
 
@@ -4257,7 +4276,9 @@ at most 0.60 %, the balance 0.01 %) and K4; rule 10's probe holds and its run to
   Only the geometric share moves with the speed past K5's bar; at four times it lies within 3.6 % of sixteen times'.
   Rule 1's check at the size rule 2 picks did not run, since rule 2 picked none.
 - **Rule 2, the element size: open, four times h_K2's elements or finer** (`step7_sizes`, at `3256d838`). Meshed at
-  0.795 and 0.633 of h_K2, 1.94 and 3.85 times the elements:
+  0.795 and 0.633 of h_K2, 1.94 and 3.85 times the elements *(2026-09-29, §16z: read against h_K2's replicate's
+  scatter, as §16z's size rule reads a doubling, the second doubling cannot tell, and with an eight-times wall D1's
+  size is not picked)*:
 
   | Reading | ×1 → ×2 | ×2 → ×4 | ×1 → ×4 | Replicate against ×1 |
   |---|---|---|---|---|
@@ -4375,7 +4396,8 @@ at most 0.60 %, the balance 0.01 %) and K4; rule 10's probe holds and its run to
     scan), and about at D4 with ν as a corner at the viscosity's high end. D1's readings need four times that size's
     elements or finer, with the element as it is; at four times, a press takes 3.8 of D4 on the CPU. Before that size
     is read again, the element collapsing at the seated tip bears on it, and on the cost. Jon's rule stands that the
-    quality items come before steps 3–5 (§15g step 2's note).
+    quality items come before steps 3–5 (§15g step 2's note). *(2026-09-29, §16z: D1's size is not picked; at eight
+    times h_K2's elements, the size used, a press takes 11.8 of D4 on the CPU.)*
 
 *The commits the runs name* are pre-squash commits kept only on the machine that ran them; the merged probe is #978's
 (`240844a3`). *Since the runs,* the probe's code changed only in which runs it lets feed the rules: K4 apart from the
@@ -4633,7 +4655,8 @@ corner). Each deciding reading's masked change, masked over as it is:
 - **§16x rule 2's missing cells.** The element as it is, frictionless at ×2 (run again at 50 by rule 1), fills them:
   its patch moves +16.86 % over the first doubling and −2.74 % over the second, and the geometric share +6.00 % and
   +0.55 %; §16x's changes from ×1 to ×4, +13.66 and +6.58 %, are reproduced. §16x's rule 2 verdict stands: ×2's
-  doubling moves the patch at μ_f 0.18 by −5.55 %, so D1's size stays open at four times h_K2's elements or finer.
+  doubling moves the patch at μ_f 0.18 by −5.55 %, so D1's size stays open at four times h_K2's elements or finer
+  *(2026-09-29, §16z: read against h_K2's replicate's scatter, that doubling cannot tell; D1's size is not picked)*.
 - **Resisted, the first doubling moves the patch as much:** the masked patch moves +24.7, +16.6 and +16.8 % from ×1
   to ×2 at μ_f 0, 0.104 and 0.18, against +16.9, +14.5 and +18.8 % as it is; from ×2 to ×4, −2.7 and −5.0 % at the
   frictional corners, against −2.4 and −5.6 %.
@@ -4738,3 +4761,269 @@ the mask's sign.
   product loop's step control and the GPU's κ were not carried forward. Jon left the call to me; the record above now
   states it, and those items are carried.
 
+
+### 16z. D1's element size, with the element as it is (design, 2026-09-28)
+
+Jon's call after §16x: settle the element collapsing at the seated tip, then read D1's element size again; his GPU call
+comes after. §16y settled the element (the element as it is, fit plan U20) and carried forward what this PR does: judge
+four times h_K2's elements with an eight-times wall, read the collapse's change again at the size picked, at every
+corner, and time §16y rule 1's re-runs. This is the design, set before the runs and revised after its review (below);
+the results are added after.
+
+**Scope.**
+- §16x rule 2 read again with an eight-times wall, so that four times h_K2's elements is judged. Under the mount it is
+  also the discretization's check on the product's own confinement (§16x rule 2), the mount's side of §9 decision 11's
+  gate, open until it settles (§15g step 7's note).
+- §16y rule 2, the masked comparison, read again at every corner at the size used, with U20's reading and the two sides
+  of U11's verdict it bears on.
+- §16x rule 1's check of the loading, and G6, at the size used. G6 runs under two step controls, which times §16y rule
+  1's re-runs and costs one of the options §15g's list sets for the product loop before step 4.
+- Not here: ν under the mount (fit plan U19, Jon's; everything here is at ν 0.49); choosing the product loop's step
+  control; the stabilized element's own h_K2, gates and cost; other insets, D1's limits and a verdict.
+
+**The runs.** As §16x's and §16y's: step 7's wall mounted at its closed end, ν 0.49, Ecoflex 00-30's η/μ with the tube's
+mass damping, f32, the pairing's corners μ_f 0, 0.104 and 0.18, the loading four times the budget's (§16x rule 1), the
+element as it is, and §16y rule 1: a run that fails with the loop's re-estimate every 500 steps is run again every 50.
+
+**The rules, set before the runs.** Engineering calls unless one names Jon. They are named, since §16x's and §16y's
+rules carry the same numbers.
+- **The size rule** (§16x rule 2, with one wall more). Walls at one, two, four and eight times h_K2's element count,
+  each meshed as step 7's is at the lattice the secant finds, the counts' ratios printed, every wall built and checked
+  before the first run; and a replicate on a lattice shifted half a cell at h_K2, as §16x's, and at four times.
+  - The deciding readings, the bar and the peak push beside them for Jon are §16x rule 2's.
+  - Each doubling is read against the scatter of the replicate at its coarser size, or the nearest coarser (h_K2's for
+    the first two doublings). A deciding reading fails if it moves past 5 % by more than that scatter, passes if it
+    stays within 5 % by that scatter, and otherwise cannot tell. A doubling fails if a reading fails; otherwise it is
+    not judged if a run behind a reading did not stand, cannot tell if a reading cannot, and passes if all pass. *(§16x
+    read a doubling at 5 % exactly, the scatter deciding only whether the rule could tell at all; read against the
+    scatter, its −5.55 % on the μ_f 0.18 patch at twice h_K2's elements cannot tell against the replicate's 2.73 % on
+    that reading.)*
+  - D1's readings need the coarsest size from which every doubling passes *(§16x's probe took the coarsest whose own
+    doubling passed; the probe now reads "from which")*. If none does and the finest doubling fails, the size is open,
+    eight times or finer; if the finest doubling after the last that failed has no verdict, no size is picked, and the
+    rule says why.
+  - `r = r∞ + C hᵖ` is fitted over the finest three sizes, and its remaining error at four and eight times printed. No
+    size is extrapolated from it *(replacing §16x rule 2's "D4 at the size the fit extrapolates to": on the design review's synthetic
+    readings, that size went from eight times to none over half a point of the finest doubling)*.
+  - **The size used** by the masked rule, the loading check and G6 is the size picked, or else the finest whose runs
+    all stood, labelled as not picked.
+  - The executor is deterministic (four times h_K2's elements at μ_f 0.18 read the same at #978's and #979's commits),
+    so the runs at one, two and four times must reproduce §16x's and §16y's readings; one that does not stops the
+    record.
+- **The interval rule.** A doubling's two runs, a replicate and its size's run, a masked run and its run as it is, and
+  the loading check's two runs are read at one re-estimate interval: where §16y rule 1 ran one every 50 steps and the
+  other stood at 500, the other is run again every 50 steps, and the change that makes to a run standing at both is
+  printed. If it moves a deciding reading by more than K3's 0.5 %, D1's readings depend on the step control, which then
+  goes to Jon beside D1's size. On the design review's public cases (the ball-on-block and the 10k tube, not in the
+  repo) it moved the seated readings at most 0.001 % and the pushes 0.25 %. The fit reads each size's own run, and says
+  so when its sizes stood at different intervals.
+- **The masked rule** (§16y rule 2) at the size used, at every corner:
+  - an element still under half after a masked run has its κ doubled, or joins the mask at 2μ, up to 25μ, the top of
+    the sources' span (§16y), or λ if lower, over up to five masked runs at ν 0.49, enough to take 2μ to 25μ. §16y
+    stopped at four, at 16μ, its four-times frictionless run leaving an element at 0.495 of its nodes against the cut
+    at 0.5;
+  - the masked runs start at the interval the run as it is was kept at (the interval rule);
+  - every round's change over as it is is printed, and the κ at which each corner cleared. On the design review's
+    public cases the change kept rising with κ after the collapse had cleared, on one with no plateau up to λ (+5.12 %
+    at 2μ, +13.83 % at λ; not in the repo);
+  - U20 stands if every deciding reading's masked change is within 5 % (K5's bar). It goes back to Jon if one exceeds
+    5 %, or if a corner is not judged, with the note that the stabilized element's own h_K2, gates and cost are not
+    measured here;
+  - U11's two sides (fit plan: *fits* needs the corners' top under the limit, *too tight* their bottom over it): the
+    corners' top and bottom, resisted over as it is. Read lower as it is, a *fits* within that change of a limit could
+    be false and a *too tight* missed; read higher, a *fits* could be missed and a *too tight* false. The push's sides
+    are printed beside, for Jon, from the geometric share at μ_f 0 (D1's push there) and the peak push with friction;
+  - the masked change keeps §16y's limits: it includes the mask's own change of stiffness, whose sign on the product
+    is not known, and is taken at the cut at half.
+- **The loading check** (§16x rule 1's) at the size used: the loading and twice it at μ_f 0 and 0.18. If a reading
+  moves more than 5 %, the loading is open at that size, and the size rule and the masked rule hold at four times the
+  budget's loading only.
+- **G6** (§16x's, `step7_cost`) at the size used, at 4 threads on an idle machine with the probe's instruments off,
+  under two step controls: the loop's re-estimate every 500 steps with §16y rule 1's re-run, the attempts it replaced
+  counted with their share of the time and the kept run's time per step over theirs; and a fixed re-estimate every 50
+  steps. Beside them, ν's and the viscosity's factors on the steps (§16x).
+- **K4.** An element inverting in a run whose validity gates hold, with no re-run left to §16y rule 1 (every 50 steps),
+  fails K4, one of §15g step 2's stop criteria, and §15a sends it to the element or the loading time. Each stage names
+  such runs of the element as it is.
+
+**For Jon,** for his GPU call: D1's size or why there is none, with the fit's remaining error there; G6 there under both
+step controls, at ν 0.49 with ν's and the viscosity's factors; the masked comparison, U20's reading and U11's sides
+there; the loading check; K4; and the interval rule's reading. Still ahead of steps 3–5 under his rule (§15g step 2's
+note), from §15g's list: ν (U19), the product loop's step control, the mount's side of the confined case unless the
+size rule settles it, and how the peak push is read at a low friction (fit plan D1, his).
+
+**Done when:** the rules' runs are in and read; the record names the runs §16y rule 1 and the interval rule made again;
+§15g's list and step 7's note, §9 (these rules' engineering calls, dated) and the fit plan (D1, G6, U20) carry the
+outcome; and the probe's new logic is pinned by tests, each failing under a mutation of the code it guards.
+
+**The code.** The probe (`insertion_sim::step7_first_run`): `SIZES` gains eight times and `REPLICATES` four; `Cell`,
+`Mounted`, `at_one_interval`, `needs_one_interval` and `interval_line` (the interval rule); `outcome`, `size_verdict`,
+`scatter_for` and `Fit` (the size rule); `step7_masked` to 25μ, with `next_stiffening`, `masked_rounds`, `sides_of` and
+`side`; `step7_cost` under two step controls; `k4_fails` and `k4_line`; fourteen unit tests.
+
+
+**Results** (`step7_sizes` at `ed24f709`; `step7_masked` and `step7_cost` at eight times h_K2's elements, at
+`cf601cb0`; both pre-squash commits kept locally; loading four times the budget's, every corner). Since `ed24f709` the
+probe changed only its summary lines (design round 2's fixes); every run's own lines are the same. After the runs,
+build round 1 added K4's reading of a run that stopped, G6's standing and K4 line, and the pure functions the tests
+pin; no run was made with them.
+
+- **Reproduction:** the runs at one, two and four times h_K2's elements, h_K2's replicate, and twice h_K2's
+  frictionless run every 50 steps read exactly §16x's and §16y's readings.
+- **The size rule: no size.** The eight-times wall is meshed at 0.506 of h_K2, the counts 1.94, 3.85 and 7.55 times
+  h_K2's. Each deciding reading's change per doubling, with how the rule reads it against the scatter beside it:
+
+  | Reading | ×1 → ×2 | ×2 → ×4 | ×4 → ×8 | Replicate at h_K2 | Replicate at ×4 |
+  |---|---|---|---|---|---|
+  | Patch, μ_f 0 | +16.86 %, fails | −2.74 %, cannot tell | +5.06 %, cannot tell | −2.67 % | −0.71 % |
+  | Patch, μ_f 0.104 | +14.53 %, fails | −2.35 %, cannot tell | +2.45 %, passes | −3.01 % | −0.14 % |
+  | Patch, μ_f 0.18 | +18.84 %, fails | −5.55 %, cannot tell | +1.68 %, passes | −2.73 % | −0.05 % |
+  | Geometric share | +5.90 %, fails | +0.57 %, passes | −0.90 %, passes | +0.20 % | −0.43 % |
+  | Peak push, μ_f 0.104 / 0.18 (for Jon) | +8.36 / +8.41 % | +2.19 / +1.46 % | −1.12 / −0.96 % | +0.27 / +0.28 % | −0.57 / −0.50 % |
+
+  - No size is picked. The first doubling fails on every reading, so D1's size is twice h_K2's elements or finer; the
+    second cannot tell against h_K2's scatter, and the third cannot tell on the frictionless patch, which moves
+    +5.06 % against its replicate's 0.71 %. Over the third, every other deciding reading, and the peak push, moves at
+    most 2.45 %. Eight times is the size used, as not picked.
+  - The second doubling is read against h_K2's scatter, standing in for twice's, which was not measured. Against a
+    scatter under 0.55 % the −5.55 % fails, and the size would be four times or finer (arithmetic on the rule); four
+    times' replicate moves the patches 0.05–0.71 %.
+  - Read at 5 % flat, as §16x read a doubling, the second and third doublings fail (−5.55 % and +5.06 %), and the size
+    would be open, eight times or finer.
+  - The replicate at four times moves the patches 0.05–0.71 %, against 2.67–3.01 % at h_K2.
+  - No fit: every deciding reading changes direction over the finest three sizes, so no order and no remaining error
+    are read.
+  - The share's first two doublings read +5.90 and +0.57 %, where §16y read +6.00 and +0.55 %: here both runs are
+    every 50 steps (the interval rule), and h_K2's and four times' frictionless runs moved their 10 mm push +0.099 and
+    +0.020 % between intervals.
+  - Under the mount, the size rule is the check on the product's own confinement, so the mount's side of §9 decision
+    11's gate stays open.
+- **The interval rule:** h_K2's and four times' frictionless runs were run again every 50 steps to match twice h_K2's
+  (which failed at 500 and stood at 50, §16y rule 1). Between the intervals the patch moved 0.000 % and the geometric
+  share at most 0.099 %, under K3's 0.5 %, so here D1's readings do not depend on the step control; the peak push, not
+  a deciding reading, moved at most 0.40 %. At eight times no run needed the rule, as every run stood at 500; there
+  G6's two step controls read the deciding readings within 0.01 % of each other.
+- **The loading check at eight times:** twice the loading moves the peak push at μ_f 0.18 +0.27 %, the geometric share
+  −2.60 %, and the patches at 0 and 0.18 −0.01 and +0.22 %: the loading holds there.
+- **The masked rule at eight times, the size used and not picked: U20 stands there.** Each deciding reading's masked
+  change, masked over as it is:
+
+  | Reading | Masked change | The collapse cleared at |
+  |---|---|---|
+  | Patch, μ_f 0 | +4.11 % | 16μ, the fifth run |
+  | Patch, μ_f 0.104 | +1.56 % | 8μ, the third |
+  | Patch, μ_f 0.18 | +0.31 % | 8μ, the third |
+  | Geometric share (μ_f 0) | +0.61 % | 16μ |
+  | Peak push, μ_f 0.104 / 0.18 (for Jon) | +0.70 / +0.63 % | 8μ |
+
+  - Every corner cleared; the masks held about 1 in 10⁴ of the wall's elements. Every deciding reading's masked change
+    is within 5 %, so U20 stands at eight times. At twice h_K2's elements, which the size rule does not exclude, §16y's
+    masked change on the frictionless patch was +6.44 %, and at four times it was not judged; U20 is read again at the
+    size picked.
+  - The frictionless corner cleared on the last run the rule allows, its least element at 0.510 of its nodes against
+    the cut at 0.5; no element reached more than 16μ. Over its five runs the
+    patch's change read +3.23, +4.32, +4.00, +4.49 and +4.11 %, and the least element 0.259, 0.330, 0.478, 0.416 and
+    0.510: neither rose steadily over the runs.
+  - **U11's two sides,** resisted over as it is: the corners' top, the patch at μ_f 0.18, +0.31 %: as it is reads it
+    lower, so a *fits* within 0.31 % of a limit could be false; their bottom, the patch at μ_f 0, +4.11 %: as it is
+    reads it lower, so a *too tight* within 4.11 % of a limit could be missed. The push's (for Jon): its top +0.63 %
+    and its bottom, the geometric share, +0.61 %, each lower as it is. Each includes the mask's own change of
+    stiffness, of unknown sign on the product.
+  - Every run stood at 500.
+- **K4** held in every kept run of the element as it is, in the three stages; every kept run stood.
+- **The tests:** each of the fourteen fails under a mutation of the helper it guards (the build review's and mine after
+  its fixes). The re-runs' plumbing (`at_fifty`, `Cell::press`) and each stage's own inline logic cannot fail a unit
+  test; the runs exercised them as they stood at `ed24f709` and `cf601cb0`.
+- **G6 at eight times** (`step7_cost`: 4 threads, an idle machine, the probe's instruments off; a press is §16x rule
+  11's three runs):
+
+  | Step control | A press over D4, on the CPU | Full verdicts at 1 and 2 insets, over their 15 min | The same steps at K1's per-step budget, over D4 |
+  |---|---|---|---|
+  | Every 500 steps, with §16y rule 1's re-run | 11.8 | 3.9 and 7.9 | 53 |
+  | Every 50 steps | 27.5 | 9.2 and 18.4 | 53 |
+
+  - No run at eight times needed §16y rule 1's re-run, so there the retry cost nothing; re-estimating every 50 steps
+    took the same steps, within 0.2 %, and 2.34 times the time.
+  - A press cost 3.1 times four times h_K2's (3.8 of D4, §16x) for 1.96 times the elements (arithmetic).
+  - The rest step's factor on the steps is 1.07 and 1.23 at ν 0.495 and 0.4975, and 0.80–1.39 across the viscosity's
+    range (Ecoflex's η/μ × 0.74 to × 1.47); no ν or viscosity run was made at eight times. With ν a corner, a press is
+    twice the runs (§16x), about 24–26 of D4 at the loop's interval, and up to about 37 at the viscosity's high end
+    (arithmetic, taking the steps as that factor and the time as the steps).
+  - With the loop's interval, the CPU as timed runs 4.5 times faster than a device at K1's per-step budget. Meeting D4
+    at eight times h_K2's elements takes a device at least 11.8 times this CPU (arithmetic). No GPU step has been
+    timed.
+- **For Jon's call:**
+  - **D1's element size is not picked.** The size rule excludes h_K2 alone, taking h_K2's scatter for twice's; with a
+    scatter at twice as small as four times', it would be four times or finer; read at 5 % flat, eight times or finer.
+    From four to eight times every deciding reading passes but the frictionless patch, which moves +5.06 % against its
+    replicate's 0.71 %. That patch is the bottom of U11's interval, on which a *too tight* rests. The
+    frictional patches move +2.45 and +1.68 %, the geometric share −0.90 %, and the peak push, his to read at a low
+    friction, −1.12 and −0.96 %. No fit says how much is left: every deciding reading changed direction over the finest
+    three sizes.
+  - At eight times, the size used and not picked: the loading holds; G6's two step controls read the deciding readings
+    within 0.01 % of each other; K4 holds; and the collapse's masked change is at most +4.11 %, so U20 stands there.
+    So U20, and with it a GPU carrying κ = 0 only (§15g step 4), stands at eight times; at twice h_K2's elements §16y's
+    masked change was +6.44 %, past its bar, and at four times it was not judged.
+  - G6 there: 11.8 of D4 on the CPU with the loop's interval, 27.5 re-estimating every 50 steps; the bake 0.29 of D4
+    once per scan and band. At four times it was 3.8 (§16x); twice was not timed as G6. A press at sixteen times would
+    take about 37 of D4 on this CPU, by the last doubling's growth (arithmetic).
+  - Still ahead of steps 3–5 under his rule (§15g step 2's note): D1's size and, with it, the mount's side of the
+    confined case, both the size rule's (judging eight times takes a sixteen-times wall); ν (U19, his); and how the
+    peak push is read at a low friction (fit plan D1, his). Before step 4: the product loop's step control, mine to
+    choose from G6 (here the re-run cost nothing, and a fixed 50 steps 2.34 times the time).
+
+*My priors, scored* (written before the first run, kept locally):
+- the runs at one to four times h_K2's elements reproducing §16x's and §16y's: hit;
+- four times passing its doubling, so D1's size four times: miss, the frictionless patch +5.06 %, and the frictional
+  patches moving −2 to −3 %: miss, +2.45 and +1.68 %;
+- eight times' runs standing at 500: hit;
+- the interval's own effect under 0.5 % on the patch: hit, 0.000 %;
+- the replicate at four times moving less than h_K2's: hit, 0.05–0.71 % against 2.67–3.01 %;
+- the masked frictionless corner at four times clearing by 32μ or λ, its change +4.8 to +5.3 %: not run at four times;
+  at eight times it cleared by 16μ, at +4.11 %;
+- the loading check at four times holding, the share moving most: run at eight times, where it held and the share
+  moved most, −2.60 %;
+- G6 at four times reproducing 3.8 of D4: not run; a press at eight times about 12 of D4: hit, 11.8;
+- a fit's order between 1 and 2: miss, no fit.
+
+None of my ten suspected design defects named reading a doubling against its scatter, K4 at the last interval, the
+mount's side, or costing a fixed 50 steps.
+
+**How the design was checked.** Round 1: two cold reviewers, of the physics and code, and of the whole plan; the first
+measured on the public cases with a harness outside the repo, since deleted. About 19 findings; the largest:
+- a doubling was passed or failed at 5 % inside the scatter its replicate measures; each is now read against it;
+- on the public cases the masked change kept rising with κ after the collapse cleared, and the extension to λ went
+  past the sources' span with nothing depending on it; κ now stops at 25μ, every round is printed, and a corner not
+  judged sends U20 back to Jon;
+- the fit's extrapolated size moved with noise, and was cut;
+- a K4 failure every 50 steps read as "not judged"; the mount's side of the confined case, the fixed-50 step control's
+  cost, the push's bottom side (the geometric share, not the 1 mm peak) and the rules' clashing numbers were missing
+  or wrong; a size verdict was printed where the rule could not tell;
+- a stored spec and three prints did not match their runs, `sides` had no test, and a replicate wall was built only
+  after every run.
+
+Round 2: one fresh reviewer of round 1's fixes found nine problems, eight of them written by those fixes, among them:
+the interval rule's reading left out the loading check's and the masked rule's runs; a sentence gave the mask's own
+stiffening a sign the next called unknown; the fit moved by the scatter came out undefined where a size passes; the K4
+line was wider than its check, and counted the masked model's runs; and new logic had no test. They were fixed in the
+code or cut, and the design rounds stopped there.
+
+**How the build was checked.** Round 1: three cold reviewers, of the code (42 mutations in a worktree of its own), of
+this record against the runs' outputs and the repo for the scan's figures (about 130 numbers checked; a sweep of the
+runs' local figures, with planted ones as its positive controls, found none in any added line or commit message), and
+of the whole plan. The largest findings:
+- "U20 stands" was written without its condition, eight times being the size used and not picked, while the size rule
+  does not exclude twice h_K2's elements, where §16y's masked change was past the bar;
+- "twice h_K2's elements or finer" stood alone, resting on h_K2's scatter in place of twice's, which was not measured;
+  the replicate at four times reads its own far smaller;
+- the step control's independence at eight times was credited to the interval rule, which made no runs there (its
+  line read 0.000 % over no runs); G6's paired runs are the evidence;
+- about half the new logic had no test, the deciding readings among it; the helpers now have tests, and the rest was
+  exercised only by the runs;
+- the rest step's factor was reported as steps, older cost statements read as current, and three prints could say
+  more than their checks (G6's standing, the loading check's order, K4 in a run that stopped).
+
+Round 2: one fresh reviewer of round 1's fixes found seven problems, five of them written by those fixes: the masked
+rule's κ described two ways, a "not read" line saying more than its check, the record crediting the runs with logic
+changed after them, a figure finer than its prints, and a count no test pinned. They were fixed or cut, and the rounds
+stopped there; none moved a verdict.

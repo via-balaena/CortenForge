@@ -14,7 +14,8 @@ Phase 2 flow with D1–D5 as recommended.
 > - **§2 describes the replaced solver.**
 > - **G2 and G4 are updated for the new solver.** G1, G3 and G5 keep the old solver's baselines, and the
 >   unknowns (§7) are updated. *(2026-09-28: G1, G3 and G6 now also carry the new solver's first run on `base_mold`,
->   soft-contact recon §16x; the element collapsing at its seated tip is recon §16y and U20.)*
+>   soft-contact recon §16x; the element collapsing at its seated tip is recon §16y and U20.)* *(2026-09-29: D1's
+>   element size read again with an eight-times wall is recon §16z.)*
 
 **Scene:** the product scan `base_mold` — 5 mm inset, 17 mm Dragon Skin 10A at 25 % Slacker, curved
 centerline. ⛔ It is a sensitive scan: probes load it from outside the repo,
@@ -239,7 +240,12 @@ which inset would pass.
       moves 8.4 % over the first doubling of the elements and 2.2 % over the second, within K5's bar from twice. The
       element size D1's readings need is open, four times or finer, on the seated patch.)* *(2026-09-28, recon §16y:
       resisting the elements that collapse at the seated tip, those under half their nodes' volume, moves that peak by
-      at most 0.4 % at four times h_K2's elements; its effect on the seated patch is U20.)*
+      at most 0.4 % at four times h_K2's elements; its effect on the seated patch is U20.)* *(2026-09-29, recon §16z:
+      from four to eight times h_K2's elements the peak moves −1.12 and −0.96 % at μ_f 0.104 and 0.18. D1's size is not
+      picked: twice h_K2's elements or finer by the size rule, which takes h_K2's scatter for twice's; four times or
+      finer with a scatter at twice as small as four times'; and eight times or finer read at 5 % flat. From four to
+      eight times the frictionless patch moves +5.06 % against its replicate's 0.71 %, which the size rule cannot tell
+      from 5 %.)*
     - *Seated:* ~~the contact pressure at the seat, read as its area-weighted 95th percentile~~ **the contact
       force on the most-loaded 1 cm² patch, over 1 cm²** (Jon, 2026-09-26, accepting the recommendation after
       K5; soft-contact recon §16s). The percentile it replaces did not converge on the tube: its most-squeezed
@@ -298,7 +304,9 @@ which inset would pass.
       1–2 insets, 3–8 at the worst corner; arithmetic.)* *(2026-09-28, recon §16x: those took the budget's loading;
       at the four times it that D1's readings need, a press takes 0.38 of D4 on the CPU at h_K2 and 3.8 at four
       times its elements (1.3 and 17 at K1's per-step budget, which the CPU beats), and full verdicts at 1–2 insets
-      take 0.13–0.25 and 1.3–2.6 of the search's 15 minutes.)*
+      take 0.13–0.25 and 1.3–2.6 of the search's 15 minutes.)* *(2026-09-29, recon §16z: at eight times h_K2's
+      elements, 11.8 of D4 on the CPU, and full verdicts at 1–2 insets 3.9–7.9 of the 15 minutes; D1's size is not
+      picked.)*
     - If the new solver takes far longer on the same scene, revisit the budget rather than cut the
       physics.
   - **D5 — Where the inset changes.** *Decided:* on the fit screen, as **Try at *n* mm**, with D3's
@@ -416,7 +424,7 @@ This is why the architecture changed (soft-contact recon §3).
 | **G3 — Full seat** | The full inset is reached along the sliding path | Growing: 4.531 of 5 mm. Sliding with the inset: met by construction on the prescribed fitted path, in every valid run of step 7's first (recon §16x, 2026-09-28) |
 | **G4 — κ independent of the schedule** (implicit solver only) | The derived κ does not change with the step count | Holds (the ceiling rule) |
 | **G5 — Heat map in the rest frame** | `the_heat_map_reads_the_deformed_view_at_rest_positions` passes | Passes; fails under four mutations |
-| **G6 — Runtime** | Within the Phase 2 budget | See Phase 2. *(2026-09-28, recon §16x: on `base_mold` a press takes 0.38 of D4 on the CPU at the element size K2 needs, and 3.8 at four times its elements; D1's readings need four times or finer, open)* |
+| **G6 — Runtime** | Within the Phase 2 budget | See Phase 2. *(2026-09-28, recon §16x: on `base_mold` a press takes 0.38 of D4 on the CPU at the element size K2 needs, and 3.8 at four times its elements; D1's readings need four times or finer, open)* *(2026-09-29, recon §16z: 11.8 at eight times, the size used and not picked, 27.5 re-estimating every 50 steps; D1's size is twice h_K2's elements or finer by the size rule, taking h_K2's scatter for twice's; four times or finer with a scatter at twice as small as four times'; and eight times or finer read at 5 % flat)* |
 
 G1 and G2 should become committed probes (the scan is repo-excluded, so they run locally and cannot gate
 in CI); G5 already gates in CI.
@@ -571,6 +579,7 @@ in CI); G5 already gates in CI.
     the 5 mm inset a viscous press takes 0.42 of D4 at K1's rate, and 0.59 at ν 0.495 with 1.47 times the viscosity.)*
     *(2026-09-28, recon §16x: at the loading D1's readings need, four times the budget's, a press takes 0.38 of D4 on
     the CPU at h_K2 and 3.8 at four times its elements; the viscosity's range moves the steps 0.83–1.39 times.)*
+    *(2026-09-29, recon §16z: 11.8 at eight times its elements, the size used and not picked.)*
 - **U16 — D1's readings do not converge on the tube** (soft-contact recon §16p, K5, 2026-09-25). The seated 95th
   percentile moved by 8–12 % from the 50k to the 100k mesh in three of four cases (−2.2 % in the fourth), and the
   frictionless push peak by 14 % (λ_a 1.1). The push with friction converged. §15a sends this back to D1's
@@ -583,7 +592,9 @@ in CI); G5 already gates in CI.
   do not converge, and `base_mold` at h_K2 is about the 10k tube's element size, so the element size they need on
   the product is measured in step 7 *(2026-09-28, recon §16x: measured and open, four times h_K2's elements or
   finer; an element collapsing at the seated tip under the mount is not yet settled)* *(2026-09-28, recon §16y: the
-  collapse's effect is U20)*. The
+  collapse's effect is U20)* *(2026-09-29, recon §16z: not picked, twice h_K2's elements or finer by the size rule, taking
+  h_K2's scatter for twice's; four times or finer with a scatter at twice as small as four times'; and eight times or
+  finer read at 5 % flat)*. The
   lip radius stays under Later.
 - **U17 — The product wall's canal surface** (soft-contact recon §16r, 2026-09-26). At the element size K2 needs,
   the old path's wall puts the canal nodes off the true canal surface: its 5th and 95th percentiles at −0.50 and
@@ -658,6 +669,12 @@ in CI); G5 already gates in CI.
   Carried forward: the next PR reads D1's element size with this element and reads the collapse's change again there,
   at every corner; runs that fail with the loop's 500-step re-estimate are made again every 50 steps, and the product
   loop's step control is an open item before the GPU.
+  *(2026-09-29, recon §16z: read again at eight times h_K2's elements, the size used and not picked, every corner's
+  collapse cleared and each masked change is within 5 %, at most +4.11 %, on the frictionless patch: U20 stands there.
+  At twice h_K2's elements, which the size rule does not exclude, the masked change was +6.44 % (recon §16y), and at
+  four times not judged. At eight times, resisted reads the top of the corners' interval 0.31 % higher, so a *fits*
+  within 0.31 % of a limit could be false, and the bottom 4.11 % higher, so a *too tight* within 4.11 % of a limit
+  could be missed. Each includes the stabilization's own change of stiffness, of unknown sign.)*
 ---
 
 ## 8. References
