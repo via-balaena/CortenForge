@@ -15,6 +15,7 @@ use super::state_buffers::GpuStateBuffers;
 use super::types::PhysicsParams;
 use super::wgpu_helpers::{buf_entry, create_pipeline, storage_entry};
 use crate::context::GpuContext;
+use crate::submit::Recording;
 
 use sim_core::types::Model;
 
@@ -230,7 +231,7 @@ impl GpuSmoothPipeline {
     /// Encode the smooth dynamics compute passes (assemble + solve).
     ///
     /// Assumes `write_params()` has already been called this frame.
-    pub fn encode(&self, encoder: &mut wgpu::CommandEncoder) {
+    pub fn encode(&self, rec: &mut impl Recording) {
         let nv = self.nv;
         if nv == 0 {
             return;
@@ -240,10 +241,7 @@ impl GpuSmoothPipeline {
 
         // ── 1. smooth_assemble ───────────────────────────────────────
         {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("smooth_assemble"),
-                timestamp_writes: None,
-            });
+            let mut pass = rec.pass("smooth_assemble");
             pass.set_pipeline(&self.assemble_pipeline);
             pass.set_bind_group(0, &self.params_bind_group, &[0]);
             pass.set_bind_group(1, &self.forces_bind_group, &[]);
@@ -255,10 +253,7 @@ impl GpuSmoothPipeline {
         // ── 2. smooth_solve ──────────────────────────────────────────
         {
             let offset = UNIFORM_ALIGN as u32;
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("smooth_solve"),
-                timestamp_writes: None,
-            });
+            let mut pass = rec.pass("smooth_solve");
             pass.set_pipeline(&self.solve_pipeline);
             pass.set_bind_group(0, &self.params_bind_group, &[offset]);
             pass.set_bind_group(1, &self.forces_bind_group, &[]);
@@ -279,7 +274,7 @@ impl GpuSmoothPipeline {
         model: &GpuModelBuffers,
         state: &GpuStateBuffers,
         cpu_model: &Model,
-        encoder: &mut wgpu::CommandEncoder,
+        rec: &mut impl Recording,
     ) {
         let nv = self.nv;
         if nv == 0 {
@@ -295,6 +290,6 @@ impl GpuSmoothPipeline {
         ctx.queue.write_buffer(&state.qfrc_actuator, 0, &zero_bytes);
         ctx.queue.write_buffer(&state.qfrc_passive, 0, &zero_bytes);
 
-        self.encode(encoder);
+        self.encode(rec);
     }
 }

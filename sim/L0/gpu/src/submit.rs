@@ -251,11 +251,7 @@ impl<T: Pod> Recorder<T> {
     /// Inside a step, or when the GPU wait or the buffer's mapping fails.
     pub fn read<P: Pod>(&mut self, buffer: &wgpu::Buffer, count: usize) -> Vec<P> {
         let bytes = (count * std::mem::size_of::<P>()) as u64;
-        let read = self.read_many(&[(buffer, bytes)]);
-        read[0]
-            .chunks_exact(std::mem::size_of::<P>())
-            .map(bytemuck::pod_read_unaligned)
-            .collect()
+        values(&self.read_many(&[(buffer, bytes)])[0])
     }
 
     /// Read the first `bytes` of each buffer named, in one submit and one
@@ -358,6 +354,15 @@ impl<T: Pod> Recording for Recorder<T> {
 
 #[cfg(test)]
 mod tests;
+
+/// The values of `P` in `bytes` read back, whatever the bytes' alignment.
+#[must_use]
+pub fn values<P: Pod>(bytes: &[u8]) -> Vec<P> {
+    bytes
+        .chunks_exact(std::mem::size_of::<P>())
+        .map(bytemuck::pod_read_unaligned)
+        .collect()
+}
 
 /// Read `count` values of `P` from the start of `buffer`: a read with
 /// nothing recorded before it.

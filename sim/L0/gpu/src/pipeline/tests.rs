@@ -35,7 +35,7 @@ use sim_core::types::{Data, MjJointType, Model};
 use super::collision::GpuCollisionPipeline;
 use super::constraint::GpuConstraintPipeline;
 use super::crba::GpuCrbaPipeline;
-use super::fk::{GpuFkPipeline, readback_f32s, readback_vec4s};
+use super::fk::GpuFkPipeline;
 use super::integrate::GpuIntegratePipeline;
 use super::model_buffers::GpuModelBuffers;
 use super::rne::GpuRnePipeline;
@@ -44,6 +44,7 @@ use super::state_buffers::GpuStateBuffers;
 use super::types::PipelineContact;
 use super::velocity_fk::GpuVelocityFkPipeline;
 use crate::context::GpuContext;
+use crate::submit::read_buffer;
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -72,7 +73,7 @@ fn compare_xpos(
     label: &str,
     tol: f32,
 ) {
-    let gpu = readback_vec4s(ctx, buffer, cpu_values.len());
+    let gpu = read_buffer::<[f32; 4]>(ctx, buffer, cpu_values.len());
     for (i, (g, c)) in gpu.iter().zip(cpu_values.iter()).enumerate() {
         let dx = (g[0] - c.x as f32).abs();
         let dy = (g[1] - c.y as f32).abs();
@@ -99,7 +100,7 @@ fn compare_xquat(
     label: &str,
     tol: f32,
 ) {
-    let gpu = readback_vec4s(ctx, buffer, cpu_values.len());
+    let gpu = read_buffer::<[f32; 4]>(ctx, buffer, cpu_values.len());
     for (i, (g, c)) in gpu.iter().zip(cpu_values.iter()).enumerate() {
         let cc = c.as_ref().coords;
         // Quaternions q and -q represent the same rotation
@@ -270,7 +271,7 @@ fn t4_cinert_matches_cpu() {
     ctx.queue.submit([encoder.finish()]);
 
     // Readback cinert (3 vec4 per body)
-    let gpu_cinert = readback_vec4s(&ctx, &state_buf.body_cinert, model.nbody * 3);
+    let gpu_cinert = read_buffer::<[f32; 4]>(&ctx, &state_buf.body_cinert, model.nbody * 3);
 
     // Compare each body's cinert against CPU
     for body_id in 0..model.nbody {
@@ -388,7 +389,7 @@ fn t5_cdof_matches_cpu() {
     ctx.queue.submit([encoder.finish()]);
 
     // Readback cdof (2 vec4 per DOF)
-    let gpu_cdof = readback_vec4s(&ctx, &state_buf.cdof, model.nv * 2);
+    let gpu_cdof = read_buffer::<[f32; 4]>(&ctx, &state_buf.cdof, model.nv * 2);
 
     // All 3 DOFs are hinge joints
     for dof in 0..model.nv {
@@ -473,7 +474,7 @@ fn t5b_cdof_multi_joint_body() {
     pipeline.dispatch(&ctx, &model_buf, &state_buf, &mut encoder);
     ctx.queue.submit([encoder.finish()]);
 
-    let gpu_cdof = readback_vec4s(&ctx, &state_buf.cdof, model.nv * 2);
+    let gpu_cdof = read_buffer::<[f32; 4]>(&ctx, &state_buf.cdof, model.nv * 2);
 
     let tol = 1e-4;
     for dof in 0..model.nv {
@@ -524,8 +525,8 @@ fn t6_subtree_com_matches_cpu() {
     pipeline.dispatch(&ctx, &model_buf, &state_buf, &mut encoder);
     ctx.queue.submit([encoder.finish()]);
 
-    let gpu_com = readback_vec4s(&ctx, &state_buf.subtree_com, model.nbody);
-    let gpu_mass = readback_f32s(&ctx, &state_buf.subtree_mass, model.nbody);
+    let gpu_com = read_buffer::<[f32; 4]>(&ctx, &state_buf.subtree_com, model.nbody);
+    let gpu_mass = read_buffer::<f32>(&ctx, &state_buf.subtree_mass, model.nbody);
 
     let tol = 1e-4;
     for b in 0..model.nbody {
@@ -572,7 +573,7 @@ fn t7_cinert_hinge_chain() {
     pipeline.dispatch(&ctx, &model_buf, &state_buf, &mut encoder);
     ctx.queue.submit([encoder.finish()]);
 
-    let gpu_cinert = readback_vec4s(&ctx, &state_buf.body_cinert, model.nbody * 3);
+    let gpu_cinert = read_buffer::<[f32; 4]>(&ctx, &state_buf.body_cinert, model.nbody * 3);
 
     let tol = 1e-3; // Looser for chain + rotated inertia
     for body_id in 1..model.nbody {
@@ -661,7 +662,7 @@ fn t8_qm_diagonal_free_body() {
 
     // Readback qM
     let nv = model.nv;
-    let gpu_qm = readback_f32s(&ctx, &state_buf.qm, nv * nv);
+    let gpu_qm = read_buffer::<f32>(&ctx, &state_buf.qm, nv * nv);
 
     let tol = 1e-4;
     for i in 0..nv {
@@ -693,7 +694,7 @@ fn t9_qm_pendulum_full_matrix() {
     let (_, state_buf) = run_fk_and_crba(&ctx, &model, &data);
 
     let nv = model.nv;
-    let gpu_qm = readback_f32s(&ctx, &state_buf.qm, nv * nv);
+    let gpu_qm = read_buffer::<f32>(&ctx, &state_buf.qm, nv * nv);
 
     let tol = 1e-3;
     for i in 0..nv {
@@ -734,7 +735,7 @@ fn t10_qm_flat_tree_free_bodies() {
     let (_, state_buf) = run_fk_and_crba(&ctx, &model, &data);
 
     let nv = model.nv;
-    let gpu_qm = readback_f32s(&ctx, &state_buf.qm, nv * nv);
+    let gpu_qm = read_buffer::<f32>(&ctx, &state_buf.qm, nv * nv);
 
     let tol = 1e-4;
     for i in 0..nv {
@@ -771,7 +772,7 @@ fn t10b_qm_multi_joint_body() {
     let (_, state_buf) = run_fk_and_crba(&ctx, &model, &data);
 
     let nv = model.nv;
-    let gpu_qm = readback_f32s(&ctx, &state_buf.qm, nv * nv);
+    let gpu_qm = read_buffer::<f32>(&ctx, &state_buf.qm, nv * nv);
 
     let tol = 1e-4;
     for i in 0..nv {
@@ -821,7 +822,7 @@ fn t11_cvel_free_body() {
     let (_, state_buf) = run_fk_and_vel_fk(&ctx, &model, &data);
 
     // Readback cvel (2 vec4 per body)
-    let gpu_cvel = readback_vec4s(&ctx, &state_buf.body_cvel, model.nbody * 2);
+    let gpu_cvel = read_buffer::<[f32; 4]>(&ctx, &state_buf.body_cvel, model.nbody * 2);
 
     let tol = 1e-5;
     for b in 0..model.nbody {
@@ -879,7 +880,7 @@ fn t12_cvel_pendulum() {
 
     let (_, state_buf) = run_fk_and_vel_fk(&ctx, &model, &data);
 
-    let gpu_cvel = readback_vec4s(&ctx, &state_buf.body_cvel, model.nbody * 2);
+    let gpu_cvel = read_buffer::<[f32; 4]>(&ctx, &state_buf.body_cvel, model.nbody * 2);
 
     let tol = 1e-4;
     for b in 0..model.nbody {
@@ -986,7 +987,7 @@ fn t13_qfrc_bias_gravity_free_body() {
     // GPU through RNE
     let (_, state_buf) = run_through_rne(&ctx, &model, &data);
 
-    let gpu_bias = readback_f32s(&ctx, &state_buf.qfrc_bias, model.nv);
+    let gpu_bias = read_buffer::<f32>(&ctx, &state_buf.qfrc_bias, model.nv);
 
     let tol = 1e-4;
     for d in 0..model.nv {
@@ -1035,7 +1036,7 @@ fn t13b_qfrc_bias_gravity_rotated_free_body() {
     data.forward(&model).expect("CPU forward failed");
 
     let (_, state_buf) = run_through_rne(&ctx, &model, &data);
-    let gpu_bias = readback_f32s(&ctx, &state_buf.qfrc_bias, model.nv);
+    let gpu_bias = read_buffer::<f32>(&ctx, &state_buf.qfrc_bias, model.nv);
 
     let tol = 1e-4;
     for d in 0..model.nv {
@@ -1078,7 +1079,7 @@ fn t14_qfrc_bias_coriolis_spinning() {
     data.forward(&model).expect("CPU forward failed");
 
     let (_, state_buf) = run_through_rne(&ctx, &model, &data);
-    let gpu_bias = readback_f32s(&ctx, &state_buf.qfrc_bias, model.nv);
+    let gpu_bias = read_buffer::<f32>(&ctx, &state_buf.qfrc_bias, model.nv);
 
     let tol = 1e-3;
     for d in 0..model.nv {
@@ -1116,7 +1117,7 @@ fn t15_qfrc_bias_pendulum() {
     data.forward(&model).expect("CPU forward failed");
 
     let (_, state_buf) = run_through_rne(&ctx, &model, &data);
-    let gpu_bias = readback_f32s(&ctx, &state_buf.qfrc_bias, model.nv);
+    let gpu_bias = read_buffer::<f32>(&ctx, &state_buf.qfrc_bias, model.nv);
 
     let tol = 1e-3;
     for d in 0..model.nv {
@@ -1164,7 +1165,7 @@ fn t15b_qfrc_bias_spatial_chain() {
     data.forward(&model).expect("CPU forward failed");
 
     let (_, state_buf) = run_through_rne(&ctx, &model, &data);
-    let gpu_bias = readback_f32s(&ctx, &state_buf.qfrc_bias, model.nv);
+    let gpu_bias = read_buffer::<f32>(&ctx, &state_buf.qfrc_bias, model.nv);
 
     let tol = 1e-3;
     for d in 0..model.nv {
@@ -1200,7 +1201,7 @@ fn t15c_qfrc_bias_multi_joint_body() {
     data.forward(&model).expect("CPU forward failed");
 
     let (_, state_buf) = run_through_rne(&ctx, &model, &data);
-    let gpu_bias = readback_f32s(&ctx, &state_buf.qfrc_bias, model.nv);
+    let gpu_bias = read_buffer::<f32>(&ctx, &state_buf.qfrc_bias, model.nv);
 
     let tol = 1e-3;
     for d in 0..model.nv {
@@ -1229,7 +1230,7 @@ fn t16_qacc_smooth_free_body() {
     data.forward(&model).expect("CPU forward failed");
 
     let (_, state_buf) = run_through_smooth(&ctx, &model, &data);
-    let gpu_qacc = readback_f32s(&ctx, &state_buf.qacc_smooth, model.nv);
+    let gpu_qacc = read_buffer::<f32>(&ctx, &state_buf.qacc_smooth, model.nv);
 
     let tol = 1e-4;
     for d in 0..model.nv {
@@ -1300,7 +1301,7 @@ fn t17_gravity_drop_trajectory() {
     }
 
     // Readback GPU qpos
-    let gpu_qpos = readback_f32s(&ctx, &state_buf.qpos, model.nq);
+    let gpu_qpos = read_buffer::<f32>(&ctx, &state_buf.qpos, model.nq);
 
     // Compare z position (should be close to 10 - 0.5*9.81*4 ≈ -9.62)
     let gpu_z = gpu_qpos[2];
@@ -1365,7 +1366,7 @@ fn t18_quaternion_stability() {
 
         // Check quaternion norm every 100 steps
         if (step + 1) % 100 == 0 {
-            let qpos = readback_f32s(&ctx, &state_buf.qpos, model.nq);
+            let qpos = read_buffer::<f32>(&ctx, &state_buf.qpos, model.nq);
             // Quaternion at qpos[3..7] (w,x,y,z)
             let w = qpos[3];
             let x = qpos[4];
@@ -1447,9 +1448,7 @@ fn readback_contacts(
     contact_count_buffer: &wgpu::Buffer,
     max_contacts: usize,
 ) -> Vec<PipelineContact> {
-    // Readback count
-    let count_data = readback_f32s(ctx, contact_count_buffer, 1);
-    let count = f32::to_bits(count_data[0]) as usize;
+    let count = read_buffer::<u32>(ctx, contact_count_buffer, 1)[0] as usize;
     let count = count.min(max_contacts);
     if count == 0 {
         return vec![];
@@ -1457,7 +1456,7 @@ fn readback_contacts(
 
     // Readback contacts (as f32s, reinterpret as PipelineContact)
     // PipelineContact = 48 bytes = 12 f32s
-    let raw = readback_f32s(ctx, contact_buffer, count * 12);
+    let raw = read_buffer::<f32>(ctx, contact_buffer, count * 12);
     let contacts: &[PipelineContact] = bytemuck::cast_slice(&raw);
     contacts[..count].to_vec()
 }
@@ -1493,7 +1492,7 @@ fn t19_aabb_matches_cpu() {
 
     // Readback AABB for each geom (2×vec4 per geom)
     let n_aabb_vec4s = model.ngeom * 2;
-    let aabb_data = readback_vec4s(&ctx, &state_buf.geom_aabb, n_aabb_vec4s);
+    let aabb_data = read_buffer::<[f32; 4]>(&ctx, &state_buf.geom_aabb, n_aabb_vec4s);
 
     // Ground plane (geom 0): should have huge AABB
     let plane_min = &aabb_data[0];
@@ -1796,13 +1795,12 @@ fn run_full_pipeline_with_constraints(
 
     ctx.queue.submit([encoder.finish()]);
 
-    readback_f32s(ctx, &state_buf.qacc, model.nv)
+    read_buffer::<f32>(ctx, &state_buf.qacc, model.nv)
 }
 
 /// Readback constraint count from GPU.
 fn readback_constraint_count(ctx: &GpuContext, state_buf: &GpuStateBuffers) -> u32 {
-    let data = readback_f32s(ctx, &state_buf.constraint_count, 1);
-    f32::to_bits(data[0])
+    read_buffer::<u32>(ctx, &state_buf.constraint_count, 1)[0]
 }
 
 #[test]
@@ -1841,7 +1839,7 @@ fn t23_constraint_assembly_produces_rows() {
     );
 
     // Verify efc_D values are positive (regularization)
-    let efc_d = readback_f32s(&ctx, &state_buf.efc_d, n_constraints as usize);
+    let efc_d = read_buffer::<f32>(&ctx, &state_buf.efc_d, n_constraints as usize);
     for (i, &d) in efc_d.iter().enumerate() {
         assert!(
             d > 0.0,
@@ -1871,7 +1869,7 @@ fn t24_newton_solver_sphere_on_ground() {
     let qacc = run_full_pipeline_with_constraints(&ctx, &model, &model_buf, &state_buf);
 
     // Also get qacc_smooth for comparison
-    let qacc_smooth = readback_f32s(&ctx, &state_buf.qacc_smooth, model.nv);
+    let qacc_smooth = read_buffer::<f32>(&ctx, &state_buf.qacc_smooth, model.nv);
 
     eprintln!("  T24: qacc_smooth = {:?}", &qacc_smooth);
     eprintln!("  T24: qacc        = {:?}", &qacc);
@@ -1920,7 +1918,7 @@ fn t25_zero_contacts_qacc_equals_smooth() {
     let state_buf = GpuStateBuffers::new(&ctx, &model_buf, &data);
 
     let qacc = run_full_pipeline_with_constraints(&ctx, &model, &model_buf, &state_buf);
-    let qacc_smooth = readback_f32s(&ctx, &state_buf.qacc_smooth, model.nv);
+    let qacc_smooth = read_buffer::<f32>(&ctx, &state_buf.qacc_smooth, model.nv);
 
     // No contacts → constraint_count should be 0
     let n_constraints = readback_constraint_count(&ctx, &state_buf);
@@ -1989,7 +1987,7 @@ fn t26_multi_substep_stability() {
         ctx.queue.submit([encoder.finish()]);
 
         // Check stability every step
-        let qpos = readback_f32s(&ctx, &state_buf.qpos, model.nq);
+        let qpos = read_buffer::<f32>(&ctx, &state_buf.qpos, model.nq);
         for (i, &p) in qpos.iter().enumerate() {
             assert!(
                 p.is_finite(),
@@ -2002,7 +2000,7 @@ fn t26_multi_substep_stability() {
         }
     }
 
-    let final_qpos = readback_f32s(&ctx, &state_buf.qpos, model.nq);
+    let final_qpos = read_buffer::<f32>(&ctx, &state_buf.qpos, model.nq);
     let final_z = final_qpos[2];
     eprintln!("  T26: after {n_steps} steps, z = {final_z:.4}");
 
@@ -2559,8 +2557,8 @@ fn run_one_substep_batched(
     integrate.dispatch(ctx, &model_buf, &state_buf, model, &mut encoder);
     ctx.queue.submit([encoder.finish()]);
 
-    let qpos_all = readback_f32s(ctx, &state_buf.qpos, nq * datas.len());
-    let qvel_all = readback_f32s(ctx, &state_buf.qvel, nv * datas.len());
+    let qpos_all = read_buffer::<f32>(ctx, &state_buf.qpos, nq * datas.len());
+    let qvel_all = read_buffer::<f32>(ctx, &state_buf.qvel, nv * datas.len());
     (0..datas.len())
         .map(|k| {
             (
@@ -2892,23 +2890,22 @@ fn t37_large_batch_allocates_and_steps() {
     eprintln!("  T37 passed: n_env={N_ENV} allocates + steps with contact");
 }
 
-// ── T38: Chunked substep submits (long-rollout hang, wall #2 regression guard) ──
+// ── T38: Substeps across submits (long-rollout hang, wall #2 regression guard) ──
 //
-// Before chunking, `step(num_substeps)` encoded EVERY substep into one command
-// buffer (~14 cmds/substep) and submitted once; past ~100 substeps that overran a
-// backend command limit and the synchronous readback poll then blocked forever
-// (probe: 75 OK, 100 hang). `step()` now submits in bounded chunks of
-// `SUBSTEP_CHUNK` (=32). This guards two things at once:
-//   1. NO-HANG: `step(150)` (> SUBSTEP_CHUNK, the regime that used to hang) simply
-//      completing is the regression guard — pre-fix this test would never return.
-//   2. BYTE-IDENTICAL: chunk boundaries must not change the trajectory. State lives
+// This model opens 24 compute passes a substep. On Metal, wgpu 27 opens two Metal
+// command buffers a pass against the queue's 4 096, so one command buffer of 2 048
+// passes blocks for good inside `finish` (recon §17a); unbounded, `step(150)` did.
+// `step()` now records through a `Recorder`, which submits within its pass cap:
+// `step(150)` is seven submits. This guards two things at once:
+//   1. NO-HANG: `step(150)` completing is the regression guard.
+//   2. BYTE-IDENTICAL: submit boundaries must not change the trajectory. State lives
 //      in `state_bufs` across the ordered submits, and the f32→f64→f32 round-trip
 //      between per-step uploads is lossless, so a single `step(150)` must match
 //      150× `step(1)` exactly. A contactless free-fall fixture keeps the math the
 //      simplest deterministic path (no contact set, no solver iteration variance).
 #[test]
-fn t38_chunked_substeps_no_hang_and_byte_identical() {
-    const SUBSTEPS: u32 = 150; // > SUBSTEP_CHUNK (32): spans multiple chunks/submits.
+fn t38_substeps_across_submits_no_hang_and_byte_identical() {
+    const SUBSTEPS: u32 = 150; // 3 600 passes: past Metal's 2 047, and seven submits.
 
     let mut model = Model::free_body(1.0, Vector3::new(0.1, 0.2, 0.3));
     // One geom (no ground plane) → collision finds no pairs, so the body free-falls
@@ -2923,28 +2920,28 @@ fn t38_chunked_substeps_no_hang_and_byte_identical() {
         return;
     };
 
-    // Run A: one chunked call. Completing at all is the no-hang guard.
+    // Run A: one call. Completing at all is the no-hang guard.
     let mut data_batch = init.clone();
     pipeline.step(&model, std::slice::from_mut(&mut data_batch), SUBSTEPS);
 
-    // Run B: SUBSTEPS single-substep calls (each one chunk).
+    // Run B: SUBSTEPS single-substep calls (each one submit).
     let mut data_iter = init.clone();
     for _ in 0..SUBSTEPS {
         pipeline.step(&model, std::slice::from_mut(&mut data_iter), 1);
     }
 
-    // Byte-identical: chunk-boundary independence (exact f64 equality).
+    // Byte-identical: submit-boundary independence (exact f64 equality).
     for i in 0..model.nq {
         assert_eq!(
             data_batch.qpos[i], data_iter.qpos[i],
-            "qpos[{i}] differs: chunked step({SUBSTEPS}) {} vs {SUBSTEPS}× step(1) {}",
+            "qpos[{i}] differs: step({SUBSTEPS}) {} vs {SUBSTEPS}× step(1) {}",
             data_batch.qpos[i], data_iter.qpos[i]
         );
     }
     for i in 0..model.nv {
         assert_eq!(
             data_batch.qvel[i], data_iter.qvel[i],
-            "qvel[{i}] differs: chunked step({SUBSTEPS}) {} vs {SUBSTEPS}× step(1) {}",
+            "qvel[{i}] differs: step({SUBSTEPS}) {} vs {SUBSTEPS}× step(1) {}",
             data_batch.qvel[i], data_iter.qvel[i]
         );
     }

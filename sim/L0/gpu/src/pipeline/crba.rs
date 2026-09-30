@@ -18,6 +18,7 @@ use super::state_buffers::GpuStateBuffers;
 use super::types::FkParams;
 use super::wgpu_helpers::{buf_entry, create_pipeline, storage_entry};
 use crate::context::GpuContext;
+use crate::submit::Recording;
 
 /// Minimum uniform buffer offset alignment (`WebGPU` spec: 256 bytes).
 const UNIFORM_ALIGN: u64 = 256;
@@ -260,7 +261,7 @@ impl GpuCrbaPipeline {
     /// Encodes init, backward, `mass_matrix`, cholesky. The caller must
     /// ensure params have been written (via [`Self::write_params`]) and qM has been
     /// zeroed before submitting the resulting command buffer.
-    pub fn encode(&self, encoder: &mut wgpu::CommandEncoder) {
+    pub fn encode(&self, rec: &mut impl Recording) {
         let ceil64 = |n: u32| -> u32 { n.div_ceil(64) };
         let nv = self.nv;
         let n_env = self.n_env;
@@ -269,10 +270,7 @@ impl GpuCrbaPipeline {
 
         // ── 1. crba_init ──────────────────────────────────────────────
         {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("crba_init"),
-                timestamp_writes: None,
-            });
+            let mut pass = rec.pass("crba_init");
             pass.set_pipeline(&self.init_pipeline);
             pass.set_bind_group(0, &self.params_bind_group, &[0]);
             pass.set_bind_group(1, &self.model_bind_group, &[]);
@@ -284,10 +282,7 @@ impl GpuCrbaPipeline {
         // ── 2. crba_backward (leaves → root) ─────────────────────────
         for depth in (1..=self.max_depth).rev() {
             let offset = (u64::from(depth) * UNIFORM_ALIGN) as u32;
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("crba_backward"),
-                timestamp_writes: None,
-            });
+            let mut pass = rec.pass("crba_backward");
             pass.set_pipeline(&self.backward_pipeline);
             pass.set_bind_group(0, &self.params_bind_group, &[offset]);
             pass.set_bind_group(1, &self.model_bind_group, &[]);
@@ -299,10 +294,7 @@ impl GpuCrbaPipeline {
         // ── 3. crba_mass_matrix ───────────────────────────────────────
         if nv > 0 {
             let offset = (mm_slot * UNIFORM_ALIGN) as u32;
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("crba_mass_matrix"),
-                timestamp_writes: None,
-            });
+            let mut pass = rec.pass("crba_mass_matrix");
             pass.set_pipeline(&self.mass_matrix_pipeline);
             pass.set_bind_group(0, &self.params_bind_group, &[offset]);
             pass.set_bind_group(1, &self.model_bind_group, &[]);
@@ -314,10 +306,7 @@ impl GpuCrbaPipeline {
         // ── 4. crba_cholesky ──────────────────────────────────────────
         if nv > 0 {
             let offset = (chol_slot * UNIFORM_ALIGN) as u32;
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("crba_cholesky"),
-                timestamp_writes: None,
-            });
+            let mut pass = rec.pass("crba_cholesky");
             pass.set_pipeline(&self.cholesky_pipeline);
             pass.set_bind_group(0, &self.params_bind_group, &[offset]);
             pass.set_bind_group(1, &self.model_bind_group, &[]);
@@ -336,7 +325,7 @@ impl GpuCrbaPipeline {
         ctx: &GpuContext,
         model: &GpuModelBuffers,
         state: &GpuStateBuffers,
-        encoder: &mut wgpu::CommandEncoder,
+        rec: &mut impl Recording,
     ) {
         self.write_params(ctx, model, state);
 
@@ -348,6 +337,6 @@ impl GpuCrbaPipeline {
             ctx.queue.write_buffer(&state.qm, 0, &zero_bytes);
         }
 
-        self.encode(encoder);
+        self.encode(rec);
     }
 }

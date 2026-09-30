@@ -54,7 +54,7 @@ use sim_core::types::{Data, MjJointType, Model};
 
 use super::crba::GpuCrbaPipeline;
 use super::eulerdamp::GpuEulerdampPipeline;
-use super::fk::{GpuFkPipeline, readback_f32s, readback_vec4s};
+use super::fk::GpuFkPipeline;
 use super::integrate::GpuIntegratePipeline;
 use super::model_buffers::GpuModelBuffers;
 use super::rne::GpuRnePipeline;
@@ -62,6 +62,7 @@ use super::smooth::GpuSmoothPipeline;
 use super::state_buffers::GpuStateBuffers;
 use super::velocity_fk::GpuVelocityFkPipeline;
 use crate::context::GpuContext;
+use crate::submit::read_buffer;
 
 /// Name used in this file's skip line.
 const SUITE: &str = "conformance suite";
@@ -263,7 +264,7 @@ fn check_cinert(
     env: usize,
     n_env: usize,
 ) {
-    let gpu = readback_vec4s(ctx, &state.body_cinert, model.nbody * 3 * n_env);
+    let gpu = read_buffer::<[f32; 4]>(ctx, &state.body_cinert, model.nbody * 3 * n_env);
     let env_off = env * model.nbody * 3;
     for b in 1..model.nbody {
         let base = env_off + b * 3;
@@ -343,8 +344,8 @@ fn compare_env_fields(
     let off_v = env * nv; // dof-indexed buffers
 
     // ── Kinematics ────────────────────────────────────────────────
-    let gpu_xpos = readback_vec4s(ctx, &state.body_xpos, nbody * n_env);
-    let gpu_xquat = readback_vec4s(ctx, &state.body_xquat, nbody * n_env);
+    let gpu_xpos = read_buffer::<[f32; 4]>(ctx, &state.body_xpos, nbody * n_env);
+    let gpu_xquat = read_buffer::<[f32; 4]>(ctx, &state.body_xquat, nbody * n_env);
     for b in 0..nbody {
         for k in 0..3 {
             check(
@@ -375,8 +376,8 @@ fn compare_env_fields(
     }
 
     // subtree_com / subtree_mass
-    let gpu_com = readback_vec4s(ctx, &state.subtree_com, nbody * n_env);
-    let gpu_smass = readback_f32s(ctx, &state.subtree_mass, nbody * n_env);
+    let gpu_com = read_buffer::<[f32; 4]>(ctx, &state.subtree_com, nbody * n_env);
+    let gpu_smass = read_buffer::<f32>(ctx, &state.subtree_mass, nbody * n_env);
     for b in 0..nbody {
         check(
             fails,
@@ -400,7 +401,7 @@ fn compare_env_fields(
     check_cinert(fails, ctx, state, data, model, name, env, n_env);
 
     // cdof — partial-frame oracle (data.cdof is vestigial)
-    let gpu_cdof = readback_vec4s(ctx, &state.cdof, nv * 2 * n_env);
+    let gpu_cdof = read_buffer::<[f32; 4]>(ctx, &state.cdof, nv * 2 * n_env);
     for dof in 0..nv {
         let cpu = cpu_cdof_dof(model, data, dof);
         for k in 0..3 {
@@ -422,7 +423,7 @@ fn compare_env_fields(
     }
 
     // ── Velocity / dynamics ───────────────────────────────────────
-    let gpu_cvel = readback_vec4s(ctx, &state.body_cvel, nbody * 2 * n_env);
+    let gpu_cvel = read_buffer::<[f32; 4]>(ctx, &state.body_cvel, nbody * 2 * n_env);
     for b in 0..nbody {
         check_spatial(
             fails,
@@ -436,7 +437,7 @@ fn compare_env_fields(
         );
     }
 
-    let gpu_cacc = readback_vec4s(ctx, &state.body_cacc, nbody * 2 * n_env);
+    let gpu_cacc = read_buffer::<[f32; 4]>(ctx, &state.body_cacc, nbody * 2 * n_env);
     for b in 0..nbody {
         check_spatial(
             fails,
@@ -451,7 +452,7 @@ fn compare_env_fields(
     }
 
     // qM (full matrix), env block of nv·nv
-    let gpu_qm = readback_f32s(ctx, &state.qm, nv * nv * n_env);
+    let gpu_qm = read_buffer::<f32>(ctx, &state.qm, nv * nv * n_env);
     let off_qm = env * nv * nv;
     for i in 0..nv {
         for j in 0..nv {
@@ -466,7 +467,7 @@ fn compare_env_fields(
     }
 
     // qfrc_bias (Coriolis + gravity)
-    let gpu_bias = readback_f32s(ctx, &state.qfrc_bias, nv * n_env);
+    let gpu_bias = read_buffer::<f32>(ctx, &state.qfrc_bias, nv * n_env);
     for d in 0..nv {
         check(
             fails,
@@ -707,8 +708,8 @@ fn gpu_damped_integration_matches_cpu() {
                 &integrate,
             );
             if checkpoints.contains(&step) {
-                let gpu_qpos = readback_f32s(&ctx, &state.qpos, model.nq);
-                let gpu_qvel = readback_f32s(&ctx, &state.qvel, model.nv);
+                let gpu_qpos = read_buffer::<f32>(&ctx, &state.qpos, model.nq);
+                let gpu_qvel = read_buffer::<f32>(&ctx, &state.qvel, model.nv);
                 check_step_state(
                     &mut fails,
                     name,
