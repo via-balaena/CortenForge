@@ -38,7 +38,6 @@ pub mod state_buffers;
 mod tests;
 pub mod types;
 pub mod velocity_fk;
-mod wgpu_helpers;
 
 pub use collision::GpuCollisionPipeline;
 pub use constraint::GpuConstraintPipeline;

@@ -2367,6 +2367,7 @@ dependencies = [
  "mesh-types",
  "nalgebra 0.34.2",
  "serde",
+ "sim-gpu",
  "sim-ml-chassis",
  "sim-soft",
  "sim-soft-explicit",
@@ -10118,6 +10119,7 @@ dependencies = [
  "nalgebra 0.34.2",
  "pollster",
  "sim-core",
+ "sim-soft-explicit",
  "wgpu",
 ]
 

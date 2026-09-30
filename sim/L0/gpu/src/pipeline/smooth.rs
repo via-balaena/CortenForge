@@ -13,9 +13,9 @@
 use super::model_buffers::GpuModelBuffers;
 use super::state_buffers::GpuStateBuffers;
 use super::types::PhysicsParams;
-use super::wgpu_helpers::{buf_entry, create_pipeline, storage_entry};
 use crate::context::GpuContext;
 use crate::submit::Recording;
+use crate::wgpu_helpers::{buf_entry, create_pipeline, storage_entry};
 
 use sim_core::types::Model;
 

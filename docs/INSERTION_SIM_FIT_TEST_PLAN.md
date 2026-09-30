@@ -673,6 +673,7 @@ in CI); G5 already gates in CI.
   at every corner; runs that fail with the loop's 500-step re-estimate are made again every 50 steps, and the product
   loop's step control is an open item before the GPU. *(2026-09-29, recon §17: it is set before step 4, the GPU
   executor; step 3's recorder assumes a step's values are known when the step is recorded, recon §17a.)*
+  *(2026-09-29, recon §17b: set, the loop's re-estimate every 500 steps and §16y rule 1's re-run of a press that fails.)*
   *(2026-09-29, recon §16z: read again at eight times h_K2's elements, the size used and not picked, every corner's
   collapse cleared and each masked change is within 5 %, at most +4.11 %, on the frictionless patch: U20 stands there.
   At twice h_K2's elements, which the size rule does not exclude, the masked change was +6.44 % (recon §16y), and at

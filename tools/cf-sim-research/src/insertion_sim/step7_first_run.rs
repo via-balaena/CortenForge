@@ -49,6 +49,8 @@ use cf_cap_planes::CapPlane;
 use cf_device_types::SimDesign;
 use mesh_types::IndexedMesh;
 use nalgebra::{Isometry3, Matrix4, Point3, Translation3, UnitQuaternion, Vector3, Vector4};
+use sim_gpu::GpuContext;
+use sim_gpu::soft::GpuExecutor;
 use sim_soft::lowering::path::{Centreline, FittedPath, travelled};
 use sim_soft::lowering::{
     Lowered, Lowering, PRODUCT_BAKE, Plane, SAMPLING_BAR, START_CLEARANCE, Skin, lower,
@@ -276,6 +278,8 @@ struct Spec {
     /// The loading time, seconds.
     loading: f64,
     wide: bool,
+    /// Whether the run is on the GPU executor, at f32 (§17b), rather than the CPU's.
+    gpu: bool,
     hold: f64,
     /// Whether the probe's instruments run: the exact G1 and G2, the windows' snapshots, and the collapse's reads.
     instruments: bool,
@@ -793,7 +797,11 @@ fn corner(spec: &Spec) -> String {
     format!(
         "μ_f {:.3}, {}, loading ×{:.0}",
         spec.friction,
-        if spec.wide { "f64" } else { "f32" },
+        match (spec.gpu, spec.wide) {
+            (true, _) => "GPU f32",
+            (false, true) => "f64",
+            (false, false) => "f32",
+        },
         spec.loading
     )
 }
@@ -1030,7 +1038,18 @@ fn press(
         loading: spec.loading,
     };
     let damping = stage.damping(wall);
-    let (run, readings) = if spec.wide {
+    let (run, readings) = if spec.gpu {
+        let ctx = GpuContext::new().expect("a GPU adapter");
+        let (run, _) = run(
+            &press,
+            &stage.obstacle,
+            |m, o| GpuExecutor::new(&ctx, m, o).unwrap(),
+            damping,
+            spec,
+        );
+        let readings = run.readings(&press, &stage.obstacle);
+        (run, readings)
+    } else if spec.wide {
         let (run, _) = run(
             &press,
             &stage.obstacle,
@@ -1689,6 +1708,7 @@ fn spec(friction: f64, loading: f64) -> Spec {
         friction,
         loading,
         wide: false,
+        gpu: false,
         hold: HOLD,
         instruments: true,
         reestimate_every: 500,
@@ -3537,84 +3557,87 @@ fn a_reading_past_5_percent_opens_the_loading_even_beside_one_not_read() {
     assert!(loading_verdict(&[f64::NAN, 0.01, 0.0, 0.0]).starts_with("not judged"));
 }
 
-/// G6: a press timed at `STEP7_LOADING` and `STEP7_SIZE`, the probe's instruments off, under two step controls; and what
-/// the cost rests on.
+/// G6: a press timed at `STEP7_LOADING` and `STEP7_SIZE`, the probe's instruments off, under the product loop's step
+/// control (§17b); and what the cost rests on. With `STEP7_GPU` 1, on the GPU executor.
 #[test]
 #[ignore = "needs the repo-excluded product scan; run with --release --ignored --nocapture"]
 fn step7_cost() {
     let factor = env_number("STEP7_LOADING", 1.0);
     let size = SIZES[env_number("STEP7_SIZE", 0.0) as usize];
+    let gpu = env_number("STEP7_GPU", 0.0) > 0.5;
     let threads = std::env::var("RAYON_NUM_THREADS").unwrap_or_else(|_| "unset".to_owned());
+    let executor = if gpu {
+        "the GPU".to_owned()
+    } else {
+        format!("the CPU at {threads} threads")
+    };
     let mut stage = Stage::new(&format!(
-        "G6 at ×{size} h_K2's elements, loading ×{factor}, {threads} threads"
+        "G6 at ×{size} h_K2's elements, loading ×{factor}, on {executor}"
     ));
     let wall = Wall::build(&stage.scene, stage.h_k2 / size.cbrt(), None, [0.0; 3]);
     let model = wall.model(POISSON, 1.0, 1.0);
     let start = stage.wall_line(&format!("×{size}"), &wall, &model);
     let loading = factor * Stage::budget_loading(&wall, start);
-    // Two of the product loop's step controls (§15g's list): the loop's re-estimate every 500 steps with §16y rule 1's
-    // re-run of a run that fails, and a fixed re-estimate every 50 steps.
+    // The product loop's step control (§17b): the loop's re-estimate every 500 steps, with §16y rule 1's re-run of a run
+    // that fails. §16z also timed a fixed re-estimate every 50 steps, at 2.34 times the time.
     let mut cells: Vec<Cell> = Vec::new();
-    for (control, every) in [
-        ("every 500 steps, with §16y rule 1's re-run", 500),
-        ("every 50 steps", 50),
-    ] {
-        let mut seconds = 0.0;
-        let mut steps = 0;
-        let mut standing = true;
-        for friction in corners() {
-            let spec = Spec {
-                instruments: false,
-                reestimate_every: every,
-                ..spec(friction, loading)
-            };
-            let on = Pressed {
-                wall: &wall,
-                model: &model,
-                start,
-            };
-            let label = format!("timed {control}, μ_f {friction}");
-            let (cell, run) = Cell::press(&mut stage, on, spec, label);
-            // §16y rule 1's and §16x rule 6's re-runs count with the attempts they replaced.
-            let kept = run.clock.setup + run.clock.stepping;
-            if run.earlier.1 > 0 {
-                println!(
-                    "    the attempts replaced: {:.1} s over {} steps [LOCAL]; their share of the corner's time {:.3}; \
-                     the kept run, every {} steps with a {} s hold, over them in seconds per step {:.2} [PUBLIC]",
-                    run.earlier.0,
-                    run.earlier.1,
-                    run.earlier.0 / (run.earlier.0 + kept),
-                    run.spec.reestimate_every,
-                    run.spec.hold,
-                    (kept / run.steps as f64) / (run.earlier.0 / run.earlier.1 as f64)
-                );
-            }
-            seconds += run.earlier.0 + kept;
-            steps += run.earlier.1 + run.steps;
-            standing &= cell.stood();
-            cells.push(cell);
+    let (control, every) = ("every 500 steps, with §16y rule 1's re-run", 500);
+    let mut seconds = 0.0;
+    let mut steps = 0;
+    let mut standing = true;
+    for friction in corners() {
+        let spec = Spec {
+            instruments: false,
+            reestimate_every: every,
+            gpu,
+            ..spec(friction, loading)
+        };
+        let on = Pressed {
+            wall: &wall,
+            model: &model,
+            start,
+        };
+        let label = format!("timed {control}, μ_f {friction}");
+        let (cell, run) = Cell::press(&mut stage, on, spec, label);
+        // §16y rule 1's and §16x rule 6's re-runs count with the attempts they replaced.
+        let kept = run.clock.setup + run.clock.stepping;
+        if run.earlier.1 > 0 {
+            println!(
+                "    the attempts replaced: {:.1} s over {} steps [LOCAL]; their share of the corner's time {:.3}; \
+                 the kept run, every {} steps with a {} s hold, over them in seconds per step {:.2} [PUBLIC]",
+                run.earlier.0,
+                run.earlier.1,
+                run.earlier.0 / (run.earlier.0 + kept),
+                run.spec.reestimate_every,
+                run.spec.hold,
+                (kept / run.steps as f64) / (run.earlier.0 / run.earlier.1 as f64)
+            );
         }
-        println!(
-            "\nG6, {control} [LOCAL]: a press {seconds:.1} s over {steps} steps; [PUBLIC] over D4 {:.3} on the CPU at \
-             {threads} threads; a search of full verdicts at 1 and 2 insets over D4's 15 min {:.3} and {:.3}{}",
-            seconds / D4_SECONDS,
-            seconds / (3.0 * D4_SECONDS),
-            2.0 * seconds / (3.0 * D4_SECONDS),
-            if standing {
-                ""
-            } else {
-                "; ⚠ a corner's kept run did not stand, so this is not a press's cost"
-            }
-        );
-        // K1's per-step budget scaled by element count: the bar the GPU must meet, not a projection of it.
-        let (budget, k1_elements) = k1_budget();
-        let bar = budget * model.element_count() as f64 / k1_elements as f64;
-        println!(
-            "K1 [PUBLIC]: the same steps at K1's per-step budget, scaled by element count, over D4 {:.3}: the bar a GPU \
-             must meet, not its projection",
-            steps as f64 * bar / D4_SECONDS
-        );
+        seconds += run.earlier.0 + kept;
+        steps += run.earlier.1 + run.steps;
+        standing &= cell.stood();
+        cells.push(cell);
     }
+    println!(
+        "\nG6, {control} [LOCAL]: a press {seconds:.1} s over {steps} steps; [PUBLIC] over D4 {:.3} on \
+         {executor}; a search of full verdicts at 1 and 2 insets over D4's 15 min {:.3} and {:.3}{}",
+        seconds / D4_SECONDS,
+        seconds / (3.0 * D4_SECONDS),
+        2.0 * seconds / (3.0 * D4_SECONDS),
+        if standing {
+            ""
+        } else {
+            "; ⚠ a corner's kept run did not stand, so this is not a press's cost"
+        }
+    );
+    // K1's per-step budget scaled by element count: the bar the GPU must meet, not a projection of it.
+    let (budget, k1_elements) = k1_budget();
+    let bar = budget * model.element_count() as f64 / k1_elements as f64;
+    println!(
+        "K1 [PUBLIC]: the same steps at K1's per-step budget, scaled by element count, over D4 {:.3}: the bar a GPU \
+         must meet, not its projection",
+        steps as f64 * bar / D4_SECONDS
+    );
     k4_line(&cells.iter().collect::<Vec<_>>());
     // What the cost rests on: the viscosity's range, and ν 0.495, as the rest step's factor on the steps.
     let rest = |m: &ExplicitModel| rest_step(m, &stage.obstacle);
