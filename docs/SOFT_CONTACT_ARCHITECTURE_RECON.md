@@ -1283,6 +1283,7 @@ Each item is one PR with its own tests and a done-when.
      which phase 1 writes, so on the GPU it gains a binding or recomputes J. While the product runs the element as it
      is (fit plan U20), the GPU needs κ = 0 only, and its per-phase conformance is at κ = 0; the stabilization stays a
      CPU instrument.)*
+   - *(2026-09-30, §17c: done; G6 on the GPU misses D4, which goes to Jon.)*
 5. **The experiment on the GPU:** K1, K2 at 100k, the ν sweep, the ladder, the Coulomb push, the stress
    case, the SDF comparison and stiffness scaling. *Stiffness scaling runs first on the CPU, in step 2
    (16i), because the product's budget depends on it.*
@@ -5381,3 +5382,53 @@ so.
   - gates that could not fail.
 - Round 2, one fresh reviewer, found 16 problems, 11 written by round 1's fixes and all in gates or prose.
 - The section was then cut to this. Round 2's fixes and the cut have not been reviewed.
+
+### 17c. Step 4, as built (2026-09-30)
+
+**Where.** `sim/L0/gpu/src/soft.rs`, the executor; `soft/kernels.rs`, each entry point's bindings, pipeline and
+dispatch; `soft/log.rs`, the step log's rows added at f64; `soft/soft.wgsl`, 21 entry points after the shared math;
+`soft/tests/`, the fixtures, the conformance gate and the other gates. The rigid pipeline's wgpu helpers moved to the
+crate root for both; `ExplicitModel` gained `shortest_edge`, which both executors read; the recorder counts its reads
+under test. The probe's `step7_cost` takes `STEP7_GPU=1`, and times a press under the decided step control alone.
+
+**On Metal** (the M4 Pro, wgpu 27; each figure is its test's output):
+- Conformance on the eight fixtures, the GPU's distance from the CPU at f32 against each output's bar:
+  - phases 1–5 at most 4.6e-7 of the largest magnitude;
+  - phase 6 at most 5.0e-6, on the tube, whose bar is 1.5e-5 from the CPU at f32's own 7.4e-6 from f64;
+  - phases 7–8 at most 7.5e-6 against 1e-5, on the tube, where the CPU at f32 is 8.3e-6 from f64: the closest any
+    output comes to its bar;
+  - each sum at most 6.6e-7 of its terms' magnitudes; the maxima equal to the digits printed; the counts exact.
+- The estimate: ω² within 1.6e-6 and the damping quotient within 6.8e-6 of the CPU at f32 (bar 1e-3); the CPU at f32
+  is 1.4–2.7e-4 from f64.
+- Every gate failed under its named change (25 changes; the script and its logs kept locally). Three changes were not
+  the first tried:
+  - phase 6's first, the damping dropped from the prediction, did not fail: at the fixtures' step it moves a
+    prediction by far less than the bar. The step's advance dropped from the prediction did.
+  - the repeat gate first failed under its race by the run blowing up in the loop, not by comparing runs. It now
+    compares runs that stop, and failed with one run stopping where another did not.
+  - the margins' first change, compressing a fixture to `J − 1 = −1`, failed the outputs' bars with the elements still
+    about 0.02 from `J = 0`, clear of the margin. Compressing to `J − 1 = −1.0015` failed the margin.
+- §17a's failed wait or map: a device destroyed before a read fails in wgpu's validation at `map_async` (the staging
+  buffer is invalid), before the recorder's wait or map. It is not the recorder's path, so no gate follows.
+- A reduction dispatched in two dimensions (above 65 535 workgroups, 16.7 million items) ran more workgroups than it
+  has partials. They now write nothing; no test reaches that size.
+- On lavapipe the gates are CI's (`tests-debug` shard 3); the repeat gate runs on Metal only.
+
+**On the product** (`base_mold`, through the probe's press; the logs kept locally):
+- At h_K2's elements and the budget's loading, the GPU and the CPU took the same steps in every run, D1's readings
+  within 0.008 % of each other, and the same corner (μ_f 0.18) fell short of the same validity gate on both.
+- **G6 at eight times h_K2's elements** (`step7_cost` at `b62acd5b`; the loading four times the budget's, as §16z's;
+  the loop's interval with §16y rule 1's re-run; the GPU, then the CPU at four threads, from one binary on an idle
+  machine):
+
+  | Executor | A press over D4 | Full verdicts at 1 and 2 insets, over their 15 min |
+  |---|---|---|
+  | GPU (Metal) | 2.30 | 0.77 and 1.53 |
+  | CPU (4 threads) | 12.4 | 4.1 and 8.2 |
+
+  - The GPU is 5.4 times the CPU (arithmetic). The CPU took 12.4 of D4 here and 11.8 at `cf601cb0` (§16z), over the
+    same steps in each corner; what differs between the two CPU runs has not been isolated.
+  - Every corner stood on both, and neither ran rule 1's re-run. The steps agree within 0.011 % a corner, and the
+    deciding readings within 0.001 %, against K3's 0.5 %.
+- **D4 is missed:** meeting it takes 2.3 times this GPU's speed (arithmetic). Under §17b's rule step 4 is done, and D4
+  goes to Jon with §17b's options.
