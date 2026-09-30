@@ -1223,6 +1223,9 @@ qpos quaternion layout swizzle `(w,x,y,z) ↔ (x,y,z,w)`.
 
 ## 9. Command buffer structure
 
+*(Superseded: the substeps are recorded through a `Recorder`, which submits within a cap on compute
+passes; see §2. The sketch below is the original plan.)*
+
 One command buffer per frame, encoding all substeps:
 
 ```rust

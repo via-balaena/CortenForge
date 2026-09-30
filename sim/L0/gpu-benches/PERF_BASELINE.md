@@ -44,7 +44,7 @@ scale walls that only appear under load.
 - `cpu_seq` — single-env `Data::step` looped over all envs (naive baseline).
 - `cpu_batch` — `BatchSim::step_all`, rayon-parallel across envs (the CPU best).
 - `gpu_rollout` — `GpuPhysicsPipeline::step(num_substeps = STEPS)`: all substeps in
-  one submit + one readback. The GPU's strength; the right mode for RL-style rollouts.
+  one call + one readback. The GPU's strength; the right mode for RL-style rollouts.
 - `gpu_perstep` — `step(num_substeps = 1)` × STEPS: one upload + readback per step.
   The cost of per-step observation (e.g. a policy that reads state every step).
 
