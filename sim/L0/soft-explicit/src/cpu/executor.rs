@@ -458,7 +458,7 @@ impl CpuExecutor {
                 .collect(),
             offsets: incidence.offsets().to_vec(),
             entries: incidence.entries().to_vec(),
-            shortest_edge: shortest_edge(model),
+            shortest_edge: model.shortest_edge(),
             viscous: model.materials().iter().any(|m| m.viscosity > 0.0),
             surface_nodes,
             surface_index,
@@ -730,21 +730,6 @@ impl CpuExecutor {
         };
         (mode, measured.iter().map(|&x| widen3(x)).collect())
     }
-}
-
-/// The shortest element edge at rest.
-fn shortest_edge(model: &ExplicitModel) -> f64 {
-    let p = model.rest_positions();
-    model
-        .elements()
-        .iter()
-        .flat_map(|e| {
-            [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)].map(|(i, j)| {
-                let (a, b) = (p[e[i] as usize], p[e[j] as usize]);
-                ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
-            })
-        })
-        .fold(f64::INFINITY, f64::min)
 }
 
 impl Executor for CpuExecutor {

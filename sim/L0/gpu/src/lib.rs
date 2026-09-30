@@ -6,7 +6,9 @@
 
 pub mod context;
 pub mod pipeline;
+pub mod soft;
 pub mod submit;
+mod wgpu_helpers;
 
 // Adapter-or-skip policy shared by every GPU test in this crate.
 #[cfg(test)]

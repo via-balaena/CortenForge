@@ -10118,6 +10118,7 @@ dependencies = [
  "nalgebra 0.34.2",
  "pollster",
  "sim-core",
+ "sim-soft-explicit",
  "wgpu",
 ]
 

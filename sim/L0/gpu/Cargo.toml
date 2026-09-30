@@ -22,6 +22,9 @@ bytemuck = { workspace = true }
 pollster = { workspace = true }
 # Engine-side model/state source (Model / Data) for building GPU buffers
 sim-core = { workspace = true }
+# The soft executor's model, obstacle, executor trait and shared WGSL math
+# (recon §17b)
+sim-soft-explicit = { workspace = true }
 # Log facade used by wgpu and adapter / device selection diagnostics
 log = "0.4"
 

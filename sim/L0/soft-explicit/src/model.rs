@@ -394,6 +394,22 @@ impl ExplicitModel {
         self.elements.len()
     }
 
+    /// The shortest element edge at rest, the length an executor's power
+    /// iteration scales its finite difference by.
+    #[must_use]
+    pub fn shortest_edge(&self) -> f64 {
+        let p = &self.rest_positions;
+        self.elements
+            .iter()
+            .flat_map(|e| {
+                [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)].map(|(i, j)| {
+                    let (a, b) = (p[e[i] as usize], p[e[j] as usize]);
+                    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+                })
+            })
+            .fold(f64::INFINITY, f64::min)
+    }
+
     /// Node rest positions.
     #[must_use]
     pub fn rest_positions(&self) -> &[[f64; 3]] {

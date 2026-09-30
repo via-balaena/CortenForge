@@ -16,9 +16,9 @@
 use super::model_buffers::GpuModelBuffers;
 use super::state_buffers::GpuStateBuffers;
 use super::types::FkParams;
-use super::wgpu_helpers::{buf_entry, create_pipeline, storage_entry};
 use crate::context::GpuContext;
 use crate::submit::Recording;
+use crate::wgpu_helpers::{buf_entry, create_pipeline, storage_entry};
 
 /// Minimum uniform buffer offset alignment (`WebGPU` spec: 256 bytes).
 const UNIFORM_ALIGN: u64 = 256;

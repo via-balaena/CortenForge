@@ -28,9 +28,9 @@ use super::state_buffers::GpuStateBuffers;
 use super::types::{
     GPU_GEOM_PLANE, GPU_GEOM_SDF, NarrowphaseParams, SDF_META_NONE, SdfMetaGpu, geom_type_to_gpu,
 };
-use super::wgpu_helpers::{buf_entry, storage_entry, uniform_entry};
 use crate::context::GpuContext;
 use crate::submit::Recording;
+use crate::wgpu_helpers::{buf_entry, storage_entry, uniform_entry};
 
 // ── Pair descriptor ────────────────────────────────────────────────────
 
