@@ -109,6 +109,8 @@ pub fn report_missing_adapter(suite: &str, err: &GpuError, action: NoAdapter) {
 ///
 /// When construction fails for any other reason, or when the run required an
 /// adapter and none was found (see [`report_missing_adapter`]).
+// Panicking is the contract here too: a test whose pipeline cannot be built
+// has failed, and the harness reports a panic as that failure.
 #[allow(clippy::panic)]
 pub fn pipeline_or_skip(
     suite: &str,
