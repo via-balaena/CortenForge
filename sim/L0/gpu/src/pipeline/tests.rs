@@ -2017,6 +2017,7 @@ fn t26_multi_substep_stability() {
 // ═══════════════════════════════════════════════════════════════════════
 
 use super::orchestrator::{GpuPhysicsPipeline, GpuPipelineError};
+use crate::test_support::{action_from_env, pipeline_or_skip, report_missing_adapter};
 
 // ── T28: Model validation ─────────────────────────────────────────────
 
@@ -2027,8 +2028,8 @@ fn t28_model_validation() {
     let data = model.make_data();
     match GpuPhysicsPipeline::new(&model, &data) {
         Ok(_) => eprintln!("  T28: free-body model accepted"),
-        Err(GpuPipelineError::NoGpu(_)) => {
-            eprintln!("  T28: skipping (no GPU)");
+        Err(GpuPipelineError::NoGpu(err)) => {
+            report_missing_adapter("T28", &err, action_from_env());
             return;
         }
         Err(e) => panic!("Free-body model should be accepted, got: {e}"),
@@ -2041,8 +2042,8 @@ fn t28_model_validation() {
         Err(GpuPipelineError::UnsupportedJointType(_, _)) => {
             eprintln!("  T28: hinge model correctly rejected");
         }
-        Err(GpuPipelineError::NoGpu(_)) => {
-            eprintln!("  T28: skipping nv check (no GPU)");
+        Err(GpuPipelineError::NoGpu(err)) => {
+            report_missing_adapter("T28", &err, action_from_env());
             return;
         }
         Ok(_) => panic!("Hinge model should be rejected, but was accepted"),
@@ -2065,13 +2066,8 @@ fn t29_single_substep_orchestrator() {
     data.qpos[2] = 10.0;
     data.qpos[3] = 1.0;
 
-    let pipeline = match GpuPhysicsPipeline::new(&model, &data) {
-        Ok(p) => p,
-        Err(GpuPipelineError::NoGpu(_)) => {
-            eprintln!("  T29: skipping (no GPU)");
-            return;
-        }
-        Err(e) => panic!("Pipeline creation failed: {e}"),
+    let Some(pipeline) = pipeline_or_skip("T29", GpuPhysicsPipeline::new(&model, &data)) else {
+        return;
     };
 
     // Run 1 substep via orchestrator
@@ -2106,13 +2102,9 @@ fn t30_multi_substep_single_submit() {
     data_batch.qpos[2] = 10.0;
     data_batch.qpos[3] = 1.0;
 
-    let pipeline = match GpuPhysicsPipeline::new(&model, &data_batch) {
-        Ok(p) => p,
-        Err(GpuPipelineError::NoGpu(_)) => {
-            eprintln!("  T30: skipping (no GPU)");
-            return;
-        }
-        Err(e) => panic!("Pipeline creation failed: {e}"),
+    let Some(pipeline) = pipeline_or_skip("T30", GpuPhysicsPipeline::new(&model, &data_batch))
+    else {
+        return;
     };
 
     pipeline.step(&model, std::slice::from_mut(&mut data_batch), 10);
@@ -2276,13 +2268,8 @@ fn t31_gpu_vs_cpu_trajectory() {
     let mut gpu_data = model.make_data();
     gpu_data.qpos[2] = DROP_Z;
     gpu_data.qpos[3] = 1.0;
-    let pipeline = match GpuPhysicsPipeline::new(&model, &gpu_data) {
-        Ok(p) => p,
-        Err(GpuPipelineError::NoGpu(_)) => {
-            eprintln!("  T31: skipping (no GPU)");
-            return;
-        }
-        Err(e) => panic!("Pipeline creation failed: {e}"),
+    let Some(pipeline) = pipeline_or_skip("T31", GpuPhysicsPipeline::new(&model, &gpu_data)) else {
+        return;
     };
 
     let mut gpu = RolloutInvariants {
@@ -2388,13 +2375,8 @@ fn t33_step_applies_implicit_damping() {
     // GPU damped trajectory via the production step() path.
     let mut gpu_data = model.make_data();
     set_init(&mut gpu_data);
-    let pipeline = match GpuPhysicsPipeline::new(&model, &gpu_data) {
-        Ok(p) => p,
-        Err(GpuPipelineError::NoGpu(_)) => {
-            eprintln!("  T33: skipping (no GPU)");
-            return;
-        }
-        Err(e) => panic!("Pipeline creation failed: {e}"),
+    let Some(pipeline) = pipeline_or_skip("T33", GpuPhysicsPipeline::new(&model, &gpu_data)) else {
+        return;
     };
     for _ in 0..nsteps {
         pipeline.step(&model, std::slice::from_mut(&mut gpu_data), 1);
@@ -2453,13 +2435,8 @@ fn t32_sustained_multi_substep() {
     data.qpos[2] = 10.0;
     data.qpos[3] = 1.0;
 
-    let pipeline = match GpuPhysicsPipeline::new(&model, &data) {
-        Ok(p) => p,
-        Err(GpuPipelineError::NoGpu(_)) => {
-            eprintln!("  T32: skipping (no GPU)");
-            return;
-        }
-        Err(e) => panic!("Pipeline creation failed: {e}"),
+    let Some(pipeline) = pipeline_or_skip("T32", GpuPhysicsPipeline::new(&model, &data)) else {
+        return;
     };
 
     let dt = model.timestep;
@@ -2720,13 +2697,9 @@ fn t35_orchestrator_batched_step_matches_single() {
     let substeps = 50;
 
     // Build the batched pipeline first — this doubles as the GPU-availability gate.
-    let pipe = match GpuPhysicsPipeline::new_batched(&model, &[&d0, &d1]) {
-        Ok(p) => p,
-        Err(GpuPipelineError::NoGpu(_)) => {
-            eprintln!("  T35: skipping (no GPU)");
-            return;
-        }
-        Err(e) => panic!("batched pipeline creation failed: {e}"),
+    let Some(pipe) = pipeline_or_skip("T35", GpuPhysicsPipeline::new_batched(&model, &[&d0, &d1]))
+    else {
+        return;
     };
 
     // Single-env oracle: each env stepped alone through the production step()
@@ -2814,13 +2787,9 @@ fn t36_orchestrator_batched_step_with_contact_matches_single() {
     let d1 = make(2.5, -0.5); // deeper + moving ⇒ a distinct contact result
 
     // Batched pipeline first — doubles as the GPU-availability gate.
-    let pipe = match GpuPhysicsPipeline::new_batched(&model, &[&d0, &d1]) {
-        Ok(p) => p,
-        Err(GpuPipelineError::NoGpu(_)) => {
-            eprintln!("  T36: skipping (no GPU)");
-            return;
-        }
-        Err(e) => panic!("batched pipeline creation failed: {e}"),
+    let Some(pipe) = pipeline_or_skip("T36", GpuPhysicsPipeline::new_batched(&model, &[&d0, &d1]))
+    else {
+        return;
     };
 
     // Single-env oracle: each env stepped alone through the production step().
@@ -2896,13 +2865,8 @@ fn t37_large_batch_allocates_and_steps() {
         .collect();
     let refs: Vec<&Data> = datas.iter().collect();
 
-    let pipe = match GpuPhysicsPipeline::new_batched(&model, &refs) {
-        Ok(p) => p,
-        Err(GpuPipelineError::NoGpu(_)) => {
-            eprintln!("  T37: skipping (no GPU)");
-            return;
-        }
-        Err(e) => panic!("large-batch pipeline creation failed: {e}"),
+    let Some(pipe) = pipeline_or_skip("T37", GpuPhysicsPipeline::new_batched(&model, &refs)) else {
+        return;
     };
     drop(refs);
 
@@ -2955,13 +2919,8 @@ fn t38_chunked_substeps_no_hang_and_byte_identical() {
     init.qpos[2] = 50.0;
     init.qpos[3] = 1.0; // unit quaternion (w)
 
-    let pipeline = match GpuPhysicsPipeline::new(&model, &init) {
-        Ok(p) => p,
-        Err(GpuPipelineError::NoGpu(_)) => {
-            eprintln!("  T38: skipping (no GPU)");
-            return;
-        }
-        Err(e) => panic!("Pipeline creation failed: {e}"),
+    let Some(pipeline) = pipeline_or_skip("T38", GpuPhysicsPipeline::new(&model, &init)) else {
+        return;
     };
 
     // Run A: one chunked call. Completing at all is the no-hang guard.
@@ -3023,13 +2982,8 @@ fn t39_no_geom_model_steps() {
     data.qpos[2] = 5.0;
     data.qpos[3] = 1.0; // unit quaternion (w)
 
-    let pipeline = match GpuPhysicsPipeline::new(&model, &data) {
-        Ok(p) => p,
-        Err(GpuPipelineError::NoGpu(_)) => {
-            eprintln!("  T39: skipping (no GPU)");
-            return;
-        }
-        Err(e) => panic!("Pipeline creation failed: {e}"),
+    let Some(pipeline) = pipeline_or_skip("T39", GpuPhysicsPipeline::new(&model, &data)) else {
+        return;
     };
 
     // Pre-fix this dispatch panicked on the geoms binding (size 16 vs 96).

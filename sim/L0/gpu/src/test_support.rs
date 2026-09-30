@@ -18,6 +18,7 @@
 //! really ran.
 
 use crate::context::{GpuContext, GpuError};
+use crate::pipeline::{GpuPhysicsPipeline, GpuPipelineError};
 
 /// Environment variable by which a run declares an adapter MUST be present.
 pub const REQUIRE_GPU: &str = "CF_REQUIRE_GPU";
@@ -84,7 +85,7 @@ pub fn action_from_env() -> NoAdapter {
 /// When `action` is [`NoAdapter::Fail`].
 // Panicking IS the contract: the variable exists to convert a silent skip into a
 // failure, and a test harness reports a panic as the failure it is. Returning an
-// error would put the decision back on each of the 51 call sites, which is the
+// error would put the decision back on each call site, which is the
 // arrangement that produced the fail-open.
 #[allow(clippy::panic)]
 pub fn report_missing_adapter(suite: &str, err: &GpuError, action: NoAdapter) {
@@ -95,6 +96,31 @@ pub fn report_missing_adapter(suite: &str, err: &GpuError, action: NoAdapter) {
              found: {err}. Install a software Vulkan driver (`mesa-vulkan-drivers` \
              provides lavapipe) or unset {REQUIRE_GPU} to allow skipping."
         ),
+    }
+}
+
+/// A pipeline for a test, or `None` when this run tolerates having no adapter.
+///
+/// The pipeline builds its own context, so its constructor is where a missing
+/// adapter surfaces; this sends that case through the same policy as
+/// [`gpu_context_or_skip`].
+///
+/// # Panics
+///
+/// When construction fails for any other reason, or when the run required an
+/// adapter and none was found (see [`report_missing_adapter`]).
+#[allow(clippy::panic)]
+pub fn pipeline_or_skip(
+    suite: &str,
+    built: Result<GpuPhysicsPipeline, GpuPipelineError>,
+) -> Option<GpuPhysicsPipeline> {
+    match built {
+        Ok(pipeline) => Some(pipeline),
+        Err(GpuPipelineError::NoGpu(err)) => {
+            report_missing_adapter(suite, &err, action_from_env());
+            None
+        }
+        Err(err) => panic!("{suite}: pipeline creation failed: {err}"),
     }
 }
 

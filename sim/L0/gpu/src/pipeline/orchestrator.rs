@@ -23,7 +23,7 @@ use super::rne::GpuRnePipeline;
 use super::smooth::GpuSmoothPipeline;
 use super::state_buffers::GpuStateBuffers;
 use super::velocity_fk::GpuVelocityFkPipeline;
-use crate::context::GpuContext;
+use crate::context::{GpuContext, GpuError};
 
 /// Maximum substeps encoded into a single Metal/wgpu command buffer.
 ///
@@ -41,8 +41,8 @@ const SUBSTEP_CHUNK: u32 = 32;
 /// Errors from GPU pipeline creation or operation.
 #[derive(Debug)]
 pub enum GpuPipelineError {
-    /// No GPU device available.
-    NoGpu(String),
+    /// No GPU device available: the context's own error.
+    NoGpu(GpuError),
     /// Model has nv > 60 (exceeds shared memory budget for Newton solver).
     NvTooLarge(usize),
     /// Model contains a non-free joint type.
@@ -52,7 +52,7 @@ pub enum GpuPipelineError {
 impl std::fmt::Display for GpuPipelineError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NoGpu(msg) => write!(f, "GPU not available: {msg}"),
+            Self::NoGpu(err) => write!(f, "GPU not available: {err}"),
             Self::NvTooLarge(nv) => write!(f, "nv={nv} exceeds GPU limit of 60"),
             Self::UnsupportedJointType(j, jt) => {
                 write!(
@@ -148,7 +148,7 @@ impl GpuPhysicsPipeline {
         }
 
         // ── GPU context ───────────────────────────────────────────
-        let ctx = GpuContext::new().map_err(|e| GpuPipelineError::NoGpu(e.to_string()))?;
+        let ctx = GpuContext::new().map_err(GpuPipelineError::NoGpu)?;
 
         // ── Upload model + state ──────────────────────────────────
         let model_bufs = GpuModelBuffers::upload(&ctx, model);
