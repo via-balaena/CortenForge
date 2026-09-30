@@ -1,8 +1,8 @@
 //! Per-phase conformance (recon §17b): on every fixture, the GPU at f32
 //! against the CPU executor at f32, the phases run in order up to one read,
 //! each output held to its bar. The CPU at f64 runs beside them: a contact
-//! output's bar is twice the CPU at f32's distance from it, and every array's
-//! is printed.
+//! output's bar is the larger of 1e-5 and twice the CPU at f32's distance
+//! from it, and every array's distance is printed.
 
 #![cfg(test)]
 
@@ -197,7 +197,9 @@ fn conform(f: &Fixture) -> (Vec<String>, Vec<String>) {
         margins.slipping
     )];
     margins.assert_clear(f.name);
-    assert!((f.shows)(&margins), "{}: not what it is for", f.name);
+    if let Some(shows) = f.shows {
+        assert!(shows(&margins), "{}: not what it is for", f.name);
+    }
     let mut failures = Vec::new();
     for ((name, a32), ((_, a64), (_, ag))) in arrays(&c32)
         .into_iter()

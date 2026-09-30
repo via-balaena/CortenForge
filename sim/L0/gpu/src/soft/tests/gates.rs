@@ -180,6 +180,7 @@ fn the_estimate_follows_the_cpu_with_one_read() {
     for f in [
         fixtures::tube(),
         fixtures::viscous(),
+        fixtures::stabilized(),
         fixtures::constrained(),
     ] {
         let mut cpu32 = cpu::f32::CpuExecutor::new(&f.model, &f.obstacle).unwrap();
