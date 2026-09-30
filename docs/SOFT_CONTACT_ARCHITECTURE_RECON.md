@@ -5215,246 +5215,165 @@ has not been reviewed.
 
 ### 17b. Step 4: the soft executor on the GPU (design, 2026-09-29)
 
-**The step control, first** (mine; the list after §15g's outline of steps 6–9; costed in §16z). Decided: the loop's
-re-estimate every 500 steps, with §16y rule 1: a run that goes non-finite, fails a validity gate or inverts an element
-is run again, from its start, re-estimating every 50 steps, and if that run fails too it does not stand.
-- At eight times h_K2's elements, the size used, no run needed the re-run, so there it cost nothing. Re-estimating
-  every 50 steps took the same steps within 0.2 % and 2.34 times the time, and the two read the deciding readings
-  within 0.01 % (§16z).
-- Where it fires, a corner costs the attempt it replaces plus a run every 50 steps, more than a fixed 50 would there;
-  G6 prints that cost (`counting`, `tools/cf-sim-research/src/insertion_sim/step7_first_run.rs:1103-1107`). At twice
-  h_K2's elements it fired on the frictionless corner (§16y), where G6 was not timed. The choice is made at the size
-  used; if D1's size moves to one where it fires, it is costed again there.
-- Tracking the step between re-estimates is not taken. It is not costed, the bound it needs is not measured for this
-  element (§16y, "Beside the rules"), and step 3's recorder takes each step's values from the host when the step is
-  recorded (§17a).
-- **Where it lives.** A re-run needs the press's start, which the loop does not hold, so `Stepper` is unchanged and
-  the rule stays with the code that runs a press: today only the probe (`step7_first_run.rs:1059-1082`), where it
-  composes with the press's own re-run of a hold made longer (§16x rule 6, `:1083-1093`). Code that runs presses
-  outside the probe takes it with the press's other rules.
-- On the GPU a re-run is a new executor, and each re-estimate is one read (below).
+**The step control** (mine, before step 4; the list after §15g's steps 6–9). The loop re-estimates every 500 steps,
+and §16y rule 1 runs a press that goes non-finite, fails a validity gate or inverts an element again from its start,
+re-estimating every 50 steps; a press that fails again does not stand.
+- At eight times h_K2's elements no run needed the re-run, and re-estimating every 50 steps instead took 2.34 times
+  the time for deciding readings within 0.01 % (§16z). Where the re-run fires, that corner costs its attempt plus a
+  run every 50 steps; at twice h_K2's elements it fired (§16y), untimed. If D1's size moves there, it is costed again.
+- Tracking the step is not taken: it is not costed, its bound is not measured for this element (§16y), and the
+  recorder takes a step's values from the host (§17a).
+- The rule stays with the code that runs a press, today the probe (`step7_first_run.rs:1059-1093`, with rule 6's
+  longer hold). `Stepper` is unchanged.
 
-**What the executor needs, read from the loop and the trait** (`sim/L0/soft-explicit/src`).
-- The loop calls phases 1–5 with no values, then `contact(time, dt, damping)`, `integrate(dt, damping)` and
-  `boundary_conditions(dt, damping)`, and `accumulate()` inside a window (`stepping.rs:187-199`).
-- It reads the monitors every `monitor_every` steps, 100 by default (`stepping.rs:37`); the probe sets its own
-  (`step7_first_run.rs:480`). It re-estimates every `reestimate_every` steps, each estimate 100 power iterations
-  (`stepping.rs:38`, `:157-171`). A press snapshots at each window's end (`step7_first_run.rs:529`). With its
-  instruments on, the probe also reads a snapshot and the phase outputs after every monitor read (`:427-428`); G6
-  runs them off.
-- Nothing is read back except by `monitors`, `snapshot`, `phase_outputs` and `estimate_top_mode` (`executor.rs:316-319`,
-  §14d). `set_poses` may come between any two steps (`executor.rs:349-353`).
-- This step's conformance tests read between phases, which the loop never does. A read inside one of the recorder's
-  steps stops (§17a).
-- The CPU executor holds these at f64: the pose track the work's move and turn come from; the monitors' sums over
-  nodes and over steps; the contact work and damping loss per node; the window sums; and the power iteration's
-  quotients (`src/cpu/executor.rs`).
-- Its internal energy runs phases 1–2, and its power iteration phases 1–5, on arrays of their own, and neither adds
-  to the inverted count, which only phase 1 does (`cpu/executor.rs:217-230`, `:236-270`, `:811-817`). The power iteration
-  reads two maxima on the host each iteration (`:673`, `:711`).
+**Two measurements on Metal** (the M4 Pro, wgpu 27; the probes are kept locally).
+- **Fast math.** wgpu-hal does not set Metal's fast-math option, and wgpu 27 has none
+  (`wgpu-hal-27.0.4/src/metal/device.rs:208-213`). TwoSum's error term and Kahan's compensation of 1 + 1e-8 came back
+  0 (IEEE: 1e-8), and a·b + c was rounded once. The design's review measured that a sum with a NaN in it is NaN, that
+  `max`, `min` and `select` drop a NaN, and that `x != x` is false for one. So the device keeps no compensated sum,
+  and long sums go to the host at f64.
+- **Passes.** 960 dispatches recorded as 960 passes took 19.8–22.7 ms to record and run, and as one pass 1.4–8.6 ms:
+  12–22 µs a pass. One pass per phase would spend roughly a fifth to a third of a GPU step's share of D4 at eight
+  times h_K2's elements on passes (arithmetic on §16z's local figures). So a step is one pass.
 
-**Facts about Metal it rests on,** measured on the M4 Pro with wgpu 27 by probes outside the repo (kept locally).
-- **Fast math.** wgpu-hal does not set Metal's fast-math option (`wgpu-hal-27.0.4/src/metal/device.rs:208-213`), and
-  wgpu 27 has no option for it.
-  - A kernel over values read from a buffer returned 0 for TwoSum's error term of 1 + 1e-8, which IEEE arithmetic
-    makes 1e-8, and 0 for Kahan's compensation of the same sum. So the device does not keep either compensation.
-  - It rounded a·b + c once: 2.4415553e-4 at a = b = 1 + 2⁻¹³ and c = −1, where rounding the product first gives
-    2.4414063e-4. So its f32 results differ from the CPU's in how expressions round.
-  - Measured by the design's review (its probe not kept): a sum with a NaN in it is NaN; `max`, `min` and `select`
-    drop a NaN, as Rust's `f32::max` does; and `x != x` reads false for a NaN.
-  - `ln_1p` takes the backend's `log` where |x| > 0.25 (`shared.wgsl:225-226`), so there the device's fast `log`
-    runs, and a fixture reaches it (the gates).
-- **A pass costs more than a dispatch.**
-  - 960 dispatches of a small kernel over 4 096 and 262 144 f32 values, recorded as 960 passes, took 22.7 and
-    19.8 ms to record and run; recorded as one pass, 1.4 and 8.6 ms (a release build, the best of five). That is
-    12–22 µs a pass beyond its dispatch.
-  - At eight times h_K2's elements, D4 leaves a GPU step 1/11.8 of a CPU step (§16z). One pass per phase, about ten
-    a step, would spend roughly a fifth to a third of that on passes, and one pass a step a thirtieth or less
-    (arithmetic, on §16z's local figures).
-  - Dispatches in one pass see each other's writes: 1 000 dispatches in one pass, each reading the last one's output
-    shifted by half the array, left no element wrong (measured by the design's review).
-
-**The design.**
-- **Where.** `sim-gpu` gains `soft`, an `Executor` over `sim-soft-explicit`'s model and obstacle, as §14a lays out:
-  hand-written entry points that fetch, gather and scatter around `SHARED_WGSL`.
-  - `sim-gpu` then depends on `sim-soft-explicit`: 73 crates to 80 by `cargo tree -e normal`, the count §14c uses
-    (L0-io allows 200). `cf-sim-research` depends on `sim-gpu` for G6 on the GPU.
-  - It runs f32 only. Everything crossing the trait is f64, as the trait says (`executor.rs:5-7`).
-- **The phases are the CPU executor's,** one entry point each, over the same arrays: per element for phases 1 and 4,
-  per node for 2, 3, 5, 7 and 8, per surface node for 6.
-  - Each gather sums a node's incidence list in its order, as the CPU's does (`cpu/executor.rs:139`, `:186`). No
-    atomic adds a float.
-  - The counts, inverted elements and coarse corrections, are u32 atomics into a pair of words with a carry: 64 bits,
-    exact in any order.
-  - κ_e is taken as the CPU takes it. U20 needs κ = 0 (§15g step 4's note); one fixture also runs κ ≠ 0, since it
-    is the same shared function.
-  - The internal energy at a read runs phases 1–2, and the power iteration phases 1–5, on arrays of their own, and
-    neither counts, as on the CPU.
-  - The per-node constants (the rest position, the mass and its inverse, the two constraint directions) share one
-    array, and each surface node's contact state another, so each entry point binds at most the context's 16 storage
-    buffers (`context.rs:49`). wgpu rejects a layout over that when the layout is created
-    (`wgpu-core-27.0.3/src/device/resource.rs:2492`, `:3408`).
-- **The obstacle's pose, on the host.** In `contact`, the executor interpolates the pose at the step's start and end
-  with the shared math at f32, as the CPU executor does (`cpu/executor.rs:527-539`), and passes both in the step's
-  values.
-  - So `set_poses` writes nothing to the device, and the contact kernel reads the poses the CPU executor forms, bit
-    for bit.
-  - In the same call it takes the obstacle's origin, move and turn over the step from the track at f64, as the CPU
-    does (`:919-932`), and keeps them with the step, so a later `set_poses` does not change a step already taken.
-  - This replaces §14d's pose samples streamed to the device a batch at a time, written before the recorder had
-    per-step values. It rules out a pose formed on the device, which §14a's rigid–soft exchange on one device would
-    need: that needs another design, as tracking the step does.
-  - The anchors `set_state` forms when given none are formed on the host the same way, and written through the
-    recorder.
-- **A step's values** (§17a's ring): dt, damping, the two poses, and the step's rows in the step log (below). One
-  type serves the recorder, so it also carries an estimate's perturbation and β. In WGSL's uniform layout each pose
-  and the rows after them are aligned to 16 bytes (a struct without it was rejected, measured by the design's
-  review), and the Rust type is padded to that size, since the ring binds its size (`submit.rs:164`, `:178`).
-- **One pass a step.** The executor does not open a pass per phase.
-  - Each phase appends its dispatches to a pending list, which holds the phases in the loop's order: 1 to 8, then
-    `accumulate`. The list is recorded as one pass, in one recorder step carrying the pending values, when a phase
-    comes that does not follow the last one pending, when a phase brings a dt or damping other than the pending ones,
-    and before any read, write or `clear_accumulators`. In the loop, that is once a step, at the next step's phase 1.
-  - The loop's order is unchanged and still written once (§14d). A test that reads between phases gets the phases
-    recorded up to that point.
-- **The step log, and where each f64 sum goes.** Each `contact` writes a row: the contact forces' resultant, their
-  moment about a fixed point, and the normal forces' sum. Each `boundary_conditions` writes a row of its own: the
-  step's contact work and damping loss. They are counted apart, as the CPU counts steps at `contact` and adds work at
-  `boundary_conditions` (`cpu/executor.rs:951`, `:980-988`).
-  - The rows are read back only at the trait's reads, so the executor reads back nothing else. If the log fills
-    between two reads, it grows on the device, copied into a buffer twice its size.
+**The design.** `sim-gpu` gains `soft`, an `Executor` over `sim-soft-explicit`'s model and obstacle, with entry points
+around `SHARED_WGSL` (§14a). `sim-gpu` depends on `sim-soft-explicit` (73 crates to 80; L0-io allows 200), and
+`cf-sim-research` on `sim-gpu`. The device runs f32; the trait carries f64 (`executor.rs:5-7`).
+- **The phases** are the CPU executor's, one entry point each, over the same arrays.
+  - Each gather sums a node's incidence list in its order (`cpu/executor.rs:139`, `:186`); no atomic adds a float.
+  - The counts, inverted elements and coarse corrections, are u32 atomics into a 64-bit pair with a carry.
+  - The internal energy at a read (phases 1–2) and the estimate (phases 1–5) run on arrays of their own and do not
+    count (`:217-270`, `:811-817`).
+  - κ_e is taken as the CPU takes it; conformance is at κ = 0 (§15g step 4).
+  - The per-node constants share one array and each surface node's contact state another, so each entry point binds
+    at most 16 storage buffers (`context.rs:49`).
+- **The pose, on the host.** `contact` interpolates the pose at the step's start and end with the shared f32 math, as
+  the CPU executor does (`cpu/executor.rs:527-539`), and passes both in the step's values, so `set_poses` writes
+  nothing to the device.
+  - The same call keeps the step's origin, move and turn from the f64 track (`:919-932`).
+  - `set_state`'s default anchors are formed on the host the same way.
+  - This replaces §14d's pose samples streamed to the device; a pose formed on the device (§14a's rigid–soft
+    exchange) would need another design.
+- **A step's values** (§17a's ring): dt, damping, the two poses, the step's two log rows, and an estimate's
+  perturbation and β, since a recorder has one type. In WGSL the poses and what follows them are aligned to 16 bytes,
+  and the Rust type is padded to match (`submit.rs:164`, `:178`).
+- **One pass a step.** Each phase appends its dispatches to a pending list, held in the loop's order: 1–8, then
+  `accumulate`. The list is recorded as one pass, in one recorder step, when a phase does not follow the last one
+  pending, when dt or damping changes, and before any read, write or `clear_accumulators`. In the loop that is once a
+  step.
+- **The step log.** Each `contact` writes a row: the contact forces' resultant, their moment about the rest
+  positions' centroid c, and the normal sum. Each `boundary_conditions` writes a row of its own, the contact work and
+  damping loss; the two are counted apart, as on the CPU (`:951`, `:980-988`). Rows are read back only at the trait's
+  reads (`executor.rs:316-319`), and a full log grows on the device.
 
   | At f64 on the CPU | On the GPU |
   |---|---|
-  | The resultant, moment and normal sum: over the surface nodes each step, then over the steps since the last read | Over the surface nodes by a fixed tree at f32, into the step's row; the host adds the rows at f64 |
-  | The moment's arm: each node's position, widened, less the obstacle's origin from the f64 track | The moment about a fixed point c, the rest positions' centroid, each arm the rest arm (formed at f64, then narrowed) plus the displacement; the host moves it, M = M_c + (c − p) × F, at f64, with p kept from `contact` |
-  | The work of the obstacle's motion: each step, from the resultant, the moment and the f64 track | On the host at f64, from each row and the origin, move and turn kept from its `contact` |
-  | Contact work and damping loss, per node over the run | Over the nodes by a fixed tree, into the `boundary_conditions` row; the host adds the rows at f64 |
-  | Inverted elements and coarse corrections, u64 | u32 atomics into 64-bit pairs; exact |
-  | The deepest penetration and prediction, per node | Per node at f32, reduced by max at a read; exact |
-  | Kinetic, contact kinetic and internal energy, at a read | Each workgroup's slice by a fixed tree at f32; the partials read and added at f64 |
-  | The window sums, per node | Per node at f32 between two reads, then added into the host's f64 sums at the read |
+  | The resultant, moment and normal sum: per step, then over steps | A fixed f32 tree per step, into the row; the host adds rows at f64 |
+  | The moment's arm, from the f64 track's origin p | About c, each arm formed at f64 then narrowed; the host moves it, M = M_c + (c − p) × F |
+  | The obstacle's work, each step | On the host at f64, from each row and its kept origin, move and turn |
+  | Contact work and damping loss, per node | A fixed f32 tree per step, into the row; the host adds rows at f64 |
+  | Inverted elements and coarse corrections, u64 | 64-bit atomic pairs; exact |
+  | The deepest penetration and prediction, per node | Per node at f32, maxed at a read; exact |
+  | Kinetic, contact kinetic and internal energy, at a read | Workgroup partials by a fixed f32 tree, added at f64 on the host |
+  | The window sums, per node | Per node at f32 between reads, added into f64 on the host at a read |
 
-  - A fixed tree of n terms at f32 is within ⌈log₂ n⌉ · u · Σ|terms| of the exact sum, with u = 2⁻²⁴: 1.0e-6 of
-    Σ|terms| at 10⁵ terms (arithmetic). A sum can be far below the sum of its terms' magnitudes: a canal's radial
-    forces cancel in the resultant. So a sum is compared against its terms' magnitudes (the gates).
-  - n steps summed at f32 are within (n − 1) · u of the terms' total magnitude (arithmetic). The caller's read
-    interval sets n: at the loop's 100, 5.9e-6.
-- **The power iteration, one read an estimate.** It follows `top_mode_and_vector` (`cpu/executor.rs:631-732`) step
-  for step.
-  - The two maxima the CPU reads each iteration are reductions on the device by a tree with `max`, which drops a NaN
-    as Rust's does, into a buffer the next dispatch reads.
-  - Its two breaks are a flag that makes the later iterations do nothing: a zero largest component keeps the vector
-    and quotient before it (`:677`), a zero next iterate keeps this iteration's (`:715-718`), and a break at the
-    first iteration leaves ω² at 0, as on the CPU.
-  - After the loop, the damping quotient takes one viscous evaluation on the vector kept (`:723-729`). The two
-    quotients' partial sums are read once, at the end, and added at f64.
-  - The fixed start vector is formed on the host at f32, with Rust's `sin` and `cos` as the CPU forms it, and
-    uploaded once.
-  - An estimate is one recorder step carrying the perturbation and β, in one pass.
-- **Reads and writes** go through the recorder (§17a). `monitors`, `snapshot`, `phase_outputs` and
-  `estimate_top_mode` are one read each; `monitors` and `snapshot` also read the step log, and the window sums when a
-  window has added steps since the last read. The
-  ring's own submit, when its slots fill (`submit.rs:219-225`), does not wait. `set_state` is one write.
-- **Limits and features.** No wgpu feature: f32 only, the ring for per-step values, workgroup memory for reductions,
-  u32 atomics for counts. The product's fine grid is above wgpu's default binding size and runs on Metal, which
-  grants 4 GiB (§15g step 4's note). CI's fixtures stay under the default, so this step does not need lavapipe's
-  grant.
+- **The power iteration** follows `top_mode_and_vector` (`cpu/executor.rs:631-732`), with one read an estimate.
+  - Its two maxima are `max` trees, which drop a NaN as Rust's `max` does, into a buffer the next dispatch reads.
+  - Its breaks (`:677`, `:715-718`) set a flag that idles the later iterations, and keep the vector and quotient the
+    CPU keeps.
+  - The damping quotient takes one viscous evaluation after the loop (`:723-729`).
+  - The quotients' partials are read once and added at f64.
+  - The start vector is formed on the host at f32, as the CPU forms it.
+  - An estimate is one recorder step, one pass.
+- **Reads and writes** go through the recorder (§17a). Each trait read is one read; `monitors` and `snapshot` also
+  take the log and, when a window has added steps, the window sums. `set_state` is one write. No wgpu feature is
+  needed. The product's fine grid is above wgpu's default binding size and within Metal's 4 GiB (§15g step 4); CI's
+  fixtures stay under the default.
 
-**The fixtures.** Each is set on both executors from one state, deformed by 1–10 % except where named:
-- the tube (`fixtures/tube.rs`), frictional;
-- a block of two materials, one at ν 0.49 and one at 0.4975;
+**The fixtures,** each set on both executors from one state, deformed 1–10 % unless named:
+- the tube, frictional;
+- a block of two materials, at ν 0.49 and 0.4975;
 - a viscous block;
-- held nodes, and nodes held in one or two directions;
+- nodes held whole, and in one or two directions;
 - an obstacle with a fine grid;
 - an obstacle whose track moves and turns;
 - friction sticking, and friction slipping;
-- an element compressed past |J − 1| = 0.25, where `ln_1p` takes the backend's `log`;
-- κ ≠ 0 on a few elements.
+- an element compressed past |J − 1| = 0.25, where `ln_1p` takes the backend's `log` (`shared.wgsl:225-226`).
 
-Each stays clear of the places where an output jumps: where a node starts to touch, and where its friction turns
-from sticking to slipping (both move its anchor, `shared/contact.rs:119-124`); the movable reach
-(`KINEMATIC_MIN_REACH`); where the fine grid ends; and J = 0 (the inverted count). It asserts its margins from the CPU
-executor's state before comparing, and no node is left out of a comparison.
+Each asserts, from the CPU's state, that it stays clear of where an output jumps: a node starting to touch or turning
+from sticking to slipping (its anchor, `shared/contact.rs:119-124`), the movable reach (`KINEMATIC_MIN_REACH`), the
+fine grid's edge, and J = 0. No node is left out of a comparison.
 
-**The gates,** set before the build. Each is to be made to fail once by the change named; all run on Metal locally
-and on lavapipe in CI's `tests-debug` shard 3, except where named.
+**The gates,** set before the build. Each is made to fail once by the change named. They run on Metal locally and on
+lavapipe in CI's `tests-debug` shard 3, unless named.
 
-| Gate | To be made to fail by |
+| Gate | Made to fail by |
 |---|---|
-| Per-phase conformance, GPU f32 against CPU f32, on every fixture, the phases run in order up to the one read. Each array output (the phase outputs, the snapshot) within 1e-5 of its largest magnitude (§15g step 4). Each sum in the monitors within 1e-5 of its terms' summed magnitudes; for the moment, Σ \|x − c\| \|f\| + \|c − p\| Σ \|f\|; for one step's work, the sum of the nodes' step works' magnitudes. Maxima within 1e-5 of themselves; counts exact | for each phase, a term dropped from its kernel (a corner swapped in a gather; the constraint projection skipped in `boundary_conditions`) |
-| The margins above, asserted by each fixture | a fixture moved onto one |
-| The obstacle that moves and turns | its two poses swapped; the moment's move taken with the wrong sign |
-| `set_poses` between two steps: the obstacle's work is the same with a read before the `set_poses` as without one (the GPU against itself) | the origin, move and turn formed at the read |
-| On a fixture with one element inverted well past J = 0: phase outputs and the inverted count read after `monitors` and after an estimate equal those read before them | the internal energy's phase 1 on the step's arrays; its phase 1 counting; the estimate on the step's arrays |
-| A step recorded as one pass is byte-identical to the same step recorded pass by pass | the pending list replayed out of order |
-| The estimate's ω² and damping quotient within 1e-3 of the CPU f32 executor's, the bar the repo holds f32's ω² to against f64 (`tests/executor.rs:686`; the damping quotient's is set here), with the CPU f32's distance from f64 printed beside; a break at the first iteration leaves ω² at 0; one read an estimate | the free-direction projection dropped from K v; a break giving ω² as 0/0; a read each iteration |
-| On Metal, three runs of 1 000 steps of the tube through `Stepper` repeat bit for bit | a gather written as a scatter that races |
-| With no window open, a run read every step and the same run read every 100 steps, its log growing past its first size between reads, give identical cumulative monitors and the same final state | the rows dropped when the log grows |
-| The window sums of a still state over 1 000 steps, read every 100, are each within 1e-5 of 1 000 times the state. The test itself shows that the state summed over all 1 000 steps at f32 misses 1e-5 | no window sums added in at a read |
-| A NaN in one node's velocity, read before any step, makes the monitors not finite, and `run_until` stops, on the GPU as on the CPU | the kinetic energy's tree dropping a NaN (a max with 0) |
+| Per-phase conformance, GPU f32 against CPU f32, on every fixture, the phases run in order up to the one read; by the bars below | for each phase, a term dropped from its kernel (a corner swapped in a gather; the projection skipped in `boundary_conditions`) |
+| Each fixture's margins | a fixture moved onto one |
+| The obstacle that moves and turns | its two poses swapped; the moment moved with the wrong sign |
+| `set_poses` between two steps: the obstacle's work is the same with a read before it as without one (the GPU against itself) | the origin, move and turn formed at the read |
+| With one element inverted well past J = 0: the phase outputs and the count read after `monitors` and after an estimate equal those read before | the energy's phase 1 on the step's arrays; its phase 1 counting; the estimate on the step's arrays |
+| A step recorded as one pass is byte-identical to it recorded pass by pass | the pending list replayed out of order |
+| The estimate's ω² and damping quotient within 1e-3 of the CPU f32 executor's, the CPU f32's distance from f64 printed beside; a break at the first iteration leaves ω² at 0; one read an estimate | the free-direction projection dropped from K v; ω² as 0/0; a read each iteration |
+| On Metal, three runs of 1 000 tube steps through `Stepper` repeat bit for bit | a gather written as a scatter that races |
+| With no window open, a run read every step and the same run read every 100 steps, its log growing between reads, give identical cumulative monitors and final state | the rows dropped when the log grows |
+| A still state's window sums over 1 000 steps, read every 100, are each within 1e-5 of 1 000 times the state; the test shows the state's f32 sum over all 1 000 steps misses 1e-5 | no window sums added at a read |
+| A NaN in one node's velocity, read before any step, makes the monitors not finite, and `run_until` stops, on the GPU as on the CPU | the kinetic energy's tree dropping a NaN |
 | A count set just below 2³² and counted past it reads the exact total | no carry |
 
-**Two bars amended here, before the build** (mine; §15g step 4 holds each output to 1e-5 of its largest magnitude).
-- A sum is held to its terms' summed magnitudes, not its own (above): the device's rounding of a sum scales with its
-  terms, and it keeps no compensation.
-- Phase 6's contact and normal forces are held to 1e-5 of their largest magnitude or twice the CPU f32 executor's
-  distance from f64 on the same fixture, whichever is larger. A contact force follows the predicted depth, which f32
-  resolves only to the rounding of the point's grid coordinate. On Metal that coordinate differed from the CPU's by
-  one unit in the last place in 28 % of 2²⁰ cases; on the 10k tube the CPU f32's contact forces differ from f64's by
-  2.9e-5 of the largest with the nodes on the mandrel's surface, and by 6.9e-6 with the bore 0.5 mm inside it
-  (measured by the design's second review, its probes not kept). Two results each that far from f64 can be twice
-  that far apart.
+**The bars.** §15g step 4 holds each output to 1e-5 of its largest magnitude. Two are amended here, before the build
+(mine):
+- a sum is held to 1e-5 of its terms' summed magnitudes (for the moment, Σ|x − c||f| + |c − p|Σ|f|), since the
+  device's f32 tree is within ⌈log₂ n⌉ · u · Σ|terms| and keeps no compensation;
+- phase 6's contact and normal forces are held to the larger of 1e-5 and twice the CPU f32 executor's distance from
+  f64 on the same fixture, since f32's rounding of the grid coordinate sets their precision. The design's review
+  measured the CPU f32 2.9e-5 from f64 on the 10k tube with the nodes on the mandrel, and 6.9e-6 with the bore
+  0.5 mm inside it.
 
-**If a gate misses,** it is not re-tuned. A gate its named change cannot make fail is deleted, and the record says
+Maxima are held to 1e-5 of themselves and counts exactly. The estimate is held to 1e-3, the bar the repo holds f32's
+ω² to against f64 (`tests/executor.rs:686`).
+
+**If a gate misses,** it is not re-tuned; a gate its named change cannot make fail is deleted, and the record says
 so.
-- A conformance miss: the record gives the GPU's distance from the CPU f32 executor beside the CPU f32's from f64 on
-  that fixture, and step 4 is not done until the bar is met or Jon changes it.
-- G6 on the GPU (below): if its deciding readings miss K3's 0.5 %, the GPU does not yet stand in for the CPU on the
-  product, and step 4 is not done; the readings go to the record and to Jon. A corner that one executor runs again
-  by rule 1 and the other does not is compared as each ran, and the record says which; at eight times, the two step
-  controls read the deciding readings within 0.01 % of each other (§16z). A corner that stands on one executor and not
-  on the other is a miss.
-- D4: a miss does not leave step 4 undone. It goes to Jon with the options below.
+- Conformance: the record gives the GPU's distance from the CPU f32 executor beside the CPU f32's from f64, and step 4
+  is not done until the bar is met or Jon changes it.
+- G6 on the GPU: deciding readings beyond K3's 0.5 %, or a corner that stands on one executor only, leave step 4
+  undone and go to Jon. A corner that rule 1 runs again on one executor only is compared as each ran.
+- A D4 miss leaves step 4 done, and goes to Jon.
 
-**D4: a proposal for Jon** (§17). §15g step 2's rule asks for the speed plan's revision before GPU work. It is still
-owed, and when it is due is Jon's.
+**D4: a proposal for Jon** (§17). The revision §15g step 2's rule asks for is owed; its date is Jon's.
 - **The measurement.** G6 on the GPU: a press on `base_mold` at eight times h_K2's elements, the three corners under
-  the step control above, through the probe's `press` on Metal. It is reported over D4 and over the CPU's time (four
-  threads, §16z), and its deciding readings are compared with the CPU's at eight times (§16z) at K3's 0.5 %.
-- **The bar.** A press within D4 at the size used, at ν 0.49 and the nominal viscosity: at least 11.8 times the CPU
-  (§16z). With ν as a corner it is about 24–26, about 37 at the viscosity's high end, and about 37 at sixteen times
-  h_K2's elements (§16z, arithmetic). K1's per-step budget, step 5's speed gate (§15a), gives 53 of D4 at eight
-  times, so it cannot tell a GPU that misses D4 from one that meets it. D4's bar would replace it; changing a
-  pre-registered criterion is Jon's.
-- **What a miss triggers.** The quality gates are not loosened (§9 decision 12), and the element size stays the size
-  rule's (§16z). The options, for Jon:
-  - the executor made faster against the bar: fused phases (§14d), or local stepping at the seated tip (not costed);
-  - D4 itself: its machine (a faster device, such as an RTX 4070 Ti through Vulkan with the same code, which Jon has;
-    not measured), or its budget (fit plan D4: *"revisit the budget rather than cut the physics"*).
-- The run builds the eight-times wall, which took about 4 GB of memory in §16z's runs (local), so it runs under the
-  local runner's memory watchdog. No reviewer runs it.
+  the step control above, through the probe's `press` on Metal. It is reported over D4 and over the CPU (four
+  threads, §16z), with its deciding readings against the CPU's at K3's 0.5 %. It runs locally under the memory
+  watchdog, since the wall took about 4 GB; no reviewer runs it.
+- **The bar.** At least 11.8 times the CPU, at ν 0.49 and the nominal viscosity. With ν as a corner it is about 24–26,
+  and about 37 at the viscosity's high end or at sixteen times h_K2's elements (§16z). It would replace K1's per-step
+  budget, which is 53 of D4 there, so it cannot fail a GPU that misses D4. That replacement is Jon's.
+- **A miss.** The quality gates and the element size stay (§9 decision 12, §16z). The options, for Jon: a faster
+  executor (fused phases, §14d; local stepping, not costed); or D4's machine or budget (a faster device through the
+  same code; fit plan D4: *"revisit the budget rather than cut the physics"*).
 
-**From step 3** (§17a).
-- The prose of §17a's last fixes was not reviewed. This design's review read §17a as an input and found the behaviour
-  §17b relies on in `submit.rs`.
-- A failed wait or map is still not made to fail. The build tries a device destroyed before a read; if wgpu lets the
-  read reach the recorder, it becomes §17a's gate, and otherwise §17a's record stands.
-
-**Not here.**
-- Soft-on-soft contact (step 8's design), and a rigid pipeline on the soft executor's device (§17a).
-- Fusing phases into fewer kernels (§14d). One pass a step keeps a kernel per phase, so per-phase conformance stays
-  checkable.
-- A faster device: after Metal, through Vulkan, with the same code.
-- K1–K6 on the GPU: step 5.
-- The Metal facts above are wgpu 27's. The probes are kept locally; a later wgpu is not measured.
+**Carried, and not here.**
+- §17a's failed wait or map: the build tries a device destroyed before a read. If the read reaches the recorder, it
+  becomes §17a's gate.
+- Not here: soft-on-soft contact; fused kernels; a faster device; K1–K6 on the GPU (step 5). The Metal facts above
+  are wgpu 27's.
 
 **Done when:**
-- every gate above passes where the table runs it: on Metal on the M4 Pro with `CF_REQUIRE_GPU=1`, and on lavapipe
-  in CI's shard 3;
-- `sim-gpu` grades A, and `sim-soft-explicit`, `sim-gpu-benches` and `cf-sim-research` pass their tests and grade as
-  before;
-- G6 on the GPU is recorded here, with its readings' comparison, under the rules above;
-- the notes that §17b changes point here: §14d's streamed poses and §17a's pose on the device; §16e's and §17's read
-  per power iteration; the step-control item in §15g's list; fit plan U20's note; and `set_poses`' doc
-  (`executor.rs:349-353`).
+- every gate passes where the table runs it;
+- `sim-gpu` grades A, and `sim-soft-explicit`, `sim-gpu-benches` and `cf-sim-research` pass and grade as before;
+- G6 on the GPU is recorded here;
+- the notes §17b changes point here: §14d's and §17a's pose on the device, §16e's and §17's read per power
+  iteration, §15g's step-control item, fit plan U20, and `set_poses`' doc (`executor.rs:349-353`).
+
+**How the design was checked.** Two rounds of cold review (three reviewers; the reviews are kept locally).
+- Round 1, a code reviewer who measured on Metal and a whole-plan reviewer, changed the design:
+  - the energy read and the estimate on their own arrays;
+  - the obstacle's work formed at `contact`;
+  - the log read only at the trait's reads;
+  - G6's consequence;
+  - a turning obstacle and ν per fixture;
+  - gates that could not fail.
+- Round 2, one fresh reviewer, found 16 problems, 11 written by round 1's fixes and all in gates or prose.
+- The section was then cut to this. Round 2's fixes and the cut have not been reviewed.
