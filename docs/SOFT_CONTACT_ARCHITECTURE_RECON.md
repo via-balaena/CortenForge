@@ -5425,8 +5425,8 @@ under test. The probe's `step7_cost` takes `STEP7_GPU=1`, and times a press unde
   h_K2's elements is not recorded.
 - On lavapipe the gates are CI's (`tests-debug` shard 3); the repeat gate runs on Metal only.
 
-**Grades** (`RAYON_NUM_THREADS=1`): `sim-gpu`, `sim-gpu-benches` and `cf-sim-research` A at `71a40f44`;
-`sim-soft-explicit` A at `b62acd5b`, its code unchanged since.
+**Grades** (`RAYON_NUM_THREADS=1`): `sim-gpu` A at `8a0ea359`; `sim-gpu-benches` and `cf-sim-research` A at
+`9f13719f`; `sim-soft-explicit` A at `b62acd5b`, its code unchanged since.
 
 **On the product** (`base_mold`, through the probe's press; the logs kept locally):
 - At h_K2's elements and the budget's loading, the GPU and the CPU took the same steps in every run, D1's readings
