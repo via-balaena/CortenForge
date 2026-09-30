@@ -1283,7 +1283,7 @@ Each item is one PR with its own tests and a done-when.
      which phase 1 writes, so on the GPU it gains a binding or recomputes J. While the product runs the element as it
      is (fit plan U20), the GPU needs κ = 0 only, and its per-phase conformance is at κ = 0; the stabilization stays a
      CPU instrument.)*
-   - *(2026-09-30, §17c: built and gated on Metal; CI runs the gates on lavapipe. G6 on the GPU misses D4, which
+   - *(2026-09-30, §17c: built and gated on Metal; the lavapipe run is the PR's CI. G6 on the GPU misses D4, which
      goes to Jon.)*
 5. **The experiment on the GPU:** K1, K2 at 100k, the ν sweep, the ladder, the Coulomb push, the stress
    case, the SDF comparison and stiffness scaling. *Stiffness scaling runs first on the CPU, in step 2
@@ -5250,7 +5250,7 @@ around `SHARED_WGSL` (§14a). `sim-gpu` depends on `sim-soft-explicit` (73 crate
   - The counts, inverted elements and coarse corrections, are u32 atomics into a 64-bit pair with a carry.
   - The internal energy at a read (phases 1–2) and the estimate (phases 1–5) run on arrays of their own and do not
     count (`:217-270`, `:796-802`).
-  - κ_e is taken as the CPU takes it; conformance is at κ = 0 (§15g step 4).
+  - κ_e is taken as the CPU takes it; conformance is at κ = 0 (§15g step 4), and one fixture at κ = 2μ (§17c).
   - The per-node constants share one array and each surface node's contact state another, so each entry point binds
     at most 16 storage buffers (`context.rs:49`).
 - **The pose, on the host.** `contact` interpolates the pose at the step's start and end with the shared f32 math, as
@@ -5392,28 +5392,31 @@ dispatch; `soft/log.rs`, the step log's rows added at f64; `soft/soft.wgsl`, 21 
 crate root for both; `ExplicitModel` gained `shortest_edge`, which both executors read; the recorder counts its reads
 under test. The probe's `step7_cost` takes `STEP7_GPU=1`, and times a press under the decided step control alone.
 
-**On Metal** (the M4 Pro, wgpu 27; each figure is its test's output at `71a40f44`, the record kept locally):
-- Conformance on the eight fixtures, the GPU's distance from the CPU at f32 against each output's bar:
-  - phases 1–5 at most 4.4e-7 of the largest magnitude;
+**On Metal** (the M4 Pro, wgpu 27; each figure is its test's output at `7649a1bc`, the record kept locally):
+- Conformance on nine fixtures, §17b's and one at κ = 2μ, the GPU's distance from the CPU at f32 against each output's
+  bar:
+  - phases 1–5 at most 4.6e-7 of the largest magnitude;
   - phase 6's contact forces 4.8e-6 against 1.5e-5, and its normal forces 5.0e-6 against 1.3e-5, both on the tube,
     each bar twice the CPU at f32's distance from f64;
   - phases 7–8 at most 7.5e-6 against 1e-5, on the tube, where the CPU at f32 is 8.3e-6 from f64;
-  - the window's sums of one step as their phases' outputs, but the friction, a contact output: at most 3.1e-3
-    against 6.0e-3, where the CPU at f32 is 3.0e-3 from f64;
+  - the window's sums of one step as their phases' outputs. The friction's takes phase 6's amended bar, which §17b
+    does not list: at most 3.1e-3 against 6.0e-3, where the CPU at f32 is 3.0e-3 from f64;
   - each sum at most 6.6e-7 of its terms' magnitudes; the maxima equal to the digits printed; the counts exact.
-- The estimate: ω² within 5.0e-7 and the damping quotient within 6.7e-6 of the CPU at f32 (bar 1e-3); the CPU at f32
-  is 1.6–2.7e-4 from f64 in ω², and 5.8e-4 in the damping quotient.
-- Every gate failed under its named change, on its own assertion (38 changes at `71a40f44`; the script and its log,
+- The estimate: ω² within 1.6e-6 and the damping quotient within 6.8e-6 of the CPU at f32 (bar 1e-3); the CPU at f32
+  is 8.6e-5 to 2.7e-4 from f64 in ω², and 5.8e-4 in the damping quotient.
+- Every gate failed under its named change, on its own assertion (46 changes at `7649a1bc`; the script and its log,
   with each failure's place, kept locally). Three were not the first tried:
   - phase 6's first, the damping dropped from the prediction, did not fail; the step's advance dropped did.
-  - the repeat gate first failed under its race by the run blowing up in the loop. It now compares runs that stop,
-    every value by its bits, and fails with one run stopping where another did not.
+  - the repeat gate's race, a gather written as a scatter, blows the runs up; they stop at different times. The gate
+    now compares runs that stop, every value by its bits, and a race that leaves them finite, the kinetic energy added
+    into one term, fails it too.
   - the margins': at `J − 1 = −1` the pressures missed their bar (1.0e-4 against 1e-5) while `J` cleared the margin
     then, 1e-3. The margin is 0.1, and `J − 1 = −0.95` fails it.
 - A reduction past 256 blocks and past 65 535 workgroups (16.8 million items) has its gate. No gate reaches these,
   and each passes its change: the per-item index past 65 535 workgroups (4.2 million items); held nodes left out of
-  the deepest prediction; the projection in the estimate's damping; the damping in phase 6's prediction. No gate is
-  written for the power iteration's second break, a scaled vector of zeros.
+  the deepest prediction; the projection in the estimate's damping; the damping in phase 6's prediction; a race left
+  in a reduction's tree, which three Metal runs did not show. No gate is written for the power iteration's second
+  break, a scaled vector of zeros.
 - §17a's failed wait or map: a device destroyed before a read fails in wgpu's validation at `map_async` (the staging
   buffer is invalid), before the recorder's wait or map (a probe, kept locally). It is not the recorder's path, so no
   gate follows.
@@ -5445,9 +5448,11 @@ under test. The probe's `step7_cost` takes `STEP7_GPU=1`, and times a press unde
   undo step 4; D4 goes to Jon with §17b's options.
 
 **How the build was checked.** One round of cold review, four reviewers (the kernels, the executor, the gates, the
-whole plan; kept locally). No reviewer found a finite state in which an output of the executor differs from the
-CPU's; after a run had blown up, one found the GPU's contact outputs finite where the CPU's were zero, the loop
-stopping on both. They found gates that could not fail for a path they claimed to cover (the window sums and their
-clear, the fine grid, `set_poses`, array lengths, the repeat gate's fields, the fixtures' purposes, κ, reductions past
-256 blocks), and figures and claims in this record that its logs did not carry. The gates were added or widened, each
-made to fail, and the figures taken again from the tests' output. The fixes have not been reviewed.
+whole plan), then one fresh reviewer on that round's fixes; their findings kept locally. No reviewer found a finite
+state in which an output of the executor differs from the CPU's; after a run had blown up, one found the GPU's
+contact outputs finite where the CPU's were zero, the loop stopping on both. The first round found gates that could
+not fail for a path they claimed (the window sums and their clear, the fine grid, `set_poses`, array lengths, the
+repeat gate's fields), paths no gate covered (κ, reductions past 256 blocks, the fixtures' purposes), and figures and
+claims in this record that its logs did not carry. The second found 10 more, 7 made by the first's fixes: κ had gone
+onto the viscous fixture, taking viscosity at κ = 0 with it, and the widened comparisons and the purposes had not been
+made to fail. The mutation record above was taken after both; the second round's fixes have not been reviewed.
