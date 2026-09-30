@@ -5457,5 +5457,5 @@ repeat gate's fields), paths no gate covered (κ, reductions past 256 blocks, th
 claims in this record that its logs did not carry. The second found 10 more, 7 made by the first's fixes: κ had gone
 onto the viscous fixture, taking viscosity at κ = 0 with it, and the widened comparisons and the purposes had not been
 made to fail. A third, narrow, on those fixes found 2: three fixtures asserted nothing of what they are for, and
-the one-pass gate's later comparisons had never failed. The mutation record above was taken after all three; the
-third round's fixes have not been reviewed.
+the one-pass gate's later comparisons had never failed. A fourth, gentle, found 1: the viscous fixture's purpose did
+not pin κ = 0. The mutation record above was taken after all four; the last fix has not been reviewed.
