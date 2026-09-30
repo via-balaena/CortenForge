@@ -19,7 +19,7 @@ scale walls that only appear under load.
   env-steps/s). **With contact the GPU never overtakes** the CPU batch in the swept
   range (at 4096: 0.38 M vs 0.64 M).
 - **`gpu_rollout` ≫ `gpu_perstep`** everywhere — batching all substeps into one
-  submit amortizes the per-step upload/readback that dominates the interactive path.
+  call amortizes the per-step upload/readback that dominates the interactive path.
 - **No scale wall** appeared through n_env = 4096 on either fixture (the three walls
   the harness exposed earlier — no-geom panic, ≥100-substep hang, 256 MB buffer
   ceiling — are all fixed upstream; see the GPU shader-conformance notes).

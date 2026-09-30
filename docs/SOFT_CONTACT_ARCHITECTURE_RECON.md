@@ -5087,12 +5087,12 @@ Jon, 2026-09-29, after §16z: *"let's do it on metal first, on this laptop"*. Th
 
 **What was built** (`sim/L0/gpu/src/submit.rs`).
 - `Recorder` holds the pending encoder and opens every compute pass (`Recording::pass`), counting them; a pass opened on
-  the encoder directly escapes the count. A submit stays under `PASS_CAP`, 1 024 passes. With a run of other commands
+  the encoder directly escapes the count. A submit holds at most `PASS_CAP`, 1 024 passes. With a run of other commands
   between each two passes, which opens one more Metal command buffer (`command/mod.rs:1352`, `:635-643`), that is at
   most about 3 072 of the queue's 4 096.
-- Steps whose values ride the ring cannot split across submits, so the recorder submits before such a step and at its
-  end once `STEP_PASS_CAP`, 512, are pending, and the step may open 512; past that it stops with a message. A recorder
-  whose steps carry no values submits itself at the cap instead, inside a step if it must.
+- The recorder submits before a step and at its end once `STEP_PASS_CAP`, 512, are pending. A step carrying values
+  cannot split across submits, since its values sit in one submit's ring: it may open 512 and stops with a message past
+  that. A step carrying none is also submitted inside itself, at the cap.
 - Each step's values go into a uniform ring, one slot a step at `min_uniform_buffer_offset_alignment`, staged on the
   host, written at the submit, and bound by a dynamic offset, as `fk.rs` binds its per-level parameters
   (`pipeline/fk.rs:75`, `:302`). It needs no device feature, and the context requests none (`context.rs:39`). Push
@@ -5127,7 +5127,7 @@ Jon, 2026-09-29, after §16z: *"let's do it on metal first, on this laptop"*. Th
   size are its to name (§15g step 4's note).
 - **wgpu stays at 27** (§15g step 3).
 
-**The gates, each made to fail once, at the code of `1fcd5289`** (the recorder's in `sim/L0/gpu/src/submit/tests.rs`,
+**The gates, each made to fail once, at the code of `1fcd5289` (T41 at `217a2e8d`)** (the recorder's in `sim/L0/gpu/src/submit/tests.rs`,
 the pipeline's in `sim/L0/gpu/src/pipeline/tests.rs`; each thread-bound test fails after a minute rather than hang):
 
 | Gate | Made to fail by |
@@ -5142,6 +5142,7 @@ the pipeline's in `sim/L0/gpu/src/pipeline/tests.rs`; each thread-bound test fai
 | `reads_writes_and_submits_inside_a_step_stop` | a read allowed inside a step |
 | T38: one `step(150)` byte-identical to 150 `step(1)`, within a minute | a read that drops the pending submit; unbounded, it blocked (above) |
 | T40: `step(0)` reads the state back, rounded to f32 | an early return at zero substeps |
+| T41: a free sphere beside 1 024 static ones, two passes an SDF pair, so a substep passes 2 047; one `step(2)` byte-identical to two `step(1)`, within a minute | `step()` on a recorder with values, which stopped past 512; no submit at the cap, which blocked |
 | the test policy | `GpuContext::new` finding no adapter under `CF_REQUIRE_GPU=1`: 3 tests pass and 63 fail; at `df00dea8` the same change let 14 of 55 pass, 11 of them pipeline tests that never ran |
 | the context's test | asking for wgpu's default buffer size: 268 435 456 bytes granted against the adapter's 14 302 248 960 |
 
@@ -5163,8 +5164,8 @@ runs `sim-gpu` on Metal (the macOS job tests other crates, `.github/workflows/qu
 lavapipe in `tests-debug` shard 3 (`quality-gate.yml:589-637`); `sim-gpu` grades A; and `sim-gpu-benches`, the one crate
 that uses it, passes.
 
-**Results** (the code at `1fcd5289`):
-- On Metal, `CF_REQUIRE_GPU=1 cargo test -p sim-gpu`: 66 of 66 pass, on the Apple M4 Pro.
+**Results** (the code at `217a2e8d`):
+- On Metal, `CF_REQUIRE_GPU=1 cargo test -p sim-gpu`: 67 of 67 pass, on the Apple M4 Pro.
 - `cargo xtask grade sim-gpu`: A on every automated criterion, coverage 97.9 %. A run before the build's review was F on
   Clippy, for an `#[allow(clippy::panic)]` with no `//` justification, which the pre-commit hook's clippy does not check.
 - `sim-gpu-benches`: its test passes.
@@ -5201,4 +5202,13 @@ raising the cap. The rest: passes opened outside steps shrank a step's budget; r
 wgpu's message; T38 had no time bound, and the time bound reported a panic as a timeout; the stages' dispatch wrappers
 took a recorder but wrote straight to the queue; the cap's margin with clears between passes was argued, not tested; one
 gate could not fail; the speed plan's revision had no owner; and stale text in the spec, the benches, §11, §14a and §15g.
-All were fixed or cut, and every gate was made to fail again at the fixed code.
+All were fixed or cut, and every gate was made to fail again at the fixed code. Two of these reopened what round 2 had
+recorded as fixed: a step's budget still depended on passes opened outside steps, which no test covered, and the
+back-to-back test that answered round 2 could not fail.
+
+A fix-diff pass by one fresh reviewer found five problems, three written by those fixes, all in prose ("instead" where
+every recorder also submits at step boundaries, "under" where a submit holds exactly the cap, two `# Panics` sections
+missing the 4-byte case, and this paragraph not saying what was reopened), and two older: the regression's fix had no
+gate in the pipeline, since `step()` on a recorder with values passed every test (T41 now fails it), and one bench
+sentence still said one submit. They were fixed, and the build's review stopped there; the prose of those last fixes
+has not been reviewed.
