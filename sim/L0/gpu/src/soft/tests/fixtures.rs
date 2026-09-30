@@ -316,7 +316,11 @@ pub fn viscous() -> Fixture {
     let model = block_model((3, 3, 2), |_| material(23.0e3, 0.49, 7.0), |_| false);
     Fixture {
         name: "viscous",
-        shows: |model, _| model.materials().iter().all(|m| m.viscosity > 0.0),
+        // The product's combination: viscosity without the stabilization.
+        shows: |model, _| {
+            model.materials().iter().all(|m| m.viscosity > 0.0)
+                && model.element_stabilizations().iter().all(|&k| k == 0.0)
+        },
         displacements: deformation(&model, 0.03, 0.05),
         velocities: velocities(&model),
         model,
