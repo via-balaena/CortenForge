@@ -68,7 +68,7 @@ use sim_core::types::{Data, Model};
 use super::constraint::GpuConstraintPipeline;
 use super::crba::GpuCrbaPipeline;
 use super::eulerdamp::GpuEulerdampPipeline;
-use super::fk::{GpuFkPipeline, readback_f32s};
+use super::fk::GpuFkPipeline;
 use super::integrate::GpuIntegratePipeline;
 use super::model_buffers::GpuModelBuffers;
 use super::rne::GpuRnePipeline;
@@ -77,6 +77,7 @@ use super::state_buffers::GpuStateBuffers;
 use super::types::{MAX_CONSTRAINTS, MAX_PIPELINE_CONTACTS, PipelineContact};
 use super::velocity_fk::GpuVelocityFkPipeline;
 use crate::context::GpuContext;
+use crate::submit::read_buffer;
 
 /// Name used in this file's skip line.
 const SUITE: &str = "contact conformance suite";
@@ -294,8 +295,8 @@ fn compare_constraint_env(
 
     // ── row count ────────────────────────────────────────────────────────
     // `constraint_count` is one atomic u32 per env; read up to env's slot.
-    let counts = readback_f32s(ctx, &state.constraint_count, env + 1);
-    let gpu_rows = f32::to_bits(counts[env]) as usize;
+    let counts = read_buffer::<u32>(ctx, &state.constraint_count, env + 1);
+    let gpu_rows = counts[env] as usize;
     let mut row_fails = Failures::new();
     check(
         &mut row_fails,
@@ -312,8 +313,8 @@ fn compare_constraint_env(
         // efc_* are row-major [max_constraints, nv]/[max_constraints]; env k's
         // rows start at k·MAX_CONSTRAINTS. Read up to env's window and slice it.
         let base = env * max_c;
-        let efc_d_all = readback_f32s(ctx, &state.efc_d, base + gpu_rows);
-        let efc_aref_all = readback_f32s(ctx, &state.efc_aref, base + gpu_rows);
+        let efc_d_all = read_buffer::<f32>(ctx, &state.efc_d, base + gpu_rows);
+        let efc_aref_all = read_buffer::<f32>(ctx, &state.efc_aref, base + gpu_rows);
         check_multiset(
             &mut asm_fails,
             &efc_d_all[base..],
@@ -336,8 +337,8 @@ fn compare_constraint_env(
     finish_channel(fails, aref_fails, case, env, "efc_aref", allow("efc_aref"));
 
     // ── solve channel: qacc, qfrc_constraint (nv-vectors) ────────────────
-    let qacc_all = readback_f32s(ctx, &state.qacc, (env + 1) * nv);
-    let qfrc_all = readback_f32s(ctx, &state.qfrc_constraint, (env + 1) * nv);
+    let qacc_all = read_buffer::<f32>(ctx, &state.qacc, (env + 1) * nv);
+    let qfrc_all = read_buffer::<f32>(ctx, &state.qfrc_constraint, (env + 1) * nv);
     let gpu_qacc = &qacc_all[env * nv..];
     let gpu_qfrc = &qfrc_all[env * nv..];
 
@@ -677,8 +678,8 @@ fn run_rollout(
         ctx.queue.submit([encoder.finish()]);
 
         traj.push((
-            readback_f32s(ctx, &state_buf.qpos, nq),
-            readback_f32s(ctx, &state_buf.qvel, nv),
+            read_buffer::<f32>(ctx, &state_buf.qpos, nq),
+            read_buffer::<f32>(ctx, &state_buf.qvel, nv),
         ));
     }
 

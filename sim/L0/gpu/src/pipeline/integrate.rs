@@ -14,6 +14,7 @@ use super::state_buffers::GpuStateBuffers;
 use super::types::PhysicsParams;
 use super::wgpu_helpers::{buf_entry, create_pipeline, storage_entry};
 use crate::context::GpuContext;
+use crate::submit::Recording;
 
 use sim_core::types::Model;
 
@@ -178,17 +179,14 @@ impl GpuIntegratePipeline {
     }
 
     /// Encode the integration compute pass into the command encoder.
-    pub fn encode(&self, encoder: &mut wgpu::CommandEncoder) {
+    pub fn encode(&self, rec: &mut impl Recording) {
         if self.njnt == 0 {
             return;
         }
 
         let ceil64 = |n: u32| -> u32 { n.div_ceil(64) };
 
-        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some("integrate_euler"),
-            timestamp_writes: None,
-        });
+        let mut pass = rec.pass("integrate_euler");
         pass.set_pipeline(&self.euler_pipeline);
         pass.set_bind_group(0, &self.params_bind_group, &[]);
         pass.set_bind_group(1, &self.model_bind_group, &[]);

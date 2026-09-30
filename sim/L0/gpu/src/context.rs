@@ -28,19 +28,7 @@ impl GpuContext {
     }
 
     async fn new_async() -> Result<Self, GpuError> {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::METAL | wgpu::Backends::VULKAN,
-            ..Default::default()
-        });
-
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: None,
-                force_fallback_adapter: false,
-            })
-            .await
-            .map_err(|_| GpuError::NoAdapter)?;
+        let adapter = request_adapter().await?;
 
         let adapter_info = adapter.get_info();
         let adapter_limits = adapter.limits();
@@ -78,6 +66,22 @@ impl GpuContext {
     }
 }
 
+/// The adapter every context is built on: high-performance, Metal or Vulkan.
+async fn request_adapter() -> Result<wgpu::Adapter, GpuError> {
+    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::METAL | wgpu::Backends::VULKAN,
+        ..Default::default()
+    });
+    instance
+        .request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        })
+        .await
+        .map_err(|_| GpuError::NoAdapter)
+}
+
 /// Errors from GPU context creation.
 #[derive(Debug)]
 pub enum GpuError {
@@ -99,14 +103,33 @@ impl std::fmt::Display for GpuError {
 impl std::error::Error for GpuError {}
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
+    /// ★ The context is on the platform's backend (Metal on macOS, Vulkan
+    /// elsewhere, lavapipe in CI) and was granted the adapter's own buffer
+    /// limits, which the soft executor's fine grid needs above wgpu's default.
     #[test]
-    fn gpu_context_creates_on_metal() {
+    fn a_context_takes_the_platform_backend_and_the_adapters_buffer_limits() {
         let Some(ctx) = crate::test_support::gpu_context_or_skip("adapter probe") else {
             return;
         };
-        eprintln!("  GPU adapter: {}", ctx.adapter_info.name);
-        eprintln!("  Backend: {:?}", ctx.adapter_info.backend);
-        assert!(!ctx.adapter_info.name.is_empty());
+        let expected = if cfg!(target_os = "macos") {
+            wgpu::Backend::Metal
+        } else {
+            wgpu::Backend::Vulkan
+        };
+        assert_eq!(
+            ctx.adapter_info.backend, expected,
+            "{}",
+            ctx.adapter_info.name
+        );
+
+        let adapter = pollster::block_on(super::request_adapter()).expect("an adapter, as above");
+        let (granted, offered) = (ctx.device.limits(), adapter.limits());
+        assert_eq!(granted.max_buffer_size, offered.max_buffer_size);
+        assert_eq!(
+            granted.max_storage_buffer_binding_size,
+            offered.max_storage_buffer_binding_size
+        );
     }
 }

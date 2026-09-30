@@ -1,8 +1,8 @@
 //! GPU physics pipeline orchestrator — unified struct holding all sub-pipelines.
 //!
 //! Session 6: Wraps FK, CRBA, velocity FK, RNE, smooth, collision, constraint,
-//! and integration into a single `GpuPhysicsPipeline` that encodes N substeps
-//! and submits them in bounded chunks (see `SUBSTEP_CHUNK`).
+//! and integration into a single `GpuPhysicsPipeline` that records N substeps
+//! through a [`Recorder`], which submits them within its pass cap.
 
 #![allow(
     clippy::cast_possible_truncation,
@@ -23,26 +23,16 @@ use super::rne::GpuRnePipeline;
 use super::smooth::GpuSmoothPipeline;
 use super::state_buffers::GpuStateBuffers;
 use super::velocity_fk::GpuVelocityFkPipeline;
-use crate::context::GpuContext;
-
-/// Maximum substeps encoded into a single Metal/wgpu command buffer.
-///
-/// Each substep encodes ~14 GPU commands; very long single-submit buffers
-/// (~100+ substeps ≈ 1400 commands) exceed backend limits and the synchronous
-/// readback poll then blocks forever. `step()` chunks the substep loop into
-/// bounded submits of this size. Submits are ordered and state persists in
-/// `state_bufs` between chunks, so a run of `> SUBSTEP_CHUNK` substeps is
-/// chunk-boundary-independent, and a run of `<= SUBSTEP_CHUNK` is a single
-/// submit (byte-identical to the pre-chunking single-buffer encoding).
-const SUBSTEP_CHUNK: u32 = 32;
+use crate::context::{GpuContext, GpuError};
+use crate::submit::{Recorder, Recording};
 
 // ── Error type ────────────────────────────────────────────────────────
 
 /// Errors from GPU pipeline creation or operation.
 #[derive(Debug)]
 pub enum GpuPipelineError {
-    /// No GPU device available.
-    NoGpu(String),
+    /// No GPU device available: the context's own error.
+    NoGpu(GpuError),
     /// Model has nv > 60 (exceeds shared memory budget for Newton solver).
     NvTooLarge(usize),
     /// Model contains a non-free joint type.
@@ -52,7 +42,7 @@ pub enum GpuPipelineError {
 impl std::fmt::Display for GpuPipelineError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NoGpu(msg) => write!(f, "GPU not available: {msg}"),
+            Self::NoGpu(err) => write!(f, "GPU not available: {err}"),
             Self::NvTooLarge(nv) => write!(f, "nv={nv} exceeds GPU limit of 60"),
             Self::UnsupportedJointType(j, jt) => {
                 write!(
@@ -70,8 +60,8 @@ impl std::error::Error for GpuPipelineError {}
 
 /// Unified GPU physics pipeline holding all sub-pipelines.
 ///
-/// Encodes N substeps and submits them in bounded chunks (see `SUBSTEP_CHUNK`).
-/// Reads back final qpos/qvel via staging buffers.
+/// Records N substeps through a [`Recorder`], which submits them within its
+/// pass cap, and reads the final qpos/qvel back.
 pub struct GpuPhysicsPipeline {
     ctx: GpuContext,
     model_bufs: GpuModelBuffers,
@@ -86,10 +76,6 @@ pub struct GpuPhysicsPipeline {
     constraint: GpuConstraintPipeline,
     eulerdamp: GpuEulerdampPipeline,
     integrate: GpuIntegratePipeline,
-
-    // Staging buffers for readback (MAP_READ | COPY_DST)
-    staging_qpos: wgpu::Buffer,
-    staging_qvel: wgpu::Buffer,
 
     // Cached model dimensions (single-env counts; per-env buffer strides).
     nq: u32,
@@ -148,7 +134,7 @@ impl GpuPhysicsPipeline {
         }
 
         // ── GPU context ───────────────────────────────────────────
-        let ctx = GpuContext::new().map_err(|e| GpuPipelineError::NoGpu(e.to_string()))?;
+        let ctx = GpuContext::new().map_err(GpuPipelineError::NoGpu)?;
 
         // ── Upload model + state ──────────────────────────────────
         let model_bufs = GpuModelBuffers::upload(&ctx, model);
@@ -177,21 +163,8 @@ impl GpuPhysicsPipeline {
         // otherwise it is skipped so the undamped path is byte-identical.
         let has_damping = (0..model.nv).any(|i| model.implicit_damping[i] > 0.0);
 
-        // ── Staging buffers for readback (sized for all envs) ─────
         let nq = model.nq as u32;
         let nv = model.nv as u32;
-        let staging_qpos = ctx.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("staging_qpos"),
-            size: u64::from((n_env * nq).max(1)) * 4,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-        let staging_qvel = ctx.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("staging_qvel"),
-            size: u64::from((n_env * nv).max(1)) * 4,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
 
         Ok(Self {
             ctx,
@@ -206,8 +179,6 @@ impl GpuPhysicsPipeline {
             constraint,
             eulerdamp,
             integrate,
-            staging_qpos,
-            staging_qvel,
             nq,
             nv,
             n_env,
@@ -216,9 +187,9 @@ impl GpuPhysicsPipeline {
     }
 
     /// Run `num_substeps` substeps on GPU for every environment in lockstep.
-    /// Uploads each env's current state, encodes the substeps and submits them
-    /// in bounded chunks (see `SUBSTEP_CHUNK`), and reads the final per-env state
-    /// back into `datas`.
+    /// Uploads each env's current state, records the substeps through a
+    /// [`Recorder`], which submits them within its pass cap, and reads the final
+    /// per-env state back into `datas`.
     ///
     /// `datas` must hold exactly `n_env` environments (the count fixed at
     /// construction); for the interactive path pass a one-element slice.
@@ -258,60 +229,29 @@ impl GpuPhysicsPipeline {
                 .write_params(&self.ctx, &self.model_bufs, cpu_model);
         }
 
-        // 3. Encode the substeps in bounded chunks, submitting each chunk
-        //    separately. A single command buffer holding all substeps overruns
-        //    backend command limits for large `num_substeps` (see SUBSTEP_CHUNK).
-        //    State lives in `state_bufs` across submits, which are ordered, so
-        //    the trajectory is independent of where the chunk boundaries fall;
-        //    the final-state copy rides the last chunk's encoder.
-        let qpos_total = self.n_env * self.nq;
-        let qvel_total = self.n_env * self.nv;
-        let qpos_size = u64::from(qpos_total.max(1)) * 4;
-        let qvel_size = u64::from(qvel_total.max(1)) * 4;
-        let mut remaining = num_substeps;
-        loop {
-            let chunk = remaining.min(SUBSTEP_CHUNK);
-            let is_last = chunk == remaining;
-
-            let mut encoder =
-                self.ctx
-                    .device
-                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                        label: Some("gpu_physics_step"),
-                    });
-            for _ in 0..chunk {
-                self.encode_substep(&mut encoder);
-            }
-
-            // The final chunk also copies the final state (all envs) to staging.
-            if is_last {
-                encoder.copy_buffer_to_buffer(
-                    &self.state_bufs.qpos,
-                    0,
-                    &self.staging_qpos,
-                    0,
-                    qpos_size,
-                );
-                encoder.copy_buffer_to_buffer(
-                    &self.state_bufs.qvel,
-                    0,
-                    &self.staging_qvel,
-                    0,
-                    qvel_size,
-                );
-            }
-
-            self.ctx.queue.submit([encoder.finish()]);
-
-            remaining -= chunk;
-            if remaining == 0 {
-                break;
-            }
+        // The uploads and writes above bypass the recorder, which is safe only
+        // because it is created below, after them: they land at its first submit,
+        // before any substep, and the last `step()` ended in a read.
+        //
+        // 3. Record the substeps, one recorder step each. The recorder submits
+        //    within its pass cap; state lives in `state_bufs` across its ordered
+        //    submits, so the trajectory does not depend on where they fall (T38).
+        let mut rec = Recorder::new(&self.ctx);
+        for _ in 0..num_substeps {
+            rec.begin_step(&());
+            self.encode_substep(&mut rec);
+            rec.end_step();
         }
 
-        // 4. Synchronous readback — map staging buffers directly
-        let qpos_f32 = map_staging_f32(&self.ctx, &self.staging_qpos, qpos_total as usize);
-        let qvel_f32 = map_staging_f32(&self.ctx, &self.staging_qvel, qvel_total as usize);
+        // 4. Read the final state of every env back, after the last substep.
+        let qpos_bytes = u64::from(self.n_env * self.nq) * 4;
+        let qvel_bytes = u64::from(self.n_env * self.nv) * 4;
+        let read = rec.read_many(&[
+            (&self.state_bufs.qpos, qpos_bytes),
+            (&self.state_bufs.qvel, qvel_bytes),
+        ]);
+        let qpos_f32: Vec<f32> = crate::submit::values(&read[0]);
+        let qvel_f32: Vec<f32> = crate::submit::values(&read[1]);
 
         // 5. f32 → f64 widening, write each env's slice back to its Data. Env k's
         //    block sits at offset k · n{q,v}, matching the shaders' env stride.
@@ -329,60 +269,43 @@ impl GpuPhysicsPipeline {
         }
     }
 
-    /// Encode one full substep into the command encoder.
+    /// Record one full substep.
     ///
     /// Clears per-substep buffers, then encodes the pipeline stages (eulerdamp
     /// between constraint and integration only when the model has damping).
-    fn encode_substep(&self, encoder: &mut wgpu::CommandEncoder) {
+    fn encode_substep(&self, rec: &mut Recorder) {
         // ── Zero per-substep state buffers ────────────────────────
-        encoder.clear_buffer(&self.state_bufs.body_cfrc, 0, None);
-        encoder.clear_buffer(&self.state_bufs.qfrc_bias, 0, None);
+        rec.commands()
+            .clear_buffer(&self.state_bufs.body_cfrc, 0, None);
+        rec.commands()
+            .clear_buffer(&self.state_bufs.qfrc_bias, 0, None);
         if self.nv > 0 {
             let nv_sq_bytes = u64::from(self.n_env) * u64::from(self.nv) * u64::from(self.nv) * 4;
-            encoder.clear_buffer(&self.state_bufs.qm, 0, Some(nv_sq_bytes));
-            encoder.clear_buffer(&self.state_bufs.qfrc_applied, 0, None);
-            encoder.clear_buffer(&self.state_bufs.qfrc_actuator, 0, None);
-            encoder.clear_buffer(&self.state_bufs.qfrc_passive, 0, None);
+            rec.commands()
+                .clear_buffer(&self.state_bufs.qm, 0, Some(nv_sq_bytes));
+            rec.commands()
+                .clear_buffer(&self.state_bufs.qfrc_applied, 0, None);
+            rec.commands()
+                .clear_buffer(&self.state_bufs.qfrc_actuator, 0, None);
+            rec.commands()
+                .clear_buffer(&self.state_bufs.qfrc_passive, 0, None);
         }
 
         // ── pipeline stages ──────────────────────────────────────
-        self.fk.encode(encoder);
-        self.crba.encode(encoder);
-        self.velocity_fk.encode(encoder);
-        self.rne.encode(encoder);
-        self.smooth.encode(encoder);
-        self.collision.encode(encoder, &self.state_bufs);
-        self.constraint.encode(encoder, &self.state_bufs);
+        self.fk.encode(rec);
+        self.crba.encode(rec);
+        self.velocity_fk.encode(rec);
+        self.rne.encode(rec);
+        self.smooth.encode(rec);
+        self.collision.encode(rec, &self.state_bufs);
+        self.constraint.encode(rec, &self.state_bufs);
         // Implicit joint damping (MuJoCo eulerdamp): re-solve qacc with the damped
         // matrix and the contact-coupled RHS, between the constraint stage (which
         // writes qfrc_constraint) and integration. Skipped for undamped models so
         // their trajectory is byte-identical.
         if self.has_damping {
-            self.eulerdamp.encode(encoder);
+            self.eulerdamp.encode(rec);
         }
-        self.integrate.encode(encoder);
+        self.integrate.encode(rec);
     }
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────
-
-/// Map a staging buffer (`MAP_READ`) and read f32 values from it.
-///
-/// The buffer must have been filled by a prior `copy_buffer_to_buffer` +
-/// `queue.submit()` — this function only maps and reads.
-fn map_staging_f32(ctx: &GpuContext, staging: &wgpu::Buffer, count: usize) -> Vec<f32> {
-    let slice = staging.slice(..);
-    slice.map_async(wgpu::MapMode::Read, |_| {});
-    match ctx.device.poll(wgpu::PollType::Wait {
-        submission_index: None,
-        timeout: Some(std::time::Duration::from_secs(5)),
-    }) {
-        Ok(_) => {}
-        Err(e) => log::warn!("GPU poll timeout: {e:?}"),
-    }
-    let data = slice.get_mapped_range();
-    let floats: Vec<f32> = bytemuck::cast_slice::<u8, f32>(&data)[..count].to_vec();
-    drop(data);
-    staging.unmap();
-    floats
 }

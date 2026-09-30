@@ -37,12 +37,12 @@ in the inner loop. No stale data between substeps.
 
 A GPU physics pipeline where **every stage** of the physics step —
 FK, CRBA, RNE, collision, constraint solve, integration — runs as
-sequential compute dispatches. The CPU submits the substeps in bounded
-chunks (at most `SUBSTEP_CHUNK` substeps per command buffer; a single
-interactive frame is typically one chunk) and reads back only what Bevy
-needs for rendering. Long rollouts span multiple ordered submits (state
-persists in the GPU state buffers between them); see `SUBSTEP_CHUNK` in
-`orchestrator.rs`.
+sequential compute dispatches. The CPU records the substeps through a
+`Recorder` (`src/submit.rs`), which submits them within a cap on compute
+passes (on Metal, one command buffer of 2 048 passes blocks inside
+`finish`), and reads back only what Bevy needs for rendering. Long rollouts
+span multiple ordered submits (state persists in the GPU state buffers
+between them).
 
 ```
 Per frame:
@@ -1222,6 +1222,9 @@ Hinge/slide: scalar integration. Ball/free: quaternion exponential map
 qpos quaternion layout swizzle `(w,x,y,z) ↔ (x,y,z,w)`.
 
 ## 9. Command buffer structure
+
+*(Superseded: the substeps are recorded through a `Recorder`, which submits within a cap on compute
+passes; see §2. The sketch below is the original plan.)*
 
 One command buffer per frame, encoding all substeps:
 

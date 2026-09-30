@@ -14,6 +14,7 @@ use super::state_buffers::GpuStateBuffers;
 use super::types::FkParams;
 use super::wgpu_helpers::{buf_entry, create_pipeline, storage_entry};
 use crate::context::GpuContext;
+use crate::submit::Recording;
 
 /// Minimum uniform buffer offset alignment (`WebGPU` spec: 256 bytes).
 const UNIFORM_ALIGN: u64 = 256;
@@ -172,15 +173,12 @@ impl GpuVelocityFkPipeline {
     }
 
     /// Encode the velocity FK forward scan: one compute pass per depth level.
-    pub fn encode(&self, encoder: &mut wgpu::CommandEncoder) {
+    pub fn encode(&self, rec: &mut impl Recording) {
         let ceil64 = |n: u32| -> u32 { n.div_ceil(64) };
 
         for depth in 0..=self.max_depth {
             let offset = (u64::from(depth) * UNIFORM_ALIGN) as u32;
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("velocity_fk_forward"),
-                timestamp_writes: None,
-            });
+            let mut pass = rec.pass("velocity_fk_forward");
             pass.set_pipeline(&self.forward_pipeline);
             pass.set_bind_group(0, &self.params_bind_group, &[offset]);
             pass.set_bind_group(1, &self.model_bind_group, &[]);

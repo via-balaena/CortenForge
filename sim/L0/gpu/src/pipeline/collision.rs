@@ -30,6 +30,7 @@ use super::types::{
 };
 use super::wgpu_helpers::{buf_entry, storage_entry, uniform_entry};
 use crate::context::GpuContext;
+use crate::submit::Recording;
 
 // ── Pair descriptor ────────────────────────────────────────────────────
 
@@ -448,11 +449,11 @@ impl GpuCollisionPipeline {
     ///
     /// All bind groups and params buffers were pre-created in `new()` —
     /// this method performs zero GPU resource allocation.
-    pub fn encode(&self, encoder: &mut wgpu::CommandEncoder, state_bufs: &GpuStateBuffers) {
+    pub fn encode(&self, rec: &mut impl Recording, state_bufs: &GpuStateBuffers) {
         // 1. Reset the per-env contact counters (one atomic u32 per env). Must
         //    clear ALL n_env slots — the allocator sized this buffer ×n_env, so its
         //    paired clear is ×n_env too (else env>0 keeps stale counts across steps).
-        encoder.clear_buffer(
+        rec.commands().clear_buffer(
             &state_bufs.contact_count,
             0,
             Some(u64::from(self.n_env) * 4),
@@ -460,10 +461,7 @@ impl GpuCollisionPipeline {
 
         // 2. AABB computation (one dispatch, all geoms)
         {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("aabb"),
-                timestamp_writes: None,
-            });
+            let mut pass = rec.pass("aabb");
             pass.set_pipeline(&self.aabb_pipeline);
             pass.set_bind_group(0, &self.aabb_bg0, &[]);
             pass.set_bind_group(1, &self.aabb_bg1, &[]);
@@ -475,13 +473,10 @@ impl GpuCollisionPipeline {
 
         // 3. Narrowphase dispatches (pre-built at construction time)
         for disp in &self.dispatches {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some(if disp.is_sdf_sdf {
-                    "sdf_sdf_narrow"
-                } else {
-                    "sdf_plane_narrow"
-                }),
-                timestamp_writes: None,
+            let mut pass = rec.pass(if disp.is_sdf_sdf {
+                "sdf_sdf_narrow"
+            } else {
+                "sdf_plane_narrow"
             });
             pass.set_pipeline(if disp.is_sdf_sdf {
                 &self.sdf_sdf_pipeline

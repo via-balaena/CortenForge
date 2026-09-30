@@ -9,7 +9,7 @@
 //! - `cpu_seq` — single-env `Data::step` in a loop over all envs (naive baseline)
 //! - `cpu_batch` — `BatchSim::step_all` (rayon-parallel across envs; the CPU best)
 //! - `gpu_rollout` — `GpuPhysicsPipeline::step(num_substeps = steps)`: all substeps
-//!   in ONE submit + ONE readback (the GPU's strength)
+//!   in ONE call + ONE readback (the GPU's strength)
 //! - `gpu_perstep` — `step(num_substeps = 1)` called `steps` times: one upload +
 //!   readback PER step (the cost of per-step observations, as in RL)
 //!
@@ -105,7 +105,7 @@ fn bench_fixture(c: &mut Criterion, tag: &str, build: fn() -> Model, drop_z: f64
             continue;
         }
 
-        // ── gpu_rollout: STEPS substeps in one submit + one readback ──
+        // ── gpu_rollout: STEPS substeps in one call + one readback ──
         group.bench_with_input(BenchmarkId::new("gpu_rollout", n), &n, |b, &n| {
             let model = build();
             let mut datas = make_datas(&model, n, drop_z);

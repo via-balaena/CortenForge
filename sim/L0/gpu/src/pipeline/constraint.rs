@@ -26,6 +26,7 @@ use super::state_buffers::GpuStateBuffers;
 use super::types::{AssemblyParams, SolverParams};
 use super::wgpu_helpers::{buf_entry, create_pipeline, storage_entry, uniform_entry};
 use crate::context::GpuContext;
+use crate::submit::Recording;
 
 use sim_core::types::Model;
 
@@ -399,7 +400,7 @@ impl GpuConstraintPipeline {
     /// Encode constraint solve dispatches into the command encoder.
     ///
     /// Sequence: clear constraint_count → assemble → newton → map_forces.
-    pub fn encode(&self, encoder: &mut wgpu::CommandEncoder, state_bufs: &GpuStateBuffers) {
+    pub fn encode(&self, rec: &mut impl Recording, state_bufs: &GpuStateBuffers) {
         if self.nv == 0 {
             return;
         }
@@ -407,7 +408,7 @@ impl GpuConstraintPipeline {
         // Reset the per-env constraint row counters (one atomic u32 per env).
         // Must clear ALL n_env slots, not just env 0 — the allocator sized this
         // buffer ×n_env, so its paired clear is ×n_env too.
-        encoder.clear_buffer(
+        rec.commands().clear_buffer(
             &state_bufs.constraint_count,
             0,
             Some(u64::from(self.n_env) * 4),
@@ -415,10 +416,7 @@ impl GpuConstraintPipeline {
 
         // ── 1. Constraint assembly ─────────────────────────────────
         {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("assemble_contacts"),
-                timestamp_writes: None,
-            });
+            let mut pass = rec.pass("assemble_contacts");
             pass.set_pipeline(&self.assemble_pipeline);
             pass.set_bind_group(0, &self.assemble_bg0, &[]);
             pass.set_bind_group(1, &self.assemble_bg1, &[]);
@@ -431,10 +429,7 @@ impl GpuConstraintPipeline {
 
         // ── 2. Newton solver (single workgroup) ────────────────────
         {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("newton_solve"),
-                timestamp_writes: None,
-            });
+            let mut pass = rec.pass("newton_solve");
             pass.set_pipeline(&self.newton_pipeline);
             pass.set_bind_group(0, &self.newton_bg0, &[]);
             pass.set_bind_group(1, &self.newton_bg1, &[]);
@@ -446,10 +441,7 @@ impl GpuConstraintPipeline {
 
         // ── 3. Force mapping ───────────────────────────────────────
         {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("map_forces"),
-                timestamp_writes: None,
-            });
+            let mut pass = rec.pass("map_forces");
             pass.set_pipeline(&self.map_forces_pipeline);
             pass.set_bind_group(0, &self.mapf_bg0, &[]);
             pass.set_bind_group(1, &self.mapf_bg1, &[]);

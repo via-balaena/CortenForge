@@ -2,7 +2,6 @@
 //!
 //! Compiles the `fk.wgsl` shader (4 entry points), creates bind group
 //! layouts and bind groups, and dispatches the tree-scan FK passes.
-//! Provides readback utilities for validation.
 
 #![allow(
     clippy::cast_possible_truncation,
@@ -15,6 +14,7 @@ use super::state_buffers::GpuStateBuffers;
 use super::types::FkParams;
 use super::wgpu_helpers::{buf_entry, create_pipeline, storage_entry};
 use crate::context::GpuContext;
+use crate::submit::Recording;
 
 /// Minimum uniform buffer offset alignment (`WebGPU` spec: 256 bytes).
 const UNIFORM_ALIGN: u64 = 256;
@@ -288,7 +288,7 @@ impl GpuFkPipeline {
     ///
     /// Encodes forward FK, geom poses, subtree backward, and subtree
     /// normalize dispatches. Must be called after [`Self::write_params`].
-    pub fn encode(&self, encoder: &mut wgpu::CommandEncoder) {
+    pub fn encode(&self, rec: &mut impl Recording) {
         let ceil64 = |n: u32| -> u32 { n.div_ceil(64) };
         let geom_slot = u64::from(self.max_depth) + 1;
         let normalize_slot = geom_slot + 1;
@@ -296,10 +296,7 @@ impl GpuFkPipeline {
         // ── Forward FK: one pass per depth level ──────────────────────
         for depth in 0..=self.max_depth {
             let offset = (u64::from(depth) * UNIFORM_ALIGN) as u32;
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("fk_forward"),
-                timestamp_writes: None,
-            });
+            let mut pass = rec.pass("fk_forward");
             pass.set_pipeline(&self.fk_forward_pipeline);
             pass.set_bind_group(0, &self.params_bind_group, &[offset]);
             pass.set_bind_group(1, &self.model_bind_group, &[]);
@@ -311,10 +308,7 @@ impl GpuFkPipeline {
         // ── Geom poses: one dispatch ──────────────────────────────────
         if self.ngeom > 0 {
             let offset = (geom_slot * UNIFORM_ALIGN) as u32;
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("fk_geom_poses"),
-                timestamp_writes: None,
-            });
+            let mut pass = rec.pass("fk_geom_poses");
             pass.set_pipeline(&self.geom_pipeline);
             pass.set_bind_group(0, &self.params_bind_group, &[offset]);
             pass.set_bind_group(1, &self.model_bind_group, &[]);
@@ -329,10 +323,7 @@ impl GpuFkPipeline {
         // is a single dispatch over the env axis. Slot 0's params carry the
         // correct nbody/n_env; the reduction ignores `current_depth`.
         {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("fk_subtree_backward"),
-                timestamp_writes: None,
-            });
+            let mut pass = rec.pass("fk_subtree_backward");
             pass.set_pipeline(&self.subtree_backward_pipeline);
             pass.set_bind_group(0, &self.params_bind_group, &[0]);
             pass.set_bind_group(1, &self.model_bind_group, &[]);
@@ -344,10 +335,7 @@ impl GpuFkPipeline {
         // ── Subtree COM: normalize ────────────────────────────────────
         {
             let offset = (normalize_slot * UNIFORM_ALIGN) as u32;
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("fk_subtree_normalize"),
-                timestamp_writes: None,
-            });
+            let mut pass = rec.pass("fk_subtree_normalize");
             pass.set_pipeline(&self.subtree_normalize_pipeline);
             pass.set_bind_group(0, &self.params_bind_group, &[offset]);
             pass.set_bind_group(1, &self.model_bind_group, &[]);
@@ -371,72 +359,5 @@ impl GpuFkPipeline {
     ) {
         self.write_params(ctx, model, state);
         self.encode(encoder);
-    }
-}
-
-// ── Readback utilities ────────────────────────────────────────────────
-
-/// Readback a GPU buffer of `vec4<f32>` to CPU as `Vec<[f32; 4]>`.
-#[must_use]
-pub fn readback_vec4s(ctx: &GpuContext, buffer: &wgpu::Buffer, count: usize) -> Vec<[f32; 4]> {
-    let size = (count * 16) as u64;
-    let staging = ctx.device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("readback_staging"),
-        size,
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-
-    let mut encoder = ctx
-        .device
-        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("readback"),
-        });
-    encoder.copy_buffer_to_buffer(buffer, 0, &staging, 0, size);
-    ctx.queue.submit([encoder.finish()]);
-
-    let slice = staging.slice(..);
-    slice.map_async(wgpu::MapMode::Read, |_| {});
-    poll_wait(ctx);
-
-    let data = slice.get_mapped_range();
-    let floats: &[[f32; 4]] = bytemuck::cast_slice(&data);
-    floats.to_vec()
-}
-
-/// Readback a GPU buffer of `f32` to CPU.
-#[must_use]
-pub fn readback_f32s(ctx: &GpuContext, buffer: &wgpu::Buffer, count: usize) -> Vec<f32> {
-    let size = (count * 4) as u64;
-    let staging = ctx.device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("readback_staging"),
-        size,
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-
-    let mut encoder = ctx
-        .device
-        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("readback"),
-        });
-    encoder.copy_buffer_to_buffer(buffer, 0, &staging, 0, size);
-    ctx.queue.submit([encoder.finish()]);
-
-    let slice = staging.slice(..);
-    slice.map_async(wgpu::MapMode::Read, |_| {});
-    poll_wait(ctx);
-
-    let data = slice.get_mapped_range();
-    bytemuck::cast_slice::<u8, f32>(&data).to_vec()
-}
-
-fn poll_wait(ctx: &GpuContext) {
-    match ctx.device.poll(wgpu::PollType::Wait {
-        submission_index: None,
-        timeout: Some(std::time::Duration::from_secs(5)),
-    }) {
-        Ok(_) => {}
-        Err(e) => log::warn!("GPU poll timeout: {e:?}"),
     }
 }

@@ -5,12 +5,15 @@
 §16p (#970), and 2c, K6, is §16q (#971). 2d, the product's budget and the stop rule, is §16r (#972). K5,
 with D1's readings diagnosed and replaced, is §16s (#973). Fit plan U3, why the rigid path asks for room and the
 path step 7 runs, is §16t. Step 6's obstacle bake is §16u, the wall's canal surface §16v, and the lowering §16w.
-Step 7's first run is §16x (#978), and the element collapsing at its seated tip §16y.
+Step 7's first run is §16x (#978), the element collapsing at its seated tip §16y (#979), and D1's element size §16z
+(#980). The GPU steps are §17, step 3 first (§17a).
 - **Research:** §1–§10.
 - **Code architecture and the crate layout:** §11–§14.
 - **The first experiment and its kill criteria:** §15.
 - **Build step 2's design, and what its PRs measured:** §16 (§16m–§16s); U3, §16t; step 6's bake, §16u; the wall's
-  canal surface, §16v; the lowering, §16w; step 7's first run, §16x; the element collapsing at the seated tip, §16y.
+  canal surface, §16v; the lowering, §16w; step 7's first run, §16x; the element collapsing at the seated tip, §16y;
+  D1's element size, §16z.
+- **The GPU steps, 3–5:** §17.
 
 The code architecture, crate layout and first experiment were checked by cold review, against criteria
 written beforehand (§14e, §15i). The research sections were not. Jon's direction:
@@ -409,7 +412,7 @@ fill a gap.
      product have no touching walls, so the first build does not need it.
    - Not designing it out: the lowered data carries the surface triangles, the phase-level trait has
      room for broad-phase and soft-contact phases, and the contact-list GPU tools are extracted as
-     shared infrastructure (§14).
+     shared infrastructure (§14) *(2026-09-29, §17a: when soft-on-soft contact is built, after step 8's design)*.
    - Building it at once would put a broad phase into the first build before the base solver has passed
      its kill criteria.
    - When it is built, it gets its own research round (how practitioners do explicit soft self-contact
@@ -465,6 +468,10 @@ fill a gap.
   read at one re-estimate interval, the step control's own effect barred at K3's 0.5 %; the masked comparison doubled
   up to 25μ; the loading check, the masked comparison and G6 at the size picked, or else the finest whose runs stood;
   and G6 under the loop's re-run and a fixed 50 steps.
+- *(2026-09-29, §17a)* step 3: a shared recorder that submits by a count of compute passes, at every read and before
+  every host write, with each step's values in a uniform ring; the rigid pipeline recording through it; reads that
+  stop on a failure and wait without a timeout; the pipeline tests under the adapter policy; and the contact-list
+  tools and a rigid pipeline on a caller's device left to their users.
 
 ## 10. What the research could not see
 
@@ -531,10 +538,13 @@ has both, each over one model definition.
 - **Redesign** the GPU foundation for rigid **and** soft.
 - **Keep what has earned it:**
   - device setup;
-  - chunked submits (long command buffers hung the readback, `pipeline/orchestrator.rs:28-37`, round 1);
+  - chunked submits (long command buffers hung the readback, `pipeline/orchestrator.rs:28-37` at `df00dea8`, round 1)
+    *(2026-09-29, §17a: measured, what blocks is compute passes, inside `finish` on Metal, not the readback; now
+    `sim_gpu::submit::Recorder`)*;
   - the atomic contact append, extracted as shared GPU infrastructure for soft-on-soft contact (§9
     decision 9). The CAS float-add is extracted too, if scatter is chosen over per-pair slots and a
-    gather. The first experiment needs neither;
+    gather. The first experiment needs neither *(2026-09-29, §17a: both are extracted when soft-on-soft contact is
+    built, after step 8's design)*;
   - the CPU-conformance harnesses.
 
 **The key design choice is to write the physics math once.** The repo has measured what writing it twice
@@ -694,7 +704,7 @@ solid"*).
 | **`sim-soft-explicit`** | L0 | new | **The explicit solver, minus the GPU.** The executor trait. The explicit model and state data layout (flat arrays; `#[repr(C)]` parameter blocks with no `vec3`). The shared math (14b), written once in the loop-free subset and compiled at f32 and f64, with its committed generated WGSL and a freshness test. The **CPU executor** (rayon on native, sequential on wasm32, as `newton.rs` does). The **stepping loop**, which owns the order of phases within a step, batching, the stable time step and mass scaling, and the energy monitors and stop rule, over any executor. A `test-fixtures` feature with small lowered meshes, as `sim-core` has *(replaced in step 2's design by a public module, 16f)*. |
 | **`sim-wgsl-gen`** | L0 | new | The §13 translator: `syn` (with `proc-macro2` for source positions), plus `naga` to validate its output, on the physics side's naga version. A `write` command regenerates the committed WGSL, and the freshness test names that command when it fails. A dev-dependency of `sim-soft-explicit`. |
 | **`sim-soft`** | L0 | grows | The model as today, plus **lowering** it to `sim-soft-explicit`'s data, including resampling the insertion path evenly in time *(2026-09-27, §16t: the path is the fitted pose)*. **Baking the obstacle SDF from its triangle mesh** (flood-fill sign and the Gaussian pre-smooth, moved from `tools/cf-sim-research`) *(2026-09-27, §16u: a new bake, not moved: the parity of a ray's crossings for the sign, no pre-smooth, and a fine grid in bricks near the surface)*. The **scenarios and readouts in model terms** (contact pressure by region) *(2026-09-26, §16s: D1's readings landed in `sim-soft-explicit`'s `readings`, over the solver's snapshots, so `sim-soft` calls them and does not build a second set)* *(2026-09-27, §16w: nothing in `sim-soft` calls them yet; step 7's runs read them from the tool)*. The test of its `Material` impls against the shared math (F3). The implicit Newton solver stays as it is. |
-| **`sim-gpu`** | L0-io | rebuilt | **The GPU executors.** It *extracts* shared infrastructure from today's rigid code: the device context (`context.rs`), and chunked submission, which today sits inside the rigid `step()` (`pipeline/orchestrator.rs:28-37`), and the contact-list tools (the atomic append; the CAS float-add if scatter is chosen). It adds `soft`, the explicit executor, whose hand-written entry points fetch, gather and scatter around the generated WGSL. It holds the **GPU-vs-CPU conformance tests** against `sim-soft-explicit`'s CPU executor. The rigid pipeline stays as it is until its own redesign, keeping the parts only it uses. It depends on `sim-soft-explicit` and `sim-core`, not on `sim-soft`, and has its own wgpu version (13e). |
+| **`sim-gpu`** | L0-io | rebuilt | **The GPU executors.** It *extracts* shared infrastructure from today's rigid code: the device context (`context.rs`), and chunked submission, which today sits inside the rigid `step()` (`pipeline/orchestrator.rs:28-37`) *(2026-09-29, §17a: extracted as `sim_gpu::submit::Recorder`; the lines cited are `df00dea8`'s)*, and the contact-list tools (the atomic append; the CAS float-add if scatter is chosen) *(2026-09-29, §17a: extracted when soft-on-soft contact is built, after step 8's design)*. It adds `soft`, the explicit executor, whose hand-written entry points fetch, gather and scatter around the generated WGSL. It holds the **GPU-vs-CPU conformance tests** against `sim-soft-explicit`'s CPU executor. The rigid pipeline stays as it is until its own redesign, keeping the parts only it uses. It depends on `sim-soft-explicit` and `sim-core`, not on `sim-soft`, and has its own wgpu version (13e). |
 | `sim-coupling` | L1 | later | Two-way explicit rigid–soft coupling on the CPU (subcycling, F5). **The fit test does not need it**: the scan is a kinematic pose, applied in the contact law. GPU rigid–soft exchange lives in `sim-gpu`, on one device. |
 | `sim-bevy-soft`, the studio, `tools/cf-sim-research` | L1 / App / tool | consumers | Pick the executor (CPU or GPU), and show results from CPU snapshots (13e). |
 | `sim-gpu-benches` | L1 | grows | Benchmarks for both executors. L0 bans `criterion`, even as a dev-dependency. |
@@ -850,7 +860,7 @@ Two cold reviews, each against criteria written beforehand.
 - **Checked by no one:**
   - two wgpu versions at once on Vulkan;
   - how coverage scores code that is included twice;
-  - whether `sim-gpu` grades A today;
+  - whether `sim-gpu` grades A today *(2026-09-29, §17a: it does, at `df00dea8`)*;
   - the spike timings;
   - `sim-soft-explicit`'s own dependency count and wasm32 build, since it does not exist yet. L0's cap
     is 100 release / 120 test.
@@ -1230,7 +1240,8 @@ Each item is one PR with its own tests and a done-when.
        not the tube's.
      - Report the per-press time against D4's 5-minute target (§9 decision 12).
      - If it misses, the speed plan is revised before any GPU work. The quality gates are not
-       loosened.
+       loosened. *(2026-09-29, §17: GPU work started on Jon's call with this revision still owed; when it is due is
+       his.)*
    - **The stop rule (pre-registered; amended 2026-09-24 in 16i, before any data):**
      - Proceed if the 50k gap-corrected error is ≤ 5 % at every corner.
      - Proceed with a flag if it is 5–7 %, and the extrapolation reaches ≤ 5 % at 100k at every corner.
@@ -1239,7 +1250,8 @@ Each item is one PR with its own tests and a done-when.
      - ⛔ **Stop before any GPU work** otherwise, or if K3, K4, K6 or the Yeoh case (16h) fails.
    - A reviewer's model (not kept) put the element alone at +1.2–1.65 % at 50k.
    - *Done when:* the stop rule has been applied, with its numbers written here. *(Applied 2026-09-26, §16r:
-     proceed.)* *(Jon, 2026-09-26: the quality items come before steps 3–5, K5 first of them; §16s.)*
+     proceed.)* *(Jon, 2026-09-26: the quality items come before steps 3–5, K5 first of them; §16s.)* *(Jon, 2026-09-29: steps 3–5
+     now, the items still open afterwards or on the GPU; §17. The step control, mine, still comes before step 4.)*
 3. **`sim-gpu`: the shared GPU infrastructure is extracted:** the context, chunked submission and the
    contact-list tools.
    - It stays on the workspace's wgpu (27) until a need for a newer version is named. The physics' own
@@ -1249,6 +1261,8 @@ Each item is one PR with its own tests and a done-when.
      - the shaders are validated under the new naga;
      - a binary holding both versions runs on lavapipe (Vulkan) in CI.
    - *Done when:* `sim-gpu`'s suite passes on Metal and in CI.
+   - *(2026-09-29, §17a: built; the contact-list tools are extracted when soft-on-soft contact is built, after step
+     8's design.)*
 4. **`sim-gpu`'s soft executor,** with per-phase conformance against the CPU executor, on lavapipe in CI.
    - *Done when:* every phase's outputs agree, GPU f32 against CPU f32. Per output, the largest
      difference must be ≤ 1e-5 × the largest magnitude.
@@ -1376,7 +1390,9 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
 - *(2026-09-28, §16y)* the product loop's step control: rule 1's re-run every 50 steps lives only in the probe, and
   the solver's loop re-estimates every 500 steps with no retry. Before step 4, the product loop needs one of a retry,
   a fixed 50 steps, or tracking the step, costed in G6 *(2026-09-29, §16z: at eight times h_K2's elements no run needed
-  the retry, and a fixed 50 steps took 2.34 times the time, 27.5 of D4 against 11.8; tracking not costed)*;
+  the retry, and a fixed 50 steps took 2.34 times the time, 27.5 of D4 against 11.8; tracking not costed)*
+  *(2026-09-29, §17a: step 3's recorder assumes a step's values are known on the host when it is recorded, so tracking
+  the step on the device would need another design)*;
 
 **Starting now, in parallel with steps 1–2, needing no solver:**
 - U3's geometric check *(done, §16t)*;
@@ -5027,3 +5043,172 @@ Round 2: one fresh reviewer of round 1's fixes found seven problems, five of the
 rule's κ described two ways, a "not read" line saying more than its check, the record crediting the runs with logic
 changed after them, a figure finer than its prints, and a count no test pinned. They were fixed or cut, and the rounds
 stopped there; none moved a verdict.
+
+## 17. The GPU steps
+
+Jon, 2026-09-29, after §16z: *"let's do it on metal first, on this laptop"*. The GPU executor is built now, §15g steps
+3–5, first on Metal on the M4 Pro, D4's machine (fit plan D4).
+- **D4.** At eight times h_K2's elements, the size used and not picked, a press takes 11.8 of D4 on this CPU (§16z), so a
+  device must be at least 11.8 times as fast there. No step yet measures a device against that: at K1's per-step budget,
+  step 5's speed gate, a press there would take 53 of D4 (§16z). The revision of the speed plan that §15g's rule asks for
+  before GPU work (step 2) is still owed; when it is due is Jon's, raised with him on 2026-09-29. The quality gates are
+  not loosened.
+- **The order.** This reverses Jon's order of 2026-09-26 (§15g step 2's note), which put the quality items first. Those
+  still open stay open, to run afterwards or on the GPU: the items §16z's "For Jon's call" lists, and fit plan U15, the
+  damping's form. The product loop's step control, mine, still comes before step 4 (§16z); on the GPU each re-estimate's
+  power iteration reads one scalar per iteration (§16e), and each read is a submit (§17a).
+
+### 17a. Step 3: recording and reading, shared (2026-09-29)
+
+**What step 4's executor needs,** read from the loop and the trait in `sim/L0/soft-explicit/src`:
+- It is driven one phase at a time and runs to a time, not a count (`stepping.rs:179-206`, `:233-244`). Reads cut into
+  the run: the monitors every 100 steps (§16e), the re-estimate, snapshots and phase outputs; so do host writes,
+  `set_state` and `set_poses` (`executor.rs:341-408`). The GPU executor records phases as compute passes and reads back
+  only on an explicit read (§14d).
+- Each step's own values: its phases take the step's time, dt and damping (`stepping.rs:194-196`). What else a step
+  carries, the obstacle's pose interpolated on the device (§14b) from samples streamed a batch at a time (§14d) and the
+  work's move and turn from the f64 track (§15g step 4's note), is step 4's design. This assumes a step's values are
+  known on the host when the step is recorded; tracking the step on the device (not costed, §16z) would need another
+  design.
+
+**Two facts about wgpu 27 that it rests on.**
+- A `queue.write_buffer` runs "just before the explicitly submitted commands" of the next submit (wgpu 27.0.1,
+  `src/api/queue.rs:114-116`), so a write issued while work is recorded but not submitted overtakes all of it. Two tests
+  assert it: `values_written_between_encodes_collapse_to_the_last` and `a_bare_write_overtakes_the_steps_before_it`
+  (`sim/L0/gpu/src/submit/tests.rs`).
+- On Metal, one command buffer of 2 048 compute passes blocks for good inside `CommandEncoder::finish`, and 2 047
+  complete (measured on the M4 Pro, a debug build, one dispatch a pass). wgpu-core opens two Metal command buffers for
+  each compute pass (`wgpu-core-27.0.3/src/command/compute.rs:543-547`, `:770-799`), wgpu-hal gives the queue 4 096
+  (`wgpu-hal-27.0.4/src/metal/adapter.rs:30`, `:54`), and none is committed before the submit. One more is outstanding
+  than two a pass account for; which one is not isolated. The rigid pipeline's hang was this, not the readback §11
+  names: T38 with its chunk bound removed blocked in `finish`, at a Metal command-buffer allocation (its stack sampled).
+  T38's model opens 24 passes a substep, and the collision stage opens one per dispatch (`pipeline/collision.rs:476`),
+  so a bound in substeps is not one in passes.
+
+**What was built** (`sim/L0/gpu/src/submit.rs`).
+- `Recorder` holds the pending encoder and opens every compute pass (`Recording::pass`), counting them; a pass opened on
+  the encoder directly escapes the count. A submit holds at most `PASS_CAP`, 1 024 passes. With a run of other commands
+  between each two passes, which opens one more Metal command buffer (`command/mod.rs:1352`, `:635-643`), that is at
+  most about 3 072 of the queue's 4 096.
+- The recorder submits before a step and at its end once `STEP_PASS_CAP`, 512, are pending. A step carrying values
+  cannot split across submits, since its values sit in one submit's ring: it may open 512 and stops with a message past
+  that. A step carrying none is also submitted inside itself, at the cap.
+- Each step's values go into a uniform ring, one slot a step at `min_uniform_buffer_offset_alignment`, staged on the
+  host, written at the submit, and bound by a dynamic offset, as `fk.rs` binds its per-level parameters
+  (`pipeline/fk.rs:75`, `:302`). It needs no device feature, and the context requests none (`context.rs:39`). Push
+  constants would serve on Metal and Vulkan too (a native feature in wgpu 27, renamed immediates from 28); they are not
+  used, so the device stays featureless.
+- `write` submits what was recorded before it. `read` and `read_many` copy the buffers named into staging, submit once,
+  map each and wait once, with no timeout: the wait covers everything submitted before it, whose length the caller
+  sets. A read comes in 4-byte units, as wgpu copies. A failed wait or map stops with its cause, since the trait's reads
+  return values, not errors (`executor.rs:401-408`). Reads, writes and submits inside a step stop with a message.
+- The rigid pipeline records through it. Its stages open passes through `Recording` (a bare encoder in tests), and
+  `step()` records one step a substep, with no values, and reads qpos and qvel in one read; its uploads and uniform
+  writes go straight to the queue before it creates its recorder, so they land at the recorder's first submit. A
+  substep past the cap now runs, split across submits; at `df00dea8` a model of about 524 passes a substep ran calls of
+  up to three substeps and hung from `step(4)`, the first to pass 2 047 in one chunk (measured in the build's review).
+  `SUBSTEP_CHUNK`, the staging buffers, `map_staging_f32` and `fk.rs`'s readback
+  helpers are gone; tests read through `submit::read_buffer`, and read counts as u32 rather than through f32 bits.
+- The test policy: eleven pipeline tests (twelve places; T28 has two) returned on `NoGpu` without consulting
+  `test_support`. `NoGpu` now carries the context's `GpuError`, and they go through the policy (`pipeline_or_skip`). The
+  context's test asserts the backend, Metal on macOS and Vulkan elsewhere, and that the device got the adapter's buffer
+  limits.
+
+**Not here.**
+- **The contact-list tools** (the atomic append and the CAS float-add; §11, §14a). Step 4 need not use them, and today
+  they are WGSL written out in each rigid shader that uses them (the append in `shaders/sdf_sdf_narrow.wgsl:340-351` and
+  `shaders/sdf_plane_narrow.wgsl:240-251`; the CAS add in `crba.wgsl`, `rne.wgsl` and `newton_solve.wgsl`). They are
+  extracted when soft-on-soft contact is built, after step 8's design (§9 decision 9), where they have a user (Jon
+  agreed, 2026-09-29).
+- **A rigid pipeline built on a caller's device,** for §14a's rigid–soft exchange on one device: no user before that
+  exchange. The pipeline creates its own (`pipeline/orchestrator.rs:137`).
+- **For step 4:** its host writes go through the recorder (the queue stays public for the rigid pipeline's writes
+  before recording); more storage buffers per stage than the context's 16, wgpu features, and lavapipe's granted binding
+  size are its to name (§15g step 4's note).
+- **wgpu stays at 27** (§15g step 3).
+
+**The gates, each made to fail once, at the code of `1fcd5289` (T41 at `217a2e8d`)** (the recorder's in `sim/L0/gpu/src/submit/tests.rs`,
+the pipeline's in `sim/L0/gpu/src/pipeline/tests.rs`; each thread-bound test fails after a minute rather than hang):
+
+| Gate | Made to fail by |
+|---|---|
+| `each_step_reads_its_own_values`: 40 steps through a ring of 8 slots, so it fills and its slots are reused, and a read after step 21; the cells start unwritten | every step's values staged into one slot |
+| `a_write_waits_for_the_steps_before_it` | a write that does not submit first |
+| `a_submit_at_the_cap_with_a_clear_between_passes_completes`: 1 024 passes, each after a clear | the cap raised to 1 400, which blocked: with the clears, about 4 200 Metal command buffers |
+| `a_step_without_values_past_the_cap_submits_itself`: one step of 2 148 passes, each counted | no submit at the cap, which blocked |
+| `a_step_carrying_values_past_its_pass_cap_stops_with_a_message` | the submit cap in place of the step cap |
+| `a_step_after_passes_outside_steps_keeps_its_budget`: 600 passes outside steps, then a step of 512 | no submit at the step's start |
+| `a_read_not_in_four_byte_units_stops_with_a_message` | no check on the read's size |
+| `reads_writes_and_submits_inside_a_step_stop` | a read allowed inside a step |
+| T38: one `step(150)` byte-identical to 150 `step(1)`, within a minute | a read that drops the pending submit; unbounded, it blocked (above) |
+| T40: `step(0)` reads the state back, rounded to f32 | an early return at zero substeps |
+| T41: a free sphere beside 1 024 static ones, two passes an SDF pair, so a substep passes 2 047; one `step(2)` byte-identical to two `step(1)`, within a minute | `step()` on a recorder with values, which stopped past 512; no submit at the cap, which blocked |
+| the test policy | `GpuContext::new` finding no adapter under `CF_REQUIRE_GPU=1`: 3 tests pass and 63 fail; at `df00dea8` the same change let 14 of 55 pass, 11 of them pipeline tests that never ran |
+| the context's test | asking for wgpu's default buffer size: 268 435 456 bytes granted against the adapter's 14 302 248 960 |
+
+Not made to fail: a failed wait or map, since no way was found to make one fail on demand.
+
+Measured once, not a test: sixteen submits of 512 passes back to back, with more GPU work in each than recording it
+takes, completed on Metal: recorded in 2.2 s and done in 3.1 s, where recording the same passes with no work takes 0.3 s,
+so the recording waited on the GPU and did not block. What it waited on is not isolated. It was a test until the build's
+review, and was cut because nothing could make it fail.
+
+**Before and after** (a one-off; the probe and its outputs are local). Four rollouts, run ten times at `df00dea8` and ten
+times at `1fcd5289`: T38's free fall, a sphere resting on a plane, implicit damping, and four environments on a plane.
+Free fall and damping repeat bit for bit and are bit-for-bit identical before and after. The two with contact do not
+repeat run to run: x, y and the velocities differ by up to 2.3e-18 between runs of the same code, with height and time
+exact, and before to after by at most 2.1e-18. What differs between their runs is not isolated.
+
+**Done when:** `sim-gpu`'s suite passes on Metal on the M4 Pro with `CF_REQUIRE_GPU=1`, a local run, since no CI job
+runs `sim-gpu` on Metal (the macOS job tests other crates, `.github/workflows/quality-gate.yml:942-982`); it passes on
+lavapipe in `tests-debug` shard 3 (`quality-gate.yml:589-637`); `sim-gpu` grades A; and `sim-gpu-benches`, the one crate
+that uses it, passes.
+
+**Results** (the code at `217a2e8d`):
+- On Metal, `CF_REQUIRE_GPU=1 cargo test -p sim-gpu`: 67 of 67 pass, on the Apple M4 Pro.
+- `cargo xtask grade sim-gpu`: A on every automated criterion, coverage 97.9 %. A run before the build's review was F on
+  Clippy, for an `#[allow(clippy::panic)]` with no `//` justification, which the pre-commit hook's clippy does not check.
+- `sim-gpu-benches`: its test passes.
+- lavapipe, in CI's `tests-debug` shard 3: at the push.
+
+**Before the change** (`df00dea8`): 55 of 55 tests pass on Metal, the adapter reporting Apple M4 Pro on Metal, in
+4.0 s; `cargo xtask grade sim-gpu` is A on every automated criterion, with coverage 97.9 %. (§14e had left whether
+`sim-gpu` grades A unchecked.)
+
+**How the design was checked.** Round 1: a reviewer of the code, who measured on Metal with a probe outside the repo
+(since deleted), and a reviewer of the whole plan. Their findings that changed the design:
+- the loop never hands the executor a total, and reads and host writes cut into it, so a split of a known count became
+  a recorder that submits at reads and before writes;
+- what hangs is compute passes, blocking in `finish`, not the readback (measured by the reviewer, then again here, and
+  traced to the Metal queue's count), so the cap counts passes;
+- the obstacle's pose was said to come from the host's f64 track, which only the work's move and turn do;
+- the contact-list tools were sent to step 8, which is a design step;
+- D4's rule on GPU work, the step control's place before step 4, and the open items' owners were missing from §17;
+- push constants were ruled out on a removed field, not a removed capability;
+- no gate made T38's no-hang half fail, and none compared the rigid pipeline with itself before the change.
+
+Round 2: one fresh reviewer of the revision found nine problems, seven of them written by the revision: §17 called the
+GPU work D4's revision though nothing could fail; the write rule held only for writes through the recorder; the ring's
+wrap, a failed wait and the before-and-after comparison had no failing arm; the cap was argued one submit at a time,
+though submits run back to back; §11 still named the readback; a step's pass budget depended on what was pending; and the
+no-timeout reason did not hold for capped submits. Two were older: "twelve tests" counted places, and the fit plan had
+no note. They were fixed in the code and its tests, measured, or cut, and the design rounds stopped there. The eleven
+tests were found by a mutation run before this round reported them.
+
+The build's review, round 1: three cold reviewers, of the recorder, of the rigid pipeline's migration, and of the whole
+plan; the first two measured with probes outside the repo (since deleted). All three found the same regression: the step
+cap stopped rigid substeps past 512 passes, which had run. The fix splits steps where no values can split rather than
+raising the cap. The rest: passes opened outside steps shrank a step's budget; reads not in 4-byte units failed with
+wgpu's message; T38 had no time bound, and the time bound reported a panic as a timeout; the stages' dispatch wrappers
+took a recorder but wrote straight to the queue; the cap's margin with clears between passes was argued, not tested; one
+gate could not fail; the speed plan's revision had no owner; and stale text in the spec, the benches, §11, §14a and §15g.
+All were fixed or cut, and every gate was made to fail again at the fixed code. Two of these reopened what round 2 had
+recorded as fixed: a step's budget still depended on passes opened outside steps, which no test covered, and the
+back-to-back test that answered round 2 could not fail.
+
+A fix-diff pass by one fresh reviewer found five problems, three written by those fixes, all in prose ("instead" where
+every recorder also submits at step boundaries, "under" where a submit holds exactly the cap, two `# Panics` sections
+missing the 4-byte case, and this paragraph not saying what was reopened), and two older: the regression's fix had no
+gate in the pipeline, since `step()` on a recorder with values passed every test (T41 now fails it), and one bench
+sentence still said one submit. They were fixed, and the build's review stopped there; the prose of those last fixes
+has not been reviewed.
