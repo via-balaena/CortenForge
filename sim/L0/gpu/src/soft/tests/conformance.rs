@@ -197,9 +197,11 @@ fn conform(f: &Fixture) -> (Vec<String>, Vec<String>) {
         margins.slipping
     )];
     margins.assert_clear(f.name);
-    if let Some(shows) = f.shows {
-        assert!(shows(&margins), "{}: not what it is for", f.name);
-    }
+    assert!(
+        (f.shows)(&f.model, &margins),
+        "{}: not what it is for",
+        f.name
+    );
     let mut failures = Vec::new();
     for ((name, a32), ((_, a64), (_, ag))) in arrays(&c32)
         .into_iter()

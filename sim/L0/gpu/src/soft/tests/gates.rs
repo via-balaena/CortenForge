@@ -150,20 +150,10 @@ fn one_pass_a_step_is_the_same_as_a_pass_a_phase() {
     let Some(ctx) = context() else { return };
     let f = fixtures::tube();
     let (one, each) = (run(&ctx, &f, false, 10), run(&ctx, &f, true, 10));
-    assert!(
-        snapshot_bits(&one.0) == snapshot_bits(&each.0),
-        "the snapshots differ"
-    );
-    assert!(
-        outputs_bits(&one.1) == outputs_bits(&each.1),
-        "the phase outputs differ"
-    );
-    assert!(
-        monitor_bits(&one.2) == monitor_bits(&each.2),
-        "the monitors differ: {:?} vs {:?}",
-        one.2,
-        each.2
-    );
+    let bits = |r: &(Snapshot, PhaseOutputs, Monitors)| {
+        [snapshot_bits(&r.0), outputs_bits(&r.1), monitor_bits(&r.2)].concat()
+    };
+    assert!(bits(&one) == bits(&each), "the steps differ");
 }
 
 /// The estimate's arguments as the stepping loop passes them.

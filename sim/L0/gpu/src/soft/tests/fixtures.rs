@@ -46,9 +46,8 @@ pub struct Fixture {
     pub displacements: Vec<[f64; 3]>,
     pub velocities: Vec<[f64; 3]>,
     pub anchors: Option<Vec<[f64; 3]>>,
-    /// Whether its step shows what the fixture is for, where the margins can
-    /// show it.
-    pub shows: Option<fn(&Margins) -> bool>,
+    /// Whether its model and step show what the fixture is for.
+    pub shows: fn(&ExplicitModel, &Margins) -> bool,
 }
 
 /// Every fixture §17b names.
@@ -269,7 +268,7 @@ pub fn tube() -> Fixture {
         .unwrap();
     Fixture {
         name: "the tube, frictional",
-        shows: Some(|m| m.in_contact > 0),
+        shows: |_, m| m.in_contact > 0,
         displacements: deformation(&model, tube.length, 0.01),
         velocities: velocities(&model),
         model,
@@ -296,7 +295,11 @@ pub fn two_materials() -> Fixture {
     );
     Fixture {
         name: "two materials",
-        shows: None,
+        shows: |model, _| {
+            let ratio = |m: &Material| m.lambda / m.mu;
+            let first = ratio(&model.materials()[0]);
+            model.materials().iter().any(|m| ratio(m) != first)
+        },
         displacements: deformation(&model, 0.04, 0.05),
         velocities: velocities(&model),
         model,
@@ -313,7 +316,7 @@ pub fn viscous() -> Fixture {
     let model = block_model((3, 3, 2), |_| material(23.0e3, 0.49, 7.0), |_| false);
     Fixture {
         name: "viscous",
-        shows: None,
+        shows: |model, _| model.materials().iter().all(|m| m.viscosity > 0.0),
         displacements: deformation(&model, 0.03, 0.05),
         velocities: velocities(&model),
         model,
@@ -333,7 +336,7 @@ pub fn stabilized() -> Fixture {
         .unwrap();
     Fixture {
         name: "a volumetric stabilization",
-        shows: None,
+        shows: |model, _| model.element_stabilizations().iter().all(|&k| k > 0.0),
         displacements: deformation(&model, 0.03, 0.05),
         velocities: velocities(&model),
         model,
@@ -366,7 +369,7 @@ pub fn constrained() -> Fixture {
     let model = model.with_constraints(constraints).unwrap();
     Fixture {
         name: "held and constrained",
-        shows: Some(|m| m.constrained_contacts > 0),
+        shows: |_, m| m.constrained_contacts > 0,
         displacements: deformation(&model, 0.03, 0.03),
         velocities: velocities(&model),
         model,
@@ -398,7 +401,7 @@ fn fine_grid() -> Fixture {
     };
     Fixture {
         name: "a fine grid",
-        shows: Some(|m| m.fine_contacts > 0 && m.fine_contacts < m.in_contact),
+        shows: |_, m| m.fine_contacts > 0 && m.fine_contacts < m.in_contact,
         displacements: deformation(&model, 0.03, 0.03),
         velocities: velocities(&model),
         model,
@@ -416,7 +419,7 @@ pub fn moving_and_turning() -> Fixture {
     let model = block_model((3, 3, 2), |_| SILICONE, |p| p[2] > 0.02 - 1e-9);
     Fixture {
         name: "an obstacle that moves and turns",
-        shows: Some(|m| m.in_contact > 0),
+        shows: |_, m| m.in_contact > 0,
         displacements: deformation(&model, 0.03, 0.03),
         velocities: velocities(&model),
         model,
@@ -481,7 +484,7 @@ fn sticking_and_slipping() -> Fixture {
         .collect();
     Fixture {
         name: "friction sticking and slipping",
-        shows: Some(|m| m.slipping > 0 && m.slipping < m.in_contact),
+        shows: |_, m| m.slipping > 0 && m.slipping < m.in_contact,
         displacements,
         velocities: velocities(&model),
         model,
@@ -504,7 +507,7 @@ fn compressed() -> Fixture {
         .collect();
     Fixture {
         name: "compressed past |J - 1| = 0.25",
-        shows: Some(|m| m.jacobian < 0.75),
+        shows: |_, m| m.jacobian < 0.75,
         displacements,
         velocities: velocities(&model),
         model,
