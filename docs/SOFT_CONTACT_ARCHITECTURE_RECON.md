@@ -5405,7 +5405,7 @@ under test. The probe's `step7_cost` takes `STEP7_GPU=1`, and times a press unde
 - The estimate: ω² within 1.6e-6 and the damping quotient within 6.8e-6 of the CPU at f32 (bar 1e-3); the CPU at f32
   is 8.6e-5 to 2.7e-4 from f64 in ω², and 5.8e-4 in the damping quotient.
 - Every gate failed under its named change, on its own assertion, and each fixture under a change taking away what
-  it is for (49 changes at `ed965b2c`; the script and its log, with each failure's place, kept locally). Three were
+  it is for (50 changes at `c4cd704b`; the script and its log, with each failure's place, kept locally). Three were
   not the first tried:
   - phase 6's first, the damping dropped from the prediction, did not fail; the step's advance dropped did.
   - the repeat gate's race, a gather written as a scatter, blows the runs up; they stop at different times. The gate
@@ -5426,7 +5426,7 @@ under test. The probe's `step7_cost` takes `STEP7_GPU=1`, and times a press unde
   h_K2's elements is not recorded.
 - On lavapipe the gates are CI's (`tests-debug` shard 3); the repeat gate runs on Metal only.
 
-**Grades** (`RAYON_NUM_THREADS=1`): `sim-gpu` A at `ed965b2c`; `sim-gpu-benches` and `cf-sim-research` A at
+**Grades** (`RAYON_NUM_THREADS=1`): `sim-gpu` A at `c4cd704b`; `sim-gpu-benches` and `cf-sim-research` A at
 `9f13719f`; `sim-soft-explicit` A at `b62acd5b`, its code unchanged since.
 
 **On the product** (`base_mold`, through the probe's press; the logs kept locally):
