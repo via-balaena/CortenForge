@@ -128,6 +128,8 @@ clap = { version = "4", features = ["derive"] }
 # Build step 2d (`src/insertion_sim/explicit_budget.rs`): the product's budget on the explicit solver,
 # measured locally. Test-only: lowering moves to `sim-soft` in step 6.
 sim-soft-explicit = { workspace = true }
+# Step 4 (recon §17b): G6 on the GPU executor, through the step-7 probe's press. Test-only, as the probe is.
+sim-gpu = { workspace = true }
 
 [features]
 default = ["x11"]
