@@ -18,7 +18,7 @@ workspace = true
 
 [dependencies]
 # Shared geometric kernel (Aabb, Triangle, Bounded)
-cf-geometry = { path = "../../design/cf-geometry" }
+cf-geometry = { workspace = true }
 
 # Core math library - matches parry3d and avian for compatibility
 nalgebra = { workspace = true }

@@ -17,9 +17,6 @@ rust-version.workspace = true
 description = "Headless simulation & differentiable co-design toolkit: rigid + soft-FEM physics, soft↔rigid coupling, model I/O, and the RL/optimization stack"
 keywords = ["simulation", "physics", "robotics", "differentiable", "rl"]
 categories = ["science", "simulation"]
-# Publishing is deferred: this umbrella re-exports the L1 `sim-coupling`
-# keystone, which is `publish = false` while its public surface settles.
-publish = false
 
 # Aggregates the L0/L0-io/L0-integration sim libraries plus the L1 coupling
 # keystone, so the umbrella itself is L1. It is deliberately Bevy-free and

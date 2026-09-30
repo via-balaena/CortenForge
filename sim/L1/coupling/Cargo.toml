@@ -7,7 +7,6 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
-publish = false
 
 [package.metadata.cortenforge]
 tier = "L1"
@@ -17,11 +16,11 @@ path = "src/lib.rs"
 
 [dependencies]
 # Soft FEM substrate (validated, Layer-1): the deformable body + penalty contact.
-sim-soft = { path = "../../L0/soft" }
+sim-soft = { workspace = true }
 # Rigid-body engine: the body whose pose drives the contact + receives the reaction.
-sim-core = { path = "../../L0/core" }
+sim-core = { workspace = true }
 # Loads a minimal MJCF into a sim-core Model (the rigid side's constructor).
-sim-mjcf = { path = "../../L0/mjcf" }
+sim-mjcf = { workspace = true }
 # Vec/quat math at the coupling seam.
 nalgebra = { workspace = true }
 # Tensor<f64> for the soft solver's step interface.

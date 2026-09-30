@@ -3,32 +3,15 @@ name = "cf-cast"
 description = "Physical-cast tooling — mold/plug STL extraction for layered silicone devices"
 keywords = ["mesh", "casting", "mold", "3d-printing", "manufacturing"]
 categories = ["graphics", "science", "algorithms"]
-# ⚠ NOT `version.workspace` — retiring the v1 single-piece path (2026-09-12)
-# removed `export_molds`, `write_procedure`, `generate_procedure_markdown`,
-# `MoldArtifact`, `MoldExportReport` and `CastTarget::Mold` from the public
-# API. That is a real break, so it is versioned here rather than absorbed by
-# the workspace number. Same rationale as `mesh/mesh-repair`.
-#
-# ⚠ The `semver` CI job checks mesh-repair ONLY, so nothing automated would
-# have caught this break — it is declared by hand or not at all.
-#
-# ⚠ CONSEQUENCE: this crate no longer follows `[workspace.package] version`.
-# A future workspace-wide bump will skip it silently — nothing enforces the
-# relationship. Bump it explicitly, or re-inherit once its version catches up.
-#
-# 2.1.0 (2026-09-13) — additive. `pub mod wheel` (#912-#918) and `pub mod
-# plug_role` + `Ribbon::with_plug_role`. ⚠ `Ribbon` also gained a public
-# `plug_role` FIELD, which strict semver calls a break. It is treated as
-# additive because `Ribbon` carries a computed invariant
-# (`segments.len() == points.len() - 1`) that only `Ribbon::new` establishes,
-# so literal construction is not a supported path and no site in this
-# workspace does it. Declared here because nothing checks it.
-version = "2.1.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
+# Not published while it builds a C++ kernel (`manifold3d` below); the SDK's
+# published crates stay free of C++. See the facade's `fabrication` feature.
+publish = false
 
 # `L0-io` (not bare `L0`) because the public `CastSpec::export_molds` API
 # writes STL files via `mesh-io::save_stl`, which is itself `L0-io`. The

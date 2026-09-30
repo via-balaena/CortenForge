@@ -537,7 +537,11 @@ exclude = [
 ]
 
 [workspace.package]
-version = "1.0.0"
+# The one version line: every published crate inherits it. 0.x on purpose:
+# the public API makes no stability promise yet.
+# ⚠ A bump also moves the `version` on each published crate's entry under
+# "Internal Workspace Crates" below; `cargo xtask publish-set` checks them.
+version = "0.9.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/via-balaena/CortenForge"
@@ -713,7 +717,8 @@ pollster = "0.4"
 # patch — manifold3d's API + output bit-pattern are not yet semver-stable,
 # and the cross-piece shared-primitive invariant rests on bit-equal output.
 # First-time builds compile the upstream `elalish/manifold` C++ kernel via
-# manifold-csg-sys's build.rs (CMake + a vendored Clipper2); measured ~3 min
+# manifold-csg-sys's build.rs, which git-clones it and builds it with CMake
+# (manifold's own CMake then fetches Clipper2 and oneTBB); measured ~3 min
 # 14 s on the S1 spike. Subsequent builds use cargo's target cache.
 manifold3d = { version = "=0.1.8", features = ["nalgebra"] }
 
@@ -728,28 +733,38 @@ tempfile = "3.27"
 # ---------------------------------------------------------------------------
 # Internal Workspace Crates
 # ---------------------------------------------------------------------------
-# These are path dependencies for workspace members
+# These are path dependencies for workspace members. An entry whose crate
+# publishes (the `cortenforge` facade and everything it pulls in, per
+# `cargo xtask publish-set`) also carries `version`, which crates.io requires
+# of every dependency it ships. The requirement is EXACT (`=`): the set
+# releases in lockstep, and a caret would let `cargo publish --dry-run` verify
+# against a same-named crate of someone else's at a higher patch (measured at
+# 0.9.0: the facade's `sim` resolved to another project's `sim` 0.9.2, and the
+# dry-run passed). The rest stay path-only ON PURPOSE: cargo
+# strips a versionless dev-dependency from the published manifest, but one
+# with a version stays, and crates.io rejects a manifest naming a crate it
+# does not have — dev-dependencies included.
 
 # Mesh domain
-mesh-types = { path = "mesh/mesh-types" }
-mesh-io = { path = "mesh/mesh-io" }
-mesh-repair = { path = "mesh/mesh-repair" }
+mesh-types = { path = "mesh/mesh-types", version = "=0.9.0" }
+mesh-io = { path = "mesh/mesh-io", version = "=0.9.0" }
+mesh-repair = { path = "mesh/mesh-repair", version = "=0.9.0" }
 mesh-repair-benches = { path = "mesh/mesh-repair-benches" }
-mesh-loft = { path = "mesh/mesh-loft" }
-mesh-select = { path = "mesh/mesh-select" }
-mesh-sdf = { path = "mesh/mesh-sdf" }
-mesh-offset = { path = "mesh/mesh-offset" }
-mesh-shell = { path = "mesh/mesh-shell" }
+mesh-loft = { path = "mesh/mesh-loft", version = "=0.9.0" }
+mesh-select = { path = "mesh/mesh-select", version = "=0.9.0" }
+mesh-sdf = { path = "mesh/mesh-sdf", version = "=0.9.0" }
+mesh-offset = { path = "mesh/mesh-offset", version = "=0.9.0" }
+mesh-shell = { path = "mesh/mesh-shell", version = "=0.9.0" }
 mesh-shell-benches = { path = "mesh/mesh-shell-benches" }
-mesh-measure = { path = "mesh/mesh-measure" }
-mesh-printability = { path = "mesh/mesh-printability" }
-mesh-lattice = { path = "mesh/mesh-lattice" }
+mesh-measure = { path = "mesh/mesh-measure", version = "=0.9.0" }
+mesh-printability = { path = "mesh/mesh-printability", version = "=0.9.0" }
+mesh-lattice = { path = "mesh/mesh-lattice", version = "=0.9.0" }
 
 # Umbrella crate
-mesh = { path = "mesh/mesh" }
+mesh = { path = "mesh/mesh", version = "=0.9.0" }
 
 # Geometric kernel
-cf-geometry = { path = "design/cf-geometry" }
+cf-geometry = { path = "design/cf-geometry", version = "=0.9.0" }
 cf-vehicle = { path = "design/cf-vehicle" }
 cf-assembly-checks = { path = "design/cf-assembly-checks" }
 cf-trike = { path = "design/cf-trike" }
@@ -758,7 +773,7 @@ cf-routing = { path = "design/cf-routing" }
 cf-routing-tests = { path = "design/cf-routing-tests" }
 
 # Spatial foundation
-cf-spatial = { path = "design/cf-spatial" }
+cf-spatial = { path = "design/cf-spatial", version = "=0.9.0" }
 
 # Design kernel.
 # `default-features = false` at the workspace level drops the
@@ -768,7 +783,7 @@ cf-spatial = { path = "design/cf-spatial" }
 # via `features = ["parallel-meshing"]`. cf-design's own `default =
 # ["parallel-meshing"]` keeps `cargo test -p cf-design` exercising the
 # par_* tests by default.
-cf-design = { path = "design/cf-design", default-features = false }
+cf-design = { path = "design/cf-design", version = "=0.9.0", default-features = false }
 cf-design-tests = { path = "design/cf-design-tests" }
 
 # Cast tooling
@@ -787,7 +802,7 @@ pbit-fw-core = { path = "firmware/pbit-fw-core" }
 # only the SDK domains it uses (see the facade's `[features]`); members add
 # `features = [...]`. A direct `cargo add cortenforge` still gets all domains
 # via the facade's own `default`. Only cf-studio-{engine,gui} consume it.
-cortenforge = { path = "cortenforge", default-features = false }
+cortenforge = { path = "cortenforge", version = "=0.9.0", default-features = false }
 
 # CortenForge Studio — guided scan→cast wizard (see MISSION.md).
 # cf-studio-core: headless workflow spine. cf-studio-engine: the
@@ -797,17 +812,17 @@ cf-studio-engine = { path = "tools/cf-studio-engine" }
 
 # Headless mesh-editing core extracted from cf-scan-prep; consumed by the
 # cf-scan-prep Bevy tool and (later) cf-studio's live scan editor.
-cf-scan-prep-core = { path = "tools/cf-scan-prep-core" }
+cf-scan-prep-core = { path = "tools/cf-scan-prep-core", version = "=0.9.0" }
 
 # Shared cap-plane abstraction
-cf-cap-planes = { path = "design/cf-cap-planes" }
+cf-cap-planes = { path = "design/cf-cap-planes", version = "=0.9.0" }
 
 # Shared device-design domain types (Phase 1 of the sim-decouple
 # refactor — `docs/SIM_DECOUPLE_REFACTOR_PLAN.md` §3). Lifted from
 # `tools/cf-device-design/src/main.rs` so cf-device-design (CAD) +
 # cf-sim-research (Phase 2+) describe a layered-silicone device the
 # same way.
-cf-device-types = { path = "design/cf-device-types" }
+cf-device-types = { path = "design/cf-device-types", version = "=0.9.0" }
 
 # Shared device-side geometric primitives (Phase 2.5 of the
 # sim-decouple refactor — `docs/archive/SIM_DECOUPLE_PHASE_3_RECON.md`
@@ -817,29 +832,29 @@ cf-device-types = { path = "design/cf-device-types" }
 cf-device-geometry = { path = "design/cf-device-geometry" }
 
 # Sim domain - Layer 0 (Bevy-free)
-sim-types = { path = "sim/L0/types" }
-sim-core = { path = "sim/L0/core" }
+sim-types = { path = "sim/L0/types", version = "=0.9.0" }
+sim-core = { path = "sim/L0/core", version = "=0.9.0" }
 sim-core-benches = { path = "sim/L0/core-benches" }
-sim-mjcf = { path = "sim/L0/mjcf" }
-sim-urdf = { path = "sim/L0/urdf" }
+sim-mjcf = { path = "sim/L0/mjcf", version = "=0.9.0" }
+sim-urdf = { path = "sim/L0/urdf", version = "=0.9.0" }
 sim-gpu = { path = "sim/L0/gpu" }
 sim-gpu-benches = { path = "sim/L0/gpu-benches" }
-sim-ml-chassis = { path = "sim/L0/ml-chassis" }
+sim-ml-chassis = { path = "sim/L0/ml-chassis", version = "=0.9.0" }
 sim-ml-chassis-benches = { path = "sim/L0/ml-chassis-benches" }
-sim-rl = { path = "sim/L0/rl" }
+sim-rl = { path = "sim/L0/rl", version = "=0.9.0" }
 sim-rl-baselines = { path = "sim/L0/rl-baselines" }
-sim-thermostat = { path = "sim/L0/thermostat" }
-sim-opt = { path = "sim/L0/opt" }
-sim-therm-env = { path = "sim/L0/therm-env" }
-sim-soft = { path = "sim/L0/soft" }
-sim-soft-explicit = { path = "sim/L0/soft-explicit" }
+sim-thermostat = { path = "sim/L0/thermostat", version = "=0.9.0" }
+sim-opt = { path = "sim/L0/opt", version = "=0.9.0" }
+sim-therm-env = { path = "sim/L0/therm-env", version = "=0.9.0" }
+sim-soft = { path = "sim/L0/soft", version = "=0.9.0" }
+sim-soft-explicit = { path = "sim/L0/soft-explicit", version = "=0.9.0" }
 sim-wgsl-gen = { path = "sim/L0/wgsl-gen" }
 sim-truss = { path = "sim/L0/truss" }
 # Sim domain - Layer 1 (Bevy integration)
-sim-coupling = { path = "sim/L1/coupling" }
+sim-coupling = { path = "sim/L1/coupling", version = "=0.9.0" }
 cf-fsu-model = { path = "sim/L1/fsu-model" }
 # Headless sim umbrella (re-exports the spine above) — see sim/sim.
-sim = { path = "sim/sim" }
+sim = { path = "sim/sim", version = "=0.9.0" }
 sim-bevy = { path = "sim/L1/bevy" }
 sim-ml-chassis-bevy = { path = "sim/L1/ml-chassis-bevy" }
 sim-bevy-soft = { path = "sim/L1/sim-bevy-soft" }

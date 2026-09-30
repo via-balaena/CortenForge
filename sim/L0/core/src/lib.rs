@@ -57,7 +57,6 @@
 //! }
 //! ```
 
-#![doc(html_root_url = "https://docs.rs/sim-core/1.0.0")]
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 #![warn(missing_docs)]
 #![allow(

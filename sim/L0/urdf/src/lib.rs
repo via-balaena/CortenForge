@@ -85,7 +85,6 @@
 //! same right-handed, Z-up convention. Link and joint frames (`xyz`, `rpy`,
 //! `axis`) are therefore passed through verbatim, with no axis remapping.
 
-#![doc(html_root_url = "https://docs.rs/sim-urdf/1.0.0")]
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 #![warn(missing_docs)]
 #![allow(

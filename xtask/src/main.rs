@@ -48,6 +48,7 @@ mod grade;
 mod hook_install;
 mod licensed_gates;
 mod pr_scope;
+mod publish_set;
 mod release_gates;
 mod setup;
 mod test_reachability;
@@ -317,6 +318,13 @@ enum Commands {
     #[command(long_about = disclaimer_sync::LONG_ABOUT)]
     DisclaimerSync,
 
+    /// The crates.io release set is the facade's closure, at one version.
+    //
+    // Fourth sibling: a crate added without `publish = false` joins the next
+    // `cargo publish --workspace` unseen, and nothing else in the tree says so.
+    #[command(long_about = publish_set::LONG_ABOUT)]
+    PublishSet,
+
     /// Set up development environment (git hooks, verify tools)
     Setup,
 
@@ -392,6 +400,7 @@ fn main() -> Result<()> {
         Commands::ReleaseGates => release_gates::check(),
         Commands::TestReachability => test_reachability::check(),
         Commands::DisclaimerSync => disclaimer_sync::check(),
+        Commands::PublishSet => publish_set::check(),
         Commands::Setup => setup::run(),
         Commands::Uninstall => setup::uninstall(),
     }

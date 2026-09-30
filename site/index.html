@@ -285,9 +285,9 @@ cortenforge = { git = "https://github.com/via-balaena/CortenForge" }</code></pre
 use cortenforge::sim;          // rigid + soft physics, soft&harr;rigid coupling, RL/opt
 use cortenforge::mesh;         // load / repair / measure / print meshes
 use cortenforge::cf_design;    // implicit-surface design kernel
-use cortenforge::cf_cast;      // multi-material mold generation</code></pre>
+use cortenforge::cf_scan_prep_core; // headless scan cleanup</code></pre>
 
-      <p>Simulation lives under <code>sim</code>, mesh work under <code>mesh</code>, and the design and fabrication crates are re-exported individually. The facade is headless by construction, so anything built against it runs without a window or a graphics driver &mdash; on a build server, or inside a training loop. Left out: the Bevy, GUI, and GPU crates, and most of the research and application code under <code>tools/</code>, of which it re-exports only the headless scan-prep and mold-CLI crates. Everything excluded is still in the repository; you can depend on it directly.</p>
+      <p>Simulation lives under <code>sim</code>, mesh work under <code>mesh</code>, and the design and fabrication crates are re-exported individually. The facade is headless by construction, so anything built against it runs without a window or a graphics driver &mdash; on a build server, or inside a training loop. Left out: the Bevy, GUI, and GPU crates, and most of the research and application code under <code>tools/</code>, of which it re-exports only the headless scan-prep crate. Mold generation (<code>cf-cast</code>) and its command-line bridge are left out for now too, because <code>cf-cast</code> builds a C++ kernel. Everything excluded is still in the repository; you can depend on it directly.</p>
 
       <p>To work on the SDK itself rather than depend on it:</p>
 
@@ -344,7 +344,7 @@ cargo xtask grade &lt;crate-name&gt;      # run the quality gate on a single cra
         </div>
       </div>
 
-      <p class="stack-note">70 crates outside <code>examples/</code>. Pure Rust with no framework dependencies in the physics and mesh cores; the mold-CSG stage builds a vendored C++ kernel through CMake. The facade pulls it in by default, so a first build needs CMake and a C++ compiler; <code>default-features = false, features = ["sim", "mesh"]</code> skips it. Layer-0 core crates are checked against the <code>wasm32-unknown-unknown</code> target as part of the quality gate.</p>
+      <p class="stack-note">70 crates outside <code>examples/</code>. Pure Rust with no framework dependencies in the physics and mesh cores; the mold-CSG stage in <code>cf-cast</code> builds a C++ kernel with CMake (fetched at build time), so building it needs CMake and a C++ compiler, and the facade leaves it out for now. Layer-0 core crates are checked against the <code>wasm32-unknown-unknown</code> target as part of the quality gate.</p>
     </section>
 
     <section>

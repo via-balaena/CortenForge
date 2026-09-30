@@ -12,6 +12,7 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
+publish = false
 
 # The binary is not named after the package, so its docs do not collide with
 # the library's (the cf-viewer / cf-view precedent).

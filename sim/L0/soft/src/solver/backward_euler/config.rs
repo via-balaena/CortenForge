@@ -237,7 +237,7 @@ pub enum InitialGuess {
 /// `#[non_exhaustive]` is deliberate and was added when `initial_guess`
 /// landed. This struct is a bag of independent integration knobs that grows
 /// as the solver does — `gravity_z`, `lm_regularization`, `friction_mu`,
-/// `fbar` and `initial_guess` were all added after v1.0.0 — and with public
+/// `fbar` and `initial_guess` were all added later — and with public
 /// fields and no marker, **every one of those additions is a semver break for
 /// any external struct literal.** Closing it converts an open-ended series of
 /// breaks into exactly one, taken here, at the cost of a construction idiom

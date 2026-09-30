@@ -9,6 +9,7 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
+publish = false
 
 # Composes the mesh stack (io/repair/sdf) + the cf-geometry kernel into
 # anatomical field recipes; depends on `mesh-io`, so it cannot be L0 (mesh-io

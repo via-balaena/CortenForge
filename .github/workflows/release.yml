@@ -26,8 +26,8 @@ on:
   workflow_dispatch:
 
 # Only `release` writes. build-check runs build scripts for ~280 transitive
-# crates plus a vendored C++ kernel, and sbom runs an unpinned `cargo install`;
-# both get read-only.
+# crates plus a C++ kernel fetched at build time, and sbom runs an unpinned
+# `cargo install`; both get read-only.
 permissions:
   contents: read
   # `id-token: write` removed 2026-09-02: nothing here mints or consumes an
@@ -243,8 +243,8 @@ jobs:
             There is no download; everything here is built from source.
 
             You need a Rust toolchain (see `rust-toolchain.toml`), **CMake and a
-            C++ compiler** — `manifold-csg-sys` builds a vendored C++ kernel
-            through CMake — and a working Vulkan or GL driver for the 3D views.
+            C++ compiler** — `manifold-csg-sys` fetches a C++ kernel at build time
+            and builds it through CMake — and a working Vulkan or GL driver for the 3D views.
             On Debian/Ubuntu that is:
 
             ```

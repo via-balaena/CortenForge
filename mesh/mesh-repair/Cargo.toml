@@ -1,14 +1,6 @@
 [package]
 name = "mesh-repair"
-# ⚠ NOT `version.workspace` — this is the only crate the `semver` CI job
-# checks (`.github/workflows/quality-gate.yml`), and 2.0 is a real break:
-# `MeshReport` gained a field and became `#[non_exhaustive]`. Pinned here so
-# the break is versioned rather than absorbed by the workspace number.
-#
-# ⚠ CONSEQUENCE: this crate no longer follows `[workspace.package] version`.
-# A future workspace-wide bump will skip it silently — nothing enforces the
-# relationship. Bump it explicitly, or re-inherit once its version catches up.
-version = "2.0.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -25,7 +17,7 @@ workspace = true
 
 [dependencies]
 # Geometric primitives (workspace)
-cf-geometry = { path = "../../design/cf-geometry" }
+cf-geometry = { workspace = true }
 # Shared mesh data structures (workspace)
 mesh-types = { workspace = true }
 # Linear algebra (vectors, matrices, rotations)

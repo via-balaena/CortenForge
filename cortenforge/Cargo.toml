@@ -1,13 +1,12 @@
 [package]
 name = "cortenforge"
-description = "The CortenForge SDK facade — one stable dependency that re-exports the public SDK crates. Applications depend on this single crate and reach the SDK through it (cortenforge::sim, cortenforge::mesh, cortenforge::cf_cast, …) so the SDK's internal crate structure can evolve behind one contract. See MISSION.md."
+description = "The CortenForge SDK facade — one stable dependency that re-exports the public SDK crates. Applications depend on this single crate and reach the SDK through it (cortenforge::sim, cortenforge::mesh, cortenforge::cf_design, …) so the SDK's internal crate structure can evolve behind one contract. See MISSION.md."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
-publish = false
 
 # The SDK public surface. Aggregates the whole headless spine — including the
 # L1 `sim-coupling` keystone (via the `sim` umbrella) — so the facade is itself
@@ -24,7 +23,7 @@ workspace = true
 
 # One feature per SDK domain, so a consumer that needs only part of the SDK
 # doesn't pay to build the rest. `default` enables all three, so a plain
-# `cargo add cortenforge` still yields the whole SDK; a mesh-only app opts out
+# `cargo add cortenforge` still yields every domain; a mesh-only app opts out
 # of the sim spine with `default-features = false, features = ["mesh"]`.
 [features]
 default = ["sim", "mesh", "fabrication"]
@@ -33,15 +32,17 @@ default = ["sim", "mesh", "fabrication"]
 sim = ["dep:sim", "dep:cf-geometry", "dep:cf-spatial"]
 # The mesh-processing toolkit — `cortenforge::mesh`.
 mesh = ["dep:mesh"]
-# The design → fabrication path (`cf_design` / `cf_cast` / scan-prep / …).
+# The design → fabrication path (`cf_design` / scan-prep / device types / …).
 # Also activates the shared geometry kernels the design kernel builds on.
+# ⚠ `cf-cast` and `cf-cast-cli` are NOT here for now: cf-cast builds a C++
+# kernel (`manifold3d`, see its manifest), and the SDK's published crates stay
+# free of C++. They rejoin this feature once that kernel is replaced; until then an
+# app depends on them directly.
 fabrication = [
     "dep:cf-design",
     "dep:cf-cap-planes",
     "dep:cf-device-types",
     "dep:cf-scan-prep-core",
-    "dep:cf-cast",
-    "dep:cf-cast-cli",
     "dep:cf-geometry",
     "dep:cf-spatial",
 ]
@@ -79,7 +80,3 @@ cf-cap-planes = { workspace = true, optional = true }
 cf-device-types = { workspace = true, optional = true }
 # Re-exported as `cortenforge::cf_scan_prep_core` — headless scan-prep.
 cf-scan-prep-core = { workspace = true, optional = true }
-# Re-exported as `cortenforge::cf_cast` — multi-material mold generation.
-cf-cast = { workspace = true, optional = true }
-# Re-exported as `cortenforge::cf_cast_cli` — the scan→cast bridge.
-cf-cast-cli = { workspace = true, optional = true }
