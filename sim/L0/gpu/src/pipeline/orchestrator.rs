@@ -229,6 +229,10 @@ impl GpuPhysicsPipeline {
                 .write_params(&self.ctx, &self.model_bufs, cpu_model);
         }
 
+        // The uploads and writes above bypass the recorder, which is safe only
+        // because it is created below, after them: they land at its first submit,
+        // before any substep, and the last `step()` ended in a read.
+        //
         // 3. Record the substeps, one recorder step each. The recorder submits
         //    within its pass cap; state lives in `state_bufs` across its ordered
         //    submits, so the trajectory does not depend on where they fall (T38).

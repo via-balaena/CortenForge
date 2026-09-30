@@ -27,9 +27,13 @@ use crate::context::GpuContext;
 ///
 /// A run of other commands (clears, copies) between two passes opens one more
 /// Metal command buffer, so a submit at the cap holds at most about 3 072 of
-/// the queue's 4 096. A [`Recorder`] submits at a step's end once half the cap
-/// is used, so a step may open up to half the cap before it would stop.
+/// the queue's 4 096.
 pub const PASS_CAP: u32 = 1024;
+
+/// Compute passes one step may open. A [`Recorder`] submits at a step's end
+/// once this many are pending, so a step always starts with fewer, and a
+/// submit never passes [`PASS_CAP`].
+pub const STEP_PASS_CAP: u32 = PASS_CAP / 2;
 
 /// Something compute passes and commands are recorded into.
 ///
@@ -67,6 +71,8 @@ pub struct Recorder<T: Pod = ()> {
     encoder: Option<wgpu::CommandEncoder>,
     /// Compute passes in the pending encoder.
     passes: u32,
+    /// Compute passes the open step has opened.
+    step_passes: u32,
     /// Steps ended in the pending encoder, and so slots staged in the ring.
     steps: u32,
     in_step: bool,
@@ -131,6 +137,7 @@ impl<T: Pod> Recorder<T> {
             queue: ctx.queue.clone(),
             encoder: None,
             passes: 0,
+            step_passes: 0,
             steps: 0,
             in_step: false,
             ring,
@@ -177,6 +184,7 @@ impl<T: Pod> Recorder<T> {
     pub fn begin_step(&mut self, values: &T) -> u32 {
         assert!(!self.in_step, "begin_step inside a step");
         self.in_step = true;
+        self.step_passes = 0;
         let Some(ring) = self.ring.as_mut() else {
             return 0;
         };
@@ -201,7 +209,7 @@ impl<T: Pod> Recorder<T> {
             .ring
             .as_ref()
             .is_some_and(|ring| self.steps == ring.slots);
-        if self.passes >= PASS_CAP / 2 || ring_full {
+        if self.passes >= STEP_PASS_CAP || ring_full {
             self.submit();
         }
     }
@@ -260,8 +268,8 @@ impl<T: Pod> Recorder<T> {
     /// # Panics
     ///
     /// Inside a step, or when the GPU wait or a buffer's mapping fails. The
-    /// wait has no timeout: [`PASS_CAP`] prevents the one hang measured, and a
-    /// timeout would fail a long, correct submit.
+    /// wait has no timeout: it waits for everything submitted before it, whose
+    /// length the caller sets, and [`PASS_CAP`] prevents the one hang measured.
     // Panicking is the contract: the executor trait's reads return values, not
     // errors, and a read that cannot finish leaves nothing to return.
     #[allow(clippy::panic)]
@@ -329,14 +337,21 @@ impl<T: Pod> Recorder<T> {
 impl<T: Pod> Recording for Recorder<T> {
     /// # Panics
     ///
-    /// When the pending submit already holds [`PASS_CAP`] passes: a step that
-    /// opens more than half the cap stops here rather than blocking in
-    /// [`wgpu::CommandEncoder::finish`].
+    /// When the open step has opened [`STEP_PASS_CAP`] passes, or, outside
+    /// steps, when the pending submit holds [`PASS_CAP`]: it stops here rather
+    /// than block in [`wgpu::CommandEncoder::finish`].
     fn pass(&mut self, label: &str) -> wgpu::ComputePass<'_> {
+        if self.in_step {
+            assert!(
+                self.step_passes < STEP_PASS_CAP,
+                "a step opened more than {STEP_PASS_CAP} compute passes (recon §17a)"
+            );
+            self.step_passes += 1;
+        }
         assert!(
             self.passes < PASS_CAP,
             "{PASS_CAP} compute passes without a submit, and more would block on \
-             Metal (recon §17a): end steps more often, or open fewer passes a step"
+             Metal (recon §17a): record in steps, or submit sooner"
         );
         self.passes += 1;
         self.commands().pass(label)

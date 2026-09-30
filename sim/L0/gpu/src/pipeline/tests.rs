@@ -3000,3 +3000,34 @@ fn t39_no_geom_model_steps() {
         data.qpos[2]
     );
 }
+
+// ── T40: Zero substeps read the state back ────────────────────────────
+//
+// `step(0)` records no substep and still reads qpos/qvel back, so each value
+// returns rounded to f32 and time does not move.
+#[test]
+fn t40_zero_substeps_read_the_state_back() {
+    let mut model = Model::free_body(1.0, Vector3::new(0.1, 0.2, 0.3));
+    add_sdf_sphere_geom(&mut model, 1, 5.0, 12);
+    let mut data = model.make_data();
+    data.qpos[0] = 0.1;
+    data.qpos[2] = 50.3;
+    data.qpos[3] = 1.0;
+    data.qvel[0] = 0.7;
+    let init = data.clone();
+
+    let Some(pipeline) = pipeline_or_skip("T40", GpuPhysicsPipeline::new(&model, &data)) else {
+        return;
+    };
+    pipeline.step(&model, std::slice::from_mut(&mut data), 0);
+
+    for i in 0..model.nq {
+        assert_eq!(data.qpos[i], f64::from(init.qpos[i] as f32), "qpos[{i}]");
+    }
+    for i in 0..model.nv {
+        assert_eq!(data.qvel[i], f64::from(init.qvel[i] as f32), "qvel[{i}]");
+    }
+    assert_eq!(data.time, init.time);
+    // 0.1 has no exact f32, so a state that really went through the GPU moved.
+    assert_ne!(data.qpos[0], init.qpos[0], "the state was not read back");
+}
