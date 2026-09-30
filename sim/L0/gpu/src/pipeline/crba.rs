@@ -325,7 +325,7 @@ impl GpuCrbaPipeline {
         ctx: &GpuContext,
         model: &GpuModelBuffers,
         state: &GpuStateBuffers,
-        rec: &mut impl Recording,
+        encoder: &mut wgpu::CommandEncoder,
     ) {
         self.write_params(ctx, model, state);
 
@@ -337,6 +337,6 @@ impl GpuCrbaPipeline {
             ctx.queue.write_buffer(&state.qm, 0, &zero_bytes);
         }
 
-        self.encode(rec);
+        self.encode(encoder);
     }
 }

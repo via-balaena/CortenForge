@@ -2,7 +2,6 @@
 //!
 //! Compiles the `fk.wgsl` shader (4 entry points), creates bind group
 //! layouts and bind groups, and dispatches the tree-scan FK passes.
-//! Provides readback utilities for validation.
 
 #![allow(
     clippy::cast_possible_truncation,
@@ -356,9 +355,9 @@ impl GpuFkPipeline {
         ctx: &GpuContext,
         model: &GpuModelBuffers,
         state: &GpuStateBuffers,
-        rec: &mut impl Recording,
+        encoder: &mut wgpu::CommandEncoder,
     ) {
         self.write_params(ctx, model, state);
-        self.encode(rec);
+        self.encode(encoder);
     }
 }

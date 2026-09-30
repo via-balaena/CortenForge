@@ -201,9 +201,9 @@ impl GpuIntegratePipeline {
         model: &GpuModelBuffers,
         state: &GpuStateBuffers,
         cpu_model: &Model,
-        rec: &mut impl Recording,
+        encoder: &mut wgpu::CommandEncoder,
     ) {
         self.write_params(ctx, model, state, cpu_model);
-        self.encode(rec);
+        self.encode(encoder);
     }
 }

@@ -193,9 +193,9 @@ impl GpuVelocityFkPipeline {
         ctx: &GpuContext,
         model: &GpuModelBuffers,
         state: &GpuStateBuffers,
-        rec: &mut impl Recording,
+        encoder: &mut wgpu::CommandEncoder,
     ) {
         self.write_params(ctx, model, state);
-        self.encode(rec);
+        self.encode(encoder);
     }
 }

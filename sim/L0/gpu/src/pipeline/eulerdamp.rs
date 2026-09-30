@@ -202,9 +202,9 @@ impl GpuEulerdampPipeline {
         ctx: &GpuContext,
         model: &GpuModelBuffers,
         cpu_model: &Model,
-        rec: &mut impl Recording,
+        encoder: &mut wgpu::CommandEncoder,
     ) {
         self.write_params(ctx, model, cpu_model);
-        self.encode(rec);
+        self.encode(encoder);
     }
 }

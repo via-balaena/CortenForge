@@ -17,6 +17,9 @@
 //! jobs that install a software adapter, so their green means the pipelines
 //! really ran.
 
+use std::sync::mpsc;
+use std::time::Duration;
+
 use crate::context::{GpuContext, GpuError};
 use crate::pipeline::{GpuPhysicsPipeline, GpuPipelineError};
 
@@ -123,6 +126,36 @@ pub fn pipeline_or_skip(
             None
         }
         Err(err) => panic!("{suite}: pipeline creation failed: {err}"),
+    }
+}
+
+/// Run `work` on a thread and return its result, failing after a minute rather
+/// than hanging the suite: a command buffer that blocks, as 2 048 compute
+/// passes in one do on Metal (recon §17a), never returns. A panic in `work` is
+/// raised again as itself.
+///
+/// # Panics
+///
+/// When `work` panics or does not finish within a minute.
+// Panicking is the contract: this is a test harness, and a hang or a panic in
+// `work` is the test's failure.
+#[allow(clippy::panic)]
+pub fn within_a_minute<R: Send + 'static>(
+    what: &str,
+    work: impl FnOnce() -> R + Send + 'static,
+) -> R {
+    let (done, finished) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        // The receiver waits for this send, or has given up on it.
+        done.send(work()).unwrap_or_default();
+    });
+    match finished.recv_timeout(Duration::from_mins(1)) {
+        Ok(result) => result,
+        Err(mpsc::RecvTimeoutError::Timeout) => panic!("{what} did not finish in a minute"),
+        Err(mpsc::RecvTimeoutError::Disconnected) => match worker.join() {
+            Err(payload) => std::panic::resume_unwind(payload),
+            Ok(()) => panic!("{what} ended without a result"),
+        },
     }
 }
 

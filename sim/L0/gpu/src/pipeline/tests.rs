@@ -2668,7 +2668,7 @@ fn t34_gpu_batched_collision_substep_matches_single() {
 // together must each match the same env stepped ALONE through a single-env
 // `step()`, so the only thing under test is the n_env stride threaded through
 // the whole orchestrator: batched upload, per-env buffer clears, multi-substep
-// single-submit, and per-env readback/writeback.
+// recording across submits, and per-env readback/writeback.
 //
 // A free-fall fixture (sphere far above the plane, never contacting over the
 // rollout) keeps the dynamics exact and deterministic, isolating the batching
@@ -2892,12 +2892,13 @@ fn t37_large_batch_allocates_and_steps() {
 
 // ── T38: Substeps across submits (long-rollout hang, wall #2 regression guard) ──
 //
-// This model opens 24 compute passes a substep. On Metal, wgpu 27 opens two Metal
-// command buffers a pass against the queue's 4 096, so one command buffer of 2 048
-// passes blocks for good inside `finish` (recon §17a); unbounded, `step(150)` did.
-// `step()` now records through a `Recorder`, which submits within its pass cap:
-// `step(150)` is seven submits. This guards two things at once:
-//   1. NO-HANG: `step(150)` completing is the regression guard.
+// This model opens 24 compute passes a substep. On Metal one command buffer of
+// 2 048 compute passes blocks for good inside `finish`, and 2 047 complete
+// (measured; recon §17a); unbounded, `step(150)` blocked. `step()` now records
+// through a `Recorder`, which submits within its pass cap, so `step(150)` spans
+// several submits (seven by arithmetic: 22 substeps reach 512 passes). This
+// guards two things at once:
+//   1. NO-HANG: `step(150)` finishing within a minute is the regression guard.
 //   2. BYTE-IDENTICAL: submit boundaries must not change the trajectory. State lives
 //      in `state_bufs` across the ordered submits, and the f32→f64→f32 round-trip
 //      between per-step uploads is lossless, so a single `step(150)` must match
@@ -2905,7 +2906,7 @@ fn t37_large_batch_allocates_and_steps() {
 //      simplest deterministic path (no contact set, no solver iteration variance).
 #[test]
 fn t38_substeps_across_submits_no_hang_and_byte_identical() {
-    const SUBSTEPS: u32 = 150; // 3 600 passes: past Metal's 2 047, and seven submits.
+    const SUBSTEPS: u32 = 150; // 3 600 passes: past Metal's 2 047; seven submits by arithmetic.
 
     let mut model = Model::free_body(1.0, Vector3::new(0.1, 0.2, 0.3));
     // One geom (no ground plane) → collision finds no pairs, so the body free-falls
@@ -2920,15 +2921,18 @@ fn t38_substeps_across_submits_no_hang_and_byte_identical() {
         return;
     };
 
-    // Run A: one call. Completing at all is the no-hang guard.
-    let mut data_batch = init.clone();
-    pipeline.step(&model, std::slice::from_mut(&mut data_batch), SUBSTEPS);
-
-    // Run B: SUBSTEPS single-substep calls (each one submit).
-    let mut data_iter = init.clone();
-    for _ in 0..SUBSTEPS {
-        pipeline.step(&model, std::slice::from_mut(&mut data_iter), 1);
-    }
+    // Run A: one call; Run B: SUBSTEPS single-substep calls (each one submit).
+    // Both inside a minute's limit: finishing is the no-hang guard.
+    let (runner, start) = (model.clone(), init.clone());
+    let (data_batch, data_iter) = crate::test_support::within_a_minute("T38", move || {
+        let mut data_batch = start.clone();
+        pipeline.step(&runner, std::slice::from_mut(&mut data_batch), SUBSTEPS);
+        let mut data_iter = start;
+        for _ in 0..SUBSTEPS {
+            pipeline.step(&runner, std::slice::from_mut(&mut data_iter), 1);
+        }
+        (data_batch, data_iter)
+    });
 
     // Byte-identical: submit-boundary independence (exact f64 equality).
     for i in 0..model.nq {

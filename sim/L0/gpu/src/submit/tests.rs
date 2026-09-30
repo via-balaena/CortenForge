@@ -8,14 +8,12 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::mpsc;
-use std::time::Duration;
 
 use bytemuck::{Pod, Zeroable};
 
 use super::{PASS_CAP, Recorder, Recording, STEP_PASS_CAP, read_buffer};
 use crate::context::GpuContext;
-use crate::test_support::gpu_context_or_skip;
+use crate::test_support::{gpu_context_or_skip, within_a_minute};
 
 const SUITE: &str = "recorder tests";
 
@@ -48,17 +46,13 @@ struct Step { cell: u32, value: u32, pad0: u32, pad1: u32 }
 @group(0) @binding(2) var<storage, read> source: array<u32>;
 @compute @workgroup_size(1) fn own_value() { cells[step.cell] = step.value; }
 @compute @workgroup_size(1) fn from_source() { cells[step.cell] = source[0]; }
-@compute @workgroup_size(64) fn heavy(@builtin(global_invocation_id) id: vec3<u32>) {
-    var x = f32(id.x);
-    for (var i = 0u; i < 16384u; i++) { x = x * 1.0001 + 0.5; }
-    if (x < 0.0) { cells[0] = 1u; }
-}
+@compute @workgroup_size(1) fn count() { cells[0] = cells[0] + 1u; }
 ";
 
 struct Kernel {
     own_value: wgpu::ComputePipeline,
     from_source: wgpu::ComputePipeline,
-    heavy: wgpu::ComputePipeline,
+    count: wgpu::ComputePipeline,
     layout: wgpu::BindGroupLayout,
     cells: wgpu::Buffer,
     source: wgpu::Buffer,
@@ -130,7 +124,7 @@ impl Kernel {
         Self {
             own_value: entry("own_value"),
             from_source: entry("from_source"),
-            heavy: entry("heavy"),
+            count: entry("count"),
             layout,
             cells: storage_buffer("cells", u64::from(n) * 4),
             source: storage_buffer("source", 16),
@@ -309,35 +303,33 @@ fn a_bare_write_overtakes_the_steps_before_it() {
     assert_eq!(cells, [2; 8]);
 }
 
-/// Run `work` on a thread, failing after a minute instead of hanging the
-/// suite: a submit that blocks, as 2 048 passes do on Metal, never returns.
-fn within_a_minute<R: Send + 'static>(what: &str, work: impl FnOnce() -> R + Send + 'static) -> R {
-    let (done, finished) = mpsc::channel();
-    std::thread::spawn(move || done.send(work()).unwrap());
-    finished
-        .recv_timeout(Duration::from_mins(1))
-        .unwrap_or_else(|_| panic!("{what} did not finish in a minute"))
+/// A plain uniform holding `step(0)`, for work recorded without step values.
+fn one_step_uniform(ctx: &GpuContext, rec: &mut Recorder) -> wgpu::Buffer {
+    let uniform = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("one_step"),
+        size: std::mem::size_of::<Step>() as u64,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    rec.write(&uniform, 0, bytemuck::bytes_of(&step(0)));
+    uniform
 }
 
-/// ★★ A submit of [`PASS_CAP`] passes, recorded outside steps, completes on
-/// this backend.
+/// ★★ A submit of [`PASS_CAP`] passes, each after a clear, completes on this
+/// backend. A clear after a pass opens one more Metal command buffer, so this
+/// is the cap's worst case, about 3 072 of the Metal queue's 4 096.
 #[test]
-fn a_submit_at_the_cap_completes() {
+fn a_submit_at_the_cap_with_a_clear_between_passes_completes() {
     let Some(ctx) = gpu_context_or_skip(SUITE) else {
         return;
     };
     let cells = within_a_minute("a submit of PASS_CAP passes", move || {
         let kernel = Kernel::new(&ctx, 1, false);
-        let uniform = ctx.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("one_step"),
-            size: std::mem::size_of::<Step>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let group = kernel.bind_group(&ctx, uniform.as_entire_binding());
         let mut rec = Recorder::new(&ctx);
-        rec.write(&uniform, 0, bytemuck::bytes_of(&step(0)));
+        let uniform = one_step_uniform(&ctx, &mut rec);
+        let group = kernel.bind_group(&ctx, uniform.as_entire_binding());
         for _ in 0..PASS_CAP {
+            rec.commands().clear_buffer(&kernel.source, 0, None);
             let mut pass = rec.pass("at_the_cap");
             pass.set_pipeline(&kernel.own_value);
             pass.set_bind_group(0, &group, &[]);
@@ -348,67 +340,32 @@ fn a_submit_at_the_cap_completes() {
     assert_eq!(cells, [step(0).value]);
 }
 
-/// ★ Submits at the step cap, back to back with no wait between them and more
-/// GPU work in each than recording it takes, complete on Metal. Measured on an
-/// M4 Pro: recorded in 2.2 s and done in 3.1 s, where recording the same
-/// passes with no work takes 0.3 s, so the recording waited on the GPU and did
-/// not block; what it waited on is not isolated. Metal only: the queue's cap
-/// is Metal's, and on a software adapter the work is slow.
+/// ★★ A step that carries no values, and opens more passes than one command
+/// buffer holds on Metal, completes: the recorder submits itself at
+/// [`PASS_CAP`], inside the step. Every pass counts once.
 #[test]
-fn back_to_back_submits_at_the_step_cap_complete() {
-    const STEPS: u32 = 16;
+fn a_step_without_values_past_the_cap_submits_itself() {
+    const PASSES: u32 = 2 * PASS_CAP + 100;
     let Some(ctx) = gpu_context_or_skip(SUITE) else {
         return;
     };
-    if ctx.adapter_info.backend != wgpu::Backend::Metal {
-        eprintln!(
-            "  back-to-back submits: Metal only, skipped on {:?}",
-            ctx.adapter_info.backend
-        );
-        return;
-    }
-    let started = std::time::Instant::now();
-    let (cells, recorded) = within_a_minute("back-to-back submits", move || {
-        let kernel = Kernel::new(&ctx, 1, true);
-        let mut rec = Recorder::<Step>::with_step_values(&ctx, STEPS);
-        let group = kernel.bind_group(&ctx, rec.step_values_binding().unwrap());
+    let counted = within_a_minute("a step past the cap", move || {
+        let kernel = Kernel::new(&ctx, 1, false);
+        let mut rec = Recorder::new(&ctx);
+        let uniform = one_step_uniform(&ctx, &mut rec);
+        let group = kernel.bind_group(&ctx, uniform.as_entire_binding());
         rec.write(&kernel.cells, 0, bytemuck::bytes_of(&0_u32));
-        // Each step opens exactly the step cap, so each `end_step` submits.
-        for _ in 0..STEPS {
-            let offset = rec.begin_step(&step(0));
-            for _ in 0..STEP_PASS_CAP {
-                let mut pass = rec.pass("heavy");
-                pass.set_pipeline(&kernel.heavy);
-                pass.set_bind_group(0, &group, &[offset]);
-                pass.dispatch_workgroups(64, 1, 1);
-            }
-            rec.end_step();
+        rec.begin_step(&());
+        for _ in 0..PASSES {
+            let mut pass = rec.pass("count");
+            pass.set_pipeline(&kernel.count);
+            pass.set_bind_group(0, &group, &[]);
+            pass.dispatch_workgroups(1, 1, 1);
         }
-        let recorded = started.elapsed();
-        (rec.read::<u32>(&kernel.cells, 1), recorded)
+        rec.end_step();
+        rec.read::<u32>(&kernel.cells, 1)
     });
-    eprintln!(
-        "  {STEPS} submits of {STEP_PASS_CAP} heavy passes: recorded in {recorded:?}, done in {:?}",
-        started.elapsed()
-    );
-    assert_eq!(cells, [0]);
-}
-
-/// ★ A step's pass past [`STEP_PASS_CAP`] stops with a message, whatever is
-/// pending before it.
-#[test]
-fn a_step_past_its_pass_cap_stops_with_a_message() {
-    let Some(ctx) = gpu_context_or_skip(SUITE) else {
-        return;
-    };
-    let mut rec = Recorder::new(&ctx);
-    rec.begin_step(&());
-    let message = panic_message(|| {
-        for _ in 0..=STEP_PASS_CAP {
-            drop(rec.pass("past_the_step_cap"));
-        }
-    });
-    assert!(message.contains("a step opened more than"), "{message}");
+    assert_eq!(counted, [PASSES]);
 }
 
 /// The message a closure panicked with.
@@ -421,23 +378,52 @@ fn panic_message(run: impl FnOnce()) -> String {
         .unwrap_or_default()
 }
 
-/// ★ One pass past the cap stops with a message, before a submit that would
-/// block could be built.
+/// ★ A step carrying values stops past [`STEP_PASS_CAP`] passes: its values
+/// cannot split across submits.
 #[test]
-fn a_pass_past_the_cap_stops_with_a_message() {
+fn a_step_carrying_values_past_its_pass_cap_stops_with_a_message() {
     let Some(ctx) = gpu_context_or_skip(SUITE) else {
         return;
     };
-    let mut rec = Recorder::new(&ctx);
+    let mut rec = Recorder::<Step>::with_step_values(&ctx, 1);
+    rec.begin_step(&step(0));
     let message = panic_message(|| {
-        for _ in 0..=PASS_CAP {
-            drop(rec.pass("past_the_cap"));
+        for _ in 0..=STEP_PASS_CAP {
+            drop(rec.pass("past_the_step_cap"));
         }
     });
-    assert!(
-        message.contains("compute passes without a submit"),
-        "{message}"
-    );
+    assert!(message.contains("opened more than"), "{message}");
+}
+
+/// ★ Passes opened outside steps do not shrink the next step's budget: the
+/// step begins with a submit once half the cap is pending.
+#[test]
+fn a_step_after_passes_outside_steps_keeps_its_budget() {
+    let Some(ctx) = gpu_context_or_skip(SUITE) else {
+        return;
+    };
+    let mut rec = Recorder::<Step>::with_step_values(&ctx, 1);
+    for _ in 0..600 {
+        drop(rec.pass("outside_steps"));
+    }
+    rec.begin_step(&step(0));
+    for _ in 0..STEP_PASS_CAP {
+        drop(rec.pass("in_the_step"));
+    }
+    rec.end_step();
+    assert!(rec.submit().is_none(), "the full step submitted at its end");
+}
+
+/// A read whose size is not a multiple of 4 bytes stops with a message:
+/// wgpu copies buffers in 4-byte units.
+#[test]
+fn a_read_not_in_four_byte_units_stops_with_a_message() {
+    let Some(ctx) = gpu_context_or_skip(SUITE) else {
+        return;
+    };
+    let kernel = Kernel::new(&ctx, 1, true);
+    let message = panic_message(|| drop(read_buffer::<u16>(&ctx, &kernel.cells, 1)));
+    assert!(message.contains("multiples of 4 bytes"), "{message}");
 }
 
 /// Reads, writes and submits inside a step stop with a message: each would

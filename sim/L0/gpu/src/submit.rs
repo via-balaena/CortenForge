@@ -30,9 +30,13 @@ use crate::context::GpuContext;
 /// the queue's 4 096.
 pub const PASS_CAP: u32 = 1024;
 
-/// Compute passes one step may open. A [`Recorder`] submits at a step's end
-/// once this many are pending, so a step always starts with fewer, and a
-/// submit never passes [`PASS_CAP`].
+/// Compute passes one step may open when its steps carry values.
+///
+/// A step's values sit in one submit's ring, so such a step cannot be split
+/// across submits. A [`Recorder`] with values therefore submits before a step
+/// and at its end once this many are pending: a step starts with fewer, and a
+/// submit stays under [`PASS_CAP`]. A recorder whose steps carry no values
+/// submits itself at [`PASS_CAP`] instead, inside a step if it must.
 pub const STEP_PASS_CAP: u32 = PASS_CAP / 2;
 
 /// Something compute passes and commands are recorded into.
@@ -44,7 +48,9 @@ pub trait Recording {
     /// Open a compute pass labelled `label`.
     fn pass(&mut self, label: &str) -> wgpu::ComputePass<'_>;
 
-    /// The encoder, for commands outside a pass (clears, copies).
+    /// The encoder, for commands outside a pass (clears, copies). A pass
+    /// opened on it directly escapes a [`Recorder`]'s count: open passes with
+    /// [`Self::pass`].
     fn commands(&mut self) -> &mut wgpu::CommandEncoder;
 }
 
@@ -175,7 +181,9 @@ impl<T: Pod> Recorder<T> {
     }
 
     /// Begin a step carrying `values`, and return the dynamic offset its
-    /// passes bind the step values at (0 when steps carry none).
+    /// passes bind the step values at (0 when steps carry none). Submits
+    /// first once [`STEP_PASS_CAP`] passes are pending, as from passes opened
+    /// outside steps, so the step has its whole budget.
     ///
     /// # Panics
     ///
@@ -183,6 +191,9 @@ impl<T: Pod> Recorder<T> {
     #[allow(clippy::cast_possible_truncation)] // an offset within a ring of u32 slots
     pub fn begin_step(&mut self, values: &T) -> u32 {
         assert!(!self.in_step, "begin_step inside a step");
+        if self.passes >= STEP_PASS_CAP {
+            self.submit();
+        }
         self.in_step = true;
         self.step_passes = 0;
         let Some(ring) = self.ring.as_mut() else {
@@ -219,12 +230,18 @@ impl<T: Pod> Recorder<T> {
     /// # Panics
     ///
     /// Inside a step.
-    #[allow(clippy::cast_possible_truncation)] // within the ring, see `with_step_values`
     pub fn submit(&mut self) -> Option<wgpu::SubmissionIndex> {
         assert!(
             !self.in_step,
             "a submit inside a step would split its values"
         );
+        self.flush()
+    }
+
+    /// Submit everything recorded, inside a step or not: only where no step's
+    /// values can split, which [`Self::submit`] and the pass cap ensure.
+    #[allow(clippy::cast_possible_truncation)] // within the ring, see `with_step_values`
+    fn flush(&mut self) -> Option<wgpu::SubmissionIndex> {
         let steps = std::mem::take(&mut self.steps);
         self.passes = 0;
         // Steps that recorded nothing leave nothing to submit or bind.
@@ -267,14 +284,21 @@ impl<T: Pod> Recorder<T> {
     ///
     /// # Panics
     ///
-    /// Inside a step, or when the GPU wait or a buffer's mapping fails. The
-    /// wait has no timeout: it waits for everything submitted before it, whose
+    /// Inside a step, when a byte count is not a multiple of 4 (wgpu copies
+    /// buffers in 4-byte units), or when the GPU wait or a buffer's mapping
+    /// fails. The wait has no timeout: it waits for everything submitted before it, whose
     /// length the caller sets, and [`PASS_CAP`] prevents the one hang measured.
     // Panicking is the contract: the executor trait's reads return values, not
     // errors, and a read that cannot finish leaves nothing to return.
     #[allow(clippy::panic)]
     pub fn read_many(&mut self, buffers: &[(&wgpu::Buffer, u64)]) -> Vec<Vec<u8>> {
         assert!(!self.in_step, "a read inside a step would split its values");
+        for &(_, bytes) in buffers {
+            assert!(
+                bytes % wgpu::COPY_BUFFER_ALIGNMENT == 0,
+                "a read of {bytes} bytes: reads come in multiples of 4 bytes"
+            );
+        }
         // An empty read needs no staging: wgpu maps no empty slice.
         let staging: Vec<Option<wgpu::Buffer>> = buffers
             .iter()
@@ -335,24 +359,33 @@ impl<T: Pod> Recorder<T> {
 }
 
 impl<T: Pod> Recording for Recorder<T> {
+    /// Submits itself once [`PASS_CAP`] passes are pending, where no step's
+    /// values can split: outside a step, or in a step that carries none.
+    ///
     /// # Panics
     ///
-    /// When the open step has opened [`STEP_PASS_CAP`] passes, or, outside
-    /// steps, when the pending submit holds [`PASS_CAP`]: it stops here rather
-    /// than block in [`wgpu::CommandEncoder::finish`].
+    /// When a step carrying values has opened [`STEP_PASS_CAP`] passes: it
+    /// stops here rather than split its values or block in
+    /// [`wgpu::CommandEncoder::finish`].
     fn pass(&mut self, label: &str) -> wgpu::ComputePass<'_> {
-        if self.in_step {
+        let values_in_step = self.in_step && self.ring.is_some();
+        if values_in_step {
             assert!(
                 self.step_passes < STEP_PASS_CAP,
-                "a step opened more than {STEP_PASS_CAP} compute passes (recon §17a)"
+                "a step carrying values opened more than {STEP_PASS_CAP} compute \
+                 passes, and its values cannot split across submits (recon §17a)"
             );
             self.step_passes += 1;
         }
-        assert!(
-            self.passes < PASS_CAP,
-            "{PASS_CAP} compute passes without a submit, and more would block on \
-             Metal (recon §17a): record in steps, or submit sooner"
-        );
+        if self.passes == PASS_CAP {
+            // `begin_step` and `end_step` keep a step carrying values under the
+            // cap; reaching it inside one means that bound was broken.
+            assert!(
+                !values_in_step,
+                "{PASS_CAP} compute passes pending inside a step carrying values"
+            );
+            self.flush();
+        }
         self.passes += 1;
         self.commands().pass(label)
     }

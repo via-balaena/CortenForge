@@ -274,7 +274,7 @@ impl GpuSmoothPipeline {
         model: &GpuModelBuffers,
         state: &GpuStateBuffers,
         cpu_model: &Model,
-        rec: &mut impl Recording,
+        encoder: &mut wgpu::CommandEncoder,
     ) {
         let nv = self.nv;
         if nv == 0 {
@@ -290,6 +290,6 @@ impl GpuSmoothPipeline {
         ctx.queue.write_buffer(&state.qfrc_actuator, 0, &zero_bytes);
         ctx.queue.write_buffer(&state.qfrc_passive, 0, &zero_bytes);
 
-        self.encode(rec);
+        self.encode(encoder);
     }
 }
