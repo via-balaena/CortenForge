@@ -828,7 +828,8 @@ The boundary is guarded in both directions:
   elastic and (since §16p) viscous forces today. A soft-contact phase, or any other force phase, must feed that
   prediction, and a node touching two surfaces needs a joint correction: part of step 8's design.)*
 - The GPU executor records each phase as compute passes, submits in chunks, and **never reads back**
-  except on an explicit read call. The pose samples stream to the device a batch at a time.
+  except on an explicit read call. The pose samples stream to the device a batch at a time. *(2026-09-30, §17b: the
+  pose is interpolated on the host and carried in each step's values, and a step is one pass.)*
 - The monitors (kinetic and internal energy, contact force) are reduced on the executor, and read
   every k steps.
 - **What phase-level costs:**
@@ -1392,7 +1393,8 @@ product's mesh, budget and contact law. Three macro reviews found what that desi
   a fixed 50 steps, or tracking the step, costed in G6 *(2026-09-29, §16z: at eight times h_K2's elements no run needed
   the retry, and a fixed 50 steps took 2.34 times the time, 27.5 of D4 against 11.8; tracking not costed)*
   *(2026-09-29, §17a: step 3's recorder assumes a step's values are known on the host when it is recorded, so tracking
-  the step on the device would need another design)*;
+  the step on the device would need another design)* *(2026-09-29, §17b: set, the loop's re-estimate every 500 steps
+  and §16y rule 1's re-run, which stays with the code that runs a press)*;
 
 **Starting now, in parallel with steps 1–2, needing no solver:**
 - U3's geometric check *(done, §16t)*;
@@ -1832,7 +1834,7 @@ against the scan; G2 against the grid needs a run on the product, step 7.)*
   - the reductions of the running values.
 - **Snapshot:** the displacements and the accumulated sums, read on request.
 - **The power iteration's pieces** (below). Its vector stays on the executor; the host reads one scalar
-  per iteration.
+  per iteration. *(2026-09-30, §17b: on the GPU the whole estimate is one read.)*
 
 **The CPU executor is one source file, compiled at f32 and f64** by the same `include!` pattern as the
 shared math (§14c). K3 compares the two. It loops with rayon on native, and sequentially on wasm32
@@ -5056,7 +5058,8 @@ Jon, 2026-09-29, after §16z: *"let's do it on metal first, on this laptop"*. Th
 - **The order.** This reverses Jon's order of 2026-09-26 (§15g step 2's note), which put the quality items first. Those
   still open stay open, to run afterwards or on the GPU: the items §16z's "For Jon's call" lists, and fit plan U15, the
   damping's form. The product loop's step control, mine, still comes before step 4 (§16z); on the GPU each re-estimate's
-  power iteration reads one scalar per iteration (§16e), and each read is a submit (§17a).
+  power iteration reads one scalar per iteration (§16e), and each read is a submit (§17a). *(2026-09-30, §17b: the step
+  control is set, and an estimate is one read.)*
 
 ### 17a. Step 3: recording and reading, shared (2026-09-29)
 
@@ -5067,7 +5070,8 @@ Jon, 2026-09-29, after §16z: *"let's do it on metal first, on this laptop"*. Th
   only on an explicit read (§14d).
 - Each step's own values: its phases take the step's time, dt and damping (`stepping.rs:194-196`). What else a step
   carries, the obstacle's pose interpolated on the device (§14b) from samples streamed a batch at a time (§14d) and the
-  work's move and turn from the f64 track (§15g step 4's note), is step 4's design. This assumes a step's values are
+  work's move and turn from the f64 track (§15g step 4's note), is step 4's design. *(2026-09-30, §17b: the pose is
+  interpolated on the host and carried in the step's values.)* This assumes a step's values are
   known on the host when the step is recorded; tracking the step on the device (not costed, §16z) would need another
   design.
 

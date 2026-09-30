@@ -567,7 +567,9 @@ fn reduce_tree(local: u32) {
     }
 }
 
-// Each workgroup's `TREE` items reduced into one partial per component.
+// Each workgroup's `TREE` items reduced into one partial per component. A
+// dispatch in two dimensions runs more workgroups than there are partials;
+// those write nothing.
 @compute @workgroup_size(256)
 fn reduce_partials(
     @builtin(workgroup_id) group: vec3<u32>,
@@ -575,6 +577,7 @@ fn reduce_partials(
     @builtin(local_invocation_index) local: u32,
 ) {
     let block = group.x + group.y * groups.x;
+    let blocks = (reduction.items + TREE - 1u) / TREE;
     let i = block * TREE + local;
     let components = reduction.components;
     for (var c = 0u; c < components; c++) {
@@ -585,7 +588,7 @@ fn reduce_partials(
         tree[c * TREE + local] = value;
     }
     reduce_tree(local);
-    if (local == 0u) {
+    if (local == 0u && block < blocks) {
         for (var c = 0u; c < components; c++) {
             partials[block * components + c] = tree[c * TREE];
         }

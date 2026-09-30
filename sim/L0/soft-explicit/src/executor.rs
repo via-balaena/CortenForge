@@ -348,8 +348,9 @@ pub trait Executor {
 
     /// Replace the obstacle's pose track: samples every `interval` from
     /// `start`. A run can change how the obstacle moves without losing its
-    /// state (plan §14d's poses streamed a batch at a time; K6's loading legs
-    /// that end on a force, 16b).
+    /// state (K6's loading legs that end on a force, plan 16b). The GPU
+    /// executor keeps the track on the host and carries each step's poses in
+    /// its values (plan §17b).
     ///
     /// # Errors
     /// An [`ObstacleError`] if the track is empty, its start is not finite,
