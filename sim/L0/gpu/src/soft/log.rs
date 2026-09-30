@@ -74,7 +74,7 @@ impl Totals {
         }
     }
 
-    /// Restart the ones since the last read.
+    /// Restart the ones since the last `monitors`.
     pub(super) const fn restart(&mut self) {
         self.resultant = [0.0; 3];
         self.moment = [0.0; 3];

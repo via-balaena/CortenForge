@@ -1318,9 +1318,10 @@ impl GpuExecutor {
         rows.written - 1
     }
 
-    /// The log's rows written since the last read, and the window sums if any
-    /// step added to them, read with `more` in one read; the rows and sums
-    /// taken into the host's totals, and `more`'s data returned.
+    /// The log's rows written since the last `monitors` or `snapshot`, and the
+    /// window sums if any step added to them, read with `more` in one read;
+    /// the rows and sums taken into the host's totals, and `more`'s data
+    /// returned.
     fn read_with_log(&mut self, more: &[(wgpu::Buffer, u64)]) -> Vec<Vec<u8>> {
         self.record_pending();
         let contact_bytes = bytes::<[f32; CONTACT_ROW]>(self.contact_rows.written);
