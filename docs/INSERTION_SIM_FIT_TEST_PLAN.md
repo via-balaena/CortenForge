@@ -283,6 +283,9 @@ which inset would pass.
     - Make it automatic once runs meet D4.
   - **D4 — The runtime budget.** *Decided:* at most 5 minutes per run on this machine (Apple M4
     Pro) and 15 minutes per search, measured on `base_mold` as G6.
+    - *(2026-09-29, recon §17: Jon's call, the GPU executor now, first on Metal on this machine. At eight times h_K2's
+      elements, the size used and not picked, a press takes 11.8 of D4 on the CPU; no step yet measures a device
+      against that, and the speed plan's revision the recon's rule asks for before GPU work is still owed.)*
     - Jon, 2026-09-24: *"i just mean i want a fast simulation. but i dont want to sacrifice quality."*
       So it is a target, measured per press (U13), and quality is never traded for it.
     - Each step is shown as it is solved, so the user watches the scan go in during the run, not after
@@ -668,7 +671,8 @@ in CI); G5 already gates in CI.
   about 2 % of a limit could be a wrong verdict. Every such change includes the stabilization's own change of stiffness, of unknown sign.
   Carried forward: the next PR reads D1's element size with this element and reads the collapse's change again there,
   at every corner; runs that fail with the loop's 500-step re-estimate are made again every 50 steps, and the product
-  loop's step control is an open item before the GPU.
+  loop's step control is an open item before the GPU. *(2026-09-29, recon §17: it is set before step 4, the GPU
+  executor; step 3's recorder assumes a step's values are known when the step is recorded, recon §17a.)*
   *(2026-09-29, recon §16z: read again at eight times h_K2's elements, the size used and not picked, every corner's
   collapse cleared and each masked change is within 5 %, at most +4.11 %, on the frictionless patch: U20 stands there.
   At twice h_K2's elements, which the size rule does not exclude, the masked change was +6.44 % (recon §16y), and at

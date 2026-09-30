@@ -538,7 +538,8 @@ has both, each over one model definition.
 - **Redesign** the GPU foundation for rigid **and** soft.
 - **Keep what has earned it:**
   - device setup;
-  - chunked submits (long command buffers hung the readback, `pipeline/orchestrator.rs:28-37`, round 1);
+  - chunked submits (long command buffers hung the readback, `pipeline/orchestrator.rs:28-37`, round 1)
+    *(2026-09-29, §17a: measured, what blocks is compute passes, inside `finish` on Metal, not the readback)*;
   - the atomic contact append, extracted as shared GPU infrastructure for soft-on-soft contact (§9
     decision 9). The CAS float-add is extracted too, if scatter is chosen over per-pair slots and a
     gather. The first experiment needs neither *(2026-09-29, §17a: both are extracted when soft-on-soft contact is
@@ -5043,68 +5044,66 @@ stopped there; none moved a verdict.
 
 Jon, 2026-09-29, after §16z: *"let's do it on metal first, on this laptop"*. The GPU executor is built now, §15g steps
 3–5, first on Metal on the M4 Pro, D4's machine (fit plan D4).
-- **It is the revision §15g's rule on D4 asks for** (step 2: "if it misses, the speed plan is revised before any GPU
-  work"). At eight times h_K2's elements, the size used and not picked, a press takes 11.8 of D4 on this CPU, so a
-  device must be at least 11.8 times as fast there (§16z). The quality gates are not loosened.
-- **It reverses his order of 2026-09-26** (§15g step 2's note), which put the quality items first. Those still open
-  stay open, with whose each is, as §16z's "For Jon's call" lists them, and fit plan U15, the damping's form; they run
-  afterwards or on the GPU. The product loop's step control, mine, still comes before step 4 (§16z). G6 costed it on
-  the CPU; on the GPU each re-estimate's power iteration also reads one scalar per iteration (§16e), and each read is a
-  submit (§17a).
+- **D4.** At eight times h_K2's elements, the size used and not picked, a press takes 11.8 of D4 on this CPU (§16z), so a
+  device must be at least 11.8 times as fast there. No step yet measures a device against that: K1, step 5's speed gate,
+  no longer clears D4 at that size (§16x). The revision of the speed plan that §15g's rule asks for before GPU work (step
+  2) is still owed. The quality gates are not loosened.
+- **The order.** This reverses Jon's order of 2026-09-26 (§15g step 2's note), which put the quality items first. Those
+  still open stay open, to run afterwards or on the GPU: the items §16z's "For Jon's call" lists, and fit plan U15, the
+  damping's form. The product loop's step control, mine, still comes before step 4 (§16z); on the GPU each re-estimate's
+  power iteration reads one scalar per iteration (§16e), and each read is a submit (§17a).
 
-### 17a. Step 3: recording and reading, shared (design, 2026-09-29; revised after its review)
+### 17a. Step 3: recording and reading, shared (2026-09-29)
 
-**What step 4's executor needs,** read from the loop and the trait:
-- **It is driven one phase at a time, and runs to a time, not a count** (`sim/L0/soft-explicit/src/stepping.rs:179-206`,
-  `:233-244`). Reads cut into the run: the monitors every 100 steps (§16e), the re-estimate, snapshots and phase outputs;
-  so do host writes, `set_state` and `set_poses` (`src/executor.rs:341-408`). The GPU executor records phases as compute
-  passes and never reads back except on an explicit read call (§14d).
-- **Each step's own values.** Its phases take the step's time, dt and damping as arguments (`stepping.rs:194-196`).
-  What else a step carries, the obstacle's pose interpolated on the device (§14b) from samples streamed a batch at a
-  time (§14d) and the work's move and turn from the f64 track (§15g step 4's note), is step 4's design. This assumes a
-  step's values are known on the host when the step is recorded, as they are under the loop's re-estimate, where alone
-  dt changes; tracking the step on the device (not costed, §16z) would need another design.
-- **Ordering.** A `queue.write_buffer` is not a command: wgpu runs every write issued before a submit "just before the
-  explicitly submitted commands" (wgpu 27.0.1, `src/api/queue.rs:114-116`). A write issued while steps are recorded but
-  not submitted lands before all of them: a write per step collapses to the last, and a `set_state` between recorded
-  steps overtakes them.
-- **A bound on each submit, counted in compute passes.** Measured on Metal (the M4 Pro, wgpu 27, a debug build, one
-  dispatch a pass): 2 047 passes in one command buffer complete; 2 048 block for good inside `CommandEncoder::finish`.
-  wgpu-core opens two Metal command buffers for each compute pass (`wgpu-core-27.0.3/src/command/compute.rs:543-547`,
-  `:770-799`), and wgpu-hal gives the queue 4 096 (`wgpu-hal-27.0.4/src/metal/adapter.rs:30`, `:54`), none of them
-  committed before the submit. One more is outstanding than two a pass account for; which one is not isolated. The
-  rigid pipeline's hang is the same: T38 with its chunk bound removed blocked in `finish`, at a Metal command-buffer
-  allocation (its stack sampled 15 s in). So it is not the readback that hangs, as `pipeline/orchestrator.rs:28-37`
-  says, and 32 substeps do not bound passes: the collision stage opens one per pair (`pipeline/collision.rs:477-478`).
-  Peak memory was about 0.4 MB a pass. Vulkan and a release build are not measured.
+**What step 4's executor needs,** read from the loop and the trait in `sim/L0/soft-explicit/src`:
+- It is driven one phase at a time and runs to a time, not a count (`stepping.rs:179-206`, `:233-244`). Reads cut into
+  the run: the monitors every 100 steps (§16e), the re-estimate, snapshots and phase outputs; so do host writes,
+  `set_state` and `set_poses` (`executor.rs:341-408`). The GPU executor records phases as compute passes and reads back
+  only on an explicit read (§14d).
+- Each step's own values: its phases take the step's time, dt and damping (`stepping.rs:194-196`). What else a step
+  carries, the obstacle's pose interpolated on the device (§14b) from samples streamed a batch at a time (§14d) and the
+  work's move and turn from the f64 track (§15g step 4's note), is step 4's design. This assumes a step's values are
+  known on the host when the step is recorded; tracking the step on the device (not costed, §16z) would need another
+  design.
 
-**Scope.**
-1. **`sim_gpu::submit::Recorder`**, new: the one place work is recorded, submitted and read.
-   - It holds the pending command encoder and opens every compute pass, counting them.
-   - Each step's values go into a uniform ring, one slot a step at the device's `min_uniform_buffer_offset_alignment`,
-     staged on the host and written at the submit; the step's passes bind its slot by a dynamic offset, as `fk.rs`
-     binds its per-level parameters (`pipeline/fk.rs:74`, `:304`). The ring needs no device feature, and the context
-     requests none (`context.rs:51`). Push constants would serve on Metal and Vulkan too (a native feature in wgpu 27,
-     renamed immediates from 28); they are not used, so the device stays featureless.
-   - It submits at a step's end once half its cap is used or its ring is full, at every read, and before every host
-     write.
-   - Its cap is 1 024 passes a submit. A run of other commands between two passes (clears, copies) opens one more Metal
-     command buffer (`command/mod.rs:1352`, `:635-643`), so a submit holds at most about 3 072 of the queue's 4 096. A
-     step that would pass the cap stops with a message instead of blocking.
-   - A read copies the buffers it names into staging, submits once, waits once, and maps each. A failed wait or map
-     stops with its cause: the trait's reads return values, not errors (`executor.rs:401-408`). Today a 5 s timeout logs
-     a warning and the unmapped buffer then panics with an unrelated message (`orchestrator.rs:373-388`,
-     `fk.rs:434-442`). The wait has no timeout: the cap prevents the one hang measured, and a timeout would fail a long,
-     correct submit.
-2. **The rigid pipeline records through it.** Its stages open their passes with the recorder, and `step()` submits by
-   the cap instead of every 32 substeps. The readback helpers in `pipeline/fk.rs:377-442` and `map_staging_f32` become
-   the recorder's read, for f32, `vec4<f32>` and u32 (the contact count is read today through f32 bits,
-   `pipeline/tests.rs:1451-1452`).
-3. **The test policy.** Twelve pipeline tests return on `GpuPipelineError::NoGpu` without consulting `test_support`
-   (`pipeline/tests.rs:2030` and eleven more). `NoGpu` now carries the `GpuError`, and they go through the policy. The
-   context's test, `gpu_context_creates_on_metal`, asserts only that the adapter has a name (`context.rs:103-111`); it
-   now asserts the backend, Metal on macOS and Vulkan elsewhere, and that the device was granted the adapter's buffer
-   limits.
+**Two facts about wgpu 27 that it rests on.**
+- A `queue.write_buffer` runs "just before the explicitly submitted commands" of the next submit (wgpu 27.0.1,
+  `src/api/queue.rs:114-116`), so a write issued while work is recorded but not submitted overtakes all of it. Two tests
+  assert it: `values_written_between_encodes_collapse_to_the_last` and `a_bare_write_overtakes_the_steps_before_it`
+  (`sim/L0/gpu/src/submit/tests.rs`).
+- On Metal, one command buffer of 2 048 compute passes blocks for good inside `CommandEncoder::finish`, and 2 047
+  complete (measured on the M4 Pro, a debug build, one dispatch a pass). wgpu-core opens two Metal command buffers for
+  each compute pass (`wgpu-core-27.0.3/src/command/compute.rs:543-547`, `:770-799`), wgpu-hal gives the queue 4 096
+  (`wgpu-hal-27.0.4/src/metal/adapter.rs:30`, `:54`), and none is committed before the submit. One more is outstanding
+  than two a pass account for; which one is not isolated. The rigid pipeline's hang was this, not the readback §11
+  names: T38 with its chunk bound removed blocked in `finish`, at a Metal command-buffer allocation (its stack sampled).
+  T38's model opens 24 passes a substep, and the collision stage opens one per dispatch (`pipeline/collision.rs:476`),
+  so a bound in substeps is not one in passes.
+
+**What was built** (`sim/L0/gpu/src/submit.rs`).
+- `Recorder` holds the pending encoder and opens every compute pass (`Recording::pass`), counting them. A step
+  (`begin_step`, `end_step`) may open `STEP_PASS_CAP`, 512 passes, and the recorder submits at a step's end once 512 are
+  pending or its ring is full, so a submit stays under `PASS_CAP`, 1 024: with a run of other commands between each two
+  passes, which opens one more Metal command buffer (`command/mod.rs:1352`, `:635-643`), at most about 3 072 of the
+  queue's 4 096. A step past its cap, or 1 024 passes outside steps, stops with a message.
+- Each step's values go into a uniform ring, one slot a step at `min_uniform_buffer_offset_alignment`, staged on the
+  host, written at the submit, and bound by a dynamic offset, as `fk.rs` binds its per-level parameters
+  (`pipeline/fk.rs:75`, `:302`). It needs no device feature, and the context requests none (`context.rs:39`). Push
+  constants would serve on Metal and Vulkan too (a native feature in wgpu 27, renamed immediates from 28); they are not
+  used, so the device stays featureless.
+- `write` submits what was recorded before it. `read` and `read_many` copy the buffers named into staging, submit once,
+  map each and wait once, with no timeout: the wait covers everything submitted before it, whose length the caller
+  sets. A failed wait or map stops with its cause, since the trait's reads return values, not errors
+  (`executor.rs:401-408`). Reads, writes and submits inside a step stop with a message.
+- The rigid pipeline records through it. Its stages open passes through `Recording` (a bare encoder in tests), and
+  `step()` records one step a substep and reads qpos and qvel in one read; its uploads and uniform writes go straight to
+  the queue before it creates its recorder, so they land at the recorder's first submit. `SUBSTEP_CHUNK`, the staging
+  buffers, `map_staging_f32` and `fk.rs`'s readback helpers are gone; tests read through `submit::read_buffer`, and read
+  counts as u32 rather than through f32 bits.
+- The test policy: eleven pipeline tests (twelve places; T28 has two) returned on `NoGpu` without consulting
+  `test_support`. `NoGpu` now carries the context's `GpuError`, and they go through the policy (`pipeline_or_skip`). The
+  context's test asserts the backend, Metal on macOS and Vulkan elsewhere, and that the device got the adapter's buffer
+  limits.
 
 **Not here.**
 - **The contact-list tools** (the atomic append and the CAS float-add; §11, §14a). Step 4 need not use them, and today
@@ -5113,33 +5112,52 @@ Jon, 2026-09-29, after §16z: *"let's do it on metal first, on this laptop"*. Th
   extracted when soft-on-soft contact is built, after step 8's design (§9 decision 9), where they have a user (Jon
   agreed, 2026-09-29).
 - **A rigid pipeline built on a caller's device,** for §14a's rigid–soft exchange on one device: no user before that
-  exchange. The pipeline creates its own (`orchestrator.rs:151`).
-- **More storage buffers per stage than the context's 16, wgpu features, and lavapipe's granted binding size:** step 4
-  names what it needs (§15g step 4's note).
+  exchange. The pipeline creates its own (`pipeline/orchestrator.rs:137`).
+- **For step 4:** its host writes go through the recorder (the queue stays public for the rigid pipeline's writes
+  before recording); more storage buffers per stage than the context's 16, wgpu features, and lavapipe's granted binding
+  size are its to name (§15g step 4's note).
 - **wgpu stays at 27** (§15g step 3).
 
-**The gates, each made to fail once before it counts.**
-- **Each step's values:** each step's kernel writes its value into that step's cell, the cells first set to a sentinel,
-  over steps spanning several submits with a read between them; every cell must hold its own step's value. Made to fail
-  by writing each step's values to one slot with `write_buffer` between encodes. That arm stays as a test asserting the
-  collapse, so the reason for the ring is checked, not stated.
-- **A write waits for the steps before it:** a host write through the recorder, between recorded steps, is seen only by
-  the steps after it. Made to fail by a bare `write_buffer`, which the earlier steps see; that arm also stays, asserting
-  it.
-- **The cap:** a submit of 1 024 passes completes here, on a thread that fails after a time limit rather than hanging the
-  suite; a step past the cap stops with its message. Made to fail by raising the cap to 2 048, which blocks as measured.
-- **T38** (`pipeline/tests.rs:2931-3004`): one `step(150)` byte-identical to 150 `step(1)`, and no hang. Its no-hang half
-  failed as measured above; its byte half is made to fail by dropping the last, partial submit.
-- **Before and after:** the rigid rollouts that repeat bit for bit at `df00dea8` are compared bit for bit after the
-  change (a one-off, recorded here). The rest of the suite compares against the CPU within tolerances, not against the
-  code before.
-- **The test policy:** with `GpuContext::new` made to find no adapter and `CF_REQUIRE_GPU=1`, the twelve tests fail; at
-  `df00dea8` the same change leaves them passing.
+**The gates, each made to fail once** (the recorder's in `sim/L0/gpu/src/submit/tests.rs`, the pipeline's in
+`sim/L0/gpu/src/pipeline/tests.rs`):
+
+| Gate | Made to fail by |
+|---|---|
+| `each_step_reads_its_own_values`: 40 steps through a ring of 8 slots, so it fills and its slots are reused, and a read after step 21; the cells start unwritten | every step's values staged into one slot |
+| `a_write_waits_for_the_steps_before_it` | a write that does not submit first |
+| `a_submit_at_the_cap_completes`: 1 024 passes outside steps, on a thread given a minute | the cap raised to 2 048, which blocked until the minute ran out |
+| `a_step_past_its_pass_cap_stops_with_a_message` | the submit cap in place of the step cap |
+| `a_pass_past_the_cap_stops_with_a_message` | the submit cap checked one pass late |
+| `reads_writes_and_submits_inside_a_step_stop` | a read allowed inside a step |
+| T38: one `step(150)`, seven submits, byte-identical to 150 `step(1)`, and no hang | a read that drops the pending submit; unbounded, it blocked (above) |
+| T40: `step(0)` reads the state back, rounded to f32 | an early return at zero substeps |
+| the test policy | `GpuContext::new` finding no adapter under `CF_REQUIRE_GPU=1`: 3 tests pass and 52 fail; at `df00dea8` the same change let 14 pass, 11 of them pipeline tests that never ran |
+| the context's test | asking for wgpu's default buffer size, which it caught: 268 435 456 bytes granted against the adapter's 14 302 248 960 |
+
+Not made to fail:
+- `back_to_back_submits_at_the_step_cap_complete`, on Metal only: sixteen submits of 512 passes, with more GPU work in
+  each than recording it takes. Measured: recorded in 2.2 s and done in 3.1 s, where recording the same passes with no
+  work takes 0.3 s, so the recording waited on the GPU and did not block. What it waited on is not isolated.
+- A failed wait or map: no way was found to make one fail on demand.
+
+**Before and after** (a one-off; the probe and its outputs are local). Four rollouts, run ten times at `df00dea8` and ten
+times after: T38's free fall, a sphere resting on a plane, implicit damping, and four environments on a plane. Free fall
+and damping repeat bit for bit and are bit-for-bit identical before and after. The two with contact do not repeat run to
+run: x, y and the velocities differ by up to 1.9e-18 between runs of the same code, with height and time exact. Before to
+after they differ by at most 2.2e-18, the same order (a maximum over 100 pairs, against 45 within each side). What
+differs between their runs is not isolated.
 
 **Done when:** `sim-gpu`'s suite passes on Metal on the M4 Pro with `CF_REQUIRE_GPU=1`, a local run, since no CI job
 runs `sim-gpu` on Metal (the macOS job tests other crates, `.github/workflows/quality-gate.yml:942-982`); it passes on
 lavapipe in `tests-debug` shard 3 (`quality-gate.yml:589-637`); `sim-gpu` grades A; and `sim-gpu-benches`, the one crate
 that uses it, passes.
+
+**Results** (the code at `a6c854cc`):
+- On Metal, `CF_REQUIRE_GPU=1 cargo test -p sim-gpu`: 65 of 65 pass, on the Apple M4 Pro.
+- `cargo xtask grade sim-gpu`: A on every automated criterion, coverage 97.9 %. Its first run was F on Clippy, for an
+  `#[allow(clippy::panic)]` with no `//` justification, which the pre-commit hook's clippy does not check.
+- `sim-gpu-benches`: its test passes.
+- lavapipe, in CI's `tests-debug` shard 3: at the push.
 
 **Before the change** (`df00dea8`): 55 of 55 tests pass on Metal, the adapter reporting Apple M4 Pro on Metal, in
 4.0 s; `cargo xtask grade sim-gpu` is A on every automated criterion, with coverage 97.9 %. (§14e had left whether
@@ -5156,3 +5174,11 @@ that uses it, passes.
 - D4's rule on GPU work, the step control's place before step 4, and the open items' owners were missing from §17;
 - push constants were ruled out on a removed field, not a removed capability;
 - no gate made T38's no-hang half fail, and none compared the rigid pipeline with itself before the change.
+
+Round 2: one fresh reviewer of the revision found nine problems, seven of them written by the revision: §17 called the
+GPU work D4's revision though nothing could fail; the write rule held only for writes through the recorder; the ring's
+wrap, a failed wait and the before-and-after comparison had no failing arm; the cap was argued one submit at a time,
+though submits run back to back; §11 still named the readback; a step's pass budget depended on what was pending; and the
+no-timeout reason did not hold for capped submits. Two were older: "twelve tests" counted places, and the fit plan had
+no note. They were fixed in the code and its tests, measured, or cut, and the design rounds stopped there. The eleven
+tests were found by a mutation run before this round reported them.
