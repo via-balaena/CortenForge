@@ -237,7 +237,8 @@ fn a_break_at_the_first_iteration_leaves_omega_squared_at_zero() {
 
 /// ★ On Metal, three runs of 1 000 tube steps through the stepping loop
 /// repeat bit for bit: no float is added by an atomic, and every sum is a
-/// fixed tree.
+/// fixed tree. A run that stops is compared as far as it went, by bits, so a
+/// `NaN` compares by its payload.
 #[test]
 fn three_runs_on_metal_repeat_bit_for_bit() {
     let Some(ctx) = context() else { return };
@@ -246,20 +247,39 @@ fn three_runs_on_metal_repeat_bit_for_bit() {
         return;
     }
     let f = fixtures::tube();
-    let runs: Vec<(Snapshot, Vec<Monitors>)> = (0..3)
+    let runs: Vec<(Result<(), RunError>, Vec<u64>)> = (0..3)
         .map(|_| {
             let mut stepper = Stepper::new(gpu(&ctx, &f), StepperConfig::new(f.damping), f.time);
-            for _ in 0..1000 {
-                stepper.step().unwrap();
-            }
-            let monitors = stepper.samples().iter().map(|s| s.monitors).collect();
-            (stepper.executor_mut().snapshot(), monitors)
+            let stopped = (0..1000).try_for_each(|_| stepper.step());
+            let snapshot = stepper.executor_mut().snapshot();
+            let bits = [
+                &snapshot.displacements,
+                &snapshot.velocities,
+                &snapshot.anchors,
+            ]
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|x| x.to_bits())
+            .chain(stepper.samples().iter().flat_map(|s| {
+                let m = s.monitors;
+                [
+                    m.kinetic_energy,
+                    m.internal_energy,
+                    m.contact_work,
+                    m.obstacle_work,
+                ]
+                .map(f64::to_bits)
+            }))
+            .collect();
+            (stopped, bits)
         })
         .collect();
     for run in &runs[1..] {
-        assert!(run.0 == runs[0].0, "the state differs");
-        assert!(run.1 == runs[0].1, "the monitors differ");
+        assert_eq!(run.0, runs[0].0, "one run stopped where another did not");
+        assert!(run.1 == runs[0].1, "the runs differ");
     }
+    assert!(runs[0].0.is_ok(), "the runs stopped: {:?}", runs[0].0);
 }
 
 /// ★ With no window open, a run read every step and the same run read every
