@@ -14,8 +14,8 @@
 //!   a step, and a host write through [`Recorder::write`] first submits what
 //!   was recorded before it.
 //!
-//! Reads and writes happen between steps: one inside a step would split the
-//! step's values across two submits, so it stops with a message instead.
+//! Reads, writes and submits happen between steps, and stop with a message
+//! inside one.
 
 use std::sync::mpsc;
 
@@ -32,11 +32,11 @@ pub const PASS_CAP: u32 = 1024;
 
 /// Compute passes one step may open when its steps carry values.
 ///
-/// A step's values sit in one submit's ring, so such a step cannot be split
-/// across submits. A [`Recorder`] with values therefore submits before a step
-/// and at its end once this many are pending: a step starts with fewer, and a
-/// submit stays under [`PASS_CAP`]. A recorder whose steps carry no values
-/// submits itself at [`PASS_CAP`] instead, inside a step if it must.
+/// A [`Recorder`] submits before a step and at its end once this many are
+/// pending, so a step starts with fewer. A step's values sit in one submit's
+/// ring, so a step carrying them cannot be split across submits: it may open
+/// this many, and a submit then holds at most [`PASS_CAP`]. A step carrying no
+/// values has no such limit; the recorder also submits inside it, at the cap.
 pub const STEP_PASS_CAP: u32 = PASS_CAP / 2;
 
 /// Something compute passes and commands are recorded into.
@@ -233,7 +233,7 @@ impl<T: Pod> Recorder<T> {
     pub fn submit(&mut self) -> Option<wgpu::SubmissionIndex> {
         assert!(
             !self.in_step,
-            "a submit inside a step would split its values"
+            "a submit inside a step: submit between steps"
         );
         self.flush()
     }
@@ -273,7 +273,8 @@ impl<T: Pod> Recorder<T> {
     ///
     /// # Panics
     ///
-    /// Inside a step, or when the GPU wait or the buffer's mapping fails.
+    /// Inside a step, when `count` values of `P` are not a multiple of 4 bytes,
+    /// or when the GPU wait or the buffer's mapping fails.
     pub fn read<P: Pod>(&mut self, buffer: &wgpu::Buffer, count: usize) -> Vec<P> {
         let bytes = (count * std::mem::size_of::<P>()) as u64;
         values(&self.read_many(&[(buffer, bytes)])[0])
@@ -292,7 +293,7 @@ impl<T: Pod> Recorder<T> {
     // errors, and a read that cannot finish leaves nothing to return.
     #[allow(clippy::panic)]
     pub fn read_many(&mut self, buffers: &[(&wgpu::Buffer, u64)]) -> Vec<Vec<u8>> {
-        assert!(!self.in_step, "a read inside a step would split its values");
+        assert!(!self.in_step, "a read inside a step: read between steps");
         for &(_, bytes) in buffers {
             assert!(
                 bytes % wgpu::COPY_BUFFER_ALIGNMENT == 0,
@@ -417,7 +418,8 @@ pub fn values<P: Pod>(bytes: &[u8]) -> Vec<P> {
 ///
 /// # Panics
 ///
-/// When the GPU wait or the buffer's mapping fails.
+/// When `count` values of `P` are not a multiple of 4 bytes, or when the GPU
+/// wait or the buffer's mapping fails.
 #[must_use]
 pub fn read_buffer<P: Pod>(ctx: &GpuContext, buffer: &wgpu::Buffer, count: usize) -> Vec<P> {
     Recorder::new(ctx).read(buffer, count)

@@ -3035,3 +3035,47 @@ fn t40_zero_substeps_read_the_state_back() {
     // 0.1 has no exact f32, so a state that really went through the GPU moved.
     assert_ne!(data.qpos[0], init.qpos[0], "the state was not read back");
 }
+
+// ── T41: A substep past the pass cap runs ─────────────────────────────
+//
+// 1 024 static SDF spheres far from a falling one: the collision stage opens two
+// compute passes for each SDF pair, so every substep opens more passes than one
+// command buffer holds on Metal (2 047; recon §17a). `step()` records with no step
+// values, so its recorder submits inside the substep at the cap, and where it does
+// must not change the trajectory: one `step(2)` is byte-identical to two `step(1)`.
+#[test]
+fn t41_a_substep_past_the_pass_cap_runs() {
+    const STATIC_SPHERES: u32 = 1024;
+    let mut model = Model::free_body(1.0, Vector3::new(0.1, 0.2, 0.3));
+    add_sdf_sphere_geom(&mut model, 1, 5.0, 6);
+    for i in 0..STATIC_SPHERES {
+        add_sdf_sphere_geom(&mut model, 0, 1.0, 6);
+        let geom = model.ngeom - 1;
+        model.geom_pos[geom] = Vector3::new(100.0 + 3.0 * f64::from(i), 0.0, 0.0);
+    }
+    let mut init = model.make_data();
+    init.qpos[2] = 50.0;
+    init.qpos[3] = 1.0;
+
+    let Some(pipeline) = pipeline_or_skip("T41", GpuPhysicsPipeline::new(&model, &init)) else {
+        return;
+    };
+    let (runner, start) = (model.clone(), init.clone());
+    let (one_call, per_substep) = crate::test_support::within_a_minute("T41", move || {
+        let mut one_call = start.clone();
+        pipeline.step(&runner, std::slice::from_mut(&mut one_call), 2);
+        let mut per_substep = start;
+        for _ in 0..2 {
+            pipeline.step(&runner, std::slice::from_mut(&mut per_substep), 1);
+        }
+        (one_call, per_substep)
+    });
+
+    for i in 0..model.nq {
+        assert_eq!(one_call.qpos[i], per_substep.qpos[i], "qpos[{i}]");
+    }
+    for i in 0..model.nv {
+        assert_eq!(one_call.qvel[i], per_substep.qvel[i], "qvel[{i}]");
+    }
+    assert!(one_call.qpos[2] < init.qpos[2], "the sphere did not fall");
+}
