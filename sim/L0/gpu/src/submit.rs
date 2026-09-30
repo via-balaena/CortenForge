@@ -84,6 +84,9 @@ pub struct Recorder<T: Pod = ()> {
     in_step: bool,
     ring: Option<Ring>,
     values: std::marker::PhantomData<T>,
+    /// Reads made, for a test to count.
+    #[cfg(test)]
+    reads: u32,
 }
 
 /// The uniform ring behind each step's values: one slot a step, each at the
@@ -148,6 +151,8 @@ impl<T: Pod> Recorder<T> {
             in_step: false,
             ring,
             values: std::marker::PhantomData,
+            #[cfg(test)]
+            reads: 0,
         }
     }
 
@@ -256,6 +261,12 @@ impl<T: Pod> Recorder<T> {
         Some(self.queue.submit([encoder.finish()]))
     }
 
+    /// The reads made so far.
+    #[cfg(test)]
+    pub(crate) const fn reads(&self) -> u32 {
+        self.reads
+    }
+
     /// Write `data` into `buffer` at `offset`, after everything recorded
     /// before it.
     ///
@@ -294,6 +305,10 @@ impl<T: Pod> Recorder<T> {
     #[allow(clippy::panic)]
     pub fn read_many(&mut self, buffers: &[(&wgpu::Buffer, u64)]) -> Vec<Vec<u8>> {
         assert!(!self.in_step, "a read inside a step: read between steps");
+        #[cfg(test)]
+        {
+            self.reads += 1;
+        }
         for &(_, bytes) in buffers {
             assert!(
                 bytes % wgpu::COPY_BUFFER_ALIGNMENT == 0,
