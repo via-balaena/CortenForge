@@ -289,7 +289,7 @@ fn three_runs_on_metal_repeat_bit_for_bit() {
         })
         .collect();
     for run in &runs[1..] {
-        assert_eq!(run.0, runs[0].0, "one run stopped where another did not");
+        assert_eq!(run.0, runs[0].0, "the runs stopped differently");
         assert!(run.1 == runs[0].1, "the runs differ");
     }
     assert!(runs[0].0.is_ok(), "the runs stopped: {:?}", runs[0].0);
