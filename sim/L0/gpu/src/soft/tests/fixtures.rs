@@ -2,6 +2,8 @@
 //! state set on every executor, deformed 1–10 % unless named; and the margins
 //! each asserts from the CPU's state: clear of where an output jumps.
 
+#![cfg(test)]
+
 use sim_soft_explicit::executor::{Obstacle, PhaseOutputs, Snapshot};
 use sim_soft_explicit::f64::{Material, Pose, SdfGridLayout};
 use sim_soft_explicit::fixtures::grid::bricks;

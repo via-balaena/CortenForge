@@ -3,6 +3,8 @@
 //! each output held to its bar. The CPU at f64 runs beside them: phase 6's bar
 //! is twice the CPU at f32's distance from it, and every output's is printed.
 
+#![cfg(test)]
+
 use sim_soft_explicit::cpu;
 use sim_soft_explicit::executor::{Executor, Monitors, PhaseOutputs, Snapshot, rigid_motion};
 use sim_soft_explicit::f64 as shared;

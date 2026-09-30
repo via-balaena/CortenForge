@@ -18,7 +18,7 @@
 //! - **Sums over nodes.** Metal compiles with fast math, which drops a
 //!   compensated sum's error term, so the device keeps none. Each sum is a
 //!   fixed f32 tree, per step into a row of the step log or per workgroup at a
-//!   read, and the host adds the rows and partials at f64 ([`log`]). Maxima
+//!   read, and the host adds the rows and partials at f64 (`soft/log.rs`). Maxima
 //!   are `max` trees, and counts u32 atomics into a 64-bit pair.
 //! - **Reads.** Rows, window sums and partials come back only at the trait's
 //!   reads, each one [`Recorder::read_many`]. The internal energy read and the
@@ -283,6 +283,7 @@ impl Tracks {
     }
 
     /// The pose at `time`, as the CPU executor at f32 interpolates it.
+    // f64 → f32 rounds, as the CPU executor at f32 narrows its boundary values.
     #[allow(clippy::cast_possible_truncation)]
     fn at(&self, time: f64) -> shared::Pose {
         let span = shared::pose_sample_span(
@@ -317,6 +318,7 @@ const fn pose_values(p: shared::Pose) -> [f32; 7] {
     [p.qw, p.qx, p.qy, p.qz, p.tx, p.ty, p.tz]
 }
 
+// f64 → f32 rounds, as the CPU executor at f32 narrows its boundary values.
 #[allow(clippy::cast_possible_truncation)]
 const fn narrow3(v: [f64; 3]) -> [f32; 3] {
     [v[0] as f32, v[1] as f32, v[2] as f32]
@@ -760,6 +762,7 @@ impl GpuExecutor {
 
         let recorder = Recorder::<StepValues>::with_step_values(ctx, RING_SLOTS);
         let kernels = Kernels::new(ctx);
+        // Cannot fail: the recorder is built with `with_step_values`.
         let Some(step_values) = recorder.step_values_binding() else {
             unreachable!("a recorder built with step values binds them");
         };
@@ -1286,6 +1289,7 @@ impl GpuExecutor {
                 0,
                 u64::from(rows.capacity) * row_bytes,
             );
+            // Cannot fail: the recorder is built with `with_step_values`.
             let Some(step_values) = self.recorder.step_values_binding() else {
                 unreachable!("a recorder built with step values binds them");
             };
@@ -1572,11 +1576,13 @@ impl Executor for GpuExecutor {
         );
     }
 
+    // f64 → f32 rounds, as the CPU executor at f32 narrows its boundary values.
     #[allow(clippy::cast_possible_truncation)]
     fn integrate(&mut self, dt: f64, damping: f64) {
         self.append(Phase::Integrate, Some([dt as f32, damping as f32]), |_| {});
     }
 
+    // f64 → f32 rounds, as the CPU executor at f32 narrows its boundary values.
     #[allow(clippy::cast_possible_truncation)]
     fn boundary_conditions(&mut self, dt: f64, damping: f64) {
         self.append(

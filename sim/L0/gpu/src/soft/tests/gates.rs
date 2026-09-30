@@ -1,5 +1,7 @@
 //! The gates on what is particular to the GPU executor (recon §17b).
 
+#![cfg(test)]
+
 use sim_soft_explicit::cpu;
 use sim_soft_explicit::executor::{Executor, Monitors, PhaseOutputs, Snapshot};
 use sim_soft_explicit::stepping::{RunError, Stepper, StepperConfig};

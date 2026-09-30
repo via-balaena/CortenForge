@@ -2,6 +2,7 @@
 //! CPU executor at f32 on every fixture, and the gates on what is particular
 //! to the GPU. Each gate was made to fail once by the change §17b names.
 
+#![cfg(test)]
 #![allow(
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
