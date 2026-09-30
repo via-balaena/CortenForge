@@ -46,6 +46,8 @@ pub struct Fixture {
     pub displacements: Vec<[f64; 3]>,
     pub velocities: Vec<[f64; 3]>,
     pub anchors: Option<Vec<[f64; 3]>>,
+    /// Whether its step shows what the fixture is for.
+    pub shows: fn(&Margins) -> bool,
 }
 
 /// Every fixture §17b names.
@@ -265,6 +267,7 @@ pub fn tube() -> Fixture {
         .unwrap();
     Fixture {
         name: "the tube, frictional",
+        shows: |m| m.in_contact > 0,
         displacements: deformation(&model, tube.length, 0.01),
         velocities: velocities(&model),
         model,
@@ -291,6 +294,7 @@ pub fn two_materials() -> Fixture {
     );
     Fixture {
         name: "two materials",
+        shows: |_| true,
         displacements: deformation(&model, 0.04, 0.05),
         velocities: velocities(&model),
         model,
@@ -302,11 +306,15 @@ pub fn two_materials() -> Fixture {
     }
 }
 
-/// The silicone with its viscosity (7 Pa·s).
+/// The silicone with its viscosity (7 Pa·s), and a volumetric stabilization
+/// of twice μ (recon §16y), which the product runs without.
 pub fn viscous() -> Fixture {
-    let model = block_model((3, 3, 2), |_| material(23.0e3, 0.49, 7.0), |_| false);
+    let model = block_model((3, 3, 2), |_| material(23.0e3, 0.49, 7.0), |_| false)
+        .with_volumetric_stabilization(2.0)
+        .unwrap();
     Fixture {
-        name: "viscous",
+        name: "viscous, stabilized",
+        shows: |_| true,
         displacements: deformation(&model, 0.03, 0.05),
         velocities: velocities(&model),
         model,
@@ -339,6 +347,7 @@ pub fn constrained() -> Fixture {
     let model = model.with_constraints(constraints).unwrap();
     Fixture {
         name: "held and constrained",
+        shows: |m| m.constrained_contacts > 0,
         displacements: deformation(&model, 0.03, 0.03),
         velocities: velocities(&model),
         model,
@@ -350,22 +359,27 @@ pub fn constrained() -> Fixture {
     }
 }
 
-/// A block pressed on a floor with a fine grid under part of it.
+/// A block pressed on a floor with a fine grid under part of it, 0.1 mm
+/// lower than the coarse grid's, so a depth read from the wrong grid shows.
 fn fine_grid() -> Fixture {
     let model = block_model((3, 3, 2), |_| SILICONE, |p| p[2] > 0.02 - 1e-9);
     let coarse = rising_floor(0.0);
-    let fine = floor(
+    let mut fine = floor(
         ([-0.01, -0.01, -0.005], [0.04, 0.04, 0.005], 0.0005),
         1.0,
         vec![IDENTITY],
         0.0,
     );
+    for value in &mut fine.values {
+        *value += 1e-4;
+    }
     let obstacle = Obstacle {
         fine: Some(bricks(fine.grid, &fine.values, |[i, _, _]| i < 3)),
         ..coarse
     };
     Fixture {
         name: "a fine grid",
+        shows: |m| m.fine_contacts > 0 && m.fine_contacts < m.in_contact,
         displacements: deformation(&model, 0.03, 0.03),
         velocities: velocities(&model),
         model,
@@ -378,11 +392,12 @@ fn fine_grid() -> Fixture {
 }
 
 /// A floor tilted 0.1 rad about x, turning about y at 1 rad/s and rising,
-/// pressed 1–4 mm into a block's bottom face, frictional.
+/// pressed into a block's bottom face, frictional.
 pub fn moving_and_turning() -> Fixture {
     let model = block_model((3, 3, 2), |_| SILICONE, |p| p[2] > 0.02 - 1e-9);
     Fixture {
         name: "an obstacle that moves and turns",
+        shows: |m| m.in_contact > 0,
         displacements: deformation(&model, 0.03, 0.03),
         velocities: velocities(&model),
         model,
@@ -425,9 +440,9 @@ pub fn turning_floor(rate: f64) -> Obstacle {
     )
 }
 
-/// A block pressed on a frictional floor, its bottom nodes anchored so half
-/// stick and half slip: anchors 0.02 mm and 1 mm from where each sits, the
-/// friction limit about 0.3 of a 0.5–1.5 mm press.
+/// A block pressed on a frictional floor, its bottom nodes anchored so some
+/// stick and some slip: anchors 0.02 mm and 1 mm from where each sits, the
+/// friction limit 0.3 of the press.
 fn sticking_and_slipping() -> Fixture {
     let model = block_model((3, 3, 2), |_| SILICONE, |p| p[2] > 0.02 - 1e-9);
     let displacements = deformation(&model, 0.03, 0.03);
@@ -447,6 +462,7 @@ fn sticking_and_slipping() -> Fixture {
         .collect();
     Fixture {
         name: "friction sticking and slipping",
+        shows: |m| m.slipping > 0 && m.slipping < m.in_contact,
         displacements,
         velocities: velocities(&model),
         model,
@@ -469,6 +485,7 @@ fn compressed() -> Fixture {
         .collect();
     Fixture {
         name: "compressed past |J - 1| = 0.25",
+        shows: |m| m.jacobian < 0.75,
         displacements,
         velocities: velocities(&model),
         model,
@@ -500,11 +517,17 @@ pub struct Margins {
     pub in_contact: usize,
     /// Of them, slipping.
     pub slipping: usize,
+    /// Of them, answered by the fine grid.
+    pub fine_contacts: usize,
+    /// Surface nodes inside the obstacle with its normal partly or wholly in
+    /// a constrained direction.
+    pub constrained_contacts: usize,
 }
 
 impl Margins {
     /// Assert every margin: 1 µm of depth, 0.1 µm of slip, 1e-4 of reach, no
-    /// grid change within 1 µm, and 1e-3 of `J`.
+    /// grid change within 1 µm, and 0.1 of `J` (at `J` = 0.002 the pressures
+    /// at f32 missed their bar).
     pub fn assert_clear(&self, name: &str) {
         assert!(
             self.touch > 1e-6,
@@ -523,11 +546,26 @@ impl Margins {
         );
         assert!(!self.fine_edge, "{name}: a lookup at the fine grid's edge");
         assert!(
-            self.jacobian > 1e-3,
+            self.jacobian > 0.1,
             "{name}: an element {:e} from J = 0",
             self.jacobian
         );
     }
+}
+
+/// Whether the grid that answers a lookup at `point`, fine or coarse, changes
+/// within 1 µm of it.
+fn fine_changes(obstacle: &Obstacle, point: [f64; 3]) -> bool {
+    obstacle.fine.as_ref().is_some_and(|fine| {
+        let here = fine.sample(point).is_some();
+        (0..3).any(|axis| {
+            [-1e-6, 1e-6].iter().any(|&step| {
+                let mut moved = point;
+                moved[axis] += step;
+                fine.sample(moved).is_some() != here
+            })
+        })
+    })
 }
 
 /// The margins of `fixture`'s step, from the state `before` it and the
@@ -551,18 +589,8 @@ pub fn margins(fixture: &Fixture, before: &Snapshot, outputs: &PhaseOutputs) -> 
             .fold(f64::INFINITY, |m, &d| m.min(1.0 + d)),
         in_contact: 0,
         slipping: 0,
-    };
-    let fine_changes = |point: [f64; 3]| {
-        obstacle.fine.as_ref().is_some_and(|fine| {
-            let here = fine.sample(point).is_some();
-            (0..3).any(|axis| {
-                [-1e-6, 1e-6].iter().any(|&step| {
-                    let mut moved = point;
-                    moved[axis] += step;
-                    fine.sample(moved).is_some() != here
-                })
-            })
-        })
+        fine_contacts: 0,
+        constrained_contacts: 0,
     };
     for a in 0..model.node_count() {
         if surface.of(a).is_empty() {
@@ -591,7 +619,7 @@ pub fn margins(fixture: &Fixture, before: &Snapshot, outputs: &PhaseOutputs) -> 
         ));
         let point = shared::vec3_add(rest, free(shared::advance_displacement(u, velocity, dt)));
         let predicted = shared::pose_to_body(next, point);
-        margins.fine_edge |= fine_changes(now) || fine_changes(predicted);
+        margins.fine_edge |= fine_changes(obstacle, now) || fine_changes(obstacle, predicted);
         let stiffness = shared::kinematic_stiffness(mass, inverse_mass, damping, dt);
         if stiffness == 0.0 {
             continue;
@@ -606,10 +634,20 @@ pub fn margins(fixture: &Fixture, before: &Snapshot, outputs: &PhaseOutputs) -> 
         margins.reach = margins
             .reach
             .min((reach - shared::KINEMATIC_MIN_REACH).abs());
+        if depth < 0.0 && reach < 1.0 - 1e-9 {
+            margins.constrained_contacts += 1;
+        }
         if reach <= shared::KINEMATIC_MIN_REACH || depth >= 0.0 {
             continue;
         }
         margins.in_contact += 1;
+        if obstacle
+            .fine
+            .as_ref()
+            .is_some_and(|fine| fine.sample(predicted).is_some())
+        {
+            margins.fine_contacts += 1;
+        }
         let penetration = -depth;
         let corrected = shared::vec3_add(point, shared::vec3_scale(along, penetration / reach));
         let anchor = fixture.anchors.as_ref().map_or(now, |anchors| anchors[a]);

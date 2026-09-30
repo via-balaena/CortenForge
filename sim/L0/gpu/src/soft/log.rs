@@ -31,7 +31,7 @@ pub(super) struct Motion {
 /// cumulative.
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct Totals {
-    /// Since the last read: the resultant, the moment about the obstacle's
+    /// Since the last `monitors`: the resultant, the moment about the obstacle's
     /// origin at each step's start, the normal sum, and the steps.
     pub resultant: [f64; 3],
     pub moment: [f64; 3],
@@ -89,8 +89,9 @@ mod tests {
 
     /// ★ A moment taken about the centroid and moved to the origin is the
     /// moment about the origin, and the work is the force on the move plus the
-    /// moment on the turn. A lever arm dropped, or taken the wrong way round,
-    /// moves the moment by `(c − p) × F`, which is not zero here.
+    /// moment on the turn. A lever arm dropped moves the moment by
+    /// `(c − p) × F`, and one taken the wrong way round by twice that; neither
+    /// is zero here.
     #[test]
     #[allow(clippy::cast_possible_truncation)]
     fn a_rows_moment_is_moved_to_the_origin_and_does_the_obstacles_work() {

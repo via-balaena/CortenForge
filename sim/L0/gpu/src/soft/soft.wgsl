@@ -92,7 +92,7 @@ struct Element {
     material: Material,
 }
 
-// A surface node's contact this step_values.
+// A surface node's contact this step.
 struct Contact {
     force: array<f32, 3>,
     normal_force: f32,
@@ -544,7 +544,8 @@ fn accumulate(
 
 var<workgroup> tree: array<f32, 1792>;
 
-// The reduction's operation on two values. `max` drops a NaN, as Rust's does.
+// The reduction's operation on two values. On Metal `max` drops a NaN, as
+// Rust's does (recon §17b); on other backends that is not measured.
 fn combine(a: f32, b: f32) -> f32 {
     if (reduction.operation == SUM) {
         return a + b;
@@ -672,9 +673,9 @@ fn node_energies(
 // ---- The power iteration ----
 //
 // `top_mode_and_vector` in `src/cpu/executor.rs`, one dispatch a loop body
-// step_values. A break sets `STOPPED`, which idles the later iterations; only a
-// single-invocation kernel writes it, so no dispatch reads it while it
-// changes.
+// step. A break sets `STOPPED`, which idles the later iterations. Only
+// `estimate_start`, which does not read it, and the single-invocation
+// `estimate_scale` write it, so no dispatch reads it while it changes.
 
 // The start vector, and the scalars cleared.
 @compute @workgroup_size(64)
@@ -701,7 +702,7 @@ fn estimate_start(
 }
 
 // An iteration's start: stop at a vector of zeros, or after the last
-// iteration's scaled next vector was zero; else the finite difference's step_values.
+// iteration's scaled next vector was zero; else the finite difference's step.
 @compute @workgroup_size(1)
 fn estimate_scale() {
     if (scalars[STOPPED] != 0.0) {

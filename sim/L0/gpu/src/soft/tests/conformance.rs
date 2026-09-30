@@ -1,7 +1,8 @@
 //! Per-phase conformance (recon §17b): on every fixture, the GPU at f32
 //! against the CPU executor at f32, the phases run in order up to one read,
-//! each output held to its bar. The CPU at f64 runs beside them: phase 6's bar
-//! is twice the CPU at f32's distance from it, and every output's is printed.
+//! each output held to its bar. The CPU at f64 runs beside them: a contact
+//! output's bar is twice the CPU at f32's distance from it, and every array's
+//! is printed.
 
 #![cfg(test)]
 
@@ -19,7 +20,7 @@ struct Step {
     before: Snapshot,
     /// Phases 1–6's outputs after phases 1–8.
     outputs: PhaseOutputs,
-    /// The state after phases 1–8.
+    /// The state after phases 1–8, and the window's sums of them.
     after: Snapshot,
     /// The monitors read after phases 1–8.
     monitors: Monitors,
@@ -52,11 +53,16 @@ fn phases(e: &mut dyn Executor, f: &Fixture, last: usize) {
     }
 }
 
-/// One step of `f` on `e`, and phases 1–7 again from the same start.
+/// One step of `f` on `e` in a window, and phases 1–7 again from the same
+/// start. The window first takes the state set and is cleared, so its sums
+/// hold the step alone.
 fn step(e: &mut dyn Executor, f: &Fixture) -> Step {
     set(e, f);
+    e.accumulate();
+    e.clear_accumulators();
     let before = e.snapshot();
     phases(e, f, 8);
+    e.accumulate();
     let outputs = e.phase_outputs();
     let after = e.snapshot();
     let monitors = e.monitors();
@@ -100,6 +106,15 @@ fn arrays(s: &Step) -> Vec<(&'static str, Vec<f64>)> {
         ("7 velocities", flat(&s.integrated.velocities)),
         ("8 displacements", flat(&s.after.displacements)),
         ("8 velocities", flat(&s.after.velocities)),
+        (
+            "accumulated displacements",
+            flat(&s.after.displacement_sums),
+        ),
+        (
+            "accumulated normal forces",
+            s.after.normal_force_sums.clone(),
+        ),
+        ("accumulated friction", flat(&s.after.friction_sums)),
     ]
 }
 
@@ -165,8 +180,9 @@ fn sums(f: &Fixture, s: &Step, m: &Monitors) -> Vec<(&'static str, f64, f64)> {
 }
 
 /// Run `f` on the CPU at f32 and f64 and on the GPU; assert its margins and
-/// every output against its bar; return the lines of its record.
-fn conform(f: &Fixture) -> Vec<String> {
+/// what it is for; return the lines of its record, and each output over its
+/// bar.
+fn conform(f: &Fixture) -> (Vec<String>, Vec<String>) {
     let ctx = context().expect("an adapter, checked by the caller");
     let mut cpu32 = cpu::f32::CpuExecutor::new(&f.model, &f.obstacle).unwrap();
     let mut cpu64 = cpu::f64::CpuExecutor::new(&f.model, &f.obstacle).unwrap();
@@ -181,6 +197,7 @@ fn conform(f: &Fixture) -> Vec<String> {
         margins.slipping
     )];
     margins.assert_clear(f.name);
+    assert!((f.shows)(&margins), "{}: not what it is for", f.name);
     let mut failures = Vec::new();
     for ((name, a32), ((_, a64), (_, ag))) in arrays(&c32)
         .into_iter()
@@ -188,7 +205,10 @@ fn conform(f: &Fixture) -> Vec<String> {
     {
         let gpu_from_cpu = relative_difference(&a32, &ag);
         let cpu_from_f64 = relative_difference(&a32, &a64);
-        let bar = if name.starts_with("6 contact") || name.starts_with("6 normal") {
+        let contact = name.starts_with("6 contact")
+            || name.ends_with("normal forces")
+            || name.ends_with("friction");
+        let bar = if contact {
             1e-5_f64.max(2.0 * cpu_from_f64)
         } else {
             1e-5
@@ -197,7 +217,7 @@ fn conform(f: &Fixture) -> Vec<String> {
             "  {name:<26} GPU {gpu_from_cpu:.1e}  CPU f32 from f64 {cpu_from_f64:.1e}  bar {bar:.1e}"
         ));
         if gpu_from_cpu > bar {
-            failures.push(format!("{name}: {gpu_from_cpu:e} over {bar:e}"));
+            failures.push(format!("{}, {name}: {gpu_from_cpu:e} over {bar:e}", f.name));
         }
     }
     for ((name, value, magnitude), (_, gpu_value, _)) in sums(f, &c32, &c32.monitors)
@@ -214,7 +234,10 @@ fn conform(f: &Fixture) -> Vec<String> {
             "  {name:<26} GPU {relative:.1e} of its terms' magnitudes"
         ));
         if difference > 1e-5 * magnitude {
-            failures.push(format!("{name}: {difference:e} of {magnitude:e}"));
+            failures.push(format!(
+                "{}, {name}: {difference:e} of {magnitude:e}",
+                f.name
+            ));
         }
     }
     let (m32, mg) = (&c32.monitors, &g.monitors);
@@ -228,7 +251,7 @@ fn conform(f: &Fixture) -> Vec<String> {
     ] {
         record.push(format!("  {name:<26} CPU {a:.3e} GPU {b:.3e}"));
         if (a - b).abs() > 1e-5 * a.abs() {
-            failures.push(format!("{name}: {a:e} vs {b:e}"));
+            failures.push(format!("{}, {name}: {a:e} vs {b:e}", f.name));
         }
     }
     for (name, a, b) in [
@@ -246,28 +269,27 @@ fn conform(f: &Fixture) -> Vec<String> {
     ] {
         record.push(format!("  {name:<26} CPU {a} GPU {b}"));
         if a != b {
-            failures.push(format!("{name}: {a} vs {b}"));
+            failures.push(format!("{}, {name}: {a} vs {b}", f.name));
         }
     }
-    assert!(
-        failures.is_empty(),
-        "{}: {failures:#?}\n{}",
-        f.name,
-        record.join("\n")
-    );
-    record
+    (record, failures)
 }
 
 /// ★ Every fixture's every phase output and monitor, GPU against the CPU at
-/// f32, within its bar (recon §17b); each fixture clear of its margins.
+/// f32, within its bar (recon §17b); each fixture clear of its margins, and
+/// showing what it is for.
 #[test]
 fn every_phase_matches_the_cpu_at_f32_on_every_fixture() {
     if context().is_none() {
         return;
     }
+    let mut failures = Vec::new();
     for fixture in fixtures::all() {
-        for line in conform(&fixture) {
+        let (record, over) = conform(&fixture);
+        for line in record {
             println!("{line}");
         }
+        failures.extend(over);
     }
+    assert!(failures.is_empty(), "{failures:#?}");
 }

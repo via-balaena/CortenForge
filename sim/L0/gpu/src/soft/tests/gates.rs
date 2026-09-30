@@ -2,14 +2,22 @@
 
 #![cfg(test)]
 
+use bytemuck::Zeroable;
 use sim_soft_explicit::cpu;
 use sim_soft_explicit::executor::{Executor, Monitors, PhaseOutputs, Snapshot};
 use sim_soft_explicit::stepping::{RunError, Stepper, StepperConfig};
+use wgpu::util::DeviceExt;
 
-use super::super::GpuExecutor;
-use super::context;
+use super::super::kernels::binding::{LOG_ROWS, PARTIALS, REDUCTION, TERMS};
+use super::super::kernels::{Dispatch, Kernel, Kernels, Shared};
+use super::super::{
+    Constants, GpuExecutor, MAX, Maker, RING_SLOTS, Reduction, SUM, StepValues, TREE, bytes,
+    record_pass,
+};
 use super::fixtures::{self, Fixture, SILICONE, block_model, nowhere, turning_floor};
+use super::{context, monitor_bits, outputs_bits, snapshot_bits};
 use crate::context::GpuContext;
+use crate::submit::Recorder;
 
 /// One step of `f`'s fixed `dt` from time `time`.
 fn step(e: &mut dyn Executor, f: &Fixture, time: f64) {
@@ -37,13 +45,14 @@ fn gpu(ctx: &GpuContext, f: &Fixture) -> GpuExecutor {
 
 /// ★ A new pose track set between two steps leaves the obstacle's work as it
 /// was with a read before it as without one: each step's motion is kept when
-/// its contact phase runs, not formed when its row is read.
+/// its contact phase runs, not formed when its row is read. The same steps on
+/// the old track do other work, so the new track is taken.
 #[test]
 fn a_new_pose_track_between_steps_leaves_the_work_as_a_read_before_it_would() {
     let Some(ctx) = context() else { return };
     let f = fixtures::moving_and_turning();
     let turned = turning_floor(3.0);
-    let work = |read_before: bool| {
+    let work = |read_before: bool, new_track: bool| {
         let mut gpu = gpu(&ctx, &f);
         let mut time = f.time;
         for _ in 0..5 {
@@ -53,16 +62,22 @@ fn a_new_pose_track_between_steps_leaves_the_work_as_a_read_before_it_would() {
         if read_before {
             gpu.monitors();
         }
-        gpu.set_poses(turned.start, turned.interval, &turned.poses)
-            .unwrap();
+        if new_track {
+            gpu.set_poses(turned.start, turned.interval, &turned.poses)
+                .unwrap();
+        }
         for _ in 0..5 {
             step(&mut gpu, &f, time);
             time += f.dt;
         }
         gpu.monitors().obstacle_work
     };
-    let (with_read, without) = (work(true), work(false));
+    let (with_read, without) = (work(true, true), work(false, true));
     assert!(with_read != 0.0, "the obstacle does work");
+    assert!(
+        with_read != work(false, false),
+        "the new track changed nothing: {with_read:e}"
+    );
     assert_eq!(
         with_read.to_bits(),
         without.to_bits(),
@@ -135,10 +150,16 @@ fn one_pass_a_step_is_the_same_as_a_pass_a_phase() {
     let Some(ctx) = context() else { return };
     let f = fixtures::tube();
     let (one, each) = (run(&ctx, &f, false, 10), run(&ctx, &f, true, 10));
-    assert!(one.0 == each.0, "the snapshots differ");
-    assert!(one.1 == each.1, "the phase outputs differ");
     assert!(
-        one.2 == each.2,
+        snapshot_bits(&one.0) == snapshot_bits(&each.0),
+        "the snapshots differ"
+    );
+    assert!(
+        outputs_bits(&one.1) == outputs_bits(&each.1),
+        "the phase outputs differ"
+    );
+    assert!(
+        monitor_bits(&one.2) == monitor_bits(&each.2),
         "the monitors differ: {:?} vs {:?}",
         one.2,
         each.2
@@ -254,26 +275,15 @@ fn three_runs_on_metal_repeat_bit_for_bit() {
             let mut stepper = Stepper::new(gpu(&ctx, &f), StepperConfig::new(f.damping), f.time);
             let stopped = (0..1000).try_for_each(|_| stepper.step());
             let snapshot = stepper.executor_mut().snapshot();
-            let bits = [
-                &snapshot.displacements,
-                &snapshot.velocities,
-                &snapshot.anchors,
-            ]
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|x| x.to_bits())
-            .chain(stepper.samples().iter().flat_map(|s| {
-                let m = s.monitors;
-                [
-                    m.kinetic_energy,
-                    m.internal_energy,
-                    m.contact_work,
-                    m.obstacle_work,
-                ]
-                .map(f64::to_bits)
-            }))
-            .collect();
+            let bits = snapshot_bits(&snapshot)
+                .into_iter()
+                .chain(
+                    stepper
+                        .samples()
+                        .iter()
+                        .flat_map(|s| monitor_bits(&s.monitors)),
+                )
+                .collect();
             (stopped, bits)
         })
         .collect();
@@ -306,7 +316,10 @@ fn reading_every_step_or_every_hundred_gives_the_same_run() {
     };
     let (every, hundred) = (run(1), run(100));
     assert!(hundred.2 > super::super::LOG_ROWS_AT_START, "the log grew");
-    assert!(every.0 == hundred.0, "the state differs");
+    assert!(
+        snapshot_bits(&every.0) == snapshot_bits(&hundred.0),
+        "the state differs"
+    );
     let cumulative = |m: &Monitors| {
         [
             m.contact_work,
@@ -428,4 +441,98 @@ fn a_count_carries_past_two_to_the_thirty_second() {
     let elements = model.element_count() as u64;
     assert_eq!(monitors.inverted_element_steps, inverted + elements);
     assert_eq!(monitors.coarse_corrections, coarse);
+}
+
+/// ★ A reduction over more blocks than `reduce_row` takes in one row of
+/// partials (256), and over more workgroups than a dispatch's dimension
+/// holds (65 535), reaches its row with every partial: the sum and the
+/// largest of terms placed in the first block and the last.
+#[test]
+fn a_reduction_past_256_blocks_and_65_535_workgroups_takes_every_partial() {
+    let Some(ctx) = context() else { return };
+    let kernels = Kernels::new(&ctx);
+    let mut recorder = Recorder::<StepValues>::with_step_values(&ctx, RING_SLOTS);
+    for blocks in [300, 65_537] {
+        let mut values = vec![0.0_f32; (blocks * TREE) as usize];
+        values[0] = 1.0;
+        values[(blocks * TREE) as usize - 1] = 2.0;
+        assert_eq!(
+            sum_and_largest(&ctx, &kernels, &mut recorder, &values),
+            [3.0, 2.0],
+            "{blocks} blocks: the sum, the largest"
+        );
+    }
+}
+
+/// The sum and the largest of `values`, each reduced into a row of its own,
+/// in one pass.
+fn sum_and_largest(
+    ctx: &GpuContext,
+    kernels: &Kernels,
+    recorder: &mut Recorder<StepValues>,
+    values: &[f32],
+) -> Vec<f32> {
+    let maker = Maker {
+        device: &ctx.device,
+        limit: u64::MAX,
+    };
+    let items = values.len() as u32;
+    let constants = ctx
+        .device
+        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("constants"),
+            contents: bytemuck::bytes_of(&Constants::zeroed()),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+    let terms = maker.filled("terms", values).unwrap();
+    let partials = maker
+        .zeroed("partials", bytes::<f32>(items.div_ceil(TREE)))
+        .unwrap();
+    let rows = maker.zeroed("rows", bytes::<f32>(2)).unwrap();
+    let dispatches: Vec<Dispatch> = {
+        let shared = Shared {
+            constants: &constants,
+            step_values: recorder.step_values_binding().unwrap(),
+        };
+        [(SUM, 0), (MAX, 1)]
+            .into_iter()
+            .flat_map(|(operation, row)| {
+                let reduction = maker.reduction(
+                    "reduction",
+                    Reduction {
+                        items,
+                        components: 1,
+                        operation,
+                        row,
+                    },
+                );
+                [
+                    kernels.bind(
+                        &ctx.device,
+                        &shared,
+                        Kernel::ReducePartials,
+                        items,
+                        &[
+                            (REDUCTION, &reduction),
+                            (TERMS, &terms),
+                            (PARTIALS, &partials),
+                        ],
+                    ),
+                    kernels.bind(
+                        &ctx.device,
+                        &shared,
+                        Kernel::ReduceRow,
+                        1,
+                        &[
+                            (REDUCTION, &reduction),
+                            (PARTIALS, &partials),
+                            (LOG_ROWS, &rows),
+                        ],
+                    ),
+                ]
+            })
+            .collect()
+    };
+    record_pass(recorder, kernels, &StepValues::zeroed(), &dispatches);
+    recorder.read(&rows, 2)
 }

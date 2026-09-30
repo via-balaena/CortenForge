@@ -328,8 +328,8 @@ fn widen3(v: [f32; 3]) -> [f64; 3] {
     v.map(f64::from)
 }
 
-/// The window sums, at f64 on the host; each read adds the device's f32
-/// sums since the last one.
+/// The window sums, at f64 on the host; each `monitors` or `snapshot` adds
+/// the device's f32 sums since the last.
 struct Window {
     displacement_sums: Vec<[f64; 3]>,
     normal_force_sums: Vec<f64>,
@@ -340,7 +340,7 @@ struct Window {
 }
 
 /// The step log's rows on the device: a buffer, how many it holds, and how
-/// many are written since the last read.
+/// many are written since the last `monitors` or `snapshot`.
 struct Rows {
     buffer: wgpu::Buffer,
     capacity: u32,
