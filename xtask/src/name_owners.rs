@@ -298,9 +298,9 @@ mod tests {
         assert_eq!(read_answer("zz-x", "404", absent).unwrap(), Answer::Absent);
     }
 
-    /// Anything else is an error, never a pass: a 404 for another reason (a
-    /// moved API would answer every name that way), another name's 404, an
-    /// unexpected status, or a body that is not the expected JSON.
+    /// Anything else is an error, never a pass: a 404 for another reason,
+    /// another name's 404, an unexpected status, or a body that is not the
+    /// expected JSON.
     #[test]
     fn refuses_what_it_does_not_expect() {
         let other_404 = r#"{"errors":[{"detail":"Not Found"}]}"#;

@@ -1169,10 +1169,10 @@ jobs:
   #   4. `name-owners`: each name in that set is ours, not on crates.io, or
   #      listed as another account's (`cargo xtask name-owners --help`). The
   #      only step that asks crates.io who owns a name. It needs crates.io's
-  #      API: an outage longer than its retries fails the run, and another
-  #      account publishing a set name fails every run until the list or the
-  #      set changes. It runs last so a failure there leaves the dry-run's
-  #      result standing.
+  #      API: an outage longer than its retries, or an answer it does not
+  #      expect, fails the run, and another account publishing a set name
+  #      fails every run until the list or the set changes. It runs last so a
+  #      failure there leaves the dry-run's result standing.
   # The dry-run cannot see ownership. A name+version already on the index
   # prints `already exists` as a warning, not an error (cargo downgrades it in
   # a dry run). Requirements between the set's crates are exact (`=`), and
