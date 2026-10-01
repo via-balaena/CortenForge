@@ -1,0 +1,107 @@
+# Publish the crates.io release set on a version tag, through crates.io's
+# trusted publishing: nothing is stored here, and the publish job trades
+# GitHub's OIDC token for a crates.io token that lasts 30 minutes.
+#
+# The first job has no credentials. It checks the tag and the release set,
+# lists what crates.io lacks at the tag's version (`cargo xtask publish
+# --list`), and verifies those crates (`--dry-run`); `cargo xtask publish
+# --help` states both steps. The second job runs only when something is
+# missing, in the `crates-io` environment, and builds nothing: any code it
+# compiled could ask GitHub for the token the job may mint.
+#
+# ⚠ Before the first tag, create the `crates-io` environment in the
+# repository's settings with a required reviewer, and limit it to tags
+# matching `v*`. A job naming an environment that does not exist creates it
+# with no protection, so the approval this file relies on would be missing in
+# silence.
+#
+# ⚠ crates.io configures a trusted publisher only for a crate that already
+# exists. Each crate's first publish is done by hand with a token
+# (`cargo xtask publish`), and the publisher (this repository, `publish.yml`,
+# environment `crates-io`) is configured on crates.io after it. A crate that
+# joins the release set later is published the same way first; here, its
+# upload would fail after the crates before it in dependency order.
+#
+# ⚠ After a failed upload, re-run ALL jobs, not only the failed one: the list
+# of what is missing comes from the first job, and a stale one names crates
+# that are already published.
+name: Publish
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  pending:
+    name: What crates.io lacks
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      missing: ${{ steps.list.outputs.missing }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Anyone who can push a tag can push it on any commit; only what main
+      # holds has been through review and CI.
+      - name: The tag is on main
+        run: |
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD
+
+      - name: The release set passes its gates
+        run: |
+          cargo run -q -p xtask -- publish-set
+          cargo run -q -p xtask -- native-build
+          cargo run -q -p xtask -- name-owners
+
+      - name: List the crates crates.io lacks at the tag's version
+        id: list
+        run: |
+          missing=$(cargo run -q -p xtask -- publish --list --tag "$GITHUB_REF_NAME")
+          printf '%s\n' "$missing"
+          echo "missing=$(printf '%s' "$missing" | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
+
+      - name: Verify them
+        if: steps.list.outputs.missing != ''
+        run: cargo run -q -p xtask -- publish --dry-run --tag "$GITHUB_REF_NAME"
+
+  publish:
+    name: Publish to crates.io
+    needs: pending
+    if: needs.pending.outputs.missing != ''
+    runs-on: ubuntu-latest
+    environment: crates-io
+    # Uploads only, and the token lasts 30 minutes.
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
+        id: auth
+
+      # `--no-verify` packages and uploads without building anything.
+      - name: Upload them
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+          MISSING: ${{ needs.pending.outputs.missing }}
+        run: |
+          args=()
+          for name in $MISSING; do
+            args+=(-p "$name")
+          done
+          cargo publish --locked --no-verify "${args[@]}"

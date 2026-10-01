@@ -676,7 +676,8 @@ if a && b {  // Need tests where:
 │ Release tag                              │
 │   ├── build-check (3 triples, blocking)  │
 │   ├── sbom — only asset, if produced     │
-│   └── Changelog generated                │
+│   ├── Changelog generated                │
+│   └── crates.io publish (publish.yml)    │
 └─────────────────────────────────────────┘
 ```
 
