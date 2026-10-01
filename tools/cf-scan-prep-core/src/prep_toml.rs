@@ -73,11 +73,8 @@ pub struct PrepSimplifyBlock {
     /// Algorithm identifier — pinned literal so downstream audits know
     /// what code path produced this file.
     pub algorithm: &'static str,
-    /// Version string for the algorithm dependency. Tracks the
-    /// workspace `meshopt` Cargo dep; bump this constant in lockstep
-    /// when that dep is updated. Hard-coded literal because the
-    /// meshopt-rs crate doesn't expose its version at runtime and a
-    /// build-script lift for one provenance line would be overkill.
+    /// Version string for the algorithm dependency; see
+    /// [`SIMPLIFY_ALGORITHM_VERSION`] for what it records today.
     pub algorithm_version: &'static str,
     /// Target face count from the Simplify panel slider at save time.
     pub target_face_count: usize,
@@ -252,8 +249,10 @@ pub struct PrepAabbBlock {
 /// cf-device-design's `simplify_sloppy` proxy).
 pub const SIMPLIFY_ALGORITHM_NAME: &str = "meshopt_quadric_edge_collapse";
 
-/// Tracks the workspace `meshopt` Cargo dep. Update in lockstep with
-/// `Cargo.toml`'s `meshopt = "X.Y.Z"`.
+/// ⚠ Still the version of `meshopt`, which `simplify.rs` no longer uses (it
+/// decimates with `baby_shark`) and the workspace no longer declares.
+/// Correcting it, and [`SIMPLIFY_ALGORITHM_NAME`], changes every `.prep.toml`
+/// written, so it is a change of its own.
 pub const SIMPLIFY_ALGORITHM_VERSION: &str = "0.6.2";
 
 /// Build the `.prep.toml` string from the current cf-scan-prep state.

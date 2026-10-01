@@ -84,20 +84,7 @@ pub fn check() -> Result<()> {
 /// [`check`], rooted at an explicit workspace directory so the unit test can
 /// point at the workspace without `set_current_dir`.
 pub(crate) fn check_at(root: &Path) -> Result<()> {
-    let out = std::process::Command::new("cargo")
-        .args(["metadata", "--format-version", "1", "--no-deps"])
-        .current_dir(root)
-        .output()
-        .context("run `cargo metadata`")?;
-    if !out.status.success() {
-        bail!(
-            "`cargo metadata` failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-    }
-    let metadata: Value =
-        serde_json::from_slice(&out.stdout).context("parse `cargo metadata` JSON")?;
-    let packages = packages(&metadata)?;
+    let packages = packages(&workspace_metadata(root)?)?;
     let set = closure(&packages)?;
     let found = problems(&packages, &set);
     if !found.is_empty() {
@@ -115,6 +102,29 @@ pub(crate) fn check_at(root: &Path) -> Result<()> {
         packages[FACADE].version
     );
     Ok(())
+}
+
+/// The release set's crate names, for checks that walk what it builds. It is
+/// the facade's closure whether or not the rules above hold.
+pub(crate) fn release_set(root: &Path) -> Result<BTreeSet<String>> {
+    let packages = packages(&workspace_metadata(root)?)?;
+    Ok(closure(&packages)?.into_keys().collect())
+}
+
+/// `cargo metadata --no-deps` for the workspace at `root`.
+fn workspace_metadata(root: &Path) -> Result<Value> {
+    let out = std::process::Command::new("cargo")
+        .args(["metadata", "--format-version", "1", "--no-deps"])
+        .current_dir(root)
+        .output()
+        .context("run `cargo metadata`")?;
+    if !out.status.success() {
+        bail!(
+            "`cargo metadata` failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    serde_json::from_slice(&out.stdout).context("parse `cargo metadata` JSON")
 }
 
 /// Workspace members keyed by name, with their path dependencies on each other.
