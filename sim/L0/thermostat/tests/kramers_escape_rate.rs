@@ -183,7 +183,7 @@ fn gate_a_kramers_rate() {
 // ─── Gate B: Arrhenius slope ──────────────────────���────────────────────────
 
 #[test]
-#[ignore = "450M steps — run with `cargo test -p sim-thermostat -- --ignored`"]
+#[ignore = "450M steps — run with `cargo test -p cortenforge-sim-thermostat -- --ignored`"]
 fn gate_b_arrhenius_slope() {
     let well = DoubleWellPotential::new(DELTA_V, X_0, 0);
     let temperatures = [0.75, 1.0, 1.5];

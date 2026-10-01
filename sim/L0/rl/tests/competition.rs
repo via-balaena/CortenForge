@@ -7,7 +7,7 @@
 //!
 //! All tests are `#[ignore]` — they take minutes, not seconds.  Run via:
 //! ```text
-//! cargo test -p sim-rl --test competition -- --ignored --nocapture
+//! cargo test -p cortenforge-sim-rl --test competition -- --ignored --nocapture
 //! ```
 //!
 //! 6-DOF baselines re-calibrated on the #591 stable arm (the fixture had

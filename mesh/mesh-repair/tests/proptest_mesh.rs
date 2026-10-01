@@ -2,7 +2,7 @@
 //!
 //! These tests use proptest to generate random meshes and verify invariants.
 //!
-//! Run with: cargo test -p mesh-repair -- proptest
+//! Run with: cargo test -p cortenforge-mesh-repair -- proptest
 
 #![allow(
     // `usize → u32` casts at random-mesh construction sites where the

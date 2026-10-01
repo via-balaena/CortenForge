@@ -87,7 +87,7 @@ enum Commands {
 
     /// Grade a specific crate against the A-grade standard
     Grade {
-        /// The crate to grade (e.g., "mesh-types")
+        /// The crate to grade (e.g., "cortenforge-mesh-types")
         #[arg(name = "CRATE")]
         crate_name: String,
 
@@ -124,7 +124,7 @@ enum Commands {
     /// Costs one full instrumented run. Use it to decide which binaries a
     /// coverage pass can skip without moving the reported number.
     CoverageCensus {
-        /// The crate to census (e.g., "sim-soft")
+        /// The crate to census (e.g., "cortenforge-sim-soft")
         #[arg(name = "CRATE")]
         crate_name: String,
 

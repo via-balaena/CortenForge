@@ -21,7 +21,7 @@
 //! no longer asserts); this integration test is the CI-gated home of the
 //! stage-by-stage oracle.
 //!
-//! Run with: `cargo test -p mesh-repair --test repair_pipeline`
+//! Run with: `cargo test -p cortenforge-mesh-repair --test repair_pipeline`
 
 // Cube indices fit in u32 by platform convention; `vertices.len() as u32`
 // for new-vertex indices is a representation choice, not narrowing.

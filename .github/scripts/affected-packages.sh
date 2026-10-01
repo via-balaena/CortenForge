@@ -25,7 +25,7 @@
 #   AFFECTED_CRATES  - needs.affected.outputs.crates     (comma-separated)
 #   EVENT_NAME       - github.event_name                 ("pull_request" => PR)
 #
-# Output: a single line like `-p sim-core -p sim-mjcf`, or empty if no
+# Output: a single line like `-p cortenforge-sim-core -p cortenforge-sim-mjcf`, or empty if no
 # candidate is affected.
 
 set -euo pipefail

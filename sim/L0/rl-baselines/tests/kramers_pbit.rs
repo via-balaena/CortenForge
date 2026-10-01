@@ -22,7 +22,7 @@
 //! `DoubleWellPotential::kramers_rate` (Phase 3's validated formula).
 //!
 //! Heavy; run explicitly with `--release`:
-//! `cargo test -p sim-therm-env --release --test kramers_pbit -- --ignored --nocapture`
+//! `cargo test -p sim-rl-baselines --release --test kramers_pbit -- --ignored --nocapture`
 
 #![allow(
     clippy::unwrap_used,

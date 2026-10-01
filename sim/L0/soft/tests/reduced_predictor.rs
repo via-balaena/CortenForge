@@ -51,7 +51,7 @@
 //! being compiled.
 //!
 //! ```text
-//! cargo test --release -p sim-soft --test reduced_predictor -- --ignored --nocapture \
+//! cargo test --release -p cortenforge-sim-soft --test reduced_predictor -- --ignored --nocapture \
 //!   --test-threads=1
 //! ```
 //!

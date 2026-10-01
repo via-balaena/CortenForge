@@ -7,7 +7,7 @@
 //! deliberate load.
 //!
 //! ```text
-//! cargo test --release -p sim-soft --test refbox_pilot -- --ignored --nocapture
+//! cargo test --release -p cortenforge-sim-soft --test refbox_pilot -- --ignored --nocapture
 //! ```
 
 #![allow(clippy::print_stdout, clippy::panic, clippy::expect_used)]
@@ -60,7 +60,7 @@ fn pilot_probe_spread() {
 /// it needs measuring rather than citing.
 ///
 /// ```text
-/// cargo test --release -p sim-soft --features phase-timing \
+/// cargo test --release -p cortenforge-sim-soft --features phase-timing \
 ///   --test refbox_pilot -- --ignored --nocapture probe_phase_character
 /// ```
 #[test]

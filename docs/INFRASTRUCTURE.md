@@ -573,7 +573,7 @@ benchmarks:
 
 ```bash
 cargo install cargo-mutants
-cargo mutants --package mesh-repair -- --release
+cargo mutants --package cortenforge-mesh-repair -- --release
 ```
 
 **Why**:

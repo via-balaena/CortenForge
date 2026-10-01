@@ -786,7 +786,7 @@ cf-spatial = { path = "design/cf-spatial", version = "=0.9.0", package = "corten
 # inheriting consumers — required to keep sim-soft under the L0 100-dep
 # tier cap. Only cf-design-tests calls `mesh_adaptive_par`; it opts in
 # via `features = ["parallel-meshing"]`. cf-design's own `default =
-# ["parallel-meshing"]` keeps `cargo test -p cf-design` exercising the
+# ["parallel-meshing"]` keeps `cargo test -p cortenforge-design` exercising the
 # par_* tests by default.
 cf-design = { path = "design/cf-design", version = "=0.9.0", default-features = false, package = "cortenforge-design" }
 cf-design-tests = { path = "design/cf-design-tests" }

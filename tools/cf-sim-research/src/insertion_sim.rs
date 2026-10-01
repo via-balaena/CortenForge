@@ -8791,7 +8791,7 @@ mod tests {
     /// σ-vs-κ coupling — **measured by running it, not recalled**.
     ///
     /// ```text
-    /// cargo test -p sim-soft --release --test tet10_yeoh_ipc_convergence \
+    /// cargo test -p cortenforge-sim-soft --release --test tet10_yeoh_ipc_convergence \
     ///     is_the_contact_traction_a_property_of_the_scene_or_of_kappa \
     ///     -- --ignored --nocapture
     /// ```

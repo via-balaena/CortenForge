@@ -41,7 +41,7 @@
 //! R0:
 //!
 //! ```text
-//! cargo test --release -p sim-soft --test r0_ab -- --ignored --nocapture --test-threads=1
+//! cargo test --release -p cortenforge-sim-soft --test r0_ab -- --ignored --nocapture --test-threads=1
 //! ```
 //!
 //! ⚠ Both trees pin the same toolchain (1.96.0) via `rust-toolchain.toml`; if that

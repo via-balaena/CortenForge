@@ -859,7 +859,7 @@ jobs:
       # ⚠ These counts go stale the moment a test is added or deleted, and this
       # comment has already been wrong twice — once claiming five gates when
       # there were six, and once claiming ten ignores one commit after a
-      # producer was deleted. `cargo test --release -p sim-soft --test
+      # producer was deleted. `cargo test --release -p cortenforge-sim-soft --test
       # stick_impact` prints both; re-read it rather than trusting this line.
       #
       # ⚠⚠ Every gate here asserts on Newton ITERATION COUNTS or on convergence,

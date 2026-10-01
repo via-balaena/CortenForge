@@ -7,7 +7,7 @@
 //! - Various polygon counts (100s to 1000s of triangles)
 //! - Both ASCII and binary STL formats
 //!
-//! To run: cargo test -p mesh-io thingi10k
+//! To run: cargo test -p cortenforge-mesh-io thingi10k
 //!
 //! # Adding More Test Models
 //!

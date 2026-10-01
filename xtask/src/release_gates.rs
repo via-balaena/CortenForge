@@ -161,7 +161,7 @@ fn release_only_tests(items: &[syn::Item], out: &mut Vec<String>) {
 /// ⚠ Deliberately scans the whole text rather than line-anchored continuations.
 /// Both spellings are live in this repo — the continuation form
 /// (`--test foo \` on its own line) and the inline form (`cargo test --release
-/// -p sim-soft --test bonded_layer_indentation`). A line-anchored pattern reads
+/// -p cortenforge-sim-soft --test bonded_layer_indentation`). A line-anchored pattern reads
 /// the second as absent, which is exactly the false alarm this module must not
 /// raise: it was made by hand while writing this, and reported a covered gate as
 /// missing.

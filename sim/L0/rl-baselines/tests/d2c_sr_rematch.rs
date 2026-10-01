@@ -11,7 +11,7 @@
 //! clock.  Run with:
 //!
 //! ```text
-//! cargo test -p sim-opt --release --ignored d2c_sr_rematch
+//! cargo test -p sim-rl-baselines --release --test d2c_sr_rematch -- --ignored
 //! ```
 //!
 //! The test gate is "protocol-completes-cleanly" per Ch 42 §6

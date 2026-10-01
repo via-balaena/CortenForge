@@ -8,7 +8,7 @@
 //! rate to compare the physical p-bit against — not `kramers_rate`.
 //!
 //! Heavy; run with `--release`:
-//! `cargo test -p sim-therm-env --release --test kramers_turnover -- --ignored --nocapture`
+//! `cargo test -p sim-rl-baselines --release --test kramers_turnover -- --ignored --nocapture`
 
 #![allow(
     clippy::unwrap_used,

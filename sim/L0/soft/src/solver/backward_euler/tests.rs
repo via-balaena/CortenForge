@@ -3658,7 +3658,7 @@ fn factorization_count_over_a_ramp(cells: usize, steps: usize) -> (usize, usize)
 
 /// Producer for the factorization rate the ordering threshold is derived from.
 ///
-/// `cargo test -p sim-soft --release --lib factorization_rate_per_step -- --ignored --nocapture`
+/// `cargo test -p cortenforge-sim-soft --release --lib factorization_rate_per_step -- --ignored --nocapture`
 ///
 /// The nested-dissection ordering costs a one-off symbolic charge per solver
 /// CONSTRUCTION and repays a little on every numeric FACTORIZATION, so its
@@ -3738,7 +3738,7 @@ fn factorizations_clear_the_ordering_break_even() {
 /// Fill growth, AMD against nested dissection — the diagnostic behind the
 /// ordering choice, and the instrument for revisiting it.
 ///
-/// `cargo test -p sim-soft --release --lib factorization_fill_growth -- --ignored --nocapture`
+/// `cargo test -p cortenforge-sim-soft --release --lib factorization_fill_growth -- --ignored --nocapture`
 ///
 /// Both columns come from the same process on the same pattern, so the ratio
 /// is the number to read. **No table is reproduced here**: this diagnostic
@@ -3907,7 +3907,7 @@ fn validity_sweep_parallel_agrees_with_sequential() {
 /// the first place.
 ///
 /// ```text
-/// cargo test --release -p sim-soft --lib -- --ignored --nocapture \
+/// cargo test --release -p cortenforge-sim-soft --lib -- --ignored --nocapture \
 ///   validity_sweep_parallel_speedup_tet10
 /// ```
 #[test]
@@ -4116,7 +4116,7 @@ fn assert_sweeps_agree(n_lat: usize, nz: usize) {
 /// are a state-dependence; an offset on one arm would mean the timers.
 ///
 /// ```text
-/// cargo test --release -p sim-soft --lib -- --ignored --nocapture \
+/// cargo test --release -p cortenforge-sim-soft --lib -- --ignored --nocapture \
 ///   validity_sweep_parallel_speedup
 /// ```
 #[test]

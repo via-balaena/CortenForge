@@ -15,7 +15,7 @@
 //! ladder.
 //!
 //! ```text
-//! cargo test --release -p sim-soft --features phase-timing \
+//! cargo test --release -p cortenforge-sim-soft --features phase-timing \
 //!   --test reduced_phase_shares -- --ignored --nocapture --test-threads=1
 //! ```
 //!

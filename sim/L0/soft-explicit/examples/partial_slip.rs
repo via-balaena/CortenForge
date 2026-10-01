@@ -2,7 +2,7 @@
 //! (plan §16b), printed as one line: K6's errors per row and phase, the
 //! validity gates, and the run's cost.
 //!
-//! `cargo run --release -p sim-soft-explicit --example partial_slip --
+//! `cargo run --release -p cortenforge-sim-soft-explicit --example partial_slip --
 //! <a/h> <f32|f64> <R/a> <block/a> <viscous> <slowdown> [table]`
 //! (defaults: 50 f64 100 10 0 1, which is `PartialSlipRun::plan`). `a/h` is
 //! the fine region's elements per contact half-width (plan: 50; CI: 12);

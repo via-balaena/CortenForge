@@ -54,7 +54,7 @@ dependency_budget = 200
 tier_up_features = { gpu-probe = "L0-io" }
 
 # Binaries the COVERAGE pass skips. They still run, and still gate: `grade`'s
-# pass 2 is an uninstrumented `cargo test --release -p sim-soft` over the whole
+# pass 2 is an uninstrumented `cargo test --release -p cortenforge-sim-soft` over the whole
 # suite, and `bonded_layer_indentation` additionally has its own CI job. Only
 # the instrumented measurement pass omits them.
 #

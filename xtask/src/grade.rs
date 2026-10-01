@@ -2249,7 +2249,7 @@ fn coverage_skip_reason(
 ///
 /// The three manual commands that used to stand in for that test still work
 /// and are still worth running after touching the printing, re-verified
-/// 2026-08-18: `grade sim-types --skip-coverage`,
+/// 2026-08-18: `grade cortenforge-sim-types --skip-coverage` (named `sim-types` at the time),
 /// `grade cf-device-design --skip-coverage` (bin-only), and
 /// `grade sim-core-benches` (`(no production lines)`, which also confirms on
 /// real input the invariant asserted above — a zero total implies an empty

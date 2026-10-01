@@ -4,7 +4,7 @@
 //! D1's, plan §16s), the validity gates, the loaded step factor, and the
 //! run's cost.
 //!
-//! `cargo run --release -p sim-soft-explicit --example tube --
+//! `cargo run --release -p cortenforge-sim-soft-explicit --example tube --
 //! <mesh> <case> <friction> <f32|f64> <grid> <hold> <loading> <stiffness> <viscous> <walls>
 //! <stabilization>` (defaults: 10k 0 0 f32 20 0.2 10 1, Ecoflex 00-30's `η/μ`, the
 //! case's walls, and 0). `walls` is free, cased or shell; with shell the mandrel goes

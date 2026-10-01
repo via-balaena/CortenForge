@@ -77,7 +77,7 @@
 //!
 //! ```text
 //! CF_L4_STL=/path/FMA13075.stl CF_L5_STL=/path/FMA13076.stl CF_DISC_STL=/path/FMA16036.stl \
-//!   cargo test -p sim-coupling --release \
+//!   cargo test -p cortenforge-sim-coupling --release \
 //!   --test rung7_fsu_validation -- --ignored --nocapture
 //! ```
 
