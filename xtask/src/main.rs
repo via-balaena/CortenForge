@@ -47,6 +47,7 @@ mod grade;
 // outlived the code it described.
 mod hook_install;
 mod licensed_gates;
+mod name_owners;
 mod native_build;
 mod pr_scope;
 mod publish_set;
@@ -334,6 +335,12 @@ enum Commands {
     #[command(long_about = native_build::LONG_ABOUT)]
     NativeBuild,
 
+    /// Each crates.io release-set name is ours, not on crates.io, or listed as another account's.
+    //
+    // Sixth sibling: no other gate asks crates.io who owns a name.
+    #[command(long_about = name_owners::LONG_ABOUT)]
+    NameOwners,
+
     /// Set up development environment (git hooks, verify tools)
     Setup,
 
@@ -411,6 +418,7 @@ fn main() -> Result<()> {
         Commands::DisclaimerSync => disclaimer_sync::check(),
         Commands::PublishSet => publish_set::check(),
         Commands::NativeBuild => native_build::check(),
+        Commands::NameOwners => name_owners::check(),
         Commands::Setup => setup::run(),
         Commands::Uninstall => setup::uninstall(),
     }
