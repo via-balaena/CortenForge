@@ -49,30 +49,33 @@ A package counts as native when
     literal `rustc-link-lib=NAME`, `=dylib=NAME` or `=static=NAME`.
 
 The rules:
-  - nothing builds C++: no `cmake`, `cpp_build` or `cxx-build` build tool, and
-    no build script naming C++ sources. A listing cannot allow these. `cmake`
-    is refused whatever the project's language, because this check cannot see
-    inside a CMake project and every user would need CMake installed. An
-    exception for one package is a code change here, and needs a project that
-    declares only C, builds without downloading anything, and has no
-    pure-Rust alternative of similar quality;
+  - nothing builds C++: no `autotools`, `cmake`, `cpp_build` or `cxx-build`
+    build tool, and no build script naming C++ sources. A listing cannot allow
+    these. `autotools` and `cmake` are refused whatever the project's
+    language, because this check cannot see inside those projects and every
+    user would need the tool installed. An exception for one package is a code
+    change here, and needs a project that declares only C, builds without
+    downloading anything, and has no pure-Rust alternative of similar quality;
   - every other native package, a C++ runtime link included, is in the
-    allowlist with exactly the signals found, so a listed package that starts
-    doing more, or less, fails too;
+    allowlist with exactly the signals found, so a listed package whose
+    signals change fails too;
   - every allowlist entry is still found, so the list cannot go stale.
 
 What the signals cannot see:
-  - C++ that a build script compiles through `cc` without naming its sources
-    in its own file (sources found by listing a directory, or named in another
-    file the script pulls in). It reads as `the build tool cc`, so whoever
-    reviews the new listing is the check;
+  - C++ that a build script compiles through `cc` or `gcc` without naming its
+    sources in its own file (sources found by listing a directory, or named in
+    another file the script pulls in). It reads as that build tool, which a
+    listing allows;
   - native code a build script builds with none of those tools;
   - a C++ runtime link spelled any other way (another attribute order,
     `cfg_attr`, a name built at run time, `rustc-flags`, `rustc-link-arg`),
     and other system libraries linked through `#[link]`;
   - a build-dependency that only a macOS or Windows host uses;
-  - what language a shipped native library was written in: a new listing of
-    one needs a person to confirm it is not C++;
+  - what language a native library was written in, whether the package ships
+    it or finds it on the machine through pkg-config, system-deps or vcpkg: a
+    new listing of one needs a person to confirm it is not C++;
+  - a change inside a listed package that keeps its signals: entries name
+    signals, not versions;
   - newer compatible versions a user's own lockfile may resolve;
   - other targets (musl, gnullvm, 32-bit, mobile, wasm, fuzzing builds).
 
@@ -106,8 +109,8 @@ const NATIVE_TOOLS: [&str; 11] = [
 ];
 
 /// Of [`NATIVE_TOOLS`], the ones no listing can allow: they build C++, or a
-/// CMake project this check cannot see into.
-const CPP_TOOLS: [&str; 3] = ["cmake", "cpp_build", "cxx-build"];
+/// CMake or autotools project this check cannot see into.
+const CPP_TOOLS: [&str; 4] = ["autotools", "cmake", "cpp_build", "cxx-build"];
 
 /// File extensions of native libraries and objects. A versioned shared library
 /// (`libfoo.so.1`) is matched by name in [`is_library`].
@@ -938,6 +941,19 @@ user v1.0.0
             assert_eq!(got.len(), 1, "{helper}: {got:?}");
             assert!(got[0].contains("`kernel` may build C++"), "{got:?}");
         }
+    }
+
+    /// `--help` names the tools in the same words as the two lists, so a tool
+    /// added to or dropped from either one changes the help too.
+    #[test]
+    fn the_help_names_the_tools_the_code_uses() {
+        let help = LONG_ABOUT.split_whitespace().collect::<Vec<_>>().join(" ");
+        let native = format!("a native build tool ({})", NATIVE_TOOLS.join(", "));
+        assert!(help.contains(&native), "{native}");
+        let quoted: Vec<String> = CPP_TOOLS.iter().map(|tool| format!("`{tool}`")).collect();
+        let (last, rest) = quoted.split_last().unwrap();
+        let refused = format!("no {} or {last} build tool", rest.join(", "));
+        assert!(help.contains(&refused), "{refused}");
     }
 
     #[test]
