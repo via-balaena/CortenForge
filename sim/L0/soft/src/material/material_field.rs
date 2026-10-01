@@ -45,7 +45,7 @@
 //! `MaterialField` is a pure compositional aggregator and propagates
 //! `NaN` per the BF-7 sentinel pattern.
 //!
-//! [s]: ../../../../docs/studies/soft_body_architecture/src/20-materials/09-spatial-fields/00-sdf-valued.md
+//! [s]: https://github.com/via-balaena/CortenForge/blob/e1949cf31f6e5760518dda1e545dc2a628e8849f/docs/studies/soft_body_architecture/src/20-materials/09-spatial-fields/00-sdf-valued.md
 
 // `min_principal_stretch` rides the `MaterialField` shape forward for upcoming
 // stretch-limit diagnostics; not yet read by any consumer.

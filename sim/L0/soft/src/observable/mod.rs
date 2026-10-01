@@ -44,7 +44,7 @@ pub trait Observable {
     /// Per-vertex temperature. Empty unless thermal coupling is active.
     fn temperature_field(&self, step: &Self::Step) -> TemperatureField;
 
-    /// γ-locked reward breakdown per [Part 10 Ch 00](../../100-optimization/00-forward.md).
+    /// γ-locked reward breakdown per [Part 10 Ch 00](https://github.com/via-balaena/CortenForge/blob/e1949cf31f6e5760518dda1e545dc2a628e8849f/docs/studies/soft_body_architecture/src/100-optimization/00-forward.md).
     /// Four per-term fields; skeleton 1-tet gap is encoded as
     /// `f64::NAN` sentinels on `pressure_uniformity` + `coverage` per
     /// spec §2.
