@@ -314,9 +314,12 @@ pub(crate) fn check_at(root: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Run cargo in `root` and return its stdout. Colour is forced off: CI sets
+/// `CARGO_TERM_COLOR=always`, which puts escape codes into `cargo tree`'s lines.
 fn cargo(root: &Path, args: &[&str]) -> Result<String> {
     let out = std::process::Command::new("cargo")
         .args(args)
+        .env("CARGO_TERM_COLOR", "never")
         .current_dir(root)
         .output()
         .with_context(|| format!("run `cargo {}`", args.join(" ")))?;
