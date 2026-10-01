@@ -1,6 +1,8 @@
 [package]
 name = "cortenforge-sim-coupling"
 description = "Staggered forward soft↔rigid coupling between sim-soft (FEM) and sim-core (rigid). Exchanges rigid pose (→ soft contact) and the soft contact reaction (→ rigid xfrc) once per lockstep step."
+keywords = ["physics", "simulation", "soft-body", "rigid-body", "coupling"]
+categories = ["simulation", "science"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true

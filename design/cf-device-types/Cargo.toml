@@ -1,6 +1,8 @@
 [package]
 name = "cortenforge-device-types"
 description = "Shared device-design domain types: cavity and layer-stack state, scan resources, centerline, sim-design projection and Smooth-On Slacker curve data"
+keywords = ["design", "casting", "silicone", "geometry", "cad"]
+categories = ["data-structures", "science"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true

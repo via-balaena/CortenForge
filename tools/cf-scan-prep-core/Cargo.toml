@@ -1,6 +1,8 @@
 [package]
 name = "cortenforge-scan-prep-core"
 description = "Headless, Bevy-free mesh-editing core for scan preprocessing — the scan repair / cap / centerline / trim / reconstruct algorithms + the .prep.toml schema"
+keywords = ["mesh", "scan", "repair", "centerline", "geometry"]
+categories = ["graphics", "algorithms"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -1,7 +1,7 @@
 [package]
 name = "cortenforge-sim-opt"
 description = "Gradient-free optimizers (simulated annealing, parallel tempering) and bootstrap statistics for comparing two training algorithms"
-keywords = ["optimization", "annealing", "cem", "gradient-free", "metaheuristic"]
+keywords = ["optimization", "annealing", "parallel-tempering", "gradient-free", "metaheuristic"]
 categories = ["algorithms", "mathematics", "science"]
 version.workspace = true
 edition.workspace = true
