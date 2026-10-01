@@ -768,6 +768,80 @@ mod tests {
             .expect("the release set should be the facade's closure");
     }
 
+    /// `check_at` applies the packaging rules to every crate in the set and to
+    /// none outside it: the facade and its one dependency, both without the
+    /// root's NOTICE, fail twice (an unpublished member with no licences,
+    /// NOTICE or README adds nothing), once with only the facade's, pass with
+    /// both, and fail again when the dependency's README is not the one its
+    /// own name and description give.
+    #[test]
+    fn check_at_reads_each_crates_packaging() {
+        let root = std::env::temp_dir().join(format!("cf-check-at-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let write = |path: std::path::PathBuf, text: &str| {
+            std::fs::create_dir_all(path.parent().expect("a parent")).expect("make dirs");
+            std::fs::write(&path, text).expect("write fixture file");
+        };
+        write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"cortenforge\", \"member\", \"outsider\"]\n",
+        );
+        for file in ROOT_FILES {
+            write(root.join(file), &format!("{file} text"));
+        }
+        let manifest = |name: &str, rest: &str| {
+            format!("[package]\nname = \"{name}\"\nversion = \"0.9.0\"\nedition = \"2021\"\n{rest}")
+        };
+        write(
+            root.join("cortenforge/Cargo.toml"),
+            &manifest(
+                FACADE,
+                "description = \"The facade\"\n\
+                 [dependencies]\nmember = { path = \"../member\", version = \"=0.9.0\" }\n",
+            ),
+        );
+        write(
+            root.join("member/Cargo.toml"),
+            &manifest("member", "description = \"Does one thing\"\n"),
+        );
+        write(
+            root.join("outsider/Cargo.toml"),
+            &manifest("outsider", "publish = false\n"),
+        );
+        for name in [FACADE, "member", "outsider"] {
+            write(root.join(name).join("src/lib.rs"), "");
+        }
+        for name in [FACADE, "member"] {
+            for file in ["LICENSE-APACHE", "LICENSE-MIT"] {
+                write(root.join(name).join(file), &format!("{file} text"));
+            }
+        }
+        write(root.join(FACADE).join(README), "# cortenforge\n");
+        write(
+            root.join("member").join(README),
+            &member_readme("member", "Does one thing"),
+        );
+
+        let neither = check_at(&root);
+        write(root.join(FACADE).join("NOTICE"), "NOTICE text");
+        let facade_only = check_at(&root);
+        write(root.join("member").join("NOTICE"), "NOTICE text");
+        let both = check_at(&root);
+        write(
+            root.join("member").join(README),
+            &member_readme("member", "Does two things"),
+        );
+        let stale_readme = check_at(&root);
+        let _ = std::fs::remove_dir_all(&root);
+        let err = neither.expect_err("crates without the NOTICE must fail");
+        assert!(err.to_string().starts_with("2 problem(s)"), "{err}");
+        let err = facade_only.expect_err("the member without its NOTICE must fail");
+        assert!(err.to_string().starts_with("1 problem(s)"), "{err}");
+        both.expect("the same workspace with both NOTICEs should pass");
+        let err = stale_readme.expect_err("the member's stale README must fail");
+        assert!(err.to_string().starts_with("1 problem(s)"), "{err}");
+    }
+
     /// A crate whose packaging breaks no rule: the root's files, the README its
     /// description gives, and a plain `exclude`.
     fn packaged(name: &str) -> Packaging {

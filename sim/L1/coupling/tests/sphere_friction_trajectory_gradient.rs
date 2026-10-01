@@ -35,8 +35,7 @@
 //! conditioning. A 2026-06-27 implement-measure-revert spike falsified all three tangent levers
 //! (`lm_regularization` inert; tol 1e-10→1e-13 hits `NewtonIterCap`; threading `DN·C` into the
 //! forward Hessian makes it WORSE by desyncing forward `x*` from the frozen-lag adjoint tangent) —
-//! the only conceivable fix is a fully consistent asymmetric forward tangent, NOT pursued. See
-//! `project-differentiable-finite-contact.md`.
+//! the only conceivable fix is a fully consistent asymmetric forward tangent, NOT pursued.
 
 // A missing/malformed fixture (MJCF load, body index) surfaces as a test panic.
 #![allow(clippy::expect_used)]

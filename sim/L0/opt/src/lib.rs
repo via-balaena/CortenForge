@@ -1,12 +1,12 @@
 //! # sim-opt
 //!
-//! Gradient-free optimization algorithms and rematch analysis
-//! machinery.
+//! Gradient-free optimizers (simulated annealing, parallel tempering)
+//! and bootstrap statistics for comparing two training algorithms.
 //!
 //! This crate is **Layer 0** — zero Bevy, zero ML framework
 //! dependencies. It extends `sim-ml-chassis`'s `Algorithm` trait
-//! with Simulated Annealing and ships the statistical-analysis
-//! machinery the ml-chassis-refactor study's rematch consumes.
+//! with Simulated Annealing and Parallel Tempering and ships the
+//! statistical-analysis machinery behind [`run_rematch`].
 //!
 //! ## Scope
 //!
@@ -15,10 +15,11 @@
 //!   and `VecEnv` directly, like CEM, and emits per-epoch
 //!   `EpochMetrics` in the per-episode-total unit the chassis
 //!   algorithms standardized on.
+//! - [`richer_sa`] — `RicherSa` / `RicherSaHyperparams`.
+//! - [`parallel_tempering`] — `Pt` / `PtHyperparams`.
 //! - [`analysis`] — bootstrap CI on the difference of means and
-//!   medians, bimodality coefficient, Ch 30 three-outcome
-//!   classifier, and the folded-pilot driver that executes
-//!   Chapter 32's rematch protocol end-to-end.
+//!   medians, bimodality coefficient, three-outcome classifier,
+//!   and [`run_rematch`].
 //!
 //! ## What this crate does NOT do
 //!
@@ -30,8 +31,8 @@
 //!   and are passed into `Sa::new` at construction time.
 //! - **No environment construction.** `VecEnv` instances come
 //!   from `sim-ml-chassis::TaskConfig::build_vec_env(n_envs,
-//!   seed)`, which sim-opt's analysis module calls via the
-//!   rematch driver.
+//!   seed)`, which sim-opt's analysis module calls via
+//!   [`run_rematch`].
 //! - **No Bevy dependency.** This is Layer 0.
 
 #![deny(clippy::unwrap_used, clippy::expect_used)]

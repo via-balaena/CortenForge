@@ -1,6 +1,6 @@
 [package]
 name = "cf-device-types"
-description = "Shared device-design domain types: cavity and layer-stack state, scan resources, centerline, sim-design projection and slacker recipe data, so tools describe a layered-silicone device the same way"
+description = "Shared device-design domain types: cavity and layer-stack state, scan resources, centerline, sim-design projection and Smooth-On Slacker curve data"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

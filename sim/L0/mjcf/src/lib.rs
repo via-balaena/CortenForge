@@ -67,7 +67,7 @@
 //! - `<inertial>` - Mass properties with pos, mass, diaginertia/fullinertia
 //! - `<joint>` - Joint attached to body
 //! - `<geom>` - Collision/visual geometry attached to body
-//! - `<site>` - Marker/sensor attachment point - parsed but not used
+//! - `<site>` - Marker/sensor attachment point
 //!
 //! ## Joints
 //!
@@ -104,27 +104,27 @@
 //!
 //! ## Contact
 //!
-//! - `<contact>` - Contact pair filtering (parsed but not implemented)
+//! - `<contact>` - Contact pair filtering
 //!
 //! # MJB Binary Format
 //!
-//! When the `mjb` feature is enabled, this crate also supports MuJoCo's binary
-//! format (MJB) for faster model loading:
+//! When the `mjb` feature is enabled, this crate also saves and loads a parsed
+//! model in a binary format of its own (bincode behind an `MJB1` header; it is
+//! not MuJoCo's `.mjb`):
 //!
 //! ```ignore
-//! use sim_mjcf::{load_model, load_mjb_file, save_mjb_file};
+//! use sim_mjcf::{parse_mjcf_str, load_mjb_file, save_mjb_file};
 //!
 //! // Parse MJCF and save as binary
-//! let model = load_model("<mujoco><worldbody/></mujoco>").unwrap();
+//! let model = parse_mjcf_str("<mujoco><worldbody/></mujoco>").unwrap();
 //! save_mjb_file(&model, "model.mjb").unwrap();
 //!
-//! // Later, load the binary format (much faster)
+//! // Later, load the binary format
 //! let loaded = load_mjb_file("model.mjb").unwrap();
 //! ```
 //!
 //! # Limitations
 //!
-//! - Height fields (hfield) and signed distance fields (sdf) are parsed but fall back to Box geometry
 //! - Composite bodies: only `type="cable"` is supported (all other types are deprecated in MuJoCo 3.4.0)
 //!
 //! # Optional features
@@ -133,18 +133,19 @@
 //!   the `image` crate. Disable via `default-features = false` for embedded / WASM
 //!   builds; inline `elevation="..."` height fields continue to work either way.
 //! - `threemf`: 3MF asset support for `<mesh file="..."/>` (forwards to `mesh-io/threemf`).
-//! - `mjb`: MuJoCo binary format (de)serialization.
+//! - `mjb`: the binary model format above (not MuJoCo's `.mjb`).
 //! - `serde`: derive Serialize/Deserialize on the public types.
 //!
 //! # Coordinate System
 //!
-//! MJCF uses a right-handed coordinate system (Z-up by default) which is
-//! converted to match the CortenForge convention:
+//! MJCF uses a right-handed coordinate system (Z-up by default) which matches
+//! the CortenForge convention:
 //!
 //! - X: right
 //! - Y: forward
 //! - Z: up
 
+#![cfg_attr(docsrs, feature(doc_cfg))]
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 #![warn(missing_docs)]
 #![allow(

@@ -96,7 +96,7 @@ pub struct ValidityDomain {
     /// Tensile principal-stretch cap. `Some(m)` directs the solver gate
     /// to panic when any singular value of `F` exceeds `m`. `None`
     /// defers to the legacy `max_stretch_deviation` symmetric bound.
-    /// Yeoh's calibrated `0.8 · λ_break` lands here per arc memo D8.
+    /// Yeoh's calibrated `0.8 · λ_break` lands here.
     pub max_principal_stretch: Option<f64>,
 
     /// Compressive principal-stretch cap. `Some(n)` directs the solver
@@ -106,7 +106,7 @@ pub struct ValidityDomain {
     /// `Some`, since the gate routes through the per-principal-stretch
     /// flavor on either bound's presence).  Yeoh's `0.20` (H4-2-A
     /// research-informed default, was 0.30 pre-H4-2-A) lands here per
-    /// arc memo D8 + `docs/CANDIDATE_H4_COMPRESSION_RESEARCH.md` —
+    /// `docs/CANDIDATE_H4_COMPRESSION_RESEARCH.md` —
     /// but note H4-2-C drops this slot to `None` for per-tet `Yeoh`s
     /// built via [`crate::MaterialField::sample_yeoh`], so in the
     /// cf-sim-research FEM path the compressive cap is currently

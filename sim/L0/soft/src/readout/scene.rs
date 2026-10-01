@@ -3,7 +3,7 @@
 //! Each constructor returns a `(impl Mesh, BoundaryConditions,
 //! SceneInitial)` 3-tuple — Phase 2's canonical scene-emission
 //! contract, Decision K + L of
-//! [`phase_2_multi_element_fem_scope.md`](../../../../docs/todo/phase_2_multi_element_fem_scope.md).
+//! [`phase_2_multi_element_fem_scope.md`](https://github.com/via-balaena/CortenForge/blob/e1949cf31f6e5760518dda1e545dc2a628e8849f/sim/docs/todo/phase_2_multi_element_fem_scope.md).
 //! The family: `one_tet_cube` (the canonical decimeter-edge tet per
 //! spec §2), `layered_silicone_sphere`, `compressive_block_on_plane`,
 //! `sphere_on_plane`, and `dropping_sphere`. Multi-tet meshes are

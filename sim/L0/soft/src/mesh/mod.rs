@@ -72,8 +72,7 @@ pub struct QualityMetrics {
 ///
 /// Generic over the per-tet material type `M`. NH consumers omit the
 /// type parameter (defaults to [`NeoHookean`]); Yeoh consumers (row
-/// 23+) write `Mesh<Yeoh>` explicitly. Per arc memo D10 — row picks
-/// one material model, no in-row mixing.
+/// 23+) write `Mesh<Yeoh>` explicitly.
 pub trait Mesh<M: Material = NeoHookean>: Send + Sync {
     /// Number of tetrahedra in the mesh.
     fn n_tets(&self) -> usize;
@@ -195,8 +194,7 @@ pub trait Mesh<M: Material = NeoHookean>: Send + Sync {
     /// share vertex count, tet count, and per-tet vertex indices (Ch 00
     /// §02 mesh claim 3).
     ///
-    /// Restricted to same-`M` comparisons (mixing NH and Yeoh meshes
-    /// is rejected by D10's "no in-row mixing" rule). Trait method
+    /// Restricted to same-`M` comparisons. Trait method
     /// signatures can't carry an extra generic over a different `M`
     /// while staying object-safe; if a future use case needs
     /// cross-`M` topology comparison, lift the topology methods into

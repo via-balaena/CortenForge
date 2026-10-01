@@ -39,8 +39,8 @@
 //! `theta_var` as parent. The VJP solves the IFT adjoint `A · λ = g_free`
 //! and contracts against `∂r/∂θ` — see `NewtonStepVjp` for the math.
 //!
-//! [r]: ../../../../../../docs/studies/soft_body_architecture/src/60-differentiability/02-implicit-function.md
-//! [tet4]: ../../../../../../docs/studies/soft_body_architecture/src/30-discretization/00-element-choice/00-tet4.md
+//! [r]: https://github.com/via-balaena/CortenForge/blob/e1949cf31f6e5760518dda1e545dc2a628e8849f/docs/studies/soft_body_architecture/src/60-differentiability/02-implicit-function.md
+//! [tet4]: https://github.com/via-balaena/CortenForge/blob/e1949cf31f6e5760518dda1e545dc2a628e8849f/docs/studies/soft_body_architecture/src/30-discretization/00-element-choice/00-tet4.md
 
 // Forward-riding placeholders across the backward-Euler module: `CpuNewtonSolver::element`
 // carries the (Tet10) element variant forward, and `factor.rs`'s `is_llt` / `is_lu`
@@ -140,7 +140,7 @@ struct GaussGeometry<const N: usize, const G: usize> {
 /// memo Decision G's monomorphization. Yeoh consumers (row 23+) write
 /// `M = Yeoh` explicitly, typically via the [`crate::CpuTet4YeohSolver`]
 /// alias, and use a `Mesh<Yeoh>` impl such as
-/// `SdfMeshedTetMesh<Yeoh>` per arc memo D10. Per-tet `M`
+/// `SdfMeshedTetMesh<Yeoh>`. Per-tet `M`
 /// instances live on the mesh and are read at the assembly hot
 /// points via `self.mesh.materials()`.
 pub struct CpuNewtonSolver<

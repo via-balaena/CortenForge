@@ -150,7 +150,7 @@ impl TaskConfig {
     /// instead; that path synthesizes its own `build_fn` and ignores
     /// the seed via `_seed: u64`.  This constructor is the
     /// custom-stochastic-task surface deferred from PR 2a in
-    /// [Ch 42](../../../../docs/studies/ml_chassis_refactor/src/42-pr-3-sim-opt-rematch.md)
+    /// [Ch 42](https://github.com/via-balaena/CortenForge/blob/e1949cf31f6e5760518dda1e545dc2a628e8849f/docs/studies/ml_chassis_refactor/src/42-pr-3-sim-opt-rematch.md)
     /// §2 sub-decision (a).
     pub fn from_build_fn<F>(
         name: impl Into<String>,

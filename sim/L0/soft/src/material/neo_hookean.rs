@@ -22,8 +22,8 @@
 //! from Part 2 Ch 04 03-impl.md §88 is deferred to the gradcheck session
 //! that first exercises `F ≈ I` at six-digit agreement with linear.
 //!
-//! [e]: docs/studies/soft_body_architecture/src/20-materials/04-hyperelastic/00-neo-hookean/00-energy.md
-//! [t]: docs/studies/soft_body_architecture/src/20-materials/04-hyperelastic/00-neo-hookean/01-tangent.md
+//! [e]: https://github.com/via-balaena/CortenForge/blob/e1949cf31f6e5760518dda1e545dc2a628e8849f/docs/studies/soft_body_architecture/src/20-materials/04-hyperelastic/00-neo-hookean/00-energy.md
+//! [t]: https://github.com/via-balaena/CortenForge/blob/e1949cf31f6e5760518dda1e545dc2a628e8849f/docs/studies/soft_body_architecture/src/20-materials/04-hyperelastic/00-neo-hookean/01-tangent.md
 
 use nalgebra::{Matrix3, SMatrix};
 

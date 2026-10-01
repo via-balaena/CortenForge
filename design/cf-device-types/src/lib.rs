@@ -1,16 +1,8 @@
 //! Shared device-design domain types.
 //!
-//! Lifted out of `tools/cf-device-design/src/main.rs` per
-//! `docs/SIM_DECOUPLE_REFACTOR_PLAN.md` §3 (A1 Phase 1). The CAD
-//! binary (`cf-device-design`) and the future sim-research binary
-//! (`cf-sim-research`, Phase 2+) both depend on this crate so they
-//! describe a layered-silicone device — the cavity inset, the
-//! ordered layer stack, the scan resources, the centerline, and the
-//! sim-design projection of those — the same way.
-//!
 //! This crate is **types only**. No FEM, no rendering, no UI. Bevy
-//! enters only through `#[derive(Resource)]` on the resources the
-//! Bevy binaries need to share.
+//! enters only through `#[derive(Resource)]`, behind the off-by-default
+//! `bevy` feature.
 //!
 //! The five submodules are organized by topic:
 //!
@@ -25,15 +17,12 @@
 //!   `resolve_slacker_fraction` — the canonical "snap an arbitrary
 //!   fraction to the curve, or fall back to the native 0.0" function.
 //! - [`sim`] — the sim-side projection of `(CavityState,
-//!   LayersState)` into the insertion-sim's `SimDesign` /
-//!   `SimLayer`, plus the per-run UI enums (`ScalarMode`,
-//!   `SimMode`) and the `SlackerResolution` enum describing how
-//!   `effective_silicone_for_layer` resolved a layer.
+//!   LayersState)` into `SimDesign` / `SimLayer`, plus the per-run
+//!   UI enums (`ScalarMode`, `SimMode`) and the `SlackerResolution`
+//!   enum describing how a layer's Slacker-softened material was
+//!   resolved.
 //! - [`design_toml`] — `.design.toml` Save/Open schema +
-//!   load/save/validate/apply helpers. Lifted from
-//!   cf-device-design's private module per
-//!   `docs/archive/SIM_DECOUPLE_PHASE_3_RECON.md` §2.5.a so cf-sim-research
-//!   (Phase 3) can ingest the same design files.
+//!   load/save/validate/apply helpers.
 
 pub mod design;
 pub mod design_toml;

@@ -7,10 +7,7 @@
 //! [`PseudoNormalSign`] (parry's pseudo-normal inside test, fast but
 //! fragile on cleaned scans).
 //!
-//! Compose the oracles explicitly via `Signed { distance, sign }`. See
-//! `docs/MESH_SDF_ORACLE_DECOMPOSITION_SPEC.md` for the architecture
-//! rationale and the choice between [`PseudoNormalSign`] (well-formed
-//! synthetic meshes) and [`FloodFillSign`] (cleaned body-part scans).
+//! Compose the oracles explicitly via `Signed { distance, sign }`.
 //!
 //! # Layer 0
 //!
@@ -70,8 +67,8 @@
 //! ).unwrap();
 //!
 //! // `sdf` is a `Signed<TriMeshDistance, FloodFillSign>` and impls
-//! // `cf_design::Sdf` via cf-design's blanket impl — drop-in for
-//! // `Solid::from_sdf` and `Arc<dyn Sdf>` consumers.
+//! // `cf_design::Sdf` — drop-in for `Solid::from_sdf` and `Arc<dyn Sdf>`
+//! // consumers.
 //! assert!(sdf.evaluate(Point3::new(0.5, 0.3, 0.2)) < 0.0);
 //! ```
 //!

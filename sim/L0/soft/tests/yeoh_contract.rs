@@ -1,19 +1,18 @@
 //! Yeoh contract — math cross-checks for the production
 //! [`sim_soft::Yeoh`] struct.
 //!
-//! Closed forms documented in `material/yeoh.rs` and the Yeoh arc memo
-//! §"Math derivations":
+//! Closed forms documented in `material/yeoh.rs`:
 //!
 //! - `ψ = C₁(I₁ − 3) + C₂(I₁ − 3)² − μ ln J + (λ/2)(ln J)²`
 //! - `P = μ(F − F⁻ᵀ) + λ (ln J) F⁻ᵀ + 4 C₂ (I₁ − 3) F`
 //! - `C_ijkl = C_NH_ijkl + 4 C₂ (I₁ − 3) δ_ik δ_jl + 8 C₂ F_ij F_kl`
 //!
-//! Cross-checks (Yeoh arc memo §"Validation cascade"):
+//! Cross-checks:
 //!
 //! 1. **NH bit-exact at C₂=0** — every Yeoh output equals NH on a
-//!    battery of `F`. Validates the locked D2 contract; the production
-//!    impl uses the additive-decomposition + FMA pattern (Spike 1
-//!    finding) load-bearing for bit-exactness.
+//!    battery of `F`. The production impl uses the
+//!    additive-decomposition + FMA pattern (Spike 1 finding) load-bearing
+//!    for bit-exactness.
 //! 2. **Hand-derived scalar uniaxial closed-form** — for `F = diag(s,1,1)`,
 //!    matrix-form `ψ`, `P_11`, `P_22` match the scalar closed-form
 //!    derived by hand-substituting the diagonal `F`. Catches
@@ -43,7 +42,7 @@ use nalgebra::{Matrix3, Vector3};
 
 use sim_soft::{Material, NeoHookean, Yeoh};
 
-// ECOFLEX_00_30 calibration per Yeoh arc memo line 81.
+// ECOFLEX_00_30 calibration.
 const MU: f64 = 23_000.0; // Pa
 const LAMBDA: f64 = 92_000.0; // Pa (ν=0.40 convention: λ = 4μ)
 const C2: f64 = 2_050.0; // Pa (Yeoh C₂)

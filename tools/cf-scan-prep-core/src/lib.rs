@@ -1,12 +1,6 @@
 //! `cf-scan-prep-core` — the headless, Bevy-free mesh-editing core for scan
 //! preprocessing.
 //!
-//! This is the pure-compute half of the `cf-scan-prep` tool, extracted so a
-//! second frontend (CortenForge Studio's Bevy scan editor) can drive
-//! the exact same algorithms the Bevy tool does, with no behavior drift. The
-//! Bevy tool keeps the ECS/egui/rendering shell and calls into here; Studio
-//! calls into here too.
-//!
 //! Everything here operates on [`mesh_types::IndexedMesh`] + nalgebra types.
 //! Nothing here depends on Bevy, egui, or any renderer.
 
@@ -555,8 +549,7 @@ mod tests {
     }
     /// Millions use `M` suffix with two decimals. `3_352_068` matches
     /// the iter-1 fixture's face count (`sock_over_capsule.stl`, 3.35M
-    /// faces) — banked in MEMORY.md's Resume-here block as the spec's
-    /// canonical perf-calibration value.
+    /// faces), the spec's canonical perf-calibration value.
     #[test]
     fn human_count_millions_use_m_suffix() {
         assert_eq!(human_count(1_000_000), "1.00M");
@@ -1471,7 +1464,6 @@ mod tests {
     /// centerline that follows the ROTATED body axis, not the
     /// world Z axis. The algorithm uses `spine_hint` (not world
     /// directions) for slicing, so any spine_hint direction works.
-    /// See `project_scans_axis_orientation` memo.
     #[test]
     fn centerline_algorithm_xyz_independent() {
         let mut mesh = make_closed_frustum_mesh(20, 32, 0.05, 0.05, 0.2, |_, _, _| 0.0);

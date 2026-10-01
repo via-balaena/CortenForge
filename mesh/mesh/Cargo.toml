@@ -52,6 +52,3 @@ mesh-lattice = { workspace = true }
 [dev-dependencies]
 # Temporary files/dirs for tests
 tempfile = { workspace = true }
-
-[package.metadata.docs.rs]
-all-features = true

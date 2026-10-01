@@ -10,9 +10,7 @@
 //! repeated [`FaceField::brush`] queries against a fixed surface are cheap. It
 //! is deliberately anatomy-free and interaction-framework-free — it returns a
 //! plain set of face ids; what a caller does with them (paint, erase, trim,
-//! bore, attach) is the caller's concern. A paint GUI is only its first
-//! consumer; a tendon-site picker, a subtractive-bore selector, and a scan
-//! trimmer all reduce to the same query.
+//! bore, attach) is the caller's concern.
 
 // L0 library posture (matches `mesh-loft` / `mesh-repair` / `cf-geometry`):
 // production code never panics — deny `unwrap`/`expect` outside tests so a

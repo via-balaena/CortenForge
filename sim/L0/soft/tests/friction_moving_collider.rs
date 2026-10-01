@@ -12,7 +12,7 @@
 //! drift `Δ_surf`. With no drift the top does not move tangentially; with drift it is
 //! dragged toward `Δ_surf`, monotonically in `μ`. Hand-checked sign + magnitude of the
 //! per-pair force live in `contact::friction`'s `drift_drags_resting_vertex_in_drift_direction`.
-//! Forward-only (the friction-coupled gradient is `PR3b`). See `project-friction-leaf.md`.
+//! Forward-only (the friction-coupled gradient is `PR3b`).
 
 // A contact solve on a valid hand-built scene does not fail; index/count casts on a small
 // block are exact.

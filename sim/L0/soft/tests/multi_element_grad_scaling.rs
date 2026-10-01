@@ -23,8 +23,7 @@
 //!    that the multi-element machinery doesn't perturb the per-tet
 //!    IFT adjoint solve materially.
 //!
-//! NOTE on bit-equality (per
-//! `project_faer_block_diagonal_fp_drift.md`):
+//! NOTE on bit-equality:
 //! the scope memo's strict bit-equality claims for per-tet
 //! contribution and aggregate-as-sum-of-N-baselines were revised
 //! after the commit-5 finding that faer's sparse solve on a
@@ -246,8 +245,7 @@ fn aggregate_grad_decomposes_to_per_tet_sum() {
 fn per_tet_grad_close_to_one_tet_baseline() {
     // Each per-tet contribution should match the 1-tet baseline grad
     // within FP precision. Bit-equality is NOT asserted per the
-    // faer-block-diagonal FP-drift finding (project memory:
-    // project_faer_block_diagonal_fp_drift.md) — faer's sparse
+    // faer-block-diagonal FP-drift finding — faer's sparse
     // factor on a 6×6 block-diagonal matrix takes a slightly
     // different per-column FP path than a standalone 3×3, so the
     // adjoint solve λ differs at the last few bits. Tolerance:

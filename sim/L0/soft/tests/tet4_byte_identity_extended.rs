@@ -21,7 +21,7 @@
 //! pre-rung-4 tip of branch `tet10-rung4-multigp-stiffness` (== `main`
 //! `053417c8`) via the `#[ignore]` capture harness at the bottom of this file
 //! (`cargo test -p sim-soft --test tet4_byte_identity_extended -- --ignored
-//! --nocapture`), rustc/host as recorded in the memory checkpoint. The rung-4
+//! --nocapture`). The rung-4
 //! refactor must reproduce them exactly.
 //!
 //! **Failure protocol.** If a test fails, do NOT re-capture. First rule out a

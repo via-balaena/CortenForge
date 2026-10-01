@@ -21,8 +21,8 @@
 //! reconciliation. The two forms are surface-equivalent for every
 //! consumer in this crate.
 //!
-//! [s]: ../../../../docs/studies/soft_body_architecture/src/20-materials/09-spatial-fields/00-sdf-valued.md
-//! [a]: ../../../../docs/studies/soft_body_architecture/src/70-sdf-pipeline/02-material-assignment/00-sampling.md
+//! [s]: https://github.com/via-balaena/CortenForge/blob/e1949cf31f6e5760518dda1e545dc2a628e8849f/docs/studies/soft_body_architecture/src/20-materials/09-spatial-fields/00-sdf-valued.md
+//! [a]: https://github.com/via-balaena/CortenForge/blob/e1949cf31f6e5760518dda1e545dc2a628e8849f/docs/studies/soft_body_architecture/src/70-sdf-pipeline/02-material-assignment/00-sampling.md
 
 use crate::Vec3;
 

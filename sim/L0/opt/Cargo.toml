@@ -1,6 +1,6 @@
 [package]
 name = "sim-opt"
-description = "Gradient-free optimization algorithms and rematch analysis machinery"
+description = "Gradient-free optimizers (simulated annealing, parallel tempering) and bootstrap statistics for comparing two training algorithms"
 keywords = ["optimization", "annealing", "cem", "gradient-free", "metaheuristic"]
 categories = ["algorithms", "mathematics", "science"]
 version.workspace = true

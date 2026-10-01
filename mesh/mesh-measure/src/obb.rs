@@ -1,6 +1,6 @@
 //! Oriented bounding box computation.
 //!
-//! Computes the minimum-volume oriented bounding box using PCA.
+//! Computes the oriented bounding box using PCA.
 
 // Mesh processing uses u32 indices; truncation would only occur for meshes with >4B vertices
 // which exceeds practical limits.
@@ -11,7 +11,7 @@ use nalgebra::{Matrix3, Rotation3};
 
 /// Result of oriented bounding box computation.
 ///
-/// The OBB is the minimum-volume bounding box aligned to the mesh's
+/// The OBB is the bounding box aligned to the mesh's
 /// principal axes (computed via PCA).
 ///
 /// # Example
@@ -112,7 +112,7 @@ impl OrientedBoundingBox {
     }
 }
 
-/// Compute an oriented bounding box (minimum volume) for a mesh.
+/// Compute an oriented bounding box for a mesh.
 ///
 /// Uses PCA to find the principal axes and then computes the
 /// axis-aligned bounding box in that coordinate system.
@@ -123,7 +123,7 @@ impl OrientedBoundingBox {
 ///
 /// # Returns
 ///
-/// An [`OrientedBoundingBox`] with the minimum-volume box.
+/// An [`OrientedBoundingBox`].
 ///
 /// # Example
 ///

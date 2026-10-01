@@ -449,7 +449,7 @@ pub trait ContactModel: Send + Sync {
 /// `active_pairs` actually depends on the mesh, hence on `M`).
 /// Implemented generically over `M: Material` for both
 /// [`NullContact`] and [`PenaltyRigidContact`]; the same impl carries
-/// through any mesh's material model per arc memo D10.
+/// through any mesh's material model.
 pub trait ActivePairsFor<M: crate::material::Material>: ContactModel {
     /// Active contact pairs for the given positions.
     fn active_pairs(&self, mesh: &dyn crate::mesh::Mesh<M>, positions: &[Vec3])

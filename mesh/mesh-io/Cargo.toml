@@ -18,6 +18,10 @@ exclude = ["COMPLETION.md"]
 [package.metadata.cortenforge]
 tier = "L0-io"
 
+[package.metadata.docs.rs]
+features = ["threemf", "step"]
+rustdoc-args = ["--cfg", "docsrs"]
+
 [lints]
 workspace = true
 
@@ -30,7 +34,13 @@ default = []
 # opt-in; deferred until the pre-commit hook handles isolated-workspace
 # crates (the fuzz crate has its own [workspace] block).
 threemf = ["dep:zip"]
-step = ["truck-stepio", "truck-modeling", "truck-topology", "truck-polymesh", "truck-meshalgo"]
+step = [
+    "dep:truck-stepio",
+    "dep:truck-modeling",
+    "dep:truck-topology",
+    "dep:truck-polymesh",
+    "dep:truck-meshalgo",
+]
 
 [dependencies]
 # Shared mesh data structures (workspace)

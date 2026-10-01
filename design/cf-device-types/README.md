@@ -1,6 +1,6 @@
 # cf-device-types
 
-Shared device-design domain types: cavity and layer-stack state, scan resources, centerline, sim-design projection and slacker recipe data, so tools describe a layered-silicone device the same way
+Shared device-design domain types: cavity and layer-stack state, scan resources, centerline, sim-design projection and Smooth-On Slacker curve data
 
 This crate is part of [CortenForge](https://github.com/via-balaena/CortenForge), a Rust SDK for mechatronics and simulation. Most applications depend on the [`cortenforge`](https://crates.io/crates/cortenforge) crate instead, which brings in the rest of the SDK.
 

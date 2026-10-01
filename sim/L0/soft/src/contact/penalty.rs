@@ -804,8 +804,7 @@ impl PenaltyRigidContact {
 /// readouts is a deterministic regression gate but pollutes
 /// physically-meaningful aggregates. For probe-inside-cavity
 /// geometries the orphan share can dominate at 95-97 % of readouts
-/// (rows 21 + 22 silicone-sleeve precedent — see pattern (xx) at
-/// `project_sim_soft_row_22_patterns.md`).
+/// (rows 21 + 22 silicone-sleeve precedent).
 ///
 /// Returns a fresh `Vec` containing only the referenced-vertex readouts
 /// in the same order as the input. Pass `referenced_vertices(&mesh)`

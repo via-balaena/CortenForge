@@ -80,8 +80,7 @@
 //! Lamé 6×6 LU solves. Empirically `~0.3` s total in release (each h/2
 //! single-pass cost is dominated by mesh build + `~3` Newton iters at
 //! the static regime); orders of magnitude inside any reasonable
-//! per-test budget. Soft budget per
-//! [`feedback_release_mode_heavy_tests`].
+//! per-test budget.
 
 #![allow(
     // Direct gradient comparisons with documented analytic baselines —

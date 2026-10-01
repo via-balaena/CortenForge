@@ -292,7 +292,7 @@ mod tests {
 
     // ── α.0: is remedy D independent of remedy F? ────────────────────────────────────
     //
-    // `project-mesh-sdf-trust-arc` carries "★★ ORDER IS FORCED: F then D" on the
+    // An earlier design note carried "★★ ORDER IS FORCED: F then D" on the
     // grounds that normalising to clear the area floor puts `grad` at ~19 % error. The
     // three tests below exist to check that, because the claim was measured on an
     // adapter (`cf_fsu_model`'s test-only `NormalisedOracle`) that queries the inner
@@ -436,7 +436,7 @@ mod tests {
     ///
     /// ## The claim being tested
     ///
-    /// `project-mesh-sdf-trust-arc` records "★★ ORDER IS FORCED: F then D", reasoning
+    /// An earlier design note records "★★ ORDER IS FORCED: F then D", reasoning
     /// that a target extent chosen to clear the area floor lands `grad` at ~19 % error.
     /// That number came from `cf_fsu_model`'s test-only `NormalisedOracle`, whose own
     /// doc comment says what it does: it queries the inner oracle **in the scaled

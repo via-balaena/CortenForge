@@ -1282,7 +1282,7 @@ fn stress_h_disconnected_dual_cavity() {
 /// 0.4 mm → grid ≈ 250 × 250 × 75 = 4.7 M voxels = 4.7 MB, well under
 /// the 64 MB stress-fixture budget. Asserts the detector completes
 /// quickly enough not to time out the integration-test budget;
-/// debug-mode runtime is too slow per `feedback_release_mode_heavy_tests`,
+/// debug-mode runtime is too slow,
 /// so the fixture is `#[cfg_attr(debug_assertions, ignore)]`.
 #[test]
 #[cfg_attr(
@@ -1464,8 +1464,7 @@ fn make_self_folded_sheet(n: u32) -> IndexedMesh {
 /// fan → 210 candidate intersecting pairs;
 /// `IntersectionParams::default()` caps reported pairs at 100 with
 /// `truncated = true`. Heavy enough to warrant
-/// `#[cfg_attr(debug_assertions, ignore)]` per
-/// `feedback_release_mode_heavy_tests`.
+/// `#[cfg_attr(debug_assertions, ignore)]`.
 #[test]
 #[cfg_attr(
     debug_assertions,

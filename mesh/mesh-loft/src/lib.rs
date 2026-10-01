@@ -13,16 +13,14 @@
 //! bodies, or a general paint-and-loft GUI all reduce to the same two patches
 //! and a wall.
 //!
-//! # Ladder
+//! # Functions
 //!
-//! All rungs below now live in this crate (the primitive is complete):
-//!
-//! * **B0:** [`extract_patch`] — from a mesh and a face-id selection, produce
+//! * [`extract_patch`] — from a mesh and a face-id selection, produce
 //!   the patch sub-mesh plus its ordered, winding-oriented boundary-rim loop(s).
-//! * **B1:** [`stitch_rims`] — stitch two rims into the perimeter wall.
-//! * **B2:** [`assemble_bushing`] — top patch + wall + bottom patch → one closed
+//! * [`stitch_rims`] — stitch two rims into the perimeter wall.
+//! * [`assemble_bushing`] — top patch + wall + bottom patch → one closed
 //!   watertight mesh.
-//! * **B3:** [`smooth_wall`] — smooth only the free wall (contact caps stay pinned).
+//! * [`smooth_wall`] — smooth only the free wall (contact caps stay pinned).
 //!
 //! Patch preparation for real painted regions (so a raw selection meets
 //! [`assemble_bushing`]'s single-boundary precondition): [`finalize_patch`] =

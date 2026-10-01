@@ -1,19 +1,10 @@
-//! Cap-plane abstraction shared by CortenForge's scan-prep / device-
-//! design / cast tooling.
+//! Cap-plane abstraction for cleaned scans.
 //!
 //! cf-scan-prep emits a `[caps]` block in every `.prep.toml` recording
 //! the detected open-boundary loops of a cleaned scan — for each loop,
 //! the fit-plane centroid + outward normal, vertex count, and whether
 //! the user marked the loop as "included" (worth treating as a cap, not
-//! a small hole the device should keep sealed). cf-device-design,
-//! `insertion_sim`, and cf-cast-cli all parse these records and then
-//! compose pinned-floor closed shells against them.
-//!
-//! Before this crate, every consumer hand-rolled its own copy of the
-//! parser + the [`dome_wall_only_mesh`] cap-stripper + the diagnostic
-//! used to validate cap-face classification. This crate is the shared
-//! home so the three consumers stay in lockstep — schema drift on one
-//! side now surfaces as a compile error in the other.
+//! a small hole the device should keep sealed).
 //!
 //! # Public surface
 //!
@@ -29,7 +20,7 @@
 //! - [`report_cap_face_classification`] — permanent regression-sentinel
 //!   diagnostic. Emits a stderr table of cap-face classification stats
 //!   so a Taubin-smoothing or decimation drift that breaks the cap-face
-//!   detection rule surfaces at startup, not at the visual gate.
+//!   detection rule surfaces.
 //!
 //! # The `CapPlane` runtime frame (post-bake)
 //!
@@ -45,25 +36,11 @@
 //! # Cap-normal convention
 //!
 //! `CapPlane.normal` points OUTWARD — away from the body interior. This
-//! matches cf-scan-prep's `orient_cap_normal_outward` heuristic, which
+//! matches cf-scan-prep-core's `orient_cap_normal_outward` heuristic, which
 //! flips raw fit-plane normals to point away from the mesh-majority
 //! side. Downstream code uses this convention to decide which half-
 //! space to keep when intersecting an offset shell with a cap plane
 //! (the body-interior half-space, where `(p - centroid) · normal ≤ 0`).
-//!
-//! # Schema lockstep risk (parse-only for v1)
-//!
-//! cf-scan-prep's `.prep.toml` emit path (`PrepCapsBlock` /
-//! `PrepCapLoop` in `tools/cf-scan-prep/src/main.rs`) was NOT refactored
-//! to use this crate's types — its wire format is flat `[f64;3]` arrays
-//! in PRE-bake frame, fundamentally incompatible with this crate's
-//! runtime [`CapPlane`] (nalgebra `Point3`/`Vector3` in POST-bake
-//! frame). Sharing a serde-derived struct would require dual
-//! wire/runtime types + a frame-transform adapter — a bigger refactor
-//! than the pinned-floor arc's v1 scope. The lockstep is currently
-//! maintained by hand: the field-name string constants in this crate's
-//! parser MUST stay in sync with cf-scan-prep's `PrepCapLoop` serde
-//! fields.
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 

@@ -14,7 +14,7 @@
 //! 1. **Component contracts** ([`PassiveComponent`], [`Stochastic`],
 //!    [`Diagnose`]) — small traits that anything bolting onto a `Model` via
 //!    `cb_passive` must implement. The `apply` signature
-//!    `(&self, &Model, &Data, &mut DVector<f64>)` enforces M5: a passive
+//!    `(&self, &Model, &Data, &mut DVector<f64>)` enforces that a passive
 //!    component reads `Data` immutably and writes only to a per-DOF
 //!    accumulator. Mutable access to `Data` is **uncompilable**, not just
 //!    discouraged.
@@ -61,11 +61,6 @@
 //!     data.step(&model)?;
 //! }
 //! ```
-//!
-//! ## See also
-//!
-//! - [`docs/thermo_computing/02_foundations/chassis_design.md`](https://github.com/bigmark222/cortenforge/blob/main/docs/thermo_computing/02_foundations/chassis_design.md)
-//!   — the seven bolt-pattern decisions this crate inherits.
 
 mod baoab;
 mod colored_drive;

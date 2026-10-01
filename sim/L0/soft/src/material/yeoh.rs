@@ -1,6 +1,6 @@
 //! Compressible 2-parameter Yeoh material — closed-form `P` and tangent.
 //!
-//! Closed forms from the Yeoh arc memo (`§Math derivations`):
+//! Closed forms:
 //!
 //! - `ψ(F) = C₁(I₁ − 3) + C₂(I₁ − 3)² − μ ln J + (λ/2)(ln J)²`
 //! - `P(F) = μ(F − F⁻ᵀ) + λ (ln J) F⁻ᵀ + 4 C₂ (I₁ − 3) F`
@@ -8,7 +8,7 @@
 //!
 //! with `C₁ = μ/2` (small-strain consistency).
 //!
-//! ## NH-bit-exact contract (spec D2)
+//! ## NH-bit-exact contract
 //!
 //! At `C₂ = 0`, every output equals [`NeoHookean`]'s output bit-exactly.
 //! This is **structurally fragile**: Spike 1 surfaced two requirements
@@ -37,7 +37,7 @@
 //! ## Validity domain
 //!
 //! Yeoh uses the asymmetric `max_principal_stretch` /
-//! `min_principal_stretch` bounds (memo D8). Default constructors leave
+//! `min_principal_stretch` bounds. Default constructors leave
 //! these `None`, falling through to the legacy NH symmetric bound at
 //! `max_stretch_deviation = 1.0`. Per-anchor calibrated bounds reach a
 //! Yeoh via two paths:
@@ -82,7 +82,7 @@ impl Yeoh {
         }
     }
 
-    /// Set per-material asymmetric principal-stretch bounds (memo D8).
+    /// Set per-material asymmetric principal-stretch bounds.
     /// `max` caps tensile stretch (e.g. `0.8 · λ_break`); `min` caps
     /// compression (e.g. `0.20` H4-2-A research-informed default
     /// per `docs/CANDIDATE_H4_COMPRESSION_RESEARCH.md`).
@@ -121,7 +121,7 @@ impl Yeoh {
     /// Lift a [`NeoHookean`] to a Yeoh with `C₂ = 0`. Validity bounds
     /// inherit `None` so the solver falls back to the same legacy gate
     /// the source NH used; `energy`/`first_piola`/`tangent` are bit-exactly
-    /// equal to the source NH at every `F` (D2 contract).
+    /// equal to the source NH at every `F`.
     #[must_use]
     pub const fn from_neo_hookean(nh: &NeoHookean) -> Self {
         Self::from_lame_and_c2(nh.mu(), nh.lambda(), 0.0)

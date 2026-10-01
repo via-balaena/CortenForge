@@ -10,7 +10,7 @@
 //! using the shared components (`compute_gae`, `ReplayBuffer`, `Adam`,
 //! etc.) directly — they do not go through `Algorithm::train()`.
 //!
-//! See the [spec](../../docs/ML_COMPETITION_SPEC.md) for the full rationale
+//! See the [spec](https://github.com/via-balaena/CortenForge/blob/e1949cf31f6e5760518dda1e545dc2a628e8849f/examples/fundamentals/sim-ml/ML_COMPETITION_SPEC.md) for the full rationale
 //! behind the monolithic `train()` design.
 
 use std::collections::BTreeMap;

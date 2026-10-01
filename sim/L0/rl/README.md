@@ -1,6 +1,6 @@
 # sim-rl
 
-Generic RL baselines (CEM, REINFORCE, PPO, TD3, SAC) — the control group for every CortenForge competition
+Generic RL baselines (CEM, REINFORCE, PPO, TD3, SAC)
 
 This crate is part of [CortenForge](https://github.com/via-balaena/CortenForge), a Rust SDK for mechatronics and simulation. Most applications depend on the [`cortenforge`](https://crates.io/crates/cortenforge) crate instead, which brings in the rest of the SDK.
 

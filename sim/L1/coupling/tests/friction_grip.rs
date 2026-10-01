@@ -10,7 +10,7 @@
 //! step.
 //!
 //! Forward-only (PR3a): the friction-coupled GRADIENT is PR3b. See
-//! `docs/keystone/friction_recon.md` and the project memory `project-friction-leaf.md`.
+//! `docs/keystone/friction_recon.md`.
 
 // A missing/malformed fixture (MJCF load, body index) surfaces as a test panic — the
 // canonical fixture idiom in this workspace's integration tests.

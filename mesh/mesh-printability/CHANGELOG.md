@@ -366,8 +366,8 @@ deleted v0.8 spec.
   immediately after row #14 (when the §6.3 TrappedVolume detector
   first ships); the current `PrintValidation` struct has no
   `trapped_volumes` field. The
-  README's f3d-winding callout sits **near the top of the file** per
-  `feedback_f3d_winding_callout` — the inner cavity's reversed
+  README's f3d-winding callout sits **near the top of the file** —
+  the inner cavity's reversed
   winding is the load-bearing topology the detector relies on, not a
   bug, and `f3d`'s default two-sided lighting hides it; MeshLab and
   ParaView render both shells with their distinct orientations
@@ -461,8 +461,8 @@ deleted v0.8 spec.
   `out/mesh.ply` (24v, 44f, ASCII) +
   `out/issues.ply` (4 centroid points, 2 coincident at `(15, 2.5, 18)`,
   ASCII) for the visuals pass. The README's f3d back-face-culling
-  callout sits **near the top of the file** per
-  `feedback_f3d_winding_callout` — the slab's bottom is a genuine
+  callout sits **near the top of the file** —
+  the slab's bottom is a genuine
   outward-facing-with-normal-`-z` surface, exactly as the printability
   detector sees it; viewers that cull back-faces by default will hide
   the load-bearing geometry. Crate name
@@ -619,7 +619,7 @@ deleted v0.8 spec.
   `is_printable()` for a different reason — the pedagogical point of
   the example. Saves `out/mesh.ply` (490 v, 972 f, ASCII) + `out/issues.ply`
   (FDM iteration centroids, ASCII vertex-only) for the visuals pass;
-  README front-matter callout per `feedback_f3d_winding_callout` flags
+  README front-matter callout flags
   the inner sphere's REVERSED winding as f3d-hidden by design (use
   MeshLab + slice plane or ParaView + clip filter to see the cavity).
   Crate name `example-mesh-printability-trapped-volume` per §7.0 +
@@ -702,8 +702,8 @@ deleted v0.8 spec.
   (68v / 128f, ASCII) + `out/issues.ply` (104 vertex-only centroids:
   100 `approximate_location` points clustered around the four rings
   near `(0, 0, 5)` + 4 `OverhangRegion.center` points at the lateral
-  underside region centroids). README front-matter callout per
-  `feedback_f3d_winding_callout` documents that the four
+  underside region centroids). README front-matter callout
+  documents that the four
   interpenetration rings produce z-fighting in `f3d`'s default
   rendering — that visual mess IS the detector's input signal. Crate
   name `example-mesh-printability-self-intersecting` per §7.0 + §12.3's
@@ -801,7 +801,7 @@ deleted v0.8 spec.
   a bug. Saves `out/mesh.ply` (22v / 36f, ASCII) + `out/issues.ply`
   (2 vertex-only centroids: 1 SmallFeature + 1 ThinWall, both at
   `(35, 15, 0.1)` since they localize the same component). README
-  front-matter callout per `feedback_f3d_winding_callout` documents
+  front-matter callout documents
   the 1:150 cube-vs-burr scale ratio + the `f3d --up +Z` flag
   recommendation per row #17.5 precedent. Crate name
   `example-mesh-printability-small-feature` per §7.0 + §12.3's
@@ -976,8 +976,8 @@ deleted v0.8 spec.
   §7.1-style hollow thin-lip slab (outer `30 × 10 × 4 mm`; 0.4 mm
   top wall), `0.2 mm` hex-prism burr, and `r = 3 mm` UV-tessellated
   sphere cavity (32 segs × 16 stacks; REVERSED winding) inside the
-  body's solid material. Math-pass-first per row #22.5 precedent +
-  `feedback_math_pass_first_handauthored`: hand-authored components
+  body's solid material. Math-pass-first per row #22.5 precedent:
+  hand-authored components
   (46 verts + 72 faces) get bit-exact `1e-12` per-vertex +
   per-face winding anchors via `expected_hand_vertices()` /
   `expected_hand_face_normals()`; sphere shell (482 verts + 960

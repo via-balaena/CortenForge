@@ -28,7 +28,7 @@
 //! pure arithmetic on `phi`. No `HashMap` iteration, no float-equality
 //! comparison on the sample hot path.
 //!
-//! [c]: ../../../../docs/studies/soft_body_architecture/src/70-sdf-pipeline/02-material-assignment/01-composition.md
+//! [c]: https://github.com/via-balaena/CortenForge/blob/e1949cf31f6e5760518dda1e545dc2a628e8849f/docs/studies/soft_body_architecture/src/70-sdf-pipeline/02-material-assignment/01-composition.md
 
 use nalgebra::Point3;
 
@@ -165,7 +165,7 @@ impl Field<f64> for LayeredScalarField {
 /// via the [`Sdf`] supertrait bound, and `Box<dyn Field<f64>>` is
 /// Send + Sync via the [`Field`] supertrait bound from commit 1.
 ///
-/// [c]: ../../../../docs/studies/soft_body_architecture/src/70-sdf-pipeline/02-material-assignment/01-composition.md
+/// [c]: https://github.com/via-balaena/CortenForge/blob/e1949cf31f6e5760518dda1e545dc2a628e8849f/docs/studies/soft_body_architecture/src/70-sdf-pipeline/02-material-assignment/01-composition.md
 pub struct BlendedScalarField {
     sdf: Box<dyn Sdf>,
     inside_field: Box<dyn Field<f64>>,

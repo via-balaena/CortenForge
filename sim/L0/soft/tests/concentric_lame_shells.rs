@@ -161,8 +161,7 @@
 //! refinement scan exactly (commit 10's IV-4 region-tagging gate runs
 //! the same three levels on the same canonical sphere geometry). At the
 //! finest level the body has `~57 000` tets; the static `replay_step`
-//! at that resolution stays inside the per-test runtime budget per
-//! [`feedback_release_mode_heavy_tests`].
+//! at that resolution stays inside the per-test runtime budget.
 //!
 //! Asserted shape — bound chosen as a conservative regression-detector
 //! ceiling, looser than IV-3's `~O(h^1.5)` for two distinct reasons:
@@ -334,7 +333,7 @@ const CELL_SIZE_H2: f64 = 0.02;
 
 /// Fine refinement — matches IV-4 (commit 10). At ~57 000 tets the
 /// pressure-inflation `replay_step` stays inside the per-test runtime
-/// budget per `feedback_release_mode_heavy_tests`.
+/// budget.
 const CELL_SIZE_H4: f64 = 0.01;
 
 // ── Static-regime time step ──────────────────────────────────────────────

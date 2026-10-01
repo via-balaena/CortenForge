@@ -2,8 +2,7 @@
 //!
 //! The explicit soft-body solver's core, minus the GPU: the physics shared by
 //! the CPU and GPU executors, written once, and the lowered model they both
-//! run on. The plan is `docs/SOFT_CONTACT_ARCHITECTURE_RECON.md` (§14 the
-//! crate layout, §15 the first experiment).
+//! run on.
 //!
 //! ## The shared math, written once
 //!
@@ -12,20 +11,20 @@
 //! alias `R`. Each file is compiled twice here:
 //!
 //! - [`f32`](mod@f32), what the GPU runs and the CPU executor's working precision;
-//! - [`f64`](mod@f64), the reference that says whether `f32` is enough (plan §15a K3);
+//! - [`f64`](mod@f64), the reference that says whether `f32` is enough;
 //!
 //! and translated once into [`SHARED_WGSL`] for the GPU executor. A freshness
 //! test regenerates that WGSL and fails, naming the command, if the committed
 //! file is stale.
 //!
-//! What the shared math holds (plan §14b):
+//! What the shared math holds:
 //!
 //! - **the constitutive law**: `sim-soft`'s compressible Yeoh, neo-Hookean at
 //!   `C₂ = 0`, written in the displacement gradient and split into the terms
 //!   evaluated per element and the λ term averaged over nodes (selective
-//!   averaged nodal pressure, §15c), part of which may be taken at each
-//!   element's own volume instead (a volumetric stabilization, §16y); and the
-//!   silicone's own damping, a deviatoric Kelvin–Voigt viscosity (§16p);
+//!   averaged nodal pressure), part of which may be taken at each element's
+//!   own volume instead (a volumetric stabilization); and the silicone's own
+//!   damping, a deviatoric Kelvin–Voigt viscosity;
 //! - **the element**: the four-node tetrahedron's displacement gradient,
 //!   dilation, elastic and viscous forces, energy and stable-step estimate;
 //! - **pressure averaging** and its rule where materials meet;
@@ -33,9 +32,9 @@
 //! - **the obstacle's pose** and its interpolation between time samples;
 //! - **the obstacle's distance field**: a tricubic lookup in its baked grid;
 //! - **the contact law**: the kinematic predictor/corrector with kinematic
-//!   Coulomb friction (plan §16o).
+//!   Coulomb friction.
 //!
-//! Displacements, not positions, are the state (plan §6): a node's position
+//! Displacements, not positions, are the state: a node's position
 //! is its rest position plus its displacement. Orchestration (gathers,
 //! storage indexing, dispatch) belongs to each executor. Vectors are `[R; 3]`
 //! and 3×3 matrices `[R; 9]`, row-major.
@@ -46,10 +45,10 @@
 //! element arrays, a material per element (bonded layers need it), and the
 //! rest-state quantities computed once, in `f64`.
 //!
-//! ## What a verdict reads
+//! ## Readings
 //!
-//! [`readings`] holds fit plan D1's readings, taken from a run's monitors and
-//! its measurement window: the push force's peak over travel, and the seated
+//! [`readings`] holds the readings taken from a run's monitors and its
+//! measurement window: the push force's peak over travel, and the seated
 //! contact force on the most-loaded square centimetre.
 
 #![deny(clippy::unwrap_used, clippy::expect_used)]
