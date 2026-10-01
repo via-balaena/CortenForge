@@ -1156,8 +1156,8 @@ jobs:
   # PUBLISH DRY-RUN - the crates.io release set still packages and builds
   # ============================================================================
   # A published version can be yanked but never deleted, so the release set is
-  # rehearsed on every run instead of discovered broken on release day. Cheapest
-  # step first:
+  # rehearsed on every run instead of discovered broken on release day. Steps,
+  # in order:
   #   1. `publish-set`: the set is the `cortenforge` facade's closure, at one
   #      version. What it asserts is defined once, in
   #      `cargo xtask publish-set --help`, and deliberately not restated here.
@@ -1166,10 +1166,16 @@ jobs:
   #   3. `cargo publish --workspace --dry-run`: every crate in that set packages,
   #      then builds (default features) from its own tarball against the
   #      others' tarballs.
-  # ⚠ No step can see name OWNERSHIP, so a name someone else holds on
-  # crates.io passes all three. A name+version already on the index prints
-  # `already exists` as a warning, not an error (cargo downgrades it in a dry
-  # run). Requirements between the set's crates are exact (`=`), and
+  #   4. `name-owners`: each name in that set is ours, not on crates.io, or
+  #      listed as another account's (`cargo xtask name-owners --help`). The
+  #      only step that asks crates.io who owns a name. It needs crates.io's
+  #      API: an outage longer than its retries, or an answer it does not
+  #      expect, fails the run, and another account publishing a set name
+  #      fails every run until the list or the set changes. It runs last so a
+  #      failure there leaves the dry-run's result standing.
+  # The dry-run cannot see ownership. A name+version already on the index
+  # prints `already exists` as a warning, not an error (cargo downgrades it in
+  # a dry run). Requirements between the set's crates are exact (`=`), and
   # `publish-set` enforces that: with a caret, the facade was verified against
   # another project's `sim` 0.9.2 and the dry-run still passed (measured).
   # No event-type `if:` (see `doc-theft`): `quality-gate` fails anything that is
@@ -1197,6 +1203,9 @@ jobs:
 
       - name: Every crate in it packages and builds from its own tarball
         run: cargo publish --workspace --dry-run
+
+      - name: Each name in it is ours, not on crates.io, or listed as another account's
+        run: cargo run -q -p xtask -- name-owners
 
   # ============================================================================
   # SEMVER - Breaking change detection
