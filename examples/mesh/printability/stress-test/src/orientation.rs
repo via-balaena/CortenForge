@@ -35,7 +35,7 @@
 //! exercised here as a **stdout diagnostic** — its output is printed
 //! but NOT asserted.
 //!
-//! Logged as a v0.9 candidate: enrich `find_optimal_orientation`'s
+//! Logged as a deferred candidate: enrich `find_optimal_orientation`'s
 //! sampler (e.g., 1° angle bins around primary axes, or a
 //! gradient-descent refinement step) so it can reach arbitrary axis-
 //! aligned rotations like `R_Y(-60°)`.
@@ -52,8 +52,8 @@
 //! aspect ratio below the false-positive threshold and yields a clean
 //! `is_printable() == true` Run 1 with 2 Info-only `OverhangRegion`s.
 //! The spec's original `[100, 250]` mm² area band (sized for L=30) is
-//! reduced to `[50, 100]` for the L=15 fixture. Logged as v0.9
-//! candidate per CHANGELOG.md "v0.9 candidates" section.
+//! reduced to `[50, 100]` for the L=15 fixture. Logged as a deferred
+//! candidate per CHANGELOG.md "deferred candidates" section.
 //!
 //! ## Numerical anchors (asserted in `main`)
 //!
@@ -88,7 +88,7 @@
 //!    axis_pre - (0, 0, 1)` has norm < `1e-12` (locks the construction).
 //! 10. Diagnostic `find_optimal_orientation` print — picked rotation +
 //!     resulting `overhang_area`; no value-level assertion (the picked
-//!     sample depends on sample-set ordering, which may shift in v0.9
+//!     sample depends on sample-set ordering, which may shift in a later
 //!     enrichment).
 //! 11. **Geometric — centroid on lateral surface**: each Run 1
 //!     `OverhangRegion.center` has radial distance from the cylinder's
@@ -143,7 +143,7 @@ const RADIUS: f64 = 5.0;
 /// edge case in mesh-repair's BVH triangle-pair test. LENGTH=15 keeps
 /// the cylinder aspect ratio at 1.5:1 (column still visually leans),
 /// stays under the false-positive threshold, and preserves a clean
-/// `is_printable() == true` Run 1 (Info-only). Logged as v0.9
+/// `is_printable() == true` Run 1 (Info-only). Logged as a deferred
 /// candidate: investigate mesh-repair sensitivity to thin-aspect-ratio
 /// cylinders.
 const LENGTH: f64 = 15.0;
@@ -229,7 +229,7 @@ fn place_lift_z() -> f64 {
     // would subtly shift the cap-rim z values used by anchors #11 / #12,
     // making cross-platform FP drift hard to reason about. Mirror of the
     // mesh-printability/orientation FP-semantics convention; see
-    // CHANGELOG.md `[Unreleased] / v0.9 candidates / FP bit-exactness`.
+    // CHANGELOG.md `[Unreleased] / deferred candidates / FP bit-exactness`.
     #[allow(clippy::suboptimal_flops)]
     let lift = LENGTH / 2.0 * tilt_rad.cos() + RADIUS * tilt_rad.sin();
     lift

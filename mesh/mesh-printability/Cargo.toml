@@ -3,6 +3,7 @@ name = "mesh-printability"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+exclude = ["COMPLETION.md"]
 license.workspace = true
 description = "Print validation and manufacturing analysis for triangle meshes"
 repository.workspace = true

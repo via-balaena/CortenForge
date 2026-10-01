@@ -9,6 +9,7 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
+exclude = ["COMPLETION.md"]
 
 [package.metadata.cortenforge]
 tier = "L0"

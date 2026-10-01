@@ -1159,7 +1159,8 @@ jobs:
   # rehearsed on every run instead of discovered broken on release day. Steps,
   # in order:
   #   1. `publish-set`: the set is the `cortenforge` facade's closure, at one
-  #      version. What it asserts is defined once, in
+  #      version, and each crate in it carries the licence texts, NOTICE and a
+  #      README. What it asserts is defined once, in
   #      `cargo xtask publish-set --help`, and deliberately not restated here.
   #   2. `native-build`: that set builds no C++ on a desktop target, and its
   #      other native build steps are listed (`cargo xtask native-build --help`).
@@ -1195,7 +1196,7 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' }}
 
-      - name: The release set is the facade's closure, at one version
+      - name: The release set is the facade's closure, at one version, with licences, NOTICE and READMEs
         run: cargo run -q -p xtask -- publish-set
 
       - name: The release set builds no C++, and its other native builds are listed
@@ -1515,14 +1516,14 @@ jobs:
       - name: Every crate WITH tests still reaches a CI job
         run: cargo run -q -p xtask -- test-reachability
 
-      # The disclaimer is the same legal text in seven files, and until #939 the
+      # The disclaimer is the same legal text in several files, and until #939 the
       # only thing holding them together was a comment asking the next editor to
-      # remember. #938 widened it and dropped a clause from two of the seven on
-      # the way: the files parsed, all 25 checks were green, and the new text
+      # remember. #938 widened it and dropped a clause from two of them on the
+      # way: the files parsed, all 25 checks were green, and the new text
       # read BETTER than the old. Belongs in this job for the same reason as its
       # siblings — a PR editing DISCLAIMER.md does not touch xtask, so a
       # test-only check would fire on `main`, a merge too late.
-      - name: The disclaimer's seven copies still agree
+      - name: The disclaimer's copies still agree
         run: cargo run -q -p xtask -- disclaimer-sync
 
   quality-gate:

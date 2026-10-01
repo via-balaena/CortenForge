@@ -328,11 +328,11 @@ struct ThinWallFlagMeta {
 /// Per-face metadata captured during the §6.2 `LongBridge` flag-collection
 /// loop. `area` is summed per cluster for the issue-description's
 /// `region area: …` line (parity with `ThinWall` + `ExcessiveOverhang`).
-/// `angle_from_neg_up_rad` is preserved for v0.9 diagnostic surface
+/// `angle_from_neg_up_rad` is preserved for a later diagnostic surface
 /// (per-cluster "most-horizontal face" reporting); the v0.8 emit path
 /// reads it via `meta.angle_from_neg_up_rad` only when the field is
 /// referenced explicitly, so the dead-code lint allow below is the
-/// minimal escape until v0.9.
+/// minimal escape.
 #[derive(Clone, Copy)]
 #[allow(dead_code)]
 struct LongBridgeFlagMeta {
@@ -421,7 +421,7 @@ fn flag_overhang_faces(
         // `mul_add` calls would shift the normalized face-normal cross-
         // platform and thereby shift which faces flag at the overhang
         // threshold. Bit-exactness deferred — see CHANGELOG.md
-        // `[Unreleased] / v0.9 candidates`.
+        // `[Unreleased] / deferred candidates`.
         #[allow(clippy::suboptimal_flops)]
         let len = (normal.x * normal.x + normal.y * normal.y + normal.z * normal.z).sqrt();
         if len < 1e-10 {
@@ -434,7 +434,7 @@ fn flag_overhang_faces(
         // chains would shift the final FP bit of the overhang predicate's
         // dot product, changing which faces flag at the threshold boundary
         // cross-platform. Bit-exactness deferred — see CHANGELOG.md
-        // `[Unreleased] / v0.9 candidates`.
+        // `[Unreleased] / deferred candidates`.
         #[allow(clippy::suboptimal_flops)]
         let dot = normal.x * up.x + normal.y * up.y + normal.z * up.z;
 
@@ -993,7 +993,7 @@ fn flag_thin_wall_faces(
         // FP bits cross-platform, which in turn shifts which faces flag
         // at the `min_wall_thickness` threshold. Same precedent as the
         // `flag_overhang_faces` `len = sqrt(...)` site. Bit-exactness
-        // deferred — see CHANGELOG.md `[Unreleased] / v0.9 candidates`.
+        // deferred — see CHANGELOG.md `[Unreleased] / deferred candidates`.
         #[allow(clippy::suboptimal_flops)]
         let origin = Point3::new(
             centroid.x - EPS_RAY_OFFSET * normal.x,
@@ -1204,7 +1204,7 @@ fn emit_thin_wall_component(
 ///    `PrintIssue`.
 ///
 /// Per-face complexity is O(n) ray-tri intersections; total is O(n²).
-/// Documented v0.9 BVH followup at >10k tris (see §6.1 of the v0.8 spec).
+/// Documented deferred BVH followup at >10k tris (see §6.1 of the v0.8 spec).
 fn check_thin_walls(mesh: &IndexedMesh, config: &PrinterConfig, validation: &mut PrintValidation) {
     if !is_watertight_and_consistent_winding(mesh) {
         validation.issues.push(PrintIssue::new(
@@ -1564,15 +1564,15 @@ fn emit_long_bridge_component(
 ///    end at the longest-axis endpoints, lifted to 3D at the cluster
 ///    centroid's `up`-elevation) and a `LongBridge` `PrintIssue`.
 ///
-/// **v0.8 limitations** (locked by §9.2.4 stress fixtures, v0.9
+/// **v0.8 limitations** (locked by §9.2.4 stress fixtures, deferred
 /// followups documented in `CHANGELOG.md`):
 ///
 /// - Cantilever-as-bridge: a one-end-anchored horizontal face flags
-///   even though it isn't a true bridge. v0.9: support-end analysis to
+///   even though it isn't a true bridge. Deferred: support-end analysis to
 ///   distinguish.
 /// - Diagonal underflag: bbox is axis-aligned in the perpendicular
 ///   plane, so a 14×14 mm patch (true diagonal ≈ 19.8 mm) underflags
-///   when `max_bridge_span = 15`. v0.9: OBB-based span.
+///   when `max_bridge_span = 15`. Deferred: OBB-based span.
 fn check_long_bridges(
     mesh: &IndexedMesh,
     config: &PrinterConfig,
@@ -1637,7 +1637,7 @@ fn check_long_bridges(
 /// `moller_trumbore` self-hit guard don't interact at threshold
 /// boundaries. Per §6.3 line 1096 (with v0.8 implementation refinement
 /// — the spec text "a single uniform jitter suffices" is incorrect for
-/// axis-aligned cube fixtures; v0.9 spec edit will document the
+/// axis-aligned cube fixtures; a later spec edit will document the
 /// asymmetric requirement).
 const ROW_JITTER_Y: f64 = 1.0e-5;
 const ROW_JITTER_Z: f64 = 1.7e-5;
@@ -1666,7 +1666,7 @@ const VOXEL_GRID_BYTE_CAP: u64 = 1_000_000_000;
 /// **Tradeoff:** trapped cavities smaller than the scaled voxel
 /// get missed on large parts. Acceptable for cf-cast iter-N use
 /// case (cup-piece cavities are gross body-cavity scale, not sub-
-/// mm pockets). §6.3 v0.9 followup ("per-region adaptive voxel
+/// mm pockets). §6.3 deferred followup ("per-region adaptive voxel
 /// sizing") is still the canonical fix; this cap is the workshop-
 /// scale accelerator until that ships. See
 /// `docs/CF_CAST_F4_SPATIAL_INDEX_RECON.md` §B-12 S3 for the
@@ -2123,16 +2123,16 @@ fn trapped_components(grid: &mut VoxelGrid) -> Vec<Vec<(u32, u32, u32)>> {
 /// 9. §4.4 sort `validation.trapped_volumes` by
 ///    `(center.x, center.y, center.z)` via `f64::total_cmp`.
 ///
-/// **v0.8 limitations** (locked by §9.2.5 stress fixtures, v0.9
+/// **v0.8 limitations** (locked by §9.2.5 stress fixtures, deferred
 /// followups documented in `CHANGELOG.md`):
 ///
 /// - Sub-voxel pinhole leaks: a cavity-to-exterior channel narrower
 ///   than `voxel_size` lets the flood-fill reach the cavity, so it is
 ///   not flagged as trapped. Documented intentional behavior for v0.8
-///   (printer drainage capability is a separate concern). v0.9:
+///   (printer drainage capability is a separate concern). Deferred:
 ///   drainage-path simulation along `up` direction.
 /// - Adaptive voxel sizing: parts much larger than `min_feature_size`
-///   pay an `O((part_size / voxel_size)³)` memory bill. v0.9: per-region
+///   pay an `O((part_size / voxel_size)³)` memory bill. Deferred: per-region
 ///   adaptive voxel sizing.
 //
 // `clippy::too_many_lines`: the §6.3 algorithm is inherently 11-step

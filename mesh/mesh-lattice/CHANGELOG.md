@@ -5,6 +5,9 @@ All notable changes to mesh-lattice will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+The 1.0.0 and 0.7.0 entries below were version numbers inside the CortenForge
+workspace and were never published to crates.io.
+
 ## [Unreleased]
 
 ### Changed
@@ -17,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   MSRV job had been trying to install a Rust version that does not exist, so it
   never compiled anything.
 
-### v0.9 candidates
+### Deferred candidates
 
 These backlog candidates are gated on a real consumer driving them per
 the platform's "examples drive gap-fixes" discipline. Each entry names
@@ -169,7 +172,7 @@ maintainers.
   inward-offset inner surface" contract. Adds the
   `LatticeError::OffsetFailed` failure mode for upstream offset
   failures; the `0%-infill` early-return path retains the legacy
-  `shell = mesh.clone()` pattern as a strict-(b) deferral (see v0.9
+  `shell = mesh.clone()` pattern as a strict-(b) deferral (see deferred
   candidates above).
 
 - **Gap b — lattice-to-shell bridging struts.** Near-shell lattice
@@ -192,7 +195,7 @@ maintainers.
   lattice struts do not intrude into the cap bands.
   `cap_thickness = cell_size / resolution` heuristically tracks
   FDM-typical 0.4-0.6 mm/layer across the three preset constructors;
-  see the `layer_height` v0.9 candidate above for explicit-field
+  see the `layer_height` deferred candidate above for explicit-field
   follow-up. Cap-overlap edge case (`2 × cap_thickness >=
   interior_height_z`) returns `LatticeError::InteriorTooSmall`.
 
@@ -223,7 +226,7 @@ maintainers.
   un-welded marching-cubes inner_offset where overlapping triangle
   clusters confuse parity counting. Convex inputs only; non-convex
   inputs whose AABB inset includes outside-part regions are tracked
-  as a v0.9 candidate above.
+  as a deferred candidate above.
 
 ## [0.7.0]
 

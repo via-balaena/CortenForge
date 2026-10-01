@@ -1,6 +1,6 @@
 [package]
 name = "cf-scan-prep-core"
-description = "Headless, Bevy-free mesh-editing core for scan preprocessing — the scan repair / cap / centerline / trim / reconstruct algorithms + the .prep.toml schema, shared by the cf-scan-prep Bevy tool and CortenForge Studio."
+description = "Headless, Bevy-free mesh-editing core for scan preprocessing — the scan repair / cap / centerline / trim / reconstruct algorithms + the .prep.toml schema"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

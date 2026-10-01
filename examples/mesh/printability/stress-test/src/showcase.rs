@@ -93,7 +93,7 @@
 //!    leaning column resting on the build plate masks its overhang
 //!    concern unless the user lifts it (or the filter learns to
 //!    distinguish "edge touches plate" from "face supported by plate").
-//!    v0.9 candidate.
+//!    Deferred candidate.
 //! 4. **Wing produces unexpected `ThinWall` Warning co-flags** from
 //!    its leaning-prism geometry. The §6.1 `ThinWall` detector inward-
 //!    ray-casts from each face's centroid; for the wing's bottom and
@@ -110,7 +110,7 @@
 //!    Pedagogically valuable; not asserted by the spec.
 //! 5. **3 false-positive `SelfIntersecting Critical` pairs from the
 //!    wing** — same family of bug as the orientation crate's L≥18 mm
-//!    leaning cylinder (CHANGELOG `[Unreleased] / v0.9 candidates /
+//!    leaning cylinder (CHANGELOG `[Unreleased] / deferred candidates /
 //!    "mesh-repair detect_self_intersections false-positives on
 //!    thin-aspect-ratio cylinders"`). At L = 30 / W = 5, the wing
 //!    has lateral aspect ratio 6:1 — within the BVH-precision
@@ -136,7 +136,7 @@
 //! `small_features`). The
 //! per-detector internal ordering varies (e.g., `check_thin_walls`
 //! emits Warning before Critical clusters, sorted by descending
-//! thickness within the detector). v0.9 candidate: implement the
+//! thickness within the detector). Deferred candidate: implement the
 //! global §4.4 sort. Anchor #7 (below) accordingly verifies issues
 //! is non-empty rather than strict severity-descending.
 //!
@@ -1305,7 +1305,7 @@ fn verify(v: &PrintValidation) {
     // bearing types. **Spec deviation**: §4.4 calls for global
     // severity-descending sort; `validate_for_printing` does NOT
     // currently apply such a sort (issues append in detector run
-    // order; v0.9 candidate). Anchor weakened to a structural check
+    // order; deferred candidate). Anchor weakened to a structural check
     // until §4.4 lands; severity coverage is verified by anchor #6
     // (≥ 2 Critical) and the dedicated burr-thinwall-Critical
     // observation below.

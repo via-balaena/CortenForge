@@ -1,5 +1,6 @@
 //! Self-test: the crates that publish to crates.io are exactly the `cortenforge`
-//! facade and everything it pulls in, at one version.
+//! facade and everything it pulls in, at one version, each carrying its licence
+//! texts, NOTICE and README.
 //!
 //! crates.io rejects an upload that names a dependency it does not have, and it
 //! checks every dependency in the manifest, optional ones included
@@ -14,7 +15,7 @@
 //! nor `cargo publish --dry-run` (which never uploads) can answer it.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
@@ -35,19 +36,50 @@ closure over normal and build dependencies (optional ones included):
   - no crate inside it has a dev-dependency WITH a version on a crate outside
     it. cargo keeps such a dev-dependency in the published manifest (it strips
     only versionless ones), and crates.io rejects a manifest naming a crate it
-    does not have.
+    does not have;
+  - every crate inside it has LICENSE-APACHE, LICENSE-MIT and NOTICE identical
+    to the workspace root's, and a README.md. Each of the three is a symlink
+    to the root's file, which cargo packages as the file itself. Every crate
+    but the facade has exactly the README its name and description give; the
+    failure prints it;
+  - no crate inside it sets `include`, or a `readme` other than README.md, and
+    each `exclude` entry is a plain path (letters, digits, `.`, `_`, `-` and
+    `/` only) naming none of those four files. This reads the manifest, not
+    cargo's own file list, so it refuses what it cannot read rather than guess.
 
 `cargo publish --workspace --dry-run` checks the rest: that each crate packages
 and builds from its own tarball. Neither can see name ownership.
 
-Needs no build and no network — only `cargo metadata --no-deps`.";
+Needs no build and no network: `cargo metadata --no-deps` and the files
+themselves.";
 
 /// The one crate users depend on. The release set is what it pulls in.
 const FACADE: &str = "cortenforge";
 
+/// The files every crate in the set holds as the workspace root's: the two
+/// licence texts and the NOTICE that carries the disclaimer.
+const ROOT_FILES: [&str; 3] = ["LICENSE-APACHE", "LICENSE-MIT", "NOTICE"];
+
+/// The README every crate in the set ships.
+const README: &str = "README.md";
+
+/// Whether an `exclude` entry is a plain path: letters, digits, `.`, `_`, `-`
+/// and `/`. Anything else (a glob, an escape, a brace, whitespace) is syntax
+/// cargo may read as a pattern, so the check refuses it rather than list every
+/// form.
+fn is_plain_path(entry: &str) -> bool {
+    entry
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/'))
+}
+
 /// One workspace package, reduced to what publishing depends on.
 struct Package {
     version: String,
+    /// The manifest's `description`, if it has one.
+    description: Option<String>,
+    /// The crate's directory. `None` only for a test fixture.
+    dir: Option<PathBuf>,
     /// `publish` unset or `true`, which `cargo metadata` both report as `null`.
     /// `publish = false` reads as `[]`.
     publishable: bool,
@@ -84,9 +116,26 @@ pub fn check() -> Result<()> {
 /// [`check`], rooted at an explicit workspace directory so the unit test can
 /// point at the workspace without `set_current_dir`.
 pub(crate) fn check_at(root: &Path) -> Result<()> {
-    let packages = packages(&workspace_metadata(root)?)?;
+    let metadata = workspace_metadata(root)?;
+    let workspace_root = metadata["workspace_root"]
+        .as_str()
+        .map(Path::new)
+        .context("`cargo metadata`: missing 'workspace_root'")?;
+    let packages = packages(&metadata)?;
     let set = closure(&packages)?;
-    let found = problems(&packages, &set);
+    let mut found = problems(&packages, &set);
+    for name in set.keys() {
+        let pkg = &packages[name];
+        let dir = pkg
+            .dir
+            .as_deref()
+            .with_context(|| format!("`cargo metadata` gave no manifest path for `{name}`"))?;
+        found.extend(packaging_problems(
+            name,
+            pkg.description.as_deref(),
+            &packaging(workspace_root, dir)?,
+        ));
+    }
     if !found.is_empty() {
         for problem in &found {
             eprintln!("  ✗ {problem}");
@@ -170,6 +219,11 @@ fn packages(metadata: &Value) -> Result<BTreeMap<String, Package>> {
             name.to_string(),
             Package {
                 version: version.to_string(),
+                description: pkg["description"].as_str().map(str::to_owned),
+                dir: pkg["manifest_path"]
+                    .as_str()
+                    .and_then(|manifest| Path::new(manifest).parent())
+                    .map(Path::to_path_buf),
                 publishable,
                 deps,
             },
@@ -260,6 +314,175 @@ fn problems(packages: &BTreeMap<String, Package>, set: &BTreeMap<String, String>
                 ));
             }
         }
+    }
+    found
+}
+
+/// How a crate's copy of one of [`ROOT_FILES`] compares with the root's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Held {
+    Missing,
+    Differs,
+    Same,
+}
+
+/// What a crate's directory and manifest say about what it packages.
+struct Packaging {
+    /// Each of [`ROOT_FILES`], held as the root's or not.
+    root_files: Vec<(&'static str, Held)>,
+    /// The crate's README.md, if it has one.
+    readme: Option<String>,
+    /// The manifest's `readme`, when set to anything but `"README.md"`.
+    readme_key: Option<String>,
+    /// Manifest keys this check cannot read: `include`, or an `exclude` that is
+    /// not a list of strings.
+    unreadable: Vec<&'static str>,
+    /// The manifest's `exclude` entries.
+    exclude: Vec<String>,
+}
+
+/// Read a crate's packaging from its directory `dir`, against the workspace
+/// `root`'s files.
+fn packaging(root: &Path, dir: &Path) -> Result<Packaging> {
+    let mut root_files = Vec::new();
+    for file in ROOT_FILES {
+        let wanted = std::fs::read(root.join(file))
+            .with_context(|| format!("read the workspace root's `{file}`"))?;
+        let held = match std::fs::read(dir.join(file)) {
+            Ok(bytes) if bytes == wanted => Held::Same,
+            Ok(_) => Held::Differs,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Held::Missing,
+            Err(err) => {
+                return Err(err).with_context(|| format!("read {}", dir.join(file).display()))
+            }
+        };
+        root_files.push((file, held));
+    }
+    let readme = match std::fs::read_to_string(dir.join(README)) {
+        Ok(text) => Some(text),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+        Err(err) => {
+            return Err(err).with_context(|| format!("read {}", dir.join(README).display()))
+        }
+    };
+    let manifest_path = dir.join("Cargo.toml");
+    let manifest: toml::Value = toml::from_str(
+        &std::fs::read_to_string(&manifest_path)
+            .with_context(|| format!("read {}", manifest_path.display()))?,
+    )
+    .with_context(|| format!("parse {}", manifest_path.display()))?;
+    let package = manifest.get("package");
+    let mut unreadable = Vec::new();
+    if package.and_then(|p| p.get("include")).is_some() {
+        unreadable.push("include");
+    }
+    let mut exclude = Vec::new();
+    match package.and_then(|p| p.get("exclude")) {
+        None => {}
+        Some(toml::Value::Array(entries)) => {
+            for entry in entries {
+                match entry.as_str() {
+                    Some(path) => exclude.push(path.to_owned()),
+                    None => unreadable.push("exclude"),
+                }
+            }
+        }
+        Some(_) => unreadable.push("exclude"),
+    }
+    unreadable.dedup();
+    let readme_key = match package.and_then(|p| p.get("readme")) {
+        None => None,
+        Some(toml::Value::String(path)) if path == README => None,
+        Some(other) => Some(other.to_string()),
+    };
+    Ok(Packaging {
+        root_files,
+        readme,
+        readme_key,
+        unreadable,
+        exclude,
+    })
+}
+
+/// The README of every crate in the set but the facade: the crate's name and
+/// description, then what it is part of and its licence.
+fn member_readme(name: &str, description: &str) -> String {
+    format!(
+        "# {name}\n\n{description}\n\n\
+         This crate is part of [CortenForge](https://github.com/via-balaena/CortenForge), \
+         a Rust SDK for mechatronics and simulation. Most applications depend on the \
+         [`cortenforge`](https://crates.io/crates/cortenforge) crate instead, which brings \
+         in the rest of the SDK.\n\n\
+         Licensed under either of the Apache License, Version 2.0, or the MIT license, at \
+         your option. Both texts ship with this crate, with a `NOTICE` that carries the \
+         disclaimer.\n"
+    )
+}
+
+/// Every way crate `name`'s packaging departs from the rules in [`LONG_ABOUT`].
+fn packaging_problems(name: &str, description: Option<&str>, packaging: &Packaging) -> Vec<String> {
+    let mut found = Vec::new();
+    for (file, held) in &packaging.root_files {
+        match held {
+            Held::Missing => found.push(format!(
+                "`{name}` has no `{file}`: add a symlink to the workspace root's"
+            )),
+            Held::Differs => found.push(format!(
+                "`{name}`'s `{file}` differs from the workspace root's: make it a symlink to \
+                 the root's"
+            )),
+            Held::Same => {}
+        }
+    }
+    for key in &packaging.unreadable {
+        let what = if *key == "include" {
+            "`include`, which"
+        } else {
+            "`exclude` in a form"
+        };
+        found.push(format!(
+            "`{name}` sets {what} this check cannot read: name plain paths in `exclude` instead"
+        ));
+    }
+    for entry in &packaging.exclude {
+        let path = entry.trim_start_matches("./").trim_matches('/');
+        if !is_plain_path(entry) {
+            found.push(format!(
+                "`{name}` excludes {entry:?}, which is not a plain path this check can read: \
+                 use letters, digits, `.`, `_`, `-` and `/`"
+            ));
+        } else if path.is_empty() || path == "." {
+            found.push(format!("`{name}` excludes `{entry}`, the whole crate"));
+        } else if ROOT_FILES.contains(&path) || path == README {
+            found.push(format!(
+                "`{name}` excludes `{entry}`, which every crate in the set ships"
+            ));
+        }
+    }
+    if let Some(key) = &packaging.readme_key {
+        found.push(format!(
+            "`{name}` sets `readme = {key}`: leave `readme` unset"
+        ));
+    }
+    let Some(readme) = &packaging.readme else {
+        found.push(format!("`{name}` has no {README}"));
+        return found;
+    };
+    if name == FACADE {
+        return found;
+    }
+    let Some(description) = description else {
+        found.push(format!(
+            "`{name}` has no `description`, which its README is made from"
+        ));
+        return found;
+    };
+    let wanted = member_readme(name, description);
+    if *readme != wanted {
+        found.push(format!(
+            "`{name}`'s {README} is not the one its name and description give; it should \
+             read:\n{wanted}"
+        ));
     }
     found
 }
@@ -536,10 +759,175 @@ mod tests {
     }
 
     /// ★ The real workspace passes. The fixtures above are what make a broken
-    /// rule fail rather than pass; this makes a broken WORKSPACE fail.
+    /// rule fail rather than pass; this makes a broken WORKSPACE fail. It runs
+    /// from `xtask/`, so the root's files must be found through `cargo
+    /// metadata`, not the directory it is given.
     #[test]
     fn the_workspace_publishes_exactly_the_facade_closure() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
-        check_at(root).expect("the release set should be the facade's closure");
+        check_at(Path::new(env!("CARGO_MANIFEST_DIR")))
+            .expect("the release set should be the facade's closure");
+    }
+
+    /// A crate whose packaging breaks no rule: the root's files, the README its
+    /// description gives, and a plain `exclude`.
+    fn packaged(name: &str) -> Packaging {
+        Packaging {
+            root_files: ROOT_FILES.iter().map(|file| (*file, Held::Same)).collect(),
+            readme: Some(member_readme(name, "Does one thing")),
+            readme_key: None,
+            unreadable: Vec::new(),
+            exclude: vec!["COMPLETION.md".to_owned(), "docs/".to_owned()],
+        }
+    }
+
+    fn packaging_found(name: &str, packaging: &Packaging) -> Vec<String> {
+        packaging_problems(name, Some("Does one thing"), packaging)
+    }
+
+    #[test]
+    fn a_crate_packaged_by_the_rules_has_no_problems() {
+        assert_eq!(packaging_found("a", &packaged("a")), Vec::<String>::new());
+    }
+
+    /// A missing file and a copy that drifted from the root's each fail.
+    #[test]
+    fn each_root_file_must_be_the_roots() {
+        let mut packaging = packaged("a");
+        packaging.root_files[0].1 = Held::Missing;
+        packaging.root_files[2].1 = Held::Differs;
+        let found = packaging_found("a", &packaging);
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert!(
+            found[0].contains("`a` has no `LICENSE-APACHE`"),
+            "{found:?}"
+        );
+        assert!(found[1].contains("`a`'s `NOTICE` differs"), "{found:?}");
+    }
+
+    /// What it cannot read it refuses: `include`, an entry that is not a plain
+    /// path, the whole crate, and a plain path naming a file every crate ships.
+    #[test]
+    fn an_exclude_it_cannot_vouch_for_fails() {
+        let mut packaging = packaged("a");
+        packaging.unreadable = vec!["include"];
+        let unplain = ["*.md", "\\NOTICE", "{NOTICE,x}", "NOTICE\t", "LICENSE-MIT "];
+        packaging.exclude = unplain
+            .iter()
+            .chain(&["./", "/NOTICE", "README.md/", "./LICENSE-MIT"])
+            .map(|entry| (*entry).to_owned())
+            .collect();
+        let found = packaging_found("a", &packaging);
+        assert_eq!(found.len(), 10, "{found:?}");
+        assert!(found[0].contains("sets `include`, which"), "{found:?}");
+        for (line, entry) in found[1..6].iter().zip(unplain) {
+            assert!(
+                line.contains(&format!("excludes {entry:?}, which is not a plain path")),
+                "{line}"
+            );
+        }
+        assert!(found[6].contains("`./`, the whole crate"), "{found:?}");
+        for (line, entry) in found[7..]
+            .iter()
+            .zip(["/NOTICE", "README.md/", "./LICENSE-MIT"])
+        {
+            assert!(
+                line.contains(&format!("excludes `{entry}`, which every crate")),
+                "{line}"
+            );
+        }
+    }
+
+    /// Every crate needs a README; every one but the facade needs exactly the
+    /// one its name and description give, so it cannot drift from them.
+    #[test]
+    fn the_readme_is_the_one_the_manifest_gives() {
+        let mut packaging = packaged(FACADE);
+        packaging.readme = Some("# Written by hand\n".to_owned());
+        assert_eq!(packaging_found(FACADE, &packaging), Vec::<String>::new());
+
+        packaging.readme = None;
+        assert_eq!(packaging_found("a", &packaging), ["`a` has no README.md"]);
+        assert_eq!(
+            packaging_found(FACADE, &packaging),
+            ["`cortenforge` has no README.md"]
+        );
+
+        let mut packaging = packaged("a");
+        packaging.readme_key = Some("false".to_owned());
+        assert_eq!(
+            packaging_found("a", &packaging),
+            ["`a` sets `readme = false`: leave `readme` unset"]
+        );
+
+        let mut packaging = packaged("a");
+        let stale = packaging_problems("a", Some("Does two things"), &packaging);
+        assert_eq!(stale.len(), 1, "{stale:?}");
+        assert!(
+            stale[0].ends_with(&member_readme("a", "Does two things")),
+            "{stale:?}"
+        );
+
+        packaging.readme = Some(member_readme("b", "Does one thing"));
+        assert_eq!(
+            packaging_found("a", &packaging).len(),
+            1,
+            "another crate's README"
+        );
+
+        let undescribed = packaging_problems("a", None, &packaged("a"));
+        assert!(
+            undescribed[0].contains("no `description`"),
+            "{undescribed:?}"
+        );
+    }
+
+    /// The reader follows a symlink, tells a drifted copy and a missing file
+    /// apart, and refuses `include`, a `readme` naming another file, and an
+    /// `exclude` that is not a list of paths.
+    #[cfg(unix)]
+    #[test]
+    fn packaging_reads_links_copies_and_the_manifest() {
+        let root = std::env::temp_dir().join(format!("cf-publish-set-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (a, b) = (root.join("crates/a"), root.join("crates/b"));
+        for dir in [&a, &b] {
+            std::fs::create_dir_all(dir).expect("make dirs");
+        }
+        for file in ROOT_FILES {
+            std::fs::write(root.join(file), format!("{file} text")).expect("write root file");
+        }
+        std::os::unix::fs::symlink("../../LICENSE-APACHE", a.join("LICENSE-APACHE")).expect("link");
+        std::fs::write(a.join("LICENSE-MIT"), "an old copy").expect("write copy");
+        std::fs::write(a.join(README), "# a\n").expect("write readme");
+        std::fs::write(
+            a.join("Cargo.toml"),
+            "[package]\nname = \"a\"\ninclude = [\"src/\"]\nreadme = \"docs/README.md\"\n\
+             exclude = [\"COMPLETION.md\", 3]\n",
+        )
+        .expect("write manifest");
+        std::fs::write(
+            b.join("Cargo.toml"),
+            "[package]\nname = \"b\"\nreadme = \"README.md\"\nexclude.workspace = true\n",
+        )
+        .expect("write manifest");
+
+        let (read_a, read_b) = (packaging(&root, &a), packaging(&root, &b));
+        let _ = std::fs::remove_dir_all(&root);
+        let (read_a, read_b) = (read_a.expect("read a"), read_b.expect("read b"));
+        assert_eq!(
+            read_a.root_files,
+            [
+                ("LICENSE-APACHE", Held::Same),
+                ("LICENSE-MIT", Held::Differs),
+                ("NOTICE", Held::Missing)
+            ]
+        );
+        assert_eq!(read_a.readme.as_deref(), Some("# a\n"));
+        assert_eq!(read_a.readme_key.as_deref(), Some("\"docs/README.md\""));
+        assert_eq!(read_a.unreadable, ["include", "exclude"]);
+        assert_eq!(read_a.exclude, ["COMPLETION.md"]);
+        assert_eq!(read_b.readme, None);
+        assert_eq!(read_b.readme_key, None);
+        assert_eq!(read_b.unreadable, ["exclude"]);
     }
 }

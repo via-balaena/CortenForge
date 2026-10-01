@@ -45,7 +45,7 @@
 //! untraced (candidates: `TRI_TABLE` orientation inconsistencies
 //! between cube cases, `is_degenerate` filter interactions, or
 //! seam handling between adjacent cells). The heuristic cannot be
-//! range-anchored on shell topologies; v0.9 fix is proper volume
+//! range-anchored on shell topologies; the deferred fix is proper volume
 //! integration on a welded mesh, gated on F10 weld-pass. Anchor
 //! used here: `actual_density` is finite and in `[0.0, 1.0]`.
 //!
@@ -62,7 +62,7 @@
 //! gates both the three `vertices.push(...)` calls AND the
 //! `faces.push([...])` inside the same `if !is_degenerate(...)`
 //! block — degenerate-tri filtering removes both atomically, so the
-//! ratio is invariant per commit. v0.9 candidate: weld via
+//! ratio is invariant per commit. Deferred candidate: weld via
 //! `mesh-repair::weld_vertices` (see `mesh-lattice/CHANGELOG.md`).
 
 // Gyroid analytical formulas read more clearly without `mul_add`
@@ -256,7 +256,7 @@ fn verify_lattice_result_geometry(result: &LatticeResult, bounds: (Point3<f64>, 
     // 3 unique vertices per triangle at ANY resolution, so `3 × t_count`
     // holds regardless of `RESOLUTION` / `CELL_SIZE`. It asserts the
     // current un-welded contract (F10); the only thing that flips it is
-    // the v0.9 #10 weld pass (`mesh-repair::weld_vertices`), a
+    // the deferred #10 weld pass (`mesh-repair::weld_vertices`), a
     // consumer-gated feature whose implementer updates this assert as
     // part of that change — NOT a silent lib-retune. (Softening to
     // `<= 3 × t_count` would be vacuous: every triangle mesh satisfies
@@ -302,7 +302,7 @@ fn verify_lattice_result_geometry(result: &LatticeResult, bounds: (Point3<f64>, 
 /// (`generate.rs:552-576`) — signed-tetrahedron volume of the un-
 /// welded soup mesh, abs-normalized. For un-welded MC output this
 /// is approximate (F9). Lock a generous range; tightening requires
-/// a real volume integration (v0.9 territory).
+/// a real volume integration (deferred work).
 fn verify_actual_density(result: &LatticeResult) {
     let d = result.actual_density;
     assert!(

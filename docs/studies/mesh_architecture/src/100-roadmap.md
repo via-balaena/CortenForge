@@ -30,9 +30,9 @@ Drives PLY writer extensions (typed properties), 3MF metadata extensions (XML-ty
 
 **Status at first stable release**: no consumer drove this. The custom-attribute consumers in the example inventory — e.g. `mesh-sdf-distance-query`'s grid PLY with per-oracle `extras[...]: Vec<f32>` scalars — fit the existing `HashMap<String, Vec<f32>>` shape exactly. Defer until a multi-type consumer arrives.
 
-## v0.9 candidates
+## Deferred candidates
 
-The first stable release surfaced sixteen near-term candidates: eleven from cross-crate audit and example execution, five from the F6 `generate_infill` gap-fix sub-arc. Each candidate is gated on a real consumer driving it (per `feedback_examples_drive_gap_fixes`); the Trigger line in each entry below states what consumer-arrival looks like. Crate-specific candidates also appear in the corresponding `CHANGELOG.md` `[Unreleased]` block. Two `mesh-measure` candidates (#5, #7) have since shipped — the measurement consistency audit was the consumer that drove them (#613, #614); they keep their numbers below (cross-referenced from Part 8) and are marked shipped rather than removed.
+The first stable release surfaced sixteen candidates: eleven from cross-crate audit and example execution, five from the F6 `generate_infill` gap-fix sub-arc. Each candidate is gated on a real consumer driving it (per `feedback_examples_drive_gap_fixes`); the Trigger line in each entry below states what consumer-arrival looks like. Crate-specific candidates also appear in the corresponding `CHANGELOG.md` `[Unreleased]` block. Two `mesh-measure` candidates (#5, #7) have since shipped — the measurement consistency audit was the consumer that drove them (#613, #614); they keep their numbers below (cross-referenced from Part 8) and are marked shipped rather than removed.
 
 For `mesh-printability`-specific candidates surfaced by the v0.8 fix arc (PR #223), see `mesh/mesh-printability/CHANGELOG.md`'s `[Unreleased]` block — that backlog is tracked at the crate level rather than mirrored here, since it's specific to the printability detector inventory.
 

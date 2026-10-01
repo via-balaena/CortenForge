@@ -83,7 +83,7 @@ otherwise be invisible in CI's debug-only test matrix.
 
 ## Quality
 
-- **Workspace lints inherited** since Gap A (commit 1c, `[lints] workspace = true`); 6 statement-scoped `#[allow(clippy::suboptimal_flops)]` / `#[allow(clippy::manual_midpoint)]` annotations suppress 9 underlying clippy warnings on overhang-predicate + orientation-score sites where FMA / midpoint forms would shift the final FP bit (deferred as v0.9 candidate per `CHANGELOG.md` `[Unreleased] / v0.9 candidates`).
+- **Workspace lints inherited** since Gap A (commit 1c, `[lints] workspace = true`); 6 statement-scoped `#[allow(clippy::suboptimal_flops)]` / `#[allow(clippy::manual_midpoint)]` annotations suppress 9 underlying clippy warnings on overhang-predicate + orientation-score sites where FMA / midpoint forms would shift the final FP bit (a deferred candidate per `CHANGELOG.md` `[Unreleased] / deferred candidates`).
 - **Zero `clippy` warnings** on `cargo clippy -p mesh-printability --tests --all-targets -- -D warnings`.
 - **Zero `rustdoc` warnings** on `RUSTDOCFLAGS=-D warnings cargo doc --no-deps -p mesh-printability`.
 - **No `unwrap` / `expect` in library code** — `#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]` at the crate root; test sites use per-site `#[allow]` where the panic is local to the test.
@@ -109,9 +109,9 @@ bump: a downstream consumer requests `tracing` instrumentation on
 `mesh-printability` (currently tracing-free by design — keeps the
 release graph wasm-compatible without per-feature gating).
 
-## Known limitations (tracked for v0.9+)
+## Known limitations (deferred)
 
-The CHANGELOG.md `[Unreleased] / v0.9 candidates` block carries the
+The CHANGELOG.md `[Unreleased] / deferred candidates` block carries the
 verbose form (each item with named re-open trigger + resolution
 path); the project memo `project_mesh_printability_gaps.md` carries
 the cross-session-AI form (concise list with triggers); the mesh
@@ -121,19 +121,19 @@ lives in all three with the same wording — drift between any of
 the three is a regression any one of the three's edits can catch.
 Headline items:
 
-- **No BVH acceleration** for `ThinWall` (brute-force O(n²) Möller-Trumbore) and `SelfIntersecting` (mesh-repair's BVH path is per-call, not amortized across the validate pipeline). Validation runtime is dominated by these two detectors at > 10k triangles. v0.9 candidate.
-- **`IntersectionParams` not re-exported** from `mesh-printability::*` — callers who want to tune `epsilon`, `max_reported`, `allow_touching` must depend on `mesh-repair` directly. v0.9 candidate.
+- **No BVH acceleration** for `ThinWall` (brute-force O(n²) Möller-Trumbore) and `SelfIntersecting` (mesh-repair's BVH path is per-call, not amortized across the validate pipeline). Validation runtime is dominated by these two detectors at > 10k triangles. Deferred candidate.
+- **`IntersectionParams` not re-exported** from `mesh-printability::*` — callers who want to tune `epsilon`, `max_reported`, `allow_touching` must depend on `mesh-repair` directly. Deferred candidate.
 - **Heuristic estimates** for `support_volume` (`overhang_area * 5.0`) and the `material_volume` proxy (`bbox * 0.3`). Adequate for relative comparisons across orientations; not a substitute for slicer-grade volume computation.
 - **Overhang-predicate FP bits not bit-exact** across FMA-vs-non-FMA platforms (the 9 per-site `#[allow(clippy::suboptimal_flops)]` deferral). Tolerance bands + cross-os CI mitigate.
-- **Cavity-ceiling co-flag** under the corrected Gap M predicate: a sealed cavity's ceiling inherently flags as 90° overhang. Documented behavior; v0.9 candidate for cavity-aware overhang severity.
-- **`find_optimal_orientation` discrete sample set** cannot reach arbitrary axis-aligned rotations (e.g., `R_Y(-60°)`). For exact-axis recovery, use `apply_orientation` with a hand-constructed `Matrix3`. v0.9 candidate.
-- **`mesh-repair detect_self_intersections` false-positives** on thin-aspect-ratio prismatic geometry (cylinders L≥18mm at R=5mm, leaning-prism wing in the `showcase` module). v0.9 candidate (carried up to mesh-repair).
-- **Build-plate filter discrimination** (Gap M.2 over-aggressiveness): filter excludes any face whose lowest VERTEX touches the plate, even when the centroid + remaining vertices represent real overhang concern. Surfaced by the `showcase` module. v0.9 candidate.
-- **`§4.4` global severity-descending sort** of `validation.issues` not implemented; issues append in detector run order (overhangs → thin_walls → long_bridges → trapped_volumes → self_intersections → small_features). v0.9 candidate.
+- **Cavity-ceiling co-flag** under the corrected Gap M predicate: a sealed cavity's ceiling inherently flags as 90° overhang. Documented behavior; deferred candidate for cavity-aware overhang severity.
+- **`find_optimal_orientation` discrete sample set** cannot reach arbitrary axis-aligned rotations (e.g., `R_Y(-60°)`). For exact-axis recovery, use `apply_orientation` with a hand-constructed `Matrix3`. Deferred candidate.
+- **`mesh-repair detect_self_intersections` false-positives** on thin-aspect-ratio prismatic geometry (cylinders L≥18mm at R=5mm, leaning-prism wing in the `showcase` module). Deferred candidate (carried up to mesh-repair).
+- **Build-plate filter discrimination** (Gap M.2 over-aggressiveness): filter excludes any face whose lowest VERTEX touches the plate, even when the centroid + remaining vertices represent real overhang concern. Surfaced by the `showcase` module. Deferred candidate.
+- **`§4.4` global severity-descending sort** of `validation.issues` not implemented; issues append in detector run order (overhangs → thin_walls → long_bridges → trapped_volumes → self_intersections → small_features). Deferred candidate.
 
 ## Cross-references
 
-- **CHANGELOG.md** — per-entry detail for every Gap A–M shipped + verbose v0.9 candidates anchor.
+- **CHANGELOG.md** — per-entry detail for every Gap A–M shipped + verbose deferred candidates anchor.
 - **mesh book §50** (`docs/studies/mesh_architecture/src/50-shell-and-print.md`) — depth-pass narrative on the architecture + worked example + Known limitations.
 - **Pre-squash audit trail** (lands in row #25): `git checkout feature/mesh-printability-v0-8-pre-squash` recovers the per-commit history.
 - **Example crate** (`examples/mesh/printability/stress-test`, crate `example-printability-stress-test`): the domain validation superset, seven headless modules (`long_bridge` / `trapped_volume` / `self_intersecting` / `small_feature` / `orientation` / `technology_sweep` / `showcase`) each self-gating one detector or composition pattern, folded from the former eight per-crate examples. Documented as a museum-plaque README per `feedback_museum_plaque_readmes`.

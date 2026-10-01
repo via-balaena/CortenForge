@@ -13,8 +13,8 @@ use crate::obstacle::ObstacleBake;
 /// The product's bake (plan §16u, §16w).
 ///
 /// A coarse grid at 0.5 mm with a 4 mm margin, a fine one at 0.0625 mm (Jon, 2026-09-27), and a band of eight fine
-/// cells. The band started at four; on `base_mold` a frictionless run's deepest predicted point reached 0.91 of that,
-/// past half, so §16w's rule set it to twice that point, rounded up to whole fine cells. Every run reads the deepest
+/// cells. The band started at four; on `base_mold` a frictionless run's deepest predicted point passed half of that,
+/// so §16w's rule set it to twice that point, rounded up to whole fine cells. Every run reads the deepest
 /// predicted point and the corrections the coarse grid answered.
 pub const PRODUCT_BAKE: ObstacleBake = ObstacleBake {
     coarse_cell: 0.000_5,

@@ -5,6 +5,9 @@ All notable changes to mesh-printability will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+The 0.8.0 and 0.7.0 entries below were version numbers inside the CortenForge
+workspace and were never published to crates.io.
+
 ## [Unreleased]
 
 ### Added
@@ -66,12 +69,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   uniform reversal leaves every edge in agreement. It catches *locally
   inconsistent* winding.
 
-### v0.9 candidates
+### Deferred candidates
 
-These v0.9 backlog items are tracked here so per-site `#[allow]`
+These deferred backlog items are tracked here so per-site `#[allow]`
 justification comments + project memo cross-references can point at a
 stable anchor that survives v0.8 spec deletion. Each entry lists a
-named re-open trigger so v0.9-arc planning is not dependent on the
+named re-open trigger so planning the deferred work does not depend on the
 deleted v0.8 spec.
 
 - **FP bit-exactness of overhang predicate (§5.1 deferral).** v0.8 keeps
@@ -134,13 +137,13 @@ deleted v0.8 spec.
   shape at L=15 produces zero false-positives, while L≥18 consistently
   fires 8 pairs. Re-open trigger: a user reports false-positive
   `SelfIntersecting` flags on a single watertight prismatic feature,
-  OR another v0.9 example needs a tall thin tilted-prism fixture
+  OR another later example needs a tall thin tilted-prism fixture
   without switching to a different shape. Resolution path: investigate
   `mesh_repair::intersect::detect_self_intersections`'s
   `IntersectionParams::epsilon` and BVH bucketing; consider a tighter
   tolerance default OR a pre-pass that detects tangent-plane
   parallelism and skips those pair tests. (Cross-references existing
-  v0.9 candidate: §6.4 `IntersectionParams` re-export gap.)
+  deferred candidate: §6.4 `IntersectionParams` re-export gap.)
 - **§6.4 `IntersectionParams` re-export gap.** v0.8's
   `mesh-printability::*` does not re-export
   `mesh_repair::IntersectionParams` and `SelfIntersectionResult` —
@@ -319,7 +322,7 @@ deleted v0.8 spec.
   topologically disjoint via edge-adjacency, since the construction
   uses two disjoint cube-component vertex sets). The 2-cluster topology
   applies generically to closed-shell thin-section fixtures (slab top
-  + slab bottom share no edge); unit tests assert it explicitly. **v0.9
+  + slab bottom share no edge); unit tests assert it explicitly. **Deferred
   followups**: BVH acceleration for the >10k-tri perf cliff (documented,
   not gated); shell-based thickness via mesh-offset SDF for highly
   curved geometry; anisotropic thresholds per build direction. **SEMVER
@@ -398,9 +401,9 @@ deleted v0.8 spec.
   processes. **v0.8 documented limitations** (locked by §9.2.4 stress
   fixtures `stress_g_cantilever_currently_flagged` +
   `stress_g_diagonal_bridge_underflagged`): cantilever-as-bridge (no
-  support-end analysis; v0.9 followup) and diagonal-underflag
+  support-end analysis; deferred followup) and diagonal-underflag
   (axis-aligned-in-perp-plane bbox is conservative for diagonals;
-  v0.9 OBB followup). Cluster overlapping with overhang regions
+  deferred OBB followup). Cluster overlapping with overhang regions
   produces independent flags from both detectors (documented
   behaviour, not a duplicate-flag bug). **§4.4 ordering**:
   `long_bridges` regions sort by `(start.x, start.y, start.z)` via
@@ -511,7 +514,7 @@ deleted v0.8 spec.
   implementation uses **asymmetric per-axis jitter** (`ROW_JITTER_Y =
   1.0e-5`, `ROW_JITTER_Z = 1.7e-5`) so the ray's `(y, z)` coords never
   lie on a triangle's symmetry line. Both magnitudes still sit an
-  order above `EPS_RAY_OFFSET` (1e-6 mm). v0.9 spec edit will document
+  order above `EPS_RAY_OFFSET` (1e-6 mm). A later spec edit will document
   the asymmetric requirement. **§4.4 ordering**: `trapped_volumes`
   regions sort by `(center.x, center.y, center.z)` via
   `f64::total_cmp` (mirrors `long_bridges`' pattern at
@@ -552,7 +555,7 @@ deleted v0.8 spec.
   topology), and the v0.8 documented limitation per §6.3 line 1118 is
   already covered indirectly by `test_trapped_volume_info_below_min_feature`
   in `validation.rs::tests` (resolution-threshold path). Geometry-
-  authoring effort is better paired with v0.9's drainage-path
+  authoring effort is better paired with later drainage-path
   simulation, when the behavior becomes actionable rather than
   purely diagnostic.
 - **`cross-os` CI matrix covers mesh-printability (§10.4.1).** Single-
@@ -622,12 +625,12 @@ deleted v0.8 spec.
   Crate name `example-mesh-printability-trapped-volume` per §7.0 +
   §12.3's example-commit acceptance gates. **§7.3 spec deviation**:
   `out/voxels.ply` (point-cloud of trapped voxel centres) is deferred
-  to v0.9 — `TrappedVolumeRegion` (regions.rs:153) exposes only
+  — `TrappedVolumeRegion` (regions.rs:153) exposes only
   `center / volume / bounding_box / voxel_count` and not the individual
   voxel centres; surfacing them requires a public-API extension that
   is out of scope for the row #15 example-only commit. The cavity
   centroid + bounding box already in `issues.ply` cover the
-  pedagogical need; the per-voxel point-cloud is a v0.9 visualization
+  pedagogical need; the per-voxel point-cloud is a deferred visualization
   enhancement once a clear use case drives it.
 - **`SelfIntersecting` detector via mesh-repair re-use (Gap I, §6.4).**
   Re-uses `mesh_repair::detect_self_intersections` with
@@ -668,7 +671,7 @@ deleted v0.8 spec.
   pairs on coord-shared cubes; the v0.8 mechanism for "vertex-only
   contact = not flagged" is the adjacency skip path, faithfully
   exercised by the shared-INDEX fixture, and the SAT looseness on
-  duplicate-coord meshes is filed as a v0.9 mesh-repair followup.
+  duplicate-coord meshes is filed as a deferred mesh-repair followup.
 - **`examples/mesh/printability-self-intersecting` visual demo (Gap I, §7.4).**
   First production consumer of the §6.4 `SelfIntersecting` detector
   beyond the row #16 unit + stress fixtures. The fixture is two hand-
@@ -710,7 +713,7 @@ deleted v0.8 spec.
   to give power users an ergonomic tuned-params escape hatch from
   within `mesh-printability`. Row #16 landed the detector but did not
   ship that re-export; the example documents the gap inline (README
-  pitfall section + module doc-comment) and flags it as a v0.9
+  pitfall section + module doc-comment) and flags it as a deferred
   candidate. Pure addition; fourth ⏸ pause-for-visuals commit per
   §12.6 row 4.
 - **`SmallFeature` detector via connected-component bbox extent (Gap J, §6.5).**
@@ -760,7 +763,7 @@ deleted v0.8 spec.
   open 5-of-6-face cube no-panic, vertex-only adjacency = 2 components,
   unit-cube divergence-theorem 1.0 mm³ within 1e-6). All eight are
   Light (no `#[cfg_attr(debug_assertions, ignore)]`); the algorithm
-  is `O(n_faces)` so no perf-budget concern. **v0.9 followups (§6.5)**:
+  is `O(n_faces)` so no perf-budget concern. **Deferred followups (§6.5)**:
   curvature-based detection (small bumps on a larger body), volume-
   based threshold (long thin spikes that pass extent but fail volume).
 - **`examples/mesh/printability-small-feature` visual demo (Gap J, §7.5).**
@@ -806,7 +809,7 @@ deleted v0.8 spec.
   complete in examples**: ThinWall (row #11) + LongBridge (row #13) +
   TrappedVolume (row #15) + SelfIntersecting (row #17) +
   SmallFeature (this commit) — each with a paired visual demo.
-  Eighth ⏸ pause-for-visuals commit per §12.6 row 8. **v0.9
+  Eighth ⏸ pause-for-visuals commit per §12.6 row 8. **Deferred
   candidates**: unit-detection heuristic for "scaled 1000×" CAD
   failure mode (per §7.5 README pitfalls section); §6.4
   `IntersectionParams` re-export gap (carried from row #17, still
@@ -981,7 +984,7 @@ deleted v0.8 spec.
   faces) gets procedural anchors (per-vertex `|v - center| ≈ R`
   within `1e-12`; per-face REVERSED-winding cosine similarity
   `> 0.99` with center direction); plus mesh bounding-box anchor.
-  Sets the procedural-sphere-anchors pattern as a v0.9 candidate
+  Sets the procedural-sphere-anchors pattern as a deferred candidate
   template for SDF-meshed math-pass. Five §7.8 spec deviations
   surfaced + documented inline in `src/main.rs` + README:
   (1) sphere radius reduced 4 mm → 3 mm to put body wall thickness
@@ -993,7 +996,7 @@ deleted v0.8 spec.
   build-plate filter at `validation.rs:404-408` (`face_min_along_up
   = 0 = mesh_min_along_up`; the filter excludes any face whose
   minimum-along-up coincides with the mesh's, regardless of full
-  extent — a real Gap M.2 over-aggressiveness; v0.9 candidate
+  extent — a real Gap M.2 over-aggressiveness; deferred candidate
   "build-plate filter discrimination between edge-touches-plate and
   face-supported-by-plate"; the `>= 2` overhang assertion is
   satisfied independently by slab + sphere cavity ceilings);
@@ -1007,11 +1010,11 @@ deleted v0.8 spec.
   triangle pairs (BVH precision bug in
   `mesh_repair::detect_self_intersections` on tilted prismatic
   geometry; same family as orientation crate's L≥18 mm cylinder
-  observation; v0.9 candidate already tracked in this CHANGELOG).
+  observation; deferred candidate already tracked in this CHANGELOG).
   6th deviation: `validate_for_printing` does NOT apply a global
   §4.4 severity-descending sort to `validation.issues` (issues
   append in detector run order); anchor #7 in this example was
-  relaxed to a non-empty structural check; v0.9 candidate.
+  relaxed to a non-empty structural check; deferred candidate.
   Per-detector outcome on FDM: 5 `ThinWall` (3 Critical + 2 Warning),
   1 `SmallFeature` Warning (no Critical band per
   `classify_small_feature_severity`), 2 `TrappedVolume` Info, 2
@@ -1022,7 +1025,7 @@ deleted v0.8 spec.
   presence pass. 2 PLY artifacts (`mesh.ply` 528v / 1032f + `issues.ply`
   12 centroid points). The deviations together (#3 silencing the
   wing's intended overhang; #4 surfacing it via a different
-  detector; #5 surfacing a v0.9 BVH false-positive) are the richest
+  detector; #5 surfacing a false positive) are the richest
   pedagogical surface of the fixture: real CAD pipelines lose
   intended diagnostics to filter masks AND gain unintended
   diagnostics from inward-ray-cast slope sensitivity, and the
@@ -1037,7 +1040,7 @@ deleted v0.8 spec.
   `#[allow]`s preserve FP semantics on overhang-predicate sites where FMA
   (`mul_add`) and midpoint forms would shift FP bits at the threshold
   boundary. Bit-exactness deferral is tracked under
-  [v0.9 candidates](#v09-candidates).
+  [deferred candidates](#deferred-candidates).
 - Extracted `build_edge_to_faces` private helper from
   `check_basic_manifold` so the same edge→face-list map can be shared
   with `check_overhangs`' region-split logic (Gap D, next commit). Pure
@@ -1164,8 +1167,8 @@ the consolidated picture is:
   `NonManifold` issue and `is_printable() == false` (Gap F directed-
   edge check). v0.7 silently accepted such meshes.
 - Cavity-ceiling co-flag (sealed cavities flag overhang under
-  Gap M) is documented behavior; tracked as a v0.9 candidate for
-  cavity-aware severity in the `[Unreleased] / v0.9 candidates`
+  Gap M) is documented behavior; tracked as a deferred candidate for
+  cavity-aware severity in the `[Unreleased] / deferred candidates`
   block above.
 
 ## [0.7.0] - 2025-XX-XX

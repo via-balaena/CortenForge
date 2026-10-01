@@ -6,7 +6,7 @@ Focused, single-concept demonstrations of the 10-crate mesh ecosystem
 the `mesh` umbrella). Two further public crates — `mesh-loft` (bushing
 lofting) and `mesh-select` (brush-based face selection) — are not yet
 exampled; they await a consumer to drive their first example (see the
-[Part 10 v0.9 candidates](../../docs/studies/mesh_architecture/src/100-roadmap.md#v09-candidates)).
+[Part 10 deferred candidates](../../docs/studies/mesh_architecture/src/100-roadmap.md#deferred-candidates)).
 
 Each example writes one or more PLY artifacts to its own `out/`
 directory; per-example READMEs document the locked numerical anchors
@@ -110,7 +110,7 @@ IS the correctness signal — the visuals pass is optional pedagogy.
 ## Future examples
 
 The mesh book's Part 10 — [Roadmap](../../docs/studies/mesh_architecture/src/100-roadmap.md)
-— tracks v0.9 example candidates surfaced by the v1.0 arc (welded TPMS-
+— tracks deferred example candidates surfaced by the v1.0 arc (welded TPMS-
 lattice MC output, 3MF beam-lattice writer consuming the
 `BeamLatticeData` populated above, winding-number inside-test for the
 SDF-vertex-region edge case, and others). New mesh examples should be

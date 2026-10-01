@@ -33,14 +33,14 @@
 //!   indirectly via `test_trapped_volume_info_below_min_feature` in
 //!   `validation.rs::tests` (which exercises the resolution-threshold
 //!   path). Faithful sub-voxel-opening fixture deferred to a v0.8.x
-//!   follow-up commit or v0.9 once drainage-path simulation makes the
+//!   follow-up commit or later, once drainage-path simulation makes the
 //!   behavior actionable rather than purely diagnostic.
 //!
 //! - §9.2.2 #5 `stress_m_y_up_orientation_symmetric` exercises Gap L's
 //!   `with_build_up_direction`. It was not authored in commit #8 (Gap
 //!   L); the Gap L `config.rs::tests` `+Y up` cases cover the same
 //!   property at unit-test scope. A standalone integration variant can
-//!   land in a v0.9 cleanup pass if needed.
+//!   land in a later cleanup pass if needed.
 
 use mesh_printability::{
     IssueSeverity, PrintIssueType, PrintTechnology, PrintabilityError, PrinterConfig,
@@ -559,7 +559,7 @@ fn stress_c_pole_tied_vertex_sphere() {
     // 0.4 mm radial wall by chord-vs-arc tessellation error
     // (cos(π/16) ≈ 0.981 chord shrinkage; outer + inner shells both
     // shrink, net effect concentrates reported thickness around 0.385
-    // mm). v0.9 followup: re-tessellate denser to tighten the band, or
+    // mm). Deferred followup: re-tessellate denser to tighten the band, or
     // amend the spec to acknowledge tessellation chord error.
     let mesh = build_uv_sphere_shell_pair(5.0, 0.4, 16, 8);
     let config = PrinterConfig::fdm_default();
@@ -619,12 +619,12 @@ fn stress_c_5k_tri_perf_budget() {
     // target (line 952): CI runners are typically 2× slower than
     // local on cold cache, so the assertion adds headroom that absorbs
     // CI-vs-local variance without masking real regressions. A 4× or
-    // worse blow-up would still trip; v0.9's BVH followup (§6.1 line
+    // worse blow-up would still trip; the deferred BVH followup (§6.1 line
     // 956) tightens this back to ~100 ms.
     //
     // §9.2.3 + §10.4.2 wire this fixture through `tests-release` CI;
     // perf regressions on >10k tris would land separately under the
-    // v0.9 BVH followup.
+    // deferred BVH followup.
     let mesh = build_5k_tri_thin_shell();
     let config = PrinterConfig::fdm_default();
     let start = std::time::Instant::now();
@@ -755,7 +755,7 @@ fn stress_g_diagonal_bridge_underflagged() {
     // 14×14 horizontal patch at z=10, `max_bridge_span = 15`. The
     // axis-aligned bbox extent is 14 < 15 → no flag, even though the
     // true diagonal (14·√2 ≈ 19.8 mm) exceeds the limit. Locks v0.8
-    // bbox-conservative behavior; v0.9 OBB followup catches diagonals.
+    // bbox-conservative behavior; deferred OBB followup catches diagonals.
     let mut vertices: Vec<Point3<f64>> = Vec::new();
     let mut faces: Vec<[u32; 3]> = Vec::new();
     append_closed_cuboid(
@@ -781,7 +781,7 @@ fn stress_g_diagonal_bridge_underflagged() {
     assert_eq!(
         validation.long_bridges.len(),
         0,
-        "Gap G: diagonal 14×14 patch underflags at v0.8 (bbox = 14 < max = 15); v0.9 OBB catches"
+        "Gap G: diagonal 14×14 patch underflags at v0.8 (bbox = 14 < max = 15); a deferred OBB followup catches"
     );
 }
 
@@ -790,7 +790,7 @@ fn stress_g_cantilever_currently_flagged() {
     // 20-mm cantilever (one-end-anchored horizontal face) at z=10 with
     // anchor cube at z=0. v0.8 cannot distinguish a cantilever from a
     // bridge — both produce a single cluster of horizontal-down faces
-    // above the build plate. Locks the v0.8 limitation; v0.9 followup
+    // above the build plate. Locks the v0.8 limitation; deferred followup
     // adds support-end analysis to demote cantilevers from `LongBridge`
     // to a no-flag.
     let mut vertices: Vec<Point3<f64>> = Vec::new();
@@ -817,7 +817,7 @@ fn stress_g_cantilever_currently_flagged() {
     assert_eq!(
         validation.long_bridges.len(),
         1,
-        "Gap G: cantilever flags as bridge at v0.8 (locks limitation); v0.9 adds support-end analysis"
+        "Gap G: cantilever flags as bridge at v0.8 (locks limitation); a deferred followup adds support-end analysis"
     );
     let any_critical = validation.issues.iter().any(|i| {
         i.issue_type == PrintIssueType::LongBridge && i.severity == IssueSeverity::Critical
@@ -1552,7 +1552,7 @@ fn stress_i_vertex_only_contact_not_flagged() {
     // intersections. The shared-INDEX construction tests the v0.8
     // mechanism for "vertex-only contact = not flagged" (the
     // adjacency skip path) faithfully; the coord-only SAT looseness
-    // is a v0.9 followup against mesh-repair, not a v0.8 detector
+    // is a deferred followup against mesh-repair, not a v0.8 detector
     // regression.
     let mut vertices: Vec<Point3<f64>> = Vec::new();
     let mut faces: Vec<[u32; 3]> = Vec::new();

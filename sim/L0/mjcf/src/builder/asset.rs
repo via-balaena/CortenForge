@@ -14,7 +14,7 @@ pub enum AssetKind {
     /// Mesh or hfield file (uses `meshdir`).
     Mesh,
     /// Texture file (uses `texturedir`).
-    /// Constructed only in tests; production texture loading is post-v1.0.
+    /// Constructed only in tests; production texture loading is deferred.
     #[allow(dead_code)]
     Texture,
 }

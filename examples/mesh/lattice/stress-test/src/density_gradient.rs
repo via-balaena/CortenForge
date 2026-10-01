@@ -99,7 +99,7 @@ const SPOT_TOL: f64 = 1e-9;
 /// downstream (`SurfaceDistance` via `verify_surface_distance_demo`
 /// and `verify_density_map_constructors`; `StressField` only via
 /// `verify_density_map_constructors` with no `evaluate` anchor since
-/// it requires a meaningful stress field, deferred to v0.9).
+/// it requires a meaningful stress field, deferred).
 fn verify_density_map_evaluation() {
     // (1) Uniform: density at any point ignores the point.
     let uniform = DensityMap::Uniform(0.4);
@@ -609,7 +609,7 @@ fn print_summary(s: &Summary) {
         s.result.actual_density,
     );
     println!();
-    println!("BeamLatticeData (3MF beam-extension precursor; F11 v0.9 consumer):");
+    println!("BeamLatticeData (3MF beam-extension precursor; F11 deferred consumer):");
     println!(
         "  vertex_count() = {} (BIT-EXACT; 5³ deduplicated corners + 64 cell centers)",
         s.beam_data.vertex_count(),

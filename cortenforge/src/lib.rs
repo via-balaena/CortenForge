@@ -107,6 +107,11 @@ pub use cf_device_types;
 #[cfg(feature = "fabrication")]
 pub use cf_scan_prep_core;
 
+// The README's Rust block runs as a doctest, so the paths it shows stay real.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
+
 #[cfg(test)]
 mod tests {
     // The facade is pure re-exports with no executable lines of its own; this

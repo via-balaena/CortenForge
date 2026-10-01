@@ -3,6 +3,7 @@ name = "mesh-offset"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+exclude = ["COMPLETION.md"]
 license.workspace = true
 description = "Mesh offset operations using signed distance fields"
 repository.workspace = true

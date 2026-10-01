@@ -5,8 +5,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+rust-version.workspace = true
 keywords = ["mesh", "3d", "shell", "offset", "printing"]
 categories = ["graphics", "algorithms"]
+exclude = ["COMPLETION.md"]
 
 [package.metadata.cortenforge]
 tier = "L0"

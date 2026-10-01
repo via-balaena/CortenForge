@@ -4,7 +4,7 @@
 
 [package]
 name = "mesh-io"
-description = "Mesh file I/O: STL, OBJ, PLY loading and saving"
+description = "Mesh file I/O: STL, OBJ and PLY loading and saving, with 3MF and STEP behind features"
 keywords = ["mesh", "stl", "obj", "ply", "3d"]
 categories = ["parsing", "graphics", "encoding"]
 version.workspace = true
@@ -13,6 +13,7 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
+exclude = ["COMPLETION.md"]
 
 [package.metadata.cortenforge]
 tier = "L0-io"
