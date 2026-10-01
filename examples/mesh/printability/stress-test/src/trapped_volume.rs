@@ -105,7 +105,7 @@
 //! only `center / volume / bounding_box / voxel_count` — the individual
 //! voxel centres live in the detector's internal `VoxelGrid::states`
 //! (validation.rs:1442) and are not surfaced. Extending the public API
-//! to expose them is v0.9 candidate scope; row #15's mandate is
+//! to expose them is deferred candidate scope; row #15's mandate is
 //! example-only (no source change to mesh-printability), so v0.8 ships
 //! the cavity centroid in `issues.ply` and defers the per-voxel point-
 //! cloud.

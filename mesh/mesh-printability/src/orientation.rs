@@ -38,7 +38,7 @@ impl OrientationResult {
         // shift the final FP bit of the orientation-search score on cross-
         // platform runs, changing which orientation is selected as optimal at
         // tie-break boundaries. Bit-exactness deferred — see CHANGELOG.md
-        // `[Unreleased] / v0.9 candidates`.
+        // `[Unreleased] / deferred candidates`.
         #[allow(clippy::suboptimal_flops)]
         let score = support_volume + overhang_area * 0.1;
         Self {
@@ -176,7 +176,7 @@ fn generate_sample_orientations(samples: usize) -> Vec<UnitQuaternion<f64>> {
         // FP-bit preserved: `f64::midpoint(a, b)` differs from `(a + b) / 2.0`
         // in the final bit and would shift Fibonacci-sphere sample positions,
         // changing the orientation-search optimum cross-platform. Bit-exactness
-        // deferred — see CHANGELOG.md `[Unreleased] / v0.9 candidates`.
+        // deferred — see CHANGELOG.md `[Unreleased] / deferred candidates`.
         #[allow(clippy::manual_midpoint)]
         let golden_ratio = (1.0 + 5.0_f64.sqrt()) / 2.0;
 
@@ -253,7 +253,7 @@ fn evaluate_orientation(
         // `mul_add` calls would shift the normalized face-normal cross-
         // platform and thereby shift which faces flag at the overhang
         // threshold. Bit-exactness deferred — see CHANGELOG.md
-        // `[Unreleased] / v0.9 candidates`.
+        // `[Unreleased] / deferred candidates`.
         #[allow(clippy::suboptimal_flops)]
         let len = (normal.x * normal.x + normal.y * normal.y + normal.z * normal.z).sqrt();
         if len < 1e-10 {
@@ -437,7 +437,7 @@ mod tests {
         // FP-bit preserved to mirror the impl at `OrientationResult::new`;
         // rewriting one without the other would silently mask cross-platform
         // drift in the score formula. Bit-exactness deferred — see
-        // CHANGELOG.md `[Unreleased] / v0.9 candidates`.
+        // CHANGELOG.md `[Unreleased] / deferred candidates`.
         #[allow(clippy::suboptimal_flops)]
         let expected = 100.0 + 50.0 * 0.1;
         assert!((result.score - expected).abs() < f64::EPSILON);

@@ -5,6 +5,9 @@ All notable changes to mesh-io will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+The 1.0.0 and 0.7.0 entries below were version numbers inside the CortenForge
+workspace and were never published to crates.io.
+
 ## [Unreleased]
 
 ### Changed
@@ -17,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   MSRV job had been trying to install a Rust version that does not exist, so it
   never compiled anything.
 
-### v0.9 candidates
+### Deferred candidates
 
 These backlog candidates are gated on a real consumer driving them per
 the platform's "examples drive gap-fixes" discipline. Each entry names

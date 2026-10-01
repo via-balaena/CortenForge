@@ -1,6 +1,6 @@
 [package]
 name = "sim-soft"
-description = "Soft-body walking skeleton — seven-trait surface over faer + chassis tape. Phase B fills in bodies."
+description = "Backward-Euler soft-body FEM: hyperelastic materials (Neo-Hookean, Yeoh) on tetrahedral meshes, SDF-to-tet meshing, bonded multi-material, and penalty and IPC contact with friction"
 keywords = ["physics", "simulation", "soft-body", "fem", "differentiable"]
 categories = ["simulation", "science", "mathematics"]
 version.workspace = true
@@ -9,6 +9,7 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
+exclude = ["EXAMPLE_INVENTORY.md", "tests/assets/"]
 
 # Grader F.3 opt-in: the six load-bearing invariants (I-1..I-6) are all
 # tested in `tests/*.rs` per scope §6 test-harness commitment — the only

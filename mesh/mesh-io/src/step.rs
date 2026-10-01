@@ -9,12 +9,7 @@
 //!
 //! # Feature Gate
 //!
-//! This module requires the `step` feature to be enabled:
-//!
-//! ```toml
-//! [dependencies]
-//! mesh-io = { version = "1.0", features = ["step"] }
-//! ```
+//! This module requires the `step` feature.
 //!
 //! # Limitations
 //!

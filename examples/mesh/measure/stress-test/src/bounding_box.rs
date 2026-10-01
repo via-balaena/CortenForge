@@ -463,7 +463,7 @@ fn verify_combined_obb(obb: &OrientedBoundingBox, mesh: &IndexedMesh) {
     // outside the AABB envelope. Geometrically: the input mesh sits
     // inside both AABB and OBB, but neither contains the other. The
     // 16-vertex `obb.contains()` anchor above is the proper enclosure
-    // test. The "OBB ⊆ AABB" folk intuition is a documentation v0.9
+    // test. The "OBB ⊆ AABB" folk intuition is a deferred documentation
     // candidate; see `mesh-measure/CHANGELOG.md`.)
 }
 

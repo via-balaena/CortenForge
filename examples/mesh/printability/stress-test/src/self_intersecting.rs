@@ -107,7 +107,7 @@
 //! `mesh_repair::intersect::detect_self_intersections` directly with a
 //! tuned `IntersectionParams` (the §3 spec calls for re-exporting
 //! these types from `mesh-printability`; row #16 landed without that
-//! re-export, open as a v0.9 candidate). §6.4 is the "print-validation
+//! re-export, open as a deferred candidate). §6.4 is the "print-validation
 //! default" wrapper.
 //!
 //! ## How to run

@@ -39,10 +39,10 @@
 //! BIT-EXACT (perfect square), so `data.total_length()` sums to
 //! `540 × 5.0 = 2700.0` BIT-EXACT in any order.
 //!
-//! F11 (3MF beam writer) is a v0.9 candidate this example pre-stages:
-//! v1.0 stops at the populated `BeamLatticeData`; the v0.9 writer
+//! F11 (3MF beam writer) is a deferred candidate this example pre-stages:
+//! v1.0 stops at the populated `BeamLatticeData`; the deferred writer
 //! will emit it as `<beamlattice>` / `<beams>` / `<beam>` blocks.
-//! See `mesh-io/CHANGELOG.md` for the v0.9 candidate entry.
+//! See `mesh-io/CHANGELOG.md` for the deferred candidate entry.
 
 use std::path::Path;
 
@@ -335,7 +335,7 @@ fn verify_actual_density(result: &LatticeResult) {
 // verify_beam_data — independent-path verification of the 3MF precursor
 // =============================================================================
 
-/// Every beam-data anchor for the F11 v0.9 3MF beam writer's input
+/// Every beam-data anchor for the F11 deferred 3MF beam writer's input
 /// shape. Returns `data.estimate_volume()` for inclusion in the
 /// summary print.
 ///
@@ -454,7 +454,7 @@ fn print_summary(s: &Summary) {
         s.result.actual_density,
     );
     println!();
-    println!("BeamLatticeData (3MF beam-extension precursor; F11 v0.9 consumer):");
+    println!("BeamLatticeData (3MF beam-extension precursor; F11 deferred consumer):");
     println!(
         "  vertex_count() = {} (BIT-EXACT; 6³ unique grid nodes after dedup)",
         s.beam_data.vertex_count(),

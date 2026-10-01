@@ -5,6 +5,9 @@ All notable changes to mesh-repair will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+The 2.0.0, 1.0.0 and 0.7.0 entries below were version numbers inside the CortenForge
+workspace and were never published to crates.io.
+
 ## [Unreleased]
 
 ### Changed

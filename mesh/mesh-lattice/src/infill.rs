@@ -359,11 +359,11 @@ pub fn generate_infill(
     // `cap_thickness` of z-extent at the top + bottom of the cavity for
     // planar-slab geometry; the lattice iteration domain shrinks to skip
     // those bands. `layer_height` derives from `cell_size / resolution`
-    // per the v1.0 spec heuristic — `resolution` is validated `>= 2`
+    // as a heuristic — `resolution` is validated `>= 2`
     // (`params.rs::LatticeParams::validate`), and across the three
     // preset constructors (cubic res=10, gyroid res=15, octet res=10)
     // yields FDM-typical 0.4–0.6 mm/layer. Adding `params.layer_height`
-    // as an explicit `f64` field is a v0.9 candidate when a real
+    // as an explicit `f64` field is a deferred candidate when a real
     // consumer wants direct control.
     //
     // Caps occupy the FULL xy interior bbox so they meet the
@@ -514,7 +514,7 @@ pub fn generate_infill(
     // shell. The detection threshold is the natural lattice-scale
     // ("near-shell cells reach the wall") and decoupled from
     // `connection_thickness` (the strut diameter); a separate
-    // `params.connection_distance` field is a v0.9 candidate if a
+    // `params.connection_distance` field is a deferred candidate if a
     // real consumer wants explicit control.
     //
     // Why `2 * cell_size` and not `cell_size / 2`: the lattice
@@ -622,7 +622,7 @@ pub fn generate_infill(
 /// [`mesh_sdf::UnsignedDistance::closest_point`], as implemented for
 /// `mesh_sdf::TriMeshDistance`. On the canonical cube
 /// fixture (~50 unique nodes × ~75 000 inner-offset faces) this runs
-/// in milliseconds in release mode — well within v1.0 example budgets.
+/// in milliseconds in release mode — well within the examples' budgets.
 ///
 /// Threshold semantic: a node is considered "near-shell" when its
 /// closest-point distance is `<= threshold` (inclusive). On the

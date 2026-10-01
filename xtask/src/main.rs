@@ -312,7 +312,7 @@ enum Commands {
     #[command(long_about = test_reachability::LONG_ABOUT)]
     TestReachability,
 
-    /// The disclaimer's seven copies still agree.
+    /// The disclaimer's copies still agree.
     //
     // Third sibling of `release-gates` and `test-reachability`: those catch a
     // gate CI stopped running and a crate CI never started. This catches legal
@@ -320,7 +320,7 @@ enum Commands {
     #[command(long_about = disclaimer_sync::LONG_ABOUT)]
     DisclaimerSync,
 
-    /// The crates.io release set is the facade's closure, at one version.
+    /// The crates.io release set is the facade's closure, at one version, with licences, NOTICE and READMEs.
     //
     // Fourth sibling: a crate added without `publish = false` joins the next
     // `cargo publish --workspace` unseen, and nothing else in the tree says so.

@@ -104,10 +104,10 @@ pub const CAP_FACE_NORMAL_DOT_MIN: f64 = 0.95;
 /// STL storage and any later vertex welding.
 ///
 /// ★ MEASURED, and the point is the PLATEAU, not the number. On `base_mold`
-/// this strips 804 faces — the whole fan, exactly — at BOTH 0.5 mm and 1.0 mm,
-/// and 2412 (over-stripping) only once it reaches 2.0 mm. A criterion that
-/// gives the same answer across a 2x range of its own tolerance is reading a
-/// real gap in the geometry rather than a tuned edge.
+/// this strips the whole cap fan, exactly, at BOTH 0.5 mm and 1.0 mm, and
+/// over-strips only once it reaches 2.0 mm. A criterion that gives the same
+/// answer across a 2x range of its own tolerance is reading a real gap in the
+/// geometry rather than a tuned edge.
 pub const CAP_FACE_VERTEX_DIST_M: f64 = 0.0008;
 
 /// Maximum face-centroid-to-cap-plane distance (meters) for cap-face
@@ -361,12 +361,12 @@ pub fn dome_wall_only_mesh(cleaned_mesh: &IndexedMesh, cap_planes: &[CapPlane]) 
             // `dome_wall_only_mesh_strips_taubin_drifted_cap_face`).
             //
             // ⚠ The VERTEX test is the one that has to exist, and the normal
-            // test is why. Measured on `base_mold` 2026-09-10: its cap is an
-            // 804-face fan, mean tilt 1.5 deg — and TWO faces are
-            // near-degenerate slivers tilted 50 deg, whose normals mean
-            // nothing. The normal test kept them, they sat 1.00 mm from the
-            // floor centre, and the cavity rind then ate the floor: the plug
-            // shipped with its base 9.5 mm inside the cap plane instead of
+            // test is why. Measured on `base_mold` 2026-09-10: its cap is a
+            // nearly flat fan, and some faces are near-degenerate slivers
+            // tilted far past the normal test's limit, whose normals mean
+            // nothing. The normal test kept them, they sat near the floor
+            // centre, and the cavity rind then ate the floor: the plug
+            // shipped with its base well inside the cap plane instead of
             // pinned to it. A sliver has no reliable normal; it does have
             // vertices.
             !cap_planes.iter().any(|plane| {
@@ -746,18 +746,17 @@ mod tests {
 
     /// ★★★ A SLIVER cap face has no usable normal — strip it by its vertices.
     ///
-    /// Measured on `~/scans/base_mold` 2026-09-10. Its cap is an 804-face
-    /// centroid fan, mean tilt 1.5 deg from the cap normal, and TWO faces are
-    /// long thin slivers: a sub-mm out-of-plane wobble at one vertex swings the
-    /// cross product tens of degrees, so the normal test kept them. They landed
-    /// 1.00 mm from the floor centre, `pinned_floor_shell`'s rind reached the
-    /// floor through them, and the shipped plug had its base 9.5 mm INSIDE the
-    /// cap plane instead of pinned to it — a visibly concave, ragged bottom on
-    /// a part whose cleaned scan is flat.
+    /// Measured on `base_mold` 2026-09-10. Its cap is a nearly flat centroid
+    /// fan, and some faces are long thin slivers: a sub-mm out-of-plane wobble
+    /// at one vertex swings the cross product tens of degrees, so the normal
+    /// test kept them. They landed near the floor centre, `pinned_floor_shell`'s
+    /// rind reached the floor through them, and the shipped plug had its base
+    /// well INSIDE the cap plane instead of pinned to it — a visibly concave,
+    /// ragged bottom on a part whose cleaned scan is flat.
     ///
     /// The geometry below is that failure in miniature: a 10 mm x 1 um triangle
-    /// with one vertex 0.5 mm off the plane tilts ~27 deg, past the 18 deg the
-    /// normal test allows.
+    /// with one vertex 0.5 mm off the plane tilts past the 18 deg the normal
+    /// test allows.
     ///
     /// ⚠ The second half is the positive control. A sliver that is genuinely
     /// NOT on the cap plane must survive, or this test would pass on a rule

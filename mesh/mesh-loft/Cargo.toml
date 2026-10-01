@@ -1,6 +1,6 @@
 [package]
 name = "mesh-loft"
-description = "Anatomy-free mesh-loft primitive — join two painted contact patches into one closed, watertight bushing (extract patch + rim, stitch the perimeter wall, assemble, and smooth only the free wall)"
+description = "Join two painted contact patches into one closed, watertight bushing (extract patch + rim, stitch the perimeter wall, assemble, and smooth only the free wall)"
 keywords = ["mesh", "loft", "bushing", "geometry", "watertight"]
 categories = ["mathematics", "graphics"]
 version.workspace = true

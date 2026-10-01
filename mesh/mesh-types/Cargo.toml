@@ -1,6 +1,6 @@
 [package]
 name = "mesh-types"
-description = "Core mesh types for CortenForge: Vertex, IndexedMesh, Triangle, AABB"
+description = "Core mesh types for CortenForge: IndexedMesh, AttributedMesh, Triangle, Aabb"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,6 +9,7 @@ authors.workspace = true
 rust-version.workspace = true
 keywords = ["mesh", "3d", "geometry", "triangles", "cad"]
 categories = ["graphics", "mathematics", "data-structures"]
+exclude = ["COMPLETION.md"]
 
 [package.metadata.cortenforge]
 tier = "L0"

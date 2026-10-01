@@ -2321,7 +2321,7 @@ fn test_long_bridge_cantilever_currently_flagged() {
     // 20-mm cantilever face anchored on one end. v0.8 cannot
     // distinguish a cantilever from a bridge: both produce a single
     // cluster of horizontal-down faces above the build plate.
-    // Locks the v0.8 limitation; v0.9 followup adds support-end
+    // Locks the v0.8 limitation; deferred followup adds support-end
     // analysis. Fixture is identical to
     // `test_long_bridge_well_above_critical`: the v0.8 detector
     // sees both shapes the same way.
@@ -2333,7 +2333,7 @@ fn test_long_bridge_cantilever_currently_flagged() {
     assert_eq!(
         result.long_bridges.len(),
         1,
-        "cantilever currently flags as a bridge (v0.8 limitation; v0.9 followup)"
+        "cantilever currently flags as a bridge (v0.8 limitation; deferred followup)"
     );
 }
 
@@ -2342,7 +2342,7 @@ fn test_long_bridge_diagonal_underflagged_documented() {
     // 14×14 horizontal patch at z=10, `max_bridge_span = 15`.
     // span = max(14, 14) = 14 < 15 → no flag, even though the true
     // Euclidean diagonal (14·√2 ≈ 19.8 mm) exceeds the limit. v0.8
-    // axis-aligned bbox is conservative for diagonals; v0.9 OBB
+    // axis-aligned bbox is conservative for diagonals; a deferred OBB
     // followup will catch this case.
     let mesh = make_closed_bridge_fixture(14.0, 14.0, 1.5, 10.0);
     let mut config = PrinterConfig::fdm_default();

@@ -11,6 +11,7 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
+exclude = ["COMPLETION.md"]
 keywords = ["mesh", "lattice", "infill", "3d-printing", "gyroid"]
 categories = ["algorithms", "mathematics", "graphics"]
 

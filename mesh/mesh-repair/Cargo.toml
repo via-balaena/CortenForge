@@ -3,6 +3,7 @@ name = "mesh-repair"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+exclude = ["COMPLETION.md"]
 license.workspace = true
 description = "Mesh repair operations: validation, welding, degenerate removal, hole filling, winding correction, component analysis, self-intersection detection"
 repository.workspace = true

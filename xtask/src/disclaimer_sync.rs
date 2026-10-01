@@ -1,4 +1,4 @@
-//! Self-test: the disclaimer's seven copies still agree with each other.
+//! Self-test: the disclaimer's copies still agree with each other.
 //!
 //! ⚠ **What this asserts is [`LONG_ABOUT`]** — the text `cargo xtask
 //! disclaimer-sync --help` prints, and the one place that definition lives.
@@ -6,12 +6,12 @@
 //!
 //! # That the hazard is real
 //!
-//! The same legal text lives in seven places, and until this module the only
+//! The same legal text lives in several places, and until this module the only
 //! thing holding them together was a comment in `waiver.rs` asking the next
 //! editor to remember. On 2026-09-18 the disclaimer was widened from the body
 //! to the farm's hazards (#938) and the clause *"you alone are responsible for
 //! choosing body-safe materials and for proper mixing, curing, cleaning, and
-//! hygiene"* was dropped from two of the seven on the way. The files parsed,
+//! hygiene"* was dropped from two of the copies on the way. The files parsed,
 //! CI was green across all 25 checks, and the new text read **better** than the
 //! old. Nothing in the tree could have told anyone.
 //!
@@ -37,7 +37,7 @@
 //!
 //! # Why the roster is closed
 //!
-//! Listing the seven would catch drift *within* them and miss an eighth. So the
+//! Listing the copies would catch drift *within* them and miss a new one. So the
 //! scan runs the other way too: any tracked file carrying the disclaimer's
 //! distinctive phrasing and **not** on the roster fails, because a new surface
 //! nobody classified is a surface nothing keeps in sync.
@@ -70,11 +70,12 @@ use owo_colors::OwoColorize;
 /// clap here rather than restating it, and the module header points here rather
 /// than restating it — so there is one copy, not three.
 pub const LONG_ABOUT: &str = "\
-The disclaimer's seven copies still agree.
+The disclaimer's copies still agree.
 
-The same legal text lives in DISCLAIMER.md, NOTICE, README.md, both site
-footers, Cendrillon's launch waiver and the release-notes template. They are
-deliberately worded differently, so this compares CLAUSES, not sentences.
+The same legal text lives in DISCLAIMER.md, NOTICE, README.md, the `cortenforge`
+crate's README, both site footers, Cendrillon's launch waiver and the
+release-notes template. They are deliberately worded differently, so this
+compares CLAUSES, not sentences.
 
 Asserts, in order:
 
@@ -85,14 +86,16 @@ Asserts, in order:
   2. THE FLOOR — every surface carries as-is, not-a-medical-device and
      at-your-own-risk. No summary is short enough to drop these.
 
-  3. TIER SCOPE — general surfaces (README, site front page) name the hazards;
-     Cendrillon-scoped surfaces (its waiver, its footer) carry the body-safe
-     materials clause. Cendrillon deliberately omits the hydrogen hazards, and
-     that omission is recorded here so reversing it is a deliberate edit.
+  3. TIER SCOPE — general surfaces (README.md, the `cortenforge` crate's
+     README, site front page) name the hazards; Cendrillon-scoped surfaces
+     (its waiver, its footer) carry the body-safe materials clause.
+     Cendrillon deliberately omits the hydrogen hazards, and that omission is
+     recorded here so reversing it is a deliberate edit.
 
   4. A CLOSED ROSTER — no tracked file outside the roster carries the
-     disclaimer's distinctive phrasing. An unclassified eighth surface is one
-     nothing keeps in sync.
+     disclaimer's distinctive phrasing. An unclassified surface is one
+     nothing keeps in sync. A tracked symlink to a roster file is that file
+     (each release-set crate's NOTICE links to the root's).
 
 A file on the roster that cannot be read is a FAILURE, not a pass: its clauses
 are unknown, and an absence that was never observed is not evidence.";
@@ -260,6 +263,7 @@ pub(crate) const ROSTER: &[(&str, Tier)] = &[
     ("DISCLAIMER.md", Tier::Canonical),
     ("NOTICE", Tier::Canonical),
     ("README.md", Tier::General),
+    ("cortenforge/README.md", Tier::General),
     ("site/index.html", Tier::General),
     ("site/cendrillon/index.html", Tier::Scoped),
     ("tools/cf-studio-gui/src/waiver.rs", Tier::Scoped),
@@ -280,7 +284,7 @@ const NOT_OURS: &[&str] = &["sim/L0/tests/assets/", "LICENSE-MIT", "LICENSE-APAC
 /// ⚠⚠ Found by the gate failing on itself the moment `git add` made it
 /// tracked — which is also why it passed when run from an untracked working
 /// copy. Its test fixtures contain *"This tool is not a medical device"*, so it
-/// reads as an eighth surface. It is not one: nobody is asked to accept these
+/// reads as one more surface. It is not one: nobody is asked to accept these
 /// terms by reading a Rust module.
 ///
 /// ⛔ This is the one self-reference, not a category. Widening it to
@@ -336,8 +340,7 @@ pub(crate) fn clauses_in(normalised: &str) -> BTreeSet<Clause> {
 /// Whether this text carries the disclaimer's distinctive legal phrasing.
 ///
 /// ⚠ Deliberately narrow. "its own risk" is ordinary English and appears in
-/// research prose across `docs/`; the conjunction below does not. Across 2964
-/// tracked files this matches the seven roster surfaces and nothing else.
+/// research prose across `docs/`; the conjunction below does not.
 pub(crate) fn is_a_disclaimer_surface(normalised: &str) -> bool {
     let medical = normalised.contains("not a medical device");
     let risk_and_warranty = normalised.contains("at your own risk")
@@ -446,7 +449,7 @@ pub(crate) fn unrostered(root: &Path, exclusions: Exclusions) -> Result<Vec<Stri
     let rostered: BTreeSet<&str> = ROSTER.iter().map(|(path, _)| *path).collect();
     let mut others = Vec::new();
     for path in tracked_files(root)? {
-        if rostered.contains(path.as_str()) {
+        if rostered.contains(path.as_str()) || links_to_rostered(root, &path, &rostered) {
             continue;
         }
         if exclusions == Exclusions::Applied
@@ -459,6 +462,27 @@ pub(crate) fn unrostered(root: &Path, exclusions: Exclusions) -> Result<Vec<Stri
         }
     }
     Ok(others)
+}
+
+/// Whether `path` is a symlink to a roster file. The audit checks that file
+/// at its own path, so the link carries no text of its own: each release-set
+/// crate's `NOTICE` links to the root's.
+///
+/// ⚠ Not an [`Exclusions`] entry, because it cannot hide a surface: a link to
+/// any other file, tracked or not, inside the repository or out, is still read.
+fn links_to_rostered(root: &Path, path: &str, rostered: &BTreeSet<&str>) -> bool {
+    let full = root.join(path);
+    if !std::fs::symlink_metadata(&full).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        return false;
+    }
+    let (Ok(target), Ok(root)) = (std::fs::canonicalize(&full), std::fs::canonicalize(root)) else {
+        return false;
+    };
+    let Ok(relative) = target.strip_prefix(&root) else {
+        return false;
+    };
+    let parts: Option<Vec<&str>> = relative.iter().map(|part| part.to_str()).collect();
+    parts.is_some_and(|parts| rostered.contains(parts.join("/").as_str()))
 }
 
 /// Read and normalise one file, if it is prose we may read.
@@ -845,7 +869,7 @@ mod tests {
         }));
     }
 
-    /// ★★★ Assertion 4 fails on an eighth surface nobody classified.
+    /// ★★★ Assertion 4 fails on a surface nobody classified.
     #[test]
     fn an_unclassified_surface_is_caught() {
         let findings = audit(&healthy(), &[], &["site/about/index.html".to_owned()]);
@@ -854,9 +878,85 @@ mod tests {
         }));
     }
 
+    /// A link to a roster file is that file. A copy, a link out of the
+    /// repository, a link to an untracked file, a link to a tracked file off
+    /// the roster, and a link to an excluded file are each still read.
+    #[cfg(unix)]
+    #[test]
+    fn only_a_link_to_a_roster_file_is_skipped() {
+        let git = |dir: &Path, args: &[&str]| {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .output()
+                .expect("run git");
+            assert!(out.status.success(), "git {args:?} failed");
+        };
+        let base = std::env::temp_dir().join(format!("cf-disclaimer-links-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (repo, outside) = (base.join("repo"), base.join("outside.txt"));
+        for dir in [
+            "linked",
+            "copied",
+            "out",
+            "loose",
+            "terms",
+            "self",
+            "xtask/src",
+        ] {
+            std::fs::create_dir_all(repo.join(dir)).expect("make dirs");
+        }
+        let text = "Provided as is. This is not a medical device.";
+        for file in [
+            repo.join("NOTICE"),
+            repo.join("TERMS.txt"),
+            repo.join(SELF_SOURCE),
+            repo.join("copied/NOTICE"),
+            outside.clone(),
+        ] {
+            std::fs::write(file, text).expect("write terms");
+        }
+        std::fs::write(repo.join("loose/untracked.txt"), text).expect("write untracked");
+        use std::os::unix::fs::symlink;
+        symlink("../NOTICE", repo.join("linked/NOTICE")).expect("link to the roster");
+        symlink(&outside, repo.join("out/NOTICE")).expect("link out of the repo");
+        symlink("untracked.txt", repo.join("loose/NOTICE")).expect("link to untracked");
+        symlink("../TERMS.txt", repo.join("terms/NOTICE")).expect("link off the roster");
+        symlink(format!("../{SELF_SOURCE}"), repo.join("self/NOTICE")).expect("link to excluded");
+        git(&repo, &["init", "-q"]);
+        let added = [
+            "NOTICE",
+            "TERMS.txt",
+            SELF_SOURCE,
+            "linked/NOTICE",
+            "copied/NOTICE",
+            "out/NOTICE",
+            "loose/NOTICE",
+            "terms/NOTICE",
+            "self/NOTICE",
+        ];
+        git(&repo, &[&["add"][..], &added[..]].concat());
+
+        let found = unrostered(&repo, Exclusions::Applied).expect("scan the temp repo");
+        let _ = std::fs::remove_dir_all(&base);
+        assert_eq!(
+            found,
+            [
+                "TERMS.txt",
+                "copied/NOTICE",
+                "loose/NOTICE",
+                "out/NOTICE",
+                "self/NOTICE",
+                "terms/NOTICE"
+            ],
+            "only the link to a roster file is skipped"
+        );
+    }
+
     /// ⛔ An unreadable roster file must FAIL, not pass quietly. Its clauses
     /// are unknown, and the rest of the audit would otherwise report a clean
-    /// tree while one of the seven went unexamined.
+    /// tree while one of them went unexamined.
     #[test]
     fn an_unreadable_surface_fails_rather_than_passing() {
         let mut tree = healthy();
