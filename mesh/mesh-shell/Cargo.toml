@@ -1,5 +1,5 @@
 [package]
-name = "mesh-shell"
+name = "cortenforge-mesh-shell"
 description = "Generate printable shells around 3D meshes"
 version.workspace = true
 edition.workspace = true
@@ -12,6 +12,9 @@ exclude = ["COMPLETION.md"]
 
 [package.metadata.cortenforge]
 tier = "L0"
+
+[lib]
+name = "mesh_shell"
 
 [lints]
 workspace = true

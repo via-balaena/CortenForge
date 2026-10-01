@@ -1,6 +1,8 @@
-# sim-therm-env
+# cortenforge-sim-therm-env
 
 ThermCircuitEnv: typed builder producing SimEnv/VecEnv from thermodynamic circuit descriptions
+
+In code, this crate is `sim_therm_env`.
 
 This crate is part of [CortenForge](https://github.com/via-balaena/CortenForge), a Rust SDK for mechatronics and simulation. Most applications depend on the [`cortenforge`](https://crates.io/crates/cortenforge) crate instead, which brings in the rest of the SDK.
 

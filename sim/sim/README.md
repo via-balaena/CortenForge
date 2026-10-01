@@ -1,6 +1,8 @@
-# sim
+# cortenforge-sim
 
 Headless simulation & differentiable co-design toolkit: rigid + soft-FEM physics, soft↔rigid coupling, model I/O, and the RL/optimization stack
+
+In code, this crate is `sim`.
 
 This crate is part of [CortenForge](https://github.com/via-balaena/CortenForge), a Rust SDK for mechatronics and simulation. Most applications depend on the [`cortenforge`](https://crates.io/crates/cortenforge) crate instead, which brings in the rest of the SDK.
 

@@ -4346,15 +4346,15 @@ const L0_BANNED: &[BanPattern] = &[
         kind: BanKind::Prefix,
     },
     BanPattern {
-        pattern: "sim-mjcf",
+        pattern: "cortenforge-sim-mjcf",
         kind: BanKind::Exact,
     },
     BanPattern {
-        pattern: "sim-urdf",
+        pattern: "cortenforge-sim-urdf",
         kind: BanKind::Exact,
     },
     BanPattern {
-        pattern: "mesh-io",
+        pattern: "cortenforge-mesh-io",
         kind: BanKind::Exact,
     },
     BanPattern {
@@ -4556,11 +4556,11 @@ enum FindingKind {
 }
 
 /// True if `crate_name` must declare tier metadata. Plan §5.1 scope:
-/// `sim-*`, `mesh-*`, `cf-*`, `cortenforge*`. The two no-hyphen umbrellas
-/// (`mesh`, `cortenforge`) are explicitly accepted; `examples/*` and
-/// `xtask` are out of scope.
+/// `sim-*`, `mesh-*`, `cf-*`, `cortenforge*`. The facade `cortenforge`, the
+/// one name without a hyphen, is accepted by name; `examples/*` and `xtask`
+/// are out of scope.
 fn applies_to_crate(crate_name: &str) -> bool {
-    if matches!(crate_name, "mesh" | "cortenforge") {
+    if crate_name == "cortenforge" {
         return true;
     }
     // Workspace tools and shared helper crates that happen to match a
@@ -6994,12 +6994,13 @@ serde = \"1\"
     }
 
     #[test]
-    fn applies_to_crate_in_scope_no_hyphen_umbrellas() {
-        // The two no-hyphen umbrellas are explicit exceptions: `mesh`
-        // (the umbrella crate) and `cortenforge` (the top-level crate
-        // name from plan §2.1, even though it doesn't currently exist).
-        assert!(applies_to_crate("mesh"));
+    fn applies_to_crate_in_scope_facade_and_umbrellas() {
+        // The facade is accepted by name; the `mesh` and `sim` umbrellas are
+        // packaged as `cortenforge-mesh` and `cortenforge-sim`, which the
+        // prefix covers.
         assert!(applies_to_crate("cortenforge"));
+        assert!(applies_to_crate("cortenforge-mesh"));
+        assert!(applies_to_crate("cortenforge-sim"));
     }
 
     #[test]
@@ -7543,11 +7544,11 @@ tier_up_features = { sneaky = "App" }
         // The sim-thermostat dev-poison case: image, mesh-io, sim-mjcf,
         // zip, zstd all get individually flagged in the dev graph.
         let deps: Vec<String> = [
-            "sim-thermostat",
-            "sim-mjcf",
+            "cortenforge-sim-thermostat",
+            "cortenforge-sim-mjcf",
             "image",
             "image-webp",
-            "mesh-io",
+            "cortenforge-mesh-io",
             "zip",
             "zstd",
             "zstd-safe",

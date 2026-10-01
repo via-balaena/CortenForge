@@ -22,7 +22,7 @@ path = "src/lib.rs"
 # reads. The leg-region cutover inverts the old direction (now cf-osim → cf-msk-lib).
 cf-msk-lib = { path = "../cf-msk-lib" }
 # Model / Data — forward kinematics + tendon Jacobian (ten_J) for moment arms.
-sim-core = { path = "../../sim/L0/core" }
+sim-core = { workspace = true }
 # Vec/quat math for frames, axes, path points.
 nalgebra = { workspace = true }
 # .osim is XML; same parser the MJCF importer uses.
@@ -34,6 +34,6 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 # The MJCF importer the r4 micro-spike loads through (load_model) — test-only.
-sim-mjcf = { path = "../../sim/L0/mjcf" }
+sim-mjcf = { workspace = true }
 # Float-tolerance assertions for the spike / oracle-comparison tests.
 approx = { workspace = true }

@@ -1,5 +1,5 @@
 [package]
-name = "sim-coupling"
+name = "cortenforge-sim-coupling"
 description = "Staggered forward soft↔rigid coupling between sim-soft (FEM) and sim-core (rigid). Exchanges rigid pose (→ soft contact) and the soft contact reaction (→ rigid xfrc) once per lockstep step."
 version.workspace = true
 edition.workspace = true
@@ -12,6 +12,7 @@ rust-version.workspace = true
 tier = "L1"
 
 [lib]
+name = "sim_coupling"
 path = "src/lib.rs"
 
 [dependencies]

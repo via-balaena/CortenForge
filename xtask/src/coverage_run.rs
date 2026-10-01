@@ -145,8 +145,8 @@ pub(crate) struct CoverageRun {
 /// leave the whole tree uninstrumented — which would read as a coverage
 /// collapse rather than as a wrapper bug.
 ///
-/// The crate name here is the *compiler's* spelling: `cf-fsu-model` is compiled
-/// as `cf_fsu_model`.
+/// The crate name here is the *compiler's*, its library target's name (see
+/// [`compiler_crate_name`]).
 fn should_instrument(args: &[String], target_crate: &str) -> bool {
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -158,6 +158,41 @@ fn should_instrument(args: &[String], target_crate: &str) -> bool {
         }
     }
     false
+}
+
+/// The name `rustc` compiles `package`'s library under: its library target's
+/// name, from `cargo metadata`. A renamed package keeps its library's short
+/// name, so the two differ: `cortenforge-geometry` compiles as `cf_geometry`.
+/// Matching the package name instead left such a library uninstrumented, and
+/// the lines only its integration tests reach read as uncovered.
+///
+/// A package without a library has no target the integration tests link, so
+/// its name with `-` as `_` stands in.
+fn compiler_crate_name(sh: &Shell, package: &str) -> Result<String> {
+    let metadata: serde_json::Value = serde_json::from_str(
+        &cmd!(sh, "cargo metadata --format-version 1 --no-deps")
+            .read()
+            .context("run `cargo metadata`")?,
+    )
+    .context("parse `cargo metadata` JSON")?;
+    Ok(library_name(&metadata, package).unwrap_or_else(|| package.replace('-', "_")))
+}
+
+/// `package`'s library target name in `metadata`, if it has a library.
+fn library_name(metadata: &serde_json::Value, package: &str) -> Option<String> {
+    metadata["packages"]
+        .as_array()?
+        .iter()
+        .find(|pkg| pkg["name"] == package)?["targets"]
+        .as_array()?
+        .iter()
+        .find(|target| {
+            target["kind"]
+                .as_array()
+                .is_some_and(|kinds| kinds.iter().any(|kind| kind == "lib"))
+        })?["name"]
+        .as_str()
+        .map(str::to_owned)
 }
 
 /// True when this `rustc` invocation builds a test target (`--test`).
@@ -589,8 +624,7 @@ fn measure_inner(
     let cov_tool = llvm_tool(sh, "llvm-cov")?;
     let xtask_exe = std::env::current_exe().context("cannot locate the running xtask binary")?;
 
-    // The compiler spells `-` as `_` in crate names.
-    let compiler_crate_name = crate_name.replace('-', "_");
+    let compiler_crate_name = compiler_crate_name(sh, crate_name)?;
 
     let target_dir = prepare_target_dir(workspace_root, &compiler_crate_name)?;
     let profraw_dir = target_dir.join("profraw");
@@ -922,6 +956,25 @@ coverage_skip_binaries = [\"bonded_layer_indentation\", \"stick_impact\"]
         .collect();
         assert!(should_instrument(&args, "cf_fsu_model"));
         assert!(!should_instrument(&args, "nalgebra"));
+    }
+
+    /// The library's name, not the package's: a renamed package keeps the
+    /// short library name, and a package without a library has none.
+    #[test]
+    fn the_compiler_names_a_crate_after_its_library() {
+        let metadata = serde_json::json!({ "packages": [
+            { "name": "cortenforge-geometry", "targets": [
+                { "kind": ["lib"], "name": "cf_geometry" },
+                { "kind": ["test"], "name": "aabb" },
+            ] },
+            { "name": "cf-viewer", "targets": [{ "kind": ["bin"], "name": "cf-viewer" }] },
+        ] });
+        assert_eq!(
+            library_name(&metadata, "cortenforge-geometry").as_deref(),
+            Some("cf_geometry")
+        );
+        assert_eq!(library_name(&metadata, "cf-viewer"), None);
+        assert_eq!(library_name(&metadata, "absent"), None);
     }
 
     /// `rustc` accepts the joined spelling, so a future cargo could switch to

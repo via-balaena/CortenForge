@@ -3,7 +3,7 @@
 # Layer 0 crate: Zero Bevy dependencies
 
 [package]
-name = "mesh-io"
+name = "cortenforge-mesh-io"
 description = "Mesh file I/O: STL, OBJ and PLY loading and saving, with 3MF and STEP behind features"
 keywords = ["mesh", "stl", "obj", "ply", "3d"]
 categories = ["parsing", "graphics", "encoding"]
@@ -21,6 +21,9 @@ tier = "L0-io"
 [package.metadata.docs.rs]
 features = ["threemf", "step"]
 rustdoc-args = ["--cfg", "docsrs"]
+
+[lib]
+name = "mesh_io"
 
 [lints]
 workspace = true

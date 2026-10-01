@@ -3,7 +3,7 @@
 # Layer 0 crate: Zero Bevy dependencies
 
 [package]
-name = "mesh-lattice"
+name = "cortenforge-mesh-lattice"
 description = "Lattice structure and infill pattern generation for 3D printing"
 version.workspace = true
 edition.workspace = true
@@ -17,6 +17,9 @@ categories = ["algorithms", "mathematics", "graphics"]
 
 [package.metadata.cortenforge]
 tier = "L0"
+
+[lib]
+name = "mesh_lattice"
 
 [lints]
 workspace = true

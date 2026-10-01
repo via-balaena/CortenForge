@@ -8,7 +8,7 @@ publish = false
 [dependencies]
 # StaggeredCoupling + the impact rollout (CoupledStep now carries force_on_soft AND peak_pressure),
 # plus soft_positions / soft_boundary_faces for the deformed-mesh trajectory.
-sim-coupling = { path = "../../../sim/L1/coupling" }
+sim-coupling = { workspace = true }
 # load_model — the limb MJCF (a free-joint mass over the soft buffer).
 sim-mjcf = { workspace = true }
 # Vec3 / VertexId + the measured Ecoflex / Dragon Skin material consts for the two buffers.

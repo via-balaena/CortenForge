@@ -51,7 +51,7 @@ const OURS: [&str; 1] = ["bigmark222"];
 
 /// Release-set names on crates.io that are not ours: another account holds
 /// each today.
-const FOREIGN: [&str; 3] = ["mesh", "mesh-types", "sim"];
+const FOREIGN: [&str; 0] = [];
 
 /// Tries per name, the first included.
 const ATTEMPTS: u32 = 4;

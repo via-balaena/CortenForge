@@ -572,8 +572,8 @@ jobs:
           # coverage. Revisit if shard 1 ever stops being the long pole.
           - id: 2
             crates: cf-studio-core cf-studio-engine cf-studio
-              cf-geometry cf-spatial cf-scan-prep-core
-              cf-msk-fit cf-anthro cf-cap-planes cf-device-types cf-vehicle cf-trike cf-assembly-checks
+              cortenforge-geometry cortenforge-spatial cortenforge-scan-prep-core
+              cf-msk-fit cf-anthro cortenforge-cap-planes cortenforge-device-types cf-vehicle cf-trike cf-assembly-checks
               cf-nebraska cf-wind cf-electrolysis cf-storage cf-tillage cf-nitrogen cf-acres
               example-trike-mass-budget xtask
           # shard 3 = sim + mesh + design: one shared dependency stack, no giant
@@ -587,12 +587,12 @@ jobs:
           # ✅ Measured (`e0935ea0`): 17.5 min at 34 crates — 13.3 compile, 4.2
           # execute. The "cheap per crate" expectation held.
           - id: 3
-            crates: sim-soft sim-core sim-mjcf sim-urdf sim-gpu sim-types
-              sim-truss sim-gpu-benches sim-soft-explicit sim-wgsl-gen
-              sim-therm-env cf-design cf-design-tests cf-fsu-geometry cf-routing cf-routing-tests cf-cast-cli sim
+            crates: cortenforge-sim-soft cortenforge-sim-core cortenforge-sim-mjcf cortenforge-sim-urdf sim-gpu cortenforge-sim-types
+              sim-truss sim-gpu-benches cortenforge-sim-soft-explicit sim-wgsl-gen
+              cortenforge-sim-therm-env cortenforge-design cf-design-tests cf-fsu-geometry cf-routing cf-routing-tests cf-cast-cli cortenforge-sim
               pbit-analyze pbit-fw-core
-              mesh-types mesh-io mesh-repair mesh-loft mesh-select mesh-sdf mesh-offset
-              mesh-shell mesh-measure mesh-printability mesh-lattice mesh
+              cortenforge-mesh-types cortenforge-mesh-io cortenforge-mesh-repair cortenforge-mesh-loft cortenforge-mesh-select cortenforge-mesh-sdf cortenforge-mesh-offset
+              cortenforge-mesh-shell cortenforge-mesh-measure cortenforge-mesh-printability cortenforge-mesh-lattice cortenforge-mesh
               cortenforge cf-msk-lib cf-mjcf-emit cf-osim
     steps:
       - uses: actions/checkout@v7
@@ -639,7 +639,7 @@ jobs:
           # `threemf` feature, so run that crate again with it enabled —
           # only when mesh-io is in this shard's selected set.
           case " $PKGS " in
-            *" -p mesh-io "*) cargo test -p mesh-io --features threemf ;;
+            *" -p cortenforge-mesh-io "*) cargo test -p cortenforge-mesh-io --features threemf ;;
           esac
         shell: bash
 
@@ -718,14 +718,14 @@ jobs:
             # the settled contact set, pinned against MuJoCo. `run-validators`
             # cannot cover them: it runs `cargo run`, which never builds a test
             # target.
-            crates: sim-conformance-tests sim-coupling cf-fsu-model sim-rl-baselines
+            crates: sim-conformance-tests cortenforge-sim-coupling cf-fsu-model sim-rl-baselines
               example-contact-filtering-bitmask
               example-contact-filtering-exclude-pairs
               example-contact-filtering-ghost-layers
           - id: 2
-            crates: sim-thermostat sim-opt mesh-printability sim-soft-explicit
+            crates: cortenforge-sim-thermostat cortenforge-sim-opt cortenforge-mesh-printability cortenforge-sim-soft-explicit
           - id: 3
-            crates: sim-ml-chassis sim-rl cf-codesign
+            crates: cortenforge-sim-ml-chassis cortenforge-sim-rl cf-codesign
     steps:
       - uses: actions/checkout@v7
 
@@ -767,7 +767,7 @@ jobs:
           echo "shard ${{ matrix.id }} packages: ${PKGS:-<none>}"
           # sim-soft isn't in any shard's crate list (it runs as selective test
           # bins below), so resolve it independently.
-          SOFT_PKGS=$(bash .github/scripts/affected-packages.sh "sim-soft")
+          SOFT_PKGS=$(bash .github/scripts/affected-packages.sh "cortenforge-sim-soft")
           echo "SOFT_PKGS=$SOFT_PKGS" >> "$GITHUB_ENV"
           # cf-cast (Monte-Carlo mold kernel) is resolved here rather than in a
           # shard crate list so it runs exactly once, in the step near the end of
@@ -888,7 +888,7 @@ jobs:
       - name: Run sim-soft release-only contact + reduced-basis tests
         if: matrix.id == 3 && env.SOFT_PKGS != ''
         run: |
-          cargo test --release -p sim-soft \
+          cargo test --release -p cortenforge-sim-soft \
             --test hertz_sphere_plane \
             --test contact_drop_rest \
             --test non_interpenetration \
@@ -971,7 +971,7 @@ jobs:
           AFFECTED_CRATES: ${{ needs.affected.outputs.crates }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
-          PKGS=$(bash .github/scripts/affected-packages.sh "sim-core sim-mjcf mesh-io mesh-printability")
+          PKGS=$(bash .github/scripts/affected-packages.sh "cortenforge-sim-core cortenforge-sim-mjcf cortenforge-mesh-io cortenforge-mesh-printability")
           echo "PKGS=$PKGS" >> "$GITHUB_ENV"
           GUI_PKGS=$(bash .github/scripts/affected-packages.sh "cf-studio-gui")
           echo "GUI_PKGS=$GUI_PKGS" >> "$GITHUB_ENV"
@@ -1056,7 +1056,7 @@ jobs:
           AFFECTED_CRATES: ${{ needs.affected.outputs.crates }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
-          SOFT_PKGS=$(bash .github/scripts/affected-packages.sh "sim-soft")
+          SOFT_PKGS=$(bash .github/scripts/affected-packages.sh "cortenforge-sim-soft")
           echo "SOFT_PKGS=$SOFT_PKGS" >> "$GITHUB_ENV"
           FACADE_PKGS=$(bash .github/scripts/affected-packages.sh "cortenforge")
           echo "FACADE_PKGS=$FACADE_PKGS" >> "$GITHUB_ENV"
@@ -1064,7 +1064,7 @@ jobs:
 
       - name: Test sim-soft with gpu-probe
         if: env.SOFT_PKGS != ''
-        run: cargo test --features gpu-probe -p sim-soft
+        run: cargo test --features gpu-probe -p cortenforge-sim-soft
 
       # The default-feature build (tests-debug) only exercises the facade with
       # ALL domains on. These subset builds guard the per-domain feature gating
@@ -1215,7 +1215,7 @@ jobs:
     name: Semver
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # Only run on PRs (compare against base branch)
+    # Only run on PRs
     if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v7
@@ -1224,12 +1224,10 @@ jobs:
 
       - name: Check semver compatibility
         uses: obi1kenobi/cargo-semver-checks-action@v2
-        # Only check crates that are published to crates.io
-        # New/unpublished crates should be added here once published
+        # Checks one crate against its latest crates.io release, which exists
+        # from the release set's first publish on
         with:
-          # For now, only check mesh-repair which has a published baseline
-          # Other crates are not yet on crates.io
-          package: mesh-repair
+          package: cortenforge-mesh-repair
         continue-on-error: true  # Don't block PRs on semver for now
 
   # ============================================================================
@@ -1455,7 +1453,7 @@ jobs:
       # displacement ramp over three meshes plus a 3-level convergence study.
       - name: Run the demand-#1 bonded-layer indentation gate
         if: steps.scope.outputs.run == 'true'
-        run: cargo test --release -p sim-soft --test bonded_layer_indentation
+        run: cargo test --release -p cortenforge-sim-soft --test bonded_layer_indentation
         shell: bash
 
   # ============================================================================

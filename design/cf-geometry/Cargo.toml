@@ -1,5 +1,5 @@
 [package]
-name = "cf-geometry"
+name = "cortenforge-geometry"
 description = "Shared geometric kernel for CortenForge"
 keywords = ["geometry", "sdf", "3d", "kernel", "cad"]
 categories = ["mathematics", "graphics", "algorithms"]
@@ -12,6 +12,9 @@ rust-version.workspace = true
 
 [package.metadata.cortenforge]
 tier = "L0"
+
+[lib]
+name = "cf_geometry"
 
 [lints]
 workspace = true

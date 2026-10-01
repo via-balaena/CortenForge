@@ -27,6 +27,8 @@ Assert that the crates.io release set is exactly the `cortenforge` facade's
 closure over normal and build dependencies (optional ones included):
 
   - no crate inside it is `publish = false` (crates.io needs every one);
+  - every crate inside it but the facade is named `cortenforge-<name>`, so the
+    set publishes under one prefix rather than taking bare names on crates.io;
   - no crate outside it is publishable (cargo makes a new crate publishable by
     default, and `cargo publish --workspace` ships every crate that is);
   - every crate inside it carries the facade's version, and every versioned
@@ -40,8 +42,8 @@ closure over normal and build dependencies (optional ones included):
   - every crate inside it has LICENSE-APACHE, LICENSE-MIT and NOTICE identical
     to the workspace root's, and a README.md. Each of the three is a symlink
     to the root's file, which cargo packages as the file itself. Every crate
-    but the facade has exactly the README its name and description give; the
-    failure prints it;
+    but the facade has exactly the README its name, library name and
+    description give; the failure prints it;
   - no crate inside it sets `include`, or a `readme` other than README.md, and
     each `exclude` entry is a plain path (letters, digits, `.`, `_`, `-` and
     `/` only) naming none of those four files. This reads the manifest, not
@@ -63,6 +65,9 @@ const ROOT_FILES: [&str; 3] = ["LICENSE-APACHE", "LICENSE-MIT", "NOTICE"];
 /// The README every crate in the set ships.
 const README: &str = "README.md";
 
+/// What every crate in the set but the facade is named with.
+const PREFIX: &str = "cortenforge-";
+
 /// Whether an `exclude` entry is a plain path: letters, digits, `.`, `_`, `-`
 /// and `/`. Anything else (a glob, an escape, a brace, whitespace) is syntax
 /// cargo may read as a pattern, so the check refuses it rather than list every
@@ -78,6 +83,8 @@ struct Package {
     version: String,
     /// The manifest's `description`, if it has one.
     description: Option<String>,
+    /// The library target's name, which code uses, if the crate has one.
+    lib: Option<String>,
     /// The crate's directory. `None` only for a test fixture.
     dir: Option<PathBuf>,
     /// `publish` unset or `true`, which `cargo metadata` both report as `null`.
@@ -124,6 +131,7 @@ pub(crate) fn check_at(root: &Path) -> Result<()> {
     let packages = packages(&metadata)?;
     let set = closure(&packages)?;
     let mut found = problems(&packages, &set);
+    found.extend(prefix_problems(&set));
     for name in set.keys() {
         let pkg = &packages[name];
         let dir = pkg
@@ -132,6 +140,7 @@ pub(crate) fn check_at(root: &Path) -> Result<()> {
             .with_context(|| format!("`cargo metadata` gave no manifest path for `{name}`"))?;
         found.extend(packaging_problems(
             name,
+            pkg.lib.as_deref(),
             pkg.description.as_deref(),
             &packaging(workspace_root, dir)?,
         ));
@@ -220,6 +229,17 @@ fn packages(metadata: &Value) -> Result<BTreeMap<String, Package>> {
             Package {
                 version: version.to_string(),
                 description: pkg["description"].as_str().map(str::to_owned),
+                lib: pkg["targets"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .find(|target| {
+                        target["kind"]
+                            .as_array()
+                            .is_some_and(|kinds| kinds.iter().any(|kind| kind == "lib"))
+                    })
+                    .and_then(|target| target["name"].as_str())
+                    .map(str::to_owned),
                 dir: pkg["manifest_path"]
                     .as_str()
                     .and_then(|manifest| Path::new(manifest).parent())
@@ -318,6 +338,21 @@ fn problems(packages: &BTreeMap<String, Package>, set: &BTreeMap<String, String>
     found
 }
 
+/// Every crate in the facade's [`closure`] but the facade itself that is not
+/// named with [`PREFIX`].
+fn prefix_problems(set: &BTreeMap<String, String>) -> Vec<String> {
+    set.keys()
+        .filter(|name| name.as_str() != FACADE && !name.starts_with(PREFIX))
+        .map(|name| {
+            format!(
+                "`{name}` is in the release set but not named `{PREFIX}…` ({}): rename the \
+                 package and keep its `[lib] name`",
+                chain(set, name)
+            )
+        })
+        .collect()
+}
+
 /// How a crate's copy of one of [`ROOT_FILES`] compares with the root's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Held {
@@ -405,10 +440,11 @@ fn packaging(root: &Path, dir: &Path) -> Result<Packaging> {
 }
 
 /// The README of every crate in the set but the facade: the crate's name and
-/// description, then what it is part of and its licence.
-fn member_readme(name: &str, description: &str) -> String {
+/// description, the name code uses for it, then what it is part of and its
+/// licence.
+fn member_readme(name: &str, lib: &str, description: &str) -> String {
     format!(
-        "# {name}\n\n{description}\n\n\
+        "# {name}\n\n{description}\n\nIn code, this crate is `{lib}`.\n\n\
          This crate is part of [CortenForge](https://github.com/via-balaena/CortenForge), \
          a Rust SDK for mechatronics and simulation. Most applications depend on the \
          [`cortenforge`](https://crates.io/crates/cortenforge) crate instead, which brings \
@@ -420,7 +456,12 @@ fn member_readme(name: &str, description: &str) -> String {
 }
 
 /// Every way crate `name`'s packaging departs from the rules in [`LONG_ABOUT`].
-fn packaging_problems(name: &str, description: Option<&str>, packaging: &Packaging) -> Vec<String> {
+fn packaging_problems(
+    name: &str,
+    lib: Option<&str>,
+    description: Option<&str>,
+    packaging: &Packaging,
+) -> Vec<String> {
     let mut found = Vec::new();
     for (file, held) in &packaging.root_files {
         match held {
@@ -477,11 +518,17 @@ fn packaging_problems(name: &str, description: Option<&str>, packaging: &Packagi
         ));
         return found;
     };
-    let wanted = member_readme(name, description);
+    let Some(lib) = lib else {
+        found.push(format!(
+            "`{name}` has no library target, whose name its README gives"
+        ));
+        return found;
+    };
+    let wanted = member_readme(name, lib, description);
     if *readme != wanted {
         found.push(format!(
-            "`{name}`'s {README} is not the one its name and description give; it should \
-             read:\n{wanted}"
+            "`{name}`'s {README} is not the one its name, library name and description \
+             give; it should read:\n{wanted}"
         ));
     }
     found
@@ -797,12 +844,12 @@ mod tests {
             &manifest(
                 FACADE,
                 "description = \"The facade\"\n\
-                 [dependencies]\nmember = { path = \"../member\", version = \"=0.9.0\" }\n",
+                 [dependencies]\ncortenforge-member = { path = \"../member\", version = \"=0.9.0\" }\n",
             ),
         );
         write(
             root.join("member/Cargo.toml"),
-            &manifest("member", "description = \"Does one thing\"\n"),
+            &manifest("cortenforge-member", "description = \"Does one thing\"\n"),
         );
         write(
             root.join("outsider/Cargo.toml"),
@@ -819,7 +866,7 @@ mod tests {
         write(root.join(FACADE).join(README), "# cortenforge\n");
         write(
             root.join("member").join(README),
-            &member_readme("member", "Does one thing"),
+            &member_readme("cortenforge-member", "cortenforge_member", "Does one thing"),
         );
 
         let neither = check_at(&root);
@@ -829,9 +876,30 @@ mod tests {
         let both = check_at(&root);
         write(
             root.join("member").join(README),
-            &member_readme("member", "Does two things"),
+            &member_readme(
+                "cortenforge-member",
+                "cortenforge_member",
+                "Does two things",
+            ),
         );
         let stale_readme = check_at(&root);
+        write(
+            root.join("cortenforge/Cargo.toml"),
+            &manifest(
+                FACADE,
+                "description = \"The facade\"\n\
+                 [dependencies]\nmember = { path = \"../member\", version = \"=0.9.0\" }\n",
+            ),
+        );
+        write(
+            root.join("member/Cargo.toml"),
+            &manifest("member", "description = \"Does one thing\"\n"),
+        );
+        write(
+            root.join("member").join(README),
+            &member_readme("member", "member", "Does one thing"),
+        );
+        let unprefixed = check_at(&root);
         let _ = std::fs::remove_dir_all(&root);
         let err = neither.expect_err("crates without the NOTICE must fail");
         assert!(err.to_string().starts_with("2 problem(s)"), "{err}");
@@ -840,6 +908,8 @@ mod tests {
         both.expect("the same workspace with both NOTICEs should pass");
         let err = stale_readme.expect_err("the member's stale README must fail");
         assert!(err.to_string().starts_with("1 problem(s)"), "{err}");
+        let err = unprefixed.expect_err("a member without the prefix must fail");
+        assert!(err.to_string().starts_with("1 problem(s)"), "{err}");
     }
 
     /// A crate whose packaging breaks no rule: the root's files, the README its
@@ -847,7 +917,11 @@ mod tests {
     fn packaged(name: &str) -> Packaging {
         Packaging {
             root_files: ROOT_FILES.iter().map(|file| (*file, Held::Same)).collect(),
-            readme: Some(member_readme(name, "Does one thing")),
+            readme: Some(member_readme(
+                name,
+                &name.replace('-', "_"),
+                "Does one thing",
+            )),
             readme_key: None,
             unreadable: Vec::new(),
             exclude: vec!["COMPLETION.md".to_owned(), "docs/".to_owned()],
@@ -855,7 +929,12 @@ mod tests {
     }
 
     fn packaging_found(name: &str, packaging: &Packaging) -> Vec<String> {
-        packaging_problems(name, Some("Does one thing"), packaging)
+        packaging_problems(
+            name,
+            Some(&name.replace('-', "_")),
+            Some("Does one thing"),
+            packaging,
+        )
     }
 
     #[test]
@@ -934,25 +1013,59 @@ mod tests {
         );
 
         let mut packaging = packaged("a");
-        let stale = packaging_problems("a", Some("Does two things"), &packaging);
+        let stale = packaging_problems("a", Some("a"), Some("Does two things"), &packaging);
         assert_eq!(stale.len(), 1, "{stale:?}");
         assert!(
-            stale[0].ends_with(&member_readme("a", "Does two things")),
+            stale[0].ends_with(&member_readme("a", "a", "Does two things")),
             "{stale:?}"
         );
 
-        packaging.readme = Some(member_readme("b", "Does one thing"));
+        packaging.readme = Some(member_readme("b", "b", "Does one thing"));
         assert_eq!(
             packaging_found("a", &packaging).len(),
             1,
             "another crate's README"
         );
 
-        let undescribed = packaging_problems("a", None, &packaged("a"));
+        let undescribed = packaging_problems("a", Some("a"), None, &packaged("a"));
         assert!(
             undescribed[0].contains("no `description`"),
             "{undescribed:?}"
         );
+
+        let other_library =
+            packaging_problems("a", Some("b"), Some("Does one thing"), &packaged("a"));
+        assert_eq!(other_library.len(), 1, "a README naming another library");
+        let no_library = packaging_problems("a", None, Some("Does one thing"), &packaged("a"));
+        assert!(
+            no_library[0].contains("no library target"),
+            "{no_library:?}"
+        );
+    }
+
+    /// Every crate the facade pulls in carries the prefix; the facade itself
+    /// does not need it.
+    #[test]
+    fn a_set_crate_without_the_prefix_is_named() {
+        let set = closure(&packages(&json!({ "packages": consistent() })).unwrap()).unwrap();
+        let bare = prefix_problems(&set);
+        assert_eq!(bare.len(), 2, "{bare:?}");
+        assert!(bare[0].starts_with("`a` is in the release set"), "{bare:?}");
+        assert!(bare[1].starts_with("`b` is in the release set"), "{bare:?}");
+        let prefixed: BTreeMap<String, String> = set
+            .into_iter()
+            .map(|(name, via)| {
+                let rename = |n: String| {
+                    if n == FACADE || n.is_empty() {
+                        n
+                    } else {
+                        format!("{PREFIX}{n}")
+                    }
+                };
+                (rename(name), rename(via))
+            })
+            .collect();
+        assert_eq!(prefix_problems(&prefixed), Vec::<String>::new());
     }
 
     /// The reader follows a symlink, tells a drifted copy and a missing file

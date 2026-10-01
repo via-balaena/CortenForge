@@ -1,5 +1,5 @@
 [package]
-name = "sim-types"
+name = "cortenforge-sim-types"
 description = "Foundation types for sim-core: body identity, pose, simulation configuration"
 keywords = ["physics", "simulation", "robotics", "pose", "types"]
 categories = ["simulation", "science", "data-structures"]
@@ -12,6 +12,9 @@ rust-version.workspace = true
 
 [package.metadata.cortenforge]
 tier = "L0"
+
+[lib]
+name = "sim_types"
 
 [dependencies]
 # Vector / matrix / isometry primitives for Pose, Transform, etc.

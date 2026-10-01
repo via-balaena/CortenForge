@@ -15,12 +15,12 @@ publish = false
 
 [dependencies]
 # The keystone gradient substrate: the differentiable soft↔rigid coupling.
-sim-coupling = { path = "../../sim/L1/coupling" }
+sim-coupling = { workspace = true }
 # Builds the rigid side (a sim-core Model) from a minimal MJCF string.
-sim-mjcf = { path = "../../sim/L0/mjcf" }
+sim-mjcf = { workspace = true }
 # The rigid engine + its analytic parameter-Jacobian channel (system-ID): the
 # `∂(trajectory)/∂(joint damping)` gradient that drives sim-to-real calibration.
-sim-core = { path = "../../sim/L0/core" }
+sim-core = { workspace = true }
 # The gradient optimizer (Adam) — reused, not reinvented (sim-opt is gradient-free).
 sim-ml-chassis = { workspace = true }
 # The linear truss (bar-element) solver — the structural forward model behind the

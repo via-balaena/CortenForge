@@ -1,5 +1,5 @@
 [package]
-name = "sim-core"
+name = "cortenforge-sim-core"
 description = "Physics simulation core: Model/Data architecture, MuJoCo pipeline, collision, integration"
 keywords = ["physics", "simulation", "mujoco", "robotics", "dynamics"]
 categories = ["simulation", "science", "science::robotics"]
@@ -12,6 +12,9 @@ rust-version.workspace = true
 
 [package.metadata.cortenforge]
 tier = "L0"
+
+[lib]
+name = "sim_core"
 
 [dependencies]
 # Shared geometry kernel: AABBs, SDFs, convex hulls used by collision

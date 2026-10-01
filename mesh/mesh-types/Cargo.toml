@@ -1,5 +1,5 @@
 [package]
-name = "mesh-types"
+name = "cortenforge-mesh-types"
 description = "Core mesh types for CortenForge: IndexedMesh, AttributedMesh, Triangle, Aabb"
 version.workspace = true
 edition.workspace = true
@@ -13,6 +13,9 @@ exclude = ["COMPLETION.md"]
 
 [package.metadata.cortenforge]
 tier = "L0"
+
+[lib]
+name = "mesh_types"
 
 [lints]
 workspace = true

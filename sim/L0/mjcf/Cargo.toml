@@ -1,5 +1,5 @@
 [package]
-name = "sim-mjcf"
+name = "cortenforge-sim-mjcf"
 description = "MJCF (MuJoCo XML Format) model loader for physics simulation"
 keywords = ["mjcf", "mujoco", "physics", "simulation", "robotics"]
 categories = ["parsing", "simulation", "science::robotics"]
@@ -16,6 +16,9 @@ tier = "L0-io"
 [package.metadata.docs.rs]
 features = ["mjb"]
 rustdoc-args = ["--cfg", "docsrs"]
+
+[lib]
+name = "sim_mjcf"
 
 [dependencies]
 # Foundation types (BodyId, Pose) assembled into the Model

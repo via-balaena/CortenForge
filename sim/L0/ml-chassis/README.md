@@ -1,6 +1,8 @@
-# sim-ml-chassis
+# cortenforge-sim-ml-chassis
 
 Algorithm chassis: traits, primitives, Competition runner — the foundation every CortenForge algorithm crate bolts onto
+
+In code, this crate is `sim_ml_chassis`.
 
 This crate is part of [CortenForge](https://github.com/via-balaena/CortenForge), a Rust SDK for mechatronics and simulation. Most applications depend on the [`cortenforge`](https://crates.io/crates/cortenforge) crate instead, which brings in the rest of the SDK.
 

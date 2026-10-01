@@ -1,5 +1,5 @@
 [package]
-name = "sim-thermostat"
+name = "cortenforge-sim-thermostat"
 description = "Langevin thermostat + passive-component framework for thermodynamic computing on CortenForge"
 keywords = ["thermodynamics", "langevin", "physics", "simulation", "computing"]
 categories = ["simulation", "science", "mathematics"]
@@ -13,6 +13,9 @@ exclude = ["COMPLETION.md"]
 
 [package.metadata.cortenforge]
 tier = "L0"
+
+[lib]
+name = "sim_thermostat"
 
 [dependencies]
 # Simulation engine — Model, Data, callback hooks

@@ -30,7 +30,7 @@ nalgebra = { workspace = true }
 # (cf-osim → cf-msk-lib is the normal dep; this dev dep does not affect that graph.)
 cf-osim = { path = "../cf-osim" }
 # Load + forward the emitted MJCF; read its tendon Jacobian for moment arms.
-sim-mjcf = { path = "../../sim/L0/mjcf" }
-sim-core = { path = "../../sim/L0/core" }
+sim-mjcf = { workspace = true }
+sim-core = { workspace = true }
 # Read the vendored OpenSim joint-moment reference for the muscle-driven dynamics gate.
 serde_json = { workspace = true }

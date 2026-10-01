@@ -1,6 +1,8 @@
-# mesh
+# cortenforge-mesh
 
 Complete mesh processing toolkit for 3D printing, CAD, and scan processing
+
+In code, this crate is `mesh`.
 
 This crate is part of [CortenForge](https://github.com/via-balaena/CortenForge), a Rust SDK for mechatronics and simulation. Most applications depend on the [`cortenforge`](https://crates.io/crates/cortenforge) crate instead, which brings in the rest of the SDK.
 

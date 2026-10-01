@@ -4,7 +4,7 @@
 # Users can depend on this single crate to get the full mesh processing toolkit.
 
 [package]
-name = "mesh"
+name = "cortenforge-mesh"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -17,6 +17,9 @@ categories = ["graphics", "science", "algorithms"]
 
 [package.metadata.cortenforge]
 tier = "L0-io"
+
+[lib]
+name = "mesh"
 
 [lints]
 workspace = true

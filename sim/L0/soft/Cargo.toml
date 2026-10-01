@@ -1,5 +1,5 @@
 [package]
-name = "sim-soft"
+name = "cortenforge-sim-soft"
 description = "Backward-Euler soft-body FEM: hyperelastic materials (Neo-Hookean, Yeoh) on tetrahedral meshes, SDF-to-tet meshing, bonded multi-material, and penalty and IPC contact with friction"
 keywords = ["physics", "simulation", "soft-body", "fem", "differentiable"]
 categories = ["simulation", "science", "mathematics"]
@@ -87,6 +87,9 @@ coverage_skip_binaries = [
     "non_interpenetration",
     "slender_bending_matches_analytic",
 ]
+
+[lib]
+name = "sim_soft"
 
 [features]
 default = []

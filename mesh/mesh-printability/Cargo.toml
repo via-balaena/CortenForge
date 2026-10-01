@@ -1,5 +1,5 @@
 [package]
-name = "mesh-printability"
+name = "cortenforge-mesh-printability"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,6 +12,9 @@ categories = ["graphics", "game-development", "science"]
 
 [package.metadata.cortenforge]
 tier = "L0"
+
+[lib]
+name = "mesh_printability"
 
 [lints]
 workspace = true

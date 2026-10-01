@@ -1,5 +1,5 @@
 [package]
-name = "mesh-measure"
+name = "cortenforge-mesh-measure"
 description = "Measurement and dimensioning tools for 3D meshes"
 version.workspace = true
 edition.workspace = true
@@ -13,6 +13,9 @@ categories = ["graphics", "mathematics"]
 
 [package.metadata.cortenforge]
 tier = "L0"
+
+[lib]
+name = "mesh_measure"
 
 [lints]
 workspace = true

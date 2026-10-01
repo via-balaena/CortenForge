@@ -1,5 +1,5 @@
 [package]
-name = "cf-spatial"
+name = "cortenforge-spatial"
 description = "Spatial data structures for CortenForge: VoxelGrid, OccupancyMap, raycasting"
 version.workspace = true
 edition.workspace = true
@@ -12,6 +12,9 @@ categories = ["graphics", "mathematics", "data-structures", "algorithms"]
 
 [package.metadata.cortenforge]
 tier = "L0"
+
+[lib]
+name = "cf_spatial"
 
 [lints]
 workspace = true
