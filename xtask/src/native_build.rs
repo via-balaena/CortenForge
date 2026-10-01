@@ -1,10 +1,8 @@
 //! Self-test: the crates.io release set builds no C++, and every other native
 //! build step it takes on a desktop target is one we have listed.
 //!
-//! The SDK's published crates stay Rust: a package that builds C++ is refused
-//! outright, and anything else that compiles, links or ships native code needs
-//! an entry in [`ALLOWED`] that names exactly what it does. [`LONG_ABOUT`]
-//! states the rules and what the signals cannot see.
+//! [`LONG_ABOUT`] states the signals, the rules and what the signals cannot
+//! see; [`ALLOWED`] is the list.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
@@ -69,11 +67,11 @@ What the signals cannot see:
   - native code a build script builds with none of those tools;
   - a C++ runtime link spelled any other way (another attribute order,
     `cfg_attr`, a name built at run time, `rustc-flags`, `rustc-link-arg`),
-    and other system libraries linked through `#[link]`;
+    and other libraries linked through `#[link]` or a build script's
+    `rustc-link-lib`;
   - a build-dependency that only a macOS or Windows host uses;
-  - what language a native library was written in, whether the package ships
-    it or finds it on the machine through pkg-config, system-deps or vcpkg: a
-    new listing of one needs a person to confirm it is not C++;
+  - what language a native library was written in, however the package gets
+    it: a new listing of one needs a person to confirm it is not C++;
   - a change inside a listed package that keeps its signals: entries name
     signals, not versions;
   - newer compatible versions a user's own lockfile may resolve;
@@ -178,9 +176,8 @@ struct Allowed {
     why: &'static str,
 }
 
-/// The native packages the release set may build. C and assembly are allowed
-/// when listed, and so is a link to a runtime the operating system ships;
-/// compiling or shipping C++ never is.
+/// The native packages the release set may build, each with exactly its signals
+/// and why; the rules are in [`LONG_ABOUT`].
 const ALLOWED: &[Allowed] = &[
     Allowed {
         name: "atomic-wait",
@@ -696,7 +693,7 @@ fn problems(found: &BTreeMap<String, Found>, allowed: &[Allowed]) -> Vec<String>
     for entry in allowed {
         if !found.contains_key(entry.name) {
             out.push(format!(
-                "`{}` is listed but the release set no longer builds it: remove its entry",
+                "`{}` is listed but shows no native signal in the release set: remove its entry",
                 entry.name
             ));
         }
