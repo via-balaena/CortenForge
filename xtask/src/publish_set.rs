@@ -169,6 +169,16 @@ pub(crate) fn release_set(root: &Path) -> Result<BTreeSet<String>> {
     Ok(closure(&packages)?.into_keys().collect())
 }
 
+/// [`release_set`], and the version every crate in it carries: the facade's.
+pub(crate) fn release_set_and_version(root: &Path) -> Result<(BTreeSet<String>, String)> {
+    let packages = packages(&workspace_metadata(root)?)?;
+    let version = packages
+        .get(FACADE)
+        .map(|facade| facade.version.clone())
+        .with_context(|| format!("the workspace has no `{FACADE}` package"))?;
+    Ok((closure(&packages)?.into_keys().collect(), version))
+}
+
 /// `cargo metadata --no-deps` for the workspace at `root`.
 fn workspace_metadata(root: &Path) -> Result<Value> {
     let out = std::process::Command::new("cargo")
