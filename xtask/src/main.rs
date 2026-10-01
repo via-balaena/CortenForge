@@ -30,6 +30,7 @@ mod check;
 mod complete;
 mod coverage;
 mod coverage_run;
+mod crates_io;
 mod disclaimer_sync;
 mod doc_theft;
 mod grade;
