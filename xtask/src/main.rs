@@ -47,6 +47,7 @@ mod grade;
 // outlived the code it described.
 mod hook_install;
 mod licensed_gates;
+mod native_build;
 mod pr_scope;
 mod publish_set;
 mod release_gates;
@@ -325,6 +326,14 @@ enum Commands {
     #[command(long_about = publish_set::LONG_ABOUT)]
     PublishSet,
 
+    /// The crates.io release set builds no C++, and its other native builds are listed.
+    //
+    // Fifth sibling: a dependency that compiles C++ (or any other native code)
+    // enters the published crates through any `Cargo.toml` line, and no other
+    // gate looks for it.
+    #[command(long_about = native_build::LONG_ABOUT)]
+    NativeBuild,
+
     /// Set up development environment (git hooks, verify tools)
     Setup,
 
@@ -401,6 +410,7 @@ fn main() -> Result<()> {
         Commands::TestReachability => test_reachability::check(),
         Commands::DisclaimerSync => disclaimer_sync::check(),
         Commands::PublishSet => publish_set::check(),
+        Commands::NativeBuild => native_build::check(),
         Commands::Setup => setup::run(),
         Commands::Uninstall => setup::uninstall(),
     }
