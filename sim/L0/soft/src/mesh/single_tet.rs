@@ -73,7 +73,7 @@ impl SingleTetMesh<NeoHookean> {
 impl SingleTetMesh<Yeoh> {
     /// Canonical decimeter-edge tet sampled against the Yeoh-variant
     /// `field` at the tet centroid. Mirror of [`SingleTetMesh::new`]
-    /// for the Yeoh material model (arc memo D10).
+    /// for the Yeoh material model.
     ///
     /// # Panics
     ///

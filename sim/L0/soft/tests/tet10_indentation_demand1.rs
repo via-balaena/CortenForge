@@ -41,8 +41,7 @@
 //! therefore a **deliberately-run one-shot measurement**, `#[ignore]`d
 //! unconditionally: never a routine or CI test. What CI runs is this file's two
 //! cheap arms — the [`node_density_control_confound_is_small`] relationship guard
-//! and the ~41 s Tet4 probe — with the Tet10 arm still `#[ignore]`d. See the session memory `project-tet10-fbar-element-upgrade` for
-//! the full carry-forward.
+//! and the ~41 s Tet4 probe — with the Tet10 arm still `#[ignore]`d.
 //!
 //! ## What this rung answers
 //!

@@ -2,8 +2,7 @@
 //!
 //! This is an **open-research worked example**, not a device: the artifact is the simulation
 //! and what it teaches about *protecting recoverability* (keeping a worst-moment contact below
-//! the irreversible cliff), and the contact is non-injurious *by physics*, not by policy. See
-//! the project memory `project-deescalation-study.md`.
+//! the irreversible cliff), and the contact is non-injurious *by physics*, not by policy.
 //!
 //! ## The experiment (forward only — gradients/co-design are RQ2)
 //! A ~1 kg rigid "limb" strikes, at a realistic incoming speed, a soft buffer of **measured**
@@ -13,7 +12,7 @@
 //! claim being that the soft buffer keeps peak contact force in the recoverable zone while the
 //! hard baseline crosses the irreversible cliff.
 //!
-//! ## The recoverability metric (cited thresholds — `project-deescalation-injury-thresholds.md`)
+//! ## The recoverability metric (cited thresholds)
 //! - **Recoverable / comfort line:** ISO/TS 15066 transient contact force for the hand/forearm,
 //!   **≈270 N** (the conservative, most-likely-contact region; this is pain-onset, *not* injury).
 //! - **Irreversible cliff:** facial-bone fracture onset **≈450 N**; skin laceration energy-density

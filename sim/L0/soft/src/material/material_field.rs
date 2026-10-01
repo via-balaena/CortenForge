@@ -5,8 +5,7 @@
 //! per-parameter typed fields" + "Trait-surface contract". Originally
 //! Phase 4-monomorphic to [`NeoHookean`]; the F4.0a Yeoh-arc commit
 //! widens the same-type aggregator to also build [`Yeoh`] from a
-//! `(μ, C₂, λ)` triplet of fields per arc memo D10 ("`MaterialField` gets
-//! parallel constructors; row picks one material model"). Internal
+//! `(μ, C₂, λ)` triplet of fields. Internal
 //! enum-tagged storage; no per-tet `Box<dyn Material>` dispatch.
 //!
 //! Two construction families:
@@ -98,8 +97,8 @@ pub(crate) enum MaterialFieldInner {
         mu: Box<dyn Field<f64>>,
         c2: Box<dyn Field<f64>>,
         lambda: Box<dyn Field<f64>>,
-        /// Optional per-tet asymmetric principal-stretch caps
-        /// (memo D8). `None` → legacy path: the produced [`Yeoh`]
+        /// Optional per-tet asymmetric principal-stretch caps.
+        /// `None` → legacy path: the produced [`Yeoh`]
         /// inherits `(max_principal_stretch, min_principal_stretch)
         /// = (None, None)` and the solver gate falls back to
         /// `max_stretch_deviation` (NH-style symmetric). `Some` →
@@ -187,8 +186,7 @@ impl MaterialField {
     /// Construct a Yeoh variant from three heterogeneous
     /// [`Field<f64>`](crate::field::Field) impls (μ, C₂, λ). Yeoh's
     /// `C₁ = μ / 2` is derived; the field doesn't store `C₁`
-    /// separately. Per arc memo D10 — row picks one material model
-    /// for all its tets, no in-row mixing.
+    /// separately.
     ///
     /// Bounds-less legacy path: the produced per-tet [`Yeoh`] has
     /// `validity().max_principal_stretch == None` AND

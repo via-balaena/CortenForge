@@ -404,7 +404,7 @@ where
         // element in it. The corner block is gated again. Do not restore
         // the argument.
         //
-        // Two gate flavors (Yeoh arc memo D8): if either of the new
+        // Two gate flavors: if either of the new
         // asymmetric bounds is `Some`, gate per-bound; else fall
         // back to the legacy NH symmetric `max_i |σ_i - 1|` bound.
         //

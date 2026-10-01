@@ -43,7 +43,7 @@
 //! 1. **Cheapest contact-active scene** — quasi-static Newton on a
 //!    `~384`-tet cube at `STATIC_DT = 1.0` converges in `~3-5` iters
 //!    release-mode in `~25 ms`. A 5-point `κ` scan completes in well
-//!    under a second per `feedback_release_mode_heavy_tests`.
+//!    under a second.
 //! 2. **Well-understood failure regime** — the compressive-block
 //!    fixture surfaced cold-start tet inversion at `(κ = 1e4,
 //!    d̂ = 1e-3, δ = 5e-4)` where `κ · (d̂ + δ) ≈ 15 N` per top-face

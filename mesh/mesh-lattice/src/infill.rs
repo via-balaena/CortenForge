@@ -449,8 +449,7 @@ pub fn generate_infill(
     // queries; the wrapped `TriMeshDistance` shares its `Arc<TriMesh>`
     // BVH between the two consumers.
     //
-    // See `docs/MESH_SDF_ORACLE_DECOMPOSITION_SPEC.md` and project
-    // memory `mesh-sdf-oracle-decomposition-spec` for the full
+    // See `docs/MESH_SDF_ORACLE_DECOMPOSITION_SPEC.md` for the full
     // architectural reasoning.
     let inner_bbox = inner_offset.aabb();
     let inner_padding = 5.0 * offset_resolution;

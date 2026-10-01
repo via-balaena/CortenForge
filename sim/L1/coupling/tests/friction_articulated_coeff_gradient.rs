@@ -18,8 +18,7 @@
 //!
 //! The μ_c FD has a V-shaped minimum at `ε = μ_c·1e-3` (rel ~2e-6): smaller steps hit round-off
 //! CANCELLATION (∂x/∂μ_c is a tiny change in a large tip coordinate), larger steps the O(ε²)
-//! truncation of the near-linear friction response — so the step is `μ_c·1e-3`. See
-//! `project-friction-leaf.md`.
+//! truncation of the near-linear friction response — so the step is `μ_c·1e-3`.
 
 #![allow(clippy::expect_used)]
 

@@ -106,8 +106,7 @@ pub type CpuTet4NHSolver<Msh> =
     solver::CpuNewtonSolver<element::Tet4, Msh, contact::NullContact, material::NeoHookean, 4, 1>;
 
 /// Yeoh-flavored sibling of [`CpuTet4NHSolver`]. Specialize via the
-/// `Msh` parameter (typically `SdfMeshedTetMesh<Yeoh>` per arc
-/// memo D10).
+/// `Msh` parameter (typically `SdfMeshedTetMesh<Yeoh>`).
 pub type CpuTet4YeohSolver<Msh> =
     solver::CpuNewtonSolver<element::Tet4, Msh, contact::NullContact, material::Yeoh, 4, 1>;
 

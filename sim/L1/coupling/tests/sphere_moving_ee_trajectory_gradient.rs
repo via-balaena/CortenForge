@@ -24,8 +24,7 @@
 //!    poses at the COM height `xipos.z`, so the adjoint must take the scalar-height channel, NOT
 //!    the geom-Jacobian centre channel which routes `∂h/∂q` through `geom_xpos ≠ xipos`).
 //!
-//! Scope: contact-engaged, stable-active-set, normal-only (no friction). See
-//! `project-differentiable-finite-contact.md`.
+//! Scope: contact-engaged, stable-active-set, normal-only (no friction).
 
 #![allow(clippy::expect_used)]
 

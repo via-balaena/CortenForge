@@ -58,8 +58,6 @@
 //! digits of agreement, three orders above the observed ~6.7e-16
 //! cross-platform noise floor, many orders below any real
 //! contact-dispatch regression's drift) is the right tolerance there.
-//! See `project_faer_block_diagonal_fp_drift.md` cross-platform
-//! extension for the full rationale.
 //!
 //! **Determinism-across-runs gate (R-2 carry-forward, dispatch-wiring
 //! tier).** Each scene runs twice within its test fn; the second run's

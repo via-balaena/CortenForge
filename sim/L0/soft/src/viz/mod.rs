@@ -87,9 +87,6 @@
 //! symptom and exposed another. The lesson: when a structured mesh
 //! exists, its connectivity is the right primitive.
 //!
-//! See `project_sim_soft_viz_arc.md` (memory) for the full
-//! architecture story including the spike findings.
-//!
 //! # Per-vertex scalar averaging
 //!
 //! Per-tet scalars (e.g. strain-energy density `psi_j_per_m3` from

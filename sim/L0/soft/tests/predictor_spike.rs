@@ -698,7 +698,7 @@ fn spike_ipc_5202() {
 /// `-z` loads the layer AWAY from the indenter sitting above it (benign), while
 /// `+z` drives it INTO the collider (the hazard). Testing only the benign
 /// direction would be the same vacuous-fixture mistake as zeroing the pinned
-/// velocities — see `feedback_negative_controls_need_two_sided_rules`.
+/// velocities.
 #[test]
 #[ignore = "predictor spike instrument — run explicitly, see module docs"]
 fn spike_ipc_gravity_5202() {

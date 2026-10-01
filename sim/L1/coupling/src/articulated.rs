@@ -491,7 +491,7 @@ impl<C: PlaneContact> StaggeredCoupling<C> {
     ///
     /// All kinematics are read at a FRESH scratch `forward` at `qpos` (matching the FD
     /// `loaded_state_jacobian` / [`Self::fresh_xfrc_column`] eval point). See
-    /// `docs/keystone/multilink_recon.md` and `project-analytic-chain-jstate-subpr2` (the spec).
+    /// `docs/keystone/multilink_recon.md`.
     // expect_used: a transition-derivative / forward on a valid model does not fail; a
     // failure is a programmer error surfaced loudly (mirrors `analytic_state_jacobian`).
     #[allow(clippy::expect_used)]

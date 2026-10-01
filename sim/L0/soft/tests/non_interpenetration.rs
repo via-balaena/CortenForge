@@ -53,7 +53,7 @@
 //! The compressive-block scene is debug-feasible (cube at `n = 4` is
 //! sub-second release-mode); the Hertzian and drop-and-rest scenes
 //! inherit their parent fixtures' `#[cfg_attr(debug_assertions,
-//! ignore)]` release-only gate per `feedback_release_mode_heavy_tests`.
+//! ignore)]` release-only gate.
 //! Each test re-runs its scene at the canonical parameters and walks
 //! every referenced vertex at converged `x_final` to assert
 //! `signed_distance ≥ -δ_pen`.

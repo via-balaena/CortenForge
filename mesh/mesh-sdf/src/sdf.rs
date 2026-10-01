@@ -796,9 +796,8 @@ mod tests {
 
     /// Far-field sign is reliable on a watertight pyramid (cap-fan
     /// style) — the failure mode the old face-normal heuristic
-    /// produced on real cleaned scans (see project memory
-    /// `pinned-floor-visual-gate-postmortem`, `min_sdf = -89.5 mm` on
-    /// a 71 mm body). With parry's pseudo-normals, probes far above
+    /// produced on real cleaned scans (`min_sdf = -89.5 mm` on a 71 mm
+    /// body). With parry's pseudo-normals, probes far above
     /// / below / lateral of the pyramid all get the expected outside
     /// sign, independent of which BVH leaf face is hit.
     #[test]

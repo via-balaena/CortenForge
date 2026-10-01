@@ -78,15 +78,14 @@
 //! C₂ = (σ_100 / 3.5 − C₁) / 4                 (uniaxial at λ = 2)
 //! ```
 //!
-//! Yeoh arc memo §"Math derivations" derives both. C₂ is positive for
+//! C₂ is positive for
 //! every published Smooth-On silicone. Mooney-Rivlin's I₂ contribution
-//! gives Drucker-unstable `C₀₁ < 0` on the same data and is rejected
-//! per arc memo D1.
+//! gives Drucker-unstable `C₀₁ < 0` on the same data and is rejected.
 //!
 //! Tensile validity cap `max_principal_stretch = 0.8 · λ_break` (80 %
 //! safety margin to rupture; calibrated per anchor from TDS elongation
-//! at break). Compressive cap is family-uniform at `0.20` per arc memo
-//! D8 (loosened from 0.30 by H4-2-A — see
+//! at break). Compressive cap is family-uniform at `0.20` (loosened
+//! from 0.30 by H4-2-A — see
 //! `docs/CANDIDATE_H4_COMPRESSION_RESEARCH.md`).
 //!
 //! # Validity
@@ -151,7 +150,7 @@ pub enum ShoreReading {
 /// Lets downstream artifacts (JSON capture, row prose) record whether
 /// a material came from a published anchor, an anchor-bounded
 /// interpolation, or a post-cast measurement, so `Path 1 / Path 2 /
-/// Path 3` (Yeoh arc memo D5) is preserved through the pipeline.
+/// Path 3` is preserved through the pipeline.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum ConstructionSource {
@@ -188,7 +187,7 @@ pub enum ConstructionSource {
 /// Reference data for one silicone — Lamé pair, Yeoh `C₂`, density,
 /// validity bounds, and provenance.
 ///
-/// Construction paths (Yeoh arc memo D5):
+/// Construction paths:
 ///
 /// 1. Use one of the `pub const` anchor entries below
 ///    (`ECOFLEX_00_30`, `DRAGON_SKIN_10A`, …). Source tag
@@ -231,10 +230,10 @@ pub struct SiliconeMaterial {
     /// 500 psi = 3.447 `MPa`. That is +4.4 %, and high is the *under-protective*
     /// direction for a barrier that diverges at the ceiling.
     pub tensile_strength_pa: f64,
-    /// Tensile principal-stretch cap (Yeoh validity gate, memo D8).
+    /// Tensile principal-stretch cap (Yeoh validity gate).
     /// Calibrated as `0.8 · λ_break` per anchor.
     pub validity_max_principal_stretch: f64,
-    /// Compressive principal-stretch cap (Yeoh validity gate, memo D8).
+    /// Compressive principal-stretch cap (Yeoh validity gate).
     /// Family-uniform at 0.20 (H4-2-A research-informed default per
     /// `docs/CANDIDATE_H4_COMPRESSION_RESEARCH.md` — Sparks et al.
     /// 2015 measured Ecoflex 00-10/00-30 + Dragon Skin in unconfined
@@ -312,7 +311,7 @@ impl SiliconeMaterial {
     /// `C₂`, density, and tensile validity bound. Compressive bound
     /// stays family-uniform at `0.20` (no interpolation).
     ///
-    /// Cross-family interpolation is rejected (memo D3): Ecoflex and
+    /// Cross-family interpolation is rejected: Ecoflex and
     /// Dragon Skin are different chemistries and pretending Shore
     /// 00-50 sits on a continuous curve with Shore A 5 hides this.
     ///
@@ -590,8 +589,7 @@ const PSI_TO_PA: f64 = 6894.757;
 
 // Per-anchor Yeoh validity bounds: tensile cap = 0.8 · λ_break,
 // compressive cap = 0.20 (family-uniform). λ_break per Smooth-On TDS
-// elongation-at-break rows; recon table at Yeoh arc memo §"Recon
-// findings".
+// elongation-at-break rows.
 //
 // Loosened 0.30 → 0.20 (H4-2-A, 2026-05-19 NIGHT) per
 // `docs/CANDIDATE_H4_COMPRESSION_RESEARCH.md` after the H4.3 sweep
@@ -962,12 +960,11 @@ mod tests {
     /// `0.8 · (1 + ε_break(%) / 100)` where `ε_break` is the
     /// elongation-at-break published on the Smooth-On TDS. Pins both
     /// the `λ = 1 + ε` ASTM-D412 conversion and the 80 %-rupture-margin
-    /// rule from arc memo D8. A typo in either `λ_break` or the 0.8
+    /// rule. A typo in either `λ_break` or the 0.8
     /// multiplier surfaces here.
     #[test]
     fn validity_max_pins_to_80_pct_of_one_plus_elongation_at_break() {
-        // (anchor, ε_break in %, from Smooth-On TDS via arc memo
-        // §"Recon findings" lines 26-31, 35-40).
+        // (anchor, ε_break in %, from Smooth-On TDS).
         const PUBLISHED_ELONGATION_PCT: &[(SiliconeMaterial, f64)] = &[
             (ECOFLEX_00_10, 800.0),
             (ECOFLEX_00_20, 845.0),
@@ -1081,7 +1078,7 @@ mod tests {
     /// Every anchor's `(μ, C₂)` pair reproduces the published 100 %
     /// modulus via the Yeoh calibration formula
     /// `M_100 = 3.5·C₁ + 14·C₂` (incompressible-uniaxial Yeoh at
-    /// λ = 2; arc memo line 72). Catches transcription typos in the
+    /// λ = 2). Catches transcription typos in the
     /// anchor table.
     ///
     /// Tolerance covers `c2` rounding to nearest 10 Pa; worst case

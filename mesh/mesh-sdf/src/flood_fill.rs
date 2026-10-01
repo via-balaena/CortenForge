@@ -969,7 +969,7 @@ mod tests {
     /// Same pyramid with the BASE winding inverted — base normals now
     /// point +z (INTO the body) instead of -z (out of it). Mimics the
     /// pre-B cf-scan-prep auto-cap output where `auto_cap_open_boundaries`
-    /// emitted inward-pointing cap-fan triangles ([[project-cf-scan-prep-cap-winding-concern]]).
+    /// emitted inward-pointing cap-fan triangles.
     ///
     /// A pseudo-normal sign query at `(0, 0, -3)` finds the base as
     /// the closest face, asks `(probe − closest) · normal`, gets

@@ -203,8 +203,7 @@ pub struct FloodFillReport {
     /// A correctness contract for the build: a value below
     /// `-bbox_half_diagonal` indicates a sign flip — the unsigned
     /// magnitude can't exceed the bounding-box half-diagonal for a
-    /// body that fits inside the grid (see
-    /// [[project-pinned-floor-visual-gate-postmortem]]).
+    /// body that fits inside the grid.
     pub min_signed_distance_m: f64,
 }
 

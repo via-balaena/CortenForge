@@ -58,8 +58,7 @@
 //! population — Theorem 1 bounds these by construction.
 //!
 //! Optional III-4 (volume convergence to `(4/3)πr³`) is folded in as
-//! `volume_relative_error_decreases_monotonically_with_resolution` —
-//! recommend-first per `feedback_recommend_first_deep_specialist`.
+//! `volume_relative_error_decreases_monotonically_with_resolution`.
 //! The III-2 sweep already builds the meshes the convergence test
 //! needs, so adding the assertion is essentially free.
 
@@ -290,8 +289,7 @@ fn total_volume_increases_strictly_with_radius_at_fixed_cells_per_radius() {
 #[test]
 fn volume_relative_error_decreases_monotonically_with_resolution() {
     // Optional III-4 — volume convergence to the analytic
-    // `(4/3)πr³` as `cell_size → 0`. NOT load-bearing; recommend-
-    // first per `feedback_recommend_first_deep_specialist`. Folded
+    // `(4/3)πr³` as `cell_size → 0`. NOT load-bearing. Folded
     // into commit 6 because the III-2 sweep already builds the
     // meshes this needs.
     //

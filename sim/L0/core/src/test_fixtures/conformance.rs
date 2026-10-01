@@ -6,7 +6,7 @@
 //! dynamics conformance suite (`sim-gpu`'s `pipeline::conformance_tests`) draw
 //! from. Keeping one list means the two oracles cannot silently drift to
 //! different model sets — a GPU shader bug masked by a missing topology is a
-//! recurring failure mode (see `project-gpu-shader-conformance-gap`).
+//! recurring failure mode.
 //!
 //! The matrix sweeps joint types `{hinge, slide, ball, free}` across topologies
 //! `{single, parallel/spatial chains, multi-joint-per-body, branched}` plus a
@@ -546,8 +546,7 @@ pub fn damped_conformance_matrix() -> Vec<ConformanceCase> {
 // skipped. [`ContactSpec`] carries each contact across the boundary; the CPU
 // oracle is the reference and the GPU consumes its `contacts`, so neither side
 // can drift, and the comparison isolates assembly + solve. (Collision
-// conformance — SDF dedup, per-cell caps — is a separate later slice.) See
-// `project-gpu-shader-conformance-gap` (contact/constraint slice).
+// conformance — SDF dedup, per-cell caps — is a separate later slice.)
 
 /// One contact, expressed independently of either engine, carrying it from the
 /// CPU analytic collision to the GPU `contact_buffer`.

@@ -46,7 +46,7 @@
 //! posed the way a game poses it, hands Newton a *qualitatively different*
 //! starting point. Whether that is enough to clear the wall is the question this
 //! file exists to answer, and it is not answerable from the 24 cells already
-//! run. → `stick_flex.rs`, and the ladder's memory of it.
+//! run. → `stick_flex.rs`.
 //!
 //! # The three arms, and why the comparison is made at MEASURED deflection
 //!

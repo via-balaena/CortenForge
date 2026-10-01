@@ -52,8 +52,7 @@
 //! **Wall-clock budget (S-8 lens viii).** Recorded per probe via
 //! `Instant::now()` and surfaced through `eprintln!` (visible under
 //! `--nocapture`); the test fails if total wall-clock exceeds 60 s
-//! per scope memo §8 commit 8 soft budget. Run with `--release` per
-//! `feedback_release_mode_heavy_tests`.
+//! per scope memo §8 commit 8 soft budget. Run with `--release`.
 
 // `to_bits()` comparisons in the determinism test are intentional;
 // `theta_val` (f64) vs `theta` (Tensor) is the same meaningful

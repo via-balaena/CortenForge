@@ -17,7 +17,7 @@
 //! rollout must stay in the penalty band (`z ∈ (0.100, 0.116)`) over the full horizon, so the
 //! gradient the harness gates is taken in the intended engaged regime.
 //!
-//! See `docs/keystone/friction_recon.md` and `project-friction-leaf.md`.
+//! See `docs/keystone/friction_recon.md`.
 
 // A missing/malformed fixture (MJCF load, body index) surfaces as a test panic.
 #![allow(clippy::expect_used)]

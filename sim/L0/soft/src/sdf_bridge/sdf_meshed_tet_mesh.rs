@@ -66,8 +66,7 @@ use super::{CutPoints, MeshingHints};
 /// Generic over `M: BuildableFromField` so the same pipeline produces
 /// either NH or Yeoh per-tet caches. NH consumers omit the type
 /// parameter (defaults to [`NeoHookean`]); Yeoh consumers (row 23+)
-/// write `SdfMeshedTetMesh<Yeoh>` and use [`SdfMeshedTetMesh::from_sdf_yeoh`]
-/// per arc memo D10.
+/// write `SdfMeshedTetMesh<Yeoh>` and use [`SdfMeshedTetMesh::from_sdf_yeoh`].
 #[derive(Clone, Debug)]
 pub struct SdfMeshedTetMesh<M: BuildableFromField = NeoHookean> {
     vertices: Vec<Vec3>,
@@ -556,8 +555,7 @@ impl SdfMeshedTetMesh<NeoHookean> {
 impl SdfMeshedTetMesh<Yeoh> {
     /// Build a Yeoh mesh by running the BCC + Labelle-Shewchuk
     /// Isosurface Stuffing pipeline. Mirror of
-    /// [`SdfMeshedTetMesh::<NeoHookean>::from_sdf`] for Yeoh consumers
-    /// (arc memo D10).
+    /// [`SdfMeshedTetMesh::<NeoHookean>::from_sdf`] for Yeoh consumers.
     ///
     /// `hints.material_field` MUST be `Some` and built via
     /// [`MaterialField::from_yeoh_fields`] — there is no

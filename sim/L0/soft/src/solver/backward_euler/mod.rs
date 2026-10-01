@@ -140,7 +140,7 @@ struct GaussGeometry<const N: usize, const G: usize> {
 /// memo Decision G's monomorphization. Yeoh consumers (row 23+) write
 /// `M = Yeoh` explicitly, typically via the [`crate::CpuTet4YeohSolver`]
 /// alias, and use a `Mesh<Yeoh>` impl such as
-/// `SdfMeshedTetMesh<Yeoh>` per arc memo D10. Per-tet `M`
+/// `SdfMeshedTetMesh<Yeoh>`. Per-tet `M`
 /// instances live on the mesh and are read at the assembly hot
 /// points via `self.mesh.materials()`.
 pub struct CpuNewtonSolver<

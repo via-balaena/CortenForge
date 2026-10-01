@@ -16,7 +16,7 @@
 //!   harness bands only the LOSS (the tip-`x` slide, which swings sign across the horizon), so this
 //!   state-level guard on the tip HEIGHT `z` isn't expressible as a loss band.
 //!
-//! See `docs/keystone/moment_residual_recon.md` and `project-friction-leaf.md`.
+//! See `docs/keystone/moment_residual_recon.md`.
 
 #![allow(clippy::expect_used)]
 

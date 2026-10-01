@@ -85,8 +85,7 @@
 //!
 //! ## Helper extensions surfaced at first use
 //!
-//! Per `feedback_no_reflexive_defer` and the Hertzian / compressive-
-//! block precedent (helper docstring claims may need empirical
+//! Per the Hertzian / compressive-block precedent (helper docstring claims may need empirical
 //! validation), the `dropping_sphere` helper at
 //! `SoftScene::dropping_sphere` was validated end-to-end here. No
 //! drift surfaced — the empty-pinned design works under dynamics for
@@ -211,7 +210,7 @@ fn mean_referenced_z(x_flat: &[f64], referenced: &[VertexId]) -> f64 {
 
 // ── Tests ────────────────────────────────────────────────────────────────
 
-// Release-mode-only gate per `feedback_release_mode_heavy_tests` and the
+// Release-mode-only gate.
 // Mirrors the Hertzian fixture's release-only pattern. Runtime is
 // ~20 s release-mode at the canonical (CELL_SIZE = 3 mm, N_STEPS =
 // 2000) parameters; debug-mode inflation at this resolution would push
